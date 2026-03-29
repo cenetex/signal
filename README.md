@@ -21,9 +21,12 @@ Browser / WebAssembly with Emscripten:
 ```sh
 emcmake cmake -S . -B build-web
 cmake --build build-web
+python3 -m http.server 8080 --directory build-web
 ```
 
 That produces `build-web/space_miner.html` plus the `.js` and `.wasm` files.
+
+Open `http://127.0.0.1:8080/space_miner.html` and sanity-check browser input by holding `W` or `Space`, alt-tabbing away, then returning. The ship should stop taking active input when focus is lost.
 
 ## Notes
 

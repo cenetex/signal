@@ -186,6 +186,12 @@ static float rand_range(float min_value, float max_value) {
     return lerpf(min_value, max_value, randf());
 }
 
+// Drop transient and held input when the app loses focus.
+static void clear_input_state(void) {
+    memset(g.key_down, 0, sizeof(g.key_down));
+    memset(g.key_pressed, 0, sizeof(g.key_pressed));
+}
+
 static void set_notice(const char* fmt, ...) {
     va_list args;
     va_start(args, fmt);
@@ -781,6 +787,12 @@ static void event(const sapp_event* event) {
             if ((event->key_code >= 0) && (event->key_code < KEY_COUNT)) {
                 g.key_down[event->key_code] = false;
             }
+            break;
+
+        case SAPP_EVENTTYPE_UNFOCUSED:
+        case SAPP_EVENTTYPE_SUSPENDED:
+        case SAPP_EVENTTYPE_ICONIFIED:
+            clear_input_state();
             break;
 
         default:
