@@ -94,6 +94,8 @@ static const float SHIP_CARGO_MAX = 120.0f;
 static const float MINING_RANGE = 170.0f;
 static const float MINING_RATE = 28.0f;
 static const float ORE_PRICE = 12.0f;
+static const float HUD_MARGIN = 28.0f;
+static const float HUD_CELL = 8.0f;
 
 static float clampf(float value, float min_value, float max_value) {
     if (value < min_value) {
@@ -238,7 +240,7 @@ static void reset_world(void) {
         respawn_asteroid(&g.asteroids[i]);
     }
 
-    set_notice("Mine ore with SPACE and sell it at the station with E.");
+    set_notice("Mine ore, dock, sell.");
 }
 
 static void draw_circle_filled(vec2 center, float radius, int segments, float r, float g0, float b, float a) {
@@ -271,6 +273,17 @@ static void draw_rect_centered(vec2 center, float half_w, float half_h, float r,
     sgl_v2f(center.x + half_w, center.y - half_h);
     sgl_v2f(center.x + half_w, center.y + half_h);
     sgl_v2f(center.x - half_w, center.y + half_h);
+    sgl_end();
+}
+
+static void draw_rect_outline(vec2 center, float half_w, float half_h, float r, float g0, float b, float a) {
+    sgl_c4f(r, g0, b, a);
+    sgl_begin_line_strip();
+    sgl_v2f(center.x - half_w, center.y - half_h);
+    sgl_v2f(center.x + half_w, center.y - half_h);
+    sgl_v2f(center.x + half_w, center.y + half_h);
+    sgl_v2f(center.x - half_w, center.y + half_h);
+    sgl_v2f(center.x - half_w, center.y - half_h);
     sgl_end();
 }
 
@@ -403,7 +416,35 @@ static void draw_beam(void) {
     }
 }
 
+static void draw_ui_panel(float x, float y, float width, float height, float accent) {
+    vec2 center = v2(x + (width * 0.5f), y + (height * 0.5f));
+    draw_rect_centered(center, width * 0.5f, height * 0.5f, 0.03f, 0.06f, 0.10f, 0.86f);
+    draw_rect_outline(center, width * 0.5f, height * 0.5f, 0.16f, 0.30f + accent, 0.42f + accent, 0.95f);
+    draw_rect_centered(v2(x + 54.0f, y + 12.0f), 40.0f, 1.5f, 0.28f, 0.74f + accent, 1.0f, 0.75f);
+}
+
+static void draw_hud_panels(void) {
+    float screen_w = sapp_widthf();
+    float screen_h = sapp_heightf();
+    bool compact = screen_w < 760.0f;
+    float hud_margin = compact ? 16.0f : HUD_MARGIN;
+    float bottom_height = compact ? 30.0f : 34.0f;
+    float top_width = compact ? (screen_w - (hud_margin * 2.0f)) : 360.0f;
+    float top_height = compact ? 92.0f : 106.0f;
+
+    draw_ui_panel(hud_margin, hud_margin, top_width, top_height, 0.03f);
+
+    draw_ui_panel(hud_margin, screen_h - hud_margin - bottom_height, screen_w - (hud_margin * 2.0f), bottom_height, 0.02f);
+}
+
 static void draw_hud(void) {
+    float screen_w = sapp_widthf();
+    float screen_h = sapp_heightf();
+    bool compact = screen_w < 760.0f;
+    float hud_margin = compact ? 16.0f : HUD_MARGIN;
+    float left_text_x = (hud_margin + 18.0f) / HUD_CELL;
+    float top_text_y = (hud_margin + 18.0f) / HUD_CELL;
+    float bottom_text_y = (screen_h - hud_margin - 20.0f) / HUD_CELL;
     int cargo_units = (int)lroundf(g.ship.cargo);
     int credits = (int)lroundf(g.ship.credits);
     int station_distance = (int)lroundf(v2_len(v2_sub(g.station.pos, g.ship.pos)));
@@ -424,48 +465,66 @@ static void draw_hud(void) {
 
     sdtx_canvas(sapp_widthf(), sapp_heightf());
     sdtx_font(0);
-    sdtx_origin(1.0f, 1.0f);
+    sdtx_origin(0.0f, 0.0f);
     sdtx_home();
 
+    sdtx_pos(left_text_x, top_text_y);
     sdtx_color3b(232, 241, 255);
-    sdtx_printf("SOKOL SPACE MINER\n");
-    sdtx_printf("Credits: %d\n", credits);
-    sdtx_printf("Cargo:   %d / %d ore\n", cargo_units, cargo_capacity);
+    sdtx_puts("SHIP STATUS");
+    sdtx_crlf();
+
+    sdtx_color3b(203, 220, 248);
+    if (compact) {
+        sdtx_printf("CR %d  CARGO %d/%d", credits, cargo_units, cargo_capacity);
+    } else {
+        sdtx_printf("Credits %d cr   Cargo %d/%d ore", credits, cargo_units, cargo_capacity);
+    }
+    sdtx_crlf();
 
     if (g.docked) {
         sdtx_color3b(112, 255, 214);
-        sdtx_printf("Station: docked, press E to sell cargo\n");
+        if (compact) {
+            sdtx_puts("Station docked, press E to sell");
+        } else {
+            sdtx_puts("Station docked. Press E to sell cargo.");
+        }
     } else {
         sdtx_color3b(199, 222, 255);
-        sdtx_printf("Station: %d units, %d deg %s\n", station_distance, bearing_degrees, bearing_side);
+        if (compact) {
+            sdtx_printf("Station %d units, %d deg %s", station_distance, bearing_degrees, bearing_side);
+        } else {
+            sdtx_printf("Station %d units away, %d deg %s", station_distance, bearing_degrees, bearing_side);
+        }
     }
+    sdtx_crlf();
 
     if (g.hover_asteroid >= 0) {
         const asteroid_t* asteroid = &g.asteroids[g.hover_asteroid];
         int ore_left = (int)lroundf(asteroid->ore);
         sdtx_color3b(130, 255, 235);
-        sdtx_printf("Target:  asteroid with %d ore remaining\n", ore_left);
+        if (compact) {
+            sdtx_printf("Target asteroid, %d ore", ore_left);
+        } else {
+            sdtx_printf("Target asteroid, %d ore remaining", ore_left);
+        }
     } else {
         sdtx_color3b(169, 179, 204);
-        sdtx_printf("Target:  line up an asteroid in front of the ship\n");
+        sdtx_puts("No target lock. Line up an asteroid.");
     }
-
     sdtx_crlf();
+
     if (cargo_units >= cargo_capacity) {
         sdtx_color3b(255, 221, 119);
-        sdtx_printf("Cargo hold full. Head back to the station.\n");
+        sdtx_puts("Cargo hold full. Return to station.");
+    } else if (g.notice_timer > 0.0f) {
+        sdtx_color3b(114, 255, 192);
+        sdtx_puts(g.notice);
     } else {
         sdtx_color3b(164, 177, 205);
-        sdtx_printf("Asteroid belt starts beyond the station ring.\n");
+        sdtx_puts("Mine ore, dock, sell.");
     }
 
-    if (g.notice_timer > 0.0f) {
-        sdtx_crlf();
-        sdtx_color3b(114, 255, 192);
-        sdtx_printf("%s\n", g.notice);
-    }
-
-    sdtx_pos(0.0f, (sapp_heightf() / 8.0f) - 3.0f);
+    sdtx_pos(left_text_x, bottom_text_y);
     sdtx_color3b(145, 160, 188);
     sdtx_puts("W/S thrust  A/D turn  SPACE mine  E sell  R reset  ESC quit");
 }
@@ -598,7 +657,7 @@ static void update_game(float dt) {
                 asteroid->ore -= mined;
                 if (asteroid->ore <= 0.01f) {
                     respawn_asteroid(asteroid);
-                    set_notice("Asteroid exhausted. Another ore rock drifted into the belt.");
+                    set_notice("Asteroid depleted. New ore drifted in.");
                 }
             }
         } else {
@@ -608,15 +667,15 @@ static void update_game(float dt) {
 
     if (is_key_pressed(SAPP_KEYCODE_E)) {
         if (!g.docked) {
-            set_notice("Move into the station ring before selling.");
+            set_notice("Enter station ring to sell.");
         } else if (g.ship.cargo <= 0.01f) {
-            set_notice("Cargo hold is empty.");
+            set_notice("Cargo hold empty.");
         } else {
             int sold_units = (int)lroundf(g.ship.cargo);
             int payout = (int)lroundf(g.ship.cargo * ORE_PRICE);
             g.ship.credits += g.ship.cargo * ORE_PRICE;
             g.ship.cargo = 0.0f;
-            set_notice("Sold %d ore for %d credits.", sold_units, payout);
+            set_notice("Sold %d ore for %d cr.", sold_units, payout);
         }
     }
 
@@ -679,6 +738,13 @@ static void frame(void) {
     }
     draw_beam();
     draw_ship();
+
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, sapp_widthf(), sapp_heightf(), 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    draw_hud_panels();
     draw_hud();
 
     sg_begin_pass(&(sg_pass){

@@ -25,6 +25,43 @@
         color: #dce9ff;
       }
 
+      .shell {
+        width: min(96vw, 1400px);
+        display: grid;
+        gap: 14px;
+      }
+
+      .hero {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        padding: 0 6px;
+      }
+
+      .hero-copy {
+        display: grid;
+        gap: 6px;
+      }
+
+      .eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: rgba(150, 198, 255, 0.74);
+      }
+
+      .title {
+        font-size: clamp(20px, 2.8vw, 34px);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+      }
+
+      .subtitle {
+        font-size: 13px;
+        color: rgba(220, 233, 255, 0.72);
+      }
+
       .frame {
         width: min(96vw, 1400px);
         aspect-ratio: 16 / 9;
@@ -44,25 +81,20 @@
         display: block;
         outline: none;
       }
-
-      .label {
-        position: absolute;
-        left: 18px;
-        top: 16px;
-        padding: 8px 12px;
-        border-radius: 999px;
-        background: rgba(7, 16, 29, 0.78);
-        border: 1px solid rgba(150, 198, 255, 0.22);
-        font-size: 12px;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-      }
     </style>
   </head>
   <body>
-    <div class="frame">
-      <div class="label">Sokol Space Miner</div>
-      <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+    <div class="shell">
+      <div class="hero">
+        <div class="hero-copy">
+          <div class="eyebrow">C + Sokol Prototype</div>
+          <div class="title">Sokol Space Miner</div>
+          <div class="subtitle">Fly, mine asteroids, dock at the station, and sell your haul.</div>
+        </div>
+      </div>
+      <div class="frame">
+        <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+      </div>
     </div>
     <script>
       var Module = {
