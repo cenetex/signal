@@ -62,6 +62,22 @@ typedef struct {
 typedef struct {
     bool key_down[KEY_COUNT];
     bool key_pressed[KEY_COUNT];
+} input_state_t;
+
+typedef struct {
+    float turn;
+    float thrust;
+    bool mine;
+    bool sell;
+    bool reset;
+} input_intent_t;
+
+typedef struct {
+    float accumulator;
+} runtime_state_t;
+
+typedef struct {
+    input_state_t input;
     ship_t ship;
     station_t station;
     asteroid_t asteroids[MAX_ASTEROIDS];
@@ -77,6 +93,7 @@ typedef struct {
     char notice[128];
     float notice_timer;
     float time;
+    runtime_state_t runtime;
     sg_pass_action pass_action;
 } game_t;
 
@@ -96,6 +113,8 @@ static const float MINING_RATE = 28.0f;
 static const float ORE_PRICE = 12.0f;
 static const float HUD_MARGIN = 28.0f;
 static const float HUD_CELL = 8.0f;
+static const float SIM_DT = 1.0f / 120.0f;
+static const int MAX_SIM_STEPS_PER_FRAME = 8;
 
 static float clampf(float value, float min_value, float max_value) {
     if (value < min_value) {
@@ -188,8 +207,12 @@ static float rand_range(float min_value, float max_value) {
 
 // Drop transient and held input when the app loses focus.
 static void clear_input_state(void) {
-    memset(g.key_down, 0, sizeof(g.key_down));
-    memset(g.key_pressed, 0, sizeof(g.key_pressed));
+    memset(g.input.key_down, 0, sizeof(g.input.key_down));
+    memset(g.input.key_pressed, 0, sizeof(g.input.key_pressed));
+}
+
+static void consume_pressed_input(void) {
+    memset(g.input.key_pressed, 0, sizeof(g.input.key_pressed));
 }
 
 static void set_notice(const char* fmt, ...) {
@@ -579,45 +602,64 @@ static int find_mining_target(vec2 origin, vec2 forward) {
 }
 
 static bool is_key_down(sapp_keycode key) {
-    return (key >= 0) && (key < KEY_COUNT) && g.key_down[key];
+    return (key >= 0) && (key < KEY_COUNT) && g.input.key_down[key];
 }
 
 static bool is_key_pressed(sapp_keycode key) {
-    return (key >= 0) && (key < KEY_COUNT) && g.key_pressed[key];
+    return (key >= 0) && (key < KEY_COUNT) && g.input.key_pressed[key];
 }
 
-static void update_game(float dt) {
-    g.time += dt;
+static vec2 ship_forward(void) {
+    return v2_from_angle(g.ship.angle);
+}
+
+static vec2 ship_muzzle(vec2 forward) {
+    return v2_add(g.ship.pos, v2_scale(forward, SHIP_RADIUS + 8.0f));
+}
+
+static void reset_step_feedback(void) {
     g.hover_asteroid = -1;
     g.beam_active = false;
     g.beam_hit = false;
     g.thrusting = false;
+}
 
-    float turn_input = 0.0f;
+static input_intent_t sample_input_intent(void) {
+    input_intent_t intent = { 0 };
+
     if (is_key_down(SAPP_KEYCODE_A) || is_key_down(SAPP_KEYCODE_LEFT)) {
-        turn_input += 1.0f;
+        intent.turn += 1.0f;
     }
     if (is_key_down(SAPP_KEYCODE_D) || is_key_down(SAPP_KEYCODE_RIGHT)) {
-        turn_input -= 1.0f;
+        intent.turn -= 1.0f;
     }
-    g.ship.angle = wrap_angle(g.ship.angle + (turn_input * SHIP_TURN_SPEED * dt));
-
-    vec2 forward = v2_from_angle(g.ship.angle);
-    float thrust_input = 0.0f;
     if (is_key_down(SAPP_KEYCODE_W) || is_key_down(SAPP_KEYCODE_UP)) {
-        thrust_input += 1.0f;
+        intent.thrust += 1.0f;
     }
     if (is_key_down(SAPP_KEYCODE_S) || is_key_down(SAPP_KEYCODE_DOWN)) {
-        thrust_input -= 1.0f;
+        intent.thrust -= 1.0f;
     }
 
+    intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
+    intent.sell = is_key_pressed(SAPP_KEYCODE_E);
+    intent.reset = is_key_pressed(SAPP_KEYCODE_R);
+    return intent;
+}
+
+static void step_ship_rotation(float dt, float turn_input) {
+    g.ship.angle = wrap_angle(g.ship.angle + (turn_input * SHIP_TURN_SPEED * dt));
+}
+
+static void step_ship_thrust(float dt, float thrust_input, vec2 forward) {
     if (thrust_input > 0.0f) {
         g.ship.vel = v2_add(g.ship.vel, v2_scale(forward, SHIP_ACCEL * thrust_input * dt));
         g.thrusting = true;
     } else if (thrust_input < 0.0f) {
         g.ship.vel = v2_add(g.ship.vel, v2_scale(forward, SHIP_BRAKE * thrust_input * dt));
     }
+}
 
+static void step_ship_motion(float dt) {
     g.ship.vel = v2_scale(g.ship.vel, 1.0f / (1.0f + (SHIP_DRAG * dt)));
     g.ship.pos = v2_add(g.ship.pos, v2_scale(g.ship.vel, dt));
 
@@ -626,74 +668,113 @@ static void update_game(float dt) {
         vec2 push_home = v2_scale(v2_norm(g.ship.pos), -(world_distance - WORLD_RADIUS) * 0.08f);
         g.ship.vel = v2_add(g.ship.vel, push_home);
     }
+}
 
+static void step_asteroid_spin(float dt) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         g.asteroids[i].rotation += g.asteroids[i].spin * dt;
     }
+}
 
+static void resolve_world_collisions(void) {
     resolve_ship_circle(g.station.pos, g.station.radius + 4.0f);
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         resolve_ship_circle(g.asteroids[i].pos, g.asteroids[i].radius);
     }
+}
 
+static void update_docking_state(float dt) {
     g.docked = (v2_len(v2_sub(g.ship.pos, g.station.pos)) <= g.station.dock_radius);
     if (g.docked) {
         g.ship.vel = v2_scale(g.ship.vel, 1.0f / (1.0f + (dt * 2.2f)));
     }
+}
 
-    vec2 muzzle = v2_add(g.ship.pos, v2_scale(forward, SHIP_RADIUS + 8.0f));
-    g.hover_asteroid = find_mining_target(muzzle, forward);
+static void update_targeting_state(vec2 forward) {
+    g.hover_asteroid = find_mining_target(ship_muzzle(forward), forward);
+}
 
-    if (is_key_down(SAPP_KEYCODE_SPACE)) {
-        g.beam_active = true;
-        g.beam_start = muzzle;
+static void step_mining_system(float dt, bool mining, vec2 forward) {
+    if (!mining) {
+        return;
+    }
 
-        if (g.hover_asteroid >= 0) {
-            asteroid_t* asteroid = &g.asteroids[g.hover_asteroid];
-            vec2 to_asteroid = v2_sub(asteroid->pos, muzzle);
-            vec2 normal = v2_norm(to_asteroid);
-            g.beam_end = v2_sub(asteroid->pos, v2_scale(normal, asteroid->radius * 0.85f));
-            g.beam_hit = true;
+    vec2 muzzle = ship_muzzle(forward);
+    g.beam_active = true;
+    g.beam_start = muzzle;
 
-            if (g.ship.cargo < SHIP_CARGO_MAX) {
-                float mined = MINING_RATE * dt;
-                mined = fminf(mined, asteroid->ore);
-                mined = fminf(mined, SHIP_CARGO_MAX - g.ship.cargo);
-                g.ship.cargo += mined;
-                asteroid->ore -= mined;
-                if (asteroid->ore <= 0.01f) {
-                    respawn_asteroid(asteroid);
-                    set_notice("Asteroid depleted. New ore drifted in.");
-                }
+    if (g.hover_asteroid >= 0) {
+        asteroid_t* asteroid = &g.asteroids[g.hover_asteroid];
+        vec2 to_asteroid = v2_sub(asteroid->pos, muzzle);
+        vec2 normal = v2_norm(to_asteroid);
+        g.beam_end = v2_sub(asteroid->pos, v2_scale(normal, asteroid->radius * 0.85f));
+        g.beam_hit = true;
+
+        if (g.ship.cargo < SHIP_CARGO_MAX) {
+            float mined = MINING_RATE * dt;
+            mined = fminf(mined, asteroid->ore);
+            mined = fminf(mined, SHIP_CARGO_MAX - g.ship.cargo);
+            g.ship.cargo += mined;
+            asteroid->ore -= mined;
+            if (asteroid->ore <= 0.01f) {
+                respawn_asteroid(asteroid);
+                set_notice("Asteroid depleted. New ore drifted in.");
             }
-        } else {
-            g.beam_end = v2_add(muzzle, v2_scale(forward, MINING_RANGE));
         }
+    } else {
+        g.beam_end = v2_add(muzzle, v2_scale(forward, MINING_RANGE));
+    }
+}
+
+static void step_station_interaction_system(bool sell) {
+    if (!sell) {
+        return;
     }
 
-    if (is_key_pressed(SAPP_KEYCODE_E)) {
-        if (!g.docked) {
-            set_notice("Enter station ring to sell.");
-        } else if (g.ship.cargo <= 0.01f) {
-            set_notice("Cargo hold empty.");
-        } else {
-            int sold_units = (int)lroundf(g.ship.cargo);
-            int payout = (int)lroundf(g.ship.cargo * ORE_PRICE);
-            g.ship.credits += g.ship.cargo * ORE_PRICE;
-            g.ship.cargo = 0.0f;
-            set_notice("Sold %d ore for %d cr.", sold_units, payout);
-        }
+    if (!g.docked) {
+        set_notice("Enter station ring to sell.");
+    } else if (g.ship.cargo <= 0.01f) {
+        set_notice("Cargo hold empty.");
+    } else {
+        int sold_units = (int)lroundf(g.ship.cargo);
+        int payout = (int)lroundf(g.ship.cargo * ORE_PRICE);
+        g.ship.credits += g.ship.cargo * ORE_PRICE;
+        g.ship.cargo = 0.0f;
+        set_notice("Sold %d ore for %d cr.", sold_units, payout);
     }
+}
 
-    if (is_key_pressed(SAPP_KEYCODE_R)) {
-        reset_world();
-    }
-
+static void step_notice_timer(float dt) {
     if (g.notice_timer > 0.0f) {
         g.notice_timer = fmaxf(0.0f, g.notice_timer - dt);
     }
+}
 
-    memset(g.key_pressed, 0, sizeof(g.key_pressed));
+static void sim_step(float dt) {
+    reset_step_feedback();
+    g.time += dt;
+
+    input_intent_t intent = sample_input_intent();
+    if (intent.reset) {
+        reset_world();
+        consume_pressed_input();
+        return;
+    }
+
+    step_ship_rotation(dt, intent.turn);
+    vec2 forward = ship_forward();
+    step_ship_thrust(dt, intent.thrust, forward);
+    step_ship_motion(dt);
+    step_asteroid_spin(dt);
+    resolve_world_collisions();
+    update_docking_state(dt);
+
+    forward = ship_forward();
+    update_targeting_state(forward);
+    step_mining_system(dt, intent.mine, forward);
+    step_station_interaction_system(intent.sell);
+    step_notice_timer(dt);
+    consume_pressed_input();
 }
 
 static void init(void) {
@@ -721,11 +802,7 @@ static void init(void) {
     reset_world();
 }
 
-static void frame(void) {
-    float dt = (float)sapp_frame_duration();
-    dt = clampf(dt, 1.0f / 240.0f, 1.0f / 20.0f);
-    update_game(dt);
-
+static void render_world(void) {
     vec2 camera = g.ship.pos;
     float half_w = sapp_widthf() * 0.5f;
     float half_h = sapp_heightf() * 0.5f;
@@ -744,7 +821,9 @@ static void frame(void) {
     }
     draw_beam();
     draw_ship();
+}
 
+static void render_ui(void) {
     sgl_matrix_mode_projection();
     sgl_load_identity();
     sgl_ortho(0.0f, sapp_widthf(), sapp_heightf(), 0.0f, -1.0f, 1.0f);
@@ -752,6 +831,11 @@ static void frame(void) {
     sgl_load_identity();
     draw_hud_panels();
     draw_hud();
+}
+
+static void render_frame(void) {
+    render_world();
+    render_ui();
 
     sg_begin_pass(&(sg_pass){
         .action = g.pass_action,
@@ -761,6 +845,28 @@ static void frame(void) {
     sdtx_draw();
     sg_end_pass();
     sg_commit();
+}
+
+static void advance_simulation_frame(float frame_dt) {
+    g.runtime.accumulator += frame_dt;
+
+    int sim_steps = 0;
+    while ((g.runtime.accumulator >= SIM_DT) && (sim_steps < MAX_SIM_STEPS_PER_FRAME)) {
+        sim_step(SIM_DT);
+        g.runtime.accumulator -= SIM_DT;
+        sim_steps++;
+    }
+
+    if (g.runtime.accumulator >= SIM_DT) {
+        g.runtime.accumulator = 0.0f;
+    }
+}
+
+static void frame(void) {
+    float max_frame_dt = SIM_DT * (float)MAX_SIM_STEPS_PER_FRAME;
+    float frame_dt = clampf((float)sapp_frame_duration(), 0.0f, max_frame_dt);
+    advance_simulation_frame(frame_dt);
+    render_frame();
 }
 
 static void cleanup(void) {
@@ -773,9 +879,9 @@ static void event(const sapp_event* event) {
     switch (event->type) {
         case SAPP_EVENTTYPE_KEY_DOWN:
             if ((event->key_code >= 0) && (event->key_code < KEY_COUNT)) {
-                g.key_down[event->key_code] = true;
+                g.input.key_down[event->key_code] = true;
                 if (!event->key_repeat) {
-                    g.key_pressed[event->key_code] = true;
+                    g.input.key_pressed[event->key_code] = true;
                 }
             }
             if (event->key_code == SAPP_KEYCODE_ESCAPE) {
@@ -785,7 +891,7 @@ static void event(const sapp_event* event) {
 
         case SAPP_EVENTTYPE_KEY_UP:
             if ((event->key_code >= 0) && (event->key_code < KEY_COUNT)) {
-                g.key_down[event->key_code] = false;
+                g.input.key_down[event->key_code] = false;
             }
             break;
 
