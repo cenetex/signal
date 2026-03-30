@@ -175,4 +175,34 @@ typedef struct {
     float brightness;
 } star_t;
 
+typedef enum {
+    AUDIO_WAVE_SINE,
+    AUDIO_WAVE_TRIANGLE,
+    AUDIO_WAVE_SQUARE,
+    AUDIO_WAVE_NOISE,
+} audio_wave_t;
+
+typedef struct {
+    bool active;
+    audio_wave_t wave;
+    float phase;
+    float frequency;
+    float sweep;
+    float gain;
+    float pan;
+    float duration;
+    float age;
+    float noise_mix;
+} audio_voice_t;
+
+typedef struct {
+    bool valid;
+    uint32_t rng;
+    int sample_rate;
+    int channels;
+    float mining_tick_cooldown;
+    audio_voice_t voices[AUDIO_VOICE_COUNT];
+    float mix_buffer[AUDIO_MIX_FRAMES * 2];
+} audio_state_t;
+
 #endif

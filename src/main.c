@@ -7,6 +7,9 @@
 
 #include "math_util.h"
 #include "types.h"
+#include "commodity.h"
+#include "ship.h"
+#include "audio.h"
 
 /* --- Multiplayer networking --- */
 #include "net.h"
@@ -78,35 +81,7 @@ typedef struct {
     float accumulator;
 } runtime_state_t;
 
-typedef enum {
-    AUDIO_WAVE_SINE,
-    AUDIO_WAVE_TRIANGLE,
-    AUDIO_WAVE_SQUARE,
-    AUDIO_WAVE_NOISE,
-} audio_wave_t;
-
-typedef struct {
-    bool active;
-    audio_wave_t wave;
-    float phase;
-    float frequency;
-    float sweep;
-    float gain;
-    float pan;
-    float duration;
-    float age;
-    float noise_mix;
-} audio_voice_t;
-
-typedef struct {
-    bool valid;
-    uint32_t rng;
-    int sample_rate;
-    int channels;
-    float mining_tick_cooldown;
-    audio_voice_t voices[AUDIO_VOICE_COUNT];
-    float mix_buffer[AUDIO_MIX_FRAMES * 2];
-} audio_state_t;
+/* audio_wave_t, audio_voice_t, audio_state_t: see types.h */
 
 typedef struct {
     input_state_t input;
@@ -148,9 +123,7 @@ static game_t g;
 
 static const float WORLD_RADIUS = 2200.0f;
 static const float SHIP_BRAKE = 180.0f;
-static const float SHIP_HOLD_UPGRADE_STEP = 24.0f;
 static const float MINING_RANGE = 170.0f;
-static const float SHIP_MINING_UPGRADE_STEP = 7.0f;
 static const float HUD_MARGIN = 28.0f;
 static const float HUD_TOP_PANEL_WIDTH = 332.0f;
 static const float HUD_TOP_PANEL_HEIGHT = 78.0f;
@@ -179,9 +152,6 @@ static const float FIELD_ASTEROID_RESPAWN_DELAY = 0.6f;
 static const float FRACTURE_CHILD_CLEANUP_AGE = 22.0f;
 static const float FRACTURE_CHILD_CLEANUP_DISTANCE = 940.0f;
 static const float FRAGMENT_NEARBY_RANGE = 220.0f;
-static const float SHIP_TRACTOR_UPGRADE_STEP = 24.0f;
-static const float SHIP_BASE_COLLECT_RADIUS = 30.0f;
-static const float SHIP_COLLECT_UPGRADE_STEP = 5.0f;
 static const float FRAGMENT_TRACTOR_ACCEL = 380.0f;
 static const float FRAGMENT_MAX_SPEED = 210.0f;
 static const float REFINERY_HOPPER_CAPACITY = 100.0f;
@@ -191,7 +161,6 @@ static const float NPC_DOCK_TIME = 3.0f;
 static const float HAULER_DOCK_TIME = 4.0f;
 static const float HAULER_LOAD_TIME = 2.0f;
 static const float STATION_PRODUCTION_RATE = 0.3f;
-static const float UPGRADE_BASE_PRODUCT = 8.0f;
 
 const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
     [HULL_CLASS_MINER] = {
@@ -235,219 +204,12 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
     },
 };
 static const float COLLECTION_FEEDBACK_TIME = 1.1f;
-static const int SHIP_UPGRADE_MAX_LEVEL = 4;
 static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
 static const float STATION_DOCK_APPROACH_OFFSET = 34.0f;
 static const float SHIP_COLLISION_DAMAGE_THRESHOLD = 115.0f;
 static const float SHIP_COLLISION_DAMAGE_SCALE = 0.12f;
 
-static uint32_t audio_rng_next(void) {
-    g.audio.rng = (g.audio.rng * 1664525u) + 1013904223u;
-    return g.audio.rng;
-}
-
-static float audio_randf(void) {
-    return (float)((audio_rng_next() >> 8) & 0x00FFFFFFu) / 16777215.0f;
-}
-
-static float audio_rand_bipolar(void) {
-    return (audio_randf() * 2.0f) - 1.0f;
-}
-
-static void audio_clear_voices(void) {
-    memset(g.audio.voices, 0, sizeof(g.audio.voices));
-    g.audio.mining_tick_cooldown = 0.0f;
-}
-
-static void audio_play_voice(audio_wave_t wave, float frequency, float sweep, float gain, float duration, float pan, float noise_mix) {
-    if (!g.audio.valid) {
-        return;
-    }
-
-    for (int i = 0; i < AUDIO_VOICE_COUNT; i++) {
-        if (g.audio.voices[i].active) {
-            continue;
-        }
-        g.audio.voices[i] = (audio_voice_t){
-            .active = true,
-            .wave = wave,
-            .phase = audio_randf(),
-            .frequency = frequency,
-            .sweep = sweep,
-            .gain = gain,
-            .pan = clampf(pan, -1.0f, 1.0f),
-            .duration = fmaxf(duration, 0.02f),
-            .age = 0.0f,
-            .noise_mix = clampf(noise_mix, 0.0f, 1.0f),
-        };
-        return;
-    }
-}
-
-static float audio_sample_wave(audio_wave_t wave, float phase) {
-    float wrapped = phase - floorf(phase);
-    switch (wave) {
-        case AUDIO_WAVE_SINE:
-            return sinf(wrapped * TWO_PI_F);
-        case AUDIO_WAVE_TRIANGLE:
-            return 1.0f - (4.0f * fabsf(wrapped - 0.5f));
-        case AUDIO_WAVE_SQUARE:
-            return wrapped < 0.5f ? 1.0f : -1.0f;
-        case AUDIO_WAVE_NOISE:
-            return audio_rand_bipolar();
-        default:
-            return 0.0f;
-    }
-}
-
-static void audio_play_mining_tick(void) {
-    if ((g.audio.mining_tick_cooldown > 0.0f) || !g.audio.valid) {
-        return;
-    }
-    g.audio.mining_tick_cooldown = 0.06f;
-    audio_play_voice(AUDIO_WAVE_SQUARE, 1080.0f, -5200.0f, 0.035f, 0.035f, audio_rand_bipolar() * 0.12f, 0.08f);
-    audio_play_voice(AUDIO_WAVE_TRIANGLE, 720.0f, -1800.0f, 0.022f, 0.05f, 0.0f, 0.0f);
-}
-
-static void audio_play_fracture(asteroid_tier_t parent_tier) {
-    static const float base_freqs[ASTEROID_TIER_COUNT] = { 180.0f, 250.0f, 340.0f, 420.0f };
-    float base = base_freqs[parent_tier < ASTEROID_TIER_COUNT ? parent_tier : ASTEROID_TIER_L];
-    audio_play_voice(AUDIO_WAVE_TRIANGLE, base, -base * 0.65f, 0.10f, 0.18f, audio_rand_bipolar() * 0.24f, 0.15f);
-    audio_play_voice(AUDIO_WAVE_NOISE, base * 0.7f, -base * 0.45f, 0.05f, 0.12f, 0.0f, 1.0f);
-}
-
-static void audio_play_pickup(float ore, int fragments) {
-    float gain = clampf(0.04f + (ore * 0.0032f), 0.04f, 0.11f);
-    float pitch = 540.0f + clampf(ore * 14.0f, 0.0f, 220.0f) + (float)(fragments * 24);
-    audio_play_voice(AUDIO_WAVE_SINE, pitch, 920.0f, gain, 0.09f, audio_rand_bipolar() * 0.35f, 0.0f);
-}
-
-static void audio_play_dock(void) {
-    audio_play_voice(AUDIO_WAVE_SINE, 310.0f, 580.0f, 0.08f, 0.16f, -0.12f, 0.0f);
-    audio_play_voice(AUDIO_WAVE_SINE, 470.0f, 380.0f, 0.06f, 0.18f, 0.12f, 0.0f);
-}
-
-static void audio_play_launch(void) {
-    audio_play_voice(AUDIO_WAVE_TRIANGLE, 620.0f, -980.0f, 0.06f, 0.14f, -0.10f, 0.0f);
-    audio_play_voice(AUDIO_WAVE_SINE, 420.0f, -420.0f, 0.04f, 0.18f, 0.10f, 0.0f);
-}
-
-static void audio_play_sale(void) {
-    audio_play_voice(AUDIO_WAVE_SINE, 420.0f, 440.0f, 0.07f, 0.15f, -0.18f, 0.0f);
-    audio_play_voice(AUDIO_WAVE_SINE, 630.0f, 520.0f, 0.06f, 0.17f, 0.18f, 0.0f);
-}
-
-static void audio_play_repair(void) {
-    audio_play_voice(AUDIO_WAVE_TRIANGLE, 240.0f, 260.0f, 0.06f, 0.18f, 0.0f, 0.0f);
-    audio_play_voice(AUDIO_WAVE_SINE, 510.0f, -120.0f, 0.03f, 0.20f, 0.0f, 0.0f);
-}
-
-static void audio_play_upgrade(ship_upgrade_t upgrade) {
-    float root = 420.0f;
-    switch (upgrade) {
-        case SHIP_UPGRADE_MINING:
-            root = 520.0f;
-            break;
-        case SHIP_UPGRADE_HOLD:
-            root = 430.0f;
-            break;
-        case SHIP_UPGRADE_TRACTOR:
-            root = 610.0f;
-            break;
-        case SHIP_UPGRADE_COUNT:
-        default:
-            break;
-    }
-    audio_play_voice(AUDIO_WAVE_SINE, root, 320.0f, 0.06f, 0.12f, -0.12f, 0.0f);
-    audio_play_voice(AUDIO_WAVE_SINE, root * 1.25f, 380.0f, 0.05f, 0.15f, 0.12f, 0.0f);
-    audio_play_voice(AUDIO_WAVE_SINE, root * 1.5f, 480.0f, 0.04f, 0.18f, 0.0f, 0.0f);
-}
-
-static void audio_play_damage(float damage) {
-    float gain = clampf(0.035f + (damage * 0.0018f), 0.04f, 0.10f);
-    audio_play_voice(AUDIO_WAVE_NOISE, 180.0f, -80.0f, gain, 0.12f, audio_rand_bipolar() * 0.22f, 1.0f);
-    audio_play_voice(AUDIO_WAVE_SQUARE, 130.0f, -160.0f, gain * 0.5f, 0.10f, 0.0f, 0.15f);
-}
-
-static void audio_step(float dt) {
-    if (g.audio.mining_tick_cooldown > 0.0f) {
-        g.audio.mining_tick_cooldown = fmaxf(0.0f, g.audio.mining_tick_cooldown - dt);
-    }
-}
-
-static void audio_generate_stream(void) {
-    if (!g.audio.valid || !saudio_isvalid()) {
-        return;
-    }
-
-    int channels = saudio_channels();
-    int sample_rate = saudio_sample_rate();
-    if ((channels < 1) || (channels > 2) || (sample_rate <= 0)) {
-        return;
-    }
-
-    g.audio.channels = channels;
-    g.audio.sample_rate = sample_rate;
-    const float sample_dt = 1.0f / (float)sample_rate;
-
-    int frames_requested = saudio_expect();
-    while (frames_requested > 0) {
-        int frames_to_mix = frames_requested > AUDIO_MIX_FRAMES ? AUDIO_MIX_FRAMES : frames_requested;
-        memset(g.audio.mix_buffer, 0, sizeof(float) * (size_t)(frames_to_mix * channels));
-
-        for (int frame_index = 0; frame_index < frames_to_mix; frame_index++) {
-            float left = 0.0f;
-            float right = 0.0f;
-
-            for (int voice_index = 0; voice_index < AUDIO_VOICE_COUNT; voice_index++) {
-                audio_voice_t* voice = &g.audio.voices[voice_index];
-                if (!voice->active) {
-                    continue;
-                }
-
-                if (voice->age >= voice->duration) {
-                    voice->active = false;
-                    continue;
-                }
-
-                float attack = clampf(voice->age / 0.01f, 0.0f, 1.0f);
-                float release = 1.0f - clampf(voice->age / voice->duration, 0.0f, 1.0f);
-                float envelope = voice->gain * attack * release * release;
-                float sample = audio_sample_wave(voice->wave, voice->phase);
-                if ((voice->noise_mix > 0.0f) && (voice->wave != AUDIO_WAVE_NOISE)) {
-                    sample = lerpf(sample, audio_rand_bipolar(), voice->noise_mix);
-                }
-                sample *= envelope;
-
-                if (channels == 1) {
-                    left += sample;
-                } else {
-                    float pan = clampf(voice->pan, -1.0f, 1.0f);
-                    float left_gain = sqrtf(0.5f * (1.0f - pan));
-                    float right_gain = sqrtf(0.5f * (1.0f + pan));
-                    left += sample * left_gain;
-                    right += sample * right_gain;
-                }
-
-                voice->frequency = fmaxf(45.0f, voice->frequency + (voice->sweep * sample_dt));
-                voice->phase += voice->frequency * sample_dt;
-                voice->phase -= floorf(voice->phase);
-                voice->age += sample_dt;
-            }
-
-            if (channels == 1) {
-                g.audio.mix_buffer[frame_index] = clampf(left * 0.75f, -1.0f, 1.0f);
-            } else {
-                int base = frame_index * channels;
-                g.audio.mix_buffer[base + 0] = clampf(left * 0.75f, -1.0f, 1.0f);
-                g.audio.mix_buffer[base + 1] = clampf(right * 0.75f, -1.0f, 1.0f);
-            }
-        }
-
-        saudio_push(g.audio.mix_buffer, frames_to_mix);
-        frames_requested = saudio_expect();
-    }
-}
+/* Audio system: see audio.h/c */
 
 static float ui_window_width(void) {
     return sapp_widthf() / fmaxf(1.0f, sapp_dpi_scale());
@@ -556,123 +318,22 @@ static float asteroid_progress_ratio(const asteroid_t* asteroid) {
     return 0.0f;
 }
 
-static commodity_t commodity_refined_form(commodity_t commodity) {
-    switch (commodity) {
-        case COMMODITY_FERRITE_ORE:
-            return COMMODITY_FRAME_INGOT;
-        case COMMODITY_CUPRITE_ORE:
-            return COMMODITY_CONDUCTOR_INGOT;
-        case COMMODITY_CRYSTAL_ORE:
-            return COMMODITY_LENS_INGOT;
-        case COMMODITY_FRAME_INGOT:
-        case COMMODITY_CONDUCTOR_INGOT:
-        case COMMODITY_LENS_INGOT:
-        case COMMODITY_COUNT:
-        default:
-            return commodity;
-    }
-}
-
-static const char* commodity_name(commodity_t commodity) {
-    switch (commodity) {
-        case COMMODITY_FERRITE_ORE:
-            return "Ferrite Ore";
-        case COMMODITY_CUPRITE_ORE:
-            return "Cuprite Ore";
-        case COMMODITY_CRYSTAL_ORE:
-            return "Crystal Ore";
-        case COMMODITY_FRAME_INGOT:
-            return "Frame Ingots";
-        case COMMODITY_CONDUCTOR_INGOT:
-            return "Conductor Ingots";
-        case COMMODITY_LENS_INGOT:
-            return "Lens Ingots";
-        case COMMODITY_COUNT:
-        default:
-            return "Cargo";
-    }
-}
-
-static const char* commodity_code(commodity_t commodity) {
-    switch (commodity) {
-        case COMMODITY_FERRITE_ORE:
-            return "FE";
-        case COMMODITY_CUPRITE_ORE:
-            return "CU";
-        case COMMODITY_CRYSTAL_ORE:
-            return "CR";
-        case COMMODITY_FRAME_INGOT:
-            return "FR";
-        case COMMODITY_CONDUCTOR_INGOT:
-            return "CO";
-        case COMMODITY_LENS_INGOT:
-            return "LN";
-        case COMMODITY_COUNT:
-        default:
-            return "--";
-    }
-}
-
-static const char* commodity_short_name(commodity_t commodity) {
-    switch (commodity) {
-        case COMMODITY_FERRITE_ORE:
-            return "Ferrite";
-        case COMMODITY_CUPRITE_ORE:
-            return "Cuprite";
-        case COMMODITY_CRYSTAL_ORE:
-            return "Crystal";
-        case COMMODITY_FRAME_INGOT:
-            return "Frame";
-        case COMMODITY_CONDUCTOR_INGOT:
-            return "Conductor";
-        case COMMODITY_LENS_INGOT:
-            return "Lens";
-        case COMMODITY_COUNT:
-        default:
-            return "Unknown";
-    }
-}
+/* commodity_refined_form, commodity_name, commodity_code, commodity_short_name: see commodity.h/c */
 
 static commodity_t random_raw_ore(void) {
     return (commodity_t)rand_int((int)COMMODITY_FERRITE_ORE, (int)COMMODITY_CRYSTAL_ORE);
 }
 
-static float ship_total_cargo(void) {
-    float total = 0.0f;
-    for (int i = 0; i < COMMODITY_COUNT; i++) {
-        total += g.ship.cargo[i];
-    }
-    return total;
-}
-
-static float ship_raw_ore_total(void) {
-    float total = 0.0f;
-    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
-        total += g.ship.cargo[i];
-    }
-    return total;
-}
-
-static float ship_cargo_amount(commodity_t commodity) {
-    return g.ship.cargo[commodity];
-}
+/* ship_total_cargo, ship_raw_ore_total, ship_cargo_amount, station_buy_price, station_inventory_amount: see commodity.h/c */
 
 static void clear_ship_cargo(void) {
     memset(g.ship.cargo, 0, sizeof(g.ship.cargo));
 }
 
-static float station_buy_price(const station_t* station, commodity_t commodity) {
-    return station != NULL ? station->buy_price[commodity] : 0.0f;
-}
-
-static float station_inventory_amount(const station_t* station, commodity_t commodity) {
-    return station != NULL ? station->inventory[commodity] : 0.0f;
-}
-
 static void format_ore_manifest(char* text, size_t text_size) {
-    int ferrite = (int)lroundf(ship_cargo_amount(COMMODITY_FERRITE_ORE));
-    int cuprite = (int)lroundf(ship_cargo_amount(COMMODITY_CUPRITE_ORE));
-    int crystal = (int)lroundf(ship_cargo_amount(COMMODITY_CRYSTAL_ORE));
+    int ferrite = (int)lroundf(ship_cargo_amount(&g.ship,COMMODITY_FERRITE_ORE));
+    int cuprite = (int)lroundf(ship_cargo_amount(&g.ship,COMMODITY_CUPRITE_ORE));
+    int crystal = (int)lroundf(ship_cargo_amount(&g.ship,COMMODITY_CRYSTAL_ORE));
     snprintf(text, text_size, "%s %d  %s %d  %s %d",
         commodity_code(COMMODITY_FERRITE_ORE), ferrite,
         commodity_code(COMMODITY_CUPRITE_ORE), cuprite,
@@ -704,97 +365,9 @@ static void format_refinery_price_line(const station_t* station, char* text, siz
     snprintf(text, text_size, "FE %d  CU %d  CR %d", ferrite, cuprite, crystal);
 }
 
-static const hull_def_t* npc_hull_def(const npc_ship_t* npc) {
-    return &HULL_DEFS[npc->hull_class];
-}
-
-static const hull_def_t* ship_hull_def(void) {
-    return &HULL_DEFS[g.ship.hull_class];
-}
-
-static float ship_max_hull(void) {
-    return ship_hull_def()->max_hull;
-}
-
-static float ship_cargo_capacity(void) {
-    return ship_hull_def()->ore_capacity + ((float)g.ship.hold_level * SHIP_HOLD_UPGRADE_STEP);
-}
-
-static float ship_mining_rate(void) {
-    return ship_hull_def()->mining_rate + ((float)g.ship.mining_level * SHIP_MINING_UPGRADE_STEP);
-}
-
-static float ship_tractor_range(void) {
-    return ship_hull_def()->tractor_range + ((float)g.ship.tractor_level * SHIP_TRACTOR_UPGRADE_STEP);
-}
-
-static float ship_collect_radius(void) {
-    return SHIP_BASE_COLLECT_RADIUS + ((float)g.ship.tractor_level * SHIP_COLLECT_UPGRADE_STEP);
-}
-
-static int ship_upgrade_level(ship_upgrade_t upgrade) {
-    switch (upgrade) {
-        case SHIP_UPGRADE_MINING:
-            return g.ship.mining_level;
-        case SHIP_UPGRADE_HOLD:
-            return g.ship.hold_level;
-        case SHIP_UPGRADE_TRACTOR:
-            return g.ship.tractor_level;
-        case SHIP_UPGRADE_COUNT:
-        default:
-            return 0;
-    }
-}
-
-static bool ship_upgrade_maxed(ship_upgrade_t upgrade) {
-    return ship_upgrade_level(upgrade) >= SHIP_UPGRADE_MAX_LEVEL;
-}
-
-static int ship_upgrade_cost(ship_upgrade_t upgrade) {
-    int level = ship_upgrade_level(upgrade);
-    int tier = level + 1;
-    switch (upgrade) {
-        case SHIP_UPGRADE_MINING:
-            return 180 + (tier * 110) + (level * level * 120);
-        case SHIP_UPGRADE_HOLD:
-            return 210 + (tier * 120) + (level * level * 135);
-        case SHIP_UPGRADE_TRACTOR:
-            return 160 + (tier * 100) + (level * level * 110);
-        case SHIP_UPGRADE_COUNT:
-        default:
-            return 0;
-    }
-}
-
-static product_t upgrade_required_product(ship_upgrade_t upgrade) {
-    switch (upgrade) {
-        case SHIP_UPGRADE_HOLD:
-            return PRODUCT_FRAME;
-        case SHIP_UPGRADE_MINING:
-            return PRODUCT_LASER_MODULE;
-        case SHIP_UPGRADE_TRACTOR:
-            return PRODUCT_TRACTOR_MODULE;
-        case SHIP_UPGRADE_COUNT:
-        default:
-            return PRODUCT_FRAME;
-    }
-}
-
-static float upgrade_product_cost(ship_upgrade_t upgrade) {
-    int level = ship_upgrade_level(upgrade);
-    int next = level + 1;
-    return UPGRADE_BASE_PRODUCT * (float)next;
-}
-
-static const char* product_name(product_t product) {
-    switch (product) {
-        case PRODUCT_FRAME: return "Frames";
-        case PRODUCT_LASER_MODULE: return "Laser Modules";
-        case PRODUCT_TRACTOR_MODULE: return "Tractor Modules";
-        case PRODUCT_COUNT:
-        default: return "Products";
-    }
-}
+/* ship_hull_def, npc_hull_def, ship_max_hull, ship_cargo_capacity, ship_mining_rate,
+   ship_tractor_range, ship_collect_radius, ship_upgrade_level, ship_upgrade_maxed,
+   ship_upgrade_cost, upgrade_required_product, upgrade_product_cost, product_name: see ship.h/c */
 
 static const station_t* station_at(int station_index) {
     if ((station_index < 0) || (station_index >= MAX_STATIONS)) {
@@ -940,8 +513,8 @@ static void split_hud_message_lines(const char* text, int max_cols, char* line0,
 }
 
 static bool build_hud_message(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
-    int cargo_units = (int)lroundf(ship_raw_ore_total());
-    int cargo_capacity = (int)lroundf(ship_cargo_capacity());
+    int cargo_units = (int)lroundf(ship_raw_ore_total(&g.ship));
+    int cargo_capacity = (int)lroundf(ship_cargo_capacity(&g.ship));
     const station_t* station = current_station_ptr();
 
     if (g.notice_timer > 0.0f) {
@@ -1085,9 +658,9 @@ static const char* station_role_fit_title(station_role_t role) {
 
 static bool can_afford_upgrade(const station_t* station, ship_upgrade_t upgrade, uint32_t service, int credit_cost) {
     if (!station || !(station->services & service)) return false;
-    if (ship_upgrade_maxed(upgrade)) return false;
+    if (ship_upgrade_maxed(&g.ship,upgrade)) return false;
     if (g.ship.credits + 0.01f < (float)credit_cost) return false;
-    if (station->product_stock[upgrade_required_product(upgrade)] + 0.01f < upgrade_product_cost(upgrade)) return false;
+    if (station->product_stock[upgrade_required_product(upgrade)] + 0.01f < upgrade_product_cost(&g.ship,upgrade)) return false;
     return true;
 }
 
@@ -1099,16 +672,16 @@ static void build_station_ui_state(station_ui_state_t* ui) {
     }
 
     ui->hull_now = (int)lroundf(g.ship.hull);
-    ui->hull_max = (int)lroundf(ship_max_hull());
-    float ore_total = ship_raw_ore_total();
+    ui->hull_max = (int)lroundf(ship_max_hull(&g.ship));
+    float ore_total = ship_raw_ore_total(&g.ship);
     float repair = station_repair_cost();
     ui->cargo_units = (int)lroundf(ore_total);
-    ui->cargo_capacity = (int)lroundf(ship_cargo_capacity());
+    ui->cargo_capacity = (int)lroundf(ship_cargo_capacity(&g.ship));
     ui->payout = (int)lroundf(station_cargo_sale_value());
     ui->repair_cost = (int)lroundf(repair);
-    ui->mining_cost = ship_upgrade_cost(SHIP_UPGRADE_MINING);
-    ui->hold_cost = ship_upgrade_cost(SHIP_UPGRADE_HOLD);
-    ui->tractor_cost = ship_upgrade_cost(SHIP_UPGRADE_TRACTOR);
+    ui->mining_cost = ship_upgrade_cost(&g.ship,SHIP_UPGRADE_MINING);
+    ui->hold_cost = ship_upgrade_cost(&g.ship,SHIP_UPGRADE_HOLD);
+    ui->tractor_cost = ship_upgrade_cost(&g.ship,SHIP_UPGRADE_TRACTOR);
     ui->can_sell = station_has_service(STATION_SERVICE_ORE_BUYER) && (ore_total > 0.01f);
     ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (repair > 0.0f) && (g.ship.credits + 0.01f >= repair);
     ui->can_upgrade_mining = can_afford_upgrade(ui->station, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, ui->mining_cost);
@@ -1221,7 +794,7 @@ static int build_station_service_lines(const station_ui_state_t* ui, station_ser
 
     if (ui->station->role == STATION_ROLE_YARD) {
         lines[1].action = "[4] Hold racks";
-        if (ship_upgrade_maxed(SHIP_UPGRADE_HOLD)) {
+        if (ship_upgrade_maxed(&g.ship,SHIP_UPGRADE_HOLD)) {
             snprintf(lines[1].state, sizeof(lines[1].state), "maxed");
             lines[1].r = 169;
             lines[1].g0 = 179;
@@ -1236,7 +809,7 @@ static int build_station_service_lines(const station_ui_state_t* ui, station_ser
     }
 
     lines[1].action = "[3] Laser array";
-    if (ship_upgrade_maxed(SHIP_UPGRADE_MINING)) {
+    if (ship_upgrade_maxed(&g.ship,SHIP_UPGRADE_MINING)) {
         snprintf(lines[1].state, sizeof(lines[1].state), "maxed");
         lines[1].r = 169;
         lines[1].g0 = 179;
@@ -1249,7 +822,7 @@ static int build_station_service_lines(const station_ui_state_t* ui, station_ser
     }
 
     lines[2].action = "[5] Tractor coil";
-    if (ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR)) {
+    if (ship_upgrade_maxed(&g.ship,SHIP_UPGRADE_TRACTOR)) {
         snprintf(lines[2].state, sizeof(lines[2].state), "maxed");
         lines[2].r = 169;
         lines[2].g0 = 179;
@@ -1317,7 +890,7 @@ static vec2 station_dock_anchor(void) {
     if (station == NULL) {
         return v2(0.0f, 0.0f);
     }
-    return v2_add(station->pos, v2(0.0f, -(station->radius + ship_hull_def()->ship_radius + STATION_DOCK_APPROACH_OFFSET)));
+    return v2_add(station->pos, v2(0.0f, -(station->radius + ship_hull_def(&g.ship)->ship_radius + STATION_DOCK_APPROACH_OFFSET)));
 }
 
 static bool station_has_service(uint32_t service) {
@@ -1333,20 +906,20 @@ static float station_cargo_sale_value(void) {
     }
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
         commodity_t commodity = (commodity_t)i;
-        total += ship_cargo_amount(commodity) * station_buy_price(station, commodity);
+        total += ship_cargo_amount(&g.ship,commodity) * station_buy_price(station, commodity);
     }
     return total;
 }
 
 static float station_repair_cost(void) {
-    float missing_hull = fmaxf(0.0f, ship_max_hull() - g.ship.hull);
+    float missing_hull = fmaxf(0.0f, ship_max_hull(&g.ship) - g.ship.hull);
     return ceilf(missing_hull * STATION_REPAIR_COST_PER_HULL);
 }
 
 static void apply_ship_damage(float damage);
 
 static float ship_cargo_space(void) {
-    return fmaxf(0.0f, ship_cargo_capacity() - ship_total_cargo());
+    return fmaxf(0.0f, ship_cargo_capacity(&g.ship) - ship_total_cargo(&g.ship));
 }
 
 static void clear_collection_feedback(void) {
@@ -1590,7 +1163,7 @@ static void fracture_asteroid(int asteroid_index, vec2 outward_dir) {
         child->vel = child_vel;
     }
 
-    audio_play_fracture(parent.tier);
+    audio_play_fracture(&g.audio,parent.tier);
     set_notice("%s %s fractured into %d %s %s%s.",
         asteroid_tier_name(parent.tier),
         asteroid_tier_kind(parent.tier),
@@ -1637,7 +1210,7 @@ static void reset_world(void) {
     g.ship.pos = v2(0.0f, -110.0f);
     g.ship.vel = v2(0.0f, 0.0f);
     g.ship.angle = PI_F * 0.5f;
-    g.ship.hull = ship_max_hull();
+    g.ship.hull = ship_max_hull(&g.ship);
     clear_ship_cargo();
     g.ship.credits = 0.0f;
     g.ship.mining_level = 0;
@@ -1684,7 +1257,7 @@ static void reset_world(void) {
     g.notice_timer = 0.0f;
     g.nearby_fragments = 0;
     g.tractor_fragments = 0;
-    audio_clear_voices();
+    audio_clear_voices(&g.audio);
     clear_collection_feedback();
     g.field_spawn_timer = 0.0f;
 
@@ -1980,9 +1553,9 @@ static void draw_ship_tractor_field(void) {
     }
 
     float pulse = 0.28f + (sinf(g.time * 7.0f) * 0.08f);
-    draw_circle_outline(g.ship.pos, ship_tractor_range(), 40, 0.24f, 0.86f, 1.0f, pulse);
+    draw_circle_outline(g.ship.pos, ship_tractor_range(&g.ship), 40, 0.24f, 0.86f, 1.0f, pulse);
     if (g.tractor_fragments > 0) {
-        draw_circle_outline(g.ship.pos, ship_collect_radius() + 6.0f, 28, 0.50f, 1.0f, 0.82f, 0.75f);
+        draw_circle_outline(g.ship.pos, ship_collect_radius(&g.ship) + 6.0f, 28, 0.50f, 1.0f, 0.82f, 0.75f);
     }
 }
 
@@ -2347,8 +1920,8 @@ static void draw_hud_panels(void) {
         }
 
         if (show_fit_panel) {
-            draw_ui_meter(fit_x + 16.0f, fit_y + 54.0f, fit_w - 32.0f, 12.0f, g.ship.hull / ship_max_hull(), 0.96f, 0.54f, 0.28f);
-            draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, ship_total_cargo() / fmaxf(1.0f, ship_cargo_capacity()), 0.26f, 0.90f, 0.72f);
+            draw_ui_meter(fit_x + 16.0f, fit_y + 54.0f, fit_w - 32.0f, 12.0f, g.ship.hull / ship_max_hull(&g.ship), 0.96f, 0.54f, 0.28f);
+            draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, ship_total_cargo(&g.ship) / fmaxf(1.0f, ship_cargo_capacity(&g.ship)), 0.26f, 0.90f, 0.72f);
             if (ui.station->role == STATION_ROLE_YARD) {
                 draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.ship.hold_level, 0.50f, 0.82f, 1.0f);
             } else if (ui.station->role == STATION_ROLE_BEAMWORKS) {
@@ -2490,13 +2063,13 @@ static void draw_station_services(const station_ui_state_t* ui) {
             sdtx_puts("Ore only sells here.");
         } else if (ui->station->role == STATION_ROLE_YARD) {
             int frames = (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]);
-            int need = (int)lroundf(upgrade_product_cost(SHIP_UPGRADE_HOLD));
+            int need = (int)lroundf(upgrade_product_cost(&g.ship,SHIP_UPGRADE_HOLD));
             sdtx_printf("Hold %d ore  Lv %d/%d", ui->cargo_capacity, g.ship.hold_level, SHIP_UPGRADE_MAX_LEVEL);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 56.0f));
             sdtx_printf("Hull %d/%d", ui->hull_now, ui->hull_max);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 88.0f));
             sdtx_color3b(145, 160, 188);
-            sdtx_printf("Frames %d  Need %d", frames, ship_upgrade_maxed(SHIP_UPGRADE_HOLD) ? 0 : need);
+            sdtx_printf("Frames %d  Need %d", frames, ship_upgrade_maxed(&g.ship,SHIP_UPGRADE_HOLD) ? 0 : need);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
             sdtx_printf("Repair %s", ui->repair_cost > 0 ? "available" : "nominal");
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
@@ -2552,10 +2125,10 @@ static void draw_hud(void) {
     uint8_t message_g = 177;
     uint8_t message_b = 205;
     int hull_units = (int)lroundf(g.ship.hull);
-    int hull_capacity = (int)lroundf(ship_max_hull());
-    int cargo_units = (int)lroundf(ship_raw_ore_total());
+    int hull_capacity = (int)lroundf(ship_max_hull(&g.ship));
+    int cargo_units = (int)lroundf(ship_raw_ore_total(&g.ship));
     int credits = (int)lroundf(g.ship.credits);
-    int cargo_capacity = (int)lroundf(ship_cargo_capacity());
+    int cargo_capacity = (int)lroundf(ship_cargo_capacity(&g.ship));
     int payout_preview = (int)lroundf(station_cargo_sale_value());
     const station_t* current_station = current_station_ptr();
     const station_t* navigation_station = navigation_station_ptr();
@@ -2800,7 +2373,7 @@ static void draw_hud(void) {
 
 static void resolve_ship_circle(vec2 center, float radius) {
     vec2 delta = v2_sub(g.ship.pos, center);
-    float minimum = radius + ship_hull_def()->ship_radius;
+    float minimum = radius + ship_hull_def(&g.ship)->ship_radius;
     float distance_sq = v2_len_sq(delta);
     float minimum_sq = minimum * minimum;
     if (distance_sq >= minimum_sq) {
@@ -2863,7 +2436,7 @@ static vec2 ship_forward(void) {
 }
 
 static vec2 ship_muzzle(vec2 forward) {
-    return v2_add(g.ship.pos, v2_scale(forward, ship_hull_def()->ship_radius + 8.0f));
+    return v2_add(g.ship.pos, v2_scale(forward, ship_hull_def(&g.ship)->ship_radius + 8.0f));
 }
 
 static bool try_spend_credits(float amount) {
@@ -2889,7 +2462,7 @@ static void dock_ship(void) {
     g.docked = true;
     g.in_dock_range = true;
     anchor_ship_in_station();
-    audio_play_dock();
+    audio_play_dock(&g.audio);
     set_notice("Docked at %s.", current_station_ptr()->name);
 }
 
@@ -2898,14 +2471,14 @@ static void launch_ship(void) {
     g.nearby_station = g.current_station;
     g.in_dock_range = true;
     anchor_ship_in_station();
-    audio_play_launch();
+    audio_play_launch(&g.audio);
     set_notice("Launch corridor clear. Press thrust when ready.");
 }
 
 static void emergency_recover_ship(void) {
-    int lost_units = (int)lroundf(ship_raw_ore_total());
+    int lost_units = (int)lroundf(ship_raw_ore_total(&g.ship));
     clear_ship_cargo();
-    g.ship.hull = ship_max_hull();
+    g.ship.hull = ship_max_hull(&g.ship);
     g.ship.angle = PI_F * 0.5f;
     dock_ship();
     if (lost_units > 0) {
@@ -2920,7 +2493,7 @@ static void apply_ship_damage(float damage) {
         return;
     }
 
-    audio_play_damage(damage);
+    audio_play_damage(&g.audio,damage);
     g.ship.hull = fmaxf(0.0f, g.ship.hull - damage);
     if (g.ship.hull <= 0.01f) {
         emergency_recover_ship();
@@ -2937,14 +2510,14 @@ static void try_sell_station_cargo(void) {
         set_notice("%s doesn't buy raw ore.", station->name);
         return;
     }
-    if (ship_raw_ore_total() <= 0.01f) {
+    if (ship_raw_ore_total(&g.ship) <= 0.01f) {
         set_notice("Cargo hold empty.");
         return;
     }
 
     for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
         commodity_t ore = (commodity_t)i;
-        float amount = ship_cargo_amount(ore);
+        float amount = ship_cargo_amount(&g.ship,ore);
         if (amount <= 0.01f) {
             continue;
         }
@@ -2968,7 +2541,7 @@ static void try_sell_station_cargo(void) {
 
     int payout = (int)lroundf(payout_total);
     g.ship.credits += payout_total;
-    audio_play_sale();
+    audio_play_sale(&g.audio);
     if (sold_types > 1) {
         set_notice("Sold %d ore across %d veins for %d cr.", sold_units, sold_types, payout);
     } else {
@@ -2992,8 +2565,8 @@ static void try_repair_ship(void) {
         return;
     }
 
-    g.ship.hull = ship_max_hull();
-    audio_play_repair();
+    g.ship.hull = ship_max_hull(&g.ship);
+    audio_play_repair(&g.audio);
     set_notice("Hull restored for %d cr.", (int)lroundf(repair_cost));
 }
 
@@ -3018,7 +2591,7 @@ static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
         }
         return;
     }
-    if (ship_upgrade_maxed(upgrade)) {
+    if (ship_upgrade_maxed(&g.ship,upgrade)) {
         switch (upgrade) {
             case SHIP_UPGRADE_MINING:
                 set_notice("Laser array already tuned to spec.");
@@ -3037,7 +2610,7 @@ static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
     }
 
     product_t required = upgrade_required_product(upgrade);
-    float product_cost = upgrade_product_cost(upgrade);
+    float product_cost = upgrade_product_cost(&g.ship,upgrade);
     if (station->product_stock[required] < product_cost - 0.01f) {
         int have = (int)lroundf(station->product_stock[required]);
         int need = (int)lroundf(product_cost);
@@ -3045,7 +2618,7 @@ static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
         return;
     }
 
-    int cost = ship_upgrade_cost(upgrade);
+    int cost = ship_upgrade_cost(&g.ship,upgrade);
     if (!try_spend_credits((float)cost)) {
         set_notice("Need %d cr for this upgrade.", cost);
         return;
@@ -3056,18 +2629,18 @@ static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
     switch (upgrade) {
         case SHIP_UPGRADE_MINING:
             g.ship.mining_level++;
-            audio_play_upgrade(upgrade);
-            set_notice("Laser array tuned. Output now %d ore/sec.", (int)lroundf(ship_mining_rate()));
+            audio_play_upgrade(&g.audio,upgrade);
+            set_notice("Laser array tuned. Output now %d ore/sec.", (int)lroundf(ship_mining_rate(&g.ship)));
             break;
         case SHIP_UPGRADE_HOLD:
             g.ship.hold_level++;
-            audio_play_upgrade(upgrade);
-            set_notice("Hold racks expanded. Capacity now %d ore.", (int)lroundf(ship_cargo_capacity()));
+            audio_play_upgrade(&g.audio,upgrade);
+            set_notice("Hold racks expanded. Capacity now %d ore.", (int)lroundf(ship_cargo_capacity(&g.ship)));
             break;
         case SHIP_UPGRADE_TRACTOR:
             g.ship.tractor_level++;
-            audio_play_upgrade(upgrade);
-            set_notice("Tractor coil widened to %d units.", (int)lroundf(ship_tractor_range()));
+            audio_play_upgrade(&g.audio,upgrade);
+            set_notice("Tractor coil widened to %d units.", (int)lroundf(ship_tractor_range(&g.ship)));
             break;
         case SHIP_UPGRADE_COUNT:
         default:
@@ -3112,11 +2685,11 @@ static input_intent_t sample_input_intent(void) {
 }
 
 static void step_ship_rotation(float dt, float turn_input) {
-    g.ship.angle = wrap_angle(g.ship.angle + (turn_input * ship_hull_def()->turn_speed * dt));
+    g.ship.angle = wrap_angle(g.ship.angle + (turn_input * ship_hull_def(&g.ship)->turn_speed * dt));
 }
 
 static void step_ship_thrust(float dt, float thrust_input, vec2 forward) {
-    const hull_def_t* hull = ship_hull_def();
+    const hull_def_t* hull = ship_hull_def(&g.ship);
     if (thrust_input > 0.0f) {
         g.ship.vel = v2_add(g.ship.vel, v2_scale(forward, hull->accel * thrust_input * dt));
         g.thrusting = true;
@@ -3126,7 +2699,7 @@ static void step_ship_thrust(float dt, float thrust_input, vec2 forward) {
 }
 
 static void step_ship_motion(float dt) {
-    g.ship.vel = v2_scale(g.ship.vel, 1.0f / (1.0f + (ship_hull_def()->drag * dt)));
+    g.ship.vel = v2_scale(g.ship.vel, 1.0f / (1.0f + (ship_hull_def(&g.ship)->drag * dt)));
     g.ship.pos = v2_add(g.ship.pos, v2_scale(g.ship.vel, dt));
 
     float world_distance_sq = v2_len_sq(g.ship.pos);
@@ -3211,7 +2784,7 @@ static void update_targeting_state(vec2 forward) {
 
 static void step_fragment_collection(float dt) {
     float nearby_range_sq = FRAGMENT_NEARBY_RANGE * FRAGMENT_NEARBY_RANGE;
-    float tractor_range = ship_tractor_range();
+    float tractor_range = ship_tractor_range(&g.ship);
     float tractor_range_sq = tractor_range * tractor_range;
     float cargo_space = ship_cargo_space();
     float collected_ore = 0.0f;
@@ -3245,7 +2818,7 @@ static void step_fragment_collection(float dt) {
             }
         }
 
-        float collect_radius = ship_collect_radius() + asteroid->radius;
+        float collect_radius = ship_collect_radius(&g.ship) + asteroid->radius;
         if (distance_sq <= (collect_radius * collect_radius)) {
             float recovered = fminf(asteroid->ore, cargo_space);
             if (recovered <= 0.0f) {
@@ -3267,7 +2840,7 @@ static void step_fragment_collection(float dt) {
     }
 
     if (collected_ore > 0.0f) {
-        audio_play_pickup(collected_ore, collected_fragments);
+        audio_play_pickup(&g.audio,collected_ore, collected_fragments);
     }
     push_collection_feedback(collected_ore, collected_fragments);
 }
@@ -3287,11 +2860,11 @@ static void step_mining_system(float dt, bool mining, vec2 forward) {
         vec2 normal = v2_norm(to_asteroid);
         g.beam_end = v2_sub(asteroid->pos, v2_scale(normal, asteroid->radius * 0.85f));
         g.beam_hit = true;
-        audio_play_mining_tick();
+        audio_play_mining_tick(&g.audio);
 
         if (!net_is_connected()) {
             /* Single-player: apply damage locally. */
-            float mined = fminf(ship_mining_rate() * dt, asteroid->hp);
+            float mined = fminf(ship_mining_rate(&g.ship) * dt, asteroid->hp);
             asteroid->hp -= mined;
             if (asteroid->hp <= 0.01f) {
                 fracture_asteroid(g.hover_asteroid, normal);
@@ -3697,7 +3270,7 @@ static void step_station_production(float dt) {
 
 static void sim_step(float dt) {
     reset_step_feedback();
-    audio_step(dt);
+    audio_step(&g.audio, dt);
     g.time += dt;
 
     input_intent_t intent = sample_input_intent();
@@ -3758,28 +3331,6 @@ static void sim_step(float dt) {
     consume_pressed_input();
 }
 
-static void init_audio(void) {
-    memset(&g.audio, 0, sizeof(g.audio));
-    g.audio.rng = 0xA11D0F5Du;
-
-    saudio_setup(&(saudio_desc){
-        .sample_rate = 44100,
-        .num_channels = 2,
-        .buffer_frames = 2048,
-        .packet_frames = 256,
-        .num_packets = 32,
-        .logger.func = slog_func,
-    });
-
-    if (!saudio_isvalid()) {
-        return;
-    }
-
-    g.audio.valid = true;
-    g.audio.sample_rate = saudio_sample_rate();
-    g.audio.channels = saudio_channels();
-}
-
 /* Forward declarations for multiplayer callbacks (defined below init). */
 static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count);
 static void apply_remote_npcs(const NetNpcState* npcs, int count);
@@ -3805,7 +3356,7 @@ static void init(void) {
         .logger.func = slog_func,
     });
 
-    init_audio();
+    audio_init(&g.audio);
 
     g.pass_action.colors[0].load_action = SG_LOADACTION_CLEAR;
     g.pass_action.colors[0].clear_value = (sg_color){ 0.018f, 0.024f, 0.045f, 1.0f };
@@ -4046,7 +3597,7 @@ static void frame(void) {
     float max_frame_dt = SIM_DT * (float)MAX_SIM_STEPS_PER_FRAME;
     float frame_dt = clampf((float)sapp_frame_duration(), 0.0f, max_frame_dt);
     advance_simulation_frame(frame_dt);
-    audio_generate_stream();
+    audio_generate_stream(&g.audio);
 
     /* --- Multiplayer: poll and send state --- */
     if (g.multiplayer_enabled) {
