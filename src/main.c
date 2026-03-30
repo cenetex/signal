@@ -7,6 +7,7 @@
 
 #include "math_util.h"
 #include "types.h"
+#include "commodity.h"
 
 /* --- Multiplayer networking --- */
 #include "net.h"
@@ -556,123 +557,22 @@ static float asteroid_progress_ratio(const asteroid_t* asteroid) {
     return 0.0f;
 }
 
-static commodity_t commodity_refined_form(commodity_t commodity) {
-    switch (commodity) {
-        case COMMODITY_FERRITE_ORE:
-            return COMMODITY_FRAME_INGOT;
-        case COMMODITY_CUPRITE_ORE:
-            return COMMODITY_CONDUCTOR_INGOT;
-        case COMMODITY_CRYSTAL_ORE:
-            return COMMODITY_LENS_INGOT;
-        case COMMODITY_FRAME_INGOT:
-        case COMMODITY_CONDUCTOR_INGOT:
-        case COMMODITY_LENS_INGOT:
-        case COMMODITY_COUNT:
-        default:
-            return commodity;
-    }
-}
-
-static const char* commodity_name(commodity_t commodity) {
-    switch (commodity) {
-        case COMMODITY_FERRITE_ORE:
-            return "Ferrite Ore";
-        case COMMODITY_CUPRITE_ORE:
-            return "Cuprite Ore";
-        case COMMODITY_CRYSTAL_ORE:
-            return "Crystal Ore";
-        case COMMODITY_FRAME_INGOT:
-            return "Frame Ingots";
-        case COMMODITY_CONDUCTOR_INGOT:
-            return "Conductor Ingots";
-        case COMMODITY_LENS_INGOT:
-            return "Lens Ingots";
-        case COMMODITY_COUNT:
-        default:
-            return "Cargo";
-    }
-}
-
-static const char* commodity_code(commodity_t commodity) {
-    switch (commodity) {
-        case COMMODITY_FERRITE_ORE:
-            return "FE";
-        case COMMODITY_CUPRITE_ORE:
-            return "CU";
-        case COMMODITY_CRYSTAL_ORE:
-            return "CR";
-        case COMMODITY_FRAME_INGOT:
-            return "FR";
-        case COMMODITY_CONDUCTOR_INGOT:
-            return "CO";
-        case COMMODITY_LENS_INGOT:
-            return "LN";
-        case COMMODITY_COUNT:
-        default:
-            return "--";
-    }
-}
-
-static const char* commodity_short_name(commodity_t commodity) {
-    switch (commodity) {
-        case COMMODITY_FERRITE_ORE:
-            return "Ferrite";
-        case COMMODITY_CUPRITE_ORE:
-            return "Cuprite";
-        case COMMODITY_CRYSTAL_ORE:
-            return "Crystal";
-        case COMMODITY_FRAME_INGOT:
-            return "Frame";
-        case COMMODITY_CONDUCTOR_INGOT:
-            return "Conductor";
-        case COMMODITY_LENS_INGOT:
-            return "Lens";
-        case COMMODITY_COUNT:
-        default:
-            return "Unknown";
-    }
-}
+/* commodity_refined_form, commodity_name, commodity_code, commodity_short_name: see commodity.h/c */
 
 static commodity_t random_raw_ore(void) {
     return (commodity_t)rand_int((int)COMMODITY_FERRITE_ORE, (int)COMMODITY_CRYSTAL_ORE);
 }
 
-static float ship_total_cargo(void) {
-    float total = 0.0f;
-    for (int i = 0; i < COMMODITY_COUNT; i++) {
-        total += g.ship.cargo[i];
-    }
-    return total;
-}
-
-static float ship_raw_ore_total(void) {
-    float total = 0.0f;
-    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
-        total += g.ship.cargo[i];
-    }
-    return total;
-}
-
-static float ship_cargo_amount(commodity_t commodity) {
-    return g.ship.cargo[commodity];
-}
+/* ship_total_cargo, ship_raw_ore_total, ship_cargo_amount, station_buy_price, station_inventory_amount: see commodity.h/c */
 
 static void clear_ship_cargo(void) {
     memset(g.ship.cargo, 0, sizeof(g.ship.cargo));
 }
 
-static float station_buy_price(const station_t* station, commodity_t commodity) {
-    return station != NULL ? station->buy_price[commodity] : 0.0f;
-}
-
-static float station_inventory_amount(const station_t* station, commodity_t commodity) {
-    return station != NULL ? station->inventory[commodity] : 0.0f;
-}
-
 static void format_ore_manifest(char* text, size_t text_size) {
-    int ferrite = (int)lroundf(ship_cargo_amount(COMMODITY_FERRITE_ORE));
-    int cuprite = (int)lroundf(ship_cargo_amount(COMMODITY_CUPRITE_ORE));
-    int crystal = (int)lroundf(ship_cargo_amount(COMMODITY_CRYSTAL_ORE));
+    int ferrite = (int)lroundf(ship_cargo_amount(&g.ship,COMMODITY_FERRITE_ORE));
+    int cuprite = (int)lroundf(ship_cargo_amount(&g.ship,COMMODITY_CUPRITE_ORE));
+    int crystal = (int)lroundf(ship_cargo_amount(&g.ship,COMMODITY_CRYSTAL_ORE));
     snprintf(text, text_size, "%s %d  %s %d  %s %d",
         commodity_code(COMMODITY_FERRITE_ORE), ferrite,
         commodity_code(COMMODITY_CUPRITE_ORE), cuprite,
@@ -940,7 +840,7 @@ static void split_hud_message_lines(const char* text, int max_cols, char* line0,
 }
 
 static bool build_hud_message(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
-    int cargo_units = (int)lroundf(ship_raw_ore_total());
+    int cargo_units = (int)lroundf(ship_raw_ore_total(&g.ship));
     int cargo_capacity = (int)lroundf(ship_cargo_capacity());
     const station_t* station = current_station_ptr();
 
@@ -1100,7 +1000,7 @@ static void build_station_ui_state(station_ui_state_t* ui) {
 
     ui->hull_now = (int)lroundf(g.ship.hull);
     ui->hull_max = (int)lroundf(ship_max_hull());
-    float ore_total = ship_raw_ore_total();
+    float ore_total = ship_raw_ore_total(&g.ship);
     float repair = station_repair_cost();
     ui->cargo_units = (int)lroundf(ore_total);
     ui->cargo_capacity = (int)lroundf(ship_cargo_capacity());
@@ -1333,7 +1233,7 @@ static float station_cargo_sale_value(void) {
     }
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
         commodity_t commodity = (commodity_t)i;
-        total += ship_cargo_amount(commodity) * station_buy_price(station, commodity);
+        total += ship_cargo_amount(&g.ship,commodity) * station_buy_price(station, commodity);
     }
     return total;
 }
@@ -1346,7 +1246,7 @@ static float station_repair_cost(void) {
 static void apply_ship_damage(float damage);
 
 static float ship_cargo_space(void) {
-    return fmaxf(0.0f, ship_cargo_capacity() - ship_total_cargo());
+    return fmaxf(0.0f, ship_cargo_capacity() - ship_total_cargo(&g.ship));
 }
 
 static void clear_collection_feedback(void) {
@@ -2348,7 +2248,7 @@ static void draw_hud_panels(void) {
 
         if (show_fit_panel) {
             draw_ui_meter(fit_x + 16.0f, fit_y + 54.0f, fit_w - 32.0f, 12.0f, g.ship.hull / ship_max_hull(), 0.96f, 0.54f, 0.28f);
-            draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, ship_total_cargo() / fmaxf(1.0f, ship_cargo_capacity()), 0.26f, 0.90f, 0.72f);
+            draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, ship_total_cargo(&g.ship) / fmaxf(1.0f, ship_cargo_capacity()), 0.26f, 0.90f, 0.72f);
             if (ui.station->role == STATION_ROLE_YARD) {
                 draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.ship.hold_level, 0.50f, 0.82f, 1.0f);
             } else if (ui.station->role == STATION_ROLE_BEAMWORKS) {
@@ -2553,7 +2453,7 @@ static void draw_hud(void) {
     uint8_t message_b = 205;
     int hull_units = (int)lroundf(g.ship.hull);
     int hull_capacity = (int)lroundf(ship_max_hull());
-    int cargo_units = (int)lroundf(ship_raw_ore_total());
+    int cargo_units = (int)lroundf(ship_raw_ore_total(&g.ship));
     int credits = (int)lroundf(g.ship.credits);
     int cargo_capacity = (int)lroundf(ship_cargo_capacity());
     int payout_preview = (int)lroundf(station_cargo_sale_value());
@@ -2903,7 +2803,7 @@ static void launch_ship(void) {
 }
 
 static void emergency_recover_ship(void) {
-    int lost_units = (int)lroundf(ship_raw_ore_total());
+    int lost_units = (int)lroundf(ship_raw_ore_total(&g.ship));
     clear_ship_cargo();
     g.ship.hull = ship_max_hull();
     g.ship.angle = PI_F * 0.5f;
@@ -2937,14 +2837,14 @@ static void try_sell_station_cargo(void) {
         set_notice("%s doesn't buy raw ore.", station->name);
         return;
     }
-    if (ship_raw_ore_total() <= 0.01f) {
+    if (ship_raw_ore_total(&g.ship) <= 0.01f) {
         set_notice("Cargo hold empty.");
         return;
     }
 
     for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
         commodity_t ore = (commodity_t)i;
-        float amount = ship_cargo_amount(ore);
+        float amount = ship_cargo_amount(&g.ship,ore);
         if (amount <= 0.01f) {
             continue;
         }
