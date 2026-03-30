@@ -19,7 +19,7 @@
 
 enum {
     KEY_COUNT = 512,
-    MAX_ASTEROIDS = 20,
+    MAX_ASTEROIDS = 48,
     MAX_STARS = 120,
 };
 
@@ -42,14 +42,27 @@ typedef struct {
     float dock_radius;
 } station_t;
 
+typedef enum {
+    ASTEROID_TIER_XL,
+    ASTEROID_TIER_L,
+    ASTEROID_TIER_M,
+    ASTEROID_TIER_S,
+    ASTEROID_TIER_COUNT,
+} asteroid_tier_t;
+
 typedef struct {
+    bool active;
+    bool fracture_child;
+    asteroid_tier_t tier;
     vec2 pos;
+    vec2 vel;
     float radius;
-    float ore;
-    float max_ore;
+    float hp;
+    float max_hp;
     float rotation;
     float spin;
     float seed;
+    float age;
 } asteroid_t;
 
 typedef struct {
@@ -93,6 +106,7 @@ typedef struct {
     char notice[128];
     float notice_timer;
     float time;
+    float field_spawn_timer;
     runtime_state_t runtime;
     sg_pass_action pass_action;
 } game_t;
@@ -115,6 +129,10 @@ static const float HUD_MARGIN = 28.0f;
 static const float HUD_CELL = 8.0f;
 static const float SIM_DT = 1.0f / 120.0f;
 static const int MAX_SIM_STEPS_PER_FRAME = 8;
+static const int FIELD_ASTEROID_TARGET = 16;
+static const float FIELD_ASTEROID_RESPAWN_DELAY = 1.4f;
+static const float FRACTURE_CHILD_CLEANUP_AGE = 22.0f;
+static const float FRACTURE_CHILD_CLEANUP_DISTANCE = 940.0f;
 
 static float clampf(float value, float min_value, float max_value) {
     if (value < min_value) {
@@ -145,6 +163,10 @@ static vec2 v2_sub(vec2 a, vec2 b) {
 
 static vec2 v2_scale(vec2 value, float scale) {
     return v2(value.x * scale, value.y * scale);
+}
+
+static vec2 v2_perp(vec2 value) {
+    return v2(-value.y, value.x);
 }
 
 static float v2_dot(vec2 a, vec2 b) {
@@ -205,6 +227,10 @@ static float rand_range(float min_value, float max_value) {
     return lerpf(min_value, max_value, randf());
 }
 
+static int rand_int(int min_value, int max_value) {
+    return min_value + (int)(rng_next() % (uint32_t)(max_value - min_value + 1));
+}
+
 // Drop transient and held input when the app loses focus.
 static void clear_input_state(void) {
     memset(g.input.key_down, 0, sizeof(g.input.key_down));
@@ -223,16 +249,255 @@ static void set_notice(const char* fmt, ...) {
     g.notice_timer = 3.0f;
 }
 
-static void respawn_asteroid(asteroid_t* asteroid) {
+static asteroid_tier_t asteroid_next_tier(asteroid_tier_t tier) {
+    if (tier >= ASTEROID_TIER_S) {
+        return ASTEROID_TIER_S;
+    }
+    return (asteroid_tier_t)(tier + 1);
+}
+
+static const char* asteroid_tier_name(asteroid_tier_t tier) {
+    switch (tier) {
+        case ASTEROID_TIER_XL:
+            return "XL";
+        case ASTEROID_TIER_L:
+            return "L";
+        case ASTEROID_TIER_M:
+            return "M";
+        case ASTEROID_TIER_S:
+            return "S";
+        default:
+            return "?";
+    }
+}
+
+static const char* asteroid_tier_kind(asteroid_tier_t tier) {
+    switch (tier) {
+        case ASTEROID_TIER_XL:
+            return "rock";
+        case ASTEROID_TIER_L:
+            return "chunk";
+        case ASTEROID_TIER_M:
+            return "shard";
+        case ASTEROID_TIER_S:
+            return "fragment";
+        default:
+            return "piece";
+    }
+}
+
+static float asteroid_spin_limit(asteroid_tier_t tier) {
+    switch (tier) {
+        case ASTEROID_TIER_XL:
+            return 0.16f;
+        case ASTEROID_TIER_L:
+            return 0.24f;
+        case ASTEROID_TIER_M:
+            return 0.38f;
+        case ASTEROID_TIER_S:
+            return 0.62f;
+        default:
+            return 0.2f;
+    }
+}
+
+static float asteroid_radius_min(asteroid_tier_t tier) {
+    switch (tier) {
+        case ASTEROID_TIER_XL:
+            return 54.0f;
+        case ASTEROID_TIER_L:
+            return 34.0f;
+        case ASTEROID_TIER_M:
+            return 20.0f;
+        case ASTEROID_TIER_S:
+            return 11.0f;
+        default:
+            return 16.0f;
+    }
+}
+
+static float asteroid_radius_max(asteroid_tier_t tier) {
+    switch (tier) {
+        case ASTEROID_TIER_XL:
+            return 78.0f;
+        case ASTEROID_TIER_L:
+            return 48.0f;
+        case ASTEROID_TIER_M:
+            return 30.0f;
+        case ASTEROID_TIER_S:
+            return 16.0f;
+        default:
+            return 18.0f;
+    }
+}
+
+static float asteroid_hp_min(asteroid_tier_t tier) {
+    switch (tier) {
+        case ASTEROID_TIER_XL:
+            return 120.0f;
+        case ASTEROID_TIER_L:
+            return 68.0f;
+        case ASTEROID_TIER_M:
+            return 32.0f;
+        case ASTEROID_TIER_S:
+            return 10.0f;
+        default:
+            return 8.0f;
+    }
+}
+
+static float asteroid_hp_max(asteroid_tier_t tier) {
+    switch (tier) {
+        case ASTEROID_TIER_XL:
+            return 170.0f;
+        case ASTEROID_TIER_L:
+            return 96.0f;
+        case ASTEROID_TIER_M:
+            return 46.0f;
+        case ASTEROID_TIER_S:
+            return 18.0f;
+        default:
+            return 12.0f;
+    }
+}
+
+static asteroid_tier_t random_field_asteroid_tier(void) {
+    float roll = randf();
+    if (roll < 0.24f) {
+        return ASTEROID_TIER_XL;
+    }
+    if (roll < 0.70f) {
+        return ASTEROID_TIER_L;
+    }
+    return ASTEROID_TIER_M;
+}
+
+static void clear_asteroid(asteroid_t* asteroid) {
+    memset(asteroid, 0, sizeof(*asteroid));
+}
+
+static void configure_asteroid_tier(asteroid_t* asteroid, asteroid_tier_t tier) {
+    float spin_limit = asteroid_spin_limit(tier);
+    asteroid->active = true;
+    asteroid->tier = tier;
+    asteroid->radius = rand_range(asteroid_radius_min(tier), asteroid_radius_max(tier));
+    asteroid->max_hp = rand_range(asteroid_hp_min(tier), asteroid_hp_max(tier));
+    asteroid->hp = asteroid->max_hp;
+    asteroid->rotation = rand_range(0.0f, TWO_PI_F);
+    asteroid->spin = rand_range(-spin_limit, spin_limit);
+    asteroid->seed = rand_range(0.0f, 100.0f);
+    asteroid->age = 0.0f;
+}
+
+static void spawn_field_asteroid_of_tier(asteroid_t* asteroid, asteroid_tier_t tier) {
     float distance = rand_range(420.0f, WORLD_RADIUS - 180.0f);
     float angle = rand_range(0.0f, TWO_PI_F);
+    clear_asteroid(asteroid);
+    configure_asteroid_tier(asteroid, tier);
+    asteroid->fracture_child = false;
     asteroid->pos = v2(cosf(angle) * distance, sinf(angle) * distance);
-    asteroid->radius = rand_range(26.0f, 52.0f);
-    asteroid->max_ore = rand_range(55.0f, 150.0f);
-    asteroid->ore = asteroid->max_ore;
-    asteroid->rotation = rand_range(0.0f, TWO_PI_F);
-    asteroid->spin = rand_range(-0.45f, 0.45f);
-    asteroid->seed = rand_range(0.0f, 100.0f);
+    asteroid->vel = v2(rand_range(-4.0f, 4.0f), rand_range(-4.0f, 4.0f));
+}
+
+static void spawn_field_asteroid(asteroid_t* asteroid) {
+    spawn_field_asteroid_of_tier(asteroid, random_field_asteroid_tier());
+}
+
+static void spawn_child_asteroid(asteroid_t* asteroid, asteroid_tier_t tier, vec2 pos, vec2 vel) {
+    clear_asteroid(asteroid);
+    configure_asteroid_tier(asteroid, tier);
+    asteroid->fracture_child = true;
+    asteroid->pos = pos;
+    asteroid->vel = vel;
+}
+
+static int desired_child_count(asteroid_tier_t tier) {
+    switch (tier) {
+        case ASTEROID_TIER_XL:
+            return rand_int(2, 3);
+        case ASTEROID_TIER_L:
+            return rand_int(2, 3);
+        case ASTEROID_TIER_M:
+            return rand_int(2, 4);
+        case ASTEROID_TIER_S:
+        default:
+            return 0;
+    }
+}
+
+static int count_seeded_field_asteroids(void) {
+    int active_count = 0;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (g.asteroids[i].active && !g.asteroids[i].fracture_child) {
+            active_count++;
+        }
+    }
+    return active_count;
+}
+
+static int find_inactive_asteroid_slot(void) {
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!g.asteroids[i].active) {
+            return i;
+        }
+    }
+    return -1;
+}
+
+static void fracture_asteroid(int asteroid_index, vec2 outward_dir) {
+    asteroid_t parent = g.asteroids[asteroid_index];
+    asteroid_tier_t child_tier = asteroid_next_tier(parent.tier);
+    int desired = desired_child_count(parent.tier);
+    int child_slots[4] = { asteroid_index, -1, -1, -1 };
+    int child_count = 1;
+
+    for (int i = 0; (i < MAX_ASTEROIDS) && (child_count < desired); i++) {
+        if ((i == asteroid_index) || g.asteroids[i].active) {
+            continue;
+        }
+        child_slots[child_count++] = i;
+    }
+
+    float base_angle = atan2f(outward_dir.y, outward_dir.x);
+    for (int i = 0; i < child_count; i++) {
+        float spread_t = (child_count == 1) ? 0.0f : (((float)i / (float)(child_count - 1)) - 0.5f);
+        float child_angle = base_angle + (spread_t * 1.35f) + rand_range(-0.14f, 0.14f);
+        vec2 dir = v2_from_angle(child_angle);
+        vec2 tangent = v2_perp(dir);
+        asteroid_t* child = &g.asteroids[child_slots[i]];
+        spawn_child_asteroid(child, child_tier, parent.pos, parent.vel);
+        vec2 child_pos = v2_add(parent.pos, v2_scale(dir, (parent.radius * 0.28f) + (child->radius * 0.85f)));
+        float drift = rand_range(22.0f, 56.0f);
+        vec2 child_vel = v2_add(parent.vel, v2_add(v2_scale(dir, drift), v2_scale(tangent, rand_range(-10.0f, 10.0f))));
+        child->pos = child_pos;
+        child->vel = child_vel;
+    }
+
+    set_notice("%s %s fractured into %d %s %s%s.",
+        asteroid_tier_name(parent.tier),
+        asteroid_tier_kind(parent.tier),
+        child_count,
+        asteroid_tier_name(child_tier),
+        asteroid_tier_kind(child_tier),
+        child_count == 1 ? "" : "s");
+}
+
+static void maintain_asteroid_field(float dt) {
+    if (count_seeded_field_asteroids() >= FIELD_ASTEROID_TARGET) {
+        g.field_spawn_timer = 0.0f;
+        return;
+    }
+
+    g.field_spawn_timer += dt;
+    if (g.field_spawn_timer < FIELD_ASTEROID_RESPAWN_DELAY) {
+        return;
+    }
+
+    int slot = find_inactive_asteroid_slot();
+    if (slot >= 0) {
+        spawn_field_asteroid(&g.asteroids[slot]);
+    }
+    g.field_spawn_timer = 0.0f;
 }
 
 static void init_starfield(void) {
@@ -264,12 +529,20 @@ static void reset_world(void) {
     g.docked = true;
     g.notice[0] = '\0';
     g.notice_timer = 0.0f;
+    g.field_spawn_timer = 0.0f;
 
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        respawn_asteroid(&g.asteroids[i]);
+    memset(g.asteroids, 0, sizeof(g.asteroids));
+    if (FIELD_ASTEROID_TARGET > 0) {
+        spawn_field_asteroid_of_tier(&g.asteroids[0], ASTEROID_TIER_XL);
+    }
+    if (FIELD_ASTEROID_TARGET > 1) {
+        spawn_field_asteroid_of_tier(&g.asteroids[1], ASTEROID_TIER_L);
+    }
+    for (int i = 2; i < FIELD_ASTEROID_TARGET; i++) {
+        spawn_field_asteroid(&g.asteroids[i]);
     }
 
-    set_notice("Mine ore, dock, sell.");
+    set_notice("Crack rocks, mine fragments, dock, sell.");
 }
 
 static void draw_circle_filled(vec2 center, float radius, int segments, float r, float g0, float b, float a) {
@@ -359,17 +632,71 @@ static void draw_station(void) {
     }
 }
 
+static void asteroid_tier_body_color(asteroid_tier_t tier, float hp_ratio, float* r, float* g0, float* b) {
+    float base_r = 0.30f;
+    float base_g = 0.31f;
+    float base_b = 0.34f;
+
+    switch (tier) {
+        case ASTEROID_TIER_XL:
+            base_r = 0.29f;
+            base_g = 0.31f;
+            base_b = 0.42f;
+            break;
+        case ASTEROID_TIER_L:
+            base_r = 0.31f;
+            base_g = 0.33f;
+            base_b = 0.38f;
+            break;
+        case ASTEROID_TIER_M:
+            base_r = 0.26f;
+            base_g = 0.36f;
+            base_b = 0.42f;
+            break;
+        case ASTEROID_TIER_S:
+            base_r = 0.28f;
+            base_g = 0.44f;
+            base_b = 0.36f;
+            break;
+        default:
+            break;
+    }
+
+    *r = lerpf(base_r * 0.72f, base_r * 1.16f, hp_ratio);
+    *g0 = lerpf(base_g * 0.72f, base_g * 1.16f, hp_ratio);
+    *b = lerpf(base_b * 0.72f, base_b * 1.16f, hp_ratio);
+}
+
 static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
-    float ore_ratio = asteroid->ore / asteroid->max_ore;
-    float body_r = lerpf(0.24f, 0.38f, ore_ratio);
-    float body_g = lerpf(0.23f, 0.34f, ore_ratio);
-    float body_b = lerpf(0.24f, 0.31f, ore_ratio);
+    float hp_ratio = asteroid->hp / asteroid->max_hp;
+    float body_r = 0.3f;
+    float body_g = 0.3f;
+    float body_b = 0.3f;
+    int segments = 18;
+    asteroid_tier_body_color(asteroid->tier, hp_ratio, &body_r, &body_g, &body_b);
+
+    switch (asteroid->tier) {
+        case ASTEROID_TIER_XL:
+            segments = 22;
+            break;
+        case ASTEROID_TIER_L:
+            segments = 18;
+            break;
+        case ASTEROID_TIER_M:
+            segments = 15;
+            break;
+        case ASTEROID_TIER_S:
+            segments = 12;
+            break;
+        default:
+            break;
+    }
 
     sgl_c4f(body_r, body_g, body_b, 1.0f);
     sgl_begin_triangles();
-    for (int i = 0; i < 18; i++) {
-        float a0 = asteroid->rotation + ((float)i / 18.0f) * TWO_PI_F;
-        float a1 = asteroid->rotation + ((float)(i + 1) / 18.0f) * TWO_PI_F;
+    for (int i = 0; i < segments; i++) {
+        float a0 = asteroid->rotation + ((float)i / (float)segments) * TWO_PI_F;
+        float a1 = asteroid->rotation + ((float)(i + 1) / (float)segments) * TWO_PI_F;
         float r0 = asteroid_profile(asteroid, a0);
         float r1 = asteroid_profile(asteroid, a1);
         sgl_v2f(asteroid->pos.x, asteroid->pos.y);
@@ -378,19 +705,25 @@ static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
     }
     sgl_end();
 
-    float rim_r = targeted ? 0.45f : 0.22f;
-    float rim_g = targeted ? 0.94f : 0.24f;
-    float rim_b = targeted ? 1.0f : 0.30f;
+    float rim_r = targeted ? 0.45f : (body_r * 0.85f);
+    float rim_g = targeted ? 0.94f : (body_g * 0.95f);
+    float rim_b = targeted ? 1.0f : fminf(1.0f, body_b * 1.2f);
     float rim_a = targeted ? 1.0f : 0.8f;
 
     sgl_c4f(rim_r, rim_g, rim_b, rim_a);
     sgl_begin_line_strip();
-    for (int i = 0; i <= 18; i++) {
-        float angle = asteroid->rotation + ((float)i / 18.0f) * TWO_PI_F;
+    for (int i = 0; i <= segments; i++) {
+        float angle = asteroid->rotation + ((float)i / (float)segments) * TWO_PI_F;
         float radius = asteroid_profile(asteroid, angle);
         sgl_v2f(asteroid->pos.x + cosf(angle) * radius, asteroid->pos.y + sinf(angle) * radius);
     }
     sgl_end();
+
+    if (asteroid->tier == ASTEROID_TIER_S) {
+        draw_circle_filled(asteroid->pos, asteroid->radius * 0.22f, 10, 0.48f, 0.96f, 0.78f, 0.7f);
+    } else if (asteroid->tier == ASTEROID_TIER_M) {
+        draw_circle_filled(asteroid->pos, asteroid->radius * 0.16f, 8, 0.36f, 0.78f, 0.98f, 0.4f);
+    }
 
     if (targeted) {
         draw_circle_outline(asteroid->pos, asteroid->radius + 12.0f, 24, 0.35f, 1.0f, 0.92f, 0.75f);
@@ -527,18 +860,18 @@ static void draw_hud(void) {
     }
     sdtx_crlf();
 
-    if (g.hover_asteroid >= 0) {
+    if ((g.hover_asteroid >= 0) && g.asteroids[g.hover_asteroid].active) {
         const asteroid_t* asteroid = &g.asteroids[g.hover_asteroid];
-        int ore_left = (int)lroundf(asteroid->ore);
+        int integrity_left = (int)lroundf(asteroid->hp);
         sdtx_color3b(130, 255, 235);
         if (compact) {
-            sdtx_printf("Target asteroid, %d ore", ore_left);
+            sdtx_printf("Target %s %s, %d integrity", asteroid_tier_name(asteroid->tier), asteroid_tier_kind(asteroid->tier), integrity_left);
         } else {
-            sdtx_printf("Target asteroid, %d ore remaining", ore_left);
+            sdtx_printf("Target %s %s, %d integrity", asteroid_tier_name(asteroid->tier), asteroid_tier_kind(asteroid->tier), integrity_left);
         }
     } else {
         sdtx_color3b(169, 179, 204);
-        sdtx_puts("No target lock. Line up an asteroid.");
+        sdtx_puts("No target lock. Line up a rock or fragment.");
     }
     sdtx_crlf();
 
@@ -550,7 +883,7 @@ static void draw_hud(void) {
         sdtx_puts(g.notice);
     } else {
         sdtx_color3b(164, 177, 205);
-        sdtx_puts("Mine ore, dock, sell.");
+        sdtx_puts("Crack rocks down to fragments, then sell.");
     }
 
     sdtx_pos(left_text_x, bottom_text_y);
@@ -581,6 +914,9 @@ static int find_mining_target(vec2 origin, vec2 forward) {
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t* asteroid = &g.asteroids[i];
+        if (!asteroid->active) {
+            continue;
+        }
         vec2 to_asteroid = v2_sub(asteroid->pos, origin);
         float projection = v2_dot(to_asteroid, forward);
         if ((projection < 0.0f) || (projection > MINING_RANGE)) {
@@ -670,15 +1006,39 @@ static void step_ship_motion(float dt) {
     }
 }
 
-static void step_asteroid_spin(float dt) {
+static void step_asteroid_dynamics(float dt) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        g.asteroids[i].rotation += g.asteroids[i].spin * dt;
+        asteroid_t* asteroid = &g.asteroids[i];
+        if (!asteroid->active) {
+            continue;
+        }
+
+        asteroid->rotation += asteroid->spin * dt;
+        asteroid->pos = v2_add(asteroid->pos, v2_scale(asteroid->vel, dt));
+        asteroid->vel = v2_scale(asteroid->vel, 1.0f / (1.0f + (0.42f * dt)));
+        asteroid->age += dt;
+
+        float world_distance = v2_len(asteroid->pos);
+        if (world_distance > (WORLD_RADIUS + asteroid->radius + 260.0f)) {
+            clear_asteroid(asteroid);
+            continue;
+        }
+
+        if (asteroid->fracture_child && (asteroid->age >= FRACTURE_CHILD_CLEANUP_AGE)) {
+            float ship_distance = v2_len(v2_sub(asteroid->pos, g.ship.pos));
+            if (ship_distance > FRACTURE_CHILD_CLEANUP_DISTANCE) {
+                clear_asteroid(asteroid);
+            }
+        }
     }
 }
 
 static void resolve_world_collisions(void) {
     resolve_ship_circle(g.station.pos, g.station.radius + 4.0f);
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!g.asteroids[i].active) {
+            continue;
+        }
         resolve_ship_circle(g.asteroids[i].pos, g.asteroids[i].radius);
     }
 }
@@ -710,15 +1070,24 @@ static void step_mining_system(float dt, bool mining, vec2 forward) {
         g.beam_end = v2_sub(asteroid->pos, v2_scale(normal, asteroid->radius * 0.85f));
         g.beam_hit = true;
 
-        if (g.ship.cargo < SHIP_CARGO_MAX) {
-            float mined = MINING_RATE * dt;
-            mined = fminf(mined, asteroid->ore);
+        float mined = MINING_RATE * dt;
+        if (asteroid->tier == ASTEROID_TIER_S) {
             mined = fminf(mined, SHIP_CARGO_MAX - g.ship.cargo);
-            g.ship.cargo += mined;
-            asteroid->ore -= mined;
-            if (asteroid->ore <= 0.01f) {
-                respawn_asteroid(asteroid);
-                set_notice("Asteroid depleted. New ore drifted in.");
+        }
+
+        if (mined > 0.0f) {
+            mined = fminf(mined, asteroid->hp);
+            if (asteroid->tier == ASTEROID_TIER_S) {
+                g.ship.cargo += mined;
+            }
+            asteroid->hp -= mined;
+            if (asteroid->hp <= 0.01f) {
+                if (asteroid->tier == ASTEROID_TIER_S) {
+                    clear_asteroid(asteroid);
+                    set_notice("Fragment refined into cargo.");
+                } else {
+                    fracture_asteroid(g.hover_asteroid, normal);
+                }
             }
         }
     } else {
@@ -765,7 +1134,8 @@ static void sim_step(float dt) {
     vec2 forward = ship_forward();
     step_ship_thrust(dt, intent.thrust, forward);
     step_ship_motion(dt);
-    step_asteroid_spin(dt);
+    step_asteroid_dynamics(dt);
+    maintain_asteroid_field(dt);
     resolve_world_collisions();
     update_docking_state(dt);
 
@@ -817,6 +1187,9 @@ static void render_world(void) {
     draw_background(camera);
     draw_station();
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!g.asteroids[i].active) {
+            continue;
+        }
         draw_asteroid(&g.asteroids[i], i == g.hover_asteroid);
     }
     draw_beam();
