@@ -967,106 +967,21 @@ static void init_starfield(void) {
     }
 }
 
+static void sync_world_to_globals(void);
+
 static void reset_world(void) {
-    g.ship.hull_class = HULL_CLASS_MINER;
-    g.ship.pos = v2(0.0f, -110.0f);
-    g.ship.vel = v2(0.0f, 0.0f);
-    g.ship.angle = PI_F * 0.5f;
-    g.ship.hull = ship_max_hull(&g.ship);
-    clear_ship_cargo();
-    g.ship.credits = 0.0f;
-    g.ship.mining_level = 0;
-    g.ship.hold_level = 0;
-    g.ship.tractor_level = 0;
+    world_reset(&g.world);
+    player_init_ship(&g.world.players[0], &g.world);
+    g.world.players[0].connected = true;
+    sync_world_to_globals();
 
-    memset(g.stations, 0, sizeof(g.stations));
-
-    snprintf(g.stations[0].name, sizeof(g.stations[0].name), "%s", "Prospect Refinery");
-    g.stations[0].role = STATION_ROLE_REFINERY;
-    g.stations[0].pos = v2(0.0f, -240.0f);
-    g.stations[0].radius = 62.0f;
-    g.stations[0].dock_radius = 132.0f;
-    g.stations[0].buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    g.stations[0].buy_price[COMMODITY_CUPRITE_ORE] = 14.0f;
-    g.stations[0].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
-    g.stations[0].services = STATION_SERVICE_ORE_BUYER | STATION_SERVICE_REPAIR;
-
-    snprintf(g.stations[1].name, sizeof(g.stations[1].name), "%s", "Kepler Yard");
-    g.stations[1].role = STATION_ROLE_YARD;
-    g.stations[1].pos = v2(-320.0f, 230.0f);
-    g.stations[1].radius = 56.0f;
-    g.stations[1].dock_radius = 124.0f;
-    g.stations[1].services = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_HOLD;
-
-    snprintf(g.stations[2].name, sizeof(g.stations[2].name), "%s", "Helios Works");
-    g.stations[2].role = STATION_ROLE_BEAMWORKS;
-    g.stations[2].pos = v2(320.0f, 230.0f);
-    g.stations[2].radius = 56.0f;
-    g.stations[2].dock_radius = 124.0f;
-    g.stations[2].services = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_LASER | STATION_SERVICE_UPGRADE_TRACTOR;
-
-    g.current_station = 0;
-    g.nearby_station = 0;
-
-    g.hover_asteroid = -1;
-    g.beam_active = false;
-    g.beam_hit = false;
     g.thrusting = false;
-    g.in_dock_range = true;
-    g.docked = true;
-    g.ship.pos = station_dock_anchor();
     g.notice[0] = '\0';
     g.notice_timer = 0.0f;
-    g.nearby_fragments = 0;
-    g.tractor_fragments = 0;
     audio_clear_voices(&g.audio);
     clear_collection_feedback();
-    g.field_spawn_timer = 0.0f;
 
-    memset(g.asteroids, 0, sizeof(g.asteroids));
-    if (FIELD_ASTEROID_TARGET > 0) {
-        spawn_field_asteroid_of_tier(&g.asteroids[0], ASTEROID_TIER_XL);
-    }
-    if (FIELD_ASTEROID_TARGET > 1) {
-        spawn_field_asteroid_of_tier(&g.asteroids[1], ASTEROID_TIER_L);
-    }
-    for (int i = 2; i < FIELD_ASTEROID_TARGET; i++) {
-        spawn_field_asteroid(&g.asteroids[i]);
-    }
-
-    memset(g.npc_ships, 0, sizeof(g.npc_ships));
-    for (int i = 0; i < 3; i++) {
-        npc_ship_t* npc = &g.npc_ships[i];
-        npc->active = true;
-        npc->role = NPC_ROLE_MINER;
-        npc->hull_class = HULL_CLASS_NPC_MINER;
-        npc->state = NPC_STATE_DOCKED;
-        npc->pos = v2_add(g.stations[0].pos, v2(30.0f * (float)(i - 1), -(g.stations[0].radius + HULL_DEFS[HULL_CLASS_NPC_MINER].ship_radius + 50.0f)));
-        npc->vel = v2(0.0f, 0.0f);
-        npc->angle = PI_F * 0.5f;
-        npc->target_asteroid = -1;
-        npc->home_station = 0;
-        npc->state_timer = NPC_DOCK_TIME + (float)i * 2.0f;
-        npc->thrusting = false;
-    }
-
-    for (int i = 0; i < 2; i++) {
-        npc_ship_t* npc = &g.npc_ships[3 + i];
-        npc->active = true;
-        npc->role = NPC_ROLE_HAULER;
-        npc->hull_class = HULL_CLASS_HAULER;
-        npc->state = NPC_STATE_DOCKED;
-        npc->pos = v2_add(g.stations[0].pos, v2(50.0f * (float)(i == 0 ? -1 : 1), -(g.stations[0].radius + HULL_DEFS[HULL_CLASS_HAULER].ship_radius + 70.0f)));
-        npc->vel = v2(0.0f, 0.0f);
-        npc->angle = PI_F * 0.5f;
-        npc->target_asteroid = -1;
-        npc->home_station = 0;
-        npc->dest_station = 1 + i;
-        npc->state_timer = HAULER_DOCK_TIME + (float)i * 3.0f;
-        npc->thrusting = false;
-    }
-
-    set_notice("%s online. Press E to launch.", current_station_ptr()->name);
+    set_notice("%s online. Press E to launch.", g.stations[g.current_station].name);
 }
 
 static float asteroid_profile(const asteroid_t* asteroid, float angle) {
@@ -2780,30 +2695,7 @@ static void step_npc_ships(float dt) {
 
 /* step_refinery_production, step_station_production: see economy.h/c */
 
-static void sync_globals_to_world(void) {
-    server_player_t* sp = &g.world.players[0];
-    sp->connected = true;
-    sp->id = 0;
-    sp->ship = g.ship;
-    sp->input = (input_intent_t){0};
-    sp->current_station = g.current_station;
-    sp->nearby_station = g.nearby_station;
-    sp->docked = g.docked;
-    sp->in_dock_range = g.in_dock_range;
-    sp->hover_asteroid = g.hover_asteroid;
-    sp->beam_active = g.beam_active;
-    sp->beam_hit = g.beam_hit;
-    sp->beam_start = g.beam_start;
-    sp->beam_end = g.beam_end;
-    sp->nearby_fragments = g.nearby_fragments;
-    sp->tractor_fragments = g.tractor_fragments;
-    memcpy(g.world.stations, g.stations, sizeof(g.stations));
-    memcpy(g.world.asteroids, g.asteroids, sizeof(g.asteroids));
-    memcpy(g.world.npc_ships, g.npc_ships, sizeof(g.npc_ships));
-    g.world.rng = g.rng;
-    g.world.time = g.time;
-    g.world.field_spawn_timer = g.field_spawn_timer;
-}
+/* No sync_globals_to_world — world_t is the source of truth in single player. */
 
 static void sync_world_to_globals(void) {
     server_player_t* sp = &g.world.players[0];
@@ -2838,52 +2730,29 @@ static void sim_step(float dt) {
         return;
     }
 
-    if (!g.multiplayer_enabled || !net_is_connected()) {
-        /* Single player: run authoritative sim locally */
-        sync_globals_to_world();
-        g.world.players[0].input = intent;
-        world_sim_step(&g.world, dt);
-        sync_world_to_globals();
-    } else {
-        /* Multiplayer: server is authoritative for world state.
-         * Run local player physics for responsiveness.
-         * World state arrives via network callbacks. */
-        g.time += dt;
-        step_asteroid_dynamics(g.asteroids, MAX_ASTEROIDS, g.ship.pos, dt);
-        step_npc_ships(dt);
-
-        if (!g.docked) {
-            step_ship_rotation(dt, intent.turn);
-            vec2 forward = ship_forward();
-            step_ship_thrust(dt, intent.thrust, forward);
-            step_ship_motion(dt);
-            resolve_world_collisions();
-            update_docking_state(dt);
-            if (!g.docked) {
-                update_targeting_state(forward);
-                step_mining_system(dt, intent.mine, forward);
-                step_fragment_collection(dt);
-            }
-        } else {
-            update_docking_state(dt);
-        }
-    }
+    /* One code path: feed input, run sim, sync out.
+     * Single player: this is authoritative.
+     * Multiplayer: this is prediction — server corrections arrive
+     * via network callbacks and overwrite g.world state. */
+    g.world.players[0].input = intent;
+    world_sim_step(&g.world, dt);
+    sync_world_to_globals();
 
     step_notice_timer(dt);
 
-    /* Queue one-shot actions for the next net send (before key_pressed is consumed). */
+    /* In multiplayer, also queue one-shot actions for network send. */
     if (g.multiplayer_enabled && net_is_connected() && g.pending_net_action == 0) {
-        if (is_key_pressed(SAPP_KEYCODE_E))
+        if (intent.interact)
             g.pending_net_action = g.docked ? 2 : 1;
-        else if (is_key_pressed(SAPP_KEYCODE_1))
+        else if (intent.service_sell)
             g.pending_net_action = 3;
-        else if (is_key_pressed(SAPP_KEYCODE_2))
+        else if (intent.service_repair)
             g.pending_net_action = 4;
-        else if (is_key_pressed(SAPP_KEYCODE_3))
+        else if (intent.upgrade_mining)
             g.pending_net_action = 5;
-        else if (is_key_pressed(SAPP_KEYCODE_4))
+        else if (intent.upgrade_hold)
             g.pending_net_action = 6;
-        else if (is_key_pressed(SAPP_KEYCODE_5))
+        else if (intent.upgrade_tractor)
             g.pending_net_action = 7;
     }
 
