@@ -617,7 +617,7 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
     npc->angle = wrap_angle(npc->angle + diff);
     vec2 fwd = v2_from_angle(npc->angle);
     npc->vel = v2_add(npc->vel, v2_scale(fwd, accel * dt));
-    npc->thrusting = true;
+    npc->thrusting = accel > 0.0f;
 }
 
 static void npc_apply_physics(npc_ship_t *npc, float drag, float dt) {

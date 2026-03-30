@@ -13,7 +13,6 @@
 
 static struct {
     bool connected;
-    bool is_host;
     uint8_t local_id;
     NetPlayerState players[NET_MAX_PLAYERS];
     NetCallbacks callbacks;
@@ -95,6 +94,10 @@ static void handle_message(const uint8_t* data, int len) {
             ps->angle = read_f32_le(&data[18]);
             ps->active = true;
 
+            /* Skip self-echo for remote player rendering; local player
+               state is handled via PLAYER_SHIP from the server. */
+            if (id == net_state.local_id) break;
+
             if (net_state.callbacks.on_state) {
                 net_state.callbacks.on_state(ps);
             }
@@ -146,30 +149,6 @@ static void handle_message(const uint8_t* data, int len) {
                     arr[i].target_asteroid  = (int8_t)p[22];
                 }
                 net_state.callbacks.on_npcs(arr, count);
-            }
-        }
-        break;
-
-    case NET_MSG_MINING_ACTION:
-        if (len < 7) break;
-        {
-            uint8_t pid = data[1];
-            uint8_t aidx = data[2];
-            float dmg = read_f32_le(&data[3]);
-            if (net_state.callbacks.on_mining_action) {
-                net_state.callbacks.on_mining_action(pid, aidx, dmg);
-            }
-        }
-        break;
-
-    case NET_MSG_HOST_ASSIGN:
-        if (len < 2) break;
-        {
-            bool host = (data[1] != 0);
-            net_state.is_host = host;
-            printf("[net] host assignment: %s\n", host ? "YES" : "NO");
-            if (net_state.callbacks.on_host_assign) {
-                net_state.callbacks.on_host_assign(host);
             }
         }
         break;
@@ -315,56 +294,6 @@ void net_send_state(float x, float y, float vx, float vy, float angle) {
     ws_send_binary(buf, 22);
 }
 
-void net_send_asteroids(const NetAsteroidState* asteroids, int count) {
-    if (count <= 0 || count > 48) return;
-    int msg_len = 2 + count * 30;
-    uint8_t buf[2 + 48 * 30]; /* max size */
-    buf[0] = NET_MSG_WORLD_ASTEROIDS;
-    buf[1] = (uint8_t)count;
-    for (int i = 0; i < count; i++) {
-        uint8_t* p = &buf[2 + i * 30];
-        p[0] = asteroids[i].index;
-        p[1] = asteroids[i].flags;
-        write_f32_le(&p[2],  asteroids[i].x);
-        write_f32_le(&p[6],  asteroids[i].y);
-        write_f32_le(&p[10], asteroids[i].vx);
-        write_f32_le(&p[14], asteroids[i].vy);
-        write_f32_le(&p[18], asteroids[i].hp);
-        write_f32_le(&p[22], asteroids[i].ore);
-        write_f32_le(&p[26], asteroids[i].radius);
-    }
-    ws_send_binary(buf, msg_len);
-}
-
-void net_send_npcs(const NetNpcState* npcs, int count) {
-    if (count <= 0 || count > 6) return;
-    int msg_len = 2 + count * 23;
-    uint8_t buf[2 + 6 * 23]; /* max size */
-    buf[0] = NET_MSG_WORLD_NPCS;
-    buf[1] = (uint8_t)count;
-    for (int i = 0; i < count; i++) {
-        uint8_t* p = &buf[2 + i * 23];
-        p[0] = npcs[i].index;
-        p[1] = npcs[i].flags;
-        write_f32_le(&p[2],  npcs[i].x);
-        write_f32_le(&p[6],  npcs[i].y);
-        write_f32_le(&p[10], npcs[i].vx);
-        write_f32_le(&p[14], npcs[i].vy);
-        write_f32_le(&p[18], npcs[i].angle);
-        p[22] = (uint8_t)npcs[i].target_asteroid;
-    }
-    ws_send_binary(buf, msg_len);
-}
-
-void net_send_mining_action(int asteroid_index, float damage) {
-    uint8_t buf[7];
-    buf[0] = NET_MSG_MINING_ACTION;
-    buf[1] = net_state.local_id;
-    buf[2] = (uint8_t)asteroid_index;
-    write_f32_le(&buf[3], damage);
-    ws_send_binary(buf, 7);
-}
-
 void net_poll(void) {
     /* Emscripten WebSocket callbacks fire on the main thread automatically.
      * Nothing to do here — messages are handled in on_ws_message(). */
@@ -402,18 +331,6 @@ void net_send_state(float x, float y, float vx, float vy, float angle) {
     (void)x; (void)y; (void)vx; (void)vy; (void)angle;
 }
 
-void net_send_asteroids(const NetAsteroidState* asteroids, int count) {
-    (void)asteroids; (void)count;
-}
-
-void net_send_npcs(const NetNpcState* npcs, int count) {
-    (void)npcs; (void)count;
-}
-
-void net_send_mining_action(int asteroid_index, float damage) {
-    (void)asteroid_index; (void)damage;
-}
-
 void net_poll(void) {
     /* No-op on native builds. */
 }
@@ -424,14 +341,6 @@ void net_poll(void) {
 
 bool net_is_connected(void) {
     return net_state.connected;
-}
-
-bool net_is_host(void) {
-    return net_state.is_host;
-}
-
-void net_set_host(bool h) {
-    net_state.is_host = h;
 }
 
 uint8_t net_local_id(void) {

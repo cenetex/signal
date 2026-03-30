@@ -141,7 +141,6 @@ typedef struct {
     /* --- Multiplayer --- */
     bool multiplayer_enabled;
     float net_send_timer;
-    float world_sync_timer;
     uint8_t pending_net_action; /* one-shot action queued for next net send */
 } game_t;
 
@@ -3290,20 +3289,15 @@ static void step_mining_system(float dt, bool mining, vec2 forward) {
         g.beam_hit = true;
         audio_play_mining_tick();
 
-        float mined = ship_mining_rate() * dt;
-        if (mined > 0.0f) {
-            if (net_is_connected() && !net_is_host()) {
-                /* Guest: send mining action to host, don't apply locally. */
-                net_send_mining_action(g.hover_asteroid, mined);
-            } else {
-                /* Host or single-player: apply damage locally. */
-                mined = fminf(mined, asteroid->hp);
-                asteroid->hp -= mined;
-                if (asteroid->hp <= 0.01f) {
-                    fracture_asteroid(g.hover_asteroid, normal);
-                }
+        if (!net_is_connected()) {
+            /* Single-player: apply damage locally. */
+            float mined = fminf(ship_mining_rate() * dt, asteroid->hp);
+            asteroid->hp -= mined;
+            if (asteroid->hp <= 0.01f) {
+                fracture_asteroid(g.hover_asteroid, normal);
             }
         }
+        /* Multiplayer: server applies damage, client just shows beam. */
     } else {
         g.beam_end = v2_add(muzzle, v2_scale(forward, MINING_RANGE));
     }
@@ -3394,7 +3388,7 @@ static void npc_steer_toward(npc_ship_t* npc, vec2 target, float accel, float tu
 
     vec2 forward = v2_from_angle(npc->angle);
     npc->vel = v2_add(npc->vel, v2_scale(forward, accel * dt));
-    npc->thrusting = true;
+    npc->thrusting = accel > 0.0f;
 }
 
 static void npc_apply_physics(npc_ship_t* npc, float drag, float dt) {
@@ -3789,8 +3783,6 @@ static void init_audio(void) {
 /* Forward declarations for multiplayer callbacks (defined below init). */
 static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count);
 static void apply_remote_npcs(const NetNpcState* npcs, int count);
-static void apply_remote_mining(uint8_t player_id, uint8_t asteroid_index, float damage);
-static void on_host_assigned(bool is_host);
 static void apply_remote_player_state(const NetPlayerState* state);
 static void apply_remote_player_ship(const NetPlayerShipState* state);
 
@@ -3833,8 +3825,6 @@ static void init(void) {
             cbs.on_state = apply_remote_player_state;
             cbs.on_asteroids = apply_remote_asteroids;
             cbs.on_npcs = apply_remote_npcs;
-            cbs.on_mining_action = apply_remote_mining;
-            cbs.on_host_assign = on_host_assigned;
             cbs.on_player_ship = apply_remote_player_ship;
             g.multiplayer_enabled = net_init(server_url, &cbs);
         }
@@ -3845,57 +3835,7 @@ static void init(void) {
 
 /* --- Multiplayer: world state sync callbacks and broadcast --- */
 
-static void broadcast_world_state(void) {
-    /* Pack active asteroids. */
-    NetAsteroidState ast_buf[MAX_ASTEROIDS];
-    int ast_count = 0;
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        asteroid_t* a = &g.asteroids[i];
-        if (!a->active) continue;
-        NetAsteroidState* s = &ast_buf[ast_count++];
-        s->index = (uint8_t)i;
-        s->flags = 1; /* bit0 = active */
-        if (a->fracture_child) s->flags |= (1 << 1);
-        s->flags |= (((uint8_t)a->tier & 0x3) << 2);
-        s->flags |= (((uint8_t)a->commodity & 0x7) << 4);
-        s->x  = a->pos.x;
-        s->y  = a->pos.y;
-        s->vx = a->vel.x;
-        s->vy = a->vel.y;
-        s->hp = a->hp;
-        s->ore = a->ore;
-        s->radius = a->radius;
-    }
-    if (ast_count > 0) {
-        net_send_asteroids(ast_buf, ast_count);
-    }
-
-    /* Pack NPC ships. */
-    NetNpcState npc_buf[MAX_NPC_SHIPS];
-    int npc_count = 0;
-    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        npc_ship_t* n = &g.npc_ships[i];
-        if (!n->active) continue;
-        NetNpcState* s = &npc_buf[npc_count++];
-        s->index = (uint8_t)i;
-        s->flags = 1; /* bit0 = active */
-        s->flags |= (((uint8_t)n->role & 0x3) << 1);
-        s->flags |= (((uint8_t)n->state & 0x7) << 3);
-        if (n->thrusting) s->flags |= (1 << 6);
-        s->x  = n->pos.x;
-        s->y  = n->pos.y;
-        s->vx = n->vel.x;
-        s->vy = n->vel.y;
-        s->angle = n->angle;
-        s->target_asteroid = (int8_t)n->target_asteroid;
-    }
-    if (npc_count > 0) {
-        net_send_npcs(npc_buf, npc_count);
-    }
-}
-
 static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
-    if (net_is_host()) return; /* Host is authoritative, ignore. */
 
     /* Mark which indices were received. */
     bool received[MAX_ASTEROIDS];
@@ -3929,8 +3869,6 @@ static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count)
 }
 
 static void apply_remote_npcs(const NetNpcState* npcs, int count) {
-    if (net_is_host()) return;
-
     bool received[MAX_NPC_SHIPS];
     memset(received, 0, sizeof(received));
 
@@ -3957,26 +3895,6 @@ static void apply_remote_npcs(const NetNpcState* npcs, int count) {
             g.npc_ships[i].active = false;
         }
     }
-}
-
-static void apply_remote_mining(uint8_t player_id, uint8_t asteroid_index, float damage) {
-    (void)player_id;
-    if (!net_is_host()) return;
-    if (asteroid_index >= MAX_ASTEROIDS) return;
-
-    asteroid_t* a = &g.asteroids[asteroid_index];
-    if (!a->active) return;
-
-    float mined = fminf(damage, a->hp);
-    a->hp -= mined;
-    if (a->hp <= 0.01f) {
-        vec2 outward = v2_norm(v2_sub(a->pos, g.ship.pos));
-        fracture_asteroid((int)asteroid_index, outward);
-    }
-}
-
-static void on_host_assigned(bool is_host) {
-    printf("[game] host assigned: %s\n", is_host ? "YES" : "NO");
 }
 
 static void apply_remote_player_state(const NetPlayerState* state) {
@@ -4143,14 +4061,6 @@ static void frame(void) {
             net_send_input(flags, g.ship.angle, action);
         }
 
-        /* Host broadcasts world state at ~4 Hz. */
-        if (net_is_host()) {
-            g.world_sync_timer += frame_dt;
-            if (g.world_sync_timer >= 0.25f) {
-                g.world_sync_timer = 0.0f;
-                broadcast_world_state();
-            }
-        }
     }
 
     render_frame();

@@ -27,12 +27,9 @@ enum {
     NET_MSG_LEAVE           = 0x02,
     NET_MSG_STATE           = 0x03,
     NET_MSG_INPUT           = 0x04,
-    NET_MSG_ASTEROID_UPDATE = 0x05,
     NET_MSG_WORLD_ASTEROIDS = 0x10,
     NET_MSG_WORLD_NPCS      = 0x11,
-    NET_MSG_WORLD_STATIONS  = 0x12,
     NET_MSG_MINING_ACTION   = 0x13,
-    NET_MSG_HOST_ASSIGN     = 0x14,
     NET_MSG_PLAYER_SHIP     = 0x15,
 };
 
@@ -52,7 +49,7 @@ typedef struct {
     bool active;
 } NetPlayerState;
 
-/* Packed asteroid state for world sync (26 bytes per asteroid). */
+/* Packed asteroid state for world sync (30 bytes per asteroid). */
 typedef struct {
     uint8_t index;      /* asteroid slot 0-47 */
     uint8_t flags;      /* bit0=active, bit1=fracture_child, bits2-3=tier, bits4-6=commodity */
@@ -79,9 +76,6 @@ typedef void (*net_on_player_leave_fn)(uint8_t player_id);
 typedef void (*net_on_player_state_fn)(const NetPlayerState* state);
 typedef void (*net_on_asteroids_fn)(const NetAsteroidState* asteroids, int count);
 typedef void (*net_on_npcs_fn)(const NetNpcState* npcs, int count);
-typedef void (*net_on_mining_action_fn)(uint8_t player_id, uint8_t asteroid_index, float damage);
-typedef void (*net_on_host_assign_fn)(bool is_host);
-
 /* Packed player ship state (from PLAYER_SHIP 0x15). */
 typedef struct {
     uint8_t player_id;
@@ -105,8 +99,6 @@ typedef struct {
     net_on_player_state_fn on_state;
     net_on_asteroids_fn on_asteroids;
     net_on_npcs_fn on_npcs;
-    net_on_mining_action_fn on_mining_action;
-    net_on_host_assign_fn on_host_assign;
     net_on_player_ship_fn on_player_ship;
 } NetCallbacks;
 
@@ -141,20 +133,5 @@ const NetPlayerState* net_get_players(void);
 
 /* Returns the number of currently active remote players. */
 int net_remote_player_count(void);
-
-/* Returns true if this client is the authoritative host. */
-bool net_is_host(void);
-
-/* Set host status (called internally when HOST_ASSIGN is received). */
-void net_set_host(bool h);
-
-/* Send world asteroid state (host only). */
-void net_send_asteroids(const NetAsteroidState* asteroids, int count);
-
-/* Send world NPC state (host only). */
-void net_send_npcs(const NetNpcState* npcs, int count);
-
-/* Send mining action to host (guest only). */
-void net_send_mining_action(int asteroid_index, float damage);
 
 #endif /* NET_H */
