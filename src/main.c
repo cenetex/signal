@@ -2598,21 +2598,30 @@ static void step_hauler(npc_ship_t* npc, int n, float dt) {
             npc->vel = v2(0.0f, 0.0f);
             if (npc->state_timer <= 0.0f) {
                 station_t* home = &g.stations[npc->home_station];
-                float available = 0.0f;
-                for (int i = 0; i < INGOT_COUNT; i++) {
-                    available += home->inventory[COMMODITY_RAW_ORE_COUNT + i];
-                }
-                if (available > 1.0f) {
-                    float space = hull->ingot_capacity;
-                    for (int i = 0; i < INGOT_COUNT; i++) {
-                        commodity_t ingot = (commodity_t)(COMMODITY_RAW_ORE_COUNT + i);
-                        float take = fminf(home->inventory[ingot], space / (float)INGOT_COUNT);
+                station_t* dest = &g.stations[npc->dest_station];
+                float space = hull->ingot_capacity;
+                bool loaded = false;
+                if (dest->role == STATION_ROLE_YARD) {
+                    commodity_t ingot = COMMODITY_FRAME_INGOT;
+                    float take = fminf(home->inventory[ingot], space);
+                    if (take > 0.5f) {
+                        npc->ingots[INGOT_IDX(ingot)] += take;
+                        home->inventory[ingot] -= take;
+                        loaded = true;
+                    }
+                } else if (dest->role == STATION_ROLE_BEAMWORKS) {
+                    commodity_t ingots[2] = { COMMODITY_CONDUCTOR_INGOT, COMMODITY_LENS_INGOT };
+                    for (int i = 0; i < 2; i++) {
+                        float take = fminf(home->inventory[ingots[i]], space / 2.0f);
                         if (take > 0.01f) {
-                            npc->ingots[i] += take;
-                            home->inventory[ingot] -= take;
+                            npc->ingots[INGOT_IDX(ingots[i])] += take;
+                            home->inventory[ingots[i]] -= take;
                             space -= take;
+                            loaded = true;
                         }
                     }
+                }
+                if (loaded) {
                     npc->state = NPC_STATE_TRAVEL_TO_DEST;
                 } else {
                     npc->state_timer = HAULER_LOAD_TIME;
@@ -2772,7 +2781,7 @@ static void step_npc_ships(float dt) {
                 asteroid->hp -= mined;
 
                 float cargo_space = hull->ore_capacity - npc_total_cargo(npc);
-                float ore_gained = mined * 0.4f;
+                float ore_gained = mined * 0.15f;
                 ore_gained = fminf(ore_gained, cargo_space);
                 if (ore_gained > 0.0f) {
                     npc->cargo[asteroid->commodity] += ore_gained;
@@ -2941,7 +2950,7 @@ static void init(void) {
         const char* server_url = emscripten_run_script_string(
             "(() => {"
             "  const p = new URLSearchParams(window.location.search);"
-            "  return p.get('server') || 'ws://signal-relay-84734004.us-east-1.elb.amazonaws.com/ws';"
+            "  return p.get('server') || 'wss://signal-relay-84734004.us-east-1.elb.amazonaws.com/ws';"
             "})()");
         if (server_url && server_url[0] != '\0') {
             NetCallbacks cbs = {0};

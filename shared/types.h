@@ -213,6 +213,7 @@ static const float REFINERY_BASE_SMELT_RATE = 0.5f;
 static const int REFINERY_MAX_FURNACES = 3;
 static const float STATION_PRODUCTION_RATE = 0.3f;
 static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
+static const float MAX_PRODUCT_STOCK = 40.0f;
 
 /* Ship upgrade constants (shared between client and server) */
 static const float SHIP_HOLD_UPGRADE_STEP = 24.0f;

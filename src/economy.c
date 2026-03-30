@@ -31,24 +31,33 @@ void step_station_production(station_t* stations, int count, float dt) {
         station_t* station = &stations[s];
 
         if (station->role == STATION_ROLE_YARD) {
-            float buf = station->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)];
-            if (buf > 0.01f) {
-                float consume = fminf(buf, STATION_PRODUCTION_RATE * dt);
-                station->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] -= consume;
-                station->product_stock[PRODUCT_FRAME] += consume;
+            if (station->product_stock[PRODUCT_FRAME] < MAX_PRODUCT_STOCK) {
+                float buf = station->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)];
+                if (buf > 0.01f) {
+                    float room = MAX_PRODUCT_STOCK - station->product_stock[PRODUCT_FRAME];
+                    float consume = fminf(buf, fminf(STATION_PRODUCTION_RATE * dt, room));
+                    station->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] -= consume;
+                    station->product_stock[PRODUCT_FRAME] += consume;
+                }
             }
         } else if (station->role == STATION_ROLE_BEAMWORKS) {
-            float buf_co = station->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)];
-            if (buf_co > 0.01f) {
-                float consume = fminf(buf_co, STATION_PRODUCTION_RATE * dt);
-                station->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)] -= consume;
-                station->product_stock[PRODUCT_LASER_MODULE] += consume;
+            if (station->product_stock[PRODUCT_LASER_MODULE] < MAX_PRODUCT_STOCK) {
+                float buf_co = station->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)];
+                if (buf_co > 0.01f) {
+                    float room = MAX_PRODUCT_STOCK - station->product_stock[PRODUCT_LASER_MODULE];
+                    float consume = fminf(buf_co, fminf(STATION_PRODUCTION_RATE * dt, room));
+                    station->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)] -= consume;
+                    station->product_stock[PRODUCT_LASER_MODULE] += consume;
+                }
             }
-            float buf_ln = station->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)];
-            if (buf_ln > 0.01f) {
-                float consume = fminf(buf_ln, STATION_PRODUCTION_RATE * dt);
-                station->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)] -= consume;
-                station->product_stock[PRODUCT_TRACTOR_MODULE] += consume;
+            if (station->product_stock[PRODUCT_TRACTOR_MODULE] < MAX_PRODUCT_STOCK) {
+                float buf_ln = station->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)];
+                if (buf_ln > 0.01f) {
+                    float room = MAX_PRODUCT_STOCK - station->product_stock[PRODUCT_TRACTOR_MODULE];
+                    float consume = fminf(buf_ln, fminf(STATION_PRODUCTION_RATE * dt, room));
+                    station->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)] -= consume;
+                    station->product_stock[PRODUCT_TRACTOR_MODULE] += consume;
+                }
             }
         }
     }
