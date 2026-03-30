@@ -77,6 +77,13 @@ typedef enum {
     STATION_ROLE_BEAMWORKS,
 } station_role_t;
 
+typedef enum {
+    PRODUCT_FRAME,
+    PRODUCT_LASER_MODULE,
+    PRODUCT_TRACTOR_MODULE,
+    PRODUCT_COUNT,
+} product_t;
+
 typedef struct {
     char name[32];
     station_role_t role;
@@ -87,6 +94,8 @@ typedef struct {
     float inventory[COMMODITY_COUNT];
     float desired_stock[COMMODITY_COUNT];
     float ore_buffer[COMMODITY_RAW_ORE_COUNT];
+    float ingot_buffer[COMMODITY_COUNT];
+    float product_stock[PRODUCT_COUNT];
     uint32_t services;
 } station_t;
 
@@ -346,6 +355,8 @@ static const float HAULER_DRAG = 0.55f;
 static const float HAULER_CARGO_MAX = 40.0f;
 static const float HAULER_DOCK_TIME = 4.0f;
 static const float HAULER_LOAD_TIME = 2.0f;
+static const float STATION_PRODUCTION_RATE = 0.3f;
+static const float UPGRADE_BASE_PRODUCT = 8.0f;
 static const float COLLECTION_FEEDBACK_TIME = 1.1f;
 static const int SHIP_UPGRADE_MAX_LEVEL = 4;
 static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
@@ -955,6 +966,36 @@ static int ship_upgrade_cost(ship_upgrade_t upgrade) {
     }
 }
 
+static product_t upgrade_required_product(ship_upgrade_t upgrade) {
+    switch (upgrade) {
+        case SHIP_UPGRADE_HOLD:
+            return PRODUCT_FRAME;
+        case SHIP_UPGRADE_MINING:
+            return PRODUCT_LASER_MODULE;
+        case SHIP_UPGRADE_TRACTOR:
+            return PRODUCT_TRACTOR_MODULE;
+        case SHIP_UPGRADE_COUNT:
+        default:
+            return PRODUCT_FRAME;
+    }
+}
+
+static float upgrade_product_cost(ship_upgrade_t upgrade) {
+    int level = ship_upgrade_level(upgrade);
+    int next = level + 1;
+    return UPGRADE_BASE_PRODUCT * (float)next;
+}
+
+static const char* product_name(product_t product) {
+    switch (product) {
+        case PRODUCT_FRAME: return "Frames";
+        case PRODUCT_LASER_MODULE: return "Laser Modules";
+        case PRODUCT_TRACTOR_MODULE: return "Tractor Modules";
+        case PRODUCT_COUNT:
+        default: return "Products";
+    }
+}
+
 static const station_t* station_at(int station_index) {
     if ((station_index < 0) || (station_index >= MAX_STATIONS)) {
         return NULL;
@@ -1260,9 +1301,9 @@ static void build_station_ui_state(station_ui_state_t* ui) {
     ui->tractor_cost = ship_upgrade_cost(SHIP_UPGRADE_TRACTOR);
     ui->can_sell = station_has_service(STATION_SERVICE_ORE_BUYER) && (ship_raw_ore_total() > 0.01f);
     ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (station_repair_cost() > 0.0f) && (g.ship.credits + 0.01f >= station_repair_cost());
-    ui->can_upgrade_mining = station_has_service(STATION_SERVICE_UPGRADE_LASER) && !ship_upgrade_maxed(SHIP_UPGRADE_MINING) && (g.ship.credits + 0.01f >= (float)ui->mining_cost);
-    ui->can_upgrade_hold = station_has_service(STATION_SERVICE_UPGRADE_HOLD) && !ship_upgrade_maxed(SHIP_UPGRADE_HOLD) && (g.ship.credits + 0.01f >= (float)ui->hold_cost);
-    ui->can_upgrade_tractor = station_has_service(STATION_SERVICE_UPGRADE_TRACTOR) && !ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR) && (g.ship.credits + 0.01f >= (float)ui->tractor_cost);
+    ui->can_upgrade_mining = station_has_service(STATION_SERVICE_UPGRADE_LASER) && !ship_upgrade_maxed(SHIP_UPGRADE_MINING) && (g.ship.credits + 0.01f >= (float)ui->mining_cost) && (ui->station->product_stock[upgrade_required_product(SHIP_UPGRADE_MINING)] + 0.01f >= upgrade_product_cost(SHIP_UPGRADE_MINING));
+    ui->can_upgrade_hold = station_has_service(STATION_SERVICE_UPGRADE_HOLD) && !ship_upgrade_maxed(SHIP_UPGRADE_HOLD) && (g.ship.credits + 0.01f >= (float)ui->hold_cost) && (ui->station->product_stock[upgrade_required_product(SHIP_UPGRADE_HOLD)] + 0.01f >= upgrade_product_cost(SHIP_UPGRADE_HOLD));
+    ui->can_upgrade_tractor = station_has_service(STATION_SERVICE_UPGRADE_TRACTOR) && !ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR) && (g.ship.credits + 0.01f >= (float)ui->tractor_cost) && (ui->station->product_stock[upgrade_required_product(SHIP_UPGRADE_TRACTOR)] + 0.01f >= upgrade_product_cost(SHIP_UPGRADE_TRACTOR));
 }
 
 static void format_station_header_badge(const station_ui_state_t* ui, char* text, size_t text_size) {
@@ -1316,9 +1357,13 @@ static void format_station_market_detail(const station_ui_state_t* ui, bool comp
             snprintf(text, text_size, "Value %d cr // Stock %s", ui->payout, stock);
         }
     } else if (ui->station->role == STATION_ROLE_YARD) {
-        snprintf(text, text_size, "Stock FR %d", (int)lroundf(ui->station->inventory[COMMODITY_FRAME_INGOT]));
+        int buf = (int)lroundf(ui->station->ingot_buffer[COMMODITY_FRAME_INGOT]);
+        int prod = (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]);
+        snprintf(text, text_size, "Ingots %d // Frames %d", buf, prod);
     } else {
-        snprintf(text, text_size, "Stock CO %d  LN %d", (int)lroundf(ui->station->inventory[COMMODITY_CONDUCTOR_INGOT]), (int)lroundf(ui->station->inventory[COMMODITY_LENS_INGOT]));
+        int lsr = (int)lroundf(ui->station->product_stock[PRODUCT_LASER_MODULE]);
+        int trc = (int)lroundf(ui->station->product_stock[PRODUCT_TRACTOR_MODULE]);
+        snprintf(text, text_size, "LSR %d  TRC %d", lsr, trc);
     }
 }
 
@@ -2640,33 +2685,33 @@ static void draw_station_services(const station_ui_state_t* ui) {
             sdtx_color3b(169, 179, 204);
             sdtx_puts("Ore only sells here.");
         } else if (ui->station->role == STATION_ROLE_YARD) {
+            int frames = (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]);
+            int need = (int)lroundf(upgrade_product_cost(SHIP_UPGRADE_HOLD));
+            sdtx_printf("Hold %d ore  Lv %d/%d", ui->cargo_capacity, g.ship.hold_level, SHIP_UPGRADE_MAX_LEVEL);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 56.0f));
             sdtx_printf("Hull %d/%d", ui->hull_now, ui->hull_max);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
-            sdtx_printf("Hold %d ore", ui->cargo_capacity);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 88.0f));
             sdtx_color3b(145, 160, 188);
-            sdtx_printf("Hold level %d/%d", g.ship.hold_level, SHIP_UPGRADE_MAX_LEVEL);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
+            sdtx_printf("Frames %d  Need %d", frames, ship_upgrade_maxed(SHIP_UPGRADE_HOLD) ? 0 : need);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
             sdtx_printf("Repair %s", ui->repair_cost > 0 ? "available" : "nominal");
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 184.0f));
-            sdtx_printf("Next rack %s", ship_upgrade_maxed(SHIP_UPGRADE_HOLD) ? "maxed" : "ready");
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 216.0f));
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
             sdtx_color3b(169, 179, 204);
-            sdtx_puts("Frame and hold refits.");
+            sdtx_puts("Frame manufacturing.");
         } else {
-            sdtx_printf("Laser %d ore/sec", (int)lroundf(ship_mining_rate()));
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
-            sdtx_printf("Tractor %d u", (int)lroundf(ship_tractor_range()));
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
+            int lasers = (int)lroundf(ui->station->product_stock[PRODUCT_LASER_MODULE]);
+            int tractors = (int)lroundf(ui->station->product_stock[PRODUCT_TRACTOR_MODULE]);
+            sdtx_printf("Laser Lv %d/%d  Tractor Lv %d/%d", g.ship.mining_level, SHIP_UPGRADE_MAX_LEVEL, g.ship.tractor_level, SHIP_UPGRADE_MAX_LEVEL);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 56.0f));
+            sdtx_printf("Hull %d/%d", ui->hull_now, ui->hull_max);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 88.0f));
             sdtx_color3b(145, 160, 188);
-            sdtx_printf("Laser level %d/%d", g.ship.mining_level, SHIP_UPGRADE_MAX_LEVEL);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
-            sdtx_printf("Tractor level %d/%d", g.ship.tractor_level, SHIP_UPGRADE_MAX_LEVEL);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 184.0f));
+            sdtx_printf("LSR %d  TRC %d", lasers, tractors);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
             sdtx_printf("Repair %s", ui->repair_cost > 0 ? "available" : "nominal");
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 216.0f));
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
             sdtx_color3b(169, 179, 204);
-            sdtx_puts("Field gear tuning.");
+            sdtx_puts("Module fabrication.");
         }
     }
 }
@@ -3139,7 +3184,7 @@ static void try_repair_ship(void) {
 }
 
 static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
-    const station_t* station = current_station_ptr();
+    station_t* station = &g.stations[g.current_station];
     uint32_t required_service = station_upgrade_service(upgrade);
 
     if (!station_has_service(required_service)) {
@@ -3177,24 +3222,22 @@ static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
         return;
     }
 
-    int cost = ship_upgrade_cost(upgrade);
-    if (!try_spend_credits((float)cost)) {
-        switch (upgrade) {
-            case SHIP_UPGRADE_MINING:
-                set_notice("Need %d cr to retune the laser array.", cost);
-                break;
-            case SHIP_UPGRADE_HOLD:
-                set_notice("Need %d cr for expanded hold racks.", cost);
-                break;
-            case SHIP_UPGRADE_TRACTOR:
-                set_notice("Need %d cr for a tractor coil retune.", cost);
-                break;
-            case SHIP_UPGRADE_COUNT:
-            default:
-                break;
-        }
+    product_t required = upgrade_required_product(upgrade);
+    float product_cost = upgrade_product_cost(upgrade);
+    if (station->product_stock[required] < product_cost - 0.01f) {
+        int have = (int)lroundf(station->product_stock[required]);
+        int need = (int)lroundf(product_cost);
+        set_notice("Need %d %s, station has %d. Awaiting supply.", need, product_name(required), have);
         return;
     }
+
+    int cost = ship_upgrade_cost(upgrade);
+    if (!try_spend_credits((float)cost)) {
+        set_notice("Need %d cr for this upgrade.", cost);
+        return;
+    }
+
+    station->product_stock[required] -= product_cost;
 
     switch (upgrade) {
         case SHIP_UPGRADE_MINING:
@@ -3583,7 +3626,7 @@ static void step_hauler(npc_ship_t* npc, int n, float dt) {
             if (npc->state_timer <= 0.0f) {
                 station_t* dest = &g.stations[npc->dest_station];
                 for (int i = 0; i < INGOT_COUNT; i++) {
-                    dest->inventory[COMMODITY_RAW_ORE_COUNT + i] += npc->ingots[i];
+                    dest->ingot_buffer[COMMODITY_RAW_ORE_COUNT + i] += npc->ingots[i];
                     npc->ingots[i] = 0.0f;
                 }
                 npc->state = NPC_STATE_RETURN_TO_STATION;
@@ -3799,6 +3842,34 @@ static void step_refinery_production(float dt) {
     }
 }
 
+static void step_station_production(float dt) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t* station = &g.stations[s];
+
+        if (station->role == STATION_ROLE_YARD) {
+            float buf = station->ingot_buffer[COMMODITY_FRAME_INGOT];
+            if (buf > 0.01f) {
+                float consume = fminf(buf, STATION_PRODUCTION_RATE * dt);
+                station->ingot_buffer[COMMODITY_FRAME_INGOT] -= consume;
+                station->product_stock[PRODUCT_FRAME] += consume;
+            }
+        } else if (station->role == STATION_ROLE_BEAMWORKS) {
+            float buf_co = station->ingot_buffer[COMMODITY_CONDUCTOR_INGOT];
+            if (buf_co > 0.01f) {
+                float consume = fminf(buf_co, STATION_PRODUCTION_RATE * dt);
+                station->ingot_buffer[COMMODITY_CONDUCTOR_INGOT] -= consume;
+                station->product_stock[PRODUCT_LASER_MODULE] += consume;
+            }
+            float buf_ln = station->ingot_buffer[COMMODITY_LENS_INGOT];
+            if (buf_ln > 0.01f) {
+                float consume = fminf(buf_ln, STATION_PRODUCTION_RATE * dt);
+                station->ingot_buffer[COMMODITY_LENS_INGOT] -= consume;
+                station->product_stock[PRODUCT_TRACTOR_MODULE] += consume;
+            }
+        }
+    }
+}
+
 static void sim_step(float dt) {
     reset_step_feedback();
     audio_step(dt);
@@ -3814,6 +3885,7 @@ static void sim_step(float dt) {
     step_asteroid_dynamics(dt);
     maintain_asteroid_field(dt);
     step_refinery_production(dt);
+    step_station_production(dt);
     step_npc_ships(dt);
 
     if (!g.docked) {
