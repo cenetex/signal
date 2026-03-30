@@ -93,6 +93,7 @@ static void handle_message(const uint8_t* data, int len) {
             ps->vx    = read_f32_le(&data[10]);
             ps->vy    = read_f32_le(&data[14]);
             ps->angle = read_f32_le(&data[18]);
+            ps->flags = (len >= 23) ? data[22] : 0;
             ps->active = true;
 
             /* Skip self-echo for remote player rendering; local player

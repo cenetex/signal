@@ -77,15 +77,20 @@ static inline float read_f32_le(const uint8_t *buf) {
  * STATE message (22 bytes):
  * [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32]
  */
-static inline int serialize_player_state(uint8_t *buf, uint8_t id, const ship_t *s) {
+static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_player_t *sp) {
     buf[0] = NET_MSG_STATE;
     buf[1] = id;
-    write_f32_le(&buf[2],  s->pos.x);
-    write_f32_le(&buf[6],  s->pos.y);
-    write_f32_le(&buf[10], s->vel.x);
-    write_f32_le(&buf[14], s->vel.y);
-    write_f32_le(&buf[18], s->angle);
-    return 22;
+    write_f32_le(&buf[2],  sp->ship.pos.x);
+    write_f32_le(&buf[6],  sp->ship.pos.y);
+    write_f32_le(&buf[10], sp->ship.vel.x);
+    write_f32_le(&buf[14], sp->ship.vel.y);
+    write_f32_le(&buf[18], sp->ship.angle);
+    uint8_t flags = 0;
+    if (sp->input.thrust > 0.0f) flags |= 1;
+    if (sp->beam_active && sp->beam_hit) flags |= 2;
+    if (sp->docked) flags |= 4;
+    buf[22] = flags;
+    return 23;
 }
 
 /*

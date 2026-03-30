@@ -187,7 +187,7 @@ static void broadcast_player_states(void) {
     uint8_t buf[22];
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!world.players[i].connected) continue;
-        int len = serialize_player_state(buf, (uint8_t)i, &world.players[i].ship);
+        int len = serialize_player_state(buf, (uint8_t)i, &world.players[i]);
         broadcast_except(i, buf, (size_t)len);
     }
 }

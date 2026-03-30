@@ -2231,29 +2231,67 @@ static void apply_remote_player_ship(const NetPlayerShipState* state) {
 static void draw_remote_players(void) {
     if (!g.multiplayer_enabled) return;
     const NetPlayerState* players = net_get_players();
-    /* Color palette for remote players (6 distinct colors). */
     static const float colors[][3] = {
-        {1.0f, 0.45f, 0.25f}, /* orange */
-        {0.25f, 1.0f, 0.55f}, /* green */
-        {0.55f, 0.35f, 1.0f}, /* purple */
-        {1.0f, 0.85f, 0.15f}, /* yellow */
-        {0.15f, 0.85f, 1.0f}, /* cyan */
-        {1.0f, 0.35f, 0.75f}, /* pink */
+        {1.0f, 0.45f, 0.25f},
+        {0.25f, 1.0f, 0.55f},
+        {0.55f, 0.35f, 1.0f},
+        {1.0f, 0.85f, 0.15f},
+        {0.15f, 0.85f, 1.0f},
+        {1.0f, 0.35f, 0.75f},
     };
     for (int i = 0; i < NET_MAX_PLAYERS; i++) {
         if (!players[i].active) continue;
         if (i == (int)net_local_id()) continue;
         int ci = i % 6;
+        float cr = colors[ci][0], cg = colors[ci][1], cb = colors[ci][2];
+        bool thrusting = (players[i].flags & 1) != 0;
+        bool mining = (players[i].flags & 2) != 0;
+
         sgl_push_matrix();
         sgl_translate(players[i].x, players[i].y, 0.0f);
         sgl_rotate(players[i].angle, 0.0f, 0.0f, 1.0f);
-        sgl_c4f(colors[ci][0], colors[ci][1], colors[ci][2], 0.85f);
+
+        /* Thrust flame */
+        if (thrusting) {
+            float flicker = 10.0f + sinf(g.time * 42.0f + (float)i * 7.0f) * 3.0f;
+            sgl_c4f(1.0f, 0.74f, 0.24f, 0.9f);
+            sgl_begin_triangles();
+            sgl_v2f(-12.0f, 0.0f);
+            sgl_v2f(-26.0f - flicker, 6.0f);
+            sgl_v2f(-26.0f - flicker, -6.0f);
+            sgl_end();
+        }
+
+        /* Hull */
+        sgl_c4f(cr, cg, cb, 0.9f);
         sgl_begin_triangles();
-        sgl_v2f(18.0f, 0.0f);
-        sgl_v2f(-12.0f, 10.0f);
-        sgl_v2f(-12.0f, -10.0f);
+        sgl_v2f(22.0f, 0.0f);
+        sgl_v2f(-14.0f, 12.0f);
+        sgl_v2f(-14.0f, -12.0f);
         sgl_end();
+
+        /* Cockpit */
+        sgl_c4f(cr * 0.3f, cg * 0.3f, cb * 0.3f, 1.0f);
+        sgl_begin_triangles();
+        sgl_v2f(8.0f, 0.0f);
+        sgl_v2f(-5.0f, 5.5f);
+        sgl_v2f(-5.0f, -5.5f);
+        sgl_end();
+
+        /* Wing struts */
+        draw_segment(v2(-9.0f, 8.0f), v2(-15.0f, 17.0f), cr * 0.7f, cg * 0.7f, cb * 0.7f, 0.85f);
+        draw_segment(v2(-9.0f, -8.0f), v2(-15.0f, -17.0f), cr * 0.7f, cg * 0.7f, cb * 0.7f, 0.85f);
+
         sgl_pop_matrix();
+
+        /* Mining beam */
+        if (mining) {
+            vec2 pos = v2(players[i].x, players[i].y);
+            vec2 forward = v2_from_angle(players[i].angle);
+            vec2 muzzle = v2_add(pos, v2_scale(forward, 24.0f));
+            vec2 beam_end = v2_add(muzzle, v2_scale(forward, MINING_RANGE));
+            draw_segment(muzzle, beam_end, cr, cg, cb, 0.6f);
+        }
     }
 }
 
@@ -2337,7 +2375,11 @@ static void frame(void) {
 
     /* --- Multiplayer: poll and send state --- */
     if (g.multiplayer_enabled) {
+        bool was_connected = net_is_connected();
         net_poll();
+        if (was_connected && !net_is_connected()) {
+            set_notice("Connection lost. Continuing offline.");
+        }
         /* Send local state at ~20 Hz (every 50ms). */
         g.net_send_timer += frame_dt;
         if (g.net_send_timer >= 0.05f) {
