@@ -1,13 +1,17 @@
 /*
- * game_sim.c -- Headless game simulation for the Signal Space Miner
- * authoritative server.
- *
- * Extracted from src/main.c.  All rendering, audio, and sokol
- * references have been removed.  Global state `g.` has been replaced
- * with world_t *w and server_player_t *sp parameters.
+ * game_sim.c -- Game simulation for Signal Space Miner.
+ * Used by both the authoritative server and the client (local sim).
+ * All rendering, audio, and sokol references are excluded.
+ * Global state replaced with world_t *w and server_player_t *sp parameters.
  */
 #include "game_sim.h"
 #include <stdlib.h>
+
+#ifdef GAME_SIM_VERBOSE
+#define SIM_LOG(...) printf(__VA_ARGS__)
+#else
+#define SIM_LOG(...) ((void)0)
+#endif
 
 /* ================================================================== */
 /* Hull definitions                                                   */
@@ -412,7 +416,7 @@ static void fracture_asteroid(world_t *w, int idx, vec2 outward_dir) {
     }
 
     /* audio_play_fracture removed */
-    printf("[sim] asteroid %d fractured into %d children\n", idx, child_count);
+    SIM_LOG("[sim] asteroid %d fractured into %d children\n", idx, child_count);
 }
 
 /* ================================================================== */
@@ -813,7 +817,7 @@ static void dock_ship(world_t *w, server_player_t *sp) {
     sp->docked = true;
     sp->in_dock_range = true;
     anchor_ship_in_station(sp, w);
-    printf("[sim] player %d docked at station %d\n", sp->id, sp->current_station);
+    SIM_LOG("[sim] player %d docked at station %d\n", sp->id, sp->current_station);
 }
 
 static void launch_ship(world_t *w, server_player_t *sp) {
@@ -821,7 +825,7 @@ static void launch_ship(world_t *w, server_player_t *sp) {
     sp->nearby_station = sp->current_station;
     sp->in_dock_range = true;
     anchor_ship_in_station(sp, w);
-    printf("[sim] player %d launched\n", sp->id);
+    SIM_LOG("[sim] player %d launched\n", sp->id);
 }
 
 static void emergency_recover_ship(world_t *w, server_player_t *sp) {
@@ -829,7 +833,7 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     sp->ship.hull = ship_max_hull(&sp->ship);
     sp->ship.angle = PI_F * 0.5f;
     dock_ship(w, sp);
-    printf("[sim] player %d emergency recovered\n", sp->id);
+    SIM_LOG("[sim] player %d emergency recovered\n", sp->id);
 }
 
 static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
@@ -900,7 +904,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         sp->ship.cargo[ore] -= accepted;
     }
     sp->ship.credits += payout;
-    printf("[sim] player %d sold ore for %.0f cr\n", sp->id, payout);
+    SIM_LOG("[sim] player %d sold ore for %.0f cr\n", sp->id, payout);
 }
 
 static void try_repair_ship(world_t *w, server_player_t *sp) {
@@ -910,7 +914,7 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
     if (cost <= 0.0f) return;
     if (!try_spend_credits(&sp->ship, cost)) return;
     sp->ship.hull = ship_max_hull(&sp->ship);
-    printf("[sim] player %d repaired for %.0f cr\n", sp->id, cost);
+    SIM_LOG("[sim] player %d repaired for %.0f cr\n", sp->id, cost);
 }
 
 static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade_t upgrade) {
@@ -932,7 +936,7 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
     case SHIP_UPGRADE_TRACTOR: sp->ship.tractor_level++; break;
     default: break;
     }
-    printf("[sim] player %d upgraded %d to level %d\n", sp->id, (int)upgrade,
+    SIM_LOG("[sim] player %d upgraded %d to level %d\n", sp->id, (int)upgrade,
            ship_upgrade_level(&sp->ship, upgrade));
 }
 
@@ -1203,7 +1207,7 @@ void world_reset(world_t *w) {
         npc->thrusting     = false;
     }
 
-    printf("[sim] world reset complete (%d asteroids, %d NPCs)\n", FIELD_ASTEROID_TARGET, 5);
+    SIM_LOG("[sim] world reset complete (%d asteroids, %d NPCs)\n", FIELD_ASTEROID_TARGET, 5);
 }
 
 /* ================================================================== */

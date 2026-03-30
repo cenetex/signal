@@ -27,7 +27,7 @@ if(BUILD_TESTS_ONLY)
     return()
 endif()
 
-set(GAME_SOURCES src/main.c src/net.c src/commodity.c src/ship.c src/audio.c src/economy.c src/asteroid.c src/npc.c src/render.c)
+set(GAME_SOURCES src/main.c src/net.c src/commodity.c src/ship.c src/audio.c src/economy.c src/asteroid.c src/npc.c src/render.c server/game_sim.c)
 
 if(WIN32 AND NOT EMSCRIPTEN)
     add_executable(space_miner WIN32 ${GAME_SOURCES})
@@ -35,7 +35,7 @@ else()
     add_executable(space_miner ${GAME_SOURCES})
 endif()
 
-target_include_directories(space_miner PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/sokol" "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared")
+target_include_directories(space_miner PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/sokol" "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
 
 if(MSVC)
     target_compile_definitions(space_miner PRIVATE _CRT_SECURE_NO_WARNINGS)
