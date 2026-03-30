@@ -224,4 +224,34 @@ static const float SHIP_COLLECT_UPGRADE_STEP = 5.0f;
 static const float UPGRADE_BASE_PRODUCT = 8.0f;
 static const int SHIP_UPGRADE_MAX_LEVEL = 4;
 
+enum { SIM_MAX_EVENTS = 16 };
+
+typedef enum {
+    SIM_EVENT_FRACTURE,
+    SIM_EVENT_PICKUP,
+    SIM_EVENT_MINING_TICK,
+    SIM_EVENT_DOCK,
+    SIM_EVENT_LAUNCH,
+    SIM_EVENT_SELL,
+    SIM_EVENT_REPAIR,
+    SIM_EVENT_UPGRADE,
+    SIM_EVENT_DAMAGE,
+} sim_event_type_t;
+
+typedef struct {
+    sim_event_type_t type;
+    int player_id;
+    union {
+        struct { asteroid_tier_t tier; } fracture;
+        struct { float ore; int fragments; } pickup;
+        struct { ship_upgrade_t upgrade; } upgrade;
+        struct { float amount; } damage;
+    };
+} sim_event_t;
+
+typedef struct {
+    sim_event_t events[SIM_MAX_EVENTS];
+    int count;
+} sim_events_t;
+
 #endif

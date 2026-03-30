@@ -13,6 +13,12 @@
 #define SIM_LOG(...) ((void)0)
 #endif
 
+static void emit_event(world_t *w, sim_event_t ev) {
+    if (w->events.count < SIM_MAX_EVENTS) {
+        w->events.events[w->events.count++] = ev;
+    }
+}
+
 /* ================================================================== */
 /* Hull definitions                                                   */
 /* ================================================================== */
@@ -417,6 +423,7 @@ static void fracture_asteroid(world_t *w, int idx, vec2 outward_dir) {
 
     /* audio_play_fracture removed */
     SIM_LOG("[sim] asteroid %d fractured into %d children\n", idx, child_count);
+    emit_event(w, (sim_event_t){.type = SIM_EVENT_FRACTURE, .fracture.tier = parent.tier});
 }
 
 /* ================================================================== */
@@ -818,6 +825,7 @@ static void dock_ship(world_t *w, server_player_t *sp) {
     sp->in_dock_range = true;
     anchor_ship_in_station(sp, w);
     SIM_LOG("[sim] player %d docked at station %d\n", sp->id, sp->current_station);
+    emit_event(w, (sim_event_t){.type = SIM_EVENT_DOCK, .player_id = sp->id});
 }
 
 static void launch_ship(world_t *w, server_player_t *sp) {
@@ -826,6 +834,7 @@ static void launch_ship(world_t *w, server_player_t *sp) {
     sp->in_dock_range = true;
     anchor_ship_in_station(sp, w);
     SIM_LOG("[sim] player %d launched\n", sp->id);
+    emit_event(w, (sim_event_t){.type = SIM_EVENT_LAUNCH, .player_id = sp->id});
 }
 
 static void emergency_recover_ship(world_t *w, server_player_t *sp) {
@@ -834,6 +843,7 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     sp->ship.angle = PI_F * 0.5f;
     dock_ship(w, sp);
     SIM_LOG("[sim] player %d emergency recovered\n", sp->id);
+    emit_event(w, (sim_event_t){.type = SIM_EVENT_DAMAGE, .player_id = sp->id});
 }
 
 static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
@@ -905,6 +915,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     }
     sp->ship.credits += payout;
     SIM_LOG("[sim] player %d sold ore for %.0f cr\n", sp->id, payout);
+    emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
 }
 
 static void try_repair_ship(world_t *w, server_player_t *sp) {
@@ -915,6 +926,7 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
     if (!try_spend_credits(&sp->ship, cost)) return;
     sp->ship.hull = ship_max_hull(&sp->ship);
     SIM_LOG("[sim] player %d repaired for %.0f cr\n", sp->id, cost);
+    emit_event(w, (sim_event_t){.type = SIM_EVENT_REPAIR, .player_id = sp->id});
 }
 
 static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade_t upgrade) {
@@ -937,6 +949,7 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
     default: break;
     }
     SIM_LOG("[sim] player %d upgraded %d to level %d\n", sp->id, (int)upgrade,
+    emit_event(w, (sim_event_t){.type = SIM_EVENT_UPGRADE, .player_id = sp->id, .upgrade.upgrade = upgrade});
            ship_upgrade_level(&sp->ship, upgrade));
 }
 
@@ -1058,6 +1071,7 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
         vec2 normal = v2_norm(to_a);
         sp->beam_end = v2_sub(a->pos, v2_scale(normal, a->radius * 0.85f));
         sp->beam_hit = true;
+        emit_event(w, (sim_event_t){.type = SIM_EVENT_MINING_TICK, .player_id = sp->id});
         float mined = ship_mining_rate(&sp->ship) * dt;
         mined = fminf(mined, a->hp);
         a->hp -= mined;
@@ -1125,6 +1139,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
 /* ================================================================== */
 
 void world_sim_step(world_t *w, float dt) {
+    w->events.count = 0;
     w->time += dt;
     step_asteroid_dynamics(w, dt);
     maintain_asteroid_field(w, dt);

@@ -85,6 +85,7 @@ typedef struct {
     uint32_t rng;
     float time;
     float field_spawn_timer;
+    sim_events_t events;
 } world_t;
 
 /* ------------------------------------------------------------------ */
