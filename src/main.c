@@ -9,6 +9,7 @@
 #include "types.h"
 #include "commodity.h"
 #include "ship.h"
+#include "audio.h"
 
 /* --- Multiplayer networking --- */
 #include "net.h"
@@ -80,35 +81,7 @@ typedef struct {
     float accumulator;
 } runtime_state_t;
 
-typedef enum {
-    AUDIO_WAVE_SINE,
-    AUDIO_WAVE_TRIANGLE,
-    AUDIO_WAVE_SQUARE,
-    AUDIO_WAVE_NOISE,
-} audio_wave_t;
-
-typedef struct {
-    bool active;
-    audio_wave_t wave;
-    float phase;
-    float frequency;
-    float sweep;
-    float gain;
-    float pan;
-    float duration;
-    float age;
-    float noise_mix;
-} audio_voice_t;
-
-typedef struct {
-    bool valid;
-    uint32_t rng;
-    int sample_rate;
-    int channels;
-    float mining_tick_cooldown;
-    audio_voice_t voices[AUDIO_VOICE_COUNT];
-    float mix_buffer[AUDIO_MIX_FRAMES * 2];
-} audio_state_t;
+/* audio_wave_t, audio_voice_t, audio_state_t: see types.h */
 
 typedef struct {
     input_state_t input;
@@ -236,213 +209,7 @@ static const float STATION_DOCK_APPROACH_OFFSET = 34.0f;
 static const float SHIP_COLLISION_DAMAGE_THRESHOLD = 115.0f;
 static const float SHIP_COLLISION_DAMAGE_SCALE = 0.12f;
 
-static uint32_t audio_rng_next(void) {
-    g.audio.rng = (g.audio.rng * 1664525u) + 1013904223u;
-    return g.audio.rng;
-}
-
-static float audio_randf(void) {
-    return (float)((audio_rng_next() >> 8) & 0x00FFFFFFu) / 16777215.0f;
-}
-
-static float audio_rand_bipolar(void) {
-    return (audio_randf() * 2.0f) - 1.0f;
-}
-
-static void audio_clear_voices(void) {
-    memset(g.audio.voices, 0, sizeof(g.audio.voices));
-    g.audio.mining_tick_cooldown = 0.0f;
-}
-
-static void audio_play_voice(audio_wave_t wave, float frequency, float sweep, float gain, float duration, float pan, float noise_mix) {
-    if (!g.audio.valid) {
-        return;
-    }
-
-    for (int i = 0; i < AUDIO_VOICE_COUNT; i++) {
-        if (g.audio.voices[i].active) {
-            continue;
-        }
-        g.audio.voices[i] = (audio_voice_t){
-            .active = true,
-            .wave = wave,
-            .phase = audio_randf(),
-            .frequency = frequency,
-            .sweep = sweep,
-            .gain = gain,
-            .pan = clampf(pan, -1.0f, 1.0f),
-            .duration = fmaxf(duration, 0.02f),
-            .age = 0.0f,
-            .noise_mix = clampf(noise_mix, 0.0f, 1.0f),
-        };
-        return;
-    }
-}
-
-static float audio_sample_wave(audio_wave_t wave, float phase) {
-    float wrapped = phase - floorf(phase);
-    switch (wave) {
-        case AUDIO_WAVE_SINE:
-            return sinf(wrapped * TWO_PI_F);
-        case AUDIO_WAVE_TRIANGLE:
-            return 1.0f - (4.0f * fabsf(wrapped - 0.5f));
-        case AUDIO_WAVE_SQUARE:
-            return wrapped < 0.5f ? 1.0f : -1.0f;
-        case AUDIO_WAVE_NOISE:
-            return audio_rand_bipolar();
-        default:
-            return 0.0f;
-    }
-}
-
-static void audio_play_mining_tick(void) {
-    if ((g.audio.mining_tick_cooldown > 0.0f) || !g.audio.valid) {
-        return;
-    }
-    g.audio.mining_tick_cooldown = 0.06f;
-    audio_play_voice(AUDIO_WAVE_SQUARE, 1080.0f, -5200.0f, 0.035f, 0.035f, audio_rand_bipolar() * 0.12f, 0.08f);
-    audio_play_voice(AUDIO_WAVE_TRIANGLE, 720.0f, -1800.0f, 0.022f, 0.05f, 0.0f, 0.0f);
-}
-
-static void audio_play_fracture(asteroid_tier_t parent_tier) {
-    static const float base_freqs[ASTEROID_TIER_COUNT] = { 180.0f, 250.0f, 340.0f, 420.0f };
-    float base = base_freqs[parent_tier < ASTEROID_TIER_COUNT ? parent_tier : ASTEROID_TIER_L];
-    audio_play_voice(AUDIO_WAVE_TRIANGLE, base, -base * 0.65f, 0.10f, 0.18f, audio_rand_bipolar() * 0.24f, 0.15f);
-    audio_play_voice(AUDIO_WAVE_NOISE, base * 0.7f, -base * 0.45f, 0.05f, 0.12f, 0.0f, 1.0f);
-}
-
-static void audio_play_pickup(float ore, int fragments) {
-    float gain = clampf(0.04f + (ore * 0.0032f), 0.04f, 0.11f);
-    float pitch = 540.0f + clampf(ore * 14.0f, 0.0f, 220.0f) + (float)(fragments * 24);
-    audio_play_voice(AUDIO_WAVE_SINE, pitch, 920.0f, gain, 0.09f, audio_rand_bipolar() * 0.35f, 0.0f);
-}
-
-static void audio_play_dock(void) {
-    audio_play_voice(AUDIO_WAVE_SINE, 310.0f, 580.0f, 0.08f, 0.16f, -0.12f, 0.0f);
-    audio_play_voice(AUDIO_WAVE_SINE, 470.0f, 380.0f, 0.06f, 0.18f, 0.12f, 0.0f);
-}
-
-static void audio_play_launch(void) {
-    audio_play_voice(AUDIO_WAVE_TRIANGLE, 620.0f, -980.0f, 0.06f, 0.14f, -0.10f, 0.0f);
-    audio_play_voice(AUDIO_WAVE_SINE, 420.0f, -420.0f, 0.04f, 0.18f, 0.10f, 0.0f);
-}
-
-static void audio_play_sale(void) {
-    audio_play_voice(AUDIO_WAVE_SINE, 420.0f, 440.0f, 0.07f, 0.15f, -0.18f, 0.0f);
-    audio_play_voice(AUDIO_WAVE_SINE, 630.0f, 520.0f, 0.06f, 0.17f, 0.18f, 0.0f);
-}
-
-static void audio_play_repair(void) {
-    audio_play_voice(AUDIO_WAVE_TRIANGLE, 240.0f, 260.0f, 0.06f, 0.18f, 0.0f, 0.0f);
-    audio_play_voice(AUDIO_WAVE_SINE, 510.0f, -120.0f, 0.03f, 0.20f, 0.0f, 0.0f);
-}
-
-static void audio_play_upgrade(ship_upgrade_t upgrade) {
-    float root = 420.0f;
-    switch (upgrade) {
-        case SHIP_UPGRADE_MINING:
-            root = 520.0f;
-            break;
-        case SHIP_UPGRADE_HOLD:
-            root = 430.0f;
-            break;
-        case SHIP_UPGRADE_TRACTOR:
-            root = 610.0f;
-            break;
-        case SHIP_UPGRADE_COUNT:
-        default:
-            break;
-    }
-    audio_play_voice(AUDIO_WAVE_SINE, root, 320.0f, 0.06f, 0.12f, -0.12f, 0.0f);
-    audio_play_voice(AUDIO_WAVE_SINE, root * 1.25f, 380.0f, 0.05f, 0.15f, 0.12f, 0.0f);
-    audio_play_voice(AUDIO_WAVE_SINE, root * 1.5f, 480.0f, 0.04f, 0.18f, 0.0f, 0.0f);
-}
-
-static void audio_play_damage(float damage) {
-    float gain = clampf(0.035f + (damage * 0.0018f), 0.04f, 0.10f);
-    audio_play_voice(AUDIO_WAVE_NOISE, 180.0f, -80.0f, gain, 0.12f, audio_rand_bipolar() * 0.22f, 1.0f);
-    audio_play_voice(AUDIO_WAVE_SQUARE, 130.0f, -160.0f, gain * 0.5f, 0.10f, 0.0f, 0.15f);
-}
-
-static void audio_step(float dt) {
-    if (g.audio.mining_tick_cooldown > 0.0f) {
-        g.audio.mining_tick_cooldown = fmaxf(0.0f, g.audio.mining_tick_cooldown - dt);
-    }
-}
-
-static void audio_generate_stream(void) {
-    if (!g.audio.valid || !saudio_isvalid()) {
-        return;
-    }
-
-    int channels = saudio_channels();
-    int sample_rate = saudio_sample_rate();
-    if ((channels < 1) || (channels > 2) || (sample_rate <= 0)) {
-        return;
-    }
-
-    g.audio.channels = channels;
-    g.audio.sample_rate = sample_rate;
-    const float sample_dt = 1.0f / (float)sample_rate;
-
-    int frames_requested = saudio_expect();
-    while (frames_requested > 0) {
-        int frames_to_mix = frames_requested > AUDIO_MIX_FRAMES ? AUDIO_MIX_FRAMES : frames_requested;
-        memset(g.audio.mix_buffer, 0, sizeof(float) * (size_t)(frames_to_mix * channels));
-
-        for (int frame_index = 0; frame_index < frames_to_mix; frame_index++) {
-            float left = 0.0f;
-            float right = 0.0f;
-
-            for (int voice_index = 0; voice_index < AUDIO_VOICE_COUNT; voice_index++) {
-                audio_voice_t* voice = &g.audio.voices[voice_index];
-                if (!voice->active) {
-                    continue;
-                }
-
-                if (voice->age >= voice->duration) {
-                    voice->active = false;
-                    continue;
-                }
-
-                float attack = clampf(voice->age / 0.01f, 0.0f, 1.0f);
-                float release = 1.0f - clampf(voice->age / voice->duration, 0.0f, 1.0f);
-                float envelope = voice->gain * attack * release * release;
-                float sample = audio_sample_wave(voice->wave, voice->phase);
-                if ((voice->noise_mix > 0.0f) && (voice->wave != AUDIO_WAVE_NOISE)) {
-                    sample = lerpf(sample, audio_rand_bipolar(), voice->noise_mix);
-                }
-                sample *= envelope;
-
-                if (channels == 1) {
-                    left += sample;
-                } else {
-                    float pan = clampf(voice->pan, -1.0f, 1.0f);
-                    float left_gain = sqrtf(0.5f * (1.0f - pan));
-                    float right_gain = sqrtf(0.5f * (1.0f + pan));
-                    left += sample * left_gain;
-                    right += sample * right_gain;
-                }
-
-                voice->frequency = fmaxf(45.0f, voice->frequency + (voice->sweep * sample_dt));
-                voice->phase += voice->frequency * sample_dt;
-                voice->phase -= floorf(voice->phase);
-                voice->age += sample_dt;
-            }
-
-            if (channels == 1) {
-                g.audio.mix_buffer[frame_index] = clampf(left * 0.75f, -1.0f, 1.0f);
-            } else {
-                int base = frame_index * channels;
-                g.audio.mix_buffer[base + 0] = clampf(left * 0.75f, -1.0f, 1.0f);
-                g.audio.mix_buffer[base + 1] = clampf(right * 0.75f, -1.0f, 1.0f);
-            }
-        }
-
-        saudio_push(g.audio.mix_buffer, frames_to_mix);
-        frames_requested = saudio_expect();
-    }
-}
+/* Audio system: see audio.h/c */
 
 static float ui_window_width(void) {
     return sapp_widthf() / fmaxf(1.0f, sapp_dpi_scale());
@@ -1396,7 +1163,7 @@ static void fracture_asteroid(int asteroid_index, vec2 outward_dir) {
         child->vel = child_vel;
     }
 
-    audio_play_fracture(parent.tier);
+    audio_play_fracture(&g.audio,parent.tier);
     set_notice("%s %s fractured into %d %s %s%s.",
         asteroid_tier_name(parent.tier),
         asteroid_tier_kind(parent.tier),
@@ -1490,7 +1257,7 @@ static void reset_world(void) {
     g.notice_timer = 0.0f;
     g.nearby_fragments = 0;
     g.tractor_fragments = 0;
-    audio_clear_voices();
+    audio_clear_voices(&g.audio);
     clear_collection_feedback();
     g.field_spawn_timer = 0.0f;
 
@@ -2695,7 +2462,7 @@ static void dock_ship(void) {
     g.docked = true;
     g.in_dock_range = true;
     anchor_ship_in_station();
-    audio_play_dock();
+    audio_play_dock(&g.audio);
     set_notice("Docked at %s.", current_station_ptr()->name);
 }
 
@@ -2704,7 +2471,7 @@ static void launch_ship(void) {
     g.nearby_station = g.current_station;
     g.in_dock_range = true;
     anchor_ship_in_station();
-    audio_play_launch();
+    audio_play_launch(&g.audio);
     set_notice("Launch corridor clear. Press thrust when ready.");
 }
 
@@ -2726,7 +2493,7 @@ static void apply_ship_damage(float damage) {
         return;
     }
 
-    audio_play_damage(damage);
+    audio_play_damage(&g.audio,damage);
     g.ship.hull = fmaxf(0.0f, g.ship.hull - damage);
     if (g.ship.hull <= 0.01f) {
         emergency_recover_ship();
@@ -2774,7 +2541,7 @@ static void try_sell_station_cargo(void) {
 
     int payout = (int)lroundf(payout_total);
     g.ship.credits += payout_total;
-    audio_play_sale();
+    audio_play_sale(&g.audio);
     if (sold_types > 1) {
         set_notice("Sold %d ore across %d veins for %d cr.", sold_units, sold_types, payout);
     } else {
@@ -2799,7 +2566,7 @@ static void try_repair_ship(void) {
     }
 
     g.ship.hull = ship_max_hull(&g.ship);
-    audio_play_repair();
+    audio_play_repair(&g.audio);
     set_notice("Hull restored for %d cr.", (int)lroundf(repair_cost));
 }
 
@@ -2862,17 +2629,17 @@ static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
     switch (upgrade) {
         case SHIP_UPGRADE_MINING:
             g.ship.mining_level++;
-            audio_play_upgrade(upgrade);
+            audio_play_upgrade(&g.audio,upgrade);
             set_notice("Laser array tuned. Output now %d ore/sec.", (int)lroundf(ship_mining_rate(&g.ship)));
             break;
         case SHIP_UPGRADE_HOLD:
             g.ship.hold_level++;
-            audio_play_upgrade(upgrade);
+            audio_play_upgrade(&g.audio,upgrade);
             set_notice("Hold racks expanded. Capacity now %d ore.", (int)lroundf(ship_cargo_capacity(&g.ship)));
             break;
         case SHIP_UPGRADE_TRACTOR:
             g.ship.tractor_level++;
-            audio_play_upgrade(upgrade);
+            audio_play_upgrade(&g.audio,upgrade);
             set_notice("Tractor coil widened to %d units.", (int)lroundf(ship_tractor_range(&g.ship)));
             break;
         case SHIP_UPGRADE_COUNT:
@@ -3073,7 +2840,7 @@ static void step_fragment_collection(float dt) {
     }
 
     if (collected_ore > 0.0f) {
-        audio_play_pickup(collected_ore, collected_fragments);
+        audio_play_pickup(&g.audio,collected_ore, collected_fragments);
     }
     push_collection_feedback(collected_ore, collected_fragments);
 }
@@ -3093,7 +2860,7 @@ static void step_mining_system(float dt, bool mining, vec2 forward) {
         vec2 normal = v2_norm(to_asteroid);
         g.beam_end = v2_sub(asteroid->pos, v2_scale(normal, asteroid->radius * 0.85f));
         g.beam_hit = true;
-        audio_play_mining_tick();
+        audio_play_mining_tick(&g.audio);
 
         if (!net_is_connected()) {
             /* Single-player: apply damage locally. */
@@ -3503,7 +3270,7 @@ static void step_station_production(float dt) {
 
 static void sim_step(float dt) {
     reset_step_feedback();
-    audio_step(dt);
+    audio_step(&g.audio, dt);
     g.time += dt;
 
     input_intent_t intent = sample_input_intent();
@@ -3564,28 +3331,6 @@ static void sim_step(float dt) {
     consume_pressed_input();
 }
 
-static void init_audio(void) {
-    memset(&g.audio, 0, sizeof(g.audio));
-    g.audio.rng = 0xA11D0F5Du;
-
-    saudio_setup(&(saudio_desc){
-        .sample_rate = 44100,
-        .num_channels = 2,
-        .buffer_frames = 2048,
-        .packet_frames = 256,
-        .num_packets = 32,
-        .logger.func = slog_func,
-    });
-
-    if (!saudio_isvalid()) {
-        return;
-    }
-
-    g.audio.valid = true;
-    g.audio.sample_rate = saudio_sample_rate();
-    g.audio.channels = saudio_channels();
-}
-
 /* Forward declarations for multiplayer callbacks (defined below init). */
 static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count);
 static void apply_remote_npcs(const NetNpcState* npcs, int count);
@@ -3611,7 +3356,7 @@ static void init(void) {
         .logger.func = slog_func,
     });
 
-    init_audio();
+    audio_init(&g.audio);
 
     g.pass_action.colors[0].load_action = SG_LOADACTION_CLEAR;
     g.pass_action.colors[0].clear_value = (sg_color){ 0.018f, 0.024f, 0.045f, 1.0f };
@@ -3852,7 +3597,7 @@ static void frame(void) {
     float max_frame_dt = SIM_DT * (float)MAX_SIM_STEPS_PER_FRAME;
     float frame_dt = clampf((float)sapp_frame_duration(), 0.0f, max_frame_dt);
     advance_simulation_frame(frame_dt);
-    audio_generate_stream();
+    audio_generate_stream(&g.audio);
 
     /* --- Multiplayer: poll and send state --- */
     if (g.multiplayer_enabled) {
