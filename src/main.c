@@ -5,6 +5,9 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "math_util.h"
+#include "types.h"
+
 /* --- Multiplayer networking --- */
 #include "net.h"
 #ifdef __EMSCRIPTEN__
@@ -25,178 +28,7 @@
 #include "sokol_debugtext.h"
 #include "sokol_log.h"
 
-enum {
-    KEY_COUNT = 512,
-    MAX_ASTEROIDS = 48,
-    MAX_STARS = 120,
-    MAX_STATIONS = 3,
-    MAX_NPC_SHIPS = 6,
-    AUDIO_VOICE_COUNT = 24,
-    AUDIO_MIX_FRAMES = 512,
-};
-
-enum {
-    STATION_SERVICE_ORE_BUYER = 1 << 0,
-    STATION_SERVICE_REPAIR = 1 << 1,
-    STATION_SERVICE_UPGRADE_LASER = 1 << 2,
-    STATION_SERVICE_UPGRADE_HOLD = 1 << 3,
-    STATION_SERVICE_UPGRADE_TRACTOR = 1 << 4,
-};
-
-typedef enum {
-    COMMODITY_FERRITE_ORE,
-    COMMODITY_CUPRITE_ORE,
-    COMMODITY_CRYSTAL_ORE,
-    COMMODITY_RAW_ORE_COUNT,
-    COMMODITY_FRAME_INGOT = COMMODITY_RAW_ORE_COUNT,
-    COMMODITY_CONDUCTOR_INGOT,
-    COMMODITY_LENS_INGOT,
-    COMMODITY_COUNT,
-} commodity_t;
-
-enum {
-    INGOT_COUNT = COMMODITY_COUNT - COMMODITY_RAW_ORE_COUNT,
-};
-
-#define INGOT_IDX(c) ((c) - COMMODITY_RAW_ORE_COUNT)
-
-typedef struct {
-    float x;
-    float y;
-} vec2;
-
-typedef enum {
-    HULL_CLASS_MINER,
-    HULL_CLASS_HAULER,
-    HULL_CLASS_NPC_MINER,
-    HULL_CLASS_COUNT,
-} hull_class_t;
-
-typedef struct {
-    const char* name;
-    float max_hull;
-    float accel;
-    float turn_speed;
-    float drag;
-    float ore_capacity;
-    float ingot_capacity;
-    float mining_rate;
-    float tractor_range;
-    float ship_radius;
-    float render_scale;
-} hull_def_t;
-
-typedef struct {
-    vec2 pos;
-    vec2 vel;
-    float angle;
-    float hull;
-    float cargo[COMMODITY_COUNT];
-    float credits;
-    hull_class_t hull_class;
-    int mining_level;
-    int hold_level;
-    int tractor_level;
-} ship_t;
-
-typedef enum {
-    STATION_ROLE_REFINERY,
-    STATION_ROLE_YARD,
-    STATION_ROLE_BEAMWORKS,
-} station_role_t;
-
-typedef enum {
-    PRODUCT_FRAME,
-    PRODUCT_LASER_MODULE,
-    PRODUCT_TRACTOR_MODULE,
-    PRODUCT_COUNT,
-} product_t;
-
-typedef struct {
-    char name[32];
-    station_role_t role;
-    vec2 pos;
-    float radius;
-    float dock_radius;
-    float buy_price[COMMODITY_COUNT];
-    float inventory[COMMODITY_COUNT];
-    float ore_buffer[COMMODITY_RAW_ORE_COUNT];
-    float ingot_buffer[INGOT_COUNT];
-    float product_stock[PRODUCT_COUNT];
-    uint32_t services;
-} station_t;
-
-typedef enum {
-    ASTEROID_TIER_XL,
-    ASTEROID_TIER_L,
-    ASTEROID_TIER_M,
-    ASTEROID_TIER_S,
-    ASTEROID_TIER_COUNT,
-} asteroid_tier_t;
-
-typedef enum {
-    SHIP_UPGRADE_MINING,
-    SHIP_UPGRADE_HOLD,
-    SHIP_UPGRADE_TRACTOR,
-    SHIP_UPGRADE_COUNT,
-} ship_upgrade_t;
-
-typedef struct {
-    bool active;
-    bool fracture_child;
-    asteroid_tier_t tier;
-    vec2 pos;
-    vec2 vel;
-    float radius;
-    float hp;
-    float max_hp;
-    float ore;
-    float max_ore;
-    commodity_t commodity;
-    float rotation;
-    float spin;
-    float seed;
-    float age;
-} asteroid_t;
-
-typedef enum {
-    NPC_ROLE_MINER,
-    NPC_ROLE_HAULER,
-} npc_role_t;
-
-typedef enum {
-    NPC_STATE_IDLE,
-    NPC_STATE_TRAVEL_TO_ASTEROID,
-    NPC_STATE_MINING,
-    NPC_STATE_RETURN_TO_STATION,
-    NPC_STATE_DOCKED,
-    NPC_STATE_TRAVEL_TO_DEST,
-    NPC_STATE_UNLOADING,
-} npc_state_t;
-
-typedef struct {
-    bool active;
-    npc_role_t role;
-    hull_class_t hull_class;
-    npc_state_t state;
-    vec2 pos;
-    vec2 vel;
-    float angle;
-    float cargo[COMMODITY_RAW_ORE_COUNT];
-    float ingots[INGOT_COUNT];
-    int target_asteroid;
-    int home_station;
-    int dest_station;
-    float state_timer;
-    bool thrusting;
-} npc_ship_t;
-
-typedef struct {
-    vec2 pos;
-    float depth;
-    float size;
-    float brightness;
-} star_t;
+/* Types, enums, and math utilities are in types.h and math_util.h */
 
 typedef struct {
     const station_t* station;
@@ -314,8 +146,6 @@ typedef struct {
 
 static game_t g;
 
-static const float PI_F = 3.14159265359f;
-static const float TWO_PI_F = 6.28318530718f;
 static const float WORLD_RADIUS = 2200.0f;
 static const float SHIP_BRAKE = 180.0f;
 static const float SHIP_HOLD_UPGRADE_STEP = 24.0f;
@@ -363,7 +193,7 @@ static const float HAULER_LOAD_TIME = 2.0f;
 static const float STATION_PRODUCTION_RATE = 0.3f;
 static const float UPGRADE_BASE_PRODUCT = 8.0f;
 
-static const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
+const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
     [HULL_CLASS_MINER] = {
         .name = "Mining Cutter",
         .max_hull = 100.0f,
@@ -410,20 +240,6 @@ static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
 static const float STATION_DOCK_APPROACH_OFFSET = 34.0f;
 static const float SHIP_COLLISION_DAMAGE_THRESHOLD = 115.0f;
 static const float SHIP_COLLISION_DAMAGE_SCALE = 0.12f;
-
-static float clampf(float value, float min_value, float max_value) {
-    if (value < min_value) {
-        return min_value;
-    }
-    if (value > max_value) {
-        return max_value;
-    }
-    return value;
-}
-
-static float lerpf(float a, float b, float t) {
-    return a + (b - a) * t;
-}
 
 static uint32_t audio_rng_next(void) {
     g.audio.rng = (g.audio.rng * 1664525u) + 1013904223u;
@@ -675,71 +491,6 @@ static float ui_text_zoom(void) {
 static float ui_text_pos(float pixel_value) {
     // Snap to the debugtext cell grid so scaled layouts don't self-overlap.
     return roundf(pixel_value / (HUD_CELL * ui_text_zoom()));
-}
-
-static vec2 v2(float x, float y) {
-    vec2 result = { x, y };
-    return result;
-}
-
-static vec2 v2_add(vec2 a, vec2 b) {
-    return v2(a.x + b.x, a.y + b.y);
-}
-
-static vec2 v2_sub(vec2 a, vec2 b) {
-    return v2(a.x - b.x, a.y - b.y);
-}
-
-static vec2 v2_scale(vec2 value, float scale) {
-    return v2(value.x * scale, value.y * scale);
-}
-
-static vec2 v2_perp(vec2 value) {
-    return v2(-value.y, value.x);
-}
-
-static float v2_dist_sq(vec2 a, vec2 b) {
-    float dx = a.x - b.x;
-    float dy = a.y - b.y;
-    return (dx * dx) + (dy * dy);
-}
-
-static float v2_dot(vec2 a, vec2 b) {
-    return (a.x * b.x) + (a.y * b.y);
-}
-
-static float v2_cross(vec2 a, vec2 b) {
-    return (a.x * b.y) - (a.y * b.x);
-}
-
-static float v2_len_sq(vec2 value) {
-    return v2_dot(value, value);
-}
-
-static float v2_len(vec2 value) {
-    return sqrtf(v2_len_sq(value));
-}
-
-static vec2 v2_norm(vec2 value) {
-    float len = v2_len(value);
-    if (len > 0.00001f) {
-        return v2_scale(value, 1.0f / len);
-    }
-    return v2(1.0f, 0.0f);
-}
-
-static vec2 v2_from_angle(float angle) {
-    return v2(cosf(angle), sinf(angle));
-}
-
-static float wrap_angle(float angle) {
-    while (angle > PI_F) {
-        angle -= TWO_PI_F;
-    }
-    while (angle < -PI_F) {
-        angle += TWO_PI_F;
-    }
-    return angle;
 }
 
 static uint32_t rng_next(void) {
@@ -4018,6 +3769,8 @@ static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count)
 static void apply_remote_npcs(const NetNpcState* npcs, int count);
 static void apply_remote_mining(uint8_t player_id, uint8_t asteroid_index, float damage);
 static void on_host_assigned(bool is_host);
+static void apply_remote_player_state(const NetPlayerState* state);
+static void apply_remote_player_ship(const NetPlayerShipState* state);
 
 static void init(void) {
     memset(&g, 0, sizeof(g));
@@ -4055,10 +3808,12 @@ static void init(void) {
             "})()");
         if (server_url && server_url[0] != '\0') {
             NetCallbacks cbs = {0};
+            cbs.on_state = apply_remote_player_state;
             cbs.on_asteroids = apply_remote_asteroids;
             cbs.on_npcs = apply_remote_npcs;
             cbs.on_mining_action = apply_remote_mining;
             cbs.on_host_assign = on_host_assigned;
+            cbs.on_player_ship = apply_remote_player_ship;
             g.multiplayer_enabled = net_init(server_url, &cbs);
         }
     }
@@ -4202,6 +3957,36 @@ static void on_host_assigned(bool is_host) {
     printf("[game] host assigned: %s\n", is_host ? "YES" : "NO");
 }
 
+static void apply_remote_player_state(const NetPlayerState* state) {
+    /* Apply server-authoritative position for the local player. */
+    if (state->player_id == net_local_id()) {
+        /* Blend toward server position for smooth correction. */
+        g.ship.pos.x = lerpf(g.ship.pos.x, state->x, 0.3f);
+        g.ship.pos.y = lerpf(g.ship.pos.y, state->y, 0.3f);
+        g.ship.vel.x = state->vx;
+        g.ship.vel.y = state->vy;
+        g.ship.angle = state->angle;
+    }
+}
+
+static void apply_remote_player_ship(const NetPlayerShipState* state) {
+    /* Apply server-authoritative ship state for the local player. */
+    g.ship.hull = state->hull;
+    g.ship.credits = state->credits;
+    g.ship.mining_level = (int)state->mining_level;
+    g.ship.hold_level = (int)state->hold_level;
+    g.ship.tractor_level = (int)state->tractor_level;
+    g.ship.cargo[COMMODITY_FERRITE_ORE] = state->cargo_ferrite;
+    g.ship.cargo[COMMODITY_CUPRITE_ORE] = state->cargo_cuprite;
+    g.ship.cargo[COMMODITY_CRYSTAL_ORE] = state->cargo_crystal;
+    g.docked = state->docked;
+    g.current_station = (int)state->current_station;
+    if (g.docked) {
+        g.in_dock_range = true;
+        g.nearby_station = g.current_station;
+    }
+}
+
 /* --- Multiplayer: draw remote players as colored triangles --- */
 static void draw_remote_players(void) {
     if (!g.multiplayer_enabled) return;
@@ -4320,8 +4105,9 @@ static void frame(void) {
             net_send_state(g.ship.pos.x, g.ship.pos.y,
                            g.ship.vel.x, g.ship.vel.y,
                            g.ship.angle);
-            /* Also send input flags. */
+            /* Also send input flags + station action. */
             uint8_t flags = 0;
+            uint8_t action = 0;
             if (g.thrusting) flags |= NET_INPUT_THRUST;
             if (g.input.key_down[SAPP_KEYCODE_A] || g.input.key_down[SAPP_KEYCODE_LEFT])
                 flags |= NET_INPUT_LEFT;
@@ -4329,7 +4115,21 @@ static void frame(void) {
                 flags |= NET_INPUT_RIGHT;
             if (g.input.key_down[SAPP_KEYCODE_SPACE])
                 flags |= NET_INPUT_FIRE;
-            net_send_input(flags, g.ship.angle);
+            /* One-shot station actions: check key_pressed so they fire once. */
+            if (is_key_pressed(SAPP_KEYCODE_E)) {
+                action = g.docked ? 2 : 1; /* launch or dock */
+            } else if (is_key_pressed(SAPP_KEYCODE_1)) {
+                action = 3; /* sell cargo */
+            } else if (is_key_pressed(SAPP_KEYCODE_2)) {
+                action = 4; /* repair */
+            } else if (is_key_pressed(SAPP_KEYCODE_3)) {
+                action = 5; /* upgrade mining */
+            } else if (is_key_pressed(SAPP_KEYCODE_4)) {
+                action = 6; /* upgrade hold */
+            } else if (is_key_pressed(SAPP_KEYCODE_5)) {
+                action = 7; /* upgrade tractor */
+            }
+            net_send_input(flags, g.ship.angle, action);
         }
 
         /* Host broadcasts world state at ~4 Hz. */
