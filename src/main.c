@@ -54,6 +54,12 @@ typedef enum {
     COMMODITY_COUNT,
 } commodity_t;
 
+enum {
+    INGOT_COUNT = COMMODITY_COUNT - COMMODITY_RAW_ORE_COUNT,
+};
+
+#define INGOT_IDX(c) ((c) - COMMODITY_RAW_ORE_COUNT)
+
 typedef struct {
     float x;
     float y;
@@ -94,7 +100,7 @@ typedef struct {
     float inventory[COMMODITY_COUNT];
     float desired_stock[COMMODITY_COUNT];
     float ore_buffer[COMMODITY_RAW_ORE_COUNT];
-    float ingot_buffer[COMMODITY_COUNT];
+    float ingot_buffer[INGOT_COUNT];
     float product_stock[PRODUCT_COUNT];
     uint32_t services;
 } station_t;
@@ -146,10 +152,6 @@ typedef enum {
     NPC_STATE_TRAVEL_TO_DEST,
     NPC_STATE_UNLOADING,
 } npc_state_t;
-
-enum {
-    INGOT_COUNT = COMMODITY_COUNT - COMMODITY_RAW_ORE_COUNT,
-};
 
 typedef struct {
     bool active;
@@ -853,10 +855,7 @@ static float ship_total_cargo(void) {
 
 static float ship_raw_ore_total(void) {
     float total = 0.0f;
-    for (int i = 0; i < COMMODITY_COUNT; i++) {
-        if (!commodity_is_raw_ore((commodity_t)i)) {
-            continue;
-        }
+    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
         total += g.ship.cargo[i];
     }
     return total;
@@ -1283,6 +1282,14 @@ static const char* station_role_fit_title(station_role_t role) {
     }
 }
 
+static bool can_afford_upgrade(const station_t* station, ship_upgrade_t upgrade, uint32_t service, int credit_cost) {
+    if (!station || !(station->services & service)) return false;
+    if (ship_upgrade_maxed(upgrade)) return false;
+    if (g.ship.credits + 0.01f < (float)credit_cost) return false;
+    if (station->product_stock[upgrade_required_product(upgrade)] + 0.01f < upgrade_product_cost(upgrade)) return false;
+    return true;
+}
+
 static void build_station_ui_state(station_ui_state_t* ui) {
     memset(ui, 0, sizeof(*ui));
     ui->station = current_station_ptr();
@@ -1301,9 +1308,9 @@ static void build_station_ui_state(station_ui_state_t* ui) {
     ui->tractor_cost = ship_upgrade_cost(SHIP_UPGRADE_TRACTOR);
     ui->can_sell = station_has_service(STATION_SERVICE_ORE_BUYER) && (ship_raw_ore_total() > 0.01f);
     ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (station_repair_cost() > 0.0f) && (g.ship.credits + 0.01f >= station_repair_cost());
-    ui->can_upgrade_mining = station_has_service(STATION_SERVICE_UPGRADE_LASER) && !ship_upgrade_maxed(SHIP_UPGRADE_MINING) && (g.ship.credits + 0.01f >= (float)ui->mining_cost) && (ui->station->product_stock[upgrade_required_product(SHIP_UPGRADE_MINING)] + 0.01f >= upgrade_product_cost(SHIP_UPGRADE_MINING));
-    ui->can_upgrade_hold = station_has_service(STATION_SERVICE_UPGRADE_HOLD) && !ship_upgrade_maxed(SHIP_UPGRADE_HOLD) && (g.ship.credits + 0.01f >= (float)ui->hold_cost) && (ui->station->product_stock[upgrade_required_product(SHIP_UPGRADE_HOLD)] + 0.01f >= upgrade_product_cost(SHIP_UPGRADE_HOLD));
-    ui->can_upgrade_tractor = station_has_service(STATION_SERVICE_UPGRADE_TRACTOR) && !ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR) && (g.ship.credits + 0.01f >= (float)ui->tractor_cost) && (ui->station->product_stock[upgrade_required_product(SHIP_UPGRADE_TRACTOR)] + 0.01f >= upgrade_product_cost(SHIP_UPGRADE_TRACTOR));
+    ui->can_upgrade_mining = can_afford_upgrade(ui->station, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, ui->mining_cost);
+    ui->can_upgrade_hold = can_afford_upgrade(ui->station, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, ui->hold_cost);
+    ui->can_upgrade_tractor = can_afford_upgrade(ui->station, SHIP_UPGRADE_TRACTOR, STATION_SERVICE_UPGRADE_TRACTOR, ui->tractor_cost);
 }
 
 static void format_station_header_badge(const station_ui_state_t* ui, char* text, size_t text_size) {
@@ -1357,7 +1364,7 @@ static void format_station_market_detail(const station_ui_state_t* ui, bool comp
             snprintf(text, text_size, "Value %d cr // Stock %s", ui->payout, stock);
         }
     } else if (ui->station->role == STATION_ROLE_YARD) {
-        int buf = (int)lroundf(ui->station->ingot_buffer[COMMODITY_FRAME_INGOT]);
+        int buf = (int)lroundf(ui->station->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)]);
         int prod = (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]);
         snprintf(text, text_size, "Ingots %d // Frames %d", buf, prod);
     } else {
@@ -2600,7 +2607,7 @@ static void draw_station_services(const station_ui_state_t* ui) {
     market_x = panel_x + 18.0f;
     services_x = panel_x + 18.0f;
     card_gap = compact ? 4.0f : 6.0f;
-    card_h = compact ? 18.0f : 28.0f;
+    card_h = compact ? 18.0f : 24.0f;
 
     if (show_fit_panel) {
         fit_w = 180.0f;
@@ -3539,6 +3546,12 @@ static float npc_total_cargo(const npc_ship_t* npc) {
     return total;
 }
 
+static bool npc_target_valid(const npc_ship_t* npc) {
+    if (npc->target_asteroid < 0) return false;
+    const asteroid_t* a = &g.asteroids[npc->target_asteroid];
+    return a->active && a->tier != ASTEROID_TIER_S;
+}
+
 static int npc_find_mineable_asteroid(const npc_ship_t* npc) {
     int best = -1;
     float best_dist_sq = 1e18f;
@@ -3626,7 +3639,7 @@ static void step_hauler(npc_ship_t* npc, int n, float dt) {
             if (npc->state_timer <= 0.0f) {
                 station_t* dest = &g.stations[npc->dest_station];
                 for (int i = 0; i < INGOT_COUNT; i++) {
-                    dest->ingot_buffer[COMMODITY_RAW_ORE_COUNT + i] += npc->ingots[i];
+                    dest->ingot_buffer[i] += npc->ingots[i];
                     npc->ingots[i] = 0.0f;
                 }
                 npc->state = NPC_STATE_RETURN_TO_STATION;
@@ -3686,8 +3699,7 @@ static void step_npc_ships(float dt) {
             }
 
             case NPC_STATE_TRAVEL_TO_ASTEROID: {
-                if (npc->target_asteroid < 0 || !g.asteroids[npc->target_asteroid].active ||
-                    g.asteroids[npc->target_asteroid].tier == ASTEROID_TIER_S) {
+                if (!npc_target_valid(npc)) {
                     int target = npc_find_mineable_asteroid(npc);
                     if (target >= 0) {
                         npc->target_asteroid = target;
@@ -3709,8 +3721,7 @@ static void step_npc_ships(float dt) {
             }
 
             case NPC_STATE_MINING: {
-                if (npc->target_asteroid < 0 || !g.asteroids[npc->target_asteroid].active ||
-                    g.asteroids[npc->target_asteroid].tier == ASTEROID_TIER_S) {
+                if (!npc_target_valid(npc)) {
                     if (npc_total_cargo(npc) > 0.5f) {
                         npc->state = NPC_STATE_RETURN_TO_STATION;
                     } else {
@@ -3726,10 +3737,11 @@ static void step_npc_ships(float dt) {
                 }
 
                 asteroid_t* asteroid = &g.asteroids[npc->target_asteroid];
-                float dist = sqrtf(v2_dist_sq(npc->pos, asteroid->pos));
+                float dist_sq = v2_dist_sq(npc->pos, asteroid->pos);
                 float standoff = asteroid->radius + 60.0f;
+                float approach = standoff + 20.0f;
 
-                if (dist > standoff + 20.0f) {
+                if (dist_sq > approach * approach) {
                     npc_steer_toward(npc, asteroid->pos, NPC_ACCEL, NPC_TURN_SPEED, dt);
                     npc_apply_physics(npc, NPC_DRAG, dt);
                     break;
@@ -3743,7 +3755,7 @@ static void step_npc_ships(float dt) {
                 else if (diff < -max_turn) diff = -max_turn;
                 npc->angle = wrap_angle(npc->angle + diff);
 
-                if (dist < standoff) {
+                if (dist_sq < standoff * standoff) {
                     vec2 away = v2_norm(v2_sub(npc->pos, asteroid->pos));
                     npc->vel = v2_add(npc->vel, v2_scale(away, NPC_ACCEL * 0.5f * dt));
                 }
@@ -3847,23 +3859,23 @@ static void step_station_production(float dt) {
         station_t* station = &g.stations[s];
 
         if (station->role == STATION_ROLE_YARD) {
-            float buf = station->ingot_buffer[COMMODITY_FRAME_INGOT];
+            float buf = station->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)];
             if (buf > 0.01f) {
                 float consume = fminf(buf, STATION_PRODUCTION_RATE * dt);
-                station->ingot_buffer[COMMODITY_FRAME_INGOT] -= consume;
+                station->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] -= consume;
                 station->product_stock[PRODUCT_FRAME] += consume;
             }
         } else if (station->role == STATION_ROLE_BEAMWORKS) {
-            float buf_co = station->ingot_buffer[COMMODITY_CONDUCTOR_INGOT];
+            float buf_co = station->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)];
             if (buf_co > 0.01f) {
                 float consume = fminf(buf_co, STATION_PRODUCTION_RATE * dt);
-                station->ingot_buffer[COMMODITY_CONDUCTOR_INGOT] -= consume;
+                station->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)] -= consume;
                 station->product_stock[PRODUCT_LASER_MODULE] += consume;
             }
-            float buf_ln = station->ingot_buffer[COMMODITY_LENS_INGOT];
+            float buf_ln = station->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)];
             if (buf_ln > 0.01f) {
                 float consume = fminf(buf_ln, STATION_PRODUCTION_RATE * dt);
-                station->ingot_buffer[COMMODITY_LENS_INGOT] -= consume;
+                station->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)] -= consume;
                 station->product_stock[PRODUCT_TRACTOR_MODULE] += consume;
             }
         }
@@ -3964,7 +3976,7 @@ static void init(void) {
         const char* server_url = emscripten_run_script_string(
             "(() => {"
             "  const p = new URLSearchParams(window.location.search);"
-            "  return p.get('server') || '';"
+            "  return p.get('server') || 'ws://signal-relay-84734004.us-east-1.elb.amazonaws.com/ws';"
             "})()");
         if (server_url && server_url[0] != '\0') {
             g.multiplayer_enabled = net_init(server_url, NULL);
