@@ -7,6 +7,7 @@
 #include "types.h"
 #include "commodity.h"
 #include "ship.h"
+#include "economy.h"
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -325,6 +326,115 @@ TEST(test_product_name) {
     ASSERT_STR_EQ(product_name(PRODUCT_TRACTOR_MODULE), "Tractor Modules");
 }
 
+/* ---- Economy Tests ---- */
+
+TEST(test_refinery_production_smelts_ore) {
+    station_t station = {0};
+    station.role = STATION_ROLE_REFINERY;
+    station.ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f;
+    step_refinery_production(&station, 1, 1.0f);
+    ASSERT(station.ore_buffer[COMMODITY_FERRITE_ORE] < 10.0f);
+    ASSERT(station.inventory[COMMODITY_FRAME_INGOT] > 0.0f);
+}
+
+TEST(test_refinery_production_empty_buffer_noop) {
+    station_t station = {0};
+    station.role = STATION_ROLE_REFINERY;
+    step_refinery_production(&station, 1, 1.0f);
+    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_FRAME_INGOT], 0.0f, 0.001f);
+}
+
+TEST(test_refinery_skips_non_refinery) {
+    station_t station = {0};
+    station.role = STATION_ROLE_YARD;
+    station.ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f;
+    step_refinery_production(&station, 1, 1.0f);
+    ASSERT_EQ_FLOAT(station.ore_buffer[COMMODITY_FERRITE_ORE], 10.0f, 0.001f);
+}
+
+TEST(test_station_production_yard_makes_frames) {
+    station_t station = {0};
+    station.role = STATION_ROLE_YARD;
+    station.ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] = 5.0f;
+    step_station_production(&station, 1, 1.0f);
+    ASSERT(station.ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] < 5.0f);
+    ASSERT(station.product_stock[PRODUCT_FRAME] > 0.0f);
+}
+
+TEST(test_station_production_beamworks_makes_modules) {
+    station_t station = {0};
+    station.role = STATION_ROLE_BEAMWORKS;
+    station.ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)] = 5.0f;
+    station.ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)] = 5.0f;
+    step_station_production(&station, 1, 1.0f);
+    ASSERT(station.product_stock[PRODUCT_LASER_MODULE] > 0.0f);
+    ASSERT(station.product_stock[PRODUCT_TRACTOR_MODULE] > 0.0f);
+}
+
+TEST(test_station_cargo_sale_value) {
+    ship_t ship = {0};
+    station_t station = {0};
+    ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
+    station.buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    ASSERT_EQ_FLOAT(station_cargo_sale_value(&ship, &station), 100.0f, 0.01f);
+}
+
+TEST(test_station_cargo_sale_value_null_station) {
+    ship_t ship = {0};
+    ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
+    ASSERT_EQ_FLOAT(station_cargo_sale_value(&ship, NULL), 0.0f, 0.01f);
+}
+
+TEST(test_station_repair_cost_no_damage) {
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.hull = 100.0f;
+    station_t station = {0};
+    ASSERT_EQ_FLOAT(station_repair_cost(&ship, &station), 0.0f, 0.01f);
+}
+
+TEST(test_station_repair_cost_with_damage) {
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.hull = 50.0f;
+    station_t station = {0};
+    float cost = station_repair_cost(&ship, &station);
+    ASSERT(cost > 0.0f);
+}
+
+TEST(test_can_afford_upgrade_all_conditions) {
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.credits = 10000.0f;
+    station_t station = {0};
+    station.services = STATION_SERVICE_UPGRADE_HOLD;
+    station.product_stock[PRODUCT_FRAME] = 100.0f;
+    int cost = ship_upgrade_cost(&ship, SHIP_UPGRADE_HOLD);
+    ASSERT(can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost));
+}
+
+TEST(test_can_afford_upgrade_no_credits) {
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.credits = 0.0f;
+    station_t station = {0};
+    station.services = STATION_SERVICE_UPGRADE_HOLD;
+    station.product_stock[PRODUCT_FRAME] = 100.0f;
+    int cost = ship_upgrade_cost(&ship, SHIP_UPGRADE_HOLD);
+    ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost));
+}
+
+TEST(test_can_afford_upgrade_no_product) {
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.credits = 10000.0f;
+    station_t station = {0};
+    station.services = STATION_SERVICE_UPGRADE_HOLD;
+    station.product_stock[PRODUCT_FRAME] = 0.0f;
+    int cost = ship_upgrade_cost(&ship, SHIP_UPGRADE_HOLD);
+    ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost));
+}
+
 /* ---- Runner ---- */
 
 int main(void) {
@@ -364,6 +474,20 @@ int main(void) {
     RUN(test_upgrade_product_cost_scales_with_level);
     RUN(test_npc_hull_def);
     RUN(test_product_name);
+
+    printf("\nEconomy tests:\n");
+    RUN(test_refinery_production_smelts_ore);
+    RUN(test_refinery_production_empty_buffer_noop);
+    RUN(test_refinery_skips_non_refinery);
+    RUN(test_station_production_yard_makes_frames);
+    RUN(test_station_production_beamworks_makes_modules);
+    RUN(test_station_cargo_sale_value);
+    RUN(test_station_cargo_sale_value_null_station);
+    RUN(test_station_repair_cost_no_damage);
+    RUN(test_station_repair_cost_with_damage);
+    RUN(test_can_afford_upgrade_all_conditions);
+    RUN(test_can_afford_upgrade_no_credits);
+    RUN(test_can_afford_upgrade_no_product);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
