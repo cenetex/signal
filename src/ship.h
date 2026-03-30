@@ -3,14 +3,6 @@
 
 #include "types.h"
 
-static const float SHIP_HOLD_UPGRADE_STEP = 24.0f;
-static const float SHIP_MINING_UPGRADE_STEP = 7.0f;
-static const float SHIP_TRACTOR_UPGRADE_STEP = 24.0f;
-static const float SHIP_BASE_COLLECT_RADIUS = 30.0f;
-static const float SHIP_COLLECT_UPGRADE_STEP = 5.0f;
-static const float UPGRADE_BASE_PRODUCT = 8.0f;
-static const int SHIP_UPGRADE_MAX_LEVEL = 4;
-
 const hull_def_t* ship_hull_def(const ship_t* ship);
 const hull_def_t* npc_hull_def(const npc_ship_t* npc);
 

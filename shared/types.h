@@ -207,4 +207,20 @@ typedef struct {
     float mix_buffer[AUDIO_MIX_FRAMES * 2];
 } audio_state_t;
 
+/* Economy constants (shared between client and server) */
+static const float REFINERY_HOPPER_CAPACITY = 100.0f;
+static const float REFINERY_BASE_SMELT_RATE = 0.5f;
+static const int REFINERY_MAX_FURNACES = 3;
+static const float STATION_PRODUCTION_RATE = 0.3f;
+static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
+
+/* Ship upgrade constants (shared between client and server) */
+static const float SHIP_HOLD_UPGRADE_STEP = 24.0f;
+static const float SHIP_MINING_UPGRADE_STEP = 7.0f;
+static const float SHIP_TRACTOR_UPGRADE_STEP = 24.0f;
+static const float SHIP_BASE_COLLECT_RADIUS = 30.0f;
+static const float SHIP_COLLECT_UPGRADE_STEP = 5.0f;
+static const float UPGRADE_BASE_PRODUCT = 8.0f;
+static const int SHIP_UPGRADE_MAX_LEVEL = 4;
+
 #endif
