@@ -10,7 +10,9 @@
 #define SOKOL_GFX_IMPL
 #define SOKOL_GL_IMPL
 #define SOKOL_DEBUGTEXT_IMPL
+#define SOKOL_AUDIO_IMPL
 #include "sokol_app.h"
+#include "sokol_audio.h"
 #include "sokol_gfx.h"
 #include "sokol_glue.h"
 #include "sokol_gl.h"
@@ -21,12 +23,17 @@ enum {
     KEY_COUNT = 512,
     MAX_ASTEROIDS = 48,
     MAX_STARS = 120,
+    MAX_STATIONS = 3,
+    AUDIO_VOICE_COUNT = 24,
+    AUDIO_MIX_FRAMES = 512,
 };
 
 enum {
-    STATION_SERVICE_MARKET = 1 << 0,
+    STATION_SERVICE_ORE_BUYER = 1 << 0,
     STATION_SERVICE_REPAIR = 1 << 1,
-    STATION_SERVICE_OUTFIT = 1 << 2,
+    STATION_SERVICE_UPGRADE_LASER = 1 << 2,
+    STATION_SERVICE_UPGRADE_HOLD = 1 << 3,
+    STATION_SERVICE_UPGRADE_TRACTOR = 1 << 4,
 };
 
 typedef struct {
@@ -46,8 +53,15 @@ typedef struct {
     int tractor_level;
 } ship_t;
 
+typedef enum {
+    STATION_ROLE_REFINERY,
+    STATION_ROLE_YARD,
+    STATION_ROLE_BEAMWORKS,
+} station_role_t;
+
 typedef struct {
     char name[32];
+    station_role_t role;
     vec2 pos;
     float radius;
     float dock_radius;
@@ -116,13 +130,45 @@ typedef struct {
     float accumulator;
 } runtime_state_t;
 
+typedef enum {
+    AUDIO_WAVE_SINE,
+    AUDIO_WAVE_TRIANGLE,
+    AUDIO_WAVE_SQUARE,
+    AUDIO_WAVE_NOISE,
+} audio_wave_t;
+
+typedef struct {
+    bool active;
+    audio_wave_t wave;
+    float phase;
+    float frequency;
+    float sweep;
+    float gain;
+    float pan;
+    float duration;
+    float age;
+    float noise_mix;
+} audio_voice_t;
+
+typedef struct {
+    bool valid;
+    uint32_t rng;
+    int sample_rate;
+    int channels;
+    float mining_tick_cooldown;
+    audio_voice_t voices[AUDIO_VOICE_COUNT];
+    float mix_buffer[AUDIO_MIX_FRAMES * 2];
+} audio_state_t;
+
 typedef struct {
     input_state_t input;
     ship_t ship;
-    station_t station;
+    station_t stations[MAX_STATIONS];
     asteroid_t asteroids[MAX_ASTEROIDS];
     star_t stars[MAX_STARS];
     uint32_t rng;
+    int current_station;
+    int nearby_station;
     int hover_asteroid;
     bool beam_active;
     bool beam_hit;
@@ -141,6 +187,7 @@ typedef struct {
     float time;
     float field_spawn_timer;
     runtime_state_t runtime;
+    audio_state_t audio;
     sg_pass_action pass_action;
 } game_t;
 
@@ -162,7 +209,16 @@ static const float SHIP_BASE_MINING_RATE = 28.0f;
 static const float SHIP_MINING_UPGRADE_STEP = 7.0f;
 static const float STATION_DEFAULT_ORE_PRICE = 12.0f;
 static const float HUD_MARGIN = 28.0f;
+static const float HUD_TOP_PANEL_WIDTH = 308.0f;
+static const float HUD_TOP_PANEL_HEIGHT = 84.0f;
+static const float HUD_BOTTOM_PANEL_HEIGHT = 32.0f;
+static const float STATION_PANEL_WIDTH = 560.0f;
+static const float STATION_PANEL_HEIGHT = 320.0f;
 static const float HUD_CELL = 8.0f;
+static const float UI_SCALE_TIGHT = 1.85f;
+static const float UI_SCALE_COMPACT = 1.60f;
+static const float UI_SCALE_DEFAULT = 1.42f;
+static const float UI_SCALE_WIDE = 1.28f;
 static const float SIM_DT = 1.0f / 120.0f;
 static const int MAX_SIM_STEPS_PER_FRAME = 8;
 static const int FIELD_ASTEROID_TARGET = 16;
@@ -177,7 +233,7 @@ static const float SHIP_COLLECT_UPGRADE_STEP = 5.0f;
 static const float FRAGMENT_TRACTOR_ACCEL = 380.0f;
 static const float FRAGMENT_MAX_SPEED = 210.0f;
 static const float COLLECTION_FEEDBACK_TIME = 1.1f;
-static const int SHIP_UPGRADE_MAX_LEVEL = 3;
+static const int SHIP_UPGRADE_MAX_LEVEL = 4;
 static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
 static const float STATION_DOCK_APPROACH_OFFSET = 34.0f;
 static const float SHIP_COLLISION_DAMAGE_THRESHOLD = 115.0f;
@@ -195,6 +251,258 @@ static float clampf(float value, float min_value, float max_value) {
 
 static float lerpf(float a, float b, float t) {
     return a + (b - a) * t;
+}
+
+static uint32_t audio_rng_next(void) {
+    g.audio.rng = (g.audio.rng * 1664525u) + 1013904223u;
+    return g.audio.rng;
+}
+
+static float audio_randf(void) {
+    return (float)((audio_rng_next() >> 8) & 0x00FFFFFFu) / 16777215.0f;
+}
+
+static float audio_rand_bipolar(void) {
+    return (audio_randf() * 2.0f) - 1.0f;
+}
+
+static void audio_clear_voices(void) {
+    memset(g.audio.voices, 0, sizeof(g.audio.voices));
+    g.audio.mining_tick_cooldown = 0.0f;
+}
+
+static void audio_play_voice(audio_wave_t wave, float frequency, float sweep, float gain, float duration, float pan, float noise_mix) {
+    if (!g.audio.valid) {
+        return;
+    }
+
+    for (int i = 0; i < AUDIO_VOICE_COUNT; i++) {
+        if (g.audio.voices[i].active) {
+            continue;
+        }
+        g.audio.voices[i] = (audio_voice_t){
+            .active = true,
+            .wave = wave,
+            .phase = audio_randf(),
+            .frequency = frequency,
+            .sweep = sweep,
+            .gain = gain,
+            .pan = clampf(pan, -1.0f, 1.0f),
+            .duration = fmaxf(duration, 0.02f),
+            .age = 0.0f,
+            .noise_mix = clampf(noise_mix, 0.0f, 1.0f),
+        };
+        return;
+    }
+}
+
+static float audio_sample_wave(audio_wave_t wave, float phase) {
+    float wrapped = phase - floorf(phase);
+    switch (wave) {
+        case AUDIO_WAVE_SINE:
+            return sinf(wrapped * TWO_PI_F);
+        case AUDIO_WAVE_TRIANGLE:
+            return 1.0f - (4.0f * fabsf(wrapped - 0.5f));
+        case AUDIO_WAVE_SQUARE:
+            return wrapped < 0.5f ? 1.0f : -1.0f;
+        case AUDIO_WAVE_NOISE:
+            return audio_rand_bipolar();
+        default:
+            return 0.0f;
+    }
+}
+
+static void audio_play_mining_tick(void) {
+    if ((g.audio.mining_tick_cooldown > 0.0f) || !g.audio.valid) {
+        return;
+    }
+    g.audio.mining_tick_cooldown = 0.06f;
+    audio_play_voice(AUDIO_WAVE_SQUARE, 1080.0f, -5200.0f, 0.035f, 0.035f, audio_rand_bipolar() * 0.12f, 0.08f);
+    audio_play_voice(AUDIO_WAVE_TRIANGLE, 720.0f, -1800.0f, 0.022f, 0.05f, 0.0f, 0.0f);
+}
+
+static void audio_play_fracture(asteroid_tier_t parent_tier) {
+    static const float base_freqs[ASTEROID_TIER_COUNT] = { 180.0f, 250.0f, 340.0f, 420.0f };
+    float base = base_freqs[parent_tier < ASTEROID_TIER_COUNT ? parent_tier : ASTEROID_TIER_L];
+    audio_play_voice(AUDIO_WAVE_TRIANGLE, base, -base * 0.65f, 0.10f, 0.18f, audio_rand_bipolar() * 0.24f, 0.15f);
+    audio_play_voice(AUDIO_WAVE_NOISE, base * 0.7f, -base * 0.45f, 0.05f, 0.12f, 0.0f, 1.0f);
+}
+
+static void audio_play_pickup(float ore, int fragments) {
+    float gain = clampf(0.04f + (ore * 0.0032f), 0.04f, 0.11f);
+    float pitch = 540.0f + clampf(ore * 14.0f, 0.0f, 220.0f) + (float)(fragments * 24);
+    audio_play_voice(AUDIO_WAVE_SINE, pitch, 920.0f, gain, 0.09f, audio_rand_bipolar() * 0.35f, 0.0f);
+}
+
+static void audio_play_dock(void) {
+    audio_play_voice(AUDIO_WAVE_SINE, 310.0f, 580.0f, 0.08f, 0.16f, -0.12f, 0.0f);
+    audio_play_voice(AUDIO_WAVE_SINE, 470.0f, 380.0f, 0.06f, 0.18f, 0.12f, 0.0f);
+}
+
+static void audio_play_launch(void) {
+    audio_play_voice(AUDIO_WAVE_TRIANGLE, 620.0f, -980.0f, 0.06f, 0.14f, -0.10f, 0.0f);
+    audio_play_voice(AUDIO_WAVE_SINE, 420.0f, -420.0f, 0.04f, 0.18f, 0.10f, 0.0f);
+}
+
+static void audio_play_sale(void) {
+    audio_play_voice(AUDIO_WAVE_SINE, 420.0f, 440.0f, 0.07f, 0.15f, -0.18f, 0.0f);
+    audio_play_voice(AUDIO_WAVE_SINE, 630.0f, 520.0f, 0.06f, 0.17f, 0.18f, 0.0f);
+}
+
+static void audio_play_repair(void) {
+    audio_play_voice(AUDIO_WAVE_TRIANGLE, 240.0f, 260.0f, 0.06f, 0.18f, 0.0f, 0.0f);
+    audio_play_voice(AUDIO_WAVE_SINE, 510.0f, -120.0f, 0.03f, 0.20f, 0.0f, 0.0f);
+}
+
+static void audio_play_upgrade(ship_upgrade_t upgrade) {
+    float root = 420.0f;
+    switch (upgrade) {
+        case SHIP_UPGRADE_MINING:
+            root = 520.0f;
+            break;
+        case SHIP_UPGRADE_HOLD:
+            root = 430.0f;
+            break;
+        case SHIP_UPGRADE_TRACTOR:
+            root = 610.0f;
+            break;
+        case SHIP_UPGRADE_COUNT:
+        default:
+            break;
+    }
+    audio_play_voice(AUDIO_WAVE_SINE, root, 320.0f, 0.06f, 0.12f, -0.12f, 0.0f);
+    audio_play_voice(AUDIO_WAVE_SINE, root * 1.25f, 380.0f, 0.05f, 0.15f, 0.12f, 0.0f);
+    audio_play_voice(AUDIO_WAVE_SINE, root * 1.5f, 480.0f, 0.04f, 0.18f, 0.0f, 0.0f);
+}
+
+static void audio_play_damage(float damage) {
+    float gain = clampf(0.035f + (damage * 0.0018f), 0.04f, 0.10f);
+    audio_play_voice(AUDIO_WAVE_NOISE, 180.0f, -80.0f, gain, 0.12f, audio_rand_bipolar() * 0.22f, 1.0f);
+    audio_play_voice(AUDIO_WAVE_SQUARE, 130.0f, -160.0f, gain * 0.5f, 0.10f, 0.0f, 0.15f);
+}
+
+static void audio_step(float dt) {
+    if (g.audio.mining_tick_cooldown > 0.0f) {
+        g.audio.mining_tick_cooldown = fmaxf(0.0f, g.audio.mining_tick_cooldown - dt);
+    }
+}
+
+static void audio_generate_stream(void) {
+    if (!g.audio.valid || !saudio_isvalid()) {
+        return;
+    }
+
+    int channels = saudio_channels();
+    int sample_rate = saudio_sample_rate();
+    if ((channels < 1) || (channels > 2) || (sample_rate <= 0)) {
+        return;
+    }
+
+    g.audio.channels = channels;
+    g.audio.sample_rate = sample_rate;
+    const float sample_dt = 1.0f / (float)sample_rate;
+
+    int frames_requested = saudio_expect();
+    while (frames_requested > 0) {
+        int frames_to_mix = frames_requested > AUDIO_MIX_FRAMES ? AUDIO_MIX_FRAMES : frames_requested;
+        memset(g.audio.mix_buffer, 0, sizeof(float) * (size_t)(frames_to_mix * channels));
+
+        for (int frame_index = 0; frame_index < frames_to_mix; frame_index++) {
+            float left = 0.0f;
+            float right = 0.0f;
+
+            for (int voice_index = 0; voice_index < AUDIO_VOICE_COUNT; voice_index++) {
+                audio_voice_t* voice = &g.audio.voices[voice_index];
+                if (!voice->active) {
+                    continue;
+                }
+
+                if (voice->age >= voice->duration) {
+                    voice->active = false;
+                    continue;
+                }
+
+                float attack = clampf(voice->age / 0.01f, 0.0f, 1.0f);
+                float release = 1.0f - clampf(voice->age / voice->duration, 0.0f, 1.0f);
+                float envelope = voice->gain * attack * release * release;
+                float sample = audio_sample_wave(voice->wave, voice->phase);
+                if ((voice->noise_mix > 0.0f) && (voice->wave != AUDIO_WAVE_NOISE)) {
+                    sample = lerpf(sample, audio_rand_bipolar(), voice->noise_mix);
+                }
+                sample *= envelope;
+
+                if (channels == 1) {
+                    left += sample;
+                } else {
+                    float pan = clampf(voice->pan, -1.0f, 1.0f);
+                    float left_gain = sqrtf(0.5f * (1.0f - pan));
+                    float right_gain = sqrtf(0.5f * (1.0f + pan));
+                    left += sample * left_gain;
+                    right += sample * right_gain;
+                }
+
+                voice->frequency = fmaxf(45.0f, voice->frequency + (voice->sweep * sample_dt));
+                voice->phase += voice->frequency * sample_dt;
+                voice->phase -= floorf(voice->phase);
+                voice->age += sample_dt;
+            }
+
+            if (channels == 1) {
+                g.audio.mix_buffer[frame_index] = clampf(left * 0.75f, -1.0f, 1.0f);
+            } else {
+                int base = frame_index * channels;
+                g.audio.mix_buffer[base + 0] = clampf(left * 0.75f, -1.0f, 1.0f);
+                g.audio.mix_buffer[base + 1] = clampf(right * 0.75f, -1.0f, 1.0f);
+            }
+        }
+
+        saudio_push(g.audio.mix_buffer, frames_to_mix);
+        frames_requested = saudio_expect();
+    }
+}
+
+static float ui_window_width(void) {
+    return sapp_widthf() / fmaxf(1.0f, sapp_dpi_scale());
+}
+
+static float ui_window_height(void) {
+    return sapp_heightf() / fmaxf(1.0f, sapp_dpi_scale());
+}
+
+static float ui_scale(void) {
+    float width = ui_window_width();
+    float height = ui_window_height();
+    if ((width < 900.0f) || (height < 620.0f)) {
+        return UI_SCALE_TIGHT;
+    }
+    if ((width < 1280.0f) || (height < 780.0f)) {
+        return UI_SCALE_COMPACT;
+    }
+    if ((width > 1800.0f) && (height > 980.0f)) {
+        return UI_SCALE_WIDE;
+    }
+    return UI_SCALE_DEFAULT;
+}
+
+static float ui_screen_width(void) {
+    return ui_window_width() / ui_scale();
+}
+
+static float ui_screen_height(void) {
+    return ui_window_height() / ui_scale();
+}
+
+static bool ui_is_compact(void) {
+    return (ui_screen_width() < 900.0f) || (ui_screen_height() < 540.0f);
+}
+
+static float ui_text_zoom(void) {
+    return 1.0f;
+}
+
+static float ui_text_pos(float pixel_value) {
+    // Snap to the debugtext cell grid so scaled layouts don't self-overlap.
+    return roundf(pixel_value / (HUD_CELL * ui_text_zoom()));
 }
 
 static vec2 v2(float x, float y) {
@@ -365,13 +673,119 @@ static bool ship_upgrade_maxed(ship_upgrade_t upgrade) {
 
 static int ship_upgrade_cost(ship_upgrade_t upgrade) {
     int level = ship_upgrade_level(upgrade);
+    int tier = level + 1;
     switch (upgrade) {
         case SHIP_UPGRADE_MINING:
-            return 110 + (level * 120);
+            return 180 + (tier * 110) + (level * level * 120);
         case SHIP_UPGRADE_HOLD:
-            return 135 + (level * 145);
+            return 210 + (tier * 120) + (level * level * 135);
         case SHIP_UPGRADE_TRACTOR:
-            return 95 + (level * 125);
+            return 160 + (tier * 100) + (level * level * 110);
+        case SHIP_UPGRADE_COUNT:
+        default:
+            return 0;
+    }
+}
+
+static const station_t* station_at(int station_index) {
+    if ((station_index < 0) || (station_index >= MAX_STATIONS)) {
+        return NULL;
+    }
+    return &g.stations[station_index];
+}
+
+static const station_t* current_station_ptr(void) {
+    return station_at(g.current_station);
+}
+
+static const station_t* nearby_station_ptr(void) {
+    return station_at(g.nearby_station);
+}
+
+static int nearest_station_index(vec2 pos) {
+    float best_distance_sq = 0.0f;
+    int best_index = -1;
+
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        float distance_sq = v2_dist_sq(pos, g.stations[i].pos);
+        if ((best_index < 0) || (distance_sq < best_distance_sq)) {
+            best_distance_sq = distance_sq;
+            best_index = i;
+        }
+    }
+
+    return best_index;
+}
+
+static const station_t* navigation_station_ptr(void) {
+    if (g.docked) {
+        return current_station_ptr();
+    }
+    if (g.nearby_station >= 0) {
+        return nearby_station_ptr();
+    }
+    return station_at(nearest_station_index(g.ship.pos));
+}
+
+static const char* station_role_name(station_role_t role) {
+    switch (role) {
+        case STATION_ROLE_REFINERY:
+            return "Refinery";
+        case STATION_ROLE_YARD:
+            return "Yard";
+        case STATION_ROLE_BEAMWORKS:
+            return "Beamworks";
+        default:
+            return "Station";
+    }
+}
+
+static const char* station_role_hub_label(station_role_t role) {
+    switch (role) {
+        case STATION_ROLE_REFINERY:
+            return "REFINERY // ore intake";
+        case STATION_ROLE_YARD:
+            return "YARD // frame bay";
+        case STATION_ROLE_BEAMWORKS:
+            return "BEAMWORKS // field bench";
+        default:
+            return "STATION";
+    }
+}
+
+static void station_role_color(station_role_t role, float* r, float* g0, float* b) {
+    switch (role) {
+        case STATION_ROLE_REFINERY:
+            *r = 0.34f;
+            *g0 = 0.96f;
+            *b = 0.76f;
+            break;
+        case STATION_ROLE_YARD:
+            *r = 0.98f;
+            *g0 = 0.74f;
+            *b = 0.30f;
+            break;
+        case STATION_ROLE_BEAMWORKS:
+            *r = 0.42f;
+            *g0 = 0.86f;
+            *b = 1.0f;
+            break;
+        default:
+            *r = 0.45f;
+            *g0 = 0.85f;
+            *b = 1.0f;
+            break;
+    }
+}
+
+static uint32_t station_upgrade_service(ship_upgrade_t upgrade) {
+    switch (upgrade) {
+        case SHIP_UPGRADE_MINING:
+            return STATION_SERVICE_UPGRADE_LASER;
+        case SHIP_UPGRADE_HOLD:
+            return STATION_SERVICE_UPGRADE_HOLD;
+        case SHIP_UPGRADE_TRACTOR:
+            return STATION_SERVICE_UPGRADE_TRACTOR;
         case SHIP_UPGRADE_COUNT:
         default:
             return 0;
@@ -379,15 +793,21 @@ static int ship_upgrade_cost(ship_upgrade_t upgrade) {
 }
 
 static vec2 station_dock_anchor(void) {
-    return v2_add(g.station.pos, v2(0.0f, -(g.station.radius + SHIP_RADIUS + STATION_DOCK_APPROACH_OFFSET)));
+    const station_t* station = current_station_ptr();
+    if (station == NULL) {
+        return v2(0.0f, 0.0f);
+    }
+    return v2_add(station->pos, v2(0.0f, -(station->radius + SHIP_RADIUS + STATION_DOCK_APPROACH_OFFSET)));
 }
 
 static bool station_has_service(uint32_t service) {
-    return (g.station.services & service) != 0;
+    const station_t* station = current_station_ptr();
+    return (station != NULL) && ((station->services & service) != 0);
 }
 
 static float station_cargo_sale_value(void) {
-    return g.ship.cargo * g.station.ore_price;
+    const station_t* station = current_station_ptr();
+    return station != NULL ? (g.ship.cargo * station->ore_price) : 0.0f;
 }
 
 static float station_repair_cost(void) {
@@ -641,6 +1061,7 @@ static void fracture_asteroid(int asteroid_index, vec2 outward_dir) {
         child->vel = child_vel;
     }
 
+    audio_play_fracture(parent.tier);
     set_notice("%s %s fractured into %d %s %s%s.",
         asteroid_tier_name(parent.tier),
         asteroid_tier_kind(parent.tier),
@@ -693,12 +1114,34 @@ static void reset_world(void) {
     g.ship.hold_level = 0;
     g.ship.tractor_level = 0;
 
-    snprintf(g.station.name, sizeof(g.station.name), "%s", "Prospect Station");
-    g.station.pos = v2(0.0f, 0.0f);
-    g.station.radius = 58.0f;
-    g.station.dock_radius = 125.0f;
-    g.station.ore_price = STATION_DEFAULT_ORE_PRICE;
-    g.station.services = STATION_SERVICE_MARKET | STATION_SERVICE_REPAIR | STATION_SERVICE_OUTFIT;
+    memset(g.stations, 0, sizeof(g.stations));
+
+    snprintf(g.stations[0].name, sizeof(g.stations[0].name), "%s", "Prospect Refinery");
+    g.stations[0].role = STATION_ROLE_REFINERY;
+    g.stations[0].pos = v2(0.0f, -240.0f);
+    g.stations[0].radius = 62.0f;
+    g.stations[0].dock_radius = 132.0f;
+    g.stations[0].ore_price = STATION_DEFAULT_ORE_PRICE;
+    g.stations[0].services = STATION_SERVICE_ORE_BUYER | STATION_SERVICE_REPAIR;
+
+    snprintf(g.stations[1].name, sizeof(g.stations[1].name), "%s", "Kepler Yard");
+    g.stations[1].role = STATION_ROLE_YARD;
+    g.stations[1].pos = v2(-320.0f, 230.0f);
+    g.stations[1].radius = 56.0f;
+    g.stations[1].dock_radius = 124.0f;
+    g.stations[1].ore_price = 0.0f;
+    g.stations[1].services = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_HOLD;
+
+    snprintf(g.stations[2].name, sizeof(g.stations[2].name), "%s", "Helios Works");
+    g.stations[2].role = STATION_ROLE_BEAMWORKS;
+    g.stations[2].pos = v2(320.0f, 230.0f);
+    g.stations[2].radius = 56.0f;
+    g.stations[2].dock_radius = 124.0f;
+    g.stations[2].ore_price = 0.0f;
+    g.stations[2].services = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_LASER | STATION_SERVICE_UPGRADE_TRACTOR;
+
+    g.current_station = 0;
+    g.nearby_station = 0;
 
     g.hover_asteroid = -1;
     g.beam_active = false;
@@ -711,6 +1154,7 @@ static void reset_world(void) {
     g.notice_timer = 0.0f;
     g.nearby_fragments = 0;
     g.tractor_fragments = 0;
+    audio_clear_voices();
     clear_collection_feedback();
     g.field_spawn_timer = 0.0f;
 
@@ -725,7 +1169,7 @@ static void reset_world(void) {
         spawn_field_asteroid(&g.asteroids[i]);
     }
 
-    set_notice("%s services online. Press E to launch.", g.station.name);
+    set_notice("%s online. Press E to launch.", current_station_ptr()->name);
 }
 
 static void draw_circle_filled(vec2 center, float radius, int segments, float r, float g0, float b, float a) {
@@ -800,19 +1244,43 @@ static void draw_background(vec2 camera) {
     draw_circle_filled(v2_add(camera, v2(540.0f, -260.0f)), 260.0f, 28, 0.10f, 0.05f, 0.15f, 0.16f);
 }
 
-static void draw_station(void) {
-    float pulse = 0.35f + (sinf(g.time * 2.5f) * 0.15f);
-    float dock_alpha = g.docked ? 0.62f : (g.in_dock_range ? 0.46f : 0.15f + pulse);
-    draw_circle_outline(g.station.pos, g.station.dock_radius, 48, 0.25f, 0.85f, 1.0f, dock_alpha);
-    draw_circle_filled(g.station.pos, g.station.radius, 28, 0.08f, 0.12f, 0.17f, 1.0f);
-    draw_circle_outline(g.station.pos, g.station.radius + 8.0f, 28, 0.45f, 0.85f, 1.0f, 0.9f);
-    draw_circle_filled(g.station.pos, 18.0f, 18, 0.22f, 0.86f, 0.96f, 1.0f);
+static void draw_station(const station_t* station, bool is_current, bool is_nearby) {
+    float role_r = 0.45f;
+    float role_g = 0.85f;
+    float role_b = 1.0f;
+    float pulse = 0.35f + (sinf((g.time * 2.1f) + (float)station->role) * 0.15f);
+    int spoke_count = 6;
 
-    for (int i = 0; i < 6; i++) {
-        float angle = (TWO_PI_F / 6.0f) * (float)i + g.time * 0.18f;
-        vec2 inner = v2_add(g.station.pos, v2(cosf(angle) * 28.0f, sinf(angle) * 28.0f));
-        vec2 outer = v2_add(g.station.pos, v2(cosf(angle) * 48.0f, sinf(angle) * 48.0f));
-        draw_segment(inner, outer, 0.35f, 0.78f, 1.0f, 0.85f);
+    station_role_color(station->role, &role_r, &role_g, &role_b);
+    if (station->role == STATION_ROLE_YARD) {
+        spoke_count = 4;
+    } else if (station->role == STATION_ROLE_BEAMWORKS) {
+        spoke_count = 5;
+    }
+
+    float dock_alpha = is_current ? 0.62f : (is_nearby ? 0.50f : 0.16f + pulse);
+    draw_circle_outline(station->pos, station->dock_radius, 48, role_r * 0.72f, role_g, role_b, dock_alpha);
+    draw_circle_filled(station->pos, station->radius, 28, 0.08f, 0.12f, 0.17f, 1.0f);
+    draw_circle_outline(station->pos, station->radius + 8.0f, 28, role_r, role_g, role_b, 0.92f);
+    draw_circle_filled(station->pos, 18.0f, 18, role_r * 0.68f, role_g * 0.88f, role_b * 0.96f, 1.0f);
+
+    for (int i = 0; i < spoke_count; i++) {
+        float angle = (TWO_PI_F / (float)spoke_count) * (float)i + g.time * (0.14f + ((float)station->role * 0.02f));
+        vec2 inner = v2_add(station->pos, v2(cosf(angle) * 28.0f, sinf(angle) * 28.0f));
+        vec2 outer = v2_add(station->pos, v2(cosf(angle) * 48.0f, sinf(angle) * 48.0f));
+        draw_segment(inner, outer, role_r * 0.8f, role_g * 0.92f, role_b, 0.85f);
+
+        if (station->role == STATION_ROLE_REFINERY) {
+            vec2 mid = v2_add(station->pos, v2(cosf(angle) * 58.0f, sinf(angle) * 58.0f));
+            draw_rect_centered(mid, 4.0f, 4.0f, role_r * 0.8f, role_g, role_b * 0.9f, 0.85f);
+        }
+    }
+
+    if (station->role == STATION_ROLE_YARD) {
+        draw_rect_outline(station->pos, 18.0f, 18.0f, role_r * 0.82f, role_g * 0.86f, role_b * 0.76f, 0.75f);
+    } else if (station->role == STATION_ROLE_BEAMWORKS) {
+        draw_segment(v2_add(station->pos, v2(-24.0f, 0.0f)), v2_add(station->pos, v2(24.0f, 0.0f)), role_r, role_g, role_b, 0.78f);
+        draw_segment(v2_add(station->pos, v2(0.0f, -24.0f)), v2_add(station->pos, v2(0.0f, 24.0f)), role_r, role_g, role_b, 0.40f);
     }
 }
 
@@ -974,22 +1442,57 @@ static void draw_beam(void) {
     }
 }
 
+static void draw_ui_scanlines(float x, float y, float width, float height, float spacing, float alpha) {
+    for (float scan_y = y + 10.0f; scan_y < (y + height - 10.0f); scan_y += spacing) {
+        draw_segment(v2(x + 10.0f, scan_y), v2(x + width - 10.0f, scan_y), 0.08f, 0.14f, 0.20f, alpha);
+    }
+}
+
+static void draw_ui_corner_brackets(float x, float y, float width, float height, float r, float g0, float b, float alpha) {
+    float arm = fminf(26.0f, fminf(width, height) * 0.16f);
+    float inset = 3.0f;
+
+    draw_segment(v2(x + inset, y + arm), v2(x + inset, y + inset), r, g0, b, alpha);
+    draw_segment(v2(x + inset, y + inset), v2(x + arm, y + inset), r, g0, b, alpha);
+
+    draw_segment(v2(x + width - arm, y + inset), v2(x + width - inset, y + inset), r, g0, b, alpha);
+    draw_segment(v2(x + width - inset, y + inset), v2(x + width - inset, y + arm), r, g0, b, alpha);
+
+    draw_segment(v2(x + inset, y + height - arm), v2(x + inset, y + height - inset), r, g0, b, alpha);
+    draw_segment(v2(x + inset, y + height - inset), v2(x + arm, y + height - inset), r, g0, b, alpha);
+
+    draw_segment(v2(x + width - arm, y + height - inset), v2(x + width - inset, y + height - inset), r, g0, b, alpha);
+    draw_segment(v2(x + width - inset, y + height - inset), v2(x + width - inset, y + height - arm), r, g0, b, alpha);
+}
+
+static void draw_ui_rule(float x0, float x1, float y, float r, float g0, float b, float alpha) {
+    draw_segment(v2(x0, y), v2(x1, y), r, g0, b, alpha);
+}
+
 static void draw_ui_panel(float x, float y, float width, float height, float accent) {
     vec2 center = v2(x + (width * 0.5f), y + (height * 0.5f));
-    draw_rect_centered(center, width * 0.5f, height * 0.5f, 0.03f, 0.06f, 0.10f, 0.86f);
-    draw_rect_outline(center, width * 0.5f, height * 0.5f, 0.16f, 0.30f + accent, 0.42f + accent, 0.95f);
-    draw_rect_centered(v2(x + 54.0f, y + 12.0f), 40.0f, 1.5f, 0.28f, 0.74f + accent, 1.0f, 0.75f);
+    float accent_r = 0.26f + (accent * 0.28f);
+    float accent_g = 0.72f + (accent * 0.20f);
+    float accent_b = 0.98f;
+
+    draw_rect_centered(center, width * 0.5f, height * 0.5f, 0.015f, 0.028f, 0.05f, 0.94f);
+    draw_rect_centered(center, (width * 0.5f) - 2.0f, (height * 0.5f) - 2.0f, 0.018f, 0.044f, 0.072f, 0.86f);
+    draw_ui_scanlines(x, y, width, height, 8.0f, 0.06f);
+    draw_rect_outline(center, width * 0.5f, height * 0.5f, 0.09f, 0.18f, 0.28f, 0.34f);
+    draw_ui_corner_brackets(x, y, width, height, accent_r, accent_g, accent_b, 0.82f);
+    draw_ui_rule(x + 14.0f, x + fminf(116.0f, width * 0.28f), y + 14.0f, accent_r, accent_g, accent_b, 0.82f);
+    draw_ui_rule(x + width - fminf(56.0f, width * 0.18f), x + width - 14.0f, y + 14.0f, 0.18f, 0.28f, 0.38f, 0.55f);
 }
 
 static void get_station_panel_rect(float* x, float* y, float* width, float* height) {
-    float screen_w = sapp_widthf();
-    float screen_h = sapp_heightf();
-    bool compact = screen_w < 760.0f;
+    float screen_w = ui_screen_width();
+    float screen_h = ui_screen_height();
+    bool compact = ui_is_compact();
     float hud_margin = compact ? 16.0f : HUD_MARGIN;
-    float bottom_height = compact ? 30.0f : 34.0f;
-    float top_height = compact ? 92.0f : 106.0f;
-    float panel_width = fminf(compact ? (screen_w - (hud_margin * 2.0f)) : 560.0f, screen_w - (hud_margin * 2.0f));
-    float panel_height = compact ? 260.0f : 320.0f;
+    float bottom_height = compact ? 28.0f : HUD_BOTTOM_PANEL_HEIGHT;
+    float top_height = compact ? 86.0f : HUD_TOP_PANEL_HEIGHT;
+    float panel_width = fminf(compact ? (screen_w - (hud_margin * 2.0f)) : STATION_PANEL_WIDTH, screen_w - (hud_margin * 2.0f));
+    float panel_height = compact ? fminf(308.0f, screen_h - top_height - bottom_height - (hud_margin * 2.0f) - 20.0f) : fminf(STATION_PANEL_HEIGHT, screen_h - top_height - bottom_height - (hud_margin * 2.0f) - 20.0f);
     float panel_x = (screen_w - panel_width) * 0.5f;
     float min_y = hud_margin + top_height + 16.0f;
     float max_y = screen_h - hud_margin - bottom_height - panel_height - 14.0f;
@@ -1002,19 +1505,22 @@ static void get_station_panel_rect(float* x, float* y, float* width, float* heig
 }
 
 static void draw_ui_scrim(float alpha) {
-    draw_rect_centered(v2(sapp_widthf() * 0.5f, sapp_heightf() * 0.5f), sapp_widthf() * 0.5f, sapp_heightf() * 0.5f, 0.01f, 0.03f, 0.06f, alpha);
+    draw_rect_centered(v2(ui_screen_width() * 0.5f, ui_screen_height() * 0.5f), ui_screen_width() * 0.5f, ui_screen_height() * 0.5f, 0.01f, 0.03f, 0.06f, alpha);
 }
 
 static void draw_ui_meter(float x, float y, float width, float height, float fill, float r, float g0, float b) {
     float clamped_fill = clampf(fill, 0.0f, 1.0f);
     vec2 center = v2(x + (width * 0.5f), y + (height * 0.5f));
 
-    draw_rect_centered(center, width * 0.5f, height * 0.5f, 0.04f, 0.07f, 0.12f, 0.96f);
+    draw_rect_centered(center, width * 0.5f, height * 0.5f, 0.03f, 0.06f, 0.10f, 0.98f);
+    draw_ui_scanlines(x, y, width, height, 4.0f, 0.05f);
     if (clamped_fill > 0.0f) {
         float fill_width = width * clamped_fill;
         draw_rect_centered(v2(x + (fill_width * 0.5f), y + (height * 0.5f)), fill_width * 0.5f, height * 0.5f, r, g0, b, 0.92f);
+        draw_ui_rule(x + 2.0f, x + fill_width - 2.0f, y + 2.0f, fminf(1.0f, r + 0.18f), fminf(1.0f, g0 + 0.18f), fminf(1.0f, b + 0.18f), 0.72f);
     }
-    draw_rect_outline(center, width * 0.5f, height * 0.5f, 0.18f, 0.30f, 0.42f, 0.95f);
+    draw_ui_corner_brackets(x, y, width, height, 0.24f, 0.48f, 0.62f, 0.70f);
+    draw_rect_outline(center, width * 0.5f, height * 0.5f, 0.12f, 0.22f, 0.32f, 0.48f);
 }
 
 static void draw_upgrade_pips(float x, float y, int level, float r, float g0, float b) {
@@ -1036,23 +1542,27 @@ static void draw_upgrade_pips(float x, float y, int level, float r, float g0, fl
 
 static void draw_service_card(float x, float y, float width, float height, float accent_r, float accent_g, float accent_b, bool hot) {
     vec2 center = v2(x + (width * 0.5f), y + (height * 0.5f));
-    float border_a = hot ? 0.96f : 0.62f;
-    float accent_a = hot ? 0.92f : 0.38f;
-    float body_tint = hot ? 0.11f : 0.07f;
+    float border_a = hot ? 0.84f : 0.30f;
+    float accent_a = hot ? 0.92f : 0.48f;
+    float body_tint = hot ? 0.10f : 0.06f;
+    float status_w = fminf(92.0f, width * 0.24f);
 
-    draw_rect_centered(center, width * 0.5f, height * 0.5f, 0.03f, body_tint, 0.11f, 0.92f);
-    draw_rect_outline(center, width * 0.5f, height * 0.5f, accent_r * 0.45f, accent_g * 0.45f, accent_b * 0.45f, border_a);
-    draw_rect_centered(v2(x + 3.0f, y + (height * 0.5f)), 3.0f, height * 0.5f, accent_r, accent_g, accent_b, accent_a);
+    draw_rect_centered(center, width * 0.5f, height * 0.5f, 0.025f, body_tint, 0.09f, 0.94f);
+    draw_rect_centered(v2(x + width - (status_w * 0.5f) - 8.0f, y + (height * 0.5f)), status_w * 0.5f, (height * 0.5f) - 5.0f, 0.02f, 0.05f, 0.08f, 0.92f);
+    draw_rect_centered(v2(x + 4.0f, y + (height * 0.5f)), 3.0f, height * 0.5f, accent_r, accent_g, accent_b, accent_a);
+    draw_ui_rule(x + 14.0f, x + fminf(90.0f, width * 0.20f), y + 8.0f, accent_r, accent_g, accent_b, hot ? 0.78f : 0.38f);
+    draw_ui_rule(x + 10.0f, x + width - 10.0f, y + height - 2.0f, accent_r * 0.5f, accent_g * 0.5f, accent_b * 0.5f, hot ? 0.26f : 0.14f);
+    draw_rect_outline(center, width * 0.5f, height * 0.5f, accent_r * 0.30f, accent_g * 0.30f, accent_b * 0.30f, border_a);
 }
 
 static void draw_hud_panels(void) {
-    float screen_w = sapp_widthf();
-    float screen_h = sapp_heightf();
-    bool compact = screen_w < 760.0f;
+    float screen_w = ui_screen_width();
+    float screen_h = ui_screen_height();
+    bool compact = ui_is_compact();
     float hud_margin = compact ? 16.0f : HUD_MARGIN;
-    float bottom_height = compact ? 30.0f : 34.0f;
-    float top_width = compact ? (screen_w - (hud_margin * 2.0f)) : 360.0f;
-    float top_height = compact ? 92.0f : 106.0f;
+    float bottom_height = compact ? 28.0f : HUD_BOTTOM_PANEL_HEIGHT;
+    float top_width = compact ? (screen_w - (hud_margin * 2.0f)) : HUD_TOP_PANEL_WIDTH;
+    float top_height = compact ? 86.0f : HUD_TOP_PANEL_HEIGHT;
 
     draw_ui_panel(hud_margin, hud_margin, top_width, top_height, 0.03f);
 
@@ -1079,21 +1589,20 @@ static void draw_hud_panels(void) {
         float fit_y = 0.0f;
         float fit_w = 0.0f;
         float fit_h = 0.0f;
-        float card_gap = compact ? 3.0f : 8.0f;
-        float card_h = compact ? 16.0f : 30.0f;
+        float card_gap = compact ? 4.0f : 6.0f;
+        float card_h = compact ? 18.0f : 24.0f;
         float sell_y = 0.0f;
         float repair_y = 0.0f;
         float mining_y = 0.0f;
-        float hold_y = 0.0f;
-        float tractor_y = 0.0f;
-        bool can_sell = station_has_service(STATION_SERVICE_MARKET) && (g.ship.cargo > 0.01f);
+        const station_t* station = current_station_ptr();
+        bool can_sell = station_has_service(STATION_SERVICE_ORE_BUYER) && (g.ship.cargo > 0.01f);
         bool can_repair = station_has_service(STATION_SERVICE_REPAIR) && (station_repair_cost() > 0.0f) && (g.ship.credits + 0.01f >= station_repair_cost());
-        bool can_upgrade_mining = station_has_service(STATION_SERVICE_OUTFIT) && !ship_upgrade_maxed(SHIP_UPGRADE_MINING) && (g.ship.credits + 0.01f >= (float)ship_upgrade_cost(SHIP_UPGRADE_MINING));
-        bool can_upgrade_hold = station_has_service(STATION_SERVICE_OUTFIT) && !ship_upgrade_maxed(SHIP_UPGRADE_HOLD) && (g.ship.credits + 0.01f >= (float)ship_upgrade_cost(SHIP_UPGRADE_HOLD));
-        bool can_upgrade_tractor = station_has_service(STATION_SERVICE_OUTFIT) && !ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR) && (g.ship.credits + 0.01f >= (float)ship_upgrade_cost(SHIP_UPGRADE_TRACTOR));
+        bool can_upgrade_mining = station_has_service(STATION_SERVICE_UPGRADE_LASER) && !ship_upgrade_maxed(SHIP_UPGRADE_MINING) && (g.ship.credits + 0.01f >= (float)ship_upgrade_cost(SHIP_UPGRADE_MINING));
+        bool can_upgrade_hold = station_has_service(STATION_SERVICE_UPGRADE_HOLD) && !ship_upgrade_maxed(SHIP_UPGRADE_HOLD) && (g.ship.credits + 0.01f >= (float)ship_upgrade_cost(SHIP_UPGRADE_HOLD));
+        bool can_upgrade_tractor = station_has_service(STATION_SERVICE_UPGRADE_TRACTOR) && !ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR) && (g.ship.credits + 0.01f >= (float)ship_upgrade_cost(SHIP_UPGRADE_TRACTOR));
 
         get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
-        draw_ui_scrim(0.44f);
+        draw_ui_scrim(0.34f);
         draw_ui_panel(panel_x, panel_y, panel_w, panel_h, 0.08f);
 
         inner_x = panel_x + 18.0f;
@@ -1101,43 +1610,55 @@ static void draw_hud_panels(void) {
         inner_w = panel_w - 36.0f;
         inner_h = panel_h - 36.0f;
 
-        fit_w = compact ? inner_w : 180.0f;
+        fit_w = compact ? inner_w : 168.0f;
         fit_x = compact ? inner_x : (panel_x + panel_w - fit_w - 18.0f);
-        fit_y = inner_y + 34.0f;
-        fit_h = compact ? 94.0f : (inner_h - 34.0f);
+        fit_y = inner_y + 42.0f;
+        fit_h = compact ? 96.0f : (inner_h - 42.0f);
 
         market_x = inner_x;
         market_y = fit_y;
-        market_w = compact ? inner_w : (fit_x - inner_x - 14.0f);
-        market_h = compact ? 60.0f : 76.0f;
+        market_w = compact ? inner_w : (fit_x - inner_x - 12.0f);
+        market_h = compact ? 62.0f : 72.0f;
 
         services_x = inner_x;
-        services_y = market_y + market_h + 12.0f;
+        services_y = market_y + market_h + 16.0f;
         services_w = compact ? inner_w : market_w;
-        services_h = compact ? 112.0f : (panel_y + panel_h - 18.0f - services_y);
+        services_h = compact ? 120.0f : (panel_y + panel_h - 18.0f - services_y);
+
+        draw_ui_rule(inner_x, panel_x + panel_w - 18.0f, inner_y + 26.0f, 0.14f, 0.26f, 0.38f, 0.70f);
+        if (!compact) {
+            draw_segment(v2(fit_x - 10.0f, inner_y + 38.0f), v2(fit_x - 10.0f, panel_y + panel_h - 18.0f), 0.10f, 0.22f, 0.32f, 0.60f);
+        }
 
         draw_ui_panel(market_x, market_y, market_w, market_h, 0.04f);
         draw_ui_panel(services_x, services_y, services_w, services_h, 0.03f);
         draw_ui_panel(fit_x, fit_y, fit_w, fit_h, 0.05f);
 
-        sell_y = services_y + 14.0f;
+        sell_y = services_y + (compact ? 30.0f : 36.0f);
         repair_y = sell_y + card_h + card_gap;
         mining_y = repair_y + card_h + card_gap;
-        hold_y = mining_y + card_h + card_gap;
-        tractor_y = hold_y + card_h + card_gap;
 
-        draw_service_card(services_x + 12.0f, sell_y, services_w - 24.0f, card_h, 0.24f, 0.90f, 0.70f, can_sell);
-        draw_service_card(services_x + 12.0f, repair_y, services_w - 24.0f, card_h, 0.98f, 0.72f, 0.26f, can_repair);
-        draw_service_card(services_x + 12.0f, mining_y, services_w - 24.0f, card_h, 0.34f, 0.88f, 1.0f, can_upgrade_mining);
-        draw_service_card(services_x + 12.0f, hold_y, services_w - 24.0f, card_h, 0.50f, 0.82f, 1.0f, can_upgrade_hold);
-        draw_service_card(services_x + 12.0f, tractor_y, services_w - 24.0f, card_h, 0.42f, 1.0f, 0.86f, can_upgrade_tractor);
+        if (station->role == STATION_ROLE_REFINERY) {
+            draw_service_card(services_x + 12.0f, sell_y, services_w - 24.0f, card_h, 0.24f, 0.90f, 0.70f, can_sell);
+            draw_service_card(services_x + 12.0f, repair_y, services_w - 24.0f, card_h, 0.98f, 0.72f, 0.26f, can_repair);
+        } else if (station->role == STATION_ROLE_YARD) {
+            draw_service_card(services_x + 12.0f, sell_y, services_w - 24.0f, card_h, 0.98f, 0.72f, 0.26f, can_repair);
+            draw_service_card(services_x + 12.0f, repair_y, services_w - 24.0f, card_h, 0.50f, 0.82f, 1.0f, can_upgrade_hold);
+        } else {
+            draw_service_card(services_x + 12.0f, sell_y, services_w - 24.0f, card_h, 0.98f, 0.72f, 0.26f, can_repair);
+            draw_service_card(services_x + 12.0f, repair_y, services_w - 24.0f, card_h, 0.34f, 0.88f, 1.0f, can_upgrade_mining);
+            draw_service_card(services_x + 12.0f, mining_y, services_w - 24.0f, card_h, 0.42f, 1.0f, 0.86f, can_upgrade_tractor);
+        }
 
         draw_ui_meter(fit_x + 16.0f, fit_y + 54.0f, fit_w - 32.0f, 12.0f, g.ship.hull / ship_max_hull(), 0.96f, 0.54f, 0.28f);
         draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, g.ship.cargo / fmaxf(1.0f, ship_cargo_capacity()), 0.26f, 0.90f, 0.72f);
         if (!compact) {
-            draw_upgrade_pips(fit_x + 18.0f, fit_y + 146.0f, g.ship.mining_level, 0.34f, 0.88f, 1.0f);
-            draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.ship.hold_level, 0.50f, 0.82f, 1.0f);
-            draw_upgrade_pips(fit_x + 18.0f, fit_y + 222.0f, g.ship.tractor_level, 0.42f, 1.0f, 0.86f);
+            if (station->role == STATION_ROLE_YARD) {
+                draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.ship.hold_level, 0.50f, 0.82f, 1.0f);
+            } else if (station->role == STATION_ROLE_BEAMWORKS) {
+                draw_upgrade_pips(fit_x + 18.0f, fit_y + 146.0f, g.ship.mining_level, 0.34f, 0.88f, 1.0f);
+                draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.ship.tractor_level, 0.42f, 1.0f, 0.86f);
+            }
         }
     }
 }
@@ -1167,19 +1688,22 @@ static void draw_station_services(void) {
     float sell_y = 0.0f;
     float repair_y = 0.0f;
     float mining_y = 0.0f;
-    float hold_y = 0.0f;
-    float tractor_y = 0.0f;
-    bool compact = sapp_widthf() < 760.0f;
+    const station_t* station = current_station_ptr();
+    bool compact = ui_is_compact();
     int hull_now = (int)lroundf(g.ship.hull);
     int hull_max = (int)lroundf(ship_max_hull());
     int cargo_units = (int)lroundf(g.ship.cargo);
     int cargo_capacity = (int)lroundf(ship_cargo_capacity());
     int payout = (int)lroundf(station_cargo_sale_value());
-    int ore_price = (int)lroundf(g.station.ore_price);
+    int ore_price = (int)lroundf(station->ore_price);
     int repair_cost = (int)lroundf(station_repair_cost());
     int mining_cost = ship_upgrade_cost(SHIP_UPGRADE_MINING);
     int hold_cost = ship_upgrade_cost(SHIP_UPGRADE_HOLD);
     int tractor_cost = ship_upgrade_cost(SHIP_UPGRADE_TRACTOR);
+    bool can_sell = station_has_service(STATION_SERVICE_ORE_BUYER) && (g.ship.cargo > 0.01f);
+    bool can_upgrade_mining = station_has_service(STATION_SERVICE_UPGRADE_LASER) && !ship_upgrade_maxed(SHIP_UPGRADE_MINING) && (g.ship.credits + 0.01f >= (float)mining_cost);
+    bool can_upgrade_hold = station_has_service(STATION_SERVICE_UPGRADE_HOLD) && !ship_upgrade_maxed(SHIP_UPGRADE_HOLD) && (g.ship.credits + 0.01f >= (float)hold_cost);
+    bool can_upgrade_tractor = station_has_service(STATION_SERVICE_UPGRADE_TRACTOR) && !ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR) && (g.ship.credits + 0.01f >= (float)tractor_cost);
 
     get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
     inner_x = panel_x + 18.0f;
@@ -1187,144 +1711,246 @@ static void draw_station_services(void) {
     inner_w = panel_w - 36.0f;
     fit_w = compact ? inner_w : 180.0f;
     fit_x = compact ? inner_x : (panel_x + panel_w - fit_w - 18.0f);
-    fit_y = inner_y + 34.0f;
+    fit_y = inner_y + 42.0f;
     market_x = inner_x;
     market_y = fit_y;
-    market_h = compact ? 60.0f : 76.0f;
+    market_h = compact ? 62.0f : 78.0f;
     services_x = inner_x;
-    services_y = market_y + market_h + 12.0f;
-    card_gap = compact ? 3.0f : 8.0f;
-    card_h = compact ? 16.0f : 30.0f;
-    sell_y = services_y + 14.0f;
+    services_y = market_y + market_h + 16.0f;
+    card_gap = compact ? 4.0f : 6.0f;
+    card_h = compact ? 18.0f : 28.0f;
+    sell_y = services_y + (compact ? 30.0f : 36.0f);
     repair_y = sell_y + card_h + card_gap;
     mining_y = repair_y + card_h + card_gap;
-    hold_y = mining_y + card_h + card_gap;
-    tractor_y = hold_y + card_h + card_gap;
 
     sdtx_color3b(232, 241, 255);
-    sdtx_pos((panel_x + 20.0f) / HUD_CELL, (panel_y + 18.0f) / HUD_CELL);
-    sdtx_puts(g.station.name);
-    sdtx_pos((panel_x + 20.0f) / HUD_CELL, (panel_y + 34.0f) / HUD_CELL);
+    sdtx_pos(ui_text_pos(panel_x + 20.0f), ui_text_pos(panel_y + 16.0f));
+    sdtx_puts(station->name);
+    sdtx_pos(ui_text_pos(panel_x + 20.0f), ui_text_pos(panel_y + 32.0f));
     sdtx_color3b(118, 255, 221);
-    sdtx_puts("RUN HUB // market, repair, outfit");
+    sdtx_puts(station_role_hub_label(station->role));
 
-    sdtx_pos((panel_x + panel_w - (compact ? 132.0f : 156.0f)) / HUD_CELL, (panel_y + 18.0f) / HUD_CELL);
+    sdtx_pos(ui_text_pos(panel_x + panel_w - (compact ? 132.0f : 152.0f)), ui_text_pos(panel_y + 16.0f));
     sdtx_color3b(203, 220, 248);
-    sdtx_printf("BOARD %d CR", ore_price);
-    sdtx_pos((panel_x + panel_w - (compact ? 132.0f : 156.0f)) / HUD_CELL, (panel_y + 34.0f) / HUD_CELL);
+    if (station->role == STATION_ROLE_REFINERY) {
+        sdtx_printf("BOARD %d CR", ore_price);
+    } else if (station->role == STATION_ROLE_YARD) {
+        sdtx_puts("YARD BAY");
+    } else {
+        sdtx_puts("BEAM LAB");
+    }
+    sdtx_pos(ui_text_pos(panel_x + panel_w - (compact ? 132.0f : 152.0f)), ui_text_pos(panel_y + 32.0f));
     sdtx_color3b(145, 160, 188);
     sdtx_puts("Press E to launch");
 
-    sdtx_pos((market_x + 16.0f) / HUD_CELL, (market_y + 16.0f) / HUD_CELL);
+    sdtx_pos(ui_text_pos(market_x + 18.0f), ui_text_pos(market_y + 16.0f));
     sdtx_color3b(130, 255, 235);
-    sdtx_puts("Cargo board");
-    sdtx_pos((market_x + 16.0f) / HUD_CELL, (market_y + 34.0f) / HUD_CELL);
-    sdtx_color3b(203, 220, 248);
-    if (compact) {
-        sdtx_printf("Ore %d/%d  Payout %d", cargo_units, cargo_capacity, payout);
+    if (station->role == STATION_ROLE_REFINERY) {
+        sdtx_puts("ORE BOARD");
+    } else if (station->role == STATION_ROLE_YARD) {
+        sdtx_puts("FRAME BAY");
     } else {
-        sdtx_printf("Ore manifest %d/%d units   Payout preview %d cr", cargo_units, cargo_capacity, payout);
+        sdtx_puts("FIELD BENCH");
     }
-    sdtx_pos((market_x + 16.0f) / HUD_CELL, (market_y + 50.0f) / HUD_CELL);
+    sdtx_pos(ui_text_pos(market_x + 18.0f), ui_text_pos(market_y + 32.0f));
+    sdtx_color3b(203, 220, 248);
+    if (station->role == STATION_ROLE_REFINERY) {
+        if (compact) {
+            sdtx_printf("Ore %d/%d  Value %d", cargo_units, cargo_capacity, payout);
+        } else {
+            sdtx_printf("Ore %d/%d   Value %d cr", cargo_units, cargo_capacity, payout);
+        }
+    } else if (station->role == STATION_ROLE_YARD) {
+        sdtx_puts(compact ? "Hull service + hold refit" : "Hull service and hold refits.");
+    } else {
+        sdtx_puts(compact ? "Laser + tractor tuning" : "Laser and tractor tuning.");
+    }
+    sdtx_pos(ui_text_pos(market_x + 18.0f), ui_text_pos(market_y + 48.0f));
     sdtx_color3b(145, 160, 188);
-    if (cargo_units > 0) {
-        sdtx_puts("Return value is locked before you sell.");
+    if (station->role == STATION_ROLE_REFINERY) {
+        if (cargo_units > 0) {
+            sdtx_puts("Raw ore sells here.");
+        } else {
+            sdtx_puts("Refinery board standing by.");
+        }
+    } else if (station->role == STATION_ROLE_YARD) {
+        if (ship_upgrade_maxed(SHIP_UPGRADE_HOLD)) {
+            sdtx_puts("Hold racks at dock limit.");
+        } else {
+            sdtx_printf("Next hold rack %d cr.", hold_cost);
+        }
     } else {
-        sdtx_puts("Bring in fragments from the belt to post a sale.");
+        if (ship_upgrade_maxed(SHIP_UPGRADE_MINING) && ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR)) {
+            sdtx_puts("Beam systems tuned to spec.");
+        } else {
+            sdtx_puts("Tune beam output and reach.");
+        }
     }
 
-    sdtx_pos((services_x + 16.0f) / HUD_CELL, (services_y + 16.0f) / HUD_CELL);
+    sdtx_pos(ui_text_pos(services_x + 18.0f), ui_text_pos(services_y + 16.0f));
     sdtx_color3b(130, 255, 235);
-    sdtx_puts("Service bay");
+    sdtx_puts("SERVICES");
 
-    sdtx_pos((services_x + 24.0f) / HUD_CELL, (sell_y + (compact ? 4.0f : 9.0f)) / HUD_CELL);
-    sdtx_color3b(cargo_units > 0 ? 114 : 169, cargo_units > 0 ? 255 : 179, cargo_units > 0 ? 192 : 204);
-    sdtx_printf("[1] Sell cargo manifest      %s", cargo_units > 0 ? "ready" : "empty");
+    if (station->role == STATION_ROLE_REFINERY) {
+        sdtx_pos(ui_text_pos(services_x + 24.0f), ui_text_pos(sell_y + (compact ? 5.0f : 8.0f)));
+        sdtx_color3b(can_sell ? 114 : 169, can_sell ? 255 : 179, can_sell ? 192 : 204);
+        sdtx_printf("[1] Sell ore                %s", cargo_units > 0 ? "ready" : "empty");
 
-    sdtx_pos((services_x + 24.0f) / HUD_CELL, (repair_y + (compact ? 4.0f : 9.0f)) / HUD_CELL);
-    if (repair_cost > 0) {
-        sdtx_color3b(255, 221, 119);
-        sdtx_printf("[2] Repair hull             %d cr", repair_cost);
+        sdtx_pos(ui_text_pos(services_x + 24.0f), ui_text_pos(repair_y + (compact ? 5.0f : 8.0f)));
+        if (repair_cost > 0) {
+            sdtx_color3b(255, 221, 119);
+            sdtx_printf("[2] Repair hull             %d cr", repair_cost);
+        } else {
+            sdtx_color3b(169, 179, 204);
+            sdtx_puts("[2] Repair hull             nominal");
+        }
+    } else if (station->role == STATION_ROLE_YARD) {
+        sdtx_pos(ui_text_pos(services_x + 24.0f), ui_text_pos(sell_y + (compact ? 5.0f : 8.0f)));
+        if (repair_cost > 0) {
+            sdtx_color3b(255, 221, 119);
+            sdtx_printf("[2] Repair hull             %d cr", repair_cost);
+        } else {
+            sdtx_color3b(169, 179, 204);
+            sdtx_puts("[2] Repair hull             nominal");
+        }
+
+        sdtx_pos(ui_text_pos(services_x + 24.0f), ui_text_pos(repair_y + (compact ? 5.0f : 8.0f)));
+        if (ship_upgrade_maxed(SHIP_UPGRADE_HOLD)) {
+            sdtx_color3b(169, 179, 204);
+            sdtx_puts("[4] Hold racks              maxed");
+        } else {
+            sdtx_color3b(can_upgrade_hold ? 203 : 169, can_upgrade_hold ? 220 : 179, can_upgrade_hold ? 248 : 204);
+            sdtx_printf("[4] Hold racks              %d cr", hold_cost);
+        }
     } else {
-        sdtx_color3b(169, 179, 204);
-        sdtx_puts("[2] Repair hull             nominal");
+        sdtx_pos(ui_text_pos(services_x + 24.0f), ui_text_pos(sell_y + (compact ? 5.0f : 8.0f)));
+        if (repair_cost > 0) {
+            sdtx_color3b(255, 221, 119);
+            sdtx_printf("[2] Repair hull             %d cr", repair_cost);
+        } else {
+            sdtx_color3b(169, 179, 204);
+            sdtx_puts("[2] Repair hull             nominal");
+        }
+
+        sdtx_pos(ui_text_pos(services_x + 24.0f), ui_text_pos(repair_y + (compact ? 5.0f : 8.0f)));
+        if (ship_upgrade_maxed(SHIP_UPGRADE_MINING)) {
+            sdtx_color3b(169, 179, 204);
+            sdtx_puts("[3] Laser array             maxed");
+        } else {
+            sdtx_color3b(can_upgrade_mining ? 203 : 169, can_upgrade_mining ? 220 : 179, can_upgrade_mining ? 248 : 204);
+            sdtx_printf("[3] Laser array             %d cr", mining_cost);
+        }
+
+        sdtx_pos(ui_text_pos(services_x + 24.0f), ui_text_pos(mining_y + (compact ? 5.0f : 8.0f)));
+        if (ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR)) {
+            sdtx_color3b(169, 179, 204);
+            sdtx_puts("[5] Tractor coil            maxed");
+        } else {
+            sdtx_color3b(can_upgrade_tractor ? 203 : 169, can_upgrade_tractor ? 220 : 179, can_upgrade_tractor ? 248 : 204);
+            sdtx_printf("[5] Tractor coil            %d cr", tractor_cost);
+        }
     }
 
-    sdtx_pos((services_x + 24.0f) / HUD_CELL, (mining_y + (compact ? 4.0f : 9.0f)) / HUD_CELL);
-    if (ship_upgrade_maxed(SHIP_UPGRADE_MINING)) {
-        sdtx_color3b(169, 179, 204);
-        sdtx_puts("[3] Mining lattice          maxed");
-    } else {
-        sdtx_color3b(203, 220, 248);
-        sdtx_printf("[3] Mining lattice          %d cr", mining_cost);
-    }
-
-    sdtx_pos((services_x + 24.0f) / HUD_CELL, (hold_y + (compact ? 4.0f : 9.0f)) / HUD_CELL);
-    if (ship_upgrade_maxed(SHIP_UPGRADE_HOLD)) {
-        sdtx_color3b(169, 179, 204);
-        sdtx_puts("[4] Cargo racks             maxed");
-    } else {
-        sdtx_color3b(203, 220, 248);
-        sdtx_printf("[4] Cargo racks             %d cr", hold_cost);
-    }
-
-    sdtx_pos((services_x + 24.0f) / HUD_CELL, (tractor_y + (compact ? 4.0f : 9.0f)) / HUD_CELL);
-    if (ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR)) {
-        sdtx_color3b(169, 179, 204);
-        sdtx_puts("[5] Tractor field           maxed");
-    } else {
-        sdtx_color3b(203, 220, 248);
-        sdtx_printf("[5] Tractor field           %d cr", tractor_cost);
-    }
-
-    sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 16.0f) / HUD_CELL);
+    sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 16.0f));
     sdtx_color3b(130, 255, 235);
-    sdtx_puts("Ship fit");
-    sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 34.0f) / HUD_CELL);
+    if (station->role == STATION_ROLE_REFINERY) {
+        sdtx_puts("HAUL");
+    } else if (station->role == STATION_ROLE_YARD) {
+        sdtx_puts("FIT");
+    } else {
+        sdtx_puts("TUNING");
+    }
+
+    sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 32.0f));
     sdtx_color3b(203, 220, 248);
     if (compact) {
-        sdtx_printf("Hull %d/%d  Hold %d/%d", hull_now, hull_max, cargo_units, cargo_capacity);
-        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 74.0f) / HUD_CELL);
-        sdtx_color3b(145, 160, 188);
-        sdtx_printf("Laser %d/s  Tractor %du", (int)lroundf(ship_mining_rate()), (int)lroundf(ship_tractor_range()));
-        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 92.0f) / HUD_CELL);
-        sdtx_printf("Upgrades L%d H%d T%d", g.ship.mining_level, g.ship.hold_level, g.ship.tractor_level);
+        if (station->role == STATION_ROLE_REFINERY) {
+            sdtx_printf("Hull %d/%d  Ore %d/%d", hull_now, hull_max, cargo_units, cargo_capacity);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
+            sdtx_color3b(145, 160, 188);
+            sdtx_printf("Board %d cr  Haul %d cr", ore_price, payout);
+        } else if (station->role == STATION_ROLE_YARD) {
+            sdtx_printf("Hull %d/%d  Hold %d/%d", hull_now, hull_max, cargo_units, cargo_capacity);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
+            sdtx_color3b(145, 160, 188);
+            sdtx_printf("Hold lvl %d/%d", g.ship.hold_level, SHIP_UPGRADE_MAX_LEVEL);
+        } else {
+            sdtx_printf("Laser %d/s  Tractor %du", (int)lroundf(ship_mining_rate()), (int)lroundf(ship_tractor_range()));
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
+            sdtx_color3b(145, 160, 188);
+            sdtx_printf("L%d  T%d", g.ship.mining_level, g.ship.tractor_level);
+        }
     } else {
-        sdtx_printf("Hull %d/%d", hull_now, hull_max);
-        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 74.0f) / HUD_CELL);
-        sdtx_color3b(203, 220, 248);
-        sdtx_printf("Cargo %d/%d", cargo_units, cargo_capacity);
-        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 126.0f) / HUD_CELL);
-        sdtx_color3b(145, 160, 188);
-        sdtx_printf("Mining %d ore/sec", (int)lroundf(ship_mining_rate()));
-        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 164.0f) / HUD_CELL);
-        sdtx_printf("Hold capacity %d ore", cargo_capacity);
-        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 202.0f) / HUD_CELL);
-        sdtx_printf("Tractor range %d u", (int)lroundf(ship_tractor_range()));
-        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 240.0f) / HUD_CELL);
-        sdtx_color3b(169, 179, 204);
-        sdtx_puts("Every upgrade carries into the next sortie.");
+        if (station->role == STATION_ROLE_REFINERY) {
+            sdtx_printf("Hull %d/%d", hull_now, hull_max);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
+            sdtx_printf("Ore %d/%d", cargo_units, cargo_capacity);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
+            sdtx_color3b(145, 160, 188);
+            sdtx_printf("Board %d cr", ore_price);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
+            sdtx_printf("Haul %d cr", payout);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 184.0f));
+            sdtx_printf("Repair %s", repair_cost > 0 ? "available" : "nominal");
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 216.0f));
+            sdtx_color3b(169, 179, 204);
+            sdtx_puts("Ore only sells here.");
+        } else if (station->role == STATION_ROLE_YARD) {
+            sdtx_printf("Hull %d/%d", hull_now, hull_max);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
+            sdtx_printf("Hold %d ore", cargo_capacity);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
+            sdtx_color3b(145, 160, 188);
+            sdtx_printf("Hold level %d/%d", g.ship.hold_level, SHIP_UPGRADE_MAX_LEVEL);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
+            sdtx_printf("Repair %s", repair_cost > 0 ? "available" : "nominal");
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 184.0f));
+            sdtx_printf("Next rack %s", ship_upgrade_maxed(SHIP_UPGRADE_HOLD) ? "maxed" : "ready");
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 216.0f));
+            sdtx_color3b(169, 179, 204);
+            sdtx_puts("Frame and hold refits.");
+        } else {
+            sdtx_printf("Laser %d ore/sec", (int)lroundf(ship_mining_rate()));
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
+            sdtx_printf("Tractor %d u", (int)lroundf(ship_tractor_range()));
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
+            sdtx_color3b(145, 160, 188);
+            sdtx_printf("Laser level %d/%d", g.ship.mining_level, SHIP_UPGRADE_MAX_LEVEL);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
+            sdtx_printf("Tractor level %d/%d", g.ship.tractor_level, SHIP_UPGRADE_MAX_LEVEL);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 184.0f));
+            sdtx_printf("Repair %s", repair_cost > 0 ? "available" : "nominal");
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 216.0f));
+            sdtx_color3b(169, 179, 204);
+            sdtx_puts("Field gear tuning.");
+        }
     }
 }
 
 static void draw_hud(void) {
-    float screen_w = sapp_widthf();
-    float screen_h = sapp_heightf();
-    bool compact = screen_w < 760.0f;
+    float screen_w = ui_screen_width();
+    float screen_h = ui_screen_height();
+    bool compact = ui_is_compact();
     float hud_margin = compact ? 16.0f : HUD_MARGIN;
-    float left_text_x = (hud_margin + 18.0f) / HUD_CELL;
-    float top_text_y = (hud_margin + 18.0f) / HUD_CELL;
-    float bottom_text_y = (screen_h - hud_margin - 20.0f) / HUD_CELL;
+    float left_text_x = ui_text_pos(hud_margin + 18.0f);
+    float top_text_y = ui_text_pos(hud_margin + 18.0f);
+    float bottom_text_y = ui_text_pos(screen_h - hud_margin - 20.0f);
     int hull_units = (int)lroundf(g.ship.hull);
     int hull_capacity = (int)lroundf(ship_max_hull());
     int cargo_units = (int)lroundf(g.ship.cargo);
     int credits = (int)lroundf(g.ship.credits);
-    int station_distance = (int)lroundf(v2_len(v2_sub(g.station.pos, g.ship.pos)));
     int cargo_capacity = (int)lroundf(ship_cargo_capacity());
     int payout_preview = (int)lroundf(station_cargo_sale_value());
+    const station_t* current_station = current_station_ptr();
+    const station_t* navigation_station = navigation_station_ptr();
+    int station_distance = 0;
 
     vec2 forward = v2_from_angle(g.ship.angle);
-    vec2 home = v2_norm(v2_sub(g.station.pos, g.ship.pos));
+    vec2 home = v2(0.0f, -1.0f);
+    if (navigation_station != NULL) {
+        station_distance = (int)lroundf(v2_len(v2_sub(navigation_station->pos, g.ship.pos)));
+        home = v2_norm(v2_sub(navigation_station->pos, g.ship.pos));
+    }
     float bearing = atan2f(v2_cross(forward, home), v2_dot(forward, home));
     int bearing_degrees = (int)lroundf(fabsf(bearing) * (180.0f / PI_F));
     const char* bearing_side = "ahead";
@@ -1336,14 +1962,14 @@ static void draw_hud(void) {
         bearing_degrees = 0;
     }
 
-    sdtx_canvas(sapp_widthf(), sapp_heightf());
+    sdtx_canvas(screen_w / ui_text_zoom(), screen_h / ui_text_zoom());
     sdtx_font(0);
     sdtx_origin(0.0f, 0.0f);
     sdtx_home();
 
     sdtx_pos(left_text_x, top_text_y);
     sdtx_color3b(232, 241, 255);
-    sdtx_puts("SHIP STATUS");
+    sdtx_puts(g.docked ? "RUN STATUS" : "SHIP STATUS");
     sdtx_crlf();
 
     sdtx_color3b(203, 220, 248);
@@ -1357,30 +1983,38 @@ static void draw_hud(void) {
     if (g.docked) {
         sdtx_color3b(112, 255, 214);
         if (compact) {
-            sdtx_puts("Docked. Press E to launch");
+            sdtx_printf("%s // docked // E launch", current_station->name);
         } else {
-            sdtx_printf("Docked at %s. Press E to launch.", g.station.name);
+            sdtx_printf("%s // docked // E launch", current_station->name);
         }
     } else if (g.in_dock_range) {
         sdtx_color3b(112, 255, 214);
         if (compact) {
             sdtx_puts("Dock ring hot, press E to dock");
         } else {
-            sdtx_printf("%s docking ring acquired. Press E to dock.", g.station.name);
+            sdtx_printf("%s docking ring acquired. Press E to dock.", navigation_station != NULL ? navigation_station->name : "Station");
         }
     } else {
         sdtx_color3b(199, 222, 255);
         if (compact) {
-            sdtx_printf("Station %d units, %d deg %s", station_distance, bearing_degrees, bearing_side);
+            sdtx_printf("%s %d u, %d deg %s", navigation_station != NULL ? station_role_name(navigation_station->role) : "Station", station_distance, bearing_degrees, bearing_side);
         } else {
-            sdtx_printf("Station %d units away, %d deg %s", station_distance, bearing_degrees, bearing_side);
+            sdtx_printf("%s %d units away, %d deg %s", navigation_station != NULL ? navigation_station->name : "Station", station_distance, bearing_degrees, bearing_side);
         }
     }
     sdtx_crlf();
 
     if (g.docked) {
         sdtx_color3b(130, 255, 235);
-        sdtx_printf("Cargo board ready. Current payout preview %d cr.", payout_preview);
+        if (station_has_service(STATION_SERVICE_ORE_BUYER)) {
+            if (cargo_units > 0) {
+                sdtx_printf("Board %d cr // haul %d cr", (int)lroundf(current_station->ore_price), payout_preview);
+            } else {
+                sdtx_printf("Board %d cr // hold empty", (int)lroundf(current_station->ore_price));
+            }
+        } else {
+            sdtx_printf("%s console online", station_role_name(current_station->role));
+        }
     } else if ((g.hover_asteroid >= 0) && g.asteroids[g.hover_asteroid].active) {
         const asteroid_t* asteroid = &g.asteroids[g.hover_asteroid];
         int integrity_left = (int)lroundf(asteroid->hp);
@@ -1405,7 +2039,13 @@ static void draw_hud(void) {
             sdtx_puts(g.notice);
         } else {
             sdtx_color3b(164, 177, 205);
-            sdtx_puts("Sell, repair, refit, then launch the next sortie.");
+            if (current_station->role == STATION_ROLE_REFINERY) {
+                sdtx_puts("Sell ore, patch up, head back out.");
+            } else if (current_station->role == STATION_ROLE_YARD) {
+                sdtx_puts("Patch the hull and refit the hold.");
+            } else {
+                sdtx_puts("Tune field gear here, then hit the belt.");
+            }
         }
     } else if (g.collection_feedback_timer > 0.0f) {
         int recovered_ore = (int)lroundf(g.collection_feedback_ore);
@@ -1420,7 +2060,7 @@ static void draw_hud(void) {
         sdtx_puts("Hold full. Nearby fragments drifting out there.");
     } else if (cargo_units >= cargo_capacity) {
         sdtx_color3b(255, 221, 119);
-        sdtx_puts("Cargo hold full. Return to station.");
+        sdtx_puts("Cargo hold full. Run it to the refinery.");
     } else if (g.nearby_fragments > 0) {
         sdtx_color3b(114, 255, 192);
         if (g.tractor_fragments > 0) {
@@ -1433,13 +2073,19 @@ static void draw_hud(void) {
         sdtx_puts(g.notice);
     } else {
         sdtx_color3b(164, 177, 205);
-        sdtx_puts("Crack rocks, sweep fragments, dock, sell.");
+        sdtx_puts("Crack rocks, sweep fragments, run ore to the refinery.");
     }
 
     sdtx_pos(left_text_x, bottom_text_y);
     sdtx_color3b(145, 160, 188);
     if (g.docked) {
-        sdtx_puts("1 sell  2 repair  3 laser  4 hold  5 tractor  E launch  R reset  ESC quit");
+        if (current_station->role == STATION_ROLE_REFINERY) {
+            sdtx_puts("1 sell  2 repair  E launch  R reset  ESC quit");
+        } else if (current_station->role == STATION_ROLE_YARD) {
+            sdtx_puts("2 repair  4 hold  E launch  R reset  ESC quit");
+        } else {
+            sdtx_puts("2 repair  3 laser  5 tractor  E launch  R reset  ESC quit");
+        }
     } else {
         sdtx_puts("W/S thrust  A/D turn  SPACE mine  E dock  R reset  ESC quit");
     }
@@ -1532,16 +2178,22 @@ static void anchor_ship_in_station(void) {
 }
 
 static void dock_ship(void) {
+    if (g.nearby_station >= 0) {
+        g.current_station = g.nearby_station;
+    }
     g.docked = true;
     g.in_dock_range = true;
     anchor_ship_in_station();
-    set_notice("Docked at %s.", g.station.name);
+    audio_play_dock();
+    set_notice("Docked at %s.", current_station_ptr()->name);
 }
 
 static void launch_ship(void) {
     g.docked = false;
+    g.nearby_station = g.current_station;
     g.in_dock_range = true;
     anchor_ship_in_station();
+    audio_play_launch();
     set_notice("Launch corridor clear. Press thrust when ready.");
 }
 
@@ -1563,6 +2215,7 @@ static void apply_ship_damage(float damage) {
         return;
     }
 
+    audio_play_damage(damage);
     g.ship.hull = fmaxf(0.0f, g.ship.hull - damage);
     if (g.ship.hull <= 0.01f) {
         emergency_recover_ship();
@@ -1570,8 +2223,9 @@ static void apply_ship_damage(float damage) {
 }
 
 static void try_sell_station_cargo(void) {
-    if (!station_has_service(STATION_SERVICE_MARKET)) {
-        set_notice("%s has no cargo market online.", g.station.name);
+    const station_t* station = current_station_ptr();
+    if (!station_has_service(STATION_SERVICE_ORE_BUYER)) {
+        set_notice("%s doesn't buy raw ore.", station->name);
         return;
     }
     if (g.ship.cargo <= 0.01f) {
@@ -1583,13 +2237,15 @@ static void try_sell_station_cargo(void) {
     int payout = (int)lroundf(station_cargo_sale_value());
     g.ship.credits += station_cargo_sale_value();
     g.ship.cargo = 0.0f;
+    audio_play_sale();
     set_notice("Sold %d ore for %d cr.", sold_units, payout);
 }
 
 static void try_repair_ship(void) {
+    const station_t* station = current_station_ptr();
     float repair_cost = station_repair_cost();
     if (!station_has_service(STATION_SERVICE_REPAIR)) {
-        set_notice("%s repair crews are offline.", g.station.name);
+        set_notice("%s repair crews are offline.", station->name);
         return;
     }
     if (repair_cost <= 0.0f) {
@@ -1602,24 +2258,41 @@ static void try_repair_ship(void) {
     }
 
     g.ship.hull = ship_max_hull();
+    audio_play_repair();
     set_notice("Hull restored for %d cr.", (int)lroundf(repair_cost));
 }
 
 static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
-    if (!station_has_service(STATION_SERVICE_OUTFIT)) {
-        set_notice("%s outfitting bay is offline.", g.station.name);
+    const station_t* station = current_station_ptr();
+    uint32_t required_service = station_upgrade_service(upgrade);
+
+    if (!station_has_service(required_service)) {
+        switch (upgrade) {
+            case SHIP_UPGRADE_MINING:
+                set_notice("%s doesn't tune laser arrays.", station->name);
+                break;
+            case SHIP_UPGRADE_HOLD:
+                set_notice("%s doesn't refit hold racks.", station->name);
+                break;
+            case SHIP_UPGRADE_TRACTOR:
+                set_notice("%s doesn't tune tractor coils.", station->name);
+                break;
+            case SHIP_UPGRADE_COUNT:
+            default:
+                break;
+        }
         return;
     }
     if (ship_upgrade_maxed(upgrade)) {
         switch (upgrade) {
             case SHIP_UPGRADE_MINING:
-                set_notice("Mining lattice already tuned to spec.");
+                set_notice("Laser array already tuned to spec.");
                 break;
             case SHIP_UPGRADE_HOLD:
-                set_notice("Cargo racks already at station limit.");
+                set_notice("Hold racks already at station limit.");
                 break;
             case SHIP_UPGRADE_TRACTOR:
-                set_notice("Tractor field already at station limit.");
+                set_notice("Tractor coil already at station limit.");
                 break;
             case SHIP_UPGRADE_COUNT:
             default:
@@ -1632,13 +2305,13 @@ static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
     if (!try_spend_credits((float)cost)) {
         switch (upgrade) {
             case SHIP_UPGRADE_MINING:
-                set_notice("Need %d cr to retune the mining lattice.", cost);
+                set_notice("Need %d cr to retune the laser array.", cost);
                 break;
             case SHIP_UPGRADE_HOLD:
-                set_notice("Need %d cr for expanded cargo racks.", cost);
+                set_notice("Need %d cr for expanded hold racks.", cost);
                 break;
             case SHIP_UPGRADE_TRACTOR:
-                set_notice("Need %d cr for a tractor field retune.", cost);
+                set_notice("Need %d cr for a tractor coil retune.", cost);
                 break;
             case SHIP_UPGRADE_COUNT:
             default:
@@ -1650,15 +2323,18 @@ static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
     switch (upgrade) {
         case SHIP_UPGRADE_MINING:
             g.ship.mining_level++;
-            set_notice("Mining lattice tuned. Beam output now %d ore/sec.", (int)lroundf(ship_mining_rate()));
+            audio_play_upgrade(upgrade);
+            set_notice("Laser array tuned. Output now %d ore/sec.", (int)lroundf(ship_mining_rate()));
             break;
         case SHIP_UPGRADE_HOLD:
             g.ship.hold_level++;
-            set_notice("Cargo racks expanded. Hold now fits %d ore.", (int)lroundf(ship_cargo_capacity()));
+            audio_play_upgrade(upgrade);
+            set_notice("Hold racks expanded. Capacity now %d ore.", (int)lroundf(ship_cargo_capacity()));
             break;
         case SHIP_UPGRADE_TRACTOR:
             g.ship.tractor_level++;
-            set_notice("Tractor field widened to %d units.", (int)lroundf(ship_tractor_range()));
+            audio_play_upgrade(upgrade);
+            set_notice("Tractor coil widened to %d units.", (int)lroundf(ship_tractor_range()));
             break;
         case SHIP_UPGRADE_COUNT:
         default:
@@ -1758,7 +2434,9 @@ static void step_asteroid_dynamics(float dt) {
 }
 
 static void resolve_world_collisions(void) {
-    resolve_ship_circle(g.station.pos, g.station.radius + 4.0f);
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        resolve_ship_circle(g.stations[i].pos, g.stations[i].radius + 4.0f);
+    }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!g.asteroids[i].active || asteroid_is_collectible(&g.asteroids[i])) {
             continue;
@@ -1770,12 +2448,24 @@ static void resolve_world_collisions(void) {
 static void update_docking_state(float dt) {
     if (g.docked) {
         g.in_dock_range = true;
+        g.nearby_station = g.current_station;
         anchor_ship_in_station();
         return;
     }
 
-    float dock_radius_sq = g.station.dock_radius * g.station.dock_radius;
-    g.in_dock_range = v2_dist_sq(g.ship.pos, g.station.pos) <= dock_radius_sq;
+    float best_distance_sq = 0.0f;
+    g.nearby_station = -1;
+
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        float dock_radius_sq = g.stations[i].dock_radius * g.stations[i].dock_radius;
+        float distance_sq = v2_dist_sq(g.ship.pos, g.stations[i].pos);
+        if ((distance_sq <= dock_radius_sq) && ((g.nearby_station < 0) || (distance_sq < best_distance_sq))) {
+            best_distance_sq = distance_sq;
+            g.nearby_station = i;
+        }
+    }
+
+    g.in_dock_range = g.nearby_station >= 0;
     if (g.in_dock_range) {
         g.ship.vel = v2_scale(g.ship.vel, 1.0f / (1.0f + (dt * 2.2f)));
     }
@@ -1842,6 +2532,9 @@ static void step_fragment_collection(float dt) {
         }
     }
 
+    if (collected_ore > 0.0f) {
+        audio_play_pickup(collected_ore, collected_fragments);
+    }
     push_collection_feedback(collected_ore, collected_fragments);
 }
 
@@ -1860,6 +2553,7 @@ static void step_mining_system(float dt, bool mining, vec2 forward) {
         vec2 normal = v2_norm(to_asteroid);
         g.beam_end = v2_sub(asteroid->pos, v2_scale(normal, asteroid->radius * 0.85f));
         g.beam_hit = true;
+        audio_play_mining_tick();
 
         float mined = ship_mining_rate() * dt;
         if (mined > 0.0f) {
@@ -1920,6 +2614,7 @@ static void step_notice_timer(float dt) {
 
 static void sim_step(float dt) {
     reset_step_feedback();
+    audio_step(dt);
     g.time += dt;
 
     input_intent_t intent = sample_input_intent();
@@ -1954,6 +2649,28 @@ static void sim_step(float dt) {
     consume_pressed_input();
 }
 
+static void init_audio(void) {
+    memset(&g.audio, 0, sizeof(g.audio));
+    g.audio.rng = 0xA11D0F5Du;
+
+    saudio_setup(&(saudio_desc){
+        .sample_rate = 44100,
+        .num_channels = 2,
+        .buffer_frames = 2048,
+        .packet_frames = 256,
+        .num_packets = 32,
+        .logger.func = slog_func,
+    });
+
+    if (!saudio_isvalid()) {
+        return;
+    }
+
+    g.audio.valid = true;
+    g.audio.sample_rate = saudio_sample_rate();
+    g.audio.channels = saudio_channels();
+}
+
 static void init(void) {
     memset(&g, 0, sizeof(g));
     g.rng = 0xC0FFEE12u;
@@ -1971,6 +2688,8 @@ static void init(void) {
         .fonts[0] = sdtx_font_oric(),
         .logger.func = slog_func,
     });
+
+    init_audio();
 
     g.pass_action.colors[0].load_action = SG_LOADACTION_CLEAR;
     g.pass_action.colors[0].clear_value = (sg_color){ 0.018f, 0.024f, 0.045f, 1.0f };
@@ -1992,7 +2711,11 @@ static void render_world(void) {
     sgl_load_identity();
 
     draw_background(camera);
-    draw_station();
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        bool is_current = g.docked && (i == g.current_station);
+        bool is_nearby = (!g.docked) && (i == g.nearby_station);
+        draw_station(&g.stations[i], is_current, is_nearby);
+    }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!g.asteroids[i].active) {
             continue;
@@ -2005,9 +2728,11 @@ static void render_world(void) {
 }
 
 static void render_ui(void) {
+    float screen_w = ui_screen_width();
+    float screen_h = ui_screen_height();
     sgl_matrix_mode_projection();
     sgl_load_identity();
-    sgl_ortho(0.0f, sapp_widthf(), sapp_heightf(), 0.0f, -1.0f, 1.0f);
+    sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
     sgl_matrix_mode_modelview();
     sgl_load_identity();
     draw_hud_panels();
@@ -2047,10 +2772,12 @@ static void frame(void) {
     float max_frame_dt = SIM_DT * (float)MAX_SIM_STEPS_PER_FRAME;
     float frame_dt = clampf((float)sapp_frame_duration(), 0.0f, max_frame_dt);
     advance_simulation_frame(frame_dt);
+    audio_generate_stream();
     render_frame();
 }
 
 static void cleanup(void) {
+    saudio_shutdown();
     sdtx_shutdown();
     sgl_shutdown();
     sg_shutdown();
@@ -2095,8 +2822,8 @@ sapp_desc sokol_main(int argc, char* argv[]) {
         .frame_cb = frame,
         .cleanup_cb = cleanup,
         .event_cb = event,
-        .width = 1280,
-        .height = 720,
+        .width = 1600,
+        .height = 900,
         .sample_count = 4,
         .high_dpi = true,
         .window_title = "Sokol Space Miner",

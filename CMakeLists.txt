@@ -49,6 +49,7 @@ elseif(APPLE)
     target_link_libraries(space_miner PRIVATE
         objc
         "-framework Cocoa"
+        "-framework AudioToolbox"
         "-framework QuartzCore"
         "-framework Metal"
         "-framework MetalKit"
@@ -62,12 +63,17 @@ elseif(WIN32)
         opengl32
     )
 else()
+    find_package(ALSA REQUIRED)
     find_package(OpenGL REQUIRED)
     find_package(X11 REQUIRED)
 
-    target_include_directories(space_miner PRIVATE "${X11_INCLUDE_DIR}")
+    target_include_directories(space_miner PRIVATE
+        "${X11_INCLUDE_DIR}"
+        ${ALSA_INCLUDE_DIRS}
+    )
     target_link_libraries(space_miner PRIVATE
         OpenGL::GL
+        ${ALSA_LIBRARIES}
         ${X11_LIBRARIES}
         ${X11_Xi_LIB}
         ${X11_Xcursor_LIB}

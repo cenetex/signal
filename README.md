@@ -3,10 +3,22 @@
 A small C + Sokol prototype with a simple mining loop:
 
 - Fly a ship with `W/S` and `A/D`
-- Line up asteroids and hold `Space` to mine ore
-- Sweep through fragments to pull them into the hold
-- Enter the station ring, press `E` to dock, then use station services:
-  `1` sell cargo, `2` repair, `3` mining upgrade, `4` cargo upgrade, `5` tractor upgrade
+- Line up asteroids and hold `Space` to fracture rocks
+- Sweep through fragments to pull ore into the hold
+- Enter a station ring and press `E` to dock
+- Use specialist stations:
+  `Prospect Refinery` buys ore and repairs
+  `Kepler Yard` repairs and expands the hold
+  `Helios Works` repairs and tunes the laser/tractor
+
+## Controls
+
+- Flight: `W/S` thrust, `A/D` turn, `Space` mine, `E` dock
+- Docked everywhere: `2` repair, `E` launch
+- Refinery: `1` sell ore
+- Yard: `4` upgrade hold
+- Beamworks: `3` upgrade laser, `5` upgrade tractor
+- Global: `R` reset, `Esc` quit
 
 ## Build
 
@@ -35,3 +47,4 @@ Open `http://127.0.0.1:8080/space_miner.html` and sanity-check browser input by 
 - The game is set up to stay asset-free: geometry and HUD text are drawn directly with Sokol.
 - Native builds use Metal on macOS, OpenGL on Linux, and OpenGL on Windows through Sokol.
 - The browser target uses WebGL 2 via Emscripten.
+- Browser audio may stay muted until the page receives a click or key press to unlock WebAudio.
