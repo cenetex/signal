@@ -2860,13 +2860,13 @@ static void sim_step(float dt) {
         return;
     }
 
+    step_asteroid_dynamics(g.asteroids, MAX_ASTEROIDS, g.ship.pos, dt);
     if (!g.multiplayer_enabled || !net_is_connected()) {
-        step_asteroid_dynamics(g.asteroids, MAX_ASTEROIDS, g.ship.pos, dt);
         maintain_asteroid_field(dt);
-        step_refinery_production(g.stations, MAX_STATIONS, dt);
-        step_station_production(g.stations, MAX_STATIONS, dt);
-        step_npc_ships(dt);
     }
+    step_refinery_production(g.stations, MAX_STATIONS, dt);
+    step_station_production(g.stations, MAX_STATIONS, dt);
+    step_npc_ships(dt);
 
     if (!g.docked) {
         step_ship_rotation(dt, intent.turn);
@@ -2882,16 +2882,13 @@ static void sim_step(float dt) {
         if (!g.docked) {
             update_targeting_state(forward);
             step_mining_system(dt, intent.mine, forward);
-            if (!g.multiplayer_enabled || !net_is_connected()) {
-                step_fragment_collection(dt);
-            }
+            step_fragment_collection(dt);
         }
     } else {
+        update_docking_state(dt);
         if (!g.multiplayer_enabled || !net_is_connected()) {
-            update_docking_state(dt);
             step_station_interaction_system(&intent);
         }
-        /* Multiplayer + docked: server controls undocking via PLAYER_SHIP. */
     }
 
     step_notice_timer(dt);
