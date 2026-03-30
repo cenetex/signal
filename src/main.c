@@ -23,6 +23,12 @@ enum {
     MAX_STARS = 120,
 };
 
+enum {
+    STATION_SERVICE_MARKET = 1 << 0,
+    STATION_SERVICE_REPAIR = 1 << 1,
+    STATION_SERVICE_OUTFIT = 1 << 2,
+};
+
 typedef struct {
     float x;
     float y;
@@ -32,14 +38,21 @@ typedef struct {
     vec2 pos;
     vec2 vel;
     float angle;
+    float hull;
     float cargo;
     float credits;
+    int mining_level;
+    int hold_level;
+    int tractor_level;
 } ship_t;
 
 typedef struct {
+    char name[32];
     vec2 pos;
     float radius;
     float dock_radius;
+    float ore_price;
+    uint32_t services;
 } station_t;
 
 typedef enum {
@@ -49,6 +62,13 @@ typedef enum {
     ASTEROID_TIER_S,
     ASTEROID_TIER_COUNT,
 } asteroid_tier_t;
+
+typedef enum {
+    SHIP_UPGRADE_MINING,
+    SHIP_UPGRADE_HOLD,
+    SHIP_UPGRADE_TRACTOR,
+    SHIP_UPGRADE_COUNT,
+} ship_upgrade_t;
 
 typedef struct {
     bool active;
@@ -83,7 +103,12 @@ typedef struct {
     float turn;
     float thrust;
     bool mine;
-    bool sell;
+    bool interact;
+    bool service_sell;
+    bool service_repair;
+    bool upgrade_mining;
+    bool upgrade_hold;
+    bool upgrade_tractor;
     bool reset;
 } input_intent_t;
 
@@ -102,6 +127,7 @@ typedef struct {
     bool beam_active;
     bool beam_hit;
     bool thrusting;
+    bool in_dock_range;
     bool docked;
     vec2 beam_start;
     vec2 beam_end;
@@ -128,10 +154,13 @@ static const float SHIP_ACCEL = 300.0f;
 static const float SHIP_BRAKE = 180.0f;
 static const float SHIP_TURN_SPEED = 2.75f;
 static const float SHIP_DRAG = 0.45f;
-static const float SHIP_CARGO_MAX = 120.0f;
+static const float SHIP_BASE_HULL = 100.0f;
+static const float SHIP_BASE_CARGO_MAX = 120.0f;
+static const float SHIP_HOLD_UPGRADE_STEP = 24.0f;
 static const float MINING_RANGE = 170.0f;
-static const float MINING_RATE = 28.0f;
-static const float ORE_PRICE = 12.0f;
+static const float SHIP_BASE_MINING_RATE = 28.0f;
+static const float SHIP_MINING_UPGRADE_STEP = 7.0f;
+static const float STATION_DEFAULT_ORE_PRICE = 12.0f;
 static const float HUD_MARGIN = 28.0f;
 static const float HUD_CELL = 8.0f;
 static const float SIM_DT = 1.0f / 120.0f;
@@ -141,11 +170,18 @@ static const float FIELD_ASTEROID_RESPAWN_DELAY = 1.4f;
 static const float FRACTURE_CHILD_CLEANUP_AGE = 22.0f;
 static const float FRACTURE_CHILD_CLEANUP_DISTANCE = 940.0f;
 static const float FRAGMENT_NEARBY_RANGE = 220.0f;
-static const float FRAGMENT_TRACTOR_RANGE = 150.0f;
-static const float FRAGMENT_COLLECT_RADIUS = 30.0f;
+static const float SHIP_BASE_TRACTOR_RANGE = 150.0f;
+static const float SHIP_TRACTOR_UPGRADE_STEP = 24.0f;
+static const float SHIP_BASE_COLLECT_RADIUS = 30.0f;
+static const float SHIP_COLLECT_UPGRADE_STEP = 5.0f;
 static const float FRAGMENT_TRACTOR_ACCEL = 380.0f;
 static const float FRAGMENT_MAX_SPEED = 210.0f;
 static const float COLLECTION_FEEDBACK_TIME = 1.1f;
+static const int SHIP_UPGRADE_MAX_LEVEL = 3;
+static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
+static const float STATION_DOCK_APPROACH_OFFSET = 34.0f;
+static const float SHIP_COLLISION_DAMAGE_THRESHOLD = 115.0f;
+static const float SHIP_COLLISION_DAMAGE_SCALE = 0.12f;
 
 static float clampf(float value, float min_value, float max_value) {
     if (value < min_value) {
@@ -289,8 +325,80 @@ static float asteroid_progress_ratio(const asteroid_t* asteroid) {
     return 0.0f;
 }
 
+static float ship_max_hull(void) {
+    return SHIP_BASE_HULL;
+}
+
+static float ship_cargo_capacity(void) {
+    return SHIP_BASE_CARGO_MAX + ((float)g.ship.hold_level * SHIP_HOLD_UPGRADE_STEP);
+}
+
+static float ship_mining_rate(void) {
+    return SHIP_BASE_MINING_RATE + ((float)g.ship.mining_level * SHIP_MINING_UPGRADE_STEP);
+}
+
+static float ship_tractor_range(void) {
+    return SHIP_BASE_TRACTOR_RANGE + ((float)g.ship.tractor_level * SHIP_TRACTOR_UPGRADE_STEP);
+}
+
+static float ship_collect_radius(void) {
+    return SHIP_BASE_COLLECT_RADIUS + ((float)g.ship.tractor_level * SHIP_COLLECT_UPGRADE_STEP);
+}
+
+static int ship_upgrade_level(ship_upgrade_t upgrade) {
+    switch (upgrade) {
+        case SHIP_UPGRADE_MINING:
+            return g.ship.mining_level;
+        case SHIP_UPGRADE_HOLD:
+            return g.ship.hold_level;
+        case SHIP_UPGRADE_TRACTOR:
+            return g.ship.tractor_level;
+        case SHIP_UPGRADE_COUNT:
+        default:
+            return 0;
+    }
+}
+
+static bool ship_upgrade_maxed(ship_upgrade_t upgrade) {
+    return ship_upgrade_level(upgrade) >= SHIP_UPGRADE_MAX_LEVEL;
+}
+
+static int ship_upgrade_cost(ship_upgrade_t upgrade) {
+    int level = ship_upgrade_level(upgrade);
+    switch (upgrade) {
+        case SHIP_UPGRADE_MINING:
+            return 110 + (level * 120);
+        case SHIP_UPGRADE_HOLD:
+            return 135 + (level * 145);
+        case SHIP_UPGRADE_TRACTOR:
+            return 95 + (level * 125);
+        case SHIP_UPGRADE_COUNT:
+        default:
+            return 0;
+    }
+}
+
+static vec2 station_dock_anchor(void) {
+    return v2_add(g.station.pos, v2(0.0f, -(g.station.radius + SHIP_RADIUS + STATION_DOCK_APPROACH_OFFSET)));
+}
+
+static bool station_has_service(uint32_t service) {
+    return (g.station.services & service) != 0;
+}
+
+static float station_cargo_sale_value(void) {
+    return g.ship.cargo * g.station.ore_price;
+}
+
+static float station_repair_cost(void) {
+    float missing_hull = fmaxf(0.0f, ship_max_hull() - g.ship.hull);
+    return ceilf(missing_hull * STATION_REPAIR_COST_PER_HULL);
+}
+
+static void apply_ship_damage(float damage);
+
 static float ship_cargo_space(void) {
-    return fmaxf(0.0f, SHIP_CARGO_MAX - g.ship.cargo);
+    return fmaxf(0.0f, ship_cargo_capacity() - g.ship.cargo);
 }
 
 static void clear_collection_feedback(void) {
@@ -578,18 +686,27 @@ static void reset_world(void) {
     g.ship.pos = v2(0.0f, -110.0f);
     g.ship.vel = v2(0.0f, 0.0f);
     g.ship.angle = PI_F * 0.5f;
+    g.ship.hull = ship_max_hull();
     g.ship.cargo = 0.0f;
     g.ship.credits = 0.0f;
+    g.ship.mining_level = 0;
+    g.ship.hold_level = 0;
+    g.ship.tractor_level = 0;
 
+    snprintf(g.station.name, sizeof(g.station.name), "%s", "Prospect Station");
     g.station.pos = v2(0.0f, 0.0f);
     g.station.radius = 58.0f;
     g.station.dock_radius = 125.0f;
+    g.station.ore_price = STATION_DEFAULT_ORE_PRICE;
+    g.station.services = STATION_SERVICE_MARKET | STATION_SERVICE_REPAIR | STATION_SERVICE_OUTFIT;
 
     g.hover_asteroid = -1;
     g.beam_active = false;
     g.beam_hit = false;
     g.thrusting = false;
+    g.in_dock_range = true;
     g.docked = true;
+    g.ship.pos = station_dock_anchor();
     g.notice[0] = '\0';
     g.notice_timer = 0.0f;
     g.nearby_fragments = 0;
@@ -608,7 +725,7 @@ static void reset_world(void) {
         spawn_field_asteroid(&g.asteroids[i]);
     }
 
-    set_notice("Crack rocks, sweep fragments, dock, sell.");
+    set_notice("%s services online. Press E to launch.", g.station.name);
 }
 
 static void draw_circle_filled(vec2 center, float radius, int segments, float r, float g0, float b, float a) {
@@ -685,7 +802,8 @@ static void draw_background(vec2 camera) {
 
 static void draw_station(void) {
     float pulse = 0.35f + (sinf(g.time * 2.5f) * 0.15f);
-    draw_circle_outline(g.station.pos, g.station.dock_radius, 48, 0.25f, 0.85f, 1.0f, 0.15f + pulse);
+    float dock_alpha = g.docked ? 0.62f : (g.in_dock_range ? 0.46f : 0.15f + pulse);
+    draw_circle_outline(g.station.pos, g.station.dock_radius, 48, 0.25f, 0.85f, 1.0f, dock_alpha);
     draw_circle_filled(g.station.pos, g.station.radius, 28, 0.08f, 0.12f, 0.17f, 1.0f);
     draw_circle_outline(g.station.pos, g.station.radius + 8.0f, 28, 0.45f, 0.85f, 1.0f, 0.9f);
     draw_circle_filled(g.station.pos, 18.0f, 18, 0.22f, 0.86f, 0.96f, 1.0f);
@@ -802,9 +920,9 @@ static void draw_ship_tractor_field(void) {
     }
 
     float pulse = 0.28f + (sinf(g.time * 7.0f) * 0.08f);
-    draw_circle_outline(g.ship.pos, FRAGMENT_TRACTOR_RANGE, 40, 0.24f, 0.86f, 1.0f, pulse);
+    draw_circle_outline(g.ship.pos, ship_tractor_range(), 40, 0.24f, 0.86f, 1.0f, pulse);
     if (g.tractor_fragments > 0) {
-        draw_circle_outline(g.ship.pos, FRAGMENT_COLLECT_RADIUS + 6.0f, 28, 0.50f, 1.0f, 0.82f, 0.75f);
+        draw_circle_outline(g.ship.pos, ship_collect_radius() + 6.0f, 28, 0.50f, 1.0f, 0.82f, 0.75f);
     }
 }
 
@@ -863,6 +981,70 @@ static void draw_ui_panel(float x, float y, float width, float height, float acc
     draw_rect_centered(v2(x + 54.0f, y + 12.0f), 40.0f, 1.5f, 0.28f, 0.74f + accent, 1.0f, 0.75f);
 }
 
+static void get_station_panel_rect(float* x, float* y, float* width, float* height) {
+    float screen_w = sapp_widthf();
+    float screen_h = sapp_heightf();
+    bool compact = screen_w < 760.0f;
+    float hud_margin = compact ? 16.0f : HUD_MARGIN;
+    float bottom_height = compact ? 30.0f : 34.0f;
+    float top_height = compact ? 92.0f : 106.0f;
+    float panel_width = fminf(compact ? (screen_w - (hud_margin * 2.0f)) : 560.0f, screen_w - (hud_margin * 2.0f));
+    float panel_height = compact ? 260.0f : 320.0f;
+    float panel_x = (screen_w - panel_width) * 0.5f;
+    float min_y = hud_margin + top_height + 16.0f;
+    float max_y = screen_h - hud_margin - bottom_height - panel_height - 14.0f;
+    float panel_y = clampf((screen_h - panel_height) * 0.5f, min_y, fmaxf(min_y, max_y));
+
+    *x = panel_x;
+    *y = panel_y;
+    *width = panel_width;
+    *height = panel_height;
+}
+
+static void draw_ui_scrim(float alpha) {
+    draw_rect_centered(v2(sapp_widthf() * 0.5f, sapp_heightf() * 0.5f), sapp_widthf() * 0.5f, sapp_heightf() * 0.5f, 0.01f, 0.03f, 0.06f, alpha);
+}
+
+static void draw_ui_meter(float x, float y, float width, float height, float fill, float r, float g0, float b) {
+    float clamped_fill = clampf(fill, 0.0f, 1.0f);
+    vec2 center = v2(x + (width * 0.5f), y + (height * 0.5f));
+
+    draw_rect_centered(center, width * 0.5f, height * 0.5f, 0.04f, 0.07f, 0.12f, 0.96f);
+    if (clamped_fill > 0.0f) {
+        float fill_width = width * clamped_fill;
+        draw_rect_centered(v2(x + (fill_width * 0.5f), y + (height * 0.5f)), fill_width * 0.5f, height * 0.5f, r, g0, b, 0.92f);
+    }
+    draw_rect_outline(center, width * 0.5f, height * 0.5f, 0.18f, 0.30f, 0.42f, 0.95f);
+}
+
+static void draw_upgrade_pips(float x, float y, int level, float r, float g0, float b) {
+    const float pip_w = 16.0f;
+    const float pip_h = 7.0f;
+    const float gap = 6.0f;
+
+    for (int i = 0; i < SHIP_UPGRADE_MAX_LEVEL; i++) {
+        float px = x + ((pip_w + gap) * (float)i);
+        float alpha = i < level ? 0.95f : 0.35f;
+        draw_rect_centered(v2(px + (pip_w * 0.5f), y + (pip_h * 0.5f)), pip_w * 0.5f, pip_h * 0.5f,
+            i < level ? r : 0.12f,
+            i < level ? g0 : 0.18f,
+            i < level ? b : 0.24f,
+            alpha);
+        draw_rect_outline(v2(px + (pip_w * 0.5f), y + (pip_h * 0.5f)), pip_w * 0.5f, pip_h * 0.5f, 0.18f, 0.30f, 0.42f, 0.88f);
+    }
+}
+
+static void draw_service_card(float x, float y, float width, float height, float accent_r, float accent_g, float accent_b, bool hot) {
+    vec2 center = v2(x + (width * 0.5f), y + (height * 0.5f));
+    float border_a = hot ? 0.96f : 0.62f;
+    float accent_a = hot ? 0.92f : 0.38f;
+    float body_tint = hot ? 0.11f : 0.07f;
+
+    draw_rect_centered(center, width * 0.5f, height * 0.5f, 0.03f, body_tint, 0.11f, 0.92f);
+    draw_rect_outline(center, width * 0.5f, height * 0.5f, accent_r * 0.45f, accent_g * 0.45f, accent_b * 0.45f, border_a);
+    draw_rect_centered(v2(x + 3.0f, y + (height * 0.5f)), 3.0f, height * 0.5f, accent_r, accent_g, accent_b, accent_a);
+}
+
 static void draw_hud_panels(void) {
     float screen_w = sapp_widthf();
     float screen_h = sapp_heightf();
@@ -875,6 +1057,254 @@ static void draw_hud_panels(void) {
     draw_ui_panel(hud_margin, hud_margin, top_width, top_height, 0.03f);
 
     draw_ui_panel(hud_margin, screen_h - hud_margin - bottom_height, screen_w - (hud_margin * 2.0f), bottom_height, 0.02f);
+
+    if (g.docked) {
+        float panel_x = 0.0f;
+        float panel_y = 0.0f;
+        float panel_w = 0.0f;
+        float panel_h = 0.0f;
+        float inner_x = 0.0f;
+        float inner_y = 0.0f;
+        float inner_w = 0.0f;
+        float inner_h = 0.0f;
+        float market_x = 0.0f;
+        float market_y = 0.0f;
+        float market_w = 0.0f;
+        float market_h = 0.0f;
+        float services_x = 0.0f;
+        float services_y = 0.0f;
+        float services_w = 0.0f;
+        float services_h = 0.0f;
+        float fit_x = 0.0f;
+        float fit_y = 0.0f;
+        float fit_w = 0.0f;
+        float fit_h = 0.0f;
+        float card_gap = compact ? 3.0f : 8.0f;
+        float card_h = compact ? 16.0f : 30.0f;
+        float sell_y = 0.0f;
+        float repair_y = 0.0f;
+        float mining_y = 0.0f;
+        float hold_y = 0.0f;
+        float tractor_y = 0.0f;
+        bool can_sell = station_has_service(STATION_SERVICE_MARKET) && (g.ship.cargo > 0.01f);
+        bool can_repair = station_has_service(STATION_SERVICE_REPAIR) && (station_repair_cost() > 0.0f) && (g.ship.credits + 0.01f >= station_repair_cost());
+        bool can_upgrade_mining = station_has_service(STATION_SERVICE_OUTFIT) && !ship_upgrade_maxed(SHIP_UPGRADE_MINING) && (g.ship.credits + 0.01f >= (float)ship_upgrade_cost(SHIP_UPGRADE_MINING));
+        bool can_upgrade_hold = station_has_service(STATION_SERVICE_OUTFIT) && !ship_upgrade_maxed(SHIP_UPGRADE_HOLD) && (g.ship.credits + 0.01f >= (float)ship_upgrade_cost(SHIP_UPGRADE_HOLD));
+        bool can_upgrade_tractor = station_has_service(STATION_SERVICE_OUTFIT) && !ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR) && (g.ship.credits + 0.01f >= (float)ship_upgrade_cost(SHIP_UPGRADE_TRACTOR));
+
+        get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
+        draw_ui_scrim(0.44f);
+        draw_ui_panel(panel_x, panel_y, panel_w, panel_h, 0.08f);
+
+        inner_x = panel_x + 18.0f;
+        inner_y = panel_y + 18.0f;
+        inner_w = panel_w - 36.0f;
+        inner_h = panel_h - 36.0f;
+
+        fit_w = compact ? inner_w : 180.0f;
+        fit_x = compact ? inner_x : (panel_x + panel_w - fit_w - 18.0f);
+        fit_y = inner_y + 34.0f;
+        fit_h = compact ? 94.0f : (inner_h - 34.0f);
+
+        market_x = inner_x;
+        market_y = fit_y;
+        market_w = compact ? inner_w : (fit_x - inner_x - 14.0f);
+        market_h = compact ? 60.0f : 76.0f;
+
+        services_x = inner_x;
+        services_y = market_y + market_h + 12.0f;
+        services_w = compact ? inner_w : market_w;
+        services_h = compact ? 112.0f : (panel_y + panel_h - 18.0f - services_y);
+
+        draw_ui_panel(market_x, market_y, market_w, market_h, 0.04f);
+        draw_ui_panel(services_x, services_y, services_w, services_h, 0.03f);
+        draw_ui_panel(fit_x, fit_y, fit_w, fit_h, 0.05f);
+
+        sell_y = services_y + 14.0f;
+        repair_y = sell_y + card_h + card_gap;
+        mining_y = repair_y + card_h + card_gap;
+        hold_y = mining_y + card_h + card_gap;
+        tractor_y = hold_y + card_h + card_gap;
+
+        draw_service_card(services_x + 12.0f, sell_y, services_w - 24.0f, card_h, 0.24f, 0.90f, 0.70f, can_sell);
+        draw_service_card(services_x + 12.0f, repair_y, services_w - 24.0f, card_h, 0.98f, 0.72f, 0.26f, can_repair);
+        draw_service_card(services_x + 12.0f, mining_y, services_w - 24.0f, card_h, 0.34f, 0.88f, 1.0f, can_upgrade_mining);
+        draw_service_card(services_x + 12.0f, hold_y, services_w - 24.0f, card_h, 0.50f, 0.82f, 1.0f, can_upgrade_hold);
+        draw_service_card(services_x + 12.0f, tractor_y, services_w - 24.0f, card_h, 0.42f, 1.0f, 0.86f, can_upgrade_tractor);
+
+        draw_ui_meter(fit_x + 16.0f, fit_y + 54.0f, fit_w - 32.0f, 12.0f, g.ship.hull / ship_max_hull(), 0.96f, 0.54f, 0.28f);
+        draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, g.ship.cargo / fmaxf(1.0f, ship_cargo_capacity()), 0.26f, 0.90f, 0.72f);
+        if (!compact) {
+            draw_upgrade_pips(fit_x + 18.0f, fit_y + 146.0f, g.ship.mining_level, 0.34f, 0.88f, 1.0f);
+            draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.ship.hold_level, 0.50f, 0.82f, 1.0f);
+            draw_upgrade_pips(fit_x + 18.0f, fit_y + 222.0f, g.ship.tractor_level, 0.42f, 1.0f, 0.86f);
+        }
+    }
+}
+
+static void draw_station_services(void) {
+    if (!g.docked) {
+        return;
+    }
+
+    float panel_x = 0.0f;
+    float panel_y = 0.0f;
+    float panel_w = 0.0f;
+    float panel_h = 0.0f;
+    float inner_x = 0.0f;
+    float inner_y = 0.0f;
+    float inner_w = 0.0f;
+    float market_x = 0.0f;
+    float market_y = 0.0f;
+    float market_h = 0.0f;
+    float services_x = 0.0f;
+    float services_y = 0.0f;
+    float fit_x = 0.0f;
+    float fit_y = 0.0f;
+    float fit_w = 0.0f;
+    float card_gap = 0.0f;
+    float card_h = 0.0f;
+    float sell_y = 0.0f;
+    float repair_y = 0.0f;
+    float mining_y = 0.0f;
+    float hold_y = 0.0f;
+    float tractor_y = 0.0f;
+    bool compact = sapp_widthf() < 760.0f;
+    int hull_now = (int)lroundf(g.ship.hull);
+    int hull_max = (int)lroundf(ship_max_hull());
+    int cargo_units = (int)lroundf(g.ship.cargo);
+    int cargo_capacity = (int)lroundf(ship_cargo_capacity());
+    int payout = (int)lroundf(station_cargo_sale_value());
+    int ore_price = (int)lroundf(g.station.ore_price);
+    int repair_cost = (int)lroundf(station_repair_cost());
+    int mining_cost = ship_upgrade_cost(SHIP_UPGRADE_MINING);
+    int hold_cost = ship_upgrade_cost(SHIP_UPGRADE_HOLD);
+    int tractor_cost = ship_upgrade_cost(SHIP_UPGRADE_TRACTOR);
+
+    get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
+    inner_x = panel_x + 18.0f;
+    inner_y = panel_y + 18.0f;
+    inner_w = panel_w - 36.0f;
+    fit_w = compact ? inner_w : 180.0f;
+    fit_x = compact ? inner_x : (panel_x + panel_w - fit_w - 18.0f);
+    fit_y = inner_y + 34.0f;
+    market_x = inner_x;
+    market_y = fit_y;
+    market_h = compact ? 60.0f : 76.0f;
+    services_x = inner_x;
+    services_y = market_y + market_h + 12.0f;
+    card_gap = compact ? 3.0f : 8.0f;
+    card_h = compact ? 16.0f : 30.0f;
+    sell_y = services_y + 14.0f;
+    repair_y = sell_y + card_h + card_gap;
+    mining_y = repair_y + card_h + card_gap;
+    hold_y = mining_y + card_h + card_gap;
+    tractor_y = hold_y + card_h + card_gap;
+
+    sdtx_color3b(232, 241, 255);
+    sdtx_pos((panel_x + 20.0f) / HUD_CELL, (panel_y + 18.0f) / HUD_CELL);
+    sdtx_puts(g.station.name);
+    sdtx_pos((panel_x + 20.0f) / HUD_CELL, (panel_y + 34.0f) / HUD_CELL);
+    sdtx_color3b(118, 255, 221);
+    sdtx_puts("RUN HUB // market, repair, outfit");
+
+    sdtx_pos((panel_x + panel_w - (compact ? 132.0f : 156.0f)) / HUD_CELL, (panel_y + 18.0f) / HUD_CELL);
+    sdtx_color3b(203, 220, 248);
+    sdtx_printf("BOARD %d CR", ore_price);
+    sdtx_pos((panel_x + panel_w - (compact ? 132.0f : 156.0f)) / HUD_CELL, (panel_y + 34.0f) / HUD_CELL);
+    sdtx_color3b(145, 160, 188);
+    sdtx_puts("Press E to launch");
+
+    sdtx_pos((market_x + 16.0f) / HUD_CELL, (market_y + 16.0f) / HUD_CELL);
+    sdtx_color3b(130, 255, 235);
+    sdtx_puts("Cargo board");
+    sdtx_pos((market_x + 16.0f) / HUD_CELL, (market_y + 34.0f) / HUD_CELL);
+    sdtx_color3b(203, 220, 248);
+    if (compact) {
+        sdtx_printf("Ore %d/%d  Payout %d", cargo_units, cargo_capacity, payout);
+    } else {
+        sdtx_printf("Ore manifest %d/%d units   Payout preview %d cr", cargo_units, cargo_capacity, payout);
+    }
+    sdtx_pos((market_x + 16.0f) / HUD_CELL, (market_y + 50.0f) / HUD_CELL);
+    sdtx_color3b(145, 160, 188);
+    if (cargo_units > 0) {
+        sdtx_puts("Return value is locked before you sell.");
+    } else {
+        sdtx_puts("Bring in fragments from the belt to post a sale.");
+    }
+
+    sdtx_pos((services_x + 16.0f) / HUD_CELL, (services_y + 16.0f) / HUD_CELL);
+    sdtx_color3b(130, 255, 235);
+    sdtx_puts("Service bay");
+
+    sdtx_pos((services_x + 24.0f) / HUD_CELL, (sell_y + (compact ? 4.0f : 9.0f)) / HUD_CELL);
+    sdtx_color3b(cargo_units > 0 ? 114 : 169, cargo_units > 0 ? 255 : 179, cargo_units > 0 ? 192 : 204);
+    sdtx_printf("[1] Sell cargo manifest      %s", cargo_units > 0 ? "ready" : "empty");
+
+    sdtx_pos((services_x + 24.0f) / HUD_CELL, (repair_y + (compact ? 4.0f : 9.0f)) / HUD_CELL);
+    if (repair_cost > 0) {
+        sdtx_color3b(255, 221, 119);
+        sdtx_printf("[2] Repair hull             %d cr", repair_cost);
+    } else {
+        sdtx_color3b(169, 179, 204);
+        sdtx_puts("[2] Repair hull             nominal");
+    }
+
+    sdtx_pos((services_x + 24.0f) / HUD_CELL, (mining_y + (compact ? 4.0f : 9.0f)) / HUD_CELL);
+    if (ship_upgrade_maxed(SHIP_UPGRADE_MINING)) {
+        sdtx_color3b(169, 179, 204);
+        sdtx_puts("[3] Mining lattice          maxed");
+    } else {
+        sdtx_color3b(203, 220, 248);
+        sdtx_printf("[3] Mining lattice          %d cr", mining_cost);
+    }
+
+    sdtx_pos((services_x + 24.0f) / HUD_CELL, (hold_y + (compact ? 4.0f : 9.0f)) / HUD_CELL);
+    if (ship_upgrade_maxed(SHIP_UPGRADE_HOLD)) {
+        sdtx_color3b(169, 179, 204);
+        sdtx_puts("[4] Cargo racks             maxed");
+    } else {
+        sdtx_color3b(203, 220, 248);
+        sdtx_printf("[4] Cargo racks             %d cr", hold_cost);
+    }
+
+    sdtx_pos((services_x + 24.0f) / HUD_CELL, (tractor_y + (compact ? 4.0f : 9.0f)) / HUD_CELL);
+    if (ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR)) {
+        sdtx_color3b(169, 179, 204);
+        sdtx_puts("[5] Tractor field           maxed");
+    } else {
+        sdtx_color3b(203, 220, 248);
+        sdtx_printf("[5] Tractor field           %d cr", tractor_cost);
+    }
+
+    sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 16.0f) / HUD_CELL);
+    sdtx_color3b(130, 255, 235);
+    sdtx_puts("Ship fit");
+    sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 34.0f) / HUD_CELL);
+    sdtx_color3b(203, 220, 248);
+    if (compact) {
+        sdtx_printf("Hull %d/%d  Hold %d/%d", hull_now, hull_max, cargo_units, cargo_capacity);
+        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 74.0f) / HUD_CELL);
+        sdtx_color3b(145, 160, 188);
+        sdtx_printf("Laser %d/s  Tractor %du", (int)lroundf(ship_mining_rate()), (int)lroundf(ship_tractor_range()));
+        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 92.0f) / HUD_CELL);
+        sdtx_printf("Upgrades L%d H%d T%d", g.ship.mining_level, g.ship.hold_level, g.ship.tractor_level);
+    } else {
+        sdtx_printf("Hull %d/%d", hull_now, hull_max);
+        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 74.0f) / HUD_CELL);
+        sdtx_color3b(203, 220, 248);
+        sdtx_printf("Cargo %d/%d", cargo_units, cargo_capacity);
+        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 126.0f) / HUD_CELL);
+        sdtx_color3b(145, 160, 188);
+        sdtx_printf("Mining %d ore/sec", (int)lroundf(ship_mining_rate()));
+        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 164.0f) / HUD_CELL);
+        sdtx_printf("Hold capacity %d ore", cargo_capacity);
+        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 202.0f) / HUD_CELL);
+        sdtx_printf("Tractor range %d u", (int)lroundf(ship_tractor_range()));
+        sdtx_pos((fit_x + 16.0f) / HUD_CELL, (fit_y + 240.0f) / HUD_CELL);
+        sdtx_color3b(169, 179, 204);
+        sdtx_puts("Every upgrade carries into the next sortie.");
+    }
 }
 
 static void draw_hud(void) {
@@ -885,10 +1315,13 @@ static void draw_hud(void) {
     float left_text_x = (hud_margin + 18.0f) / HUD_CELL;
     float top_text_y = (hud_margin + 18.0f) / HUD_CELL;
     float bottom_text_y = (screen_h - hud_margin - 20.0f) / HUD_CELL;
+    int hull_units = (int)lroundf(g.ship.hull);
+    int hull_capacity = (int)lroundf(ship_max_hull());
     int cargo_units = (int)lroundf(g.ship.cargo);
     int credits = (int)lroundf(g.ship.credits);
     int station_distance = (int)lroundf(v2_len(v2_sub(g.station.pos, g.ship.pos)));
-    int cargo_capacity = (int)SHIP_CARGO_MAX;
+    int cargo_capacity = (int)lroundf(ship_cargo_capacity());
+    int payout_preview = (int)lroundf(station_cargo_sale_value());
 
     vec2 forward = v2_from_angle(g.ship.angle);
     vec2 home = v2_norm(v2_sub(g.station.pos, g.ship.pos));
@@ -915,18 +1348,25 @@ static void draw_hud(void) {
 
     sdtx_color3b(203, 220, 248);
     if (compact) {
-        sdtx_printf("CR %d  CARGO %d/%d", credits, cargo_units, cargo_capacity);
+        sdtx_printf("CR %d  H %d/%d  C %d/%d", credits, hull_units, hull_capacity, cargo_units, cargo_capacity);
     } else {
-        sdtx_printf("Credits %d cr   Cargo %d/%d ore", credits, cargo_units, cargo_capacity);
+        sdtx_printf("Credits %d cr   Hull %d/%d   Cargo %d/%d ore", credits, hull_units, hull_capacity, cargo_units, cargo_capacity);
     }
     sdtx_crlf();
 
     if (g.docked) {
         sdtx_color3b(112, 255, 214);
         if (compact) {
-            sdtx_puts("Station docked, press E to sell");
+            sdtx_puts("Docked. Press E to launch");
         } else {
-            sdtx_puts("Station docked. Press E to sell cargo.");
+            sdtx_printf("Docked at %s. Press E to launch.", g.station.name);
+        }
+    } else if (g.in_dock_range) {
+        sdtx_color3b(112, 255, 214);
+        if (compact) {
+            sdtx_puts("Dock ring hot, press E to dock");
+        } else {
+            sdtx_printf("%s docking ring acquired. Press E to dock.", g.station.name);
         }
     } else {
         sdtx_color3b(199, 222, 255);
@@ -938,7 +1378,10 @@ static void draw_hud(void) {
     }
     sdtx_crlf();
 
-    if ((g.hover_asteroid >= 0) && g.asteroids[g.hover_asteroid].active) {
+    if (g.docked) {
+        sdtx_color3b(130, 255, 235);
+        sdtx_printf("Cargo board ready. Current payout preview %d cr.", payout_preview);
+    } else if ((g.hover_asteroid >= 0) && g.asteroids[g.hover_asteroid].active) {
         const asteroid_t* asteroid = &g.asteroids[g.hover_asteroid];
         int integrity_left = (int)lroundf(asteroid->hp);
         sdtx_color3b(130, 255, 235);
@@ -956,7 +1399,15 @@ static void draw_hud(void) {
     }
     sdtx_crlf();
 
-    if (g.collection_feedback_timer > 0.0f) {
+    if (g.docked) {
+        if (g.notice_timer > 0.0f) {
+            sdtx_color3b(114, 255, 192);
+            sdtx_puts(g.notice);
+        } else {
+            sdtx_color3b(164, 177, 205);
+            sdtx_puts("Sell, repair, refit, then launch the next sortie.");
+        }
+    } else if (g.collection_feedback_timer > 0.0f) {
         int recovered_ore = (int)lroundf(g.collection_feedback_ore);
         sdtx_color3b(114, 255, 192);
         if (g.collection_feedback_fragments > 0) {
@@ -987,7 +1438,13 @@ static void draw_hud(void) {
 
     sdtx_pos(left_text_x, bottom_text_y);
     sdtx_color3b(145, 160, 188);
-    sdtx_puts("W/S thrust  A/D turn  SPACE mine  E sell  R reset  ESC quit");
+    if (g.docked) {
+        sdtx_puts("1 sell  2 repair  3 laser  4 hold  5 tractor  E launch  R reset  ESC quit");
+    } else {
+        sdtx_puts("W/S thrust  A/D turn  SPACE mine  E dock  R reset  ESC quit");
+    }
+
+    draw_station_services();
 }
 
 static void resolve_ship_circle(vec2 center, float radius) {
@@ -1005,6 +1462,10 @@ static void resolve_ship_circle(vec2 center, float radius) {
 
     float velocity_towards_surface = v2_dot(g.ship.vel, normal);
     if (velocity_towards_surface < 0.0f) {
+        float impact_speed = -velocity_towards_surface;
+        if (!g.docked && (impact_speed > SHIP_COLLISION_DAMAGE_THRESHOLD)) {
+            apply_ship_damage((impact_speed - SHIP_COLLISION_DAMAGE_THRESHOLD) * SHIP_COLLISION_DAMAGE_SCALE);
+        }
         g.ship.vel = v2_sub(g.ship.vel, v2_scale(normal, velocity_towards_surface * 1.2f));
     }
 }
@@ -1054,6 +1515,157 @@ static vec2 ship_muzzle(vec2 forward) {
     return v2_add(g.ship.pos, v2_scale(forward, SHIP_RADIUS + 8.0f));
 }
 
+static bool try_spend_credits(float amount) {
+    if (amount <= 0.0f) {
+        return true;
+    }
+    if (g.ship.credits + 0.01f < amount) {
+        return false;
+    }
+    g.ship.credits = fmaxf(0.0f, g.ship.credits - amount);
+    return true;
+}
+
+static void anchor_ship_in_station(void) {
+    g.ship.pos = station_dock_anchor();
+    g.ship.vel = v2(0.0f, 0.0f);
+}
+
+static void dock_ship(void) {
+    g.docked = true;
+    g.in_dock_range = true;
+    anchor_ship_in_station();
+    set_notice("Docked at %s.", g.station.name);
+}
+
+static void launch_ship(void) {
+    g.docked = false;
+    g.in_dock_range = true;
+    anchor_ship_in_station();
+    set_notice("Launch corridor clear. Press thrust when ready.");
+}
+
+static void emergency_recover_ship(void) {
+    int lost_units = (int)lroundf(g.ship.cargo);
+    g.ship.cargo = 0.0f;
+    g.ship.hull = ship_max_hull();
+    g.ship.angle = PI_F * 0.5f;
+    dock_ship();
+    if (lost_units > 0) {
+        set_notice("Tow drones recovered the hull. Lost %d ore in the breach.", lost_units);
+    } else {
+        set_notice("Tow drones recovered the hull. Repair crews have you docked.");
+    }
+}
+
+static void apply_ship_damage(float damage) {
+    if (damage <= 0.0f) {
+        return;
+    }
+
+    g.ship.hull = fmaxf(0.0f, g.ship.hull - damage);
+    if (g.ship.hull <= 0.01f) {
+        emergency_recover_ship();
+    }
+}
+
+static void try_sell_station_cargo(void) {
+    if (!station_has_service(STATION_SERVICE_MARKET)) {
+        set_notice("%s has no cargo market online.", g.station.name);
+        return;
+    }
+    if (g.ship.cargo <= 0.01f) {
+        set_notice("Cargo hold empty.");
+        return;
+    }
+
+    int sold_units = (int)lroundf(g.ship.cargo);
+    int payout = (int)lroundf(station_cargo_sale_value());
+    g.ship.credits += station_cargo_sale_value();
+    g.ship.cargo = 0.0f;
+    set_notice("Sold %d ore for %d cr.", sold_units, payout);
+}
+
+static void try_repair_ship(void) {
+    float repair_cost = station_repair_cost();
+    if (!station_has_service(STATION_SERVICE_REPAIR)) {
+        set_notice("%s repair crews are offline.", g.station.name);
+        return;
+    }
+    if (repair_cost <= 0.0f) {
+        set_notice("Hull already nominal.");
+        return;
+    }
+    if (!try_spend_credits(repair_cost)) {
+        set_notice("Need %d cr for hull repair.", (int)lroundf(repair_cost));
+        return;
+    }
+
+    g.ship.hull = ship_max_hull();
+    set_notice("Hull restored for %d cr.", (int)lroundf(repair_cost));
+}
+
+static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
+    if (!station_has_service(STATION_SERVICE_OUTFIT)) {
+        set_notice("%s outfitting bay is offline.", g.station.name);
+        return;
+    }
+    if (ship_upgrade_maxed(upgrade)) {
+        switch (upgrade) {
+            case SHIP_UPGRADE_MINING:
+                set_notice("Mining lattice already tuned to spec.");
+                break;
+            case SHIP_UPGRADE_HOLD:
+                set_notice("Cargo racks already at station limit.");
+                break;
+            case SHIP_UPGRADE_TRACTOR:
+                set_notice("Tractor field already at station limit.");
+                break;
+            case SHIP_UPGRADE_COUNT:
+            default:
+                break;
+        }
+        return;
+    }
+
+    int cost = ship_upgrade_cost(upgrade);
+    if (!try_spend_credits((float)cost)) {
+        switch (upgrade) {
+            case SHIP_UPGRADE_MINING:
+                set_notice("Need %d cr to retune the mining lattice.", cost);
+                break;
+            case SHIP_UPGRADE_HOLD:
+                set_notice("Need %d cr for expanded cargo racks.", cost);
+                break;
+            case SHIP_UPGRADE_TRACTOR:
+                set_notice("Need %d cr for a tractor field retune.", cost);
+                break;
+            case SHIP_UPGRADE_COUNT:
+            default:
+                break;
+        }
+        return;
+    }
+
+    switch (upgrade) {
+        case SHIP_UPGRADE_MINING:
+            g.ship.mining_level++;
+            set_notice("Mining lattice tuned. Beam output now %d ore/sec.", (int)lroundf(ship_mining_rate()));
+            break;
+        case SHIP_UPGRADE_HOLD:
+            g.ship.hold_level++;
+            set_notice("Cargo racks expanded. Hold now fits %d ore.", (int)lroundf(ship_cargo_capacity()));
+            break;
+        case SHIP_UPGRADE_TRACTOR:
+            g.ship.tractor_level++;
+            set_notice("Tractor field widened to %d units.", (int)lroundf(ship_tractor_range()));
+            break;
+        case SHIP_UPGRADE_COUNT:
+        default:
+            break;
+    }
+}
+
 static void reset_step_feedback(void) {
     g.hover_asteroid = -1;
     g.beam_active = false;
@@ -1080,7 +1692,12 @@ static input_intent_t sample_input_intent(void) {
     }
 
     intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
-    intent.sell = is_key_pressed(SAPP_KEYCODE_E);
+    intent.interact = is_key_pressed(SAPP_KEYCODE_E);
+    intent.service_sell = is_key_pressed(SAPP_KEYCODE_1);
+    intent.service_repair = is_key_pressed(SAPP_KEYCODE_2);
+    intent.upgrade_mining = is_key_pressed(SAPP_KEYCODE_3);
+    intent.upgrade_hold = is_key_pressed(SAPP_KEYCODE_4);
+    intent.upgrade_tractor = is_key_pressed(SAPP_KEYCODE_5);
     intent.reset = is_key_pressed(SAPP_KEYCODE_R);
     return intent;
 }
@@ -1151,9 +1768,15 @@ static void resolve_world_collisions(void) {
 }
 
 static void update_docking_state(float dt) {
-    float dock_radius_sq = g.station.dock_radius * g.station.dock_radius;
-    g.docked = v2_dist_sq(g.ship.pos, g.station.pos) <= dock_radius_sq;
     if (g.docked) {
+        g.in_dock_range = true;
+        anchor_ship_in_station();
+        return;
+    }
+
+    float dock_radius_sq = g.station.dock_radius * g.station.dock_radius;
+    g.in_dock_range = v2_dist_sq(g.ship.pos, g.station.pos) <= dock_radius_sq;
+    if (g.in_dock_range) {
         g.ship.vel = v2_scale(g.ship.vel, 1.0f / (1.0f + (dt * 2.2f)));
     }
 }
@@ -1164,7 +1787,8 @@ static void update_targeting_state(vec2 forward) {
 
 static void step_fragment_collection(float dt) {
     float nearby_range_sq = FRAGMENT_NEARBY_RANGE * FRAGMENT_NEARBY_RANGE;
-    float tractor_range_sq = FRAGMENT_TRACTOR_RANGE * FRAGMENT_TRACTOR_RANGE;
+    float tractor_range = ship_tractor_range();
+    float tractor_range_sq = tractor_range * tractor_range;
     float cargo_space = ship_cargo_space();
     float collected_ore = 0.0f;
     int collected_fragments = 0;
@@ -1187,7 +1811,7 @@ static void step_fragment_collection(float dt) {
 
         if (distance_sq <= tractor_range_sq) {
             float distance = sqrtf(distance_sq);
-            float pull_ratio = 1.0f - clampf(distance / FRAGMENT_TRACTOR_RANGE, 0.0f, 1.0f);
+            float pull_ratio = 1.0f - clampf(distance / tractor_range, 0.0f, 1.0f);
             vec2 pull_dir = distance > 0.001f ? v2_scale(to_ship, 1.0f / distance) : ship_forward();
             g.tractor_fragments++;
             asteroid->vel = v2_add(asteroid->vel, v2_scale(pull_dir, FRAGMENT_TRACTOR_ACCEL * lerpf(0.35f, 1.0f, pull_ratio) * dt));
@@ -1197,7 +1821,7 @@ static void step_fragment_collection(float dt) {
             }
         }
 
-        float collect_radius = FRAGMENT_COLLECT_RADIUS + asteroid->radius;
+        float collect_radius = ship_collect_radius() + asteroid->radius;
         if (distance_sq <= (collect_radius * collect_radius)) {
             float recovered = fminf(asteroid->ore, cargo_space);
             if (recovered <= 0.0f) {
@@ -1237,7 +1861,7 @@ static void step_mining_system(float dt, bool mining, vec2 forward) {
         g.beam_end = v2_sub(asteroid->pos, v2_scale(normal, asteroid->radius * 0.85f));
         g.beam_hit = true;
 
-        float mined = MINING_RATE * dt;
+        float mined = ship_mining_rate() * dt;
         if (mined > 0.0f) {
             mined = fminf(mined, asteroid->hp);
             asteroid->hp -= mined;
@@ -1250,21 +1874,34 @@ static void step_mining_system(float dt, bool mining, vec2 forward) {
     }
 }
 
-static void step_station_interaction_system(bool sell) {
-    if (!sell) {
+static void step_station_interaction_system(const input_intent_t* intent) {
+    if (intent->interact) {
+        if (g.docked) {
+            launch_ship();
+            return;
+        }
+        if (!g.in_dock_range) {
+            set_notice("Enter station ring to dock.");
+            return;
+        }
+        dock_ship();
         return;
     }
 
     if (!g.docked) {
-        set_notice("Enter station ring to sell.");
-    } else if (g.ship.cargo <= 0.01f) {
-        set_notice("Cargo hold empty.");
-    } else {
-        int sold_units = (int)lroundf(g.ship.cargo);
-        int payout = (int)lroundf(g.ship.cargo * ORE_PRICE);
-        g.ship.credits += g.ship.cargo * ORE_PRICE;
-        g.ship.cargo = 0.0f;
-        set_notice("Sold %d ore for %d cr.", sold_units, payout);
+        return;
+    }
+
+    if (intent->service_sell) {
+        try_sell_station_cargo();
+    } else if (intent->service_repair) {
+        try_repair_ship();
+    } else if (intent->upgrade_mining) {
+        try_apply_ship_upgrade(SHIP_UPGRADE_MINING);
+    } else if (intent->upgrade_hold) {
+        try_apply_ship_upgrade(SHIP_UPGRADE_HOLD);
+    } else if (intent->upgrade_tractor) {
+        try_apply_ship_upgrade(SHIP_UPGRADE_TRACTOR);
     }
 }
 
@@ -1292,20 +1929,27 @@ static void sim_step(float dt) {
         return;
     }
 
-    step_ship_rotation(dt, intent.turn);
-    vec2 forward = ship_forward();
-    step_ship_thrust(dt, intent.thrust, forward);
-    step_ship_motion(dt);
     step_asteroid_dynamics(dt);
     maintain_asteroid_field(dt);
-    resolve_world_collisions();
-    update_docking_state(dt);
 
-    forward = ship_forward();
-    update_targeting_state(forward);
-    step_mining_system(dt, intent.mine, forward);
-    step_fragment_collection(dt);
-    step_station_interaction_system(intent.sell);
+    if (!g.docked) {
+        step_ship_rotation(dt, intent.turn);
+        vec2 forward = ship_forward();
+        step_ship_thrust(dt, intent.thrust, forward);
+        step_ship_motion(dt);
+        resolve_world_collisions();
+    }
+
+    update_docking_state(dt);
+    step_station_interaction_system(&intent);
+
+    if (!g.docked) {
+        vec2 forward = ship_forward();
+        update_targeting_state(forward);
+        step_mining_system(dt, intent.mine, forward);
+        step_fragment_collection(dt);
+    }
+
     step_notice_timer(dt);
     consume_pressed_input();
 }

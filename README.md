@@ -4,7 +4,9 @@ A small C + Sokol prototype with a simple mining loop:
 
 - Fly a ship with `W/S` and `A/D`
 - Line up asteroids and hold `Space` to mine ore
-- Return to the station ring and press `E` to sell cargo
+- Sweep through fragments to pull them into the hold
+- Enter the station ring, press `E` to dock, then use station services:
+  `1` sell cargo, `2` repair, `3` mining upgrade, `4` cargo upgrade, `5` tractor upgrade
 
 ## Build
 
