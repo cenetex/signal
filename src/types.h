@@ -190,6 +190,8 @@ typedef struct {
     float sweep;
     float gain;
     float pan;
+    float pan_l;
+    float pan_r;
     float duration;
     float age;
     float noise_mix;

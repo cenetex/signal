@@ -1219,14 +1219,23 @@ static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
 
     sgl_c4f(body_r, body_g, body_b, 1.0f);
     sgl_begin_triangles();
-    for (int i = 0; i < segments; i++) {
-        float a0 = asteroid->rotation + ((float)i / (float)segments) * TWO_PI_F;
-        float a1 = asteroid->rotation + ((float)(i + 1) / (float)segments) * TWO_PI_F;
+    {
+        float step = TWO_PI_F / (float)segments;
+        float a0 = asteroid->rotation;
         float r0 = asteroid_profile(asteroid, a0);
-        float r1 = asteroid_profile(asteroid, a1);
-        sgl_v2f(asteroid->pos.x, asteroid->pos.y);
-        sgl_v2f(asteroid->pos.x + cosf(a0) * r0, asteroid->pos.y + sinf(a0) * r0);
-        sgl_v2f(asteroid->pos.x + cosf(a1) * r1, asteroid->pos.y + sinf(a1) * r1);
+        float prev_x = asteroid->pos.x + cosf(a0) * r0;
+        float prev_y = asteroid->pos.y + sinf(a0) * r0;
+        for (int i = 1; i <= segments; i++) {
+            float a1 = asteroid->rotation + (float)i * step;
+            float r1 = asteroid_profile(asteroid, a1);
+            float cx = asteroid->pos.x + cosf(a1) * r1;
+            float cy = asteroid->pos.y + sinf(a1) * r1;
+            sgl_v2f(asteroid->pos.x, asteroid->pos.y);
+            sgl_v2f(prev_x, prev_y);
+            sgl_v2f(cx, cy);
+            prev_x = cx;
+            prev_y = cy;
+        }
     }
     sgl_end();
 

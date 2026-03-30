@@ -26,18 +26,23 @@ static void audio_play_voice(audio_state_t* a, audio_wave_t wave, float frequenc
     if (!a->valid) return;
     for (int i = 0; i < AUDIO_VOICE_COUNT; i++) {
         if (a->voices[i].active) continue;
-        a->voices[i] = (audio_voice_t){
-            .active = true,
-            .wave = wave,
-            .phase = audio_randf(a),
-            .frequency = frequency,
-            .sweep = sweep,
-            .gain = gain,
-            .pan = clampf(pan, -1.0f, 1.0f),
-            .duration = fmaxf(duration, 0.02f),
-            .age = 0.0f,
-            .noise_mix = clampf(noise_mix, 0.0f, 1.0f),
-        };
+        {
+            float clamped_pan = clampf(pan, -1.0f, 1.0f);
+            a->voices[i] = (audio_voice_t){
+                .active = true,
+                .wave = wave,
+                .phase = audio_randf(a),
+                .frequency = frequency,
+                .sweep = sweep,
+                .gain = gain,
+                .pan = clamped_pan,
+                .pan_l = sqrtf(0.5f * (1.0f - clamped_pan)),
+                .pan_r = sqrtf(0.5f * (1.0f + clamped_pan)),
+                .duration = fmaxf(duration, 0.02f),
+                .age = 0.0f,
+                .noise_mix = clampf(noise_mix, 0.0f, 1.0f),
+            };
+        }
         return;
     }
 }
@@ -118,9 +123,8 @@ void audio_generate_stream(audio_state_t* a) {
                 if (channels == 1) {
                     left += sample;
                 } else {
-                    float pan = clampf(v->pan, -1.0f, 1.0f);
-                    left += sample * sqrtf(0.5f * (1.0f - pan));
-                    right += sample * sqrtf(0.5f * (1.0f + pan));
+                    left += sample * v->pan_l;
+                    right += sample * v->pan_r;
                 }
 
                 v->frequency = fmaxf(45.0f, v->frequency + (v->sweep * sample_dt));

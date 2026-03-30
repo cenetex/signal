@@ -6,12 +6,18 @@
 void draw_circle_filled(vec2 center, float radius, int segments, float r, float g0, float b, float a) {
     sgl_c4f(r, g0, b, a);
     sgl_begin_triangles();
-    for (int i = 0; i < segments; i++) {
-        float a0 = ((float)i / (float)segments) * TWO_PI_F;
-        float a1 = ((float)(i + 1) / (float)segments) * TWO_PI_F;
+    float step = TWO_PI_F / (float)segments;
+    float prev_cx = center.x + radius;
+    float prev_cy = center.y;
+    for (int i = 1; i <= segments; i++) {
+        float angle = (float)i * step;
+        float cx = center.x + cosf(angle) * radius;
+        float cy = center.y + sinf(angle) * radius;
         sgl_v2f(center.x, center.y);
-        sgl_v2f(center.x + cosf(a0) * radius, center.y + sinf(a0) * radius);
-        sgl_v2f(center.x + cosf(a1) * radius, center.y + sinf(a1) * radius);
+        sgl_v2f(prev_cx, prev_cy);
+        sgl_v2f(cx, cy);
+        prev_cx = cx;
+        prev_cy = cy;
     }
     sgl_end();
 }
@@ -19,8 +25,9 @@ void draw_circle_filled(vec2 center, float radius, int segments, float r, float 
 void draw_circle_outline(vec2 center, float radius, int segments, float r, float g0, float b, float a) {
     sgl_c4f(r, g0, b, a);
     sgl_begin_line_strip();
+    float step = TWO_PI_F / (float)segments;
     for (int i = 0; i <= segments; i++) {
-        float angle = ((float)i / (float)segments) * TWO_PI_F;
+        float angle = (float)i * step;
         sgl_v2f(center.x + cosf(angle) * radius, center.y + sinf(angle) * radius);
     }
     sgl_end();
