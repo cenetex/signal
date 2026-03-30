@@ -2532,15 +2532,13 @@ static void step_mining_system(float dt, bool mining, vec2 forward) {
         g.beam_hit = true;
         audio_play_mining_tick(&g.audio);
 
-        if (!net_is_connected()) {
-            /* Single-player: apply damage locally. */
-            float mined = fminf(ship_mining_rate(&g.ship) * dt, asteroid->hp);
-            asteroid->hp -= mined;
-            if (asteroid->hp <= 0.01f) {
-                fracture_asteroid(g.hover_asteroid, normal);
-            }
+        /* Apply damage locally (single-player) or as prediction (multiplayer).
+         * Server corrects via asteroid state snapshots. */
+        float mined = fminf(ship_mining_rate(&g.ship) * dt, asteroid->hp);
+        asteroid->hp -= mined;
+        if (asteroid->hp <= 0.01f) {
+            fracture_asteroid(g.hover_asteroid, normal);
         }
-        /* Multiplayer: server applies damage, client just shows beam. */
     } else {
         g.beam_end = v2_add(muzzle, v2_scale(forward, MINING_RANGE));
     }
