@@ -2950,7 +2950,7 @@ static void init(void) {
         const char* server_url = emscripten_run_script_string(
             "(() => {"
             "  const p = new URLSearchParams(window.location.search);"
-            "  return p.get('server') || 'wss://signal-relay-84734004.us-east-1.elb.amazonaws.com/ws';"
+            "  return p.get('server') || 'wss://signal-ws.ratimics.com/ws';"
             "})()");
         if (server_url && server_url[0] != '\0') {
             NetCallbacks cbs = {0};
