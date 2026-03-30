@@ -142,6 +142,7 @@ typedef struct {
     bool multiplayer_enabled;
     float net_send_timer;
     float world_sync_timer;
+    uint8_t pending_net_action; /* one-shot action queued for next net send */
 } game_t;
 
 static game_t g;
@@ -3726,19 +3727,40 @@ static void sim_step(float dt) {
         resolve_world_collisions();
 
         update_docking_state(dt);
-        step_station_interaction_system(&intent);
-
+        if (!g.multiplayer_enabled || !net_is_connected()) {
+            step_station_interaction_system(&intent);
+        }
         if (!g.docked) {
             update_targeting_state(forward);
             step_mining_system(dt, intent.mine, forward);
             step_fragment_collection(dt);
         }
     } else {
-        update_docking_state(dt);
-        step_station_interaction_system(&intent);
+        if (!g.multiplayer_enabled || !net_is_connected()) {
+            update_docking_state(dt);
+            step_station_interaction_system(&intent);
+        }
+        /* Multiplayer + docked: server controls undocking via PLAYER_SHIP. */
     }
 
     step_notice_timer(dt);
+
+    /* Queue one-shot actions for the next net send (before key_pressed is consumed). */
+    if (g.multiplayer_enabled && net_is_connected() && g.pending_net_action == 0) {
+        if (is_key_pressed(SAPP_KEYCODE_E))
+            g.pending_net_action = g.docked ? 2 : 1;
+        else if (is_key_pressed(SAPP_KEYCODE_1))
+            g.pending_net_action = 3;
+        else if (is_key_pressed(SAPP_KEYCODE_2))
+            g.pending_net_action = 4;
+        else if (is_key_pressed(SAPP_KEYCODE_3))
+            g.pending_net_action = 5;
+        else if (is_key_pressed(SAPP_KEYCODE_4))
+            g.pending_net_action = 6;
+        else if (is_key_pressed(SAPP_KEYCODE_5))
+            g.pending_net_action = 7;
+    }
+
     consume_pressed_input();
 }
 
@@ -4115,20 +4137,9 @@ static void frame(void) {
                 flags |= NET_INPUT_RIGHT;
             if (g.input.key_down[SAPP_KEYCODE_SPACE])
                 flags |= NET_INPUT_FIRE;
-            /* One-shot station actions: check key_pressed so they fire once. */
-            if (is_key_pressed(SAPP_KEYCODE_E)) {
-                action = g.docked ? 2 : 1; /* launch or dock */
-            } else if (is_key_pressed(SAPP_KEYCODE_1)) {
-                action = 3; /* sell cargo */
-            } else if (is_key_pressed(SAPP_KEYCODE_2)) {
-                action = 4; /* repair */
-            } else if (is_key_pressed(SAPP_KEYCODE_3)) {
-                action = 5; /* upgrade mining */
-            } else if (is_key_pressed(SAPP_KEYCODE_4)) {
-                action = 6; /* upgrade hold */
-            } else if (is_key_pressed(SAPP_KEYCODE_5)) {
-                action = 7; /* upgrade tractor */
-            }
+            /* Use queued one-shot action from sim_step (where key_pressed is valid). */
+            action = g.pending_net_action;
+            g.pending_net_action = 0;
             net_send_input(flags, g.ship.angle, action);
         }
 

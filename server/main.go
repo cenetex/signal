@@ -17,11 +17,16 @@ import (
 
 // Protocol message types.
 const (
-	MsgJoin           = 0x01
-	MsgLeave          = 0x02
-	MsgState          = 0x03
-	MsgInput          = 0x04
-	MsgAsteroidUpdate = 0x05
+	MsgJoin            = 0x01
+	MsgLeave           = 0x02
+	MsgState           = 0x03
+	MsgInput           = 0x04
+	MsgAsteroidUpdate  = 0x05
+	MsgWorldAsteroids  = 0x10
+	MsgWorldNpcs       = 0x11
+	MsgWorldStations   = 0x12
+	MsgMiningAction    = 0x13
+	MsgHostAssign      = 0x14
 )
 
 // Limits.
@@ -50,6 +55,8 @@ type Room struct {
 	mu      sync.RWMutex
 	players map[uint8]*Player
 	nextID  uint8
+	hostID  uint8
+	hasHost bool
 }
 
 func NewRoom() *Room {
@@ -108,6 +115,19 @@ func (r *Room) Join(conn *websocket.Conn) (*Player, error) {
 		_ = conn.WriteMessage(websocket.BinaryMessage, existMsg)
 	}
 
+	// Host assignment: first player becomes the host.
+	if !r.hasHost {
+		r.hostID = id
+		r.hasHost = true
+		hostMsg := []byte{MsgHostAssign, 1}
+		_ = conn.WriteMessage(websocket.BinaryMessage, hostMsg)
+		log.Printf("player %d assigned as host", id)
+	} else {
+		// Tell this player they are NOT the host.
+		notHostMsg := []byte{MsgHostAssign, 0}
+		_ = conn.WriteMessage(websocket.BinaryMessage, notHostMsg)
+	}
+
 	log.Printf("player %d joined (%d total)", id, len(r.players))
 	return p, nil
 }
@@ -124,6 +144,24 @@ func (r *Room) Leave(p *Player) {
 		other.mu.Lock()
 		_ = other.Conn.WriteMessage(websocket.BinaryMessage, leaveMsg)
 		other.mu.Unlock()
+	}
+
+	// If the leaving player was the host, reassign to another player.
+	if r.hasHost && r.hostID == p.ID {
+		r.hasHost = false
+		for _, other := range r.players {
+			r.hostID = other.ID
+			r.hasHost = true
+			other.mu.Lock()
+			hostMsg := []byte{MsgHostAssign, 1}
+			_ = other.Conn.WriteMessage(websocket.BinaryMessage, hostMsg)
+			other.mu.Unlock()
+			log.Printf("player %d reassigned as host", other.ID)
+			break
+		}
+		if !r.hasHost {
+			log.Printf("no players remaining, no host")
+		}
 	}
 
 	log.Printf("player %d left (%d total)", p.ID, len(r.players))
@@ -248,6 +286,31 @@ func handleWebSocket(w http.ResponseWriter, r *http.Request) {
 				other.mu.Lock()
 				_ = other.Conn.WriteMessage(websocket.BinaryMessage, data)
 				other.mu.Unlock()
+			}
+			room.mu.RUnlock()
+
+		case MsgWorldAsteroids, MsgWorldNpcs, MsgWorldStations:
+			// Host broadcasts world state to all other players.
+			room.mu.RLock()
+			for _, other := range room.players {
+				if other.ID == player.ID {
+					continue
+				}
+				other.mu.Lock()
+				_ = other.Conn.WriteMessage(websocket.BinaryMessage, data)
+				other.mu.Unlock()
+			}
+			room.mu.RUnlock()
+
+		case MsgMiningAction:
+			// Guest sends mining action — relay to host only.
+			room.mu.RLock()
+			if room.hasHost {
+				if host, ok := room.players[room.hostID]; ok && host.ID != player.ID {
+					host.mu.Lock()
+					_ = host.Conn.WriteMessage(websocket.BinaryMessage, data)
+					host.mu.Unlock()
+				}
 			}
 			room.mu.RUnlock()
 		}

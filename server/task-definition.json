@@ -4,11 +4,16 @@
   "requiresCompatibilities": ["FARGATE"],
   "cpu": "256",
   "memory": "512",
-  "executionRoleArn": "arn:aws:iam::role/ecsTaskExecutionRole",
+  "runtimePlatform": {
+    "cpuArchitecture": "ARM64",
+    "operatingSystemFamily": "LINUX"
+  },
+  "executionRoleArn": "arn:aws:iam::022118847419:role/kyro-dev-ecs-execution",
+  "taskRoleArn": "arn:aws:iam::022118847419:role/kyro-dev-ecs-task",
   "containerDefinitions": [
     {
       "name": "relay-server",
-      "image": "signal-relay-server:latest",
+      "image": "022118847419.dkr.ecr.us-east-1.amazonaws.com/signal-relay:latest",
       "essential": true,
       "portMappings": [
         {
@@ -28,7 +33,8 @@
         "options": {
           "awslogs-group": "/ecs/signal-relay-server",
           "awslogs-region": "us-east-1",
-          "awslogs-stream-prefix": "ecs"
+          "awslogs-stream-prefix": "ecs",
+          "awslogs-create-group": "true"
         }
       }
     }

@@ -13,6 +13,7 @@
 
 static struct {
     bool connected;
+    bool is_host;
     uint8_t local_id;
     NetPlayerState players[NET_MAX_PLAYERS];
     NetCallbacks callbacks;
@@ -83,8 +84,6 @@ static void handle_message(const uint8_t* data, int len) {
         if (len < 22) break;
         {
             uint8_t id = data[1];
-            /* Skip our own state echoed back. */
-            if (id == net_state.local_id) break;
             if (id >= NET_MAX_PLAYERS) break;
 
             NetPlayerState* ps = &net_state.players[id];
@@ -98,6 +97,103 @@ static void handle_message(const uint8_t* data, int len) {
 
             if (net_state.callbacks.on_state) {
                 net_state.callbacks.on_state(ps);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_ASTEROIDS:
+        if (len < 2) break;
+        {
+            int count = (int)data[1];
+            int expected = 2 + count * 30; /* 30 bytes per asteroid */
+            if (len < expected) break;
+            if (net_state.callbacks.on_asteroids) {
+                NetAsteroidState arr[48];
+                for (int i = 0; i < count && i < 48; i++) {
+                    const uint8_t* p = &data[2 + i * 30];
+                    arr[i].index  = p[0];
+                    arr[i].flags  = p[1];
+                    arr[i].x      = read_f32_le(&p[2]);
+                    arr[i].y      = read_f32_le(&p[6]);
+                    arr[i].vx     = read_f32_le(&p[10]);
+                    arr[i].vy     = read_f32_le(&p[14]);
+                    arr[i].hp     = read_f32_le(&p[18]);
+                    arr[i].ore    = read_f32_le(&p[22]);
+                    arr[i].radius = read_f32_le(&p[26]);
+                }
+                net_state.callbacks.on_asteroids(arr, count);
+            }
+        }
+        break;
+
+    case NET_MSG_WORLD_NPCS:
+        if (len < 2) break;
+        {
+            int count = (int)data[1];
+            int expected = 2 + count * 23;
+            if (len < expected) break;
+            if (net_state.callbacks.on_npcs) {
+                NetNpcState arr[6];
+                for (int i = 0; i < count && i < 6; i++) {
+                    const uint8_t* p = &data[2 + i * 23];
+                    arr[i].index            = p[0];
+                    arr[i].flags            = p[1];
+                    arr[i].x                = read_f32_le(&p[2]);
+                    arr[i].y                = read_f32_le(&p[6]);
+                    arr[i].vx               = read_f32_le(&p[10]);
+                    arr[i].vy               = read_f32_le(&p[14]);
+                    arr[i].angle            = read_f32_le(&p[18]);
+                    arr[i].target_asteroid  = (int8_t)p[22];
+                }
+                net_state.callbacks.on_npcs(arr, count);
+            }
+        }
+        break;
+
+    case NET_MSG_MINING_ACTION:
+        if (len < 7) break;
+        {
+            uint8_t pid = data[1];
+            uint8_t aidx = data[2];
+            float dmg = read_f32_le(&data[3]);
+            if (net_state.callbacks.on_mining_action) {
+                net_state.callbacks.on_mining_action(pid, aidx, dmg);
+            }
+        }
+        break;
+
+    case NET_MSG_HOST_ASSIGN:
+        if (len < 2) break;
+        {
+            bool host = (data[1] != 0);
+            net_state.is_host = host;
+            printf("[net] host assignment: %s\n", host ? "YES" : "NO");
+            if (net_state.callbacks.on_host_assign) {
+                net_state.callbacks.on_host_assign(host);
+            }
+        }
+        break;
+
+    case NET_MSG_PLAYER_SHIP:
+        if (len < 27) break;
+        {
+            uint8_t id = data[1];
+            /* Only apply our own ship state. */
+            if (id != net_state.local_id) break;
+            if (net_state.callbacks.on_player_ship) {
+                NetPlayerShipState pss;
+                pss.player_id       = id;
+                pss.hull            = read_f32_le(&data[2]);
+                pss.credits         = read_f32_le(&data[6]);
+                pss.docked          = data[10] != 0;
+                pss.current_station = data[11];
+                pss.mining_level    = data[12];
+                pss.hold_level      = data[13];
+                pss.tractor_level   = data[14];
+                pss.cargo_ferrite   = read_f32_le(&data[15]);
+                pss.cargo_cuprite   = read_f32_le(&data[19]);
+                pss.cargo_crystal   = read_f32_le(&data[23]);
+                net_state.callbacks.on_player_ship(&pss);
             }
         }
         break;
@@ -198,12 +294,13 @@ static void ws_send_binary(const uint8_t* data, int len) {
     emscripten_websocket_send_binary(ws_socket, (void*)data, (unsigned int)len);
 }
 
-void net_send_input(uint8_t flags, float angle) {
-    uint8_t buf[6];
+void net_send_input(uint8_t flags, float angle, uint8_t action) {
+    uint8_t buf[7];
     buf[0] = NET_MSG_INPUT;
     buf[1] = flags;
     write_f32_le(&buf[2], angle);
-    ws_send_binary(buf, 6);
+    buf[6] = action;
+    ws_send_binary(buf, 7);
 }
 
 void net_send_state(float x, float y, float vx, float vy, float angle) {
@@ -216,6 +313,56 @@ void net_send_state(float x, float y, float vx, float vy, float angle) {
     write_f32_le(&buf[14], vy);
     write_f32_le(&buf[18], angle);
     ws_send_binary(buf, 22);
+}
+
+void net_send_asteroids(const NetAsteroidState* asteroids, int count) {
+    if (count <= 0 || count > 48) return;
+    int msg_len = 2 + count * 30;
+    uint8_t buf[2 + 48 * 30]; /* max size */
+    buf[0] = NET_MSG_WORLD_ASTEROIDS;
+    buf[1] = (uint8_t)count;
+    for (int i = 0; i < count; i++) {
+        uint8_t* p = &buf[2 + i * 30];
+        p[0] = asteroids[i].index;
+        p[1] = asteroids[i].flags;
+        write_f32_le(&p[2],  asteroids[i].x);
+        write_f32_le(&p[6],  asteroids[i].y);
+        write_f32_le(&p[10], asteroids[i].vx);
+        write_f32_le(&p[14], asteroids[i].vy);
+        write_f32_le(&p[18], asteroids[i].hp);
+        write_f32_le(&p[22], asteroids[i].ore);
+        write_f32_le(&p[26], asteroids[i].radius);
+    }
+    ws_send_binary(buf, msg_len);
+}
+
+void net_send_npcs(const NetNpcState* npcs, int count) {
+    if (count <= 0 || count > 6) return;
+    int msg_len = 2 + count * 23;
+    uint8_t buf[2 + 6 * 23]; /* max size */
+    buf[0] = NET_MSG_WORLD_NPCS;
+    buf[1] = (uint8_t)count;
+    for (int i = 0; i < count; i++) {
+        uint8_t* p = &buf[2 + i * 23];
+        p[0] = npcs[i].index;
+        p[1] = npcs[i].flags;
+        write_f32_le(&p[2],  npcs[i].x);
+        write_f32_le(&p[6],  npcs[i].y);
+        write_f32_le(&p[10], npcs[i].vx);
+        write_f32_le(&p[14], npcs[i].vy);
+        write_f32_le(&p[18], npcs[i].angle);
+        p[22] = (uint8_t)npcs[i].target_asteroid;
+    }
+    ws_send_binary(buf, msg_len);
+}
+
+void net_send_mining_action(int asteroid_index, float damage) {
+    uint8_t buf[7];
+    buf[0] = NET_MSG_MINING_ACTION;
+    buf[1] = net_state.local_id;
+    buf[2] = (uint8_t)asteroid_index;
+    write_f32_le(&buf[3], damage);
+    ws_send_binary(buf, 7);
 }
 
 void net_poll(void) {
@@ -247,12 +394,24 @@ void net_shutdown(void) {
     net_state.connected = false;
 }
 
-void net_send_input(uint8_t flags, float angle) {
-    (void)flags; (void)angle;
+void net_send_input(uint8_t flags, float angle, uint8_t action) {
+    (void)flags; (void)angle; (void)action;
 }
 
 void net_send_state(float x, float y, float vx, float vy, float angle) {
     (void)x; (void)y; (void)vx; (void)vy; (void)angle;
+}
+
+void net_send_asteroids(const NetAsteroidState* asteroids, int count) {
+    (void)asteroids; (void)count;
+}
+
+void net_send_npcs(const NetNpcState* npcs, int count) {
+    (void)npcs; (void)count;
+}
+
+void net_send_mining_action(int asteroid_index, float damage) {
+    (void)asteroid_index; (void)damage;
 }
 
 void net_poll(void) {
@@ -265,6 +424,14 @@ void net_poll(void) {
 
 bool net_is_connected(void) {
     return net_state.connected;
+}
+
+bool net_is_host(void) {
+    return net_state.is_host;
+}
+
+void net_set_host(bool h) {
+    net_state.is_host = h;
 }
 
 uint8_t net_local_id(void) {

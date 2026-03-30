@@ -1,18 +1,16 @@
-# Multi-stage build for the Signal relay server.
-FROM golang:1.21-alpine AS builder
-
+# Multi-stage build for the Signal authoritative game server.
+FROM alpine:3.19 AS builder
+RUN apk add --no-cache gcc musl-dev make
 WORKDIR /app
-COPY go.mod go.sum ./
-RUN go mod download
-COPY main.go .
-RUN CGO_ENABLED=0 GOOS=linux go build -o relay-server .
+COPY *.c *.h ./
+RUN gcc -O2 -static -o signal-server main.c game_sim.c mongoose.c -lm -DMG_ENABLE_LOG=0
 
 FROM alpine:3.19
 RUN apk --no-cache add ca-certificates
 WORKDIR /app
-COPY --from=builder /app/relay-server .
+COPY --from=builder /app/signal-server .
 
 EXPOSE 8080
 ENV PORT=8080
 
-ENTRYPOINT ["./relay-server"]
+ENTRYPOINT ["./signal-server"]
