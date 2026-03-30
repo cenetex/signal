@@ -14,6 +14,7 @@
 #include "asteroid.h"
 #include "npc.h"
 #include "render.h"
+#include "game_sim.h"
 
 /* --- Multiplayer networking --- */
 #include "net.h"
@@ -68,18 +69,7 @@ typedef struct {
     bool key_pressed[KEY_COUNT];
 } input_state_t;
 
-typedef struct {
-    float turn;
-    float thrust;
-    bool mine;
-    bool interact;
-    bool service_sell;
-    bool service_repair;
-    bool upgrade_mining;
-    bool upgrade_hold;
-    bool upgrade_tractor;
-    bool reset;
-} input_intent_t;
+/* input_intent_t defined in game_sim.h */
 
 typedef struct {
     float accumulator;
@@ -117,6 +107,8 @@ typedef struct {
     runtime_state_t runtime;
     audio_state_t audio;
     sg_pass_action pass_action;
+    /* --- Simulation --- */
+    world_t world;
     /* --- Multiplayer --- */
     bool multiplayer_enabled;
     float net_send_timer;
@@ -125,9 +117,6 @@ typedef struct {
 
 static game_t g;
 
-static const float WORLD_RADIUS = 2200.0f;
-static const float SHIP_BRAKE = 180.0f;
-static const float MINING_RANGE = 170.0f;
 static const float HUD_MARGIN = 28.0f;
 static const float HUD_TOP_PANEL_WIDTH = 332.0f;
 static const float HUD_TOP_PANEL_HEIGHT = 78.0f;
@@ -149,64 +138,9 @@ static const float UI_SCALE_TIGHT = 1.85f;
 static const float UI_SCALE_COMPACT = 1.60f;
 static const float UI_SCALE_DEFAULT = 1.42f;
 static const float UI_SCALE_WIDE = 1.28f;
-static const float SIM_DT = 1.0f / 120.0f;
 static const int MAX_SIM_STEPS_PER_FRAME = 8;
-static const int FIELD_ASTEROID_TARGET = 32;
-static const float FIELD_ASTEROID_RESPAWN_DELAY = 0.6f;
-static const float FRACTURE_CHILD_CLEANUP_AGE = 22.0f;
-static const float FRACTURE_CHILD_CLEANUP_DISTANCE = 940.0f;
-static const float FRAGMENT_NEARBY_RANGE = 220.0f;
-static const float FRAGMENT_TRACTOR_ACCEL = 380.0f;
-static const float FRAGMENT_MAX_SPEED = 210.0f;
-static const float NPC_DOCK_TIME = 3.0f;
-static const float HAULER_DOCK_TIME = 4.0f;
-static const float HAULER_LOAD_TIME = 2.0f;
 
-const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
-    [HULL_CLASS_MINER] = {
-        .name = "Mining Cutter",
-        .max_hull = 100.0f,
-        .accel = 300.0f,
-        .turn_speed = 2.75f,
-        .drag = 0.45f,
-        .ore_capacity = 120.0f,
-        .ingot_capacity = 0.0f,
-        .mining_rate = 28.0f,
-        .tractor_range = 150.0f,
-        .ship_radius = 16.0f,
-        .render_scale = 1.0f,
-    },
-    [HULL_CLASS_HAULER] = {
-        .name = "Cargo Hauler",
-        .max_hull = 150.0f,
-        .accel = 140.0f,
-        .turn_speed = 1.6f,
-        .drag = 0.55f,
-        .ore_capacity = 0.0f,
-        .ingot_capacity = 40.0f,
-        .mining_rate = 0.0f,
-        .tractor_range = 0.0f,
-        .ship_radius = 18.0f,
-        .render_scale = 0.85f,
-    },
-    [HULL_CLASS_NPC_MINER] = {
-        .name = "Mining Drone",
-        .max_hull = 80.0f,
-        .accel = 180.0f,
-        .turn_speed = 2.0f,
-        .drag = 0.5f,
-        .ore_capacity = 60.0f,
-        .ingot_capacity = 0.0f,
-        .mining_rate = 14.0f,
-        .tractor_range = 0.0f,
-        .ship_radius = 12.0f,
-        .render_scale = 0.7f,
-    },
-};
-static const float COLLECTION_FEEDBACK_TIME = 1.1f;
-static const float STATION_DOCK_APPROACH_OFFSET = 34.0f;
-static const float SHIP_COLLISION_DAMAGE_THRESHOLD = 115.0f;
-static const float SHIP_COLLISION_DAMAGE_SCALE = 0.12f;
+/* HULL_DEFS defined in game_sim.c */
 
 /* Audio system: see audio.h/c */
 
@@ -2532,15 +2466,13 @@ static void step_mining_system(float dt, bool mining, vec2 forward) {
         g.beam_hit = true;
         audio_play_mining_tick(&g.audio);
 
-        if (!net_is_connected()) {
-            /* Single-player: apply damage locally. */
-            float mined = fminf(ship_mining_rate(&g.ship) * dt, asteroid->hp);
-            asteroid->hp -= mined;
-            if (asteroid->hp <= 0.01f) {
-                fracture_asteroid(g.hover_asteroid, normal);
-            }
+        /* Apply damage locally (single-player) or as prediction (multiplayer).
+         * Server corrects via asteroid state snapshots. */
+        float mined = fminf(ship_mining_rate(&g.ship) * dt, asteroid->hp);
+        asteroid->hp -= mined;
+        if (asteroid->hp <= 0.01f) {
+            fracture_asteroid(g.hover_asteroid, normal);
         }
-        /* Multiplayer: server applies damage, client just shows beam. */
     } else {
         g.beam_end = v2_add(muzzle, v2_scale(forward, MINING_RANGE));
     }
@@ -2848,10 +2780,56 @@ static void step_npc_ships(float dt) {
 
 /* step_refinery_production, step_station_production: see economy.h/c */
 
+static void sync_globals_to_world(void) {
+    server_player_t* sp = &g.world.players[0];
+    sp->connected = true;
+    sp->id = 0;
+    sp->ship = g.ship;
+    sp->input = (input_intent_t){0};
+    sp->current_station = g.current_station;
+    sp->nearby_station = g.nearby_station;
+    sp->docked = g.docked;
+    sp->in_dock_range = g.in_dock_range;
+    sp->hover_asteroid = g.hover_asteroid;
+    sp->beam_active = g.beam_active;
+    sp->beam_hit = g.beam_hit;
+    sp->beam_start = g.beam_start;
+    sp->beam_end = g.beam_end;
+    sp->nearby_fragments = g.nearby_fragments;
+    sp->tractor_fragments = g.tractor_fragments;
+    memcpy(g.world.stations, g.stations, sizeof(g.stations));
+    memcpy(g.world.asteroids, g.asteroids, sizeof(g.asteroids));
+    memcpy(g.world.npc_ships, g.npc_ships, sizeof(g.npc_ships));
+    g.world.rng = g.rng;
+    g.world.time = g.time;
+    g.world.field_spawn_timer = g.field_spawn_timer;
+}
+
+static void sync_world_to_globals(void) {
+    server_player_t* sp = &g.world.players[0];
+    g.ship = sp->ship;
+    g.current_station = sp->current_station;
+    g.nearby_station = sp->nearby_station;
+    g.docked = sp->docked;
+    g.in_dock_range = sp->in_dock_range;
+    g.hover_asteroid = sp->hover_asteroid;
+    g.beam_active = sp->beam_active;
+    g.beam_hit = sp->beam_hit;
+    g.beam_start = sp->beam_start;
+    g.beam_end = sp->beam_end;
+    g.nearby_fragments = sp->nearby_fragments;
+    g.tractor_fragments = sp->tractor_fragments;
+    memcpy(g.stations, g.world.stations, sizeof(g.stations));
+    memcpy(g.asteroids, g.world.asteroids, sizeof(g.asteroids));
+    memcpy(g.npc_ships, g.world.npc_ships, sizeof(g.npc_ships));
+    g.rng = g.world.rng;
+    g.time = g.world.time;
+    g.field_spawn_timer = g.world.field_spawn_timer;
+}
+
 static void sim_step(float dt) {
     reset_step_feedback();
     audio_step(&g.audio, dt);
-    g.time += dt;
 
     input_intent_t intent = sample_input_intent();
     if (intent.reset) {
@@ -2861,37 +2839,34 @@ static void sim_step(float dt) {
     }
 
     if (!g.multiplayer_enabled || !net_is_connected()) {
+        /* Single player: run authoritative sim locally */
+        sync_globals_to_world();
+        g.world.players[0].input = intent;
+        world_sim_step(&g.world, dt);
+        sync_world_to_globals();
+    } else {
+        /* Multiplayer: server is authoritative for world state.
+         * Run local player physics for responsiveness.
+         * World state arrives via network callbacks. */
+        g.time += dt;
         step_asteroid_dynamics(g.asteroids, MAX_ASTEROIDS, g.ship.pos, dt);
-        maintain_asteroid_field(dt);
-        step_refinery_production(g.stations, MAX_STATIONS, dt);
-        step_station_production(g.stations, MAX_STATIONS, dt);
         step_npc_ships(dt);
-    }
 
-    if (!g.docked) {
-        step_ship_rotation(dt, intent.turn);
-        vec2 forward = ship_forward();
-        step_ship_thrust(dt, intent.thrust, forward);
-        step_ship_motion(dt);
-        resolve_world_collisions();
-
-        update_docking_state(dt);
-        if (!g.multiplayer_enabled || !net_is_connected()) {
-            step_station_interaction_system(&intent);
-        }
         if (!g.docked) {
-            update_targeting_state(forward);
-            step_mining_system(dt, intent.mine, forward);
-            if (!g.multiplayer_enabled || !net_is_connected()) {
+            step_ship_rotation(dt, intent.turn);
+            vec2 forward = ship_forward();
+            step_ship_thrust(dt, intent.thrust, forward);
+            step_ship_motion(dt);
+            resolve_world_collisions();
+            update_docking_state(dt);
+            if (!g.docked) {
+                update_targeting_state(forward);
+                step_mining_system(dt, intent.mine, forward);
                 step_fragment_collection(dt);
             }
-        }
-    } else {
-        if (!g.multiplayer_enabled || !net_is_connected()) {
+        } else {
             update_docking_state(dt);
-            step_station_interaction_system(&intent);
         }
-        /* Multiplayer + docked: server controls undocking via PLAYER_SHIP. */
     }
 
     step_notice_timer(dt);
