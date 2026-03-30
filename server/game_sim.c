@@ -487,24 +487,33 @@ static void step_station_production(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (st->role == STATION_ROLE_YARD) {
-            float buf = st->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)];
-            if (buf > 0.01f) {
-                float consume = fminf(buf, STATION_PRODUCTION_RATE * dt);
-                st->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] -= consume;
-                st->product_stock[PRODUCT_FRAME] += consume;
+            if (st->product_stock[PRODUCT_FRAME] < MAX_PRODUCT_STOCK) {
+                float buf = st->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)];
+                if (buf > 0.01f) {
+                    float room = MAX_PRODUCT_STOCK - st->product_stock[PRODUCT_FRAME];
+                    float consume = fminf(buf, fminf(STATION_PRODUCTION_RATE * dt, room));
+                    st->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] -= consume;
+                    st->product_stock[PRODUCT_FRAME] += consume;
+                }
             }
         } else if (st->role == STATION_ROLE_BEAMWORKS) {
-            float buf_co = st->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)];
-            if (buf_co > 0.01f) {
-                float consume = fminf(buf_co, STATION_PRODUCTION_RATE * dt);
-                st->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)] -= consume;
-                st->product_stock[PRODUCT_LASER_MODULE] += consume;
+            if (st->product_stock[PRODUCT_LASER_MODULE] < MAX_PRODUCT_STOCK) {
+                float buf_co = st->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)];
+                if (buf_co > 0.01f) {
+                    float room = MAX_PRODUCT_STOCK - st->product_stock[PRODUCT_LASER_MODULE];
+                    float consume = fminf(buf_co, fminf(STATION_PRODUCTION_RATE * dt, room));
+                    st->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)] -= consume;
+                    st->product_stock[PRODUCT_LASER_MODULE] += consume;
+                }
             }
-            float buf_ln = st->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)];
-            if (buf_ln > 0.01f) {
-                float consume = fminf(buf_ln, STATION_PRODUCTION_RATE * dt);
-                st->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)] -= consume;
-                st->product_stock[PRODUCT_TRACTOR_MODULE] += consume;
+            if (st->product_stock[PRODUCT_TRACTOR_MODULE] < MAX_PRODUCT_STOCK) {
+                float buf_ln = st->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)];
+                if (buf_ln > 0.01f) {
+                    float room = MAX_PRODUCT_STOCK - st->product_stock[PRODUCT_TRACTOR_MODULE];
+                    float consume = fminf(buf_ln, fminf(STATION_PRODUCTION_RATE * dt, room));
+                    st->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)] -= consume;
+                    st->product_stock[PRODUCT_TRACTOR_MODULE] += consume;
+                }
             }
         }
     }
@@ -564,20 +573,30 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
         npc->vel = v2(0.0f, 0.0f);
         if (npc->state_timer <= 0.0f) {
             station_t *home = &w->stations[npc->home_station];
-            float available = 0.0f;
-            for (int i = 0; i < INGOT_COUNT; i++)
-                available += home->inventory[COMMODITY_RAW_ORE_COUNT + i];
-            if (available > 1.0f) {
-                float space = hull->ingot_capacity;
-                for (int i = 0; i < INGOT_COUNT; i++) {
-                    commodity_t ingot = (commodity_t)(COMMODITY_RAW_ORE_COUNT + i);
-                    float take = fminf(home->inventory[ingot], space / (float)INGOT_COUNT);
+            station_t *dest = &w->stations[npc->dest_station];
+            float space = hull->ingot_capacity;
+            bool loaded = false;
+            if (dest->role == STATION_ROLE_YARD) {
+                commodity_t ingot = COMMODITY_FRAME_INGOT;
+                float take = fminf(home->inventory[ingot], space);
+                if (take > 0.5f) {
+                    npc->ingots[INGOT_IDX(ingot)] += take;
+                    home->inventory[ingot] -= take;
+                    loaded = true;
+                }
+            } else if (dest->role == STATION_ROLE_BEAMWORKS) {
+                commodity_t ingots[2] = { COMMODITY_CONDUCTOR_INGOT, COMMODITY_LENS_INGOT };
+                for (int i = 0; i < 2; i++) {
+                    float take = fminf(home->inventory[ingots[i]], space / 2.0f);
                     if (take > 0.01f) {
-                        npc->ingots[i] += take;
-                        home->inventory[ingot] -= take;
+                        npc->ingots[INGOT_IDX(ingots[i])] += take;
+                        home->inventory[ingots[i]] -= take;
                         space -= take;
+                        loaded = true;
                     }
                 }
+            }
+            if (loaded) {
                 npc->state = NPC_STATE_TRAVEL_TO_DEST;
             } else {
                 npc->state_timer = HAULER_LOAD_TIME;
@@ -714,7 +733,7 @@ static void step_npc_ships(world_t *w, float dt) {
             a->hp -= mined;
 
             float cs = hull->ore_capacity - npc_total_cargo(npc);
-            float ore_gained = fminf(mined * 0.4f, cs);
+            float ore_gained = fminf(mined * 0.15f, cs);
             if (ore_gained > 0.0f) npc->cargo[a->commodity] += ore_gained;
 
             if (a->hp <= 0.01f) {
