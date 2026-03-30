@@ -182,6 +182,12 @@ static vec2 v2_perp(vec2 value) {
     return v2(-value.y, value.x);
 }
 
+static float v2_dist_sq(vec2 a, vec2 b) {
+    float dx = a.x - b.x;
+    float dy = a.y - b.y;
+    return (dx * dx) + (dy * dy);
+}
+
 static float v2_dot(vec2 a, vec2 b) {
     return (a.x * b.x) + (a.y * b.y);
 }
@@ -271,6 +277,38 @@ static asteroid_tier_t asteroid_next_tier(asteroid_tier_t tier) {
 
 static bool asteroid_is_collectible(const asteroid_t* asteroid) {
     return asteroid->active && (asteroid->tier == ASTEROID_TIER_S);
+}
+
+static float asteroid_progress_ratio(const asteroid_t* asteroid) {
+    if (asteroid_is_collectible(asteroid) && (asteroid->max_ore > 0.0f)) {
+        return clampf(asteroid->ore / asteroid->max_ore, 0.0f, 1.0f);
+    }
+    if (asteroid->max_hp > 0.0f) {
+        return clampf(asteroid->hp / asteroid->max_hp, 0.0f, 1.0f);
+    }
+    return 0.0f;
+}
+
+static float ship_cargo_space(void) {
+    return fmaxf(0.0f, SHIP_CARGO_MAX - g.ship.cargo);
+}
+
+static void clear_collection_feedback(void) {
+    g.collection_feedback_ore = 0.0f;
+    g.collection_feedback_fragments = 0;
+    g.collection_feedback_timer = 0.0f;
+}
+
+static void push_collection_feedback(float recovered_ore, int recovered_fragments) {
+    if (recovered_ore <= 0.0f) {
+        return;
+    }
+    if (g.collection_feedback_timer <= 0.0f) {
+        clear_collection_feedback();
+    }
+    g.collection_feedback_ore += recovered_ore;
+    g.collection_feedback_fragments += recovered_fragments;
+    g.collection_feedback_timer = COLLECTION_FEEDBACK_TIME;
 }
 
 static const char* asteroid_tier_name(asteroid_tier_t tier) {
@@ -448,23 +486,22 @@ static int desired_child_count(asteroid_tier_t tier) {
     }
 }
 
-static int count_seeded_field_asteroids(void) {
-    int active_count = 0;
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (g.asteroids[i].active && !g.asteroids[i].fracture_child) {
-            active_count++;
-        }
-    }
-    return active_count;
-}
+static void inspect_asteroid_field(int* seeded_count, int* first_inactive_slot) {
+    *seeded_count = 0;
+    *first_inactive_slot = -1;
 
-static int find_inactive_asteroid_slot(void) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!g.asteroids[i].active) {
-            return i;
+            if (*first_inactive_slot < 0) {
+                *first_inactive_slot = i;
+            }
+            continue;
+        }
+
+        if (!g.asteroids[i].fracture_child) {
+            (*seeded_count)++;
         }
     }
-    return -1;
 }
 
 static void fracture_asteroid(int asteroid_index, vec2 outward_dir) {
@@ -506,7 +543,11 @@ static void fracture_asteroid(int asteroid_index, vec2 outward_dir) {
 }
 
 static void maintain_asteroid_field(float dt) {
-    if (count_seeded_field_asteroids() >= FIELD_ASTEROID_TARGET) {
+    int seeded_count = 0;
+    int first_inactive_slot = -1;
+    inspect_asteroid_field(&seeded_count, &first_inactive_slot);
+
+    if (seeded_count >= FIELD_ASTEROID_TARGET) {
         g.field_spawn_timer = 0.0f;
         return;
     }
@@ -516,9 +557,8 @@ static void maintain_asteroid_field(float dt) {
         return;
     }
 
-    int slot = find_inactive_asteroid_slot();
-    if (slot >= 0) {
-        spawn_field_asteroid(&g.asteroids[slot]);
+    if (first_inactive_slot >= 0) {
+        spawn_field_asteroid(&g.asteroids[first_inactive_slot]);
     }
     g.field_spawn_timer = 0.0f;
 }
@@ -554,9 +594,7 @@ static void reset_world(void) {
     g.notice_timer = 0.0f;
     g.nearby_fragments = 0;
     g.tractor_fragments = 0;
-    g.collection_feedback_ore = 0.0f;
-    g.collection_feedback_fragments = 0;
-    g.collection_feedback_timer = 0.0f;
+    clear_collection_feedback();
     g.field_spawn_timer = 0.0f;
 
     memset(g.asteroids, 0, sizeof(g.asteroids));
@@ -696,15 +734,12 @@ static void asteroid_tier_body_color(asteroid_tier_t tier, float hp_ratio, float
 }
 
 static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
-    float hp_ratio = asteroid->hp / asteroid->max_hp;
-    if (asteroid_is_collectible(asteroid) && (asteroid->max_ore > 0.0f)) {
-        hp_ratio = asteroid->ore / asteroid->max_ore;
-    }
+    float progress_ratio = asteroid_progress_ratio(asteroid);
     float body_r = 0.3f;
     float body_g = 0.3f;
     float body_b = 0.3f;
     int segments = 18;
-    asteroid_tier_body_color(asteroid->tier, hp_ratio, &body_r, &body_g, &body_b);
+    asteroid_tier_body_color(asteroid->tier, progress_ratio, &body_r, &body_g, &body_b);
 
     switch (asteroid->tier) {
         case ASTEROID_TIER_XL:
@@ -751,8 +786,7 @@ static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
     sgl_end();
 
     if (asteroid->tier == ASTEROID_TIER_S) {
-        float ore_ratio = asteroid->max_ore > 0.0f ? (asteroid->ore / asteroid->max_ore) : 1.0f;
-        draw_circle_filled(asteroid->pos, asteroid->radius * lerpf(0.14f, 0.24f, ore_ratio), 10, 0.48f, 0.96f, 0.78f, lerpf(0.35f, 0.8f, ore_ratio));
+        draw_circle_filled(asteroid->pos, asteroid->radius * lerpf(0.14f, 0.24f, progress_ratio), 10, 0.48f, 0.96f, 0.78f, lerpf(0.35f, 0.8f, progress_ratio));
     } else if (asteroid->tier == ASTEROID_TIER_M) {
         draw_circle_filled(asteroid->pos, asteroid->radius * 0.16f, 8, 0.36f, 0.78f, 0.98f, 0.4f);
     }
@@ -908,11 +942,7 @@ static void draw_hud(void) {
         const asteroid_t* asteroid = &g.asteroids[g.hover_asteroid];
         int integrity_left = (int)lroundf(asteroid->hp);
         sdtx_color3b(130, 255, 235);
-        if (compact) {
-            sdtx_printf("Target %s %s, %d integrity", asteroid_tier_name(asteroid->tier), asteroid_tier_kind(asteroid->tier), integrity_left);
-        } else {
-            sdtx_printf("Target %s %s, %d integrity", asteroid_tier_name(asteroid->tier), asteroid_tier_kind(asteroid->tier), integrity_left);
-        }
+        sdtx_printf("Target %s %s, %d integrity", asteroid_tier_name(asteroid->tier), asteroid_tier_kind(asteroid->tier), integrity_left);
     } else if (g.nearby_fragments > 0) {
         sdtx_color3b(130, 255, 235);
         if (g.tractor_fragments > 0) {
@@ -962,13 +992,15 @@ static void draw_hud(void) {
 
 static void resolve_ship_circle(vec2 center, float radius) {
     vec2 delta = v2_sub(g.ship.pos, center);
-    float distance = v2_len(delta);
     float minimum = radius + SHIP_RADIUS;
-    if (distance >= minimum) {
+    float distance_sq = v2_len_sq(delta);
+    float minimum_sq = minimum * minimum;
+    if (distance_sq >= minimum_sq) {
         return;
     }
 
-    vec2 normal = v2_norm(delta);
+    float distance = sqrtf(distance_sq);
+    vec2 normal = distance > 0.00001f ? v2_scale(delta, 1.0f / distance) : v2(1.0f, 0.0f);
     g.ship.pos = v2_add(center, v2_scale(normal, minimum));
 
     float velocity_towards_surface = v2_dot(g.ship.vel, normal);
@@ -1070,14 +1102,19 @@ static void step_ship_motion(float dt) {
     g.ship.vel = v2_scale(g.ship.vel, 1.0f / (1.0f + (SHIP_DRAG * dt)));
     g.ship.pos = v2_add(g.ship.pos, v2_scale(g.ship.vel, dt));
 
-    float world_distance = v2_len(g.ship.pos);
-    if (world_distance > WORLD_RADIUS) {
-        vec2 push_home = v2_scale(v2_norm(g.ship.pos), -(world_distance - WORLD_RADIUS) * 0.08f);
+    float world_distance_sq = v2_len_sq(g.ship.pos);
+    float world_radius_sq = WORLD_RADIUS * WORLD_RADIUS;
+    if (world_distance_sq > world_radius_sq) {
+        float world_distance = sqrtf(world_distance_sq);
+        vec2 push_dir = v2_scale(g.ship.pos, 1.0f / world_distance);
+        vec2 push_home = v2_scale(push_dir, -(world_distance - WORLD_RADIUS) * 0.08f);
         g.ship.vel = v2_add(g.ship.vel, push_home);
     }
 }
 
 static void step_asteroid_dynamics(float dt) {
+    float cleanup_distance_sq = FRACTURE_CHILD_CLEANUP_DISTANCE * FRACTURE_CHILD_CLEANUP_DISTANCE;
+
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t* asteroid = &g.asteroids[i];
         if (!asteroid->active) {
@@ -1089,15 +1126,14 @@ static void step_asteroid_dynamics(float dt) {
         asteroid->vel = v2_scale(asteroid->vel, 1.0f / (1.0f + (0.42f * dt)));
         asteroid->age += dt;
 
-        float world_distance = v2_len(asteroid->pos);
-        if (world_distance > (WORLD_RADIUS + asteroid->radius + 260.0f)) {
+        float max_distance = WORLD_RADIUS + asteroid->radius + 260.0f;
+        if (v2_len_sq(asteroid->pos) > (max_distance * max_distance)) {
             clear_asteroid(asteroid);
             continue;
         }
 
         if (asteroid->fracture_child && (asteroid->age >= FRACTURE_CHILD_CLEANUP_AGE)) {
-            float ship_distance = v2_len(v2_sub(asteroid->pos, g.ship.pos));
-            if (ship_distance > FRACTURE_CHILD_CLEANUP_DISTANCE) {
+            if (v2_dist_sq(asteroid->pos, g.ship.pos) > cleanup_distance_sq) {
                 clear_asteroid(asteroid);
             }
         }
@@ -1115,7 +1151,8 @@ static void resolve_world_collisions(void) {
 }
 
 static void update_docking_state(float dt) {
-    g.docked = (v2_len(v2_sub(g.ship.pos, g.station.pos)) <= g.station.dock_radius);
+    float dock_radius_sq = g.station.dock_radius * g.station.dock_radius;
+    g.docked = v2_dist_sq(g.ship.pos, g.station.pos) <= dock_radius_sq;
     if (g.docked) {
         g.ship.vel = v2_scale(g.ship.vel, 1.0f / (1.0f + (dt * 2.2f)));
     }
@@ -1126,7 +1163,9 @@ static void update_targeting_state(vec2 forward) {
 }
 
 static void step_fragment_collection(float dt) {
-    float cargo_space = SHIP_CARGO_MAX - g.ship.cargo;
+    float nearby_range_sq = FRAGMENT_NEARBY_RANGE * FRAGMENT_NEARBY_RANGE;
+    float tractor_range_sq = FRAGMENT_TRACTOR_RANGE * FRAGMENT_TRACTOR_RANGE;
+    float cargo_space = ship_cargo_space();
     float collected_ore = 0.0f;
     int collected_fragments = 0;
 
@@ -1137,8 +1176,8 @@ static void step_fragment_collection(float dt) {
         }
 
         vec2 to_ship = v2_sub(g.ship.pos, asteroid->pos);
-        float distance = v2_len(to_ship);
-        if (distance <= FRAGMENT_NEARBY_RANGE) {
+        float distance_sq = v2_len_sq(to_ship);
+        if (distance_sq <= nearby_range_sq) {
             g.nearby_fragments++;
         }
 
@@ -1146,7 +1185,8 @@ static void step_fragment_collection(float dt) {
             continue;
         }
 
-        if (distance <= FRAGMENT_TRACTOR_RANGE) {
+        if (distance_sq <= tractor_range_sq) {
+            float distance = sqrtf(distance_sq);
             float pull_ratio = 1.0f - clampf(distance / FRAGMENT_TRACTOR_RANGE, 0.0f, 1.0f);
             vec2 pull_dir = distance > 0.001f ? v2_scale(to_ship, 1.0f / distance) : ship_forward();
             g.tractor_fragments++;
@@ -1157,7 +1197,8 @@ static void step_fragment_collection(float dt) {
             }
         }
 
-        if (distance <= (FRAGMENT_COLLECT_RADIUS + asteroid->radius)) {
+        float collect_radius = FRAGMENT_COLLECT_RADIUS + asteroid->radius;
+        if (distance_sq <= (collect_radius * collect_radius)) {
             float recovered = fminf(asteroid->ore, cargo_space);
             if (recovered <= 0.0f) {
                 continue;
@@ -1172,21 +1213,12 @@ static void step_fragment_collection(float dt) {
                 clear_asteroid(asteroid);
                 collected_fragments++;
             } else if (asteroid->max_ore > 0.0f) {
-                float ore_ratio = asteroid->ore / asteroid->max_ore;
-                asteroid->radius = lerpf(asteroid_radius_min(ASTEROID_TIER_S) * 0.72f, asteroid_radius_max(ASTEROID_TIER_S), ore_ratio);
+                asteroid->radius = lerpf(asteroid_radius_min(ASTEROID_TIER_S) * 0.72f, asteroid_radius_max(ASTEROID_TIER_S), asteroid_progress_ratio(asteroid));
             }
         }
     }
 
-    if (collected_ore > 0.0f) {
-        if (g.collection_feedback_timer <= 0.0f) {
-            g.collection_feedback_ore = 0.0f;
-            g.collection_feedback_fragments = 0;
-        }
-        g.collection_feedback_ore += collected_ore;
-        g.collection_feedback_fragments += collected_fragments;
-        g.collection_feedback_timer = COLLECTION_FEEDBACK_TIME;
-    }
+    push_collection_feedback(collected_ore, collected_fragments);
 }
 
 static void step_mining_system(float dt, bool mining, vec2 forward) {
@@ -1244,8 +1276,7 @@ static void step_notice_timer(float dt) {
     if (g.collection_feedback_timer > 0.0f) {
         g.collection_feedback_timer = fmaxf(0.0f, g.collection_feedback_timer - dt);
         if (g.collection_feedback_timer <= 0.0f) {
-            g.collection_feedback_ore = 0.0f;
-            g.collection_feedback_fragments = 0;
+            clear_collection_feedback();
         }
     }
 }
