@@ -19,29 +19,22 @@
 
       body {
         margin: 0;
-        min-height: 100vh;
-        display: grid;
-        place-items: center;
+        min-height: 100dvh;
+        overflow: hidden;
         color: #dce9ff;
       }
 
       .shell {
-        width: min(96vw, 1400px);
-        display: grid;
-        gap: 14px;
+        width: 100vw;
+        height: 100dvh;
       }
 
       .hero {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
-        padding: 0 6px;
+        display: none;
       }
 
       .hero-copy {
-        display: grid;
-        gap: 6px;
+        display: none;
       }
 
       .eyebrow {
@@ -63,15 +56,10 @@
       }
 
       .frame {
-        width: min(96vw, 1400px);
-        aspect-ratio: 16 / 9;
-        border: 1px solid rgba(125, 180, 255, 0.24);
-        border-radius: 18px;
+        width: 100vw;
+        height: 100dvh;
         overflow: hidden;
-        background: rgba(7, 12, 20, 0.75);
-        box-shadow:
-          0 24px 90px rgba(0, 0, 0, 0.45),
-          inset 0 1px 0 rgba(255, 255, 255, 0.05);
+        background: transparent;
         position: relative;
       }
 
@@ -80,6 +68,12 @@
         height: 100%;
         display: block;
         outline: none;
+      }
+
+      @media (max-width: 760px), (max-height: 680px) {
+        .hero {
+          display: none;
+        }
       }
     </style>
   </head>
