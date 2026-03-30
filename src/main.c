@@ -5,6 +5,12 @@
 #include <stdio.h>
 #include <string.h>
 
+/* --- Multiplayer networking --- */
+#include "net.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
+
 #define SOKOL_IMPL
 #define SOKOL_APP_IMPL
 #define SOKOL_GFX_IMPL
@@ -260,6 +266,9 @@ typedef struct {
     runtime_state_t runtime;
     audio_state_t audio;
     sg_pass_action pass_action;
+    /* --- Multiplayer --- */
+    bool multiplayer_enabled;
+    float net_send_timer;
 } game_t;
 
 static game_t g;
@@ -2880,6 +2889,15 @@ static void draw_hud(void) {
         }
     }
 
+    /* --- Multiplayer HUD indicator --- */
+    if (g.multiplayer_enabled && net_is_connected()) {
+        float mp_x = ui_text_pos(screen_w - (compact ? 100.0f : 120.0f));
+        float mp_y = ui_text_pos(8.0f);
+        sdtx_pos(mp_x, mp_y);
+        sdtx_color3b(80, 255, 180);
+        sdtx_printf("MP:%d", net_remote_player_count() + 1);
+    }
+
     draw_station_services(&ui);
 }
 
@@ -3727,6 +3745,50 @@ static void init(void) {
 
     init_starfield();
     reset_world();
+
+    /* --- Multiplayer: auto-connect if server URL is available --- */
+#ifdef __EMSCRIPTEN__
+    {
+        const char* server_url = emscripten_run_script_string(
+            "(() => {"
+            "  const p = new URLSearchParams(window.location.search);"
+            "  return p.get('server') || '';"
+            "})()");
+        if (server_url && server_url[0] != '\0') {
+            g.multiplayer_enabled = net_init(server_url, NULL);
+        }
+    }
+#endif
+}
+
+/* --- Multiplayer: draw remote players as colored triangles --- */
+static void draw_remote_players(void) {
+    if (!g.multiplayer_enabled) return;
+    const NetPlayerState* players = net_get_players();
+    /* Color palette for remote players (6 distinct colors). */
+    static const float colors[][3] = {
+        {1.0f, 0.45f, 0.25f}, /* orange */
+        {0.25f, 1.0f, 0.55f}, /* green */
+        {0.55f, 0.35f, 1.0f}, /* purple */
+        {1.0f, 0.85f, 0.15f}, /* yellow */
+        {0.15f, 0.85f, 1.0f}, /* cyan */
+        {1.0f, 0.35f, 0.75f}, /* pink */
+    };
+    for (int i = 0; i < NET_MAX_PLAYERS; i++) {
+        if (!players[i].active) continue;
+        if (i == (int)net_local_id()) continue;
+        int ci = i % 6;
+        sgl_push_matrix();
+        sgl_translate(players[i].x, players[i].y, 0.0f);
+        sgl_rotate(players[i].angle, 0.0f, 0.0f, 1.0f);
+        sgl_c4f(colors[ci][0], colors[ci][1], colors[ci][2], 0.85f);
+        sgl_begin_triangles();
+        sgl_v2f(18.0f, 0.0f);
+        sgl_v2f(-12.0f, 10.0f);
+        sgl_v2f(-12.0f, -10.0f);
+        sgl_end();
+        sgl_pop_matrix();
+    }
 }
 
 static void render_world(void) {
@@ -3757,6 +3819,7 @@ static void render_world(void) {
     draw_ship_tractor_field();
     draw_ship();
     draw_npc_ships();
+    draw_remote_players(); /* Multiplayer: remote player ships */
 }
 
 static void render_ui(void) {
@@ -3805,10 +3868,37 @@ static void frame(void) {
     float frame_dt = clampf((float)sapp_frame_duration(), 0.0f, max_frame_dt);
     advance_simulation_frame(frame_dt);
     audio_generate_stream();
+
+    /* --- Multiplayer: poll and send state --- */
+    if (g.multiplayer_enabled) {
+        net_poll();
+        /* Send local state at ~20 Hz (every 50ms). */
+        g.net_send_timer += frame_dt;
+        if (g.net_send_timer >= 0.05f) {
+            g.net_send_timer -= 0.05f;
+            net_send_state(g.ship.pos.x, g.ship.pos.y,
+                           g.ship.vel.x, g.ship.vel.y,
+                           g.ship.angle);
+            /* Also send input flags. */
+            uint8_t flags = 0;
+            if (g.thrusting) flags |= NET_INPUT_THRUST;
+            if (g.input.key_down[SAPP_KEYCODE_A] || g.input.key_down[SAPP_KEYCODE_LEFT])
+                flags |= NET_INPUT_LEFT;
+            if (g.input.key_down[SAPP_KEYCODE_D] || g.input.key_down[SAPP_KEYCODE_RIGHT])
+                flags |= NET_INPUT_RIGHT;
+            if (g.input.key_down[SAPP_KEYCODE_SPACE])
+                flags |= NET_INPUT_FIRE;
+            net_send_input(flags, g.ship.angle);
+        }
+    }
+
     render_frame();
 }
 
 static void cleanup(void) {
+    if (g.multiplayer_enabled) {
+        net_shutdown();
+    }
     saudio_shutdown();
     sdtx_shutdown();
     sgl_shutdown();

@@ -7,9 +7,9 @@ set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 if(WIN32 AND NOT EMSCRIPTEN)
-    add_executable(space_miner WIN32 src/main.c)
+    add_executable(space_miner WIN32 src/main.c src/net.c)
 else()
-    add_executable(space_miner src/main.c)
+    add_executable(space_miner src/main.c src/net.c)
 endif()
 
 target_include_directories(space_miner PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/sokol")
@@ -45,6 +45,7 @@ if(EMSCRIPTEN)
         "SHELL:-sNO_EXIT_RUNTIME=1"
         "SHELL:-sEXPORTED_FUNCTIONS=['_main','__saudio_emsc_pull']"
         "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
+        "SHELL:-lwebsocket.js"
     )
 elseif(APPLE)
     target_link_libraries(space_miner PRIVATE
