@@ -27,7 +27,7 @@ if(BUILD_TESTS_ONLY)
     return()
 endif()
 
-set(GAME_SOURCES src/main.c src/net.c src/commodity.c src/ship.c src/audio.c src/economy.c src/asteroid.c src/npc.c)
+set(GAME_SOURCES src/main.c src/net.c src/commodity.c src/ship.c src/audio.c src/economy.c src/asteroid.c src/npc.c src/render.c)
 
 if(WIN32 AND NOT EMSCRIPTEN)
     add_executable(space_miner WIN32 ${GAME_SOURCES})
