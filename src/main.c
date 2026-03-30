@@ -24,6 +24,7 @@ enum {
     MAX_ASTEROIDS = 48,
     MAX_STARS = 120,
     MAX_STATIONS = 3,
+    MAX_NPC_SHIPS = 4,
     AUDIO_VOICE_COUNT = 24,
     AUDIO_MIX_FRAMES = 512,
 };
@@ -117,6 +118,34 @@ typedef struct {
     float age;
 } asteroid_t;
 
+typedef enum {
+    NPC_ROLE_MINER,
+} npc_role_t;
+
+typedef enum {
+    NPC_STATE_IDLE,
+    NPC_STATE_TRAVEL_TO_ASTEROID,
+    NPC_STATE_MINING,
+    NPC_STATE_RETURN_TO_STATION,
+    NPC_STATE_DOCKED,
+} npc_state_t;
+
+typedef struct {
+    bool active;
+    npc_role_t role;
+    npc_state_t state;
+    vec2 pos;
+    vec2 vel;
+    float angle;
+    float cargo[COMMODITY_RAW_ORE_COUNT];
+    float cargo_max;
+    float mining_rate;
+    int target_asteroid;
+    int home_station;
+    float state_timer;
+    bool thrusting;
+} npc_ship_t;
+
 typedef struct {
     vec2 pos;
     float depth;
@@ -207,6 +236,7 @@ typedef struct {
     ship_t ship;
     station_t stations[MAX_STATIONS];
     asteroid_t asteroids[MAX_ASTEROIDS];
+    npc_ship_t npc_ships[MAX_NPC_SHIPS];
     star_t stars[MAX_STARS];
     uint32_t rng;
     int current_station;
@@ -272,8 +302,8 @@ static const float UI_SCALE_DEFAULT = 1.42f;
 static const float UI_SCALE_WIDE = 1.28f;
 static const float SIM_DT = 1.0f / 120.0f;
 static const int MAX_SIM_STEPS_PER_FRAME = 8;
-static const int FIELD_ASTEROID_TARGET = 16;
-static const float FIELD_ASTEROID_RESPAWN_DELAY = 1.4f;
+static const int FIELD_ASTEROID_TARGET = 32;
+static const float FIELD_ASTEROID_RESPAWN_DELAY = 0.6f;
 static const float FRACTURE_CHILD_CLEANUP_AGE = 22.0f;
 static const float FRACTURE_CHILD_CLEANUP_DISTANCE = 940.0f;
 static const float FRAGMENT_NEARBY_RANGE = 220.0f;
@@ -285,6 +315,14 @@ static const float FRAGMENT_TRACTOR_ACCEL = 380.0f;
 static const float FRAGMENT_MAX_SPEED = 210.0f;
 static const float REFINERY_BASE_SMELT_RATE = 0.5f;
 static const int REFINERY_MAX_FURNACES = 3;
+static const float NPC_ACCEL = 180.0f;
+static const float NPC_TURN_SPEED = 2.0f;
+static const float NPC_DRAG = 0.5f;
+static const float NPC_MINING_RATE = 14.0f;
+static const float NPC_CARGO_MAX = 60.0f;
+static const float NPC_DOCK_TIME = 3.0f;
+static const float NPC_MINING_RANGE = 170.0f;
+static const float NPC_SHIP_RADIUS = 12.0f;
 static const float COLLECTION_FEEDBACK_TIME = 1.1f;
 static const int SHIP_UPGRADE_MAX_LEVEL = 4;
 static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
@@ -1783,6 +1821,23 @@ static void reset_world(void) {
         spawn_field_asteroid(&g.asteroids[i]);
     }
 
+    memset(g.npc_ships, 0, sizeof(g.npc_ships));
+    for (int i = 0; i < 3; i++) {
+        npc_ship_t* npc = &g.npc_ships[i];
+        npc->active = true;
+        npc->role = NPC_ROLE_MINER;
+        npc->state = NPC_STATE_DOCKED;
+        npc->pos = v2_add(g.stations[0].pos, v2(30.0f * (float)(i - 1), -(g.stations[0].radius + NPC_SHIP_RADIUS + 50.0f)));
+        npc->vel = v2(0.0f, 0.0f);
+        npc->angle = PI_F * 0.5f;
+        npc->cargo_max = NPC_CARGO_MAX;
+        npc->mining_rate = NPC_MINING_RATE;
+        npc->target_asteroid = -1;
+        npc->home_station = 0;
+        npc->state_timer = NPC_DOCK_TIME + (float)i * 2.0f;
+        npc->thrusting = false;
+    }
+
     set_notice("%s online. Press E to launch.", current_station_ptr()->name);
 }
 
@@ -2071,6 +2126,65 @@ static void draw_ship(void) {
     draw_segment(v2(-9.0f, -8.0f), v2(-15.0f, -17.0f), 0.55f, 0.72f, 0.92f, 0.85f);
 
     sgl_pop_matrix();
+}
+
+static void draw_npc_ship(const npc_ship_t* npc) {
+    sgl_push_matrix();
+    sgl_translate(npc->pos.x, npc->pos.y, 0.0f);
+    sgl_rotate(npc->angle, 0.0f, 0.0f, 1.0f);
+    sgl_scale(0.7f, 0.7f, 1.0f);
+
+    if (npc->thrusting) {
+        float flicker = 8.0f + sinf(g.time * 38.0f + npc->pos.x) * 2.5f;
+        sgl_c4f(1.0f, 0.6f, 0.15f, 0.9f);
+        sgl_begin_triangles();
+        sgl_v2f(-12.0f, 0.0f);
+        sgl_v2f(-26.0f - flicker, 6.0f);
+        sgl_v2f(-26.0f - flicker, -6.0f);
+        sgl_end();
+    }
+
+    sgl_c4f(0.92f, 0.68f, 0.28f, 1.0f);
+    sgl_begin_triangles();
+    sgl_v2f(22.0f, 0.0f);
+    sgl_v2f(-14.0f, 12.0f);
+    sgl_v2f(-14.0f, -12.0f);
+    sgl_end();
+
+    sgl_c4f(0.28f, 0.18f, 0.08f, 1.0f);
+    sgl_begin_triangles();
+    sgl_v2f(8.0f, 0.0f);
+    sgl_v2f(-5.0f, 5.5f);
+    sgl_v2f(-5.0f, -5.5f);
+    sgl_end();
+
+    draw_segment(v2(-9.0f, 8.0f), v2(-15.0f, 17.0f), 0.82f, 0.58f, 0.24f, 0.85f);
+    draw_segment(v2(-9.0f, -8.0f), v2(-15.0f, -17.0f), 0.82f, 0.58f, 0.24f, 0.85f);
+
+    sgl_pop_matrix();
+}
+
+static void draw_npc_mining_beam(const npc_ship_t* npc) {
+    if (npc->state != NPC_STATE_MINING) return;
+    if (npc->target_asteroid < 0) return;
+    const asteroid_t* asteroid = &g.asteroids[npc->target_asteroid];
+    if (!asteroid->active) return;
+
+    vec2 forward = v2_from_angle(npc->angle);
+    vec2 muzzle = v2_add(npc->pos, v2_scale(forward, NPC_SHIP_RADIUS + 5.0f));
+    vec2 to_target = v2_sub(asteroid->pos, muzzle);
+    vec2 hit = v2_sub(asteroid->pos, v2_scale(v2_norm(to_target), asteroid->radius * 0.85f));
+
+    draw_segment(muzzle, hit, 0.92f, 0.68f, 0.28f, 0.85f);
+    draw_segment(muzzle, hit, 0.45f, 0.30f, 0.10f, 0.35f);
+}
+
+static void draw_npc_ships(void) {
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!g.npc_ships[i].active) continue;
+        draw_npc_ship(&g.npc_ships[i]);
+        draw_npc_mining_beam(&g.npc_ships[i]);
+    }
 }
 
 static void draw_beam(void) {
@@ -3311,6 +3425,201 @@ static void step_notice_timer(float dt) {
     }
 }
 
+static float npc_total_cargo(const npc_ship_t* npc) {
+    float total = 0.0f;
+    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
+        total += npc->cargo[i];
+    }
+    return total;
+}
+
+static int npc_find_mineable_asteroid(const npc_ship_t* npc) {
+    int best = -1;
+    float best_dist_sq = 1e18f;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t* a = &g.asteroids[i];
+        if (!a->active) continue;
+        if (a->tier == ASTEROID_TIER_S) continue;
+        float d = v2_dist_sq(npc->pos, a->pos);
+        if (d < best_dist_sq) {
+            best_dist_sq = d;
+            best = i;
+        }
+    }
+    return best;
+}
+
+static void npc_steer_toward(npc_ship_t* npc, vec2 target, float dt) {
+    vec2 delta = v2_sub(target, npc->pos);
+    float desired_angle = atan2f(delta.y, delta.x);
+    float diff = wrap_angle(desired_angle - npc->angle);
+    float max_turn = NPC_TURN_SPEED * dt;
+    if (diff > max_turn) diff = max_turn;
+    else if (diff < -max_turn) diff = -max_turn;
+    npc->angle = wrap_angle(npc->angle + diff);
+
+    vec2 forward = v2_from_angle(npc->angle);
+    npc->vel = v2_add(npc->vel, v2_scale(forward, NPC_ACCEL * dt));
+    npc->thrusting = true;
+}
+
+static void npc_apply_physics(npc_ship_t* npc, float dt) {
+    npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (NPC_DRAG * dt)));
+    npc->pos = v2_add(npc->pos, v2_scale(npc->vel, dt));
+}
+
+static void step_npc_ships(float dt) {
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        npc_ship_t* npc = &g.npc_ships[n];
+        if (!npc->active) continue;
+        npc->thrusting = false;
+
+        switch (npc->state) {
+            case NPC_STATE_DOCKED: {
+                npc->state_timer -= dt;
+                npc->vel = v2(0.0f, 0.0f);
+                if (npc->state_timer <= 0.0f) {
+                    int target = npc_find_mineable_asteroid(npc);
+                    if (target >= 0) {
+                        npc->target_asteroid = target;
+                        npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+                    } else {
+                        npc->state = NPC_STATE_IDLE;
+                        npc->state_timer = 2.0f;
+                    }
+                }
+                break;
+            }
+
+            case NPC_STATE_TRAVEL_TO_ASTEROID: {
+                if (npc->target_asteroid < 0 || !g.asteroids[npc->target_asteroid].active ||
+                    g.asteroids[npc->target_asteroid].tier == ASTEROID_TIER_S) {
+                    int target = npc_find_mineable_asteroid(npc);
+                    if (target >= 0) {
+                        npc->target_asteroid = target;
+                    } else {
+                        npc->state = NPC_STATE_RETURN_TO_STATION;
+                        break;
+                    }
+                }
+
+                asteroid_t* asteroid = &g.asteroids[npc->target_asteroid];
+                npc_steer_toward(npc, asteroid->pos, dt);
+                npc_apply_physics(npc, dt);
+
+                float dist_sq = v2_dist_sq(npc->pos, asteroid->pos);
+                if (dist_sq < (NPC_MINING_RANGE * NPC_MINING_RANGE)) {
+                    npc->state = NPC_STATE_MINING;
+                }
+                break;
+            }
+
+            case NPC_STATE_MINING: {
+                if (npc->target_asteroid < 0 || !g.asteroids[npc->target_asteroid].active ||
+                    g.asteroids[npc->target_asteroid].tier == ASTEROID_TIER_S) {
+                    if (npc_total_cargo(npc) > 0.5f) {
+                        npc->state = NPC_STATE_RETURN_TO_STATION;
+                    } else {
+                        int target = npc_find_mineable_asteroid(npc);
+                        if (target >= 0) {
+                            npc->target_asteroid = target;
+                            npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+                        } else {
+                            npc->state = NPC_STATE_RETURN_TO_STATION;
+                        }
+                    }
+                    break;
+                }
+
+                asteroid_t* asteroid = &g.asteroids[npc->target_asteroid];
+                float dist = sqrtf(v2_dist_sq(npc->pos, asteroid->pos));
+                float standoff = asteroid->radius + 60.0f;
+
+                if (dist > standoff + 20.0f) {
+                    npc_steer_toward(npc, asteroid->pos, dt);
+                    npc_apply_physics(npc, dt);
+                    break;
+                }
+
+                vec2 face_dir = v2_sub(asteroid->pos, npc->pos);
+                float desired_angle = atan2f(face_dir.y, face_dir.x);
+                float diff = wrap_angle(desired_angle - npc->angle);
+                float max_turn = NPC_TURN_SPEED * dt;
+                if (diff > max_turn) diff = max_turn;
+                else if (diff < -max_turn) diff = -max_turn;
+                npc->angle = wrap_angle(npc->angle + diff);
+
+                if (dist < standoff) {
+                    vec2 away = v2_norm(v2_sub(npc->pos, asteroid->pos));
+                    npc->vel = v2_add(npc->vel, v2_scale(away, NPC_ACCEL * 0.5f * dt));
+                }
+                npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (4.0f * dt)));
+                npc_apply_physics(npc, dt);
+
+                float mined = npc->mining_rate * dt;
+                mined = fminf(mined, asteroid->hp);
+                asteroid->hp -= mined;
+
+                float cargo_space = npc->cargo_max - npc_total_cargo(npc);
+                float ore_gained = mined * 0.4f;
+                ore_gained = fminf(ore_gained, cargo_space);
+                if (ore_gained > 0.0f) {
+                    npc->cargo[asteroid->commodity] += ore_gained;
+                }
+
+                if (asteroid->hp <= 0.01f) {
+                    vec2 outward = v2_norm(v2_sub(asteroid->pos, npc->pos));
+                    fracture_asteroid(npc->target_asteroid, outward);
+                    npc->target_asteroid = -1;
+                }
+
+                if (cargo_space <= 0.5f) {
+                    npc->state = NPC_STATE_RETURN_TO_STATION;
+                    npc->target_asteroid = -1;
+                }
+                break;
+            }
+
+            case NPC_STATE_RETURN_TO_STATION: {
+                station_t* home = &g.stations[npc->home_station];
+                npc_steer_toward(npc, home->pos, dt);
+                npc_apply_physics(npc, dt);
+
+                float dock_dist_sq = v2_dist_sq(npc->pos, home->pos);
+                float dock_r = home->dock_radius * 0.7f;
+                if (dock_dist_sq < (dock_r * dock_r)) {
+                    npc->vel = v2(0.0f, 0.0f);
+                    npc->pos = v2_add(home->pos, v2(30.0f * (float)(n % 3 - 1), -(home->radius + NPC_SHIP_RADIUS + 50.0f)));
+
+                    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
+                        home->ore_buffer[i] += npc->cargo[i];
+                        npc->cargo[i] = 0.0f;
+                    }
+
+                    npc->state = NPC_STATE_DOCKED;
+                    npc->state_timer = NPC_DOCK_TIME;
+                    npc->target_asteroid = -1;
+                }
+                break;
+            }
+
+            case NPC_STATE_IDLE: {
+                npc->state_timer -= dt;
+                if (npc->state_timer <= 0.0f) {
+                    int target = npc_find_mineable_asteroid(npc);
+                    if (target >= 0) {
+                        npc->target_asteroid = target;
+                        npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+                    } else {
+                        npc->state_timer = 3.0f;
+                    }
+                }
+                break;
+            }
+        }
+    }
+}
+
 static void step_refinery_production(float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t* station = &g.stations[s];
@@ -3350,6 +3659,7 @@ static void sim_step(float dt) {
     step_asteroid_dynamics(dt);
     maintain_asteroid_field(dt);
     step_refinery_production(dt);
+    step_npc_ships(dt);
 
     if (!g.docked) {
         step_ship_rotation(dt, intent.turn);
@@ -3449,6 +3759,7 @@ static void render_world(void) {
     draw_beam();
     draw_ship_tractor_field();
     draw_ship();
+    draw_npc_ships();
 }
 
 static void render_ui(void) {
