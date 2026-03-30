@@ -24,8 +24,8 @@ jobs:
 
       - name: Build and run tests
         run: |
-          cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Debug
-          cmake --build build-test --target space_miner_test
+          cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON
+          cmake --build build-test
           ./build-test/space_miner_test
 
   build:
