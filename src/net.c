@@ -16,6 +16,7 @@ static struct {
     uint8_t local_id;
     NetPlayerState players[NET_MAX_PLAYERS];
     NetCallbacks callbacks;
+    char server_hash[12];
 } net_state;
 
 /* ---------- Protocol helpers --------------------------------------------- */
@@ -196,6 +197,16 @@ static void handle_message(const uint8_t* data, int len) {
                 pss.cargo_crystal   = read_f32_le(&data[23]);
                 net_state.callbacks.on_player_ship(&pss);
             }
+        }
+        break;
+
+    case NET_MSG_SERVER_INFO:
+        if (len >= 2) {
+            int hash_len = len - 1;
+            if (hash_len > 11) hash_len = 11;
+            memcpy(net_state.server_hash, &data[1], (size_t)hash_len);
+            net_state.server_hash[hash_len] = '\0';
+            printf("[net] server version: %s\n", net_state.server_hash);
         }
         break;
 
@@ -381,4 +392,8 @@ int net_remote_player_count(void) {
         }
     }
     return count;
+}
+
+const char* net_server_hash(void) {
+    return net_state.server_hash;
 }

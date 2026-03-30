@@ -24,6 +24,7 @@ enum {
     NET_MSG_MINING_ACTION   = 0x13,
     NET_MSG_HOST_ASSIGN     = 0x14,
     NET_MSG_PLAYER_SHIP     = 0x15,
+    NET_MSG_SERVER_INFO     = 0x16,
 };
 
 /* Input flags (client -> server) */

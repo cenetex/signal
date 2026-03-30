@@ -113,8 +113,13 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             int count = 0;
             for (int i = 0; i < MAX_PLAYERS; i++)
                 if (world.players[i].connected) count++;
+#ifdef GIT_HASH
             mg_http_reply(c, 200, "Content-Type: application/json\r\n",
-                          "{\"status\":\"ok\",\"players\":%d}", count);
+                          "{\"status\":\"ok\",\"players\":%d,\"version\":\"%s\"}", count, GIT_HASH);
+#else
+            mg_http_reply(c, 200, "Content-Type: application/json\r\n",
+                          "{\"status\":\"ok\",\"players\":%d,\"version\":\"dev\"}", count);
+#endif
         } else {
             mg_http_reply(c, 404, "", "Not found");
         }
@@ -141,6 +146,20 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             if (i == pid || !world.players[i].connected) continue;
             uint8_t exist_msg[] = { NET_MSG_JOIN, (uint8_t)i };
             ws_send(c, exist_msg, 2);
+        }
+
+        /* Send server version hash. */
+        {
+#ifdef GIT_HASH
+            const char *hash = GIT_HASH;
+#else
+            const char *hash = "dev";
+#endif
+            size_t hlen = strlen(hash);
+            uint8_t info_msg[12] = { NET_MSG_SERVER_INFO };
+            if (hlen > 11) hlen = 11;
+            memcpy(&info_msg[1], hash, hlen);
+            ws_send(c, info_msg, 1 + hlen);
         }
 
         printf("[server] player %d joined\n", pid);

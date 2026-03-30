@@ -32,6 +32,7 @@ enum {
     NET_MSG_WORLD_STATIONS  = 0x12,
     NET_MSG_MINING_ACTION   = 0x13,
     NET_MSG_PLAYER_SHIP     = 0x15,
+    NET_MSG_SERVER_INFO     = 0x16,
 };
 
 /* Input flags packed into a single byte. */
@@ -138,5 +139,8 @@ const NetPlayerState* net_get_players(void);
 
 /* Returns the number of currently active remote players. */
 int net_remote_player_count(void);
+
+/* Returns the server's git hash (empty string if not received). */
+const char* net_server_hash(void);
 
 #endif /* NET_H */
