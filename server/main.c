@@ -219,7 +219,11 @@ int main(void) {
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
     mg_http_listen(&mgr, listen_url, ev_handler, NULL);
+#ifdef GIT_HASH
+    printf("[server] signal game server %s on %s\n", GIT_HASH, listen_url);
+#else
     printf("[server] signal game server on %s\n", listen_url);
+#endif
 
     uint64_t last_sim = 0, last_state = 0, last_world = 0, last_ship = 0;
     float sim_accum = 0.0f;

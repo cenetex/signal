@@ -8,6 +8,17 @@ set(CMAKE_C_EXTENSIONS OFF)
 
 option(BUILD_TESTS_ONLY "Only build the test executable" OFF)
 
+if(NOT DEFINED GIT_HASH)
+    execute_process(COMMAND git rev-parse --short HEAD
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE GIT_HASH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        ERROR_QUIET)
+endif()
+if(NOT GIT_HASH)
+    set(GIT_HASH "dev")
+endif()
+
 if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
     add_executable(space_miner_test src/test_main.c src/commodity.c src/ship.c src/economy.c src/asteroid.c)
     target_include_directories(space_miner_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared")
@@ -36,6 +47,7 @@ else()
 endif()
 
 target_include_directories(space_miner PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/sokol" "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
+target_compile_definitions(space_miner PRIVATE GIT_HASH="${GIT_HASH}")
 
 if(MSVC)
     target_compile_definitions(space_miner PRIVATE _CRT_SECURE_NO_WARNINGS)

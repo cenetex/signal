@@ -1935,13 +1935,22 @@ static void draw_hud(void) {
         }
     }
 
-    /* --- Multiplayer HUD indicator --- */
-    if (g.multiplayer_enabled && net_is_connected()) {
-        float mp_x = ui_text_pos(screen_w - (compact ? 100.0f : 120.0f));
-        float mp_y = ui_text_pos(8.0f);
-        sdtx_pos(mp_x, mp_y);
-        sdtx_color3b(80, 255, 180);
-        sdtx_printf("MP:%d", net_remote_player_count() + 1);
+    /* --- Multiplayer HUD indicator + version --- */
+    {
+        float info_x = ui_text_pos(screen_w - (compact ? 100.0f : 120.0f));
+        float info_y = ui_text_pos(8.0f);
+        sdtx_pos(info_x, info_y);
+        sdtx_color3b(80, 90, 100);
+#ifdef GIT_HASH
+        sdtx_puts(GIT_HASH);
+#else
+        sdtx_puts("dev");
+#endif
+        if (g.multiplayer_enabled && net_is_connected()) {
+            sdtx_pos(info_x, ui_text_pos(18.0f));
+            sdtx_color3b(80, 255, 180);
+            sdtx_printf("MP:%d", net_remote_player_count() + 1);
+        }
     }
 
     draw_station_services(&ui);

@@ -41,7 +41,8 @@ jobs:
 
       - name: Build WASM
         run: |
-          emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release
+          GIT_HASH=$(git rev-parse --short HEAD)
+          emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$GIT_HASH
           cmake --build build-web
 
       - name: Prepare artifacts
@@ -81,7 +82,8 @@ jobs:
 
       - name: Build and push server image
         run: |
-          docker build -f server/Dockerfile . -t 022118847419.dkr.ecr.us-east-1.amazonaws.com/signal-relay:latest
+          GIT_HASH=$(git rev-parse --short HEAD)
+          docker build -f server/Dockerfile . --build-arg GIT_HASH=$GIT_HASH -t 022118847419.dkr.ecr.us-east-1.amazonaws.com/signal-relay:latest
           docker push 022118847419.dkr.ecr.us-east-1.amazonaws.com/signal-relay:latest
 
       - name: Deploy to ECS
