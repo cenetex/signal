@@ -1286,18 +1286,22 @@ static void format_station_market_summary(const station_ui_state_t* ui, bool com
     }
 }
 
-static void format_station_market_detail(const station_ui_state_t* ui, char* text, size_t text_size) {
+static void format_station_market_detail(const station_ui_state_t* ui, bool compact, char* text, size_t text_size) {
     if (ui->station == NULL) {
         text[0] = '\0';
         return;
     }
 
     if (ui->station->role == STATION_ROLE_REFINERY) {
-        char stock[64] = { 0 };
-        format_ingot_stock_line(ui->station, stock, sizeof(stock));
-        snprintf(text, text_size, "Value %d cr // Stock %s", ui->payout, stock);
+        if (compact) {
+            snprintf(text, text_size, "Haul %d cr", ui->payout);
+        } else {
+            char stock[64] = { 0 };
+            format_ingot_stock_line(ui->station, stock, sizeof(stock));
+            snprintf(text, text_size, "Value %d cr // Stock %s", ui->payout, stock);
+        }
     } else if (ui->station->role == STATION_ROLE_YARD) {
-        snprintf(text, text_size, "Stock FR %d // awaiting supply", (int)lroundf(ui->station->inventory[COMMODITY_FRAME_INGOT]));
+        snprintf(text, text_size, "Stock FR %d", (int)lroundf(ui->station->inventory[COMMODITY_FRAME_INGOT]));
     } else {
         snprintf(text, text_size, "Stock CO %d  LN %d", (int)lroundf(ui->station->inventory[COMMODITY_CONDUCTOR_INGOT]), (int)lroundf(ui->station->inventory[COMMODITY_LENS_INGOT]));
     }
@@ -1389,10 +1393,14 @@ static int build_station_service_lines(const station_ui_state_t* ui, station_ser
     return 3;
 }
 
-static void draw_station_service_text_line(float x, float y, const station_service_line_t* line) {
+static void draw_station_service_text_line(float x, float y, const station_service_line_t* line, bool compact) {
     sdtx_pos(ui_text_pos(x), ui_text_pos(y));
     sdtx_color3b(line->r, line->g0, line->b);
-    sdtx_printf("%-26s %s", line->action, line->state);
+    if (compact) {
+        sdtx_printf("%-16s %s", line->action, line->state);
+    } else {
+        sdtx_printf("%-26s %s", line->action, line->state);
+    }
 }
 
 static void station_role_color(station_role_t role, float* r, float* g0, float* b) {
@@ -2501,7 +2509,7 @@ static void draw_station_services(const station_ui_state_t* ui) {
     bool show_fit_panel = !compact;
     format_station_header_badge(ui, header_badge, sizeof(header_badge));
     format_station_market_summary(ui, compact, market_summary, sizeof(market_summary));
-    format_station_market_detail(ui, market_detail, sizeof(market_detail));
+    format_station_market_detail(ui, compact, market_detail, sizeof(market_detail));
     service_line_count = build_station_service_lines(ui, service_lines);
 
     get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
@@ -2535,12 +2543,14 @@ static void draw_station_services(const station_ui_state_t* ui) {
     sdtx_color3b(118, 255, 221);
     sdtx_puts(station_role_hub_label(ui->station->role));
 
-    sdtx_pos(ui_text_pos(panel_x + panel_w - (compact ? 132.0f : 152.0f)), ui_text_pos(panel_y + 16.0f));
-    sdtx_color3b(203, 220, 248);
-    sdtx_puts(header_badge);
-    sdtx_pos(ui_text_pos(panel_x + panel_w - (compact ? 132.0f : 152.0f)), ui_text_pos(panel_y + 32.0f));
-    sdtx_color3b(145, 160, 188);
-    sdtx_puts("Press E to launch");
+    if (panel_w >= 480.0f) {
+        sdtx_pos(ui_text_pos(panel_x + panel_w - 152.0f), ui_text_pos(panel_y + 16.0f));
+        sdtx_color3b(203, 220, 248);
+        sdtx_puts(header_badge);
+        sdtx_pos(ui_text_pos(panel_x + panel_w - 152.0f), ui_text_pos(panel_y + 32.0f));
+        sdtx_color3b(145, 160, 188);
+        sdtx_puts("Press E to launch");
+    }
 
     sdtx_pos(ui_text_pos(market_x + 18.0f), ui_text_pos(market_y + 16.0f));
     sdtx_color3b(130, 255, 235);
@@ -2558,7 +2568,7 @@ static void draw_station_services(const station_ui_state_t* ui) {
 
     for (int i = 0; i < service_line_count; i++) {
         float line_y = (i == 0) ? sell_y : ((i == 1) ? repair_y : mining_y);
-        draw_station_service_text_line(services_x + 24.0f, line_y + (compact ? 5.0f : 8.0f), &service_lines[i]);
+        draw_station_service_text_line(services_x + 24.0f, line_y + (compact ? 5.0f : 8.0f), &service_lines[i], compact);
     }
 
     if (show_fit_panel) {
