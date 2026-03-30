@@ -78,7 +78,6 @@ typedef struct {
     float radius;
     float dock_radius;
     float buy_price[COMMODITY_COUNT];
-    float sell_price[COMMODITY_COUNT];
     float inventory[COMMODITY_COUNT];
     float desired_stock[COMMODITY_COUNT];
     float ore_buffer[COMMODITY_RAW_ORE_COUNT];
@@ -1267,7 +1266,7 @@ static void format_station_market_summary(const station_ui_state_t* ui, bool com
         char manifest[64] = { 0 };
         format_ore_manifest(manifest, sizeof(manifest));
         if (compact) {
-            snprintf(text, text_size, "%s // %d/%d", manifest, ui->cargo_units, ui->cargo_capacity);
+            snprintf(text, text_size, "%s %d/%d", manifest, ui->cargo_units, ui->cargo_capacity);
         } else {
             snprintf(text, text_size, "%s // %d/%d", manifest, ui->cargo_units, ui->cargo_capacity);
         }
@@ -1770,9 +1769,6 @@ static void reset_world(void) {
     g.stations[0].buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
     g.stations[0].buy_price[COMMODITY_CUPRITE_ORE] = 14.0f;
     g.stations[0].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
-    g.stations[0].sell_price[COMMODITY_FRAME_INGOT] = 24.0f;
-    g.stations[0].sell_price[COMMODITY_CONDUCTOR_INGOT] = 32.0f;
-    g.stations[0].sell_price[COMMODITY_LENS_INGOT] = 40.0f;
     g.stations[0].services = STATION_SERVICE_ORE_BUYER | STATION_SERVICE_REPAIR;
 
     snprintf(g.stations[1].name, sizeof(g.stations[1].name), "%s", "Kepler Yard");
@@ -2398,7 +2394,7 @@ static void draw_hud_panels(void) {
         services_w = inner_w;
 
         if (show_fit_panel) {
-            fit_w = 168.0f;
+            fit_w = 180.0f;
             fit_x = panel_x + panel_w - fit_w - 18.0f;
             fit_y = inner_y + 42.0f;
             fit_h = inner_h - 42.0f;
@@ -2464,7 +2460,7 @@ static void draw_hud_panels(void) {
     }
 }
 
-static void draw_station_services(void) {
+static void draw_station_services(const station_ui_state_t* ui) {
     if (!g.docked) {
         return;
     }
@@ -2487,7 +2483,6 @@ static void draw_station_services(void) {
     float sell_y = 0.0f;
     float repair_y = 0.0f;
     float mining_y = 0.0f;
-    station_ui_state_t ui = { 0 };
     station_service_line_t service_lines[3] = { 0 };
     char header_badge[32] = { 0 };
     char market_summary[64] = { 0 };
@@ -2495,12 +2490,10 @@ static void draw_station_services(void) {
     int service_line_count = 0;
     bool compact = ui_is_compact();
     bool show_fit_panel = !compact;
-
-    build_station_ui_state(&ui);
-    format_station_header_badge(&ui, header_badge, sizeof(header_badge));
-    format_station_market_summary(&ui, compact, market_summary, sizeof(market_summary));
-    format_station_market_detail(&ui, market_detail, sizeof(market_detail));
-    service_line_count = build_station_service_lines(&ui, service_lines);
+    format_station_header_badge(ui, header_badge, sizeof(header_badge));
+    format_station_market_summary(ui, compact, market_summary, sizeof(market_summary));
+    format_station_market_detail(ui, market_detail, sizeof(market_detail));
+    service_line_count = build_station_service_lines(ui, service_lines);
 
     get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
     inner_y = panel_y + 18.0f;
@@ -2528,10 +2521,10 @@ static void draw_station_services(void) {
 
     sdtx_color3b(232, 241, 255);
     sdtx_pos(ui_text_pos(panel_x + 20.0f), ui_text_pos(panel_y + 16.0f));
-    sdtx_puts(ui.station->name);
+    sdtx_puts(ui->station->name);
     sdtx_pos(ui_text_pos(panel_x + 20.0f), ui_text_pos(panel_y + 32.0f));
     sdtx_color3b(118, 255, 221);
-    sdtx_puts(station_role_hub_label(ui.station->role));
+    sdtx_puts(station_role_hub_label(ui->station->role));
 
     sdtx_pos(ui_text_pos(panel_x + panel_w - (compact ? 132.0f : 152.0f)), ui_text_pos(panel_y + 16.0f));
     sdtx_color3b(203, 220, 248);
@@ -2542,7 +2535,7 @@ static void draw_station_services(void) {
 
     sdtx_pos(ui_text_pos(market_x + 18.0f), ui_text_pos(market_y + 16.0f));
     sdtx_color3b(130, 255, 235);
-    sdtx_puts(station_role_market_title(ui.station->role));
+    sdtx_puts(station_role_market_title(ui->station->role));
     sdtx_pos(ui_text_pos(market_x + 18.0f), ui_text_pos(market_y + 32.0f));
     sdtx_color3b(203, 220, 248);
     sdtx_puts(market_summary);
@@ -2562,20 +2555,20 @@ static void draw_station_services(void) {
     if (show_fit_panel) {
         sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 16.0f));
         sdtx_color3b(130, 255, 235);
-        sdtx_puts(station_role_fit_title(ui.station->role));
+        sdtx_puts(station_role_fit_title(ui->station->role));
 
         sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 32.0f));
         sdtx_color3b(203, 220, 248);
-        if (ui.station->role == STATION_ROLE_REFINERY) {
+        if (ui->station->role == STATION_ROLE_REFINERY) {
             char board_line[64] = { 0 };
             char hopper_line[64] = { 0 };
             char stock_line[64] = { 0 };
-            format_refinery_price_line(ui.station, board_line, sizeof(board_line));
-            format_ore_hopper_line(ui.station, hopper_line, sizeof(hopper_line));
-            format_ingot_stock_line(ui.station, stock_line, sizeof(stock_line));
-            sdtx_printf("Hull %d/%d", ui.hull_now, ui.hull_max);
+            format_refinery_price_line(ui->station, board_line, sizeof(board_line));
+            format_ore_hopper_line(ui->station, hopper_line, sizeof(hopper_line));
+            format_ingot_stock_line(ui->station, stock_line, sizeof(stock_line));
+            sdtx_printf("Hull %d/%d", ui->hull_now, ui->hull_max);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 56.0f));
-            sdtx_printf("Ore %d/%d  Haul %d cr", ui.cargo_units, ui.cargo_capacity, ui.payout);
+            sdtx_printf("Ore %d/%d  Haul %d cr", ui->cargo_units, ui->cargo_capacity, ui->payout);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 88.0f));
             sdtx_color3b(145, 160, 188);
             sdtx_puts(board_line);
@@ -2585,19 +2578,19 @@ static void draw_station_services(void) {
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
             sdtx_printf("Stock    %s", stock_line);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 184.0f));
-            sdtx_printf("Repair %s", ui.repair_cost > 0 ? "available" : "nominal");
+            sdtx_printf("Repair %s", ui->repair_cost > 0 ? "available" : "nominal");
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 216.0f));
             sdtx_color3b(169, 179, 204);
             sdtx_puts("Ore only sells here.");
-        } else if (ui.station->role == STATION_ROLE_YARD) {
-            sdtx_printf("Hull %d/%d", ui.hull_now, ui.hull_max);
+        } else if (ui->station->role == STATION_ROLE_YARD) {
+            sdtx_printf("Hull %d/%d", ui->hull_now, ui->hull_max);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
-            sdtx_printf("Hold %d ore", ui.cargo_capacity);
+            sdtx_printf("Hold %d ore", ui->cargo_capacity);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
             sdtx_color3b(145, 160, 188);
             sdtx_printf("Hold level %d/%d", g.ship.hold_level, SHIP_UPGRADE_MAX_LEVEL);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
-            sdtx_printf("Repair %s", ui.repair_cost > 0 ? "available" : "nominal");
+            sdtx_printf("Repair %s", ui->repair_cost > 0 ? "available" : "nominal");
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 184.0f));
             sdtx_printf("Next rack %s", ship_upgrade_maxed(SHIP_UPGRADE_HOLD) ? "maxed" : "ready");
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 216.0f));
@@ -2613,7 +2606,7 @@ static void draw_station_services(void) {
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
             sdtx_printf("Tractor level %d/%d", g.ship.tractor_level, SHIP_UPGRADE_MAX_LEVEL);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 184.0f));
-            sdtx_printf("Repair %s", ui.repair_cost > 0 ? "available" : "nominal");
+            sdtx_printf("Repair %s", ui->repair_cost > 0 ? "available" : "nominal");
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 216.0f));
             sdtx_color3b(169, 179, 204);
             sdtx_puts("Field gear tuning.");
@@ -2660,6 +2653,10 @@ static void draw_hud(void) {
     int payout_preview = (int)lroundf(station_cargo_sale_value());
     const station_t* current_station = current_station_ptr();
     const station_t* navigation_station = navigation_station_ptr();
+    station_ui_state_t ui = { 0 };
+    if (g.docked) {
+        build_station_ui_state(&ui);
+    }
     int station_distance = 0;
 
     vec2 forward = v2_from_angle(g.ship.angle);
@@ -2788,7 +2785,7 @@ static void draw_hud(void) {
             }
         }
 
-        draw_station_services();
+        draw_station_services(&ui);
         return;
     }
 
@@ -2883,7 +2880,7 @@ static void draw_hud(void) {
         }
     }
 
-    draw_station_services();
+    draw_station_services(&ui);
 }
 
 static void resolve_ship_circle(vec2 center, float radius) {
