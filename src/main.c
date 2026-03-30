@@ -356,6 +356,7 @@ static const float SHIP_BASE_COLLECT_RADIUS = 30.0f;
 static const float SHIP_COLLECT_UPGRADE_STEP = 5.0f;
 static const float FRAGMENT_TRACTOR_ACCEL = 380.0f;
 static const float FRAGMENT_MAX_SPEED = 210.0f;
+static const float REFINERY_HOPPER_CAPACITY = 100.0f;
 static const float REFINERY_BASE_SMELT_RATE = 0.5f;
 static const int REFINERY_MAX_FURNACES = 3;
 static const float NPC_DOCK_TIME = 3.0f;
@@ -938,10 +939,11 @@ static void format_ore_manifest(char* text, size_t text_size) {
 }
 
 static void format_ore_hopper_line(const station_t* station, char* text, size_t text_size) {
+    int cap = (int)lroundf(REFINERY_HOPPER_CAPACITY);
     int ferrite = (int)lroundf(station->ore_buffer[COMMODITY_FERRITE_ORE]);
     int cuprite = (int)lroundf(station->ore_buffer[COMMODITY_CUPRITE_ORE]);
     int crystal = (int)lroundf(station->ore_buffer[COMMODITY_CRYSTAL_ORE]);
-    snprintf(text, text_size, "FE %d  CU %d  CR %d", ferrite, cuprite, crystal);
+    snprintf(text, text_size, "FE %d/%d  CU %d/%d  CR %d/%d", ferrite, cap, cuprite, cap, crystal, cap);
 }
 
 static void format_ingot_stock_line(const station_t* station, char* text, size_t text_size) {
@@ -3209,12 +3211,22 @@ static void try_sell_station_cargo(void) {
         if (amount <= 0.01f) {
             continue;
         }
-        payout_total += amount * station_buy_price(station, ore);
-        station->ore_buffer[ore] += amount;
-        sold_units += (int)lroundf(amount);
+        float hopper_space = REFINERY_HOPPER_CAPACITY - station->ore_buffer[ore];
+        if (hopper_space <= 0.01f) {
+            continue;
+        }
+        float accepted = fminf(amount, hopper_space);
+        payout_total += accepted * station_buy_price(station, ore);
+        station->ore_buffer[ore] += accepted;
+        sold_units += (int)lroundf(accepted);
         sold_types++;
         sold_commodity = ore;
-        g.ship.cargo[ore] = 0.0f;
+        g.ship.cargo[ore] -= accepted;
+    }
+
+    if (sold_units == 0) {
+        set_notice("Hoppers full. Smelting in progress.");
+        return;
     }
 
     int payout = (int)lroundf(payout_total);
@@ -3542,10 +3554,16 @@ static void step_mining_system(float dt, bool mining, vec2 forward) {
 
         float mined = ship_mining_rate() * dt;
         if (mined > 0.0f) {
-            mined = fminf(mined, asteroid->hp);
-            asteroid->hp -= mined;
-            if (asteroid->hp <= 0.01f) {
-                fracture_asteroid(g.hover_asteroid, normal);
+            if (net_is_connected() && !net_is_host()) {
+                /* Guest: send mining action to host, don't apply locally. */
+                net_send_mining_action(g.hover_asteroid, mined);
+            } else {
+                /* Host or single-player: apply damage locally. */
+                mined = fminf(mined, asteroid->hp);
+                asteroid->hp -= mined;
+                if (asteroid->hp <= 0.01f) {
+                    fracture_asteroid(g.hover_asteroid, normal);
+                }
             }
         }
     } else {
@@ -3857,8 +3875,10 @@ static void step_npc_ships(float dt) {
                     npc->pos = v2_add(home->pos, v2(30.0f * (float)(n % 3 - 1), -(home->radius + npc_hull_def(npc)->ship_radius + 50.0f)));
 
                     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
-                        home->ore_buffer[i] += npc->cargo[i];
-                        npc->cargo[i] = 0.0f;
+                        float space = REFINERY_HOPPER_CAPACITY - home->ore_buffer[i];
+                        float deposit = fminf(npc->cargo[i], fmaxf(0.0f, space));
+                        home->ore_buffer[i] += deposit;
+                        npc->cargo[i] -= deposit;
                     }
 
                     npc->state = NPC_STATE_DOCKED;
@@ -4038,7 +4058,12 @@ static void init(void) {
             "  return p.get('server') || 'ws://signal-relay-84734004.us-east-1.elb.amazonaws.com/ws';"
             "})()");
         if (server_url && server_url[0] != '\0') {
-            g.multiplayer_enabled = net_init(server_url, NULL);
+            NetCallbacks cbs = {0};
+            cbs.on_asteroids = apply_remote_asteroids;
+            cbs.on_npcs = apply_remote_npcs;
+            cbs.on_mining_action = apply_remote_mining;
+            cbs.on_host_assign = on_host_assigned;
+            g.multiplayer_enabled = net_init(server_url, &cbs);
         }
     }
 #endif
@@ -4178,8 +4203,7 @@ static void apply_remote_mining(uint8_t player_id, uint8_t asteroid_index, float
 }
 
 static void on_host_assigned(bool is_host) {
-    printf("[game] host assigned: %s
-", is_host ? "YES" : "NO");
+    printf("[game] host assigned: %s\n", is_host ? "YES" : "NO");
 }
 
 /* --- Multiplayer: draw remote players as colored triangles --- */
@@ -4310,6 +4334,15 @@ static void frame(void) {
             if (g.input.key_down[SAPP_KEYCODE_SPACE])
                 flags |= NET_INPUT_FIRE;
             net_send_input(flags, g.ship.angle);
+        }
+
+        /* Host broadcasts world state at ~4 Hz. */
+        if (net_is_host()) {
+            g.world_sync_timer += frame_dt;
+            if (g.world_sync_timer >= 0.25f) {
+                g.world_sync_timer = 0.0f;
+                broadcast_world_state();
+            }
         }
     }
 
