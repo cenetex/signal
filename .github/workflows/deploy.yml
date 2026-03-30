@@ -51,7 +51,6 @@ jobs:
           cp build-web/space_miner.html _site/index.html
           cp build-web/space_miner.js _site/space_miner.js
           cp build-web/space_miner.wasm _site/space_miner.wasm
-          cp web/CNAME _site/CNAME
 
       - uses: actions/upload-pages-artifact@v3
         with:
