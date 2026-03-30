@@ -3783,6 +3783,7 @@ static void init_audio(void) {
 /* Forward declarations for multiplayer callbacks (defined below init). */
 static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count);
 static void apply_remote_npcs(const NetNpcState* npcs, int count);
+static void apply_remote_stations(uint8_t index, const float* ore_buf, const float* inventory, const float* product_stock);
 static void apply_remote_player_state(const NetPlayerState* state);
 static void apply_remote_player_ship(const NetPlayerShipState* state);
 
@@ -3825,6 +3826,7 @@ static void init(void) {
             cbs.on_state = apply_remote_player_state;
             cbs.on_asteroids = apply_remote_asteroids;
             cbs.on_npcs = apply_remote_npcs;
+            cbs.on_stations = apply_remote_stations;
             cbs.on_player_ship = apply_remote_player_ship;
             g.multiplayer_enabled = net_init(server_url, &cbs);
         }
@@ -3897,15 +3899,26 @@ static void apply_remote_npcs(const NetNpcState* npcs, int count) {
     }
 }
 
+static void apply_remote_stations(uint8_t index, const float* ore_buf, const float* inventory, const float* product_stock) {
+    if (index >= MAX_STATIONS) return;
+    station_t* st = &g.stations[index];
+    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
+        st->ore_buffer[i] = ore_buf[i];
+    for (int i = 0; i < COMMODITY_COUNT; i++)
+        st->inventory[i] = inventory[i];
+    for (int i = 0; i < PRODUCT_COUNT; i++)
+        st->product_stock[i] = product_stock[i];
+}
+
 static void apply_remote_player_state(const NetPlayerState* state) {
     /* Apply server-authoritative position for the local player. */
     if (state->player_id == net_local_id()) {
-        /* Blend toward server position for smooth correction. */
+        /* Blend all values for smooth correction. */
         g.ship.pos.x = lerpf(g.ship.pos.x, state->x, 0.3f);
         g.ship.pos.y = lerpf(g.ship.pos.y, state->y, 0.3f);
-        g.ship.vel.x = state->vx;
-        g.ship.vel.y = state->vy;
-        g.ship.angle = state->angle;
+        g.ship.vel.x = lerpf(g.ship.vel.x, state->vx, 0.3f);
+        g.ship.vel.y = lerpf(g.ship.vel.y, state->vy, 0.3f);
+        g.ship.angle = lerpf(g.ship.angle, state->angle, 0.3f);
     }
 }
 

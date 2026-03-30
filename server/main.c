@@ -21,10 +21,11 @@ static world_t world;
 static bool running = true;
 
 /* Timing intervals in milliseconds */
-#define SIM_TICK_MS   33    /* ~30 Hz simulation */
+#define SIM_TICK_MS   33    /* ~30 Hz poll rate; sim uses SIM_DT accumulator */
 #define STATE_TICK_MS 50    /* 20 Hz player state broadcast */
 #define WORLD_TICK_MS 100   /* 10 Hz world state broadcast */
 #define SHIP_TICK_MS  250   /* 4 Hz full ship state (cargo, hull, etc.) */
+#define MAX_SIM_STEPS 8     /* cap sub-steps per poll to prevent spiral */
 
 /* ------------------------------------------------------------------ */
 /* Signal handler                                                     */
@@ -192,6 +193,11 @@ static void broadcast_ship_states(void) {
         /* Full ship state sent only to the owning player. */
         ws_send(world.players[i].conn, buf, (size_t)len);
     }
+
+    /* Station state (inventory, ore buffers, products) at same cadence. */
+    uint8_t sbuf[2 + MAX_STATIONS * 49];
+    int slen = serialize_stations(sbuf, world.stations);
+    broadcast(sbuf, (size_t)slen);
 }
 
 /* ------------------------------------------------------------------ */
@@ -216,14 +222,23 @@ int main(void) {
     printf("[server] signal game server on %s\n", listen_url);
 
     uint64_t last_sim = 0, last_state = 0, last_world = 0, last_ship = 0;
+    float sim_accum = 0.0f;
 
     while (running) {
         mg_mgr_poll(&mgr, 1);
         uint64_t now = mg_millis();
 
         if (now - last_sim >= SIM_TICK_MS) {
-            world_sim_step(&world, (float)SIM_TICK_MS / 1000.0f);
+            float elapsed = (float)(now - last_sim) / 1000.0f;
             last_sim = now;
+            sim_accum += elapsed;
+            int steps = 0;
+            while (sim_accum >= SIM_DT && steps < MAX_SIM_STEPS) {
+                world_sim_step(&world, SIM_DT);
+                sim_accum -= SIM_DT;
+                steps++;
+            }
+            if (sim_accum > SIM_DT) sim_accum = 0.0f; /* prevent spiral */
         }
         if (now - last_state >= STATE_TICK_MS) {
             broadcast_player_states();

@@ -29,6 +29,7 @@ enum {
     NET_MSG_INPUT           = 0x04,
     NET_MSG_WORLD_ASTEROIDS = 0x10,
     NET_MSG_WORLD_NPCS      = 0x11,
+    NET_MSG_WORLD_STATIONS  = 0x12,
     NET_MSG_MINING_ACTION   = 0x13,
     NET_MSG_PLAYER_SHIP     = 0x15,
 };
@@ -93,12 +94,16 @@ typedef struct {
 
 typedef void (*net_on_player_ship_fn)(const NetPlayerShipState* state);
 
+/* Station update callback: index, ore_buffer[3], inventory[6], product_stock[3]. */
+typedef void (*net_on_stations_fn)(uint8_t index, const float* ore_buf, const float* inventory, const float* product_stock);
+
 typedef struct {
     net_on_player_join_fn on_join;
     net_on_player_leave_fn on_leave;
     net_on_player_state_fn on_state;
     net_on_asteroids_fn on_asteroids;
     net_on_npcs_fn on_npcs;
+    net_on_stations_fn on_stations;
     net_on_player_ship_fn on_player_ship;
 } NetCallbacks;
 

@@ -153,6 +153,28 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_WORLD_STATIONS:
+        if (len < 2) break;
+        {
+            uint8_t count = data[1];
+            if (len < 2 + count * 49) break;
+            if (net_state.callbacks.on_stations) {
+                for (int i = 0; i < count; i++) {
+                    const uint8_t *p = &data[2 + i * 49];
+                    uint8_t idx = p[0];
+                    float ore_buf[3], inv[6], prod[3];
+                    for (int j = 0; j < 3; j++)
+                        ore_buf[j] = read_f32_le(&p[1 + j * 4]);
+                    for (int j = 0; j < 6; j++)
+                        inv[j] = read_f32_le(&p[13 + j * 4]);
+                    for (int j = 0; j < 3; j++)
+                        prod[j] = read_f32_le(&p[37 + j * 4]);
+                    net_state.callbacks.on_stations(idx, ore_buf, inv, prod);
+                }
+            }
+        }
+        break;
+
     case NET_MSG_PLAYER_SHIP:
         if (len < 27) break;
         {

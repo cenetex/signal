@@ -145,7 +145,35 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
 }
 
 /*
- * PLAYER_SHIP message (24 bytes):
+ * WORLD_STATIONS message:
+ * [type:1][count:1] + count * [index:1][ore_buf: 3×f32][inventory: 6×f32][product_stock: 3×f32]
+ * = 2 + count * 49 bytes
+ */
+static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
+    buf[0] = NET_MSG_WORLD_STATIONS;
+    buf[1] = (uint8_t)MAX_STATIONS;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        uint8_t *p = &buf[2 + i * 49];
+        const station_t *st = &stations[i];
+        p[0] = (uint8_t)i;
+        /* ore_buffer: 3 raw ores */
+        write_f32_le(&p[1],  st->ore_buffer[0]);
+        write_f32_le(&p[5],  st->ore_buffer[1]);
+        write_f32_le(&p[9],  st->ore_buffer[2]);
+        /* inventory: 6 commodities */
+        for (int c = 0; c < COMMODITY_COUNT; c++) {
+            write_f32_le(&p[13 + c * 4], st->inventory[c]);
+        }
+        /* product_stock: 3 products */
+        for (int pr = 0; pr < PRODUCT_COUNT; pr++) {
+            write_f32_le(&p[37 + pr * 4], st->product_stock[pr]);
+        }
+    }
+    return 2 + MAX_STATIONS * 49;
+}
+
+/*
+ * PLAYER_SHIP message (27 bytes):
  * [type:1][id:1][hull:f32][credits:f32][docked:1][station:1]
  * [mining_lvl:1][hold_lvl:1][tractor_lvl:1]
  * [cargo_fe:f32][cargo_cu:f32][cargo_cr:f32]
