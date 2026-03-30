@@ -209,11 +209,21 @@ static const float SHIP_BASE_MINING_RATE = 28.0f;
 static const float SHIP_MINING_UPGRADE_STEP = 7.0f;
 static const float STATION_DEFAULT_ORE_PRICE = 12.0f;
 static const float HUD_MARGIN = 28.0f;
-static const float HUD_TOP_PANEL_WIDTH = 308.0f;
-static const float HUD_TOP_PANEL_HEIGHT = 84.0f;
+static const float HUD_TOP_PANEL_WIDTH = 332.0f;
+static const float HUD_TOP_PANEL_HEIGHT = 78.0f;
+static const float HUD_TOP_PANEL_COMPACT_WIDTH = 252.0f;
+static const float HUD_TOP_PANEL_COMPACT_HEIGHT = 64.0f;
 static const float HUD_BOTTOM_PANEL_HEIGHT = 32.0f;
+static const float HUD_BOTTOM_PANEL_WIDTH = 560.0f;
+static const float HUD_BOTTOM_PANEL_COMPACT_WIDTH = 344.0f;
+static const float HUD_MESSAGE_PANEL_WIDTH = 320.0f;
+static const float HUD_MESSAGE_PANEL_HEIGHT = 62.0f;
+static const float HUD_MESSAGE_PANEL_COMPACT_WIDTH = 236.0f;
+static const float HUD_MESSAGE_PANEL_COMPACT_HEIGHT = 56.0f;
 static const float STATION_PANEL_WIDTH = 560.0f;
 static const float STATION_PANEL_HEIGHT = 320.0f;
+static const float STATION_PANEL_COMPACT_WIDTH = 520.0f;
+static const float STATION_PANEL_COMPACT_HEIGHT = 224.0f;
 static const float HUD_CELL = 8.0f;
 static const float UI_SCALE_TIGHT = 1.85f;
 static const float UI_SCALE_COMPACT = 1.60f;
@@ -493,7 +503,7 @@ static float ui_screen_height(void) {
 }
 
 static bool ui_is_compact(void) {
-    return (ui_screen_width() < 900.0f) || (ui_screen_height() < 540.0f);
+    return (ui_window_width() < 1200.0f) || (ui_window_height() < 760.0f);
 }
 
 static float ui_text_zoom(void) {
@@ -738,6 +748,198 @@ static const char* station_role_name(station_role_t role) {
         default:
             return "Station";
     }
+}
+
+static const char* station_role_short_name(station_role_t role) {
+    switch (role) {
+        case STATION_ROLE_REFINERY:
+            return "REF";
+        case STATION_ROLE_YARD:
+            return "YARD";
+        case STATION_ROLE_BEAMWORKS:
+            return "BEAM";
+        default:
+            return "STN";
+    }
+}
+
+static void get_flight_hud_rects(float* top_x, float* top_y, float* top_w, float* top_h,
+    float* bottom_x, float* bottom_y, float* bottom_w, float* bottom_h);
+
+static bool hud_should_draw_message_panel(void) {
+    return !g.docked || (g.notice_timer > 0.0f) || (g.collection_feedback_timer > 0.0f);
+}
+
+static void get_hud_message_panel_rect(float* x, float* y, float* width, float* height) {
+    float screen_w = ui_screen_width();
+    bool compact = ui_is_compact();
+    float hud_margin = compact ? 16.0f : HUD_MARGIN;
+    float bottom_x = 0.0f;
+    float bottom_y = 0.0f;
+    float bottom_w = 0.0f;
+    float bottom_h = 0.0f;
+    float top_x = 0.0f;
+    float top_y = 0.0f;
+    float top_w = 0.0f;
+    float top_h = 0.0f;
+    float panel_w = compact ? HUD_MESSAGE_PANEL_COMPACT_WIDTH : HUD_MESSAGE_PANEL_WIDTH;
+    float panel_h = compact ? HUD_MESSAGE_PANEL_COMPACT_HEIGHT : HUD_MESSAGE_PANEL_HEIGHT;
+    float gap = compact ? 8.0f : 12.0f;
+
+    get_flight_hud_rects(&top_x, &top_y, &top_w, &top_h, &bottom_x, &bottom_y, &bottom_w, &bottom_h);
+    panel_w = fminf(panel_w, screen_w - (hud_margin * 2.0f));
+
+    *x = screen_w - hud_margin - panel_w;
+    *y = bottom_y - gap - panel_h;
+    *width = panel_w;
+    *height = panel_h;
+}
+
+static void split_hud_message_lines(const char* text, int max_cols, char* line0, size_t line0_size, char* line1, size_t line1_size) {
+    if ((text == NULL) || (text[0] == '\0')) {
+        line0[0] = '\0';
+        line1[0] = '\0';
+        return;
+    }
+
+    if (max_cols < 8) {
+        max_cols = 8;
+    }
+
+    size_t len = strlen(text);
+    if ((int)len <= max_cols) {
+        snprintf(line0, line0_size, "%s", text);
+        line1[0] = '\0';
+        return;
+    }
+
+    int split = max_cols;
+    while ((split > (max_cols / 2)) && (text[split] != ' ')) {
+        split--;
+    }
+    if (split <= (max_cols / 2)) {
+        split = max_cols;
+    }
+
+    snprintf(line0, line0_size, "%.*s", split, text);
+
+    const char* rest = text + split;
+    while (*rest == ' ') {
+        rest++;
+    }
+
+    if ((int)strlen(rest) <= max_cols) {
+        snprintf(line1, line1_size, "%s", rest);
+    } else if (max_cols > 3) {
+        snprintf(line1, line1_size, "%.*s...", max_cols - 3, rest);
+    } else {
+        snprintf(line1, line1_size, "%s", rest);
+    }
+}
+
+static bool build_hud_message(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
+    int cargo_units = (int)lroundf(g.ship.cargo);
+    int cargo_capacity = (int)lroundf(ship_cargo_capacity());
+    const station_t* station = current_station_ptr();
+
+    if (g.notice_timer > 0.0f) {
+        snprintf(label, label_size, "NOTICE");
+        snprintf(message, message_size, "%s", g.notice);
+        *r = 114;
+        *g0 = 255;
+        *b = 192;
+        return true;
+    }
+
+    if (g.collection_feedback_timer > 0.0f) {
+        int recovered_ore = (int)lroundf(g.collection_feedback_ore);
+        snprintf(label, label_size, "RECOVERY");
+        if (g.collection_feedback_fragments > 0) {
+            snprintf(message, message_size, "Recovered %d ore from %d fragment%s.", recovered_ore, g.collection_feedback_fragments, g.collection_feedback_fragments == 1 ? "" : "s");
+        } else {
+            snprintf(message, message_size, "Recovered %d ore.", recovered_ore);
+        }
+        *r = 114;
+        *g0 = 255;
+        *b = 192;
+        return true;
+    }
+
+    if (g.docked) {
+        if (station != NULL) {
+            if (station->role == STATION_ROLE_REFINERY) {
+                snprintf(label, label_size, "REFINERY");
+                snprintf(message, message_size, "Sell raw ore here, repair up, then head back into the belt.");
+            } else if (station->role == STATION_ROLE_YARD) {
+                snprintf(label, label_size, "YARD");
+                snprintf(message, message_size, "Patch the hull and refit hold racks before the next sortie.");
+            } else {
+                snprintf(label, label_size, "BEAMWORKS");
+                snprintf(message, message_size, "Tune the laser or tractor, then get back on the run.");
+            }
+            *r = 164;
+            *g0 = 177;
+            *b = 205;
+            return true;
+        }
+        return false;
+    }
+
+    if ((cargo_units >= cargo_capacity) && (g.nearby_fragments > 0)) {
+        snprintf(label, label_size, "WARN");
+        snprintf(message, message_size, "Hold full. Fragments are still drifting outside the scoop.");
+        *r = 255;
+        *g0 = 221;
+        *b = 119;
+        return true;
+    }
+
+    if (cargo_units >= cargo_capacity) {
+        snprintf(label, label_size, "WARN");
+        snprintf(message, message_size, "Hold full. Run the ore home to the refinery.");
+        *r = 255;
+        *g0 = 221;
+        *b = 119;
+        return true;
+    }
+
+    if (g.in_dock_range) {
+        snprintf(label, label_size, "DOCK");
+        snprintf(message, message_size, "Inside the dock ring. Press E to dock.");
+        *r = 112;
+        *g0 = 255;
+        *b = 214;
+        return true;
+    }
+
+    if (g.nearby_fragments > 0) {
+        snprintf(label, label_size, "TRACTOR");
+        if (g.tractor_fragments > 0) {
+            snprintf(message, message_size, "Sweep through the debris cloud and let the tractor finish the pull.");
+        } else {
+            snprintf(message, message_size, "Close in on the fragments and let the tractor catch them.");
+        }
+        *r = 114;
+        *g0 = 255;
+        *b = 192;
+        return true;
+    }
+
+    if ((g.hover_asteroid >= 0) && g.asteroids[g.hover_asteroid].active) {
+        snprintf(label, label_size, "TIP");
+        snprintf(message, message_size, "Hold the beam steady, crack the rock down, then sweep the fragments.");
+        *r = 164;
+        *g0 = 177;
+        *b = 205;
+        return true;
+    }
+
+    snprintf(label, label_size, "TIP");
+    snprintf(message, message_size, "Crack rocks, sweep fragments, and run raw ore back to the refinery.");
+    *r = 164;
+    *g0 = 177;
+    *b = 205;
+    return true;
 }
 
 static const char* station_role_hub_label(station_role_t role) {
@@ -1239,9 +1441,6 @@ static void draw_background(vec2 camera) {
         float tint = star->brightness;
         draw_rect_centered(parallax_pos, star->size, star->size, 0.65f * tint, 0.75f * tint, tint, 0.9f);
     }
-
-    draw_circle_filled(v2_add(camera, v2(-420.0f, 310.0f)), 210.0f, 28, 0.06f, 0.08f, 0.18f, 0.24f);
-    draw_circle_filled(v2_add(camera, v2(540.0f, -260.0f)), 260.0f, 28, 0.10f, 0.05f, 0.15f, 0.16f);
 }
 
 static void draw_station(const station_t* station, bool is_current, bool is_nearby) {
@@ -1490,9 +1689,9 @@ static void get_station_panel_rect(float* x, float* y, float* width, float* heig
     bool compact = ui_is_compact();
     float hud_margin = compact ? 16.0f : HUD_MARGIN;
     float bottom_height = compact ? 28.0f : HUD_BOTTOM_PANEL_HEIGHT;
-    float top_height = compact ? 86.0f : HUD_TOP_PANEL_HEIGHT;
-    float panel_width = fminf(compact ? (screen_w - (hud_margin * 2.0f)) : STATION_PANEL_WIDTH, screen_w - (hud_margin * 2.0f));
-    float panel_height = compact ? fminf(308.0f, screen_h - top_height - bottom_height - (hud_margin * 2.0f) - 20.0f) : fminf(STATION_PANEL_HEIGHT, screen_h - top_height - bottom_height - (hud_margin * 2.0f) - 20.0f);
+    float top_height = compact ? HUD_TOP_PANEL_COMPACT_HEIGHT : HUD_TOP_PANEL_HEIGHT;
+    float panel_width = fminf(compact ? STATION_PANEL_COMPACT_WIDTH : STATION_PANEL_WIDTH, screen_w - (hud_margin * 2.0f));
+    float panel_height = fminf(compact ? STATION_PANEL_COMPACT_HEIGHT : STATION_PANEL_HEIGHT, screen_h - top_height - bottom_height - (hud_margin * 2.0f) - 20.0f);
     float panel_x = (screen_w - panel_width) * 0.5f;
     float min_y = hud_margin + top_height + 16.0f;
     float max_y = screen_h - hud_margin - bottom_height - panel_height - 14.0f;
@@ -1555,18 +1754,44 @@ static void draw_service_card(float x, float y, float width, float height, float
     draw_rect_outline(center, width * 0.5f, height * 0.5f, accent_r * 0.30f, accent_g * 0.30f, accent_b * 0.30f, border_a);
 }
 
-static void draw_hud_panels(void) {
+static void get_flight_hud_rects(float* top_x, float* top_y, float* top_w, float* top_h,
+    float* bottom_x, float* bottom_y, float* bottom_w, float* bottom_h) {
     float screen_w = ui_screen_width();
     float screen_h = ui_screen_height();
     bool compact = ui_is_compact();
     float hud_margin = compact ? 16.0f : HUD_MARGIN;
+    float top_width = fminf(compact ? HUD_TOP_PANEL_COMPACT_WIDTH : HUD_TOP_PANEL_WIDTH, screen_w - (hud_margin * 2.0f));
+    float top_height = compact ? HUD_TOP_PANEL_COMPACT_HEIGHT : HUD_TOP_PANEL_HEIGHT;
+    float bottom_width = fminf(compact ? HUD_BOTTOM_PANEL_COMPACT_WIDTH : HUD_BOTTOM_PANEL_WIDTH, screen_w - (hud_margin * 2.0f));
     float bottom_height = compact ? 28.0f : HUD_BOTTOM_PANEL_HEIGHT;
-    float top_width = compact ? (screen_w - (hud_margin * 2.0f)) : HUD_TOP_PANEL_WIDTH;
-    float top_height = compact ? 86.0f : HUD_TOP_PANEL_HEIGHT;
 
-    draw_ui_panel(hud_margin, hud_margin, top_width, top_height, 0.03f);
+    *top_x = hud_margin;
+    *top_y = hud_margin;
+    *top_w = top_width;
+    *top_h = top_height;
+    *bottom_x = hud_margin;
+    *bottom_y = screen_h - hud_margin - bottom_height;
+    *bottom_w = bottom_width;
+    *bottom_h = bottom_height;
+}
 
-    draw_ui_panel(hud_margin, screen_h - hud_margin - bottom_height, screen_w - (hud_margin * 2.0f), bottom_height, 0.02f);
+static void draw_hud_panels(void) {
+    float top_x = 0.0f;
+    float top_y = 0.0f;
+    float top_w = 0.0f;
+    float top_h = 0.0f;
+    float bottom_x = 0.0f;
+    float bottom_y = 0.0f;
+    float bottom_w = 0.0f;
+    float bottom_h = 0.0f;
+    float message_x = 0.0f;
+    float message_y = 0.0f;
+    float message_w = 0.0f;
+    float message_h = 0.0f;
+    get_flight_hud_rects(&top_x, &top_y, &top_w, &top_h, &bottom_x, &bottom_y, &bottom_w, &bottom_h);
+
+    draw_ui_panel(top_x, top_y, top_w, top_h, 0.03f);
+    draw_ui_panel(bottom_x, bottom_y, bottom_w, bottom_h, 0.02f);
 
     if (g.docked) {
         float panel_x = 0.0f;
@@ -1589,6 +1814,8 @@ static void draw_hud_panels(void) {
         float fit_y = 0.0f;
         float fit_w = 0.0f;
         float fit_h = 0.0f;
+        bool compact = ui_is_compact();
+        bool show_fit_panel = !compact;
         float card_gap = compact ? 4.0f : 6.0f;
         float card_h = compact ? 18.0f : 24.0f;
         float sell_y = 0.0f;
@@ -1610,29 +1837,42 @@ static void draw_hud_panels(void) {
         inner_w = panel_w - 36.0f;
         inner_h = panel_h - 36.0f;
 
-        fit_w = compact ? inner_w : 168.0f;
-        fit_x = compact ? inner_x : (panel_x + panel_w - fit_w - 18.0f);
-        fit_y = inner_y + 42.0f;
-        fit_h = compact ? 96.0f : (inner_h - 42.0f);
-
         market_x = inner_x;
-        market_y = fit_y;
-        market_w = compact ? inner_w : (fit_x - inner_x - 12.0f);
-        market_h = compact ? 62.0f : 72.0f;
-
         services_x = inner_x;
-        services_y = market_y + market_h + 16.0f;
-        services_w = compact ? inner_w : market_w;
-        services_h = compact ? 120.0f : (panel_y + panel_h - 18.0f - services_y);
+        services_w = inner_w;
+
+        if (show_fit_panel) {
+            fit_w = 168.0f;
+            fit_x = panel_x + panel_w - fit_w - 18.0f;
+            fit_y = inner_y + 42.0f;
+            fit_h = inner_h - 42.0f;
+
+            market_y = fit_y;
+            market_w = fit_x - inner_x - 12.0f;
+            market_h = 72.0f;
+
+            services_y = market_y + market_h + 16.0f;
+            services_w = market_w;
+            services_h = panel_y + panel_h - 18.0f - services_y;
+        } else {
+            market_y = inner_y + 42.0f;
+            market_w = inner_w;
+            market_h = 54.0f;
+
+            services_y = market_y + market_h + 12.0f;
+            services_h = 92.0f;
+        }
 
         draw_ui_rule(inner_x, panel_x + panel_w - 18.0f, inner_y + 26.0f, 0.14f, 0.26f, 0.38f, 0.70f);
-        if (!compact) {
+        if (show_fit_panel) {
             draw_segment(v2(fit_x - 10.0f, inner_y + 38.0f), v2(fit_x - 10.0f, panel_y + panel_h - 18.0f), 0.10f, 0.22f, 0.32f, 0.60f);
         }
 
         draw_ui_panel(market_x, market_y, market_w, market_h, 0.04f);
         draw_ui_panel(services_x, services_y, services_w, services_h, 0.03f);
-        draw_ui_panel(fit_x, fit_y, fit_w, fit_h, 0.05f);
+        if (show_fit_panel) {
+            draw_ui_panel(fit_x, fit_y, fit_w, fit_h, 0.05f);
+        }
 
         sell_y = services_y + (compact ? 30.0f : 36.0f);
         repair_y = sell_y + card_h + card_gap;
@@ -1650,16 +1890,21 @@ static void draw_hud_panels(void) {
             draw_service_card(services_x + 12.0f, mining_y, services_w - 24.0f, card_h, 0.42f, 1.0f, 0.86f, can_upgrade_tractor);
         }
 
-        draw_ui_meter(fit_x + 16.0f, fit_y + 54.0f, fit_w - 32.0f, 12.0f, g.ship.hull / ship_max_hull(), 0.96f, 0.54f, 0.28f);
-        draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, g.ship.cargo / fmaxf(1.0f, ship_cargo_capacity()), 0.26f, 0.90f, 0.72f);
-        if (!compact) {
+        if (show_fit_panel) {
+            draw_ui_meter(fit_x + 16.0f, fit_y + 54.0f, fit_w - 32.0f, 12.0f, g.ship.hull / ship_max_hull(), 0.96f, 0.54f, 0.28f);
+            draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, g.ship.cargo / fmaxf(1.0f, ship_cargo_capacity()), 0.26f, 0.90f, 0.72f);
             if (station->role == STATION_ROLE_YARD) {
                 draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.ship.hold_level, 0.50f, 0.82f, 1.0f);
             } else if (station->role == STATION_ROLE_BEAMWORKS) {
                 draw_upgrade_pips(fit_x + 18.0f, fit_y + 146.0f, g.ship.mining_level, 0.34f, 0.88f, 1.0f);
-                draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.ship.tractor_level, 0.42f, 1.0f, 0.86f);
+            draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.ship.tractor_level, 0.42f, 1.0f, 0.86f);
             }
         }
+    }
+
+    if (hud_should_draw_message_panel()) {
+        get_hud_message_panel_rect(&message_x, &message_y, &message_w, &message_h);
+        draw_ui_panel(message_x, message_y, message_w, message_h, 0.05f);
     }
 }
 
@@ -1672,9 +1917,7 @@ static void draw_station_services(void) {
     float panel_y = 0.0f;
     float panel_w = 0.0f;
     float panel_h = 0.0f;
-    float inner_x = 0.0f;
     float inner_y = 0.0f;
-    float inner_w = 0.0f;
     float market_x = 0.0f;
     float market_y = 0.0f;
     float market_h = 0.0f;
@@ -1690,6 +1933,7 @@ static void draw_station_services(void) {
     float mining_y = 0.0f;
     const station_t* station = current_station_ptr();
     bool compact = ui_is_compact();
+    bool show_fit_panel = !compact;
     int hull_now = (int)lroundf(g.ship.hull);
     int hull_max = (int)lroundf(ship_max_hull());
     int cargo_units = (int)lroundf(g.ship.cargo);
@@ -1706,19 +1950,25 @@ static void draw_station_services(void) {
     bool can_upgrade_tractor = station_has_service(STATION_SERVICE_UPGRADE_TRACTOR) && !ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR) && (g.ship.credits + 0.01f >= (float)tractor_cost);
 
     get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
-    inner_x = panel_x + 18.0f;
     inner_y = panel_y + 18.0f;
-    inner_w = panel_w - 36.0f;
-    fit_w = compact ? inner_w : 180.0f;
-    fit_x = compact ? inner_x : (panel_x + panel_w - fit_w - 18.0f);
-    fit_y = inner_y + 42.0f;
-    market_x = inner_x;
-    market_y = fit_y;
-    market_h = compact ? 62.0f : 78.0f;
-    services_x = inner_x;
-    services_y = market_y + market_h + 16.0f;
+    market_x = panel_x + 18.0f;
+    services_x = panel_x + 18.0f;
     card_gap = compact ? 4.0f : 6.0f;
     card_h = compact ? 18.0f : 28.0f;
+
+    if (show_fit_panel) {
+        fit_w = 180.0f;
+        fit_x = panel_x + panel_w - fit_w - 18.0f;
+        fit_y = inner_y + 42.0f;
+        market_y = fit_y;
+        market_h = 78.0f;
+        services_y = market_y + market_h + 16.0f;
+    } else {
+        market_y = inner_y + 42.0f;
+        market_h = 54.0f;
+        services_y = market_y + market_h + 12.0f;
+    }
+
     sell_y = services_y + (compact ? 30.0f : 36.0f);
     repair_y = sell_y + card_h + card_gap;
     mining_y = repair_y + card_h + card_gap;
@@ -1851,36 +2101,19 @@ static void draw_station_services(void) {
         }
     }
 
-    sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 16.0f));
-    sdtx_color3b(130, 255, 235);
-    if (station->role == STATION_ROLE_REFINERY) {
-        sdtx_puts("HAUL");
-    } else if (station->role == STATION_ROLE_YARD) {
-        sdtx_puts("FIT");
-    } else {
-        sdtx_puts("TUNING");
-    }
-
-    sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 32.0f));
-    sdtx_color3b(203, 220, 248);
-    if (compact) {
+    if (show_fit_panel) {
+        sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 16.0f));
+        sdtx_color3b(130, 255, 235);
         if (station->role == STATION_ROLE_REFINERY) {
-            sdtx_printf("Hull %d/%d  Ore %d/%d", hull_now, hull_max, cargo_units, cargo_capacity);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
-            sdtx_color3b(145, 160, 188);
-            sdtx_printf("Board %d cr  Haul %d cr", ore_price, payout);
+            sdtx_puts("HAUL");
         } else if (station->role == STATION_ROLE_YARD) {
-            sdtx_printf("Hull %d/%d  Hold %d/%d", hull_now, hull_max, cargo_units, cargo_capacity);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
-            sdtx_color3b(145, 160, 188);
-            sdtx_printf("Hold lvl %d/%d", g.ship.hold_level, SHIP_UPGRADE_MAX_LEVEL);
+            sdtx_puts("FIT");
         } else {
-            sdtx_printf("Laser %d/s  Tractor %du", (int)lroundf(ship_mining_rate()), (int)lroundf(ship_tractor_range()));
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
-            sdtx_color3b(145, 160, 188);
-            sdtx_printf("L%d  T%d", g.ship.mining_level, g.ship.tractor_level);
+            sdtx_puts("TUNING");
         }
-    } else {
+
+        sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 32.0f));
+        sdtx_color3b(203, 220, 248);
         if (station->role == STATION_ROLE_REFINERY) {
             sdtx_printf("Hull %d/%d", hull_now, hull_max);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
@@ -1931,10 +2164,33 @@ static void draw_hud(void) {
     float screen_w = ui_screen_width();
     float screen_h = ui_screen_height();
     bool compact = ui_is_compact();
-    float hud_margin = compact ? 16.0f : HUD_MARGIN;
-    float left_text_x = ui_text_pos(hud_margin + 18.0f);
-    float top_text_y = ui_text_pos(hud_margin + 18.0f);
-    float bottom_text_y = ui_text_pos(screen_h - hud_margin - 20.0f);
+    float top_x = 0.0f;
+    float top_y = 0.0f;
+    float top_w = 0.0f;
+    float top_h = 0.0f;
+    float bottom_x = 0.0f;
+    float bottom_y = 0.0f;
+    float bottom_w = 0.0f;
+    float bottom_h = 0.0f;
+    float message_x = 0.0f;
+    float message_y = 0.0f;
+    float message_w = 0.0f;
+    float message_h = 0.0f;
+    get_flight_hud_rects(&top_x, &top_y, &top_w, &top_h, &bottom_x, &bottom_y, &bottom_w, &bottom_h);
+    float top_text_x = ui_text_pos(top_x + 16.0f);
+    float top_row_0 = ui_text_pos(top_y + 16.0f);
+    float top_row_1 = ui_text_pos(top_y + (compact ? 24.0f : 30.0f));
+    float top_row_2 = ui_text_pos(top_y + (compact ? 32.0f : 44.0f));
+    float top_row_3 = ui_text_pos(top_y + (compact ? 40.0f : 58.0f));
+    float bottom_text_x = ui_text_pos(bottom_x + 16.0f);
+    float bottom_text_y = ui_text_pos(bottom_y + 8.0f);
+    char message_label[16] = { 0 };
+    char message_text[160] = { 0 };
+    char message_line0[96] = { 0 };
+    char message_line1[96] = { 0 };
+    uint8_t message_r = 164;
+    uint8_t message_g = 177;
+    uint8_t message_b = 205;
     int hull_units = (int)lroundf(g.ship.hull);
     int hull_capacity = (int)lroundf(ship_max_hull());
     int cargo_units = (int)lroundf(g.ship.cargo);
@@ -1966,117 +2222,172 @@ static void draw_hud(void) {
     sdtx_font(0);
     sdtx_origin(0.0f, 0.0f);
     sdtx_home();
+    if (hud_should_draw_message_panel()) {
+        int message_cols = 0;
+        get_hud_message_panel_rect(&message_x, &message_y, &message_w, &message_h);
+        build_hud_message(message_label, sizeof(message_label), message_text, sizeof(message_text), &message_r, &message_g, &message_b);
+        message_cols = (int)((message_w - 28.0f) / (HUD_CELL * ui_text_zoom()));
+        split_hud_message_lines(message_text, message_cols, message_line0, sizeof(message_line0), message_line1, sizeof(message_line1));
+    }
 
-    sdtx_pos(left_text_x, top_text_y);
+    if (compact) {
+        const char* nav_role = navigation_station != NULL ? station_role_short_name(navigation_station->role) : "STN";
+        const char* dock_role = current_station != NULL ? station_role_short_name(current_station->role) : "STN";
+        const char* bearing_mark = "A";
+        if (bearing > 0.12f) {
+            bearing_mark = "L";
+        } else if (bearing < -0.12f) {
+            bearing_mark = "R";
+        }
+
+        sdtx_pos(top_text_x, top_row_0);
+        sdtx_color3b(232, 241, 255);
+        sdtx_printf("%s // CR %d", g.docked ? "RUN" : "SHIP", credits);
+
+        sdtx_pos(top_text_x, top_row_1);
+        sdtx_color3b(203, 220, 248);
+        sdtx_printf("H %d/%d  C %d/%d", hull_units, hull_capacity, cargo_units, cargo_capacity);
+
+        sdtx_pos(top_text_x, top_row_2);
+        if (g.docked) {
+            sdtx_color3b(112, 255, 214);
+            sdtx_printf("%s // E launch", dock_role);
+        } else if (g.in_dock_range) {
+            sdtx_color3b(112, 255, 214);
+            sdtx_puts("DOCK RING // E dock");
+        } else {
+            sdtx_color3b(199, 222, 255);
+            sdtx_printf("%s %d u // %d %s", nav_role, station_distance, bearing_degrees, bearing_mark);
+        }
+
+        sdtx_pos(top_text_x, top_row_3);
+        if (g.docked) {
+            sdtx_color3b(130, 255, 235);
+            if (station_has_service(STATION_SERVICE_ORE_BUYER)) {
+                if (cargo_units > 0) {
+                    sdtx_printf("BOARD %d // HAUL %d", (int)lroundf(current_station->ore_price), payout_preview);
+                } else {
+                    sdtx_printf("BOARD %d // HOLD EMPTY", (int)lroundf(current_station->ore_price));
+                }
+            } else {
+                sdtx_printf("%s CONSOLE", dock_role);
+            }
+        } else if ((g.hover_asteroid >= 0) && g.asteroids[g.hover_asteroid].active) {
+            const asteroid_t* asteroid = &g.asteroids[g.hover_asteroid];
+            int integrity_left = (int)lroundf(asteroid->hp);
+            sdtx_color3b(130, 255, 235);
+            sdtx_printf("TGT %s // %d HP", asteroid_tier_name(asteroid->tier), integrity_left);
+        } else if (g.nearby_fragments > 0) {
+            sdtx_color3b(130, 255, 235);
+            if (g.tractor_fragments > 0) {
+                sdtx_printf("TRACTOR // %d FRAG", g.tractor_fragments);
+            } else {
+                sdtx_printf("FRAGMENTS // %d", g.nearby_fragments);
+            }
+        } else if (cargo_units >= cargo_capacity) {
+            sdtx_color3b(255, 221, 119);
+            sdtx_puts("HOLD FULL // RETURN");
+        } else {
+            sdtx_color3b(169, 179, 204);
+            sdtx_puts("FIELD CLEAR // SCAN");
+        }
+
+        sdtx_pos(bottom_text_x, bottom_text_y);
+        sdtx_color3b(145, 160, 188);
+        if (g.docked) {
+            if (current_station->role == STATION_ROLE_REFINERY) {
+                sdtx_puts("1 sell  2 repair  E launch");
+            } else if (current_station->role == STATION_ROLE_YARD) {
+                sdtx_puts("2 repair  4 hold  E launch");
+            } else {
+                sdtx_puts("2 repair  3 laser  5 tractor");
+            }
+        } else {
+            sdtx_puts("W/S thrust  A/D turn  SPC mine  E dock");
+        }
+
+        if (hud_should_draw_message_panel()) {
+            float message_text_x = ui_text_pos(message_x + 16.0f);
+            float message_row_0 = ui_text_pos(message_y + 14.0f);
+            float message_row_1 = ui_text_pos(message_y + 24.0f);
+            float message_row_2 = ui_text_pos(message_y + 34.0f);
+
+            sdtx_pos(message_text_x, message_row_0);
+            sdtx_color3b(message_r, message_g, message_b);
+            sdtx_puts(message_label);
+
+            sdtx_pos(message_text_x, message_row_1);
+            sdtx_color3b(232, 241, 255);
+            sdtx_puts(message_line0);
+
+            if (message_line1[0] != '\0') {
+                sdtx_pos(message_text_x, message_row_2);
+                sdtx_color3b(169, 179, 204);
+                sdtx_puts(message_line1);
+            }
+        }
+
+        draw_station_services();
+        return;
+    }
+
+    sdtx_pos(top_text_x, top_row_0);
     sdtx_color3b(232, 241, 255);
     sdtx_puts(g.docked ? "RUN STATUS" : "SHIP STATUS");
-    sdtx_crlf();
 
+    sdtx_pos(top_text_x, top_row_1);
     sdtx_color3b(203, 220, 248);
-    if (compact) {
-        sdtx_printf("CR %d  H %d/%d  C %d/%d", credits, hull_units, hull_capacity, cargo_units, cargo_capacity);
-    } else {
-        sdtx_printf("Credits %d cr   Hull %d/%d   Cargo %d/%d ore", credits, hull_units, hull_capacity, cargo_units, cargo_capacity);
-    }
-    sdtx_crlf();
+    sdtx_printf("CR %d  H %d/%d  C %d/%d", credits, hull_units, hull_capacity, cargo_units, cargo_capacity);
 
+    sdtx_pos(top_text_x, top_row_2);
     if (g.docked) {
         sdtx_color3b(112, 255, 214);
-        if (compact) {
-            sdtx_printf("%s // docked // E launch", current_station->name);
-        } else {
-            sdtx_printf("%s // docked // E launch", current_station->name);
-        }
+        sdtx_printf("%s // docked // E launch", current_station->name);
     } else if (g.in_dock_range) {
         sdtx_color3b(112, 255, 214);
-        if (compact) {
-            sdtx_puts("Dock ring hot, press E to dock");
-        } else {
-            sdtx_printf("%s docking ring acquired. Press E to dock.", navigation_station != NULL ? navigation_station->name : "Station");
-        }
+        sdtx_puts("Dock ring hot // E to dock");
     } else {
         sdtx_color3b(199, 222, 255);
-        if (compact) {
-            sdtx_printf("%s %d u, %d deg %s", navigation_station != NULL ? station_role_name(navigation_station->role) : "Station", station_distance, bearing_degrees, bearing_side);
-        } else {
-            sdtx_printf("%s %d units away, %d deg %s", navigation_station != NULL ? navigation_station->name : "Station", station_distance, bearing_degrees, bearing_side);
-        }
+        sdtx_printf("%s %d u // %d deg %s",
+            navigation_station != NULL ? navigation_station->name : "Station",
+            station_distance,
+            bearing_degrees,
+            bearing_side);
     }
-    sdtx_crlf();
 
+    sdtx_pos(top_text_x, top_row_3);
     if (g.docked) {
         sdtx_color3b(130, 255, 235);
         if (station_has_service(STATION_SERVICE_ORE_BUYER)) {
             if (cargo_units > 0) {
-                sdtx_printf("Board %d cr // haul %d cr", (int)lroundf(current_station->ore_price), payout_preview);
+                sdtx_printf("Board %d // haul %d", (int)lroundf(current_station->ore_price), payout_preview);
             } else {
-                sdtx_printf("Board %d cr // hold empty", (int)lroundf(current_station->ore_price));
+                sdtx_printf("Board %d // hold empty", (int)lroundf(current_station->ore_price));
             }
         } else {
-            sdtx_printf("%s console online", station_role_name(current_station->role));
+            sdtx_printf("%s console", station_role_name(current_station->role));
         }
     } else if ((g.hover_asteroid >= 0) && g.asteroids[g.hover_asteroid].active) {
         const asteroid_t* asteroid = &g.asteroids[g.hover_asteroid];
         int integrity_left = (int)lroundf(asteroid->hp);
         sdtx_color3b(130, 255, 235);
-        sdtx_printf("Target %s %s, %d integrity", asteroid_tier_name(asteroid->tier), asteroid_tier_kind(asteroid->tier), integrity_left);
+        sdtx_printf("Target %s %s // %d hp", asteroid_tier_name(asteroid->tier), asteroid_tier_kind(asteroid->tier), integrity_left);
     } else if (g.nearby_fragments > 0) {
         sdtx_color3b(130, 255, 235);
         if (g.tractor_fragments > 0) {
-            sdtx_printf("Tractor lock on %d fragment%s", g.tractor_fragments, g.tractor_fragments == 1 ? "" : "s");
+            sdtx_printf("Tractor lock // %d frag%s", g.tractor_fragments, g.tractor_fragments == 1 ? "" : "s");
         } else {
-            sdtx_printf("Nearby fragments %d", g.nearby_fragments);
+            sdtx_printf("Nearby fragments // %d", g.nearby_fragments);
         }
-    } else {
-        sdtx_color3b(169, 179, 204);
-        sdtx_puts("No target lock. Line up a rock.");
-    }
-    sdtx_crlf();
-
-    if (g.docked) {
-        if (g.notice_timer > 0.0f) {
-            sdtx_color3b(114, 255, 192);
-            sdtx_puts(g.notice);
-        } else {
-            sdtx_color3b(164, 177, 205);
-            if (current_station->role == STATION_ROLE_REFINERY) {
-                sdtx_puts("Sell ore, patch up, head back out.");
-            } else if (current_station->role == STATION_ROLE_YARD) {
-                sdtx_puts("Patch the hull and refit the hold.");
-            } else {
-                sdtx_puts("Tune field gear here, then hit the belt.");
-            }
-        }
-    } else if (g.collection_feedback_timer > 0.0f) {
-        int recovered_ore = (int)lroundf(g.collection_feedback_ore);
-        sdtx_color3b(114, 255, 192);
-        if (g.collection_feedback_fragments > 0) {
-            sdtx_printf("Recovered %d ore from %d fragment%s.", recovered_ore, g.collection_feedback_fragments, g.collection_feedback_fragments == 1 ? "" : "s");
-        } else {
-            sdtx_printf("Recovered %d ore.", recovered_ore);
-        }
-    } else if ((cargo_units >= cargo_capacity) && (g.nearby_fragments > 0)) {
-        sdtx_color3b(255, 221, 119);
-        sdtx_puts("Hold full. Nearby fragments drifting out there.");
     } else if (cargo_units >= cargo_capacity) {
         sdtx_color3b(255, 221, 119);
-        sdtx_puts("Cargo hold full. Run it to the refinery.");
-    } else if (g.nearby_fragments > 0) {
-        sdtx_color3b(114, 255, 192);
-        if (g.tractor_fragments > 0) {
-            sdtx_puts("Sweep through fragments to collect them.");
-        } else {
-            sdtx_puts("Close in and let the tractor pull fragments in.");
-        }
-    } else if (g.notice_timer > 0.0f) {
-        sdtx_color3b(114, 255, 192);
-        sdtx_puts(g.notice);
+        sdtx_puts("Hold full // return run");
     } else {
-        sdtx_color3b(164, 177, 205);
-        sdtx_puts("Crack rocks, sweep fragments, run ore to the refinery.");
+        sdtx_color3b(169, 179, 204);
+        sdtx_puts("No target // line up a rock");
     }
 
-    sdtx_pos(left_text_x, bottom_text_y);
+    sdtx_pos(bottom_text_x, bottom_text_y);
     sdtx_color3b(145, 160, 188);
     if (g.docked) {
         if (current_station->role == STATION_ROLE_REFINERY) {
@@ -2088,6 +2399,27 @@ static void draw_hud(void) {
         }
     } else {
         sdtx_puts("W/S thrust  A/D turn  SPACE mine  E dock  R reset  ESC quit");
+    }
+
+    if (hud_should_draw_message_panel()) {
+        float message_text_x = ui_text_pos(message_x + 16.0f);
+        float message_row_0 = ui_text_pos(message_y + 16.0f);
+        float message_row_1 = ui_text_pos(message_y + 30.0f);
+        float message_row_2 = ui_text_pos(message_y + 42.0f);
+
+        sdtx_pos(message_text_x, message_row_0);
+        sdtx_color3b(message_r, message_g, message_b);
+        sdtx_puts(message_label);
+
+        sdtx_pos(message_text_x, message_row_1);
+        sdtx_color3b(232, 241, 255);
+        sdtx_puts(message_line0);
+
+        if (message_line1[0] != '\0') {
+            sdtx_pos(message_text_x, message_row_2);
+            sdtx_color3b(169, 179, 204);
+            sdtx_puts(message_line1);
+        }
     }
 
     draw_station_services();

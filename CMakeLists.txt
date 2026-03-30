@@ -43,6 +43,7 @@ if(EMSCRIPTEN)
         "SHELL:-sMIN_WEBGL_VERSION=2"
         "SHELL:-sMAX_WEBGL_VERSION=2"
         "SHELL:-sNO_EXIT_RUNTIME=1"
+        "SHELL:-sEXPORTED_FUNCTIONS=['_main','__saudio_emsc_pull']"
         "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
     )
 elseif(APPLE)
