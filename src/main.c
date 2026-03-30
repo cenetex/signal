@@ -40,7 +40,8 @@ typedef enum {
     COMMODITY_FERRITE_ORE,
     COMMODITY_CUPRITE_ORE,
     COMMODITY_CRYSTAL_ORE,
-    COMMODITY_FRAME_INGOT,
+    COMMODITY_RAW_ORE_COUNT,
+    COMMODITY_FRAME_INGOT = COMMODITY_RAW_ORE_COUNT,
     COMMODITY_CONDUCTOR_INGOT,
     COMMODITY_LENS_INGOT,
     COMMODITY_COUNT,
@@ -79,7 +80,7 @@ typedef struct {
     float sell_price[COMMODITY_COUNT];
     float inventory[COMMODITY_COUNT];
     float desired_stock[COMMODITY_COUNT];
-    float ore_buffer[COMMODITY_COUNT];
+    float ore_buffer[COMMODITY_RAW_ORE_COUNT];
     uint32_t services;
 } station_t;
 
@@ -686,7 +687,7 @@ static float asteroid_progress_ratio(const asteroid_t* asteroid) {
 }
 
 static bool commodity_is_raw_ore(commodity_t commodity) {
-    return commodity <= COMMODITY_CRYSTAL_ORE;
+    return commodity < COMMODITY_RAW_ORE_COUNT;
 }
 
 static commodity_t commodity_refined_form(commodity_t commodity) {
@@ -2915,7 +2916,7 @@ static void try_sell_station_cargo(void) {
         return;
     }
 
-    for (int i = COMMODITY_FERRITE_ORE; i <= COMMODITY_CRYSTAL_ORE; i++) {
+    for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
         commodity_t ore = (commodity_t)i;
         float amount = ship_cargo_amount(ore);
         if (amount <= 0.01f) {
@@ -3316,7 +3317,7 @@ static void step_refinery_production(float dt) {
         if (station->role != STATION_ROLE_REFINERY) continue;
 
         int active = 0;
-        for (int i = COMMODITY_FERRITE_ORE; i <= COMMODITY_CRYSTAL_ORE; i++) {
+        for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
             if (station->ore_buffer[i] > 0.01f) active++;
         }
         if (active == 0) continue;
@@ -3324,7 +3325,7 @@ static void step_refinery_production(float dt) {
 
         float rate = REFINERY_BASE_SMELT_RATE / (float)active;
 
-        for (int i = COMMODITY_FERRITE_ORE; i <= COMMODITY_CRYSTAL_ORE; i++) {
+        for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
             commodity_t ore = (commodity_t)i;
             if (station->ore_buffer[ore] <= 0.01f) continue;
             float consume = fminf(station->ore_buffer[ore], rate * dt);
