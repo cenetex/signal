@@ -59,6 +59,8 @@ typedef struct {
     float radius;
     float hp;
     float max_hp;
+    float ore;
+    float max_ore;
     float rotation;
     float spin;
     float seed;
@@ -105,6 +107,11 @@ typedef struct {
     vec2 beam_end;
     char notice[128];
     float notice_timer;
+    int nearby_fragments;
+    int tractor_fragments;
+    float collection_feedback_ore;
+    int collection_feedback_fragments;
+    float collection_feedback_timer;
     float time;
     float field_spawn_timer;
     runtime_state_t runtime;
@@ -133,6 +140,12 @@ static const int FIELD_ASTEROID_TARGET = 16;
 static const float FIELD_ASTEROID_RESPAWN_DELAY = 1.4f;
 static const float FRACTURE_CHILD_CLEANUP_AGE = 22.0f;
 static const float FRACTURE_CHILD_CLEANUP_DISTANCE = 940.0f;
+static const float FRAGMENT_NEARBY_RANGE = 220.0f;
+static const float FRAGMENT_TRACTOR_RANGE = 150.0f;
+static const float FRAGMENT_COLLECT_RADIUS = 30.0f;
+static const float FRAGMENT_TRACTOR_ACCEL = 380.0f;
+static const float FRAGMENT_MAX_SPEED = 210.0f;
+static const float COLLECTION_FEEDBACK_TIME = 1.1f;
 
 static float clampf(float value, float min_value, float max_value) {
     if (value < min_value) {
@@ -254,6 +267,10 @@ static asteroid_tier_t asteroid_next_tier(asteroid_tier_t tier) {
         return ASTEROID_TIER_S;
     }
     return (asteroid_tier_t)(tier + 1);
+}
+
+static bool asteroid_is_collectible(const asteroid_t* asteroid) {
+    return asteroid->active && (asteroid->tier == ASTEROID_TIER_S);
 }
 
 static const char* asteroid_tier_name(asteroid_tier_t tier) {
@@ -383,6 +400,12 @@ static void configure_asteroid_tier(asteroid_t* asteroid, asteroid_tier_t tier) 
     asteroid->radius = rand_range(asteroid_radius_min(tier), asteroid_radius_max(tier));
     asteroid->max_hp = rand_range(asteroid_hp_min(tier), asteroid_hp_max(tier));
     asteroid->hp = asteroid->max_hp;
+    asteroid->max_ore = 0.0f;
+    asteroid->ore = 0.0f;
+    if (tier == ASTEROID_TIER_S) {
+        asteroid->max_ore = rand_range(8.0f, 14.0f);
+        asteroid->ore = asteroid->max_ore;
+    }
     asteroid->rotation = rand_range(0.0f, TWO_PI_F);
     asteroid->spin = rand_range(-spin_limit, spin_limit);
     asteroid->seed = rand_range(0.0f, 100.0f);
@@ -529,6 +552,11 @@ static void reset_world(void) {
     g.docked = true;
     g.notice[0] = '\0';
     g.notice_timer = 0.0f;
+    g.nearby_fragments = 0;
+    g.tractor_fragments = 0;
+    g.collection_feedback_ore = 0.0f;
+    g.collection_feedback_fragments = 0;
+    g.collection_feedback_timer = 0.0f;
     g.field_spawn_timer = 0.0f;
 
     memset(g.asteroids, 0, sizeof(g.asteroids));
@@ -542,7 +570,7 @@ static void reset_world(void) {
         spawn_field_asteroid(&g.asteroids[i]);
     }
 
-    set_notice("Crack rocks, mine fragments, dock, sell.");
+    set_notice("Crack rocks, sweep fragments, dock, sell.");
 }
 
 static void draw_circle_filled(vec2 center, float radius, int segments, float r, float g0, float b, float a) {
@@ -669,6 +697,9 @@ static void asteroid_tier_body_color(asteroid_tier_t tier, float hp_ratio, float
 
 static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
     float hp_ratio = asteroid->hp / asteroid->max_hp;
+    if (asteroid_is_collectible(asteroid) && (asteroid->max_ore > 0.0f)) {
+        hp_ratio = asteroid->ore / asteroid->max_ore;
+    }
     float body_r = 0.3f;
     float body_g = 0.3f;
     float body_b = 0.3f;
@@ -720,13 +751,26 @@ static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
     sgl_end();
 
     if (asteroid->tier == ASTEROID_TIER_S) {
-        draw_circle_filled(asteroid->pos, asteroid->radius * 0.22f, 10, 0.48f, 0.96f, 0.78f, 0.7f);
+        float ore_ratio = asteroid->max_ore > 0.0f ? (asteroid->ore / asteroid->max_ore) : 1.0f;
+        draw_circle_filled(asteroid->pos, asteroid->radius * lerpf(0.14f, 0.24f, ore_ratio), 10, 0.48f, 0.96f, 0.78f, lerpf(0.35f, 0.8f, ore_ratio));
     } else if (asteroid->tier == ASTEROID_TIER_M) {
         draw_circle_filled(asteroid->pos, asteroid->radius * 0.16f, 8, 0.36f, 0.78f, 0.98f, 0.4f);
     }
 
     if (targeted) {
         draw_circle_outline(asteroid->pos, asteroid->radius + 12.0f, 24, 0.35f, 1.0f, 0.92f, 0.75f);
+    }
+}
+
+static void draw_ship_tractor_field(void) {
+    if (g.nearby_fragments <= 0) {
+        return;
+    }
+
+    float pulse = 0.28f + (sinf(g.time * 7.0f) * 0.08f);
+    draw_circle_outline(g.ship.pos, FRAGMENT_TRACTOR_RANGE, 40, 0.24f, 0.86f, 1.0f, pulse);
+    if (g.tractor_fragments > 0) {
+        draw_circle_outline(g.ship.pos, FRAGMENT_COLLECT_RADIUS + 6.0f, 28, 0.50f, 1.0f, 0.82f, 0.75f);
     }
 }
 
@@ -869,21 +913,46 @@ static void draw_hud(void) {
         } else {
             sdtx_printf("Target %s %s, %d integrity", asteroid_tier_name(asteroid->tier), asteroid_tier_kind(asteroid->tier), integrity_left);
         }
+    } else if (g.nearby_fragments > 0) {
+        sdtx_color3b(130, 255, 235);
+        if (g.tractor_fragments > 0) {
+            sdtx_printf("Tractor lock on %d fragment%s", g.tractor_fragments, g.tractor_fragments == 1 ? "" : "s");
+        } else {
+            sdtx_printf("Nearby fragments %d", g.nearby_fragments);
+        }
     } else {
         sdtx_color3b(169, 179, 204);
-        sdtx_puts("No target lock. Line up a rock or fragment.");
+        sdtx_puts("No target lock. Line up a rock.");
     }
     sdtx_crlf();
 
-    if (cargo_units >= cargo_capacity) {
+    if (g.collection_feedback_timer > 0.0f) {
+        int recovered_ore = (int)lroundf(g.collection_feedback_ore);
+        sdtx_color3b(114, 255, 192);
+        if (g.collection_feedback_fragments > 0) {
+            sdtx_printf("Recovered %d ore from %d fragment%s.", recovered_ore, g.collection_feedback_fragments, g.collection_feedback_fragments == 1 ? "" : "s");
+        } else {
+            sdtx_printf("Recovered %d ore.", recovered_ore);
+        }
+    } else if ((cargo_units >= cargo_capacity) && (g.nearby_fragments > 0)) {
+        sdtx_color3b(255, 221, 119);
+        sdtx_puts("Hold full. Nearby fragments drifting out there.");
+    } else if (cargo_units >= cargo_capacity) {
         sdtx_color3b(255, 221, 119);
         sdtx_puts("Cargo hold full. Return to station.");
+    } else if (g.nearby_fragments > 0) {
+        sdtx_color3b(114, 255, 192);
+        if (g.tractor_fragments > 0) {
+            sdtx_puts("Sweep through fragments to collect them.");
+        } else {
+            sdtx_puts("Close in and let the tractor pull fragments in.");
+        }
     } else if (g.notice_timer > 0.0f) {
         sdtx_color3b(114, 255, 192);
         sdtx_puts(g.notice);
     } else {
         sdtx_color3b(164, 177, 205);
-        sdtx_puts("Crack rocks down to fragments, then sell.");
+        sdtx_puts("Crack rocks, sweep fragments, dock, sell.");
     }
 
     sdtx_pos(left_text_x, bottom_text_y);
@@ -914,7 +983,7 @@ static int find_mining_target(vec2 origin, vec2 forward) {
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t* asteroid = &g.asteroids[i];
-        if (!asteroid->active) {
+        if (!asteroid->active || asteroid_is_collectible(asteroid)) {
             continue;
         }
         vec2 to_asteroid = v2_sub(asteroid->pos, origin);
@@ -958,6 +1027,8 @@ static void reset_step_feedback(void) {
     g.beam_active = false;
     g.beam_hit = false;
     g.thrusting = false;
+    g.nearby_fragments = 0;
+    g.tractor_fragments = 0;
 }
 
 static input_intent_t sample_input_intent(void) {
@@ -1036,7 +1107,7 @@ static void step_asteroid_dynamics(float dt) {
 static void resolve_world_collisions(void) {
     resolve_ship_circle(g.station.pos, g.station.radius + 4.0f);
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!g.asteroids[i].active) {
+        if (!g.asteroids[i].active || asteroid_is_collectible(&g.asteroids[i])) {
             continue;
         }
         resolve_ship_circle(g.asteroids[i].pos, g.asteroids[i].radius);
@@ -1052,6 +1123,70 @@ static void update_docking_state(float dt) {
 
 static void update_targeting_state(vec2 forward) {
     g.hover_asteroid = find_mining_target(ship_muzzle(forward), forward);
+}
+
+static void step_fragment_collection(float dt) {
+    float cargo_space = SHIP_CARGO_MAX - g.ship.cargo;
+    float collected_ore = 0.0f;
+    int collected_fragments = 0;
+
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t* asteroid = &g.asteroids[i];
+        if (!asteroid_is_collectible(asteroid)) {
+            continue;
+        }
+
+        vec2 to_ship = v2_sub(g.ship.pos, asteroid->pos);
+        float distance = v2_len(to_ship);
+        if (distance <= FRAGMENT_NEARBY_RANGE) {
+            g.nearby_fragments++;
+        }
+
+        if (cargo_space <= 0.0f) {
+            continue;
+        }
+
+        if (distance <= FRAGMENT_TRACTOR_RANGE) {
+            float pull_ratio = 1.0f - clampf(distance / FRAGMENT_TRACTOR_RANGE, 0.0f, 1.0f);
+            vec2 pull_dir = distance > 0.001f ? v2_scale(to_ship, 1.0f / distance) : ship_forward();
+            g.tractor_fragments++;
+            asteroid->vel = v2_add(asteroid->vel, v2_scale(pull_dir, FRAGMENT_TRACTOR_ACCEL * lerpf(0.35f, 1.0f, pull_ratio) * dt));
+            float speed = v2_len(asteroid->vel);
+            if (speed > FRAGMENT_MAX_SPEED) {
+                asteroid->vel = v2_scale(v2_norm(asteroid->vel), FRAGMENT_MAX_SPEED);
+            }
+        }
+
+        if (distance <= (FRAGMENT_COLLECT_RADIUS + asteroid->radius)) {
+            float recovered = fminf(asteroid->ore, cargo_space);
+            if (recovered <= 0.0f) {
+                continue;
+            }
+
+            g.ship.cargo += recovered;
+            cargo_space -= recovered;
+            asteroid->ore -= recovered;
+            collected_ore += recovered;
+
+            if (asteroid->ore <= 0.01f) {
+                clear_asteroid(asteroid);
+                collected_fragments++;
+            } else if (asteroid->max_ore > 0.0f) {
+                float ore_ratio = asteroid->ore / asteroid->max_ore;
+                asteroid->radius = lerpf(asteroid_radius_min(ASTEROID_TIER_S) * 0.72f, asteroid_radius_max(ASTEROID_TIER_S), ore_ratio);
+            }
+        }
+    }
+
+    if (collected_ore > 0.0f) {
+        if (g.collection_feedback_timer <= 0.0f) {
+            g.collection_feedback_ore = 0.0f;
+            g.collection_feedback_fragments = 0;
+        }
+        g.collection_feedback_ore += collected_ore;
+        g.collection_feedback_fragments += collected_fragments;
+        g.collection_feedback_timer = COLLECTION_FEEDBACK_TIME;
+    }
 }
 
 static void step_mining_system(float dt, bool mining, vec2 forward) {
@@ -1071,23 +1206,11 @@ static void step_mining_system(float dt, bool mining, vec2 forward) {
         g.beam_hit = true;
 
         float mined = MINING_RATE * dt;
-        if (asteroid->tier == ASTEROID_TIER_S) {
-            mined = fminf(mined, SHIP_CARGO_MAX - g.ship.cargo);
-        }
-
         if (mined > 0.0f) {
             mined = fminf(mined, asteroid->hp);
-            if (asteroid->tier == ASTEROID_TIER_S) {
-                g.ship.cargo += mined;
-            }
             asteroid->hp -= mined;
             if (asteroid->hp <= 0.01f) {
-                if (asteroid->tier == ASTEROID_TIER_S) {
-                    clear_asteroid(asteroid);
-                    set_notice("Fragment refined into cargo.");
-                } else {
-                    fracture_asteroid(g.hover_asteroid, normal);
-                }
+                fracture_asteroid(g.hover_asteroid, normal);
             }
         }
     } else {
@@ -1117,6 +1240,14 @@ static void step_notice_timer(float dt) {
     if (g.notice_timer > 0.0f) {
         g.notice_timer = fmaxf(0.0f, g.notice_timer - dt);
     }
+
+    if (g.collection_feedback_timer > 0.0f) {
+        g.collection_feedback_timer = fmaxf(0.0f, g.collection_feedback_timer - dt);
+        if (g.collection_feedback_timer <= 0.0f) {
+            g.collection_feedback_ore = 0.0f;
+            g.collection_feedback_fragments = 0;
+        }
+    }
 }
 
 static void sim_step(float dt) {
@@ -1142,6 +1273,7 @@ static void sim_step(float dt) {
     forward = ship_forward();
     update_targeting_state(forward);
     step_mining_system(dt, intent.mine, forward);
+    step_fragment_collection(dt);
     step_station_interaction_system(intent.sell);
     step_notice_timer(dt);
     consume_pressed_input();
@@ -1193,6 +1325,7 @@ static void render_world(void) {
         draw_asteroid(&g.asteroids[i], i == g.hover_asteroid);
     }
     draw_beam();
+    draw_ship_tractor_field();
     draw_ship();
 }
 
