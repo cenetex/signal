@@ -6,7 +6,7 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-set(GAME_SOURCES src/main.c src/net.c src/commodity.c)
+set(GAME_SOURCES src/main.c src/net.c src/commodity.c src/ship.c)
 
 if(WIN32 AND NOT EMSCRIPTEN)
     add_executable(space_miner WIN32 ${GAME_SOURCES})
@@ -15,7 +15,7 @@ else()
 endif()
 
 if(NOT EMSCRIPTEN)
-    add_executable(space_miner_test src/test_main.c src/commodity.c)
+    add_executable(space_miner_test src/test_main.c src/commodity.c src/ship.c)
     target_include_directories(space_miner_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src")
     if(NOT MSVC)
         target_link_libraries(space_miner_test PRIVATE m)

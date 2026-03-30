@@ -8,6 +8,7 @@
 #include "math_util.h"
 #include "types.h"
 #include "commodity.h"
+#include "ship.h"
 
 /* --- Multiplayer networking --- */
 #include "net.h"
@@ -149,9 +150,7 @@ static game_t g;
 
 static const float WORLD_RADIUS = 2200.0f;
 static const float SHIP_BRAKE = 180.0f;
-static const float SHIP_HOLD_UPGRADE_STEP = 24.0f;
 static const float MINING_RANGE = 170.0f;
-static const float SHIP_MINING_UPGRADE_STEP = 7.0f;
 static const float HUD_MARGIN = 28.0f;
 static const float HUD_TOP_PANEL_WIDTH = 332.0f;
 static const float HUD_TOP_PANEL_HEIGHT = 78.0f;
@@ -180,9 +179,6 @@ static const float FIELD_ASTEROID_RESPAWN_DELAY = 0.6f;
 static const float FRACTURE_CHILD_CLEANUP_AGE = 22.0f;
 static const float FRACTURE_CHILD_CLEANUP_DISTANCE = 940.0f;
 static const float FRAGMENT_NEARBY_RANGE = 220.0f;
-static const float SHIP_TRACTOR_UPGRADE_STEP = 24.0f;
-static const float SHIP_BASE_COLLECT_RADIUS = 30.0f;
-static const float SHIP_COLLECT_UPGRADE_STEP = 5.0f;
 static const float FRAGMENT_TRACTOR_ACCEL = 380.0f;
 static const float FRAGMENT_MAX_SPEED = 210.0f;
 static const float REFINERY_HOPPER_CAPACITY = 100.0f;
@@ -192,7 +188,6 @@ static const float NPC_DOCK_TIME = 3.0f;
 static const float HAULER_DOCK_TIME = 4.0f;
 static const float HAULER_LOAD_TIME = 2.0f;
 static const float STATION_PRODUCTION_RATE = 0.3f;
-static const float UPGRADE_BASE_PRODUCT = 8.0f;
 
 const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
     [HULL_CLASS_MINER] = {
@@ -236,7 +231,6 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
     },
 };
 static const float COLLECTION_FEEDBACK_TIME = 1.1f;
-static const int SHIP_UPGRADE_MAX_LEVEL = 4;
 static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
 static const float STATION_DOCK_APPROACH_OFFSET = 34.0f;
 static const float SHIP_COLLISION_DAMAGE_THRESHOLD = 115.0f;
@@ -604,97 +598,9 @@ static void format_refinery_price_line(const station_t* station, char* text, siz
     snprintf(text, text_size, "FE %d  CU %d  CR %d", ferrite, cuprite, crystal);
 }
 
-static const hull_def_t* npc_hull_def(const npc_ship_t* npc) {
-    return &HULL_DEFS[npc->hull_class];
-}
-
-static const hull_def_t* ship_hull_def(void) {
-    return &HULL_DEFS[g.ship.hull_class];
-}
-
-static float ship_max_hull(void) {
-    return ship_hull_def()->max_hull;
-}
-
-static float ship_cargo_capacity(void) {
-    return ship_hull_def()->ore_capacity + ((float)g.ship.hold_level * SHIP_HOLD_UPGRADE_STEP);
-}
-
-static float ship_mining_rate(void) {
-    return ship_hull_def()->mining_rate + ((float)g.ship.mining_level * SHIP_MINING_UPGRADE_STEP);
-}
-
-static float ship_tractor_range(void) {
-    return ship_hull_def()->tractor_range + ((float)g.ship.tractor_level * SHIP_TRACTOR_UPGRADE_STEP);
-}
-
-static float ship_collect_radius(void) {
-    return SHIP_BASE_COLLECT_RADIUS + ((float)g.ship.tractor_level * SHIP_COLLECT_UPGRADE_STEP);
-}
-
-static int ship_upgrade_level(ship_upgrade_t upgrade) {
-    switch (upgrade) {
-        case SHIP_UPGRADE_MINING:
-            return g.ship.mining_level;
-        case SHIP_UPGRADE_HOLD:
-            return g.ship.hold_level;
-        case SHIP_UPGRADE_TRACTOR:
-            return g.ship.tractor_level;
-        case SHIP_UPGRADE_COUNT:
-        default:
-            return 0;
-    }
-}
-
-static bool ship_upgrade_maxed(ship_upgrade_t upgrade) {
-    return ship_upgrade_level(upgrade) >= SHIP_UPGRADE_MAX_LEVEL;
-}
-
-static int ship_upgrade_cost(ship_upgrade_t upgrade) {
-    int level = ship_upgrade_level(upgrade);
-    int tier = level + 1;
-    switch (upgrade) {
-        case SHIP_UPGRADE_MINING:
-            return 180 + (tier * 110) + (level * level * 120);
-        case SHIP_UPGRADE_HOLD:
-            return 210 + (tier * 120) + (level * level * 135);
-        case SHIP_UPGRADE_TRACTOR:
-            return 160 + (tier * 100) + (level * level * 110);
-        case SHIP_UPGRADE_COUNT:
-        default:
-            return 0;
-    }
-}
-
-static product_t upgrade_required_product(ship_upgrade_t upgrade) {
-    switch (upgrade) {
-        case SHIP_UPGRADE_HOLD:
-            return PRODUCT_FRAME;
-        case SHIP_UPGRADE_MINING:
-            return PRODUCT_LASER_MODULE;
-        case SHIP_UPGRADE_TRACTOR:
-            return PRODUCT_TRACTOR_MODULE;
-        case SHIP_UPGRADE_COUNT:
-        default:
-            return PRODUCT_FRAME;
-    }
-}
-
-static float upgrade_product_cost(ship_upgrade_t upgrade) {
-    int level = ship_upgrade_level(upgrade);
-    int next = level + 1;
-    return UPGRADE_BASE_PRODUCT * (float)next;
-}
-
-static const char* product_name(product_t product) {
-    switch (product) {
-        case PRODUCT_FRAME: return "Frames";
-        case PRODUCT_LASER_MODULE: return "Laser Modules";
-        case PRODUCT_TRACTOR_MODULE: return "Tractor Modules";
-        case PRODUCT_COUNT:
-        default: return "Products";
-    }
-}
+/* ship_hull_def, npc_hull_def, ship_max_hull, ship_cargo_capacity, ship_mining_rate,
+   ship_tractor_range, ship_collect_radius, ship_upgrade_level, ship_upgrade_maxed,
+   ship_upgrade_cost, upgrade_required_product, upgrade_product_cost, product_name: see ship.h/c */
 
 static const station_t* station_at(int station_index) {
     if ((station_index < 0) || (station_index >= MAX_STATIONS)) {
@@ -841,7 +747,7 @@ static void split_hud_message_lines(const char* text, int max_cols, char* line0,
 
 static bool build_hud_message(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
     int cargo_units = (int)lroundf(ship_raw_ore_total(&g.ship));
-    int cargo_capacity = (int)lroundf(ship_cargo_capacity());
+    int cargo_capacity = (int)lroundf(ship_cargo_capacity(&g.ship));
     const station_t* station = current_station_ptr();
 
     if (g.notice_timer > 0.0f) {
@@ -985,9 +891,9 @@ static const char* station_role_fit_title(station_role_t role) {
 
 static bool can_afford_upgrade(const station_t* station, ship_upgrade_t upgrade, uint32_t service, int credit_cost) {
     if (!station || !(station->services & service)) return false;
-    if (ship_upgrade_maxed(upgrade)) return false;
+    if (ship_upgrade_maxed(&g.ship,upgrade)) return false;
     if (g.ship.credits + 0.01f < (float)credit_cost) return false;
-    if (station->product_stock[upgrade_required_product(upgrade)] + 0.01f < upgrade_product_cost(upgrade)) return false;
+    if (station->product_stock[upgrade_required_product(upgrade)] + 0.01f < upgrade_product_cost(&g.ship,upgrade)) return false;
     return true;
 }
 
@@ -999,16 +905,16 @@ static void build_station_ui_state(station_ui_state_t* ui) {
     }
 
     ui->hull_now = (int)lroundf(g.ship.hull);
-    ui->hull_max = (int)lroundf(ship_max_hull());
+    ui->hull_max = (int)lroundf(ship_max_hull(&g.ship));
     float ore_total = ship_raw_ore_total(&g.ship);
     float repair = station_repair_cost();
     ui->cargo_units = (int)lroundf(ore_total);
-    ui->cargo_capacity = (int)lroundf(ship_cargo_capacity());
+    ui->cargo_capacity = (int)lroundf(ship_cargo_capacity(&g.ship));
     ui->payout = (int)lroundf(station_cargo_sale_value());
     ui->repair_cost = (int)lroundf(repair);
-    ui->mining_cost = ship_upgrade_cost(SHIP_UPGRADE_MINING);
-    ui->hold_cost = ship_upgrade_cost(SHIP_UPGRADE_HOLD);
-    ui->tractor_cost = ship_upgrade_cost(SHIP_UPGRADE_TRACTOR);
+    ui->mining_cost = ship_upgrade_cost(&g.ship,SHIP_UPGRADE_MINING);
+    ui->hold_cost = ship_upgrade_cost(&g.ship,SHIP_UPGRADE_HOLD);
+    ui->tractor_cost = ship_upgrade_cost(&g.ship,SHIP_UPGRADE_TRACTOR);
     ui->can_sell = station_has_service(STATION_SERVICE_ORE_BUYER) && (ore_total > 0.01f);
     ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (repair > 0.0f) && (g.ship.credits + 0.01f >= repair);
     ui->can_upgrade_mining = can_afford_upgrade(ui->station, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, ui->mining_cost);
@@ -1121,7 +1027,7 @@ static int build_station_service_lines(const station_ui_state_t* ui, station_ser
 
     if (ui->station->role == STATION_ROLE_YARD) {
         lines[1].action = "[4] Hold racks";
-        if (ship_upgrade_maxed(SHIP_UPGRADE_HOLD)) {
+        if (ship_upgrade_maxed(&g.ship,SHIP_UPGRADE_HOLD)) {
             snprintf(lines[1].state, sizeof(lines[1].state), "maxed");
             lines[1].r = 169;
             lines[1].g0 = 179;
@@ -1136,7 +1042,7 @@ static int build_station_service_lines(const station_ui_state_t* ui, station_ser
     }
 
     lines[1].action = "[3] Laser array";
-    if (ship_upgrade_maxed(SHIP_UPGRADE_MINING)) {
+    if (ship_upgrade_maxed(&g.ship,SHIP_UPGRADE_MINING)) {
         snprintf(lines[1].state, sizeof(lines[1].state), "maxed");
         lines[1].r = 169;
         lines[1].g0 = 179;
@@ -1149,7 +1055,7 @@ static int build_station_service_lines(const station_ui_state_t* ui, station_ser
     }
 
     lines[2].action = "[5] Tractor coil";
-    if (ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR)) {
+    if (ship_upgrade_maxed(&g.ship,SHIP_UPGRADE_TRACTOR)) {
         snprintf(lines[2].state, sizeof(lines[2].state), "maxed");
         lines[2].r = 169;
         lines[2].g0 = 179;
@@ -1217,7 +1123,7 @@ static vec2 station_dock_anchor(void) {
     if (station == NULL) {
         return v2(0.0f, 0.0f);
     }
-    return v2_add(station->pos, v2(0.0f, -(station->radius + ship_hull_def()->ship_radius + STATION_DOCK_APPROACH_OFFSET)));
+    return v2_add(station->pos, v2(0.0f, -(station->radius + ship_hull_def(&g.ship)->ship_radius + STATION_DOCK_APPROACH_OFFSET)));
 }
 
 static bool station_has_service(uint32_t service) {
@@ -1239,14 +1145,14 @@ static float station_cargo_sale_value(void) {
 }
 
 static float station_repair_cost(void) {
-    float missing_hull = fmaxf(0.0f, ship_max_hull() - g.ship.hull);
+    float missing_hull = fmaxf(0.0f, ship_max_hull(&g.ship) - g.ship.hull);
     return ceilf(missing_hull * STATION_REPAIR_COST_PER_HULL);
 }
 
 static void apply_ship_damage(float damage);
 
 static float ship_cargo_space(void) {
-    return fmaxf(0.0f, ship_cargo_capacity() - ship_total_cargo(&g.ship));
+    return fmaxf(0.0f, ship_cargo_capacity(&g.ship) - ship_total_cargo(&g.ship));
 }
 
 static void clear_collection_feedback(void) {
@@ -1537,7 +1443,7 @@ static void reset_world(void) {
     g.ship.pos = v2(0.0f, -110.0f);
     g.ship.vel = v2(0.0f, 0.0f);
     g.ship.angle = PI_F * 0.5f;
-    g.ship.hull = ship_max_hull();
+    g.ship.hull = ship_max_hull(&g.ship);
     clear_ship_cargo();
     g.ship.credits = 0.0f;
     g.ship.mining_level = 0;
@@ -1880,9 +1786,9 @@ static void draw_ship_tractor_field(void) {
     }
 
     float pulse = 0.28f + (sinf(g.time * 7.0f) * 0.08f);
-    draw_circle_outline(g.ship.pos, ship_tractor_range(), 40, 0.24f, 0.86f, 1.0f, pulse);
+    draw_circle_outline(g.ship.pos, ship_tractor_range(&g.ship), 40, 0.24f, 0.86f, 1.0f, pulse);
     if (g.tractor_fragments > 0) {
-        draw_circle_outline(g.ship.pos, ship_collect_radius() + 6.0f, 28, 0.50f, 1.0f, 0.82f, 0.75f);
+        draw_circle_outline(g.ship.pos, ship_collect_radius(&g.ship) + 6.0f, 28, 0.50f, 1.0f, 0.82f, 0.75f);
     }
 }
 
@@ -2247,8 +2153,8 @@ static void draw_hud_panels(void) {
         }
 
         if (show_fit_panel) {
-            draw_ui_meter(fit_x + 16.0f, fit_y + 54.0f, fit_w - 32.0f, 12.0f, g.ship.hull / ship_max_hull(), 0.96f, 0.54f, 0.28f);
-            draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, ship_total_cargo(&g.ship) / fmaxf(1.0f, ship_cargo_capacity()), 0.26f, 0.90f, 0.72f);
+            draw_ui_meter(fit_x + 16.0f, fit_y + 54.0f, fit_w - 32.0f, 12.0f, g.ship.hull / ship_max_hull(&g.ship), 0.96f, 0.54f, 0.28f);
+            draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, ship_total_cargo(&g.ship) / fmaxf(1.0f, ship_cargo_capacity(&g.ship)), 0.26f, 0.90f, 0.72f);
             if (ui.station->role == STATION_ROLE_YARD) {
                 draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.ship.hold_level, 0.50f, 0.82f, 1.0f);
             } else if (ui.station->role == STATION_ROLE_BEAMWORKS) {
@@ -2390,13 +2296,13 @@ static void draw_station_services(const station_ui_state_t* ui) {
             sdtx_puts("Ore only sells here.");
         } else if (ui->station->role == STATION_ROLE_YARD) {
             int frames = (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]);
-            int need = (int)lroundf(upgrade_product_cost(SHIP_UPGRADE_HOLD));
+            int need = (int)lroundf(upgrade_product_cost(&g.ship,SHIP_UPGRADE_HOLD));
             sdtx_printf("Hold %d ore  Lv %d/%d", ui->cargo_capacity, g.ship.hold_level, SHIP_UPGRADE_MAX_LEVEL);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 56.0f));
             sdtx_printf("Hull %d/%d", ui->hull_now, ui->hull_max);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 88.0f));
             sdtx_color3b(145, 160, 188);
-            sdtx_printf("Frames %d  Need %d", frames, ship_upgrade_maxed(SHIP_UPGRADE_HOLD) ? 0 : need);
+            sdtx_printf("Frames %d  Need %d", frames, ship_upgrade_maxed(&g.ship,SHIP_UPGRADE_HOLD) ? 0 : need);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
             sdtx_printf("Repair %s", ui->repair_cost > 0 ? "available" : "nominal");
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
@@ -2452,10 +2358,10 @@ static void draw_hud(void) {
     uint8_t message_g = 177;
     uint8_t message_b = 205;
     int hull_units = (int)lroundf(g.ship.hull);
-    int hull_capacity = (int)lroundf(ship_max_hull());
+    int hull_capacity = (int)lroundf(ship_max_hull(&g.ship));
     int cargo_units = (int)lroundf(ship_raw_ore_total(&g.ship));
     int credits = (int)lroundf(g.ship.credits);
-    int cargo_capacity = (int)lroundf(ship_cargo_capacity());
+    int cargo_capacity = (int)lroundf(ship_cargo_capacity(&g.ship));
     int payout_preview = (int)lroundf(station_cargo_sale_value());
     const station_t* current_station = current_station_ptr();
     const station_t* navigation_station = navigation_station_ptr();
@@ -2700,7 +2606,7 @@ static void draw_hud(void) {
 
 static void resolve_ship_circle(vec2 center, float radius) {
     vec2 delta = v2_sub(g.ship.pos, center);
-    float minimum = radius + ship_hull_def()->ship_radius;
+    float minimum = radius + ship_hull_def(&g.ship)->ship_radius;
     float distance_sq = v2_len_sq(delta);
     float minimum_sq = minimum * minimum;
     if (distance_sq >= minimum_sq) {
@@ -2763,7 +2669,7 @@ static vec2 ship_forward(void) {
 }
 
 static vec2 ship_muzzle(vec2 forward) {
-    return v2_add(g.ship.pos, v2_scale(forward, ship_hull_def()->ship_radius + 8.0f));
+    return v2_add(g.ship.pos, v2_scale(forward, ship_hull_def(&g.ship)->ship_radius + 8.0f));
 }
 
 static bool try_spend_credits(float amount) {
@@ -2805,7 +2711,7 @@ static void launch_ship(void) {
 static void emergency_recover_ship(void) {
     int lost_units = (int)lroundf(ship_raw_ore_total(&g.ship));
     clear_ship_cargo();
-    g.ship.hull = ship_max_hull();
+    g.ship.hull = ship_max_hull(&g.ship);
     g.ship.angle = PI_F * 0.5f;
     dock_ship();
     if (lost_units > 0) {
@@ -2892,7 +2798,7 @@ static void try_repair_ship(void) {
         return;
     }
 
-    g.ship.hull = ship_max_hull();
+    g.ship.hull = ship_max_hull(&g.ship);
     audio_play_repair();
     set_notice("Hull restored for %d cr.", (int)lroundf(repair_cost));
 }
@@ -2918,7 +2824,7 @@ static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
         }
         return;
     }
-    if (ship_upgrade_maxed(upgrade)) {
+    if (ship_upgrade_maxed(&g.ship,upgrade)) {
         switch (upgrade) {
             case SHIP_UPGRADE_MINING:
                 set_notice("Laser array already tuned to spec.");
@@ -2937,7 +2843,7 @@ static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
     }
 
     product_t required = upgrade_required_product(upgrade);
-    float product_cost = upgrade_product_cost(upgrade);
+    float product_cost = upgrade_product_cost(&g.ship,upgrade);
     if (station->product_stock[required] < product_cost - 0.01f) {
         int have = (int)lroundf(station->product_stock[required]);
         int need = (int)lroundf(product_cost);
@@ -2945,7 +2851,7 @@ static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
         return;
     }
 
-    int cost = ship_upgrade_cost(upgrade);
+    int cost = ship_upgrade_cost(&g.ship,upgrade);
     if (!try_spend_credits((float)cost)) {
         set_notice("Need %d cr for this upgrade.", cost);
         return;
@@ -2957,17 +2863,17 @@ static void try_apply_ship_upgrade(ship_upgrade_t upgrade) {
         case SHIP_UPGRADE_MINING:
             g.ship.mining_level++;
             audio_play_upgrade(upgrade);
-            set_notice("Laser array tuned. Output now %d ore/sec.", (int)lroundf(ship_mining_rate()));
+            set_notice("Laser array tuned. Output now %d ore/sec.", (int)lroundf(ship_mining_rate(&g.ship)));
             break;
         case SHIP_UPGRADE_HOLD:
             g.ship.hold_level++;
             audio_play_upgrade(upgrade);
-            set_notice("Hold racks expanded. Capacity now %d ore.", (int)lroundf(ship_cargo_capacity()));
+            set_notice("Hold racks expanded. Capacity now %d ore.", (int)lroundf(ship_cargo_capacity(&g.ship)));
             break;
         case SHIP_UPGRADE_TRACTOR:
             g.ship.tractor_level++;
             audio_play_upgrade(upgrade);
-            set_notice("Tractor coil widened to %d units.", (int)lroundf(ship_tractor_range()));
+            set_notice("Tractor coil widened to %d units.", (int)lroundf(ship_tractor_range(&g.ship)));
             break;
         case SHIP_UPGRADE_COUNT:
         default:
@@ -3012,11 +2918,11 @@ static input_intent_t sample_input_intent(void) {
 }
 
 static void step_ship_rotation(float dt, float turn_input) {
-    g.ship.angle = wrap_angle(g.ship.angle + (turn_input * ship_hull_def()->turn_speed * dt));
+    g.ship.angle = wrap_angle(g.ship.angle + (turn_input * ship_hull_def(&g.ship)->turn_speed * dt));
 }
 
 static void step_ship_thrust(float dt, float thrust_input, vec2 forward) {
-    const hull_def_t* hull = ship_hull_def();
+    const hull_def_t* hull = ship_hull_def(&g.ship);
     if (thrust_input > 0.0f) {
         g.ship.vel = v2_add(g.ship.vel, v2_scale(forward, hull->accel * thrust_input * dt));
         g.thrusting = true;
@@ -3026,7 +2932,7 @@ static void step_ship_thrust(float dt, float thrust_input, vec2 forward) {
 }
 
 static void step_ship_motion(float dt) {
-    g.ship.vel = v2_scale(g.ship.vel, 1.0f / (1.0f + (ship_hull_def()->drag * dt)));
+    g.ship.vel = v2_scale(g.ship.vel, 1.0f / (1.0f + (ship_hull_def(&g.ship)->drag * dt)));
     g.ship.pos = v2_add(g.ship.pos, v2_scale(g.ship.vel, dt));
 
     float world_distance_sq = v2_len_sq(g.ship.pos);
@@ -3111,7 +3017,7 @@ static void update_targeting_state(vec2 forward) {
 
 static void step_fragment_collection(float dt) {
     float nearby_range_sq = FRAGMENT_NEARBY_RANGE * FRAGMENT_NEARBY_RANGE;
-    float tractor_range = ship_tractor_range();
+    float tractor_range = ship_tractor_range(&g.ship);
     float tractor_range_sq = tractor_range * tractor_range;
     float cargo_space = ship_cargo_space();
     float collected_ore = 0.0f;
@@ -3145,7 +3051,7 @@ static void step_fragment_collection(float dt) {
             }
         }
 
-        float collect_radius = ship_collect_radius() + asteroid->radius;
+        float collect_radius = ship_collect_radius(&g.ship) + asteroid->radius;
         if (distance_sq <= (collect_radius * collect_radius)) {
             float recovered = fminf(asteroid->ore, cargo_space);
             if (recovered <= 0.0f) {
@@ -3191,7 +3097,7 @@ static void step_mining_system(float dt, bool mining, vec2 forward) {
 
         if (!net_is_connected()) {
             /* Single-player: apply damage locally. */
-            float mined = fminf(ship_mining_rate() * dt, asteroid->hp);
+            float mined = fminf(ship_mining_rate(&g.ship) * dt, asteroid->hp);
             asteroid->hp -= mined;
             if (asteroid->hp <= 0.01f) {
                 fracture_asteroid(g.hover_asteroid, normal);
