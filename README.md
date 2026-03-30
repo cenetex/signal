@@ -4,10 +4,10 @@ A small C + Sokol prototype with a simple mining loop:
 
 - Fly a ship with `W/S` and `A/D`
 - Line up asteroids and hold `Space` to fracture rocks
-- Sweep through fragments to pull ore into the hold
+- Sweep through fragments to pull ferrite, cuprite, and crystal ore into the hold
 - Enter a station ring and press `E` to dock
 - Use specialist stations:
-  `Prospect Refinery` buys ore and repairs
+  `Prospect Refinery` buys raw ore, repairs, and stocks ingots
   `Kepler Yard` repairs and expands the hold
   `Helios Works` repairs and tunes the laser/tractor
 

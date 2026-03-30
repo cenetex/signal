@@ -36,6 +36,16 @@ enum {
     STATION_SERVICE_UPGRADE_TRACTOR = 1 << 4,
 };
 
+typedef enum {
+    COMMODITY_FERRITE_ORE,
+    COMMODITY_CUPRITE_ORE,
+    COMMODITY_CRYSTAL_ORE,
+    COMMODITY_FRAME_INGOT,
+    COMMODITY_CONDUCTOR_INGOT,
+    COMMODITY_LENS_INGOT,
+    COMMODITY_COUNT,
+} commodity_t;
+
 typedef struct {
     float x;
     float y;
@@ -46,7 +56,7 @@ typedef struct {
     vec2 vel;
     float angle;
     float hull;
-    float cargo;
+    float cargo[COMMODITY_COUNT];
     float credits;
     int mining_level;
     int hold_level;
@@ -65,7 +75,10 @@ typedef struct {
     vec2 pos;
     float radius;
     float dock_radius;
-    float ore_price;
+    float buy_price[COMMODITY_COUNT];
+    float sell_price[COMMODITY_COUNT];
+    float inventory[COMMODITY_COUNT];
+    float desired_stock[COMMODITY_COUNT];
     uint32_t services;
 } station_t;
 
@@ -95,6 +108,7 @@ typedef struct {
     float max_hp;
     float ore;
     float max_ore;
+    commodity_t commodity;
     float rotation;
     float spin;
     float seed;
@@ -115,7 +129,6 @@ typedef struct {
     int cargo_units;
     int cargo_capacity;
     int payout;
-    int ore_price;
     int repair_cost;
     int mining_cost;
     int hold_cost;
@@ -234,7 +247,6 @@ static const float SHIP_HOLD_UPGRADE_STEP = 24.0f;
 static const float MINING_RANGE = 170.0f;
 static const float SHIP_BASE_MINING_RATE = 28.0f;
 static const float SHIP_MINING_UPGRADE_STEP = 7.0f;
-static const float STATION_DEFAULT_ORE_PRICE = 12.0f;
 static const float HUD_MARGIN = 28.0f;
 static const float HUD_TOP_PANEL_WIDTH = 332.0f;
 static const float HUD_TOP_PANEL_HEIGHT = 78.0f;
@@ -670,6 +682,133 @@ static float asteroid_progress_ratio(const asteroid_t* asteroid) {
     return 0.0f;
 }
 
+static bool commodity_is_raw_ore(commodity_t commodity) {
+    return commodity <= COMMODITY_CRYSTAL_ORE;
+}
+
+static commodity_t commodity_refined_form(commodity_t commodity) {
+    switch (commodity) {
+        case COMMODITY_FERRITE_ORE:
+            return COMMODITY_FRAME_INGOT;
+        case COMMODITY_CUPRITE_ORE:
+            return COMMODITY_CONDUCTOR_INGOT;
+        case COMMODITY_CRYSTAL_ORE:
+            return COMMODITY_LENS_INGOT;
+        case COMMODITY_FRAME_INGOT:
+        case COMMODITY_CONDUCTOR_INGOT:
+        case COMMODITY_LENS_INGOT:
+        case COMMODITY_COUNT:
+        default:
+            return commodity;
+    }
+}
+
+static const char* commodity_name(commodity_t commodity) {
+    switch (commodity) {
+        case COMMODITY_FERRITE_ORE:
+            return "Ferrite Ore";
+        case COMMODITY_CUPRITE_ORE:
+            return "Cuprite Ore";
+        case COMMODITY_CRYSTAL_ORE:
+            return "Crystal Ore";
+        case COMMODITY_FRAME_INGOT:
+            return "Frame Ingots";
+        case COMMODITY_CONDUCTOR_INGOT:
+            return "Conductor Ingots";
+        case COMMODITY_LENS_INGOT:
+            return "Lens Ingots";
+        case COMMODITY_COUNT:
+        default:
+            return "Cargo";
+    }
+}
+
+static const char* commodity_code(commodity_t commodity) {
+    switch (commodity) {
+        case COMMODITY_FERRITE_ORE:
+            return "FE";
+        case COMMODITY_CUPRITE_ORE:
+            return "CU";
+        case COMMODITY_CRYSTAL_ORE:
+            return "CR";
+        case COMMODITY_FRAME_INGOT:
+            return "FR";
+        case COMMODITY_CONDUCTOR_INGOT:
+            return "CO";
+        case COMMODITY_LENS_INGOT:
+            return "LN";
+        case COMMODITY_COUNT:
+        default:
+            return "--";
+    }
+}
+
+static commodity_t random_raw_ore(void) {
+    return (commodity_t)rand_int((int)COMMODITY_FERRITE_ORE, (int)COMMODITY_CRYSTAL_ORE);
+}
+
+static float ship_total_cargo(void) {
+    float total = 0.0f;
+    for (int i = 0; i < COMMODITY_COUNT; i++) {
+        total += g.ship.cargo[i];
+    }
+    return total;
+}
+
+static float ship_raw_ore_total(void) {
+    float total = 0.0f;
+    for (int i = 0; i < COMMODITY_COUNT; i++) {
+        if (!commodity_is_raw_ore((commodity_t)i)) {
+            continue;
+        }
+        total += g.ship.cargo[i];
+    }
+    return total;
+}
+
+static float ship_cargo_amount(commodity_t commodity) {
+    return g.ship.cargo[commodity];
+}
+
+static void clear_ship_cargo(void) {
+    memset(g.ship.cargo, 0, sizeof(g.ship.cargo));
+}
+
+static float station_buy_price(const station_t* station, commodity_t commodity) {
+    return station != NULL ? station->buy_price[commodity] : 0.0f;
+}
+
+static float station_inventory_amount(const station_t* station, commodity_t commodity) {
+    return station != NULL ? station->inventory[commodity] : 0.0f;
+}
+
+static void format_ore_manifest(char* text, size_t text_size) {
+    int ferrite = (int)lroundf(ship_cargo_amount(COMMODITY_FERRITE_ORE));
+    int cuprite = (int)lroundf(ship_cargo_amount(COMMODITY_CUPRITE_ORE));
+    int crystal = (int)lroundf(ship_cargo_amount(COMMODITY_CRYSTAL_ORE));
+    snprintf(text, text_size, "%s %d  %s %d  %s %d",
+        commodity_code(COMMODITY_FERRITE_ORE), ferrite,
+        commodity_code(COMMODITY_CUPRITE_ORE), cuprite,
+        commodity_code(COMMODITY_CRYSTAL_ORE), crystal);
+}
+
+static void format_ingot_stock_line(const station_t* station, char* text, size_t text_size) {
+    int frame = (int)lroundf(station_inventory_amount(station, COMMODITY_FRAME_INGOT));
+    int conductor = (int)lroundf(station_inventory_amount(station, COMMODITY_CONDUCTOR_INGOT));
+    int lens = (int)lroundf(station_inventory_amount(station, COMMODITY_LENS_INGOT));
+    snprintf(text, text_size, "%s %d  %s %d  %s %d",
+        commodity_code(COMMODITY_FRAME_INGOT), frame,
+        commodity_code(COMMODITY_CONDUCTOR_INGOT), conductor,
+        commodity_code(COMMODITY_LENS_INGOT), lens);
+}
+
+static void format_refinery_price_line(const station_t* station, char* text, size_t text_size) {
+    int ferrite = (int)lroundf(station_buy_price(station, COMMODITY_FERRITE_ORE));
+    int cuprite = (int)lroundf(station_buy_price(station, COMMODITY_CUPRITE_ORE));
+    int crystal = (int)lroundf(station_buy_price(station, COMMODITY_CRYSTAL_ORE));
+    snprintf(text, text_size, "FE %d  CU %d  CR %d", ferrite, cuprite, crystal);
+}
+
 static float ship_max_hull(void) {
     return SHIP_BASE_HULL;
 }
@@ -868,7 +1007,7 @@ static void split_hud_message_lines(const char* text, int max_cols, char* line0,
 }
 
 static bool build_hud_message(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
-    int cargo_units = (int)lroundf(g.ship.cargo);
+    int cargo_units = (int)lroundf(ship_raw_ore_total());
     int cargo_capacity = (int)lroundf(ship_cargo_capacity());
     const station_t* station = current_station_ptr();
 
@@ -1020,15 +1159,14 @@ static void build_station_ui_state(station_ui_state_t* ui) {
 
     ui->hull_now = (int)lroundf(g.ship.hull);
     ui->hull_max = (int)lroundf(ship_max_hull());
-    ui->cargo_units = (int)lroundf(g.ship.cargo);
+    ui->cargo_units = (int)lroundf(ship_raw_ore_total());
     ui->cargo_capacity = (int)lroundf(ship_cargo_capacity());
     ui->payout = (int)lroundf(station_cargo_sale_value());
-    ui->ore_price = (int)lroundf(ui->station->ore_price);
     ui->repair_cost = (int)lroundf(station_repair_cost());
     ui->mining_cost = ship_upgrade_cost(SHIP_UPGRADE_MINING);
     ui->hold_cost = ship_upgrade_cost(SHIP_UPGRADE_HOLD);
     ui->tractor_cost = ship_upgrade_cost(SHIP_UPGRADE_TRACTOR);
-    ui->can_sell = station_has_service(STATION_SERVICE_ORE_BUYER) && (g.ship.cargo > 0.01f);
+    ui->can_sell = station_has_service(STATION_SERVICE_ORE_BUYER) && (ship_raw_ore_total() > 0.01f);
     ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (station_repair_cost() > 0.0f) && (g.ship.credits + 0.01f >= station_repair_cost());
     ui->can_upgrade_mining = station_has_service(STATION_SERVICE_UPGRADE_LASER) && !ship_upgrade_maxed(SHIP_UPGRADE_MINING) && (g.ship.credits + 0.01f >= (float)ui->mining_cost);
     ui->can_upgrade_hold = station_has_service(STATION_SERVICE_UPGRADE_HOLD) && !ship_upgrade_maxed(SHIP_UPGRADE_HOLD) && (g.ship.credits + 0.01f >= (float)ui->hold_cost);
@@ -1042,7 +1180,7 @@ static void format_station_header_badge(const station_ui_state_t* ui, char* text
     }
 
     if (ui->station->role == STATION_ROLE_REFINERY) {
-        snprintf(text, text_size, "BOARD %d CR", ui->ore_price);
+        snprintf(text, text_size, "ORE BOARD");
     } else if (ui->station->role == STATION_ROLE_YARD) {
         snprintf(text, text_size, "YARD BAY");
     } else {
@@ -1057,10 +1195,12 @@ static void format_station_market_summary(const station_ui_state_t* ui, bool com
     }
 
     if (ui->station->role == STATION_ROLE_REFINERY) {
+        char manifest[64] = { 0 };
+        format_ore_manifest(manifest, sizeof(manifest));
         if (compact) {
-            snprintf(text, text_size, "Ore %d/%d  Value %d", ui->cargo_units, ui->cargo_capacity, ui->payout);
+            snprintf(text, text_size, "%s // %d/%d", manifest, ui->cargo_units, ui->cargo_capacity);
         } else {
-            snprintf(text, text_size, "Ore %d/%d   Value %d cr", ui->cargo_units, ui->cargo_capacity, ui->payout);
+            snprintf(text, text_size, "%s // %d/%d", manifest, ui->cargo_units, ui->cargo_capacity);
         }
     } else if (ui->station->role == STATION_ROLE_YARD) {
         snprintf(text, text_size, "%s", compact ? "Hull service + hold refit" : "Hull service and hold refits.");
@@ -1076,19 +1216,13 @@ static void format_station_market_detail(const station_ui_state_t* ui, char* tex
     }
 
     if (ui->station->role == STATION_ROLE_REFINERY) {
-        snprintf(text, text_size, "%s", ui->cargo_units > 0 ? "Raw ore sells here." : "Refinery board standing by.");
+        char stock[64] = { 0 };
+        format_ingot_stock_line(ui->station, stock, sizeof(stock));
+        snprintf(text, text_size, "Value %d cr // %s", ui->payout, stock);
     } else if (ui->station->role == STATION_ROLE_YARD) {
-        if (ship_upgrade_maxed(SHIP_UPGRADE_HOLD)) {
-            snprintf(text, text_size, "Hold racks at dock limit.");
-        } else {
-            snprintf(text, text_size, "Next hold rack %d cr.", ui->hold_cost);
-        }
+        snprintf(text, text_size, "Demand FR %d // frame intake", (int)lroundf(ui->station->desired_stock[COMMODITY_FRAME_INGOT]));
     } else {
-        if (ship_upgrade_maxed(SHIP_UPGRADE_MINING) && ship_upgrade_maxed(SHIP_UPGRADE_TRACTOR)) {
-            snprintf(text, text_size, "Beam systems tuned to spec.");
-        } else {
-            snprintf(text, text_size, "Tune beam output and reach.");
-        }
+        snprintf(text, text_size, "Demand CO %d  LN %d", (int)lroundf(ui->station->desired_stock[COMMODITY_CONDUCTOR_INGOT]), (int)lroundf(ui->station->desired_stock[COMMODITY_LENS_INGOT]));
     }
 }
 
@@ -1238,7 +1372,18 @@ static bool station_has_service(uint32_t service) {
 
 static float station_cargo_sale_value(void) {
     const station_t* station = current_station_ptr();
-    return station != NULL ? (g.ship.cargo * station->ore_price) : 0.0f;
+    float total = 0.0f;
+    if (station == NULL) {
+        return 0.0f;
+    }
+    for (int i = 0; i < COMMODITY_COUNT; i++) {
+        commodity_t commodity = (commodity_t)i;
+        if (!commodity_is_raw_ore(commodity)) {
+            continue;
+        }
+        total += ship_cargo_amount(commodity) * station_buy_price(station, commodity);
+    }
+    return total;
 }
 
 static float station_repair_cost(void) {
@@ -1249,7 +1394,7 @@ static float station_repair_cost(void) {
 static void apply_ship_damage(float damage);
 
 static float ship_cargo_space(void) {
-    return fmaxf(0.0f, ship_cargo_capacity() - g.ship.cargo);
+    return fmaxf(0.0f, ship_cargo_capacity() - ship_total_cargo());
 }
 
 static void clear_collection_feedback(void) {
@@ -1390,10 +1535,11 @@ static void clear_asteroid(asteroid_t* asteroid) {
     memset(asteroid, 0, sizeof(*asteroid));
 }
 
-static void configure_asteroid_tier(asteroid_t* asteroid, asteroid_tier_t tier) {
+static void configure_asteroid_tier(asteroid_t* asteroid, asteroid_tier_t tier, commodity_t commodity) {
     float spin_limit = asteroid_spin_limit(tier);
     asteroid->active = true;
     asteroid->tier = tier;
+    asteroid->commodity = commodity;
     asteroid->radius = rand_range(asteroid_radius_min(tier), asteroid_radius_max(tier));
     asteroid->max_hp = rand_range(asteroid_hp_min(tier), asteroid_hp_max(tier));
     asteroid->hp = asteroid->max_hp;
@@ -1413,7 +1559,7 @@ static void spawn_field_asteroid_of_tier(asteroid_t* asteroid, asteroid_tier_t t
     float distance = rand_range(420.0f, WORLD_RADIUS - 180.0f);
     float angle = rand_range(0.0f, TWO_PI_F);
     clear_asteroid(asteroid);
-    configure_asteroid_tier(asteroid, tier);
+    configure_asteroid_tier(asteroid, tier, random_raw_ore());
     asteroid->fracture_child = false;
     asteroid->pos = v2(cosf(angle) * distance, sinf(angle) * distance);
     asteroid->vel = v2(rand_range(-4.0f, 4.0f), rand_range(-4.0f, 4.0f));
@@ -1423,9 +1569,9 @@ static void spawn_field_asteroid(asteroid_t* asteroid) {
     spawn_field_asteroid_of_tier(asteroid, random_field_asteroid_tier());
 }
 
-static void spawn_child_asteroid(asteroid_t* asteroid, asteroid_tier_t tier, vec2 pos, vec2 vel) {
+static void spawn_child_asteroid(asteroid_t* asteroid, asteroid_tier_t tier, commodity_t commodity, vec2 pos, vec2 vel) {
     clear_asteroid(asteroid);
-    configure_asteroid_tier(asteroid, tier);
+    configure_asteroid_tier(asteroid, tier, commodity);
     asteroid->fracture_child = true;
     asteroid->pos = pos;
     asteroid->vel = vel;
@@ -1484,7 +1630,7 @@ static void fracture_asteroid(int asteroid_index, vec2 outward_dir) {
         vec2 dir = v2_from_angle(child_angle);
         vec2 tangent = v2_perp(dir);
         asteroid_t* child = &g.asteroids[child_slots[i]];
-        spawn_child_asteroid(child, child_tier, parent.pos, parent.vel);
+        spawn_child_asteroid(child, child_tier, parent.commodity, parent.pos, parent.vel);
         vec2 child_pos = v2_add(parent.pos, v2_scale(dir, (parent.radius * 0.28f) + (child->radius * 0.85f)));
         float drift = rand_range(22.0f, 56.0f);
         vec2 child_vel = v2_add(parent.vel, v2_add(v2_scale(dir, drift), v2_scale(tangent, rand_range(-10.0f, 10.0f))));
@@ -1539,7 +1685,7 @@ static void reset_world(void) {
     g.ship.vel = v2(0.0f, 0.0f);
     g.ship.angle = PI_F * 0.5f;
     g.ship.hull = ship_max_hull();
-    g.ship.cargo = 0.0f;
+    clear_ship_cargo();
     g.ship.credits = 0.0f;
     g.ship.mining_level = 0;
     g.ship.hold_level = 0;
@@ -1552,7 +1698,12 @@ static void reset_world(void) {
     g.stations[0].pos = v2(0.0f, -240.0f);
     g.stations[0].radius = 62.0f;
     g.stations[0].dock_radius = 132.0f;
-    g.stations[0].ore_price = STATION_DEFAULT_ORE_PRICE;
+    g.stations[0].buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    g.stations[0].buy_price[COMMODITY_CUPRITE_ORE] = 14.0f;
+    g.stations[0].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
+    g.stations[0].sell_price[COMMODITY_FRAME_INGOT] = 24.0f;
+    g.stations[0].sell_price[COMMODITY_CONDUCTOR_INGOT] = 32.0f;
+    g.stations[0].sell_price[COMMODITY_LENS_INGOT] = 40.0f;
     g.stations[0].services = STATION_SERVICE_ORE_BUYER | STATION_SERVICE_REPAIR;
 
     snprintf(g.stations[1].name, sizeof(g.stations[1].name), "%s", "Kepler Yard");
@@ -1560,7 +1711,7 @@ static void reset_world(void) {
     g.stations[1].pos = v2(-320.0f, 230.0f);
     g.stations[1].radius = 56.0f;
     g.stations[1].dock_radius = 124.0f;
-    g.stations[1].ore_price = 0.0f;
+    g.stations[1].desired_stock[COMMODITY_FRAME_INGOT] = 40.0f;
     g.stations[1].services = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_HOLD;
 
     snprintf(g.stations[2].name, sizeof(g.stations[2].name), "%s", "Helios Works");
@@ -1568,7 +1719,8 @@ static void reset_world(void) {
     g.stations[2].pos = v2(320.0f, 230.0f);
     g.stations[2].radius = 56.0f;
     g.stations[2].dock_radius = 124.0f;
-    g.stations[2].ore_price = 0.0f;
+    g.stations[2].desired_stock[COMMODITY_CONDUCTOR_INGOT] = 24.0f;
+    g.stations[2].desired_stock[COMMODITY_LENS_INGOT] = 24.0f;
     g.stations[2].services = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_LASER | STATION_SERVICE_UPGRADE_TRACTOR;
 
     g.current_station = 0;
@@ -2118,7 +2270,7 @@ static void draw_hud_panels(void) {
 
         if (show_fit_panel) {
             draw_ui_meter(fit_x + 16.0f, fit_y + 54.0f, fit_w - 32.0f, 12.0f, g.ship.hull / ship_max_hull(), 0.96f, 0.54f, 0.28f);
-            draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, g.ship.cargo / fmaxf(1.0f, ship_cargo_capacity()), 0.26f, 0.90f, 0.72f);
+            draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, ship_total_cargo() / fmaxf(1.0f, ship_cargo_capacity()), 0.26f, 0.90f, 0.72f);
             if (ui.station->role == STATION_ROLE_YARD) {
                 draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.ship.hold_level, 0.50f, 0.82f, 1.0f);
             } else if (ui.station->role == STATION_ROLE_BEAMWORKS) {
@@ -2237,12 +2389,14 @@ static void draw_station_services(void) {
         sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 32.0f));
         sdtx_color3b(203, 220, 248);
         if (ui.station->role == STATION_ROLE_REFINERY) {
+            char board_line[64] = { 0 };
+            format_refinery_price_line(ui.station, board_line, sizeof(board_line));
             sdtx_printf("Hull %d/%d", ui.hull_now, ui.hull_max);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
             sdtx_printf("Ore %d/%d", ui.cargo_units, ui.cargo_capacity);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
             sdtx_color3b(145, 160, 188);
-            sdtx_printf("Board %d cr", ui.ore_price);
+            sdtx_puts(board_line);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
             sdtx_printf("Haul %d cr", ui.payout);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 184.0f));
@@ -2315,7 +2469,7 @@ static void draw_hud(void) {
     uint8_t message_b = 205;
     int hull_units = (int)lroundf(g.ship.hull);
     int hull_capacity = (int)lroundf(ship_max_hull());
-    int cargo_units = (int)lroundf(g.ship.cargo);
+    int cargo_units = (int)lroundf(ship_raw_ore_total());
     int credits = (int)lroundf(g.ship.credits);
     int cargo_capacity = (int)lroundf(ship_cargo_capacity());
     int payout_preview = (int)lroundf(station_cargo_sale_value());
@@ -2387,9 +2541,9 @@ static void draw_hud(void) {
             sdtx_color3b(130, 255, 235);
             if (station_has_service(STATION_SERVICE_ORE_BUYER)) {
                 if (cargo_units > 0) {
-                    sdtx_printf("BOARD %d // HAUL %d", (int)lroundf(current_station->ore_price), payout_preview);
+                    sdtx_printf("ORE BOARD // HAUL %d", payout_preview);
                 } else {
-                    sdtx_printf("BOARD %d // HOLD EMPTY", (int)lroundf(current_station->ore_price));
+                    sdtx_puts("ORE BOARD // HOLD EMPTY");
                 }
             } else {
                 sdtx_printf("%s CONSOLE", dock_role);
@@ -2482,9 +2636,9 @@ static void draw_hud(void) {
         sdtx_color3b(130, 255, 235);
         if (station_has_service(STATION_SERVICE_ORE_BUYER)) {
             if (cargo_units > 0) {
-                sdtx_printf("Board %d // haul %d", (int)lroundf(current_station->ore_price), payout_preview);
+                sdtx_printf("Ore board // haul %d", payout_preview);
             } else {
-                sdtx_printf("Board %d // hold empty", (int)lroundf(current_station->ore_price));
+                sdtx_puts("Ore board // hold empty");
             }
         } else {
             sdtx_printf("%s console", station_role_name(current_station->role));
@@ -2652,8 +2806,8 @@ static void launch_ship(void) {
 }
 
 static void emergency_recover_ship(void) {
-    int lost_units = (int)lroundf(g.ship.cargo);
-    g.ship.cargo = 0.0f;
+    int lost_units = (int)lroundf(ship_raw_ore_total());
+    clear_ship_cargo();
     g.ship.hull = ship_max_hull();
     g.ship.angle = PI_F * 0.5f;
     dock_ship();
@@ -2677,22 +2831,42 @@ static void apply_ship_damage(float damage) {
 }
 
 static void try_sell_station_cargo(void) {
-    const station_t* station = current_station_ptr();
+    station_t* station = &g.stations[g.current_station];
+    float payout_total = 0.0f;
+    int sold_units = 0;
+    int sold_types = 0;
+    commodity_t sold_commodity = COMMODITY_COUNT;
     if (!station_has_service(STATION_SERVICE_ORE_BUYER)) {
         set_notice("%s doesn't buy raw ore.", station->name);
         return;
     }
-    if (g.ship.cargo <= 0.01f) {
+    if (ship_raw_ore_total() <= 0.01f) {
         set_notice("Cargo hold empty.");
         return;
     }
 
-    int sold_units = (int)lroundf(g.ship.cargo);
-    int payout = (int)lroundf(station_cargo_sale_value());
-    g.ship.credits += station_cargo_sale_value();
-    g.ship.cargo = 0.0f;
+    for (int i = COMMODITY_FERRITE_ORE; i <= COMMODITY_CRYSTAL_ORE; i++) {
+        commodity_t ore = (commodity_t)i;
+        float amount = ship_cargo_amount(ore);
+        if (amount <= 0.01f) {
+            continue;
+        }
+        payout_total += amount * station_buy_price(station, ore);
+        station->inventory[commodity_refined_form(ore)] += amount;
+        sold_units += (int)lroundf(amount);
+        sold_types++;
+        sold_commodity = ore;
+        g.ship.cargo[ore] = 0.0f;
+    }
+
+    int payout = (int)lroundf(payout_total);
+    g.ship.credits += payout_total;
     audio_play_sale();
-    set_notice("Sold %d ore for %d cr.", sold_units, payout);
+    if (sold_types > 1) {
+        set_notice("Sold %d ore across %d veins for %d cr.", sold_units, sold_types, payout);
+    } else {
+        set_notice("Sold %d %s for %d cr.", sold_units, commodity_name(sold_commodity), payout);
+    }
 }
 
 static void try_repair_ship(void) {
@@ -2972,7 +3146,7 @@ static void step_fragment_collection(float dt) {
                 continue;
             }
 
-            g.ship.cargo += recovered;
+            g.ship.cargo[asteroid->commodity] += recovered;
             cargo_space -= recovered;
             asteroid->ore -= recovered;
             collected_ore += recovered;
