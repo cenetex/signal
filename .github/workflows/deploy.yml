@@ -9,11 +9,10 @@ on:
 
 permissions:
   contents: read
-  pages: write
   id-token: write
 
 concurrency:
-  group: pages
+  group: deploy
   cancel-in-progress: true
 
 jobs:
@@ -28,7 +27,7 @@ jobs:
           cmake --build build-test
           ./build-test/space_miner_test
 
-  build:
+  build-and-deploy:
     needs: test
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
@@ -45,24 +44,21 @@ jobs:
           emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release
           cmake --build build-web
 
-      - name: Prepare deploy
+      - name: Prepare artifacts
         run: |
           mkdir -p _site
           cp build-web/space_miner.html _site/index.html
           cp build-web/space_miner.js _site/space_miner.js
           cp build-web/space_miner.wasm _site/space_miner.wasm
 
-      - uses: actions/upload-pages-artifact@v3
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          path: _site
+          role-to-assume: arn:aws:iam::022118847419:role/github-actions-deploy
+          aws-region: us-east-1
 
-  deploy:
-    needs: build
-    runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
-    environment:
-      name: github-pages
-      url: ${{ steps.deploy.outputs.page_url }}
-    steps:
-      - id: deploy
-        uses: actions/deploy-pages@v4
+      - name: Deploy to S3
+        run: aws s3 sync _site/ s3://signal-ratimics-client/ --delete
+
+      - name: Invalidate CloudFront
+        run: aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*"
