@@ -1363,7 +1363,7 @@ static void render_world(void) {
 static void render_ui(void) {
     sgl_matrix_mode_projection();
     sgl_load_identity();
-    sgl_ortho(0.0f, sapp_widthf(), sapp_heightf(), 0.0f, -1.0f, 1.0f);
+    sgl_ortho(0.0f, ui_screen_width(), ui_screen_height(), 0.0f, -1.0f, 1.0f);
     sgl_matrix_mode_modelview();
     sgl_load_identity();
     draw_hud_panels();
