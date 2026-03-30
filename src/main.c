@@ -79,6 +79,7 @@ typedef struct {
     float sell_price[COMMODITY_COUNT];
     float inventory[COMMODITY_COUNT];
     float desired_stock[COMMODITY_COUNT];
+    float ore_buffer[COMMODITY_COUNT];
     uint32_t services;
 } station_t;
 
@@ -281,6 +282,8 @@ static const float SHIP_BASE_COLLECT_RADIUS = 30.0f;
 static const float SHIP_COLLECT_UPGRADE_STEP = 5.0f;
 static const float FRAGMENT_TRACTOR_ACCEL = 380.0f;
 static const float FRAGMENT_MAX_SPEED = 210.0f;
+static const float REFINERY_BASE_SMELT_RATE = 0.5f;
+static const int REFINERY_MAX_FURNACES = 3;
 static const float COLLECTION_FEEDBACK_TIME = 1.1f;
 static const int SHIP_UPGRADE_MAX_LEVEL = 4;
 static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
@@ -743,6 +746,26 @@ static const char* commodity_code(commodity_t commodity) {
     }
 }
 
+static const char* commodity_short_name(commodity_t commodity) {
+    switch (commodity) {
+        case COMMODITY_FERRITE_ORE:
+            return "Ferrite";
+        case COMMODITY_CUPRITE_ORE:
+            return "Cuprite";
+        case COMMODITY_CRYSTAL_ORE:
+            return "Crystal";
+        case COMMODITY_FRAME_INGOT:
+            return "Frame";
+        case COMMODITY_CONDUCTOR_INGOT:
+            return "Conductor";
+        case COMMODITY_LENS_INGOT:
+            return "Lens";
+        case COMMODITY_COUNT:
+        default:
+            return "Unknown";
+    }
+}
+
 static commodity_t random_raw_ore(void) {
     return (commodity_t)rand_int((int)COMMODITY_FERRITE_ORE, (int)COMMODITY_CRYSTAL_ORE);
 }
@@ -790,6 +813,13 @@ static void format_ore_manifest(char* text, size_t text_size) {
         commodity_code(COMMODITY_FERRITE_ORE), ferrite,
         commodity_code(COMMODITY_CUPRITE_ORE), cuprite,
         commodity_code(COMMODITY_CRYSTAL_ORE), crystal);
+}
+
+static void format_ore_hopper_line(const station_t* station, char* text, size_t text_size) {
+    int ferrite = (int)lroundf(station->ore_buffer[COMMODITY_FERRITE_ORE]);
+    int cuprite = (int)lroundf(station->ore_buffer[COMMODITY_CUPRITE_ORE]);
+    int crystal = (int)lroundf(station->ore_buffer[COMMODITY_CRYSTAL_ORE]);
+    snprintf(text, text_size, "FE %d  CU %d  CR %d", ferrite, cuprite, crystal);
 }
 
 static void format_ingot_stock_line(const station_t* station, char* text, size_t text_size) {
@@ -1218,11 +1248,11 @@ static void format_station_market_detail(const station_ui_state_t* ui, char* tex
     if (ui->station->role == STATION_ROLE_REFINERY) {
         char stock[64] = { 0 };
         format_ingot_stock_line(ui->station, stock, sizeof(stock));
-        snprintf(text, text_size, "Value %d cr // %s", ui->payout, stock);
+        snprintf(text, text_size, "Value %d cr // Stock %s", ui->payout, stock);
     } else if (ui->station->role == STATION_ROLE_YARD) {
-        snprintf(text, text_size, "Demand FR %d // frame intake", (int)lroundf(ui->station->desired_stock[COMMODITY_FRAME_INGOT]));
+        snprintf(text, text_size, "Stock FR %d // awaiting supply", (int)lroundf(ui->station->inventory[COMMODITY_FRAME_INGOT]));
     } else {
-        snprintf(text, text_size, "Demand CO %d  LN %d", (int)lroundf(ui->station->desired_stock[COMMODITY_CONDUCTOR_INGOT]), (int)lroundf(ui->station->desired_stock[COMMODITY_LENS_INGOT]));
+        snprintf(text, text_size, "Stock CO %d  LN %d", (int)lroundf(ui->station->inventory[COMMODITY_CONDUCTOR_INGOT]), (int)lroundf(ui->station->inventory[COMMODITY_LENS_INGOT]));
     }
 }
 
@@ -1864,7 +1894,24 @@ static void draw_station(const station_t* station, bool is_current, bool is_near
     }
 }
 
-static void asteroid_tier_body_color(asteroid_tier_t tier, float hp_ratio, float* r, float* g0, float* b) {
+static void commodity_material_tint(commodity_t commodity, float* mr, float* mg, float* mb) {
+    switch (commodity) {
+        case COMMODITY_FERRITE_ORE:
+            *mr = 0.55f; *mg = 0.25f; *mb = 0.18f;
+            break;
+        case COMMODITY_CUPRITE_ORE:
+            *mr = 0.22f; *mg = 0.30f; *mb = 0.50f;
+            break;
+        case COMMODITY_CRYSTAL_ORE:
+            *mr = 0.25f; *mg = 0.48f; *mb = 0.30f;
+            break;
+        default:
+            *mr = 0.30f; *mg = 0.31f; *mb = 0.34f;
+            break;
+    }
+}
+
+static void asteroid_body_color(asteroid_tier_t tier, commodity_t commodity, float hp_ratio, float* r, float* g0, float* b) {
     float base_r = 0.30f;
     float base_g = 0.31f;
     float base_b = 0.34f;
@@ -1894,6 +1941,12 @@ static void asteroid_tier_body_color(asteroid_tier_t tier, float hp_ratio, float
             break;
     }
 
+    float mat_r, mat_g, mat_b;
+    commodity_material_tint(commodity, &mat_r, &mat_g, &mat_b);
+    base_r = lerpf(base_r, mat_r, 0.5f);
+    base_g = lerpf(base_g, mat_g, 0.5f);
+    base_b = lerpf(base_b, mat_b, 0.5f);
+
     *r = lerpf(base_r * 0.72f, base_r * 1.16f, hp_ratio);
     *g0 = lerpf(base_g * 0.72f, base_g * 1.16f, hp_ratio);
     *b = lerpf(base_b * 0.72f, base_b * 1.16f, hp_ratio);
@@ -1905,7 +1958,7 @@ static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
     float body_g = 0.3f;
     float body_b = 0.3f;
     int segments = 18;
-    asteroid_tier_body_color(asteroid->tier, progress_ratio, &body_r, &body_g, &body_b);
+    asteroid_body_color(asteroid->tier, asteroid->commodity, progress_ratio, &body_r, &body_g, &body_b);
 
     switch (asteroid->tier) {
         case ASTEROID_TIER_XL:
@@ -1952,9 +2005,19 @@ static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
     sgl_end();
 
     if (asteroid->tier == ASTEROID_TIER_S) {
-        draw_circle_filled(asteroid->pos, asteroid->radius * lerpf(0.14f, 0.24f, progress_ratio), 10, 0.48f, 0.96f, 0.78f, lerpf(0.35f, 0.8f, progress_ratio));
+        float cr, cg, cb;
+        commodity_material_tint(asteroid->commodity, &cr, &cg, &cb);
+        float glow_r = lerpf(0.48f, cr * 1.6f, 0.5f);
+        float glow_g = lerpf(0.96f, cg * 1.6f, 0.5f);
+        float glow_b = lerpf(0.78f, cb * 1.6f, 0.5f);
+        draw_circle_filled(asteroid->pos, asteroid->radius * lerpf(0.14f, 0.24f, progress_ratio), 10, glow_r, glow_g, glow_b, lerpf(0.35f, 0.8f, progress_ratio));
     } else if (asteroid->tier == ASTEROID_TIER_M) {
-        draw_circle_filled(asteroid->pos, asteroid->radius * 0.16f, 8, 0.36f, 0.78f, 0.98f, 0.4f);
+        float cr, cg, cb;
+        commodity_material_tint(asteroid->commodity, &cr, &cg, &cb);
+        float glow_r = lerpf(0.36f, cr * 1.4f, 0.4f);
+        float glow_g = lerpf(0.78f, cg * 1.4f, 0.4f);
+        float glow_b = lerpf(0.98f, cb * 1.4f, 0.4f);
+        draw_circle_filled(asteroid->pos, asteroid->radius * 0.16f, 8, glow_r, glow_g, glow_b, 0.4f);
     }
 
     if (targeted) {
@@ -2390,15 +2453,22 @@ static void draw_station_services(void) {
         sdtx_color3b(203, 220, 248);
         if (ui.station->role == STATION_ROLE_REFINERY) {
             char board_line[64] = { 0 };
+            char hopper_line[64] = { 0 };
+            char stock_line[64] = { 0 };
             format_refinery_price_line(ui.station, board_line, sizeof(board_line));
+            format_ore_hopper_line(ui.station, hopper_line, sizeof(hopper_line));
+            format_ingot_stock_line(ui.station, stock_line, sizeof(stock_line));
             sdtx_printf("Hull %d/%d", ui.hull_now, ui.hull_max);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 72.0f));
-            sdtx_printf("Ore %d/%d", ui.cargo_units, ui.cargo_capacity);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 56.0f));
+            sdtx_printf("Ore %d/%d  Haul %d cr", ui.cargo_units, ui.cargo_capacity, ui.payout);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 88.0f));
             sdtx_color3b(145, 160, 188);
             sdtx_puts(board_line);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
+            sdtx_color3b(203, 220, 248);
+            sdtx_printf("Hoppers  %s", hopper_line);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
-            sdtx_printf("Haul %d cr", ui.payout);
+            sdtx_printf("Stock    %s", stock_line);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 184.0f));
             sdtx_printf("Repair %s", ui.repair_cost > 0 ? "available" : "nominal");
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 216.0f));
@@ -2552,7 +2622,7 @@ static void draw_hud(void) {
             const asteroid_t* asteroid = &g.asteroids[g.hover_asteroid];
             int integrity_left = (int)lroundf(asteroid->hp);
             sdtx_color3b(130, 255, 235);
-            sdtx_printf("TGT %s // %d HP", asteroid_tier_name(asteroid->tier), integrity_left);
+            sdtx_printf("TGT %s // %s // %d HP", asteroid_tier_name(asteroid->tier), commodity_code(asteroid->commodity), integrity_left);
         } else if (g.nearby_fragments > 0) {
             sdtx_color3b(130, 255, 235);
             if (g.tractor_fragments > 0) {
@@ -2647,7 +2717,7 @@ static void draw_hud(void) {
         const asteroid_t* asteroid = &g.asteroids[g.hover_asteroid];
         int integrity_left = (int)lroundf(asteroid->hp);
         sdtx_color3b(130, 255, 235);
-        sdtx_printf("Target %s %s // %d hp", asteroid_tier_name(asteroid->tier), asteroid_tier_kind(asteroid->tier), integrity_left);
+        sdtx_printf("Target %s %s // %s // %d hp", asteroid_tier_name(asteroid->tier), asteroid_tier_kind(asteroid->tier), commodity_short_name(asteroid->commodity), integrity_left);
     } else if (g.nearby_fragments > 0) {
         sdtx_color3b(130, 255, 235);
         if (g.tractor_fragments > 0) {
@@ -2852,7 +2922,7 @@ static void try_sell_station_cargo(void) {
             continue;
         }
         payout_total += amount * station_buy_price(station, ore);
-        station->inventory[commodity_refined_form(ore)] += amount;
+        station->ore_buffer[ore] += amount;
         sold_units += (int)lroundf(amount);
         sold_types++;
         sold_commodity = ore;
@@ -3240,6 +3310,30 @@ static void step_notice_timer(float dt) {
     }
 }
 
+static void step_refinery_production(float dt) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t* station = &g.stations[s];
+        if (station->role != STATION_ROLE_REFINERY) continue;
+
+        int active = 0;
+        for (int i = COMMODITY_FERRITE_ORE; i <= COMMODITY_CRYSTAL_ORE; i++) {
+            if (station->ore_buffer[i] > 0.01f) active++;
+        }
+        if (active == 0) continue;
+        if (active > REFINERY_MAX_FURNACES) active = REFINERY_MAX_FURNACES;
+
+        float rate = REFINERY_BASE_SMELT_RATE / (float)active;
+
+        for (int i = COMMODITY_FERRITE_ORE; i <= COMMODITY_CRYSTAL_ORE; i++) {
+            commodity_t ore = (commodity_t)i;
+            if (station->ore_buffer[ore] <= 0.01f) continue;
+            float consume = fminf(station->ore_buffer[ore], rate * dt);
+            station->ore_buffer[ore] -= consume;
+            station->inventory[commodity_refined_form(ore)] += consume;
+        }
+    }
+}
+
 static void sim_step(float dt) {
     reset_step_feedback();
     audio_step(dt);
@@ -3254,6 +3348,7 @@ static void sim_step(float dt) {
 
     step_asteroid_dynamics(dt);
     maintain_asteroid_field(dt);
+    step_refinery_production(dt);
 
     if (!g.docked) {
         step_ship_rotation(dt, intent.turn);
