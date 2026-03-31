@@ -1697,54 +1697,96 @@ static void draw_station_services(const station_ui_state_t* ui) {
 
     case STATION_TAB_ROLE: {
         if (ui->station->scaffold) break;
-        char market_summary[64] = { 0 };
-        char market_detail[64] = { 0 };
-        format_station_market_summary(ui, compact, market_summary, sizeof(market_summary));
-        format_station_market_detail(ui, compact, market_detail, sizeof(market_detail));
+        float meter_x = cx;
+        float meter_w = fminf(inner_w - 40.0f, 200.0f);
 
-        sdtx_color3b(130, 255, 235);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-        sdtx_puts(station_role_market_title(ui->station->role));
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 16.0f));
-        sdtx_color3b(203, 220, 248);
-        sdtx_puts(market_summary);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 32.0f));
-        sdtx_color3b(145, 160, 188);
-        sdtx_puts(market_detail);
-
-        /* Role-specific production details */
-        float dy = cy + 56.0f;
-        sdtx_color3b(203, 220, 248);
         if (ui->station->role == STATION_ROLE_REFINERY) {
-            char board_line[64] = { 0 };
-            char hopper_line[64] = { 0 };
-            char stock_line[64] = { 0 };
-            format_refinery_price_line(ui->station, board_line, sizeof(board_line));
-            format_ore_hopper_line(ui->station, hopper_line, sizeof(hopper_line));
-            format_ingot_stock_line(ui->station, stock_line, sizeof(stock_line));
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(dy));
-            sdtx_color3b(145, 160, 188);
-            sdtx_puts(board_line);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(dy + 16.0f));
+            /* Ore prices */
+            sdtx_color3b(255, 221, 119);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+            sdtx_printf("FE %d  CU %d  CR %d cr/u",
+                (int)lroundf(ui->station->buy_price[COMMODITY_FERRITE_ORE]),
+                (int)lroundf(ui->station->buy_price[COMMODITY_CUPRITE_ORE]),
+                (int)lroundf(ui->station->buy_price[COMMODITY_CRYSTAL_ORE]));
+            /* Haul value */
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 16.0f));
             sdtx_color3b(203, 220, 248);
-            sdtx_printf("Hoppers  %s", hopper_line);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(dy + 32.0f));
-            sdtx_printf("Stock    %s", stock_line);
+            sdtx_printf("Haul value: %d cr", ui->payout);
+            /* Hopper meters */
+            float hy = cy + 38.0f;
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(hy));
+            sdtx_color3b(145, 160, 188);
+            sdtx_puts("HOPPERS");
+            hy += 14.0f;
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(hy)); sdtx_color3b(180, 140, 120); sdtx_puts("FE");
+            draw_ui_meter(meter_x + 24.0f, hy * HUD_CELL + 1.0f, meter_w, 9.0f,
+                ui->station->ore_buffer[0] / REFINERY_HOPPER_CAPACITY, 0.72f, 0.42f, 0.28f);
+            hy += 16.0f;
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(hy)); sdtx_color3b(120, 150, 200); sdtx_puts("CU");
+            draw_ui_meter(meter_x + 24.0f, hy * HUD_CELL + 1.0f, meter_w, 9.0f,
+                ui->station->ore_buffer[1] / REFINERY_HOPPER_CAPACITY, 0.28f, 0.48f, 0.82f);
+            hy += 16.0f;
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(hy)); sdtx_color3b(130, 200, 140); sdtx_puts("CR");
+            draw_ui_meter(meter_x + 24.0f, hy * HUD_CELL + 1.0f, meter_w, 9.0f,
+                ui->station->ore_buffer[2] / REFINERY_HOPPER_CAPACITY, 0.30f, 0.72f, 0.38f);
+            /* Ingot stock */
+            if (!compact) {
+                hy += 22.0f;
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(hy));
+                sdtx_color3b(145, 160, 188);
+                sdtx_printf("Stock  FR %d  CO %d  LN %d",
+                    (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]),
+                    (int)lroundf(ui->station->product_stock[PRODUCT_TRACTOR_MODULE]),
+                    (int)lroundf(ui->station->product_stock[PRODUCT_LASER_MODULE]));
+            }
         } else if (ui->station->role == STATION_ROLE_YARD) {
-            int frames = (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]);
+            sdtx_color3b(130, 255, 235);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+            sdtx_puts("FRAME BAY");
+            float fy = cy + 20.0f;
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(fy));
+            sdtx_color3b(145, 160, 188);
+            sdtx_puts("Frame stock");
+            draw_ui_meter(meter_x, fy * HUD_CELL + 14.0f, meter_w, 10.0f,
+                ui->station->product_stock[PRODUCT_FRAME] / MAX_PRODUCT_STOCK, 0.50f, 0.82f, 1.0f);
+            fy += 30.0f;
             int need = (int)lroundf(upgrade_product_cost(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD));
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(dy));
-            sdtx_color3b(145, 160, 188);
-            sdtx_printf("Frames %d  Need %d", frames, ship_upgrade_maxed(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD) ? 0 : need);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(fy));
+            sdtx_color3b(203, 220, 248);
+            sdtx_printf("Hold upgrade: %s",
+                ship_upgrade_maxed(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD) ? "MAX" : "available");
+            if (!ship_upgrade_maxed(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD)) {
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(fy + 16.0f));
+                sdtx_color3b(145, 160, 188);
+                sdtx_printf("Need %d frames + %d cr", need, ship_upgrade_cost(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD));
+            }
+            draw_upgrade_pips(meter_x, fy * HUD_CELL + 34.0f, LOCAL_PLAYER.ship.hold_level, 0.50f, 0.82f, 1.0f);
         } else if (ui->station->role == STATION_ROLE_BEAMWORKS) {
-            int lasers = (int)lroundf(ui->station->product_stock[PRODUCT_LASER_MODULE]);
-            int tractors = (int)lroundf(ui->station->product_stock[PRODUCT_TRACTOR_MODULE]);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(dy));
+            sdtx_color3b(130, 255, 235);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+            sdtx_puts("FIELD BENCH");
+            float by = cy + 20.0f;
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(by));
             sdtx_color3b(145, 160, 188);
-            sdtx_printf("LSR %d  TRC %d", lasers, tractors);
+            sdtx_puts("Laser modules");
+            draw_ui_meter(meter_x, by * HUD_CELL + 14.0f, meter_w, 10.0f,
+                ui->station->product_stock[PRODUCT_LASER_MODULE] / MAX_PRODUCT_STOCK, 0.34f, 0.88f, 1.0f);
+            by += 30.0f;
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(by));
+            sdtx_puts("Tractor modules");
+            draw_ui_meter(meter_x, by * HUD_CELL + 14.0f, meter_w, 10.0f,
+                ui->station->product_stock[PRODUCT_TRACTOR_MODULE] / MAX_PRODUCT_STOCK, 0.42f, 1.0f, 0.86f);
+            if (!compact) {
+                by += 26.0f;
+                draw_upgrade_pips(meter_x, by * HUD_CELL, LOCAL_PLAYER.ship.mining_level, 0.34f, 0.88f, 1.0f);
+                draw_upgrade_pips(meter_x, by * HUD_CELL + 14.0f, LOCAL_PLAYER.ship.tractor_level, 0.42f, 1.0f, 0.86f);
+            }
         } else if (ui->station->role == STATION_ROLE_OUTPOST) {
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(dy));
-            sdtx_color3b(145, 160, 188);
+            sdtx_color3b(130, 255, 235);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+            sdtx_puts("RELAY STATUS");
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
+            sdtx_color3b(203, 220, 248);
             sdtx_printf("Signal range: %.0f", ui->station->signal_range);
         }
         break;
@@ -1755,6 +1797,7 @@ static void draw_station_services(const station_ui_state_t* ui) {
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
         sdtx_puts("CONTRACTS");
         int shown = 0;
+        int max_show = compact ? 6 : 8;
         for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
             contract_t *ct = &g.world.contracts[ci];
             if (!ct->active) continue;
@@ -1762,13 +1805,28 @@ static void draw_station_services(const station_ui_state_t* ui) {
             if (g.world.stations[ct->station_index].name[0] == '\0') continue;
             float cprice = ct->base_price * (1.0f + ct->age / 300.0f * 0.2f);
             if (cprice < 0.01f) continue;
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f + (float)shown * 16.0f));
-            sdtx_color3b(203, 220, 248);
+            float line_y = cy + 22.0f + (float)shown * 18.0f;
+            /* Commodity color pip */
+            float pip_r = 0.5f, pip_g = 0.5f, pip_b = 0.5f;
+            if (ct->commodity == COMMODITY_FERRITE_ORE) { pip_r = 0.85f; pip_g = 0.50f; pip_b = 0.35f; }
+            else if (ct->commodity == COMMODITY_CUPRITE_ORE) { pip_r = 0.40f; pip_g = 0.55f; pip_b = 0.90f; }
+            else if (ct->commodity == COMMODITY_CRYSTAL_ORE) { pip_r = 0.40f; pip_g = 0.85f; pip_b = 0.50f; }
+            else if (ct->commodity == COMMODITY_FRAME_INGOT) { pip_r = 0.70f; pip_g = 0.75f; pip_b = 0.90f; }
+            else if (ct->commodity == COMMODITY_CONDUCTOR_INGOT) { pip_r = 0.60f; pip_g = 0.80f; pip_b = 1.0f; }
+            else if (ct->commodity == COMMODITY_LENS_INGOT) { pip_r = 0.55f; pip_g = 0.95f; pip_b = 0.65f; }
+            draw_rect_centered(v2(cx * HUD_CELL + 2.0f, line_y * HUD_CELL + 5.0f), 3.0f, 3.0f, pip_r, pip_g, pip_b, 0.9f);
+            /* Age-based brightness: newer = brighter */
+            float age_fade = clampf(ct->age / 600.0f, 0.0f, 1.0f);
+            uint8_t txt_r = (uint8_t)lerpf(220.0f, 120.0f, age_fade);
+            uint8_t txt_g = (uint8_t)lerpf(235.0f, 140.0f, age_fade);
+            uint8_t txt_b = (uint8_t)lerpf(255.0f, 170.0f, age_fade);
+            sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(line_y));
+            sdtx_color3b(txt_r, txt_g, txt_b);
             sdtx_printf("%s @ %s: %.0f cr/u",
                 commodity_short_name(ct->commodity),
                 g.world.stations[ct->station_index].name,
                 cprice);
-            if (++shown >= 8) break;
+            if (++shown >= max_show) break;
         }
         if (shown == 0) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
