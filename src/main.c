@@ -39,6 +39,14 @@
 
 /* Types, enums, and math utilities are in types.h and math_util.h */
 
+typedef enum {
+    STATION_TAB_OVERVIEW = 0,
+    STATION_TAB_SERVICES,
+    STATION_TAB_MARKET,
+    STATION_TAB_CONSTRUCTION,
+    STATION_TAB_COUNT
+} station_tab_t;
+
 typedef struct {
     const station_t* station;
     int hull_now;
@@ -98,6 +106,8 @@ typedef struct {
     float net_send_timer;
     uint8_t pending_net_action;
     float dock_predict_timer;   /* ignore server docked state while > 0 */
+    station_tab_t station_tab;  /* active tab when docked */
+    bool was_docked;            /* track dock transitions for tab reset */
     /* --- Interpolation (multiplayer) --- */
     struct {
         asteroid_t prev[MAX_ASTEROIDS];
@@ -537,6 +547,8 @@ static const char* station_role_hub_label(station_role_t role) {
             return "YARD // frame bay";
         case STATION_ROLE_BEAMWORKS:
             return "BEAMWORKS // field bench";
+        case STATION_ROLE_OUTPOST:
+            return "OUTPOST // relay hub";
         default:
             return "STATION";
     }
@@ -550,6 +562,8 @@ static const char* station_role_market_title(station_role_t role) {
             return "FRAME BAY";
         case STATION_ROLE_BEAMWORKS:
             return "FIELD BENCH";
+        case STATION_ROLE_OUTPOST:
+            return "OUTPOST";
         default:
             return "MARKET";
     }
@@ -563,6 +577,8 @@ static const char* station_role_fit_title(station_role_t role) {
             return "FIT";
         case STATION_ROLE_BEAMWORKS:
             return "TUNING";
+        case STATION_ROLE_OUTPOST:
+            return "OUTPOST";
         default:
             return "STATUS";
     }
@@ -769,6 +785,11 @@ static void station_role_color(station_role_t role, float* r, float* g0, float* 
             *g0 = 0.86f;
             *b = 1.0f;
             break;
+        case STATION_ROLE_OUTPOST:
+            *r = 0.72f;
+            *g0 = 0.92f;
+            *b = 0.52f;
+            break;
         default:
             *r = 0.45f;
             *g0 = 0.85f;
@@ -966,6 +987,9 @@ static void draw_background(vec2 camera) {
 }
 
 static void draw_station(const station_t* station, bool is_current, bool is_nearby) {
+    /* Skip empty station slots (no radius means not placed) */
+    if (station->radius <= 0.0f && !station->scaffold) return;
+
     float role_r = 0.45f;
     float role_g = 0.85f;
     float role_b = 1.0f;
@@ -977,6 +1001,39 @@ static void draw_station(const station_t* station, bool is_current, bool is_near
         spoke_count = 4;
     } else if (station->role == STATION_ROLE_BEAMWORKS) {
         spoke_count = 5;
+    } else if (station->role == STATION_ROLE_OUTPOST) {
+        spoke_count = 3;
+    }
+
+    /* Scaffold rendering: dashed outline, translucent */
+    if (station->scaffold) {
+        float alpha = 0.3f + 0.2f * sinf(g.world.time * 1.5f);
+        float prog = station->scaffold_progress;
+        /* Dashed dock circle */
+        int dash_segs = 24;
+        float step = TWO_PI_F / (float)dash_segs;
+        for (int i = 0; i < dash_segs; i += 2) {
+            float a0 = (float)i * step;
+            float a1 = (float)(i + 1) * step;
+            vec2 p0 = v2_add(station->pos, v2(cosf(a0) * station->dock_radius, sinf(a0) * station->dock_radius));
+            vec2 p1 = v2_add(station->pos, v2(cosf(a1) * station->dock_radius, sinf(a1) * station->dock_radius));
+            draw_segment(p0, p1, role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, alpha);
+        }
+        /* Station body outline */
+        draw_circle_outline(station->pos, station->radius, 18, role_r * 0.6f, role_g * 0.6f, role_b * 0.6f, alpha + 0.15f);
+        /* Progress ring: filled portion */
+        if (prog > 0.01f) {
+            int filled_segs = (int)(prog * 24.0f);
+            float fill_step = TWO_PI_F / 24.0f;
+            for (int i = 0; i < filled_segs && i < 24; i++) {
+                float a0 = (float)i * fill_step;
+                float a1 = (float)(i + 1) * fill_step;
+                vec2 p0 = v2_add(station->pos, v2(cosf(a0) * (station->radius + 12.0f), sinf(a0) * (station->radius + 12.0f)));
+                vec2 p1 = v2_add(station->pos, v2(cosf(a1) * (station->radius + 12.0f), sinf(a1) * (station->radius + 12.0f)));
+                draw_segment(p0, p1, role_r, role_g, role_b, 0.8f);
+            }
+        }
+        return;
     }
 
     float dock_alpha = is_current ? 0.62f : (is_nearby ? 0.50f : 0.16f + pulse);
@@ -1002,6 +1059,12 @@ static void draw_station(const station_t* station, bool is_current, bool is_near
     } else if (station->role == STATION_ROLE_BEAMWORKS) {
         draw_segment(v2_add(station->pos, v2(-24.0f, 0.0f)), v2_add(station->pos, v2(24.0f, 0.0f)), role_r, role_g, role_b, 0.78f);
         draw_segment(v2_add(station->pos, v2(0.0f, -24.0f)), v2_add(station->pos, v2(0.0f, 24.0f)), role_r, role_g, role_b, 0.40f);
+    } else if (station->role == STATION_ROLE_OUTPOST) {
+        /* Triangle marker for activated outpost */
+        float s = 14.0f;
+        draw_segment(v2_add(station->pos, v2(0.0f, -s)), v2_add(station->pos, v2(s, s * 0.6f)), role_r, role_g, role_b, 0.75f);
+        draw_segment(v2_add(station->pos, v2(s, s * 0.6f)), v2_add(station->pos, v2(-s, s * 0.6f)), role_r, role_g, role_b, 0.75f);
+        draw_segment(v2_add(station->pos, v2(-s, s * 0.6f)), v2_add(station->pos, v2(0.0f, -s)), role_r, role_g, role_b, 0.75f);
     }
 }
 
@@ -1374,104 +1437,79 @@ static void draw_hud_panels(void) {
         float panel_y = 0.0f;
         float panel_w = 0.0f;
         float panel_h = 0.0f;
-        float inner_x = 0.0f;
-        float inner_y = 0.0f;
-        float inner_w = 0.0f;
-        float inner_h = 0.0f;
-        float market_x = 0.0f;
-        float market_y = 0.0f;
-        float market_w = 0.0f;
-        float market_h = 0.0f;
-        float services_x = 0.0f;
-        float services_y = 0.0f;
-        float services_w = 0.0f;
-        float services_h = 0.0f;
-        float fit_x = 0.0f;
-        float fit_y = 0.0f;
-        float fit_w = 0.0f;
-        float fit_h = 0.0f;
         bool compact = ui_is_compact();
-        bool show_fit_panel = !compact;
-        float card_gap = compact ? 4.0f : 6.0f;
-        float card_h = compact ? 18.0f : 24.0f;
-        float sell_y = 0.0f;
-        float repair_y = 0.0f;
-        float mining_y = 0.0f;
         station_ui_state_t ui = { 0 };
-
         build_station_ui_state(&ui);
-
         get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
         draw_ui_scrim(0.34f);
         draw_ui_panel(panel_x, panel_y, panel_w, panel_h, 0.08f);
 
-        inner_x = panel_x + 18.0f;
-        inner_y = panel_y + 18.0f;
-        inner_w = panel_w - 36.0f;
-        inner_h = panel_h - 36.0f;
+        float inner_x = panel_x + 18.0f;
+        float inner_y = panel_y + 18.0f;
+        float inner_w = panel_w - 36.0f;
 
-        market_x = inner_x;
-        services_x = inner_x;
-        services_w = inner_w;
-
-        if (show_fit_panel) {
-            fit_w = 180.0f;
-            fit_x = panel_x + panel_w - fit_w - 18.0f;
-            fit_y = inner_y + 42.0f;
-            fit_h = inner_h - 42.0f;
-
-            market_y = fit_y;
-            market_w = fit_x - inner_x - 12.0f;
-            market_h = 72.0f;
-
-            services_y = market_y + market_h + 16.0f;
-            services_w = market_w;
-            services_h = panel_y + panel_h - 18.0f - services_y;
-        } else {
-            market_y = inner_y + 42.0f;
-            market_w = inner_w;
-            market_h = 54.0f;
-
-            services_y = market_y + market_h + 12.0f;
-            services_h = 92.0f;
-        }
-
+        /* Header rule below station name */
         draw_ui_rule(inner_x, panel_x + panel_w - 18.0f, inner_y + 26.0f, 0.14f, 0.26f, 0.38f, 0.70f);
-        if (show_fit_panel) {
-            draw_segment(v2(fit_x - 10.0f, inner_y + 38.0f), v2(fit_x - 10.0f, panel_y + panel_h - 18.0f), 0.10f, 0.22f, 0.32f, 0.60f);
-        }
 
-        draw_ui_panel(market_x, market_y, market_w, market_h, 0.04f);
-        draw_ui_panel(services_x, services_y, services_w, services_h, 0.03f);
-        if (show_fit_panel) {
-            draw_ui_panel(fit_x, fit_y, fit_w, fit_h, 0.05f);
-        }
+        /* Tab bar */
+        float tab_y = inner_y + 32.0f;
+        float tab_h = compact ? 16.0f : 20.0f;
+        int tab_count = ui.station->scaffold ? STATION_TAB_COUNT : (STATION_TAB_COUNT - 1);
+        float tab_w = fminf(inner_w / (float)tab_count, 120.0f);
 
-        sell_y = services_y + (compact ? 30.0f : 36.0f);
-        repair_y = sell_y + card_h + card_gap;
-        mining_y = repair_y + card_h + card_gap;
-
-        if (ui.station->role == STATION_ROLE_REFINERY) {
-            draw_service_card(services_x + 12.0f, sell_y, services_w - 24.0f, card_h, 0.24f, 0.90f, 0.70f, ui.can_sell);
-            draw_service_card(services_x + 12.0f, repair_y, services_w - 24.0f, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
-        } else if (ui.station->role == STATION_ROLE_YARD) {
-            draw_service_card(services_x + 12.0f, sell_y, services_w - 24.0f, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
-            draw_service_card(services_x + 12.0f, repair_y, services_w - 24.0f, card_h, 0.50f, 0.82f, 1.0f, ui.can_upgrade_hold);
-        } else {
-            draw_service_card(services_x + 12.0f, sell_y, services_w - 24.0f, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
-            draw_service_card(services_x + 12.0f, repair_y, services_w - 24.0f, card_h, 0.34f, 0.88f, 1.0f, ui.can_upgrade_mining);
-            draw_service_card(services_x + 12.0f, mining_y, services_w - 24.0f, card_h, 0.42f, 1.0f, 0.86f, ui.can_upgrade_tractor);
-        }
-
-        if (show_fit_panel) {
-            draw_ui_meter(fit_x + 16.0f, fit_y + 54.0f, fit_w - 32.0f, 12.0f, LOCAL_PLAYER.ship.hull / ship_max_hull(&LOCAL_PLAYER.ship), 0.96f, 0.54f, 0.28f);
-            draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, ship_total_cargo(&LOCAL_PLAYER.ship) / fmaxf(1.0f, ship_cargo_capacity(&LOCAL_PLAYER.ship)), 0.26f, 0.90f, 0.72f);
-            if (ui.station->role == STATION_ROLE_YARD) {
-                draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, LOCAL_PLAYER.ship.hold_level, 0.50f, 0.82f, 1.0f);
-            } else if (ui.station->role == STATION_ROLE_BEAMWORKS) {
-                draw_upgrade_pips(fit_x + 18.0f, fit_y + 146.0f, LOCAL_PLAYER.ship.mining_level, 0.34f, 0.88f, 1.0f);
-                draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, LOCAL_PLAYER.ship.tractor_level, 0.42f, 1.0f, 0.86f);
+        for (int t = 0; t < tab_count; t++) {
+            float tx = inner_x + (float)t * tab_w;
+            bool active = ((int)g.station_tab == t);
+            float accent_a = active ? 0.92f : 0.20f;
+            /* Active tab: brighter background */
+            if (active) {
+                draw_rect_centered(v2(tx + tab_w * 0.5f, tab_y + tab_h * 0.5f),
+                    tab_w * 0.5f, tab_h * 0.5f, 0.06f, 0.12f, 0.18f, 0.95f);
             }
+            /* Bottom accent bar for active tab */
+            draw_ui_rule(tx + 4.0f, tx + tab_w - 4.0f, tab_y + tab_h - 2.0f,
+                0.30f, 0.85f, 1.0f, accent_a);
+        }
+
+        /* Tab content area */
+        float content_y = tab_y + tab_h + 8.0f;
+        float content_h = panel_y + panel_h - 18.0f - content_y;
+        draw_ui_panel(inner_x, content_y, inner_w, content_h, 0.03f);
+
+        /* Service cards on the Services tab */
+        if (g.station_tab == STATION_TAB_SERVICES && !ui.station->scaffold) {
+            float card_gap = compact ? 4.0f : 6.0f;
+            float card_h = compact ? 18.0f : 24.0f;
+            float first_card_y = content_y + (compact ? 30.0f : 36.0f);
+            float card_w = inner_w - 24.0f;
+
+            if (ui.station->role == STATION_ROLE_REFINERY) {
+                draw_service_card(inner_x + 12.0f, first_card_y, card_w, card_h, 0.24f, 0.90f, 0.70f, ui.can_sell);
+                draw_service_card(inner_x + 12.0f, first_card_y + card_h + card_gap, card_w, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
+            } else if (ui.station->role == STATION_ROLE_YARD) {
+                draw_service_card(inner_x + 12.0f, first_card_y, card_w, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
+                draw_service_card(inner_x + 12.0f, first_card_y + card_h + card_gap, card_w, card_h, 0.50f, 0.82f, 1.0f, ui.can_upgrade_hold);
+            } else if (ui.station->role == STATION_ROLE_OUTPOST) {
+                draw_service_card(inner_x + 12.0f, first_card_y, card_w, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
+            } else {
+                draw_service_card(inner_x + 12.0f, first_card_y, card_w, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
+                draw_service_card(inner_x + 12.0f, first_card_y + card_h + card_gap, card_w, card_h, 0.34f, 0.88f, 1.0f, ui.can_upgrade_mining);
+                draw_service_card(inner_x + 12.0f, first_card_y + 2.0f * (card_h + card_gap), card_w, card_h, 0.42f, 1.0f, 0.86f, ui.can_upgrade_tractor);
+            }
+        }
+
+        /* Overview tab: hull + cargo meters */
+        if (g.station_tab == STATION_TAB_OVERVIEW && !ui.station->scaffold) {
+            float meter_x = inner_x + 16.0f;
+            float meter_w = fminf(inner_w - 32.0f, 280.0f);
+            draw_ui_meter(meter_x, content_y + 48.0f, meter_w, 12.0f,
+                LOCAL_PLAYER.ship.hull / ship_max_hull(&LOCAL_PLAYER.ship), 0.96f, 0.54f, 0.28f);
+            draw_ui_meter(meter_x, content_y + 80.0f, meter_w, 12.0f,
+                ship_total_cargo(&LOCAL_PLAYER.ship) / fmaxf(1.0f, ship_cargo_capacity(&LOCAL_PLAYER.ship)), 0.26f, 0.90f, 0.72f);
+            /* Upgrade pips */
+            draw_upgrade_pips(meter_x + 2.0f, content_y + 120.0f, LOCAL_PLAYER.ship.mining_level, 0.34f, 0.88f, 1.0f);
+            draw_upgrade_pips(meter_x + 2.0f, content_y + 140.0f, LOCAL_PLAYER.ship.tractor_level, 0.42f, 1.0f, 0.86f);
+            draw_upgrade_pips(meter_x + 2.0f, content_y + 160.0f, LOCAL_PLAYER.ship.hold_level, 0.50f, 0.82f, 1.0f);
         }
     }
 
@@ -1482,105 +1520,153 @@ static void draw_hud_panels(void) {
 }
 
 static void draw_station_services(const station_ui_state_t* ui) {
-    if (!LOCAL_PLAYER.docked) {
-        return;
-    }
+    if (!LOCAL_PLAYER.docked) return;
 
-    float panel_x = 0.0f;
-    float panel_y = 0.0f;
-    float panel_w = 0.0f;
-    float panel_h = 0.0f;
-    float inner_y = 0.0f;
-    float market_x = 0.0f;
-    float market_y = 0.0f;
-    float market_h = 0.0f;
-    float services_x = 0.0f;
-    float services_y = 0.0f;
-    float fit_x = 0.0f;
-    float fit_y = 0.0f;
-    float fit_w = 0.0f;
-    float card_gap = 0.0f;
-    float card_h = 0.0f;
-    float sell_y = 0.0f;
-    float repair_y = 0.0f;
-    float mining_y = 0.0f;
-    station_service_line_t service_lines[3] = { 0 };
-    char header_badge[32] = { 0 };
-    char market_summary[64] = { 0 };
-    char market_detail[64] = { 0 };
-    int service_line_count = 0;
-    bool compact = ui_is_compact();
-    bool show_fit_panel = !compact;
-    format_station_header_badge(ui, header_badge, sizeof(header_badge));
-    format_station_market_summary(ui, compact, market_summary, sizeof(market_summary));
-    format_station_market_detail(ui, compact, market_detail, sizeof(market_detail));
-    service_line_count = build_station_service_lines(ui, service_lines);
-
+    float panel_x = 0.0f, panel_y = 0.0f, panel_w = 0.0f, panel_h = 0.0f;
     get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
-    inner_y = panel_y + 18.0f;
-    market_x = panel_x + 18.0f;
-    services_x = panel_x + 18.0f;
-    card_gap = compact ? 4.0f : 6.0f;
-    card_h = compact ? 18.0f : 24.0f;
+    bool compact = ui_is_compact();
+    float tab_h = compact ? 16.0f : 20.0f;
+    float inner_x = panel_x + 18.0f;
+    float inner_y = panel_y + 18.0f;
+    float inner_w = panel_w - 36.0f;
+    float content_y = inner_y + 32.0f + tab_h + 8.0f;
+    float cx = inner_x + 18.0f; /* content text x */
+    float cy = content_y + 16.0f; /* content text start y */
+    int tab_count = ui->station->scaffold ? STATION_TAB_COUNT : (STATION_TAB_COUNT - 1);
+    float tab_w = fminf(inner_w / (float)tab_count, 120.0f);
 
-    if (show_fit_panel) {
-        fit_w = 180.0f;
-        fit_x = panel_x + panel_w - fit_w - 18.0f;
-        fit_y = inner_y + 42.0f;
-        market_y = fit_y;
-        market_h = 78.0f;
-        services_y = market_y + market_h + 16.0f;
-    } else {
-        market_y = inner_y + 42.0f;
-        market_h = 54.0f;
-        services_y = market_y + market_h + 12.0f;
-    }
-
-    sell_y = services_y + (compact ? 30.0f : 36.0f);
-    repair_y = sell_y + card_h + card_gap;
-    mining_y = repair_y + card_h + card_gap;
-
+    /* Station name + role header */
     sdtx_color3b(232, 241, 255);
     sdtx_pos(ui_text_pos(panel_x + 20.0f), ui_text_pos(panel_y + 16.0f));
     sdtx_puts(ui->station->name);
-    sdtx_pos(ui_text_pos(panel_x + 20.0f), ui_text_pos(panel_y + 32.0f));
-    sdtx_color3b(118, 255, 221);
-    sdtx_puts(station_role_hub_label(ui->station->role));
+    if (ui->station->scaffold) {
+        sdtx_pos(ui_text_pos(panel_x + 20.0f), ui_text_pos(panel_y + 32.0f));
+        sdtx_color3b(255, 221, 119);
+        sdtx_puts("UNDER CONSTRUCTION");
+    } else {
+        sdtx_pos(ui_text_pos(panel_x + 20.0f), ui_text_pos(panel_y + 32.0f));
+        sdtx_color3b(118, 255, 221);
+        sdtx_puts(station_role_hub_label(ui->station->role));
+    }
 
+    /* Credits badge (right side of header) */
     if (panel_w >= 480.0f) {
+        char header_badge[32] = { 0 };
+        format_station_header_badge(ui, header_badge, sizeof(header_badge));
         sdtx_pos(ui_text_pos(panel_x + panel_w - 152.0f), ui_text_pos(panel_y + 16.0f));
         sdtx_color3b(203, 220, 248);
         sdtx_puts(header_badge);
         sdtx_pos(ui_text_pos(panel_x + panel_w - 152.0f), ui_text_pos(panel_y + 32.0f));
         sdtx_color3b(145, 160, 188);
-        sdtx_puts("Press E to launch");
+        sdtx_puts("Tab: switch  E: launch");
     }
 
-    sdtx_pos(ui_text_pos(market_x + 18.0f), ui_text_pos(market_y + 16.0f));
-    sdtx_color3b(130, 255, 235);
-    sdtx_puts(station_role_market_title(ui->station->role));
-    sdtx_pos(ui_text_pos(market_x + 18.0f), ui_text_pos(market_y + 32.0f));
-    sdtx_color3b(203, 220, 248);
-    sdtx_puts(market_summary);
-    sdtx_pos(ui_text_pos(market_x + 18.0f), ui_text_pos(market_y + 48.0f));
-    sdtx_color3b(145, 160, 188);
-    sdtx_puts(market_detail);
-
-    sdtx_pos(ui_text_pos(services_x + 18.0f), ui_text_pos(services_y + 16.0f));
-    sdtx_color3b(130, 255, 235);
-    sdtx_puts("SERVICES");
-
-    for (int i = 0; i < service_line_count; i++) {
-        float line_y = (i == 0) ? sell_y : ((i == 1) ? repair_y : mining_y);
-        draw_station_service_text_line(services_x + 24.0f, line_y + (compact ? 5.0f : 8.0f), &service_lines[i], compact);
+    /* Tab labels */
+    {
+        float tab_bar_y = inner_y + 32.0f;
+        const char* labels[STATION_TAB_COUNT] = { "OVERVIEW", "SERVICES", "MARKET", "BUILD" };
+        for (int t = 0; t < tab_count; t++) {
+            float tx = inner_x + (float)t * tab_w;
+            bool active = ((int)g.station_tab == t);
+            sdtx_pos(ui_text_pos(tx + 8.0f), ui_text_pos(tab_bar_y + (compact ? 4.0f : 6.0f)));
+            if (active) {
+                sdtx_color3b(130, 255, 235);
+            } else {
+                sdtx_color3b(100, 120, 145);
+            }
+            sdtx_puts(labels[t]);
+        }
     }
 
-    if (show_fit_panel) {
-        sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 16.0f));
+    /* ---- Tab content ---- */
+    switch (g.station_tab) {
+
+    case STATION_TAB_OVERVIEW: {
+        if (ui->station->scaffold) {
+            /* Scaffold overview */
+            int pct = (int)lroundf(ui->station->scaffold_progress * 100.0f);
+            int frames_held = (int)lroundf(LOCAL_PLAYER.ship.cargo[COMMODITY_FRAME_INGOT]);
+            float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - ui->station->scaffold_progress);
+            int needed_int = (int)lroundf(needed);
+            sdtx_color3b(203, 220, 248);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+            sdtx_printf("Progress: %d%%", pct);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 16.0f));
+            sdtx_printf("Need %d more frame ingots", needed_int);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 32.0f));
+            sdtx_printf("You have: %d frame ingots", frames_held);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 56.0f));
+            sdtx_color3b(145, 160, 188);
+            sdtx_puts("Dock to auto-deliver frames.");
+        } else {
+            /* Ship status overview */
+            sdtx_color3b(130, 255, 235);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+            sdtx_puts("SHIP STATUS");
+            sdtx_color3b(203, 220, 248);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
+            sdtx_printf("Hull %d/%d", ui->hull_now, ui->hull_max);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 36.0f));
+            sdtx_printf("Cargo %d/%d ore", ui->cargo_units, ui->cargo_capacity);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 52.0f));
+            sdtx_printf("Laser Lv %d  Tractor Lv %d  Hold Lv %d",
+                LOCAL_PLAYER.ship.mining_level, LOCAL_PLAYER.ship.tractor_level, LOCAL_PLAYER.ship.hold_level);
+
+            /* Station-specific summary */
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 76.0f));
+            sdtx_color3b(130, 255, 235);
+            sdtx_puts("STATION");
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 96.0f));
+            sdtx_color3b(169, 179, 204);
+            if (ui->station->role == STATION_ROLE_REFINERY) {
+                sdtx_puts("Ore refinery. Sells ore, repairs hull.");
+            } else if (ui->station->role == STATION_ROLE_YARD) {
+                sdtx_puts("Frame yard. Repairs hull, upgrades hold.");
+            } else if (ui->station->role == STATION_ROLE_OUTPOST) {
+                sdtx_puts("Signal relay outpost. Repairs hull.");
+            } else {
+                sdtx_puts("Beamworks. Repairs hull, upgrades laser + tractor.");
+            }
+        }
+        break;
+    }
+
+    case STATION_TAB_SERVICES: {
+        if (ui->station->scaffold) break;
+        station_service_line_t service_lines[3] = { 0 };
+        int service_line_count = build_station_service_lines(ui, service_lines);
         sdtx_color3b(130, 255, 235);
-        sdtx_puts(station_role_fit_title(ui->station->role));
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+        sdtx_puts("SERVICES");
+        float card_gap = compact ? 4.0f : 6.0f;
+        float line_h = compact ? 18.0f : 24.0f;
+        float first_line_y = cy + 20.0f;
+        for (int i = 0; i < service_line_count; i++) {
+            float line_y = first_line_y + (float)i * (line_h + card_gap);
+            draw_station_service_text_line(cx + 6.0f, line_y + (compact ? 5.0f : 8.0f), &service_lines[i], compact);
+        }
+        break;
+    }
 
-        sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 32.0f));
+    case STATION_TAB_MARKET: {
+        if (ui->station->scaffold) break;
+        char market_summary[64] = { 0 };
+        char market_detail[64] = { 0 };
+        format_station_market_summary(ui, compact, market_summary, sizeof(market_summary));
+        format_station_market_detail(ui, compact, market_detail, sizeof(market_detail));
+
+        sdtx_color3b(130, 255, 235);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+        sdtx_puts(station_role_market_title(ui->station->role));
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 16.0f));
+        sdtx_color3b(203, 220, 248);
+        sdtx_puts(market_summary);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 32.0f));
+        sdtx_color3b(145, 160, 188);
+        sdtx_puts(market_detail);
+
+        /* Role-specific production details */
+        float dy = cy + 56.0f;
         sdtx_color3b(203, 220, 248);
         if (ui->station->role == STATION_ROLE_REFINERY) {
             char board_line[64] = { 0 };
@@ -1589,55 +1675,31 @@ static void draw_station_services(const station_ui_state_t* ui) {
             format_refinery_price_line(ui->station, board_line, sizeof(board_line));
             format_ore_hopper_line(ui->station, hopper_line, sizeof(hopper_line));
             format_ingot_stock_line(ui->station, stock_line, sizeof(stock_line));
-            sdtx_printf("Hull %d/%d", ui->hull_now, ui->hull_max);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 56.0f));
-            sdtx_printf("Ore %d/%d  Haul %d cr", ui->cargo_units, ui->cargo_capacity, ui->payout);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 88.0f));
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(dy));
             sdtx_color3b(145, 160, 188);
             sdtx_puts(board_line);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(dy + 16.0f));
             sdtx_color3b(203, 220, 248);
             sdtx_printf("Hoppers  %s", hopper_line);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(dy + 32.0f));
             sdtx_printf("Stock    %s", stock_line);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 184.0f));
-            sdtx_printf("Repair %s", ui->repair_cost > 0 ? "available" : "nominal");
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 216.0f));
-            sdtx_color3b(169, 179, 204);
-            sdtx_puts("Ore only sells here.");
         } else if (ui->station->role == STATION_ROLE_YARD) {
             int frames = (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]);
-            int need = (int)lroundf(upgrade_product_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_HOLD));
-            sdtx_printf("Hold %d ore  Lv %d/%d", ui->cargo_capacity, LOCAL_PLAYER.ship.hold_level, SHIP_UPGRADE_MAX_LEVEL);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 56.0f));
-            sdtx_printf("Hull %d/%d", ui->hull_now, ui->hull_max);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 88.0f));
+            int need = (int)lroundf(upgrade_product_cost(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD));
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(dy));
             sdtx_color3b(145, 160, 188);
-            sdtx_printf("Frames %d  Need %d", frames, ship_upgrade_maxed(&LOCAL_PLAYER.ship,SHIP_UPGRADE_HOLD) ? 0 : need);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
-            sdtx_printf("Repair %s", ui->repair_cost > 0 ? "available" : "nominal");
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
-            sdtx_color3b(169, 179, 204);
-            sdtx_puts("Frame manufacturing.");
-        } else {
+            sdtx_printf("Frames %d  Need %d", frames, ship_upgrade_maxed(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD) ? 0 : need);
+        } else if (ui->station->role == STATION_ROLE_BEAMWORKS) {
             int lasers = (int)lroundf(ui->station->product_stock[PRODUCT_LASER_MODULE]);
             int tractors = (int)lroundf(ui->station->product_stock[PRODUCT_TRACTOR_MODULE]);
-            sdtx_printf("Laser Lv %d/%d  Tractor Lv %d/%d", LOCAL_PLAYER.ship.mining_level, SHIP_UPGRADE_MAX_LEVEL, LOCAL_PLAYER.ship.tractor_level, SHIP_UPGRADE_MAX_LEVEL);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 56.0f));
-            sdtx_printf("Hull %d/%d", ui->hull_now, ui->hull_max);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 88.0f));
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(dy));
             sdtx_color3b(145, 160, 188);
             sdtx_printf("LSR %d  TRC %d", lasers, tractors);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
-            sdtx_printf("Repair %s", ui->repair_cost > 0 ? "available" : "nominal");
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
-            sdtx_color3b(169, 179, 204);
-            sdtx_puts("Module fabrication.");
         }
 
         /* Contract board */
-        float contract_y = fit_y + 248.0f;
-        sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(contract_y));
+        float contract_y = dy + 48.0f;
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(contract_y));
         sdtx_color3b(180, 220, 255);
         sdtx_puts("CONTRACTS");
         int shown = 0;
@@ -1645,7 +1707,7 @@ static void draw_station_services(const station_ui_state_t* ui) {
             contract_t *ct = &g.world.contracts[ci];
             if (!ct->active) continue;
             float cprice = ct->base_price * (1.0f + ct->age / 300.0f * 0.2f);
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(contract_y + 16.0f + (float)shown * 14.0f));
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(contract_y + 16.0f + (float)shown * 14.0f));
             sdtx_color3b(203, 220, 248);
             sdtx_printf("%s @ %s: %.0f cr/u",
                 commodity_short_name(ct->commodity),
@@ -1654,10 +1716,44 @@ static void draw_station_services(const station_ui_state_t* ui) {
             if (++shown >= 5) break;
         }
         if (shown == 0) {
-            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(contract_y + 16.0f));
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(contract_y + 16.0f));
             sdtx_color3b(145, 160, 188);
             sdtx_puts("(none)");
         }
+        break;
+    }
+
+    case STATION_TAB_CONSTRUCTION: {
+        if (!ui->station->scaffold) break;
+        int pct = (int)lroundf(ui->station->scaffold_progress * 100.0f);
+        int frames_held = (int)lroundf(LOCAL_PLAYER.ship.cargo[COMMODITY_FRAME_INGOT]);
+        float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - ui->station->scaffold_progress);
+        int needed_int = (int)lroundf(needed);
+
+        sdtx_color3b(130, 255, 235);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+        sdtx_puts("CONSTRUCTION");
+
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
+        sdtx_color3b(255, 221, 119);
+        sdtx_printf("Progress: %d%%", pct);
+
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 40.0f));
+        sdtx_color3b(203, 220, 248);
+        sdtx_printf("Materials needed: %d frame ingots", needed_int);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 56.0f));
+        sdtx_printf("You carry: %d frame ingots", frames_held);
+
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 80.0f));
+        sdtx_color3b(145, 160, 188);
+        sdtx_puts("Frame ingots auto-deliver on dock.");
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 96.0f));
+        sdtx_printf("Signal range on activation: %.0f", OUTPOST_SIGNAL_RANGE);
+        break;
+    }
+
+    default:
+        break;
     }
 }
 
@@ -1804,15 +1900,9 @@ static void draw_hud(void) {
         sdtx_pos(bottom_text_x, bottom_text_y);
         sdtx_color3b(145, 160, 188);
         if (LOCAL_PLAYER.docked) {
-            if (current_station->role == STATION_ROLE_REFINERY) {
-                sdtx_puts("1 sell  2 repair  E launch");
-            } else if (current_station->role == STATION_ROLE_YARD) {
-                sdtx_puts("2 repair  4 hold  E launch");
-            } else {
-                sdtx_puts("2 repair  3 laser  5 tractor");
-            }
+            sdtx_puts("Tab switch  E launch  Q back");
         } else {
-            sdtx_puts("W/S thrust  A/D turn  SPC mine  E dock");
+            sdtx_puts("W/S thrust  A/D turn  SPC mine  E dock  6 outpost");
         }
 
         if (hud_should_draw_message_panel()) {
@@ -1901,15 +1991,9 @@ static void draw_hud(void) {
     sdtx_pos(bottom_text_x, bottom_text_y);
     sdtx_color3b(145, 160, 188);
     if (LOCAL_PLAYER.docked) {
-        if (current_station->role == STATION_ROLE_REFINERY) {
-            sdtx_puts("1 sell  2 repair  E launch  R reset  ESC quit");
-        } else if (current_station->role == STATION_ROLE_YARD) {
-            sdtx_puts("2 repair  4 hold  E launch  R reset  ESC quit");
-        } else {
-            sdtx_puts("2 repair  3 laser  5 tractor  E launch  R reset  ESC quit");
-        }
+        sdtx_puts("Tab switch  Q back  E launch  R reset  ESC quit");
     } else {
-        sdtx_puts("W/S thrust  A/D turn  SPACE mine  E dock  R reset  ESC quit");
+        sdtx_puts("W/S thrust  A/D turn  SPACE mine  E dock  6 outpost  R reset  ESC quit");
     }
 
     if (hud_should_draw_message_panel()) {
@@ -2038,6 +2122,24 @@ static void sim_step(float dt) {
         reset_world();
         consume_pressed_input();
         return;
+    }
+
+    /* Tab switching while docked */
+    if (LOCAL_PLAYER.docked && !g.was_docked) {
+        /* Just docked — reset to overview (or construction for scaffolds) */
+        const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
+        g.station_tab = st->scaffold ? STATION_TAB_CONSTRUCTION : STATION_TAB_OVERVIEW;
+    }
+    g.was_docked = LOCAL_PLAYER.docked;
+    if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_TAB)) {
+        const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
+        int max_tab = st->scaffold ? STATION_TAB_CONSTRUCTION : STATION_TAB_MARKET;
+        g.station_tab = (station_tab_t)(((int)g.station_tab + 1) % (max_tab + 1));
+    }
+    if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_Q)) {
+        const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
+        int max_tab = st->scaffold ? STATION_TAB_CONSTRUCTION : STATION_TAB_MARKET;
+        g.station_tab = (station_tab_t)(((int)g.station_tab + max_tab) % (max_tab + 1));
     }
 
     LOCAL_PLAYER.input = intent;
@@ -2293,6 +2395,7 @@ static void apply_remote_stations(uint8_t index, const float* ore_buf, const flo
         st->inventory[i] = inventory[i];
     for (int i = 0; i < PRODUCT_COUNT; i++)
         st->product_stock[i] = product_stock[i];
+    /* scaffold and scaffold_progress will be updated via a future network message */
 }
 
 static void apply_remote_station_identity(uint8_t index, uint8_t role, uint32_t services,

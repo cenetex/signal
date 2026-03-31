@@ -98,6 +98,8 @@ typedef struct {
     float radius;
     float dock_radius;
     float signal_range;
+    bool scaffold;           /* true = under construction, not yet active */
+    float scaffold_progress; /* 0.0 to 1.0 */
     float buy_price[COMMODITY_COUNT];
     float inventory[COMMODITY_COUNT];
     float ore_buffer[COMMODITY_RAW_ORE_COUNT];
@@ -219,6 +221,9 @@ static const int REFINERY_MAX_FURNACES = 3;
 static const float STATION_PRODUCTION_RATE = 0.3f;
 static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
 static const float MAX_PRODUCT_STOCK = 40.0f;
+
+/* Outpost construction constants (client-shared) */
+static const float SCAFFOLD_MATERIAL_NEEDED = 100.0f;  /* total units of frame ingots */
 
 /* Ship upgrade constants (shared between client and server) */
 static const float SHIP_HOLD_UPGRADE_STEP = 24.0f;
