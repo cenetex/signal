@@ -141,9 +141,9 @@ static const float HUD_MESSAGE_PANEL_HEIGHT = 62.0f;
 static const float HUD_MESSAGE_PANEL_COMPACT_WIDTH = 236.0f;
 static const float HUD_MESSAGE_PANEL_COMPACT_HEIGHT = 56.0f;
 static const float STATION_PANEL_WIDTH = 560.0f;
-static const float STATION_PANEL_HEIGHT = 320.0f;
+static const float STATION_PANEL_HEIGHT = 400.0f;
 static const float STATION_PANEL_COMPACT_WIDTH = 520.0f;
-static const float STATION_PANEL_COMPACT_HEIGHT = 224.0f;
+static const float STATION_PANEL_COMPACT_HEIGHT = 290.0f;
 static const float HUD_CELL = 8.0f;
 static const float UI_SCALE_TIGHT = 1.85f;
 static const float UI_SCALE_COMPACT = 1.60f;
@@ -1758,7 +1758,10 @@ static void draw_station_services(const station_ui_state_t* ui) {
         for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
             contract_t *ct = &g.world.contracts[ci];
             if (!ct->active) continue;
+            if (ct->station_index < 0 || ct->station_index >= MAX_STATIONS) continue;
+            if (g.world.stations[ct->station_index].name[0] == '\0') continue;
             float cprice = ct->base_price * (1.0f + ct->age / 300.0f * 0.2f);
+            if (cprice < 0.01f) continue;
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f + (float)shown * 16.0f));
             sdtx_color3b(203, 220, 248);
             sdtx_printf("%s @ %s: %.0f cr/u",
