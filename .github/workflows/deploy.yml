@@ -27,6 +27,38 @@ jobs:
           cmake --build build-test
           ./build-test/space_miner_test
 
+  native:
+    needs: test
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux
+          - os: macos-latest
+            name: macos
+          - os: windows-latest
+            name: windows
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies (Linux)
+        if: matrix.name == 'linux'
+        run: sudo apt-get update && sudo apt-get install -y libgl-dev libx11-dev libxi-dev libxcursor-dev libasound2-dev
+
+      - name: Build
+        shell: bash
+        run: |
+          GIT_HASH=$(git rev-parse --short HEAD)
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$GIT_HASH
+          cmake --build build --config Release
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: signal-${{ matrix.name }}
+          path: build/
+
   deploy-client:
     needs: test
     runs-on: ubuntu-latest
