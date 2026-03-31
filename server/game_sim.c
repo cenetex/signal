@@ -1424,6 +1424,56 @@ static void step_asteroid_gravity(world_t *w, float dt) {
             a->vel = v2_add(a->vel, v2_scale(normal, accel * dt));
         }
     }
+
+    /* Weak-signal current keeps isolated field rocks drifting inward. */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *a = &w->asteroids[i];
+        if (!a->active || a->tier == ASTEROID_TIER_S) continue;
+
+        bool near_player = false;
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            if (!w->players[p].connected) continue;
+            if (v2_dist_sq(a->pos, w->players[p].ship.pos) <= 600.0f * 600.0f) {
+                near_player = true;
+                break;
+            }
+        }
+        if (near_player) continue;
+
+        bool near_asteroid = false;
+        for (int j = 0; j < MAX_ASTEROIDS; j++) {
+            if (j == i || !w->asteroids[j].active) continue;
+            if (v2_dist_sq(a->pos, w->asteroids[j].pos) <= 400.0f * 400.0f) {
+                near_asteroid = true;
+                break;
+            }
+        }
+        if (near_asteroid) continue;
+
+        float best_signal = 0.0f;
+        int best_station = -1;
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            if (w->stations[s].signal_range <= 0.0f) continue;
+            float dist = sqrtf(v2_dist_sq(a->pos, w->stations[s].pos));
+            float strength = fmaxf(0.0f, 1.0f - (dist / w->stations[s].signal_range));
+            if (strength > best_signal) {
+                best_signal = strength;
+                best_station = s;
+            }
+        }
+        if (best_station < 0 || best_signal <= 0.0f || best_signal >= 0.75f) continue;
+
+        vec2 delta = v2_sub(w->stations[best_station].pos, a->pos);
+        float dist_sq = v2_len_sq(delta);
+        if (dist_sq < 1.0f) continue;
+        float dist = sqrtf(dist_sq);
+        float min_dist = a->radius + w->stations[best_station].radius;
+        if (dist < min_dist + 10.0f) continue;
+
+        vec2 normal = v2_scale(delta, 1.0f / dist);
+        float current = (0.75f - best_signal) / 0.75f;
+        a->vel = v2_add(a->vel, v2_scale(normal, 3.0f * current * dt));
+    }
 }
 
 /* ================================================================== */
