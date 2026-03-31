@@ -1328,31 +1328,51 @@ TEST(test_scenario_full_mining_cycle) {
     }
     ASSERT(target >= 0);
 
-    /* Position player in mining range, facing the asteroid */
-    vec2 apos = w.asteroids[target].pos;
-    w.players[0].ship.pos = v2(apos.x - 50.0f, apos.y);
-    w.players[0].ship.angle = 0.0f;
-    w.players[0].ship.vel = v2(0.0f, 0.0f);
-
-    /* Mine until asteroid fractures (hp <= 0) */
-    w.players[0].input.mine = true;
-    for (int i = 0; i < 24000; i++) {
-        world_sim_step(&w, SIM_DT);
-        if (w.asteroids[target].hp <= 0.0f || !w.asteroids[target].active) break;
-        /* Re-position to stay in range (asteroid may drift) */
-        w.players[0].ship.pos = v2(w.asteroids[target].pos.x - 50.0f, w.asteroids[target].pos.y);
-        w.players[0].ship.vel = v2(0.0f, 0.0f);
-    }
-    w.players[0].input.mine = false;
-    /* Asteroid should have fractured or been destroyed */
-    ASSERT(w.asteroids[target].hp <= 0.0f || !w.asteroids[target].active);
-
-    /* Find a TIER_S fragment to collect */
+    /* Mine down the fracture chain until we deterministically reach a
+     * collectible TIER_S fragment. The seeded opening asteroid may be XL,
+     * so a single fracture only produces L — not S. */
     int frag = -1;
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (w.asteroids[i].active && w.asteroids[i].tier == ASTEROID_TIER_S && w.asteroids[i].ore > 0.0f) {
-            frag = i; break;
+    for (int depth = 0; depth < 5 && frag < 0; depth++) {
+        asteroid_tier_t tier = w.asteroids[target].tier;
+        vec2 fracture_center = w.asteroids[target].pos;
+
+        w.players[0].ship.pos = v2(fracture_center.x - 50.0f, fracture_center.y);
+        w.players[0].ship.angle = 0.0f;
+        w.players[0].ship.vel = v2(0.0f, 0.0f);
+
+        w.players[0].input.mine = true;
+        for (int i = 0; i < 24000; i++) {
+            world_sim_step(&w, SIM_DT);
+            if (w.asteroids[target].hp <= 0.0f || !w.asteroids[target].active) break;
+            w.players[0].ship.pos = v2(w.asteroids[target].pos.x - 50.0f, w.asteroids[target].pos.y);
+            w.players[0].ship.vel = v2(0.0f, 0.0f);
         }
+        w.players[0].input.mine = false;
+        ASSERT(w.asteroids[target].hp <= 0.0f || !w.asteroids[target].active);
+
+        /* If we fractured an M, look for the nearest TIER_S child */
+        if (tier == ASTEROID_TIER_M) {
+            float best_d_sq = 1e30f;
+            for (int i = 0; i < MAX_ASTEROIDS; i++) {
+                if (!w.asteroids[i].active || w.asteroids[i].tier != ASTEROID_TIER_S || w.asteroids[i].ore <= 0.0f)
+                    continue;
+                float d_sq = v2_dist_sq(w.asteroids[i].pos, fracture_center);
+                if (d_sq < best_d_sq) { best_d_sq = d_sq; frag = i; }
+            }
+            break;
+        }
+
+        /* Otherwise find the nearest child of the next tier down */
+        int next_target = -1;
+        float best_d_sq = 1e30f;
+        asteroid_tier_t next_tier = (asteroid_tier_t)(tier + 1);
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            if (!w.asteroids[i].active || w.asteroids[i].tier != next_tier) continue;
+            float d_sq = v2_dist_sq(w.asteroids[i].pos, fracture_center);
+            if (d_sq < best_d_sq) { best_d_sq = d_sq; next_target = i; }
+        }
+        ASSERT(next_target >= 0);
+        target = next_target;
     }
     ASSERT(frag >= 0);
 
