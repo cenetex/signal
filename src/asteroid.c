@@ -28,7 +28,7 @@ float asteroid_progress_ratio(const asteroid_t* asteroid) {
 
 const char* asteroid_tier_name(asteroid_tier_t tier) {
     switch (tier) {
-        case ASTEROID_TIER_XXL: return "XXL";
+        case ASTEROID_TIER_XXL: return "Titan";
         case ASTEROID_TIER_XL: return "XL";
         case ASTEROID_TIER_L: return "L";
         case ASTEROID_TIER_M: return "M";
@@ -39,7 +39,7 @@ const char* asteroid_tier_name(asteroid_tier_t tier) {
 
 const char* asteroid_tier_kind(asteroid_tier_t tier) {
     switch (tier) {
-        case ASTEROID_TIER_XXL: return "planetoid";
+        case ASTEROID_TIER_XXL: return "titan";
         case ASTEROID_TIER_XL: return "body";
         case ASTEROID_TIER_L: return "rock";
         case ASTEROID_TIER_M: return "shard";
