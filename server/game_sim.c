@@ -949,8 +949,8 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
     default: break;
     }
     SIM_LOG("[sim] player %d upgraded %d to level %d\n", sp->id, (int)upgrade,
-    emit_event(w, (sim_event_t){.type = SIM_EVENT_UPGRADE, .player_id = sp->id, .upgrade.upgrade = upgrade});
            ship_upgrade_level(&sp->ship, upgrade));
+    emit_event(w, (sim_event_t){.type = SIM_EVENT_UPGRADE, .player_id = sp->id, .upgrade.upgrade = upgrade});
 }
 
 /* ================================================================== */
