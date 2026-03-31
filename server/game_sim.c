@@ -569,6 +569,14 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier == ASTEROID_TIER_S) continue;
+        /* Skip asteroids already targeted by another miner */
+        bool taken = false;
+        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+            if (&w->npc_ships[n] == npc) continue;
+            if (w->npc_ships[n].active && w->npc_ships[n].role == NPC_ROLE_MINER &&
+                w->npc_ships[n].target_asteroid == i) { taken = true; break; }
+        }
+        if (taken) continue;
         float d = v2_dist_sq(npc->pos, a->pos);
         if (d < best_d) { best_d = d; best = i; }
     }
@@ -612,6 +620,24 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
         float d = sqrtf(d_sq);
         vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
         npc->pos = v2_add(st->pos, v2_scale(normal, minimum));
+        float vel_toward = v2_dot(npc->vel, normal);
+        if (vel_toward < 0.0f)
+            npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.2f));
+    }
+}
+
+static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
+    const hull_def_t *hull = npc_hull_def(npc);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *a = &w->asteroids[i];
+        if (!a->active || asteroid_is_collectible(a)) continue;
+        float minimum = a->radius + hull->ship_radius;
+        vec2 delta = v2_sub(npc->pos, a->pos);
+        float d_sq = v2_len_sq(delta);
+        if (d_sq >= minimum * minimum) continue;
+        float d = sqrtf(d_sq);
+        vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
+        npc->pos = v2_add(a->pos, v2_scale(normal, minimum));
         float vel_toward = v2_dot(npc->vel, normal);
         if (vel_toward < 0.0f)
             npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.2f));
@@ -713,8 +739,10 @@ static void step_npc_ships(world_t *w, float dt) {
 
         if (npc->role == NPC_ROLE_HAULER) {
             step_hauler(w, npc, n, dt);
-            if (npc->state != NPC_STATE_DOCKED)
+            if (npc->state != NPC_STATE_DOCKED) {
                 npc_resolve_station_collisions(w, npc);
+                npc_resolve_asteroid_collisions(w, npc);
+            }
             continue;
         }
 
@@ -839,9 +867,11 @@ static void step_npc_ships(world_t *w, float dt) {
         default: break;
         }
 
-        /* NPC station collision (Bug 34) */
-        if (npc->state != NPC_STATE_DOCKED)
+        /* NPC collision with stations and asteroids */
+        if (npc->state != NPC_STATE_DOCKED) {
             npc_resolve_station_collisions(w, npc);
+            npc_resolve_asteroid_collisions(w, npc);
+        }
     }
 }
 
@@ -1207,7 +1237,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             /* Add jitter to controls proportional to interference.
              * Use a local RNG seeded from player position to avoid
              * mutating world RNG state (bug 47). */
-            uint32_t local_rng = (uint32_t)(sp->ship.pos.x * 1000.0f) ^ (uint32_t)(sp->ship.pos.y * 1000.0f) ^ (uint32_t)(w->time * 1000.0f);
+            uint32_t local_rng = (uint32_t)(sp->ship.pos.x * 1000.0f) ^ (uint32_t)(sp->ship.pos.y * 1000.0f) ^ ((uint32_t)sp->id * 0x9E3779B9u);
             if (local_rng == 0) local_rng = 0xA341316Cu;
             local_rng ^= local_rng << 13; local_rng ^= local_rng >> 17; local_rng ^= local_rng << 5;
             float r1 = (float)(local_rng & 0x00FFFFFFu) / 16777215.0f;

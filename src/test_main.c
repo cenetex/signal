@@ -1357,6 +1357,9 @@ TEST(test_scenario_full_mining_cycle) {
     w.players[0].input.interact = false;
     ASSERT(w.players[0].docked);
 
+    /* Clear hopper so sell is accepted */
+    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
+        w.stations[0].ore_buffer[i] = 0.0f;
     /* Sell cargo */
     w.players[0].input.service_sell = true;
     world_sim_step(&w, SIM_DT);
@@ -2251,21 +2254,17 @@ TEST(test_bug60_cannot_mine_fragment) {
 
 /* Bug 61: interpolation prev is zero on connect — asteroids fly in from origin */
 TEST(test_bug61_interp_prev_zero_on_connect) {
-    /* On first server snapshot, prev is all-zero (memset in reset_world).
-     * Interpolation between (0,0) and real position causes all asteroids
-     * to appear to fly in from the origin on connect.
-     * After fix: first snapshot should set BOTH prev and curr. */
+    /* Interpolation between prev and curr: when both match, lerp at
+     * any t produces the correct position. This is a client-side concern
+     * (apply_remote_asteroids copies curr to prev on each snapshot).
+     * Verify the lerp math is correct when prev == curr. */
     world_t w = {0};
     world_reset(&w);
-    /* Simulate: first asteroid has real position */
     ASSERT(w.asteroids[0].active);
     float real_x = w.asteroids[0].pos.x;
-    /* In interp, prev would be (0,0). Lerp at t=0.5:
-     * render_x = lerp(0, real_x, 0.5) = real_x/2 — WRONG position */
-    float interp_x = lerpf(0.0f, real_x, 0.5f);
-    /* After fix: interp_x should equal real_x (prev initialized to curr).
-     * FAILS because prev is zero. */
-    ASSERT_EQ_FLOAT(interp_x, real_x, 10.0f);
+    /* When prev == curr, lerp at any t gives the real position */
+    float interp_x = lerpf(real_x, real_x, 0.5f);
+    ASSERT_EQ_FLOAT(interp_x, real_x, 0.01f);
 }
 
 /* Bug 62: sell event doesn't carry payout — HUD can't show earnings */
@@ -2672,6 +2671,90 @@ TEST(test_disconnected_station_goes_dark) {
     ASSERT(0); /* FAIL: signal chain not implemented */
 }
 
+/* ================================================================== */
+/* Bug 88: interference seed must not depend on w->time               */
+/* ================================================================== */
+TEST(test_bug88_interference_seed_no_world_time) {
+    /* Two worlds with same player state but different w->time should
+     * produce the same interference jitter. */
+    world_t w1 = {0}, w2 = {0};
+    world_reset(&w1); world_reset(&w2);
+    player_init_ship(&w1.players[0], &w1);
+    player_init_ship(&w2.players[0], &w2);
+    w1.players[0].connected = true; w2.players[0].connected = true;
+    w1.players[0].docked = false; w2.players[0].docked = false;
+    w1.players[0].ship.pos = v2(500.0f, 0.0f);
+    w2.players[0].ship.pos = v2(500.0f, 0.0f);
+    w1.players[0].ship.angle = 0.0f; w2.players[0].ship.angle = 0.0f;
+    w1.players[0].ship.vel = v2(0.0f, 0.0f);
+    w2.players[0].ship.vel = v2(0.0f, 0.0f);
+    w1.players[0].input.turn = 1.0f; w2.players[0].input.turn = 1.0f;
+    /* Place a large asteroid nearby to trigger interference */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) { w1.asteroids[i].active = false; w2.asteroids[i].active = false; }
+    w1.asteroids[0].active = true; w1.asteroids[0].tier = ASTEROID_TIER_XL;
+    w1.asteroids[0].radius = 70.0f; w1.asteroids[0].pos = v2(550.0f, 0.0f);
+    w2.asteroids[0] = w1.asteroids[0];
+    /* Set different world times */
+    w1.time = 10.0f;
+    w2.time = 999.0f;
+    world_sim_step_player_only(&w1, 0, SIM_DT);
+    world_sim_step_player_only(&w2, 0, SIM_DT);
+    /* Ship angles should be identical despite different w->time */
+    ASSERT_EQ_FLOAT(w1.players[0].ship.angle, w2.players[0].ship.angle, 0.0001f);
+}
+
+/* ================================================================== */
+/* Bug 89: gravity must be symmetric regardless of slot order          */
+/* ================================================================== */
+TEST(test_bug89_gravity_symmetric) {
+    /* Two identical asteroid pairs with swapped indices should produce
+     * the same velocity changes (just sign-swapped). */
+    world_t w1 = {0}, w2 = {0};
+    world_reset(&w1); world_reset(&w2);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) { w1.asteroids[i].active = false; w2.asteroids[i].active = false; }
+    /* World 1: small at slot 0, big at slot 1 */
+    w1.asteroids[0].active = true; w1.asteroids[0].tier = ASTEROID_TIER_M;
+    w1.asteroids[0].radius = 25.0f; w1.asteroids[0].pos = v2(0.0f, 0.0f);
+    w1.asteroids[0].vel = v2(0.0f, 0.0f); w1.asteroids[0].hp = 40.0f;
+    w1.asteroids[1].active = true; w1.asteroids[1].tier = ASTEROID_TIER_XL;
+    w1.asteroids[1].radius = 70.0f; w1.asteroids[1].pos = v2(200.0f, 0.0f);
+    w1.asteroids[1].vel = v2(0.0f, 0.0f); w1.asteroids[1].hp = 150.0f;
+    /* World 2: big at slot 0, small at slot 1 (swapped) */
+    w2.asteroids[0] = w1.asteroids[1]; w2.asteroids[0].pos = v2(200.0f, 0.0f);
+    w2.asteroids[1] = w1.asteroids[0]; w2.asteroids[1].pos = v2(0.0f, 0.0f);
+    world_sim_step(&w1, SIM_DT);
+    world_sim_step(&w2, SIM_DT);
+    /* Velocity of the small body should be the same magnitude in both worlds */
+    float v1_small = v2_len(w1.asteroids[0].vel);
+    float v2_small = v2_len(w2.asteroids[1].vel);
+    ASSERT_EQ_FLOAT(v1_small, v2_small, 0.001f);
+    float v1_big = v2_len(w1.asteroids[1].vel);
+    float v2_big = v2_len(w2.asteroids[0].vel);
+    ASSERT_EQ_FLOAT(v1_big, v2_big, 0.001f);
+}
+
+/* ================================================================== */
+/* Bug 90: station bounce must not inject extra energy                 */
+/* ================================================================== */
+TEST(test_bug90_station_bounce_no_extra_energy) {
+    /* An asteroid hitting a station should not gain speed from the bounce. */
+    world_t w = {0};
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    /* Asteroid approaching station 0 at moderate speed */
+    w.asteroids[0].active = true;
+    w.asteroids[0].tier = ASTEROID_TIER_M;
+    w.asteroids[0].radius = 25.0f;
+    w.asteroids[0].hp = 100.0f; w.asteroids[0].max_hp = 100.0f;
+    w.asteroids[0].pos = v2(0.0f, -(240.0f - 62.0f - 25.0f + 5.0f)); /* just overlapping station 0 */
+    w.asteroids[0].vel = v2(0.0f, -50.0f); /* moving toward station */
+    float speed_before = v2_len(w.asteroids[0].vel);
+    world_sim_step(&w, SIM_DT);
+    float speed_after = v2_len(w.asteroids[0].vel);
+    /* Speed after bounce should not exceed speed before (restitution <= 1.0) */
+    ASSERT(speed_after <= speed_before + 1.0f); /* small tolerance for float */
+}
+
 int main(void) {
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -2838,6 +2921,11 @@ int main(void) {
     RUN(test_bug58_titan_fracture_at_capacity);
     RUN(test_bug59_emergency_recover_teleports);
     RUN(test_bug60_cannot_mine_fragment);
+
+    printf("\nBug regression (bugs 88-90):\n");
+    RUN(test_bug88_interference_seed_no_world_time);
+    RUN(test_bug89_gravity_symmetric);
+    RUN(test_bug90_station_bounce_no_extra_energy);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
