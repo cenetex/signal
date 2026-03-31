@@ -83,4 +83,9 @@ static inline float wrap_angle(float angle) {
     return angle;
 }
 
+static inline float lerp_angle(float a, float b, float t) {
+    float diff = wrap_angle(b - a);
+    return wrap_angle(a + diff * t);
+}
+
 #endif

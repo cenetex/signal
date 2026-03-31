@@ -224,7 +224,7 @@ static const float SHIP_COLLECT_UPGRADE_STEP = 5.0f;
 static const float UPGRADE_BASE_PRODUCT = 8.0f;
 static const int SHIP_UPGRADE_MAX_LEVEL = 4;
 
-enum { SIM_MAX_EVENTS = 16 };
+enum { SIM_MAX_EVENTS = 64 };
 
 typedef enum {
     SIM_EVENT_FRACTURE,

@@ -83,7 +83,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
 
     const uint8_t *data = (const uint8_t *)wm->data.buf;
     int len = (int)wm->data.len;
-    if (len < 1) return;
+    if (len < 1 || pid < 0 || pid >= MAX_PLAYERS) return;
 
     switch (data[0]) {
     case NET_MSG_INPUT:

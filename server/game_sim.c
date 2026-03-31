@@ -843,12 +843,12 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     sp->ship.angle = PI_F * 0.5f;
     dock_ship(w, sp);
     SIM_LOG("[sim] player %d emergency recovered\n", sp->id);
-    emit_event(w, (sim_event_t){.type = SIM_EVENT_DAMAGE, .player_id = sp->id});
 }
 
 static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
     if (damage <= 0.0f) return;
     sp->ship.hull = fmaxf(0.0f, sp->ship.hull - damage);
+    emit_event(w, (sim_event_t){.type = SIM_EVENT_DAMAGE, .player_id = sp->id, .damage.amount = damage});
     if (sp->ship.hull <= 0.01f) emergency_recover_ship(w, sp);
 }
 

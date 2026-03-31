@@ -665,15 +665,18 @@ TEST(test_bug10_damage_event_has_amount) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
-    w.players[0].ship.pos = w.stations[0].pos;
-    w.players[0].ship.vel = v2(2000.0f, 0.0f);
-    for (int i = 0; i < 30; i++)
-        world_sim_step(&w, 1.0f / 120.0f);
-    /* Check if any damage event was emitted with amount > 0 */
+    /* Place ship above station, moving fast into it */
+    w.players[0].ship.pos = v2(w.stations[0].pos.x, w.stations[0].pos.y + 80.0f);
+    w.players[0].ship.vel = v2(0.0f, -2000.0f);
+    /* Damage happens on first collision tick — check events immediately */
     bool found = false;
-    for (int i = 0; i < w.events.count; i++) {
-        if (w.events.events[i].type == SIM_EVENT_DAMAGE && w.events.events[i].damage.amount > 0.0f)
-            found = true;
+    for (int tick = 0; tick < 10; tick++) {
+        world_sim_step(&w, 1.0f / 120.0f);
+        for (int i = 0; i < w.events.count; i++) {
+            if (w.events.events[i].type == SIM_EVENT_DAMAGE && w.events.events[i].damage.amount > 0.0f)
+                found = true;
+        }
+        if (found) break;
     }
     ASSERT(found);
 }
