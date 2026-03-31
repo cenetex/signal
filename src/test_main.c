@@ -852,6 +852,8 @@ TEST(test_roundtrip_stations) {
     station_t stations[MAX_STATIONS];
     memset(stations, 0, sizeof(stations));
 
+    /* Mark station 0 as active so it gets serialized */
+    stations[0].signal_range = 2200.0f;
     stations[0].ore_buffer[0] = 45.5f;
     stations[0].ore_buffer[1] = 12.3f;
     stations[0].ore_buffer[2] = 78.9f;
@@ -862,8 +864,8 @@ TEST(test_roundtrip_stations) {
     int len = serialize_stations(buf, stations);
 
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_STATIONS);
-    ASSERT_EQ_INT(buf[1], MAX_STATIONS);
-    ASSERT_EQ_INT(len, 2 + MAX_STATIONS * STATION_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[1], 1); /* only 1 active station */
+    ASSERT_EQ_INT(len, 2 + 1 * STATION_RECORD_SIZE);
 
     uint8_t *p = &buf[2];
     ASSERT_EQ_INT(p[0], 0);
@@ -881,11 +883,14 @@ TEST(test_bug92_station_record_size_matches_buffer) {
      * expected number of bytes. */
     station_t stations[MAX_STATIONS];
     memset(stations, 0, sizeof(stations));
+    /* Empty stations should produce 0 records */
     uint8_t buf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
     int len = serialize_stations(buf, stations);
-    ASSERT_EQ_INT(len, 2 + MAX_STATIONS * STATION_RECORD_SIZE);
-    /* Verify no write past the buffer end by checking the function
-     * returns a value that fits within the allocated buffer. */
+    ASSERT_EQ_INT(len, 2); /* header only, no records */
+    /* With active stations */
+    for (int i = 0; i < 3; i++) stations[i].signal_range = 1000.0f;
+    len = serialize_stations(buf, stations);
+    ASSERT_EQ_INT(len, 2 + 3 * STATION_RECORD_SIZE);
     ASSERT((size_t)len <= sizeof(buf));
 }
 
@@ -944,10 +949,10 @@ TEST(test_parse_input_too_short) {
     memset(&intent, 0, sizeof(intent));
     intent.thrust = 99.0f;  /* canary value */
 
-    uint8_t msg[4] = { NET_MSG_INPUT, 0xFF, 0, 0 };
-    parse_input(msg, 4, &intent);
+    uint8_t msg[2] = { NET_MSG_INPUT, 0xFF };
+    parse_input(msg, 2, &intent);
 
-    /* Too short — should not modify intent */
+    /* Too short (< 3 bytes) — should not modify intent */
     ASSERT_EQ_FLOAT(intent.thrust, 99.0f, 0.01f);
 }
 
@@ -2695,6 +2700,28 @@ TEST(test_field_respawn_starts_beyond_signal_edge) {
     ASSERT(w.asteroids[spawned].active);
 }
 
+TEST(test_asteroids_drift_toward_stronger_signal) {
+    world_t w = {0};
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    for (int s = 1; s < MAX_STATIONS; s++) w.stations[s].signal_range = 0.0f;
+
+    asteroid_t *a = &w.asteroids[0];
+    a->active = true;
+    a->tier = ASTEROID_TIER_XL;
+    a->radius = 60.0f;
+    a->hp = 150.0f;
+    a->max_hp = 150.0f;
+    a->pos = v2(1800.0f, -240.0f);
+    a->vel = v2(0.0f, 0.0f);
+
+    float start_x = a->pos.x;
+    for (int i = 0; i < 1200; i++) world_sim_step(&w, SIM_DT);
+
+    ASSERT(a->pos.x < start_x - 30.0f);
+    ASSERT(a->vel.x < -1.0f);
+}
+
 /* ================================================================== */
 /* STRATEGIC TDD: Contracts (#70) — define the economic behavior      */
 /* ================================================================== */
@@ -3219,6 +3246,7 @@ int main(void) {
     RUN(test_asteroid_outside_signal_despawns);
     RUN(test_npc_miners_avoid_zero_signal_asteroids);
     RUN(test_field_respawn_starts_beyond_signal_edge);
+    RUN(test_asteroids_drift_toward_stronger_signal);
 
     printf("\nBug regression batch 6 (bugs 51-60):\n");
     RUN(test_bug51_npc_cargo_zeroed_on_dock);

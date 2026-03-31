@@ -216,11 +216,12 @@ _Static_assert(
 );
 
 static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
-    buf[0] = NET_MSG_WORLD_STATIONS;
-    buf[1] = (uint8_t)MAX_STATIONS;
+    int count = 0;
     for (int i = 0; i < MAX_STATIONS; i++) {
-        uint8_t *p = &buf[2 + i * STATION_RECORD_SIZE];
         const station_t *st = &stations[i];
+        /* Skip empty slots: no signal, no scaffold, no dock radius */
+        if (st->signal_range <= 0.0f && !st->scaffold && st->dock_radius <= 0.0f) continue;
+        uint8_t *p = &buf[2 + count * STATION_RECORD_SIZE];
         p[0] = (uint8_t)i;
         /* ore_buffer: 3 raw ores */
         write_f32_le(&p[1],  st->ore_buffer[0]);
@@ -234,8 +235,11 @@ static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
         for (int pr = 0; pr < PRODUCT_COUNT; pr++) {
             write_f32_le(&p[37 + pr * 4], st->product_stock[pr]);
         }
+        count++;
     }
-    return 2 + MAX_STATIONS * STATION_RECORD_SIZE;
+    buf[0] = NET_MSG_WORLD_STATIONS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * STATION_RECORD_SIZE;
 }
 
 /*
@@ -287,15 +291,14 @@ static inline int serialize_player_ship(uint8_t *buf, uint8_t id, const server_p
 /* ------------------------------------------------------------------ */
 
 /*
- * INPUT message (7 bytes):
- * [type:1][flags:1][angle:f32][action:1]
+ * INPUT message (3 bytes, current):
+ * [type:1][flags:1][action:1]
  *
- * Falls back to 6 bytes for legacy clients (no action byte).
+ * Legacy (7 bytes): [type:1][flags:1][angle:f32][action:1]
  */
 static inline void parse_input(const uint8_t *data, int len, input_intent_t *intent) {
-    if (len < 6) return;
+    if (len < 3) return;
     uint8_t flags = data[1];
-    (void)read_f32_le(&data[2]);
 
     /* Overwrite continuous inputs every message. */
     if (flags & NET_INPUT_THRUST)
@@ -311,9 +314,14 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
         intent->turn = -1.0f;
     intent->mine = (flags & NET_INPUT_FIRE) != 0;
 
-    /* OR-in one-shot actions — they accumulate until the sim consumes them. */
-    if (len >= 7) {
-        uint8_t action = data[6];
+    /* OR-in one-shot actions — they accumulate until the sim consumes them.
+     * 3-byte format (current): action at byte 2.
+     * 7-byte format (legacy): action at byte 6 (angle at bytes 2-5, ignored).
+     * 6-byte format (legacy, no action): no action byte present. */
+    {
+        uint8_t action = 0;
+        if (len == 3) action = data[2];
+        else if (len >= 7) action = data[6];
         switch (action) {
         case NET_ACTION_DOCK:
         case NET_ACTION_LAUNCH:

@@ -132,9 +132,8 @@ void net_shutdown(void);
 
 /* Send the local player's input state to the server.
  * flags: bitmask of NET_INPUT_* values.
- * angle: current ship angle in radians.
  * action: station interaction (0=none, 1=dock, 2=launch, etc.) */
-void net_send_input(uint8_t flags, float angle, uint8_t action);
+void net_send_input(uint8_t flags, uint8_t action);
 
 /* Send the local player's full state to the server for relay. */
 void net_send_state(float x, float y, float vx, float vy, float angle);

@@ -355,13 +355,12 @@ static void ws_send_binary(const uint8_t* data, int len) {
     emscripten_websocket_send_binary(ws_socket, (void*)data, (unsigned int)len);
 }
 
-void net_send_input(uint8_t flags, float angle, uint8_t action) {
-    uint8_t buf[7];
+void net_send_input(uint8_t flags, uint8_t action) {
+    uint8_t buf[3];
     buf[0] = NET_MSG_INPUT;
     buf[1] = flags;
-    write_f32_le(&buf[2], angle);
-    buf[6] = action;
-    ws_send_binary(buf, 7);
+    buf[2] = action;
+    ws_send_binary(buf, 3);
 }
 
 void net_send_state(float x, float y, float vx, float vy, float angle) {
@@ -454,13 +453,12 @@ void net_shutdown(void) {
     net_state.connected = false;
 }
 
-void net_send_input(uint8_t flags, float angle, uint8_t action) {
-    uint8_t buf[7];
+void net_send_input(uint8_t flags, uint8_t action) {
+    uint8_t buf[3];
     buf[0] = NET_MSG_INPUT;
     buf[1] = flags;
-    write_f32_le(&buf[2], angle);
-    buf[6] = action;
-    ws_send_binary(buf, 7);
+    buf[2] = action;
+    ws_send_binary(buf, 3);
 }
 
 void net_send_state(float x, float y, float vx, float vy, float angle) {

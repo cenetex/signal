@@ -106,6 +106,7 @@ typedef struct {
     float net_send_timer;
     uint8_t pending_net_action;
     float dock_predict_timer;   /* ignore server docked state while > 0 */
+    float net_input_timer;      /* throttle input sends to ~30 Hz */
     station_tab_t station_tab;  /* active tab when docked */
     bool was_docked;            /* track dock transitions for tab reset */
     /* --- Interpolation (multiplayer) --- */
@@ -2657,22 +2658,26 @@ static void frame(void) {
         if (was_connected && !net_is_connected()) {
             set_notice("Connection lost. Continuing offline.");
         }
-        /* Send input before sim so the server processes it sooner. */
+        /* Send input at ~30 Hz, or immediately if there's a one-shot action. */
         {
-            uint8_t flags = 0;
-            if (g.input.key_down[SAPP_KEYCODE_W] || g.input.key_down[SAPP_KEYCODE_UP])
-                flags |= NET_INPUT_THRUST;
-            if (g.input.key_down[SAPP_KEYCODE_S] || g.input.key_down[SAPP_KEYCODE_DOWN])
-                flags |= NET_INPUT_BRAKE;
-            if (g.input.key_down[SAPP_KEYCODE_A] || g.input.key_down[SAPP_KEYCODE_LEFT])
-                flags |= NET_INPUT_LEFT;
-            if (g.input.key_down[SAPP_KEYCODE_D] || g.input.key_down[SAPP_KEYCODE_RIGHT])
-                flags |= NET_INPUT_RIGHT;
-            if (g.input.key_down[SAPP_KEYCODE_SPACE])
-                flags |= NET_INPUT_FIRE;
             uint8_t action = g.pending_net_action;
-            g.pending_net_action = 0;
-            net_send_input(flags, LOCAL_PLAYER.ship.angle, action);
+            g.net_input_timer -= frame_dt;
+            if (g.net_input_timer <= 0.0f || action != 0) {
+                g.net_input_timer = 1.0f / 30.0f;
+                uint8_t flags = 0;
+                if (g.input.key_down[SAPP_KEYCODE_W] || g.input.key_down[SAPP_KEYCODE_UP])
+                    flags |= NET_INPUT_THRUST;
+                if (g.input.key_down[SAPP_KEYCODE_S] || g.input.key_down[SAPP_KEYCODE_DOWN])
+                    flags |= NET_INPUT_BRAKE;
+                if (g.input.key_down[SAPP_KEYCODE_A] || g.input.key_down[SAPP_KEYCODE_LEFT])
+                    flags |= NET_INPUT_LEFT;
+                if (g.input.key_down[SAPP_KEYCODE_D] || g.input.key_down[SAPP_KEYCODE_RIGHT])
+                    flags |= NET_INPUT_RIGHT;
+                if (g.input.key_down[SAPP_KEYCODE_SPACE])
+                    flags |= NET_INPUT_FIRE;
+                g.pending_net_action = 0;
+                net_send_input(flags, action);
+            }
         }
     }
 
