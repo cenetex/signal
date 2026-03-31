@@ -20,6 +20,15 @@ if(NOT GIT_HASH)
 endif()
 
 if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
+    # --- Headless game server ---
+    add_executable(space_miner_server server/main.c server/game_sim.c server/mongoose.c src/commodity.c src/ship.c src/economy.c src/asteroid.c)
+    target_include_directories(space_miner_server PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
+    target_compile_definitions(space_miner_server PRIVATE GIT_HASH="${GIT_HASH}" SIM_LOG_ENABLED=0)
+    if(NOT MSVC)
+        target_link_libraries(space_miner_server PRIVATE m)
+        target_compile_options(space_miner_server PRIVATE -Wall -Wextra -Wpedantic)
+    endif()
+
     add_executable(space_miner_test src/test_main.c src/commodity.c src/ship.c src/economy.c src/asteroid.c server/game_sim.c)
     target_include_directories(space_miner_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
     if(NOT MSVC)
