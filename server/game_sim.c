@@ -1409,6 +1409,19 @@ void world_sim_step(world_t *w, float dt) {
 }
 
 /* ================================================================== */
+/* Public: world_sim_step_player_only                                 */
+/* ================================================================== */
+
+void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
+    w->events.count = 0;
+    w->time += dt;
+    if (player_idx < 0 || player_idx >= MAX_PLAYERS) return;
+    server_player_t *sp = &w->players[player_idx];
+    if (!sp->connected) return;
+    step_player(w, sp, dt);
+}
+
+/* ================================================================== */
 /* Public: world_reset                                                */
 /* ================================================================== */
 

@@ -97,6 +97,19 @@ typedef struct {
     float net_send_timer;
     uint8_t pending_net_action;
     float dock_predict_timer;   /* ignore server docked state while > 0 */
+    /* --- Interpolation (multiplayer) --- */
+    struct {
+        asteroid_t prev[MAX_ASTEROIDS];
+        asteroid_t curr[MAX_ASTEROIDS];
+        float t;
+        float interval;
+    } asteroid_interp;
+    struct {
+        npc_ship_t prev[MAX_NPC_SHIPS];
+        npc_ship_t curr[MAX_NPC_SHIPS];
+        float t;
+        float interval;
+    } npc_interp;
 } game_t;
 
 static game_t g;
@@ -907,6 +920,10 @@ static void reset_world(void) {
     player_init_ship(&LOCAL_PLAYER, &g.world);
     LOCAL_PLAYER.connected = true;
 
+    memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
+    g.asteroid_interp.interval = 0.1f;
+    memset(&g.npc_interp, 0, sizeof(g.npc_interp));
+    g.npc_interp.interval = 0.1f;
 
     g.thrusting = false;
     g.notice[0] = '\0';
@@ -1977,12 +1994,37 @@ static void sim_step(float dt) {
         return;
     }
 
-    /* One code path: feed input, run sim, sync out.
-     * Single player: this is authoritative.
-     * Multiplayer: this is prediction — server corrections arrive
-     * via network callbacks and overwrite g.world state. */
     LOCAL_PLAYER.input = intent;
-    world_sim_step(&g.world, dt);
+    if (g.multiplayer_enabled && net_is_connected()) {
+        /* Multiplayer: only predict local player movement.
+         * Asteroids, NPCs, production are server-authoritative
+         * and interpolated from server snapshots. */
+        world_sim_step_player_only(&g.world, g.local_player_slot, dt);
+
+        /* Mining beam visual only — no HP deduction */
+        if (!LOCAL_PLAYER.docked && intent.mine) {
+            vec2 forward = v2_from_angle(LOCAL_PLAYER.ship.angle);
+            vec2 muzzle = v2_add(LOCAL_PLAYER.ship.pos,
+                v2_scale(forward, ship_hull_def(&LOCAL_PLAYER.ship)->ship_radius + 8.0f));
+            LOCAL_PLAYER.beam_active = true;
+            LOCAL_PLAYER.beam_start = muzzle;
+            if (LOCAL_PLAYER.hover_asteroid >= 0) {
+                asteroid_t *a = &g.world.asteroids[LOCAL_PLAYER.hover_asteroid];
+                vec2 to_a = v2_sub(a->pos, muzzle);
+                LOCAL_PLAYER.beam_end = v2_sub(a->pos, v2_scale(v2_norm(to_a), a->radius * 0.85f));
+                LOCAL_PLAYER.beam_hit = true;
+            } else {
+                LOCAL_PLAYER.beam_end = v2_add(muzzle, v2_scale(forward, 170.0f));
+            }
+        }
+
+        /* Advance interpolation timers */
+        g.asteroid_interp.t += dt / fmaxf(g.asteroid_interp.interval, 0.01f);
+        g.npc_interp.t += dt / fmaxf(g.npc_interp.interval, 0.01f);
+    } else {
+        /* Single player: full authoritative sim */
+        world_sim_step(&g.world, dt);
+    }
 
     g.thrusting = (intent.thrust > 0.0f) && !LOCAL_PLAYER.docked;
 
@@ -2108,8 +2150,12 @@ static void init(void) {
 /* --- Multiplayer: world state sync callbacks and broadcast --- */
 
 static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
+    /* Shift current -> previous for interpolation */
+    memcpy(g.asteroid_interp.prev, g.asteroid_interp.curr, sizeof(g.asteroid_interp.prev));
+    g.asteroid_interp.interval = fmaxf(g.asteroid_interp.t * g.asteroid_interp.interval, 0.05f);
+    if (g.asteroid_interp.interval > 0.2f) g.asteroid_interp.interval = 0.1f;
+    g.asteroid_interp.t = 0.0f;
 
-    /* Mark which indices were received. */
     bool received[MAX_ASTEROIDS];
     memset(received, 0, sizeof(received));
 
@@ -2118,7 +2164,7 @@ static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count)
         if (idx >= MAX_ASTEROIDS) continue;
         received[idx] = true;
 
-        asteroid_t* a = &g.world.asteroids[idx];
+        asteroid_t* a = &g.asteroid_interp.curr[idx];
         a->active = (asteroids[i].flags & 1) != 0;
         a->fracture_child = (asteroids[i].flags & (1 << 1)) != 0;
         a->tier = (asteroid_tier_t)((asteroids[i].flags >> 2) & 0x7);
@@ -2127,26 +2173,29 @@ static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count)
         a->pos.y = asteroids[i].y;
         a->vel.x = asteroids[i].vx;
         a->vel.y = asteroids[i].vy;
-        /* Accept server HP only if lower (server is authoritative for
-         * damage).  Prevents flicker when local mining prediction runs
-         * ahead of the server broadcast. */
-        if (asteroids[i].hp < a->hp || !a->active)
-            a->hp = asteroids[i].hp;
+        a->hp    = asteroids[i].hp;
         a->ore   = asteroids[i].ore;
         a->radius = asteroids[i].radius;
         if (a->max_hp < a->hp) a->max_hp = a->hp;
         if (a->max_ore < a->ore) a->max_ore = a->ore;
     }
 
-    /* Deactivate asteroids not in the update. */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!received[i]) {
-            g.world.asteroids[i].active = false;
+            g.asteroid_interp.curr[i].active = false;
         }
     }
+
+    /* Also copy to world for game logic (targeting, beam hit checks) */
+    memcpy(g.world.asteroids, g.asteroid_interp.curr, sizeof(g.world.asteroids));
 }
 
 static void apply_remote_npcs(const NetNpcState* npcs, int count) {
+    memcpy(g.npc_interp.prev, g.npc_interp.curr, sizeof(g.npc_interp.prev));
+    g.npc_interp.interval = fmaxf(g.npc_interp.t * g.npc_interp.interval, 0.05f);
+    if (g.npc_interp.interval > 0.2f) g.npc_interp.interval = 0.1f;
+    g.npc_interp.t = 0.0f;
+
     bool received[MAX_NPC_SHIPS];
     memset(received, 0, sizeof(received));
 
@@ -2155,7 +2204,7 @@ static void apply_remote_npcs(const NetNpcState* npcs, int count) {
         if (idx >= MAX_NPC_SHIPS) continue;
         received[idx] = true;
 
-        npc_ship_t* n = &g.world.npc_ships[idx];
+        npc_ship_t* n = &g.npc_interp.curr[idx];
         n->active = (npcs[i].flags & 1) != 0;
         n->role = (npc_role_t)((npcs[i].flags >> 1) & 0x3);
         n->state = (npc_state_t)((npcs[i].flags >> 3) & 0x7);
@@ -2170,9 +2219,11 @@ static void apply_remote_npcs(const NetNpcState* npcs, int count) {
 
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!received[i]) {
-            g.world.npc_ships[i].active = false;
+            g.npc_interp.curr[i].active = false;
         }
     }
+
+    memcpy(g.world.npc_ships, g.npc_interp.curr, sizeof(g.world.npc_ships));
 }
 
 static void apply_remote_stations(uint8_t index, const float* ore_buf, const float* inventory, const float* product_stock) {
@@ -2358,7 +2409,39 @@ static void render_ui(void) {
     draw_hud();
 }
 
+static void interpolate_world_for_render(void) {
+    if (!g.multiplayer_enabled || !net_is_connected()) return;
+    float t = clampf(g.asteroid_interp.t, 0.0f, 1.2f);
+
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *dst = &g.world.asteroids[i];
+        const asteroid_t *prev = &g.asteroid_interp.prev[i];
+        const asteroid_t *curr = &g.asteroid_interp.curr[i];
+        /* Use current state for everything except position */
+        *dst = *curr;
+        if (prev->active && curr->active) {
+            dst->pos.x = lerpf(prev->pos.x, curr->pos.x, t);
+            dst->pos.y = lerpf(prev->pos.y, curr->pos.y, t);
+            dst->rotation = prev->rotation + (curr->rotation - prev->rotation) * t;
+        }
+    }
+
+    float nt = clampf(g.npc_interp.t, 0.0f, 1.2f);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        npc_ship_t *dst = &g.world.npc_ships[i];
+        const npc_ship_t *prev = &g.npc_interp.prev[i];
+        const npc_ship_t *curr = &g.npc_interp.curr[i];
+        *dst = *curr;
+        if (prev->active && curr->active) {
+            dst->pos.x = lerpf(prev->pos.x, curr->pos.x, nt);
+            dst->pos.y = lerpf(prev->pos.y, curr->pos.y, nt);
+            dst->angle = lerp_angle(prev->angle, curr->angle, nt);
+        }
+    }
+}
+
 static void render_frame(void) {
+    interpolate_world_for_render();
     render_world();
     render_ui();
 

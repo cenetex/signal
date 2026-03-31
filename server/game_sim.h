@@ -98,6 +98,7 @@ typedef struct {
 
 void world_reset(world_t *w);
 void world_sim_step(world_t *w, float dt);
+void world_sim_step_player_only(world_t *w, int player_idx, float dt);
 void player_init_ship(server_player_t *sp, world_t *w);
 
 #endif /* GAME_SIM_H */
