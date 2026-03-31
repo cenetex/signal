@@ -184,7 +184,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
 /* ------------------------------------------------------------------ */
 
 static void broadcast_player_states(void) {
-    uint8_t buf[22];
+    uint8_t buf[24];
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!world.players[i].connected) continue;
         int len = serialize_player_state(buf, (uint8_t)i, &world.players[i]);
