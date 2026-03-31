@@ -2347,7 +2347,7 @@ static void init(void) {
         server_url = emscripten_run_script_string(
             "(() => {"
             "  const p = new URLSearchParams(window.location.search);"
-            "  return p.get('server') || 'wss://signal-ws.ratimics.com/ws';"
+            "  return p.get('server') || window.SIGNAL_SERVER || '';"
             "})()");
 #else
         /* Native: check SIGNAL_SERVER environment variable or command line */

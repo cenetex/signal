@@ -83,6 +83,8 @@ jobs:
           cp web/index.html _site/index.html
           cp build-web/space_miner.js _site/space_miner.js
           cp build-web/space_miner.wasm _site/space_miner.wasm
+          # Inject server URL so the client binary doesn't hardcode it
+          sed -i 's|<head>|<head><script>window.SIGNAL_SERVER="wss://signal-ws.ratimics.com/ws";</script>|' _site/index.html
 
       - name: Configure AWS credentials
         uses: aws-actions/configure-aws-credentials@v4
