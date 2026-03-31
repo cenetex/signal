@@ -1152,16 +1152,61 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
 /* step_player -- one player per tick                                 */
 /* ================================================================== */
 
+/* Calculate signal interference from nearby objects.  Returns 0..1
+ * where 0 = clean signal, 1 = maximum interference. */
+static float calc_signal_interference(const world_t *w, const server_player_t *sp) {
+    float interference = 0.0f;
+    vec2 pos = sp->ship.pos;
+
+    /* Other players — strong interference at close range */
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (!w->players[i].connected || w->players[i].docked) continue;
+        if (&w->players[i] == sp) continue;
+        float d = sqrtf(v2_dist_sq(pos, w->players[i].ship.pos));
+        if (d < 200.0f) {
+            float strength = (200.0f - d) / 200.0f;
+            interference += strength * 0.5f;
+        }
+    }
+
+    /* Large asteroids — mass creates interference */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active || a->tier == ASTEROID_TIER_S) continue;
+        float range = a->radius * 3.0f;
+        float d = sqrtf(v2_dist_sq(pos, a->pos));
+        if (d < range) {
+            float strength = (range - d) / range;
+            float mass_factor = a->radius / 80.0f;  /* bigger = more interference */
+            interference += strength * mass_factor * 0.15f;
+        }
+    }
+
+    return clampf(interference, 0.0f, 0.7f);  /* cap at 70% interference */
+}
+
 static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->hover_asteroid = -1;
     sp->nearby_fragments = 0;
     sp->tractor_fragments = 0;
 
     if (!sp->docked) {
+        /* Signal interference: nearby objects add noise to controls */
+        float interference = calc_signal_interference(w, sp);
+        float turn_input = sp->input.turn;
+        float thrust_input = sp->input.thrust;
+        if (interference > 0.01f) {
+            /* Add jitter to controls proportional to interference */
+            float noise_turn = (randf(w) - 0.5f) * 2.0f * interference;
+            float noise_thrust = (randf(w) - 0.5f) * 0.6f * interference;
+            turn_input += noise_turn;
+            thrust_input = clampf(thrust_input + noise_thrust, -1.0f, 1.0f);
+        }
+
         vec2 forward = ship_forward(&sp->ship);
-        step_ship_rotation(&sp->ship, dt, sp->input.turn);
+        step_ship_rotation(&sp->ship, dt, turn_input);
         forward = ship_forward(&sp->ship);           /* refresh after rotation */
-        step_ship_thrust(&sp->ship, dt, sp->input.thrust, forward);
+        step_ship_thrust(&sp->ship, dt, thrust_input, forward);
         step_ship_motion(&sp->ship, dt);
         resolve_world_collisions(w, sp);
         update_docking_state(w, sp, dt);
@@ -1330,7 +1375,7 @@ void world_sim_step(world_t *w, float dt) {
         step_player(w, &w->players[p], dt);
     }
 
-    /* Player-player collision resolution (Bug 40) */
+    /* Player-player collision: ramming damage + signal interference */
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!w->players[i].connected || w->players[i].docked) continue;
         for (int j = i + 1; j < MAX_PLAYERS; j++) {
@@ -1348,9 +1393,16 @@ void world_sim_step(world_t *w, float dt) {
             w->players[j].ship.pos = v2_sub(w->players[j].ship.pos, v2_scale(normal, overlap * 0.5f));
             float rel_vel = v2_dot(v2_sub(w->players[i].ship.vel, w->players[j].ship.vel), normal);
             if (rel_vel < 0.0f) {
+                float impact = -rel_vel;
                 vec2 impulse = v2_scale(normal, rel_vel * 0.6f);
                 w->players[i].ship.vel = v2_sub(w->players[i].ship.vel, impulse);
                 w->players[j].ship.vel = v2_add(w->players[j].ship.vel, impulse);
+                /* Ramming damage — both ships take damage based on impact speed */
+                if (impact > SHIP_COLLISION_DAMAGE_THRESHOLD * 0.7f) {
+                    float dmg = (impact - SHIP_COLLISION_DAMAGE_THRESHOLD * 0.7f) * SHIP_COLLISION_DAMAGE_SCALE;
+                    apply_ship_damage(w, &w->players[i], dmg);
+                    apply_ship_damage(w, &w->players[j], dmg);
+                }
             }
         }
     }
