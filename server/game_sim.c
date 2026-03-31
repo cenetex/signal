@@ -1123,11 +1123,13 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
         sp->beam_end = v2_sub(a->pos, v2_scale(normal, a->radius * 0.85f));
         sp->beam_hit = true;
         emit_event(w, (sim_event_t){.type = SIM_EVENT_MINING_TICK, .player_id = sp->id});
-        float mined = ship_mining_rate(&sp->ship) * dt;
-        mined = fminf(mined, a->hp);
-        a->hp -= mined;
-        if (a->hp <= 0.01f)
-            fracture_asteroid(w, sp->hover_asteroid, normal);
+        if (!w->player_only_mode) {
+            float mined = ship_mining_rate(&sp->ship) * dt;
+            mined = fminf(mined, a->hp);
+            a->hp -= mined;
+            if (a->hp <= 0.01f)
+                fracture_asteroid(w, sp->hover_asteroid, normal);
+        }
     } else {
         sp->beam_end = v2_add(muzzle, v2_scale(forward, MINING_RANGE));
     }
@@ -1196,9 +1198,17 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         float turn_input = sp->input.turn;
         float thrust_input = sp->input.thrust;
         if (interference > 0.01f) {
-            /* Add jitter to controls proportional to interference */
-            float noise_turn = (randf(w) - 0.5f) * 2.0f * interference;
-            float noise_thrust = (randf(w) - 0.5f) * 0.6f * interference;
+            /* Add jitter to controls proportional to interference.
+             * Use a local RNG seeded from player position to avoid
+             * mutating world RNG state (bug 47). */
+            uint32_t local_rng = (uint32_t)(sp->ship.pos.x * 1000.0f) ^ (uint32_t)(sp->ship.pos.y * 1000.0f) ^ (uint32_t)(w->time * 1000.0f);
+            if (local_rng == 0) local_rng = 0xA341316Cu;
+            local_rng ^= local_rng << 13; local_rng ^= local_rng >> 17; local_rng ^= local_rng << 5;
+            float r1 = (float)(local_rng & 0x00FFFFFFu) / 16777215.0f;
+            local_rng ^= local_rng << 13; local_rng ^= local_rng >> 17; local_rng ^= local_rng << 5;
+            float r2 = (float)(local_rng & 0x00FFFFFFu) / 16777215.0f;
+            float noise_turn = (r1 - 0.5f) * 2.0f * interference;
+            float noise_thrust = (r2 - 0.5f) * 0.6f * interference;
             turn_input += noise_turn;
             thrust_input = clampf(thrust_input + noise_thrust, -1.0f, 1.0f);
         }
@@ -1247,15 +1257,16 @@ static void step_asteroid_gravity(world_t *w, float dt) {
             if (dist_sq > 400.0f * 400.0f || dist_sq < 1.0f) continue;
             float dist = sqrtf(dist_sq);
             vec2 normal = v2_scale(delta, 1.0f / dist);
-            float strength = (b->radius * b->radius) / dist_sq * 8.0f;
-            if (strength > 60.0f) strength = 60.0f; /* clamp max force */
-            vec2 force_a = v2_scale(normal, strength * dt);
-            /* Symmetric: b pulls a toward it, a pulls b toward it */
-            float strength_b = (a->radius * a->radius) / dist_sq * 8.0f;
-            if (strength_b > 60.0f) strength_b = 60.0f;
-            vec2 force_b = v2_scale(normal, -strength_b * dt);
-            a->vel = v2_add(a->vel, force_a);
-            b->vel = v2_add(b->vel, force_b);
+            float mass_a = a->radius * a->radius;
+            float mass_b = b->radius * b->radius;
+            /* Gravitational force proportional to both masses */
+            float force_mag = (mass_a * mass_b) / dist_sq * 8.0f;
+            if (force_mag > 60.0f * mass_a) force_mag = 60.0f * mass_a; /* clamp */
+            /* F = ma, so acceleration = force / mass */
+            vec2 accel_a = v2_scale(normal, (force_mag / mass_a) * dt);
+            vec2 accel_b = v2_scale(normal, -(force_mag / mass_b) * dt);
+            a->vel = v2_add(a->vel, accel_a);
+            b->vel = v2_add(b->vel, accel_b);
         }
     }
 
@@ -1268,9 +1279,14 @@ static void step_asteroid_gravity(world_t *w, float dt) {
             float dist_sq = v2_len_sq(delta);
             if (dist_sq > 800.0f * 800.0f || dist_sq < 1.0f) continue;
             float dist = sqrtf(dist_sq);
+            /* Don't attract asteroids that are at or inside collision boundary */
+            float min_dist = a->radius + w->stations[s].radius;
+            if (dist < min_dist + 10.0f) continue;
             vec2 normal = v2_scale(delta, 1.0f / dist);
-            float strength = w->stations[s].radius / (dist * 0.8f) * 2.0f;
-            a->vel = v2_add(a->vel, v2_scale(normal, strength * dt));
+            float force = w->stations[s].radius / (dist * 0.8f) * 2.0f;
+            float mass_a = a->radius * a->radius;
+            float accel = force / mass_a;
+            a->vel = v2_add(a->vel, v2_scale(normal, accel * dt));
         }
     }
 }
@@ -1333,13 +1349,18 @@ static void resolve_asteroid_station_collisions(world_t *w) {
             if (dist < 0.001f) { dist = 0.001f; delta = v2(1.0f, 0.0f); }
             vec2 normal = v2_scale(delta, 1.0f / dist);
             float overlap = min_dist - dist;
-            /* Push asteroid out (station is immovable) */
-            a->pos = v2_add(a->pos, v2_scale(normal, overlap));
+            /* Push asteroid out (station is immovable) with extra margin */
+            float push = overlap + 8.0f;
+            a->pos = v2_add(a->pos, v2_scale(normal, push));
             /* Bounce velocity with restitution 0.6 */
             float vel_along = v2_dot(a->vel, normal);
             float impact_speed = fabsf(vel_along);
             if (vel_along < 0.0f) {
                 a->vel = v2_sub(a->vel, v2_scale(normal, vel_along * 1.6f));
+            }
+            /* Always give a minimum outward velocity to prevent sticking */
+            if (vel_along < 20.0f) {
+                a->vel = v2_add(a->vel, v2_scale(normal, 20.0f));
             }
             /* High-speed impact damages asteroid */
             if (impact_speed > 100.0f) {
@@ -1414,11 +1435,13 @@ void world_sim_step(world_t *w, float dt) {
 
 void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
     w->events.count = 0;
-    w->time += dt;
+    /* Do NOT advance w->time — world time is server-authoritative (bug 46) */
     if (player_idx < 0 || player_idx >= MAX_PLAYERS) return;
     server_player_t *sp = &w->players[player_idx];
     if (!sp->connected) return;
+    w->player_only_mode = true;  /* suppress mining HP and world RNG mutation */
     step_player(w, sp, dt);
+    w->player_only_mode = false;
 }
 
 /* ================================================================== */

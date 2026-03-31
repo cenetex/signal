@@ -86,6 +86,7 @@ typedef struct {
     float time;
     float field_spawn_timer;
     sim_events_t events;
+    bool player_only_mode;
 } world_t;
 
 /* ------------------------------------------------------------------ */

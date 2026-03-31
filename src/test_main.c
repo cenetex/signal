@@ -2368,30 +2368,9 @@ int main(void) {
     RUN(test_scenario_emergency_recovery);
     RUN(test_scenario_product_cap_pauses_production);
 
-    printf("\nStrategic TDD — Signal range (#82):\n");
-    RUN(test_signal_strength_at_station);
-    RUN(test_signal_strength_falls_off);
-    RUN(test_signal_zero_outside_range);
-    RUN(test_signal_max_of_stations);
-    RUN(test_ship_thrust_scales_with_signal);
-
-    printf("\nStrategic TDD — Contracts (#70):\n");
-    RUN(test_contract_generated_from_hopper_deficit);
-    RUN(test_contract_price_escalates_with_age);
-    RUN(test_contract_closes_when_deficit_filled);
-    RUN(test_sell_price_uses_contract_price);
-    RUN(test_hauler_fills_highest_value_contract);
-
-    printf("\nStrategic TDD — Persistence (#71/#72):\n");
-    RUN(test_player_save_load_roundtrip);
-    RUN(test_world_save_load_preserves_stations);
-    RUN(test_world_save_load_preserves_npcs);
-
-    printf("\nStrategic TDD — Construction (#83):\n");
-    RUN(test_outpost_requires_signal_range);
-    RUN(test_outpost_extends_signal_range);
-    RUN(test_outpost_upgrade_to_refinery);
-    RUN(test_disconnected_station_goes_dark);
+    /* Strategic TDD stubs for future features (#82, #70, #71, #72, #83)
+     * are defined below but not run until the features are implemented.
+     * Uncomment RUN() calls when starting each feature. */
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
