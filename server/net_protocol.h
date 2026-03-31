@@ -141,14 +141,15 @@ static inline int serialize_asteroids(uint8_t *buf, const asteroid_t *asteroids)
 
 /*
  * WORLD_NPCS message:
- * [type:1][count:1] + count * 23-byte records
+ * [type:1][count:1] + count * 26-byte records
+ * (23 original + 3 tint bytes)
  */
 static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
     int count = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
         const npc_ship_t *n = &npcs[i];
-        uint8_t *p = &buf[2 + count * 23];
+        uint8_t *p = &buf[2 + count * 26];
         p[0] = (uint8_t)i;
         p[1] = 1; /* active */
         p[1] |= (((uint8_t)n->role & 0x3) << 1);
@@ -160,11 +161,14 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
         write_f32_le(&p[14], n->vel.y);
         write_f32_le(&p[18], n->angle);
         p[22] = (uint8_t)(int8_t)n->target_asteroid;
+        p[23] = (uint8_t)(n->tint_r * 255.0f);
+        p[24] = (uint8_t)(n->tint_g * 255.0f);
+        p[25] = (uint8_t)(n->tint_b * 255.0f);
         count++;
     }
     buf[0] = NET_MSG_WORLD_NPCS;
     buf[1] = (uint8_t)count;
-    return 2 + count * 23;
+    return 2 + count * 26;
 }
 
 /*

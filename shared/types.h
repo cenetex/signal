@@ -170,6 +170,7 @@ typedef struct {
     int dest_station;
     float state_timer;
     bool thrusting;
+    float tint_r, tint_g, tint_b;  /* accumulated ore color (starts white) */
 } npc_ship_t;
 
 typedef struct {

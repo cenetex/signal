@@ -1141,9 +1141,10 @@ static void draw_npc_ship(const npc_ship_t* npc) {
     const hull_def_t* hull = npc_hull_def(npc);
     bool is_hauler = npc->hull_class == HULL_CLASS_HAULER;
     float scale = hull->render_scale;
-    float hull_r = is_hauler ? 0.40f : 0.92f;
-    float hull_g = is_hauler ? 0.72f : 0.68f;
-    float hull_b = is_hauler ? 0.90f : 0.28f;
+    /* Use accumulated ore tint — starts white, absorbs cargo colors over time */
+    float hull_r = npc->tint_r;
+    float hull_g = npc->tint_g;
+    float hull_b = npc->tint_b;
 
     sgl_push_matrix();
     sgl_translate(npc->pos.x, npc->pos.y, 0.0f);
@@ -2269,6 +2270,9 @@ static void apply_remote_npcs(const NetNpcState* npcs, int count) {
         n->vel.y = npcs[i].vy;
         n->angle = npcs[i].angle;
         n->target_asteroid = (int)npcs[i].target_asteroid;
+        n->tint_r = (float)npcs[i].tint_r / 255.0f;
+        n->tint_g = (float)npcs[i].tint_g / 255.0f;
+        n->tint_b = (float)npcs[i].tint_b / 255.0f;
     }
 
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {

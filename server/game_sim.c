@@ -49,8 +49,8 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .ingot_capacity= 40.0f,
         .mining_rate   = 0.0f,
         .tractor_range = 0.0f,
-        .ship_radius   = 18.0f,
-        .render_scale  = 0.85f,
+        .ship_radius   = 22.0f,
+        .render_scale  = 1.15f,
     },
     [HULL_CLASS_NPC_MINER] = {
         .name          = "Mining Drone",
@@ -1070,6 +1070,34 @@ static void step_npc_ships(world_t *w, float dt) {
             npc_resolve_station_collisions(w, npc);
             npc_resolve_asteroid_collisions(w, npc);
         }
+
+        /* Blend tint toward dominant cargo color.
+         * Ore colors: ferrite=(0.55, 0.25, 0.18), cuprite=(0.22, 0.30, 0.50), crystal=(0.25, 0.48, 0.30) */
+        static const float ore_r[3] = {0.55f, 0.22f, 0.25f};
+        static const float ore_g[3] = {0.25f, 0.30f, 0.48f};
+        static const float ore_b[3] = {0.18f, 0.50f, 0.30f};
+        float total = 0.0f;
+        float target_r = 1.0f, target_g = 1.0f, target_b = 1.0f;
+        if (npc->role == NPC_ROLE_MINER) {
+            for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) total += npc->cargo[c];
+        } else {
+            for (int c = 0; c < INGOT_COUNT; c++) total += npc->ingots[c];
+        }
+        if (total > 1.0f) {
+            target_r = 0.0f; target_g = 0.0f; target_b = 0.0f;
+            int count = (npc->role == NPC_ROLE_MINER) ? COMMODITY_RAW_ORE_COUNT : INGOT_COUNT;
+            const float *cargo = (npc->role == NPC_ROLE_MINER) ? npc->cargo : npc->ingots;
+            for (int c = 0; c < count; c++) {
+                float w_c = cargo[c] / total;
+                target_r += ore_r[c] * w_c;
+                target_g += ore_g[c] * w_c;
+                target_b += ore_b[c] * w_c;
+            }
+        }
+        float blend = 0.3f * dt;  /* slow blend toward cargo color */
+        npc->tint_r = lerpf(npc->tint_r, target_r, blend);
+        npc->tint_g = lerpf(npc->tint_g, target_g, blend);
+        npc->tint_b = lerpf(npc->tint_b, target_b, blend);
     }
 }
 
@@ -1526,6 +1554,9 @@ static void step_asteroid_gravity(world_t *w, float dt) {
             float dist_sq = v2_len_sq(delta);
             if (dist_sq > 400.0f * 400.0f || dist_sq < 1.0f) continue;
             float dist = sqrtf(dist_sq);
+            /* Don't attract asteroids at or inside collision boundary */
+            float min_dist = a->radius + b->radius;
+            if (dist < min_dist + 5.0f) continue;
             vec2 normal = v2_scale(delta, 1.0f / dist);
             float mass_a = a->radius * a->radius;
             float mass_b = b->radius * b->radius;
@@ -1868,38 +1899,40 @@ void world_reset(world_t *w) {
     for (int i = 2; i < FIELD_ASTEROID_TARGET && i < MAX_ASTEROIDS; i++)
         seed_field_asteroid_of_tier(w, &w->asteroids[i], random_field_asteroid_tier(w));
 
-    /* --- NPC ships (1 miner + 2 haulers) --- */
-    for (int i = 0; i < 1; i++) {
-        npc_ship_t *npc = &w->npc_ships[i];
+    /* --- NPC ships (1 miner + 1 hauler) --- */
+    {
+        npc_ship_t *npc = &w->npc_ships[0];
         npc->active       = true;
         npc->role          = NPC_ROLE_MINER;
         npc->hull_class    = HULL_CLASS_NPC_MINER;
         npc->state         = NPC_STATE_DOCKED;
-        npc->pos           = v2_add(w->stations[0].pos, v2(30.0f * (float)(i - 1), -(w->stations[0].radius + HULL_DEFS[HULL_CLASS_NPC_MINER].ship_radius + 50.0f)));
+        npc->pos           = v2_add(w->stations[0].pos, v2(-30.0f, -(w->stations[0].radius + HULL_DEFS[HULL_CLASS_NPC_MINER].ship_radius + 50.0f)));
         npc->vel           = v2(0.0f, 0.0f);
         npc->angle         = PI_F * 0.5f;
         npc->target_asteroid = -1;
         npc->home_station  = 0;
-        npc->state_timer   = NPC_DOCK_TIME + (float)i * 2.0f;
+        npc->state_timer   = NPC_DOCK_TIME;
         npc->thrusting     = false;
+        npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
     }
-    for (int i = 0; i < 2; i++) {
-        npc_ship_t *npc = &w->npc_ships[1 + i];
+    {
+        npc_ship_t *npc = &w->npc_ships[1];
         npc->active       = true;
         npc->role          = NPC_ROLE_HAULER;
         npc->hull_class    = HULL_CLASS_HAULER;
         npc->state         = NPC_STATE_DOCKED;
-        npc->pos           = v2_add(w->stations[0].pos, v2(50.0f * (float)(i == 0 ? -1 : 1), -(w->stations[0].radius + HULL_DEFS[HULL_CLASS_HAULER].ship_radius + 70.0f)));
+        npc->pos           = v2_add(w->stations[0].pos, v2(-50.0f, -(w->stations[0].radius + HULL_DEFS[HULL_CLASS_HAULER].ship_radius + 70.0f)));
         npc->vel           = v2(0.0f, 0.0f);
         npc->angle         = PI_F * 0.5f;
         npc->target_asteroid = -1;
         npc->home_station  = 0;
-        npc->dest_station  = 1 + i;
-        npc->state_timer   = HAULER_DOCK_TIME + (float)i * 3.0f;
+        npc->dest_station  = 1;
+        npc->state_timer   = HAULER_DOCK_TIME;
         npc->thrusting     = false;
+        npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
     }
 
-    SIM_LOG("[sim] world reset complete (%d asteroids, %d NPCs)\n", FIELD_ASTEROID_TARGET, 3);
+    SIM_LOG("[sim] world reset complete (%d asteroids, %d NPCs)\n", FIELD_ASTEROID_TARGET, 2);
 }
 
 /* ================================================================== */
@@ -1925,7 +1958,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 2
+#define SAVE_VERSION 3
 
 typedef struct {
     uint32_t magic;
@@ -1962,7 +1995,7 @@ bool world_load(world_t *w, const char *path) {
 
     save_header_t hdr;
     if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
-    if (hdr.magic != SAVE_MAGIC || (hdr.version != SAVE_VERSION && hdr.version != 1)) { fclose(f); return false; }
+    if (hdr.magic != SAVE_MAGIC || hdr.version < 1 || hdr.version > SAVE_VERSION) { fclose(f); return false; }
 
     w->rng = hdr.rng;
     w->time = hdr.time;
@@ -1970,7 +2003,21 @@ bool world_load(world_t *w, const char *path) {
 
     if (fread(w->stations, sizeof(w->stations), 1, f) != 1) { fclose(f); return false; }
     if (fread(w->asteroids, sizeof(w->asteroids), 1, f) != 1) { fclose(f); return false; }
-    if (fread(w->npc_ships, sizeof(w->npc_ships), 1, f) != 1) { fclose(f); return false; }
+    if (hdr.version >= 3) {
+        if (fread(w->npc_ships, sizeof(w->npc_ships), 1, f) != 1) { fclose(f); return false; }
+    } else {
+        /* v1/v2: npc_ship_t was 80 bytes (no tint fields) */
+        enum { OLD_NPC_SIZE = 80 };
+        uint8_t old_npcs[MAX_NPC_SHIPS * OLD_NPC_SIZE];
+        if (fread(old_npcs, OLD_NPC_SIZE * MAX_NPC_SHIPS, 1, f) != 1) { fclose(f); return false; }
+        memset(w->npc_ships, 0, sizeof(w->npc_ships));
+        for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+            memcpy(&w->npc_ships[i], &old_npcs[i * OLD_NPC_SIZE], OLD_NPC_SIZE);
+            w->npc_ships[i].tint_r = 1.0f;
+            w->npc_ships[i].tint_g = 1.0f;
+            w->npc_ships[i].tint_b = 1.0f;
+        }
+    }
     if (hdr.version >= 2) {
         if (fread(w->contracts, sizeof(w->contracts), 1, f) != 1) { fclose(f); return false; }
     } else {

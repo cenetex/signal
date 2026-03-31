@@ -220,7 +220,7 @@ static void broadcast_world(void) {
     broadcast(abuf, (size_t)alen);
 
     /* NPCs */
-    uint8_t nbuf[2 + MAX_NPC_SHIPS * 23];
+    uint8_t nbuf[2 + MAX_NPC_SHIPS * 26];
     int nlen = serialize_npcs(nbuf, world.npc_ships);
     broadcast(nbuf, (size_t)nlen);
 }

@@ -135,12 +135,12 @@ static void handle_message(const uint8_t* data, int len) {
         if (len < 2) break;
         {
             int count = (int)data[1];
-            int expected = 2 + count * 23;
+            int expected = 2 + count * 26;
             if (len < expected) break;
             if (net_state.callbacks.on_npcs) {
                 NetNpcState arr[6];
                 for (int i = 0; i < count && i < 6; i++) {
-                    const uint8_t* p = &data[2 + i * 23];
+                    const uint8_t* p = &data[2 + i * 26];
                     arr[i].index            = p[0];
                     arr[i].flags            = p[1];
                     arr[i].x                = read_f32_le(&p[2]);
@@ -149,6 +149,9 @@ static void handle_message(const uint8_t* data, int len) {
                     arr[i].vy               = read_f32_le(&p[14]);
                     arr[i].angle            = read_f32_le(&p[18]);
                     arr[i].target_asteroid  = (int8_t)p[22];
+                    arr[i].tint_r           = p[23];
+                    arr[i].tint_g           = p[24];
+                    arr[i].tint_b           = p[25];
                 }
                 net_state.callbacks.on_npcs(arr, count);
             }
