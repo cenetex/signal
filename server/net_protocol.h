@@ -33,6 +33,7 @@ enum {
     NET_INPUT_LEFT   = 1 << 1,
     NET_INPUT_RIGHT  = 1 << 2,
     NET_INPUT_FIRE   = 1 << 3,
+    NET_INPUT_BRAKE  = 1 << 4,
 };
 
 /* Station action byte values */
@@ -216,7 +217,12 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
     (void)read_f32_le(&data[2]);
 
     /* Overwrite continuous inputs every message. */
-    intent->thrust = (flags & NET_INPUT_THRUST) ? 1.0f : 0.0f;
+    if (flags & NET_INPUT_THRUST)
+        intent->thrust = 1.0f;
+    else if (flags & NET_INPUT_BRAKE)
+        intent->thrust = -1.0f;
+    else
+        intent->thrust = 0.0f;
     intent->turn = 0.0f;
     if ((flags & NET_INPUT_LEFT) && !(flags & NET_INPUT_RIGHT))
         intent->turn = 1.0f;

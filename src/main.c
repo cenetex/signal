@@ -96,6 +96,7 @@ typedef struct {
     bool multiplayer_enabled;
     float net_send_timer;
     uint8_t pending_net_action;
+    float dock_predict_timer;   /* ignore server docked state while > 0 */
 } game_t;
 
 static game_t g;
@@ -2009,12 +2010,15 @@ static void sim_step(float dt) {
     }
 
     step_notice_timer(dt);
+    if (g.dock_predict_timer > 0.0f)
+        g.dock_predict_timer = fmaxf(0.0f, g.dock_predict_timer - dt);
 
     /* In multiplayer, also queue one-shot actions for network send. */
     if (g.multiplayer_enabled && net_is_connected()) {
-        if (intent.interact)
+        if (intent.interact) {
             g.pending_net_action = LOCAL_PLAYER.docked ? 2 : 1;
-        else if (intent.service_sell)
+            g.dock_predict_timer = 0.5f;
+        } else if (intent.service_sell)
             g.pending_net_action = 3;
         else if (intent.service_repair)
             g.pending_net_action = 4;
@@ -2035,6 +2039,7 @@ static void apply_remote_npcs(const NetNpcState* npcs, int count);
 static void apply_remote_stations(uint8_t index, const float* ore_buf, const float* inventory, const float* product_stock);
 static void apply_remote_player_state(const NetPlayerState* state);
 static void apply_remote_player_ship(const NetPlayerShipState* state);
+static void sync_local_player_slot_from_network(void);
 
 static void init(void) {
     memset(&g, 0, sizeof(g));
@@ -2078,11 +2083,6 @@ static void init(void) {
             cbs.on_stations = apply_remote_stations;
             cbs.on_player_ship = apply_remote_player_ship;
             g.multiplayer_enabled = net_init(server_url, &cbs);
-            if (g.multiplayer_enabled) {
-                g.local_player_slot = (int)net_local_id();
-                LOCAL_PLAYER.connected = true;
-                player_init_ship(&LOCAL_PLAYER, &g.world);
-            }
         }
     }
 #endif
@@ -2167,20 +2167,22 @@ static void apply_remote_stations(uint8_t index, const float* ore_buf, const flo
 }
 
 static void apply_remote_player_state(const NetPlayerState* state) {
-    /* Apply server-authoritative position for the local player. */
-    if (state->player_id == net_local_id()) {
-        server_player_t* sp = &LOCAL_PLAYER;
-        sp->ship.pos.x = lerpf(sp->ship.pos.x, state->x, 0.3f);
-        sp->ship.pos.y = lerpf(sp->ship.pos.y, state->y, 0.3f);
-        sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.3f);
-        sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.3f);
-        sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.3f);
-    }
+    /* Reconcile local prediction with server-authoritative position. */
+    if (state->player_id != net_local_id() || state->player_id >= MAX_PLAYERS) return;
+
+    server_player_t* sp = &g.world.players[state->player_id];
+    sp->ship.pos.x = lerpf(sp->ship.pos.x, state->x, 0.2f);
+    sp->ship.pos.y = lerpf(sp->ship.pos.y, state->y, 0.2f);
+    sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.2f);
+    sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.2f);
+    sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.2f);
 }
 
 static void apply_remote_player_ship(const NetPlayerShipState* state) {
     /* Apply server-authoritative ship state for the local player. */
-    server_player_t* sp = &LOCAL_PLAYER;
+    if (state->player_id != net_local_id() || state->player_id >= MAX_PLAYERS) return;
+
+    server_player_t* sp = &g.world.players[state->player_id];
     sp->ship.hull = state->hull;
     sp->ship.credits = state->credits;
     sp->ship.mining_level = (int)state->mining_level;
@@ -2189,12 +2191,38 @@ static void apply_remote_player_ship(const NetPlayerShipState* state) {
     sp->ship.cargo[COMMODITY_FERRITE_ORE] = state->cargo_ferrite;
     sp->ship.cargo[COMMODITY_CUPRITE_ORE] = state->cargo_cuprite;
     sp->ship.cargo[COMMODITY_CRYSTAL_ORE] = state->cargo_crystal;
-    sp->docked = state->docked;
-    sp->current_station = (int)state->current_station;
-    if (sp->docked) {
-        sp->in_dock_range = true;
-        sp->nearby_station = sp->current_station;
+    /* Only apply server docked state when not mid-prediction (e.g. just
+     * pressed E to launch/dock).  Without this guard the 4 Hz ship-state
+     * broadcast can snap docked=true back before the server processes
+     * the launch action, pinning the player in place. */
+    if (g.dock_predict_timer <= 0.0f) {
+        sp->docked = state->docked;
+        sp->current_station = (int)state->current_station;
+        if (sp->docked) {
+            sp->in_dock_range = true;
+            sp->nearby_station = sp->current_station;
+        }
     }
+}
+
+static void sync_local_player_slot_from_network(void) {
+    uint8_t net_id = net_local_id();
+    if (net_id == 0xFF || net_id >= MAX_PLAYERS) return;
+    if (g.local_player_slot == (int)net_id) {
+        LOCAL_PLAYER.connected = true;
+        return;
+    }
+
+    server_player_t previous = g.world.players[g.local_player_slot];
+    server_player_t* assigned = &g.world.players[net_id];
+    memset(&g.world.players[g.local_player_slot], 0, sizeof(g.world.players[g.local_player_slot]));
+    g.local_player_slot = (int)net_id;
+    if (!assigned->connected && assigned->ship.hull <= 0.0f) {
+        *assigned = previous;
+    }
+    LOCAL_PLAYER.id = net_id;
+    LOCAL_PLAYER.connected = true;
+    LOCAL_PLAYER.conn = NULL;
 }
 
 /* --- Multiplayer: draw remote players as colored triangles --- */
@@ -2340,40 +2368,36 @@ static void advance_simulation_frame(float frame_dt) {
 static void frame(void) {
     float max_frame_dt = SIM_DT * (float)MAX_SIM_STEPS_PER_FRAME;
     float frame_dt = clampf((float)sapp_frame_duration(), 0.0f, max_frame_dt);
-    advance_simulation_frame(frame_dt);
-    audio_generate_stream(&g.audio);
 
-    /* --- Multiplayer: poll and send state --- */
+    /* --- Multiplayer: poll incoming and send input BEFORE sim --- */
     if (g.multiplayer_enabled) {
         bool was_connected = net_is_connected();
         net_poll();
+        sync_local_player_slot_from_network();
         if (was_connected && !net_is_connected()) {
             set_notice("Connection lost. Continuing offline.");
         }
-        /* Send local state at ~20 Hz (every 50ms). */
-        g.net_send_timer += frame_dt;
-        if (g.net_send_timer >= 0.05f) {
-            g.net_send_timer -= 0.05f;
-            net_send_state(LOCAL_PLAYER.ship.pos.x, LOCAL_PLAYER.ship.pos.y,
-                           LOCAL_PLAYER.ship.vel.x, LOCAL_PLAYER.ship.vel.y,
-                           LOCAL_PLAYER.ship.angle);
-            /* Also send input flags + station action. */
+        /* Send input before sim so the server processes it sooner. */
+        {
             uint8_t flags = 0;
-            uint8_t action = 0;
-            if (g.thrusting) flags |= NET_INPUT_THRUST;
+            if (g.input.key_down[SAPP_KEYCODE_W] || g.input.key_down[SAPP_KEYCODE_UP])
+                flags |= NET_INPUT_THRUST;
+            if (g.input.key_down[SAPP_KEYCODE_S] || g.input.key_down[SAPP_KEYCODE_DOWN])
+                flags |= NET_INPUT_BRAKE;
             if (g.input.key_down[SAPP_KEYCODE_A] || g.input.key_down[SAPP_KEYCODE_LEFT])
                 flags |= NET_INPUT_LEFT;
             if (g.input.key_down[SAPP_KEYCODE_D] || g.input.key_down[SAPP_KEYCODE_RIGHT])
                 flags |= NET_INPUT_RIGHT;
             if (g.input.key_down[SAPP_KEYCODE_SPACE])
                 flags |= NET_INPUT_FIRE;
-            /* Use queued one-shot action from sim_step (where key_pressed is valid). */
-            action = g.pending_net_action;
+            uint8_t action = g.pending_net_action;
             g.pending_net_action = 0;
             net_send_input(flags, LOCAL_PLAYER.ship.angle, action);
         }
-
     }
+
+    advance_simulation_frame(frame_dt);
+    audio_generate_stream(&g.audio);
 
     render_frame();
 }

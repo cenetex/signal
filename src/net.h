@@ -41,6 +41,7 @@ enum {
     NET_INPUT_LEFT   = 1 << 1,
     NET_INPUT_RIGHT  = 1 << 2,
     NET_INPUT_FIRE   = 1 << 3,
+    NET_INPUT_BRAKE  = 1 << 4,
 };
 
 typedef struct {
