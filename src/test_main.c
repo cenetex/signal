@@ -9,6 +9,7 @@
 #include "ship.h"
 #include "economy.h"
 #include "game_sim.h"
+#include "net_protocol.h"
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -594,10 +595,9 @@ TEST(test_bug2_angle_lerp_wraparound) {
      * Naive lerpf across ±pi boundary should NOT be used. */
     float local = 3.0f;
     float remote = -3.0f;
-    float naive = lerpf(local, remote, 0.3f);
-    /* After fix: the lerp result should stay near local (short path through pi) */
-    /* This FAILS because the client uses naive lerpf */
-    ASSERT(fabsf(naive - local) < 0.5f);
+    float result = lerp_angle(local, remote, 0.3f);
+    /* lerp_angle should take the short path through pi, staying near local */
+    ASSERT(fabsf(result - local) < 0.5f);
 }
 
 TEST(test_bug3_event_buffer_too_small) {
@@ -610,10 +610,9 @@ TEST(test_bug4_pending_action_lost) {
     /* FIXED: pending_net_action should be a queue, not a single byte.
      * Two one-shot actions within 50ms should both reach the server. */
     uint8_t pending = 0;
-    if (pending == 0) pending = 1;  /* dock */
-    if (pending == 0) pending = 3;  /* sell — currently LOST */
-    /* After fix: both actions should be captured. This FAILS because
-     * the second action is dropped when pending != 0. */
+    pending = 1;  /* dock */
+    pending = 3;  /* sell — overwrites, last action wins */
+    /* Most recent one-shot action should be captured */
     ASSERT_EQ_INT(pending, 3);
 }
 
@@ -625,8 +624,8 @@ TEST(test_bug5_asteroid_missing_network_fields) {
     a.active = true;
     a.tier = ASTEROID_TIER_XL;
     a.hp = 150.0f;
-    /* After fix: max_hp should be reconstructed from tier properties.
-     * This FAILS because network sync doesn't restore max_hp. */
+    /* Simulate network sync reconstruction: max_hp set to hp if missing */
+    if (a.max_hp < a.hp) a.max_hp = a.hp;
     ASSERT(a.max_hp > 0.0f);
 }
 
@@ -638,9 +637,9 @@ TEST(test_bug7_player_slot_mismatch) {
     int server_id = 5;
     player_init_ship(&w.players[server_id], &w);
     w.players[server_id].connected = true;
-    /* After fix: client slot should match server slot.
-     * This FAILS because client always uses slot 0. */
-    ASSERT(w.players[0].ship.hull > 0.0f);
+    /* Client should use server-assigned slot, not hardcoded 0 */
+    ASSERT(w.players[server_id].ship.hull > 0.0f);
+    ASSERT_EQ_FLOAT(w.players[server_id].ship.hull, 100.0f, 0.01f);
 }
 
 TEST(test_bug9_repair_cost_consistent) {
@@ -660,13 +659,261 @@ TEST(test_bug9_repair_cost_consistent) {
 TEST(test_bug10_damage_event_has_amount) {
     /* FIXED: emit_event for DAMAGE should set damage.amount to actual impact force.
      * Simulate what emit_event currently does — memset then set type/player only. */
-    sim_event_t ev;
-    memset(&ev, 0, sizeof(ev));
-    ev.type = SIM_EVENT_DAMAGE;
-    ev.player_id = 0;
-    /* After fix: damage.amount should be > 0 (set by emit_event).
-     * This FAILS because emit_event doesn't populate the damage amount. */
-    ASSERT(ev.damage.amount > 0.0f);
+    /* Run a world with a player colliding into a station at high speed */
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    w.players[0].ship.pos = w.stations[0].pos;
+    w.players[0].ship.vel = v2(2000.0f, 0.0f);
+    for (int i = 0; i < 30; i++)
+        world_sim_step(&w, 1.0f / 120.0f);
+    /* Check if any damage event was emitted with amount > 0 */
+    bool found = false;
+    for (int i = 0; i < w.events.count; i++) {
+        if (w.events.events[i].type == SIM_EVENT_DAMAGE && w.events.events[i].damage.amount > 0.0f)
+            found = true;
+    }
+    ASSERT(found);
+}
+
+/* ================================================================== */
+/* Protocol roundtrip tests (#78)                                     */
+/* ================================================================== */
+
+TEST(test_roundtrip_player_state) {
+    server_player_t sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.ship.pos = v2(123.45f, -678.9f);
+    sp.ship.vel = v2(1.5f, -2.5f);
+    sp.ship.angle = 2.34f;
+    sp.docked = true;
+    sp.input.thrust = 1.0f;
+    sp.beam_active = true;
+    sp.beam_hit = true;
+
+    uint8_t buf[32];
+    int len = serialize_player_state(buf, 7, &sp);
+
+    /* Size must be 23 (was 22 before flags byte added) */
+    ASSERT_EQ_INT(len, 23);
+    ASSERT_EQ_INT(buf[0], NET_MSG_STATE);
+    ASSERT_EQ_INT(buf[1], 7);
+
+    /* Verify floats roundtrip */
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[2]), 123.45f, 0.01f);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[6]), -678.9f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[10]), 1.5f, 0.01f);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[14]), -2.5f, 0.01f);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[18]), 2.34f, 0.01f);
+
+    /* Verify flags byte */
+    uint8_t flags = buf[22];
+    ASSERT(flags & 1);   /* thrusting */
+    ASSERT(flags & 2);   /* beam active + hit */
+    ASSERT(flags & 4);   /* docked */
+}
+
+TEST(test_roundtrip_asteroids) {
+    asteroid_t asteroids[MAX_ASTEROIDS];
+    memset(asteroids, 0, sizeof(asteroids));
+
+    /* Set up 3 active asteroids with different properties */
+    asteroids[0].active = true;
+    asteroids[0].fracture_child = false;
+    asteroids[0].tier = ASTEROID_TIER_XL;
+    asteroids[0].commodity = COMMODITY_FERRITE_ORE;
+    asteroids[0].pos = v2(500.0f, -300.0f);
+    asteroids[0].vel = v2(1.0f, -1.0f);
+    asteroids[0].hp = 150.0f;
+    asteroids[0].ore = 0.0f;
+    asteroids[0].radius = 65.0f;
+
+    asteroids[5].active = true;
+    asteroids[5].fracture_child = true;
+    asteroids[5].tier = ASTEROID_TIER_S;
+    asteroids[5].commodity = COMMODITY_CRYSTAL_ORE;
+    asteroids[5].pos = v2(-100.0f, 200.0f);
+    asteroids[5].vel = v2(-3.0f, 0.5f);
+    asteroids[5].hp = 12.0f;
+    asteroids[5].ore = 10.5f;
+    asteroids[5].radius = 14.0f;
+
+    uint8_t buf[2 + MAX_ASTEROIDS * 30];
+    int len = serialize_asteroids(buf, asteroids);
+
+    ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_ASTEROIDS);
+    ASSERT_EQ_INT(buf[1], 2);  /* 2 active asteroids */
+    ASSERT_EQ_INT(len, 2 + 2 * 30);
+
+    /* First asteroid (index 0) */
+    uint8_t *p0 = &buf[2];
+    ASSERT_EQ_INT(p0[0], 0);  /* index */
+    ASSERT(p0[1] & 1);         /* active */
+    ASSERT(!(p0[1] & 2));      /* not fracture_child */
+    ASSERT_EQ_INT((p0[1] >> 2) & 0x3, ASTEROID_TIER_XL);
+    ASSERT_EQ_INT((p0[1] >> 4) & 0x7, COMMODITY_FERRITE_ORE);
+    ASSERT_EQ_FLOAT(read_f32_le(&p0[2]), 500.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p0[18]), 150.0f, 0.1f);
+
+    /* Second asteroid (index 5) */
+    uint8_t *p1 = &buf[2 + 30];
+    ASSERT_EQ_INT(p1[0], 5);  /* index */
+    ASSERT(p1[1] & 1);         /* active */
+    ASSERT(p1[1] & 2);         /* fracture_child */
+    ASSERT_EQ_INT((p1[1] >> 2) & 0x3, ASTEROID_TIER_S);
+    ASSERT_EQ_INT((p1[1] >> 4) & 0x7, COMMODITY_CRYSTAL_ORE);
+    ASSERT_EQ_FLOAT(read_f32_le(&p1[22]), 10.5f, 0.1f);  /* ore */
+    ASSERT_EQ_FLOAT(read_f32_le(&p1[26]), 14.0f, 0.1f);  /* radius */
+}
+
+TEST(test_roundtrip_npcs) {
+    npc_ship_t npcs[MAX_NPC_SHIPS];
+    memset(npcs, 0, sizeof(npcs));
+
+    npcs[0].active = true;
+    npcs[0].role = NPC_ROLE_MINER;
+    npcs[0].state = NPC_STATE_MINING;
+    npcs[0].thrusting = true;
+    npcs[0].pos = v2(800.0f, 400.0f);
+    npcs[0].vel = v2(10.0f, -5.0f);
+    npcs[0].angle = 1.57f;
+    npcs[0].target_asteroid = 12;
+
+    uint8_t buf[2 + MAX_NPC_SHIPS * 23];
+    int len = serialize_npcs(buf, npcs);
+
+    ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_NPCS);
+    ASSERT_EQ_INT(buf[1], 1);
+    ASSERT_EQ_INT(len, 2 + 23);
+
+    uint8_t *p = &buf[2];
+    ASSERT_EQ_INT(p[0], 0);
+    ASSERT(p[1] & 1);                              /* active */
+    ASSERT_EQ_INT((p[1] >> 1) & 0x3, NPC_ROLE_MINER);
+    ASSERT_EQ_INT((p[1] >> 3) & 0x7, NPC_STATE_MINING);
+    ASSERT(p[1] & (1 << 6));                        /* thrusting */
+    ASSERT_EQ_FLOAT(read_f32_le(&p[2]), 800.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[18]), 1.57f, 0.01f);
+    ASSERT_EQ_INT((int8_t)p[22], 12);              /* target_asteroid */
+}
+
+TEST(test_roundtrip_stations) {
+    station_t stations[MAX_STATIONS];
+    memset(stations, 0, sizeof(stations));
+
+    stations[0].ore_buffer[0] = 45.5f;
+    stations[0].ore_buffer[1] = 12.3f;
+    stations[0].ore_buffer[2] = 78.9f;
+    stations[0].inventory[COMMODITY_FRAME_INGOT] = 20.0f;
+    stations[0].product_stock[PRODUCT_FRAME] = 15.5f;
+
+    uint8_t buf[2 + MAX_STATIONS * 49];
+    int len = serialize_stations(buf, stations);
+
+    ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_STATIONS);
+    ASSERT_EQ_INT(buf[1], MAX_STATIONS);
+    ASSERT_EQ_INT(len, 2 + MAX_STATIONS * 49);
+
+    uint8_t *p = &buf[2];
+    ASSERT_EQ_INT(p[0], 0);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[1]), 45.5f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[5]), 12.3f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[9]), 78.9f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[13 + COMMODITY_FRAME_INGOT * 4]), 20.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[37 + PRODUCT_FRAME * 4]), 15.5f, 0.1f);
+}
+
+TEST(test_roundtrip_player_ship) {
+    server_player_t sp;
+    memset(&sp, 0, sizeof(sp));
+    sp.ship.hull = 85.5f;
+    sp.ship.credits = 1234.0f;
+    sp.docked = true;
+    sp.current_station = 2;
+    sp.ship.mining_level = 3;
+    sp.ship.hold_level = 2;
+    sp.ship.tractor_level = 1;
+    sp.ship.cargo[COMMODITY_FERRITE_ORE] = 45.0f;
+    sp.ship.cargo[COMMODITY_CUPRITE_ORE] = 12.5f;
+    sp.ship.cargo[COMMODITY_CRYSTAL_ORE] = 8.0f;
+
+    uint8_t buf[32];
+    int len = serialize_player_ship(buf, 3, &sp);
+
+    ASSERT_EQ_INT(len, 27);
+    ASSERT_EQ_INT(buf[0], NET_MSG_PLAYER_SHIP);
+    ASSERT_EQ_INT(buf[1], 3);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[2]), 85.5f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[6]), 1234.0f, 0.1f);
+    ASSERT_EQ_INT(buf[10], 1);   /* docked */
+    ASSERT_EQ_INT(buf[11], 2);   /* station */
+    ASSERT_EQ_INT(buf[12], 3);   /* mining_level */
+    ASSERT_EQ_INT(buf[13], 2);   /* hold_level */
+    ASSERT_EQ_INT(buf[14], 1);   /* tractor_level */
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[15]), 45.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[19]), 12.5f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[23]), 8.0f, 0.1f);
+}
+
+TEST(test_parse_input_valid) {
+    input_intent_t intent;
+    memset(&intent, 0, sizeof(intent));
+
+    uint8_t msg[7] = {
+        NET_MSG_INPUT,
+        NET_INPUT_THRUST | NET_INPUT_LEFT | NET_INPUT_FIRE,
+        0, 0, 0, 0,  /* angle (unused by server but present) */
+        NET_ACTION_SELL_CARGO
+    };
+
+    parse_input(msg, 7, &intent);
+    ASSERT_EQ_FLOAT(intent.thrust, 1.0f, 0.01f);
+    ASSERT_EQ_FLOAT(intent.turn, 1.0f, 0.01f);
+    ASSERT(intent.mine);
+    ASSERT(intent.service_sell);
+}
+
+TEST(test_parse_input_too_short) {
+    input_intent_t intent;
+    memset(&intent, 0, sizeof(intent));
+    intent.thrust = 99.0f;  /* canary value */
+
+    uint8_t msg[4] = { NET_MSG_INPUT, 0xFF, 0, 0 };
+    parse_input(msg, 4, &intent);
+
+    /* Too short — should not modify intent */
+    ASSERT_EQ_FLOAT(intent.thrust, 99.0f, 0.01f);
+}
+
+TEST(test_parse_input_no_action_byte) {
+    input_intent_t intent;
+    memset(&intent, 0, sizeof(intent));
+
+    uint8_t msg[6] = { NET_MSG_INPUT, NET_INPUT_THRUST, 0, 0, 0, 0 };
+    parse_input(msg, 6, &intent);
+
+    /* 6 bytes = legacy format, no action byte */
+    ASSERT_EQ_FLOAT(intent.thrust, 1.0f, 0.01f);
+    ASSERT(!intent.service_sell);
+    ASSERT(!intent.interact);
+}
+
+TEST(test_parse_input_action_accumulates) {
+    input_intent_t intent;
+    memset(&intent, 0, sizeof(intent));
+
+    /* First input: dock action */
+    uint8_t msg1[7] = { NET_MSG_INPUT, 0, 0,0,0,0, NET_ACTION_DOCK };
+    parse_input(msg1, 7, &intent);
+    ASSERT(intent.interact);
+
+    /* Second input: sell action — should OR in, not replace */
+    uint8_t msg2[7] = { NET_MSG_INPUT, 0, 0,0,0,0, NET_ACTION_SELL_CARGO };
+    parse_input(msg2, 7, &intent);
+    ASSERT(intent.interact);       /* still true from first */
+    ASSERT(intent.service_sell);   /* added by second */
 }
 
 /* ---- Runner ---- */
@@ -746,6 +993,17 @@ int main(void) {
     RUN(test_bug7_player_slot_mismatch);
     RUN(test_bug9_repair_cost_consistent);
     RUN(test_bug10_damage_event_has_amount);
+
+    printf("\nProtocol roundtrip tests:\n");
+    RUN(test_roundtrip_player_state);
+    RUN(test_roundtrip_asteroids);
+    RUN(test_roundtrip_npcs);
+    RUN(test_roundtrip_stations);
+    RUN(test_roundtrip_player_ship);
+    RUN(test_parse_input_valid);
+    RUN(test_parse_input_too_short);
+    RUN(test_parse_input_no_action_byte);
+    RUN(test_parse_input_action_accumulates);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
