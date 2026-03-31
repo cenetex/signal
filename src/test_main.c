@@ -1487,6 +1487,231 @@ TEST(test_bug40_no_player_player_collision) {
     ASSERT(dist > 10.0f);
 }
 
+/* ================================================================== */
+/* Physics & client-server bugs batch 5 (bugs 41-50)                  */
+/* ================================================================== */
+
+/* Bug 41: gravity violates Newton's third law — asymmetric forces */
+TEST(test_bug41_gravity_asymmetric) {
+    /* Two asteroids: a (radius 60) and b (radius 20).
+     * Force on a from b should equal force on b from a (Newton's third law).
+     * Currently: force_a uses b->radius², force_b uses a->radius².
+     * These are different. The system gains/loses net momentum. */
+    world_t w = {0};
+    world_reset(&w);
+    /* Clear field, place two asteroids */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    w.asteroids[0].active = true; w.asteroids[0].tier = ASTEROID_TIER_XL;
+    w.asteroids[0].radius = 60.0f; w.asteroids[0].pos = v2(0.0f, 0.0f);
+    w.asteroids[0].vel = v2(0.0f, 0.0f);
+    w.asteroids[1].active = true; w.asteroids[1].tier = ASTEROID_TIER_M;
+    w.asteroids[1].radius = 20.0f; w.asteroids[1].pos = v2(200.0f, 0.0f);
+    w.asteroids[1].vel = v2(0.0f, 0.0f);
+    /* Measure total momentum before */
+    float mom_before = 60.0f*60.0f * w.asteroids[0].vel.x + 20.0f*20.0f * w.asteroids[1].vel.x;
+    world_sim_step(&w, SIM_DT);
+    float mom_after = 60.0f*60.0f * w.asteroids[0].vel.x + 20.0f*20.0f * w.asteroids[1].vel.x;
+    /* After fix: momentum should be conserved (forces equal and opposite).
+     * FAILS because forces are asymmetric. */
+    ASSERT_EQ_FLOAT(mom_before, mom_after, 0.01f);
+}
+
+/* Bug 42: station attraction doesn't depend on asteroid mass */
+TEST(test_bug42_station_gravity_ignores_mass) {
+    world_t w = {0};
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    /* Tiny fragment and huge XL at same distance from station */
+    w.asteroids[0].active = true; w.asteroids[0].tier = ASTEROID_TIER_S;
+    w.asteroids[0].radius = 12.0f; w.asteroids[0].pos = v2(400.0f, -240.0f);
+    w.asteroids[0].vel = v2(0.0f, 0.0f);
+    w.asteroids[1].active = true; w.asteroids[1].tier = ASTEROID_TIER_XL;
+    w.asteroids[1].radius = 70.0f; w.asteroids[1].pos = v2(-400.0f, -240.0f);
+    w.asteroids[1].vel = v2(0.0f, 0.0f);
+    world_sim_step(&w, SIM_DT);
+    float accel_s = v2_len(w.asteroids[0].vel);
+    float accel_xl = v2_len(w.asteroids[1].vel);
+    /* After fix: fragment should accelerate faster (less mass, same force).
+     * Currently both get same velocity change because mass isn't considered. */
+    ASSERT(accel_s > accel_xl * 1.5f);
+}
+
+/* Bug 43: fracture inside station collision loop can spawn children inside stations */
+TEST(test_bug43_fracture_children_inside_station) {
+    world_t w = {0};
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    /* Place an asteroid heading fast toward station 0 */
+    w.asteroids[0].active = true; w.asteroids[0].tier = ASTEROID_TIER_L;
+    w.asteroids[0].radius = 40.0f; w.asteroids[0].hp = 5.0f; /* low HP — will fracture */
+    w.asteroids[0].max_hp = 80.0f;
+    w.asteroids[0].commodity = COMMODITY_FERRITE_ORE;
+    w.asteroids[0].pos = v2(w.stations[0].radius + 42.0f, -240.0f);
+    w.asteroids[0].vel = v2(-200.0f, 0.0f);
+    w.asteroids[0].seed = 42.0f;
+    /* Run one tick — should collide, fracture, spawn children */
+    world_sim_step(&w, SIM_DT);
+    /* Check: no active asteroid should be inside any station */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) continue;
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            float dist = v2_len(v2_sub(w.asteroids[i].pos, w.stations[s].pos));
+            float min_dist = w.asteroids[i].radius + w.stations[s].radius;
+            ASSERT(dist >= min_dist * 0.9f); /* allow small overlap tolerance */
+        }
+    }
+}
+
+/* Bug 44: gravity + collision oscillation — touching asteroids vibrate */
+TEST(test_bug44_gravity_collision_oscillation) {
+    world_t w = {0};
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    /* Two asteroids barely touching */
+    w.asteroids[0].active = true; w.asteroids[0].tier = ASTEROID_TIER_L;
+    w.asteroids[0].radius = 40.0f; w.asteroids[0].hp = 80.0f; w.asteroids[0].max_hp = 80.0f;
+    w.asteroids[0].pos = v2(0.0f, 0.0f); w.asteroids[0].vel = v2(0.0f, 0.0f);
+    w.asteroids[1].active = true; w.asteroids[1].tier = ASTEROID_TIER_L;
+    w.asteroids[1].radius = 40.0f; w.asteroids[1].hp = 80.0f; w.asteroids[1].max_hp = 80.0f;
+    w.asteroids[1].pos = v2(82.0f, 0.0f); w.asteroids[1].vel = v2(0.0f, 0.0f);
+    /* Run 5 seconds — should settle, not oscillate */
+    float max_speed = 0.0f;
+    for (int i = 0; i < 600; i++) {
+        world_sim_step(&w, SIM_DT);
+        float sa = v2_len(w.asteroids[0].vel);
+        float sb = v2_len(w.asteroids[1].vel);
+        if (sa > max_speed) max_speed = sa;
+        if (sb > max_speed) max_speed = sb;
+    }
+    float final_speed = v2_len(w.asteroids[0].vel) + v2_len(w.asteroids[1].vel);
+    /* After fix: asteroids should settle (speed → 0), not vibrate.
+     * FAILS if gravity keeps pulling them back after collision pushes apart. */
+    ASSERT(final_speed < 1.0f);
+}
+
+/* Bug 45: world_sim_step_player_only still runs mining damage */
+TEST(test_bug45_player_only_still_mines) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    /* Position near an asteroid */
+    int target = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (w.asteroids[i].active && w.asteroids[i].tier != ASTEROID_TIER_S) {
+            target = i; break;
+        }
+    }
+    ASSERT(target >= 0);
+    w.players[0].ship.pos = v2_add(w.asteroids[target].pos, v2(-50.0f, 0.0f));
+    w.players[0].ship.angle = 0.0f;
+    w.players[0].input.mine = true;
+    float hp_before = w.asteroids[target].hp;
+    /* Use player-only step (what multiplayer client should use) */
+    world_sim_step_player_only(&w, 0, SIM_DT);
+    /* After fix: player_only step should NOT deduct asteroid HP.
+     * Mining visual yes. HP deduction no. That's the server's job.
+     * FAILS because step_player → step_mining_system → deducts HP. */
+    ASSERT_EQ_FLOAT(w.asteroids[target].hp, hp_before, 0.01f);
+}
+
+/* Bug 46: world_sim_step_player_only advances w->time causing client time drift */
+TEST(test_bug46_player_only_advances_time) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    float time_before = w.time;
+    world_sim_step_player_only(&w, 0, SIM_DT);
+    /* After fix: player_only step should NOT advance world time.
+     * World time is server-authoritative. Client should track its own render time.
+     * FAILS because line 1417 does w->time += dt. */
+    ASSERT_EQ_FLOAT(w.time, time_before, 0.001f);
+}
+
+/* Bug 47: signal interference uses world RNG — diverges client/server */
+TEST(test_bug47_interference_uses_world_rng) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    w.players[0].ship.pos = v2(100.0f, 0.0f);
+    /* Place another player nearby to trigger interference */
+    player_init_ship(&w.players[1], &w);
+    w.players[1].connected = true;
+    w.players[1].docked = false;
+    w.players[1].ship.pos = v2(120.0f, 0.0f);
+    uint32_t rng_before = w.rng;
+    w.players[0].input.thrust = 1.0f;
+    world_sim_step_player_only(&w, 0, SIM_DT);
+    /* After fix: player-only step should not advance world RNG.
+     * Interference noise should use a separate RNG.
+     * FAILS because calc_signal_interference calls randf(w). */
+    ASSERT(w.rng == rng_before);
+}
+
+/* Bug 48: Titan (XXL) fracture creates 8-14 children but MAX_ASTEROIDS is 48 */
+TEST(test_bug48_titan_fracture_overflow) {
+    world_t w = {0};
+    world_reset(&w);
+    /* World has FIELD_ASTEROID_TARGET (32) asteroids. Titan fracture creates 8-14 more.
+     * 32 + 14 = 46 < 48, so it fits. But if field has 40+ asteroids
+     * (from other fractures), Titan fracture tries to create 14 children
+     * with only 8 free slots → only 8 children created, rest silently dropped. */
+    int active_count = 0;
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        if (w.asteroids[i].active) active_count++;
+    /* With 32 field target, there are 48-32=16 free slots. Titan needs up to 14. OK.
+     * But document that at high field density, Titan fracture is truncated. */
+    ASSERT(MAX_ASTEROIDS - active_count >= 14); /* barely fits */
+}
+
+/* Bug 49: asteroid-station collision restitution 1.6x on vel_along but
+ * only when vel_along < 0 — a stationary asteroid touching a station
+ * gets zero bounce (vel_along = 0, no branch entered) but gravity
+ * keeps pushing it back next tick. The asteroid sticks to the station. */
+TEST(test_bug49_asteroid_sticks_to_station) {
+    world_t w = {0};
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    /* Place asteroid exactly at station collision boundary, zero velocity */
+    float touch_dist = w.stations[0].radius + 30.0f;
+    w.asteroids[0].active = true; w.asteroids[0].tier = ASTEROID_TIER_L;
+    w.asteroids[0].radius = 30.0f; w.asteroids[0].hp = 80.0f; w.asteroids[0].max_hp = 80.0f;
+    w.asteroids[0].pos = v2(touch_dist - 1.0f, -240.0f); /* slightly inside */
+    w.asteroids[0].vel = v2(0.0f, 0.0f); /* stationary */
+    /* Run 2 seconds — gravity pulls it in, collision pushes out, but no bounce */
+    for (int i = 0; i < 240; i++)
+        world_sim_step(&w, SIM_DT);
+    float dist = v2_len(v2_sub(w.asteroids[0].pos, w.stations[0].pos));
+    float min_dist = w.asteroids[0].radius + w.stations[0].radius;
+    /* After fix: asteroid should be pushed clearly outside station, not oscillating at boundary.
+     * FAILS if asteroid is stuck at or vibrating near the collision boundary. */
+    ASSERT(dist > min_dist + 5.0f);
+}
+
+/* Bug 50: player ship collision with asteroid uses restitution 1.2 (energy gain)
+ * but asteroid-station uses 0.6 (energy loss). Inconsistent physics model. */
+TEST(test_bug50_ship_collision_energy_gain) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    w.players[0].ship.hull = 10000.0f; /* won't die */
+    /* Aim at station at high speed */
+    w.players[0].ship.pos = v2(200.0f, -240.0f);
+    w.players[0].ship.vel = v2(-400.0f, 0.0f);
+    float ke_before = v2_len_sq(w.players[0].ship.vel);
+    world_sim_step(&w, SIM_DT);
+    float ke_after = v2_len_sq(w.players[0].ship.vel);
+    /* After fix: kinetic energy should decrease on collision (restitution <= 1.0).
+     * FAILS because ship-station collision uses 1.2x multiplier, adding energy. */
+    ASSERT(ke_after <= ke_before);
+}
+
 int main(void) {
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -1609,6 +1834,18 @@ int main(void) {
     RUN(test_bug38_dock_dampening_framerate_dependent);
     RUN(test_bug39_launch_immediate_redock);
     RUN(test_bug40_no_player_player_collision);
+
+    printf("\nPhysics & client-server bugs (batch 5 — SHOULD FAIL until fixed):\n");
+    RUN(test_bug41_gravity_asymmetric);
+    RUN(test_bug42_station_gravity_ignores_mass);
+    RUN(test_bug43_fracture_children_inside_station);
+    RUN(test_bug44_gravity_collision_oscillation);
+    RUN(test_bug45_player_only_still_mines);
+    RUN(test_bug46_player_only_advances_time);
+    RUN(test_bug47_interference_uses_world_rng);
+    RUN(test_bug48_titan_fracture_overflow);
+    RUN(test_bug49_asteroid_sticks_to_station);
+    RUN(test_bug50_ship_collision_energy_gain);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
