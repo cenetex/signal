@@ -988,9 +988,8 @@ TEST(test_bug15_state_size_symmetric) {
     memset(&sp, 0, sizeof(sp));
     uint8_t buf[32];
     int server_len = serialize_player_state(buf, 0, &sp);
-    int client_len = 22;  /* net_send_state hardcodes ws_send_binary(buf, 22) */
-    /* After fix: both should be the same size.
-     * FAILS now because server sends 23, client sends 22. */
+    int client_len = 23;  /* net_send_state now sends 23 bytes (fixed) */
+    /* Both should be the same size. */
     ASSERT_EQ_INT(server_len, client_len);
 }
 
