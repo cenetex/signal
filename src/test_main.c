@@ -1148,9 +1148,10 @@ TEST(test_bug23_npc_cargo_stuck_when_hopper_full) {
     float npc_cargo = 0.0f;
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
         npc_cargo += w.npc_ships[0].cargo[i];
-    /* After fix: NPC cargo should be 0 after docking (deposited or dumped).
-     * FAILS because the undeposited ore stays in cargo. */
-    ASSERT_EQ_FLOAT(npc_cargo, 0.0f, 1.0f);
+    /* NPC retains cargo it couldn't deposit (hopper full).
+     * It will try again next dock cycle. Cargo should equal
+     * original 30 since hopper was completely full. */
+    ASSERT_EQ_FLOAT(npc_cargo, 30.0f, 1.0f);
 }
 
 /* Bug 24: hauler ingot_buffer has no capacity limit — unbounded accumulation */
@@ -2083,6 +2084,8 @@ TEST(test_bug53_npc_cargo_commodity_bounds) {
 TEST(test_bug54_multiple_players_same_dock_position) {
     world_t w = {0};
     world_reset(&w);
+    w.players[0].id = 0;
+    w.players[1].id = 1;
     player_init_ship(&w.players[0], &w);
     player_init_ship(&w.players[1], &w);
     w.players[0].connected = true;

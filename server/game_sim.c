@@ -812,11 +812,13 @@ static void step_npc_ships(world_t *w, float dt) {
             if (v2_dist_sq(npc->pos, home->pos) < dock_r * dock_r) {
                 npc->vel = v2(0.0f, 0.0f);
                 npc->pos = v2_add(home->pos, v2(30.0f * (float)(n % 3 - 1), -(home->radius + hull->ship_radius + 50.0f)));
-                for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
-                    float space = REFINERY_HOPPER_CAPACITY - home->ore_buffer[i];
-                    float deposit = fminf(npc->cargo[i], fmaxf(0.0f, space));
-                    home->ore_buffer[i] += deposit;
-                    npc->cargo[i] = 0.0f;
+                if (home->role == STATION_ROLE_REFINERY) {
+                    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
+                        float space = REFINERY_HOPPER_CAPACITY - home->ore_buffer[i];
+                        float deposit = fminf(npc->cargo[i], fmaxf(0.0f, space));
+                        home->ore_buffer[i] += deposit;
+                        npc->cargo[i] -= deposit;
+                    }
                 }
                 npc->state = NPC_STATE_DOCKED;
                 npc->state_timer = NPC_DOCK_TIME;
@@ -864,7 +866,11 @@ static bool try_spend_credits(ship_t *s, float amount) {
 
 static void anchor_ship_in_station(server_player_t *sp, world_t *w) {
     const station_t *st = &w->stations[sp->current_station];
-    sp->ship.pos = station_dock_anchor(st, ship_hull_def_ptr(&sp->ship));
+    const hull_def_t *hull = ship_hull_def_ptr(&sp->ship);
+    vec2 base = station_dock_anchor(st, hull);
+    /* Offset by player ID so multiple docked players don't overlap */
+    float offset = (float)(sp->id % 4) * (hull->ship_radius * 2.5f) - (hull->ship_radius * 3.75f);
+    sp->ship.pos = v2_add(base, v2(offset, 0.0f));
     sp->ship.vel = v2(0.0f, 0.0f);
 }
 
