@@ -36,6 +36,9 @@ enum {
     NET_MSG_STATION_IDENTITY= 0x17,
 };
 
+/* Station econ record size — must match server's STATION_RECORD_SIZE */
+#define STATION_RECORD_SIZE 49
+
 /* Input flags packed into a single byte. */
 enum {
     NET_INPUT_THRUST = 1 << 0,

@@ -235,7 +235,7 @@ static void broadcast_ship_states(void) {
     }
 
     /* Station state (inventory, ore buffers, products) at same cadence. */
-    uint8_t sbuf[2 + MAX_STATIONS * 49];
+    uint8_t sbuf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
     int slen = serialize_stations(sbuf, world.stations);
     broadcast(sbuf, (size_t)slen);
 }

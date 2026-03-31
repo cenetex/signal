@@ -174,13 +174,22 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
 /*
  * WORLD_STATIONS message:
  * [type:1][count:1] + count * [index:1][ore_buf: 3×f32][inventory: 6×f32][product_stock: 3×f32]
- * = 2 + count * 49 bytes
+ * = 2 + count * STATION_RECORD_SIZE bytes
  */
+#define STATION_RECORD_SIZE 49
+
+/* Compile-time guard: if the record layout changes, update STATION_RECORD_SIZE
+ * and all buffers that depend on it. */
+_Static_assert(
+    1 + COMMODITY_RAW_ORE_COUNT * 4 + COMMODITY_COUNT * 4 + PRODUCT_COUNT * 4 == STATION_RECORD_SIZE,
+    "STATION_RECORD_SIZE must match serialized station econ layout"
+);
+
 static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
     buf[0] = NET_MSG_WORLD_STATIONS;
     buf[1] = (uint8_t)MAX_STATIONS;
     for (int i = 0; i < MAX_STATIONS; i++) {
-        uint8_t *p = &buf[2 + i * 49];
+        uint8_t *p = &buf[2 + i * STATION_RECORD_SIZE];
         const station_t *st = &stations[i];
         p[0] = (uint8_t)i;
         /* ore_buffer: 3 raw ores */
@@ -196,7 +205,7 @@ static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
             write_f32_le(&p[37 + pr * 4], st->product_stock[pr]);
         }
     }
-    return 2 + MAX_STATIONS * 49;
+    return 2 + MAX_STATIONS * STATION_RECORD_SIZE;
 }
 
 /*

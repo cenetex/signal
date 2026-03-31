@@ -162,10 +162,10 @@ static void handle_message(const uint8_t* data, int len) {
         if (len < 2) break;
         {
             uint8_t count = data[1];
-            if (len < 2 + count * 49) break;
+            if (len < 2 + count * STATION_RECORD_SIZE) break;
             if (net_state.callbacks.on_stations) {
                 for (int i = 0; i < count; i++) {
-                    const uint8_t *p = &data[2 + i * 49];
+                    const uint8_t *p = &data[2 + i * STATION_RECORD_SIZE];
                     uint8_t idx = p[0];
                     float ore_buf[3], inv[6], prod[3];
                     for (int j = 0; j < 3; j++)

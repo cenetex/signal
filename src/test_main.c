@@ -817,12 +817,12 @@ TEST(test_roundtrip_stations) {
     stations[0].inventory[COMMODITY_FRAME_INGOT] = 20.0f;
     stations[0].product_stock[PRODUCT_FRAME] = 15.5f;
 
-    uint8_t buf[2 + MAX_STATIONS * 49];
+    uint8_t buf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
     int len = serialize_stations(buf, stations);
 
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_STATIONS);
     ASSERT_EQ_INT(buf[1], MAX_STATIONS);
-    ASSERT_EQ_INT(len, 2 + MAX_STATIONS * 49);
+    ASSERT_EQ_INT(len, 2 + MAX_STATIONS * STATION_RECORD_SIZE);
 
     uint8_t *p = &buf[2];
     ASSERT_EQ_INT(p[0], 0);
@@ -831,6 +831,21 @@ TEST(test_roundtrip_stations) {
     ASSERT_EQ_FLOAT(read_f32_le(&p[9]), 78.9f, 0.1f);
     ASSERT_EQ_FLOAT(read_f32_le(&p[13 + COMMODITY_FRAME_INGOT * 4]), 20.0f, 0.1f);
     ASSERT_EQ_FLOAT(read_f32_le(&p[37 + PRODUCT_FRAME * 4]), 15.5f, 0.1f);
+}
+
+TEST(test_bug92_station_record_size_matches_buffer) {
+    /* Bug 92: station broadcast buffer must match serialized record size.
+     * STATION_RECORD_SIZE is validated at compile time via _Static_assert,
+     * but verify at runtime that serialize_stations writes exactly the
+     * expected number of bytes. */
+    station_t stations[MAX_STATIONS];
+    memset(stations, 0, sizeof(stations));
+    uint8_t buf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
+    int len = serialize_stations(buf, stations);
+    ASSERT_EQ_INT(len, 2 + MAX_STATIONS * STATION_RECORD_SIZE);
+    /* Verify no write past the buffer end by checking the function
+     * returns a value that fits within the allocated buffer. */
+    ASSERT((size_t)len <= sizeof(buf));
 }
 
 TEST(test_roundtrip_player_ship) {
@@ -3054,6 +3069,7 @@ int main(void) {
     RUN(test_roundtrip_asteroids);
     RUN(test_roundtrip_npcs);
     RUN(test_roundtrip_stations);
+    RUN(test_bug92_station_record_size_matches_buffer);
     RUN(test_roundtrip_player_ship);
     RUN(test_parse_input_valid);
     RUN(test_parse_input_too_short);
