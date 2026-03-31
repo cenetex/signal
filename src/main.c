@@ -1633,6 +1633,30 @@ static void draw_station_services(const station_ui_state_t* ui) {
             sdtx_color3b(169, 179, 204);
             sdtx_puts("Module fabrication.");
         }
+
+        /* Contract board */
+        float contract_y = fit_y + 248.0f;
+        sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(contract_y));
+        sdtx_color3b(180, 220, 255);
+        sdtx_puts("CONTRACTS");
+        int shown = 0;
+        for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
+            contract_t *ct = &g.world.contracts[ci];
+            if (!ct->active) continue;
+            float cprice = ct->base_price * (1.0f + ct->age / 300.0f * 0.2f);
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(contract_y + 16.0f + (float)shown * 14.0f));
+            sdtx_color3b(203, 220, 248);
+            sdtx_printf("%s @ %s: %.0f cr/u",
+                commodity_short_name(ct->commodity),
+                g.world.stations[ct->station_index].name,
+                cprice);
+            if (++shown >= 5) break;
+        }
+        if (shown == 0) {
+            sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(contract_y + 16.0f));
+            sdtx_color3b(145, 160, 188);
+            sdtx_puts("(none)");
+        }
     }
 }
 

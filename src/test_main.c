@@ -2578,30 +2578,45 @@ TEST(test_contract_generated_from_hopper_deficit) {
     world_t w = {0};
     world_reset(&w);
     w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f; /* well below 50% of 100 */
-    /* After #70: step_contracts should create a contract
-     * contract_t *c = find_contract(&w, 0, COMMODITY_FERRITE_ORE);
-     * ASSERT(c != NULL);
-     * ASSERT(c->quantity_needed > 30.0f); */
-    ASSERT(0); /* FAIL: contract system not implemented */
+    world_sim_step(&w, SIM_DT);
+    /* Find contract for station 0, ferrite ore */
+    contract_t *found = NULL;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active && w.contracts[k].station_index == 0 && w.contracts[k].commodity == COMMODITY_FERRITE_ORE) {
+            found = &w.contracts[k];
+            break;
+        }
+    }
+    ASSERT(found != NULL);
+    ASSERT(found->quantity_needed > 30.0f);
 }
 
 TEST(test_contract_price_escalates_with_age) {
     /* An unfilled contract should increase in price over time */
-    /* After #70:
-     * contract_t c = {.base_price = 10.0f, .age = 0.0f};
-     * float price_t0 = contract_price(&c);
-     * c.age = 300.0f; // 5 minutes
-     * float price_t5 = contract_price(&c);
-     * ASSERT(price_t5 > price_t0 * 1.2f); */
-    ASSERT(0); /* FAIL: contract system not implemented */
+    contract_t c = {.active = true, .base_price = 10.0f, .age = 0.0f};
+    float price_t0 = contract_price(&c);
+    c.age = 300.0f; /* 5 minutes */
+    float price_t5 = contract_price(&c);
+    ASSERT(price_t5 > price_t0);
+    ASSERT_EQ_FLOAT(price_t5, 10.0f * 1.2f, 0.01f);
 }
 
 TEST(test_contract_closes_when_deficit_filled) {
-    /* Selling ore that fills the hopper should close the contract */
+    /* When ore_buffer rises to 80% threshold, contract should close */
     world_t w = {0};
     world_reset(&w);
-    /* After #70: generate contract, sell enough ore, verify contract gone */
-    ASSERT(0); /* FAIL: not implemented */
+    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f;
+    world_sim_step(&w, SIM_DT); /* generates contract */
+    /* Now fill the hopper above 80% threshold */
+    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.85f;
+    world_sim_step(&w, SIM_DT); /* should close the contract */
+    bool found = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active && w.contracts[k].station_index == 0 && w.contracts[k].commodity == COMMODITY_FERRITE_ORE) {
+            found = true; break;
+        }
+    }
+    ASSERT(!found);
 }
 
 TEST(test_sell_price_uses_contract_price) {
@@ -2609,11 +2624,26 @@ TEST(test_sell_price_uses_contract_price) {
      * escalated contract price, not the base buy_price */
     world_t w = {0};
     world_reset(&w);
-    /* After #70:
-     * Create contract with escalated price
-     * Sell ore
-     * Verify credits gained = contract_price * quantity, not base_price * quantity */
-    ASSERT(0); /* FAIL: not implemented */
+    /* Create a contract with aged price */
+    w.contracts[0] = (contract_t){
+        .active = true, .station_index = 0,
+        .commodity = COMMODITY_FERRITE_ORE,
+        .quantity_needed = 50.0f,
+        .base_price = 10.0f, .age = 300.0f, /* 5 min -> 1.2x */
+    };
+    /* Set up player docked at station 0 with ore */
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
+    float expected_price = 10.0f * 1.2f; /* contract_price at age 300 */
+    /* Trigger sell */
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    /* Credits should reflect escalated price, not base 10.0 */
+    ASSERT(w.players[0].ship.credits > 10.0f * 10.0f); /* more than base */
+    ASSERT_EQ_FLOAT(w.players[0].ship.credits, 10.0f * expected_price, 1.0f);
 }
 
 TEST(test_hauler_fills_highest_value_contract) {
@@ -2621,10 +2651,32 @@ TEST(test_hauler_fills_highest_value_contract) {
      * fillable from local inventory, not a hardcoded destination */
     world_t w = {0};
     world_reset(&w);
-    /* After #70: set up two contracts with different values
-     * Run hauler decision logic
-     * Verify hauler targets the higher-value contract */
-    ASSERT(0); /* FAIL: not implemented */
+    /* Set up two contracts: one cheap at station 1, one expensive at station 2 */
+    w.contracts[0] = (contract_t){
+        .active = true, .station_index = 1,
+        .commodity = COMMODITY_FRAME_INGOT,
+        .quantity_needed = 20.0f,
+        .base_price = 10.0f, .age = 0.0f,
+    };
+    w.contracts[1] = (contract_t){
+        .active = true, .station_index = 2,
+        .commodity = COMMODITY_CONDUCTOR_INGOT,
+        .quantity_needed = 20.0f,
+        .base_price = 50.0f, .age = 0.0f,
+    };
+    /* Give home station (0) inventory of both */
+    w.stations[0].inventory[COMMODITY_FRAME_INGOT] = 20.0f;
+    w.stations[0].inventory[COMMODITY_CONDUCTOR_INGOT] = 20.0f;
+    /* Set up hauler at home, ready to decide */
+    npc_ship_t *hauler = &w.npc_ships[3]; /* first hauler */
+    hauler->state = NPC_STATE_DOCKED;
+    hauler->state_timer = 0.0f; /* ready to act */
+    hauler->home_station = 0;
+    hauler->dest_station = 1; /* default dest */
+    memset(hauler->ingots, 0, sizeof(hauler->ingots));
+    world_sim_step(&w, SIM_DT);
+    /* Hauler should target station 2 (higher value contract) */
+    ASSERT(hauler->dest_station == 2);
 }
 
 /* ================================================================== */
@@ -2990,6 +3042,13 @@ int main(void) {
     RUN(test_bug88_interference_seed_no_world_time);
     RUN(test_bug89_gravity_symmetric);
     RUN(test_bug90_station_bounce_no_extra_energy);
+
+    printf("\nContract tests:\n");
+    RUN(test_contract_generated_from_hopper_deficit);
+    RUN(test_contract_price_escalates_with_age);
+    RUN(test_contract_closes_when_deficit_filled);
+    RUN(test_sell_price_uses_contract_price);
+    RUN(test_hauler_fills_highest_value_contract);
 
     printf("\nPersistence tests:\n");
     RUN(test_player_save_load_roundtrip);

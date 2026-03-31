@@ -86,6 +86,7 @@ typedef struct {
     float time;
     float field_spawn_timer;
     sim_events_t events;
+    contract_t contracts[MAX_CONTRACTS];
     bool player_only_mode;
 } world_t;
 
@@ -97,6 +98,7 @@ typedef struct {
 /* Public API                                                         */
 /* ------------------------------------------------------------------ */
 
+float contract_price(const contract_t *c);
 void world_reset(world_t *w);
 void world_sim_step(world_t *w, float dt);
 void world_sim_step_player_only(world_t *w, int player_idx, float dt);

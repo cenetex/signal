@@ -256,4 +256,15 @@ typedef struct {
     int count;
 } sim_events_t;
 
+enum { MAX_CONTRACTS = 16 };
+
+typedef struct {
+    bool active;
+    uint8_t station_index;
+    commodity_t commodity;
+    float quantity_needed;
+    float base_price;
+    float age;
+} contract_t;
+
 #endif

@@ -707,34 +707,60 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
         npc->vel = v2(0.0f, 0.0f);
         if (npc->state_timer <= 0.0f) {
             station_t *home = &w->stations[npc->home_station];
-            station_t *dest = &w->stations[npc->dest_station];
             float space = hull->ingot_capacity;
             bool loaded = false;
-            if (dest->role == STATION_ROLE_YARD) {
-                commodity_t ingot = COMMODITY_FRAME_INGOT;
+
+            /* Contract-driven routing: find highest-value fillable contract */
+            int best_contract = -1;
+            float best_score = 0.0f;
+            for (int k = 0; k < MAX_CONTRACTS; k++) {
+                if (!w->contracts[k].active) continue;
+                commodity_t c = w->contracts[k].commodity;
+                if (c < COMMODITY_RAW_ORE_COUNT) continue; /* haulers carry ingots only */
+                if (home->inventory[c] < 0.5f) continue; /* no stock to fill */
+                float dist = fmaxf(1.0f, v2_len(v2_sub(w->stations[w->contracts[k].station_index].pos, home->pos)));
+                float score = contract_price(&w->contracts[k]) / dist;
+                if (score > best_score) {
+                    best_score = score;
+                    best_contract = k;
+                }
+            }
+
+            if (best_contract >= 0) {
+                /* Load the commodity for this contract */
+                commodity_t ingot = w->contracts[best_contract].commodity;
+                npc->dest_station = w->contracts[best_contract].station_index;
                 float take = fminf(home->inventory[ingot], space);
                 if (take > 0.5f) {
                     npc->ingots[INGOT_IDX(ingot)] += take;
                     home->inventory[ingot] -= take;
                     loaded = true;
                 }
-            } else if (dest->role == STATION_ROLE_BEAMWORKS) {
-                commodity_t ingots[2] = { COMMODITY_CONDUCTOR_INGOT, COMMODITY_LENS_INGOT };
-                for (int i = 0; i < 2; i++) {
-                    float take = fminf(home->inventory[ingots[i]], space / 2.0f);
-                    if (take > 0.01f) {
-                        npc->ingots[INGOT_IDX(ingots[i])] += take;
-                        home->inventory[ingots[i]] -= take;
-                        space -= take;
+            } else {
+                /* Fallback: original round-trip behavior */
+                station_t *dest = &w->stations[npc->dest_station];
+                if (dest->role == STATION_ROLE_YARD) {
+                    commodity_t ingot = COMMODITY_FRAME_INGOT;
+                    float take = fminf(home->inventory[ingot], space);
+                    if (take > 0.5f) {
+                        npc->ingots[INGOT_IDX(ingot)] += take;
+                        home->inventory[ingot] -= take;
                         loaded = true;
+                    }
+                } else if (dest->role == STATION_ROLE_BEAMWORKS) {
+                    commodity_t ingots[2] = { COMMODITY_CONDUCTOR_INGOT, COMMODITY_LENS_INGOT };
+                    for (int i = 0; i < 2; i++) {
+                        float take = fminf(home->inventory[ingots[i]], space / 2.0f);
+                        if (take > 0.01f) {
+                            npc->ingots[INGOT_IDX(ingots[i])] += take;
+                            home->inventory[ingots[i]] -= take;
+                            space -= take;
+                            loaded = true;
+                        }
                     }
                 }
             }
-            if (loaded) {
-                npc->state = NPC_STATE_TRAVEL_TO_DEST;
-            } else {
-                npc->state = NPC_STATE_TRAVEL_TO_DEST;
-            }
+            npc->state = NPC_STATE_TRAVEL_TO_DEST;
         }
         break;
     }
@@ -1051,7 +1077,19 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         float hopper_space = REFINERY_HOPPER_CAPACITY - st->ore_buffer[ore];
         if (hopper_space <= 0.01f) continue;
         float accepted = fminf(amount, hopper_space);
-        payout += accepted * st->buy_price[ore];
+        /* Check for active contract at this station for this commodity */
+        float price = st->buy_price[ore];
+        for (int k = 0; k < MAX_CONTRACTS; k++) {
+            if (w->contracts[k].active && w->contracts[k].station_index == sp->current_station && w->contracts[k].commodity == ore) {
+                price = contract_price(&w->contracts[k]);
+                w->contracts[k].quantity_needed -= accepted;
+                if (w->contracts[k].quantity_needed <= 0.01f) {
+                    w->contracts[k].active = false;
+                }
+                break;
+            }
+        }
+        payout += accepted * price;
         st->ore_buffer[ore] += accepted;
         sp->ship.cargo[ore] -= accepted;
     }
@@ -1487,6 +1525,118 @@ static void resolve_asteroid_station_collisions(world_t *w) {
 }
 
 /* ================================================================== */
+/* Contract system                                                    */
+/* ================================================================== */
+
+float contract_price(const contract_t *c) {
+    /* Price escalates with age: +20% per 5 minutes */
+    float escalation = 1.0f + (c->age / 300.0f) * 0.2f;
+    return c->base_price * escalation;
+}
+
+static void step_contracts(world_t *w, float dt) {
+    /* Age existing contracts and close filled ones */
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        if (!w->contracts[i].active) continue;
+        w->contracts[i].age += dt;
+        station_t *st = &w->stations[w->contracts[i].station_index];
+        commodity_t c = w->contracts[i].commodity;
+        float current = 0.0f;
+        if (c < COMMODITY_RAW_ORE_COUNT) {
+            current = st->ore_buffer[c];
+        } else {
+            current = st->ingot_buffer[INGOT_IDX(c)];
+        }
+        float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.8f : INGOT_BUFFER_CAPACITY * 0.8f;
+        if (current >= threshold) {
+            w->contracts[i].active = false;
+        }
+    }
+
+    /* Generate new contracts from deficits */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (st->role == STATION_ROLE_REFINERY) {
+            for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
+                if (st->ore_buffer[c] < REFINERY_HOPPER_CAPACITY * 0.5f) {
+                    bool exists = false;
+                    for (int k = 0; k < MAX_CONTRACTS; k++) {
+                        if (w->contracts[k].active && w->contracts[k].station_index == s && w->contracts[k].commodity == (commodity_t)c) {
+                            exists = true; break;
+                        }
+                    }
+                    if (!exists) {
+                        for (int k = 0; k < MAX_CONTRACTS; k++) {
+                            if (!w->contracts[k].active) {
+                                w->contracts[k] = (contract_t){
+                                    .active = true,
+                                    .station_index = (uint8_t)s,
+                                    .commodity = (commodity_t)c,
+                                    .quantity_needed = REFINERY_HOPPER_CAPACITY * 0.5f - st->ore_buffer[c],
+                                    .base_price = st->buy_price[c],
+                                    .age = 0.0f,
+                                };
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if (st->role == STATION_ROLE_YARD) {
+            commodity_t ingot = COMMODITY_FRAME_INGOT;
+            if (st->ingot_buffer[INGOT_IDX(ingot)] < INGOT_BUFFER_CAPACITY * 0.5f) {
+                bool exists = false;
+                for (int k = 0; k < MAX_CONTRACTS; k++) {
+                    if (w->contracts[k].active && w->contracts[k].station_index == s && w->contracts[k].commodity == ingot) {
+                        exists = true; break;
+                    }
+                }
+                if (!exists) {
+                    for (int k = 0; k < MAX_CONTRACTS; k++) {
+                        if (!w->contracts[k].active) {
+                            w->contracts[k] = (contract_t){
+                                .active = true, .station_index = (uint8_t)s,
+                                .commodity = ingot,
+                                .quantity_needed = INGOT_BUFFER_CAPACITY * 0.5f - st->ingot_buffer[INGOT_IDX(ingot)],
+                                .base_price = 20.0f, .age = 0.0f,
+                            };
+                            break;
+                        }
+                    }
+                }
+            }
+        }
+        if (st->role == STATION_ROLE_BEAMWORKS) {
+            commodity_t ingots[2] = { COMMODITY_CONDUCTOR_INGOT, COMMODITY_LENS_INGOT };
+            for (int j = 0; j < 2; j++) {
+                if (st->ingot_buffer[INGOT_IDX(ingots[j])] < INGOT_BUFFER_CAPACITY * 0.5f) {
+                    bool exists = false;
+                    for (int k = 0; k < MAX_CONTRACTS; k++) {
+                        if (w->contracts[k].active && w->contracts[k].station_index == s && w->contracts[k].commodity == ingots[j]) {
+                            exists = true; break;
+                        }
+                    }
+                    if (!exists) {
+                        for (int k = 0; k < MAX_CONTRACTS; k++) {
+                            if (!w->contracts[k].active) {
+                                w->contracts[k] = (contract_t){
+                                    .active = true, .station_index = (uint8_t)s,
+                                    .commodity = ingots[j],
+                                    .quantity_needed = INGOT_BUFFER_CAPACITY * 0.5f - st->ingot_buffer[INGOT_IDX(ingots[j])],
+                                    .base_price = 22.0f, .age = 0.0f,
+                                };
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+/* ================================================================== */
 /* Public: world_sim_step                                             */
 /* ================================================================== */
 
@@ -1500,6 +1650,7 @@ void world_sim_step(world_t *w, float dt) {
     resolve_asteroid_station_collisions(w);
     step_refinery_production(w, dt);
     step_station_production(w, dt);
+    step_contracts(w, dt);
     step_npc_ships(w, dt);
     for (int p = 0; p < MAX_PLAYERS; p++) {
         if (!w->players[p].connected) continue;
@@ -1653,7 +1804,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 1
+#define SAVE_VERSION 2
 
 typedef struct {
     uint32_t magic;
@@ -1678,6 +1829,7 @@ bool world_save(const world_t *w, const char *path) {
     if (fwrite(w->stations, sizeof(w->stations), 1, f) != 1) { fclose(f); return false; }
     if (fwrite(w->asteroids, sizeof(w->asteroids), 1, f) != 1) { fclose(f); return false; }
     if (fwrite(w->npc_ships, sizeof(w->npc_ships), 1, f) != 1) { fclose(f); return false; }
+    if (fwrite(w->contracts, sizeof(w->contracts), 1, f) != 1) { fclose(f); return false; }
 
     fclose(f);
     return true;
@@ -1689,7 +1841,7 @@ bool world_load(world_t *w, const char *path) {
 
     save_header_t hdr;
     if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
-    if (hdr.magic != SAVE_MAGIC || hdr.version != SAVE_VERSION) { fclose(f); return false; }
+    if (hdr.magic != SAVE_MAGIC || (hdr.version != SAVE_VERSION && hdr.version != 1)) { fclose(f); return false; }
 
     w->rng = hdr.rng;
     w->time = hdr.time;
@@ -1698,6 +1850,11 @@ bool world_load(world_t *w, const char *path) {
     if (fread(w->stations, sizeof(w->stations), 1, f) != 1) { fclose(f); return false; }
     if (fread(w->asteroids, sizeof(w->asteroids), 1, f) != 1) { fclose(f); return false; }
     if (fread(w->npc_ships, sizeof(w->npc_ships), 1, f) != 1) { fclose(f); return false; }
+    if (hdr.version >= 2) {
+        if (fread(w->contracts, sizeof(w->contracts), 1, f) != 1) { fclose(f); return false; }
+    } else {
+        memset(w->contracts, 0, sizeof(w->contracts));
+    }
 
     /* Clear transient state */
     w->events.count = 0;
