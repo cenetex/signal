@@ -2519,6 +2519,56 @@ TEST(test_ship_thrust_scales_with_signal) {
     ASSERT(vel_low_signal < vel_full_signal * 0.7f);
 }
 
+TEST(test_asteroid_outside_signal_despawns) {
+    world_t w = {0};
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    w.asteroids[0].active = true;
+    w.asteroids[0].tier = ASTEROID_TIER_L;
+    w.asteroids[0].radius = 40.0f;
+    w.asteroids[0].hp = 100.0f;
+    w.asteroids[0].max_hp = 100.0f;
+    w.asteroids[0].pos = v2(4000.0f, 0.0f);
+    w.asteroids[0].vel = v2(0.0f, 0.0f);
+    world_sim_step(&w, SIM_DT);
+    ASSERT(!w.asteroids[0].active);
+}
+
+TEST(test_npc_miners_avoid_zero_signal_asteroids) {
+    world_t w = {0};
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    for (int i = 1; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    w.asteroids[0].active = true;
+    w.asteroids[0].tier = ASTEROID_TIER_L;
+    w.asteroids[0].radius = 50.0f;
+    w.asteroids[0].hp = 120.0f;
+    w.asteroids[0].max_hp = 120.0f;
+    w.asteroids[0].pos = v2(260.0f, -240.0f);
+
+    w.asteroids[1].active = true;
+    w.asteroids[1].tier = ASTEROID_TIER_XL;
+    w.asteroids[1].radius = 80.0f;
+    w.asteroids[1].hp = 240.0f;
+    w.asteroids[1].max_hp = 240.0f;
+    w.asteroids[1].pos = v2(4000.0f, 0.0f);
+
+    w.npc_ships[0].active = true;
+    w.npc_ships[0].role = NPC_ROLE_MINER;
+    w.npc_ships[0].hull_class = HULL_CLASS_NPC_MINER;
+    w.npc_ships[0].home_station = 0;
+    w.npc_ships[0].state = NPC_STATE_DOCKED;
+    w.npc_ships[0].state_timer = 0.0f;
+    w.npc_ships[0].target_asteroid = -1;
+    w.npc_ships[0].pos = w.stations[0].pos;
+    w.npc_ships[0].vel = v2(0.0f, 0.0f);
+    w.npc_ships[0].angle = 0.0f;
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(w.npc_ships[0].target_asteroid, 0);
+}
+
 /* ================================================================== */
 /* STRATEGIC TDD: Contracts (#70) — define the economic behavior      */
 /* ================================================================== */
@@ -2908,6 +2958,15 @@ int main(void) {
     RUN(test_bug68_gravity_uses_radius_not_mass);
     RUN(test_bug69_npc_idle_no_boundary);
     RUN(test_bug70_upgrade_cost_level_zero);
+
+    printf("\nSignal range (#82):\n");
+    RUN(test_signal_strength_at_station);
+    RUN(test_signal_strength_falls_off);
+    RUN(test_signal_zero_outside_range);
+    RUN(test_signal_max_of_stations);
+    RUN(test_ship_thrust_scales_with_signal);
+    RUN(test_asteroid_outside_signal_despawns);
+    RUN(test_npc_miners_avoid_zero_signal_asteroids);
 
     printf("\nBug regression batch 6 (bugs 51-60):\n");
     RUN(test_bug51_npc_cargo_zeroed_on_dock);

@@ -112,6 +112,18 @@ float signal_strength_at(const world_t *w, vec2 pos) {
     return best;
 }
 
+static bool point_within_signal_margin(const world_t *w, vec2 pos, float margin) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        float range = w->stations[s].signal_range;
+        if (range <= 0.0f) continue;
+        float max_dist = range + margin;
+        if (v2_dist_sq(pos, w->stations[s].pos) <= max_dist * max_dist) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* ================================================================== */
 /* Commodity / ship helpers                                           */
 /* ================================================================== */
@@ -487,10 +499,8 @@ static void step_asteroid_dynamics(world_t *w, float dt) {
         a->vel = v2_scale(a->vel, 1.0f / (1.0f + (0.42f * dt)));
         a->age += dt;
 
-        /* Despawn asteroids outside all station signal ranges (with margin) */
-        float sig = signal_strength_at(w, a->pos);
-        float safety_d = WORLD_RADIUS + a->radius + 260.0f;
-        if (sig <= 0.0f && v2_len_sq(a->pos) > (safety_d * safety_d)) {
+        /* Despawn asteroids that leave station-supported space. */
+        if (!point_within_signal_margin(w, a->pos, a->radius + 260.0f)) {
             clear_asteroid(a);
             continue;
         }
@@ -600,6 +610,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier == ASTEROID_TIER_S) continue;
+        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
         /* Skip asteroids already targeted by another miner */
         bool taken = false;
         for (int n = 0; n < MAX_NPC_SHIPS; n++) {
