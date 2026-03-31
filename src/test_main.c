@@ -1356,11 +1356,15 @@ TEST(test_scenario_full_mining_cycle) {
     }
     ASSERT(frag >= 0);
 
-    /* Position player near fragment and collect via sim steps */
-    w.players[0].ship.pos = w.asteroids[frag].pos;
-    w.players[0].ship.vel = v2(0.0f, 0.0f);
-    for (int i = 0; i < 120; i++)
+    /* Position player on fragment and collect via sim steps.
+     * Re-position each step so fragment drift doesn't break collection. */
+    for (int i = 0; i < 240; i++) {
+        if (w.asteroids[frag].active) {
+            w.players[0].ship.pos = w.asteroids[frag].pos;
+            w.players[0].ship.vel = v2(0.0f, 0.0f);
+        }
         world_sim_step(&w, SIM_DT);
+    }
 
     /* Should have some cargo now */
     float ore = ship_raw_ore_total(&w.players[0].ship);
