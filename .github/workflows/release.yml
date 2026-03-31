@@ -1,0 +1,100 @@
+name: Release Binaries
+
+on:
+  release:
+    types: [published]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-native:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            name: linux-x64
+            artifact: space_miner
+            cmake_flags: ""
+          - os: macos-latest
+            name: macos-arm64
+            artifact: space_miner
+            cmake_flags: ""
+          - os: windows-latest
+            name: windows-x64
+            artifact: space_miner.exe
+            cmake_flags: ""
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Linux dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libasound2-dev libx11-dev libxi-dev libxcursor-dev libgl-dev
+
+      - name: Build
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=${{ github.ref_name }}
+          cmake --build build --config Release --target space_miner
+
+      - name: Package (Unix)
+        if: runner.os != 'Windows'
+        run: |
+          mkdir -p dist
+          cp build/${{ matrix.artifact }} dist/
+          cd dist && tar czf ../space_miner-${{ matrix.name }}.tar.gz *
+
+      - name: Package (Windows)
+        if: runner.os == 'Windows'
+        run: |
+          mkdir dist
+          copy build\Release\${{ matrix.artifact }} dist\
+          cd dist && Compress-Archive -Path * -DestinationPath ..\space_miner-${{ matrix.name }}.zip
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: space_miner-${{ matrix.name }}
+          path: space_miner-${{ matrix.name }}.*
+
+  build-server:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build server
+        run: |
+          cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=${{ github.ref_name }}
+          cmake --build build --config Release --target space_miner_server
+
+      - name: Package
+        run: |
+          mkdir -p dist
+          cp build/space_miner_server dist/
+          cd dist && tar czf ../space_miner_server-linux-x64.tar.gz *
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: space_miner_server-linux-x64
+          path: space_miner_server-linux-x64.tar.gz
+
+  attach-to-release:
+    needs: [build-native, build-server]
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release'
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Upload release assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          for f in artifacts/**/*; do
+            [ -f "$f" ] && gh release upload "${{ github.event.release.tag_name }}" "$f" --repo "${{ github.repository }}" --clobber
+          done
