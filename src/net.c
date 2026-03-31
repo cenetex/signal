@@ -93,8 +93,6 @@ static void handle_message(const uint8_t* data, int len) {
             ps->flags = (len >= 23) ? data[22] : 0;
             ps->active = true;
 
-            if (id == net_state.local_id) break;
-
             if (net_state.callbacks.on_state) {
                 net_state.callbacks.on_state(ps);
             }

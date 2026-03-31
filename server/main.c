@@ -188,6 +188,8 @@ static void broadcast_player_states(void) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!world.players[i].connected) continue;
         int len = serialize_player_state(buf, (uint8_t)i, &world.players[i]);
+        /* The owning client needs authoritative STATE too for reconciliation. */
+        ws_send(world.players[i].conn, buf, (size_t)len);
         broadcast_except(i, buf, (size_t)len);
     }
 }
