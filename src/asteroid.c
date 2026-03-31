@@ -51,55 +51,55 @@ const char* asteroid_tier_kind(asteroid_tier_t tier) {
 float asteroid_spin_limit(asteroid_tier_t tier) {
     switch (tier) {
         case ASTEROID_TIER_XXL: return 0.06f;
-        case ASTEROID_TIER_XL: return 0.15f;
-        case ASTEROID_TIER_L: return 0.25f;
-        case ASTEROID_TIER_M: return 0.45f;
-        case ASTEROID_TIER_S: return 0.80f;
-        case ASTEROID_TIER_COUNT: default: return 0.25f;
+        case ASTEROID_TIER_XL: return 0.16f;
+        case ASTEROID_TIER_L: return 0.24f;
+        case ASTEROID_TIER_M: return 0.38f;
+        case ASTEROID_TIER_S: return 0.62f;
+        case ASTEROID_TIER_COUNT: default: return 0.2f;
     }
 }
 
 float asteroid_radius_min(asteroid_tier_t tier) {
     switch (tier) {
         case ASTEROID_TIER_XXL: return 180.0f;
-        case ASTEROID_TIER_XL: return 62.0f;
-        case ASTEROID_TIER_L: return 35.0f;
-        case ASTEROID_TIER_M: return 18.0f;
-        case ASTEROID_TIER_S: return 7.0f;
-        case ASTEROID_TIER_COUNT: default: return 18.0f;
+        case ASTEROID_TIER_XL: return 54.0f;
+        case ASTEROID_TIER_L: return 34.0f;
+        case ASTEROID_TIER_M: return 20.0f;
+        case ASTEROID_TIER_S: return 11.0f;
+        case ASTEROID_TIER_COUNT: default: return 16.0f;
     }
 }
 
 float asteroid_radius_max(asteroid_tier_t tier) {
     switch (tier) {
         case ASTEROID_TIER_XXL: return 350.0f;
-        case ASTEROID_TIER_XL: return 92.0f;
-        case ASTEROID_TIER_L: return 52.0f;
+        case ASTEROID_TIER_XL: return 78.0f;
+        case ASTEROID_TIER_L: return 48.0f;
         case ASTEROID_TIER_M: return 30.0f;
-        case ASTEROID_TIER_S: return 12.0f;
-        case ASTEROID_TIER_COUNT: default: return 30.0f;
+        case ASTEROID_TIER_S: return 16.0f;
+        case ASTEROID_TIER_COUNT: default: return 18.0f;
     }
 }
 
 float asteroid_hp_min(asteroid_tier_t tier) {
     switch (tier) {
         case ASTEROID_TIER_XXL: return 800.0f;
-        case ASTEROID_TIER_XL: return 240.0f;
-        case ASTEROID_TIER_L: return 100.0f;
-        case ASTEROID_TIER_M: return 38.0f;
-        case ASTEROID_TIER_S: return 0.0f;
-        case ASTEROID_TIER_COUNT: default: return 38.0f;
+        case ASTEROID_TIER_XL: return 120.0f;
+        case ASTEROID_TIER_L: return 68.0f;
+        case ASTEROID_TIER_M: return 32.0f;
+        case ASTEROID_TIER_S: return 10.0f;
+        case ASTEROID_TIER_COUNT: default: return 8.0f;
     }
 }
 
 float asteroid_hp_max(asteroid_tier_t tier) {
     switch (tier) {
         case ASTEROID_TIER_XXL: return 1400.0f;
-        case ASTEROID_TIER_XL: return 360.0f;
-        case ASTEROID_TIER_L: return 160.0f;
-        case ASTEROID_TIER_M: return 62.0f;
-        case ASTEROID_TIER_S: return 0.0f;
-        case ASTEROID_TIER_COUNT: default: return 62.0f;
+        case ASTEROID_TIER_XL: return 170.0f;
+        case ASTEROID_TIER_L: return 96.0f;
+        case ASTEROID_TIER_M: return 46.0f;
+        case ASTEROID_TIER_S: return 18.0f;
+        case ASTEROID_TIER_COUNT: default: return 12.0f;
     }
 }
 

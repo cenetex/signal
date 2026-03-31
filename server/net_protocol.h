@@ -1,55 +1,15 @@
 /*
- * net_protocol.h -- Binary protocol for the Signal Space Miner
- * authoritative server.
+ * net_protocol.h -- Server-side serialization helpers for the Signal
+ * Space Miner authoritative server.
  *
- * Message types match the client-side net.h definitions.
+ * Protocol enums, message types, and record sizes live in
+ * shared/net_protocol.h (single source of truth).
  */
 #ifndef NET_PROTOCOL_H
 #define NET_PROTOCOL_H
 
 #include "game_sim.h"
-
-/* ------------------------------------------------------------------ */
-/* Message types                                                      */
-/* ------------------------------------------------------------------ */
-
-enum {
-    NET_MSG_JOIN            = 0x01,
-    NET_MSG_LEAVE           = 0x02,
-    NET_MSG_STATE           = 0x03,
-    NET_MSG_INPUT           = 0x04,
-    NET_MSG_WORLD_ASTEROIDS = 0x10,
-    NET_MSG_WORLD_NPCS      = 0x11,
-    NET_MSG_WORLD_STATIONS  = 0x12,
-    NET_MSG_MINING_ACTION   = 0x13,
-    NET_MSG_HOST_ASSIGN     = 0x14,
-    NET_MSG_PLAYER_SHIP     = 0x15,
-    NET_MSG_SERVER_INFO     = 0x16,
-    NET_MSG_STATION_IDENTITY= 0x17,
-    NET_MSG_WORLD_PLAYERS   = 0x18,
-};
-
-/* Input flags (client -> server) */
-enum {
-    NET_INPUT_THRUST = 1 << 0,
-    NET_INPUT_LEFT   = 1 << 1,
-    NET_INPUT_RIGHT  = 1 << 2,
-    NET_INPUT_FIRE   = 1 << 3,
-    NET_INPUT_BRAKE  = 1 << 4,
-};
-
-/* Station action byte values */
-enum {
-    NET_ACTION_NONE           = 0,
-    NET_ACTION_DOCK           = 1,
-    NET_ACTION_LAUNCH         = 2,
-    NET_ACTION_SELL_CARGO     = 3,
-    NET_ACTION_REPAIR         = 4,
-    NET_ACTION_UPGRADE_MINING = 5,
-    NET_ACTION_UPGRADE_HOLD   = 6,
-    NET_ACTION_UPGRADE_TRACTOR= 7,
-    NET_ACTION_PLACE_OUTPOST  = 8,
-};
+#include "protocol.h"   /* shared/protocol.h — protocol enums & constants */
 
 /* ------------------------------------------------------------------ */
 /* Helpers                                                            */
@@ -116,7 +76,7 @@ static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_
  * [type:1][count:1] + count * 22-byte records
  * Each record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1]
  */
-#define PLAYER_RECORD_SIZE 22
+/* PLAYER_RECORD_SIZE defined in shared/net_protocol.h */
 static inline int serialize_all_player_states(uint8_t *buf, const server_player_t *players) {
     int count = 0;
     for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -206,10 +166,10 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
  * [type:1][count:1] + count * [index:1][ore_buf: 3×f32][inventory: 6×f32][product_stock: 3×f32]
  * = 2 + count * STATION_RECORD_SIZE bytes
  */
-#define STATION_RECORD_SIZE 49
+/* STATION_RECORD_SIZE defined in shared/net_protocol.h */
 
 /* Compile-time guard: if the record layout changes, update STATION_RECORD_SIZE
- * and all buffers that depend on it. */
+ * (in shared/net_protocol.h) and all buffers that depend on it. */
 _Static_assert(
     1 + COMMODITY_RAW_ORE_COUNT * 4 + COMMODITY_COUNT * 4 + PRODUCT_COUNT * 4 == STATION_RECORD_SIZE,
     "STATION_RECORD_SIZE must match serialized station econ layout"

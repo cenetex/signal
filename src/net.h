@@ -17,36 +17,10 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "protocol.h"   /* shared protocol enums, message types, record sizes */
 
 enum {
     NET_MAX_PLAYERS = 32,
-};
-
-enum {
-    NET_MSG_JOIN            = 0x01,
-    NET_MSG_LEAVE           = 0x02,
-    NET_MSG_STATE           = 0x03,
-    NET_MSG_INPUT           = 0x04,
-    NET_MSG_WORLD_ASTEROIDS = 0x10,
-    NET_MSG_WORLD_NPCS      = 0x11,
-    NET_MSG_WORLD_STATIONS  = 0x12,
-    NET_MSG_MINING_ACTION   = 0x13,
-    NET_MSG_PLAYER_SHIP     = 0x15,
-    NET_MSG_SERVER_INFO     = 0x16,
-    NET_MSG_STATION_IDENTITY= 0x17,
-    NET_MSG_WORLD_PLAYERS   = 0x18,
-};
-
-/* Station econ record size — must match server's STATION_RECORD_SIZE */
-#define STATION_RECORD_SIZE 49
-
-/* Input flags packed into a single byte. */
-enum {
-    NET_INPUT_THRUST = 1 << 0,
-    NET_INPUT_LEFT   = 1 << 1,
-    NET_INPUT_RIGHT  = 1 << 2,
-    NET_INPUT_FIRE   = 1 << 3,
-    NET_INPUT_BRAKE  = 1 << 4,
 };
 
 typedef struct {

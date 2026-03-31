@@ -12,6 +12,10 @@
 #include <string.h>
 #include "math_util.h"
 #include "types.h"
+#include "commodity.h"
+#include "ship.h"
+#include "asteroid.h"
+#include "economy.h"
 
 /* ------------------------------------------------------------------ */
 /* Constants (server-only)                                            */

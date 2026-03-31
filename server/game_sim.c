@@ -188,118 +188,12 @@ static bool point_within_signal_margin(const world_t *w, vec2 pos, float margin)
 /* Commodity / ship helpers                                           */
 /* ================================================================== */
 
-static asteroid_tier_t asteroid_next_tier(asteroid_tier_t tier) {
-    if (tier >= ASTEROID_TIER_S) return ASTEROID_TIER_S;
-    return (asteroid_tier_t)(tier + 1);
-}
-/* Note: XXL -> XL is handled naturally by (tier + 1) since XXL=0, XL=1 */
-
-static bool asteroid_is_collectible(const asteroid_t *a) {
-    return a->active && (a->tier == ASTEROID_TIER_S);
-}
-
-static float asteroid_progress_ratio(const asteroid_t *a) {
-    if (asteroid_is_collectible(a) && a->max_ore > 0.0f)
-        return clampf(a->ore / a->max_ore, 0.0f, 1.0f);
-    if (a->max_hp > 0.0f)
-        return clampf(a->hp / a->max_hp, 0.0f, 1.0f);
-    return 0.0f;
-}
-
-static commodity_t commodity_refined_form(commodity_t c) {
-    switch (c) {
-    case COMMODITY_FERRITE_ORE: return COMMODITY_FRAME_INGOT;
-    case COMMODITY_CUPRITE_ORE: return COMMODITY_CONDUCTOR_INGOT;
-    case COMMODITY_CRYSTAL_ORE: return COMMODITY_LENS_INGOT;
-    default: return c;
-    }
-}
-
 static commodity_t random_raw_ore(world_t *w) {
     return (commodity_t)rand_int(w, (int)COMMODITY_FERRITE_ORE, (int)COMMODITY_CRYSTAL_ORE);
 }
 
-static float ship_total_cargo(const ship_t *s) {
-    float t = 0.0f;
-    for (int i = 0; i < COMMODITY_COUNT; i++) t += s->cargo[i];
-    return t;
-}
-
-static float ship_raw_ore_total(const ship_t *s) {
-    float t = 0.0f;
-    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) t += s->cargo[i];
-    return t;
-}
-
 static void clear_ship_cargo(ship_t *s) {
     memset(s->cargo, 0, sizeof(s->cargo));
-}
-
-static const hull_def_t *ship_hull_def_ptr(const ship_t *s) {
-    return &HULL_DEFS[s->hull_class];
-}
-
-static const hull_def_t *npc_hull_def(const npc_ship_t *npc) {
-    return &HULL_DEFS[npc->hull_class];
-}
-
-static float ship_max_hull(const ship_t *s) {
-    return ship_hull_def_ptr(s)->max_hull;
-}
-
-static float ship_cargo_capacity(const ship_t *s) {
-    return ship_hull_def_ptr(s)->ore_capacity + ((float)s->hold_level * SHIP_HOLD_UPGRADE_STEP);
-}
-
-static float ship_mining_rate(const ship_t *s) {
-    return ship_hull_def_ptr(s)->mining_rate + ((float)s->mining_level * SHIP_MINING_UPGRADE_STEP);
-}
-
-static float ship_tractor_range(const ship_t *s) {
-    return ship_hull_def_ptr(s)->tractor_range + ((float)s->tractor_level * SHIP_TRACTOR_UPGRADE_STEP);
-}
-
-static float ship_collect_radius(const ship_t *s) {
-    return SHIP_BASE_COLLECT_RADIUS + ((float)s->tractor_level * SHIP_COLLECT_UPGRADE_STEP);
-}
-
-static int ship_upgrade_level(const ship_t *s, ship_upgrade_t upgrade) {
-    switch (upgrade) {
-    case SHIP_UPGRADE_MINING:  return s->mining_level;
-    case SHIP_UPGRADE_HOLD:    return s->hold_level;
-    case SHIP_UPGRADE_TRACTOR: return s->tractor_level;
-    default: return 0;
-    }
-}
-
-static bool ship_upgrade_maxed(const ship_t *s, ship_upgrade_t upgrade) {
-    return ship_upgrade_level(s, upgrade) >= SHIP_UPGRADE_MAX_LEVEL;
-}
-
-static int ship_upgrade_cost(const ship_t *s, ship_upgrade_t upgrade) {
-    int level = ship_upgrade_level(s, upgrade);
-    int tier = level + 1;
-    switch (upgrade) {
-    case SHIP_UPGRADE_MINING:  return 180 + (tier * 110) + (level * level * 120);
-    case SHIP_UPGRADE_HOLD:    return 210 + (tier * 120) + (level * level * 135);
-    case SHIP_UPGRADE_TRACTOR: return 160 + (tier * 100) + (level * level * 110);
-    default: return 0;
-    }
-}
-
-static product_t upgrade_required_product(ship_upgrade_t upgrade) {
-    switch (upgrade) {
-    case SHIP_UPGRADE_HOLD:    return PRODUCT_FRAME;
-    case SHIP_UPGRADE_MINING:  return PRODUCT_LASER_MODULE;
-    case SHIP_UPGRADE_TRACTOR: return PRODUCT_TRACTOR_MODULE;
-    default: return PRODUCT_FRAME;
-    }
-}
-
-static float upgrade_product_cost(const ship_t *s, ship_upgrade_t upgrade) {
-    int level = ship_upgrade_level(s, upgrade);
-    int next = level + 1;
-    return UPGRADE_BASE_PRODUCT * (float)next;
 }
 
 static float ship_cargo_space(const ship_t *s) {
@@ -338,7 +232,7 @@ static bool station_has_service(const station_t *station, uint32_t service) {
     return station && ((station->services & service) != 0);
 }
 
-static float station_cargo_sale_value(const station_t *station, const ship_t *s) {
+static float sim_station_cargo_sale_value(const station_t *station, const ship_t *s) {
     float total = 0.0f;
     if (!station) return 0.0f;
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
@@ -347,79 +241,16 @@ static float station_cargo_sale_value(const station_t *station, const ship_t *s)
     return total;
 }
 
-static float station_repair_cost(const ship_t *s) {
+static float sim_station_repair_cost(const ship_t *s) {
     float missing = fmaxf(0.0f, ship_max_hull(s) - s->hull);
     return ceilf(missing * STATION_REPAIR_COST_PER_HULL);
-}
-
-/* ================================================================== */
-/* Asteroid tier property functions                                   */
-/* ================================================================== */
-
-static float asteroid_spin_limit(asteroid_tier_t tier) {
-    switch (tier) {
-    case ASTEROID_TIER_XXL: return 0.06f;
-    case ASTEROID_TIER_XL: return 0.16f;
-    case ASTEROID_TIER_L:  return 0.24f;
-    case ASTEROID_TIER_M:  return 0.38f;
-    case ASTEROID_TIER_S:  return 0.62f;
-    default: return 0.2f;
-    }
-}
-
-static float asteroid_radius_min(asteroid_tier_t tier) {
-    switch (tier) {
-    case ASTEROID_TIER_XXL: return 180.0f;
-    case ASTEROID_TIER_XL: return 54.0f;
-    case ASTEROID_TIER_L:  return 34.0f;
-    case ASTEROID_TIER_M:  return 20.0f;
-    case ASTEROID_TIER_S:  return 11.0f;
-    default: return 16.0f;
-    }
-}
-
-static float asteroid_radius_max(asteroid_tier_t tier) {
-    switch (tier) {
-    case ASTEROID_TIER_XXL: return 350.0f;
-    case ASTEROID_TIER_XL: return 78.0f;
-    case ASTEROID_TIER_L:  return 48.0f;
-    case ASTEROID_TIER_M:  return 30.0f;
-    case ASTEROID_TIER_S:  return 16.0f;
-    default: return 18.0f;
-    }
-}
-
-static float asteroid_hp_min(asteroid_tier_t tier) {
-    switch (tier) {
-    case ASTEROID_TIER_XXL: return 800.0f;
-    case ASTEROID_TIER_XL: return 120.0f;
-    case ASTEROID_TIER_L:  return 68.0f;
-    case ASTEROID_TIER_M:  return 32.0f;
-    case ASTEROID_TIER_S:  return 10.0f;
-    default: return 8.0f;
-    }
-}
-
-static float asteroid_hp_max(asteroid_tier_t tier) {
-    switch (tier) {
-    case ASTEROID_TIER_XXL: return 1400.0f;
-    case ASTEROID_TIER_XL: return 170.0f;
-    case ASTEROID_TIER_L:  return 96.0f;
-    case ASTEROID_TIER_M:  return 46.0f;
-    case ASTEROID_TIER_S:  return 18.0f;
-    default: return 12.0f;
-    }
 }
 
 /* ================================================================== */
 /* Asteroid lifecycle                                                 */
 /* ================================================================== */
 
-static void clear_asteroid(asteroid_t *a) {
-    memset(a, 0, sizeof(*a));
-}
-
-static void configure_asteroid_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier, commodity_t commodity) {
+static void sim_configure_asteroid(world_t *w, asteroid_t *a, asteroid_tier_t tier, commodity_t commodity) {
     float sl = asteroid_spin_limit(tier);
     a->active    = true;
     a->tier      = tier;
@@ -458,7 +289,7 @@ static float max_signal_range(const world_t *w) {
 static void seed_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier) {
     float angle = rand_range(w, 0.0f, TWO_PI_F);
     clear_asteroid(a);
-    configure_asteroid_tier(w, a, tier, random_raw_ore(w));
+    sim_configure_asteroid(w, a, tier, random_raw_ore(w));
     a->fracture_child = false;
     /* Initial field seeding keeps rocks inside supported space so the opening loop stays populated. */
     int stn = rand_int(w, 0, MAX_STATIONS - 1);
@@ -496,7 +327,7 @@ static void set_inbound_field_velocity(world_t *w, asteroid_t *a, vec2 inward) {
 
 static void spawn_inbound_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier) {
     clear_asteroid(a);
-    configure_asteroid_tier(w, a, tier, random_raw_ore(w));
+    sim_configure_asteroid(w, a, tier, random_raw_ore(w));
     a->fracture_child = false;
 
     int stn = rand_int(w, 0, MAX_STATIONS - 1);
@@ -541,7 +372,7 @@ static void spawn_field_asteroid(world_t *w, asteroid_t *a) {
 
 static void spawn_child_asteroid(world_t *w, asteroid_t *a, asteroid_tier_t tier, commodity_t commodity, vec2 pos, vec2 vel) {
     clear_asteroid(a);
-    configure_asteroid_tier(w, a, tier, commodity);
+    sim_configure_asteroid(w, a, tier, commodity);
     a->fracture_child = true;
     a->pos = pos;
     a->vel = vel;
@@ -605,7 +436,7 @@ static void fracture_asteroid(world_t *w, int idx, vec2 outward_dir) {
 /* Per-frame world systems                                            */
 /* ================================================================== */
 
-static void step_asteroid_dynamics(world_t *w, float dt) {
+static void sim_step_asteroid_dynamics(world_t *w, float dt) {
     float cleanup_d_sq = FRACTURE_CHILD_CLEANUP_DISTANCE * FRACTURE_CHILD_CLEANUP_DISTANCE;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
@@ -647,7 +478,7 @@ static void maintain_asteroid_field(world_t *w, float dt) {
     w->field_spawn_timer = 0.0f;
 }
 
-static void step_refinery_production(world_t *w, float dt) {
+static void sim_step_refinery_production(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (st->role != STATION_ROLE_REFINERY) continue;
@@ -669,7 +500,7 @@ static void step_refinery_production(world_t *w, float dt) {
     }
 }
 
-static void step_station_production(world_t *w, float dt) {
+static void sim_step_station_production(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (st->role == STATION_ROLE_YARD) {
@@ -1110,7 +941,7 @@ static vec2 ship_forward(const ship_t *s) {
 }
 
 static vec2 ship_muzzle(const ship_t *s, vec2 forward) {
-    return v2_add(s->pos, v2_scale(forward, ship_hull_def_ptr(s)->ship_radius + 8.0f));
+    return v2_add(s->pos, v2_scale(forward, ship_hull_def(s)->ship_radius + 8.0f));
 }
 
 static bool try_spend_credits(ship_t *s, float amount) {
@@ -1122,7 +953,7 @@ static bool try_spend_credits(ship_t *s, float amount) {
 
 static void anchor_ship_in_station(server_player_t *sp, world_t *w) {
     const station_t *st = &w->stations[sp->current_station];
-    const hull_def_t *hull = ship_hull_def_ptr(&sp->ship);
+    const hull_def_t *hull = ship_hull_def(&sp->ship);
     vec2 base = station_dock_anchor(st, hull);
     /* Offset by player ID so multiple docked players don't overlap */
     float offset = (float)(sp->id % 4) * (hull->ship_radius * 2.5f) - (hull->ship_radius * 3.75f);
@@ -1170,7 +1001,7 @@ static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
 /* ================================================================== */
 
 static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, float radius) {
-    float minimum = radius + ship_hull_def_ptr(&sp->ship)->ship_radius;
+    float minimum = radius + ship_hull_def(&sp->ship)->ship_radius;
     vec2 delta = v2_sub(sp->ship.pos, center);
     float d_sq = v2_len_sq(delta);
     if (d_sq >= minimum * minimum) return;
@@ -1190,7 +1021,7 @@ static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, fl
 /* Mining target                                                      */
 /* ================================================================== */
 
-static int find_mining_target(const world_t *w, vec2 origin, vec2 forward) {
+static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward) {
     int best = -1;
     float best_proj = MINING_RANGE + 1.0f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -1246,7 +1077,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
 static void try_repair_ship(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
     if (!station_has_service(st, STATION_SERVICE_REPAIR)) return;
-    float cost = station_repair_cost(&sp->ship);
+    float cost = sim_station_repair_cost(&sp->ship);
     if (cost <= 0.0f) return;
     if (!try_spend_credits(&sp->ship, cost)) return;
     sp->ship.hull = ship_max_hull(&sp->ship);
@@ -1283,11 +1114,11 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
 /* ================================================================== */
 
 static void step_ship_rotation(ship_t *s, float dt, float turn_input) {
-    s->angle = wrap_angle(s->angle + (turn_input * ship_hull_def_ptr(s)->turn_speed * dt));
+    s->angle = wrap_angle(s->angle + (turn_input * ship_hull_def(s)->turn_speed * dt));
 }
 
 static void step_ship_thrust(ship_t *s, float dt, float thrust_input, vec2 forward) {
-    const hull_def_t *hull = ship_hull_def_ptr(s);
+    const hull_def_t *hull = ship_hull_def(s);
     if (thrust_input > 0.0f) {
         s->vel = v2_add(s->vel, v2_scale(forward, hull->accel * thrust_input * dt));
     } else if (thrust_input < 0.0f) {
@@ -1296,7 +1127,7 @@ static void step_ship_thrust(ship_t *s, float dt, float thrust_input, vec2 forwa
 }
 
 static void step_ship_motion(ship_t *s, float dt, const world_t *w) {
-    s->vel = v2_scale(s->vel, 1.0f / (1.0f + (ship_hull_def_ptr(s)->drag * dt)));
+    s->vel = v2_scale(s->vel, 1.0f / (1.0f + (ship_hull_def(s)->drag * dt)));
     s->pos = v2_add(s->pos, v2_scale(s->vel, dt));
 
     /* Signal-based boundary: push back when signal is weak */
@@ -1351,7 +1182,7 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
 }
 
 static void update_targeting_state(world_t *w, server_player_t *sp, vec2 forward) {
-    sp->hover_asteroid = find_mining_target(w, ship_muzzle(&sp->ship, forward), forward);
+    sp->hover_asteroid = sim_find_mining_target(w, ship_muzzle(&sp->ship, forward), forward);
 }
 
 static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) {
@@ -1795,13 +1626,13 @@ static void step_contracts(world_t *w, float dt) {
 void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
     w->time += dt;
-    step_asteroid_dynamics(w, dt);
+    sim_step_asteroid_dynamics(w, dt);
     maintain_asteroid_field(w, dt);
     step_asteroid_gravity(w, dt);
     resolve_asteroid_collisions(w);
     resolve_asteroid_station_collisions(w);
-    step_refinery_production(w, dt);
-    step_station_production(w, dt);
+    sim_step_refinery_production(w, dt);
+    sim_step_station_production(w, dt);
     step_contracts(w, dt);
     step_npc_ships(w, dt);
     for (int p = 0; p < MAX_PLAYERS; p++) {
@@ -1814,8 +1645,8 @@ void world_sim_step(world_t *w, float dt) {
         if (!w->players[i].connected || w->players[i].docked) continue;
         for (int j = i + 1; j < MAX_PLAYERS; j++) {
             if (!w->players[j].connected || w->players[j].docked) continue;
-            float ri = ship_hull_def_ptr(&w->players[i].ship)->ship_radius;
-            float rj = ship_hull_def_ptr(&w->players[j].ship)->ship_radius;
+            float ri = ship_hull_def(&w->players[i].ship)->ship_radius;
+            float rj = ship_hull_def(&w->players[j].ship)->ship_radius;
             float minimum = ri + rj;
             vec2 delta = v2_sub(w->players[i].ship.pos, w->players[j].ship.pos);
             float d_sq = v2_len_sq(delta);
