@@ -1854,32 +1854,181 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 3
+#define SAVE_VERSION 4
 
-typedef struct {
-    uint32_t magic;
-    uint32_t version;
-    uint32_t rng;
-    float time;
-    float field_spawn_timer;
-} save_header_t;
+/* ---- helper macros for explicit field I/O ---- */
+#define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
+#define READ_FIELD(f, val)  do { if (fread(&(val), sizeof(val), 1, (f)) != 1)  { fclose(f); return false; } } while(0)
+
+/* ---- station field-by-field I/O ---- */
+static bool write_station(FILE *f, const station_t *s) {
+    WRITE_FIELD(f, s->name);
+    WRITE_FIELD(f, s->role);
+    WRITE_FIELD(f, s->pos);
+    WRITE_FIELD(f, s->radius);
+    WRITE_FIELD(f, s->dock_radius);
+    WRITE_FIELD(f, s->signal_range);
+    WRITE_FIELD(f, s->scaffold);
+    WRITE_FIELD(f, s->scaffold_progress);
+    WRITE_FIELD(f, s->buy_price);
+    WRITE_FIELD(f, s->inventory);
+    WRITE_FIELD(f, s->ore_buffer);
+    WRITE_FIELD(f, s->ingot_buffer);
+    WRITE_FIELD(f, s->product_stock);
+    WRITE_FIELD(f, s->services);
+    return true;
+}
+
+static bool read_station(FILE *f, station_t *s) {
+    READ_FIELD(f, s->name);
+    READ_FIELD(f, s->role);
+    READ_FIELD(f, s->pos);
+    READ_FIELD(f, s->radius);
+    READ_FIELD(f, s->dock_radius);
+    READ_FIELD(f, s->signal_range);
+    READ_FIELD(f, s->scaffold);
+    READ_FIELD(f, s->scaffold_progress);
+    READ_FIELD(f, s->buy_price);
+    READ_FIELD(f, s->inventory);
+    READ_FIELD(f, s->ore_buffer);
+    READ_FIELD(f, s->ingot_buffer);
+    READ_FIELD(f, s->product_stock);
+    READ_FIELD(f, s->services);
+    return true;
+}
+
+/* ---- asteroid field-by-field I/O ---- */
+static bool write_asteroid(FILE *f, const asteroid_t *a) {
+    WRITE_FIELD(f, a->active);
+    WRITE_FIELD(f, a->fracture_child);
+    WRITE_FIELD(f, a->tier);
+    WRITE_FIELD(f, a->pos);
+    WRITE_FIELD(f, a->vel);
+    WRITE_FIELD(f, a->radius);
+    WRITE_FIELD(f, a->hp);
+    WRITE_FIELD(f, a->max_hp);
+    WRITE_FIELD(f, a->ore);
+    WRITE_FIELD(f, a->max_ore);
+    WRITE_FIELD(f, a->commodity);
+    WRITE_FIELD(f, a->rotation);
+    WRITE_FIELD(f, a->spin);
+    WRITE_FIELD(f, a->seed);
+    WRITE_FIELD(f, a->age);
+    return true;
+}
+
+static bool read_asteroid(FILE *f, asteroid_t *a) {
+    READ_FIELD(f, a->active);
+    READ_FIELD(f, a->fracture_child);
+    READ_FIELD(f, a->tier);
+    READ_FIELD(f, a->pos);
+    READ_FIELD(f, a->vel);
+    READ_FIELD(f, a->radius);
+    READ_FIELD(f, a->hp);
+    READ_FIELD(f, a->max_hp);
+    READ_FIELD(f, a->ore);
+    READ_FIELD(f, a->max_ore);
+    READ_FIELD(f, a->commodity);
+    READ_FIELD(f, a->rotation);
+    READ_FIELD(f, a->spin);
+    READ_FIELD(f, a->seed);
+    READ_FIELD(f, a->age);
+    return true;
+}
+
+/* ---- npc_ship field-by-field I/O ---- */
+static bool write_npc(FILE *f, const npc_ship_t *n) {
+    WRITE_FIELD(f, n->active);
+    WRITE_FIELD(f, n->role);
+    WRITE_FIELD(f, n->hull_class);
+    WRITE_FIELD(f, n->state);
+    WRITE_FIELD(f, n->pos);
+    WRITE_FIELD(f, n->vel);
+    WRITE_FIELD(f, n->angle);
+    WRITE_FIELD(f, n->cargo);
+    WRITE_FIELD(f, n->ingots);
+    WRITE_FIELD(f, n->target_asteroid);
+    WRITE_FIELD(f, n->home_station);
+    WRITE_FIELD(f, n->dest_station);
+    WRITE_FIELD(f, n->state_timer);
+    WRITE_FIELD(f, n->thrusting);
+    WRITE_FIELD(f, n->tint_r);
+    WRITE_FIELD(f, n->tint_g);
+    WRITE_FIELD(f, n->tint_b);
+    return true;
+}
+
+static bool read_npc(FILE *f, npc_ship_t *n) {
+    READ_FIELD(f, n->active);
+    READ_FIELD(f, n->role);
+    READ_FIELD(f, n->hull_class);
+    READ_FIELD(f, n->state);
+    READ_FIELD(f, n->pos);
+    READ_FIELD(f, n->vel);
+    READ_FIELD(f, n->angle);
+    READ_FIELD(f, n->cargo);
+    READ_FIELD(f, n->ingots);
+    READ_FIELD(f, n->target_asteroid);
+    READ_FIELD(f, n->home_station);
+    READ_FIELD(f, n->dest_station);
+    READ_FIELD(f, n->state_timer);
+    READ_FIELD(f, n->thrusting);
+    READ_FIELD(f, n->tint_r);
+    READ_FIELD(f, n->tint_g);
+    READ_FIELD(f, n->tint_b);
+    return true;
+}
+
+/* ---- contract field-by-field I/O ---- */
+static bool write_contract(FILE *f, const contract_t *c) {
+    WRITE_FIELD(f, c->active);
+    WRITE_FIELD(f, c->station_index);
+    WRITE_FIELD(f, c->commodity);
+    WRITE_FIELD(f, c->quantity_needed);
+    WRITE_FIELD(f, c->base_price);
+    WRITE_FIELD(f, c->age);
+    return true;
+}
+
+static bool read_contract(FILE *f, contract_t *c) {
+    READ_FIELD(f, c->active);
+    READ_FIELD(f, c->station_index);
+    READ_FIELD(f, c->commodity);
+    READ_FIELD(f, c->quantity_needed);
+    READ_FIELD(f, c->base_price);
+    READ_FIELD(f, c->age);
+    return true;
+}
 
 bool world_save(const world_t *w, const char *path) {
     FILE *f = fopen(path, "wb");
     if (!f) return false;
 
-    save_header_t hdr = {
-        .magic = SAVE_MAGIC,
-        .version = SAVE_VERSION,
-        .rng = w->rng,
-        .time = w->time,
-        .field_spawn_timer = w->field_spawn_timer,
-    };
-    if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
-    if (fwrite(w->stations, sizeof(w->stations), 1, f) != 1) { fclose(f); return false; }
-    if (fwrite(w->asteroids, sizeof(w->asteroids), 1, f) != 1) { fclose(f); return false; }
-    if (fwrite(w->npc_ships, sizeof(w->npc_ships), 1, f) != 1) { fclose(f); return false; }
-    if (fwrite(w->contracts, sizeof(w->contracts), 1, f) != 1) { fclose(f); return false; }
+    /* Header */
+    uint32_t magic = SAVE_MAGIC;
+    uint32_t version = SAVE_VERSION;
+    WRITE_FIELD(f, magic);
+    WRITE_FIELD(f, version);
+    WRITE_FIELD(f, w->rng);
+    WRITE_FIELD(f, w->time);
+    WRITE_FIELD(f, w->field_spawn_timer);
+
+    /* Stations */
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (!write_station(f, &w->stations[i])) return false;
+    }
+    /* Asteroids */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!write_asteroid(f, &w->asteroids[i])) return false;
+    }
+    /* NPC ships */
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!write_npc(f, &w->npc_ships[i])) return false;
+    }
+    /* Contracts */
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        if (!write_contract(f, &w->contracts[i])) return false;
+    }
 
     fclose(f);
     return true;
@@ -1889,35 +2038,30 @@ bool world_load(world_t *w, const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return false;
 
-    save_header_t hdr;
-    if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
-    if (hdr.magic != SAVE_MAGIC || hdr.version < 1 || hdr.version > SAVE_VERSION) { fclose(f); return false; }
+    uint32_t magic, version;
+    READ_FIELD(f, magic);
+    READ_FIELD(f, version);
+    if (magic != SAVE_MAGIC || version < 4 || version > SAVE_VERSION) { fclose(f); return false; }
 
-    w->rng = hdr.rng;
-    w->time = hdr.time;
-    w->field_spawn_timer = hdr.field_spawn_timer;
+    READ_FIELD(f, w->rng);
+    READ_FIELD(f, w->time);
+    READ_FIELD(f, w->field_spawn_timer);
 
-    if (fread(w->stations, sizeof(w->stations), 1, f) != 1) { fclose(f); return false; }
-    if (fread(w->asteroids, sizeof(w->asteroids), 1, f) != 1) { fclose(f); return false; }
-    if (hdr.version >= 3) {
-        if (fread(w->npc_ships, sizeof(w->npc_ships), 1, f) != 1) { fclose(f); return false; }
-    } else {
-        /* v1/v2: npc_ship_t was 80 bytes (no tint fields) */
-        enum { OLD_NPC_SIZE = 80 };
-        uint8_t old_npcs[MAX_NPC_SHIPS * OLD_NPC_SIZE];
-        if (fread(old_npcs, OLD_NPC_SIZE * MAX_NPC_SHIPS, 1, f) != 1) { fclose(f); return false; }
-        memset(w->npc_ships, 0, sizeof(w->npc_ships));
-        for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-            memcpy(&w->npc_ships[i], &old_npcs[i * OLD_NPC_SIZE], OLD_NPC_SIZE);
-            w->npc_ships[i].tint_r = 1.0f;
-            w->npc_ships[i].tint_g = 1.0f;
-            w->npc_ships[i].tint_b = 1.0f;
-        }
+    /* Stations */
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (!read_station(f, &w->stations[i])) return false;
     }
-    if (hdr.version >= 2) {
-        if (fread(w->contracts, sizeof(w->contracts), 1, f) != 1) { fclose(f); return false; }
-    } else {
-        memset(w->contracts, 0, sizeof(w->contracts));
+    /* Asteroids */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!read_asteroid(f, &w->asteroids[i])) return false;
+    }
+    /* NPC ships */
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!read_npc(f, &w->npc_ships[i])) return false;
+    }
+    /* Contracts */
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        if (!read_contract(f, &w->contracts[i])) return false;
     }
 
     /* Clear transient state */
