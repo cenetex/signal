@@ -3,139 +3,419 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Signal — Space Mining MMO</title>
+    <title>Signal — Keep the Belt Connected</title>
     <style>
+      @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap");
+
       :root {
         color-scheme: dark;
-        font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+        --bg-0: #080706;
+        --bg-1: #110f0d;
+        --bg-2: #1a1510;
+        --panel: rgba(18, 17, 14, 0.82);
+        --panel-strong: rgba(28, 24, 18, 0.9);
+        --ink: #f5efdf;
+        --muted: #cfc3ad;
+        --faint: #8e846f;
+        --line: rgba(245, 239, 223, 0.12);
+        --ore: #f1b566;
+        --signal: #80ffd5;
+        --danger: #ff8764;
+        --shadow: 0 28px 80px rgba(0, 0, 0, 0.36);
+        font-family: "IBM Plex Sans Condensed", "Arial Narrow", sans-serif;
         background:
-          radial-gradient(circle at top, rgba(40, 70, 120, 0.25), transparent 40%),
-          linear-gradient(180deg, #09111f 0%, #04070c 100%);
-      }
-      * { box-sizing: border-box; margin: 0; padding: 0; }
-      body {
-        min-height: 100dvh;
-        color: #dce9ff;
-        overflow: hidden;
+          radial-gradient(circle at 16% 18%, rgba(241, 181, 102, 0.18), transparent 30%),
+          radial-gradient(circle at 86% 76%, rgba(128, 255, 213, 0.12), transparent 26%),
+          linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 48%, var(--bg-0) 100%);
       }
 
-      /* --- Menu overlay --- */
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      html,
+      body {
+        min-height: 100dvh;
+      }
+
+      body {
+        overflow: hidden;
+        color: var(--ink);
+        position: relative;
+      }
+
+      body::before,
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      body::before {
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+        background-size: 120px 120px;
+        mask-image: radial-gradient(circle at center, black 24%, transparent 88%);
+        opacity: 0.38;
+      }
+
+      body::after {
+        background:
+          linear-gradient(180deg, rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0.54)),
+          radial-gradient(circle at center, transparent 44%, rgba(0, 0, 0, 0.42) 100%);
+      }
+
       #menu {
         position: fixed;
         inset: 0;
         z-index: 10;
-        display: flex;
-        flex-direction: column;
-        align-items: center;
-        justify-content: center;
+        overflow: auto;
+        padding: 24px 18px 36px;
         background:
-          radial-gradient(circle at top, rgba(40, 70, 120, 0.25), transparent 40%),
-          linear-gradient(180deg, #09111f 0%, #04070c 100%);
+          linear-gradient(180deg, rgba(8, 7, 6, 0.28), rgba(8, 7, 6, 0.72)),
+          radial-gradient(circle at top, rgba(241, 181, 102, 0.08), transparent 28%);
         transition: opacity 0.4s, visibility 0.4s;
       }
+
       #menu.hidden {
         opacity: 0;
         visibility: hidden;
         pointer-events: none;
       }
-      .menu-content {
-        max-width: 640px;
-        width: 100%;
-        text-align: center;
-        padding: 2rem;
+
+      .menu-shell {
+        width: min(1180px, 100%);
+        margin: 0 auto;
+        display: grid;
+        gap: 18px;
       }
-      .eyebrow {
-        font-size: 11px;
-        letter-spacing: 0.22em;
-        text-transform: uppercase;
-        color: rgba(150, 198, 255, 0.6);
-        margin-bottom: 0.75rem;
-      }
-      h1 {
-        font-size: clamp(32px, 6vw, 56px);
-        letter-spacing: 0.08em;
-        text-transform: uppercase;
-        font-weight: 400;
-        margin-bottom: 0.5rem;
-      }
-      .subtitle {
-        font-size: 14px;
-        color: rgba(220, 233, 255, 0.55);
-        margin-bottom: 2.5rem;
-        line-height: 1.7;
-      }
-      .actions {
+
+      .masthead {
         display: flex;
-        gap: 1rem;
-        justify-content: center;
-        flex-wrap: wrap;
-        margin-bottom: 2.5rem;
-      }
-      .btn {
-        display: inline-block;
-        padding: 0.75rem 2rem;
-        font-family: inherit;
-        font-size: 13px;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+        color: var(--faint);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
         letter-spacing: 0.12em;
         text-transform: uppercase;
-        text-decoration: none;
-        border: 1px solid rgba(150, 198, 255, 0.3);
-        color: #dce9ff;
-        cursor: pointer;
-        background: none;
-        transition: all 0.2s;
       }
-      .btn:hover {
-        border-color: rgba(150, 198, 255, 0.7);
-        background: rgba(150, 198, 255, 0.08);
-      }
-      .btn.primary {
-        background: rgba(80, 200, 160, 0.15);
-        border-color: rgba(80, 200, 160, 0.5);
-        color: #72ffb6;
-      }
-      .btn.primary:hover {
-        background: rgba(80, 200, 160, 0.25);
-        border-color: rgba(80, 200, 160, 0.8);
-      }
-      .downloads {
-        margin-top: 0.5rem;
-      }
-      .downloads h2 {
-        font-size: 11px;
-        letter-spacing: 0.18em;
-        text-transform: uppercase;
-        color: rgba(150, 198, 255, 0.35);
-        margin-bottom: 0.75rem;
-        font-weight: 400;
-      }
-      .download-links {
-        display: flex;
-        gap: 1.5rem;
-        justify-content: center;
-      }
-      .download-links a {
-        font-size: 12px;
-        color: rgba(220, 233, 255, 0.4);
-        text-decoration: none;
-        letter-spacing: 0.08em;
-        transition: color 0.2s;
-      }
-      .download-links a:hover { color: #dce9ff; }
-      .controls {
-        margin-top: 2.5rem;
-        font-size: 11px;
-        color: rgba(220, 233, 255, 0.25);
-        line-height: 1.8;
-      }
-      .controls span { color: rgba(150, 198, 255, 0.45); }
 
-      /* --- Game canvas --- */
+      .masthead-mark {
+        color: var(--signal);
+      }
+
+      .masthead-status {
+        color: rgba(245, 239, 223, 0.62);
+      }
+
+      .intro-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1.28fr) minmax(320px, 0.92fr);
+        gap: 18px;
+      }
+
+      .panel {
+        position: relative;
+        overflow: hidden;
+        border: 1px solid var(--line);
+        border-radius: 28px;
+        background: var(--panel);
+        box-shadow: var(--shadow);
+        backdrop-filter: blur(22px);
+      }
+
+      .hero-panel {
+        padding: clamp(26px, 4vw, 52px);
+      }
+
+      .hero-panel::before {
+        content: "";
+        position: absolute;
+        inset: auto -8% 8% auto;
+        width: 320px;
+        height: 320px;
+        border-radius: 50%;
+        background: radial-gradient(circle, rgba(128, 255, 213, 0.18), transparent 66%);
+        pointer-events: none;
+      }
+
+      .eyebrow {
+        margin-bottom: 14px;
+        color: var(--ore);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        max-width: 10ch;
+        margin-bottom: 18px;
+        font-size: clamp(52px, 10vw, 112px);
+        line-height: 0.88;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        font-weight: 600;
+      }
+
+      h1 .accent {
+        color: var(--signal);
+      }
+
+      .subtitle {
+        max-width: 18ch;
+        margin-bottom: 18px;
+        font-size: clamp(19px, 2.4vw, 31px);
+        line-height: 1.08;
+        color: rgba(245, 239, 223, 0.92);
+      }
+
+      .lede {
+        max-width: 63ch;
+        margin-bottom: 28px;
+        font-size: 16px;
+        line-height: 1.7;
+        color: var(--muted);
+      }
+
+      .signal-note {
+        max-width: 58ch;
+        margin-bottom: 30px;
+        padding: 14px 18px;
+        border-left: 3px solid rgba(128, 255, 213, 0.68);
+        background: rgba(128, 255, 213, 0.06);
+        color: rgba(245, 239, 223, 0.82);
+        font-size: 14px;
+        line-height: 1.7;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        margin-bottom: 30px;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        min-width: 190px;
+        padding: 14px 22px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--ink);
+        text-decoration: none;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        font-size: 12px;
+        font-family: "IBM Plex Mono", monospace;
+        background: rgba(245, 239, 223, 0.04);
+        transition: transform 0.2s, border-color 0.2s, background 0.2s, color 0.2s;
+        cursor: pointer;
+      }
+
+      .btn:hover {
+        transform: translateY(-1px);
+        border-color: rgba(245, 239, 223, 0.34);
+        background: rgba(245, 239, 223, 0.08);
+      }
+
+      .btn.primary {
+        color: #0f1311;
+        background: linear-gradient(135deg, var(--signal), #a6ffd8 70%);
+        border-color: rgba(128, 255, 213, 0.9);
+      }
+
+      .btn.primary:hover {
+        background: linear-gradient(135deg, #92ffdc, #b7ffe2 70%);
+      }
+
+      .story-strip {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .story-card {
+        padding: 16px 16px 18px;
+        border-radius: 18px;
+        border: 1px solid rgba(245, 239, 223, 0.08);
+        background: rgba(245, 239, 223, 0.03);
+      }
+
+      .story-card .label {
+        margin-bottom: 8px;
+        color: var(--ore);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      .story-card p {
+        color: var(--muted);
+        font-size: 14px;
+        line-height: 1.55;
+      }
+
+      .brief-panel {
+        display: grid;
+        gap: 16px;
+        padding: clamp(24px, 3vw, 34px);
+        background:
+          linear-gradient(180deg, rgba(36, 29, 22, 0.92), rgba(18, 17, 14, 0.88)),
+          radial-gradient(circle at top right, rgba(241, 181, 102, 0.12), transparent 36%);
+      }
+
+      .brief-topline {
+        color: rgba(245, 239, 223, 0.5);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      .brief-title {
+        font-size: 28px;
+        line-height: 1.02;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+      }
+
+      .brief-copy {
+        color: var(--muted);
+        font-size: 15px;
+        line-height: 1.7;
+      }
+
+      .brief-rail {
+        display: grid;
+        gap: 12px;
+      }
+
+      .brief-item {
+        padding: 14px 16px;
+        border: 1px solid rgba(245, 239, 223, 0.08);
+        border-radius: 18px;
+        background: rgba(0, 0, 0, 0.14);
+      }
+
+      .brief-item h2 {
+        margin-bottom: 5px;
+        font-size: 13px;
+        color: var(--signal);
+        font-family: "IBM Plex Mono", monospace;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        font-weight: 500;
+      }
+
+      .brief-item p {
+        color: rgba(245, 239, 223, 0.76);
+        font-size: 14px;
+        line-height: 1.58;
+      }
+
+      .support-grid {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr) minmax(280px, 0.72fr);
+        gap: 18px;
+      }
+
+      .support-panel {
+        padding: 22px 24px;
+      }
+
+      .support-title {
+        margin-bottom: 16px;
+        color: rgba(245, 239, 223, 0.66);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.16em;
+        text-transform: uppercase;
+      }
+
+      .pill-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .pill {
+        display: inline-flex;
+        align-items: center;
+        padding: 10px 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(245, 239, 223, 0.1);
+        background: rgba(245, 239, 223, 0.03);
+        color: rgba(245, 239, 223, 0.78);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.06em;
+      }
+
+      .pill strong {
+        color: var(--ore);
+        margin-right: 6px;
+        font-weight: 500;
+      }
+
+      .download-links {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 10px;
+      }
+
+      .download-links a {
+        display: block;
+        padding: 14px 16px;
+        border-radius: 16px;
+        border: 1px solid rgba(245, 239, 223, 0.1);
+        background: rgba(245, 239, 223, 0.03);
+        color: var(--ink);
+        text-decoration: none;
+        transition: transform 0.2s, border-color 0.2s, background 0.2s;
+      }
+
+      .download-links a:hover {
+        transform: translateY(-1px);
+        border-color: rgba(245, 239, 223, 0.28);
+        background: rgba(245, 239, 223, 0.07);
+      }
+
+      .download-links span {
+        display: block;
+      }
+
+      .download-links .os {
+        margin-bottom: 4px;
+        color: var(--ore);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+      }
+
+      .download-links .desc {
+        color: rgba(245, 239, 223, 0.72);
+        font-size: 14px;
+        line-height: 1.4;
+      }
+
       #game {
         position: fixed;
         inset: 0;
         z-index: 1;
       }
+
       #game canvas {
         width: 100%;
         height: 100%;
@@ -143,7 +423,6 @@
         outline: none;
       }
 
-      /* --- Loading --- */
       #loading {
         position: fixed;
         inset: 0;
@@ -151,71 +430,195 @@
         display: none;
         align-items: center;
         justify-content: center;
-        background: rgba(4, 7, 12, 0.95);
-        font-size: 13px;
-        letter-spacing: 0.12em;
+        background: rgba(7, 7, 6, 0.95);
+        color: rgba(245, 239, 223, 0.76);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 12px;
+        letter-spacing: 0.18em;
         text-transform: uppercase;
-        color: rgba(150, 198, 255, 0.6);
       }
-      #loading.active { display: flex; }
 
-      /* --- ESC hint --- */
+      #loading.active {
+        display: flex;
+      }
+
       #esc-hint {
         position: fixed;
-        top: 12px;
+        top: 14px;
         left: 50%;
         transform: translateX(-50%);
         z-index: 8;
+        padding: 8px 12px;
+        border-radius: 999px;
+        border: 1px solid rgba(245, 239, 223, 0.1);
+        background: rgba(7, 7, 6, 0.52);
+        color: rgba(245, 239, 223, 0.42);
+        font-family: "IBM Plex Mono", monospace;
         font-size: 10px;
-        letter-spacing: 0.15em;
+        letter-spacing: 0.16em;
         text-transform: uppercase;
-        color: rgba(150, 198, 255, 0.3);
         opacity: 0;
         transition: opacity 1s;
         pointer-events: none;
+        backdrop-filter: blur(10px);
       }
-      #esc-hint.visible { opacity: 1; transition: opacity 0.3s; }
+
+      #esc-hint.visible {
+        opacity: 1;
+        transition: opacity 0.3s;
+      }
+
+      @media (max-width: 980px) {
+        .intro-grid,
+        .support-grid {
+          grid-template-columns: 1fr;
+        }
+
+        h1,
+        .subtitle,
+        .lede {
+          max-width: none;
+        }
+
+        .brief-panel {
+          order: 2;
+        }
+      }
+
+      @media (max-width: 760px) {
+        #menu {
+          padding: 14px 12px 22px;
+        }
+
+        .masthead {
+          align-items: flex-start;
+          flex-direction: column;
+        }
+
+        .hero-panel,
+        .brief-panel,
+        .support-panel {
+          border-radius: 22px;
+        }
+
+        .story-strip,
+        .download-links {
+          grid-template-columns: 1fr;
+        }
+
+        .btn {
+          width: 100%;
+        }
+
+        .pill-row {
+          gap: 8px;
+        }
+      }
     </style>
   </head>
   <body>
-    <!-- Menu overlay -->
     <div id="menu">
-      <div class="menu-content">
-        <div class="eyebrow">C + Sokol + Mongoose</div>
-        <h1>Signal</h1>
-        <p class="subtitle">
-          Mine asteroids. Build outposts. Extend the signal.<br>
-          The belt is alive and it's trying to crush your stations.
-        </p>
-        <div class="actions">
-          <button class="btn primary" id="play-btn">Play Now</button>
+      <div class="menu-shell">
+        <div class="masthead">
+          <div><span class="masthead-mark">Signal</span> // station-chain frontier</div>
+          <div class="masthead-status">Browser playtest // belt is live</div>
         </div>
-        <div class="downloads">
-          <h2>Native Downloads</h2>
-          <div class="download-links">
-            <a href="https://github.com/atimics/sokol-space-miner/actions" target="_blank">macOS</a>
-            <a href="https://github.com/atimics/sokol-space-miner/actions" target="_blank">Windows</a>
-            <a href="https://github.com/atimics/sokol-space-miner/actions" target="_blank">Linux</a>
-          </div>
+
+        <div class="intro-grid">
+          <section class="panel hero-panel">
+            <div class="eyebrow">Industrial Frontier MMO</div>
+            <h1>Keep the Belt <span class="accent">Connected</span></h1>
+            <p class="subtitle">One fragile chain of stations against a living asteroid belt.</p>
+            <p class="lede">
+              Mine rock, answer contract demand, dock where the line still holds, and push the signal outward
+              before the belt starves the next station in the chain. This is not a map to clear. It is a frontier
+              to keep alive.
+            </p>
+            <div class="signal-note">
+              Every haul feeds something real. Refineries go hungry. Yards run dry. Beamworks stall. If one station
+              goes dark, the whole frontier starts to tighten around you.
+            </div>
+            <div class="actions">
+              <button class="btn primary" id="play-btn">Enter the Belt</button>
+              <a class="btn" href="https://github.com/atimics/signal/actions" target="_blank" rel="noreferrer">Open Native Builds</a>
+            </div>
+            <div class="story-strip">
+              <div class="story-card">
+                <div class="label">Mine</div>
+                <p>Crack inbound rock, strip the ore, and drag value home before the belt batters the line.</p>
+              </div>
+              <div class="story-card">
+                <div class="label">Haul</div>
+                <p>Stations are always short on something. Contracts turn logistics into survival, not side content.</p>
+              </div>
+              <div class="story-card">
+                <div class="label">Extend</div>
+                <p>Outposts are the future of the frontier. New links mean new reach, new pressure, and new mistakes.</p>
+              </div>
+            </div>
+          </section>
+
+          <aside class="panel brief-panel">
+            <div class="brief-topline">Frontier Briefing</div>
+            <div class="brief-title">The Belt Does Not Care If Your Stations Survive</div>
+            <div class="brief-copy">
+              Signal is about maintaining a working industrial chain in hostile space. The asteroid field keeps moving.
+              Demand keeps changing. Your job is to keep the frontier from collapsing long enough to extend it.
+            </div>
+            <div class="brief-rail">
+              <div class="brief-item">
+                <h2>Current Loop</h2>
+                <p>Launch, mine, dock, sell, repair, and route material where the chain needs it most.</p>
+              </div>
+              <div class="brief-item">
+                <h2>Pressure</h2>
+                <p>Asteroids drift in from the dark, stations consume what they receive, and weak links become dead space fast.</p>
+              </div>
+              <div class="brief-item">
+                <h2>Road Ahead</h2>
+                <p>Contracts, signal coverage, and player-built outposts turn expansion into part of the game rather than a separate map screen.</p>
+              </div>
+            </div>
+          </aside>
         </div>
-        <div class="controls">
-          <span>W/S</span> thrust &nbsp;
-          <span>A/D</span> turn &nbsp;
-          <span>Space</span> mine &nbsp;
-          <span>E</span> dock &nbsp;
-          <span>1-5</span> services &nbsp;
-          <span>Esc</span> menu
+
+        <div class="support-grid">
+          <section class="panel support-panel">
+            <div class="support-title">Flight Keys</div>
+            <div class="pill-row">
+              <div class="pill"><strong>W/S</strong> thrust</div>
+              <div class="pill"><strong>A/D</strong> turn</div>
+              <div class="pill"><strong>Space</strong> cut rock</div>
+              <div class="pill"><strong>E</strong> dock or launch</div>
+              <div class="pill"><strong>1-5</strong> station services</div>
+              <div class="pill"><strong>Esc</strong> return to briefing</div>
+            </div>
+          </section>
+
+          <section class="panel support-panel">
+            <div class="support-title">Native Builds</div>
+            <div class="download-links">
+              <a href="https://github.com/atimics/signal/actions" target="_blank" rel="noreferrer">
+                <span class="os">macOS</span>
+                <span class="desc">Desktop build from the latest Actions run.</span>
+              </a>
+              <a href="https://github.com/atimics/signal/actions" target="_blank" rel="noreferrer">
+                <span class="os">Windows</span>
+                <span class="desc">Download the current native artifact.</span>
+              </a>
+              <a href="https://github.com/atimics/signal/actions" target="_blank" rel="noreferrer">
+                <span class="os">Linux</span>
+                <span class="desc">Grab the freshest Linux build from CI.</span>
+              </a>
+            </div>
+          </section>
         </div>
       </div>
     </div>
 
-    <!-- Loading screen -->
-    <div id="loading">Loading...</div>
+    <div id="loading">Entering the belt...</div>
+    <div id="esc-hint">Esc to reopen briefing</div>
 
-    <!-- ESC hint (fades in after game starts) -->
-    <div id="esc-hint">ESC for menu</div>
-
-    <!-- Game canvas (hidden until Play) -->
     <div id="game">
       <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
     </div>
@@ -234,7 +637,6 @@
         menuVisible = false;
         document.getElementById('menu').classList.add('hidden');
         document.getElementById('canvas').focus();
-        // Show ESC hint briefly
         var hint = document.getElementById('esc-hint');
         hint.classList.add('visible');
         setTimeout(function() { hint.classList.remove('visible'); }, 3000);
@@ -247,10 +649,8 @@
         }
         gameStarted = true;
 
-        // Show loading
         document.getElementById('loading').classList.add('active');
 
-        // Load the WASM game
         var script = document.createElement('script');
         script.src = 'space_miner.js';
         script.onload = function() {
@@ -260,10 +660,8 @@
         document.body.appendChild(script);
       }
 
-      // Play button
       document.getElementById('play-btn').addEventListener('click', startGame);
 
-      // ESC toggles menu while game is running
       document.addEventListener('keydown', function(e) {
         if (e.key === 'Escape' && gameStarted) {
           e.preventDefault();
@@ -276,7 +674,6 @@
         }
       });
 
-      // Module config for Emscripten
       var Module = {
         canvas: document.getElementById('canvas'),
         print: function(text) { console.log(text); },
