@@ -42,7 +42,8 @@
 typedef enum {
     STATION_TAB_OVERVIEW = 0,
     STATION_TAB_SERVICES,
-    STATION_TAB_MARKET,
+    STATION_TAB_ROLE,       /* role-specific: Refinery / Yard / Bench / Outpost */
+    STATION_TAB_CONTRACTS,
     STATION_TAB_CONSTRUCTION,
     STATION_TAB_COUNT
 } station_tab_t;
@@ -1452,22 +1453,30 @@ static void draw_hud_panels(void) {
         /* Header rule below station name */
         draw_ui_rule(inner_x, panel_x + panel_w - 18.0f, inner_y + 26.0f, 0.14f, 0.26f, 0.38f, 0.70f);
 
-        /* Tab bar */
+        /* Tab bar — scaffold: OVERVIEW + BUILD; normal: OVERVIEW + SERVICES + role + CONTRACTS */
         float tab_y = inner_y + 32.0f;
         float tab_h = compact ? 16.0f : 20.0f;
-        int tab_count = ui.station->scaffold ? STATION_TAB_COUNT : (STATION_TAB_COUNT - 1);
+        station_tab_t visible_tabs[STATION_TAB_COUNT];
+        int tab_count = 0;
+        if (ui.station->scaffold) {
+            visible_tabs[tab_count++] = STATION_TAB_OVERVIEW;
+            visible_tabs[tab_count++] = STATION_TAB_CONSTRUCTION;
+        } else {
+            visible_tabs[tab_count++] = STATION_TAB_OVERVIEW;
+            visible_tabs[tab_count++] = STATION_TAB_SERVICES;
+            visible_tabs[tab_count++] = STATION_TAB_ROLE;
+            visible_tabs[tab_count++] = STATION_TAB_CONTRACTS;
+        }
         float tab_w = fminf(inner_w / (float)tab_count, 120.0f);
 
         for (int t = 0; t < tab_count; t++) {
             float tx = inner_x + (float)t * tab_w;
-            bool active = ((int)g.station_tab == t);
+            bool active = (g.station_tab == visible_tabs[t]);
             float accent_a = active ? 0.92f : 0.20f;
-            /* Active tab: brighter background */
             if (active) {
                 draw_rect_centered(v2(tx + tab_w * 0.5f, tab_y + tab_h * 0.5f),
                     tab_w * 0.5f, tab_h * 0.5f, 0.06f, 0.12f, 0.18f, 0.95f);
             }
-            /* Bottom accent bar for active tab */
             draw_ui_rule(tx + 4.0f, tx + tab_w - 4.0f, tab_y + tab_h - 2.0f,
                 0.30f, 0.85f, 1.0f, accent_a);
         }
@@ -1533,7 +1542,17 @@ static void draw_station_services(const station_ui_state_t* ui) {
     float content_y = inner_y + 32.0f + tab_h + 8.0f;
     float cx = inner_x + 18.0f; /* content text x */
     float cy = content_y + 16.0f; /* content text start y */
-    int tab_count = ui->station->scaffold ? STATION_TAB_COUNT : (STATION_TAB_COUNT - 1);
+    station_tab_t visible_tabs[STATION_TAB_COUNT];
+    int tab_count = 0;
+    if (ui->station->scaffold) {
+        visible_tabs[tab_count++] = STATION_TAB_OVERVIEW;
+        visible_tabs[tab_count++] = STATION_TAB_CONSTRUCTION;
+    } else {
+        visible_tabs[tab_count++] = STATION_TAB_OVERVIEW;
+        visible_tabs[tab_count++] = STATION_TAB_SERVICES;
+        visible_tabs[tab_count++] = STATION_TAB_ROLE;
+        visible_tabs[tab_count++] = STATION_TAB_CONTRACTS;
+    }
     float tab_w = fminf(inner_w / (float)tab_count, 120.0f);
 
     /* Station name + role header */
@@ -1565,17 +1584,27 @@ static void draw_station_services(const station_ui_state_t* ui) {
     /* Tab labels */
     {
         float tab_bar_y = inner_y + 32.0f;
-        const char* labels[STATION_TAB_COUNT] = { "OVERVIEW", "SERVICES", "MARKET", "BUILD" };
+        /* Role-specific label for the ROLE tab */
+        const char* role_label = "STATION";
+        if (ui->station->role == STATION_ROLE_REFINERY) role_label = "REFINERY";
+        else if (ui->station->role == STATION_ROLE_YARD) role_label = "YARD";
+        else if (ui->station->role == STATION_ROLE_BEAMWORKS) role_label = "BENCH";
+        else if (ui->station->role == STATION_ROLE_OUTPOST) role_label = "OUTPOST";
+
         for (int t = 0; t < tab_count; t++) {
             float tx = inner_x + (float)t * tab_w;
-            bool active = ((int)g.station_tab == t);
+            station_tab_t tid = visible_tabs[t];
+            bool active = (g.station_tab == tid);
             sdtx_pos(ui_text_pos(tx + 8.0f), ui_text_pos(tab_bar_y + (compact ? 4.0f : 6.0f)));
-            if (active) {
-                sdtx_color3b(130, 255, 235);
-            } else {
-                sdtx_color3b(100, 120, 145);
+            sdtx_color3b(active ? 130 : 100, active ? 255 : 120, active ? 235 : 145);
+            switch (tid) {
+                case STATION_TAB_OVERVIEW:     sdtx_puts("OVERVIEW"); break;
+                case STATION_TAB_SERVICES:     sdtx_puts("SERVICES"); break;
+                case STATION_TAB_ROLE:         sdtx_puts(role_label); break;
+                case STATION_TAB_CONTRACTS:    sdtx_puts("CONTRACTS"); break;
+                case STATION_TAB_CONSTRUCTION: sdtx_puts("BUILD"); break;
+                default: break;
             }
-            sdtx_puts(labels[t]);
         }
     }
 
@@ -1649,7 +1678,7 @@ static void draw_station_services(const station_ui_state_t* ui) {
         break;
     }
 
-    case STATION_TAB_MARKET: {
+    case STATION_TAB_ROLE: {
         if (ui->station->scaffold) break;
         char market_summary[64] = { 0 };
         char market_detail[64] = { 0 };
@@ -1696,30 +1725,35 @@ static void draw_station_services(const station_ui_state_t* ui) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(dy));
             sdtx_color3b(145, 160, 188);
             sdtx_printf("LSR %d  TRC %d", lasers, tractors);
+        } else if (ui->station->role == STATION_ROLE_OUTPOST) {
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(dy));
+            sdtx_color3b(145, 160, 188);
+            sdtx_printf("Signal range: %.0f", ui->station->signal_range);
         }
+        break;
+    }
 
-        /* Contract board */
-        float contract_y = dy + 48.0f;
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(contract_y));
-        sdtx_color3b(180, 220, 255);
+    case STATION_TAB_CONTRACTS: {
+        sdtx_color3b(130, 255, 235);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
         sdtx_puts("CONTRACTS");
         int shown = 0;
         for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
             contract_t *ct = &g.world.contracts[ci];
             if (!ct->active) continue;
             float cprice = ct->base_price * (1.0f + ct->age / 300.0f * 0.2f);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(contract_y + 16.0f + (float)shown * 14.0f));
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f + (float)shown * 16.0f));
             sdtx_color3b(203, 220, 248);
             sdtx_printf("%s @ %s: %.0f cr/u",
                 commodity_short_name(ct->commodity),
                 g.world.stations[ct->station_index].name,
                 cprice);
-            if (++shown >= 5) break;
+            if (++shown >= 8) break;
         }
         if (shown == 0) {
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(contract_y + 16.0f));
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
             sdtx_color3b(145, 160, 188);
-            sdtx_puts("(none)");
+            sdtx_puts("No active contracts.");
         }
         break;
     }
@@ -2132,15 +2166,23 @@ static void sim_step(float dt) {
         g.station_tab = st->scaffold ? STATION_TAB_CONSTRUCTION : STATION_TAB_OVERVIEW;
     }
     g.was_docked = LOCAL_PLAYER.docked;
-    if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_TAB)) {
+    if (LOCAL_PLAYER.docked && (is_key_pressed(SAPP_KEYCODE_TAB) || is_key_pressed(SAPP_KEYCODE_Q))) {
         const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
-        int max_tab = st->scaffold ? STATION_TAB_CONSTRUCTION : STATION_TAB_MARKET;
-        g.station_tab = (station_tab_t)(((int)g.station_tab + 1) % (max_tab + 1));
-    }
-    if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_Q)) {
-        const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
-        int max_tab = st->scaffold ? STATION_TAB_CONSTRUCTION : STATION_TAB_MARKET;
-        g.station_tab = (station_tab_t)(((int)g.station_tab + max_tab) % (max_tab + 1));
+        station_tab_t vtabs[STATION_TAB_COUNT];
+        int vtab_count = 0;
+        if (st->scaffold) {
+            vtabs[vtab_count++] = STATION_TAB_OVERVIEW;
+            vtabs[vtab_count++] = STATION_TAB_CONSTRUCTION;
+        } else {
+            vtabs[vtab_count++] = STATION_TAB_OVERVIEW;
+            vtabs[vtab_count++] = STATION_TAB_SERVICES;
+            vtabs[vtab_count++] = STATION_TAB_ROLE;
+            vtabs[vtab_count++] = STATION_TAB_CONTRACTS;
+        }
+        int cur = 0;
+        for (int i = 0; i < vtab_count; i++) { if (vtabs[i] == g.station_tab) { cur = i; break; } }
+        int dir = is_key_pressed(SAPP_KEYCODE_TAB) ? 1 : (vtab_count - 1);
+        g.station_tab = vtabs[(cur + dir) % vtab_count];
     }
 
     LOCAL_PLAYER.input = intent;
