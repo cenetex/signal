@@ -1483,7 +1483,8 @@ static void draw_hud_panels(void) {
 
         /* Tab content area */
         float content_y = tab_y + tab_h + 8.0f;
-        float content_h = panel_y + panel_h - 18.0f - content_y;
+        float strip_h = compact ? 32.0f : 38.0f;
+        float content_h = panel_y + panel_h - 18.0f - content_y - strip_h;
         draw_ui_panel(inner_x, content_y, inner_w, content_h, 0.03f);
 
         /* Service cards on the Services tab */
@@ -1508,18 +1509,23 @@ static void draw_hud_panels(void) {
             }
         }
 
-        /* Overview tab: hull + cargo meters */
-        if (g.station_tab == STATION_TAB_OVERVIEW && !ui.station->scaffold) {
-            float meter_x = inner_x + 16.0f;
-            float meter_w = fminf(inner_w - 32.0f, 280.0f);
-            draw_ui_meter(meter_x, content_y + 48.0f, meter_w, 12.0f,
+        /* Ship status strip — always visible below the content area */
+        {
+            float strip_y = panel_y + panel_h - (compact ? 32.0f : 38.0f);
+            float meter_x = inner_x + 4.0f;
+            float meter_w = compact ? 80.0f : 100.0f;
+            float pip_x = meter_x + meter_w * 2.0f + 36.0f;
+            /* Hull + cargo meters side by side */
+            draw_ui_meter(meter_x, strip_y + 4.0f, meter_w, 10.0f,
                 LOCAL_PLAYER.ship.hull / ship_max_hull(&LOCAL_PLAYER.ship), 0.96f, 0.54f, 0.28f);
-            draw_ui_meter(meter_x, content_y + 80.0f, meter_w, 12.0f,
+            draw_ui_meter(meter_x + meter_w + 8.0f, strip_y + 4.0f, meter_w, 10.0f,
                 ship_total_cargo(&LOCAL_PLAYER.ship) / fmaxf(1.0f, ship_cargo_capacity(&LOCAL_PLAYER.ship)), 0.26f, 0.90f, 0.72f);
-            /* Upgrade pips */
-            draw_upgrade_pips(meter_x + 2.0f, content_y + 120.0f, LOCAL_PLAYER.ship.mining_level, 0.34f, 0.88f, 1.0f);
-            draw_upgrade_pips(meter_x + 2.0f, content_y + 140.0f, LOCAL_PLAYER.ship.tractor_level, 0.42f, 1.0f, 0.86f);
-            draw_upgrade_pips(meter_x + 2.0f, content_y + 160.0f, LOCAL_PLAYER.ship.hold_level, 0.50f, 0.82f, 1.0f);
+            /* Upgrade pips inline */
+            if (!compact) {
+                draw_upgrade_pips(pip_x, strip_y + 2.0f, LOCAL_PLAYER.ship.mining_level, 0.34f, 0.88f, 1.0f);
+                draw_upgrade_pips(pip_x, strip_y + 14.0f, LOCAL_PLAYER.ship.tractor_level, 0.42f, 1.0f, 0.86f);
+                draw_upgrade_pips(pip_x, strip_y + 26.0f, LOCAL_PLAYER.ship.hold_level, 0.50f, 0.82f, 1.0f);
+            }
         }
     }
 
@@ -1613,7 +1619,6 @@ static void draw_station_services(const station_ui_state_t* ui) {
 
     case STATION_TAB_OVERVIEW: {
         if (ui->station->scaffold) {
-            /* Scaffold overview */
             int pct = (int)lroundf(ui->station->scaffold_progress * 100.0f);
             int frames_held = (int)lroundf(LOCAL_PLAYER.ship.cargo[COMMODITY_FRAME_INGOT]);
             float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - ui->station->scaffold_progress);
@@ -1629,34 +1634,46 @@ static void draw_station_services(const station_ui_state_t* ui) {
             sdtx_color3b(145, 160, 188);
             sdtx_puts("Dock to auto-deliver frames.");
         } else {
-            /* Ship status overview */
-            sdtx_color3b(130, 255, 235);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-            sdtx_puts("SHIP STATUS");
+            /* Station welcome — what this place does */
             sdtx_color3b(203, 220, 248);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
-            sdtx_printf("Hull %d/%d", ui->hull_now, ui->hull_max);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 36.0f));
-            sdtx_printf("Cargo %d/%d ore", ui->cargo_units, ui->cargo_capacity);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 52.0f));
-            sdtx_printf("Laser Lv %d  Tractor Lv %d  Hold Lv %d",
-                LOCAL_PLAYER.ship.mining_level, LOCAL_PLAYER.ship.tractor_level, LOCAL_PLAYER.ship.hold_level);
-
-            /* Station-specific summary */
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 76.0f));
-            sdtx_color3b(130, 255, 235);
-            sdtx_puts("STATION");
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 96.0f));
-            sdtx_color3b(169, 179, 204);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
             if (ui->station->role == STATION_ROLE_REFINERY) {
-                sdtx_puts("Ore refinery. Sells ore, repairs hull.");
+                sdtx_puts("Ore intake and refining hub.");
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
+                sdtx_color3b(145, 160, 188);
+                sdtx_puts("Sell raw ore for credits. Smelts ingots");
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 34.0f));
+                sdtx_puts("for station production.");
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 58.0f));
+                sdtx_color3b(203, 220, 248);
+                sdtx_printf("Haul value: %d cr", ui->payout);
             } else if (ui->station->role == STATION_ROLE_YARD) {
-                sdtx_puts("Frame yard. Repairs hull, upgrades hold.");
+                sdtx_puts("Frame manufacturing yard.");
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
+                sdtx_color3b(145, 160, 188);
+                sdtx_puts("Upgrades cargo hold capacity.");
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 34.0f));
+                sdtx_puts("Produces frame components from ingots.");
             } else if (ui->station->role == STATION_ROLE_OUTPOST) {
-                sdtx_puts("Signal relay outpost. Repairs hull.");
+                sdtx_puts("Signal relay outpost.");
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
+                sdtx_color3b(145, 160, 188);
+                sdtx_puts("Extends signal range into new territory.");
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 44.0f));
+                sdtx_color3b(203, 220, 248);
+                sdtx_printf("Signal range: %.0f", ui->station->signal_range);
             } else {
-                sdtx_puts("Beamworks. Repairs hull, upgrades laser + tractor.");
+                sdtx_puts("Field equipment works.");
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
+                sdtx_color3b(145, 160, 188);
+                sdtx_puts("Upgrades mining laser and tractor beam.");
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 34.0f));
+                sdtx_puts("Fabricates modules from ingots.");
             }
+            /* Common: repair status */
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 80.0f));
+            sdtx_color3b(ui->repair_cost > 0 ? 255 : 145, ui->repair_cost > 0 ? 180 : 160, ui->repair_cost > 0 ? 80 : 188);
+            sdtx_printf("Hull repair: %s", ui->repair_cost > 0 ? "needed" : "nominal");
         }
         break;
     }
