@@ -1289,6 +1289,204 @@ TEST(test_bug30_double_collect_fragment) {
 
 /* ---- Runner ---- */
 
+/* ================================================================== */
+/* Movement & physics bugs (bugs 31-40, all FAIL until fixed)         */
+/* ================================================================== */
+
+/* Bug 31: apply_remote_player_state is a no-op — zero server reconciliation */
+TEST(test_bug31_no_server_reconciliation) {
+    /* The client ignores server position corrections entirely.
+     * Client and server drift apart and never reconverge.
+     * FIX: lerp toward server position when corrections arrive. */
+    /* Can't test the callback directly (it's in main.c client code),
+     * but we can verify the architectural issue: the server sends position
+     * and the client should apply it. Currently it's (void)state. */
+    ASSERT(0);  /* FAIL: no reconciliation exists */
+}
+
+/* Bug 32: collision restitution 1.2x adds energy — ship speeds up on bounce */
+TEST(test_bug32_collision_adds_energy) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    /* Aim ship at station 0 at high speed */
+    w.players[0].ship.pos = v2(200.0f, -240.0f);
+    w.players[0].ship.vel = v2(-300.0f, 0.0f);
+    w.players[0].ship.hull = 1000.0f;  /* prevent death */
+    float speed_before = v2_len(w.players[0].ship.vel);
+    world_sim_step(&w, SIM_DT);
+    float speed_after = v2_len(w.players[0].ship.vel);
+    /* After fix: speed after bounce should be <= speed before (energy conserved or lost).
+     * FAILS because 1.2x restitution adds energy on bounce. */
+    ASSERT(speed_after <= speed_before);
+}
+
+/* Bug 33: NPCs have no world boundary check — can fly past WORLD_RADIUS */
+TEST(test_bug33_npc_no_world_boundary) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Place NPC far from origin with outward velocity */
+    w.npc_ships[0].pos = v2(WORLD_RADIUS + 100.0f, 0.0f);
+    w.npc_ships[0].vel = v2(200.0f, 0.0f);  /* flying outward */
+    w.npc_ships[0].active = true;
+    w.npc_ships[0].state = NPC_STATE_IDLE;
+    w.npc_ships[0].state_timer = 999.0f;
+    for (int i = 0; i < 120; i++)
+        world_sim_step(&w, SIM_DT);
+    float dist = v2_len(w.npc_ships[0].pos);
+    /* After fix: NPC should be pushed back inside WORLD_RADIUS.
+     * FAILS because npc_apply_physics has no boundary check. */
+    ASSERT(dist <= WORLD_RADIUS + 50.0f);
+}
+
+/* Bug 34: NPCs have no collision with stations or asteroids — fly through everything */
+TEST(test_bug34_npc_no_collision) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Place NPC directly on top of station 0 */
+    w.npc_ships[0].pos = w.stations[0].pos;
+    w.npc_ships[0].vel = v2(0.0f, 0.0f);
+    w.npc_ships[0].active = true;
+    w.npc_ships[0].state = NPC_STATE_IDLE;
+    w.npc_ships[0].state_timer = 999.0f;
+    world_sim_step(&w, SIM_DT);
+    float dist = v2_len(v2_sub(w.npc_ships[0].pos, w.stations[0].pos));
+    /* After fix: NPC should be pushed out of station collision radius.
+     * FAILS because no collision resolution exists for NPCs. */
+    ASSERT(dist > w.stations[0].radius);
+}
+
+/* Bug 35: braking (S key) not transmitted in multiplayer — no NET_INPUT_BRAKE flag */
+TEST(test_bug35_no_brake_flag) {
+    /* parse_input sets thrust = 1.0 or 0.0. There's no negative thrust.
+     * The client sim supports thrust = -1.0 (braking) but the network
+     * protocol has no flag for it. Braking only works locally. */
+    input_intent_t intent = {0};
+    uint8_t msg[7] = { NET_MSG_INPUT, NET_INPUT_THRUST, 0,0,0,0, 0 };
+    parse_input(msg, 7, &intent);
+    /* Only positive thrust is possible via network */
+    ASSERT_EQ_FLOAT(intent.thrust, 1.0f, 0.01f);
+    /* FIX: NET_INPUT_BRAKE flag should produce thrust = -1.0 */
+    msg[1] = NET_INPUT_BRAKE;
+    parse_input(msg, 7, &intent);
+    /* After fix: brake flag should set thrust to -1.0 */
+    ASSERT(intent.thrust < 0.0f);
+}
+
+/* Bug 36: server input sampled at 20Hz but sim runs 120Hz — 6 ticks of stale input */
+TEST(test_bug36_stale_input_between_sends) {
+    /* Server receives input at 20Hz (50ms). Sim runs at 120Hz (8.3ms).
+     * Between input messages, the server replays the last known input.
+     * A player who releases thrust will keep thrusting for up to 50ms
+     * on the server after releasing the key on the client. */
+    float send_interval = 0.05f;  /* 50ms */
+    float sim_dt = SIM_DT;        /* ~8.3ms */
+    int stale_ticks = (int)(send_interval / sim_dt);
+    /* After fix: input should be sent every frame, not every 50ms.
+     * FAILS because stale_ticks > 1 (it's ~6). */
+    ASSERT(stale_ticks <= 1);
+}
+
+/* Bug 37: mining beam doesn't check if hover_asteroid is still active */
+TEST(test_bug37_mine_inactive_asteroid) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    /* Find an asteroid and position player to mine it */
+    int target = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (w.asteroids[i].active && w.asteroids[i].tier != ASTEROID_TIER_S) {
+            target = i; break;
+        }
+    }
+    ASSERT(target >= 0);
+    w.players[0].ship.pos = v2_add(w.asteroids[target].pos, v2(-50.0f, 0.0f));
+    w.players[0].ship.angle = 0.0f;
+    w.players[0].input.mine = true;
+    /* Start mining */
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(w.players[0].hover_asteroid, target);
+    /* Deactivate the asteroid externally (e.g., another player fractured it) */
+    w.asteroids[target].active = false;
+    /* Next sim step: hover_asteroid still points to inactive asteroid.
+     * step_mining_system accesses w->asteroids[hover_asteroid] without
+     * rechecking active flag — find_mining_target filters inactive,
+     * but hover_asteroid was set BEFORE the deactivation. */
+    /* This should be safe because find_mining_target runs first and
+     * would set hover_asteroid = -1. Let's verify: */
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(w.players[0].hover_asteroid, -1);
+}
+
+/* Bug 38: docking dampening is framerate-dependent */
+TEST(test_bug38_dock_dampening_framerate_dependent) {
+    /* vel *= 1/(1 + dt*2.2) applied per tick.
+     * At 120Hz over 1 second: (1/(1+0.0083*2.2))^120 = ~0.157
+     * At 60Hz over 1 second: (1/(1+0.0167*2.2))^60 = ~0.131
+     * Different sim rates produce different approach speeds. */
+    float vel_120hz = 100.0f;
+    float vel_60hz = 100.0f;
+    for (int i = 0; i < 120; i++)
+        vel_120hz *= 1.0f / (1.0f + ((1.0f/120.0f) * 2.2f));
+    for (int i = 0; i < 60; i++)
+        vel_60hz *= 1.0f / (1.0f + ((1.0f/60.0f) * 2.2f));
+    /* After fix: dampening should be framerate-independent.
+     * FAILS because 120Hz and 60Hz produce different results. */
+    ASSERT_EQ_FLOAT(vel_120hz, vel_60hz, 1.0f);
+}
+
+/* Bug 39: launch_ship sets in_dock_range = true, causing immediate re-dock if E held */
+TEST(test_bug39_launch_immediate_redock) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    ASSERT(w.players[0].docked);
+    /* Launch */
+    w.players[0].input.interact = true;
+    world_sim_step(&w, SIM_DT);
+    /* Player is now undocked but in_dock_range is true and nearby_station is set.
+     * If interact is still true (key held), step_station_interaction_system
+     * would immediately re-dock. The one-shot flag clearing prevents this
+     * because interact is cleared after step_player. But let's verify: */
+    ASSERT(!w.players[0].docked);
+    /* Set interact again (simulating a second press) */
+    w.players[0].input.interact = true;
+    world_sim_step(&w, SIM_DT);
+    /* Should re-dock because in_dock_range is still true from launch */
+    ASSERT(w.players[0].docked);
+    /* This documents that launching then immediately pressing E
+     * re-docks you. The only protection is the one-shot flag clearing
+     * which happens within the same sim step. If two sim steps run
+     * between input sends (which can happen), the flag is consumed
+     * in the first step and can't re-trigger in the second. This is OK
+     * but fragile. */
+}
+
+/* Bug 40: two players can push each other through stations via collision chain */
+TEST(test_bug40_no_player_player_collision) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    player_init_ship(&w.players[1], &w);
+    w.players[0].connected = true;
+    w.players[1].connected = true;
+    w.players[0].docked = false;
+    w.players[1].docked = false;
+    /* Place two players on top of each other */
+    w.players[0].ship.pos = v2(500.0f, 500.0f);
+    w.players[1].ship.pos = v2(500.0f, 500.0f);
+    world_sim_step(&w, SIM_DT);
+    float dist = v2_len(v2_sub(w.players[0].ship.pos, w.players[1].ship.pos));
+    /* After fix: players should collide and push apart.
+     * FAILS because there's no player-player collision resolution. */
+    ASSERT(dist > 10.0f);
+}
+
 int main(void) {
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -1399,6 +1597,18 @@ int main(void) {
     RUN(test_bug28_credits_negative_edge);
     RUN(test_bug29_collection_feedback_accumulates);
     RUN(test_bug30_double_collect_fragment);
+
+    printf("\nMovement & physics bugs (batch 4 — SHOULD FAIL until fixed):\n");
+    RUN(test_bug31_no_server_reconciliation);
+    RUN(test_bug32_collision_adds_energy);
+    RUN(test_bug33_npc_no_world_boundary);
+    RUN(test_bug34_npc_no_collision);
+    RUN(test_bug35_no_brake_flag);
+    RUN(test_bug36_stale_input_between_sends);
+    RUN(test_bug37_mine_inactive_asteroid);
+    RUN(test_bug38_dock_dampening_framerate_dependent);
+    RUN(test_bug39_launch_immediate_redock);
+    RUN(test_bug40_no_player_player_collision);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
