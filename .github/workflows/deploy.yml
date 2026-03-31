@@ -120,6 +120,7 @@ jobs:
 
       - name: Build and push server image
         run: |
+          set -euo pipefail
           GIT_HASH=$(git rev-parse --short HEAD)
           docker buildx build \
             --platform linux/arm64 \
@@ -130,5 +131,40 @@ jobs:
 
       - name: Deploy to ECS
         run: |
-          aws ecs update-service --cluster default --service signal-relay --force-new-deployment
+          set -euo pipefail
+          IMAGE_REPO=022118847419.dkr.ecr.us-east-1.amazonaws.com/signal-relay
+          ARM64_DIGEST=$(
+            aws ecr batch-get-image \
+              --repository-name signal-relay \
+              --image-ids imageTag=latest \
+              --accepted-media-types application/vnd.oci.image.index.v1+json \
+              --query 'images[0].imageManifest' \
+              --output text |
+            jq -r '.manifests[] | select(.platform.architecture == "arm64" and .platform.os == "linux") | .digest'
+          )
+          aws ecs describe-task-definition \
+            --task-definition signal-relay-server \
+            --query 'taskDefinition' > taskdef.json
+          jq --arg image "${IMAGE_REPO}@${ARM64_DIGEST}" '
+            .containerDefinitions[0].image = $image |
+            del(
+              .taskDefinitionArn,
+              .revision,
+              .status,
+              .requiresAttributes,
+              .compatibilities,
+              .registeredAt,
+              .registeredBy
+            )
+          ' taskdef.json > taskdef-deploy.json
+          TASK_DEF_ARN=$(
+            aws ecs register-task-definition \
+              --cli-input-json file://taskdef-deploy.json \
+              --query 'taskDefinition.taskDefinitionArn' \
+              --output text
+          )
+          aws ecs update-service \
+            --cluster default \
+            --service signal-relay \
+            --task-definition "$TASK_DEF_ARN"
           aws ecs wait services-stable --cluster default --services signal-relay
