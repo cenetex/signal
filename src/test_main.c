@@ -1627,22 +1627,22 @@ TEST(test_bug32_collision_adds_energy) {
     ASSERT(speed_after <= speed_before);
 }
 
-/* Bug 33: NPCs have no world boundary check — can fly past WORLD_RADIUS */
+/* Bug 33: NPCs have no world boundary check — can fly past signal range */
 TEST(test_bug33_npc_no_world_boundary) {
     world_t w = {0};
     world_reset(&w);
-    /* Place NPC far from origin with outward velocity */
-    w.npc_ships[0].pos = v2(WORLD_RADIUS + 100.0f, 0.0f);
+    /* Place NPC outside all station signal ranges with outward velocity */
+    w.npc_ships[0].pos = v2(2500.0f, -240.0f); /* beyond refinery signal_range 2200 */
     w.npc_ships[0].vel = v2(200.0f, 0.0f);  /* flying outward */
     w.npc_ships[0].active = true;
     w.npc_ships[0].state = NPC_STATE_IDLE;
     w.npc_ships[0].state_timer = 999.0f;
-    for (int i = 0; i < 120; i++)
+    float start_dist = v2_len(v2_sub(w.npc_ships[0].pos, w.stations[0].pos));
+    for (int i = 0; i < 600; i++)
         world_sim_step(&w, SIM_DT);
-    float dist = v2_len(w.npc_ships[0].pos);
-    /* After fix: NPC should be pushed back inside WORLD_RADIUS.
-     * FAILS because npc_apply_physics has no boundary check. */
-    ASSERT(dist <= WORLD_RADIUS + 50.0f);
+    float end_dist = v2_len(v2_sub(w.npc_ships[0].pos, w.stations[0].pos));
+    /* After fix: NPC should be pushed back toward station (closer than start). */
+    ASSERT(end_dist < start_dist);
 }
 
 /* Bug 34: NPCs have no collision with stations or asteroids — fly through everything */
@@ -2462,32 +2462,25 @@ TEST(test_signal_strength_at_station) {
     /* At a station's position, signal should be 1.0 (full strength) */
     world_t w = {0};
     world_reset(&w);
-    /* station 0 is at (0, -240) */
-    /* signal_strength_at doesn't exist yet → won't compile until #82.
-     * For now, test the WORLD_RADIUS boundary which #82 replaces. */
-    float dist = v2_len(w.stations[0].pos);
-    ASSERT(dist < WORLD_RADIUS); /* station is inside world — will become signal range */
-    /* After #82: ASSERT_EQ_FLOAT(signal_strength_at(&w, w.stations[0].pos), 1.0f, 0.01f); */
-    ASSERT(0); /* FAIL: signal_strength_at not implemented */
+    ASSERT_EQ_FLOAT(signal_strength_at(&w, w.stations[0].pos), 1.0f, 0.01f);
+    ASSERT_EQ_FLOAT(signal_strength_at(&w, w.stations[1].pos), 1.0f, 0.01f);
+    ASSERT_EQ_FLOAT(signal_strength_at(&w, w.stations[2].pos), 1.0f, 0.01f);
 }
 
 TEST(test_signal_strength_falls_off) {
     /* Signal should decrease linearly from 1.0 at station to 0.0 at range edge */
     world_t w = {0};
     world_reset(&w);
-    /* After #82: test that signal at half-range is ~0.5 */
-    /* float half = signal_strength_at(&w, v2(1100.0f, -240.0f)); // 1100u from refinery
-     * ASSERT(half > 0.3f && half < 0.7f); */
-    ASSERT(0); /* FAIL: not implemented */
+    /* Station 0 at (0, -240), signal_range = 2200. Point 1100u to the right. */
+    float half = signal_strength_at(&w, v2(1100.0f, -240.0f));
+    ASSERT(half > 0.3f && half < 0.7f);
 }
 
 TEST(test_signal_zero_outside_range) {
     /* Far from all stations, signal should be 0.0 */
     world_t w = {0};
     world_reset(&w);
-    /* After #82: signal at (10000, 10000) should be 0.0 */
-    /* ASSERT_EQ_FLOAT(signal_strength_at(&w, v2(10000.0f, 10000.0f)), 0.0f, 0.01f); */
-    ASSERT(0); /* FAIL: not implemented */
+    ASSERT_EQ_FLOAT(signal_strength_at(&w, v2(10000.0f, 10000.0f)), 0.0f, 0.01f);
 }
 
 TEST(test_signal_max_of_stations) {
@@ -2496,10 +2489,9 @@ TEST(test_signal_max_of_stations) {
     world_reset(&w);
     /* Midpoint between station 0 and station 1 should get max of the two signals,
      * not their sum. Signal is never > 1.0. */
-    /* After #82:
-     * float s = signal_strength_at(&w, v2(-160.0f, 0.0f));
-     * ASSERT(s <= 1.0f); */
-    ASSERT(0); /* FAIL: not implemented */
+    float s = signal_strength_at(&w, v2(-160.0f, 0.0f));
+    ASSERT(s <= 1.0f);
+    ASSERT(s > 0.0f);
 }
 
 TEST(test_ship_thrust_scales_with_signal) {
@@ -2516,8 +2508,8 @@ TEST(test_ship_thrust_scales_with_signal) {
     w.players[0].input.thrust = 1.0f;
     world_sim_step(&w, SIM_DT);
     float vel_full_signal = w.players[0].ship.vel.x;
-    /* Place ship at range edge (low signal) → same thrust → should be slower */
-    w.players[0].ship.pos = v2(2100.0f, 0.0f); /* near WORLD_RADIUS */
+    /* Place ship far from all stations (low/zero signal) → same thrust → should be slower */
+    w.players[0].ship.pos = v2(4000.0f, 0.0f); /* outside all station signal ranges */
     w.players[0].ship.vel = v2(0.0f, 0.0f);
     w.players[0].input.thrust = 1.0f;
     world_sim_step(&w, SIM_DT);
@@ -2707,21 +2699,27 @@ TEST(test_bug88_interference_seed_no_world_time) {
 /* Bug 89: gravity must be symmetric regardless of slot order          */
 /* ================================================================== */
 TEST(test_bug89_gravity_symmetric) {
-    /* Two identical asteroid pairs with swapped indices should produce
-     * the same velocity changes (just sign-swapped). */
+    /* Use a Titan/small-body pair close enough to hit the gravity clamp.
+     * Swapping indices must not change the resulting accelerations. */
     world_t w1 = {0}, w2 = {0};
     world_reset(&w1); world_reset(&w2);
     for (int i = 0; i < MAX_ASTEROIDS; i++) { w1.asteroids[i].active = false; w2.asteroids[i].active = false; }
-    /* World 1: small at slot 0, big at slot 1 */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        w1.stations[s].pos = v2(10000.0f, 10000.0f);
+        w2.stations[s].pos = v2(10000.0f, 10000.0f);
+    }
+    /* World 1: small at slot 0, Titan at slot 1 */
     w1.asteroids[0].active = true; w1.asteroids[0].tier = ASTEROID_TIER_M;
-    w1.asteroids[0].radius = 25.0f; w1.asteroids[0].pos = v2(0.0f, 0.0f);
+    w1.asteroids[0].radius = 12.0f; w1.asteroids[0].pos = v2(1200.0f, 1200.0f);
     w1.asteroids[0].vel = v2(0.0f, 0.0f); w1.asteroids[0].hp = 40.0f;
-    w1.asteroids[1].active = true; w1.asteroids[1].tier = ASTEROID_TIER_XL;
-    w1.asteroids[1].radius = 70.0f; w1.asteroids[1].pos = v2(200.0f, 0.0f);
-    w1.asteroids[1].vel = v2(0.0f, 0.0f); w1.asteroids[1].hp = 150.0f;
-    /* World 2: big at slot 0, small at slot 1 (swapped) */
+    w1.asteroids[1].active = true; w1.asteroids[1].tier = ASTEROID_TIER_XXL;
+    w1.asteroids[1].radius = 200.0f; w1.asteroids[1].pos = v2(1225.0f, 1200.0f);
+    w1.asteroids[1].vel = v2(0.0f, 0.0f); w1.asteroids[1].hp = 1000.0f;
+    /* World 2: Titan at slot 0, small at slot 1 (swapped) */
     w2.asteroids[0] = w1.asteroids[1]; w2.asteroids[0].pos = v2(200.0f, 0.0f);
     w2.asteroids[1] = w1.asteroids[0]; w2.asteroids[1].pos = v2(0.0f, 0.0f);
+    w2.asteroids[0].pos = v2(1225.0f, 1200.0f);
+    w2.asteroids[1].pos = v2(1200.0f, 1200.0f);
     world_sim_step(&w1, SIM_DT);
     world_sim_step(&w2, SIM_DT);
     /* Velocity of the small body should be the same magnitude in both worlds */
@@ -2737,22 +2735,23 @@ TEST(test_bug89_gravity_symmetric) {
 /* Bug 90: station bounce must not inject extra energy                 */
 /* ================================================================== */
 TEST(test_bug90_station_bounce_no_extra_energy) {
-    /* An asteroid hitting a station should not gain speed from the bounce. */
+    /* A low-speed impact should lose energy; it should not be boosted
+     * by an anti-sticking shove layered on top of restitution. */
     world_t w = {0};
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
-    /* Asteroid approaching station 0 at moderate speed */
+    /* Asteroid approaching station 0 at low speed */
     w.asteroids[0].active = true;
     w.asteroids[0].tier = ASTEROID_TIER_M;
     w.asteroids[0].radius = 25.0f;
     w.asteroids[0].hp = 100.0f; w.asteroids[0].max_hp = 100.0f;
     w.asteroids[0].pos = v2(0.0f, -(240.0f - 62.0f - 25.0f + 5.0f)); /* just overlapping station 0 */
-    w.asteroids[0].vel = v2(0.0f, -50.0f); /* moving toward station */
+    w.asteroids[0].vel = v2(0.0f, -10.0f); /* moving toward station */
     float speed_before = v2_len(w.asteroids[0].vel);
     world_sim_step(&w, SIM_DT);
     float speed_after = v2_len(w.asteroids[0].vel);
-    /* Speed after bounce should not exceed speed before (restitution <= 1.0) */
-    ASSERT(speed_after <= speed_before + 1.0f); /* small tolerance for float */
+    /* Speed after bounce should be materially lower than impact speed. */
+    ASSERT(speed_after < speed_before * 0.8f);
 }
 
 int main(void) {

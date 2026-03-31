@@ -95,6 +95,7 @@ typedef struct {
     vec2 pos;
     float radius;
     float dock_radius;
+    float signal_range;
     float buy_price[COMMODITY_COUNT];
     float inventory[COMMODITY_COUNT];
     float ore_buffer[COMMODITY_RAW_ORE_COUNT];

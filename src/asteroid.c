@@ -3,7 +3,7 @@
 #include "asteroid.h"
 #include "commodity.h"
 
-static const float WORLD_RADIUS = 2200.0f;
+static const float WORLD_RADIUS = 5000.0f;  /* safety net; gameplay bounded by station signal_range */
 static const float FRACTURE_CHILD_CLEANUP_AGE = 22.0f;
 static const float FRACTURE_CHILD_CLEANUP_DISTANCE = 940.0f;
 

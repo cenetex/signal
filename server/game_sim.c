@@ -98,6 +98,21 @@ static int rand_int(world_t *w, int lo, int hi) {
 }
 
 /* ================================================================== */
+/* Signal strength                                                    */
+/* ================================================================== */
+
+float signal_strength_at(const world_t *w, vec2 pos) {
+    float best = 0.0f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (w->stations[s].signal_range <= 0.0f) continue;
+        float dist = sqrtf(v2_dist_sq(pos, w->stations[s].pos));
+        float strength = fmaxf(0.0f, 1.0f - (dist / w->stations[s].signal_range));
+        if (strength > best) best = strength;
+    }
+    return best;
+}
+
+/* ================================================================== */
 /* Commodity / ship helpers                                           */
 /* ================================================================== */
 
@@ -360,19 +375,33 @@ static asteroid_tier_t random_field_asteroid_tier(world_t *w) {
     return ASTEROID_TIER_M;
 }
 
+static float max_signal_range(const world_t *w) {
+    float best = 0.0f;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (w->stations[i].signal_range > best) best = w->stations[i].signal_range;
+    }
+    return best > 0.0f ? best : WORLD_RADIUS;
+}
+
 static void spawn_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier) {
     float angle = rand_range(w, 0.0f, TWO_PI_F);
     clear_asteroid(a);
     configure_asteroid_tier(w, a, tier, random_raw_ore(w));
     a->fracture_child = false;
+    /* Pick a random station and spawn within its signal range */
+    int stn = rand_int(w, 0, MAX_STATIONS - 1);
+    float sr = w->stations[stn].signal_range;
+    if (sr <= 0.0f) sr = max_signal_range(w);
     if (tier == ASTEROID_TIER_XXL) {
-        /* XXL asteroids spawn at world edge and drift inward */
-        a->pos = v2(cosf(angle) * WORLD_RADIUS, sinf(angle) * WORLD_RADIUS);
+        /* XXL asteroids spawn at signal edge of a random station and drift inward */
+        vec2 center = w->stations[stn].pos;
+        a->pos = v2_add(center, v2(cosf(angle) * sr, sinf(angle) * sr));
         float inward_speed = rand_range(w, 15.0f, 30.0f);
         a->vel = v2(-cosf(angle) * inward_speed, -sinf(angle) * inward_speed);
     } else {
-        float distance = rand_range(w, 420.0f, WORLD_RADIUS - 180.0f);
-        a->pos = v2(cosf(angle) * distance, sinf(angle) * distance);
+        vec2 center = w->stations[stn].pos;
+        float distance = rand_range(w, 420.0f, sr - 180.0f);
+        a->pos = v2_add(center, v2(cosf(angle) * distance, sinf(angle) * distance));
         a->vel = v2(rand_range(w, -4.0f, 4.0f), rand_range(w, -4.0f, 4.0f));
     }
 }
@@ -458,8 +487,10 @@ static void step_asteroid_dynamics(world_t *w, float dt) {
         a->vel = v2_scale(a->vel, 1.0f / (1.0f + (0.42f * dt)));
         a->age += dt;
 
-        float max_d = WORLD_RADIUS + a->radius + 260.0f;
-        if (v2_len_sq(a->pos) > (max_d * max_d)) {
+        /* Despawn asteroids outside all station signal ranges (with margin) */
+        float sig = signal_strength_at(w, a->pos);
+        float safety_d = WORLD_RADIUS + a->radius + 260.0f;
+        if (sig <= 0.0f && v2_len_sq(a->pos) > (safety_d * safety_d)) {
             clear_asteroid(a);
             continue;
         }
@@ -596,16 +627,29 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
     npc->thrusting = accel > 0.0f;
 }
 
-static void npc_apply_physics(npc_ship_t *npc, float drag, float dt) {
+static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world_t *w) {
     npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (drag * dt)));
     npc->pos = v2_add(npc->pos, v2_scale(npc->vel, dt));
-    /* World boundary push-back (same as step_ship_motion) */
-    float d_sq = v2_len_sq(npc->pos);
-    float wr_sq = WORLD_RADIUS * WORLD_RADIUS;
-    if (d_sq > wr_sq) {
-        float d = sqrtf(d_sq);
-        vec2 push = v2_scale(npc->pos, -(d - WORLD_RADIUS) * 0.08f / d);
-        npc->vel = v2_add(npc->vel, push);
+    /* Signal-based boundary: push back when signal is weak */
+    float sig = signal_strength_at(w, npc->pos);
+    if (sig < 0.15f) {
+        /* Find nearest station and its signal edge distance */
+        float best_d_sq = 1e18f;
+        int best_s = 0;
+        for (int i = 0; i < MAX_STATIONS; i++) {
+            float d_sq = v2_dist_sq(npc->pos, w->stations[i].pos);
+            if (d_sq < best_d_sq) { best_d_sq = d_sq; best_s = i; }
+        }
+        vec2 to_station = v2_sub(w->stations[best_s].pos, npc->pos);
+        float d = sqrtf(v2_len_sq(to_station));
+        if (d > 0.001f) {
+            /* Push proportional to overshoot past signal edge (like old WORLD_RADIUS) */
+            float edge = w->stations[best_s].signal_range;
+            float overshoot = fmaxf(0.0f, d - edge);
+            float push_strength = overshoot * 0.08f;
+            vec2 push = v2_scale(to_station, push_strength / d);
+            npc->vel = v2_add(npc->vel, push);
+        }
     }
 }
 
@@ -686,7 +730,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_TRAVEL_TO_DEST: {
         station_t *dest = &w->stations[npc->dest_station];
         npc_steer_toward(npc, dest->pos, hull->accel, hull->turn_speed, dt);
-        npc_apply_physics(npc, hull->drag, dt);
+        npc_apply_physics(npc, hull->drag, dt, w);
         float dock_r = dest->dock_radius * 0.7f;
         if (v2_dist_sq(npc->pos, dest->pos) < dock_r * dock_r) {
             npc->vel = v2(0.0f, 0.0f);
@@ -714,7 +758,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_RETURN_TO_STATION: {
         station_t *home = &w->stations[npc->home_station];
         npc_steer_toward(npc, home->pos, hull->accel, hull->turn_speed, dt);
-        npc_apply_physics(npc, hull->drag, dt);
+        npc_apply_physics(npc, hull->drag, dt, w);
         float dock_r = home->dock_radius * 0.7f;
         if (v2_dist_sq(npc->pos, home->pos) < dock_r * dock_r) {
             npc->vel = v2(0.0f, 0.0f);
@@ -771,7 +815,7 @@ static void step_npc_ships(world_t *w, float dt) {
             }
             asteroid_t *a = &w->asteroids[npc->target_asteroid];
             npc_steer_toward(npc, a->pos, hull->accel, hull->turn_speed, dt);
-            npc_apply_physics(npc, hull->drag, dt);
+            npc_apply_physics(npc, hull->drag, dt, w);
             if (v2_dist_sq(npc->pos, a->pos) < MINING_RANGE * MINING_RANGE)
                 npc->state = NPC_STATE_MINING;
             break;
@@ -794,7 +838,7 @@ static void step_npc_ships(world_t *w, float dt) {
 
             if (dist_sq > approach * approach) {
                 npc_steer_toward(npc, a->pos, hull->accel, hull->turn_speed, dt);
-                npc_apply_physics(npc, hull->drag, dt);
+                npc_apply_physics(npc, hull->drag, dt, w);
                 break;
             }
 
@@ -811,7 +855,7 @@ static void step_npc_ships(world_t *w, float dt) {
                 npc->vel = v2_add(npc->vel, v2_scale(away, hull->accel * 0.5f * dt));
             }
             npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (4.0f * dt)));
-            npc_apply_physics(npc, hull->drag, dt);
+            npc_apply_physics(npc, hull->drag, dt, w);
 
             float mined = hull->mining_rate * dt;
             mined = fminf(mined, a->hp);
@@ -835,7 +879,7 @@ static void step_npc_ships(world_t *w, float dt) {
         case NPC_STATE_RETURN_TO_STATION: {
             station_t *home = &w->stations[npc->home_station];
             npc_steer_toward(npc, home->pos, hull->accel, hull->turn_speed, dt);
-            npc_apply_physics(npc, hull->drag, dt);
+            npc_apply_physics(npc, hull->drag, dt, w);
             float dock_r = home->dock_radius * 0.7f;
             if (v2_dist_sq(npc->pos, home->pos) < dock_r * dock_r) {
                 npc->vel = v2(0.0f, 0.0f);
@@ -855,7 +899,7 @@ static void step_npc_ships(world_t *w, float dt) {
             break;
         }
         case NPC_STATE_IDLE: {
-            npc_apply_physics(npc, hull->drag, dt);
+            npc_apply_physics(npc, hull->drag, dt, w);
             npc->state_timer -= dt;
             if (npc->state_timer <= 0.0f) {
                 int target = npc_find_mineable_asteroid(w, npc);
@@ -1057,15 +1101,30 @@ static void step_ship_thrust(ship_t *s, float dt, float thrust_input, vec2 forwa
     }
 }
 
-static void step_ship_motion(ship_t *s, float dt) {
+static void step_ship_motion(ship_t *s, float dt, const world_t *w) {
     s->vel = v2_scale(s->vel, 1.0f / (1.0f + (ship_hull_def_ptr(s)->drag * dt)));
     s->pos = v2_add(s->pos, v2_scale(s->vel, dt));
-    float d_sq = v2_len_sq(s->pos);
-    float wr_sq = WORLD_RADIUS * WORLD_RADIUS;
-    if (d_sq > wr_sq) {
-        float d = sqrtf(d_sq);
-        vec2 push = v2_scale(s->pos, -(d - WORLD_RADIUS) * 0.08f / d);
-        s->vel = v2_add(s->vel, push);
+
+    /* Signal-based boundary: push back when signal is weak */
+    float sig = signal_strength_at(w, s->pos);
+    if (sig < 0.15f) {
+        /* Find nearest station and its signal edge distance */
+        float best_d_sq = 1e18f;
+        int best_s = 0;
+        for (int i = 0; i < MAX_STATIONS; i++) {
+            float d_sq = v2_dist_sq(s->pos, w->stations[i].pos);
+            if (d_sq < best_d_sq) { best_d_sq = d_sq; best_s = i; }
+        }
+        vec2 to_station = v2_sub(w->stations[best_s].pos, s->pos);
+        float d = sqrtf(v2_len_sq(to_station));
+        if (d > 0.001f) {
+            /* Push proportional to overshoot past signal edge (like old WORLD_RADIUS) */
+            float edge = w->stations[best_s].signal_range;
+            float overshoot = fmaxf(0.0f, d - edge);
+            float push_strength = overshoot * 0.08f;
+            vec2 push = v2_scale(to_station, push_strength / d);
+            s->vel = v2_add(s->vel, push);
+        }
     }
 }
 
@@ -1160,7 +1219,8 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
         sp->beam_hit = true;
         emit_event(w, (sim_event_t){.type = SIM_EVENT_MINING_TICK, .player_id = sp->id});
         if (!w->player_only_mode) {
-            float mined = ship_mining_rate(&sp->ship) * dt;
+            float mining_sig = signal_strength_at(w, sp->ship.pos);
+            float mined = ship_mining_rate(&sp->ship) * dt * (0.2f + 0.8f * mining_sig);
             mined = fminf(mined, a->hp);
             a->hp -= mined;
             if (a->hp <= 0.01f)
@@ -1229,10 +1289,14 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->tractor_fragments = 0;
 
     if (!sp->docked) {
+        /* Signal attenuation: scale controls by station signal strength */
+        float sig = signal_strength_at(w, sp->ship.pos);
+        float signal_scale = 0.3f + 0.7f * sig; /* 30% minimum at zero signal */
+        float turn_input = sp->input.turn * signal_scale;
+        float thrust_input = sp->input.thrust * signal_scale;
+
         /* Signal interference: nearby objects add noise to controls */
         float interference = calc_signal_interference(w, sp);
-        float turn_input = sp->input.turn;
-        float thrust_input = sp->input.thrust;
         if (interference > 0.01f) {
             /* Add jitter to controls proportional to interference.
              * Use a local RNG seeded from player position to avoid
@@ -1253,7 +1317,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         step_ship_rotation(&sp->ship, dt, turn_input);
         forward = ship_forward(&sp->ship);           /* refresh after rotation */
         step_ship_thrust(&sp->ship, dt, thrust_input, forward);
-        step_ship_motion(&sp->ship, dt);
+        step_ship_motion(&sp->ship, dt, w);
         resolve_world_collisions(w, sp);
         update_docking_state(w, sp, dt);
         step_station_interaction_system(w, sp, &sp->input);
@@ -1295,9 +1359,12 @@ static void step_asteroid_gravity(world_t *w, float dt) {
             vec2 normal = v2_scale(delta, 1.0f / dist);
             float mass_a = a->radius * a->radius;
             float mass_b = b->radius * b->radius;
-            /* Gravitational force proportional to both masses */
+            /* Gravitational force proportional to both masses.
+             * Clamp against the lighter body so swapping slots cannot
+             * change the result while preserving equal/opposite force. */
             float force_mag = (mass_a * mass_b) / dist_sq * 8.0f;
-            if (force_mag > 60.0f * mass_a) force_mag = 60.0f * mass_a; /* clamp */
+            float max_force = 60.0f * fminf(mass_a, mass_b);
+            if (force_mag > max_force) force_mag = max_force;
             /* F = ma, so acceleration = force / mass */
             vec2 accel_a = v2_scale(normal, (force_mag / mass_a) * dt);
             vec2 accel_b = v2_scale(normal, -(force_mag / mass_b) * dt);
@@ -1393,10 +1460,6 @@ static void resolve_asteroid_station_collisions(world_t *w) {
             float impact_speed = fabsf(vel_along);
             if (vel_along < 0.0f) {
                 a->vel = v2_sub(a->vel, v2_scale(normal, vel_along * 1.6f));
-            }
-            /* Always give a minimum outward velocity to prevent sticking */
-            if (vel_along < 20.0f) {
-                a->vel = v2_add(a->vel, v2_scale(normal, 20.0f));
             }
             /* High-speed impact damages asteroid */
             if (impact_speed > 100.0f) {
@@ -1498,6 +1561,7 @@ void world_reset(world_t *w) {
     w->stations[0].buy_price[COMMODITY_CUPRITE_ORE] = 14.0f;
     w->stations[0].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
     w->stations[0].services    = STATION_SERVICE_ORE_BUYER | STATION_SERVICE_REPAIR;
+    w->stations[0].signal_range = 2200.0f;
 
     snprintf(w->stations[1].name, sizeof(w->stations[1].name), "%s", "Kepler Yard");
     w->stations[1].role        = STATION_ROLE_YARD;
@@ -1505,6 +1569,7 @@ void world_reset(world_t *w) {
     w->stations[1].radius      = 56.0f;
     w->stations[1].dock_radius = 124.0f;
     w->stations[1].services    = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_HOLD;
+    w->stations[1].signal_range = 1800.0f;
 
     snprintf(w->stations[2].name, sizeof(w->stations[2].name), "%s", "Helios Works");
     w->stations[2].role        = STATION_ROLE_BEAMWORKS;
@@ -1512,6 +1577,7 @@ void world_reset(world_t *w) {
     w->stations[2].radius      = 56.0f;
     w->stations[2].dock_radius = 124.0f;
     w->stations[2].services    = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_LASER | STATION_SERVICE_UPGRADE_TRACTOR;
+    w->stations[2].signal_range = 1800.0f;
 
     /* --- Initial asteroid field --- */
     if (FIELD_ASTEROID_TARGET > 0) spawn_field_asteroid_of_tier(w, &w->asteroids[0], ASTEROID_TIER_XL);
