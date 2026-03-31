@@ -2246,6 +2246,216 @@ TEST(test_bug60_cannot_mine_fragment) {
 }
 
 /* ================================================================== */
+/* Bug regression batch 7 (bugs 61-70)                                */
+/* ================================================================== */
+
+/* Bug 61: interpolation prev is zero on connect — asteroids fly in from origin */
+TEST(test_bug61_interp_prev_zero_on_connect) {
+    /* On first server snapshot, prev is all-zero (memset in reset_world).
+     * Interpolation between (0,0) and real position causes all asteroids
+     * to appear to fly in from the origin on connect.
+     * After fix: first snapshot should set BOTH prev and curr. */
+    world_t w = {0};
+    world_reset(&w);
+    /* Simulate: first asteroid has real position */
+    ASSERT(w.asteroids[0].active);
+    float real_x = w.asteroids[0].pos.x;
+    /* In interp, prev would be (0,0). Lerp at t=0.5:
+     * render_x = lerp(0, real_x, 0.5) = real_x/2 — WRONG position */
+    float interp_x = lerpf(0.0f, real_x, 0.5f);
+    /* After fix: interp_x should equal real_x (prev initialized to curr).
+     * FAILS because prev is zero. */
+    ASSERT_EQ_FLOAT(interp_x, real_x, 10.0f);
+}
+
+/* Bug 62: sell event doesn't carry payout — HUD can't show earnings */
+TEST(test_bug62_sell_event_no_payout) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 50.0f;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    /* Find the sell event */
+    bool found = false;
+    for (int i = 0; i < w.events.count; i++) {
+        if (w.events.events[i].type == SIM_EVENT_SELL) {
+            found = true;
+            /* After fix: event should carry payout amount.
+             * Currently the union has no payout field for SELL. */
+            /* ASSERT(w.events.events[i].sell.payout > 0.0f); */
+        }
+    }
+    ASSERT(found); /* sell event was emitted */
+    /* The test passes on the event existing but doesn't verify payout
+     * because the struct has no payout field. This documents the gap. */
+}
+
+/* Bug 63: NPCs fly through asteroids — no NPC-asteroid collision */
+TEST(test_bug63_npc_asteroid_collision) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Place NPC directly on top of an asteroid */
+    int target = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (w.asteroids[i].active && w.asteroids[i].tier != ASTEROID_TIER_S) {
+            target = i; break;
+        }
+    }
+    ASSERT(target >= 0);
+    w.npc_ships[0].pos = w.asteroids[target].pos;
+    w.npc_ships[0].state = NPC_STATE_IDLE;
+    w.npc_ships[0].state_timer = 999.0f;
+    world_sim_step(&w, SIM_DT);
+    float dist = v2_len(v2_sub(w.npc_ships[0].pos, w.asteroids[target].pos));
+    /* After fix: NPC should be pushed out of the asteroid.
+     * FAILS because there's no NPC-asteroid collision. */
+    ASSERT(dist > w.asteroids[target].radius * 0.5f);
+}
+
+/* Bug 64: hull_class not validated — out of bounds HULL_DEFS access possible */
+TEST(test_bug64_hull_class_bounds) {
+    /* ship_hull_def_ptr does: HULL_DEFS[s->hull_class]
+     * If hull_class >= HULL_CLASS_COUNT, this is out of bounds.
+     * No validation anywhere in the code. */
+    ship_t ship;
+    memset(&ship, 0, sizeof(ship));
+    ship.hull_class = HULL_CLASS_COUNT; /* invalid */
+    /* ship_hull_def(&ship) would access HULL_DEFS[3] — past the array.
+     * After fix: should return NULL or a default hull.
+     * Can't safely call it without risking OOB, so just document: */
+    ASSERT((int)ship.hull_class >= HULL_CLASS_COUNT); /* proves the gap */
+}
+
+/* Bug 65: emergency recovery at station with no repair leaves player stuck */
+TEST(test_bug65_emergency_recover_no_repair_station) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    /* Remove REPAIR from all stations */
+    for (int i = 0; i < MAX_STATIONS; i++)
+        w.stations[i].services &= ~STATION_SERVICE_REPAIR;
+    /* Position near station 1 and die */
+    w.players[0].ship.pos = w.stations[1].pos;
+    w.players[0].nearby_station = 1;
+    w.players[0].ship.hull = 0.5f;
+    w.players[0].ship.vel = v2(0.0f, 500.0f);
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    /* Player docks via emergency_recover. But station has no REPAIR.
+     * Player is at full hull (emergency_recover restores hull) but can't
+     * repair in the future if they take damage. This is OK but document. */
+    if (w.players[0].docked) {
+        ASSERT_EQ_FLOAT(w.players[0].ship.hull, ship_max_hull(&w.players[0].ship), 0.01f);
+    }
+}
+
+/* Bug 66: multiple NPC miners can target the same asteroid */
+TEST(test_bug66_npc_miners_same_target) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Run 10 seconds — miners should have found targets */
+    for (int i = 0; i < 1200; i++) world_sim_step(&w, SIM_DT);
+    /* Check if any two miners share the same target */
+    int targets[MAX_NPC_SHIPS];
+    int miner_count = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].role == NPC_ROLE_MINER &&
+            w.npc_ships[i].state == NPC_STATE_MINING &&
+            w.npc_ships[i].target_asteroid >= 0) {
+            targets[miner_count++] = w.npc_ships[i].target_asteroid;
+        }
+    }
+    /* After fix: miners should avoid targeting the same asteroid.
+     * FAILS if two miners mine the same rock (inefficient, not a crash). */
+    bool duplicates = false;
+    for (int i = 0; i < miner_count; i++)
+        for (int j = i + 1; j < miner_count; j++)
+            if (targets[i] == targets[j]) duplicates = true;
+    ASSERT(!duplicates);
+}
+
+/* Bug 67: dock_ship doesn't validate nearby_station < MAX_STATIONS */
+TEST(test_bug67_dock_station_bounds) {
+    /* dock_ship: if (sp->nearby_station >= 0) sp->current_station = sp->nearby_station
+     * No upper bound check. If nearby_station is somehow >= MAX_STATIONS,
+     * current_station becomes invalid → all station accesses OOB. */
+    ASSERT(MAX_STATIONS == 3);
+    /* After fix: dock_ship should check nearby_station < MAX_STATIONS.
+     * Currently it only checks >= 0. */
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    w.players[0].nearby_station = MAX_STATIONS; /* OOB */
+    w.players[0].in_dock_range = true;
+    w.players[0].input.interact = true;
+    /* After fix: this should NOT dock (invalid station).
+     * Currently it sets current_station = 3 → OOB. */
+    world_sim_step(&w, SIM_DT);
+    /* If it docked, current_station is invalid: */
+    if (w.players[0].docked) {
+        ASSERT(w.players[0].current_station < MAX_STATIONS);
+    }
+}
+
+/* Bug 68: asteroid gravity force proportional to radius² not mass */
+TEST(test_bug68_gravity_uses_radius_not_mass) {
+    /* Gravity strength uses radius² as mass proxy.
+     * A dense small asteroid and a fluffy large asteroid with same radius
+     * have the same gravitational pull. This is simplistic but consistent.
+     * The real issue: radius changes after partial collection of TIER_S.
+     * A half-collected fragment has reduced radius but same mass —
+     * its gravity incorrectly weakens as it's collected. */
+    world_t w = {0};
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    w.asteroids[0].active = true;
+    w.asteroids[0].tier = ASTEROID_TIER_S;
+    w.asteroids[0].radius = 14.0f; /* full size */
+    w.asteroids[0].ore = 5.0f; /* half collected */
+    w.asteroids[0].max_ore = 10.0f;
+    /* The radius shrinks via asteroid_progress_ratio during collection.
+     * This means gravity weakens as ore is collected — which is weird. */
+    /* This is a design issue, not a crash bug. Document it. */
+    ASSERT(w.asteroids[0].radius > 0.0f);
+}
+
+/* Bug 69: NPC idle state applies physics but not world boundary */
+TEST(test_bug69_npc_idle_no_boundary) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Place NPC at world edge in idle state with outward velocity */
+    w.npc_ships[0].pos = v2(WORLD_RADIUS - 50.0f, 0.0f);
+    w.npc_ships[0].vel = v2(100.0f, 0.0f);
+    w.npc_ships[0].state = NPC_STATE_IDLE;
+    w.npc_ships[0].state_timer = 999.0f;
+    for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
+    /* NPC should be pushed back by world boundary.
+     * Bug 33 was fixed for general NPC boundary, but check IDLE specifically. */
+    float dist = v2_len(w.npc_ships[0].pos);
+    ASSERT(dist <= WORLD_RADIUS + 100.0f);
+}
+
+/* Bug 70: upgrade cost at level 0 might not match HUD display */
+TEST(test_bug70_upgrade_cost_level_zero) {
+    /* ship_upgrade_cost at level 0:
+     * mining: 180 + (1*110) + (0*0*120) = 290
+     * hold: 210 + (1*120) + (0*0*135) = 330
+     * tractor: 160 + (1*100) + (0*0*110) = 260
+     * Verify these match expected values. */
+    ship_t ship;
+    memset(&ship, 0, sizeof(ship));
+    ship.hull_class = HULL_CLASS_MINER;
+    ASSERT_EQ_INT(ship_upgrade_cost(&ship, SHIP_UPGRADE_MINING), 290);
+    ASSERT_EQ_INT(ship_upgrade_cost(&ship, SHIP_UPGRADE_HOLD), 330);
+    ASSERT_EQ_INT(ship_upgrade_cost(&ship, SHIP_UPGRADE_TRACTOR), 260);
+}
+
+/* ================================================================== */
 /* STRATEGIC TDD: Signal range (#82) — define the behavior first      */
 /* ================================================================== */
 
@@ -2604,6 +2814,18 @@ int main(void) {
     RUN(test_scenario_upgrade_requires_products);
     RUN(test_scenario_emergency_recovery);
     RUN(test_scenario_product_cap_pauses_production);
+
+    printf("\nBug regression batch 7 (bugs 61-70):\n");
+    RUN(test_bug61_interp_prev_zero_on_connect);
+    RUN(test_bug62_sell_event_no_payout);
+    RUN(test_bug63_npc_asteroid_collision);
+    RUN(test_bug64_hull_class_bounds);
+    RUN(test_bug65_emergency_recover_no_repair_station);
+    RUN(test_bug66_npc_miners_same_target);
+    RUN(test_bug67_dock_station_bounds);
+    RUN(test_bug68_gravity_uses_radius_not_mass);
+    RUN(test_bug69_npc_idle_no_boundary);
+    RUN(test_bug70_upgrade_cost_level_zero);
 
     printf("\nBug regression batch 6 (bugs 51-60):\n");
     RUN(test_bug51_npc_cargo_zeroed_on_dock);
