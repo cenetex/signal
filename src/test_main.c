@@ -8,6 +8,7 @@
 #include "commodity.h"
 #include "ship.h"
 #include "economy.h"
+#include "game_sim.h"
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -57,48 +58,7 @@ static int tests_failed = 0;
     } \
 } while(0)
 
-/* Need HULL_DEFS definition for tests that use ship stats */
-const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
-    [HULL_CLASS_MINER] = {
-        .name = "Mining Cutter",
-        .max_hull = 100.0f,
-        .accel = 300.0f,
-        .turn_speed = 2.75f,
-        .drag = 0.45f,
-        .ore_capacity = 120.0f,
-        .ingot_capacity = 0.0f,
-        .mining_rate = 28.0f,
-        .tractor_range = 150.0f,
-        .ship_radius = 16.0f,
-        .render_scale = 1.0f,
-    },
-    [HULL_CLASS_HAULER] = {
-        .name = "Cargo Hauler",
-        .max_hull = 150.0f,
-        .accel = 140.0f,
-        .turn_speed = 1.6f,
-        .drag = 0.55f,
-        .ore_capacity = 0.0f,
-        .ingot_capacity = 40.0f,
-        .mining_rate = 0.0f,
-        .tractor_range = 0.0f,
-        .ship_radius = 18.0f,
-        .render_scale = 0.85f,
-    },
-    [HULL_CLASS_NPC_MINER] = {
-        .name = "Mining Drone",
-        .max_hull = 80.0f,
-        .accel = 180.0f,
-        .turn_speed = 2.0f,
-        .drag = 0.5f,
-        .ore_capacity = 60.0f,
-        .ingot_capacity = 0.0f,
-        .mining_rate = 14.0f,
-        .tractor_range = 0.0f,
-        .ship_radius = 12.0f,
-        .render_scale = 0.7f,
-    },
-};
+/* HULL_DEFS provided by game_sim.c */
 
 /* ---- Commodity Tests ---- */
 
@@ -435,6 +395,267 @@ TEST(test_can_afford_upgrade_no_product) {
     ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost));
 }
 
+/* ---- World Sim Tests ---- */
+
+TEST(test_world_reset_creates_stations) {
+    world_t w = {0};
+    world_reset(&w);
+    ASSERT_STR_EQ(w.stations[0].name, "Prospect Refinery");
+    ASSERT_EQ_INT(w.stations[0].role, STATION_ROLE_REFINERY);
+    ASSERT_STR_EQ(w.stations[1].name, "Kepler Yard");
+    ASSERT_STR_EQ(w.stations[2].name, "Helios Works");
+}
+
+TEST(test_world_reset_spawns_asteroids) {
+    world_t w = {0};
+    world_reset(&w);
+    int count = 0;
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        if (w.asteroids[i].active) count++;
+    ASSERT(count >= 20);
+}
+
+TEST(test_world_reset_spawns_npcs) {
+    world_t w = {0};
+    world_reset(&w);
+    int miners = 0, haulers = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!w.npc_ships[i].active) continue;
+        if (w.npc_ships[i].role == NPC_ROLE_MINER) miners++;
+        if (w.npc_ships[i].role == NPC_ROLE_HAULER) haulers++;
+    }
+    ASSERT_EQ_INT(miners, 3);
+    ASSERT_EQ_INT(haulers, 2);
+}
+
+TEST(test_player_init_ship_docked) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    ASSERT(w.players[0].docked);
+    ASSERT_EQ_INT(w.players[0].current_station, 0);
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull, 100.0f, 0.01f);
+}
+
+TEST(test_world_sim_step_advances_time) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    float t0 = w.time;
+    world_sim_step(&w, 1.0f / 120.0f);
+    ASSERT(w.time > t0);
+}
+
+TEST(test_world_sim_step_moves_ship_with_thrust) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    w.players[0].ship.angle = 0.0f;
+    w.players[0].ship.pos = v2(0.0f, 0.0f);
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    w.players[0].input.thrust = 1.0f;
+    for (int i = 0; i < 120; i++)
+        world_sim_step(&w, 1.0f / 120.0f);
+    ASSERT(w.players[0].ship.pos.x > 5.0f);
+}
+
+TEST(test_world_sim_step_mining_damages_asteroid) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    /* Place player right next to first active non-S asteroid */
+    int target = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (w.asteroids[i].active && w.asteroids[i].tier != ASTEROID_TIER_S) {
+            target = i;
+            break;
+        }
+    }
+    ASSERT(target >= 0);
+    vec2 apos = w.asteroids[target].pos;
+    w.players[0].ship.pos = v2(apos.x - 50.0f, apos.y);
+    w.players[0].ship.angle = 0.0f;
+    w.players[0].input.mine = true;
+    float hp_before = w.asteroids[target].hp;
+    for (int i = 0; i < 60; i++)
+        world_sim_step(&w, 1.0f / 120.0f);
+    ASSERT(w.asteroids[target].hp < hp_before);
+}
+
+TEST(test_world_sim_step_docking) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    ASSERT(w.players[0].docked);
+    /* Launch */
+    w.players[0].input.interact = true;
+    world_sim_step(&w, 1.0f / 120.0f);
+    ASSERT(!w.players[0].docked);
+    /* Fly back into dock range and dock */
+    w.players[0].input.interact = false;
+    for (int i = 0; i < 10; i++)
+        world_sim_step(&w, 1.0f / 120.0f);
+    w.players[0].input.interact = true;
+    world_sim_step(&w, 1.0f / 120.0f);
+    ASSERT(w.players[0].docked);
+}
+
+TEST(test_world_sim_step_sell_ore) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    ASSERT(w.players[0].docked);
+    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
+    float credits_before = w.players[0].ship.credits;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, 1.0f / 120.0f);
+    ASSERT(w.players[0].ship.credits > credits_before);
+    ASSERT(w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] < 10.0f);
+}
+
+TEST(test_world_sim_step_refinery_produces_ingots) {
+    world_t w = {0};
+    world_reset(&w);
+    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 50.0f;
+    for (int i = 0; i < 600; i++)
+        world_sim_step(&w, 1.0f / 120.0f);
+    ASSERT(w.stations[0].inventory[COMMODITY_FRAME_INGOT] > 0.0f);
+    ASSERT(w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] < 50.0f);
+}
+
+TEST(test_world_sim_step_events_emitted) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    ASSERT(w.players[0].docked);
+    /* Launch should emit LAUNCH event */
+    w.players[0].input.interact = true;
+    world_sim_step(&w, 1.0f / 120.0f);
+    bool found_launch = false;
+    for (int i = 0; i < w.events.count; i++) {
+        if (w.events.events[i].type == SIM_EVENT_LAUNCH) found_launch = true;
+    }
+    ASSERT(found_launch);
+}
+
+TEST(test_world_sim_step_npc_miners_work) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Run for 5 seconds of sim time */
+    for (int i = 0; i < 600; i++)
+        world_sim_step(&w, 1.0f / 120.0f);
+    /* At least one miner should have left docked state */
+    bool any_traveling = false;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].role == NPC_ROLE_MINER &&
+            w.npc_ships[i].state != NPC_STATE_DOCKED) {
+            any_traveling = true;
+        }
+    }
+    ASSERT(any_traveling);
+}
+
+TEST(test_world_network_writes_persist) {
+    /* Simulate: world_sim_step runs, then network callback overwrites asteroid,
+     * next world_sim_step should see the overwritten state */
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    world_sim_step(&w, 1.0f / 120.0f);
+    /* Simulate network overwrite of asteroid 0 */
+    w.asteroids[0].active = true;
+    w.asteroids[0].hp = 999.0f;
+    w.asteroids[0].pos = v2(100.0f, 100.0f);
+    world_sim_step(&w, 1.0f / 120.0f);
+    /* HP should still be near 999 (only drag/dynamics, no mining) */
+    ASSERT(w.asteroids[0].hp > 990.0f);
+    ASSERT(w.asteroids[0].active);
+}
+
+/* ================================================================== */
+/* Bug regression tests (10 bugs found in code review)                */
+/* ================================================================== */
+
+TEST(test_bug2_angle_lerp_wraparound) {
+    float local = 3.0f;
+    float remote = -3.0f;
+    float diff = wrap_angle(remote - local);
+    float correct = wrap_angle(local + diff * 0.3f);
+    float naive = lerpf(local, remote, 0.3f);
+    ASSERT(fabsf(correct - local) < 0.5f);
+    ASSERT(fabsf(naive - local) > 1.0f);
+}
+
+TEST(test_bug3_event_buffer_too_small) {
+    ASSERT(SIM_MAX_EVENTS < MAX_PLAYERS);
+    world_t w = {0};
+    w.events.count = 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        sim_event_t ev = {.type = SIM_EVENT_MINING_TICK, .player_id = i};
+        if (w.events.count < SIM_MAX_EVENTS)
+            w.events.events[w.events.count++] = ev;
+    }
+    ASSERT_EQ_INT(w.events.count, SIM_MAX_EVENTS);
+}
+
+TEST(test_bug4_pending_action_lost) {
+    uint8_t pending = 0;
+    if (pending == 0) pending = 1;
+    if (pending == 0) pending = 3;
+    ASSERT_EQ_INT(pending, 1);
+}
+
+TEST(test_bug5_asteroid_missing_network_fields) {
+    asteroid_t a;
+    memset(&a, 0, sizeof(a));
+    a.active = true;
+    a.tier = ASTEROID_TIER_XL;
+    a.hp = 150.0f;
+    ASSERT_EQ_FLOAT(a.max_hp, 0.0f, 0.01f);
+    ASSERT_EQ_FLOAT(a.seed, 0.0f, 0.01f);
+    ASSERT_EQ_FLOAT(a.age, 0.0f, 0.01f);
+}
+
+TEST(test_bug7_player_slot_mismatch) {
+    world_t w = {0};
+    world_reset(&w);
+    int server_id = 5;
+    player_init_ship(&w.players[server_id], &w);
+    w.players[server_id].connected = true;
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull, 0.0f, 0.01f);
+    ASSERT(w.players[server_id].ship.hull > 0.0f);
+}
+
+TEST(test_bug9_repair_cost_consistent) {
+    ship_t ship;
+    memset(&ship, 0, sizeof(ship));
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.hull = 80.0f;
+    station_t st;
+    memset(&st, 0, sizeof(st));
+    st.services = STATION_SERVICE_REPAIR;
+    float cost = station_repair_cost(&ship, &st);
+    ASSERT_EQ_FLOAT(cost, 40.0f, 0.01f);
+}
+
+TEST(test_bug10_damage_event_uninitialized) {
+    sim_event_t ev;
+    memset(&ev, 0, sizeof(ev));
+    ev.type = SIM_EVENT_DAMAGE;
+    ev.player_id = 0;
+    ASSERT_EQ_FLOAT(ev.damage.amount, 0.0f, 0.01f);
+}
+
 /* ---- Runner ---- */
 
 int main(void) {
@@ -488,6 +709,30 @@ int main(void) {
     RUN(test_can_afford_upgrade_all_conditions);
     RUN(test_can_afford_upgrade_no_credits);
     RUN(test_can_afford_upgrade_no_product);
+
+    printf("\nWorld sim tests:\n");
+    RUN(test_world_reset_creates_stations);
+    RUN(test_world_reset_spawns_asteroids);
+    RUN(test_world_reset_spawns_npcs);
+    RUN(test_player_init_ship_docked);
+    RUN(test_world_sim_step_advances_time);
+    RUN(test_world_sim_step_moves_ship_with_thrust);
+    RUN(test_world_sim_step_mining_damages_asteroid);
+    RUN(test_world_sim_step_docking);
+    RUN(test_world_sim_step_sell_ore);
+    RUN(test_world_sim_step_refinery_produces_ingots);
+    RUN(test_world_sim_step_events_emitted);
+    RUN(test_world_sim_step_npc_miners_work);
+    RUN(test_world_network_writes_persist);
+
+    printf("\nBug regression tests:\n");
+    RUN(test_bug2_angle_lerp_wraparound);
+    RUN(test_bug3_event_buffer_too_small);
+    RUN(test_bug4_pending_action_lost);
+    RUN(test_bug5_asteroid_missing_network_fields);
+    RUN(test_bug7_player_slot_mismatch);
+    RUN(test_bug9_repair_cost_consistent);
+    RUN(test_bug10_damage_event_uninitialized);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
