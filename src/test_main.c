@@ -3205,7 +3205,7 @@ int main(void) {
     RUN(test_bug39_launch_immediate_redock);
     RUN(test_bug40_no_player_player_collision);
 
-    printf("\nPhysics & client-server bugs (batch 5 — SHOULD FAIL until fixed):\n");
+    printf("\nBug regression batch 5 (bugs 41-50):\n");
     RUN(test_bug41_gravity_asymmetric);
     RUN(test_bug42_station_gravity_ignores_mass);
     RUN(test_bug43_fracture_children_inside_station);
