@@ -1,0 +1,148 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Signal — Space Mining MMO</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: "IBM Plex Mono", "SFMono-Regular", ui-monospace, monospace;
+        background:
+          radial-gradient(circle at top, rgba(40, 70, 120, 0.25), transparent 40%),
+          linear-gradient(180deg, #09111f 0%, #04070c 100%);
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      body {
+        min-height: 100dvh;
+        color: #dce9ff;
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 2rem;
+      }
+      .container {
+        max-width: 640px;
+        width: 100%;
+        text-align: center;
+      }
+      .eyebrow {
+        font-size: 11px;
+        letter-spacing: 0.22em;
+        text-transform: uppercase;
+        color: rgba(150, 198, 255, 0.6);
+        margin-bottom: 0.75rem;
+      }
+      h1 {
+        font-size: clamp(28px, 5vw, 48px);
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        font-weight: 400;
+        margin-bottom: 0.5rem;
+      }
+      .subtitle {
+        font-size: 14px;
+        color: rgba(220, 233, 255, 0.6);
+        margin-bottom: 2.5rem;
+        line-height: 1.6;
+      }
+      .actions {
+        display: flex;
+        gap: 1rem;
+        justify-content: center;
+        flex-wrap: wrap;
+        margin-bottom: 3rem;
+      }
+      a.btn {
+        display: inline-block;
+        padding: 0.75rem 2rem;
+        font-family: inherit;
+        font-size: 13px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        text-decoration: none;
+        border: 1px solid rgba(150, 198, 255, 0.3);
+        color: #dce9ff;
+        transition: all 0.2s;
+      }
+      a.btn:hover {
+        border-color: rgba(150, 198, 255, 0.7);
+        background: rgba(150, 198, 255, 0.08);
+      }
+      a.btn.primary {
+        background: rgba(80, 200, 160, 0.15);
+        border-color: rgba(80, 200, 160, 0.5);
+        color: #72ffb6;
+      }
+      a.btn.primary:hover {
+        background: rgba(80, 200, 160, 0.25);
+        border-color: rgba(80, 200, 160, 0.8);
+      }
+      .downloads {
+        margin-top: 1rem;
+      }
+      .downloads h2 {
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: rgba(150, 198, 255, 0.4);
+        margin-bottom: 1rem;
+        font-weight: 400;
+      }
+      .download-links {
+        display: flex;
+        gap: 1.5rem;
+        justify-content: center;
+        flex-wrap: wrap;
+      }
+      .download-links a {
+        font-size: 12px;
+        color: rgba(220, 233, 255, 0.5);
+        text-decoration: none;
+        letter-spacing: 0.08em;
+        transition: color 0.2s;
+      }
+      .download-links a:hover {
+        color: #dce9ff;
+      }
+      .controls {
+        margin-top: 3rem;
+        font-size: 11px;
+        color: rgba(220, 233, 255, 0.3);
+        line-height: 1.8;
+      }
+      .controls span {
+        color: rgba(150, 198, 255, 0.5);
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <div class="eyebrow">C + Sokol + Mongoose</div>
+      <h1>Signal</h1>
+      <p class="subtitle">
+        Mine asteroids. Build outposts. Extend the signal.<br>
+        The belt is alive and it's trying to crush your stations.
+      </p>
+      <div class="actions">
+        <a href="game.html" class="btn primary">Play Now</a>
+      </div>
+      <div class="downloads">
+        <h2>Native Downloads</h2>
+        <div class="download-links">
+          <a href="https://github.com/atimics/sokol-space-miner/actions" target="_blank">macOS</a>
+          <a href="https://github.com/atimics/sokol-space-miner/actions" target="_blank">Windows</a>
+          <a href="https://github.com/atimics/sokol-space-miner/actions" target="_blank">Linux</a>
+        </div>
+      </div>
+      <div class="controls">
+        <span>W/S</span> thrust &nbsp;
+        <span>A/D</span> turn &nbsp;
+        <span>Space</span> mine &nbsp;
+        <span>E</span> dock &nbsp;
+        <span>1-5</span> station services
+      </div>
+    </div>
+  </body>
+</html>
