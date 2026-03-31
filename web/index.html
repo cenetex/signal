@@ -16,16 +16,33 @@
       body {
         min-height: 100dvh;
         color: #dce9ff;
+        overflow: hidden;
+      }
+
+      /* --- Menu overlay --- */
+      #menu {
+        position: fixed;
+        inset: 0;
+        z-index: 10;
         display: flex;
         flex-direction: column;
         align-items: center;
         justify-content: center;
-        padding: 2rem;
+        background:
+          radial-gradient(circle at top, rgba(40, 70, 120, 0.25), transparent 40%),
+          linear-gradient(180deg, #09111f 0%, #04070c 100%);
+        transition: opacity 0.4s, visibility 0.4s;
       }
-      .container {
+      #menu.hidden {
+        opacity: 0;
+        visibility: hidden;
+        pointer-events: none;
+      }
+      .menu-content {
         max-width: 640px;
         width: 100%;
         text-align: center;
+        padding: 2rem;
       }
       .eyebrow {
         font-size: 11px;
@@ -35,7 +52,7 @@
         margin-bottom: 0.75rem;
       }
       h1 {
-        font-size: clamp(28px, 5vw, 48px);
+        font-size: clamp(32px, 6vw, 56px);
         letter-spacing: 0.08em;
         text-transform: uppercase;
         font-weight: 400;
@@ -43,18 +60,18 @@
       }
       .subtitle {
         font-size: 14px;
-        color: rgba(220, 233, 255, 0.6);
+        color: rgba(220, 233, 255, 0.55);
         margin-bottom: 2.5rem;
-        line-height: 1.6;
+        line-height: 1.7;
       }
       .actions {
         display: flex;
         gap: 1rem;
         justify-content: center;
         flex-wrap: wrap;
-        margin-bottom: 3rem;
+        margin-bottom: 2.5rem;
       }
-      a.btn {
+      .btn {
         display: inline-block;
         padding: 0.75rem 2rem;
         font-family: inherit;
@@ -64,85 +81,207 @@
         text-decoration: none;
         border: 1px solid rgba(150, 198, 255, 0.3);
         color: #dce9ff;
+        cursor: pointer;
+        background: none;
         transition: all 0.2s;
       }
-      a.btn:hover {
+      .btn:hover {
         border-color: rgba(150, 198, 255, 0.7);
         background: rgba(150, 198, 255, 0.08);
       }
-      a.btn.primary {
+      .btn.primary {
         background: rgba(80, 200, 160, 0.15);
         border-color: rgba(80, 200, 160, 0.5);
         color: #72ffb6;
       }
-      a.btn.primary:hover {
+      .btn.primary:hover {
         background: rgba(80, 200, 160, 0.25);
         border-color: rgba(80, 200, 160, 0.8);
       }
       .downloads {
-        margin-top: 1rem;
+        margin-top: 0.5rem;
       }
       .downloads h2 {
         font-size: 11px;
         letter-spacing: 0.18em;
         text-transform: uppercase;
-        color: rgba(150, 198, 255, 0.4);
-        margin-bottom: 1rem;
+        color: rgba(150, 198, 255, 0.35);
+        margin-bottom: 0.75rem;
         font-weight: 400;
       }
       .download-links {
         display: flex;
         gap: 1.5rem;
         justify-content: center;
-        flex-wrap: wrap;
       }
       .download-links a {
         font-size: 12px;
-        color: rgba(220, 233, 255, 0.5);
+        color: rgba(220, 233, 255, 0.4);
         text-decoration: none;
         letter-spacing: 0.08em;
         transition: color 0.2s;
       }
-      .download-links a:hover {
-        color: #dce9ff;
-      }
+      .download-links a:hover { color: #dce9ff; }
       .controls {
-        margin-top: 3rem;
+        margin-top: 2.5rem;
         font-size: 11px;
-        color: rgba(220, 233, 255, 0.3);
+        color: rgba(220, 233, 255, 0.25);
         line-height: 1.8;
       }
-      .controls span {
-        color: rgba(150, 198, 255, 0.5);
+      .controls span { color: rgba(150, 198, 255, 0.45); }
+
+      /* --- Game canvas --- */
+      #game {
+        position: fixed;
+        inset: 0;
+        z-index: 1;
       }
+      #game canvas {
+        width: 100%;
+        height: 100%;
+        display: block;
+        outline: none;
+      }
+
+      /* --- Loading --- */
+      #loading {
+        position: fixed;
+        inset: 0;
+        z-index: 5;
+        display: none;
+        align-items: center;
+        justify-content: center;
+        background: rgba(4, 7, 12, 0.95);
+        font-size: 13px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+        color: rgba(150, 198, 255, 0.6);
+      }
+      #loading.active { display: flex; }
+
+      /* --- ESC hint --- */
+      #esc-hint {
+        position: fixed;
+        top: 12px;
+        left: 50%;
+        transform: translateX(-50%);
+        z-index: 8;
+        font-size: 10px;
+        letter-spacing: 0.15em;
+        text-transform: uppercase;
+        color: rgba(150, 198, 255, 0.3);
+        opacity: 0;
+        transition: opacity 1s;
+        pointer-events: none;
+      }
+      #esc-hint.visible { opacity: 1; transition: opacity 0.3s; }
     </style>
   </head>
   <body>
-    <div class="container">
-      <div class="eyebrow">C + Sokol + Mongoose</div>
-      <h1>Signal</h1>
-      <p class="subtitle">
-        Mine asteroids. Build outposts. Extend the signal.<br>
-        The belt is alive and it's trying to crush your stations.
-      </p>
-      <div class="actions">
-        <a href="game.html" class="btn primary">Play Now</a>
-      </div>
-      <div class="downloads">
-        <h2>Native Downloads</h2>
-        <div class="download-links">
-          <a href="https://github.com/atimics/sokol-space-miner/actions" target="_blank">macOS</a>
-          <a href="https://github.com/atimics/sokol-space-miner/actions" target="_blank">Windows</a>
-          <a href="https://github.com/atimics/sokol-space-miner/actions" target="_blank">Linux</a>
+    <!-- Menu overlay -->
+    <div id="menu">
+      <div class="menu-content">
+        <div class="eyebrow">C + Sokol + Mongoose</div>
+        <h1>Signal</h1>
+        <p class="subtitle">
+          Mine asteroids. Build outposts. Extend the signal.<br>
+          The belt is alive and it's trying to crush your stations.
+        </p>
+        <div class="actions">
+          <button class="btn primary" id="play-btn">Play Now</button>
+        </div>
+        <div class="downloads">
+          <h2>Native Downloads</h2>
+          <div class="download-links">
+            <a href="https://github.com/atimics/sokol-space-miner/actions" target="_blank">macOS</a>
+            <a href="https://github.com/atimics/sokol-space-miner/actions" target="_blank">Windows</a>
+            <a href="https://github.com/atimics/sokol-space-miner/actions" target="_blank">Linux</a>
+          </div>
+        </div>
+        <div class="controls">
+          <span>W/S</span> thrust &nbsp;
+          <span>A/D</span> turn &nbsp;
+          <span>Space</span> mine &nbsp;
+          <span>E</span> dock &nbsp;
+          <span>1-5</span> services &nbsp;
+          <span>Esc</span> menu
         </div>
       </div>
-      <div class="controls">
-        <span>W/S</span> thrust &nbsp;
-        <span>A/D</span> turn &nbsp;
-        <span>Space</span> mine &nbsp;
-        <span>E</span> dock &nbsp;
-        <span>1-5</span> station services
-      </div>
     </div>
+
+    <!-- Loading screen -->
+    <div id="loading">Loading...</div>
+
+    <!-- ESC hint (fades in after game starts) -->
+    <div id="esc-hint">ESC for menu</div>
+
+    <!-- Game canvas (hidden until Play) -->
+    <div id="game">
+      <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+    </div>
+
+    <script>
+      var gameStarted = false;
+      var menuVisible = true;
+
+      function showMenu() {
+        menuVisible = true;
+        document.getElementById('menu').classList.remove('hidden');
+        document.getElementById('esc-hint').classList.remove('visible');
+      }
+
+      function hideMenu() {
+        menuVisible = false;
+        document.getElementById('menu').classList.add('hidden');
+        document.getElementById('canvas').focus();
+        // Show ESC hint briefly
+        var hint = document.getElementById('esc-hint');
+        hint.classList.add('visible');
+        setTimeout(function() { hint.classList.remove('visible'); }, 3000);
+      }
+
+      function startGame() {
+        if (gameStarted) {
+          hideMenu();
+          return;
+        }
+        gameStarted = true;
+
+        // Show loading
+        document.getElementById('loading').classList.add('active');
+
+        // Load the WASM game
+        var script = document.createElement('script');
+        script.src = 'space_miner.js';
+        script.onload = function() {
+          document.getElementById('loading').classList.remove('active');
+          hideMenu();
+        };
+        document.body.appendChild(script);
+      }
+
+      // Play button
+      document.getElementById('play-btn').addEventListener('click', startGame);
+
+      // ESC toggles menu while game is running
+      document.addEventListener('keydown', function(e) {
+        if (e.key === 'Escape' && gameStarted) {
+          e.preventDefault();
+          e.stopPropagation();
+          if (menuVisible) {
+            hideMenu();
+          } else {
+            showMenu();
+          }
+        }
+      });
+
+      // Module config for Emscripten
+      var Module = {
+        canvas: document.getElementById('canvas'),
+        print: function(text) { console.log(text); },
+        printErr: function(text) { console.error(text); }
+      };
+    </script>
   </body>
 </html>
