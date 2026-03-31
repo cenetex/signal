@@ -9,7 +9,7 @@ enum {
     KEY_COUNT = 512,
     MAX_ASTEROIDS = 48,
     MAX_STARS = 120,
-    MAX_STATIONS = 3,
+    MAX_STATIONS = 8,
     MAX_NPC_SHIPS = 6,
     AUDIO_VOICE_COUNT = 24,
     AUDIO_MIX_FRAMES = 512,
@@ -21,6 +21,7 @@ enum {
     STATION_SERVICE_UPGRADE_LASER = 1 << 2,
     STATION_SERVICE_UPGRADE_HOLD = 1 << 3,
     STATION_SERVICE_UPGRADE_TRACTOR = 1 << 4,
+    STATION_SERVICE_BLUEPRINT = 1 << 5,
 };
 
 typedef enum {
@@ -80,6 +81,7 @@ typedef enum {
     STATION_ROLE_REFINERY,
     STATION_ROLE_YARD,
     STATION_ROLE_BEAMWORKS,
+    STATION_ROLE_OUTPOST,    /* player-built outpost */
 } station_role_t;
 
 typedef enum {
@@ -210,8 +212,8 @@ typedef struct {
 } audio_state_t;
 
 /* Economy constants (shared between client and server) */
-static const float REFINERY_HOPPER_CAPACITY = 100.0f;
-static const float REFINERY_BASE_SMELT_RATE = 0.5f;
+static const float REFINERY_HOPPER_CAPACITY = 500.0f;
+static const float REFINERY_BASE_SMELT_RATE = 2.0f;
 static const int REFINERY_MAX_FURNACES = 3;
 static const float STATION_PRODUCTION_RATE = 0.3f;
 static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
@@ -223,7 +225,7 @@ static const float SHIP_MINING_UPGRADE_STEP = 7.0f;
 static const float SHIP_TRACTOR_UPGRADE_STEP = 24.0f;
 static const float SHIP_BASE_COLLECT_RADIUS = 30.0f;
 static const float SHIP_COLLECT_UPGRADE_STEP = 5.0f;
-static const float UPGRADE_BASE_PRODUCT = 8.0f;
+static const float UPGRADE_BASE_PRODUCT = 16.0f;
 static const int SHIP_UPGRADE_MAX_LEVEL = 4;
 
 enum { SIM_MAX_EVENTS = 64 };
