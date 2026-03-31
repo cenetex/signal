@@ -52,6 +52,10 @@ set(GAME_SOURCES src/main.c src/net.c src/commodity.c src/ship.c src/audio.c src
 # Native builds link mongoose for WebSocket client networking
 if(NOT EMSCRIPTEN)
     list(APPEND GAME_SOURCES server/mongoose.c)
+    # mongoose.c needs POSIX APIs on Linux
+    if(UNIX AND NOT APPLE)
+        add_compile_definitions(_POSIX_C_SOURCE=200809L)
+    endif()
 endif()
 
 if(WIN32 AND NOT EMSCRIPTEN)
