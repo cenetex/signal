@@ -2135,7 +2135,7 @@ static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count)
         if (idx >= MAX_ASTEROIDS) continue;
         received[idx] = true;
 
-        asteroid_t* a = &g.asteroids[idx];
+        asteroid_t* a = &g.world.asteroids[idx];
         a->active = (asteroids[i].flags & 1) != 0;
         a->fracture_child = (asteroids[i].flags & (1 << 1)) != 0;
         a->tier = (asteroid_tier_t)((asteroids[i].flags >> 2) & 0x3);
@@ -2152,7 +2152,7 @@ static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count)
     /* Deactivate asteroids not in the update. */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!received[i]) {
-            g.asteroids[i].active = false;
+            g.world.asteroids[i].active = false;
         }
     }
 }
@@ -2166,7 +2166,7 @@ static void apply_remote_npcs(const NetNpcState* npcs, int count) {
         if (idx >= MAX_NPC_SHIPS) continue;
         received[idx] = true;
 
-        npc_ship_t* n = &g.npc_ships[idx];
+        npc_ship_t* n = &g.world.npc_ships[idx];
         n->active = (npcs[i].flags & 1) != 0;
         n->role = (npc_role_t)((npcs[i].flags >> 1) & 0x3);
         n->state = (npc_state_t)((npcs[i].flags >> 3) & 0x7);
@@ -2181,14 +2181,14 @@ static void apply_remote_npcs(const NetNpcState* npcs, int count) {
 
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!received[i]) {
-            g.npc_ships[i].active = false;
+            g.world.npc_ships[i].active = false;
         }
     }
 }
 
 static void apply_remote_stations(uint8_t index, const float* ore_buf, const float* inventory, const float* product_stock) {
     if (index >= MAX_STATIONS) return;
-    station_t* st = &g.stations[index];
+    station_t* st = &g.world.stations[index];
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
         st->ore_buffer[i] = ore_buf[i];
     for (int i = 0; i < COMMODITY_COUNT; i++)
@@ -2200,30 +2200,31 @@ static void apply_remote_stations(uint8_t index, const float* ore_buf, const flo
 static void apply_remote_player_state(const NetPlayerState* state) {
     /* Apply server-authoritative position for the local player. */
     if (state->player_id == net_local_id()) {
-        /* Blend all values for smooth correction. */
-        g.ship.pos.x = lerpf(g.ship.pos.x, state->x, 0.3f);
-        g.ship.pos.y = lerpf(g.ship.pos.y, state->y, 0.3f);
-        g.ship.vel.x = lerpf(g.ship.vel.x, state->vx, 0.3f);
-        g.ship.vel.y = lerpf(g.ship.vel.y, state->vy, 0.3f);
-        g.ship.angle = lerpf(g.ship.angle, state->angle, 0.3f);
+        server_player_t* sp = &g.world.players[0];
+        sp->ship.pos.x = lerpf(sp->ship.pos.x, state->x, 0.3f);
+        sp->ship.pos.y = lerpf(sp->ship.pos.y, state->y, 0.3f);
+        sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.3f);
+        sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.3f);
+        sp->ship.angle = lerpf(sp->ship.angle, state->angle, 0.3f);
     }
 }
 
 static void apply_remote_player_ship(const NetPlayerShipState* state) {
     /* Apply server-authoritative ship state for the local player. */
-    g.ship.hull = state->hull;
-    g.ship.credits = state->credits;
-    g.ship.mining_level = (int)state->mining_level;
-    g.ship.hold_level = (int)state->hold_level;
-    g.ship.tractor_level = (int)state->tractor_level;
-    g.ship.cargo[COMMODITY_FERRITE_ORE] = state->cargo_ferrite;
-    g.ship.cargo[COMMODITY_CUPRITE_ORE] = state->cargo_cuprite;
-    g.ship.cargo[COMMODITY_CRYSTAL_ORE] = state->cargo_crystal;
-    g.docked = state->docked;
-    g.current_station = (int)state->current_station;
-    if (g.docked) {
-        g.in_dock_range = true;
-        g.nearby_station = g.current_station;
+    server_player_t* sp = &g.world.players[0];
+    sp->ship.hull = state->hull;
+    sp->ship.credits = state->credits;
+    sp->ship.mining_level = (int)state->mining_level;
+    sp->ship.hold_level = (int)state->hold_level;
+    sp->ship.tractor_level = (int)state->tractor_level;
+    sp->ship.cargo[COMMODITY_FERRITE_ORE] = state->cargo_ferrite;
+    sp->ship.cargo[COMMODITY_CUPRITE_ORE] = state->cargo_cuprite;
+    sp->ship.cargo[COMMODITY_CRYSTAL_ORE] = state->cargo_crystal;
+    sp->docked = state->docked;
+    sp->current_station = (int)state->current_station;
+    if (sp->docked) {
+        sp->in_dock_range = true;
+        sp->nearby_station = sp->current_station;
     }
 }
 
