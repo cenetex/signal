@@ -47,7 +47,7 @@ if(BUILD_TESTS_ONLY)
     return()
 endif()
 
-set(GAME_SOURCES src/main.c src/net.c src/commodity.c src/ship.c src/audio.c src/economy.c src/asteroid.c src/npc.c src/render.c server/game_sim.c)
+set(GAME_SOURCES src/main.c src/net.c src/station_ui.c src/hud.c src/commodity.c src/ship.c src/audio.c src/economy.c src/asteroid.c src/npc.c src/render.c server/game_sim.c)
 
 # Native builds link mongoose for WebSocket client networking
 if(NOT EMSCRIPTEN)
