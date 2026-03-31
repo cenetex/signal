@@ -49,8 +49,8 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .ingot_capacity= 40.0f,
         .mining_rate   = 0.0f,
         .tractor_range = 0.0f,
-        .ship_radius   = 18.0f,
-        .render_scale  = 0.85f,
+        .ship_radius   = 22.0f,
+        .render_scale  = 1.15f,
     },
     [HULL_CLASS_NPC_MINER] = {
         .name          = "Mining Drone",
@@ -110,6 +110,66 @@ float signal_strength_at(const world_t *w, vec2 pos) {
         if (strength > best) best = strength;
     }
     return best;
+}
+
+/* ================================================================== */
+/* Station construction                                               */
+/* ================================================================== */
+
+bool can_place_outpost(const world_t *w, vec2 pos) {
+    /* Must be within signal range of an existing station */
+    if (signal_strength_at(w, pos) <= 0.0f) return false;
+    /* Must not overlap existing stations */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (w->stations[s].signal_range <= 0.0f) continue;
+        float d = sqrtf(v2_dist_sq(pos, w->stations[s].pos));
+        if (d < OUTPOST_MIN_DISTANCE) return false;
+    }
+    /* Must have a free station slot */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (w->stations[s].signal_range <= 0.0f) return true;
+    }
+    return false;
+}
+
+/* Place an outpost at pos, deducting credits from sp.
+ * Returns the station slot index on success, -1 on failure.
+ * Must NOT be called in player_only_mode (client prediction). */
+int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
+    if (w->player_only_mode) return -1;
+    if (!sp->docked) return -1;
+    if (!(w->stations[sp->current_station].services & STATION_SERVICE_BLUEPRINT))
+        return -1;
+    if (sp->ship.credits < OUTPOST_CREDIT_COST) return -1;
+    if (!can_place_outpost(w, pos)) return -1;
+
+    /* Find free slot */
+    int slot = -1;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (w->stations[s].signal_range <= 0.0f) { slot = s; break; }
+    }
+    if (slot < 0) return -1;
+
+    sp->ship.credits -= OUTPOST_CREDIT_COST;
+
+    station_t *st = &w->stations[slot];
+    memset(st, 0, sizeof(*st));
+    snprintf(st->name, sizeof(st->name), "Outpost %d", slot);
+    st->role = STATION_ROLE_OUTPOST;
+    st->pos = pos;
+    st->radius = OUTPOST_RADIUS;
+    st->dock_radius = OUTPOST_DOCK_RADIUS;
+    st->signal_range = OUTPOST_SIGNAL_RANGE;
+    st->services = STATION_SERVICE_REPAIR;
+
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_OUTPOST_PLACED,
+        .player_id = sp->id,
+        .outpost_placed = { .slot = slot },
+    });
+    SIM_LOG("[sim] player %d placed outpost at (%.0f, %.0f) in slot %d\n",
+            sp->id, pos.x, pos.y, slot);
+    return slot;
 }
 
 static bool point_within_signal_margin(const world_t *w, vec2 pos, float margin) {
@@ -667,7 +727,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier == ASTEROID_TIER_S) continue;
-        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        if (signal_strength_at(w, a->pos) < 0.66f) continue;
         /* Skip asteroids already targeted by another miner */
         bool taken = false;
         for (int n = 0; n < MAX_NPC_SHIPS; n++) {
@@ -698,9 +758,9 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
 static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world_t *w) {
     npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (drag * dt)));
     npc->pos = v2_add(npc->pos, v2_scale(npc->vel, dt));
-    /* Signal-based boundary: push back when signal is weak */
+    /* Signal-based boundary: NPCs stay in strong signal (66%+) */
     float sig = signal_strength_at(w, npc->pos);
-    if (sig < 0.15f) {
+    if (sig < 0.66f) {
         /* Find nearest station and its signal edge distance */
         float best_d_sq = 1e18f;
         int best_s = 0;
@@ -1010,6 +1070,34 @@ static void step_npc_ships(world_t *w, float dt) {
             npc_resolve_station_collisions(w, npc);
             npc_resolve_asteroid_collisions(w, npc);
         }
+
+        /* Blend tint toward dominant cargo color.
+         * Ore colors: ferrite=(0.55, 0.25, 0.18), cuprite=(0.22, 0.30, 0.50), crystal=(0.25, 0.48, 0.30) */
+        static const float ore_r[3] = {0.55f, 0.22f, 0.25f};
+        static const float ore_g[3] = {0.25f, 0.30f, 0.48f};
+        static const float ore_b[3] = {0.18f, 0.50f, 0.30f};
+        float total = 0.0f;
+        float target_r = 1.0f, target_g = 1.0f, target_b = 1.0f;
+        if (npc->role == NPC_ROLE_MINER) {
+            for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) total += npc->cargo[c];
+        } else {
+            for (int c = 0; c < INGOT_COUNT; c++) total += npc->ingots[c];
+        }
+        if (total > 1.0f) {
+            target_r = 0.0f; target_g = 0.0f; target_b = 0.0f;
+            int count = (npc->role == NPC_ROLE_MINER) ? COMMODITY_RAW_ORE_COUNT : INGOT_COUNT;
+            const float *cargo = (npc->role == NPC_ROLE_MINER) ? npc->cargo : npc->ingots;
+            for (int c = 0; c < count; c++) {
+                float w_c = cargo[c] / total;
+                target_r += ore_r[c] * w_c;
+                target_g += ore_g[c] * w_c;
+                target_b += ore_b[c] * w_c;
+            }
+        }
+        float blend = 0.3f * dt;  /* slow blend toward cargo color */
+        npc->tint_r = lerpf(npc->tint_r, target_r, blend);
+        npc->tint_g = lerpf(npc->tint_g, target_g, blend);
+        npc->tint_b = lerpf(npc->tint_b, target_b, blend);
     }
 }
 
@@ -1350,6 +1438,9 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     else if (intent->upgrade_mining) try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_MINING);
     else if (intent->upgrade_hold)   try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_HOLD);
     else if (intent->upgrade_tractor)try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_TRACTOR);
+    /* Outpost placement is server-authoritative only (guarded inside try_place_outpost) */
+    if (intent->place_outpost)
+        try_place_outpost(w, sp, sp->ship.pos);
 }
 
 /* ================================================================== */
@@ -1444,6 +1535,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->input.upgrade_mining = false;
     sp->input.upgrade_hold = false;
     sp->input.upgrade_tractor = false;
+    sp->input.place_outpost = false;
 }
 
 /* ================================================================== */
@@ -1462,6 +1554,9 @@ static void step_asteroid_gravity(world_t *w, float dt) {
             float dist_sq = v2_len_sq(delta);
             if (dist_sq > 400.0f * 400.0f || dist_sq < 1.0f) continue;
             float dist = sqrtf(dist_sq);
+            /* Don't attract asteroids at or inside collision boundary */
+            float min_dist = a->radius + b->radius;
+            if (dist < min_dist + 5.0f) continue;
             vec2 normal = v2_scale(delta, 1.0f / dist);
             float mass_a = a->radius * a->radius;
             float mass_b = b->radius * b->radius;
@@ -1787,7 +1882,7 @@ void world_reset(world_t *w) {
     w->stations[1].pos         = v2(-320.0f, 230.0f);
     w->stations[1].radius      = 56.0f;
     w->stations[1].dock_radius = 124.0f;
-    w->stations[1].services    = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_HOLD;
+    w->stations[1].services    = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_HOLD | STATION_SERVICE_BLUEPRINT;
     w->stations[1].signal_range = 1800.0f;
 
     snprintf(w->stations[2].name, sizeof(w->stations[2].name), "%s", "Helios Works");
@@ -1804,38 +1899,40 @@ void world_reset(world_t *w) {
     for (int i = 2; i < FIELD_ASTEROID_TARGET && i < MAX_ASTEROIDS; i++)
         seed_field_asteroid_of_tier(w, &w->asteroids[i], random_field_asteroid_tier(w));
 
-    /* --- NPC ships (3 miners + 2 haulers) --- */
-    for (int i = 0; i < 3; i++) {
-        npc_ship_t *npc = &w->npc_ships[i];
+    /* --- NPC ships (1 miner + 1 hauler) --- */
+    {
+        npc_ship_t *npc = &w->npc_ships[0];
         npc->active       = true;
         npc->role          = NPC_ROLE_MINER;
         npc->hull_class    = HULL_CLASS_NPC_MINER;
         npc->state         = NPC_STATE_DOCKED;
-        npc->pos           = v2_add(w->stations[0].pos, v2(30.0f * (float)(i - 1), -(w->stations[0].radius + HULL_DEFS[HULL_CLASS_NPC_MINER].ship_radius + 50.0f)));
+        npc->pos           = v2_add(w->stations[0].pos, v2(-30.0f, -(w->stations[0].radius + HULL_DEFS[HULL_CLASS_NPC_MINER].ship_radius + 50.0f)));
         npc->vel           = v2(0.0f, 0.0f);
         npc->angle         = PI_F * 0.5f;
         npc->target_asteroid = -1;
         npc->home_station  = 0;
-        npc->state_timer   = NPC_DOCK_TIME + (float)i * 2.0f;
+        npc->state_timer   = NPC_DOCK_TIME;
         npc->thrusting     = false;
+        npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
     }
-    for (int i = 0; i < 2; i++) {
-        npc_ship_t *npc = &w->npc_ships[3 + i];
+    {
+        npc_ship_t *npc = &w->npc_ships[1];
         npc->active       = true;
         npc->role          = NPC_ROLE_HAULER;
         npc->hull_class    = HULL_CLASS_HAULER;
         npc->state         = NPC_STATE_DOCKED;
-        npc->pos           = v2_add(w->stations[0].pos, v2(50.0f * (float)(i == 0 ? -1 : 1), -(w->stations[0].radius + HULL_DEFS[HULL_CLASS_HAULER].ship_radius + 70.0f)));
+        npc->pos           = v2_add(w->stations[0].pos, v2(-50.0f, -(w->stations[0].radius + HULL_DEFS[HULL_CLASS_HAULER].ship_radius + 70.0f)));
         npc->vel           = v2(0.0f, 0.0f);
         npc->angle         = PI_F * 0.5f;
         npc->target_asteroid = -1;
         npc->home_station  = 0;
-        npc->dest_station  = 1 + i;
-        npc->state_timer   = HAULER_DOCK_TIME + (float)i * 3.0f;
+        npc->dest_station  = 1;
+        npc->state_timer   = HAULER_DOCK_TIME;
         npc->thrusting     = false;
+        npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
     }
 
-    SIM_LOG("[sim] world reset complete (%d asteroids, %d NPCs)\n", FIELD_ASTEROID_TARGET, 5);
+    SIM_LOG("[sim] world reset complete (%d asteroids, %d NPCs)\n", FIELD_ASTEROID_TARGET, 2);
 }
 
 /* ================================================================== */
@@ -1861,7 +1958,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 2
+#define SAVE_VERSION 3
 
 typedef struct {
     uint32_t magic;
@@ -1898,7 +1995,7 @@ bool world_load(world_t *w, const char *path) {
 
     save_header_t hdr;
     if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
-    if (hdr.magic != SAVE_MAGIC || (hdr.version != SAVE_VERSION && hdr.version != 1)) { fclose(f); return false; }
+    if (hdr.magic != SAVE_MAGIC || hdr.version < 1 || hdr.version > SAVE_VERSION) { fclose(f); return false; }
 
     w->rng = hdr.rng;
     w->time = hdr.time;
@@ -1906,7 +2003,21 @@ bool world_load(world_t *w, const char *path) {
 
     if (fread(w->stations, sizeof(w->stations), 1, f) != 1) { fclose(f); return false; }
     if (fread(w->asteroids, sizeof(w->asteroids), 1, f) != 1) { fclose(f); return false; }
-    if (fread(w->npc_ships, sizeof(w->npc_ships), 1, f) != 1) { fclose(f); return false; }
+    if (hdr.version >= 3) {
+        if (fread(w->npc_ships, sizeof(w->npc_ships), 1, f) != 1) { fclose(f); return false; }
+    } else {
+        /* v1/v2: npc_ship_t was 80 bytes (no tint fields) */
+        enum { OLD_NPC_SIZE = 80 };
+        uint8_t old_npcs[MAX_NPC_SHIPS * OLD_NPC_SIZE];
+        if (fread(old_npcs, OLD_NPC_SIZE * MAX_NPC_SHIPS, 1, f) != 1) { fclose(f); return false; }
+        memset(w->npc_ships, 0, sizeof(w->npc_ships));
+        for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+            memcpy(&w->npc_ships[i], &old_npcs[i * OLD_NPC_SIZE], OLD_NPC_SIZE);
+            w->npc_ships[i].tint_r = 1.0f;
+            w->npc_ships[i].tint_g = 1.0f;
+            w->npc_ships[i].tint_b = 1.0f;
+        }
+    }
     if (hdr.version >= 2) {
         if (fread(w->contracts, sizeof(w->contracts), 1, f) != 1) { fclose(f); return false; }
     } else {

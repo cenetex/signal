@@ -22,6 +22,11 @@ enum {
 };
 
 static const float WORLD_RADIUS = 5000.0f;  /* safety net; gameplay bounded by station signal_range */
+static const float OUTPOST_CREDIT_COST = 500.0f;
+static const float OUTPOST_RADIUS = 40.0f;
+static const float OUTPOST_DOCK_RADIUS = 96.0f;
+static const float OUTPOST_SIGNAL_RANGE = 600.0f;  /* ~1/3 of main stations */
+static const float OUTPOST_MIN_DISTANCE = 200.0f; /* min distance between stations */
 static const float SIM_DT = 1.0f / 120.0f;
 static const float MINING_RANGE = 170.0f;
 static const float SHIP_BRAKE = 180.0f;
@@ -54,6 +59,7 @@ typedef struct {
     bool upgrade_mining;
     bool upgrade_hold;
     bool upgrade_tractor;
+    bool place_outpost;
     bool reset;
 } input_intent_t;
 
@@ -104,6 +110,8 @@ void world_sim_step(world_t *w, float dt);
 void world_sim_step_player_only(world_t *w, int player_idx, float dt);
 void player_init_ship(server_player_t *sp, world_t *w);
 float signal_strength_at(const world_t *w, vec2 pos);
+bool can_place_outpost(const world_t *w, vec2 pos);
+int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos);
 bool world_save(const world_t *w, const char *path);
 bool world_load(world_t *w, const char *path);
 bool player_save(const server_player_t *sp, const char *dir, int slot);

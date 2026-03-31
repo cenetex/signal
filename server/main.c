@@ -158,6 +158,14 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             ws_send(c, exist_msg, 2);
         }
 
+        /* Send station identity for all active stations. */
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            if (world.stations[s].signal_range <= 0.0f) continue;
+            uint8_t id_buf[64];
+            int id_len = serialize_station_identity(id_buf, s, &world.stations[s]);
+            ws_send(c, id_buf, (size_t)id_len);
+        }
+
         /* Send server version hash. */
         {
 #ifdef GIT_HASH
@@ -212,7 +220,7 @@ static void broadcast_world(void) {
     broadcast(abuf, (size_t)alen);
 
     /* NPCs */
-    uint8_t nbuf[2 + MAX_NPC_SHIPS * 23];
+    uint8_t nbuf[2 + MAX_NPC_SHIPS * 26];
     int nlen = serialize_npcs(nbuf, world.npc_ships);
     broadcast(nbuf, (size_t)nlen);
 }
@@ -227,7 +235,7 @@ static void broadcast_ship_states(void) {
     }
 
     /* Station state (inventory, ore buffers, products) at same cadence. */
-    uint8_t sbuf[2 + MAX_STATIONS * 49];
+    uint8_t sbuf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
     int slen = serialize_stations(sbuf, world.stations);
     broadcast(sbuf, (size_t)slen);
 }
@@ -282,6 +290,15 @@ int main(void) {
             int steps = 0;
             while (sim_accum >= SIM_DT && steps < MAX_SIM_STEPS) {
                 world_sim_step(&world, SIM_DT);
+                /* Broadcast station identity for any newly placed outposts. */
+                for (int e = 0; e < world.events.count; e++) {
+                    if (world.events.events[e].type == SIM_EVENT_OUTPOST_PLACED) {
+                        int slot = world.events.events[e].outpost_placed.slot;
+                        uint8_t id_buf[64];
+                        int id_len = serialize_station_identity(id_buf, slot, &world.stations[slot]);
+                        broadcast(id_buf, (size_t)id_len);
+                    }
+                }
                 sim_accum -= SIM_DT;
                 steps++;
             }

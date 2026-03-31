@@ -30,6 +30,13 @@ static void write_f32_le(uint8_t* buf, float v) {
     buf[3] = (uint8_t)(conv.u >> 24);
 }
 
+static uint32_t read_u32_le(const uint8_t* buf) {
+    return (uint32_t)buf[0]
+         | ((uint32_t)buf[1] << 8)
+         | ((uint32_t)buf[2] << 16)
+         | ((uint32_t)buf[3] << 24);
+}
+
 static float read_f32_le(const uint8_t* buf) {
     union { float f; uint32_t u; } conv;
     conv.u = (uint32_t)buf[0]
@@ -128,12 +135,12 @@ static void handle_message(const uint8_t* data, int len) {
         if (len < 2) break;
         {
             int count = (int)data[1];
-            int expected = 2 + count * 23;
+            int expected = 2 + count * 26;
             if (len < expected) break;
             if (net_state.callbacks.on_npcs) {
                 NetNpcState arr[6];
                 for (int i = 0; i < count && i < 6; i++) {
-                    const uint8_t* p = &data[2 + i * 23];
+                    const uint8_t* p = &data[2 + i * 26];
                     arr[i].index            = p[0];
                     arr[i].flags            = p[1];
                     arr[i].x                = read_f32_le(&p[2]);
@@ -142,6 +149,9 @@ static void handle_message(const uint8_t* data, int len) {
                     arr[i].vy               = read_f32_le(&p[14]);
                     arr[i].angle            = read_f32_le(&p[18]);
                     arr[i].target_asteroid  = (int8_t)p[22];
+                    arr[i].tint_r           = p[23];
+                    arr[i].tint_g           = p[24];
+                    arr[i].tint_b           = p[25];
                 }
                 net_state.callbacks.on_npcs(arr, count);
             }
@@ -152,10 +162,10 @@ static void handle_message(const uint8_t* data, int len) {
         if (len < 2) break;
         {
             uint8_t count = data[1];
-            if (len < 2 + count * 49) break;
+            if (len < 2 + count * STATION_RECORD_SIZE) break;
             if (net_state.callbacks.on_stations) {
                 for (int i = 0; i < count; i++) {
-                    const uint8_t *p = &data[2 + i * 49];
+                    const uint8_t *p = &data[2 + i * STATION_RECORD_SIZE];
                     uint8_t idx = p[0];
                     float ore_buf[3], inv[6], prod[3];
                     for (int j = 0; j < 3; j++)
@@ -190,6 +200,24 @@ static void handle_message(const uint8_t* data, int len) {
                 pss.cargo_crystal   = read_f32_le(&data[23]);
                 net_state.callbacks.on_player_ship(&pss);
             }
+        }
+        break;
+
+    case NET_MSG_STATION_IDENTITY:
+        if (len >= 59 && net_state.callbacks.on_station_identity) {
+            uint8_t idx = data[1];
+            uint8_t role = data[2];
+            uint32_t services = read_u32_le(&data[3]);
+            float px = read_f32_le(&data[7]);
+            float py = read_f32_le(&data[11]);
+            float radius = read_f32_le(&data[15]);
+            float dock_radius = read_f32_le(&data[19]);
+            float signal_range = read_f32_le(&data[23]);
+            char name[32];
+            memcpy(name, &data[27], 31);
+            name[31] = '\0';
+            net_state.callbacks.on_station_identity(idx, role, services, px, py,
+                radius, dock_radius, signal_range, name);
         }
         break;
 

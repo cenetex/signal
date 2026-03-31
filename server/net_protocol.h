@@ -25,6 +25,7 @@ enum {
     NET_MSG_HOST_ASSIGN     = 0x14,
     NET_MSG_PLAYER_SHIP     = 0x15,
     NET_MSG_SERVER_INFO     = 0x16,
+    NET_MSG_STATION_IDENTITY= 0x17,
 };
 
 /* Input flags (client -> server) */
@@ -46,6 +47,7 @@ enum {
     NET_ACTION_UPGRADE_MINING = 5,
     NET_ACTION_UPGRADE_HOLD   = 6,
     NET_ACTION_UPGRADE_TRACTOR= 7,
+    NET_ACTION_PLACE_OUTPOST  = 8,
 };
 
 /* ------------------------------------------------------------------ */
@@ -59,6 +61,20 @@ static inline void write_f32_le(uint8_t *buf, float v) {
     buf[1] = (uint8_t)(conv.u >> 8);
     buf[2] = (uint8_t)(conv.u >> 16);
     buf[3] = (uint8_t)(conv.u >> 24);
+}
+
+static inline void write_u32_le(uint8_t *buf, uint32_t v) {
+    buf[0] = (uint8_t)(v);
+    buf[1] = (uint8_t)(v >> 8);
+    buf[2] = (uint8_t)(v >> 16);
+    buf[3] = (uint8_t)(v >> 24);
+}
+
+static inline uint32_t read_u32_le(const uint8_t *buf) {
+    return (uint32_t)buf[0]
+         | ((uint32_t)buf[1] << 8)
+         | ((uint32_t)buf[2] << 16)
+         | ((uint32_t)buf[3] << 24);
 }
 
 static inline float read_f32_le(const uint8_t *buf) {
@@ -125,14 +141,15 @@ static inline int serialize_asteroids(uint8_t *buf, const asteroid_t *asteroids)
 
 /*
  * WORLD_NPCS message:
- * [type:1][count:1] + count * 23-byte records
+ * [type:1][count:1] + count * 26-byte records
+ * (23 original + 3 tint bytes)
  */
 static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
     int count = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
         const npc_ship_t *n = &npcs[i];
-        uint8_t *p = &buf[2 + count * 23];
+        uint8_t *p = &buf[2 + count * 26];
         p[0] = (uint8_t)i;
         p[1] = 1; /* active */
         p[1] |= (((uint8_t)n->role & 0x3) << 1);
@@ -144,23 +161,35 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
         write_f32_le(&p[14], n->vel.y);
         write_f32_le(&p[18], n->angle);
         p[22] = (uint8_t)(int8_t)n->target_asteroid;
+        p[23] = (uint8_t)(n->tint_r * 255.0f);
+        p[24] = (uint8_t)(n->tint_g * 255.0f);
+        p[25] = (uint8_t)(n->tint_b * 255.0f);
         count++;
     }
     buf[0] = NET_MSG_WORLD_NPCS;
     buf[1] = (uint8_t)count;
-    return 2 + count * 23;
+    return 2 + count * 26;
 }
 
 /*
  * WORLD_STATIONS message:
  * [type:1][count:1] + count * [index:1][ore_buf: 3×f32][inventory: 6×f32][product_stock: 3×f32]
- * = 2 + count * 49 bytes
+ * = 2 + count * STATION_RECORD_SIZE bytes
  */
+#define STATION_RECORD_SIZE 49
+
+/* Compile-time guard: if the record layout changes, update STATION_RECORD_SIZE
+ * and all buffers that depend on it. */
+_Static_assert(
+    1 + COMMODITY_RAW_ORE_COUNT * 4 + COMMODITY_COUNT * 4 + PRODUCT_COUNT * 4 == STATION_RECORD_SIZE,
+    "STATION_RECORD_SIZE must match serialized station econ layout"
+);
+
 static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
     buf[0] = NET_MSG_WORLD_STATIONS;
     buf[1] = (uint8_t)MAX_STATIONS;
     for (int i = 0; i < MAX_STATIONS; i++) {
-        uint8_t *p = &buf[2 + i * 49];
+        uint8_t *p = &buf[2 + i * STATION_RECORD_SIZE];
         const station_t *st = &stations[i];
         p[0] = (uint8_t)i;
         /* ore_buffer: 3 raw ores */
@@ -176,7 +205,29 @@ static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
             write_f32_le(&p[37 + pr * 4], st->product_stock[pr]);
         }
     }
-    return 2 + MAX_STATIONS * 49;
+    return 2 + MAX_STATIONS * STATION_RECORD_SIZE;
+}
+
+/*
+ * STATION_IDENTITY message — full static fields for one station.
+ * Sent on player join (for all active stations) and when a new outpost is placed.
+ * [type:1][index:1][role:1][services:4][pos_x:f32][pos_y:f32]
+ * [radius:f32][dock_radius:f32][signal_range:f32][name:32]
+ * = 54 bytes per message
+ */
+static inline int serialize_station_identity(uint8_t *buf, int index, const station_t *st) {
+    buf[0] = NET_MSG_STATION_IDENTITY;
+    buf[1] = (uint8_t)index;
+    buf[2] = (uint8_t)st->role;
+    write_u32_le(&buf[3], st->services);
+    write_f32_le(&buf[7], st->pos.x);
+    write_f32_le(&buf[11], st->pos.y);
+    write_f32_le(&buf[15], st->radius);
+    write_f32_le(&buf[19], st->dock_radius);
+    write_f32_le(&buf[23], st->signal_range);
+    memset(&buf[27], 0, 32);
+    memcpy(&buf[27], st->name, strnlen(st->name, 31));
+    return 59;
 }
 
 /*
@@ -252,6 +303,9 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
             break;
         case NET_ACTION_UPGRADE_TRACTOR:
             intent->upgrade_tractor = true;
+            break;
+        case NET_ACTION_PLACE_OUTPOST:
+            intent->place_outpost = true;
             break;
         default:
             break;

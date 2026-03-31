@@ -33,7 +33,11 @@ enum {
     NET_MSG_MINING_ACTION   = 0x13,
     NET_MSG_PLAYER_SHIP     = 0x15,
     NET_MSG_SERVER_INFO     = 0x16,
+    NET_MSG_STATION_IDENTITY= 0x17,
 };
+
+/* Station econ record size — must match server's STATION_RECORD_SIZE */
+#define STATION_RECORD_SIZE 49
 
 /* Input flags packed into a single byte. */
 enum {
@@ -72,6 +76,7 @@ typedef struct {
     float vx, vy;       /* velocity */
     float angle;        /* facing */
     int8_t target_asteroid; /* mining target (-1 for none) */
+    uint8_t tint_r, tint_g, tint_b; /* accumulated ore color */
 } NetNpcState;
 
 /* Callbacks — set these before calling net_init(). */
@@ -100,6 +105,11 @@ typedef void (*net_on_player_ship_fn)(const NetPlayerShipState* state);
 /* Station update callback: index, ore_buffer[3], inventory[6], product_stock[3]. */
 typedef void (*net_on_stations_fn)(uint8_t index, const float* ore_buf, const float* inventory, const float* product_stock);
 
+/* Station identity callback: full static fields for a station slot. */
+typedef void (*net_on_station_identity_fn)(uint8_t index, uint8_t role, uint32_t services,
+    float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
+    const char* name);
+
 typedef struct {
     net_on_player_join_fn on_join;
     net_on_player_leave_fn on_leave;
@@ -107,6 +117,7 @@ typedef struct {
     net_on_asteroids_fn on_asteroids;
     net_on_npcs_fn on_npcs;
     net_on_stations_fn on_stations;
+    net_on_station_identity_fn on_station_identity;
     net_on_player_ship_fn on_player_ship;
 } NetCallbacks;
 
