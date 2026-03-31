@@ -1357,7 +1357,12 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         step_ship_motion(&sp->ship, dt, w);
         resolve_world_collisions(w, sp);
         update_docking_state(w, sp, dt);
-        step_station_interaction_system(w, sp, &sp->input);
+        /* In client prediction mode (player_only_mode), skip station
+         * interactions — the server is authoritative for dock/launch,
+         * sell, repair, and upgrades.  This prevents snap-back flicker
+         * when the client predicts an action before the server confirms. */
+        if (!w->player_only_mode)
+            step_station_interaction_system(w, sp, &sp->input);
         if (!sp->docked) {
             update_targeting_state(w, sp, forward);
             step_mining_system(w, sp, dt, sp->input.mine, forward);
@@ -1365,7 +1370,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         }
     } else {
         update_docking_state(w, sp, dt);
-        step_station_interaction_system(w, sp, &sp->input);
+        if (!w->player_only_mode)
+            step_station_interaction_system(w, sp, &sp->input);
     }
 
     /* Clear one-shot action flags after the sim has consumed them. */

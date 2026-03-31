@@ -107,7 +107,6 @@ typedef struct {
     float net_send_timer;
     uint8_t pending_net_action;
     float dock_predict_timer;   /* ignore server docked state while > 0 */
-    float ship_predict_timer;   /* ignore server ship state (cargo/credits/levels) while > 0 */
     float net_input_timer;      /* throttle input sends to ~30 Hz */
     station_tab_t station_tab;  /* active tab when docked */
     bool was_docked;            /* track dock transitions for tab reset */
@@ -2283,33 +2282,23 @@ static void sim_step(float dt) {
     if (g.dock_predict_timer > 0.0f)
         g.dock_predict_timer = fmaxf(0.0f, g.dock_predict_timer - dt);
 
-    if (g.ship_predict_timer > 0.0f)
-        g.ship_predict_timer = fmaxf(0.0f, g.ship_predict_timer - dt);
-
     /* In multiplayer, also queue one-shot actions for network send. */
     if (g.multiplayer_enabled && net_is_connected()) {
         if (intent.interact) {
             g.pending_net_action = LOCAL_PLAYER.docked ? 2 : 1;
             g.dock_predict_timer = 0.5f;
-        } else if (intent.service_sell) {
+        } else if (intent.service_sell)
             g.pending_net_action = 3;
-            g.ship_predict_timer = 0.5f;
-        } else if (intent.service_repair) {
+        else if (intent.service_repair)
             g.pending_net_action = 4;
-            g.ship_predict_timer = 0.5f;
-        } else if (intent.upgrade_mining) {
+        else if (intent.upgrade_mining)
             g.pending_net_action = 5;
-            g.ship_predict_timer = 0.5f;
-        } else if (intent.upgrade_hold) {
+        else if (intent.upgrade_hold)
             g.pending_net_action = 6;
-            g.ship_predict_timer = 0.5f;
-        } else if (intent.upgrade_tractor) {
+        else if (intent.upgrade_tractor)
             g.pending_net_action = 7;
-            g.ship_predict_timer = 0.5f;
-        } else if (intent.place_outpost) {
+        else if (intent.place_outpost)
             g.pending_net_action = 8;
-            g.ship_predict_timer = 0.5f;
-        }
     }
 
     consume_pressed_input();
@@ -2503,18 +2492,14 @@ static void apply_remote_player_ship(const NetPlayerShipState* state) {
     if (state->player_id != net_local_id() || state->player_id >= MAX_PLAYERS) return;
 
     server_player_t* sp = &g.world.players[state->player_id];
-    /* Skip cargo/credits/levels while a local action is in flight to
-     * prevent snap-back flicker (sell, repair, upgrade prediction). */
-    if (g.ship_predict_timer <= 0.0f) {
-        sp->ship.hull = state->hull;
-        sp->ship.credits = state->credits;
-        sp->ship.mining_level = (int)state->mining_level;
-        sp->ship.hold_level = (int)state->hold_level;
-        sp->ship.tractor_level = (int)state->tractor_level;
-        sp->ship.cargo[COMMODITY_FERRITE_ORE] = state->cargo_ferrite;
-        sp->ship.cargo[COMMODITY_CUPRITE_ORE] = state->cargo_cuprite;
-        sp->ship.cargo[COMMODITY_CRYSTAL_ORE] = state->cargo_crystal;
-    }
+    sp->ship.hull = state->hull;
+    sp->ship.credits = state->credits;
+    sp->ship.mining_level = (int)state->mining_level;
+    sp->ship.hold_level = (int)state->hold_level;
+    sp->ship.tractor_level = (int)state->tractor_level;
+    sp->ship.cargo[COMMODITY_FERRITE_ORE] = state->cargo_ferrite;
+    sp->ship.cargo[COMMODITY_CUPRITE_ORE] = state->cargo_cuprite;
+    sp->ship.cargo[COMMODITY_CRYSTAL_ORE] = state->cargo_crystal;
     /* Dock-state reconciliation: the server is authoritative, but we
      * must not snap back to docked while the local sim has already
      * launched (the server may not have processed the action yet).
