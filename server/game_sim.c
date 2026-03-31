@@ -395,31 +395,88 @@ static float max_signal_range(const world_t *w) {
     return best > 0.0f ? best : WORLD_RADIUS;
 }
 
-static void spawn_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier) {
+static void seed_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier) {
     float angle = rand_range(w, 0.0f, TWO_PI_F);
     clear_asteroid(a);
     configure_asteroid_tier(w, a, tier, random_raw_ore(w));
     a->fracture_child = false;
-    /* Pick a random station and spawn within its signal range */
+    /* Initial field seeding keeps rocks inside supported space so the opening loop stays populated. */
     int stn = rand_int(w, 0, MAX_STATIONS - 1);
     float sr = w->stations[stn].signal_range;
     if (sr <= 0.0f) sr = max_signal_range(w);
-    if (tier == ASTEROID_TIER_XXL) {
-        /* XXL asteroids spawn at signal edge of a random station and drift inward */
-        vec2 center = w->stations[stn].pos;
-        a->pos = v2_add(center, v2(cosf(angle) * sr, sinf(angle) * sr));
-        float inward_speed = rand_range(w, 15.0f, 30.0f);
-        a->vel = v2(-cosf(angle) * inward_speed, -sinf(angle) * inward_speed);
-    } else {
-        vec2 center = w->stations[stn].pos;
-        float distance = rand_range(w, 420.0f, sr - 180.0f);
-        a->pos = v2_add(center, v2(cosf(angle) * distance, sinf(angle) * distance));
-        a->vel = v2(rand_range(w, -4.0f, 4.0f), rand_range(w, -4.0f, 4.0f));
+    vec2 center = w->stations[stn].pos;
+    float distance = rand_range(w, 420.0f, sr - 180.0f);
+    a->pos = v2_add(center, v2(cosf(angle) * distance, sinf(angle) * distance));
+    a->vel = v2(rand_range(w, -4.0f, 4.0f), rand_range(w, -4.0f, 4.0f));
+}
+
+static void set_inbound_field_velocity(world_t *w, asteroid_t *a, vec2 inward) {
+    float speed_lo = 12.0f, speed_hi = 20.0f, tangent_jitter = 6.0f;
+    switch (a->tier) {
+    case ASTEROID_TIER_XXL:
+        speed_lo = 18.0f; speed_hi = 30.0f; tangent_jitter = 4.0f;
+        break;
+    case ASTEROID_TIER_XL:
+        speed_lo = 16.0f; speed_hi = 26.0f; tangent_jitter = 5.0f;
+        break;
+    case ASTEROID_TIER_L:
+        speed_lo = 14.0f; speed_hi = 22.0f; tangent_jitter = 6.0f;
+        break;
+    case ASTEROID_TIER_M:
+        speed_lo = 12.0f; speed_hi = 18.0f; tangent_jitter = 7.0f;
+        break;
+    case ASTEROID_TIER_S:
+    default:
+        break;
     }
+    vec2 tangent = v2_perp(inward);
+    a->vel = v2_add(v2_scale(inward, rand_range(w, speed_lo, speed_hi)),
+                    v2_scale(tangent, rand_range(w, -tangent_jitter, tangent_jitter)));
+}
+
+static void spawn_inbound_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier) {
+    clear_asteroid(a);
+    configure_asteroid_tier(w, a, tier, random_raw_ore(w));
+    a->fracture_child = false;
+
+    int stn = rand_int(w, 0, MAX_STATIONS - 1);
+    vec2 center = w->stations[stn].pos;
+    float sr = w->stations[stn].signal_range;
+    if (sr <= 0.0f) sr = max_signal_range(w);
+
+    float cleanup_margin = a->radius + 260.0f;
+    float min_offset = fmaxf(42.0f, a->radius + 28.0f);
+    float max_offset = fmaxf(min_offset + 1.0f, cleanup_margin - 10.0f);
+    vec2 spawn_pos = center;
+    vec2 inward = v2(-1.0f, 0.0f);
+    bool found = false;
+
+    for (int attempt = 0; attempt < 32; attempt++) {
+        float angle = rand_range(w, 0.0f, TWO_PI_F);
+        vec2 outward = v2_from_angle(angle);
+        float offset = rand_range(w, min_offset, max_offset);
+        vec2 pos = v2_add(center, v2_scale(outward, sr + offset));
+        if (signal_strength_at(w, pos) > 0.0f) continue;
+        if (!point_within_signal_margin(w, pos, cleanup_margin)) continue;
+        spawn_pos = pos;
+        inward = v2_scale(outward, -1.0f);
+        found = true;
+        break;
+    }
+
+    if (!found) {
+        vec2 outward = v2_from_angle(rand_range(w, 0.0f, TWO_PI_F));
+        float offset = fminf(max_offset, min_offset + 16.0f);
+        spawn_pos = v2_add(center, v2_scale(outward, sr + offset));
+        inward = v2_scale(outward, -1.0f);
+    }
+
+    a->pos = spawn_pos;
+    set_inbound_field_velocity(w, a, inward);
 }
 
 static void spawn_field_asteroid(world_t *w, asteroid_t *a) {
-    spawn_field_asteroid_of_tier(w, a, random_field_asteroid_tier(w));
+    spawn_inbound_field_asteroid_of_tier(w, a, random_field_asteroid_tier(w));
 }
 
 static void spawn_child_asteroid(world_t *w, asteroid_t *a, asteroid_tier_t tier, commodity_t commodity, vec2 pos, vec2 vel) {
@@ -1742,10 +1799,10 @@ void world_reset(world_t *w) {
     w->stations[2].signal_range = 1800.0f;
 
     /* --- Initial asteroid field --- */
-    if (FIELD_ASTEROID_TARGET > 0) spawn_field_asteroid_of_tier(w, &w->asteroids[0], ASTEROID_TIER_XL);
-    if (FIELD_ASTEROID_TARGET > 1) spawn_field_asteroid_of_tier(w, &w->asteroids[1], ASTEROID_TIER_L);
+    if (FIELD_ASTEROID_TARGET > 0) seed_field_asteroid_of_tier(w, &w->asteroids[0], ASTEROID_TIER_XL);
+    if (FIELD_ASTEROID_TARGET > 1) seed_field_asteroid_of_tier(w, &w->asteroids[1], ASTEROID_TIER_L);
     for (int i = 2; i < FIELD_ASTEROID_TARGET && i < MAX_ASTEROIDS; i++)
-        spawn_field_asteroid(w, &w->asteroids[i]);
+        seed_field_asteroid_of_tier(w, &w->asteroids[i], random_field_asteroid_tier(w));
 
     /* --- NPC ships (3 miners + 2 haulers) --- */
     for (int i = 0; i < 3; i++) {

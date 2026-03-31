@@ -2569,6 +2569,48 @@ TEST(test_npc_miners_avoid_zero_signal_asteroids) {
     ASSERT_EQ_INT(w.npc_ships[0].target_asteroid, 0);
 }
 
+TEST(test_field_respawn_starts_beyond_signal_edge) {
+    world_t w = {0};
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+
+    w.field_spawn_timer = FIELD_ASTEROID_RESPAWN_DELAY;
+    world_sim_step(&w, SIM_DT);
+
+    int spawned = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (w.asteroids[i].active) {
+            spawned = i;
+            break;
+        }
+    }
+    ASSERT(spawned >= 0);
+
+    const asteroid_t *a = &w.asteroids[spawned];
+    ASSERT_EQ_FLOAT(signal_strength_at(&w, a->pos), 0.0f, 0.01f);
+
+    int nearest_station = 0;
+    float nearest_d_sq = 1e18f;
+    bool outside_all_signal = true;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        float d_sq = v2_dist_sq(a->pos, w.stations[s].pos);
+        if (d_sq < nearest_d_sq) {
+            nearest_d_sq = d_sq;
+            nearest_station = s;
+        }
+        if (w.stations[s].signal_range > 0.0f && d_sq <= w.stations[s].signal_range * w.stations[s].signal_range) {
+            outside_all_signal = false;
+        }
+    }
+    ASSERT(outside_all_signal);
+
+    vec2 toward_station = v2_sub(w.stations[nearest_station].pos, a->pos);
+    ASSERT(v2_dot(a->vel, toward_station) > 0.0f);
+
+    world_sim_step(&w, SIM_DT);
+    ASSERT(w.asteroids[spawned].active);
+}
+
 /* ================================================================== */
 /* STRATEGIC TDD: Contracts (#70) — define the economic behavior      */
 /* ================================================================== */
@@ -3025,6 +3067,7 @@ int main(void) {
     RUN(test_ship_thrust_scales_with_signal);
     RUN(test_asteroid_outside_signal_despawns);
     RUN(test_npc_miners_avoid_zero_signal_asteroids);
+    RUN(test_field_respawn_starts_beyond_signal_edge);
 
     printf("\nBug regression batch 6 (bugs 51-60):\n");
     RUN(test_bug51_npc_cargo_zeroed_on_dock);
