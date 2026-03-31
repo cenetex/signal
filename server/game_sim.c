@@ -974,9 +974,18 @@ static void dock_ship(world_t *w, server_player_t *sp) {
 
 static void launch_ship(world_t *w, server_player_t *sp) {
     sp->docked = false;
-    sp->nearby_station = sp->current_station;
-    sp->in_dock_range = true;
+    sp->in_dock_range = false;  /* prevent immediate re-dock */
+    sp->nearby_station = -1;
     anchor_ship_in_station(sp, w);
+    /* Kick ship away from station so it clears dock range */
+    const station_t *st = &w->stations[sp->current_station];
+    vec2 away = v2_sub(sp->ship.pos, st->pos);
+    float len = sqrtf(v2_len_sq(away));
+    if (len > 1.0f) {
+        sp->ship.vel = v2_scale(away, 40.0f / len);
+    } else {
+        sp->ship.vel = v2(0.0f, -40.0f);
+    }
     SIM_LOG("[sim] player %d launched\n", sp->id);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_LAUNCH, .player_id = sp->id});
 }
