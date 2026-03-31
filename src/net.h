@@ -33,6 +33,7 @@ enum {
     NET_MSG_MINING_ACTION   = 0x13,
     NET_MSG_PLAYER_SHIP     = 0x15,
     NET_MSG_SERVER_INFO     = 0x16,
+    NET_MSG_STATION_IDENTITY= 0x17,
 };
 
 /* Input flags packed into a single byte. */
@@ -100,6 +101,11 @@ typedef void (*net_on_player_ship_fn)(const NetPlayerShipState* state);
 /* Station update callback: index, ore_buffer[3], inventory[6], product_stock[3]. */
 typedef void (*net_on_stations_fn)(uint8_t index, const float* ore_buf, const float* inventory, const float* product_stock);
 
+/* Station identity callback: full static fields for a station slot. */
+typedef void (*net_on_station_identity_fn)(uint8_t index, uint8_t role, uint32_t services,
+    float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
+    const char* name);
+
 typedef struct {
     net_on_player_join_fn on_join;
     net_on_player_leave_fn on_leave;
@@ -107,6 +113,7 @@ typedef struct {
     net_on_asteroids_fn on_asteroids;
     net_on_npcs_fn on_npcs;
     net_on_stations_fn on_stations;
+    net_on_station_identity_fn on_station_identity;
     net_on_player_ship_fn on_player_ship;
 } NetCallbacks;
 

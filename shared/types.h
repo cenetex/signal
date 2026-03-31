@@ -240,6 +240,7 @@ typedef enum {
     SIM_EVENT_REPAIR,
     SIM_EVENT_UPGRADE,
     SIM_EVENT_DAMAGE,
+    SIM_EVENT_OUTPOST_PLACED,
 } sim_event_type_t;
 
 typedef struct {
@@ -250,6 +251,7 @@ typedef struct {
         struct { float ore; int fragments; } pickup;
         struct { ship_upgrade_t upgrade; } upgrade;
         struct { float amount; } damage;
+        struct { int slot; } outpost_placed;
     };
 } sim_event_t;
 

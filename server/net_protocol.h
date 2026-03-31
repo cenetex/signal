@@ -25,6 +25,7 @@ enum {
     NET_MSG_HOST_ASSIGN     = 0x14,
     NET_MSG_PLAYER_SHIP     = 0x15,
     NET_MSG_SERVER_INFO     = 0x16,
+    NET_MSG_STATION_IDENTITY= 0x17,
 };
 
 /* Input flags (client -> server) */
@@ -46,6 +47,7 @@ enum {
     NET_ACTION_UPGRADE_MINING = 5,
     NET_ACTION_UPGRADE_HOLD   = 6,
     NET_ACTION_UPGRADE_TRACTOR= 7,
+    NET_ACTION_PLACE_OUTPOST  = 8,
 };
 
 /* ------------------------------------------------------------------ */
@@ -59,6 +61,20 @@ static inline void write_f32_le(uint8_t *buf, float v) {
     buf[1] = (uint8_t)(conv.u >> 8);
     buf[2] = (uint8_t)(conv.u >> 16);
     buf[3] = (uint8_t)(conv.u >> 24);
+}
+
+static inline void write_u32_le(uint8_t *buf, uint32_t v) {
+    buf[0] = (uint8_t)(v);
+    buf[1] = (uint8_t)(v >> 8);
+    buf[2] = (uint8_t)(v >> 16);
+    buf[3] = (uint8_t)(v >> 24);
+}
+
+static inline uint32_t read_u32_le(const uint8_t *buf) {
+    return (uint32_t)buf[0]
+         | ((uint32_t)buf[1] << 8)
+         | ((uint32_t)buf[2] << 16)
+         | ((uint32_t)buf[3] << 24);
 }
 
 static inline float read_f32_le(const uint8_t *buf) {
@@ -180,6 +196,28 @@ static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
 }
 
 /*
+ * STATION_IDENTITY message — full static fields for one station.
+ * Sent on player join (for all active stations) and when a new outpost is placed.
+ * [type:1][index:1][role:1][services:4][pos_x:f32][pos_y:f32]
+ * [radius:f32][dock_radius:f32][signal_range:f32][name:32]
+ * = 54 bytes per message
+ */
+static inline int serialize_station_identity(uint8_t *buf, int index, const station_t *st) {
+    buf[0] = NET_MSG_STATION_IDENTITY;
+    buf[1] = (uint8_t)index;
+    buf[2] = (uint8_t)st->role;
+    write_u32_le(&buf[3], st->services);
+    write_f32_le(&buf[7], st->pos.x);
+    write_f32_le(&buf[11], st->pos.y);
+    write_f32_le(&buf[15], st->radius);
+    write_f32_le(&buf[19], st->dock_radius);
+    write_f32_le(&buf[23], st->signal_range);
+    memset(&buf[27], 0, 32);
+    memcpy(&buf[27], st->name, strnlen(st->name, 31));
+    return 59;
+}
+
+/*
  * PLAYER_SHIP message (27 bytes):
  * [type:1][id:1][hull:f32][credits:f32][docked:1][station:1]
  * [mining_lvl:1][hold_lvl:1][tractor_lvl:1]
@@ -252,6 +290,9 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
             break;
         case NET_ACTION_UPGRADE_TRACTOR:
             intent->upgrade_tractor = true;
+            break;
+        case NET_ACTION_PLACE_OUTPOST:
+            intent->place_outpost = true;
             break;
         default:
             break;

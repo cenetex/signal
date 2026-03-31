@@ -30,6 +30,13 @@ static void write_f32_le(uint8_t* buf, float v) {
     buf[3] = (uint8_t)(conv.u >> 24);
 }
 
+static uint32_t read_u32_le(const uint8_t* buf) {
+    return (uint32_t)buf[0]
+         | ((uint32_t)buf[1] << 8)
+         | ((uint32_t)buf[2] << 16)
+         | ((uint32_t)buf[3] << 24);
+}
+
 static float read_f32_le(const uint8_t* buf) {
     union { float f; uint32_t u; } conv;
     conv.u = (uint32_t)buf[0]
@@ -190,6 +197,24 @@ static void handle_message(const uint8_t* data, int len) {
                 pss.cargo_crystal   = read_f32_le(&data[23]);
                 net_state.callbacks.on_player_ship(&pss);
             }
+        }
+        break;
+
+    case NET_MSG_STATION_IDENTITY:
+        if (len >= 59 && net_state.callbacks.on_station_identity) {
+            uint8_t idx = data[1];
+            uint8_t role = data[2];
+            uint32_t services = read_u32_le(&data[3]);
+            float px = read_f32_le(&data[7]);
+            float py = read_f32_le(&data[11]);
+            float radius = read_f32_le(&data[15]);
+            float dock_radius = read_f32_le(&data[19]);
+            float signal_range = read_f32_le(&data[23]);
+            char name[32];
+            memcpy(name, &data[27], 31);
+            name[31] = '\0';
+            net_state.callbacks.on_station_identity(idx, role, services, px, py,
+                radius, dock_radius, signal_range, name);
         }
         break;
 

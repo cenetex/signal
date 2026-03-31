@@ -2778,39 +2778,106 @@ TEST(test_world_load_missing_file) {
 /* ================================================================== */
 
 TEST(test_outpost_requires_signal_range) {
-    /* Can't place an outpost outside signal range of any existing station */
-    /* After #82 + #83:
-     * bool ok = can_place_outpost(&w, v2(10000.0f, 10000.0f));
-     * ASSERT(!ok);
-     * bool ok2 = can_place_outpost(&w, v2(500.0f, -240.0f)); // near refinery
-     * ASSERT(ok2); */
-    ASSERT(0); /* FAIL: construction not implemented */
+    world_t w = {0};
+    world_reset(&w);
+    /* Can't place outside signal range */
+    bool ok = can_place_outpost(&w, v2(10000.0f, 10000.0f));
+    ASSERT(!ok);
+    /* Can place within signal range (near refinery at 0,-240, range 2200) */
+    bool ok2 = can_place_outpost(&w, v2(500.0f, -240.0f));
+    ASSERT(ok2);
 }
 
 TEST(test_outpost_extends_signal_range) {
-    /* After placing an outpost, signal should be available near it */
-    /* After #82 + #83:
-     * place_outpost(&w, v2(2000.0f, 0.0f));
-     * float s = signal_strength_at(&w, v2(2000.0f, 0.0f));
-     * ASSERT(s > 0.9f); */
-    ASSERT(0); /* FAIL: construction not implemented */
+    world_t w = {0};
+    world_reset(&w);
+    /* Place point at edge of refinery signal — within range but far */
+    vec2 outpost_pos = v2(2000.0f, -240.0f);
+    /* Verify the point is in signal before placing */
+    ASSERT(signal_strength_at(&w, outpost_pos) > 0.0f);
+
+    /* Set up a player docked at Kepler Yard (station 1, has BLUEPRINT) */
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = true;
+    w.players[0].current_station = 1;
+    w.players[0].ship.credits = 1000.0f;
+
+    int slot = try_place_outpost(&w, &w.players[0], outpost_pos);
+    ASSERT(slot >= 3);
+    /* Signal should be available at the outpost itself */
+    float s = signal_strength_at(&w, outpost_pos);
+    ASSERT(s > 0.9f);
+    /* Signal should extend beyond the outpost */
+    float s2 = signal_strength_at(&w, v2(2500.0f, -240.0f));
+    ASSERT(s2 > 0.0f);
 }
 
 TEST(test_outpost_upgrade_to_refinery) {
-    /* Outpost should be upgradable to refinery with correct materials */
-    /* After #83:
-     * Deliver materials, upgrade, verify role changes, signal range increases */
-    ASSERT(0); /* FAIL: construction not implemented */
+    /* Outpost upgrade not yet implemented — placeholder */
+    ASSERT(0); /* FAIL: outpost upgrade not implemented */
 }
 
 TEST(test_disconnected_station_goes_dark) {
-    /* A station with no chain back to a player should become dark */
-    /* After #82 + #83:
-     * Build chain: player → station A → station B
-     * Destroy station A
-     * Verify station B is dark (not lit)
-     * Verify signal at station B is 0 */
+    /* Signal chain propagation not yet implemented — placeholder */
     ASSERT(0); /* FAIL: signal chain not implemented */
+}
+
+TEST(test_outpost_requires_blueprint_station) {
+    /* Must be docked at a station with STATION_SERVICE_BLUEPRINT */
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = true;
+    w.players[0].current_station = 0; /* Refinery — no blueprint service */
+    w.players[0].ship.credits = 1000.0f;
+    int slot = try_place_outpost(&w, &w.players[0], v2(500.0f, -240.0f));
+    ASSERT_EQ_INT(slot, -1); /* Should fail — no blueprint service */
+
+    /* Now try from Kepler Yard (station 1 — has blueprint) */
+    w.players[0].current_station = 1;
+    slot = try_place_outpost(&w, &w.players[0], v2(500.0f, -240.0f));
+    ASSERT(slot >= 3); /* Should succeed */
+}
+
+TEST(test_outpost_requires_credits) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = true;
+    w.players[0].current_station = 1;
+    w.players[0].ship.credits = 100.0f; /* Not enough */
+    int slot = try_place_outpost(&w, &w.players[0], v2(500.0f, -240.0f));
+    ASSERT_EQ_INT(slot, -1);
+}
+
+TEST(test_outpost_skipped_in_prediction) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = true;
+    w.players[0].current_station = 1;
+    w.players[0].ship.credits = 1000.0f;
+    w.player_only_mode = true; /* Simulate client prediction */
+    int slot = try_place_outpost(&w, &w.players[0], v2(500.0f, -240.0f));
+    ASSERT_EQ_INT(slot, -1);
+    w.player_only_mode = false;
+}
+
+TEST(test_outpost_min_distance) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = true;
+    w.players[0].current_station = 1;
+    w.players[0].ship.credits = 1000.0f;
+    /* Too close to Prospect Refinery at (0,-240) */
+    int slot = try_place_outpost(&w, &w.players[0], v2(50.0f, -240.0f));
+    ASSERT_EQ_INT(slot, -1);
 }
 
 /* ================================================================== */
@@ -3080,6 +3147,16 @@ int main(void) {
     RUN(test_bug58_titan_fracture_at_capacity);
     RUN(test_bug59_emergency_recover_teleports);
     RUN(test_bug60_cannot_mine_fragment);
+
+    printf("\nStation construction (#83):\n");
+    RUN(test_outpost_requires_signal_range);
+    RUN(test_outpost_extends_signal_range);
+    RUN(test_outpost_upgrade_to_refinery);
+    RUN(test_disconnected_station_goes_dark);
+    RUN(test_outpost_requires_blueprint_station);
+    RUN(test_outpost_requires_credits);
+    RUN(test_outpost_skipped_in_prediction);
+    RUN(test_outpost_min_distance);
 
     printf("\nBug regression (bugs 88-90):\n");
     RUN(test_bug88_interference_seed_no_world_time);

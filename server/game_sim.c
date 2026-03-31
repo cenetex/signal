@@ -112,6 +112,66 @@ float signal_strength_at(const world_t *w, vec2 pos) {
     return best;
 }
 
+/* ================================================================== */
+/* Station construction                                               */
+/* ================================================================== */
+
+bool can_place_outpost(const world_t *w, vec2 pos) {
+    /* Must be within signal range of an existing station */
+    if (signal_strength_at(w, pos) <= 0.0f) return false;
+    /* Must not overlap existing stations */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (w->stations[s].signal_range <= 0.0f) continue;
+        float d = sqrtf(v2_dist_sq(pos, w->stations[s].pos));
+        if (d < OUTPOST_MIN_DISTANCE) return false;
+    }
+    /* Must have a free station slot */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (w->stations[s].signal_range <= 0.0f) return true;
+    }
+    return false;
+}
+
+/* Place an outpost at pos, deducting credits from sp.
+ * Returns the station slot index on success, -1 on failure.
+ * Must NOT be called in player_only_mode (client prediction). */
+int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
+    if (w->player_only_mode) return -1;
+    if (!sp->docked) return -1;
+    if (!(w->stations[sp->current_station].services & STATION_SERVICE_BLUEPRINT))
+        return -1;
+    if (sp->ship.credits < OUTPOST_CREDIT_COST) return -1;
+    if (!can_place_outpost(w, pos)) return -1;
+
+    /* Find free slot */
+    int slot = -1;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (w->stations[s].signal_range <= 0.0f) { slot = s; break; }
+    }
+    if (slot < 0) return -1;
+
+    sp->ship.credits -= OUTPOST_CREDIT_COST;
+
+    station_t *st = &w->stations[slot];
+    memset(st, 0, sizeof(*st));
+    snprintf(st->name, sizeof(st->name), "Outpost %d", slot);
+    st->role = STATION_ROLE_OUTPOST;
+    st->pos = pos;
+    st->radius = OUTPOST_RADIUS;
+    st->dock_radius = OUTPOST_DOCK_RADIUS;
+    st->signal_range = OUTPOST_SIGNAL_RANGE;
+    st->services = STATION_SERVICE_REPAIR;
+
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_OUTPOST_PLACED,
+        .player_id = sp->id,
+        .outpost_placed = { .slot = slot },
+    });
+    SIM_LOG("[sim] player %d placed outpost at (%.0f, %.0f) in slot %d\n",
+            sp->id, pos.x, pos.y, slot);
+    return slot;
+}
+
 static bool point_within_signal_margin(const world_t *w, vec2 pos, float margin) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         float range = w->stations[s].signal_range;
@@ -1350,6 +1410,9 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     else if (intent->upgrade_mining) try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_MINING);
     else if (intent->upgrade_hold)   try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_HOLD);
     else if (intent->upgrade_tractor)try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_TRACTOR);
+    /* Outpost placement is server-authoritative only (guarded inside try_place_outpost) */
+    if (intent->place_outpost)
+        try_place_outpost(w, sp, sp->ship.pos);
 }
 
 /* ================================================================== */
@@ -1444,6 +1507,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->input.upgrade_mining = false;
     sp->input.upgrade_hold = false;
     sp->input.upgrade_tractor = false;
+    sp->input.place_outpost = false;
 }
 
 /* ================================================================== */
@@ -1787,7 +1851,7 @@ void world_reset(world_t *w) {
     w->stations[1].pos         = v2(-320.0f, 230.0f);
     w->stations[1].radius      = 56.0f;
     w->stations[1].dock_radius = 124.0f;
-    w->stations[1].services    = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_HOLD;
+    w->stations[1].services    = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_HOLD | STATION_SERVICE_BLUEPRINT;
     w->stations[1].signal_range = 1800.0f;
 
     snprintf(w->stations[2].name, sizeof(w->stations[2].name), "%s", "Helios Works");

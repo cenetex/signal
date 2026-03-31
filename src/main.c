@@ -2004,6 +2004,7 @@ static input_intent_t sample_input_intent(void) {
     intent.upgrade_mining = is_key_pressed(SAPP_KEYCODE_3);
     intent.upgrade_hold = is_key_pressed(SAPP_KEYCODE_4);
     intent.upgrade_tractor = is_key_pressed(SAPP_KEYCODE_5);
+    intent.place_outpost = is_key_pressed(SAPP_KEYCODE_6);
     intent.reset = is_key_pressed(SAPP_KEYCODE_R);
     return intent;
 }
@@ -2130,6 +2131,8 @@ static void sim_step(float dt) {
             g.pending_net_action = 6;
         else if (intent.upgrade_tractor)
             g.pending_net_action = 7;
+        else if (intent.place_outpost)
+            g.pending_net_action = 8;
     }
 
     consume_pressed_input();
@@ -2139,6 +2142,8 @@ static void sim_step(float dt) {
 static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count);
 static void apply_remote_npcs(const NetNpcState* npcs, int count);
 static void apply_remote_stations(uint8_t index, const float* ore_buf, const float* inventory, const float* product_stock);
+static void apply_remote_station_identity(uint8_t index, uint8_t role, uint32_t services,
+    float pos_x, float pos_y, float radius, float dock_radius, float signal_range, const char* name);
 static void apply_remote_player_state(const NetPlayerState* state);
 static void apply_remote_player_ship(const NetPlayerShipState* state);
 static void sync_local_player_slot_from_network(void);
@@ -2188,6 +2193,7 @@ static void init(void) {
             cbs.on_asteroids = apply_remote_asteroids;
             cbs.on_npcs = apply_remote_npcs;
             cbs.on_stations = apply_remote_stations;
+            cbs.on_station_identity = apply_remote_station_identity;
             cbs.on_player_ship = apply_remote_player_ship;
             g.multiplayer_enabled = net_init(server_url, &cbs);
         }
@@ -2283,6 +2289,20 @@ static void apply_remote_stations(uint8_t index, const float* ore_buf, const flo
         st->inventory[i] = inventory[i];
     for (int i = 0; i < PRODUCT_COUNT; i++)
         st->product_stock[i] = product_stock[i];
+}
+
+static void apply_remote_station_identity(uint8_t index, uint8_t role, uint32_t services,
+    float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
+    const char* name) {
+    if (index >= MAX_STATIONS) return;
+    station_t* st = &g.world.stations[index];
+    st->role = (station_role_t)role;
+    st->services = services;
+    st->pos = v2(pos_x, pos_y);
+    st->radius = radius;
+    st->dock_radius = dock_radius;
+    st->signal_range = signal_range;
+    snprintf(st->name, sizeof(st->name), "%s", name);
 }
 
 static void apply_remote_player_state(const NetPlayerState* state) {
