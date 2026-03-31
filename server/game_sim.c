@@ -1647,3 +1647,120 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->hover_asteroid  = -1;
     anchor_ship_in_station(sp, w);
 }
+
+/* ================================================================== */
+/* World persistence                                                   */
+/* ================================================================== */
+
+#define SAVE_MAGIC 0x5349474E  /* "SIGN" */
+#define SAVE_VERSION 1
+
+typedef struct {
+    uint32_t magic;
+    uint32_t version;
+    uint32_t rng;
+    float time;
+    float field_spawn_timer;
+} save_header_t;
+
+bool world_save(const world_t *w, const char *path) {
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+
+    save_header_t hdr = {
+        .magic = SAVE_MAGIC,
+        .version = SAVE_VERSION,
+        .rng = w->rng,
+        .time = w->time,
+        .field_spawn_timer = w->field_spawn_timer,
+    };
+    if (fwrite(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
+    if (fwrite(w->stations, sizeof(w->stations), 1, f) != 1) { fclose(f); return false; }
+    if (fwrite(w->asteroids, sizeof(w->asteroids), 1, f) != 1) { fclose(f); return false; }
+    if (fwrite(w->npc_ships, sizeof(w->npc_ships), 1, f) != 1) { fclose(f); return false; }
+
+    fclose(f);
+    return true;
+}
+
+bool world_load(world_t *w, const char *path) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+
+    save_header_t hdr;
+    if (fread(&hdr, sizeof(hdr), 1, f) != 1) { fclose(f); return false; }
+    if (hdr.magic != SAVE_MAGIC || hdr.version != SAVE_VERSION) { fclose(f); return false; }
+
+    w->rng = hdr.rng;
+    w->time = hdr.time;
+    w->field_spawn_timer = hdr.field_spawn_timer;
+
+    if (fread(w->stations, sizeof(w->stations), 1, f) != 1) { fclose(f); return false; }
+    if (fread(w->asteroids, sizeof(w->asteroids), 1, f) != 1) { fclose(f); return false; }
+    if (fread(w->npc_ships, sizeof(w->npc_ships), 1, f) != 1) { fclose(f); return false; }
+
+    /* Clear transient state */
+    w->events.count = 0;
+    w->player_only_mode = false;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        memset(&w->players[i], 0, sizeof(w->players[i]));
+    }
+
+    fclose(f);
+    return true;
+}
+
+/* ================================================================== */
+/* Player persistence                                                  */
+/* ================================================================== */
+
+#define PLAYER_MAGIC 0x504C5952u  /* "PLYR" */
+
+typedef struct {
+    uint32_t magic;
+    ship_t ship;
+    int last_station;
+    vec2 last_pos;
+    float last_angle;
+} player_save_data_t;
+
+bool player_save(const server_player_t *sp, const char *dir, int slot) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/player_%d.sav", dir, slot);
+    FILE *f = fopen(path, "wb");
+    if (!f) return false;
+    player_save_data_t data = {
+        .magic = PLAYER_MAGIC,
+        .ship = sp->ship,
+        .last_station = sp->current_station,
+        .last_pos = sp->ship.pos,
+        .last_angle = sp->ship.angle,
+    };
+    bool ok = fwrite(&data, sizeof(data), 1, f) == 1;
+    fclose(f);
+    if (ok) SIM_LOG("[sim] saved player %d\n", slot);
+    return ok;
+}
+
+bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/player_%d.sav", dir, slot);
+    FILE *f = fopen(path, "rb");
+    if (!f) return false;
+    player_save_data_t data;
+    if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
+    fclose(f);
+    if (data.magic != PLAYER_MAGIC) return false;
+    sp->ship = data.ship;
+    sp->current_station = data.last_station;
+    sp->ship.pos = data.last_pos;
+    sp->ship.angle = data.last_angle;
+    /* Dock the player at their last station for safety */
+    sp->docked = true;
+    sp->nearby_station = sp->current_station;
+    sp->in_dock_range = true;
+    anchor_ship_in_station(sp, w);
+    SIM_LOG("[sim] loaded player %d (%.0f credits, station %d)\n",
+            slot, sp->ship.credits, sp->current_station);
+    return true;
+}

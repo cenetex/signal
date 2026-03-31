@@ -102,5 +102,9 @@ void world_sim_step(world_t *w, float dt);
 void world_sim_step_player_only(world_t *w, int player_idx, float dt);
 void player_init_ship(server_player_t *sp, world_t *w);
 float signal_strength_at(const world_t *w, vec2 pos);
+bool world_save(const world_t *w, const char *path);
+bool world_load(world_t *w, const char *path);
+bool player_save(const server_player_t *sp, const char *dir, int slot);
+bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot);
 
 #endif /* GAME_SIM_H */

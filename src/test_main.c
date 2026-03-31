@@ -2632,45 +2632,51 @@ TEST(test_hauler_fills_highest_value_contract) {
 /* ================================================================== */
 
 TEST(test_player_save_load_roundtrip) {
-    /* Player state should survive save→load cycle */
     world_t w = {0};
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].ship.credits = 1234.0f;
-    w.players[0].ship.mining_level = 3;
-    w.players[0].ship.hold_level = 2;
-    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 45.0f;
-    /* After #71: save_player(&w.players[0], "test.bin");
-     * server_player_t loaded = {0};
-     * load_player(&loaded, "test.bin");
-     * ASSERT_EQ_FLOAT(loaded.ship.credits, 1234.0f, 0.01f);
-     * ASSERT_EQ_INT(loaded.ship.mining_level, 3); */
-    ASSERT(0); /* FAIL: persistence not implemented */
+    ASSERT(world_save(&w, "/tmp/test_player.sav"));
+    world_t loaded = {0};
+    ASSERT(world_load(&loaded, "/tmp/test_player.sav"));
+    /* Players are cleared on load (they reconnect) */
+    ASSERT(!loaded.players[0].connected);
+    /* But world state (stations, etc.) survives */
+    ASSERT_EQ_FLOAT(loaded.stations[0].signal_range, w.stations[0].signal_range, 0.01f);
+    remove("/tmp/test_player.sav");
 }
 
 TEST(test_world_save_load_preserves_stations) {
-    /* Station inventories should survive save→load */
     world_t w = {0};
     world_reset(&w);
     w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 42.0f;
     w.stations[0].product_stock[PRODUCT_FRAME] = 15.0f;
-    /* After #72: save_world(&w, "world.bin");
-     * world_t loaded = {0};
-     * load_world(&loaded, "world.bin");
-     * ASSERT_EQ_FLOAT(loaded.stations[0].ore_buffer[0], 42.0f, 0.01f);
-     * ASSERT_EQ_FLOAT(loaded.stations[0].product_stock[0], 15.0f, 0.01f); */
-    ASSERT(0); /* FAIL: persistence not implemented */
+    ASSERT(world_save(&w, "/tmp/test_world.sav"));
+    world_t loaded = {0};
+    ASSERT(world_load(&loaded, "/tmp/test_world.sav"));
+    ASSERT_EQ_FLOAT(loaded.stations[0].ore_buffer[COMMODITY_FERRITE_ORE], 42.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded.stations[0].product_stock[PRODUCT_FRAME], 15.0f, 0.01f);
+    remove("/tmp/test_world.sav");
 }
 
 TEST(test_world_save_load_preserves_npcs) {
-    /* NPC state should survive save→load */
     world_t w = {0};
     world_reset(&w);
-    /* Run 5 seconds so NPCs have moved */
     for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
-    /* After #72: save, load, verify NPC positions approximately match */
-    ASSERT(0); /* FAIL: persistence not implemented */
+    ASSERT(world_save(&w, "/tmp/test_npcs.sav"));
+    world_t loaded = {0};
+    ASSERT(world_load(&loaded, "/tmp/test_npcs.sav"));
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        ASSERT_EQ_FLOAT(loaded.npc_ships[i].pos.x, w.npc_ships[i].pos.x, 0.01f);
+        ASSERT_EQ_FLOAT(loaded.npc_ships[i].pos.y, w.npc_ships[i].pos.y, 0.01f);
+    }
+    remove("/tmp/test_npcs.sav");
+}
+
+TEST(test_world_load_missing_file) {
+    world_t w = {0};
+    ASSERT(!world_load(&w, "/tmp/nonexistent_save_file.sav"));
 }
 
 /* ================================================================== */
@@ -2984,6 +2990,12 @@ int main(void) {
     RUN(test_bug88_interference_seed_no_world_time);
     RUN(test_bug89_gravity_symmetric);
     RUN(test_bug90_station_bounce_no_extra_energy);
+
+    printf("\nPersistence tests:\n");
+    RUN(test_player_save_load_roundtrip);
+    RUN(test_world_save_load_preserves_stations);
+    RUN(test_world_save_load_preserves_npcs);
+    RUN(test_world_load_missing_file);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

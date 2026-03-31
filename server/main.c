@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <signal.h>
+#include <sys/stat.h>
 
 /* ------------------------------------------------------------------ */
 /* Global state                                                       */
@@ -26,6 +27,9 @@ static bool running = true;
 #define WORLD_TICK_MS 100   /* 10 Hz world state broadcast */
 #define SHIP_TICK_MS  250   /* 4 Hz full ship state (cargo, hull, etc.) */
 #define MAX_SIM_STEPS 8     /* cap sub-steps per poll to prevent spiral */
+#define SAVE_PATH "world.sav"
+#define PLAYER_SAVE_DIR "saves"
+#define AUTOSAVE_MS 30000   /* autosave every 30 seconds */
 
 /* ------------------------------------------------------------------ */
 /* Signal handler                                                     */
@@ -134,7 +138,13 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         sp->connected = true;
         sp->id = (uint8_t)pid;
         sp->conn = c;
-        player_init_ship(sp, &world);
+        /* Try to restore saved player state, fall back to fresh ship */
+        if (!player_load(sp, &world, PLAYER_SAVE_DIR, pid)) {
+            player_init_ship(sp, &world);
+            printf("[server] player %d: fresh ship\n", pid);
+        } else {
+            printf("[server] player %d: restored save\n", pid);
+        }
 
         /* Send JOIN to new player (their own ID). */
         uint8_t join_msg[] = { NET_MSG_JOIN, (uint8_t)pid };
@@ -168,11 +178,12 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
     } else if (ev == MG_EV_CLOSE) {
         for (int i = 0; i < MAX_PLAYERS; i++) {
             if (world.players[i].conn == c) {
+                player_save(&world.players[i], PLAYER_SAVE_DIR, i);
                 world.players[i].connected = false;
                 world.players[i].conn = NULL;
                 uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
                 broadcast(leave_msg, 2);
-                printf("[server] player %d left\n", i);
+                printf("[server] player %d left (saved)\n", i);
                 break;
             }
         }
@@ -234,8 +245,19 @@ int main(void) {
     char listen_url[64];
     snprintf(listen_url, sizeof(listen_url), "http://0.0.0.0:%s", port);
 
+    /* Ensure saves directory exists. */
+#ifdef _WIN32
+    _mkdir(PLAYER_SAVE_DIR);
+#else
+    mkdir(PLAYER_SAVE_DIR, 0755);
+#endif
+
     /* Initialise world. */
     world_reset(&world);
+    if (world_load(&world, SAVE_PATH))
+        printf("[server] loaded world from %s\n", SAVE_PATH);
+    else
+        printf("[server] fresh world\n");
 
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
@@ -246,7 +268,7 @@ int main(void) {
     printf("[server] signal game server on %s\n", listen_url);
 #endif
 
-    uint64_t last_sim = 0, last_state = 0, last_world = 0, last_ship = 0;
+    uint64_t last_sim = 0, last_state = 0, last_world = 0, last_ship = 0, last_save = 0;
     float sim_accum = 0.0f;
 
     while (running) {
@@ -277,9 +299,15 @@ int main(void) {
             broadcast_ship_states();
             last_ship = now;
         }
+        if (now - last_save >= AUTOSAVE_MS) {
+            world_save(&world, SAVE_PATH);
+            last_save = now;
+        }
     }
 
     mg_mgr_free(&mgr);
+    world_save(&world, SAVE_PATH);
+    printf("[server] world saved\n");
     printf("[server] shutdown\n");
     return 0;
 }
