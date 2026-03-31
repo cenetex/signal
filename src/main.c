@@ -79,31 +79,13 @@ typedef struct {
 
 typedef struct {
     input_state_t input;
-    ship_t ship;
-    station_t stations[MAX_STATIONS];
-    asteroid_t asteroids[MAX_ASTEROIDS];
-    npc_ship_t npc_ships[MAX_NPC_SHIPS];
     star_t stars[MAX_STARS];
-    uint32_t rng;
-    int current_station;
-    int nearby_station;
-    int hover_asteroid;
-    bool beam_active;
-    bool beam_hit;
     bool thrusting;
-    bool in_dock_range;
-    bool docked;
-    vec2 beam_start;
-    vec2 beam_end;
     char notice[128];
     float notice_timer;
-    int nearby_fragments;
-    int tractor_fragments;
     float collection_feedback_ore;
     int collection_feedback_fragments;
     float collection_feedback_timer;
-    float time;
-    float field_spawn_timer;
     runtime_state_t runtime;
     audio_state_t audio;
     sg_pass_action pass_action;
@@ -189,14 +171,14 @@ static float ui_text_pos(float pixel_value) {
 }
 
 static uint32_t rng_next(void) {
-    if (g.rng == 0) {
-        g.rng = 0xA341316Cu;
+    if (g.world.rng == 0) {
+        g.world.rng = 0xA341316Cu;
     }
-    uint32_t x = g.rng;
+    uint32_t x = g.world.rng;
     x ^= x << 13;
     x ^= x >> 17;
     x ^= x << 5;
-    g.rng = x;
+    g.world.rng = x;
     return x;
 }
 
@@ -241,13 +223,13 @@ static commodity_t random_raw_ore(void) {
 /* ship_total_cargo, ship_raw_ore_total, ship_cargo_amount, station_buy_price, station_inventory_amount: see commodity.h/c */
 
 static void clear_ship_cargo(void) {
-    memset(g.ship.cargo, 0, sizeof(g.ship.cargo));
+    memset(g.world.players[0].ship.cargo, 0, sizeof(g.world.players[0].ship.cargo));
 }
 
 static void format_ore_manifest(char* text, size_t text_size) {
-    int ferrite = (int)lroundf(ship_cargo_amount(&g.ship,COMMODITY_FERRITE_ORE));
-    int cuprite = (int)lroundf(ship_cargo_amount(&g.ship,COMMODITY_CUPRITE_ORE));
-    int crystal = (int)lroundf(ship_cargo_amount(&g.ship,COMMODITY_CRYSTAL_ORE));
+    int ferrite = (int)lroundf(ship_cargo_amount(&g.world.players[0].ship,COMMODITY_FERRITE_ORE));
+    int cuprite = (int)lroundf(ship_cargo_amount(&g.world.players[0].ship,COMMODITY_CUPRITE_ORE));
+    int crystal = (int)lroundf(ship_cargo_amount(&g.world.players[0].ship,COMMODITY_CRYSTAL_ORE));
     snprintf(text, text_size, "%s %d  %s %d  %s %d",
         commodity_code(COMMODITY_FERRITE_ORE), ferrite,
         commodity_code(COMMODITY_CUPRITE_ORE), cuprite,
@@ -287,15 +269,15 @@ static const station_t* station_at(int station_index) {
     if ((station_index < 0) || (station_index >= MAX_STATIONS)) {
         return NULL;
     }
-    return &g.stations[station_index];
+    return &g.world.stations[station_index];
 }
 
 static const station_t* current_station_ptr(void) {
-    return station_at(g.current_station);
+    return station_at(g.world.players[0].current_station);
 }
 
 static const station_t* nearby_station_ptr(void) {
-    return station_at(g.nearby_station);
+    return station_at(g.world.players[0].nearby_station);
 }
 
 static int nearest_station_index(vec2 pos) {
@@ -303,7 +285,7 @@ static int nearest_station_index(vec2 pos) {
     int best_index = -1;
 
     for (int i = 0; i < MAX_STATIONS; i++) {
-        float distance_sq = v2_dist_sq(pos, g.stations[i].pos);
+        float distance_sq = v2_dist_sq(pos, g.world.stations[i].pos);
         if ((best_index < 0) || (distance_sq < best_distance_sq)) {
             best_distance_sq = distance_sq;
             best_index = i;
@@ -314,13 +296,13 @@ static int nearest_station_index(vec2 pos) {
 }
 
 static const station_t* navigation_station_ptr(void) {
-    if (g.docked) {
+    if (g.world.players[0].docked) {
         return current_station_ptr();
     }
-    if (g.nearby_station >= 0) {
+    if (g.world.players[0].nearby_station >= 0) {
         return nearby_station_ptr();
     }
-    return station_at(nearest_station_index(g.ship.pos));
+    return station_at(nearest_station_index(g.world.players[0].ship.pos));
 }
 
 static const char* station_role_name(station_role_t role) {
@@ -355,7 +337,7 @@ static void get_flight_hud_rects(float* top_x, float* top_y, float* top_w, float
     float* bottom_x, float* bottom_y, float* bottom_w, float* bottom_h);
 
 static bool hud_should_draw_message_panel(void) {
-    return !g.docked || (g.notice_timer > 0.0f) || (g.collection_feedback_timer > 0.0f);
+    return !g.world.players[0].docked || (g.notice_timer > 0.0f) || (g.collection_feedback_timer > 0.0f);
 }
 
 static void get_hud_message_panel_rect(float* x, float* y, float* width, float* height) {
@@ -426,8 +408,8 @@ static void split_hud_message_lines(const char* text, int max_cols, char* line0,
 }
 
 static bool build_hud_message(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
-    int cargo_units = (int)lroundf(ship_raw_ore_total(&g.ship));
-    int cargo_capacity = (int)lroundf(ship_cargo_capacity(&g.ship));
+    int cargo_units = (int)lroundf(ship_raw_ore_total(&g.world.players[0].ship));
+    int cargo_capacity = (int)lroundf(ship_cargo_capacity(&g.world.players[0].ship));
     const station_t* station = current_station_ptr();
 
     if (g.notice_timer > 0.0f) {
@@ -453,7 +435,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
-    if (g.docked) {
+    if (g.world.players[0].docked) {
         if (station != NULL) {
             if (station->role == STATION_ROLE_REFINERY) {
                 snprintf(label, label_size, "REFINERY");
@@ -473,7 +455,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return false;
     }
 
-    if ((cargo_units >= cargo_capacity) && (g.nearby_fragments > 0)) {
+    if ((cargo_units >= cargo_capacity) && (g.world.players[0].nearby_fragments > 0)) {
         snprintf(label, label_size, "WARN");
         snprintf(message, message_size, "Hold full. Fragments are still drifting outside the scoop.");
         *r = 255;
@@ -491,7 +473,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
-    if (g.in_dock_range) {
+    if (g.world.players[0].in_dock_range) {
         snprintf(label, label_size, "DOCK");
         snprintf(message, message_size, "Inside the dock ring. Press E to dock.");
         *r = 112;
@@ -500,9 +482,9 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
-    if (g.nearby_fragments > 0) {
+    if (g.world.players[0].nearby_fragments > 0) {
         snprintf(label, label_size, "TRACTOR");
-        if (g.tractor_fragments > 0) {
+        if (g.world.players[0].tractor_fragments > 0) {
             snprintf(message, message_size, "Sweep through the debris cloud and let the tractor finish the pull.");
         } else {
             snprintf(message, message_size, "Close in on the fragments and let the tractor catch them.");
@@ -513,7 +495,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
-    if ((g.hover_asteroid >= 0) && g.asteroids[g.hover_asteroid].active) {
+    if ((g.world.players[0].hover_asteroid >= 0) && g.world.asteroids[g.world.players[0].hover_asteroid].active) {
         snprintf(label, label_size, "TIP");
         snprintf(message, message_size, "Hold the beam steady, crack the rock down, then sweep the fragments.");
         *r = 164;
@@ -578,22 +560,22 @@ static void build_station_ui_state(station_ui_state_t* ui) {
         return;
     }
 
-    ui->hull_now = (int)lroundf(g.ship.hull);
-    ui->hull_max = (int)lroundf(ship_max_hull(&g.ship));
-    float ore_total = ship_raw_ore_total(&g.ship);
-    float repair = station_repair_cost(&g.ship, current_station_ptr());
+    ui->hull_now = (int)lroundf(g.world.players[0].ship.hull);
+    ui->hull_max = (int)lroundf(ship_max_hull(&g.world.players[0].ship));
+    float ore_total = ship_raw_ore_total(&g.world.players[0].ship);
+    float repair = station_repair_cost(&g.world.players[0].ship, current_station_ptr());
     ui->cargo_units = (int)lroundf(ore_total);
-    ui->cargo_capacity = (int)lroundf(ship_cargo_capacity(&g.ship));
-    ui->payout = (int)lroundf(station_cargo_sale_value(&g.ship, current_station_ptr()));
+    ui->cargo_capacity = (int)lroundf(ship_cargo_capacity(&g.world.players[0].ship));
+    ui->payout = (int)lroundf(station_cargo_sale_value(&g.world.players[0].ship, current_station_ptr()));
     ui->repair_cost = (int)lroundf(repair);
-    ui->mining_cost = ship_upgrade_cost(&g.ship,SHIP_UPGRADE_MINING);
-    ui->hold_cost = ship_upgrade_cost(&g.ship,SHIP_UPGRADE_HOLD);
-    ui->tractor_cost = ship_upgrade_cost(&g.ship,SHIP_UPGRADE_TRACTOR);
+    ui->mining_cost = ship_upgrade_cost(&g.world.players[0].ship,SHIP_UPGRADE_MINING);
+    ui->hold_cost = ship_upgrade_cost(&g.world.players[0].ship,SHIP_UPGRADE_HOLD);
+    ui->tractor_cost = ship_upgrade_cost(&g.world.players[0].ship,SHIP_UPGRADE_TRACTOR);
     ui->can_sell = station_has_service(STATION_SERVICE_ORE_BUYER) && (ore_total > 0.01f);
-    ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (repair > 0.0f) && (g.ship.credits + 0.01f >= repair);
-    ui->can_upgrade_mining = can_afford_upgrade(ui->station, &g.ship, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, ui->mining_cost);
-    ui->can_upgrade_hold = can_afford_upgrade(ui->station, &g.ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, ui->hold_cost);
-    ui->can_upgrade_tractor = can_afford_upgrade(ui->station, &g.ship, SHIP_UPGRADE_TRACTOR, STATION_SERVICE_UPGRADE_TRACTOR, ui->tractor_cost);
+    ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (repair > 0.0f) && (g.world.players[0].ship.credits + 0.01f >= repair);
+    ui->can_upgrade_mining = can_afford_upgrade(ui->station, &g.world.players[0].ship, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, ui->mining_cost);
+    ui->can_upgrade_hold = can_afford_upgrade(ui->station, &g.world.players[0].ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, ui->hold_cost);
+    ui->can_upgrade_tractor = can_afford_upgrade(ui->station, &g.world.players[0].ship, SHIP_UPGRADE_TRACTOR, STATION_SERVICE_UPGRADE_TRACTOR, ui->tractor_cost);
 }
 
 static void format_station_header_badge(const station_ui_state_t* ui, char* text, size_t text_size) {
@@ -701,7 +683,7 @@ static int build_station_service_lines(const station_ui_state_t* ui, station_ser
 
     if (ui->station->role == STATION_ROLE_YARD) {
         lines[1].action = "[4] Hold racks";
-        if (ship_upgrade_maxed(&g.ship,SHIP_UPGRADE_HOLD)) {
+        if (ship_upgrade_maxed(&g.world.players[0].ship,SHIP_UPGRADE_HOLD)) {
             snprintf(lines[1].state, sizeof(lines[1].state), "maxed");
             lines[1].r = 169;
             lines[1].g0 = 179;
@@ -716,7 +698,7 @@ static int build_station_service_lines(const station_ui_state_t* ui, station_ser
     }
 
     lines[1].action = "[3] Laser array";
-    if (ship_upgrade_maxed(&g.ship,SHIP_UPGRADE_MINING)) {
+    if (ship_upgrade_maxed(&g.world.players[0].ship,SHIP_UPGRADE_MINING)) {
         snprintf(lines[1].state, sizeof(lines[1].state), "maxed");
         lines[1].r = 169;
         lines[1].g0 = 179;
@@ -729,7 +711,7 @@ static int build_station_service_lines(const station_ui_state_t* ui, station_ser
     }
 
     lines[2].action = "[5] Tractor coil";
-    if (ship_upgrade_maxed(&g.ship,SHIP_UPGRADE_TRACTOR)) {
+    if (ship_upgrade_maxed(&g.world.players[0].ship,SHIP_UPGRADE_TRACTOR)) {
         snprintf(lines[2].state, sizeof(lines[2].state), "maxed");
         lines[2].r = 169;
         lines[2].g0 = 179;
@@ -797,7 +779,7 @@ static vec2 station_dock_anchor(void) {
     if (station == NULL) {
         return v2(0.0f, 0.0f);
     }
-    return v2_add(station->pos, v2(0.0f, -(station->radius + ship_hull_def(&g.ship)->ship_radius + STATION_DOCK_APPROACH_OFFSET)));
+    return v2_add(station->pos, v2(0.0f, -(station->radius + ship_hull_def(&g.world.players[0].ship)->ship_radius + STATION_DOCK_APPROACH_OFFSET)));
 }
 
 static bool station_has_service(uint32_t service) {
@@ -808,7 +790,7 @@ static bool station_has_service(uint32_t service) {
 /* station_cargo_sale_value, station_repair_cost: see economy.h/c */
 
 static float ship_cargo_space(void) {
-    return fmaxf(0.0f, ship_cargo_capacity(&g.ship) - ship_total_cargo(&g.ship));
+    return fmaxf(0.0f, ship_cargo_capacity(&g.world.players[0].ship) - ship_total_cargo(&g.world.players[0].ship));
 }
 
 static void clear_collection_feedback(void) {
@@ -844,7 +826,7 @@ static void spawn_field_asteroid_of_tier(asteroid_t* asteroid, asteroid_tier_t t
     float distance = rand_range(420.0f, WORLD_RADIUS - 180.0f);
     float angle = rand_range(0.0f, TWO_PI_F);
     clear_asteroid(asteroid);
-    configure_asteroid_tier(asteroid, tier, random_raw_ore(), &g.rng);
+    configure_asteroid_tier(asteroid, tier, random_raw_ore(), &g.world.rng);
     asteroid->fracture_child = false;
     asteroid->pos = v2(cosf(angle) * distance, sinf(angle) * distance);
     asteroid->vel = v2(rand_range(-4.0f, 4.0f), rand_range(-4.0f, 4.0f));
@@ -856,7 +838,7 @@ static void spawn_field_asteroid(asteroid_t* asteroid) {
 
 static void spawn_child_asteroid(asteroid_t* asteroid, asteroid_tier_t tier, commodity_t commodity, vec2 pos, vec2 vel) {
     clear_asteroid(asteroid);
-    configure_asteroid_tier(asteroid, tier, commodity, &g.rng);
+    configure_asteroid_tier(asteroid, tier, commodity, &g.world.rng);
     asteroid->fracture_child = true;
     asteroid->pos = pos;
     asteroid->vel = vel;
@@ -881,14 +863,14 @@ static void inspect_asteroid_field(int* seeded_count, int* first_inactive_slot) 
     *first_inactive_slot = -1;
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!g.asteroids[i].active) {
+        if (!g.world.asteroids[i].active) {
             if (*first_inactive_slot < 0) {
                 *first_inactive_slot = i;
             }
             continue;
         }
 
-        if (!g.asteroids[i].fracture_child) {
+        if (!g.world.asteroids[i].fracture_child) {
             (*seeded_count)++;
         }
     }
@@ -905,13 +887,11 @@ static void init_starfield(void) {
     }
 }
 
-static void sync_world_to_globals(void);
-
 static void reset_world(void) {
     world_reset(&g.world);
     player_init_ship(&g.world.players[0], &g.world);
     g.world.players[0].connected = true;
-    sync_world_to_globals();
+
 
     g.thrusting = false;
     g.notice[0] = '\0';
@@ -919,7 +899,7 @@ static void reset_world(void) {
     audio_clear_voices(&g.audio);
     clear_collection_feedback();
 
-    set_notice("%s online. Press E to launch.", g.stations[g.current_station].name);
+    set_notice("%s online. Press E to launch.", g.world.stations[g.world.players[0].current_station].name);
 }
 
 static float asteroid_profile(const asteroid_t* asteroid, float angle) {
@@ -943,7 +923,7 @@ static void draw_station(const station_t* station, bool is_current, bool is_near
     float role_r = 0.45f;
     float role_g = 0.85f;
     float role_b = 1.0f;
-    float pulse = 0.35f + (sinf((g.time * 2.1f) + (float)station->role) * 0.15f);
+    float pulse = 0.35f + (sinf((g.world.time * 2.1f) + (float)station->role) * 0.15f);
     int spoke_count = 6;
 
     station_role_color(station->role, &role_r, &role_g, &role_b);
@@ -960,7 +940,7 @@ static void draw_station(const station_t* station, bool is_current, bool is_near
     draw_circle_filled(station->pos, 18.0f, 18, role_r * 0.68f, role_g * 0.88f, role_b * 0.96f, 1.0f);
 
     for (int i = 0; i < spoke_count; i++) {
-        float angle = (TWO_PI_F / (float)spoke_count) * (float)i + g.time * (0.14f + ((float)station->role * 0.02f));
+        float angle = (TWO_PI_F / (float)spoke_count) * (float)i + g.world.time * (0.14f + ((float)station->role * 0.02f));
         vec2 inner = v2_add(station->pos, v2(cosf(angle) * 28.0f, sinf(angle) * 28.0f));
         vec2 outer = v2_add(station->pos, v2(cosf(angle) * 48.0f, sinf(angle) * 48.0f));
         draw_segment(inner, outer, role_r * 0.8f, role_g * 0.92f, role_b, 0.85f);
@@ -1062,24 +1042,24 @@ static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
 }
 
 static void draw_ship_tractor_field(void) {
-    if (g.nearby_fragments <= 0) {
+    if (g.world.players[0].nearby_fragments <= 0) {
         return;
     }
 
-    float pulse = 0.28f + (sinf(g.time * 7.0f) * 0.08f);
-    draw_circle_outline(g.ship.pos, ship_tractor_range(&g.ship), 40, 0.24f, 0.86f, 1.0f, pulse);
-    if (g.tractor_fragments > 0) {
-        draw_circle_outline(g.ship.pos, ship_collect_radius(&g.ship) + 6.0f, 28, 0.50f, 1.0f, 0.82f, 0.75f);
+    float pulse = 0.28f + (sinf(g.world.time * 7.0f) * 0.08f);
+    draw_circle_outline(g.world.players[0].ship.pos, ship_tractor_range(&g.world.players[0].ship), 40, 0.24f, 0.86f, 1.0f, pulse);
+    if (g.world.players[0].tractor_fragments > 0) {
+        draw_circle_outline(g.world.players[0].ship.pos, ship_collect_radius(&g.world.players[0].ship) + 6.0f, 28, 0.50f, 1.0f, 0.82f, 0.75f);
     }
 }
 
 static void draw_ship(void) {
     sgl_push_matrix();
-    sgl_translate(g.ship.pos.x, g.ship.pos.y, 0.0f);
-    sgl_rotate(g.ship.angle, 0.0f, 0.0f, 1.0f);
+    sgl_translate(g.world.players[0].ship.pos.x, g.world.players[0].ship.pos.y, 0.0f);
+    sgl_rotate(g.world.players[0].ship.angle, 0.0f, 0.0f, 1.0f);
 
     if (g.thrusting) {
-        float flicker = 10.0f + sinf(g.time * 42.0f) * 3.0f;
+        float flicker = 10.0f + sinf(g.world.time * 42.0f) * 3.0f;
         sgl_c4f(1.0f, 0.74f, 0.24f, 0.95f);
         sgl_begin_triangles();
         sgl_v2f(-12.0f, 0.0f);
@@ -1122,7 +1102,7 @@ static void draw_npc_ship(const npc_ship_t* npc) {
     sgl_scale(scale, scale, 1.0f);
 
     if (npc->thrusting) {
-        float flicker = 8.0f + sinf(g.time * 38.0f + npc->pos.x) * 2.5f;
+        float flicker = 8.0f + sinf(g.world.time * 38.0f + npc->pos.x) * 2.5f;
         sgl_c4f(1.0f, 0.6f, 0.15f, 0.9f);
         sgl_begin_triangles();
         sgl_v2f(-12.0f, 0.0f);
@@ -1154,7 +1134,7 @@ static void draw_npc_ship(const npc_ship_t* npc) {
 static void draw_npc_mining_beam(const npc_ship_t* npc) {
     if (npc->state != NPC_STATE_MINING) return;
     if (npc->target_asteroid < 0) return;
-    const asteroid_t* asteroid = &g.asteroids[npc->target_asteroid];
+    const asteroid_t* asteroid = &g.world.asteroids[npc->target_asteroid];
     if (!asteroid->active) return;
 
     vec2 forward = v2_from_angle(npc->angle);
@@ -1168,22 +1148,22 @@ static void draw_npc_mining_beam(const npc_ship_t* npc) {
 
 static void draw_npc_ships(void) {
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        if (!g.npc_ships[i].active) continue;
-        draw_npc_ship(&g.npc_ships[i]);
-        draw_npc_mining_beam(&g.npc_ships[i]);
+        if (!g.world.npc_ships[i].active) continue;
+        draw_npc_ship(&g.world.npc_ships[i]);
+        draw_npc_mining_beam(&g.world.npc_ships[i]);
     }
 }
 
 static void draw_beam(void) {
-    if (!g.beam_active) {
+    if (!g.world.players[0].beam_active) {
         return;
     }
 
-    if (g.beam_hit) {
-        draw_segment(g.beam_start, g.beam_end, 0.45f, 1.0f, 0.92f, 0.95f);
-        draw_segment(g.beam_start, g.beam_end, 0.12f, 0.78f, 1.0f, 0.35f);
+    if (g.world.players[0].beam_hit) {
+        draw_segment(g.world.players[0].beam_start, g.world.players[0].beam_end, 0.45f, 1.0f, 0.92f, 0.95f);
+        draw_segment(g.world.players[0].beam_start, g.world.players[0].beam_end, 0.12f, 0.78f, 1.0f, 0.35f);
     } else {
-        draw_segment(g.beam_start, g.beam_end, 0.9f, 0.75f, 0.30f, 0.55f);
+        draw_segment(g.world.players[0].beam_start, g.world.players[0].beam_end, 0.9f, 0.75f, 0.30f, 0.55f);
     }
 }
 
@@ -1339,7 +1319,7 @@ static void draw_hud_panels(void) {
     draw_ui_panel(top_x, top_y, top_w, top_h, 0.03f);
     draw_ui_panel(bottom_x, bottom_y, bottom_w, bottom_h, 0.02f);
 
-    if (g.docked) {
+    if (g.world.players[0].docked) {
         float panel_x = 0.0f;
         float panel_y = 0.0f;
         float panel_w = 0.0f;
@@ -1434,13 +1414,13 @@ static void draw_hud_panels(void) {
         }
 
         if (show_fit_panel) {
-            draw_ui_meter(fit_x + 16.0f, fit_y + 54.0f, fit_w - 32.0f, 12.0f, g.ship.hull / ship_max_hull(&g.ship), 0.96f, 0.54f, 0.28f);
-            draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, ship_total_cargo(&g.ship) / fmaxf(1.0f, ship_cargo_capacity(&g.ship)), 0.26f, 0.90f, 0.72f);
+            draw_ui_meter(fit_x + 16.0f, fit_y + 54.0f, fit_w - 32.0f, 12.0f, g.world.players[0].ship.hull / ship_max_hull(&g.world.players[0].ship), 0.96f, 0.54f, 0.28f);
+            draw_ui_meter(fit_x + 16.0f, fit_y + 94.0f, fit_w - 32.0f, 12.0f, ship_total_cargo(&g.world.players[0].ship) / fmaxf(1.0f, ship_cargo_capacity(&g.world.players[0].ship)), 0.26f, 0.90f, 0.72f);
             if (ui.station->role == STATION_ROLE_YARD) {
-                draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.ship.hold_level, 0.50f, 0.82f, 1.0f);
+                draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.world.players[0].ship.hold_level, 0.50f, 0.82f, 1.0f);
             } else if (ui.station->role == STATION_ROLE_BEAMWORKS) {
-                draw_upgrade_pips(fit_x + 18.0f, fit_y + 146.0f, g.ship.mining_level, 0.34f, 0.88f, 1.0f);
-                draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.ship.tractor_level, 0.42f, 1.0f, 0.86f);
+                draw_upgrade_pips(fit_x + 18.0f, fit_y + 146.0f, g.world.players[0].ship.mining_level, 0.34f, 0.88f, 1.0f);
+                draw_upgrade_pips(fit_x + 18.0f, fit_y + 184.0f, g.world.players[0].ship.tractor_level, 0.42f, 1.0f, 0.86f);
             }
         }
     }
@@ -1452,7 +1432,7 @@ static void draw_hud_panels(void) {
 }
 
 static void draw_station_services(const station_ui_state_t* ui) {
-    if (!g.docked) {
+    if (!g.world.players[0].docked) {
         return;
     }
 
@@ -1577,13 +1557,13 @@ static void draw_station_services(const station_ui_state_t* ui) {
             sdtx_puts("Ore only sells here.");
         } else if (ui->station->role == STATION_ROLE_YARD) {
             int frames = (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]);
-            int need = (int)lroundf(upgrade_product_cost(&g.ship,SHIP_UPGRADE_HOLD));
-            sdtx_printf("Hold %d ore  Lv %d/%d", ui->cargo_capacity, g.ship.hold_level, SHIP_UPGRADE_MAX_LEVEL);
+            int need = (int)lroundf(upgrade_product_cost(&g.world.players[0].ship,SHIP_UPGRADE_HOLD));
+            sdtx_printf("Hold %d ore  Lv %d/%d", ui->cargo_capacity, g.world.players[0].ship.hold_level, SHIP_UPGRADE_MAX_LEVEL);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 56.0f));
             sdtx_printf("Hull %d/%d", ui->hull_now, ui->hull_max);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 88.0f));
             sdtx_color3b(145, 160, 188);
-            sdtx_printf("Frames %d  Need %d", frames, ship_upgrade_maxed(&g.ship,SHIP_UPGRADE_HOLD) ? 0 : need);
+            sdtx_printf("Frames %d  Need %d", frames, ship_upgrade_maxed(&g.world.players[0].ship,SHIP_UPGRADE_HOLD) ? 0 : need);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 120.0f));
             sdtx_printf("Repair %s", ui->repair_cost > 0 ? "available" : "nominal");
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 152.0f));
@@ -1592,7 +1572,7 @@ static void draw_station_services(const station_ui_state_t* ui) {
         } else {
             int lasers = (int)lroundf(ui->station->product_stock[PRODUCT_LASER_MODULE]);
             int tractors = (int)lroundf(ui->station->product_stock[PRODUCT_TRACTOR_MODULE]);
-            sdtx_printf("Laser Lv %d/%d  Tractor Lv %d/%d", g.ship.mining_level, SHIP_UPGRADE_MAX_LEVEL, g.ship.tractor_level, SHIP_UPGRADE_MAX_LEVEL);
+            sdtx_printf("Laser Lv %d/%d  Tractor Lv %d/%d", g.world.players[0].ship.mining_level, SHIP_UPGRADE_MAX_LEVEL, g.world.players[0].ship.tractor_level, SHIP_UPGRADE_MAX_LEVEL);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 56.0f));
             sdtx_printf("Hull %d/%d", ui->hull_now, ui->hull_max);
             sdtx_pos(ui_text_pos(fit_x + 18.0f), ui_text_pos(fit_y + 88.0f));
@@ -1638,25 +1618,25 @@ static void draw_hud(void) {
     uint8_t message_r = 164;
     uint8_t message_g = 177;
     uint8_t message_b = 205;
-    int hull_units = (int)lroundf(g.ship.hull);
-    int hull_capacity = (int)lroundf(ship_max_hull(&g.ship));
-    int cargo_units = (int)lroundf(ship_raw_ore_total(&g.ship));
-    int credits = (int)lroundf(g.ship.credits);
-    int cargo_capacity = (int)lroundf(ship_cargo_capacity(&g.ship));
-    int payout_preview = (int)lroundf(station_cargo_sale_value(&g.ship, current_station_ptr()));
+    int hull_units = (int)lroundf(g.world.players[0].ship.hull);
+    int hull_capacity = (int)lroundf(ship_max_hull(&g.world.players[0].ship));
+    int cargo_units = (int)lroundf(ship_raw_ore_total(&g.world.players[0].ship));
+    int credits = (int)lroundf(g.world.players[0].ship.credits);
+    int cargo_capacity = (int)lroundf(ship_cargo_capacity(&g.world.players[0].ship));
+    int payout_preview = (int)lroundf(station_cargo_sale_value(&g.world.players[0].ship, current_station_ptr()));
     const station_t* current_station = current_station_ptr();
     const station_t* navigation_station = navigation_station_ptr();
     station_ui_state_t ui = { 0 };
-    if (g.docked) {
+    if (g.world.players[0].docked) {
         build_station_ui_state(&ui);
     }
     int station_distance = 0;
 
-    vec2 forward = v2_from_angle(g.ship.angle);
+    vec2 forward = v2_from_angle(g.world.players[0].ship.angle);
     vec2 home = v2(0.0f, -1.0f);
     if (navigation_station != NULL) {
-        station_distance = (int)lroundf(v2_len(v2_sub(navigation_station->pos, g.ship.pos)));
-        home = v2_norm(v2_sub(navigation_station->pos, g.ship.pos));
+        station_distance = (int)lroundf(v2_len(v2_sub(navigation_station->pos, g.world.players[0].ship.pos)));
+        home = v2_norm(v2_sub(navigation_station->pos, g.world.players[0].ship.pos));
     }
     float bearing = atan2f(v2_cross(forward, home), v2_dot(forward, home));
     int bearing_degrees = (int)lroundf(fabsf(bearing) * (180.0f / PI_F));
@@ -1693,17 +1673,17 @@ static void draw_hud(void) {
 
         sdtx_pos(top_text_x, top_row_0);
         sdtx_color3b(232, 241, 255);
-        sdtx_printf("%s // CR %d", g.docked ? "RUN" : "SHIP", credits);
+        sdtx_printf("%s // CR %d", g.world.players[0].docked ? "RUN" : "SHIP", credits);
 
         sdtx_pos(top_text_x, top_row_1);
         sdtx_color3b(203, 220, 248);
         sdtx_printf("H %d/%d  C %d/%d", hull_units, hull_capacity, cargo_units, cargo_capacity);
 
         sdtx_pos(top_text_x, top_row_2);
-        if (g.docked) {
+        if (g.world.players[0].docked) {
             sdtx_color3b(112, 255, 214);
             sdtx_printf("%s // E launch", dock_role);
-        } else if (g.in_dock_range) {
+        } else if (g.world.players[0].in_dock_range) {
             sdtx_color3b(112, 255, 214);
             sdtx_puts("DOCK RING // E dock");
         } else {
@@ -1712,7 +1692,7 @@ static void draw_hud(void) {
         }
 
         sdtx_pos(top_text_x, top_row_3);
-        if (g.docked) {
+        if (g.world.players[0].docked) {
             sdtx_color3b(130, 255, 235);
             if (station_has_service(STATION_SERVICE_ORE_BUYER)) {
                 if (cargo_units > 0) {
@@ -1723,17 +1703,17 @@ static void draw_hud(void) {
             } else {
                 sdtx_printf("%s CONSOLE", dock_role);
             }
-        } else if ((g.hover_asteroid >= 0) && g.asteroids[g.hover_asteroid].active) {
-            const asteroid_t* asteroid = &g.asteroids[g.hover_asteroid];
+        } else if ((g.world.players[0].hover_asteroid >= 0) && g.world.asteroids[g.world.players[0].hover_asteroid].active) {
+            const asteroid_t* asteroid = &g.world.asteroids[g.world.players[0].hover_asteroid];
             int integrity_left = (int)lroundf(asteroid->hp);
             sdtx_color3b(130, 255, 235);
             sdtx_printf("TGT %s // %s // %d HP", asteroid_tier_name(asteroid->tier), commodity_code(asteroid->commodity), integrity_left);
-        } else if (g.nearby_fragments > 0) {
+        } else if (g.world.players[0].nearby_fragments > 0) {
             sdtx_color3b(130, 255, 235);
-            if (g.tractor_fragments > 0) {
-                sdtx_printf("TRACTOR // %d FRAG", g.tractor_fragments);
+            if (g.world.players[0].tractor_fragments > 0) {
+                sdtx_printf("TRACTOR // %d FRAG", g.world.players[0].tractor_fragments);
             } else {
-                sdtx_printf("FRAGMENTS // %d", g.nearby_fragments);
+                sdtx_printf("FRAGMENTS // %d", g.world.players[0].nearby_fragments);
             }
         } else if (cargo_units >= cargo_capacity) {
             sdtx_color3b(255, 221, 119);
@@ -1745,7 +1725,7 @@ static void draw_hud(void) {
 
         sdtx_pos(bottom_text_x, bottom_text_y);
         sdtx_color3b(145, 160, 188);
-        if (g.docked) {
+        if (g.world.players[0].docked) {
             if (current_station->role == STATION_ROLE_REFINERY) {
                 sdtx_puts("1 sell  2 repair  E launch");
             } else if (current_station->role == STATION_ROLE_YARD) {
@@ -1784,17 +1764,17 @@ static void draw_hud(void) {
 
     sdtx_pos(top_text_x, top_row_0);
     sdtx_color3b(232, 241, 255);
-    sdtx_puts(g.docked ? "RUN STATUS" : "SHIP STATUS");
+    sdtx_puts(g.world.players[0].docked ? "RUN STATUS" : "SHIP STATUS");
 
     sdtx_pos(top_text_x, top_row_1);
     sdtx_color3b(203, 220, 248);
     sdtx_printf("CR %d  H %d/%d  C %d/%d", credits, hull_units, hull_capacity, cargo_units, cargo_capacity);
 
     sdtx_pos(top_text_x, top_row_2);
-    if (g.docked) {
+    if (g.world.players[0].docked) {
         sdtx_color3b(112, 255, 214);
         sdtx_printf("%s // docked // E launch", current_station->name);
-    } else if (g.in_dock_range) {
+    } else if (g.world.players[0].in_dock_range) {
         sdtx_color3b(112, 255, 214);
         sdtx_puts("Dock ring hot // E to dock");
     } else {
@@ -1807,7 +1787,7 @@ static void draw_hud(void) {
     }
 
     sdtx_pos(top_text_x, top_row_3);
-    if (g.docked) {
+    if (g.world.players[0].docked) {
         sdtx_color3b(130, 255, 235);
         if (station_has_service(STATION_SERVICE_ORE_BUYER)) {
             if (cargo_units > 0) {
@@ -1818,17 +1798,17 @@ static void draw_hud(void) {
         } else {
             sdtx_printf("%s console", station_role_name(current_station->role));
         }
-    } else if ((g.hover_asteroid >= 0) && g.asteroids[g.hover_asteroid].active) {
-        const asteroid_t* asteroid = &g.asteroids[g.hover_asteroid];
+    } else if ((g.world.players[0].hover_asteroid >= 0) && g.world.asteroids[g.world.players[0].hover_asteroid].active) {
+        const asteroid_t* asteroid = &g.world.asteroids[g.world.players[0].hover_asteroid];
         int integrity_left = (int)lroundf(asteroid->hp);
         sdtx_color3b(130, 255, 235);
         sdtx_printf("Target %s %s // %s // %d hp", asteroid_tier_name(asteroid->tier), asteroid_tier_kind(asteroid->tier), commodity_short_name(asteroid->commodity), integrity_left);
-    } else if (g.nearby_fragments > 0) {
+    } else if (g.world.players[0].nearby_fragments > 0) {
         sdtx_color3b(130, 255, 235);
-        if (g.tractor_fragments > 0) {
-            sdtx_printf("Tractor lock // %d frag%s", g.tractor_fragments, g.tractor_fragments == 1 ? "" : "s");
+        if (g.world.players[0].tractor_fragments > 0) {
+            sdtx_printf("Tractor lock // %d frag%s", g.world.players[0].tractor_fragments, g.world.players[0].tractor_fragments == 1 ? "" : "s");
         } else {
-            sdtx_printf("Nearby fragments // %d", g.nearby_fragments);
+            sdtx_printf("Nearby fragments // %d", g.world.players[0].nearby_fragments);
         }
     } else if (cargo_units >= cargo_capacity) {
         sdtx_color3b(255, 221, 119);
@@ -1840,7 +1820,7 @@ static void draw_hud(void) {
 
     sdtx_pos(bottom_text_x, bottom_text_y);
     sdtx_color3b(145, 160, 188);
-    if (g.docked) {
+    if (g.world.players[0].docked) {
         if (current_station->role == STATION_ROLE_REFINERY) {
             sdtx_puts("1 sell  2 repair  E launch  R reset  ESC quit");
         } else if (current_station->role == STATION_ROLE_YARD) {
@@ -1906,20 +1886,20 @@ static bool is_key_pressed(sapp_keycode key) {
 }
 
 static vec2 ship_forward(void) {
-    return v2_from_angle(g.ship.angle);
+    return v2_from_angle(g.world.players[0].ship.angle);
 }
 
 static vec2 ship_muzzle(vec2 forward) {
-    return v2_add(g.ship.pos, v2_scale(forward, ship_hull_def(&g.ship)->ship_radius + 8.0f));
+    return v2_add(g.world.players[0].ship.pos, v2_scale(forward, ship_hull_def(&g.world.players[0].ship)->ship_radius + 8.0f));
 }
 
 static void reset_step_feedback(void) {
-    g.hover_asteroid = -1;
-    g.beam_active = false;
-    g.beam_hit = false;
+    g.world.players[0].hover_asteroid = -1;
+    g.world.players[0].beam_active = false;
+    g.world.players[0].beam_hit = false;
     g.thrusting = false;
-    g.nearby_fragments = 0;
-    g.tractor_fragments = 0;
+    g.world.players[0].nearby_fragments = 0;
+    g.world.players[0].tractor_fragments = 0;
 }
 
 static input_intent_t sample_input_intent(void) {
@@ -1966,27 +1946,7 @@ static void step_notice_timer(float dt) {
 
 /* No sync_globals_to_world — world_t is the source of truth in single player. */
 
-static void sync_world_to_globals(void) {
-    server_player_t* sp = &g.world.players[0];
-    g.ship = sp->ship;
-    g.current_station = sp->current_station;
-    g.nearby_station = sp->nearby_station;
-    g.docked = sp->docked;
-    g.in_dock_range = sp->in_dock_range;
-    g.hover_asteroid = sp->hover_asteroid;
-    g.beam_active = sp->beam_active;
-    g.beam_hit = sp->beam_hit;
-    g.beam_start = sp->beam_start;
-    g.beam_end = sp->beam_end;
-    g.nearby_fragments = sp->nearby_fragments;
-    g.tractor_fragments = sp->tractor_fragments;
-    memcpy(g.stations, g.world.stations, sizeof(g.stations));
-    memcpy(g.asteroids, g.world.asteroids, sizeof(g.asteroids));
-    memcpy(g.npc_ships, g.world.npc_ships, sizeof(g.npc_ships));
-    g.rng = g.world.rng;
-    g.time = g.world.time;
-    g.field_spawn_timer = g.world.field_spawn_timer;
-}
+/* sync_world_to_globals removed — everything reads from g.world directly */
 
 static void sim_step(float dt) {
     reset_step_feedback();
@@ -2005,7 +1965,7 @@ static void sim_step(float dt) {
      * via network callbacks and overwrite g.world state. */
     g.world.players[0].input = intent;
     world_sim_step(&g.world, dt);
-    sync_world_to_globals();
+
 
     /* Play audio from sim events */
     for (int i = 0; i < g.world.events.count; i++) {
@@ -2020,7 +1980,7 @@ static void sim_step(float dt) {
             case SIM_EVENT_DOCK:
                 if (ev->player_id == 0) {
                     audio_play_dock(&g.audio);
-                    set_notice("Docked at %s.", g.stations[g.current_station].name);
+                    set_notice("Docked at %s.", g.world.stations[g.world.players[0].current_station].name);
                 }
                 break;
             case SIM_EVENT_LAUNCH:
@@ -2051,7 +2011,7 @@ static void sim_step(float dt) {
     /* In multiplayer, also queue one-shot actions for network send. */
     if (g.multiplayer_enabled && net_is_connected() && g.pending_net_action == 0) {
         if (intent.interact)
-            g.pending_net_action = g.docked ? 2 : 1;
+            g.pending_net_action = g.world.players[0].docked ? 2 : 1;
         else if (intent.service_sell)
             g.pending_net_action = 3;
         else if (intent.service_repair)
@@ -2076,7 +2036,7 @@ static void apply_remote_player_ship(const NetPlayerShipState* state);
 
 static void init(void) {
     memset(&g, 0, sizeof(g));
-    g.rng = 0xC0FFEE12u;
+    g.world.rng = 0xC0FFEE12u;
 
     sg_setup(&(sg_desc){
         .environment = sglue_environment(),
@@ -2254,7 +2214,7 @@ static void draw_remote_players(void) {
 
         /* Thrust flame */
         if (thrusting) {
-            float flicker = 10.0f + sinf(g.time * 42.0f + (float)i * 7.0f) * 3.0f;
+            float flicker = 10.0f + sinf(g.world.time * 42.0f + (float)i * 7.0f) * 3.0f;
             sgl_c4f(1.0f, 0.74f, 0.24f, 0.9f);
             sgl_begin_triangles();
             sgl_v2f(-12.0f, 0.0f);
@@ -2297,7 +2257,7 @@ static void draw_remote_players(void) {
 }
 
 static void render_world(void) {
-    vec2 camera = g.ship.pos;
+    vec2 camera = g.world.players[0].ship.pos;
     float half_w = sapp_widthf() * 0.5f;
     float half_h = sapp_heightf() * 0.5f;
 
@@ -2310,15 +2270,15 @@ static void render_world(void) {
 
     draw_background(camera);
     for (int i = 0; i < MAX_STATIONS; i++) {
-        bool is_current = g.docked && (i == g.current_station);
-        bool is_nearby = (!g.docked) && (i == g.nearby_station);
-        draw_station(&g.stations[i], is_current, is_nearby);
+        bool is_current = g.world.players[0].docked && (i == g.world.players[0].current_station);
+        bool is_nearby = (!g.world.players[0].docked) && (i == g.world.players[0].nearby_station);
+        draw_station(&g.world.stations[i], is_current, is_nearby);
     }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!g.asteroids[i].active) {
+        if (!g.world.asteroids[i].active) {
             continue;
         }
-        draw_asteroid(&g.asteroids[i], i == g.hover_asteroid);
+        draw_asteroid(&g.world.asteroids[i], i == g.world.players[0].hover_asteroid);
     }
     draw_beam();
     draw_ship_tractor_field();
@@ -2385,9 +2345,9 @@ static void frame(void) {
         g.net_send_timer += frame_dt;
         if (g.net_send_timer >= 0.05f) {
             g.net_send_timer -= 0.05f;
-            net_send_state(g.ship.pos.x, g.ship.pos.y,
-                           g.ship.vel.x, g.ship.vel.y,
-                           g.ship.angle);
+            net_send_state(g.world.players[0].ship.pos.x, g.world.players[0].ship.pos.y,
+                           g.world.players[0].ship.vel.x, g.world.players[0].ship.vel.y,
+                           g.world.players[0].ship.angle);
             /* Also send input flags + station action. */
             uint8_t flags = 0;
             uint8_t action = 0;
@@ -2401,7 +2361,7 @@ static void frame(void) {
             /* Use queued one-shot action from sim_step (where key_pressed is valid). */
             action = g.pending_net_action;
             g.pending_net_action = 0;
-            net_send_input(flags, g.ship.angle, action);
+            net_send_input(flags, g.world.players[0].ship.angle, action);
         }
 
     }
