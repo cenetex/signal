@@ -1969,6 +1969,7 @@ static void sim_step(float dt) {
     LOCAL_PLAYER.input = intent;
     world_sim_step(&g.world, dt);
 
+    g.thrusting = (intent.thrust > 0.0f) && !LOCAL_PLAYER.docked;
 
     /* Play audio from sim events */
     for (int i = 0; i < g.world.events.count; i++) {
@@ -2191,17 +2192,19 @@ static void apply_remote_player_ship(const NetPlayerShipState* state) {
     sp->ship.cargo[COMMODITY_FERRITE_ORE] = state->cargo_ferrite;
     sp->ship.cargo[COMMODITY_CUPRITE_ORE] = state->cargo_cuprite;
     sp->ship.cargo[COMMODITY_CRYSTAL_ORE] = state->cargo_crystal;
-    /* Only apply server docked state when not mid-prediction (e.g. just
-     * pressed E to launch/dock).  Without this guard the 4 Hz ship-state
-     * broadcast can snap docked=true back before the server processes
-     * the launch action, pinning the player in place. */
-    if (g.dock_predict_timer <= 0.0f) {
-        sp->docked = state->docked;
+    /* Dock-state reconciliation: the server is authoritative, but we
+     * must not snap back to docked while the local sim has already
+     * launched (the server may not have processed the action yet).
+     * - Server says undocked → always accept.
+     * - Server says docked  → only accept if we locally agree
+     *   (still docked or within the dock-prediction guard window). */
+    if (!state->docked) {
+        sp->docked = false;
+    } else if (sp->docked || g.dock_predict_timer <= 0.0f) {
+        sp->docked = true;
         sp->current_station = (int)state->current_station;
-        if (sp->docked) {
-            sp->in_dock_range = true;
-            sp->nearby_station = sp->current_station;
-        }
+        sp->in_dock_range = true;
+        sp->nearby_station = sp->current_station;
     }
 }
 

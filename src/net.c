@@ -317,7 +317,7 @@ void net_send_input(uint8_t flags, float angle, uint8_t action) {
 }
 
 void net_send_state(float x, float y, float vx, float vy, float angle) {
-    uint8_t buf[22];
+    uint8_t buf[23];
     buf[0] = NET_MSG_STATE;
     buf[1] = net_state.local_id;
     write_f32_le(&buf[2], x);
@@ -325,7 +325,8 @@ void net_send_state(float x, float y, float vx, float vy, float angle) {
     write_f32_le(&buf[10], vx);
     write_f32_le(&buf[14], vy);
     write_f32_le(&buf[18], angle);
-    ws_send_binary(buf, 22);
+    buf[22] = 0;
+    ws_send_binary(buf, 23);
 }
 
 void net_poll(void) {
