@@ -719,6 +719,47 @@ TEST(test_roundtrip_player_state) {
     ASSERT(flags & 4);   /* docked */
 }
 
+TEST(test_roundtrip_batched_player_states) {
+    server_player_t players[MAX_PLAYERS];
+    memset(players, 0, sizeof(players));
+
+    /* Two connected players */
+    players[0].connected = true;
+    players[0].ship.pos = v2(100.0f, 200.0f);
+    players[0].ship.vel = v2(1.0f, -1.0f);
+    players[0].ship.angle = 1.5f;
+    players[0].input.thrust = 1.0f;
+    players[0].docked = false;
+
+    players[3].connected = true;
+    players[3].ship.pos = v2(-50.0f, 300.0f);
+    players[3].ship.vel = v2(0.0f, 2.0f);
+    players[3].ship.angle = 3.14f;
+    players[3].docked = true;
+
+    uint8_t buf[2 + MAX_PLAYERS * PLAYER_RECORD_SIZE];
+    int len = serialize_all_player_states(buf, players);
+
+    /* Should have 2 records */
+    ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_PLAYERS);
+    ASSERT_EQ_INT(buf[1], 2);
+    ASSERT_EQ_INT(len, 2 + 2 * PLAYER_RECORD_SIZE);
+
+    /* First record: player 0 */
+    uint8_t *p0 = &buf[2];
+    ASSERT_EQ_INT(p0[0], 0);
+    ASSERT_EQ_FLOAT(read_f32_le(&p0[1]), 100.0f, 0.01f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p0[5]), 200.0f, 0.01f);
+    ASSERT(p0[21] & 1); /* thrusting */
+    ASSERT(!(p0[21] & 4)); /* not docked */
+
+    /* Second record: player 3 */
+    uint8_t *p1 = &buf[2 + PLAYER_RECORD_SIZE];
+    ASSERT_EQ_INT(p1[0], 3);
+    ASSERT_EQ_FLOAT(read_f32_le(&p1[1]), -50.0f, 0.01f);
+    ASSERT(p1[21] & 4); /* docked */
+}
+
 TEST(test_roundtrip_asteroids) {
     asteroid_t asteroids[MAX_ASTEROIDS];
     memset(asteroids, 0, sizeof(asteroids));
@@ -3090,6 +3131,7 @@ int main(void) {
 
     printf("\nProtocol roundtrip tests:\n");
     RUN(test_roundtrip_player_state);
+    RUN(test_roundtrip_batched_player_states);
     RUN(test_roundtrip_asteroids);
     RUN(test_roundtrip_npcs);
     RUN(test_roundtrip_stations);

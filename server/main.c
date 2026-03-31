@@ -203,14 +203,11 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
 /* ------------------------------------------------------------------ */
 
 static void broadcast_player_states(void) {
-    uint8_t buf[24];
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!world.players[i].connected) continue;
-        int len = serialize_player_state(buf, (uint8_t)i, &world.players[i]);
-        /* The owning client needs authoritative STATE too for reconciliation. */
-        ws_send(world.players[i].conn, buf, (size_t)len);
-        broadcast_except(i, buf, (size_t)len);
-    }
+    /* Batch all connected player states into one message, send once per client.
+     * This is O(N) sends instead of O(N^2). */
+    uint8_t buf[2 + MAX_PLAYERS * PLAYER_RECORD_SIZE];
+    int len = serialize_all_player_states(buf, world.players);
+    broadcast(buf, (size_t)len);
 }
 
 static void broadcast_world(void) {

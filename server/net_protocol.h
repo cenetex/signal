@@ -26,6 +26,7 @@ enum {
     NET_MSG_PLAYER_SHIP     = 0x15,
     NET_MSG_SERVER_INFO     = 0x16,
     NET_MSG_STATION_IDENTITY= 0x17,
+    NET_MSG_WORLD_PLAYERS   = 0x18,
 };
 
 /* Input flags (client -> server) */
@@ -108,6 +109,35 @@ static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_
     if (sp->docked) flags |= 4;
     buf[22] = flags;
     return 23;
+}
+
+/*
+ * WORLD_PLAYERS message (batched):
+ * [type:1][count:1] + count * 22-byte records
+ * Each record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1]
+ */
+#define PLAYER_RECORD_SIZE 22
+static inline int serialize_all_player_states(uint8_t *buf, const server_player_t *players) {
+    int count = 0;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (!players[i].connected) continue;
+        uint8_t *p = &buf[2 + count * PLAYER_RECORD_SIZE];
+        p[0] = (uint8_t)i;
+        write_f32_le(&p[1],  players[i].ship.pos.x);
+        write_f32_le(&p[5],  players[i].ship.pos.y);
+        write_f32_le(&p[9],  players[i].ship.vel.x);
+        write_f32_le(&p[13], players[i].ship.vel.y);
+        write_f32_le(&p[17], players[i].ship.angle);
+        uint8_t flags = 0;
+        if (players[i].input.thrust > 0.0f) flags |= 1;
+        if (players[i].beam_active && players[i].beam_hit) flags |= 2;
+        if (players[i].docked) flags |= 4;
+        p[21] = flags;
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_PLAYERS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * PLAYER_RECORD_SIZE;
 }
 
 /*

@@ -106,6 +106,32 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_WORLD_PLAYERS:
+        if (len < 2) break;
+        {
+            int count = (int)data[1];
+            int expected = 2 + count * 22;
+            if (len < expected) break;
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[2 + i * 22];
+                uint8_t id = p[0];
+                if (id >= NET_MAX_PLAYERS) continue;
+                NetPlayerState* ps = &net_state.players[id];
+                ps->player_id = id;
+                ps->x     = read_f32_le(&p[1]);
+                ps->y     = read_f32_le(&p[5]);
+                ps->vx    = read_f32_le(&p[9]);
+                ps->vy    = read_f32_le(&p[13]);
+                ps->angle = read_f32_le(&p[17]);
+                ps->flags = p[21];
+                ps->active = true;
+                if (net_state.callbacks.on_state) {
+                    net_state.callbacks.on_state(ps);
+                }
+            }
+        }
+        break;
+
     case NET_MSG_WORLD_ASTEROIDS:
         if (len < 2) break;
         {

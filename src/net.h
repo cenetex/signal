@@ -34,6 +34,7 @@ enum {
     NET_MSG_PLAYER_SHIP     = 0x15,
     NET_MSG_SERVER_INFO     = 0x16,
     NET_MSG_STATION_IDENTITY= 0x17,
+    NET_MSG_WORLD_PLAYERS   = 0x18,
 };
 
 /* Station econ record size — must match server's STATION_RECORD_SIZE */
