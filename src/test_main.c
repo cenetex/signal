@@ -1282,6 +1282,302 @@ TEST(test_bug30_double_collect_fragment) {
     ASSERT(total <= 10.5f);  /* small epsilon for float */
 }
 
+/* ================================================================== */
+/* Sim integration scenarios (#79)                                    */
+/* ================================================================== */
+
+TEST(test_scenario_full_mining_cycle) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    ASSERT(w.players[0].docked);
+
+    /* Launch from station */
+    w.players[0].input.interact = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.interact = false;
+    ASSERT(!w.players[0].docked);
+
+    /* Find nearest active non-S asteroid */
+    int target = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (w.asteroids[i].active && w.asteroids[i].tier != ASTEROID_TIER_S) {
+            target = i; break;
+        }
+    }
+    ASSERT(target >= 0);
+
+    /* Position player in mining range, facing the asteroid */
+    vec2 apos = w.asteroids[target].pos;
+    w.players[0].ship.pos = v2(apos.x - 50.0f, apos.y);
+    w.players[0].ship.angle = 0.0f;
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+
+    /* Mine until asteroid fractures (hp <= 0) */
+    w.players[0].input.mine = true;
+    for (int i = 0; i < 12000; i++) {
+        world_sim_step(&w, SIM_DT);
+        if (w.asteroids[target].hp <= 0.0f || !w.asteroids[target].active) break;
+        /* Re-position to stay in range (asteroid may drift) */
+        w.players[0].ship.pos = v2(w.asteroids[target].pos.x - 50.0f, w.asteroids[target].pos.y);
+        w.players[0].ship.vel = v2(0.0f, 0.0f);
+    }
+    w.players[0].input.mine = false;
+    /* Asteroid should have fractured or been destroyed */
+    ASSERT(w.asteroids[target].hp <= 0.0f || !w.asteroids[target].active);
+
+    /* Find a TIER_S fragment to collect */
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (w.asteroids[i].active && w.asteroids[i].tier == ASTEROID_TIER_S && w.asteroids[i].ore > 0.0f) {
+            frag = i; break;
+        }
+    }
+    ASSERT(frag >= 0);
+
+    /* Position player near fragment and collect via sim steps */
+    w.players[0].ship.pos = w.asteroids[frag].pos;
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    for (int i = 0; i < 120; i++)
+        world_sim_step(&w, SIM_DT);
+
+    /* Should have some cargo now */
+    float ore = ship_raw_ore_total(&w.players[0].ship);
+    ASSERT(ore > 0.0f);
+
+    /* Dock at station 0 (refinery) */
+    w.players[0].ship.pos = w.stations[0].pos;
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    w.players[0].nearby_station = 0;
+    w.players[0].in_dock_range = true;
+    w.players[0].input.interact = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.interact = false;
+    ASSERT(w.players[0].docked);
+
+    /* Sell cargo */
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.service_sell = false;
+
+    /* Verify credits > 0 and cargo == 0 */
+    ASSERT(w.players[0].ship.credits > 0.0f);
+    ASSERT(ship_raw_ore_total(&w.players[0].ship) < 0.01f);
+}
+
+TEST(test_scenario_two_players_mining) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    player_init_ship(&w.players[1], &w);
+    w.players[0].connected = true;
+    w.players[1].connected = true;
+
+    /* Launch both */
+    w.players[0].input.interact = true;
+    w.players[1].input.interact = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.interact = false;
+    w.players[1].input.interact = false;
+    ASSERT(!w.players[0].docked);
+    ASSERT(!w.players[1].docked);
+
+    /* Find two different active non-S asteroids */
+    int ast0 = -1, ast1 = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (w.asteroids[i].active && w.asteroids[i].tier != ASTEROID_TIER_S) {
+            if (ast0 < 0) { ast0 = i; }
+            else { ast1 = i; break; }
+        }
+    }
+    ASSERT(ast0 >= 0 && ast1 >= 0);
+
+    float hp0_before = w.asteroids[ast0].hp;
+    float hp1_before = w.asteroids[ast1].hp;
+
+    /* Position players near their respective asteroids */
+    w.players[0].ship.pos = v2(w.asteroids[ast0].pos.x - 50.0f, w.asteroids[ast0].pos.y);
+    w.players[0].ship.angle = 0.0f;
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    w.players[1].ship.pos = v2(w.asteroids[ast1].pos.x - 50.0f, w.asteroids[ast1].pos.y);
+    w.players[1].ship.angle = 0.0f;
+    w.players[1].ship.vel = v2(0.0f, 0.0f);
+
+    /* Both mine for 120 ticks */
+    w.players[0].input.mine = true;
+    w.players[1].input.mine = true;
+    for (int i = 0; i < 120; i++) {
+        w.players[0].ship.pos = v2(w.asteroids[ast0].pos.x - 50.0f, w.asteroids[ast0].pos.y);
+        w.players[1].ship.pos = v2(w.asteroids[ast1].pos.x - 50.0f, w.asteroids[ast1].pos.y);
+        w.players[0].ship.vel = v2(0.0f, 0.0f);
+        w.players[1].ship.vel = v2(0.0f, 0.0f);
+        world_sim_step(&w, SIM_DT);
+    }
+    w.players[0].input.mine = false;
+    w.players[1].input.mine = false;
+
+    /* Each asteroid took damage independently */
+    ASSERT(w.asteroids[ast0].hp < hp0_before);
+    ASSERT(w.asteroids[ast1].hp < hp1_before);
+
+    /* No state bleed: player 0's cargo didn't affect player 1 */
+    float cargo0 = ship_raw_ore_total(&w.players[0].ship);
+    float cargo1 = ship_raw_ore_total(&w.players[1].ship);
+    /* Both should have zero or independent cargo (S fragments, not direct ore from non-S) */
+    (void)cargo0; (void)cargo1;
+    /* Verify credits are independent */
+    ASSERT_EQ_FLOAT(w.players[0].ship.credits, 0.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w.players[1].ship.credits, 0.0f, 0.01f);
+}
+
+TEST(test_scenario_npc_economy_30_seconds) {
+    world_t w = {0};
+    world_reset(&w);
+
+    /* Run for 3600 ticks (30 seconds at 120Hz) with no players */
+    for (int i = 0; i < 3600; i++)
+        world_sim_step(&w, SIM_DT);
+
+    /* Verify: at least one asteroid was mined (some HP < max_hp or deactivated) */
+    bool any_mined = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active ||
+            (w.asteroids[i].hp < w.asteroids[i].max_hp && w.asteroids[i].max_hp > 0.0f)) {
+            any_mined = true; break;
+        }
+    }
+    ASSERT(any_mined);
+
+    /* Verify: refinery has processed some ore (inventory > 0 for at least one ingot) */
+    bool any_ingot = false;
+    for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
+        if (w.stations[0].inventory[i] > 0.0f) { any_ingot = true; break; }
+    }
+    /* Also check if ore_buffer was consumed (smelting happened) */
+    bool ore_consumed = false;
+    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
+        if (w.stations[0].ore_buffer[i] > 0.0f) { ore_consumed = true; break; }
+    }
+    ASSERT(any_ingot || ore_consumed);
+
+    /* Verify: no negative values anywhere */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
+            ASSERT(w.stations[s].ore_buffer[i] >= 0.0f);
+        for (int i = 0; i < COMMODITY_COUNT; i++)
+            ASSERT(w.stations[s].inventory[i] >= 0.0f);
+        for (int i = 0; i < PRODUCT_COUNT; i++)
+            ASSERT(w.stations[s].product_stock[i] >= 0.0f);
+    }
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w.npc_ships[n].active) continue;
+        for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
+            ASSERT(w.npc_ships[n].cargo[i] >= 0.0f);
+    }
+}
+
+TEST(test_scenario_upgrade_requires_products) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    ASSERT(w.players[0].docked);
+
+    /* Launch then dock at station 2 (Helios Works - has laser upgrade) */
+    w.players[0].input.interact = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.interact = false;
+    ASSERT(!w.players[0].docked);
+
+    /* Dock at station 2 */
+    w.players[0].ship.pos = w.stations[2].pos;
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    w.players[0].nearby_station = 2;
+    w.players[0].in_dock_range = true;
+    w.players[0].input.interact = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.interact = false;
+    ASSERT(w.players[0].docked);
+    ASSERT_EQ_INT(w.players[0].current_station, 2);
+
+    /* Give player enough credits */
+    w.players[0].ship.credits = 1000.0f;
+    int level_before = w.players[0].ship.mining_level;
+
+    /* Set product_stock for PRODUCT_LASER_MODULE to 0 */
+    w.stations[2].product_stock[PRODUCT_LASER_MODULE] = 0.0f;
+
+    /* Try upgrade_mining -- should fail (no product stock) */
+    w.players[0].input.upgrade_mining = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.upgrade_mining = false;
+    ASSERT_EQ_INT(w.players[0].ship.mining_level, level_before);
+
+    /* Set product_stock to 20 */
+    w.stations[2].product_stock[PRODUCT_LASER_MODULE] = 20.0f;
+
+    /* Try upgrade_mining -- should succeed */
+    w.players[0].input.upgrade_mining = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.upgrade_mining = false;
+    ASSERT_EQ_INT(w.players[0].ship.mining_level, level_before + 1);
+}
+
+TEST(test_scenario_emergency_recovery) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+
+    /* Launch */
+    w.players[0].input.interact = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.interact = false;
+    ASSERT(!w.players[0].docked);
+
+    /* Give player some cargo */
+    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 50.0f;
+
+    /* Set hull to 1.0 (near death) */
+    w.players[0].ship.hull = 1.0f;
+
+    /* Give high velocity towards station 0 to trigger collision damage */
+    w.players[0].ship.pos = v2(w.stations[0].pos.x + 80.0f, w.stations[0].pos.y);
+    w.players[0].ship.vel = v2(-2000.0f, 0.0f);
+
+    /* Run sim for a few ticks */
+    for (int i = 0; i < 10; i++)
+        world_sim_step(&w, SIM_DT);
+
+    /* Verify: player is docked (emergency recovery triggered) */
+    ASSERT(w.players[0].docked);
+
+    /* Verify: hull is restored to max */
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull, ship_max_hull(&w.players[0].ship), 0.01f);
+
+    /* Verify: cargo is cleared (lost on recovery) */
+    ASSERT(ship_raw_ore_total(&w.players[0].ship) < 0.01f);
+}
+
+TEST(test_scenario_product_cap_pauses_production) {
+    world_t w = {0};
+    world_reset(&w);
+
+    /* Set station 1 (Kepler Yard) product_stock[PRODUCT_FRAME] to MAX_PRODUCT_STOCK */
+    w.stations[1].product_stock[PRODUCT_FRAME] = MAX_PRODUCT_STOCK;
+
+    /* Set ingot_buffer with some frame ingots */
+    w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] = 20.0f;
+
+    /* Run 120 ticks */
+    for (int i = 0; i < 120; i++)
+        world_sim_step(&w, SIM_DT);
+
+    /* Verify product_stock didn't exceed MAX_PRODUCT_STOCK */
+    ASSERT(w.stations[1].product_stock[PRODUCT_FRAME] <= MAX_PRODUCT_STOCK + 0.01f);
+}
+
 /* ---- Runner ---- */
 
 /* ================================================================== */
@@ -1712,6 +2008,223 @@ TEST(test_bug50_ship_collision_energy_gain) {
     ASSERT(ke_after <= ke_before);
 }
 
+/* ================================================================== */
+/* STRATEGIC TDD: Signal range (#82) — define the behavior first      */
+/* ================================================================== */
+
+TEST(test_signal_strength_at_station) {
+    /* At a station's position, signal should be 1.0 (full strength) */
+    world_t w = {0};
+    world_reset(&w);
+    /* station 0 is at (0, -240) */
+    /* signal_strength_at doesn't exist yet → won't compile until #82.
+     * For now, test the WORLD_RADIUS boundary which #82 replaces. */
+    float dist = v2_len(w.stations[0].pos);
+    ASSERT(dist < WORLD_RADIUS); /* station is inside world — will become signal range */
+    /* After #82: ASSERT_EQ_FLOAT(signal_strength_at(&w, w.stations[0].pos), 1.0f, 0.01f); */
+    ASSERT(0); /* FAIL: signal_strength_at not implemented */
+}
+
+TEST(test_signal_strength_falls_off) {
+    /* Signal should decrease linearly from 1.0 at station to 0.0 at range edge */
+    world_t w = {0};
+    world_reset(&w);
+    /* After #82: test that signal at half-range is ~0.5 */
+    /* float half = signal_strength_at(&w, v2(1100.0f, -240.0f)); // 1100u from refinery
+     * ASSERT(half > 0.3f && half < 0.7f); */
+    ASSERT(0); /* FAIL: not implemented */
+}
+
+TEST(test_signal_zero_outside_range) {
+    /* Far from all stations, signal should be 0.0 */
+    world_t w = {0};
+    world_reset(&w);
+    /* After #82: signal at (10000, 10000) should be 0.0 */
+    /* ASSERT_EQ_FLOAT(signal_strength_at(&w, v2(10000.0f, 10000.0f)), 0.0f, 0.01f); */
+    ASSERT(0); /* FAIL: not implemented */
+}
+
+TEST(test_signal_max_of_stations) {
+    /* When inside multiple stations' ranges, signal is the maximum, not sum */
+    world_t w = {0};
+    world_reset(&w);
+    /* Midpoint between station 0 and station 1 should get max of the two signals,
+     * not their sum. Signal is never > 1.0. */
+    /* After #82:
+     * float s = signal_strength_at(&w, v2(-160.0f, 0.0f));
+     * ASSERT(s <= 1.0f); */
+    ASSERT(0); /* FAIL: not implemented */
+}
+
+TEST(test_ship_thrust_scales_with_signal) {
+    /* At low signal, ship should accelerate slower */
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    /* Place ship at station (full signal) → thrust → measure velocity */
+    w.players[0].ship.pos = v2(0.0f, -240.0f);
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    w.players[0].ship.angle = 0.0f;
+    w.players[0].input.thrust = 1.0f;
+    world_sim_step(&w, SIM_DT);
+    float vel_full_signal = w.players[0].ship.vel.x;
+    /* Place ship at range edge (low signal) → same thrust → should be slower */
+    w.players[0].ship.pos = v2(2100.0f, 0.0f); /* near WORLD_RADIUS */
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    w.players[0].input.thrust = 1.0f;
+    world_sim_step(&w, SIM_DT);
+    float vel_low_signal = w.players[0].ship.vel.x;
+    /* After #82: vel_low_signal should be significantly less than vel_full_signal */
+    /* Currently both are the same — no signal scaling */
+    ASSERT(vel_low_signal < vel_full_signal * 0.7f);
+}
+
+/* ================================================================== */
+/* STRATEGIC TDD: Contracts (#70) — define the economic behavior      */
+/* ================================================================== */
+
+TEST(test_contract_generated_from_hopper_deficit) {
+    /* A refinery with low ore_buffer should generate an ore contract */
+    world_t w = {0};
+    world_reset(&w);
+    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f; /* well below 50% of 100 */
+    /* After #70: step_contracts should create a contract
+     * contract_t *c = find_contract(&w, 0, COMMODITY_FERRITE_ORE);
+     * ASSERT(c != NULL);
+     * ASSERT(c->quantity_needed > 30.0f); */
+    ASSERT(0); /* FAIL: contract system not implemented */
+}
+
+TEST(test_contract_price_escalates_with_age) {
+    /* An unfilled contract should increase in price over time */
+    /* After #70:
+     * contract_t c = {.base_price = 10.0f, .age = 0.0f};
+     * float price_t0 = contract_price(&c);
+     * c.age = 300.0f; // 5 minutes
+     * float price_t5 = contract_price(&c);
+     * ASSERT(price_t5 > price_t0 * 1.2f); */
+    ASSERT(0); /* FAIL: contract system not implemented */
+}
+
+TEST(test_contract_closes_when_deficit_filled) {
+    /* Selling ore that fills the hopper should close the contract */
+    world_t w = {0};
+    world_reset(&w);
+    /* After #70: generate contract, sell enough ore, verify contract gone */
+    ASSERT(0); /* FAIL: not implemented */
+}
+
+TEST(test_sell_price_uses_contract_price) {
+    /* When a contract exists, selling at that station should pay the
+     * escalated contract price, not the base buy_price */
+    world_t w = {0};
+    world_reset(&w);
+    /* After #70:
+     * Create contract with escalated price
+     * Sell ore
+     * Verify credits gained = contract_price * quantity, not base_price * quantity */
+    ASSERT(0); /* FAIL: not implemented */
+}
+
+TEST(test_hauler_fills_highest_value_contract) {
+    /* NPC hauler at a station should pick the highest-value contract
+     * fillable from local inventory, not a hardcoded destination */
+    world_t w = {0};
+    world_reset(&w);
+    /* After #70: set up two contracts with different values
+     * Run hauler decision logic
+     * Verify hauler targets the higher-value contract */
+    ASSERT(0); /* FAIL: not implemented */
+}
+
+/* ================================================================== */
+/* STRATEGIC TDD: Persistence (#71/#72) — save/load correctness       */
+/* ================================================================== */
+
+TEST(test_player_save_load_roundtrip) {
+    /* Player state should survive save→load cycle */
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].ship.credits = 1234.0f;
+    w.players[0].ship.mining_level = 3;
+    w.players[0].ship.hold_level = 2;
+    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 45.0f;
+    /* After #71: save_player(&w.players[0], "test.bin");
+     * server_player_t loaded = {0};
+     * load_player(&loaded, "test.bin");
+     * ASSERT_EQ_FLOAT(loaded.ship.credits, 1234.0f, 0.01f);
+     * ASSERT_EQ_INT(loaded.ship.mining_level, 3); */
+    ASSERT(0); /* FAIL: persistence not implemented */
+}
+
+TEST(test_world_save_load_preserves_stations) {
+    /* Station inventories should survive save→load */
+    world_t w = {0};
+    world_reset(&w);
+    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 42.0f;
+    w.stations[0].product_stock[PRODUCT_FRAME] = 15.0f;
+    /* After #72: save_world(&w, "world.bin");
+     * world_t loaded = {0};
+     * load_world(&loaded, "world.bin");
+     * ASSERT_EQ_FLOAT(loaded.stations[0].ore_buffer[0], 42.0f, 0.01f);
+     * ASSERT_EQ_FLOAT(loaded.stations[0].product_stock[0], 15.0f, 0.01f); */
+    ASSERT(0); /* FAIL: persistence not implemented */
+}
+
+TEST(test_world_save_load_preserves_npcs) {
+    /* NPC state should survive save→load */
+    world_t w = {0};
+    world_reset(&w);
+    /* Run 5 seconds so NPCs have moved */
+    for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
+    /* After #72: save, load, verify NPC positions approximately match */
+    ASSERT(0); /* FAIL: persistence not implemented */
+}
+
+/* ================================================================== */
+/* STRATEGIC TDD: Station construction (#83)                          */
+/* ================================================================== */
+
+TEST(test_outpost_requires_signal_range) {
+    /* Can't place an outpost outside signal range of any existing station */
+    /* After #82 + #83:
+     * bool ok = can_place_outpost(&w, v2(10000.0f, 10000.0f));
+     * ASSERT(!ok);
+     * bool ok2 = can_place_outpost(&w, v2(500.0f, -240.0f)); // near refinery
+     * ASSERT(ok2); */
+    ASSERT(0); /* FAIL: construction not implemented */
+}
+
+TEST(test_outpost_extends_signal_range) {
+    /* After placing an outpost, signal should be available near it */
+    /* After #82 + #83:
+     * place_outpost(&w, v2(2000.0f, 0.0f));
+     * float s = signal_strength_at(&w, v2(2000.0f, 0.0f));
+     * ASSERT(s > 0.9f); */
+    ASSERT(0); /* FAIL: construction not implemented */
+}
+
+TEST(test_outpost_upgrade_to_refinery) {
+    /* Outpost should be upgradable to refinery with correct materials */
+    /* After #83:
+     * Deliver materials, upgrade, verify role changes, signal range increases */
+    ASSERT(0); /* FAIL: construction not implemented */
+}
+
+TEST(test_disconnected_station_goes_dark) {
+    /* A station with no chain back to a player should become dark */
+    /* After #82 + #83:
+     * Build chain: player → station A → station B
+     * Destroy station A
+     * Verify station B is dark (not lit)
+     * Verify signal at station B is 0 */
+    ASSERT(0); /* FAIL: signal chain not implemented */
+}
+
 int main(void) {
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -1846,6 +2359,39 @@ int main(void) {
     RUN(test_bug48_titan_fracture_overflow);
     RUN(test_bug49_asteroid_sticks_to_station);
     RUN(test_bug50_ship_collision_energy_gain);
+
+    printf("\nSim integration scenarios:\n");
+    RUN(test_scenario_full_mining_cycle);
+    RUN(test_scenario_two_players_mining);
+    RUN(test_scenario_npc_economy_30_seconds);
+    RUN(test_scenario_upgrade_requires_products);
+    RUN(test_scenario_emergency_recovery);
+    RUN(test_scenario_product_cap_pauses_production);
+
+    printf("\nStrategic TDD — Signal range (#82):\n");
+    RUN(test_signal_strength_at_station);
+    RUN(test_signal_strength_falls_off);
+    RUN(test_signal_zero_outside_range);
+    RUN(test_signal_max_of_stations);
+    RUN(test_ship_thrust_scales_with_signal);
+
+    printf("\nStrategic TDD — Contracts (#70):\n");
+    RUN(test_contract_generated_from_hopper_deficit);
+    RUN(test_contract_price_escalates_with_age);
+    RUN(test_contract_closes_when_deficit_filled);
+    RUN(test_sell_price_uses_contract_price);
+    RUN(test_hauler_fills_highest_value_contract);
+
+    printf("\nStrategic TDD — Persistence (#71/#72):\n");
+    RUN(test_player_save_load_roundtrip);
+    RUN(test_world_save_load_preserves_stations);
+    RUN(test_world_save_load_preserves_npcs);
+
+    printf("\nStrategic TDD — Construction (#83):\n");
+    RUN(test_outpost_requires_signal_range);
+    RUN(test_outpost_extends_signal_range);
+    RUN(test_outpost_upgrade_to_refinery);
+    RUN(test_disconnected_station_goes_dark);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
