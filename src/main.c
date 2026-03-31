@@ -2112,7 +2112,11 @@ static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count)
         a->pos.y = asteroids[i].y;
         a->vel.x = asteroids[i].vx;
         a->vel.y = asteroids[i].vy;
-        a->hp    = asteroids[i].hp;
+        /* Accept server HP only if lower (server is authoritative for
+         * damage).  Prevents flicker when local mining prediction runs
+         * ahead of the server broadcast. */
+        if (asteroids[i].hp < a->hp || !a->active)
+            a->hp = asteroids[i].hp;
         a->ore   = asteroids[i].ore;
         a->radius = asteroids[i].radius;
         if (a->max_hp < a->hp) a->max_hp = a->hp;
