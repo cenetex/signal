@@ -2,7 +2,7 @@
  * net.c — Multiplayer networking implementation for Signal Space Miner.
  *
  * WASM build: Uses emscripten WebSocket API.
- * Native build: Stubbed — prints a notice and operates as disconnected.
+ * Native build: Uses mongoose WebSocket client.
  */
 #include "net.h"
 
@@ -19,9 +19,7 @@ static struct {
     char server_hash[12];
 } net_state;
 
-/* ---------- Protocol helpers --------------------------------------------- */
-
-#ifdef __EMSCRIPTEN__
+/* ---------- Protocol helpers (shared between WASM and native) ------------ */
 
 static void write_f32_le(uint8_t* buf, float v) {
     union { float f; uint32_t u; } conv;
@@ -49,7 +47,6 @@ static void handle_message(const uint8_t* data, int len) {
         if (len < 2) break;
         {
             uint8_t id = data[1];
-            /* First JOIN we receive is our own ID assignment. */
             if (net_state.local_id == 0xFF) {
                 net_state.local_id = id;
                 printf("[net] assigned player id %d\n", id);
@@ -96,8 +93,6 @@ static void handle_message(const uint8_t* data, int len) {
             ps->flags = (len >= 23) ? data[22] : 0;
             ps->active = true;
 
-            /* Skip self-echo for remote player rendering; local player
-               state is handled via PLAYER_SHIP from the server. */
             if (id == net_state.local_id) break;
 
             if (net_state.callbacks.on_state) {
@@ -110,7 +105,7 @@ static void handle_message(const uint8_t* data, int len) {
         if (len < 2) break;
         {
             int count = (int)data[1];
-            int expected = 2 + count * 30; /* 30 bytes per asteroid */
+            int expected = 2 + count * 30;
             if (len < expected) break;
             if (net_state.callbacks.on_asteroids) {
                 NetAsteroidState arr[48];
@@ -181,7 +176,6 @@ static void handle_message(const uint8_t* data, int len) {
         if (len < 27) break;
         {
             uint8_t id = data[1];
-            /* Only apply our own ship state. */
             if (id != net_state.local_id) break;
             if (net_state.callbacks.on_player_ship) {
                 NetPlayerShipState pss;
@@ -217,6 +211,12 @@ static void handle_message(const uint8_t* data, int len) {
 }
 
 /* ========================================================================= */
+/* Platform-specific implementations                                        */
+/* ========================================================================= */
+
+#ifdef __EMSCRIPTEN__
+
+/* ========================================================================= */
 /* WASM implementation using emscripten WebSocket API                        */
 /* ========================================================================= */
 
@@ -234,7 +234,7 @@ static EM_BOOL on_ws_open(int eventType, const EmscriptenWebSocketOpenEvent* eve
 
 static EM_BOOL on_ws_message(int eventType, const EmscriptenWebSocketMessageEvent* event, void* userData) {
     (void)eventType; (void)userData;
-    if (event->isText) return EM_TRUE; /* Ignore text messages. */
+    if (event->isText) return EM_TRUE;
     handle_message((const uint8_t*)event->data, (int)event->numBytes);
     return EM_TRUE;
 }
@@ -257,16 +257,12 @@ static EM_BOOL on_ws_close(int eventType, const EmscriptenWebSocketCloseEvent* e
 bool net_init(const char* url, const NetCallbacks* callbacks) {
     memset(&net_state, 0, sizeof(net_state));
     net_state.local_id = 0xFF;
-
-    if (callbacks) {
-        net_state.callbacks = *callbacks;
-    }
+    if (callbacks) net_state.callbacks = *callbacks;
 
     if (!url || url[0] == '\0') {
         printf("[net] no server URL provided, multiplayer disabled\n");
         return false;
     }
-
     if (!emscripten_websocket_is_supported()) {
         printf("[net] WebSocket not supported in this browser\n");
         return false;
@@ -330,44 +326,108 @@ void net_send_state(float x, float y, float vx, float vy, float angle) {
 }
 
 void net_poll(void) {
-    /* Emscripten WebSocket callbacks fire on the main thread automatically.
-     * Nothing to do here — messages are handled in on_ws_message(). */
+    /* Emscripten WebSocket callbacks fire on the main thread automatically. */
 }
 
-/* ========================================================================= */
-/* Native stub — TODO: POSIX WebSocket client implementation                 */
-/* ========================================================================= */
 #else
+
+/* ========================================================================= */
+/* Native implementation using mongoose WebSocket client                     */
+/* ========================================================================= */
+
+#include "mongoose.h"
+
+static struct mg_mgr net_mgr;
+static struct mg_connection *ws_conn = NULL;
+static bool mgr_initialized = false;
+
+static void ws_send_binary(const uint8_t* data, int len) {
+    if (!net_state.connected || !ws_conn) return;
+    mg_ws_send(ws_conn, data, (size_t)len, WEBSOCKET_OP_BINARY);
+}
+
+static void net_ev_handler(struct mg_connection *c, int ev, void *ev_data) {
+    if (ev == MG_EV_WS_OPEN) {
+        net_state.connected = true;
+        ws_conn = c;
+        printf("[net] connected to server\n");
+    } else if (ev == MG_EV_WS_MSG) {
+        struct mg_ws_message *wm = (struct mg_ws_message *)ev_data;
+        handle_message((const uint8_t *)wm->data.buf, (int)wm->data.len);
+    } else if (ev == MG_EV_ERROR) {
+        printf("[net] connection error: %s\n", (char *)ev_data);
+        net_state.connected = false;
+        ws_conn = NULL;
+    } else if (ev == MG_EV_CLOSE) {
+        printf("[net] disconnected from server\n");
+        net_state.connected = false;
+        ws_conn = NULL;
+    }
+}
 
 bool net_init(const char* url, const NetCallbacks* callbacks) {
     memset(&net_state, 0, sizeof(net_state));
     net_state.local_id = 0xFF;
+    if (callbacks) net_state.callbacks = *callbacks;
 
-    if (callbacks) {
-        net_state.callbacks = *callbacks;
+    if (!url || url[0] == '\0') {
+        printf("[net] no server URL provided, multiplayer disabled\n");
+        return false;
     }
 
-    if (url && url[0] != '\0') {
-        printf("[net] native multiplayer not yet supported (URL: %s)\n", url);
-        printf("[net] TODO: implement POSIX WebSocket client\n");
+    mg_mgr_init(&net_mgr);
+    mgr_initialized = true;
+
+    struct mg_connection *c = mg_ws_connect(&net_mgr, url, net_ev_handler, NULL, NULL);
+    if (!c) {
+        printf("[net] failed to connect to %s\n", url);
+        mg_mgr_free(&net_mgr);
+        mgr_initialized = false;
+        return false;
     }
-    return false;
+
+    printf("[net] connecting to %s\n", url);
+    return true;
 }
 
 void net_shutdown(void) {
+    if (ws_conn) {
+        mg_ws_send(ws_conn, "", 0, WEBSOCKET_OP_CLOSE);
+        ws_conn = NULL;
+    }
+    if (mgr_initialized) {
+        mg_mgr_free(&net_mgr);
+        mgr_initialized = false;
+    }
     net_state.connected = false;
 }
 
 void net_send_input(uint8_t flags, float angle, uint8_t action) {
-    (void)flags; (void)angle; (void)action;
+    uint8_t buf[7];
+    buf[0] = NET_MSG_INPUT;
+    buf[1] = flags;
+    write_f32_le(&buf[2], angle);
+    buf[6] = action;
+    ws_send_binary(buf, 7);
 }
 
 void net_send_state(float x, float y, float vx, float vy, float angle) {
-    (void)x; (void)y; (void)vx; (void)vy; (void)angle;
+    uint8_t buf[23];
+    buf[0] = NET_MSG_STATE;
+    buf[1] = net_state.local_id;
+    write_f32_le(&buf[2], x);
+    write_f32_le(&buf[6], y);
+    write_f32_le(&buf[10], vx);
+    write_f32_le(&buf[14], vy);
+    write_f32_le(&buf[18], angle);
+    buf[22] = 0;
+    ws_send_binary(buf, 23);
 }
 
 void net_poll(void) {
-    /* No-op on native builds. */
+    if (mgr_initialized) {
+        mg_mgr_poll(&net_mgr, 0);  /* non-blocking */
+    }
 }
 
 #endif /* __EMSCRIPTEN__ */

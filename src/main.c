@@ -3,6 +3,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "math_util.h"
@@ -841,19 +842,32 @@ static asteroid_tier_t random_field_asteroid_tier(void) {
     return ASTEROID_TIER_M;
 }
 
+static float client_max_signal_range(void) {
+    float best = 0.0f;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (g.world.stations[i].signal_range > best) best = g.world.stations[i].signal_range;
+    }
+    return best > 0.0f ? best : WORLD_RADIUS;
+}
+
 static void spawn_field_asteroid_of_tier(asteroid_t* asteroid, asteroid_tier_t tier) {
     float angle = rand_range(0.0f, TWO_PI_F);
     clear_asteroid(asteroid);
     configure_asteroid_tier(asteroid, tier, random_raw_ore(), &g.world.rng);
     asteroid->fracture_child = false;
+    /* Pick a random station and spawn within its signal range */
+    int stn = rand_int(0, MAX_STATIONS - 1);
+    float sr = g.world.stations[stn].signal_range;
+    if (sr <= 0.0f) sr = client_max_signal_range();
     if (tier == ASTEROID_TIER_XXL) {
-        /* XXL asteroids spawn at world edge and drift inward */
-        asteroid->pos = v2(cosf(angle) * WORLD_RADIUS, sinf(angle) * WORLD_RADIUS);
+        vec2 center = g.world.stations[stn].pos;
+        asteroid->pos = v2_add(center, v2(cosf(angle) * sr, sinf(angle) * sr));
         float inward_speed = rand_range(15.0f, 30.0f);
         asteroid->vel = v2(-cosf(angle) * inward_speed, -sinf(angle) * inward_speed);
     } else {
-        float distance = rand_range(420.0f, WORLD_RADIUS - 180.0f);
-        asteroid->pos = v2(cosf(angle) * distance, sinf(angle) * distance);
+        vec2 center = g.world.stations[stn].pos;
+        float distance = rand_range(420.0f, sr - 180.0f);
+        asteroid->pos = v2_add(center, v2(cosf(angle) * distance, sinf(angle) * distance));
         asteroid->vel = v2(rand_range(-4.0f, 4.0f), rand_range(-4.0f, 4.0f));
     }
 }
@@ -1696,6 +1710,8 @@ static void draw_hud(void) {
         split_hud_message_lines(message_text, message_cols, message_line0, sizeof(message_line0), message_line1, sizeof(message_line1));
     }
 
+    int sig_pct = (int)lroundf(signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos) * 100.0f);
+
     if (compact) {
         const char* nav_role = navigation_station != NULL ? station_role_short_name(navigation_station->role) : "STN";
         const char* dock_role = current_station != NULL ? station_role_short_name(current_station->role) : "STN";
@@ -1711,8 +1727,10 @@ static void draw_hud(void) {
         sdtx_printf("%s // CR %d", LOCAL_PLAYER.docked ? "RUN" : "SHIP", credits);
 
         sdtx_pos(top_text_x, top_row_1);
-        sdtx_color3b(203, 220, 248);
-        sdtx_printf("H %d/%d  C %d/%d", hull_units, hull_capacity, cargo_units, cargo_capacity);
+        if (sig_pct < 30) sdtx_color3b(255, 100, 100);
+        else if (sig_pct < 60) sdtx_color3b(255, 221, 119);
+        else sdtx_color3b(203, 220, 248);
+        sdtx_printf("H %d/%d  C %d/%d  SIG %d%%", hull_units, hull_capacity, cargo_units, cargo_capacity, sig_pct);
 
         sdtx_pos(top_text_x, top_row_2);
         if (LOCAL_PLAYER.docked) {
@@ -1802,8 +1820,10 @@ static void draw_hud(void) {
     sdtx_puts(LOCAL_PLAYER.docked ? "RUN STATUS" : "SHIP STATUS");
 
     sdtx_pos(top_text_x, top_row_1);
-    sdtx_color3b(203, 220, 248);
-    sdtx_printf("CR %d  H %d/%d  C %d/%d", credits, hull_units, hull_capacity, cargo_units, cargo_capacity);
+    if (sig_pct < 30) sdtx_color3b(255, 100, 100);
+    else if (sig_pct < 60) sdtx_color3b(255, 221, 119);
+    else sdtx_color3b(203, 220, 248);
+    sdtx_printf("CR %d  H %d/%d  C %d/%d  SIG %d%%", credits, hull_units, hull_capacity, cargo_units, cargo_capacity, sig_pct);
 
     sdtx_pos(top_text_x, top_row_2);
     if (LOCAL_PLAYER.docked) {
@@ -2126,13 +2146,18 @@ static void init(void) {
     reset_world();
 
     /* --- Multiplayer: auto-connect if server URL is available --- */
-#ifdef __EMSCRIPTEN__
     {
-        const char* server_url = emscripten_run_script_string(
+        const char* server_url = NULL;
+#ifdef __EMSCRIPTEN__
+        server_url = emscripten_run_script_string(
             "(() => {"
             "  const p = new URLSearchParams(window.location.search);"
             "  return p.get('server') || 'wss://signal-ws.ratimics.com/ws';"
             "})()");
+#else
+        /* Native: check SIGNAL_SERVER environment variable or command line */
+        server_url = getenv("SIGNAL_SERVER");
+#endif
         if (server_url && server_url[0] != '\0') {
             NetCallbacks cbs = {0};
             cbs.on_state = apply_remote_player_state;
@@ -2143,7 +2168,6 @@ static void init(void) {
             g.multiplayer_enabled = net_init(server_url, &cbs);
         }
     }
-#endif
 }
 
 
