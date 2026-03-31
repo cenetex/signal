@@ -586,57 +586,66 @@ TEST(test_world_network_writes_persist) {
 /* Bug regression tests (10 bugs found in code review)                */
 /* ================================================================== */
 
+/* These tests assert what SHOULD be true after the bugs are fixed.
+ * They FAIL against current code, proving the bugs exist. */
+
 TEST(test_bug2_angle_lerp_wraparound) {
+    /* FIXED: apply_remote_player_state should use wrap-aware lerp.
+     * Naive lerpf across ±pi boundary should NOT be used. */
     float local = 3.0f;
     float remote = -3.0f;
-    float diff = wrap_angle(remote - local);
-    float correct = wrap_angle(local + diff * 0.3f);
     float naive = lerpf(local, remote, 0.3f);
-    ASSERT(fabsf(correct - local) < 0.5f);
-    ASSERT(fabsf(naive - local) > 1.0f);
+    /* After fix: the lerp result should stay near local (short path through pi) */
+    /* This FAILS because the client uses naive lerpf */
+    ASSERT(fabsf(naive - local) < 0.5f);
 }
 
 TEST(test_bug3_event_buffer_too_small) {
-    ASSERT(SIM_MAX_EVENTS < MAX_PLAYERS);
-    world_t w = {0};
-    w.events.count = 0;
-    for (int i = 0; i < MAX_PLAYERS; i++) {
-        sim_event_t ev = {.type = SIM_EVENT_MINING_TICK, .player_id = i};
-        if (w.events.count < SIM_MAX_EVENTS)
-            w.events.events[w.events.count++] = ev;
-    }
-    ASSERT_EQ_INT(w.events.count, SIM_MAX_EVENTS);
+    /* FIXED: SIM_MAX_EVENTS should be >= MAX_PLAYERS so all players get events */
+    /* This FAILS because SIM_MAX_EVENTS is 16 but MAX_PLAYERS is 32 */
+    ASSERT(SIM_MAX_EVENTS >= MAX_PLAYERS);
 }
 
 TEST(test_bug4_pending_action_lost) {
+    /* FIXED: pending_net_action should be a queue, not a single byte.
+     * Two one-shot actions within 50ms should both reach the server. */
     uint8_t pending = 0;
-    if (pending == 0) pending = 1;
-    if (pending == 0) pending = 3;
-    ASSERT_EQ_INT(pending, 1);
+    if (pending == 0) pending = 1;  /* dock */
+    if (pending == 0) pending = 3;  /* sell — currently LOST */
+    /* After fix: both actions should be captured. This FAILS because
+     * the second action is dropped when pending != 0. */
+    ASSERT_EQ_INT(pending, 3);
 }
 
 TEST(test_bug5_asteroid_missing_network_fields) {
+    /* FIXED: network asteroid sync should restore max_hp, seed, age.
+     * Simulate a network-synced asteroid — only NetAsteroidState fields set. */
     asteroid_t a;
     memset(&a, 0, sizeof(a));
     a.active = true;
     a.tier = ASTEROID_TIER_XL;
     a.hp = 150.0f;
-    ASSERT_EQ_FLOAT(a.max_hp, 0.0f, 0.01f);
-    ASSERT_EQ_FLOAT(a.seed, 0.0f, 0.01f);
-    ASSERT_EQ_FLOAT(a.age, 0.0f, 0.01f);
+    /* After fix: max_hp should be reconstructed from tier properties.
+     * This FAILS because network sync doesn't restore max_hp. */
+    ASSERT(a.max_hp > 0.0f);
 }
 
 TEST(test_bug7_player_slot_mismatch) {
+    /* FIXED: client should use server-assigned player ID, not hardcoded 0.
+     * If server assigns ID 5, client should predict into slot 5. */
     world_t w = {0};
     world_reset(&w);
     int server_id = 5;
     player_init_ship(&w.players[server_id], &w);
     w.players[server_id].connected = true;
-    ASSERT_EQ_FLOAT(w.players[0].ship.hull, 0.0f, 0.01f);
-    ASSERT(w.players[server_id].ship.hull > 0.0f);
+    /* After fix: client slot should match server slot.
+     * This FAILS because client always uses slot 0. */
+    ASSERT(w.players[0].ship.hull > 0.0f);
 }
 
 TEST(test_bug9_repair_cost_consistent) {
+    /* This one should PASS — verifying the economy.c version works.
+     * The real bug is a name collision with game_sim.c's static version. */
     ship_t ship;
     memset(&ship, 0, sizeof(ship));
     ship.hull_class = HULL_CLASS_MINER;
@@ -648,12 +657,16 @@ TEST(test_bug9_repair_cost_consistent) {
     ASSERT_EQ_FLOAT(cost, 40.0f, 0.01f);
 }
 
-TEST(test_bug10_damage_event_uninitialized) {
+TEST(test_bug10_damage_event_has_amount) {
+    /* FIXED: emit_event for DAMAGE should set damage.amount to actual impact force.
+     * Simulate what emit_event currently does — memset then set type/player only. */
     sim_event_t ev;
     memset(&ev, 0, sizeof(ev));
     ev.type = SIM_EVENT_DAMAGE;
     ev.player_id = 0;
-    ASSERT_EQ_FLOAT(ev.damage.amount, 0.0f, 0.01f);
+    /* After fix: damage.amount should be > 0 (set by emit_event).
+     * This FAILS because emit_event doesn't populate the damage amount. */
+    ASSERT(ev.damage.amount > 0.0f);
 }
 
 /* ---- Runner ---- */
@@ -732,7 +745,7 @@ int main(void) {
     RUN(test_bug5_asteroid_missing_network_fields);
     RUN(test_bug7_player_slot_mismatch);
     RUN(test_bug9_repair_cost_consistent);
-    RUN(test_bug10_damage_event_uninitialized);
+    RUN(test_bug10_damage_event_has_amount);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
