@@ -75,6 +75,7 @@ float station_cargo_sale_value(const ship_t* ship, const station_t* station) {
 
 float station_repair_cost(const ship_t* ship, const station_t* station) {
     if (station == NULL) return 0.0f;
+    if (!(station->services & STATION_SERVICE_REPAIR)) return 0.0f;
     float damage = ship_max_hull(ship) - ship->hull;
     if (damage <= 0.0f) return 0.0f;
     return damage * STATION_REPAIR_COST_PER_HULL;

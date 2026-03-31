@@ -13,6 +13,8 @@
 #define SIM_LOG(...) ((void)0)
 #endif
 
+static const float INGOT_BUFFER_CAPACITY = 50.0f;
+
 static void emit_event(world_t *w, sim_event_t ev) {
     if (w->events.count < SIM_MAX_EVENTS) {
         w->events.events[w->events.count++] = ev;
@@ -541,7 +543,7 @@ static float npc_total_cargo(const npc_ship_t *npc) {
 }
 
 static bool npc_target_valid(const world_t *w, const npc_ship_t *npc) {
-    if (npc->target_asteroid < 0) return false;
+    if (npc->target_asteroid < 0 || npc->target_asteroid >= MAX_ASTEROIDS) return false;
     const asteroid_t *a = &w->asteroids[npc->target_asteroid];
     return a->active && a->tier != ASTEROID_TIER_S;
 }
@@ -574,6 +576,31 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
 static void npc_apply_physics(npc_ship_t *npc, float drag, float dt) {
     npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (drag * dt)));
     npc->pos = v2_add(npc->pos, v2_scale(npc->vel, dt));
+    /* World boundary push-back (same as step_ship_motion) */
+    float d_sq = v2_len_sq(npc->pos);
+    float wr_sq = WORLD_RADIUS * WORLD_RADIUS;
+    if (d_sq > wr_sq) {
+        float d = sqrtf(d_sq);
+        vec2 push = v2_scale(npc->pos, -(d - WORLD_RADIUS) * 0.08f / d);
+        npc->vel = v2_add(npc->vel, push);
+    }
+}
+
+static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
+    const hull_def_t *hull = npc_hull_def(npc);
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        station_t *st = &w->stations[i];
+        float minimum = st->radius + 4.0f + hull->ship_radius;
+        vec2 delta = v2_sub(npc->pos, st->pos);
+        float d_sq = v2_len_sq(delta);
+        if (d_sq >= minimum * minimum) continue;
+        float d = sqrtf(d_sq);
+        vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
+        npc->pos = v2_add(st->pos, v2_scale(normal, minimum));
+        float vel_toward = v2_dot(npc->vel, normal);
+        if (vel_toward < 0.0f)
+            npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.2f));
+    }
 }
 
 static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
@@ -610,7 +637,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             if (loaded) {
                 npc->state = NPC_STATE_TRAVEL_TO_DEST;
             } else {
-                npc->state_timer = HAULER_LOAD_TIME;
+                npc->state = NPC_STATE_TRAVEL_TO_DEST;
             }
         }
         break;
@@ -635,6 +662,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             station_t *dest = &w->stations[npc->dest_station];
             for (int i = 0; i < INGOT_COUNT; i++) {
                 dest->ingot_buffer[i] += npc->ingots[i];
+                if (dest->ingot_buffer[i] > INGOT_BUFFER_CAPACITY)
+                    dest->ingot_buffer[i] = INGOT_BUFFER_CAPACITY;
                 npc->ingots[i] = 0.0f;
             }
             npc->state = NPC_STATE_RETURN_TO_STATION;
@@ -669,6 +698,8 @@ static void step_npc_ships(world_t *w, float dt) {
 
         if (npc->role == NPC_ROLE_HAULER) {
             step_hauler(w, npc, n, dt);
+            if (npc->state != NPC_STATE_DOCKED)
+                npc_resolve_station_collisions(w, npc);
             continue;
         }
 
@@ -693,7 +724,7 @@ static void step_npc_ships(world_t *w, float dt) {
             if (!npc_target_valid(w, npc)) {
                 int target = npc_find_mineable_asteroid(w, npc);
                 if (target >= 0) npc->target_asteroid = target;
-                else { npc->state = NPC_STATE_RETURN_TO_STATION; break; }
+                else { npc->target_asteroid = -1; npc->state = NPC_STATE_RETURN_TO_STATION; break; }
             }
             asteroid_t *a = &w->asteroids[npc->target_asteroid];
             npc_steer_toward(npc, a->pos, hull->accel, hull->turn_speed, dt);
@@ -770,7 +801,7 @@ static void step_npc_ships(world_t *w, float dt) {
                     float space = REFINERY_HOPPER_CAPACITY - home->ore_buffer[i];
                     float deposit = fminf(npc->cargo[i], fmaxf(0.0f, space));
                     home->ore_buffer[i] += deposit;
-                    npc->cargo[i] -= deposit;
+                    npc->cargo[i] = 0.0f;
                 }
                 npc->state = NPC_STATE_DOCKED;
                 npc->state_timer = NPC_DOCK_TIME;
@@ -779,6 +810,7 @@ static void step_npc_ships(world_t *w, float dt) {
             break;
         }
         case NPC_STATE_IDLE: {
+            npc_apply_physics(npc, hull->drag, dt);
             npc->state_timer -= dt;
             if (npc->state_timer <= 0.0f) {
                 int target = npc_find_mineable_asteroid(w, npc);
@@ -789,6 +821,10 @@ static void step_npc_ships(world_t *w, float dt) {
         }
         default: break;
         }
+
+        /* NPC station collision (Bug 34) */
+        if (npc->state != NPC_STATE_DOCKED)
+            npc_resolve_station_collisions(w, npc);
     }
 }
 
@@ -1149,6 +1185,31 @@ void world_sim_step(world_t *w, float dt) {
     for (int p = 0; p < MAX_PLAYERS; p++) {
         if (!w->players[p].connected) continue;
         step_player(w, &w->players[p], dt);
+    }
+
+    /* Player-player collision resolution (Bug 40) */
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (!w->players[i].connected || w->players[i].docked) continue;
+        for (int j = i + 1; j < MAX_PLAYERS; j++) {
+            if (!w->players[j].connected || w->players[j].docked) continue;
+            float ri = ship_hull_def_ptr(&w->players[i].ship)->ship_radius;
+            float rj = ship_hull_def_ptr(&w->players[j].ship)->ship_radius;
+            float minimum = ri + rj;
+            vec2 delta = v2_sub(w->players[i].ship.pos, w->players[j].ship.pos);
+            float d_sq = v2_len_sq(delta);
+            if (d_sq >= minimum * minimum) continue;
+            float d = sqrtf(d_sq);
+            vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
+            float overlap = minimum - d;
+            w->players[i].ship.pos = v2_add(w->players[i].ship.pos, v2_scale(normal, overlap * 0.5f));
+            w->players[j].ship.pos = v2_sub(w->players[j].ship.pos, v2_scale(normal, overlap * 0.5f));
+            float rel_vel = v2_dot(v2_sub(w->players[i].ship.vel, w->players[j].ship.vel), normal);
+            if (rel_vel < 0.0f) {
+                vec2 impulse = v2_scale(normal, rel_vel * 0.6f);
+                w->players[i].ship.vel = v2_sub(w->players[i].ship.vel, impulse);
+                w->players[j].ship.vel = v2_add(w->players[j].ship.vel, impulse);
+            }
+        }
     }
 }
 
