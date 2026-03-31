@@ -74,6 +74,7 @@ void commodity_material_tint(commodity_t commodity, float* mr, float* mg, float*
 void asteroid_body_color(asteroid_tier_t tier, commodity_t commodity, float hp_ratio, float* r, float* g0, float* b) {
     float base_r = 0.30f, base_g = 0.31f, base_b = 0.34f;
     switch (tier) {
+        case ASTEROID_TIER_XXL: base_r = 0.25f; base_g = 0.28f; base_b = 0.45f; break;
         case ASTEROID_TIER_XL: base_r = 0.29f; base_g = 0.31f; base_b = 0.42f; break;
         case ASTEROID_TIER_L: base_r = 0.31f; base_g = 0.33f; base_b = 0.38f; break;
         case ASTEROID_TIER_M: base_r = 0.26f; base_g = 0.36f; base_b = 0.42f; break;

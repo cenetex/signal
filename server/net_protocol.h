@@ -107,8 +107,8 @@ static inline int serialize_asteroids(uint8_t *buf, const asteroid_t *asteroids)
         p[0] = (uint8_t)i;
         p[1] = 1; /* active */
         if (a->fracture_child) p[1] |= (1 << 1);
-        p[1] |= (((uint8_t)a->tier & 0x3) << 2);
-        p[1] |= (((uint8_t)a->commodity & 0x7) << 4);
+        p[1] |= (((uint8_t)a->tier & 0x7) << 2);
+        p[1] |= (((uint8_t)a->commodity & 0x7) << 5);
         write_f32_le(&p[2],  a->pos.x);
         write_f32_le(&p[6],  a->pos.y);
         write_f32_le(&p[10], a->vel.x);

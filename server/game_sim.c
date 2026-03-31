@@ -105,6 +105,7 @@ static asteroid_tier_t asteroid_next_tier(asteroid_tier_t tier) {
     if (tier >= ASTEROID_TIER_S) return ASTEROID_TIER_S;
     return (asteroid_tier_t)(tier + 1);
 }
+/* Note: XXL -> XL is handled naturally by (tier + 1) since XXL=0, XL=1 */
 
 static bool asteroid_is_collectible(const asteroid_t *a) {
     return a->active && (a->tier == ASTEROID_TIER_S);
@@ -270,6 +271,7 @@ static float station_repair_cost(const ship_t *s) {
 
 static float asteroid_spin_limit(asteroid_tier_t tier) {
     switch (tier) {
+    case ASTEROID_TIER_XXL: return 0.06f;
     case ASTEROID_TIER_XL: return 0.16f;
     case ASTEROID_TIER_L:  return 0.24f;
     case ASTEROID_TIER_M:  return 0.38f;
@@ -280,6 +282,7 @@ static float asteroid_spin_limit(asteroid_tier_t tier) {
 
 static float asteroid_radius_min(asteroid_tier_t tier) {
     switch (tier) {
+    case ASTEROID_TIER_XXL: return 180.0f;
     case ASTEROID_TIER_XL: return 54.0f;
     case ASTEROID_TIER_L:  return 34.0f;
     case ASTEROID_TIER_M:  return 20.0f;
@@ -290,6 +293,7 @@ static float asteroid_radius_min(asteroid_tier_t tier) {
 
 static float asteroid_radius_max(asteroid_tier_t tier) {
     switch (tier) {
+    case ASTEROID_TIER_XXL: return 350.0f;
     case ASTEROID_TIER_XL: return 78.0f;
     case ASTEROID_TIER_L:  return 48.0f;
     case ASTEROID_TIER_M:  return 30.0f;
@@ -300,6 +304,7 @@ static float asteroid_radius_max(asteroid_tier_t tier) {
 
 static float asteroid_hp_min(asteroid_tier_t tier) {
     switch (tier) {
+    case ASTEROID_TIER_XXL: return 800.0f;
     case ASTEROID_TIER_XL: return 120.0f;
     case ASTEROID_TIER_L:  return 68.0f;
     case ASTEROID_TIER_M:  return 32.0f;
@@ -310,6 +315,7 @@ static float asteroid_hp_min(asteroid_tier_t tier) {
 
 static float asteroid_hp_max(asteroid_tier_t tier) {
     switch (tier) {
+    case ASTEROID_TIER_XXL: return 1400.0f;
     case ASTEROID_TIER_XL: return 170.0f;
     case ASTEROID_TIER_L:  return 96.0f;
     case ASTEROID_TIER_M:  return 46.0f;
@@ -348,19 +354,27 @@ static void configure_asteroid_tier(world_t *w, asteroid_t *a, asteroid_tier_t t
 
 static asteroid_tier_t random_field_asteroid_tier(world_t *w) {
     float roll = randf(w);
-    if (roll < 0.24f) return ASTEROID_TIER_XL;
+    if (roll < 0.03f) return ASTEROID_TIER_XXL;
+    if (roll < 0.26f) return ASTEROID_TIER_XL;
     if (roll < 0.70f) return ASTEROID_TIER_L;
     return ASTEROID_TIER_M;
 }
 
 static void spawn_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier) {
-    float distance = rand_range(w, 420.0f, WORLD_RADIUS - 180.0f);
     float angle = rand_range(w, 0.0f, TWO_PI_F);
     clear_asteroid(a);
     configure_asteroid_tier(w, a, tier, random_raw_ore(w));
     a->fracture_child = false;
-    a->pos = v2(cosf(angle) * distance, sinf(angle) * distance);
-    a->vel = v2(rand_range(w, -4.0f, 4.0f), rand_range(w, -4.0f, 4.0f));
+    if (tier == ASTEROID_TIER_XXL) {
+        /* XXL asteroids spawn at world edge and drift inward */
+        a->pos = v2(cosf(angle) * WORLD_RADIUS, sinf(angle) * WORLD_RADIUS);
+        float inward_speed = rand_range(w, 15.0f, 30.0f);
+        a->vel = v2(-cosf(angle) * inward_speed, -sinf(angle) * inward_speed);
+    } else {
+        float distance = rand_range(w, 420.0f, WORLD_RADIUS - 180.0f);
+        a->pos = v2(cosf(angle) * distance, sinf(angle) * distance);
+        a->vel = v2(rand_range(w, -4.0f, 4.0f), rand_range(w, -4.0f, 4.0f));
+    }
 }
 
 static void spawn_field_asteroid(world_t *w, asteroid_t *a) {
@@ -377,6 +391,7 @@ static void spawn_child_asteroid(world_t *w, asteroid_t *a, asteroid_tier_t tier
 
 static int desired_child_count(world_t *w, asteroid_tier_t tier) {
     switch (tier) {
+    case ASTEROID_TIER_XXL: return rand_int(w, 8, 14);
     case ASTEROID_TIER_XL: return rand_int(w, 2, 3);
     case ASTEROID_TIER_L:  return rand_int(w, 2, 3);
     case ASTEROID_TIER_M:  return rand_int(w, 2, 4);
@@ -400,7 +415,7 @@ static void fracture_asteroid(world_t *w, int idx, vec2 outward_dir) {
     asteroid_t parent = w->asteroids[idx];
     asteroid_tier_t child_tier = asteroid_next_tier(parent.tier);
     int desired = desired_child_count(w, parent.tier);
-    int child_slots[4] = { idx, -1, -1, -1 };
+    int child_slots[16] = { idx, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
     int child_count = 1;
 
     for (int i = 0; i < MAX_ASTEROIDS && child_count < desired; i++) {
@@ -1171,6 +1186,131 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
 }
 
 /* ================================================================== */
+/* Asteroid-asteroid gravity                                          */
+/* ================================================================== */
+
+static void step_asteroid_gravity(world_t *w, float dt) {
+    /* Asteroid-asteroid attraction (non-S tier, within 400 units) */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *a = &w->asteroids[i];
+        if (!a->active || a->tier == ASTEROID_TIER_S) continue;
+        for (int j = i + 1; j < MAX_ASTEROIDS; j++) {
+            asteroid_t *b = &w->asteroids[j];
+            if (!b->active || b->tier == ASTEROID_TIER_S) continue;
+            vec2 delta = v2_sub(b->pos, a->pos);
+            float dist_sq = v2_len_sq(delta);
+            if (dist_sq > 400.0f * 400.0f || dist_sq < 1.0f) continue;
+            float dist = sqrtf(dist_sq);
+            vec2 normal = v2_scale(delta, 1.0f / dist);
+            float strength = (b->radius * b->radius) / dist_sq * 8.0f;
+            if (strength > 60.0f) strength = 60.0f; /* clamp max force */
+            vec2 force_a = v2_scale(normal, strength * dt);
+            /* Symmetric: b pulls a toward it, a pulls b toward it */
+            float strength_b = (a->radius * a->radius) / dist_sq * 8.0f;
+            if (strength_b > 60.0f) strength_b = 60.0f;
+            vec2 force_b = v2_scale(normal, -strength_b * dt);
+            a->vel = v2_add(a->vel, force_a);
+            b->vel = v2_add(b->vel, force_b);
+        }
+    }
+
+    /* Station attraction (asteroids within 800 units of a station) */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            vec2 delta = v2_sub(w->stations[s].pos, a->pos);
+            float dist_sq = v2_len_sq(delta);
+            if (dist_sq > 800.0f * 800.0f || dist_sq < 1.0f) continue;
+            float dist = sqrtf(dist_sq);
+            vec2 normal = v2_scale(delta, 1.0f / dist);
+            float strength = w->stations[s].radius / (dist * 0.8f) * 2.0f;
+            a->vel = v2_add(a->vel, v2_scale(normal, strength * dt));
+        }
+    }
+}
+
+/* ================================================================== */
+/* Asteroid-asteroid collision                                        */
+/* ================================================================== */
+
+static void resolve_asteroid_collisions(world_t *w) {
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        for (int j = i + 1; j < MAX_ASTEROIDS; j++) {
+            asteroid_t *b = &w->asteroids[j];
+            if (!b->active) continue;
+            /* Skip if both are S tier */
+            if (a->tier == ASTEROID_TIER_S && b->tier == ASTEROID_TIER_S) continue;
+            float min_dist = a->radius + b->radius;
+            vec2 delta = v2_sub(a->pos, b->pos);
+            float dist_sq = v2_len_sq(delta);
+            if (dist_sq >= min_dist * min_dist) continue;
+            float dist = sqrtf(dist_sq);
+            if (dist < 0.001f) { dist = 0.001f; delta = v2(1.0f, 0.0f); }
+            vec2 normal = v2_scale(delta, 1.0f / dist);
+            float overlap = min_dist - dist;
+            /* Push apart: heavier (larger radius) moves less */
+            float mass_a = a->radius * a->radius;
+            float mass_b = b->radius * b->radius;
+            float total_mass = mass_a + mass_b;
+            float ratio_a = mass_b / total_mass; /* a moves proportional to b's mass */
+            float ratio_b = mass_a / total_mass;
+            a->pos = v2_add(a->pos, v2_scale(normal, overlap * ratio_a));
+            b->pos = v2_sub(b->pos, v2_scale(normal, overlap * ratio_b));
+            /* Transfer velocity along collision normal */
+            float rel_vel = v2_dot(v2_sub(a->vel, b->vel), normal);
+            if (rel_vel < 0.0f) {
+                vec2 impulse_a = v2_scale(normal, rel_vel * ratio_a);
+                vec2 impulse_b = v2_scale(normal, rel_vel * ratio_b);
+                a->vel = v2_sub(a->vel, impulse_a);
+                b->vel = v2_add(b->vel, impulse_b);
+            }
+        }
+    }
+}
+
+/* ================================================================== */
+/* Asteroid-station collision                                         */
+/* ================================================================== */
+
+static void resolve_asteroid_station_collisions(world_t *w) {
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            float min_dist = a->radius + w->stations[s].radius;
+            vec2 delta = v2_sub(a->pos, w->stations[s].pos);
+            float dist_sq = v2_len_sq(delta);
+            if (dist_sq >= min_dist * min_dist) continue;
+            float dist = sqrtf(dist_sq);
+            if (dist < 0.001f) { dist = 0.001f; delta = v2(1.0f, 0.0f); }
+            vec2 normal = v2_scale(delta, 1.0f / dist);
+            float overlap = min_dist - dist;
+            /* Push asteroid out (station is immovable) */
+            a->pos = v2_add(a->pos, v2_scale(normal, overlap));
+            /* Bounce velocity with restitution 0.6 */
+            float vel_along = v2_dot(a->vel, normal);
+            float impact_speed = fabsf(vel_along);
+            if (vel_along < 0.0f) {
+                a->vel = v2_sub(a->vel, v2_scale(normal, vel_along * 1.6f));
+            }
+            /* High-speed impact damages asteroid */
+            if (impact_speed > 100.0f) {
+                float damage = impact_speed * 0.3f;
+                a->hp -= damage;
+                if (a->hp <= 0.0f) {
+                    /* Fracture the asteroid */
+                    vec2 outward = v2_scale(normal, -1.0f);
+                    fracture_asteroid(w, i, outward);
+                }
+            }
+        }
+    }
+}
+
+/* ================================================================== */
 /* Public: world_sim_step                                             */
 /* ================================================================== */
 
@@ -1179,6 +1319,9 @@ void world_sim_step(world_t *w, float dt) {
     w->time += dt;
     step_asteroid_dynamics(w, dt);
     maintain_asteroid_field(w, dt);
+    step_asteroid_gravity(w, dt);
+    resolve_asteroid_collisions(w);
+    resolve_asteroid_station_collisions(w);
     step_refinery_production(w, dt);
     step_station_production(w, dt);
     step_npc_ships(w, dt);

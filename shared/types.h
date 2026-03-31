@@ -104,6 +104,7 @@ typedef struct {
 } station_t;
 
 typedef enum {
+    ASTEROID_TIER_XXL,
     ASTEROID_TIER_XL,
     ASTEROID_TIER_L,
     ASTEROID_TIER_M,

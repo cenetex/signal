@@ -816,7 +816,10 @@ static void push_collection_feedback(float recovered_ore, int recovered_fragment
 
 static asteroid_tier_t random_field_asteroid_tier(void) {
     float roll = randf();
-    if (roll < 0.24f) {
+    if (roll < 0.03f) {
+        return ASTEROID_TIER_XXL;
+    }
+    if (roll < 0.26f) {
         return ASTEROID_TIER_XL;
     }
     if (roll < 0.70f) {
@@ -826,13 +829,20 @@ static asteroid_tier_t random_field_asteroid_tier(void) {
 }
 
 static void spawn_field_asteroid_of_tier(asteroid_t* asteroid, asteroid_tier_t tier) {
-    float distance = rand_range(420.0f, WORLD_RADIUS - 180.0f);
     float angle = rand_range(0.0f, TWO_PI_F);
     clear_asteroid(asteroid);
     configure_asteroid_tier(asteroid, tier, random_raw_ore(), &g.world.rng);
     asteroid->fracture_child = false;
-    asteroid->pos = v2(cosf(angle) * distance, sinf(angle) * distance);
-    asteroid->vel = v2(rand_range(-4.0f, 4.0f), rand_range(-4.0f, 4.0f));
+    if (tier == ASTEROID_TIER_XXL) {
+        /* XXL asteroids spawn at world edge and drift inward */
+        asteroid->pos = v2(cosf(angle) * WORLD_RADIUS, sinf(angle) * WORLD_RADIUS);
+        float inward_speed = rand_range(15.0f, 30.0f);
+        asteroid->vel = v2(-cosf(angle) * inward_speed, -sinf(angle) * inward_speed);
+    } else {
+        float distance = rand_range(420.0f, WORLD_RADIUS - 180.0f);
+        asteroid->pos = v2(cosf(angle) * distance, sinf(angle) * distance);
+        asteroid->vel = v2(rand_range(-4.0f, 4.0f), rand_range(-4.0f, 4.0f));
+    }
 }
 
 static void spawn_field_asteroid(asteroid_t* asteroid) {
@@ -849,6 +859,8 @@ static void spawn_child_asteroid(asteroid_t* asteroid, asteroid_tier_t tier, com
 
 static int desired_child_count(asteroid_tier_t tier) {
     switch (tier) {
+        case ASTEROID_TIER_XXL:
+            return rand_int(8, 14);
         case ASTEROID_TIER_XL:
             return rand_int(2, 3);
         case ASTEROID_TIER_L:
@@ -971,6 +983,9 @@ static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
     asteroid_body_color(asteroid->tier, asteroid->commodity, progress_ratio, &body_r, &body_g, &body_b);
 
     switch (asteroid->tier) {
+        case ASTEROID_TIER_XXL:
+            segments = 28;
+            break;
         case ASTEROID_TIER_XL:
             segments = 22;
             break;
@@ -2106,8 +2121,8 @@ static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count)
         asteroid_t* a = &g.world.asteroids[idx];
         a->active = (asteroids[i].flags & 1) != 0;
         a->fracture_child = (asteroids[i].flags & (1 << 1)) != 0;
-        a->tier = (asteroid_tier_t)((asteroids[i].flags >> 2) & 0x3);
-        a->commodity = (commodity_t)((asteroids[i].flags >> 4) & 0x7);
+        a->tier = (asteroid_tier_t)((asteroids[i].flags >> 2) & 0x7);
+        a->commodity = (commodity_t)((asteroids[i].flags >> 5) & 0x7);
         a->pos.x = asteroids[i].x;
         a->pos.y = asteroids[i].y;
         a->vel.x = asteroids[i].vx;

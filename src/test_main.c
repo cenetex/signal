@@ -756,8 +756,8 @@ TEST(test_roundtrip_asteroids) {
     ASSERT_EQ_INT(p0[0], 0);  /* index */
     ASSERT(p0[1] & 1);         /* active */
     ASSERT(!(p0[1] & 2));      /* not fracture_child */
-    ASSERT_EQ_INT((p0[1] >> 2) & 0x3, ASTEROID_TIER_XL);
-    ASSERT_EQ_INT((p0[1] >> 4) & 0x7, COMMODITY_FERRITE_ORE);
+    ASSERT_EQ_INT((p0[1] >> 2) & 0x7, ASTEROID_TIER_XL);
+    ASSERT_EQ_INT((p0[1] >> 5) & 0x7, COMMODITY_FERRITE_ORE);
     ASSERT_EQ_FLOAT(read_f32_le(&p0[2]), 500.0f, 0.1f);
     ASSERT_EQ_FLOAT(read_f32_le(&p0[18]), 150.0f, 0.1f);
 
@@ -766,8 +766,8 @@ TEST(test_roundtrip_asteroids) {
     ASSERT_EQ_INT(p1[0], 5);  /* index */
     ASSERT(p1[1] & 1);         /* active */
     ASSERT(p1[1] & 2);         /* fracture_child */
-    ASSERT_EQ_INT((p1[1] >> 2) & 0x3, ASTEROID_TIER_S);
-    ASSERT_EQ_INT((p1[1] >> 4) & 0x7, COMMODITY_CRYSTAL_ORE);
+    ASSERT_EQ_INT((p1[1] >> 2) & 0x7, ASTEROID_TIER_S);
+    ASSERT_EQ_INT((p1[1] >> 5) & 0x7, COMMODITY_CRYSTAL_ORE);
     ASSERT_EQ_FLOAT(read_f32_le(&p1[22]), 10.5f, 0.1f);  /* ore */
     ASSERT_EQ_FLOAT(read_f32_le(&p1[26]), 14.0f, 0.1f);  /* radius */
 }
