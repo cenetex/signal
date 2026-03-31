@@ -727,7 +727,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier == ASTEROID_TIER_S) continue;
-        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        if (signal_strength_at(w, a->pos) < 0.66f) continue;
         /* Skip asteroids already targeted by another miner */
         bool taken = false;
         for (int n = 0; n < MAX_NPC_SHIPS; n++) {
@@ -758,9 +758,9 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
 static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world_t *w) {
     npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (drag * dt)));
     npc->pos = v2_add(npc->pos, v2_scale(npc->vel, dt));
-    /* Signal-based boundary: push back when signal is weak */
+    /* Signal-based boundary: NPCs stay in strong signal (66%+) */
     float sig = signal_strength_at(w, npc->pos);
-    if (sig < 0.15f) {
+    if (sig < 0.66f) {
         /* Find nearest station and its signal edge distance */
         float best_d_sq = 1e18f;
         int best_s = 0;
@@ -1868,8 +1868,8 @@ void world_reset(world_t *w) {
     for (int i = 2; i < FIELD_ASTEROID_TARGET && i < MAX_ASTEROIDS; i++)
         seed_field_asteroid_of_tier(w, &w->asteroids[i], random_field_asteroid_tier(w));
 
-    /* --- NPC ships (3 miners + 2 haulers) --- */
-    for (int i = 0; i < 3; i++) {
+    /* --- NPC ships (1 miner + 2 haulers) --- */
+    for (int i = 0; i < 1; i++) {
         npc_ship_t *npc = &w->npc_ships[i];
         npc->active       = true;
         npc->role          = NPC_ROLE_MINER;
@@ -1884,7 +1884,7 @@ void world_reset(world_t *w) {
         npc->thrusting     = false;
     }
     for (int i = 0; i < 2; i++) {
-        npc_ship_t *npc = &w->npc_ships[3 + i];
+        npc_ship_t *npc = &w->npc_ships[1 + i];
         npc->active       = true;
         npc->role          = NPC_ROLE_HAULER;
         npc->hull_class    = HULL_CLASS_HAULER;
@@ -1899,7 +1899,7 @@ void world_reset(world_t *w) {
         npc->thrusting     = false;
     }
 
-    SIM_LOG("[sim] world reset complete (%d asteroids, %d NPCs)\n", FIELD_ASTEROID_TARGET, 5);
+    SIM_LOG("[sim] world reset complete (%d asteroids, %d NPCs)\n", FIELD_ASTEROID_TARGET, 3);
 }
 
 /* ================================================================== */

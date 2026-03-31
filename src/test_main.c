@@ -426,7 +426,7 @@ TEST(test_world_reset_spawns_npcs) {
         if (w.npc_ships[i].role == NPC_ROLE_MINER) miners++;
         if (w.npc_ships[i].role == NPC_ROLE_HAULER) haulers++;
     }
-    ASSERT_EQ_INT(miners, 3);
+    ASSERT_EQ_INT(miners, 1);
     ASSERT_EQ_INT(haulers, 2);
 }
 
@@ -2710,7 +2710,7 @@ TEST(test_hauler_fills_highest_value_contract) {
     w.stations[0].inventory[COMMODITY_FRAME_INGOT] = 20.0f;
     w.stations[0].inventory[COMMODITY_CONDUCTOR_INGOT] = 20.0f;
     /* Set up hauler at home, ready to decide */
-    npc_ship_t *hauler = &w.npc_ships[3]; /* first hauler */
+    npc_ship_t *hauler = &w.npc_ships[1]; /* first hauler */
     hauler->state = NPC_STATE_DOCKED;
     hauler->state_timer = 0.0f; /* ready to act */
     hauler->home_station = 0;
