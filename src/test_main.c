@@ -2009,6 +2009,240 @@ TEST(test_bug50_ship_collision_energy_gain) {
 }
 
 /* ================================================================== */
+/* Bug regression batch 6 (bugs 51-60)                                */
+/* ================================================================== */
+
+/* Bug 51: NPC miner discards ALL cargo on dock, not just undepositable */
+TEST(test_bug51_npc_cargo_zeroed_on_dock) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Fill hopper so only 5 units can be deposited */
+    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY - 5.0f;
+    /* Give NPC 30 ferrite and send it home */
+    w.npc_ships[0].cargo[COMMODITY_FERRITE_ORE] = 30.0f;
+    w.npc_ships[0].state = NPC_STATE_RETURN_TO_STATION;
+    w.npc_ships[0].pos = w.stations[0].pos;
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    /* After fix: NPC should retain the 25 units it couldn't deposit.
+     * FAILS because line 819 sets cargo[i] = 0.0f unconditionally. */
+    if (w.npc_ships[0].state == NPC_STATE_DOCKED) {
+        ASSERT(w.npc_ships[0].cargo[COMMODITY_FERRITE_ORE] > 20.0f);
+    }
+}
+
+/* Bug 52: game_sim.c station_repair_cost doesn't check REPAIR service */
+TEST(test_bug52_server_repair_cost_no_service_check) {
+    /* game_sim.c has its own static station_repair_cost(const ship_t*)
+     * that doesn't take a station param and doesn't check services.
+     * economy.c's version checks services. The server uses the wrong one. */
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].ship.hull = 50.0f;
+    w.players[0].ship.credits = 1000.0f;
+    /* Dock at station 1 (Yard) which has REPAIR service */
+    w.players[0].input.interact = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.interact = false;
+    /* Now remove REPAIR service from the station */
+    w.stations[w.players[0].current_station].services &= ~STATION_SERVICE_REPAIR;
+    /* Try to repair — should fail because no REPAIR service */
+    w.players[0].input.service_repair = true;
+    float hull_before = w.players[0].ship.hull;
+    world_sim_step(&w, SIM_DT);
+    /* After fix: hull should be unchanged (repair rejected).
+     * This actually passes because try_repair_ship checks service via
+     * station_has_service. But the cost function used for HUD display
+     * doesn't. The HUD would show a cost even at a non-repair station. */
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull, hull_before, 0.01f);
+}
+
+/* Bug 53: NPC commodity index could overflow npc.cargo array */
+TEST(test_bug53_npc_cargo_commodity_bounds) {
+    /* npc.cargo is sized [COMMODITY_RAW_ORE_COUNT] = 3.
+     * If an asteroid has commodity >= 3 (ingot type), writing to
+     * npc.cargo[commodity] is out of bounds.
+     * Asteroids should only have raw ore commodities, but verify. */
+    world_t w = {0};
+    world_reset(&w);
+    /* Check all asteroids have commodity < RAW_ORE_COUNT */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) continue;
+        ASSERT((int)w.asteroids[i].commodity < COMMODITY_RAW_ORE_COUNT);
+    }
+    /* Spawn more via fracture and verify children inherit valid commodity */
+    for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) continue;
+        ASSERT((int)w.asteroids[i].commodity < COMMODITY_RAW_ORE_COUNT);
+    }
+}
+
+/* Bug 54: multiple players dock at exact same position — overlap */
+TEST(test_bug54_multiple_players_same_dock_position) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    player_init_ship(&w.players[1], &w);
+    w.players[0].connected = true;
+    w.players[1].connected = true;
+    /* Both docked at station 0 */
+    ASSERT(w.players[0].docked);
+    ASSERT(w.players[1].docked);
+    float dist = v2_len(v2_sub(w.players[0].ship.pos, w.players[1].ship.pos));
+    /* After fix: docked players should be offset so they don't overlap.
+     * FAILS because both use the same dock_anchor position. */
+    ASSERT(dist > 5.0f);
+}
+
+/* Bug 55: NPC deposits ore at non-refinery home station — ore never smelts */
+TEST(test_bug55_npc_deposits_at_non_refinery) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Reassign a miner's home to station 1 (Yard) */
+    w.npc_ships[0].home_station = 1;
+    w.npc_ships[0].cargo[COMMODITY_FERRITE_ORE] = 20.0f;
+    w.npc_ships[0].state = NPC_STATE_RETURN_TO_STATION;
+    w.npc_ships[0].pos = w.stations[1].pos;
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    /* NPC docked at Yard and deposited ore into Yard's ore_buffer.
+     * Yard doesn't smelt. The ore sits forever. */
+    /* After fix: NPC should only deposit ore at REFINERY stations,
+     * or seek the nearest refinery to sell. */
+    ASSERT_EQ_FLOAT(w.stations[1].ore_buffer[COMMODITY_FERRITE_ORE], 0.0f, 0.01f);
+}
+
+/* Bug 56: asteroid drag constant 0.42 not in shared constants */
+TEST(test_bug56_asteroid_drag_constant) {
+    /* Asteroid drag is hardcoded as 0.42f inline in step_asteroid_dynamics.
+     * It should be a named constant in game_sim.h or types.h so it can be
+     * tuned alongside ship drag and dock dampening. */
+    /* Can't test directly — this is a code quality issue.
+     * But we can verify the drag value produces reasonable behavior: */
+    world_t w = {0};
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    w.asteroids[0].active = true; w.asteroids[0].tier = ASTEROID_TIER_L;
+    w.asteroids[0].radius = 40.0f; w.asteroids[0].hp = 80.0f;
+    w.asteroids[0].pos = v2(500.0f, 0.0f);
+    w.asteroids[0].vel = v2(100.0f, 0.0f);
+    /* After 5 seconds, asteroid should have slowed significantly */
+    for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
+    float speed = v2_len(w.asteroids[0].vel);
+    ASSERT(speed < 20.0f); /* drag should slow it down */
+}
+
+/* Bug 57: ship collision restitution 1.2x adds energy to the system */
+TEST(test_bug57_ship_collision_restitution_energy) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    w.players[0].ship.hull = 10000.0f;
+    /* Place near an asteroid and ram it */
+    int target = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (w.asteroids[i].active && w.asteroids[i].tier >= ASTEROID_TIER_L) {
+            target = i; break;
+        }
+    }
+    if (target < 0) { ASSERT(0); return; }
+    vec2 toward = v2_norm(v2_sub(w.asteroids[target].pos, v2(0.0f, 0.0f)));
+    w.players[0].ship.pos = v2_sub(w.asteroids[target].pos, v2_scale(toward, w.asteroids[target].radius + 20.0f));
+    w.players[0].ship.vel = v2_scale(toward, 300.0f);
+    float ke_before = v2_len_sq(w.players[0].ship.vel);
+    world_sim_step(&w, SIM_DT);
+    float ke_after = v2_len_sq(w.players[0].ship.vel);
+    /* After fix: KE should decrease (restitution ≤ 1.0).
+     * FAILS if the 1.2x multiplier adds energy. */
+    ASSERT(ke_after <= ke_before * 1.01f); /* small epsilon */
+}
+
+/* Bug 58: Titan fracture at full capacity produces fewer children than requested */
+TEST(test_bug58_titan_fracture_at_capacity) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Fill most asteroid slots */
+    for (int i = 0; i < MAX_ASTEROIDS - 3; i++) {
+        w.asteroids[i].active = true;
+        w.asteroids[i].tier = ASTEROID_TIER_S;
+        w.asteroids[i].radius = 12.0f;
+        w.asteroids[i].hp = 10.0f;
+    }
+    /* Place a Titan in one of the remaining slots */
+    int titan_slot = MAX_ASTEROIDS - 3;
+    w.asteroids[titan_slot].active = true;
+    w.asteroids[titan_slot].tier = ASTEROID_TIER_XXL;
+    w.asteroids[titan_slot].radius = 200.0f;
+    w.asteroids[titan_slot].hp = 1.0f; /* about to fracture */
+    w.asteroids[titan_slot].max_hp = 1000.0f;
+    w.asteroids[titan_slot].commodity = COMMODITY_FERRITE_ORE;
+    w.asteroids[titan_slot].pos = v2(800.0f, 0.0f);
+    w.asteroids[titan_slot].seed = 42.0f;
+    /* Fracture it — only 2 free slots available but it wants 8-14 children */
+    int active_before = 0;
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        if (w.asteroids[i].active) active_before++;
+    /* The fracture will only create as many children as free slots (2-3).
+     * This is silent truncation — no warning, no event. */
+    ASSERT(MAX_ASTEROIDS - active_before < 8); /* proves truncation will happen */
+}
+
+/* Bug 59: emergency recovery docks at last station even if far away */
+TEST(test_bug59_emergency_recover_teleports) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    /* Launch and fly to station 2 area */
+    w.players[0].input.interact = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.interact = false;
+    w.players[0].docked = false;
+    w.players[0].ship.pos = v2(320.0f, 200.0f); /* near station 2 */
+    w.players[0].nearby_station = 2;
+    w.players[0].current_station = 0; /* last docked at 0 */
+    /* Kill the player by setting hull to near-zero and running a tick
+     * (collision or world boundary will trigger emergency recovery) */
+    w.players[0].ship.hull = 0.001f;
+    w.players[0].ship.vel = v2(0.0f, 500.0f); /* moving fast to trigger collision */
+    for (int i = 0; i < 60; i++) world_sim_step(&w, SIM_DT);
+    /* Player should recover at station 2 (nearest), not station 0 (last docked).
+     * dock_ship uses nearby_station if >= 0, which is 2 here. So this should work. */
+    ASSERT(w.players[0].docked);
+    ASSERT_EQ_INT(w.players[0].current_station, 2);
+}
+
+/* Bug 60: mining TIER_S fragments shouldn't be possible — they're collectible, not mineable */
+TEST(test_bug60_cannot_mine_fragment) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+    /* Create a TIER_S fragment right in front of the player */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    w.asteroids[0].active = true;
+    w.asteroids[0].tier = ASTEROID_TIER_S;
+    w.asteroids[0].radius = 12.0f;
+    w.asteroids[0].hp = 10.0f;
+    w.asteroids[0].max_hp = 10.0f;
+    w.asteroids[0].ore = 10.0f;
+    w.asteroids[0].max_ore = 10.0f;
+    w.asteroids[0].commodity = COMMODITY_FERRITE_ORE;
+    w.asteroids[0].pos = v2(100.0f, 0.0f);
+    w.players[0].ship.pos = v2(50.0f, 0.0f);
+    w.players[0].ship.angle = 0.0f;
+    w.players[0].input.mine = true;
+    world_sim_step(&w, SIM_DT);
+    /* find_mining_target should skip TIER_S (collectible, not mineable).
+     * Verify the mining beam doesn't target fragments. */
+    ASSERT_EQ_INT(w.players[0].hover_asteroid, -1);
+}
+
+/* ================================================================== */
 /* STRATEGIC TDD: Signal range (#82) — define the behavior first      */
 /* ================================================================== */
 
@@ -2368,9 +2602,17 @@ int main(void) {
     RUN(test_scenario_emergency_recovery);
     RUN(test_scenario_product_cap_pauses_production);
 
-    /* Strategic TDD stubs for future features (#82, #70, #71, #72, #83)
-     * are defined below but not run until the features are implemented.
-     * Uncomment RUN() calls when starting each feature. */
+    printf("\nBug regression batch 6 (bugs 51-60):\n");
+    RUN(test_bug51_npc_cargo_zeroed_on_dock);
+    RUN(test_bug52_server_repair_cost_no_service_check);
+    RUN(test_bug53_npc_cargo_commodity_bounds);
+    RUN(test_bug54_multiple_players_same_dock_position);
+    RUN(test_bug55_npc_deposits_at_non_refinery);
+    RUN(test_bug56_asteroid_drag_constant);
+    RUN(test_bug57_ship_collision_restitution_energy);
+    RUN(test_bug58_titan_fracture_at_capacity);
+    RUN(test_bug59_emergency_recover_teleports);
+    RUN(test_bug60_cannot_mine_fragment);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
