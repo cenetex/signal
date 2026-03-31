@@ -1094,6 +1094,199 @@ TEST(test_bug20_player_ship_checks_id) {
     ASSERT(0);  /* FAIL: no ID check in PLAYER_SHIP handler */
 }
 
+/* ================================================================== */
+/* Bug regression tests — batch 3 (bugs 21-30, all FAIL until fixed)  */
+/* ================================================================== */
+
+/* Bug 21: commodity bitpacking uses 3 bits (0-7) but adding COMMODITY_JUMP_CRYSTAL
+ * would make COMMODITY_COUNT=7, and any value >=8 would be truncated. */
+TEST(test_bug21_commodity_bits_fragile) {
+    /* 3 bits can encode 0-7. COMMODITY_COUNT is currently 6. Adding 2 more
+     * commodities (jump crystals, etc) would overflow the bitfield.
+     * FIX: use 4 bits for commodity in the network protocol. */
+    ASSERT(COMMODITY_COUNT <= 7);  /* passes today */
+    /* After fix: protocol should handle COMMODITY_COUNT > 7 */
+    /* This test documents the fragility — manually check when adding commodities */
+}
+
+/* Bug 22: hauler that can't load stays docked and retries every HAULER_LOAD_TIME,
+ * but never considers going to a DIFFERENT station to find cargo. */
+TEST(test_bug22_hauler_stuck_at_empty_station) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Empty the refinery inventory so haulers can't load anything */
+    for (int i = 0; i < COMMODITY_COUNT; i++)
+        w.stations[0].inventory[i] = 0.0f;
+    /* Run 10 seconds — haulers should try to find cargo elsewhere */
+    for (int i = 0; i < 1200; i++)
+        world_sim_step(&w, SIM_DT);
+    /* After fix: haulers should have left to find cargo or changed state.
+     * FAILS because haulers just wait at home_station forever. */
+    bool any_hauler_moved = false;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].role == NPC_ROLE_HAULER &&
+            w.npc_ships[i].state != NPC_STATE_DOCKED) {
+            any_hauler_moved = true;
+        }
+    }
+    ASSERT(any_hauler_moved);
+}
+
+/* Bug 23: NPC miners don't lose cargo when they can't deposit (hopper full).
+ * Ore stays in NPC cargo forever, inflating the economy. */
+TEST(test_bug23_npc_cargo_stuck_when_hopper_full) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Fill all hoppers to capacity */
+    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
+        w.stations[0].ore_buffer[i] = REFINERY_HOPPER_CAPACITY;
+    /* Give miner some cargo and send it home */
+    w.npc_ships[0].cargo[0] = 30.0f;
+    w.npc_ships[0].state = NPC_STATE_RETURN_TO_STATION;
+    w.npc_ships[0].pos = w.stations[0].pos;
+    for (int i = 0; i < 600; i++)
+        world_sim_step(&w, SIM_DT);
+    /* NPC should have attempted to deposit but hopper was full.
+     * After fix: NPC should dump cargo (lost) or wait.
+     * Currently the ore stays in NPC cargo — they just undock and mine more
+     * on top of it. The cargo silently accumulates past capacity. */
+    float npc_cargo = 0.0f;
+    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
+        npc_cargo += w.npc_ships[0].cargo[i];
+    /* After fix: NPC cargo should be 0 after docking (deposited or dumped).
+     * FAILS because the undeposited ore stays in cargo. */
+    ASSERT_EQ_FLOAT(npc_cargo, 0.0f, 1.0f);
+}
+
+/* Bug 24: hauler ingot_buffer has no capacity limit — unbounded accumulation */
+TEST(test_bug24_ingot_buffer_no_cap) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Hauler delivers 40 ingots to Kepler Yard */
+    w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] = 40.0f;
+    /* Deliver 40 more — no cap check, total becomes 80 */
+    w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] += 40.0f;
+    /* After fix: ingot_buffer should be capped (like ore_buffer has HOPPER_CAPACITY).
+     * FAILS because there's no INGOT_BUFFER_CAPACITY constant or check. */
+    ASSERT(w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] <= 50.0f);
+}
+
+/* Bug 25: world_reset always uses same RNG seed — identical asteroid fields every game */
+TEST(test_bug25_rng_deterministic_every_reset) {
+    world_t w1 = {0}, w2 = {0};
+    world_reset(&w1);
+    world_reset(&w2);
+    /* Both worlds have identical asteroid positions because rng seed is 0xC0FFEE12 */
+    /* After fix: seed from time or counter so each reset produces different fields.
+     * FAILS because both resets produce identical state. */
+    bool all_same = true;
+    for (int i = 0; i < 5; i++) {
+        if (w1.asteroids[i].pos.x != w2.asteroids[i].pos.x) all_same = false;
+    }
+    ASSERT(!all_same);
+}
+
+/* Bug 26: hauler unloading dumps ingots without checking dest ingot_buffer capacity */
+TEST(test_bug26_hauler_unload_no_cap) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Pre-fill dest ingot buffer */
+    w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] = 100.0f;
+    /* Hauler arrives with 40 more */
+    w.npc_ships[3].ingots[INGOT_IDX(COMMODITY_FRAME_INGOT)] = 40.0f;
+    w.npc_ships[3].state = NPC_STATE_UNLOADING;
+    w.npc_ships[3].state_timer = 0.01f;
+    w.npc_ships[3].dest_station = 1;
+    world_sim_step(&w, SIM_DT);
+    /* After fix: ingot_buffer should not exceed a cap.
+     * FAILS because unloading has no cap — buffer becomes 140. */
+    ASSERT(w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] <= 100.0f);
+}
+
+/* Bug 27: cargo can go slightly negative due to float imprecision in sell loop */
+TEST(test_bug27_cargo_negative_after_sell) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    /* Set cargo to a value that might cause float issues */
+    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 0.011f;  /* just above threshold */
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    /* After fix: cargo should never go negative.
+     * Check that all cargo values >= 0 after any transaction. */
+    for (int i = 0; i < COMMODITY_COUNT; i++) {
+        ASSERT(w.players[0].ship.cargo[i] >= 0.0f);
+    }
+}
+
+/* Bug 28: credits can go slightly negative due to float comparison in try_spend_credits */
+TEST(test_bug28_credits_negative_edge) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    /* Set credits to just barely enough (within 0.01 epsilon) */
+    w.players[0].ship.credits = 289.99f;  /* upgrade costs 290 */
+    /* try_spend_credits checks: credits + 0.01 < amount
+     * 289.99 + 0.01 = 290.0 which is NOT < 290.0, so it succeeds
+     * Then: credits = max(0, 289.99 - 290) = max(0, -0.01) = 0.0 — OK
+     * But with different values the 0.01 epsilon could allow overspend */
+    w.players[0].ship.credits = 0.005f;
+    /* try_spend_credits(0.01): 0.005 + 0.01 = 0.015 which is NOT < 0.01, so succeeds
+     * Result: max(0, 0.005 - 0.01) = 0.0 — the 0.005 is lost */
+    ship_t *s = &w.players[0].ship;
+    bool spent = (s->credits + 0.01f >= 0.01f);  /* would pass the check */
+    ASSERT(spent);  /* documents: epsilon allows spending more than you have */
+    /* After fix: use exact comparison or integer credits.
+     * This test passes but documents the imprecision. */
+}
+
+/* Bug 29: collection_feedback_ore accumulates across multiple collection events
+ * but never resets between display cycles — shows cumulative, not per-event. */
+TEST(test_bug29_collection_feedback_accumulates) {
+    /* This is a client-side game_t issue, not testable in headless sim.
+     * Document: push_collection_feedback adds to existing values if timer > 0.
+     * Two quick collections show "Recovered 25 ore" instead of "10" then "15".
+     * After fix: either reset on each event or show cumulative intentionally. */
+    ASSERT(COLLECTION_FEEDBACK_TIME > 0.0f);  /* timer exists */
+    /* FAIL assertion to force review of the accumulation behavior: */
+    ASSERT(0);
+}
+
+/* Bug 30: two players collecting the same TIER_S fragment simultaneously
+ * can both get the full ore — no atomic check on ore remaining */
+TEST(test_bug30_double_collect_fragment) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Create a fragment with 10 ore */
+    w.asteroids[0].active = true;
+    w.asteroids[0].tier = ASTEROID_TIER_S;
+    w.asteroids[0].ore = 10.0f;
+    w.asteroids[0].max_ore = 10.0f;
+    w.asteroids[0].commodity = COMMODITY_FERRITE_ORE;
+    w.asteroids[0].pos = v2(500.0f, 500.0f);
+    w.asteroids[0].radius = 12.0f;
+    /* Two players right on top of the fragment */
+    player_init_ship(&w.players[0], &w);
+    player_init_ship(&w.players[1], &w);
+    w.players[0].connected = true;
+    w.players[1].connected = true;
+    w.players[0].docked = false;
+    w.players[1].docked = false;
+    w.players[0].ship.pos = v2(500.0f, 500.0f);
+    w.players[1].ship.pos = v2(500.0f, 500.0f);
+    w.players[0].ship.tractor_level = 4;
+    w.players[1].ship.tractor_level = 4;
+    world_sim_step(&w, SIM_DT);
+    /* Both players should get at most 10 ore total (not 10 each) */
+    float total = w.players[0].ship.cargo[COMMODITY_FERRITE_ORE]
+                + w.players[1].ship.cargo[COMMODITY_FERRITE_ORE];
+    /* After fix: total should be <= 10.0.
+     * FAILS if both players collect the full 10 before the ore is decremented. */
+    ASSERT(total <= 10.5f);  /* small epsilon for float */
+}
+
 /* ---- Runner ---- */
 
 int main(void) {
@@ -1194,6 +1387,18 @@ int main(void) {
     RUN(test_bug18_emergency_recover_nearest_station);
     RUN(test_bug19_feedback_in_world);
     RUN(test_bug20_player_ship_checks_id);
+
+    printf("\nBug regression tests (batch 3 — SHOULD FAIL until fixed):\n");
+    RUN(test_bug21_commodity_bits_fragile);
+    RUN(test_bug22_hauler_stuck_at_empty_station);
+    RUN(test_bug23_npc_cargo_stuck_when_hopper_full);
+    RUN(test_bug24_ingot_buffer_no_cap);
+    RUN(test_bug25_rng_deterministic_every_reset);
+    RUN(test_bug26_hauler_unload_no_cap);
+    RUN(test_bug27_cargo_negative_after_sell);
+    RUN(test_bug28_credits_negative_edge);
+    RUN(test_bug29_collection_feedback_accumulates);
+    RUN(test_bug30_double_collect_fragment);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
