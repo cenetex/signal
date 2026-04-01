@@ -102,14 +102,14 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
 
 /*
  * WORLD_ASTEROIDS message:
- * [type:1][count:1] + count * 30-byte records
+ * [type:1][count:1] + count * ASTEROID_RECORD_SIZE-byte records
  */
 static inline int serialize_asteroids(uint8_t *buf, const asteroid_t *asteroids) {
     int count = 0;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!asteroids[i].active) continue;
         const asteroid_t *a = &asteroids[i];
-        uint8_t *p = &buf[2 + count * 30];
+        uint8_t *p = &buf[2 + count * ASTEROID_RECORD_SIZE];
         p[0] = (uint8_t)i;
         p[1] = 1; /* active */
         if (a->fracture_child) p[1] |= (1 << 1);
@@ -126,12 +126,12 @@ static inline int serialize_asteroids(uint8_t *buf, const asteroid_t *asteroids)
     }
     buf[0] = NET_MSG_WORLD_ASTEROIDS;
     buf[1] = (uint8_t)count;
-    return 2 + count * 30;
+    return 2 + count * ASTEROID_RECORD_SIZE;
 }
 
 /*
  * WORLD_NPCS message:
- * [type:1][count:1] + count * 26-byte records
+ * [type:1][count:1] + count * NPC_RECORD_SIZE-byte records
  * (23 original + 3 tint bytes)
  */
 static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
@@ -139,7 +139,7 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!npcs[i].active) continue;
         const npc_ship_t *n = &npcs[i];
-        uint8_t *p = &buf[2 + count * 26];
+        uint8_t *p = &buf[2 + count * NPC_RECORD_SIZE];
         p[0] = (uint8_t)i;
         p[1] = 1; /* active */
         p[1] |= (((uint8_t)n->role & 0x3) << 1);
@@ -158,7 +158,7 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
     }
     buf[0] = NET_MSG_WORLD_NPCS;
     buf[1] = (uint8_t)count;
-    return 2 + count * 26;
+    return 2 + count * NPC_RECORD_SIZE;
 }
 
 /*
@@ -170,6 +170,19 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
 
 /* Compile-time guard: if the record layout changes, update STATION_RECORD_SIZE
  * (in shared/net_protocol.h) and all buffers that depend on it. */
+/* Compile-time guards: record sizes must match serialization layouts. */
+_Static_assert(
+    1 + 5 * 4 + 1 == PLAYER_RECORD_SIZE,
+    "PLAYER_RECORD_SIZE must match serialized player state layout"
+);
+_Static_assert(
+    1 + 1 + 7 * 4 == ASTEROID_RECORD_SIZE,
+    "ASTEROID_RECORD_SIZE must match serialized asteroid layout"
+);
+_Static_assert(
+    2 + 5 * 4 + 1 + 3 == NPC_RECORD_SIZE,
+    "NPC_RECORD_SIZE must match serialized NPC layout"
+);
 _Static_assert(
     1 + COMMODITY_RAW_ORE_COUNT * 4 + COMMODITY_COUNT * 4 + PRODUCT_COUNT * 4 == STATION_RECORD_SIZE,
     "STATION_RECORD_SIZE must match serialized station econ layout"
@@ -220,7 +233,7 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
     write_f32_le(&buf[23], st->signal_range);
     memset(&buf[27], 0, 32);
     memcpy(&buf[27], st->name, strnlen(st->name, 31));
-    return 59;
+    return STATION_IDENTITY_SIZE;
 }
 
 /*

@@ -1132,7 +1132,7 @@ static void interpolate_world_for_render(void) {
         if (prev->active && curr->active) {
             dst->pos.x = lerpf(prev->pos.x, curr->pos.x, t);
             dst->pos.y = lerpf(prev->pos.y, curr->pos.y, t);
-            dst->rotation = prev->rotation + (curr->rotation - prev->rotation) * t;
+            dst->rotation = lerp_angle(prev->rotation, curr->rotation, t);
         }
     }
 

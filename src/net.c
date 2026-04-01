@@ -136,12 +136,12 @@ static void handle_message(const uint8_t* data, int len) {
         if (len < 2) break;
         {
             int count = (int)data[1];
-            int expected = 2 + count * 30;
+            int expected = 2 + count * ASTEROID_RECORD_SIZE;
             if (len < expected) break;
             if (net_state.callbacks.on_asteroids) {
                 NetAsteroidState arr[48];
                 for (int i = 0; i < count && i < 48; i++) {
-                    const uint8_t* p = &data[2 + i * 30];
+                    const uint8_t* p = &data[2 + i * ASTEROID_RECORD_SIZE];
                     arr[i].index  = p[0];
                     arr[i].flags  = p[1];
                     arr[i].x      = read_f32_le(&p[2]);
@@ -161,12 +161,12 @@ static void handle_message(const uint8_t* data, int len) {
         if (len < 2) break;
         {
             int count = (int)data[1];
-            int expected = 2 + count * 26;
+            int expected = 2 + count * NPC_RECORD_SIZE;
             if (len < expected) break;
             if (net_state.callbacks.on_npcs) {
                 NetNpcState arr[6];
                 for (int i = 0; i < count && i < 6; i++) {
-                    const uint8_t* p = &data[2 + i * 26];
+                    const uint8_t* p = &data[2 + i * NPC_RECORD_SIZE];
                     arr[i].index            = p[0];
                     arr[i].flags            = p[1];
                     arr[i].x                = read_f32_le(&p[2]);
@@ -230,7 +230,7 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_STATION_IDENTITY:
-        if (len >= 59 && net_state.callbacks.on_station_identity) {
+        if (len >= STATION_IDENTITY_SIZE && net_state.callbacks.on_station_identity) {
             uint8_t idx = data[1];
             uint8_t role = data[2];
             uint32_t services = read_u32_le(&data[3]);

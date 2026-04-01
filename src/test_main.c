@@ -2885,6 +2885,128 @@ TEST(test_world_load_missing_file) {
     ASSERT(!world_load(&w, "/tmp/nonexistent_save_file.sav"));
 }
 
+TEST(test_player_save_load_preserves_ship) {
+    world_t w = {0};
+    world_reset(&w);
+    server_player_t sp = {0};
+    player_init_ship(&sp, &w);
+    sp.connected = true;
+    sp.ship.credits = 500.0f;
+    sp.ship.hull = 42.0f;
+    sp.ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
+    sp.ship.cargo[COMMODITY_CUPRITE_ORE] = 5.0f;
+    sp.ship.mining_level = 2;
+    sp.ship.hold_level = 1;
+    sp.ship.tractor_level = 3;
+    sp.current_station = 1;
+    ASSERT(player_save(&sp, "/tmp", 99));
+
+    server_player_t loaded = {0};
+    ASSERT(player_load(&loaded, &w, "/tmp", 99));
+    ASSERT_EQ_FLOAT(loaded.ship.credits, 500.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded.ship.hull, 42.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded.ship.cargo[COMMODITY_FERRITE_ORE], 10.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded.ship.cargo[COMMODITY_CUPRITE_ORE], 5.0f, 0.01f);
+    ASSERT_EQ_INT(loaded.ship.mining_level, 2);
+    ASSERT_EQ_INT(loaded.ship.hold_level, 1);
+    ASSERT_EQ_INT(loaded.ship.tractor_level, 3);
+    ASSERT_EQ_INT(loaded.current_station, 1);
+    ASSERT(loaded.docked);
+    remove("/tmp/player_99.sav");
+}
+
+TEST(test_player_load_clamps_negative_credits) {
+    world_t w = {0};
+    world_reset(&w);
+    server_player_t sp = {0};
+    player_init_ship(&sp, &w);
+    sp.connected = true;
+    sp.ship.credits = -999.0f;
+    ASSERT(player_save(&sp, "/tmp", 98));
+
+    server_player_t loaded = {0};
+    ASSERT(player_load(&loaded, &w, "/tmp", 98));
+    ASSERT(loaded.ship.credits >= 0.0f);
+    remove("/tmp/player_98.sav");
+}
+
+TEST(test_player_load_clamps_negative_cargo) {
+    world_t w = {0};
+    world_reset(&w);
+    server_player_t sp = {0};
+    player_init_ship(&sp, &w);
+    sp.connected = true;
+    sp.ship.cargo[COMMODITY_FERRITE_ORE] = -50.0f;
+    ASSERT(player_save(&sp, "/tmp", 97));
+
+    server_player_t loaded = {0};
+    ASSERT(player_load(&loaded, &w, "/tmp", 97));
+    ASSERT(loaded.ship.cargo[COMMODITY_FERRITE_ORE] >= 0.0f);
+    remove("/tmp/player_97.sav");
+}
+
+TEST(test_player_load_clamps_hull_hp) {
+    world_t w = {0};
+    world_reset(&w);
+    server_player_t sp = {0};
+    player_init_ship(&sp, &w);
+    sp.connected = true;
+    sp.ship.hull = 99999.0f;  /* way above max */
+    ASSERT(player_save(&sp, "/tmp", 96));
+
+    server_player_t loaded = {0};
+    ASSERT(player_load(&loaded, &w, "/tmp", 96));
+    ASSERT(loaded.ship.hull <= ship_max_hull(&loaded.ship));
+    remove("/tmp/player_96.sav");
+}
+
+TEST(test_player_load_clamps_upgrade_levels) {
+    world_t w = {0};
+    world_reset(&w);
+    server_player_t sp = {0};
+    player_init_ship(&sp, &w);
+    sp.connected = true;
+    sp.ship.mining_level = 100;
+    sp.ship.hold_level = -5;
+    ASSERT(player_save(&sp, "/tmp", 95));
+
+    server_player_t loaded = {0};
+    ASSERT(player_load(&loaded, &w, "/tmp", 95));
+    ASSERT(loaded.ship.mining_level >= 0 && loaded.ship.mining_level <= SHIP_UPGRADE_MAX_LEVEL);
+    ASSERT(loaded.ship.hold_level >= 0 && loaded.ship.hold_level <= SHIP_UPGRADE_MAX_LEVEL);
+    remove("/tmp/player_95.sav");
+}
+
+TEST(test_player_load_invalid_station_falls_back) {
+    world_t w = {0};
+    world_reset(&w);
+    server_player_t sp = {0};
+    player_init_ship(&sp, &w);
+    sp.connected = true;
+    sp.current_station = 99;  /* out of range */
+    ASSERT(player_save(&sp, "/tmp", 94));
+
+    server_player_t loaded = {0};
+    ASSERT(player_load(&loaded, &w, "/tmp", 94));
+    ASSERT(loaded.current_station >= 0 && loaded.current_station < MAX_STATIONS);
+    remove("/tmp/player_94.sav");
+}
+
+TEST(test_player_load_bad_magic_fails) {
+    /* Write garbage with wrong magic */
+    FILE *f = fopen("/tmp/player_93.sav", "wb");
+    ASSERT(f != NULL);
+    uint32_t bad_magic = 0xDEADBEEF;
+    fwrite(&bad_magic, sizeof(bad_magic), 1, f);
+    fclose(f);
+
+    world_t w = {0};
+    world_reset(&w);
+    server_player_t loaded = {0};
+    ASSERT(!player_load(&loaded, &w, "/tmp", 93));
+    remove("/tmp/player_93.sav");
+}
+
 /* ================================================================== */
 /* STRATEGIC TDD: Station construction (#83)                          */
 /* ================================================================== */
@@ -3285,6 +3407,13 @@ int main(void) {
     RUN(test_world_save_load_preserves_stations);
     RUN(test_world_save_load_preserves_npcs);
     RUN(test_world_load_missing_file);
+    RUN(test_player_save_load_preserves_ship);
+    RUN(test_player_load_clamps_negative_credits);
+    RUN(test_player_load_clamps_negative_cargo);
+    RUN(test_player_load_clamps_hull_hp);
+    RUN(test_player_load_clamps_upgrade_levels);
+    RUN(test_player_load_invalid_station_falls_back);
+    RUN(test_player_load_bad_magic_fails);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

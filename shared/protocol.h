@@ -77,4 +77,13 @@ enum {
 /* Player state record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1] */
 #define PLAYER_RECORD_SIZE 22
 
+/* Asteroid record: [id+flags:1][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32] */
+#define ASTEROID_RECORD_SIZE 30
+
+/* NPC record: [id+flags:1][flags:1][pos:2xf32][vel:2xf32][angle:f32][target:1][tint:3] */
+#define NPC_RECORD_SIZE 26
+
+/* Station identity message payload (after type byte): [index:1][reserved:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32] */
+#define STATION_IDENTITY_SIZE 59
+
 #endif /* SHARED_PROTOCOL_H */

@@ -2203,6 +2203,16 @@ bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot) {
     if (sp->ship.mining_level < 0 || sp->ship.mining_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship.mining_level = 0;
     if (sp->ship.hold_level < 0 || sp->ship.hold_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship.hold_level = 0;
     if (sp->ship.tractor_level < 0 || sp->ship.tractor_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship.tractor_level = 0;
+    /* Clamp credits (no negative, no NaN) */
+    if (!(sp->ship.credits >= 0.0f)) sp->ship.credits = 0.0f;
+    /* Clamp hull HP */
+    float max_hull = ship_max_hull(&sp->ship);
+    if (!(sp->ship.hull > 0.0f)) sp->ship.hull = max_hull;
+    if (sp->ship.hull > max_hull) sp->ship.hull = max_hull;
+    /* Clamp cargo (no negative, no NaN, no exceeding capacity) */
+    for (int i = 0; i < COMMODITY_COUNT; i++) {
+        if (!(sp->ship.cargo[i] >= 0.0f)) sp->ship.cargo[i] = 0.0f;
+    }
     sp->ship.pos = data.last_pos;
     sp->ship.angle = data.last_angle;
     /* Dock the player at their last station for safety */
