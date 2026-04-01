@@ -73,12 +73,12 @@
         position: fixed;
         inset: 0;
         z-index: 10;
-        overflow: auto;
-        padding: 24px 18px 36px;
-        background:
-          linear-gradient(180deg, rgba(8, 7, 6, 0.28), rgba(8, 7, 6, 0.72)),
-          radial-gradient(circle at top, rgba(241, 181, 102, 0.08), transparent 28%);
-        transition: opacity 0.4s, visibility 0.4s;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        background: rgba(4, 4, 3, 0.72);
+        backdrop-filter: blur(6px);
+        transition: opacity 0.3s, visibility 0.3s;
       }
 
       #menu.hidden {
@@ -88,144 +88,64 @@
       }
 
       .menu-shell {
-        width: min(1180px, 100%);
-        margin: 0 auto;
-        display: grid;
-        gap: 18px;
+        width: min(420px, calc(100% - 36px));
+        border: 1px solid var(--line);
+        border-radius: 20px;
+        background: var(--panel-strong);
+        box-shadow: var(--shadow);
+        overflow: hidden;
       }
 
-      .masthead {
-        display: flex;
-        align-items: center;
-        justify-content: space-between;
-        gap: 16px;
+      .menu-header {
+        padding: 22px 24px 16px;
+        border-bottom: 1px solid var(--line);
+        text-align: center;
+      }
+
+      .menu-header .title {
+        color: var(--signal);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 13px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        margin-bottom: 4px;
+      }
+
+      .menu-header .status {
         color: var(--faint);
         font-family: "IBM Plex Mono", monospace;
-        font-size: 11px;
+        font-size: 10px;
         letter-spacing: 0.12em;
         text-transform: uppercase;
       }
 
-      .masthead-mark {
-        color: var(--signal);
-      }
-
-      .masthead-status {
-        color: rgba(245, 239, 223, 0.62);
-      }
-
-      .intro-grid {
+      .menu-actions {
+        padding: 16px 20px;
         display: grid;
-        grid-template-columns: minmax(0, 1.28fr) minmax(320px, 0.92fr);
-        gap: 18px;
-      }
-
-      .panel {
-        position: relative;
-        overflow: hidden;
-        border: 1px solid var(--line);
-        border-radius: 28px;
-        background: var(--panel);
-        box-shadow: var(--shadow);
-        backdrop-filter: blur(22px);
-      }
-
-      .hero-panel {
-        padding: clamp(26px, 4vw, 52px);
-      }
-
-      .hero-panel::before {
-        content: "";
-        position: absolute;
-        inset: auto -8% 8% auto;
-        width: 320px;
-        height: 320px;
-        border-radius: 50%;
-        background: radial-gradient(circle, rgba(128, 255, 213, 0.18), transparent 66%);
-        pointer-events: none;
-      }
-
-      .eyebrow {
-        margin-bottom: 14px;
-        color: var(--ore);
-        font-family: "IBM Plex Mono", monospace;
-        font-size: 11px;
-        letter-spacing: 0.2em;
-        text-transform: uppercase;
-      }
-
-      h1 {
-        max-width: 10ch;
-        margin-bottom: 18px;
-        font-size: clamp(52px, 10vw, 112px);
-        line-height: 0.88;
-        letter-spacing: 0.04em;
-        text-transform: uppercase;
-        font-weight: 600;
-      }
-
-      h1 .accent {
-        color: var(--signal);
-      }
-
-      .subtitle {
-        max-width: 18ch;
-        margin-bottom: 18px;
-        font-size: clamp(19px, 2.4vw, 31px);
-        line-height: 1.08;
-        color: rgba(245, 239, 223, 0.92);
-      }
-
-      .lede {
-        max-width: 63ch;
-        margin-bottom: 28px;
-        font-size: 16px;
-        line-height: 1.7;
-        color: var(--muted);
-      }
-
-      .signal-note {
-        max-width: 58ch;
-        margin-bottom: 30px;
-        padding: 14px 18px;
-        border-left: 3px solid rgba(128, 255, 213, 0.68);
-        background: rgba(128, 255, 213, 0.06);
-        color: rgba(245, 239, 223, 0.82);
-        font-size: 14px;
-        line-height: 1.7;
-      }
-
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        margin-bottom: 30px;
+        gap: 8px;
       }
 
       .btn {
-        display: inline-flex;
+        display: flex;
         align-items: center;
         justify-content: center;
-        gap: 10px;
-        min-width: 190px;
-        padding: 14px 22px;
+        padding: 12px 18px;
         border: 1px solid var(--line);
-        border-radius: 999px;
+        border-radius: 10px;
         color: var(--ink);
         text-decoration: none;
         text-transform: uppercase;
-        letter-spacing: 0.14em;
+        letter-spacing: 0.12em;
         font-size: 12px;
         font-family: "IBM Plex Mono", monospace;
-        background: rgba(245, 239, 223, 0.04);
-        transition: transform 0.2s, border-color 0.2s, background 0.2s, color 0.2s;
+        background: rgba(245, 239, 223, 0.03);
+        transition: border-color 0.2s, background 0.2s;
         cursor: pointer;
       }
 
       .btn:hover {
-        transform: translateY(-1px);
-        border-color: rgba(245, 239, 223, 0.34);
-        background: rgba(245, 239, 223, 0.08);
+        border-color: rgba(245, 239, 223, 0.28);
+        background: rgba(245, 239, 223, 0.07);
       }
 
       .btn.primary {
@@ -238,176 +158,65 @@
         background: linear-gradient(135deg, #92ffdc, #b7ffe2 70%);
       }
 
-      .story-strip {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 12px;
+      .menu-section {
+        padding: 14px 20px;
+        border-top: 1px solid var(--line);
       }
 
-      .story-card {
-        padding: 16px 16px 18px;
-        border-radius: 18px;
-        border: 1px solid rgba(245, 239, 223, 0.08);
-        background: rgba(245, 239, 223, 0.03);
-      }
-
-      .story-card .label {
-        margin-bottom: 8px;
-        color: var(--ore);
+      .menu-section-title {
+        color: var(--faint);
         font-family: "IBM Plex Mono", monospace;
-        font-size: 11px;
+        font-size: 10px;
         letter-spacing: 0.14em;
         text-transform: uppercase;
+        margin-bottom: 10px;
       }
 
-      .story-card p {
-        color: var(--muted);
-        font-size: 14px;
-        line-height: 1.55;
-      }
-
-      .brief-panel {
+      .controls-grid {
         display: grid;
-        gap: 16px;
-        padding: clamp(24px, 3vw, 34px);
-        background:
-          linear-gradient(180deg, rgba(36, 29, 22, 0.92), rgba(18, 17, 14, 0.88)),
-          radial-gradient(circle at top right, rgba(241, 181, 102, 0.12), transparent 36%);
+        grid-template-columns: 1fr 1fr;
+        gap: 6px 16px;
       }
 
-      .brief-topline {
-        color: rgba(245, 239, 223, 0.5);
-        font-family: "IBM Plex Mono", monospace;
-        font-size: 11px;
-        letter-spacing: 0.16em;
-        text-transform: uppercase;
-      }
-
-      .brief-title {
-        font-size: 28px;
-        line-height: 1.02;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-      }
-
-      .brief-copy {
-        color: var(--muted);
-        font-size: 15px;
-        line-height: 1.7;
-      }
-
-      .brief-rail {
-        display: grid;
-        gap: 12px;
-      }
-
-      .brief-item {
-        padding: 14px 16px;
-        border: 1px solid rgba(245, 239, 223, 0.08);
-        border-radius: 18px;
-        background: rgba(0, 0, 0, 0.14);
-      }
-
-      .brief-item h2 {
-        margin-bottom: 5px;
-        font-size: 13px;
-        color: var(--signal);
-        font-family: "IBM Plex Mono", monospace;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-        font-weight: 500;
-      }
-
-      .brief-item p {
-        color: rgba(245, 239, 223, 0.76);
-        font-size: 14px;
-        line-height: 1.58;
-      }
-
-      .support-grid {
-        display: grid;
-        grid-template-columns: minmax(0, 1fr) minmax(280px, 0.72fr);
-        gap: 18px;
-      }
-
-      .support-panel {
-        padding: 22px 24px;
-      }
-
-      .support-title {
-        margin-bottom: 16px;
-        color: rgba(245, 239, 223, 0.66);
-        font-family: "IBM Plex Mono", monospace;
-        font-size: 11px;
-        letter-spacing: 0.16em;
-        text-transform: uppercase;
-      }
-
-      .pill-row {
+      .control-item {
         display: flex;
-        flex-wrap: wrap;
-        gap: 10px;
-      }
-
-      .pill {
-        display: inline-flex;
         align-items: center;
-        padding: 10px 12px;
-        border-radius: 999px;
-        border: 1px solid rgba(245, 239, 223, 0.1);
-        background: rgba(245, 239, 223, 0.03);
-        color: rgba(245, 239, 223, 0.78);
+        gap: 8px;
+        font-size: 12px;
+        color: var(--muted);
         font-family: "IBM Plex Mono", monospace;
-        font-size: 11px;
-        letter-spacing: 0.06em;
       }
 
-      .pill strong {
+      .control-item kbd {
+        display: inline-block;
+        min-width: 22px;
+        padding: 2px 6px;
+        border: 1px solid rgba(245, 239, 223, 0.12);
+        border-radius: 4px;
+        background: rgba(245, 239, 223, 0.05);
         color: var(--ore);
-        margin-right: 6px;
-        font-weight: 500;
+        font-size: 11px;
+        text-align: center;
+        font-family: inherit;
       }
 
-      .download-links {
-        display: grid;
-        grid-template-columns: repeat(3, minmax(0, 1fr));
-        gap: 10px;
+      .menu-footer {
+        padding: 12px 20px 16px;
+        border-top: 1px solid var(--line);
+        text-align: center;
+        color: var(--faint);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 10px;
+        letter-spacing: 0.1em;
       }
 
-      .download-links a {
-        display: block;
-        padding: 14px 16px;
-        border-radius: 16px;
-        border: 1px solid rgba(245, 239, 223, 0.1);
-        background: rgba(245, 239, 223, 0.03);
-        color: var(--ink);
+      .menu-footer a {
+        color: var(--signal);
         text-decoration: none;
-        transition: transform 0.2s, border-color 0.2s, background 0.2s;
       }
 
-      .download-links a:hover {
-        transform: translateY(-1px);
-        border-color: rgba(245, 239, 223, 0.28);
-        background: rgba(245, 239, 223, 0.07);
-      }
-
-      .download-links span {
-        display: block;
-      }
-
-      .download-links .os {
-        margin-bottom: 4px;
-        color: var(--ore);
-        font-family: "IBM Plex Mono", monospace;
-        font-size: 11px;
-        letter-spacing: 0.14em;
-        text-transform: uppercase;
-      }
-
-      .download-links .desc {
-        color: rgba(245, 239, 223, 0.72);
-        font-size: 14px;
-        line-height: 1.4;
+      .menu-footer a:hover {
+        text-decoration: underline;
       }
 
       #game {
@@ -468,50 +277,13 @@
         transition: opacity 0.3s;
       }
 
-      @media (max-width: 980px) {
-        .intro-grid,
-        .support-grid {
+      @media (max-width: 480px) {
+        .menu-shell {
+          width: calc(100% - 24px);
+        }
+
+        .controls-grid {
           grid-template-columns: 1fr;
-        }
-
-        h1,
-        .subtitle,
-        .lede {
-          max-width: none;
-        }
-
-        .brief-panel {
-          order: 2;
-        }
-      }
-
-      @media (max-width: 760px) {
-        #menu {
-          padding: 14px 12px 22px;
-        }
-
-        .masthead {
-          align-items: flex-start;
-          flex-direction: column;
-        }
-
-        .hero-panel,
-        .brief-panel,
-        .support-panel {
-          border-radius: 22px;
-        }
-
-        .story-strip,
-        .download-links {
-          grid-template-columns: 1fr;
-        }
-
-        .btn {
-          width: 100%;
-        }
-
-        .pill-row {
-          gap: 8px;
         }
       }
     </style>
@@ -519,99 +291,32 @@
   <body>
     <div id="menu">
       <div class="menu-shell">
-        <div class="masthead">
-          <div><span class="masthead-mark">Signal</span> // station-chain frontier</div>
-          <div class="masthead-status">Browser playtest // belt is live</div>
+        <div class="menu-header">
+          <div class="title">Signal</div>
+          <div class="status">Paused</div>
         </div>
 
-        <div class="intro-grid">
-          <section class="panel hero-panel">
-            <div class="eyebrow">Industrial Frontier MMO</div>
-            <h1>Keep the Belt <span class="accent">Connected</span></h1>
-            <p class="subtitle">One fragile chain of stations against a living asteroid belt.</p>
-            <p class="lede">
-              Mine rock, answer contract demand, dock where the line still holds, and push the signal outward
-              before the belt starves the next station in the chain. This is not a map to clear. It is a frontier
-              to keep alive.
-            </p>
-            <div class="signal-note">
-              Every haul feeds something real. Refineries go hungry. Yards run dry. Beamworks stall. If one station
-              goes dark, the whole frontier starts to tighten around you.
-            </div>
-            <div class="actions">
-              <button class="btn primary" id="play-btn">Enter the Belt</button>
-              <a class="btn" href="https://github.com/atimics/signal/actions" target="_blank" rel="noreferrer">Open Native Builds</a>
-            </div>
-            <div class="story-strip">
-              <div class="story-card">
-                <div class="label">Mine</div>
-                <p>Crack inbound rock, strip the ore, and drag value home before the belt batters the line.</p>
-              </div>
-              <div class="story-card">
-                <div class="label">Haul</div>
-                <p>Stations are always short on something. Contracts turn logistics into survival, not side content.</p>
-              </div>
-              <div class="story-card">
-                <div class="label">Extend</div>
-                <p>Outposts are the future of the frontier. New links mean new reach, new pressure, and new mistakes.</p>
-              </div>
-            </div>
-          </section>
-
-          <aside class="panel brief-panel">
-            <div class="brief-topline">Frontier Briefing</div>
-            <div class="brief-title">The Belt Does Not Care If Your Stations Survive</div>
-            <div class="brief-copy">
-              Signal is about maintaining a working industrial chain in hostile space. The asteroid field keeps moving.
-              Demand keeps changing. Your job is to keep the frontier from collapsing long enough to extend it.
-            </div>
-            <div class="brief-rail">
-              <div class="brief-item">
-                <h2>Current Loop</h2>
-                <p>Launch, mine, dock, sell, repair, and route material where the chain needs it most.</p>
-              </div>
-              <div class="brief-item">
-                <h2>Pressure</h2>
-                <p>Asteroids drift in from the dark, stations consume what they receive, and weak links become dead space fast.</p>
-              </div>
-              <div class="brief-item">
-                <h2>Road Ahead</h2>
-                <p>Contracts, signal coverage, and player-built outposts turn expansion into part of the game rather than a separate map screen.</p>
-              </div>
-            </div>
-          </aside>
+        <div class="menu-actions">
+          <button class="btn primary" id="play-btn">Resume</button>
+          <a class="btn" href="/" id="quit-btn">Quit to Menu</a>
         </div>
 
-        <div class="support-grid">
-          <section class="panel support-panel">
-            <div class="support-title">Flight Keys</div>
-            <div class="pill-row">
-              <div class="pill"><strong>W/S</strong> thrust</div>
-              <div class="pill"><strong>A/D</strong> turn</div>
-              <div class="pill"><strong>Space</strong> cut rock</div>
-              <div class="pill"><strong>E</strong> dock or launch</div>
-              <div class="pill"><strong>1-5</strong> station services</div>
-              <div class="pill"><strong>Esc</strong> return to briefing</div>
-            </div>
-          </section>
+        <div class="menu-section">
+          <div class="menu-section-title">Controls</div>
+          <div class="controls-grid">
+            <div class="control-item"><kbd>W</kbd><kbd>S</kbd> Thrust</div>
+            <div class="control-item"><kbd>A</kbd><kbd>D</kbd> Turn</div>
+            <div class="control-item"><kbd>Space</kbd> Mine</div>
+            <div class="control-item"><kbd>E</kbd> Dock / Launch</div>
+            <div class="control-item"><kbd>1</kbd>-<kbd>5</kbd> Station tabs</div>
+            <div class="control-item"><kbd>6</kbd> Outpost</div>
+            <div class="control-item"><kbd>R</kbd> Reset</div>
+            <div class="control-item"><kbd>Esc</kbd> This menu</div>
+          </div>
+        </div>
 
-          <section class="panel support-panel">
-            <div class="support-title">Native Builds</div>
-            <div class="download-links">
-              <a href="https://github.com/atimics/signal/actions" target="_blank" rel="noreferrer">
-                <span class="os">macOS</span>
-                <span class="desc">Desktop build from the latest Actions run.</span>
-              </a>
-              <a href="https://github.com/atimics/signal/actions" target="_blank" rel="noreferrer">
-                <span class="os">Windows</span>
-                <span class="desc">Download the current native artifact.</span>
-              </a>
-              <a href="https://github.com/atimics/signal/actions" target="_blank" rel="noreferrer">
-                <span class="os">Linux</span>
-                <span class="desc">Grab the freshest Linux build from CI.</span>
-              </a>
-            </div>
-          </section>
+        <div class="menu-footer">
+          <a href="https://github.com/atimics/signal" target="_blank" rel="noreferrer">github.com/atimics/signal</a>
         </div>
       </div>
     </div>
@@ -649,6 +354,8 @@
         }
         gameStarted = true;
 
+        document.getElementById('play-btn').textContent = 'Resume';
+        document.querySelector('.menu-header .status').textContent = 'Paused';
         document.getElementById('loading').classList.add('active');
 
         var script = document.createElement('script');
@@ -659,6 +366,10 @@
         };
         document.body.appendChild(script);
       }
+
+      /* Initial state before game loads */
+      document.getElementById('play-btn').textContent = 'Enter the Belt';
+      document.querySelector('.menu-header .status').textContent = 'Ready';
 
       document.getElementById('play-btn').addEventListener('click', startGame);
 
