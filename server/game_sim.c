@@ -727,13 +727,8 @@ static void maintain_asteroid_field(world_t *w, float dt) {
     w->field_spawn_timer += dt;
     if (w->field_spawn_timer < FIELD_ASTEROID_RESPAWN_DELAY) return;
     if (first_slot >= 0) {
-        /* Spawn a small clump if enough free slots, otherwise a single rock */
-        int free_slots = FIELD_ASTEROID_TARGET - seeded;
-        if (free_slots >= 4) {
-            seed_asteroid_clump(w, first_slot);
-        } else {
-            spawn_field_asteroid(w, &w->asteroids[first_slot]);
-        }
+        /* Always spawn inbound from signal edge — never teleport mid-game */
+        spawn_field_asteroid(w, &w->asteroids[first_slot]);
     }
     w->field_spawn_timer = 0.0f;
 }
