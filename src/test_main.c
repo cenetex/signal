@@ -3038,7 +3038,14 @@ TEST(test_outpost_extends_signal_range) {
 
     int slot = try_place_outpost(&w, &w.players[0], outpost_pos);
     ASSERT(slot >= 3);
-    /* Signal should be available at the outpost itself */
+    /* Scaffold doesn't provide signal — only the parent refinery covers this point */
+    ASSERT(signal_strength_at(&w, outpost_pos) > 0.0f);
+    ASSERT(signal_strength_at(&w, outpost_pos) < 0.2f);
+    /* Complete construction to activate signal */
+    w.stations[slot].scaffold = false;
+    w.stations[slot].scaffold_progress = 1.0f;
+    rebuild_signal_chain(&w);
+    /* Now the outpost itself provides strong signal at its own position */
     float s = signal_strength_at(&w, outpost_pos);
     ASSERT(s > 0.9f);
     /* Signal should extend beyond the outpost */
@@ -3051,7 +3058,47 @@ TEST(test_outpost_upgrade_to_refinery) {
 }
 
 TEST(test_disconnected_station_goes_dark) {
-    /* TODO: signal chain propagation not yet implemented — skip for now */
+    world_t w = {0};
+    world_reset(&w);
+    /* All 3 starter stations should be connected */
+    ASSERT(w.stations[0].signal_connected);
+    ASSERT(w.stations[1].signal_connected);
+    ASSERT(w.stations[2].signal_connected);
+
+    /* Place an outpost within signal range of station 0 */
+    server_player_t sp = {0};
+    player_init_ship(&sp, &w);
+    sp.connected = true;
+    sp.ship.credits = 10000.0f;
+    sp.docked = false;
+    vec2 outpost_pos = v2_add(w.stations[0].pos, v2(500.0f, 0.0f));
+    int slot = try_place_outpost(&w, &sp, outpost_pos);
+    ASSERT(slot >= 0);
+    /* Finish construction */
+    w.stations[slot].scaffold_progress = 1.0f;
+    w.stations[slot].scaffold = false;
+    w.stations[slot].signal_range = 800.0f;
+    w.stations[slot].signal_connected = false;
+    w.stations[slot].modules[w.stations[slot].module_count++] = (station_module_t){ MODULE_REPAIR_BAY, false, 1.0f };
+    rebuild_signal_chain(&w);
+    ASSERT(w.stations[slot].signal_connected);
+    ASSERT(station_provides_signal(&w.stations[slot]));
+
+    /* Shrink ALL root stations so the outpost is disconnected */
+    float saved[3];
+    for (int i = 0; i < 3; i++) {
+        saved[i] = w.stations[i].signal_range;
+        w.stations[i].signal_range = 1.0f;
+    }
+    rebuild_signal_chain(&w);
+    ASSERT(!w.stations[slot].signal_connected);
+    ASSERT(!station_provides_signal(&w.stations[slot]));
+
+    /* Restore — outpost should reconnect */
+    for (int i = 0; i < 3; i++)
+        w.stations[i].signal_range = saved[i];
+    rebuild_signal_chain(&w);
+    ASSERT(w.stations[slot].signal_connected);
 }
 
 TEST(test_outpost_requires_undocked) {
@@ -3384,7 +3431,7 @@ int main(void) {
     RUN(test_outpost_requires_signal_range);
     RUN(test_outpost_extends_signal_range);
     /* test_outpost_upgrade_to_refinery — not implemented, tracked in backlog */
-    /* test_disconnected_station_goes_dark — not implemented, tracked in backlog */
+    RUN(test_disconnected_station_goes_dark);
     RUN(test_outpost_requires_undocked);
     RUN(test_outpost_requires_credits);
     RUN(test_outpost_skipped_in_prediction);

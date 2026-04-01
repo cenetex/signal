@@ -120,6 +120,7 @@ typedef struct {
     float radius;
     float dock_radius;
     float signal_range;
+    bool signal_connected;   /* true = can trace signal path to a root station */
     bool scaffold;           /* true = under construction, not yet active */
     float scaffold_progress; /* 0.0 to 1.0 */
     float buy_price[COMMODITY_COUNT];
@@ -155,7 +156,7 @@ static inline bool station_provides_docking(const station_t *st) {
 
 /* Should this station contribute to signal coverage? */
 static inline bool station_provides_signal(const station_t *st) {
-    return st->signal_range > 0.0f;
+    return st->signal_range > 0.0f && st->signal_connected;
 }
 
 /* Should this station participate in collision? */

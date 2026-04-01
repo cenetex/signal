@@ -101,6 +101,43 @@ static int rand_int(world_t *w, int lo, int hi) {
 /* Signal strength                                                    */
 /* ================================================================== */
 
+/*
+ * Recompute signal_connected for all stations via flood-fill.
+ * Root stations (indices 0-2, the built-in ones) are always connected.
+ * An outpost is connected if its signal_range overlaps a connected station.
+ */
+void rebuild_signal_chain(world_t *w) {
+    /* Reset all */
+    for (int s = 0; s < MAX_STATIONS; s++)
+        w->stations[s].signal_connected = false;
+
+    /* Root stations (first 3) are always connected if active */
+    for (int s = 0; s < 3 && s < MAX_STATIONS; s++) {
+        if (station_is_active(&w->stations[s]))
+            w->stations[s].signal_connected = true;
+    }
+
+    /* Flood-fill: keep scanning until no new connections found */
+    bool changed = true;
+    while (changed) {
+        changed = false;
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            if (w->stations[s].signal_connected) continue;
+            if (!station_is_active(&w->stations[s])) continue;
+            /* Check if this station is within the signal range of any connected station */
+            for (int o = 0; o < MAX_STATIONS; o++) {
+                if (!w->stations[o].signal_connected) continue;
+                float dist = sqrtf(v2_dist_sq(w->stations[s].pos, w->stations[o].pos));
+                if (dist < w->stations[o].signal_range) {
+                    w->stations[s].signal_connected = true;
+                    changed = true;
+                    break;
+                }
+            }
+        }
+    }
+}
+
 float signal_strength_at(const world_t *w, vec2 pos) {
     float best = 0.0f;
     for (int s = 0; s < MAX_STATIONS; s++) {
@@ -148,6 +185,7 @@ static void activate_outpost(world_t *w, int station_idx) {
     st->signal_range = OUTPOST_SIGNAL_RANGE;
     add_module(st, MODULE_REPAIR_BAY);
     rebuild_station_services(st);
+    rebuild_signal_chain(w);
     SIM_LOG("[sim] outpost %d activated (signal_range=%.0f)\n", station_idx, OUTPOST_SIGNAL_RANGE);
 }
 
@@ -666,6 +704,26 @@ static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
     }
 }
 
+/* Find nearest active station with a dock module. Returns 0 as fallback. */
+static int nearest_active_dock_station(const world_t *w, vec2 pos) {
+    int best = 0;
+    float best_d = 1e18f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!station_is_active(&w->stations[s])) continue;
+        if (!station_has_module(&w->stations[s], MODULE_DOCK)) continue;
+        float d = v2_dist_sq(pos, w->stations[s].pos);
+        if (d < best_d) { best_d = d; best = s; }
+    }
+    return best;
+}
+
+static void npc_validate_stations(world_t *w, npc_ship_t *npc) {
+    if (!station_is_active(&w->stations[npc->home_station]))
+        npc->home_station = nearest_active_dock_station(w, npc->pos);
+    if (!station_is_active(&w->stations[npc->dest_station]))
+        npc->dest_station = npc->home_station;
+}
+
 static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     const hull_def_t *hull = npc_hull_def(npc);
     switch (npc->state) {
@@ -792,6 +850,7 @@ static void step_npc_ships(world_t *w, float dt) {
         npc_ship_t *npc = &w->npc_ships[n];
         if (!npc->active) continue;
         npc->thrusting = false;
+        npc_validate_stations(w, npc);
 
         if (npc->role == NPC_ROLE_HAULER) {
             step_hauler(w, npc, n, dt);
@@ -1836,6 +1895,7 @@ void world_reset(world_t *w) {
     add_module(&w->stations[2], MODULE_CONTRACT_BOARD);
     add_module(&w->stations[2], MODULE_BLUEPRINT_DESK);
     rebuild_station_services(&w->stations[2]);
+    rebuild_signal_chain(w);
 
     /* --- Initial asteroid field --- */
     if (FIELD_ASTEROID_TARGET > 0) seed_field_asteroid_of_tier(w, &w->asteroids[0], ASTEROID_TIER_XL);
@@ -2146,6 +2206,7 @@ bool world_load(world_t *w, const char *path) {
     }
 
     fclose(f);
+    rebuild_signal_chain(w);
     return true;
 }
 

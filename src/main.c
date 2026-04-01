@@ -777,6 +777,8 @@ static void sim_step(float dt) {
 }
 
 /* Forward declarations for multiplayer callbacks (defined below init). */
+static void on_player_join(uint8_t player_id);
+static void on_player_leave(uint8_t player_id);
 static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count);
 static void apply_remote_npcs(const NetNpcState* npcs, int count);
 static void apply_remote_stations(uint8_t index, const float* ore_buf, const float* inventory, const float* product_stock);
@@ -827,6 +829,8 @@ static void init(void) {
 #endif
         if (server_url && server_url[0] != '\0') {
             NetCallbacks cbs = {0};
+            cbs.on_join = on_player_join;
+            cbs.on_leave = on_player_leave;
             cbs.on_state = apply_remote_player_state;
             cbs.on_asteroids = apply_remote_asteroids;
             cbs.on_npcs = apply_remote_npcs;
@@ -840,6 +844,21 @@ static void init(void) {
 
 
 /* --- Multiplayer: world state sync callbacks and broadcast --- */
+
+static void on_player_join(uint8_t player_id) {
+    if (player_id >= MAX_PLAYERS) return;
+    g.world.players[player_id].connected = true;
+    g.world.players[player_id].id = player_id;
+    if ((int)player_id != g.local_player_slot)
+        set_notice("Player %d joined.", (int)player_id);
+}
+
+static void on_player_leave(uint8_t player_id) {
+    if (player_id >= MAX_PLAYERS) return;
+    g.world.players[player_id].connected = false;
+    if ((int)player_id != g.local_player_slot)
+        set_notice("Player %d left.", (int)player_id);
+}
 
 static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
     /* Shift current -> previous for interpolation */
