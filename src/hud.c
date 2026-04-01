@@ -277,7 +277,7 @@ static void split_hud_message_lines(const char* text, int max_cols, char* line0,
 }
 
 static bool build_hud_message(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
-    int cargo_units = (int)lroundf(ship_raw_ore_total(&LOCAL_PLAYER.ship));
+    int cargo_units = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
     int cargo_capacity = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
     const station_t* station = current_station_ptr();
 
@@ -570,7 +570,7 @@ void draw_hud(void) {
     uint8_t message_b = 205;
     int hull_units = (int)lroundf(LOCAL_PLAYER.ship.hull);
     int hull_capacity = (int)lroundf(ship_max_hull(&LOCAL_PLAYER.ship));
-    int cargo_units = (int)lroundf(ship_raw_ore_total(&LOCAL_PLAYER.ship));
+    int cargo_units = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
     int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
     int cargo_capacity = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
     int payout_preview = (int)lroundf(station_cargo_sale_value(&LOCAL_PLAYER.ship, current_station_ptr()));
