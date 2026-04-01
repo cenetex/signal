@@ -1309,6 +1309,25 @@ static void render_world(void) {
     draw_ship();
     draw_npc_ships();
     draw_remote_players(); /* Multiplayer: remote player ships */
+
+    /* Tracked contract target outline (yellow) */
+    if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
+        contract_t *ct = &g.world.contracts[g.tracked_contract];
+        if (ct->active) {
+            float pulse = 0.5f + 0.3f * sinf(g.world.time * 3.0f);
+            if (ct->action == CONTRACT_DESTROY && ct->target_index >= 0 && ct->target_index < MAX_ASTEROIDS
+                && g.world.asteroids[ct->target_index].active) {
+                /* Outline the target asteroid */
+                asteroid_t *a = &g.world.asteroids[ct->target_index];
+                draw_circle_outline(a->pos, a->radius + 16.0f, 24, 1.0f, 0.87f, 0.20f, pulse);
+            } else if (ct->action == CONTRACT_SUPPLY && ct->station_index < MAX_STATIONS) {
+                /* Outline the target station */
+                station_t *st = &g.world.stations[ct->station_index];
+                if (station_exists(st))
+                    draw_circle_outline(st->pos, st->dock_radius + 20.0f, 32, 1.0f, 0.87f, 0.20f, pulse);
+            }
+        }
+    }
 }
 
 static void render_ui(void) {

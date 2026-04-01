@@ -854,14 +854,14 @@ void draw_hud(void) {
                 DRAW_PIP(best_pos, 0.9f, 0.25f, 0.2f);
         }
 
-        /* Tracked contract pip (white) */
+        /* Tracked contract pip (yellow) */
         if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
             contract_t *ct = &g.world.contracts[g.tracked_contract];
             if (ct->active) {
                 vec2 target = (ct->action == CONTRACT_SUPPLY)
                     ? g.world.stations[ct->station_index].pos
                     : ct->target_pos;
-                DRAW_PIP(target, 1.0f, 1.0f, 1.0f);
+                DRAW_PIP(target, 1.0f, 0.87f, 0.20f);
             } else {
                 g.tracked_contract = -1; /* contract completed/expired */
             }
