@@ -1,0 +1,199 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Signal — Keep the Belt Connected</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap");
+
+      :root {
+        color-scheme: dark;
+        --bg-0: #080706;
+        --bg-1: #110f0d;
+        --bg-2: #1a1510;
+        --panel: rgba(18, 17, 14, 0.82);
+        --ink: #f5efdf;
+        --muted: #cfc3ad;
+        --faint: #8e846f;
+        --line: rgba(245, 239, 223, 0.12);
+        --ore: #f1b566;
+        --signal: #80ffd5;
+        --shadow: 0 28px 80px rgba(0, 0, 0, 0.36);
+        font-family: "IBM Plex Sans Condensed", "Arial Narrow", sans-serif;
+        background:
+          radial-gradient(circle at 16% 18%, rgba(241, 181, 102, 0.18), transparent 30%),
+          radial-gradient(circle at 86% 76%, rgba(128, 255, 213, 0.12), transparent 26%),
+          linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 48%, var(--bg-0) 100%);
+      }
+
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+
+      html, body { min-height: 100dvh; }
+
+      body {
+        color: var(--ink);
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        position: relative;
+      }
+
+      body::before,
+      body::after {
+        content: "";
+        position: fixed;
+        inset: 0;
+        pointer-events: none;
+      }
+
+      body::before {
+        background:
+          linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
+          linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+        background-size: 120px 120px;
+        mask-image: radial-gradient(circle at center, black 24%, transparent 88%);
+        opacity: 0.38;
+      }
+
+      body::after {
+        background:
+          linear-gradient(180deg, rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0.54)),
+          radial-gradient(circle at center, transparent 44%, rgba(0, 0, 0, 0.42) 100%);
+      }
+
+      .landing {
+        position: relative;
+        z-index: 1;
+        width: min(680px, 100%);
+        text-align: center;
+      }
+
+      .eyebrow {
+        margin-bottom: 16px;
+        color: var(--ore);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.2em;
+        text-transform: uppercase;
+      }
+
+      h1 {
+        margin-bottom: 20px;
+        font-size: clamp(64px, 14vw, 128px);
+        line-height: 0.88;
+        letter-spacing: 0.06em;
+        text-transform: uppercase;
+        font-weight: 600;
+      }
+
+      h1 .accent { color: var(--signal); }
+
+      .tagline {
+        margin-bottom: 16px;
+        font-size: clamp(20px, 3vw, 32px);
+        line-height: 1.1;
+        color: rgba(245, 239, 223, 0.92);
+      }
+
+      .desc {
+        max-width: 52ch;
+        margin: 0 auto 36px;
+        font-size: 16px;
+        line-height: 1.7;
+        color: var(--muted);
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 12px;
+        justify-content: center;
+        margin-bottom: 40px;
+      }
+
+      .btn {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        gap: 10px;
+        min-width: 190px;
+        padding: 16px 28px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        color: var(--ink);
+        text-decoration: none;
+        text-transform: uppercase;
+        letter-spacing: 0.14em;
+        font-size: 13px;
+        font-family: "IBM Plex Mono", monospace;
+        background: rgba(245, 239, 223, 0.04);
+        transition: transform 0.2s, border-color 0.2s, background 0.2s, color 0.2s;
+        cursor: pointer;
+      }
+
+      .btn:hover {
+        transform: translateY(-1px);
+        border-color: rgba(245, 239, 223, 0.34);
+        background: rgba(245, 239, 223, 0.08);
+      }
+
+      .btn.primary {
+        color: #0f1311;
+        background: linear-gradient(135deg, var(--signal), #a6ffd8 70%);
+        border-color: rgba(128, 255, 213, 0.9);
+        font-size: 14px;
+        padding: 18px 36px;
+      }
+
+      .btn.primary:hover {
+        background: linear-gradient(135deg, #92ffdc, #b7ffe2 70%);
+      }
+
+      .links {
+        display: flex;
+        gap: 24px;
+        justify-content: center;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 12px;
+        letter-spacing: 0.1em;
+      }
+
+      .links a {
+        color: var(--faint);
+        text-decoration: none;
+        text-transform: uppercase;
+        transition: color 0.2s;
+      }
+
+      .links a:hover { color: var(--ink); }
+
+      @media (max-width: 600px) {
+        .btn { width: 100%; }
+        .links { flex-direction: column; gap: 14px; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="landing">
+      <div class="eyebrow">Industrial Frontier MMO</div>
+      <h1>S<span class="accent">i</span>gnal</h1>
+      <p class="tagline">Keep the Belt Connected</p>
+      <p class="desc">
+        Mine rock, answer contract demand, and push the signal outward before
+        the belt starves the next station in the chain. A living asteroid field.
+        One fragile chain of stations. Your job is to keep it alive.
+      </p>
+      <div class="actions">
+        <a class="btn primary" href="/play">Play Now</a>
+        <a class="btn" href="https://github.com/atimics/signal/actions" target="_blank" rel="noreferrer">Native Builds</a>
+      </div>
+      <div class="links">
+        <a href="https://github.com/atimics/signal" target="_blank" rel="noreferrer">GitHub</a>
+        <a href="https://github.com/atimics/signal/actions" target="_blank" rel="noreferrer">CI / Artifacts</a>
+      </div>
+    </div>
+  </body>
+</html>

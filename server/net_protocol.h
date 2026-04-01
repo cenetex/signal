@@ -347,6 +347,11 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
             intent->place_outpost = true;
             break;
         default:
+            /* NET_ACTION_BUILD_MODULE + module_type (9..9+MODULE_COUNT) */
+            if (action >= NET_ACTION_BUILD_MODULE && action < NET_ACTION_BUILD_MODULE + MODULE_COUNT) {
+                intent->build_module = true;
+                intent->build_module_type = (module_type_t)(action - NET_ACTION_BUILD_MODULE);
+            }
             break;
         }
     }

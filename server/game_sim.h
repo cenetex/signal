@@ -65,6 +65,8 @@ typedef struct {
     bool upgrade_hold;
     bool upgrade_tractor;
     bool place_outpost;
+    bool build_module;
+    module_type_t build_module_type;
     bool reset;
 } input_intent_t;
 

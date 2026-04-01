@@ -419,7 +419,6 @@ void draw_hud_panels(void) {
     get_flight_hud_rects(&top_x, &top_y, &top_w, &top_h, &bottom_x, &bottom_y, &bottom_w, &bottom_h);
 
     draw_ui_panel(top_x, top_y, top_w, top_h, 0.03f);
-    draw_ui_panel(bottom_x, bottom_y, bottom_w, bottom_h, 0.02f);
 
     if (LOCAL_PLAYER.docked) {
         float panel_x = 0.0f;
@@ -554,8 +553,6 @@ void draw_hud(void) {
     float top_row_1 = ui_text_pos(top_y + (compact ? 24.0f : 30.0f));
     float top_row_2 = ui_text_pos(top_y + (compact ? 32.0f : 44.0f));
     float top_row_3 = ui_text_pos(top_y + (compact ? 40.0f : 58.0f));
-    float bottom_text_x = ui_text_pos(bottom_x + 16.0f);
-    float bottom_text_y = ui_text_pos(bottom_y + 8.0f);
     char message_label[16] = { 0 };
     char message_text[160] = { 0 };
     char message_line0[96] = { 0 };
@@ -672,17 +669,6 @@ void draw_hud(void) {
             sdtx_puts("FIELD CLEAR // SCAN");
         }
 
-        sdtx_pos(bottom_text_x, bottom_text_y);
-        sdtx_color3b(145, 160, 188);
-        if (LOCAL_PLAYER.docked) {
-            sdtx_puts("Tab switch  E launch  Q back");
-        } else if (g.placing_outpost) {
-            sdtx_color3b(130, 255, 235);
-            sdtx_puts("6/Enter confirm  Esc/Q cancel");
-        } else {
-            sdtx_puts("W/S thrust  A/D turn  SPC mine  E dock  6 outpost");
-        }
-
         if (hud_should_draw_message_panel()) {
             float message_text_x = ui_text_pos(message_x + 16.0f);
             float message_row_0 = ui_text_pos(message_y + 14.0f);
@@ -764,17 +750,6 @@ void draw_hud(void) {
     } else {
         sdtx_color3b(169, 179, 204);
         sdtx_puts("No target // line up a rock");
-    }
-
-    sdtx_pos(bottom_text_x, bottom_text_y);
-    sdtx_color3b(145, 160, 188);
-    if (LOCAL_PLAYER.docked) {
-        sdtx_puts("Tab switch  Q back  E launch  R reset  ESC quit");
-    } else if (g.placing_outpost) {
-        sdtx_color3b(130, 255, 235);
-        sdtx_puts("PLACEMENT MODE // 6 or Enter to confirm  Esc or Q to cancel");
-    } else {
-        sdtx_puts("W/S thrust  A/D turn  SPACE mine  E dock  6 outpost  R reset  ESC quit");
     }
 
     if (hud_should_draw_message_panel()) {

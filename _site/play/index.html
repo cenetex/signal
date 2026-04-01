@@ -1,0 +1,42 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Signal — Play</title>
+    <style>
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { width: 100%; height: 100%; overflow: hidden; background: #080706; }
+      #loading {
+        position: fixed; inset: 0; z-index: 20;
+        display: flex; align-items: center; justify-content: center;
+        color: #80ffd5; font-family: "IBM Plex Mono", monospace; font-size: 14px;
+        letter-spacing: 0.1em; text-transform: uppercase;
+        background: #080706;
+        transition: opacity 0.4s;
+      }
+      #loading.done { opacity: 0; pointer-events: none; }
+      canvas { display: block; width: 100%; height: 100%; }
+    </style>
+  <script>window.SIGNAL_SERVER="wss://signal-ws.ratimics.com/ws";</script></head>
+  <body>
+    <div id="loading">Entering the belt...</div>
+    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+
+    <script>
+      var Module = {
+        canvas: document.getElementById('canvas'),
+        print: function(text) { console.log(text); },
+        printErr: function(text) { console.error(text); }
+      };
+
+      var script = document.createElement('script');
+      script.src = './space_miner.js';
+      script.onload = function() {
+        document.getElementById('loading').classList.add('done');
+        document.getElementById('canvas').focus();
+      };
+      document.body.appendChild(script);
+    </script>
+  </body>
+</html>

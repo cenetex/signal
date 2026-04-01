@@ -419,6 +419,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         visible_tabs[tab_count++] = STATION_TAB_SERVICES;
         visible_tabs[tab_count++] = STATION_TAB_ROLE;
         visible_tabs[tab_count++] = STATION_TAB_CONTRACTS;
+        visible_tabs[tab_count++] = STATION_TAB_CONSTRUCTION;
     }
     float tab_w = fminf(inner_w / (float)tab_count, 120.0f);
 
@@ -699,31 +700,88 @@ void draw_station_services(const station_ui_state_t* ui) {
     }
 
     case STATION_TAB_CONSTRUCTION: {
-        if (!ui->station->scaffold) break;
-        int pct = (int)lroundf(ui->station->scaffold_progress * 100.0f);
-        int frames_held = (int)lroundf(LOCAL_PLAYER.ship.cargo[COMMODITY_FRAME_INGOT]);
-        float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - ui->station->scaffold_progress);
-        int needed_int = (int)lroundf(needed);
-
         sdtx_color3b(130, 255, 235);
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-        sdtx_puts("CONSTRUCTION");
+        sdtx_puts("BUILD");
 
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
-        sdtx_color3b(255, 221, 119);
-        sdtx_printf("Progress: %d%%", pct);
+        if (ui->station->scaffold) {
+            /* Outpost under construction */
+            int pct = (int)lroundf(ui->station->scaffold_progress * 100.0f);
+            int frames_held = (int)lroundf(LOCAL_PLAYER.ship.cargo[COMMODITY_FRAME_INGOT]);
+            float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - ui->station->scaffold_progress);
+            int needed_int = (int)lroundf(needed);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 18.0f));
+            sdtx_color3b(255, 221, 119);
+            sdtx_printf("Station scaffold: %d%%", pct);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 34.0f));
+            sdtx_color3b(203, 220, 248);
+            sdtx_printf("Need %d frames (carry %d)", needed_int, frames_held);
+        } else {
+            /* Active station: show scaffold modules in progress + buildable modules */
+            float ly = cy + 18.0f;
 
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 40.0f));
-        sdtx_color3b(203, 220, 248);
-        sdtx_printf("Materials needed: %d frame ingots", needed_int);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 56.0f));
-        sdtx_printf("You carry: %d frame ingots", frames_held);
+            /* Show modules under construction */
+            for (int i = 0; i < ui->station->module_count; i++) {
+                if (!ui->station->modules[i].scaffold) continue;
+                int pct = (int)lroundf(ui->station->modules[i].build_progress * 100.0f);
+                const char* mname = "Module";
+                switch (ui->station->modules[i].type) {
+                    case MODULE_FURNACE:        mname = "Furnace"; break;
+                    case MODULE_FRAME_PRESS:    mname = "Frame Press"; break;
+                    case MODULE_LASER_FAB:      mname = "Laser Fab"; break;
+                    case MODULE_TRACTOR_FAB:    mname = "Tractor Fab"; break;
+                    case MODULE_REPAIR_BAY:     mname = "Repair Bay"; break;
+                    case MODULE_ORE_BUYER:      mname = "Ore Buyer"; break;
+                    case MODULE_CONTRACT_BOARD: mname = "Contracts"; break;
+                    case MODULE_SIGNAL_RELAY:   mname = "Signal Relay"; break;
+                    case MODULE_BLUEPRINT_DESK: mname = "Blueprints"; break;
+                    case MODULE_ORE_SILO:       mname = "Ore Silo"; break;
+                    default: break;
+                }
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_color3b(255, 221, 119);
+                sdtx_printf("%s: %d%%", mname, pct);
+                ly += 14.0f;
+            }
 
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 80.0f));
-        sdtx_color3b(145, 160, 188);
-        sdtx_puts("Frame ingots auto-deliver on dock.");
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 96.0f));
-        sdtx_printf("Signal range on activation: %.0f", OUTPOST_SIGNAL_RANGE);
+            /* List buildable modules (not already installed) */
+            if (ly > cy + 20.0f) ly += 6.0f; /* gap after in-progress */
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_color3b(145, 160, 188);
+            sdtx_puts("Available:");
+            ly += 16.0f;
+
+            /* Modules the player can build — show with key shortcuts */
+            static const struct { module_type_t type; const char* name; int key; int frames; int credits; } buildable[] = {
+                { MODULE_FURNACE,        "Furnace",      1, 60,  200 },
+                { MODULE_FRAME_PRESS,    "Frame Press",  2, 80,  300 },
+                { MODULE_LASER_FAB,      "Laser Fab",    3, 80,  300 },
+                { MODULE_TRACTOR_FAB,    "Tractor Fab",  4, 80,  300 },
+                { MODULE_ORE_BUYER,      "Ore Buyer",    5, 40,  100 },
+                { MODULE_SIGNAL_RELAY,   "Signal Relay", 7, 40,  100 },
+                { MODULE_ORE_SILO,       "Ore Silo",     8, 30,  100 },
+            };
+            int n_buildable = (int)(sizeof(buildable) / sizeof(buildable[0]));
+            int shown = 0;
+            int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
+            for (int b = 0; b < n_buildable; b++) {
+                if (station_has_module(ui->station, buildable[b].type)) continue;
+                if (ui->station->module_count >= MAX_MODULES_PER_STATION) continue;
+                bool can_afford = credits >= buildable[b].credits;
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
+                sdtx_printf("[%d] %-14s %dcr + %d frames",
+                    buildable[b].key, buildable[b].name,
+                    buildable[b].credits, buildable[b].frames);
+                ly += 14.0f;
+                shown++;
+            }
+            if (shown == 0) {
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_color3b(145, 160, 188);
+                sdtx_puts("All modules installed.");
+            }
+        }
         break;
     }
 

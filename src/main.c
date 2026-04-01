@@ -611,11 +611,41 @@ static input_intent_t sample_input_intent(void) {
 
     intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
     intent.interact = is_key_pressed(SAPP_KEYCODE_E);
-    intent.service_sell = is_key_pressed(SAPP_KEYCODE_1);
-    intent.service_repair = is_key_pressed(SAPP_KEYCODE_2);
-    intent.upgrade_mining = is_key_pressed(SAPP_KEYCODE_3);
-    intent.upgrade_hold = is_key_pressed(SAPP_KEYCODE_4);
-    intent.upgrade_tractor = is_key_pressed(SAPP_KEYCODE_5);
+    /* Number keys: BUILD tab → module construction, otherwise → services/upgrades */
+    if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONSTRUCTION
+        && !current_station_ptr()->scaffold) {
+        static const struct { module_type_t type; const char *name; } build_keys[] = {
+            { MODULE_FURNACE,      "Furnace" },
+            { MODULE_FRAME_PRESS,  "Frame Press" },
+            { MODULE_LASER_FAB,    "Laser Fab" },
+            { MODULE_TRACTOR_FAB,  "Tractor Fab" },
+            { MODULE_ORE_BUYER,    "Ore Buyer" },
+            { MODULE_DOCK,         NULL },  /* 6 — skip */
+            { MODULE_SIGNAL_RELAY, "Signal Relay" },
+            { MODULE_ORE_SILO,     "Ore Silo" },
+        };
+        for (int k = 0; k < 8; k++) {
+            if (!is_key_pressed(SAPP_KEYCODE_1 + k)) continue;
+            if (!build_keys[k].name) continue;
+            const station_t *st = current_station_ptr();
+            if (station_has_module(st, build_keys[k].type)) {
+                set_notice("%s already installed.", build_keys[k].name);
+            } else if (st->module_count >= MAX_MODULES_PER_STATION) {
+                set_notice("No module slots available.");
+            } else {
+                intent.build_module = true;
+                intent.build_module_type = build_keys[k].type;
+                set_notice("Blueprint placed: %s", build_keys[k].name);
+            }
+            break;
+        }
+    } else if (!LOCAL_PLAYER.docked || g.station_tab != STATION_TAB_CONSTRUCTION) {
+        intent.service_sell = is_key_pressed(SAPP_KEYCODE_1);
+        intent.service_repair = is_key_pressed(SAPP_KEYCODE_2);
+        intent.upgrade_mining = is_key_pressed(SAPP_KEYCODE_3);
+        intent.upgrade_hold = is_key_pressed(SAPP_KEYCODE_4);
+        intent.upgrade_tractor = is_key_pressed(SAPP_KEYCODE_5);
+    }
     /* Outpost placement mode: 6 toggles, Enter confirms, Esc/Q cancels */
     if (g.placing_outpost) {
         if (is_key_pressed(SAPP_KEYCODE_6) || is_key_pressed(SAPP_KEYCODE_ENTER) || is_key_pressed(SAPP_KEYCODE_KP_ENTER)) {
@@ -698,6 +728,7 @@ static void sim_step(float dt) {
             vtabs[vtab_count++] = STATION_TAB_SERVICES;
             vtabs[vtab_count++] = STATION_TAB_ROLE;
             vtabs[vtab_count++] = STATION_TAB_CONTRACTS;
+            vtabs[vtab_count++] = STATION_TAB_CONSTRUCTION;
         }
         int cur = 0;
         for (int i = 0; i < vtab_count; i++) { if (vtabs[i] == g.station_tab) { cur = i; break; } }
@@ -799,6 +830,8 @@ static void sim_step(float dt) {
             g.pending_net_action = 7;
         else if (intent.place_outpost)
             g.pending_net_action = 8;
+        else if (intent.build_module)
+            g.pending_net_action = NET_ACTION_BUILD_MODULE + (uint8_t)intent.build_module_type;
     }
 
     consume_pressed_input();

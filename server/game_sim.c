@@ -189,6 +189,86 @@ static void activate_outpost(world_t *w, int station_idx) {
     SIM_LOG("[sim] outpost %d activated (signal_range=%.0f)\n", station_idx, OUTPOST_SIGNAL_RANGE);
 }
 
+/* Module construction cost in frame ingots */
+static float module_build_cost(module_type_t type) {
+    switch (type) {
+        case MODULE_REPAIR_BAY:     return 30.0f;
+        case MODULE_ORE_BUYER:      return 40.0f;
+        case MODULE_FURNACE:        return 60.0f;
+        case MODULE_FRAME_PRESS:    return 80.0f;
+        case MODULE_LASER_FAB:      return 80.0f;
+        case MODULE_TRACTOR_FAB:    return 80.0f;
+        case MODULE_CONTRACT_BOARD: return 20.0f;
+        case MODULE_BLUEPRINT_DESK: return 50.0f;
+        case MODULE_SIGNAL_RELAY:   return 40.0f;
+        case MODULE_ORE_SILO:       return 30.0f;
+        default:                    return 20.0f;
+    }
+}
+
+/* Credit cost to begin module construction */
+static float module_credit_cost(module_type_t type) {
+    switch (type) {
+        case MODULE_FURNACE:     return 200.0f;
+        case MODULE_FRAME_PRESS: return 300.0f;
+        case MODULE_LASER_FAB:   return 300.0f;
+        case MODULE_TRACTOR_FAB: return 300.0f;
+        default:                 return 100.0f;
+    }
+}
+
+/* Add a scaffold module to a station and generate a supply contract */
+static void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type) {
+    if (st->module_count >= MAX_MODULES_PER_STATION) return;
+    if (station_has_module(st, type)) return;
+
+    station_module_t *m = &st->modules[st->module_count++];
+    m->type = type;
+    m->scaffold = true;
+    m->build_progress = 0.0f;
+
+    /* Generate a contract for frame ingots to build this module */
+    float cost = module_build_cost(type);
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (!w->contracts[k].active) {
+            w->contracts[k] = (contract_t){
+                .active = true,
+                .station_index = (uint8_t)station_idx,
+                .commodity = COMMODITY_FRAME_INGOT,
+                .quantity_needed = cost,
+                .base_price = 25.0f,
+                .age = 0.0f,
+            };
+            break;
+        }
+    }
+    SIM_LOG("[sim] began construction of module %d at station %d (cost %.0f frames)\n",
+            type, station_idx, cost);
+}
+
+/* Deliver frame ingots to scaffold modules at a station */
+static void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *ship) {
+    if (ship->cargo[COMMODITY_FRAME_INGOT] < 0.01f) return;
+
+    for (int i = 0; i < st->module_count; i++) {
+        if (!st->modules[i].scaffold) continue;
+        float cost = module_build_cost(st->modules[i].type);
+        float needed = cost * (1.0f - st->modules[i].build_progress);
+        if (needed < 0.01f) continue;
+        float deliver = fminf(ship->cargo[COMMODITY_FRAME_INGOT], needed);
+        ship->cargo[COMMODITY_FRAME_INGOT] -= deliver;
+        st->modules[i].build_progress += deliver / cost;
+        if (st->modules[i].build_progress >= 1.0f) {
+            st->modules[i].scaffold = false;
+            st->modules[i].build_progress = 1.0f;
+            rebuild_station_services(st);
+            rebuild_signal_chain(w);
+            SIM_LOG("[sim] module %d activated at station %d\n", st->modules[i].type, station_idx);
+        }
+        if (ship->cargo[COMMODITY_FRAME_INGOT] < 0.01f) break;
+    }
+}
+
 static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     if (!sp->docked) return;
     station_t *st = &w->stations[sp->current_station];
@@ -908,6 +988,28 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     dest->ingot_buffer[i] = INGOT_BUFFER_CAPACITY;
                 npc->ingots[i] = 0.0f;
             }
+            /* Hauler also delivers frame ingots to scaffold station and modules */
+            if (dest->scaffold || dest->module_count > 0) {
+                /* Create a temporary ship_t to reuse step_module_delivery */
+                ship_t hauler_ship = {0};
+                hauler_ship.cargo[COMMODITY_FRAME_INGOT] = dest->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)];
+                float before = hauler_ship.cargo[COMMODITY_FRAME_INGOT];
+                if (dest->scaffold) {
+                    /* Feed outpost scaffold */
+                    float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - dest->scaffold_progress);
+                    float deliver = fminf(hauler_ship.cargo[COMMODITY_FRAME_INGOT], needed);
+                    if (deliver > 0.01f) {
+                        hauler_ship.cargo[COMMODITY_FRAME_INGOT] -= deliver;
+                        dest->scaffold_progress += deliver / SCAFFOLD_MATERIAL_NEEDED;
+                        if (dest->scaffold_progress >= 1.0f)
+                            activate_outpost(w, npc->dest_station);
+                    }
+                }
+                step_module_delivery(w, dest, npc->dest_station, &hauler_ship);
+                /* Put remaining frames back */
+                float consumed = before - hauler_ship.cargo[COMMODITY_FRAME_INGOT];
+                dest->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] -= consumed;
+            }
             npc->state = NPC_STATE_RETURN_TO_STATION;
         }
         break;
@@ -1457,8 +1559,20 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         return;
     }
     if (!sp->docked) return;
-    /* Auto-deliver frame ingots to scaffold stations */
+    station_t *docked_st = &w->stations[sp->current_station];
+    /* Auto-deliver frame ingots to scaffold station and scaffold modules */
     step_scaffold_delivery(w, sp);
+    step_module_delivery(w, docked_st, sp->current_station, &sp->ship);
+    /* Module construction: player requests to build a module */
+    if (intent->build_module && !w->player_only_mode) {
+        float cost = module_credit_cost(intent->build_module_type);
+        if (sp->ship.credits >= cost
+            && !station_has_module(docked_st, intent->build_module_type)
+            && docked_st->module_count < MAX_MODULES_PER_STATION) {
+            sp->ship.credits -= cost;
+            begin_module_construction(w, docked_st, sp->current_station, intent->build_module_type);
+        }
+    }
     if (intent->service_sell)        try_sell_station_cargo(w, sp);
     else if (intent->service_repair) try_repair_ship(w, sp);
     else if (intent->upgrade_mining) try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_MINING);
