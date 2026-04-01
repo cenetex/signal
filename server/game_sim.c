@@ -2150,7 +2150,7 @@ static void step_contracts(world_t *w, float dt) {
         need.target_index = -1;
         need.claimed_by = -1;
 
-        /* Priority 1: scaffold modules need frames */
+        /* Priority 1: scaffold modules need ingots */
         for (int m = 0; m < st->module_count; m++) {
             if (!st->modules[m].scaffold) continue;
             float cost = module_build_cost(st->modules[m].type);
@@ -2159,7 +2159,7 @@ static void step_contracts(world_t *w, float dt) {
                 need = (contract_t){
                     .active = true, .action = CONTRACT_SUPPLY,
                     .station_index = (uint8_t)s,
-                    .commodity = COMMODITY_FERRITE_INGOT,
+                    .commodity = module_build_material(st->modules[m].type),
                     .quantity_needed = remaining,
                     .base_price = 25.0f,
                     .target_index = -1, .claimed_by = -1,
@@ -2168,7 +2168,7 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
 
-        /* Priority 2: station scaffold needs frames */
+        /* Priority 2: station scaffold needs ferrite ingots */
         if (!need.active && st->scaffold) {
             float remaining = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
             if (remaining > 0.5f) {
