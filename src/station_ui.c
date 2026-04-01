@@ -251,8 +251,10 @@ void format_station_market_summary(const station_ui_state_t* ui, bool compact, c
         }
     } else if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
         snprintf(text, text_size, "%s", compact ? "Hull service + hold refit" : "Hull service and hold refits.");
-    } else {
+    } else if (station_has_module(ui->station, MODULE_LASER_FAB) || station_has_module(ui->station, MODULE_TRACTOR_FAB)) {
         snprintf(text, text_size, "%s", compact ? "Laser + tractor tuning" : "Laser and tractor tuning.");
+    } else {
+        snprintf(text, text_size, "%s", compact ? "Signal relay outpost" : "Signal relay outpost.");
     }
 }
 
@@ -274,10 +276,12 @@ void format_station_market_detail(const station_ui_state_t* ui, bool compact, ch
         int buf = (int)lroundf(ui->station->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)]);
         int prod = (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]);
         snprintf(text, text_size, "Ingots %d // Frames %d", buf, prod);
-    } else {
+    } else if (station_has_module(ui->station, MODULE_LASER_FAB) || station_has_module(ui->station, MODULE_TRACTOR_FAB)) {
         int lsr = (int)lroundf(ui->station->product_stock[PRODUCT_LASER_MODULE]);
         int trc = (int)lroundf(ui->station->product_stock[PRODUCT_TRACTOR_MODULE]);
         snprintf(text, text_size, "LSR %d  TRC %d", lsr, trc);
+    } else {
+        snprintf(text, text_size, "Signal range: %.0f", ui->station->signal_range);
     }
 }
 

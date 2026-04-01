@@ -115,13 +115,6 @@ static float rand_range_rng(float min_val, float max_val, uint32_t* rng) {
     return min_val + (max_val - min_val) * t;
 }
 
-static int rand_int_rng(int min_val, int max_val, uint32_t* rng) {
-    uint32_t x = *rng;
-    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-    *rng = x;
-    return min_val + (int)(x % (uint32_t)(max_val - min_val + 1));
-}
-
 void configure_asteroid_tier(asteroid_t* asteroid, asteroid_tier_t tier, commodity_t commodity, uint32_t* rng) {
     float spin_limit = asteroid_spin_limit(tier);
     asteroid->active = true;
