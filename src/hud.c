@@ -804,9 +804,9 @@ void draw_hud(void) {
                 sdtx_color3b(220, 200, 60);
                 sdtx_puts("connecting...");
             } else {
-                /* Version mismatch: client is stale */
-                sdtx_color3b(255, 120, 80);
-                sdtx_puts("OFFLINE // refresh");
+                /* Version mismatch — server is updating, keep playing */
+                sdtx_color3b(220, 200, 60);
+                sdtx_printf("v%s (updating)", client_hash);
             }
         } else if (g.multiplayer_enabled) {
             sdtx_color3b(220, 200, 60);
