@@ -1762,7 +1762,7 @@ static void step_asteroid_gravity(world_t *w, float dt) {
             if (!b->active || b->tier == ASTEROID_TIER_S) continue;
             vec2 delta = v2_sub(b->pos, a->pos);
             float dist_sq = v2_len_sq(delta);
-            if (dist_sq > 400.0f * 400.0f || dist_sq < 1.0f) continue;
+            if (dist_sq > 800.0f * 800.0f || dist_sq < 1.0f) continue;
             float dist = sqrtf(dist_sq);
             /* Don't attract asteroids at or inside collision boundary */
             float min_dist = a->radius + b->radius;
@@ -1773,7 +1773,7 @@ static void step_asteroid_gravity(world_t *w, float dt) {
             /* Gravitational force proportional to both masses.
              * Clamp against the lighter body so swapping slots cannot
              * change the result while preserving equal/opposite force. */
-            float force_mag = (mass_a * mass_b) / dist_sq * 8.0f;
+            float force_mag = (mass_a * mass_b) / dist_sq * 14.0f;
             float max_force = 60.0f * fminf(mass_a, mass_b);
             if (force_mag > max_force) force_mag = max_force;
             /* F = ma, so acceleration = force / mass */
