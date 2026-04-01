@@ -1,0 +1,80 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="800" style="background:#0a0e1a">
+  <style>
+    text { font-family: 'IBM Plex Mono', monospace; fill: #dce9ff; }
+    .dim { fill: #5a6a8a; font-size: 9px; }
+    .label { fill: #72ffb6; font-size: 11px; font-weight: bold; }
+    .title { fill: #dce9ff; font-size: 14px; text-anchor: middle; }
+  </style>
+  <text x="400" y="30" class="title">C-BAND SECTOR MAP — WHAT PLAYERS SEE</text>
+  <circle cx="400" cy="400" r="300" fill="none" stroke="#1a2a4a" stroke-width="1" stroke-dasharray="4,4"/>
+  <circle cx="400" cy="400" r="220" fill="none" stroke="#1a2a4a" stroke-width="1" stroke-dasharray="2,6"/>
+  <!-- A and B band indicators -->
+  <circle cx="400" cy="400" r="60" fill="none" stroke="#2a3a5a" stroke-width="1"/>
+  <text x="400" y="355" class="dim" text-anchor="middle">A-BAND</text>
+  <circle cx="400" cy="400" r="130" fill="none" stroke="#2a3a5a" stroke-width="1"/>
+  <text x="400" y="285" class="dim" text-anchor="middle">B-BAND</text>
+  <circle cx="400.0" cy="100.0" r="7.9" fill="rgb(58,161,117)" opacity="0.85"/>
+  <text x="400.0" y="78.0" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-29</text>
+  <circle cx="439.2" cy="102.6" r="9.6" fill="rgb(70,193,140)" opacity="0.85"/>
+  <circle cx="477.6" cy="110.2" r="6.4" fill="rgb(47,131,95)" opacity="0.85"/>
+  <circle cx="514.8" cy="122.8" r="4.5" fill="rgb(34,95,69)" opacity="0.85"/>
+  <text x="523.2" y="102.5" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-9</text>
+  <circle cx="550.0" cy="140.2" r="7.6" fill="rgb(56,154,112)" opacity="0.85"/>
+  <circle cx="582.6" cy="162.0" r="8.6" fill="rgb(63,174,126)" opacity="0.85"/>
+  <circle cx="612.1" cy="187.9" r="5.7" fill="rgb(43,118,86)" opacity="0.85"/>
+  <text x="627.7" y="172.3" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-16</text>
+  <circle cx="638.0" cy="217.4" r="6.1" fill="rgb(45,124,90)" opacity="0.85"/>
+  <circle cx="659.8" cy="250.0" r="8.8" fill="rgb(64,177,129)" opacity="0.85"/>
+  <circle cx="677.2" cy="285.2" r="7.4" fill="rgb(54,151,109)" opacity="0.85"/>
+  <text x="697.5" y="276.8" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-26</text>
+  <circle cx="689.8" cy="322.4" r="4.4" fill="rgb(33,92,67)" opacity="0.85"/>
+  <circle cx="697.4" cy="360.8" r="6.4" fill="rgb(47,131,95)" opacity="0.85"/>
+  <circle cx="700.0" cy="400.0" r="9.5" fill="rgb(69,190,138)" opacity="0.85"/>
+  <text x="722.0" y="400.0" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-38</text>
+  <circle cx="697.4" cy="439.2" r="7.6" fill="rgb(56,154,112)" opacity="0.85"/>
+  <circle cx="689.8" cy="477.6" r="5.9" fill="rgb(44,121,88)" opacity="0.85"/>
+  <circle cx="677.2" cy="514.8" r="8.4" fill="rgb(62,170,124)" opacity="0.85"/>
+  <text x="697.5" y="523.2" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-32</text>
+  <circle cx="659.8" cy="550.0" r="8.8" fill="rgb(64,177,129)" opacity="0.85"/>
+  <circle cx="638.0" cy="582.6" r="5.4" fill="rgb(40,111,81)" opacity="0.85"/>
+  <circle cx="612.1" cy="612.1" r="5.4" fill="rgb(40,111,81)" opacity="0.85"/>
+  <text x="627.7" y="627.7" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-14</text>
+  <circle cx="582.6" cy="638.0" r="9.0" fill="rgb(65,180,131)" opacity="0.85"/>
+  <circle cx="550.0" cy="659.8" r="8.6" fill="rgb(63,174,126)" opacity="0.85"/>
+  <circle cx="514.8" cy="677.2" r="5.4" fill="rgb(40,111,81)" opacity="0.85"/>
+  <text x="523.2" y="697.5" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-14</text>
+  <circle cx="477.6" cy="689.8" r="6.4" fill="rgb(47,131,95)" opacity="0.85"/>
+  <circle cx="439.2" cy="697.4" r="8.4" fill="rgb(62,170,124)" opacity="0.85"/>
+  <circle cx="400.0" cy="700.0" r="6.2" fill="rgb(46,128,93)" opacity="0.85"/>
+  <text x="400.0" y="722.0" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-19</text>
+  <circle cx="360.8" cy="697.4" r="4.5" fill="rgb(34,95,69)" opacity="0.85"/>
+  <circle cx="322.4" cy="689.8" r="7.8" fill="rgb(57,157,114)" opacity="0.85"/>
+  <circle cx="285.2" cy="677.2" r="9.6" fill="rgb(70,193,140)" opacity="0.85"/>
+  <text x="276.8" y="697.5" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-39</text>
+  <circle cx="250.0" cy="659.8" r="6.6" fill="rgb(49,134,98)" opacity="0.85"/>
+  <circle cx="217.4" cy="638.0" r="5.6" fill="rgb(41,115,83)" opacity="0.85"/>
+  <circle cx="187.9" cy="612.1" r="8.4" fill="rgb(62,170,124)" opacity="0.85"/>
+  <text x="172.3" y="627.7" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-32</text>
+  <circle cx="162.0" cy="582.6" r="8.1" fill="rgb(59,164,119)" opacity="0.85"/>
+  <circle cx="140.2" cy="550.0" r="5.4" fill="rgb(40,111,81)" opacity="0.85"/>
+  <circle cx="122.8" cy="514.8" r="6.7" fill="rgb(50,138,100)" opacity="0.85"/>
+  <text x="102.5" y="523.2" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-22</text>
+  <circle cx="110.2" cy="477.6" r="9.8" fill="rgb(71,197,143)" opacity="0.85"/>
+  <circle cx="102.6" cy="439.2" r="7.8" fill="rgb(57,157,114)" opacity="0.85"/>
+  <circle cx="100.0" cy="400.0" r="4.7" fill="rgb(35,98,71)" opacity="0.85"/>
+  <text x="78.0" y="400.0" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-10</text>
+  <circle cx="102.6" cy="360.8" r="6.6" fill="rgb(49,134,98)" opacity="0.85"/>
+  <circle cx="110.2" cy="322.4" r="8.3" fill="rgb(60,167,121)" opacity="0.85"/>
+  <circle cx="122.8" cy="285.2" r="5.7" fill="rgb(43,118,86)" opacity="0.85"/>
+  <text x="102.5" y="276.8" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-16</text>
+  <circle cx="140.2" cy="250.0" r="5.4" fill="rgb(40,111,81)" opacity="0.85"/>
+  <circle cx="162.0" cy="217.4" r="8.8" fill="rgb(64,177,129)" opacity="0.85"/>
+  <circle cx="187.9" cy="187.9" r="8.8" fill="rgb(64,177,129)" opacity="0.85"/>
+  <text x="172.3" y="172.3" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-34</text>
+  <circle cx="217.4" cy="162.0" r="5.2" fill="rgb(39,108,78)" opacity="0.85"/>
+  <circle cx="250.0" cy="140.2" r="5.6" fill="rgb(41,115,83)" opacity="0.85"/>
+  <circle cx="285.2" cy="122.8" r="8.8" fill="rgb(64,177,129)" opacity="0.85"/>
+  <text x="276.8" y="102.5" class="label" text-anchor="middle" dominant-baseline="middle" font-size="9">C-34</text>
+  <circle cx="322.4" cy="110.2" r="7.8" fill="rgb(57,157,114)" opacity="0.85"/>
+  <circle cx="360.8" cy="102.6" r="5.7" fill="rgb(43,118,86)" opacity="0.85"/>
+</svg>

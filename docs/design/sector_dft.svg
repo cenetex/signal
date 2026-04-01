@@ -1,0 +1,43 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" style="background:#0a0e1a">
+  <style>
+    text { font-family: 'IBM Plex Mono', monospace; fill: #5a6a8a; font-size: 10px; }
+    .title { fill: #dce9ff; font-size: 13px; text-anchor: middle; }
+    .peak { fill: #ff6b6b; font-size: 11px; font-weight: bold; }
+  </style>
+  <text x="400" y="25" class="title">DFT OF SECTOR LABELS — FREQUENCY RECOVERY</text>
+  <line x1="60" y1="340" x2="740" y2="340" stroke="#2a3a5a" stroke-width="1"/>
+  <line x1="60" y1="60" x2="60" y2="340" stroke="#2a3a5a" stroke-width="1"/>
+  <text x="400" y="385" class="axis" text-anchor="middle" style="fill:#5a6a8a;font-size:9px">Frequency (Hz)</text>
+  <rect x="60.0" y="340.0" width="27.3" height="0.0" fill="#2a5a4a" opacity="0.7"/>
+  <text x="60.0" y="355" style="fill:#5a6a8a;font-size:8px" text-anchor="middle">0</text>
+  <rect x="88.3" y="336.9" width="27.3" height="3.1" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="116.7" y="340.0" width="27.3" height="0.0" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="145.0" y="303.4" width="27.3" height="36.6" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="173.3" y="340.0" width="27.3" height="0.0" fill="#2a5a4a" opacity="0.7"/>
+  <text x="173.3" y="355" style="fill:#5a6a8a;font-size:8px" text-anchor="middle">133</text>
+  <rect x="201.7" y="337.5" width="27.3" height="2.5" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="230.0" y="340.0" width="27.3" height="0.0" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="258.3" y="269.6" width="27.3" height="70.4" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="286.7" y="340.0" width="27.3" height="0.0" fill="#2a5a4a" opacity="0.7"/>
+  <text x="286.7" y="355" style="fill:#5a6a8a;font-size:8px" text-anchor="middle">266</text>
+  <rect x="315.0" y="337.7" width="27.3" height="2.3" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="343.3" y="340.0" width="27.3" height="0.0" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="371.7" y="337.9" width="27.3" height="2.1" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="400.0" y="340.0" width="27.3" height="0.0" fill="#2a5a4a" opacity="0.7"/>
+  <text x="400.0" y="355" style="fill:#5a6a8a;font-size:8px" text-anchor="middle">399</text>
+  <rect x="428.3" y="88.0" width="27.3" height="252.0" fill="#ff4444" opacity="1.0"/>
+  <text x="442.5" y="73.0" class="peak" text-anchor="middle">432 Hz</text>
+  <text x="442.5" y="83.0" style="fill:#ff8888;font-size:9px" text-anchor="middle">▼</text>
+  <rect x="456.7" y="340.0" width="27.3" height="0.0" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="485.0" y="338.0" width="27.3" height="2.0" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="513.3" y="340.0" width="27.3" height="0.0" fill="#2a5a4a" opacity="0.7"/>
+  <text x="513.3" y="355" style="fill:#5a6a8a;font-size:8px" text-anchor="middle">532</text>
+  <rect x="541.7" y="338.8" width="27.3" height="1.2" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="570.0" y="340.0" width="27.3" height="0.0" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="598.3" y="336.0" width="27.3" height="4.0" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="626.7" y="340.0" width="27.3" height="0.0" fill="#2a5a4a" opacity="0.7"/>
+  <text x="626.7" y="355" style="fill:#5a6a8a;font-size:8px" text-anchor="middle">665</text>
+  <rect x="655.0" y="338.8" width="27.3" height="1.2" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="683.3" y="340.0" width="27.3" height="0.0" fill="#2a5a4a" opacity="0.7"/>
+  <rect x="711.7" y="337.7" width="27.3" height="2.3" fill="#2a5a4a" opacity="0.7"/>
+</svg>

@@ -342,18 +342,99 @@ static float max_signal_range(const world_t *w) {
     return best > 0.0f ? best : WORLD_RADIUS;
 }
 
+/* Find a good clump center in the belt density field near signal-covered space. */
+static vec2 find_belt_clump_center(world_t *w, float *out_density) {
+    vec2 best_pos = v2(0.0f, 0.0f);
+    float best_density = 0.0f;
+    for (int attempt = 0; attempt < 32; attempt++) {
+        int stn = rand_int(w, 0, MAX_STATIONS - 1);
+        if (w->stations[stn].signal_range <= 0.0f) continue;
+        float angle = rand_range(w, 0.0f, TWO_PI_F);
+        float distance = rand_range(w, 200.0f, w->stations[stn].signal_range * 0.95f);
+        vec2 pos = v2_add(w->stations[stn].pos, v2(cosf(angle) * distance, sinf(angle) * distance));
+        float d = belt_density_at(&w->belt, pos.x, pos.y);
+        if (d > best_density) {
+            best_density = d;
+            best_pos = pos;
+        }
+        if (d > 0.25f) break;
+    }
+    if (out_density) *out_density = best_density;
+    return best_pos;
+}
+
+/*
+ * Seed a clump of asteroids at a belt position.
+ * Clumps are irregular blobs: 1 anchor (XL/XXL), several medium, debris fill.
+ * Returns number of asteroids placed.
+ */
+static int seed_asteroid_clump(world_t *w, int first_slot) {
+    float density = 0.0f;
+    vec2 center = find_belt_clump_center(w, &density);
+    if (density < 0.05f) return 0;
+
+    commodity_t ore = belt_ore_at(&w->belt, center.x, center.y);
+
+    /* Clump size scales with density: 3-12 rocks */
+    int clump_size = 3 + (int)(density * 9.0f);
+    float clump_radius = 200.0f + density * 400.0f;
+
+    /* Elongation: stretch the clump along a random axis */
+    float stretch_angle = rand_range(w, 0.0f, TWO_PI_F);
+    float stretch_factor = rand_range(w, 1.0f, 2.5f);
+    float cos_s = cosf(stretch_angle);
+    float sin_s = sinf(stretch_angle);
+
+    /* Shared drift velocity for the clump */
+    vec2 drift = v2(rand_range(w, -3.0f, 3.0f), rand_range(w, -3.0f, 3.0f));
+
+    int placed = 0;
+    for (int i = 0; i < clump_size && (first_slot + placed) < MAX_ASTEROIDS; i++) {
+        asteroid_t *a = &w->asteroids[first_slot + placed];
+        if (a->active) continue;
+
+        /* Pick tier: first rock is the anchor, rest are smaller */
+        asteroid_tier_t tier;
+        if (i == 0) {
+            tier = (randf(w) < 0.15f) ? ASTEROID_TIER_XXL : ASTEROID_TIER_XL;
+        } else if (i <= 3) {
+            tier = (randf(w) < 0.4f) ? ASTEROID_TIER_L : ASTEROID_TIER_M;
+        } else {
+            tier = (randf(w) < 0.3f) ? ASTEROID_TIER_L : ASTEROID_TIER_M;
+        }
+
+        clear_asteroid(a);
+        sim_configure_asteroid(w, a, tier, ore);
+        a->fracture_child = false;
+
+        /* Scatter around center with elongation */
+        float r = rand_range(w, 0.0f, clump_radius) * sqrtf(randf(w)); /* sqrt for uniform disk */
+        float theta = rand_range(w, 0.0f, TWO_PI_F);
+        float lx = cosf(theta) * r;
+        float ly = sinf(theta) * r;
+        /* Apply stretch */
+        float sx = lx * cos_s - ly * sin_s;
+        float sy = lx * sin_s + ly * cos_s;
+        sx *= stretch_factor;
+        float fx = sx * cos_s + sy * sin_s;
+        float fy = -sx * sin_s + sy * cos_s;
+
+        a->pos = v2_add(center, v2(fx, fy));
+        a->vel = v2_add(drift, v2(rand_range(w, -2.0f, 2.0f), rand_range(w, -2.0f, 2.0f)));
+        placed++;
+    }
+    return placed;
+}
+
+/* Seed a single asteroid at a belt position (for respawn/compat). */
 static void seed_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier) {
-    float angle = rand_range(w, 0.0f, TWO_PI_F);
+    float density = 0.0f;
+    vec2 pos = find_belt_clump_center(w, &density);
+    commodity_t ore = belt_ore_at(&w->belt, pos.x, pos.y);
     clear_asteroid(a);
-    sim_configure_asteroid(w, a, tier, random_raw_ore(w));
+    sim_configure_asteroid(w, a, tier, ore);
     a->fracture_child = false;
-    /* Initial field seeding keeps rocks inside supported space so the opening loop stays populated. */
-    int stn = rand_int(w, 0, MAX_STATIONS - 1);
-    float sr = w->stations[stn].signal_range;
-    if (sr <= 0.0f) sr = max_signal_range(w);
-    vec2 center = w->stations[stn].pos;
-    float distance = rand_range(w, 420.0f, sr - 180.0f);
-    a->pos = v2_add(center, v2(cosf(angle) * distance, sinf(angle) * distance));
+    a->pos = pos;
     a->vel = v2(rand_range(w, -4.0f, 4.0f), rand_range(w, -4.0f, 4.0f));
 }
 
@@ -383,41 +464,36 @@ static void set_inbound_field_velocity(world_t *w, asteroid_t *a, vec2 inward) {
 
 static void spawn_inbound_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier) {
     clear_asteroid(a);
-    sim_configure_asteroid(w, a, tier, random_raw_ore(w));
     a->fracture_child = false;
 
+    /* Find a spawn point in a dense belt region near the signal edge.
+     * The asteroid drifts inward toward station infrastructure. */
     int stn = rand_int(w, 0, MAX_STATIONS - 1);
     vec2 center = w->stations[stn].pos;
     float sr = w->stations[stn].signal_range;
     if (sr <= 0.0f) sr = max_signal_range(w);
 
-    float cleanup_margin = a->radius + 260.0f;
-    float min_offset = fmaxf(42.0f, a->radius + 28.0f);
-    float max_offset = fmaxf(min_offset + 1.0f, cleanup_margin - 10.0f);
     vec2 spawn_pos = center;
     vec2 inward = v2(-1.0f, 0.0f);
-    bool found = false;
+    float best_density = 0.0f;
 
     for (int attempt = 0; attempt < 32; attempt++) {
         float angle = rand_range(w, 0.0f, TWO_PI_F);
         vec2 outward = v2_from_angle(angle);
-        float offset = rand_range(w, min_offset, max_offset);
-        vec2 pos = v2_add(center, v2_scale(outward, sr + offset));
-        if (signal_strength_at(w, pos) > 0.0f) continue;
-        if (!point_within_signal_margin(w, pos, cleanup_margin)) continue;
-        spawn_pos = pos;
-        inward = v2_scale(outward, -1.0f);
-        found = true;
-        break;
+        /* Spawn at 70-100% of signal range */
+        float dist = rand_range(w, sr * 0.7f, sr * 1.0f);
+        vec2 pos = v2_add(center, v2_scale(outward, dist));
+        float d = belt_density_at(&w->belt, pos.x, pos.y);
+        if (d > best_density) {
+            best_density = d;
+            spawn_pos = pos;
+            inward = v2_scale(outward, -1.0f);
+        }
+        if (d > 0.15f) break;
     }
 
-    if (!found) {
-        vec2 outward = v2_from_angle(rand_range(w, 0.0f, TWO_PI_F));
-        float offset = fminf(max_offset, min_offset + 16.0f);
-        spawn_pos = v2_add(center, v2_scale(outward, sr + offset));
-        inward = v2_scale(outward, -1.0f);
-    }
-
+    commodity_t ore = belt_ore_at(&w->belt, spawn_pos.x, spawn_pos.y);
+    sim_configure_asteroid(w, a, tier, ore);
     a->pos = spawn_pos;
     set_inbound_field_velocity(w, a, inward);
 }
@@ -530,7 +606,15 @@ static void maintain_asteroid_field(world_t *w, float dt) {
     if (seeded >= FIELD_ASTEROID_TARGET) { w->field_spawn_timer = 0.0f; return; }
     w->field_spawn_timer += dt;
     if (w->field_spawn_timer < FIELD_ASTEROID_RESPAWN_DELAY) return;
-    if (first_slot >= 0) spawn_field_asteroid(w, &w->asteroids[first_slot]);
+    if (first_slot >= 0) {
+        /* Spawn a small clump if enough free slots, otherwise a single rock */
+        int free_slots = FIELD_ASTEROID_TARGET - seeded;
+        if (free_slots >= 4) {
+            seed_asteroid_clump(w, first_slot);
+        } else {
+            spawn_field_asteroid(w, &w->asteroids[first_slot]);
+        }
+    }
     w->field_spawn_timer = 0.0f;
 }
 
@@ -1856,7 +1940,8 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
 void world_reset(world_t *w) {
     uint32_t seed = w->rng;  /* caller may pre-set seed; 0 = default */
     memset(w, 0, sizeof(*w));
-    w->rng = seed ? seed : 0xC0FFEE12u;
+    w->rng = seed ? seed : 2037u;
+    belt_field_init(&w->belt, w->rng, WORLD_RADIUS);
 
     /* --- Stations --- */
     snprintf(w->stations[0].name, sizeof(w->stations[0].name), "%s", "Prospect Refinery");
@@ -1900,11 +1985,19 @@ void world_reset(world_t *w) {
     rebuild_station_services(&w->stations[2]);
     rebuild_signal_chain(w);
 
-    /* --- Initial asteroid field --- */
-    if (FIELD_ASTEROID_TARGET > 0) seed_field_asteroid_of_tier(w, &w->asteroids[0], ASTEROID_TIER_XL);
-    if (FIELD_ASTEROID_TARGET > 1) seed_field_asteroid_of_tier(w, &w->asteroids[1], ASTEROID_TIER_L);
-    for (int i = 2; i < FIELD_ASTEROID_TARGET && i < MAX_ASTEROIDS; i++)
-        seed_field_asteroid_of_tier(w, &w->asteroids[i], random_field_asteroid_tier(w));
+    /* --- Initial asteroid field: spawn as clumps along belt density --- */
+    {
+        int slot = 0;
+        while (slot < FIELD_ASTEROID_TARGET && slot < MAX_ASTEROIDS) {
+            int placed = seed_asteroid_clump(w, slot);
+            if (placed == 0) {
+                /* Fallback: single rock if no good clump center found */
+                seed_field_asteroid_of_tier(w, &w->asteroids[slot], random_field_asteroid_tier(w));
+                placed = 1;
+            }
+            slot += placed;
+        }
+    }
 
     /* --- NPC ships (1 miner + 1 hauler) --- */
     {
@@ -2209,6 +2302,7 @@ bool world_load(world_t *w, const char *path) {
     }
 
     fclose(f);
+    belt_field_init(&w->belt, w->rng, WORLD_RADIUS);
     rebuild_signal_chain(w);
     return true;
 }

@@ -1,0 +1,141 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="900" height="900" style="background:#0a0e1a">
+<style>
+  text { font-family: 'IBM Plex Mono', monospace; }
+  .title { fill: #dce9ff; font-size: 15px; text-anchor: middle; font-weight: bold; }
+  .band-label { fill: #3a4a6a; font-size: 10px; text-anchor: middle; letter-spacing: 0.15em; }
+  .a-label { fill: #ffbb44; font-size: 10px; font-weight: bold; }
+  .b-label { fill: #66bbff; font-size: 9px; }
+  .c-label { fill: #72ffb6; font-size: 8px; }
+  .a-name { fill: #cc9933; font-size: 7px; }
+  .b-name { fill: #4488bb; font-size: 7px; }
+</style>
+<text x="450" y="28" class="title">SIGNAL SECTOR MAP</text>
+
+<!-- Band rings -->
+<circle cx="450" cy="450" r="80" fill="none" stroke="#332a1a" stroke-width="1.5"/>
+<circle cx="450" cy="450" r="180" fill="none" stroke="#1a2a3a" stroke-width="1"/>
+<circle cx="450" cy="450" r="340" fill="none" stroke="#1a3a2a" stroke-width="0.5" stroke-dasharray="3,3"/>
+
+<!-- Band labels -->
+<text x="450" y="462" class="band-label" style="fill:#665522">A</text>
+<text x="450" y="360" class="band-label" style="fill:#334466">B-BAND</text>
+<text x="450" y="100" class="band-label" style="fill:#336644">C-BAND</text>
+  <circle cx="450.0" cy="370.0" r="14" fill="#33281a" stroke="#ffbb44" stroke-width="1.5" opacity="0.9"/>
+  <text x="450.0" y="374.0" class="a-label" text-anchor="middle">A-1</text>
+  <text x="450.0" y="342.0" class="a-name" text-anchor="middle" dominant-baseline="middle">Prospect Basin</text>
+  <circle cx="530.0" cy="450.0" r="14" fill="#33281a" stroke="#ffbb44" stroke-width="1.5" opacity="0.9"/>
+  <text x="530.0" y="454.0" class="a-label" text-anchor="middle">A-2</text>
+  <text x="558.0" y="450.0" class="a-name" text-anchor="middle" dominant-baseline="middle">Kepler Flats</text>
+  <circle cx="450.0" cy="530.0" r="14" fill="#33281a" stroke="#ffbb44" stroke-width="1.5" opacity="0.9"/>
+  <text x="450.0" y="534.0" class="a-label" text-anchor="middle">A-3</text>
+  <text x="450.0" y="558.0" class="a-name" text-anchor="middle" dominant-baseline="middle">Helios Shelf</text>
+  <circle cx="370.0" cy="450.0" r="14" fill="#33281a" stroke="#ffbb44" stroke-width="1.5" opacity="0.9"/>
+  <text x="370.0" y="454.0" class="a-label" text-anchor="middle">A-4</text>
+  <text x="342.0" y="450.0" class="a-name" text-anchor="middle" dominant-baseline="middle">Signal Deep</text>
+  <circle cx="450.0" cy="270.0" r="10" fill="#1a2233" stroke="#4488bb" stroke-width="1" opacity="0.85"/>
+  <text x="450.0" y="273.0" class="b-label" text-anchor="middle">B-1</text>
+  <text x="450.0" y="244.0" class="b-name" text-anchor="middle" dominant-baseline="middle">Crystal Reach</text>
+  <circle cx="540.0" cy="294.1" r="10" fill="#1a2233" stroke="#4488bb" stroke-width="1" opacity="0.85"/>
+  <text x="540.0" y="297.1" class="b-label" text-anchor="middle">B-2</text>
+  <circle cx="605.9" cy="360.0" r="10" fill="#1a2233" stroke="#4488bb" stroke-width="1" opacity="0.85"/>
+  <text x="605.9" y="363.0" class="b-label" text-anchor="middle">B-3</text>
+  <text x="628.4" y="347.0" class="b-name" text-anchor="middle" dominant-baseline="middle">Copper Drift</text>
+  <circle cx="630.0" cy="450.0" r="10" fill="#1a2233" stroke="#4488bb" stroke-width="1" opacity="0.85"/>
+  <text x="630.0" y="453.0" class="b-label" text-anchor="middle">B-4</text>
+  <circle cx="605.9" cy="540.0" r="10" fill="#1a2233" stroke="#4488bb" stroke-width="1" opacity="0.85"/>
+  <text x="605.9" y="543.0" class="b-label" text-anchor="middle">B-5</text>
+  <text x="628.4" y="553.0" class="b-name" text-anchor="middle" dominant-baseline="middle">Cairn Hollow</text>
+  <circle cx="540.0" cy="605.9" r="10" fill="#1a2233" stroke="#4488bb" stroke-width="1" opacity="0.85"/>
+  <text x="540.0" y="608.9" class="b-label" text-anchor="middle">B-6</text>
+  <circle cx="450.0" cy="630.0" r="10" fill="#1a2233" stroke="#4488bb" stroke-width="1" opacity="0.85"/>
+  <text x="450.0" y="633.0" class="b-label" text-anchor="middle">B-7</text>
+  <text x="450.0" y="656.0" class="b-name" text-anchor="middle" dominant-baseline="middle">Dust Margin</text>
+  <circle cx="360.0" cy="605.9" r="10" fill="#1a2233" stroke="#4488bb" stroke-width="1" opacity="0.85"/>
+  <text x="360.0" y="608.9" class="b-label" text-anchor="middle">B-8</text>
+  <circle cx="294.1" cy="540.0" r="10" fill="#1a2233" stroke="#4488bb" stroke-width="1" opacity="0.85"/>
+  <text x="294.1" y="543.0" class="b-label" text-anchor="middle">B-9</text>
+  <text x="271.6" y="553.0" class="b-name" text-anchor="middle" dominant-baseline="middle">Ore Shadow</text>
+  <circle cx="270.0" cy="450.0" r="10" fill="#1a2233" stroke="#4488bb" stroke-width="1" opacity="0.85"/>
+  <text x="270.0" y="453.0" class="b-label" text-anchor="middle">B-10</text>
+  <circle cx="294.1" cy="360.0" r="10" fill="#1a2233" stroke="#4488bb" stroke-width="1" opacity="0.85"/>
+  <text x="294.1" y="363.0" class="b-label" text-anchor="middle">B-11</text>
+  <text x="271.6" y="347.0" class="b-name" text-anchor="middle" dominant-baseline="middle">Ember Ring</text>
+  <circle cx="360.0" cy="294.1" r="10" fill="#1a2233" stroke="#4488bb" stroke-width="1" opacity="0.85"/>
+  <text x="360.0" y="297.1" class="b-label" text-anchor="middle">B-12</text>
+  <circle cx="450.0" cy="110.0" r="5.6" fill="rgb(43,146,102)" opacity="0.8"/>
+  <text x="450.0" y="75.0" class="c-label" text-anchor="middle" dominant-baseline="middle">C-29</text>
+  <circle cx="494.4" cy="112.9" r="6.6" fill="rgb(52,176,123)" opacity="0.8"/>
+  <circle cx="538.0" cy="121.6" r="4.6" fill="rgb(35,119,83)" opacity="0.8"/>
+  <circle cx="580.1" cy="135.9" r="3.5" fill="rgb(26,86,60)" opacity="0.8"/>
+  <circle cx="620.0" cy="155.6" r="5.4" fill="rgb(42,140,98)" opacity="0.8"/>
+  <text x="637.5" y="125.2" class="c-label" text-anchor="middle" dominant-baseline="middle">C-27</text>
+  <circle cx="657.0" cy="180.3" r="6.0" fill="rgb(47,158,110)" opacity="0.8"/>
+  <circle cx="690.4" cy="209.6" r="4.2" fill="rgb(32,107,75)" opacity="0.8"/>
+  <circle cx="719.7" cy="243.0" r="4.4" fill="rgb(34,113,79)" opacity="0.8"/>
+  <circle cx="744.4" cy="280.0" r="6.1" fill="rgb(48,161,112)" opacity="0.8"/>
+  <text x="774.8" y="262.5" class="c-label" text-anchor="middle" dominant-baseline="middle">C-34</text>
+  <circle cx="764.1" cy="319.9" r="5.3" fill="rgb(41,137,96)" opacity="0.8"/>
+  <circle cx="778.4" cy="362.0" r="3.4" fill="rgb(25,83,58)" opacity="0.8"/>
+  <circle cx="787.1" cy="405.6" r="4.6" fill="rgb(35,119,83)" opacity="0.8"/>
+  <circle cx="790.0" cy="450.0" r="6.5" fill="rgb(51,173,121)" opacity="0.8"/>
+  <text x="825.0" y="450.0" class="c-label" text-anchor="middle" dominant-baseline="middle">C-38</text>
+  <circle cx="787.1" cy="494.4" r="5.4" fill="rgb(42,140,98)" opacity="0.8"/>
+  <circle cx="778.4" cy="538.0" r="4.3" fill="rgb(33,110,77)" opacity="0.8"/>
+  <circle cx="764.1" cy="580.1" r="5.9" fill="rgb(46,155,108)" opacity="0.8"/>
+  <circle cx="744.4" cy="620.0" r="6.1" fill="rgb(48,161,112)" opacity="0.8"/>
+  <text x="774.8" y="637.5" class="c-label" text-anchor="middle" dominant-baseline="middle">C-34</text>
+  <circle cx="719.7" cy="657.0" r="4.0" fill="rgb(30,101,71)" opacity="0.8"/>
+  <circle cx="690.4" cy="690.4" r="4.0" fill="rgb(30,101,71)" opacity="0.8"/>
+  <circle cx="657.0" cy="719.7" r="6.2" fill="rgb(49,164,114)" opacity="0.8"/>
+  <circle cx="620.0" cy="744.4" r="6.0" fill="rgb(47,158,110)" opacity="0.8"/>
+  <text x="637.5" y="774.8" class="c-label" text-anchor="middle" dominant-baseline="middle">C-33</text>
+  <circle cx="580.1" cy="764.1" r="4.0" fill="rgb(30,101,71)" opacity="0.8"/>
+  <circle cx="538.0" cy="778.4" r="4.6" fill="rgb(35,119,83)" opacity="0.8"/>
+  <circle cx="494.4" cy="787.1" r="5.9" fill="rgb(46,155,108)" opacity="0.8"/>
+  <circle cx="450.0" cy="790.0" r="4.5" fill="rgb(34,116,81)" opacity="0.8"/>
+  <text x="450.0" y="825.0" class="c-label" text-anchor="middle" dominant-baseline="middle">C-19</text>
+  <circle cx="405.6" cy="787.1" r="3.5" fill="rgb(26,86,60)" opacity="0.8"/>
+  <circle cx="362.0" cy="778.4" r="5.5" fill="rgb(43,143,100)" opacity="0.8"/>
+  <circle cx="319.9" cy="764.1" r="6.6" fill="rgb(52,176,123)" opacity="0.8"/>
+  <circle cx="280.0" cy="744.4" r="4.7" fill="rgb(36,122,85)" opacity="0.8"/>
+  <text x="262.5" y="774.8" class="c-label" text-anchor="middle" dominant-baseline="middle">C-21</text>
+  <circle cx="243.0" cy="719.7" r="4.1" fill="rgb(31,104,73)" opacity="0.8"/>
+  <circle cx="209.6" cy="690.4" r="5.9" fill="rgb(46,155,108)" opacity="0.8"/>
+  <circle cx="180.3" cy="657.0" r="5.7" fill="rgb(44,149,104)" opacity="0.8"/>
+  <circle cx="155.6" cy="620.0" r="4.0" fill="rgb(30,101,71)" opacity="0.8"/>
+  <text x="125.2" y="637.5" class="c-label" text-anchor="middle" dominant-baseline="middle">C-14</text>
+  <circle cx="135.9" cy="580.1" r="4.8" fill="rgb(37,125,87)" opacity="0.8"/>
+  <circle cx="121.6" cy="538.0" r="6.8" fill="rgb(53,179,125)" opacity="0.8"/>
+  <circle cx="112.9" cy="494.4" r="5.5" fill="rgb(43,143,100)" opacity="0.8"/>
+  <circle cx="110.0" cy="450.0" r="3.6" fill="rgb(26,89,62)" opacity="0.8"/>
+  <text x="75.0" y="450.0" class="c-label" text-anchor="middle" dominant-baseline="middle">C-10</text>
+  <circle cx="112.9" cy="405.6" r="4.7" fill="rgb(36,122,85)" opacity="0.8"/>
+  <circle cx="121.6" cy="362.0" r="5.8" fill="rgb(45,152,106)" opacity="0.8"/>
+  <circle cx="135.9" cy="319.9" r="4.2" fill="rgb(32,107,75)" opacity="0.8"/>
+  <circle cx="155.6" cy="280.0" r="4.0" fill="rgb(30,101,71)" opacity="0.8"/>
+  <text x="125.2" y="262.5" class="c-label" text-anchor="middle" dominant-baseline="middle">C-14</text>
+  <circle cx="180.3" cy="243.0" r="6.1" fill="rgb(48,161,112)" opacity="0.8"/>
+  <circle cx="209.6" cy="209.6" r="6.1" fill="rgb(48,161,112)" opacity="0.8"/>
+  <circle cx="243.0" cy="180.3" r="3.9" fill="rgb(29,98,69)" opacity="0.8"/>
+  <circle cx="280.0" cy="155.6" r="4.1" fill="rgb(31,104,73)" opacity="0.8"/>
+  <text x="262.5" y="125.2" class="c-label" text-anchor="middle" dominant-baseline="middle">C-15</text>
+  <circle cx="319.9" cy="135.9" r="6.1" fill="rgb(48,161,112)" opacity="0.8"/>
+  <circle cx="362.0" cy="121.6" r="5.5" fill="rgb(43,143,100)" opacity="0.8"/>
+  <circle cx="405.6" cy="112.9" r="4.2" fill="rgb(32,107,75)" opacity="0.8"/>
+
+<rect x="20" y="810" width="220" height="80" fill="#0a0e1a" stroke="#1a2a3a" stroke-width="0.5" rx="4"/>
+<text x="35" y="828" style="fill:#dce9ff;font-size:10px;font-weight:bold">BANDS</text>
+<circle cx="40" cy="845" r="5" fill="#33281a" stroke="#ffbb44" stroke-width="1"/>
+<text x="52" y="848" style="fill:#ffbb44;font-size:9px">A — Core (4 sectors, sequential)</text>
+<circle cx="40" cy="862" r="5" fill="#1a2233" stroke="#4488bb" stroke-width="1"/>
+<text x="52" y="865" style="fill:#66bbff;font-size:9px">B — Inner ring (12 sectors, sequential)</text>
+<circle cx="40" cy="879" r="4" fill="rgb(42,140,98)"/>
+<text x="52" y="882" style="fill:#72ffb6;font-size:9px">C — Outer ring (48 sectors, encoded)</text>
+
+<rect x="640" y="810" width="240" height="80" fill="#0a0e1a" stroke="#2a1a1a" stroke-width="0.5" rx="4"/>
+<text x="655" y="828" style="fill:#ff6b6b;font-size:10px;font-weight:bold">THE PUZZLE</text>
+<text x="655" y="845" style="fill:#aa5555;font-size:8px">A-band: 1, 2, 3, 4</text>
+<text x="655" y="858" style="fill:#aa5555;font-size:8px">B-band: 1, 2, 3, 4, 5, 6, 7, 8...</text>
+<text x="655" y="871" style="fill:#ff6b6b;font-size:8px;font-weight:bold">C-band: 29, 39, 20, 9, 27, 33, 16...</text>
+<text x="655" y="884" style="fill:#884444;font-size:7px">Why aren't these sequential?</text>
+</svg>

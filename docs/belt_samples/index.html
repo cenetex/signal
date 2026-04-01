@@ -1,0 +1,43 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<title>SIGNAL — Asteroid Belt Density Samples</title>
+<style>
+body { background: #080808; color: #c0d8f0; font-family: monospace; margin: 2em; }
+h1 { color: #3af0c0; font-size: 1.4em; }
+h2 { color: #8ab8e0; font-size: 1.1em; margin-top: 2em; }
+.grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1em; max-width: 1600px; }
+img { width: 100%; border: 1px solid #1a2a3a; }
+.caption { color: #607080; font-size: 0.8em; margin-top: 0.3em; }
+</style>
+</head>
+<body>
+<h1>SIGNAL — Asteroid Belt Density Field Samples</h1>
+<p>Ridged noise + regional bias + pool modulation. Left: density. Right: ore distribution (orange=ferrite, blue=cuprite, green=crystal).</p>
+
+<h2>Seed 432 (resonance)</h2>
+<div class="grid">
+<div><img src="density_432.png"><div class="caption">Density — interlocking belt lattice</div></div>
+<div><img src="ore_432.png"><div class="caption">Ore bias — geographic commodity zones</div></div>
+</div>
+
+<h2>Seed 1337</h2>
+<div class="grid">
+<div><img src="density_1337.png"><div class="caption">Density — sharp veins, large voids</div></div>
+<div><img src="ore_1337.png"><div class="caption">Ore bias</div></div>
+</div>
+
+<h2>Seed 2037</h2>
+<div class="grid">
+<div><img src="density_2037.png"><div class="caption">Density — churning region with sweeping arc</div></div>
+<div><img src="ore_2037.png"><div class="caption">Ore bias</div></div>
+</div>
+
+<h2>Seed 8080</h2>
+<div class="grid">
+<div><img src="density_8080.png"><div class="caption">Density — strong diagonal belt</div></div>
+<div><img src="ore_8080.png"><div class="caption">Ore bias</div></div>
+</div>
+</body>
+</html>

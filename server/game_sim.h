@@ -13,6 +13,7 @@
 #include "math_util.h"
 #include "types.h"
 #include "commodity.h"
+#include "belt.h"
 #include "ship.h"
 #include "asteroid.h"
 #include "economy.h"
@@ -37,10 +38,10 @@ static const float SHIP_BRAKE = 180.0f;
 static const float FRAGMENT_TRACTOR_ACCEL = 380.0f;
 static const float FRAGMENT_MAX_SPEED = 210.0f;
 static const float FRAGMENT_NEARBY_RANGE = 220.0f;
-static const int FIELD_ASTEROID_TARGET = 32;
-static const float FIELD_ASTEROID_RESPAWN_DELAY = 0.6f;
-static const float FRACTURE_CHILD_CLEANUP_AGE = 22.0f;
-static const float FRACTURE_CHILD_CLEANUP_DISTANCE = 940.0f;
+static const int FIELD_ASTEROID_TARGET = 192;
+static const float FIELD_ASTEROID_RESPAWN_DELAY = 0.3f;
+static const float FRACTURE_CHILD_CLEANUP_AGE = 30.0f;
+static const float FRACTURE_CHILD_CLEANUP_DISTANCE = 4000.0f;
 static const float STATION_DOCK_APPROACH_OFFSET = 34.0f;
 static const float SHIP_COLLISION_DAMAGE_THRESHOLD = 115.0f;
 static const float SHIP_COLLISION_DAMAGE_SCALE = 0.12f;
@@ -98,6 +99,7 @@ typedef struct {
     sim_events_t events;
     contract_t contracts[MAX_CONTRACTS];
     bool player_only_mode;
+    belt_field_t belt;
 } world_t;
 
 /* ------------------------------------------------------------------ */

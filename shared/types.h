@@ -7,7 +7,7 @@
 
 enum {
     KEY_COUNT = 512,
-    MAX_ASTEROIDS = 48,
+    MAX_ASTEROIDS = 512,
     MAX_STARS = 120,
     MAX_STATIONS = 8,
     MAX_NPC_SHIPS = 6,

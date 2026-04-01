@@ -1,0 +1,77 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="800" height="400" style="background:#0a0e1a">
+  <style>
+    text { font-family: 'IBM Plex Mono', monospace; fill: #5a6a8a; font-size: 10px; }
+    .title { fill: #dce9ff; font-size: 13px; text-anchor: middle; }
+    .axis { fill: #5a6a8a; font-size: 9px; }
+  </style>
+  <text x="400" y="25" class="title">SECTOR LABELS BY ANGULAR POSITION — THE HIDDEN SIGNAL</text>
+  <!-- axes -->
+  <line x1="60" y1="340" x2="740" y2="340" stroke="#2a3a5a" stroke-width="1"/>
+  <line x1="60" y1="60" x2="60" y2="340" stroke="#2a3a5a" stroke-width="1"/>
+  <text x="400" y="385" class="axis" text-anchor="middle">Sector angular position (degrees)</text>
+  <line x1="60" y1="280.4" x2="740" y2="280.4" stroke="#1a2a3a" stroke-width="0.5"/>
+  <text x="52" y="280.4" class="axis" text-anchor="end" dominant-baseline="middle">10</text>
+  <line x1="60" y1="220.9" x2="740" y2="220.9" stroke="#1a2a3a" stroke-width="0.5"/>
+  <text x="52" y="220.9" class="axis" text-anchor="end" dominant-baseline="middle">20</text>
+  <line x1="60" y1="161.3" x2="740" y2="161.3" stroke="#1a2a3a" stroke-width="0.5"/>
+  <text x="52" y="161.3" class="axis" text-anchor="end" dominant-baseline="middle">30</text>
+  <line x1="60" y1="101.7" x2="740" y2="101.7" stroke="#1a2a3a" stroke-width="0.5"/>
+  <text x="52" y="101.7" class="axis" text-anchor="end" dominant-baseline="middle">40</text>
+  <path d="M 60.0,167.2 L 74.5,107.7 L 88.9,220.9 L 103.4,286.4 L 117.9,179.1 L 132.3,143.4 L 146.8,244.7 L 161.3,232.8 L 175.7,137.4 L 190.2,185.1 L 204.7,292.3 L 219.1,220.9 L 233.6,113.6 L 248.1,179.1 L 262.6,238.7 L 277.0,149.4 L 291.5,137.4 L 306.0,256.6 L 320.4,256.6 L 334.9,131.5 L 349.4,143.4 L 363.8,256.6 L 378.3,220.9 L 392.8,149.4 L 407.2,226.8 L 421.7,286.4 L 436.2,173.2 L 450.6,107.7 L 465.1,214.9 L 479.6,250.6 L 494.0,149.4 L 508.5,161.3 L 523.0,256.6 L 537.4,208.9 L 551.9,101.7 L 566.4,173.2 L 580.9,280.4 L 595.3,214.9 L 609.8,155.3 L 624.3,244.7 L 638.7,256.6 L 653.2,137.4 L 667.7,137.4 L 682.1,262.6 L 696.6,250.6 L 711.1,137.4 L 725.5,173.2 L 740.0,244.7" fill="none" stroke="#3a7a5a" stroke-width="1" opacity="0.5"/>
+  <circle cx="60.0" cy="167.2" r="4" fill="rgb(80,161,160)" opacity="0.9"/>
+  <circle cx="74.5" cy="107.7" r="4" fill="rgb(80,193,160)" opacity="0.9"/>
+  <circle cx="88.9" cy="220.9" r="4" fill="rgb(80,131,160)" opacity="0.9"/>
+  <circle cx="103.4" cy="286.4" r="4" fill="rgb(80,95,160)" opacity="0.9"/>
+  <circle cx="117.9" cy="179.1" r="4" fill="rgb(80,154,160)" opacity="0.9"/>
+  <circle cx="132.3" cy="143.4" r="4" fill="rgb(80,174,160)" opacity="0.9"/>
+  <circle cx="146.8" cy="244.7" r="4" fill="rgb(80,118,160)" opacity="0.9"/>
+  <circle cx="161.3" cy="232.8" r="4" fill="rgb(80,124,160)" opacity="0.9"/>
+  <circle cx="175.7" cy="137.4" r="4" fill="rgb(80,177,160)" opacity="0.9"/>
+  <circle cx="190.2" cy="185.1" r="4" fill="rgb(80,151,160)" opacity="0.9"/>
+  <circle cx="204.7" cy="292.3" r="4" fill="rgb(80,92,160)" opacity="0.9"/>
+  <circle cx="219.1" cy="220.9" r="4" fill="rgb(80,131,160)" opacity="0.9"/>
+  <circle cx="233.6" cy="113.6" r="4" fill="rgb(80,190,160)" opacity="0.9"/>
+  <circle cx="248.1" cy="179.1" r="4" fill="rgb(80,154,160)" opacity="0.9"/>
+  <circle cx="262.6" cy="238.7" r="4" fill="rgb(80,121,160)" opacity="0.9"/>
+  <circle cx="277.0" cy="149.4" r="4" fill="rgb(80,170,160)" opacity="0.9"/>
+  <circle cx="291.5" cy="137.4" r="4" fill="rgb(80,177,160)" opacity="0.9"/>
+  <circle cx="306.0" cy="256.6" r="4" fill="rgb(80,111,160)" opacity="0.9"/>
+  <circle cx="320.4" cy="256.6" r="4" fill="rgb(80,111,160)" opacity="0.9"/>
+  <circle cx="334.9" cy="131.5" r="4" fill="rgb(80,180,160)" opacity="0.9"/>
+  <circle cx="349.4" cy="143.4" r="4" fill="rgb(80,174,160)" opacity="0.9"/>
+  <circle cx="363.8" cy="256.6" r="4" fill="rgb(80,111,160)" opacity="0.9"/>
+  <circle cx="378.3" cy="220.9" r="4" fill="rgb(80,131,160)" opacity="0.9"/>
+  <circle cx="392.8" cy="149.4" r="4" fill="rgb(80,170,160)" opacity="0.9"/>
+  <circle cx="407.2" cy="226.8" r="4" fill="rgb(80,128,160)" opacity="0.9"/>
+  <circle cx="421.7" cy="286.4" r="4" fill="rgb(80,95,160)" opacity="0.9"/>
+  <circle cx="436.2" cy="173.2" r="4" fill="rgb(80,157,160)" opacity="0.9"/>
+  <circle cx="450.6" cy="107.7" r="4" fill="rgb(80,193,160)" opacity="0.9"/>
+  <circle cx="465.1" cy="214.9" r="4" fill="rgb(80,134,160)" opacity="0.9"/>
+  <circle cx="479.6" cy="250.6" r="4" fill="rgb(80,115,160)" opacity="0.9"/>
+  <circle cx="494.0" cy="149.4" r="4" fill="rgb(80,170,160)" opacity="0.9"/>
+  <circle cx="508.5" cy="161.3" r="4" fill="rgb(80,164,160)" opacity="0.9"/>
+  <circle cx="523.0" cy="256.6" r="4" fill="rgb(80,111,160)" opacity="0.9"/>
+  <circle cx="537.4" cy="208.9" r="4" fill="rgb(80,138,160)" opacity="0.9"/>
+  <circle cx="551.9" cy="101.7" r="4" fill="rgb(80,197,160)" opacity="0.9"/>
+  <circle cx="566.4" cy="173.2" r="4" fill="rgb(80,157,160)" opacity="0.9"/>
+  <circle cx="580.9" cy="280.4" r="4" fill="rgb(80,98,160)" opacity="0.9"/>
+  <circle cx="595.3" cy="214.9" r="4" fill="rgb(80,134,160)" opacity="0.9"/>
+  <circle cx="609.8" cy="155.3" r="4" fill="rgb(80,167,160)" opacity="0.9"/>
+  <circle cx="624.3" cy="244.7" r="4" fill="rgb(80,118,160)" opacity="0.9"/>
+  <circle cx="638.7" cy="256.6" r="4" fill="rgb(80,111,160)" opacity="0.9"/>
+  <circle cx="653.2" cy="137.4" r="4" fill="rgb(80,177,160)" opacity="0.9"/>
+  <circle cx="667.7" cy="137.4" r="4" fill="rgb(80,177,160)" opacity="0.9"/>
+  <circle cx="682.1" cy="262.6" r="4" fill="rgb(80,108,160)" opacity="0.9"/>
+  <circle cx="696.6" cy="250.6" r="4" fill="rgb(80,115,160)" opacity="0.9"/>
+  <circle cx="711.1" cy="137.4" r="4" fill="rgb(80,177,160)" opacity="0.9"/>
+  <circle cx="725.5" cy="173.2" r="4" fill="rgb(80,157,160)" opacity="0.9"/>
+  <circle cx="740.0" cy="244.7" r="4" fill="rgb(80,118,160)" opacity="0.9"/>
+  <text x="60.0" y="355" class="axis" text-anchor="middle">0°</text>
+  <text x="146.8" y="355" class="axis" text-anchor="middle">45°</text>
+  <text x="233.6" y="355" class="axis" text-anchor="middle">90°</text>
+  <text x="320.4" y="355" class="axis" text-anchor="middle">135°</text>
+  <text x="407.2" y="355" class="axis" text-anchor="middle">180°</text>
+  <text x="494.0" y="355" class="axis" text-anchor="middle">225°</text>
+  <text x="580.9" y="355" class="axis" text-anchor="middle">270°</text>
+  <text x="667.7" y="355" class="axis" text-anchor="middle">315°</text>
+</svg>

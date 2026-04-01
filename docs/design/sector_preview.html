@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html>
+<head>
+<style>
+  body { background: #0a0e1a; margin: 0; padding: 20px; font-family: 'IBM Plex Mono', monospace; color: #dce9ff; }
+  h2 { color: #72ffb6; font-size: 14px; letter-spacing: 0.1em; text-transform: uppercase; margin-top: 40px; }
+  p { color: #5a6a8a; font-size: 12px; max-width: 800px; }
+</style>
+</head>
+<body>
+
+<h2>Signal Sector Map — All Three Bands</h2>
+<p>A-band (core): 4 sectors, named, sequential. B-band (inner ring): 12 sectors, sequential. C-band (outer ring): 48 sectors — labels are not sequential. Why?</p>
+<object data="sector_full_map.svg" type="image/svg+xml" width="900" height="900"></object>
+
+<h2>C-Band Labels — What Players See</h2>
+<p>The ring of C-band sectors with labels. Dot size and brightness correspond to label value. No obvious pattern.</p>
+<object data="sector_ring.svg" type="image/svg+xml" width="800" height="800"></object>
+
+<h2>The Hidden Signal — Labels Plotted by Angle</h2>
+<p>Plot each C-band sector's label value against its angular position. Looks like noise. Run a DFT.</p>
+<object data="sector_signal.svg" type="image/svg+xml" width="800" height="400"></object>
+
+<h2>The Reveal — DFT Frequency Recovery</h2>
+<p>Discrete Fourier Transform of the label sequence. One frequency dominates: 432 Hz.</p>
+<object data="sector_dft.svg" type="image/svg+xml" width="800" height="400"></object>
+
+</body>
+</html>
