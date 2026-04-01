@@ -1515,9 +1515,10 @@ static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, i
 
 static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
-    if (!station_has_service(st, STATION_SERVICE_ORE_BUYER)) return;
-    if (ship_raw_ore_total(&sp->ship) <= 0.01f) return;
     float payout = 0.0f;
+
+    /* Sell raw ore if station buys ore */
+    if (station_has_service(st, STATION_SERVICE_ORE_BUYER) && ship_raw_ore_total(&sp->ship) > 0.01f) {
     for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
         commodity_t ore = (commodity_t)i;
         float amount = sp->ship.cargo[ore];
@@ -1543,7 +1544,9 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         st->inventory[ore] += accepted;
         sp->ship.cargo[ore] -= accepted;
     }
-    /* Also deliver ingots to active contracts at this station */
+    } /* end ore selling block */
+
+    /* Deliver any cargo to active contracts at this station */
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         contract_t *ct = &w->contracts[k];
         if (!ct->active || ct->action != CONTRACT_SUPPLY) continue;
@@ -1562,9 +1565,11 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
             emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_SUPPLY});
         }
     }
-    sp->ship.credits += payout;
-    SIM_LOG("[sim] player %d sold cargo for %.0f cr\n", sp->id, payout);
-    emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
+    if (payout > 0.01f) {
+        sp->ship.credits += payout;
+        SIM_LOG("[sim] player %d sold cargo for %.0f cr\n", sp->id, payout);
+        emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
+    }
 }
 
 static void try_repair_ship(world_t *w, server_player_t *sp) {
