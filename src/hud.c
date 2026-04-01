@@ -481,34 +481,6 @@ void draw_hud_panels(void) {
         float content_h = panel_y + panel_h - 18.0f - content_y - strip_h;
         draw_ui_panel(inner_x, content_y, inner_w, content_h, 0.03f);
 
-        /* Service cards on the Status tab */
-        if (g.station_tab == STATION_TAB_STATUS && !ui.station->scaffold) {
-            float card_gap = compact ? 4.0f : 6.0f;
-            float card_h = compact ? 18.0f : 24.0f;
-            float first_card_y = content_y + (compact ? 30.0f : 36.0f);
-            float card_w = inner_w - 24.0f;
-
-            if (station_has_module(ui.station, MODULE_ORE_BUYER)) {
-                draw_service_card(inner_x + 12.0f, first_card_y, card_w, card_h, 0.24f, 0.90f, 0.70f, ui.can_sell);
-                draw_service_card(inner_x + 12.0f, first_card_y + card_h + card_gap, card_w, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
-            } else if (station_has_module(ui.station, MODULE_FRAME_PRESS)) {
-                draw_service_card(inner_x + 12.0f, first_card_y, card_w, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
-                draw_service_card(inner_x + 12.0f, first_card_y + card_h + card_gap, card_w, card_h, 0.50f, 0.82f, 1.0f, ui.can_upgrade_hold);
-            } else if (station_has_module(ui.station, MODULE_LASER_FAB) || station_has_module(ui.station, MODULE_TRACTOR_FAB)) {
-                draw_service_card(inner_x + 12.0f, first_card_y, card_w, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
-                int card_n = 1;
-                if (station_has_module(ui.station, MODULE_LASER_FAB)) {
-                    draw_service_card(inner_x + 12.0f, first_card_y + (float)card_n * (card_h + card_gap), card_w, card_h, 0.34f, 0.88f, 1.0f, ui.can_upgrade_mining);
-                    card_n++;
-                }
-                if (station_has_module(ui.station, MODULE_TRACTOR_FAB)) {
-                    draw_service_card(inner_x + 12.0f, first_card_y + (float)card_n * (card_h + card_gap), card_w, card_h, 0.42f, 1.0f, 0.86f, ui.can_upgrade_tractor);
-                }
-            } else {
-                draw_service_card(inner_x + 12.0f, first_card_y, card_w, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
-            }
-        }
-
         /* Ship status strip -- always visible below the content area */
         {
             float strip_y = panel_y + panel_h - (compact ? 32.0f : 38.0f);
