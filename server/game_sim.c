@@ -345,7 +345,25 @@ int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
 
     station_t *st = &w->stations[slot];
     memset(st, 0, sizeof(*st));
-    snprintf(st->name, sizeof(st->name), "Outpost %d", slot);
+    /* Generate a name from the position hash */
+    {
+        static const char *prefixes[] = {
+            "Far", "Deep", "Outer", "Edge", "Drift", "Void", "Pale",
+            "Iron", "Cold", "Dark", "High", "Low", "Red", "Dim",
+            "Rust", "Ash", "Grim", "Last", "Lost", "Worn",
+        };
+        static const char *suffixes[] = {
+            "Reach", "Point", "Gate", "Rock", "Anchor", "Post",
+            "Haven", "Mark", "Light", "Hold", "Watch", "Ridge",
+            "Cairn", "Spur", "Ledge", "Pike", "Notch", "Forge",
+            "Well", "Yard",
+        };
+        uint32_t h = (uint32_t)(pos.x * 7.13f) ^ (uint32_t)(pos.y * 13.37f) ^ (uint32_t)slot;
+        h ^= h >> 16; h *= 0x45d9f3bu; h ^= h >> 16;
+        int pi = (int)(h % 20);
+        int si = (int)((h >> 8) % 20);
+        snprintf(st->name, sizeof(st->name), "%s %s", prefixes[pi], suffixes[si]);
+    }
     st->pos = pos;
     st->radius = OUTPOST_RADIUS;
     st->dock_radius = OUTPOST_DOCK_RADIUS;
