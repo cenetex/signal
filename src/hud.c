@@ -849,12 +849,14 @@ void draw_hud(void) {
             } \
         } while(0)
 
-        /* Nav pip: blueprint (yellow) or station (green) */
-        if (g.nav_pip_active) {
-            if (g.nav_pip_is_blueprint)
-                DRAW_PIP(g.nav_pip_pos, 1.0f, 0.87f, 0.20f);
-            else
-                DRAW_PIP(g.nav_pip_pos, 0.34f, 0.96f, 0.76f);
+        /* Nav pips: blueprint (yellow) and/or station (green) */
+        if (g.nav_pip_active && g.nav_pip_is_blueprint)
+            DRAW_PIP(g.nav_pip_pos, 1.0f, 0.87f, 0.20f);
+        {
+            /* Always show green pip to nearest station */
+            const station_t* nav_st = navigation_station_ptr();
+            if (nav_st)
+                DRAW_PIP(nav_st->pos, 0.34f, 0.96f, 0.76f);
         }
 
         /* Target pip: nearest off-screen asteroid (red) */
