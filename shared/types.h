@@ -332,6 +332,12 @@ static const float SHIP_COLLECT_UPGRADE_STEP = 5.0f;
 static const float UPGRADE_BASE_PRODUCT = 16.0f;
 static const int SHIP_UPGRADE_MAX_LEVEL = 4;
 
+typedef enum {
+    CONTRACT_SUPPLY,
+    CONTRACT_DESTROY,
+    CONTRACT_SCAN,
+} contract_action_t;
+
 enum { SIM_MAX_EVENTS = 64 };
 
 typedef enum {
@@ -345,6 +351,7 @@ typedef enum {
     SIM_EVENT_UPGRADE,
     SIM_EVENT_DAMAGE,
     SIM_EVENT_OUTPOST_PLACED,
+    SIM_EVENT_CONTRACT_COMPLETE,
 } sim_event_type_t;
 
 typedef struct {
@@ -356,6 +363,7 @@ typedef struct {
         struct { ship_upgrade_t upgrade; } upgrade;
         struct { float amount; } damage;
         struct { int slot; } outpost_placed;
+        struct { contract_action_t action; } contract_complete;
     };
 } sim_event_t;
 
@@ -365,12 +373,6 @@ typedef struct {
 } sim_events_t;
 
 enum { MAX_CONTRACTS = 24 };
-
-typedef enum {
-    CONTRACT_SUPPLY,     /* bring commodity to target station */
-    CONTRACT_DESTROY,    /* eliminate target asteroid/object */
-    CONTRACT_SCAN,       /* map area around target position */
-} contract_action_t;
 
 typedef struct {
     bool active;

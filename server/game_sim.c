@@ -2110,16 +2110,21 @@ static void step_contracts(world_t *w, float dt) {
             commodity_t c = w->contracts[i].commodity;
             float current = (c < COMMODITY_RAW_ORE_COUNT) ? st->ore_buffer[c] : st->ingot_buffer[INGOT_IDX(c)];
             float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.8f : INGOT_BUFFER_CAPACITY * 0.8f;
-            if (current >= threshold) w->contracts[i].active = false;
+            if (current >= threshold) {
+                w->contracts[i].active = false;
+                emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_SUPPLY});
+            }
             break;
         }
         case CONTRACT_DESTROY: {
             /* Close when target asteroid is gone */
             int idx = w->contracts[i].target_index;
-            if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active)
+            if (idx >= 0 && idx < MAX_ASTEROIDS && !w->asteroids[idx].active) {
                 w->contracts[i].active = false;
+                emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_DESTROY});
+            }
             /* Expire after 60 seconds if unfulfilled */
-            if (w->contracts[i].age > 60.0f) w->contracts[i].active = false;
+            if (w->contracts[i].active && w->contracts[i].age > 60.0f) w->contracts[i].active = false;
             break;
         }
         case CONTRACT_SCAN: {

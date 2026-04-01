@@ -844,6 +844,12 @@ static void sim_step(float dt) {
             case SIM_EVENT_DAMAGE:
                 if (ev->player_id == g.local_player_slot) audio_play_damage(&g.audio, ev->damage.amount);
                 break;
+            case SIM_EVENT_CONTRACT_COMPLETE:
+                if (ev->contract_complete.action == CONTRACT_SUPPLY)
+                    set_notice("Supply contract fulfilled.");
+                else if (ev->contract_complete.action == CONTRACT_DESTROY)
+                    set_notice("Target destroyed. Contract complete.");
+                break;
             default:
                 break;
         }
