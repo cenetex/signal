@@ -585,37 +585,21 @@ void draw_station_services(const station_ui_state_t* ui) {
         }
         /* BUY: ingots from station inventory */
         {
-            /* Compute total stock and value */
-            int total_stock = 0;
-            float total_value = 0.0f;
-            for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-                float s = station_inventory_amount(ui->station, (commodity_t)c);
-                if (s > 0.5f) {
-                    total_stock += (int)lroundf(s);
-                    commodity_t src = commodity_ore_form((commodity_t)c);
-                    total_value += s * station_buy_price(ui->station, src) * 2.0f;
-                }
-            }
             bool has_stock = false;
             for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
                 int stock = (int)lroundf(station_inventory_amount(ui->station, (commodity_t)c));
                 if (stock <= 0) continue;
-                if (!has_stock) {
-                    sdtx_color3b(130, 255, 235);
-                    sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-                    int tv = (int)lroundf(total_value);
-                    if (tv >= 1000)
-                        sdtx_printf("[F] BUY INGOTS (%d u / %dk)", total_stock, tv / 1000);
-                    else
-                        sdtx_printf("[F] BUY INGOTS (%d u / %d)", total_stock, tv);
-                    my += 16.0f;
-                    has_stock = true;
-                }
                 commodity_t src = commodity_ore_form((commodity_t)c);
                 int price = (int)lroundf(station_buy_price(ui->station, src) * 2.0f);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-                sdtx_color3b(203, 220, 248);
-                sdtx_printf("%s: %d stock  (%d cr/u)", commodity_short_name((commodity_t)c), stock, price);
+                if (!has_stock) {
+                    sdtx_color3b(130, 255, 235);
+                    sdtx_printf("[F] %s  %d cr/u  (%d stock)", commodity_short_name((commodity_t)c), price, stock);
+                    has_stock = true;
+                } else {
+                    sdtx_color3b(203, 220, 248);
+                    sdtx_printf("    %s  %d cr/u  (%d stock)", commodity_short_name((commodity_t)c), price, stock);
+                }
                 my += 14.0f;
             }
             if (!has_stock) {
