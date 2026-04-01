@@ -125,10 +125,10 @@ TEST(test_station_buy_price) {
     /* Empty hopper = 2× base (max deficit) */
     ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 20.0f, 0.01f);
     /* Full hopper = base price */
-    station.ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    station.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
     ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 10.0f, 0.01f);
     /* Half full = 1.5× base */
-    station.ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
+    station.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
     ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 15.0f, 0.01f);
     ASSERT_EQ_FLOAT(station_buy_price(NULL, COMMODITY_FERRITE_ORE), 0.0f, 0.01f);
 }
@@ -298,9 +298,9 @@ TEST(test_product_name) {
 TEST(test_refinery_production_smelts_ore) {
     station_t station = {0};
     station.modules[station.module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
-    station.ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f;
+    station.inventory[COMMODITY_FERRITE_ORE] = 10.0f;
     step_refinery_production(&station, 1, 1.0f);
-    ASSERT(station.ore_buffer[COMMODITY_FERRITE_ORE] < 10.0f);
+    ASSERT(station.inventory[COMMODITY_FERRITE_ORE] < 10.0f);
     ASSERT(station.inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
 }
 
@@ -314,29 +314,29 @@ TEST(test_refinery_production_empty_buffer_noop) {
 TEST(test_refinery_skips_non_refinery) {
     station_t station = {0};
     station.modules[station.module_count++] = (station_module_t){ MODULE_FRAME_PRESS, false, 1.0f };
-    station.ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f;
+    station.inventory[COMMODITY_FERRITE_ORE] = 10.0f;
     step_refinery_production(&station, 1, 1.0f);
-    ASSERT_EQ_FLOAT(station.ore_buffer[COMMODITY_FERRITE_ORE], 10.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_FERRITE_ORE], 10.0f, 0.001f);
 }
 
 TEST(test_station_production_yard_makes_frames) {
     station_t station = {0};
     station.modules[station.module_count++] = (station_module_t){ MODULE_FRAME_PRESS, false, 1.0f };
-    station.ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 5.0f;
+    station.inventory[COMMODITY_FERRITE_INGOT] = 5.0f;
     step_station_production(&station, 1, 1.0f);
-    ASSERT(station.ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] < 5.0f);
-    ASSERT(station.product_stock[PRODUCT_FRAME] > 0.0f);
+    ASSERT(station.inventory[COMMODITY_FERRITE_INGOT] < 5.0f);
+    ASSERT(station.inventory[COMMODITY_FRAME] > 0.0f);
 }
 
 TEST(test_station_production_beamworks_makes_modules) {
     station_t station = {0};
     station.modules[station.module_count++] = (station_module_t){ MODULE_LASER_FAB, false, 1.0f };
     station.modules[station.module_count++] = (station_module_t){ MODULE_TRACTOR_FAB, false, 1.0f };
-    station.ingot_buffer[INGOT_IDX(COMMODITY_CUPRITE_INGOT)] = 5.0f;
-    station.ingot_buffer[INGOT_IDX(COMMODITY_CRYSTAL_INGOT)] = 5.0f;
+    station.inventory[COMMODITY_CUPRITE_INGOT] = 5.0f;
+    station.inventory[COMMODITY_CRYSTAL_INGOT] = 5.0f;
     step_station_production(&station, 1, 1.0f);
-    ASSERT(station.product_stock[PRODUCT_LASER_MODULE] > 0.0f);
-    ASSERT(station.product_stock[PRODUCT_TRACTOR_MODULE] > 0.0f);
+    ASSERT(station.inventory[COMMODITY_LASER_MODULE] > 0.0f);
+    ASSERT(station.inventory[COMMODITY_TRACTOR_MODULE] > 0.0f);
 }
 
 TEST(test_station_cargo_sale_value) {
@@ -378,7 +378,7 @@ TEST(test_can_afford_upgrade_all_conditions) {
     ship.credits = 10000.0f;
     station_t station = {0};
     station.services = STATION_SERVICE_UPGRADE_HOLD;
-    station.product_stock[PRODUCT_FRAME] = 100.0f;
+    station.inventory[COMMODITY_FRAME] = 100.0f;
     int cost = ship_upgrade_cost(&ship, SHIP_UPGRADE_HOLD);
     ASSERT(can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost));
 }
@@ -389,7 +389,7 @@ TEST(test_can_afford_upgrade_no_credits) {
     ship.credits = 0.0f;
     station_t station = {0};
     station.services = STATION_SERVICE_UPGRADE_HOLD;
-    station.product_stock[PRODUCT_FRAME] = 100.0f;
+    station.inventory[COMMODITY_FRAME] = 100.0f;
     int cost = ship_upgrade_cost(&ship, SHIP_UPGRADE_HOLD);
     ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost));
 }
@@ -400,7 +400,7 @@ TEST(test_can_afford_upgrade_no_product) {
     ship.credits = 10000.0f;
     station_t station = {0};
     station.services = STATION_SERVICE_UPGRADE_HOLD;
-    station.product_stock[PRODUCT_FRAME] = 0.0f;
+    station.inventory[COMMODITY_FRAME] = 0.0f;
     int cost = ship_upgrade_cost(&ship, SHIP_UPGRADE_HOLD);
     ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost));
 }
@@ -535,11 +535,11 @@ TEST(test_world_sim_step_sell_ore) {
 TEST(test_world_sim_step_refinery_produces_ingots) {
     world_t w = {0};
     world_reset(&w);
-    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 50.0f;
+    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 50.0f;
     for (int i = 0; i < 600; i++)
         world_sim_step(&w, 1.0f / 120.0f);
     ASSERT(w.stations[0].inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
-    ASSERT(w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] < 50.0f);
+    ASSERT(w.stations[0].inventory[COMMODITY_FERRITE_ORE] < 50.0f);
 }
 
 TEST(test_world_sim_step_events_emitted) {
@@ -865,11 +865,11 @@ TEST(test_roundtrip_stations) {
 
     /* Mark station 0 as active so it gets serialized */
     stations[0].signal_range = 2200.0f;
-    stations[0].ore_buffer[0] = 45.5f;
-    stations[0].ore_buffer[1] = 12.3f;
-    stations[0].ore_buffer[2] = 78.9f;
+    stations[0].inventory[0] = 45.5f;
+    stations[0].inventory[1] = 12.3f;
+    stations[0].inventory[2] = 78.9f;
     stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
-    stations[0].product_stock[PRODUCT_FRAME] = 15.5f;
+    stations[0].inventory[COMMODITY_FRAME] = 15.5f;
 
     uint8_t buf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
     int len = serialize_stations(buf, stations);
@@ -880,11 +880,12 @@ TEST(test_roundtrip_stations) {
 
     uint8_t *p = &buf[2];
     ASSERT_EQ_INT(p[0], 0);
-    ASSERT_EQ_FLOAT(read_f32_le(&p[1]), 45.5f, 0.1f);
-    ASSERT_EQ_FLOAT(read_f32_le(&p[5]), 12.3f, 0.1f);
-    ASSERT_EQ_FLOAT(read_f32_le(&p[9]), 78.9f, 0.1f);
-    ASSERT_EQ_FLOAT(read_f32_le(&p[13 + COMMODITY_FERRITE_INGOT * 4]), 20.0f, 0.1f);
-    ASSERT_EQ_FLOAT(read_f32_le(&p[37 + PRODUCT_FRAME * 4]), 15.5f, 0.1f);
+    /* inventory starts at byte 1, each commodity is 4 bytes */
+    ASSERT_EQ_FLOAT(read_f32_le(&p[1 + COMMODITY_FERRITE_ORE * 4]), 45.5f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[1 + COMMODITY_CUPRITE_ORE * 4]), 12.3f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[1 + COMMODITY_CRYSTAL_ORE * 4]), 78.9f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[1 + COMMODITY_FERRITE_INGOT * 4]), 20.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[1 + COMMODITY_FRAME * 4]), 15.5f, 0.1f);
 }
 
 TEST(test_bug92_station_record_size_matches_buffer) {
@@ -1113,10 +1114,10 @@ TEST(test_bug17_no_duplicate_refinery) {
     station_t stations[MAX_STATIONS];
     memset(stations, 0, sizeof(stations));
     stations[0].modules[stations[0].module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
-    stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f;
+    stations[0].inventory[COMMODITY_FERRITE_ORE] = 10.0f;
     step_refinery_production(stations, MAX_STATIONS, 1.0f);
     /* Ore should be consumed and inventory produced. */
-    ASSERT(stations[0].ore_buffer[COMMODITY_FERRITE_ORE] < 10.0f);
+    ASSERT(stations[0].inventory[COMMODITY_FERRITE_ORE] < 10.0f);
     ASSERT(stations[0].inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
 }
 
@@ -1219,7 +1220,7 @@ TEST(test_bug23_npc_cargo_stuck_when_hopper_full) {
     world_reset(&w);
     /* Fill all hoppers to capacity */
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
-        w.stations[0].ore_buffer[i] = REFINERY_HOPPER_CAPACITY;
+        w.stations[0].inventory[i] = REFINERY_HOPPER_CAPACITY;
     /* Give miner some cargo and send it home */
     w.npc_ships[0].cargo[0] = 30.0f;
     w.npc_ships[0].state = NPC_STATE_RETURN_TO_STATION;
@@ -1245,14 +1246,14 @@ TEST(test_bug24_ingot_buffer_no_cap) {
     world_t w = {0};
     world_reset(&w);
     /* Pre-fill dest ingot buffer near capacity */
-    w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 40.0f;
+    w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 40.0f;
     /* Hauler arrives with 40 more ingots — should be capped */
     w.npc_ships[3].ingots[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 40.0f;
     w.npc_ships[3].state = NPC_STATE_UNLOADING;
     w.npc_ships[3].state_timer = 0.01f;
     w.npc_ships[3].dest_station = 1;
     world_sim_step(&w, SIM_DT);
-    ASSERT(w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] <= 50.0f);
+    ASSERT(w.stations[1].inventory[COMMODITY_FERRITE_INGOT] <= 50.0f);
 }
 
 /* Bug 25: world_reset always uses same RNG seed — identical asteroid fields every game */
@@ -1274,7 +1275,7 @@ TEST(test_bug26_hauler_unload_no_cap) {
     world_t w = {0};
     world_reset(&w);
     /* Pre-fill dest ingot buffer */
-    w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 100.0f;
+    w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 100.0f;
     /* Hauler arrives with 40 more */
     w.npc_ships[3].ingots[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 40.0f;
     w.npc_ships[3].state = NPC_STATE_UNLOADING;
@@ -1283,7 +1284,7 @@ TEST(test_bug26_hauler_unload_no_cap) {
     world_sim_step(&w, SIM_DT);
     /* After fix: ingot_buffer should not exceed a cap.
      * FAILS because unloading has no cap — buffer becomes 140. */
-    ASSERT(w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] <= 100.0f);
+    ASSERT(w.stations[1].inventory[COMMODITY_FERRITE_INGOT] <= 100.0f);
 }
 
 /* Bug 27: cargo can go slightly negative due to float imprecision in sell loop */
@@ -1477,7 +1478,7 @@ TEST(test_scenario_full_mining_cycle) {
 
     /* Clear hopper so sell is accepted */
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
-        w.stations[0].ore_buffer[i] = 0.0f;
+        w.stations[0].inventory[i] = 0.0f;
     /* Sell cargo */
     w.players[0].input.service_sell = true;
     world_sim_step(&w, SIM_DT);
@@ -1583,18 +1584,18 @@ TEST(test_scenario_npc_economy_30_seconds) {
     /* Also check if ore_buffer was consumed (smelting happened) */
     bool ore_consumed = false;
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
-        if (w.stations[0].ore_buffer[i] > 0.0f) { ore_consumed = true; break; }
+        if (w.stations[0].inventory[i] > 0.0f) { ore_consumed = true; break; }
     }
     ASSERT(any_ingot || ore_consumed);
 
     /* Verify: no negative values anywhere */
     for (int s = 0; s < MAX_STATIONS; s++) {
         for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
-            ASSERT(w.stations[s].ore_buffer[i] >= 0.0f);
+            ASSERT(w.stations[s].inventory[i] >= 0.0f);
         for (int i = 0; i < COMMODITY_COUNT; i++)
             ASSERT(w.stations[s].inventory[i] >= 0.0f);
         for (int i = 0; i < PRODUCT_COUNT; i++)
-            ASSERT(w.stations[s].product_stock[i] >= 0.0f);
+            ASSERT(w.stations[s].inventory[COMMODITY_FRAME + i] >= 0.0f);
     }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w.npc_ships[n].active) continue;
@@ -1631,8 +1632,8 @@ TEST(test_scenario_upgrade_requires_products) {
     w.players[0].ship.credits = 1000.0f;
     int level_before = w.players[0].ship.mining_level;
 
-    /* Set product_stock for PRODUCT_LASER_MODULE to 0 */
-    w.stations[2].product_stock[PRODUCT_LASER_MODULE] = 0.0f;
+    /* Set inventory for PRODUCT_LASER_MODULE to 0 */
+    w.stations[2].inventory[COMMODITY_LASER_MODULE] = 0.0f;
 
     /* Try upgrade_mining -- should fail (no product stock) */
     w.players[0].input.upgrade_mining = true;
@@ -1640,8 +1641,8 @@ TEST(test_scenario_upgrade_requires_products) {
     w.players[0].input.upgrade_mining = false;
     ASSERT_EQ_INT(w.players[0].ship.mining_level, level_before);
 
-    /* Set product_stock to 20 */
-    w.stations[2].product_stock[PRODUCT_LASER_MODULE] = 20.0f;
+    /* Set inventory to 20 */
+    w.stations[2].inventory[COMMODITY_LASER_MODULE] = 20.0f;
 
     /* Try upgrade_mining -- should succeed */
     w.players[0].input.upgrade_mining = true;
@@ -1690,18 +1691,18 @@ TEST(test_scenario_product_cap_pauses_production) {
     world_t w = {0};
     world_reset(&w);
 
-    /* Set station 1 (Kepler Yard) product_stock[PRODUCT_FRAME] to MAX_PRODUCT_STOCK */
-    w.stations[1].product_stock[PRODUCT_FRAME] = MAX_PRODUCT_STOCK;
+    /* Set station 1 (Kepler Yard) inventory[COMMODITY_FRAME] to MAX_PRODUCT_STOCK */
+    w.stations[1].inventory[COMMODITY_FRAME] = MAX_PRODUCT_STOCK;
 
     /* Set ingot_buffer with some frame ingots */
-    w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 20.0f;
+    w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
 
     /* Run 120 ticks */
     for (int i = 0; i < 120; i++)
         world_sim_step(&w, SIM_DT);
 
-    /* Verify product_stock didn't exceed MAX_PRODUCT_STOCK */
-    ASSERT(w.stations[1].product_stock[PRODUCT_FRAME] <= MAX_PRODUCT_STOCK + 0.01f);
+    /* Verify inventory didn't exceed MAX_PRODUCT_STOCK */
+    ASSERT(w.stations[1].inventory[COMMODITY_FRAME] <= MAX_PRODUCT_STOCK + 0.01f);
 }
 
 /* ---- Runner ---- */
@@ -2144,7 +2145,7 @@ TEST(test_bug51_npc_cargo_zeroed_on_dock) {
     world_t w = {0};
     world_reset(&w);
     /* Fill hopper so only 5 units can be deposited */
-    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY - 5.0f;
+    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY - 5.0f;
     /* Give NPC 30 ferrite and send it home */
     w.npc_ships[0].cargo[COMMODITY_FERRITE_ORE] = 30.0f;
     w.npc_ships[0].state = NPC_STATE_RETURN_TO_STATION;
@@ -2239,7 +2240,7 @@ TEST(test_bug55_npc_deposits_at_non_refinery) {
      * Yard doesn't smelt. The ore sits forever. */
     /* After fix: NPC should only deposit ore at REFINERY stations,
      * or seek the nearest refinery to sell. */
-    ASSERT_EQ_FLOAT(w.stations[1].ore_buffer[COMMODITY_FERRITE_ORE], 0.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w.stations[1].inventory[COMMODITY_FERRITE_ORE], 0.0f, 0.01f);
 }
 
 /* Bug 56: asteroid drag constant 0.42 not in shared constants */
@@ -2768,9 +2769,9 @@ TEST(test_contract_generated_from_hopper_deficit) {
     world_t w = {0};
     world_reset(&w);
     /* Make ferrite the biggest deficit by filling the others */
-    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f;
-    w.stations[0].ore_buffer[COMMODITY_CUPRITE_ORE] = REFINERY_HOPPER_CAPACITY;
-    w.stations[0].ore_buffer[COMMODITY_CRYSTAL_ORE] = REFINERY_HOPPER_CAPACITY;
+    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 10.0f;
+    w.stations[0].inventory[COMMODITY_CUPRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    w.stations[0].inventory[COMMODITY_CRYSTAL_ORE] = REFINERY_HOPPER_CAPACITY;
     world_sim_step(&w, SIM_DT);
     /* Find contract for station 0, ferrite ore */
     contract_t *found = NULL;
@@ -2798,10 +2799,10 @@ TEST(test_contract_closes_when_deficit_filled) {
     /* When ore_buffer rises to 80% threshold, contract should close */
     world_t w = {0};
     world_reset(&w);
-    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f;
+    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 10.0f;
     world_sim_step(&w, SIM_DT); /* generates contract */
     /* Now fill the hopper above 80% threshold */
-    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.85f;
+    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.85f;
     world_sim_step(&w, SIM_DT); /* should close the contract */
     bool found = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
@@ -2901,13 +2902,13 @@ TEST(test_player_save_load_roundtrip) {
 TEST(test_world_save_load_preserves_stations) {
     world_t w = {0};
     world_reset(&w);
-    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 42.0f;
-    w.stations[0].product_stock[PRODUCT_FRAME] = 15.0f;
+    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 42.0f;
+    w.stations[0].inventory[COMMODITY_FRAME] = 15.0f;
     ASSERT(world_save(&w, "/tmp/test_world.sav"));
     world_t loaded = {0};
     ASSERT(world_load(&loaded, "/tmp/test_world.sav"));
-    ASSERT_EQ_FLOAT(loaded.stations[0].ore_buffer[COMMODITY_FERRITE_ORE], 42.0f, 0.01f);
-    ASSERT_EQ_FLOAT(loaded.stations[0].product_stock[PRODUCT_FRAME], 15.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded.stations[0].inventory[COMMODITY_FERRITE_ORE], 42.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded.stations[0].inventory[COMMODITY_FRAME], 15.0f, 0.01f);
     remove("/tmp/test_world.sav");
 }
 
@@ -3306,42 +3307,42 @@ TEST(test_bug90_station_bounce_no_extra_energy) {
 TEST(test_furnace_only_smelts_ferrite) {
     station_t st = {0};
     st.modules[st.module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
-    st.ore_buffer[COMMODITY_FERRITE_ORE] = 50.0f;
-    st.ore_buffer[COMMODITY_CUPRITE_ORE] = 50.0f;
-    st.ore_buffer[COMMODITY_CRYSTAL_ORE] = 50.0f;
+    st.inventory[COMMODITY_FERRITE_ORE] = 50.0f;
+    st.inventory[COMMODITY_CUPRITE_ORE] = 50.0f;
+    st.inventory[COMMODITY_CRYSTAL_ORE] = 50.0f;
     step_refinery_production(&st, 1, 1.0f);
-    ASSERT(st.ore_buffer[COMMODITY_FERRITE_ORE] < 50.0f);  /* smelted */
-    ASSERT_EQ_FLOAT(st.ore_buffer[COMMODITY_CUPRITE_ORE], 50.0f, 0.01f);  /* untouched */
-    ASSERT_EQ_FLOAT(st.ore_buffer[COMMODITY_CRYSTAL_ORE], 50.0f, 0.01f);  /* untouched */
+    ASSERT(st.inventory[COMMODITY_FERRITE_ORE] < 50.0f);  /* smelted */
+    ASSERT_EQ_FLOAT(st.inventory[COMMODITY_CUPRITE_ORE], 50.0f, 0.01f);  /* untouched */
+    ASSERT_EQ_FLOAT(st.inventory[COMMODITY_CRYSTAL_ORE], 50.0f, 0.01f);  /* untouched */
     ASSERT(st.inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
 }
 
 TEST(test_furnace_cu_smelts_cuprite) {
     station_t st = {0};
     st.modules[st.module_count++] = (station_module_t){ MODULE_FURNACE_CU, false, 1.0f };
-    st.ore_buffer[COMMODITY_FERRITE_ORE] = 50.0f;
-    st.ore_buffer[COMMODITY_CUPRITE_ORE] = 50.0f;
+    st.inventory[COMMODITY_FERRITE_ORE] = 50.0f;
+    st.inventory[COMMODITY_CUPRITE_ORE] = 50.0f;
     step_refinery_production(&st, 1, 1.0f);
-    ASSERT_EQ_FLOAT(st.ore_buffer[COMMODITY_FERRITE_ORE], 50.0f, 0.01f);  /* no FE furnace */
-    ASSERT(st.ore_buffer[COMMODITY_CUPRITE_ORE] < 50.0f);
+    ASSERT_EQ_FLOAT(st.inventory[COMMODITY_FERRITE_ORE], 50.0f, 0.01f);  /* no FE furnace */
+    ASSERT(st.inventory[COMMODITY_CUPRITE_ORE] < 50.0f);
     ASSERT(st.inventory[COMMODITY_CUPRITE_INGOT] > 0.0f);
 }
 
 TEST(test_furnace_cr_smelts_crystal) {
     station_t st = {0};
     st.modules[st.module_count++] = (station_module_t){ MODULE_FURNACE_CR, false, 1.0f };
-    st.ore_buffer[COMMODITY_CRYSTAL_ORE] = 50.0f;
+    st.inventory[COMMODITY_CRYSTAL_ORE] = 50.0f;
     step_refinery_production(&st, 1, 1.0f);
-    ASSERT(st.ore_buffer[COMMODITY_CRYSTAL_ORE] < 50.0f);
+    ASSERT(st.inventory[COMMODITY_CRYSTAL_ORE] < 50.0f);
     ASSERT(st.inventory[COMMODITY_CRYSTAL_INGOT] > 0.0f);
 }
 
 TEST(test_no_furnace_no_smelting) {
     station_t st = {0};
     st.modules[st.module_count++] = (station_module_t){ MODULE_FRAME_PRESS, false, 1.0f };
-    st.ore_buffer[COMMODITY_FERRITE_ORE] = 50.0f;
+    st.inventory[COMMODITY_FERRITE_ORE] = 50.0f;
     step_refinery_production(&st, 1, 1.0f);
-    ASSERT_EQ_FLOAT(st.ore_buffer[COMMODITY_FERRITE_ORE], 50.0f, 0.01f);
+    ASSERT_EQ_FLOAT(st.inventory[COMMODITY_FERRITE_ORE], 50.0f, 0.01f);
 }
 
 /* ================================================================== */
@@ -3406,7 +3407,7 @@ TEST(test_one_contract_per_station) {
     world_reset(&w);
     /* Empty all hoppers to create demand */
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
-        w.stations[0].ore_buffer[i] = 0.0f;
+        w.stations[0].inventory[i] = 0.0f;
     /* Run a few ticks to generate contracts */
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     /* Count contracts for station 0 */
@@ -3479,15 +3480,15 @@ TEST(test_dynamic_ore_price_deficit) {
     station_t st = {0};
     st.buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
     /* Empty hopper = 2x base */
-    st.ore_buffer[COMMODITY_FERRITE_ORE] = 0.0f;
+    st.inventory[COMMODITY_FERRITE_ORE] = 0.0f;
     float price_empty = station_buy_price(&st, COMMODITY_FERRITE_ORE);
     ASSERT_EQ_FLOAT(price_empty, 20.0f, 0.1f);
     /* Full hopper = base */
-    st.ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    st.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
     float price_full = station_buy_price(&st, COMMODITY_FERRITE_ORE);
     ASSERT_EQ_FLOAT(price_full, 10.0f, 0.1f);
     /* Half = 1.5x */
-    st.ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
+    st.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
     float price_half = station_buy_price(&st, COMMODITY_FERRITE_ORE);
     ASSERT_EQ_FLOAT(price_half, 15.0f, 0.1f);
 }
@@ -3496,7 +3497,7 @@ TEST(test_product_price_tracks_ore) {
     /* Product price should be 2x ore price */
     station_t st = {0};
     st.buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    st.ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;  /* full = base price */
+    st.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;  /* full = base price */
     float ore_price = station_buy_price(&st, COMMODITY_FERRITE_ORE);
     /* Ferrite ingot price = 2x ferrite ore price */
     float expected = ore_price * 2.0f;

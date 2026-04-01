@@ -22,7 +22,7 @@ void step_refinery_production(station_t* stations, int count, float dt) {
 
         int active = 0;
         for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
-            if (station->ore_buffer[i] > 0.01f && can_smelt_ore(station, (commodity_t)i)) active++;
+            if (station->inventory[i] > 0.01f && can_smelt_ore(station, (commodity_t)i)) active++;
         }
         if (active == 0) continue;
         if (active > REFINERY_MAX_FURNACES) active = REFINERY_MAX_FURNACES;
@@ -32,9 +32,9 @@ void step_refinery_production(station_t* stations, int count, float dt) {
         for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
             commodity_t ore = (commodity_t)i;
             if (!can_smelt_ore(station, ore)) continue;
-            if (station->ore_buffer[ore] <= 0.01f) continue;
-            float consume = fminf(station->ore_buffer[ore], rate * dt);
-            station->ore_buffer[ore] -= consume;
+            if (station->inventory[ore] <= 0.01f) continue;
+            float consume = fminf(station->inventory[ore], rate * dt);
+            station->inventory[ore] -= consume;
             station->inventory[commodity_refined_form(ore)] += consume;
         }
     }
@@ -45,35 +45,35 @@ void step_station_production(station_t* stations, int count, float dt) {
         station_t* station = &stations[s];
 
         if (station_has_module(station, MODULE_FRAME_PRESS)) {
-            if (station->product_stock[PRODUCT_FRAME] < MAX_PRODUCT_STOCK) {
-                float buf = station->ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)];
+            if (station->inventory[COMMODITY_FRAME] < MAX_PRODUCT_STOCK) {
+                float buf = station->inventory[COMMODITY_FERRITE_INGOT];
                 if (buf > 0.01f) {
-                    float room = MAX_PRODUCT_STOCK - station->product_stock[PRODUCT_FRAME];
+                    float room = MAX_PRODUCT_STOCK - station->inventory[COMMODITY_FRAME];
                     float consume = fminf(buf, fminf(STATION_PRODUCTION_RATE * dt, room));
-                    station->ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] -= consume;
-                    station->product_stock[PRODUCT_FRAME] += consume;
+                    station->inventory[COMMODITY_FERRITE_INGOT] -= consume;
+                    station->inventory[COMMODITY_FRAME] += consume;
                 }
             }
         }
         if (station_has_module(station, MODULE_LASER_FAB)) {
-            if (station->product_stock[PRODUCT_LASER_MODULE] < MAX_PRODUCT_STOCK) {
-                float buf_co = station->ingot_buffer[INGOT_IDX(COMMODITY_CUPRITE_INGOT)];
+            if (station->inventory[COMMODITY_LASER_MODULE] < MAX_PRODUCT_STOCK) {
+                float buf_co = station->inventory[COMMODITY_CUPRITE_INGOT];
                 if (buf_co > 0.01f) {
-                    float room = MAX_PRODUCT_STOCK - station->product_stock[PRODUCT_LASER_MODULE];
+                    float room = MAX_PRODUCT_STOCK - station->inventory[COMMODITY_LASER_MODULE];
                     float consume = fminf(buf_co, fminf(STATION_PRODUCTION_RATE * dt, room));
-                    station->ingot_buffer[INGOT_IDX(COMMODITY_CUPRITE_INGOT)] -= consume;
-                    station->product_stock[PRODUCT_LASER_MODULE] += consume;
+                    station->inventory[COMMODITY_CUPRITE_INGOT] -= consume;
+                    station->inventory[COMMODITY_LASER_MODULE] += consume;
                 }
             }
         }
         if (station_has_module(station, MODULE_TRACTOR_FAB)) {
-            if (station->product_stock[PRODUCT_TRACTOR_MODULE] < MAX_PRODUCT_STOCK) {
-                float buf_ln = station->ingot_buffer[INGOT_IDX(COMMODITY_CRYSTAL_INGOT)];
+            if (station->inventory[COMMODITY_TRACTOR_MODULE] < MAX_PRODUCT_STOCK) {
+                float buf_ln = station->inventory[COMMODITY_CRYSTAL_INGOT];
                 if (buf_ln > 0.01f) {
-                    float room = MAX_PRODUCT_STOCK - station->product_stock[PRODUCT_TRACTOR_MODULE];
+                    float room = MAX_PRODUCT_STOCK - station->inventory[COMMODITY_TRACTOR_MODULE];
                     float consume = fminf(buf_ln, fminf(STATION_PRODUCTION_RATE * dt, room));
-                    station->ingot_buffer[INGOT_IDX(COMMODITY_CRYSTAL_INGOT)] -= consume;
-                    station->product_stock[PRODUCT_TRACTOR_MODULE] += consume;
+                    station->inventory[COMMODITY_CRYSTAL_INGOT] -= consume;
+                    station->inventory[COMMODITY_TRACTOR_MODULE] += consume;
                 }
             }
         }
@@ -102,6 +102,6 @@ bool can_afford_upgrade(const station_t* station, const ship_t* ship, ship_upgra
     if (!station || !(station->services & service)) return false;
     if (ship_upgrade_maxed(ship, upgrade)) return false;
     if (ship->credits + 0.01f < (float)credit_cost) return false;
-    if (station->product_stock[upgrade_required_product(upgrade)] + 0.01f < upgrade_product_cost(ship, upgrade)) return false;
+    if (station->inventory[COMMODITY_FRAME + upgrade_required_product(upgrade)] + 0.01f < upgrade_product_cost(ship, upgrade)) return false;
     return true;
 }

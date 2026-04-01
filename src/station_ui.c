@@ -170,9 +170,9 @@ void format_ore_manifest(char* text, size_t text_size) {
 
 void format_ore_hopper_line(const station_t* station, char* text, size_t text_size) {
     int cap = (int)lroundf(REFINERY_HOPPER_CAPACITY);
-    int ferrite = (int)lroundf(station->ore_buffer[COMMODITY_FERRITE_ORE]);
-    int cuprite = (int)lroundf(station->ore_buffer[COMMODITY_CUPRITE_ORE]);
-    int crystal = (int)lroundf(station->ore_buffer[COMMODITY_CRYSTAL_ORE]);
+    int ferrite = (int)lroundf(station->inventory[COMMODITY_FERRITE_ORE]);
+    int cuprite = (int)lroundf(station->inventory[COMMODITY_CUPRITE_ORE]);
+    int crystal = (int)lroundf(station->inventory[COMMODITY_CRYSTAL_ORE]);
     snprintf(text, text_size, "FE %d/%d  CU %d/%d  CR %d/%d", ferrite, cap, cuprite, cap, crystal, cap);
 }
 
@@ -273,12 +273,12 @@ void format_station_market_detail(const station_ui_state_t* ui, bool compact, ch
             snprintf(text, text_size, "Value %d cr // Stock %s", ui->payout, stock);
         }
     } else if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
-        int buf = (int)lroundf(ui->station->ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)]);
-        int prod = (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]);
+        int buf = (int)lroundf(ui->station->inventory[COMMODITY_FERRITE_INGOT]);
+        int prod = (int)lroundf(ui->station->inventory[COMMODITY_FRAME]);
         snprintf(text, text_size, "Ingots %d // Frames %d", buf, prod);
     } else if (station_has_module(ui->station, MODULE_LASER_FAB) || station_has_module(ui->station, MODULE_TRACTOR_FAB)) {
-        int lsr = (int)lroundf(ui->station->product_stock[PRODUCT_LASER_MODULE]);
-        int trc = (int)lroundf(ui->station->product_stock[PRODUCT_TRACTOR_MODULE]);
+        int lsr = (int)lroundf(ui->station->inventory[COMMODITY_LASER_MODULE]);
+        int trc = (int)lroundf(ui->station->inventory[COMMODITY_TRACTOR_MODULE]);
         snprintf(text, text_size, "LSR %d  TRC %d", lsr, trc);
     } else {
         snprintf(text, text_size, "Signal range: %.0f", ui->station->signal_range);

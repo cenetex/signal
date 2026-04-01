@@ -929,7 +929,7 @@ static void on_player_join(uint8_t player_id);
 static void on_player_leave(uint8_t player_id);
 static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count);
 static void apply_remote_npcs(const NetNpcState* npcs, int count);
-static void apply_remote_stations(uint8_t index, const float* ore_buf, const float* inventory, const float* product_stock);
+static void apply_remote_stations(uint8_t index, const float* inventory);
 static void apply_remote_station_identity(uint8_t index, uint8_t role, uint32_t services,
     float pos_x, float pos_y, float radius, float dock_radius, float signal_range, const char* name);
 static void apply_remote_player_state(const NetPlayerState* state);
@@ -1092,16 +1092,11 @@ static void apply_remote_npcs(const NetNpcState* npcs, int count) {
     memcpy(g.world.npc_ships, g.npc_interp.curr, sizeof(g.world.npc_ships));
 }
 
-static void apply_remote_stations(uint8_t index, const float* ore_buf, const float* inventory, const float* product_stock) {
+static void apply_remote_stations(uint8_t index, const float* inventory) {
     if (index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[index];
-    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
-        st->ore_buffer[i] = ore_buf[i];
     for (int i = 0; i < COMMODITY_COUNT; i++)
         st->inventory[i] = inventory[i];
-    for (int i = 0; i < PRODUCT_COUNT; i++)
-        st->product_stock[i] = product_stock[i];
-    /* scaffold and scaffold_progress will be updated via a future network message */
 }
 
 static void apply_remote_station_identity(uint8_t index, uint8_t flags, uint32_t services,

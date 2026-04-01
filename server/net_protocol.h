@@ -191,7 +191,7 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
 
 /*
  * WORLD_STATIONS message:
- * [type:1][count:1] + count * [index:1][ore_buf: 3×f32][inventory: 6×f32][product_stock: 3×f32]
+ * [type:1][count:1] + count * [index:1][inventory: COMMODITY_COUNT×f32]
  * = 2 + count * STATION_RECORD_SIZE bytes
  */
 /* STATION_RECORD_SIZE defined in shared/net_protocol.h */
@@ -212,7 +212,7 @@ _Static_assert(
     "NPC_RECORD_SIZE must match serialized NPC layout"
 );
 _Static_assert(
-    1 + COMMODITY_RAW_ORE_COUNT * 4 + COMMODITY_COUNT * 4 + PRODUCT_COUNT * 4 == STATION_RECORD_SIZE,
+    1 + COMMODITY_COUNT * 4 == STATION_RECORD_SIZE,
     "STATION_RECORD_SIZE must match serialized station econ layout"
 );
 
@@ -223,18 +223,8 @@ static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
         if (!station_exists(st)) continue;
         uint8_t *p = &buf[2 + count * STATION_RECORD_SIZE];
         p[0] = (uint8_t)i;
-        /* ore_buffer: 3 raw ores */
-        write_f32_le(&p[1],  st->ore_buffer[0]);
-        write_f32_le(&p[5],  st->ore_buffer[1]);
-        write_f32_le(&p[9],  st->ore_buffer[2]);
-        /* inventory: 6 commodities */
-        for (int c = 0; c < COMMODITY_COUNT; c++) {
-            write_f32_le(&p[13 + c * 4], st->inventory[c]);
-        }
-        /* product_stock: 3 products */
-        for (int pr = 0; pr < PRODUCT_COUNT; pr++) {
-            write_f32_le(&p[37 + pr * 4], st->product_stock[pr]);
-        }
+        for (int c = 0; c < COMMODITY_COUNT; c++)
+            write_f32_le(&p[1 + c * 4], st->inventory[c]);
         count++;
     }
     buf[0] = NET_MSG_WORLD_STATIONS;

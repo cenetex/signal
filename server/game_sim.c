@@ -826,7 +826,7 @@ static void sim_step_refinery_production(world_t *w, float dt) {
 
         int active = 0;
         for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++)
-            if (st->ore_buffer[i] > 0.01f && sim_can_smelt_ore(st, (commodity_t)i)) active++;
+            if (st->inventory[i] > 0.01f && sim_can_smelt_ore(st, (commodity_t)i)) active++;
         if (active == 0) continue;
         if (active > REFINERY_MAX_FURNACES) active = REFINERY_MAX_FURNACES;
         float rate = REFINERY_BASE_SMELT_RATE / (float)active;
@@ -834,9 +834,9 @@ static void sim_step_refinery_production(world_t *w, float dt) {
         for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
             commodity_t ore = (commodity_t)i;
             if (!sim_can_smelt_ore(st, ore)) continue;
-            if (st->ore_buffer[ore] <= 0.01f) continue;
-            float consume = fminf(st->ore_buffer[ore], rate * dt);
-            st->ore_buffer[ore] -= consume;
+            if (st->inventory[ore] <= 0.01f) continue;
+            float consume = fminf(st->inventory[ore], rate * dt);
+            st->inventory[ore] -= consume;
             st->inventory[commodity_refined_form(ore)] += consume;
         }
     }
@@ -846,35 +846,35 @@ static void sim_step_station_production(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (station_has_module(st, MODULE_FRAME_PRESS)) {
-            if (st->product_stock[PRODUCT_FRAME] < MAX_PRODUCT_STOCK) {
-                float buf = st->ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)];
+            if (st->inventory[COMMODITY_FRAME] < MAX_PRODUCT_STOCK) {
+                float buf = st->inventory[COMMODITY_FERRITE_INGOT];
                 if (buf > 0.01f) {
-                    float room = MAX_PRODUCT_STOCK - st->product_stock[PRODUCT_FRAME];
+                    float room = MAX_PRODUCT_STOCK - st->inventory[COMMODITY_FRAME];
                     float consume = fminf(buf, fminf(STATION_PRODUCTION_RATE * dt, room));
-                    st->ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] -= consume;
-                    st->product_stock[PRODUCT_FRAME] += consume;
+                    st->inventory[COMMODITY_FERRITE_INGOT] -= consume;
+                    st->inventory[COMMODITY_FRAME] += consume;
                 }
             }
         }
         if (station_has_module(st, MODULE_LASER_FAB)) {
-            if (st->product_stock[PRODUCT_LASER_MODULE] < MAX_PRODUCT_STOCK) {
-                float buf_co = st->ingot_buffer[INGOT_IDX(COMMODITY_CUPRITE_INGOT)];
+            if (st->inventory[COMMODITY_LASER_MODULE] < MAX_PRODUCT_STOCK) {
+                float buf_co = st->inventory[COMMODITY_CUPRITE_INGOT];
                 if (buf_co > 0.01f) {
-                    float room = MAX_PRODUCT_STOCK - st->product_stock[PRODUCT_LASER_MODULE];
+                    float room = MAX_PRODUCT_STOCK - st->inventory[COMMODITY_LASER_MODULE];
                     float consume = fminf(buf_co, fminf(STATION_PRODUCTION_RATE * dt, room));
-                    st->ingot_buffer[INGOT_IDX(COMMODITY_CUPRITE_INGOT)] -= consume;
-                    st->product_stock[PRODUCT_LASER_MODULE] += consume;
+                    st->inventory[COMMODITY_CUPRITE_INGOT] -= consume;
+                    st->inventory[COMMODITY_LASER_MODULE] += consume;
                 }
             }
         }
         if (station_has_module(st, MODULE_TRACTOR_FAB)) {
-            if (st->product_stock[PRODUCT_TRACTOR_MODULE] < MAX_PRODUCT_STOCK) {
-                float buf_ln = st->ingot_buffer[INGOT_IDX(COMMODITY_CRYSTAL_INGOT)];
+            if (st->inventory[COMMODITY_TRACTOR_MODULE] < MAX_PRODUCT_STOCK) {
+                float buf_ln = st->inventory[COMMODITY_CRYSTAL_INGOT];
                 if (buf_ln > 0.01f) {
-                    float room = MAX_PRODUCT_STOCK - st->product_stock[PRODUCT_TRACTOR_MODULE];
+                    float room = MAX_PRODUCT_STOCK - st->inventory[COMMODITY_TRACTOR_MODULE];
                     float consume = fminf(buf_ln, fminf(STATION_PRODUCTION_RATE * dt, room));
-                    st->ingot_buffer[INGOT_IDX(COMMODITY_CRYSTAL_INGOT)] -= consume;
-                    st->product_stock[PRODUCT_TRACTOR_MODULE] += consume;
+                    st->inventory[COMMODITY_CRYSTAL_INGOT] -= consume;
+                    st->inventory[COMMODITY_TRACTOR_MODULE] += consume;
                 }
             }
         }
@@ -1105,21 +1105,17 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
         if (npc->state_timer <= 0.0f) {
             station_t *dest = &w->stations[npc->dest_station];
             for (int i = 0; i < INGOT_COUNT; i++) {
-                dest->ingot_buffer[i] += npc->ingots[i];
-                if (dest->ingot_buffer[i] > INGOT_BUFFER_CAPACITY)
-                    dest->ingot_buffer[i] = INGOT_BUFFER_CAPACITY;
+                dest->inventory[COMMODITY_RAW_ORE_COUNT + i] += npc->ingots[i];
+                if (dest->inventory[COMMODITY_RAW_ORE_COUNT + i] > INGOT_BUFFER_CAPACITY)
+                    dest->inventory[COMMODITY_RAW_ORE_COUNT + i] = INGOT_BUFFER_CAPACITY;
                 npc->ingots[i] = 0.0f;
             }
             /* Hauler also delivers ingots to scaffold station and modules */
             if (dest->scaffold || dest->module_count > 0) {
-                /* Feed from station's ingot buffer into scaffolds */
+                /* Feed from station inventory into scaffolds */
                 ship_t hauler_ship = {0};
-                for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-                    if (c == COMMODITY_FRAME)
-                        hauler_ship.cargo[c] = dest->product_stock[PRODUCT_FRAME];
-                    else if (c < COMMODITY_FRAME)
-                        hauler_ship.cargo[c] = dest->ingot_buffer[INGOT_IDX((commodity_t)c)];
-                }
+                for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
+                    hauler_ship.cargo[c] = dest->inventory[c];
                 if (dest->scaffold) {
                     float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - dest->scaffold_progress);
                     float deliver = fminf(hauler_ship.cargo[COMMODITY_FRAME], needed);
@@ -1133,13 +1129,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 step_module_delivery(w, dest, npc->dest_station, &hauler_ship);
                 /* Put remaining back */
                 for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-                    if (c == COMMODITY_FRAME) {
-                        float consumed = dest->product_stock[PRODUCT_FRAME] - hauler_ship.cargo[c];
-                        if (consumed > 0.01f) dest->product_stock[PRODUCT_FRAME] -= consumed;
-                    } else if (c < COMMODITY_FRAME) {
-                        float consumed = dest->ingot_buffer[INGOT_IDX((commodity_t)c)] - hauler_ship.cargo[c];
-                        if (consumed > 0.01f) dest->ingot_buffer[INGOT_IDX((commodity_t)c)] -= consumed;
-                    }
+                    float consumed = dest->inventory[c] - hauler_ship.cargo[c];
+                    if (consumed > 0.01f) dest->inventory[c] -= consumed;
                 }
             }
             npc->state = NPC_STATE_RETURN_TO_STATION;
@@ -1279,9 +1270,9 @@ static void step_npc_ships(world_t *w, float dt) {
                 npc->pos = v2_add(home->pos, v2(30.0f * (float)(n % 3 - 1), -(home->radius + hull->ship_radius + 50.0f)));
                 if (station_has_module(home, MODULE_FURNACE)) {
                     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
-                        float space = REFINERY_HOPPER_CAPACITY - home->ore_buffer[i];
+                        float space = REFINERY_HOPPER_CAPACITY - home->inventory[i];
                         float deposit = fminf(npc->cargo[i], fmaxf(0.0f, space));
-                        home->ore_buffer[i] += deposit;
+                        home->inventory[i] += deposit;
                         npc->cargo[i] -= deposit;
                     }
                 }
@@ -1531,7 +1522,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         commodity_t ore = (commodity_t)i;
         float amount = sp->ship.cargo[ore];
         if (amount <= 0.01f) continue;
-        float hopper_space = REFINERY_HOPPER_CAPACITY - st->ore_buffer[ore];
+        float hopper_space = REFINERY_HOPPER_CAPACITY - st->inventory[ore];
         if (hopper_space <= 0.01f) continue;
         float accepted = fminf(amount, hopper_space);
         /* Check for active contract at this station for this commodity */
@@ -1549,7 +1540,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
             }
         }
         payout += accepted * price;
-        st->ore_buffer[ore] += accepted;
+        st->inventory[ore] += accepted;
         sp->ship.cargo[ore] -= accepted;
     }
     /* Also deliver ingots to active contracts at this station */
@@ -1563,7 +1554,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         float deliver = fminf(sp->ship.cargo[c], ct->quantity_needed);
         float ingot_price = contract_price(ct);
         sp->ship.cargo[c] -= deliver;
-        st->ingot_buffer[INGOT_IDX(c)] += deliver;
+        st->inventory[c] += deliver;
         payout += deliver * ingot_price;
         ct->quantity_needed -= deliver;
         if (ct->quantity_needed <= 0.01f) {
@@ -1595,10 +1586,10 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
 
     product_t required = upgrade_required_product(upgrade);
     float pcost = upgrade_product_cost(&sp->ship, upgrade);
-    if (st->product_stock[required] < pcost - 0.01f) return;
+    if (st->inventory[COMMODITY_FRAME + required] < pcost - 0.01f) return;
     int cost = ship_upgrade_cost(&sp->ship, upgrade);
     if (!try_spend_credits(&sp->ship, (float)cost)) return;
-    st->product_stock[required] -= pcost;
+    st->inventory[COMMODITY_FRAME + required] -= pcost;
 
     switch (upgrade) {
     case SHIP_UPGRADE_MINING:  sp->ship.mining_level++;  break;
@@ -2153,7 +2144,7 @@ static void step_contracts(world_t *w, float dt) {
             /* Close when station buffer is sufficiently full */
             station_t *st = &w->stations[w->contracts[i].station_index];
             commodity_t c = w->contracts[i].commodity;
-            float current = (c < COMMODITY_RAW_ORE_COUNT) ? st->ore_buffer[c] : st->ingot_buffer[INGOT_IDX(c)];
+            float current = (c < COMMODITY_RAW_ORE_COUNT) ? st->inventory[c] : st->inventory[c];
             float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.8f : INGOT_BUFFER_CAPACITY * 0.8f;
             if (current >= threshold) {
                 w->contracts[i].active = false;
@@ -2240,7 +2231,7 @@ static void step_contracts(world_t *w, float dt) {
             float worst_deficit = 0.0f;
             int worst_ore = -1;
             for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
-                float deficit = REFINERY_HOPPER_CAPACITY * 0.5f - st->ore_buffer[c];
+                float deficit = REFINERY_HOPPER_CAPACITY * 0.5f - st->inventory[c];
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_ore = c; }
             }
             if (worst_ore >= 0) {
@@ -2266,7 +2257,7 @@ static void step_contracts(world_t *w, float dt) {
             int worst_idx = -1;
             for (int j = 0; j < 3; j++) {
                 if (!station_has_module(st, checks[j].mod)) continue;
-                float deficit = INGOT_BUFFER_CAPACITY * 0.5f - st->ingot_buffer[INGOT_IDX(checks[j].ingot)];
+                float deficit = INGOT_BUFFER_CAPACITY * 0.5f - st->inventory[checks[j].ingot];
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
             }
             if (worst_idx >= 0) {
@@ -2461,7 +2452,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 9
+#define SAVE_VERSION 10
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
@@ -2479,9 +2470,6 @@ static bool write_station(FILE *f, const station_t *s) {
     WRITE_FIELD(f, s->scaffold_progress);
     WRITE_FIELD(f, s->buy_price);
     WRITE_FIELD(f, s->inventory);
-    WRITE_FIELD(f, s->ore_buffer);
-    WRITE_FIELD(f, s->ingot_buffer);
-    WRITE_FIELD(f, s->product_stock);
     WRITE_FIELD(f, s->services);
     /* Modules */
     WRITE_FIELD(f, s->module_count);
@@ -2502,9 +2490,6 @@ static bool read_station(FILE *f, station_t *s) {
     READ_FIELD(f, s->scaffold_progress);
     READ_FIELD(f, s->buy_price);
     READ_FIELD(f, s->inventory);
-    READ_FIELD(f, s->ore_buffer);
-    READ_FIELD(f, s->ingot_buffer);
-    READ_FIELD(f, s->product_stock);
     READ_FIELD(f, s->services);
     /* Modules */
     READ_FIELD(f, s->module_count);

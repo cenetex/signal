@@ -130,10 +130,7 @@ typedef struct {
     bool scaffold;           /* true = under construction, not yet active */
     float scaffold_progress; /* 0.0 to 1.0 */
     float buy_price[COMMODITY_COUNT];
-    float inventory[COMMODITY_COUNT];
-    float ore_buffer[COMMODITY_RAW_ORE_COUNT];
-    float ingot_buffer[INGOT_COUNT];
-    float product_stock[PRODUCT_COUNT];
+    float inventory[COMMODITY_COUNT]; /* unified storage for all commodities */
     uint32_t services;
     /* Module system */
     station_module_t modules[MAX_MODULES_PER_STATION];

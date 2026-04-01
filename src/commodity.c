@@ -131,7 +131,7 @@ float station_buy_price(const station_t* station, commodity_t commodity) {
     /* Dynamic pricing: price rises when hopper is empty, stays at base when full.
      * price = base × (1 + deficit_ratio). Empty hopper = 2× base. */
     if (commodity < COMMODITY_RAW_ORE_COUNT) {
-        float fill = station->ore_buffer[commodity] / REFINERY_HOPPER_CAPACITY;
+        float fill = station->inventory[commodity] / REFINERY_HOPPER_CAPACITY;
         if (fill > 1.0f) fill = 1.0f;
         float deficit = 1.0f - fill;
         return base * (1.0f + deficit);

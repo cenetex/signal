@@ -77,8 +77,8 @@ typedef struct {
 
 typedef void (*net_on_player_ship_fn)(const NetPlayerShipState* state);
 
-/* Station update callback: index, ore_buffer[3], inventory[6], product_stock[3]. */
-typedef void (*net_on_stations_fn)(uint8_t index, const float* ore_buf, const float* inventory, const float* product_stock);
+/* Station update callback: index + full inventory[COMMODITY_COUNT]. */
+typedef void (*net_on_stations_fn)(uint8_t index, const float* inventory);
 
 /* Station identity callback: full static fields for a station slot. */
 typedef void (*net_on_station_identity_fn)(uint8_t index, uint8_t role, uint32_t services,
