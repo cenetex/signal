@@ -817,6 +817,9 @@ void draw_hud(void) {
             sdtx_color3b(80, 90, 100);
             sdtx_puts(client_hash);
         }
+        sdtx_pos(info_x, ui_text_pos(18.0f));
+        sdtx_color3b(100, 80, 60);
+        sdtx_puts("ALPHA // may reset");
     }
 
     draw_station_services(&ui);
