@@ -212,12 +212,12 @@ static void broadcast_player_states(void) {
 
 static void broadcast_world(void) {
     /* Asteroids */
-    uint8_t abuf[2 + MAX_ASTEROIDS * 30];
+    uint8_t abuf[2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
     int alen = serialize_asteroids(abuf, world.asteroids);
     broadcast(abuf, (size_t)alen);
 
     /* NPCs */
-    uint8_t nbuf[2 + MAX_NPC_SHIPS * 26];
+    uint8_t nbuf[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
     int nlen = serialize_npcs(nbuf, world.npc_ships);
     broadcast(nbuf, (size_t)nlen);
 }

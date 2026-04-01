@@ -920,8 +920,11 @@ static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count)
     }
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!received[i]) {
-            g.asteroid_interp.curr[i].active = false;
+        if (!received[i] && g.asteroid_interp.curr[i].active) {
+            /* Don't deactivate immediately — extrapolate position from velocity
+             * so asteroids don't flicker when the server skips a tick. */
+            g.asteroid_interp.curr[i].pos.x += g.asteroid_interp.curr[i].vel.x * g.asteroid_interp.interval;
+            g.asteroid_interp.curr[i].pos.y += g.asteroid_interp.curr[i].vel.y * g.asteroid_interp.interval;
         }
     }
 

@@ -7,7 +7,7 @@
 
 enum {
     KEY_COUNT = 512,
-    MAX_ASTEROIDS = 512,
+    MAX_ASTEROIDS = 255, /* limited by uint8 index in network protocol */
     MAX_STARS = 120,
     MAX_STATIONS = 8,
     MAX_NPC_SHIPS = 6,
