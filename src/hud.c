@@ -458,15 +458,9 @@ void draw_hud_panels(void) {
         float tab_h = compact ? 16.0f : 20.0f;
         station_tab_t visible_tabs[STATION_TAB_COUNT];
         int tab_count = 0;
-        if (ui.station->scaffold) {
-            visible_tabs[tab_count++] = STATION_TAB_OVERVIEW;
-            visible_tabs[tab_count++] = STATION_TAB_CONSTRUCTION;
-        } else {
-            visible_tabs[tab_count++] = STATION_TAB_OVERVIEW;
-            visible_tabs[tab_count++] = STATION_TAB_SERVICES;
-            visible_tabs[tab_count++] = STATION_TAB_ROLE;
-            visible_tabs[tab_count++] = STATION_TAB_CONTRACTS;
-        }
+        visible_tabs[tab_count++] = STATION_TAB_STATUS;
+        visible_tabs[tab_count++] = STATION_TAB_MARKET;
+        visible_tabs[tab_count++] = STATION_TAB_CONTRACTS;
         float tab_w = fminf(inner_w / (float)tab_count, 120.0f);
 
         for (int t = 0; t < tab_count; t++) {
@@ -487,8 +481,8 @@ void draw_hud_panels(void) {
         float content_h = panel_y + panel_h - 18.0f - content_y - strip_h;
         draw_ui_panel(inner_x, content_y, inner_w, content_h, 0.03f);
 
-        /* Service cards on the Services tab */
-        if (g.station_tab == STATION_TAB_SERVICES && !ui.station->scaffold) {
+        /* Service cards on the Status tab */
+        if (g.station_tab == STATION_TAB_STATUS && !ui.station->scaffold) {
             float card_gap = compact ? 4.0f : 6.0f;
             float card_h = compact ? 18.0f : 24.0f;
             float first_card_y = content_y + (compact ? 30.0f : 36.0f);

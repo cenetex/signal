@@ -407,20 +407,13 @@ void draw_station_services(const station_ui_state_t* ui) {
     float inner_y = panel_y + 18.0f;
     float inner_w = panel_w - 36.0f;
     float content_y = inner_y + 32.0f + tab_h + 8.0f;
-    float cx = inner_x + 18.0f; /* content text x */
-    float cy = content_y + 16.0f; /* content text start y */
+    float cx = inner_x + 18.0f;
+    float cy = content_y + 16.0f;
     station_tab_t visible_tabs[STATION_TAB_COUNT];
     int tab_count = 0;
-    if (ui->station->scaffold) {
-        visible_tabs[tab_count++] = STATION_TAB_OVERVIEW;
-        visible_tabs[tab_count++] = STATION_TAB_CONSTRUCTION;
-    } else {
-        visible_tabs[tab_count++] = STATION_TAB_OVERVIEW;
-        visible_tabs[tab_count++] = STATION_TAB_SERVICES;
-        visible_tabs[tab_count++] = STATION_TAB_ROLE;
-        visible_tabs[tab_count++] = STATION_TAB_CONTRACTS;
-        visible_tabs[tab_count++] = STATION_TAB_CONSTRUCTION;
-    }
+    visible_tabs[tab_count++] = STATION_TAB_STATUS;
+    visible_tabs[tab_count++] = STATION_TAB_MARKET;
+    visible_tabs[tab_count++] = STATION_TAB_CONTRACTS;
     float tab_w = fminf(inner_w / (float)tab_count, 120.0f);
 
     /* Station name + role header */
@@ -452,14 +445,6 @@ void draw_station_services(const station_ui_state_t* ui) {
     /* Tab labels */
     {
         float tab_bar_y = inner_y + 32.0f;
-        /* Role-specific label for the ROLE tab */
-        module_type_t dom = station_dominant_module(ui->station);
-        const char* role_label = "STATION";
-        if (dom == MODULE_FURNACE) role_label = "REFINERY";
-        else if (dom == MODULE_FRAME_PRESS) role_label = "YARD";
-        else if (dom == MODULE_LASER_FAB || dom == MODULE_TRACTOR_FAB) role_label = "BENCH";
-        else if (dom == MODULE_SIGNAL_RELAY) role_label = "OUTPOST";
-
         for (int t = 0; t < tab_count; t++) {
             float tx = inner_x + (float)t * tab_w;
             station_tab_t tid = visible_tabs[t];
@@ -467,20 +452,64 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_pos(ui_text_pos(tx + 8.0f), ui_text_pos(tab_bar_y + (compact ? 4.0f : 6.0f)));
             sdtx_color3b(active ? 130 : 100, active ? 255 : 120, active ? 235 : 145);
             switch (tid) {
-                case STATION_TAB_OVERVIEW:     sdtx_puts("OVERVIEW"); break;
-                case STATION_TAB_SERVICES:     sdtx_puts("SERVICES"); break;
-                case STATION_TAB_ROLE:         sdtx_puts(role_label); break;
-                case STATION_TAB_CONTRACTS:    sdtx_puts("CONTRACTS"); break;
-                case STATION_TAB_CONSTRUCTION: sdtx_puts("BUILD"); break;
+                case STATION_TAB_STATUS:    sdtx_puts("STATUS"); break;
+                case STATION_TAB_MARKET:    sdtx_puts("MARKET"); break;
+                case STATION_TAB_CONTRACTS: sdtx_puts("CONTRACTS"); break;
                 default: break;
             }
         }
     }
 
+    /* ---- Build overlay (drawn on top of any tab) ---- */
+    if (g.build_overlay && !ui->station->scaffold) {
+        sdtx_color3b(255, 221, 119);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+        sdtx_puts("BUILD MODULE");
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
+        sdtx_color3b(145, 160, 188);
+        sdtx_puts("Press 1-8 to select, Esc to cancel");
+        float ly = cy + 32.0f;
+        /* In-progress modules */
+        for (int i = 0; i < ui->station->module_count; i++) {
+            if (!ui->station->modules[i].scaffold) continue;
+            int pct = (int)lroundf(ui->station->modules[i].build_progress * 100.0f);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_color3b(255, 221, 119);
+            sdtx_printf("Building: %d%%", pct);
+            ly += 14.0f;
+        }
+        if (ly > cy + 34.0f) ly += 4.0f;
+        /* Available modules */
+        static const struct { module_type_t type; const char* name; int key; int frames; int credits; } buildable[] = {
+            { MODULE_FURNACE,        "Furnace (FE)", 1, 60,  200 },
+            { MODULE_FURNACE_CU,     "Furnace (CU)", 2, 100, 400 },
+            { MODULE_FURNACE_CR,     "Furnace (CR)", 3, 140, 600 },
+            { MODULE_FRAME_PRESS,    "Frame Press",  4, 80,  300 },
+            { MODULE_LASER_FAB,      "Laser Fab",    5, 80,  300 },
+            { MODULE_TRACTOR_FAB,    "Tractor Fab",  6, 80,  300 },
+            { MODULE_ORE_BUYER,      "Ore Buyer",    7, 40,  100 },
+            { MODULE_SIGNAL_RELAY,   "Signal Relay", 8, 40,  100 },
+        };
+        int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
+        for (int b = 0; b < 8; b++) {
+            if (station_has_module(ui->station, buildable[b].type)) continue;
+            if (ui->station->module_count >= MAX_MODULES_PER_STATION) continue;
+            bool can_afford = credits >= buildable[b].credits;
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
+            sdtx_printf("[%d] %-14s %dcr + %d frames", buildable[b].key, buildable[b].name, buildable[b].credits, buildable[b].frames);
+            ly += 14.0f;
+        }
+        return; /* overlay takes over rendering */
+    }
+
     /* ---- Tab content ---- */
     switch (g.station_tab) {
 
-    case STATION_TAB_OVERVIEW: {
+    case STATION_TAB_STATUS: {
+        float ly = cy;
+
+        /* Scaffold progress */
         if (ui->station->scaffold) {
             int pct = (int)lroundf(ui->station->scaffold_progress * 100.0f);
             int frames_held = (int)lroundf(LOCAL_PLAYER.ship.cargo[COMMODITY_FRAME_INGOT]);
@@ -541,137 +570,52 @@ void draw_station_services(const station_ui_state_t* ui) {
         break;
     }
 
-    case STATION_TAB_SERVICES: {
-        if (ui->station->scaffold) break;
-        station_service_line_t service_lines[3] = { 0 };
-        int service_line_count = build_station_service_lines(ui, service_lines);
-        sdtx_color3b(130, 255, 235);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-        sdtx_puts("SERVICES");
-        float card_gap = compact ? 4.0f : 6.0f;
-        float line_h = compact ? 18.0f : 24.0f;
-        float first_line_y = cy + 20.0f;
-        for (int i = 0; i < service_line_count; i++) {
-            float line_y = first_line_y + (float)i * (line_h + card_gap);
-            draw_station_service_text_line(cx + 6.0f, line_y + (compact ? 5.0f : 8.0f), &service_lines[i], compact);
-        }
-        break;
-    }
-
-    case STATION_TAB_ROLE: {
-        if (ui->station->scaffold) break;
-        float meter_x = cx;
-        float meter_w = fminf(inner_w - 40.0f, 200.0f);
-
-        if (station_has_module(ui->station, MODULE_FURNACE)) {
-            /* Ore prices */
+    case STATION_TAB_MARKET: {
+        if (ui->station->scaffold) { sdtx_pos(ui_text_pos(cx), ui_text_pos(cy)); sdtx_color3b(145,160,188); sdtx_puts("Under construction."); break; }
+        float my = cy;
+        /* SELL: ore prices (if station buys ore) */
+        if (station_has_module(ui->station, MODULE_ORE_BUYER)) {
+            sdtx_color3b(130, 255, 235);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+            sdtx_puts("SELL ORE  (1 key)");
+            my += 16.0f;
+            for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
+                int price = (int)lroundf(station_buy_price(ui->station, (commodity_t)c));
+                int held = (int)lroundf(ship_cargo_amount(&LOCAL_PLAYER.ship, (commodity_t)c));
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+                sdtx_color3b(held > 0 ? 203 : 145, held > 0 ? 220 : 160, held > 0 ? 248 : 188);
+                sdtx_printf("%s: %d cr/u  (carry %d)", commodity_code((commodity_t)c), price, held);
+                my += 14.0f;
+            }
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
             sdtx_color3b(255, 221, 119);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-            sdtx_printf("FE %d  CU %d  CR %d cr/u",
-                (int)lroundf(ui->station->buy_price[COMMODITY_FERRITE_ORE]),
-                (int)lroundf(ui->station->buy_price[COMMODITY_CUPRITE_ORE]),
-                (int)lroundf(ui->station->buy_price[COMMODITY_CRYSTAL_ORE]));
-            /* Haul value */
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 16.0f));
-            sdtx_color3b(203, 220, 248);
             sdtx_printf("Haul value: %d cr", ui->payout);
-            /* Hopper meters */
-            float hy = cy + 38.0f;
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(hy));
-            sdtx_color3b(145, 160, 188);
-            sdtx_puts("HOPPERS");
-            hy += 14.0f;
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(hy)); sdtx_color3b(180, 140, 120); sdtx_puts("FE");
-            draw_ui_meter(meter_x + 24.0f, hy * HUD_CELL + 1.0f, meter_w, 9.0f,
-                ui->station->ore_buffer[0] / REFINERY_HOPPER_CAPACITY, 0.72f, 0.42f, 0.28f);
-            hy += 16.0f;
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(hy)); sdtx_color3b(120, 150, 200); sdtx_puts("CU");
-            draw_ui_meter(meter_x + 24.0f, hy * HUD_CELL + 1.0f, meter_w, 9.0f,
-                ui->station->ore_buffer[1] / REFINERY_HOPPER_CAPACITY, 0.28f, 0.48f, 0.82f);
-            hy += 16.0f;
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(hy)); sdtx_color3b(130, 200, 140); sdtx_puts("CR");
-            draw_ui_meter(meter_x + 24.0f, hy * HUD_CELL + 1.0f, meter_w, 9.0f,
-                ui->station->ore_buffer[2] / REFINERY_HOPPER_CAPACITY, 0.30f, 0.72f, 0.38f);
-            /* Ingot stock */
-            if (!compact) {
-                hy += 22.0f;
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(hy));
-                sdtx_color3b(145, 160, 188);
-                sdtx_printf("Stock  FR %d  CO %d  LN %d",
-                    (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]),
-                    (int)lroundf(ui->station->product_stock[PRODUCT_TRACTOR_MODULE]),
-                    (int)lroundf(ui->station->product_stock[PRODUCT_LASER_MODULE]));
-            }
-        } else if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
-            sdtx_color3b(130, 255, 235);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-            sdtx_puts("FRAME BAY");
-            float fy = cy + 20.0f;
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(fy));
-            sdtx_color3b(145, 160, 188);
-            sdtx_puts("Frame stock");
-            draw_ui_meter(meter_x, fy * HUD_CELL + 14.0f, meter_w, 10.0f,
-                ui->station->product_stock[PRODUCT_FRAME] / MAX_PRODUCT_STOCK, 0.50f, 0.82f, 1.0f);
-            fy += 30.0f;
-            int need = (int)lroundf(upgrade_product_cost(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD));
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(fy));
-            sdtx_color3b(203, 220, 248);
-            sdtx_printf("Hold upgrade: %s",
-                ship_upgrade_maxed(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD) ? "MAX" : "available");
-            if (!ship_upgrade_maxed(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD)) {
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(fy + 16.0f));
-                sdtx_color3b(145, 160, 188);
-                sdtx_printf("Need %d frames + %d cr", need, ship_upgrade_cost(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD));
-            }
-            draw_upgrade_pips(meter_x, fy * HUD_CELL + 34.0f, LOCAL_PLAYER.ship.hold_level, 0.50f, 0.82f, 1.0f);
-        } else if (station_has_module(ui->station, MODULE_LASER_FAB) || station_has_module(ui->station, MODULE_TRACTOR_FAB)) {
-            sdtx_color3b(130, 255, 235);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-            sdtx_puts("FIELD BENCH");
-            float by = cy + 20.0f;
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(by));
-            sdtx_color3b(145, 160, 188);
-            sdtx_puts("Laser modules");
-            draw_ui_meter(meter_x, by * HUD_CELL + 14.0f, meter_w, 10.0f,
-                ui->station->product_stock[PRODUCT_LASER_MODULE] / MAX_PRODUCT_STOCK, 0.34f, 0.88f, 1.0f);
-            by += 30.0f;
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(by));
-            sdtx_puts("Tractor modules");
-            draw_ui_meter(meter_x, by * HUD_CELL + 14.0f, meter_w, 10.0f,
-                ui->station->product_stock[PRODUCT_TRACTOR_MODULE] / MAX_PRODUCT_STOCK, 0.42f, 1.0f, 0.86f);
-            if (!compact) {
-                by += 26.0f;
-                draw_upgrade_pips(meter_x, by * HUD_CELL, LOCAL_PLAYER.ship.mining_level, 0.34f, 0.88f, 1.0f);
-                draw_upgrade_pips(meter_x, by * HUD_CELL + 14.0f, LOCAL_PLAYER.ship.tractor_level, 0.42f, 1.0f, 0.86f);
-            }
-        } else if (station_has_module(ui->station, MODULE_SIGNAL_RELAY)) {
-            sdtx_color3b(130, 255, 235);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-            sdtx_puts("RELAY STATUS");
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
-            sdtx_color3b(203, 220, 248);
-            sdtx_printf("Signal range: %.0f", ui->station->signal_range);
+            my += 20.0f;
         }
-        /* Market: buyable ingots from station inventory */
-        if (!compact) {
-            float my = cy + 120.0f;
+        /* BUY: ingots from station inventory */
+        {
             bool has_stock = false;
             for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
                 int stock = (int)lroundf(station_inventory_amount(ui->station, (commodity_t)c));
                 if (stock <= 0) continue;
                 if (!has_stock) {
+                    sdtx_color3b(130, 255, 235);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-                    sdtx_color3b(145, 160, 188);
-                    sdtx_puts("MARKET  (F to buy)");
+                    sdtx_puts("BUY INGOTS  (F key)");
                     my += 16.0f;
                     has_stock = true;
                 }
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-                sdtx_color3b(203, 220, 248);
                 commodity_t src = commodity_ore_form((commodity_t)c);
                 int price = (int)lroundf(station_buy_price(ui->station, src) * 2.0f);
-                sdtx_printf("%s: %d  (%d cr/u)", commodity_short_name((commodity_t)c), stock, price);
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+                sdtx_color3b(203, 220, 248);
+                sdtx_printf("%s: %d stock  (%d cr/u)", commodity_short_name((commodity_t)c), stock, price);
                 my += 14.0f;
+            }
+            if (!has_stock) {
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+                sdtx_color3b(145, 160, 188);
+                sdtx_puts("No ingots in stock.");
             }
         }
         break;
@@ -743,95 +687,6 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
             sdtx_color3b(145, 160, 188);
             sdtx_puts("No active contracts.");
-        }
-        break;
-    }
-
-    case STATION_TAB_CONSTRUCTION: {
-        sdtx_color3b(130, 255, 235);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-        sdtx_puts("BUILD");
-
-        if (ui->station->scaffold) {
-            /* Outpost under construction */
-            int pct = (int)lroundf(ui->station->scaffold_progress * 100.0f);
-            int frames_held = (int)lroundf(LOCAL_PLAYER.ship.cargo[COMMODITY_FRAME_INGOT]);
-            float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - ui->station->scaffold_progress);
-            int needed_int = (int)lroundf(needed);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 18.0f));
-            sdtx_color3b(255, 221, 119);
-            sdtx_printf("Station scaffold: %d%%", pct);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 34.0f));
-            sdtx_color3b(203, 220, 248);
-            sdtx_printf("Need %d frames (carry %d)", needed_int, frames_held);
-        } else {
-            /* Active station: show scaffold modules in progress + buildable modules */
-            float ly = cy + 18.0f;
-
-            /* Show modules under construction */
-            for (int i = 0; i < ui->station->module_count; i++) {
-                if (!ui->station->modules[i].scaffold) continue;
-                int pct = (int)lroundf(ui->station->modules[i].build_progress * 100.0f);
-                const char* mname = "Module";
-                switch (ui->station->modules[i].type) {
-                    case MODULE_FURNACE:        mname = "Furnace (FE)"; break;
-                    case MODULE_FURNACE_CU:     mname = "Furnace (CU)"; break;
-                    case MODULE_FURNACE_CR:     mname = "Furnace (CR)"; break;
-                    case MODULE_FRAME_PRESS:    mname = "Frame Press"; break;
-                    case MODULE_LASER_FAB:      mname = "Laser Fab"; break;
-                    case MODULE_TRACTOR_FAB:    mname = "Tractor Fab"; break;
-                    case MODULE_REPAIR_BAY:     mname = "Repair Bay"; break;
-                    case MODULE_ORE_BUYER:      mname = "Ore Buyer"; break;
-                    case MODULE_CONTRACT_BOARD: mname = "Contracts"; break;
-                    case MODULE_SIGNAL_RELAY:   mname = "Signal Relay"; break;
-                    case MODULE_BLUEPRINT_DESK: mname = "Blueprints"; break;
-                    case MODULE_ORE_SILO:       mname = "Ore Silo"; break;
-                    default: break;
-                }
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                sdtx_color3b(255, 221, 119);
-                sdtx_printf("%s: %d%%", mname, pct);
-                ly += 14.0f;
-            }
-
-            /* List buildable modules (not already installed) */
-            if (ly > cy + 20.0f) ly += 6.0f; /* gap after in-progress */
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            sdtx_color3b(145, 160, 188);
-            sdtx_puts("Available:");
-            ly += 16.0f;
-
-            /* Modules the player can build — show with key shortcuts */
-            static const struct { module_type_t type; const char* name; int key; int frames; int credits; } buildable[] = {
-                { MODULE_FURNACE,        "Furnace (FE)", 1, 60,  200 },
-                { MODULE_FURNACE_CU,     "Furnace (CU)", 2, 100, 400 },
-                { MODULE_FURNACE_CR,     "Furnace (CR)", 3, 140, 600 },
-                { MODULE_FRAME_PRESS,    "Frame Press",  4, 80,  300 },
-                { MODULE_LASER_FAB,      "Laser Fab",    5, 80,  300 },
-                { MODULE_TRACTOR_FAB,    "Tractor Fab",  6, 80,  300 },
-                { MODULE_ORE_BUYER,      "Ore Buyer",    7, 40,  100 },
-                { MODULE_SIGNAL_RELAY,   "Signal Relay", 8, 40,  100 },
-            };
-            int n_buildable = (int)(sizeof(buildable) / sizeof(buildable[0]));
-            int shown = 0;
-            int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
-            for (int b = 0; b < n_buildable; b++) {
-                if (station_has_module(ui->station, buildable[b].type)) continue;
-                if (ui->station->module_count >= MAX_MODULES_PER_STATION) continue;
-                bool can_afford = credits >= buildable[b].credits;
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
-                sdtx_printf("[%d] %-14s %dcr + %d frames",
-                    buildable[b].key, buildable[b].name,
-                    buildable[b].credits, buildable[b].frames);
-                ly += 14.0f;
-                shown++;
-            }
-            if (shown == 0) {
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                sdtx_color3b(145, 160, 188);
-                sdtx_puts("All modules installed.");
-            }
         }
         break;
     }

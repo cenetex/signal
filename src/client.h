@@ -30,11 +30,9 @@
 /* ------------------------------------------------------------------ */
 
 typedef enum {
-    STATION_TAB_OVERVIEW = 0,
-    STATION_TAB_SERVICES,
-    STATION_TAB_ROLE,
+    STATION_TAB_STATUS = 0,
+    STATION_TAB_MARKET,
     STATION_TAB_CONTRACTS,
-    STATION_TAB_CONSTRUCTION,
     STATION_TAB_COUNT
 } station_tab_t;
 
@@ -104,8 +102,9 @@ typedef struct {
     float net_input_timer;
     station_tab_t station_tab;
     bool was_docked;
-    /* --- Outpost placement mode --- */
-    bool placing_outpost;
+    /* --- Build mode --- */
+    bool placing_outpost;    /* undocked: outpost placement */
+    bool build_overlay;      /* docked: module build menu open */
     /* --- Contract tracking --- */
     int tracked_contract;    /* index into world.contracts, -1 = none */
     /* --- Navigation breadcrumb (last docked station or placed blueprint) --- */

@@ -622,11 +622,38 @@ static input_intent_t sample_input_intent(void) {
     intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
     intent.interact = is_key_pressed(SAPP_KEYCODE_E);
     /* Number keys: context-dependent */
-    if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONTRACTS) {
-        /* 1/2/3 selects a contract to track */
+    if (LOCAL_PLAYER.docked && g.build_overlay) {
+        /* Build overlay: 1-8 select module, Esc/B closes */
+        static const struct { module_type_t type; const char *name; } build_keys[] = {
+            { MODULE_FURNACE,      "Furnace (FE)" },
+            { MODULE_FURNACE_CU,   "Furnace (CU)" },
+            { MODULE_FURNACE_CR,   "Furnace (CR)" },
+            { MODULE_FRAME_PRESS,  "Frame Press" },
+            { MODULE_LASER_FAB,    "Laser Fab" },
+            { MODULE_TRACTOR_FAB,  "Tractor Fab" },
+            { MODULE_ORE_BUYER,    "Ore Buyer" },
+            { MODULE_SIGNAL_RELAY, "Signal Relay" },
+        };
+        for (int k = 0; k < 8; k++) {
+            if (!is_key_pressed(SAPP_KEYCODE_1 + k)) continue;
+            const station_t *st = current_station_ptr();
+            if (station_has_module(st, build_keys[k].type)) {
+                set_notice("%s already installed.", build_keys[k].name);
+            } else if (st->module_count >= MAX_MODULES_PER_STATION) {
+                set_notice("No module slots available.");
+            } else {
+                intent.build_module = true;
+                intent.build_module_type = build_keys[k].type;
+                set_notice("Blueprint placed: %s", build_keys[k].name);
+            }
+            break;
+        }
+        if (is_key_pressed(SAPP_KEYCODE_ESCAPE) || is_key_pressed(SAPP_KEYCODE_B))
+            g.build_overlay = false;
+    } else if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONTRACTS) {
+        /* Contracts tab: 1/2/3 track contract */
         for (int k = 0; k < 3; k++) {
             if (!is_key_pressed(SAPP_KEYCODE_1 + k)) continue;
-            /* Find top 3 nearest contracts (same logic as UI) */
             int nearest[3] = {-1, -1, -1};
             float nearest_d[3] = {1e18f, 1e18f, 1e18f};
             const station_t *here_st = current_station_ptr();
@@ -653,34 +680,8 @@ static input_intent_t sample_input_intent(void) {
             }
             break;
         }
-    } else if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONSTRUCTION
-        && !current_station_ptr()->scaffold) {
-        static const struct { module_type_t type; const char *name; } build_keys[] = {
-            { MODULE_FURNACE,      "Furnace (FE)" },
-            { MODULE_FURNACE_CU,   "Furnace (CU)" },
-            { MODULE_FURNACE_CR,   "Furnace (CR)" },
-            { MODULE_FRAME_PRESS,  "Frame Press" },
-            { MODULE_LASER_FAB,    "Laser Fab" },
-            { MODULE_TRACTOR_FAB,  "Tractor Fab" },
-            { MODULE_ORE_BUYER,    "Ore Buyer" },
-            { MODULE_SIGNAL_RELAY, "Signal Relay" },
-        };
-        for (int k = 0; k < 8; k++) {
-            if (!is_key_pressed(SAPP_KEYCODE_1 + k)) continue;
-            if (!build_keys[k].name) continue;
-            const station_t *st = current_station_ptr();
-            if (station_has_module(st, build_keys[k].type)) {
-                set_notice("%s already installed.", build_keys[k].name);
-            } else if (st->module_count >= MAX_MODULES_PER_STATION) {
-                set_notice("No module slots available.");
-            } else {
-                intent.build_module = true;
-                intent.build_module_type = build_keys[k].type;
-                set_notice("Blueprint placed: %s", build_keys[k].name);
-            }
-            break;
-        }
-    } else if (!LOCAL_PLAYER.docked || g.station_tab != STATION_TAB_CONSTRUCTION) {
+    } else {
+        /* Default: service keys */
         intent.service_sell = is_key_pressed(SAPP_KEYCODE_1);
         intent.service_repair = is_key_pressed(SAPP_KEYCODE_2);
         intent.upgrade_mining = is_key_pressed(SAPP_KEYCODE_3);
@@ -702,12 +703,12 @@ static input_intent_t sample_input_intent(void) {
             }
         }
     }
-    /* Outpost placement mode: 6 toggles, Enter confirms, Esc/Q cancels */
+    /* B key: build mode */
     if (g.placing_outpost) {
-        if (is_key_pressed(SAPP_KEYCODE_6) || is_key_pressed(SAPP_KEYCODE_ENTER) || is_key_pressed(SAPP_KEYCODE_KP_ENTER)) {
+        /* Outpost placement: B/Enter confirms, Esc cancels */
+        if (is_key_pressed(SAPP_KEYCODE_B) || is_key_pressed(SAPP_KEYCODE_ENTER) || is_key_pressed(SAPP_KEYCODE_KP_ENTER)) {
             intent.place_outpost = true;
             g.placing_outpost = false;
-            /* Set nav breadcrumb to the placement target */
             vec2 fwd = v2_from_angle(LOCAL_PLAYER.ship.angle);
             g.nav_pip_active = true;
             g.nav_pip_pos = v2_add(LOCAL_PLAYER.ship.pos, v2_scale(fwd, 150.0f));
@@ -715,8 +716,12 @@ static input_intent_t sample_input_intent(void) {
         } else if (is_key_pressed(SAPP_KEYCODE_ESCAPE) || is_key_pressed(SAPP_KEYCODE_Q)) {
             g.placing_outpost = false;
         }
-    } else if (is_key_pressed(SAPP_KEYCODE_6) && !LOCAL_PLAYER.docked) {
-        g.placing_outpost = true;
+    } else if (is_key_pressed(SAPP_KEYCODE_B)) {
+        if (LOCAL_PLAYER.docked) {
+            g.build_overlay = !g.build_overlay; /* toggle */
+        } else {
+            g.placing_outpost = true;
+        }
     }
     intent.reset = is_key_pressed(SAPP_KEYCODE_R);
     return intent;
@@ -756,7 +761,8 @@ static void sim_step(float dt) {
     if (LOCAL_PLAYER.docked && !g.was_docked) {
         /* Just docked — reset to overview (or construction for scaffolds) */
         const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
-        g.station_tab = st->scaffold ? STATION_TAB_CONSTRUCTION : STATION_TAB_OVERVIEW;
+        g.station_tab = STATION_TAB_STATUS;
+        g.build_overlay = false;
         g.placing_outpost = false;
         /* Clear blueprint pip if we docked at the blueprint station */
         if (g.nav_pip_is_blueprint) {
@@ -772,20 +778,12 @@ static void sim_step(float dt) {
         }
     }
     g.was_docked = LOCAL_PLAYER.docked;
-    if (LOCAL_PLAYER.docked && (is_key_pressed(SAPP_KEYCODE_TAB) || is_key_pressed(SAPP_KEYCODE_Q))) {
-        const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
+    if (LOCAL_PLAYER.docked && !g.build_overlay && (is_key_pressed(SAPP_KEYCODE_TAB) || is_key_pressed(SAPP_KEYCODE_Q))) {
         station_tab_t vtabs[STATION_TAB_COUNT];
         int vtab_count = 0;
-        if (st->scaffold) {
-            vtabs[vtab_count++] = STATION_TAB_OVERVIEW;
-            vtabs[vtab_count++] = STATION_TAB_CONSTRUCTION;
-        } else {
-            vtabs[vtab_count++] = STATION_TAB_OVERVIEW;
-            vtabs[vtab_count++] = STATION_TAB_SERVICES;
-            vtabs[vtab_count++] = STATION_TAB_ROLE;
-            vtabs[vtab_count++] = STATION_TAB_CONTRACTS;
-            vtabs[vtab_count++] = STATION_TAB_CONSTRUCTION;
-        }
+        vtabs[vtab_count++] = STATION_TAB_STATUS;
+        vtabs[vtab_count++] = STATION_TAB_MARKET;
+        vtabs[vtab_count++] = STATION_TAB_CONTRACTS;
         int cur = 0;
         for (int i = 0; i < vtab_count; i++) { if (vtabs[i] == g.station_tab) { cur = i; break; } }
         int dir = is_key_pressed(SAPP_KEYCODE_TAB) ? 1 : (vtab_count - 1);
