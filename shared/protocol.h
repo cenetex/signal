@@ -89,4 +89,8 @@ enum {
 /* Station identity message payload (after type byte): [index:1][reserved:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32] */
 #define STATION_IDENTITY_SIZE 59
 
+/* Player ship state: [type:1][id:1][hull:f32][credits:f32][docked:1][station:1]
+ * [mining:1][hold:1][tractor:1][scaffold_kit:1][cargo:COMMODITY_COUNT×f32] */
+#define PLAYER_SHIP_SIZE (16 + 9 * 4)  /* 52 bytes */
+
 #endif /* SHARED_PROTOCOL_H */

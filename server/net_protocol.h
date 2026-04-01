@@ -215,6 +215,10 @@ _Static_assert(
     1 + COMMODITY_COUNT * 4 == STATION_RECORD_SIZE,
     "STATION_RECORD_SIZE must match serialized station econ layout"
 );
+_Static_assert(
+    16 + COMMODITY_COUNT * 4 == PLAYER_SHIP_SIZE,
+    "PLAYER_SHIP_SIZE must match serialized player ship layout"
+);
 
 static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
     int count = 0;
