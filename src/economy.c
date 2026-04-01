@@ -5,7 +5,7 @@
 void step_refinery_production(station_t* stations, int count, float dt) {
     for (int s = 0; s < count; s++) {
         station_t* station = &stations[s];
-        if (station->role != STATION_ROLE_REFINERY) continue;
+        if (!station_has_module(station, MODULE_FURNACE)) continue;
 
         int active = 0;
         for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
@@ -30,7 +30,7 @@ void step_station_production(station_t* stations, int count, float dt) {
     for (int s = 0; s < count; s++) {
         station_t* station = &stations[s];
 
-        if (station->role == STATION_ROLE_YARD) {
+        if (station_has_module(station, MODULE_FRAME_PRESS)) {
             if (station->product_stock[PRODUCT_FRAME] < MAX_PRODUCT_STOCK) {
                 float buf = station->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)];
                 if (buf > 0.01f) {
@@ -40,7 +40,8 @@ void step_station_production(station_t* stations, int count, float dt) {
                     station->product_stock[PRODUCT_FRAME] += consume;
                 }
             }
-        } else if (station->role == STATION_ROLE_BEAMWORKS) {
+        }
+        if (station_has_module(station, MODULE_LASER_FAB)) {
             if (station->product_stock[PRODUCT_LASER_MODULE] < MAX_PRODUCT_STOCK) {
                 float buf_co = station->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)];
                 if (buf_co > 0.01f) {
@@ -50,6 +51,8 @@ void step_station_production(station_t* stations, int count, float dt) {
                     station->product_stock[PRODUCT_LASER_MODULE] += consume;
                 }
             }
+        }
+        if (station_has_module(station, MODULE_TRACTOR_FAB)) {
             if (station->product_stock[PRODUCT_TRACTOR_MODULE] < MAX_PRODUCT_STOCK) {
                 float buf_ln = station->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)];
                 if (buf_ln > 0.01f) {

@@ -13,7 +13,7 @@
  *   WORLD_STATIONS  (0x12): [type:1][count:1] + count * STATION_RECORD_SIZE records
  *   PLAYER_SHIP     (0x15): [type:1][id:1] + ship cargo/hull/credits/levels
  *   SERVER_INFO     (0x16): [type:1][hash:up to 11]
- *   STATION_IDENTITY(0x17): [type:1][index:1][role:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32]
+ *   STATION_IDENTITY(0x17): [type:1][index:1][reserved:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32]
  *   WORLD_PLAYERS   (0x18): [type:1][count:1] + count * PLAYER_RECORD_SIZE records
  */
 #ifndef SHARED_PROTOCOL_H

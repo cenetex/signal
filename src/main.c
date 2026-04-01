@@ -277,15 +277,16 @@ static void draw_station(const station_t* station, bool is_current, bool is_near
     float role_r = 0.45f;
     float role_g = 0.85f;
     float role_b = 1.0f;
-    float pulse = 0.35f + (sinf((g.world.time * 2.1f) + (float)station->role) * 0.15f);
+    module_type_t dom = station_dominant_module(station);
+    float pulse = 0.35f + (sinf((g.world.time * 2.1f) + (float)dom) * 0.15f);
     int spoke_count = 6;
 
-    station_role_color(station->role, &role_r, &role_g, &role_b);
-    if (station->role == STATION_ROLE_YARD) {
+    station_role_color(station, &role_r, &role_g, &role_b);
+    if (dom == MODULE_FRAME_PRESS) {
         spoke_count = 4;
-    } else if (station->role == STATION_ROLE_BEAMWORKS) {
+    } else if (dom == MODULE_LASER_FAB || dom == MODULE_TRACTOR_FAB) {
         spoke_count = 5;
-    } else if (station->role == STATION_ROLE_OUTPOST) {
+    } else if (dom == MODULE_SIGNAL_RELAY) {
         spoke_count = 3;
     }
 
@@ -327,23 +328,23 @@ static void draw_station(const station_t* station, bool is_current, bool is_near
     draw_circle_filled(station->pos, 18.0f, 18, role_r * 0.68f, role_g * 0.88f, role_b * 0.96f, 1.0f);
 
     for (int i = 0; i < spoke_count; i++) {
-        float angle = (TWO_PI_F / (float)spoke_count) * (float)i + g.world.time * (0.14f + ((float)station->role * 0.02f));
+        float angle = (TWO_PI_F / (float)spoke_count) * (float)i + g.world.time * (0.14f + ((float)dom * 0.02f));
         vec2 inner = v2_add(station->pos, v2(cosf(angle) * 28.0f, sinf(angle) * 28.0f));
         vec2 outer = v2_add(station->pos, v2(cosf(angle) * 48.0f, sinf(angle) * 48.0f));
         draw_segment(inner, outer, role_r * 0.8f, role_g * 0.92f, role_b, 0.85f);
 
-        if (station->role == STATION_ROLE_REFINERY) {
+        if (dom == MODULE_FURNACE) {
             vec2 mid = v2_add(station->pos, v2(cosf(angle) * 58.0f, sinf(angle) * 58.0f));
             draw_rect_centered(mid, 4.0f, 4.0f, role_r * 0.8f, role_g, role_b * 0.9f, 0.85f);
         }
     }
 
-    if (station->role == STATION_ROLE_YARD) {
+    if (dom == MODULE_FRAME_PRESS) {
         draw_rect_outline(station->pos, 18.0f, 18.0f, role_r * 0.82f, role_g * 0.86f, role_b * 0.76f, 0.75f);
-    } else if (station->role == STATION_ROLE_BEAMWORKS) {
+    } else if (dom == MODULE_LASER_FAB || dom == MODULE_TRACTOR_FAB) {
         draw_segment(v2_add(station->pos, v2(-24.0f, 0.0f)), v2_add(station->pos, v2(24.0f, 0.0f)), role_r, role_g, role_b, 0.78f);
         draw_segment(v2_add(station->pos, v2(0.0f, -24.0f)), v2_add(station->pos, v2(0.0f, 24.0f)), role_r, role_g, role_b, 0.40f);
-    } else if (station->role == STATION_ROLE_OUTPOST) {
+    } else if (dom == MODULE_SIGNAL_RELAY) {
         /* Triangle marker for activated outpost */
         float s = 14.0f;
         draw_segment(v2_add(station->pos, v2(0.0f, -s)), v2_add(station->pos, v2(s, s * 0.6f)), role_r, role_g, role_b, 0.75f);
@@ -933,12 +934,12 @@ static void apply_remote_stations(uint8_t index, const float* ore_buf, const flo
     /* scaffold and scaffold_progress will be updated via a future network message */
 }
 
-static void apply_remote_station_identity(uint8_t index, uint8_t role, uint32_t services,
+static void apply_remote_station_identity(uint8_t index, uint8_t role_reserved, uint32_t services,
     float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
     const char* name) {
+    (void)role_reserved; /* legacy field — ignored, services are authoritative */
     if (index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[index];
-    st->role = (station_role_t)role;
     st->services = services;
     st->pos = v2(pos_x, pos_y);
     st->radius = radius;

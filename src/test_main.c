@@ -291,7 +291,7 @@ TEST(test_product_name) {
 
 TEST(test_refinery_production_smelts_ore) {
     station_t station = {0};
-    station.role = STATION_ROLE_REFINERY;
+    station.modules[station.module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
     station.ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f;
     step_refinery_production(&station, 1, 1.0f);
     ASSERT(station.ore_buffer[COMMODITY_FERRITE_ORE] < 10.0f);
@@ -300,14 +300,14 @@ TEST(test_refinery_production_smelts_ore) {
 
 TEST(test_refinery_production_empty_buffer_noop) {
     station_t station = {0};
-    station.role = STATION_ROLE_REFINERY;
+    station.modules[station.module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
     step_refinery_production(&station, 1, 1.0f);
     ASSERT_EQ_FLOAT(station.inventory[COMMODITY_FRAME_INGOT], 0.0f, 0.001f);
 }
 
 TEST(test_refinery_skips_non_refinery) {
     station_t station = {0};
-    station.role = STATION_ROLE_YARD;
+    station.modules[station.module_count++] = (station_module_t){ MODULE_FRAME_PRESS, false, 1.0f };
     station.ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f;
     step_refinery_production(&station, 1, 1.0f);
     ASSERT_EQ_FLOAT(station.ore_buffer[COMMODITY_FERRITE_ORE], 10.0f, 0.001f);
@@ -315,7 +315,7 @@ TEST(test_refinery_skips_non_refinery) {
 
 TEST(test_station_production_yard_makes_frames) {
     station_t station = {0};
-    station.role = STATION_ROLE_YARD;
+    station.modules[station.module_count++] = (station_module_t){ MODULE_FRAME_PRESS, false, 1.0f };
     station.ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] = 5.0f;
     step_station_production(&station, 1, 1.0f);
     ASSERT(station.ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] < 5.0f);
@@ -324,7 +324,8 @@ TEST(test_station_production_yard_makes_frames) {
 
 TEST(test_station_production_beamworks_makes_modules) {
     station_t station = {0};
-    station.role = STATION_ROLE_BEAMWORKS;
+    station.modules[station.module_count++] = (station_module_t){ MODULE_LASER_FAB, false, 1.0f };
+    station.modules[station.module_count++] = (station_module_t){ MODULE_TRACTOR_FAB, false, 1.0f };
     station.ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)] = 5.0f;
     station.ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)] = 5.0f;
     step_station_production(&station, 1, 1.0f);
@@ -403,7 +404,7 @@ TEST(test_world_reset_creates_stations) {
     world_t w = {0};
     world_reset(&w);
     ASSERT_STR_EQ(w.stations[0].name, "Prospect Refinery");
-    ASSERT_EQ_INT(w.stations[0].role, STATION_ROLE_REFINERY);
+    ASSERT(station_has_module(&w.stations[0], MODULE_FURNACE));
     ASSERT_STR_EQ(w.stations[1].name, "Kepler Yard");
     ASSERT_STR_EQ(w.stations[2].name, "Helios Works");
 }
@@ -1094,7 +1095,7 @@ TEST(test_bug17_no_duplicate_refinery) {
      * consistent results — verify economy.c's version works correctly. */
     station_t stations[MAX_STATIONS];
     memset(stations, 0, sizeof(stations));
-    stations[0].role = STATION_ROLE_REFINERY;
+    stations[0].modules[stations[0].module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
     stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f;
     step_refinery_production(stations, MAX_STATIONS, 1.0f);
     /* Ore should be consumed and inventory produced. */

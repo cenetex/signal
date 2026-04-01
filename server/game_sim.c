@@ -145,7 +145,8 @@ static void activate_outpost(world_t *w, int station_idx) {
     st->scaffold = false;
     st->scaffold_progress = 1.0f;
     st->signal_range = OUTPOST_SIGNAL_RANGE;
-    st->services = STATION_SERVICE_REPAIR;
+    add_module(st, MODULE_REPAIR_BAY);
+    rebuild_station_services(st);
     SIM_LOG("[sim] outpost %d activated (signal_range=%.0f)\n", station_idx, OUTPOST_SIGNAL_RANGE);
 }
 
@@ -187,14 +188,13 @@ int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
     station_t *st = &w->stations[slot];
     memset(st, 0, sizeof(*st));
     snprintf(st->name, sizeof(st->name), "Outpost %d", slot);
-    st->role = STATION_ROLE_OUTPOST;
     st->pos = pos;
     st->radius = OUTPOST_RADIUS;
     st->dock_radius = OUTPOST_DOCK_RADIUS;
     st->signal_range = OUTPOST_SIGNAL_RANGE;
-    st->services = STATION_SERVICE_REPAIR;
     add_module(st, MODULE_DOCK);
     add_module(st, MODULE_SIGNAL_RELAY);
+    rebuild_station_services(st);
 
     emit_event(w, (sim_event_t){
         .type = SIM_EVENT_OUTPOST_PLACED,
@@ -515,7 +515,7 @@ static void maintain_asteroid_field(world_t *w, float dt) {
 static void sim_step_refinery_production(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
-        if (st->role != STATION_ROLE_REFINERY) continue;
+        if (!station_has_module(st, MODULE_FURNACE)) continue;
 
         int active = 0;
         for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++)
@@ -537,7 +537,7 @@ static void sim_step_refinery_production(world_t *w, float dt) {
 static void sim_step_station_production(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
-        if (st->role == STATION_ROLE_YARD) {
+        if (station_has_module(st, MODULE_FRAME_PRESS)) {
             if (st->product_stock[PRODUCT_FRAME] < MAX_PRODUCT_STOCK) {
                 float buf = st->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)];
                 if (buf > 0.01f) {
@@ -547,7 +547,8 @@ static void sim_step_station_production(world_t *w, float dt) {
                     st->product_stock[PRODUCT_FRAME] += consume;
                 }
             }
-        } else if (st->role == STATION_ROLE_BEAMWORKS) {
+        }
+        if (station_has_module(st, MODULE_LASER_FAB)) {
             if (st->product_stock[PRODUCT_LASER_MODULE] < MAX_PRODUCT_STOCK) {
                 float buf_co = st->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)];
                 if (buf_co > 0.01f) {
@@ -557,6 +558,8 @@ static void sim_step_station_production(world_t *w, float dt) {
                     st->product_stock[PRODUCT_LASER_MODULE] += consume;
                 }
             }
+        }
+        if (station_has_module(st, MODULE_TRACTOR_FAB)) {
             if (st->product_stock[PRODUCT_TRACTOR_MODULE] < MAX_PRODUCT_STOCK) {
                 float buf_ln = st->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)];
                 if (buf_ln > 0.01f) {
@@ -721,7 +724,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             } else {
                 /* Fallback: original round-trip behavior */
                 station_t *dest = &w->stations[npc->dest_station];
-                if (dest->role == STATION_ROLE_YARD) {
+                if (station_has_module(dest, MODULE_FRAME_PRESS)) {
                     commodity_t ingot = COMMODITY_FRAME_INGOT;
                     float take = fminf(home->inventory[ingot], space);
                     if (take > 0.5f) {
@@ -729,16 +732,24 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                         home->inventory[ingot] -= take;
                         loaded = true;
                     }
-                } else if (dest->role == STATION_ROLE_BEAMWORKS) {
-                    commodity_t ingots[2] = { COMMODITY_CONDUCTOR_INGOT, COMMODITY_LENS_INGOT };
-                    for (int i = 0; i < 2; i++) {
-                        float take = fminf(home->inventory[ingots[i]], space / 2.0f);
-                        if (take > 0.01f) {
-                            npc->ingots[INGOT_IDX(ingots[i])] += take;
-                            home->inventory[ingots[i]] -= take;
-                            space -= take;
-                            loaded = true;
-                        }
+                }
+                if (!loaded && station_has_module(dest, MODULE_LASER_FAB)) {
+                    commodity_t ingot = COMMODITY_CONDUCTOR_INGOT;
+                    float take = fminf(home->inventory[ingot], space);
+                    if (take > 0.5f) {
+                        npc->ingots[INGOT_IDX(ingot)] += take;
+                        home->inventory[ingot] -= take;
+                        space -= take;
+                        loaded = true;
+                    }
+                }
+                if (!loaded && station_has_module(dest, MODULE_TRACTOR_FAB)) {
+                    commodity_t ingot = COMMODITY_LENS_INGOT;
+                    float take = fminf(home->inventory[ingot], space);
+                    if (take > 0.5f) {
+                        npc->ingots[INGOT_IDX(ingot)] += take;
+                        home->inventory[ingot] -= take;
+                        loaded = true;
                     }
                 }
             }
@@ -903,7 +914,7 @@ static void step_npc_ships(world_t *w, float dt) {
             if (v2_dist_sq(npc->pos, home->pos) < dock_r * dock_r) {
                 npc->vel = v2(0.0f, 0.0f);
                 npc->pos = v2_add(home->pos, v2(30.0f * (float)(n % 3 - 1), -(home->radius + hull->ship_radius + 50.0f)));
-                if (home->role == STATION_ROLE_REFINERY) {
+                if (station_has_module(home, MODULE_FURNACE)) {
                     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
                         float space = REFINERY_HOPPER_CAPACITY - home->ore_buffer[i];
                         float deposit = fminf(npc->cargo[i], fmaxf(0.0f, space));
@@ -1644,7 +1655,7 @@ static void step_contracts(world_t *w, float dt) {
     /* Generate new contracts from deficits */
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
-        if (st->role == STATION_ROLE_REFINERY) {
+        if (station_has_module(st, MODULE_FURNACE)) {
             for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
                 if (st->ore_buffer[c] < REFINERY_HOPPER_CAPACITY * 0.5f) {
                     bool exists = false;
@@ -1671,7 +1682,7 @@ static void step_contracts(world_t *w, float dt) {
                 }
             }
         }
-        if (st->role == STATION_ROLE_YARD) {
+        if (station_has_module(st, MODULE_FRAME_PRESS)) {
             commodity_t ingot = COMMODITY_FRAME_INGOT;
             if (st->ingot_buffer[INGOT_IDX(ingot)] < INGOT_BUFFER_CAPACITY * 0.5f) {
                 bool exists = false;
@@ -1695,7 +1706,7 @@ static void step_contracts(world_t *w, float dt) {
                 }
             }
         }
-        if (st->role == STATION_ROLE_BEAMWORKS) {
+        if (station_has_module(st, MODULE_LASER_FAB) || station_has_module(st, MODULE_TRACTOR_FAB)) {
             commodity_t ingots[2] = { COMMODITY_CONDUCTOR_INGOT, COMMODITY_LENS_INGOT };
             for (int j = 0; j < 2; j++) {
                 if (st->ingot_buffer[INGOT_IDX(ingots[j])] < INGOT_BUFFER_CAPACITY * 0.5f) {
@@ -1803,40 +1814,36 @@ void world_reset(world_t *w) {
 
     /* --- Stations --- */
     snprintf(w->stations[0].name, sizeof(w->stations[0].name), "%s", "Prospect Refinery");
-    w->stations[0].role        = STATION_ROLE_REFINERY;
     w->stations[0].pos         = v2(0.0f, -240.0f);
     w->stations[0].radius      = 62.0f;
     w->stations[0].dock_radius = 132.0f;
     w->stations[0].buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
     w->stations[0].buy_price[COMMODITY_CUPRITE_ORE] = 14.0f;
     w->stations[0].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
-    w->stations[0].services    = STATION_SERVICE_ORE_BUYER | STATION_SERVICE_REPAIR;
     w->stations[0].signal_range = 2200.0f;
     add_module(&w->stations[0], MODULE_DOCK);
     add_module(&w->stations[0], MODULE_ORE_BUYER);
     add_module(&w->stations[0], MODULE_FURNACE);
     add_module(&w->stations[0], MODULE_REPAIR_BAY);
     add_module(&w->stations[0], MODULE_CONTRACT_BOARD);
+    rebuild_station_services(&w->stations[0]);
 
     snprintf(w->stations[1].name, sizeof(w->stations[1].name), "%s", "Kepler Yard");
-    w->stations[1].role        = STATION_ROLE_YARD;
     w->stations[1].pos         = v2(-320.0f, 230.0f);
     w->stations[1].radius      = 56.0f;
     w->stations[1].dock_radius = 124.0f;
-    w->stations[1].services    = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_HOLD | STATION_SERVICE_BLUEPRINT;
     w->stations[1].signal_range = 1800.0f;
     add_module(&w->stations[1], MODULE_DOCK);
     add_module(&w->stations[1], MODULE_FRAME_PRESS);
     add_module(&w->stations[1], MODULE_REPAIR_BAY);
     add_module(&w->stations[1], MODULE_CONTRACT_BOARD);
     add_module(&w->stations[1], MODULE_BLUEPRINT_DESK);
+    rebuild_station_services(&w->stations[1]);
 
     snprintf(w->stations[2].name, sizeof(w->stations[2].name), "%s", "Helios Works");
-    w->stations[2].role        = STATION_ROLE_BEAMWORKS;
     w->stations[2].pos         = v2(320.0f, 230.0f);
     w->stations[2].radius      = 56.0f;
     w->stations[2].dock_radius = 124.0f;
-    w->stations[2].services    = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_LASER | STATION_SERVICE_UPGRADE_TRACTOR;
     w->stations[2].signal_range = 1800.0f;
     add_module(&w->stations[2], MODULE_DOCK);
     add_module(&w->stations[2], MODULE_LASER_FAB);
@@ -1844,6 +1851,7 @@ void world_reset(world_t *w) {
     add_module(&w->stations[2], MODULE_REPAIR_BAY);
     add_module(&w->stations[2], MODULE_CONTRACT_BOARD);
     add_module(&w->stations[2], MODULE_BLUEPRINT_DESK);
+    rebuild_station_services(&w->stations[2]);
 
     /* --- Initial asteroid field --- */
     if (FIELD_ASTEROID_TARGET > 0) seed_field_asteroid_of_tier(w, &w->asteroids[0], ASTEROID_TIER_XL);
@@ -1910,7 +1918,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 5
+#define SAVE_VERSION 6
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
@@ -1919,7 +1927,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ---- station field-by-field I/O ---- */
 static bool write_station(FILE *f, const station_t *s) {
     WRITE_FIELD(f, s->name);
-    WRITE_FIELD(f, s->role);
+    { uint32_t reserved = 0; WRITE_FIELD(f, reserved); } /* was: role */
     WRITE_FIELD(f, s->pos);
     WRITE_FIELD(f, s->radius);
     WRITE_FIELD(f, s->dock_radius);
@@ -1942,7 +1950,7 @@ static bool write_station(FILE *f, const station_t *s) {
 
 static bool read_station(FILE *f, station_t *s) {
     READ_FIELD(f, s->name);
-    READ_FIELD(f, s->role);
+    { uint32_t reserved; READ_FIELD(f, reserved); (void)reserved; } /* was: role */
     READ_FIELD(f, s->pos);
     READ_FIELD(f, s->radius);
     READ_FIELD(f, s->dock_radius);

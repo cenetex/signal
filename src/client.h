@@ -187,12 +187,12 @@ void build_station_ui_state(station_ui_state_t* ui);
 void draw_station_services(const station_ui_state_t* ui);
 
 /* Station label/color helpers */
-const char* station_role_hub_label(station_role_t role);
-const char* station_role_market_title(station_role_t role);
-const char* station_role_fit_title(station_role_t role);
-const char* station_role_name(station_role_t role);
-const char* station_role_short_name(station_role_t role);
-void station_role_color(station_role_t role, float* r, float* g0, float* b);
+const char* station_role_hub_label(const station_t* station);
+const char* station_role_market_title(const station_t* station);
+const char* station_role_fit_title(const station_t* station);
+const char* station_role_name(const station_t* station);
+const char* station_role_short_name(const station_t* station);
+void station_role_color(const station_t* station, float* r, float* g0, float* b);
 
 /* Station lookup helpers (implemented in station_ui.c) */
 const station_t* station_at(int station_index);

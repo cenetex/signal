@@ -306,14 +306,12 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
 
     if (LOCAL_PLAYER.docked) {
         if (station != NULL) {
-            if (station->role == STATION_ROLE_REFINERY) {
-                snprintf(label, label_size, "REFINERY");
+            snprintf(label, label_size, "%s", station_role_name(station));
+            if (station_has_module(station, MODULE_FURNACE)) {
                 snprintf(message, message_size, "Sell raw ore here, repair up, then head back into the belt.");
-            } else if (station->role == STATION_ROLE_YARD) {
-                snprintf(label, label_size, "YARD");
+            } else if (station_has_module(station, MODULE_FRAME_PRESS)) {
                 snprintf(message, message_size, "Patch the hull and refit hold racks before the next sortie.");
             } else {
-                snprintf(label, label_size, "BEAMWORKS");
                 snprintf(message, message_size, "Tune the laser or tractor, then get back on the run.");
             }
             *r = 164;
@@ -463,18 +461,24 @@ void draw_hud_panels(void) {
             float first_card_y = content_y + (compact ? 30.0f : 36.0f);
             float card_w = inner_w - 24.0f;
 
-            if (ui.station->role == STATION_ROLE_REFINERY) {
+            if (station_has_module(ui.station, MODULE_ORE_BUYER)) {
                 draw_service_card(inner_x + 12.0f, first_card_y, card_w, card_h, 0.24f, 0.90f, 0.70f, ui.can_sell);
                 draw_service_card(inner_x + 12.0f, first_card_y + card_h + card_gap, card_w, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
-            } else if (ui.station->role == STATION_ROLE_YARD) {
+            } else if (station_has_module(ui.station, MODULE_FRAME_PRESS)) {
                 draw_service_card(inner_x + 12.0f, first_card_y, card_w, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
                 draw_service_card(inner_x + 12.0f, first_card_y + card_h + card_gap, card_w, card_h, 0.50f, 0.82f, 1.0f, ui.can_upgrade_hold);
-            } else if (ui.station->role == STATION_ROLE_OUTPOST) {
+            } else if (station_has_module(ui.station, MODULE_LASER_FAB) || station_has_module(ui.station, MODULE_TRACTOR_FAB)) {
                 draw_service_card(inner_x + 12.0f, first_card_y, card_w, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
+                int card_n = 1;
+                if (station_has_module(ui.station, MODULE_LASER_FAB)) {
+                    draw_service_card(inner_x + 12.0f, first_card_y + (float)card_n * (card_h + card_gap), card_w, card_h, 0.34f, 0.88f, 1.0f, ui.can_upgrade_mining);
+                    card_n++;
+                }
+                if (station_has_module(ui.station, MODULE_TRACTOR_FAB)) {
+                    draw_service_card(inner_x + 12.0f, first_card_y + (float)card_n * (card_h + card_gap), card_w, card_h, 0.42f, 1.0f, 0.86f, ui.can_upgrade_tractor);
+                }
             } else {
                 draw_service_card(inner_x + 12.0f, first_card_y, card_w, card_h, 0.98f, 0.72f, 0.26f, ui.can_repair);
-                draw_service_card(inner_x + 12.0f, first_card_y + card_h + card_gap, card_w, card_h, 0.34f, 0.88f, 1.0f, ui.can_upgrade_mining);
-                draw_service_card(inner_x + 12.0f, first_card_y + 2.0f * (card_h + card_gap), card_w, card_h, 0.42f, 1.0f, 0.86f, ui.can_upgrade_tractor);
             }
         }
 
@@ -585,8 +589,8 @@ void draw_hud(void) {
     int sig_pct = (int)lroundf(signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos) * 100.0f);
 
     if (compact) {
-        const char* nav_role = navigation_station != NULL ? station_role_short_name(navigation_station->role) : "STN";
-        const char* dock_role = current_station != NULL ? station_role_short_name(current_station->role) : "STN";
+        const char* nav_role = navigation_station != NULL ? station_role_short_name(navigation_station) : "STN";
+        const char* dock_role = current_station != NULL ? station_role_short_name(current_station) : "STN";
         const char* bearing_mark = "A";
         if (bearing > 0.12f) {
             bearing_mark = "L";
@@ -717,7 +721,7 @@ void draw_hud(void) {
                 sdtx_puts("Ore board // hold empty");
             }
         } else {
-            sdtx_printf("%s console", station_role_name(current_station->role));
+            sdtx_printf("%s console", station_role_name(current_station));
         }
     } else if ((LOCAL_PLAYER.hover_asteroid >= 0) && g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
         const asteroid_t* asteroid = &g.world.asteroids[LOCAL_PLAYER.hover_asteroid];

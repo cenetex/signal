@@ -78,13 +78,6 @@ typedef struct {
 } ship_t;
 
 typedef enum {
-    STATION_ROLE_REFINERY,
-    STATION_ROLE_YARD,
-    STATION_ROLE_BEAMWORKS,
-    STATION_ROLE_OUTPOST,    /* player-built outpost */
-} station_role_t;
-
-typedef enum {
     PRODUCT_FRAME,
     PRODUCT_LASER_MODULE,
     PRODUCT_TRACTOR_MODULE,
@@ -123,7 +116,6 @@ enum {
 
 typedef struct {
     char name[32];
-    station_role_t role;    /* legacy — will be removed once modules drive everything */
     vec2 pos;
     float radius;
     float dock_radius;
@@ -260,6 +252,38 @@ static inline bool station_has_module(const station_t *st, module_type_t type) {
     for (int i = 0; i < st->module_count; i++)
         if (st->modules[i].type == type) return true;
     return false;
+}
+
+static inline void rebuild_station_services(station_t *st) {
+    st->services = 0;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].scaffold) continue;
+        switch (st->modules[i].type) {
+            case MODULE_ORE_BUYER:      st->services |= STATION_SERVICE_ORE_BUYER; break;
+            case MODULE_REPAIR_BAY:     st->services |= STATION_SERVICE_REPAIR; break;
+            case MODULE_LASER_FAB:      st->services |= STATION_SERVICE_UPGRADE_LASER; break;
+            case MODULE_TRACTOR_FAB:    st->services |= STATION_SERVICE_UPGRADE_TRACTOR; break;
+            case MODULE_FRAME_PRESS:    st->services |= STATION_SERVICE_UPGRADE_HOLD; break;
+            case MODULE_BLUEPRINT_DESK: st->services |= STATION_SERVICE_BLUEPRINT; break;
+            default: break;
+        }
+    }
+}
+
+/* Return the dominant module type for display purposes (name, color, visual).
+ * Priority: FURNACE > FRAME_PRESS > LASER_FAB > TRACTOR_FAB > SIGNAL_RELAY > others.
+ * Returns MODULE_DOCK as fallback. */
+static inline module_type_t station_dominant_module(const station_t *st) {
+    static const module_type_t priority[] = {
+        MODULE_FURNACE, MODULE_FRAME_PRESS, MODULE_LASER_FAB,
+        MODULE_TRACTOR_FAB, MODULE_SIGNAL_RELAY, MODULE_ORE_BUYER,
+    };
+    for (int p = 0; p < (int)(sizeof(priority) / sizeof(priority[0])); p++) {
+        for (int i = 0; i < st->module_count; i++) {
+            if (st->modules[i].type == priority[p]) return priority[p];
+        }
+    }
+    return MODULE_DOCK;
 }
 
 /* Outpost construction constants (client-shared) */

@@ -53,104 +53,81 @@ const station_t* navigation_station_ptr(void) {
 /* Station role labels and colors                                      */
 /* ------------------------------------------------------------------ */
 
-const char* station_role_name(station_role_t role) {
-    switch (role) {
-        case STATION_ROLE_REFINERY:
-            return "Refinery";
-        case STATION_ROLE_YARD:
-            return "Yard";
-        case STATION_ROLE_BEAMWORKS:
-            return "Beamworks";
-        default:
-            return "Station";
+const char* station_role_name(const station_t* station) {
+    module_type_t dom = station_dominant_module(station);
+    switch (dom) {
+        case MODULE_FURNACE:     return "Refinery";
+        case MODULE_FRAME_PRESS: return "Yard";
+        case MODULE_LASER_FAB:   return "Beamworks";
+        case MODULE_TRACTOR_FAB: return "Beamworks";
+        case MODULE_SIGNAL_RELAY:return "Outpost";
+        default:                 return "Station";
     }
 }
 
-const char* station_role_short_name(station_role_t role) {
-    switch (role) {
-        case STATION_ROLE_REFINERY:
-            return "REF";
-        case STATION_ROLE_YARD:
-            return "YARD";
-        case STATION_ROLE_BEAMWORKS:
-            return "BEAM";
-        default:
-            return "STN";
+const char* station_role_short_name(const station_t* station) {
+    module_type_t dom = station_dominant_module(station);
+    switch (dom) {
+        case MODULE_FURNACE:     return "REF";
+        case MODULE_FRAME_PRESS: return "YARD";
+        case MODULE_LASER_FAB:   return "BEAM";
+        case MODULE_TRACTOR_FAB: return "BEAM";
+        case MODULE_SIGNAL_RELAY:return "OTP";
+        default:                 return "STN";
     }
 }
 
-const char* station_role_hub_label(station_role_t role) {
-    switch (role) {
-        case STATION_ROLE_REFINERY:
-            return "REFINERY // ore intake";
-        case STATION_ROLE_YARD:
-            return "YARD // frame bay";
-        case STATION_ROLE_BEAMWORKS:
-            return "BEAMWORKS // field bench";
-        case STATION_ROLE_OUTPOST:
-            return "OUTPOST // relay hub";
-        default:
-            return "STATION";
+const char* station_role_hub_label(const station_t* station) {
+    module_type_t dom = station_dominant_module(station);
+    switch (dom) {
+        case MODULE_FURNACE:     return "REFINERY // ore intake";
+        case MODULE_FRAME_PRESS: return "YARD // frame bay";
+        case MODULE_LASER_FAB:   return "BEAMWORKS // field bench";
+        case MODULE_TRACTOR_FAB: return "BEAMWORKS // field bench";
+        case MODULE_SIGNAL_RELAY:return "OUTPOST // relay hub";
+        default:                 return "STATION";
     }
 }
 
-const char* station_role_market_title(station_role_t role) {
-    switch (role) {
-        case STATION_ROLE_REFINERY:
-            return "ORE BOARD";
-        case STATION_ROLE_YARD:
-            return "FRAME BAY";
-        case STATION_ROLE_BEAMWORKS:
-            return "FIELD BENCH";
-        case STATION_ROLE_OUTPOST:
-            return "OUTPOST";
-        default:
-            return "MARKET";
+const char* station_role_market_title(const station_t* station) {
+    module_type_t dom = station_dominant_module(station);
+    switch (dom) {
+        case MODULE_FURNACE:     return "ORE BOARD";
+        case MODULE_FRAME_PRESS: return "FRAME BAY";
+        case MODULE_LASER_FAB:   return "FIELD BENCH";
+        case MODULE_TRACTOR_FAB: return "FIELD BENCH";
+        case MODULE_SIGNAL_RELAY:return "OUTPOST";
+        default:                 return "MARKET";
     }
 }
 
-const char* station_role_fit_title(station_role_t role) {
-    switch (role) {
-        case STATION_ROLE_REFINERY:
-            return "HAUL";
-        case STATION_ROLE_YARD:
-            return "FIT";
-        case STATION_ROLE_BEAMWORKS:
-            return "TUNING";
-        case STATION_ROLE_OUTPOST:
-            return "OUTPOST";
-        default:
-            return "STATUS";
+const char* station_role_fit_title(const station_t* station) {
+    module_type_t dom = station_dominant_module(station);
+    switch (dom) {
+        case MODULE_FURNACE:     return "HAUL";
+        case MODULE_FRAME_PRESS: return "FIT";
+        case MODULE_LASER_FAB:   return "TUNING";
+        case MODULE_TRACTOR_FAB: return "TUNING";
+        case MODULE_SIGNAL_RELAY:return "OUTPOST";
+        default:                 return "STATUS";
     }
 }
 
-void station_role_color(station_role_t role, float* r, float* g0, float* b) {
-    switch (role) {
-        case STATION_ROLE_REFINERY:
-            *r = 0.34f;
-            *g0 = 0.96f;
-            *b = 0.76f;
-            break;
-        case STATION_ROLE_YARD:
-            *r = 0.98f;
-            *g0 = 0.74f;
-            *b = 0.30f;
-            break;
-        case STATION_ROLE_BEAMWORKS:
-            *r = 0.42f;
-            *g0 = 0.86f;
-            *b = 1.0f;
-            break;
-        case STATION_ROLE_OUTPOST:
-            *r = 0.72f;
-            *g0 = 0.92f;
-            *b = 0.52f;
-            break;
+void station_role_color(const station_t* station, float* r, float* g0, float* b) {
+    module_type_t dom = station_dominant_module(station);
+    switch (dom) {
+        case MODULE_FURNACE:
+            *r = 0.34f; *g0 = 0.96f; *b = 0.76f; break;
+        case MODULE_FRAME_PRESS:
+            *r = 0.98f; *g0 = 0.74f; *b = 0.30f; break;
+        case MODULE_LASER_FAB:
+            *r = 0.42f; *g0 = 0.86f; *b = 1.0f; break;
+        case MODULE_TRACTOR_FAB:
+            *r = 0.42f; *g0 = 0.86f; *b = 1.0f; break;
+        case MODULE_SIGNAL_RELAY:
+            *r = 0.72f; *g0 = 0.92f; *b = 0.52f; break;
         default:
-            *r = 0.45f;
-            *g0 = 0.85f;
-            *b = 1.0f;
-            break;
+            *r = 0.45f; *g0 = 0.85f; *b = 1.0f; break;
     }
 }
 
@@ -255,13 +232,7 @@ void format_station_header_badge(const station_ui_state_t* ui, char* text, size_
         return;
     }
 
-    if (ui->station->role == STATION_ROLE_REFINERY) {
-        snprintf(text, text_size, "ORE BOARD");
-    } else if (ui->station->role == STATION_ROLE_YARD) {
-        snprintf(text, text_size, "YARD BAY");
-    } else {
-        snprintf(text, text_size, "BEAM LAB");
-    }
+    snprintf(text, text_size, "%s", station_role_market_title(ui->station));
 }
 
 void format_station_market_summary(const station_ui_state_t* ui, bool compact, char* text, size_t text_size) {
@@ -270,7 +241,7 @@ void format_station_market_summary(const station_ui_state_t* ui, bool compact, c
         return;
     }
 
-    if (ui->station->role == STATION_ROLE_REFINERY) {
+    if (station_has_module(ui->station, MODULE_ORE_BUYER)) {
         char manifest[64] = { 0 };
         format_ore_manifest(manifest, sizeof(manifest));
         if (compact) {
@@ -278,7 +249,7 @@ void format_station_market_summary(const station_ui_state_t* ui, bool compact, c
         } else {
             snprintf(text, text_size, "%s // %d/%d", manifest, ui->cargo_units, ui->cargo_capacity);
         }
-    } else if (ui->station->role == STATION_ROLE_YARD) {
+    } else if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
         snprintf(text, text_size, "%s", compact ? "Hull service + hold refit" : "Hull service and hold refits.");
     } else {
         snprintf(text, text_size, "%s", compact ? "Laser + tractor tuning" : "Laser and tractor tuning.");
@@ -291,7 +262,7 @@ void format_station_market_detail(const station_ui_state_t* ui, bool compact, ch
         return;
     }
 
-    if (ui->station->role == STATION_ROLE_REFINERY) {
+    if (station_has_module(ui->station, MODULE_ORE_BUYER)) {
         if (compact) {
             snprintf(text, text_size, "Haul %d cr", ui->payout);
         } else {
@@ -299,7 +270,7 @@ void format_station_market_detail(const station_ui_state_t* ui, bool compact, ch
             format_ingot_stock_line(ui->station, stock, sizeof(stock));
             snprintf(text, text_size, "Value %d cr // Stock %s", ui->payout, stock);
         }
-    } else if (ui->station->role == STATION_ROLE_YARD) {
+    } else if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
         int buf = (int)lroundf(ui->station->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)]);
         int prod = (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]);
         snprintf(text, text_size, "Ingots %d // Frames %d", buf, prod);
@@ -321,7 +292,7 @@ int build_station_service_lines(const station_ui_state_t* ui, station_service_li
 
     memset(lines, 0, sizeof(station_service_line_t) * 3);
 
-    if (ui->station->role == STATION_ROLE_REFINERY) {
+    if (station_has_module(ui->station, MODULE_ORE_BUYER)) {
         lines[0].action = "[1] Sell ore";
         snprintf(lines[0].state, sizeof(lines[0].state), "%s", ui->cargo_units > 0 ? "ready" : "empty");
         lines[0].r = ui->can_sell ? 114 : 169;
@@ -356,7 +327,7 @@ int build_station_service_lines(const station_ui_state_t* ui, station_service_li
         lines[0].b = 204;
     }
 
-    if (ui->station->role == STATION_ROLE_YARD) {
+    if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
         lines[1].action = "[4] Hold racks";
         if (ship_upgrade_maxed(&LOCAL_PLAYER.ship,SHIP_UPGRADE_HOLD)) {
             snprintf(lines[1].state, sizeof(lines[1].state), "maxed");
@@ -372,32 +343,39 @@ int build_station_service_lines(const station_ui_state_t* ui, station_service_li
         return 2;
     }
 
-    lines[1].action = "[3] Laser array";
-    if (ship_upgrade_maxed(&LOCAL_PLAYER.ship,SHIP_UPGRADE_MINING)) {
-        snprintf(lines[1].state, sizeof(lines[1].state), "maxed");
-        lines[1].r = 169;
-        lines[1].g0 = 179;
-        lines[1].b = 204;
-    } else {
-        snprintf(lines[1].state, sizeof(lines[1].state), "%d cr", ui->mining_cost);
-        lines[1].r = ui->can_upgrade_mining ? 203 : 169;
-        lines[1].g0 = ui->can_upgrade_mining ? 220 : 179;
-        lines[1].b = ui->can_upgrade_mining ? 248 : 204;
+    int count = 1;
+    if (station_has_module(ui->station, MODULE_LASER_FAB)) {
+        lines[count].action = "[3] Laser array";
+        if (ship_upgrade_maxed(&LOCAL_PLAYER.ship,SHIP_UPGRADE_MINING)) {
+            snprintf(lines[count].state, sizeof(lines[count].state), "maxed");
+            lines[count].r = 169;
+            lines[count].g0 = 179;
+            lines[count].b = 204;
+        } else {
+            snprintf(lines[count].state, sizeof(lines[count].state), "%d cr", ui->mining_cost);
+            lines[count].r = ui->can_upgrade_mining ? 203 : 169;
+            lines[count].g0 = ui->can_upgrade_mining ? 220 : 179;
+            lines[count].b = ui->can_upgrade_mining ? 248 : 204;
+        }
+        count++;
     }
 
-    lines[2].action = "[5] Tractor coil";
-    if (ship_upgrade_maxed(&LOCAL_PLAYER.ship,SHIP_UPGRADE_TRACTOR)) {
-        snprintf(lines[2].state, sizeof(lines[2].state), "maxed");
-        lines[2].r = 169;
-        lines[2].g0 = 179;
-        lines[2].b = 204;
-    } else {
-        snprintf(lines[2].state, sizeof(lines[2].state), "%d cr", ui->tractor_cost);
-        lines[2].r = ui->can_upgrade_tractor ? 203 : 169;
-        lines[2].g0 = ui->can_upgrade_tractor ? 220 : 179;
-        lines[2].b = ui->can_upgrade_tractor ? 248 : 204;
+    if (station_has_module(ui->station, MODULE_TRACTOR_FAB)) {
+        lines[count].action = "[5] Tractor coil";
+        if (ship_upgrade_maxed(&LOCAL_PLAYER.ship,SHIP_UPGRADE_TRACTOR)) {
+            snprintf(lines[count].state, sizeof(lines[count].state), "maxed");
+            lines[count].r = 169;
+            lines[count].g0 = 179;
+            lines[count].b = 204;
+        } else {
+            snprintf(lines[count].state, sizeof(lines[count].state), "%d cr", ui->tractor_cost);
+            lines[count].r = ui->can_upgrade_tractor ? 203 : 169;
+            lines[count].g0 = ui->can_upgrade_tractor ? 220 : 179;
+            lines[count].b = ui->can_upgrade_tractor ? 248 : 204;
+        }
+        count++;
     }
-    return 3;
+    return count;
 }
 
 void draw_station_service_text_line(float x, float y, const station_service_line_t* line, bool compact) {
@@ -451,7 +429,7 @@ void draw_station_services(const station_ui_state_t* ui) {
     } else {
         sdtx_pos(ui_text_pos(panel_x + 20.0f), ui_text_pos(panel_y + 32.0f));
         sdtx_color3b(118, 255, 221);
-        sdtx_puts(station_role_hub_label(ui->station->role));
+        sdtx_puts(station_role_hub_label(ui->station));
     }
 
     /* Credits badge (right side of header) */
@@ -470,11 +448,12 @@ void draw_station_services(const station_ui_state_t* ui) {
     {
         float tab_bar_y = inner_y + 32.0f;
         /* Role-specific label for the ROLE tab */
+        module_type_t dom = station_dominant_module(ui->station);
         const char* role_label = "STATION";
-        if (ui->station->role == STATION_ROLE_REFINERY) role_label = "REFINERY";
-        else if (ui->station->role == STATION_ROLE_YARD) role_label = "YARD";
-        else if (ui->station->role == STATION_ROLE_BEAMWORKS) role_label = "BENCH";
-        else if (ui->station->role == STATION_ROLE_OUTPOST) role_label = "OUTPOST";
+        if (dom == MODULE_FURNACE) role_label = "REFINERY";
+        else if (dom == MODULE_FRAME_PRESS) role_label = "YARD";
+        else if (dom == MODULE_LASER_FAB || dom == MODULE_TRACTOR_FAB) role_label = "BENCH";
+        else if (dom == MODULE_SIGNAL_RELAY) role_label = "OUTPOST";
 
         for (int t = 0; t < tab_count; t++) {
             float tx = inner_x + (float)t * tab_w;
@@ -516,7 +495,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             /* Station welcome -- what this place does */
             sdtx_color3b(203, 220, 248);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-            if (ui->station->role == STATION_ROLE_REFINERY) {
+            if (station_has_module(ui->station, MODULE_FURNACE)) {
                 sdtx_puts("Ore intake and refining hub.");
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
                 sdtx_color3b(145, 160, 188);
@@ -526,14 +505,14 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 58.0f));
                 sdtx_color3b(203, 220, 248);
                 sdtx_printf("Haul value: %d cr", ui->payout);
-            } else if (ui->station->role == STATION_ROLE_YARD) {
+            } else if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
                 sdtx_puts("Frame manufacturing yard.");
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
                 sdtx_color3b(145, 160, 188);
                 sdtx_puts("Upgrades cargo hold capacity.");
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 34.0f));
                 sdtx_puts("Produces frame components from ingots.");
-            } else if (ui->station->role == STATION_ROLE_OUTPOST) {
+            } else if (station_has_module(ui->station, MODULE_SIGNAL_RELAY)) {
                 sdtx_puts("Signal relay outpost.");
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
                 sdtx_color3b(145, 160, 188);
@@ -579,7 +558,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         float meter_x = cx;
         float meter_w = fminf(inner_w - 40.0f, 200.0f);
 
-        if (ui->station->role == STATION_ROLE_REFINERY) {
+        if (station_has_module(ui->station, MODULE_FURNACE)) {
             /* Ore prices */
             sdtx_color3b(255, 221, 119);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
@@ -618,7 +597,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                     (int)lroundf(ui->station->product_stock[PRODUCT_TRACTOR_MODULE]),
                     (int)lroundf(ui->station->product_stock[PRODUCT_LASER_MODULE]));
             }
-        } else if (ui->station->role == STATION_ROLE_YARD) {
+        } else if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
             sdtx_color3b(130, 255, 235);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
             sdtx_puts("FRAME BAY");
@@ -640,7 +619,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_printf("Need %d frames + %d cr", need, ship_upgrade_cost(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD));
             }
             draw_upgrade_pips(meter_x, fy * HUD_CELL + 34.0f, LOCAL_PLAYER.ship.hold_level, 0.50f, 0.82f, 1.0f);
-        } else if (ui->station->role == STATION_ROLE_BEAMWORKS) {
+        } else if (station_has_module(ui->station, MODULE_LASER_FAB) || station_has_module(ui->station, MODULE_TRACTOR_FAB)) {
             sdtx_color3b(130, 255, 235);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
             sdtx_puts("FIELD BENCH");
@@ -660,7 +639,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 draw_upgrade_pips(meter_x, by * HUD_CELL, LOCAL_PLAYER.ship.mining_level, 0.34f, 0.88f, 1.0f);
                 draw_upgrade_pips(meter_x, by * HUD_CELL + 14.0f, LOCAL_PLAYER.ship.tractor_level, 0.42f, 1.0f, 0.86f);
             }
-        } else if (ui->station->role == STATION_ROLE_OUTPOST) {
+        } else if (station_has_module(ui->station, MODULE_SIGNAL_RELAY)) {
             sdtx_color3b(130, 255, 235);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
             sdtx_puts("RELAY STATUS");
