@@ -122,8 +122,14 @@ TEST(test_station_buy_price) {
     station_t station = {0};
     station.buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
     station.buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
+    /* Empty hopper = 2× base (max deficit) */
+    ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 20.0f, 0.01f);
+    /* Full hopper = base price */
+    station.ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
     ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 10.0f, 0.01f);
-    ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_CRYSTAL_ORE), 18.0f, 0.01f);
+    /* Half full = 1.5× base */
+    station.ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
+    ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 15.0f, 0.01f);
     ASSERT_EQ_FLOAT(station_buy_price(NULL, COMMODITY_FERRITE_ORE), 0.0f, 0.01f);
 }
 
@@ -338,7 +344,8 @@ TEST(test_station_cargo_sale_value) {
     station_t station = {0};
     ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
     station.buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    ASSERT_EQ_FLOAT(station_cargo_sale_value(&ship, &station), 100.0f, 0.01f);
+    /* Empty hopper = 2× base, so 10 ore × 20 cr = 200 */
+    ASSERT_EQ_FLOAT(station_cargo_sale_value(&ship, &station), 200.0f, 0.01f);
 }
 
 TEST(test_station_cargo_sale_value_null_station) {
@@ -1001,11 +1008,11 @@ TEST(test_bug11_no_duplicate_sale_value) {
     ship_t ship;
     memset(&ship, 0, sizeof(ship));
     ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
-    station_t st;
+    station_t st = {0};
     memset(&st, 0, sizeof(st));
     st.buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
     float val = station_cargo_sale_value(&ship, &st);
-    ASSERT_EQ_FLOAT(val, 100.0f, 0.01f);
+    ASSERT_EQ_FLOAT(val, 200.0f, 0.01f); /* empty hopper = 2× base */
     /* The real test: there should be no static version in game_sim.c.
      * We verify by checking economy.c's extern version is the one called by world_sim_step.
      * If duplicates exist, this line count assertion will fail when they're removed: */
