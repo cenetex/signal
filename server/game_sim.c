@@ -1752,7 +1752,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             sp->ship.has_scaffold_kit = true;
             SIM_LOG("[sim] player %d bought scaffold kit\n", sp->id);
         }
-        return;
+        /* Don't return — allow other intents (like interact/launch) to process */
     }
     /* Outpost placement: must be undocked with scaffold kit */
     if (intent->place_outpost && !sp->docked && sp->ship.has_scaffold_kit) {
@@ -1928,6 +1928,9 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->input.upgrade_hold = false;
     sp->input.upgrade_tractor = false;
     sp->input.place_outpost = false;
+    sp->input.buy_scaffold_kit = false;
+    sp->input.build_module = false;
+    sp->input.buy_product = false;
 }
 
 /* ================================================================== */
