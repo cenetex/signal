@@ -822,53 +822,57 @@ void draw_hud(void) {
         sdtx_puts("ALPHA // may reset");
     }
 
-    /* Navigation pip: bearing arrow to last breadcrumb */
-    if (g.nav_pip_active && !LOCAL_PLAYER.docked) {
-        vec2 to_pip = v2_sub(g.nav_pip_pos, LOCAL_PLAYER.ship.pos);
-        float dist = sqrtf(v2_len_sq(to_pip));
-        /* Check if target is on screen (world coords → screen coords) */
+    /* --- Edge pips --- */
+    if (!LOCAL_PLAYER.docked) {
         float half_w = sapp_widthf() * 0.5f / fmaxf(1.0f, sapp_dpi_scale());
         float half_h = sapp_heightf() * 0.5f / fmaxf(1.0f, sapp_dpi_scale());
-        float screen_dx = fabsf(to_pip.x);
-        float screen_dy = fabsf(to_pip.y);
-        bool on_screen = (screen_dx < half_w * 0.85f) && (screen_dy < half_h * 0.85f);
-        if (dist > 50.0f && !on_screen) {
-            /* Screen-space angle: negate Y because screen Y is flipped */
-            float angle = atan2f(-to_pip.y, to_pip.x);
-            /* Place arrow on screen edge */
-            float margin = 40.0f;
-            float cx = screen_w * 0.5f;
-            float cy = screen_h * 0.5f;
-            float ex = cx + cosf(angle) * (cx - margin);
-            float ey = cy + sinf(angle) * (cy - margin);
-            /* Clamp to screen bounds */
-            if (ex < margin) ex = margin;
-            if (ex > screen_w - margin) ex = screen_w - margin;
-            if (ey < margin) ey = margin;
-            if (ey > screen_h - margin) ey = screen_h - margin;
-            /* Draw arrow chevron */
-            float ar = 8.0f;
-            float ca = cosf(angle), sa = sinf(angle);
-            float pip_r = g.nav_pip_is_blueprint ? 1.0f : 0.34f;
-            float pip_g = g.nav_pip_is_blueprint ? 0.87f : 0.96f;
-            float pip_b = g.nav_pip_is_blueprint ? 0.20f : 0.76f;
-            float pulse = 0.6f + 0.3f * sinf(g.world.time * 3.0f);
-            sgl_defaults();
-            sgl_matrix_mode_projection();
-            sgl_load_identity();
-            sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
-            sgl_matrix_mode_modelview();
-            sgl_load_identity();
-            float lx = -ca * ar - sa * ar * 0.6f;
-            float ly = -sa * ar + ca * ar * 0.6f;
-            float rx = -ca * ar + sa * ar * 0.6f;
-            float ry = -sa * ar - ca * ar * 0.6f;
-            sgl_begin_lines();
-            sgl_c4f(pip_r, pip_g, pip_b, pulse);
-            sgl_v2f(ex + lx, ey + ly); sgl_v2f(ex, ey);
-            sgl_v2f(ex, ey); sgl_v2f(ex + rx, ey + ry);
-            sgl_end();
+
+        /* Helper: draw a chevron pip at screen edge toward a world position */
+        #define DRAW_PIP(target_pos, pr, pg, pb) do { \
+            vec2 _to = v2_sub(target_pos, LOCAL_PLAYER.ship.pos); \
+            float _dist = sqrtf(v2_len_sq(_to)); \
+            bool _on = (fabsf(_to.x) < half_w * 0.85f) && (fabsf(_to.y) < half_h * 0.85f); \
+            if (_dist > 50.0f && !_on) { \
+                float _a = atan2f(-_to.y, _to.x); \
+                float _m = 40.0f, _cx = screen_w*0.5f, _cy = screen_h*0.5f; \
+                float _ex = _cx + cosf(_a)*(_cx-_m), _ey = _cy + sinf(_a)*(_cy-_m); \
+                if (_ex < _m) _ex = _m; if (_ex > screen_w-_m) _ex = screen_w-_m; \
+                if (_ey < _m) _ey = _m; if (_ey > screen_h-_m) _ey = screen_h-_m; \
+                float _ar = 8.0f, _ca = cosf(_a), _sa = sinf(_a); \
+                float _pulse = 0.6f + 0.3f * sinf(g.world.time * 3.0f); \
+                sgl_defaults(); sgl_matrix_mode_projection(); sgl_load_identity(); \
+                sgl_ortho(0,screen_w,screen_h,0,-1,1); sgl_matrix_mode_modelview(); sgl_load_identity(); \
+                sgl_begin_lines(); sgl_c4f(pr, pg, pb, _pulse); \
+                sgl_v2f(_ex+(-_ca*_ar-_sa*_ar*0.6f), _ey+(-_sa*_ar+_ca*_ar*0.6f)); sgl_v2f(_ex, _ey); \
+                sgl_v2f(_ex, _ey); sgl_v2f(_ex+(-_ca*_ar+_sa*_ar*0.6f), _ey+(-_sa*_ar-_ca*_ar*0.6f)); \
+                sgl_end(); \
+            } \
+        } while(0)
+
+        /* Nav pip: blueprint (yellow) or station (green) */
+        if (g.nav_pip_active) {
+            if (g.nav_pip_is_blueprint)
+                DRAW_PIP(g.nav_pip_pos, 1.0f, 0.87f, 0.20f);
+            else
+                DRAW_PIP(g.nav_pip_pos, 0.34f, 0.96f, 0.76f);
         }
+
+        /* Target pip: nearest off-screen asteroid (red) */
+        {
+            float best_d = 1e18f;
+            vec2 best_pos = LOCAL_PLAYER.ship.pos;
+            bool found = false;
+            for (int i = 0; i < MAX_ASTEROIDS; i++) {
+                if (!g.world.asteroids[i].active) continue;
+                if (asteroid_is_collectible(&g.world.asteroids[i])) continue;
+                float d = v2_dist_sq(g.world.asteroids[i].pos, LOCAL_PLAYER.ship.pos);
+                if (d < best_d) { best_d = d; best_pos = g.world.asteroids[i].pos; found = true; }
+            }
+            if (found)
+                DRAW_PIP(best_pos, 0.9f, 0.25f, 0.2f);
+        }
+
+        #undef DRAW_PIP
     }
 
     draw_station_services(&ui);
