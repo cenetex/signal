@@ -252,7 +252,8 @@ static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
 static inline int serialize_station_identity(uint8_t *buf, int index, const station_t *st) {
     buf[0] = NET_MSG_STATION_IDENTITY;
     buf[1] = (uint8_t)index;
-    buf[2] = 0; /* reserved (was: role) */
+    buf[2] = 0;
+    if (st->scaffold) buf[2] |= 1;  /* bit 0: scaffold */
     write_u32_le(&buf[3], st->services);
     write_f32_le(&buf[7], st->pos.x);
     write_f32_le(&buf[11], st->pos.y);

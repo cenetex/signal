@@ -984,12 +984,12 @@ static void apply_remote_stations(uint8_t index, const float* ore_buf, const flo
     /* scaffold and scaffold_progress will be updated via a future network message */
 }
 
-static void apply_remote_station_identity(uint8_t index, uint8_t role_reserved, uint32_t services,
+static void apply_remote_station_identity(uint8_t index, uint8_t flags, uint32_t services,
     float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
     const char* name) {
-    (void)role_reserved; /* legacy field — ignored, services are authoritative */
     if (index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[index];
+    st->scaffold = (flags & 1) != 0;
     st->services = services;
     st->pos = v2(pos_x, pos_y);
     st->radius = radius;

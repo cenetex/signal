@@ -334,6 +334,13 @@ int main(void) {
         }
         if (now - last_world >= WORLD_TICK_MS) {
             broadcast_world();
+            /* Re-broadcast station identities so scaffold status stays synced */
+            for (int s = 0; s < MAX_STATIONS; s++) {
+                if (!station_exists(&world.stations[s])) continue;
+                uint8_t id_buf[64];
+                int id_len = serialize_station_identity(id_buf, s, &world.stations[s]);
+                broadcast(id_buf, (size_t)id_len);
+            }
             last_world = now;
         }
         if (now - last_ship >= SHIP_TICK_MS) {
