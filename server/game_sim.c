@@ -1407,7 +1407,7 @@ static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, i
         if (a->tier < max_tier) continue; /* tier enum: XXL=0 < XL=1 < ... < S=4 */
         vec2 to_a = v2_sub(a->pos, origin);
         float proj = v2_dot(to_a, forward);
-        if (proj < 0.0f || proj > MINING_RANGE) continue;
+        if (proj < 0.0f || proj > MINING_RANGE + a->radius) continue;
         float dist_from_ray = fabsf(v2_cross(to_a, forward));
         if (dist_from_ray > a->radius + 9.0f) continue;
         if (proj < best_proj) { best_proj = proj; best = i; }

@@ -180,7 +180,7 @@ int find_mining_target(const asteroid_t* asteroids, int count, vec2 origin, vec2
 
         vec2 to_asteroid = v2_sub(asteroid->pos, origin);
         float projection = v2_dot(to_asteroid, forward);
-        if ((projection < 0.0f) || (projection > range)) continue;
+        if ((projection < 0.0f) || (projection > range + asteroid->radius)) continue;
 
         float distance_from_ray = fabsf(v2_cross(to_asteroid, forward));
         if (distance_from_ray > (asteroid->radius + 9.0f)) continue;
