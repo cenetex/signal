@@ -84,6 +84,7 @@ typedef struct {
     bool in_dock_range;
     bool beam_active;
     bool beam_hit;
+    bool beam_ineffective; /* hitting a rock too tough for current laser level */
     int hover_asteroid;
     vec2 beam_start;
     vec2 beam_end;

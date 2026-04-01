@@ -558,10 +558,16 @@ static void draw_beam(void) {
         return;
     }
 
-    if (LOCAL_PLAYER.beam_hit) {
+    if (LOCAL_PLAYER.beam_hit && LOCAL_PLAYER.beam_ineffective) {
+        /* Red beam: hitting a rock too tough for current laser */
+        draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 1.0f, 0.2f, 0.15f, 0.85f);
+        draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.8f, 0.1f, 0.05f, 0.30f);
+    } else if (LOCAL_PLAYER.beam_hit) {
+        /* Normal mining beam: teal */
         draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.45f, 1.0f, 0.92f, 0.95f);
         draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.12f, 0.78f, 1.0f, 0.35f);
     } else {
+        /* Beam into empty space */
         draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.9f, 0.75f, 0.30f, 0.55f);
     }
 }

@@ -166,17 +166,13 @@ void step_asteroid_dynamics(asteroid_t* asteroids, int count, vec2 ship_pos, flo
 }
 
 int find_mining_target(const asteroid_t* asteroids, int count, vec2 origin, vec2 forward, float range, int mining_level) {
-    /* Max tier: Level 0=M, 1=L, 2=XL, 3+=XXL */
-    int max_tier = (mining_level >= 3) ? ASTEROID_TIER_XXL :
-                   (mining_level == 2) ? ASTEROID_TIER_XL :
-                   (mining_level == 1) ? ASTEROID_TIER_L : ASTEROID_TIER_M;
+    (void)mining_level; /* tier check moved to damage step — beam targets any rock */
     int best_index = -1;
     float best_projection = range + 1.0f;
 
     for (int i = 0; i < count; i++) {
         const asteroid_t* asteroid = &asteroids[i];
         if (!asteroid->active || asteroid_is_collectible(asteroid)) continue;
-        if (asteroid->tier < max_tier) continue; /* tier enum: XXL=0 is biggest */
 
         vec2 to_asteroid = v2_sub(asteroid->pos, origin);
         float projection = v2_dot(to_asteroid, forward);

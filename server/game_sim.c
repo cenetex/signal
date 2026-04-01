@@ -1444,13 +1444,12 @@ static asteroid_tier_t max_mineable_tier(int mining_level) {
 }
 
 static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, int mining_level) {
-    asteroid_tier_t max_tier = max_mineable_tier(mining_level);
+    (void)mining_level; /* tier check moved to damage step */
     int best = -1;
     float best_proj = MINING_RANGE + 1.0f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active || asteroid_is_collectible(a)) continue;
-        if (a->tier < max_tier) continue; /* tier enum: XXL=0 < XL=1 < ... < S=4 */
         vec2 to_a = v2_sub(a->pos, origin);
         float proj = v2_dot(to_a, forward);
         if (proj < 0.0f || proj > MINING_RANGE + a->radius) continue;
@@ -1656,6 +1655,7 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
 static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool mining, vec2 forward) {
     sp->beam_active = false;
     sp->beam_hit = false;
+    sp->beam_ineffective = false;
     if (!mining) return;
 
     vec2 muzzle = ship_muzzle(&sp->ship, forward);
@@ -1668,15 +1668,22 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
         vec2 normal = v2_norm(to_a);
         sp->beam_end = v2_sub(a->pos, v2_scale(normal, a->radius * 0.85f));
         sp->beam_hit = true;
-        emit_event(w, (sim_event_t){.type = SIM_EVENT_MINING_TICK, .player_id = sp->id});
-        if (!w->player_only_mode) {
-            float mining_sig = signal_strength_at(w, sp->ship.pos);
-            float mined = ship_mining_rate(&sp->ship) * dt * (0.2f + 0.8f * mining_sig);
-            mined = fminf(mined, a->hp);
-            a->hp -= mined;
-            a->net_dirty = true;
-            if (a->hp <= 0.01f)
-                fracture_asteroid(w, sp->hover_asteroid, normal);
+        /* Check if laser is powerful enough for this tier */
+        asteroid_tier_t max_tier = max_mineable_tier(sp->ship.mining_level);
+        if (a->tier < max_tier) {
+            /* Beam hits but does no damage — too tough */
+            sp->beam_ineffective = true;
+        } else {
+            emit_event(w, (sim_event_t){.type = SIM_EVENT_MINING_TICK, .player_id = sp->id});
+            if (!w->player_only_mode) {
+                float mining_sig = signal_strength_at(w, sp->ship.pos);
+                float mined = ship_mining_rate(&sp->ship) * dt * (0.2f + 0.8f * mining_sig);
+                mined = fminf(mined, a->hp);
+                a->hp -= mined;
+                a->net_dirty = true;
+                if (a->hp <= 0.01f)
+                    fracture_asteroid(w, sp->hover_asteroid, normal);
+            }
         }
     } else {
         sp->beam_end = v2_add(muzzle, v2_scale(forward, MINING_RANGE));
