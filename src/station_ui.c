@@ -585,6 +585,17 @@ void draw_station_services(const station_ui_state_t* ui) {
         }
         /* BUY: ingots from station inventory */
         {
+            /* Compute total stock and value */
+            int total_stock = 0;
+            float total_value = 0.0f;
+            for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+                float s = station_inventory_amount(ui->station, (commodity_t)c);
+                if (s > 0.5f) {
+                    total_stock += (int)lroundf(s);
+                    commodity_t src = commodity_ore_form((commodity_t)c);
+                    total_value += s * station_buy_price(ui->station, src) * 2.0f;
+                }
+            }
             bool has_stock = false;
             for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
                 int stock = (int)lroundf(station_inventory_amount(ui->station, (commodity_t)c));
@@ -592,7 +603,11 @@ void draw_station_services(const station_ui_state_t* ui) {
                 if (!has_stock) {
                     sdtx_color3b(130, 255, 235);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-                    sdtx_puts("[F] BUY INGOTS");
+                    int tv = (int)lroundf(total_value);
+                    if (tv >= 1000)
+                        sdtx_printf("[F] BUY INGOTS (%d u / %dk)", total_stock, tv / 1000);
+                    else
+                        sdtx_printf("[F] BUY INGOTS (%d u / %d)", total_stock, tv);
                     my += 16.0f;
                     has_stock = true;
                 }
