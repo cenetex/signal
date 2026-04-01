@@ -268,10 +268,11 @@ int main(void) {
     mg_mgr_init(&mgr);
     mg_http_listen(&mgr, listen_url, ev_handler, NULL);
 #ifdef GIT_HASH
-    printf("[server] signal game server %s on %s\n", GIT_HASH, listen_url);
+    printf("[server] SIGNAL alpha %s on %s\n", GIT_HASH, listen_url);
 #else
-    printf("[server] signal game server on %s\n", listen_url);
+    printf("[server] SIGNAL alpha on %s\n", listen_url);
 #endif
+    printf("[server] ALPHA BUILD — world may reset without notice\n");
 
     uint64_t last_sim = 0, last_state = 0, last_world = 0, last_ship = 0, last_save = 0;
     float sim_accum = 0.0f;
