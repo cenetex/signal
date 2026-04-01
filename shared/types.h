@@ -196,6 +196,7 @@ typedef struct {
     float spin;
     float seed;
     float age;
+    bool net_dirty;   /* needs network sync (spawn, fracture, HP change, death) */
 } asteroid_t;
 
 typedef enum {

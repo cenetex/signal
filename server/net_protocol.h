@@ -104,14 +104,42 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
  * WORLD_ASTEROIDS message:
  * [type:1][count:1] + count * ASTEROID_RECORD_SIZE-byte records
  */
-static inline int serialize_asteroids(uint8_t *buf, const asteroid_t *asteroids) {
+/* Serialize only dirty asteroids (delta update). Clears dirty flags after serialization. */
+static inline int serialize_asteroids(uint8_t *buf, asteroid_t *asteroids) {
+    int count = 0;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!asteroids[i].net_dirty) continue;
+        asteroid_t *a = &asteroids[i];
+        uint8_t *p = &buf[2 + count * ASTEROID_RECORD_SIZE];
+        p[0] = (uint8_t)i;
+        p[1] = a->active ? 1 : 0;  /* inactive = deactivation signal */
+        if (a->fracture_child) p[1] |= (1 << 1);
+        p[1] |= (((uint8_t)a->tier & 0x7) << 2);
+        p[1] |= (((uint8_t)a->commodity & 0x7) << 5);
+        write_f32_le(&p[2],  a->pos.x);
+        write_f32_le(&p[6],  a->pos.y);
+        write_f32_le(&p[10], a->vel.x);
+        write_f32_le(&p[14], a->vel.y);
+        write_f32_le(&p[18], a->hp);
+        write_f32_le(&p[22], a->ore);
+        write_f32_le(&p[26], a->radius);
+        a->net_dirty = false;
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_ASTEROIDS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * ASTEROID_RECORD_SIZE;
+}
+
+/* Serialize ALL asteroids (full sync for new player join). Does not clear dirty flags. */
+static inline int serialize_asteroids_full(uint8_t *buf, const asteroid_t *asteroids) {
     int count = 0;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!asteroids[i].active) continue;
         const asteroid_t *a = &asteroids[i];
         uint8_t *p = &buf[2 + count * ASTEROID_RECORD_SIZE];
         p[0] = (uint8_t)i;
-        p[1] = 1; /* active */
+        p[1] = 1;
         if (a->fracture_child) p[1] |= (1 << 1);
         p[1] |= (((uint8_t)a->tier & 0x7) << 2);
         p[1] |= (((uint8_t)a->commodity & 0x7) << 5);

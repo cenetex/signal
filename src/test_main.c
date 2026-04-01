@@ -767,6 +767,7 @@ TEST(test_roundtrip_asteroids) {
 
     /* Set up 3 active asteroids with different properties */
     asteroids[0].active = true;
+    asteroids[0].net_dirty = true;
     asteroids[0].fracture_child = false;
     asteroids[0].tier = ASTEROID_TIER_XL;
     asteroids[0].commodity = COMMODITY_FERRITE_ORE;
@@ -777,6 +778,7 @@ TEST(test_roundtrip_asteroids) {
     asteroids[0].radius = 65.0f;
 
     asteroids[5].active = true;
+    asteroids[5].net_dirty = true;
     asteroids[5].fracture_child = true;
     asteroids[5].tier = ASTEROID_TIER_S;
     asteroids[5].commodity = COMMODITY_CRYSTAL_ORE;
@@ -786,12 +788,12 @@ TEST(test_roundtrip_asteroids) {
     asteroids[5].ore = 10.5f;
     asteroids[5].radius = 14.0f;
 
-    uint8_t buf[2 + MAX_ASTEROIDS * 30];
+    uint8_t buf[2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
     int len = serialize_asteroids(buf, asteroids);
 
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_ASTEROIDS);
-    ASSERT_EQ_INT(buf[1], 2);  /* 2 active asteroids */
-    ASSERT_EQ_INT(len, 2 + 2 * 30);
+    ASSERT_EQ_INT(buf[1], 2);  /* 2 dirty asteroids */
+    ASSERT_EQ_INT(len, 2 + 2 * ASTEROID_RECORD_SIZE);
 
     /* First asteroid (index 0) */
     uint8_t *p0 = &buf[2];

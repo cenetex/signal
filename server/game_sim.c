@@ -324,6 +324,7 @@ static void sim_configure_asteroid(world_t *w, asteroid_t *a, asteroid_tier_t ti
     a->spin     = rand_range(w, -sl, sl);
     a->seed     = rand_range(w, 0.0f, 100.0f);
     a->age      = 0.0f;
+    a->net_dirty = true;
 }
 
 static asteroid_tier_t random_field_asteroid_tier(world_t *w) {
@@ -1017,6 +1018,7 @@ static void step_npc_ships(world_t *w, float dt) {
             float mined = hull->mining_rate * dt;
             mined = fminf(mined, a->hp);
             a->hp -= mined;
+            a->net_dirty = true;
 
             float cs = hull->ore_capacity - npc_total_cargo(npc);
             float ore_gained = fminf(mined * 0.15f, cs);
@@ -1431,6 +1433,7 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
             float mined = ship_mining_rate(&sp->ship) * dt * (0.2f + 0.8f * mining_sig);
             mined = fminf(mined, a->hp);
             a->hp -= mined;
+            a->net_dirty = true;
             if (a->hp <= 0.01f)
                 fracture_asteroid(w, sp->hover_asteroid, normal);
         }
@@ -1742,6 +1745,7 @@ static void resolve_asteroid_station_collisions(world_t *w) {
             if (impact_speed > 100.0f) {
                 float damage = impact_speed * 0.3f;
                 a->hp -= damage;
+                a->net_dirty = true;
                 if (a->hp <= 0.0f) {
                     /* Fracture the asteroid */
                     vec2 outward = v2_scale(normal, -1.0f);

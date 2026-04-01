@@ -104,7 +104,9 @@ float asteroid_hp_max(asteroid_tier_t tier) {
 }
 
 void clear_asteroid(asteroid_t* asteroid) {
+    bool was_active = asteroid->active;
     memset(asteroid, 0, sizeof(*asteroid));
+    if (was_active) asteroid->net_dirty = true; /* signal deactivation to network */
 }
 
 static float rand_range_rng(float min_val, float max_val, uint32_t* rng) {

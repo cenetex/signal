@@ -166,6 +166,13 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             ws_send(c, id_buf, (size_t)id_len);
         }
 
+        /* Send full asteroid sync to new player. */
+        {
+            uint8_t sync_buf[2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
+            int sync_len = serialize_asteroids_full(sync_buf, world.asteroids);
+            ws_send(c, sync_buf, (size_t)sync_len);
+        }
+
         /* Send server version hash. */
         {
 #ifdef GIT_HASH
