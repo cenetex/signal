@@ -2,14 +2,27 @@
 #include <stddef.h>
 #include "economy.h"
 
+/* Check if station can smelt a specific ore type */
+static bool can_smelt_ore(const station_t* station, commodity_t ore) {
+    switch (ore) {
+        case COMMODITY_FERRITE_ORE: return station_has_module(station, MODULE_FURNACE);
+        case COMMODITY_CUPRITE_ORE: return station_has_module(station, MODULE_FURNACE_CU);
+        case COMMODITY_CRYSTAL_ORE: return station_has_module(station, MODULE_FURNACE_CR);
+        default: return false;
+    }
+}
+
 void step_refinery_production(station_t* stations, int count, float dt) {
     for (int s = 0; s < count; s++) {
         station_t* station = &stations[s];
-        if (!station_has_module(station, MODULE_FURNACE)) continue;
+        /* Need at least one furnace type */
+        if (!station_has_module(station, MODULE_FURNACE)
+            && !station_has_module(station, MODULE_FURNACE_CU)
+            && !station_has_module(station, MODULE_FURNACE_CR)) continue;
 
         int active = 0;
         for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
-            if (station->ore_buffer[i] > 0.01f) active++;
+            if (station->ore_buffer[i] > 0.01f && can_smelt_ore(station, (commodity_t)i)) active++;
         }
         if (active == 0) continue;
         if (active > REFINERY_MAX_FURNACES) active = REFINERY_MAX_FURNACES;
@@ -18,6 +31,7 @@ void step_refinery_production(station_t* stations, int count, float dt) {
 
         for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
             commodity_t ore = (commodity_t)i;
+            if (!can_smelt_ore(station, ore)) continue;
             if (station->ore_buffer[ore] <= 0.01f) continue;
             float consume = fminf(station->ore_buffer[ore], rate * dt);
             station->ore_buffer[ore] -= consume;

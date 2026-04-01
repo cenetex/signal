@@ -91,7 +91,9 @@ typedef enum {
 typedef enum {
     MODULE_DOCK,
     MODULE_ORE_BUYER,
-    MODULE_FURNACE,
+    MODULE_FURNACE,         /* smelts ferrite ore only */
+    MODULE_FURNACE_CU,      /* smelts cuprite ore */
+    MODULE_FURNACE_CR,      /* smelts crystal ore */
     MODULE_INGOT_SELLER,
     MODULE_REPAIR_BAY,
     MODULE_SIGNAL_RELAY,

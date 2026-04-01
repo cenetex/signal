@@ -656,14 +656,14 @@ static input_intent_t sample_input_intent(void) {
     } else if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONSTRUCTION
         && !current_station_ptr()->scaffold) {
         static const struct { module_type_t type; const char *name; } build_keys[] = {
-            { MODULE_FURNACE,      "Furnace" },
+            { MODULE_FURNACE,      "Furnace (FE)" },
+            { MODULE_FURNACE_CU,   "Furnace (CU)" },
+            { MODULE_FURNACE_CR,   "Furnace (CR)" },
             { MODULE_FRAME_PRESS,  "Frame Press" },
             { MODULE_LASER_FAB,    "Laser Fab" },
             { MODULE_TRACTOR_FAB,  "Tractor Fab" },
             { MODULE_ORE_BUYER,    "Ore Buyer" },
-            { MODULE_DOCK,         NULL },  /* 6 — skip */
             { MODULE_SIGNAL_RELAY, "Signal Relay" },
-            { MODULE_ORE_SILO,     "Ore Silo" },
         };
         for (int k = 0; k < 8; k++) {
             if (!is_key_pressed(SAPP_KEYCODE_1 + k)) continue;

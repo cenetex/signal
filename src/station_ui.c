@@ -774,7 +774,9 @@ void draw_station_services(const station_ui_state_t* ui) {
                 int pct = (int)lroundf(ui->station->modules[i].build_progress * 100.0f);
                 const char* mname = "Module";
                 switch (ui->station->modules[i].type) {
-                    case MODULE_FURNACE:        mname = "Furnace"; break;
+                    case MODULE_FURNACE:        mname = "Furnace (FE)"; break;
+                    case MODULE_FURNACE_CU:     mname = "Furnace (CU)"; break;
+                    case MODULE_FURNACE_CR:     mname = "Furnace (CR)"; break;
                     case MODULE_FRAME_PRESS:    mname = "Frame Press"; break;
                     case MODULE_LASER_FAB:      mname = "Laser Fab"; break;
                     case MODULE_TRACTOR_FAB:    mname = "Tractor Fab"; break;
@@ -801,13 +803,14 @@ void draw_station_services(const station_ui_state_t* ui) {
 
             /* Modules the player can build — show with key shortcuts */
             static const struct { module_type_t type; const char* name; int key; int frames; int credits; } buildable[] = {
-                { MODULE_FURNACE,        "Furnace",      1, 60,  200 },
-                { MODULE_FRAME_PRESS,    "Frame Press",  2, 80,  300 },
-                { MODULE_LASER_FAB,      "Laser Fab",    3, 80,  300 },
-                { MODULE_TRACTOR_FAB,    "Tractor Fab",  4, 80,  300 },
-                { MODULE_ORE_BUYER,      "Ore Buyer",    5, 40,  100 },
-                { MODULE_SIGNAL_RELAY,   "Signal Relay", 7, 40,  100 },
-                { MODULE_ORE_SILO,       "Ore Silo",     8, 30,  100 },
+                { MODULE_FURNACE,        "Furnace (FE)", 1, 60,  200 },
+                { MODULE_FURNACE_CU,     "Furnace (CU)", 2, 100, 400 },
+                { MODULE_FURNACE_CR,     "Furnace (CR)", 3, 140, 600 },
+                { MODULE_FRAME_PRESS,    "Frame Press",  4, 80,  300 },
+                { MODULE_LASER_FAB,      "Laser Fab",    5, 80,  300 },
+                { MODULE_TRACTOR_FAB,    "Tractor Fab",  6, 80,  300 },
+                { MODULE_ORE_BUYER,      "Ore Buyer",    7, 40,  100 },
+                { MODULE_SIGNAL_RELAY,   "Signal Relay", 8, 40,  100 },
             };
             int n_buildable = (int)(sizeof(buildable) / sizeof(buildable[0]));
             int shown = 0;

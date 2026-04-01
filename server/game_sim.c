@@ -202,6 +202,8 @@ static float module_build_cost(module_type_t type) {
         case MODULE_REPAIR_BAY:     return 30.0f;
         case MODULE_ORE_BUYER:      return 40.0f;
         case MODULE_FURNACE:        return 60.0f;
+        case MODULE_FURNACE_CU:     return 100.0f;
+        case MODULE_FURNACE_CR:     return 140.0f;
         case MODULE_FRAME_PRESS:    return 80.0f;
         case MODULE_LASER_FAB:      return 80.0f;
         case MODULE_TRACTOR_FAB:    return 80.0f;
@@ -217,6 +219,8 @@ static float module_build_cost(module_type_t type) {
 static float module_credit_cost(module_type_t type) {
     switch (type) {
         case MODULE_FURNACE:     return 200.0f;
+        case MODULE_FURNACE_CU:  return 400.0f;
+        case MODULE_FURNACE_CR:  return 600.0f;
         case MODULE_FRAME_PRESS: return 300.0f;
         case MODULE_LASER_FAB:   return 300.0f;
         case MODULE_TRACTOR_FAB: return 300.0f;
@@ -779,20 +783,32 @@ static void maintain_asteroid_field(world_t *w, float dt) {
     w->field_spawn_timer = 0.0f;
 }
 
+static bool sim_can_smelt_ore(const station_t *st, commodity_t ore) {
+    switch (ore) {
+        case COMMODITY_FERRITE_ORE: return station_has_module(st, MODULE_FURNACE);
+        case COMMODITY_CUPRITE_ORE: return station_has_module(st, MODULE_FURNACE_CU);
+        case COMMODITY_CRYSTAL_ORE: return station_has_module(st, MODULE_FURNACE_CR);
+        default: return false;
+    }
+}
+
 static void sim_step_refinery_production(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
-        if (!station_has_module(st, MODULE_FURNACE)) continue;
+        if (!station_has_module(st, MODULE_FURNACE)
+            && !station_has_module(st, MODULE_FURNACE_CU)
+            && !station_has_module(st, MODULE_FURNACE_CR)) continue;
 
         int active = 0;
         for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++)
-            if (st->ore_buffer[i] > 0.01f) active++;
+            if (st->ore_buffer[i] > 0.01f && sim_can_smelt_ore(st, (commodity_t)i)) active++;
         if (active == 0) continue;
         if (active > REFINERY_MAX_FURNACES) active = REFINERY_MAX_FURNACES;
         float rate = REFINERY_BASE_SMELT_RATE / (float)active;
 
         for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
             commodity_t ore = (commodity_t)i;
+            if (!sim_can_smelt_ore(st, ore)) continue;
             if (st->ore_buffer[ore] <= 0.01f) continue;
             float consume = fminf(st->ore_buffer[ore], rate * dt);
             st->ore_buffer[ore] -= consume;
