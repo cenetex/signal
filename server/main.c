@@ -220,7 +220,7 @@ static void broadcast_player_states(void) {
 static void mark_visible_asteroids_dirty(void) {
     /* Mark asteroids near any connected player as dirty so they get sent.
      * View radius ~1200u covers a generous screen at default zoom. */
-    const float VIEW_RADIUS_SQ = 1200.0f * 1200.0f;
+    const float VIEW_RADIUS_SQ = 3000.0f * 3000.0f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!world.asteroids[i].active || world.asteroids[i].net_dirty) continue;
         for (int p = 0; p < MAX_PLAYERS; p++) {

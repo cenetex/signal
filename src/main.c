@@ -697,7 +697,7 @@ static input_intent_t sample_input_intent(void) {
                 if (st->inventory[c] > 0.5f) {
                     intent.buy_product = true;
                     intent.buy_commodity = (commodity_t)c;
-                    set_notice("Bought %s", commodity_short_name((commodity_t)c));
+                    set_notice("Bought %s ingots", commodity_short_name((commodity_t)c));
                     break;
                 }
             }
