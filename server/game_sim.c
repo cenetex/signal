@@ -1783,12 +1783,13 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) {
             float available = docked_st->inventory[c];
             float space = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
-            float amount = fminf(fminf(available, space), 10.0f); /* buy up to 10 per press */
-            /* Price = 2× the buy price of the source ore */
             commodity_t source_ore = commodity_ore_form((commodity_t)c);
             float price_per = docked_st->buy_price[source_ore] * 2.0f;
+            /* Buy as much as you can afford and carry */
+            float afford = (price_per > 0.01f) ? floorf(sp->ship.credits / price_per) : 0.0f;
+            float amount = fminf(fminf(available, space), afford);
             float total_cost = amount * price_per;
-            if (amount > 0.01f && sp->ship.credits >= total_cost) {
+            if (amount > 0.01f) {
                 sp->ship.credits -= total_cost;
                 sp->ship.cargo[c] += amount;
                 docked_st->inventory[c] -= amount;

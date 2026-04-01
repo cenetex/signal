@@ -703,9 +703,12 @@ static input_intent_t sample_input_intent(void) {
                     } else if (LOCAL_PLAYER.ship.credits < price) {
                         set_notice("Need %d cr.", (int)lroundf(price));
                     } else {
+                        float avail = st->inventory[c];
+                        float afford = floorf(LOCAL_PLAYER.ship.credits / price);
+                        int amount = (int)fminf(fminf(avail, space), afford);
                         intent.buy_product = true;
                         intent.buy_commodity = (commodity_t)c;
-                        set_notice("Bought %s ingots", commodity_short_name((commodity_t)c));
+                        set_notice("Bought %d %s  -%d cr", amount, commodity_short_name((commodity_t)c), (int)(amount * price));
                     }
                     break;
                 }
