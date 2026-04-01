@@ -526,7 +526,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             if (station_has_module(ui->station, MODULE_ORE_BUYER)) {
                 sdtx_color3b(ui->payout > 0 ? 130 : 145, ui->payout > 0 ? 255 : 160, ui->payout > 0 ? 235 : 188);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                sdtx_printf("[1] Sell ore  %d cr", ui->payout);
+                sdtx_printf("[1] Sell cargo  +%d cr", ui->payout);
                 ly += 16.0f;
             }
             sdtx_color3b(ui->repair_cost > 0 ? 255 : 145, ui->repair_cost > 0 ? 221 : 160, ui->repair_cost > 0 ? 119 : 188);
@@ -575,7 +575,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         if (station_has_module(ui->station, MODULE_ORE_BUYER)) {
             sdtx_color3b(130, 255, 235);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-            sdtx_printf("[1] SELL ORE  (%d cr)", ui->payout);
+            sdtx_printf("[1] SELL CARGO  +%d cr", ui->payout);
             my += 16.0f;
             for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
                 int price = (int)lroundf(station_buy_price(ui->station, (commodity_t)c));
