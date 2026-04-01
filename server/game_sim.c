@@ -178,6 +178,8 @@ static void add_module(station_t *st, module_type_t type) {
     m->build_progress = 1.0f;
 }
 
+static int spawn_npc(world_t *w, int station_idx, npc_role_t role);
+
 static void activate_outpost(world_t *w, int station_idx) {
     station_t *st = &w->stations[station_idx];
     st->scaffold = false;
@@ -186,6 +188,11 @@ static void activate_outpost(world_t *w, int station_idx) {
     add_module(st, MODULE_REPAIR_BAY);
     rebuild_station_services(st);
     rebuild_signal_chain(w);
+    /* Spawn NPCs based on installed modules */
+    if (station_has_module(st, MODULE_FURNACE))
+        spawn_npc(w, station_idx, NPC_ROLE_MINER);
+    if (station_has_module(st, MODULE_FRAME_PRESS) || station_has_module(st, MODULE_LASER_FAB) || station_has_module(st, MODULE_TRACTOR_FAB))
+        spawn_npc(w, station_idx, NPC_ROLE_HAULER);
     SIM_LOG("[sim] outpost %d activated (signal_range=%.0f)\n", station_idx, OUTPOST_SIGNAL_RANGE);
 }
 
@@ -263,10 +270,42 @@ static void step_module_delivery(world_t *w, station_t *st, int station_idx, shi
             st->modules[i].build_progress = 1.0f;
             rebuild_station_services(st);
             rebuild_signal_chain(w);
+            /* Spawn NPC when production module activates */
+            if (st->modules[i].type == MODULE_FURNACE)
+                spawn_npc(w, station_idx, NPC_ROLE_MINER);
+            if (st->modules[i].type == MODULE_FRAME_PRESS || st->modules[i].type == MODULE_LASER_FAB || st->modules[i].type == MODULE_TRACTOR_FAB)
+                spawn_npc(w, station_idx, NPC_ROLE_HAULER);
             SIM_LOG("[sim] module %d activated at station %d\n", st->modules[i].type, station_idx);
         }
         if (ship->cargo[COMMODITY_FRAME_INGOT] < 0.01f) break;
     }
+}
+
+/* Spawn an NPC at a station. Returns slot index or -1 if full. */
+static int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
+    int slot = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (!w->npc_ships[i].active) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
+    station_t *st = &w->stations[station_idx];
+    hull_class_t hc = (role == NPC_ROLE_MINER) ? HULL_CLASS_NPC_MINER : HULL_CLASS_HAULER;
+    npc_ship_t *npc = &w->npc_ships[slot];
+    memset(npc, 0, sizeof(*npc));
+    npc->active = true;
+    npc->role = role;
+    npc->hull_class = hc;
+    npc->state = NPC_STATE_DOCKED;
+    npc->pos = v2_add(st->pos, v2(30.0f * (float)(slot % 3 - 1), -(st->radius + HULL_DEFS[hc].ship_radius + 50.0f)));
+    npc->angle = PI_F * 0.5f;
+    npc->target_asteroid = -1;
+    npc->home_station = station_idx;
+    npc->dest_station = station_idx;
+    npc->state_timer = (role == NPC_ROLE_MINER) ? NPC_DOCK_TIME : HAULER_DOCK_TIME;
+    npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
+    SIM_LOG("[sim] spawned %s at station %d (slot %d)\n",
+            role == NPC_ROLE_MINER ? "miner" : "hauler", station_idx, slot);
+    return slot;
 }
 
 static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
@@ -2137,40 +2176,13 @@ void world_reset(world_t *w) {
         }
     }
 
-    /* --- NPC ships (1 miner + 1 hauler) --- */
-    {
-        npc_ship_t *npc = &w->npc_ships[0];
-        npc->active       = true;
-        npc->role          = NPC_ROLE_MINER;
-        npc->hull_class    = HULL_CLASS_NPC_MINER;
-        npc->state         = NPC_STATE_DOCKED;
-        npc->pos           = v2_add(w->stations[0].pos, v2(-30.0f, -(w->stations[0].radius + HULL_DEFS[HULL_CLASS_NPC_MINER].ship_radius + 50.0f)));
-        npc->vel           = v2(0.0f, 0.0f);
-        npc->angle         = PI_F * 0.5f;
-        npc->target_asteroid = -1;
-        npc->home_station  = 0;
-        npc->state_timer   = NPC_DOCK_TIME;
-        npc->thrusting     = false;
-        npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
-    }
-    {
-        npc_ship_t *npc = &w->npc_ships[1];
-        npc->active       = true;
-        npc->role          = NPC_ROLE_HAULER;
-        npc->hull_class    = HULL_CLASS_HAULER;
-        npc->state         = NPC_STATE_DOCKED;
-        npc->pos           = v2_add(w->stations[0].pos, v2(-50.0f, -(w->stations[0].radius + HULL_DEFS[HULL_CLASS_HAULER].ship_radius + 70.0f)));
-        npc->vel           = v2(0.0f, 0.0f);
-        npc->angle         = PI_F * 0.5f;
-        npc->target_asteroid = -1;
-        npc->home_station  = 0;
-        npc->dest_station  = 1;
-        npc->state_timer   = HAULER_DOCK_TIME;
-        npc->thrusting     = false;
-        npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
-    }
+    /* --- NPC ships: 2 miners at refinery, 2 haulers for logistics --- */
+    spawn_npc(w, 0, NPC_ROLE_MINER);
+    spawn_npc(w, 0, NPC_ROLE_MINER);
+    spawn_npc(w, 0, NPC_ROLE_HAULER);
+    spawn_npc(w, 0, NPC_ROLE_HAULER);
 
-    SIM_LOG("[sim] world reset complete (%d asteroids, %d NPCs)\n", FIELD_ASTEROID_TARGET, 2);
+    SIM_LOG("[sim] world reset complete (%d asteroids, 4 NPCs)\n", FIELD_ASTEROID_TARGET);
 }
 
 /* ================================================================== */

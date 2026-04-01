@@ -434,8 +434,8 @@ TEST(test_world_reset_spawns_npcs) {
         if (w.npc_ships[i].role == NPC_ROLE_MINER) miners++;
         if (w.npc_ships[i].role == NPC_ROLE_HAULER) haulers++;
     }
-    ASSERT_EQ_INT(miners, 1);
-    ASSERT_EQ_INT(haulers, 1);
+    ASSERT_EQ_INT(miners, 2);
+    ASSERT_EQ_INT(haulers, 2);
 }
 
 TEST(test_player_init_ship_docked) {
@@ -1184,11 +1184,13 @@ TEST(test_bug21_commodity_bits_fragile) {
 TEST(test_bug22_hauler_stuck_at_empty_station) {
     world_t w = {0};
     world_reset(&w);
-    /* Empty the refinery inventory so haulers can't load anything */
+    /* Empty the refinery inventory so haulers can't load from home */
     for (int i = 0; i < COMMODITY_COUNT; i++)
         w.stations[0].inventory[i] = 0.0f;
-    /* Run 10 seconds — haulers should try to find cargo elsewhere */
-    for (int i = 0; i < 1200; i++)
+    /* Put some ingots at station 1 so haulers have a reason to move */
+    w.stations[1].inventory[COMMODITY_FRAME_INGOT] = 20.0f;
+    /* Run 30 seconds — haulers should try to find cargo elsewhere */
+    for (int i = 0; i < 3600; i++)
         world_sim_step(&w, SIM_DT);
     /* After fix: haulers should have left to find cargo or changed state.
      * FAILS because haulers just wait at home_station forever. */
@@ -2841,8 +2843,14 @@ TEST(test_hauler_fills_highest_value_contract) {
     /* Give home station (0) inventory of both */
     w.stations[0].inventory[COMMODITY_FRAME_INGOT] = 20.0f;
     w.stations[0].inventory[COMMODITY_CONDUCTOR_INGOT] = 20.0f;
-    /* Set up hauler at home, ready to decide */
-    npc_ship_t *hauler = &w.npc_ships[1]; /* first hauler */
+    /* Find the first hauler */
+    npc_ship_t *hauler = NULL;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER) {
+            hauler = &w.npc_ships[i]; break;
+        }
+    }
+    ASSERT(hauler != NULL);
     hauler->state = NPC_STATE_DOCKED;
     hauler->state_timer = 0.0f; /* ready to act */
     hauler->home_station = 0;

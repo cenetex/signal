@@ -10,7 +10,7 @@ enum {
     MAX_ASTEROIDS = 255, /* limited by uint8 index in network protocol */
     MAX_STARS = 120,
     MAX_STATIONS = 8,
-    MAX_NPC_SHIPS = 6,
+    MAX_NPC_SHIPS = 16,
     AUDIO_VOICE_COUNT = 24,
     AUDIO_MIX_FRAMES = 512,
 };
