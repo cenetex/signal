@@ -231,6 +231,8 @@ int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
     st->radius = OUTPOST_RADIUS;
     st->dock_radius = OUTPOST_DOCK_RADIUS;
     st->signal_range = OUTPOST_SIGNAL_RANGE;
+    st->scaffold = true;
+    st->scaffold_progress = 0.0f;
     add_module(st, MODULE_DOCK);
     add_module(st, MODULE_SIGNAL_RELAY);
     rebuild_station_services(st);
@@ -1852,18 +1854,19 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
 /* ================================================================== */
 
 void world_reset(world_t *w) {
+    uint32_t seed = w->rng;  /* caller may pre-set seed; 0 = default */
     memset(w, 0, sizeof(*w));
-    w->rng = 0xC0FFEE12u;
+    w->rng = seed ? seed : 0xC0FFEE12u;
 
     /* --- Stations --- */
     snprintf(w->stations[0].name, sizeof(w->stations[0].name), "%s", "Prospect Refinery");
-    w->stations[0].pos         = v2(0.0f, -240.0f);
+    w->stations[0].pos         = v2(0.0f, -2400.0f);
     w->stations[0].radius      = 62.0f;
     w->stations[0].dock_radius = 132.0f;
     w->stations[0].buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
     w->stations[0].buy_price[COMMODITY_CUPRITE_ORE] = 14.0f;
     w->stations[0].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
-    w->stations[0].signal_range = 2200.0f;
+    w->stations[0].signal_range = 18000.0f;
     add_module(&w->stations[0], MODULE_DOCK);
     add_module(&w->stations[0], MODULE_ORE_BUYER);
     add_module(&w->stations[0], MODULE_FURNACE);
@@ -1872,10 +1875,10 @@ void world_reset(world_t *w) {
     rebuild_station_services(&w->stations[0]);
 
     snprintf(w->stations[1].name, sizeof(w->stations[1].name), "%s", "Kepler Yard");
-    w->stations[1].pos         = v2(-320.0f, 230.0f);
+    w->stations[1].pos         = v2(-3200.0f, 2300.0f);
     w->stations[1].radius      = 56.0f;
     w->stations[1].dock_radius = 124.0f;
-    w->stations[1].signal_range = 1800.0f;
+    w->stations[1].signal_range = 15000.0f;
     add_module(&w->stations[1], MODULE_DOCK);
     add_module(&w->stations[1], MODULE_FRAME_PRESS);
     add_module(&w->stations[1], MODULE_REPAIR_BAY);
@@ -1884,10 +1887,10 @@ void world_reset(world_t *w) {
     rebuild_station_services(&w->stations[1]);
 
     snprintf(w->stations[2].name, sizeof(w->stations[2].name), "%s", "Helios Works");
-    w->stations[2].pos         = v2(320.0f, 230.0f);
+    w->stations[2].pos         = v2(3200.0f, 2300.0f);
     w->stations[2].radius      = 56.0f;
     w->stations[2].dock_radius = 124.0f;
-    w->stations[2].signal_range = 1800.0f;
+    w->stations[2].signal_range = 15000.0f;
     add_module(&w->stations[2], MODULE_DOCK);
     add_module(&w->stations[2], MODULE_LASER_FAB);
     add_module(&w->stations[2], MODULE_TRACTOR_FAB);

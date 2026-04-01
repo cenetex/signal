@@ -1722,7 +1722,7 @@ TEST(test_bug33_npc_no_world_boundary) {
     world_t w = {0};
     world_reset(&w);
     /* Place NPC outside all station signal ranges with outward velocity */
-    w.npc_ships[0].pos = v2(2500.0f, -240.0f); /* beyond refinery signal_range 2200 */
+    w.npc_ships[0].pos = v2_add(w.stations[0].pos, v2(19000.0f, 0.0f)); /* beyond refinery signal_range 18000 */
     w.npc_ships[0].vel = v2(200.0f, 0.0f);  /* flying outward */
     w.npc_ships[0].active = true;
     w.npc_ships[0].state = NPC_STATE_IDLE;
@@ -1913,10 +1913,10 @@ TEST(test_bug42_station_gravity_ignores_mass) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
     /* Tiny fragment and huge XL at same distance from station */
     w.asteroids[0].active = true; w.asteroids[0].tier = ASTEROID_TIER_S;
-    w.asteroids[0].radius = 12.0f; w.asteroids[0].pos = v2(400.0f, -240.0f);
+    w.asteroids[0].radius = 12.0f; w.asteroids[0].pos = v2_add(w.stations[0].pos, v2(400.0f, 0.0f));
     w.asteroids[0].vel = v2(0.0f, 0.0f);
     w.asteroids[1].active = true; w.asteroids[1].tier = ASTEROID_TIER_XL;
-    w.asteroids[1].radius = 70.0f; w.asteroids[1].pos = v2(-400.0f, -240.0f);
+    w.asteroids[1].radius = 70.0f; w.asteroids[1].pos = v2_add(w.stations[0].pos, v2(-400.0f, 0.0f));
     w.asteroids[1].vel = v2(0.0f, 0.0f);
     world_sim_step(&w, SIM_DT);
     float accel_s = v2_len(w.asteroids[0].vel);
@@ -2297,14 +2297,22 @@ TEST(test_bug59_emergency_recover_teleports) {
     world_sim_step(&w, SIM_DT);
     w.players[0].input.interact = false;
     w.players[0].docked = false;
-    w.players[0].ship.pos = v2(320.0f, 200.0f); /* near station 2 */
+    w.players[0].ship.pos = v2_add(w.stations[2].pos, v2(80.0f, 0.0f)); /* inside dock ring of station 2 */
     w.players[0].nearby_station = 2;
     w.players[0].current_station = 0; /* last docked at 0 */
-    /* Kill the player by setting hull to near-zero and running a tick
-     * (collision or world boundary will trigger emergency recovery) */
-    w.players[0].ship.hull = 0.001f;
-    w.players[0].ship.vel = v2(0.0f, 500.0f); /* moving fast to trigger collision */
-    for (int i = 0; i < 60; i++) world_sim_step(&w, SIM_DT);
+    /* Place an asteroid just ahead for a head-on collision */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    w.asteroids[0].active = true;
+    w.asteroids[0].tier = ASTEROID_TIER_L;
+    w.asteroids[0].radius = 40.0f;
+    w.asteroids[0].hp = 100.0f;
+    w.asteroids[0].max_hp = 100.0f;
+    w.asteroids[0].commodity = COMMODITY_FERRITE_ORE;
+    w.asteroids[0].pos = v2_add(w.players[0].ship.pos, v2(50.0f, 0.0f));
+    w.asteroids[0].vel = v2(-400.0f, 0.0f);
+    w.players[0].ship.hull = 0.1f;
+    w.players[0].ship.vel = v2(400.0f, 0.0f);
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     /* Player should recover at station 2 (nearest), not station 0 (last docked).
      * dock_ship uses nearby_station if >= 0, which is 2 here. So this should work. */
     ASSERT(w.players[0].docked);
@@ -2561,8 +2569,8 @@ TEST(test_signal_strength_falls_off) {
     /* Signal should decrease linearly from 1.0 at station to 0.0 at range edge */
     world_t w = {0};
     world_reset(&w);
-    /* Station 0 at (0, -240), signal_range = 2200. Point 1100u to the right. */
-    float half = signal_strength_at(&w, v2(1100.0f, -240.0f));
+    /* Station 0 at (0, -2400), signal_range = 18000. Point 9000u to the right. */
+    float half = signal_strength_at(&w, v2_add(w.stations[0].pos, v2(9000.0f, 0.0f)));
     ASSERT(half > 0.3f && half < 0.7f);
 }
 
@@ -2570,7 +2578,7 @@ TEST(test_signal_zero_outside_range) {
     /* Far from all stations, signal should be 0.0 */
     world_t w = {0};
     world_reset(&w);
-    ASSERT_EQ_FLOAT(signal_strength_at(&w, v2(10000.0f, 10000.0f)), 0.0f, 0.01f);
+    ASSERT_EQ_FLOAT(signal_strength_at(&w, v2(100000.0f, 100000.0f)), 0.0f, 0.01f);
 }
 
 TEST(test_signal_max_of_stations) {
@@ -2592,14 +2600,14 @@ TEST(test_ship_thrust_scales_with_signal) {
     w.players[0].connected = true;
     w.players[0].docked = false;
     /* Place ship at station (full signal) → thrust → measure velocity */
-    w.players[0].ship.pos = v2(0.0f, -240.0f);
+    w.players[0].ship.pos = w.stations[0].pos;
     w.players[0].ship.vel = v2(0.0f, 0.0f);
     w.players[0].ship.angle = 0.0f;
     w.players[0].input.thrust = 1.0f;
     world_sim_step(&w, SIM_DT);
     float vel_full_signal = w.players[0].ship.vel.x;
     /* Place ship far from all stations (low/zero signal) → same thrust → should be slower */
-    w.players[0].ship.pos = v2(4000.0f, 0.0f); /* outside all station signal ranges */
+    w.players[0].ship.pos = v2(40000.0f, 0.0f); /* outside all station signal ranges */
     w.players[0].ship.vel = v2(0.0f, 0.0f);
     w.players[0].input.thrust = 1.0f;
     world_sim_step(&w, SIM_DT);
@@ -2618,7 +2626,7 @@ TEST(test_asteroid_outside_signal_despawns) {
     w.asteroids[0].radius = 40.0f;
     w.asteroids[0].hp = 100.0f;
     w.asteroids[0].max_hp = 100.0f;
-    w.asteroids[0].pos = v2(4000.0f, 0.0f);
+    w.asteroids[0].pos = v2(40000.0f, 0.0f);
     w.asteroids[0].vel = v2(0.0f, 0.0f);
     world_sim_step(&w, SIM_DT);
     ASSERT(!w.asteroids[0].active);
@@ -2713,7 +2721,7 @@ TEST(test_asteroids_drift_toward_stronger_signal) {
     a->radius = 60.0f;
     a->hp = 150.0f;
     a->max_hp = 150.0f;
-    a->pos = v2(1800.0f, -240.0f);
+    a->pos = v2_add(w.stations[0].pos, v2(15000.0f, 0.0f));
     a->vel = v2(0.0f, 0.0f);
 
     float start_x = a->pos.x;
@@ -3015,10 +3023,10 @@ TEST(test_outpost_requires_signal_range) {
     world_t w = {0};
     world_reset(&w);
     /* Can't place outside signal range */
-    bool ok = can_place_outpost(&w, v2(10000.0f, 10000.0f));
+    bool ok = can_place_outpost(&w, v2(100000.0f, 100000.0f));
     ASSERT(!ok);
-    /* Can place within signal range (near refinery at 0,-240, range 2200) */
-    bool ok2 = can_place_outpost(&w, v2(500.0f, -240.0f));
+    /* Can place within signal range (near refinery at (0,-2400), range 18000) */
+    bool ok2 = can_place_outpost(&w, v2_add(w.stations[0].pos, v2(5000.0f, 0.0f)));
     ASSERT(ok2);
 }
 
@@ -3026,7 +3034,7 @@ TEST(test_outpost_extends_signal_range) {
     world_t w = {0};
     world_reset(&w);
     /* Place point at edge of refinery signal — within range but far */
-    vec2 outpost_pos = v2(2000.0f, -240.0f);
+    vec2 outpost_pos = v2_add(w.stations[0].pos, v2(16000.0f, 0.0f));
     /* Verify the point is in signal before placing */
     ASSERT(signal_strength_at(&w, outpost_pos) > 0.0f);
 
@@ -3049,7 +3057,7 @@ TEST(test_outpost_extends_signal_range) {
     float s = signal_strength_at(&w, outpost_pos);
     ASSERT(s > 0.9f);
     /* Signal should extend beyond the outpost */
-    float s2 = signal_strength_at(&w, v2(2500.0f, -240.0f));
+    float s2 = signal_strength_at(&w, v2_add(outpost_pos, v2(3000.0f, 0.0f)));
     ASSERT(s2 > 0.0f);
 }
 
@@ -3071,13 +3079,13 @@ TEST(test_disconnected_station_goes_dark) {
     sp.connected = true;
     sp.ship.credits = 10000.0f;
     sp.docked = false;
-    vec2 outpost_pos = v2_add(w.stations[0].pos, v2(500.0f, 0.0f));
+    vec2 outpost_pos = v2_add(w.stations[0].pos, v2(5000.0f, 0.0f));
     int slot = try_place_outpost(&w, &sp, outpost_pos);
     ASSERT(slot >= 0);
     /* Finish construction */
     w.stations[slot].scaffold_progress = 1.0f;
     w.stations[slot].scaffold = false;
-    w.stations[slot].signal_range = 800.0f;
+    w.stations[slot].signal_range = 6000.0f;
     w.stations[slot].signal_connected = false;
     w.stations[slot].modules[w.stations[slot].module_count++] = (station_module_t){ MODULE_REPAIR_BAY, false, 1.0f };
     rebuild_signal_chain(&w);
@@ -3151,8 +3159,8 @@ TEST(test_outpost_min_distance) {
     w.players[0].connected = true;
     w.players[0].docked = false;
     w.players[0].ship.credits = 1000.0f;
-    /* Too close to Prospect Refinery at (0,-240) */
-    int slot = try_place_outpost(&w, &w.players[0], v2(50.0f, -240.0f));
+    /* Too close to Prospect Refinery at (0,-2400) — within OUTPOST_MIN_DISTANCE (800) */
+    int slot = try_place_outpost(&w, &w.players[0], v2_add(w.stations[0].pos, v2(500.0f, 0.0f)));
     ASSERT_EQ_INT(slot, -1);
 }
 
@@ -3238,7 +3246,9 @@ TEST(test_bug90_station_bounce_no_extra_energy) {
     w.asteroids[0].tier = ASTEROID_TIER_M;
     w.asteroids[0].radius = 25.0f;
     w.asteroids[0].hp = 100.0f; w.asteroids[0].max_hp = 100.0f;
-    w.asteroids[0].pos = v2(0.0f, -(240.0f - 62.0f - 25.0f + 5.0f)); /* just overlapping station 0 */
+    /* Position just overlapping station 0 (at y = station_y + radius + asteroid_radius - overlap) */
+    float s0y = w.stations[0].pos.y;
+    w.asteroids[0].pos = v2(w.stations[0].pos.x, s0y + 62.0f + 25.0f - 5.0f);
     w.asteroids[0].vel = v2(0.0f, -10.0f); /* moving toward station */
     float speed_before = v2_len(w.asteroids[0].vel);
     world_sim_step(&w, SIM_DT);

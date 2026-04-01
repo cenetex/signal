@@ -25,12 +25,12 @@ enum {
     MAX_PLAYERS = 32,
 };
 
-static const float WORLD_RADIUS = 5000.0f;  /* safety net; gameplay bounded by station signal_range */
+static const float WORLD_RADIUS = 50000.0f;  /* safety net; gameplay bounded by station signal_range */
 static const float OUTPOST_CREDIT_COST = 500.0f;
 static const float OUTPOST_RADIUS = 40.0f;
 static const float OUTPOST_DOCK_RADIUS = 96.0f;
-static const float OUTPOST_SIGNAL_RANGE = 600.0f;  /* ~1/3 of main stations */
-static const float OUTPOST_MIN_DISTANCE = 200.0f; /* min distance between stations */
+static const float OUTPOST_SIGNAL_RANGE = 6000.0f;
+static const float OUTPOST_MIN_DISTANCE = 800.0f; /* min distance between stations */
 static const float SIM_DT = 1.0f / 120.0f;
 static const float MINING_RANGE = 170.0f;
 static const float SHIP_BRAKE = 180.0f;
