@@ -497,7 +497,10 @@ void draw_station_services(const station_ui_state_t* ui) {
             bool can_afford = credits >= buildable[b].credits;
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
-            sdtx_printf("[%d] %-14s %dcr + %d frames", buildable[b].key, buildable[b].name, buildable[b].credits, buildable[b].frames);
+            const char *mat_name = "FE";
+            if (buildable[b].type == MODULE_FURNACE_CU || buildable[b].type == MODULE_LASER_FAB) mat_name = "CU";
+            if (buildable[b].type == MODULE_FURNACE_CR || buildable[b].type == MODULE_TRACTOR_FAB) mat_name = "CR";
+            sdtx_printf("[%d] %-14s %dcr + %d %s ingots", buildable[b].key, buildable[b].name, buildable[b].credits, buildable[b].frames, mat_name);
             ly += 14.0f;
         }
         return; /* overlay takes over rendering */
@@ -519,12 +522,12 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
             sdtx_printf("Progress: %d%%", pct);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 16.0f));
-            sdtx_printf("Need %d more frame ingots", needed_int);
+            sdtx_printf("Need %d more ferrite ingots", needed_int);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 32.0f));
-            sdtx_printf("You have: %d frame ingots", frames_held);
+            sdtx_printf("You have: %d ferrite ingots", frames_held);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 56.0f));
             sdtx_color3b(145, 160, 188);
-            sdtx_puts("Dock to auto-deliver frames.");
+            sdtx_puts("Dock to auto-deliver ferrite ingots.");
         } else {
             /* Station welcome -- what this place does */
             sdtx_color3b(203, 220, 248);
@@ -540,12 +543,12 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_color3b(203, 220, 248);
                 sdtx_printf("Haul value: %d cr", ui->payout);
             } else if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
-                sdtx_puts("Frame manufacturing yard.");
+                sdtx_puts("Ferrite smelting and frame production.");
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
                 sdtx_color3b(145, 160, 188);
                 sdtx_puts("Upgrades cargo hold capacity.");
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 34.0f));
-                sdtx_puts("Produces frame components from ingots.");
+                sdtx_puts("Produces products from ingots.");
             } else if (station_has_module(ui->station, MODULE_SIGNAL_RELAY)) {
                 sdtx_puts("Signal relay outpost.");
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));

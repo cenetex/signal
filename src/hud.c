@@ -343,7 +343,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
                 if (station_has_module(station, MODULE_FURNACE)) {
                     snprintf(message, message_size, "Sell raw ore here, repair up, then head back into the belt.");
                 } else if (station_has_module(station, MODULE_FRAME_PRESS)) {
-                    snprintf(message, message_size, "Press F to buy frames. Haul to outpost blueprints.");
+                    snprintf(message, message_size, "Press F to buy ingots. Haul to blueprints.");
                 } else {
                     snprintf(message, message_size, "Tune the laser or tractor, then get back on the run.");
                 }
