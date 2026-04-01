@@ -797,22 +797,8 @@ static void sim_step(float dt) {
          * and interpolated from server snapshots. */
         world_sim_step_player_only(&g.world, g.local_player_slot, dt);
 
-        /* Mining beam visual only — no HP deduction */
-        if (!LOCAL_PLAYER.docked && intent.mine) {
-            vec2 forward = v2_from_angle(LOCAL_PLAYER.ship.angle);
-            vec2 muzzle = v2_add(LOCAL_PLAYER.ship.pos,
-                v2_scale(forward, ship_hull_def(&LOCAL_PLAYER.ship)->ship_radius + 8.0f));
-            LOCAL_PLAYER.beam_active = true;
-            LOCAL_PLAYER.beam_start = muzzle;
-            if (LOCAL_PLAYER.hover_asteroid >= 0) {
-                asteroid_t *a = &g.world.asteroids[LOCAL_PLAYER.hover_asteroid];
-                vec2 to_a = v2_sub(a->pos, muzzle);
-                LOCAL_PLAYER.beam_end = v2_sub(a->pos, v2_scale(v2_norm(to_a), a->radius * 0.85f));
-                LOCAL_PLAYER.beam_hit = true;
-            } else {
-                LOCAL_PLAYER.beam_end = v2_add(muzzle, v2_scale(forward, 170.0f));
-            }
-        }
+        /* Mining beam visual — step_player already set hover_asteroid and beam state.
+         * Just ensure beam_ineffective is set for rendering. */
 
         /* Advance interpolation timers */
         g.asteroid_interp.t += dt / fmaxf(g.asteroid_interp.interval, 0.01f);
