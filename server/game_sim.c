@@ -2072,87 +2072,112 @@ static void step_contracts(world_t *w, float dt) {
         }
     }
 
-    /* Generate new contracts from deficits */
+    /* Generate ONE contract per station — its top need.
+     * Priority: scaffold modules > empty hoppers > empty ingot buffers.
+     * Skip if station already has an active contract. */
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
-        if (station_has_module(st, MODULE_FURNACE)) {
+        if (!station_exists(st)) continue;
+
+        /* Check if this station already has an active contract */
+        bool has_contract = false;
+        for (int k = 0; k < MAX_CONTRACTS; k++) {
+            if (w->contracts[k].active && w->contracts[k].station_index == s) {
+                has_contract = true; break;
+            }
+        }
+        if (has_contract) continue;
+
+        /* Evaluate station's top need */
+        contract_t need = {0};
+        need.target_index = -1;
+        need.claimed_by = -1;
+
+        /* Priority 1: scaffold modules need frames */
+        for (int m = 0; m < st->module_count; m++) {
+            if (!st->modules[m].scaffold) continue;
+            float cost = module_build_cost(st->modules[m].type);
+            float remaining = cost * (1.0f - st->modules[m].build_progress);
+            if (remaining > 0.5f) {
+                need = (contract_t){
+                    .active = true, .action = CONTRACT_SUPPLY,
+                    .station_index = (uint8_t)s,
+                    .commodity = COMMODITY_FRAME_INGOT,
+                    .quantity_needed = remaining,
+                    .base_price = 25.0f,
+                    .target_index = -1, .claimed_by = -1,
+                };
+                break;
+            }
+        }
+
+        /* Priority 2: station scaffold needs frames */
+        if (!need.active && st->scaffold) {
+            float remaining = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
+            if (remaining > 0.5f) {
+                need = (contract_t){
+                    .active = true, .action = CONTRACT_SUPPLY,
+                    .station_index = (uint8_t)s,
+                    .commodity = COMMODITY_FRAME_INGOT,
+                    .quantity_needed = remaining,
+                    .base_price = 25.0f,
+                    .target_index = -1, .claimed_by = -1,
+                };
+            }
+        }
+
+        /* Priority 3: ore hopper with biggest deficit */
+        if (!need.active && station_has_module(st, MODULE_FURNACE)) {
+            float worst_deficit = 0.0f;
+            int worst_ore = -1;
             for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
-                if (st->ore_buffer[c] < REFINERY_HOPPER_CAPACITY * 0.5f) {
-                    bool exists = false;
-                    for (int k = 0; k < MAX_CONTRACTS; k++) {
-                        if (w->contracts[k].active && w->contracts[k].station_index == s && w->contracts[k].commodity == (commodity_t)c) {
-                            exists = true; break;
-                        }
-                    }
-                    if (!exists) {
-                        for (int k = 0; k < MAX_CONTRACTS; k++) {
-                            if (!w->contracts[k].active) {
-                                w->contracts[k] = (contract_t){
-                                    .active = true, .action = CONTRACT_SUPPLY,
-                                    .station_index = (uint8_t)s,
-                                    .commodity = (commodity_t)c,
-                                    .quantity_needed = REFINERY_HOPPER_CAPACITY * 0.5f - st->ore_buffer[c],
-                                    .base_price = st->buy_price[c], .age = 0.0f,
-                                    .target_index = -1, .claimed_by = -1,
-                                };
-                                break;
-                            }
-                        }
-                    }
-                }
+                float deficit = REFINERY_HOPPER_CAPACITY * 0.5f - st->ore_buffer[c];
+                if (deficit > worst_deficit) { worst_deficit = deficit; worst_ore = c; }
+            }
+            if (worst_ore >= 0) {
+                need = (contract_t){
+                    .active = true, .action = CONTRACT_SUPPLY,
+                    .station_index = (uint8_t)s,
+                    .commodity = (commodity_t)worst_ore,
+                    .quantity_needed = worst_deficit,
+                    .base_price = st->buy_price[worst_ore],
+                    .target_index = -1, .claimed_by = -1,
+                };
             }
         }
-        if (station_has_module(st, MODULE_FRAME_PRESS)) {
-            commodity_t ingot = COMMODITY_FRAME_INGOT;
-            if (st->ingot_buffer[INGOT_IDX(ingot)] < INGOT_BUFFER_CAPACITY * 0.5f) {
-                bool exists = false;
-                for (int k = 0; k < MAX_CONTRACTS; k++) {
-                    if (w->contracts[k].active && w->contracts[k].station_index == s && w->contracts[k].commodity == ingot) {
-                        exists = true; break;
-                    }
-                }
-                if (!exists) {
-                    for (int k = 0; k < MAX_CONTRACTS; k++) {
-                        if (!w->contracts[k].active) {
-                            w->contracts[k] = (contract_t){
-                                .active = true, .action = CONTRACT_SUPPLY,
-                                .station_index = (uint8_t)s,
-                                .commodity = ingot,
-                                .quantity_needed = INGOT_BUFFER_CAPACITY * 0.5f - st->ingot_buffer[INGOT_IDX(ingot)],
-                                .base_price = 20.0f, .age = 0.0f,
-                                .target_index = -1, .claimed_by = -1,
-                            };
-                            break;
-                        }
-                    }
-                }
+
+        /* Priority 4: ingot buffer deficit (for production stations) */
+        if (!need.active) {
+            struct { module_type_t mod; commodity_t ingot; float price; } checks[] = {
+                { MODULE_FRAME_PRESS, COMMODITY_FRAME_INGOT, 20.0f },
+                { MODULE_LASER_FAB, COMMODITY_CONDUCTOR_INGOT, 22.0f },
+                { MODULE_TRACTOR_FAB, COMMODITY_LENS_INGOT, 22.0f },
+            };
+            float worst_deficit = 0.0f;
+            int worst_idx = -1;
+            for (int j = 0; j < 3; j++) {
+                if (!station_has_module(st, checks[j].mod)) continue;
+                float deficit = INGOT_BUFFER_CAPACITY * 0.5f - st->ingot_buffer[INGOT_IDX(checks[j].ingot)];
+                if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
+            }
+            if (worst_idx >= 0) {
+                need = (contract_t){
+                    .active = true, .action = CONTRACT_SUPPLY,
+                    .station_index = (uint8_t)s,
+                    .commodity = checks[worst_idx].ingot,
+                    .quantity_needed = worst_deficit,
+                    .base_price = checks[worst_idx].price,
+                    .target_index = -1, .claimed_by = -1,
+                };
             }
         }
-        if (station_has_module(st, MODULE_LASER_FAB) || station_has_module(st, MODULE_TRACTOR_FAB)) {
-            commodity_t ingots[2] = { COMMODITY_CONDUCTOR_INGOT, COMMODITY_LENS_INGOT };
-            for (int j = 0; j < 2; j++) {
-                if (st->ingot_buffer[INGOT_IDX(ingots[j])] < INGOT_BUFFER_CAPACITY * 0.5f) {
-                    bool exists = false;
-                    for (int k = 0; k < MAX_CONTRACTS; k++) {
-                        if (w->contracts[k].active && w->contracts[k].station_index == s && w->contracts[k].commodity == ingots[j]) {
-                            exists = true; break;
-                        }
-                    }
-                    if (!exists) {
-                        for (int k = 0; k < MAX_CONTRACTS; k++) {
-                            if (!w->contracts[k].active) {
-                                w->contracts[k] = (contract_t){
-                                    .active = true, .action = CONTRACT_SUPPLY,
-                                    .station_index = (uint8_t)s,
-                                    .commodity = ingots[j],
-                                    .quantity_needed = INGOT_BUFFER_CAPACITY * 0.5f - st->ingot_buffer[INGOT_IDX(ingots[j])],
-                                    .base_price = 22.0f, .age = 0.0f,
-                                    .target_index = -1, .claimed_by = -1,
-                                };
-                                break;
-                            }
-                        }
-                    }
+
+        /* Post the contract if we found a need */
+        if (need.active) {
+            for (int k = 0; k < MAX_CONTRACTS; k++) {
+                if (!w->contracts[k].active) {
+                    w->contracts[k] = need;
+                    break;
                 }
             }
         }

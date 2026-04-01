@@ -681,50 +681,63 @@ void draw_station_services(const station_ui_state_t* ui) {
         sdtx_color3b(130, 255, 235);
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
         sdtx_puts("CONTRACTS");
-        int shown = 0;
-        int max_show = compact ? 6 : 8;
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
+        sdtx_color3b(145, 160, 188);
+        sdtx_puts("Press 1-3 to track");
+
+        /* Find top 3 nearest contracts by distance from current station */
+        int nearest[3] = {-1, -1, -1};
+        float nearest_d[3] = {1e18f, 1e18f, 1e18f};
+        vec2 here = ui->station->pos;
         for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
             contract_t *ct = &g.world.contracts[ci];
             if (!ct->active) continue;
-            if (ct->station_index < 0 || ct->station_index >= MAX_STATIONS) continue;
+            if (ct->station_index >= MAX_STATIONS) continue;
             if (!station_exists(&g.world.stations[ct->station_index])) continue;
+            vec2 target = (ct->action == CONTRACT_SUPPLY) ? g.world.stations[ct->station_index].pos : ct->target_pos;
+            float d = v2_dist_sq(here, target);
+            for (int slot = 0; slot < 3; slot++) {
+                if (d < nearest_d[slot]) {
+                    /* Shift down */
+                    for (int j = 2; j > slot; j--) { nearest[j] = nearest[j-1]; nearest_d[j] = nearest_d[j-1]; }
+                    nearest[slot] = ci;
+                    nearest_d[slot] = d;
+                    break;
+                }
+            }
+        }
+
+        int shown = 0;
+        for (int slot = 0; slot < 3; slot++) {
+            if (nearest[slot] < 0) continue;
+            contract_t *ct = &g.world.contracts[nearest[slot]];
             float cprice = ct->base_price * (1.0f + ct->age / 300.0f * 0.2f);
-            if (cprice < 0.01f) continue;
-            float line_y = cy + 22.0f + (float)shown * 18.0f;
+            float line_y = cy + 32.0f + (float)shown * 20.0f;
+            bool tracked = (g.tracked_contract == nearest[slot]);
             /* Action-based pip color */
             float pip_r = 0.5f, pip_g = 0.5f, pip_b = 0.5f;
             if (ct->action == CONTRACT_DESTROY) { pip_r = 0.95f; pip_g = 0.30f; pip_b = 0.20f; }
             else if (ct->action == CONTRACT_SCAN) { pip_r = 0.30f; pip_g = 0.70f; pip_b = 0.95f; }
             else {
-                /* SUPPLY: color by commodity */
                 if (ct->commodity == COMMODITY_FERRITE_ORE) { pip_r = 0.85f; pip_g = 0.50f; pip_b = 0.35f; }
                 else if (ct->commodity == COMMODITY_CUPRITE_ORE) { pip_r = 0.40f; pip_g = 0.55f; pip_b = 0.90f; }
                 else if (ct->commodity == COMMODITY_CRYSTAL_ORE) { pip_r = 0.40f; pip_g = 0.85f; pip_b = 0.50f; }
-                else if (ct->commodity == COMMODITY_FRAME_INGOT) { pip_r = 0.70f; pip_g = 0.75f; pip_b = 0.90f; }
-                else if (ct->commodity == COMMODITY_CONDUCTOR_INGOT) { pip_r = 0.60f; pip_g = 0.80f; pip_b = 1.0f; }
-                else if (ct->commodity == COMMODITY_LENS_INGOT) { pip_r = 0.55f; pip_g = 0.95f; pip_b = 0.65f; }
+                else { pip_r = 0.60f; pip_g = 0.75f; pip_b = 0.90f; }
             }
             draw_rect_centered(v2(cx * HUD_CELL + 2.0f, line_y * HUD_CELL + 5.0f), 3.0f, 3.0f, pip_r, pip_g, pip_b, 0.9f);
-            /* Age-based brightness */
-            float age_fade = clampf(ct->age / 600.0f, 0.0f, 1.0f);
-            uint8_t txt_r = (uint8_t)lerpf(220.0f, 120.0f, age_fade);
-            uint8_t txt_g = (uint8_t)lerpf(235.0f, 140.0f, age_fade);
-            uint8_t txt_b = (uint8_t)lerpf(255.0f, 170.0f, age_fade);
             sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(line_y));
-            sdtx_color3b(txt_r, txt_g, txt_b);
+            sdtx_color3b(tracked ? 255 : 203, tracked ? 255 : 220, tracked ? 130 : 248);
             if (ct->action == CONTRACT_DESTROY) {
-                sdtx_printf("DESTROY @ %.0f,%.0f: %.0f cr",
-                    ct->target_pos.x, ct->target_pos.y, cprice);
+                sdtx_printf("[%d] DESTROY: %.0f cr%s", shown + 1, cprice, tracked ? " *" : "");
             } else if (ct->action == CONTRACT_SCAN) {
-                sdtx_printf("SCAN @ %.0f,%.0f: %.0f cr",
-                    ct->target_pos.x, ct->target_pos.y, cprice);
+                sdtx_printf("[%d] SCAN: %.0f cr%s", shown + 1, cprice, tracked ? " *" : "");
             } else {
-                sdtx_printf("%s @ %s: %.0f cr/u",
+                sdtx_printf("[%d] %s @ %s: %.0f cr%s", shown + 1,
                     commodity_short_name(ct->commodity),
                     g.world.stations[ct->station_index].name,
-                    cprice);
+                    cprice, tracked ? " *" : "");
             }
-            if (++shown >= max_show) break;
+            shown++;
         }
         if (shown == 0) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));

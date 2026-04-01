@@ -239,6 +239,7 @@ static void reset_world(void) {
     player_init_ship(&LOCAL_PLAYER, &g.world);
     LOCAL_PLAYER.connected = true;
 
+    g.tracked_contract = -1;
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
     g.asteroid_interp.interval = 0.1f;
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
@@ -612,8 +613,39 @@ static input_intent_t sample_input_intent(void) {
 
     intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
     intent.interact = is_key_pressed(SAPP_KEYCODE_E);
-    /* Number keys: BUILD tab → module construction, otherwise → services/upgrades */
-    if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONSTRUCTION
+    /* Number keys: context-dependent */
+    if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONTRACTS) {
+        /* 1/2/3 selects a contract to track */
+        for (int k = 0; k < 3; k++) {
+            if (!is_key_pressed(SAPP_KEYCODE_1 + k)) continue;
+            /* Find top 3 nearest contracts (same logic as UI) */
+            int nearest[3] = {-1, -1, -1};
+            float nearest_d[3] = {1e18f, 1e18f, 1e18f};
+            const station_t *here_st = current_station_ptr();
+            if (!here_st) break;
+            vec2 here = here_st->pos;
+            for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
+                contract_t *ct = &g.world.contracts[ci];
+                if (!ct->active || ct->station_index >= MAX_STATIONS) continue;
+                if (!station_exists(&g.world.stations[ct->station_index])) continue;
+                vec2 target = (ct->action == CONTRACT_SUPPLY) ? g.world.stations[ct->station_index].pos : ct->target_pos;
+                float d = v2_dist_sq(here, target);
+                for (int slot = 0; slot < 3; slot++) {
+                    if (d < nearest_d[slot]) {
+                        for (int j = 2; j > slot; j--) { nearest[j] = nearest[j-1]; nearest_d[j] = nearest_d[j-1]; }
+                        nearest[slot] = ci;
+                        nearest_d[slot] = d;
+                        break;
+                    }
+                }
+            }
+            if (nearest[k] >= 0) {
+                g.tracked_contract = nearest[k];
+                set_notice("Contract tracked.");
+            }
+            break;
+        }
+    } else if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONSTRUCTION
         && !current_station_ptr()->scaffold) {
         static const struct { module_type_t type; const char *name; } build_keys[] = {
             { MODULE_FURNACE,      "Furnace" },

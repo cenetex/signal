@@ -2758,7 +2758,10 @@ TEST(test_contract_generated_from_hopper_deficit) {
     /* A refinery with low ore_buffer should generate an ore contract */
     world_t w = {0};
     world_reset(&w);
-    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f; /* well below 50% of 100 */
+    /* Make ferrite the biggest deficit by filling the others */
+    w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f;
+    w.stations[0].ore_buffer[COMMODITY_CUPRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    w.stations[0].ore_buffer[COMMODITY_CRYSTAL_ORE] = REFINERY_HOPPER_CAPACITY;
     world_sim_step(&w, SIM_DT);
     /* Find contract for station 0, ferrite ore */
     contract_t *found = NULL;

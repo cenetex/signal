@@ -106,6 +106,8 @@ typedef struct {
     bool was_docked;
     /* --- Outpost placement mode --- */
     bool placing_outpost;
+    /* --- Contract tracking --- */
+    int tracked_contract;    /* index into world.contracts, -1 = none */
     /* --- Navigation breadcrumb (last docked station or placed blueprint) --- */
     bool nav_pip_active;
     vec2 nav_pip_pos;
