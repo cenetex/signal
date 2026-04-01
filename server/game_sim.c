@@ -1770,9 +1770,27 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     }
     if (!sp->docked) return;
     station_t *docked_st = &w->stations[sp->current_station];
-    /* Auto-deliver ferrite ingots to scaffold station and scaffold modules */
+    /* Auto-deliver to scaffolds */
     step_scaffold_delivery(w, sp);
     step_module_delivery(w, docked_st, sp->current_station, &sp->ship);
+    /* Auto-deliver contracted ingots from cargo to station buffer */
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *ct = &w->contracts[k];
+        if (!ct->active || ct->action != CONTRACT_SUPPLY) continue;
+        if (ct->station_index != sp->current_station) continue;
+        commodity_t c = ct->commodity;
+        if (c < COMMODITY_RAW_ORE_COUNT) continue; /* ore sold via [1] key */
+        if (sp->ship.cargo[c] < 0.01f) continue;
+        float deliver = fminf(sp->ship.cargo[c], ct->quantity_needed);
+        sp->ship.cargo[c] -= deliver;
+        docked_st->ingot_buffer[INGOT_IDX(c)] += deliver;
+        ct->quantity_needed -= deliver;
+        if (ct->quantity_needed <= 0.01f) {
+            ct->active = false;
+            emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_SUPPLY});
+        }
+        SIM_LOG("[sim] player %d delivered %.0f of %d to station %d\n", sp->id, deliver, c, sp->current_station);
+    }
     /* Module construction: player requests to build a module */
     if (intent->build_module && !w->player_only_mode) {
         float cost = module_credit_cost(intent->build_module_type);
