@@ -74,8 +74,8 @@ enum {
 /* Record sizes                                                       */
 /* ------------------------------------------------------------------ */
 
-/* Station economic snapshot: [index:1][ore_buf:3xf32][inv:6xf32][prod:3xf32] */
-#define STATION_RECORD_SIZE 53
+/* Station economic snapshot: [index:1][ore_buf:3xf32][inv:9xf32][prod:3xf32] */
+#define STATION_RECORD_SIZE 61
 
 /* Player state record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1] */
 #define PLAYER_RECORD_SIZE 22

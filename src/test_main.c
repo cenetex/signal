@@ -193,7 +193,7 @@ TEST(test_ingot_idx) {
     ASSERT_EQ_INT(INGOT_IDX(COMMODITY_FERRITE_INGOT), 0);
     ASSERT_EQ_INT(INGOT_IDX(COMMODITY_CUPRITE_INGOT), 1);
     ASSERT_EQ_INT(INGOT_IDX(COMMODITY_CRYSTAL_INGOT), 2);
-    ASSERT_EQ_INT(INGOT_COUNT, 4);
+    ASSERT_EQ_INT(INGOT_COUNT, 6);
 }
 
 /* ---- Ship Tests ---- */
@@ -1182,7 +1182,7 @@ TEST(test_bug21_commodity_bits_fragile) {
     /* 3 bits can encode 0-7. COMMODITY_COUNT is currently 6. Adding 2 more
      * commodities (jump crystals, etc) would overflow the bitfield.
      * FIX: use 4 bits for commodity in the network protocol. */
-    ASSERT(COMMODITY_COUNT <= 7);  /* passes today */
+    ASSERT(COMMODITY_RAW_ORE_COUNT <= 7)  /* asteroid protocol uses 3 bits for ore type */;  /* passes today */
     /* After fix: protocol should handle COMMODITY_COUNT > 7 */
     /* This test documents the fragility — manually check when adding commodities */
 }

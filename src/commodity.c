@@ -43,6 +43,10 @@ const char* commodity_name(commodity_t commodity) {
             return "Crystal Ingots";
         case COMMODITY_FRAME:
             return "Frames";
+        case COMMODITY_LASER_MODULE:
+            return "Laser Modules";
+        case COMMODITY_TRACTOR_MODULE:
+            return "Tractor Modules";
         case COMMODITY_COUNT:
         default:
             return "Cargo";
@@ -65,6 +69,10 @@ const char* commodity_code(commodity_t commodity) {
             return "LN";
         case COMMODITY_FRAME:
             return "FM";
+        case COMMODITY_LASER_MODULE:
+            return "LM";
+        case COMMODITY_TRACTOR_MODULE:
+            return "TM";
         case COMMODITY_COUNT:
         default:
             return "--";
@@ -87,6 +95,10 @@ const char* commodity_short_name(commodity_t commodity) {
             return "CR Ingot";
         case COMMODITY_FRAME:
             return "Frame";
+        case COMMODITY_LASER_MODULE:
+            return "Laser Mod";
+        case COMMODITY_TRACTOR_MODULE:
+            return "Tractor Mod";
         case COMMODITY_COUNT:
         default:
             return "Unknown";
