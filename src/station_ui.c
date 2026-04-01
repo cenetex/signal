@@ -512,63 +512,53 @@ void draw_station_services(const station_ui_state_t* ui) {
     case STATION_TAB_STATUS: {
         float ly = cy;
 
-        /* Scaffold progress */
         if (ui->station->scaffold) {
             int pct = (int)lroundf(ui->station->scaffold_progress * 100.0f);
-            int frames_held = (int)lroundf(LOCAL_PLAYER.ship.cargo[COMMODITY_FERRITE_INGOT]);
-            float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - ui->station->scaffold_progress);
-            int needed_int = (int)lroundf(needed);
-            sdtx_color3b(203, 220, 248);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-            sdtx_printf("Progress: %d%%", pct);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 16.0f));
-            sdtx_printf("Need %d more ferrite ingots", needed_int);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 32.0f));
-            sdtx_printf("You have: %d ferrite ingots", frames_held);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 56.0f));
+            sdtx_color3b(255, 221, 119);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_printf("SCAFFOLD  %d%%", pct);
+            ly += 18.0f;
             sdtx_color3b(145, 160, 188);
-            sdtx_puts("Dock to auto-deliver ferrite ingots.");
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_puts("Deliver ferrite ingots to build.");
         } else {
-            /* Station welcome -- what this place does */
-            sdtx_color3b(203, 220, 248);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-            if (station_has_module(ui->station, MODULE_FURNACE)) {
-                sdtx_puts("Ore intake and refining hub.");
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
-                sdtx_color3b(145, 160, 188);
-                sdtx_puts("Sell raw ore for credits. Smelts ingots");
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 34.0f));
-                sdtx_puts("for station production.");
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 58.0f));
-                sdtx_color3b(203, 220, 248);
-                sdtx_printf("Haul value: %d cr", ui->payout);
-            } else if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
-                sdtx_puts("Ferrite smelting and frame production.");
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
-                sdtx_color3b(145, 160, 188);
-                sdtx_puts("Upgrades cargo hold capacity.");
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 34.0f));
-                sdtx_puts("Produces products from ingots.");
-            } else if (station_has_module(ui->station, MODULE_SIGNAL_RELAY)) {
-                sdtx_puts("Signal relay outpost.");
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
-                sdtx_color3b(145, 160, 188);
-                sdtx_puts("Extends signal range into new territory.");
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 44.0f));
-                sdtx_color3b(203, 220, 248);
-                sdtx_printf("Signal range: %.0f", ui->station->signal_range);
-            } else {
-                sdtx_puts("Field equipment works.");
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
-                sdtx_color3b(145, 160, 188);
-                sdtx_puts("Upgrades mining laser and tractor beam.");
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 34.0f));
-                sdtx_puts("Fabricates modules from ingots.");
+            /* Actions */
+            if (station_has_module(ui->station, MODULE_ORE_BUYER)) {
+                sdtx_color3b(ui->payout > 0 ? 130 : 145, ui->payout > 0 ? 255 : 160, ui->payout > 0 ? 235 : 188);
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_printf("[1] Sell ore  %d cr", ui->payout);
+                ly += 16.0f;
             }
-            /* Common: repair status */
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 80.0f));
-            sdtx_color3b(ui->repair_cost > 0 ? 255 : 145, ui->repair_cost > 0 ? 180 : 160, ui->repair_cost > 0 ? 80 : 188);
-            sdtx_printf("Hull repair: %s", ui->repair_cost > 0 ? "needed" : "nominal");
+            sdtx_color3b(ui->repair_cost > 0 ? 255 : 145, ui->repair_cost > 0 ? 221 : 160, ui->repair_cost > 0 ? 119 : 188);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_printf("[2] Repair  %s", ui->repair_cost > 0 ? "needed" : "nominal");
+            ly += 16.0f;
+            if (station_has_module(ui->station, MODULE_LASER_FAB)) {
+                bool maxed = ship_upgrade_maxed(&LOCAL_PLAYER.ship, SHIP_UPGRADE_MINING);
+                sdtx_color3b(maxed ? 145 : 203, maxed ? 160 : 220, maxed ? 188 : 248);
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_printf("[3] Laser  %s", maxed ? "MAX" : "upgrade");
+                ly += 16.0f;
+            }
+            if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
+                bool maxed = ship_upgrade_maxed(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD);
+                sdtx_color3b(maxed ? 145 : 203, maxed ? 160 : 220, maxed ? 188 : 248);
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_printf("[4] Hold  %s", maxed ? "MAX" : "upgrade");
+                ly += 16.0f;
+            }
+            if (station_has_module(ui->station, MODULE_TRACTOR_FAB)) {
+                bool maxed = ship_upgrade_maxed(&LOCAL_PLAYER.ship, SHIP_UPGRADE_TRACTOR);
+                sdtx_color3b(maxed ? 145 : 203, maxed ? 160 : 220, maxed ? 188 : 248);
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_printf("[5] Tractor  %s", maxed ? "MAX" : "upgrade");
+                ly += 16.0f;
+            }
+            /* Build hint */
+            ly += 8.0f;
+            sdtx_color3b(100, 130, 120);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_puts("[B] Build module  [E] Launch");
         }
         break;
     }
