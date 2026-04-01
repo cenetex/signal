@@ -592,7 +592,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 if (!has_stock) {
                     sdtx_color3b(130, 255, 235);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-                    sdtx_puts("BUY INGOTS  (F key)");
+                    sdtx_puts("[F] BUY INGOTS");
                     my += 16.0f;
                     has_stock = true;
                 }
