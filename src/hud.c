@@ -326,13 +326,27 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
 
     if (LOCAL_PLAYER.docked) {
         if (station != NULL) {
-            snprintf(label, label_size, "%s", station_role_name(station));
-            if (station_has_module(station, MODULE_FURNACE)) {
-                snprintf(message, message_size, "Sell raw ore here, repair up, then head back into the belt.");
-            } else if (station_has_module(station, MODULE_FRAME_PRESS)) {
-                snprintf(message, message_size, "Patch the hull and refit hold racks before the next sortie.");
+            /* Rotate tips based on time */
+            int tip_cycle = (int)(g.world.time / 5.0f) % 3;
+            bool has_market = false;
+            for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
+                if (station->inventory[c] > 0.5f) { has_market = true; break; }
+
+            if (tip_cycle == 1 && has_market) {
+                snprintf(label, label_size, "MARKET");
+                snprintf(message, message_size, "Press F to buy ingots. Haul them to your outpost blueprints.");
+            } else if (tip_cycle == 2 && station_has_module(station, MODULE_ORE_BUYER)) {
+                snprintf(label, label_size, "TIP");
+                snprintf(message, message_size, "Press 1 to sell ore. Press B to place an outpost blueprint.");
             } else {
-                snprintf(message, message_size, "Tune the laser or tractor, then get back on the run.");
+                snprintf(label, label_size, "%s", station_role_name(station));
+                if (station_has_module(station, MODULE_FURNACE)) {
+                    snprintf(message, message_size, "Sell raw ore here, repair up, then head back into the belt.");
+                } else if (station_has_module(station, MODULE_FRAME_PRESS)) {
+                    snprintf(message, message_size, "Press F to buy frames. Haul to outpost blueprints.");
+                } else {
+                    snprintf(message, message_size, "Tune the laser or tractor, then get back on the run.");
+                }
             }
             *r = 164;
             *g0 = 177;
