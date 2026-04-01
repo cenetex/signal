@@ -123,6 +123,8 @@ void player_init_ship(server_player_t *sp, world_t *w);
 float signal_strength_at(const world_t *w, vec2 pos);
 void rebuild_signal_chain(world_t *w);
 bool can_place_outpost(const world_t *w, vec2 pos);
+void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type);
+void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *ship);
 int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos);
 bool world_save(const world_t *w, const char *path);
 bool world_load(world_t *w, const char *path);

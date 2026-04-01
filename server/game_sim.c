@@ -240,7 +240,7 @@ static float module_credit_cost(module_type_t type) {
 }
 
 /* Add a scaffold module to a station and generate a supply contract */
-static void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type) {
+void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type) {
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
     if (station_has_module(st, type)) return;
 
@@ -270,7 +270,7 @@ static void begin_module_construction(world_t *w, station_t *st, int station_idx
 }
 
 /* Deliver ingots to scaffold modules at a station */
-static void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *ship) {
+void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *ship) {
     for (int i = 0; i < st->module_count; i++) {
         if (!st->modules[i].scaffold) continue;
         commodity_t mat = module_build_material(st->modules[i].type);
@@ -2117,9 +2117,10 @@ static void step_contracts(world_t *w, float dt) {
             break;
         }
         case CONTRACT_DESTROY: {
-            /* Close when target asteroid is gone */
+            /* Close when target asteroid is gone or index invalid */
             int idx = w->contracts[i].target_index;
-            if (idx >= 0 && idx < MAX_ASTEROIDS && !w->asteroids[idx].active) {
+            bool target_gone = (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active);
+            if (target_gone) {
                 w->contracts[i].active = false;
                 emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_DESTROY});
             }

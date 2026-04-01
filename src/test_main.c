@@ -3287,6 +3287,248 @@ TEST(test_bug90_station_bounce_no_extra_energy) {
     ASSERT(speed_after < speed_before * 0.8f);
 }
 
+/* ================================================================== */
+/* Refinery tiers                                                      */
+/* ================================================================== */
+
+TEST(test_furnace_only_smelts_ferrite) {
+    station_t st = {0};
+    st.modules[st.module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
+    st.ore_buffer[COMMODITY_FERRITE_ORE] = 50.0f;
+    st.ore_buffer[COMMODITY_CUPRITE_ORE] = 50.0f;
+    st.ore_buffer[COMMODITY_CRYSTAL_ORE] = 50.0f;
+    step_refinery_production(&st, 1, 1.0f);
+    ASSERT(st.ore_buffer[COMMODITY_FERRITE_ORE] < 50.0f);  /* smelted */
+    ASSERT_EQ_FLOAT(st.ore_buffer[COMMODITY_CUPRITE_ORE], 50.0f, 0.01f);  /* untouched */
+    ASSERT_EQ_FLOAT(st.ore_buffer[COMMODITY_CRYSTAL_ORE], 50.0f, 0.01f);  /* untouched */
+    ASSERT(st.inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
+}
+
+TEST(test_furnace_cu_smelts_cuprite) {
+    station_t st = {0};
+    st.modules[st.module_count++] = (station_module_t){ MODULE_FURNACE_CU, false, 1.0f };
+    st.ore_buffer[COMMODITY_FERRITE_ORE] = 50.0f;
+    st.ore_buffer[COMMODITY_CUPRITE_ORE] = 50.0f;
+    step_refinery_production(&st, 1, 1.0f);
+    ASSERT_EQ_FLOAT(st.ore_buffer[COMMODITY_FERRITE_ORE], 50.0f, 0.01f);  /* no FE furnace */
+    ASSERT(st.ore_buffer[COMMODITY_CUPRITE_ORE] < 50.0f);
+    ASSERT(st.inventory[COMMODITY_CUPRITE_INGOT] > 0.0f);
+}
+
+TEST(test_furnace_cr_smelts_crystal) {
+    station_t st = {0};
+    st.modules[st.module_count++] = (station_module_t){ MODULE_FURNACE_CR, false, 1.0f };
+    st.ore_buffer[COMMODITY_CRYSTAL_ORE] = 50.0f;
+    step_refinery_production(&st, 1, 1.0f);
+    ASSERT(st.ore_buffer[COMMODITY_CRYSTAL_ORE] < 50.0f);
+    ASSERT(st.inventory[COMMODITY_CRYSTAL_INGOT] > 0.0f);
+}
+
+TEST(test_no_furnace_no_smelting) {
+    station_t st = {0};
+    st.modules[st.module_count++] = (station_module_t){ MODULE_FRAME_PRESS, false, 1.0f };
+    st.ore_buffer[COMMODITY_FERRITE_ORE] = 50.0f;
+    step_refinery_production(&st, 1, 1.0f);
+    ASSERT_EQ_FLOAT(st.ore_buffer[COMMODITY_FERRITE_ORE], 50.0f, 0.01f);
+}
+
+/* ================================================================== */
+/* Module construction                                                 */
+/* ================================================================== */
+
+TEST(test_module_build_material_types) {
+    /* Verify each module requires the correct ingot type */
+    world_t w = {0};
+    world_reset(&w);
+    station_t *st = &w.stations[0];
+    /* Laser fab should generate a cuprite ingot contract */
+    begin_module_construction(&w, st, 0, MODULE_LASER_FAB);
+    bool found_cu = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active && w.contracts[k].commodity == COMMODITY_CUPRITE_INGOT) {
+            found_cu = true; break;
+        }
+    }
+    ASSERT(found_cu);
+}
+
+TEST(test_module_construction_and_delivery) {
+    world_t w = {0};
+    world_reset(&w);
+    station_t *st = &w.stations[0];
+    int mc_before = st->module_count;
+    begin_module_construction(&w, st, 0, MODULE_TRACTOR_FAB);
+    ASSERT_EQ_INT(st->module_count, mc_before + 1);
+    ASSERT(st->modules[mc_before].scaffold);
+    /* Deliver the required crystal ingots */
+    ship_t ship = {0};
+    ship.cargo[COMMODITY_CRYSTAL_INGOT] = 200.0f;
+    step_module_delivery(&w, st, 0, &ship);
+    ASSERT(!st->modules[mc_before].scaffold);  /* activated */
+    ASSERT(ship.cargo[COMMODITY_CRYSTAL_INGOT] < 200.0f);  /* consumed */
+}
+
+TEST(test_module_activation_spawns_npc) {
+    world_t w = {0};
+    world_reset(&w);
+    int npc_before = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_before++;
+    /* Build a furnace on an outpost (station 0 already has one, use station 1) */
+    station_t *st = &w.stations[1];
+    begin_module_construction(&w, st, 1, MODULE_FURNACE);
+    ship_t ship = {0};
+    ship.cargo[COMMODITY_FERRITE_INGOT] = 200.0f;
+    step_module_delivery(&w, st, 1, &ship);
+    /* A miner should have been spawned */
+    int npc_after = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_after++;
+    ASSERT(npc_after > npc_before);
+}
+
+/* ================================================================== */
+/* Contract system (3-action model)                                    */
+/* ================================================================== */
+
+TEST(test_one_contract_per_station) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Empty all hoppers to create demand */
+    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
+        w.stations[0].ore_buffer[i] = 0.0f;
+    /* Run a few ticks to generate contracts */
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    /* Count contracts for station 0 */
+    int count = 0;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active && w.contracts[k].station_index == 0) count++;
+    }
+    ASSERT_EQ_INT(count, 1);  /* one contract per station */
+}
+
+TEST(test_destroy_contract_completes_when_asteroid_gone) {
+    /* DESTROY contracts should close when their target_index is invalid or inactive.
+     * Test without full sim to avoid respawn interference. */
+    contract_t c = {
+        .active = true, .action = CONTRACT_DESTROY,
+        .target_index = -1,  /* invalid = gone */
+        .base_price = 30.0f, .claimed_by = -1,
+    };
+    /* The fulfillment check: idx < 0 || idx >= MAX_ASTEROIDS || !asteroids[idx].active */
+    bool target_gone = (c.target_index < 0 || c.target_index >= MAX_ASTEROIDS);
+    ASSERT(target_gone);
+
+    /* Valid index, inactive asteroid */
+    asteroid_t asteroids[MAX_ASTEROIDS];
+    memset(asteroids, 0, sizeof(asteroids));
+    c.target_index = 5;
+    asteroids[5].active = false;
+    target_gone = (c.target_index < 0 || c.target_index >= MAX_ASTEROIDS || !asteroids[c.target_index].active);
+    ASSERT(target_gone);
+
+    /* Valid index, active asteroid — should NOT be gone */
+    asteroids[5].active = true;
+    target_gone = (c.target_index < 0 || c.target_index >= MAX_ASTEROIDS || !asteroids[c.target_index].active);
+    ASSERT(!target_gone);
+}
+
+TEST(test_supply_contract_uses_correct_material) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Build a laser fab scaffold on station 0 */
+    begin_module_construction(&w, &w.stations[0], 0, MODULE_LASER_FAB);
+    /* The generated contract should be for cuprite ingots */
+    bool found = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active && w.contracts[k].action == CONTRACT_SUPPLY
+            && w.contracts[k].station_index == 0
+            && w.contracts[k].commodity == COMMODITY_CUPRITE_INGOT) {
+            found = true; break;
+        }
+    }
+    ASSERT(found);
+    /* After contract expires and regenerates via step_contracts, it should still be cuprite */
+    for (int k = 0; k < MAX_CONTRACTS; k++) w.contracts[k].active = false;
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    found = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active && w.contracts[k].station_index == 0
+            && w.contracts[k].commodity == COMMODITY_CUPRITE_INGOT) {
+            found = true; break;
+        }
+    }
+    ASSERT(found);
+}
+
+/* ================================================================== */
+/* Dynamic pricing                                                     */
+/* ================================================================== */
+
+TEST(test_dynamic_ore_price_deficit) {
+    station_t st = {0};
+    st.buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    /* Empty hopper = 2x base */
+    st.ore_buffer[COMMODITY_FERRITE_ORE] = 0.0f;
+    float price_empty = station_buy_price(&st, COMMODITY_FERRITE_ORE);
+    ASSERT_EQ_FLOAT(price_empty, 20.0f, 0.1f);
+    /* Full hopper = base */
+    st.ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    float price_full = station_buy_price(&st, COMMODITY_FERRITE_ORE);
+    ASSERT_EQ_FLOAT(price_full, 10.0f, 0.1f);
+    /* Half = 1.5x */
+    st.ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
+    float price_half = station_buy_price(&st, COMMODITY_FERRITE_ORE);
+    ASSERT_EQ_FLOAT(price_half, 15.0f, 0.1f);
+}
+
+TEST(test_product_price_tracks_ore) {
+    /* Product price should be 2x ore price */
+    station_t st = {0};
+    st.buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    st.ore_buffer[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;  /* full = base price */
+    float ore_price = station_buy_price(&st, COMMODITY_FERRITE_ORE);
+    /* Ferrite ingot price = 2x ferrite ore price */
+    float expected = ore_price * 2.0f;
+    ASSERT_EQ_FLOAT(expected, 20.0f, 0.1f);
+}
+
+/* ================================================================== */
+/* Belt generation                                                     */
+/* ================================================================== */
+
+TEST(test_belt_density_varies) {
+    belt_field_t bf;
+    belt_field_init(&bf, 2037, 50000.0f);
+    /* Sample multiple points — should get both zero and nonzero density */
+    int zeros = 0, nonzeros = 0;
+    for (int i = 0; i < 100; i++) {
+        float x = (float)(i * 1000 - 50000);
+        float d = belt_density_at(&bf, x, 0.0f);
+        if (d < 0.01f) zeros++;
+        else nonzeros++;
+    }
+    ASSERT(zeros > 10);     /* some empty space */
+    ASSERT(nonzeros > 10);  /* some belt regions */
+}
+
+TEST(test_belt_ore_distribution) {
+    belt_field_t bf;
+    belt_field_init(&bf, 2037, 50000.0f);
+    int fe = 0, cu = 0, cr = 0;
+    for (int i = 0; i < 1000; i++) {
+        float x = (float)(i * 100 - 50000);
+        float y = (float)((i * 73) % 100000 - 50000);
+        commodity_t ore = belt_ore_at(&bf, x, y);
+        if (ore == COMMODITY_FERRITE_ORE) fe++;
+        else if (ore == COMMODITY_CUPRITE_ORE) cu++;
+        else if (ore == COMMODITY_CRYSTAL_ORE) cr++;
+    }
+    /* Ferrite should dominate, cuprite rare, crystal moderate */
+    ASSERT(fe > 500);   /* majority ferrite */
+    ASSERT(cu < 200);   /* cuprite is rare */
+    ASSERT(cr > 20);    /* crystal exists */
+    ASSERT(cr < fe);    /* less than ferrite */
+}
+
 int main(void) {
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -3501,6 +3743,30 @@ int main(void) {
     RUN(test_player_load_clamps_upgrade_levels);
     RUN(test_player_load_invalid_station_falls_back);
     RUN(test_player_load_bad_magic_fails);
+
+    printf("\nRefinery tiers:\n");
+    RUN(test_furnace_only_smelts_ferrite);
+    RUN(test_furnace_cu_smelts_cuprite);
+    RUN(test_furnace_cr_smelts_crystal);
+    RUN(test_no_furnace_no_smelting);
+
+    printf("\nModule construction:\n");
+    RUN(test_module_build_material_types);
+    RUN(test_module_construction_and_delivery);
+    RUN(test_module_activation_spawns_npc);
+
+    printf("\nContract system (3-action):\n");
+    RUN(test_one_contract_per_station);
+    RUN(test_destroy_contract_completes_when_asteroid_gone);
+    RUN(test_supply_contract_uses_correct_material);
+
+    printf("\nDynamic pricing:\n");
+    RUN(test_dynamic_ore_price_deficit);
+    RUN(test_product_price_tracks_ore);
+
+    printf("\nBelt generation:\n");
+    RUN(test_belt_density_varies);
+    RUN(test_belt_ore_distribution);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

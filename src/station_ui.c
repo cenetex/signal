@@ -580,20 +580,18 @@ void draw_station_services(const station_ui_state_t* ui) {
         if (station_has_module(ui->station, MODULE_ORE_BUYER)) {
             sdtx_color3b(130, 255, 235);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-            sdtx_puts("SELL ORE  (1 key)");
+            sdtx_printf("[1] SELL ORE  (%d cr)", ui->payout);
             my += 16.0f;
             for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
                 int price = (int)lroundf(station_buy_price(ui->station, (commodity_t)c));
                 int held = (int)lroundf(ship_cargo_amount(&LOCAL_PLAYER.ship, (commodity_t)c));
+                if (held <= 0) continue;
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-                sdtx_color3b(held > 0 ? 203 : 145, held > 0 ? 220 : 160, held > 0 ? 248 : 188);
-                sdtx_printf("%s: %d cr/u  (carry %d)", commodity_code((commodity_t)c), price, held);
+                sdtx_color3b(203, 220, 248);
+                sdtx_printf("%s x%d @ %d cr/u", commodity_code((commodity_t)c), held, price);
                 my += 14.0f;
             }
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-            sdtx_color3b(255, 221, 119);
-            sdtx_printf("Haul value: %d cr", ui->payout);
-            my += 20.0f;
+            my += 6.0f;
         }
         /* BUY: ingots from station inventory */
         {
