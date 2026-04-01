@@ -730,9 +730,30 @@ static input_intent_t sample_input_intent(void) {
         }
     } else if (is_key_pressed(SAPP_KEYCODE_B)) {
         if (LOCAL_PLAYER.docked) {
-            g.build_overlay = !g.build_overlay; /* toggle */
+            if (g.build_overlay) {
+                g.build_overlay = false;
+            } else if (!LOCAL_PLAYER.ship.has_scaffold_kit) {
+                /* Buy scaffold kit */
+                const station_t *st = current_station_ptr();
+                if (st && station_has_module(st, MODULE_BLUEPRINT_DESK)) {
+                    if (LOCAL_PLAYER.ship.credits >= OUTPOST_CREDIT_COST) {
+                        intent.buy_scaffold_kit = true;
+                        set_notice("Scaffold kit purchased. Undock and press B to deploy.");
+                    } else {
+                        set_notice("Need %d cr for scaffold kit.", (int)OUTPOST_CREDIT_COST);
+                    }
+                } else {
+                    g.build_overlay = true; /* show module build menu */
+                }
+            } else {
+                g.build_overlay = true;
+            }
         } else {
-            g.placing_outpost = true;
+            if (LOCAL_PLAYER.ship.has_scaffold_kit) {
+                g.placing_outpost = true;
+            } else {
+                set_notice("Buy a scaffold kit at a station first.");
+            }
         }
     }
     intent.reset = is_key_pressed(SAPP_KEYCODE_R);
@@ -888,6 +909,8 @@ static void sim_step(float dt) {
             g.pending_net_action = 7;
         else if (intent.place_outpost)
             g.pending_net_action = 8;
+        else if (intent.buy_scaffold_kit)
+            g.pending_net_action = NET_ACTION_BUY_SCAFFOLD;
         else if (intent.build_module)
             g.pending_net_action = NET_ACTION_BUILD_MODULE + (uint8_t)intent.build_module_type;
         else if (intent.buy_product)

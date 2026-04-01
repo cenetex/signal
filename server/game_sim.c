@@ -341,13 +341,13 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     }
 }
 
-/* Place an outpost at pos, deducting credits from sp.
+/* Place an outpost at pos using scaffold kit from cargo.
  * Returns the station slot index on success, -1 on failure.
  * Must NOT be called in player_only_mode (client prediction). */
 int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
     if (w->player_only_mode) return -1;
-    if (sp->docked) return -1;  /* must be undocked to place */
-    if (sp->ship.credits < OUTPOST_CREDIT_COST) return -1;
+    if (sp->docked) return -1;
+    if (!sp->ship.has_scaffold_kit) return -1;
     if (!can_place_outpost(w, pos)) return -1;
 
     /* Find free slot */
@@ -356,8 +356,6 @@ int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
         if (!station_exists(&w->stations[s])) { slot = s; break; }
     }
     if (slot < 0) return -1;
-
-    sp->ship.credits -= OUTPOST_CREDIT_COST;
 
     station_t *st = &w->stations[slot];
     memset(st, 0, sizeof(*st));
@@ -1744,11 +1742,24 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
 }
 
 static void step_station_interaction_system(world_t *w, server_player_t *sp, const input_intent_t *intent) {
-    /* Outpost placement: must be undocked, places 150 units ahead of ship */
-    if (intent->place_outpost && !sp->docked) {
+    /* Buy scaffold kit: docked at station with blueprint desk */
+    if (intent->buy_scaffold_kit && sp->docked && !w->player_only_mode) {
+        station_t *st = &w->stations[sp->current_station];
+        if (station_has_module(st, MODULE_BLUEPRINT_DESK)
+            && sp->ship.credits >= OUTPOST_CREDIT_COST
+            && !sp->ship.has_scaffold_kit) {
+            sp->ship.credits -= OUTPOST_CREDIT_COST;
+            sp->ship.has_scaffold_kit = true;
+            SIM_LOG("[sim] player %d bought scaffold kit\n", sp->id);
+        }
+        return;
+    }
+    /* Outpost placement: must be undocked with scaffold kit */
+    if (intent->place_outpost && !sp->docked && sp->ship.has_scaffold_kit) {
         vec2 forward = v2_from_angle(sp->ship.angle);
         vec2 place_pos = v2_add(sp->ship.pos, v2_scale(forward, 150.0f));
-        try_place_outpost(w, sp, place_pos);
+        int slot = try_place_outpost(w, sp, place_pos);
+        if (slot >= 0) sp->ship.has_scaffold_kit = false;
         return;
     }
     if (intent->interact) {

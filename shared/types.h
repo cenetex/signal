@@ -75,6 +75,7 @@ typedef struct {
     int mining_level;
     int hold_level;
     int tractor_level;
+    bool has_scaffold_kit;
 } ship_t;
 
 typedef enum {

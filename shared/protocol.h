@@ -66,6 +66,7 @@ enum {
     NET_ACTION_UPGRADE_TRACTOR= 7,
     NET_ACTION_PLACE_OUTPOST  = 8,
     NET_ACTION_BUILD_MODULE   = 9,  /* +module_type offset */
+    NET_ACTION_BUY_SCAFFOLD   = 25,
     NET_ACTION_BUY_PRODUCT    = 30, /* +commodity offset */
 };
 

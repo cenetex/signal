@@ -3073,6 +3073,7 @@ TEST(test_outpost_extends_signal_range) {
     w.players[0].connected = true;
     w.players[0].docked = false;
     w.players[0].ship.credits = 1000.0f;
+    w.players[0].ship.has_scaffold_kit = true;
 
     int slot = try_place_outpost(&w, &w.players[0], outpost_pos);
     ASSERT(slot >= 3);
@@ -3109,6 +3110,7 @@ TEST(test_disconnected_station_goes_dark) {
     sp.connected = true;
     sp.ship.credits = 10000.0f;
     sp.docked = false;
+    sp.ship.has_scaffold_kit = true;
     vec2 outpost_pos = v2_add(w.stations[0].pos, v2(5000.0f, 0.0f));
     int slot = try_place_outpost(&w, &sp, outpost_pos);
     ASSERT(slot >= 0);
@@ -3146,6 +3148,7 @@ TEST(test_outpost_requires_undocked) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].ship.credits = 1000.0f;
+    w.players[0].ship.has_scaffold_kit = true;
 
     /* Docked — should fail */
     w.players[0].docked = true;
@@ -3158,14 +3161,14 @@ TEST(test_outpost_requires_undocked) {
     ASSERT(slot >= 3);
 }
 
-TEST(test_outpost_requires_credits) {
+TEST(test_outpost_requires_scaffold_kit) {
     world_t w = {0};
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
-    w.players[0].ship.credits = 100.0f; /* Not enough */
-    int slot = try_place_outpost(&w, &w.players[0], v2(500.0f, -240.0f));
+    w.players[0].ship.has_scaffold_kit = false; /* No kit */
+    int slot = try_place_outpost(&w, &w.players[0], v2_add(w.stations[0].pos, v2(500.0f, 0.0f)));
     ASSERT_EQ_INT(slot, -1);
 }
 
@@ -3176,8 +3179,9 @@ TEST(test_outpost_skipped_in_prediction) {
     w.players[0].connected = true;
     w.players[0].docked = false;
     w.players[0].ship.credits = 1000.0f;
+    w.players[0].ship.has_scaffold_kit = true;
     w.player_only_mode = true; /* Simulate client prediction */
-    int slot = try_place_outpost(&w, &w.players[0], v2(500.0f, -240.0f));
+    int slot = try_place_outpost(&w, &w.players[0], v2_add(w.stations[0].pos, v2(500.0f, 0.0f)));
     ASSERT_EQ_INT(slot, -1);
     w.player_only_mode = false;
 }
@@ -3189,6 +3193,7 @@ TEST(test_outpost_min_distance) {
     w.players[0].connected = true;
     w.players[0].docked = false;
     w.players[0].ship.credits = 1000.0f;
+    w.players[0].ship.has_scaffold_kit = true;
     /* Too close to Prospect Refinery at (0,-2400) — within OUTPOST_MIN_DISTANCE (800) */
     int slot = try_place_outpost(&w, &w.players[0], v2_add(w.stations[0].pos, v2(500.0f, 0.0f)));
     ASSERT_EQ_INT(slot, -1);
@@ -3715,7 +3720,7 @@ int main(void) {
     /* test_outpost_upgrade_to_refinery — not implemented, tracked in backlog */
     RUN(test_disconnected_station_goes_dark);
     RUN(test_outpost_requires_undocked);
-    RUN(test_outpost_requires_credits);
+    RUN(test_outpost_requires_scaffold_kit);
     RUN(test_outpost_skipped_in_prediction);
     RUN(test_outpost_min_distance);
 

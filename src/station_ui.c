@@ -558,7 +558,12 @@ void draw_station_services(const station_ui_state_t* ui) {
             ly += 8.0f;
             sdtx_color3b(100, 130, 120);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            sdtx_puts("[B] Build module  [E] Launch");
+            if (LOCAL_PLAYER.ship.has_scaffold_kit)
+                sdtx_puts("[B] Build module  [E] Launch + deploy");
+            else if (station_has_module(ui->station, MODULE_BLUEPRINT_DESK))
+                sdtx_printf("[B] Buy scaffold kit  %d cr", (int)OUTPOST_CREDIT_COST);
+            else
+                sdtx_puts("[B] Build module  [E] Launch");
         }
         break;
     }

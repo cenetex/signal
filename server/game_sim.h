@@ -65,6 +65,7 @@ typedef struct {
     bool upgrade_hold;
     bool upgrade_tractor;
     bool place_outpost;
+    bool buy_scaffold_kit;
     bool build_module;
     module_type_t build_module_type;
     bool buy_product;
