@@ -160,7 +160,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
 
         /* Send station identity for all active stations. */
         for (int s = 0; s < MAX_STATIONS; s++) {
-            if (world.stations[s].signal_range <= 0.0f) continue;
+            if (!station_exists(&world.stations[s])) continue;
             uint8_t id_buf[64];
             int id_len = serialize_station_identity(id_buf, s, &world.stations[s]);
             ws_send(c, id_buf, (size_t)id_len);

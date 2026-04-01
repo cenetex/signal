@@ -2688,7 +2688,7 @@ TEST(test_field_respawn_starts_beyond_signal_edge) {
             nearest_d_sq = d_sq;
             nearest_station = s;
         }
-        if (w.stations[s].signal_range > 0.0f && d_sq <= w.stations[s].signal_range * w.stations[s].signal_range) {
+        if (station_provides_signal(&w.stations[s]) && d_sq <= w.stations[s].signal_range * w.stations[s].signal_range) {
             outside_all_signal = false;
         }
     }

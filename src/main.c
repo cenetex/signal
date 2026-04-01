@@ -271,8 +271,7 @@ static void draw_background(vec2 camera) {
 }
 
 static void draw_station(const station_t* station, bool is_current, bool is_nearby) {
-    /* Skip empty station slots (no radius means not placed) */
-    if (station->radius <= 0.0f && !station->scaffold) return;
+    if (!station_exists(station)) return;
 
     float role_r = 0.45f;
     float role_g = 0.85f;

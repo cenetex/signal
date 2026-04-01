@@ -133,6 +133,36 @@ typedef struct {
     int module_count;
 } station_t;
 
+/* ------------------------------------------------------------------ */
+/* Station lifecycle helpers                                           */
+/* ------------------------------------------------------------------ */
+
+/* A station slot is in use if it has signal range, is under construction,
+ * or has a dock radius.  Empty/zeroed slots return false. */
+static inline bool station_exists(const station_t *st) {
+    return st->signal_range > 0.0f || st->scaffold || st->dock_radius > 0.0f;
+}
+
+/* A station is active (fully built and operational). */
+static inline bool station_is_active(const station_t *st) {
+    return st->signal_range > 0.0f && !st->scaffold;
+}
+
+/* Should this station provide a dock ring? */
+static inline bool station_provides_docking(const station_t *st) {
+    return st->dock_radius > 0.0f;
+}
+
+/* Should this station contribute to signal coverage? */
+static inline bool station_provides_signal(const station_t *st) {
+    return st->signal_range > 0.0f;
+}
+
+/* Should this station participate in collision? */
+static inline bool station_collides(const station_t *st) {
+    return st->radius > 0.0f;
+}
+
 typedef enum {
     ASTEROID_TIER_XXL,
     ASTEROID_TIER_XL,

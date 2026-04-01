@@ -104,7 +104,7 @@ static int rand_int(world_t *w, int lo, int hi) {
 float signal_strength_at(const world_t *w, vec2 pos) {
     float best = 0.0f;
     for (int s = 0; s < MAX_STATIONS; s++) {
-        if (w->stations[s].signal_range <= 0.0f) continue;
+        if (!station_provides_signal(&w->stations[s])) continue;
         float dist = sqrtf(v2_dist_sq(pos, w->stations[s].pos));
         float strength = fmaxf(0.0f, 1.0f - (dist / w->stations[s].signal_range));
         if (strength > best) best = strength;
@@ -121,13 +121,13 @@ bool can_place_outpost(const world_t *w, vec2 pos) {
     if (signal_strength_at(w, pos) <= 0.0f) return false;
     /* Must not overlap existing stations */
     for (int s = 0; s < MAX_STATIONS; s++) {
-        if (w->stations[s].signal_range <= 0.0f) continue;
+        if (!station_exists(&w->stations[s])) continue;
         float d = sqrtf(v2_dist_sq(pos, w->stations[s].pos));
         if (d < OUTPOST_MIN_DISTANCE) return false;
     }
     /* Must have a free station slot */
     for (int s = 0; s < MAX_STATIONS; s++) {
-        if (w->stations[s].signal_range <= 0.0f) return true;
+        if (!station_exists(&w->stations[s])) return true;
     }
     return false;
 }
@@ -180,7 +180,7 @@ int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
     /* Find free slot */
     int slot = -1;
     for (int s = 0; s < MAX_STATIONS; s++) {
-        if (w->stations[s].signal_range <= 0.0f) { slot = s; break; }
+        if (!station_exists(&w->stations[s])) { slot = s; break; }
     }
     if (slot < 0) return -1;
 
@@ -209,8 +209,8 @@ int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
 
 static bool point_within_signal_margin(const world_t *w, vec2 pos, float margin) {
     for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!station_provides_signal(&w->stations[s])) continue;
         float range = w->stations[s].signal_range;
-        if (range <= 0.0f) continue;
         float max_dist = range + margin;
         if (v2_dist_sq(pos, w->stations[s].pos) <= max_dist * max_dist) {
             return true;
@@ -1190,8 +1190,10 @@ static void step_ship_motion(ship_t *s, float dt, const world_t *w) {
 }
 
 static void resolve_world_collisions(world_t *w, server_player_t *sp) {
-    for (int i = 0; i < MAX_STATIONS; i++)
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (!station_collides(&w->stations[i])) continue;
         resolve_ship_circle(w, sp, w->stations[i].pos, w->stations[i].radius + 4.0f);
+    }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!w->asteroids[i].active || asteroid_is_collectible(&w->asteroids[i])) continue;
         resolve_ship_circle(w, sp, w->asteroids[i].pos, w->asteroids[i].radius);
@@ -1501,7 +1503,7 @@ static void step_asteroid_gravity(world_t *w, float dt) {
         float best_signal = 0.0f;
         int best_station = -1;
         for (int s = 0; s < MAX_STATIONS; s++) {
-            if (w->stations[s].signal_range <= 0.0f) continue;
+            if (!station_provides_signal(&w->stations[s])) continue;
             float dist = sqrtf(v2_dist_sq(a->pos, w->stations[s].pos));
             float strength = fmaxf(0.0f, 1.0f - (dist / w->stations[s].signal_range));
             if (strength > best_signal) {
@@ -2132,7 +2134,7 @@ bool world_load(world_t *w, const char *path) {
     /* Post-load migration: ensure built-in stations have blueprint service.
      * Saves created before the outpost feature lack this bit. */
     for (int i = 0; i < 3 && i < MAX_STATIONS; i++) {
-        if (w->stations[i].signal_range > 0.0f)
+        if (station_is_active(&w->stations[i]))
             w->stations[i].services |= STATION_SERVICE_BLUEPRINT;
     }
 
@@ -2195,7 +2197,7 @@ bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot) {
     /* Validate station index */
     sp->current_station = data.last_station;
     if (sp->current_station < 0 || sp->current_station >= MAX_STATIONS ||
-        w->stations[sp->current_station].signal_range <= 0.0f)
+        !station_exists(&w->stations[sp->current_station]))
         sp->current_station = 0;
     /* Clamp upgrade levels */
     if (sp->ship.mining_level < 0 || sp->ship.mining_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship.mining_level = 0;

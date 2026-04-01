@@ -179,8 +179,7 @@ static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
     int count = 0;
     for (int i = 0; i < MAX_STATIONS; i++) {
         const station_t *st = &stations[i];
-        /* Skip empty slots: no signal, no scaffold, no dock radius */
-        if (st->signal_range <= 0.0f && !st->scaffold && st->dock_radius <= 0.0f) continue;
+        if (!station_exists(st)) continue;
         uint8_t *p = &buf[2 + count * STATION_RECORD_SIZE];
         p[0] = (uint8_t)i;
         /* ore_buffer: 3 raw ores */

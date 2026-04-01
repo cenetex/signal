@@ -664,7 +664,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             contract_t *ct = &g.world.contracts[ci];
             if (!ct->active) continue;
             if (ct->station_index < 0 || ct->station_index >= MAX_STATIONS) continue;
-            if (g.world.stations[ct->station_index].name[0] == '\0') continue;
+            if (!station_exists(&g.world.stations[ct->station_index])) continue;
             float cprice = ct->base_price * (1.0f + ct->age / 300.0f * 0.2f);
             if (cprice < 0.01f) continue;
             float line_y = cy + 22.0f + (float)shown * 18.0f;
