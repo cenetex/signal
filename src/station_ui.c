@@ -520,7 +520,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             ly += 18.0f;
             sdtx_color3b(145, 160, 188);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            sdtx_puts("Deliver ferrite ingots to build.");
+            sdtx_puts("Deliver frames to build.");
         } else {
             /* Actions */
             if (station_has_module(ui->station, MODULE_ORE_BUYER)) {

@@ -41,6 +41,8 @@ const char* commodity_name(commodity_t commodity) {
             return "Cuprite Ingots";
         case COMMODITY_CRYSTAL_INGOT:
             return "Crystal Ingots";
+        case COMMODITY_FRAME:
+            return "Frames";
         case COMMODITY_COUNT:
         default:
             return "Cargo";
@@ -61,6 +63,8 @@ const char* commodity_code(commodity_t commodity) {
             return "CO";
         case COMMODITY_CRYSTAL_INGOT:
             return "LN";
+        case COMMODITY_FRAME:
+            return "FM";
         case COMMODITY_COUNT:
         default:
             return "--";
@@ -81,6 +85,8 @@ const char* commodity_short_name(commodity_t commodity) {
             return "CU Ingot";
         case COMMODITY_CRYSTAL_INGOT:
             return "CR Ingot";
+        case COMMODITY_FRAME:
+            return "Frame";
         case COMMODITY_COUNT:
         default:
             return "Unknown";

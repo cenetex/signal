@@ -32,6 +32,7 @@ typedef enum {
     COMMODITY_FERRITE_INGOT = COMMODITY_RAW_ORE_COUNT,
     COMMODITY_CUPRITE_INGOT,
     COMMODITY_CRYSTAL_INGOT,
+    COMMODITY_FRAME,
     COMMODITY_COUNT,
 } commodity_t;
 
@@ -322,7 +323,7 @@ static inline module_type_t station_dominant_module(const station_t *st) {
 }
 
 /* Outpost construction constants (client-shared) */
-static const float SCAFFOLD_MATERIAL_NEEDED = 100.0f;  /* total units of ferrite ingots */
+static const float SCAFFOLD_MATERIAL_NEEDED = 100.0f;  /* total frames needed */
 
 /* Ship upgrade constants (shared between client and server) */
 static const float SHIP_HOLD_UPGRADE_STEP = 24.0f;

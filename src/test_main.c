@@ -193,7 +193,7 @@ TEST(test_ingot_idx) {
     ASSERT_EQ_INT(INGOT_IDX(COMMODITY_FERRITE_INGOT), 0);
     ASSERT_EQ_INT(INGOT_IDX(COMMODITY_CUPRITE_INGOT), 1);
     ASSERT_EQ_INT(INGOT_IDX(COMMODITY_CRYSTAL_INGOT), 2);
-    ASSERT_EQ_INT(INGOT_COUNT, 3);
+    ASSERT_EQ_INT(INGOT_COUNT, 4);
 }
 
 /* ---- Ship Tests ---- */
@@ -3389,7 +3389,7 @@ TEST(test_module_activation_spawns_npc) {
     station_t *st = &w.stations[1];
     begin_module_construction(&w, st, 1, MODULE_FURNACE);
     ship_t ship = {0};
-    ship.cargo[COMMODITY_FERRITE_INGOT] = 200.0f;
+    ship.cargo[COMMODITY_FRAME] = 200.0f;
     step_module_delivery(&w, st, 1, &ship);
     /* A miner should have been spawned */
     int npc_after = 0;
