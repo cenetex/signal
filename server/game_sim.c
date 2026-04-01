@@ -994,7 +994,8 @@ static void dock_ship(world_t *w, server_player_t *sp) {
     if (sp->nearby_station >= 0) sp->current_station = sp->nearby_station;
     sp->docked = true;
     sp->in_dock_range = true;
-    anchor_ship_in_station(sp, w);
+    /* Keep ship at its current position (already in dock range) — just stop it */
+    sp->ship.vel = v2(0.0f, 0.0f);
     SIM_LOG("[sim] player %d docked at station %d\n", sp->id, sp->current_station);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_DOCK, .player_id = sp->id});
 }
@@ -1003,7 +1004,6 @@ static void launch_ship(world_t *w, server_player_t *sp) {
     sp->docked = false;
     sp->in_dock_range = false;  /* prevent immediate re-dock */
     sp->nearby_station = -1;
-    anchor_ship_in_station(sp, w);
     /* Kick ship away from station so it clears dock range */
     const station_t *st = &w->stations[sp->current_station];
     vec2 away = v2_sub(sp->ship.pos, st->pos);
@@ -1204,7 +1204,7 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
     if (sp->docked) {
         sp->in_dock_range = true;
         sp->nearby_station = sp->current_station;
-        anchor_ship_in_station(sp, w);
+        sp->ship.vel = v2(0.0f, 0.0f);  /* hold position, don't teleport */
         return;
     }
     float best_d = 0.0f;

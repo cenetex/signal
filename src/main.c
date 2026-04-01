@@ -1274,7 +1274,7 @@ sapp_desc sokol_main(int argc, char* argv[]) {
         .height = 900,
         .sample_count = 4,
         .high_dpi = true,
-        .window_title = "Sokol Space Miner",
+        .window_title = "SIGNAL",
         .logger.func = slog_func,
     };
 }
