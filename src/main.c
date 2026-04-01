@@ -354,7 +354,7 @@ static void draw_station(const station_t* station, bool is_current, bool is_near
 
 }
 
-static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
+static void draw_asteroid(const asteroid_t* asteroid, bool targeted, bool ineffective) {
     float progress_ratio = asteroid_progress_ratio(asteroid);
     float body_r = 0.3f;
     float body_g = 0.3f;
@@ -404,9 +404,9 @@ static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
     }
     sgl_end();
 
-    float rim_r = targeted ? 0.45f : (body_r * 0.85f);
-    float rim_g = targeted ? 0.94f : (body_g * 0.95f);
-    float rim_b = targeted ? 1.0f : fminf(1.0f, body_b * 1.2f);
+    float rim_r = targeted ? (ineffective ? 1.0f : 0.45f) : (body_r * 0.85f);
+    float rim_g = targeted ? (ineffective ? 0.15f : 0.94f) : (body_g * 0.95f);
+    float rim_b = targeted ? (ineffective ? 0.1f : 1.0f) : fminf(1.0f, body_b * 1.2f);
     float rim_a = targeted ? 1.0f : 0.8f;
 
     sgl_c4f(rim_r, rim_g, rim_b, rim_a);
@@ -434,7 +434,9 @@ static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {
         draw_circle_filled(asteroid->pos, asteroid->radius * 0.16f, 8, glow_r, glow_g, glow_b, 0.4f);
     }
 
-    if (targeted) {
+    if (targeted && ineffective) {
+        draw_circle_outline(asteroid->pos, asteroid->radius + 12.0f, 24, 1.0f, 0.2f, 0.15f, 0.75f);
+    } else if (targeted) {
         draw_circle_outline(asteroid->pos, asteroid->radius + 12.0f, 24, 0.35f, 1.0f, 0.92f, 0.75f);
     }
 }
@@ -1241,7 +1243,8 @@ static void render_world(void) {
         if (!g.world.asteroids[i].active) {
             continue;
         }
-        draw_asteroid(&g.world.asteroids[i], i == LOCAL_PLAYER.hover_asteroid);
+        bool is_target = (i == LOCAL_PLAYER.hover_asteroid);
+        draw_asteroid(&g.world.asteroids[i], is_target, is_target && LOCAL_PLAYER.beam_ineffective);
     }
     draw_beam();
     draw_ship_tractor_field();

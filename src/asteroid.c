@@ -168,21 +168,23 @@ void step_asteroid_dynamics(asteroid_t* asteroids, int count, vec2 ship_pos, flo
 int find_mining_target(const asteroid_t* asteroids, int count, vec2 origin, vec2 forward, float range, int mining_level) {
     (void)mining_level; /* tier check moved to damage step — beam targets any rock */
     int best_index = -1;
-    float best_projection = range + 1.0f;
+    float best_dist = range + 1.0f;
 
     for (int i = 0; i < count; i++) {
         const asteroid_t* asteroid = &asteroids[i];
         if (!asteroid->active || asteroid_is_collectible(asteroid)) continue;
 
-        vec2 to_asteroid = v2_sub(asteroid->pos, origin);
-        float projection = v2_dot(to_asteroid, forward);
-        if ((projection < 0.0f) || (projection > range + asteroid->radius)) continue;
-
-        float distance_from_ray = fabsf(v2_cross(to_asteroid, forward));
-        if (distance_from_ray > (asteroid->radius + 9.0f)) continue;
-
-        if (projection < best_projection) {
-            best_projection = projection;
+        vec2 to_a = v2_sub(asteroid->pos, origin);
+        float proj = v2_dot(to_a, forward);
+        float perp = fabsf(v2_cross(to_a, forward));
+        /* Ray-circle intersection: ray hits if perpendicular distance < radius */
+        if (perp > asteroid->radius) continue;
+        float surface_dist = proj - sqrtf(fmaxf(0.0f, asteroid->radius * asteroid->radius - perp * perp));
+        if (surface_dist < -asteroid->radius) continue;
+        if (surface_dist > range) continue;
+        float hit_dist = fmaxf(0.0f, surface_dist);
+        if (hit_dist < best_dist) {
+            best_dist = hit_dist;
             best_index = i;
         }
     }

@@ -1446,16 +1446,22 @@ static asteroid_tier_t max_mineable_tier(int mining_level) {
 static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, int mining_level) {
     (void)mining_level; /* tier check moved to damage step */
     int best = -1;
-    float best_proj = MINING_RANGE + 1.0f;
+    float best_dist = MINING_RANGE + 1.0f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active || asteroid_is_collectible(a)) continue;
         vec2 to_a = v2_sub(a->pos, origin);
         float proj = v2_dot(to_a, forward);
-        if (proj < 0.0f || proj > MINING_RANGE + a->radius) continue;
-        float dist_from_ray = fabsf(v2_cross(to_a, forward));
-        if (dist_from_ray > a->radius + 9.0f) continue;
-        if (proj < best_proj) { best_proj = proj; best = i; }
+        float perp = fabsf(v2_cross(to_a, forward));
+        /* Ray-circle intersection: ray hits if perpendicular distance < radius */
+        if (perp > a->radius) continue;
+        /* Distance to surface along the ray (not center) */
+        float surface_dist = proj - sqrtf(fmaxf(0.0f, a->radius * a->radius - perp * perp));
+        if (surface_dist < -a->radius) continue; /* behind us */
+        if (surface_dist > MINING_RANGE) continue; /* too far */
+        /* Pick closest surface hit */
+        float hit_dist = fmaxf(0.0f, surface_dist);
+        if (hit_dist < best_dist) { best_dist = hit_dist; best = i; }
     }
     return best;
 }

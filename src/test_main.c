@@ -1500,15 +1500,17 @@ TEST(test_scenario_two_players_mining) {
     ASSERT(!w.players[0].docked);
     ASSERT(!w.players[1].docked);
 
-    /* Find two different active non-S asteroids */
-    int ast0 = -1, ast1 = -1;
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (w.asteroids[i].active && w.asteroids[i].tier != ASTEROID_TIER_S) {
-            if (ast0 < 0) { ast0 = i; }
-            else { ast1 = i; break; }
-        }
-    }
-    ASSERT(ast0 >= 0 && ast1 >= 0);
+    /* Create two M-tier test asteroids near station 0 */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    int ast0 = 0, ast1 = 1;
+    w.asteroids[ast0].active = true; w.asteroids[ast0].tier = ASTEROID_TIER_M;
+    w.asteroids[ast0].radius = 25.0f; w.asteroids[ast0].hp = 50.0f; w.asteroids[ast0].max_hp = 50.0f;
+    w.asteroids[ast0].commodity = COMMODITY_FERRITE_ORE;
+    w.asteroids[ast0].pos = v2_add(w.stations[0].pos, v2(200.0f, 0.0f));
+    w.asteroids[ast1].active = true; w.asteroids[ast1].tier = ASTEROID_TIER_M;
+    w.asteroids[ast1].radius = 25.0f; w.asteroids[ast1].hp = 50.0f; w.asteroids[ast1].max_hp = 50.0f;
+    w.asteroids[ast1].commodity = COMMODITY_CUPRITE_ORE;
+    w.asteroids[ast1].pos = v2_add(w.stations[0].pos, v2(-200.0f, 0.0f));
 
     float hp0_before = w.asteroids[ast0].hp;
     float hp1_before = w.asteroids[ast1].hp;
