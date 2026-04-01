@@ -132,6 +132,14 @@ bool can_place_outpost(const world_t *w, vec2 pos) {
     return false;
 }
 
+static void add_module(station_t *st, module_type_t type) {
+    if (st->module_count >= MAX_MODULES_PER_STATION) return;
+    station_module_t *m = &st->modules[st->module_count++];
+    m->type = type;
+    m->scaffold = false;
+    m->build_progress = 1.0f;
+}
+
 static void activate_outpost(world_t *w, int station_idx) {
     station_t *st = &w->stations[station_idx];
     st->scaffold = false;
@@ -185,6 +193,8 @@ int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
     st->dock_radius = OUTPOST_DOCK_RADIUS;
     st->signal_range = OUTPOST_SIGNAL_RANGE;
     st->services = STATION_SERVICE_REPAIR;
+    add_module(st, MODULE_DOCK);
+    add_module(st, MODULE_SIGNAL_RELAY);
 
     emit_event(w, (sim_event_t){
         .type = SIM_EVENT_OUTPOST_PLACED,
@@ -1802,6 +1812,11 @@ void world_reset(world_t *w) {
     w->stations[0].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
     w->stations[0].services    = STATION_SERVICE_ORE_BUYER | STATION_SERVICE_REPAIR;
     w->stations[0].signal_range = 2200.0f;
+    add_module(&w->stations[0], MODULE_DOCK);
+    add_module(&w->stations[0], MODULE_ORE_BUYER);
+    add_module(&w->stations[0], MODULE_FURNACE);
+    add_module(&w->stations[0], MODULE_REPAIR_BAY);
+    add_module(&w->stations[0], MODULE_CONTRACT_BOARD);
 
     snprintf(w->stations[1].name, sizeof(w->stations[1].name), "%s", "Kepler Yard");
     w->stations[1].role        = STATION_ROLE_YARD;
@@ -1810,6 +1825,11 @@ void world_reset(world_t *w) {
     w->stations[1].dock_radius = 124.0f;
     w->stations[1].services    = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_HOLD | STATION_SERVICE_BLUEPRINT;
     w->stations[1].signal_range = 1800.0f;
+    add_module(&w->stations[1], MODULE_DOCK);
+    add_module(&w->stations[1], MODULE_FRAME_PRESS);
+    add_module(&w->stations[1], MODULE_REPAIR_BAY);
+    add_module(&w->stations[1], MODULE_CONTRACT_BOARD);
+    add_module(&w->stations[1], MODULE_BLUEPRINT_DESK);
 
     snprintf(w->stations[2].name, sizeof(w->stations[2].name), "%s", "Helios Works");
     w->stations[2].role        = STATION_ROLE_BEAMWORKS;
@@ -1818,6 +1838,12 @@ void world_reset(world_t *w) {
     w->stations[2].dock_radius = 124.0f;
     w->stations[2].services    = STATION_SERVICE_REPAIR | STATION_SERVICE_UPGRADE_LASER | STATION_SERVICE_UPGRADE_TRACTOR;
     w->stations[2].signal_range = 1800.0f;
+    add_module(&w->stations[2], MODULE_DOCK);
+    add_module(&w->stations[2], MODULE_LASER_FAB);
+    add_module(&w->stations[2], MODULE_TRACTOR_FAB);
+    add_module(&w->stations[2], MODULE_REPAIR_BAY);
+    add_module(&w->stations[2], MODULE_CONTRACT_BOARD);
+    add_module(&w->stations[2], MODULE_BLUEPRINT_DESK);
 
     /* --- Initial asteroid field --- */
     if (FIELD_ASTEROID_TARGET > 0) seed_field_asteroid_of_tier(w, &w->asteroids[0], ASTEROID_TIER_XL);

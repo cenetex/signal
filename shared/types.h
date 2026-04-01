@@ -113,15 +113,12 @@ typedef enum {
 
 typedef struct {
     module_type_t type;
-    int grid_x, grid_y;     /* top-left cell on station grid */
-    int width, height;      /* cells occupied */
     bool scaffold;          /* under construction */
     float build_progress;   /* 0.0 to 1.0 */
 } station_module_t;
 
 enum {
     MAX_MODULES_PER_STATION = 16,
-    STATION_GRID_SIZE = 8,
 };
 
 typedef struct {
