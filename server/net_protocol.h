@@ -352,6 +352,11 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
                 intent->build_module = true;
                 intent->build_module_type = (module_type_t)(action - NET_ACTION_BUILD_MODULE);
             }
+            /* NET_ACTION_BUY_PRODUCT + commodity (30..30+COMMODITY_COUNT) */
+            else if (action >= NET_ACTION_BUY_PRODUCT && action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT) {
+                intent->buy_product = true;
+                intent->buy_commodity = (commodity_t)(action - NET_ACTION_BUY_PRODUCT);
+            }
             break;
         }
     }

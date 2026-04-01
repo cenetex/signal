@@ -1578,6 +1578,24 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     else if (intent->upgrade_mining) try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_MINING);
     else if (intent->upgrade_hold)   try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_HOLD);
     else if (intent->upgrade_tractor)try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_TRACTOR);
+    /* Buy ingots from station inventory */
+    if (intent->buy_product && !w->player_only_mode) {
+        commodity_t c = intent->buy_commodity;
+        if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) {
+            float available = docked_st->inventory[c];
+            float space = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
+            float amount = fminf(fminf(available, space), 10.0f); /* buy up to 10 per press */
+            float price_per = 15.0f; /* flat price per ingot */
+            float total_cost = amount * price_per;
+            if (amount > 0.01f && sp->ship.credits >= total_cost) {
+                sp->ship.credits -= total_cost;
+                sp->ship.cargo[c] += amount;
+                docked_st->inventory[c] -= amount;
+                SIM_LOG("[sim] player %d bought %.0f of commodity %d for %.0f cr\n",
+                        sp->id, amount, c, total_cost);
+            }
+        }
+    }
 }
 
 /* ================================================================== */

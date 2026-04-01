@@ -67,6 +67,8 @@ typedef struct {
     bool place_outpost;
     bool build_module;
     module_type_t build_module_type;
+    bool buy_product;
+    commodity_t buy_commodity;
     bool reset;
 } input_intent_t;
 

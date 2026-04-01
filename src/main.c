@@ -646,6 +646,21 @@ static input_intent_t sample_input_intent(void) {
         intent.upgrade_hold = is_key_pressed(SAPP_KEYCODE_4);
         intent.upgrade_tractor = is_key_pressed(SAPP_KEYCODE_5);
     }
+    /* Buy ingots from station (F key while docked) */
+    if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_F)) {
+        const station_t *st = current_station_ptr();
+        if (st) {
+            /* Buy the first available ingot type */
+            for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+                if (st->inventory[c] > 0.5f) {
+                    intent.buy_product = true;
+                    intent.buy_commodity = (commodity_t)c;
+                    set_notice("Bought %s", commodity_short_name((commodity_t)c));
+                    break;
+                }
+            }
+        }
+    }
     /* Outpost placement mode: 6 toggles, Enter confirms, Esc/Q cancels */
     if (g.placing_outpost) {
         if (is_key_pressed(SAPP_KEYCODE_6) || is_key_pressed(SAPP_KEYCODE_ENTER) || is_key_pressed(SAPP_KEYCODE_KP_ENTER)) {
@@ -832,6 +847,8 @@ static void sim_step(float dt) {
             g.pending_net_action = 8;
         else if (intent.build_module)
             g.pending_net_action = NET_ACTION_BUILD_MODULE + (uint8_t)intent.build_module_type;
+        else if (intent.buy_product)
+            g.pending_net_action = NET_ACTION_BUY_PRODUCT + (uint8_t)intent.buy_commodity;
     }
 
     consume_pressed_input();

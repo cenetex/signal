@@ -652,6 +652,26 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_color3b(203, 220, 248);
             sdtx_printf("Signal range: %.0f", ui->station->signal_range);
         }
+        /* Market: buyable ingots from station inventory */
+        if (!compact) {
+            float my = cy + 120.0f;
+            bool has_stock = false;
+            for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+                int stock = (int)lroundf(station_inventory_amount(ui->station, (commodity_t)c));
+                if (stock <= 0) continue;
+                if (!has_stock) {
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+                    sdtx_color3b(145, 160, 188);
+                    sdtx_puts("MARKET  (F to buy)");
+                    my += 16.0f;
+                    has_stock = true;
+                }
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+                sdtx_color3b(203, 220, 248);
+                sdtx_printf("%s: %d  (15 cr/u)", commodity_short_name((commodity_t)c), stock);
+                my += 14.0f;
+            }
+        }
         break;
     }
 
