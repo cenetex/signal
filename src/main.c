@@ -695,13 +695,18 @@ static input_intent_t sample_input_intent(void) {
             /* Buy the first available ingot type */
             for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
                 if (st->inventory[c] > 0.5f) {
-                    intent.buy_product = true;
-                    intent.buy_commodity = (commodity_t)c;
                     float space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
-                    if (space < 0.5f)
+                    commodity_t src = commodity_ore_form((commodity_t)c);
+                    float price = station_buy_price(st, src) * 2.0f;
+                    if (space < 0.5f) {
                         set_notice("Hold full.");
-                    else
+                    } else if (LOCAL_PLAYER.ship.credits < price) {
+                        set_notice("Need %d cr.", (int)lroundf(price));
+                    } else {
+                        intent.buy_product = true;
+                        intent.buy_commodity = (commodity_t)c;
                         set_notice("Bought %s ingots", commodity_short_name((commodity_t)c));
+                    }
                     break;
                 }
             }
