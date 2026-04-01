@@ -266,10 +266,10 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
 }
 
 /*
- * PLAYER_SHIP message (27 bytes):
+ * PLAYER_SHIP message (40 bytes):
  * [type:1][id:1][hull:f32][credits:f32][docked:1][station:1]
- * [mining_lvl:1][hold_lvl:1][tractor_lvl:1]
- * [cargo_fe:f32][cargo_cu:f32][cargo_cr:f32]
+ * [mining_lvl:1][hold_lvl:1][tractor_lvl:1][flags:1]
+ * [cargo: COMMODITY_COUNT × f32]
  */
 static inline int serialize_player_ship(uint8_t *buf, uint8_t id, const server_player_t *sp) {
     buf[0] = NET_MSG_PLAYER_SHIP;
@@ -281,10 +281,10 @@ static inline int serialize_player_ship(uint8_t *buf, uint8_t id, const server_p
     buf[12] = (uint8_t)sp->ship.mining_level;
     buf[13] = (uint8_t)sp->ship.hold_level;
     buf[14] = (uint8_t)sp->ship.tractor_level;
-    write_f32_le(&buf[15], sp->ship.cargo[COMMODITY_FERRITE_ORE]);
-    write_f32_le(&buf[19], sp->ship.cargo[COMMODITY_CUPRITE_ORE]);
-    write_f32_le(&buf[23], sp->ship.cargo[COMMODITY_CRYSTAL_ORE]);
-    return 27;
+    buf[15] = sp->ship.has_scaffold_kit ? 1 : 0;
+    for (int c = 0; c < COMMODITY_COUNT; c++)
+        write_f32_le(&buf[16 + c * 4], sp->ship.cargo[c]);
+    return 16 + COMMODITY_COUNT * 4;
 }
 
 /* ------------------------------------------------------------------ */

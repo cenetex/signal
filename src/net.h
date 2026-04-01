@@ -17,6 +17,7 @@
 
 #include <stdbool.h>
 #include <stdint.h>
+#include "types.h"      /* COMMODITY_COUNT */
 #include "protocol.h"   /* shared protocol enums, message types, record sizes */
 
 enum {
@@ -70,9 +71,8 @@ typedef struct {
     uint8_t mining_level;
     uint8_t hold_level;
     uint8_t tractor_level;
-    float cargo_ferrite;
-    float cargo_cuprite;
-    float cargo_crystal;
+    bool has_scaffold_kit;
+    float cargo[COMMODITY_COUNT];
 } NetPlayerShipState;
 
 typedef void (*net_on_player_ship_fn)(const NetPlayerShipState* state);

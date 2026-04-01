@@ -918,11 +918,13 @@ TEST(test_roundtrip_player_ship) {
     sp.ship.cargo[COMMODITY_FERRITE_ORE] = 45.0f;
     sp.ship.cargo[COMMODITY_CUPRITE_ORE] = 12.5f;
     sp.ship.cargo[COMMODITY_CRYSTAL_ORE] = 8.0f;
+    sp.ship.cargo[COMMODITY_FERRITE_INGOT] = 20.0f;
+    sp.ship.has_scaffold_kit = true;
 
-    uint8_t buf[32];
+    uint8_t buf[64];
     int len = serialize_player_ship(buf, 3, &sp);
 
-    ASSERT_EQ_INT(len, 27);
+    ASSERT_EQ_INT(len, 16 + COMMODITY_COUNT * 4);
     ASSERT_EQ_INT(buf[0], NET_MSG_PLAYER_SHIP);
     ASSERT_EQ_INT(buf[1], 3);
     ASSERT_EQ_FLOAT(read_f32_le(&buf[2]), 85.5f, 0.1f);
@@ -932,9 +934,9 @@ TEST(test_roundtrip_player_ship) {
     ASSERT_EQ_INT(buf[12], 3);   /* mining_level */
     ASSERT_EQ_INT(buf[13], 2);   /* hold_level */
     ASSERT_EQ_INT(buf[14], 1);   /* tractor_level */
-    ASSERT_EQ_FLOAT(read_f32_le(&buf[15]), 45.0f, 0.1f);
-    ASSERT_EQ_FLOAT(read_f32_le(&buf[19]), 12.5f, 0.1f);
-    ASSERT_EQ_FLOAT(read_f32_le(&buf[23]), 8.0f, 0.1f);
+    ASSERT_EQ_INT(buf[15], 1);   /* has_scaffold_kit */
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[16]), 45.0f, 0.1f);   /* ferrite ore */
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[16 + 3*4]), 20.0f, 0.1f); /* ferrite ingot */
 }
 
 TEST(test_parse_input_valid) {
@@ -1051,17 +1053,22 @@ TEST(test_bug13_buy_price_correct_size) {
 /* Bug 14: PLAYER_SHIP message should sync ALL cargo, including ingots.
  * FIX: extend serialize_player_ship to include all COMMODITY_COUNT cargo slots. */
 TEST(test_bug14_player_ship_syncs_all_cargo) {
-    /* Player ship message syncs the 3 raw ore cargo types which is
-     * sufficient — players don't carry ingots.  Verify the message
-     * round-trips the ore values correctly. */
+    /* Player ship message syncs ALL cargo including ingots. */
     server_player_t sp;
     memset(&sp, 0, sizeof(sp));
     sp.ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
     sp.ship.cargo[COMMODITY_CUPRITE_ORE] = 20.0f;
     sp.ship.cargo[COMMODITY_CRYSTAL_ORE] = 30.0f;
+    sp.ship.cargo[COMMODITY_FERRITE_INGOT] = 5.0f;
+    sp.ship.cargo[COMMODITY_CUPRITE_INGOT] = 3.0f;
+    sp.ship.has_scaffold_kit = true;
     uint8_t buf[64];
     int len = serialize_player_ship(buf, 0, &sp);
-    ASSERT(len == 27);
+    ASSERT(len == 16 + COMMODITY_COUNT * 4);
+    /* Verify ingot cargo round-trips */
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[16 + COMMODITY_FERRITE_INGOT * 4]), 5.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&buf[16 + COMMODITY_CUPRITE_INGOT * 4]), 3.0f, 0.1f);
+    ASSERT_EQ_INT(buf[15], 1); /* scaffold kit */
 }
 
 /* Bug 15: client and server STATE message should be same size.

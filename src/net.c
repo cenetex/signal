@@ -207,12 +207,12 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_PLAYER_SHIP:
-        if (len < 27) break;
+        if (len < 16 + COMMODITY_COUNT * 4) break;
         {
             uint8_t id = data[1];
             if (id != net_state.local_id) break;
             if (net_state.callbacks.on_player_ship) {
-                NetPlayerShipState pss;
+                NetPlayerShipState pss = {0};
                 pss.player_id       = id;
                 pss.hull            = read_f32_le(&data[2]);
                 pss.credits         = read_f32_le(&data[6]);
@@ -221,9 +221,9 @@ static void handle_message(const uint8_t* data, int len) {
                 pss.mining_level    = data[12];
                 pss.hold_level      = data[13];
                 pss.tractor_level   = data[14];
-                pss.cargo_ferrite   = read_f32_le(&data[15]);
-                pss.cargo_cuprite   = read_f32_le(&data[19]);
-                pss.cargo_crystal   = read_f32_le(&data[23]);
+                pss.has_scaffold_kit = data[15] != 0;
+                for (int c = 0; c < COMMODITY_COUNT; c++)
+                    pss.cargo[c] = read_f32_le(&data[16 + c * 4]);
                 net_state.callbacks.on_player_ship(&pss);
             }
         }
