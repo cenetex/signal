@@ -132,14 +132,38 @@ bool can_place_outpost(const world_t *w, vec2 pos) {
     return false;
 }
 
+static void activate_outpost(world_t *w, int station_idx) {
+    station_t *st = &w->stations[station_idx];
+    st->scaffold = false;
+    st->scaffold_progress = 1.0f;
+    st->signal_range = OUTPOST_SIGNAL_RANGE;
+    st->services = STATION_SERVICE_REPAIR;
+    SIM_LOG("[sim] outpost %d activated (signal_range=%.0f)\n", station_idx, OUTPOST_SIGNAL_RANGE);
+}
+
+static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
+    if (!sp->docked) return;
+    station_t *st = &w->stations[sp->current_station];
+    if (!st->scaffold) return;
+    if (sp->ship.cargo[COMMODITY_FRAME_INGOT] < 0.01f) return;
+    float deliver = sp->ship.cargo[COMMODITY_FRAME_INGOT];
+    float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
+    float accepted = fminf(deliver, needed);
+    sp->ship.cargo[COMMODITY_FRAME_INGOT] -= accepted;
+    st->scaffold_progress += accepted / SCAFFOLD_MATERIAL_NEEDED;
+    SIM_LOG("[sim] player %d delivered %.1f frame ingots to scaffold %d (progress %.0f%%)\n",
+            sp->id, accepted, sp->current_station, st->scaffold_progress * 100.0f);
+    if (st->scaffold_progress >= 1.0f) {
+        activate_outpost(w, sp->current_station);
+    }
+}
+
 /* Place an outpost at pos, deducting credits from sp.
  * Returns the station slot index on success, -1 on failure.
  * Must NOT be called in player_only_mode (client prediction). */
 int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
     if (w->player_only_mode) return -1;
-    if (!sp->docked) return -1;
-    if (!(w->stations[sp->current_station].services & STATION_SERVICE_BLUEPRINT))
-        return -1;
+    if (sp->docked) return -1;  /* must be undocked to place */
     if (sp->ship.credits < OUTPOST_CREDIT_COST) return -1;
     if (!can_place_outpost(w, pos)) return -1;
 
@@ -1266,6 +1290,13 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
 }
 
 static void step_station_interaction_system(world_t *w, server_player_t *sp, const input_intent_t *intent) {
+    /* Outpost placement: must be undocked, places 150 units ahead of ship */
+    if (intent->place_outpost && !sp->docked) {
+        vec2 forward = v2_from_angle(sp->ship.angle);
+        vec2 place_pos = v2_add(sp->ship.pos, v2_scale(forward, 150.0f));
+        try_place_outpost(w, sp, place_pos);
+        return;
+    }
     if (intent->interact) {
         if (sp->docked) { launch_ship(w, sp); return; }
         if (!sp->in_dock_range) return;
@@ -1273,14 +1304,13 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         return;
     }
     if (!sp->docked) return;
+    /* Auto-deliver frame ingots to scaffold stations */
+    step_scaffold_delivery(w, sp);
     if (intent->service_sell)        try_sell_station_cargo(w, sp);
     else if (intent->service_repair) try_repair_ship(w, sp);
     else if (intent->upgrade_mining) try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_MINING);
     else if (intent->upgrade_hold)   try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_HOLD);
     else if (intent->upgrade_tractor)try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_TRACTOR);
-    /* Outpost placement is server-authoritative only (guarded inside try_place_outpost) */
-    if (intent->place_outpost)
-        try_place_outpost(w, sp, sp->ship.pos);
 }
 
 /* ================================================================== */
@@ -2001,7 +2031,11 @@ static bool read_contract(FILE *f, contract_t *c) {
 }
 
 bool world_save(const world_t *w, const char *path) {
-    FILE *f = fopen(path, "wb");
+    /* Write to a temp file first, then rename atomically to avoid
+     * truncated saves if the process is interrupted mid-write. */
+    char tmp_path[272];
+    snprintf(tmp_path, sizeof(tmp_path), "%s.tmp", path);
+    FILE *f = fopen(tmp_path, "wb");
     if (!f) return false;
 
     /* Header */
@@ -2015,22 +2049,25 @@ bool world_save(const world_t *w, const char *path) {
 
     /* Stations */
     for (int i = 0; i < MAX_STATIONS; i++) {
-        if (!write_station(f, &w->stations[i])) return false;
+        if (!write_station(f, &w->stations[i])) { fclose(f); remove(tmp_path); return false; }
     }
     /* Asteroids */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!write_asteroid(f, &w->asteroids[i])) return false;
+        if (!write_asteroid(f, &w->asteroids[i])) { fclose(f); remove(tmp_path); return false; }
     }
     /* NPC ships */
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        if (!write_npc(f, &w->npc_ships[i])) return false;
+        if (!write_npc(f, &w->npc_ships[i])) { fclose(f); remove(tmp_path); return false; }
     }
     /* Contracts */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
-        if (!write_contract(f, &w->contracts[i])) return false;
+        if (!write_contract(f, &w->contracts[i])) { fclose(f); remove(tmp_path); return false; }
     }
 
     fclose(f);
+    /* Atomic rename — on POSIX this is atomic; on Windows it overwrites. */
+    remove(path);
+    if (rename(tmp_path, path) != 0) { remove(tmp_path); return false; }
     return true;
 }
 
@@ -2062,6 +2099,13 @@ bool world_load(world_t *w, const char *path) {
     /* Contracts */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         if (!read_contract(f, &w->contracts[i])) return false;
+    }
+
+    /* Post-load migration: ensure built-in stations have blueprint service.
+     * Saves created before the outpost feature lack this bit. */
+    for (int i = 0; i < 3 && i < MAX_STATIONS; i++) {
+        if (w->stations[i].signal_range > 0.0f)
+            w->stations[i].services |= STATION_SERVICE_BLUEPRINT;
     }
 
     /* Clear transient state */
@@ -2117,7 +2161,18 @@ bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot) {
     fclose(f);
     if (data.magic != PLAYER_MAGIC) return false;
     sp->ship = data.ship;
+    /* Validate hull class */
+    if (sp->ship.hull_class < 0 || sp->ship.hull_class >= HULL_CLASS_COUNT)
+        sp->ship.hull_class = HULL_CLASS_MINER;
+    /* Validate station index */
     sp->current_station = data.last_station;
+    if (sp->current_station < 0 || sp->current_station >= MAX_STATIONS ||
+        w->stations[sp->current_station].signal_range <= 0.0f)
+        sp->current_station = 0;
+    /* Clamp upgrade levels */
+    if (sp->ship.mining_level < 0 || sp->ship.mining_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship.mining_level = 0;
+    if (sp->ship.hold_level < 0 || sp->ship.hold_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship.hold_level = 0;
+    if (sp->ship.tractor_level < 0 || sp->ship.tractor_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship.tractor_level = 0;
     sp->ship.pos = data.last_pos;
     sp->ship.angle = data.last_angle;
     /* Dock the player at their last station for safety */

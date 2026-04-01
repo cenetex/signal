@@ -207,7 +207,7 @@ static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
  * Sent on player join (for all active stations) and when a new outpost is placed.
  * [type:1][index:1][role:1][services:4][pos_x:f32][pos_y:f32]
  * [radius:f32][dock_radius:f32][signal_range:f32][name:32]
- * = 54 bytes per message
+ * = 59 bytes per message
  */
 static inline int serialize_station_identity(uint8_t *buf, int index, const station_t *st) {
     buf[0] = NET_MSG_STATION_IDENTITY;

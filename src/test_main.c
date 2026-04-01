@@ -2910,8 +2910,7 @@ TEST(test_outpost_extends_signal_range) {
     /* Set up a player docked at Kepler Yard (station 1, has BLUEPRINT) */
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
-    w.players[0].docked = true;
-    w.players[0].current_station = 1;
+    w.players[0].docked = false;
     w.players[0].ship.credits = 1000.0f;
 
     int slot = try_place_outpost(&w, &w.players[0], outpost_pos);
@@ -2932,22 +2931,23 @@ TEST(test_disconnected_station_goes_dark) {
     /* TODO: signal chain propagation not yet implemented — skip for now */
 }
 
-TEST(test_outpost_requires_blueprint_station) {
-    /* Must be docked at a station with STATION_SERVICE_BLUEPRINT */
+TEST(test_outpost_requires_undocked) {
+    /* Must be undocked to place an outpost */
     world_t w = {0};
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
-    w.players[0].docked = true;
-    w.players[0].current_station = 0; /* Refinery — no blueprint service */
     w.players[0].ship.credits = 1000.0f;
-    int slot = try_place_outpost(&w, &w.players[0], v2(500.0f, -240.0f));
-    ASSERT_EQ_INT(slot, -1); /* Should fail — no blueprint service */
 
-    /* Now try from Kepler Yard (station 1 — has blueprint) */
-    w.players[0].current_station = 1;
+    /* Docked — should fail */
+    w.players[0].docked = true;
+    int slot = try_place_outpost(&w, &w.players[0], v2(500.0f, -240.0f));
+    ASSERT_EQ_INT(slot, -1);
+
+    /* Undocked — should succeed */
+    w.players[0].docked = false;
     slot = try_place_outpost(&w, &w.players[0], v2(500.0f, -240.0f));
-    ASSERT(slot >= 3); /* Should succeed */
+    ASSERT(slot >= 3);
 }
 
 TEST(test_outpost_requires_credits) {
@@ -2955,8 +2955,7 @@ TEST(test_outpost_requires_credits) {
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
-    w.players[0].docked = true;
-    w.players[0].current_station = 1;
+    w.players[0].docked = false;
     w.players[0].ship.credits = 100.0f; /* Not enough */
     int slot = try_place_outpost(&w, &w.players[0], v2(500.0f, -240.0f));
     ASSERT_EQ_INT(slot, -1);
@@ -2967,8 +2966,7 @@ TEST(test_outpost_skipped_in_prediction) {
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
-    w.players[0].docked = true;
-    w.players[0].current_station = 1;
+    w.players[0].docked = false;
     w.players[0].ship.credits = 1000.0f;
     w.player_only_mode = true; /* Simulate client prediction */
     int slot = try_place_outpost(&w, &w.players[0], v2(500.0f, -240.0f));
@@ -2981,8 +2979,7 @@ TEST(test_outpost_min_distance) {
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
-    w.players[0].docked = true;
-    w.players[0].current_station = 1;
+    w.players[0].docked = false;
     w.players[0].ship.credits = 1000.0f;
     /* Too close to Prospect Refinery at (0,-240) */
     int slot = try_place_outpost(&w, &w.players[0], v2(50.0f, -240.0f));
@@ -3263,9 +3260,9 @@ int main(void) {
     printf("\nStation construction (#83):\n");
     RUN(test_outpost_requires_signal_range);
     RUN(test_outpost_extends_signal_range);
-    RUN(test_outpost_upgrade_to_refinery);
-    RUN(test_disconnected_station_goes_dark);
-    RUN(test_outpost_requires_blueprint_station);
+    /* test_outpost_upgrade_to_refinery — not implemented, tracked in backlog */
+    /* test_disconnected_station_goes_dark — not implemented, tracked in backlog */
+    RUN(test_outpost_requires_undocked);
     RUN(test_outpost_requires_credits);
     RUN(test_outpost_skipped_in_prediction);
     RUN(test_outpost_min_distance);
