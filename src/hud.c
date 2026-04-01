@@ -290,6 +290,26 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
+    if (g.placing_outpost && !LOCAL_PLAYER.docked) {
+        vec2 forward = v2_from_angle(LOCAL_PLAYER.ship.angle);
+        vec2 target = v2_add(LOCAL_PLAYER.ship.pos, v2_scale(forward, 150.0f));
+        bool valid = can_place_outpost(&g.world, target);
+        int cost = (int)lroundf(OUTPOST_CREDIT_COST);
+        int sig = (int)lroundf(signal_strength_at(&g.world, target) * 100.0f);
+        snprintf(label, label_size, "OUTPOST");
+        if (!valid) {
+            snprintf(message, message_size, "Invalid position. Cost %d cr. Signal %d%%", cost, sig);
+            *r = 255; *g0 = 100; *b = 100;
+        } else if (LOCAL_PLAYER.ship.credits < OUTPOST_CREDIT_COST) {
+            snprintf(message, message_size, "Need %d cr (have %d). Signal %d%%", cost, (int)lroundf(LOCAL_PLAYER.ship.credits), sig);
+            *r = 255; *g0 = 221; *b = 119;
+        } else {
+            snprintf(message, message_size, "Place outpost for %d cr. Signal %d%%", cost, sig);
+            *r = 130; *g0 = 255; *b = 235;
+        }
+        return true;
+    }
+
     if (g.collection_feedback_timer > 0.0f) {
         int recovered_ore = (int)lroundf(g.collection_feedback_ore);
         snprintf(label, label_size, "RECOVERY");
@@ -656,6 +676,9 @@ void draw_hud(void) {
         sdtx_color3b(145, 160, 188);
         if (LOCAL_PLAYER.docked) {
             sdtx_puts("Tab switch  E launch  Q back");
+        } else if (g.placing_outpost) {
+            sdtx_color3b(130, 255, 235);
+            sdtx_puts("6/Enter confirm  Esc/Q cancel");
         } else {
             sdtx_puts("W/S thrust  A/D turn  SPC mine  E dock  6 outpost");
         }
@@ -747,6 +770,9 @@ void draw_hud(void) {
     sdtx_color3b(145, 160, 188);
     if (LOCAL_PLAYER.docked) {
         sdtx_puts("Tab switch  Q back  E launch  R reset  ESC quit");
+    } else if (g.placing_outpost) {
+        sdtx_color3b(130, 255, 235);
+        sdtx_puts("PLACEMENT MODE // 6 or Enter to confirm  Esc or Q to cancel");
     } else {
         sdtx_puts("W/S thrust  A/D turn  SPACE mine  E dock  6 outpost  R reset  ESC quit");
     }

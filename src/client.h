@@ -104,6 +104,8 @@ typedef struct {
     float net_input_timer;
     station_tab_t station_tab;
     bool was_docked;
+    /* --- Outpost placement mode --- */
+    bool placing_outpost;
     /* --- Interpolation (multiplayer) --- */
     struct {
         asteroid_t prev[MAX_ASTEROIDS];

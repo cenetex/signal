@@ -616,7 +616,17 @@ static input_intent_t sample_input_intent(void) {
     intent.upgrade_mining = is_key_pressed(SAPP_KEYCODE_3);
     intent.upgrade_hold = is_key_pressed(SAPP_KEYCODE_4);
     intent.upgrade_tractor = is_key_pressed(SAPP_KEYCODE_5);
-    intent.place_outpost = is_key_pressed(SAPP_KEYCODE_6);
+    /* Outpost placement mode: 6 toggles, Enter confirms, Esc/Q cancels */
+    if (g.placing_outpost) {
+        if (is_key_pressed(SAPP_KEYCODE_6) || is_key_pressed(SAPP_KEYCODE_ENTER) || is_key_pressed(SAPP_KEYCODE_KP_ENTER)) {
+            intent.place_outpost = true;
+            g.placing_outpost = false;
+        } else if (is_key_pressed(SAPP_KEYCODE_ESCAPE) || is_key_pressed(SAPP_KEYCODE_Q)) {
+            g.placing_outpost = false;
+        }
+    } else if (is_key_pressed(SAPP_KEYCODE_6) && !LOCAL_PLAYER.docked) {
+        g.placing_outpost = true;
+    }
     intent.reset = is_key_pressed(SAPP_KEYCODE_R);
     return intent;
 }
@@ -656,6 +666,7 @@ static void sim_step(float dt) {
         /* Just docked — reset to overview (or construction for scaffolds) */
         const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
         g.station_tab = st->scaffold ? STATION_TAB_CONSTRUCTION : STATION_TAB_OVERVIEW;
+        g.placing_outpost = false;
     }
     g.was_docked = LOCAL_PLAYER.docked;
     if (LOCAL_PLAYER.docked && (is_key_pressed(SAPP_KEYCODE_TAB) || is_key_pressed(SAPP_KEYCODE_Q))) {
@@ -1113,6 +1124,23 @@ static void render_world(void) {
         bool is_nearby = (!LOCAL_PLAYER.docked) && (i == LOCAL_PLAYER.nearby_station);
         draw_station(&g.world.stations[i], is_current, is_nearby);
     }
+    /* Outpost placement preview */
+    if (g.placing_outpost && !LOCAL_PLAYER.docked) {
+        vec2 forward = v2_from_angle(LOCAL_PLAYER.ship.angle);
+        vec2 target = v2_add(LOCAL_PLAYER.ship.pos, v2_scale(forward, 150.0f));
+        bool valid = can_place_outpost(&g.world, target)
+                  && LOCAL_PLAYER.ship.credits >= OUTPOST_CREDIT_COST;
+        float cr = valid ? 0.3f : 0.9f;
+        float cg = valid ? 0.9f : 0.2f;
+        float cb = valid ? 0.5f : 0.2f;
+        float pulse = 0.5f + 0.3f * sinf(g.world.time * 4.0f);
+        draw_circle_outline(target, OUTPOST_RADIUS, 18, cr, cg, cb, pulse);
+        draw_circle_outline(target, OUTPOST_DOCK_RADIUS, 24, cr * 0.6f, cg * 0.6f, cb * 0.6f, pulse * 0.5f);
+        /* Crosshair */
+        draw_segment(v2_add(target, v2(-20.0f, 0.0f)), v2_add(target, v2(20.0f, 0.0f)), cr, cg, cb, pulse * 0.7f);
+        draw_segment(v2_add(target, v2(0.0f, -20.0f)), v2_add(target, v2(0.0f, 20.0f)), cr, cg, cb, pulse * 0.7f);
+    }
+
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!g.world.asteroids[i].active) {
             continue;
