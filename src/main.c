@@ -708,6 +708,10 @@ static input_intent_t sample_input_intent(void) {
                         int amount = (int)fminf(fminf(avail, space), afford);
                         intent.buy_product = true;
                         intent.buy_commodity = (commodity_t)c;
+                        /* Optimistic client prediction */
+                        LOCAL_PLAYER.ship.cargo[c] += (float)amount;
+                        LOCAL_PLAYER.ship.credits -= (float)amount * price;
+                        g.world.stations[LOCAL_PLAYER.current_station].inventory[c] -= (float)amount;
                         set_notice("Bought %d %s  -%d cr", amount, commodity_short_name((commodity_t)c), (int)(amount * price));
                     }
                     break;
