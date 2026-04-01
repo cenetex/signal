@@ -1884,7 +1884,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 4
+#define SAVE_VERSION 5
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
@@ -1906,6 +1906,11 @@ static bool write_station(FILE *f, const station_t *s) {
     WRITE_FIELD(f, s->ingot_buffer);
     WRITE_FIELD(f, s->product_stock);
     WRITE_FIELD(f, s->services);
+    /* Modules */
+    WRITE_FIELD(f, s->module_count);
+    for (int m = 0; m < s->module_count && m < MAX_MODULES_PER_STATION; m++) {
+        WRITE_FIELD(f, s->modules[m]);
+    }
     return true;
 }
 
@@ -1924,6 +1929,13 @@ static bool read_station(FILE *f, station_t *s) {
     READ_FIELD(f, s->ingot_buffer);
     READ_FIELD(f, s->product_stock);
     READ_FIELD(f, s->services);
+    /* Modules */
+    READ_FIELD(f, s->module_count);
+    if (s->module_count < 0) s->module_count = 0;
+    if (s->module_count > MAX_MODULES_PER_STATION) s->module_count = MAX_MODULES_PER_STATION;
+    for (int m = 0; m < s->module_count; m++) {
+        READ_FIELD(f, s->modules[m]);
+    }
     return true;
 }
 
@@ -2078,7 +2090,7 @@ bool world_load(world_t *w, const char *path) {
     uint32_t magic, version;
     READ_FIELD(f, magic);
     READ_FIELD(f, version);
-    if (magic != SAVE_MAGIC || version < 4 || version > SAVE_VERSION) { fclose(f); return false; }
+    if (magic != SAVE_MAGIC || version < 5 || version > SAVE_VERSION) { fclose(f); return false; }
 
     READ_FIELD(f, w->rng);
     READ_FIELD(f, w->time);

@@ -91,9 +91,42 @@ typedef enum {
     PRODUCT_COUNT,
 } product_t;
 
+/* ------------------------------------------------------------------ */
+/* Station modules                                                    */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    MODULE_DOCK,
+    MODULE_ORE_BUYER,
+    MODULE_FURNACE,
+    MODULE_INGOT_SELLER,
+    MODULE_REPAIR_BAY,
+    MODULE_SIGNAL_RELAY,
+    MODULE_FRAME_PRESS,
+    MODULE_LASER_FAB,
+    MODULE_TRACTOR_FAB,
+    MODULE_CONTRACT_BOARD,
+    MODULE_ORE_SILO,
+    MODULE_BLUEPRINT_DESK,
+    MODULE_COUNT
+} module_type_t;
+
+typedef struct {
+    module_type_t type;
+    int grid_x, grid_y;     /* top-left cell on station grid */
+    int width, height;      /* cells occupied */
+    bool scaffold;          /* under construction */
+    float build_progress;   /* 0.0 to 1.0 */
+} station_module_t;
+
+enum {
+    MAX_MODULES_PER_STATION = 16,
+    STATION_GRID_SIZE = 8,
+};
+
 typedef struct {
     char name[32];
-    station_role_t role;
+    station_role_t role;    /* legacy — will be removed once modules drive everything */
     vec2 pos;
     float radius;
     float dock_radius;
@@ -106,6 +139,9 @@ typedef struct {
     float ingot_buffer[INGOT_COUNT];
     float product_stock[PRODUCT_COUNT];
     uint32_t services;
+    /* Module system */
+    station_module_t modules[MAX_MODULES_PER_STATION];
+    int module_count;
 } station_t;
 
 typedef enum {
@@ -221,6 +257,13 @@ static const int REFINERY_MAX_FURNACES = 3;
 static const float STATION_PRODUCTION_RATE = 0.3f;
 static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
 static const float MAX_PRODUCT_STOCK = 40.0f;
+
+/* Module helpers */
+static inline bool station_has_module(const station_t *st, module_type_t type) {
+    for (int i = 0; i < st->module_count; i++)
+        if (st->modules[i].type == type) return true;
+    return false;
+}
 
 /* Outpost construction constants (client-shared) */
 static const float SCAFFOLD_MATERIAL_NEEDED = 100.0f;  /* total units of frame ingots */
