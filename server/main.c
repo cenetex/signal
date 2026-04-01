@@ -217,8 +217,27 @@ static void broadcast_player_states(void) {
     broadcast(buf, (size_t)len);
 }
 
+static void mark_visible_asteroids_dirty(void) {
+    /* Mark asteroids near any connected player as dirty so they get sent.
+     * View radius ~1200u covers a generous screen at default zoom. */
+    const float VIEW_RADIUS_SQ = 1200.0f * 1200.0f;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!world.asteroids[i].active || world.asteroids[i].net_dirty) continue;
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            if (!world.players[p].connected) continue;
+            if (v2_dist_sq(world.asteroids[i].pos, world.players[p].ship.pos) < VIEW_RADIUS_SQ) {
+                world.asteroids[i].net_dirty = true;
+                break;
+            }
+        }
+    }
+}
+
 static void broadcast_world(void) {
-    /* Asteroids */
+    /* Mark asteroids in player views as dirty before serializing */
+    mark_visible_asteroids_dirty();
+
+    /* Asteroids (delta: only dirty) */
     uint8_t abuf[2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
     int alen = serialize_asteroids(abuf, world.asteroids);
     broadcast(abuf, (size_t)alen);
