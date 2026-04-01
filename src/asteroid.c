@@ -149,7 +149,9 @@ void step_asteroid_dynamics(asteroid_t* asteroids, int count, vec2 ship_pos, flo
         asteroid->vel = v2_scale(asteroid->vel, 1.0f / (1.0f + (0.42f * dt)));
         asteroid->age += dt;
 
-        float max_distance = WORLD_RADIUS + asteroid->radius + 260.0f;
+        /* Clean up asteroids that drift too far from any station signal.
+         * Check distance from origin as a coarse safety net. */
+        float max_distance = WORLD_RADIUS * 1.5f;
         if (v2_len_sq(asteroid->pos) > (max_distance * max_distance)) {
             clear_asteroid(asteroid);
             continue;

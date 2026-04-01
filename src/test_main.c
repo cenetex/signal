@@ -1988,9 +1988,9 @@ TEST(test_bug44_gravity_collision_oscillation) {
     w.asteroids[1].active = true; w.asteroids[1].tier = ASTEROID_TIER_L;
     w.asteroids[1].radius = 40.0f; w.asteroids[1].hp = 80.0f; w.asteroids[1].max_hp = 80.0f;
     w.asteroids[1].pos = v2(1582.0f, 1500.0f); w.asteroids[1].vel = v2(0.0f, 0.0f);
-    /* Run 5 seconds — should settle, not oscillate */
+    /* Run 15 seconds — should settle, not oscillate */
     float max_speed = 0.0f;
-    for (int i = 0; i < 600; i++) {
+    for (int i = 0; i < 1800; i++) {
         world_sim_step(&w, SIM_DT);
         float sa = v2_len(w.asteroids[0].vel);
         float sb = v2_len(w.asteroids[1].vel);

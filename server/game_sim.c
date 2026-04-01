@@ -480,22 +480,45 @@ static float max_signal_range(const world_t *w) {
     return best > 0.0f ? best : WORLD_RADIUS;
 }
 
-/* Find a good clump center in the belt density field near signal-covered space. */
+/* Pick a random active station (skip empty slots). */
+static int pick_active_station(world_t *w) {
+    int active[MAX_STATIONS];
+    int count = 0;
+    for (int s = 0; s < MAX_STATIONS; s++)
+        if (station_provides_signal(&w->stations[s])) active[count++] = s;
+    if (count == 0) return 0;
+    return active[rand_int(w, 0, count - 1)];
+}
+
+/* Find a good clump center in the belt density field near signal-covered space.
+ * Uses gradient walk: sample random points, then step toward higher density. */
 static vec2 find_belt_clump_center(world_t *w, float *out_density) {
     vec2 best_pos = v2(0.0f, 0.0f);
     float best_density = 0.0f;
-    for (int attempt = 0; attempt < 32; attempt++) {
-        int stn = rand_int(w, 0, MAX_STATIONS - 1);
-        if (w->stations[stn].signal_range <= 0.0f) continue;
+    for (int attempt = 0; attempt < 16; attempt++) {
+        int stn = pick_active_station(w);
         float angle = rand_range(w, 0.0f, TWO_PI_F);
-        float distance = rand_range(w, 200.0f, w->stations[stn].signal_range * 0.95f);
+        float distance = rand_range(w, 200.0f, w->stations[stn].signal_range * 0.85f);
         vec2 pos = v2_add(w->stations[stn].pos, v2(cosf(angle) * distance, sinf(angle) * distance));
         float d = belt_density_at(&w->belt, pos.x, pos.y);
+        /* Gradient walk: take 4 steps toward higher density */
+        float step = 200.0f;
+        for (int g = 0; g < 4; g++) {
+            float dx = belt_density_at(&w->belt, pos.x + step, pos.y) - belt_density_at(&w->belt, pos.x - step, pos.y);
+            float dy = belt_density_at(&w->belt, pos.x, pos.y + step) - belt_density_at(&w->belt, pos.x, pos.y - step);
+            float glen = sqrtf(dx * dx + dy * dy);
+            if (glen > 0.001f) {
+                pos.x += dx / glen * step;
+                pos.y += dy / glen * step;
+            }
+            d = belt_density_at(&w->belt, pos.x, pos.y);
+            step *= 0.6f;
+        }
         if (d > best_density) {
             best_density = d;
             best_pos = pos;
         }
-        if (d > 0.25f) break;
+        if (d > 0.3f) break;
     }
     if (out_density) *out_density = best_density;
     return best_pos;
@@ -604,9 +627,9 @@ static void spawn_inbound_field_asteroid_of_tier(world_t *w, asteroid_t *a, aste
     clear_asteroid(a);
     a->fracture_child = false;
 
-    /* Find a spawn point in a dense belt region near the signal edge.
-     * The asteroid drifts inward toward station infrastructure. */
-    int stn = rand_int(w, 0, MAX_STATIONS - 1);
+    /* Spawn at 30-60% of signal range — close enough to reach the action
+     * in 1-3 minutes, not 10-15. Prefer belt-dense positions. */
+    int stn = pick_active_station(w);
     vec2 center = w->stations[stn].pos;
     float sr = w->stations[stn].signal_range;
     if (sr <= 0.0f) sr = max_signal_range(w);
@@ -618,8 +641,7 @@ static void spawn_inbound_field_asteroid_of_tier(world_t *w, asteroid_t *a, aste
     for (int attempt = 0; attempt < 32; attempt++) {
         float angle = rand_range(w, 0.0f, TWO_PI_F);
         vec2 outward = v2_from_angle(angle);
-        /* Spawn at 70-100% of signal range */
-        float dist = rand_range(w, sr * 0.7f, sr * 1.0f);
+        float dist = rand_range(w, sr * 0.30f, sr * 0.60f);
         vec2 pos = v2_add(center, v2_scale(outward, dist));
         float d = belt_density_at(&w->belt, pos.x, pos.y);
         if (d > best_density) {
@@ -745,8 +767,14 @@ static void maintain_asteroid_field(world_t *w, float dt) {
     w->field_spawn_timer += dt;
     if (w->field_spawn_timer < FIELD_ASTEROID_RESPAWN_DELAY) return;
     if (first_slot >= 0) {
-        /* Always spawn inbound from signal edge — never teleport mid-game */
-        spawn_field_asteroid(w, &w->asteroids[first_slot]);
+        /* Spawn a small wave of 2-4 inbound rocks from the belt edge */
+        int wave = 2 + rand_int(w, 0, 2);
+        int spawned = 0;
+        for (int i = first_slot; i < MAX_ASTEROIDS && spawned < wave; i++) {
+            if (w->asteroids[i].active) continue;
+            spawn_field_asteroid(w, &w->asteroids[i]);
+            spawned++;
+        }
     }
     w->field_spawn_timer = 0.0f;
 }
@@ -1784,7 +1812,7 @@ static void step_asteroid_gravity(world_t *w, float dt) {
             float dist = sqrtf(dist_sq);
             /* Don't attract asteroids at or inside collision boundary */
             float min_dist = a->radius + b->radius;
-            if (dist < min_dist + 5.0f) continue;
+            if (dist < min_dist * 1.3f) continue; /* dead zone: 30% beyond contact */
             vec2 normal = v2_scale(delta, 1.0f / dist);
             float mass_a = a->radius * a->radius;
             float mass_b = b->radius * b->radius;
