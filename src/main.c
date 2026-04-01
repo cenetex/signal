@@ -351,22 +351,6 @@ static void draw_station(const station_t* station, bool is_current, bool is_near
         draw_segment(v2_add(station->pos, v2(-s, s * 0.6f)), v2_add(station->pos, v2(0.0f, -s)), role_r, role_g, role_b, 0.75f);
     }
 
-    /* Station name label below the dock ring */
-    if (station->name[0] != '\0') {
-        float label_y = station->pos.y + station->dock_radius + 20.0f;
-        float label_x = station->pos.x;
-        /* Convert world coords to text coords (approximate — text is screen-space) */
-        float screen_w = ui_screen_width();
-        float screen_h = ui_screen_height();
-        vec2 camera = LOCAL_PLAYER.ship.pos;
-        float sx = (label_x - camera.x) / ui_scale() + screen_w * 0.5f;
-        float sy = (label_y - camera.y) / ui_scale() + screen_h * 0.5f;
-        if (sx > 0 && sx < screen_w && sy > 0 && sy < screen_h) {
-            sdtx_pos(ui_text_pos(sx - 40.0f), ui_text_pos(sy));
-            sdtx_color3f(role_r * 0.7f, role_g * 0.7f, role_b * 0.7f);
-            sdtx_puts(station->name);
-        }
-    }
 }
 
 static void draw_asteroid(const asteroid_t* asteroid, bool targeted) {

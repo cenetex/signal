@@ -838,6 +838,17 @@ void draw_hud(void) {
             } \
         } while(0)
 
+        /* Nearest station name — bottom left */
+        {
+            const station_t* nav_st = navigation_station_ptr();
+            if (nav_st && nav_st->name[0] != '\0') {
+                float dist = sqrtf(v2_dist_sq(nav_st->pos, LOCAL_PLAYER.ship.pos));
+                sdtx_pos(ui_text_pos(16.0f), ui_text_pos(screen_h - 20.0f));
+                sdtx_color3b(100, 130, 120);
+                sdtx_printf("%s  %d u", nav_st->name, (int)lroundf(dist));
+            }
+        }
+
         /* Nav pips: blueprint (yellow) and/or station (green) */
         if (g.nav_pip_active && g.nav_pip_is_blueprint)
             DRAW_PIP(g.nav_pip_pos, 1.0f, 0.87f, 0.20f);
