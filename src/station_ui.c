@@ -668,7 +668,9 @@ void draw_station_services(const station_ui_state_t* ui) {
                 }
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
                 sdtx_color3b(203, 220, 248);
-                sdtx_printf("%s: %d  (15 cr/u)", commodity_short_name((commodity_t)c), stock);
+                commodity_t src = commodity_ore_form((commodity_t)c);
+                int price = (int)lroundf(station_buy_price(ui->station, src) * 2.0f);
+                sdtx_printf("%s: %d  (%d cr/u)", commodity_short_name((commodity_t)c), stock, price);
                 my += 14.0f;
             }
         }

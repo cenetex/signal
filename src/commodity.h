@@ -4,6 +4,7 @@
 #include "types.h"
 
 commodity_t commodity_refined_form(commodity_t commodity);
+commodity_t commodity_ore_form(commodity_t commodity);
 const char* commodity_name(commodity_t commodity);
 const char* commodity_code(commodity_t commodity);
 const char* commodity_short_name(commodity_t commodity);

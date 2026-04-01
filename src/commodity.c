@@ -1,6 +1,15 @@
 #include <stddef.h>
 #include "commodity.h"
 
+commodity_t commodity_ore_form(commodity_t commodity) {
+    switch (commodity) {
+        case COMMODITY_FRAME_INGOT:     return COMMODITY_FERRITE_ORE;
+        case COMMODITY_CONDUCTOR_INGOT: return COMMODITY_CUPRITE_ORE;
+        case COMMODITY_LENS_INGOT:      return COMMODITY_CRYSTAL_ORE;
+        default:                        return commodity;
+    }
+}
+
 commodity_t commodity_refined_form(commodity_t commodity) {
     switch (commodity) {
         case COMMODITY_FERRITE_ORE:
