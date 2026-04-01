@@ -134,6 +134,7 @@ bool can_place_outpost(const world_t *w, vec2 pos) {
 
 static void add_module(station_t *st, module_type_t type) {
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
+    if (station_has_module(st, type)) return;
     station_module_t *m = &st->modules[st->module_count++];
     m->type = type;
     m->scaffold = false;
@@ -247,16 +248,6 @@ static uint32_t station_upgrade_service(ship_upgrade_t upgrade) {
 /* Station helpers                                                    */
 /* ================================================================== */
 
-static int nearest_station_index(world_t *w, vec2 pos) {
-    float best_d = 0.0f;
-    int best = -1;
-    for (int i = 0; i < MAX_STATIONS; i++) {
-        float d = v2_dist_sq(pos, w->stations[i].pos);
-        if (best < 0 || d < best_d) { best_d = d; best = i; }
-    }
-    return best;
-}
-
 static vec2 station_dock_anchor(const station_t *station, const hull_def_t *hull) {
     if (!station) return v2(0.0f, 0.0f);
     return v2_add(station->pos, v2(0.0f, -(station->radius + hull->ship_radius + STATION_DOCK_APPROACH_OFFSET)));
@@ -264,15 +255,6 @@ static vec2 station_dock_anchor(const station_t *station, const hull_def_t *hull
 
 static bool station_has_service(const station_t *station, uint32_t service) {
     return station && ((station->services & service) != 0);
-}
-
-static float sim_station_cargo_sale_value(const station_t *station, const ship_t *s) {
-    float total = 0.0f;
-    if (!station) return 0.0f;
-    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
-        total += s->cargo[i] * station->buy_price[i];
-    }
-    return total;
 }
 
 static float sim_station_repair_cost(const ship_t *s) {
