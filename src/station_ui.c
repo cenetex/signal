@@ -177,13 +177,13 @@ void format_ore_hopper_line(const station_t* station, char* text, size_t text_si
 }
 
 void format_ingot_stock_line(const station_t* station, char* text, size_t text_size) {
-    int frame = (int)lroundf(station_inventory_amount(station, COMMODITY_FRAME_INGOT));
-    int conductor = (int)lroundf(station_inventory_amount(station, COMMODITY_CONDUCTOR_INGOT));
-    int lens = (int)lroundf(station_inventory_amount(station, COMMODITY_LENS_INGOT));
+    int frame = (int)lroundf(station_inventory_amount(station, COMMODITY_FERRITE_INGOT));
+    int conductor = (int)lroundf(station_inventory_amount(station, COMMODITY_CUPRITE_INGOT));
+    int lens = (int)lroundf(station_inventory_amount(station, COMMODITY_CRYSTAL_INGOT));
     snprintf(text, text_size, "%s %d  %s %d  %s %d",
-        commodity_code(COMMODITY_FRAME_INGOT), frame,
-        commodity_code(COMMODITY_CONDUCTOR_INGOT), conductor,
-        commodity_code(COMMODITY_LENS_INGOT), lens);
+        commodity_code(COMMODITY_FERRITE_INGOT), frame,
+        commodity_code(COMMODITY_CUPRITE_INGOT), conductor,
+        commodity_code(COMMODITY_CRYSTAL_INGOT), lens);
 }
 
 void format_refinery_price_line(const station_t* station, char* text, size_t text_size) {
@@ -273,7 +273,7 @@ void format_station_market_detail(const station_ui_state_t* ui, bool compact, ch
             snprintf(text, text_size, "Value %d cr // Stock %s", ui->payout, stock);
         }
     } else if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
-        int buf = (int)lroundf(ui->station->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)]);
+        int buf = (int)lroundf(ui->station->ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)]);
         int prod = (int)lroundf(ui->station->product_stock[PRODUCT_FRAME]);
         snprintf(text, text_size, "Ingots %d // Frames %d", buf, prod);
     } else if (station_has_module(ui->station, MODULE_LASER_FAB) || station_has_module(ui->station, MODULE_TRACTOR_FAB)) {
@@ -512,7 +512,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         /* Scaffold progress */
         if (ui->station->scaffold) {
             int pct = (int)lroundf(ui->station->scaffold_progress * 100.0f);
-            int frames_held = (int)lroundf(LOCAL_PLAYER.ship.cargo[COMMODITY_FRAME_INGOT]);
+            int frames_held = (int)lroundf(LOCAL_PLAYER.ship.cargo[COMMODITY_FERRITE_INGOT]);
             float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - ui->station->scaffold_progress);
             int needed_int = (int)lroundf(needed);
             sdtx_color3b(203, 220, 248);

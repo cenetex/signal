@@ -3,9 +3,9 @@
 
 commodity_t commodity_ore_form(commodity_t commodity) {
     switch (commodity) {
-        case COMMODITY_FRAME_INGOT:     return COMMODITY_FERRITE_ORE;
-        case COMMODITY_CONDUCTOR_INGOT: return COMMODITY_CUPRITE_ORE;
-        case COMMODITY_LENS_INGOT:      return COMMODITY_CRYSTAL_ORE;
+        case COMMODITY_FERRITE_INGOT:     return COMMODITY_FERRITE_ORE;
+        case COMMODITY_CUPRITE_INGOT: return COMMODITY_CUPRITE_ORE;
+        case COMMODITY_CRYSTAL_INGOT:      return COMMODITY_CRYSTAL_ORE;
         default:                        return commodity;
     }
 }
@@ -13,14 +13,14 @@ commodity_t commodity_ore_form(commodity_t commodity) {
 commodity_t commodity_refined_form(commodity_t commodity) {
     switch (commodity) {
         case COMMODITY_FERRITE_ORE:
-            return COMMODITY_FRAME_INGOT;
+            return COMMODITY_FERRITE_INGOT;
         case COMMODITY_CUPRITE_ORE:
-            return COMMODITY_CONDUCTOR_INGOT;
+            return COMMODITY_CUPRITE_INGOT;
         case COMMODITY_CRYSTAL_ORE:
-            return COMMODITY_LENS_INGOT;
-        case COMMODITY_FRAME_INGOT:
-        case COMMODITY_CONDUCTOR_INGOT:
-        case COMMODITY_LENS_INGOT:
+            return COMMODITY_CRYSTAL_INGOT;
+        case COMMODITY_FERRITE_INGOT:
+        case COMMODITY_CUPRITE_INGOT:
+        case COMMODITY_CRYSTAL_INGOT:
         case COMMODITY_COUNT:
         default:
             return commodity;
@@ -35,11 +35,11 @@ const char* commodity_name(commodity_t commodity) {
             return "Cuprite Ore";
         case COMMODITY_CRYSTAL_ORE:
             return "Crystal Ore";
-        case COMMODITY_FRAME_INGOT:
+        case COMMODITY_FERRITE_INGOT:
             return "Ferrite Ingots";
-        case COMMODITY_CONDUCTOR_INGOT:
+        case COMMODITY_CUPRITE_INGOT:
             return "Cuprite Ingots";
-        case COMMODITY_LENS_INGOT:
+        case COMMODITY_CRYSTAL_INGOT:
             return "Crystal Ingots";
         case COMMODITY_COUNT:
         default:
@@ -55,11 +55,11 @@ const char* commodity_code(commodity_t commodity) {
             return "CU";
         case COMMODITY_CRYSTAL_ORE:
             return "CR";
-        case COMMODITY_FRAME_INGOT:
+        case COMMODITY_FERRITE_INGOT:
             return "FR";
-        case COMMODITY_CONDUCTOR_INGOT:
+        case COMMODITY_CUPRITE_INGOT:
             return "CO";
-        case COMMODITY_LENS_INGOT:
+        case COMMODITY_CRYSTAL_INGOT:
             return "LN";
         case COMMODITY_COUNT:
         default:
@@ -75,11 +75,11 @@ const char* commodity_short_name(commodity_t commodity) {
             return "Cuprite";
         case COMMODITY_CRYSTAL_ORE:
             return "Crystal";
-        case COMMODITY_FRAME_INGOT:
+        case COMMODITY_FERRITE_INGOT:
             return "FE Ingot";
-        case COMMODITY_CONDUCTOR_INGOT:
+        case COMMODITY_CUPRITE_INGOT:
             return "CU Ingot";
-        case COMMODITY_LENS_INGOT:
+        case COMMODITY_CRYSTAL_INGOT:
             return "CR Ingot";
         case COMMODITY_COUNT:
         default:

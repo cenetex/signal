@@ -64,20 +64,20 @@ static int tests_failed = 0;
 /* ---- Commodity Tests ---- */
 
 TEST(test_refined_form_mapping) {
-    ASSERT_EQ_INT(commodity_refined_form(COMMODITY_FERRITE_ORE), COMMODITY_FRAME_INGOT);
-    ASSERT_EQ_INT(commodity_refined_form(COMMODITY_CUPRITE_ORE), COMMODITY_CONDUCTOR_INGOT);
-    ASSERT_EQ_INT(commodity_refined_form(COMMODITY_CRYSTAL_ORE), COMMODITY_LENS_INGOT);
+    ASSERT_EQ_INT(commodity_refined_form(COMMODITY_FERRITE_ORE), COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(commodity_refined_form(COMMODITY_CUPRITE_ORE), COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(commodity_refined_form(COMMODITY_CRYSTAL_ORE), COMMODITY_CRYSTAL_INGOT);
 }
 
 TEST(test_refined_form_ingots_return_self) {
-    ASSERT_EQ_INT(commodity_refined_form(COMMODITY_FRAME_INGOT), COMMODITY_FRAME_INGOT);
-    ASSERT_EQ_INT(commodity_refined_form(COMMODITY_CONDUCTOR_INGOT), COMMODITY_CONDUCTOR_INGOT);
-    ASSERT_EQ_INT(commodity_refined_form(COMMODITY_LENS_INGOT), COMMODITY_LENS_INGOT);
+    ASSERT_EQ_INT(commodity_refined_form(COMMODITY_FERRITE_INGOT), COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(commodity_refined_form(COMMODITY_CUPRITE_INGOT), COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(commodity_refined_form(COMMODITY_CRYSTAL_INGOT), COMMODITY_CRYSTAL_INGOT);
 }
 
 TEST(test_commodity_name) {
     ASSERT_STR_EQ(commodity_name(COMMODITY_FERRITE_ORE), "Ferrite Ore");
-    ASSERT_STR_EQ(commodity_name(COMMODITY_FRAME_INGOT), "Frame Ingots");
+    ASSERT_STR_EQ(commodity_name(COMMODITY_FERRITE_INGOT), "Ferrite Ingots");
     ASSERT_STR_EQ(commodity_name(COMMODITY_COUNT), "Cargo");
 }
 
@@ -85,14 +85,14 @@ TEST(test_commodity_code) {
     ASSERT_STR_EQ(commodity_code(COMMODITY_FERRITE_ORE), "FE");
     ASSERT_STR_EQ(commodity_code(COMMODITY_CUPRITE_ORE), "CU");
     ASSERT_STR_EQ(commodity_code(COMMODITY_CRYSTAL_ORE), "CR");
-    ASSERT_STR_EQ(commodity_code(COMMODITY_FRAME_INGOT), "FR");
-    ASSERT_STR_EQ(commodity_code(COMMODITY_CONDUCTOR_INGOT), "CO");
-    ASSERT_STR_EQ(commodity_code(COMMODITY_LENS_INGOT), "LN");
+    ASSERT_STR_EQ(commodity_code(COMMODITY_FERRITE_INGOT), "FR");
+    ASSERT_STR_EQ(commodity_code(COMMODITY_CUPRITE_INGOT), "CO");
+    ASSERT_STR_EQ(commodity_code(COMMODITY_CRYSTAL_INGOT), "LN");
 }
 
 TEST(test_commodity_short_name) {
     ASSERT_STR_EQ(commodity_short_name(COMMODITY_FERRITE_ORE), "Ferrite");
-    ASSERT_STR_EQ(commodity_short_name(COMMODITY_FRAME_INGOT), "Frame");
+    ASSERT_STR_EQ(commodity_short_name(COMMODITY_FERRITE_INGOT), "FE Ingot");
 }
 
 TEST(test_ship_raw_ore_total) {
@@ -100,14 +100,14 @@ TEST(test_ship_raw_ore_total) {
     ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
     ship.cargo[COMMODITY_CUPRITE_ORE] = 20.0f;
     ship.cargo[COMMODITY_CRYSTAL_ORE] = 5.0f;
-    ship.cargo[COMMODITY_FRAME_INGOT] = 100.0f;
+    ship.cargo[COMMODITY_FERRITE_INGOT] = 100.0f;
     ASSERT_EQ_FLOAT(ship_raw_ore_total(&ship), 35.0f, 0.01f);
 }
 
 TEST(test_ship_total_cargo) {
     ship_t ship = {0};
     ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
-    ship.cargo[COMMODITY_FRAME_INGOT] = 5.0f;
+    ship.cargo[COMMODITY_FERRITE_INGOT] = 5.0f;
     ASSERT_EQ_FLOAT(ship_total_cargo(&ship), 15.0f, 0.01f);
 }
 
@@ -135,9 +135,9 @@ TEST(test_station_buy_price) {
 
 TEST(test_station_inventory_amount) {
     station_t station = {0};
-    station.inventory[COMMODITY_FRAME_INGOT] = 25.0f;
-    ASSERT_EQ_FLOAT(station_inventory_amount(&station, COMMODITY_FRAME_INGOT), 25.0f, 0.01f);
-    ASSERT_EQ_FLOAT(station_inventory_amount(NULL, COMMODITY_FRAME_INGOT), 0.0f, 0.01f);
+    station.inventory[COMMODITY_FERRITE_INGOT] = 25.0f;
+    ASSERT_EQ_FLOAT(station_inventory_amount(&station, COMMODITY_FERRITE_INGOT), 25.0f, 0.01f);
+    ASSERT_EQ_FLOAT(station_inventory_amount(NULL, COMMODITY_FERRITE_INGOT), 0.0f, 0.01f);
 }
 
 /* ---- Math Tests ---- */
@@ -190,9 +190,9 @@ TEST(test_lerpf) {
 /* ---- INGOT_IDX Tests ---- */
 
 TEST(test_ingot_idx) {
-    ASSERT_EQ_INT(INGOT_IDX(COMMODITY_FRAME_INGOT), 0);
-    ASSERT_EQ_INT(INGOT_IDX(COMMODITY_CONDUCTOR_INGOT), 1);
-    ASSERT_EQ_INT(INGOT_IDX(COMMODITY_LENS_INGOT), 2);
+    ASSERT_EQ_INT(INGOT_IDX(COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(INGOT_IDX(COMMODITY_CUPRITE_INGOT), 1);
+    ASSERT_EQ_INT(INGOT_IDX(COMMODITY_CRYSTAL_INGOT), 2);
     ASSERT_EQ_INT(INGOT_COUNT, 3);
 }
 
@@ -301,14 +301,14 @@ TEST(test_refinery_production_smelts_ore) {
     station.ore_buffer[COMMODITY_FERRITE_ORE] = 10.0f;
     step_refinery_production(&station, 1, 1.0f);
     ASSERT(station.ore_buffer[COMMODITY_FERRITE_ORE] < 10.0f);
-    ASSERT(station.inventory[COMMODITY_FRAME_INGOT] > 0.0f);
+    ASSERT(station.inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
 }
 
 TEST(test_refinery_production_empty_buffer_noop) {
     station_t station = {0};
     station.modules[station.module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
     step_refinery_production(&station, 1, 1.0f);
-    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_FRAME_INGOT], 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
 }
 
 TEST(test_refinery_skips_non_refinery) {
@@ -322,9 +322,9 @@ TEST(test_refinery_skips_non_refinery) {
 TEST(test_station_production_yard_makes_frames) {
     station_t station = {0};
     station.modules[station.module_count++] = (station_module_t){ MODULE_FRAME_PRESS, false, 1.0f };
-    station.ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] = 5.0f;
+    station.ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 5.0f;
     step_station_production(&station, 1, 1.0f);
-    ASSERT(station.ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] < 5.0f);
+    ASSERT(station.ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] < 5.0f);
     ASSERT(station.product_stock[PRODUCT_FRAME] > 0.0f);
 }
 
@@ -332,8 +332,8 @@ TEST(test_station_production_beamworks_makes_modules) {
     station_t station = {0};
     station.modules[station.module_count++] = (station_module_t){ MODULE_LASER_FAB, false, 1.0f };
     station.modules[station.module_count++] = (station_module_t){ MODULE_TRACTOR_FAB, false, 1.0f };
-    station.ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)] = 5.0f;
-    station.ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)] = 5.0f;
+    station.ingot_buffer[INGOT_IDX(COMMODITY_CUPRITE_INGOT)] = 5.0f;
+    station.ingot_buffer[INGOT_IDX(COMMODITY_CRYSTAL_INGOT)] = 5.0f;
     step_station_production(&station, 1, 1.0f);
     ASSERT(station.product_stock[PRODUCT_LASER_MODULE] > 0.0f);
     ASSERT(station.product_stock[PRODUCT_TRACTOR_MODULE] > 0.0f);
@@ -538,7 +538,7 @@ TEST(test_world_sim_step_refinery_produces_ingots) {
     w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] = 50.0f;
     for (int i = 0; i < 600; i++)
         world_sim_step(&w, 1.0f / 120.0f);
-    ASSERT(w.stations[0].inventory[COMMODITY_FRAME_INGOT] > 0.0f);
+    ASSERT(w.stations[0].inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
     ASSERT(w.stations[0].ore_buffer[COMMODITY_FERRITE_ORE] < 50.0f);
 }
 
@@ -868,7 +868,7 @@ TEST(test_roundtrip_stations) {
     stations[0].ore_buffer[0] = 45.5f;
     stations[0].ore_buffer[1] = 12.3f;
     stations[0].ore_buffer[2] = 78.9f;
-    stations[0].inventory[COMMODITY_FRAME_INGOT] = 20.0f;
+    stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
     stations[0].product_stock[PRODUCT_FRAME] = 15.5f;
 
     uint8_t buf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
@@ -883,7 +883,7 @@ TEST(test_roundtrip_stations) {
     ASSERT_EQ_FLOAT(read_f32_le(&p[1]), 45.5f, 0.1f);
     ASSERT_EQ_FLOAT(read_f32_le(&p[5]), 12.3f, 0.1f);
     ASSERT_EQ_FLOAT(read_f32_le(&p[9]), 78.9f, 0.1f);
-    ASSERT_EQ_FLOAT(read_f32_le(&p[13 + COMMODITY_FRAME_INGOT * 4]), 20.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p[13 + COMMODITY_FERRITE_INGOT * 4]), 20.0f, 0.1f);
     ASSERT_EQ_FLOAT(read_f32_le(&p[37 + PRODUCT_FRAME * 4]), 15.5f, 0.1f);
 }
 
@@ -1110,7 +1110,7 @@ TEST(test_bug17_no_duplicate_refinery) {
     step_refinery_production(stations, MAX_STATIONS, 1.0f);
     /* Ore should be consumed and inventory produced. */
     ASSERT(stations[0].ore_buffer[COMMODITY_FERRITE_ORE] < 10.0f);
-    ASSERT(stations[0].inventory[COMMODITY_FRAME_INGOT] > 0.0f);
+    ASSERT(stations[0].inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
 }
 
 /* Bug 18: emergency recovery should dock at NEAREST station, not last docked station.
@@ -1189,7 +1189,7 @@ TEST(test_bug22_hauler_stuck_at_empty_station) {
     for (int i = 0; i < COMMODITY_COUNT; i++)
         w.stations[0].inventory[i] = 0.0f;
     /* Put some ingots at station 1 so haulers have a reason to move */
-    w.stations[1].inventory[COMMODITY_FRAME_INGOT] = 20.0f;
+    w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
     /* Run 30 seconds — haulers should try to find cargo elsewhere */
     for (int i = 0; i < 3600; i++)
         world_sim_step(&w, SIM_DT);
@@ -1238,14 +1238,14 @@ TEST(test_bug24_ingot_buffer_no_cap) {
     world_t w = {0};
     world_reset(&w);
     /* Pre-fill dest ingot buffer near capacity */
-    w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] = 40.0f;
+    w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 40.0f;
     /* Hauler arrives with 40 more ingots — should be capped */
-    w.npc_ships[3].ingots[INGOT_IDX(COMMODITY_FRAME_INGOT)] = 40.0f;
+    w.npc_ships[3].ingots[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 40.0f;
     w.npc_ships[3].state = NPC_STATE_UNLOADING;
     w.npc_ships[3].state_timer = 0.01f;
     w.npc_ships[3].dest_station = 1;
     world_sim_step(&w, SIM_DT);
-    ASSERT(w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] <= 50.0f);
+    ASSERT(w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] <= 50.0f);
 }
 
 /* Bug 25: world_reset always uses same RNG seed — identical asteroid fields every game */
@@ -1267,16 +1267,16 @@ TEST(test_bug26_hauler_unload_no_cap) {
     world_t w = {0};
     world_reset(&w);
     /* Pre-fill dest ingot buffer */
-    w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] = 100.0f;
+    w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 100.0f;
     /* Hauler arrives with 40 more */
-    w.npc_ships[3].ingots[INGOT_IDX(COMMODITY_FRAME_INGOT)] = 40.0f;
+    w.npc_ships[3].ingots[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 40.0f;
     w.npc_ships[3].state = NPC_STATE_UNLOADING;
     w.npc_ships[3].state_timer = 0.01f;
     w.npc_ships[3].dest_station = 1;
     world_sim_step(&w, SIM_DT);
     /* After fix: ingot_buffer should not exceed a cap.
      * FAILS because unloading has no cap — buffer becomes 140. */
-    ASSERT(w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] <= 100.0f);
+    ASSERT(w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] <= 100.0f);
 }
 
 /* Bug 27: cargo can go slightly negative due to float imprecision in sell loop */
@@ -1687,7 +1687,7 @@ TEST(test_scenario_product_cap_pauses_production) {
     w.stations[1].product_stock[PRODUCT_FRAME] = MAX_PRODUCT_STOCK;
 
     /* Set ingot_buffer with some frame ingots */
-    w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] = 20.0f;
+    w.stations[1].ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 20.0f;
 
     /* Run 120 ticks */
     for (int i = 0; i < 120; i++)
@@ -2840,19 +2840,19 @@ TEST(test_hauler_fills_highest_value_contract) {
     /* Set up two contracts: one cheap at station 1, one expensive at station 2 */
     w.contracts[0] = (contract_t){
         .active = true, .station_index = 1,
-        .commodity = COMMODITY_FRAME_INGOT,
+        .commodity = COMMODITY_FERRITE_INGOT,
         .quantity_needed = 20.0f,
         .base_price = 10.0f, .age = 0.0f,
     };
     w.contracts[1] = (contract_t){
         .active = true, .station_index = 2,
-        .commodity = COMMODITY_CONDUCTOR_INGOT,
+        .commodity = COMMODITY_CUPRITE_INGOT,
         .quantity_needed = 20.0f,
         .base_price = 50.0f, .age = 0.0f,
     };
     /* Give home station (0) inventory of both */
-    w.stations[0].inventory[COMMODITY_FRAME_INGOT] = 20.0f;
-    w.stations[0].inventory[COMMODITY_CONDUCTOR_INGOT] = 20.0f;
+    w.stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
+    w.stations[0].inventory[COMMODITY_CUPRITE_INGOT] = 20.0f;
     /* Find the first hauler */
     npc_ship_t *hauler = NULL;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {

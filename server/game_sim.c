@@ -245,7 +245,7 @@ static void begin_module_construction(world_t *w, station_t *st, int station_idx
             w->contracts[k] = (contract_t){
                 .active = true, .action = CONTRACT_SUPPLY,
                 .station_index = (uint8_t)station_idx,
-                .commodity = COMMODITY_FRAME_INGOT,
+                .commodity = COMMODITY_FERRITE_INGOT,
                 .quantity_needed = cost,
                 .base_price = 25.0f, .age = 0.0f,
                 .target_index = -1, .claimed_by = -1,
@@ -259,15 +259,15 @@ static void begin_module_construction(world_t *w, station_t *st, int station_idx
 
 /* Deliver frame ingots to scaffold modules at a station */
 static void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *ship) {
-    if (ship->cargo[COMMODITY_FRAME_INGOT] < 0.01f) return;
+    if (ship->cargo[COMMODITY_FERRITE_INGOT] < 0.01f) return;
 
     for (int i = 0; i < st->module_count; i++) {
         if (!st->modules[i].scaffold) continue;
         float cost = module_build_cost(st->modules[i].type);
         float needed = cost * (1.0f - st->modules[i].build_progress);
         if (needed < 0.01f) continue;
-        float deliver = fminf(ship->cargo[COMMODITY_FRAME_INGOT], needed);
-        ship->cargo[COMMODITY_FRAME_INGOT] -= deliver;
+        float deliver = fminf(ship->cargo[COMMODITY_FERRITE_INGOT], needed);
+        ship->cargo[COMMODITY_FERRITE_INGOT] -= deliver;
         st->modules[i].build_progress += deliver / cost;
         if (st->modules[i].build_progress >= 1.0f) {
             st->modules[i].scaffold = false;
@@ -281,7 +281,7 @@ static void step_module_delivery(world_t *w, station_t *st, int station_idx, shi
                 spawn_npc(w, station_idx, NPC_ROLE_HAULER);
             SIM_LOG("[sim] module %d activated at station %d\n", st->modules[i].type, station_idx);
         }
-        if (ship->cargo[COMMODITY_FRAME_INGOT] < 0.01f) break;
+        if (ship->cargo[COMMODITY_FERRITE_INGOT] < 0.01f) break;
     }
 }
 
@@ -316,11 +316,11 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     if (!sp->docked) return;
     station_t *st = &w->stations[sp->current_station];
     if (!st->scaffold) return;
-    if (sp->ship.cargo[COMMODITY_FRAME_INGOT] < 0.01f) return;
-    float deliver = sp->ship.cargo[COMMODITY_FRAME_INGOT];
+    if (sp->ship.cargo[COMMODITY_FERRITE_INGOT] < 0.01f) return;
+    float deliver = sp->ship.cargo[COMMODITY_FERRITE_INGOT];
     float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
     float accepted = fminf(deliver, needed);
-    sp->ship.cargo[COMMODITY_FRAME_INGOT] -= accepted;
+    sp->ship.cargo[COMMODITY_FERRITE_INGOT] -= accepted;
     st->scaffold_progress += accepted / SCAFFOLD_MATERIAL_NEEDED;
     SIM_LOG("[sim] player %d delivered %.1f frame ingots to scaffold %d (progress %.0f%%)\n",
             sp->id, accepted, sp->current_station, st->scaffold_progress * 100.0f);
@@ -822,33 +822,33 @@ static void sim_step_station_production(world_t *w, float dt) {
         station_t *st = &w->stations[s];
         if (station_has_module(st, MODULE_FRAME_PRESS)) {
             if (st->product_stock[PRODUCT_FRAME] < MAX_PRODUCT_STOCK) {
-                float buf = st->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)];
+                float buf = st->ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)];
                 if (buf > 0.01f) {
                     float room = MAX_PRODUCT_STOCK - st->product_stock[PRODUCT_FRAME];
                     float consume = fminf(buf, fminf(STATION_PRODUCTION_RATE * dt, room));
-                    st->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] -= consume;
+                    st->ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] -= consume;
                     st->product_stock[PRODUCT_FRAME] += consume;
                 }
             }
         }
         if (station_has_module(st, MODULE_LASER_FAB)) {
             if (st->product_stock[PRODUCT_LASER_MODULE] < MAX_PRODUCT_STOCK) {
-                float buf_co = st->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)];
+                float buf_co = st->ingot_buffer[INGOT_IDX(COMMODITY_CUPRITE_INGOT)];
                 if (buf_co > 0.01f) {
                     float room = MAX_PRODUCT_STOCK - st->product_stock[PRODUCT_LASER_MODULE];
                     float consume = fminf(buf_co, fminf(STATION_PRODUCTION_RATE * dt, room));
-                    st->ingot_buffer[INGOT_IDX(COMMODITY_CONDUCTOR_INGOT)] -= consume;
+                    st->ingot_buffer[INGOT_IDX(COMMODITY_CUPRITE_INGOT)] -= consume;
                     st->product_stock[PRODUCT_LASER_MODULE] += consume;
                 }
             }
         }
         if (station_has_module(st, MODULE_TRACTOR_FAB)) {
             if (st->product_stock[PRODUCT_TRACTOR_MODULE] < MAX_PRODUCT_STOCK) {
-                float buf_ln = st->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)];
+                float buf_ln = st->ingot_buffer[INGOT_IDX(COMMODITY_CRYSTAL_INGOT)];
                 if (buf_ln > 0.01f) {
                     float room = MAX_PRODUCT_STOCK - st->product_stock[PRODUCT_TRACTOR_MODULE];
                     float consume = fminf(buf_ln, fminf(STATION_PRODUCTION_RATE * dt, room));
-                    st->ingot_buffer[INGOT_IDX(COMMODITY_LENS_INGOT)] -= consume;
+                    st->ingot_buffer[INGOT_IDX(COMMODITY_CRYSTAL_INGOT)] -= consume;
                     st->product_stock[PRODUCT_TRACTOR_MODULE] += consume;
                 }
             }
@@ -1028,7 +1028,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 /* Fallback: original round-trip behavior */
                 station_t *dest = &w->stations[npc->dest_station];
                 if (station_has_module(dest, MODULE_FRAME_PRESS)) {
-                    commodity_t ingot = COMMODITY_FRAME_INGOT;
+                    commodity_t ingot = COMMODITY_FERRITE_INGOT;
                     float take = fminf(home->inventory[ingot], space);
                     if (take > 0.5f) {
                         npc->ingots[INGOT_IDX(ingot)] += take;
@@ -1037,7 +1037,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     }
                 }
                 if (!loaded && station_has_module(dest, MODULE_LASER_FAB)) {
-                    commodity_t ingot = COMMODITY_CONDUCTOR_INGOT;
+                    commodity_t ingot = COMMODITY_CUPRITE_INGOT;
                     float take = fminf(home->inventory[ingot], space);
                     if (take > 0.5f) {
                         npc->ingots[INGOT_IDX(ingot)] += take;
@@ -1047,7 +1047,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     }
                 }
                 if (!loaded && station_has_module(dest, MODULE_TRACTOR_FAB)) {
-                    commodity_t ingot = COMMODITY_LENS_INGOT;
+                    commodity_t ingot = COMMODITY_CRYSTAL_INGOT;
                     float take = fminf(home->inventory[ingot], space);
                     if (take > 0.5f) {
                         npc->ingots[INGOT_IDX(ingot)] += take;
@@ -1088,14 +1088,14 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             if (dest->scaffold || dest->module_count > 0) {
                 /* Create a temporary ship_t to reuse step_module_delivery */
                 ship_t hauler_ship = {0};
-                hauler_ship.cargo[COMMODITY_FRAME_INGOT] = dest->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)];
-                float before = hauler_ship.cargo[COMMODITY_FRAME_INGOT];
+                hauler_ship.cargo[COMMODITY_FERRITE_INGOT] = dest->ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)];
+                float before = hauler_ship.cargo[COMMODITY_FERRITE_INGOT];
                 if (dest->scaffold) {
                     /* Feed outpost scaffold */
                     float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - dest->scaffold_progress);
-                    float deliver = fminf(hauler_ship.cargo[COMMODITY_FRAME_INGOT], needed);
+                    float deliver = fminf(hauler_ship.cargo[COMMODITY_FERRITE_INGOT], needed);
                     if (deliver > 0.01f) {
-                        hauler_ship.cargo[COMMODITY_FRAME_INGOT] -= deliver;
+                        hauler_ship.cargo[COMMODITY_FERRITE_INGOT] -= deliver;
                         dest->scaffold_progress += deliver / SCAFFOLD_MATERIAL_NEEDED;
                         if (dest->scaffold_progress >= 1.0f)
                             activate_outpost(w, npc->dest_station);
@@ -1103,8 +1103,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 }
                 step_module_delivery(w, dest, npc->dest_station, &hauler_ship);
                 /* Put remaining frames back */
-                float consumed = before - hauler_ship.cargo[COMMODITY_FRAME_INGOT];
-                dest->ingot_buffer[INGOT_IDX(COMMODITY_FRAME_INGOT)] -= consumed;
+                float consumed = before - hauler_ship.cargo[COMMODITY_FERRITE_INGOT];
+                dest->ingot_buffer[INGOT_IDX(COMMODITY_FERRITE_INGOT)] -= consumed;
             }
             npc->state = NPC_STATE_RETURN_TO_STATION;
         }
@@ -2131,7 +2131,7 @@ static void step_contracts(world_t *w, float dt) {
                 need = (contract_t){
                     .active = true, .action = CONTRACT_SUPPLY,
                     .station_index = (uint8_t)s,
-                    .commodity = COMMODITY_FRAME_INGOT,
+                    .commodity = COMMODITY_FERRITE_INGOT,
                     .quantity_needed = remaining,
                     .base_price = 25.0f,
                     .target_index = -1, .claimed_by = -1,
@@ -2147,7 +2147,7 @@ static void step_contracts(world_t *w, float dt) {
                 need = (contract_t){
                     .active = true, .action = CONTRACT_SUPPLY,
                     .station_index = (uint8_t)s,
-                    .commodity = COMMODITY_FRAME_INGOT,
+                    .commodity = COMMODITY_FERRITE_INGOT,
                     .quantity_needed = remaining,
                     .base_price = 25.0f,
                     .target_index = -1, .claimed_by = -1,
@@ -2178,9 +2178,9 @@ static void step_contracts(world_t *w, float dt) {
         /* Priority 4: ingot buffer deficit (for production stations) */
         if (!need.active) {
             struct { module_type_t mod; commodity_t ingot; float price; } checks[] = {
-                { MODULE_FRAME_PRESS, COMMODITY_FRAME_INGOT, 20.0f },
-                { MODULE_LASER_FAB, COMMODITY_CONDUCTOR_INGOT, 22.0f },
-                { MODULE_TRACTOR_FAB, COMMODITY_LENS_INGOT, 22.0f },
+                { MODULE_FRAME_PRESS, COMMODITY_FERRITE_INGOT, 20.0f },
+                { MODULE_LASER_FAB, COMMODITY_CUPRITE_INGOT, 22.0f },
+                { MODULE_TRACTOR_FAB, COMMODITY_CRYSTAL_INGOT, 22.0f },
             };
             float worst_deficit = 0.0f;
             int worst_idx = -1;
