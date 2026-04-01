@@ -321,7 +321,7 @@ static inline module_type_t station_dominant_module(const station_t *st) {
 }
 
 /* Outpost construction constants (client-shared) */
-static const float SCAFFOLD_MATERIAL_NEEDED = 100.0f;  /* total units of frame ingots */
+static const float SCAFFOLD_MATERIAL_NEEDED = 100.0f;  /* total units of ferrite ingots */
 
 /* Ship upgrade constants (shared between client and server) */
 static const float SHIP_HOLD_UPGRADE_STEP = 24.0f;

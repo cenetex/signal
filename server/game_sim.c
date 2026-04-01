@@ -1030,6 +1030,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             float best_score = 0.0f;
             for (int k = 0; k < MAX_CONTRACTS; k++) {
                 if (!w->contracts[k].active) continue;
+                if (w->contracts[k].action != CONTRACT_SUPPLY) continue;
                 commodity_t c = w->contracts[k].commodity;
                 if (c < COMMODITY_RAW_ORE_COUNT) continue; /* haulers carry ingots only */
                 if (home->inventory[c] < 0.5f) continue; /* no stock to fill */
@@ -1529,7 +1530,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         /* Check for active contract at this station for this commodity */
         float price = st->buy_price[ore];
         for (int k = 0; k < MAX_CONTRACTS; k++) {
-            if (w->contracts[k].active && w->contracts[k].station_index == sp->current_station && w->contracts[k].commodity == ore) {
+            if (w->contracts[k].active && w->contracts[k].action == CONTRACT_SUPPLY && w->contracts[k].station_index == sp->current_station && w->contracts[k].commodity == ore) {
                 price = contract_price(&w->contracts[k]);
                 w->contracts[k].quantity_needed -= accepted;
                 if (w->contracts[k].quantity_needed <= 0.01f) {
@@ -2409,7 +2410,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 8
+#define SAVE_VERSION 9
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
@@ -2549,21 +2550,29 @@ static bool read_npc(FILE *f, npc_ship_t *n) {
 /* ---- contract field-by-field I/O ---- */
 static bool write_contract(FILE *f, const contract_t *c) {
     WRITE_FIELD(f, c->active);
+    WRITE_FIELD(f, c->action);
     WRITE_FIELD(f, c->station_index);
     WRITE_FIELD(f, c->commodity);
     WRITE_FIELD(f, c->quantity_needed);
     WRITE_FIELD(f, c->base_price);
     WRITE_FIELD(f, c->age);
+    WRITE_FIELD(f, c->target_pos);
+    WRITE_FIELD(f, c->target_index);
+    WRITE_FIELD(f, c->claimed_by);
     return true;
 }
 
 static bool read_contract(FILE *f, contract_t *c) {
     READ_FIELD(f, c->active);
+    READ_FIELD(f, c->action);
     READ_FIELD(f, c->station_index);
     READ_FIELD(f, c->commodity);
     READ_FIELD(f, c->quantity_needed);
     READ_FIELD(f, c->base_price);
     READ_FIELD(f, c->age);
+    READ_FIELD(f, c->target_pos);
+    READ_FIELD(f, c->target_index);
+    READ_FIELD(f, c->claimed_by);
     return true;
 }
 
