@@ -55,12 +55,12 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
     [HULL_CLASS_NPC_MINER] = {
         .name          = "Mining Drone",
         .max_hull      = 80.0f,
-        .accel         = 180.0f,
-        .turn_speed    = 2.0f,
+        .accel         = 140.0f,
+        .turn_speed    = 1.8f,
         .drag          = 0.5f,
-        .ore_capacity  = 60.0f,
+        .ore_capacity  = 40.0f,
         .ingot_capacity= 0.0f,
-        .mining_rate   = 14.0f,
+        .mining_rate   = 8.0f,
         .tractor_range = 0.0f,
         .ship_radius   = 12.0f,
         .render_scale  = 0.7f,
@@ -1345,12 +1345,25 @@ static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, fl
 /* Mining target                                                      */
 /* ================================================================== */
 
-static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward) {
+/* Max asteroid tier mineable at each laser level:
+ * Level 0: M, Level 1: L, Level 2: XL, Level 3: XXL, Level 4: all */
+static asteroid_tier_t max_mineable_tier(int mining_level) {
+    switch (mining_level) {
+        case 0: return ASTEROID_TIER_M;
+        case 1: return ASTEROID_TIER_L;
+        case 2: return ASTEROID_TIER_XL;
+        default: return ASTEROID_TIER_XXL;
+    }
+}
+
+static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, int mining_level) {
+    asteroid_tier_t max_tier = max_mineable_tier(mining_level);
     int best = -1;
     float best_proj = MINING_RANGE + 1.0f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active || asteroid_is_collectible(a)) continue;
+        if (a->tier < max_tier) continue; /* tier enum: XXL=0 < XL=1 < ... < S=4 */
         vec2 to_a = v2_sub(a->pos, origin);
         float proj = v2_dot(to_a, forward);
         if (proj < 0.0f || proj > MINING_RANGE) continue;
@@ -1508,7 +1521,7 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
 }
 
 static void update_targeting_state(world_t *w, server_player_t *sp, vec2 forward) {
-    sp->hover_asteroid = sim_find_mining_target(w, ship_muzzle(&sp->ship, forward), forward);
+    sp->hover_asteroid = sim_find_mining_target(w, ship_muzzle(&sp->ship, forward), forward, sp->ship.mining_level);
 }
 
 static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) {

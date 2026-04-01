@@ -20,6 +20,6 @@ void configure_asteroid_tier(asteroid_t* asteroid, asteroid_tier_t tier, commodi
 
 void step_asteroid_dynamics(asteroid_t* asteroids, int count, vec2 ship_pos, float dt);
 
-int find_mining_target(const asteroid_t* asteroids, int count, vec2 origin, vec2 forward, float range);
+int find_mining_target(const asteroid_t* asteroids, int count, vec2 origin, vec2 forward, float range, int mining_level);
 
 #endif

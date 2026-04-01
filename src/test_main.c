@@ -284,7 +284,7 @@ TEST(test_npc_hull_def) {
     npc.hull_class = HULL_CLASS_NPC_MINER;
     const hull_def_t* hull = npc_hull_def(&npc);
     ASSERT_STR_EQ(hull->name, "Mining Drone");
-    ASSERT_EQ_FLOAT(hull->ore_capacity, 60.0f, 0.01f);
+    ASSERT_EQ_FLOAT(hull->ore_capacity, 40.0f, 0.01f);
 }
 
 TEST(test_product_name) {
@@ -479,6 +479,7 @@ TEST(test_world_sim_step_mining_damages_asteroid) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
+    w.players[0].ship.mining_level = SHIP_UPGRADE_MAX_LEVEL;
     /* Place player right next to first active non-S asteroid */
     int target = -1;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -1369,6 +1370,7 @@ TEST(test_scenario_full_mining_cycle) {
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
+    w.players[0].ship.mining_level = SHIP_UPGRADE_MAX_LEVEL;
     ASSERT(w.players[0].docked);
 
     /* Launch from station */
@@ -1486,6 +1488,8 @@ TEST(test_scenario_two_players_mining) {
     player_init_ship(&w.players[1], &w);
     w.players[0].connected = true;
     w.players[1].connected = true;
+    w.players[0].ship.mining_level = SHIP_UPGRADE_MAX_LEVEL;
+    w.players[1].ship.mining_level = SHIP_UPGRADE_MAX_LEVEL;
 
     /* Launch both */
     w.players[0].input.interact = true;
@@ -1805,6 +1809,7 @@ TEST(test_bug37_mine_inactive_asteroid) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
+    w.players[0].ship.mining_level = SHIP_UPGRADE_MAX_LEVEL;
     /* Find an asteroid and position player to mine it */
     int target = -1;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
