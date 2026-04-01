@@ -691,26 +691,39 @@ void draw_station_services(const station_ui_state_t* ui) {
             float cprice = ct->base_price * (1.0f + ct->age / 300.0f * 0.2f);
             if (cprice < 0.01f) continue;
             float line_y = cy + 22.0f + (float)shown * 18.0f;
-            /* Commodity color pip */
+            /* Action-based pip color */
             float pip_r = 0.5f, pip_g = 0.5f, pip_b = 0.5f;
-            if (ct->commodity == COMMODITY_FERRITE_ORE) { pip_r = 0.85f; pip_g = 0.50f; pip_b = 0.35f; }
-            else if (ct->commodity == COMMODITY_CUPRITE_ORE) { pip_r = 0.40f; pip_g = 0.55f; pip_b = 0.90f; }
-            else if (ct->commodity == COMMODITY_CRYSTAL_ORE) { pip_r = 0.40f; pip_g = 0.85f; pip_b = 0.50f; }
-            else if (ct->commodity == COMMODITY_FRAME_INGOT) { pip_r = 0.70f; pip_g = 0.75f; pip_b = 0.90f; }
-            else if (ct->commodity == COMMODITY_CONDUCTOR_INGOT) { pip_r = 0.60f; pip_g = 0.80f; pip_b = 1.0f; }
-            else if (ct->commodity == COMMODITY_LENS_INGOT) { pip_r = 0.55f; pip_g = 0.95f; pip_b = 0.65f; }
+            if (ct->action == CONTRACT_DESTROY) { pip_r = 0.95f; pip_g = 0.30f; pip_b = 0.20f; }
+            else if (ct->action == CONTRACT_SCAN) { pip_r = 0.30f; pip_g = 0.70f; pip_b = 0.95f; }
+            else {
+                /* SUPPLY: color by commodity */
+                if (ct->commodity == COMMODITY_FERRITE_ORE) { pip_r = 0.85f; pip_g = 0.50f; pip_b = 0.35f; }
+                else if (ct->commodity == COMMODITY_CUPRITE_ORE) { pip_r = 0.40f; pip_g = 0.55f; pip_b = 0.90f; }
+                else if (ct->commodity == COMMODITY_CRYSTAL_ORE) { pip_r = 0.40f; pip_g = 0.85f; pip_b = 0.50f; }
+                else if (ct->commodity == COMMODITY_FRAME_INGOT) { pip_r = 0.70f; pip_g = 0.75f; pip_b = 0.90f; }
+                else if (ct->commodity == COMMODITY_CONDUCTOR_INGOT) { pip_r = 0.60f; pip_g = 0.80f; pip_b = 1.0f; }
+                else if (ct->commodity == COMMODITY_LENS_INGOT) { pip_r = 0.55f; pip_g = 0.95f; pip_b = 0.65f; }
+            }
             draw_rect_centered(v2(cx * HUD_CELL + 2.0f, line_y * HUD_CELL + 5.0f), 3.0f, 3.0f, pip_r, pip_g, pip_b, 0.9f);
-            /* Age-based brightness: newer = brighter */
+            /* Age-based brightness */
             float age_fade = clampf(ct->age / 600.0f, 0.0f, 1.0f);
             uint8_t txt_r = (uint8_t)lerpf(220.0f, 120.0f, age_fade);
             uint8_t txt_g = (uint8_t)lerpf(235.0f, 140.0f, age_fade);
             uint8_t txt_b = (uint8_t)lerpf(255.0f, 170.0f, age_fade);
             sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(line_y));
             sdtx_color3b(txt_r, txt_g, txt_b);
-            sdtx_printf("%s @ %s: %.0f cr/u",
-                commodity_short_name(ct->commodity),
-                g.world.stations[ct->station_index].name,
-                cprice);
+            if (ct->action == CONTRACT_DESTROY) {
+                sdtx_printf("DESTROY @ %.0f,%.0f: %.0f cr",
+                    ct->target_pos.x, ct->target_pos.y, cprice);
+            } else if (ct->action == CONTRACT_SCAN) {
+                sdtx_printf("SCAN @ %.0f,%.0f: %.0f cr",
+                    ct->target_pos.x, ct->target_pos.y, cprice);
+            } else {
+                sdtx_printf("%s @ %s: %.0f cr/u",
+                    commodity_short_name(ct->commodity),
+                    g.world.stations[ct->station_index].name,
+                    cprice);
+            }
             if (++shown >= max_show) break;
         }
         if (shown == 0) {

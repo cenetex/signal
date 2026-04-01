@@ -239,12 +239,12 @@ static void begin_module_construction(world_t *w, station_t *st, int station_idx
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (!w->contracts[k].active) {
             w->contracts[k] = (contract_t){
-                .active = true,
+                .active = true, .action = CONTRACT_SUPPLY,
                 .station_index = (uint8_t)station_idx,
                 .commodity = COMMODITY_FRAME_INGOT,
                 .quantity_needed = cost,
-                .base_price = 25.0f,
-                .age = 0.0f,
+                .base_price = 25.0f, .age = 0.0f,
+                .target_index = -1, .claimed_by = -1,
             };
             break;
         }
@@ -1288,6 +1288,52 @@ static void step_npc_ships(world_t *w, float dt) {
     }
 }
 
+/* Generate DESTROY contracts for asteroids blocking stuck NPCs. */
+static void generate_npc_distress_contracts(world_t *w) {
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        npc_ship_t *npc = &w->npc_ships[n];
+        if (!npc->active) continue;
+        /* Only haulers in transit can get stuck */
+        if (npc->role != NPC_ROLE_HAULER) continue;
+        if (npc->state != NPC_STATE_TRAVEL_TO_DEST && npc->state != NPC_STATE_RETURN_TO_STATION) continue;
+        /* Check if stuck: low speed for a while (state_timer repurposed — skip if fresh) */
+        float speed = v2_len(npc->vel);
+        if (speed > 15.0f) continue;
+        /* Find nearest blocking asteroid */
+        int blocker = -1;
+        float best_d = 200.0f * 200.0f; /* within 200u */
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            if (!w->asteroids[i].active || asteroid_is_collectible(&w->asteroids[i])) continue;
+            float d = v2_dist_sq(npc->pos, w->asteroids[i].pos);
+            if (d < best_d) { best_d = d; blocker = i; }
+        }
+        if (blocker < 0) continue;
+        /* Check if a DESTROY contract already exists for this asteroid */
+        bool exists = false;
+        for (int k = 0; k < MAX_CONTRACTS; k++) {
+            if (w->contracts[k].active && w->contracts[k].action == CONTRACT_DESTROY
+                && w->contracts[k].target_index == blocker) {
+                exists = true; break;
+            }
+        }
+        if (exists) continue;
+        /* Post distress contract */
+        for (int k = 0; k < MAX_CONTRACTS; k++) {
+            if (!w->contracts[k].active) {
+                w->contracts[k] = (contract_t){
+                    .active = true, .action = CONTRACT_DESTROY,
+                    .station_index = (uint8_t)npc->home_station,
+                    .target_pos = w->asteroids[blocker].pos,
+                    .target_index = blocker,
+                    .base_price = 30.0f, .age = 0.0f,
+                    .claimed_by = -1,
+                };
+                break;
+            }
+        }
+    }
+}
+
 /* ================================================================== */
 /* Player ship helpers                                                */
 /* ================================================================== */
@@ -1994,21 +2040,35 @@ float contract_price(const contract_t *c) {
 }
 
 static void step_contracts(world_t *w, float dt) {
-    /* Age existing contracts and close filled ones */
+    /* Age existing contracts and check fulfillment */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         if (!w->contracts[i].active) continue;
         w->contracts[i].age += dt;
-        station_t *st = &w->stations[w->contracts[i].station_index];
-        commodity_t c = w->contracts[i].commodity;
-        float current = 0.0f;
-        if (c < COMMODITY_RAW_ORE_COUNT) {
-            current = st->ore_buffer[c];
-        } else {
-            current = st->ingot_buffer[INGOT_IDX(c)];
+
+        switch (w->contracts[i].action) {
+        case CONTRACT_SUPPLY: {
+            /* Close when station buffer is sufficiently full */
+            station_t *st = &w->stations[w->contracts[i].station_index];
+            commodity_t c = w->contracts[i].commodity;
+            float current = (c < COMMODITY_RAW_ORE_COUNT) ? st->ore_buffer[c] : st->ingot_buffer[INGOT_IDX(c)];
+            float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.8f : INGOT_BUFFER_CAPACITY * 0.8f;
+            if (current >= threshold) w->contracts[i].active = false;
+            break;
         }
-        float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.8f : INGOT_BUFFER_CAPACITY * 0.8f;
-        if (current >= threshold) {
-            w->contracts[i].active = false;
+        case CONTRACT_DESTROY: {
+            /* Close when target asteroid is gone */
+            int idx = w->contracts[i].target_index;
+            if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active)
+                w->contracts[i].active = false;
+            /* Expire after 60 seconds if unfulfilled */
+            if (w->contracts[i].age > 60.0f) w->contracts[i].active = false;
+            break;
+        }
+        case CONTRACT_SCAN: {
+            /* Expire after 120 seconds */
+            if (w->contracts[i].age > 120.0f) w->contracts[i].active = false;
+            break;
+        }
         }
     }
 
@@ -2028,12 +2088,12 @@ static void step_contracts(world_t *w, float dt) {
                         for (int k = 0; k < MAX_CONTRACTS; k++) {
                             if (!w->contracts[k].active) {
                                 w->contracts[k] = (contract_t){
-                                    .active = true,
+                                    .active = true, .action = CONTRACT_SUPPLY,
                                     .station_index = (uint8_t)s,
                                     .commodity = (commodity_t)c,
                                     .quantity_needed = REFINERY_HOPPER_CAPACITY * 0.5f - st->ore_buffer[c],
-                                    .base_price = st->buy_price[c],
-                                    .age = 0.0f,
+                                    .base_price = st->buy_price[c], .age = 0.0f,
+                                    .target_index = -1, .claimed_by = -1,
                                 };
                                 break;
                             }
@@ -2055,10 +2115,12 @@ static void step_contracts(world_t *w, float dt) {
                     for (int k = 0; k < MAX_CONTRACTS; k++) {
                         if (!w->contracts[k].active) {
                             w->contracts[k] = (contract_t){
-                                .active = true, .station_index = (uint8_t)s,
+                                .active = true, .action = CONTRACT_SUPPLY,
+                                .station_index = (uint8_t)s,
                                 .commodity = ingot,
                                 .quantity_needed = INGOT_BUFFER_CAPACITY * 0.5f - st->ingot_buffer[INGOT_IDX(ingot)],
                                 .base_price = 20.0f, .age = 0.0f,
+                                .target_index = -1, .claimed_by = -1,
                             };
                             break;
                         }
@@ -2080,10 +2142,12 @@ static void step_contracts(world_t *w, float dt) {
                         for (int k = 0; k < MAX_CONTRACTS; k++) {
                             if (!w->contracts[k].active) {
                                 w->contracts[k] = (contract_t){
-                                    .active = true, .station_index = (uint8_t)s,
+                                    .active = true, .action = CONTRACT_SUPPLY,
+                                    .station_index = (uint8_t)s,
                                     .commodity = ingots[j],
                                     .quantity_needed = INGOT_BUFFER_CAPACITY * 0.5f - st->ingot_buffer[INGOT_IDX(ingots[j])],
                                     .base_price = 22.0f, .age = 0.0f,
+                                    .target_index = -1, .claimed_by = -1,
                                 };
                                 break;
                             }
@@ -2111,6 +2175,7 @@ void world_sim_step(world_t *w, float dt) {
     sim_step_station_production(w, dt);
     step_contracts(w, dt);
     step_npc_ships(w, dt);
+    generate_npc_distress_contracts(w);
     for (int p = 0; p < MAX_PLAYERS; p++) {
         if (!w->players[p].connected) continue;
         step_player(w, &w->players[p], dt);
@@ -2262,7 +2327,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 7
+#define SAVE_VERSION 8
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)

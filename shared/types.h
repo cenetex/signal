@@ -362,15 +362,25 @@ typedef struct {
     int count;
 } sim_events_t;
 
-enum { MAX_CONTRACTS = 16 };
+enum { MAX_CONTRACTS = 24 };
+
+typedef enum {
+    CONTRACT_SUPPLY,     /* bring commodity to target station */
+    CONTRACT_DESTROY,    /* eliminate target asteroid/object */
+    CONTRACT_SCAN,       /* map area around target position */
+} contract_action_t;
 
 typedef struct {
     bool active;
-    uint8_t station_index;
-    commodity_t commodity;
-    float quantity_needed;
+    contract_action_t action;
+    uint8_t station_index;  /* destination (SUPPLY) or issuer (DESTROY/SCAN) */
+    commodity_t commodity;  /* what to supply (SUPPLY only) */
+    float quantity_needed;  /* amount (SUPPLY) or radius (SCAN) */
     float base_price;
     float age;
+    vec2 target_pos;        /* world position (DESTROY/SCAN target) */
+    int target_index;       /* asteroid slot (DESTROY) or -1 */
+    int8_t claimed_by;      /* player/NPC id, -1 = open */
 } contract_t;
 
 #endif
