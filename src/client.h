@@ -106,6 +106,10 @@ typedef struct {
     bool was_docked;
     /* --- Outpost placement mode --- */
     bool placing_outpost;
+    /* --- Navigation breadcrumb (last docked station or placed blueprint) --- */
+    bool nav_pip_active;
+    vec2 nav_pip_pos;
+    bool nav_pip_is_blueprint;  /* false = station, true = placed blueprint */
     /* --- Interpolation (multiplayer) --- */
     struct {
         asteroid_t prev[MAX_ASTEROIDS];

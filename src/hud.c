@@ -822,5 +822,54 @@ void draw_hud(void) {
         sdtx_puts("ALPHA // may reset");
     }
 
+    /* Navigation pip: bearing arrow to last breadcrumb */
+    if (g.nav_pip_active && !LOCAL_PLAYER.docked) {
+        vec2 to_pip = v2_sub(g.nav_pip_pos, LOCAL_PLAYER.ship.pos);
+        float dist = sqrtf(v2_len_sq(to_pip));
+        /* Check if target is on screen (world coords → screen coords) */
+        float half_w = sapp_widthf() * 0.5f / fmaxf(1.0f, sapp_dpi_scale());
+        float half_h = sapp_heightf() * 0.5f / fmaxf(1.0f, sapp_dpi_scale());
+        float screen_dx = fabsf(to_pip.x);
+        float screen_dy = fabsf(to_pip.y);
+        bool on_screen = (screen_dx < half_w * 0.85f) && (screen_dy < half_h * 0.85f);
+        if (dist > 50.0f && !on_screen) {
+            /* Screen-space angle: negate Y because screen Y is flipped */
+            float angle = atan2f(-to_pip.y, to_pip.x);
+            /* Place arrow on screen edge */
+            float margin = 40.0f;
+            float cx = screen_w * 0.5f;
+            float cy = screen_h * 0.5f;
+            float ex = cx + cosf(angle) * (cx - margin);
+            float ey = cy + sinf(angle) * (cy - margin);
+            /* Clamp to screen bounds */
+            if (ex < margin) ex = margin;
+            if (ex > screen_w - margin) ex = screen_w - margin;
+            if (ey < margin) ey = margin;
+            if (ey > screen_h - margin) ey = screen_h - margin;
+            /* Draw arrow chevron */
+            float ar = 8.0f;
+            float ca = cosf(angle), sa = sinf(angle);
+            float pip_r = g.nav_pip_is_blueprint ? 1.0f : 0.34f;
+            float pip_g = g.nav_pip_is_blueprint ? 0.87f : 0.96f;
+            float pip_b = g.nav_pip_is_blueprint ? 0.20f : 0.76f;
+            float pulse = 0.6f + 0.3f * sinf(g.world.time * 3.0f);
+            sgl_defaults();
+            sgl_matrix_mode_projection();
+            sgl_load_identity();
+            sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
+            sgl_matrix_mode_modelview();
+            sgl_load_identity();
+            float lx = -ca * ar - sa * ar * 0.6f;
+            float ly = -sa * ar + ca * ar * 0.6f;
+            float rx = -ca * ar + sa * ar * 0.6f;
+            float ry = -sa * ar - ca * ar * 0.6f;
+            sgl_begin_lines();
+            sgl_c4f(pip_r, pip_g, pip_b, pulse);
+            sgl_v2f(ex + lx, ey + ly); sgl_v2f(ex, ey);
+            sgl_v2f(ex, ey); sgl_v2f(ex + rx, ey + ry);
+            sgl_end();
+        }
+    }
+
     draw_station_services(&ui);
 }

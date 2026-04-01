@@ -621,6 +621,11 @@ static input_intent_t sample_input_intent(void) {
         if (is_key_pressed(SAPP_KEYCODE_6) || is_key_pressed(SAPP_KEYCODE_ENTER) || is_key_pressed(SAPP_KEYCODE_KP_ENTER)) {
             intent.place_outpost = true;
             g.placing_outpost = false;
+            /* Set nav breadcrumb to the placement target */
+            vec2 fwd = v2_from_angle(LOCAL_PLAYER.ship.angle);
+            g.nav_pip_active = true;
+            g.nav_pip_pos = v2_add(LOCAL_PLAYER.ship.pos, v2_scale(fwd, 150.0f));
+            g.nav_pip_is_blueprint = true;
         } else if (is_key_pressed(SAPP_KEYCODE_ESCAPE) || is_key_pressed(SAPP_KEYCODE_Q)) {
             g.placing_outpost = false;
         }
@@ -667,6 +672,18 @@ static void sim_step(float dt) {
         const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
         g.station_tab = st->scaffold ? STATION_TAB_CONSTRUCTION : STATION_TAB_OVERVIEW;
         g.placing_outpost = false;
+        /* Clear blueprint pip if we docked at the blueprint station */
+        if (g.nav_pip_is_blueprint) {
+            float d = sqrtf(v2_dist_sq(st->pos, g.nav_pip_pos));
+            if (d < 200.0f) {
+                g.nav_pip_is_blueprint = false;
+                g.nav_pip_pos = st->pos;
+            }
+            /* Otherwise keep the blueprint pip active */
+        } else {
+            g.nav_pip_active = true;
+            g.nav_pip_pos = st->pos;
+        }
     }
     g.was_docked = LOCAL_PLAYER.docked;
     if (LOCAL_PLAYER.docked && (is_key_pressed(SAPP_KEYCODE_TAB) || is_key_pressed(SAPP_KEYCODE_Q))) {
