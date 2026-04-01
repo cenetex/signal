@@ -782,8 +782,9 @@ void draw_hud(void) {
     }
 
     /* --- Multiplayer HUD indicator + version --- */
+    /* Version / connection status — top right */
     {
-        float info_x = ui_text_pos(screen_w - (compact ? 100.0f : 120.0f));
+        float info_x = ui_text_pos(screen_w - (compact ? 100.0f : 140.0f));
         float info_y = ui_text_pos(8.0f);
         sdtx_pos(info_x, info_y);
 #ifdef GIT_HASH
@@ -794,15 +795,29 @@ void draw_hud(void) {
         if (g.multiplayer_enabled && net_is_connected()) {
             const char* srv = net_server_hash();
             bool match = srv[0] != '\0' && strcmp(client_hash, srv) == 0;
-            sdtx_color3b(match ? 80 : 255, match ? 255 : 200, match ? 180 : 60);
-            sdtx_printf("%s/%s MP:%d", client_hash, srv[0] ? srv : "?", net_remote_player_count() + 1);
+            if (match) {
+                /* Synced: show version */
+                sdtx_color3b(80, 180, 120);
+                sdtx_printf("v%s", client_hash);
+            } else if (srv[0] == '\0') {
+                /* Connecting */
+                sdtx_color3b(220, 200, 60);
+                sdtx_puts("connecting...");
+            } else {
+                /* Version mismatch: client is stale */
+                sdtx_color3b(255, 120, 80);
+                sdtx_puts("OFFLINE // refresh");
+            }
+        } else if (g.multiplayer_enabled) {
+            sdtx_color3b(220, 200, 60);
+            sdtx_puts("connecting...");
         } else {
-            sdtx_color3b(80, 90, 100);
-            sdtx_puts(client_hash);
+            sdtx_color3b(80, 100, 80);
+            sdtx_printf("v%s", client_hash);
         }
         sdtx_pos(info_x, ui_text_pos(18.0f));
-        sdtx_color3b(100, 80, 60);
-        sdtx_puts("ALPHA // may reset");
+        sdtx_color3b(70, 60, 50);
+        sdtx_puts("ALPHA");
     }
 
     /* --- Edge pips --- */
