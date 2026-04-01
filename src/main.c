@@ -697,7 +697,11 @@ static input_intent_t sample_input_intent(void) {
                 if (st->inventory[c] > 0.5f) {
                     intent.buy_product = true;
                     intent.buy_commodity = (commodity_t)c;
-                    set_notice("Bought %s ingots", commodity_short_name((commodity_t)c));
+                    float space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
+                    if (space < 0.5f)
+                        set_notice("Hold full.");
+                    else
+                        set_notice("Bought %s ingots", commodity_short_name((commodity_t)c));
                     break;
                 }
             }

@@ -1535,6 +1535,8 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
                 w->contracts[k].quantity_needed -= accepted;
                 if (w->contracts[k].quantity_needed <= 0.01f) {
                     w->contracts[k].active = false;
+                    emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
+                        .contract_complete.action = CONTRACT_SUPPLY});
                 }
                 break;
             }
