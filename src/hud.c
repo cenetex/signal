@@ -716,7 +716,7 @@ void draw_hud(void) {
         const asteroid_t* asteroid = &g.world.asteroids[LOCAL_PLAYER.hover_asteroid];
         int integrity_left = (int)lroundf(asteroid->hp);
         sdtx_color3b(130, 255, 235);
-        sdtx_printf("Target %s %s // %s // %d hp", asteroid_tier_name(asteroid->tier), asteroid_tier_kind(asteroid->tier), commodity_short_name(asteroid->commodity), integrity_left);
+        sdtx_printf("Target %s // %s // %d hp", asteroid_tier_kind(asteroid->tier), commodity_short_name(asteroid->commodity), integrity_left);
     } else if (LOCAL_PLAYER.nearby_fragments > 0) {
         sdtx_color3b(130, 255, 235);
         if (LOCAL_PLAYER.tractor_fragments > 0) {
