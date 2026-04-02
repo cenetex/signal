@@ -76,6 +76,7 @@ void local_server_sync_to_client(const local_server_t *ls) {
     dst->beam_end = src->beam_end;
     dst->hover_asteroid = src->hover_asteroid;
     dst->tractor_fragments = src->tractor_fragments;
+    dst->nearby_fragments = src->nearby_fragments;
 
     /* World time */
     g.world.time = ls->world.time;
