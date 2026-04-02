@@ -315,13 +315,15 @@ static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts)
 /* ------------------------------------------------------------------ */
 
 /*
- * INPUT message (3 bytes, current):
- * [type:1][flags:1][action:1]
+ * INPUT message (4 bytes, current):
+ * [type:1][flags:1][action:1][mining_target:1]
  *
+ * Legacy (3 bytes): [type:1][flags:1][action:1] (no target)
  * Legacy (7 bytes): [type:1][flags:1][angle:f32][action:1]
  */
 static inline void parse_input(const uint8_t *data, int len, input_intent_t *intent) {
     if (len < 3) return;
+    intent->mining_target_hint = -1;
     uint8_t flags = data[1];
 
     /* Overwrite continuous inputs every message. */
@@ -385,6 +387,15 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
             }
             break;
         }
+    }
+
+    /* Mining target hint (4-byte format) */
+    if (len >= 4) {
+        uint8_t target = data[3];
+        if (target < MAX_ASTEROIDS)
+            intent->mining_target_hint = (int)target;
+        else
+            intent->mining_target_hint = -1;
     }
 }
 

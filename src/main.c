@@ -1469,7 +1469,9 @@ static void frame(void) {
                 if (g.input.key_down[SAPP_KEYCODE_SPACE])
                     flags |= NET_INPUT_FIRE;
                 g.pending_net_action = 0;
-                net_send_input(flags, action);
+                uint8_t mining_target = (LOCAL_PLAYER.hover_asteroid >= 0 && LOCAL_PLAYER.hover_asteroid < 255)
+                    ? (uint8_t)LOCAL_PLAYER.hover_asteroid : 255;
+                net_send_input(flags, action, mining_target);
             }
         }
     }

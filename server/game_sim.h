@@ -70,6 +70,7 @@ typedef struct {
     module_type_t build_module_type;
     bool buy_product;
     commodity_t buy_commodity;
+    int mining_target_hint;  /* client's hover_asteroid, -1 = none */
     bool reset;
 } input_intent_t;
 

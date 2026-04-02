@@ -110,8 +110,9 @@ void net_shutdown(void);
 
 /* Send the local player's input state to the server.
  * flags: bitmask of NET_INPUT_* values.
- * action: station interaction (0=none, 1=dock, 2=launch, etc.) */
-void net_send_input(uint8_t flags, uint8_t action);
+ * action: station interaction (0=none, 1=dock, 2=launch, etc.)
+ * mining_target: client's hover_asteroid index (255=none) */
+void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target);
 
 /* Send the local player's full state to the server for relay. */
 void net_send_state(float x, float y, float vx, float vy, float angle);
