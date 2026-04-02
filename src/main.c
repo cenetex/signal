@@ -701,20 +701,20 @@ static input_intent_t sample_input_intent(void) {
                     float amt = LOCAL_PLAYER.ship.cargo[c];
                     if (amt < 0.01f) continue;
                     if (c < COMMODITY_RAW_ORE_COUNT && (sell_st->services & STATION_SERVICE_ORE_BUYER)) {
-                        est_payout += amt * station_buy_price(sell_st, (commodity_t)c);
-                        LOCAL_PLAYER.ship.cargo[c] = 0.0f;
+                        float hopper_space = REFINERY_HOPPER_CAPACITY - sell_st->inventory[c];
+                        float sellable = fminf(amt, fmaxf(0.0f, hopper_space));
+                        est_payout += sellable * station_buy_price(sell_st, (commodity_t)c);
+                        LOCAL_PLAYER.ship.cargo[c] -= sellable;
                     }
-                    /* Deliver non-ore to contracts */
+                    /* Estimate contract delivery payout without mutating contracts */
                     for (int k = 0; k < MAX_CONTRACTS && c >= COMMODITY_RAW_ORE_COUNT; k++) {
-                        contract_t *ct = &g.world.contracts[k];
+                        const contract_t *ct = &g.world.contracts[k];
                         if (!ct->active || ct->action != CONTRACT_SUPPLY) continue;
                         if (ct->station_index != LOCAL_PLAYER.current_station) continue;
                         if (ct->commodity != (commodity_t)c) continue;
                         float deliver = fminf(amt, ct->quantity_needed);
                         LOCAL_PLAYER.ship.cargo[c] -= deliver;
                         est_payout += deliver * ct->base_price;
-                        ct->quantity_needed -= deliver;
-                        if (ct->quantity_needed <= 0.01f) ct->active = false;
                         break;
                     }
                 }
@@ -749,7 +749,6 @@ static input_intent_t sample_input_intent(void) {
                         /* Optimistic client prediction */
                         LOCAL_PLAYER.ship.cargo[c] += (float)amount;
                         LOCAL_PLAYER.ship.credits -= (float)amount * price;
-                        g.world.stations[LOCAL_PLAYER.current_station].inventory[c] -= (float)amount;
                         set_notice("Bought %d %s  -%d cr", amount, commodity_short_name((commodity_t)c), (int)(amount * price));
                     }
                     break;
@@ -826,7 +825,7 @@ static void sim_step(float dt) {
     audio_step(&g.audio, dt);
 
     input_intent_t intent = sample_input_intent();
-    if (intent.reset) {
+    if (intent.reset && !g.multiplayer_enabled) {
         reset_world();
         consume_pressed_input();
         return;

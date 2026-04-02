@@ -189,7 +189,7 @@ static void activate_outpost(world_t *w, int station_idx) {
     rebuild_station_services(st);
     rebuild_signal_chain(w);
     /* Spawn NPCs based on installed modules */
-    if (station_has_module(st, MODULE_FURNACE))
+    if (station_has_module(st, MODULE_FURNACE) || station_has_module(st, MODULE_FURNACE_CU) || station_has_module(st, MODULE_FURNACE_CR))
         spawn_npc(w, station_idx, NPC_ROLE_MINER);
     if (station_has_module(st, MODULE_FRAME_PRESS) || station_has_module(st, MODULE_LASER_FAB) || station_has_module(st, MODULE_TRACTOR_FAB))
         spawn_npc(w, station_idx, NPC_ROLE_HAULER);
@@ -287,13 +287,13 @@ void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *sh
             rebuild_station_services(st);
             rebuild_signal_chain(w);
             /* Spawn NPC when production module activates */
-            if (st->modules[i].type == MODULE_FURNACE)
+            if (st->modules[i].type == MODULE_FURNACE || st->modules[i].type == MODULE_FURNACE_CU || st->modules[i].type == MODULE_FURNACE_CR)
                 spawn_npc(w, station_idx, NPC_ROLE_MINER);
             if (st->modules[i].type == MODULE_FRAME_PRESS || st->modules[i].type == MODULE_LASER_FAB || st->modules[i].type == MODULE_TRACTOR_FAB)
                 spawn_npc(w, station_idx, NPC_ROLE_HAULER);
             SIM_LOG("[sim] module %d activated at station %d\n", st->modules[i].type, station_idx);
         }
-        if (ship->cargo[COMMODITY_FERRITE_INGOT] < 0.01f) break;
+        if (ship->cargo[mat] < 0.01f) continue;
     }
 }
 
@@ -1036,7 +1036,9 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
         npc->vel = v2(0.0f, 0.0f);
         if (npc->state_timer <= 0.0f) {
             station_t *home = &w->stations[npc->home_station];
-            float space = hull->ingot_capacity;
+            float carried = 0.0f;
+            for (int c = 0; c < INGOT_COUNT; c++) carried += npc->ingots[c];
+            float space = hull->ingot_capacity - carried;
             bool loaded = false;
 
             /* Contract-driven routing: find highest-value fillable contract */
@@ -1098,7 +1100,14 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     }
                 }
             }
-            npc->state = NPC_STATE_TRAVEL_TO_DEST;
+            float total_carried = 0.0f;
+            for (int c = 0; c < INGOT_COUNT; c++) total_carried += npc->ingots[c];
+            for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) total_carried += npc->cargo[c];
+            if (total_carried < 0.01f) {
+                npc->state_timer = HAULER_DOCK_TIME;  /* stay docked, try again later */
+            } else {
+                npc->state = NPC_STATE_TRAVEL_TO_DEST;
+            }
         }
         break;
     }
@@ -1284,7 +1293,7 @@ static void step_npc_ships(world_t *w, float dt) {
             if (v2_dist_sq(npc->pos, home->pos) < dock_r * dock_r) {
                 npc->vel = v2(0.0f, 0.0f);
                 npc->pos = v2_add(home->pos, v2(30.0f * (float)(n % 3 - 1), -(home->radius + hull->ship_radius + 50.0f)));
-                if (station_has_module(home, MODULE_FURNACE)) {
+                if (station_has_module(home, MODULE_FURNACE) || station_has_module(home, MODULE_FURNACE_CU) || station_has_module(home, MODULE_FURNACE_CR)) {
                     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
                         float space = REFINERY_HOPPER_CAPACITY - home->inventory[i];
                         float deposit = fminf(npc->cargo[i], fmaxf(0.0f, space));

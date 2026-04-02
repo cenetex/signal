@@ -310,7 +310,8 @@ static inline void rebuild_station_services(station_t *st) {
  * Returns MODULE_DOCK as fallback. */
 static inline module_type_t station_dominant_module(const station_t *st) {
     static const module_type_t priority[] = {
-        MODULE_FURNACE, MODULE_FRAME_PRESS, MODULE_LASER_FAB,
+        MODULE_FURNACE, MODULE_FURNACE_CU, MODULE_FURNACE_CR,
+        MODULE_FRAME_PRESS, MODULE_LASER_FAB,
         MODULE_TRACTOR_FAB, MODULE_SIGNAL_RELAY, MODULE_ORE_BUYER,
     };
     for (int p = 0; p < (int)(sizeof(priority) / sizeof(priority[0])); p++) {

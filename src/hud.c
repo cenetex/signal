@@ -685,7 +685,7 @@ void draw_hud(void) {
     sdtx_printf("CR %d  H %d/%d  C %d/%d  SIG %d%%", credits, hull_units, hull_capacity, cargo_units, cargo_capacity, sig_pct);
 
     sdtx_pos(top_text_x, top_row_2);
-    if (LOCAL_PLAYER.docked) {
+    if (LOCAL_PLAYER.docked && current_station) {
         sdtx_color3b(112, 255, 214);
         sdtx_printf("%s // docked // E launch", current_station->name);
     } else if (LOCAL_PLAYER.in_dock_range) {
