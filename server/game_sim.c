@@ -842,9 +842,12 @@ static void sim_step_refinery_production(world_t *w, float dt) {
             commodity_t ore = (commodity_t)i;
             if (!sim_can_smelt_ore(st, ore)) continue;
             if (st->inventory[ore] <= 0.01f) continue;
-            float consume = fminf(st->inventory[ore], rate * dt);
+            commodity_t ingot = commodity_refined_form(ore);
+            float room = INGOT_BUFFER_CAPACITY - st->inventory[ingot];
+            if (room <= 0.01f) continue;
+            float consume = fminf(fminf(st->inventory[ore], rate * dt), room);
             st->inventory[ore] -= consume;
-            st->inventory[commodity_refined_form(ore)] += consume;
+            st->inventory[ingot] += consume;
         }
     }
 }
