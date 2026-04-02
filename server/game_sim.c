@@ -898,6 +898,22 @@ static bool npc_target_valid(const world_t *w, const npc_ship_t *npc) {
 }
 
 static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
+    /* Priority: DESTROY contract targets first */
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (!w->contracts[k].active || w->contracts[k].action != CONTRACT_DESTROY) continue;
+        int idx = w->contracts[k].target_index;
+        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
+        /* Check not already taken by another miner */
+        bool taken = false;
+        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+            if (&w->npc_ships[n] == npc) continue;
+            if (w->npc_ships[n].active && w->npc_ships[n].role == NPC_ROLE_MINER &&
+                w->npc_ships[n].target_asteroid == idx) { taken = true; break; }
+        }
+        if (!taken) return idx;
+    }
+
+    /* Normal: find nearest mineable asteroid */
     int best = -1;
     float best_d = 1e18f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
