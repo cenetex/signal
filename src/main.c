@@ -622,9 +622,12 @@ static input_intent_t sample_input_intent(void) {
     intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
     /* Safety: close build overlay if not docked */
     if (!LOCAL_PLAYER.docked) g.build_overlay = false;
-    /* E key: interact (dock/launch) — also closes build overlay */
+    /* E key: interact (dock/launch) */
     intent.interact = is_key_pressed(SAPP_KEYCODE_E);
-    if (intent.interact) g.build_overlay = false;
+    if (intent.interact) {
+        g.build_overlay = false;
+        g.placing_outpost = false;
+    }
     /* Number keys: context-dependent */
     if (LOCAL_PLAYER.docked && g.build_overlay) {
         /* Build overlay: 1-8 select module, Esc/B closes */
@@ -732,8 +735,7 @@ static input_intent_t sample_input_intent(void) {
             for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
                 if (st->inventory[c] > 0.5f) {
                     float space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
-                    commodity_t src = commodity_ore_form((commodity_t)c);
-                    float price = station_buy_price(st, src) * 2.0f;
+                    float price = station_buy_price(st, (commodity_t)c);
                     if (space < 0.5f) {
                         set_notice("Hold full.");
                     } else if (LOCAL_PLAYER.ship.credits < price) {

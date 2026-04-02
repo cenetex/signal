@@ -127,9 +127,9 @@ TEST(test_station_buy_price) {
     /* Full hopper = base price */
     station.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
     ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 10.0f, 0.01f);
-    /* Half full = 1.5× base */
+    /* Half full: deficit=0.5, 0.5²=0.25 → 1.25× base */
     station.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
-    ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 15.0f, 0.01f);
+    ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 12.5f, 0.01f);
     ASSERT_EQ_FLOAT(station_buy_price(NULL, COMMODITY_FERRITE_ORE), 0.0f, 0.01f);
 }
 
@@ -3487,21 +3487,24 @@ TEST(test_dynamic_ore_price_deficit) {
     st.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
     float price_full = station_buy_price(&st, COMMODITY_FERRITE_ORE);
     ASSERT_EQ_FLOAT(price_full, 10.0f, 0.1f);
-    /* Half = 1.5x */
+    /* Half: deficit²=0.25 → 1.25x */
     st.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
     float price_half = station_buy_price(&st, COMMODITY_FERRITE_ORE);
-    ASSERT_EQ_FLOAT(price_half, 15.0f, 0.1f);
+    ASSERT_EQ_FLOAT(price_half, 12.5f, 0.1f);
 }
 
 TEST(test_product_price_tracks_ore) {
-    /* Product price should be 2x ore price */
+    /* Product price tracks own stock with squared deficit curve */
     station_t st = {0};
-    st.buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    st.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;  /* full = base price */
-    float ore_price = station_buy_price(&st, COMMODITY_FERRITE_ORE);
-    /* Ferrite ingot price = 2x ferrite ore price */
-    float expected = ore_price * 2.0f;
-    ASSERT_EQ_FLOAT(expected, 20.0f, 0.1f);
+    st.buy_price[COMMODITY_FRAME] = 20.0f;
+    /* Empty stock = 2× base */
+    ASSERT_EQ_FLOAT(station_buy_price(&st, COMMODITY_FRAME), 40.0f, 0.1f);
+    /* Full stock = base */
+    st.inventory[COMMODITY_FRAME] = MAX_PRODUCT_STOCK;
+    ASSERT_EQ_FLOAT(station_buy_price(&st, COMMODITY_FRAME), 20.0f, 0.1f);
+    /* Half stock: deficit²=0.25 → 1.25× base */
+    st.inventory[COMMODITY_FRAME] = MAX_PRODUCT_STOCK * 0.5f;
+    ASSERT_EQ_FLOAT(station_buy_price(&st, COMMODITY_FRAME), 25.0f, 0.1f);
 }
 
 /* ================================================================== */

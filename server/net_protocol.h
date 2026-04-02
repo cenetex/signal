@@ -341,8 +341,9 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
     intent->mine = (flags & NET_INPUT_FIRE) != 0;
 
     /* OR-in one-shot actions — they accumulate until the sim consumes them.
-     * 3-byte format (current): action at byte 2.
-     * 7-byte format (legacy): action at byte 6 (angle at bytes 2-5, ignored).
+     * 4-byte format (current): [type][flags][action][mining_target].
+     * 3-byte format (legacy):  [type][flags][action].
+     * 7-byte format (legacy):  action at byte 6 (angle at bytes 2-5, ignored).
      * 6-byte format (legacy, no action): no action byte present. */
     {
         uint8_t action = 0;
@@ -389,8 +390,8 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
         }
     }
 
-    /* Mining target hint (4-byte format) */
-    if (len >= 4) {
+    /* Mining target hint (4-byte format only — byte 3 is angle data in legacy 7-byte) */
+    if (len == 4) {
         uint8_t target = data[3];
         if (target < MAX_ASTEROIDS)
             intent->mining_target_hint = (int)target;

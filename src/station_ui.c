@@ -630,8 +630,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 float avail = station_inventory_amount(ui->station, (commodity_t)c);
                 if (avail < 0.5f) continue;
                 int stock = (int)lroundf(avail);
-                commodity_t src = commodity_ore_form((commodity_t)c);
-                float price_f = station_buy_price(ui->station, src) * 2.0f;
+                float price_f = station_buy_price(ui->station, (commodity_t)c);
                 int price = (int)lroundf(price_f);
                 int can_buy = (int)fminf(fminf(avail, player_space), (price_f > 0.01f) ? floorf(player_credits / price_f) : 0.0f);
                 int total_cost = can_buy * price;

@@ -4,9 +4,12 @@
 commodity_t commodity_ore_form(commodity_t commodity) {
     switch (commodity) {
         case COMMODITY_FERRITE_INGOT:     return COMMODITY_FERRITE_ORE;
-        case COMMODITY_CUPRITE_INGOT: return COMMODITY_CUPRITE_ORE;
-        case COMMODITY_CRYSTAL_INGOT:      return COMMODITY_CRYSTAL_ORE;
-        default:                        return commodity;
+        case COMMODITY_CUPRITE_INGOT:     return COMMODITY_CUPRITE_ORE;
+        case COMMODITY_CRYSTAL_INGOT:     return COMMODITY_CRYSTAL_ORE;
+        case COMMODITY_FRAME:             return COMMODITY_FERRITE_ORE;
+        case COMMODITY_LASER_MODULE:      return COMMODITY_CUPRITE_ORE;
+        case COMMODITY_TRACTOR_MODULE:    return COMMODITY_CRYSTAL_ORE;
+        default:                          return commodity;
     }
 }
 
@@ -128,15 +131,16 @@ float ship_cargo_amount(const ship_t* ship, commodity_t commodity) {
 float station_buy_price(const station_t* station, commodity_t commodity) {
     if (!station) return 0.0f;
     float base = station->buy_price[commodity];
-    /* Dynamic pricing: price rises when hopper is empty, stays at base when full.
-     * price = base × (1 + deficit_ratio). Empty hopper = 2× base. */
-    if (commodity < COMMODITY_RAW_ORE_COUNT) {
-        float fill = station->inventory[commodity] / REFINERY_HOPPER_CAPACITY;
-        if (fill > 1.0f) fill = 1.0f;
-        float deficit = 1.0f - fill;
-        return base * (1.0f + deficit);
-    }
-    return base;
+    if (base < 0.01f) return 0.0f;
+    /* Dynamic pricing: price curves up to 2× base as stock empties.
+     * Uses squared deficit so price stays near base until stock gets low.
+     * Full=1×, half=1.25×, quarter=1.56×, empty=2×. */
+    float capacity = (commodity < COMMODITY_RAW_ORE_COUNT)
+        ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
+    float fill = station->inventory[commodity] / capacity;
+    if (fill > 1.0f) fill = 1.0f;
+    float deficit = 1.0f - fill;
+    return base * (1.0f + deficit * deficit);
 }
 
 float station_inventory_amount(const station_t* station, commodity_t commodity) {

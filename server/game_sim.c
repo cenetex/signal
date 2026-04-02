@@ -1841,8 +1841,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) {
             float available = docked_st->inventory[c];
             float space = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
-            commodity_t source_ore = commodity_ore_form((commodity_t)c);
-            float price_per = docked_st->buy_price[source_ore] * 2.0f;
+            float price_per = station_buy_price(docked_st, c);
             /* Buy as much as you can afford and carry */
             float afford = (price_per > 0.01f) ? floorf(sp->ship.credits / price_per) : 0.0f;
             float amount = fminf(fminf(available, space), afford);
@@ -2422,6 +2421,10 @@ void world_reset(world_t *w) {
     w->stations[1].radius      = 56.0f;
     w->stations[1].dock_radius = 124.0f;
     w->stations[1].signal_range = 15000.0f;
+    w->stations[1].buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    w->stations[1].buy_price[COMMODITY_CUPRITE_ORE] = 14.0f;
+    w->stations[1].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
+    w->stations[1].buy_price[COMMODITY_FRAME] = 20.0f;
     add_module(&w->stations[1], MODULE_DOCK);
     add_module(&w->stations[1], MODULE_FRAME_PRESS);
     add_module(&w->stations[1], MODULE_REPAIR_BAY);
@@ -2434,6 +2437,11 @@ void world_reset(world_t *w) {
     w->stations[2].radius      = 56.0f;
     w->stations[2].dock_radius = 124.0f;
     w->stations[2].signal_range = 15000.0f;
+    w->stations[2].buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    w->stations[2].buy_price[COMMODITY_CUPRITE_ORE] = 14.0f;
+    w->stations[2].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
+    w->stations[2].buy_price[COMMODITY_LASER_MODULE] = 28.0f;
+    w->stations[2].buy_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
     add_module(&w->stations[2], MODULE_DOCK);
     add_module(&w->stations[2], MODULE_LASER_FAB);
     add_module(&w->stations[2], MODULE_TRACTOR_FAB);

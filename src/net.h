@@ -9,7 +9,7 @@
  *   JOIN  (0x01): 1 type + 1 player_id
  *   LEAVE (0x02): 1 type + 1 player_id
  *   STATE (0x03): 1 type + 1 player_id + 5 float32 (x, y, vx, vy, angle)
- *   INPUT (0x04): 1 type + 1 flags + 1 float32 angle
+ *   INPUT (0x04): 1 type + 1 flags + 1 action + 1 mining_target
  *   ASTEROID_UPDATE (0x05): relay-only
  */
 #ifndef NET_H
