@@ -706,7 +706,7 @@ TEST(test_roundtrip_player_state) {
     sp.beam_active = true;
     sp.beam_hit = true;
 
-    uint8_t buf[32];
+    uint8_t buf[64];
     int len = serialize_player_state(buf, 7, &sp);
 
     /* Size must be 23 (was 22 before flags byte added) */
@@ -1077,7 +1077,7 @@ TEST(test_bug14_player_ship_syncs_all_cargo) {
 TEST(test_bug15_state_size_symmetric) {
     server_player_t sp;
     memset(&sp, 0, sizeof(sp));
-    uint8_t buf[32];
+    uint8_t buf[64];
     int server_len = serialize_player_state(buf, 0, &sp);
     int client_len = 23;  /* net_send_state sends 23 bytes */
     ASSERT_EQ_INT(server_len, client_len);
@@ -1168,7 +1168,7 @@ TEST(test_bug20_player_ship_checks_id) {
     server_player_t sp;
     memset(&sp, 0, sizeof(sp));
     sp.ship.credits = 500.0f;
-    uint8_t buf[32];
+    uint8_t buf[64];
     serialize_player_ship(buf, 7, &sp);
     ASSERT_EQ_INT(buf[1], 7);
 }
@@ -1721,7 +1721,7 @@ TEST(test_bug31_no_server_reconciliation) {
     server_player_t sp;
     memset(&sp, 0, sizeof(sp));
     sp.ship.pos = v2(100.0f, 200.0f);
-    uint8_t buf[32];
+    uint8_t buf[64];
     int len = serialize_player_state(buf, 0, &sp);
     ASSERT(len >= 22);
     /* Position should be encoded at bytes 2-9 */
