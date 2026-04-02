@@ -1940,7 +1940,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         if (!sp->docked) {
             update_targeting_state(w, sp, forward);
             step_mining_system(w, sp, dt, sp->input.mine, forward);
-            step_fragment_collection(w, sp, dt);
+            if (!w->player_only_mode)
+                step_fragment_collection(w, sp, dt);
         }
     } else {
         update_docking_state(w, sp, dt);
