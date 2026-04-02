@@ -91,7 +91,7 @@ typedef struct {
     float pos_x, pos_y;
     float radius, dock_radius, signal_range;
     char name[32];
-    float buy_price[COMMODITY_COUNT];
+    float base_price[COMMODITY_COUNT];
     float scaffold_progress;
     int module_count;
     station_module_t modules[MAX_MODULES_PER_STATION];

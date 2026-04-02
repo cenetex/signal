@@ -120,17 +120,22 @@ TEST(test_ship_cargo_amount) {
 
 TEST(test_station_buy_price) {
     station_t station = {0};
-    station.buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    station.buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
-    /* Empty hopper = 2× base (max deficit) */
-    ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 20.0f, 0.01f);
-    /* Full hopper = base price */
-    station.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    station.base_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    station.base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
+    /* Empty hopper = 1× base (station pays full price to attract sellers) */
     ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 10.0f, 0.01f);
-    /* Half full: deficit=0.5, 0.5²=0.25 → 1.25× base */
+    /* Full hopper = 0.5× base (overstocked, pays less) */
+    station.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 5.0f, 0.01f);
+    /* Half full: 1 - 0.5*0.5 = 0.75× base */
     station.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
-    ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 12.5f, 0.01f);
+    ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 7.5f, 0.01f);
     ASSERT_EQ_FLOAT(station_buy_price(NULL, COMMODITY_FERRITE_ORE), 0.0f, 0.01f);
+    /* Sell price: empty = 2× base, full = 1× base */
+    station.inventory[COMMODITY_FERRITE_ORE] = 0.0f;
+    ASSERT_EQ_FLOAT(station_sell_price(&station, COMMODITY_FERRITE_ORE), 20.0f, 0.01f);
+    station.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    ASSERT_EQ_FLOAT(station_sell_price(&station, COMMODITY_FERRITE_ORE), 10.0f, 0.01f);
 }
 
 TEST(test_station_inventory_amount) {
@@ -343,9 +348,9 @@ TEST(test_station_cargo_sale_value) {
     ship_t ship = {0};
     station_t station = {0};
     ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
-    station.buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    /* Empty hopper = 2× base, so 10 ore × 20 cr = 200 */
-    ASSERT_EQ_FLOAT(station_cargo_sale_value(&ship, &station), 200.0f, 0.01f);
+    station.base_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    /* Empty hopper = 1× base, so 10 ore × 10 cr = 100 */
+    ASSERT_EQ_FLOAT(station_cargo_sale_value(&ship, &station), 100.0f, 0.01f);
 }
 
 TEST(test_station_cargo_sale_value_null_station) {
@@ -1014,9 +1019,9 @@ TEST(test_bug11_no_duplicate_sale_value) {
     ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
     station_t st = {0};
     memset(&st, 0, sizeof(st));
-    st.buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    st.base_price[COMMODITY_FERRITE_ORE] = 10.0f;
     float val = station_cargo_sale_value(&ship, &st);
-    ASSERT_EQ_FLOAT(val, 200.0f, 0.01f); /* empty hopper = 2× base */
+    ASSERT_EQ_FLOAT(val, 100.0f, 0.01f); /* empty hopper = 1× base (buy price) */
     /* The real test: there should be no static version in game_sim.c.
      * We verify by checking economy.c's extern version is the one called by world_sim_step.
      * If duplicates exist, this line count assertion will fail when they're removed: */
@@ -1040,14 +1045,14 @@ TEST(test_bug12_repair_cost_checks_service) {
 }
 
 /* Bug 13: buy_price should be sized RAW_ORE_COUNT (3), not COMMODITY_COUNT (6).
- * FIX: change station_t.buy_price to float buy_price[COMMODITY_RAW_ORE_COUNT]. */
+ * FIX: change station_t.base_price to float buy_price[COMMODITY_RAW_ORE_COUNT]. */
 TEST(test_bug13_buy_price_correct_size) {
     /* buy_price is sized COMMODITY_COUNT (6) which is intentional —
      * stations could in theory buy refined goods too.  Only raw ores
      * have non-zero prices, verified here. */
     for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
         station_t st = {0};
-        ASSERT_EQ_FLOAT(st.buy_price[i], 0.0f, 0.001f);
+        ASSERT_EQ_FLOAT(st.base_price[i], 0.0f, 0.001f);
     }
 }
 
@@ -3474,33 +3479,30 @@ TEST(test_supply_contract_uses_correct_material) {
 
 TEST(test_dynamic_ore_price_deficit) {
     station_t st = {0};
-    st.buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    /* Empty hopper = 2x base */
+    st.base_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    /* Buy price: empty=1× base, full=0.5× base */
     st.inventory[COMMODITY_FERRITE_ORE] = 0.0f;
-    float price_empty = station_buy_price(&st, COMMODITY_FERRITE_ORE);
-    ASSERT_EQ_FLOAT(price_empty, 20.0f, 0.1f);
-    /* Full hopper = base */
+    ASSERT_EQ_FLOAT(station_buy_price(&st, COMMODITY_FERRITE_ORE), 10.0f, 0.1f);
     st.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
-    float price_full = station_buy_price(&st, COMMODITY_FERRITE_ORE);
-    ASSERT_EQ_FLOAT(price_full, 10.0f, 0.1f);
-    /* Half: deficit²=0.25 → 1.25x */
+    ASSERT_EQ_FLOAT(station_buy_price(&st, COMMODITY_FERRITE_ORE), 5.0f, 0.1f);
     st.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
-    float price_half = station_buy_price(&st, COMMODITY_FERRITE_ORE);
-    ASSERT_EQ_FLOAT(price_half, 12.5f, 0.1f);
+    ASSERT_EQ_FLOAT(station_buy_price(&st, COMMODITY_FERRITE_ORE), 7.5f, 0.1f);
+    /* Sell price: empty=2× base, full=1× base */
+    st.inventory[COMMODITY_FERRITE_ORE] = 0.0f;
+    ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FERRITE_ORE), 20.0f, 0.1f);
+    st.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FERRITE_ORE), 10.0f, 0.1f);
 }
 
 TEST(test_product_price_tracks_ore) {
-    /* Product price tracks own stock with squared deficit curve */
     station_t st = {0};
-    st.buy_price[COMMODITY_FRAME] = 20.0f;
-    /* Empty stock = 2× base */
-    ASSERT_EQ_FLOAT(station_buy_price(&st, COMMODITY_FRAME), 40.0f, 0.1f);
-    /* Full stock = base */
+    st.base_price[COMMODITY_FRAME] = 20.0f;
+    /* Sell price: empty=2× base, full=1× base */
+    ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FRAME), 40.0f, 0.1f);
     st.inventory[COMMODITY_FRAME] = MAX_PRODUCT_STOCK;
-    ASSERT_EQ_FLOAT(station_buy_price(&st, COMMODITY_FRAME), 20.0f, 0.1f);
-    /* Half stock: deficit²=0.25 → 1.25× base */
+    ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FRAME), 20.0f, 0.1f);
     st.inventory[COMMODITY_FRAME] = MAX_PRODUCT_STOCK * 0.5f;
-    ASSERT_EQ_FLOAT(station_buy_price(&st, COMMODITY_FRAME), 25.0f, 0.1f);
+    ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FRAME), 25.0f, 0.1f);
 }
 
 /* ================================================================== */

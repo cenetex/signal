@@ -128,18 +128,34 @@ float ship_cargo_amount(const ship_t* ship, commodity_t commodity) {
     return ship->cargo[commodity];
 }
 
+/* Price the station pays when BUYING from the player (ore, deliveries).
+ * Scales down from base as station gets overstocked.
+ * Empty=1× base, full=0.5× base. */
 float station_buy_price(const station_t* station, commodity_t commodity) {
     if (!station) return 0.0f;
-    float base = station->buy_price[commodity];
+    float base = station->base_price[commodity];
     if (base < 0.01f) return 0.0f;
-    /* Dynamic pricing: price curves up to 2× base as stock empties.
-     * Uses squared deficit so price stays near base until stock gets low.
-     * Full=1×, half=1.25×, quarter=1.56×, empty=2×. */
+    float capacity = (commodity < COMMODITY_RAW_ORE_COUNT)
+        ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
+    float fill = station->inventory[commodity] / capacity;
+    if (fill > 1.0f) fill = 1.0f;
+    /* Buy cheaper when overstocked: 1.0× at empty, 0.5× at full */
+    return base * (1.0f - fill * 0.5f);
+}
+
+/* Price the station charges when SELLING to the player (ingots, products).
+ * Scales up from base as stock depletes.
+ * Full=1× base, empty=2× base. */
+float station_sell_price(const station_t* station, commodity_t commodity) {
+    if (!station) return 0.0f;
+    float base = station->base_price[commodity];
+    if (base < 0.01f) return 0.0f;
     float capacity = (commodity < COMMODITY_RAW_ORE_COUNT)
         ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
     float fill = station->inventory[commodity] / capacity;
     if (fill > 1.0f) fill = 1.0f;
     float deficit = 1.0f - fill;
+    /* Sell expensive when scarce: 1× at full, 2× at empty */
     return base * (1.0f + deficit * deficit);
 }
 

@@ -1574,7 +1574,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         if (hopper_space <= 0.01f) continue;
         float accepted = fminf(amount, hopper_space);
         /* Check for active contract at this station for this commodity */
-        float price = st->base_price[ore];
+        float price = station_buy_price(st, ore);
         for (int k = 0; k < MAX_CONTRACTS; k++) {
             if (w->contracts[k].active && w->contracts[k].action == CONTRACT_SUPPLY && w->contracts[k].station_index == sp->current_station && w->contracts[k].commodity == ore) {
                 price = contract_price(&w->contracts[k]);
@@ -1889,7 +1889,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) {
             float available = docked_st->inventory[c];
             float space = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
-            float price_per = station_base_price(docked_st, c);
+            float price_per = station_sell_price(docked_st, c);
             /* Buy as much as you can afford and carry */
             float afford = (price_per > 0.01f) ? floorf(sp->ship.credits / price_per) : 0.0f;
             float amount = fminf(fminf(available, space), afford);

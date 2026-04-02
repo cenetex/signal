@@ -88,7 +88,7 @@ enum {
 #define NPC_RECORD_SIZE 26
 
 /* Station identity: [index:1][flags:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32]
- * [buy_price:COMMODITY_COUNT×f32][scaffold_progress:f32][module_count:1][modules:MAX_MODULES×6] */
+ * [base_price:COMMODITY_COUNT×f32][scaffold_progress:f32][module_count:1][modules:MAX_MODULES×6] */
 #define STATION_MODULE_RECORD_SIZE 8  /* type:1 + scaffold:1 + ring:1 + slot:1 + build_progress:f32 */
 #define STATION_IDENTITY_SIZE (59 + COMMODITY_COUNT * 4 + 4 + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE)
 

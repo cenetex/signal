@@ -131,7 +131,7 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     st->signal_range = si->signal_range;
     snprintf(st->name, sizeof(st->name), "%s", si->name);
     for (int c = 0; c < COMMODITY_COUNT; c++)
-        st->buy_price[c] = si->buy_price[c];
+        st->base_price[c] = si->base_price[c];
     st->module_count = si->module_count;
     for (int m = 0; m < si->module_count && m < MAX_MODULES_PER_STATION; m++)
         st->modules[m] = si->modules[m];

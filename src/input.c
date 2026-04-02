@@ -161,9 +161,9 @@ input_intent_t sample_input_intent(void) {
         if (st) {
             /* Buy the first available ingot type */
             for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-                if (st->inventory[c] > 0.5f && st->buy_price[c] > 0.01f) {
+                if (st->inventory[c] > 0.5f && st->base_price[c] > 0.01f) {
                     float space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
-                    float price = station_buy_price(st, (commodity_t)c);
+                    float price = station_sell_price(st, (commodity_t)c);
                     if (space < 0.5f) {
                         set_notice("Hold full.");
                     } else if (LOCAL_PLAYER.ship.credits < price) {

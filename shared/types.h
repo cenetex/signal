@@ -133,7 +133,7 @@ typedef struct {
     bool signal_connected;   /* true = can trace signal path to a root station */
     bool scaffold;           /* true = under construction, not yet active */
     float scaffold_progress; /* 0.0 to 1.0 */
-    float buy_price[COMMODITY_COUNT];
+    float base_price[COMMODITY_COUNT];
     float inventory[COMMODITY_COUNT]; /* unified storage for all commodities */
     uint32_t services;
     /* Module system */

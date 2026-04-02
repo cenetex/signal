@@ -632,9 +632,9 @@ void draw_station_services(const station_ui_state_t* ui) {
             bool has_stock = false;
             for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
                 float avail = station_inventory_amount(ui->station, (commodity_t)c);
-                if (avail < 0.5f || ui->station->buy_price[c] < 0.01f) continue;
+                if (avail < 0.5f || ui->station->base_price[c] < 0.01f) continue;
                 int stock = (int)lroundf(avail);
-                float price_f = station_buy_price(ui->station, (commodity_t)c);
+                float price_f = station_sell_price(ui->station, (commodity_t)c);
                 int price = (int)lroundf(price_f);
                 int can_buy = (int)fminf(fminf(avail, player_space), (price_f > 0.01f) ? floorf(player_credits / price_f) : 0.0f);
                 int total_cost = can_buy * price;

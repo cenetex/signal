@@ -13,7 +13,10 @@ float ship_total_cargo(const ship_t* ship);
 float ship_raw_ore_total(const ship_t* ship);
 float ship_cargo_amount(const ship_t* ship, commodity_t commodity);
 
+/* Station buys from player at this price (lower when overstocked) */
 float station_buy_price(const station_t* station, commodity_t commodity);
+/* Station sells to player at this price (higher when understocked) */
+float station_sell_price(const station_t* station, commodity_t commodity);
 float station_inventory_amount(const station_t* station, commodity_t commodity);
 
 #endif

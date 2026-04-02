@@ -239,7 +239,7 @@ static void handle_message(const uint8_t* data, int len) {
             memcpy(si.name, &data[27], 31);
             si.name[31] = '\0';
             for (int c = 0; c < COMMODITY_COUNT; c++)
-                si.buy_price[c] = read_f32_le(&data[59 + c * 4]);
+                si.base_price[c] = read_f32_le(&data[59 + c * 4]);
             si.scaffold_progress = read_f32_le(&data[59 + COMMODITY_COUNT * 4]);
             int moff = 59 + COMMODITY_COUNT * 4 + 4;
             si.module_count = data[moff];
