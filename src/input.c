@@ -228,7 +228,10 @@ void submit_input(const input_intent_t *intent, float dt) {
 
     /* Authoritative step: local server or remote */
     if (g.local_server.active) {
-        local_server_step(&g.local_server, g.local_player_slot, intent, dt);
+        /* Forward client's predicted target so server damages the same asteroid */
+        input_intent_t server_intent = *intent;
+        server_intent.mining_target_hint = LOCAL_PLAYER.hover_asteroid;
+        local_server_step(&g.local_server, g.local_player_slot, &server_intent, dt);
         local_server_sync_to_client(&g.local_server);
     }
 
