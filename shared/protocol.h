@@ -76,7 +76,7 @@ enum {
 /* ------------------------------------------------------------------ */
 
 /* Station economic snapshot: [index:1][inventory:COMMODITY_COUNT×f32] */
-#define STATION_RECORD_SIZE (1 + 9 * 4)  /* 37 bytes */
+#define STATION_RECORD_SIZE (1 + COMMODITY_COUNT * 4)  /* 37 bytes when COMMODITY_COUNT == 9 */
 
 /* Player state record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1] */
 #define PLAYER_RECORD_SIZE 22
@@ -94,6 +94,6 @@ enum {
 
 /* Player ship state: [type:1][id:1][hull:f32][credits:f32][docked:1][station:1]
  * [mining:1][hold:1][tractor:1][scaffold_kit:1][cargo:COMMODITY_COUNT×f32] */
-#define PLAYER_SHIP_SIZE (16 + 9 * 4)  /* 52 bytes */
+#define PLAYER_SHIP_SIZE (16 + COMMODITY_COUNT * 4)  /* 52 bytes when COMMODITY_COUNT == 9 */
 
 #endif /* SHARED_PROTOCOL_H */

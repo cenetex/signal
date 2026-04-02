@@ -47,7 +47,7 @@ void spawn_field_asteroid_of_tier(asteroid_t* asteroid, asteroid_tier_t tier,
         asteroid->vel = v2(-cosf(angle) * inward_speed, -sinf(angle) * inward_speed);
     } else {
         vec2 center = stations[stn].pos;
-        float distance = rand_range(rng, 420.0f, sr - 180.0f);
+        float distance = rand_range(rng, 420.0f, fmaxf(420.0f, sr - 180.0f));
         asteroid->pos = v2_add(center, v2(cosf(angle) * distance, sinf(angle) * distance));
         asteroid->vel = v2(rand_range(rng, -4.0f, 4.0f), rand_range(rng, -4.0f, 4.0f));
     }

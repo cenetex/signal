@@ -278,9 +278,9 @@ static void handle_message(const uint8_t* data, int len) {
                 for (int i = 0; i < n; i++) {
                     const uint8_t *p = &data[2 + i * 25];
                     contracts[i].active = true;
-                    contracts[i].action = (contract_action_t)p[0];
-                    contracts[i].station_index = p[1];
-                    contracts[i].commodity = (commodity_t)p[2];
+                    contracts[i].action = (p[0] <= CONTRACT_SCAN) ? (contract_action_t)p[0] : CONTRACT_SUPPLY;
+                    contracts[i].station_index = (p[1] < MAX_STATIONS) ? p[1] : 0;
+                    contracts[i].commodity = (p[2] < COMMODITY_COUNT) ? (commodity_t)p[2] : COMMODITY_FERRITE_ORE;
                     contracts[i].quantity_needed = read_f32_le(&p[3]);
                     contracts[i].base_price = read_f32_le(&p[7]);
                     contracts[i].age = read_f32_le(&p[11]);

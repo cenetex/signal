@@ -606,49 +606,177 @@ void draw_station_services(const station_ui_state_t* ui) {
     }
 
     case STATION_TAB_MARKET: {
-        if (ui->station->scaffold) { sdtx_pos(ui_text_pos(cx), ui_text_pos(cy)); sdtx_color3b(145,160,188); sdtx_puts("Under construction."); break; }
+        if (ui->station->scaffold) {
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+            sdtx_color3b(145, 160, 188);
+            sdtx_puts("Under construction.");
+            break;
+        }
         float my = cy;
-        /* DELIVER: station's primary buy commodity */
+        float meter_w = fminf(200.0f, inner_w - 120.0f);
+        float right_col = cx + meter_w + 16.0f;
+        bool compact = ui_is_compact();
+
+        /* === SELL TO STATION === */
         {
             commodity_t buy = station_primary_buy(ui->station);
             if ((int)buy >= 0) {
-                int held = (int)lroundf(ship_cargo_amount(&LOCAL_PLAYER.ship, buy));
-                int price = (int)lroundf(station_buy_price(ui->station, buy));
-                sdtx_color3b(130, 255, 235);
+                /* Section label */
+                sdtx_color3b(100, 120, 145);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-                if (held > 0) {
-                    sdtx_printf("[1] DELIVER %s x%d  +%d cr", commodity_short_name(buy), held, held * price);
-                } else {
-                    sdtx_printf("BUYING: %s @ %d cr/u", commodity_short_name(buy), price);
-                }
+                sdtx_puts("SELL TO STATION");
+                draw_ui_rule(cx, cx + meter_w + 80.0f, my + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
                 my += 16.0f;
+
+                /* Commodity pip + name + price */
+                float mr, mg, mb;
+                commodity_material_tint(commodity_ore_form(buy), &mr, &mg, &mb);
+                draw_rect_centered(v2(cx + 3.0f, my + 5.0f), 3.0f, 3.0f,
+                    fminf(1.0f, mr * 1.8f), fminf(1.0f, mg * 1.8f), fminf(1.0f, mb * 1.8f), 0.9f);
+                sdtx_color3b(203, 220, 248);
+                sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(my));
+                sdtx_puts(commodity_short_name(buy));
+                int buy_price = (int)lroundf(station_buy_price(ui->station, buy));
+                sdtx_color3b(145, 160, 188);
+                sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
+                sdtx_printf("%d cr/u", buy_price);
+                my += 14.0f;
+
+                /* Inventory meter */
+                float capacity = (buy < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
+                float inv = station_inventory_amount(ui->station, buy);
+                float fill = inv / fmaxf(1.0f, capacity);
+                draw_ui_meter(cx, my, meter_w, 8.0f, clampf(fill, 0.0f, 1.0f),
+                    fminf(1.0f, mr * 1.5f), fminf(1.0f, mg * 1.5f), fminf(1.0f, mb * 1.5f));
+                sdtx_color3b(130, 145, 168);
+                sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
+                sdtx_printf("%d/%d", (int)lroundf(inv), (int)lroundf(capacity));
+                my += 14.0f;
+
+                /* Action line */
+                int held = (int)lroundf(ship_cargo_amount(&LOCAL_PLAYER.ship, buy));
+                if (held > 0) {
+                    sdtx_color3b(130, 255, 235);
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+                    sdtx_printf("[1] Deliver x%d", held);
+                    sdtx_color3b(90, 220, 170);
+                    sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
+                    sdtx_printf("+%d cr", held * buy_price);
+                } else {
+                    sdtx_color3b(90, 105, 130);
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+                    sdtx_puts("[1] No cargo to deliver");
+                }
+                my += compact ? 18.0f : 22.0f;
             }
         }
-        /* BUY: station's primary sell commodity */
+
+        /* === BUY FROM STATION === */
         {
             commodity_t sell = station_primary_sell(ui->station);
             if ((int)sell >= 0) {
-                float avail = station_inventory_amount(ui->station, sell);
-                float player_space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
-                float player_credits = LOCAL_PLAYER.ship.credits;
+                /* Section label */
+                sdtx_color3b(100, 120, 145);
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+                sdtx_puts("BUY FROM STATION");
+                draw_ui_rule(cx, cx + meter_w + 80.0f, my + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
+                my += 16.0f;
+
+                /* Commodity pip + name + price */
+                float mr, mg, mb;
+                commodity_material_tint(commodity_ore_form(sell), &mr, &mg, &mb);
+                draw_rect_centered(v2(cx + 3.0f, my + 5.0f), 3.0f, 3.0f,
+                    fminf(1.0f, mr * 1.8f), fminf(1.0f, mg * 1.8f), fminf(1.0f, mb * 1.8f), 0.9f);
                 float price_f = station_sell_price(ui->station, sell);
                 int price = (int)lroundf(price_f);
-                int stock = (int)lroundf(avail);
+                sdtx_color3b(203, 220, 248);
+                sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(my));
+                sdtx_puts(commodity_short_name(sell));
+                sdtx_color3b(145, 160, 188);
+                sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
+                sdtx_printf("%d cr/u", price);
+                my += 14.0f;
+
+                /* Stock meter */
+                float capacity = (sell < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
+                float avail = station_inventory_amount(ui->station, sell);
+                float fill = avail / fmaxf(1.0f, capacity);
+                draw_ui_meter(cx, my, meter_w, 8.0f, clampf(fill, 0.0f, 1.0f),
+                    fminf(1.0f, mr * 1.5f), fminf(1.0f, mg * 1.5f), fminf(1.0f, mb * 1.5f));
+                sdtx_color3b(130, 145, 168);
+                sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
+                sdtx_printf("%d/%d", (int)lroundf(avail), (int)lroundf(capacity));
+                my += 14.0f;
+
+                /* Action line */
+                float player_space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
+                float player_credits = LOCAL_PLAYER.ship.credits;
                 int can_buy = (avail > 0.5f && price_f > 0.01f)
                     ? (int)fminf(fminf(avail, player_space), floorf(player_credits / price_f))
                     : 0;
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
                 if (can_buy > 0) {
                     sdtx_color3b(130, 255, 235);
-                    sdtx_printf("[F] BUY %s x%d  -%d cr", commodity_short_name(sell), can_buy, can_buy * price);
-                } else if (stock > 0) {
-                    sdtx_color3b(145, 160, 188);
-                    sdtx_printf("SELLING: %s  %d stock  %d cr/u", commodity_short_name(sell), stock, price);
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+                    sdtx_printf("[F] Buy x%d", can_buy);
+                    sdtx_color3b(220, 160, 100);
+                    sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
+                    sdtx_printf("-%d cr", can_buy * price);
+                } else if ((int)lroundf(avail) > 0) {
+                    sdtx_color3b(90, 105, 130);
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+                    sdtx_puts(player_space < 0.5f ? "[F] Hold full" : "[F] Cannot afford");
                 } else {
-                    sdtx_color3b(145, 160, 188);
-                    sdtx_printf("SELLING: %s  none in stock", commodity_short_name(sell));
+                    sdtx_color3b(90, 105, 130);
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+                    sdtx_puts("[F] Out of stock");
                 }
-                my += 16.0f;
+                my += compact ? 18.0f : 22.0f;
+            }
+        }
+
+        /* === COMMODITIES LEDGER === */
+        if (!compact) {
+            sdtx_color3b(85, 100, 120);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+            sdtx_puts("COMMODITIES");
+            draw_ui_rule(cx, cx + meter_w + 80.0f, my + 11.0f, 0.08f, 0.15f, 0.22f, 0.30f);
+            my += 16.0f;
+
+            float mini_w = fminf(90.0f, meter_w * 0.5f);
+            for (int c = 0; c < COMMODITY_COUNT; c++) {
+                float inv = station_inventory_amount(ui->station, (commodity_t)c);
+                float base = ui->station->base_price[c];
+                if (inv < 0.5f && base < 0.01f) continue;
+
+                float cap = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
+                float fill = inv / fmaxf(1.0f, cap);
+                float mr, mg, mb;
+                commodity_material_tint(commodity_ore_form((commodity_t)c), &mr, &mg, &mb);
+
+                /* Pip + name */
+                draw_rect_centered(v2(cx + 3.0f, my + 4.0f), 2.5f, 2.5f,
+                    fminf(1.0f, mr * 1.6f), fminf(1.0f, mg * 1.6f), fminf(1.0f, mb * 1.6f), 0.8f);
+                sdtx_color3b(150, 165, 185);
+                sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(my));
+                sdtx_printf("%-10s", commodity_code((commodity_t)c));
+
+                /* Mini meter */
+                float bar_x = cx + 44.0f;
+                draw_ui_meter(bar_x, my + 1.0f, mini_w, 6.0f, clampf(fill, 0.0f, 1.0f),
+                    fminf(1.0f, mr * 1.3f), fminf(1.0f, mg * 1.3f), fminf(1.0f, mb * 1.3f));
+
+                /* Amount */
+                sdtx_color3b(130, 145, 168);
+                sdtx_pos(ui_text_pos(bar_x + mini_w + 8.0f), ui_text_pos(my));
+                sdtx_printf("%3d", (int)lroundf(inv));
+
+                /* Base price */
+                if (base > 0.01f) {
+                    sdtx_color3b(100, 115, 138);
+                    sdtx_pos(ui_text_pos(bar_x + mini_w + 44.0f), ui_text_pos(my));
+                    sdtx_printf("@%d", (int)lroundf(base));
+                }
+                my += 11.0f;
             }
         }
         break;
@@ -701,7 +829,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 else if (ct->commodity == COMMODITY_CRYSTAL_ORE) { pip_r = 0.40f; pip_g = 0.85f; pip_b = 0.50f; }
                 else { pip_r = 0.60f; pip_g = 0.75f; pip_b = 0.90f; }
             }
-            draw_rect_centered(v2(cx * HUD_CELL + 2.0f, line_y * HUD_CELL + 5.0f), 3.0f, 3.0f, pip_r, pip_g, pip_b, 0.9f);
+            draw_rect_centered(v2(cx + 3.0f, line_y + 5.0f), 3.0f, 3.0f, pip_r, pip_g, pip_b, 0.9f);
             sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(line_y));
             sdtx_color3b(tracked ? 255 : 203, tracked ? 255 : 220, tracked ? 130 : 248);
             if (ct->action == CONTRACT_DESTROY) {

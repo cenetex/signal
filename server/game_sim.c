@@ -1029,9 +1029,11 @@ static int nearest_active_dock_station(const world_t *w, vec2 pos) {
 }
 
 static void npc_validate_stations(world_t *w, npc_ship_t *npc) {
-    if (!station_is_active(&w->stations[npc->home_station]))
+    if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS ||
+        !station_is_active(&w->stations[npc->home_station]))
         npc->home_station = nearest_active_dock_station(w, npc->pos);
-    if (!station_is_active(&w->stations[npc->dest_station]))
+    if (npc->dest_station < 0 || npc->dest_station >= MAX_STATIONS ||
+        !station_is_active(&w->stations[npc->dest_station]))
         npc->dest_station = npc->home_station;
 }
 
@@ -1054,6 +1056,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             for (int k = 0; k < MAX_CONTRACTS; k++) {
                 if (!w->contracts[k].active) continue;
                 if (w->contracts[k].action != CONTRACT_SUPPLY) continue;
+                if (w->contracts[k].station_index >= MAX_STATIONS) continue;
                 commodity_t c = w->contracts[k].commodity;
                 if (c < COMMODITY_RAW_ORE_COUNT) continue; /* haulers carry ingots only */
                 if (home->inventory[c] < 0.5f) continue; /* no stock to fill */
@@ -2221,9 +2224,10 @@ static void step_contracts(world_t *w, float dt) {
         switch (w->contracts[i].action) {
         case CONTRACT_SUPPLY: {
             /* Close when station buffer is sufficiently full */
+            if (w->contracts[i].station_index >= MAX_STATIONS) break;
             station_t *st = &w->stations[w->contracts[i].station_index];
             commodity_t c = w->contracts[i].commodity;
-            float current = (c < COMMODITY_RAW_ORE_COUNT) ? st->inventory[c] : st->inventory[c];
+            float current = st->inventory[c];
             float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.8f : INGOT_BUFFER_CAPACITY * 0.8f;
             if (current >= threshold) {
                 w->contracts[i].active = false;
