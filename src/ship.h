@@ -6,6 +6,9 @@
 const hull_def_t* ship_hull_def(const ship_t* ship);
 const hull_def_t* npc_hull_def(const npc_ship_t* npc);
 
+vec2 ship_forward(float angle);
+vec2 ship_muzzle(vec2 pos, float angle, const ship_t* ship);
+
 float ship_max_hull(const ship_t* ship);
 float ship_cargo_capacity(const ship_t* ship);
 float ship_mining_rate(const ship_t* ship);

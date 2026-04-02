@@ -1406,13 +1406,7 @@ static void generate_npc_distress_contracts(world_t *w) {
 /* Player ship helpers                                                */
 /* ================================================================== */
 
-static vec2 ship_forward(const ship_t *s) {
-    return v2_from_angle(s->angle);
-}
-
-static vec2 ship_muzzle(const ship_t *s, vec2 forward) {
-    return v2_add(s->pos, v2_scale(forward, ship_hull_def(s)->ship_radius + 8.0f));
-}
+/* ship_forward, ship_muzzle: see ship.h/c */
 
 static bool try_spend_credits(ship_t *s, float amount) {
     if (amount <= 0.0f) return true;
@@ -1707,7 +1701,7 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
 }
 
 static void update_targeting_state(world_t *w, server_player_t *sp, vec2 forward) {
-    vec2 muzzle = ship_muzzle(&sp->ship, forward);
+    vec2 muzzle = ship_muzzle(sp->ship.pos, sp->ship.angle, &sp->ship);
     /* Prefer client's mining target hint if valid, in range, and in front */
     int hint = sp->input.mining_target_hint;
     if (hint >= 0 && hint < MAX_ASTEROIDS && w->asteroids[hint].active
@@ -1743,7 +1737,7 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         if (d_sq <= tr_sq) {
             float d = sqrtf(d_sq);
             float pull = 1.0f - clampf(d / tr, 0.0f, 1.0f);
-            vec2 pull_dir = d > 0.001f ? v2_scale(to_ship, 1.0f / d) : ship_forward(&sp->ship);
+            vec2 pull_dir = d > 0.001f ? v2_scale(to_ship, 1.0f / d) : ship_forward(sp->ship.angle);
             sp->tractor_fragments++;
             a->vel = v2_add(a->vel, v2_scale(pull_dir, FRAGMENT_TRACTOR_ACCEL * lerpf(0.35f, 1.0f, pull) * dt));
             float speed = v2_len(a->vel);
@@ -1773,7 +1767,7 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
     sp->beam_ineffective = false;
     if (!mining) return;
 
-    vec2 muzzle = ship_muzzle(&sp->ship, forward);
+    vec2 muzzle = ship_muzzle(sp->ship.pos, sp->ship.angle, &sp->ship);
     sp->beam_active = true;
     sp->beam_start = muzzle;
 
@@ -1943,9 +1937,9 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             thrust_input = clampf(thrust_input + noise_thrust, -1.0f, 1.0f);
         }
 
-        vec2 forward = ship_forward(&sp->ship);
+        vec2 forward = ship_forward(sp->ship.angle);
         step_ship_rotation(&sp->ship, dt, turn_input);
-        forward = ship_forward(&sp->ship);           /* refresh after rotation */
+        forward = ship_forward(sp->ship.angle);           /* refresh after rotation */
         step_ship_thrust(&sp->ship, dt, thrust_input, forward);
         step_ship_motion(&sp->ship, dt, w);
         resolve_world_collisions(w, sp);

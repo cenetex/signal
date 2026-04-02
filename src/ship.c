@@ -8,6 +8,15 @@ const hull_def_t* npc_hull_def(const npc_ship_t* npc) {
     return &HULL_DEFS[npc->hull_class];
 }
 
+vec2 ship_forward(float angle) {
+    return v2_from_angle(angle);
+}
+
+vec2 ship_muzzle(vec2 pos, float angle, const ship_t* ship) {
+    vec2 forward = v2_from_angle(angle);
+    return v2_add(pos, v2_scale(forward, ship_hull_def(ship)->ship_radius + 8.0f));
+}
+
 float ship_max_hull(const ship_t* ship) {
     return ship_hull_def(ship)->max_hull;
 }
