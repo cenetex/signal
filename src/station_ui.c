@@ -511,10 +511,14 @@ void draw_station_services(const station_ui_state_t* ui) {
 
     case STATION_TAB_STATUS: {
         float ly = cy;
+        bool compact = ui_is_compact();
+        float meter_w = fminf(200.0f, inner_w - 120.0f);
+        float right_col = cx + meter_w + 16.0f;
+        const ship_t* ship = &LOCAL_PLAYER.ship;
 
         if (ui->station->scaffold) {
             int pct = (int)lroundf(ui->station->scaffold_progress * 100.0f);
-            int held = (int)lroundf(ship_cargo_amount(&LOCAL_PLAYER.ship, COMMODITY_FRAME));
+            int held = (int)lroundf(ship_cargo_amount(ship, COMMODITY_FRAME));
             sdtx_color3b(255, 221, 119);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             sdtx_printf("SCAFFOLD  %d%%", pct);
@@ -526,81 +530,193 @@ void draw_station_services(const station_ui_state_t* ui) {
             else
                 sdtx_puts("Deliver frames to build.");
         } else {
-            /* Actions */
+            /* === SHIP STATUS === */
             {
-                /* Check if there's anything to sell/deliver here */
-                bool has_cargo = (ship_total_cargo(&LOCAL_PLAYER.ship) > 0.01f);
-                sdtx_color3b(has_cargo ? 130 : 145, has_cargo ? 255 : 160, has_cargo ? 235 : 188);
+                sdtx_color3b(100, 120, 145);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                if (station_has_module(ui->station, MODULE_ORE_BUYER) && ui->payout > 0)
-                    sdtx_printf("[1] Sell cargo  +%d cr", ui->payout);
-                else if (has_cargo)
-                    sdtx_puts("[1] Deliver cargo");
-                else
-                    sdtx_puts("[1] Hold empty");
+                sdtx_puts("SHIP");
+                draw_ui_rule(cx, cx + meter_w + 80.0f, ly + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
                 ly += 16.0f;
-            }
-            sdtx_color3b(ui->repair_cost > 0 ? 255 : 145, ui->repair_cost > 0 ? 221 : 160, ui->repair_cost > 0 ? 119 : 188);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            sdtx_printf("[2] Repair  %s", ui->repair_cost > 0 ? "needed" : "nominal");
-            ly += 16.0f;
-            if (station_has_module(ui->station, MODULE_LASER_FAB)) {
-                bool maxed = ship_upgrade_maxed(&LOCAL_PLAYER.ship, SHIP_UPGRADE_MINING);
-                sdtx_color3b(maxed ? 145 : 203, maxed ? 160 : 220, maxed ? 188 : 248);
+
+                /* Hull meter */
+                float hull_frac = ship->hull / ship_max_hull(ship);
+                bool hull_low = hull_frac < 0.35f;
+                sdtx_color3b(hull_low ? 255 : 203, hull_low ? 160 : 220, hull_low ? 130 : 248);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                sdtx_printf("[3] Laser  %s", maxed ? "MAX" : "upgrade");
-                ly += 16.0f;
-            }
-            if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
-                bool maxed = ship_upgrade_maxed(&LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD);
-                sdtx_color3b(maxed ? 145 : 203, maxed ? 160 : 220, maxed ? 188 : 248);
+                sdtx_puts("Hull");
+                draw_ui_meter(cx + 48.0f, ly + 1.0f, meter_w - 48.0f, 8.0f, clampf(hull_frac, 0.0f, 1.0f),
+                    hull_low ? 0.95f : 0.30f, hull_low ? 0.35f : 0.85f, hull_low ? 0.25f : 0.55f);
+                sdtx_color3b(145, 160, 188);
+                sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
+                sdtx_printf("%d/%d", (int)lroundf(ship->hull), (int)lroundf(ship_max_hull(ship)));
+                ly += 13.0f;
+
+                /* Cargo meter */
+                float cargo_total = ship_total_cargo(ship);
+                float cargo_cap = ship_cargo_capacity(ship);
+                float cargo_frac = cargo_total / fmaxf(1.0f, cargo_cap);
+                bool cargo_full = cargo_frac > 0.95f;
+                sdtx_color3b(cargo_full ? 255 : 203, cargo_full ? 200 : 220, cargo_full ? 100 : 248);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                sdtx_printf("[4] Hold  %s", maxed ? "MAX" : "upgrade");
-                ly += 16.0f;
-            }
-            if (station_has_module(ui->station, MODULE_TRACTOR_FAB)) {
-                bool maxed = ship_upgrade_maxed(&LOCAL_PLAYER.ship, SHIP_UPGRADE_TRACTOR);
-                sdtx_color3b(maxed ? 145 : 203, maxed ? 160 : 220, maxed ? 188 : 248);
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                sdtx_printf("[5] Tractor  %s", maxed ? "MAX" : "upgrade");
-                ly += 16.0f;
-            }
-            /* Cargo manifest */
-            ly += 8.0f;
-            bool has_cargo = false;
-            for (int c = 0; c < COMMODITY_COUNT; c++) {
-                int amt = (int)lroundf(LOCAL_PLAYER.ship.cargo[c]);
-                if (amt <= 0) continue;
-                if (!has_cargo) {
-                    sdtx_color3b(145, 160, 188);
-                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                    sdtx_puts("CARGO");
-                    ly += 14.0f;
-                    has_cargo = true;
-                }
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                sdtx_color3b(180, 190, 210);
-                sdtx_printf("%s x%d", commodity_short_name((commodity_t)c), amt);
-                ly += 12.0f;
-            }
-            if (LOCAL_PLAYER.ship.has_scaffold_kit) {
-                if (!has_cargo) { sdtx_color3b(145,160,188); sdtx_pos(ui_text_pos(cx), ui_text_pos(ly)); sdtx_puts("CARGO"); ly += 14.0f; }
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                sdtx_color3b(255, 221, 119);
-                sdtx_puts("Scaffold Kit");
-                ly += 12.0f;
+                sdtx_puts("Cargo");
+                draw_ui_meter(cx + 48.0f, ly + 1.0f, meter_w - 48.0f, 8.0f, clampf(cargo_frac, 0.0f, 1.0f),
+                    0.26f, 0.85f, 0.68f);
+                sdtx_color3b(145, 160, 188);
+                sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
+                sdtx_printf("%d/%d", (int)lroundf(cargo_total), (int)lroundf(cargo_cap));
+                ly += compact ? 16.0f : 18.0f;
             }
 
-            /* Build hint */
-            ly += 4.0f;
-            sdtx_color3b(100, 130, 120);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            if (LOCAL_PLAYER.ship.has_scaffold_kit)
-                sdtx_puts("[B] Build module  [E] Launch + deploy");
-            else if (station_has_module(ui->station, MODULE_BLUEPRINT_DESK))
-                sdtx_printf("[B] Buy scaffold kit  %d cr", (int)OUTPOST_CREDIT_COST);
-            else
-                sdtx_puts("[B] Build module  [E] Launch");
+            /* === SYSTEMS === */
+            {
+                sdtx_color3b(100, 120, 145);
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_puts("SYSTEMS");
+                draw_ui_rule(cx, cx + meter_w + 80.0f, ly + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
+                ly += 16.0f;
+
+                /* Laser */
+                {
+                    bool maxed = ship_upgrade_maxed(ship, SHIP_UPGRADE_MINING);
+                    bool available = station_has_module(ui->station, MODULE_LASER_FAB);
+                    sdtx_color3b(180, 195, 215);
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                    sdtx_puts("Laser");
+                    draw_upgrade_pips(cx + 56.0f, ly, ship->mining_level, 0.34f, 0.88f, 1.0f);
+                    sdtx_color3b(120, 140, 165);
+                    sdtx_pos(ui_text_pos(cx + 120.0f), ui_text_pos(ly));
+                    sdtx_printf("%.0f dps", ship_mining_rate(ship));
+                    if (available && !maxed) {
+                        int cost = ship_upgrade_cost(ship, SHIP_UPGRADE_MINING);
+                        bool afford = can_afford_upgrade(ui->station, ship, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, cost);
+                        sdtx_color3b(afford ? 130 : 90, afford ? 255 : 105, afford ? 235 : 130);
+                        sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
+                        sdtx_printf("[3] %dcr", cost);
+                    }
+                    ly += 16.0f;
+                }
+
+                /* Hold */
+                {
+                    bool maxed = ship_upgrade_maxed(ship, SHIP_UPGRADE_HOLD);
+                    bool available = station_has_module(ui->station, MODULE_FRAME_PRESS);
+                    sdtx_color3b(180, 195, 215);
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                    sdtx_puts("Hold");
+                    draw_upgrade_pips(cx + 56.0f, ly, ship->hold_level, 0.50f, 0.82f, 1.0f);
+                    sdtx_color3b(120, 140, 165);
+                    sdtx_pos(ui_text_pos(cx + 120.0f), ui_text_pos(ly));
+                    sdtx_printf("%.0f cap", ship_cargo_capacity(ship));
+                    if (available && !maxed) {
+                        int cost = ship_upgrade_cost(ship, SHIP_UPGRADE_HOLD);
+                        bool afford = can_afford_upgrade(ui->station, ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost);
+                        sdtx_color3b(afford ? 130 : 90, afford ? 255 : 105, afford ? 235 : 130);
+                        sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
+                        sdtx_printf("[4] %dcr", cost);
+                    }
+                    ly += 16.0f;
+                }
+
+                /* Tractor */
+                {
+                    bool maxed = ship_upgrade_maxed(ship, SHIP_UPGRADE_TRACTOR);
+                    bool available = station_has_module(ui->station, MODULE_TRACTOR_FAB);
+                    sdtx_color3b(180, 195, 215);
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                    sdtx_puts("Tractor");
+                    draw_upgrade_pips(cx + 56.0f, ly, ship->tractor_level, 0.42f, 1.0f, 0.86f);
+                    sdtx_color3b(120, 140, 165);
+                    sdtx_pos(ui_text_pos(cx + 120.0f), ui_text_pos(ly));
+                    sdtx_printf("%.0f rng", ship_tractor_range(ship));
+                    if (available && !maxed) {
+                        int cost = ship_upgrade_cost(ship, SHIP_UPGRADE_TRACTOR);
+                        bool afford = can_afford_upgrade(ui->station, ship, SHIP_UPGRADE_TRACTOR, STATION_SERVICE_UPGRADE_TRACTOR, cost);
+                        sdtx_color3b(afford ? 130 : 90, afford ? 255 : 105, afford ? 235 : 130);
+                        sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
+                        sdtx_printf("[5] %dcr", cost);
+                    }
+                    ly += compact ? 16.0f : 18.0f;
+                }
+            }
+
+            /* === CARGO HOLD === */
+            {
+                sdtx_color3b(100, 120, 145);
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_puts("CARGO HOLD");
+                draw_ui_rule(cx, cx + meter_w + 80.0f, ly + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
+                ly += 16.0f;
+
+                bool has_cargo = false;
+                for (int c = 0; c < COMMODITY_COUNT; c++) {
+                    int amt = (int)lroundf(ship->cargo[c]);
+                    if (amt <= 0) continue;
+                    has_cargo = true;
+                    float mr, mg, mb;
+                    commodity_material_tint(commodity_ore_form((commodity_t)c), &mr, &mg, &mb);
+                    draw_rect_centered(v2(cx + 3.0f, ly + 4.0f), 2.5f, 2.5f,
+                        fminf(1.0f, mr * 1.6f), fminf(1.0f, mg * 1.6f), fminf(1.0f, mb * 1.6f), 0.8f);
+                    sdtx_color3b(180, 195, 215);
+                    sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(ly));
+                    sdtx_printf("%-12s", commodity_short_name((commodity_t)c));
+                    sdtx_color3b(203, 220, 248);
+                    sdtx_pos(ui_text_pos(cx + 120.0f), ui_text_pos(ly));
+                    sdtx_printf("x%d", amt);
+                    ly += 11.0f;
+                }
+                if (ship->has_scaffold_kit) {
+                    has_cargo = true;
+                    sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(ly));
+                    sdtx_color3b(255, 221, 119);
+                    sdtx_puts("Scaffold Kit");
+                    ly += 11.0f;
+                }
+                if (!has_cargo) {
+                    sdtx_color3b(90, 105, 130);
+                    sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(ly));
+                    sdtx_puts("Empty");
+                    ly += 11.0f;
+                }
+                ly += 4.0f;
+            }
+
+            /* === ACTIONS === */
+            {
+                bool has_cargo = (ship_total_cargo(ship) > 0.01f);
+                /* Sell/deliver */
+                if (has_cargo) {
+                    if (station_has_module(ui->station, MODULE_ORE_BUYER) && ui->payout > 0) {
+                        sdtx_color3b(130, 255, 235);
+                        sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                        sdtx_printf("[1] Sell cargo  +%d cr", ui->payout);
+                    } else {
+                        sdtx_color3b(130, 255, 235);
+                        sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                        sdtx_puts("[1] Deliver cargo");
+                    }
+                } else {
+                    sdtx_color3b(90, 105, 130);
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                    sdtx_puts("[1] Hold empty");
+                }
+                /* Repair on same line, right side */
+                if (ui->repair_cost > 0) {
+                    sdtx_color3b(255, 221, 119);
+                    sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
+                    sdtx_printf("[2] Repair -%dcr", ui->repair_cost);
+                }
+                ly += 14.0f;
+
+                /* Build / launch hint */
+                sdtx_color3b(90, 115, 110);
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                if (ship->has_scaffold_kit)
+                    sdtx_puts("[B] Build  [E] Launch + deploy");
+                else if (station_has_module(ui->station, MODULE_BLUEPRINT_DESK))
+                    sdtx_printf("[B] Scaffold kit %dcr  [E] Launch", (int)OUTPOST_CREDIT_COST);
+                else
+                    sdtx_puts("[B] Build module  [E] Launch");
+            }
         }
         break;
     }
