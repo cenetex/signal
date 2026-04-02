@@ -683,8 +683,36 @@ static input_intent_t sample_input_intent(void) {
     } else {
         /* Default: service keys */
         intent.service_sell = is_key_pressed(SAPP_KEYCODE_1);
-        if (intent.service_sell && ship_total_cargo(&LOCAL_PLAYER.ship) > 0.01f)
-            set_notice("Selling cargo...");
+        if (intent.service_sell && ship_total_cargo(&LOCAL_PLAYER.ship) > 0.01f) {
+            /* Optimistic prediction: clear cargo and estimate payout */
+            const station_t *sell_st = current_station_ptr();
+            float est_payout = 0.0f;
+            if (sell_st) {
+                for (int c = 0; c < COMMODITY_COUNT; c++) {
+                    float amt = LOCAL_PLAYER.ship.cargo[c];
+                    if (amt < 0.01f) continue;
+                    if (c < COMMODITY_RAW_ORE_COUNT && (sell_st->services & STATION_SERVICE_ORE_BUYER)) {
+                        est_payout += amt * station_buy_price(sell_st, (commodity_t)c);
+                        LOCAL_PLAYER.ship.cargo[c] = 0.0f;
+                    }
+                    /* Deliver non-ore to contracts */
+                    for (int k = 0; k < MAX_CONTRACTS && c >= COMMODITY_RAW_ORE_COUNT; k++) {
+                        contract_t *ct = &g.world.contracts[k];
+                        if (!ct->active || ct->action != CONTRACT_SUPPLY) continue;
+                        if (ct->station_index != LOCAL_PLAYER.current_station) continue;
+                        if (ct->commodity != (commodity_t)c) continue;
+                        float deliver = fminf(amt, ct->quantity_needed);
+                        LOCAL_PLAYER.ship.cargo[c] -= deliver;
+                        est_payout += deliver * ct->base_price;
+                        ct->quantity_needed -= deliver;
+                        if (ct->quantity_needed <= 0.01f) ct->active = false;
+                        break;
+                    }
+                }
+                LOCAL_PLAYER.ship.credits += est_payout;
+            }
+            set_notice("Sold cargo  +%d cr", (int)lroundf(est_payout));
+        }
         intent.service_repair = is_key_pressed(SAPP_KEYCODE_2);
         intent.upgrade_mining = is_key_pressed(SAPP_KEYCODE_3);
         intent.upgrade_hold = is_key_pressed(SAPP_KEYCODE_4);
