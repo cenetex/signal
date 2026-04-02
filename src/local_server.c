@@ -25,7 +25,10 @@ void local_server_step(local_server_t *ls, int player_slot,
 void local_server_sync_to_client(const local_server_t *ls) {
     if (!ls->active) return;
 
-    /* Asteroids: shift curr -> prev, copy server state -> curr */
+    /* Asteroids: copy authoritative state directly into the client world
+     * (no latency to interpolate over in singleplayer) and into interp
+     * buffers so multiplayer-shared rendering code stays consistent. */
+    memcpy(g.world.asteroids, ls->world.asteroids, sizeof(g.world.asteroids));
     memcpy(g.asteroid_interp.prev, g.asteroid_interp.curr,
            sizeof(g.asteroid_interp.prev));
     memcpy(g.asteroid_interp.curr, ls->world.asteroids,
@@ -34,6 +37,7 @@ void local_server_sync_to_client(const local_server_t *ls) {
     g.asteroid_interp.t = 0.0f;
 
     /* NPCs: same pattern */
+    memcpy(g.world.npc_ships, ls->world.npc_ships, sizeof(g.world.npc_ships));
     memcpy(g.npc_interp.prev, g.npc_interp.curr,
            sizeof(g.npc_interp.prev));
     memcpy(g.npc_interp.curr, ls->world.npc_ships,

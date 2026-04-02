@@ -263,7 +263,6 @@ static void sim_step(float dt) {
             g.nav_pip_pos = st->pos;
         }
     }
-    g.was_docked = LOCAL_PLAYER.docked;
     if (LOCAL_PLAYER.docked && !g.build_overlay && (is_key_pressed(SAPP_KEYCODE_TAB) || is_key_pressed(SAPP_KEYCODE_Q))) {
         station_tab_t vtabs[STATION_TAB_COUNT];
         int vtab_count = 0;
@@ -288,6 +287,9 @@ static void sim_step(float dt) {
         local_server_step(&g.local_server, g.local_player_slot, &intent, dt);
         local_server_sync_to_client(&g.local_server);
     }
+
+    /* Track dock transition AFTER server sync to prevent was_docked flicker */
+    g.was_docked = LOCAL_PLAYER.docked;
 
     /* Advance interpolation timers (both modes) */
     g.asteroid_interp.t += dt / fmaxf(g.asteroid_interp.interval, 0.01f);
