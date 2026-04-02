@@ -3,6 +3,7 @@
  */
 #include <stdarg.h>
 #include "input.h"
+#include "local_server.h"
 #include "net.h"
 
 void clear_input_state(void) {
@@ -226,4 +227,56 @@ input_intent_t sample_input_intent(void) {
     }
     intent.reset = is_key_pressed(SAPP_KEYCODE_R);
     return intent;
+}
+
+void submit_input(const input_intent_t *intent, float dt) {
+    /* Set on client world for prediction */
+    LOCAL_PLAYER.input = *intent;
+
+    /* Client prediction: immediate local feedback (movement, beam targeting) */
+    world_sim_step_player_only(&g.world, g.local_player_slot, dt);
+
+    /* Authoritative step: local server or remote */
+    if (g.local_server.active) {
+        local_server_step(&g.local_server, g.local_player_slot, intent, dt);
+        local_server_sync_to_client(&g.local_server);
+    }
+
+    /* Detect one-shot actions for prediction suppression and network send */
+    bool has_action = intent->interact || intent->service_sell ||
+        intent->service_repair || intent->upgrade_mining ||
+        intent->upgrade_hold || intent->upgrade_tractor ||
+        intent->place_outpost || intent->buy_scaffold_kit ||
+        intent->build_module || intent->buy_product;
+
+    if (has_action)
+        g.action_predict_timer = 0.5f;
+
+    /* Multiplayer: encode the action and queue for network send */
+    if (has_action && g.multiplayer_enabled && net_is_connected()) {
+        if (intent->interact) {
+            g.pending_net_action = LOCAL_PLAYER.docked ? 2 : 1;
+            if (LOCAL_PLAYER.docked) {
+                LOCAL_PLAYER.docked = false;
+                LOCAL_PLAYER.in_dock_range = false;
+            }
+        } else if (intent->service_sell)
+            g.pending_net_action = 3;
+        else if (intent->service_repair)
+            g.pending_net_action = 4;
+        else if (intent->upgrade_mining)
+            g.pending_net_action = 5;
+        else if (intent->upgrade_hold)
+            g.pending_net_action = 6;
+        else if (intent->upgrade_tractor)
+            g.pending_net_action = 7;
+        else if (intent->place_outpost)
+            g.pending_net_action = 8;
+        else if (intent->buy_scaffold_kit)
+            g.pending_net_action = NET_ACTION_BUY_SCAFFOLD;
+        else if (intent->build_module)
+            g.pending_net_action = NET_ACTION_BUILD_MODULE + (uint8_t)intent->build_module_type;
+        else if (intent->buy_product)
+            g.pending_net_action = NET_ACTION_BUY_PRODUCT + (uint8_t)intent->buy_commodity;
+    }
 }

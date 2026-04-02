@@ -24,6 +24,11 @@ bool is_key_pressed(sapp_keycode key);
  * docked menus, build overlay, contracts, and outpost placement. */
 input_intent_t sample_input_intent(void);
 
+/* Submit an input intent to the authoritative server (local or remote).
+ * Handles local server dispatch, multiplayer network encoding, and
+ * action prediction timing. */
+void submit_input(const input_intent_t *intent, float dt);
+
 /* Set the HUD notice message (printf-style). */
 void set_notice(const char* fmt, ...);
 

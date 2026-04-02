@@ -87,6 +87,10 @@ void local_server_sync_to_client(const local_server_t *ls) {
     dst->tractor_fragments = src->tractor_fragments;
     dst->nearby_fragments = src->nearby_fragments;
 
+    /* Sim events: copy so process_sim_events can read from g.world.events
+     * in addition to the local_server path — keeps both sources consistent. */
+    g.world.events = ls->world.events;
+
     /* World time */
     g.world.time = ls->world.time;
 }

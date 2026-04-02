@@ -275,18 +275,7 @@ static void sim_step(float dt) {
         g.station_tab = vtabs[(cur + dir) % vtab_count];
     }
 
-    LOCAL_PLAYER.input = intent;
-
-    /* Client prediction: always run player-only on the client view world.
-     * This gives immediate local feedback (movement, beam targeting). */
-    world_sim_step_player_only(&g.world, g.local_player_slot, dt);
-
-    /* Authoritative step: local server (singleplayer) or remote server
-     * (multiplayer, handled by net_poll callbacks in frame()). */
-    if (g.local_server.active) {
-        local_server_step(&g.local_server, g.local_player_slot, &intent, dt);
-        local_server_sync_to_client(&g.local_server);
-    }
+    submit_input(&intent, dt);
 
     /* Track dock transition AFTER server sync to prevent was_docked flicker */
     g.was_docked = LOCAL_PLAYER.docked;
@@ -297,60 +286,12 @@ static void sim_step(float dt) {
 
     g.thrusting = (intent.thrust > 0.0f) && !LOCAL_PLAYER.docked;
 
-    /* Play audio from sim events — use authoritative events when available */
-    {
-        const sim_events_t *events = g.local_server.active
-            ? &g.local_server.world.events
-            : &g.world.events;
-        process_sim_events(events);
-    }
+    /* Play audio from sim events */
+    process_sim_events(&g.world.events);
 
     step_notice_timer(dt);
     if (g.action_predict_timer > 0.0f)
         g.action_predict_timer = fmaxf(0.0f, g.action_predict_timer - dt);
-
-    /* Detect one-shot actions for network send and prediction suppression. */
-    {
-        bool has_action = intent.interact || intent.service_sell ||
-            intent.service_repair || intent.upgrade_mining ||
-            intent.upgrade_hold || intent.upgrade_tractor ||
-            intent.place_outpost || intent.buy_scaffold_kit ||
-            intent.build_module || intent.buy_product;
-
-        /* Suppress server/local-server overwrites while the action is
-         * in flight.  In singleplayer the local server processes it on
-         * the same frame so the timer expires almost instantly. */
-        if (has_action)
-            g.action_predict_timer = 0.5f;
-
-        /* Multiplayer: encode the action and queue for network send. */
-        if (has_action && g.multiplayer_enabled && net_is_connected()) {
-            if (intent.interact) {
-                g.pending_net_action = LOCAL_PLAYER.docked ? 2 : 1;
-                if (LOCAL_PLAYER.docked) {
-                    LOCAL_PLAYER.docked = false;
-                    LOCAL_PLAYER.in_dock_range = false;
-                }
-            } else if (intent.service_sell)
-                g.pending_net_action = 3;
-            else if (intent.service_repair)
-                g.pending_net_action = 4;
-            else if (intent.upgrade_mining)
-                g.pending_net_action = 5;
-            else if (intent.upgrade_hold)
-                g.pending_net_action = 6;
-            else if (intent.upgrade_tractor)
-                g.pending_net_action = 7;
-            else if (intent.place_outpost)
-                g.pending_net_action = 8;
-            else if (intent.buy_scaffold_kit)
-                g.pending_net_action = NET_ACTION_BUY_SCAFFOLD;
-            else if (intent.build_module)
-                g.pending_net_action = NET_ACTION_BUILD_MODULE + (uint8_t)intent.build_module_type;
-            else if (intent.buy_product)
-                g.pending_net_action = NET_ACTION_BUY_PRODUCT + (uint8_t)intent.buy_commodity;
-        }
-    }
 
     consume_pressed_input();
 }
