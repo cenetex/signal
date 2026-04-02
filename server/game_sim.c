@@ -1574,7 +1574,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         if (hopper_space <= 0.01f) continue;
         float accepted = fminf(amount, hopper_space);
         /* Check for active contract at this station for this commodity */
-        float price = st->buy_price[ore];
+        float price = st->base_price[ore];
         for (int k = 0; k < MAX_CONTRACTS; k++) {
             if (w->contracts[k].active && w->contracts[k].action == CONTRACT_SUPPLY && w->contracts[k].station_index == sp->current_station && w->contracts[k].commodity == ore) {
                 price = contract_price(&w->contracts[k]);
@@ -1889,7 +1889,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) {
             float available = docked_st->inventory[c];
             float space = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
-            float price_per = station_buy_price(docked_st, c);
+            float price_per = station_base_price(docked_st, c);
             /* Buy as much as you can afford and carry */
             float afford = (price_per > 0.01f) ? floorf(sp->ship.credits / price_per) : 0.0f;
             float amount = fminf(fminf(available, space), afford);
@@ -2319,7 +2319,7 @@ static void step_contracts(world_t *w, float dt) {
                     .station_index = (uint8_t)s,
                     .commodity = (commodity_t)worst_ore,
                     .quantity_needed = worst_deficit,
-                    .base_price = st->buy_price[worst_ore],
+                    .base_price = st->base_price[worst_ore],
                     .target_index = -1, .claimed_by = -1,
                 };
             }
@@ -2463,9 +2463,12 @@ void world_reset(world_t *w) {
     w->stations[0].pos         = v2(0.0f, -2400.0f);
     w->stations[0].radius      = 62.0f;
     w->stations[0].dock_radius = 132.0f;
-    w->stations[0].buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    w->stations[0].buy_price[COMMODITY_CUPRITE_ORE] = 14.0f;
-    w->stations[0].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
+    w->stations[0].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    w->stations[0].base_price[COMMODITY_CUPRITE_ORE] = 14.0f;
+    w->stations[0].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
+    w->stations[0].base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
+    w->stations[0].base_price[COMMODITY_CUPRITE_INGOT] = 32.0f;
+    w->stations[0].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
     w->stations[0].signal_range = 18000.0f;
     add_module_at(&w->stations[0], MODULE_DOCK, 0, 0xFF);
     add_module_at(&w->stations[0], MODULE_RING, 1, 0xFF);
@@ -2480,10 +2483,11 @@ void world_reset(world_t *w) {
     w->stations[1].radius      = 56.0f;
     w->stations[1].dock_radius = 124.0f;
     w->stations[1].signal_range = 15000.0f;
-    w->stations[1].buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    w->stations[1].buy_price[COMMODITY_CUPRITE_ORE] = 14.0f;
-    w->stations[1].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
-    w->stations[1].buy_price[COMMODITY_FRAME] = 20.0f;
+    w->stations[1].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    w->stations[1].base_price[COMMODITY_CUPRITE_ORE] = 14.0f;
+    w->stations[1].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
+    w->stations[1].base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
+    w->stations[1].base_price[COMMODITY_FRAME] = 20.0f;
     add_module_at(&w->stations[1], MODULE_DOCK, 0, 0xFF);
     add_module_at(&w->stations[1], MODULE_RING, 1, 0xFF);
     add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 1, 0);
@@ -2497,11 +2501,13 @@ void world_reset(world_t *w) {
     w->stations[2].radius      = 56.0f;
     w->stations[2].dock_radius = 124.0f;
     w->stations[2].signal_range = 15000.0f;
-    w->stations[2].buy_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    w->stations[2].buy_price[COMMODITY_CUPRITE_ORE] = 14.0f;
-    w->stations[2].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
-    w->stations[2].buy_price[COMMODITY_LASER_MODULE] = 28.0f;
-    w->stations[2].buy_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
+    w->stations[2].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
+    w->stations[2].base_price[COMMODITY_CUPRITE_ORE] = 14.0f;
+    w->stations[2].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
+    w->stations[2].base_price[COMMODITY_CUPRITE_INGOT] = 32.0f;
+    w->stations[2].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
+    w->stations[2].base_price[COMMODITY_LASER_MODULE] = 28.0f;
+    w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
     add_module_at(&w->stations[2], MODULE_DOCK, 0, 0xFF);
     add_module_at(&w->stations[2], MODULE_RING, 1, 0xFF);
     add_module_at(&w->stations[2], MODULE_LASER_FAB, 1, 0);
@@ -2574,7 +2580,7 @@ static bool write_station(FILE *f, const station_t *s) {
     WRITE_FIELD(f, s->signal_range);
     WRITE_FIELD(f, s->scaffold);
     WRITE_FIELD(f, s->scaffold_progress);
-    WRITE_FIELD(f, s->buy_price);
+    WRITE_FIELD(f, s->base_price);
     WRITE_FIELD(f, s->inventory);
     WRITE_FIELD(f, s->services);
     /* Modules */
@@ -2594,7 +2600,7 @@ static bool read_station(FILE *f, station_t *s) {
     READ_FIELD(f, s->signal_range);
     READ_FIELD(f, s->scaffold);
     READ_FIELD(f, s->scaffold_progress);
-    READ_FIELD(f, s->buy_price);
+    READ_FIELD(f, s->base_price);
     READ_FIELD(f, s->inventory);
     READ_FIELD(f, s->services);
     /* Modules */

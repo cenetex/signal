@@ -48,10 +48,6 @@ static const int MAX_SIM_STEPS_PER_FRAME = 8;
 
 /* ship_total_cargo, ship_raw_ore_total, ship_cargo_amount, station_buy_price, station_inventory_amount: see commodity.h/c */
 
-static void clear_ship_cargo(void) {
-    memset(LOCAL_PLAYER.ship.cargo, 0, sizeof(LOCAL_PLAYER.ship.cargo));
-}
-
 /* format_ore_manifest ... format_refinery_price_line: see station_ui.c */
 /* station_at ... navigation_station_ptr: see station_ui.c */
 /* station_role_name, station_role_short_name: see station_ui.c */
@@ -62,37 +58,12 @@ static void clear_ship_cargo(void) {
 /* build_station_service_lines, draw_station_service_text_line: see station_ui.c */
 /* can_afford_upgrade: see economy.h/c */
 
-static vec2 station_dock_anchor(void) {
-    const station_t* station = current_station_ptr();
-    if (station == NULL) {
-        return v2(0.0f, 0.0f);
-    }
-    return v2_add(station->pos, v2(0.0f, -(station->radius + ship_hull_def(&LOCAL_PLAYER.ship)->ship_radius + STATION_DOCK_APPROACH_OFFSET)));
-}
-
-/* station_has_service: see station_ui.c */
-/* station_cargo_sale_value, station_repair_cost: see economy.h/c */
-
-static float ship_cargo_space(void) {
-    return fmaxf(0.0f, ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship));
-}
+/* station_dock_anchor, ship_cargo_space: see game_sim.c */
 
 static void clear_collection_feedback(void) {
     g.collection_feedback_ore = 0.0f;
     g.collection_feedback_fragments = 0;
     g.collection_feedback_timer = 0.0f;
-}
-
-static void push_collection_feedback(float recovered_ore, int recovered_fragments) {
-    if (recovered_ore <= 0.0f) {
-        return;
-    }
-    if (g.collection_feedback_timer <= 0.0f) {
-        clear_collection_feedback();
-    }
-    g.collection_feedback_ore += recovered_ore;
-    g.collection_feedback_fragments += recovered_fragments;
-    g.collection_feedback_timer = COLLECTION_FEEDBACK_TIME;
 }
 
 /* random_field_asteroid_tier, client_max_signal_range, spawn_field_asteroid_of_tier,
