@@ -620,7 +620,12 @@ static input_intent_t sample_input_intent(void) {
     }
 
     intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
-    intent.interact = is_key_pressed(SAPP_KEYCODE_E);
+    /* E key: close build overlay if open, otherwise interact (dock/launch) */
+    if (g.build_overlay && is_key_pressed(SAPP_KEYCODE_E)) {
+        g.build_overlay = false;
+    } else {
+        intent.interact = is_key_pressed(SAPP_KEYCODE_E);
+    }
     /* Number keys: context-dependent */
     if (LOCAL_PLAYER.docked && g.build_overlay) {
         /* Build overlay: 1-8 select module, Esc/B closes */
@@ -649,7 +654,7 @@ static input_intent_t sample_input_intent(void) {
             break;
         }
         if (is_key_pressed(SAPP_KEYCODE_ESCAPE) || is_key_pressed(SAPP_KEYCODE_B)
-            || is_key_pressed(SAPP_KEYCODE_E) || is_key_pressed(SAPP_KEYCODE_TAB))
+            || is_key_pressed(SAPP_KEYCODE_TAB))
             g.build_overlay = false;
     } else if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONTRACTS) {
         /* Contracts tab: 1/2/3 track contract */
