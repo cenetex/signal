@@ -86,7 +86,7 @@ typedef void (*net_on_contracts_fn)(const contract_t* contracts, int count);
 /* Station identity callback: full static fields for a station slot. */
 typedef void (*net_on_station_identity_fn)(uint8_t index, uint8_t role, uint32_t services,
     float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
-    const char* name);
+    const char* name, const float* buy_price);
 
 typedef struct {
     net_on_player_join_fn on_join;

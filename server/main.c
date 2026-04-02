@@ -161,7 +161,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         /* Send station identity for all active stations. */
         for (int s = 0; s < MAX_STATIONS; s++) {
             if (!station_exists(&world.stations[s])) continue;
-            uint8_t id_buf[64];
+            uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
             int id_len = serialize_station_identity(id_buf, s, &world.stations[s]);
             ws_send(c, id_buf, (size_t)id_len);
         }
@@ -323,7 +323,7 @@ int main(void) {
                 for (int e = 0; e < world.events.count; e++) {
                     if (world.events.events[e].type == SIM_EVENT_OUTPOST_PLACED) {
                         int slot = world.events.events[e].outpost_placed.slot;
-                        uint8_t id_buf[64];
+                        uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
                         int id_len = serialize_station_identity(id_buf, slot, &world.stations[slot]);
                         broadcast(id_buf, (size_t)id_len);
                     }
@@ -342,7 +342,7 @@ int main(void) {
             /* Re-broadcast station identities so scaffold status stays synced */
             for (int s = 0; s < MAX_STATIONS; s++) {
                 if (!station_exists(&world.stations[s])) continue;
-                uint8_t id_buf[64];
+                uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
                 int id_len = serialize_station_identity(id_buf, s, &world.stations[s]);
                 broadcast(id_buf, (size_t)id_len);
             }

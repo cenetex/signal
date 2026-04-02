@@ -974,7 +974,8 @@ static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count)
 static void apply_remote_npcs(const NetNpcState* npcs, int count);
 static void apply_remote_stations(uint8_t index, const float* inventory);
 static void apply_remote_station_identity(uint8_t index, uint8_t role, uint32_t services,
-    float pos_x, float pos_y, float radius, float dock_radius, float signal_range, const char* name);
+    float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
+    const char* name, const float* buy_price);
 static void apply_remote_player_state(const NetPlayerState* state);
 static void apply_remote_player_ship(const NetPlayerShipState* state);
 static void apply_remote_contracts(const contract_t* contracts, int count);
@@ -1154,7 +1155,7 @@ static void apply_remote_contracts(const contract_t* contracts, int count) {
 
 static void apply_remote_station_identity(uint8_t index, uint8_t flags, uint32_t services,
     float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
-    const char* name) {
+    const char* name, const float* buy_price) {
     if (index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[index];
     st->scaffold = (flags & 1) != 0;
@@ -1164,6 +1165,8 @@ static void apply_remote_station_identity(uint8_t index, uint8_t flags, uint32_t
     st->dock_radius = dock_radius;
     st->signal_range = signal_range;
     snprintf(st->name, sizeof(st->name), "%s", name);
+    for (int c = 0; c < COMMODITY_COUNT; c++)
+        st->buy_price[c] = buy_price[c];
 }
 
 static void apply_remote_player_state(const NetPlayerState* state) {

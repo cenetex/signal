@@ -238,8 +238,11 @@ static void handle_message(const uint8_t* data, int len) {
             char name[32];
             memcpy(name, &data[27], 31);
             name[31] = '\0';
+            float buy_price[COMMODITY_COUNT];
+            for (int c = 0; c < COMMODITY_COUNT; c++)
+                buy_price[c] = read_f32_le(&data[59 + c * 4]);
             net_state.callbacks.on_station_identity(idx, role, services, px, py,
-                radius, dock_radius, signal_range, name);
+                radius, dock_radius, signal_range, name, buy_price);
         }
         break;
 
