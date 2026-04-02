@@ -608,52 +608,47 @@ void draw_station_services(const station_ui_state_t* ui) {
     case STATION_TAB_MARKET: {
         if (ui->station->scaffold) { sdtx_pos(ui_text_pos(cx), ui_text_pos(cy)); sdtx_color3b(145,160,188); sdtx_puts("Under construction."); break; }
         float my = cy;
-        /* SELL: ore prices (if station buys ore) */
-        if (station_has_module(ui->station, MODULE_ORE_BUYER)) {
-            sdtx_color3b(130, 255, 235);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-            sdtx_printf("[1] SELL CARGO  +%d cr", ui->payout);
-            my += 16.0f;
-            for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
-                int price = (int)lroundf(station_buy_price(ui->station, (commodity_t)c));
-                int held = (int)lroundf(ship_cargo_amount(&LOCAL_PLAYER.ship, (commodity_t)c));
-                if (held <= 0) continue;
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-                sdtx_color3b(203, 220, 248);
-                sdtx_printf("%s x%d @ %d cr/u", commodity_code((commodity_t)c), held, price);
-                my += 14.0f;
-            }
-            my += 6.0f;
-        }
-        /* BUY: ingots from station inventory */
+        /* DELIVER: station's primary buy commodity */
         {
-            float player_space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
-            float player_credits = LOCAL_PLAYER.ship.credits;
-            bool has_stock = false;
-            for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-                float avail = station_inventory_amount(ui->station, (commodity_t)c);
-                if (avail < 0.5f || ui->station->base_price[c] < 0.01f) continue;
-                if (!station_produces(ui->station, (commodity_t)c)) continue;
-                int stock = (int)lroundf(avail);
-                float price_f = station_sell_price(ui->station, (commodity_t)c);
-                int price = (int)lroundf(price_f);
-                int can_buy = (int)fminf(fminf(avail, player_space), (price_f > 0.01f) ? floorf(player_credits / price_f) : 0.0f);
-                int total_cost = can_buy * price;
+            commodity_t buy = station_primary_buy(ui->station);
+            if ((int)buy >= 0) {
+                int held = (int)lroundf(ship_cargo_amount(&LOCAL_PLAYER.ship, buy));
+                int price = (int)lroundf(station_buy_price(ui->station, buy));
+                sdtx_color3b(130, 255, 235);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-                if (!has_stock) {
-                    sdtx_color3b(can_buy > 0 ? 130 : 145, can_buy > 0 ? 255 : 160, can_buy > 0 ? 235 : 188);
-                    sdtx_printf("[F] %s  x%d  -%d cr", commodity_short_name((commodity_t)c), can_buy, total_cost);
-                    has_stock = true;
+                if (held > 0) {
+                    sdtx_printf("[1] DELIVER %s x%d  +%d cr", commodity_short_name(buy), held, held * price);
                 } else {
-                    sdtx_color3b(203, 220, 248);
-                    sdtx_printf("    %s  %d stock  %d cr/u", commodity_short_name((commodity_t)c), stock, price);
+                    sdtx_printf("BUYING: %s @ %d cr/u", commodity_short_name(buy), price);
                 }
-                my += 14.0f;
+                my += 16.0f;
             }
-            if (!has_stock) {
+        }
+        /* BUY: station's primary sell commodity */
+        {
+            commodity_t sell = station_primary_sell(ui->station);
+            if ((int)sell >= 0) {
+                float avail = station_inventory_amount(ui->station, sell);
+                float player_space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
+                float player_credits = LOCAL_PLAYER.ship.credits;
+                float price_f = station_sell_price(ui->station, sell);
+                int price = (int)lroundf(price_f);
+                int stock = (int)lroundf(avail);
+                int can_buy = (avail > 0.5f && price_f > 0.01f)
+                    ? (int)fminf(fminf(avail, player_space), floorf(player_credits / price_f))
+                    : 0;
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-                sdtx_color3b(145, 160, 188);
-                sdtx_puts("No ingots in stock.");
+                if (can_buy > 0) {
+                    sdtx_color3b(130, 255, 235);
+                    sdtx_printf("[F] BUY %s x%d  -%d cr", commodity_short_name(sell), can_buy, can_buy * price);
+                } else if (stock > 0) {
+                    sdtx_color3b(145, 160, 188);
+                    sdtx_printf("SELLING: %s  %d stock  %d cr/u", commodity_short_name(sell), stock, price);
+                } else {
+                    sdtx_color3b(145, 160, 188);
+                    sdtx_printf("SELLING: %s  none in stock", commodity_short_name(sell));
+                }
+                my += 16.0f;
             }
         }
         break;

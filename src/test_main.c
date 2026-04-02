@@ -347,9 +347,10 @@ TEST(test_station_production_beamworks_makes_modules) {
 TEST(test_station_cargo_sale_value) {
     ship_t ship = {0};
     station_t station = {0};
+    station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FURNACE };
     ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
     station.base_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    /* Empty hopper = 1× base, so 10 ore × 10 cr = 100 */
+    /* Furnace station buys ferrite ore: empty hopper = 1× base = 100 */
     ASSERT_EQ_FLOAT(station_cargo_sale_value(&ship, &station), 100.0f, 0.01f);
 }
 
@@ -1019,9 +1020,10 @@ TEST(test_bug11_no_duplicate_sale_value) {
     ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
     station_t st = {0};
     memset(&st, 0, sizeof(st));
+    st.modules[st.module_count++] = (station_module_t){ .type = MODULE_FURNACE };
     st.base_price[COMMODITY_FERRITE_ORE] = 10.0f;
     float val = station_cargo_sale_value(&ship, &st);
-    ASSERT_EQ_FLOAT(val, 100.0f, 0.01f); /* empty hopper = 1× base (buy price) */
+    ASSERT_EQ_FLOAT(val, 100.0f, 0.01f); /* furnace buys ore: empty = 1× base */
     /* The real test: there should be no static version in game_sim.c.
      * We verify by checking economy.c's extern version is the one called by world_sim_step.
      * If duplicates exist, this line count assertion will fail when they're removed: */
@@ -3058,6 +3060,60 @@ TEST(test_player_load_bad_magic_fails) {
     remove("/tmp/player_93.sav");
 }
 
+TEST(test_world_load_rejects_stale_version) {
+    world_t w = {0};
+    world_reset(&w);
+    ASSERT(world_save(&w, "/tmp/test_stale.sav"));
+    /* Overwrite version (bytes 4-7) with old version 11 */
+    FILE *f = fopen("/tmp/test_stale.sav", "r+b");
+    ASSERT(f != NULL);
+    fseek(f, 4, SEEK_SET);
+    uint32_t old_version = 11;
+    fwrite(&old_version, sizeof(old_version), 1, f);
+    fclose(f);
+    world_t loaded = {0};
+    ASSERT(!world_load(&loaded, "/tmp/test_stale.sav"));
+    remove("/tmp/test_stale.sav");
+}
+
+TEST(test_world_save_load_preserves_module_ring_slot) {
+    world_t w = {0};
+    world_reset(&w);
+    ASSERT(w.stations[0].module_count > 0);
+    station_module_t orig = w.stations[0].modules[1];
+    ASSERT(orig.type == MODULE_RING);
+    ASSERT(orig.ring == 1);
+    ASSERT(world_save(&w, "/tmp/test_modules.sav"));
+    world_t loaded = {0};
+    ASSERT(world_load(&loaded, "/tmp/test_modules.sav"));
+    station_module_t restored = loaded.stations[0].modules[1];
+    ASSERT_EQ_INT((int)restored.type, (int)orig.type);
+    ASSERT_EQ_INT((int)restored.ring, (int)orig.ring);
+    ASSERT_EQ_INT((int)restored.slot, (int)orig.slot);
+    ASSERT_EQ_INT((int)restored.scaffold, (int)orig.scaffold);
+    ASSERT_EQ_FLOAT(restored.build_progress, orig.build_progress, 0.001f);
+    station_module_t mod2 = loaded.stations[0].modules[2];
+    ASSERT(mod2.type == MODULE_ORE_BUYER);
+    ASSERT_EQ_INT((int)mod2.ring, 1);
+    ASSERT_EQ_INT((int)mod2.slot, 0);
+    remove("/tmp/test_modules.sav");
+}
+
+TEST(test_world_save_load_preserves_smelted_ingots) {
+    world_t w = {0};
+    world_reset(&w);
+    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 20.0f;
+    for (int i = 0; i < (int)(10.0f / SIM_DT); i++)
+        world_sim_step(&w, SIM_DT);
+    float ingots_before = w.stations[0].inventory[COMMODITY_FERRITE_INGOT];
+    ASSERT(ingots_before > 0.0f);
+    ASSERT(world_save(&w, "/tmp/test_ingots.sav"));
+    world_t loaded = {0};
+    ASSERT(world_load(&loaded, "/tmp/test_ingots.sav"));
+    ASSERT_EQ_FLOAT(loaded.stations[0].inventory[COMMODITY_FERRITE_INGOT], ingots_before, 0.01f);
+    remove("/tmp/test_ingots.sav");
+}
+
 /* ================================================================== */
 /* STRATEGIC TDD: Station construction (#83)                          */
 /* ================================================================== */
@@ -3878,6 +3934,9 @@ int main(void) {
     RUN(test_player_load_clamps_upgrade_levels);
     RUN(test_player_load_invalid_station_falls_back);
     RUN(test_player_load_bad_magic_fails);
+    RUN(test_world_load_rejects_stale_version);
+    RUN(test_world_save_load_preserves_module_ring_slot);
+    RUN(test_world_save_load_preserves_smelted_ingots);
 
     printf("\nRefinery tiers:\n");
     RUN(test_furnace_only_smelts_ferrite);

@@ -1564,54 +1564,56 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
     float payout = 0.0f;
 
-    /* Sell raw ore if station buys ore */
-    if (station_has_service(st, STATION_SERVICE_ORE_BUYER) && ship_raw_ore_total(&sp->ship) > 0.01f) {
-    for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
-        commodity_t ore = (commodity_t)i;
-        float amount = sp->ship.cargo[ore];
-        if (amount <= 0.01f) continue;
-        float hopper_space = REFINERY_HOPPER_CAPACITY - st->inventory[ore];
-        if (hopper_space <= 0.01f) continue;
-        float accepted = fminf(amount, hopper_space);
-        /* Check for active contract at this station for this commodity */
-        float price = station_buy_price(st, ore);
-        for (int k = 0; k < MAX_CONTRACTS; k++) {
-            if (w->contracts[k].active && w->contracts[k].action == CONTRACT_SUPPLY && w->contracts[k].station_index == sp->current_station && w->contracts[k].commodity == ore) {
-                price = contract_price(&w->contracts[k]);
-                w->contracts[k].quantity_needed -= accepted;
-                if (w->contracts[k].quantity_needed <= 0.01f) {
-                    w->contracts[k].active = false;
-                    emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
-                        .contract_complete.action = CONTRACT_SUPPLY});
+    /* Station buys its primary input commodity from the player */
+    commodity_t buy = station_primary_buy(st);
+    if ((int)buy >= 0 && sp->ship.cargo[buy] > 0.01f) {
+        float capacity = (buy < COMMODITY_RAW_ORE_COUNT)
+            ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
+        float space = capacity - st->inventory[buy];
+        if (space > 0.01f) {
+            float accepted = fminf(sp->ship.cargo[buy], space);
+            float price = station_buy_price(st, buy);
+            /* Check for active contract bonus */
+            for (int k = 0; k < MAX_CONTRACTS; k++) {
+                if (w->contracts[k].active && w->contracts[k].action == CONTRACT_SUPPLY
+                    && w->contracts[k].station_index == sp->current_station
+                    && w->contracts[k].commodity == buy) {
+                    price = contract_price(&w->contracts[k]);
+                    w->contracts[k].quantity_needed -= accepted;
+                    if (w->contracts[k].quantity_needed <= 0.01f) {
+                        w->contracts[k].active = false;
+                        emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
+                            .contract_complete.action = CONTRACT_SUPPLY});
+                    }
+                    break;
                 }
-                break;
             }
+            payout += accepted * price;
+            st->inventory[buy] += accepted;
+            sp->ship.cargo[buy] -= accepted;
         }
-        payout += accepted * price;
-        st->inventory[ore] += accepted;
-        sp->ship.cargo[ore] -= accepted;
     }
-    } /* end ore selling block */
 
-    /* Deliver any cargo to active contracts at this station */
+    /* Also deliver any cargo matching active supply contracts at this station */
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         contract_t *ct = &w->contracts[k];
         if (!ct->active || ct->action != CONTRACT_SUPPLY) continue;
         if (ct->station_index != sp->current_station) continue;
         commodity_t c = ct->commodity;
-        if (c < COMMODITY_RAW_ORE_COUNT) continue; /* ore handled above */
+        if (c == buy) continue; /* already handled above */
         if (sp->ship.cargo[c] < 0.01f) continue;
         float deliver = fminf(sp->ship.cargo[c], ct->quantity_needed);
-        float ingot_price = contract_price(ct);
+        payout += deliver * contract_price(ct);
         sp->ship.cargo[c] -= deliver;
         st->inventory[c] += deliver;
-        payout += deliver * ingot_price;
         ct->quantity_needed -= deliver;
         if (ct->quantity_needed <= 0.01f) {
             ct->active = false;
-            emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_SUPPLY});
+            emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
+                .contract_complete.action = CONTRACT_SUPPLY});
         }
     }
+
     if (payout > 0.01f) {
         sp->ship.credits += payout;
         SIM_LOG("[sim] player %d sold cargo for %.0f cr\n", sp->id, payout);

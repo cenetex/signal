@@ -296,6 +296,19 @@ static inline bool station_has_module(const station_t *st, module_type_t type) {
     return false;
 }
 
+/* Returns true if the station consumes this commodity as production input. */
+static inline bool station_consumes(const station_t *st, commodity_t c) {
+    switch (c) {
+        case COMMODITY_FERRITE_ORE:   return station_has_module(st, MODULE_FURNACE);
+        case COMMODITY_CUPRITE_ORE:   return station_has_module(st, MODULE_FURNACE_CU);
+        case COMMODITY_CRYSTAL_ORE:   return station_has_module(st, MODULE_FURNACE_CR);
+        case COMMODITY_FERRITE_INGOT: return station_has_module(st, MODULE_FRAME_PRESS);
+        case COMMODITY_CUPRITE_INGOT: return station_has_module(st, MODULE_LASER_FAB);
+        case COMMODITY_CRYSTAL_INGOT: return station_has_module(st, MODULE_TRACTOR_FAB);
+        default: return false;
+    }
+}
+
 /* Returns true if the station produces this commodity (has the right module). */
 static inline bool station_produces(const station_t *st, commodity_t c) {
     switch (c) {
@@ -340,6 +353,39 @@ static inline module_type_t station_dominant_module(const station_t *st) {
         }
     }
     return MODULE_DOCK;
+}
+
+/* Primary trade slot: the one commodity this station buys from players.
+ * Derived from the dominant production module. Returns -1 if none. */
+static inline commodity_t station_primary_buy(const station_t *st) {
+    module_type_t dom = station_dominant_module(st);
+    switch (dom) {
+        case MODULE_FURNACE:     return COMMODITY_FERRITE_ORE;
+        case MODULE_FURNACE_CU:  return COMMODITY_CUPRITE_ORE;
+        case MODULE_FURNACE_CR:  return COMMODITY_CRYSTAL_ORE;
+        case MODULE_FRAME_PRESS: return COMMODITY_FERRITE_INGOT;
+        case MODULE_LASER_FAB:   return COMMODITY_CUPRITE_INGOT;
+        case MODULE_TRACTOR_FAB: return COMMODITY_CRYSTAL_INGOT;
+        default: break;
+    }
+    if (station_has_module(st, MODULE_ORE_BUYER)) return COMMODITY_FERRITE_ORE;
+    return (commodity_t)-1;
+}
+
+/* Primary trade slot: the one commodity this station sells to players.
+ * Derived from the dominant production module. Returns -1 if none. */
+static inline commodity_t station_primary_sell(const station_t *st) {
+    module_type_t dom = station_dominant_module(st);
+    switch (dom) {
+        case MODULE_FURNACE:     return COMMODITY_FERRITE_INGOT;
+        case MODULE_FURNACE_CU:  return COMMODITY_CUPRITE_INGOT;
+        case MODULE_FURNACE_CR:  return COMMODITY_CRYSTAL_INGOT;
+        case MODULE_FRAME_PRESS: return COMMODITY_FRAME;
+        case MODULE_LASER_FAB:   return COMMODITY_LASER_MODULE;
+        case MODULE_TRACTOR_FAB: return COMMODITY_TRACTOR_MODULE;
+        default: break;
+    }
+    return (commodity_t)-1;
 }
 
 /* Ring construction constants */

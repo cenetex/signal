@@ -120,68 +120,57 @@ input_intent_t sample_input_intent(void) {
     } else {
         /* Default: service keys */
         intent.service_sell = is_key_pressed(SAPP_KEYCODE_1);
-        if (intent.service_sell && ship_total_cargo(&LOCAL_PLAYER.ship) > 0.01f) {
-            /* Optimistic prediction: clear cargo and estimate payout */
+        if (intent.service_sell) {
+            /* Optimistic prediction: deliver primary buy commodity */
             const station_t *sell_st = current_station_ptr();
             float est_payout = 0.0f;
             if (sell_st) {
-                for (int c = 0; c < COMMODITY_COUNT; c++) {
-                    float amt = LOCAL_PLAYER.ship.cargo[c];
-                    if (amt < 0.01f) continue;
-                    if (c < COMMODITY_RAW_ORE_COUNT && (sell_st->services & STATION_SERVICE_ORE_BUYER)) {
-                        float hopper_space = REFINERY_HOPPER_CAPACITY - sell_st->inventory[c];
-                        float sellable = fminf(amt, fmaxf(0.0f, hopper_space));
-                        est_payout += sellable * station_buy_price(sell_st, (commodity_t)c);
-                        LOCAL_PLAYER.ship.cargo[c] -= sellable;
-                    }
-                    /* Estimate contract delivery payout without mutating contracts */
-                    for (int k = 0; k < MAX_CONTRACTS && c >= COMMODITY_RAW_ORE_COUNT; k++) {
-                        const contract_t *ct = &g.world.contracts[k];
-                        if (!ct->active || ct->action != CONTRACT_SUPPLY) continue;
-                        if (ct->station_index != LOCAL_PLAYER.current_station) continue;
-                        if (ct->commodity != (commodity_t)c) continue;
-                        float deliver = fminf(amt, ct->quantity_needed);
-                        LOCAL_PLAYER.ship.cargo[c] -= deliver;
-                        est_payout += deliver * ct->base_price;
-                        break;
-                    }
+                commodity_t buy = station_primary_buy(sell_st);
+                if ((int)buy >= 0 && LOCAL_PLAYER.ship.cargo[buy] > 0.01f) {
+                    float capacity = (buy < COMMODITY_RAW_ORE_COUNT)
+                        ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
+                    float space = fmaxf(0.0f, capacity - sell_st->inventory[buy]);
+                    float sellable = fminf(LOCAL_PLAYER.ship.cargo[buy], space);
+                    est_payout = sellable * station_buy_price(sell_st, buy);
+                    LOCAL_PLAYER.ship.cargo[buy] -= sellable;
+                    LOCAL_PLAYER.ship.credits += est_payout;
                 }
-                LOCAL_PLAYER.ship.credits += est_payout;
             }
-            set_notice("Sold cargo  +%d cr", (int)lroundf(est_payout));
+            if (est_payout > 0.01f) {
+                set_notice("Delivered  +%d cr", (int)lroundf(est_payout));
+            } else {
+                set_notice("Nothing to deliver here.");
+            }
         }
         intent.service_repair = is_key_pressed(SAPP_KEYCODE_2);
         intent.upgrade_mining = is_key_pressed(SAPP_KEYCODE_3);
         intent.upgrade_hold = is_key_pressed(SAPP_KEYCODE_4);
         intent.upgrade_tractor = is_key_pressed(SAPP_KEYCODE_5);
     }
-    /* Buy ingots from station (F key while docked) */
+    /* Buy product from station (F key while docked) */
     if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_F)) {
         const station_t *st = current_station_ptr();
         if (st) {
-            /* Buy the first available ingot type */
-            for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-                if (st->inventory[c] > 0.5f && st->base_price[c] > 0.01f
-                    && station_produces(st, (commodity_t)c)) {
-                    float space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
-                    float price = station_sell_price(st, (commodity_t)c);
-                    if (space < 0.5f) {
-                        set_notice("Hold full.");
-                    } else if (LOCAL_PLAYER.ship.credits < price) {
-                        set_notice("Need %d cr.", (int)lroundf(price));
-                    } else {
-                        float avail = st->inventory[c];
-                        float afford = floorf(LOCAL_PLAYER.ship.credits / price);
-                        int amount = (int)fminf(fminf(avail, space), afford);
-                        intent.buy_product = true;
-                        intent.buy_commodity = (commodity_t)c;
-                        /* Optimistic client prediction */
-                        LOCAL_PLAYER.ship.cargo[c] += (float)amount;
-                        LOCAL_PLAYER.ship.credits -= (float)amount * price;
-                        set_notice("Bought %d %s  -%d cr", amount, commodity_short_name((commodity_t)c), (int)(amount * price));
-                    }
-                    break;
+            commodity_t sell = station_primary_sell(st);
+            if ((int)sell >= 0 && st->inventory[sell] > 0.5f && st->base_price[sell] > 0.01f) {
+                float space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
+                float price = station_sell_price(st, sell);
+                if (space < 0.5f) {
+                    set_notice("Hold full.");
+                } else if (LOCAL_PLAYER.ship.credits < price) {
+                    set_notice("Need %d cr.", (int)lroundf(price));
+                } else {
+                    float avail = st->inventory[sell];
+                    float afford = floorf(LOCAL_PLAYER.ship.credits / price);
+                    int amount = (int)fminf(fminf(avail, space), afford);
+                    intent.buy_product = true;
+                    intent.buy_commodity = sell;
+                    LOCAL_PLAYER.ship.cargo[sell] += (float)amount;
+                    LOCAL_PLAYER.ship.credits -= (float)amount * price;
+                    set_notice("Bought %d %s  -%d cr", amount, commodity_short_name(sell), (int)(amount * price));
                 }
+            } else {
+                set_notice("Nothing to buy here.");
             }
         }
     }
