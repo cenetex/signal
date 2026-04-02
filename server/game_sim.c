@@ -1066,21 +1066,23 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             }
 
             if (best_contract >= 0) {
-                /* Load the commodity for this contract */
+                /* Load the commodity for this contract (leave reserve for players) */
                 commodity_t ingot = w->contracts[best_contract].commodity;
                 npc->dest_station = w->contracts[best_contract].station_index;
-                float take = fminf(home->inventory[ingot], space);
+                float avail = fmaxf(0.0f, home->inventory[ingot] - HAULER_RESERVE);
+                float take = fminf(avail, space);
                 if (take > 0.5f) {
                     npc->ingots[INGOT_IDX(ingot)] += take;
                     home->inventory[ingot] -= take;
                     loaded = true;
                 }
             } else {
-                /* Fallback: original round-trip behavior */
+                /* Fallback: original round-trip behavior (leave reserve for players) */
                 station_t *dest = &w->stations[npc->dest_station];
                 if (station_has_module(dest, MODULE_FRAME_PRESS)) {
                     commodity_t ingot = COMMODITY_FERRITE_INGOT;
-                    float take = fminf(home->inventory[ingot], space);
+                    float avail = fmaxf(0.0f, home->inventory[ingot] - HAULER_RESERVE);
+                    float take = fminf(avail, space);
                     if (take > 0.5f) {
                         npc->ingots[INGOT_IDX(ingot)] += take;
                         home->inventory[ingot] -= take;
@@ -1089,7 +1091,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 }
                 if (!loaded && station_has_module(dest, MODULE_LASER_FAB)) {
                     commodity_t ingot = COMMODITY_CUPRITE_INGOT;
-                    float take = fminf(home->inventory[ingot], space);
+                    float avail = fmaxf(0.0f, home->inventory[ingot] - HAULER_RESERVE);
+                    float take = fminf(avail, space);
                     if (take > 0.5f) {
                         npc->ingots[INGOT_IDX(ingot)] += take;
                         home->inventory[ingot] -= take;
@@ -1099,7 +1102,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 }
                 if (!loaded && station_has_module(dest, MODULE_TRACTOR_FAB)) {
                     commodity_t ingot = COMMODITY_CRYSTAL_INGOT;
-                    float take = fminf(home->inventory[ingot], space);
+                    float avail = fmaxf(0.0f, home->inventory[ingot] - HAULER_RESERVE);
+                    float take = fminf(avail, space);
                     if (take > 0.5f) {
                         npc->ingots[INGOT_IDX(ingot)] += take;
                         home->inventory[ingot] -= take;
@@ -1111,7 +1115,24 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             for (int c = 0; c < INGOT_COUNT; c++) total_carried += npc->ingots[c];
             for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) total_carried += npc->cargo[c];
             if (total_carried < 0.01f) {
-                npc->state_timer = HAULER_DOCK_TIME;  /* stay docked, try again later */
+                /* Nothing at home — relocate to a station with surplus ingots */
+                int best_src = -1;
+                float best_stock = 0.0f;
+                for (int s = 0; s < MAX_STATIONS; s++) {
+                    if (s == npc->home_station) continue;
+                    if (!station_is_active(&w->stations[s])) continue;
+                    float stock = 0.0f;
+                    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
+                        stock += fmaxf(0.0f, w->stations[s].inventory[c] - HAULER_RESERVE);
+                    if (stock > best_stock) { best_stock = stock; best_src = s; }
+                }
+                if (best_src >= 0 && best_stock > 0.5f) {
+                    /* Relocate: fly to the surplus station, dock, and load next cycle */
+                    npc->home_station = best_src;
+                    npc->state = NPC_STATE_RETURN_TO_STATION;
+                } else {
+                    npc->state_timer = HAULER_DOCK_TIME;  /* nothing anywhere, wait */
+                }
             } else {
                 npc->state = NPC_STATE_TRAVEL_TO_DEST;
             }

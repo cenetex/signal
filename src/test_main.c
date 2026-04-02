@@ -297,7 +297,7 @@ TEST(test_product_name) {
 
 TEST(test_refinery_production_smelts_ore) {
     station_t station = {0};
-    station.modules[station.module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
+    station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FURNACE };
     station.inventory[COMMODITY_FERRITE_ORE] = 10.0f;
     step_refinery_production(&station, 1, 1.0f);
     ASSERT(station.inventory[COMMODITY_FERRITE_ORE] < 10.0f);
@@ -306,14 +306,14 @@ TEST(test_refinery_production_smelts_ore) {
 
 TEST(test_refinery_production_empty_buffer_noop) {
     station_t station = {0};
-    station.modules[station.module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
+    station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FURNACE };
     step_refinery_production(&station, 1, 1.0f);
     ASSERT_EQ_FLOAT(station.inventory[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
 }
 
 TEST(test_refinery_skips_non_refinery) {
     station_t station = {0};
-    station.modules[station.module_count++] = (station_module_t){ MODULE_FRAME_PRESS, false, 1.0f };
+    station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
     station.inventory[COMMODITY_FERRITE_ORE] = 10.0f;
     step_refinery_production(&station, 1, 1.0f);
     ASSERT_EQ_FLOAT(station.inventory[COMMODITY_FERRITE_ORE], 10.0f, 0.001f);
@@ -321,7 +321,7 @@ TEST(test_refinery_skips_non_refinery) {
 
 TEST(test_station_production_yard_makes_frames) {
     station_t station = {0};
-    station.modules[station.module_count++] = (station_module_t){ MODULE_FRAME_PRESS, false, 1.0f };
+    station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
     station.inventory[COMMODITY_FERRITE_INGOT] = 5.0f;
     step_station_production(&station, 1, 1.0f);
     ASSERT(station.inventory[COMMODITY_FERRITE_INGOT] < 5.0f);
@@ -330,8 +330,8 @@ TEST(test_station_production_yard_makes_frames) {
 
 TEST(test_station_production_beamworks_makes_modules) {
     station_t station = {0};
-    station.modules[station.module_count++] = (station_module_t){ MODULE_LASER_FAB, false, 1.0f };
-    station.modules[station.module_count++] = (station_module_t){ MODULE_TRACTOR_FAB, false, 1.0f };
+    station.modules[station.module_count++] = (station_module_t){ .type = MODULE_LASER_FAB };
+    station.modules[station.module_count++] = (station_module_t){ .type = MODULE_TRACTOR_FAB };
     station.inventory[COMMODITY_CUPRITE_INGOT] = 5.0f;
     station.inventory[COMMODITY_CRYSTAL_INGOT] = 5.0f;
     step_station_production(&station, 1, 1.0f);
@@ -1113,7 +1113,7 @@ TEST(test_bug17_no_duplicate_refinery) {
      * consistent results — verify economy.c's version works correctly. */
     station_t stations[MAX_STATIONS];
     memset(stations, 0, sizeof(stations));
-    stations[0].modules[stations[0].module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
+    stations[0].modules[stations[0].module_count++] = (station_module_t){ .type = MODULE_FURNACE };
     stations[0].inventory[COMMODITY_FERRITE_ORE] = 10.0f;
     step_refinery_production(stations, MAX_STATIONS, 1.0f);
     /* Ore should be consumed and inventory produced. */
@@ -1198,19 +1198,19 @@ TEST(test_bug22_hauler_stuck_at_empty_station) {
         w.stations[0].inventory[i] = 0.0f;
     /* Put some ingots at station 1 so haulers have a reason to move */
     w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
-    /* Run 30 seconds — haulers should try to find cargo elsewhere */
-    for (int i = 0; i < 3600; i++)
+    float initial_stock = w.stations[1].inventory[COMMODITY_FERRITE_INGOT];
+    /* Run 60 seconds — haulers should relocate, load from station 1, and deliver */
+    for (int i = 0; i < 7200; i++)
         world_sim_step(&w, SIM_DT);
-    /* After fix: haulers should have left to find cargo or changed state.
-     * FAILS because haulers just wait at home_station forever. */
-    bool any_hauler_moved = false;
+    /* Hauler should have relocated or picked up ingots from station 1 */
+    bool hauler_relocated = false;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (w.npc_ships[i].role == NPC_ROLE_HAULER &&
-            w.npc_ships[i].state != NPC_STATE_DOCKED) {
-            any_hauler_moved = true;
+            w.npc_ships[i].home_station != 0) {
+            hauler_relocated = true;
         }
     }
-    ASSERT(any_hauler_moved);
+    ASSERT(hauler_relocated || w.stations[1].inventory[COMMODITY_FERRITE_INGOT] < initial_stock);
 }
 
 /* Bug 23: NPC miners don't lose cargo when they can't deposit (hopper full).
@@ -3100,10 +3100,6 @@ TEST(test_outpost_extends_signal_range) {
     ASSERT(s2 > 0.0f);
 }
 
-TEST(test_outpost_upgrade_to_refinery) {
-    /* TODO: outpost upgrade not yet implemented — skip for now */
-}
-
 TEST(test_disconnected_station_goes_dark) {
     world_t w = {0};
     world_reset(&w);
@@ -3127,7 +3123,7 @@ TEST(test_disconnected_station_goes_dark) {
     w.stations[slot].scaffold = false;
     w.stations[slot].signal_range = 6000.0f;
     w.stations[slot].signal_connected = false;
-    w.stations[slot].modules[w.stations[slot].module_count++] = (station_module_t){ MODULE_REPAIR_BAY, false, 1.0f };
+    w.stations[slot].modules[w.stations[slot].module_count++] = (station_module_t){ .type = MODULE_REPAIR_BAY };
     rebuild_signal_chain(&w);
     ASSERT(w.stations[slot].signal_connected);
     ASSERT(station_provides_signal(&w.stations[slot]));
@@ -3306,7 +3302,7 @@ TEST(test_bug90_station_bounce_no_extra_energy) {
 
 TEST(test_furnace_only_smelts_ferrite) {
     station_t st = {0};
-    st.modules[st.module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
+    st.modules[st.module_count++] = (station_module_t){ .type = MODULE_FURNACE };
     st.inventory[COMMODITY_FERRITE_ORE] = 50.0f;
     st.inventory[COMMODITY_CUPRITE_ORE] = 50.0f;
     st.inventory[COMMODITY_CRYSTAL_ORE] = 50.0f;
@@ -3319,7 +3315,7 @@ TEST(test_furnace_only_smelts_ferrite) {
 
 TEST(test_furnace_cu_smelts_cuprite) {
     station_t st = {0};
-    st.modules[st.module_count++] = (station_module_t){ MODULE_FURNACE_CU, false, 1.0f };
+    st.modules[st.module_count++] = (station_module_t){ .type = MODULE_FURNACE_CU };
     st.inventory[COMMODITY_FERRITE_ORE] = 50.0f;
     st.inventory[COMMODITY_CUPRITE_ORE] = 50.0f;
     step_refinery_production(&st, 1, 1.0f);
@@ -3330,7 +3326,7 @@ TEST(test_furnace_cu_smelts_cuprite) {
 
 TEST(test_furnace_cr_smelts_crystal) {
     station_t st = {0};
-    st.modules[st.module_count++] = (station_module_t){ MODULE_FURNACE_CR, false, 1.0f };
+    st.modules[st.module_count++] = (station_module_t){ .type = MODULE_FURNACE_CR };
     st.inventory[COMMODITY_CRYSTAL_ORE] = 50.0f;
     step_refinery_production(&st, 1, 1.0f);
     ASSERT(st.inventory[COMMODITY_CRYSTAL_ORE] < 50.0f);
@@ -3339,7 +3335,7 @@ TEST(test_furnace_cr_smelts_crystal) {
 
 TEST(test_no_furnace_no_smelting) {
     station_t st = {0};
-    st.modules[st.module_count++] = (station_module_t){ MODULE_FRAME_PRESS, false, 1.0f };
+    st.modules[st.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
     st.inventory[COMMODITY_FERRITE_ORE] = 50.0f;
     step_refinery_production(&st, 1, 1.0f);
     ASSERT_EQ_FLOAT(st.inventory[COMMODITY_FERRITE_ORE], 50.0f, 0.01f);

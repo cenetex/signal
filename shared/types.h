@@ -287,6 +287,7 @@ static const int REFINERY_MAX_FURNACES = 3;
 static const float STATION_PRODUCTION_RATE = 0.3f;
 static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
 static const float MAX_PRODUCT_STOCK = 40.0f;
+static const float HAULER_RESERVE = 8.0f;  /* keep 20% stock for player purchases */
 
 /* Module helpers */
 static inline bool station_has_module(const station_t *st, module_type_t type) {
