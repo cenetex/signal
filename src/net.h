@@ -83,10 +83,22 @@ typedef void (*net_on_stations_fn)(uint8_t index, const float* inventory);
 /* Contracts callback: full replacement of contract array. */
 typedef void (*net_on_contracts_fn)(const contract_t* contracts, int count);
 
+/* Packed station identity for network sync. */
+typedef struct {
+    uint8_t index;
+    uint8_t flags;
+    uint32_t services;
+    float pos_x, pos_y;
+    float radius, dock_radius, signal_range;
+    char name[32];
+    float buy_price[COMMODITY_COUNT];
+    float scaffold_progress;
+    int module_count;
+    station_module_t modules[MAX_MODULES_PER_STATION];
+} NetStationIdentity;
+
 /* Station identity callback: full static fields for a station slot. */
-typedef void (*net_on_station_identity_fn)(uint8_t index, uint8_t role, uint32_t services,
-    float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
-    const char* name, const float* buy_price, float scaffold_progress);
+typedef void (*net_on_station_identity_fn)(const NetStationIdentity* station);
 
 typedef struct {
     net_on_player_join_fn on_join;

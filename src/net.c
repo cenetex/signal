@@ -227,23 +227,32 @@ static void handle_message(const uint8_t* data, int len) {
 
     case NET_MSG_STATION_IDENTITY:
         if (len >= STATION_IDENTITY_SIZE && net_state.callbacks.on_station_identity) {
-            uint8_t idx = data[1];
-            uint8_t role = data[2];
-            uint32_t services = read_u32_le(&data[3]);
-            float px = read_f32_le(&data[7]);
-            float py = read_f32_le(&data[11]);
-            float radius = read_f32_le(&data[15]);
-            float dock_radius = read_f32_le(&data[19]);
-            float signal_range = read_f32_le(&data[23]);
-            char name[32];
-            memcpy(name, &data[27], 31);
-            name[31] = '\0';
-            float buy_price[COMMODITY_COUNT];
+            NetStationIdentity si = {0};
+            si.index = data[1];
+            si.flags = data[2];
+            si.services = read_u32_le(&data[3]);
+            si.pos_x = read_f32_le(&data[7]);
+            si.pos_y = read_f32_le(&data[11]);
+            si.radius = read_f32_le(&data[15]);
+            si.dock_radius = read_f32_le(&data[19]);
+            si.signal_range = read_f32_le(&data[23]);
+            memcpy(si.name, &data[27], 31);
+            si.name[31] = '\0';
             for (int c = 0; c < COMMODITY_COUNT; c++)
-                buy_price[c] = read_f32_le(&data[59 + c * 4]);
-            float scaffold_progress = read_f32_le(&data[59 + COMMODITY_COUNT * 4]);
-            net_state.callbacks.on_station_identity(idx, role, services, px, py,
-                radius, dock_radius, signal_range, name, buy_price, scaffold_progress);
+                si.buy_price[c] = read_f32_le(&data[59 + c * 4]);
+            si.scaffold_progress = read_f32_le(&data[59 + COMMODITY_COUNT * 4]);
+            int moff = 59 + COMMODITY_COUNT * 4 + 4;
+            si.module_count = data[moff];
+            if (si.module_count > MAX_MODULES_PER_STATION)
+                si.module_count = MAX_MODULES_PER_STATION;
+            moff++;
+            for (int m = 0; m < si.module_count; m++) {
+                si.modules[m].type = (module_type_t)data[moff];
+                si.modules[m].scaffold = data[moff + 1] != 0;
+                si.modules[m].build_progress = read_f32_le(&data[moff + 2]);
+                moff += STATION_MODULE_RECORD_SIZE;
+            }
+            net_state.callbacks.on_station_identity(&si);
         }
         break;
 

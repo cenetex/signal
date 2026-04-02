@@ -259,6 +259,15 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
     for (int c = 0; c < COMMODITY_COUNT; c++)
         write_f32_le(&buf[59 + c * 4], st->buy_price[c]);
     write_f32_le(&buf[59 + COMMODITY_COUNT * 4], st->scaffold_progress);
+    int moff = 59 + COMMODITY_COUNT * 4 + 4;  /* after scaffold_progress */
+    buf[moff] = (uint8_t)st->module_count;
+    moff++;
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
+        buf[moff]     = (m < st->module_count) ? (uint8_t)st->modules[m].type : 0;
+        buf[moff + 1] = (m < st->module_count && st->modules[m].scaffold) ? 1 : 0;
+        write_f32_le(&buf[moff + 2], (m < st->module_count) ? st->modules[m].build_progress : 0.0f);
+        moff += STATION_MODULE_RECORD_SIZE;
+    }
     return STATION_IDENTITY_SIZE;
 }
 

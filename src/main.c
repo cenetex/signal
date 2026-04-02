@@ -254,6 +254,31 @@ static void reset_world(void) {
     set_notice("%s online. Press E to launch.", g.world.stations[LOCAL_PLAYER.current_station].name);
 }
 
+/* --- Frustum culling: skip objects entirely off-screen --- */
+static float g_cam_left, g_cam_right, g_cam_top, g_cam_bottom;
+
+static void set_camera_bounds(vec2 camera, float half_w, float half_h) {
+    g_cam_left   = camera.x - half_w;
+    g_cam_right  = camera.x + half_w;
+    g_cam_top    = camera.y - half_h;
+    g_cam_bottom = camera.y + half_h;
+}
+
+static bool on_screen(float x, float y, float radius) {
+    return x + radius > g_cam_left  && x - radius < g_cam_right &&
+           y + radius > g_cam_top   && y - radius < g_cam_bottom;
+}
+
+/* --- LOD: reduce asteroid segments when small on screen --- */
+static int lod_segments(int base_segments, float radius) {
+    float half_w = (g_cam_right - g_cam_left) * 0.5f;
+    float screen_ratio = radius / half_w;
+    if (screen_ratio < 0.005f) return 6;
+    if (screen_ratio < 0.015f) return base_segments / 2;
+    if (screen_ratio < 0.03f)  return (base_segments * 3) / 4;
+    return base_segments;
+}
+
 static float asteroid_profile(const asteroid_t* asteroid, float angle) {
     float bump1 = sinf(angle * 3.0f + asteroid->seed);
     float bump2 = sinf(angle * 7.0f + asteroid->seed * 1.71f);
@@ -975,9 +1000,7 @@ static void on_player_leave(uint8_t player_id);
 static void apply_remote_asteroids(const NetAsteroidState* asteroids, int count);
 static void apply_remote_npcs(const NetNpcState* npcs, int count);
 static void apply_remote_stations(uint8_t index, const float* inventory);
-static void apply_remote_station_identity(uint8_t index, uint8_t role, uint32_t services,
-    float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
-    const char* name, const float* buy_price, float scaffold_progress);
+static void apply_remote_station_identity(const NetStationIdentity* si);
 static void apply_remote_player_state(const NetPlayerState* state);
 static void apply_remote_player_ship(const NetPlayerShipState* state);
 static void apply_remote_contracts(const contract_t* contracts, int count);
@@ -1155,21 +1178,22 @@ static void apply_remote_contracts(const contract_t* contracts, int count) {
         g.world.contracts[i] = contracts[i];
 }
 
-static void apply_remote_station_identity(uint8_t index, uint8_t flags, uint32_t services,
-    float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
-    const char* name, const float* buy_price, float scaffold_progress) {
-    if (index >= MAX_STATIONS) return;
-    station_t* st = &g.world.stations[index];
-    st->scaffold = (flags & 1) != 0;
-    st->scaffold_progress = scaffold_progress;
-    st->services = services;
-    st->pos = v2(pos_x, pos_y);
-    st->radius = radius;
-    st->dock_radius = dock_radius;
-    st->signal_range = signal_range;
-    snprintf(st->name, sizeof(st->name), "%s", name);
+static void apply_remote_station_identity(const NetStationIdentity* si) {
+    if (si->index >= MAX_STATIONS) return;
+    station_t* st = &g.world.stations[si->index];
+    st->scaffold = (si->flags & 1) != 0;
+    st->scaffold_progress = si->scaffold_progress;
+    st->services = si->services;
+    st->pos = v2(si->pos_x, si->pos_y);
+    st->radius = si->radius;
+    st->dock_radius = si->dock_radius;
+    st->signal_range = si->signal_range;
+    snprintf(st->name, sizeof(st->name), "%s", si->name);
     for (int c = 0; c < COMMODITY_COUNT; c++)
-        st->buy_price[c] = buy_price[c];
+        st->buy_price[c] = si->buy_price[c];
+    st->module_count = si->module_count;
+    for (int m = 0; m < si->module_count && m < MAX_MODULES_PER_STATION; m++)
+        st->modules[m] = si->modules[m];
 }
 
 static void apply_remote_player_state(const NetPlayerState* state) {
@@ -1325,19 +1349,24 @@ static void render_world(void) {
     float half_w = sapp_widthf() * 0.5f;
     float half_h = sapp_heightf() * 0.5f;
 
+    set_camera_bounds(camera, half_w, half_h);
+
     sgl_defaults();
     sgl_matrix_mode_projection();
     sgl_load_identity();
-    sgl_ortho(camera.x - half_w, camera.x + half_w, camera.y - half_h, camera.y + half_h, -1.0f, 1.0f);
+    sgl_ortho(g_cam_left, g_cam_right, g_cam_top, g_cam_bottom, -1.0f, 1.0f);
     sgl_matrix_mode_modelview();
     sgl_load_identity();
 
     draw_background(camera);
 
     for (int i = 0; i < MAX_STATIONS; i++) {
+        const station_t* st = &g.world.stations[i];
+        if (!station_exists(st) && !st->scaffold) continue;
+        if (!on_screen(st->pos.x, st->pos.y, st->dock_radius + 20.0f)) continue;
         bool is_current = LOCAL_PLAYER.docked && (i == LOCAL_PLAYER.current_station);
         bool is_nearby = (!LOCAL_PLAYER.docked) && (i == LOCAL_PLAYER.nearby_station);
-        draw_station(&g.world.stations[i], is_current, is_nearby);
+        draw_station(st, is_current, is_nearby);
     }
     /* Outpost placement preview */
     if (g.placing_outpost && !LOCAL_PLAYER.docked) {

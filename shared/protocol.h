@@ -87,8 +87,10 @@ enum {
 /* NPC record: [id+flags:1][flags:1][pos:2xf32][vel:2xf32][angle:f32][target:1][tint:3] */
 #define NPC_RECORD_SIZE 26
 
-/* Station identity: [index:1][flags:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32][buy_price:COMMODITY_COUNT×f32][scaffold_progress:f32] */
-#define STATION_IDENTITY_SIZE (59 + COMMODITY_COUNT * 4 + 4)
+/* Station identity: [index:1][flags:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32]
+ * [buy_price:COMMODITY_COUNT×f32][scaffold_progress:f32][module_count:1][modules:MAX_MODULES×6] */
+#define STATION_MODULE_RECORD_SIZE 6  /* type:1 + scaffold:1 + build_progress:f32 */
+#define STATION_IDENTITY_SIZE (59 + COMMODITY_COUNT * 4 + 4 + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE)
 
 /* Player ship state: [type:1][id:1][hull:f32][credits:f32][docked:1][station:1]
  * [mining:1][hold:1][tractor:1][scaffold_kit:1][cargo:COMMODITY_COUNT×f32] */
