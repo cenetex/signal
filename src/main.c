@@ -307,37 +307,47 @@ static void sim_step(float dt) {
     if (g.action_predict_timer > 0.0f)
         g.action_predict_timer = fmaxf(0.0f, g.action_predict_timer - dt);
 
-    /* In multiplayer, also queue one-shot actions for network send. */
-    if (g.multiplayer_enabled && net_is_connected()) {
-        if (intent.interact) {
-            g.pending_net_action = LOCAL_PLAYER.docked ? 2 : 1;
-            if (LOCAL_PLAYER.docked) {
-                /* Optimistic: locally undock immediately */
-                LOCAL_PLAYER.docked = false;
-                LOCAL_PLAYER.in_dock_range = false;
-            }
-        } else if (intent.service_sell)
-            g.pending_net_action = 3;
-        else if (intent.service_repair)
-            g.pending_net_action = 4;
-        else if (intent.upgrade_mining)
-            g.pending_net_action = 5;
-        else if (intent.upgrade_hold)
-            g.pending_net_action = 6;
-        else if (intent.upgrade_tractor)
-            g.pending_net_action = 7;
-        else if (intent.place_outpost)
-            g.pending_net_action = 8;
-        else if (intent.buy_scaffold_kit)
-            g.pending_net_action = NET_ACTION_BUY_SCAFFOLD;
-        else if (intent.build_module)
-            g.pending_net_action = NET_ACTION_BUILD_MODULE + (uint8_t)intent.build_module_type;
-        else if (intent.buy_product)
-            g.pending_net_action = NET_ACTION_BUY_PRODUCT + (uint8_t)intent.buy_commodity;
-        /* Guard: after any one-shot action, suppress server ship-state
-         * overwrites until the server has had time to process it. */
-        if (g.pending_net_action != 0)
+    /* Detect one-shot actions for network send and prediction suppression. */
+    {
+        bool has_action = intent.interact || intent.service_sell ||
+            intent.service_repair || intent.upgrade_mining ||
+            intent.upgrade_hold || intent.upgrade_tractor ||
+            intent.place_outpost || intent.buy_scaffold_kit ||
+            intent.build_module || intent.buy_product;
+
+        /* Suppress server/local-server overwrites while the action is
+         * in flight.  In singleplayer the local server processes it on
+         * the same frame so the timer expires almost instantly. */
+        if (has_action)
             g.action_predict_timer = 0.5f;
+
+        /* Multiplayer: encode the action and queue for network send. */
+        if (has_action && g.multiplayer_enabled && net_is_connected()) {
+            if (intent.interact) {
+                g.pending_net_action = LOCAL_PLAYER.docked ? 2 : 1;
+                if (LOCAL_PLAYER.docked) {
+                    LOCAL_PLAYER.docked = false;
+                    LOCAL_PLAYER.in_dock_range = false;
+                }
+            } else if (intent.service_sell)
+                g.pending_net_action = 3;
+            else if (intent.service_repair)
+                g.pending_net_action = 4;
+            else if (intent.upgrade_mining)
+                g.pending_net_action = 5;
+            else if (intent.upgrade_hold)
+                g.pending_net_action = 6;
+            else if (intent.upgrade_tractor)
+                g.pending_net_action = 7;
+            else if (intent.place_outpost)
+                g.pending_net_action = 8;
+            else if (intent.buy_scaffold_kit)
+                g.pending_net_action = NET_ACTION_BUY_SCAFFOLD;
+            else if (intent.build_module)
+                g.pending_net_action = NET_ACTION_BUILD_MODULE + (uint8_t)intent.build_module_type;
+            else if (intent.buy_product)
+                g.pending_net_action = NET_ACTION_BUY_PRODUCT + (uint8_t)intent.buy_commodity;
+        }
     }
 
     consume_pressed_input();
