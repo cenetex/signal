@@ -102,6 +102,7 @@ typedef struct {
     uint32_t rng;
     float time;
     float field_spawn_timer;
+    float gravity_accumulator;  /* runs gravity at reduced rate */
     sim_events_t events;
     contract_t contracts[MAX_CONTRACTS];
     bool player_only_mode;

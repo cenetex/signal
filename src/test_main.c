@@ -1952,7 +1952,7 @@ TEST(test_bug42_station_gravity_ignores_mass) {
     w.asteroids[1].active = true; w.asteroids[1].tier = ASTEROID_TIER_XL;
     w.asteroids[1].radius = 70.0f; w.asteroids[1].pos = v2_add(w.stations[0].pos, v2(-400.0f, 0.0f));
     w.asteroids[1].vel = v2(0.0f, 0.0f);
-    world_sim_step(&w, SIM_DT);
+    for (int i = 0; i < 5; i++) world_sim_step(&w, SIM_DT);
     float accel_s = v2_len(w.asteroids[0].vel);
     float accel_xl = v2_len(w.asteroids[1].vel);
     /* After fix: fragment should accelerate faster (less mass, same force).
@@ -3294,7 +3294,7 @@ TEST(test_bug90_station_bounce_no_extra_energy) {
     w.asteroids[0].pos = v2(w.stations[0].pos.x, s0y + 62.0f + 25.0f - 5.0f);
     w.asteroids[0].vel = v2(0.0f, -10.0f); /* moving toward station */
     float speed_before = v2_len(w.asteroids[0].vel);
-    world_sim_step(&w, SIM_DT);
+    for (int i = 0; i < 5; i++) world_sim_step(&w, SIM_DT);
     float speed_after = v2_len(w.asteroids[0].vel);
     /* Speed after bounce should be materially lower than impact speed. */
     ASSERT(speed_after < speed_before * 0.8f);

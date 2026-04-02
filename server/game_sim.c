@@ -2298,9 +2298,15 @@ void world_sim_step(world_t *w, float dt) {
     w->time += dt;
     sim_step_asteroid_dynamics(w, dt);
     maintain_asteroid_field(w, dt);
-    step_asteroid_gravity(w, dt);
-    resolve_asteroid_collisions(w);
-    resolve_asteroid_station_collisions(w);
+    /* Gravity + asteroid collisions at 30Hz (not 120Hz) — O(N²) is expensive */
+    w->gravity_accumulator += dt;
+    if (w->gravity_accumulator >= 1.0f / 30.0f) {
+        float gdt = w->gravity_accumulator;
+        w->gravity_accumulator = 0.0f;
+        step_asteroid_gravity(w, gdt);
+        resolve_asteroid_collisions(w);
+        resolve_asteroid_station_collisions(w);
+    }
     sim_step_refinery_production(w, dt);
     sim_step_station_production(w, dt);
     step_contracts(w, dt);
