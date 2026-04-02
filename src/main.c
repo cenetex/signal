@@ -379,93 +379,6 @@ static void draw_station(const station_t* station, bool is_current, bool is_near
 
 }
 
-static void draw_asteroid(const asteroid_t* asteroid, bool targeted, bool ineffective) {
-    float progress_ratio = asteroid_progress_ratio(asteroid);
-    float body_r = 0.3f;
-    float body_g = 0.3f;
-    float body_b = 0.3f;
-    int segments = 18;
-    asteroid_body_color(asteroid->tier, asteroid->commodity, progress_ratio, &body_r, &body_g, &body_b);
-
-    switch (asteroid->tier) {
-        case ASTEROID_TIER_XXL:
-            segments = 28;
-            break;
-        case ASTEROID_TIER_XL:
-            segments = 22;
-            break;
-        case ASTEROID_TIER_L:
-            segments = 18;
-            break;
-        case ASTEROID_TIER_M:
-            segments = 15;
-            break;
-        case ASTEROID_TIER_S:
-            segments = 12;
-            break;
-        default:
-            break;
-    }
-
-    sgl_c4f(body_r, body_g, body_b, 1.0f);
-    sgl_begin_triangles();
-    {
-        float step = TWO_PI_F / (float)segments;
-        float a0 = asteroid->rotation;
-        float r0 = asteroid_profile(asteroid, a0);
-        float prev_x = asteroid->pos.x + cosf(a0) * r0;
-        float prev_y = asteroid->pos.y + sinf(a0) * r0;
-        for (int i = 1; i <= segments; i++) {
-            float a1 = asteroid->rotation + (float)i * step;
-            float r1 = asteroid_profile(asteroid, a1);
-            float cx = asteroid->pos.x + cosf(a1) * r1;
-            float cy = asteroid->pos.y + sinf(a1) * r1;
-            sgl_v2f(asteroid->pos.x, asteroid->pos.y);
-            sgl_v2f(prev_x, prev_y);
-            sgl_v2f(cx, cy);
-            prev_x = cx;
-            prev_y = cy;
-        }
-    }
-    sgl_end();
-
-    float rim_r = targeted ? (ineffective ? 1.0f : 0.45f) : (body_r * 0.85f);
-    float rim_g = targeted ? (ineffective ? 0.15f : 0.94f) : (body_g * 0.95f);
-    float rim_b = targeted ? (ineffective ? 0.1f : 1.0f) : fminf(1.0f, body_b * 1.2f);
-    float rim_a = targeted ? 1.0f : 0.8f;
-
-    sgl_c4f(rim_r, rim_g, rim_b, rim_a);
-    sgl_begin_line_strip();
-    for (int i = 0; i <= segments; i++) {
-        float angle = asteroid->rotation + ((float)i / (float)segments) * TWO_PI_F;
-        float radius = asteroid_profile(asteroid, angle);
-        sgl_v2f(asteroid->pos.x + cosf(angle) * radius, asteroid->pos.y + sinf(angle) * radius);
-    }
-    sgl_end();
-
-    if (asteroid->tier == ASTEROID_TIER_S) {
-        float cr, cg, cb;
-        commodity_material_tint(asteroid->commodity, &cr, &cg, &cb);
-        float glow_r = lerpf(0.48f, cr * 1.6f, 0.5f);
-        float glow_g = lerpf(0.96f, cg * 1.6f, 0.5f);
-        float glow_b = lerpf(0.78f, cb * 1.6f, 0.5f);
-        draw_circle_filled(asteroid->pos, asteroid->radius * lerpf(0.14f, 0.24f, progress_ratio), 10, glow_r, glow_g, glow_b, lerpf(0.35f, 0.8f, progress_ratio));
-    } else if (asteroid->tier == ASTEROID_TIER_M) {
-        float cr, cg, cb;
-        commodity_material_tint(asteroid->commodity, &cr, &cg, &cb);
-        float glow_r = lerpf(0.36f, cr * 1.4f, 0.4f);
-        float glow_g = lerpf(0.78f, cg * 1.4f, 0.4f);
-        float glow_b = lerpf(0.98f, cb * 1.4f, 0.4f);
-        draw_circle_filled(asteroid->pos, asteroid->radius * 0.16f, 8, glow_r, glow_g, glow_b, 0.4f);
-    }
-
-    if (targeted && ineffective) {
-        draw_circle_outline(asteroid->pos, asteroid->radius + 12.0f, 24, 1.0f, 0.2f, 0.15f, 0.75f);
-    } else if (targeted) {
-        draw_circle_outline(asteroid->pos, asteroid->radius + 12.0f, 24, 0.35f, 1.0f, 0.92f, 0.75f);
-    }
-}
-
 static void draw_ship_tractor_field(void) {
     if (LOCAL_PLAYER.nearby_fragments <= 0) {
         return;
@@ -575,6 +488,7 @@ static void draw_npc_mining_beam(const npc_ship_t* npc) {
 static void draw_npc_ships(void) {
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!g.world.npc_ships[i].active) continue;
+        if (!on_screen(g.world.npc_ships[i].pos.x, g.world.npc_ships[i].pos.y, 50.0f)) continue;
         draw_npc_ship(&g.world.npc_ships[i]);
         draw_npc_mining_beam(&g.world.npc_ships[i]);
     }
@@ -1291,6 +1205,7 @@ static void draw_remote_players(void) {
     for (int i = 0; i < NET_MAX_PLAYERS; i++) {
         if (!players[i].active) continue;
         if (i == (int)net_local_id()) continue;
+        if (!on_screen(players[i].x, players[i].y, 50.0f)) continue;
         int ci = i % 6;
         float cr = colors[ci][0], cg = colors[ci][1], cb = colors[ci][2];
         bool thrusting = (players[i].flags & 1) != 0;
@@ -1385,12 +1300,106 @@ static void render_world(void) {
         draw_segment(v2_add(target, v2(0.0f, -20.0f)), v2_add(target, v2(0.0f, 20.0f)), cr, cg, cb, pulse * 0.7f);
     }
 
+    /* --- Batched asteroid rendering with frustum culling + LOD --- */
+    /* Pass 1: filled bodies (single triangle batch) */
+    sgl_begin_triangles();
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!g.world.asteroids[i].active) {
-            continue;
+        const asteroid_t* a = &g.world.asteroids[i];
+        if (!a->active) continue;
+        if (!on_screen(a->pos.x, a->pos.y, a->radius + 16.0f)) continue;
+
+        float progress_ratio = asteroid_progress_ratio(a);
+        float body_r, body_g, body_b;
+        asteroid_body_color(a->tier, a->commodity, progress_ratio, &body_r, &body_g, &body_b);
+
+        int base_segs = 18;
+        switch (a->tier) {
+            case ASTEROID_TIER_XXL: base_segs = 28; break;
+            case ASTEROID_TIER_XL:  base_segs = 22; break;
+            case ASTEROID_TIER_L:   base_segs = 18; break;
+            case ASTEROID_TIER_M:   base_segs = 15; break;
+            case ASTEROID_TIER_S:   base_segs = 12; break;
+            default: break;
         }
+        int segments = lod_segments(base_segs, a->radius);
+
+        sgl_c4f(body_r, body_g, body_b, 1.0f);
+        float step = TWO_PI_F / (float)segments;
+        float a0 = a->rotation;
+        float r0 = asteroid_profile(a, a0);
+        float prev_x = a->pos.x + cosf(a0) * r0;
+        float prev_y = a->pos.y + sinf(a0) * r0;
+        for (int j = 1; j <= segments; j++) {
+            float a1 = a->rotation + (float)j * step;
+            float r1 = asteroid_profile(a, a1);
+            float cx = a->pos.x + cosf(a1) * r1;
+            float cy = a->pos.y + sinf(a1) * r1;
+            sgl_v2f(a->pos.x, a->pos.y);
+            sgl_v2f(prev_x, prev_y);
+            sgl_v2f(cx, cy);
+            prev_x = cx;
+            prev_y = cy;
+        }
+    }
+    sgl_end();
+
+    /* Pass 2: outlines + decorations (per-asteroid, needs LINE_STRIP) */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t* a = &g.world.asteroids[i];
+        if (!a->active) continue;
+        if (!on_screen(a->pos.x, a->pos.y, a->radius + 16.0f)) continue;
+
         bool is_target = (i == LOCAL_PLAYER.hover_asteroid);
-        draw_asteroid(&g.world.asteroids[i], is_target, is_target && LOCAL_PLAYER.beam_ineffective);
+        bool ineffective = is_target && LOCAL_PLAYER.beam_ineffective;
+        float progress_ratio = asteroid_progress_ratio(a);
+        float body_r, body_g, body_b;
+        asteroid_body_color(a->tier, a->commodity, progress_ratio, &body_r, &body_g, &body_b);
+
+        int base_segs = 18;
+        switch (a->tier) {
+            case ASTEROID_TIER_XXL: base_segs = 28; break;
+            case ASTEROID_TIER_XL:  base_segs = 22; break;
+            case ASTEROID_TIER_L:   base_segs = 18; break;
+            case ASTEROID_TIER_M:   base_segs = 15; break;
+            case ASTEROID_TIER_S:   base_segs = 12; break;
+            default: break;
+        }
+        int segments = lod_segments(base_segs, a->radius);
+
+        float rim_r = is_target ? (ineffective ? 1.0f : 0.45f) : (body_r * 0.85f);
+        float rim_g = is_target ? (ineffective ? 0.15f : 0.94f) : (body_g * 0.95f);
+        float rim_b = is_target ? (ineffective ? 0.1f : 1.0f) : fminf(1.0f, body_b * 1.2f);
+        float rim_a = is_target ? 1.0f : 0.8f;
+
+        sgl_c4f(rim_r, rim_g, rim_b, rim_a);
+        sgl_begin_line_strip();
+        for (int j = 0; j <= segments; j++) {
+            float angle = a->rotation + ((float)j / (float)segments) * TWO_PI_F;
+            float radius = asteroid_profile(a, angle);
+            sgl_v2f(a->pos.x + cosf(angle) * radius, a->pos.y + sinf(angle) * radius);
+        }
+        sgl_end();
+
+        /* Glow core for small/medium asteroids */
+        if (a->tier == ASTEROID_TIER_S) {
+            float cr, cg, cb;
+            commodity_material_tint(a->commodity, &cr, &cg, &cb);
+            draw_circle_filled(a->pos, a->radius * lerpf(0.14f, 0.24f, progress_ratio), 10,
+                lerpf(0.48f, cr * 1.6f, 0.5f), lerpf(0.96f, cg * 1.6f, 0.5f),
+                lerpf(0.78f, cb * 1.6f, 0.5f), lerpf(0.35f, 0.8f, progress_ratio));
+        } else if (a->tier == ASTEROID_TIER_M) {
+            float cr, cg, cb;
+            commodity_material_tint(a->commodity, &cr, &cg, &cb);
+            draw_circle_filled(a->pos, a->radius * 0.16f, 8,
+                lerpf(0.36f, cr * 1.4f, 0.4f), lerpf(0.78f, cg * 1.4f, 0.4f),
+                lerpf(0.98f, cb * 1.4f, 0.4f), 0.4f);
+        }
+
+        if (is_target && ineffective) {
+            draw_circle_outline(a->pos, a->radius + 12.0f, 24, 1.0f, 0.2f, 0.15f, 0.75f);
+        } else if (is_target) {
+            draw_circle_outline(a->pos, a->radius + 12.0f, 24, 0.35f, 1.0f, 0.92f, 0.75f);
+        }
     }
     draw_beam();
     draw_ship_tractor_field();
