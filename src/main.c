@@ -964,6 +964,7 @@ static void apply_remote_station_identity(uint8_t index, uint8_t role, uint32_t 
     float pos_x, float pos_y, float radius, float dock_radius, float signal_range, const char* name);
 static void apply_remote_player_state(const NetPlayerState* state);
 static void apply_remote_player_ship(const NetPlayerShipState* state);
+static void apply_remote_contracts(const contract_t* contracts, int count);
 static void sync_local_player_slot_from_network(void);
 
 static void init(void) {
@@ -1015,6 +1016,7 @@ static void init(void) {
             cbs.on_stations = apply_remote_stations;
             cbs.on_station_identity = apply_remote_station_identity;
             cbs.on_player_ship = apply_remote_player_ship;
+            cbs.on_contracts = apply_remote_contracts;
             g.multiplayer_enabled = net_init(server_url, &cbs);
         }
     }
@@ -1127,6 +1129,14 @@ static void apply_remote_stations(uint8_t index, const float* inventory) {
     station_t* st = &g.world.stations[index];
     for (int i = 0; i < COMMODITY_COUNT; i++)
         st->inventory[i] = inventory[i];
+}
+
+static void apply_remote_contracts(const contract_t* contracts, int count) {
+    /* Full replacement: clear all, then copy received */
+    for (int i = 0; i < MAX_CONTRACTS; i++)
+        g.world.contracts[i].active = false;
+    for (int i = 0; i < count && i < MAX_CONTRACTS; i++)
+        g.world.contracts[i] = contracts[i];
 }
 
 static void apply_remote_station_identity(uint8_t index, uint8_t flags, uint32_t services,

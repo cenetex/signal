@@ -80,6 +80,9 @@ typedef void (*net_on_player_ship_fn)(const NetPlayerShipState* state);
 /* Station update callback: index + full inventory[COMMODITY_COUNT]. */
 typedef void (*net_on_stations_fn)(uint8_t index, const float* inventory);
 
+/* Contracts callback: full replacement of contract array. */
+typedef void (*net_on_contracts_fn)(const contract_t* contracts, int count);
+
 /* Station identity callback: full static fields for a station slot. */
 typedef void (*net_on_station_identity_fn)(uint8_t index, uint8_t role, uint32_t services,
     float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
@@ -94,6 +97,7 @@ typedef struct {
     net_on_stations_fn on_stations;
     net_on_station_identity_fn on_station_identity;
     net_on_player_ship_fn on_player_ship;
+    net_on_contracts_fn on_contracts;
 } NetCallbacks;
 
 /* Initialize networking and connect to the relay server.

@@ -253,6 +253,32 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_CONTRACTS:
+        if (len >= 2 && net_state.callbacks.on_contracts) {
+            uint8_t count = data[1];
+            if (len >= 2 + count * 25) {
+                contract_t contracts[MAX_CONTRACTS];
+                memset(contracts, 0, sizeof(contracts));
+                int n = count < MAX_CONTRACTS ? count : MAX_CONTRACTS;
+                for (int i = 0; i < n; i++) {
+                    const uint8_t *p = &data[2 + i * 25];
+                    contracts[i].active = true;
+                    contracts[i].action = (contract_action_t)p[0];
+                    contracts[i].station_index = p[1];
+                    contracts[i].commodity = (commodity_t)p[2];
+                    contracts[i].quantity_needed = read_f32_le(&p[3]);
+                    contracts[i].base_price = read_f32_le(&p[7]);
+                    contracts[i].age = read_f32_le(&p[11]);
+                    contracts[i].target_pos.x = read_f32_le(&p[15]);
+                    contracts[i].target_pos.y = read_f32_le(&p[19]);
+                    contracts[i].target_index = (int)(int32_t)read_u32_le(&p[23]);
+                    contracts[i].claimed_by = -1;
+                }
+                net_state.callbacks.on_contracts(contracts, n);
+            }
+        }
+        break;
+
     default:
         break;
     }

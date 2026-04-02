@@ -257,10 +257,15 @@ static void broadcast_ship_states(void) {
         ws_send(world.players[i].conn, buf, (size_t)len);
     }
 
-    /* Station state (inventory, ore buffers, products) at same cadence. */
+    /* Station state */
     uint8_t sbuf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
     int slen = serialize_stations(sbuf, world.stations);
     broadcast(sbuf, (size_t)slen);
+
+    /* Contracts */
+    uint8_t cbuf[2 + MAX_CONTRACTS * CONTRACT_RECORD_SIZE];
+    int clen = serialize_contracts(cbuf, world.contracts);
+    broadcast(cbuf, (size_t)clen);
 }
 
 /* ------------------------------------------------------------------ */

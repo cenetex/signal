@@ -281,6 +281,35 @@ static inline int serialize_player_ship(uint8_t *buf, uint8_t id, const server_p
     return 16 + COMMODITY_COUNT * 4;
 }
 
+/*
+ * CONTRACTS message:
+ * [type:1][count:1] + count * [action:1][station:1][commodity:1][quantity:f32][base_price:f32][age:f32][target_x:f32][target_y:f32][target_index:i32]
+ * = 2 + count * 25 bytes
+ */
+#define CONTRACT_RECORD_SIZE 25
+
+static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts) {
+    int count = 0;
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        if (!contracts[i].active) continue;
+        uint8_t *p = &buf[2 + count * CONTRACT_RECORD_SIZE];
+        p[0] = (uint8_t)contracts[i].action;
+        p[1] = contracts[i].station_index;
+        p[2] = (uint8_t)contracts[i].commodity;
+        write_f32_le(&p[3], contracts[i].quantity_needed);
+        write_f32_le(&p[7], contracts[i].base_price);
+        write_f32_le(&p[11], contracts[i].age);
+        write_f32_le(&p[15], contracts[i].target_pos.x);
+        write_f32_le(&p[19], contracts[i].target_pos.y);
+        write_u32_le(&p[23], (uint32_t)contracts[i].target_index);
+        /* Note: claimed_by not sent — server-only field */
+        count++;
+    }
+    buf[0] = NET_MSG_CONTRACTS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * CONTRACT_RECORD_SIZE;
+}
+
 /* ------------------------------------------------------------------ */
 /* Deserialisation (client -> server)                                 */
 /* ------------------------------------------------------------------ */
