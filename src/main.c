@@ -931,14 +931,13 @@ static void sim_step(float dt) {
     }
 
     step_notice_timer(dt);
-    if (g.dock_predict_timer > 0.0f)
-        g.dock_predict_timer = fmaxf(0.0f, g.dock_predict_timer - dt);
+    if (g.action_predict_timer > 0.0f)
+        g.action_predict_timer = fmaxf(0.0f, g.action_predict_timer - dt);
 
     /* In multiplayer, also queue one-shot actions for network send. */
     if (g.multiplayer_enabled && net_is_connected()) {
         if (intent.interact) {
             g.pending_net_action = LOCAL_PLAYER.docked ? 2 : 1;
-            g.dock_predict_timer = 0.5f;
             if (LOCAL_PLAYER.docked) {
                 /* Optimistic: locally undock immediately */
                 LOCAL_PLAYER.docked = false;
@@ -962,6 +961,10 @@ static void sim_step(float dt) {
             g.pending_net_action = NET_ACTION_BUILD_MODULE + (uint8_t)intent.build_module_type;
         else if (intent.buy_product)
             g.pending_net_action = NET_ACTION_BUY_PRODUCT + (uint8_t)intent.buy_commodity;
+        /* Guard: after any one-shot action, suppress server ship-state
+         * overwrites until the server has had time to process it. */
+        if (g.pending_net_action != 0)
+            g.action_predict_timer = 0.5f;
     }
 
     consume_pressed_input();
@@ -1201,23 +1204,27 @@ static void apply_remote_player_ship(const NetPlayerShipState* state) {
     if (state->player_id != net_local_id() || state->player_id >= MAX_PLAYERS) return;
 
     server_player_t* sp = &g.world.players[state->player_id];
-    sp->ship.hull = state->hull;
-    sp->ship.credits = state->credits;
-    sp->ship.mining_level = (int)state->mining_level;
-    sp->ship.hold_level = (int)state->hold_level;
-    sp->ship.tractor_level = (int)state->tractor_level;
-    sp->ship.has_scaffold_kit = state->has_scaffold_kit;
-    for (int c = 0; c < COMMODITY_COUNT; c++)
-        sp->ship.cargo[c] = state->cargo[c];
-    /* Dock-state reconciliation: the server is authoritative, but we
-     * must not snap back to docked while the local sim has already
-     * launched (the server may not have processed the action yet).
+    /* While the action predict timer is active, the client has made an
+     * optimistic change (buy/sell/upgrade/launch) that the server hasn't
+     * confirmed yet.  Skip overwriting mutable ship state to prevent
+     * flicker from stale PLAYER_SHIP messages. */
+    if (g.action_predict_timer <= 0.0f) {
+        sp->ship.hull = state->hull;
+        sp->ship.credits = state->credits;
+        sp->ship.mining_level = (int)state->mining_level;
+        sp->ship.hold_level = (int)state->hold_level;
+        sp->ship.tractor_level = (int)state->tractor_level;
+        sp->ship.has_scaffold_kit = state->has_scaffold_kit;
+        for (int c = 0; c < COMMODITY_COUNT; c++)
+            sp->ship.cargo[c] = state->cargo[c];
+    }
+    /* Dock-state reconciliation:
      * - Server says undocked → always accept.
      * - Server says docked  → only accept if we locally agree
-     *   (still docked or within the dock-prediction guard window). */
+     *   or the predict window has expired. */
     if (!state->docked) {
         sp->docked = false;
-    } else if (sp->docked || g.dock_predict_timer <= 0.0f) {
+    } else if (sp->docked || g.action_predict_timer <= 0.0f) {
         sp->docked = true;
         sp->current_station = (int)state->current_station;
         sp->in_dock_range = true;

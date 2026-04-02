@@ -98,7 +98,7 @@ typedef struct {
     bool multiplayer_enabled;
     float net_send_timer;
     uint8_t pending_net_action;
-    float dock_predict_timer;
+    float action_predict_timer;
     float net_input_timer;
     station_tab_t station_tab;
     bool was_docked;
