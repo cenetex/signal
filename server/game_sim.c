@@ -13,7 +13,6 @@
 #define SIM_LOG(...) ((void)0)
 #endif
 
-static const float INGOT_BUFFER_CAPACITY = 50.0f;
 
 static void emit_event(world_t *w, sim_event_t ev) {
     if (w->events.count < SIM_MAX_EVENTS) {
@@ -843,7 +842,7 @@ static void sim_step_refinery_production(world_t *w, float dt) {
             if (!sim_can_smelt_ore(st, ore)) continue;
             if (st->inventory[ore] <= 0.01f) continue;
             commodity_t ingot = commodity_refined_form(ore);
-            float room = INGOT_BUFFER_CAPACITY - st->inventory[ingot];
+            float room = MAX_PRODUCT_STOCK - st->inventory[ingot];
             if (room <= 0.01f) continue;
             float consume = fminf(fminf(st->inventory[ore], rate * dt), room);
             st->inventory[ore] -= consume;
@@ -1165,8 +1164,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             station_t *dest = &w->stations[npc->dest_station];
             for (int i = 0; i < INGOT_COUNT; i++) {
                 dest->inventory[COMMODITY_RAW_ORE_COUNT + i] += npc->ingots[i];
-                if (dest->inventory[COMMODITY_RAW_ORE_COUNT + i] > INGOT_BUFFER_CAPACITY)
-                    dest->inventory[COMMODITY_RAW_ORE_COUNT + i] = INGOT_BUFFER_CAPACITY;
+                if (dest->inventory[COMMODITY_RAW_ORE_COUNT + i] > MAX_PRODUCT_STOCK)
+                    dest->inventory[COMMODITY_RAW_ORE_COUNT + i] = MAX_PRODUCT_STOCK;
                 npc->ingots[i] = 0.0f;
             }
             /* Hauler also delivers ingots to scaffold station and modules */
@@ -2235,7 +2234,7 @@ static void step_contracts(world_t *w, float dt) {
             station_t *st = &w->stations[w->contracts[i].station_index];
             commodity_t c = w->contracts[i].commodity;
             float current = st->inventory[c];
-            float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.8f : INGOT_BUFFER_CAPACITY * 0.8f;
+            float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.8f : MAX_PRODUCT_STOCK * 0.8f;
             if (current >= threshold) {
                 w->contracts[i].active = false;
                 emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_SUPPLY});
@@ -2350,7 +2349,7 @@ static void step_contracts(world_t *w, float dt) {
             int worst_idx = -1;
             for (int j = 0; j < 3; j++) {
                 if (!station_has_module(st, checks[j].mod)) continue;
-                float deficit = INGOT_BUFFER_CAPACITY * 0.5f - st->inventory[checks[j].ingot];
+                float deficit = MAX_PRODUCT_STOCK * 0.5f - st->inventory[checks[j].ingot];
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
             }
             if (worst_idx >= 0) {
