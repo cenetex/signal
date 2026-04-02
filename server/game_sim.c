@@ -1817,9 +1817,6 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     }
     if (!sp->docked) return;
     station_t *docked_st = &w->stations[sp->current_station];
-    /* Auto-deliver to scaffolds only (construction, not trade) */
-    step_scaffold_delivery(w, sp);
-    step_module_delivery(w, docked_st, sp->current_station, &sp->ship);
     /* Module construction: player requests to build a module */
     if (intent->build_module && !w->player_only_mode) {
         float cost = module_credit_cost(intent->build_module_type);
@@ -1830,7 +1827,12 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             begin_module_construction(w, docked_st, sp->current_station, intent->build_module_type);
         }
     }
-    if (intent->service_sell)        try_sell_station_cargo(w, sp);
+    if (intent->service_sell) {
+        /* Deliver to scaffolds/modules first, then sell remaining */
+        step_scaffold_delivery(w, sp);
+        step_module_delivery(w, docked_st, sp->current_station, &sp->ship);
+        try_sell_station_cargo(w, sp);
+    }
     else if (intent->service_repair) try_repair_ship(w, sp);
     else if (intent->upgrade_mining) try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_MINING);
     else if (intent->upgrade_hold)   try_apply_ship_upgrade(w, sp, SHIP_UPGRADE_HOLD);

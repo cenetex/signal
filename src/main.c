@@ -978,7 +978,7 @@ static void apply_remote_npcs(const NetNpcState* npcs, int count);
 static void apply_remote_stations(uint8_t index, const float* inventory);
 static void apply_remote_station_identity(uint8_t index, uint8_t role, uint32_t services,
     float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
-    const char* name, const float* buy_price);
+    const char* name, const float* buy_price, float scaffold_progress);
 static void apply_remote_player_state(const NetPlayerState* state);
 static void apply_remote_player_ship(const NetPlayerShipState* state);
 static void apply_remote_contracts(const contract_t* contracts, int count);
@@ -1158,10 +1158,11 @@ static void apply_remote_contracts(const contract_t* contracts, int count) {
 
 static void apply_remote_station_identity(uint8_t index, uint8_t flags, uint32_t services,
     float pos_x, float pos_y, float radius, float dock_radius, float signal_range,
-    const char* name, const float* buy_price) {
+    const char* name, const float* buy_price, float scaffold_progress) {
     if (index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[index];
     st->scaffold = (flags & 1) != 0;
+    st->scaffold_progress = scaffold_progress;
     st->services = services;
     st->pos = v2(pos_x, pos_y);
     st->radius = radius;

@@ -241,8 +241,9 @@ static void handle_message(const uint8_t* data, int len) {
             float buy_price[COMMODITY_COUNT];
             for (int c = 0; c < COMMODITY_COUNT; c++)
                 buy_price[c] = read_f32_le(&data[59 + c * 4]);
+            float scaffold_progress = read_f32_le(&data[59 + COMMODITY_COUNT * 4]);
             net_state.callbacks.on_station_identity(idx, role, services, px, py,
-                radius, dock_radius, signal_range, name, buy_price);
+                radius, dock_radius, signal_range, name, buy_price, scaffold_progress);
         }
         break;
 

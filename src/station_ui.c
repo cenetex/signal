@@ -514,13 +514,17 @@ void draw_station_services(const station_ui_state_t* ui) {
 
         if (ui->station->scaffold) {
             int pct = (int)lroundf(ui->station->scaffold_progress * 100.0f);
+            int held = (int)lroundf(ship_cargo_amount(&LOCAL_PLAYER.ship, COMMODITY_FRAME));
             sdtx_color3b(255, 221, 119);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             sdtx_printf("SCAFFOLD  %d%%", pct);
             ly += 18.0f;
-            sdtx_color3b(145, 160, 188);
+            sdtx_color3b(held > 0 ? 130 : 145, held > 0 ? 255 : 160, held > 0 ? 235 : 188);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            sdtx_puts("Deliver frames to build.");
+            if (held > 0)
+                sdtx_printf("[1] Deliver %d frames", held);
+            else
+                sdtx_puts("Deliver frames to build.");
         } else {
             /* Actions */
             {
