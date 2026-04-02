@@ -789,7 +789,7 @@ void draw_hud(void) {
         }
         sdtx_pos(info_x, ui_text_pos(18.0f));
         sdtx_color3b(70, 60, 50);
-        sdtx_puts("ALPHA");
+        sdtx_puts("ALPHA // world resets daily");
     }
 
     /* --- Edge pips --- */
