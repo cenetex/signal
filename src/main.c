@@ -355,8 +355,7 @@ static void render_world(void) {
     if (g.placing_outpost && !LOCAL_PLAYER.docked) {
         vec2 forward = v2_from_angle(LOCAL_PLAYER.ship.angle);
         vec2 target = v2_add(LOCAL_PLAYER.ship.pos, v2_scale(forward, 150.0f));
-        bool valid = can_place_outpost(&g.world, target)
-                  && LOCAL_PLAYER.ship.credits >= OUTPOST_CREDIT_COST;
+        bool valid = can_place_outpost(&g.world, target);
         float cr = valid ? 0.3f : 0.9f;
         float cg = valid ? 0.9f : 0.2f;
         float cb = valid ? 0.5f : 0.2f;
