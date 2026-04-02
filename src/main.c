@@ -620,6 +620,8 @@ static input_intent_t sample_input_intent(void) {
     }
 
     intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
+    /* Safety: close build overlay if not docked */
+    if (!LOCAL_PLAYER.docked) g.build_overlay = false;
     /* E key: close build overlay if open, otherwise interact (dock/launch) */
     if (g.build_overlay && is_key_pressed(SAPP_KEYCODE_E)) {
         g.build_overlay = false;
