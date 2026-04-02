@@ -50,6 +50,7 @@ static const float HAULER_DOCK_TIME = 4.0f;
 static const float HAULER_LOAD_TIME = 2.0f;
 static const float COLLECTION_FEEDBACK_TIME = 1.1f;
 
+
 /* ------------------------------------------------------------------ */
 /* Server-specific types                                              */
 /* ------------------------------------------------------------------ */

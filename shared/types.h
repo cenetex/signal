@@ -107,17 +107,21 @@ typedef enum {
     MODULE_CONTRACT_BOARD,
     MODULE_ORE_SILO,
     MODULE_BLUEPRINT_DESK,
+    MODULE_RING,            /* physical ring truss structure */
     MODULE_COUNT
 } module_type_t;
 
 typedef struct {
     module_type_t type;
+    uint8_t ring;           /* 0=core level, 1=ring 1, 2=ring 2 */
+    uint8_t slot;           /* port index within ring (0xff = N/A) */
     bool scaffold;          /* under construction */
     float build_progress;   /* 0.0 to 1.0 */
 } station_module_t;
 
 enum {
     MAX_MODULES_PER_STATION = 16,
+    MAX_RING_COUNT = 3,     /* core + 2 expansion rings */
 };
 
 typedef struct {
@@ -135,6 +139,8 @@ typedef struct {
     /* Module system */
     station_module_t modules[MAX_MODULES_PER_STATION];
     int module_count;
+    /* Ring rotation (radians, per ring level) */
+    float ring_rotation[MAX_RING_COUNT];
 } station_t;
 
 /* ------------------------------------------------------------------ */
@@ -320,6 +326,38 @@ static inline module_type_t station_dominant_module(const station_t *st) {
         }
     }
     return MODULE_DOCK;
+}
+
+/* Ring construction constants */
+static const int   RING_PORT_COUNT[] = { 0, 5, 8 };    /* core has no ports */
+static const float RING_RADIUS[]     = { 40.0f, 110.0f, 170.0f };
+static const float RING_SPEED[]      = { 0.0f, 0.08f, 0.04f }; /* rad/s */
+static const float RING_GAP_CENTER   = 4.712389f;      /* 270 deg */
+static const float RING_GAP_WIDTH    = 0.698132f;       /* 40 deg */
+
+/* Ring helpers */
+static inline bool station_has_ring(const station_t *st, int ring) {
+    if (ring <= 0) return true; /* core always exists */
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_RING && st->modules[i].ring == ring
+            && !st->modules[i].scaffold)
+            return true;
+    }
+    return false;
+}
+
+static inline int station_ring_free_slot(const station_t *st, int ring, int port_count) {
+    for (int slot = 0; slot < port_count; slot++) {
+        bool taken = false;
+        for (int i = 0; i < st->module_count; i++) {
+            if (st->modules[i].ring == ring && st->modules[i].slot == slot) {
+                taken = true;
+                break;
+            }
+        }
+        if (!taken) return slot;
+    }
+    return -1;
 }
 
 /* Outpost construction constants (client-shared) */

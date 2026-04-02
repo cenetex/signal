@@ -169,11 +169,12 @@ bool can_place_outpost(const world_t *w, vec2 pos) {
     return false;
 }
 
-static void add_module(station_t *st, module_type_t type) {
+static void add_module_at(station_t *st, module_type_t type, uint8_t ring, uint8_t slot) {
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
-    if (station_has_module(st, type)) return;
     station_module_t *m = &st->modules[st->module_count++];
     m->type = type;
+    m->ring = ring;
+    m->slot = slot;
     m->scaffold = false;
     m->build_progress = 1.0f;
 }
@@ -185,7 +186,7 @@ static void activate_outpost(world_t *w, int station_idx) {
     st->scaffold = false;
     st->scaffold_progress = 1.0f;
     st->signal_range = OUTPOST_SIGNAL_RANGE;
-    add_module(st, MODULE_REPAIR_BAY);
+    add_module_at(st, MODULE_REPAIR_BAY, 0, 0xFF);
     rebuild_station_services(st);
     rebuild_signal_chain(w);
     /* Spawn NPCs based on installed modules */
@@ -244,8 +245,18 @@ void begin_module_construction(world_t *w, station_t *st, int station_idx, modul
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
     if (station_has_module(st, type)) return;
 
+    /* Find the highest complete ring and assign to next free slot */
+    int target_ring = 1;
+    for (int r = MAX_RING_COUNT - 1; r >= 1; r--) {
+        if (station_has_ring(st, r)) { target_ring = r; break; }
+    }
+    int target_slot = station_ring_free_slot(st, target_ring, RING_PORT_COUNT[target_ring]);
+    if (target_slot < 0) return; /* ring is full */
+
     station_module_t *m = &st->modules[st->module_count++];
     m->type = type;
+    m->ring = (uint8_t)target_ring;
+    m->slot = (uint8_t)target_slot;
     m->scaffold = true;
     m->build_progress = 0.0f;
 
@@ -384,8 +395,8 @@ int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
     st->signal_range = OUTPOST_SIGNAL_RANGE;
     st->scaffold = true;
     st->scaffold_progress = 0.0f;
-    add_module(st, MODULE_DOCK);
-    add_module(st, MODULE_SIGNAL_RELAY);
+    add_module_at(st, MODULE_DOCK, 0, 0xFF);
+    add_module_at(st, MODULE_SIGNAL_RELAY, 0, 0xFF);
     rebuild_station_services(st);
 
     /* Generate supply contract for outpost construction */
@@ -428,10 +439,6 @@ static bool point_within_signal_margin(const world_t *w, vec2 pos, float margin)
 /* ================================================================== */
 /* Commodity / ship helpers                                           */
 /* ================================================================== */
-
-static commodity_t random_raw_ore(world_t *w) {
-    return (commodity_t)rand_int(w, (int)COMMODITY_FERRITE_ORE, (int)COMMODITY_CRYSTAL_ORE);
-}
 
 static void clear_ship_cargo(ship_t *s) {
     memset(s->cargo, 0, sizeof(s->cargo));
@@ -1831,9 +1838,16 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     /* Module construction: player requests to build a module */
     if (intent->build_module && !w->player_only_mode) {
         float cost = module_credit_cost(intent->build_module_type);
+        /* Find target ring and slot before committing credits */
+        int target_ring = 1;
+        for (int r = MAX_RING_COUNT - 1; r >= 1; r--) {
+            if (station_has_ring(docked_st, r)) { target_ring = r; break; }
+        }
+        int target_slot = station_ring_free_slot(docked_st, target_ring, RING_PORT_COUNT[target_ring]);
         if (sp->ship.credits >= cost
             && !station_has_module(docked_st, intent->build_module_type)
-            && docked_st->module_count < MAX_MODULES_PER_STATION) {
+            && docked_st->module_count < MAX_MODULES_PER_STATION
+            && target_slot >= 0) {
             sp->ship.credits -= cost;
             begin_module_construction(w, docked_st, sp->current_station, intent->build_module_type);
         }
@@ -2335,6 +2349,15 @@ static void step_contracts(world_t *w, float dt) {
 void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
     w->time += dt;
+    /* Advance ring rotations */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!station_exists(&w->stations[s])) continue;
+        for (int r = 1; r < MAX_RING_COUNT; r++) {
+            w->stations[s].ring_rotation[r] += RING_SPEED[r] * dt;
+            if (w->stations[s].ring_rotation[r] > TWO_PI_F)
+                w->stations[s].ring_rotation[r] -= TWO_PI_F;
+        }
+    }
     sim_step_asteroid_dynamics(w, dt);
     maintain_asteroid_field(w, dt);
     /* Gravity + asteroid collisions at 30Hz (not 120Hz) — O(N²) is expensive */
@@ -2423,11 +2446,12 @@ void world_reset(world_t *w) {
     w->stations[0].buy_price[COMMODITY_CUPRITE_ORE] = 14.0f;
     w->stations[0].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
     w->stations[0].signal_range = 18000.0f;
-    add_module(&w->stations[0], MODULE_DOCK);
-    add_module(&w->stations[0], MODULE_ORE_BUYER);
-    add_module(&w->stations[0], MODULE_FURNACE);
-    add_module(&w->stations[0], MODULE_REPAIR_BAY);
-    add_module(&w->stations[0], MODULE_CONTRACT_BOARD);
+    add_module_at(&w->stations[0], MODULE_DOCK, 0, 0xFF);
+    add_module_at(&w->stations[0], MODULE_RING, 1, 0xFF);
+    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 1, 0);
+    add_module_at(&w->stations[0], MODULE_FURNACE, 1, 1);
+    add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 1, 2);
+    add_module_at(&w->stations[0], MODULE_CONTRACT_BOARD, 1, 3);
     rebuild_station_services(&w->stations[0]);
 
     snprintf(w->stations[1].name, sizeof(w->stations[1].name), "%s", "Kepler Yard");
@@ -2439,11 +2463,12 @@ void world_reset(world_t *w) {
     w->stations[1].buy_price[COMMODITY_CUPRITE_ORE] = 14.0f;
     w->stations[1].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
     w->stations[1].buy_price[COMMODITY_FRAME] = 20.0f;
-    add_module(&w->stations[1], MODULE_DOCK);
-    add_module(&w->stations[1], MODULE_FRAME_PRESS);
-    add_module(&w->stations[1], MODULE_REPAIR_BAY);
-    add_module(&w->stations[1], MODULE_CONTRACT_BOARD);
-    add_module(&w->stations[1], MODULE_BLUEPRINT_DESK);
+    add_module_at(&w->stations[1], MODULE_DOCK, 0, 0xFF);
+    add_module_at(&w->stations[1], MODULE_RING, 1, 0xFF);
+    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 1, 0);
+    add_module_at(&w->stations[1], MODULE_REPAIR_BAY, 1, 1);
+    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 1, 2);
+    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 1, 3);
     rebuild_station_services(&w->stations[1]);
 
     snprintf(w->stations[2].name, sizeof(w->stations[2].name), "%s", "Helios Works");
@@ -2456,12 +2481,13 @@ void world_reset(world_t *w) {
     w->stations[2].buy_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
     w->stations[2].buy_price[COMMODITY_LASER_MODULE] = 28.0f;
     w->stations[2].buy_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
-    add_module(&w->stations[2], MODULE_DOCK);
-    add_module(&w->stations[2], MODULE_LASER_FAB);
-    add_module(&w->stations[2], MODULE_TRACTOR_FAB);
-    add_module(&w->stations[2], MODULE_REPAIR_BAY);
-    add_module(&w->stations[2], MODULE_CONTRACT_BOARD);
-    add_module(&w->stations[2], MODULE_BLUEPRINT_DESK);
+    add_module_at(&w->stations[2], MODULE_DOCK, 0, 0xFF);
+    add_module_at(&w->stations[2], MODULE_RING, 1, 0xFF);
+    add_module_at(&w->stations[2], MODULE_LASER_FAB, 1, 0);
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 1, 1);
+    add_module_at(&w->stations[2], MODULE_REPAIR_BAY, 1, 2);
+    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 1, 3);
+    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 1, 4);
     rebuild_station_services(&w->stations[2]);
     rebuild_signal_chain(w);
 
