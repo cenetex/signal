@@ -346,7 +346,7 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
      * 6-byte format (legacy, no action): no action byte present. */
     {
         uint8_t action = 0;
-        if (len == 3) action = data[2];
+        if (len >= 3 && len < 7) action = data[2];
         else if (len >= 7) action = data[6];
         switch (action) {
         case NET_ACTION_DOCK:
