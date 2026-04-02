@@ -2247,11 +2247,14 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
 
-        /* Priority 3: ore hopper with biggest deficit */
-        if (!need.active && station_has_module(st, MODULE_FURNACE)) {
+        /* Priority 3: ore hopper with biggest deficit (only for ore types this station can smelt) */
+        if (!need.active && (station_has_module(st, MODULE_FURNACE)
+            || station_has_module(st, MODULE_FURNACE_CU)
+            || station_has_module(st, MODULE_FURNACE_CR))) {
             float worst_deficit = 0.0f;
             int worst_ore = -1;
             for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
+                if (!sim_can_smelt_ore(st, (commodity_t)c)) continue;
                 float deficit = REFINERY_HOPPER_CAPACITY * 0.5f - st->inventory[c];
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_ore = c; }
             }
