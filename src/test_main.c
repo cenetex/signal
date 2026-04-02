@@ -3542,6 +3542,103 @@ TEST(test_belt_ore_distribution) {
     ASSERT(cr < fe);    /* less than ferrite */
 }
 
+/* ================================================================== */
+/* Mixed cargo sell/deliver                                            */
+/* ================================================================== */
+
+TEST(test_sell_ore_at_refinery) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 50.0f;
+    float credits_before = w.players[0].ship.credits;
+    /* Dock at refinery (station 0) and sell */
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] < 50.0f);
+    ASSERT(w.players[0].ship.credits > credits_before);
+}
+
+TEST(test_deliver_ingots_to_contract) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    /* Player carries ferrite ingots */
+    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 30.0f;
+    float credits_before = w.players[0].ship.credits;
+    /* Create a contract at station 1 (Kepler Yard) for ferrite ingots */
+    w.contracts[0] = (contract_t){
+        .active = true, .action = CONTRACT_SUPPLY,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 20.0f,
+        .base_price = 20.0f,
+        .target_index = -1, .claimed_by = -1,
+    };
+    /* Dock at station 1 and sell */
+    w.players[0].docked = true;
+    w.players[0].current_station = 1;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    /* Ingots delivered, credits gained */
+    ASSERT(w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] < 30.0f);
+    ASSERT(w.players[0].ship.credits > credits_before);
+    /* Contract quantity reduced */
+    ASSERT(w.contracts[0].quantity_needed < 20.0f || !w.contracts[0].active);
+}
+
+TEST(test_mixed_cargo_sell_and_deliver) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    /* Player carries both ore and ingots */
+    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 40.0f;
+    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 20.0f;
+    /* Contract at refinery for ferrite ingots (unusual but valid) */
+    w.contracts[0] = (contract_t){
+        .active = true, .action = CONTRACT_SUPPLY,
+        .station_index = 0,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 15.0f,
+        .base_price = 20.0f,
+        .target_index = -1, .claimed_by = -1,
+    };
+    float credits_before = w.players[0].ship.credits;
+    /* Dock at refinery and sell */
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    /* Both ore sold AND ingots delivered */
+    ASSERT(w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] < 40.0f);
+    ASSERT(w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] < 20.0f);
+    ASSERT(w.players[0].ship.credits > credits_before);
+}
+
+TEST(test_no_delivery_without_matching_contract) {
+    /* Ingots for a commodity with no contract should not be delivered */
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    /* Player carries crystal ingots — no station needs them */
+    w.players[0].ship.cargo[COMMODITY_CRYSTAL_INGOT] = 20.0f;
+    /* Clear all contracts */
+    for (int k = 0; k < MAX_CONTRACTS; k++) w.contracts[k].active = false;
+    /* Dock at yard and try to sell */
+    w.players[0].docked = true;
+    w.players[0].current_station = 1;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    /* Crystal ingots should NOT be taken — no contract for them */
+    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_CRYSTAL_INGOT], 20.0f, 0.01f);
+}
+
 int main(void) {
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -3780,6 +3877,12 @@ int main(void) {
     printf("\nBelt generation:\n");
     RUN(test_belt_density_varies);
     RUN(test_belt_ore_distribution);
+
+    printf("\nMixed cargo sell/deliver:\n");
+    RUN(test_sell_ore_at_refinery);
+    RUN(test_deliver_ingots_to_contract);
+    RUN(test_mixed_cargo_sell_and_deliver);
+    RUN(test_no_delivery_without_matching_contract);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
