@@ -1270,6 +1270,23 @@ static void render_world(void) {
     sgl_load_identity();
 
     draw_background(camera);
+
+    /* Dim star at origin — the gravitational center of the belt */
+    {
+        vec2 star = v2(0.0f, 0.0f);
+        float dist = sqrtf(v2_dist_sq(camera, star));
+        /* Visible from anywhere — scales with distance */
+        float core_r = 8.0f;
+        float glow_r = 120.0f + dist * 0.002f; /* grows subtly at distance */
+        float pulse = 0.85f + 0.15f * sinf(g.world.time * 0.4f);
+        /* Warm amber core */
+        draw_circle_filled(star, core_r, 12, 1.0f, 0.85f, 0.5f, pulse * 0.9f);
+        /* Inner glow */
+        draw_circle_filled(star, glow_r * 0.3f, 18, 0.9f, 0.6f, 0.25f, pulse * 0.12f);
+        /* Outer glow */
+        draw_circle_filled(star, glow_r, 24, 0.7f, 0.4f, 0.15f, pulse * 0.04f);
+    }
+
     for (int i = 0; i < MAX_STATIONS; i++) {
         bool is_current = LOCAL_PLAYER.docked && (i == LOCAL_PLAYER.current_station);
         bool is_nearby = (!LOCAL_PLAYER.docked) && (i == LOCAL_PLAYER.nearby_station);
