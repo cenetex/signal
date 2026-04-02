@@ -626,6 +626,9 @@ static void frame(void) {
         sync_local_player_slot_from_network();
         if (was_connected && !net_is_connected()) {
             set_notice("Connection lost. Continuing offline.");
+            /* Fall back to local server using current world state */
+            g.local_server.world = g.world;
+            g.local_server.active = true;
         }
         /* Send input at ~30 Hz, or immediately if there's a one-shot action. */
         {

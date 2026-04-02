@@ -52,6 +52,11 @@ void local_server_sync_to_client(const local_server_t *ls) {
     const server_player_t *src = &ls->world.players[g.local_player_slot];
     server_player_t *dst = &g.world.players[g.local_player_slot];
 
+    /* Player position/velocity/angle — authoritative, always sync */
+    dst->ship.pos = src->ship.pos;
+    dst->ship.vel = src->ship.vel;
+    dst->ship.angle = src->ship.angle;
+
     if (g.action_predict_timer <= 0.0f) {
         dst->ship.hull = src->ship.hull;
         dst->ship.credits = src->ship.credits;

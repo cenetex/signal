@@ -218,6 +218,10 @@ void sync_local_player_slot_from_network(void) {
 }
 
 void interpolate_world_for_render(void) {
+    /* Singleplayer: local server syncs every tick, no interpolation needed.
+     * g.world already has authoritative state from local_server_sync_to_client. */
+    if (g.local_server.active) return;
+
     float t = clampf(g.asteroid_interp.t, 0.0f, 1.2f);
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
