@@ -111,15 +111,30 @@ static void init_starfield(void) {
 }
 
 static void reset_world(void) {
-    world_reset(&g.world);
-    player_init_ship(&LOCAL_PLAYER, &g.world);
-    LOCAL_PLAYER.connected = true;
+    if (!g.multiplayer_enabled) {
+        /* Singleplayer: use local server as authoritative sim */
+        local_server_init(&g.local_server, 0);
+        /* Copy full initial state to client world view */
+        g.world = g.local_server.world;
+    } else {
+        /* Multiplayer: server manages world, client just predicts */
+        world_reset(&g.world);
+        player_init_ship(&LOCAL_PLAYER, &g.world);
+        LOCAL_PLAYER.connected = true;
+    }
 
+    g.local_player_slot = 0;
     g.tracked_contract = -1;
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
-    g.asteroid_interp.interval = 0.1f;
+    g.asteroid_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
-    g.npc_interp.interval = 0.1f;
+    g.npc_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
+
+    /* Seed interp buffers so first frame has valid data */
+    memcpy(g.asteroid_interp.curr, g.world.asteroids, sizeof(g.asteroid_interp.curr));
+    memcpy(g.asteroid_interp.prev, g.world.asteroids, sizeof(g.asteroid_interp.prev));
+    memcpy(g.npc_interp.curr, g.world.npc_ships, sizeof(g.npc_interp.curr));
+    memcpy(g.npc_interp.prev, g.world.npc_ships, sizeof(g.npc_interp.prev));
 
     g.thrusting = false;
     g.notice[0] = '\0';
@@ -171,6 +186,52 @@ static void step_notice_timer(float dt) {
 
 /* sync_world_to_globals removed — everything reads from g.world directly */
 
+static void process_sim_events(const sim_events_t *events) {
+    for (int i = 0; i < events->count; i++) {
+        const sim_event_t* ev = &events->events[i];
+        switch (ev->type) {
+            case SIM_EVENT_FRACTURE:
+                audio_play_fracture(&g.audio, ev->fracture.tier);
+                break;
+            case SIM_EVENT_MINING_TICK:
+                if (ev->player_id == g.local_player_slot) audio_play_mining_tick(&g.audio);
+                break;
+            case SIM_EVENT_DOCK:
+                if (ev->player_id == g.local_player_slot) {
+                    audio_play_dock(&g.audio);
+                    set_notice("Docked at %s.", g.world.stations[LOCAL_PLAYER.current_station].name);
+                }
+                break;
+            case SIM_EVENT_LAUNCH:
+                if (ev->player_id == g.local_player_slot) {
+                    audio_play_launch(&g.audio);
+                    set_notice("Launch corridor clear.");
+                }
+                break;
+            case SIM_EVENT_SELL:
+                if (ev->player_id == g.local_player_slot) audio_play_sale(&g.audio);
+                break;
+            case SIM_EVENT_REPAIR:
+                if (ev->player_id == g.local_player_slot) audio_play_repair(&g.audio);
+                break;
+            case SIM_EVENT_UPGRADE:
+                if (ev->player_id == g.local_player_slot) audio_play_upgrade(&g.audio, ev->upgrade.upgrade);
+                break;
+            case SIM_EVENT_DAMAGE:
+                if (ev->player_id == g.local_player_slot) audio_play_damage(&g.audio, ev->damage.amount);
+                break;
+            case SIM_EVENT_CONTRACT_COMPLETE:
+                if (ev->contract_complete.action == CONTRACT_SUPPLY)
+                    set_notice("Supply contract fulfilled.");
+                else if (ev->contract_complete.action == CONTRACT_DESTROY)
+                    set_notice("Target destroyed. Contract complete.");
+                break;
+            default:
+                break;
+        }
+    }
+}
+
 static void sim_step(float dt) {
     reset_step_feedback();
     audio_step(&g.audio, dt);
@@ -216,68 +277,30 @@ static void sim_step(float dt) {
     }
 
     LOCAL_PLAYER.input = intent;
-    if (g.multiplayer_enabled && net_is_connected()) {
-        /* Multiplayer: only predict local player movement.
-         * Asteroids, NPCs, production are server-authoritative
-         * and interpolated from server snapshots. */
-        world_sim_step_player_only(&g.world, g.local_player_slot, dt);
 
-        /* Mining beam visual — step_player already set hover_asteroid and beam state.
-         * Just ensure beam_ineffective is set for rendering. */
+    /* Client prediction: always run player-only on the client view world.
+     * This gives immediate local feedback (movement, beam targeting). */
+    world_sim_step_player_only(&g.world, g.local_player_slot, dt);
 
-        /* Advance interpolation timers */
-        g.asteroid_interp.t += dt / fmaxf(g.asteroid_interp.interval, 0.01f);
-        g.npc_interp.t += dt / fmaxf(g.npc_interp.interval, 0.01f);
-    } else {
-        /* Single player: full authoritative sim */
-        world_sim_step(&g.world, dt);
+    /* Authoritative step: local server (singleplayer) or remote server
+     * (multiplayer, handled by net_poll callbacks in frame()). */
+    if (g.local_server.active) {
+        local_server_step(&g.local_server, g.local_player_slot, &intent, dt);
+        local_server_sync_to_client(&g.local_server);
     }
+
+    /* Advance interpolation timers (both modes) */
+    g.asteroid_interp.t += dt / fmaxf(g.asteroid_interp.interval, 0.01f);
+    g.npc_interp.t += dt / fmaxf(g.npc_interp.interval, 0.01f);
 
     g.thrusting = (intent.thrust > 0.0f) && !LOCAL_PLAYER.docked;
 
-    /* Play audio from sim events */
-    for (int i = 0; i < g.world.events.count; i++) {
-        sim_event_t* ev = &g.world.events.events[i];
-        switch (ev->type) {
-            case SIM_EVENT_FRACTURE:
-                audio_play_fracture(&g.audio, ev->fracture.tier);
-                break;
-            case SIM_EVENT_MINING_TICK:
-                if (ev->player_id == g.local_player_slot) audio_play_mining_tick(&g.audio);
-                break;
-            case SIM_EVENT_DOCK:
-                if (ev->player_id == g.local_player_slot) {
-                    audio_play_dock(&g.audio);
-                    set_notice("Docked at %s.", g.world.stations[LOCAL_PLAYER.current_station].name);
-                }
-                break;
-            case SIM_EVENT_LAUNCH:
-                if (ev->player_id == g.local_player_slot) {
-                    audio_play_launch(&g.audio);
-                    set_notice("Launch corridor clear.");
-                }
-                break;
-            case SIM_EVENT_SELL:
-                if (ev->player_id == g.local_player_slot) audio_play_sale(&g.audio);
-                break;
-            case SIM_EVENT_REPAIR:
-                if (ev->player_id == g.local_player_slot) audio_play_repair(&g.audio);
-                break;
-            case SIM_EVENT_UPGRADE:
-                if (ev->player_id == g.local_player_slot) audio_play_upgrade(&g.audio, ev->upgrade.upgrade);
-                break;
-            case SIM_EVENT_DAMAGE:
-                if (ev->player_id == g.local_player_slot) audio_play_damage(&g.audio, ev->damage.amount);
-                break;
-            case SIM_EVENT_CONTRACT_COMPLETE:
-                if (ev->contract_complete.action == CONTRACT_SUPPLY)
-                    set_notice("Supply contract fulfilled.");
-                else if (ev->contract_complete.action == CONTRACT_DESTROY)
-                    set_notice("Target destroyed. Contract complete.");
-                break;
-            default:
-                break;
-        }
+    /* Play audio from sim events — use authoritative events when available */
+    {
+        const sim_events_t *events = g.local_server.active
+            ? &g.local_server.world.events
+            : &g.world.events;
+        process_sim_events(events);
     }
 
     step_notice_timer(dt);

@@ -218,7 +218,6 @@ void sync_local_player_slot_from_network(void) {
 }
 
 void interpolate_world_for_render(void) {
-    if (!g.multiplayer_enabled || !net_is_connected()) return;
     float t = clampf(g.asteroid_interp.t, 0.0f, 1.2f);
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {

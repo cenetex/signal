@@ -18,6 +18,7 @@
 #include "economy.h"
 #include "asteroid.h"
 #include "game_sim.h"
+#include "local_server.h"
 
 /* Sokol headers (declarations only -- SOKOL_IMPL is in main.c) */
 #include "sokol_app.h"
@@ -93,6 +94,7 @@ typedef struct {
     sg_pass_action pass_action;
     /* --- Simulation --- */
     world_t world;
+    local_server_t local_server;
     int local_player_slot;
     /* --- Multiplayer --- */
     bool multiplayer_enabled;
