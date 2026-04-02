@@ -628,7 +628,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             bool has_stock = false;
             for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
                 float avail = station_inventory_amount(ui->station, (commodity_t)c);
-                if (avail < 0.5f) continue;
+                if (avail < 0.5f || ui->station->buy_price[c] < 0.01f) continue;
                 int stock = (int)lroundf(avail);
                 float price_f = station_buy_price(ui->station, (commodity_t)c);
                 int price = (int)lroundf(price_f);
