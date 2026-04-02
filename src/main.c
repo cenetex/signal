@@ -320,6 +320,12 @@ static void init(void) {
             cbs.on_player_ship = apply_remote_player_ship;
             cbs.on_contracts = apply_remote_contracts;
             g.multiplayer_enabled = net_init(server_url, &cbs);
+            if (g.multiplayer_enabled) {
+                /* Deactivate the local server — the remote server is authoritative.
+                 * The local server was started by reset_world() before we knew
+                 * multiplayer was available. */
+                g.local_server.active = false;
+            }
         }
     }
 }
