@@ -940,6 +940,7 @@ static void sim_step(float dt) {
         if (intent.interact) {
             g.pending_net_action = LOCAL_PLAYER.docked ? 2 : 1;
             g.dock_predict_timer = 0.5f;
+            set_notice(LOCAL_PLAYER.docked ? "Launching..." : "Docking...");
         } else if (intent.service_sell)
             g.pending_net_action = 3;
         else if (intent.service_repair)
