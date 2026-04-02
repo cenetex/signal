@@ -561,8 +561,34 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_printf("[5] Tractor  %s", maxed ? "MAX" : "upgrade");
                 ly += 16.0f;
             }
-            /* Build hint */
+            /* Cargo manifest */
             ly += 8.0f;
+            bool has_cargo = false;
+            for (int c = 0; c < COMMODITY_COUNT; c++) {
+                int amt = (int)lroundf(LOCAL_PLAYER.ship.cargo[c]);
+                if (amt <= 0) continue;
+                if (!has_cargo) {
+                    sdtx_color3b(145, 160, 188);
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                    sdtx_puts("CARGO");
+                    ly += 14.0f;
+                    has_cargo = true;
+                }
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_color3b(180, 190, 210);
+                sdtx_printf("%s x%d", commodity_short_name((commodity_t)c), amt);
+                ly += 12.0f;
+            }
+            if (LOCAL_PLAYER.ship.has_scaffold_kit) {
+                if (!has_cargo) { sdtx_color3b(145,160,188); sdtx_pos(ui_text_pos(cx), ui_text_pos(ly)); sdtx_puts("CARGO"); ly += 14.0f; }
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_color3b(255, 221, 119);
+                sdtx_puts("Scaffold Kit");
+                ly += 12.0f;
+            }
+
+            /* Build hint */
+            ly += 4.0f;
             sdtx_color3b(100, 130, 120);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             if (LOCAL_PLAYER.ship.has_scaffold_kit)
