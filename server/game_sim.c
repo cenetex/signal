@@ -1605,7 +1605,11 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         commodity_t c = ct->commodity;
         if (c == buy) continue; /* already handled above */
         if (sp->ship.cargo[c] < 0.01f) continue;
-        float deliver = fminf(sp->ship.cargo[c], ct->quantity_needed);
+        float capacity = (c < COMMODITY_RAW_ORE_COUNT)
+            ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
+        float space = fmaxf(0.0f, capacity - st->inventory[c]);
+        if (space < 0.01f) continue;
+        float deliver = fminf(fminf(sp->ship.cargo[c], ct->quantity_needed), space);
         payout += deliver * contract_price(ct);
         sp->ship.cargo[c] -= deliver;
         st->inventory[c] += deliver;
