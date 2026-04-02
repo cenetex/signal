@@ -1707,14 +1707,22 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
 }
 
 static void update_targeting_state(world_t *w, server_player_t *sp, vec2 forward) {
-    /* Prefer client's mining target hint if valid and in range */
+    vec2 muzzle = ship_muzzle(&sp->ship, forward);
+    /* Prefer client's mining target hint if valid, in range, and in front */
     int hint = sp->input.mining_target_hint;
     if (hint >= 0 && hint < MAX_ASTEROIDS && w->asteroids[hint].active
         && !asteroid_is_collectible(&w->asteroids[hint])) {
-        sp->hover_asteroid = hint;
-    } else {
-        sp->hover_asteroid = sim_find_mining_target(w, ship_muzzle(&sp->ship, forward), forward, sp->ship.mining_level);
+        const asteroid_t *a = &w->asteroids[hint];
+        vec2 to_a = v2_sub(a->pos, muzzle);
+        float proj = v2_dot(to_a, forward);
+        float perp = fabsf(v2_cross(to_a, forward));
+        float surface_dist = proj - sqrtf(fmaxf(0.0f, a->radius * a->radius - perp * perp));
+        if (perp <= a->radius && surface_dist >= -a->radius && surface_dist <= MINING_RANGE) {
+            sp->hover_asteroid = hint;
+            return;
+        }
     }
+    sp->hover_asteroid = sim_find_mining_target(w, muzzle, forward, sp->ship.mining_level);
 }
 
 static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) {
