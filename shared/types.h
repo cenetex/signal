@@ -296,6 +296,19 @@ static inline bool station_has_module(const station_t *st, module_type_t type) {
     return false;
 }
 
+/* Returns true if the station produces this commodity (has the right module). */
+static inline bool station_produces(const station_t *st, commodity_t c) {
+    switch (c) {
+        case COMMODITY_FERRITE_INGOT: return station_has_module(st, MODULE_FURNACE);
+        case COMMODITY_CUPRITE_INGOT: return station_has_module(st, MODULE_FURNACE_CU);
+        case COMMODITY_CRYSTAL_INGOT: return station_has_module(st, MODULE_FURNACE_CR);
+        case COMMODITY_FRAME:         return station_has_module(st, MODULE_FRAME_PRESS);
+        case COMMODITY_LASER_MODULE:  return station_has_module(st, MODULE_LASER_FAB);
+        case COMMODITY_TRACTOR_MODULE:return station_has_module(st, MODULE_TRACTOR_FAB);
+        default: return false;
+    }
+}
+
 static inline void rebuild_station_services(station_t *st) {
     st->services = 0;
     for (int i = 0; i < st->module_count; i++) {

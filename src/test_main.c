@@ -3640,6 +3640,30 @@ TEST(test_no_delivery_without_matching_contract) {
     ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_CRYSTAL_INGOT], 20.0f, 0.01f);
 }
 
+TEST(test_refinery_smelts_after_ore_sale) {
+    world_t w = {0};
+    world_reset(&w);
+    /* Player docks at Prospect Refinery (station 0) with ferrite ore */
+    w.players[0].connected = true;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
+    /* Verify Prospect has a furnace */
+    ASSERT(station_has_module(&w.stations[0], MODULE_FURNACE));
+    ASSERT(w.stations[0].services & STATION_SERVICE_ORE_BUYER);
+    /* Sell ore */
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    float ore_in_hopper = w.stations[0].inventory[COMMODITY_FERRITE_ORE];
+    ASSERT(ore_in_hopper > 0.0f);
+    /* Run sim for 10 seconds — should smelt ore into ingots */
+    for (int i = 0; i < (int)(10.0f / SIM_DT); i++)
+        world_sim_step(&w, SIM_DT);
+    float ingots = w.stations[0].inventory[COMMODITY_FERRITE_INGOT];
+    ASSERT(ingots > 0.0f);
+}
+
 int main(void) {
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -3884,6 +3908,9 @@ int main(void) {
     RUN(test_deliver_ingots_to_contract);
     RUN(test_mixed_cargo_sell_and_deliver);
     RUN(test_no_delivery_without_matching_contract);
+
+    printf("\nRefinery smelt test:\n");
+    RUN(test_refinery_smelts_after_ore_sale);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

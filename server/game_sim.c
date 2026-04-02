@@ -1886,7 +1886,8 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     /* Buy ingots from station inventory */
     if (intent->buy_product && !w->player_only_mode) {
         commodity_t c = intent->buy_commodity;
-        if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) {
+        if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT
+            && station_produces(docked_st, c)) {
             float available = docked_st->inventory[c];
             float space = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
             float price_per = station_sell_price(docked_st, c);
