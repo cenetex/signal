@@ -2565,7 +2565,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 11
+#define SAVE_VERSION 12
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
@@ -2773,7 +2773,10 @@ bool world_load(world_t *w, const char *path) {
     uint32_t magic, version;
     READ_FIELD(f, magic);
     READ_FIELD(f, version);
-    if (magic != SAVE_MAGIC || version < 5 || version > SAVE_VERSION) { fclose(f); return false; }
+    if (magic != SAVE_MAGIC || version < SAVE_VERSION || version > SAVE_VERSION) {
+        printf("[save] rejected save: magic=0x%08x version=%u (need %d)\n", magic, version, SAVE_VERSION);
+        fclose(f); return false;
+    }
 
     READ_FIELD(f, w->rng);
     READ_FIELD(f, w->time);
