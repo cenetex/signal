@@ -683,6 +683,8 @@ static input_intent_t sample_input_intent(void) {
     } else {
         /* Default: service keys */
         intent.service_sell = is_key_pressed(SAPP_KEYCODE_1);
+        if (intent.service_sell && ship_total_cargo(&LOCAL_PLAYER.ship) > 0.01f)
+            set_notice("Selling cargo...");
         intent.service_repair = is_key_pressed(SAPP_KEYCODE_2);
         intent.upgrade_mining = is_key_pressed(SAPP_KEYCODE_3);
         intent.upgrade_hold = is_key_pressed(SAPP_KEYCODE_4);
