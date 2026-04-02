@@ -650,6 +650,7 @@ static input_intent_t sample_input_intent(void) {
                 intent.build_module = true;
                 intent.build_module_type = build_keys[k].type;
                 set_notice("Blueprint placed: %s", build_keys[k].name);
+                g.build_overlay = false;
             }
             break;
         }
@@ -783,7 +784,7 @@ static input_intent_t sample_input_intent(void) {
                         set_notice("Need %d cr for scaffold kit.", (int)OUTPOST_CREDIT_COST);
                     }
                 } else {
-                    g.build_overlay = true; /* show module build menu */
+                    set_notice("No blueprint desk here.");
                 }
             } else {
                 g.build_overlay = true;

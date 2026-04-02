@@ -497,10 +497,10 @@ void draw_station_services(const station_ui_state_t* ui) {
             bool can_afford = credits >= buildable[b].credits;
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
-            const char *mat_name = "FE";
-            if (buildable[b].type == MODULE_FURNACE_CU || buildable[b].type == MODULE_LASER_FAB) mat_name = "CU";
-            if (buildable[b].type == MODULE_FURNACE_CR || buildable[b].type == MODULE_TRACTOR_FAB) mat_name = "CR";
-            sdtx_printf("[%d] %-14s %dcr + %d %s ingots", buildable[b].key, buildable[b].name, buildable[b].credits, buildable[b].frames, mat_name);
+            const char *mat_name = "frames";
+            if (buildable[b].type == MODULE_FURNACE_CU || buildable[b].type == MODULE_LASER_FAB) mat_name = "CU ingots";
+            if (buildable[b].type == MODULE_FURNACE_CR || buildable[b].type == MODULE_TRACTOR_FAB) mat_name = "CR ingots";
+            sdtx_printf("[%d] %-14s %dcr + %d %s", buildable[b].key, buildable[b].name, buildable[b].credits, buildable[b].frames, mat_name);
             ly += 14.0f;
         }
         return; /* overlay takes over rendering */
