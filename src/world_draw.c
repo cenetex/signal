@@ -57,160 +57,103 @@ void draw_background(vec2 camera) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Per-module-type line-art at world position                          */
+/* Module type color palette                                          */
 /* ------------------------------------------------------------------ */
 
-static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaffold, float progress) {
-    float s = 22.0f;
-    float a = scaffold ? 0.35f : 0.85f;
+static void module_color(module_type_t type, float *r, float *g, float *b) {
+    switch (type) {
+    case MODULE_ORE_BUYER:       *r=0.75f; *g=0.50f; *b=0.20f; return;
+    case MODULE_FURNACE:         *r=0.70f; *g=0.30f; *b=0.12f; return;
+    case MODULE_FURNACE_CU:      *r=0.60f; *g=0.40f; *b=0.15f; return;
+    case MODULE_FURNACE_CR:      *r=0.35f; *g=0.25f; *b=0.60f; return;
+    case MODULE_FRAME_PRESS:     *r=0.40f; *g=0.50f; *b=0.65f; return;
+    case MODULE_LASER_FAB:       *r=0.65f; *g=0.22f; *b=0.22f; return;
+    case MODULE_TRACTOR_FAB:     *r=0.22f; *g=0.60f; *b=0.35f; return;
+    case MODULE_SIGNAL_RELAY:    *r=0.25f; *g=0.55f; *b=0.70f; return;
+    case MODULE_REPAIR_BAY:      *r=0.30f; *g=0.45f; *b=0.70f; return;
+    case MODULE_CONTRACT_BOARD:  *r=0.65f; *g=0.60f; *b=0.25f; return;
+    case MODULE_BLUEPRINT_DESK:  *r=0.35f; *g=0.55f; *b=0.70f; return;
+    case MODULE_ORE_SILO:        *r=0.50f; *g=0.45f; *b=0.30f; return;
+    case MODULE_INGOT_SELLER:    *r=0.55f; *g=0.50f; *b=0.40f; return;
+    default:                     *r=0.30f; *g=0.35f; *b=0.40f; return;
+    }
+}
 
-    if (scaffold) {
-        /* Dashed outline + progress bar */
-        float da = TWO_PI_F / 8.0f;
-        for (int i = 0; i < 8; i += 2) {
-            vec2 p0 = v2_add(pos, v2(cosf(da * i) * s, sinf(da * i) * s));
-            vec2 p1 = v2_add(pos, v2(cosf(da * (i+1)) * s, sinf(da * (i+1)) * s));
-            draw_segment(p0, p1, 0.5f, 0.7f, 0.9f, 0.4f);
-        }
-        if (progress > 0.01f) {
-            vec2 bar_l = v2_add(pos, v2(-s, s + 4.0f));
-            vec2 bar_r = v2_add(pos, v2(-s + 2.0f * s * progress, s + 4.0f));
-            draw_segment(bar_l, bar_r, 0.4f, 1.0f, 0.7f, 0.6f);
-        }
-        return;
+/* ------------------------------------------------------------------ */
+/* Solid module block + corridor to core                              */
+/* ------------------------------------------------------------------ */
+
+static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaffold, float progress, vec2 station_center) {
+    float hw = 20.0f;  /* half-width of module block */
+    float hh = 14.0f;  /* half-height */
+    float mr, mg, mb;
+    module_color(type, &mr, &mg, &mb);
+    float alpha = scaffold ? 0.25f : 0.92f;
+
+    /* Corridor tube from module back toward station center */
+    vec2 toward = v2_sub(station_center, pos);
+    float dist = sqrtf(v2_len_sq(toward));
+    if (dist > 1.0f) {
+        vec2 dir = v2_scale(toward, 1.0f / dist);
+        vec2 perp = v2(-dir.y, dir.x);
+        float tube_hw = 5.0f;
+        float tube_len = fminf(dist - 10.0f, 40.0f);
+        vec2 base = v2_add(pos, v2_scale(dir, 2.0f));
+        vec2 tip  = v2_add(pos, v2_scale(dir, tube_len));
+        vec2 bl = v2_sub(base, v2_scale(perp, tube_hw));
+        vec2 br = v2_add(base, v2_scale(perp, tube_hw));
+        vec2 tl = v2_sub(tip, v2_scale(perp, tube_hw * 0.6f));
+        vec2 tr = v2_add(tip, v2_scale(perp, tube_hw * 0.6f));
+        sgl_c4f(mr * 0.4f, mg * 0.4f, mb * 0.4f, alpha * 0.7f);
+        sgl_begin_triangles();
+        sgl_v2f(bl.x, bl.y); sgl_v2f(br.x, br.y); sgl_v2f(tr.x, tr.y);
+        sgl_v2f(bl.x, bl.y); sgl_v2f(tr.x, tr.y); sgl_v2f(tl.x, tl.y);
+        sgl_end();
     }
 
+    /* Module block — solid filled rectangle */
     sgl_push_matrix();
     sgl_translate(pos.x, pos.y, 0.0f);
     sgl_rotate(angle, 0.0f, 0.0f, 1.0f);
 
-    switch (type) {
-    case MODULE_ORE_BUYER: {
-        /* Funnel / hopper mouth */
-        sgl_c4f(1.0f, 0.6f, 0.2f, a);
-        sgl_begin_lines();
-        sgl_v2f(-s, -s*0.6f); sgl_v2f(-s*0.4f, s*0.6f);
-        sgl_v2f(-s*0.4f, s*0.6f); sgl_v2f(s*0.4f, s*0.6f);
-        sgl_v2f(s*0.4f, s*0.6f); sgl_v2f(s, -s*0.6f);
+    /* Body fill */
+    sgl_c4f(mr * 0.5f, mg * 0.5f, mb * 0.5f, alpha);
+    sgl_begin_triangles();
+    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh); sgl_v2f(hw, hh);
+    sgl_v2f(-hw, -hh); sgl_v2f(hw, hh);  sgl_v2f(-hw, hh);
+    sgl_end();
+
+    /* Brighter face plate (outward-facing edge) */
+    sgl_c4f(mr, mg, mb, alpha);
+    sgl_begin_triangles();
+    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh); sgl_v2f(hw, -hh + 5.0f);
+    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh + 5.0f); sgl_v2f(-hw, -hh + 5.0f);
+    sgl_end();
+
+    /* Edge outline */
+    sgl_c4f(mr * 0.8f, mg * 0.8f, mb * 0.8f, alpha);
+    sgl_begin_lines();
+    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh);
+    sgl_v2f(hw, -hh);  sgl_v2f(hw, hh);
+    sgl_v2f(hw, hh);   sgl_v2f(-hw, hh);
+    sgl_v2f(-hw, hh);  sgl_v2f(-hw, -hh);
+    sgl_end();
+
+    if (scaffold && progress > 0.01f) {
+        /* Progress bar */
+        float bar_w = hw * 2.0f * progress;
+        sgl_c4f(0.3f, 1.0f, 0.6f, 0.7f);
+        sgl_begin_triangles();
+        sgl_v2f(-hw, hh + 2.0f); sgl_v2f(-hw + bar_w, hh + 2.0f); sgl_v2f(-hw + bar_w, hh + 5.0f);
+        sgl_v2f(-hw, hh + 2.0f); sgl_v2f(-hw + bar_w, hh + 5.0f); sgl_v2f(-hw, hh + 5.0f);
         sgl_end();
-        break;
-    }
-    case MODULE_FURNACE:
-    case MODULE_FURNACE_CU:
-    case MODULE_FURNACE_CR: {
-        /* Enclosed box with inner glow */
-        float gr = (type == MODULE_FURNACE) ? 0.3f : (type == MODULE_FURNACE_CU ? 0.7f : 0.4f);
-        float gg = (type == MODULE_FURNACE_CU) ? 0.45f : (type == MODULE_FURNACE_CR ? 0.3f : 0.15f);
-        float gb = (type == MODULE_FURNACE_CR) ? 1.0f : 0.1f;
-        sgl_c4f(1.0f, 0.45f, 0.15f, a);
-        sgl_begin_lines();
-        sgl_v2f(-s, -s); sgl_v2f(s, -s);
-        sgl_v2f(s, -s); sgl_v2f(s, s);
-        sgl_v2f(s, s); sgl_v2f(-s, s);
-        sgl_v2f(-s, s); sgl_v2f(-s, -s);
-        sgl_end();
-        draw_circle_filled(v2(0,0), s*0.4f, 8, gr, gg, gb, 0.5f);
-        break;
-    }
-    case MODULE_FRAME_PRESS: {
-        sgl_c4f(0.7f, 0.8f, 1.0f, a);
-        sgl_begin_lines();
-        sgl_v2f(-s, -s); sgl_v2f(s, -s);
-        sgl_v2f(s, -s); sgl_v2f(s, s);
-        sgl_v2f(s, s); sgl_v2f(-s, s);
-        sgl_v2f(-s, s); sgl_v2f(-s, -s);
-        sgl_v2f(-s*0.3f, -s*0.3f); sgl_v2f(s*0.3f, s*0.3f);
-        sgl_v2f(s*0.3f, -s*0.3f); sgl_v2f(-s*0.3f, s*0.3f);
-        sgl_end();
-        break;
-    }
-    case MODULE_LASER_FAB: {
-        sgl_c4f(1.0f, 0.3f, 0.3f, a);
-        draw_circle_outline(v2(0,0), s*0.7f, 12, 1.0f, 0.3f, 0.3f, a);
-        sgl_begin_lines();
-        sgl_v2f(-s, 0); sgl_v2f(s, 0);
-        sgl_v2f(0, -s); sgl_v2f(0, s);
-        sgl_end();
-        break;
-    }
-    case MODULE_TRACTOR_FAB: {
-        sgl_c4f(0.3f, 1.0f, 0.5f, a);
-        draw_circle_outline(v2(0,0), s*0.7f, 12, 0.3f, 1.0f, 0.5f, a);
-        sgl_begin_lines();
-        sgl_v2f(-s, 0); sgl_v2f(s, 0);
-        sgl_v2f(0, -s); sgl_v2f(0, s);
-        sgl_end();
-        break;
-    }
-    case MODULE_SIGNAL_RELAY: {
-        /* Antenna dish + signal arcs */
-        sgl_c4f(0.3f, 0.9f, 1.0f, a);
-        sgl_begin_lines();
-        sgl_v2f(0, 0); sgl_v2f(s, 0);
-        sgl_v2f(-s*0.5f, -s*0.7f); sgl_v2f(0, 0);
-        sgl_v2f(-s*0.5f, s*0.7f); sgl_v2f(0, 0);
-        sgl_end();
-        /* Signal arcs */
-        for (int arc = 1; arc <= 2; arc++) {
-            float r = s * 0.4f * (float)arc;
-            for (int j = 0; j < 4; j++) {
-                float a0 = -0.5f + (float)j * 0.25f;
-                float a1 = a0 + 0.25f;
-                vec2 p0 = v2(cosf(a0) * r, sinf(a0) * r);
-                vec2 p1 = v2(cosf(a1) * r, sinf(a1) * r);
-                draw_segment(p0, p1, 0.3f, 0.9f, 1.0f, a * 0.5f);
-            }
-        }
-        break;
-    }
-    case MODULE_REPAIR_BAY: {
-        sgl_c4f(0.4f, 0.6f, 1.0f, a);
-        sgl_begin_lines();
-        sgl_v2f(-s*0.3f, -s); sgl_v2f(-s*0.3f, -s*0.2f);
-        sgl_v2f(-s*0.3f, -s*0.2f); sgl_v2f(-s, -s*0.2f);
-        sgl_v2f(-s, -s*0.2f); sgl_v2f(-s*0.3f, s*0.4f);
-        sgl_v2f(-s*0.3f, s*0.4f); sgl_v2f(s*0.3f, -s*0.2f);
-        sgl_v2f(s*0.3f, -s*0.2f); sgl_v2f(s, -s*0.2f);
-        sgl_end();
-        break;
-    }
-    case MODULE_CONTRACT_BOARD: {
-        sgl_c4f(1.0f, 0.9f, 0.3f, a);
-        sgl_begin_lines();
-        sgl_v2f(-s*0.6f, -s); sgl_v2f(s*0.6f, -s);
-        sgl_v2f(s*0.6f, -s); sgl_v2f(s*0.6f, s);
-        sgl_v2f(s*0.6f, s); sgl_v2f(-s*0.6f, s);
-        sgl_v2f(-s*0.6f, s); sgl_v2f(-s*0.6f, -s);
-        /* Clip */
-        sgl_v2f(-s*0.2f, -s); sgl_v2f(-s*0.2f, -s*1.3f);
-        sgl_v2f(-s*0.2f, -s*1.3f); sgl_v2f(s*0.2f, -s*1.3f);
-        sgl_v2f(s*0.2f, -s*1.3f); sgl_v2f(s*0.2f, -s);
-        sgl_end();
-        break;
-    }
-    case MODULE_BLUEPRINT_DESK: {
-        sgl_c4f(0.5f, 0.8f, 1.0f, a);
-        sgl_begin_lines();
-        sgl_v2f(-s*0.7f, -s*0.5f); sgl_v2f(s*0.7f, -s*0.5f);
-        sgl_v2f(s*0.7f, -s*0.5f); sgl_v2f(s*0.7f, s*0.5f);
-        sgl_v2f(s*0.7f, s*0.5f); sgl_v2f(-s*0.7f, s*0.5f);
-        sgl_v2f(-s*0.7f, s*0.5f); sgl_v2f(-s*0.7f, -s*0.5f);
-        /* Ruler lines */
-        sgl_v2f(-s*0.5f, 0); sgl_v2f(s*0.5f, 0);
-        sgl_v2f(0, -s*0.3f); sgl_v2f(0, s*0.3f);
-        sgl_end();
-        break;
-    }
-    default:
-        draw_circle_outline(v2(0,0), s*0.5f, 8, 0.5f, 0.6f, 0.7f, a * 0.6f);
-        break;
     }
 
     sgl_pop_matrix();
 }
 
 /* ------------------------------------------------------------------ */
-/* Ring truss arc rendering                                           */
+/* Ring truss — solid filled annulus                                   */
 /* ------------------------------------------------------------------ */
 
 static void draw_ring_truss(vec2 center, float radius, float rotation, float truss_w, float cr, float cg, float cb, float alpha) {
@@ -218,16 +161,15 @@ static void draw_ring_truss(vec2 center, float radius, float rotation, float tru
     float gap_end   = RING_GAP_CENTER + RING_GAP_WIDTH * 0.5f + rotation;
     float inner_r = radius - truss_w * 0.5f;
     float outer_r = radius + truss_w * 0.5f;
-    int segs = 32;
+    int segs = 48;
     float step = TWO_PI_F / (float)segs;
 
+    /* Filled annulus segments */
     for (int i = 0; i < segs; i++) {
         float a0 = (float)i * step;
         float a1 = (float)(i + 1) * step;
-        /* Skip segments inside the gap */
         float mid = (a0 + a1) * 0.5f;
         float d = mid - gap_start;
-        /* Normalize angle difference to [-pi, pi] */
         while (d > PI_F)  d -= TWO_PI_F;
         while (d < -PI_F) d += TWO_PI_F;
         if (d >= 0.0f && d <= (gap_end - gap_start)) continue;
@@ -236,13 +178,33 @@ static void draw_ring_truss(vec2 center, float radius, float rotation, float tru
         vec2 i1 = v2_add(center, v2(cosf(a1) * inner_r, sinf(a1) * inner_r));
         vec2 o0 = v2_add(center, v2(cosf(a0) * outer_r, sinf(a0) * outer_r));
         vec2 o1 = v2_add(center, v2(cosf(a1) * outer_r, sinf(a1) * outer_r));
-        /* Inner and outer arcs */
-        draw_segment(i0, i1, cr, cg, cb, alpha);
-        draw_segment(o0, o1, cr, cg, cb, alpha);
-        /* Cross-hatch struts (every other segment) */
-        if (i % 2 == 0) {
-            draw_segment(i0, o1, cr * 0.6f, cg * 0.6f, cb * 0.6f, alpha * 0.3f);
+
+        /* Filled quad (two triangles) */
+        sgl_c4f(cr * 0.25f, cg * 0.25f, cb * 0.25f, alpha);
+        sgl_begin_triangles();
+        sgl_v2f(i0.x, i0.y); sgl_v2f(o0.x, o0.y); sgl_v2f(o1.x, o1.y);
+        sgl_v2f(i0.x, i0.y); sgl_v2f(o1.x, o1.y); sgl_v2f(i1.x, i1.y);
+        sgl_end();
+
+        /* Edge lines for structure */
+        if (i % 3 == 0) {
+            draw_segment(i0, o0, cr * 0.4f, cg * 0.4f, cb * 0.4f, alpha * 0.5f);
         }
+    }
+
+    /* Outer and inner edge highlight */
+    for (int i = 0; i < segs; i++) {
+        float a0 = (float)i * step;
+        float a1 = (float)(i + 1) * step;
+        float mid = (a0 + a1) * 0.5f;
+        float d = mid - gap_start;
+        while (d > PI_F)  d -= TWO_PI_F;
+        while (d < -PI_F) d += TWO_PI_F;
+        if (d >= 0.0f && d <= (gap_end - gap_start)) continue;
+
+        vec2 o0 = v2_add(center, v2(cosf(a0) * outer_r, sinf(a0) * outer_r));
+        vec2 o1 = v2_add(center, v2(cosf(a1) * outer_r, sinf(a1) * outer_r));
+        draw_segment(o0, o1, cr * 0.5f, cg * 0.5f, cb * 0.5f, alpha * 0.6f);
     }
 
     /* Gap termination pillars + nav lights */
@@ -250,42 +212,69 @@ static void draw_ring_truss(vec2 center, float radius, float rotation, float tru
         float pillar_angle = RING_GAP_CENTER + (float)side * RING_GAP_WIDTH * 0.5f + rotation;
         vec2 pi = v2_add(center, v2(cosf(pillar_angle) * inner_r, sinf(pillar_angle) * inner_r));
         vec2 po = v2_add(center, v2(cosf(pillar_angle) * outer_r, sinf(pillar_angle) * outer_r));
-        draw_segment(pi, po, cr, cg, cb, alpha * 1.2f);
+        vec2 perp = v2(-(po.y - pi.y), po.x - pi.x);
+        float plen = sqrtf(v2_len_sq(perp));
+        if (plen > 0.001f) perp = v2_scale(perp, 4.0f / plen);
+        /* Solid pillar */
+        sgl_c4f(cr * 0.4f, cg * 0.4f, cb * 0.4f, alpha);
+        sgl_begin_triangles();
+        sgl_v2f(pi.x - perp.x, pi.y - perp.y); sgl_v2f(pi.x + perp.x, pi.y + perp.y);
+        sgl_v2f(po.x + perp.x, po.y + perp.y);
+        sgl_v2f(pi.x - perp.x, pi.y - perp.y); sgl_v2f(po.x + perp.x, po.y + perp.y);
+        sgl_v2f(po.x - perp.x, po.y - perp.y);
+        sgl_end();
         /* Nav light */
         float pulse = 0.6f + 0.4f * sinf(g.world.time * 3.0f);
-        vec2 light_pos = v2_add(center, v2(cosf(pillar_angle) * (outer_r + 3.0f), sinf(pillar_angle) * (outer_r + 3.0f)));
-        draw_circle_filled(light_pos, 2.0f, 6, 0.2f, 1.0f, 0.4f, pulse);
+        vec2 light_pos = v2_add(center, v2(cosf(pillar_angle) * (outer_r + 5.0f), sinf(pillar_angle) * (outer_r + 5.0f)));
+        draw_circle_filled(light_pos, 3.0f, 8, 0.2f, 1.0f, 0.4f, pulse);
     }
 }
 
 /* ------------------------------------------------------------------ */
-/* Radial struts connecting rings                                     */
+/* Corridor tubes connecting core to ring modules                     */
 /* ------------------------------------------------------------------ */
 
 static void draw_struts(vec2 center, float inner_r, float outer_r, float rotation, int count, float cr, float cg, float cb, float alpha) {
+    float tube_hw = 4.0f;
     for (int i = 0; i < count; i++) {
         float angle = rotation + (TWO_PI_F / (float)count) * (float)i;
-        vec2 p0 = v2_add(center, v2(cosf(angle) * inner_r, sinf(angle) * inner_r));
-        vec2 p1 = v2_add(center, v2(cosf(angle) * outer_r, sinf(angle) * outer_r));
-        draw_segment(p0, p1, cr, cg, cb, alpha);
+        vec2 dir = v2(cosf(angle), sinf(angle));
+        vec2 perp = v2(-dir.y, dir.x);
+        vec2 p0 = v2_add(center, v2_scale(dir, inner_r));
+        vec2 p1 = v2_add(center, v2_scale(dir, outer_r));
+        /* Filled tube */
+        sgl_c4f(cr * 0.3f, cg * 0.3f, cb * 0.3f, alpha * 0.8f);
+        sgl_begin_triangles();
+        sgl_v2f(p0.x - perp.x * tube_hw, p0.y - perp.y * tube_hw);
+        sgl_v2f(p0.x + perp.x * tube_hw, p0.y + perp.y * tube_hw);
+        sgl_v2f(p1.x + perp.x * tube_hw, p1.y + perp.y * tube_hw);
+        sgl_v2f(p0.x - perp.x * tube_hw, p0.y - perp.y * tube_hw);
+        sgl_v2f(p1.x + perp.x * tube_hw, p1.y + perp.y * tube_hw);
+        sgl_v2f(p1.x - perp.x * tube_hw, p1.y - perp.y * tube_hw);
+        sgl_end();
     }
 }
 
 /* ------------------------------------------------------------------ */
-/* Empty port clamp rendering                                         */
+/* Empty port — small bracket shape                                   */
 /* ------------------------------------------------------------------ */
 
 static void draw_port_clamp(vec2 pos, float angle) {
-    float s = 16.0f;
+    float s = 10.0f;
     sgl_push_matrix();
     sgl_translate(pos.x, pos.y, 0.0f);
     sgl_rotate(angle, 0.0f, 0.0f, 1.0f);
-    sgl_c4f(0.4f, 0.5f, 0.6f, 0.4f);
+    sgl_c4f(0.25f, 0.30f, 0.35f, 0.35f);
+    sgl_begin_triangles();
+    sgl_v2f(-s, -s*0.5f); sgl_v2f(s, -s*0.5f); sgl_v2f(s, s*0.5f);
+    sgl_v2f(-s, -s*0.5f); sgl_v2f(s, s*0.5f); sgl_v2f(-s, s*0.5f);
+    sgl_end();
+    sgl_c4f(0.35f, 0.40f, 0.45f, 0.4f);
     sgl_begin_lines();
-    sgl_v2f(-s, -s*0.6f); sgl_v2f(-s, s*0.6f);
-    sgl_v2f(s, -s*0.6f); sgl_v2f(s, s*0.6f);
-    sgl_v2f(-s, -s*0.6f); sgl_v2f(-s*0.5f, -s*0.3f);
-    sgl_v2f(s, -s*0.6f); sgl_v2f(s*0.5f, -s*0.3f);
+    sgl_v2f(-s, -s*0.5f); sgl_v2f(s, -s*0.5f);
+    sgl_v2f(s, -s*0.5f);  sgl_v2f(s, s*0.5f);
+    sgl_v2f(s, s*0.5f);   sgl_v2f(-s, s*0.5f);
+    sgl_v2f(-s, s*0.5f);  sgl_v2f(-s, -s*0.5f);
     sgl_end();
     sgl_pop_matrix();
 }
@@ -329,12 +318,14 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
 
     float base_alpha = is_current ? 0.9f : (is_nearby ? 0.7f : 0.5f);
 
-    /* Core (stationary hub) */
-    float core_r = RING_RADIUS[0] * 0.5f;
-    draw_circle_filled(station->pos, core_r, 24, 0.08f, 0.12f, 0.17f, 1.0f);
-    draw_circle_outline(station->pos, core_r, 24, role_r, role_g, role_b, base_alpha);
-    draw_circle_outline(station->pos, core_r * 0.7f, 16, role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, base_alpha * 0.5f);
-    draw_circle_filled(station->pos, 10.0f, 12, role_r * 0.7f, role_g * 0.9f, role_b, 0.9f);
+    /* Core (stationary hub) — solid filled like a small asteroid */
+    float core_r = RING_RADIUS[0] * 0.55f;
+    draw_circle_filled(station->pos, core_r, 28, 0.12f, 0.16f, 0.22f, 1.0f);
+    draw_circle_filled(station->pos, core_r * 0.85f, 24, 0.15f, 0.20f, 0.28f, 1.0f);
+    draw_circle_outline(station->pos, core_r, 28, role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, base_alpha * 0.7f);
+    /* Inner hub detail */
+    draw_circle_filled(station->pos, 14.0f, 14, role_r * 0.4f, role_g * 0.5f, role_b * 0.6f, 0.9f);
+    draw_circle_outline(station->pos, 14.0f, 14, role_r * 0.6f, role_g * 0.7f, role_b * 0.8f, 0.6f);
 
     /* Dock range indicator (faint) */
     float dock_alpha = is_current ? 0.35f : (is_nearby ? 0.25f : 0.08f);
@@ -379,7 +370,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             }
 
             if (mod) {
-                draw_module_at(port_pos, port_angle, mod->type, mod->scaffold, mod->build_progress);
+                draw_module_at(port_pos, port_angle, mod->type, mod->scaffold, mod->build_progress, station->pos);
             } else {
                 draw_port_clamp(port_pos, port_angle);
             }
