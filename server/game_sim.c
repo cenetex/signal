@@ -972,18 +972,12 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
 
 /* Compute an approach target for a station: aim at the gap of the outermost
  * ring when far away, switch to the core when inside all rings. */
+static vec2 dock_port_pos(const station_t *st); /* forward decl */
+
+/* NPC approach: aim for the dock module if it exists, otherwise station center. */
 static vec2 station_approach_target(const station_t *st, vec2 from) {
-    float dist = sqrtf(v2_dist_sq(from, st->pos));
-    /* Find outermost ring */
-    int outer = 0;
-    for (int r = MAX_RING_COUNT - 1; r >= 1; r--) {
-        if (station_has_ring(st, r)) { outer = r; break; }
-    }
-    if (outer == 0 || dist < RING_RADIUS[0] + 20.0f) return st->pos;
-    /* Aim for the gap center of the outermost ring */
-    float gap_angle = RING_GAP_CENTER + st->ring_rotation[outer];
-    float target_r = RING_RADIUS[outer] - 15.0f;
-    return v2_add(st->pos, v2(cosf(gap_angle) * target_r, sinf(gap_angle) * target_r));
+    (void)from;
+    return dock_port_pos(st);
 }
 
 static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float turn_speed, float dt) {
@@ -2847,7 +2841,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 14  /* bumped: station module ring/slot layout changed, no core modules */
+#define SAVE_VERSION 15  /* bumped: persist arm_count/arm_rotation/arm_speed per station */
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
@@ -2871,6 +2865,12 @@ static bool write_station(FILE *f, const station_t *s) {
     for (int m = 0; m < s->module_count && m < MAX_MODULES_PER_STATION; m++) {
         WRITE_FIELD(f, s->modules[m]);
     }
+    /* Ring rotation */
+    WRITE_FIELD(f, s->arm_count);
+    for (int a = 0; a < MAX_ARMS; a++) {
+        WRITE_FIELD(f, s->arm_rotation[a]);
+        WRITE_FIELD(f, s->arm_speed[a]);
+    }
     return true;
 }
 
@@ -2892,6 +2892,14 @@ static bool read_station(FILE *f, station_t *s) {
     if (s->module_count > MAX_MODULES_PER_STATION) s->module_count = MAX_MODULES_PER_STATION;
     for (int m = 0; m < s->module_count; m++) {
         READ_FIELD(f, s->modules[m]);
+    }
+    /* Ring rotation */
+    READ_FIELD(f, s->arm_count);
+    if (s->arm_count < 0) s->arm_count = 0;
+    if (s->arm_count > MAX_ARMS) s->arm_count = MAX_ARMS;
+    for (int a = 0; a < MAX_ARMS; a++) {
+        READ_FIELD(f, s->arm_rotation[a]);
+        READ_FIELD(f, s->arm_speed[a]);
     }
     return true;
 }

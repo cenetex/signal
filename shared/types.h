@@ -145,12 +145,10 @@ typedef struct {
     /* Module system */
     station_module_t modules[MAX_MODULES_PER_STATION];
     int module_count;
-    /* Arm rotation */
-    int arm_count;
-    float arm_rotation[MAX_ARMS];
-    float arm_speed[MAX_ARMS];
-    /* Legacy compat (save format) */
-    float ring_rotation[MAX_RING_COUNT];
+    /* Ring rotation (per-ring, stored in arm_rotation/arm_speed) */
+    int arm_count;                    /* number of active rings with rotation */
+    float arm_rotation[MAX_ARMS];     /* per-ring rotation angle (radians) */
+    float arm_speed[MAX_ARMS];        /* per-ring rotation speed (rad/s) */
 } station_t;
 
 /* ------------------------------------------------------------------ */
@@ -439,24 +437,24 @@ static inline int ring_module_count(const station_t *st, int ring) {
     return count;
 }
 
-/* Legacy shims for callers not yet migrated */
-static const int   RING_PORT_COUNT[] = { 0, 5, 8 };
-static const float RING_RADIUS[]     = { 60.0f, 200.0f, 320.0f };
-static const float RING_SPEED[]      = { 0.0f, 0.06f, 0.03f };
-static const float RING_GAP_CENTER   = 4.712389f;
-static const float RING_GAP_WIDTH    = 0.698132f;
+/* Legacy compat — used by begin_module_construction auto-assign */
+static const int RING_PORT_COUNT[] = { 0, 3, 6, 9 }; /* matches STATION_RING_SLOTS */
 
 static inline bool station_has_ring(const station_t *st, int ring) {
-    (void)st; (void)ring;
-    return ring <= 0;
+    /* A ring "exists" if any module is placed on it */
+    for (int i = 0; i < st->module_count; i++)
+        if (st->modules[i].ring == ring) return true;
+    return false;
 }
-static inline float ring_port_angle(int ring, int slot) {
-    (void)ring; (void)slot;
-    return 0.0f;
-}
+
 static inline int station_ring_free_slot(const station_t *st, int ring, int port_count) {
-    (void)ring; (void)port_count;
-    return st->module_count;
+    for (int slot = 0; slot < port_count; slot++) {
+        bool taken = false;
+        for (int i = 0; i < st->module_count; i++)
+            if (st->modules[i].ring == ring && st->modules[i].slot == slot) { taken = true; break; }
+        if (!taken) return slot;
+    }
+    return -1;
 }
 
 /* Outpost construction constants (client-shared) */
