@@ -200,37 +200,18 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
         return;
     }
 
-    float base_alpha = is_current ? 0.9f : (is_nearby ? 0.7f : 0.5f);
+    (void)is_current;
 
-    /* Core (stationary hub) — solid filled, substantial */
-    float core_r = STATION_CORE_RADIUS * 0.7f;
-    draw_circle_filled(station->pos, core_r, 32, 0.10f, 0.14f, 0.20f, 1.0f);
-    draw_circle_filled(station->pos, core_r * 0.8f, 28, 0.14f, 0.19f, 0.26f, 1.0f);
-    draw_circle_outline(station->pos, core_r, 32, role_r * 0.45f, role_g * 0.45f, role_b * 0.45f, base_alpha * 0.8f);
-    /* Inner hub ring */
-    draw_circle_filled(station->pos, core_r * 0.4f, 20, role_r * 0.25f, role_g * 0.30f, role_b * 0.35f, 0.95f);
-    draw_circle_outline(station->pos, core_r * 0.4f, 20, role_r * 0.5f, role_g * 0.55f, role_b * 0.6f, 0.5f);
-    /* Center pip */
-    draw_circle_filled(station->pos, 8.0f, 10, role_r * 0.5f, role_g * 0.6f, role_b * 0.7f, 0.9f);
-
-    /* Dock port indicator — pulsing diamond when player is in tractor range */
-    if (is_nearby) {
-        float pulse = 0.5f + 0.4f * sinf(g.world.time * 4.0f);
-        float ds = 12.0f;
-        sgl_c4f(0.3f, 1.0f, 0.7f, pulse);
-        sgl_begin_lines();
-        sgl_v2f(station->pos.x, station->pos.y - ds);
-        sgl_v2f(station->pos.x + ds, station->pos.y);
-        sgl_v2f(station->pos.x + ds, station->pos.y);
-        sgl_v2f(station->pos.x, station->pos.y + ds);
-        sgl_v2f(station->pos.x, station->pos.y + ds);
-        sgl_v2f(station->pos.x - ds, station->pos.y);
-        sgl_v2f(station->pos.x - ds, station->pos.y);
-        sgl_v2f(station->pos.x, station->pos.y - ds);
-        sgl_end();
-        /* Tractor range ring */
-        float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
-        draw_circle_outline(station->pos, tr, 48, 0.2f, 0.7f, 0.5f, 0.12f);
+    /* Orbital center — faint signal pulse, not a physical structure */
+    float pulse = 0.15f + 0.1f * sinf(g.world.time * 2.0f);
+    draw_circle_outline(station->pos, 8.0f, 12, role_r * 0.4f, role_g * 0.4f, role_b * 0.4f, pulse);
+    /* Faint ring orbit guides */
+    for (int r = 1; r <= STATION_NUM_RINGS; r++) {
+        bool has_modules = false;
+        for (int i = 0; i < station->module_count; i++)
+            if (station->modules[i].ring == r) { has_modules = true; break; }
+        if (!has_modules) continue;
+        draw_circle_outline(station->pos, STATION_RING_RADIUS[r], 48, role_r * 0.15f, role_g * 0.15f, role_b * 0.15f, 0.12f);
     }
 }
 
@@ -316,11 +297,28 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         if (mod_count == slots)
             draw_energy_tether(positions[mod_count - 1], positions[0], role_r, role_g, role_b, base_alpha * 0.7f);
 
-        /* Modules */
+        /* Modules + dock indicators */
         for (int i = 0; i < mod_count; i++) {
             const station_module_t *m = &station->modules[mod_idx[i]];
             float angle = module_angle_ring(station, ring, m->slot);
             draw_module_at(positions[i], angle, m->type, m->scaffold, m->build_progress, station->pos);
+
+            /* Pulsing dock indicator on MODULE_DOCK when player is nearby */
+            if (m->type == MODULE_DOCK && is_nearby && !m->scaffold) {
+                float dp = 0.5f + 0.4f * sinf(g.world.time * 4.0f);
+                float ds = 16.0f;
+                sgl_c4f(0.3f, 1.0f, 0.7f, dp);
+                sgl_begin_lines();
+                sgl_v2f(positions[i].x, positions[i].y - ds);
+                sgl_v2f(positions[i].x + ds, positions[i].y);
+                sgl_v2f(positions[i].x + ds, positions[i].y);
+                sgl_v2f(positions[i].x, positions[i].y + ds);
+                sgl_v2f(positions[i].x, positions[i].y + ds);
+                sgl_v2f(positions[i].x - ds, positions[i].y);
+                sgl_v2f(positions[i].x - ds, positions[i].y);
+                sgl_v2f(positions[i].x, positions[i].y - ds);
+                sgl_end();
+            }
         }
     }
 }
