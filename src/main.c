@@ -277,7 +277,10 @@ static void sim_step(float dt) {
 
     submit_input(&intent, dt);
 
-    /* Version mismatch auto-refresh (browser only) */
+    /* Version mismatch: reload immediately to get matching client.
+     * deploy-client runs before deploy-server, so the new client
+     * is already on CDN by the time the new server sends its hash.
+     * Bust cache to avoid stale CDN edge. */
     if (g.multiplayer_enabled && net_is_connected()) {
         const char *srv = net_server_hash();
 #ifdef GIT_HASH
@@ -285,17 +288,11 @@ static void sim_step(float dt) {
 #else
         const char *cli = "dev";
 #endif
-        bool mismatch = srv[0] != '\0' && strcmp(cli, srv) != 0;
-        if (mismatch) {
-            g.version_mismatch_timer += dt;
-            /* Auto-refresh after 10 seconds if not docked */
-            if (g.version_mismatch_timer > 10.0f && !LOCAL_PLAYER.docked) {
+        if (srv[0] != '\0' && strcmp(cli, "dev") != 0 && strcmp(cli, srv) != 0) {
 #ifdef __EMSCRIPTEN__
-                emscripten_run_script("location.reload()");
+            /* Hard reload — bypass CDN cache */
+            emscripten_run_script("location.replace(location.pathname + '?v=' + Date.now())");
 #endif
-            }
-        } else {
-            g.version_mismatch_timer = 0.0f;
         }
     }
 

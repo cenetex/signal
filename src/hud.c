@@ -782,9 +782,9 @@ void draw_hud(void) {
                 sdtx_color3b(220, 200, 60);
                 sdtx_puts("connecting...");
             } else {
-                /* Version mismatch — prompt player to refresh */
+                /* Version mismatch — reloading (shown briefly before redirect) */
                 sdtx_color3b(255, 160, 60);
-                sdtx_printf("UPDATE AVAILABLE — refresh to sync");
+                sdtx_puts("syncing...");
             }
         } else if (g.multiplayer_enabled) {
             sdtx_color3b(220, 200, 60);
