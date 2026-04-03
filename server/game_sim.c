@@ -173,8 +173,8 @@ static void add_module_at(station_t *st, module_type_t type, uint8_t arm, uint8_
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
     station_module_t *m = &st->modules[st->module_count++];
     m->type = type;
-    m->arm = arm;
-    m->chain_pos = chain_pos;
+    m->ring = arm;
+    m->slot = chain_pos;
     m->scaffold = false;
     m->build_progress = 1.0f;
 }
@@ -246,8 +246,8 @@ void begin_module_construction_at(world_t *w, station_t *st, int station_idx, mo
 
     station_module_t *m = &st->modules[st->module_count++];
     m->type = type;
-    m->arm = (uint8_t)arm;
-    m->chain_pos = (uint8_t)chain_pos;
+    m->ring = (uint8_t)arm;
+    m->slot = (uint8_t)chain_pos;
     m->scaffold = true;
     m->build_progress = 0.0f;
 
@@ -2038,7 +2038,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             float cost = module_credit_cost(intent->build_module_type);
             bool slot_free = true;
             for (int m = 0; m < docked_st->module_count; m++) {
-                if (docked_st->modules[m].arm == target_ring && docked_st->modules[m].chain_pos == target_slot) {
+                if (docked_st->modules[m].ring == target_ring && docked_st->modules[m].slot == target_slot) {
                     slot_free = false;
                     break;
                 }
@@ -2656,10 +2656,12 @@ void world_reset(world_t *w) {
     w->stations[0].signal_range = 18000.0f;
     add_module_at(&w->stations[0], MODULE_DOCK, 0xFF, 0);        /* core */
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 0xFF, 0);
-    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 0, 0);
-    add_module_at(&w->stations[0], MODULE_FURNACE, 0, 1);
-    add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 0, 2);
-    add_module_at(&w->stations[0], MODULE_CONTRACT_BOARD, 0, 3);
+    /* Ring 1 (triangle): 3 modules */
+    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 1, 0);
+    add_module_at(&w->stations[0], MODULE_FURNACE, 1, 1);
+    add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 1, 2);
+    /* Ring 2 (hexagon): 1 module so far */
+    add_module_at(&w->stations[0], MODULE_CONTRACT_BOARD, 2, 0);
     w->stations[0].arm_count = 1;
     w->stations[0].arm_speed[0] = STATION_RING_SPEED;
     rebuild_station_services(&w->stations[0]);
@@ -2678,10 +2680,12 @@ void world_reset(world_t *w) {
     w->stations[1].base_price[COMMODITY_FRAME] = 20.0f;
     add_module_at(&w->stations[1], MODULE_DOCK, 0xFF, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 0xFF, 0);
-    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 0, 0);
-    add_module_at(&w->stations[1], MODULE_REPAIR_BAY, 0, 1);
-    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 0, 2);
-    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 0, 3);
+    /* Ring 1: 3 modules */
+    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 1, 0);
+    add_module_at(&w->stations[1], MODULE_REPAIR_BAY, 1, 1);
+    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 1, 2);
+    /* Ring 2: 1 module */
+    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 2, 0);
     w->stations[1].arm_count = 1;
     w->stations[1].arm_speed[0] = STATION_RING_SPEED;
     rebuild_station_services(&w->stations[1]);
@@ -2703,11 +2707,13 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
     add_module_at(&w->stations[2], MODULE_DOCK, 0xFF, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 0xFF, 0);
-    add_module_at(&w->stations[2], MODULE_LASER_FAB, 0, 0);
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 0, 1);
-    add_module_at(&w->stations[2], MODULE_REPAIR_BAY, 0, 2);
-    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 0, 3);
-    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 0, 4);
+    /* Ring 1: 3 modules */
+    add_module_at(&w->stations[2], MODULE_LASER_FAB, 1, 0);
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 1, 1);
+    add_module_at(&w->stations[2], MODULE_REPAIR_BAY, 1, 2);
+    /* Ring 2: 2 modules */
+    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 2, 0);
+    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 2, 1);
     w->stations[2].arm_count = 1;
     w->stations[2].arm_speed[0] = STATION_RING_SPEED;
     rebuild_station_services(&w->stations[2]);

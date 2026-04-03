@@ -113,8 +113,8 @@ typedef enum {
 
 typedef struct {
     module_type_t type;
-    uint8_t arm;            /* which radial arm (0, 1, 2...) */
-    uint8_t chain_pos;      /* position along arm chain (0 = nearest core) */
+    uint8_t ring;           /* which ring tier (0xFF=core, 1=inner, 2=mid, 3=outer) */
+    uint8_t slot;           /* position within ring (0..STATION_RING_SLOTS[ring]-1) */
     bool scaffold;          /* under construction */
     float build_progress;   /* 0.0 to 1.0 */
 } station_module_t;
@@ -393,31 +393,37 @@ static inline commodity_t station_primary_sell(const station_t *st) {
     return (commodity_t)-1;
 }
 
-/* Station geometry constants */
+/* Station geometry constants
+ * Ring 1: 3 modules (triangle),  Ring 2: 6 (hexagon),  Ring 3: 9 (nonagon)
+ * Total capacity: 18 outer modules. */
 static const float STATION_CORE_RADIUS    = 60.0f;
-static const float STATION_MODULE_ORBIT   = 140.0f;  /* orbital radius: core center to module center */
-static const float STATION_MODULE_ARC     = 0.35f;   /* angular spacing between modules (radians, ~20 deg) */
-static const float STATION_RING_SPEED     = 0.04f;   /* rad/s — entire ring rotates together */
+static const float STATION_RING_RADIUS[]  = { 0.0f, 130.0f, 240.0f, 360.0f };
+static const int   STATION_RING_SLOTS[]   = { 0, 3, 6, 9 };
+static const float STATION_RING_SPEED     = 0.04f;
+enum { STATION_NUM_RINGS = 3 };
 
-/* World-space position of a module by its index among outer modules.
- * All modules orbit at the same radius, evenly spaced along the arc,
- * rotating together as one ring. */
-static inline vec2 module_world_pos_ring(const station_t *st, int outer_index, int outer_total) {
-    (void)outer_total;
-    float angle = (float)outer_index * STATION_MODULE_ARC + st->arm_rotation[0];
-    return v2_add(st->pos, v2(cosf(angle) * STATION_MODULE_ORBIT, sinf(angle) * STATION_MODULE_ORBIT));
+/* World-space position of a module: ring determines radius,
+ * slot determines angle (evenly divided around full circle).
+ * Entire station rotates together via arm_rotation[0]. */
+static inline vec2 module_world_pos_ring(const station_t *st, int ring, int slot) {
+    if (ring < 1 || ring > STATION_NUM_RINGS) return st->pos;
+    int slots = STATION_RING_SLOTS[ring];
+    float angle = TWO_PI_F * (float)slot / (float)slots + st->arm_rotation[0];
+    float r = STATION_RING_RADIUS[ring];
+    return v2_add(st->pos, v2(cosf(angle) * r, sinf(angle) * r));
 }
 
-/* Angle of a module at a given outer index (for orientation). */
-static inline float module_angle_ring(const station_t *st, int outer_index) {
-    return (float)outer_index * STATION_MODULE_ARC + st->arm_rotation[0];
+static inline float module_angle_ring(const station_t *st, int ring, int slot) {
+    if (ring < 1 || ring > STATION_NUM_RINGS) return 0.0f;
+    int slots = STATION_RING_SLOTS[ring];
+    return TWO_PI_F * (float)slot / (float)slots + st->arm_rotation[0];
 }
 
-/* Count modules on a given arm. */
-static inline int arm_module_count(const station_t *st, int arm) {
+/* Count modules on a given ring. */
+static inline int ring_module_count(const station_t *st, int ring) {
     int count = 0;
     for (int i = 0; i < st->module_count; i++)
-        if (st->modules[i].arm == arm) count++;
+        if (st->modules[i].ring == ring) count++;
     return count;
 }
 

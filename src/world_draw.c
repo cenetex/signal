@@ -84,8 +84,8 @@ static void module_color(module_type_t type, float *r, float *g, float *b) {
 /* ------------------------------------------------------------------ */
 
 static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaffold, float progress, vec2 station_center) {
-    float hw = 28.0f;  /* half-width of module block */
-    float hh = 20.0f;  /* half-height — chunky rectangles */
+    float hw = 45.0f;  /* half-width — fills polygon edge */
+    float hh = 25.0f;  /* half-height — chunky blocks */
     float mr, mg, mb;
     module_color(type, &mr, &mg, &mb);
     float alpha = scaffold ? 0.25f : 0.92f;
@@ -242,7 +242,7 @@ static void draw_energy_tether(vec2 a, vec2 b, float cr, float cg, float cb, flo
     draw_circle_filled(b, 3.0f, 6, cr * 0.5f, cg * 0.7f, cb, alpha * 0.6f);
 }
 
-/* Draw module ring (above ships in render order). */
+/* Draw module rings (above ships in render order). */
 void draw_station_rings(const station_t* station, bool is_current, bool is_nearby) {
     if (!station_exists(station) || station->scaffold) return;
 
@@ -251,39 +251,50 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
     float base_alpha = is_current ? 0.9f : (is_nearby ? 0.7f : 0.5f);
     float core_edge = STATION_CORE_RADIUS * 0.7f;
 
-    /* Collect outer modules (skip core structural modules) */
-    int outer[MAX_MODULES_PER_STATION];
-    int outer_count = 0;
-    for (int i = 0; i < station->module_count; i++) {
-        if (station->modules[i].arm == 0xFF) continue; /* core module */
-        outer[outer_count++] = i;
-    }
-    if (outer_count == 0) return;
+    for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
+        int slots = STATION_RING_SLOTS[ring];
 
-    /* Compute positions + draw */
-    vec2 positions[MAX_MODULES_PER_STATION];
-    for (int i = 0; i < outer_count; i++)
-        positions[i] = module_world_pos_ring(station, i, outer_count);
-
-    /* Radial corridor from core to first module */
-    {
-        vec2 toward = v2_sub(positions[0], station->pos);
-        float d = sqrtf(v2_len_sq(toward));
-        if (d > 1.0f) {
-            vec2 core_pt = v2_add(station->pos, v2_scale(toward, core_edge / d));
-            draw_corridor(core_pt, positions[0], role_r, role_g, role_b, base_alpha);
+        /* Collect modules on this ring */
+        int mod_idx[MAX_MODULES_PER_STATION];
+        int mod_count = 0;
+        for (int i = 0; i < station->module_count; i++) {
+            if (station->modules[i].ring == ring)
+                mod_idx[mod_count++] = i;
         }
-    }
+        if (mod_count == 0) continue;
 
-    /* Energy tethers between adjacent modules */
-    for (int i = 0; i + 1 < outer_count; i++)
-        draw_energy_tether(positions[i], positions[i + 1], role_r, role_g, role_b, base_alpha * 0.7f);
+        /* Compute positions */
+        vec2 positions[MAX_MODULES_PER_STATION];
+        for (int i = 0; i < mod_count; i++) {
+            int s = station->modules[mod_idx[i]].slot;
+            positions[i] = module_world_pos_ring(station, ring, s);
+        }
 
-    /* Draw each module */
-    for (int i = 0; i < outer_count; i++) {
-        const station_module_t *m = &station->modules[outer[i]];
-        float angle = module_angle_ring(station, i);
-        draw_module_at(positions[i], angle, m->type, m->scaffold, m->build_progress, station->pos);
+        /* Radial corridor from core (or inner ring) to first module */
+        {
+            vec2 toward = v2_sub(positions[0], station->pos);
+            float d = sqrtf(v2_len_sq(toward));
+            if (d > 1.0f) {
+                float inner_edge = (ring == 1) ? core_edge : STATION_RING_RADIUS[ring - 1] + 30.0f;
+                vec2 inner_pt = v2_add(station->pos, v2_scale(toward, inner_edge / d));
+                draw_corridor(inner_pt, positions[0], role_r, role_g, role_b, base_alpha);
+            }
+        }
+
+        /* Energy tethers between adjacent modules on this ring */
+        for (int i = 0; i < mod_count; i++) {
+            int next = (i + 1) % mod_count;
+            if (mod_count < slots && next == 0) continue; /* don't close incomplete ring */
+            if (mod_count >= 2 && !(mod_count < slots && next == 0))
+                draw_energy_tether(positions[i], positions[next], role_r, role_g, role_b, base_alpha * 0.7f);
+        }
+
+        /* Draw modules */
+        for (int i = 0; i < mod_count; i++) {
+            const station_module_t *m = &station->modules[mod_idx[i]];
+            float angle = module_angle_ring(station, ring, m->slot);
+            draw_module_at(positions[i], angle, m->type, m->scaffold, m->build_progress, station->pos);
+        }
     }
 }
 

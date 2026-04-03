@@ -316,8 +316,8 @@ static void handle_message(const uint8_t* data, int len) {
             for (int m = 0; m < si.module_count; m++) {
                 si.modules[m].type = (module_type_t)data[moff];
                 si.modules[m].scaffold = data[moff + 1] != 0;
-                si.modules[m].arm = data[moff + 2];
-                si.modules[m].chain_pos = data[moff + 3];
+                si.modules[m].ring = data[moff + 2];
+                si.modules[m].slot = data[moff + 3];
                 si.modules[m].build_progress = read_f32_le(&data[moff + 4]);
                 moff += STATION_MODULE_RECORD_SIZE;
             }
