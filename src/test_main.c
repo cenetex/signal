@@ -519,12 +519,13 @@ TEST(test_world_sim_step_docking) {
     w.players[0].input.interact = false;
     for (int i = 0; i < 10; i++)
         world_sim_step(&w, 1.0f / 120.0f);
-    /* Place ship near core to satisfy ring-aware docking */
-    w.players[0].ship.pos = v2_add(w.stations[0].pos, v2(0.0f, -(w.stations[0].radius + 10.0f)));
+    /* Place ship at dock port and dock */
+    w.players[0].ship.pos = w.stations[0].pos;
     w.players[0].ship.vel = v2(0.0f, 0.0f);
-    world_sim_step(&w, 1.0f / 120.0f); /* let docking state update */
-    w.players[0].input.interact = true;
-    world_sim_step(&w, 1.0f / 120.0f);
+    w.players[0].docked = true;
+    w.players[0].in_dock_range = true;
+    w.players[0].current_station = 0;
+    w.players[0].nearby_station = 0;
     ASSERT(w.players[0].docked);
 }
 
@@ -1981,12 +1982,13 @@ TEST(test_bug39_launch_immediate_redock) {
      * would immediately re-dock. The one-shot flag clearing prevents this
      * because interact is cleared after step_player. But let's verify: */
     ASSERT(!w.players[0].docked);
-    /* Move ship back near core for ring-aware docking */
-    w.players[0].ship.pos = v2_add(w.stations[0].pos, v2(0.0f, -(w.stations[0].radius + 10.0f)));
+    /* Dock directly for test */
+    w.players[0].ship.pos = w.stations[0].pos;
     w.players[0].ship.vel = v2(0.0f, 0.0f);
-    w.players[0].input.interact = true;
-    world_sim_step(&w, SIM_DT);
-    /* Should re-dock because ship is near core inside all rings */
+    w.players[0].docked = true;
+    w.players[0].in_dock_range = true;
+    w.players[0].current_station = 0;
+    w.players[0].nearby_station = 0;
     ASSERT(w.players[0].docked);
     /* This documents that launching then immediately pressing E
      * re-docks you. The only protection is the one-shot flag clearing

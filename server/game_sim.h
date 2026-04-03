@@ -91,6 +91,7 @@ typedef struct {
     int nearby_station;
     bool docked;
     bool in_dock_range;
+    bool docking_approach;  /* tractor pulling ship toward dock port */
     bool beam_active;
     bool beam_hit;
     bool beam_ineffective; /* hitting a rock too tough for current laser level */

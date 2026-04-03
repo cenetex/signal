@@ -1538,7 +1538,8 @@ static void dock_ship(world_t *w, server_player_t *sp) {
 
 static void launch_ship(world_t *w, server_player_t *sp) {
     sp->docked = false;
-    sp->in_dock_range = false;  /* prevent immediate re-dock */
+    sp->in_dock_range = false;
+    sp->docking_approach = false;
     sp->nearby_station = -1;
     /* Kick ship away from station so it clears dock range */
     const station_t *st = &w->stations[sp->current_station];
@@ -1853,28 +1854,32 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
     }
     sp->in_dock_range = sp->nearby_station >= 0;
 
-    /* Tractor pull toward dock port when in range */
-    if (sp->in_dock_range) {
+    /* Cancel approach if out of range */
+    if (!sp->in_dock_range) sp->docking_approach = false;
+
+    /* Tractor pull ONLY during active docking approach (player pressed E) */
+    if (sp->docking_approach && sp->in_dock_range) {
         const station_t *dock_st = &w->stations[sp->nearby_station];
         vec2 port = dock_port_pos(dock_st);
         vec2 to_port = v2_sub(port, sp->ship.pos);
         float dist = sqrtf(v2_len_sq(to_port));
 
-        /* Gentle brake */
-        sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + (dt * 1.5f)));
-
-        if (dist > 3.0f) {
-            /* Pull toward dock port — strength increases as you get closer */
-            float pull_strength = 20.0f + 40.0f * (1.0f - dist / tractor_r);
+        /* Brake + pull */
+        sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + (dt * 2.5f)));
+        if (dist > 5.0f) {
+            float pull_strength = 40.0f + 60.0f * (1.0f - dist / tractor_r);
             vec2 pull = v2_scale(to_port, pull_strength * dt / dist);
             sp->ship.vel = v2_add(sp->ship.vel, pull);
-
-            /* Orient ship toward dock port */
+            /* Orient toward port */
             float desired = atan2f(to_port.y, to_port.x);
             float diff = desired - sp->ship.angle;
             while (diff > PI_F) diff -= TWO_PI_F;
             while (diff < -PI_F) diff += TWO_PI_F;
-            sp->ship.angle += diff * 3.0f * dt;
+            sp->ship.angle += diff * 4.0f * dt;
+        } else {
+            /* Close enough — snap to docked */
+            dock_ship(w, sp);
+            sp->docking_approach = false;
         }
     }
 }
@@ -1997,9 +2002,21 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     }
     if (intent->interact) {
         if (sp->docked) { launch_ship(w, sp); return; }
-        if (!sp->in_dock_range) return;
-        dock_ship(w, sp);
-        return;
+        if (sp->in_dock_range) {
+            /* If already near the core, dock instantly. Otherwise start approach. */
+            vec2 port = dock_port_pos(&w->stations[sp->nearby_station]);
+            float d = sqrtf(v2_dist_sq(sp->ship.pos, port));
+            if (d <= w->stations[sp->nearby_station].radius + 30.0f) {
+                dock_ship(w, sp);
+            } else {
+                sp->docking_approach = true;
+            }
+            return;
+        }
+    }
+    /* Cancel docking approach if player thrusts away */
+    if (sp->docking_approach && (intent->thrust > 0.1f || intent->thrust < -0.1f)) {
+        sp->docking_approach = false;
     }
     if (!sp->docked) return;
     station_t *docked_st = &w->stations[sp->current_station];
