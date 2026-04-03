@@ -1854,16 +1854,18 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     }
 }
 
-/* Check if position is inside all completed rings at a station (through gaps). */
+/* Check if position is inside the outermost module ring. */
 static bool inside_all_rings(const station_t *st, vec2 pos) {
+    /* Find outermost populated ring */
+    int outer = 0;
+    for (int i = 0; i < st->module_count; i++) {
+        int r = st->modules[i].ring;
+        if (r >= 1 && r <= STATION_NUM_RINGS && r > outer) outer = r;
+    }
+    if (outer == 0) return true; /* no rings, core only */
     vec2 delta = v2_sub(pos, st->pos);
     float dist = sqrtf(v2_len_sq(delta));
-    for (int r = 1; r < MAX_RING_COUNT; r++) {
-        if (!station_has_ring(st, r)) continue;
-        /* Must be inside this ring's radius (or in the gap corridor) */
-        if (dist > RING_RADIUS[r]) return false;
-    }
-    return true;
+    return dist <= STATION_RING_RADIUS[outer] + 40.0f;
 }
 
 static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
@@ -1888,8 +1890,24 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
         }
     }
     sp->in_dock_range = sp->nearby_station >= 0;
-    if (sp->in_dock_range)
+    if (sp->in_dock_range) {
+        /* Brake */
         sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + (dt * 2.2f)));
+        /* Magnetic pull toward core center */
+        const station_t *dock_st = &w->stations[sp->nearby_station];
+        vec2 to_core = v2_sub(dock_st->pos, sp->ship.pos);
+        float dist = sqrtf(v2_len_sq(to_core));
+        if (dist > 2.0f) {
+            vec2 pull = v2_scale(to_core, 30.0f * dt / dist);
+            sp->ship.vel = v2_add(sp->ship.vel, pull);
+            /* Orient ship toward core */
+            float desired = atan2f(to_core.y, to_core.x);
+            float diff = desired - sp->ship.angle;
+            while (diff > PI_F) diff -= TWO_PI_F;
+            while (diff < -PI_F) diff += TWO_PI_F;
+            sp->ship.angle += diff * 2.0f * dt;
+        }
+    }
 }
 
 static void update_targeting_state(world_t *w, server_player_t *sp, vec2 forward) {
