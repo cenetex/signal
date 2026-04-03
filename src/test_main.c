@@ -3430,12 +3430,17 @@ TEST(test_module_construction_and_delivery) {
     begin_module_construction(&w, st, 0, MODULE_TRACTOR_FAB);
     ASSERT_EQ_INT(st->module_count, mc_before + 1);
     ASSERT(st->modules[mc_before].scaffold);
-    /* Deliver the required crystal ingots */
+    /* Deliver the required crystal ingots (goes into station inventory) */
     ship_t ship = {0};
     ship.cargo[COMMODITY_CRYSTAL_INGOT] = 200.0f;
     step_module_delivery(&w, st, 0, &ship);
-    ASSERT(!st->modules[mc_before].scaffold);  /* activated */
-    ASSERT(ship.cargo[COMMODITY_CRYSTAL_INGOT] < 200.0f);  /* consumed */
+    ASSERT(ship.cargo[COMMODITY_CRYSTAL_INGOT] < 200.0f);  /* consumed from ship */
+    ASSERT_EQ_FLOAT(st->modules[mc_before].build_progress, 1.0f, 0.01f); /* fully supplied */
+    ASSERT(st->modules[mc_before].scaffold);  /* still building — not instant */
+    /* Run sim for 15 seconds (MODULE_BUILD_TIME = 10s + margin) */
+    for (int i = 0; i < (int)(15.0f / SIM_DT); i++)
+        world_sim_step(&w, SIM_DT);
+    ASSERT(!st->modules[mc_before].scaffold);  /* activated after build time */
 }
 
 TEST(test_module_activation_spawns_npc) {
@@ -3443,13 +3448,17 @@ TEST(test_module_activation_spawns_npc) {
     world_reset(&w);
     int npc_before = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_before++;
-    /* Build a furnace on an outpost (station 0 already has one, use station 1) */
+    /* Build a furnace on station 1 (Kepler Yard) */
     station_t *st = &w.stations[1];
     begin_module_construction(&w, st, 1, MODULE_FURNACE);
+    /* Deliver materials to station inventory */
     ship_t ship = {0};
     ship.cargo[COMMODITY_FRAME] = 200.0f;
     step_module_delivery(&w, st, 1, &ship);
-    /* A miner should have been spawned */
+    /* Run sim long enough for construction to complete (~60 frames / 4 per sec = 15s) */
+    for (int i = 0; i < (int)(20.0f / SIM_DT); i++)
+        world_sim_step(&w, SIM_DT);
+    /* A miner should have been spawned on activation */
     int npc_after = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_after++;
     ASSERT(npc_after > npc_before);

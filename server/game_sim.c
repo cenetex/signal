@@ -279,31 +279,55 @@ void begin_module_construction(world_t *w, station_t *st, int station_idx, modul
             type, station_idx, cost, material);
 }
 
-/* Deliver ingots to scaffold modules at a station */
+/* Deliver materials directly to scaffold modules. Materials are consumed
+ * immediately from cargo but build progress advances at a fixed rate —
+ * delivery fills the module's internal hopper (tracked via build_progress
+ * vs the total cost), construction ticks over time in step_module_construction. */
 void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *ship) {
+    (void)w; (void)station_idx;
     for (int i = 0; i < st->module_count; i++) {
         if (!st->modules[i].scaffold) continue;
         commodity_t mat = module_build_material(st->modules[i].type);
         if (ship->cargo[mat] < 0.01f) continue;
         float cost = module_build_cost(st->modules[i].type);
-        float needed = cost * (1.0f - st->modules[i].build_progress);
+        float needed = cost - st->modules[i].build_progress * cost;
         if (needed < 0.01f) continue;
         float deliver = fminf(ship->cargo[mat], needed);
         ship->cargo[mat] -= deliver;
+        /* Store delivered amount as fractional progress toward 1.0.
+         * build_progress tracks total delivered / cost. Construction
+         * activation is gated by build_timer in step_module_construction. */
         st->modules[i].build_progress += deliver / cost;
-        if (st->modules[i].build_progress >= 1.0f) {
-            st->modules[i].scaffold = false;
+        if (st->modules[i].build_progress > 1.0f)
             st->modules[i].build_progress = 1.0f;
-            rebuild_station_services(st);
-            rebuild_signal_chain(w);
-            /* Spawn NPC when production module activates */
-            if (st->modules[i].type == MODULE_FURNACE || st->modules[i].type == MODULE_FURNACE_CU || st->modules[i].type == MODULE_FURNACE_CR)
-                spawn_npc(w, station_idx, NPC_ROLE_MINER);
-            if (st->modules[i].type == MODULE_FRAME_PRESS || st->modules[i].type == MODULE_LASER_FAB || st->modules[i].type == MODULE_TRACTOR_FAB)
-                spawn_npc(w, station_idx, NPC_ROLE_HAULER);
-            SIM_LOG("[sim] module %d activated at station %d\n", st->modules[i].type, station_idx);
+    }
+}
+
+/* Activate scaffold modules once fully supplied and enough time has elapsed.
+ * Construction takes MODULE_BUILD_TIME seconds after materials are fully delivered. */
+static const float MODULE_BUILD_TIME = 10.0f;  /* seconds after full delivery */
+
+static void step_module_construction(world_t *w, float dt) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        for (int i = 0; i < st->module_count; i++) {
+            if (!st->modules[i].scaffold) continue;
+            if (st->modules[i].build_progress < 1.0f) continue; /* not fully supplied */
+            /* Count down build time using build_progress > 1.0 as timer.
+             * 1.0 = just finished delivery, 2.0 = construction complete. */
+            st->modules[i].build_progress += dt / MODULE_BUILD_TIME;
+            if (st->modules[i].build_progress >= 2.0f) {
+                st->modules[i].scaffold = false;
+                st->modules[i].build_progress = 1.0f;
+                rebuild_station_services(st);
+                rebuild_signal_chain(w);
+                if (st->modules[i].type == MODULE_FURNACE || st->modules[i].type == MODULE_FURNACE_CU || st->modules[i].type == MODULE_FURNACE_CR)
+                    spawn_npc(w, s, NPC_ROLE_MINER);
+                if (st->modules[i].type == MODULE_FRAME_PRESS || st->modules[i].type == MODULE_LASER_FAB || st->modules[i].type == MODULE_TRACTOR_FAB)
+                    spawn_npc(w, s, NPC_ROLE_HAULER);
+                SIM_LOG("[sim] module %d activated at station %d\n", st->modules[i].type, s);
+            }
         }
-        if (ship->cargo[mat] < 0.01f) continue;
     }
 }
 
@@ -2405,6 +2429,7 @@ void world_sim_step(world_t *w, float dt) {
     }
     sim_step_refinery_production(w, dt);
     sim_step_station_production(w, dt);
+    step_module_construction(w, dt);
     step_contracts(w, dt);
     step_npc_ships(w, dt);
     generate_npc_distress_contracts(w);

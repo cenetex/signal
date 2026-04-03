@@ -292,7 +292,7 @@ static const float HAULER_RESERVE = 8.0f;  /* keep 20% stock for player purchase
 /* Module helpers */
 static inline bool station_has_module(const station_t *st, module_type_t type) {
     for (int i = 0; i < st->module_count; i++)
-        if (st->modules[i].type == type) return true;
+        if (st->modules[i].type == type && !st->modules[i].scaffold) return true;
     return false;
 }
 
