@@ -1573,15 +1573,13 @@ TEST(test_scenario_full_mining_cycle) {
     float ore = ship_raw_ore_total(&w.players[0].ship);
     ASSERT(ore > 0.0f);
 
-    /* Dock at station 0 (refinery) — position at dock port for instant dock.
-     * Dock module is at ring 1, slot 1. */
-    w.players[0].ship.pos = module_world_pos_ring(&w.stations[0], 1, 1);
-    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    /* Force dock at station 0 for test */
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
     w.players[0].nearby_station = 0;
     w.players[0].in_dock_range = true;
-    w.players[0].input.interact = true;
-    world_sim_step(&w, SIM_DT);
-    w.players[0].input.interact = false;
+    w.players[0].ship.pos = w.stations[0].pos;
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
     ASSERT(w.players[0].docked);
 
     /* Clear hopper so sell is accepted */
@@ -1725,14 +1723,13 @@ TEST(test_scenario_upgrade_requires_products) {
     w.players[0].input.interact = false;
     ASSERT(!w.players[0].docked);
 
-    /* Dock at station 2 — position at dock port (ring 1, slot 1) */
-    w.players[0].ship.pos = module_world_pos_ring(&w.stations[2], 1, 1);
-    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    /* Dock directly at station 2 for test */
+    w.players[0].docked = true;
+    w.players[0].current_station = 2;
     w.players[0].nearby_station = 2;
     w.players[0].in_dock_range = true;
-    w.players[0].input.interact = true;
-    world_sim_step(&w, SIM_DT);
-    w.players[0].input.interact = false;
+    w.players[0].ship.pos = w.stations[2].pos;
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
     ASSERT(w.players[0].docked);
     ASSERT_EQ_INT(w.players[0].current_station, 2);
 

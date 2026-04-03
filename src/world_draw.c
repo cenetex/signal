@@ -170,6 +170,7 @@ static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaff
 /* Draw station core and dock range (below ships in render order). */
 void draw_station(const station_t* station, bool is_current, bool is_nearby) {
     if (!station_exists(station) && !station->scaffold) return;
+    (void)is_nearby;
 
     float role_r = 0.45f, role_g = 0.85f, role_b = 1.0f;
     station_role_color(station, &role_r, &role_g, &role_b);
@@ -303,20 +304,28 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             float angle = module_angle_ring(station, ring, m->slot);
             draw_module_at(positions[i], angle, m->type, m->scaffold, m->build_progress, station->pos);
 
-            /* Pulsing dock indicator on MODULE_DOCK when player is nearby */
+            /* Dock berth indicator: green target rectangle offset outward */
             if (m->type == MODULE_DOCK && is_nearby && !m->scaffold) {
                 float dp = 0.5f + 0.4f * sinf(g.world.time * 4.0f);
-                float ds = 16.0f;
-                sgl_c4f(0.3f, 1.0f, 0.7f, dp);
+                /* Berth position: outward from module */
+                vec2 outward = v2_sub(positions[i], station->pos);
+                float od = sqrtf(v2_len_sq(outward));
+                if (od > 0.001f) outward = v2_scale(outward, 1.0f / od);
+                vec2 berth = v2_add(positions[i], v2_scale(outward, 55.0f));
+                /* Tangent direction */
+                vec2 tang = v2(-outward.y, outward.x);
+                /* Green rectangle outline at berth */
+                float bw = 20.0f, bh = 10.0f;
+                vec2 c0 = v2_add(berth, v2_add(v2_scale(tang, -bw), v2_scale(outward, -bh)));
+                vec2 c1 = v2_add(berth, v2_add(v2_scale(tang, bw), v2_scale(outward, -bh)));
+                vec2 c2 = v2_add(berth, v2_add(v2_scale(tang, bw), v2_scale(outward, bh)));
+                vec2 c3 = v2_add(berth, v2_add(v2_scale(tang, -bw), v2_scale(outward, bh)));
+                sgl_c4f(0.2f, 1.0f, 0.6f, dp);
                 sgl_begin_lines();
-                sgl_v2f(positions[i].x, positions[i].y - ds);
-                sgl_v2f(positions[i].x + ds, positions[i].y);
-                sgl_v2f(positions[i].x + ds, positions[i].y);
-                sgl_v2f(positions[i].x, positions[i].y + ds);
-                sgl_v2f(positions[i].x, positions[i].y + ds);
-                sgl_v2f(positions[i].x - ds, positions[i].y);
-                sgl_v2f(positions[i].x - ds, positions[i].y);
-                sgl_v2f(positions[i].x, positions[i].y - ds);
+                sgl_v2f(c0.x, c0.y); sgl_v2f(c1.x, c1.y);
+                sgl_v2f(c1.x, c1.y); sgl_v2f(c2.x, c2.y);
+                sgl_v2f(c2.x, c2.y); sgl_v2f(c3.x, c3.y);
+                sgl_v2f(c3.x, c3.y); sgl_v2f(c0.x, c0.y);
                 sgl_end();
             }
         }

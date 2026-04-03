@@ -1846,25 +1846,46 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
 }
 
 
-/* Find the first MODULE_DOCK on a station and return its world position.
- * Falls back to station center if no dock module exists. */
+/* Dock berth: offset to the outward side of the dock module.
+ * Ship parks beside the module, not on top of it. */
+#define DOCK_BERTH_OFFSET 55.0f  /* distance from module center to berth */
+
 static vec2 dock_port_pos(const station_t *st) {
     for (int i = 0; i < st->module_count; i++) {
         if (st->modules[i].type == MODULE_DOCK && !st->modules[i].scaffold) {
             int ring = st->modules[i].ring;
-            if (ring >= 1 && ring <= STATION_NUM_RINGS)
-                return module_world_pos_ring(st, ring, st->modules[i].slot);
+            if (ring < 1 || ring > STATION_NUM_RINGS) continue;
+            vec2 mod_pos = module_world_pos_ring(st, ring, st->modules[i].slot);
+            /* Offset outward from station center */
+            vec2 outward = v2_sub(mod_pos, st->pos);
+            float d = sqrtf(v2_len_sq(outward));
+            if (d > 0.001f) outward = v2_scale(outward, 1.0f / d);
+            return v2_add(mod_pos, v2_scale(outward, DOCK_BERTH_OFFSET));
         }
     }
-    return st->pos; /* fallback */
+    return st->pos;
+}
+
+/* Angle the ship should face when docked: tangent to orbit (perpendicular to radial). */
+static float dock_port_angle(const station_t *st) {
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_DOCK && !st->modules[i].scaffold) {
+            int ring = st->modules[i].ring;
+            if (ring < 1 || ring > STATION_NUM_RINGS) continue;
+            float angle = module_angle_ring(st, ring, st->modules[i].slot);
+            return angle + PI_F * 0.5f; /* perpendicular = tangent to orbit */
+        }
+    }
+    return 0.0f;
 }
 
 static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
     if (sp->docked) {
         sp->in_dock_range = true;
         sp->nearby_station = sp->current_station;
-        /* Hold ship at dock port, rotating with station */
+        /* Hold ship at berth beside dock module, facing tangent */
         sp->ship.pos = dock_port_pos(&w->stations[sp->current_station]);
+        sp->ship.angle = dock_port_angle(&w->stations[sp->current_station]);
         sp->ship.vel = v2(0.0f, 0.0f);
         return;
     }
@@ -1912,8 +1933,8 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
             float pull_strength = 40.0f + 60.0f * (1.0f - dist / tractor_r);
             vec2 pull = v2_scale(to_port, pull_strength * dt / dist);
             sp->ship.vel = v2_add(sp->ship.vel, pull);
-            /* Orient toward port */
-            float desired = atan2f(to_port.y, to_port.x);
+            /* Orient to dock angle (tangent to orbit, parallel to module) */
+            float desired = dock_port_angle(&w->stations[sp->nearby_station]);
             float diff = desired - sp->ship.angle;
             while (diff > PI_F) diff -= TWO_PI_F;
             while (diff < -PI_F) diff += TWO_PI_F;
