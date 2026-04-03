@@ -830,6 +830,59 @@ TEST(test_roundtrip_asteroids) {
     ASSERT_EQ_FLOAT(read_f32_le(&p1[26]), 14.0f, 0.1f);  /* radius */
 }
 
+TEST(test_roundtrip_asteroids_full_includes_inactive_slots) {
+    asteroid_t asteroids[MAX_ASTEROIDS];
+    memset(asteroids, 0, sizeof(asteroids));
+
+    /* Join-time full sync must include inactive slots so a client can clear
+     * any locally seeded asteroid that the authoritative server no longer has. */
+    asteroids[0].active = true;
+    asteroids[0].tier = ASTEROID_TIER_L;
+    asteroids[0].commodity = COMMODITY_CUPRITE_ORE;
+    asteroids[0].pos = v2(42.0f, -9.0f);
+    asteroids[0].hp = 77.0f;
+    asteroids[0].radius = 33.0f;
+
+    asteroids[5].active = true;
+    asteroids[5].fracture_child = true;
+    asteroids[5].tier = ASTEROID_TIER_M;
+    asteroids[5].commodity = COMMODITY_CRYSTAL_ORE;
+    asteroids[5].pos = v2(-12.0f, 88.0f);
+    asteroids[5].ore = 11.0f;
+    asteroids[5].radius = 21.0f;
+
+    uint8_t buf[2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
+    int len = serialize_asteroids_full(buf, asteroids);
+
+    ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_ASTEROIDS);
+    ASSERT_EQ_INT(buf[1], MAX_ASTEROIDS);
+    ASSERT_EQ_INT(len, 2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE);
+
+    /* Active slot keeps its state. */
+    uint8_t *p0 = &buf[2];
+    ASSERT_EQ_INT(p0[0], 0);
+    ASSERT(p0[1] & 1);
+    ASSERT_EQ_INT((p0[1] >> 2) & 0x7, ASTEROID_TIER_L);
+    ASSERT_EQ_FLOAT(read_f32_le(&p0[2]), 42.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p0[18]), 77.0f, 0.1f);
+
+    /* Inactive slot is explicitly present and cleared. */
+    uint8_t *p1 = &buf[2 + ASTEROID_RECORD_SIZE];
+    ASSERT_EQ_INT(p1[0], 1);
+    ASSERT_EQ_INT(p1[1], 0);
+    ASSERT_EQ_FLOAT(read_f32_le(&p1[2]), 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p1[18]), 0.0f, 0.001f);
+
+    /* Another active slot still round-trips later in the full snapshot. */
+    uint8_t *p5 = &buf[2 + 5 * ASTEROID_RECORD_SIZE];
+    ASSERT_EQ_INT(p5[0], 5);
+    ASSERT(p5[1] & 1);
+    ASSERT(p5[1] & 2);
+    ASSERT_EQ_INT((p5[1] >> 2) & 0x7, ASTEROID_TIER_M);
+    ASSERT_EQ_FLOAT(read_f32_le(&p5[22]), 11.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p5[26]), 21.0f, 0.1f);
+}
+
 TEST(test_roundtrip_npcs) {
     npc_ship_t npcs[MAX_NPC_SHIPS];
     memset(npcs, 0, sizeof(npcs));
@@ -3809,6 +3862,7 @@ int main(void) {
     RUN(test_roundtrip_player_state);
     RUN(test_roundtrip_batched_player_states);
     RUN(test_roundtrip_asteroids);
+    RUN(test_roundtrip_asteroids_full_includes_inactive_slots);
     RUN(test_roundtrip_npcs);
     RUN(test_roundtrip_stations);
     RUN(test_bug92_station_record_size_matches_buffer);
