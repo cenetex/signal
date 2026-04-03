@@ -8,6 +8,8 @@
 #include "signal_model.h"
 #include <stdlib.h>
 
+#define MODULE_COLLISION_RADIUS 34.0f
+
 #ifdef GAME_SIM_VERBOSE
 #define SIM_LOG(...) printf(__VA_ARGS__)
 #else
@@ -1024,14 +1026,6 @@ static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world
     }
 }
 
-/* Check if angle is inside the ring gap (centered at RING_GAP_CENTER + rotation). */
-static bool in_ring_gap(float angle, float rotation) {
-    float gap_lo = RING_GAP_CENTER + rotation - RING_GAP_WIDTH * 0.5f;
-    float diff = angle - gap_lo;
-    diff = fmodf(diff, TWO_PI_F);
-    if (diff < 0.0f) diff += TWO_PI_F;
-    return diff < RING_GAP_WIDTH;
-}
 
 static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
     const hull_def_t *hull = npc_hull_def(npc);
@@ -1049,23 +1043,21 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
             if (vel_toward < 0.0f)
                 npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.2f));
         }
-        /* Ring truss collision for NPCs */
-        float dist = sqrtf(v2_len_sq(delta));
-        float angle = atan2f(delta.y, delta.x);
-        for (int r = 1; r < MAX_RING_COUNT; r++) {
-            if (!station_has_ring(st, r)) continue;
-            float radius = RING_RADIUS[r];
-            float tw = (r == 1) ? 10.0f : 14.0f;
-            float inner = radius - tw - hull->ship_radius;
-            float outer = radius + tw + hull->ship_radius;
-            if (dist < inner || dist > outer) continue;
-            if (in_ring_gap(angle, st->ring_rotation[r])) continue;
-            vec2 n = dist > 0.001f ? v2_scale(delta, 1.0f / dist) : v2(1.0f, 0.0f);
-            float push_r = (dist - inner < outer - dist) ? inner : outer;
-            npc->pos = v2_add(st->pos, v2_scale(n, push_r));
-            float vt = v2_dot(npc->vel, n);
-            if ((push_r < radius && vt > 0.0f) || (push_r > radius && vt < 0.0f))
-                npc->vel = v2_sub(npc->vel, v2_scale(n, vt * 1.2f));
+        /* Per-module collision for NPCs */
+        for (int m = 0; m < st->module_count; m++) {
+            int ring = st->modules[m].ring;
+            if (ring < 1 || ring > STATION_NUM_RINGS) continue;
+            vec2 mod_pos = module_world_pos_ring(st, ring, st->modules[m].slot);
+            float mod_min = MODULE_COLLISION_RADIUS + hull->ship_radius;
+            vec2 md = v2_sub(npc->pos, mod_pos);
+            float md_sq = v2_len_sq(md);
+            if (md_sq >= mod_min * mod_min) continue;
+            float mdd = sqrtf(md_sq);
+            vec2 mn = mdd > 0.001f ? v2_scale(md, 1.0f / mdd) : v2(1.0f, 0.0f);
+            npc->pos = v2_add(mod_pos, v2_scale(mn, mod_min));
+            float mvt = v2_dot(npc->vel, mn);
+            if (mvt < 0.0f)
+                npc->vel = v2_sub(npc->vel, v2_scale(mn, mvt * 1.2f));
         }
     }
 }
@@ -1798,41 +1790,15 @@ static void step_ship_motion(ship_t *s, float dt, const world_t *w) {
     }
 }
 
-/* Resolve ship-vs-ring-truss collision. Push outward if inside truss arc. */
-static void resolve_ring_collision(world_t *w, server_player_t *sp, const station_t *st) {
-    float ship_r = ship_hull_def(&sp->ship)->ship_radius;
-    for (int r = 1; r < MAX_RING_COUNT; r++) {
-        if (!station_has_ring(st, r)) continue;
-        float radius = RING_RADIUS[r];
-        float truss_hw = (r == 1) ? 10.0f : 14.0f;
-        float inner = radius - truss_hw - ship_r;
-        float outer = radius + truss_hw + ship_r;
-
-        vec2 delta = v2_sub(sp->ship.pos, st->pos);
-        float dist = sqrtf(v2_len_sq(delta));
-        if (dist < inner || dist > outer) continue;
-
-        /* Ship is within the annulus — check if in the gap */
-        float angle = atan2f(delta.y, delta.x);
-        if (in_ring_gap(angle, st->ring_rotation[r])) continue;
-
-        /* Colliding with truss — push radially to nearest edge */
-        float to_inner = dist - inner;
-        float to_outer = outer - dist;
-        vec2 normal = dist > 0.001f ? v2_scale(delta, 1.0f / dist) : v2(1.0f, 0.0f);
-        if (to_inner < to_outer) {
-            sp->ship.pos = v2_add(st->pos, v2_scale(normal, inner));
-        } else {
-            sp->ship.pos = v2_add(st->pos, v2_scale(normal, outer));
-        }
-        float vel_toward = v2_dot(sp->ship.vel, normal);
-        float push_dir = (to_inner < to_outer) ? -1.0f : 1.0f;
-        if (vel_toward * push_dir < 0.0f) {
-            float impact = fabsf(vel_toward);
-            if (!sp->docked && impact > SHIP_COLLISION_DAMAGE_THRESHOLD)
-                apply_ship_damage(w, sp, (impact - SHIP_COLLISION_DAMAGE_THRESHOLD) * SHIP_COLLISION_DAMAGE_SCALE);
-            sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(normal, vel_toward * 1.2f));
-        }
+/* Module collision radius — matches visual half-size. */
+/* Resolve ship-vs-module collision for all modules on a station. */
+static void resolve_module_collisions(world_t *w, server_player_t *sp, const station_t *st) {
+    for (int i = 0; i < st->module_count; i++) {
+        int ring = st->modules[i].ring;
+        if (ring < 1 || ring > STATION_NUM_RINGS) continue;
+        int slot = st->modules[i].slot;
+        vec2 mod_pos = module_world_pos_ring(st, ring, slot);
+        resolve_ship_circle(w, sp, mod_pos, MODULE_COLLISION_RADIUS);
     }
 }
 
@@ -1841,7 +1807,7 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_collides(&w->stations[i])) continue;
         resolve_ship_circle(w, sp, w->stations[i].pos, w->stations[i].radius + 4.0f);
-        resolve_ring_collision(w, sp, &w->stations[i]);
+        resolve_module_collisions(w, sp, &w->stations[i]);
     }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!w->asteroids[i].active || asteroid_is_collectible(&w->asteroids[i])) continue;
@@ -2362,38 +2328,58 @@ static void resolve_asteroid_collisions(world_t *w) {
 /* Asteroid-station collision                                         */
 /* ================================================================== */
 
+static void resolve_asteroid_module_collision(asteroid_t *a, vec2 mod_pos, float mod_radius) {
+    float min_dist = a->radius + mod_radius;
+    vec2 delta = v2_sub(a->pos, mod_pos);
+    float dist_sq = v2_len_sq(delta);
+    if (dist_sq >= min_dist * min_dist) return;
+    float dist = sqrtf(dist_sq);
+    if (dist < 0.001f) { dist = 0.001f; delta = v2(1.0f, 0.0f); }
+    vec2 normal = v2_scale(delta, 1.0f / dist);
+    float overlap = min_dist - dist;
+    a->pos = v2_add(a->pos, v2_scale(normal, overlap + 4.0f));
+    float vel_along = v2_dot(a->vel, normal);
+    if (vel_along < 0.0f)
+        a->vel = v2_sub(a->vel, v2_scale(normal, vel_along * 1.6f));
+    a->net_dirty = true;
+}
+
 static void resolve_asteroid_station_collisions(world_t *w) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
         for (int s = 0; s < MAX_STATIONS; s++) {
+            /* Core collision */
             float min_dist = a->radius + w->stations[s].radius;
             vec2 delta = v2_sub(a->pos, w->stations[s].pos);
             float dist_sq = v2_len_sq(delta);
-            if (dist_sq >= min_dist * min_dist) continue;
-            float dist = sqrtf(dist_sq);
-            if (dist < 0.001f) { dist = 0.001f; delta = v2(1.0f, 0.0f); }
-            vec2 normal = v2_scale(delta, 1.0f / dist);
-            float overlap = min_dist - dist;
-            /* Push asteroid out (station is immovable) with extra margin */
-            float push = overlap + 8.0f;
-            a->pos = v2_add(a->pos, v2_scale(normal, push));
-            /* Bounce velocity with restitution 0.6 */
-            float vel_along = v2_dot(a->vel, normal);
-            float impact_speed = fabsf(vel_along);
-            if (vel_along < 0.0f) {
-                a->vel = v2_sub(a->vel, v2_scale(normal, vel_along * 1.6f));
-            }
-            /* High-speed impact damages asteroid */
-            if (impact_speed > 100.0f) {
-                float damage = impact_speed * 0.3f;
-                a->hp -= damage;
-                a->net_dirty = true;
-                if (a->hp <= 0.0f) {
-                    /* Fracture the asteroid */
-                    vec2 outward = v2_scale(normal, -1.0f);
-                    fracture_asteroid(w, i, outward);
+            if (dist_sq < min_dist * min_dist) {
+                float dist = sqrtf(dist_sq);
+                if (dist < 0.001f) { dist = 0.001f; delta = v2(1.0f, 0.0f); }
+                vec2 normal = v2_scale(delta, 1.0f / dist);
+                float overlap = min_dist - dist;
+                float push = overlap + 8.0f;
+                a->pos = v2_add(a->pos, v2_scale(normal, push));
+                float vel_along = v2_dot(a->vel, normal);
+                float impact_speed = fabsf(vel_along);
+                if (vel_along < 0.0f)
+                    a->vel = v2_sub(a->vel, v2_scale(normal, vel_along * 1.6f));
+                if (impact_speed > 100.0f) {
+                    float damage = impact_speed * 0.3f;
+                    a->hp -= damage;
+                    a->net_dirty = true;
+                    if (a->hp <= 0.0f) {
+                        vec2 outward = v2_scale(normal, -1.0f);
+                        fracture_asteroid(w, i, outward);
+                    }
                 }
+            }
+            /* Module collisions */
+            for (int m = 0; m < w->stations[s].module_count; m++) {
+                int ring = w->stations[s].modules[m].ring;
+                if (ring < 1 || ring > STATION_NUM_RINGS) continue;
+                vec2 mod_pos = module_world_pos_ring(&w->stations[s], ring, w->stations[s].modules[m].slot);
+                resolve_asteroid_module_collision(a, mod_pos, MODULE_COLLISION_RADIUS);
             }
         }
     }
