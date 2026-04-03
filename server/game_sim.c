@@ -1820,58 +1820,61 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     }
 }
 
-/* Check if position is inside the outermost module ring. */
-static bool inside_all_rings(const station_t *st, vec2 pos) {
-    /* Find outermost populated ring */
-    int outer = 0;
-    for (int i = 0; i < st->module_count; i++) {
-        int r = st->modules[i].ring;
-        if (r >= 1 && r <= STATION_NUM_RINGS && r > outer) outer = r;
-    }
-    if (outer == 0) return true; /* no rings, core only */
-    vec2 delta = v2_sub(pos, st->pos);
-    float dist = sqrtf(v2_len_sq(delta));
-    return dist <= STATION_RING_RADIUS[outer] + 40.0f;
+
+/* Dock port position: core center (dock module lives at core). */
+static vec2 dock_port_pos(const station_t *st) {
+    return st->pos;
 }
 
 static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
     if (sp->docked) {
         sp->in_dock_range = true;
         sp->nearby_station = sp->current_station;
+        /* Hold ship at dock port, rotating with station */
+        sp->ship.pos = dock_port_pos(&w->stations[sp->current_station]);
         sp->ship.vel = v2(0.0f, 0.0f);
         return;
     }
+
+    /* Find nearest station whose dock port is within tractor range */
+    float tractor_r = ship_tractor_range(&sp->ship);
+    float tractor_sq = tractor_r * tractor_r;
     float best_d = 0.0f;
     sp->nearby_station = -1;
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_exists(&w->stations[i])) continue;
-        float core_r = w->stations[i].radius + 30.0f; /* dock range: station body + margin */
-        float d_sq = v2_dist_sq(sp->ship.pos, w->stations[i].pos);
-        if (d_sq > core_r * core_r) continue;
-        /* Must be inside all rings to dock */
-        if (!inside_all_rings(&w->stations[i], sp->ship.pos)) continue;
+        vec2 port = dock_port_pos(&w->stations[i]);
+        float d_sq = v2_dist_sq(sp->ship.pos, port);
+        if (d_sq > tractor_sq) continue;
         if (sp->nearby_station < 0 || d_sq < best_d) {
             best_d = d_sq;
             sp->nearby_station = i;
         }
     }
     sp->in_dock_range = sp->nearby_station >= 0;
+
+    /* Tractor pull toward dock port when in range */
     if (sp->in_dock_range) {
-        /* Brake */
-        sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + (dt * 2.2f)));
-        /* Magnetic pull toward core center */
         const station_t *dock_st = &w->stations[sp->nearby_station];
-        vec2 to_core = v2_sub(dock_st->pos, sp->ship.pos);
-        float dist = sqrtf(v2_len_sq(to_core));
-        if (dist > 2.0f) {
-            vec2 pull = v2_scale(to_core, 30.0f * dt / dist);
+        vec2 port = dock_port_pos(dock_st);
+        vec2 to_port = v2_sub(port, sp->ship.pos);
+        float dist = sqrtf(v2_len_sq(to_port));
+
+        /* Gentle brake */
+        sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + (dt * 1.5f)));
+
+        if (dist > 3.0f) {
+            /* Pull toward dock port — strength increases as you get closer */
+            float pull_strength = 20.0f + 40.0f * (1.0f - dist / tractor_r);
+            vec2 pull = v2_scale(to_port, pull_strength * dt / dist);
             sp->ship.vel = v2_add(sp->ship.vel, pull);
-            /* Orient ship toward core */
-            float desired = atan2f(to_core.y, to_core.x);
+
+            /* Orient ship toward dock port */
+            float desired = atan2f(to_port.y, to_port.x);
             float diff = desired - sp->ship.angle;
             while (diff > PI_F) diff -= TWO_PI_F;
             while (diff < -PI_F) diff += TWO_PI_F;
-            sp->ship.angle += diff * 2.0f * dt;
+            sp->ship.angle += diff * 3.0f * dt;
         }
     }
 }

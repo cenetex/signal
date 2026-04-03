@@ -213,9 +213,25 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
     /* Center pip */
     draw_circle_filled(station->pos, 8.0f, 10, role_r * 0.5f, role_g * 0.6f, role_b * 0.7f, 0.9f);
 
-    /* Dock range indicator (faint) */
-    float dock_alpha = is_current ? 0.35f : (is_nearby ? 0.25f : 0.08f);
-    draw_circle_outline(station->pos, station->dock_radius, 48, role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, dock_alpha);
+    /* Dock port indicator — pulsing diamond when player is in tractor range */
+    if (is_nearby) {
+        float pulse = 0.5f + 0.4f * sinf(g.world.time * 4.0f);
+        float ds = 12.0f;
+        sgl_c4f(0.3f, 1.0f, 0.7f, pulse);
+        sgl_begin_lines();
+        sgl_v2f(station->pos.x, station->pos.y - ds);
+        sgl_v2f(station->pos.x + ds, station->pos.y);
+        sgl_v2f(station->pos.x + ds, station->pos.y);
+        sgl_v2f(station->pos.x, station->pos.y + ds);
+        sgl_v2f(station->pos.x, station->pos.y + ds);
+        sgl_v2f(station->pos.x - ds, station->pos.y);
+        sgl_v2f(station->pos.x - ds, station->pos.y);
+        sgl_v2f(station->pos.x, station->pos.y - ds);
+        sgl_end();
+        /* Tractor range ring */
+        float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
+        draw_circle_outline(station->pos, tr, 48, 0.2f, 0.7f, 0.5f, 0.12f);
+    }
 }
 
 /* Energy tether between lateral modules — pulsing field, not solid girder. */
