@@ -110,10 +110,10 @@ static void handle_message(const uint8_t* data, int len) {
         if (len < 2) break;
         {
             int count = (int)data[1];
-            int expected = 2 + count * 22;
+            int expected = 2 + count * PLAYER_RECORD_SIZE;
             if (len < expected) break;
             for (int i = 0; i < count; i++) {
-                const uint8_t *p = &data[2 + i * 22];
+                const uint8_t *p = &data[2 + i * PLAYER_RECORD_SIZE];
                 uint8_t id = p[0];
                 if (id >= NET_MAX_PLAYERS) continue;
                 NetPlayerState* ps = &net_state.players[id];

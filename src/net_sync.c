@@ -21,10 +21,13 @@ void on_player_leave(uint8_t player_id) {
 }
 
 void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
-    /* Shift current -> previous for interpolation */
+    /* Shift current -> previous for interpolation.
+     * Compute interval as blend of measured elapsed and previous interval
+     * to smooth out network jitter. */
     memcpy(g.asteroid_interp.prev, g.asteroid_interp.curr, sizeof(g.asteroid_interp.prev));
-    g.asteroid_interp.interval = fmaxf(g.asteroid_interp.t * g.asteroid_interp.interval, 0.05f);
-    if (g.asteroid_interp.interval > 0.2f) g.asteroid_interp.interval = 0.1f;
+    float elapsed = g.asteroid_interp.t * g.asteroid_interp.interval;
+    elapsed = clampf(elapsed, 0.05f, 0.2f);
+    g.asteroid_interp.interval = lerpf(g.asteroid_interp.interval, elapsed, 0.3f);
     g.asteroid_interp.t = 0.0f;
 
     bool received[MAX_ASTEROIDS];
@@ -61,14 +64,15 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
         }
     }
 
-    /* Also copy to world for game logic (targeting, beam hit checks) */
-    memcpy(g.world.asteroids, g.asteroid_interp.curr, sizeof(g.world.asteroids));
+    /* World asteroids are updated by interpolate_world_for_render() at
+     * render time, ensuring game logic and rendering see the same positions. */
 }
 
 void apply_remote_npcs(const NetNpcState* npcs, int count) {
     memcpy(g.npc_interp.prev, g.npc_interp.curr, sizeof(g.npc_interp.prev));
-    g.npc_interp.interval = fmaxf(g.npc_interp.t * g.npc_interp.interval, 0.05f);
-    if (g.npc_interp.interval > 0.2f) g.npc_interp.interval = 0.1f;
+    float npc_elapsed = g.npc_interp.t * g.npc_interp.interval;
+    npc_elapsed = clampf(npc_elapsed, 0.05f, 0.2f);
+    g.npc_interp.interval = lerpf(g.npc_interp.interval, npc_elapsed, 0.3f);
     g.npc_interp.t = 0.0f;
 
     bool received[MAX_NPC_SHIPS];
@@ -101,7 +105,7 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         }
     }
 
-    memcpy(g.world.npc_ships, g.npc_interp.curr, sizeof(g.world.npc_ships));
+    /* World NPCs updated by interpolate_world_for_render(). */
 }
 
 void apply_remote_stations(uint8_t index, const float* inventory) {
@@ -222,7 +226,7 @@ void interpolate_world_for_render(void) {
      * g.world already has authoritative state from local_server_sync_to_client. */
     if (g.local_server.active) return;
 
-    float t = clampf(g.asteroid_interp.t, 0.0f, 1.2f);
+    float t = clampf(g.asteroid_interp.t, 0.0f, 1.0f);
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *dst = &g.world.asteroids[i];
@@ -237,7 +241,7 @@ void interpolate_world_for_render(void) {
         }
     }
 
-    float nt = clampf(g.npc_interp.t, 0.0f, 1.2f);
+    float nt = clampf(g.npc_interp.t, 0.0f, 1.0f);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         npc_ship_t *dst = &g.world.npc_ships[i];
         const npc_ship_t *prev = &g.npc_interp.prev[i];
