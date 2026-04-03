@@ -188,14 +188,12 @@ static void activate_outpost(world_t *w, int station_idx) {
     st->scaffold = false;
     st->scaffold_progress = 1.0f;
     st->signal_range = OUTPOST_SIGNAL_RANGE;
-    add_module_at(st, MODULE_REPAIR_BAY, 0, 0xFF);
+    /* First module: signal relay on ring 1, orbiting the placement point */
+    add_module_at(st, MODULE_SIGNAL_RELAY, 1, 0);
+    st->arm_count = 1;
+    st->arm_speed[0] = STATION_RING_SPEED;
     rebuild_station_services(st);
     rebuild_signal_chain(w);
-    /* Spawn NPCs based on installed modules */
-    if (station_has_module(st, MODULE_FURNACE) || station_has_module(st, MODULE_FURNACE_CU) || station_has_module(st, MODULE_FURNACE_CR))
-        spawn_npc(w, station_idx, NPC_ROLE_MINER);
-    if (station_has_module(st, MODULE_FRAME_PRESS) || station_has_module(st, MODULE_LASER_FAB) || station_has_module(st, MODULE_TRACTOR_FAB))
-        spawn_npc(w, station_idx, NPC_ROLE_HAULER);
     SIM_LOG("[sim] outpost %d activated (signal_range=%.0f)\n", station_idx, OUTPOST_SIGNAL_RANGE);
 }
 
