@@ -7,7 +7,7 @@
  *   JOIN            (0x01): [type:1][player_id:1]
  *   LEAVE           (0x02): [type:1][player_id:1]
  *   STATE           (0x03): [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1]  = 23 bytes
- *   INPUT           (0x04): [type:1][flags:1][action:1]  = 3 bytes
+ *   INPUT           (0x04): [type:1][flags:1][action:1][mining_target:1]  = 4 bytes
  *   WORLD_ASTEROIDS (0x10): [type:1][count:1] + count * 30-byte records
  *   WORLD_NPCS      (0x11): [type:1][count:1] + count * 26-byte records
  *   WORLD_STATIONS  (0x12): [type:1][count:1] + count * STATION_RECORD_SIZE records
@@ -18,6 +18,8 @@
  */
 #ifndef SHARED_PROTOCOL_H
 #define SHARED_PROTOCOL_H
+
+#include "types.h"  /* MODULE_COUNT, COMMODITY_COUNT, MAX_ASTEROIDS, etc. */
 
 /* ------------------------------------------------------------------ */
 /* Message types                                                      */
@@ -66,10 +68,18 @@ enum {
     NET_ACTION_UPGRADE_HOLD   = 6,
     NET_ACTION_UPGRADE_TRACTOR= 7,
     NET_ACTION_PLACE_OUTPOST  = 8,
-    NET_ACTION_BUILD_MODULE   = 9,  /* +module_type offset */
+    NET_ACTION_BUILD_MODULE   = 9,  /* +module_type offset, range [9..9+MODULE_COUNT) */
     NET_ACTION_BUY_SCAFFOLD   = 25,
-    NET_ACTION_BUY_PRODUCT    = 30, /* +commodity offset */
+    NET_ACTION_BUY_PRODUCT    = 30, /* +commodity offset, range [30..30+COMMODITY_COUNT) */
 };
+
+/* Compile-time check: module and scaffold action ranges must not overlap */
+_Static_assert(NET_ACTION_BUILD_MODULE + MODULE_COUNT <= NET_ACTION_BUY_SCAFFOLD,
+               "BUILD_MODULE range overlaps BUY_SCAFFOLD");
+_Static_assert(NET_ACTION_BUY_SCAFFOLD < NET_ACTION_BUY_PRODUCT,
+               "BUY_SCAFFOLD overlaps BUY_PRODUCT range");
+_Static_assert(NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT <= 256,
+               "BUY_PRODUCT range overflows uint8_t");
 
 /* ------------------------------------------------------------------ */
 /* Record sizes                                                       */

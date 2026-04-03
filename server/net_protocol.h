@@ -334,14 +334,11 @@ static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts)
 /* ------------------------------------------------------------------ */
 
 /*
- * INPUT message (4 bytes, current):
+ * INPUT message (4 bytes):
  * [type:1][flags:1][action:1][mining_target:1]
- *
- * Legacy (3 bytes): [type:1][flags:1][action:1] (no target)
- * Legacy (7 bytes): [type:1][flags:1][angle:f32][action:1]
  */
 static inline void parse_input(const uint8_t *data, int len, input_intent_t *intent) {
-    if (len < 3) return;
+    if (len < 4) return;
     intent->mining_target_hint = -1;
     uint8_t flags = data[1];
 
@@ -359,15 +356,9 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
         intent->turn = -1.0f;
     intent->mine = (flags & NET_INPUT_FIRE) != 0;
 
-    /* OR-in one-shot actions — they accumulate until the sim consumes them.
-     * 4-byte format (current): [type][flags][action][mining_target].
-     * 3-byte format (legacy):  [type][flags][action].
-     * 7-byte format (legacy):  action at byte 6 (angle at bytes 2-5, ignored).
-     * 6-byte format (legacy, no action): no action byte present. */
+    /* One-shot actions — accumulate until the sim consumes them. */
     {
-        uint8_t action = 0;
-        if (len >= 3 && len < 7) action = data[2];
-        else if (len >= 7) action = data[6];
+        uint8_t action = data[2];
         switch (action) {
         case NET_ACTION_DOCK:
         case NET_ACTION_LAUNCH:
@@ -409,8 +400,8 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
         }
     }
 
-    /* Mining target hint (4-byte format only — byte 3 is angle data in legacy 7-byte) */
-    if (len == 4) {
+    /* Mining target hint */
+    {
         uint8_t target = data[3];
         if (target < MAX_ASTEROIDS)
             intent->mining_target_hint = (int)target;

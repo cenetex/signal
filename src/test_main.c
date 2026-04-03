@@ -965,6 +965,46 @@ TEST(test_bug92_station_record_size_matches_buffer) {
     ASSERT((size_t)len <= sizeof(buf));
 }
 
+TEST(test_bug93_hint_mines_small_shard_with_minor_desync) {
+    world_t w = {0};
+    world_reset(&w);
+    memset(w.asteroids, 0, sizeof(w.asteroids));
+    memset(w.npc_ships, 0, sizeof(w.npc_ships));
+
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].id = 0;
+    w.players[0].docked = false;
+    w.players[0].in_dock_range = false;
+    w.players[0].nearby_station = -1;
+    w.players[0].ship.pos = v2(0.0f, 0.0f);
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    w.players[0].ship.angle = 0.0f;
+    w.players[0].ship.mining_level = 0;
+    w.players[0].input.mine = true;
+    w.players[0].input.mining_target_hint = 0;
+
+    /* Place an M-tier shard just outside the exact server ray, as would
+     * happen when the client view is a few units behind a fast fracture child.
+     * Exact fallback targeting should miss it; the explicit hint should still
+     * be accepted and mine it. */
+    w.asteroids[0].active = true;
+    w.asteroids[0].fracture_child = true;
+    w.asteroids[0].tier = ASTEROID_TIER_M;
+    w.asteroids[0].commodity = COMMODITY_FERRITE_ORE;
+    w.asteroids[0].pos = v2(80.0f, 26.0f);
+    w.asteroids[0].vel = v2(0.0f, 0.0f);
+    w.asteroids[0].radius = 20.0f;
+    w.asteroids[0].hp = 40.0f;
+    w.asteroids[0].max_hp = 40.0f;
+
+    float hp_before = w.asteroids[0].hp;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(w.players[0].hover_asteroid, 0);
+    ASSERT(w.asteroids[0].hp < hp_before);
+}
+
 TEST(test_roundtrip_player_ship) {
     server_player_t sp;
     memset(&sp, 0, sizeof(sp));
@@ -1003,14 +1043,14 @@ TEST(test_parse_input_valid) {
     input_intent_t intent;
     memset(&intent, 0, sizeof(intent));
 
-    uint8_t msg[7] = {
+    uint8_t msg[4] = {
         NET_MSG_INPUT,
         NET_INPUT_THRUST | NET_INPUT_LEFT | NET_INPUT_FIRE,
-        0, 0, 0, 0,  /* angle (unused by server but present) */
-        NET_ACTION_SELL_CARGO
+        NET_ACTION_SELL_CARGO,
+        0xFF  /* no mining target */
     };
 
-    parse_input(msg, 7, &intent);
+    parse_input(msg, 4, &intent);
     ASSERT_EQ_FLOAT(intent.thrust, 1.0f, 0.01f);
     ASSERT_EQ_FLOAT(intent.turn, 1.0f, 0.01f);
     ASSERT(intent.mine);
@@ -1022,21 +1062,20 @@ TEST(test_parse_input_too_short) {
     memset(&intent, 0, sizeof(intent));
     intent.thrust = 99.0f;  /* canary value */
 
-    uint8_t msg[2] = { NET_MSG_INPUT, 0xFF };
-    parse_input(msg, 2, &intent);
+    uint8_t msg[3] = { NET_MSG_INPUT, 0xFF, 0 };
+    parse_input(msg, 3, &intent);
 
-    /* Too short (< 3 bytes) — should not modify intent */
+    /* Too short (< 4 bytes) — should not modify intent */
     ASSERT_EQ_FLOAT(intent.thrust, 99.0f, 0.01f);
 }
 
-TEST(test_parse_input_no_action_byte) {
+TEST(test_parse_input_no_action) {
     input_intent_t intent;
     memset(&intent, 0, sizeof(intent));
 
-    uint8_t msg[6] = { NET_MSG_INPUT, NET_INPUT_THRUST, 0, 0, 0, 0 };
-    parse_input(msg, 6, &intent);
+    uint8_t msg[4] = { NET_MSG_INPUT, NET_INPUT_THRUST, NET_ACTION_NONE, 0xFF };
+    parse_input(msg, 4, &intent);
 
-    /* 6 bytes = legacy format, no action byte */
     ASSERT_EQ_FLOAT(intent.thrust, 1.0f, 0.01f);
     ASSERT(!intent.service_sell);
     ASSERT(!intent.interact);
@@ -1047,13 +1086,13 @@ TEST(test_parse_input_action_accumulates) {
     memset(&intent, 0, sizeof(intent));
 
     /* First input: dock action */
-    uint8_t msg1[7] = { NET_MSG_INPUT, 0, 0,0,0,0, NET_ACTION_DOCK };
-    parse_input(msg1, 7, &intent);
+    uint8_t msg1[4] = { NET_MSG_INPUT, 0, NET_ACTION_DOCK, 0xFF };
+    parse_input(msg1, 4, &intent);
     ASSERT(intent.interact);
 
     /* Second input: sell action — should OR in, not replace */
-    uint8_t msg2[7] = { NET_MSG_INPUT, 0, 0,0,0,0, NET_ACTION_SELL_CARGO };
-    parse_input(msg2, 7, &intent);
+    uint8_t msg2[4] = { NET_MSG_INPUT, 0, NET_ACTION_SELL_CARGO, 0xFF };
+    parse_input(msg2, 4, &intent);
     ASSERT(intent.interact);       /* still true from first */
     ASSERT(intent.service_sell);   /* added by second */
 }
@@ -1851,13 +1890,13 @@ TEST(test_bug35_no_brake_flag) {
      * The client sim supports thrust = -1.0 (braking) but the network
      * protocol has no flag for it. Braking only works locally. */
     input_intent_t intent = {0};
-    uint8_t msg[7] = { NET_MSG_INPUT, NET_INPUT_THRUST, 0,0,0,0, 0 };
-    parse_input(msg, 7, &intent);
+    uint8_t msg[4] = { NET_MSG_INPUT, NET_INPUT_THRUST, NET_ACTION_NONE, 0xFF };
+    parse_input(msg, 4, &intent);
     /* Only positive thrust is possible via network */
     ASSERT_EQ_FLOAT(intent.thrust, 1.0f, 0.01f);
     /* FIX: NET_INPUT_BRAKE flag should produce thrust = -1.0 */
     msg[1] = NET_INPUT_BRAKE;
-    parse_input(msg, 7, &intent);
+    parse_input(msg, 4, &intent);
     /* After fix: brake flag should set thrust to -1.0 */
     ASSERT(intent.thrust < 0.0f);
 }
@@ -3866,10 +3905,11 @@ int main(void) {
     RUN(test_roundtrip_npcs);
     RUN(test_roundtrip_stations);
     RUN(test_bug92_station_record_size_matches_buffer);
+    RUN(test_bug93_hint_mines_small_shard_with_minor_desync);
     RUN(test_roundtrip_player_ship);
     RUN(test_parse_input_valid);
     RUN(test_parse_input_too_short);
-    RUN(test_parse_input_no_action_byte);
+    RUN(test_parse_input_no_action);
     RUN(test_parse_input_action_accumulates);
 
     printf("\nBug regression tests (batch 2):\n");

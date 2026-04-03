@@ -35,7 +35,7 @@ typedef struct {
 
 /* Packed asteroid state for world sync (30 bytes per asteroid). */
 typedef struct {
-    uint8_t index;      /* asteroid slot 0-47 */
+    uint8_t index;      /* asteroid slot 0-254 */
     uint8_t flags;      /* bit0=active, bit1=fracture_child, bits2-4=tier(3), bits5-7=commodity(3) */
     float x, y;         /* position */
     float vx, vy;       /* velocity */
@@ -46,7 +46,7 @@ typedef struct {
 
 /* Packed NPC state for world sync (23 bytes per NPC). */
 typedef struct {
-    uint8_t index;      /* NPC slot 0-5 */
+    uint8_t index;      /* NPC slot 0-15 */
     uint8_t flags;      /* bit0=active, bits1-2=role, bits3-5=state, bit6=thrusting */
     float x, y;         /* position */
     float vx, vy;       /* velocity */

@@ -139,8 +139,9 @@ static void handle_message(const uint8_t* data, int len) {
             int expected = 2 + count * ASTEROID_RECORD_SIZE;
             if (len < expected) break;
             if (net_state.callbacks.on_asteroids) {
-                NetAsteroidState arr[48];
-                for (int i = 0; i < count && i < 48; i++) {
+                NetAsteroidState arr[MAX_ASTEROIDS];
+                int decoded = (count > MAX_ASTEROIDS) ? MAX_ASTEROIDS : count;
+                for (int i = 0; i < decoded; i++) {
                     const uint8_t* p = &data[2 + i * ASTEROID_RECORD_SIZE];
                     arr[i].index  = p[0];
                     arr[i].flags  = p[1];
@@ -152,7 +153,7 @@ static void handle_message(const uint8_t* data, int len) {
                     arr[i].ore    = read_f32_le(&p[22]);
                     arr[i].radius = read_f32_le(&p[26]);
                 }
-                net_state.callbacks.on_asteroids(arr, count);
+                net_state.callbacks.on_asteroids(arr, decoded);
             }
         }
         break;
@@ -164,8 +165,9 @@ static void handle_message(const uint8_t* data, int len) {
             int expected = 2 + count * NPC_RECORD_SIZE;
             if (len < expected) break;
             if (net_state.callbacks.on_npcs) {
-                NetNpcState arr[6];
-                for (int i = 0; i < count && i < 6; i++) {
+                NetNpcState arr[MAX_NPC_SHIPS];
+                int decoded = (count > MAX_NPC_SHIPS) ? MAX_NPC_SHIPS : count;
+                for (int i = 0; i < decoded; i++) {
                     const uint8_t* p = &data[2 + i * NPC_RECORD_SIZE];
                     arr[i].index            = p[0];
                     arr[i].flags            = p[1];
@@ -179,7 +181,7 @@ static void handle_message(const uint8_t* data, int len) {
                     arr[i].tint_g           = p[24];
                     arr[i].tint_b           = p[25];
                 }
-                net_state.callbacks.on_npcs(arr, count);
+                net_state.callbacks.on_npcs(arr, decoded);
             }
         }
         break;

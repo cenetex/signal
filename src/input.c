@@ -267,9 +267,9 @@ void submit_input(const input_intent_t *intent, float dt) {
             g.pending_net_action = 8;
         else if (intent->buy_scaffold_kit)
             g.pending_net_action = NET_ACTION_BUY_SCAFFOLD;
-        else if (intent->build_module)
+        else if (intent->build_module && (uint8_t)intent->build_module_type < MODULE_COUNT)
             g.pending_net_action = NET_ACTION_BUILD_MODULE + (uint8_t)intent->build_module_type;
-        else if (intent->buy_product)
+        else if (intent->buy_product && (uint8_t)intent->buy_commodity < COMMODITY_COUNT)
             g.pending_net_action = NET_ACTION_BUY_PRODUCT + (uint8_t)intent->buy_commodity;
     }
 }
