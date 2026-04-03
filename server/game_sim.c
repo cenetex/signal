@@ -2571,13 +2571,13 @@ static void step_contracts(world_t *w, float dt) {
 void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
     w->time += dt;
-    /* Advance arm rotations */
+    /* Advance per-ring rotations (stored in arm_rotation[ring-1]) */
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!station_exists(&w->stations[s])) continue;
-        for (int a = 0; a < w->stations[s].arm_count && a < MAX_ARMS; a++) {
-            w->stations[s].arm_rotation[a] += w->stations[s].arm_speed[a] * dt;
-            if (w->stations[s].arm_rotation[a] > TWO_PI_F)
-                w->stations[s].arm_rotation[a] -= TWO_PI_F;
+        for (int r = 0; r < STATION_NUM_RINGS && r < MAX_ARMS; r++) {
+            w->stations[s].arm_rotation[r] += w->stations[s].arm_speed[r] * dt;
+            if (w->stations[s].arm_rotation[r] > TWO_PI_F)
+                w->stations[s].arm_rotation[r] -= TWO_PI_F;
         }
     }
     sim_step_asteroid_dynamics(w, dt);
@@ -2680,7 +2680,7 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[0], MODULE_ORE_BUYER, 1, 1);
     add_module_at(&w->stations[0], MODULE_FURNACE, 1, 2);
     w->stations[0].arm_count = 1;
-    w->stations[0].arm_speed[0] = STATION_RING_SPEED;
+    w->stations[0].arm_speed[0] = 0.05f;  /* ring 1 speed */
     rebuild_station_services(&w->stations[0]);
     /* Seed inventory: refinery starts with some smelted ingots */
     w->stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
@@ -2705,8 +2705,9 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 2, 2);
     add_module_at(&w->stations[1], MODULE_LASER_FAB, 2, 3);
     add_module_at(&w->stations[1], MODULE_TRACTOR_FAB, 2, 4);
-    w->stations[1].arm_count = 1;
-    w->stations[1].arm_speed[0] = STATION_RING_SPEED;
+    w->stations[1].arm_count = 2;
+    w->stations[1].arm_speed[0] = 0.05f;  /* ring 1 */
+    w->stations[1].arm_speed[1] = 0.03f;  /* ring 2 — slower */
     rebuild_station_services(&w->stations[1]);
     /* Seed inventory: yard starts with frames for hold upgrades */
     w->stations[1].inventory[COMMODITY_FERRITE_INGOT] = 15.0f;
@@ -2741,8 +2742,10 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_FRAME_PRESS, 3, 3);
     add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 4);
     add_module_at(&w->stations[2], MODULE_INGOT_SELLER, 3, 5);
-    w->stations[2].arm_count = 1;
-    w->stations[2].arm_speed[0] = STATION_RING_SPEED;
+    w->stations[2].arm_count = 3;
+    w->stations[2].arm_speed[0] = 0.05f;  /* ring 1 — fast */
+    w->stations[2].arm_speed[1] = 0.03f;  /* ring 2 — medium */
+    w->stations[2].arm_speed[2] = 0.02f;  /* ring 3 — slow */
     rebuild_station_services(&w->stations[2]);
     /* Seed inventory: works starts with modules for mining/tractor upgrades */
     w->stations[2].inventory[COMMODITY_CUPRITE_INGOT] = 15.0f;

@@ -402,13 +402,20 @@ static const int   STATION_RING_SLOTS[]   = { 0, 3, 6, 9 };
 static const float STATION_RING_SPEED     = 0.04f;
 enum { STATION_NUM_RINGS = 3 };
 
+/* Per-ring rotation: ring 1 fastest, outer rings slower. */
+static inline float station_ring_rotation(const station_t *st, int ring) {
+    if (ring < 1 || ring > STATION_NUM_RINGS) return 0.0f;
+    /* Store per-ring rotation in arm_rotation[ring-1] */
+    if (ring - 1 < MAX_ARMS) return st->arm_rotation[ring - 1];
+    return 0.0f;
+}
+
 /* World-space position of a module: ring determines radius,
- * slot determines angle (evenly divided around full circle).
- * Entire station rotates together via arm_rotation[0]. */
+ * slot determines angle. Each ring rotates independently. */
 static inline vec2 module_world_pos_ring(const station_t *st, int ring, int slot) {
     if (ring < 1 || ring > STATION_NUM_RINGS) return st->pos;
     int slots = STATION_RING_SLOTS[ring];
-    float angle = TWO_PI_F * (float)slot / (float)slots + st->arm_rotation[0];
+    float angle = TWO_PI_F * (float)slot / (float)slots + station_ring_rotation(st, ring);
     float r = STATION_RING_RADIUS[ring];
     return v2_add(st->pos, v2(cosf(angle) * r, sinf(angle) * r));
 }
@@ -416,7 +423,7 @@ static inline vec2 module_world_pos_ring(const station_t *st, int ring, int slot
 static inline float module_angle_ring(const station_t *st, int ring, int slot) {
     if (ring < 1 || ring > STATION_NUM_RINGS) return 0.0f;
     int slots = STATION_RING_SLOTS[ring];
-    return TWO_PI_F * (float)slot / (float)slots + st->arm_rotation[0];
+    return TWO_PI_F * (float)slot / (float)slots + station_ring_rotation(st, ring);
 }
 
 /* Count modules on a given ring. */
