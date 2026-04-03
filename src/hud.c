@@ -539,47 +539,48 @@ void draw_hud(void) {
         sgl_v2f(0.0f, screen_h);
         sgl_end();
 
+        /* Use 1:1 canvas so text fills the screen */
+        sdtx_canvas(screen_w, screen_h);
+        sdtx_origin(0.0f, 0.0f);
         float cx = screen_w * 0.5f;
         float cy = screen_h * 0.5f;
+        float cell = 8.0f;
 
         /* Title */
-        sdtx_canvas(screen_w * 2.0f, screen_h * 2.0f);
-        sdtx_origin(0.0f, 0.0f);
-
         const char *title = "SHIP DESTROYED";
-        float title_w = (float)strlen(title) * 8.0f;
-        sdtx_pos((cx - title_w * 0.5f) / 8.0f, (cy - 50.0f) / 8.0f);
+        float title_w = (float)strlen(title) * cell;
+        sdtx_pos((cx - title_w * 0.5f) / cell, (cy - 60.0f) / cell);
         sdtx_color3b(255, 80, 60);
         sdtx_puts(title);
 
         /* Stats */
-        float row = (cy - 20.0f) / 8.0f;
-        float left = (cx - 100.0f) / 8.0f;
+        float row = (cy - 16.0f) / cell;
+        float left = (cx - 110.0f) / cell;
         sdtx_color3b(180, 180, 180);
 
         sdtx_pos(left, row);
-        sdtx_printf("Ore mined:    %8.0f", g.death_ore_mined);
-        row += 2.0f;
+        sdtx_printf("Ore mined:     %8.0f", g.death_ore_mined);
+        row += 2.5f;
 
         sdtx_pos(left, row);
-        sdtx_printf("Rocks broken: %8d", g.death_asteroids_fractured);
-        row += 2.0f;
+        sdtx_printf("Rocks broken:  %8d", g.death_asteroids_fractured);
+        row += 2.5f;
 
         sdtx_pos(left, row);
         sdtx_color3b(120, 200, 120);
-        sdtx_printf("Credits earned:%7.0f", g.death_credits_earned);
-        row += 2.0f;
+        sdtx_printf("Credits earned:%8.0f", g.death_credits_earned);
+        row += 2.5f;
 
         sdtx_pos(left, row);
         sdtx_color3b(200, 120, 120);
-        sdtx_printf("Credits spent: %7.0f", g.death_credits_spent);
-        row += 3.0f;
+        sdtx_printf("Credits spent: %8.0f", g.death_credits_spent);
+        row += 4.0f;
 
         /* Prompt */
-        sdtx_color3b(100, 100, 100);
+        sdtx_color3b(120, 120, 120);
         const char *prompt = "respawning...";
-        float prompt_w = (float)strlen(prompt) * 8.0f;
-        sdtx_pos((cx - prompt_w * 0.5f) / 8.0f, row);
+        float prompt_w = (float)strlen(prompt) * cell;
+        sdtx_pos((cx - prompt_w * 0.5f) / cell, row);
         sdtx_puts(prompt);
 
         return; /* skip normal HUD */
@@ -612,6 +613,24 @@ void draw_hud(void) {
     uint8_t message_b = 205;
     int hull_units = (int)lroundf(LOCAL_PLAYER.ship.hull);
     int hull_capacity = (int)lroundf(ship_max_hull(&LOCAL_PLAYER.ship));
+
+    /* --- Low HP red flash (pulsing vignette below 20% hull) --- */
+    if (hull_capacity > 0 && g.death_screen_timer <= 0.0f) {
+        float hp_ratio = LOCAL_PLAYER.ship.hull / ship_max_hull(&LOCAL_PLAYER.ship);
+        if (hp_ratio < 0.20f) {
+            float urgency = 1.0f - (hp_ratio / 0.20f); /* 0 at 20%, 1 at 0% */
+            float pulse = 0.5f + 0.5f * sinf((float)sapp_frame_count() * 0.08f);
+            float alpha = urgency * pulse * 0.35f;
+            /* Fullscreen red vignette */
+            sgl_begin_quads();
+            sgl_c4f(0.8f, 0.05f, 0.02f, alpha);
+            sgl_v2f(0.0f, 0.0f);
+            sgl_v2f(screen_w, 0.0f);
+            sgl_v2f(screen_w, screen_h);
+            sgl_v2f(0.0f, screen_h);
+            sgl_end();
+        }
+    }
     int cargo_units = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
     int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
     int cargo_capacity = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
