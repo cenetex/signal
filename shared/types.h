@@ -421,7 +421,7 @@ static inline int station_ring_free_slot(const station_t *st, int ring, int port
 }
 
 /* Outpost construction constants (client-shared) */
-static const float SCAFFOLD_MATERIAL_NEEDED = 100.0f;  /* total frames needed */
+static const float SCAFFOLD_MATERIAL_NEEDED = 60.0f;   /* total frames needed */
 
 /* Ship upgrade constants (shared between client and server) */
 static const float SHIP_HOLD_UPGRADE_STEP = 24.0f;
@@ -429,7 +429,7 @@ static const float SHIP_MINING_UPGRADE_STEP = 7.0f;
 static const float SHIP_TRACTOR_UPGRADE_STEP = 24.0f;
 static const float SHIP_BASE_COLLECT_RADIUS = 30.0f;
 static const float SHIP_COLLECT_UPGRADE_STEP = 5.0f;
-static const float UPGRADE_BASE_PRODUCT = 16.0f;
+static const float UPGRADE_BASE_PRODUCT = 8.0f;
 static const int SHIP_UPGRADE_MAX_LEVEL = 4;
 
 typedef enum {

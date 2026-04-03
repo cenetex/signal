@@ -1652,9 +1652,9 @@ TEST(test_scenario_two_players_mining) {
     float cargo1 = ship_raw_ore_total(&w.players[1].ship);
     /* Both should have zero or independent cargo (S fragments, not direct ore from non-S) */
     (void)cargo0; (void)cargo1;
-    /* Verify credits are independent */
-    ASSERT_EQ_FLOAT(w.players[0].ship.credits, 0.0f, 0.01f);
-    ASSERT_EQ_FLOAT(w.players[1].ship.credits, 0.0f, 0.01f);
+    /* Verify credits are independent (both start at 50 from player_init_ship) */
+    ASSERT_EQ_FLOAT(w.players[0].ship.credits, 50.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w.players[1].ship.credits, 50.0f, 0.01f);
 }
 
 TEST(test_scenario_npc_economy_30_seconds) {
@@ -2929,6 +2929,7 @@ TEST(test_sell_price_uses_contract_price) {
     w.players[0].connected = true;
     w.players[0].docked = true;
     w.players[0].current_station = 0;
+    w.players[0].ship.credits = 0.0f; /* zero out for precise payout check */
     w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
     float expected_price = 10.0f * 1.2f; /* contract_price at age 300 */
     /* Trigger sell */

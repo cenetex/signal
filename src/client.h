@@ -105,6 +105,19 @@ typedef struct {
     float net_input_timer;
     station_tab_t station_tab;
     bool was_docked;
+    /* --- Onboarding (first-run progression hints) --- */
+    struct {
+        bool launched;       /* pressed E to launch */
+        bool mined;          /* fired the mining beam */
+        bool collected;      /* picked up ore fragments */
+        bool sold;           /* sold cargo at a station */
+        bool bought;         /* bought a product with F */
+        bool upgraded;       /* applied a ship upgrade */
+        bool got_scaffold;   /* bought a scaffold kit */
+        bool placed_outpost; /* placed and activated an outpost */
+        bool complete;       /* all steps done — stop showing hints */
+        bool loaded;         /* state loaded from localStorage */
+    } onboarding;
     /* --- Build mode --- */
     bool placing_outpost;    /* undocked: outpost placement */
     bool build_overlay;      /* docked: module build menu open */

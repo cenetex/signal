@@ -11,6 +11,7 @@
 #include "world_draw.h"
 #include "input.h"
 #include "net_sync.h"
+#include "onboarding.h"
 
 /* SOKOL_IMPL must appear in exactly one .c file.
  * The declaration-only headers are already pulled in by client.h,
@@ -167,7 +168,10 @@ static void process_sim_events(const sim_events_t *events) {
                 audio_play_fracture(&g.audio, ev->fracture.tier);
                 break;
             case SIM_EVENT_MINING_TICK:
-                if (ev->player_id == g.local_player_slot) audio_play_mining_tick(&g.audio);
+                if (ev->player_id == g.local_player_slot) {
+                    audio_play_mining_tick(&g.audio);
+                    onboarding_mark_mined();
+                }
                 break;
             case SIM_EVENT_DOCK:
                 if (ev->player_id == g.local_player_slot) {
@@ -179,16 +183,23 @@ static void process_sim_events(const sim_events_t *events) {
                 if (ev->player_id == g.local_player_slot) {
                     audio_play_launch(&g.audio);
                     set_notice("Launch corridor clear.");
+                    onboarding_mark_launched();
                 }
                 break;
             case SIM_EVENT_SELL:
-                if (ev->player_id == g.local_player_slot) audio_play_sale(&g.audio);
+                if (ev->player_id == g.local_player_slot) {
+                    audio_play_sale(&g.audio);
+                    onboarding_mark_sold();
+                }
                 break;
             case SIM_EVENT_REPAIR:
                 if (ev->player_id == g.local_player_slot) audio_play_repair(&g.audio);
                 break;
             case SIM_EVENT_UPGRADE:
-                if (ev->player_id == g.local_player_slot) audio_play_upgrade(&g.audio, ev->upgrade.upgrade);
+                if (ev->player_id == g.local_player_slot) {
+                    audio_play_upgrade(&g.audio, ev->upgrade.upgrade);
+                    onboarding_mark_upgraded();
+                }
                 break;
             case SIM_EVENT_DAMAGE:
                 if (ev->player_id == g.local_player_slot) audio_play_damage(&g.audio, ev->damage.amount);
@@ -202,6 +213,22 @@ static void process_sim_events(const sim_events_t *events) {
             default:
                 break;
         }
+    }
+}
+
+static void onboarding_per_frame(void) {
+    if (g.onboarding.complete) return;
+    if (!g.onboarding.collected && ship_total_cargo(&LOCAL_PLAYER.ship) > 0.5f)
+        onboarding_mark_collected();
+    if (!g.onboarding.bought) {
+        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
+            if (LOCAL_PLAYER.ship.cargo[c] > 0.5f) { onboarding_mark_bought(); break; }
+    }
+    if (!g.onboarding.got_scaffold && LOCAL_PLAYER.ship.has_scaffold_kit)
+        onboarding_mark_got_scaffold();
+    if (!g.onboarding.placed_outpost) {
+        for (int s = 3; s < MAX_STATIONS; s++)
+            if (station_exists(&g.world.stations[s])) { onboarding_mark_placed_outpost(); break; }
     }
 }
 
@@ -262,6 +289,7 @@ static void sim_step(float dt) {
 
     /* Play audio from sim events */
     process_sim_events(&g.world.events);
+    onboarding_per_frame();
 
     step_notice_timer(dt);
     if (g.action_predict_timer > 0.0f)
@@ -297,6 +325,7 @@ static void init(void) {
 
     init_starfield();
     reset_world();
+    onboarding_load();
 
     /* --- Multiplayer: auto-connect if server URL is available --- */
     {

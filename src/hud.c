@@ -5,6 +5,7 @@
 #include "client.h"
 #include "render.h"
 #include "net.h"
+#include "onboarding.h"
 
 /* ------------------------------------------------------------------ */
 /* UI scaling / layout helpers                                         */
@@ -287,6 +288,11 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         *r = 114;
         *g0 = 255;
         *b = 192;
+        return true;
+    }
+
+    if (onboarding_hint(label, label_size, message, message_size)) {
+        *r = 114; *g0 = 230; *b = 255;
         return true;
     }
 

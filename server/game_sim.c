@@ -2526,6 +2526,8 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 1, 2);
     add_module_at(&w->stations[0], MODULE_CONTRACT_BOARD, 1, 3);
     rebuild_station_services(&w->stations[0]);
+    /* Seed inventory: refinery starts with some smelted ingots */
+    w->stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
 
     snprintf(w->stations[1].name, sizeof(w->stations[1].name), "%s", "Kepler Yard");
     w->stations[1].pos         = v2(-3200.0f, 2300.0f);
@@ -2544,6 +2546,9 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 1, 2);
     add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 1, 3);
     rebuild_station_services(&w->stations[1]);
+    /* Seed inventory: yard starts with frames for hold upgrades */
+    w->stations[1].inventory[COMMODITY_FERRITE_INGOT] = 15.0f;
+    w->stations[1].inventory[COMMODITY_FRAME] = 12.0f;
 
     snprintf(w->stations[2].name, sizeof(w->stations[2].name), "%s", "Helios Works");
     w->stations[2].pos         = v2(3200.0f, 2300.0f);
@@ -2565,6 +2570,11 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 1, 3);
     add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 1, 4);
     rebuild_station_services(&w->stations[2]);
+    /* Seed inventory: works starts with modules for mining/tractor upgrades */
+    w->stations[2].inventory[COMMODITY_CUPRITE_INGOT] = 15.0f;
+    w->stations[2].inventory[COMMODITY_CRYSTAL_INGOT] = 15.0f;
+    w->stations[2].inventory[COMMODITY_LASER_MODULE] = 10.0f;
+    w->stations[2].inventory[COMMODITY_TRACTOR_MODULE] = 10.0f;
     rebuild_signal_chain(w);
 
     /* --- Initial asteroid field: spawn as clumps along belt density --- */
@@ -2598,7 +2608,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     memset(&sp->ship, 0, sizeof(sp->ship));
     sp->ship.hull_class = HULL_CLASS_MINER;
     sp->ship.hull       = HULL_DEFS[HULL_CLASS_MINER].max_hull;
-    sp->ship.credits    = 0.0f;
+    sp->ship.credits    = 50.0f;
     sp->ship.angle      = PI_F * 0.5f;
     sp->docked          = true;
     sp->current_station = 0;
