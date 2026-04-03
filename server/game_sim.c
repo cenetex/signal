@@ -970,14 +970,10 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     return best;
 }
 
-/* Compute an approach target for a station: aim at the gap of the outermost
- * ring when far away, switch to the core when inside all rings. */
-static vec2 dock_port_pos(const station_t *st); /* forward decl */
-
-/* NPC approach: aim for the dock module if it exists, otherwise station center. */
+/* NPC approach: aim for the station core center. */
 static vec2 station_approach_target(const station_t *st, vec2 from) {
     (void)from;
-    return dock_port_pos(st);
+    return st->pos;
 }
 
 static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float turn_speed, float dt) {
@@ -1518,7 +1514,11 @@ static void anchor_ship_in_station(server_player_t *sp, world_t *w) {
 }
 
 static void apply_ship_damage(world_t *w, server_player_t *sp, float damage);
-static vec2 dock_port_pos(const station_t *st);
+
+
+/* Forward declarations for core-based docking (defined below) */
+static vec2 dock_berth_pos(const station_t *st, int slot);
+static int find_best_berth(const world_t *w, const station_t *st, int station_idx, vec2 ship_pos);
 
 static void dock_ship(world_t *w, server_player_t *sp) {
     if (sp->nearby_station >= 0) sp->current_station = sp->nearby_station;
@@ -1578,7 +1578,8 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     }
     sp->current_station = best;
     sp->nearby_station = best;
-    sp->ship.pos = dock_port_pos(&w->stations[best]);
+    sp->dock_berth = 0;
+    sp->ship.pos = dock_berth_pos(&w->stations[best], 0);
     dock_ship(w, sp);
     SIM_LOG("[sim] player %d emergency recovered at station 0\n", sp->id);
 }
@@ -1853,66 +1854,67 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
  * Ship parks beside the module, not on top of it. */
 #define DOCK_BERTH_OFFSET 55.0f  /* distance from module center to berth */
 
-static vec2 dock_port_pos(const station_t *st) {
-    for (int i = 0; i < st->module_count; i++) {
-        if (st->modules[i].type == MODULE_DOCK && !st->modules[i].scaffold) {
-            int ring = st->modules[i].ring;
-            if (ring < 1 || ring > STATION_NUM_RINGS) continue;
-            vec2 mod_pos = module_world_pos_ring(st, ring, st->modules[i].slot);
-            /* Offset outward from station center */
-            vec2 outward = v2_sub(mod_pos, st->pos);
-            float d = sqrtf(v2_len_sq(outward));
-            if (d > 0.001f) outward = v2_scale(outward, 1.0f / d);
-            return v2_add(mod_pos, v2_scale(outward, DOCK_BERTH_OFFSET));
-        }
-    }
-    return st->pos;
+/* Core-based docking: 4 berth slots around the station core (stationary).
+ * Ship docks at core, not at a rotating ring module. The MODULE_DOCK
+ * enables the service; the berth position is at the core. */
+#define DOCK_BERTH_SLOTS 4
+#define CORE_BERTH_DISTANCE 45.0f  /* distance from core center to berth */
+#define DOCK_SNAP_DISTANCE 20.0f   /* snap-to-docked threshold */
+#define DOCK_APPROACH_RANGE 300.0f /* range to detect station for docking */
+
+static vec2 dock_berth_pos(const station_t *st, int slot) {
+    float angle = (float)slot * (TWO_PI_F / (float)DOCK_BERTH_SLOTS);
+    return v2_add(st->pos, v2_scale(v2_from_angle(angle), CORE_BERTH_DISTANCE));
 }
 
-/* Angle the ship should face when docked: tangent to orbit (perpendicular to radial). */
-static float dock_port_angle(const station_t *st) {
-    for (int i = 0; i < st->module_count; i++) {
-        if (st->modules[i].type == MODULE_DOCK && !st->modules[i].scaffold) {
-            int ring = st->modules[i].ring;
-            if (ring < 1 || ring > STATION_NUM_RINGS) continue;
-            float angle = module_angle_ring(st, ring, st->modules[i].slot);
-            return angle + PI_F * 0.5f; /* perpendicular = tangent to orbit */
+static float dock_berth_angle(int slot) {
+    /* Face outward from core */
+    return (float)slot * (TWO_PI_F / (float)DOCK_BERTH_SLOTS);
+}
+
+/* Find the best (closest, unoccupied) berth slot at a station */
+static int find_best_berth(const world_t *w, const station_t *st, int station_idx, vec2 ship_pos) {
+    int best = 0;
+    float best_d = 1e18f;
+    for (int s = 0; s < DOCK_BERTH_SLOTS; s++) {
+        vec2 bp = dock_berth_pos(st, s);
+        float d = v2_dist_sq(ship_pos, bp);
+        /* Check if another player occupies this berth */
+        bool occupied = false;
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            if (!w->players[p].connected || !w->players[p].docked) continue;
+            if (w->players[p].current_station != station_idx) continue;
+            /* Compare berth position */
+            vec2 their_berth = dock_berth_pos(st, w->players[p].dock_berth);
+            if (v2_dist_sq(their_berth, bp) < 1.0f) { occupied = true; break; }
         }
+        if (!occupied && d < best_d) { best_d = d; best = s; }
     }
-    return 0.0f;
+    return best;
 }
 
 static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
     if (sp->docked) {
         sp->in_dock_range = true;
         sp->nearby_station = sp->current_station;
-        /* Hold ship at berth beside dock module, facing tangent */
-        sp->ship.pos = dock_port_pos(&w->stations[sp->current_station]);
-        sp->ship.angle = dock_port_angle(&w->stations[sp->current_station]);
+        /* Hold ship at core berth (stationary — no ring rotation) */
+        sp->ship.pos = dock_berth_pos(&w->stations[sp->current_station], sp->dock_berth);
+        sp->ship.angle = dock_berth_angle(sp->dock_berth);
         sp->ship.vel = v2(0.0f, 0.0f);
         return;
     }
 
-    /* Find nearest dock MODULE within tractor range — direct distance
-     * to the orbiting dock module, not to the station center. */
-    float tractor_r = ship_tractor_range(&sp->ship);
-    float tractor_sq = tractor_r * tractor_r;
+    /* Find nearest station with a dock module within approach range.
+     * Distance measured to station CENTER (core), not to rotating module. */
+    float approach_sq = DOCK_APPROACH_RANGE * DOCK_APPROACH_RANGE;
     float best_d = 1e18f;
     sp->nearby_station = -1;
     for (int i = 0; i < MAX_STATIONS; i++) {
-        if (!station_exists(&w->stations[i])) continue;
-        vec2 port = dock_port_pos(&w->stations[i]);
-        /* dock_port_pos returns station center if no dock module — skip those */
-        if (port.x == w->stations[i].pos.x && port.y == w->stations[i].pos.y) {
-            /* Check if it actually has a dock (not just fallback) */
-            bool has_dock = false;
-            for (int m = 0; m < w->stations[i].module_count; m++)
-                if (w->stations[i].modules[m].type == MODULE_DOCK && !w->stations[i].modules[m].scaffold)
-                    { has_dock = true; break; }
-            if (!has_dock) continue;
-        }
-        float d_sq = v2_dist_sq(sp->ship.pos, port);
-        if (d_sq > tractor_sq) continue;
+        const station_t *st = &w->stations[i];
+        if (!station_exists(st)) continue;
+        if (!station_has_module(st, MODULE_DOCK)) continue;
+        float d_sq = v2_dist_sq(sp->ship.pos, st->pos);
+        if (d_sq > approach_sq) continue;
         if (d_sq < best_d) {
             best_d = d_sq;
             sp->nearby_station = i;
@@ -1923,27 +1925,29 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
     /* Cancel approach if out of range */
     if (!sp->in_dock_range) sp->docking_approach = false;
 
-    /* Tractor pull ONLY during active docking approach (player pressed E) */
+    /* Tractor pull toward station core during active docking approach */
     if (sp->docking_approach && sp->in_dock_range) {
         const station_t *dock_st = &w->stations[sp->nearby_station];
-        vec2 port = dock_port_pos(dock_st);
-        vec2 to_port = v2_sub(port, sp->ship.pos);
-        float dist = sqrtf(v2_len_sq(to_port));
+        int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship.pos);
+        vec2 target = dock_berth_pos(dock_st, berth);
+        vec2 to_target = v2_sub(target, sp->ship.pos);
+        float dist = sqrtf(v2_len_sq(to_target));
 
-        /* Brake + pull */
-        sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + (dt * 2.5f)));
-        if (dist > 5.0f) {
-            float pull_strength = 40.0f + 60.0f * (1.0f - dist / tractor_r);
-            vec2 pull = v2_scale(to_port, pull_strength * dt / dist);
+        /* Aggressive brake + pull toward core */
+        sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + (dt * 3.5f)));
+        if (dist > DOCK_SNAP_DISTANCE) {
+            float pull_strength = 80.0f + 120.0f * (1.0f - clampf(dist / DOCK_APPROACH_RANGE, 0.0f, 1.0f));
+            vec2 pull = v2_scale(to_target, pull_strength * dt / fmaxf(dist, 1.0f));
             sp->ship.vel = v2_add(sp->ship.vel, pull);
-            /* Orient to dock angle (tangent to orbit, parallel to module) */
-            float desired = dock_port_angle(&w->stations[sp->nearby_station]);
+            /* Orient to berth angle */
+            float desired = dock_berth_angle(berth);
             float diff = desired - sp->ship.angle;
             while (diff > PI_F) diff -= TWO_PI_F;
             while (diff < -PI_F) diff += TWO_PI_F;
-            sp->ship.angle += diff * 4.0f * dt;
+            sp->ship.angle += diff * 5.0f * dt;
         } else {
-            /* Close enough — snap to docked */
+            /* Close enough — snap to docked at this berth */
+            sp->dock_berth = berth;
             dock_ship(w, sp);
             sp->docking_approach = false;
         }
@@ -2304,10 +2308,13 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     if (intent->interact) {
         if (sp->docked) { launch_ship(w, sp); return; }
         if (sp->in_dock_range) {
-            /* If close to the dock module, dock instantly. Otherwise start approach. */
-            vec2 port = dock_port_pos(&w->stations[sp->nearby_station]);
-            float d = sqrtf(v2_dist_sq(sp->ship.pos, port));
-            if (d <= MODULE_COLLISION_RADIUS + 30.0f) {
+            /* Core-based docking: find nearest berth at station core */
+            const station_t *dock_st = &w->stations[sp->nearby_station];
+            int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship.pos);
+            vec2 bp = dock_berth_pos(dock_st, berth);
+            float d = sqrtf(v2_dist_sq(sp->ship.pos, bp));
+            if (d <= DOCK_SNAP_DISTANCE) {
+                sp->dock_berth = berth;
                 dock_ship(w, sp);
             } else {
                 sp->docking_approach = true;

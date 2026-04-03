@@ -283,6 +283,21 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
     int cargo_capacity = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
     const station_t* station = current_station_ptr();
 
+    /* Hull integrity warning — highest priority, replaces red vignette */
+    if (!LOCAL_PLAYER.docked && g.death_screen_timer <= 0.0f) {
+        float max_hull = ship_max_hull(&LOCAL_PLAYER.ship);
+        if (max_hull > 0.0f) {
+            float hp_ratio = LOCAL_PLAYER.ship.hull / max_hull;
+            if (hp_ratio < 0.20f) {
+                snprintf(label, label_size, "WARNING");
+                int hp_pct = (int)lroundf(hp_ratio * 100.0f);
+                snprintf(message, message_size, "[ HULL INTEGRITY FAILING ] %d%%", hp_pct);
+                *r = 255; *g0 = 60; *b = 50;
+                return true;
+            }
+        }
+    }
+
     if (g.notice_timer > 0.0f) {
         snprintf(label, label_size, "NOTICE");
         snprintf(message, message_size, "%s", g.notice);
@@ -615,23 +630,8 @@ void draw_hud(void) {
     int hull_units = (int)lroundf(LOCAL_PLAYER.ship.hull);
     int hull_capacity = (int)lroundf(ship_max_hull(&LOCAL_PLAYER.ship));
 
-    /* --- Low HP red flash (pulsing vignette below 20% hull) --- */
-    if (hull_capacity > 0 && g.death_screen_timer <= 0.0f) {
-        float hp_ratio = LOCAL_PLAYER.ship.hull / ship_max_hull(&LOCAL_PLAYER.ship);
-        if (hp_ratio < 0.20f) {
-            float urgency = 1.0f - (hp_ratio / 0.20f); /* 0 at 20%, 1 at 0% */
-            float pulse = 0.5f + 0.5f * sinf((float)sapp_frame_count() * 0.08f);
-            float alpha = urgency * pulse * 0.35f;
-            /* Fullscreen red vignette */
-            sgl_begin_quads();
-            sgl_c4f(0.8f, 0.05f, 0.02f, alpha);
-            sgl_v2f(0.0f, 0.0f);
-            sgl_v2f(screen_w, 0.0f);
-            sgl_v2f(screen_w, screen_h);
-            sgl_v2f(0.0f, screen_h);
-            sgl_end();
-        }
-    }
+    /* --- Low HP warning: pulsing red text in message area instead of vignette --- */
+    /* (hull warning state is used by build_hud_message to show HULL INTEGRITY FAILING) */
     int cargo_units = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
     int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
     int cargo_capacity = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
@@ -790,12 +790,25 @@ void draw_hud(void) {
             float message_row_1 = ui_text_pos(message_y + 24.0f);
             float message_row_2 = ui_text_pos(message_y + 34.0f);
 
-            sdtx_pos(message_text_x, message_row_0);
-            sdtx_color3b(message_r, message_g, message_b);
+            /* Pulse the label for hull warning */
+            bool is_hull_warn = (message_r == 255 && message_g == 60 && message_b == 50);
+            if (is_hull_warn) {
+                float pulse = 0.5f + 0.5f * sinf((float)sapp_frame_count() * 0.06f);
+                sdtx_pos(message_text_x, message_row_0);
+                sdtx_color3b((uint8_t)(message_r * pulse), (uint8_t)(40 + 20 * pulse), (uint8_t)(40 + 10 * pulse));
+            } else {
+                sdtx_pos(message_text_x, message_row_0);
+                sdtx_color3b(message_r, message_g, message_b);
+            }
             sdtx_puts(message_label);
 
             sdtx_pos(message_text_x, message_row_1);
-            sdtx_color3b(232, 241, 255);
+            if (is_hull_warn) {
+                float pulse = 0.5f + 0.5f * sinf((float)sapp_frame_count() * 0.06f);
+                sdtx_color3b((uint8_t)(200 * pulse + 55), (uint8_t)(40 + 20 * pulse), (uint8_t)(40 + 10 * pulse));
+            } else {
+                sdtx_color3b(232, 241, 255);
+            }
             sdtx_puts(message_line0);
 
             if (message_line1[0] != '\0') {
@@ -917,13 +930,26 @@ void draw_hud(void) {
         float message_row_1 = ui_text_pos(message_y + 30.0f);
         float message_row_2 = ui_text_pos(message_y + 42.0f);
 
-        sdtx_pos(message_text_x, message_row_0);
-        sdtx_color3b(message_r, message_g, message_b);
-        sdtx_puts(message_label);
+        /* Pulse the label for hull warning */
+        bool is_hull_warn_n = (message_r == 255 && message_g == 60 && message_b == 50);
+        if (is_hull_warn_n) {
+            float pulse = 0.5f + 0.5f * sinf((float)sapp_frame_count() * 0.06f);
+            sdtx_pos(message_text_x, message_row_0);
+            sdtx_color3b((uint8_t)(message_r * pulse), (uint8_t)(40 + 20 * pulse), (uint8_t)(40 + 10 * pulse));
+            sdtx_puts(message_label);
 
-        sdtx_pos(message_text_x, message_row_1);
-        sdtx_color3b(232, 241, 255);
-        sdtx_puts(message_line0);
+            sdtx_pos(message_text_x, message_row_1);
+            sdtx_color3b((uint8_t)(200 * pulse + 55), (uint8_t)(40 + 20 * pulse), (uint8_t)(40 + 10 * pulse));
+            sdtx_puts(message_line0);
+        } else {
+            sdtx_pos(message_text_x, message_row_0);
+            sdtx_color3b(message_r, message_g, message_b);
+            sdtx_puts(message_label);
+
+            sdtx_pos(message_text_x, message_row_1);
+            sdtx_color3b(232, 241, 255);
+            sdtx_puts(message_line0);
+        }
 
         if (message_line1[0] != '\0') {
             sdtx_pos(message_text_x, message_row_2);
