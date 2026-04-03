@@ -277,10 +277,10 @@ static void sim_step(float dt) {
 
     submit_input(&intent, dt);
 
-    /* Version mismatch: reload immediately to get matching client.
+    /* Version mismatch: reload once to get matching client.
+     * Only reload if we haven't already tried (check ?v= in URL).
      * deploy-client runs before deploy-server, so the new client
-     * is already on CDN by the time the new server sends its hash.
-     * Bust cache to avoid stale CDN edge. */
+     * is on CDN by the time the new server sends its hash. */
     if (g.multiplayer_enabled && net_is_connected()) {
         const char *srv = net_server_hash();
 #ifdef GIT_HASH
@@ -290,8 +290,12 @@ static void sim_step(float dt) {
 #endif
         if (srv[0] != '\0' && strcmp(cli, "dev") != 0 && strcmp(cli, srv) != 0) {
 #ifdef __EMSCRIPTEN__
-            /* Hard reload — bypass CDN cache */
-            emscripten_run_script("location.replace(location.pathname + '?v=' + Date.now())");
+            /* Only reload once — if URL already has ?v= we already tried */
+            int already_tried = emscripten_run_script_int(
+                "location.search.indexOf('v=') >= 0 ? 1 : 0");
+            if (!already_tried) {
+                emscripten_run_script("location.replace(location.pathname + '?v=' + Date.now())");
+            }
 #endif
         }
     }

@@ -120,9 +120,6 @@ static void handle_message(const uint8_t* data, int len) {
             if (net_state.local_id == 0xFF) {
                 net_state.local_id = id;
                 printf("[net] assigned player id %d\n", id);
-                /* Send session token so server can load our save */
-                ensure_session_token();
-                send_session_token();
             } else if (id != net_state.local_id) {
                 if (id < NET_MAX_PLAYERS) {
                     net_state.players[id].player_id = id;
@@ -388,6 +385,9 @@ static EM_BOOL on_ws_open(int eventType, const EmscriptenWebSocketOpenEvent* eve
     (void)eventType; (void)event; (void)userData;
     net_state.connected = true;
     printf("[net] connected to relay server\n");
+    /* Send session token immediately so server can match grace slots */
+    ensure_session_token();
+    send_session_token();
     return EM_TRUE;
 }
 
@@ -517,6 +517,8 @@ static void net_ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         net_state.connected = true;
         ws_conn = c;
         printf("[net] connected to server\n");
+        ensure_session_token();
+        send_session_token();
     } else if (ev == MG_EV_WS_MSG) {
         struct mg_ws_message *wm = (struct mg_ws_message *)ev_data;
         handle_message((const uint8_t *)wm->data.buf, (int)wm->data.len);
