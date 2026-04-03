@@ -217,6 +217,10 @@ input_intent_t sample_input_intent(void) {
             }
         }
     }
+    /* H key: hail nearby station to collect pending credits */
+    if (is_key_pressed(SAPP_KEYCODE_H) && !LOCAL_PLAYER.docked) {
+        intent.hail = true;
+    }
     intent.reset = is_key_pressed(SAPP_KEYCODE_R);
     return intent;
 }
@@ -242,7 +246,7 @@ void submit_input(const input_intent_t *intent, float dt) {
         intent->service_repair || intent->upgrade_mining ||
         intent->upgrade_hold || intent->upgrade_tractor ||
         intent->place_outpost || intent->buy_scaffold_kit ||
-        intent->build_module || intent->buy_product;
+        intent->build_module || intent->buy_product || intent->hail;
 
     if (has_action)
         g.action_predict_timer = 0.5f;
@@ -273,5 +277,7 @@ void submit_input(const input_intent_t *intent, float dt) {
             g.pending_net_action = NET_ACTION_BUILD_MODULE + (uint8_t)intent->build_module_type;
         else if (intent->buy_product && (uint8_t)intent->buy_commodity < COMMODITY_COUNT)
             g.pending_net_action = NET_ACTION_BUY_PRODUCT + (uint8_t)intent->buy_commodity;
+        else if (intent->hail)
+            g.pending_net_action = NET_ACTION_HAIL;
     }
 }

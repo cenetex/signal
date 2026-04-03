@@ -1,0 +1,341 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="1000" viewBox="0 0 1400 1000">
+  <style>
+    text { font-family: monospace; fill: #8cf; font-size: 12px; }
+    .title { font-size: 16px; fill: #fff; }
+    .subtitle { font-size: 11px; fill: #668; }
+    .label { font-size: 10px; fill: #9bd; }
+    .dim { font-size: 10px; fill: #556; }
+  </style>
+
+  <rect width="1400" height="1000" fill="#0a0c12"/>
+
+  <!-- ==================== -->
+  <!-- CONCEPT A: Rings are physical truss structures -->
+  <!-- ==================== -->
+  <text x="350" y="30" class="title" text-anchor="middle">Concept A: Physical Ring Trusses</text>
+  <text x="350" y="48" class="subtitle" text-anchor="middle">Rings are buildable structures with docking ports for modules</text>
+
+  <g transform="translate(350, 260)">
+    <!-- RING 1: Physical truss (thick structural ring) -->
+    <!-- Outer edge -->
+    <circle cx="0" cy="0" r="128" fill="none" stroke="#3a5858" stroke-width="2.5"/>
+    <!-- Inner edge -->
+    <circle cx="0" cy="0" r="108" fill="none" stroke="#3a5858" stroke-width="2.5"/>
+    <!-- Cross-hatching truss pattern between inner/outer -->
+    <g opacity="0.3">
+      <line x1="108" y1="0" x2="128" y2="10" stroke="#3a5858" stroke-width="1"/>
+      <line x1="108" y1="0" x2="128" y2="-10" stroke="#3a5858" stroke-width="1"/>
+      <line x1="0" y1="108" x2="10" y2="128" stroke="#3a5858" stroke-width="1"/>
+      <line x1="0" y1="108" x2="-10" y2="128" stroke="#3a5858" stroke-width="1"/>
+      <line x1="-108" y1="0" x2="-128" y2="10" stroke="#3a5858" stroke-width="1"/>
+      <line x1="-108" y1="0" x2="-128" y2="-10" stroke="#3a5858" stroke-width="1"/>
+      <line x1="0" y1="-108" x2="10" y2="-128" stroke="#3a5858" stroke-width="1"/>
+      <line x1="0" y1="-108" x2="-10" y2="-128" stroke="#3a5858" stroke-width="1"/>
+      <!-- More truss segments around the ring -->
+      <line x1="76" y1="76" x2="91" y2="91" stroke="#3a5858" stroke-width="1"/>
+      <line x1="-76" y1="76" x2="-91" y2="91" stroke="#3a5858" stroke-width="1"/>
+      <line x1="76" y1="-76" x2="91" y2="-91" stroke="#3a5858" stroke-width="1"/>
+      <line x1="-76" y1="-76" x2="-91" y2="-91" stroke="#3a5858" stroke-width="1"/>
+    </g>
+
+    <!-- Slot ports on ring (6 docking notches cut into the ring) -->
+    <!-- Slot 0 (0deg): OCCUPIED — Ore Buyer plugged in -->
+    <g transform="rotate(0)">
+      <!-- Port notch -->
+      <rect x="106" y="-14" width="24" height="28" rx="2" fill="#0e1218" stroke="#5a8888" stroke-width="1.5"/>
+      <!-- Module plugged into port -->
+      <g transform="translate(118, 0)">
+        <polygon points="-10,-18 10,-18 7,-2 -7,-2" fill="none" stroke="#e8a030" stroke-width="1.5"/>
+        <rect x="-5" y="-2" width="10" height="10" fill="none" stroke="#e8a030" stroke-width="1"/>
+        <text x="0" y="22" class="label" text-anchor="middle" fill="#e8a030">ORE BUY</text>
+      </g>
+      <!-- Lock indicator -->
+      <circle cx="106" cy="0" r="3" fill="#5ae0a0"/>
+    </g>
+
+    <!-- Slot 1 (60deg): OCCUPIED — Furnace -->
+    <g transform="rotate(60)">
+      <rect x="106" y="-14" width="24" height="28" rx="2" fill="#0e1218" stroke="#5a8888" stroke-width="1.5"/>
+      <g transform="translate(118, 0) rotate(-60)">
+        <rect x="-12" y="-12" width="24" height="24" rx="2" fill="#1a0800" stroke="#ff6020" stroke-width="1.5"/>
+        <circle cx="0" cy="0" r="5" fill="#ff4010" opacity="0.3"/>
+        <circle cx="0" cy="0" r="2.5" fill="#ffaa40" opacity="0.5"/>
+        <text x="0" y="22" class="label" text-anchor="middle" fill="#ff6020">FURNACE</text>
+      </g>
+      <circle cx="106" cy="0" r="3" fill="#5ae0a0"/>
+    </g>
+
+    <!-- Slot 2 (120deg): OCCUPIED — Repair -->
+    <g transform="rotate(120)">
+      <rect x="106" y="-14" width="24" height="28" rx="2" fill="#0e1218" stroke="#5a8888" stroke-width="1.5"/>
+      <g transform="translate(118, 0) rotate(-120)">
+        <line x1="-8" y1="-8" x2="8" y2="8" stroke="#40c0ff" stroke-width="2"/>
+        <circle cx="-8" cy="-8" r="4" fill="none" stroke="#40c0ff" stroke-width="1.5"/>
+        <rect x="4" y="4" width="7" height="7" rx="1" fill="none" stroke="#40c0ff" stroke-width="1.5"/>
+        <text x="0" y="22" class="label" text-anchor="middle" fill="#40c0ff">REPAIR</text>
+      </g>
+      <circle cx="106" cy="0" r="3" fill="#5ae0a0"/>
+    </g>
+
+    <!-- Slot 3 (180deg): EMPTY PORT — visible docking clamp -->
+    <g transform="rotate(180)">
+      <rect x="106" y="-14" width="24" height="28" rx="2" fill="#0a0e14" stroke="#2a4444" stroke-width="1.5"/>
+      <!-- Empty port clamps -->
+      <line x1="110" y1="-10" x2="118" y2="-10" stroke="#2a4444" stroke-width="1.5"/>
+      <line x1="110" y1="10" x2="118" y2="10" stroke="#2a4444" stroke-width="1.5"/>
+      <line x1="126" y1="-8" x2="126" y2="8" stroke="#2a4444" stroke-width="1"/>
+      <!-- Empty indicator -->
+      <circle cx="106" cy="0" r="3" fill="none" stroke="#2a4444" stroke-width="1"/>
+      <g transform="translate(118, 0) rotate(-180)">
+        <text x="0" y="22" class="dim" text-anchor="middle">PORT 3</text>
+      </g>
+    </g>
+
+    <!-- Slot 4 (240deg): EMPTY -->
+    <g transform="rotate(240)">
+      <rect x="106" y="-14" width="24" height="28" rx="2" fill="#0a0e14" stroke="#2a4444" stroke-width="1.5"/>
+      <line x1="110" y1="-10" x2="118" y2="-10" stroke="#2a4444" stroke-width="1.5"/>
+      <line x1="110" y1="10" x2="118" y2="10" stroke="#2a4444" stroke-width="1.5"/>
+      <line x1="126" y1="-8" x2="126" y2="8" stroke="#2a4444" stroke-width="1"/>
+      <circle cx="106" cy="0" r="3" fill="none" stroke="#2a4444" stroke-width="1"/>
+      <g transform="translate(118, 0) rotate(-240)">
+        <text x="0" y="22" class="dim" text-anchor="middle">PORT 4</text>
+      </g>
+    </g>
+
+    <!-- Slot 5 (300deg): SCAFFOLDING — module being built -->
+    <g transform="rotate(300)">
+      <rect x="106" y="-14" width="24" height="28" rx="2" fill="#0a0e14" stroke="#5a8840" stroke-width="1.5" stroke-dasharray="3,2"/>
+      <g transform="translate(118, 0) rotate(-300)">
+        <!-- Scaffold frame -->
+        <rect x="-12" y="-12" width="24" height="24" rx="2" fill="none" stroke="#ff6020" stroke-width="1" stroke-dasharray="4,3" opacity="0.4"/>
+        <!-- Progress bar -->
+        <rect x="-10" y="14" width="20" height="3" fill="#1a1a1a" stroke="#333" stroke-width="0.5"/>
+        <rect x="-10" y="14" width="8" height="3" fill="#ff6020" opacity="0.6"/>
+        <text x="0" y="26" class="label" text-anchor="middle" fill="#ff6020" opacity="0.6">FURNACE Cu</text>
+        <text x="0" y="36" class="dim" text-anchor="middle">40% built</text>
+      </g>
+      <circle cx="106" cy="0" r="3" fill="#ff6020" opacity="0.5"/>
+    </g>
+
+    <!-- RING 0: Core hub (physical structure) -->
+    <!-- Core body -->
+    <circle cx="0" cy="0" r="42" fill="#0e1218" stroke="#2a6868" stroke-width="2.5"/>
+    <!-- Inner ring structure (thick) -->
+    <circle cx="0" cy="0" r="38" fill="none" stroke="#1a3838" stroke-width="1"/>
+    <!-- Core power indicator -->
+    <circle cx="0" cy="0" r="8" fill="#3af0c0" opacity="0.5"/>
+    <circle cx="0" cy="0" r="14" fill="none" stroke="#3af0c0" stroke-width="0.5" opacity="0.3"/>
+
+    <!-- Struts from core to ring (physical connections) -->
+    <g opacity="0.6">
+      <line x1="38" y1="0" x2="108" y2="0" stroke="#2a5858" stroke-width="2"/>
+      <line x1="-38" y1="0" x2="-108" y2="0" stroke="#2a5858" stroke-width="2"/>
+      <line x1="19" y1="33" x2="54" y2="94" stroke="#2a5858" stroke-width="2"/>
+      <line x1="-19" y1="33" x2="-54" y2="94" stroke="#2a5858" stroke-width="2"/>
+      <line x1="19" y1="-33" x2="54" y2="-94" stroke="#2a5858" stroke-width="2"/>
+      <line x1="-19" y1="-33" x2="-54" y2="-94" stroke="#2a5858" stroke-width="2"/>
+    </g>
+
+    <!-- Core modules (dock + relay) built into core body -->
+    <!-- Dock: bottom of core -->
+    <g transform="translate(0, 42)">
+      <rect x="-14" y="0" width="28" height="16" rx="2" fill="#0a0e14" stroke="#3af0c0" stroke-width="1.5"/>
+      <rect x="-8" y="12" width="16" height="8" fill="none" stroke="#3af0c0" stroke-width="1" stroke-dasharray="2,2"/>
+      <text x="0" y="30" class="label" text-anchor="middle">DOCK</text>
+    </g>
+    <!-- Relay: top of core -->
+    <g transform="translate(0, -48)">
+      <line x1="0" y1="6" x2="0" y2="-6" stroke="#80e0ff" stroke-width="1.5"/>
+      <path d="M -8,-6 Q 0,-16 8,-6" fill="none" stroke="#80e0ff" stroke-width="1.5"/>
+      <circle cx="0" cy="-6" r="2" fill="#80e0ff"/>
+      <text x="0" y="-14" class="label" text-anchor="middle" fill="#80e0ff">RELAY</text>
+    </g>
+
+    <!-- Ship approaching dock -->
+    <g transform="translate(0, 100)">
+      <polygon points="0,-7 9,7 -9,7" fill="#ffffff" stroke="none"/>
+      <text x="16" y="0" class="label" fill="#fff">ship</text>
+    </g>
+  </g>
+
+  <!-- ==================== -->
+  <!-- CONCEPT B: Side by side — Ring 2 added -->
+  <!-- ==================== -->
+  <text x="1050" y="30" class="title" text-anchor="middle">With Ring 2: Full Industrial</text>
+  <text x="1050" y="48" class="subtitle" text-anchor="middle">Each ring is a physical truss you build, then fill with modules</text>
+
+  <g transform="translate(1050, 280)">
+    <!-- RING 2: Outermost physical truss -->
+    <circle cx="0" cy="0" r="188" fill="none" stroke="#2a3838" stroke-width="2"/>
+    <circle cx="0" cy="0" r="172" fill="none" stroke="#2a3838" stroke-width="2"/>
+    <!-- Truss cross-hatching -->
+    <g opacity="0.15">
+      <circle cx="0" cy="0" r="180" fill="none" stroke="#2a3838" stroke-width="1" stroke-dasharray="6,10"/>
+    </g>
+
+    <!-- RING 1: Middle physical truss -->
+    <circle cx="0" cy="0" r="128" fill="none" stroke="#3a5858" stroke-width="2"/>
+    <circle cx="0" cy="0" r="112" fill="none" stroke="#3a5858" stroke-width="2"/>
+    <g opacity="0.2">
+      <circle cx="0" cy="0" r="120" fill="none" stroke="#3a5858" stroke-width="1" stroke-dasharray="4,8"/>
+    </g>
+
+    <!-- Core -->
+    <circle cx="0" cy="0" r="40" fill="#0e1218" stroke="#2a6868" stroke-width="2"/>
+    <circle cx="0" cy="0" r="7" fill="#3af0c0" opacity="0.4"/>
+
+    <!-- Struts core→ring1 -->
+    <g opacity="0.4">
+      <line x1="36" y1="0" x2="112" y2="0" stroke="#2a5858" stroke-width="1.5"/>
+      <line x1="-36" y1="0" x2="-112" y2="0" stroke="#2a5858" stroke-width="1.5"/>
+      <line x1="0" y1="36" x2="0" y2="112" stroke="#2a5858" stroke-width="1.5"/>
+      <line x1="0" y1="-36" x2="0" y2="-112" stroke="#2a5858" stroke-width="1.5"/>
+      <line x1="25" y1="25" x2="79" y2="79" stroke="#2a5858" stroke-width="1.5"/>
+      <line x1="-25" y1="25" x2="-79" y2="79" stroke="#2a5858" stroke-width="1.5"/>
+    </g>
+    <!-- Struts ring1→ring2 -->
+    <g opacity="0.3">
+      <line x1="128" y1="0" x2="172" y2="0" stroke="#2a3838" stroke-width="1.5"/>
+      <line x1="-128" y1="0" x2="-172" y2="0" stroke="#2a3838" stroke-width="1.5"/>
+      <line x1="0" y1="128" x2="0" y2="172" stroke="#2a3838" stroke-width="1.5"/>
+      <line x1="0" y1="-128" x2="0" y2="-172" stroke="#2a3838" stroke-width="1.5"/>
+      <line x1="90" y1="90" x2="122" y2="122" stroke="#2a3838" stroke-width="1.5"/>
+      <line x1="-90" y1="90" x2="-122" y2="122" stroke="#2a3838" stroke-width="1.5"/>
+      <line x1="90" y1="-90" x2="122" y2="-122" stroke="#2a3838" stroke-width="1.5"/>
+      <line x1="-90" y1="-90" x2="-122" y2="-122" stroke="#2a3838" stroke-width="1.5"/>
+    </g>
+
+    <!-- Core modules (dock bottom, relay top) -->
+    <g transform="translate(0, 40)">
+      <rect x="-10" y="0" width="20" height="12" rx="2" fill="none" stroke="#3af0c0" stroke-width="1.2"/>
+    </g>
+    <g transform="translate(0, -46)">
+      <line x1="0" y1="4" x2="0" y2="-4" stroke="#80e0ff" stroke-width="1.2"/>
+      <path d="M -6,-4 Q 0,-12 6,-4" fill="none" stroke="#80e0ff" stroke-width="1.2"/>
+    </g>
+
+    <!-- Ring 1 modules (6 ports, 5 filled) -->
+    <g transform="rotate(0) translate(120, 0)">
+      <polygon points="-8,-12 8,-12 6,0 -6,0" fill="none" stroke="#e8a030" stroke-width="1.2"/>
+      <rect x="-4" y="0" width="8" height="6" fill="none" stroke="#e8a030" stroke-width="0.8"/>
+    </g>
+    <g transform="rotate(60) translate(120, 0) rotate(-60)">
+      <rect x="-9" y="-9" width="18" height="18" rx="2" fill="#1a0800" stroke="#ff6020" stroke-width="1.2"/>
+      <circle cx="0" cy="0" r="3" fill="#ff4010" opacity="0.3"/>
+    </g>
+    <g transform="rotate(120) translate(120, 0) rotate(-120)">
+      <rect x="-9" y="-9" width="18" height="18" rx="2" fill="#0a0800" stroke="#d08020" stroke-width="1.2"/>
+      <text x="0" y="3" font-family="monospace" font-size="7" fill="#d08020" text-anchor="middle">Cu</text>
+    </g>
+    <g transform="rotate(180) translate(120, 0) rotate(-180)">
+      <line x1="-7" y1="-7" x2="7" y2="7" stroke="#40c0ff" stroke-width="1.5"/>
+      <circle cx="-7" cy="-7" r="4" fill="none" stroke="#40c0ff" stroke-width="1"/>
+    </g>
+    <g transform="rotate(240) translate(120, 0) rotate(-240)">
+      <rect x="-9" y="-6" width="18" height="12" rx="2" fill="none" stroke="#a0d0ff" stroke-width="1.2"/>
+      <line x1="0" y1="-3" x2="0" y2="3" stroke="#a0d0ff" stroke-width="1.2"/>
+      <line x1="-4" y1="0" x2="4" y2="0" stroke="#a0d0ff" stroke-width="1.2"/>
+    </g>
+    <!-- Slot 5: empty port -->
+    <g transform="rotate(300) translate(120, 0) rotate(-300)">
+      <rect x="-8" y="-10" width="16" height="20" rx="2" fill="none" stroke="#1a2a2a" stroke-width="1" stroke-dasharray="3,3"/>
+    </g>
+
+    <!-- Ring 2 modules (8 ports, 3 filled, rest empty) -->
+    <g transform="rotate(0) translate(180, 0)">
+      <circle cx="0" cy="0" r="9" fill="none" stroke="#ff4060" stroke-width="1.2"/>
+      <line x1="-12" y1="0" x2="12" y2="0" stroke="#ff4060" stroke-width="0.8"/>
+      <line x1="0" y1="-12" x2="0" y2="12" stroke="#ff4060" stroke-width="0.8"/>
+    </g>
+    <g transform="rotate(45) translate(180, 0) rotate(-45)">
+      <circle cx="0" cy="0" r="9" fill="none" stroke="#40ffa0" stroke-width="1.2"/>
+      <line x1="-12" y1="0" x2="12" y2="0" stroke="#40ffa0" stroke-width="0.8"/>
+      <line x1="0" y1="-12" x2="0" y2="12" stroke="#40ffa0" stroke-width="0.8"/>
+    </g>
+    <g transform="rotate(90) translate(180, 0) rotate(-90)">
+      <rect x="-8" y="-10" width="16" height="20" rx="2" fill="none" stroke="#c0c080" stroke-width="1.2"/>
+      <line x1="-4" y1="-4" x2="4" y2="-4" stroke="#c0c080" stroke-width="0.8"/>
+      <line x1="-4" y1="0" x2="4" y2="0" stroke="#c0c080" stroke-width="0.8"/>
+      <line x1="-4" y1="4" x2="3" y2="4" stroke="#c0c080" stroke-width="0.8"/>
+    </g>
+    <!-- Empty ring 2 ports -->
+    <g transform="rotate(135) translate(180, 0) rotate(-135)"><rect x="-7" y="-9" width="14" height="18" rx="2" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/></g>
+    <g transform="rotate(180) translate(180, 0) rotate(-180)"><rect x="-7" y="-9" width="14" height="18" rx="2" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/></g>
+    <g transform="rotate(225) translate(180, 0) rotate(-225)"><rect x="-7" y="-9" width="14" height="18" rx="2" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/></g>
+    <g transform="rotate(270) translate(180, 0) rotate(-270)"><rect x="-7" y="-9" width="14" height="18" rx="2" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/></g>
+    <g transform="rotate(315) translate(180, 0) rotate(-315)"><rect x="-7" y="-9" width="14" height="18" rx="2" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/></g>
+
+    <!-- Ship for scale -->
+    <g transform="translate(0, 230)">
+      <polygon points="0,-8 10,8 -10,8" fill="#ffffff" stroke="none"/>
+    </g>
+  </g>
+
+  <!-- ==================== -->
+  <!-- BOTTOM: Build sequence -->
+  <!-- ==================== -->
+  <text x="700" y="570" class="title" text-anchor="middle">Build Sequence: Two-Phase Construction</text>
+
+  <!-- Phase 1: Build the ring -->
+  <g transform="translate(180, 640)">
+    <rect x="0" y="0" width="320" height="140" rx="4" fill="#0e1218" stroke="#2a4a3a" stroke-width="1"/>
+    <text x="160" y="20" font-family="monospace" font-size="13" fill="#5ae0a0" text-anchor="middle">Phase 1: BUILD RING</text>
+    <line x1="10" y1="28" x2="310" y2="28" stroke="#1a2a2a" stroke-width="1"/>
+
+    <text x="15" y="48" font-family="monospace" font-size="11" fill="#8cf">Ring is a module type like any other.</text>
+    <text x="15" y="64" font-family="monospace" font-size="11" fill="#8cf">Build it from the BUILD menu while docked.</text>
+    <text x="15" y="84" font-family="monospace" font-size="11" fill="#556">Cost:</text>
+    <text x="15" y="100" font-family="monospace" font-size="11" fill="#5ae0a0">  Ring 1:  120 frames + 500 cr  (6 ports)</text>
+    <text x="15" y="116" font-family="monospace" font-size="11" fill="#448060">  Ring 2:  200 frames + 1000 cr (8 ports)</text>
+    <text x="15" y="132" font-family="monospace" font-size="11" fill="#556">Scaffolds like any module. Needs supply delivery.</text>
+  </g>
+
+  <!-- Arrow -->
+  <g transform="translate(530, 710)">
+    <line x1="0" y1="0" x2="50" y2="0" stroke="#445" stroke-width="2"/>
+    <polygon points="50,-5 60,0 50,5" fill="#445"/>
+  </g>
+
+  <!-- Phase 2: Fill the ports -->
+  <g transform="translate(620, 640)">
+    <rect x="0" y="0" width="320" height="140" rx="4" fill="#0e1218" stroke="#2a3a4a" stroke-width="1"/>
+    <text x="160" y="20" font-family="monospace" font-size="13" fill="#40a0ff" text-anchor="middle">Phase 2: FILL PORTS</text>
+    <line x1="10" y1="28" x2="310" y2="28" stroke="#1a2a2a" stroke-width="1"/>
+
+    <text x="15" y="48" font-family="monospace" font-size="11" fill="#8cf">Ring completion unlocks its module ports.</text>
+    <text x="15" y="64" font-family="monospace" font-size="11" fill="#8cf">[W/S] select ring, [A/D] select port.</text>
+    <text x="15" y="80" font-family="monospace" font-size="11" fill="#8cf">[1-8] pick module type, [ENTER] build.</text>
+    <text x="15" y="100" font-family="monospace" font-size="11" fill="#556">Each module scaffolds individually.</text>
+    <text x="15" y="116" font-family="monospace" font-size="11" fill="#556">Ports render as empty docking clamps</text>
+    <text x="15" y="132" font-family="monospace" font-size="11" fill="#556">until a module is built into them.</text>
+  </g>
+
+  <!-- ==================== -->
+  <!-- Data model -->
+  <!-- ==================== -->
+  <g transform="translate(30, 820)">
+    <rect x="0" y="0" width="660" height="150" rx="4" fill="#0a0e14" stroke="#1a2a2a" stroke-width="1"/>
+    <text x="15" y="20" font-family="monospace" font-size="12" fill="#fff">Data Model</text>
+    <line x1="10" y1="28" x2="650" y2="28" stroke="#1a2a2a" stroke-width="1"/>
+    <text x="15" y="46" font-family="monospace" font-size="11" fill="#5ae0a0">module_type_t: ..., MODULE_RING  // new type</text>
+    <text x="15" y="64" font-family="monospace" font-size="11" fill="#8cf">station_module_t {</text>
+    <text x="15" y="80" font-family="monospace" font-size="11" fill="#8cf">    module_type_t type;    // MODULE_RING or functional module</text>
+    <text x="15" y="96" font-family="monospace" font-size="11" fill="#8cf">    uint8_t ring;          // which ring (0=core, 1, 2)</text>
+    <text x="15" y="112" font-family="monospace" font-size="11" fill="#8cf">    uint8_t slot;          // port index within ring</text>
+    <text x="15" y="128" font-family="monospace" font-size="11" fill="#8cf">    bool scaffold; float build_progress;</text>
+    <text x="15" y="144" font-family="monospace" font-size="11" fill="#8cf">}</text>
+  </g>
+
+  <g transform="translate(720, 820)">
+    <rect x="0" y="0" width="650" height="150" rx="4" fill="#0a0e14" stroke="#1a2a2a" stroke-width="1"/>
+    <text x="15" y="20" font-family="monospace" font-size="12" fill="#fff">Key Insight</text>
+    <line x1="10" y1="28" x2="640" y2="28" stroke="#1a2a2a" stroke-width="1"/>
+    <text x="15" y="48" font-family="monospace" font-size="11" fill="#e8a030">Rings ARE modules. They live in the modules[] array.</text>
+    <text x="15" y="68" font-family="monospace" font-size="11" fill="#8cf">A MODULE_RING in ring=0, slot=2 means "Ring 1 is built".</text>
+    <text x="15" y="88" font-family="monospace" font-size="11" fill="#8cf">Ring existence = has_module_of_type(MODULE_RING, ring=N-1).</text>
+    <text x="15" y="108" font-family="monospace" font-size="11" fill="#8cf">Ports only appear on completed (non-scaffold) rings.</text>
+    <text x="15" y="128" font-family="monospace" font-size="11" fill="#556">Core (ring 0) always exists. Has dock + relay built-in.</text>
+    <text x="15" y="144" font-family="monospace" font-size="11" fill="#556">Starter stations pre-populate rings + modules in world_reset().</text>
+  </g>
+</svg>

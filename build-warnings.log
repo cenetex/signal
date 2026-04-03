@@ -1,0 +1,115 @@
+[  2%] Building C object CMakeFiles/space_miner_server.dir/server/main.c.o
+[  5%] Building C object CMakeFiles/space_miner_server.dir/server/game_sim.c.o
+/Users/ratimics/develop/signal/server/game_sim.c:172:13: warning: unused function 'add_module' [-Wunused-function]
+  172 | static void add_module(station_t *st, module_type_t type) {
+      |             ^~~~~~~~~~
+/Users/ratimics/develop/signal/server/game_sim.c:454:20: warning: unused function 'random_raw_ore' [-Wunused-function]
+  454 | static commodity_t random_raw_ore(world_t *w) {
+      |                    ^~~~~~~~~~~~~~
+2 warnings generated.
+[  8%] Building C object CMakeFiles/space_miner_server.dir/server/mongoose.c.o
+[ 11%] Building C object CMakeFiles/space_miner_server.dir/src/commodity.c.o
+[ 14%] Building C object CMakeFiles/space_miner_server.dir/src/ship.c.o
+[ 17%] Building C object CMakeFiles/space_miner_server.dir/src/economy.c.o
+[ 20%] Building C object CMakeFiles/space_miner_server.dir/src/asteroid.c.o
+[ 22%] Linking C executable space_miner_server
+[ 22%] Built target space_miner_server
+[ 25%] Building C object CMakeFiles/space_miner_test.dir/src/test_main.c.o
+/Users/ratimics/develop/signal/src/test_main.c:300:95: warning: missing field 'scaffold' initializer [-Wmissing-field-initializers]
+  300 |     station.modules[station.module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
+      |                                                                                               ^
+/Users/ratimics/develop/signal/src/test_main.c:309:95: warning: missing field 'scaffold' initializer [-Wmissing-field-initializers]
+  309 |     station.modules[station.module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
+      |                                                                                               ^
+/Users/ratimics/develop/signal/src/test_main.c:316:99: warning: missing field 'scaffold' initializer [-Wmissing-field-initializers]
+  316 |     station.modules[station.module_count++] = (station_module_t){ MODULE_FRAME_PRESS, false, 1.0f };
+      |                                                                                                   ^
+/Users/ratimics/develop/signal/src/test_main.c:324:99: warning: missing field 'scaffold' initializer [-Wmissing-field-initializers]
+  324 |     station.modules[station.module_count++] = (station_module_t){ MODULE_FRAME_PRESS, false, 1.0f };
+      |                                                                                                   ^
+/Users/ratimics/develop/signal/src/test_main.c:333:97: warning: missing field 'scaffold' initializer [-Wmissing-field-initializers]
+  333 |     station.modules[station.module_count++] = (station_module_t){ MODULE_LASER_FAB, false, 1.0f };
+      |                                                                                                 ^
+/Users/ratimics/develop/signal/src/test_main.c:334:99: warning: missing field 'scaffold' initializer [-Wmissing-field-initializers]
+  334 |     station.modules[station.module_count++] = (station_module_t){ MODULE_TRACTOR_FAB, false, 1.0f };
+      |                                                                                                   ^
+/Users/ratimics/develop/signal/src/test_main.c:1116:103: warning: missing field 'scaffold' initializer [-Wmissing-field-initializers]
+ 1116 |     stations[0].modules[stations[0].module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
+      |                                                                                                       ^
+/Users/ratimics/develop/signal/src/test_main.c:3130:116: warning: missing field 'scaffold' initializer [-Wmissing-field-initializers]
+ 3130 |     w.stations[slot].modules[w.stations[slot].module_count++] = (station_module_t){ MODULE_REPAIR_BAY, false, 1.0f };
+      |                                                                                                                    ^
+/Users/ratimics/develop/signal/src/test_main.c:3309:85: warning: missing field 'scaffold' initializer [-Wmissing-field-initializers]
+ 3309 |     st.modules[st.module_count++] = (station_module_t){ MODULE_FURNACE, false, 1.0f };
+      |                                                                                     ^
+/Users/ratimics/develop/signal/src/test_main.c:3322:88: warning: missing field 'scaffold' initializer [-Wmissing-field-initializers]
+ 3322 |     st.modules[st.module_count++] = (station_module_t){ MODULE_FURNACE_CU, false, 1.0f };
+      |                                                                                        ^
+/Users/ratimics/develop/signal/src/test_main.c:3333:88: warning: missing field 'scaffold' initializer [-Wmissing-field-initializers]
+ 3333 |     st.modules[st.module_count++] = (station_module_t){ MODULE_FURNACE_CR, false, 1.0f };
+      |                                                                                        ^
+/Users/ratimics/develop/signal/src/test_main.c:3342:89: warning: missing field 'scaffold' initializer [-Wmissing-field-initializers]
+ 3342 |     st.modules[st.module_count++] = (station_module_t){ MODULE_FRAME_PRESS, false, 1.0f };
+      |                                                                                         ^
+/Users/ratimics/develop/signal/src/test_main.c:3103:6: warning: unused function 'test_outpost_upgrade_to_refinery' [-Wunused-function]
+ 3103 | TEST(test_outpost_upgrade_to_refinery) {
+      |      ^~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+/Users/ratimics/develop/signal/src/test_main.c:18:32: note: expanded from macro 'TEST'
+   18 | #define TEST(name) static void name(void)
+      |                                ^~~~
+13 warnings generated.
+[ 28%] Building C object CMakeFiles/space_miner_test.dir/src/commodity.c.o
+[ 31%] Building C object CMakeFiles/space_miner_test.dir/src/ship.c.o
+[ 34%] Building C object CMakeFiles/space_miner_test.dir/src/economy.c.o
+[ 37%] Building C object CMakeFiles/space_miner_test.dir/src/asteroid.c.o
+[ 40%] Building C object CMakeFiles/space_miner_test.dir/server/game_sim.c.o
+/Users/ratimics/develop/signal/server/game_sim.c:172:13: warning: unused function 'add_module' [-Wunused-function]
+  172 | static void add_module(station_t *st, module_type_t type) {
+      |             ^~~~~~~~~~
+/Users/ratimics/develop/signal/server/game_sim.c:454:20: warning: unused function 'random_raw_ore' [-Wunused-function]
+  454 | static commodity_t random_raw_ore(world_t *w) {
+      |                    ^~~~~~~~~~~~~~
+2 warnings generated.
+[ 42%] Linking C executable space_miner_test
+[ 42%] Built target space_miner_test
+[ 45%] Building C object CMakeFiles/space_miner.dir/src/main.c.o
+/Users/ratimics/develop/signal/src/main.c:51:13: warning: unused function 'clear_ship_cargo' [-Wunused-function]
+   51 | static void clear_ship_cargo(void) {
+      |             ^~~~~~~~~~~~~~~~
+/Users/ratimics/develop/signal/src/main.c:65:13: warning: unused function 'station_dock_anchor' [-Wunused-function]
+   65 | static vec2 station_dock_anchor(void) {
+      |             ^~~~~~~~~~~~~~~~~~~
+/Users/ratimics/develop/signal/src/main.c:76:14: warning: unused function 'ship_cargo_space' [-Wunused-function]
+   76 | static float ship_cargo_space(void) {
+      |              ^~~~~~~~~~~~~~~~
+/Users/ratimics/develop/signal/src/main.c:86:13: warning: unused function 'push_collection_feedback' [-Wunused-function]
+   86 | static void push_collection_feedback(float recovered_ore, int recovered_fragments) {
+      |             ^~~~~~~~~~~~~~~~~~~~~~~~
+4 warnings generated.
+[ 48%] Building C object CMakeFiles/space_miner.dir/src/net.c.o
+[ 51%] Building C object CMakeFiles/space_miner.dir/src/station_ui.c.o
+[ 54%] Building C object CMakeFiles/space_miner.dir/src/hud.c.o
+[ 57%] Building C object CMakeFiles/space_miner.dir/src/world_draw.c.o
+[ 60%] Building C object CMakeFiles/space_miner.dir/src/commodity.c.o
+[ 62%] Building C object CMakeFiles/space_miner.dir/src/ship.c.o
+[ 65%] Building C object CMakeFiles/space_miner.dir/src/audio.c.o
+[ 68%] Building C object CMakeFiles/space_miner.dir/src/economy.c.o
+[ 71%] Building C object CMakeFiles/space_miner.dir/src/asteroid.c.o
+[ 74%] Building C object CMakeFiles/space_miner.dir/src/asteroid_field.c.o
+[ 77%] Building C object CMakeFiles/space_miner.dir/src/npc.c.o
+[ 80%] Building C object CMakeFiles/space_miner.dir/src/render.c.o
+[ 82%] Building C object CMakeFiles/space_miner.dir/src/rng.c.o
+[ 85%] Building C object CMakeFiles/space_miner.dir/src/input.c.o
+[ 88%] Building C object CMakeFiles/space_miner.dir/src/net_sync.c.o
+[ 91%] Building C object CMakeFiles/space_miner.dir/src/local_server.c.o
+[ 94%] Building C object CMakeFiles/space_miner.dir/server/game_sim.c.o
+/Users/ratimics/develop/signal/server/game_sim.c:172:13: warning: unused function 'add_module' [-Wunused-function]
+  172 | static void add_module(station_t *st, module_type_t type) {
+      |             ^~~~~~~~~~
+/Users/ratimics/develop/signal/server/game_sim.c:454:20: warning: unused function 'random_raw_ore' [-Wunused-function]
+  454 | static commodity_t random_raw_ore(world_t *w) {
+      |                    ^~~~~~~~~~~~~~
+2 warnings generated.
+[ 97%] Building C object CMakeFiles/space_miner.dir/server/mongoose.c.o
+[100%] Linking C executable space_miner
+[100%] Built target space_miner

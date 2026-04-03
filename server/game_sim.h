@@ -74,6 +74,7 @@ typedef struct {
     bool buy_product;
     commodity_t buy_commodity;
     int mining_target_hint;  /* client's hover_asteroid, -1 = none */
+    bool hail;               /* collect pending credits from nearby station */
     bool reset;
 } input_intent_t;
 
@@ -95,6 +96,10 @@ typedef struct {
     bool beam_active;
     bool beam_hit;
     bool beam_ineffective; /* hitting a rock too tough for current laser level */
+    bool scan_active;      /* laser scanning a non-asteroid target */
+    int scan_target_type;  /* 0=none, 1=station_module, 2=npc, 3=player */
+    int scan_target_index; /* index into stations/npc_ships/players array */
+    int scan_module_index; /* module index within station (for type=1) */
     int hover_asteroid;
     vec2 beam_start;
     vec2 beam_end;

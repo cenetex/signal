@@ -1,0 +1,327 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="950" viewBox="0 0 1400 950">
+  <style>
+    text { font-family: monospace; fill: #8cf; font-size: 12px; }
+    .title { font-size: 16px; fill: #fff; }
+    .subtitle { font-size: 11px; fill: #668; }
+    .label { font-size: 10px; fill: #9bd; }
+    .dim { font-size: 10px; fill: #556; }
+  </style>
+
+  <rect width="1400" height="950" fill="#0a0c12"/>
+
+  <!-- ==================== -->
+  <!-- MAIN: Ring with dock gap -->
+  <!-- ==================== -->
+  <text x="400" y="30" class="title" text-anchor="middle">Ring with Dock Gap</text>
+  <text x="400" y="48" class="subtitle" text-anchor="middle">Dock module sits at gap edge -- ships fly through the opening into the core</text>
+
+  <g transform="translate(400, 310)">
+    <!-- Ring 1 truss: ARC with gap at bottom -->
+    <!-- Gap spans from ~250deg to ~290deg (40deg opening) -->
+    <!-- Outer arc -->
+    <path d="M 118,-40 A 128,128 0 1,1 -118,-40" fill="none" stroke="#3a5858" stroke-width="2.5" transform="rotate(180)"/>
+    <!-- Inner arc -->
+    <path d="M 98,-33 A 108,108 0 1,1 -98,-33" fill="none" stroke="#3a5858" stroke-width="2.5" transform="rotate(180)"/>
+    <!-- Cross-hatch between arcs (showing truss structure) -->
+    <g opacity="0.25">
+      <path d="M 110,-36 A 118,118 0 1,1 -110,-36" fill="none" stroke="#3a5858" stroke-width="1" stroke-dasharray="5,8" transform="rotate(180)"/>
+    </g>
+
+    <!-- Gap edges: thicker terminations with nav lights -->
+    <!-- Left gap edge (250deg = bottom-left) -->
+    <g transform="rotate(250)">
+      <g transform="translate(118, 0)">
+        <rect x="-4" y="-16" width="8" height="32" rx="1" fill="#1a2828" stroke="#4a7878" stroke-width="2"/>
+        <!-- Nav light (green = clear to enter) -->
+        <circle cx="0" cy="-12" r="3" fill="#30ff60" opacity="0.8"/>
+        <circle cx="0" cy="-12" r="6" fill="#30ff60" opacity="0.15"/>
+        <circle cx="0" cy="12" r="3" fill="#30ff60" opacity="0.8"/>
+        <circle cx="0" cy="12" r="6" fill="#30ff60" opacity="0.15"/>
+      </g>
+    </g>
+
+    <!-- Right gap edge (290deg = bottom-right) -->
+    <g transform="rotate(290)">
+      <g transform="translate(118, 0)">
+        <rect x="-4" y="-16" width="8" height="32" rx="1" fill="#1a2828" stroke="#4a7878" stroke-width="2"/>
+        <circle cx="0" cy="-12" r="3" fill="#30ff60" opacity="0.8"/>
+        <circle cx="0" cy="-12" r="6" fill="#30ff60" opacity="0.15"/>
+        <circle cx="0" cy="12" r="3" fill="#30ff60" opacity="0.8"/>
+        <circle cx="0" cy="12" r="6" fill="#30ff60" opacity="0.15"/>
+      </g>
+    </g>
+
+    <!-- Dock module: sits at gap edge, guides ships in -->
+    <g transform="rotate(250) translate(118, 0) rotate(-250)">
+      <!-- Dock arm extending inward from left gap edge -->
+      <rect x="-22" y="-8" width="18" height="16" rx="2" fill="none" stroke="#3af0c0" stroke-width="1.5"/>
+      <!-- Guide rail -->
+      <line x1="-4" y1="-8" x2="30" y2="-20" stroke="#3af0c0" stroke-width="1" opacity="0.4"/>
+      <line x1="-4" y1="8" x2="30" y2="20" stroke="#3af0c0" stroke-width="1" opacity="0.4"/>
+      <text x="-13" y="20" class="label" text-anchor="middle">DOCK</text>
+    </g>
+
+    <!-- Dock approach corridor (faint guide lines) -->
+    <g opacity="0.15">
+      <!-- Corridor lines from gap opening downward -->
+      <line x1="-44" y1="110" x2="-44" y2="200" stroke="#3af0c0" stroke-width="1"/>
+      <line x1="44" y1="110" x2="44" y2="200" stroke="#3af0c0" stroke-width="1"/>
+      <!-- Corridor lines narrowing toward core -->
+      <line x1="-44" y1="110" x2="-20" y2="30" stroke="#3af0c0" stroke-width="1"/>
+      <line x1="44" y1="110" x2="20" y2="30" stroke="#3af0c0" stroke-width="1"/>
+    </g>
+
+    <!-- Module ports (5 ports on the ring arc, spaced across the non-gap section) -->
+    <!-- Port angles: 0, 50, 100, 150, 200 (avoiding 230-310 gap zone) -->
+
+    <!-- Port 0 (0deg = right): Ore Buyer -->
+    <g transform="rotate(0)">
+      <rect x="106" y="-12" width="24" height="24" rx="2" fill="#0e1218" stroke="#5a8888" stroke-width="1.5"/>
+      <g transform="translate(118, 0)">
+        <polygon points="-8,-14 8,-14 6,0 -6,0" fill="none" stroke="#e8a030" stroke-width="1.5"/>
+        <rect x="-4" y="0" width="8" height="8" fill="none" stroke="#e8a030" stroke-width="1"/>
+      </g>
+      <circle cx="106" cy="0" r="2.5" fill="#5ae0a0"/>
+    </g>
+
+    <!-- Port 1 (50deg): Furnace FE -->
+    <g transform="rotate(50)">
+      <rect x="106" y="-12" width="24" height="24" rx="2" fill="#0e1218" stroke="#5a8888" stroke-width="1.5"/>
+      <g transform="translate(118, 0) rotate(-50)">
+        <rect x="-10" y="-10" width="20" height="20" rx="2" fill="#1a0800" stroke="#ff6020" stroke-width="1.5"/>
+        <circle cx="0" cy="0" r="4" fill="#ff4010" opacity="0.3"/>
+        <circle cx="0" cy="0" r="2" fill="#ffaa40" opacity="0.5"/>
+      </g>
+      <circle cx="106" cy="0" r="2.5" fill="#5ae0a0"/>
+    </g>
+
+    <!-- Port 2 (100deg): Furnace CU -->
+    <g transform="rotate(100)">
+      <rect x="106" y="-12" width="24" height="24" rx="2" fill="#0e1218" stroke="#5a8888" stroke-width="1.5"/>
+      <g transform="translate(118, 0) rotate(-100)">
+        <rect x="-10" y="-10" width="20" height="20" rx="2" fill="#0a0800" stroke="#d08020" stroke-width="1.5"/>
+        <text x="0" y="3" font-family="monospace" font-size="7" fill="#d08020" text-anchor="middle">Cu</text>
+      </g>
+      <circle cx="106" cy="0" r="2.5" fill="#5ae0a0"/>
+    </g>
+
+    <!-- Port 3 (150deg): Repair -->
+    <g transform="rotate(150)">
+      <rect x="106" y="-12" width="24" height="24" rx="2" fill="#0e1218" stroke="#5a8888" stroke-width="1.5"/>
+      <g transform="translate(118, 0) rotate(-150)">
+        <line x1="-7" y1="-7" x2="7" y2="7" stroke="#40c0ff" stroke-width="2"/>
+        <circle cx="-7" cy="-7" r="4" fill="none" stroke="#40c0ff" stroke-width="1.5"/>
+        <rect x="3" y="3" width="7" height="7" rx="1" fill="none" stroke="#40c0ff" stroke-width="1.5"/>
+      </g>
+      <circle cx="106" cy="0" r="2.5" fill="#5ae0a0"/>
+    </g>
+
+    <!-- Port 4 (200deg): Empty -->
+    <g transform="rotate(200)">
+      <rect x="106" y="-12" width="24" height="24" rx="2" fill="#0a0e14" stroke="#2a4444" stroke-width="1.5"/>
+      <line x1="110" y1="-8" x2="118" y2="-8" stroke="#2a4444" stroke-width="1.5"/>
+      <line x1="110" y1="8" x2="118" y2="8" stroke="#2a4444" stroke-width="1.5"/>
+      <circle cx="106" cy="0" r="2.5" fill="none" stroke="#2a4444" stroke-width="1"/>
+      <g transform="translate(118, 0) rotate(-200)">
+        <text x="0" y="20" class="dim" text-anchor="middle">empty</text>
+      </g>
+    </g>
+
+    <!-- Struts from core to ring -->
+    <g opacity="0.5">
+      <line x1="35" y1="0" x2="108" y2="0" stroke="#2a5858" stroke-width="2"/>
+      <line x1="11" y1="33" x2="34" y2="102" stroke="#2a5858" stroke-width="2"/>
+      <line x1="-26" y1="24" x2="-80" y2="72" stroke="#2a5858" stroke-width="2"/>
+      <line x1="-35" y1="0" x2="-108" y2="0" stroke="#2a5858" stroke-width="2"/>
+      <line x1="-11" y1="-33" x2="-34" y2="-102" stroke="#2a5858" stroke-width="2"/>
+      <line x1="26" y1="-24" x2="80" y2="-72" stroke="#2a5858" stroke-width="2"/>
+    </g>
+
+    <!-- Core -->
+    <circle cx="0" cy="0" r="40" fill="#0e1218" stroke="#2a6868" stroke-width="2.5"/>
+    <circle cx="0" cy="0" r="7" fill="#3af0c0" opacity="0.5"/>
+    <circle cx="0" cy="0" r="13" fill="none" stroke="#3af0c0" stroke-width="0.5" opacity="0.3"/>
+
+    <!-- Core relay (top) -->
+    <g transform="translate(0, -46)">
+      <line x1="0" y1="4" x2="0" y2="-5" stroke="#80e0ff" stroke-width="1.5"/>
+      <path d="M -8,-5 Q 0,-15 8,-5" fill="none" stroke="#80e0ff" stroke-width="1.5"/>
+      <circle cx="0" cy="-5" r="2" fill="#80e0ff"/>
+    </g>
+
+    <!-- Ship flying through gap into dock -->
+    <g transform="translate(0, 150)">
+      <polygon points="0,-8 10,8 -10,8" fill="#ffffff" stroke="none"/>
+      <!-- Thrust flame -->
+      <polygon points="-5,8 0,18 5,8" fill="#ff8040" opacity="0.6"/>
+      <polygon points="-3,8 0,14 3,8" fill="#ffcc40" opacity="0.4"/>
+    </g>
+
+    <!-- Approach arrow -->
+    <g opacity="0.3">
+      <line x1="0" y1="130" x2="0" y2="50" stroke="#3af0c0" stroke-width="1" stroke-dasharray="4,4"/>
+      <polygon points="0,50 -4,58 4,58" fill="#3af0c0" opacity="0.5"/>
+    </g>
+
+    <text x="0" y="180" class="label" text-anchor="middle" fill="#fff">ship enters through gap</text>
+    <text x="0" y="194" class="dim" text-anchor="middle">docks at core when inside ring</text>
+  </g>
+
+  <!-- ==================== -->
+  <!-- RIGHT: Two-ring with gap alignment -->
+  <!-- ==================== -->
+  <text x="1050" y="30" class="title" text-anchor="middle">Two Rings: Aligned Gaps</text>
+  <text x="1050" y="48" class="subtitle" text-anchor="middle">Outer gap lines up with inner gap -- clear flight path to core</text>
+
+  <g transform="translate(1050, 310)">
+    <!-- Ring 2 arc with gap at bottom -->
+    <path d="M 168,-55 A 178,178 0 1,1 -168,-55" fill="none" stroke="#2a3838" stroke-width="2" transform="rotate(180)"/>
+    <path d="M 152,-50 A 162,162 0 1,1 -152,-50" fill="none" stroke="#2a3838" stroke-width="2" transform="rotate(180)"/>
+    <g opacity="0.15">
+      <path d="M 160,-52 A 170,170 0 1,1 -160,-52" fill="none" stroke="#2a3838" stroke-width="1" stroke-dasharray="5,8" transform="rotate(180)"/>
+    </g>
+
+    <!-- Ring 2 gap edges with nav lights -->
+    <g transform="rotate(252)">
+      <g transform="translate(170, 0)">
+        <rect x="-3" y="-14" width="6" height="28" rx="1" fill="#1a2828" stroke="#3a5858" stroke-width="1.5"/>
+        <circle cx="0" cy="-10" r="2.5" fill="#30ff60" opacity="0.7"/>
+        <circle cx="0" cy="10" r="2.5" fill="#30ff60" opacity="0.7"/>
+      </g>
+    </g>
+    <g transform="rotate(288)">
+      <g transform="translate(170, 0)">
+        <rect x="-3" y="-14" width="6" height="28" rx="1" fill="#1a2828" stroke="#3a5858" stroke-width="1.5"/>
+        <circle cx="0" cy="-10" r="2.5" fill="#30ff60" opacity="0.7"/>
+        <circle cx="0" cy="10" r="2.5" fill="#30ff60" opacity="0.7"/>
+      </g>
+    </g>
+
+    <!-- Ring 1 arc with gap at bottom -->
+    <path d="M 108,-38 A 118,118 0 1,1 -108,-38" fill="none" stroke="#3a5858" stroke-width="2.5" transform="rotate(180)"/>
+    <path d="M 92,-32 A 102,102 0 1,1 -92,-32" fill="none" stroke="#3a5858" stroke-width="2.5" transform="rotate(180)"/>
+    <g opacity="0.2">
+      <path d="M 100,-35 A 110,110 0 1,1 -100,-35" fill="none" stroke="#3a5858" stroke-width="1" stroke-dasharray="4,7" transform="rotate(180)"/>
+    </g>
+
+    <!-- Ring 1 gap edges -->
+    <g transform="rotate(250)">
+      <g transform="translate(110, 0)">
+        <rect x="-4" y="-14" width="8" height="28" rx="1" fill="#1a2828" stroke="#4a7878" stroke-width="2"/>
+        <circle cx="0" cy="-10" r="2.5" fill="#30ff60" opacity="0.8"/>
+        <circle cx="0" cy="10" r="2.5" fill="#30ff60" opacity="0.8"/>
+      </g>
+    </g>
+    <g transform="rotate(290)">
+      <g transform="translate(110, 0)">
+        <rect x="-4" y="-14" width="8" height="28" rx="1" fill="#1a2828" stroke="#4a7878" stroke-width="2"/>
+        <circle cx="0" cy="-10" r="2.5" fill="#30ff60" opacity="0.8"/>
+        <circle cx="0" cy="10" r="2.5" fill="#30ff60" opacity="0.8"/>
+      </g>
+    </g>
+
+    <!-- Dock module at inner ring gap -->
+    <g transform="rotate(255) translate(110, 0) rotate(-255)">
+      <rect x="-16" y="-7" width="14" height="14" rx="2" fill="none" stroke="#3af0c0" stroke-width="1.5"/>
+    </g>
+
+    <!-- Struts -->
+    <g opacity="0.35">
+      <line x1="36" y1="0" x2="100" y2="0" stroke="#2a5858" stroke-width="1.5"/>
+      <line x1="-36" y1="0" x2="-100" y2="0" stroke="#2a5858" stroke-width="1.5"/>
+      <line x1="0" y1="-36" x2="0" y2="-100" stroke="#2a5858" stroke-width="1.5"/>
+      <line x1="25" y1="-25" x2="72" y2="-72" stroke="#2a5858" stroke-width="1.5"/>
+      <line x1="-25" y1="-25" x2="-72" y2="-72" stroke="#2a5858" stroke-width="1.5"/>
+      <!-- Ring1 to ring2 struts -->
+      <line x1="118" y1="0" x2="162" y2="0" stroke="#2a3838" stroke-width="1.5"/>
+      <line x1="-118" y1="0" x2="-162" y2="0" stroke="#2a3838" stroke-width="1.5"/>
+      <line x1="0" y1="-118" x2="0" y2="-162" stroke="#2a3838" stroke-width="1.5"/>
+      <line x1="83" y1="-83" x2="114" y2="-114" stroke="#2a3838" stroke-width="1.5"/>
+      <line x1="-83" y1="-83" x2="-114" y2="-114" stroke="#2a3838" stroke-width="1.5"/>
+    </g>
+
+    <!-- Core -->
+    <circle cx="0" cy="0" r="38" fill="#0e1218" stroke="#2a6868" stroke-width="2"/>
+    <circle cx="0" cy="0" r="6" fill="#3af0c0" opacity="0.4"/>
+
+    <!-- Some modules on rings (small, showing scale) -->
+    <!-- Ring 1 modules -->
+    <g transform="rotate(0) translate(110, 0)"><rect x="-7" y="-10" width="14" height="20" rx="2" fill="none" stroke="#e8a030" stroke-width="1"/></g>
+    <g transform="rotate(50) translate(110, 0) rotate(-50)"><rect x="-7" y="-7" width="14" height="14" rx="1" fill="#1a0800" stroke="#ff6020" stroke-width="1"/></g>
+    <g transform="rotate(100) translate(110, 0) rotate(-100)"><rect x="-7" y="-7" width="14" height="14" rx="1" fill="#0a0800" stroke="#d08020" stroke-width="1"/></g>
+    <g transform="rotate(150) translate(110, 0) rotate(-150)"><line x1="-5" y1="-5" x2="5" y2="5" stroke="#40c0ff" stroke-width="1.5"/><circle cx="-5" cy="-5" r="3" fill="none" stroke="#40c0ff" stroke-width="1"/></g>
+    <g transform="rotate(200) translate(110, 0) rotate(-200)"><rect x="-7" y="-7" width="14" height="14" rx="1" fill="none" stroke="#a0d0ff" stroke-width="1"/></g>
+
+    <!-- Ring 2 modules -->
+    <g transform="rotate(0) translate(170, 0)"><circle r="7" fill="none" stroke="#ff4060" stroke-width="1"/><line x1="-9" y1="0" x2="9" y2="0" stroke="#ff4060" stroke-width="0.8"/><line x1="0" y1="-9" x2="0" y2="9" stroke="#ff4060" stroke-width="0.8"/></g>
+    <g transform="rotate(45) translate(170, 0) rotate(-45)"><circle r="7" fill="none" stroke="#40ffa0" stroke-width="1"/><line x1="-9" y1="0" x2="9" y2="0" stroke="#40ffa0" stroke-width="0.8"/><line x1="0" y1="-9" x2="0" y2="9" stroke="#40ffa0" stroke-width="0.8"/></g>
+    <g transform="rotate(90) translate(170, 0) rotate(-90)"><rect x="-6" y="-8" width="12" height="16" rx="1" fill="none" stroke="#c0c080" stroke-width="1"/></g>
+    <!-- Empty ports on ring 2 -->
+    <g transform="rotate(135) translate(170, 0) rotate(-135)"><rect x="-5" y="-7" width="10" height="14" rx="1" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="2,2"/></g>
+    <g transform="rotate(180) translate(170, 0) rotate(-180)"><rect x="-5" y="-7" width="10" height="14" rx="1" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="2,2"/></g>
+    <g transform="rotate(225) translate(170, 0) rotate(-225)"><rect x="-5" y="-7" width="10" height="14" rx="1" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="2,2"/></g>
+
+    <!-- Flight path through aligned gaps -->
+    <g opacity="0.2">
+      <line x1="-50" y1="240" x2="-30" y2="50" stroke="#3af0c0" stroke-width="1.5"/>
+      <line x1="50" y1="240" x2="30" y2="50" stroke="#3af0c0" stroke-width="1.5"/>
+    </g>
+
+    <!-- Ship approaching -->
+    <g transform="translate(0, 200)">
+      <polygon points="0,-8 10,8 -10,8" fill="#ffffff" stroke="none"/>
+      <polygon points="-5,8 0,16 5,8" fill="#ff8040" opacity="0.6"/>
+    </g>
+
+    <!-- Docked ship inside core -->
+    <g transform="translate(12, 18)">
+      <polygon points="0,-5 6,5 -6,5" fill="#ffffff" opacity="0.4" stroke="none"/>
+      <text x="14" y="2" class="dim">docked</text>
+    </g>
+
+    <text x="0" y="232" class="label" text-anchor="middle" fill="#fff">gaps align for clear approach</text>
+  </g>
+
+  <!-- ==================== -->
+  <!-- BOTTOM: Gap design notes -->
+  <!-- ==================== -->
+  <text x="700" y="600" class="title" text-anchor="middle">Gap Design Rules</text>
+
+  <g transform="translate(80, 640)">
+    <rect x="0" y="0" width="560" height="180" rx="4" fill="#0e1218" stroke="#2a4a3a" stroke-width="1"/>
+    <text x="15" y="22" font-family="monospace" font-size="12" fill="#5ae0a0">Dock gap is structural, not a module slot</text>
+    <line x1="10" y1="30" x2="550" y2="30" stroke="#1a2a2a" stroke-width="1"/>
+    <text x="15" y="50" font-family="monospace" font-size="11" fill="#8cf">- Gap spans ~40deg of the ring arc</text>
+    <text x="15" y="66" font-family="monospace" font-size="11" fill="#8cf">- Always at the same angle (270deg = bottom)</text>
+    <text x="15" y="82" font-family="monospace" font-size="11" fill="#8cf">- All rings align their gaps (clear flight path)</text>
+    <text x="15" y="98" font-family="monospace" font-size="11" fill="#8cf">- Dock module attaches to gap edge, not a port</text>
+    <text x="15" y="114" font-family="monospace" font-size="11" fill="#8cf">- Nav lights on gap edges (green=clear, red=blocked)</text>
+    <text x="15" y="134" font-family="monospace" font-size="11" fill="#556">Gap width derived from ring radius:</text>
+    <text x="15" y="150" font-family="monospace" font-size="11" fill="#556">  gap_half_angle = asin(ship_width / ring_radius)</text>
+    <text x="15" y="166" font-family="monospace" font-size="11" fill="#556">  Ensures ship always fits through</text>
+  </g>
+
+  <g transform="translate(700, 640)">
+    <rect x="0" y="0" width="560" height="180" rx="4" fill="#0e1218" stroke="#2a3a4a" stroke-width="1"/>
+    <text x="15" y="22" font-family="monospace" font-size="12" fill="#40a0ff">Port layout accounts for gap</text>
+    <line x1="10" y1="30" x2="550" y2="30" stroke="#1a2a2a" stroke-width="1"/>
+    <text x="15" y="50" font-family="monospace" font-size="11" fill="#8cf">Ring 1 (6 ports): spaced across 320deg arc</text>
+    <text x="15" y="66" font-family="monospace" font-size="11" fill="#8cf">  port_angle = gap_end + slot * (320 / 6)</text>
+    <text x="15" y="86" font-family="monospace" font-size="11" fill="#8cf">Ring 2 (8 ports): spaced across 320deg arc</text>
+    <text x="15" y="102" font-family="monospace" font-size="11" fill="#8cf">  port_angle = gap_end + slot * (320 / 8)</text>
+    <text x="15" y="126" font-family="monospace" font-size="11" fill="#556">Ports never overlap the gap zone.</text>
+    <text x="15" y="142" font-family="monospace" font-size="11" fill="#556">Gap zone = [250deg, 290deg] (40deg reserved)</text>
+    <text x="15" y="162" font-family="monospace" font-size="11" fill="#556">Dock is part of the ring, not a port.</text>
+    <text x="15" y="178" font-family="monospace" font-size="11" fill="#556">Core always has dock built-in at bottom.</text>
+  </g>
+
+  <!-- ==================== -->
+  <!-- Updated data model -->
+  <!-- ==================== -->
+  <g transform="translate(80, 860)">
+    <text x="0" y="0" font-family="monospace" font-size="11" fill="#445">RING CONSTANTS: gap_angle=270deg  gap_width=40deg  port_arc=320deg</text>
+    <text x="0" y="16" font-family="monospace" font-size="11" fill="#445">port_angle(ring, slot) = (290 + slot * 320/ring_slots[ring]) % 360</text>
+    <text x="0" y="32" font-family="monospace" font-size="11" fill="#334">Dock is implicit in ring construction -- no port slot consumed. Ship docks at core pos when inside innermost ring.</text>
+    <text x="0" y="48" font-family="monospace" font-size="11" fill="#334">ring_slots[] = { 5, 8 }  (all ports on arc, gap reserved)  core has dock+relay built-in, no ports.</text>
+  </g>
+</svg>

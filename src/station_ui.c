@@ -510,9 +510,10 @@ void draw_station_services(const station_ui_state_t* ui) {
                 { MODULE_TRACTOR_FAB,    "Tractor Fab",  6, 80,  300 },
                 { MODULE_ORE_BUYER,      "Ore Buyer",    7, 40,  100 },
                 { MODULE_SIGNAL_RELAY,   "Signal Relay", 8, 40,  100 },
+                { MODULE_SHIPYARD,      "Shipyard",     9, 120, 500 },
             };
             int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
-            for (int b = 0; b < 8; b++) {
+            for (int b = 0; b < 9; b++) {
                 if (ui->station->module_count >= MAX_MODULES_PER_STATION) continue;
                 bool can_afford = credits >= buildable[b].credits;
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));

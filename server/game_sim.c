@@ -1559,6 +1559,9 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
         }
     });
     clear_ship_cargo(&sp->ship);
+    /* Release towed fragments */
+    sp->ship.towed_count = 0;
+    memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
     sp->ship.hull = ship_max_hull(&sp->ship);
     sp->ship.angle = PI_F * 0.5f;
     sp->ship.stat_ore_mined = 0.0f;
@@ -1668,6 +1671,9 @@ static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, i
 /* Station interactions                                               */
 /* ================================================================== */
 
+/* Forward declarations for ledger functions (defined below step_station_interaction_system) */
+static void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
+
 static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
     float payout = 0.0f;
@@ -1699,6 +1705,9 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
             payout += accepted * price;
             st->inventory[buy] += accepted;
             sp->ship.cargo[buy] -= accepted;
+            /* Credit ledger for passive income on ore supply */
+            if (sp->session_ready && buy < COMMODITY_RAW_ORE_COUNT)
+                ledger_credit_supply(st, sp->session_token, accepted * price);
         }
     }
 
@@ -1956,21 +1965,61 @@ static void update_targeting_state(world_t *w, server_player_t *sp, vec2 forward
     sp->hover_asteroid = sim_find_mining_target(w, muzzle, forward, sp->ship.mining_level);
 }
 
+/* Check if a fragment is already towed by this player */
+static bool is_already_towed(const ship_t *ship, int asteroid_idx) {
+    for (int i = 0; i < ship->towed_count; i++)
+        if (ship->towed_fragments[i] == asteroid_idx) return true;
+    return false;
+}
+
 static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) {
     float nearby_sq = FRAGMENT_NEARBY_RANGE * FRAGMENT_NEARBY_RANGE;
     float tr = ship_tractor_range(&sp->ship);
     float tr_sq = tr * tr;
-    float cs = ship_cargo_space(&sp->ship);
     sp->nearby_fragments = 0;
     sp->tractor_fragments = 0;
+
+    /* Update towed fragments: spring physics to trail behind ship */
+    for (int t = 0; t < sp->ship.towed_count; t++) {
+        int idx = sp->ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) {
+            /* Remove invalid towed fragment */
+            sp->ship.towed_count--;
+            sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
+            sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+            t--;
+            continue;
+        }
+        asteroid_t *a = &w->asteroids[idx];
+        /* Trail offset behind ship */
+        float trail_dist = 35.0f + (float)t * 18.0f;
+        vec2 behind = v2_from_angle(sp->ship.angle + PI_F);
+        vec2 target_pos = v2_add(sp->ship.pos, v2_scale(behind, trail_dist));
+        /* Slight lateral spread for multiple fragments */
+        float spread = ((float)t - (float)(sp->ship.towed_count - 1) * 0.5f) * 12.0f;
+        vec2 lateral = v2_from_angle(sp->ship.angle + PI_F * 0.5f);
+        target_pos = v2_add(target_pos, v2_scale(lateral, spread));
+
+        vec2 to_target = v2_sub(target_pos, a->pos);
+        float d = v2_len(to_target);
+        if (d > 1.0f) {
+            /* Spring force */
+            float spring_strength = 600.0f;
+            vec2 spring_force = v2_scale(v2_norm(to_target), spring_strength * dt);
+            a->vel = v2_add(a->vel, spring_force);
+            /* Strong damping for towed fragments */
+            a->vel = v2_scale(a->vel, 1.0f / (1.0f + 4.0f * dt));
+        }
+        sp->tractor_fragments++;
+    }
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!asteroid_is_collectible(a)) continue;
+        if (is_already_towed(&sp->ship, i)) continue;
         vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
         float d_sq = v2_len_sq(to_ship);
         if (d_sq <= nearby_sq) sp->nearby_fragments++;
-        if (cs <= 0.0f) continue;
         if (d_sq <= tr_sq) {
             float d = sqrtf(d_sq);
             float pull = 1.0f - clampf(d / tr, 0.0f, 1.0f);
@@ -1980,14 +2029,23 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             float speed = v2_len(a->vel);
             if (speed > FRAGMENT_MAX_SPEED) a->vel = v2_scale(v2_norm(a->vel), FRAGMENT_MAX_SPEED);
         }
+        /* Collect fragment: add ore to cargo AND tow visually */
         float cr = ship_collect_radius(&sp->ship) + a->radius;
-        if (d_sq <= cr * cr) {
+        float cs = ship_cargo_space(&sp->ship);
+        if (d_sq <= cr * cr && cs > 0.0f) {
             float recovered = fminf(a->ore, cs);
-            if (recovered <= 0.0f) continue;
-            sp->ship.cargo[a->commodity] += recovered;
-            sp->ship.stat_ore_mined += recovered;
-            cs -= recovered;
-            a->ore -= recovered;
+            if (recovered > 0.0f) {
+                sp->ship.cargo[a->commodity] += recovered;
+                sp->ship.stat_ore_mined += recovered;
+                a->ore -= recovered;
+                emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
+                                            .pickup = {.ore = recovered, .fragments = 1}});
+            }
+            /* Tow the fragment visually (even if partially drained) */
+            if (sp->ship.towed_count < 8) {
+                sp->ship.towed_fragments[sp->ship.towed_count] = (int8_t)i;
+                sp->ship.towed_count++;
+            }
             if (a->ore <= 0.01f) {
                 clear_asteroid(a);
             } else if (a->max_ore > 0.0f) {
@@ -1999,10 +2057,135 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
     }
 }
 
+/* Deposit towed fragments at station ore buyer modules */
+static void step_towed_deposits(world_t *w, server_player_t *sp) {
+    if (sp->ship.towed_count == 0) return;
+    for (int t = sp->ship.towed_count - 1; t >= 0; t--) {
+        int idx = sp->ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+        asteroid_t *a = &w->asteroids[idx];
+        if (!a->active) continue;
+        /* Check all stations for ore buyer modules in range */
+        for (int si = 0; si < MAX_STATIONS; si++) {
+            const station_t *st = &w->stations[si];
+            if (st->scaffold) continue;
+            for (int mi = 0; mi < st->module_count; mi++) {
+                if (st->modules[mi].type != MODULE_ORE_BUYER) continue;
+                if (st->modules[mi].scaffold) continue;
+                vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
+                float intake_r = 25.0f;
+                if (v2_dist_sq(a->pos, mp) <= intake_r * intake_r) {
+                    /* Consume fragment into station inventory */
+                    station_t *mst = &w->stations[si]; /* non-const for mutation */
+                    (void)mst; /* suppress unused warning — we modify via cast */
+                    w->stations[si].inventory[a->commodity] += a->ore;
+                    clear_asteroid(a);
+                    /* Remove from towed list */
+                    sp->ship.towed_count--;
+                    sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
+                    sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+                    goto next_towed;
+                }
+            }
+        }
+        next_towed:;
+    }
+}
+
+/* Find scan target (station module, NPC, or player) along beam ray.
+ * Returns true if a scan target was found, populating sp->scan_* fields. */
+static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 forward) {
+    float best_dist = MINING_RANGE;
+    sp->scan_target_type = 0;
+    sp->scan_target_index = -1;
+    sp->scan_module_index = -1;
+
+    /* Check station modules */
+    for (int si = 0; si < MAX_STATIONS; si++) {
+        const station_t *st = &w->stations[si];
+        if (st->signal_range <= 0.0f) continue;
+        /* Check core */
+        vec2 to_core = v2_sub(st->pos, muzzle);
+        float proj = v2_dot(to_core, forward);
+        if (proj > 0.0f && proj < best_dist) {
+            vec2 closest = v2_add(muzzle, v2_scale(forward, proj));
+            float perp = v2_len(v2_sub(closest, st->pos));
+            if (perp < st->radius) {
+                best_dist = proj;
+                sp->scan_target_type = 1;
+                sp->scan_target_index = si;
+                sp->scan_module_index = -1; /* core */
+                sp->beam_end = v2_sub(st->pos, v2_scale(v2_norm(to_core), st->radius * 0.9f));
+            }
+        }
+        /* Check individual modules */
+        for (int mi = 0; mi < st->module_count; mi++) {
+            if (st->modules[mi].scaffold) continue;
+            vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
+            vec2 to_mod = v2_sub(mp, muzzle);
+            float mproj = v2_dot(to_mod, forward);
+            if (mproj > 0.0f && mproj < best_dist) {
+                vec2 closest = v2_add(muzzle, v2_scale(forward, mproj));
+                float perp = v2_len(v2_sub(closest, mp));
+                if (perp < MODULE_COLLISION_RADIUS) {
+                    best_dist = mproj;
+                    sp->scan_target_type = 1;
+                    sp->scan_target_index = si;
+                    sp->scan_module_index = mi;
+                    sp->beam_end = v2_sub(mp, v2_scale(v2_norm(to_mod), MODULE_COLLISION_RADIUS * 0.9f));
+                }
+            }
+        }
+    }
+
+    /* Check NPC ships */
+    for (int ni = 0; ni < MAX_NPC_SHIPS; ni++) {
+        const npc_ship_t *npc = &w->npc_ships[ni];
+        if (!npc->active) continue;
+        vec2 to_npc = v2_sub(npc->pos, muzzle);
+        float proj = v2_dot(to_npc, forward);
+        float npc_r = HULL_DEFS[npc->hull_class].render_scale * 16.0f;
+        if (proj > 0.0f && proj < best_dist) {
+            vec2 closest = v2_add(muzzle, v2_scale(forward, proj));
+            float perp = v2_len(v2_sub(closest, npc->pos));
+            if (perp < npc_r) {
+                best_dist = proj;
+                sp->scan_target_type = 2;
+                sp->scan_target_index = ni;
+                sp->scan_module_index = -1;
+                sp->beam_end = v2_sub(npc->pos, v2_scale(v2_norm(to_npc), npc_r * 0.9f));
+            }
+        }
+    }
+
+    /* Check other players */
+    for (int pi = 0; pi < MAX_PLAYERS; pi++) {
+        const server_player_t *other = &w->players[pi];
+        if (!other->connected || other->id == sp->id) continue;
+        vec2 to_p = v2_sub(other->ship.pos, muzzle);
+        float proj = v2_dot(to_p, forward);
+        float pr = HULL_DEFS[other->ship.hull_class].ship_radius;
+        if (proj > 0.0f && proj < best_dist) {
+            vec2 closest = v2_add(muzzle, v2_scale(forward, proj));
+            float perp = v2_len(v2_sub(closest, other->ship.pos));
+            if (perp < pr) {
+                best_dist = proj;
+                sp->scan_target_type = 3;
+                sp->scan_target_index = pi;
+                sp->scan_module_index = -1;
+                sp->beam_end = v2_sub(other->ship.pos, v2_scale(v2_norm(to_p), pr * 0.9f));
+            }
+        }
+    }
+
+    return sp->scan_target_type != 0;
+}
+
 static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool mining, vec2 forward) {
     sp->beam_active = false;
     sp->beam_hit = false;
     sp->beam_ineffective = false;
+    sp->scan_active = false;
     if (!mining) return;
 
     vec2 muzzle = ship_muzzle(sp->ship.pos, sp->ship.angle, &sp->ship);
@@ -2035,7 +2218,65 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
             }
         }
     } else {
-        sp->beam_end = v2_add(muzzle, v2_scale(forward, MINING_RANGE));
+        /* No asteroid target — check for scan targets */
+        if (find_scan_target(w, sp, muzzle, forward)) {
+            sp->scan_active = true;
+            sp->beam_hit = true;
+        } else {
+            sp->beam_end = v2_add(muzzle, v2_scale(forward, MINING_RANGE));
+        }
+    }
+}
+
+/* --- Economy ledger helpers --- */
+
+/* Find or create a ledger entry for a player at a station */
+static int ledger_find_or_create(station_t *st, const uint8_t *token) {
+    for (int i = 0; i < st->ledger_count; i++) {
+        if (memcmp(st->ledger[i].player_token, token, 8) == 0) return i;
+    }
+    if (st->ledger_count >= 16) return -1;
+    int idx = st->ledger_count++;
+    memcpy(st->ledger[idx].player_token, token, 8);
+    st->ledger[idx].pending_credits = 0.0f;
+    st->ledger[idx].lifetime_supply = 0.0f;
+    return idx;
+}
+
+/* Credit a player's ledger when they supply ore to a station */
+static void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) {
+    int idx = ledger_find_or_create(st, token);
+    if (idx < 0) return;
+    /* Supplier gets 80% of ore value as passive income */
+    float supplier_share = ore_value * 0.80f;
+    st->ledger[idx].pending_credits += supplier_share;
+    st->ledger[idx].lifetime_supply += ore_value;
+}
+
+/* Hail: collect pending credits from a station (requires signal > 90%) */
+static void handle_hail(world_t *w, server_player_t *sp) {
+    if (sp->docked) return;
+    float sig = signal_strength_at(w, sp->ship.pos);
+    if (sig < 0.90f) return;
+
+    float total_collected = 0.0f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (st->signal_range <= 0.0f) continue;
+        float d = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
+        if (d > st->signal_range) continue;
+        for (int i = 0; i < st->ledger_count; i++) {
+            if (memcmp(st->ledger[i].player_token, sp->session_token, 8) != 0) continue;
+            if (st->ledger[i].pending_credits > 0.01f) {
+                total_collected += st->ledger[i].pending_credits;
+                st->ledger[i].pending_credits = 0.0f;
+            }
+        }
+    }
+    if (total_collected > 0.01f) {
+        sp->ship.credits += total_collected;
+        sp->ship.stat_credits_earned += total_collected;
+        SIM_LOG("[sim] player %d hail collected %.0f credits\n", sp->id, total_collected);
     }
 }
 
@@ -2234,13 +2475,20 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         if (!sp->docked) {
             update_targeting_state(w, sp, forward);
             step_mining_system(w, sp, dt, sp->input.mine, forward);
-            if (!w->player_only_mode)
+            if (!w->player_only_mode) {
                 step_fragment_collection(w, sp, dt);
+                step_towed_deposits(w, sp);
+            }
         }
     } else {
         update_docking_state(w, sp, dt);
         if (!w->player_only_mode)
             step_station_interaction_system(w, sp, &sp->input);
+    }
+
+    /* Hail: collect pending credits from nearby station(s) */
+    if (sp->input.hail && !w->player_only_mode) {
+        handle_hail(w, sp);
     }
 
     /* Clear one-shot action flags after the sim has consumed them. */
@@ -2254,6 +2502,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->input.buy_scaffold_kit = false;
     sp->input.build_module = false;
     sp->input.buy_product = false;
+    sp->input.hail = false;
 }
 
 /* ================================================================== */
@@ -2292,21 +2541,39 @@ static void step_asteroid_gravity(world_t *w, float dt) {
         }
     }
 
-    /* Station attraction (asteroids within 800 units of a station) */
+    /* Industrial pull: only stations with active intake/processing modules
+     * generate asteroid attraction. Pull scales with industrial activity
+     * and inversely with asteroid size (fragments pulled strongly). */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
         for (int s = 0; s < MAX_STATIONS; s++) {
-            vec2 delta = v2_sub(w->stations[s].pos, a->pos);
+            const station_t *st = &w->stations[s];
+            if (st->scaffold) continue;
+            /* Count active industrial modules */
+            int intake_modules = 0;
+            for (int m = 0; m < st->module_count; m++) {
+                if (st->modules[m].scaffold) continue;
+                module_type_t mt = st->modules[m].type;
+                if (mt == MODULE_ORE_BUYER || mt == MODULE_FURNACE ||
+                    mt == MODULE_FURNACE_CU || mt == MODULE_FURNACE_CR)
+                    intake_modules++;
+            }
+            if (intake_modules == 0) continue; /* relay-only stations: no pull */
+            vec2 delta = v2_sub(st->pos, a->pos);
             float dist_sq = v2_len_sq(delta);
-            if (dist_sq > 800.0f * 800.0f || dist_sq < 1.0f) continue;
+            float pull_range = 600.0f + (float)intake_modules * 100.0f;
+            if (dist_sq > pull_range * pull_range || dist_sq < 1.0f) continue;
             float dist = sqrtf(dist_sq);
-            /* Don't attract asteroids that are at or inside collision boundary */
-            float min_dist = a->radius + w->stations[s].radius;
+            float min_dist = a->radius + st->radius;
             if (dist < min_dist + 10.0f) continue;
             vec2 normal = v2_scale(delta, 1.0f / dist);
-            float force = w->stations[s].radius / (dist * 0.8f) * 2.0f;
+            /* Tier-dependent: smaller = more pulled. radius² inversely scales force */
             float mass_a = a->radius * a->radius;
+            float base_force = (float)intake_modules * 2.5f;
+            float force = base_force * st->radius / (dist * 0.8f);
+            /* TIER_S fragments get extra pull for hopper feeding */
+            if (a->tier == ASTEROID_TIER_S) force *= 3.0f;
             float accel = force / mass_a;
             a->vel = v2_add(a->vel, v2_scale(normal, accel * dt));
         }
@@ -2360,6 +2627,45 @@ static void step_asteroid_gravity(world_t *w, float dt) {
         vec2 normal = v2_scale(delta, 1.0f / dist);
         float current = (0.75f - best_signal) / 0.75f;
         a->vel = v2_add(a->vel, v2_scale(normal, 3.0f * current * dt));
+    }
+}
+
+/* Hopper intake: ore buyer modules pull and consume nearby TIER_S fragments */
+static void step_hopper_intake(world_t *w, float dt) {
+    enum { HOPPER_TRACTOR_RADIUS = 80, HOPPER_INTAKE_RADIUS = 15 };
+    float pull_strength = FRAGMENT_TRACTOR_ACCEL * 0.6f; /* 60% of ship tractor */
+
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (st->scaffold) continue;
+        for (int m = 0; m < st->module_count; m++) {
+            if (st->modules[m].type != MODULE_ORE_BUYER || st->modules[m].scaffold) continue;
+            vec2 mp = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
+            float tr_sq = (float)(HOPPER_TRACTOR_RADIUS * HOPPER_TRACTOR_RADIUS);
+            float intake_sq = (float)(HOPPER_INTAKE_RADIUS * HOPPER_INTAKE_RADIUS);
+
+            for (int i = 0; i < MAX_ASTEROIDS; i++) {
+                asteroid_t *a = &w->asteroids[i];
+                if (!asteroid_is_collectible(a)) continue;
+                vec2 to_mod = v2_sub(mp, a->pos);
+                float d_sq = v2_len_sq(to_mod);
+                if (d_sq > tr_sq) continue;
+
+                /* Pull fragment toward module */
+                float d = sqrtf(d_sq);
+                if (d > 0.5f) {
+                    float pull = 1.0f - clampf(d / (float)HOPPER_TRACTOR_RADIUS, 0.0f, 1.0f);
+                    vec2 pull_dir = v2_scale(to_mod, 1.0f / d);
+                    a->vel = v2_add(a->vel, v2_scale(pull_dir, pull_strength * lerpf(0.3f, 1.0f, pull) * dt));
+                }
+
+                /* Consume at intake zone */
+                if (d_sq <= intake_sq) {
+                    st->inventory[a->commodity] += a->ore;
+                    clear_asteroid(a);
+                }
+            }
+        }
     }
 }
 
@@ -2630,6 +2936,7 @@ void world_sim_step(world_t *w, float dt) {
         float gdt = w->gravity_accumulator;
         w->gravity_accumulator = 0.0f;
         step_asteroid_gravity(w, gdt);
+        step_hopper_intake(w, gdt);
         resolve_asteroid_collisions(w);
         resolve_asteroid_station_collisions(w);
     }
@@ -2828,6 +3135,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->ship.hull       = HULL_DEFS[HULL_CLASS_MINER].max_hull;
     sp->ship.credits    = 50.0f;
     sp->ship.angle      = PI_F * 0.5f;
+    memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
     sp->docked          = true;
     sp->current_station = 0;
     sp->nearby_station  = 0;

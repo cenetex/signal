@@ -1,0 +1,362 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1400" height="950" viewBox="0 0 1400 950">
+  <style>
+    text { font-family: monospace; fill: #8cf; font-size: 12px; }
+    .title { font-size: 16px; fill: #fff; }
+    .subtitle { font-size: 11px; fill: #668; }
+    .label { font-size: 10px; fill: #9bd; }
+    .dim { font-size: 10px; fill: #556; }
+    .ring-label { font-size: 9px; fill: #445; }
+  </style>
+
+  <rect width="1400" height="950" fill="#0a0c12"/>
+
+  <!-- ==================== -->
+  <!-- STAGE 1: Fresh Outpost (Ring 0 only, 3 slots) -->
+  <!-- ==================== -->
+  <text x="200" y="30" class="title" text-anchor="middle">Stage 1: Fresh Outpost</text>
+  <text x="200" y="46" class="subtitle" text-anchor="middle">Ring 0 -- 3 slots (dock, relay, 1 empty)</text>
+
+  <g transform="translate(200, 220)">
+    <!-- Ring 0 track -->
+    <circle cx="0" cy="0" r="68" fill="none" stroke="#1a2a2a" stroke-width="1" stroke-dasharray="2,4"/>
+    <text x="0" y="-76" class="ring-label" text-anchor="middle">RING 0</text>
+
+    <!-- Core -->
+    <circle cx="0" cy="0" r="40" fill="#0e1218" stroke="#2a6868" stroke-width="2"/>
+    <circle cx="0" cy="0" r="6" fill="#3af0c0" opacity="0.5"/>
+
+    <!-- Slot 0 (0deg = right): DOCK -->
+    <line x1="40" y1="0" x2="54" y2="0" stroke="#2a6868" stroke-width="1.5"/>
+    <g transform="translate(68, 0)">
+      <rect x="-12" y="-16" width="24" height="32" rx="2" fill="none" stroke="#3af0c0" stroke-width="1.5"/>
+      <rect x="12" y="-5" width="7" height="10" fill="none" stroke="#3af0c0" stroke-width="1" stroke-dasharray="2,2"/>
+      <text x="0" y="26" class="label" text-anchor="middle">DOCK</text>
+    </g>
+
+    <!-- Slot 1 (120deg): SIGNAL RELAY -->
+    <g transform="rotate(120)">
+      <line x1="40" y1="0" x2="54" y2="0" stroke="#2a6868" stroke-width="1.5"/>
+      <g transform="translate(68, 0) rotate(-120)">
+        <line x1="0" y1="12" x2="0" y2="-4" stroke="#80e0ff" stroke-width="1.5"/>
+        <path d="M -10,-4 Q 0,-16 10,-4" fill="none" stroke="#80e0ff" stroke-width="1.5"/>
+        <circle cx="0" cy="-4" r="2" fill="#80e0ff"/>
+        <text x="0" y="26" class="label" text-anchor="middle" fill="#80e0ff">RELAY</text>
+      </g>
+    </g>
+
+    <!-- Slot 2 (240deg): EMPTY -->
+    <g transform="rotate(240)">
+      <g transform="translate(68, 0) rotate(-240)">
+        <circle r="12" fill="none" stroke="#1a2a2a" stroke-width="1" stroke-dasharray="3,3"/>
+        <text x="0" y="26" class="dim" text-anchor="middle">empty</text>
+      </g>
+    </g>
+
+    <!-- Ship for scale -->
+    <g transform="translate(110, 0)">
+      <polygon points="0,-7 9,7 -9,7" fill="#ffffff" stroke="none" transform="rotate(-90)"/>
+    </g>
+  </g>
+
+  <!-- Arrow -->
+  <g transform="translate(370, 220)">
+    <line x1="0" y1="0" x2="50" y2="0" stroke="#445" stroke-width="2"/>
+    <polygon points="50,-5 60,0 50,5" fill="#445"/>
+    <text x="30" y="-10" class="dim" text-anchor="middle">build ring</text>
+    <text x="30" y="16" class="dim" text-anchor="middle">expansion</text>
+  </g>
+
+  <!-- ==================== -->
+  <!-- STAGE 2: Ring Expansion built (Ring 1 unlocked, 6 new slots) -->
+  <!-- ==================== -->
+  <text x="600" y="30" class="title" text-anchor="middle">Stage 2: Ring 1 Unlocked</text>
+  <text x="600" y="46" class="subtitle" text-anchor="middle">Ring 0: 3 slots (full) + Ring 1: 6 slots (empty)</text>
+
+  <g transform="translate(600, 220)">
+    <!-- Ring 1 track -->
+    <circle cx="0" cy="0" r="118" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="2,4"/>
+    <text x="0" y="-126" class="ring-label" text-anchor="middle">RING 1</text>
+
+    <!-- Ring 0 track -->
+    <circle cx="0" cy="0" r="68" fill="none" stroke="#1a2a2a" stroke-width="1" stroke-dasharray="2,4"/>
+    <text x="50" y="-52" class="ring-label">RING 0</text>
+
+    <!-- Core -->
+    <circle cx="0" cy="0" r="40" fill="#0e1218" stroke="#2a6868" stroke-width="2"/>
+    <circle cx="0" cy="0" r="6" fill="#3af0c0" opacity="0.5"/>
+
+    <!-- Ring 0, Slot 0: DOCK -->
+    <line x1="40" y1="0" x2="54" y2="0" stroke="#2a6868" stroke-width="1.5"/>
+    <g transform="translate(68, 0)">
+      <rect x="-12" y="-16" width="24" height="32" rx="2" fill="none" stroke="#3af0c0" stroke-width="1.5"/>
+      <rect x="12" y="-5" width="7" height="10" fill="none" stroke="#3af0c0" stroke-width="1" stroke-dasharray="2,2"/>
+    </g>
+
+    <!-- Ring 0, Slot 1: RELAY -->
+    <g transform="rotate(120)">
+      <line x1="40" y1="0" x2="54" y2="0" stroke="#2a6868" stroke-width="1.5"/>
+      <g transform="translate(68, 0) rotate(-120)">
+        <line x1="0" y1="12" x2="0" y2="-4" stroke="#80e0ff" stroke-width="1.5"/>
+        <path d="M -10,-4 Q 0,-16 10,-4" fill="none" stroke="#80e0ff" stroke-width="1.5"/>
+        <circle cx="0" cy="-4" r="2" fill="#80e0ff"/>
+      </g>
+    </g>
+
+    <!-- Ring 0, Slot 2: RING EXPANSION (structural hub) -->
+    <g transform="rotate(240)">
+      <line x1="40" y1="0" x2="54" y2="0" stroke="#2a6868" stroke-width="1.5"/>
+      <g transform="translate(68, 0) rotate(-240)">
+        <!-- Ring expansion module: hub with radial beams to Ring 1 -->
+        <circle cx="0" cy="0" r="10" fill="#0e1218" stroke="#5ae0a0" stroke-width="2"/>
+        <circle cx="0" cy="0" r="4" fill="#5ae0a0" opacity="0.3"/>
+        <!-- Beams radiating outward -->
+        <line x1="10" y1="0" x2="38" y2="0" stroke="#5ae0a0" stroke-width="1" opacity="0.5"/>
+        <line x1="7" y1="-7" x2="30" y2="-24" stroke="#5ae0a0" stroke-width="1" opacity="0.5"/>
+        <line x1="-7" y1="-7" x2="-20" y2="-32" stroke="#5ae0a0" stroke-width="1" opacity="0.5"/>
+        <line x1="-10" y1="0" x2="-38" y2="8" stroke="#5ae0a0" stroke-width="1" opacity="0.5"/>
+        <line x1="-7" y1="7" x2="-22" y2="30" stroke="#5ae0a0" stroke-width="1" opacity="0.5"/>
+        <line x1="7" y1="7" x2="26" y2="26" stroke="#5ae0a0" stroke-width="1" opacity="0.5"/>
+        <text x="0" y="22" class="label" text-anchor="middle" fill="#5ae0a0">EXPAND</text>
+      </g>
+    </g>
+
+    <!-- Ring 1: 6 empty slots at 60deg spacing -->
+    <g transform="rotate(0)"><g transform="translate(118, 0) rotate(0)"><circle r="12" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/><text x="0" y="22" class="dim" text-anchor="middle">1:0</text></g></g>
+    <g transform="rotate(60)"><g transform="translate(118, 0) rotate(-60)"><circle r="12" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/><text x="0" y="22" class="dim" text-anchor="middle">1:1</text></g></g>
+    <g transform="rotate(120)"><g transform="translate(118, 0) rotate(-120)"><circle r="12" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/><text x="0" y="22" class="dim" text-anchor="middle">1:2</text></g></g>
+    <g transform="rotate(180)"><g transform="translate(118, 0) rotate(-180)"><circle r="12" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/><text x="0" y="22" class="dim" text-anchor="middle">1:3</text></g></g>
+    <g transform="rotate(240)"><g transform="translate(118, 0) rotate(-240)"><circle r="12" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/><text x="0" y="22" class="dim" text-anchor="middle">1:4</text></g></g>
+    <g transform="rotate(300)"><g transform="translate(118, 0) rotate(-300)"><circle r="12" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/><text x="0" y="22" class="dim" text-anchor="middle">1:5</text></g></g>
+  </g>
+
+  <!-- Arrow -->
+  <g transform="translate(800, 220)">
+    <line x1="0" y1="0" x2="50" y2="0" stroke="#445" stroke-width="2"/>
+    <polygon points="50,-5 60,0 50,5" fill="#445"/>
+    <text x="30" y="-10" class="dim" text-anchor="middle">build</text>
+    <text x="30" y="16" class="dim" text-anchor="middle">modules</text>
+  </g>
+
+  <!-- ==================== -->
+  <!-- STAGE 3: Developed Station (both rings populated) -->
+  <!-- ==================== -->
+  <text x="1080" y="30" class="title" text-anchor="middle">Stage 3: Industrial Complex</text>
+  <text x="1080" y="46" class="subtitle" text-anchor="middle">Ring 0 full + Ring 1 with 4 modules</text>
+
+  <g transform="translate(1080, 220)">
+    <!-- Ring 1 track -->
+    <circle cx="0" cy="0" r="118" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="2,4"/>
+
+    <!-- Ring 0 track -->
+    <circle cx="0" cy="0" r="68" fill="none" stroke="#1a2a2a" stroke-width="1" stroke-dasharray="2,4"/>
+
+    <!-- Core -->
+    <circle cx="0" cy="0" r="40" fill="#0e1218" stroke="#2a6868" stroke-width="2"/>
+    <circle cx="0" cy="0" r="6" fill="#3af0c0" opacity="0.5"/>
+
+    <!-- Ring 0, Slot 0: DOCK -->
+    <line x1="40" y1="0" x2="54" y2="0" stroke="#2a6868" stroke-width="1.5"/>
+    <g transform="translate(68, 0)">
+      <rect x="-12" y="-16" width="24" height="32" rx="2" fill="none" stroke="#3af0c0" stroke-width="1.5"/>
+      <rect x="12" y="-5" width="7" height="10" fill="none" stroke="#3af0c0" stroke-width="1" stroke-dasharray="2,2"/>
+    </g>
+
+    <!-- Ring 0, Slot 1: RELAY -->
+    <g transform="rotate(120)">
+      <line x1="40" y1="0" x2="54" y2="0" stroke="#2a6868" stroke-width="1.5"/>
+      <g transform="translate(68, 0) rotate(-120)">
+        <line x1="0" y1="12" x2="0" y2="-4" stroke="#80e0ff" stroke-width="1.5"/>
+        <path d="M -10,-4 Q 0,-16 10,-4" fill="none" stroke="#80e0ff" stroke-width="1.5"/>
+        <circle cx="0" cy="-4" r="2" fill="#80e0ff"/>
+      </g>
+    </g>
+
+    <!-- Ring 0, Slot 2: RING EXPANSION -->
+    <g transform="rotate(240)">
+      <line x1="40" y1="0" x2="54" y2="0" stroke="#2a6868" stroke-width="1.5"/>
+      <g transform="translate(68, 0) rotate(-240)">
+        <circle cx="0" cy="0" r="10" fill="#0e1218" stroke="#5ae0a0" stroke-width="2"/>
+        <circle cx="0" cy="0" r="4" fill="#5ae0a0" opacity="0.3"/>
+      </g>
+    </g>
+
+    <!-- Structural beams from expansion hub to Ring 1 modules -->
+    <!-- Beam to slot 1:0 (ore buyer) -->
+    <line x1="-24" y1="50" x2="104" y2="-50" stroke="#5ae0a0" stroke-width="0.8" opacity="0.3"/>
+    <line x1="-24" y1="50" x2="50" y2="-100" stroke="#5ae0a0" stroke-width="0.8" opacity="0.3"/>
+    <line x1="-24" y1="50" x2="-118" y2="0" stroke="#5ae0a0" stroke-width="0.8" opacity="0.3"/>
+    <line x1="-24" y1="50" x2="-60" y2="102" stroke="#5ae0a0" stroke-width="0.8" opacity="0.3"/>
+
+    <!-- Ring 1, Slot 0 (0deg): ORE BUYER -->
+    <g transform="translate(118, 0)">
+      <polygon points="-14,-18 14,-18 9,0 -9,0" fill="none" stroke="#e8a030" stroke-width="1.5"/>
+      <rect x="-7" y="0" width="14" height="10" fill="none" stroke="#e8a030" stroke-width="1"/>
+    </g>
+
+    <!-- Ring 1, Slot 1 (60deg): FURNACE (FE) -->
+    <g transform="rotate(60)">
+      <g transform="translate(118, 0) rotate(-60)">
+        <rect x="-14" y="-14" width="28" height="28" rx="2" fill="#1a0800" stroke="#ff6020" stroke-width="1.5"/>
+        <circle cx="0" cy="0" r="6" fill="#ff4010" opacity="0.3"/>
+        <circle cx="0" cy="0" r="3" fill="#ffaa40" opacity="0.5"/>
+      </g>
+    </g>
+
+    <!-- Ring 1, Slot 2 (120deg): FURNACE (CU) -->
+    <g transform="rotate(120)">
+      <g transform="translate(118, 0) rotate(-120)">
+        <rect x="-14" y="-14" width="28" height="28" rx="2" fill="#0a0800" stroke="#d08020" stroke-width="1.5"/>
+        <circle cx="0" cy="0" r="6" fill="#d08020" opacity="0.3"/>
+        <text x="0" y="3" font-family="monospace" font-size="8" fill="#d08020" text-anchor="middle">Cu</text>
+      </g>
+    </g>
+
+    <!-- Ring 1, Slot 3 (180deg): REPAIR BAY -->
+    <g transform="rotate(180)">
+      <g transform="translate(118, 0) rotate(-180)">
+        <line x1="-10" y1="-10" x2="10" y2="10" stroke="#40c0ff" stroke-width="2"/>
+        <circle cx="-10" cy="-10" r="5" fill="none" stroke="#40c0ff" stroke-width="1.5"/>
+        <rect x="6" y="6" width="8" height="8" rx="1" fill="none" stroke="#40c0ff" stroke-width="1.5"/>
+      </g>
+    </g>
+
+    <!-- Ring 1, Slot 4 (240deg): EMPTY -->
+    <g transform="rotate(240)"><g transform="translate(118, 0) rotate(-240)"><circle r="12" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/></g></g>
+
+    <!-- Ring 1, Slot 5 (300deg): EMPTY -->
+    <g transform="rotate(300)"><g transform="translate(118, 0) rotate(-300)"><circle r="12" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/></g></g>
+
+    <!-- Ship approaching dock -->
+    <g transform="translate(170, 0)">
+      <polygon points="0,-7 9,7 -9,7" fill="#ffffff" stroke="none" transform="rotate(-90)"/>
+    </g>
+  </g>
+
+  <!-- ==================== -->
+  <!-- BOTTOM: Progression & ring specs -->
+  <!-- ==================== -->
+
+  <text x="700" y="440" class="title" text-anchor="middle">Ring Progression</text>
+
+  <!-- Ring spec table -->
+  <g transform="translate(200, 470)">
+    <text x="0" y="0" font-family="monospace" font-size="12" fill="#556">RING   SLOTS   RADIUS   UNLOCK COST           TOTAL CAPACITY</text>
+    <line x1="0" y1="6" x2="700" y2="6" stroke="#1a2a2a" stroke-width="1"/>
+    <text x="0" y="22" font-family="monospace" font-size="12" fill="#3af0c0">  0      3      68px    default (outpost)     dock + relay + 1</text>
+    <text x="0" y="40" font-family="monospace" font-size="12" fill="#5ae0a0">  1      6     118px    120 frames + 500 cr   + 6 modules</text>
+    <text x="0" y="58" font-family="monospace" font-size="12" fill="#448060">  2      8     168px    200 frames + 1000 cr  + 8 modules</text>
+  </g>
+
+  <!-- ==================== -->
+  <!-- Starter station comparison -->
+  <!-- ==================== -->
+  <text x="350" y="560" class="title" text-anchor="middle">Starter Stations (pre-built)</text>
+  <text x="350" y="576" class="subtitle" text-anchor="middle">start with Ring 1 already expanded</text>
+
+  <g transform="translate(200, 680)">
+    <!-- Prospect Refinery mini -->
+    <circle cx="0" cy="0" r="30" fill="#0e1218" stroke="#2a6868" stroke-width="1.5"/>
+    <circle cx="0" cy="0" r="4" fill="#3af0c0" opacity="0.5"/>
+    <!-- Ring 0 -->
+    <circle cx="0" cy="0" r="50" fill="none" stroke="#1a2a2a" stroke-width="0.5"/>
+    <!-- Ring 1 -->
+    <circle cx="0" cy="0" r="82" fill="none" stroke="#162222" stroke-width="0.5"/>
+
+    <!-- R0 modules (3) -->
+    <g transform="rotate(0) translate(50, 0)"><rect x="-6" y="-8" width="12" height="16" fill="none" stroke="#3af0c0" stroke-width="1"/></g>
+    <g transform="rotate(120) translate(50, 0)"><circle r="5" fill="#0e1218" stroke="#5ae0a0" stroke-width="1.5"/></g>
+    <g transform="rotate(240) translate(50, 0)"><rect x="-6" y="-6" width="12" height="12" fill="none" stroke="#c0c080" stroke-width="1"/></g>
+
+    <!-- R1 modules (5 of 6 filled) -->
+    <g transform="rotate(0) translate(82, 0)"><polygon points="-7,-9 7,-9 5,0 -5,0" fill="none" stroke="#e8a030" stroke-width="1"/></g>
+    <g transform="rotate(60) translate(82, 0)"><rect x="-7" y="-7" width="14" height="14" fill="#1a0800" stroke="#ff6020" stroke-width="1"/></g>
+    <g transform="rotate(120) translate(82, 0)"><line x1="-6" y1="-6" x2="6" y2="6" stroke="#40c0ff" stroke-width="1.5"/><circle cx="-6" cy="-6" r="3" fill="none" stroke="#40c0ff" stroke-width="1"/></g>
+    <g transform="rotate(180) translate(82, 0)"><rect x="-6" y="-6" width="12" height="12" fill="none" stroke="#80e0ff" stroke-width="1"/></g>
+    <g transform="rotate(240) translate(82, 0)"><circle r="7" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="2,2"/></g>
+    <g transform="rotate(300) translate(82, 0)"><circle r="7" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="2,2"/></g>
+
+    <text x="0" y="104" class="label" text-anchor="middle">Prospect Refinery</text>
+    <text x="0" y="116" class="dim" text-anchor="middle">R0: dock, expand, contracts</text>
+    <text x="0" y="128" class="dim" text-anchor="middle">R1: ore buyer, furnace, repair, relay</text>
+  </g>
+
+  <!-- ==================== -->
+  <!-- Build mode with ring selection -->
+  <!-- ==================== -->
+  <text x="900" y="560" class="title" text-anchor="middle">Build Mode: Ring Selection</text>
+  <text x="900" y="576" class="subtitle" text-anchor="middle">[W/S] switch ring -- [A/D] rotate slot -- [1-8] module type</text>
+
+  <g transform="translate(900, 720)">
+    <!-- Ring 1 track (selected) -->
+    <circle cx="0" cy="0" r="118" fill="none" stroke="#30ff6020" stroke-width="3"/>
+    <text x="90" y="-90" font-family="monospace" font-size="10" fill="#30ff60">RING 1 (selected)</text>
+
+    <!-- Ring 0 track -->
+    <circle cx="0" cy="0" r="68" fill="none" stroke="#1a2a2a" stroke-width="1" stroke-dasharray="2,4"/>
+
+    <!-- Core -->
+    <circle cx="0" cy="0" r="40" fill="#0e1218" stroke="#2a6868" stroke-width="1.5"/>
+    <circle cx="0" cy="0" r="4" fill="#3af0c0" opacity="0.5"/>
+
+    <!-- Ring 0 modules (all occupied, dimmed) -->
+    <g opacity="0.5">
+      <g transform="rotate(0) translate(68, 0)"><rect x="-10" y="-12" width="20" height="24" rx="2" fill="none" stroke="#3af0c0" stroke-width="1"/></g>
+      <g transform="rotate(120) translate(68, 0) rotate(-120)"><line x1="0" y1="8" x2="0" y2="-3" stroke="#80e0ff" stroke-width="1"/><path d="M -7,-3 Q 0,-11 7,-3" fill="none" stroke="#80e0ff" stroke-width="1"/></g>
+      <g transform="rotate(240) translate(68, 0) rotate(-240)"><circle r="8" fill="#0e1218" stroke="#5ae0a0" stroke-width="1.5"/></g>
+    </g>
+
+    <!-- Ring 1: some modules, ghost preview at slot 3 -->
+    <!-- Slot 0: Ore buyer -->
+    <g transform="translate(118, 0)">
+      <polygon points="-10,-14 10,-14 7,0 -7,0" fill="none" stroke="#e8a030" stroke-width="1.2"/>
+      <rect x="-5" y="0" width="10" height="8" fill="none" stroke="#e8a030" stroke-width="0.8"/>
+    </g>
+
+    <!-- Slot 1 (60): Furnace -->
+    <g transform="rotate(60) translate(118, 0) rotate(-60)">
+      <rect x="-10" y="-10" width="20" height="20" rx="2" fill="#1a0800" stroke="#ff6020" stroke-width="1.2"/>
+      <circle cx="0" cy="0" r="4" fill="#ff4010" opacity="0.3"/>
+    </g>
+
+    <!-- Slot 2 (120): empty -->
+    <g transform="rotate(120) translate(118, 0) rotate(-120)"><circle r="10" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/></g>
+
+    <!-- Slot 3 (180): GHOST PREVIEW — Frame Press -->
+    <g transform="rotate(180) translate(118, 0) rotate(-180)">
+      <rect x="-12" y="-8" width="24" height="16" rx="2" fill="#30ff6008" stroke="#30ff60" stroke-width="1.5" opacity="0.6"/>
+      <line x1="-6" y1="0" x2="6" y2="0" stroke="#30ff60" stroke-width="1.5" opacity="0.6"/>
+      <line x1="0" y1="-4" x2="0" y2="4" stroke="#30ff60" stroke-width="1.5" opacity="0.6"/>
+      <!-- Selection ring -->
+      <circle cx="0" cy="0" r="16" fill="none" stroke="#30ff60" stroke-width="1" stroke-dasharray="4,3" opacity="0.5"/>
+      <!-- Arrows -->
+      <g transform="translate(-26, 0)"><polygon points="-5,0 1,-4 1,4" fill="#30ff60" opacity="0.5"/></g>
+      <g transform="translate(26, 0)"><polygon points="5,0 -1,-4 -1,4" fill="#30ff60" opacity="0.5"/></g>
+      <text x="0" y="28" font-family="monospace" font-size="10" fill="#30ff60" text-anchor="middle">FRAME PRESS</text>
+    </g>
+
+    <!-- Slot 4 (240): empty -->
+    <g transform="rotate(240) translate(118, 0) rotate(-240)"><circle r="10" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/></g>
+
+    <!-- Slot 5 (300): empty -->
+    <g transform="rotate(300) translate(118, 0) rotate(-300)"><circle r="10" fill="none" stroke="#162222" stroke-width="1" stroke-dasharray="3,3"/></g>
+
+    <!-- W/S arrows for ring switching -->
+    <g transform="translate(0, -145)">
+      <polygon points="0,-8 6,0 -6,0" fill="#445"/>
+      <text x="14" y="-2" font-family="monospace" font-size="9" fill="#445">[W] outer ring</text>
+    </g>
+    <g transform="translate(0, 145)">
+      <polygon points="0,8 6,0 -6,0" fill="#445"/>
+      <text x="14" y="4" font-family="monospace" font-size="9" fill="#445">[S] inner ring</text>
+    </g>
+  </g>
+
+  <!-- ==================== -->
+  <!-- Data model note -->
+  <!-- ==================== -->
+  <g transform="translate(30, 860)">
+    <text x="0" y="0" font-family="monospace" font-size="11" fill="#445">station_module_t { type, slot (0-9), ring (0-2), scaffold, build_progress }</text>
+    <text x="0" y="16" font-family="monospace" font-size="11" fill="#445">ring_slots[] = { 3, 6, 8 }   ring_radius[] = { 68, 118, 168 }   MODULE_RING_EXPANSION unlocks next ring</text>
+    <text x="0" y="32" font-family="monospace" font-size="11" fill="#334">position derived: station.pos + v2_from_angle(slot * TWO_PI / ring_slots[ring]) * ring_radius[ring]</text>
+  </g>
+</svg>

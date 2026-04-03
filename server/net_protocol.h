@@ -67,6 +67,7 @@ static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_
     if (sp->input.thrust > 0.0f) flags |= 1;
     if (sp->beam_active && sp->beam_hit) flags |= 2;
     if (sp->docked) flags |= 4;
+    if (sp->scan_active) flags |= 8;
     buf[22] = flags;
     return 23;
 }
@@ -92,6 +93,7 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
         if (players[i].input.thrust > 0.0f) flags |= 1;
         if (players[i].beam_active && players[i].beam_hit) flags |= 2;
         if (players[i].docked) flags |= 4;
+        if (players[i].scan_active) flags |= 8;
         p[21] = flags;
         count++;
     }
@@ -384,6 +386,9 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
             break;
         case NET_ACTION_BUY_SCAFFOLD:
             intent->buy_scaffold_kit = true;
+            break;
+        case NET_ACTION_HAIL:
+            intent->hail = true;
             break;
         default:
             /* NET_ACTION_BUILD_MODULE + module_type (9..9+MODULE_COUNT) */

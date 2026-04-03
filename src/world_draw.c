@@ -75,6 +75,7 @@ static void module_color(module_type_t type, float *r, float *g, float *b) {
     case MODULE_BLUEPRINT_DESK:  *r=0.35f; *g=0.55f; *b=0.70f; return;
     case MODULE_ORE_SILO:        *r=0.50f; *g=0.45f; *b=0.30f; return;
     case MODULE_INGOT_SELLER:    *r=0.55f; *g=0.50f; *b=0.40f; return;
+    case MODULE_SHIPYARD:        *r=0.80f; *g=0.65f; *b=0.20f; return;
     default:                     *r=0.30f; *g=0.35f; *b=0.40f; return;
     }
 }
@@ -449,12 +450,38 @@ void draw_npc_ships(void) {
     }
 }
 
+/* Draw faint tractor lines from ore buyer modules to nearby fragments */
+void draw_hopper_tractors(void) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &g.world.stations[s];
+        if (st->scaffold) continue;
+        for (int m = 0; m < st->module_count; m++) {
+            if (st->modules[m].type != MODULE_ORE_BUYER || st->modules[m].scaffold) continue;
+            vec2 mp = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
+            if (!on_screen(mp.x, mp.y, 100.0f)) continue;
+            for (int i = 0; i < MAX_ASTEROIDS; i++) {
+                const asteroid_t *a = &g.world.asteroids[i];
+                if (!asteroid_is_collectible(a)) continue;
+                float d_sq = v2_dist_sq(a->pos, mp);
+                if (d_sq > 80.0f * 80.0f) continue;
+                float d = sqrtf(d_sq);
+                float alpha = 0.15f + 0.2f * (1.0f - d / 80.0f);
+                draw_segment(mp, a->pos, 0.25f, 0.75f, 0.90f, alpha);
+            }
+        }
+    }
+}
+
 void draw_beam(void) {
     if (!LOCAL_PLAYER.beam_active) {
         return;
     }
 
-    if (LOCAL_PLAYER.beam_hit && LOCAL_PLAYER.beam_ineffective) {
+    if (LOCAL_PLAYER.scan_active) {
+        /* Scan beam: cyan/blue — information, not damage */
+        draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.30f, 0.70f, 1.0f, 0.90f);
+        draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.15f, 0.50f, 0.90f, 0.35f);
+    } else if (LOCAL_PLAYER.beam_hit && LOCAL_PLAYER.beam_ineffective) {
         /* Red beam: hitting a rock too tough for current laser */
         draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 1.0f, 0.2f, 0.15f, 0.85f);
         draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.8f, 0.1f, 0.05f, 0.30f);
@@ -465,6 +492,20 @@ void draw_beam(void) {
     } else {
         /* Beam into empty space */
         draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.9f, 0.75f, 0.30f, 0.55f);
+    }
+}
+
+/* Draw tractor tether lines from ship to towed fragments */
+void draw_towed_tethers(void) {
+    if (LOCAL_PLAYER.ship.towed_count == 0) return;
+    for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
+        int idx = LOCAL_PLAYER.ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+        const asteroid_t *a = &g.world.asteroids[idx];
+        if (!a->active) continue;
+        /* Faint teal tether line */
+        float pulse = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)t * 1.5f);
+        draw_segment(LOCAL_PLAYER.ship.pos, a->pos, 0.25f, 0.85f, 0.80f, pulse);
     }
 }
 
@@ -526,13 +567,18 @@ void draw_remote_players(void) {
 
         sgl_pop_matrix();
 
-        /* Mining beam */
+        /* Mining or scan beam */
         if (mining) {
+            bool scanning = (players[i].flags & 8) != 0;
             vec2 pos = v2(players[i].x, players[i].y);
             vec2 forward = v2_from_angle(players[i].angle);
             vec2 muzzle = v2_add(pos, v2_scale(forward, 24.0f));
             vec2 beam_end = v2_add(muzzle, v2_scale(forward, MINING_RANGE));
-            draw_segment(muzzle, beam_end, cr, cg, cb, 0.6f);
+            if (scanning) {
+                draw_segment(muzzle, beam_end, 0.30f, 0.70f, 1.0f, 0.6f);
+            } else {
+                draw_segment(muzzle, beam_end, cr, cg, cb, 0.6f);
+            }
         }
     }
 }

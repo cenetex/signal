@@ -29,7 +29,7 @@ typedef struct {
     float x, y;
     float vx, vy;
     float angle;
-    uint8_t flags;  /* bit0=thrust, bit1=mining, bit2=docked */
+    uint8_t flags;  /* bit0=thrust, bit1=mining, bit2=docked, bit3=scan */
     bool active;
 } NetPlayerState;
 

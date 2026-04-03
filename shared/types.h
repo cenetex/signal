@@ -79,6 +79,9 @@ typedef struct {
     int hold_level;
     int tractor_level;
     bool has_scaffold_kit;
+    /* Towed physical fragments (indices into asteroid array, -1 = empty) */
+    int8_t towed_fragments[8];
+    uint8_t towed_count;
     /* Run stats (reset on death/respawn) */
     float stat_ore_mined;
     float stat_credits_earned;
@@ -113,8 +116,32 @@ typedef enum {
     MODULE_ORE_SILO,
     MODULE_BLUEPRINT_DESK,
     MODULE_RING,            /* physical ring truss structure */
+    MODULE_SHIPYARD,        /* builds ship blueprints */
     MODULE_COUNT
 } module_type_t;
+
+static inline const char* module_type_name(module_type_t type) {
+    switch (type) {
+        case MODULE_DOCK:           return "Dock";
+        case MODULE_ORE_BUYER:      return "Ore Buyer";
+        case MODULE_FURNACE:        return "Furnace (FE)";
+        case MODULE_FURNACE_CU:     return "Furnace (CU)";
+        case MODULE_FURNACE_CR:     return "Furnace (CR)";
+        case MODULE_INGOT_SELLER:   return "Ingot Seller";
+        case MODULE_REPAIR_BAY:     return "Repair Bay";
+        case MODULE_SIGNAL_RELAY:   return "Signal Relay";
+        case MODULE_FRAME_PRESS:    return "Frame Press";
+        case MODULE_LASER_FAB:      return "Laser Fab";
+        case MODULE_TRACTOR_FAB:    return "Tractor Fab";
+        case MODULE_CONTRACT_BOARD: return "Contract Board";
+        case MODULE_ORE_SILO:       return "Ore Silo";
+        case MODULE_BLUEPRINT_DESK: return "Blueprint Desk";
+        case MODULE_RING:           return "Ring Truss";
+        case MODULE_SHIPYARD:       return "Shipyard";
+        default:                    return "Unknown";
+    }
+}
+
 
 typedef struct {
     module_type_t type;
@@ -149,6 +176,14 @@ typedef struct {
     int arm_count;                    /* number of active rings with rotation */
     float arm_rotation[MAX_ARMS];     /* per-ring rotation angle (radians) */
     float arm_speed[MAX_ARMS];        /* per-ring rotation speed (rad/s) */
+    char hail_message[256];           /* AI-authored station message of the day */
+    /* Economy ledger: per-player supply tracking for passive income */
+    struct {
+        uint8_t player_token[8];      /* session token of the supplier */
+        float pending_credits;        /* uncollected earnings */
+        float lifetime_supply;        /* total ore contributed */
+    } ledger[16];
+    int ledger_count;
 } station_t;
 
 /* ------------------------------------------------------------------ */

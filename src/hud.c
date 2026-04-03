@@ -6,6 +6,7 @@
 #include "render.h"
 #include "net.h"
 #include "onboarding.h"
+#include "signal_model.h"
 
 /* ------------------------------------------------------------------ */
 /* UI scaling / layout helpers                                         */
@@ -672,7 +673,14 @@ void draw_hud(void) {
         split_hud_message_lines(message_text, message_cols, message_line0, sizeof(message_line0), message_line1, sizeof(message_line1));
     }
 
-    int sig_pct = (int)lroundf(signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos) * 100.0f);
+    float sig_quality = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+    int sig_pct = (int)lroundf(sig_quality * 100.0f);
+    const char* sig_band = signal_band_name(sig_quality);
+    uint8_t sig_r, sig_g, sig_b;
+    if (sig_quality < SIGNAL_BAND_FRONTIER)         { sig_r = 255; sig_g = 80;  sig_b = 80;  }
+    else if (sig_quality < SIGNAL_BAND_FRINGE)      { sig_r = 255; sig_g = 180; sig_b = 80;  }
+    else if (sig_quality < SIGNAL_BAND_OPERATIONAL) { sig_r = 255; sig_g = 221; sig_b = 119; }
+    else                                            { sig_r = 203; sig_g = 220; sig_b = 248; }
 
     if (compact) {
         const char* nav_role = navigation_station != NULL ? station_role_short_name(navigation_station) : "STN";
@@ -689,10 +697,14 @@ void draw_hud(void) {
         sdtx_printf("%s // CR %d", LOCAL_PLAYER.docked ? "RUN" : "SHIP", credits);
 
         sdtx_pos(top_text_x, top_row_1);
-        if (sig_pct < 30) sdtx_color3b(255, 100, 100);
-        else if (sig_pct < 60) sdtx_color3b(255, 221, 119);
-        else sdtx_color3b(203, 220, 248);
-        sdtx_printf("H %d/%d  C %d/%d  SIG %d%%", hull_units, hull_capacity, cargo_units, cargo_capacity, sig_pct);
+        sdtx_color3b(203, 220, 248);
+        sdtx_printf("H %d/%d  C %d/%d  ", hull_units, hull_capacity, cargo_units, cargo_capacity);
+        sdtx_color3b(sig_r, sig_g, sig_b);
+        sdtx_printf("%s %d%%", sig_band, sig_pct);
+        if (sig_quality < SIGNAL_BAND_OPERATIONAL) {
+            int mine_pct = (int)lroundf(signal_mining_efficiency(sig_quality) * 100.0f);
+            sdtx_printf(" M%d%%", mine_pct);
+        }
 
         sdtx_pos(top_text_x, top_row_2);
         if (LOCAL_PLAYER.docked) {
@@ -723,6 +735,22 @@ void draw_hud(void) {
             int integrity_left = (int)lroundf(asteroid->hp);
             sdtx_color3b(130, 255, 235);
             sdtx_printf("TGT %s // %s // %d HP", asteroid_tier_name(asteroid->tier), commodity_code(asteroid->commodity), integrity_left);
+        } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 1) {
+            const station_t *st = &g.world.stations[LOCAL_PLAYER.scan_target_index];
+            sdtx_color3b(100, 180, 255);
+            if (LOCAL_PLAYER.scan_module_index >= 0) {
+                const station_module_t *m = &st->modules[LOCAL_PLAYER.scan_module_index];
+                sdtx_printf("SCAN %s // %s", st->name, module_type_name(m->type));
+            } else {
+                sdtx_printf("SCAN %s // CORE", st->name);
+            }
+        } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 2) {
+            const npc_ship_t *npc = &g.world.npc_ships[LOCAL_PLAYER.scan_target_index];
+            sdtx_color3b(100, 180, 255);
+            sdtx_printf("SCAN NPC // %s", npc->role == NPC_ROLE_MINER ? "MINER" : "HAULER");
+        } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 3) {
+            sdtx_color3b(100, 180, 255);
+            sdtx_printf("SCAN PILOT // ID %d", LOCAL_PLAYER.scan_target_index);
         } else if (LOCAL_PLAYER.nearby_fragments > 0) {
             sdtx_color3b(130, 255, 235);
             if (LOCAL_PLAYER.tractor_fragments > 0) {
@@ -734,8 +762,26 @@ void draw_hud(void) {
             sdtx_color3b(255, 221, 119);
             sdtx_puts("HOLD FULL // RETURN");
         } else {
-            sdtx_color3b(169, 179, 204);
-            sdtx_puts("FIELD CLEAR // SCAN");
+            /* Check for pending credits from ledger (singleplayer) */
+            float pending = 0.0f;
+            if (g.local_server.active && sig_quality >= 0.90f) {
+                for (int si = 0; si < MAX_STATIONS; si++) {
+                    const station_t *st = &g.world.stations[si];
+                    for (int li = 0; li < st->ledger_count; li++) {
+                        if (memcmp(st->ledger[li].player_token,
+                                   LOCAL_PLAYER.session_token, 8) == 0) {
+                            pending += st->ledger[li].pending_credits;
+                        }
+                    }
+                }
+            }
+            if (pending > 0.5f) {
+                sdtx_color3b(255, 221, 119);
+                sdtx_printf("H HAIL // %d CR", (int)lroundf(pending));
+            } else {
+                sdtx_color3b(169, 179, 204);
+                sdtx_puts("FIELD CLEAR // SCAN");
+            }
         }
 
         if (hud_should_draw_message_panel()) {
@@ -768,10 +814,15 @@ void draw_hud(void) {
     sdtx_puts(LOCAL_PLAYER.docked ? "RUN STATUS" : "SHIP STATUS");
 
     sdtx_pos(top_text_x, top_row_1);
-    if (sig_pct < 30) sdtx_color3b(255, 100, 100);
-    else if (sig_pct < 60) sdtx_color3b(255, 221, 119);
-    else sdtx_color3b(203, 220, 248);
-    sdtx_printf("CR %d  H %d/%d  C %d/%d  SIG %d%%", credits, hull_units, hull_capacity, cargo_units, cargo_capacity, sig_pct);
+    sdtx_color3b(203, 220, 248);
+    sdtx_printf("CR %d  H %d/%d  C %d/%d  ", credits, hull_units, hull_capacity, cargo_units, cargo_capacity);
+    sdtx_color3b(sig_r, sig_g, sig_b);
+    sdtx_printf("%s %d%%", sig_band, sig_pct);
+    if (sig_quality < SIGNAL_BAND_OPERATIONAL) {
+        int mine_eff = (int)lroundf(signal_mining_efficiency(sig_quality) * 100.0f);
+        int ctrl_eff = (int)lroundf(signal_control_scale(sig_quality) * 100.0f);
+        sdtx_printf("  MINE %d%% CTRL %d%%", mine_eff, ctrl_eff);
+    }
 
     sdtx_pos(top_text_x, top_row_2);
     if (LOCAL_PLAYER.docked && current_station) {
@@ -806,6 +857,27 @@ void draw_hud(void) {
         int integrity_left = (int)lroundf(asteroid->hp);
         sdtx_color3b(130, 255, 235);
         sdtx_printf("Target %s // %s // %d hp", asteroid_tier_kind(asteroid->tier), commodity_short_name(asteroid->commodity), integrity_left);
+    } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 1) {
+        const station_t *st = &g.world.stations[LOCAL_PLAYER.scan_target_index];
+        sdtx_color3b(100, 180, 255);
+        if (LOCAL_PLAYER.scan_module_index >= 0) {
+            const station_module_t *m = &st->modules[LOCAL_PLAYER.scan_module_index];
+            sdtx_printf("Scan %s // %s", st->name, module_type_name(m->type));
+        } else {
+            sdtx_printf("Scan %s // core hub", st->name);
+        }
+    } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 2) {
+        const npc_ship_t *npc = &g.world.npc_ships[LOCAL_PLAYER.scan_target_index];
+        int npc_cargo = 0;
+        for (int ci = 0; ci < COMMODITY_RAW_ORE_COUNT; ci++)
+            npc_cargo += (int)lroundf(npc->cargo[ci]);
+        sdtx_color3b(100, 180, 255);
+        sdtx_printf("Scan NPC %s // cargo %d", npc->role == NPC_ROLE_MINER ? "miner" : "hauler", npc_cargo);
+    } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 3) {
+        const server_player_t *other = &g.world.players[LOCAL_PLAYER.scan_target_index];
+        int other_hull = (int)lroundf(other->ship.hull);
+        sdtx_color3b(100, 180, 255);
+        sdtx_printf("Scan pilot %d // hull %d", LOCAL_PLAYER.scan_target_index, other_hull);
     } else if (LOCAL_PLAYER.nearby_fragments > 0) {
         sdtx_color3b(130, 255, 235);
         if (LOCAL_PLAYER.tractor_fragments > 0) {
@@ -817,8 +889,26 @@ void draw_hud(void) {
         sdtx_color3b(255, 221, 119);
         sdtx_puts("Hold full // return run");
     } else {
-        sdtx_color3b(169, 179, 204);
-        sdtx_puts("No target // line up a rock");
+        /* Check for pending credits from ledger (singleplayer) */
+        float pending_n = 0.0f;
+        if (g.local_server.active && sig_quality >= 0.90f) {
+            for (int si = 0; si < MAX_STATIONS; si++) {
+                const station_t *st = &g.world.stations[si];
+                for (int li = 0; li < st->ledger_count; li++) {
+                    if (memcmp(st->ledger[li].player_token,
+                               LOCAL_PLAYER.session_token, 8) == 0) {
+                        pending_n += st->ledger[li].pending_credits;
+                    }
+                }
+            }
+        }
+        if (pending_n > 0.5f) {
+            sdtx_color3b(255, 221, 119);
+            sdtx_printf("H to hail // collect %d cr", (int)lroundf(pending_n));
+        } else {
+            sdtx_color3b(169, 179, 204);
+            sdtx_puts("No target // line up a rock");
+        }
     }
 
     if (hud_should_draw_message_panel()) {

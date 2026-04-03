@@ -71,6 +71,7 @@ enum {
     NET_ACTION_PLACE_OUTPOST  = 8,
     NET_ACTION_BUILD_MODULE   = 9,  /* +module_type offset, range [9..9+MODULE_COUNT) */
     NET_ACTION_BUY_SCAFFOLD   = 25,
+    NET_ACTION_HAIL           = 26,  /* collect pending credits via signal hail */
     NET_ACTION_BUY_PRODUCT    = 30, /* +commodity offset, range [30..30+COMMODITY_COUNT) */
 };
 

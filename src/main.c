@@ -565,6 +565,7 @@ static void render_world(void) {
         bool is_nearby = (!LOCAL_PLAYER.docked) && (i == LOCAL_PLAYER.nearby_station);
         draw_station_rings(st, is_current, is_nearby);
     }
+    draw_hopper_tractors();
 
     /* Tracked contract target outline (yellow) */
     if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {

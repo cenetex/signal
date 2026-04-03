@@ -150,6 +150,183 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
 }
 
 /* ------------------------------------------------------------------ */
+/* Station REST API                                                   */
+/* ------------------------------------------------------------------ */
+
+static const char *api_token = NULL;
+
+static bool api_auth_ok(struct mg_http_message *hm) {
+    if (!api_token || api_token[0] == '\0') return false;
+    struct mg_str *auth = mg_http_get_header(hm, "Authorization");
+    if (!auth) return false;
+    /* Expect "Bearer <token>" */
+    if (auth->len < 8) return false;
+    const char *prefix = "Bearer ";
+    if (strncmp(auth->buf, prefix, 7) != 0) return false;
+    return strncmp(auth->buf + 7, api_token, auth->len - 7) == 0
+        && strlen(api_token) == auth->len - 7;
+}
+
+static int parse_station_id(struct mg_http_message *hm) {
+    /* Extract station index from /api/station/<id>/... */
+    /* URI looks like /api/station/0/state or /api/station/2/command */
+    const char *p = hm->uri.buf + 13; /* skip "/api/station/" */
+    if (p >= hm->uri.buf + (int)hm->uri.len) return -1;
+    int id = atoi(p);
+    if (id < 0 || id >= MAX_STATIONS) return -1;
+    if (!station_exists(&world.stations[id])) return -1;
+    return id;
+}
+
+static void handle_station_state(struct mg_connection *c, int sid) {
+    const station_t *st = &world.stations[sid];
+    /* Build JSON response with signal-range-scoped world view */
+    char buf[8192];
+    int pos = 0;
+
+    /* Station info */
+    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+        "{\"station\":{\"index\":%d,\"name\":\"%s\","
+        "\"signal_range\":%.1f,\"scaffold\":%s,"
+        "\"inventory\":{",
+        sid, st->name, st->signal_range, st->scaffold ? "true" : "false");
+
+    static const char *cnames[] = {
+        "ferrite_ore","cuprite_ore","crystal_ore",
+        "ferrite_ingot","cuprite_ingot","crystal_ingot",
+        "frame","laser_module","tractor_module"
+    };
+    for (int i = 0; i < COMMODITY_COUNT; i++) {
+        if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+            "\"%s\":%.1f", cnames[i], st->inventory[i]);
+    }
+    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "},\"modules\":[");
+    for (int m = 0; m < st->module_count; m++) {
+        if (m > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+            "{\"type\":\"%s\",\"ring\":%d,\"slot\":%d,\"scaffold\":%s,\"progress\":%.2f}",
+            module_type_name(st->modules[m].type),
+            st->modules[m].ring, st->modules[m].slot,
+            st->modules[m].scaffold ? "true" : "false",
+            st->modules[m].build_progress);
+    }
+
+    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "]},");
+
+    /* Visible asteroids within signal range */
+    float sr_sq = st->signal_range * st->signal_range;
+    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "\"visible_asteroids\":[");
+    bool first = true;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &world.asteroids[i];
+        if (!a->active) continue;
+        if (v2_dist_sq(a->pos, st->pos) > sr_sq) continue;
+        if (!first) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
+        first = false;
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+            "{\"index\":%d,\"tier\":%d,\"commodity\":%d,\"x\":%.0f,\"y\":%.0f,\"hp\":%.0f}",
+            i, a->tier, a->commodity, a->pos.x, a->pos.y, a->hp);
+        if (pos > (int)sizeof(buf) - 256) break;
+    }
+
+    /* Visible players within signal range */
+    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "],\"visible_players\":[");
+    first = true;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (!world.players[i].connected || world.players[i].grace_period) continue;
+        if (v2_dist_sq(world.players[i].ship.pos, st->pos) > sr_sq) continue;
+        if (!first) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
+        first = false;
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+            "{\"id\":%d,\"x\":%.0f,\"y\":%.0f,\"docked\":%s}",
+            i, world.players[i].ship.pos.x, world.players[i].ship.pos.y,
+            world.players[i].docked ? "true" : "false");
+    }
+
+    /* Visible stations within signal range */
+    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "],\"visible_stations\":[");
+    first = true;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (i == sid || !station_exists(&world.stations[i])) continue;
+        float d_sq = v2_dist_sq(world.stations[i].pos, st->pos);
+        if (d_sq > sr_sq) continue;
+        if (!first) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
+        first = false;
+        float overlap = st->signal_range + world.stations[i].signal_range - sqrtf(d_sq);
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+            "{\"index\":%d,\"name\":\"%s\",\"x\":%.0f,\"y\":%.0f,\"signal_overlap\":%s}",
+            i, world.stations[i].name, world.stations[i].pos.x, world.stations[i].pos.y,
+            overlap > 0.0f ? "true" : "false");
+    }
+
+    /* Active contracts */
+    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "],\"active_contracts\":[");
+    first = true;
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        const contract_t *ct = &world.contracts[i];
+        if (!ct->active || ct->station_index != sid) continue;
+        if (!first) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
+        first = false;
+        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+            "{\"index\":%d,\"action\":%d,\"commodity\":%d,\"quantity\":%.0f,\"base_price\":%.1f,\"age\":%.0f}",
+            i, ct->action, ct->commodity, ct->quantity_needed, ct->base_price, ct->age);
+    }
+
+    /* Hail message */
+    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "],\"hail\":\"%s\"}", st->hail_message);
+
+    mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n", "%s", buf);
+}
+
+static void handle_station_command(struct mg_connection *c, struct mg_http_message *hm, int sid) {
+    station_t *st = &world.stations[sid];
+    struct mg_str body = hm->body;
+    char *action = mg_json_get_str(body, "$.action");
+    long commodity = mg_json_get_long(body, "$.commodity", -1);
+    double price_val = 0;
+    mg_json_get_num(body, "$.price", &price_val);
+    long module_type = mg_json_get_long(body, "$.module_type", -1);
+    char *hail = mg_json_get_str(body, "$.hail");
+
+    if (!action) {
+        mg_http_reply(c, 400, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+                      "{\"ok\":false,\"error\":\"missing action\"}");
+        free(hail);
+        return;
+    }
+
+    if (strcmp(action, "set_hail") == 0 && hail && hail[0] != '\0') {
+        snprintf(st->hail_message, sizeof(st->hail_message), "%s", hail);
+        mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+                      "{\"ok\":true,\"action\":\"set_hail\"}");
+    } else if (strcmp(action, "set_price") == 0 && commodity >= 0 && commodity < COMMODITY_COUNT && price_val > 0) {
+        /* Clamp to 0.5x-2.0x of default */
+        float default_price = st->base_price[commodity];
+        float clamped = (float)price_val;
+        if (clamped < default_price * 0.5f) clamped = default_price * 0.5f;
+        if (clamped > default_price * 2.0f) clamped = default_price * 2.0f;
+        st->base_price[commodity] = clamped;
+        mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+                      "{\"ok\":true,\"action\":\"set_price\",\"commodity\":%ld,\"price\":%.1f}", commodity, clamped);
+    } else if (strcmp(action, "build_module") == 0 && module_type >= 0 && module_type < MODULE_COUNT) {
+        if (st->module_count >= MAX_MODULES_PER_STATION) {
+            mg_http_reply(c, 400, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+                          "{\"ok\":false,\"error\":\"station full\"}");
+        } else {
+            begin_module_construction(&world, st, sid, (module_type_t)module_type);
+            mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+                          "{\"ok\":true,\"action\":\"build_module\",\"type\":%ld}", module_type);
+        }
+    } else {
+        mg_http_reply(c, 400, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+                      "{\"ok\":false,\"error\":\"unknown action\"}");
+    }
+    free(action);
+    free(hail);
+}
+
+/* ------------------------------------------------------------------ */
 /* Mongoose event handler                                             */
 /* ------------------------------------------------------------------ */
 
@@ -158,6 +335,28 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         struct mg_http_message *hm = ev_data;
         if (mg_match(hm->uri, mg_str("/ws"), NULL)) {
             mg_ws_upgrade(c, hm, NULL);
+        } else if (mg_match(hm->uri, mg_str("/api/station/+/state"), NULL)) {
+            if (!api_auth_ok(hm)) {
+                mg_http_reply(c, 401, "Content-Type: application/json\r\n", "{\"error\":\"unauthorized\"}");
+            } else {
+                int sid = parse_station_id(hm);
+                if (sid < 0) {
+                    mg_http_reply(c, 404, "Content-Type: application/json\r\n", "{\"error\":\"station not found\"}");
+                } else {
+                    handle_station_state(c, sid);
+                }
+            }
+        } else if (mg_match(hm->uri, mg_str("/api/station/+/command"), NULL)) {
+            if (!api_auth_ok(hm)) {
+                mg_http_reply(c, 401, "Content-Type: application/json\r\n", "{\"error\":\"unauthorized\"}");
+            } else {
+                int sid = parse_station_id(hm);
+                if (sid < 0) {
+                    mg_http_reply(c, 404, "Content-Type: application/json\r\n", "{\"error\":\"station not found\"}");
+                } else {
+                    handle_station_command(c, hm, sid);
+                }
+            }
         } else if (mg_match(hm->uri, mg_str("/health"), NULL)) {
             int count = 0;
             for (int i = 0; i < MAX_PLAYERS; i++)
@@ -329,6 +528,11 @@ int main(void) {
 
     const char *port = getenv("PORT");
     if (!port) port = "8080";
+    api_token = getenv("SIGNAL_API_TOKEN");
+    if (api_token && api_token[0] != '\0')
+        printf("[server] Station API enabled (token set)\n");
+    else
+        printf("[server] Station API disabled (set SIGNAL_API_TOKEN to enable)\n");
     char listen_url[64];
     snprintf(listen_url, sizeof(listen_url), "http://0.0.0.0:%s", port);
 
