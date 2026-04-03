@@ -394,25 +394,23 @@ static inline commodity_t station_primary_sell(const station_t *st) {
 }
 
 /* Station geometry constants */
-static const float STATION_CORE_RADIUS   = 60.0f;
-static const float STATION_MODULE_ORBIT  = 140.0f;  /* orbital radius: core center to module center */
-static const float STATION_MODULE_ARC    = 0.35f;    /* angular spacing between chain modules (radians, ~20 deg) */
-static const float STATION_DEFAULT_ARM_SPEED = 0.04f; /* rad/s */
+static const float STATION_CORE_RADIUS    = 60.0f;
+static const float STATION_MODULE_ORBIT   = 140.0f;  /* orbital radius: core center to module center */
+static const float STATION_MODULE_ARC     = 0.35f;   /* angular spacing between modules (radians, ~20 deg) */
+static const float STATION_RING_SPEED     = 0.04f;   /* rad/s — entire ring rotates together */
 
-/* Arm base angle: arms are evenly spaced around the circle. */
-static inline float arm_base_angle(int arm, int arm_count) {
-    if (arm_count <= 0) return 0.0f;
-    return TWO_PI_F * (float)arm / (float)arm_count;
+/* World-space position of a module by its index among outer modules.
+ * All modules orbit at the same radius, evenly spaced along the arc,
+ * rotating together as one ring. */
+static inline vec2 module_world_pos_ring(const station_t *st, int outer_index, int outer_total) {
+    (void)outer_total;
+    float angle = (float)outer_index * STATION_MODULE_ARC + st->arm_rotation[0];
+    return v2_add(st->pos, v2(cosf(angle) * STATION_MODULE_ORBIT, sinf(angle) * STATION_MODULE_ORBIT));
 }
 
-/* World-space position of a module on an arm chain.
- * All modules orbit at the same radius from core center.
- * chain_pos offsets angularly along the arc from the arm's base angle. */
-static inline vec2 module_world_pos_arm(const station_t *st, int arm, int chain_pos) {
-    if (arm < 0 || arm >= st->arm_count) return st->pos;
-    float base = arm_base_angle(arm, st->arm_count) + st->arm_rotation[arm];
-    float angle = base + (float)chain_pos * STATION_MODULE_ARC;
-    return v2_add(st->pos, v2(cosf(angle) * STATION_MODULE_ORBIT, sinf(angle) * STATION_MODULE_ORBIT));
+/* Angle of a module at a given outer index (for orientation). */
+static inline float module_angle_ring(const station_t *st, int outer_index) {
+    return (float)outer_index * STATION_MODULE_ARC + st->arm_rotation[0];
 }
 
 /* Count modules on a given arm. */
