@@ -81,6 +81,8 @@ typedef struct {
     void *conn;
     uint8_t session_token[8]; /* stable identity for save persistence */
     bool session_ready;       /* true once client sends SESSION message */
+    bool grace_period;        /* true while waiting for reconnect after disconnect */
+    float grace_timer;        /* seconds remaining in grace window */
     ship_t ship;
     input_intent_t input;
     int current_station;

@@ -101,14 +101,44 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         break;
     case NET_MSG_SESSION:
         if (len >= 9 && !world.players[pid].session_ready) {
-            memcpy(world.players[pid].session_token, &data[1], 8);
-            world.players[pid].session_ready = true;
-            /* Try to restore saved state keyed by session token */
-            if (player_load_by_token(&world.players[pid], &world,
-                                     PLAYER_SAVE_DIR, world.players[pid].session_token)) {
-                printf("[server] player %d: restored save by session\n", pid);
+            const uint8_t *token = &data[1];
+            /* Check for existing grace-period player with same token */
+            int reattach = -1;
+            for (int i = 0; i < MAX_PLAYERS; i++) {
+                if (i == pid) continue;
+                if (world.players[i].connected && world.players[i].grace_period &&
+                    world.players[i].session_ready &&
+                    memcmp(world.players[i].session_token, token, 8) == 0) {
+                    reattach = i;
+                    break;
+                }
+            }
+            if (reattach >= 0) {
+                /* Reattach: copy state from grace slot to new slot */
+                server_player_t *old = &world.players[reattach];
+                server_player_t *sp = &world.players[pid];
+                sp->ship = old->ship;
+                sp->current_station = old->current_station;
+                sp->nearby_station = old->nearby_station;
+                sp->docked = old->docked;
+                sp->in_dock_range = old->in_dock_range;
+                memcpy(sp->session_token, token, 8);
+                sp->session_ready = true;
+                /* Clear the grace slot */
+                old->connected = false;
+                old->grace_period = false;
+                old->conn = NULL;
+                printf("[server] player %d: reconnected (was slot %d)\n", pid, reattach);
             } else {
-                printf("[server] player %d: no save for session, fresh ship\n", pid);
+                memcpy(world.players[pid].session_token, token, 8);
+                world.players[pid].session_ready = true;
+                /* Try to restore saved state keyed by session token */
+                if (player_load_by_token(&world.players[pid], &world,
+                                         PLAYER_SAVE_DIR, token)) {
+                    printf("[server] player %d: restored save by session\n", pid);
+                } else {
+                    printf("[server] player %d: no save for session, fresh ship\n", pid);
+                }
             }
         }
         break;
@@ -204,11 +234,19 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         for (int i = 0; i < MAX_PLAYERS; i++) {
             if (world.players[i].conn == c) {
                 player_save(&world.players[i], PLAYER_SAVE_DIR, i);
-                world.players[i].connected = false;
                 world.players[i].conn = NULL;
-                uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
-                broadcast(leave_msg, 2);
-                printf("[server] player %d left (saved)\n", i);
+                if (world.players[i].session_ready) {
+                    /* Keep slot alive for reconnect grace window */
+                    world.players[i].grace_period = true;
+                    world.players[i].grace_timer = 30.0f;
+                    printf("[server] player %d disconnected, grace window 30s\n", i);
+                } else {
+                    /* No session — immediate full disconnect */
+                    world.players[i].connected = false;
+                    uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
+                    broadcast(leave_msg, 2);
+                    printf("[server] player %d left (no session)\n", i);
+                }
                 break;
             }
         }
@@ -260,7 +298,7 @@ static void broadcast_world(void) {
 
 static void broadcast_ship_states(void) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!world.players[i].connected) continue;
+        if (!world.players[i].connected || !world.players[i].conn) continue;
         uint8_t buf[PLAYER_SHIP_SIZE + 4]; /* +4 headroom */
         int len = serialize_player_ship(buf, (uint8_t)i, &world.players[i]);
         /* Full ship state sent only to the owning player. */
@@ -345,7 +383,7 @@ int main(void) {
                         ev->type == SIM_EVENT_UPGRADE || ev->type == SIM_EVENT_DOCK ||
                         ev->type == SIM_EVENT_LAUNCH) {
                         int pid = ev->player_id;
-                        if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected) {
+                        if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected && world.players[pid].conn) {
                             uint8_t buf[PLAYER_SHIP_SIZE + 4];
                             int len = serialize_player_ship(buf, (uint8_t)pid, &world.players[pid]);
                             ws_send(world.players[pid].conn, buf, (size_t)len);
@@ -360,6 +398,20 @@ int main(void) {
                 steps++;
             }
             if (sim_accum > SIM_DT) sim_accum = 0.0f; /* prevent spiral */
+        }
+        /* Tick down reconnect grace timers */
+        for (int i = 0; i < MAX_PLAYERS; i++) {
+            server_player_t *sp = &world.players[i];
+            if (sp->connected && sp->grace_period) {
+                sp->grace_timer -= (float)SIM_TICK_MS / 1000.0f;
+                if (sp->grace_timer <= 0.0f) {
+                    sp->connected = false;
+                    sp->grace_period = false;
+                    uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
+                    broadcast(leave_msg, 2);
+                    printf("[server] player %d grace expired, fully disconnected\n", i);
+                }
+            }
         }
         if (now - last_state >= STATE_TICK_MS) {
             broadcast_player_states();
