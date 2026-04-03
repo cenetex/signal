@@ -319,13 +319,31 @@ int main(void) {
             int steps = 0;
             while (sim_accum >= SIM_DT && steps < MAX_SIM_STEPS) {
                 world_sim_step(&world, SIM_DT);
-                /* Broadcast station identity for any newly placed outposts. */
+                /* Immediate broadcasts triggered by sim events. */
                 for (int e = 0; e < world.events.count; e++) {
-                    if (world.events.events[e].type == SIM_EVENT_OUTPOST_PLACED) {
-                        int slot = world.events.events[e].outpost_placed.slot;
+                    sim_event_t *ev = &world.events.events[e];
+                    if (ev->type == SIM_EVENT_OUTPOST_PLACED) {
+                        int slot = ev->outpost_placed.slot;
                         uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
                         int id_len = serialize_station_identity(id_buf, slot, &world.stations[slot]);
                         broadcast(id_buf, (size_t)id_len);
+                    }
+                    /* Send immediate ship + station state after actions that
+                     * change cargo, credits, hull, or dock status — eliminates
+                     * the 250ms stale window from SHIP_TICK_MS cadence. */
+                    if (ev->type == SIM_EVENT_SELL || ev->type == SIM_EVENT_REPAIR ||
+                        ev->type == SIM_EVENT_UPGRADE || ev->type == SIM_EVENT_DOCK ||
+                        ev->type == SIM_EVENT_LAUNCH) {
+                        int pid = ev->player_id;
+                        if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected) {
+                            uint8_t buf[PLAYER_SHIP_SIZE + 4];
+                            int len = serialize_player_ship(buf, (uint8_t)pid, &world.players[pid]);
+                            ws_send(world.players[pid].conn, buf, (size_t)len);
+                            /* Also send updated station inventory so market UI refreshes */
+                            uint8_t sbuf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
+                            int slen = serialize_stations(sbuf, world.stations);
+                            ws_send(world.players[pid].conn, sbuf, (size_t)slen);
+                        }
                     }
                 }
                 sim_accum -= SIM_DT;
