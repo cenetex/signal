@@ -105,6 +105,7 @@ typedef struct {
     float net_input_timer;
     station_tab_t station_tab;
     bool was_docked;
+    float version_mismatch_timer; /* counts up when client/server hash differ */
     /* --- Onboarding (first-run progression hints) --- */
     struct {
         bool launched;       /* pressed E to launch */

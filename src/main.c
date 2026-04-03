@@ -277,6 +277,28 @@ static void sim_step(float dt) {
 
     submit_input(&intent, dt);
 
+    /* Version mismatch auto-refresh (browser only) */
+    if (g.multiplayer_enabled && net_is_connected()) {
+        const char *srv = net_server_hash();
+#ifdef GIT_HASH
+        const char *cli = GIT_HASH;
+#else
+        const char *cli = "dev";
+#endif
+        bool mismatch = srv[0] != '\0' && strcmp(cli, srv) != 0;
+        if (mismatch) {
+            g.version_mismatch_timer += dt;
+            /* Auto-refresh after 10 seconds if not docked */
+            if (g.version_mismatch_timer > 10.0f && !LOCAL_PLAYER.docked) {
+#ifdef __EMSCRIPTEN__
+                emscripten_run_script("location.reload()");
+#endif
+            }
+        } else {
+            g.version_mismatch_timer = 0.0f;
+        }
+    }
+
     /* Track dock transition AFTER server sync to prevent was_docked flicker */
     g.was_docked = LOCAL_PLAYER.docked;
 
