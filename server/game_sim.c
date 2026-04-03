@@ -2656,10 +2656,11 @@ void world_reset(world_t *w) {
     w->stations[0].signal_range = 18000.0f;
     add_module_at(&w->stations[0], MODULE_DOCK, 0xFF, 0);        /* core */
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 0xFF, 0);
-    /* Ring 1 only (triangle) — small starter refinery */
-    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 1, 0);
-    add_module_at(&w->stations[0], MODULE_FURNACE, 1, 1);
-    add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 1, 2);
+    /* Ring 1 (triangle): slot 0 = gap, slots 1-2 filled.
+     * Repair service provided by core (starter stations only). */
+    add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 0xFF, 0);
+    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 1, 1);
+    add_module_at(&w->stations[0], MODULE_FURNACE, 1, 2);
     w->stations[0].arm_count = 1;
     w->stations[0].arm_speed[0] = STATION_RING_SPEED;
     rebuild_station_services(&w->stations[0]);
@@ -2678,15 +2679,14 @@ void world_reset(world_t *w) {
     w->stations[1].base_price[COMMODITY_FRAME] = 20.0f;
     add_module_at(&w->stations[1], MODULE_DOCK, 0xFF, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 0xFF, 0);
-    /* Ring 1 (triangle): full */
-    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 1, 0);
-    add_module_at(&w->stations[1], MODULE_REPAIR_BAY, 1, 1);
-    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 1, 2);
-    /* Ring 2 (hexagon): 4 of 6 filled — fabrication focus */
-    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 2, 0);
-    add_module_at(&w->stations[1], MODULE_LASER_FAB, 2, 1);
-    add_module_at(&w->stations[1], MODULE_TRACTOR_FAB, 2, 2);
-    add_module_at(&w->stations[1], MODULE_ORE_SILO, 2, 3);
+    /* Ring 1 (triangle): slot 0 = gap */
+    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 1, 1);
+    add_module_at(&w->stations[1], MODULE_REPAIR_BAY, 1, 2);
+    /* Ring 2 (hexagon): slot 0 = gap */
+    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 2, 1);
+    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 2, 2);
+    add_module_at(&w->stations[1], MODULE_LASER_FAB, 2, 3);
+    add_module_at(&w->stations[1], MODULE_TRACTOR_FAB, 2, 4);
     w->stations[1].arm_count = 1;
     w->stations[1].arm_speed[0] = STATION_RING_SPEED;
     rebuild_station_services(&w->stations[1]);
@@ -2708,23 +2708,21 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
     add_module_at(&w->stations[2], MODULE_DOCK, 0xFF, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 0xFF, 0);
-    /* Ring 1 (triangle): full */
-    add_module_at(&w->stations[2], MODULE_LASER_FAB, 1, 0);
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 1, 1);
-    add_module_at(&w->stations[2], MODULE_REPAIR_BAY, 1, 2);
-    /* Ring 2 (hexagon): full */
-    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 2, 0);
-    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 2, 1);
-    add_module_at(&w->stations[2], MODULE_FURNACE, 2, 2);
-    add_module_at(&w->stations[2], MODULE_FURNACE_CU, 2, 3);
-    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 2, 4);
-    add_module_at(&w->stations[2], MODULE_ORE_BUYER, 2, 5);
-    /* Ring 3 (nonagon): 5 of 9 filled */
-    add_module_at(&w->stations[2], MODULE_FRAME_PRESS, 3, 0);
-    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 1);
-    add_module_at(&w->stations[2], MODULE_INGOT_SELLER, 3, 2);
-    add_module_at(&w->stations[2], MODULE_ORE_BUYER, 3, 3);
-    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 3, 4);
+    /* Ring 1 (triangle): slot 0 = gap */
+    add_module_at(&w->stations[2], MODULE_LASER_FAB, 1, 1);
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 1, 2);
+    /* Ring 2 (hexagon): slot 0 = gap */
+    add_module_at(&w->stations[2], MODULE_REPAIR_BAY, 2, 1);
+    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 2, 2);
+    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 2, 3);
+    add_module_at(&w->stations[2], MODULE_FURNACE, 2, 4);
+    add_module_at(&w->stations[2], MODULE_FURNACE_CU, 2, 5);
+    /* Ring 3 (nonagon): slot 0 = gap */
+    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 3, 1);
+    add_module_at(&w->stations[2], MODULE_ORE_BUYER, 3, 2);
+    add_module_at(&w->stations[2], MODULE_FRAME_PRESS, 3, 3);
+    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 4);
+    add_module_at(&w->stations[2], MODULE_INGOT_SELLER, 3, 5);
     w->stations[2].arm_count = 1;
     w->stations[2].arm_speed[0] = STATION_RING_SPEED;
     rebuild_station_services(&w->stations[2]);

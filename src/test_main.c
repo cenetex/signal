@@ -3178,23 +3178,23 @@ TEST(test_world_load_rejects_stale_version) {
 TEST(test_world_save_load_preserves_module_ring_slot) {
     world_t w = {0};
     world_reset(&w);
-    ASSERT(w.stations[0].module_count > 2);
-    station_module_t orig = w.stations[0].modules[2]; /* first arm module */
+    ASSERT(w.stations[0].module_count > 3);
+    station_module_t orig = w.stations[0].modules[3]; /* first ring 1 module */
     ASSERT(orig.type == MODULE_ORE_BUYER);
     ASSERT(orig.ring == 1);
     ASSERT(world_save(&w, "/tmp/test_modules.sav"));
     world_t loaded = {0};
     ASSERT(world_load(&loaded, "/tmp/test_modules.sav"));
-    station_module_t restored = loaded.stations[0].modules[2];
+    station_module_t restored = loaded.stations[0].modules[3];
     ASSERT_EQ_INT((int)restored.type, (int)orig.type);
     ASSERT_EQ_INT((int)restored.ring, (int)orig.ring);
     ASSERT_EQ_INT((int)restored.slot, (int)orig.slot);
     ASSERT_EQ_INT((int)restored.scaffold, (int)orig.scaffold);
     ASSERT_EQ_FLOAT(restored.build_progress, orig.build_progress, 0.001f);
-    station_module_t mod3 = loaded.stations[0].modules[3];
-    ASSERT(mod3.type == MODULE_FURNACE);
-    ASSERT_EQ_INT((int)mod3.ring, 1);
-    ASSERT_EQ_INT((int)mod3.slot, 1);
+    station_module_t mod4 = loaded.stations[0].modules[4];
+    ASSERT(mod4.type == MODULE_FURNACE);
+    ASSERT_EQ_INT((int)mod4.ring, 1);
+    ASSERT_EQ_INT((int)mod4.slot, 2);
     remove("/tmp/test_modules.sav");
 }
 
