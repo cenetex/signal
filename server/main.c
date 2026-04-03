@@ -196,6 +196,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         broadcast_except(pid, join_msg, 2);
         for (int i = 0; i < MAX_PLAYERS; i++) {
             if (i == pid || !world.players[i].connected) continue;
+            if (world.players[i].grace_period) continue; /* skip ghosts */
             uint8_t exist_msg[] = { NET_MSG_JOIN, (uint8_t)i };
             ws_send(c, exist_msg, 2);
         }

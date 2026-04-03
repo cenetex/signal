@@ -80,7 +80,7 @@ static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_
 static inline int serialize_all_player_states(uint8_t *buf, const server_player_t *players) {
     int count = 0;
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (!players[i].connected) continue;
+        if (!players[i].connected || players[i].grace_period) continue;
         uint8_t *p = &buf[2 + count * PLAYER_RECORD_SIZE];
         p[0] = (uint8_t)i;
         write_f32_le(&p[1],  players[i].ship.pos.x);
