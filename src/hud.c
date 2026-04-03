@@ -380,12 +380,17 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
+    if (LOCAL_PLAYER.docking_approach) {
+        snprintf(label, label_size, "DOCKING");
+        snprintf(message, message_size, "Tractor lock. Thrust W/S to cancel.");
+        *r = 112; *g0 = 255; *b = 214;
+        return true;
+    }
+
     if (LOCAL_PLAYER.in_dock_range) {
         snprintf(label, label_size, "DOCK");
-        snprintf(message, message_size, "Inside the dock ring. Press E to dock.");
-        *r = 112;
-        *g0 = 255;
-        *b = 214;
+        snprintf(message, message_size, "Dock module in range. Press E.");
+        *r = 112; *g0 = 255; *b = 214;
         return true;
     }
 

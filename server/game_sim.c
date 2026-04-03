@@ -1869,17 +1869,27 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
         return;
     }
 
-    /* Find nearest station whose dock port is within tractor range */
+    /* Find nearest dock MODULE within tractor range — direct distance
+     * to the orbiting dock module, not to the station center. */
     float tractor_r = ship_tractor_range(&sp->ship);
     float tractor_sq = tractor_r * tractor_r;
-    float best_d = 0.0f;
+    float best_d = 1e18f;
     sp->nearby_station = -1;
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_exists(&w->stations[i])) continue;
         vec2 port = dock_port_pos(&w->stations[i]);
+        /* dock_port_pos returns station center if no dock module — skip those */
+        if (port.x == w->stations[i].pos.x && port.y == w->stations[i].pos.y) {
+            /* Check if it actually has a dock (not just fallback) */
+            bool has_dock = false;
+            for (int m = 0; m < w->stations[i].module_count; m++)
+                if (w->stations[i].modules[m].type == MODULE_DOCK && !w->stations[i].modules[m].scaffold)
+                    { has_dock = true; break; }
+            if (!has_dock) continue;
+        }
         float d_sq = v2_dist_sq(sp->ship.pos, port);
         if (d_sq > tractor_sq) continue;
-        if (sp->nearby_station < 0 || d_sq < best_d) {
+        if (d_sq < best_d) {
             best_d = d_sq;
             sp->nearby_station = i;
         }
