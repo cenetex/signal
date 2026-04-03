@@ -967,6 +967,22 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     return best;
 }
 
+/* Compute an approach target for a station: aim at the gap of the outermost
+ * ring when far away, switch to the core when inside all rings. */
+static vec2 station_approach_target(const station_t *st, vec2 from) {
+    float dist = sqrtf(v2_dist_sq(from, st->pos));
+    /* Find outermost ring */
+    int outer = 0;
+    for (int r = MAX_RING_COUNT - 1; r >= 1; r--) {
+        if (station_has_ring(st, r)) { outer = r; break; }
+    }
+    if (outer == 0 || dist < RING_RADIUS[0] + 20.0f) return st->pos;
+    /* Aim for the gap center of the outermost ring */
+    float gap_angle = RING_GAP_CENTER + st->ring_rotation[outer];
+    float target_r = RING_RADIUS[outer] - 15.0f;
+    return v2_add(st->pos, v2(cosf(gap_angle) * target_r, sinf(gap_angle) * target_r));
+}
+
 static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float turn_speed, float dt) {
     vec2 delta = v2_sub(target, npc->pos);
     float desired = atan2f(delta.y, delta.x);
@@ -1006,20 +1022,49 @@ static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world
     }
 }
 
+/* Check if angle is inside the ring gap (centered at RING_GAP_CENTER + rotation). */
+static bool in_ring_gap(float angle, float rotation) {
+    float gap_lo = RING_GAP_CENTER + rotation - RING_GAP_WIDTH * 0.5f;
+    float diff = angle - gap_lo;
+    diff = fmodf(diff, TWO_PI_F);
+    if (diff < 0.0f) diff += TWO_PI_F;
+    return diff < RING_GAP_WIDTH;
+}
+
 static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
     const hull_def_t *hull = npc_hull_def(npc);
     for (int i = 0; i < MAX_STATIONS; i++) {
         station_t *st = &w->stations[i];
+        /* Core collision */
         float minimum = st->radius + 4.0f + hull->ship_radius;
         vec2 delta = v2_sub(npc->pos, st->pos);
         float d_sq = v2_len_sq(delta);
-        if (d_sq >= minimum * minimum) continue;
-        float d = sqrtf(d_sq);
-        vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
-        npc->pos = v2_add(st->pos, v2_scale(normal, minimum));
-        float vel_toward = v2_dot(npc->vel, normal);
-        if (vel_toward < 0.0f)
-            npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.2f));
+        if (d_sq < minimum * minimum) {
+            float d = sqrtf(d_sq);
+            vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
+            npc->pos = v2_add(st->pos, v2_scale(normal, minimum));
+            float vel_toward = v2_dot(npc->vel, normal);
+            if (vel_toward < 0.0f)
+                npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.2f));
+        }
+        /* Ring truss collision for NPCs */
+        float dist = sqrtf(v2_len_sq(delta));
+        float angle = atan2f(delta.y, delta.x);
+        for (int r = 1; r < MAX_RING_COUNT; r++) {
+            if (!station_has_ring(st, r)) continue;
+            float radius = RING_RADIUS[r];
+            float tw = (r == 1) ? 5.0f : 7.0f;
+            float inner = radius - tw - hull->ship_radius;
+            float outer = radius + tw + hull->ship_radius;
+            if (dist < inner || dist > outer) continue;
+            if (in_ring_gap(angle, st->ring_rotation[r])) continue;
+            vec2 n = dist > 0.001f ? v2_scale(delta, 1.0f / dist) : v2(1.0f, 0.0f);
+            float push_r = (dist - inner < outer - dist) ? inner : outer;
+            npc->pos = v2_add(st->pos, v2_scale(n, push_r));
+            float vt = v2_dot(npc->vel, n);
+            if ((push_r < radius && vt > 0.0f) || (push_r > radius && vt < 0.0f))
+                npc->vel = v2_sub(npc->vel, v2_scale(n, vt * 1.2f));
+        }
     }
 }
 
@@ -1170,7 +1215,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     }
     case NPC_STATE_TRAVEL_TO_DEST: {
         station_t *dest = &w->stations[npc->dest_station];
-        npc_steer_toward(npc, dest->pos, hull->accel, hull->turn_speed, dt);
+        vec2 approach = station_approach_target(dest, npc->pos);
+        npc_steer_toward(npc, approach, hull->accel, hull->turn_speed, dt);
         npc_apply_physics(npc, hull->drag, dt, w);
         float dock_r = dest->dock_radius * 0.7f;
         if (v2_dist_sq(npc->pos, dest->pos) < dock_r * dock_r) {
@@ -1221,7 +1267,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     }
     case NPC_STATE_RETURN_TO_STATION: {
         station_t *home = &w->stations[npc->home_station];
-        npc_steer_toward(npc, home->pos, hull->accel, hull->turn_speed, dt);
+        vec2 approach_home = station_approach_target(home, npc->pos);
+        npc_steer_toward(npc, approach_home, hull->accel, hull->turn_speed, dt);
         npc_apply_physics(npc, hull->drag, dt, w);
         float dock_r = home->dock_radius * 0.7f;
         if (v2_dist_sq(npc->pos, home->pos) < dock_r * dock_r) {
@@ -1344,7 +1391,8 @@ static void step_npc_ships(world_t *w, float dt) {
         }
         case NPC_STATE_RETURN_TO_STATION: {
             station_t *home = &w->stations[npc->home_station];
-            npc_steer_toward(npc, home->pos, hull->accel, hull->turn_speed, dt);
+            vec2 miner_approach = station_approach_target(home, npc->pos);
+            npc_steer_toward(npc, miner_approach, hull->accel, hull->turn_speed, dt);
             npc_apply_physics(npc, hull->drag, dt, w);
             float dock_r = home->dock_radius * 0.7f;
             if (v2_dist_sq(npc->pos, home->pos) < dock_r * dock_r) {
@@ -1748,10 +1796,49 @@ static void step_ship_motion(ship_t *s, float dt, const world_t *w) {
     }
 }
 
+/* Resolve ship-vs-ring-truss collision. Push outward if inside truss arc. */
+static void resolve_ring_collision(world_t *w, server_player_t *sp, const station_t *st) {
+    float ship_r = ship_hull_def(&sp->ship)->ship_radius;
+    for (int r = 1; r < MAX_RING_COUNT; r++) {
+        if (!station_has_ring(st, r)) continue;
+        float radius = RING_RADIUS[r];
+        float truss_hw = (r == 1) ? 5.0f : 7.0f;
+        float inner = radius - truss_hw - ship_r;
+        float outer = radius + truss_hw + ship_r;
+
+        vec2 delta = v2_sub(sp->ship.pos, st->pos);
+        float dist = sqrtf(v2_len_sq(delta));
+        if (dist < inner || dist > outer) continue;
+
+        /* Ship is within the annulus — check if in the gap */
+        float angle = atan2f(delta.y, delta.x);
+        if (in_ring_gap(angle, st->ring_rotation[r])) continue;
+
+        /* Colliding with truss — push radially to nearest edge */
+        float to_inner = dist - inner;
+        float to_outer = outer - dist;
+        vec2 normal = dist > 0.001f ? v2_scale(delta, 1.0f / dist) : v2(1.0f, 0.0f);
+        if (to_inner < to_outer) {
+            sp->ship.pos = v2_add(st->pos, v2_scale(normal, inner));
+        } else {
+            sp->ship.pos = v2_add(st->pos, v2_scale(normal, outer));
+        }
+        float vel_toward = v2_dot(sp->ship.vel, normal);
+        float push_dir = (to_inner < to_outer) ? -1.0f : 1.0f;
+        if (vel_toward * push_dir < 0.0f) {
+            float impact = fabsf(vel_toward);
+            if (!sp->docked && impact > SHIP_COLLISION_DAMAGE_THRESHOLD)
+                apply_ship_damage(w, sp, (impact - SHIP_COLLISION_DAMAGE_THRESHOLD) * SHIP_COLLISION_DAMAGE_SCALE);
+            sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(normal, vel_toward * 1.2f));
+        }
+    }
+}
+
 static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_collides(&w->stations[i])) continue;
         resolve_ship_circle(w, sp, w->stations[i].pos, w->stations[i].radius + 4.0f);
+        resolve_ring_collision(w, sp, &w->stations[i]);
     }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!w->asteroids[i].active || asteroid_is_collectible(&w->asteroids[i])) continue;
@@ -1759,19 +1846,38 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     }
 }
 
+/* Check if position is inside all completed rings at a station (through gaps). */
+static bool inside_all_rings(const station_t *st, vec2 pos) {
+    vec2 delta = v2_sub(pos, st->pos);
+    float dist = sqrtf(v2_len_sq(delta));
+    for (int r = 1; r < MAX_RING_COUNT; r++) {
+        if (!station_has_ring(st, r)) continue;
+        /* Must be inside this ring's radius (or in the gap corridor) */
+        if (dist > RING_RADIUS[r]) return false;
+    }
+    return true;
+}
+
 static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
     if (sp->docked) {
         sp->in_dock_range = true;
         sp->nearby_station = sp->current_station;
-        sp->ship.vel = v2(0.0f, 0.0f);  /* hold position, don't teleport */
+        sp->ship.vel = v2(0.0f, 0.0f);
         return;
     }
     float best_d = 0.0f;
     sp->nearby_station = -1;
     for (int i = 0; i < MAX_STATIONS; i++) {
-        float dr_sq = w->stations[i].dock_radius * w->stations[i].dock_radius;
-        float d = v2_dist_sq(sp->ship.pos, w->stations[i].pos);
-        if (d <= dr_sq && (sp->nearby_station < 0 || d < best_d)) { best_d = d; sp->nearby_station = i; }
+        if (!station_exists(&w->stations[i])) continue;
+        float core_r = w->stations[i].radius + 30.0f; /* dock range: station body + margin */
+        float d_sq = v2_dist_sq(sp->ship.pos, w->stations[i].pos);
+        if (d_sq > core_r * core_r) continue;
+        /* Must be inside all rings to dock */
+        if (!inside_all_rings(&w->stations[i], sp->ship.pos)) continue;
+        if (sp->nearby_station < 0 || d_sq < best_d) {
+            best_d = d_sq;
+            sp->nearby_station = i;
+        }
     }
     sp->in_dock_range = sp->nearby_station >= 0;
     if (sp->in_dock_range)
