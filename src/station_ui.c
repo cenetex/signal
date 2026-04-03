@@ -482,7 +482,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             /* Check if slot is occupied */
             bool occupied = false;
             for (int m = 0; m < ui->station->module_count; m++) {
-                if (ui->station->modules[m].ring == g.build_ring && ui->station->modules[m].slot == g.build_slot) {
+                if (ui->station->modules[m].arm == g.build_ring && ui->station->modules[m].chain_pos == g.build_slot) {
                     occupied = true; break;
                 }
             }

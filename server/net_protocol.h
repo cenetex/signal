@@ -270,8 +270,8 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
         buf[moff]     = (m < st->module_count) ? (uint8_t)st->modules[m].type : 0;
         buf[moff + 1] = (m < st->module_count && st->modules[m].scaffold) ? 1 : 0;
-        buf[moff + 2] = (m < st->module_count) ? st->modules[m].ring : 0;
-        buf[moff + 3] = (m < st->module_count) ? st->modules[m].slot : 0;
+        buf[moff + 2] = (m < st->module_count) ? st->modules[m].arm : 0;
+        buf[moff + 3] = (m < st->module_count) ? st->modules[m].chain_pos : 0;
         write_f32_le(&buf[moff + 4], (m < st->module_count) ? st->modules[m].build_progress : 0.0f);
         moff += STATION_MODULE_RECORD_SIZE;
     }

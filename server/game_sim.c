@@ -169,12 +169,12 @@ bool can_place_outpost(const world_t *w, vec2 pos) {
     return false;
 }
 
-static void add_module_at(station_t *st, module_type_t type, uint8_t ring, uint8_t slot) {
+static void add_module_at(station_t *st, module_type_t type, uint8_t arm, uint8_t chain_pos) {
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
     station_module_t *m = &st->modules[st->module_count++];
     m->type = type;
-    m->ring = ring;
-    m->slot = slot;
+    m->arm = arm;
+    m->chain_pos = chain_pos;
     m->scaffold = false;
     m->build_progress = 1.0f;
 }
@@ -241,13 +241,13 @@ static float module_credit_cost(module_type_t type) {
 }
 
 /* Add a scaffold module to a station and generate a supply contract */
-void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int ring, int slot) {
+void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int arm, int chain_pos) {
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
 
     station_module_t *m = &st->modules[st->module_count++];
     m->type = type;
-    m->ring = (uint8_t)ring;
-    m->slot = (uint8_t)slot;
+    m->arm = (uint8_t)arm;
+    m->chain_pos = (uint8_t)chain_pos;
     m->scaffold = true;
     m->build_progress = 0.0f;
 
@@ -2038,7 +2038,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             float cost = module_credit_cost(intent->build_module_type);
             bool slot_free = true;
             for (int m = 0; m < docked_st->module_count; m++) {
-                if (docked_st->modules[m].ring == target_ring && docked_st->modules[m].slot == target_slot) {
+                if (docked_st->modules[m].arm == target_ring && docked_st->modules[m].chain_pos == target_slot) {
                     slot_free = false;
                     break;
                 }
@@ -2553,13 +2553,13 @@ static void step_contracts(world_t *w, float dt) {
 void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
     w->time += dt;
-    /* Advance ring rotations */
+    /* Advance arm rotations */
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!station_exists(&w->stations[s])) continue;
-        for (int r = 1; r < MAX_RING_COUNT; r++) {
-            w->stations[s].ring_rotation[r] += RING_SPEED[r] * dt;
-            if (w->stations[s].ring_rotation[r] > TWO_PI_F)
-                w->stations[s].ring_rotation[r] -= TWO_PI_F;
+        for (int a = 0; a < w->stations[s].arm_count && a < MAX_ARMS; a++) {
+            w->stations[s].arm_rotation[a] += w->stations[s].arm_speed[a] * dt;
+            if (w->stations[s].arm_rotation[a] > TWO_PI_F)
+                w->stations[s].arm_rotation[a] -= TWO_PI_F;
         }
     }
     sim_step_asteroid_dynamics(w, dt);
@@ -2654,12 +2654,14 @@ void world_reset(world_t *w) {
     w->stations[0].base_price[COMMODITY_CUPRITE_INGOT] = 32.0f;
     w->stations[0].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
     w->stations[0].signal_range = 18000.0f;
-    add_module_at(&w->stations[0], MODULE_DOCK, 0, 0xFF);
-    add_module_at(&w->stations[0], MODULE_RING, 1, 0xFF);
-    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 1, 0);
-    add_module_at(&w->stations[0], MODULE_FURNACE, 1, 1);
-    add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 1, 2);
-    add_module_at(&w->stations[0], MODULE_CONTRACT_BOARD, 1, 3);
+    add_module_at(&w->stations[0], MODULE_DOCK, 0xFF, 0);        /* core */
+    add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 0xFF, 0);
+    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 0, 0);     /* arm 0 chain */
+    add_module_at(&w->stations[0], MODULE_FURNACE, 0, 1);
+    add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 0, 2);
+    add_module_at(&w->stations[0], MODULE_CONTRACT_BOARD, 0, 3);
+    w->stations[0].arm_count = 1;
+    w->stations[0].arm_speed[0] = STATION_DEFAULT_ARM_SPEED;
     rebuild_station_services(&w->stations[0]);
     /* Seed inventory: refinery starts with some smelted ingots */
     w->stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
@@ -2674,12 +2676,14 @@ void world_reset(world_t *w) {
     w->stations[1].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
     w->stations[1].base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
     w->stations[1].base_price[COMMODITY_FRAME] = 20.0f;
-    add_module_at(&w->stations[1], MODULE_DOCK, 0, 0xFF);
-    add_module_at(&w->stations[1], MODULE_RING, 1, 0xFF);
-    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 1, 0);
-    add_module_at(&w->stations[1], MODULE_REPAIR_BAY, 1, 1);
-    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 1, 2);
-    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 1, 3);
+    add_module_at(&w->stations[1], MODULE_DOCK, 0xFF, 0);
+    add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 0xFF, 0);
+    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 0, 0);
+    add_module_at(&w->stations[1], MODULE_REPAIR_BAY, 0, 1);
+    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 0, 2);
+    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 0, 3);
+    w->stations[1].arm_count = 1;
+    w->stations[1].arm_speed[0] = STATION_DEFAULT_ARM_SPEED;
     rebuild_station_services(&w->stations[1]);
     /* Seed inventory: yard starts with frames for hold upgrades */
     w->stations[1].inventory[COMMODITY_FERRITE_INGOT] = 15.0f;
@@ -2697,13 +2701,15 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
     w->stations[2].base_price[COMMODITY_LASER_MODULE] = 28.0f;
     w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
-    add_module_at(&w->stations[2], MODULE_DOCK, 0, 0xFF);
-    add_module_at(&w->stations[2], MODULE_RING, 1, 0xFF);
-    add_module_at(&w->stations[2], MODULE_LASER_FAB, 1, 0);
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 1, 1);
-    add_module_at(&w->stations[2], MODULE_REPAIR_BAY, 1, 2);
-    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 1, 3);
-    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 1, 4);
+    add_module_at(&w->stations[2], MODULE_DOCK, 0xFF, 0);
+    add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 0xFF, 0);
+    add_module_at(&w->stations[2], MODULE_LASER_FAB, 0, 0);
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 0, 1);
+    add_module_at(&w->stations[2], MODULE_REPAIR_BAY, 0, 2);
+    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 0, 3);
+    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 0, 4);
+    w->stations[2].arm_count = 1;
+    w->stations[2].arm_speed[0] = STATION_DEFAULT_ARM_SPEED;
     rebuild_station_services(&w->stations[2]);
     /* Seed inventory: works starts with modules for mining/tractor upgrades */
     w->stations[2].inventory[COMMODITY_CUPRITE_INGOT] = 15.0f;

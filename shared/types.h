@@ -113,15 +113,16 @@ typedef enum {
 
 typedef struct {
     module_type_t type;
-    uint8_t ring;           /* 0=core level, 1=ring 1, 2=ring 2 */
-    uint8_t slot;           /* port index within ring (0xff = N/A) */
+    uint8_t arm;            /* which radial arm (0, 1, 2...) */
+    uint8_t chain_pos;      /* position along arm chain (0 = nearest core) */
     bool scaffold;          /* under construction */
     float build_progress;   /* 0.0 to 1.0 */
 } station_module_t;
 
 enum {
     MAX_MODULES_PER_STATION = 16,
-    MAX_RING_COUNT = 3,     /* core + 2 expansion rings */
+    MAX_ARMS = 4,
+    MAX_RING_COUNT = 3,     /* legacy compat — used by save format */
 };
 
 typedef struct {
@@ -139,7 +140,11 @@ typedef struct {
     /* Module system */
     station_module_t modules[MAX_MODULES_PER_STATION];
     int module_count;
-    /* Ring rotation (radians, per ring level) */
+    /* Arm rotation */
+    int arm_count;
+    float arm_rotation[MAX_ARMS];
+    float arm_speed[MAX_ARMS];
+    /* Legacy compat (save format) */
     float ring_rotation[MAX_RING_COUNT];
 } station_t;
 
@@ -389,52 +394,58 @@ static inline commodity_t station_primary_sell(const station_t *st) {
 }
 
 /* Station geometry constants */
-static const float STATION_CORE_RADIUS   = 60.0f;   /* core hub visual radius */
-static const float STATION_MODULE_DIST   = 120.0f;  /* distance from core center to module center */
-static const float STATION_GAP_CENTER    = 4.712389f; /* 270 deg — gap at bottom for ships */
-static const float STATION_GAP_WIDTH     = 0.698132f; /* 40 deg total gap */
+static const float STATION_CORE_RADIUS   = 60.0f;
+static const float STATION_ARM_OFFSET    = 80.0f;   /* radial distance: core edge to first module */
+static const float STATION_MODULE_SPACING = 50.0f;  /* lateral spacing between chained modules */
+static const float STATION_DEFAULT_ARM_SPEED = 0.04f; /* rad/s */
 
-/* Module position: modules are placed sequentially around the arc,
- * leaving the gap at the bottom. The arc runs from gap_end clockwise
- * back to gap_start. Each module gets an even slice of the arc. */
-static inline float station_module_angle(int slot, int total_modules) {
-    if (total_modules <= 0) return 0.0f;
-    float arc_start = STATION_GAP_CENTER + STATION_GAP_WIDTH * 0.5f;
-    float arc_span  = TWO_PI_F - STATION_GAP_WIDTH;
-    return arc_start + ((float)slot + 0.5f) * (arc_span / (float)total_modules);
+/* Arm base angle: arms are evenly spaced around the circle.
+ * First arm starts at 0 deg (right), others distribute evenly. */
+static inline float arm_base_angle(int arm, int arm_count) {
+    if (arm_count <= 0) return 0.0f;
+    return TWO_PI_F * (float)arm / (float)arm_count;
 }
 
-/* World-space position of a module by its slot index. */
-static inline vec2 module_world_pos(const station_t *st, int slot) {
-    /* Count non-structural modules (skip dock, relay at core) */
-    int total = 0;
-    for (int i = 0; i < st->module_count; i++) {
-        if (st->modules[i].type != MODULE_DOCK && st->modules[i].type != MODULE_SIGNAL_RELAY)
-            total++;
-    }
-    float angle = station_module_angle(slot, total);
-    return v2_add(st->pos, v2(cosf(angle) * STATION_MODULE_DIST, sinf(angle) * STATION_MODULE_DIST));
+/* World-space position of a module on an arm chain. */
+static inline vec2 module_world_pos_arm(const station_t *st, int arm, int chain_pos) {
+    if (arm < 0 || arm >= st->arm_count) return st->pos;
+    float base = arm_base_angle(arm, st->arm_count) + st->arm_rotation[arm];
+    vec2 radial = v2(cosf(base), sinf(base));
+    vec2 lateral = v2(-radial.y, radial.x); /* perpendicular, CCW */
+    /* Radial: core edge outward */
+    vec2 pos = v2_add(st->pos, v2_scale(radial, STATION_CORE_RADIUS + STATION_ARM_OFFSET));
+    /* Lateral: chain extends sideways, centered on chain_pos 0 */
+    float lateral_off = (float)chain_pos * STATION_MODULE_SPACING;
+    pos = v2_add(pos, v2_scale(lateral, lateral_off));
+    return pos;
 }
 
-/* Legacy compatibility shims — these will be removed once all callers are updated */
+/* Count modules on a given arm. */
+static inline int arm_module_count(const station_t *st, int arm) {
+    int count = 0;
+    for (int i = 0; i < st->module_count; i++)
+        if (st->modules[i].arm == arm) count++;
+    return count;
+}
+
+/* Legacy shims for callers not yet migrated */
 static const int   RING_PORT_COUNT[] = { 0, 5, 8 };
 static const float RING_RADIUS[]     = { 60.0f, 200.0f, 320.0f };
 static const float RING_SPEED[]      = { 0.0f, 0.06f, 0.03f };
 static const float RING_GAP_CENTER   = 4.712389f;
 static const float RING_GAP_WIDTH    = 0.698132f;
-static const int   MAX_RING_COUNT_LEGACY = 3;
 
 static inline bool station_has_ring(const station_t *st, int ring) {
     (void)st; (void)ring;
-    return ring <= 0; /* only core "ring" exists in new model */
+    return ring <= 0;
 }
 static inline float ring_port_angle(int ring, int slot) {
-    (void)ring;
-    return station_module_angle(slot, 8);
+    (void)ring; (void)slot;
+    return 0.0f;
 }
 static inline int station_ring_free_slot(const station_t *st, int ring, int port_count) {
     (void)ring; (void)port_count;
-    return st->module_count; /* next slot = end of list */
+    return st->module_count;
 }
 
 /* Outpost construction constants (client-shared) */

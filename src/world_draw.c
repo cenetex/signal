@@ -179,7 +179,7 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
     float base_alpha = is_current ? 0.9f : (is_nearby ? 0.7f : 0.5f);
 
     /* Core (stationary hub) — solid filled, substantial */
-    float core_r = RING_RADIUS[0] * 0.7f;
+    float core_r = STATION_CORE_RADIUS * 0.7f;
     draw_circle_filled(station->pos, core_r, 32, 0.10f, 0.14f, 0.20f, 1.0f);
     draw_circle_filled(station->pos, core_r * 0.8f, 28, 0.14f, 0.19f, 0.26f, 1.0f);
     draw_circle_outline(station->pos, core_r, 32, role_r * 0.45f, role_g * 0.45f, role_b * 0.45f, base_alpha * 0.8f);
@@ -216,64 +216,62 @@ static void draw_corridor(vec2 a, vec2 b, float cr, float cg, float cb, float al
     draw_segment(ar, br, cr * 0.4f, cg * 0.4f, cb * 0.4f, alpha * 0.4f);
 }
 
-/* Draw modules + corridors (above ships in render order). */
+/* Draw arm structures + modules (above ships in render order). */
 void draw_station_rings(const station_t* station, bool is_current, bool is_nearby) {
     if (!station_exists(station) || station->scaffold) return;
 
     float role_r = 0.45f, role_g = 0.85f, role_b = 1.0f;
     station_role_color(station, &role_r, &role_g, &role_b);
     float base_alpha = is_current ? 0.9f : (is_nearby ? 0.7f : 0.5f);
-
-    /* Collect outer modules (skip dock + relay which live at core) */
-    vec2 mod_positions[MAX_MODULES_PER_STATION];
-    int mod_indices[MAX_MODULES_PER_STATION];
-    int outer_count = 0;
-    for (int i = 0; i < station->module_count; i++) {
-        if (station->modules[i].type == MODULE_DOCK ||
-            station->modules[i].type == MODULE_SIGNAL_RELAY)
-            continue;
-        int slot = outer_count;
-        mod_indices[outer_count] = i;
-        outer_count++;
-        (void)slot;
-    }
-
-    /* Compute positions */
-    for (int i = 0; i < outer_count; i++) {
-        float angle = station_module_angle(i, outer_count);
-        mod_positions[i] = v2_add(station->pos,
-            v2(cosf(angle) * STATION_MODULE_DIST, sinf(angle) * STATION_MODULE_DIST));
-    }
-
-    /* Draw corridors: core → first module, between adjacent modules */
     float core_edge = STATION_CORE_RADIUS * 0.7f;
-    for (int i = 0; i < outer_count; i++) {
-        /* Corridor from core to this module */
-        vec2 toward = v2_sub(mod_positions[i], station->pos);
+
+    for (int a = 0; a < station->arm_count && a < MAX_ARMS; a++) {
+        /* Collect modules on this arm, sorted by chain_pos */
+        int arm_mods[MAX_MODULES_PER_STATION];
+        int arm_count = 0;
+        for (int i = 0; i < station->module_count; i++) {
+            if (station->modules[i].arm == a)
+                arm_mods[arm_count++] = i;
+        }
+        if (arm_count == 0) continue;
+
+        /* Sort by chain_pos (simple insertion sort, small N) */
+        for (int i = 1; i < arm_count; i++) {
+            int key = arm_mods[i];
+            int j = i - 1;
+            while (j >= 0 && station->modules[arm_mods[j]].chain_pos > station->modules[key].chain_pos) {
+                arm_mods[j + 1] = arm_mods[j];
+                j--;
+            }
+            arm_mods[j + 1] = key;
+        }
+
+        /* Compute positions */
+        vec2 positions[MAX_MODULES_PER_STATION];
+        for (int i = 0; i < arm_count; i++) {
+            const station_module_t *m = &station->modules[arm_mods[i]];
+            positions[i] = module_world_pos_arm(station, a, (int)m->chain_pos);
+        }
+
+        /* Radial corridor: core → first module */
+        vec2 toward = v2_sub(positions[0], station->pos);
         float d = sqrtf(v2_len_sq(toward));
         if (d > 1.0f) {
             vec2 core_pt = v2_add(station->pos, v2_scale(toward, core_edge / d));
-            vec2 mod_inner = v2_add(station->pos, v2_scale(toward, (STATION_MODULE_DIST - 22.0f) / d));
-            draw_corridor(core_pt, mod_inner, role_r, role_g, role_b, base_alpha);
+            draw_corridor(core_pt, positions[0], role_r, role_g, role_b, base_alpha);
         }
 
-        /* Corridor to next module (arc segment) */
-        if (i + 1 < outer_count) {
-            vec2 edge_a = v2_add(station->pos,
-                v2_scale(v2_sub(mod_positions[i], station->pos),
-                         (STATION_MODULE_DIST) / fmaxf(1.0f, sqrtf(v2_dist_sq(mod_positions[i], station->pos)))));
-            vec2 edge_b = v2_add(station->pos,
-                v2_scale(v2_sub(mod_positions[i+1], station->pos),
-                         (STATION_MODULE_DIST) / fmaxf(1.0f, sqrtf(v2_dist_sq(mod_positions[i+1], station->pos)))));
-            draw_corridor(edge_a, edge_b, role_r, role_g, role_b, base_alpha * 0.6f);
+        /* Lateral corridors: between consecutive chain modules */
+        for (int i = 0; i + 1 < arm_count; i++) {
+            draw_corridor(positions[i], positions[i + 1], role_r, role_g, role_b, base_alpha * 0.7f);
         }
-    }
 
-    /* Draw modules */
-    for (int i = 0; i < outer_count; i++) {
-        const station_module_t *mod = &station->modules[mod_indices[i]];
-        float angle = station_module_angle(i, outer_count);
-        draw_module_at(mod_positions[i], angle, mod->type, mod->scaffold, mod->build_progress, station->pos);
+        /* Draw modules */
+        float arm_angle = arm_base_angle(a, station->arm_count) + station->arm_rotation[a];
+        for (int i = 0; i < arm_count; i++) {
+            const station_module_t *m = &station->modules[arm_mods[i]];
+            draw_module_at(positions[i], arm_angle, m->type, m->scaffold, m->build_progress, station->pos);
+        }
     }
 }
 
