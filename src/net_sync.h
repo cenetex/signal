@@ -19,13 +19,17 @@ void apply_remote_npcs(const NetNpcState* npcs, int count);
 void apply_remote_stations(uint8_t index, const float* inventory);
 void apply_remote_contracts(const contract_t* contracts, int count);
 void apply_remote_station_identity(const NetStationIdentity* si);
+void begin_player_state_batch(void);
 void apply_remote_player_state(const NetPlayerState* state);
 void apply_remote_player_ship(const NetPlayerShipState* state);
 
 /* Sync local player slot to the network-assigned ID. */
 void sync_local_player_slot_from_network(void);
 
-/* Interpolate asteroid and NPC positions for smooth multiplayer rendering. */
+/* Interpolate asteroid, NPC, and player positions for smooth multiplayer rendering. */
 void interpolate_world_for_render(void);
+
+/* Get interpolated remote player states for rendering. */
+const NetPlayerState* net_get_interpolated_players(void);
 
 #endif /* NET_SYNC_H */

@@ -8,6 +8,11 @@
 
 #include <string.h>
 #include <stdio.h>
+#include <stdlib.h>
+#include <time.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 /* ---------- Shared state ------------------------------------------------- */
 
@@ -17,6 +22,8 @@ static struct {
     NetPlayerState players[NET_MAX_PLAYERS];
     NetCallbacks callbacks;
     char server_hash[12];
+    uint8_t session_token[8];
+    bool session_token_ready;
 } net_state;
 
 /* ---------- Protocol helpers (shared between WASM and native) ------------ */
@@ -46,6 +53,62 @@ static float read_f32_le(const uint8_t* buf) {
     return conv.f;
 }
 
+/* Forward declaration — implemented per platform below. */
+static void ws_send_binary(const uint8_t* data, int len);
+
+#ifdef __EMSCRIPTEN__
+static uint8_t hex_nibble(char c) {
+    if (c >= '0' && c <= '9') return (uint8_t)(c - '0');
+    if (c >= 'a' && c <= 'f') return (uint8_t)(c - 'a' + 10);
+    if (c >= 'A' && c <= 'F') return (uint8_t)(c - 'A' + 10);
+    return 0;
+}
+#endif
+
+static void ensure_session_token(void) {
+    if (net_state.session_token_ready) return;
+#ifdef __EMSCRIPTEN__
+    /* Try to load from localStorage, generate if missing.
+     * Returns 16-char hex string or generates + stores a new one. */
+    const char *hex = emscripten_run_script_string(
+        "(function(){"
+        "var k='signal_session_token',s=localStorage.getItem(k);"
+        "if(s&&s.length===16)return s;"
+        "var a=new Uint8Array(8);crypto.getRandomValues(a);"
+        "var h='';for(var i=0;i<8;i++)h+=('0'+a[i].toString(16)).slice(-2);"
+        "localStorage.setItem(k,h);return h;"
+        "})()"
+    );
+    if (hex && strlen(hex) == 16) {
+        for (int i = 0; i < 8; i++)
+            net_state.session_token[i] = (hex_nibble(hex[i*2]) << 4) | hex_nibble(hex[i*2+1]);
+    }
+#else
+    /* Native: generate random token */
+    FILE *f = fopen("/dev/urandom", "rb");
+    if (f) {
+        fread(net_state.session_token, 1, 8, f);
+        fclose(f);
+    } else {
+        /* Fallback: time-based seed */
+        uint32_t seed = (uint32_t)time(NULL);
+        for (int i = 0; i < 8; i++) {
+            seed = seed * 1103515245u + 12345u;
+            net_state.session_token[i] = (uint8_t)(seed >> 16);
+        }
+    }
+#endif
+    net_state.session_token_ready = true;
+}
+
+static void send_session_token(void) {
+    uint8_t buf[9];
+    buf[0] = NET_MSG_SESSION;
+    memcpy(&buf[1], net_state.session_token, 8);
+    ws_send_binary(buf, 9);
+    printf("[net] sent session token\n");
+}
+
 static void handle_message(const uint8_t* data, int len) {
     if (len < 1) return;
 
@@ -57,6 +120,9 @@ static void handle_message(const uint8_t* data, int len) {
             if (net_state.local_id == 0xFF) {
                 net_state.local_id = id;
                 printf("[net] assigned player id %d\n", id);
+                /* Send session token so server can load our save */
+                ensure_session_token();
+                send_session_token();
             } else if (id != net_state.local_id) {
                 if (id < NET_MAX_PLAYERS) {
                     net_state.players[id].player_id = id;
@@ -112,6 +178,8 @@ static void handle_message(const uint8_t* data, int len) {
             int count = (int)data[1];
             int expected = 2 + count * PLAYER_RECORD_SIZE;
             if (len < expected) break;
+            if (net_state.callbacks.on_players_begin)
+                net_state.callbacks.on_players_begin();
             for (int i = 0; i < count; i++) {
                 const uint8_t *p = &data[2 + i * PLAYER_RECORD_SIZE];
                 uint8_t id = p[0];
@@ -394,6 +462,13 @@ static void ws_send_binary(const uint8_t* data, int len) {
     emscripten_websocket_send_binary(ws_socket, (void*)data, (unsigned int)len);
 }
 
+void net_send_session(const uint8_t token[8]) {
+    uint8_t buf[9];
+    buf[0] = NET_MSG_SESSION;
+    memcpy(&buf[1], token, 8);
+    ws_send_binary(buf, 9);
+}
+
 void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target) {
     uint8_t buf[4];
     buf[0] = NET_MSG_INPUT;
@@ -491,6 +566,13 @@ void net_shutdown(void) {
         mgr_initialized = false;
     }
     net_state.connected = false;
+}
+
+void net_send_session(const uint8_t token[8]) {
+    uint8_t buf[9];
+    buf[0] = NET_MSG_SESSION;
+    memcpy(&buf[1], token, 8);
+    ws_send_binary(buf, 9);
 }
 
 void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target) {

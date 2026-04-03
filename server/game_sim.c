@@ -1562,6 +1562,21 @@ static asteroid_tier_t max_mineable_tier(int mining_level) {
     }
 }
 
+static bool hinted_target_in_mining_cone(vec2 muzzle, vec2 forward, const asteroid_t *a) {
+    /* Multiplayer clients render asteroid positions slightly behind the
+     * authoritative server. Give explicit target hints a small amount of
+     * aim slack so fast-moving fracture shards still mine when the intent is
+     * clear, without relaxing general fallback targeting. */
+    const float aim_slack = 12.0f;
+    vec2 to_a = v2_sub(a->pos, muzzle);
+    float proj = v2_dot(to_a, forward);
+    float perp = fabsf(v2_cross(to_a, forward));
+    float effective_radius = a->radius + aim_slack;
+    return perp <= effective_radius
+        && proj >= -effective_radius
+        && proj <= MINING_RANGE + effective_radius;
+}
+
 static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, int mining_level) {
     (void)mining_level; /* tier check moved to damage step */
     int best = -1;
@@ -1770,11 +1785,7 @@ static void update_targeting_state(world_t *w, server_player_t *sp, vec2 forward
     if (hint >= 0 && hint < MAX_ASTEROIDS && w->asteroids[hint].active
         && !asteroid_is_collectible(&w->asteroids[hint])) {
         const asteroid_t *a = &w->asteroids[hint];
-        vec2 to_a = v2_sub(a->pos, muzzle);
-        float proj = v2_dot(to_a, forward);
-        float perp = fabsf(v2_cross(to_a, forward));
-        float surface_dist = proj - sqrtf(fmaxf(0.0f, a->radius * a->radius - perp * perp));
-        if (perp <= a->radius && surface_dist >= -a->radius && surface_dist <= MINING_RANGE) {
+        if (hinted_target_in_mining_cone(muzzle, forward, a)) {
             sp->hover_asteroid = hint;
             return;
         }
@@ -2870,9 +2881,26 @@ typedef struct {
     float last_angle;
 } player_save_data_t;
 
+static void session_token_to_hex(const uint8_t token[8], char hex[17]) {
+    static const char digits[] = "0123456789abcdef";
+    for (int i = 0; i < 8; i++) {
+        hex[i * 2]     = digits[token[i] >> 4];
+        hex[i * 2 + 1] = digits[token[i] & 0x0F];
+    }
+    hex[16] = '\0';
+}
+
 bool player_save(const server_player_t *sp, const char *dir, int slot) {
     char path[256];
-    snprintf(path, sizeof(path), "%s/player_%d.sav", dir, slot);
+    /* Use session token for filename if available, fall back to slot */
+    static const uint8_t zero_token[8] = {0};
+    if (sp->session_ready && memcmp(sp->session_token, zero_token, 8) != 0) {
+        char hex[17];
+        session_token_to_hex(sp->session_token, hex);
+        snprintf(path, sizeof(path), "%s/player_%s.sav", dir, hex);
+    } else {
+        snprintf(path, sizeof(path), "%s/player_%d.sav", dir, slot);
+    }
     FILE *f = fopen(path, "wb");
     if (!f) return false;
     player_save_data_t data = {
@@ -2888,9 +2916,7 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
     return ok;
 }
 
-bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot) {
-    char path[256];
-    snprintf(path, sizeof(path), "%s/player_%d.sav", dir, slot);
+static bool player_load_from_path(server_player_t *sp, world_t *w, const char *path, int slot) {
     FILE *f = fopen(path, "rb");
     if (!f) return false;
     player_save_data_t data;
@@ -2927,7 +2953,23 @@ bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot) {
     sp->nearby_station = sp->current_station;
     sp->in_dock_range = true;
     anchor_ship_in_station(sp, w);
+    (void)slot;
     SIM_LOG("[sim] loaded player %d (%.0f credits, station %d)\n",
             slot, sp->ship.credits, sp->current_station);
     return true;
+}
+
+bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot) {
+    char path[256];
+    snprintf(path, sizeof(path), "%s/player_%d.sav", dir, slot);
+    return player_load_from_path(sp, w, path, slot);
+}
+
+bool player_load_by_token(server_player_t *sp, world_t *w, const char *dir,
+                          const uint8_t token[8]) {
+    char hex[17];
+    session_token_to_hex(token, hex);
+    char path[256];
+    snprintf(path, sizeof(path), "%s/player_%s.sav", dir, hex);
+    return player_load_from_path(sp, w, path, (int)sp->id);
 }

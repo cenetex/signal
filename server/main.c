@@ -99,6 +99,19 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     case NET_MSG_MINING_ACTION:
         /* Legacy -- mining handled via INPUT flags now. */
         break;
+    case NET_MSG_SESSION:
+        if (len >= 9 && !world.players[pid].session_ready) {
+            memcpy(world.players[pid].session_token, &data[1], 8);
+            world.players[pid].session_ready = true;
+            /* Try to restore saved state keyed by session token */
+            if (player_load_by_token(&world.players[pid], &world,
+                                     PLAYER_SAVE_DIR, world.players[pid].session_token)) {
+                printf("[server] player %d: restored save by session\n", pid);
+            } else {
+                printf("[server] player %d: no save for session, fresh ship\n", pid);
+            }
+        }
+        break;
     default:
         break;
     }
@@ -138,13 +151,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         sp->connected = true;
         sp->id = (uint8_t)pid;
         sp->conn = c;
-        /* Try to restore saved player state, fall back to fresh ship */
-        if (!player_load(sp, &world, PLAYER_SAVE_DIR, pid)) {
-            player_init_ship(sp, &world);
-            printf("[server] player %d: fresh ship\n", pid);
-        } else {
-            printf("[server] player %d: restored save\n", pid);
-        }
+        sp->session_ready = false;
+        /* Start with fresh ship — save is loaded when client sends SESSION */
+        player_init_ship(sp, &world);
+        printf("[server] player %d: awaiting session token\n", pid);
 
         /* Send JOIN to new player (their own ID). */
         uint8_t join_msg[] = { NET_MSG_JOIN, (uint8_t)pid };

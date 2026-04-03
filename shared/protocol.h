@@ -40,6 +40,7 @@ enum {
     NET_MSG_STATION_IDENTITY= 0x17,
     NET_MSG_WORLD_PLAYERS   = 0x18,
     NET_MSG_CONTRACTS       = 0x19,
+    NET_MSG_SESSION         = 0x20, /* client -> server: [type:1][token:8] */
 };
 
 /* ------------------------------------------------------------------ */

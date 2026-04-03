@@ -100,10 +100,13 @@ typedef struct {
 /* Station identity callback: full static fields for a station slot. */
 typedef void (*net_on_station_identity_fn)(const NetStationIdentity* station);
 
+typedef void (*net_on_players_begin_fn)(void);
+
 typedef struct {
     net_on_player_join_fn on_join;
     net_on_player_leave_fn on_leave;
     net_on_player_state_fn on_state;
+    net_on_players_begin_fn on_players_begin;
     net_on_asteroids_fn on_asteroids;
     net_on_npcs_fn on_npcs;
     net_on_stations_fn on_stations;
@@ -119,6 +122,10 @@ bool net_init(const char* url, const NetCallbacks* callbacks);
 
 /* Shut down the connection and free resources. */
 void net_shutdown(void);
+
+/* Send an 8-byte session token to the server for save identification.
+ * Called automatically on JOIN. */
+void net_send_session(const uint8_t token[8]);
 
 /* Send the local player's input state to the server.
  * flags: bitmask of NET_INPUT_* values.

@@ -141,35 +141,47 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
         st->modules[m] = si->modules[m];
 }
 
+void begin_player_state_batch(void) {
+    memcpy(g.player_interp.prev, g.player_interp.curr,
+           sizeof(g.player_interp.prev));
+    float elapsed = g.player_interp.t * g.player_interp.interval;
+    elapsed = clampf(elapsed, 0.03f, 0.15f);
+    g.player_interp.interval = lerpf(g.player_interp.interval, elapsed, 0.3f);
+    g.player_interp.t = 0.0f;
+}
+
 void apply_remote_player_state(const NetPlayerState* state) {
-    /* Reconcile local prediction with server-authoritative position. */
-    if (state->player_id != net_local_id() || state->player_id >= MAX_PLAYERS) return;
+    if (state->player_id >= NET_MAX_PLAYERS) return;
 
-    server_player_t* sp = &g.world.players[state->player_id];
-    float dx = state->x - sp->ship.pos.x;
-    float dy = state->y - sp->ship.pos.y;
-    float dist_sq = dx * dx + dy * dy;
+    if (state->player_id == net_local_id()) {
+        /* Reconcile local prediction with server-authoritative position. */
+        server_player_t* sp = &g.world.players[state->player_id];
+        float dx = state->x - sp->ship.pos.x;
+        float dy = state->y - sp->ship.pos.y;
+        float dist_sq = dx * dx + dy * dy;
 
-    if (dist_sq > 200.0f * 200.0f) {
-        /* Large divergence: snap immediately */
-        sp->ship.pos.x = state->x;
-        sp->ship.pos.y = state->y;
-        sp->ship.vel.x = state->vx;
-        sp->ship.vel.y = state->vy;
-    } else if (dist_sq > 20.0f * 20.0f) {
-        /* Medium divergence: aggressive blend (50%) — converge within 2-3 updates */
-        sp->ship.pos.x = lerpf(sp->ship.pos.x, state->x, 0.5f);
-        sp->ship.pos.y = lerpf(sp->ship.pos.y, state->y, 0.5f);
-        sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.5f);
-        sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.5f);
+        if (dist_sq > 200.0f * 200.0f) {
+            sp->ship.pos.x = state->x;
+            sp->ship.pos.y = state->y;
+            sp->ship.vel.x = state->vx;
+            sp->ship.vel.y = state->vy;
+        } else if (dist_sq > 20.0f * 20.0f) {
+            sp->ship.pos.x = lerpf(sp->ship.pos.x, state->x, 0.5f);
+            sp->ship.pos.y = lerpf(sp->ship.pos.y, state->y, 0.5f);
+            sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.5f);
+            sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.5f);
+        } else {
+            sp->ship.pos.x = lerpf(sp->ship.pos.x, state->x, 0.2f);
+            sp->ship.pos.y = lerpf(sp->ship.pos.y, state->y, 0.2f);
+            sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.2f);
+            sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.2f);
+        }
+        sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.3f);
     } else {
-        /* Small divergence: gentle blend — cosmetic smoothing only */
-        sp->ship.pos.x = lerpf(sp->ship.pos.x, state->x, 0.2f);
-        sp->ship.pos.y = lerpf(sp->ship.pos.y, state->y, 0.2f);
-        sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.2f);
-        sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.2f);
+        /* Remote player: update curr for interpolation.
+         * begin_player_state_batch() already shifted prev←curr. */
+        g.player_interp.curr[state->player_id] = *state;
     }
-    sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.3f);
 }
 
 void apply_remote_player_ship(const NetPlayerShipState* state) {
@@ -257,4 +269,22 @@ void interpolate_world_for_render(void) {
             dst->angle = lerp_angle(prev->angle, curr->angle, nt);
         }
     }
+}
+
+const NetPlayerState* net_get_interpolated_players(void) {
+    static NetPlayerState result[NET_MAX_PLAYERS];
+    if (g.local_server.active) return net_get_players();
+
+    float pt = clampf(g.player_interp.t, 0.0f, 1.0f);
+    for (int i = 0; i < NET_MAX_PLAYERS; i++) {
+        const NetPlayerState *prev = &g.player_interp.prev[i];
+        const NetPlayerState *curr = &g.player_interp.curr[i];
+        result[i] = *curr;
+        if (prev->active && curr->active) {
+            result[i].x = lerpf(prev->x, curr->x, pt);
+            result[i].y = lerpf(prev->y, curr->y, pt);
+            result[i].angle = lerp_angle(prev->angle, curr->angle, pt);
+        }
+    }
+    return result;
 }

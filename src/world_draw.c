@@ -7,6 +7,7 @@
 #include "render.h"
 #include "npc.h"
 #include "net.h"
+#include "net_sync.h"
 
 /* --- Frustum culling: skip objects entirely off-screen --- */
 static float g_cam_left, g_cam_right, g_cam_top, g_cam_bottom;
@@ -277,7 +278,7 @@ void draw_beam(void) {
 /* --- Multiplayer: draw remote players as colored triangles --- */
 void draw_remote_players(void) {
     if (!g.multiplayer_enabled) return;
-    const NetPlayerState* players = net_get_players();
+    const NetPlayerState* players = net_get_interpolated_players();
     static const float colors[][3] = {
         {1.0f, 0.45f, 0.25f},
         {0.25f, 1.0f, 0.55f},

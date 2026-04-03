@@ -100,6 +100,8 @@ static void reset_world(void) {
     g.asteroid_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
     g.npc_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
+    memset(&g.player_interp, 0, sizeof(g.player_interp));
+    g.player_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
 
     /* Seed interp buffers so first frame has valid data */
     memcpy(g.asteroid_interp.curr, g.world.asteroids, sizeof(g.asteroid_interp.curr));
@@ -254,6 +256,7 @@ static void sim_step(float dt) {
     /* Advance interpolation timers (both modes) */
     g.asteroid_interp.t += dt / fmaxf(g.asteroid_interp.interval, 0.01f);
     g.npc_interp.t += dt / fmaxf(g.npc_interp.interval, 0.01f);
+    g.player_interp.t += dt / fmaxf(g.player_interp.interval, 0.01f);
 
     g.thrusting = (intent.thrust > 0.0f) && !LOCAL_PLAYER.docked;
 
@@ -312,6 +315,7 @@ static void init(void) {
             NetCallbacks cbs = {0};
             cbs.on_join = on_player_join;
             cbs.on_leave = on_player_leave;
+            cbs.on_players_begin = begin_player_state_batch;
             cbs.on_state = apply_remote_player_state;
             cbs.on_asteroids = apply_remote_asteroids;
             cbs.on_npcs = apply_remote_npcs;

@@ -79,6 +79,8 @@ typedef struct {
     bool connected;
     uint8_t id;
     void *conn;
+    uint8_t session_token[8]; /* stable identity for save persistence */
+    bool session_ready;       /* true once client sends SESSION message */
     ship_t ship;
     input_intent_t input;
     int current_station;
@@ -134,5 +136,7 @@ bool world_save(const world_t *w, const char *path);
 bool world_load(world_t *w, const char *path);
 bool player_save(const server_player_t *sp, const char *dir, int slot);
 bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot);
+bool player_load_by_token(server_player_t *sp, world_t *w, const char *dir,
+                          const uint8_t token[8]);
 
 #endif /* GAME_SIM_H */

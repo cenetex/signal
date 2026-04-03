@@ -19,6 +19,7 @@
 #include "asteroid.h"
 #include "game_sim.h"
 #include "local_server.h"
+#include "net.h"
 
 /* Sokol headers (declarations only -- SOKOL_IMPL is in main.c) */
 #include "sokol_app.h"
@@ -126,6 +127,12 @@ typedef struct {
         float t;
         float interval;
     } npc_interp;
+    struct {
+        NetPlayerState prev[NET_MAX_PLAYERS];
+        NetPlayerState curr[NET_MAX_PLAYERS];
+        float t;
+        float interval;
+    } player_interp;
 } game_t;
 
 extern game_t g;
