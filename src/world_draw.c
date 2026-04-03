@@ -140,133 +140,6 @@ static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaff
 }
 
 /* ------------------------------------------------------------------ */
-/* Ring truss — solid filled annulus                                   */
-/* ------------------------------------------------------------------ */
-
-static void draw_ring_truss(vec2 center, float radius, float rotation, float truss_w, float cr, float cg, float cb, float alpha) {
-    float gap_start = RING_GAP_CENTER - RING_GAP_WIDTH * 0.5f + rotation;
-    float gap_end   = RING_GAP_CENTER + RING_GAP_WIDTH * 0.5f + rotation;
-    float inner_r = radius - truss_w * 0.5f;
-    float outer_r = radius + truss_w * 0.5f;
-    int segs = 48;
-    float step = TWO_PI_F / (float)segs;
-
-    /* Filled annulus segments */
-    for (int i = 0; i < segs; i++) {
-        float a0 = (float)i * step;
-        float a1 = (float)(i + 1) * step;
-        float mid = (a0 + a1) * 0.5f;
-        float d = mid - gap_start;
-        while (d > PI_F)  d -= TWO_PI_F;
-        while (d < -PI_F) d += TWO_PI_F;
-        if (d >= 0.0f && d <= (gap_end - gap_start)) continue;
-
-        vec2 i0 = v2_add(center, v2(cosf(a0) * inner_r, sinf(a0) * inner_r));
-        vec2 i1 = v2_add(center, v2(cosf(a1) * inner_r, sinf(a1) * inner_r));
-        vec2 o0 = v2_add(center, v2(cosf(a0) * outer_r, sinf(a0) * outer_r));
-        vec2 o1 = v2_add(center, v2(cosf(a1) * outer_r, sinf(a1) * outer_r));
-
-        /* Filled quad (two triangles) */
-        sgl_c4f(cr * 0.35f, cg * 0.35f, cb * 0.35f, alpha);
-        sgl_begin_triangles();
-        sgl_v2f(i0.x, i0.y); sgl_v2f(o0.x, o0.y); sgl_v2f(o1.x, o1.y);
-        sgl_v2f(i0.x, i0.y); sgl_v2f(o1.x, o1.y); sgl_v2f(i1.x, i1.y);
-        sgl_end();
-
-        /* Edge lines for structure */
-        if (i % 3 == 0) {
-            draw_segment(i0, o0, cr * 0.4f, cg * 0.4f, cb * 0.4f, alpha * 0.5f);
-        }
-    }
-
-    /* Outer and inner edge highlight */
-    for (int i = 0; i < segs; i++) {
-        float a0 = (float)i * step;
-        float a1 = (float)(i + 1) * step;
-        float mid = (a0 + a1) * 0.5f;
-        float d = mid - gap_start;
-        while (d > PI_F)  d -= TWO_PI_F;
-        while (d < -PI_F) d += TWO_PI_F;
-        if (d >= 0.0f && d <= (gap_end - gap_start)) continue;
-
-        vec2 o0 = v2_add(center, v2(cosf(a0) * outer_r, sinf(a0) * outer_r));
-        vec2 o1 = v2_add(center, v2(cosf(a1) * outer_r, sinf(a1) * outer_r));
-        draw_segment(o0, o1, cr * 0.6f, cg * 0.6f, cb * 0.6f, alpha * 0.7f);
-    }
-
-    /* Gap termination pillars + nav lights */
-    for (int side = -1; side <= 1; side += 2) {
-        float pillar_angle = RING_GAP_CENTER + (float)side * RING_GAP_WIDTH * 0.5f + rotation;
-        vec2 pi = v2_add(center, v2(cosf(pillar_angle) * inner_r, sinf(pillar_angle) * inner_r));
-        vec2 po = v2_add(center, v2(cosf(pillar_angle) * outer_r, sinf(pillar_angle) * outer_r));
-        vec2 perp = v2(-(po.y - pi.y), po.x - pi.x);
-        float plen = sqrtf(v2_len_sq(perp));
-        if (plen > 0.001f) perp = v2_scale(perp, 4.0f / plen);
-        /* Solid pillar */
-        sgl_c4f(cr * 0.4f, cg * 0.4f, cb * 0.4f, alpha);
-        sgl_begin_triangles();
-        sgl_v2f(pi.x - perp.x, pi.y - perp.y); sgl_v2f(pi.x + perp.x, pi.y + perp.y);
-        sgl_v2f(po.x + perp.x, po.y + perp.y);
-        sgl_v2f(pi.x - perp.x, pi.y - perp.y); sgl_v2f(po.x + perp.x, po.y + perp.y);
-        sgl_v2f(po.x - perp.x, po.y - perp.y);
-        sgl_end();
-        /* Nav light */
-        float pulse = 0.6f + 0.4f * sinf(g.world.time * 3.0f);
-        vec2 light_pos = v2_add(center, v2(cosf(pillar_angle) * (outer_r + 5.0f), sinf(pillar_angle) * (outer_r + 5.0f)));
-        draw_circle_filled(light_pos, 3.0f, 8, 0.2f, 1.0f, 0.4f, pulse);
-    }
-}
-
-/* ------------------------------------------------------------------ */
-/* Corridor tubes connecting core to ring modules                     */
-/* ------------------------------------------------------------------ */
-
-static void draw_struts(vec2 center, float inner_r, float outer_r, float rotation, int count, float cr, float cg, float cb, float alpha) {
-    float tube_hw = 7.0f;
-    for (int i = 0; i < count; i++) {
-        float angle = rotation + (TWO_PI_F / (float)count) * (float)i;
-        vec2 dir = v2(cosf(angle), sinf(angle));
-        vec2 perp = v2(-dir.y, dir.x);
-        vec2 p0 = v2_add(center, v2_scale(dir, inner_r));
-        vec2 p1 = v2_add(center, v2_scale(dir, outer_r));
-        /* Filled tube */
-        sgl_c4f(cr * 0.3f, cg * 0.3f, cb * 0.3f, alpha * 0.8f);
-        sgl_begin_triangles();
-        sgl_v2f(p0.x - perp.x * tube_hw, p0.y - perp.y * tube_hw);
-        sgl_v2f(p0.x + perp.x * tube_hw, p0.y + perp.y * tube_hw);
-        sgl_v2f(p1.x + perp.x * tube_hw, p1.y + perp.y * tube_hw);
-        sgl_v2f(p0.x - perp.x * tube_hw, p0.y - perp.y * tube_hw);
-        sgl_v2f(p1.x + perp.x * tube_hw, p1.y + perp.y * tube_hw);
-        sgl_v2f(p1.x - perp.x * tube_hw, p1.y - perp.y * tube_hw);
-        sgl_end();
-    }
-}
-
-/* ------------------------------------------------------------------ */
-/* Empty port — small bracket shape                                   */
-/* ------------------------------------------------------------------ */
-
-static void draw_port_clamp(vec2 pos, float angle) {
-    float s = 10.0f;
-    sgl_push_matrix();
-    sgl_translate(pos.x, pos.y, 0.0f);
-    sgl_rotate(angle, 0.0f, 0.0f, 1.0f);
-    sgl_c4f(0.25f, 0.30f, 0.35f, 0.35f);
-    sgl_begin_triangles();
-    sgl_v2f(-s, -s*0.5f); sgl_v2f(s, -s*0.5f); sgl_v2f(s, s*0.5f);
-    sgl_v2f(-s, -s*0.5f); sgl_v2f(s, s*0.5f); sgl_v2f(-s, s*0.5f);
-    sgl_end();
-    sgl_c4f(0.35f, 0.40f, 0.45f, 0.4f);
-    sgl_begin_lines();
-    sgl_v2f(-s, -s*0.5f); sgl_v2f(s, -s*0.5f);
-    sgl_v2f(s, -s*0.5f);  sgl_v2f(s, s*0.5f);
-    sgl_v2f(s, s*0.5f);   sgl_v2f(-s, s*0.5f);
-    sgl_v2f(-s, s*0.5f);  sgl_v2f(-s, -s*0.5f);
-    sgl_end();
-    sgl_pop_matrix();
-}
-
-/* ------------------------------------------------------------------ */
 /* Main station draw                                                  */
 /* ------------------------------------------------------------------ */
 
@@ -321,7 +194,29 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
     draw_circle_outline(station->pos, station->dock_radius, 48, role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, dock_alpha);
 }
 
-/* Draw ring trusses and modules (above ships in render order). */
+/* Draw a corridor tube between two world-space points. */
+static void draw_corridor(vec2 a, vec2 b, float cr, float cg, float cb, float alpha) {
+    vec2 delta = v2_sub(b, a);
+    float len = sqrtf(v2_len_sq(delta));
+    if (len < 1.0f) return;
+    vec2 dir = v2_scale(delta, 1.0f / len);
+    vec2 perp = v2(-dir.y, dir.x);
+    float hw = 6.0f;
+    vec2 al = v2_sub(a, v2_scale(perp, hw));
+    vec2 ar = v2_add(a, v2_scale(perp, hw));
+    vec2 bl = v2_sub(b, v2_scale(perp, hw));
+    vec2 br = v2_add(b, v2_scale(perp, hw));
+    sgl_c4f(cr * 0.3f, cg * 0.3f, cb * 0.3f, alpha * 0.85f);
+    sgl_begin_triangles();
+    sgl_v2f(al.x, al.y); sgl_v2f(ar.x, ar.y); sgl_v2f(br.x, br.y);
+    sgl_v2f(al.x, al.y); sgl_v2f(br.x, br.y); sgl_v2f(bl.x, bl.y);
+    sgl_end();
+    /* Edge lines */
+    draw_segment(al, bl, cr * 0.4f, cg * 0.4f, cb * 0.4f, alpha * 0.4f);
+    draw_segment(ar, br, cr * 0.4f, cg * 0.4f, cb * 0.4f, alpha * 0.4f);
+}
+
+/* Draw modules + corridors (above ships in render order). */
 void draw_station_rings(const station_t* station, bool is_current, bool is_nearby) {
     if (!station_exists(station) || station->scaffold) return;
 
@@ -329,41 +224,56 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
     station_role_color(station, &role_r, &role_g, &role_b);
     float base_alpha = is_current ? 0.9f : (is_nearby ? 0.7f : 0.5f);
 
-    for (int r = 1; r < MAX_RING_COUNT; r++) {
-        if (!station_has_ring(station, r)) continue;
+    /* Collect outer modules (skip dock + relay which live at core) */
+    vec2 mod_positions[MAX_MODULES_PER_STATION];
+    int mod_indices[MAX_MODULES_PER_STATION];
+    int outer_count = 0;
+    for (int i = 0; i < station->module_count; i++) {
+        if (station->modules[i].type == MODULE_DOCK ||
+            station->modules[i].type == MODULE_SIGNAL_RELAY)
+            continue;
+        int slot = outer_count;
+        mod_indices[outer_count] = i;
+        outer_count++;
+        (void)slot;
+    }
 
-        float rot = station->ring_rotation[r];
-        float radius = RING_RADIUS[r];
-        float truss_w = (r == 1) ? 20.0f : 28.0f;
+    /* Compute positions */
+    for (int i = 0; i < outer_count; i++) {
+        float angle = station_module_angle(i, outer_count);
+        mod_positions[i] = v2_add(station->pos,
+            v2(cosf(angle) * STATION_MODULE_DIST, sinf(angle) * STATION_MODULE_DIST));
+    }
 
-        /* Truss arc with gap */
-        draw_ring_truss(station->pos, radius, rot, truss_w, role_r, role_g, role_b, base_alpha * 0.7f);
-
-        /* Struts from previous ring/core to this ring */
-        float prev_r = RING_RADIUS[r - 1] * ((r == 1) ? 0.7f : 1.0f) + 6.0f;
-        draw_struts(station->pos, prev_r, radius - truss_w * 0.5f - 2.0f, rot, (r == 1) ? 4 : 6,
-                    role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, base_alpha * 0.35f);
-
-        /* Ports and modules */
-        int ports = RING_PORT_COUNT[r];
-        for (int slot = 0; slot < ports; slot++) {
-            float port_angle = ring_port_angle(r, slot) + rot;
-            vec2 port_pos = v2_add(station->pos, v2(cosf(port_angle) * radius, sinf(port_angle) * radius));
-
-            const station_module_t *mod = NULL;
-            for (int m = 0; m < station->module_count; m++) {
-                if (station->modules[m].ring == r && station->modules[m].slot == slot) {
-                    mod = &station->modules[m];
-                    break;
-                }
-            }
-
-            if (mod) {
-                draw_module_at(port_pos, port_angle, mod->type, mod->scaffold, mod->build_progress, station->pos);
-            } else {
-                draw_port_clamp(port_pos, port_angle);
-            }
+    /* Draw corridors: core → first module, between adjacent modules */
+    float core_edge = STATION_CORE_RADIUS * 0.7f;
+    for (int i = 0; i < outer_count; i++) {
+        /* Corridor from core to this module */
+        vec2 toward = v2_sub(mod_positions[i], station->pos);
+        float d = sqrtf(v2_len_sq(toward));
+        if (d > 1.0f) {
+            vec2 core_pt = v2_add(station->pos, v2_scale(toward, core_edge / d));
+            vec2 mod_inner = v2_add(station->pos, v2_scale(toward, (STATION_MODULE_DIST - 22.0f) / d));
+            draw_corridor(core_pt, mod_inner, role_r, role_g, role_b, base_alpha);
         }
+
+        /* Corridor to next module (arc segment) */
+        if (i + 1 < outer_count) {
+            vec2 edge_a = v2_add(station->pos,
+                v2_scale(v2_sub(mod_positions[i], station->pos),
+                         (STATION_MODULE_DIST) / fmaxf(1.0f, sqrtf(v2_dist_sq(mod_positions[i], station->pos)))));
+            vec2 edge_b = v2_add(station->pos,
+                v2_scale(v2_sub(mod_positions[i+1], station->pos),
+                         (STATION_MODULE_DIST) / fmaxf(1.0f, sqrtf(v2_dist_sq(mod_positions[i+1], station->pos)))));
+            draw_corridor(edge_a, edge_b, role_r, role_g, role_b, base_alpha * 0.6f);
+        }
+    }
+
+    /* Draw modules */
+    for (int i = 0; i < outer_count; i++) {
+        const station_module_t *mod = &station->modules[mod_indices[i]];
+        float angle = station_module_angle(i, outer_count);
+        draw_module_at(mod_positions[i], angle, mod->type, mod->scaffold, mod->build_progress, station->pos);
     }
 }
 

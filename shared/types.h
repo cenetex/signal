@@ -388,53 +388,53 @@ static inline commodity_t station_primary_sell(const station_t *st) {
     return (commodity_t)-1;
 }
 
-/* Ring construction constants — sized so modules are M-asteroid scale
- * and a two-ring station is roughly titan-sized. */
-static const int   RING_PORT_COUNT[] = { 0, 5, 8 };    /* core has no ports */
-static const float RING_RADIUS[]     = { 60.0f, 200.0f, 320.0f };
-static const float RING_SPEED[]      = { 0.0f, 0.06f, 0.03f }; /* rad/s (slower at larger scale) */
-static const float RING_GAP_CENTER   = 4.712389f;      /* 270 deg */
-static const float RING_GAP_WIDTH    = 0.698132f;       /* 40 deg */
+/* Station geometry constants */
+static const float STATION_CORE_RADIUS   = 60.0f;   /* core hub visual radius */
+static const float STATION_MODULE_DIST   = 120.0f;  /* distance from core center to module center */
+static const float STATION_GAP_CENTER    = 4.712389f; /* 270 deg — gap at bottom for ships */
+static const float STATION_GAP_WIDTH     = 0.698132f; /* 40 deg total gap */
 
-/* Ring helpers */
-static inline bool station_has_ring(const station_t *st, int ring) {
-    if (ring <= 0) return true; /* core always exists */
+/* Module position: modules are placed sequentially around the arc,
+ * leaving the gap at the bottom. The arc runs from gap_end clockwise
+ * back to gap_start. Each module gets an even slice of the arc. */
+static inline float station_module_angle(int slot, int total_modules) {
+    if (total_modules <= 0) return 0.0f;
+    float arc_start = STATION_GAP_CENTER + STATION_GAP_WIDTH * 0.5f;
+    float arc_span  = TWO_PI_F - STATION_GAP_WIDTH;
+    return arc_start + ((float)slot + 0.5f) * (arc_span / (float)total_modules);
+}
+
+/* World-space position of a module by its slot index. */
+static inline vec2 module_world_pos(const station_t *st, int slot) {
+    /* Count non-structural modules (skip dock, relay at core) */
+    int total = 0;
     for (int i = 0; i < st->module_count; i++) {
-        if (st->modules[i].type == MODULE_RING && st->modules[i].ring == ring
-            && !st->modules[i].scaffold)
-            return true;
+        if (st->modules[i].type != MODULE_DOCK && st->modules[i].type != MODULE_SIGNAL_RELAY)
+            total++;
     }
-    return false;
+    float angle = station_module_angle(slot, total);
+    return v2_add(st->pos, v2(cosf(angle) * STATION_MODULE_DIST, sinf(angle) * STATION_MODULE_DIST));
 }
 
-/* Port angle for a given ring and slot (unrotated). Gap at 270 deg, arc starts at 290 deg. */
+/* Legacy compatibility shims — these will be removed once all callers are updated */
+static const int   RING_PORT_COUNT[] = { 0, 5, 8 };
+static const float RING_RADIUS[]     = { 60.0f, 200.0f, 320.0f };
+static const float RING_SPEED[]      = { 0.0f, 0.06f, 0.03f };
+static const float RING_GAP_CENTER   = 4.712389f;
+static const float RING_GAP_WIDTH    = 0.698132f;
+static const int   MAX_RING_COUNT_LEGACY = 3;
+
+static inline bool station_has_ring(const station_t *st, int ring) {
+    (void)st; (void)ring;
+    return ring <= 0; /* only core "ring" exists in new model */
+}
 static inline float ring_port_angle(int ring, int slot) {
-    int count = RING_PORT_COUNT[ring];
-    if (count <= 0) return 0.0f;
-    float arc_start = RING_GAP_CENTER + RING_GAP_WIDTH * 0.5f;
-    float arc_span  = TWO_PI_F - RING_GAP_WIDTH;
-    return arc_start + ((float)slot + 0.5f) * (arc_span / (float)count);
+    (void)ring;
+    return station_module_angle(slot, 8);
 }
-
-/* World-space position of a module port, accounting for ring rotation. */
-static inline vec2 module_world_pos(const station_t *st, int ring, int slot) {
-    float angle = ring_port_angle(ring, slot) + st->ring_rotation[ring];
-    float r = RING_RADIUS[ring];
-    return v2_add(st->pos, v2(cosf(angle) * r, sinf(angle) * r));
-}
-
 static inline int station_ring_free_slot(const station_t *st, int ring, int port_count) {
-    for (int slot = 0; slot < port_count; slot++) {
-        bool taken = false;
-        for (int i = 0; i < st->module_count; i++) {
-            if (st->modules[i].ring == ring && st->modules[i].slot == slot) {
-                taken = true;
-                break;
-            }
-        }
-        if (!taken) return slot;
-    }
-    return -1;
+    (void)ring; (void)port_count;
+    return st->module_count; /* next slot = end of list */
 }
 
 /* Outpost construction constants (client-shared) */

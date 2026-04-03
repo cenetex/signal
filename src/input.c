@@ -59,24 +59,7 @@ input_intent_t sample_input_intent(void) {
     /* Number keys: context-dependent */
     if (LOCAL_PLAYER.docked && g.build_overlay) {
         const station_t *st = current_station_ptr();
-        /* W/S: cycle ring selection */
-        if (is_key_pressed(SAPP_KEYCODE_W) || is_key_pressed(SAPP_KEYCODE_UP)) {
-            if (g.build_ring > 1) g.build_ring--;
-        }
-        if (is_key_pressed(SAPP_KEYCODE_S) || is_key_pressed(SAPP_KEYCODE_DOWN)) {
-            if (g.build_ring < MAX_RING_COUNT - 1) g.build_ring++;
-        }
-        /* A/D: cycle port on selected ring (-1 = build ring itself) */
-        int ports = RING_PORT_COUNT[g.build_ring];
-        if (is_key_pressed(SAPP_KEYCODE_A) || is_key_pressed(SAPP_KEYCODE_LEFT)) {
-            g.build_slot--;
-            if (g.build_slot < -1) g.build_slot = ports - 1;
-        }
-        if (is_key_pressed(SAPP_KEYCODE_D) || is_key_pressed(SAPP_KEYCODE_RIGHT)) {
-            g.build_slot++;
-            if (g.build_slot >= ports) g.build_slot = -1;
-        }
-        /* Build overlay: 1-8 select module for a port, or Enter to build ring */
+        /* 1-8: pick module type, auto-placed at next slot */
         static const struct { module_type_t type; const char *name; } build_keys[] = {
             { MODULE_FURNACE,      "Furnace (FE)" },
             { MODULE_FURNACE_CU,   "Furnace (CU)" },
@@ -87,38 +70,19 @@ input_intent_t sample_input_intent(void) {
             { MODULE_ORE_BUYER,    "Ore Buyer" },
             { MODULE_SIGNAL_RELAY, "Signal Relay" },
         };
-        if (g.build_slot == -1) {
-            /* Building a ring */
-            if (is_key_pressed(SAPP_KEYCODE_ENTER) || is_key_pressed(SAPP_KEYCODE_KP_ENTER)) {
-                if (!station_has_ring(st, g.build_ring)) {
-                    intent.build_module = true;
-                    intent.build_module_type = MODULE_RING;
-                    intent.build_ring = (uint8_t)g.build_ring;
-                    intent.build_slot = 0xFF;
-                    set_notice("Ring %d construction started.", g.build_ring);
-                    g.build_overlay = false;
-                } else {
-                    set_notice("Ring %d already built.", g.build_ring);
-                }
+        for (int k = 0; k < 8; k++) {
+            if (!is_key_pressed(SAPP_KEYCODE_1 + k)) continue;
+            if (st->module_count >= MAX_MODULES_PER_STATION) {
+                set_notice("Station is full.");
+            } else {
+                intent.build_module = true;
+                intent.build_module_type = build_keys[k].type;
+                intent.build_ring = 1;
+                intent.build_slot = (uint8_t)st->module_count;
+                set_notice("Building %s", build_keys[k].name);
+                g.build_overlay = false;
             }
-        } else {
-            /* Building a module at a port */
-            for (int k = 0; k < 8; k++) {
-                if (!is_key_pressed(SAPP_KEYCODE_1 + k)) continue;
-                if (!station_has_ring(st, g.build_ring)) {
-                    set_notice("Build Ring %d first.", g.build_ring);
-                } else if (st->module_count >= MAX_MODULES_PER_STATION) {
-                    set_notice("No module slots available.");
-                } else {
-                    intent.build_module = true;
-                    intent.build_module_type = build_keys[k].type;
-                    intent.build_ring = (uint8_t)g.build_ring;
-                    intent.build_slot = (uint8_t)g.build_slot;
-                    set_notice("Blueprint: %s at Ring %d Port %d", build_keys[k].name, g.build_ring, g.build_slot);
-                    g.build_overlay = false;
-                }
-                break;
-            }
+            break;
         }
         if (is_key_pressed(SAPP_KEYCODE_ESCAPE) || is_key_pressed(SAPP_KEYCODE_B)
             || is_key_pressed(SAPP_KEYCODE_TAB))
