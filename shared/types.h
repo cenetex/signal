@@ -79,9 +79,6 @@ typedef struct {
     int hold_level;
     int tractor_level;
     bool has_scaffold_kit;
-    /* Towed physical fragments (indices into asteroid array, -1 = empty) */
-    int8_t towed_fragments[8];
-    uint8_t towed_count;
     /* Run stats (reset on death/respawn) */
     float stat_ore_mined;
     float stat_credits_earned;
@@ -119,27 +116,6 @@ typedef enum {
     MODULE_COUNT
 } module_type_t;
 
-static inline const char* module_type_name(module_type_t type) {
-    switch (type) {
-        case MODULE_DOCK:           return "Dock";
-        case MODULE_ORE_BUYER:      return "Ore Buyer";
-        case MODULE_FURNACE:        return "Furnace (FE)";
-        case MODULE_FURNACE_CU:     return "Furnace (CU)";
-        case MODULE_FURNACE_CR:     return "Furnace (CR)";
-        case MODULE_INGOT_SELLER:   return "Ingot Seller";
-        case MODULE_REPAIR_BAY:     return "Repair Bay";
-        case MODULE_SIGNAL_RELAY:   return "Signal Relay";
-        case MODULE_FRAME_PRESS:    return "Frame Press";
-        case MODULE_LASER_FAB:      return "Laser Fab";
-        case MODULE_TRACTOR_FAB:    return "Tractor Fab";
-        case MODULE_CONTRACT_BOARD: return "Contract Board";
-        case MODULE_ORE_SILO:       return "Ore Silo";
-        case MODULE_BLUEPRINT_DESK: return "Blueprint Desk";
-        case MODULE_RING:           return "Ring Truss";
-        default:                    return "Unknown";
-    }
-}
-
 typedef struct {
     module_type_t type;
     uint8_t ring;           /* which ring tier (0xFF=core, 1=inner, 2=mid, 3=outer) */
@@ -173,7 +149,6 @@ typedef struct {
     int arm_count;                    /* number of active rings with rotation */
     float arm_rotation[MAX_ARMS];     /* per-ring rotation angle (radians) */
     float arm_speed[MAX_ARMS];        /* per-ring rotation speed (rad/s) */
-    char hail_message[256];           /* AI-authored station message of the day */
 } station_t;
 
 /* ------------------------------------------------------------------ */
@@ -303,8 +278,6 @@ typedef struct {
     float noise_mix;
 } audio_voice_t;
 
-typedef struct frontier_synth frontier_synth_t;
-
 typedef struct {
     bool valid;
     uint32_t rng;
@@ -313,7 +286,6 @@ typedef struct {
     float mining_tick_cooldown;
     audio_voice_t voices[AUDIO_VOICE_COUNT];
     float mix_buffer[AUDIO_MIX_FRAMES * 2];
-    frontier_synth_t* frontier_synth; /* optional: set by client for frontier music */
 } audio_state_t;
 
 /* Economy constants (shared between client and server) */
