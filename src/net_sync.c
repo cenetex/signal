@@ -194,6 +194,20 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
      * confirmed yet.  Skip overwriting mutable ship state to prevent
      * flicker from stale PLAYER_SHIP messages. */
     if (g.action_predict_timer <= 0.0f) {
+        /* Detect death: hull was critical, now full + docked + cargo cleared */
+        if (sp->ship.hull <= 0.01f && state->hull > 10.0f && state->docked
+            && g.death_screen_timer <= 0.0f) {
+            g.death_screen_timer = 4.0f;
+            g.death_ore_mined = sp->ship.stat_ore_mined;
+            g.death_credits_earned = sp->ship.stat_credits_earned;
+            g.death_credits_spent = sp->ship.stat_credits_spent;
+            g.death_asteroids_fractured = sp->ship.stat_asteroids_fractured;
+            /* Reset run stats */
+            sp->ship.stat_ore_mined = 0.0f;
+            sp->ship.stat_credits_earned = 0.0f;
+            sp->ship.stat_credits_spent = 0.0f;
+            sp->ship.stat_asteroids_fractured = 0;
+        }
         sp->ship.hull = state->hull;
         sp->ship.credits = state->credits;
         sp->ship.mining_level = (int)state->mining_level;

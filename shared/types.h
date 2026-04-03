@@ -79,6 +79,11 @@ typedef struct {
     int hold_level;
     int tractor_level;
     bool has_scaffold_kit;
+    /* Run stats (reset on death/respawn) */
+    float stat_ore_mined;
+    float stat_credits_earned;
+    float stat_credits_spent;
+    int stat_asteroids_fractured;
 } ship_t;
 
 typedef enum {
@@ -486,6 +491,7 @@ typedef enum {
     SIM_EVENT_DAMAGE,
     SIM_EVENT_OUTPOST_PLACED,
     SIM_EVENT_CONTRACT_COMPLETE,
+    SIM_EVENT_DEATH,
 } sim_event_type_t;
 
 typedef struct {
@@ -498,6 +504,12 @@ typedef struct {
         struct { float amount; } damage;
         struct { int slot; } outpost_placed;
         struct { contract_action_t action; } contract_complete;
+        struct {
+            float ore_mined;
+            float credits_earned;
+            float credits_spent;
+            int asteroids_fractured;
+        } death;
     };
 } sim_event_t;
 

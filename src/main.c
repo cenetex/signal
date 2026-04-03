@@ -210,6 +210,15 @@ static void process_sim_events(const sim_events_t *events) {
                 else if (ev->contract_complete.action == CONTRACT_DESTROY)
                     set_notice("Target destroyed. Contract complete.");
                 break;
+            case SIM_EVENT_DEATH:
+                if (ev->player_id == g.local_player_slot) {
+                    g.death_screen_timer = 4.0f;
+                    g.death_ore_mined = ev->death.ore_mined;
+                    g.death_credits_earned = ev->death.credits_earned;
+                    g.death_credits_spent = ev->death.credits_spent;
+                    g.death_asteroids_fractured = ev->death.asteroids_fractured;
+                }
+                break;
             default:
                 break;
         }
@@ -235,6 +244,13 @@ static void onboarding_per_frame(void) {
 static void sim_step(float dt) {
     reset_step_feedback();
     audio_step(&g.audio, dt);
+
+    /* Death screen countdown — block all input while active */
+    if (g.death_screen_timer > 0.0f) {
+        g.death_screen_timer = fmaxf(0.0f, g.death_screen_timer - dt);
+        consume_pressed_input();
+        return;
+    }
 
     input_intent_t intent = sample_input_intent();
     if (intent.reset && !g.multiplayer_enabled) {

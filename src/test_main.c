@@ -686,9 +686,12 @@ TEST(test_bug10_damage_event_has_amount) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
-    /* Place ship above station, moving fast into it */
-    w.players[0].ship.pos = v2(w.stations[0].pos.x, w.stations[0].pos.y + 80.0f);
-    w.players[0].ship.vel = v2(0.0f, -2000.0f);
+    /* Place ship near a ring 1 module and moving fast into it.
+     * Ring 1 modules orbit at 140.0f radius; target the signal relay (slot 0)
+     * which at rotation=0 is at angle=0, so position is station.x + 140. */
+    vec2 mod_pos = module_world_pos_ring(&w.stations[0], 1, 0);
+    w.players[0].ship.pos = v2(mod_pos.x + 60.0f, mod_pos.y);
+    w.players[0].ship.vel = v2(-2000.0f, 0.0f);
     /* Damage happens on first collision tick — check events immediately */
     bool found = false;
     for (int tick = 0; tick < 10; tick++) {
@@ -1570,8 +1573,9 @@ TEST(test_scenario_full_mining_cycle) {
     float ore = ship_raw_ore_total(&w.players[0].ship);
     ASSERT(ore > 0.0f);
 
-    /* Dock at station 0 (refinery) */
-    w.players[0].ship.pos = w.stations[0].pos;
+    /* Dock at station 0 (refinery) — position at dock port for instant dock.
+     * Dock module is at ring 1, slot 1. */
+    w.players[0].ship.pos = module_world_pos_ring(&w.stations[0], 1, 1);
     w.players[0].ship.vel = v2(0.0f, 0.0f);
     w.players[0].nearby_station = 0;
     w.players[0].in_dock_range = true;
@@ -1721,8 +1725,8 @@ TEST(test_scenario_upgrade_requires_products) {
     w.players[0].input.interact = false;
     ASSERT(!w.players[0].docked);
 
-    /* Dock at station 2 */
-    w.players[0].ship.pos = w.stations[2].pos;
+    /* Dock at station 2 — position at dock port (ring 1, slot 1) */
+    w.players[0].ship.pos = module_world_pos_ring(&w.stations[2], 1, 1);
     w.players[0].ship.vel = v2(0.0f, 0.0f);
     w.players[0].nearby_station = 2;
     w.players[0].in_dock_range = true;
@@ -1773,8 +1777,10 @@ TEST(test_scenario_emergency_recovery) {
     /* Set hull to 1.0 (near death) */
     w.players[0].ship.hull = 1.0f;
 
-    /* Give high velocity towards station 0 to trigger collision damage */
-    w.players[0].ship.pos = v2(w.stations[0].pos.x + 80.0f, w.stations[0].pos.y);
+    /* Give high velocity towards a ring 1 module to trigger collision damage.
+     * Signal relay is at ring 1, slot 0. */
+    vec2 mod = module_world_pos_ring(&w.stations[0], 1, 0);
+    w.players[0].ship.pos = v2(mod.x + 60.0f, mod.y);
     w.players[0].ship.vel = v2(-2000.0f, 0.0f);
 
     /* Run sim for a few ticks */
@@ -3181,22 +3187,22 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     world_t w = {0};
     world_reset(&w);
     ASSERT(w.stations[0].module_count > 3);
-    station_module_t orig = w.stations[0].modules[3]; /* first ring 1 module */
+    station_module_t orig = w.stations[0].modules[2]; /* ORE_BUYER at ring 1, slot 2 */
     ASSERT(orig.type == MODULE_ORE_BUYER);
     ASSERT(orig.ring == 1);
     ASSERT(world_save(&w, "/tmp/test_modules.sav"));
     world_t loaded = {0};
     ASSERT(world_load(&loaded, "/tmp/test_modules.sav"));
-    station_module_t restored = loaded.stations[0].modules[3];
+    station_module_t restored = loaded.stations[0].modules[2];
     ASSERT_EQ_INT((int)restored.type, (int)orig.type);
     ASSERT_EQ_INT((int)restored.ring, (int)orig.ring);
     ASSERT_EQ_INT((int)restored.slot, (int)orig.slot);
     ASSERT_EQ_INT((int)restored.scaffold, (int)orig.scaffold);
     ASSERT_EQ_FLOAT(restored.build_progress, orig.build_progress, 0.001f);
-    station_module_t mod4 = loaded.stations[0].modules[4];
-    ASSERT(mod4.type == MODULE_FURNACE);
-    ASSERT_EQ_INT((int)mod4.ring, 1);
-    ASSERT_EQ_INT((int)mod4.slot, 2);
+    station_module_t mod3 = loaded.stations[0].modules[3];
+    ASSERT(mod3.type == MODULE_FURNACE);
+    ASSERT_EQ_INT((int)mod3.ring, 2);
+    ASSERT_EQ_INT((int)mod3.slot, 1);
     remove("/tmp/test_modules.sav");
 }
 
@@ -3442,16 +3448,16 @@ TEST(test_bug90_station_bounce_no_extra_energy) {
     world_t w = {0};
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
-    /* Asteroid approaching station 0 at low speed */
+    /* Asteroid approaching a ring 1 module at low speed.
+     * Stations use per-module collision now (no physical core). */
     w.asteroids[0].active = true;
     w.asteroids[0].tier = ASTEROID_TIER_M;
     w.asteroids[0].radius = 25.0f;
     w.asteroids[0].hp = 100.0f; w.asteroids[0].max_hp = 100.0f;
-    /* Position just overlapping station 0 (at y = station_y + radius + asteroid_radius - overlap) */
-    float s0y = w.stations[0].pos.y;
-    float s0r = w.stations[0].radius;
-    w.asteroids[0].pos = v2(w.stations[0].pos.x, s0y + s0r + 25.0f - 5.0f);
-    w.asteroids[0].vel = v2(0.0f, -10.0f); /* moving toward station */
+    /* Position just above the signal relay (ring 1, slot 0) */
+    vec2 mod_pos = module_world_pos_ring(&w.stations[0], 1, 0);
+    w.asteroids[0].pos = v2(mod_pos.x, mod_pos.y + 34.0f + 25.0f - 5.0f);
+    w.asteroids[0].vel = v2(0.0f, -10.0f); /* moving toward module */
     float speed_before = v2_len(w.asteroids[0].vel);
     for (int i = 0; i < 5; i++) world_sim_step(&w, SIM_DT);
     float speed_after = v2_len(w.asteroids[0].vel);

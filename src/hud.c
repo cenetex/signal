@@ -424,6 +424,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
 /* ------------------------------------------------------------------ */
 
 void draw_hud_panels(void) {
+    if (g.death_screen_timer > 0.0f) return;
     float top_x = 0.0f;
     float top_y = 0.0f;
     float top_w = 0.0f;
@@ -520,6 +521,64 @@ void draw_hud_panels(void) {
 void draw_hud(void) {
     float screen_w = ui_screen_width();
     float screen_h = ui_screen_height();
+
+    /* --- Death screen overlay --- */
+    if (g.death_screen_timer > 0.0f) {
+        /* Dark overlay */
+        float alpha = fminf(g.death_screen_timer, 1.0f);
+        sgl_begin_quads();
+        sgl_c4f(0.0f, 0.0f, 0.0f, 0.7f * alpha);
+        sgl_v2f(0.0f, 0.0f);
+        sgl_v2f(screen_w, 0.0f);
+        sgl_v2f(screen_w, screen_h);
+        sgl_v2f(0.0f, screen_h);
+        sgl_end();
+
+        float cx = screen_w * 0.5f;
+        float cy = screen_h * 0.5f;
+
+        /* Title */
+        sdtx_canvas(screen_w * 2.0f, screen_h * 2.0f);
+        sdtx_origin(0.0f, 0.0f);
+
+        const char *title = "SHIP DESTROYED";
+        float title_w = (float)strlen(title) * 8.0f;
+        sdtx_pos((cx - title_w * 0.5f) / 8.0f, (cy - 50.0f) / 8.0f);
+        sdtx_color3b(255, 80, 60);
+        sdtx_puts(title);
+
+        /* Stats */
+        float row = (cy - 20.0f) / 8.0f;
+        float left = (cx - 100.0f) / 8.0f;
+        sdtx_color3b(180, 180, 180);
+
+        sdtx_pos(left, row);
+        sdtx_printf("Ore mined:    %8.0f", g.death_ore_mined);
+        row += 2.0f;
+
+        sdtx_pos(left, row);
+        sdtx_printf("Rocks broken: %8d", g.death_asteroids_fractured);
+        row += 2.0f;
+
+        sdtx_pos(left, row);
+        sdtx_color3b(120, 200, 120);
+        sdtx_printf("Credits earned:%7.0f", g.death_credits_earned);
+        row += 2.0f;
+
+        sdtx_pos(left, row);
+        sdtx_color3b(200, 120, 120);
+        sdtx_printf("Credits spent: %7.0f", g.death_credits_spent);
+        row += 3.0f;
+
+        /* Prompt */
+        sdtx_color3b(100, 100, 100);
+        const char *prompt = "respawning...";
+        float prompt_w = (float)strlen(prompt) * 8.0f;
+        sdtx_pos((cx - prompt_w * 0.5f) / 8.0f, row);
+        sdtx_puts(prompt);
+
+        return; /* skip normal HUD */
+    }
     bool compact = ui_is_compact();
     float top_x = 0.0f;
     float top_y = 0.0f;

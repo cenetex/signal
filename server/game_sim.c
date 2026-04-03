@@ -1511,6 +1511,7 @@ static bool try_spend_credits(ship_t *s, float amount) {
     if (amount <= 0.0f) return true;
     if (s->credits + 0.01f < amount) return false;
     s->credits = fmaxf(0.0f, s->credits - amount);
+    s->stat_credits_spent += amount;
     return true;
 }
 
@@ -1555,9 +1556,22 @@ static void launch_ship(world_t *w, server_player_t *sp) {
 }
 
 static void emergency_recover_ship(world_t *w, server_player_t *sp) {
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_DEATH, .player_id = sp->id,
+        .death = {
+            .ore_mined = sp->ship.stat_ore_mined,
+            .credits_earned = sp->ship.stat_credits_earned,
+            .credits_spent = sp->ship.stat_credits_spent,
+            .asteroids_fractured = sp->ship.stat_asteroids_fractured,
+        }
+    });
     clear_ship_cargo(&sp->ship);
     sp->ship.hull = ship_max_hull(&sp->ship);
     sp->ship.angle = PI_F * 0.5f;
+    sp->ship.stat_ore_mined = 0.0f;
+    sp->ship.stat_credits_earned = 0.0f;
+    sp->ship.stat_credits_spent = 0.0f;
+    sp->ship.stat_asteroids_fractured = 0;
     dock_ship(w, sp);
     SIM_LOG("[sim] player %d emergency recovered\n", sp->id);
 }
@@ -1710,6 +1724,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
 
     if (payout > 0.01f) {
         sp->ship.credits += payout;
+        sp->ship.stat_credits_earned += payout;
         SIM_LOG("[sim] player %d sold cargo for %.0f cr\n", sp->id, payout);
         emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
     }
@@ -1807,7 +1822,6 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     ship_collision_count = 0;
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_collides(&w->stations[i])) continue;
-        resolve_ship_circle(w, sp, w->stations[i].pos, w->stations[i].radius + 4.0f);
         resolve_module_collisions(w, sp, &w->stations[i]);
     }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -1822,9 +1836,17 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
 }
 
 
-/* Dock port position: core center (dock module lives at core). */
+/* Find the first MODULE_DOCK on a station and return its world position.
+ * Falls back to station center if no dock module exists. */
 static vec2 dock_port_pos(const station_t *st) {
-    return st->pos;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_DOCK && !st->modules[i].scaffold) {
+            int ring = st->modules[i].ring;
+            if (ring >= 1 && ring <= STATION_NUM_RINGS)
+                return module_world_pos_ring(st, ring, st->modules[i].slot);
+        }
+    }
+    return st->pos; /* fallback */
 }
 
 static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
@@ -1928,6 +1950,7 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             float recovered = fminf(a->ore, cs);
             if (recovered <= 0.0f) continue;
             sp->ship.cargo[a->commodity] += recovered;
+            sp->ship.stat_ore_mined += recovered;
             cs -= recovered;
             a->ore -= recovered;
             if (a->ore <= 0.01f) {
@@ -1970,8 +1993,10 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
                 mined = fminf(mined, a->hp);
                 a->hp -= mined;
                 a->net_dirty = true;
-                if (a->hp <= 0.01f)
+                if (a->hp <= 0.01f) {
                     fracture_asteroid(w, sp->hover_asteroid, normal);
+                    sp->ship.stat_asteroids_fractured++;
+                }
             }
         }
     } else {
@@ -2003,10 +2028,10 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     if (intent->interact) {
         if (sp->docked) { launch_ship(w, sp); return; }
         if (sp->in_dock_range) {
-            /* If already near the core, dock instantly. Otherwise start approach. */
+            /* If close to the dock module, dock instantly. Otherwise start approach. */
             vec2 port = dock_port_pos(&w->stations[sp->nearby_station]);
             float d = sqrtf(v2_dist_sq(sp->ship.pos, port));
-            if (d <= w->stations[sp->nearby_station].radius + 30.0f) {
+            if (d <= MODULE_COLLISION_RADIUS + 30.0f) {
                 dock_ship(w, sp);
             } else {
                 sp->docking_approach = true;
@@ -2357,10 +2382,10 @@ static void resolve_asteroid_module_collision(asteroid_t *a, vec2 mod_pos, float
     if (dist < 0.001f) { dist = 0.001f; delta = v2(1.0f, 0.0f); }
     vec2 normal = v2_scale(delta, 1.0f / dist);
     float overlap = min_dist - dist;
-    a->pos = v2_add(a->pos, v2_scale(normal, overlap + 4.0f));
+    a->pos = v2_add(a->pos, v2_scale(normal, overlap + 1.0f));
     float vel_along = v2_dot(a->vel, normal);
     if (vel_along < 0.0f)
-        a->vel = v2_sub(a->vel, v2_scale(normal, vel_along * 1.6f));
+        a->vel = v2_sub(a->vel, v2_scale(normal, vel_along * 1.2f));
     a->net_dirty = true;
 }
 
@@ -2369,32 +2394,8 @@ static void resolve_asteroid_station_collisions(world_t *w) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
         for (int s = 0; s < MAX_STATIONS; s++) {
-            /* Core collision */
-            float min_dist = a->radius + w->stations[s].radius;
-            vec2 delta = v2_sub(a->pos, w->stations[s].pos);
-            float dist_sq = v2_len_sq(delta);
-            if (dist_sq < min_dist * min_dist) {
-                float dist = sqrtf(dist_sq);
-                if (dist < 0.001f) { dist = 0.001f; delta = v2(1.0f, 0.0f); }
-                vec2 normal = v2_scale(delta, 1.0f / dist);
-                float overlap = min_dist - dist;
-                float push = overlap + 8.0f;
-                a->pos = v2_add(a->pos, v2_scale(normal, push));
-                float vel_along = v2_dot(a->vel, normal);
-                float impact_speed = fabsf(vel_along);
-                if (vel_along < 0.0f)
-                    a->vel = v2_sub(a->vel, v2_scale(normal, vel_along * 1.6f));
-                if (impact_speed > 100.0f) {
-                    float damage = impact_speed * 0.3f;
-                    a->hp -= damage;
-                    a->net_dirty = true;
-                    if (a->hp <= 0.0f) {
-                        vec2 outward = v2_scale(normal, -1.0f);
-                        fracture_asteroid(w, i, outward);
-                    }
-                }
-            }
-            /* Module collisions */
+            if (!station_exists(&w->stations[s])) continue;
+            /* Module collisions only — no physical core */
             for (int m = 0; m < w->stations[s].module_count; m++) {
                 int ring = w->stations[s].modules[m].ring;
                 if (ring < 1 || ring > STATION_NUM_RINGS) continue;
@@ -2678,13 +2679,13 @@ void world_reset(world_t *w) {
     w->stations[0].base_price[COMMODITY_CUPRITE_INGOT] = 32.0f;
     w->stations[0].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
     w->stations[0].signal_range = 18000.0f;
-    add_module_at(&w->stations[0], MODULE_DOCK, 0xFF, 0);        /* core */
-    add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 0xFF, 0);
-    /* Ring 1 (triangle): slot 0 = gap, slots 1-2 filled.
-     * Repair service provided by core (starter stations only). */
-    add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 0xFF, 0);
-    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 1, 1);
-    add_module_at(&w->stations[0], MODULE_FURNACE, 1, 2);
+    /* Ring 1 (triangle): signal relay + dock + ore buyer */
+    add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 0);
+    add_module_at(&w->stations[0], MODULE_DOCK, 1, 1);
+    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 1, 2);
+    /* Ring 2: furnace + repair */
+    add_module_at(&w->stations[0], MODULE_FURNACE, 2, 1);
+    add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 2, 2);
     w->stations[0].arm_count = 1;
     w->stations[0].arm_speed[0] = 0.05f;  /* ring 1 speed */
     rebuild_station_services(&w->stations[0]);
@@ -2701,16 +2702,16 @@ void world_reset(world_t *w) {
     w->stations[1].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
     w->stations[1].base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
     w->stations[1].base_price[COMMODITY_FRAME] = 20.0f;
-    add_module_at(&w->stations[1], MODULE_DOCK, 0xFF, 0);
-    add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 0xFF, 0);
-    /* Ring 1 (triangle): slot 0 = gap */
-    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 1, 1);
-    add_module_at(&w->stations[1], MODULE_REPAIR_BAY, 1, 2);
-    /* Ring 2 (hexagon): slot 0 = gap */
-    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 2, 1);
-    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 2, 2);
-    add_module_at(&w->stations[1], MODULE_LASER_FAB, 2, 3);
-    add_module_at(&w->stations[1], MODULE_TRACTOR_FAB, 2, 4);
+    /* Ring 1: signal + dock + frame press */
+    add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 1, 0);
+    add_module_at(&w->stations[1], MODULE_DOCK, 1, 1);
+    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 1, 2);
+    /* Ring 2: services + fabrication */
+    add_module_at(&w->stations[1], MODULE_REPAIR_BAY, 2, 1);
+    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 2, 2);
+    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 2, 3);
+    add_module_at(&w->stations[1], MODULE_LASER_FAB, 2, 4);
+    add_module_at(&w->stations[1], MODULE_TRACTOR_FAB, 2, 5);
     w->stations[1].arm_count = 2;
     w->stations[1].arm_speed[0] = 0.05f;  /* ring 1 */
     w->stations[1].arm_speed[1] = 0.03f;  /* ring 2 — slower */
@@ -2731,23 +2732,22 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
     w->stations[2].base_price[COMMODITY_LASER_MODULE] = 28.0f;
     w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
-    add_module_at(&w->stations[2], MODULE_DOCK, 0xFF, 0);
-    add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 0xFF, 0);
-    /* Ring 1 (triangle): slot 0 = gap */
-    add_module_at(&w->stations[2], MODULE_LASER_FAB, 1, 1);
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 1, 2);
-    /* Ring 2 (hexagon): slot 0 = gap */
-    add_module_at(&w->stations[2], MODULE_REPAIR_BAY, 2, 1);
-    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 2, 2);
-    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 2, 3);
-    add_module_at(&w->stations[2], MODULE_FURNACE, 2, 4);
-    add_module_at(&w->stations[2], MODULE_FURNACE_CU, 2, 5);
-    /* Ring 3 (nonagon): slot 0 = gap */
-    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 3, 1);
-    add_module_at(&w->stations[2], MODULE_ORE_BUYER, 3, 2);
-    add_module_at(&w->stations[2], MODULE_FRAME_PRESS, 3, 3);
-    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 4);
-    add_module_at(&w->stations[2], MODULE_INGOT_SELLER, 3, 5);
+    /* Ring 1: signal + dock + laser fab */
+    add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 0);
+    add_module_at(&w->stations[2], MODULE_DOCK, 1, 1);
+    add_module_at(&w->stations[2], MODULE_LASER_FAB, 1, 2);
+    /* Ring 2: production */
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 1);
+    add_module_at(&w->stations[2], MODULE_REPAIR_BAY, 2, 2);
+    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 2, 3);
+    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 2, 4);
+    add_module_at(&w->stations[2], MODULE_FURNACE, 2, 5);
+    /* Ring 3: heavy industry */
+    add_module_at(&w->stations[2], MODULE_FURNACE_CU, 3, 1);
+    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 3, 2);
+    add_module_at(&w->stations[2], MODULE_ORE_BUYER, 3, 3);
+    add_module_at(&w->stations[2], MODULE_FRAME_PRESS, 3, 4);
+    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 5);
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[0] = 0.05f;  /* ring 1 — fast */
     w->stations[2].arm_speed[1] = 0.03f;  /* ring 2 — medium */

@@ -118,6 +118,12 @@ typedef struct {
         bool complete;       /* all steps done — stop showing hints */
         bool loaded;         /* state loaded from localStorage */
     } onboarding;
+    /* --- Death screen --- */
+    float death_screen_timer;
+    float death_ore_mined;
+    float death_credits_earned;
+    float death_credits_spent;
+    int death_asteroids_fractured;
     /* --- Build mode --- */
     bool placing_outpost;    /* undocked: outpost placement */
     bool build_overlay;      /* docked: module build menu open */
