@@ -273,19 +273,32 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         }
         if (mod_count == 0) continue;
 
-        vec2 positions[MAX_MODULES_PER_STATION];
-        for (int i = 0; i < mod_count; i++) {
-            int s = station->modules[mod_idx[i]].slot;
-            positions[i] = module_world_pos_ring(station, ring, s);
+        /* Sort modules by slot (insertion sort, small N) */
+        for (int i = 1; i < mod_count; i++) {
+            int key = mod_idx[i];
+            int j = i - 1;
+            while (j >= 0 && station->modules[mod_idx[j]].slot > station->modules[key].slot) {
+                mod_idx[j + 1] = mod_idx[j]; j--;
+            }
+            mod_idx[j + 1] = key;
         }
 
-        /* Energy tethers between adjacent modules */
+        vec2 positions[MAX_MODULES_PER_STATION];
+        int slot_ids[MAX_MODULES_PER_STATION];
         for (int i = 0; i < mod_count; i++) {
-            int next = (i + 1) % mod_count;
-            if (mod_count < slots && next == 0) continue;
-            if (mod_count >= 2 && !(mod_count < slots && next == 0))
-                draw_energy_tether(positions[i], positions[next], role_r, role_g, role_b, base_alpha * 0.7f);
+            slot_ids[i] = station->modules[mod_idx[i]].slot;
+            positions[i] = module_world_pos_ring(station, ring, slot_ids[i]);
         }
+
+        /* Energy tethers between adjacent occupied slots only.
+         * Don't wrap across the gap (slot 0). */
+        for (int i = 0; i + 1 < mod_count; i++) {
+            if (slot_ids[i + 1] - slot_ids[i] == 1)
+                draw_energy_tether(positions[i], positions[i + 1], role_r, role_g, role_b, base_alpha * 0.7f);
+        }
+        /* Wrap: last→first only if ring is completely full */
+        if (mod_count == slots)
+            draw_energy_tether(positions[mod_count - 1], positions[0], role_r, role_g, role_b, base_alpha * 0.7f);
 
         /* Modules */
         for (int i = 0; i < mod_count; i++) {
