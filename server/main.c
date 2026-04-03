@@ -124,10 +124,12 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 sp->in_dock_range = old->in_dock_range;
                 memcpy(sp->session_token, token, 8);
                 sp->session_ready = true;
-                /* Clear the grace slot */
+                /* Clear the grace slot and broadcast LEAVE so clients drop the ghost */
                 old->connected = false;
                 old->grace_period = false;
                 old->conn = NULL;
+                uint8_t leave_old[] = { NET_MSG_LEAVE, (uint8_t)reattach };
+                broadcast(leave_old, 2);
                 printf("[server] player %d: reconnected (was slot %d)\n", pid, reattach);
             } else {
                 memcpy(world.players[pid].session_token, token, 8);
