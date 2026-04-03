@@ -925,7 +925,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         for (int slot = 0; slot < 3; slot++) {
             if (nearest[slot] < 0) continue;
             contract_t *ct = &g.world.contracts[nearest[slot]];
-            float cprice = ct->base_price * (1.0f + ct->age / 300.0f * 0.2f);
+            float cprice = ct->base_price * (1.0f + fminf(ct->age / 300.0f, 1.0f) * 0.2f);
             float line_y = cy + 32.0f + (float)shown * 20.0f;
             bool tracked = (g.tracked_contract == nearest[slot]);
             /* Action-based pip color */

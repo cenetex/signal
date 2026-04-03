@@ -269,7 +269,7 @@ void begin_module_construction(world_t *w, station_t *st, int station_idx, modul
                 .station_index = (uint8_t)station_idx,
                 .commodity = material,
                 .quantity_needed = cost,
-                .base_price = 25.0f, .age = 0.0f,
+                .base_price = st->base_price[material] * 1.15f, .age = 0.0f,
                 .target_index = -1, .claimed_by = -1,
             };
             break;
@@ -430,7 +430,7 @@ int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
                 .station_index = (uint8_t)slot,
                 .commodity = COMMODITY_FRAME,
                 .quantity_needed = SCAFFOLD_MATERIAL_NEEDED,
-                .base_price = 25.0f, .age = 0.0f,
+                .base_price = 23.0f, .age = 0.0f,
                 .target_index = -1, .claimed_by = -1,
             };
             break;
@@ -1450,7 +1450,7 @@ static void generate_npc_distress_contracts(world_t *w) {
                     .station_index = (uint8_t)npc->home_station,
                     .target_pos = w->asteroids[blocker].pos,
                     .target_index = blocker,
-                    .base_price = 30.0f, .age = 0.0f,
+                    .base_price = 20.0f, .age = 0.0f,
                     .claimed_by = -1,
                 };
                 break;
@@ -2251,8 +2251,8 @@ static void resolve_asteroid_station_collisions(world_t *w) {
 /* ================================================================== */
 
 float contract_price(const contract_t *c) {
-    /* Price escalates with age: +20% per 5 minutes */
-    float escalation = 1.0f + (c->age / 300.0f) * 0.2f;
+    /* Price escalates with age: +20% per 5 minutes, capped at +20% */
+    float escalation = 1.0f + fminf(c->age / 300.0f, 1.0f) * 0.2f;
     return c->base_price * escalation;
 }
 
@@ -2328,7 +2328,7 @@ static void step_contracts(world_t *w, float dt) {
                     .station_index = (uint8_t)s,
                     .commodity = module_build_material(st->modules[m].type),
                     .quantity_needed = remaining,
-                    .base_price = 25.0f,
+                    .base_price = st->base_price[module_build_material(st->modules[m].type)] * 1.15f,
                     .target_index = -1, .claimed_by = -1,
                 };
                 break;
@@ -2344,7 +2344,7 @@ static void step_contracts(world_t *w, float dt) {
                     .station_index = (uint8_t)s,
                     .commodity = COMMODITY_FRAME,
                     .quantity_needed = remaining,
-                    .base_price = 25.0f,
+                    .base_price = 23.0f,
                     .target_index = -1, .claimed_by = -1,
                 };
             }
@@ -2375,10 +2375,10 @@ static void step_contracts(world_t *w, float dt) {
 
         /* Priority 4: ingot buffer deficit (for production stations) */
         if (!need.active) {
-            struct { module_type_t mod; commodity_t ingot; float price; } checks[] = {
-                { MODULE_FRAME_PRESS, COMMODITY_FERRITE_INGOT, 20.0f },
-                { MODULE_LASER_FAB, COMMODITY_CUPRITE_INGOT, 22.0f },
-                { MODULE_TRACTOR_FAB, COMMODITY_CRYSTAL_INGOT, 22.0f },
+            struct { module_type_t mod; commodity_t ingot; } checks[] = {
+                { MODULE_FRAME_PRESS, COMMODITY_FERRITE_INGOT },
+                { MODULE_LASER_FAB, COMMODITY_CUPRITE_INGOT },
+                { MODULE_TRACTOR_FAB, COMMODITY_CRYSTAL_INGOT },
             };
             float worst_deficit = 0.0f;
             int worst_idx = -1;
@@ -2393,7 +2393,7 @@ static void step_contracts(world_t *w, float dt) {
                     .station_index = (uint8_t)s,
                     .commodity = checks[worst_idx].ingot,
                     .quantity_needed = worst_deficit,
-                    .base_price = checks[worst_idx].price,
+                    .base_price = st->base_price[checks[worst_idx].ingot] * 1.15f,
                     .target_index = -1, .claimed_by = -1,
                 };
             }
