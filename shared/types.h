@@ -406,6 +406,22 @@ static inline bool station_has_ring(const station_t *st, int ring) {
     return false;
 }
 
+/* Port angle for a given ring and slot (unrotated). Gap at 270 deg, arc starts at 290 deg. */
+static inline float ring_port_angle(int ring, int slot) {
+    int count = RING_PORT_COUNT[ring];
+    if (count <= 0) return 0.0f;
+    float arc_start = RING_GAP_CENTER + RING_GAP_WIDTH * 0.5f;
+    float arc_span  = TWO_PI_F - RING_GAP_WIDTH;
+    return arc_start + ((float)slot + 0.5f) * (arc_span / (float)count);
+}
+
+/* World-space position of a module port, accounting for ring rotation. */
+static inline vec2 module_world_pos(const station_t *st, int ring, int slot) {
+    float angle = ring_port_angle(ring, slot) + st->ring_rotation[ring];
+    float r = RING_RADIUS[ring];
+    return v2_add(st->pos, v2(cosf(angle) * r, sinf(angle) * r));
+}
+
 static inline int station_ring_free_slot(const station_t *st, int ring, int port_count) {
     for (int slot = 0; slot < port_count; slot++) {
         bool taken = false;
