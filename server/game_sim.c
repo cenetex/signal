@@ -268,7 +268,7 @@ void begin_module_construction_at(world_t *w, station_t *st, int station_idx, mo
         }
     }
     SIM_LOG("[sim] began construction of module %d at station %d ring %d slot %d\n",
-            type, station_idx, ring, slot);
+            type, station_idx, arm, chain_pos);
 }
 
 void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type) {
