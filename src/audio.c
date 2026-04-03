@@ -1,6 +1,7 @@
 #include <math.h>
 #include <string.h>
 #include "audio.h"
+#include "music.h"
 #include "sokol_audio.h"
 #include "sokol_log.h"
 
@@ -139,6 +140,16 @@ void audio_generate_stream(audio_state_t* a) {
                 int base = fi * channels;
                 a->mix_buffer[base + 0] = clampf(left * 0.75f, -1.0f, 1.0f);
                 a->mix_buffer[base + 1] = clampf(right * 0.75f, -1.0f, 1.0f);
+            }
+        }
+
+        /* Mix frontier synth (adds to existing buffer) */
+        if (a->frontier_synth) {
+            frontier_synth_render(a->frontier_synth, a->mix_buffer, frames_to_mix, channels);
+            /* Re-clamp after mixing */
+            for (int i = 0; i < frames_to_mix * channels; i++) {
+                if (a->mix_buffer[i] > 1.0f) a->mix_buffer[i] = 1.0f;
+                else if (a->mix_buffer[i] < -1.0f) a->mix_buffer[i] = -1.0f;
             }
         }
 

@@ -246,10 +246,10 @@
         var sig = 0;
         try { sig = Module._get_signal_strength(); } catch(e) { return; }
 
-        /* Music: silent below 0.20, fades in to full at 0.80 */
+        /* Music: silent below 0.50 (the gap), fades in to full at 0.80 */
         var vol = 0;
-        if (sig > 0.20) {
-          vol = Math.min(1.0, (sig - 0.20) / 0.60);
+        if (sig > 0.50) {
+          vol = Math.min(1.0, (sig - 0.50) / 0.30);
         }
         musicAudio.volume = vol * musicVolume;
       }

@@ -362,6 +362,8 @@ static void init(void) {
     });
 
     audio_init(&g.audio);
+    frontier_synth_init(&g.frontier_synth, saudio_sample_rate());
+    g.audio.frontier_synth = &g.frontier_synth;
 
     g.pass_action.colors[0].load_action = SG_LOADACTION_CLEAR;
     g.pass_action.colors[0].clear_value = (sg_color){ 0.018f, 0.024f, 0.045f, 1.0f };
@@ -551,6 +553,7 @@ static void render_world(void) {
         }
     }
     draw_beam();
+    draw_towed_tethers();
     draw_ship_tractor_field();
     draw_ship();
     draw_npc_ships();
@@ -680,6 +683,10 @@ static void frame(void) {
     }
 
     advance_simulation_frame(frame_dt);
+
+    /* Update frontier synth with current signal strength */
+    frontier_synth_set_signal(&g.frontier_synth, get_signal_strength());
+
     audio_generate_stream(&g.audio);
 
     render_frame();

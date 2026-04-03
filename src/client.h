@@ -13,6 +13,7 @@
 
 #include "math_util.h"
 #include "types.h"
+#include "music.h"
 #include "commodity.h"
 #include "ship.h"
 #include "economy.h"
@@ -92,6 +93,7 @@ typedef struct {
     float collection_feedback_timer;
     runtime_state_t runtime;
     audio_state_t audio;
+    frontier_synth_t frontier_synth;
     sg_pass_action pass_action;
     /* --- Simulation --- */
     world_t world;
