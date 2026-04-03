@@ -84,55 +84,79 @@ static void module_color(module_type_t type, float *r, float *g, float *b) {
 /* ------------------------------------------------------------------ */
 
 static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaffold, float progress, vec2 station_center) {
-    float hw = 45.0f;  /* half-width — fills polygon edge */
-    float hh = 25.0f;  /* half-height — chunky blocks */
+    float hw = 40.0f;  /* half-width */
+    float hh = 24.0f;  /* half-height */
+    float ch = 8.0f;   /* chamfer size (corner cut) */
     float mr, mg, mb;
     module_color(type, &mr, &mg, &mb);
     float alpha = scaffold ? 0.25f : 0.92f;
-    (void)station_center; /* reserved for future corridor rendering */
+    (void)station_center;
 
-    /* Module block — solid filled rectangle oriented radially */
     sgl_push_matrix();
     sgl_translate(pos.x, pos.y, 0.0f);
     sgl_rotate(angle, 0.0f, 0.0f, 1.0f);
 
-    /* Body fill — dark interior */
+    /* Rounded square body — 8 vertices (chamfered corners) */
+    /* Vertices clockwise from top-left chamfer:
+     * (-hw+ch,-hh) (hw-ch,-hh) (hw,-hh+ch) (hw,hh-ch)
+     * (hw-ch,hh) (-hw+ch,hh) (-hw,hh-ch) (-hw,-hh+ch) */
+    float vx[] = { -hw+ch, hw-ch, hw, hw, hw-ch, -hw+ch, -hw, -hw };
+    float vy[] = { -hh, -hh, -hh+ch, hh-ch, hh, hh, hh-ch, -hh+ch };
+
+    /* Body fill — fan from center */
     sgl_c4f(mr * 0.35f, mg * 0.35f, mb * 0.35f, alpha);
     sgl_begin_triangles();
-    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh); sgl_v2f(hw, hh);
-    sgl_v2f(-hw, -hh); sgl_v2f(hw, hh);  sgl_v2f(-hw, hh);
+    for (int i = 0; i < 8; i++) {
+        int n = (i + 1) % 8;
+        sgl_v2f(0, 0); sgl_v2f(vx[i], vy[i]); sgl_v2f(vx[n], vy[n]);
+    }
     sgl_end();
 
-    /* Lighter top half for depth */
-    sgl_c4f(mr * 0.55f, mg * 0.55f, mb * 0.55f, alpha);
+    /* Lighter upper half overlay */
+    sgl_c4f(mr * 0.50f, mg * 0.50f, mb * 0.50f, alpha);
     sgl_begin_triangles();
-    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh); sgl_v2f(hw, 0.0f);
-    sgl_v2f(-hw, -hh); sgl_v2f(hw, 0.0f); sgl_v2f(-hw, 0.0f);
+    sgl_v2f(vx[0], vy[0]); sgl_v2f(vx[1], vy[1]); sgl_v2f(vx[2], vy[2]);
+    sgl_v2f(vx[0], vy[0]); sgl_v2f(vx[2], vy[2]); sgl_v2f(0, 0);
+    sgl_v2f(0, 0); sgl_v2f(vx[7], vy[7]); sgl_v2f(vx[0], vy[0]);
     sgl_end();
 
-    /* Bright outward face plate (top edge = outward from station) */
-    sgl_c4f(mr, mg, mb, alpha);
+    /* Outward face plate (bright accent strip along top edge) */
+    sgl_c4f(mr * 0.9f, mg * 0.9f, mb * 0.9f, alpha);
     sgl_begin_triangles();
-    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh); sgl_v2f(hw, -hh + 6.0f);
-    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh + 6.0f); sgl_v2f(-hw, -hh + 6.0f);
+    sgl_v2f(vx[0], vy[0]); sgl_v2f(vx[1], vy[1]); sgl_v2f(vx[1], vy[1]+5);
+    sgl_v2f(vx[0], vy[0]); sgl_v2f(vx[1], vy[1]+5); sgl_v2f(vx[0], vy[0]+5);
     sgl_end();
 
     /* Edge outline */
-    sgl_c4f(mr * 0.8f, mg * 0.8f, mb * 0.8f, alpha);
+    sgl_c4f(mr * 0.7f, mg * 0.7f, mb * 0.7f, alpha);
     sgl_begin_lines();
-    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh);
-    sgl_v2f(hw, -hh);  sgl_v2f(hw, hh);
-    sgl_v2f(hw, hh);   sgl_v2f(-hw, hh);
-    sgl_v2f(-hw, hh);  sgl_v2f(-hw, -hh);
+    for (int i = 0; i < 8; i++) {
+        int n = (i + 1) % 8;
+        sgl_v2f(vx[i], vy[i]); sgl_v2f(vx[n], vy[n]);
+    }
+    sgl_end();
+
+    /* Docking ports — small nubs on each side */
+    float port_w = 5.0f, port_h = 8.0f;
+    sgl_c4f(mr * 0.6f, mg * 0.7f, mb * 0.8f, alpha * 0.9f);
+    sgl_begin_triangles();
+    /* Left port */
+    sgl_v2f(-hw-port_w, -port_h); sgl_v2f(-hw, -port_h); sgl_v2f(-hw, port_h);
+    sgl_v2f(-hw-port_w, -port_h); sgl_v2f(-hw, port_h); sgl_v2f(-hw-port_w, port_h);
+    /* Right port */
+    sgl_v2f(hw, -port_h); sgl_v2f(hw+port_w, -port_h); sgl_v2f(hw+port_w, port_h);
+    sgl_v2f(hw, -port_h); sgl_v2f(hw+port_w, port_h); sgl_v2f(hw, port_h);
+    /* Inner port (toward core) */
+    sgl_v2f(-port_h, hh); sgl_v2f(port_h, hh); sgl_v2f(port_h, hh+port_w);
+    sgl_v2f(-port_h, hh); sgl_v2f(port_h, hh+port_w); sgl_v2f(-port_h, hh+port_w);
     sgl_end();
 
     if (scaffold && progress > 0.01f) {
-        /* Progress bar */
         float bar_w = hw * 2.0f * progress;
         sgl_c4f(0.3f, 1.0f, 0.6f, 0.7f);
         sgl_begin_triangles();
-        sgl_v2f(-hw, hh + 2.0f); sgl_v2f(-hw + bar_w, hh + 2.0f); sgl_v2f(-hw + bar_w, hh + 5.0f);
-        sgl_v2f(-hw, hh + 2.0f); sgl_v2f(-hw + bar_w, hh + 5.0f); sgl_v2f(-hw, hh + 5.0f);
+        sgl_v2f(-hw, hh + 8.0f); sgl_v2f(-hw + bar_w, hh + 8.0f); sgl_v2f(-hw + bar_w, hh + 12.0f);
+        sgl_v2f(-hw, hh + 8.0f); sgl_v2f(-hw + bar_w, hh + 12.0f); sgl_v2f(-hw, hh + 12.0f);
         sgl_end();
     }
 
