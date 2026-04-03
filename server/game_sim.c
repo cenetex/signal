@@ -1741,16 +1741,15 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
 
 static void update_targeting_state(world_t *w, server_player_t *sp, vec2 forward) {
     vec2 muzzle = ship_muzzle(sp->ship.pos, sp->ship.angle, &sp->ship);
-    /* Prefer client's mining target hint if valid, in range, and in front */
+    /* Prefer client's mining target hint if valid and within generous range.
+     * Use relaxed distance check (not exact ray-circle) to tolerate
+     * position divergence between client interpolation and server state. */
     int hint = sp->input.mining_target_hint;
     if (hint >= 0 && hint < MAX_ASTEROIDS && w->asteroids[hint].active
         && !asteroid_is_collectible(&w->asteroids[hint])) {
         const asteroid_t *a = &w->asteroids[hint];
-        vec2 to_a = v2_sub(a->pos, muzzle);
-        float proj = v2_dot(to_a, forward);
-        float perp = fabsf(v2_cross(to_a, forward));
-        float surface_dist = proj - sqrtf(fmaxf(0.0f, a->radius * a->radius - perp * perp));
-        if (perp <= a->radius && surface_dist >= -a->radius && surface_dist <= MINING_RANGE) {
+        float dist = sqrtf(v2_dist_sq(a->pos, sp->ship.pos));
+        if (dist <= MINING_RANGE + a->radius + 50.0f) {
             sp->hover_asteroid = hint;
             return;
         }
