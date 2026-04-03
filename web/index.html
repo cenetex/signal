@@ -112,6 +112,23 @@
         font-family: "IBM Plex Mono", monospace; font-size: 11px;
       }
 
+      .canvas-strip {
+        width: 100%; overflow-x: auto; overflow-y: hidden;
+        margin-bottom: 24px; border: 1px solid var(--line); border-radius: 14px;
+        background: var(--panel); padding: 8px;
+        scrollbar-width: thin; scrollbar-color: rgba(245,239,223,0.15) transparent;
+      }
+      .canvas-strip::-webkit-scrollbar { height: 6px; }
+      .canvas-strip::-webkit-scrollbar-thumb { background: rgba(245,239,223,0.15); border-radius: 3px; }
+      .canvas-strip-inner {
+        display: flex; gap: 12px; width: max-content;
+      }
+      .canvas-strip img {
+        height: 220px; width: auto; border-radius: 8px;
+        opacity: 0.85; transition: opacity 0.3s;
+      }
+      .canvas-strip img:hover { opacity: 1; }
+
       .links {
         display: flex; gap: 20px; justify-content: center;
         font-family: "IBM Plex Mono", monospace;
@@ -167,6 +184,15 @@
           <code>F</code> buy
           <code>B</code> build
         </span>
+      </div>
+
+      <div class="canvas-strip">
+        <div class="canvas-strip-inner">
+          <img src="/docs/station_mockup.svg" alt="Station modules">
+          <img src="/docs/station_physical_rings.svg" alt="Ring structure">
+          <img src="/docs/station_ring_gap.svg" alt="Ring gap docking">
+          <img src="/docs/station_rings_mockup.svg" alt="Station rings">
+        </div>
       </div>
 
       <div class="links">
