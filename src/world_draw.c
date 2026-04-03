@@ -84,8 +84,8 @@ static void module_color(module_type_t type, float *r, float *g, float *b) {
 /* ------------------------------------------------------------------ */
 
 static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaffold, float progress, vec2 station_center) {
-    float hw = 40.0f;  /* half-width */
-    float hh = 24.0f;  /* half-height */
+    float hw = 32.0f;  /* half-width */
+    float hh = 32.0f;  /* half-height — square */
     float ch = 8.0f;   /* chamfer size (corner cut) */
     float mr, mg, mb;
     module_color(type, &mr, &mg, &mb);
