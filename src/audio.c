@@ -134,29 +134,6 @@ void audio_generate_stream(audio_state_t* a) {
                 v->age += sample_dt;
             }
 
-            /* Engine hum — always present, soothing low drone */
-            {
-                engine_hum_t* h = &a->hum;
-                float sr = (float)sample_rate;
-                float s1 = sinf(TWO_PI_F * h->phase1) * 0.018f;
-                float s2 = sinf(TWO_PI_F * h->phase2) * 0.014f;
-                float s3 = sinf(TWO_PI_F * h->phase3) * 0.006f;
-                /* Slow throb — breathes at ~0.08 Hz */
-                float throb = 0.75f + 0.25f * sinf(TWO_PI_F * h->lfo_phase);
-                float hum = (s1 + s2 + s3) * throb;
-                left += hum;
-                right += hum;
-                /* Advance phases */
-                h->phase1 += 48.0f / sr;
-                h->phase2 += 51.3f / sr;  /* slight detune for warmth */
-                h->phase3 += 96.5f / sr;  /* octave harmonic */
-                h->lfo_phase += 0.08f / sr;
-                h->phase1 -= floorf(h->phase1);
-                h->phase2 -= floorf(h->phase2);
-                h->phase3 -= floorf(h->phase3);
-                h->lfo_phase -= floorf(h->lfo_phase);
-            }
-
             if (channels == 1) {
                 a->mix_buffer[fi] = clampf(left * 0.75f, -1.0f, 1.0f);
             } else {
