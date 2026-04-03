@@ -3447,7 +3447,8 @@ TEST(test_bug90_station_bounce_no_extra_energy) {
     w.asteroids[0].hp = 100.0f; w.asteroids[0].max_hp = 100.0f;
     /* Position just overlapping station 0 (at y = station_y + radius + asteroid_radius - overlap) */
     float s0y = w.stations[0].pos.y;
-    w.asteroids[0].pos = v2(w.stations[0].pos.x, s0y + 62.0f + 25.0f - 5.0f);
+    float s0r = w.stations[0].radius;
+    w.asteroids[0].pos = v2(w.stations[0].pos.x, s0y + s0r + 25.0f - 5.0f);
     w.asteroids[0].vel = v2(0.0f, -10.0f); /* moving toward station */
     float speed_before = v2_len(w.asteroids[0].vel);
     for (int i = 0; i < 5; i++) world_sim_step(&w, SIM_DT);

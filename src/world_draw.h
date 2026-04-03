@@ -25,6 +25,7 @@ float asteroid_profile(const asteroid_t* asteroid, float angle);
 /* --- World object drawing --- */
 void draw_background(vec2 camera);
 void draw_station(const station_t* station, bool is_current, bool is_nearby);
+void draw_station_rings(const station_t* station, bool is_current, bool is_nearby);
 void draw_ship_tractor_field(void);
 void draw_ship(void);
 void draw_npc_ship(const npc_ship_t* npc);

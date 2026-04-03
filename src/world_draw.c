@@ -61,7 +61,7 @@ void draw_background(vec2 camera) {
 /* ------------------------------------------------------------------ */
 
 static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaffold, float progress) {
-    float s = 8.0f;
+    float s = 22.0f;
     float a = scaffold ? 0.35f : 0.85f;
 
     if (scaffold) {
@@ -276,7 +276,7 @@ static void draw_struts(vec2 center, float inner_r, float outer_r, float rotatio
 /* ------------------------------------------------------------------ */
 
 static void draw_port_clamp(vec2 pos, float angle) {
-    float s = 6.0f;
+    float s = 16.0f;
     sgl_push_matrix();
     sgl_translate(pos.x, pos.y, 0.0f);
     sgl_rotate(angle, 0.0f, 0.0f, 1.0f);
@@ -294,6 +294,7 @@ static void draw_port_clamp(vec2 pos, float angle) {
 /* Main station draw                                                  */
 /* ------------------------------------------------------------------ */
 
+/* Draw station core and dock range (below ships in render order). */
 void draw_station(const station_t* station, bool is_current, bool is_nearby) {
     if (!station_exists(station) && !station->scaffold) return;
 
@@ -328,25 +329,38 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
 
     float base_alpha = is_current ? 0.9f : (is_nearby ? 0.7f : 0.5f);
 
-    /* --- Core (stationary hub) --- */
-    draw_circle_filled(station->pos, RING_RADIUS[0] * 0.45f, 20, 0.08f, 0.12f, 0.17f, 1.0f);
-    draw_circle_outline(station->pos, RING_RADIUS[0] * 0.45f, 20, role_r, role_g, role_b, base_alpha);
-    /* Central pip */
-    draw_circle_filled(station->pos, 6.0f, 10, role_r * 0.7f, role_g * 0.9f, role_b, 0.9f);
+    /* Core (stationary hub) */
+    float core_r = RING_RADIUS[0] * 0.5f;
+    draw_circle_filled(station->pos, core_r, 24, 0.08f, 0.12f, 0.17f, 1.0f);
+    draw_circle_outline(station->pos, core_r, 24, role_r, role_g, role_b, base_alpha);
+    draw_circle_outline(station->pos, core_r * 0.7f, 16, role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, base_alpha * 0.5f);
+    draw_circle_filled(station->pos, 10.0f, 12, role_r * 0.7f, role_g * 0.9f, role_b, 0.9f);
 
-    /* --- Rings --- */
+    /* Dock range indicator (faint) */
+    float dock_alpha = is_current ? 0.35f : (is_nearby ? 0.25f : 0.08f);
+    draw_circle_outline(station->pos, station->dock_radius, 48, role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, dock_alpha);
+}
+
+/* Draw ring trusses and modules (above ships in render order). */
+void draw_station_rings(const station_t* station, bool is_current, bool is_nearby) {
+    if (!station_exists(station) || station->scaffold) return;
+
+    float role_r = 0.45f, role_g = 0.85f, role_b = 1.0f;
+    station_role_color(station, &role_r, &role_g, &role_b);
+    float base_alpha = is_current ? 0.9f : (is_nearby ? 0.7f : 0.5f);
+
     for (int r = 1; r < MAX_RING_COUNT; r++) {
         if (!station_has_ring(station, r)) continue;
 
         float rot = station->ring_rotation[r];
         float radius = RING_RADIUS[r];
-        float truss_w = (r == 1) ? 10.0f : 14.0f;
+        float truss_w = (r == 1) ? 20.0f : 28.0f;
 
         /* Truss arc with gap */
         draw_ring_truss(station->pos, radius, rot, truss_w, role_r, role_g, role_b, base_alpha * 0.7f);
 
         /* Struts from previous ring/core to this ring */
-        float prev_r = RING_RADIUS[r - 1] * ((r == 1) ? 0.45f : 1.0f) + 4.0f;
+        float prev_r = RING_RADIUS[r - 1] * ((r == 1) ? 0.5f : 1.0f) + 4.0f;
         draw_struts(station->pos, prev_r, radius - truss_w * 0.5f - 2.0f, rot, (r == 1) ? 4 : 6,
                     role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, base_alpha * 0.35f);
 
@@ -356,7 +370,6 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
             float port_angle = ring_port_angle(r, slot) + rot;
             vec2 port_pos = v2_add(station->pos, v2(cosf(port_angle) * radius, sinf(port_angle) * radius));
 
-            /* Find module at this ring+slot */
             const station_module_t *mod = NULL;
             for (int m = 0; m < station->module_count; m++) {
                 if (station->modules[m].ring == r && station->modules[m].slot == slot) {
@@ -372,10 +385,6 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
             }
         }
     }
-
-    /* --- Dock range indicator (faint) --- */
-    float dock_alpha = is_current ? 0.35f : (is_nearby ? 0.25f : 0.08f);
-    draw_circle_outline(station->pos, station->dock_radius, 48, role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, dock_alpha);
 }
 
 void draw_ship_tractor_field(void) {

@@ -513,6 +513,16 @@ static void render_world(void) {
     draw_npc_ships();
     draw_remote_players(); /* Multiplayer: remote player ships */
 
+    /* Ring trusses and modules render ON TOP of ships */
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        const station_t* st = &g.world.stations[i];
+        if (!station_exists(st)) continue;
+        if (!on_screen(st->pos.x, st->pos.y, st->dock_radius + 40.0f)) continue;
+        bool is_current = LOCAL_PLAYER.docked && (i == LOCAL_PLAYER.current_station);
+        bool is_nearby = (!LOCAL_PLAYER.docked) && (i == LOCAL_PLAYER.nearby_station);
+        draw_station_rings(st, is_current, is_nearby);
+    }
+
     /* Tracked contract target outline (yellow) */
     if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
         contract_t *ct = &g.world.contracts[g.tracked_contract];

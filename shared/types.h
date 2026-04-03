@@ -388,10 +388,11 @@ static inline commodity_t station_primary_sell(const station_t *st) {
     return (commodity_t)-1;
 }
 
-/* Ring construction constants */
+/* Ring construction constants — sized so modules are M-asteroid scale
+ * and a two-ring station is roughly titan-sized. */
 static const int   RING_PORT_COUNT[] = { 0, 5, 8 };    /* core has no ports */
-static const float RING_RADIUS[]     = { 40.0f, 110.0f, 170.0f };
-static const float RING_SPEED[]      = { 0.0f, 0.08f, 0.04f }; /* rad/s */
+static const float RING_RADIUS[]     = { 60.0f, 200.0f, 320.0f };
+static const float RING_SPEED[]      = { 0.0f, 0.06f, 0.03f }; /* rad/s (slower at larger scale) */
 static const float RING_GAP_CENTER   = 4.712389f;      /* 270 deg */
 static const float RING_GAP_WIDTH    = 0.698132f;       /* 40 deg */
 
