@@ -107,6 +107,10 @@ jobs:
       - name: Login to ECR
         uses: aws-actions/amazon-ecr-login@v2
 
+      - name: Compute short hash
+        id: vars
+        run: echo "short_sha=$(git rev-parse --short HEAD)" >> "$GITHUB_OUTPUT"
+
       - name: Build and push server image
         uses: docker/build-push-action@v6
         with:
@@ -115,7 +119,7 @@ jobs:
           platforms: linux/arm64
           push: true
           tags: 022118847419.dkr.ecr.us-east-1.amazonaws.com/signal-relay:latest
-          build-args: GIT_HASH=${{ github.sha }}
+          build-args: GIT_HASH=${{ steps.vars.outputs.short_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
