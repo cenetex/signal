@@ -1580,6 +1580,8 @@ static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
 /* Ship collision                                                     */
 /* ================================================================== */
 
+static int ship_collision_count; /* per-frame overlap counter for crush detection */
+
 static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, float radius) {
     float minimum = radius + ship_hull_def(&sp->ship)->ship_radius;
     vec2 delta = v2_sub(sp->ship.pos, center);
@@ -1595,6 +1597,7 @@ static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, fl
             apply_ship_damage(w, sp, (impact - SHIP_COLLISION_DAMAGE_THRESHOLD) * SHIP_COLLISION_DAMAGE_SCALE);
         sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(normal, vel_toward * 1.2f));
     }
+    ship_collision_count++;
 }
 
 /* ================================================================== */
@@ -1834,6 +1837,7 @@ static void resolve_ring_collision(world_t *w, server_player_t *sp, const statio
 }
 
 static void resolve_world_collisions(world_t *w, server_player_t *sp) {
+    ship_collision_count = 0;
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_collides(&w->stations[i])) continue;
         resolve_ship_circle(w, sp, w->stations[i].pos, w->stations[i].radius + 4.0f);
@@ -1842,6 +1846,11 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!w->asteroids[i].active || asteroid_is_collectible(&w->asteroids[i])) continue;
         resolve_ship_circle(w, sp, w->asteroids[i].pos, w->asteroids[i].radius);
+    }
+    /* Crush: pinched between 2+ bodies simultaneously */
+    if (!sp->docked && ship_collision_count >= 2) {
+        float crush = (float)(ship_collision_count - 1) * 2.0f;
+        apply_ship_damage(w, sp, crush);
     }
 }
 
