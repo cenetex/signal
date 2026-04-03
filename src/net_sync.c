@@ -146,26 +146,30 @@ void apply_remote_player_state(const NetPlayerState* state) {
     if (state->player_id != net_local_id() || state->player_id >= MAX_PLAYERS) return;
 
     server_player_t* sp = &g.world.players[state->player_id];
-    /* Position reconciliation: blend gently for small divergence,
-     * snap for large divergence (e.g., server teleported us). */
     float dx = state->x - sp->ship.pos.x;
     float dy = state->y - sp->ship.pos.y;
     float dist_sq = dx * dx + dy * dy;
-    if (dist_sq > 500.0f * 500.0f) {
-        /* Large divergence: snap to server (server probably docked/teleported us) */
+
+    if (dist_sq > 200.0f * 200.0f) {
+        /* Large divergence: snap immediately */
         sp->ship.pos.x = state->x;
         sp->ship.pos.y = state->y;
         sp->ship.vel.x = state->vx;
         sp->ship.vel.y = state->vy;
+    } else if (dist_sq > 20.0f * 20.0f) {
+        /* Medium divergence: aggressive blend (50%) — converge within 2-3 updates */
+        sp->ship.pos.x = lerpf(sp->ship.pos.x, state->x, 0.5f);
+        sp->ship.pos.y = lerpf(sp->ship.pos.y, state->y, 0.5f);
+        sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.5f);
+        sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.5f);
     } else {
-        /* Small divergence: gentle blend */
-        float t = dist_sq > 100.0f * 100.0f ? 0.15f : 0.08f;
-        sp->ship.pos.x = lerpf(sp->ship.pos.x, state->x, t);
-        sp->ship.pos.y = lerpf(sp->ship.pos.y, state->y, t);
-        sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, t);
-        sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, t);
+        /* Small divergence: gentle blend — cosmetic smoothing only */
+        sp->ship.pos.x = lerpf(sp->ship.pos.x, state->x, 0.2f);
+        sp->ship.pos.y = lerpf(sp->ship.pos.y, state->y, 0.2f);
+        sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.2f);
+        sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.2f);
     }
-    sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.1f);
+    sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.3f);
 }
 
 void apply_remote_player_ship(const NetPlayerShipState* state) {
