@@ -435,7 +435,7 @@ static inline commodity_t station_primary_sell(const station_t *st) {
  * Ring 1: 3 modules (triangle),  Ring 2: 6 (hexagon),  Ring 3: 9 (nonagon)
  * Total capacity: 18 outer modules. */
 static const float STATION_CORE_RADIUS    = 60.0f;
-static const float STATION_RING_RADIUS[]  = { 0.0f, 140.0f, 280.0f, 440.0f };
+static const float STATION_RING_RADIUS[]  = { 0.0f, 180.0f, 340.0f, 520.0f };
 static const int   STATION_RING_SLOTS[]   = { 0, 3, 6, 9 };
 static const float STATION_RING_SPEED     = 0.04f;
 enum { STATION_NUM_RINGS = 3 };
