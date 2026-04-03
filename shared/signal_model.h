@@ -15,8 +15,8 @@
  *   0.80–1.00  CORE      Full efficiency, NPC haulers active,
  *                        no penalties.
  */
-#ifndef SIGNAL_H
-#define SIGNAL_H
+#ifndef SIGNAL_MODEL_H
+#define SIGNAL_MODEL_H
 
 /* --- Band thresholds --- */
 #define SIGNAL_BAND_FRONTIER    0.15f
@@ -62,4 +62,4 @@ static inline const char* signal_band_name(float quality) {
     return "CORE";
 }
 
-#endif /* SIGNAL_H */
+#endif /* SIGNAL_MODEL_H */

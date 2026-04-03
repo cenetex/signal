@@ -5,7 +5,7 @@
  * Global state replaced with world_t *w and server_player_t *sp parameters.
  */
 #include "game_sim.h"
-#include "signal.h"
+#include "signal_model.h"
 #include <stdlib.h>
 
 #ifdef GAME_SIM_VERBOSE

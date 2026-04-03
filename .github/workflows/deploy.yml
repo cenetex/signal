@@ -50,7 +50,7 @@ jobs:
 
       - name: Install test dependencies
         run: |
-          npm ci
+          npm install
           npx playwright install chromium --with-deps
 
       - name: Run browser smoke tests
