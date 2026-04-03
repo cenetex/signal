@@ -67,9 +67,10 @@ jobs:
 
       - name: Prepare artifacts
         run: |
-          mkdir -p _site/play
+          mkdir -p _site/play _site/music
           cp web/index.html _site/index.html
           cp web/play.html _site/play/index.html
+          cp web/music.html _site/music/index.html
           cp build-web/space_miner.js _site/play/space_miner.js
           cp build-web/space_miner.wasm _site/play/space_miner.wasm
           sed -i 's|<head>|<head><script>window.SIGNAL_SERVER="wss://signal-ws.ratimics.com/ws";</script>|' _site/play/index.html

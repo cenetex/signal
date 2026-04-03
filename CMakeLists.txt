@@ -96,7 +96,8 @@ if(EMSCRIPTEN)
         "SHELL:-sMIN_WEBGL_VERSION=2"
         "SHELL:-sMAX_WEBGL_VERSION=2"
         "SHELL:-sNO_EXIT_RUNTIME=1"
-        "SHELL:-sEXPORTED_FUNCTIONS=['_main','__saudio_emsc_pull']"
+        "SHELL:-sEXPORTED_FUNCTIONS=['_main','__saudio_emsc_pull','_get_signal_strength']"
+        "SHELL:-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
         "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
         "SHELL:-lwebsocket.js"
     )

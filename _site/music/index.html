@@ -1,0 +1,190 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Signal OST Vol. 1</title>
+    <style>
+      @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap");
+
+      :root {
+        color-scheme: dark;
+        --bg-0: #080706; --bg-1: #110f0d; --bg-2: #1a1510;
+        --panel: rgba(18, 17, 14, 0.82);
+        --panel-strong: rgba(15, 15, 12, 0.92);
+        --ink: #f5efdf; --muted: #cfc3ad; --faint: #8e846f;
+        --line: rgba(245, 239, 223, 0.10);
+        --ore: #f1b566; --signal: #80ffd5;
+        font-family: "IBM Plex Sans Condensed", "Arial Narrow", sans-serif;
+        background:
+          radial-gradient(circle at 16% 18%, rgba(241,181,102,0.18), transparent 30%),
+          radial-gradient(circle at 86% 76%, rgba(128,255,213,0.12), transparent 26%),
+          linear-gradient(180deg, var(--bg-2), var(--bg-1) 48%, var(--bg-0));
+      }
+      * { box-sizing: border-box; margin: 0; padding: 0; }
+      html, body { min-height: 100dvh; }
+      body {
+        color: var(--ink);
+        display: flex; flex-direction: column; align-items: center;
+        padding: 28px 20px 40px;
+      }
+      body::before, body::after { content: ""; position: fixed; inset: 0; pointer-events: none; }
+      body::before {
+        background: linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
+        background-size: 120px 120px;
+        mask-image: radial-gradient(circle at center, black 24%, transparent 88%);
+        opacity: 0.38;
+      }
+      body::after {
+        background: linear-gradient(180deg, rgba(0,0,0,0.16), rgba(0,0,0,0.54)),
+                    radial-gradient(circle at center, transparent 44%, rgba(0,0,0,0.42) 100%);
+      }
+
+      .page { position: relative; z-index: 1; width: min(680px, 100%); }
+
+      .back {
+        display: inline-block; margin-bottom: 20px;
+        color: var(--faint); font-family: "IBM Plex Mono", monospace;
+        font-size: 11px; letter-spacing: 0.1em; text-transform: uppercase;
+        text-decoration: none; transition: color 0.2s;
+      }
+      .back:hover { color: var(--ink); }
+
+      .header { text-align: center; margin-bottom: 24px; }
+      h1 {
+        font-size: clamp(36px, 8vw, 60px); line-height: 0.92;
+        letter-spacing: 0.04em; text-transform: uppercase; font-weight: 600;
+      }
+      h1 .a { color: var(--signal); }
+      .sub {
+        margin-top: 8px;
+        color: var(--faint); font-family: "IBM Plex Mono", monospace;
+        font-size: 12px; letter-spacing: 0.08em;
+      }
+
+      /* Player */
+      .player {
+        position: sticky; top: 8px; z-index: 10;
+        margin-bottom: 16px; padding: 10px 16px;
+        border: 1px solid var(--line); border-radius: 14px;
+        background: var(--panel-strong); backdrop-filter: blur(16px);
+        display: flex; align-items: center; gap: 10px;
+      }
+      .p-btn {
+        width: 32px; height: 32px; border: 1px solid var(--line);
+        border-radius: 50%; background: rgba(245,239,223,0.04);
+        color: var(--ink); cursor: pointer;
+        display: flex; align-items: center; justify-content: center;
+        transition: background 0.15s; flex-shrink: 0;
+      }
+      .p-btn:hover { background: rgba(245,239,223,0.1); }
+      .p-info { flex: 1; min-width: 0; }
+      .p-title { font-size: 13px; font-weight: 500; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+      .p-bar {
+        flex: 1; max-width: 180px; height: 2px;
+        background: rgba(245,239,223,0.08); border-radius: 1px;
+        overflow: hidden; cursor: pointer;
+      }
+      .p-bar-fill { height: 100%; width: 0%; background: var(--signal); transition: width 0.3s linear; }
+      .p-time {
+        font-family: "IBM Plex Mono", monospace; font-size: 10px;
+        color: var(--faint); flex-shrink: 0; min-width: 32px; text-align: right;
+      }
+
+      /* Tracks */
+      .tracks {
+        list-style: none; border: 1px solid var(--line); border-radius: 14px;
+        background: var(--panel); backdrop-filter: blur(10px);
+        overflow: hidden; margin-bottom: 24px;
+      }
+      .t {
+        display: grid; grid-template-columns: 28px 1fr auto;
+        align-items: center; gap: 10px;
+        padding: 9px 16px; border-bottom: 1px solid var(--line);
+        cursor: pointer; transition: background 0.12s;
+      }
+      .t:last-child { border-bottom: none; }
+      .t:hover { background: rgba(245,239,223,0.025); }
+      .t.on { background: rgba(128,255,213,0.05); }
+      .t-n { font-family: "IBM Plex Mono", monospace; font-size: 12px; color: var(--faint); text-align: center; }
+      .t.on .t-n { color: var(--signal); }
+      .t-name { font-size: 14px; font-weight: 500; }
+      .t.on .t-name { color: var(--signal); }
+      .t-dur { font-family: "IBM Plex Mono", monospace; font-size: 11px; color: var(--faint); }
+
+      .foot {
+        text-align: center; font-size: 12px; color: var(--faint);
+        font-family: "IBM Plex Mono", monospace; letter-spacing: 0.06em;
+      }
+      .foot a { color: var(--muted); text-decoration: none; }
+      .foot a:hover { color: var(--ink); }
+
+      @media (max-width: 500px) {
+        body { padding: 16px 12px 32px; }
+        .player { gap: 8px; padding: 8px 12px; }
+        .p-bar { display: none; }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="page">
+      <a class="back" href="/">&larr; Signal</a>
+      <div class="header">
+        <h1>Signal <span class="a">OST</span></h1>
+        <div class="sub">Vol. 1 &mdash; ratimics &mdash; 17 tracks &mdash; <span id="dur">--:--</span></div>
+      </div>
+
+      <div class="player">
+        <button class="p-btn" id="prev"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg></button>
+        <button class="p-btn" id="play"><svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" id="ico"><path d="M8 5v14l11-7z"/></svg></button>
+        <button class="p-btn" id="next"><svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg></button>
+        <div class="p-info"><div class="p-title" id="title">&nbsp;</div></div>
+        <div class="p-bar" id="bar"><div class="p-bar-fill" id="fill"></div></div>
+        <div class="p-time" id="time">0:00</div>
+      </div>
+
+      <ol class="tracks" id="list"></ol>
+      <div class="foot"><a href="/">signal.ratimics.com</a> &mdash; <a href="/play">play</a></div>
+    </div>
+    <script>
+const U="https://signal-ratimics-assets.s3.amazonaws.com/music";
+const T=[
+  {f:"belt_drifters.mp3",n:"Signal: Belt Drifters",d:"8:00"},
+  {f:"belt_drifters_2.mp3",n:"Signal: Belt Drifters (II)",d:"4:14"},
+  {f:"echoes.mp3",n:"Signal: Echoes in the Belt",d:"6:37"},
+  {f:"echoes_2.mp3",n:"Signal: Echoes in the Belt (II)",d:"3:48"},
+  {f:"echoes_3.mp3",n:"Signal: Echoes in the Belt (III)",d:"3:56"},
+  {f:"clock_thunder.mp3",n:"Clock Made Of Thunder",d:"7:31"},
+  {f:"clock_thunder_2.mp3",n:"Clock Made Of Thunder (II)",d:"7:13"},
+  {f:"kings_of_nowhere.mp3",n:"Vector Kings of Nowhere",d:"3:23"},
+  {f:"kings_of_nowhere_2.mp3",n:"Vector Kings of Nowhere (II)",d:"3:10"},
+  {f:"vector_economy.mp3",n:"Signal: Vector Space Economy",d:"4:48"},
+  {f:"vector_economy_2.mp3",n:"Signal: Vector Space Economy (II)",d:"5:17"},
+  {f:"vector_miners_epoch.mp3",n:"Signal: Vector Miners Epoch",d:"5:08"},
+  {f:"vector_miners_epoch_2.mp3",n:"Signal: Vector Miners Epoch (II)",d:"7:59"},
+  {f:"vector_veins.mp3",n:"Vector Veins",d:"3:48"},
+  {f:"vector_veins_lofi.mp3",n:"Vector Veins: Lo-Fi Belt Miners",d:"3:08"},
+  {f:"vector_veins_80s.mp3",n:"Vector Veins: 80s Belt Miners",d:"3:59"},
+  {f:"vector_veins_80s_2.mp3",n:"Vector Veins: 80s Belt Miners (II)",d:"3:39"},
+];
+const p=s=>{const[m,s2]=s.split(":").map(Number);return m*60+s2};
+const fm=s=>{const m=Math.floor(s/60);return m+":"+String(Math.floor(s%60)).padStart(2,"0")};
+const tot=T.reduce((a,t)=>a+p(t.d),0);
+document.getElementById("dur").textContent=Math.floor(tot/3600)+"h "+fm(tot%3600);
+
+const el=document.getElementById("list");
+T.forEach((t,i)=>{const li=document.createElement("li");li.className="t";li.innerHTML=`<div class="t-n">${String(i+1).padStart(2,"0")}</div><div class="t-name">${t.n}</div><div class="t-dur">${t.d}</div>`;li.onclick=()=>go(i);el.appendChild(li)});
+
+let ci=-1,a=new Audio();a.volume=0.8;
+function go(i){ci=i;a.src=U+"/"+T[i].f;a.play();document.getElementById("title").textContent=T[i].n;ico(1);document.querySelectorAll(".t").forEach((e,j)=>e.classList.toggle("on",j===i))}
+function ico(p){document.getElementById("ico").innerHTML=p?'<rect x="6" y="4" width="4" height="16"/><rect x="14" y="4" width="4" height="16"/>':'<path d="M8 5v14l11-7z"/>'}
+document.getElementById("play").onclick=()=>{if(ci<0)return go(0);a.paused?(a.play(),ico(1)):(a.pause(),ico(0))};
+document.getElementById("prev").onclick=()=>go(ci<=0?T.length-1:ci-1);
+document.getElementById("next").onclick=()=>go((ci+1)%T.length);
+a.onended=()=>go((ci+1)%T.length);
+a.ontimeupdate=()=>{if(!a.duration)return;document.getElementById("fill").style.width=(a.currentTime/a.duration*100)+"%";document.getElementById("time").textContent=fm(a.currentTime)};
+document.getElementById("bar").onclick=e=>{if(!a.duration)return;const r=e.currentTarget.getBoundingClientRect();a.currentTime=(e.clientX-r.left)/r.width*a.duration};
+    </script>
+  </body>
+</html>

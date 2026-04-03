@@ -13,6 +13,10 @@
 #include "net_sync.h"
 #include "onboarding.h"
 
+#ifdef __EMSCRIPTEN__
+#include <emscripten/emscripten.h>
+#endif
+
 /* SOKOL_IMPL must appear in exactly one .c file.
  * The declaration-only headers are already pulled in by client.h,
  * so we just define the _IMPL macros and re-include for the bodies. */
@@ -624,6 +628,15 @@ static void advance_simulation_frame(float frame_dt) {
     if (g.runtime.accumulator >= SIM_DT) {
         g.runtime.accumulator = 0.0f;
     }
+}
+
+/* Exported for the JS music player — returns 0.0-1.0 */
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+#endif
+float get_signal_strength(void) {
+    if (g.local_player_slot < 0) return 0.0f;
+    return signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
 }
 
 static void frame(void) {

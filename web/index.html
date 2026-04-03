@@ -3,196 +3,175 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Signal — Keep the Belt Connected</title>
+    <title>Signal</title>
     <style>
       @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap");
 
       :root {
         color-scheme: dark;
-        --bg-0: #080706;
-        --bg-1: #110f0d;
-        --bg-2: #1a1510;
+        --bg-0: #080706; --bg-1: #110f0d; --bg-2: #1a1510;
         --panel: rgba(18, 17, 14, 0.82);
-        --ink: #f5efdf;
-        --muted: #cfc3ad;
-        --faint: #8e846f;
-        --line: rgba(245, 239, 223, 0.12);
-        --ore: #f1b566;
-        --signal: #80ffd5;
-        --shadow: 0 28px 80px rgba(0, 0, 0, 0.36);
+        --ink: #f5efdf; --muted: #cfc3ad; --faint: #8e846f;
+        --line: rgba(245, 239, 223, 0.10);
+        --ore: #f1b566; --signal: #80ffd5;
         font-family: "IBM Plex Sans Condensed", "Arial Narrow", sans-serif;
         background:
-          radial-gradient(circle at 16% 18%, rgba(241, 181, 102, 0.18), transparent 30%),
-          radial-gradient(circle at 86% 76%, rgba(128, 255, 213, 0.12), transparent 26%),
-          linear-gradient(180deg, var(--bg-2) 0%, var(--bg-1) 48%, var(--bg-0) 100%);
+          radial-gradient(circle at 16% 18%, rgba(241,181,102,0.18), transparent 30%),
+          radial-gradient(circle at 86% 76%, rgba(128,255,213,0.12), transparent 26%),
+          linear-gradient(180deg, var(--bg-2), var(--bg-1) 48%, var(--bg-0));
       }
-
       * { box-sizing: border-box; margin: 0; padding: 0; }
-
       html, body { min-height: 100dvh; }
-
       body {
         color: var(--ink);
-        display: flex;
-        flex-direction: column;
-        align-items: center;
+        display: flex; flex-direction: column; align-items: center;
         justify-content: center;
-        padding: 24px;
-        position: relative;
+        padding: 32px 20px 48px;
       }
-
-      body::before,
-      body::after {
-        content: "";
-        position: fixed;
-        inset: 0;
-        pointer-events: none;
-      }
-
+      body::before, body::after { content: ""; position: fixed; inset: 0; pointer-events: none; }
       body::before {
-        background:
-          linear-gradient(rgba(255, 255, 255, 0.02) 1px, transparent 1px),
-          linear-gradient(90deg, rgba(255, 255, 255, 0.02) 1px, transparent 1px);
+        background: linear-gradient(rgba(255,255,255,0.02) 1px, transparent 1px),
+                    linear-gradient(90deg, rgba(255,255,255,0.02) 1px, transparent 1px);
         background-size: 120px 120px;
         mask-image: radial-gradient(circle at center, black 24%, transparent 88%);
         opacity: 0.38;
       }
-
       body::after {
-        background:
-          linear-gradient(180deg, rgba(0, 0, 0, 0.16), rgba(0, 0, 0, 0.54)),
-          radial-gradient(circle at center, transparent 44%, rgba(0, 0, 0, 0.42) 100%);
+        background: linear-gradient(180deg, rgba(0,0,0,0.16), rgba(0,0,0,0.54)),
+                    radial-gradient(circle at center, transparent 44%, rgba(0,0,0,0.42) 100%);
       }
 
-      .landing {
-        position: relative;
-        z-index: 1;
-        width: min(680px, 100%);
-        text-align: center;
-      }
-
-      .eyebrow {
-        margin-bottom: 16px;
-        color: var(--ore);
-        font-family: "IBM Plex Mono", monospace;
-        font-size: 11px;
-        letter-spacing: 0.2em;
-        text-transform: uppercase;
-      }
+      .page { position: relative; z-index: 1; width: min(620px, 100%); text-align: center; }
 
       h1 {
-        margin-bottom: 20px;
-        font-size: clamp(64px, 14vw, 128px);
-        line-height: 0.88;
-        letter-spacing: 0.06em;
-        text-transform: uppercase;
-        font-weight: 600;
-      }
-
-      h1 .accent { color: var(--signal); }
-
-      .tagline {
+        font-size: clamp(72px, 16vw, 140px);
+        line-height: 0.88; letter-spacing: 0.06em;
+        text-transform: uppercase; font-weight: 600;
         margin-bottom: 16px;
-        font-size: clamp(20px, 3vw, 32px);
-        line-height: 1.1;
-        color: rgba(245, 239, 223, 0.92);
+      }
+      h1 .a { color: var(--signal); }
+
+      .tag {
+        font-size: clamp(18px, 3vw, 26px);
+        line-height: 1.1; color: rgba(245,239,223,0.88);
+        margin-bottom: 28px;
       }
 
-      .desc {
-        max-width: 52ch;
-        margin: 0 auto 36px;
-        font-size: 16px;
-        line-height: 1.7;
-        color: var(--muted);
-      }
-
-      .actions {
-        display: flex;
-        flex-wrap: wrap;
-        gap: 12px;
-        justify-content: center;
-        margin-bottom: 40px;
-      }
+      .actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-bottom: 20px; }
 
       .btn {
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        gap: 10px;
-        min-width: 190px;
-        padding: 16px 28px;
-        border: 1px solid var(--line);
-        border-radius: 999px;
-        color: var(--ink);
-        text-decoration: none;
-        text-transform: uppercase;
-        letter-spacing: 0.14em;
-        font-size: 13px;
+        display: inline-flex; align-items: center; justify-content: center;
+        padding: 14px 28px; border: 1px solid var(--line); border-radius: 999px;
+        color: var(--ink); text-decoration: none; text-transform: uppercase;
+        letter-spacing: 0.14em; font-size: 12px;
         font-family: "IBM Plex Mono", monospace;
-        background: rgba(245, 239, 223, 0.04);
-        transition: transform 0.2s, border-color 0.2s, background 0.2s, color 0.2s;
+        background: rgba(245,239,223,0.04);
+        transition: transform 0.2s, border-color 0.2s, background 0.2s;
         cursor: pointer;
       }
-
-      .btn:hover {
-        transform: translateY(-1px);
-        border-color: rgba(245, 239, 223, 0.34);
-        background: rgba(245, 239, 223, 0.08);
-      }
-
-      .btn.primary {
-        color: #0f1311;
+      .btn:hover { transform: translateY(-1px); border-color: rgba(245,239,223,0.3); background: rgba(245,239,223,0.08); }
+      .btn.go {
+        color: #0f1311; font-size: 13px; padding: 16px 40px;
         background: linear-gradient(135deg, var(--signal), #a6ffd8 70%);
-        border-color: rgba(128, 255, 213, 0.9);
-        font-size: 14px;
-        padding: 18px 36px;
+        border-color: rgba(128,255,213,0.9);
+      }
+      .btn.go:hover { background: linear-gradient(135deg, #92ffdc, #b7ffe2 70%); }
+
+      .sub {
+        margin-bottom: 32px; color: var(--faint);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
       }
 
-      .btn.primary:hover {
-        background: linear-gradient(135deg, #92ffdc, #b7ffe2 70%);
+      .steps {
+        display: grid; grid-template-columns: repeat(3, 1fr);
+        gap: 1px; margin-bottom: 20px;
+        border: 1px solid var(--line); border-radius: 14px;
+        background: var(--line); overflow: hidden;
+      }
+      .step {
+        background: var(--panel); padding: 16px 14px; text-align: left;
+      }
+      .step-label {
+        color: var(--signal); font-family: "IBM Plex Mono", monospace;
+        font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
+        margin-bottom: 6px;
+      }
+      .step-title { font-size: 16px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 4px; }
+      .step-desc { color: var(--faint); font-size: 13px; line-height: 1.5; }
+
+      .controls {
+        border: 1px solid var(--line); border-radius: 14px;
+        background: var(--panel); padding: 14px 18px;
+        margin-bottom: 24px; text-align: center;
+      }
+      .controls span { color: var(--faint); font-size: 13px; }
+      code {
+        padding: 1px 5px; border: 1px solid rgba(245,239,223,0.12);
+        border-radius: 999px; background: rgba(245,239,223,0.05);
+        font-family: "IBM Plex Mono", monospace; font-size: 11px;
       }
 
       .links {
-        display: flex;
-        gap: 24px;
-        justify-content: center;
+        display: flex; gap: 20px; justify-content: center;
         font-family: "IBM Plex Mono", monospace;
-        font-size: 12px;
-        letter-spacing: 0.1em;
+        font-size: 11px; letter-spacing: 0.1em;
       }
-
-      .links a {
-        color: var(--faint);
-        text-decoration: none;
-        text-transform: uppercase;
-        transition: color 0.2s;
-      }
-
+      .links a { color: var(--faint); text-decoration: none; text-transform: uppercase; transition: color 0.2s; }
       .links a:hover { color: var(--ink); }
 
       @media (max-width: 600px) {
+        body { padding: 24px 14px 36px; }
+        .steps { grid-template-columns: 1fr; }
         .btn { width: 100%; }
-        .links { flex-direction: column; gap: 14px; }
+        .links { flex-wrap: wrap; gap: 14px; }
       }
     </style>
   </head>
   <body>
-    <div class="landing">
-      <div class="eyebrow">Industrial Frontier MMO</div>
-      <h1>S<span class="accent">i</span>gnal</h1>
-      <p class="tagline">Keep the Belt Connected</p>
-      <p class="desc">
-        Mine rock, answer contract demand, and push the signal outward before
-        the belt starves the next station in the chain. A living asteroid field.
-        One fragile chain of stations. Your job is to keep it alive.
-      </p>
+    <div class="page">
+      <h1>S<span class="a">i</span>gnal</h1>
+      <p class="tag">Mine the belt. Extend the chain.</p>
+
       <div class="actions">
-        <a class="btn primary" href="/play">Play Now</a>
-        <a class="btn" href="https://github.com/atimics/signal/actions" target="_blank" rel="noreferrer">Native Builds</a>
+        <a class="btn go" href="/play">Play</a>
+        <a class="btn" href="https://github.com/atimics/signal" target="_blank">GitHub</a>
       </div>
+
+      <p class="sub">C + Sokol &bull; Browser &bull; Singleplayer / Multiplayer</p>
+
+      <div class="steps">
+        <div class="step">
+          <div class="step-label">01 Mine</div>
+          <div class="step-title">Fracture</div>
+          <div class="step-desc">Break asteroids, haul ore back before the hold fills.</div>
+        </div>
+        <div class="step">
+          <div class="step-label">02 Supply</div>
+          <div class="step-title">Trade</div>
+          <div class="step-desc">Sell to refineries, buy parts, fill contracts.</div>
+        </div>
+        <div class="step">
+          <div class="step-label">03 Expand</div>
+          <div class="step-title">Build</div>
+          <div class="step-desc">Deploy outposts to push signal deeper into the belt.</div>
+        </div>
+      </div>
+
+      <div class="controls">
+        <span>
+          <code>W/S</code> thrust
+          <code>A/D</code> turn
+          <code>Space</code> mine
+          <code>E</code> dock
+          <code>F</code> buy
+          <code>B</code> build
+        </span>
+      </div>
+
       <div class="links">
-        <a href="https://github.com/atimics/signal" target="_blank" rel="noreferrer">GitHub</a>
-        <a href="https://github.com/atimics/signal/actions" target="_blank" rel="noreferrer">CI / Artifacts</a>
+        <a href="/music">Soundtrack</a>
+        <a href="https://github.com/atimics/signal" target="_blank">GitHub</a>
       </div>
     </div>
   </body>
