@@ -10,10 +10,9 @@
       :root {
         color-scheme: dark;
         --bg-0: #080706; --bg-1: #110f0d; --bg-2: #1a1510;
-        --panel: rgba(18, 17, 14, 0.82);
         --ink: #f5efdf; --muted: #cfc3ad; --faint: #8e846f;
         --line: rgba(245, 239, 223, 0.10);
-        --ore: #f1b566; --signal: #80ffd5;
+        --signal: #80ffd5;
         font-family: "IBM Plex Sans Condensed", "Arial Narrow", sans-serif;
         background:
           radial-gradient(circle at 16% 18%, rgba(241,181,102,0.18), transparent 30%),
@@ -41,7 +40,7 @@
                     radial-gradient(circle at center, transparent 44%, rgba(0,0,0,0.42) 100%);
       }
 
-      .page { position: relative; z-index: 1; width: min(620px, 100%); text-align: center; }
+      .page { position: relative; z-index: 1; width: min(480px, 100%); text-align: center; }
 
       h1 {
         font-size: clamp(72px, 16vw, 140px);
@@ -54,10 +53,10 @@
       .tag {
         font-size: clamp(18px, 3vw, 26px);
         line-height: 1.1; color: rgba(245,239,223,0.88);
-        margin-bottom: 28px;
+        margin-bottom: 32px;
       }
 
-      .actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-bottom: 20px; }
+      .actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-bottom: 28px; }
 
       .btn {
         display: inline-flex; align-items: center; justify-content: center;
@@ -77,58 +76,6 @@
       }
       .btn.go:hover { background: linear-gradient(135deg, #92ffdc, #b7ffe2 70%); }
 
-      .sub {
-        margin-bottom: 32px; color: var(--faint);
-        font-family: "IBM Plex Mono", monospace;
-        font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
-      }
-
-      .steps {
-        display: grid; grid-template-columns: repeat(3, 1fr);
-        gap: 1px; margin-bottom: 20px;
-        border: 1px solid var(--line); border-radius: 14px;
-        background: var(--line); overflow: hidden;
-      }
-      .step {
-        background: var(--panel); padding: 16px 14px; text-align: left;
-      }
-      .step-label {
-        color: var(--signal); font-family: "IBM Plex Mono", monospace;
-        font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
-        margin-bottom: 6px;
-      }
-      .step-title { font-size: 16px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 4px; }
-      .step-desc { color: var(--faint); font-size: 13px; line-height: 1.5; }
-
-      .controls {
-        border: 1px solid var(--line); border-radius: 14px;
-        background: var(--panel); padding: 14px 18px;
-        margin-bottom: 24px; text-align: center;
-      }
-      .controls span { color: var(--faint); font-size: 13px; }
-      code {
-        padding: 1px 5px; border: 1px solid rgba(245,239,223,0.12);
-        border-radius: 999px; background: rgba(245,239,223,0.05);
-        font-family: "IBM Plex Mono", monospace; font-size: 11px;
-      }
-
-      .canvas-strip {
-        width: 100%; overflow-x: auto; overflow-y: hidden;
-        margin-bottom: 24px; border: 1px solid var(--line); border-radius: 14px;
-        background: var(--panel); padding: 8px;
-        scrollbar-width: thin; scrollbar-color: rgba(245,239,223,0.15) transparent;
-      }
-      .canvas-strip::-webkit-scrollbar { height: 6px; }
-      .canvas-strip::-webkit-scrollbar-thumb { background: rgba(245,239,223,0.15); border-radius: 3px; }
-      .canvas-strip-inner {
-        display: flex; gap: 12px; width: max-content;
-      }
-      .canvas-strip img {
-        height: 220px; width: auto; border-radius: 8px;
-        opacity: 0.85; transition: opacity 0.3s;
-      }
-      .canvas-strip img:hover { opacity: 1; }
-
       .links {
         display: flex; gap: 20px; justify-content: center;
         font-family: "IBM Plex Mono", monospace;
@@ -139,7 +86,6 @@
 
       @media (max-width: 600px) {
         body { padding: 24px 14px 36px; }
-        .steps { grid-template-columns: 1fr; }
         .btn { width: 100%; }
         .links { flex-wrap: wrap; gap: 14px; }
       }
@@ -152,52 +98,12 @@
 
       <div class="actions">
         <a class="btn go" href="/play">Play</a>
-        <a class="btn" href="https://github.com/atimics/signal" target="_blank">GitHub</a>
-      </div>
-
-      <p class="sub">C + Sokol &bull; Browser &bull; Singleplayer / Multiplayer</p>
-
-      <div class="steps">
-        <div class="step">
-          <div class="step-label">01 Mine</div>
-          <div class="step-title">Fracture</div>
-          <div class="step-desc">Break asteroids, haul ore back before the hold fills.</div>
-        </div>
-        <div class="step">
-          <div class="step-label">02 Supply</div>
-          <div class="step-title">Trade</div>
-          <div class="step-desc">Sell to refineries, buy parts, fill contracts.</div>
-        </div>
-        <div class="step">
-          <div class="step-label">03 Expand</div>
-          <div class="step-title">Build</div>
-          <div class="step-desc">Deploy outposts to push signal deeper into the belt.</div>
-        </div>
-      </div>
-
-      <div class="controls">
-        <span>
-          <code>W/S</code> thrust
-          <code>A/D</code> turn
-          <code>Space</code> mine
-          <code>E</code> dock
-          <code>F</code> buy
-          <code>B</code> build
-        </span>
-      </div>
-
-      <div class="canvas-strip">
-        <div class="canvas-strip-inner">
-          <img src="/docs/station_mockup.svg" alt="Station modules">
-          <img src="/docs/station_physical_rings.svg" alt="Ring structure">
-          <img src="/docs/station_ring_gap.svg" alt="Ring gap docking">
-          <img src="/docs/station_rings_mockup.svg" alt="Station rings">
-        </div>
+        <a class="btn" href="/music">Soundtrack</a>
+        <a class="btn" href="https://github.com/cenetex/signal" target="_blank">GitHub</a>
       </div>
 
       <div class="links">
-        <a href="/music">Soundtrack</a>
-        <a href="https://github.com/atimics/signal" target="_blank">GitHub</a>
+        <a href="https://ratimics.com">ratimics</a>
       </div>
     </div>
   </body>
