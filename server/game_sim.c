@@ -5,6 +5,7 @@
  * Global state replaced with world_t *w and server_player_t *sp parameters.
  */
 #include "game_sim.h"
+#include "signal.h"
 #include <stdlib.h>
 
 #ifdef GAME_SIM_VERBOSE
@@ -954,7 +955,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier == ASTEROID_TIER_S) continue;
-        if (signal_strength_at(w, a->pos) < 0.66f) continue;
+        if (signal_npc_confidence(signal_strength_at(w, a->pos)) < 0.1f) continue;
         /* Skip asteroids already targeted by another miner */
         bool taken = false;
         for (int n = 0; n < MAX_NPC_SHIPS; n++) {
@@ -1001,10 +1002,10 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
 static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world_t *w) {
     npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (drag * dt)));
     npc->pos = v2_add(npc->pos, v2_scale(npc->vel, dt));
-    /* Signal-based boundary: NPCs stay in strong signal (66%+) */
+    /* Signal-based boundary: NPCs pushed back when confidence is low */
     float sig = signal_strength_at(w, npc->pos);
-    if (sig < 0.66f) {
-        /* Find nearest station and its signal edge distance */
+    float npc_conf = signal_npc_confidence(sig);
+    if (npc_conf < 1.0f) {
         float best_d_sq = 1e18f;
         int best_s = 0;
         for (int i = 0; i < MAX_STATIONS; i++) {
@@ -1014,10 +1015,9 @@ static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world
         vec2 to_station = v2_sub(w->stations[best_s].pos, npc->pos);
         float d = sqrtf(v2_len_sq(to_station));
         if (d > 0.001f) {
-            /* Push proportional to overshoot past signal edge (like old WORLD_RADIUS) */
             float edge = w->stations[best_s].signal_range;
             float overshoot = fmaxf(0.0f, d - edge);
-            float push_strength = overshoot * 0.08f;
+            float push_strength = overshoot * 0.08f + (1.0f - npc_conf) * 0.05f;
             vec2 push = v2_scale(to_station, push_strength / d);
             npc->vel = v2_add(npc->vel, push);
         }
@@ -1775,10 +1775,10 @@ static void step_ship_motion(ship_t *s, float dt, const world_t *w) {
     s->vel = v2_scale(s->vel, 1.0f / (1.0f + (ship_hull_def(s)->drag * dt)));
     s->pos = v2_add(s->pos, v2_scale(s->vel, dt));
 
-    /* Signal-based boundary: push back when signal is weak */
+    /* Signal-based boundary: push back when in frontier zone */
     float sig = signal_strength_at(w, s->pos);
-    if (sig < 0.15f) {
-        /* Find nearest station and its signal edge distance */
+    float boundary = signal_boundary_push(sig);
+    if (boundary > 0.0f) {
         float best_d_sq = 1e18f;
         int best_s = 0;
         for (int i = 0; i < MAX_STATIONS; i++) {
@@ -1788,10 +1788,7 @@ static void step_ship_motion(ship_t *s, float dt, const world_t *w) {
         vec2 to_station = v2_sub(w->stations[best_s].pos, s->pos);
         float d = sqrtf(v2_len_sq(to_station));
         if (d > 0.001f) {
-            /* Push proportional to overshoot past signal edge (like old WORLD_RADIUS) */
-            float edge = w->stations[best_s].signal_range;
-            float overshoot = fmaxf(0.0f, d - edge);
-            float push_strength = overshoot * 0.08f;
+            float push_strength = boundary * 0.5f;
             vec2 push = v2_scale(to_station, push_strength / d);
             s->vel = v2_add(s->vel, push);
         }
@@ -1968,7 +1965,7 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
             emit_event(w, (sim_event_t){.type = SIM_EVENT_MINING_TICK, .player_id = sp->id});
             if (!w->player_only_mode) {
                 float mining_sig = signal_strength_at(w, sp->ship.pos);
-                float mined = ship_mining_rate(&sp->ship) * dt * (0.2f + 0.8f * mining_sig);
+                float mined = ship_mining_rate(&sp->ship) * dt * signal_mining_efficiency(mining_sig);
                 mined = fminf(mined, a->hp);
                 a->hp -= mined;
                 a->net_dirty = true;
@@ -2126,7 +2123,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     if (!sp->docked) {
         /* Signal attenuation: scale controls by station signal strength */
         float sig = signal_strength_at(w, sp->ship.pos);
-        float signal_scale = 0.3f + 0.7f * sig; /* 30% minimum at zero signal */
+        float signal_scale = signal_control_scale(sig);
         float turn_input = sp->input.turn * signal_scale;
         float thrust_input = sp->input.thrust * signal_scale;
 
