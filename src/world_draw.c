@@ -84,50 +84,37 @@ static void module_color(module_type_t type, float *r, float *g, float *b) {
 /* ------------------------------------------------------------------ */
 
 static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaffold, float progress, vec2 station_center) {
-    float hw = 20.0f;  /* half-width of module block */
-    float hh = 14.0f;  /* half-height */
+    float hw = 28.0f;  /* half-width of module block */
+    float hh = 20.0f;  /* half-height — chunky rectangles */
     float mr, mg, mb;
     module_color(type, &mr, &mg, &mb);
     float alpha = scaffold ? 0.25f : 0.92f;
+    (void)station_center; /* reserved for future corridor rendering */
 
-    /* Corridor tube from module back toward station center */
-    vec2 toward = v2_sub(station_center, pos);
-    float dist = sqrtf(v2_len_sq(toward));
-    if (dist > 1.0f) {
-        vec2 dir = v2_scale(toward, 1.0f / dist);
-        vec2 perp = v2(-dir.y, dir.x);
-        float tube_hw = 5.0f;
-        float tube_len = fminf(dist - 10.0f, 40.0f);
-        vec2 base = v2_add(pos, v2_scale(dir, 2.0f));
-        vec2 tip  = v2_add(pos, v2_scale(dir, tube_len));
-        vec2 bl = v2_sub(base, v2_scale(perp, tube_hw));
-        vec2 br = v2_add(base, v2_scale(perp, tube_hw));
-        vec2 tl = v2_sub(tip, v2_scale(perp, tube_hw * 0.6f));
-        vec2 tr = v2_add(tip, v2_scale(perp, tube_hw * 0.6f));
-        sgl_c4f(mr * 0.4f, mg * 0.4f, mb * 0.4f, alpha * 0.7f);
-        sgl_begin_triangles();
-        sgl_v2f(bl.x, bl.y); sgl_v2f(br.x, br.y); sgl_v2f(tr.x, tr.y);
-        sgl_v2f(bl.x, bl.y); sgl_v2f(tr.x, tr.y); sgl_v2f(tl.x, tl.y);
-        sgl_end();
-    }
-
-    /* Module block — solid filled rectangle */
+    /* Module block — solid filled rectangle oriented radially */
     sgl_push_matrix();
     sgl_translate(pos.x, pos.y, 0.0f);
     sgl_rotate(angle, 0.0f, 0.0f, 1.0f);
 
-    /* Body fill */
-    sgl_c4f(mr * 0.5f, mg * 0.5f, mb * 0.5f, alpha);
+    /* Body fill — dark interior */
+    sgl_c4f(mr * 0.35f, mg * 0.35f, mb * 0.35f, alpha);
     sgl_begin_triangles();
     sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh); sgl_v2f(hw, hh);
     sgl_v2f(-hw, -hh); sgl_v2f(hw, hh);  sgl_v2f(-hw, hh);
     sgl_end();
 
-    /* Brighter face plate (outward-facing edge) */
+    /* Lighter top half for depth */
+    sgl_c4f(mr * 0.55f, mg * 0.55f, mb * 0.55f, alpha);
+    sgl_begin_triangles();
+    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh); sgl_v2f(hw, 0.0f);
+    sgl_v2f(-hw, -hh); sgl_v2f(hw, 0.0f); sgl_v2f(-hw, 0.0f);
+    sgl_end();
+
+    /* Bright outward face plate (top edge = outward from station) */
     sgl_c4f(mr, mg, mb, alpha);
     sgl_begin_triangles();
-    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh); sgl_v2f(hw, -hh + 5.0f);
-    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh + 5.0f); sgl_v2f(-hw, -hh + 5.0f);
+    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh); sgl_v2f(hw, -hh + 6.0f);
+    sgl_v2f(-hw, -hh); sgl_v2f(hw, -hh + 6.0f); sgl_v2f(-hw, -hh + 6.0f);
     sgl_end();
 
     /* Edge outline */
@@ -180,7 +167,7 @@ static void draw_ring_truss(vec2 center, float radius, float rotation, float tru
         vec2 o1 = v2_add(center, v2(cosf(a1) * outer_r, sinf(a1) * outer_r));
 
         /* Filled quad (two triangles) */
-        sgl_c4f(cr * 0.25f, cg * 0.25f, cb * 0.25f, alpha);
+        sgl_c4f(cr * 0.35f, cg * 0.35f, cb * 0.35f, alpha);
         sgl_begin_triangles();
         sgl_v2f(i0.x, i0.y); sgl_v2f(o0.x, o0.y); sgl_v2f(o1.x, o1.y);
         sgl_v2f(i0.x, i0.y); sgl_v2f(o1.x, o1.y); sgl_v2f(i1.x, i1.y);
@@ -204,7 +191,7 @@ static void draw_ring_truss(vec2 center, float radius, float rotation, float tru
 
         vec2 o0 = v2_add(center, v2(cosf(a0) * outer_r, sinf(a0) * outer_r));
         vec2 o1 = v2_add(center, v2(cosf(a1) * outer_r, sinf(a1) * outer_r));
-        draw_segment(o0, o1, cr * 0.5f, cg * 0.5f, cb * 0.5f, alpha * 0.6f);
+        draw_segment(o0, o1, cr * 0.6f, cg * 0.6f, cb * 0.6f, alpha * 0.7f);
     }
 
     /* Gap termination pillars + nav lights */
@@ -235,7 +222,7 @@ static void draw_ring_truss(vec2 center, float radius, float rotation, float tru
 /* ------------------------------------------------------------------ */
 
 static void draw_struts(vec2 center, float inner_r, float outer_r, float rotation, int count, float cr, float cg, float cb, float alpha) {
-    float tube_hw = 4.0f;
+    float tube_hw = 7.0f;
     for (int i = 0; i < count; i++) {
         float angle = rotation + (TWO_PI_F / (float)count) * (float)i;
         vec2 dir = v2(cosf(angle), sinf(angle));
@@ -318,14 +305,16 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
 
     float base_alpha = is_current ? 0.9f : (is_nearby ? 0.7f : 0.5f);
 
-    /* Core (stationary hub) — solid filled like a small asteroid */
-    float core_r = RING_RADIUS[0] * 0.55f;
-    draw_circle_filled(station->pos, core_r, 28, 0.12f, 0.16f, 0.22f, 1.0f);
-    draw_circle_filled(station->pos, core_r * 0.85f, 24, 0.15f, 0.20f, 0.28f, 1.0f);
-    draw_circle_outline(station->pos, core_r, 28, role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, base_alpha * 0.7f);
-    /* Inner hub detail */
-    draw_circle_filled(station->pos, 14.0f, 14, role_r * 0.4f, role_g * 0.5f, role_b * 0.6f, 0.9f);
-    draw_circle_outline(station->pos, 14.0f, 14, role_r * 0.6f, role_g * 0.7f, role_b * 0.8f, 0.6f);
+    /* Core (stationary hub) — solid filled, substantial */
+    float core_r = RING_RADIUS[0] * 0.7f;
+    draw_circle_filled(station->pos, core_r, 32, 0.10f, 0.14f, 0.20f, 1.0f);
+    draw_circle_filled(station->pos, core_r * 0.8f, 28, 0.14f, 0.19f, 0.26f, 1.0f);
+    draw_circle_outline(station->pos, core_r, 32, role_r * 0.45f, role_g * 0.45f, role_b * 0.45f, base_alpha * 0.8f);
+    /* Inner hub ring */
+    draw_circle_filled(station->pos, core_r * 0.4f, 20, role_r * 0.25f, role_g * 0.30f, role_b * 0.35f, 0.95f);
+    draw_circle_outline(station->pos, core_r * 0.4f, 20, role_r * 0.5f, role_g * 0.55f, role_b * 0.6f, 0.5f);
+    /* Center pip */
+    draw_circle_filled(station->pos, 8.0f, 10, role_r * 0.5f, role_g * 0.6f, role_b * 0.7f, 0.9f);
 
     /* Dock range indicator (faint) */
     float dock_alpha = is_current ? 0.35f : (is_nearby ? 0.25f : 0.08f);
@@ -351,7 +340,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         draw_ring_truss(station->pos, radius, rot, truss_w, role_r, role_g, role_b, base_alpha * 0.7f);
 
         /* Struts from previous ring/core to this ring */
-        float prev_r = RING_RADIUS[r - 1] * ((r == 1) ? 0.5f : 1.0f) + 4.0f;
+        float prev_r = RING_RADIUS[r - 1] * ((r == 1) ? 0.7f : 1.0f) + 6.0f;
         draw_struts(station->pos, prev_r, radius - truss_w * 0.5f - 2.0f, rot, (r == 1) ? 4 : 6,
                     role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, base_alpha * 0.35f);
 
