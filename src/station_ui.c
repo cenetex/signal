@@ -464,11 +464,31 @@ void draw_station_services(const station_ui_state_t* ui) {
     if (g.build_overlay && !ui->station->scaffold) {
         sdtx_color3b(255, 221, 119);
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-        sdtx_puts("BUILD MODULE");
+        sdtx_puts("BUILD");
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
         sdtx_color3b(145, 160, 188);
-        sdtx_puts("Press 1-8 to select, Esc to cancel");
+        sdtx_puts("[W/S] ring  [A/D] port  [1-8] module  [Enter] ring  [Esc] close");
         float ly = cy + 32.0f;
+        /* Ring/slot selection */
+        bool has_ring = station_has_ring(ui->station, g.build_ring);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+        sdtx_color3b(130, 200, 255);
+        if (g.build_slot == -1) {
+            if (has_ring)
+                sdtx_printf("Ring %d (built) - press A/D to select ports", g.build_ring);
+            else
+                sdtx_printf("Ring %d - press Enter to build", g.build_ring);
+        } else {
+            /* Check if slot is occupied */
+            bool occupied = false;
+            for (int m = 0; m < ui->station->module_count; m++) {
+                if (ui->station->modules[m].ring == g.build_ring && ui->station->modules[m].slot == g.build_slot) {
+                    occupied = true; break;
+                }
+            }
+            sdtx_printf("Ring %d Port %d %s", g.build_ring, g.build_slot, occupied ? "(occupied)" : "(empty)");
+        }
+        ly += 18.0f;
         /* In-progress modules */
         for (int i = 0; i < ui->station->module_count; i++) {
             if (!ui->station->modules[i].scaffold) continue;
@@ -478,30 +498,31 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_printf("Building: %d%%", pct);
             ly += 14.0f;
         }
-        if (ly > cy + 34.0f) ly += 4.0f;
-        /* Available modules */
-        static const struct { module_type_t type; const char* name; int key; int frames; int credits; } buildable[] = {
-            { MODULE_FURNACE,        "Furnace (FE)", 1, 60,  200 },
-            { MODULE_FURNACE_CU,     "Furnace (CU)", 2, 100, 400 },
-            { MODULE_FURNACE_CR,     "Furnace (CR)", 3, 140, 600 },
-            { MODULE_FRAME_PRESS,    "Frame Press",  4, 80,  300 },
-            { MODULE_LASER_FAB,      "Laser Fab",    5, 80,  300 },
-            { MODULE_TRACTOR_FAB,    "Tractor Fab",  6, 80,  300 },
-            { MODULE_ORE_BUYER,      "Ore Buyer",    7, 40,  100 },
-            { MODULE_SIGNAL_RELAY,   "Signal Relay", 8, 40,  100 },
-        };
-        int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
-        for (int b = 0; b < 8; b++) {
-            if (station_has_module(ui->station, buildable[b].type)) continue;
-            if (ui->station->module_count >= MAX_MODULES_PER_STATION) continue;
-            bool can_afford = credits >= buildable[b].credits;
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
-            const char *mat_name = "frames";
-            if (buildable[b].type == MODULE_FURNACE_CU || buildable[b].type == MODULE_LASER_FAB) mat_name = "CU ingots";
-            if (buildable[b].type == MODULE_FURNACE_CR || buildable[b].type == MODULE_TRACTOR_FAB) mat_name = "CR ingots";
-            sdtx_printf("[%d] %-14s %dcr + %d %s", buildable[b].key, buildable[b].name, buildable[b].credits, buildable[b].frames, mat_name);
-            ly += 14.0f;
+        if (ly > cy + 52.0f) ly += 4.0f;
+        /* Available modules (only when port is selected) */
+        if (g.build_slot >= 0 && has_ring) {
+            static const struct { module_type_t type; const char* name; int key; int frames; int credits; } buildable[] = {
+                { MODULE_FURNACE,        "Furnace (FE)", 1, 60,  200 },
+                { MODULE_FURNACE_CU,     "Furnace (CU)", 2, 100, 400 },
+                { MODULE_FURNACE_CR,     "Furnace (CR)", 3, 140, 600 },
+                { MODULE_FRAME_PRESS,    "Frame Press",  4, 80,  300 },
+                { MODULE_LASER_FAB,      "Laser Fab",    5, 80,  300 },
+                { MODULE_TRACTOR_FAB,    "Tractor Fab",  6, 80,  300 },
+                { MODULE_ORE_BUYER,      "Ore Buyer",    7, 40,  100 },
+                { MODULE_SIGNAL_RELAY,   "Signal Relay", 8, 40,  100 },
+            };
+            int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
+            for (int b = 0; b < 8; b++) {
+                if (ui->station->module_count >= MAX_MODULES_PER_STATION) continue;
+                bool can_afford = credits >= buildable[b].credits;
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
+                const char *mat_name = "frames";
+                if (buildable[b].type == MODULE_FURNACE_CU || buildable[b].type == MODULE_LASER_FAB) mat_name = "CU ingots";
+                if (buildable[b].type == MODULE_FURNACE_CR || buildable[b].type == MODULE_TRACTOR_FAB) mat_name = "CR ingots";
+                sdtx_printf("[%d] %-14s %dcr + %d %s", buildable[b].key, buildable[b].name, buildable[b].credits, buildable[b].frames, mat_name);
+                ly += 14.0f;
+            }
         }
         return; /* overlay takes over rendering */
     }

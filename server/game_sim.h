@@ -69,6 +69,8 @@ typedef struct {
     bool buy_scaffold_kit;
     bool build_module;
     module_type_t build_module_type;
+    uint8_t build_ring;       /* target ring (1 or 2) */
+    uint8_t build_slot;       /* target port (0-7, or 0xFF for ring itself) */
     bool buy_product;
     commodity_t buy_commodity;
     int mining_target_hint;  /* client's hover_asteroid, -1 = none */
@@ -132,6 +134,7 @@ float signal_strength_at(const world_t *w, vec2 pos);
 void rebuild_signal_chain(world_t *w);
 bool can_place_outpost(const world_t *w, vec2 pos);
 void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type);
+void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int ring, int slot);
 void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *ship);
 int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos);
 bool world_save(const world_t *w, const char *path);

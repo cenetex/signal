@@ -121,6 +121,8 @@ typedef struct {
     /* --- Build mode --- */
     bool placing_outpost;    /* undocked: outpost placement */
     bool build_overlay;      /* docked: module build menu open */
+    int build_ring;          /* selected ring in build overlay (1 or 2) */
+    int build_slot;          /* selected port on ring (-1 = ring itself) */
     /* --- Contract tracking --- */
     int tracked_contract;    /* index into world.contracts, -1 = none */
     /* --- Navigation breadcrumb (last docked station or placed blueprint) --- */

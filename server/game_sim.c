@@ -240,22 +240,13 @@ static float module_credit_cost(module_type_t type) {
 }
 
 /* Add a scaffold module to a station and generate a supply contract */
-void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type) {
+void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int ring, int slot) {
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
-    if (station_has_module(st, type)) return;
-
-    /* Find the highest complete ring and assign to next free slot */
-    int target_ring = 1;
-    for (int r = MAX_RING_COUNT - 1; r >= 1; r--) {
-        if (station_has_ring(st, r)) { target_ring = r; break; }
-    }
-    int target_slot = station_ring_free_slot(st, target_ring, RING_PORT_COUNT[target_ring]);
-    if (target_slot < 0) return; /* ring is full */
 
     station_module_t *m = &st->modules[st->module_count++];
     m->type = type;
-    m->ring = (uint8_t)target_ring;
-    m->slot = (uint8_t)target_slot;
+    m->ring = (uint8_t)ring;
+    m->slot = (uint8_t)slot;
     m->scaffold = true;
     m->build_progress = 0.0f;
 
@@ -275,8 +266,19 @@ void begin_module_construction(world_t *w, station_t *st, int station_idx, modul
             break;
         }
     }
-    SIM_LOG("[sim] began construction of module %d at station %d (cost %.0f of commodity %d)\n",
-            type, station_idx, cost, material);
+    SIM_LOG("[sim] began construction of module %d at station %d ring %d slot %d\n",
+            type, station_idx, ring, slot);
+}
+
+void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type) {
+    if (st->module_count >= MAX_MODULES_PER_STATION) return;
+    int target_ring = 1;
+    for (int r = MAX_RING_COUNT - 1; r >= 1; r--) {
+        if (station_has_ring(st, r)) { target_ring = r; break; }
+    }
+    int target_slot = station_ring_free_slot(st, target_ring, RING_PORT_COUNT[target_ring]);
+    if (target_slot < 0) target_slot = 0xFF; /* ring module or full */
+    begin_module_construction_at(w, st, station_idx, type, target_ring, target_slot);
 }
 
 /* Deliver materials directly to scaffold modules. Materials are consumed
@@ -2010,19 +2012,40 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     station_t *docked_st = &w->stations[sp->current_station];
     /* Module construction: player requests to build a module */
     if (intent->build_module && !w->player_only_mode) {
-        float cost = module_credit_cost(intent->build_module_type);
-        /* Find target ring and slot before committing credits */
-        int target_ring = 1;
-        for (int r = MAX_RING_COUNT - 1; r >= 1; r--) {
-            if (station_has_ring(docked_st, r)) { target_ring = r; break; }
-        }
-        int target_slot = station_ring_free_slot(docked_st, target_ring, RING_PORT_COUNT[target_ring]);
-        if (sp->ship.credits >= cost
-            && !station_has_module(docked_st, intent->build_module_type)
-            && docked_st->module_count < MAX_MODULES_PER_STATION
-            && target_slot >= 0) {
-            sp->ship.credits -= cost;
-            begin_module_construction(w, docked_st, sp->current_station, intent->build_module_type);
+        int target_ring = (int)intent->build_ring;
+        int target_slot = (int)intent->build_slot;
+        if (target_ring < 1) target_ring = 1;
+        if (target_ring >= MAX_RING_COUNT) target_ring = MAX_RING_COUNT - 1;
+
+        if (intent->build_module_type == MODULE_RING) {
+            /* Building a new ring */
+            float cost = module_credit_cost(MODULE_RING);
+            if (sp->ship.credits >= cost
+                && !station_has_ring(docked_st, target_ring)
+                && docked_st->module_count < MAX_MODULES_PER_STATION
+                && (target_ring == 1 || station_has_ring(docked_st, target_ring - 1))) {
+                sp->ship.credits -= cost;
+                begin_module_construction_at(w, docked_st, sp->current_station, MODULE_RING, target_ring, 0xFF);
+            }
+        } else {
+            /* Building a module at a specific port */
+            float cost = module_credit_cost(intent->build_module_type);
+            bool slot_free = true;
+            for (int m = 0; m < docked_st->module_count; m++) {
+                if (docked_st->modules[m].ring == target_ring && docked_st->modules[m].slot == target_slot) {
+                    slot_free = false;
+                    break;
+                }
+            }
+            if (sp->ship.credits >= cost
+                && station_has_ring(docked_st, target_ring)
+                && docked_st->module_count < MAX_MODULES_PER_STATION
+                && target_slot >= 0 && target_slot < RING_PORT_COUNT[target_ring]
+                && slot_free) {
+                sp->ship.credits -= cost;
+                begin_module_construction_at(w, docked_st, sp->current_station,
+                                            intent->build_module_type, target_ring, target_slot);
+            }
         }
     }
     if (intent->service_sell) {
