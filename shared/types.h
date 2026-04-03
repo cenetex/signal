@@ -395,29 +395,24 @@ static inline commodity_t station_primary_sell(const station_t *st) {
 
 /* Station geometry constants */
 static const float STATION_CORE_RADIUS   = 60.0f;
-static const float STATION_ARM_OFFSET    = 80.0f;   /* radial distance: core edge to first module */
-static const float STATION_MODULE_SPACING = 50.0f;  /* lateral spacing between chained modules */
+static const float STATION_MODULE_ORBIT  = 140.0f;  /* orbital radius: core center to module center */
+static const float STATION_MODULE_ARC    = 0.35f;    /* angular spacing between chain modules (radians, ~20 deg) */
 static const float STATION_DEFAULT_ARM_SPEED = 0.04f; /* rad/s */
 
-/* Arm base angle: arms are evenly spaced around the circle.
- * First arm starts at 0 deg (right), others distribute evenly. */
+/* Arm base angle: arms are evenly spaced around the circle. */
 static inline float arm_base_angle(int arm, int arm_count) {
     if (arm_count <= 0) return 0.0f;
     return TWO_PI_F * (float)arm / (float)arm_count;
 }
 
-/* World-space position of a module on an arm chain. */
+/* World-space position of a module on an arm chain.
+ * All modules orbit at the same radius from core center.
+ * chain_pos offsets angularly along the arc from the arm's base angle. */
 static inline vec2 module_world_pos_arm(const station_t *st, int arm, int chain_pos) {
     if (arm < 0 || arm >= st->arm_count) return st->pos;
     float base = arm_base_angle(arm, st->arm_count) + st->arm_rotation[arm];
-    vec2 radial = v2(cosf(base), sinf(base));
-    vec2 lateral = v2(-radial.y, radial.x); /* perpendicular, CCW */
-    /* Radial: core edge outward */
-    vec2 pos = v2_add(st->pos, v2_scale(radial, STATION_CORE_RADIUS + STATION_ARM_OFFSET));
-    /* Lateral: chain extends sideways, centered on chain_pos 0 */
-    float lateral_off = (float)chain_pos * STATION_MODULE_SPACING;
-    pos = v2_add(pos, v2_scale(lateral, lateral_off));
-    return pos;
+    float angle = base + (float)chain_pos * STATION_MODULE_ARC;
+    return v2_add(st->pos, v2(cosf(angle) * STATION_MODULE_ORBIT, sinf(angle) * STATION_MODULE_ORBIT));
 }
 
 /* Count modules on a given arm. */
