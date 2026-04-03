@@ -682,22 +682,15 @@ void draw_station_services(const station_ui_state_t* ui) {
 
             /* === ACTIONS === */
             {
-                bool has_cargo = (ship_total_cargo(ship) > 0.01f);
                 /* Sell/deliver */
-                if (has_cargo) {
-                    if (station_has_module(ui->station, MODULE_ORE_BUYER) && ui->payout > 0) {
-                        sdtx_color3b(130, 255, 235);
-                        sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                        sdtx_printf("[1] Sell cargo  +%d cr", ui->payout);
-                    } else {
-                        sdtx_color3b(130, 255, 235);
-                        sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                        sdtx_puts("[1] Deliver cargo");
-                    }
+                if (ui->payout > 0) {
+                    sdtx_color3b(130, 255, 235);
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                    sdtx_printf("[1] Deliver  +%d cr", ui->payout);
                 } else {
                     sdtx_color3b(90, 105, 130);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                    sdtx_puts("[1] Hold empty");
+                    sdtx_puts("[1] Nothing to deliver");
                 }
                 /* Repair on same line, right side */
                 if (ui->repair_cost > 0) {
