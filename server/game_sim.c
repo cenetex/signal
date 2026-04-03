@@ -1524,6 +1524,7 @@ static void anchor_ship_in_station(server_player_t *sp, world_t *w) {
 }
 
 static void apply_ship_damage(world_t *w, server_player_t *sp, float damage);
+static vec2 dock_port_pos(const station_t *st);
 
 static void dock_ship(world_t *w, server_player_t *sp) {
     if (sp->nearby_station >= 0) sp->current_station = sp->nearby_station;
@@ -1570,8 +1571,19 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     sp->ship.stat_credits_earned = 0.0f;
     sp->ship.stat_credits_spent = 0.0f;
     sp->ship.stat_asteroids_fractured = 0;
+    /* Respawn at nearest station — teleport to its dock */
+    int best = 0;
+    float best_d = 1e18f;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (!station_exists(&w->stations[i])) continue;
+        float d = v2_dist_sq(sp->ship.pos, w->stations[i].pos);
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    sp->current_station = best;
+    sp->nearby_station = best;
+    sp->ship.pos = dock_port_pos(&w->stations[best]);
     dock_ship(w, sp);
-    SIM_LOG("[sim] player %d emergency recovered\n", sp->id);
+    SIM_LOG("[sim] player %d emergency recovered at station 0\n", sp->id);
 }
 
 static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
@@ -2804,7 +2816,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 13
+#define SAVE_VERSION 14  /* bumped: station module ring/slot layout changed, no core modules */
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
