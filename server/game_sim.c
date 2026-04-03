@@ -2656,12 +2656,15 @@ void world_reset(world_t *w) {
     w->stations[0].signal_range = 18000.0f;
     add_module_at(&w->stations[0], MODULE_DOCK, 0xFF, 0);        /* core */
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 0xFF, 0);
-    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 0, 0);     /* arm 0 chain */
+    /* Arm 0: intake + processing */
+    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 0, 0);
     add_module_at(&w->stations[0], MODULE_FURNACE, 0, 1);
-    add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 0, 2);
-    add_module_at(&w->stations[0], MODULE_CONTRACT_BOARD, 0, 3);
-    w->stations[0].arm_count = 1;
-    w->stations[0].arm_speed[0] = STATION_DEFAULT_ARM_SPEED;
+    /* Arm 1: services */
+    add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 1, 0);
+    add_module_at(&w->stations[0], MODULE_CONTRACT_BOARD, 1, 1);
+    w->stations[0].arm_count = 2;
+    w->stations[0].arm_speed[0] = 0.035f;
+    w->stations[0].arm_speed[1] = 0.045f;
     rebuild_station_services(&w->stations[0]);
     /* Seed inventory: refinery starts with some smelted ingots */
     w->stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
@@ -2678,12 +2681,15 @@ void world_reset(world_t *w) {
     w->stations[1].base_price[COMMODITY_FRAME] = 20.0f;
     add_module_at(&w->stations[1], MODULE_DOCK, 0xFF, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 0xFF, 0);
+    /* Arm 0: fabrication */
     add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 0, 0);
-    add_module_at(&w->stations[1], MODULE_REPAIR_BAY, 0, 1);
-    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 0, 2);
-    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 0, 3);
-    w->stations[1].arm_count = 1;
-    w->stations[1].arm_speed[0] = STATION_DEFAULT_ARM_SPEED;
+    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 0, 1);
+    /* Arm 1: services */
+    add_module_at(&w->stations[1], MODULE_REPAIR_BAY, 1, 0);
+    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 1, 1);
+    w->stations[1].arm_count = 2;
+    w->stations[1].arm_speed[0] = 0.05f;
+    w->stations[1].arm_speed[1] = 0.03f;
     rebuild_station_services(&w->stations[1]);
     /* Seed inventory: yard starts with frames for hold upgrades */
     w->stations[1].inventory[COMMODITY_FERRITE_INGOT] = 15.0f;
@@ -2703,13 +2709,18 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
     add_module_at(&w->stations[2], MODULE_DOCK, 0xFF, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 0xFF, 0);
+    /* Arm 0: laser production */
     add_module_at(&w->stations[2], MODULE_LASER_FAB, 0, 0);
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 0, 1);
-    add_module_at(&w->stations[2], MODULE_REPAIR_BAY, 0, 2);
-    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 0, 3);
-    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 0, 4);
-    w->stations[2].arm_count = 1;
-    w->stations[2].arm_speed[0] = STATION_DEFAULT_ARM_SPEED;
+    /* Arm 1: tractor production */
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 1, 0);
+    /* Arm 2: services */
+    add_module_at(&w->stations[2], MODULE_REPAIR_BAY, 2, 0);
+    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 2, 1);
+    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 2, 2);
+    w->stations[2].arm_count = 3;
+    w->stations[2].arm_speed[0] = 0.04f;
+    w->stations[2].arm_speed[1] = 0.04f;
+    w->stations[2].arm_speed[2] = 0.025f;
     rebuild_station_services(&w->stations[2]);
     /* Seed inventory: works starts with modules for mining/tractor upgrades */
     w->stations[2].inventory[COMMODITY_CUPRITE_INGOT] = 15.0f;

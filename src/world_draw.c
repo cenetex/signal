@@ -194,7 +194,7 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
     draw_circle_outline(station->pos, station->dock_radius, 48, role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, dock_alpha);
 }
 
-/* Draw a corridor tube between two world-space points. */
+/* Solid corridor tube (radial arm connectors). */
 static void draw_corridor(vec2 a, vec2 b, float cr, float cg, float cb, float alpha) {
     vec2 delta = v2_sub(b, a);
     float len = sqrtf(v2_len_sq(delta));
@@ -211,9 +211,35 @@ static void draw_corridor(vec2 a, vec2 b, float cr, float cg, float cb, float al
     sgl_v2f(al.x, al.y); sgl_v2f(ar.x, ar.y); sgl_v2f(br.x, br.y);
     sgl_v2f(al.x, al.y); sgl_v2f(br.x, br.y); sgl_v2f(bl.x, bl.y);
     sgl_end();
-    /* Edge lines */
     draw_segment(al, bl, cr * 0.4f, cg * 0.4f, cb * 0.4f, alpha * 0.4f);
     draw_segment(ar, br, cr * 0.4f, cg * 0.4f, cb * 0.4f, alpha * 0.4f);
+}
+
+/* Energy tether between lateral modules — pulsing field, not solid girder. */
+static void draw_energy_tether(vec2 a, vec2 b, float cr, float cg, float cb, float alpha) {
+    vec2 delta = v2_sub(b, a);
+    float len = sqrtf(v2_len_sq(delta));
+    if (len < 1.0f) return;
+    vec2 dir = v2_scale(delta, 1.0f / len);
+    vec2 perp = v2(-dir.y, dir.x);
+
+    /* Central beam — thin, bright, pulsing */
+    float pulse = 0.5f + 0.3f * sinf(g.world.time * 4.0f + len * 0.1f);
+    draw_segment(a, b, cr * 0.6f, cg * 0.8f, cb, alpha * pulse);
+
+    /* Outer field lines — wispy, offset, slower pulse */
+    float field_w = 8.0f + 3.0f * sinf(g.world.time * 2.5f);
+    vec2 ao = v2_add(a, v2_scale(perp, field_w));
+    vec2 bo = v2_add(b, v2_scale(perp, field_w));
+    vec2 ai = v2_sub(a, v2_scale(perp, field_w));
+    vec2 bi = v2_sub(b, v2_scale(perp, field_w));
+    float wisp = alpha * 0.2f * pulse;
+    draw_segment(ao, bo, cr * 0.3f, cg * 0.5f, cb * 0.8f, wisp);
+    draw_segment(ai, bi, cr * 0.3f, cg * 0.5f, cb * 0.8f, wisp);
+
+    /* Spark nodes at endpoints */
+    draw_circle_filled(a, 3.0f, 6, cr * 0.5f, cg * 0.7f, cb, alpha * 0.6f);
+    draw_circle_filled(b, 3.0f, 6, cr * 0.5f, cg * 0.7f, cb, alpha * 0.6f);
 }
 
 /* Draw arm structures + modules (above ships in render order). */
@@ -261,9 +287,9 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             draw_corridor(core_pt, positions[0], role_r, role_g, role_b, base_alpha);
         }
 
-        /* Lateral corridors: between consecutive chain modules */
+        /* Lateral energy tethers: between consecutive chain modules */
         for (int i = 0; i + 1 < arm_count; i++) {
-            draw_corridor(positions[i], positions[i + 1], role_r, role_g, role_b, base_alpha * 0.7f);
+            draw_energy_tether(positions[i], positions[i + 1], role_r, role_g, role_b, base_alpha * 0.7f);
         }
 
         /* Draw modules */
