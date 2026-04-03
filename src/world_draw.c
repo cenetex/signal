@@ -263,7 +263,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         float inner_r = (ring == 1) ? core_edge : STATION_RING_RADIUS[ring - 1];
         float outer_r = STATION_RING_RADIUS[ring];
         int strut_count = STATION_RING_SLOTS[ring]; /* one strut per slot position */
-        for (int s = 0; s < strut_count; s++) {
+        for (int s = 1; s < strut_count; s++) { /* skip slot 0 = gap */
             float angle = TWO_PI_F * (float)s / (float)strut_count + station->arm_rotation[0];
             vec2 inner_pt = v2_add(station->pos, v2(cosf(angle) * inner_r, sinf(angle) * inner_r));
             vec2 outer_pt = v2_add(station->pos, v2(cosf(angle) * outer_r, sinf(angle) * outer_r));
