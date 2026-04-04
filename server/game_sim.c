@@ -2221,25 +2221,23 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             continue;
         }
         asteroid_t *a = &w->asteroids[idx];
-        /* Trail offset behind ship */
-        float trail_dist = 35.0f + (float)t * 18.0f;
+        /* Trail in ship's wake at half tractor range, spaced apart */
+        float tr = ship_tractor_range(&sp->ship);
+        float base_dist = tr * 0.5f;
+        float trail_dist = base_dist + (float)t * 24.0f;
         vec2 behind = v2_from_angle(sp->ship.angle + PI_F);
         vec2 target_pos = v2_add(sp->ship.pos, v2_scale(behind, trail_dist));
-        /* Slight lateral spread for multiple fragments */
-        float spread = ((float)t - (float)(sp->ship.towed_count - 1) * 0.5f) * 12.0f;
-        vec2 lateral = v2_from_angle(sp->ship.angle + PI_F * 0.5f);
-        target_pos = v2_add(target_pos, v2_scale(lateral, spread));
 
         vec2 to_target = v2_sub(target_pos, a->pos);
         float d = v2_len(to_target);
-        if (d > 1.0f) {
-            /* Spring force */
-            float spring_strength = 600.0f;
+        if (d > 2.0f) {
+            /* Soft spring — follow loosely, not snap to position */
+            float spring_strength = 200.0f;
             vec2 spring_force = v2_scale(v2_norm(to_target), spring_strength * dt);
             a->vel = v2_add(a->vel, spring_force);
-            /* Strong damping for towed fragments */
-            a->vel = v2_scale(a->vel, 1.0f / (1.0f + 4.0f * dt));
         }
+        /* Gentle damping — let momentum carry them in an arc */
+        a->vel = v2_scale(a->vel, 1.0f / (1.0f + 1.5f * dt));
         sp->tractor_fragments++;
 
         /* Fragment-ship collision: keep fragment from overlapping ship */
