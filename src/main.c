@@ -419,6 +419,19 @@ static void sim_step(float dt) {
         }
     }
 
+    /* Detect death: hull hit zero (works in both singleplayer and multiplayer) */
+    if (LOCAL_PLAYER.ship.hull <= 0.01f && g.death_screen_timer <= 0.0f) {
+        g.death_screen_timer = 4.0f;
+        g.death_ore_mined = LOCAL_PLAYER.ship.stat_ore_mined;
+        g.death_credits_earned = LOCAL_PLAYER.ship.stat_credits_earned;
+        g.death_credits_spent = LOCAL_PLAYER.ship.stat_credits_spent;
+        g.death_asteroids_fractured = LOCAL_PLAYER.ship.stat_asteroids_fractured;
+        episode_trigger(&g.episode, 9);
+        memset(g.episode.watched, 0, sizeof(g.episode.watched));
+        g.episode.stations_visited = 0;
+        episode_save(&g.episode);
+    }
+
     /* Update was_docked AFTER transition checks */
     g.was_docked = LOCAL_PLAYER.docked;
 
