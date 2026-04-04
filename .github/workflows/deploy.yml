@@ -64,11 +64,6 @@ jobs:
           cp docs/*.svg _site/docs/ 2>/dev/null || true
           sed -i 's|<head>|<head><script>window.SIGNAL_SERVER="wss://signal-ws.ratimics.com/ws";</script>|' _site/play/index.html
 
-      # Snapshot previous deploy for rollback
-      - name: Snapshot previous deploy
-        run: |
-          aws s3 sync s3://signal-ratimics-client/ /tmp/rollback/ 2>&1 || echo "::warning::Snapshot failed — rollback unavailable"
-
       # Deploy immediately — site is live ~60s after push
       - name: Deploy to S3
         run: aws s3 sync _site/ s3://signal-ratimics-client/ --delete
@@ -97,17 +92,11 @@ jobs:
           name: playwright-report
           path: test-results/
 
-      # Rollback: restore previous version if smoke tests failed
-      - name: Rollback on failure
-        if: steps.smoke.outcome == 'failure'
-        run: |
-          echo "::error::Smoke tests failed — rolling back deploy"
-          aws s3 sync /tmp/rollback/ s3://signal-ratimics-client/ --delete
-          aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*"
-
       - name: Fail if smoke tests failed
         if: steps.smoke.outcome == 'failure'
-        run: exit 1
+        run: |
+          echo "::error::Smoke tests failed — deploy is live but broken. Fix and re-push."
+          exit 1
 
   deploy-server:
     runs-on: ubuntu-latest
