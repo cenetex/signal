@@ -1159,6 +1159,9 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
             }
             for (int ci = 0; ci + 1 < ccount; ci++) {
                 if (st->modules[cidx[ci+1]].slot - st->modules[cidx[ci]].slot != 1) continue;
+                /* Docks create gaps — no corridor collision on either side */
+                if (st->modules[cidx[ci]].type == MODULE_DOCK) continue;
+                if (st->modules[cidx[ci+1]].type == MODULE_DOCK) continue;
                 float ca = module_angle_ring(st, ring, st->modules[cidx[ci]].slot);
                 float cb = module_angle_ring(st, ring, st->modules[cidx[ci+1]].slot);
                 /* Annular sector test for NPC */
@@ -1187,8 +1190,10 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
                     if (vt < 0.0f) npc->vel = v2_sub(npc->vel, v2_scale(nrad, vt * 1.0f));
                 }
             }
-            if (ccount == slots && ring > 1) {
-                /* Wrap-around corridor — same test */
+            if (ccount == slots && ring > 1
+                && st->modules[cidx[ccount-1]].type != MODULE_DOCK
+                && st->modules[cidx[0]].type != MODULE_DOCK) {
+                /* Wrap-around corridor — same test (skip if dock at either end) */
                 float ca = module_angle_ring(st, ring, st->modules[cidx[ccount-1]].slot);
                 float cb = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
                 vec2 nd = v2_sub(npc->pos, st->pos);
@@ -2042,41 +2047,94 @@ static void step_ship_motion(ship_t *s, float dt, const world_t *w, float cached
 
 /* Resolve ship vs station: core + module circles + corridor annular sectors. */
 static void resolve_module_collisions(world_t *w, server_player_t *sp, const station_t *st) {
+    float ship_r = ship_hull_def(&sp->ship)->ship_radius;
     /* Station core collision (same as NPCs get) */
     if (st->radius > 0.0f) {
         resolve_ship_circle(w, sp, st->pos, st->radius + 4.0f);
     }
-    /* Module circles */
+    /* Module circles — dock modules only collide from the inside (inward half)
+     * so ships can enter through dock gaps from outside the ring. */
     for (int i = 0; i < st->module_count; i++) {
         int ring = st->modules[i].ring;
         if (ring < 1 || ring > STATION_NUM_RINGS) continue;
         vec2 mod_pos = module_world_pos_ring(st, ring, st->modules[i].slot);
-        resolve_ship_circle(w, sp, mod_pos, MODULE_COLLISION_RADIUS);
+        if (st->modules[i].type == MODULE_DOCK) {
+            /* Dock: only collide if ship is inside the ring (closer to center
+             * than the module). This lets ships fly in from outside. */
+            float ship_dist_sq = v2_dist_sq(sp->ship.pos, st->pos);
+            float mod_dist_sq = v2_dist_sq(mod_pos, st->pos);
+            if (ship_dist_sq < mod_dist_sq)
+                resolve_ship_circle(w, sp, mod_pos, MODULE_COLLISION_RADIUS);
+        } else {
+            resolve_ship_circle(w, sp, mod_pos, MODULE_COLLISION_RADIUS);
+        }
     }
-    /* Corridor annular sectors — same enumeration as rendering */
+
+    /* Precompute module angular positions for corridor junction suppression */
+    float mod_angles[MAX_MODULES_PER_STATION];
+    float mod_angular_size[MAX_MODULES_PER_STATION];
+    for (int i = 0; i < st->module_count; i++) {
+        int ring = st->modules[i].ring;
+        if (ring < 1 || ring > STATION_NUM_RINGS) { mod_angles[i] = 0; mod_angular_size[i] = 0; continue; }
+        vec2 mp = module_world_pos_ring(st, ring, st->modules[i].slot);
+        vec2 d = v2_sub(mp, st->pos);
+        mod_angles[i] = atan2f(d.y, d.x);
+        float ring_r = STATION_RING_RADIUS[ring];
+        mod_angular_size[i] = (ring_r > 1.0f) ? (MODULE_COLLISION_RADIUS + ship_r) / ring_r : 0.0f;
+    }
+
+    /* Corridor annular sectors — same enumeration as rendering.
+     * Skip corridors adjacent to dock modules — docks create entry gaps.
+     * Also skip corridor test when ship is within a module's angular footprint
+     * (module circle takes priority, prevents junction jitter). */
+    float ship_dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
+    vec2 ship_delta = v2_sub(sp->ship.pos, st->pos);
+    float ship_ang = atan2f(ship_delta.y, ship_delta.x);
+
     for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
         int slots = STATION_RING_SLOTS[ring];
-        int idx[MAX_MODULES_PER_STATION];
+        int cidx[MAX_MODULES_PER_STATION];
         int count = 0;
         for (int i = 0; i < st->module_count; i++)
-            if (st->modules[i].ring == ring) idx[count++] = i;
+            if (st->modules[i].ring == ring) cidx[count++] = i;
         if (count < 2) continue;
         for (int i = 1; i < count; i++) {
-            int tmp = idx[i]; int j = i - 1;
-            while (j >= 0 && st->modules[idx[j]].slot > st->modules[tmp].slot)
-                { idx[j+1] = idx[j]; j--; }
-            idx[j+1] = tmp;
+            int tmp = cidx[i]; int j = i - 1;
+            while (j >= 0 && st->modules[cidx[j]].slot > st->modules[tmp].slot)
+                { cidx[j+1] = cidx[j]; j--; }
+            cidx[j+1] = tmp;
         }
-        for (int i = 0; i + 1 < count; i++) {
-            if (st->modules[idx[i+1]].slot - st->modules[idx[i]].slot != 1) continue;
-            float a = module_angle_ring(st, ring, st->modules[idx[i]].slot);
-            float b = module_angle_ring(st, ring, st->modules[idx[i+1]].slot);
-            resolve_ship_annular_sector(w, sp, st->pos, STATION_RING_RADIUS[ring], a, b);
+
+        /* Check if ship is near any module on this ring (suppress corridor) */
+        bool near_module = false;
+        float ring_r = STATION_RING_RADIUS[ring];
+        if (fabsf(ship_dist - ring_r) < CORRIDOR_HW + ship_r + MODULE_COLLISION_RADIUS) {
+            for (int ci = 0; ci < count; ci++) {
+                float ang_diff = wrap_angle(ship_ang - mod_angles[cidx[ci]]);
+                if (fabsf(ang_diff) < mod_angular_size[cidx[ci]]) {
+                    near_module = true;
+                    break;
+                }
+            }
         }
-        if (count == slots && ring > 1) {
-            float a = module_angle_ring(st, ring, st->modules[idx[count-1]].slot);
-            float b = module_angle_ring(st, ring, st->modules[idx[0]].slot);
-            resolve_ship_annular_sector(w, sp, st->pos, STATION_RING_RADIUS[ring], a, b);
+
+        if (!near_module) {
+            for (int i = 0; i + 1 < count; i++) {
+                if (st->modules[cidx[i+1]].slot - st->modules[cidx[i]].slot != 1) continue;
+                if (st->modules[cidx[i]].type == MODULE_DOCK) continue;
+                if (st->modules[cidx[i+1]].type == MODULE_DOCK) continue;
+                float a = module_angle_ring(st, ring, st->modules[cidx[i]].slot);
+                float b = module_angle_ring(st, ring, st->modules[cidx[i+1]].slot);
+                resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
+            }
+            if (count == slots && ring > 1) {
+                if (st->modules[cidx[count-1]].type != MODULE_DOCK
+                    && st->modules[cidx[0]].type != MODULE_DOCK) {
+                    float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
+                    float b = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
+                    resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
+                }
+            }
         }
     }
 }
@@ -2715,8 +2773,18 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                 else if (target_slot == 1 && intent->build_module_type != MODULE_DOCK)
                     ring1_ok = false;
             }
+            /* Every ring must have at least one dock for a gap.
+             * If this would fill the last slot and the ring has no dock,
+             * only allow it if this IS a dock. */
+            bool dock_ok = true;
+            if (target_ring >= 2 && intent->build_module_type != MODULE_DOCK) {
+                int filled = ring_module_count(docked_st, target_ring);
+                int capacity = RING_PORT_COUNT[target_ring];
+                if (filled + 1 >= capacity && !ring_has_dock(docked_st, target_ring))
+                    dock_ok = false; /* must reserve last slot for a dock */
+            }
             if (sp->ship.credits >= cost
-                && ring1_ok
+                && ring1_ok && dock_ok
                 && station_has_ring(docked_st, target_ring)
                 && docked_st->module_count < MAX_MODULES_PER_STATION
                 && target_slot >= 0 && target_slot < RING_PORT_COUNT[target_ring]

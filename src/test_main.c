@@ -3801,6 +3801,229 @@ TEST(test_furnace_without_adjacent_hopper_no_smelt) {
     ASSERT_EQ_FLOAT(w.stations[0].inventory[COMMODITY_FERRITE_INGOT], initial_ingots, 0.01f);
 }
 
+/* ================================================================== */
+/* Collision accuracy tests (#238)                                    */
+/* ================================================================== */
+
+/* Helper: set up a minimal world with station 0 and a connected player */
+static void setup_collision_world(world_t *w) {
+    world_reset(w);
+    /* Clear asteroids and NPCs to isolate collision testing */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w->npc_ships[i].active = false;
+    /* Player at station 0 */
+    w->players[0].connected = true;
+    w->players[0].id = 0;
+    player_init_ship(&w->players[0], w);
+    w->players[0].docked = false;
+}
+
+TEST(test_238_station_core_blocks_player) {
+    /* Issue 1: player should not fly through station center.
+     * Place player on a collision course with station 0 core. */
+    world_t w;
+    setup_collision_world(&w);
+    vec2 st_pos = w.stations[0].pos;
+    float st_r = w.stations[0].radius; /* 40 */
+    float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius; /* 16 */
+
+    /* Start 200 units away, heading straight at center */
+    w.players[0].ship.pos = v2(st_pos.x + 200.0f, st_pos.y);
+    w.players[0].ship.vel = v2(-500.0f, 0.0f);
+
+    /* Run 120 ticks (~1 second) */
+    for (int i = 0; i < 120; i++)
+        world_sim_step(&w, SIM_DT);
+
+    float dist = v2_len(v2_sub(w.players[0].ship.pos, st_pos));
+    float min_allowed = st_r + 4.0f + ship_r;
+    /* Player must be outside the core collision boundary */
+    ASSERT(dist >= min_allowed - 1.0f);
+}
+
+TEST(test_238_module_circle_blocks_player) {
+    /* Module collision circles should block the player.
+     * Fly directly at the signal relay on ring 1, slot 1 of station 0. */
+    world_t w;
+    setup_collision_world(&w);
+    vec2 mod_pos = module_world_pos_ring(&w.stations[0], 1, 1);
+    float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius;
+
+    /* Approach from outside, heading at module */
+    vec2 approach_dir = v2_norm(v2_sub(mod_pos, w.stations[0].pos));
+    w.players[0].ship.pos = v2_add(mod_pos, v2_scale(approach_dir, 100.0f));
+    w.players[0].ship.vel = v2_scale(approach_dir, -400.0f);
+
+    for (int i = 0; i < 120; i++)
+        world_sim_step(&w, SIM_DT);
+
+    float dist = v2_len(v2_sub(w.players[0].ship.pos, mod_pos));
+    float min_allowed = 34.0f /* MODULE_COLLISION_RADIUS */ + ship_r;
+    ASSERT(dist >= min_allowed - 2.0f);
+}
+
+TEST(test_238_corridor_blocks_radial_approach) {
+    /* Corridor between hopper@1 and furnace@2 on ring 2 of station 0.
+     * Approach radially — should be pushed out. */
+    world_t w;
+    setup_collision_world(&w);
+    vec2 st_pos = w.stations[0].pos;
+
+    /* Midpoint angle between slot 1 and slot 2 on ring 2 (6 slots) */
+    float ang1 = TWO_PI_F * 1.0f / 6.0f;
+    float ang2 = TWO_PI_F * 2.0f / 6.0f;
+    float mid_ang = (ang1 + ang2) * 0.5f;
+    float ring_r = 340.0f; /* STATION_RING_RADIUS[2] */
+
+    /* Place player at the ring radius at the corridor midpoint, approaching inward */
+    vec2 corridor_point = v2_add(st_pos, v2(cosf(mid_ang) * ring_r, sinf(mid_ang) * ring_r));
+    w.players[0].ship.pos = v2_add(st_pos, v2(cosf(mid_ang) * (ring_r + 60.0f), sinf(mid_ang) * (ring_r + 60.0f)));
+    vec2 inward = v2_norm(v2_sub(st_pos, w.players[0].ship.pos));
+    w.players[0].ship.vel = v2_scale(inward, 300.0f);
+
+    for (int i = 0; i < 120; i++)
+        world_sim_step(&w, SIM_DT);
+
+    /* Player should have been pushed to outer edge of corridor band.
+     * Corridor outer edge = ring_r + CORRIDOR_HW + ship_r */
+    float dist_from_center = v2_len(v2_sub(w.players[0].ship.pos, st_pos));
+    float corridor_hw = 10.0f; /* CORRIDOR_HW */
+    float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius;
+    float outer_edge = ring_r + corridor_hw + ship_r;
+    /* Player should be at or beyond the outer edge (pushed out) */
+    ASSERT(dist_from_center >= outer_edge - 2.0f);
+}
+
+TEST(test_238_dock_gap_allows_entry) {
+    /* Dock modules create gaps — player should fly through.
+     * Station 0 ring 1 has dock@0, relay@1, gap@2.
+     * Approach through the gap between dock@0 and relay@1 (dock side). */
+    world_t w;
+    setup_collision_world(&w);
+    vec2 st_pos = w.stations[0].pos;
+    float ring_r = 180.0f; /* STATION_RING_RADIUS[1] */
+
+    /* Dock is at slot 0. The dock should create a gap on both sides.
+     * Fly radially inward through the dock's angular position. */
+    float dock_ang = TWO_PI_F * 0.0f / 3.0f; /* slot 0 of 3 */
+    vec2 outside = v2_add(st_pos, v2(cosf(dock_ang) * (ring_r + 80.0f), sinf(dock_ang) * (ring_r + 80.0f)));
+    vec2 inside_target = v2_add(st_pos, v2(cosf(dock_ang) * (ring_r - 80.0f), sinf(dock_ang) * (ring_r - 80.0f)));
+
+    w.players[0].ship.pos = outside;
+    vec2 dir = v2_norm(v2_sub(inside_target, outside));
+    w.players[0].ship.vel = v2_scale(dir, 200.0f);
+
+    for (int i = 0; i < 120; i++)
+        world_sim_step(&w, SIM_DT);
+
+    /* Player should have crossed the ring radius (passed through the dock gap) */
+    float dist_from_center = v2_len(v2_sub(w.players[0].ship.pos, st_pos));
+    ASSERT(dist_from_center < ring_r);
+}
+
+TEST(test_238_corridor_angular_edge_no_clip) {
+    /* The corridor between hopper@1 and furnace@2 on ring 2.
+     * Approach at the angular edge near the furnace end — ship should not clip through. */
+    world_t w;
+    setup_collision_world(&w);
+    vec2 st_pos = w.stations[0].pos;
+    float ring_r = 340.0f;
+
+    /* Module at slot 2 (furnace) — approach the corridor from just past this module's angle */
+    float slot2_ang = TWO_PI_F * 2.0f / 6.0f;
+    /* Place player at the ring radius, slightly before the module angle (inside corridor arc) */
+    float test_ang = slot2_ang - 0.02f; /* just inside corridor end */
+    w.players[0].ship.pos = v2_add(st_pos, v2(cosf(test_ang) * (ring_r + 50.0f), sinf(test_ang) * (ring_r + 50.0f)));
+    vec2 inward = v2_norm(v2_sub(st_pos, w.players[0].ship.pos));
+    w.players[0].ship.vel = v2_scale(inward, 300.0f);
+
+    for (int i = 0; i < 60; i++)
+        world_sim_step(&w, SIM_DT);
+
+    /* Player should NOT have reached ring_r (blocked by corridor) */
+    float dist = v2_len(v2_sub(w.players[0].ship.pos, st_pos));
+    float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius;
+    float outer_edge = ring_r + 10.0f + ship_r;
+    ASSERT(dist >= outer_edge - 2.0f);
+}
+
+TEST(test_238_module_corridor_junction_no_jitter) {
+    /* Place player at the junction between a module circle and a corridor arc.
+     * Run 240 ticks. Ship should settle — not oscillate between collision handlers. */
+    world_t w;
+    setup_collision_world(&w);
+    vec2 st_pos = w.stations[0].pos;
+    float ring_r = 340.0f;
+
+    /* Stop ring rotation so module positions are stable during test */
+    w.stations[0].arm_speed[0] = 0.0f;
+    w.stations[0].arm_speed[1] = 0.0f;
+    w.stations[0].arm_rotation[0] = 0.0f;
+    w.stations[0].arm_rotation[1] = 0.0f;
+
+    /* Furnace at slot 2 on ring 2 — get actual module angle */
+    float mod_ang = module_angle_ring(&w.stations[0], 2, 2);
+    /* Place ship just corridor-side of the module at the ring radius */
+    float junction_ang = mod_ang - 0.05f;
+    w.players[0].ship.pos = v2_add(st_pos, v2(cosf(junction_ang) * ring_r, sinf(junction_ang) * ring_r));
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+
+    /* Record position every 30 ticks, check for oscillation */
+    vec2 positions[8];
+    for (int snap = 0; snap < 8; snap++) {
+        positions[snap] = w.players[0].ship.pos;
+        for (int i = 0; i < 30; i++)
+            world_sim_step(&w, SIM_DT);
+    }
+
+    /* Check that ship settled — last 4 snapshots should be within 5 units of each other */
+    float max_drift = 0.0f;
+    for (int i = 5; i < 8; i++) {
+        float d = v2_len(v2_sub(positions[i], positions[4]));
+        if (d > max_drift) max_drift = d;
+    }
+    /* FAILS if collision handlers are fighting (ship jitters > 5 units) */
+    ASSERT(max_drift < 5.0f);
+}
+
+TEST(test_238_invisible_wall_repro) {
+    /* The original bug: player flying parallel to a corridor at the inflated
+     * collision distance bounces off "nothing visible".
+     * Test: fly tangentially just outside the visual corridor width (ring_r + hw)
+     * but inside the collision band (ring_r + hw + ship_r). Should collide. */
+    world_t w;
+    setup_collision_world(&w);
+    vec2 st_pos = w.stations[0].pos;
+    float ring_r = 340.0f;
+    float corridor_hw = 10.0f;
+    float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius;
+
+    /* Midpoint of corridor between slot 1 and slot 2 */
+    float mid_ang = TWO_PI_F * 1.5f / 6.0f;
+    /* Place at ring_r + corridor_hw + 5 (inside collision band but outside visual) */
+    float test_r = ring_r + corridor_hw + 5.0f; /* between visual edge and collision edge */
+    w.players[0].ship.pos = v2_add(st_pos, v2(cosf(mid_ang) * test_r, sinf(mid_ang) * test_r));
+    /* Fly tangentially (no radial component) */
+    vec2 radial = v2_norm(v2_sub(w.players[0].ship.pos, st_pos));
+    vec2 tangent = v2(-radial.y, radial.x);
+    w.players[0].ship.vel = v2_scale(tangent, 200.0f);
+
+    vec2 start_pos = w.players[0].ship.pos;
+    for (int i = 0; i < 60; i++)
+        world_sim_step(&w, SIM_DT);
+
+    /* The ship is inside the collision band (ring_r+hw+ship_r) but outside
+     * the visual corridor (ring_r+hw). This IS the "invisible wall" —
+     * the collision is correct (ship has physical radius) but the visual
+     * doesn't show it. Verify the collision fires: ship should be pushed outward. */
+    float start_r = v2_len(v2_sub(start_pos, st_pos));
+    float end_r = v2_len(v2_sub(w.players[0].ship.pos, st_pos));
+    /* Ship should have been pushed outward (end_r >= start_r) because it was
+     * inside the collision band. If this FAILS, the collision isn't detecting
+     * the ship at this distance. */
+    ASSERT(end_r >= start_r - 1.0f);
+}
+
 int main(void) {
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -4054,6 +4277,15 @@ int main(void) {
     printf("\nRefinery smelt test:\n");
     RUN(test_refinery_smelts_after_ore_sale);
     RUN(test_furnace_without_adjacent_hopper_no_smelt);
+
+    printf("\nCollision accuracy (#238):\n");
+    RUN(test_238_station_core_blocks_player);
+    RUN(test_238_module_circle_blocks_player);
+    RUN(test_238_corridor_blocks_radial_approach);
+    RUN(test_238_dock_gap_allows_entry);
+    RUN(test_238_corridor_angular_edge_no_clip);
+    RUN(test_238_module_corridor_junction_no_jitter);
+    RUN(test_238_invisible_wall_repro);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
