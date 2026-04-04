@@ -401,8 +401,26 @@ static void sim_step(float dt) {
 
     g.thrusting = (intent.thrust > 0.0f) && !LOCAL_PLAYER.docked;
 
-    /* Play audio from sim events */
+    /* Play audio from sim events (singleplayer only — multiplayer has no server events) */
     process_sim_events(&g.world.events);
+
+    /* Detect state transitions for music/episode triggers (works in both modes) */
+    if (g.was_docked && !LOCAL_PLAYER.docked) {
+        /* Just launched */
+        episode_trigger(&g.episode, 0);
+        if (!g.music.playing && !g.music.loading)
+            music_play(&g.music, 0);
+    }
+    if (!g.was_docked && LOCAL_PLAYER.docked) {
+        /* Just docked */
+        int ds = LOCAL_PLAYER.current_station;
+        if (ds < 3) {
+            g.episode.stations_visited |= (1 << ds);
+            if (g.episode.stations_visited == 7)
+                episode_trigger(&g.episode, 1);
+        }
+    }
+
     onboarding_per_frame();
     episode_per_frame();
     episode_update(&g.episode, dt);
