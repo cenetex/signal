@@ -2946,7 +2946,11 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             float tow_drag = 0.15f * (float)sp->ship.towed_count;
             sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + tow_drag * dt));
         }
-        resolve_world_collisions(w, sp);
+        /* Skip collision in client prediction — authoritative server handles it.
+         * Running collision on both client and server worlds with slightly
+         * different ring rotations causes jitter and invisible walls. */
+        if (!w->player_only_mode)
+            resolve_world_collisions(w, sp);
         update_docking_state(w, sp, dt);
         /* In client prediction mode (player_only_mode), skip station
          * interactions — the server is authoritative for dock/launch,
