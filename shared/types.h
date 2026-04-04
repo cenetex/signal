@@ -481,6 +481,14 @@ static inline bool station_has_ring(const station_t *st, int ring) {
     return false;
 }
 
+/* A ring has a completed dock module — gates construction of the next ring. */
+static inline bool ring_has_dock(const station_t *st, int ring) {
+    for (int i = 0; i < st->module_count; i++)
+        if (st->modules[i].ring == ring && st->modules[i].type == MODULE_DOCK && !st->modules[i].scaffold)
+            return true;
+    return false;
+}
+
 static inline int station_ring_free_slot(const station_t *st, int ring, int port_count) {
     for (int slot = 0; slot < port_count; slot++) {
         bool taken = false;

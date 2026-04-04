@@ -2525,7 +2525,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             if (sp->ship.credits >= cost
                 && !station_has_ring(docked_st, target_ring)
                 && docked_st->module_count < MAX_MODULES_PER_STATION
-                && (target_ring == 1 || station_has_ring(docked_st, target_ring - 1))) {
+                && (target_ring == 1 || ring_has_dock(docked_st, target_ring - 1))) {
                 sp->ship.credits -= cost;
                 begin_module_construction_at(w, docked_st, sp->current_station, MODULE_RING, target_ring, 0xFF);
             }
