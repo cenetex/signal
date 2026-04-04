@@ -157,7 +157,7 @@ static void episode_start_playback(episode_state_t *ep, uint8_t *data, size_t si
 #ifdef __EMSCRIPTEN__
 static void on_fetch_success(void *user, void *data, int size) {
     episode_state_t *ep = (episode_state_t *)user;
-    /* emscripten gives us a buffer we must copy — it frees it after callback */
+    fprintf(stderr, "episode: fetched %d bytes for ep %d\n", size, ep->pending);
     uint8_t *copy = (uint8_t *)malloc((size_t)size);
     if (!copy) {
         fprintf(stderr, "episode: out of memory for %d bytes\n", size);
