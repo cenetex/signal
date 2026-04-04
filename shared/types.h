@@ -80,7 +80,7 @@ typedef struct {
     int tractor_level;
     bool has_scaffold_kit;
     /* Towed physical fragments (indices into asteroid array, -1 = empty) */
-    int8_t towed_fragments[8];
+    int16_t towed_fragments[10];  /* max 10 with upgrades: 2 + 4*2 */
     uint8_t towed_count;
     /* Run stats (reset on death/respawn) */
     float stat_ore_mined;

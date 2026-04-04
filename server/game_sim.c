@@ -2257,7 +2257,7 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         float cr = ship_collect_radius(&sp->ship) + a->radius;
         int max_tow = 2 + sp->ship.tractor_level * 2; /* 2/4/6/8/10 */
         if (d_sq <= cr * cr && sp->ship.towed_count < max_tow) {
-            sp->ship.towed_fragments[sp->ship.towed_count] = (int8_t)i;
+            sp->ship.towed_fragments[sp->ship.towed_count] = (int16_t)i;
             sp->ship.towed_count++;
             sp->ship.stat_ore_mined += a->ore;
             emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
@@ -2266,40 +2266,54 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
     }
 }
 
-/* Deposit towed fragments at station ore buyer modules */
+/* Deposit towed fragments: when the SHIP is near an ore buyer module,
+ * all towed fragments get consumed (ore → station, credits → player).
+ * Fragments don't need to individually reach the hopper — the ship does. */
 static void step_towed_deposits(world_t *w, server_player_t *sp) {
     if (sp->ship.towed_count == 0) return;
+    /* Find nearest hopper module to the ship */
+    float best_d = 1e18f;
+    int best_si = -1;
+    int best_mi = -1;
+    for (int si = 0; si < MAX_STATIONS; si++) {
+        const station_t *st = &w->stations[si];
+        if (st->scaffold) continue;
+        for (int mi = 0; mi < st->module_count; mi++) {
+            if (st->modules[mi].type != MODULE_ORE_BUYER || st->modules[mi].scaffold) continue;
+            vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
+            float d = v2_dist_sq(sp->ship.pos, mp);
+            if (d < best_d) { best_d = d; best_si = si; best_mi = mi; }
+        }
+    }
+    float intake_r = 80.0f; /* ship must be within this range of hopper */
+    if (best_si < 0 || best_d > intake_r * intake_r) return;
+
+    /* Consume all towed fragments */
+    const station_t *st = &w->stations[best_si];
     for (int t = sp->ship.towed_count - 1; t >= 0; t--) {
         int idx = sp->ship.towed_fragments[t];
-        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
-        asteroid_t *a = &w->asteroids[idx];
-        if (!a->active) continue;
-        /* Check all stations for ore buyer modules in range */
-        for (int si = 0; si < MAX_STATIONS; si++) {
-            const station_t *st = &w->stations[si];
-            if (st->scaffold) continue;
-            for (int mi = 0; mi < st->module_count; mi++) {
-                if (st->modules[mi].type != MODULE_ORE_BUYER) continue;
-                if (st->modules[mi].scaffold) continue;
-                vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
-                float intake_r = 40.0f;
-                if (v2_dist_sq(a->pos, mp) <= intake_r * intake_r) {
-                    /* Hopper consumes fragment: ore → station inventory, credits → player */
-                    float ore_value = a->ore * station_buy_price(st, a->commodity);
-                    w->stations[si].inventory[a->commodity] += a->ore;
-                    sp->ship.credits += ore_value;
-                    sp->ship.stat_credits_earned += ore_value;
-                    emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
-                    clear_asteroid(a);
-                    /* Remove from towed list */
-                    sp->ship.towed_count--;
-                    sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
-                    sp->ship.towed_fragments[sp->ship.towed_count] = -1;
-                    goto next_towed;
-                }
-            }
+        if (idx < 0 || idx >= MAX_ASTEROIDS) {
+            sp->ship.towed_count--;
+            sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
+            sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+            continue;
         }
-        next_towed:;
+        asteroid_t *a = &w->asteroids[idx];
+        if (!a->active) {
+            sp->ship.towed_count--;
+            sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
+            sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+            continue;
+        }
+        float ore_value = a->ore * station_buy_price(st, a->commodity);
+        w->stations[best_si].inventory[a->commodity] += a->ore;
+        sp->ship.credits += ore_value;
+        sp->ship.stat_credits_earned += ore_value;
+        emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
+        clear_asteroid(a);
+        sp->ship.towed_count--;
+        sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
+        sp->ship.towed_fragments[sp->ship.towed_count] = -1;
     }
 }
 
@@ -2701,8 +2715,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             update_targeting_state(w, sp, forward);
             step_mining_system(w, sp, dt, sp->input.mine, forward);
             if (!w->player_only_mode) {
-                step_fragment_collection(w, sp, dt);
                 step_towed_deposits(w, sp);
+                step_fragment_collection(w, sp, dt);
             }
         }
     } else {
