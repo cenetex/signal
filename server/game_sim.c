@@ -2306,39 +2306,38 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
 /* Deposit towed fragments: when the SHIP is near an ore buyer module,
  * all towed fragments get consumed (ore → station, credits → player).
  * Fragments don't need to individually reach the hopper — the ship does. */
-#define HOPPER_PULL_RANGE 200.0f   /* hopper attracts fragments from this far */
+#define HOPPER_PULL_RANGE 300.0f   /* hopper attracts fragments from this far */
 #define HOPPER_PULL_ACCEL 300.0f   /* pull strength */
 #define HOPPER_CONSUME_RANGE 30.0f /* fragment consumed when this close to hopper */
 
-/* Clean up dead refs AND auto-detach towed fragments near hoppers. */
+static void release_towed_fragments(server_player_t *sp);
+
+/* Clean up dead refs AND auto-detach ALL towed fragments when ship is near a hopper. */
 static void step_towed_cleanup(world_t *w, server_player_t *sp) {
-    float pull_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    /* Clean dead refs */
     for (int t = sp->ship.towed_count - 1; t >= 0; t--) {
         int idx = sp->ship.towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) {
             sp->ship.towed_count--;
             sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
             sp->ship.towed_fragments[sp->ship.towed_count] = -1;
-            continue;
         }
-        /* Auto-detach if any hopper is in pull range of the fragment */
-        asteroid_t *a = &w->asteroids[idx];
-        for (int si = 0; si < MAX_STATIONS; si++) {
-            const station_t *st = &w->stations[si];
-            if (st->scaffold) continue;
-            for (int mi = 0; mi < st->module_count; mi++) {
-                if (st->modules[mi].type != MODULE_ORE_BUYER || st->modules[mi].scaffold) continue;
-                vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
-                if (v2_dist_sq(a->pos, mp) <= pull_sq) {
-                    /* Detach — hopper takes over via step_hopper_intake */
-                    sp->ship.towed_count--;
-                    sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
-                    sp->ship.towed_fragments[sp->ship.towed_count] = -1;
-                    goto next_cleanup;
-                }
+    }
+    /* Auto-detach all towed fragments if ship is near any hopper */
+    if (sp->ship.towed_count == 0) return;
+    float pull_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    for (int si = 0; si < MAX_STATIONS; si++) {
+        const station_t *st = &w->stations[si];
+        if (st->scaffold) continue;
+        for (int mi = 0; mi < st->module_count; mi++) {
+            if (st->modules[mi].type != MODULE_ORE_BUYER || st->modules[mi].scaffold) continue;
+            vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
+            if (v2_dist_sq(sp->ship.pos, mp) <= pull_sq) {
+                /* Ship is near hopper — release all towed fragments */
+                release_towed_fragments(sp);
+                return;
             }
         }
-        next_cleanup:;
     }
 }
 
