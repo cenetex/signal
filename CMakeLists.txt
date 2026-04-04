@@ -100,7 +100,6 @@ if(EMSCRIPTEN)
         "SHELL:-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
         "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
         "SHELL:-lwebsocket.js"
-        "SHELL:-sFETCH=1"
     )
 elseif(APPLE)
     target_link_libraries(space_miner PRIVATE
