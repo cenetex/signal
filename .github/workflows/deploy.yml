@@ -64,9 +64,10 @@ jobs:
           cp docs/*.svg _site/docs/ 2>/dev/null || true
           sed -i 's|<head>|<head><script>window.SIGNAL_SERVER="wss://signal-ws.ratimics.com/ws";</script>|' _site/play/index.html
 
-      # Snapshot previous deploy for rollback (non-fatal if bucket is empty/new)
+      # Snapshot previous deploy for rollback
       - name: Snapshot previous deploy
-        run: aws s3 sync s3://signal-ratimics-client/ /tmp/rollback/ --quiet || true
+        run: |
+          aws s3 sync s3://signal-ratimics-client/ /tmp/rollback/ 2>&1 || echo "::warning::Snapshot failed — rollback unavailable"
 
       # Deploy immediately — site is live ~60s after push
       - name: Deploy to S3
