@@ -2059,22 +2059,19 @@ static vec2 dock_berth_pos(const station_t *st, int berth) {
         /* End berth: radially outward past the dock */
         return v2_add(mod_pos, v2_scale(radial, DOCK_BERTH_OFFSET));
     } else {
-        /* Side berths: tangentially along the ring arc */
+        /* Inner/outer berths: radially offset (perpendicular to ring) */
         float side = (sub == 1) ? -DOCK_BERTH_SPREAD : DOCK_BERTH_SPREAD;
-        return v2_add(mod_pos, v2_scale(tangent, side));
+        return v2_add(mod_pos, v2_scale(radial, side));
     }
 }
 
-/* Dock berth angle: ships face inward toward station */
+/* Dock berth angle: all berths face inward toward station center */
 static float dock_berth_angle(const station_t *st, int berth) {
     int dock_idx = berth / BERTHS_PER_DOCK;
-    int sub = berth % BERTHS_PER_DOCK;
     int mi = station_dock_module(st, dock_idx);
     if (mi < 0) return 0.0f;
     float angle = module_angle_ring(st, st->modules[mi].ring, st->modules[mi].slot);
-    if (sub == 0) return angle + PI_F;        /* end: face inward */
-    /* Side berths: face toward the dock module (along tangent) */
-    return angle + ((sub == 1) ? PI_F * 0.5f : -PI_F * 0.5f);
+    return angle + PI_F;
 }
 
 /* Find the best (closest, unoccupied) berth slot */
