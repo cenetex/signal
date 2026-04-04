@@ -764,7 +764,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                 /* End berth (tangentially past dock, capping ring), inner, outer */
                 int dock_slots = STATION_RING_SLOTS[ring];
                 float slot_arc = TWO_PI_F / (float)dock_slots;
-                float end_ang = module_angle_ring(station, ring, m->slot) + slot_arc * 0.45f;
+                float end_ang = module_angle_ring(station, ring, m->slot) - slot_arc * 0.18f;
                 vec2 end_pos = v2_add(station->pos,
                     v2(cosf(end_ang) * STATION_RING_RADIUS[ring],
                        sinf(end_ang) * STATION_RING_RADIUS[ring]));

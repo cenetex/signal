@@ -2058,7 +2058,7 @@ static vec2 dock_berth_pos(const station_t *st, int berth) {
         int slots = STATION_RING_SLOTS[ring];
         float slot_arc = TWO_PI_F / (float)slots;
         /* Offset in the direction away from the previous slot (toward the gap) */
-        float end_angle = angle + slot_arc * 0.45f;
+        float end_angle = angle - slot_arc * 0.18f;
         return v2_add(st->pos, v2(cosf(end_angle) * STATION_RING_RADIUS[ring],
                                    sinf(end_angle) * STATION_RING_RADIUS[ring]));
     } else {
