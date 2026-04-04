@@ -308,14 +308,15 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
         fill_quad(-12, -8, 12, -8, 12, -12, -12, -12);
         /* Tip beacon */
         fill_circle_local(0, -22, 5, 8, mr*1.0f, mg*1.0f, mb*1.0f, alpha * 0.9f);
-        /* Radiating signal arcs */
+        /* Radiating signal arcs — emanate from beacon toward -Y (outward) */
         sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha * 0.5f);
         sgl_begin_lines();
         for (int r = 1; r <= 2; r++) {
             float rad = 14.0f + (float)r * 10.0f;
             for (int i = 0; i < 6; i++) {
-                float a0 = -PI_F * 0.4f + (float)i * PI_F * 0.8f / 6.0f;
-                float a1 = -PI_F * 0.4f + (float)(i+1) * PI_F * 0.8f / 6.0f;
+                /* Arc sweep centered on -Y axis (angle = -PI/2) */
+                float a0 = -PI_F * 0.5f - PI_F * 0.4f + (float)i * PI_F * 0.8f / 6.0f;
+                float a1 = -PI_F * 0.5f - PI_F * 0.4f + (float)(i+1) * PI_F * 0.8f / 6.0f;
                 sgl_v2f(cosf(a0)*rad, sinf(a0)*rad - 16);
                 sgl_v2f(cosf(a1)*rad, sinf(a1)*rad - 16);
             }
@@ -568,7 +569,7 @@ static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaff
 
     sgl_push_matrix();
     sgl_translate(pos.x, pos.y, 0.0f);
-    sgl_rotate(angle - PI_F * 0.5f, 0.0f, 0.0f, 1.0f);  /* -90° so local -Y = outward */
+    sgl_rotate(angle + PI_F * 0.5f, 0.0f, 0.0f, 1.0f);  /* +90° so local -Y = outward (+X) */
     sgl_scale(1.4f, 1.4f, 1.0f);
 
     draw_module_shape(type, mr, mg, mb, alpha);
