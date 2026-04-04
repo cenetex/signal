@@ -1069,83 +1069,7 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
             if (mvt < 0.0f)
                 npc->vel = v2_sub(npc->vel, v2_scale(mn, mvt * 1.2f));
         }
-        /* Curved corridor collision for NPCs */
-        for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
-            int slots = STATION_RING_SLOTS[ring];
-            float ring_r = STATION_RING_RADIUS[ring];
-            int cidx[MAX_MODULES_PER_STATION];
-            int ccount = 0;
-            for (int m = 0; m < st->module_count; m++)
-                if (st->modules[m].ring == ring) cidx[ccount++] = m;
-            if (ccount < 2) continue;
-            for (int ci = 1; ci < ccount; ci++) {
-                int tmp = cidx[ci]; int cj = ci - 1;
-                while (cj >= 0 && st->modules[cidx[cj]].slot > st->modules[tmp].slot) {
-                    cidx[cj + 1] = cidx[cj]; cj--;
-                }
-                cidx[cj + 1] = tmp;
-            }
-            for (int ci = 0; ci + 1 < ccount; ci++) {
-                int s0 = st->modules[cidx[ci]].slot;
-                int s1 = st->modules[cidx[ci + 1]].slot;
-                if (s1 - s0 != 1) continue;
-                float a0 = module_angle_ring(st, ring, s0);
-                float a1 = module_angle_ring(st, ring, s1);
-                float da = a1 - a0;
-                while (da > PI_F) da -= TWO_PI_F;
-                while (da < -PI_F) da += TWO_PI_F;
-                vec2 prev = v2_add(st->pos, v2(cosf(a0) * ring_r, sinf(a0) * ring_r));
-                for (int seg = 1; seg <= CORRIDOR_ARC_SEGMENTS; seg++) {
-                    float t = (float)seg / (float)CORRIDOR_ARC_SEGMENTS;
-                    float a = a0 + da * t;
-                    vec2 cur = v2_add(st->pos, v2(cosf(a) * ring_r, sinf(a) * ring_r));
-                    float corr_min = CORRIDOR_COLLISION_RADIUS + hull->ship_radius;
-                    vec2 closest = v2_closest_on_segment(npc->pos, prev, cur);
-                    vec2 cd = v2_sub(npc->pos, closest);
-                    float cd_sq = v2_len_sq(cd);
-                    if (cd_sq < corr_min * corr_min) {
-                        float cdd = sqrtf(cd_sq);
-                        vec2 cn = cdd > 0.001f ? v2_scale(cd, 1.0f / cdd) : v2(1.0f, 0.0f);
-                        npc->pos = v2_add(closest, v2_scale(cn, corr_min));
-                        float cvt = v2_dot(npc->vel, cn);
-                        if (cvt < 0.0f)
-                            npc->vel = v2_sub(npc->vel, v2_scale(cn, cvt * 1.2f));
-                    }
-                    prev = cur;
-                }
-            }
-            /* Wrap: skip on ring 1 */
-            if (ccount >= 2 && ring > 1) {
-                int fs = st->modules[cidx[0]].slot;
-                int ls = st->modules[cidx[ccount - 1]].slot;
-                if (fs == 0 && ls == slots - 1) {
-                    float a0 = module_angle_ring(st, ring, ls);
-                    float a1 = module_angle_ring(st, ring, fs);
-                    float da = a1 - a0;
-                    while (da > PI_F) da -= TWO_PI_F;
-                    while (da < -PI_F) da += TWO_PI_F;
-                    vec2 prev = v2_add(st->pos, v2(cosf(a0) * ring_r, sinf(a0) * ring_r));
-                    for (int seg = 1; seg <= CORRIDOR_ARC_SEGMENTS; seg++) {
-                        float t = (float)seg / (float)CORRIDOR_ARC_SEGMENTS;
-                        float a = a0 + da * t;
-                        vec2 cur = v2_add(st->pos, v2(cosf(a) * ring_r, sinf(a) * ring_r));
-                        float corr_min = CORRIDOR_COLLISION_RADIUS + hull->ship_radius;
-                        vec2 closest = v2_closest_on_segment(npc->pos, prev, cur);
-                        vec2 cd = v2_sub(npc->pos, closest);
-                        float cd_sq = v2_len_sq(cd);
-                        if (cd_sq < corr_min * corr_min) {
-                            float cdd = sqrtf(cd_sq);
-                            vec2 cn = cdd > 0.001f ? v2_scale(cd, 1.0f / cdd) : v2(1.0f, 0.0f);
-                            npc->pos = v2_add(closest, v2_scale(cn, corr_min));
-                            float cvt = v2_dot(npc->vel, cn);
-                            if (cvt < 0.0f)
-                                npc->vel = v2_sub(npc->vel, v2_scale(cn, cvt * 1.2f));
-                        }
-                        prev = cur;
-                    }
-                }
-            }
-        }
+        /* Corridor collision removed — trusses are visual only */
     }
 }
 
@@ -1966,50 +1890,14 @@ static void resolve_ship_corridor_arc(world_t *w, server_player_t *sp,
     ship_collision_count = saved_count;
 }
 
-/* Resolve ship-vs-module collision for all modules on a station,
- * including curved corridor arcs between adjacent modules. */
+/* Resolve ship-vs-module collision (module circles only, no corridor collision).
+ * Corridors are thin visual trusses — ships fly through them freely. */
 static void resolve_module_collisions(world_t *w, server_player_t *sp, const station_t *st) {
-    /* Per-module circle collision */
     for (int i = 0; i < st->module_count; i++) {
         int ring = st->modules[i].ring;
         if (ring < 1 || ring > STATION_NUM_RINGS) continue;
         vec2 mod_pos = module_world_pos_ring(st, ring, st->modules[i].slot);
         resolve_ship_circle(w, sp, mod_pos, MODULE_COLLISION_RADIUS);
-    }
-    /* Curved corridor collision between adjacent modules on same ring */
-    for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
-        int slots = STATION_RING_SLOTS[ring];
-        float ring_r = STATION_RING_RADIUS[ring];
-        int idx[MAX_MODULES_PER_STATION];
-        int count = 0;
-        for (int i = 0; i < st->module_count; i++)
-            if (st->modules[i].ring == ring) idx[count++] = i;
-        if (count < 2) continue;
-        for (int i = 1; i < count; i++) {
-            int tmp = idx[i]; int j = i - 1;
-            while (j >= 0 && st->modules[idx[j]].slot > st->modules[tmp].slot) {
-                idx[j + 1] = idx[j]; j--;
-            }
-            idx[j + 1] = tmp;
-        }
-        for (int i = 0; i + 1 < count; i++) {
-            int s0 = st->modules[idx[i]].slot;
-            int s1 = st->modules[idx[i + 1]].slot;
-            if (s1 - s0 != 1) continue;
-            float a0 = module_angle_ring(st, ring, s0);
-            float a1 = module_angle_ring(st, ring, s1);
-            resolve_ship_corridor_arc(w, sp, st->pos, ring_r, a0, a1);
-        }
-        /* Wrap: skip on ring 1 (leave a gap) */
-        if (count >= 2 && ring > 1) {
-            int fs = st->modules[idx[0]].slot;
-            int ls = st->modules[idx[count - 1]].slot;
-            if (fs == 0 && ls == slots - 1) {
-                float a0 = module_angle_ring(st, ring, ls);
-                float a1 = module_angle_ring(st, ring, fs);
-                resolve_ship_corridor_arc(w, sp, st->pos, ring_r, a0, a1);
-            }
-        }
     }
 }
 
@@ -2252,38 +2140,49 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             continue;
         }
         asteroid_t *a = &w->asteroids[idx];
-        /* Orbit at safe distance around ship, evenly spaced */
-        float orbit_dist = 50.0f + (float)sp->ship.towed_count * 6.0f;
-        float orbit_angle = TWO_PI_F * (float)t / fmaxf(1.0f, (float)sp->ship.towed_count);
-        vec2 target_pos = v2_add(sp->ship.pos,
-            v2_scale(v2_from_angle(orbit_angle + sp->ship.angle), orbit_dist));
+        /* Tractor drag: pull toward a point behind the ship, maintaining
+         * safe distance. Fragments feel heavy and tactile, not springy. */
+        float tractor_r = ship_tractor_range(&sp->ship);
+        float safe_dist = 40.0f + a->radius + ship_hull_def(&sp->ship)->ship_radius;
+        vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
+        float dist_to_ship = v2_len(to_ship);
 
-        /* Gently follow orbit position */
-        vec2 to_target = v2_sub(target_pos, a->pos);
-        float d = v2_len(to_target);
-        if (d > 2.0f) {
-            float follow_rate = 3.0f;
-            a->vel = v2_scale(to_target, follow_rate);
-        } else {
-            a->vel = v2(0.0f, 0.0f);
+        /* If too far, pull toward ship (but not closer than safe distance) */
+        if (dist_to_ship > tractor_r * 0.7f) {
+            /* Strong pull to catch up */
+            vec2 pull = v2_scale(to_ship, 4.0f);
+            a->vel = v2_add(a->vel, v2_scale(pull, dt));
+        } else if (dist_to_ship > safe_dist) {
+            /* Gentle pull — keep in tow range */
+            vec2 pull = v2_scale(to_ship, 1.5f);
+            a->vel = v2_add(a->vel, v2_scale(pull, dt));
         }
-        /* Match ship velocity so they move with the ship */
-        a->vel = v2_add(a->vel, sp->ship.vel);
-        /* Speed cap relative to ship */
-        vec2 rel_vel = v2_sub(a->vel, sp->ship.vel);
-        float rel_spd = v2_len(rel_vel);
-        if (rel_spd > 100.0f)
-            a->vel = v2_add(sp->ship.vel, v2_scale(rel_vel, 100.0f / rel_spd));
+
+        /* Push away if too close (don't slam into ship) */
+        if (dist_to_ship < safe_dist && dist_to_ship > 0.1f) {
+            vec2 push = v2_scale(to_ship, -(safe_dist - dist_to_ship) * 8.0f);
+            a->vel = v2_add(a->vel, v2_scale(push, dt));
+        }
+
+        /* Drag — fragments feel heavy, bleed speed over time */
+        a->vel = v2_scale(a->vel, 1.0f / (1.0f + 2.0f * dt));
+
+        /* Never faster than the ship + some slack */
+        float ship_spd = v2_len(sp->ship.vel);
+        float frag_spd = v2_len(a->vel);
+        float max_frag_spd = ship_spd + 60.0f;
+        if (frag_spd > max_frag_spd && frag_spd > 0.1f)
+            a->vel = v2_scale(a->vel, max_frag_spd / frag_spd);
         sp->tractor_fragments++;
 
         /* Fragment-ship collision: keep fragment from overlapping ship */
         float ship_r = ship_hull_def(&sp->ship)->ship_radius;
         float min_d = a->radius + ship_r + 4.0f;
-        vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
-        float ds = v2_len_sq(to_ship);
+        vec2 frag_to_ship = v2_sub(sp->ship.pos, a->pos);
+        float ds = v2_len_sq(frag_to_ship);
         if (ds < min_d * min_d && ds > 0.1f) {
             float dd = sqrtf(ds);
-            vec2 push = v2_scale(to_ship, -((min_d - dd) / dd));
+            vec2 push = v2_scale(frag_to_ship, -((min_d - dd) / dd));
             a->pos = v2_add(a->pos, push);
         }
 
