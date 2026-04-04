@@ -141,8 +141,12 @@ static void reset_step_feedback(void) {
     LOCAL_PLAYER.beam_active = false;
     LOCAL_PLAYER.beam_hit = false;
     g.thrusting = false;
-    LOCAL_PLAYER.nearby_fragments = 0;
-    LOCAL_PLAYER.tractor_fragments = 0;
+    /* In multiplayer, nearby/tractor fragment counts come from the server
+     * via PLAYER_SHIP messages at a lower rate — don't zero them every tick. */
+    if (g.local_server.active) {
+        LOCAL_PLAYER.nearby_fragments = 0;
+        LOCAL_PLAYER.tractor_fragments = 0;
+    }
 }
 
 /* sample_input_intent: see input.h/c */
