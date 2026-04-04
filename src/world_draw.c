@@ -138,32 +138,33 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
         break;
     }
     case MODULE_ORE_BUYER: {
-        /* Wide funnel/hopper -- open top tapering to narrow chute */
-        /* Funnel walls (left trapezoid) */
+        /* Wide funnel/hopper -- mouth faces outward (positive Y = toward center,
+         * negative Y = outward after rotation). Chute feeds inward. */
+        /* Funnel walls */
         sgl_c4f(mr*0.35f, mg*0.35f, mb*0.35f, alpha);
         sgl_begin_triangles();
-        sgl_v2f(-28, -22); sgl_v2f(-10, 6); sgl_v2f(-10, -22);
-        sgl_v2f(28, -22); sgl_v2f(10, -22); sgl_v2f(10, 6);
+        sgl_v2f(-28, 22); sgl_v2f(-10, -6); sgl_v2f(-10, 22);
+        sgl_v2f(28, 22); sgl_v2f(10, 22); sgl_v2f(10, -6);
         sgl_end();
         /* Funnel interior (dark void) */
         sgl_c4f(0.02f, 0.02f, 0.03f, alpha);
-        fill_quad(-10, -22, 10, -22, 10, 6, -10, 6);
-        /* Chute body */
+        fill_quad(-10, 22, 10, 22, 10, -6, -10, -6);
+        /* Chute body (feeds toward center) */
         sgl_c4f(mr*0.4f, mg*0.4f, mb*0.4f, alpha);
-        fill_quad(-10, 6, 10, 6, 8, 24, -8, 24);
-        /* Hopper rim */
+        fill_quad(-10, -6, 10, -6, 8, -24, -8, -24);
+        /* Hopper rim (wide mouth, outward-facing) */
         sgl_c4f(mr*0.8f, mg*0.8f, mb*0.8f, alpha);
-        fill_quad(-28, -24, 28, -24, 28, -20, -28, -20);
+        fill_quad(-28, 24, 28, 24, 28, 20, -28, 20);
         /* Left/right funnel lips */
-        fill_quad(-28, -24, -24, -24, -10, 6, -10, 2);
-        fill_quad(24, -24, 28, -24, 10, 2, 10, 6);
+        fill_quad(-28, 24, -24, 24, -10, -6, -10, -2);
+        fill_quad(24, 24, 28, 24, 10, -2, 10, -6);
         /* Accent lines */
         sgl_c4f(mr*0.9f, mg*0.9f, mb*0.9f, alpha);
         sgl_begin_lines();
-        sgl_v2f(-28, -24); sgl_v2f(-10, 6);
-        sgl_v2f(28, -24); sgl_v2f(10, 6);
-        sgl_v2f(-10, 6); sgl_v2f(-8, 24);
-        sgl_v2f(10, 6); sgl_v2f(8, 24);
+        sgl_v2f(-28, 24); sgl_v2f(-10, -6);
+        sgl_v2f(28, 24); sgl_v2f(10, -6);
+        sgl_v2f(-10, -6); sgl_v2f(-8, -24);
+        sgl_v2f(10, -6); sgl_v2f(8, -24);
         sgl_end();
         break;
     }

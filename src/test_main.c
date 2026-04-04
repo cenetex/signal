@@ -1569,30 +1569,40 @@ TEST(test_scenario_full_mining_cycle) {
         world_sim_step(&w, SIM_DT);
     }
 
-    /* Should have some cargo now */
-    float ore = ship_raw_ore_total(&w.players[0].ship);
-    ASSERT(ore > 0.0f);
+    /* Should be towing fragments now (physical ore, not cargo) */
+    ASSERT(w.players[0].ship.towed_count > 0);
 
-    /* Force dock at station 0 for test */
-    w.players[0].docked = true;
-    w.players[0].current_station = 0;
-    w.players[0].nearby_station = 0;
-    w.players[0].in_dock_range = true;
-    w.players[0].ship.pos = w.stations[0].pos;
-    w.players[0].ship.vel = v2(0.0f, 0.0f);
-    ASSERT(w.players[0].docked);
+    /* Fly towed fragments to station 0 ore buyer module and deposit.
+     * Find the ore buyer module position and park the ship nearby. */
+    int hopper_idx = -1;
+    for (int m = 0; m < w.stations[0].module_count; m++) {
+        if (w.stations[0].modules[m].type == MODULE_ORE_BUYER && !w.stations[0].modules[m].scaffold) {
+            hopper_idx = m; break;
+        }
+    }
+    ASSERT(hopper_idx >= 0);
+    vec2 hopper_pos = module_world_pos_ring(&w.stations[0],
+        w.stations[0].modules[hopper_idx].ring, w.stations[0].modules[hopper_idx].slot);
+    float start_credits = w.players[0].ship.credits;
 
-    /* Clear hopper so sell is accepted */
+    /* Clear hopper inventory */
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
         w.stations[0].inventory[i] = 0.0f;
-    /* Sell cargo */
-    w.players[0].input.service_sell = true;
-    world_sim_step(&w, SIM_DT);
-    w.players[0].input.service_sell = false;
 
-    /* Verify credits > 0 and cargo == 0 */
-    ASSERT(w.players[0].ship.credits > 0.0f);
-    ASSERT(ship_raw_ore_total(&w.players[0].ship) < 0.01f);
+    /* Park near hopper and sim until fragments are consumed.
+     * Fragments trail behind the ship, so sit still to let them converge. */
+    w.players[0].ship.angle = module_angle_ring(&w.stations[0],
+        w.stations[0].modules[hopper_idx].ring, w.stations[0].modules[hopper_idx].slot);
+    for (int i = 0; i < 1200; i++) {
+        w.players[0].ship.pos = hopper_pos;
+        w.players[0].ship.vel = v2(0.0f, 0.0f);
+        world_sim_step(&w, SIM_DT);
+        if (w.players[0].ship.towed_count == 0) break;
+    }
+
+    /* Verify: towed fragments consumed, credits earned */
+    ASSERT(w.players[0].ship.towed_count == 0);
+    ASSERT(w.players[0].ship.credits > start_credits);
 }
 
 TEST(test_scenario_two_players_mining) {
