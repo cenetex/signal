@@ -237,7 +237,7 @@ void get_hud_message_panel_rect(float* x, float* y, float* width, float* height)
 /* ------------------------------------------------------------------ */
 
 static void split_hud_message_lines(const char* text, int max_cols, char* line0, size_t line0_size, char* line1, size_t line1_size) {
-    if ((text == NULL) || (text[0] == '\0')) {
+    if (!text || (text[0] == '\0')) {
         line0[0] = '\0';
         line1[0] = '\0';
         return;
@@ -1005,9 +1005,9 @@ void draw_hud(void) {
         /* Helper: draw a chevron pip at screen edge toward a world position */
         #define DRAW_PIP(target_pos, pr, pg, pb) do { \
             vec2 _to = v2_sub(target_pos, LOCAL_PLAYER.ship.pos); \
-            float _dist = sqrtf(v2_len_sq(_to)); \
+            float _dist_sq = v2_len_sq(_to); \
             bool _on = (fabsf(_to.x) < half_w * 0.85f) && (fabsf(_to.y) < half_h * 0.85f); \
-            if (_dist > 50.0f && !_on) { \
+            if (_dist_sq > 2500.0f && !_on) { \
                 float _a = atan2f(-_to.y, _to.x); \
                 float _m = 40.0f, _cx = screen_w*0.5f, _cy = screen_h*0.5f; \
                 float _ex = _cx + cosf(_a)*(_cx-_m), _ey = _cy + sinf(_a)*(_cy-_m); \

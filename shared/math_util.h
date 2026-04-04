@@ -6,6 +6,7 @@
 
 static const float PI_F = 3.14159265359f;
 static const float TWO_PI_F = 6.28318530718f;
+static const float FLOAT_EPSILON = 0.01f;
 
 typedef struct {
     float x;

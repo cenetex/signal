@@ -200,7 +200,7 @@ void format_refinery_price_line(const station_t* station, char* text, size_t tex
 void build_station_ui_state(station_ui_state_t* ui) {
     memset(ui, 0, sizeof(*ui));
     ui->station = current_station_ptr();
-    if (ui->station == NULL) {
+    if (!ui->station) {
         return;
     }
 
@@ -215,8 +215,8 @@ void build_station_ui_state(station_ui_state_t* ui) {
     ui->mining_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_MINING);
     ui->hold_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_HOLD);
     ui->tractor_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_TRACTOR);
-    ui->can_sell = station_has_service(STATION_SERVICE_ORE_BUYER) && (ore_total > 0.01f);
-    ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (repair > 0.0f) && (LOCAL_PLAYER.ship.credits + 0.01f >= repair);
+    ui->can_sell = station_has_service(STATION_SERVICE_ORE_BUYER) && (ore_total > FLOAT_EPSILON);
+    ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (repair > 0.0f) && (LOCAL_PLAYER.ship.credits + FLOAT_EPSILON >= repair);
     ui->can_upgrade_mining = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, ui->mining_cost);
     ui->can_upgrade_hold = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, ui->hold_cost);
     ui->can_upgrade_tractor = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_TRACTOR, STATION_SERVICE_UPGRADE_TRACTOR, ui->tractor_cost);
@@ -227,7 +227,7 @@ void build_station_ui_state(station_ui_state_t* ui) {
 /* ------------------------------------------------------------------ */
 
 void format_station_header_badge(const station_ui_state_t* ui, char* text, size_t text_size) {
-    if (ui->station == NULL) {
+    if (!ui->station) {
         snprintf(text, text_size, "STATION");
         return;
     }
@@ -236,7 +236,7 @@ void format_station_header_badge(const station_ui_state_t* ui, char* text, size_
 }
 
 void format_station_market_summary(const station_ui_state_t* ui, bool compact, char* text, size_t text_size) {
-    if (ui->station == NULL) {
+    if (!ui->station) {
         text[0] = '\0';
         return;
     }
@@ -259,7 +259,7 @@ void format_station_market_summary(const station_ui_state_t* ui, bool compact, c
 }
 
 void format_station_market_detail(const station_ui_state_t* ui, bool compact, char* text, size_t text_size) {
-    if (ui->station == NULL) {
+    if (!ui->station) {
         text[0] = '\0';
         return;
     }
@@ -290,7 +290,7 @@ void format_station_market_detail(const station_ui_state_t* ui, bool compact, ch
 /* ------------------------------------------------------------------ */
 
 int build_station_service_lines(const station_ui_state_t* ui, station_service_line_t lines[3]) {
-    if (ui->station == NULL) {
+    if (!ui->station) {
         return 0;
     }
 
@@ -842,7 +842,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 /* Action line */
                 float player_space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
                 float player_credits = LOCAL_PLAYER.ship.credits;
-                int can_buy = (avail > 0.5f && price_f > 0.01f)
+                int can_buy = (avail > 0.5f && price_f > FLOAT_EPSILON)
                     ? (int)fminf(fminf(avail, player_space), floorf(player_credits / price_f))
                     : 0;
                 if (can_buy > 0) {
@@ -877,7 +877,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             for (int c = 0; c < COMMODITY_COUNT; c++) {
                 float inv = station_inventory_amount(ui->station, (commodity_t)c);
                 float base = ui->station->base_price[c];
-                if (inv < 0.5f && base < 0.01f) continue;
+                if (inv < 0.5f && base < FLOAT_EPSILON) continue;
 
                 float cap = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
                 float fill = inv / fmaxf(1.0f, cap);
@@ -902,7 +902,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_printf("%3d", (int)lroundf(inv));
 
                 /* Base price */
-                if (base > 0.01f) {
+                if (base > FLOAT_EPSILON) {
                     sdtx_color3b(100, 115, 138);
                     sdtx_pos(ui_text_pos(bar_x + mini_w + 44.0f), ui_text_pos(my));
                     sdtx_printf("@%d", (int)lroundf(base));

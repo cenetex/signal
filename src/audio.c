@@ -86,8 +86,7 @@ void audio_step(audio_state_t* a, float dt) {
     }
 }
 
-void audio_generate_stream(audio_state_t* a, music_state_t* music) {
-    (void)music;
+void audio_generate_stream(audio_state_t* a) {
     if (!a->valid || !saudio_isvalid()) return;
 
     int channels = saudio_channels();

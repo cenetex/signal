@@ -195,7 +195,7 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
      * flicker from stale PLAYER_SHIP messages. */
     if (g.action_predict_timer <= 0.0f) {
         /* Detect death: hull was critical, now full + docked + cargo cleared */
-        if (sp->ship.hull <= 0.01f && state->hull > 10.0f && state->docked
+        if (sp->ship.hull <= FLOAT_EPSILON && state->hull > 10.0f && state->docked
             && g.death_screen_timer <= 0.0f) {
             g.death_screen_timer = 4.0f;
             g.death_ore_mined = sp->ship.stat_ore_mined;

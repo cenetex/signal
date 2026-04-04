@@ -134,7 +134,7 @@ float ship_cargo_amount(const ship_t* ship, commodity_t commodity) {
 float station_buy_price(const station_t* station, commodity_t commodity) {
     if (!station) return 0.0f;
     float base = station->base_price[commodity];
-    if (base < 0.01f) return 0.0f;
+    if (base < FLOAT_EPSILON) return 0.0f;
     float capacity = (commodity < COMMODITY_RAW_ORE_COUNT)
         ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
     float fill = station->inventory[commodity] / capacity;
@@ -149,7 +149,7 @@ float station_buy_price(const station_t* station, commodity_t commodity) {
 float station_sell_price(const station_t* station, commodity_t commodity) {
     if (!station) return 0.0f;
     float base = station->base_price[commodity];
-    if (base < 0.01f) return 0.0f;
+    if (base < FLOAT_EPSILON) return 0.0f;
     float capacity = (commodity < COMMODITY_RAW_ORE_COUNT)
         ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
     float fill = station->inventory[commodity] / capacity;

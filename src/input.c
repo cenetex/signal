@@ -126,7 +126,7 @@ input_intent_t sample_input_intent(void) {
             float est_payout = 0.0f;
             if (sell_st) {
                 commodity_t buy = station_primary_buy(sell_st);
-                if ((int)buy >= 0 && LOCAL_PLAYER.ship.cargo[buy] > 0.01f) {
+                if ((int)buy >= 0 && LOCAL_PLAYER.ship.cargo[buy] > FLOAT_EPSILON) {
                     float capacity = (buy < COMMODITY_RAW_ORE_COUNT)
                         ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
                     float space = fmaxf(0.0f, capacity - sell_st->inventory[buy]);
@@ -136,7 +136,7 @@ input_intent_t sample_input_intent(void) {
                     LOCAL_PLAYER.ship.credits += est_payout;
                 }
             }
-            if (est_payout > 0.01f) {
+            if (est_payout > FLOAT_EPSILON) {
                 set_notice("Delivered  +%d cr", (int)lroundf(est_payout));
             } else {
                 set_notice("Nothing to deliver here.");
@@ -152,7 +152,7 @@ input_intent_t sample_input_intent(void) {
         const station_t *st = current_station_ptr();
         if (st) {
             commodity_t sell = station_primary_sell(st);
-            if ((int)sell >= 0 && st->inventory[sell] > 0.5f && st->base_price[sell] > 0.01f) {
+            if ((int)sell >= 0 && st->inventory[sell] > 0.5f && st->base_price[sell] > FLOAT_EPSILON) {
                 float space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
                 float price = station_sell_price(st, sell);
                 if (space < 0.5f) {

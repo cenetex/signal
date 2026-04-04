@@ -4,6 +4,8 @@
 #include "sokol_gl.h"
 
 void draw_circle_filled(vec2 center, float radius, int segments, float r, float g0, float b, float a) {
+    if (segments < 3) segments = 3;
+    if (segments > 256) segments = 256;
     sgl_c4f(r, g0, b, a);
     sgl_begin_triangles();
     float step = TWO_PI_F / (float)segments;
@@ -23,6 +25,8 @@ void draw_circle_filled(vec2 center, float radius, int segments, float r, float 
 }
 
 void draw_circle_outline(vec2 center, float radius, int segments, float r, float g0, float b, float a) {
+    if (segments < 3) segments = 3;
+    if (segments > 256) segments = 256;
     sgl_c4f(r, g0, b, a);
     sgl_begin_line_strip();
     float step = TWO_PI_F / (float)segments;
