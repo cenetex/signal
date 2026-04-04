@@ -2,6 +2,7 @@
 #include <string.h>
 #include "asteroid.h"
 #include "commodity.h"
+#include "rng.h"
 
 static const float WORLD_RADIUS = 5000.0f;  /* safety net; gameplay bounded by station signal_range */
 static const float FRACTURE_CHILD_CLEANUP_AGE = 22.0f;
@@ -109,31 +110,23 @@ void clear_asteroid(asteroid_t* asteroid) {
     if (was_active) asteroid->net_dirty = true; /* signal deactivation to network */
 }
 
-static float rand_range_rng(float min_val, float max_val, uint32_t* rng) {
-    uint32_t x = *rng;
-    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
-    *rng = x;
-    float t = (float)(x & 0x00FFFFFFu) / 16777215.0f;
-    return min_val + (max_val - min_val) * t;
-}
-
 void configure_asteroid_tier(asteroid_t* asteroid, asteroid_tier_t tier, commodity_t commodity, uint32_t* rng) {
     float spin_limit = asteroid_spin_limit(tier);
     asteroid->active = true;
     asteroid->tier = tier;
     asteroid->commodity = commodity;
-    asteroid->radius = rand_range_rng(asteroid_radius_min(tier), asteroid_radius_max(tier), rng);
-    asteroid->max_hp = rand_range_rng(asteroid_hp_min(tier), asteroid_hp_max(tier), rng);
+    asteroid->radius = rand_range(rng, asteroid_radius_min(tier), asteroid_radius_max(tier));
+    asteroid->max_hp = rand_range(rng, asteroid_hp_min(tier), asteroid_hp_max(tier));
     asteroid->hp = asteroid->max_hp;
     asteroid->max_ore = 0.0f;
     asteroid->ore = 0.0f;
     if (tier == ASTEROID_TIER_S) {
-        asteroid->max_ore = rand_range_rng(8.0f, 14.0f, rng);
+        asteroid->max_ore = rand_range(rng, 8.0f, 14.0f);
         asteroid->ore = asteroid->max_ore;
     }
-    asteroid->rotation = rand_range_rng(0.0f, TWO_PI_F, rng);
-    asteroid->spin = rand_range_rng(-spin_limit, spin_limit, rng);
-    asteroid->seed = rand_range_rng(0.0f, 100.0f, rng);
+    asteroid->rotation = rand_range(rng, 0.0f, TWO_PI_F);
+    asteroid->spin = rand_range(rng, -spin_limit, spin_limit);
+    asteroid->seed = rand_range(rng, 0.0f, 100.0f);
     asteroid->age = 0.0f;
 }
 

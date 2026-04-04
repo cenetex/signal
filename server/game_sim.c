@@ -6,6 +6,7 @@
  */
 #include "game_sim.h"
 #include "signal_model.h"
+#include "rng.h"
 #include <stdlib.h>
 
 #define MODULE_COLLISION_RADIUS 34.0f
@@ -76,30 +77,12 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
 /* ================================================================== */
 
 /* ================================================================== */
-/* RNG -- world-local xorshift                                        */
+/* RNG -- thin wrappers over shared rng.h (pass &w->rng)             */
 /* ================================================================== */
 
-static uint32_t rng_next(world_t *w) {
-    if (w->rng == 0) w->rng = 0xA341316Cu;
-    uint32_t x = w->rng;
-    x ^= x << 13;
-    x ^= x >> 17;
-    x ^= x << 5;
-    w->rng = x;
-    return x;
-}
-
-static float randf(world_t *w) {
-    return (float)(rng_next(w) & 0x00FFFFFFu) / 16777215.0f;
-}
-
-static float rand_range(world_t *w, float lo, float hi) {
-    return lerpf(lo, hi, randf(w));
-}
-
-static int rand_int(world_t *w, int lo, int hi) {
-    return lo + (int)(rng_next(w) % (uint32_t)(hi - lo + 1));
-}
+static float w_randf(world_t *w)                          { return randf(&w->rng); }
+static float w_rand_range(world_t *w, float lo, float hi) { return rand_range(&w->rng, lo, hi); }
+static int   w_rand_int(world_t *w, int lo, int hi)       { return rand_int(&w->rng, lo, hi); }
 
 /* ================================================================== */
 /* Signal strength                                                    */
@@ -523,24 +506,24 @@ static void sim_configure_asteroid(world_t *w, asteroid_t *a, asteroid_tier_t ti
     a->active    = true;
     a->tier      = tier;
     a->commodity = commodity;
-    a->radius    = rand_range(w, asteroid_radius_min(tier), asteroid_radius_max(tier));
-    a->max_hp    = rand_range(w, asteroid_hp_min(tier), asteroid_hp_max(tier));
+    a->radius    = w_rand_range(w, asteroid_radius_min(tier), asteroid_radius_max(tier));
+    a->max_hp    = w_rand_range(w, asteroid_hp_min(tier), asteroid_hp_max(tier));
     a->hp        = a->max_hp;
     a->max_ore   = 0.0f;
     a->ore       = 0.0f;
     if (tier == ASTEROID_TIER_S) {
-        a->max_ore = rand_range(w, 8.0f, 14.0f);
+        a->max_ore = w_rand_range(w, 8.0f, 14.0f);
         a->ore     = a->max_ore;
     }
-    a->rotation = rand_range(w, 0.0f, TWO_PI_F);
-    a->spin     = rand_range(w, -sl, sl);
-    a->seed     = rand_range(w, 0.0f, 100.0f);
+    a->rotation = w_rand_range(w, 0.0f, TWO_PI_F);
+    a->spin     = w_rand_range(w, -sl, sl);
+    a->seed     = w_rand_range(w, 0.0f, 100.0f);
     a->age      = 0.0f;
     a->net_dirty = true;
 }
 
 static asteroid_tier_t random_field_asteroid_tier(world_t *w) {
-    float roll = randf(w);
+    float roll = w_randf(w);
     if (roll < 0.03f) return ASTEROID_TIER_XXL;
     if (roll < 0.26f) return ASTEROID_TIER_XL;
     if (roll < 0.70f) return ASTEROID_TIER_L;
@@ -562,7 +545,7 @@ static int pick_active_station(world_t *w) {
     for (int s = 0; s < MAX_STATIONS; s++)
         if (station_provides_signal(&w->stations[s])) active[count++] = s;
     if (count == 0) return 0;
-    return active[rand_int(w, 0, count - 1)];
+    return active[w_rand_int(w, 0, count - 1)];
 }
 
 /* Find a good clump center in the belt density field near signal-covered space.
@@ -572,8 +555,8 @@ static vec2 find_belt_clump_center(world_t *w, float *out_density) {
     float best_density = 0.0f;
     for (int attempt = 0; attempt < 16; attempt++) {
         int stn = pick_active_station(w);
-        float angle = rand_range(w, 0.0f, TWO_PI_F);
-        float distance = rand_range(w, 200.0f, w->stations[stn].signal_range * 0.85f);
+        float angle = w_rand_range(w, 0.0f, TWO_PI_F);
+        float distance = w_rand_range(w, 200.0f, w->stations[stn].signal_range * 0.85f);
         vec2 pos = v2_add(w->stations[stn].pos, v2(cosf(angle) * distance, sinf(angle) * distance));
         float d = belt_density_at(&w->belt, pos.x, pos.y);
         /* Gradient walk: take 4 steps toward higher density */
@@ -616,13 +599,13 @@ static int seed_asteroid_clump(world_t *w, int first_slot) {
     float clump_radius = 200.0f + density * 400.0f;
 
     /* Elongation: stretch the clump along a random axis */
-    float stretch_angle = rand_range(w, 0.0f, TWO_PI_F);
-    float stretch_factor = rand_range(w, 1.0f, 2.5f);
+    float stretch_angle = w_rand_range(w, 0.0f, TWO_PI_F);
+    float stretch_factor = w_rand_range(w, 1.0f, 2.5f);
     float cos_s = cosf(stretch_angle);
     float sin_s = sinf(stretch_angle);
 
     /* Shared drift velocity for the clump */
-    vec2 drift = v2(rand_range(w, -3.0f, 3.0f), rand_range(w, -3.0f, 3.0f));
+    vec2 drift = v2(w_rand_range(w, -3.0f, 3.0f), w_rand_range(w, -3.0f, 3.0f));
 
     int placed = 0;
     for (int i = 0; i < clump_size && (first_slot + placed) < MAX_ASTEROIDS; i++) {
@@ -632,11 +615,11 @@ static int seed_asteroid_clump(world_t *w, int first_slot) {
         /* Pick tier: first rock is the anchor, rest are smaller */
         asteroid_tier_t tier;
         if (i == 0) {
-            tier = (randf(w) < 0.15f) ? ASTEROID_TIER_XXL : ASTEROID_TIER_XL;
+            tier = (w_randf(w) < 0.15f) ? ASTEROID_TIER_XXL : ASTEROID_TIER_XL;
         } else if (i <= 3) {
-            tier = (randf(w) < 0.4f) ? ASTEROID_TIER_L : ASTEROID_TIER_M;
+            tier = (w_randf(w) < 0.4f) ? ASTEROID_TIER_L : ASTEROID_TIER_M;
         } else {
-            tier = (randf(w) < 0.3f) ? ASTEROID_TIER_L : ASTEROID_TIER_M;
+            tier = (w_randf(w) < 0.3f) ? ASTEROID_TIER_L : ASTEROID_TIER_M;
         }
 
         clear_asteroid(a);
@@ -644,8 +627,8 @@ static int seed_asteroid_clump(world_t *w, int first_slot) {
         a->fracture_child = false;
 
         /* Scatter around center with elongation */
-        float r = rand_range(w, 0.0f, clump_radius) * sqrtf(randf(w)); /* sqrt for uniform disk */
-        float theta = rand_range(w, 0.0f, TWO_PI_F);
+        float r = w_rand_range(w, 0.0f, clump_radius) * sqrtf(w_randf(w)); /* sqrt for uniform disk */
+        float theta = w_rand_range(w, 0.0f, TWO_PI_F);
         float lx = cosf(theta) * r;
         float ly = sinf(theta) * r;
         /* Apply stretch */
@@ -656,7 +639,7 @@ static int seed_asteroid_clump(world_t *w, int first_slot) {
         float fy = -sx * sin_s + sy * cos_s;
 
         a->pos = v2_add(center, v2(fx, fy));
-        a->vel = v2_add(drift, v2(rand_range(w, -2.0f, 2.0f), rand_range(w, -2.0f, 2.0f)));
+        a->vel = v2_add(drift, v2(w_rand_range(w, -2.0f, 2.0f), w_rand_range(w, -2.0f, 2.0f)));
         placed++;
     }
     return placed;
@@ -671,7 +654,7 @@ static void seed_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier
     sim_configure_asteroid(w, a, tier, ore);
     a->fracture_child = false;
     a->pos = pos;
-    a->vel = v2(rand_range(w, -4.0f, 4.0f), rand_range(w, -4.0f, 4.0f));
+    a->vel = v2(w_rand_range(w, -4.0f, 4.0f), w_rand_range(w, -4.0f, 4.0f));
 }
 
 static void set_inbound_field_velocity(world_t *w, asteroid_t *a, vec2 inward) {
@@ -694,8 +677,8 @@ static void set_inbound_field_velocity(world_t *w, asteroid_t *a, vec2 inward) {
         break;
     }
     vec2 tangent = v2_perp(inward);
-    a->vel = v2_add(v2_scale(inward, rand_range(w, speed_lo, speed_hi)),
-                    v2_scale(tangent, rand_range(w, -tangent_jitter, tangent_jitter)));
+    a->vel = v2_add(v2_scale(inward, w_rand_range(w, speed_lo, speed_hi)),
+                    v2_scale(tangent, w_rand_range(w, -tangent_jitter, tangent_jitter)));
 }
 
 static void spawn_inbound_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier) {
@@ -714,9 +697,9 @@ static void spawn_inbound_field_asteroid_of_tier(world_t *w, asteroid_t *a, aste
     float best_density = 0.0f;
 
     for (int attempt = 0; attempt < 32; attempt++) {
-        float angle = rand_range(w, 0.0f, TWO_PI_F);
+        float angle = w_rand_range(w, 0.0f, TWO_PI_F);
         vec2 outward = v2_from_angle(angle);
-        float dist = rand_range(w, sr * 0.30f, sr * 0.60f);
+        float dist = w_rand_range(w, sr * 0.30f, sr * 0.60f);
         vec2 pos = v2_add(center, v2_scale(outward, dist));
         float d = belt_density_at(&w->belt, pos.x, pos.y);
         if (d > best_density) {
@@ -747,10 +730,10 @@ static void spawn_child_asteroid(world_t *w, asteroid_t *a, asteroid_tier_t tier
 
 static int desired_child_count(world_t *w, asteroid_tier_t tier) {
     switch (tier) {
-    case ASTEROID_TIER_XXL: return rand_int(w, 8, 14);
-    case ASTEROID_TIER_XL: return rand_int(w, 2, 3);
-    case ASTEROID_TIER_L:  return rand_int(w, 2, 3);
-    case ASTEROID_TIER_M:  return rand_int(w, 2, 4);
+    case ASTEROID_TIER_XXL: return w_rand_int(w, 8, 14);
+    case ASTEROID_TIER_XL: return w_rand_int(w, 2, 3);
+    case ASTEROID_TIER_L:  return w_rand_int(w, 2, 3);
+    case ASTEROID_TIER_M:  return w_rand_int(w, 2, 4);
     default: return 0;
     }
 }
@@ -782,14 +765,14 @@ static void fracture_asteroid(world_t *w, int idx, vec2 outward_dir) {
     float base_angle = atan2f(outward_dir.y, outward_dir.x);
     for (int i = 0; i < child_count; i++) {
         float spread_t = (child_count == 1) ? 0.0f : (((float)i / (float)(child_count - 1)) - 0.5f);
-        float child_angle = base_angle + (spread_t * 1.35f) + rand_range(w, -0.14f, 0.14f);
+        float child_angle = base_angle + (spread_t * 1.35f) + w_rand_range(w, -0.14f, 0.14f);
         vec2 dir = v2_from_angle(child_angle);
         vec2 tangent = v2_perp(dir);
         asteroid_t *child = &w->asteroids[child_slots[i]];
         spawn_child_asteroid(w, child, child_tier, parent.commodity, parent.pos, parent.vel);
         vec2 cpos = v2_add(parent.pos, v2_scale(dir, (parent.radius * 0.28f) + (child->radius * 0.85f)));
-        float drift = rand_range(w, 22.0f, 56.0f);
-        vec2 cvel = v2_add(parent.vel, v2_add(v2_scale(dir, drift), v2_scale(tangent, rand_range(w, -10.0f, 10.0f))));
+        float drift = w_rand_range(w, 22.0f, 56.0f);
+        vec2 cvel = v2_add(parent.vel, v2_add(v2_scale(dir, drift), v2_scale(tangent, w_rand_range(w, -10.0f, 10.0f))));
         child->pos = cpos;
         child->vel = cvel;
     }
@@ -843,7 +826,7 @@ static void maintain_asteroid_field(world_t *w, float dt) {
     if (w->field_spawn_timer < FIELD_ASTEROID_RESPAWN_DELAY) return;
     if (first_slot >= 0) {
         /* Spawn a small wave of 2-4 inbound rocks from the belt edge */
-        int wave = 2 + rand_int(w, 0, 2);
+        int wave = 2 + w_rand_int(w, 0, 2);
         int spawned = 0;
         for (int i = first_slot; i < MAX_ASTEROIDS && spawned < wave; i++) {
             if (w->asteroids[i].active) continue;
