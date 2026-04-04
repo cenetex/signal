@@ -1762,12 +1762,18 @@ static void resolve_ship_annular_sector(world_t *w, server_player_t *sp,
     float r_outer = ring_r + CORRIDOR_HW + ship_r;
     if (dist <= r_inner || dist >= r_outer) return;
 
-    /* Angular test: ship angle within the arc? */
+    /* Angular test: ship angle within the arc?
+     * Expand the arc by the ship's angular footprint at this radius
+     * so ships near the arc edge don't clip through. */
     float ship_angle = atan2f(delta.y, delta.x);
+    float angular_margin = (dist > 1.0f) ? asinf(fminf(ship_r / dist, 1.0f)) : 0.0f;
     float da = angle_b - angle_a;
     while (da > PI_F) da -= TWO_PI_F;
     while (da < -PI_F) da += TWO_PI_F;
-    if (angle_in_arc(ship_angle, angle_a, da) < 0.0f) return;
+    /* Expand arc by angular margin on both sides */
+    float expanded_start = angle_a - (da > 0 ? angular_margin : -angular_margin);
+    float expanded_da = da + (da > 0 ? 2.0f : -2.0f) * angular_margin;
+    if (angle_in_arc(ship_angle, expanded_start, expanded_da) < 0.0f) return;
 
     /* Ship is inside corridor — push radially to nearest edge */
     vec2 radial = v2_scale(delta, 1.0f / dist);
@@ -1996,8 +2002,12 @@ static void step_ship_motion(ship_t *s, float dt, const world_t *w, float cached
     }
 }
 
-/* Resolve ship vs station: module circles + corridor annular sectors. */
+/* Resolve ship vs station: core + module circles + corridor annular sectors. */
 static void resolve_module_collisions(world_t *w, server_player_t *sp, const station_t *st) {
+    /* Station core collision (same as NPCs get) */
+    if (st->radius > 0.0f) {
+        resolve_ship_circle(w, sp, st->pos, st->radius + 4.0f);
+    }
     /* Module circles */
     for (int i = 0; i < st->module_count; i++) {
         int ring = st->modules[i].ring;
