@@ -75,6 +75,7 @@ typedef struct {
     commodity_t buy_commodity;
     int mining_target_hint;  /* client's hover_asteroid, -1 = none */
     bool hail;               /* collect pending credits from nearby station */
+    bool release_tow;        /* drop all towed fragments */
     bool reset;
 } input_intent_t;
 

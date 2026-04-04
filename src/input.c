@@ -48,6 +48,7 @@ input_intent_t sample_input_intent(void) {
     }
 
     intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
+    intent.release_tow = is_key_pressed(SAPP_KEYCODE_R);
     /* Safety: close build overlay if not docked */
     if (!LOCAL_PLAYER.docked) g.build_overlay = false;
     /* E key: cycle module targets when near station, else dock/launch */
