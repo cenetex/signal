@@ -3869,9 +3869,9 @@ TEST(test_238_corridor_blocks_radial_approach) {
     setup_collision_world(&w);
     vec2 st_pos = w.stations[0].pos;
 
-    /* Midpoint angle between slot 1 and slot 2 on ring 2 (6 slots) */
-    float ang1 = TWO_PI_F * 1.0f / 6.0f;
-    float ang2 = TWO_PI_F * 2.0f / 6.0f;
+    /* Midpoint angle between slot 1 and slot 2 on ring 2 (accounts for ring_offset) */
+    float ang1 = module_angle_ring(&w.stations[0], 2, 1);
+    float ang2 = module_angle_ring(&w.stations[0], 2, 2);
     float mid_ang = (ang1 + ang2) * 0.5f;
     float ring_r = 340.0f; /* STATION_RING_RADIUS[2] */
 
