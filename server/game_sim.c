@@ -2252,27 +2252,28 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             continue;
         }
         asteroid_t *a = &w->asteroids[idx];
-        /* Trail in ship's wake at half tractor range, spaced apart */
-        float tr = ship_tractor_range(&sp->ship);
-        float base_dist = tr * 0.5f;
-        float trail_dist = base_dist + (float)t * 24.0f;
-        vec2 behind = v2_from_angle(sp->ship.angle + PI_F);
-        vec2 target_pos = v2_add(sp->ship.pos, v2_scale(behind, trail_dist));
+        /* Orbit at safe distance around ship, evenly spaced */
+        float orbit_dist = 50.0f + (float)sp->ship.towed_count * 6.0f;
+        float orbit_angle = TWO_PI_F * (float)t / fmaxf(1.0f, (float)sp->ship.towed_count);
+        vec2 target_pos = v2_add(sp->ship.pos,
+            v2_scale(v2_from_angle(orbit_angle + sp->ship.angle), orbit_dist));
 
-        /* Directly lerp toward target — no spring oscillation */
+        /* Gently follow orbit position */
         vec2 to_target = v2_sub(target_pos, a->pos);
         float d = v2_len(to_target);
         if (d > 2.0f) {
-            /* Move toward target at a fraction of the distance per second */
-            float follow_rate = 2.5f; /* lower = lazier */
+            float follow_rate = 3.0f;
             a->vel = v2_scale(to_target, follow_rate);
         } else {
             a->vel = v2(0.0f, 0.0f);
         }
-        /* Hard speed cap so they never whip around */
-        float max_speed = 160.0f;
-        float spd = v2_len(a->vel);
-        if (spd > max_speed) a->vel = v2_scale(a->vel, max_speed / spd);
+        /* Match ship velocity so they move with the ship */
+        a->vel = v2_add(a->vel, sp->ship.vel);
+        /* Speed cap relative to ship */
+        vec2 rel_vel = v2_sub(a->vel, sp->ship.vel);
+        float rel_spd = v2_len(rel_vel);
+        if (rel_spd > 100.0f)
+            a->vel = v2_add(sp->ship.vel, v2_scale(rel_vel, 100.0f / rel_spd));
         sp->tractor_fragments++;
 
         /* Fragment-ship collision: keep fragment from overlapping ship */
@@ -2762,6 +2763,11 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         forward = ship_forward(sp->ship.angle);           /* refresh after rotation */
         step_ship_thrust(&sp->ship, dt, thrust_input, forward);
         step_ship_motion(&sp->ship, dt, w);
+        /* Tow drag: each fragment adds drag, slowing the ship */
+        if (sp->ship.towed_count > 0) {
+            float tow_drag = 0.15f * (float)sp->ship.towed_count;
+            sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + tow_drag * dt));
+        }
         resolve_world_collisions(w, sp);
         update_docking_state(w, sp, dt);
         /* In client prediction mode (player_only_mode), skip station
