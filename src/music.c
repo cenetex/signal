@@ -136,7 +136,6 @@ static void music_start_playback(music_state_t *m, unsigned char *data, int size
 #ifdef __EMSCRIPTEN__
 static void on_music_fetch_success(void *user, void *data, int size) {
     music_state_t *m = (music_state_t *)user;
-    fprintf(stderr, "music: fetched %d bytes for track %d\n", size, m->current_track);
     unsigned char *copy = (unsigned char *)malloc((size_t)size);
     if (!copy) {
         fprintf(stderr, "music: out of memory for %d bytes\n", size);
@@ -145,7 +144,6 @@ static void on_music_fetch_success(void *user, void *data, int size) {
     }
     memcpy(copy, data, (size_t)size);
     music_start_playback(m, copy, size);
-    fprintf(stderr, "music: playback started, sr=%d ch=%d\n", m->sample_rate, m->channels);
 }
 
 static void on_music_fetch_error(void *user) {
@@ -199,7 +197,6 @@ void music_play(music_state_t *m, int track) {
 #ifdef __EMSCRIPTEN__
     char url[256];
     snprintf(url, sizeof(url), "%s/%s", ASSET_CDN, info->filename);
-    fprintf(stderr, "music: fetching %s\n", url);
     m->loading = true;
     emscripten_async_wget_data(url, m, on_music_fetch_success, on_music_fetch_error);
 #else
