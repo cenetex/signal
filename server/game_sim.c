@@ -2745,9 +2745,10 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             update_targeting_state(w, sp, forward);
             step_mining_system(w, sp, dt, sp->input.mine, forward);
             if (!w->player_only_mode) {
-                if (sp->input.release_tow) release_towed_fragments(sp);
+                bool released = sp->input.release_tow;
+                if (released) release_towed_fragments(sp);
                 step_towed_cleanup(w, sp);
-                step_fragment_collection(w, sp, dt);
+                if (!released) step_fragment_collection(w, sp, dt);
             }
         }
     } else {
