@@ -500,17 +500,10 @@ static uint32_t station_upgrade_service(ship_upgrade_t upgrade) {
 
 /* Forward declarations for module-based docking */
 static int station_dock_count(const station_t *st);
-static vec2 dock_berth_pos(const station_t *st, int dock_index);
-static float dock_berth_angle(const station_t *st, int dock_index);
+static int station_berth_count(const station_t *st);
+static vec2 dock_berth_pos(const station_t *st, int berth);
+static float dock_berth_angle(const station_t *st, int berth);
 static int find_best_berth(const world_t *w, const station_t *st, int station_idx, vec2 ship_pos);
-
-static vec2 station_dock_anchor(const station_t *station, const hull_def_t *hull) {
-    if (!station) return v2(0.0f, 0.0f);
-    /* Use first dock module if available, else fall back to center offset */
-    if (station_dock_count(station) > 0)
-        return dock_berth_pos(station, 0);
-    return v2_add(station->pos, v2(0.0f, -(station->radius + hull->ship_radius + STATION_DOCK_APPROACH_OFFSET)));
-}
 
 static bool station_has_service(const station_t *station, uint32_t service) {
     return station && ((station->services & service) != 0);
@@ -1602,11 +1595,17 @@ static bool try_spend_credits(ship_t *s, float amount) {
 
 static void anchor_ship_in_station(server_player_t *sp, world_t *w) {
     const station_t *st = &w->stations[sp->current_station];
-    const hull_def_t *hull = ship_hull_def(&sp->ship);
-    vec2 base = station_dock_anchor(st, hull);
-    /* Offset by player ID so multiple docked players don't overlap */
-    float offset = (float)(sp->id % 4) * (hull->ship_radius * 2.5f) - (hull->ship_radius * 3.75f);
-    sp->ship.pos = v2_add(base, v2(offset, 0.0f));
+    /* Assign a dock berth and position ship there */
+    int nberths = station_berth_count(st);
+    if (nberths > 0) {
+        sp->dock_berth = sp->id % nberths;
+        sp->ship.pos = dock_berth_pos(st, sp->dock_berth);
+        sp->ship.angle = dock_berth_angle(st, sp->dock_berth);
+    } else {
+        /* Fallback: no dock modules, park near center */
+        const hull_def_t *hull = ship_hull_def(&sp->ship);
+        sp->ship.pos = v2_add(st->pos, v2(0.0f, -(st->radius + hull->ship_radius + STATION_DOCK_APPROACH_OFFSET)));
+    }
     sp->ship.vel = v2(0.0f, 0.0f);
 }
 
@@ -2016,9 +2015,12 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
 }
 
 
-/* Module-based docking: ships dock at MODULE_DOCK positions on rotating rings.
- * The dock_berth index maps to the i-th dock module on the station. */
-#define DOCK_BERTH_OFFSET 55.0f    /* offset from dock module center (outward) */
+/* Module-based docking: each MODULE_DOCK provides 3 berth slots spread
+ * around the dock module (center, left, right of the outward offset).
+ * dock_berth = dock_module_index * BERTHS_PER_DOCK + sub_slot. */
+#define DOCK_BERTH_OFFSET 55.0f    /* radial offset from dock module center */
+#define DOCK_BERTH_SPREAD 28.0f    /* tangential spread between sub-berths */
+#define BERTHS_PER_DOCK 3          /* berths per MODULE_DOCK */
 #define DOCK_SNAP_DISTANCE 30.0f   /* snap-to-docked threshold */
 #define DOCK_APPROACH_RANGE 300.0f /* range to detect station for docking */
 
@@ -2028,6 +2030,11 @@ static int station_dock_count(const station_t *st) {
     for (int i = 0; i < st->module_count; i++)
         if (st->modules[i].type == MODULE_DOCK && !st->modules[i].scaffold) count++;
     return count;
+}
+
+/* Total berth slots across all dock modules */
+static int station_berth_count(const station_t *st) {
+    return station_dock_count(st) * BERTHS_PER_DOCK;
 }
 
 /* Get the i-th dock module index */
@@ -2042,33 +2049,41 @@ static int station_dock_module(const station_t *st, int dock_index) {
     return -1;
 }
 
-/* Dock berth position: offset outward from the dock module on its ring */
-static vec2 dock_berth_pos(const station_t *st, int dock_index) {
-    int mi = station_dock_module(st, dock_index);
-    if (mi < 0) return st->pos; /* fallback to center */
+/* Dock berth position: offset outward from the dock module, with tangential
+ * spread for sub-berths (center=0, left=-1, right=+1). */
+static vec2 dock_berth_pos(const station_t *st, int berth) {
+    int dock_idx = berth / BERTHS_PER_DOCK;
+    int sub = berth % BERTHS_PER_DOCK;  /* 0=center, 1=left, 2=right */
+    int mi = station_dock_module(st, dock_idx);
+    if (mi < 0) return st->pos;
     int ring = st->modules[mi].ring;
     int slot = st->modules[mi].slot;
     vec2 mod_pos = module_world_pos_ring(st, ring, slot);
     float angle = module_angle_ring(st, ring, slot);
-    /* Berth is offset outward from station center */
-    return v2_add(mod_pos, v2_scale(v2_from_angle(angle), DOCK_BERTH_OFFSET));
+    vec2 outward = v2_from_angle(angle);
+    vec2 tangent = v2(-outward.y, outward.x);
+    /* Sub-berth tangential offset: 0=center, 1=left, 2=right */
+    float spread = (sub == 0) ? 0.0f : ((sub == 1) ? -DOCK_BERTH_SPREAD : DOCK_BERTH_SPREAD);
+    return v2_add(v2_add(mod_pos, v2_scale(outward, DOCK_BERTH_OFFSET)),
+                  v2_scale(tangent, spread));
 }
 
 /* Dock berth angle: face inward toward station center */
-static float dock_berth_angle(const station_t *st, int dock_index) {
-    int mi = station_dock_module(st, dock_index);
+static float dock_berth_angle(const station_t *st, int berth) {
+    int dock_idx = berth / BERTHS_PER_DOCK;
+    int mi = station_dock_module(st, dock_idx);
     if (mi < 0) return 0.0f;
     float angle = module_angle_ring(st, st->modules[mi].ring, st->modules[mi].slot);
-    return angle + PI_F; /* face inward */
+    return angle + PI_F;
 }
 
-/* Find the best (closest, unoccupied) dock berth */
+/* Find the best (closest, unoccupied) berth slot */
 static int find_best_berth(const world_t *w, const station_t *st, int station_idx, vec2 ship_pos) {
-    int ndocks = station_dock_count(st);
-    if (ndocks == 0) return 0;
+    int total = station_berth_count(st);
+    if (total == 0) return 0;
     int best = 0;
     float best_d = 1e18f;
-    for (int s = 0; s < ndocks; s++) {
+    for (int s = 0; s < total; s++) {
         vec2 bp = dock_berth_pos(st, s);
         float d = v2_dist_sq(ship_pos, bp);
         bool occupied = false;

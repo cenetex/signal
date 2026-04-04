@@ -76,6 +76,8 @@ void local_server_sync_to_client(const local_server_t *ls) {
     dst->current_station = src->current_station;
     dst->in_dock_range = src->in_dock_range;
     dst->nearby_station = src->nearby_station;
+    dst->dock_berth = src->dock_berth;
+    dst->docking_approach = src->docking_approach;
 
     /* Beam/targeting state (for rendering) */
     dst->beam_active = src->beam_active;
