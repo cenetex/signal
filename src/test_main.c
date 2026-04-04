@@ -1538,7 +1538,8 @@ TEST(test_scenario_full_mining_cycle) {
     w.asteroids[frag].vel = v2(0.0f, 0.0f);
     w.players[0].ship.pos = v2_add(hopper_pos, v2(100.0f, 0.0f));
     w.players[0].ship.vel = v2(0.0f, 0.0f);
-    world_sim_step(&w, SIM_DT);
+    /* Run enough steps for the 30Hz hopper intake to fire */
+    for (int i = 0; i < 10; i++) world_sim_step(&w, SIM_DT);
 
     /* Fragment should be consumed, credits earned */
     ASSERT(w.players[0].ship.towed_count == 0);

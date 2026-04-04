@@ -2235,6 +2235,34 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             a->vel = v2_scale(a->vel, 1.0f / (1.0f + 4.0f * dt));
         }
         sp->tractor_fragments++;
+
+        /* Fragment-ship collision: keep fragment from overlapping ship */
+        float ship_r = ship_hull_def(&sp->ship)->ship_radius;
+        float min_d = a->radius + ship_r + 4.0f;
+        vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
+        float ds = v2_len_sq(to_ship);
+        if (ds < min_d * min_d && ds > 0.1f) {
+            float dd = sqrtf(ds);
+            vec2 push = v2_scale(to_ship, -((min_d - dd) / dd));
+            a->pos = v2_add(a->pos, push);
+        }
+
+        /* Fragment-fragment collision: towed fragments push apart */
+        for (int u = t + 1; u < sp->ship.towed_count; u++) {
+            int uidx = sp->ship.towed_fragments[u];
+            if (uidx < 0 || uidx >= MAX_ASTEROIDS || !w->asteroids[uidx].active) continue;
+            asteroid_t *b = &w->asteroids[uidx];
+            float sep = a->radius + b->radius + 2.0f;
+            vec2 ab = v2_sub(b->pos, a->pos);
+            float ab_sq = v2_len_sq(ab);
+            if (ab_sq < sep * sep && ab_sq > 0.1f) {
+                float abd = sqrtf(ab_sq);
+                float overlap = (sep - abd) * 0.5f;
+                vec2 n = v2_scale(ab, overlap / abd);
+                a->pos = v2_sub(a->pos, n);
+                b->pos = v2_add(b->pos, n);
+            }
+        }
     }
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -2273,61 +2301,15 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
 #define HOPPER_PULL_ACCEL 300.0f   /* pull strength */
 #define HOPPER_CONSUME_RANGE 30.0f /* fragment consumed when this close to hopper */
 
-static void step_towed_deposits(world_t *w, server_player_t *sp) {
-    if (sp->ship.towed_count == 0) return;
-    float pull_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
-    float consume_sq = HOPPER_CONSUME_RANGE * HOPPER_CONSUME_RANGE;
-    float dt = SIM_DT;
-
+/* Clean up dead towed fragment references. Detach is now done by step_hopper_intake. */
+static void step_towed_cleanup(world_t *w, server_player_t *sp) {
     for (int t = sp->ship.towed_count - 1; t >= 0; t--) {
         int idx = sp->ship.towed_fragments[t];
-        if (idx < 0 || idx >= MAX_ASTEROIDS) {
+        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) {
             sp->ship.towed_count--;
             sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
             sp->ship.towed_fragments[sp->ship.towed_count] = -1;
-            continue;
         }
-        asteroid_t *a = &w->asteroids[idx];
-        if (!a->active) {
-            sp->ship.towed_count--;
-            sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
-            sp->ship.towed_fragments[sp->ship.towed_count] = -1;
-            continue;
-        }
-
-        /* Check all hopper modules: pull fragment toward nearest, consume on contact */
-        for (int si = 0; si < MAX_STATIONS; si++) {
-            const station_t *st = &w->stations[si];
-            if (st->scaffold) continue;
-            for (int mi = 0; mi < st->module_count; mi++) {
-                if (st->modules[mi].type != MODULE_ORE_BUYER || st->modules[mi].scaffold) continue;
-                vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
-                float d_sq = v2_dist_sq(a->pos, mp);
-
-                /* Consume: fragment reached the hopper mouth */
-                if (d_sq <= consume_sq) {
-                    float ore_value = a->ore * station_buy_price(st, a->commodity);
-                    w->stations[si].inventory[a->commodity] += a->ore;
-                    sp->ship.credits += ore_value;
-                    sp->ship.stat_credits_earned += ore_value;
-                    emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
-                    clear_asteroid(a);
-                    sp->ship.towed_count--;
-                    sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
-                    sp->ship.towed_fragments[sp->ship.towed_count] = -1;
-                    goto next_towed;
-                }
-
-                /* Pull: attract fragment toward hopper */
-                if (d_sq <= pull_sq && d_sq > 1.0f) {
-                    float d = sqrtf(d_sq);
-                    float strength = HOPPER_PULL_ACCEL * (1.0f - d / HOPPER_PULL_RANGE);
-                    vec2 dir = v2_scale(v2_sub(mp, a->pos), 1.0f / d);
-                    a->vel = v2_add(a->vel, v2_scale(dir, strength * dt));
-                }
-            }
-        }
-        next_towed:;
     }
 }
 
@@ -2729,7 +2711,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             update_targeting_state(w, sp, forward);
             step_mining_system(w, sp, dt, sp->input.mine, forward);
             if (!w->player_only_mode) {
-                step_towed_deposits(w, sp);
+                step_towed_cleanup(w, sp);
                 step_fragment_collection(w, sp, dt);
             }
         }
@@ -2884,9 +2866,12 @@ static void step_asteroid_gravity(world_t *w, float dt) {
 }
 
 /* Hopper intake: ore buyer modules pull and consume nearby TIER_S fragments */
+/* Hopper intake: pull nearby S-tier fragments and consume on contact.
+ * Credits the player who was towing the fragment (if any). */
 static void step_hopper_intake(world_t *w, float dt) {
-    enum { HOPPER_TRACTOR_RADIUS = 80, HOPPER_INTAKE_RADIUS = 15 };
-    float pull_strength = FRAGMENT_TRACTOR_ACCEL * 0.6f; /* 60% of ship tractor */
+    float pull_range = HOPPER_PULL_RANGE;
+    float pull_sq = pull_range * pull_range;
+    float consume_sq = HOPPER_CONSUME_RANGE * HOPPER_CONSUME_RANGE;
 
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
@@ -2894,26 +2879,45 @@ static void step_hopper_intake(world_t *w, float dt) {
         for (int m = 0; m < st->module_count; m++) {
             if (st->modules[m].type != MODULE_ORE_BUYER || st->modules[m].scaffold) continue;
             vec2 mp = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
-            float tr_sq = (float)(HOPPER_TRACTOR_RADIUS * HOPPER_TRACTOR_RADIUS);
-            float intake_sq = (float)(HOPPER_INTAKE_RADIUS * HOPPER_INTAKE_RADIUS);
 
             for (int i = 0; i < MAX_ASTEROIDS; i++) {
                 asteroid_t *a = &w->asteroids[i];
-                if (!asteroid_is_collectible(a)) continue;
+                if (!a->active || a->tier != ASTEROID_TIER_S) continue;
                 vec2 to_mod = v2_sub(mp, a->pos);
                 float d_sq = v2_len_sq(to_mod);
-                if (d_sq > tr_sq) continue;
+                if (d_sq > pull_sq) continue;
 
-                /* Pull fragment toward module */
+                /* Pull fragment toward hopper */
                 float d = sqrtf(d_sq);
                 if (d > 0.5f) {
-                    float pull = 1.0f - clampf(d / (float)HOPPER_TRACTOR_RADIUS, 0.0f, 1.0f);
-                    vec2 pull_dir = v2_scale(to_mod, 1.0f / d);
-                    a->vel = v2_add(a->vel, v2_scale(pull_dir, pull_strength * lerpf(0.3f, 1.0f, pull) * dt));
+                    float strength = HOPPER_PULL_ACCEL * (1.0f - d / pull_range);
+                    vec2 dir = v2_scale(to_mod, 1.0f / d);
+                    a->vel = v2_add(a->vel, v2_scale(dir, strength * dt));
+                    /* Strong damping so fragments glide in smoothly */
+                    a->vel = v2_scale(a->vel, 1.0f / (1.0f + 3.0f * dt));
                 }
 
-                /* Consume at intake zone */
-                if (d_sq <= intake_sq) {
+                /* Consume at hopper mouth */
+                if (d_sq <= consume_sq) {
+                    /* Find which player was towing this and credit them */
+                    for (int p = 0; p < MAX_PLAYERS; p++) {
+                        server_player_t *sp = &w->players[p];
+                        if (!sp->connected) continue;
+                        for (int t = 0; t < sp->ship.towed_count; t++) {
+                            if (sp->ship.towed_fragments[t] == i) {
+                                float ore_value = a->ore * station_buy_price(st, a->commodity);
+                                sp->ship.credits += ore_value;
+                                sp->ship.stat_credits_earned += ore_value;
+                                emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
+                                /* Remove from tow list */
+                                sp->ship.towed_count--;
+                                sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
+                                sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+                                goto consumed;
+                            }
+                        }
+                    }
+                    consumed:
                     st->inventory[a->commodity] += a->ore;
                     clear_asteroid(a);
                 }
