@@ -50,11 +50,51 @@ input_intent_t sample_input_intent(void) {
     intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
     /* Safety: close build overlay if not docked */
     if (!LOCAL_PLAYER.docked) g.build_overlay = false;
-    /* E key: interact (dock/launch) */
-    intent.interact = is_key_pressed(SAPP_KEYCODE_E);
-    if (intent.interact) {
+    /* E key: cycle module targets when near station, else dock/launch */
+    if (is_key_pressed(SAPP_KEYCODE_E)) {
+        if (!LOCAL_PLAYER.docked && LOCAL_PLAYER.in_dock_range && LOCAL_PLAYER.nearby_station >= 0) {
+            /* Cycle through modules on the nearby station */
+            const station_t *st = &g.world.stations[LOCAL_PLAYER.nearby_station];
+            int start = (g.target_station == LOCAL_PLAYER.nearby_station) ? g.target_module + 1 : 0;
+            g.target_station = LOCAL_PLAYER.nearby_station;
+            g.target_module = -1;
+            float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
+            float tr_sq = tr * tr;
+            for (int tries = 0; tries < st->module_count; tries++) {
+                int idx = (start + tries) % st->module_count;
+                if (st->modules[idx].scaffold) continue;
+                vec2 mp = module_world_pos_ring(st, st->modules[idx].ring, st->modules[idx].slot);
+                if (v2_dist_sq(LOCAL_PLAYER.ship.pos, mp) <= tr_sq) {
+                    g.target_module = idx;
+                    break;
+                }
+            }
+            if (g.target_module < 0) {
+                /* No modules in range — fall back to dock/interact */
+                g.target_station = -1;
+                intent.interact = true;
+            }
+        } else {
+            /* Not near station or docked: dock/launch */
+            intent.interact = true;
+            g.target_station = -1;
+            g.target_module = -1;
+        }
         g.build_overlay = false;
         g.placing_outpost = false;
+    }
+    /* Clear target if we moved out of range */
+    if (g.target_station >= 0 && g.target_module >= 0) {
+        const station_t *tst = &g.world.stations[g.target_station];
+        if (g.target_module < tst->module_count) {
+            vec2 mp = module_world_pos_ring(tst, tst->modules[g.target_module].ring,
+                                             tst->modules[g.target_module].slot);
+            float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
+            if (v2_dist_sq(LOCAL_PLAYER.ship.pos, mp) > tr * tr * 1.5f) {
+                g.target_station = -1;
+                g.target_module = -1;
+            }
+        }
     }
     /* Number keys: context-dependent */
     if (LOCAL_PLAYER.docked && g.build_overlay) {

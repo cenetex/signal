@@ -101,6 +101,8 @@ static void reset_world(void) {
 
     g.local_player_slot = 0;
     g.tracked_contract = -1;
+    g.target_station = -1;
+    g.target_module = -1;
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
     g.asteroid_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
@@ -580,6 +582,65 @@ static void render_world(void) {
         draw_station_rings(st, is_current, is_nearby);
     }
     draw_hopper_tractors();
+
+    /* Module target highlight + info panel */
+    if (g.target_station >= 0 && g.target_module >= 0) {
+        const station_t *tst = &g.world.stations[g.target_station];
+        if (g.target_module < tst->module_count) {
+            const station_module_t *tm = &tst->modules[g.target_module];
+            vec2 mp = module_world_pos_ring(tst, tm->ring, tm->slot);
+            /* Pulsing highlight ring around targeted module */
+            float tp = 0.6f + 0.4f * sinf(g.world.time * 5.0f);
+            draw_circle_outline(mp, 50.0f, 20, 0.3f, 1.0f, 0.7f, tp * 0.7f);
+            draw_circle_outline(mp, 52.0f, 20, 0.3f, 1.0f, 0.7f, tp * 0.3f);
+            /* Tractor line from ship to target */
+            draw_segment(LOCAL_PLAYER.ship.pos, mp, 0.2f, 0.8f, 1.0f, tp * 0.3f);
+            /* Info text near module (world-space debugtext) */
+            float screen_w = ui_screen_width();
+            float screen_h = ui_screen_height();
+            sdtx_canvas(screen_w, screen_h);
+            sdtx_origin(0, 0);
+            /* Convert world pos to screen pos */
+            vec2 cam = LOCAL_PLAYER.ship.pos;
+            float sx = (mp.x - cam.x) + screen_w * 0.5f;
+            float sy = (mp.y - cam.y) + screen_h * 0.5f;
+            float cell = 8.0f;
+            sdtx_color3b(130, 255, 200);
+            sdtx_pos((sx + 60.0f) / cell, (sy - 20.0f) / cell);
+            const char *mod_names[] = {
+                "DOCK", "ORE HOPPER", "FURNACE (FE)", "FURNACE (CU)", "FURNACE (CR)",
+                "INGOT SELLER", "REPAIR BAY", "SIGNAL RELAY", "FRAME PRESS",
+                "LASER FAB", "TRACTOR FAB", "CONTRACTS", "ORE SILO",
+                "BLUEPRINTS", "RING", "SHIPYARD"
+            };
+            const char *name = (tm->type < MODULE_COUNT) ? mod_names[tm->type] : "MODULE";
+            sdtx_puts(name);
+            /* Module-specific info line */
+            sdtx_color3b(180, 190, 210);
+            sdtx_pos((sx + 60.0f) / cell, (sy - 8.0f) / cell);
+            switch (tm->type) {
+                case MODULE_REPAIR_BAY: {
+                    float cost = ship_max_hull(&LOCAL_PLAYER.ship) - LOCAL_PLAYER.ship.hull;
+                    if (cost > 0.5f)
+                        sdtx_printf("FIRE to repair  %dcr", (int)lroundf(cost * STATION_REPAIR_COST_PER_HULL));
+                    else
+                        sdtx_puts("Hull OK");
+                    break;
+                }
+                case MODULE_ORE_BUYER:
+                    sdtx_printf("Tow ore here  %d in stock", (int)lroundf(tst->inventory[COMMODITY_FERRITE_ORE] + tst->inventory[COMMODITY_CUPRITE_ORE] + tst->inventory[COMMODITY_CRYSTAL_ORE]));
+                    break;
+                case MODULE_CONTRACT_BOARD:
+                    sdtx_puts("FIRE to browse contracts");
+                    break;
+                case MODULE_BLUEPRINT_DESK:
+                    sdtx_puts("FIRE to buy blueprints");
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
 
     /* Tracked contract target outline (yellow) */
     if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
