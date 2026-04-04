@@ -391,9 +391,6 @@ static void sim_step(float dt) {
         }
     }
 
-    /* Track dock transition AFTER server sync to prevent was_docked flicker */
-    g.was_docked = LOCAL_PLAYER.docked;
-
     /* Advance interpolation timers (both modes) */
     g.asteroid_interp.t += dt / fmaxf(g.asteroid_interp.interval, 0.01f);
     g.npc_interp.t += dt / fmaxf(g.npc_interp.interval, 0.01f);
@@ -404,7 +401,8 @@ static void sim_step(float dt) {
     /* Play audio from sim events (singleplayer only — multiplayer has no server events) */
     process_sim_events(&g.world.events);
 
-    /* Detect state transitions for music/episode triggers (works in both modes) */
+    /* Detect state transitions for music/episode triggers (works in both modes).
+     * Must run BEFORE was_docked is updated to detect the transition. */
     if (g.was_docked && !LOCAL_PLAYER.docked) {
         /* Just launched */
         episode_trigger(&g.episode, 0);
@@ -420,6 +418,9 @@ static void sim_step(float dt) {
                 episode_trigger(&g.episode, 1);
         }
     }
+
+    /* Update was_docked AFTER transition checks */
+    g.was_docked = LOCAL_PLAYER.docked;
 
     onboarding_per_frame();
     episode_per_frame();

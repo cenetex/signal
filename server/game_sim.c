@@ -2165,14 +2165,20 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
         if (!near_module) {
             for (int i = 0; i + 1 < count; i++) {
                 if (st->modules[cidx[i+1]].slot - st->modules[cidx[i]].slot != 1) continue;
+                /* Skip corridors adjacent to docks — docks create entry gaps */
+                if (st->modules[cidx[i]].type == MODULE_DOCK) continue;
+                if (st->modules[cidx[i+1]].type == MODULE_DOCK) continue;
                 float a = module_angle_ring(st, ring, st->modules[cidx[i]].slot);
                 float b = module_angle_ring(st, ring, st->modules[cidx[i+1]].slot);
                 resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
             }
             if (count == slots) {
-                float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
-                float b = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
-                resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
+                if (st->modules[cidx[count-1]].type != MODULE_DOCK
+                    && st->modules[cidx[0]].type != MODULE_DOCK) {
+                    float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
+                    float b = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
+                    resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
+                }
             }
         }
     }
