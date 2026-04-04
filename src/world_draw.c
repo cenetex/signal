@@ -761,9 +761,15 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                 float od = sqrtf(v2_len_sq(outward));
                 if (od > 0.001f) outward = v2_scale(outward, 1.0f / od);
                 vec2 tang = v2(-outward.y, outward.x);
-                /* End berth (outward), inner (toward center), outer (away) */
+                /* End berth (tangentially past dock, capping ring), inner, outer */
+                int dock_slots = STATION_RING_SLOTS[ring];
+                float slot_arc = TWO_PI_F / (float)dock_slots;
+                float end_ang = module_angle_ring(station, ring, m->slot) + slot_arc * 0.45f;
+                vec2 end_pos = v2_add(station->pos,
+                    v2(cosf(end_ang) * STATION_RING_RADIUS[ring],
+                       sinf(end_ang) * STATION_RING_RADIUS[ring]));
                 vec2 berths[3];
-                berths[0] = v2_add(positions[i], v2_scale(outward, 55.0f));
+                berths[0] = end_pos;
                 berths[1] = v2_add(positions[i], v2_scale(outward, -28.0f));
                 berths[2] = v2_add(positions[i], v2_scale(outward, 28.0f));
                 for (int b = 0; b < 3; b++) {

@@ -2054,8 +2054,13 @@ static vec2 dock_berth_pos(const station_t *st, int berth) {
     vec2 radial = v2_from_angle(angle);  /* center → module (outward) */
     vec2 tangent = v2(-radial.y, radial.x);
     if (sub == 0) {
-        /* End berth: past the dock, outward beyond the ring */
-        return v2_add(mod_pos, v2_scale(radial, DOCK_BERTH_OFFSET));
+        /* End berth: tangentially past the dock, capping the ring chain */
+        int slots = STATION_RING_SLOTS[ring];
+        float slot_arc = TWO_PI_F / (float)slots;
+        /* Offset in the direction away from the previous slot (toward the gap) */
+        float end_angle = angle + slot_arc * 0.45f;
+        return v2_add(st->pos, v2(cosf(end_angle) * STATION_RING_RADIUS[ring],
+                                   sinf(end_angle) * STATION_RING_RADIUS[ring]));
     } else {
         /* Inner berth (toward center) / outer berth (away from center) */
         float side = (sub == 1) ? -DOCK_BERTH_SPREAD : DOCK_BERTH_SPREAD;
@@ -2070,7 +2075,7 @@ static float dock_berth_angle(const station_t *st, int berth) {
     int mi = station_dock_module(st, dock_idx);
     if (mi < 0) return 0.0f;
     float angle = module_angle_ring(st, st->modules[mi].ring, st->modules[mi].slot);
-    if (sub == 0) return angle + PI_F;        /* end: face inward */
+    if (sub == 0) return angle + PI_F;        /* end: face toward center */
     if (sub == 1) return angle;              /* inner: face outward (away from center) */
     return angle + PI_F;                     /* outer: face inward (toward center) */
 }
