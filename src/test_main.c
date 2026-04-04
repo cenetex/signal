@@ -3782,6 +3782,25 @@ TEST(test_refinery_smelts_after_ore_sale) {
     ASSERT(ingots > 0.0f);
 }
 
+TEST(test_furnace_without_adjacent_hopper_no_smelt) {
+    /* A furnace with no adjacent hopper should not smelt ore. */
+    world_t w = {0};
+    world_reset(&w);
+    /* Remove all modules from station 0 and place furnace alone */
+    w.stations[0].module_count = 0;
+    rebuild_station_services(&w.stations[0]);
+    w.stations[0].modules[0] = (station_module_t){ .type = MODULE_FURNACE, .ring = 2, .slot = 0, .scaffold = false, .build_progress = 1.0f };
+    w.stations[0].module_count = 1;
+    /* No hopper on ring 2 — furnace is isolated */
+    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 100.0f;
+    float initial_ingots = w.stations[0].inventory[COMMODITY_FERRITE_INGOT];
+    /* Run sim for 5 seconds */
+    for (int i = 0; i < (int)(5.0f / SIM_DT); i++)
+        world_sim_step(&w, SIM_DT);
+    /* No smelting should have occurred */
+    ASSERT_EQ_FLOAT(w.stations[0].inventory[COMMODITY_FERRITE_INGOT], initial_ingots, 0.01f);
+}
+
 int main(void) {
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -4034,6 +4053,7 @@ int main(void) {
 
     printf("\nRefinery smelt test:\n");
     RUN(test_refinery_smelts_after_ore_sale);
+    RUN(test_furnace_without_adjacent_hopper_no_smelt);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

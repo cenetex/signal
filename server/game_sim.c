@@ -908,24 +908,62 @@ static bool sim_can_smelt_ore(const station_t *st, commodity_t ore) {
     }
 }
 
+/* What ore type a furnace module smelts. Returns -1 for non-furnaces. */
+static commodity_t furnace_ore_type(module_type_t mt) {
+    switch (mt) {
+        case MODULE_FURNACE:    return COMMODITY_FERRITE_ORE;
+        case MODULE_FURNACE_CU: return COMMODITY_CUPRITE_ORE;
+        case MODULE_FURNACE_CR: return COMMODITY_CRYSTAL_ORE;
+        default: return (commodity_t)-1;
+    }
+}
+
+/* Check if a furnace at (ring, slot) has an adjacent hopper (slot ±1, wrapping). */
+static bool furnace_has_adjacent_hopper(const station_t *st, int ring, int slot) {
+    int slots = STATION_RING_SLOTS[ring];
+    if (slots <= 0) return false;
+    int prev_slot = (slot - 1 + slots) % slots;
+    int next_slot = (slot + 1) % slots;
+    for (int m = 0; m < st->module_count; m++) {
+        if (st->modules[m].type != MODULE_ORE_BUYER) continue;
+        if (st->modules[m].scaffold) continue;
+        if (st->modules[m].ring != ring) continue;
+        if (st->modules[m].slot == prev_slot || st->modules[m].slot == next_slot)
+            return true;
+    }
+    return false;
+}
+
+/* Per-furnace smelting with hopper adjacency.
+ * Each furnace only smelts if an adjacent hopper exists on the same ring.
+ * Smelting rate is split across active furnaces to avoid instant consumption. */
 static void sim_step_refinery_production(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
-        if (!station_has_module(st, MODULE_FURNACE)
-            && !station_has_module(st, MODULE_FURNACE_CU)
-            && !station_has_module(st, MODULE_FURNACE_CR)) continue;
 
+        /* Count active furnaces (those with adjacent hoppers and ore to smelt) */
         int active = 0;
-        for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++)
-            if (st->inventory[i] > 0.01f && sim_can_smelt_ore(st, (commodity_t)i)) active++;
+        for (int m = 0; m < st->module_count; m++) {
+            module_type_t mt = st->modules[m].type;
+            if (mt != MODULE_FURNACE && mt != MODULE_FURNACE_CU && mt != MODULE_FURNACE_CR) continue;
+            if (st->modules[m].scaffold) continue;
+            if (!furnace_has_adjacent_hopper(st, st->modules[m].ring, st->modules[m].slot)) continue;
+            commodity_t ore = furnace_ore_type(mt);
+            if (ore < 0 || st->inventory[ore] <= 0.01f) continue;
+            active++;
+        }
         if (active == 0) continue;
         if (active > REFINERY_MAX_FURNACES) active = REFINERY_MAX_FURNACES;
         float rate = REFINERY_BASE_SMELT_RATE / (float)active;
 
-        for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
-            commodity_t ore = (commodity_t)i;
-            if (!sim_can_smelt_ore(st, ore)) continue;
-            if (st->inventory[ore] <= 0.01f) continue;
+        /* Smelt per furnace */
+        for (int m = 0; m < st->module_count; m++) {
+            module_type_t mt = st->modules[m].type;
+            if (mt != MODULE_FURNACE && mt != MODULE_FURNACE_CU && mt != MODULE_FURNACE_CR) continue;
+            if (st->modules[m].scaffold) continue;
+            if (!furnace_has_adjacent_hopper(st, st->modules[m].ring, st->modules[m].slot)) continue;
+            commodity_t ore = furnace_ore_type(mt);
+            if (ore < 0 || st->inventory[ore] <= 0.01f) continue;
             commodity_t ingot = commodity_refined_form(ore);
             float room = MAX_PRODUCT_STOCK - st->inventory[ingot];
             if (room <= 0.01f) continue;
@@ -3534,15 +3572,16 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
     /* Slot 2 empty — gap for ship entry */
     /* Ring 2 (industrial): production + services */
-    add_module_at(&w->stations[2], MODULE_FURNACE, 2, 0);
-    add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 1);
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 2);
-    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 2, 3);
-    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 2, 4);
-    /* Ring 3: heavy industry */
+    add_module_at(&w->stations[2], MODULE_ORE_BUYER, 2, 0);
+    add_module_at(&w->stations[2], MODULE_FURNACE, 2, 1);
+    add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 2);
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 3);
+    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 2, 4);
+    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 2, 5);
+    /* Ring 3: heavy industry — hopper feeds adjacent furnaces */
     add_module_at(&w->stations[2], MODULE_FURNACE_CU, 3, 1);
-    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 3, 2);
-    add_module_at(&w->stations[2], MODULE_ORE_BUYER, 3, 3);
+    add_module_at(&w->stations[2], MODULE_ORE_BUYER, 3, 2);
+    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 3, 3);
     add_module_at(&w->stations[2], MODULE_FRAME_PRESS, 3, 4);
     add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 5);
     w->stations[2].arm_count = 3;
