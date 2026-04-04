@@ -2937,8 +2937,10 @@ static void step_hopper_intake(world_t *w, float dt) {
                     if (spd > 120.0f) a->vel = v2_scale(a->vel, 120.0f / spd);
                 }
 
-                /* Consume at hopper mouth */
-                if (d_sq <= consume_sq) {
+                /* Consume: within mouth range, or close and nearly stopped */
+                bool close_enough = d_sq <= consume_sq
+                    || (d_sq <= consume_sq * 4.0f && v2_len_sq(a->vel) < 20.0f * 20.0f);
+                if (close_enough) {
                     float ore_value = a->ore * station_buy_price(st, a->commodity);
                     /* Credit the player who last towed this fragment */
                     int best_p = (a->last_towed_by >= 0 && a->last_towed_by < MAX_PLAYERS
