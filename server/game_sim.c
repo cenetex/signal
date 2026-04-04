@@ -3232,10 +3232,10 @@ void world_reset(world_t *w) {
     w->stations[0].base_price[COMMODITY_CUPRITE_INGOT] = 32.0f;
     w->stations[0].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
     w->stations[0].signal_range = 18000.0f;
-    /* Ring 1 (triangle): signal relay + dock + ore buyer */
+    /* Ring 1 (triangle): signal relay + ore buyer + dock (end of chain) */
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 0);
-    add_module_at(&w->stations[0], MODULE_DOCK, 1, 1);
-    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 1, 2);
+    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 1, 1);
+    add_module_at(&w->stations[0], MODULE_DOCK, 1, 2);
     /* Ring 2: furnace + repair */
     add_module_at(&w->stations[0], MODULE_FURNACE, 2, 1);
     add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 2, 2);
@@ -3255,10 +3255,10 @@ void world_reset(world_t *w) {
     w->stations[1].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
     w->stations[1].base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
     w->stations[1].base_price[COMMODITY_FRAME] = 20.0f;
-    /* Ring 1: signal + dock + frame press */
+    /* Ring 1: signal + frame press + dock (end of chain) */
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 1, 0);
-    add_module_at(&w->stations[1], MODULE_DOCK, 1, 1);
-    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 1, 2);
+    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 1, 1);
+    add_module_at(&w->stations[1], MODULE_DOCK, 1, 2);
     /* Ring 2: services + fabrication */
     add_module_at(&w->stations[1], MODULE_REPAIR_BAY, 2, 1);
     add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 2, 2);
@@ -3285,10 +3285,10 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
     w->stations[2].base_price[COMMODITY_LASER_MODULE] = 28.0f;
     w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
-    /* Ring 1: signal + dock + laser fab */
+    /* Ring 1: signal + laser fab + dock (end of chain) */
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 0);
-    add_module_at(&w->stations[2], MODULE_DOCK, 1, 1);
-    add_module_at(&w->stations[2], MODULE_LASER_FAB, 1, 2);
+    add_module_at(&w->stations[2], MODULE_LASER_FAB, 1, 1);
+    add_module_at(&w->stations[2], MODULE_DOCK, 1, 2);
     /* Ring 2: production */
     add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 1);
     add_module_at(&w->stations[2], MODULE_REPAIR_BAY, 2, 2);

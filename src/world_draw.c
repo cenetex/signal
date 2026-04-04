@@ -197,20 +197,28 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
         break;
     }
     case MODULE_SIGNAL_RELAY: {
-        /* Antenna dish / mast */
-        sgl_c4f(mr*0.35f, mg*0.35f, mb*0.35f, alpha);
-        fill_quad(-4,24, 4,24, 4,-4, -4,-4);
-        /* Dish arc */
-        sgl_c4f(mr*0.8f, mg*0.8f, mb*0.8f, alpha);
+        /* Tall antenna mast */
+        sgl_c4f(mr*0.3f, mg*0.3f, mb*0.3f, alpha);
+        fill_quad(-3, 28, 3, 28, 3, -20, -3, -20);
+        /* Cross-arms */
+        sgl_c4f(mr*0.5f, mg*0.5f, mb*0.5f, alpha);
+        fill_quad(-16, 6, 16, 6, 16, 2, -16, 2);
+        fill_quad(-12, -8, 12, -8, 12, -12, -12, -12);
+        /* Tip beacon */
+        fill_circle_local(0, -22, 5, 8, mr*1.0f, mg*1.0f, mb*1.0f, alpha * 0.9f);
+        /* Radiating signal arcs */
+        sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha * 0.5f);
         sgl_begin_lines();
-        for (int i = 0; i < 8; i++) {
-            float a0 = PI_F * 0.7f + (float)i * PI_F * 0.6f / 8.0f;
-            float a1 = PI_F * 0.7f + (float)(i+1) * PI_F * 0.6f / 8.0f;
-            sgl_v2f(cosf(a0)*20, sinf(a0)*20 - 10);
-            sgl_v2f(cosf(a1)*20, sinf(a1)*20 - 10);
+        for (int r = 1; r <= 2; r++) {
+            float rad = 14.0f + (float)r * 10.0f;
+            for (int i = 0; i < 6; i++) {
+                float a0 = -PI_F * 0.4f + (float)i * PI_F * 0.8f / 6.0f;
+                float a1 = -PI_F * 0.4f + (float)(i+1) * PI_F * 0.8f / 6.0f;
+                sgl_v2f(cosf(a0)*rad, sinf(a0)*rad - 16);
+                sgl_v2f(cosf(a1)*rad, sinf(a1)*rad - 16);
+            }
         }
         sgl_end();
-        fill_circle_local(0, -8, 4, 8, mr*0.9f, mg*0.9f, mb*0.9f, alpha);
         break;
     }
     case MODULE_REPAIR_BAY: {
