@@ -931,23 +931,30 @@ void draw_npc_ships(void) {
     }
 }
 
-/* Draw faint tractor lines from ore buyer modules to nearby fragments */
+/* Draw tractor tendrils from ore buyer modules to nearby towed fragments */
 void draw_hopper_tractors(void) {
+    float pull_range = 200.0f;
+    float pull_sq = pull_range * pull_range;
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &g.world.stations[s];
         if (st->scaffold) continue;
         for (int m = 0; m < st->module_count; m++) {
             if (st->modules[m].type != MODULE_ORE_BUYER || st->modules[m].scaffold) continue;
             vec2 mp = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
-            if (!on_screen(mp.x, mp.y, 100.0f)) continue;
+            if (!on_screen(mp.x, mp.y, pull_range + 50.0f)) continue;
+            /* Draw tendrils to any collectible fragment in pull range */
             for (int i = 0; i < MAX_ASTEROIDS; i++) {
                 const asteroid_t *a = &g.world.asteroids[i];
-                if (!asteroid_is_collectible(a)) continue;
+                if (!a->active || a->tier != ASTEROID_TIER_S) continue;
                 float d_sq = v2_dist_sq(a->pos, mp);
-                if (d_sq > 80.0f * 80.0f) continue;
+                if (d_sq > pull_sq) continue;
                 float d = sqrtf(d_sq);
-                float alpha = 0.15f + 0.2f * (1.0f - d / 80.0f);
-                draw_segment(mp, a->pos, 0.25f, 0.75f, 0.90f, alpha);
+                float t = 1.0f - d / pull_range;
+                float pulse = 0.5f + 0.3f * sinf(g.world.time * 6.0f + (float)i * 1.7f);
+                /* Tendril: bright near hopper, fading toward fragment */
+                draw_segment(mp, a->pos, 0.75f, 0.50f, 0.20f, t * pulse * 0.5f);
+                /* Inner bright core line */
+                draw_segment(mp, a->pos, 1.0f, 0.75f, 0.30f, t * pulse * 0.25f);
             }
         }
     }

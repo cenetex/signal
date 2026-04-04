@@ -2269,27 +2269,16 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
 /* Deposit towed fragments: when the SHIP is near an ore buyer module,
  * all towed fragments get consumed (ore → station, credits → player).
  * Fragments don't need to individually reach the hopper — the ship does. */
+#define HOPPER_PULL_RANGE 200.0f   /* hopper attracts fragments from this far */
+#define HOPPER_PULL_ACCEL 300.0f   /* pull strength */
+#define HOPPER_CONSUME_RANGE 30.0f /* fragment consumed when this close to hopper */
+
 static void step_towed_deposits(world_t *w, server_player_t *sp) {
     if (sp->ship.towed_count == 0) return;
-    /* Find nearest hopper module to the ship */
-    float best_d = 1e18f;
-    int best_si = -1;
-    int best_mi = -1;
-    for (int si = 0; si < MAX_STATIONS; si++) {
-        const station_t *st = &w->stations[si];
-        if (st->scaffold) continue;
-        for (int mi = 0; mi < st->module_count; mi++) {
-            if (st->modules[mi].type != MODULE_ORE_BUYER || st->modules[mi].scaffold) continue;
-            vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
-            float d = v2_dist_sq(sp->ship.pos, mp);
-            if (d < best_d) { best_d = d; best_si = si; best_mi = mi; }
-        }
-    }
-    float intake_r = 80.0f; /* ship must be within this range of hopper */
-    if (best_si < 0 || best_d > intake_r * intake_r) return;
+    float pull_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
+    float consume_sq = HOPPER_CONSUME_RANGE * HOPPER_CONSUME_RANGE;
+    float dt = SIM_DT;
 
-    /* Consume all towed fragments */
-    const station_t *st = &w->stations[best_si];
     for (int t = sp->ship.towed_count - 1; t >= 0; t--) {
         int idx = sp->ship.towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) {
@@ -2305,15 +2294,40 @@ static void step_towed_deposits(world_t *w, server_player_t *sp) {
             sp->ship.towed_fragments[sp->ship.towed_count] = -1;
             continue;
         }
-        float ore_value = a->ore * station_buy_price(st, a->commodity);
-        w->stations[best_si].inventory[a->commodity] += a->ore;
-        sp->ship.credits += ore_value;
-        sp->ship.stat_credits_earned += ore_value;
-        emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
-        clear_asteroid(a);
-        sp->ship.towed_count--;
-        sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
-        sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+
+        /* Check all hopper modules: pull fragment toward nearest, consume on contact */
+        for (int si = 0; si < MAX_STATIONS; si++) {
+            const station_t *st = &w->stations[si];
+            if (st->scaffold) continue;
+            for (int mi = 0; mi < st->module_count; mi++) {
+                if (st->modules[mi].type != MODULE_ORE_BUYER || st->modules[mi].scaffold) continue;
+                vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
+                float d_sq = v2_dist_sq(a->pos, mp);
+
+                /* Consume: fragment reached the hopper mouth */
+                if (d_sq <= consume_sq) {
+                    float ore_value = a->ore * station_buy_price(st, a->commodity);
+                    w->stations[si].inventory[a->commodity] += a->ore;
+                    sp->ship.credits += ore_value;
+                    sp->ship.stat_credits_earned += ore_value;
+                    emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
+                    clear_asteroid(a);
+                    sp->ship.towed_count--;
+                    sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
+                    sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+                    goto next_towed;
+                }
+
+                /* Pull: attract fragment toward hopper */
+                if (d_sq <= pull_sq && d_sq > 1.0f) {
+                    float d = sqrtf(d_sq);
+                    float strength = HOPPER_PULL_ACCEL * (1.0f - d / HOPPER_PULL_RANGE);
+                    vec2 dir = v2_scale(v2_sub(mp, a->pos), 1.0f / d);
+                    a->vel = v2_add(a->vel, v2_scale(dir, strength * dt));
+                }
+            }
+        }
+        next_towed:;
     }
 }
 

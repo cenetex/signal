@@ -1526,24 +1526,18 @@ TEST(test_scenario_full_mining_cycle) {
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
         w.stations[0].inventory[i] = 0.0f;
 
-    /* Place fragment at hopper. Don't sim — verify deposit logic directly.
-     * The sim moves the ship via collision and spring physics, making
-     * frame-by-frame deposit timing unreliable in tests. */
-    w.asteroids[frag].pos = hopper_pos;
-    w.asteroids[frag].vel = v2(0.0f, 0.0f);
-    /* Manually verify deposit conditions */
-    ASSERT(station_buy_price(&w.stations[0], COMMODITY_FERRITE_ORE) > 0.0f);
-    /* Park ship at hopper — recompute pos THEN sim in same step.
-     * Stop ring rotation so hopper doesn't move between pos calc and sim. */
+    /* Stop rotation, place fragment AT hopper mouth, ship nearby */
     for (int a = 0; a < MAX_ARMS; a++) {
         w.stations[0].arm_speed[a] = 0.0f;
         w.stations[0].arm_rotation[a] = 0.0f;
     }
     hopper_pos = module_world_pos_ring(&w.stations[0],
         w.stations[0].modules[hopper_idx].ring, w.stations[0].modules[hopper_idx].slot);
-    w.players[0].ship.pos = hopper_pos;
+    ASSERT(station_buy_price(&w.stations[0], COMMODITY_FERRITE_ORE) > 0.0f);
+    w.asteroids[frag].pos = hopper_pos;
+    w.asteroids[frag].vel = v2(0.0f, 0.0f);
+    w.players[0].ship.pos = v2_add(hopper_pos, v2(100.0f, 0.0f));
     w.players[0].ship.vel = v2(0.0f, 0.0f);
-    /* Verify pre-conditions */
     world_sim_step(&w, SIM_DT);
 
     /* Fragment should be consumed, credits earned */
