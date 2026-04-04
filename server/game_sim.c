@@ -3545,14 +3545,14 @@ static void step_contracts(world_t *w, float dt) {
 void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
     w->time += dt;
-    /* Advance ring rotation — all rings share arm_speed[0] */
+    /* Derive ring rotation from world time — deterministic, no drift between
+     * client and server since both share the same world.time. */
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!station_exists(&w->stations[s])) continue;
-        float speed = w->stations[s].arm_speed[0];
+        float base = w->stations[s].arm_speed[0] * w->time;
+        base = base - floorf(base / TWO_PI_F) * TWO_PI_F;
         for (int r = 0; r < STATION_NUM_RINGS && r < MAX_ARMS; r++) {
-            w->stations[s].arm_rotation[r] += speed * dt;
-            if (w->stations[s].arm_rotation[r] > TWO_PI_F)
-                w->stations[s].arm_rotation[r] -= TWO_PI_F;
+            w->stations[s].arm_rotation[r] = base;
         }
     }
     sim_step_asteroid_dynamics(w, dt);

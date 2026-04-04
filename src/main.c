@@ -309,17 +309,18 @@ static void sim_step(float dt) {
     reset_step_feedback();
     audio_step(&g.audio, dt);
 
-    /* Advance station ring rotation client-side (multiplayer only —
-     * singleplayer gets rotation from the local server sync) */
+    /* Derive ring rotation from world time (multiplayer only —
+     * singleplayer gets rotation from local server sync).
+     * Using world.time ensures client and server produce identical
+     * rotation, preventing collision/visual desync. */
     if (g.multiplayer_enabled) {
         for (int s = 0; s < MAX_STATIONS; s++) {
             station_t *st = &g.world.stations[s];
             if (!station_exists(st)) continue;
-            float speed = st->arm_speed[0];
+            float base = st->arm_speed[0] * g.world.time;
+            base = base - floorf(base / TWO_PI_F) * TWO_PI_F;
             for (int r = 0; r < STATION_NUM_RINGS && r < MAX_ARMS; r++) {
-                st->arm_rotation[r] += speed * dt;
-                if (st->arm_rotation[r] > TWO_PI_F)
-                    st->arm_rotation[r] -= TWO_PI_F;
+                st->arm_rotation[r] = base;
             }
         }
     }
