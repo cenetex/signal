@@ -314,6 +314,11 @@ typedef struct {
     float noise_mix;
 } audio_voice_t;
 
+/* Callback for mixing external audio (music, video) into the output buffer.
+ * Called once per mix chunk with the buffer after SFX voices are mixed.
+ * Should ADD samples (not overwrite). frames = sample frames, channels = 1 or 2. */
+typedef void (*audio_mix_callback_t)(float *buffer, int frames, int channels, void *user);
+
 typedef struct {
     bool valid;
     uint32_t rng;
@@ -322,6 +327,9 @@ typedef struct {
     float mining_tick_cooldown;
     audio_voice_t voices[AUDIO_VOICE_COUNT];
     float mix_buffer[AUDIO_MIX_FRAMES * 2];
+    /* External audio sources mixed after SFX voices */
+    audio_mix_callback_t mix_callback;
+    void *mix_callback_user;
 } audio_state_t;
 
 /* Economy constants (shared between client and server) */

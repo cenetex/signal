@@ -20,6 +20,8 @@
 #include "game_sim.h"
 #include "local_server.h"
 #include "net.h"
+#include "episode.h"
+#include "music.h"
 
 /* Sokol headers (declarations only -- SOKOL_IMPL is in main.c) */
 #include "sokol_app.h"
@@ -124,6 +126,9 @@ typedef struct {
     float death_credits_earned;
     float death_credits_spent;
     int death_asteroids_fractured;
+    /* --- Episode & Music --- */
+    episode_state_t episode;
+    music_state_t music;
     /* --- Build mode --- */
     bool placing_outpost;    /* undocked: outpost placement */
     bool build_overlay;      /* docked: module build menu open */

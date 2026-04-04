@@ -44,6 +44,13 @@ game_t g;
 
 static const int MAX_SIM_STEPS_PER_FRAME = 8;
 
+/* Audio mix callback: blends episode video audio + music into SFX output */
+static void mix_external_audio(float *buffer, int frames, int channels, void *user) {
+    (void)user;
+    episode_read_audio(&g.episode, buffer, frames, channels);
+    music_read_audio(&g.music, buffer, frames, channels);
+}
+
 
 /* clear_input_state, consume_pressed_input, set_notice: see input.h/c */
 
@@ -194,6 +201,10 @@ static void process_sim_events(const sim_events_t *events) {
                     audio_play_launch(&g.audio);
                     set_notice("Launch corridor clear.");
                     onboarding_mark_launched();
+                    episode_trigger(&g.episode, 0); /* Ep 0: First Light */
+                    /* Start music on first launch */
+                    if (!g.music.playing && !g.music.loading)
+                        music_play(&g.music, 0);
                 }
                 break;
             case SIM_EVENT_SELL:
@@ -227,6 +238,7 @@ static void process_sim_events(const sim_events_t *events) {
                     g.death_credits_earned = ev->death.credits_earned;
                     g.death_credits_spent = ev->death.credits_spent;
                     g.death_asteroids_fractured = ev->death.asteroids_fractured;
+                    episode_trigger(&g.episode, 9); /* Ep 9: Death */
                 }
                 break;
             default:
@@ -248,6 +260,29 @@ static void onboarding_per_frame(void) {
     if (!g.onboarding.placed_outpost) {
         for (int s = 3; s < MAX_STATIONS; s++)
             if (station_exists(&g.world.stations[s])) { onboarding_mark_placed_outpost(); break; }
+    }
+}
+
+static void episode_per_frame(void) {
+    if (episode_is_active(&g.episode)) return;
+
+    /* Ep 3: Scaffold — bought first scaffold kit */
+    if (!g.episode.watched[3] && g.onboarding.got_scaffold)
+        episode_trigger(&g.episode, 3);
+
+    /* Ep 4: Naming — placed first outpost */
+    if (!g.episode.watched[4] && g.onboarding.placed_outpost)
+        episode_trigger(&g.episode, 4);
+
+    /* Ep 8: Every AI Dreams — 5+ connected stations */
+    if (!g.episode.watched[8]) {
+        int connected = 0;
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            if (station_exists(&g.world.stations[s]) && g.world.stations[s].signal_connected)
+                connected++;
+        }
+        if (connected >= 5)
+            episode_trigger(&g.episode, 8);
     }
 }
 
@@ -348,6 +383,13 @@ static void sim_step(float dt) {
     /* Play audio from sim events */
     process_sim_events(&g.world.events);
     onboarding_per_frame();
+    episode_per_frame();
+    episode_update(&g.episode, dt);
+    music_update(&g.music, dt);
+
+    /* ESC dismisses episode popup */
+    if (episode_is_active(&g.episode) && g.input.key_pressed[SAPP_KEYCODE_ESCAPE])
+        episode_skip(&g.episode);
 
     step_notice_timer(dt);
     if (g.action_predict_timer > 0.0f)
@@ -377,6 +419,12 @@ static void init(void) {
     });
 
     audio_init(&g.audio);
+    g.audio.mix_callback = mix_external_audio;
+    g.audio.mix_callback_user = NULL;
+
+    episode_init(&g.episode);
+    episode_load(&g.episode);
+    music_init(&g.music);
 
     g.pass_action.colors[0].load_action = SG_LOADACTION_CLEAR;
     g.pass_action.colors[0].clear_value = (sg_color){ 0.018f, 0.024f, 0.045f, 1.0f };
@@ -685,8 +733,14 @@ static void render_ui(void) {
     sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
     sgl_matrix_mode_modelview();
     sgl_load_identity();
+
     draw_hud_panels();
     draw_hud();
+
+    /* Episode video popup — bottom-right corner, doesn't block gameplay */
+    if (episode_is_active(&g.episode) && g.episode.texture_valid) {
+        episode_render(&g.episode, screen_w, screen_h);
+    }
 }
 
 /* interpolate_world_for_render: see net_sync.h/c */
@@ -777,6 +831,8 @@ static void frame(void) {
 }
 
 static void cleanup(void) {
+    episode_shutdown(&g.episode);
+    music_shutdown(&g.music);
     if (g.multiplayer_enabled) {
         net_shutdown();
     }

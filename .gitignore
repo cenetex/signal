@@ -6,3 +6,8 @@ node_modules/
 test-results/
 playwright-report/
 package-lock.json
+
+# Media assets (too large for git — use Git LFS or external hosting)
+assets/anime/*.mp4
+assets/anime/*.mpg
+assets/music/*.mp3

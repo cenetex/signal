@@ -142,6 +142,17 @@ void audio_generate_stream(audio_state_t* a) {
             }
         }
 
+        /* Mix in external audio sources (music, video episodes) */
+        if (a->mix_callback) {
+            a->mix_callback(a->mix_buffer, frames_to_mix, channels, a->mix_callback_user);
+        }
+
+        /* Final clamp */
+        for (int fi2 = 0; fi2 < frames_to_mix * channels; fi2++) {
+            if (a->mix_buffer[fi2] > 1.0f) a->mix_buffer[fi2] = 1.0f;
+            else if (a->mix_buffer[fi2] < -1.0f) a->mix_buffer[fi2] = -1.0f;
+        }
+
         saudio_push(a->mix_buffer, frames_to_mix);
         frames_requested = saudio_expect();
     }

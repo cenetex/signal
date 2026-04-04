@@ -204,6 +204,7 @@ void get_flight_hud_rects(float* top_x, float* top_y, float* top_w, float* top_h
 }
 
 bool hud_should_draw_message_panel(void) {
+    if (episode_is_active(&g.episode)) return false;
     return !LOCAL_PLAYER.docked || (g.notice_timer > 0.0f) || (g.collection_feedback_timer > 0.0f);
 }
 

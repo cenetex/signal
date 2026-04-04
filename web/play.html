@@ -62,43 +62,6 @@
         height: 100%;
       }
 
-      .controls {
-        position: fixed;
-        bottom: 14px;
-        right: 14px;
-        z-index: 10;
-        display: flex;
-        gap: 6px;
-      }
-      .ctrl-btn {
-        width: 32px; height: 32px;
-        border: 1px solid var(--line);
-        border-radius: 8px;
-        background: rgba(10,10,9,0.7);
-        backdrop-filter: blur(8px);
-        color: var(--muted);
-        cursor: pointer;
-        display: flex; align-items: center; justify-content: center;
-        transition: background 0.15s, color 0.15s, border-color 0.15s;
-        padding: 0;
-      }
-      .ctrl-btn:hover { background: rgba(245,239,223,0.08); color: var(--ink); border-color: rgba(245,239,223,0.25); }
-      .ctrl-btn.off { color: rgba(255,100,100,0.6); }
-      .ctrl-btn.off:hover { color: rgba(255,100,100,0.9); }
-      .track-name {
-        position: fixed;
-        bottom: 50px;
-        right: 14px;
-        z-index: 10;
-        font-family: "IBM Plex Mono", monospace;
-        font-size: 10px;
-        color: rgba(207,195,173,0.4);
-        letter-spacing: 0.06em;
-        text-align: right;
-        pointer-events: none;
-        transition: opacity 0.5s;
-      }
-
     </style>
   </head>
   <body>
@@ -106,22 +69,6 @@
 
 
     <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
-
-    <div id="track-name" class="track-name"></div>
-    <div class="controls">
-      <button class="ctrl-btn" id="btn-prev" title="Previous track">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
-      </button>
-      <button class="ctrl-btn" id="btn-music" title="Mute music (M)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" id="ico-music"><path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z"/></svg>
-      </button>
-      <button class="ctrl-btn" id="btn-next" title="Next track">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
-      </button>
-      <button class="ctrl-btn" id="btn-sfx" title="Mute SFX (N)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" id="ico-sfx"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 8.5v7a4.49 4.49 0 002.5-3.5zM14 3.23v2.06a7 7 0 010 13.42v2.06A9 9 0 0014 3.23z"/></svg>
-      </button>
-    </div>
 
     <script>
       var canvas = document.getElementById('canvas');
@@ -141,133 +88,8 @@
       script.onload = function() {
         document.getElementById('loading').classList.add('done');
         canvas.focus();
-        initMusic();
       };
       document.body.appendChild(script);
-
-      /* ---- Music Player ---- */
-      var MUSIC_CDN = 'https://signal-ratimics-assets.s3.amazonaws.com/music';
-      var MUSIC_TRACKS = [
-        'belt_drifters.mp3', 'echoes.mp3', 'clock_thunder.mp3',
-        'kings_of_nowhere.mp3', 'vector_economy.mp3', 'vector_miners_epoch.mp3',
-        'vector_veins.mp3', 'vector_veins_lofi.mp3', 'vector_veins_80s.mp3',
-        'belt_drifters_2.mp3', 'echoes_2.mp3', 'echoes_3.mp3',
-        'clock_thunder_2.mp3', 'kings_of_nowhere_2.mp3', 'vector_economy_2.mp3',
-        'vector_miners_epoch_2.mp3', 'vector_veins_80s_2.mp3',
-        'belt_drifters_3.mp3', 'belt_drifters_4.mp3',
-        'fade_out_at_seventeen.mp3', 'fade_out_at_seventeen_2.mp3',
-        'lofi_drift_jam.mp3', 'nebula_drift_protocol.mp3', 'nebula_drift_protocol_2.mp3'
-      ];
-
-      var musicAudio = null;
-      var musicIdx = -1;
-      var musicStarted = false;
-      var musicVolume = 0.6;
-      var musicMuted = false;
-      var sfxMuted = false;
-      var trackNameTimer = null;
-
-      function shuffleArray(arr) {
-        for (var i = arr.length - 1; i > 0; i--) {
-          var j = Math.floor(Math.random() * (i + 1));
-          var tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
-        }
-      }
-
-      function initMusic() {
-        shuffleArray(MUSIC_TRACKS);
-        musicAudio = new Audio();
-        musicAudio.volume = 0;
-        musicAudio.addEventListener('ended', function() { playNextTrack(); });
-
-        /* Browser autoplay requires user gesture — start on first click/key */
-        var startOnce = function() {
-          if (!musicStarted) {
-            musicStarted = true;
-            playNextTrack();
-          }
-          document.removeEventListener('pointerdown', startOnce);
-          document.removeEventListener('keydown', startOnce);
-        };
-        document.addEventListener('pointerdown', startOnce);
-        document.addEventListener('keydown', startOnce);
-
-        /* Poll signal strength and adjust volume */
-        setInterval(updateMusicVolume, 200);
-      }
-
-      function playNextTrack() {
-        musicIdx = (musicIdx + 1) % MUSIC_TRACKS.length;
-        musicAudio.src = MUSIC_CDN + '/' + MUSIC_TRACKS[musicIdx];
-        musicAudio.play().catch(function() {});
-        showTrackName();
-      }
-
-      function playPrevTrack() {
-        musicIdx = (musicIdx - 1 + MUSIC_TRACKS.length) % MUSIC_TRACKS.length;
-        musicAudio.src = MUSIC_CDN + '/' + MUSIC_TRACKS[musicIdx];
-        musicAudio.play().catch(function() {});
-        showTrackName();
-      }
-
-      function showTrackName() {
-        var el = document.getElementById('track-name');
-        var name = MUSIC_TRACKS[musicIdx].replace('.mp3','').replace(/_/g,' ');
-        el.textContent = name;
-        el.style.opacity = '1';
-        clearTimeout(trackNameTimer);
-        trackNameTimer = setTimeout(function() { el.style.opacity = '0'; }, 4000);
-      }
-
-      function toggleMusic() {
-        musicMuted = !musicMuted;
-        document.getElementById('btn-music').classList.toggle('off', musicMuted);
-        if (musicMuted && musicAudio) musicAudio.volume = 0;
-      }
-
-      function toggleSfx() {
-        sfxMuted = !sfxMuted;
-        document.getElementById('btn-sfx').classList.toggle('off', sfxMuted);
-        /* Insert a gain node between sokol's ScriptProcessor and destination */
-        try {
-          var ctx = Module._saudio_context;
-          var node = Module._saudio_node;
-          if (ctx && node) {
-            if (!window._sfxGain) {
-              window._sfxGain = ctx.createGain();
-              node.disconnect();
-              node.connect(window._sfxGain);
-              window._sfxGain.connect(ctx.destination);
-            }
-            window._sfxGain.gain.value = sfxMuted ? 0 : 1;
-          }
-        } catch(e) {}
-      }
-
-      function updateMusicVolume() {
-        if (!musicAudio || !musicStarted || musicMuted) return;
-        var sig = 0;
-        try { sig = Module._get_signal_strength(); } catch(e) { return; }
-
-        /* Music: silent below 0.20, fades in to full at 0.80 */
-        var vol = 0;
-        if (sig > 0.20) {
-          vol = Math.min(1.0, (sig - 0.20) / 0.60);
-        }
-        musicAudio.volume = vol * musicVolume;
-      }
-
-      /* Button handlers */
-      document.getElementById('btn-music').addEventListener('click', function(e) { e.stopPropagation(); toggleMusic(); });
-      document.getElementById('btn-sfx').addEventListener('click', function(e) { e.stopPropagation(); toggleSfx(); });
-      document.getElementById('btn-next').addEventListener('click', function(e) { e.stopPropagation(); if(musicStarted) playNextTrack(); });
-      document.getElementById('btn-prev').addEventListener('click', function(e) { e.stopPropagation(); if(musicStarted) playPrevTrack(); });
-
-      /* Keyboard shortcuts — M for music, N for SFX */
-      document.addEventListener('keydown', function(e) {
-        if (e.key === 'm' || e.key === 'M') { toggleMusic(); e.preventDefault(); }
-        if (e.key === 'n' || e.key === 'N') { toggleSfx(); e.preventDefault(); }
-      });
     </script>
   </body>
 </html>

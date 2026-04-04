@@ -47,7 +47,7 @@ if(BUILD_TESTS_ONLY)
     return()
 endif()
 
-set(GAME_SOURCES src/main.c src/net.c src/station_ui.c src/hud.c src/world_draw.c src/commodity.c src/ship.c src/audio.c src/economy.c src/asteroid.c src/asteroid_field.c src/npc.c src/render.c src/rng.c src/input.c src/net_sync.c src/local_server.c src/onboarding.c server/game_sim.c)
+set(GAME_SOURCES src/main.c src/net.c src/station_ui.c src/hud.c src/world_draw.c src/commodity.c src/ship.c src/audio.c src/economy.c src/asteroid.c src/asteroid_field.c src/npc.c src/render.c src/rng.c src/input.c src/net_sync.c src/local_server.c src/onboarding.c src/episode.c src/music.c server/game_sim.c)
 
 # Native builds link mongoose for WebSocket client networking
 if(NOT EMSCRIPTEN)
@@ -100,6 +100,7 @@ if(EMSCRIPTEN)
         "SHELL:-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
         "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
         "SHELL:-lwebsocket.js"
+        "SHELL:-sFETCH=1"
     )
 elseif(APPLE)
     target_link_libraries(space_miner PRIVATE
