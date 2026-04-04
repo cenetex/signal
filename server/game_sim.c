@@ -432,20 +432,60 @@ int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
     /* Generate a name from the position hash */
     {
         static const char *prefixes[] = {
-            "Far", "Deep", "Outer", "Edge", "Drift", "Void", "Pale",
-            "Iron", "Cold", "Dark", "High", "Low", "Red", "Dim",
-            "Rust", "Ash", "Grim", "Last", "Lost", "Worn",
+            /* distance/direction */
+            "Far", "Deep", "Outer", "Edge", "Inner", "High", "Low",
+            "Near", "Mid", "Upper", "Lower", "North", "South",
+            /* void/emptiness */
+            "Void", "Drift", "Pale", "Dim", "Faint", "Thin", "Hollow",
+            "Blank", "Null", "Silent", "Still", "Quiet", "Hush",
+            /* material/industrial */
+            "Iron", "Rust", "Ash", "Slag", "Ore", "Copper", "Tin",
+            "Lead", "Salt", "Flint", "Basalt", "Granite", "Cobalt",
+            "Carbon", "Nickel", "Sulfur", "Zinc",
+            /* temperature/light */
+            "Cold", "Dark", "Red", "Black", "Grey", "White", "Burnt",
+            "Ember", "Cinder", "Frost", "Char",
+            /* mood/frontier */
+            "Grim", "Last", "Lost", "Worn", "Lone", "Stark", "Bleak",
+            "Gaunt", "Bare", "Stern", "Hard", "Grit", "Dusk", "Dawn",
+            "Wane", "Rift", "Brink", "Fringe", "Verge", "Scarp",
+            /* celestial */
+            "Sol", "Arc", "Zenith", "Nadir", "Apex", "Nova", "Vega",
+            "Polar", "Umbra", "Halo", "Corona", "Nebula",
+            /* structural */
+            "Bolt", "Rivet", "Weld", "Truss", "Strut", "Keel",
+            "Anvil", "Hammer", "Crucible",
         };
         static const char *suffixes[] = {
-            "Reach", "Point", "Gate", "Rock", "Anchor", "Post",
-            "Haven", "Mark", "Light", "Hold", "Watch", "Ridge",
-            "Cairn", "Spur", "Ledge", "Pike", "Notch", "Forge",
-            "Well", "Yard",
+            /* position/geography */
+            "Reach", "Point", "Gate", "Rock", "Ridge", "Ledge",
+            "Spur", "Pike", "Notch", "Gap", "Pass", "Shelf",
+            "Rim", "Crest", "Bluff", "Mesa", "Knoll", "Butte",
+            /* structure/settlement */
+            "Anchor", "Post", "Haven", "Hold", "Watch", "Keep",
+            "Fort", "Camp", "Rest", "Berth", "Dock", "Pier",
+            "Mooring", "Station", "Depot", "Outpost",
+            /* industrial */
+            "Forge", "Yard", "Works", "Mill", "Foundry", "Smelter",
+            "Refinery", "Quarry", "Pit", "Mine", "Shaft", "Kiln",
+            "Furnace", "Press", "Crucible",
+            /* light/signal */
+            "Light", "Mark", "Beacon", "Signal", "Relay", "Spark",
+            "Flare", "Pulse", "Lantern", "Lamp",
+            /* water/well (frontier) */
+            "Well", "Spring", "Basin", "Cistern", "Trough",
+            /* path/boundary */
+            "Cairn", "Marker", "Waypoint", "Crossing", "Threshold",
+            "Border", "Margin", "Line", "Terminus",
+            /* shelter */
+            "Hollow", "Shelter", "Cove", "Nook", "Pocket", "Nest",
         };
+        enum { NUM_PREFIXES = sizeof(prefixes) / sizeof(prefixes[0]) };
+        enum { NUM_SUFFIXES = sizeof(suffixes) / sizeof(suffixes[0]) };
         uint32_t h = (uint32_t)(pos.x * 7.13f) ^ (uint32_t)(pos.y * 13.37f) ^ (uint32_t)slot;
         h ^= h >> 16; h *= 0x45d9f3bu; h ^= h >> 16;
-        int pi = (int)(h % 20);
-        int si = (int)((h >> 8) % 20);
+        int pi = (int)(h % NUM_PREFIXES);
+        int si = (int)((h >> 8) % NUM_SUFFIXES);
         snprintf(st->name, sizeof(st->name), "%s %s", prefixes[pi], suffixes[si]);
     }
     st->pos = pos;
