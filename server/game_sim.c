@@ -815,6 +815,32 @@ static void sim_step_asteroid_dynamics(world_t *w, float dt) {
             }
             if (!near_player) clear_asteroid(a);
         }
+
+        /* Station vortex: asteroids near stations get caught in orbit.
+         * Large asteroids orbit outside the perimeter.
+         * S fragments spiral inward toward hoppers. */
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            const station_t *st = &w->stations[s];
+            if (!station_exists(st)) continue;
+            float d_sq = v2_dist_sq(a->pos, st->pos);
+            float vortex_range = st->dock_radius * 2.0f;
+            if (d_sq > vortex_range * vortex_range || d_sq < 1.0f) continue;
+            float d = sqrtf(d_sq);
+            vec2 radial = v2_scale(v2_sub(a->pos, st->pos), 1.0f / d);
+            vec2 tangent = v2(-radial.y, radial.x);
+            if (a->tier == ASTEROID_TIER_S) {
+                /* Fragments: strong spiral inward toward center/hoppers */
+                a->vel = v2_add(a->vel, v2_scale(tangent, 12.0f * dt));
+                a->vel = v2_sub(a->vel, v2_scale(radial, 6.0f * dt));
+            } else {
+                /* Large asteroids: gentle orbit outside perimeter */
+                a->vel = v2_add(a->vel, v2_scale(tangent, 4.0f * dt));
+                /* Push outward if inside dock radius (keep clear of station) */
+                if (d < st->dock_radius)
+                    a->vel = v2_add(a->vel, v2_scale(radial, 15.0f * dt));
+            }
+            break;
+        }
     }
 }
 
@@ -2313,7 +2339,7 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
  * Fragments don't need to individually reach the hopper — the ship does. */
 #define HOPPER_PULL_RANGE 300.0f   /* hopper attracts fragments from this far */
 #define HOPPER_PULL_ACCEL 500.0f   /* pull strength — strong enough to overcome drift */
-#define HOPPER_CONSUME_RANGE 35.0f /* fragment consumed when this close to hopper */
+#define HOPPER_CONSUME_RANGE 50.0f /* fragment consumed when this close to hopper */
 
 static void release_towed_fragments(server_player_t *sp);
 
@@ -2965,10 +2991,8 @@ static void step_hopper_intake(world_t *w, float dt) {
                     if (spd > 120.0f) a->vel = v2_scale(a->vel, 120.0f / spd);
                 }
 
-                /* Consume: within mouth range, or close and nearly stopped */
-                bool close_enough = d_sq <= consume_sq
-                    || (d_sq <= consume_sq * 4.0f && v2_len_sq(a->vel) < 20.0f * 20.0f);
-                if (close_enough) {
+                /* Consume: within mouth range (generous) */
+                if (d_sq <= consume_sq) {
                     float ore_value = a->ore * station_buy_price(st, a->commodity);
                     /* Credit the player who last towed this fragment */
                     int best_p = (a->last_towed_by >= 0 && a->last_towed_by < MAX_PLAYERS

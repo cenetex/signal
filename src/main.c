@@ -563,6 +563,7 @@ static void render_world(void) {
     }
     draw_beam();
     draw_ship_tractor_field();
+    draw_towed_tethers();
     draw_ship();
     draw_npc_ships();
     draw_remote_players(); /* Multiplayer: remote player ships */
