@@ -219,6 +219,12 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
         sp->ship.has_scaffold_kit = state->has_scaffold_kit;
         for (int c = 0; c < COMMODITY_COUNT; c++)
             sp->ship.cargo[c] = state->cargo[c];
+        sp->nearby_fragments = (int)state->nearby_fragments;
+        sp->tractor_fragments = (int)state->tractor_fragments;
+        sp->ship.towed_count = state->towed_count;
+        for (int t = 0; t < 10; t++)
+            sp->ship.towed_fragments[t] = (state->towed_fragments[t] == 0xFF)
+                ? -1 : (int16_t)state->towed_fragments[t];
     }
     /* Dock-state reconciliation:
      * - Server says undocked -> always accept.

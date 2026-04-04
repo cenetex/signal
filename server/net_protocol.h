@@ -52,8 +52,8 @@ static inline float read_f32_le(const uint8_t *buf) {
 /* ------------------------------------------------------------------ */
 
 /*
- * STATE message (22 bytes):
- * [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32]
+ * STATE message (35 bytes):
+ * [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:10]
  */
 static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_player_t *sp) {
     buf[0] = NET_MSG_STATE;
@@ -68,8 +68,15 @@ static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_
     if (sp->beam_active && sp->beam_hit) flags |= 2;
     if (sp->docked) flags |= 4;
     if (sp->scan_active) flags |= 8;
+    if (sp->ship.tractor_active) flags |= 16;
     buf[22] = flags;
-    return 23;
+    buf[23] = (uint8_t)sp->ship.tractor_level;
+    buf[24] = sp->ship.towed_count;
+    for (int t = 0; t < 10; t++) {
+        int16_t fi = (t < sp->ship.towed_count) ? sp->ship.towed_fragments[t] : -1;
+        buf[25 + t] = (fi >= 0 && fi < 255) ? (uint8_t)fi : 0xFF;
+    }
+    return 35;
 }
 
 /*
@@ -94,7 +101,14 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
         if (players[i].beam_active && players[i].beam_hit) flags |= 2;
         if (players[i].docked) flags |= 4;
         if (players[i].scan_active) flags |= 8;
+        if (players[i].ship.tractor_active) flags |= 16;
         p[21] = flags;
+        p[22] = (uint8_t)players[i].ship.tractor_level;
+        p[23] = players[i].ship.towed_count;
+        for (int t = 0; t < 10; t++) {
+            int16_t fi = (t < players[i].ship.towed_count) ? players[i].ship.towed_fragments[t] : -1;
+            p[24 + t] = (fi >= 0 && fi < 255) ? (uint8_t)fi : 0xFF;
+        }
         count++;
     }
     buf[0] = NET_MSG_WORLD_PLAYERS;
@@ -207,7 +221,7 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
  * (in shared/net_protocol.h) and all buffers that depend on it. */
 /* Compile-time guards: record sizes must match serialization layouts. */
 _Static_assert(
-    1 + 5 * 4 + 1 == PLAYER_RECORD_SIZE,
+    1 + 5 * 4 + 1 + 1 + 1 + 10 == PLAYER_RECORD_SIZE,
     "PLAYER_RECORD_SIZE must match serialized player state layout"
 );
 _Static_assert(
@@ -223,7 +237,7 @@ _Static_assert(
     "STATION_RECORD_SIZE must match serialized station econ layout"
 );
 _Static_assert(
-    16 + COMMODITY_COUNT * 4 == PLAYER_SHIP_SIZE,
+    16 + COMMODITY_COUNT * 4 + 13 == PLAYER_SHIP_SIZE,
     "PLAYER_SHIP_SIZE must match serialized player ship layout"
 );
 
@@ -288,10 +302,11 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
 }
 
 /*
- * PLAYER_SHIP message (40 bytes):
+ * PLAYER_SHIP message:
  * [type:1][id:1][hull:f32][credits:f32][docked:1][station:1]
  * [mining_lvl:1][hold_lvl:1][tractor_lvl:1][flags:1]
  * [cargo: COMMODITY_COUNT × f32]
+ * [nearby_frags:1][tractor_frags:1][towed_count:1][towed_frags:10]
  */
 static inline int serialize_player_ship(uint8_t *buf, uint8_t id, const server_player_t *sp) {
     buf[0] = NET_MSG_PLAYER_SHIP;
@@ -306,7 +321,15 @@ static inline int serialize_player_ship(uint8_t *buf, uint8_t id, const server_p
     buf[15] = sp->ship.has_scaffold_kit ? 1 : 0;
     for (int c = 0; c < COMMODITY_COUNT; c++)
         write_f32_le(&buf[16 + c * 4], sp->ship.cargo[c]);
-    return 16 + COMMODITY_COUNT * 4;
+    int off = 16 + COMMODITY_COUNT * 4;
+    buf[off++] = (uint8_t)(sp->nearby_fragments < 255 ? sp->nearby_fragments : 255);
+    buf[off++] = (uint8_t)(sp->tractor_fragments < 255 ? sp->tractor_fragments : 255);
+    buf[off++] = sp->ship.towed_count;
+    for (int t = 0; t < 10; t++) {
+        int16_t fi = (t < sp->ship.towed_count) ? sp->ship.towed_fragments[t] : -1;
+        buf[off++] = (fi >= 0 && fi < 255) ? (uint8_t)fi : 0xFF;
+    }
+    return off;
 }
 
 /*

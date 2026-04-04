@@ -723,8 +723,8 @@ TEST(test_roundtrip_player_state) {
     uint8_t buf[64];
     int len = serialize_player_state(buf, 7, &sp);
 
-    /* Size must be 23 (was 22 before flags byte added) */
-    ASSERT_EQ_INT(len, 23);
+    /* Size must be 35 (was 23 before tractor data added) */
+    ASSERT_EQ_INT(len, 35);
     ASSERT_EQ_INT(buf[0], NET_MSG_STATE);
     ASSERT_EQ_INT(buf[1], 7);
 
@@ -1029,10 +1029,10 @@ TEST(test_roundtrip_player_ship) {
     sp.ship.cargo[COMMODITY_FERRITE_INGOT] = 20.0f;
     sp.ship.has_scaffold_kit = true;
 
-    uint8_t buf[64];
+    uint8_t buf[128];
     int len = serialize_player_ship(buf, 3, &sp);
 
-    ASSERT_EQ_INT(len, 16 + COMMODITY_COUNT * 4);
+    ASSERT_EQ_INT(len, PLAYER_SHIP_SIZE);
     ASSERT_EQ_INT(buf[0], NET_MSG_PLAYER_SHIP);
     ASSERT_EQ_INT(buf[1], 3);
     ASSERT_EQ_FLOAT(read_f32_le(&buf[2]), 85.5f, 0.1f);
@@ -1170,24 +1170,23 @@ TEST(test_bug14_player_ship_syncs_all_cargo) {
     sp.ship.cargo[COMMODITY_FERRITE_INGOT] = 5.0f;
     sp.ship.cargo[COMMODITY_CUPRITE_INGOT] = 3.0f;
     sp.ship.has_scaffold_kit = true;
-    uint8_t buf[64];
+    uint8_t buf[128];
     int len = serialize_player_ship(buf, 0, &sp);
-    ASSERT(len == 16 + COMMODITY_COUNT * 4);
+    ASSERT(len == PLAYER_SHIP_SIZE);
     /* Verify ingot cargo round-trips */
     ASSERT_EQ_FLOAT(read_f32_le(&buf[16 + COMMODITY_FERRITE_INGOT * 4]), 5.0f, 0.1f);
     ASSERT_EQ_FLOAT(read_f32_le(&buf[16 + COMMODITY_CUPRITE_INGOT * 4]), 3.0f, 0.1f);
     ASSERT_EQ_INT(buf[15], 1); /* scaffold kit */
 }
 
-/* Bug 15: client and server STATE message should be same size.
- * FIX: either update net_send_state to send 23 bytes, or remove it entirely. */
+/* Bug 15: server STATE message size must match expected layout.
+ * Note: client net_send_state is unused (INPUT messages are sent instead). */
 TEST(test_bug15_state_size_symmetric) {
     server_player_t sp;
     memset(&sp, 0, sizeof(sp));
     uint8_t buf[64];
     int server_len = serialize_player_state(buf, 0, &sp);
-    int client_len = 23;  /* net_send_state sends 23 bytes */
-    ASSERT_EQ_INT(server_len, client_len);
+    ASSERT_EQ_INT(server_len, 35);  /* 1+1+5*f32+1+1+1+10 = 35 bytes */
 }
 
 /* Bug 16: npc_target_valid should bounds-check target_asteroid < MAX_ASTEROIDS.

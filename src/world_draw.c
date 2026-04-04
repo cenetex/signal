@@ -1068,5 +1068,26 @@ void draw_remote_players(void) {
                 draw_segment(muzzle, beam_end, cr, cg, cb, 0.6f);
             }
         }
+
+        /* Tractor field circle + towed tethers */
+        bool tractor_on = (players[i].flags & 16) != 0;
+        if (tractor_on && players[i].towed_count > 0) {
+            vec2 pos = v2(players[i].x, players[i].y);
+            /* Compute tractor range from level (mirrors ship_tractor_range) */
+            float base_range = 150.0f; /* default hull tractor_range */
+            float tr = base_range + (float)players[i].tractor_level * SHIP_TRACTOR_UPGRADE_STEP;
+            float pulse = 0.28f + (sinf(g.world.time * 7.0f + (float)i * 2.0f) * 0.08f);
+            draw_circle_outline(pos, tr, 40, cr * 0.4f, cg * 0.8f, cb * 0.9f, pulse);
+
+            /* Tether lines to towed fragments */
+            for (int t = 0; t < players[i].towed_count && t < 10; t++) {
+                uint8_t fi = players[i].towed_fragments[t];
+                if (fi >= MAX_ASTEROIDS || fi == 0xFF) continue;
+                const asteroid_t *a = &g.world.asteroids[fi];
+                if (!a->active) continue;
+                float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)t * 1.5f);
+                draw_segment(pos, a->pos, cr * 0.4f, cg * 0.8f, cb * 0.7f, tp);
+            }
+        }
     }
 }

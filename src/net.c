@@ -161,6 +161,13 @@ static void handle_message(const uint8_t* data, int len) {
             ps->vy    = read_f32_le(&data[14]);
             ps->angle = read_f32_le(&data[18]);
             ps->flags = (len >= 23) ? data[22] : 0;
+            ps->tractor_level = (len >= 24) ? data[23] : 0;
+            ps->towed_count = (len >= 25) ? data[24] : 0;
+            if (len >= 35) {
+                for (int t = 0; t < 10; t++) ps->towed_fragments[t] = data[25 + t];
+            } else {
+                memset(ps->towed_fragments, 0xFF, 10);
+            }
             ps->active = true;
 
             if (net_state.callbacks.on_state) {
@@ -189,6 +196,9 @@ static void handle_message(const uint8_t* data, int len) {
                 ps->vy    = read_f32_le(&p[13]);
                 ps->angle = read_f32_le(&p[17]);
                 ps->flags = p[21];
+                ps->tractor_level = p[22];
+                ps->towed_count = p[23];
+                for (int t = 0; t < 10; t++) ps->towed_fragments[t] = p[24 + t];
                 ps->active = true;
                 if (net_state.callbacks.on_state) {
                     net_state.callbacks.on_state(ps);
@@ -287,6 +297,16 @@ static void handle_message(const uint8_t* data, int len) {
                 pss.has_scaffold_kit = data[15] != 0;
                 for (int c = 0; c < COMMODITY_COUNT; c++)
                     pss.cargo[c] = read_f32_le(&data[16 + c * 4]);
+                int off = 16 + COMMODITY_COUNT * 4;
+                if (len >= off + 13) {
+                    pss.nearby_fragments = data[off];
+                    pss.tractor_fragments = data[off + 1];
+                    pss.towed_count = data[off + 2];
+                    for (int t = 0; t < 10; t++)
+                        pss.towed_fragments[t] = data[off + 3 + t];
+                } else {
+                    memset(pss.towed_fragments, 0xFF, 10);
+                }
                 net_state.callbacks.on_player_ship(&pss);
             }
         }

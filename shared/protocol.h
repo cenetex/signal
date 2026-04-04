@@ -6,7 +6,7 @@
  * Packet layouts (little-endian):
  *   JOIN            (0x01): [type:1][player_id:1]
  *   LEAVE           (0x02): [type:1][player_id:1]
- *   STATE           (0x03): [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1]  = 23 bytes
+ *   STATE           (0x03): [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:10]  = 35 bytes
  *   INPUT           (0x04): [type:1][flags:1][action:1][mining_target:1]  = 4 bytes
  *   WORLD_ASTEROIDS (0x10): [type:1][count:1] + count * 30-byte records
  *   WORLD_NPCS      (0x11): [type:1][count:1] + count * 26-byte records
@@ -90,8 +90,8 @@ _Static_assert(NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT <= 256,
 /* Station economic snapshot: [index:1][inventory:COMMODITY_COUNT×f32] */
 #define STATION_RECORD_SIZE (1 + COMMODITY_COUNT * 4)  /* 37 bytes when COMMODITY_COUNT == 9 */
 
-/* Player state record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1] */
-#define PLAYER_RECORD_SIZE 22
+/* Player state record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:10] */
+#define PLAYER_RECORD_SIZE 34
 
 /* Asteroid record: [id+flags:1][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32] */
 #define ASTEROID_RECORD_SIZE 30
@@ -106,7 +106,8 @@ _Static_assert(NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT <= 256,
 #define STATION_IDENTITY_SIZE (59 + COMMODITY_COUNT * 4 + 4 + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE + 1 + MAX_ARMS * 4)
 
 /* Player ship state: [type:1][id:1][hull:f32][credits:f32][docked:1][station:1]
- * [mining:1][hold:1][tractor:1][scaffold_kit:1][cargo:COMMODITY_COUNT×f32] */
-#define PLAYER_SHIP_SIZE (16 + COMMODITY_COUNT * 4)  /* 52 bytes when COMMODITY_COUNT == 9 */
+ * [mining:1][hold:1][tractor:1][scaffold_kit:1][cargo:COMMODITY_COUNT×f32]
+ * [nearby_frags:1][tractor_frags:1][towed_count:1][towed_frags:10] */
+#define PLAYER_SHIP_SIZE (29 + COMMODITY_COUNT * 4)  /* 65 bytes when COMMODITY_COUNT == 9 */
 
 #endif /* SHARED_PROTOCOL_H */

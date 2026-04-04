@@ -29,7 +29,10 @@ typedef struct {
     float x, y;
     float vx, vy;
     float angle;
-    uint8_t flags;  /* bit0=thrust, bit1=mining, bit2=docked, bit3=scan */
+    uint8_t flags;  /* bit0=thrust, bit1=mining, bit2=docked, bit3=scan, bit4=tractor */
+    uint8_t tractor_level;
+    uint8_t towed_count;
+    uint8_t towed_fragments[10]; /* asteroid indices, 0xFF = unused */
     bool active;
 } NetPlayerState;
 
@@ -73,6 +76,10 @@ typedef struct {
     uint8_t tractor_level;
     bool has_scaffold_kit;
     float cargo[COMMODITY_COUNT];
+    uint8_t nearby_fragments;
+    uint8_t tractor_fragments;
+    uint8_t towed_count;
+    uint8_t towed_fragments[10]; /* asteroid indices, 0xFF = unused */
 } NetPlayerShipState;
 
 typedef void (*net_on_player_ship_fn)(const NetPlayerShipState* state);
