@@ -761,11 +761,11 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                 float od = sqrtf(v2_len_sq(outward));
                 if (od > 0.001f) outward = v2_scale(outward, 1.0f / od);
                 vec2 tang = v2(-outward.y, outward.x);
-                /* End berth (outward), left side, right side */
+                /* End berth (outward past dock), inner + outer side berths */
                 vec2 berths[3];
                 berths[0] = v2_add(positions[i], v2_scale(outward, 55.0f));
-                berths[1] = v2_add(v2_add(positions[i], v2_scale(outward, 55.0f * 0.4f)), v2_scale(tang, -28.0f));
-                berths[2] = v2_add(v2_add(positions[i], v2_scale(outward, 55.0f * 0.4f)), v2_scale(tang, 28.0f));
+                berths[1] = v2_add(positions[i], v2_scale(tang, -28.0f));
+                berths[2] = v2_add(positions[i], v2_scale(tang, 28.0f));
                 for (int b = 0; b < 3; b++) {
                     vec2 bdir = (b == 0) ? outward : tang;
                     vec2 bperp = (b == 0) ? tang : outward;
