@@ -3,7 +3,7 @@
 
 float npc_total_cargo(const npc_ship_t* npc) {
     float total = 0.0f;
-    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
+    for (int i = 0; i < COMMODITY_COUNT; i++) {
         total += npc->cargo[i];
     }
     return total;

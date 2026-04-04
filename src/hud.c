@@ -882,7 +882,7 @@ void draw_hud(void) {
     } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 2) {
         const npc_ship_t *npc = &g.world.npc_ships[LOCAL_PLAYER.scan_target_index];
         int npc_cargo = 0;
-        for (int ci = 0; ci < COMMODITY_RAW_ORE_COUNT; ci++)
+        for (int ci = 0; ci < COMMODITY_COUNT; ci++)
             npc_cargo += (int)lroundf(npc->cargo[ci]);
         sdtx_color3b(100, 180, 255);
         sdtx_printf("Scan NPC %s // cargo %d", npc->role == NPC_ROLE_MINER ? "miner" : "hauler", npc_cargo);

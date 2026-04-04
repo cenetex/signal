@@ -1355,7 +1355,7 @@ TEST(test_bug24_ingot_buffer_no_cap) {
     /* Pre-fill dest ingot buffer near capacity */
     w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 40.0f;
     /* Hauler arrives with 40 more ingots — should be capped */
-    w.npc_ships[3].ingots[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 40.0f;
+    w.npc_ships[3].cargo[COMMODITY_FERRITE_INGOT] = 40.0f;
     w.npc_ships[3].state = NPC_STATE_UNLOADING;
     w.npc_ships[3].state_timer = 0.01f;
     w.npc_ships[3].dest_station = 1;
@@ -1384,7 +1384,7 @@ TEST(test_bug26_hauler_unload_no_cap) {
     /* Pre-fill dest ingot buffer */
     w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 100.0f;
     /* Hauler arrives with 40 more */
-    w.npc_ships[3].ingots[INGOT_IDX(COMMODITY_FERRITE_INGOT)] = 40.0f;
+    w.npc_ships[3].cargo[COMMODITY_FERRITE_INGOT] = 40.0f;
     w.npc_ships[3].state = NPC_STATE_UNLOADING;
     w.npc_ships[3].state_timer = 0.01f;
     w.npc_ships[3].dest_station = 1;
@@ -1705,7 +1705,7 @@ TEST(test_scenario_npc_economy_30_seconds) {
     }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w.npc_ships[n].active) continue;
-        for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
+        for (int i = 0; i < COMMODITY_COUNT; i++)
             ASSERT(w.npc_ships[n].cargo[i] >= 0.0f);
     }
 }
@@ -2298,9 +2298,7 @@ TEST(test_bug52_server_repair_cost_no_service_check) {
 
 /* Bug 53: NPC commodity index could overflow npc.cargo array */
 TEST(test_bug53_npc_cargo_commodity_bounds) {
-    /* npc.cargo is sized [COMMODITY_RAW_ORE_COUNT] = 3.
-     * If an asteroid has commodity >= 3 (ingot type), writing to
-     * npc.cargo[commodity] is out of bounds.
+    /* npc.cargo is now sized [COMMODITY_COUNT] (unified with player ship_t).
      * Asteroids should only have raw ore commodities, but verify. */
     world_t w = {0};
     world_reset(&w);
@@ -2984,7 +2982,7 @@ TEST(test_hauler_fills_highest_value_contract) {
     hauler->state_timer = 0.0f; /* ready to act */
     hauler->home_station = 0;
     hauler->dest_station = 1; /* default dest */
-    memset(hauler->ingots, 0, sizeof(hauler->ingots));
+    memset(hauler->cargo, 0, sizeof(hauler->cargo));
     world_sim_step(&w, SIM_DT);
     /* Hauler should target station 2 (higher value contract) */
     ASSERT(hauler->dest_station == 2);

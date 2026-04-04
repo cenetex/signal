@@ -274,8 +274,7 @@ typedef struct {
     vec2 pos;
     vec2 vel;
     float angle;
-    float cargo[COMMODITY_RAW_ORE_COUNT];
-    float ingots[INGOT_COUNT];
+    float cargo[COMMODITY_COUNT];
     int target_asteroid;
     int home_station;
     int dest_station;

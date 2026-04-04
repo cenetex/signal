@@ -936,7 +936,7 @@ static void sim_step_station_production(world_t *w, float dt) {
 
 static float npc_total_cargo(const npc_ship_t *npc) {
     float t = 0.0f;
-    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) t += npc->cargo[i];
+    for (int i = 0; i < COMMODITY_COUNT; i++) t += npc->cargo[i];
     return t;
 }
 
@@ -1189,7 +1189,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
         if (npc->state_timer <= 0.0f) {
             station_t *home = &w->stations[npc->home_station];
             float carried = 0.0f;
-            for (int c = 0; c < INGOT_COUNT; c++) carried += npc->ingots[c];
+            for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) carried += npc->cargo[c];
             float space = hull->ingot_capacity - carried;
             bool loaded = false;
 
@@ -1218,7 +1218,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 float avail = fmaxf(0.0f, home->inventory[ingot] - HAULER_RESERVE);
                 float take = fminf(avail, space);
                 if (take > 0.5f) {
-                    npc->ingots[INGOT_IDX(ingot)] += take;
+                    npc->cargo[ingot] += take;
                     home->inventory[ingot] -= take;
                     loaded = true;
                 }
@@ -1230,7 +1230,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     float avail = fmaxf(0.0f, home->inventory[ingot] - HAULER_RESERVE);
                     float take = fminf(avail, space);
                     if (take > 0.5f) {
-                        npc->ingots[INGOT_IDX(ingot)] += take;
+                        npc->cargo[ingot] += take;
                         home->inventory[ingot] -= take;
                         loaded = true;
                     }
@@ -1240,7 +1240,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     float avail = fmaxf(0.0f, home->inventory[ingot] - HAULER_RESERVE);
                     float take = fminf(avail, space);
                     if (take > 0.5f) {
-                        npc->ingots[INGOT_IDX(ingot)] += take;
+                        npc->cargo[ingot] += take;
                         home->inventory[ingot] -= take;
                         space -= take;
                         loaded = true;
@@ -1251,15 +1251,14 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     float avail = fmaxf(0.0f, home->inventory[ingot] - HAULER_RESERVE);
                     float take = fminf(avail, space);
                     if (take > 0.5f) {
-                        npc->ingots[INGOT_IDX(ingot)] += take;
+                        npc->cargo[ingot] += take;
                         home->inventory[ingot] -= take;
                         loaded = true;
                     }
                 }
             }
             float total_carried = 0.0f;
-            for (int c = 0; c < INGOT_COUNT; c++) total_carried += npc->ingots[c];
-            for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) total_carried += npc->cargo[c];
+            for (int c = 0; c < COMMODITY_COUNT; c++) total_carried += npc->cargo[c];
             if (total_carried < 0.01f) {
                 /* Nothing at home — relocate to a station with surplus ingots */
                 int best_src = -1;
@@ -1304,11 +1303,11 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
         npc->vel = v2(0.0f, 0.0f);
         if (npc->state_timer <= 0.0f) {
             station_t *dest = &w->stations[npc->dest_station];
-            for (int i = 0; i < INGOT_COUNT; i++) {
-                dest->inventory[COMMODITY_RAW_ORE_COUNT + i] += npc->ingots[i];
-                if (dest->inventory[COMMODITY_RAW_ORE_COUNT + i] > MAX_PRODUCT_STOCK)
-                    dest->inventory[COMMODITY_RAW_ORE_COUNT + i] = MAX_PRODUCT_STOCK;
-                npc->ingots[i] = 0.0f;
+            for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
+                dest->inventory[i] += npc->cargo[i];
+                if (dest->inventory[i] > MAX_PRODUCT_STOCK)
+                    dest->inventory[i] = MAX_PRODUCT_STOCK;
+                npc->cargo[i] = 0.0f;
             }
             /* Hauler also delivers ingots to scaffold station and modules */
             if (dest->scaffold || dest->module_count > 0) {
@@ -1510,17 +1509,15 @@ static void step_npc_ships(world_t *w, float dt) {
         static const float ore_b[3] = {0.18f, 0.50f, 0.30f};
         float total = 0.0f;
         float target_r = 1.0f, target_g = 1.0f, target_b = 1.0f;
-        if (npc->role == NPC_ROLE_MINER) {
-            for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) total += npc->cargo[c];
-        } else {
-            for (int c = 0; c < INGOT_COUNT; c++) total += npc->ingots[c];
+        {
+            int base = (npc->role == NPC_ROLE_MINER) ? 0 : COMMODITY_RAW_ORE_COUNT;
+            for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) total += npc->cargo[base + c];
         }
         if (total > 1.0f) {
             target_r = 0.0f; target_g = 0.0f; target_b = 0.0f;
-            int count = (npc->role == NPC_ROLE_MINER) ? COMMODITY_RAW_ORE_COUNT : INGOT_COUNT;
-            const float *cargo = (npc->role == NPC_ROLE_MINER) ? npc->cargo : npc->ingots;
-            for (int c = 0; c < count; c++) {
-                float w_c = cargo[c] / total;
+            int base = (npc->role == NPC_ROLE_MINER) ? 0 : COMMODITY_RAW_ORE_COUNT;
+            for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
+                float w_c = npc->cargo[base + c] / total;
                 target_r += ore_r[c] * w_c;
                 target_g += ore_g[c] * w_c;
                 target_b += ore_b[c] * w_c;
@@ -3473,7 +3470,6 @@ static bool write_npc(FILE *f, const npc_ship_t *n) {
     WRITE_FIELD(f, n->vel);
     WRITE_FIELD(f, n->angle);
     WRITE_FIELD(f, n->cargo);
-    WRITE_FIELD(f, n->ingots);
     WRITE_FIELD(f, n->target_asteroid);
     WRITE_FIELD(f, n->home_station);
     WRITE_FIELD(f, n->dest_station);
@@ -3494,7 +3490,6 @@ static bool read_npc(FILE *f, npc_ship_t *n) {
     READ_FIELD(f, n->vel);
     READ_FIELD(f, n->angle);
     READ_FIELD(f, n->cargo);
-    READ_FIELD(f, n->ingots);
     READ_FIELD(f, n->target_asteroid);
     READ_FIELD(f, n->home_station);
     READ_FIELD(f, n->dest_station);
