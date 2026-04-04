@@ -1620,20 +1620,20 @@ TEST(test_scenario_two_players_mining) {
     w.asteroids[ast0].active = true; w.asteroids[ast0].tier = ASTEROID_TIER_M;
     w.asteroids[ast0].radius = 25.0f; w.asteroids[ast0].hp = 50.0f; w.asteroids[ast0].max_hp = 50.0f;
     w.asteroids[ast0].commodity = COMMODITY_FERRITE_ORE;
-    w.asteroids[ast0].pos = v2_add(w.stations[0].pos, v2(200.0f, 0.0f));
+    w.asteroids[ast0].pos = v2_add(w.stations[0].pos, v2(500.0f, 0.0f));
     w.asteroids[ast1].active = true; w.asteroids[ast1].tier = ASTEROID_TIER_M;
     w.asteroids[ast1].radius = 25.0f; w.asteroids[ast1].hp = 50.0f; w.asteroids[ast1].max_hp = 50.0f;
     w.asteroids[ast1].commodity = COMMODITY_CUPRITE_ORE;
-    w.asteroids[ast1].pos = v2_add(w.stations[0].pos, v2(-200.0f, 0.0f));
+    w.asteroids[ast1].pos = v2_add(w.stations[0].pos, v2(-500.0f, 0.0f));
 
     float hp0_before = w.asteroids[ast0].hp;
     float hp1_before = w.asteroids[ast1].hp;
 
     /* Position players near their respective asteroids */
-    w.players[0].ship.pos = v2(w.asteroids[ast0].pos.x - 50.0f, w.asteroids[ast0].pos.y);
+    w.players[0].ship.pos = v2(w.asteroids[ast0].pos.x - 60.0f, w.asteroids[ast0].pos.y);
     w.players[0].ship.angle = 0.0f;
     w.players[0].ship.vel = v2(0.0f, 0.0f);
-    w.players[1].ship.pos = v2(w.asteroids[ast1].pos.x - 50.0f, w.asteroids[ast1].pos.y);
+    w.players[1].ship.pos = v2(w.asteroids[ast1].pos.x - 60.0f, w.asteroids[ast1].pos.y);
     w.players[1].ship.angle = 0.0f;
     w.players[1].ship.vel = v2(0.0f, 0.0f);
 
@@ -1641,8 +1641,8 @@ TEST(test_scenario_two_players_mining) {
     w.players[0].input.mine = true;
     w.players[1].input.mine = true;
     for (int i = 0; i < 120; i++) {
-        w.players[0].ship.pos = v2(w.asteroids[ast0].pos.x - 50.0f, w.asteroids[ast0].pos.y);
-        w.players[1].ship.pos = v2(w.asteroids[ast1].pos.x - 50.0f, w.asteroids[ast1].pos.y);
+        w.players[0].ship.pos = v2(w.asteroids[ast0].pos.x - 60.0f, w.asteroids[ast0].pos.y);
+        w.players[1].ship.pos = v2(w.asteroids[ast1].pos.x - 60.0f, w.asteroids[ast1].pos.y);
         w.players[0].ship.vel = v2(0.0f, 0.0f);
         w.players[1].ship.vel = v2(0.0f, 0.0f);
         world_sim_step(&w, SIM_DT);

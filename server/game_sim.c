@@ -1913,21 +1913,31 @@ static void step_ship_motion(ship_t *s, float dt, const world_t *w) {
 }
 
 /* Module collision radius — matches visual half-size. */
-/* Resolve corridor arc collision: approximate the arc between two angles
- * on a ring with multiple capsule segments. */
+/* Resolve corridor arc collision: approximate the arc between two module
+ * angles with capsule segments. Shrinks endpoints inward to avoid overlap
+ * with module circle collision. Does NOT increment ship_collision_count
+ * (modules already count for crush detection). */
 static void resolve_ship_corridor_arc(world_t *w, server_player_t *sp,
                                        vec2 center, float ring_r, float ang_a, float ang_b) {
     float da = ang_b - ang_a;
     while (da > PI_F) da -= TWO_PI_F;
     while (da < -PI_F) da += TWO_PI_F;
-    vec2 prev = v2_add(center, v2(cosf(ang_a) * ring_r, sinf(ang_a) * ring_r));
+    /* Shrink arc by 15% at each end to avoid overlapping module collision circles */
+    float margin = 0.15f;
+    float sa = ang_a + da * margin;
+    float sb = ang_a + da * (1.0f - margin);
+    float sda = sb - sa;
+    vec2 prev = v2_add(center, v2(cosf(sa) * ring_r, sinf(sa) * ring_r));
+    int saved_count = ship_collision_count;
     for (int s = 1; s <= CORRIDOR_ARC_SEGMENTS; s++) {
         float t = (float)s / (float)CORRIDOR_ARC_SEGMENTS;
-        float a = ang_a + da * t;
+        float a = sa + sda * t;
         vec2 cur = v2_add(center, v2(cosf(a) * ring_r, sinf(a) * ring_r));
         resolve_ship_capsule(w, sp, prev, cur, CORRIDOR_COLLISION_RADIUS);
         prev = cur;
     }
+    /* Corridor segments don't count toward crush detection */
+    ship_collision_count = saved_count;
 }
 
 /* Resolve ship-vs-module collision for all modules on a station,
@@ -1987,9 +1997,10 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
         if (!w->asteroids[i].active || asteroid_is_collectible(&w->asteroids[i])) continue;
         resolve_ship_circle(w, sp, w->asteroids[i].pos, w->asteroids[i].radius);
     }
-    /* Crush: pinched between 2+ bodies simultaneously */
-    if (!sp->docked && ship_collision_count >= 2) {
-        float crush = (float)(ship_collision_count - 1) * 2.0f;
+    /* Crush: pinched between 3+ bodies simultaneously (2 adjacent modules
+     * on the same ring is normal, only crush when truly trapped) */
+    if (!sp->docked && ship_collision_count >= 3) {
+        float crush = (float)(ship_collision_count - 2) * 2.0f;
         apply_ship_damage(w, sp, crush);
     }
 }
