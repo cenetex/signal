@@ -3,13 +3,20 @@ import { test, expect } from '@playwright/test';
 test.describe('Browser smoke tests', () => {
   test('WASM module loads and canvas appears', async ({ page }) => {
     const errors: string[] = [];
+    const consoleErrors: string[] = [];
     page.on('pageerror', (err) => errors.push(err.message));
+    page.on('console', (msg) => {
+      if (msg.type() === 'error') consoleErrors.push(msg.text());
+    });
 
     await page.goto('/space_miner.html');
 
     // Wait for the Emscripten canvas to appear
     const canvas = page.locator('canvas');
     await expect(canvas).toBeVisible({ timeout: 15_000 });
+
+    // Give WASM a moment to fully initialize (link errors can be deferred)
+    await page.waitForTimeout(2_000);
 
     // Canvas should have real dimensions
     const box = await canvas.boundingBox();
@@ -18,7 +25,10 @@ test.describe('Browser smoke tests', () => {
     expect(box!.height).toBeGreaterThan(100);
 
     // No fatal JS errors during startup
-    expect(errors.filter((e) => /abort|unreachable|RuntimeError/i.test(e))).toHaveLength(0);
+    const fatalPattern = /abort|unreachable|RuntimeError|LinkError|compile failed/i;
+    expect(errors.filter((e) => fatalPattern.test(e))).toHaveLength(0);
+    // No fatal console.error messages (catches WASM link failures logged via printErr)
+    expect(consoleErrors.filter((e) => fatalPattern.test(e))).toHaveLength(0);
   });
 
   test('keyboard input does not crash', async ({ page }) => {
