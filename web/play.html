@@ -83,6 +83,15 @@
         canvas.focus();
       });
 
+      /* Prevent browser from stealing game keys (Tab, F, E, etc.) */
+      window.addEventListener('keydown', function(e) {
+        if (document.activeElement === canvas || e.target === document.body) {
+          if (['Tab','F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'].indexOf(e.key) === -1) {
+            e.preventDefault();
+          }
+        }
+      });
+
       var script = document.createElement('script');
       script.src = './space_miner.js';
       script.onload = function() {
