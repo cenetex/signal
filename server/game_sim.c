@@ -9,8 +9,8 @@
 #include "rng.h"
 #include <stdlib.h>
 
-#define MODULE_COLLISION_RADIUS 34.0f
-#define CORRIDOR_COLLISION_RADIUS 10.0f
+#define MODULE_COLLISION_RADIUS 42.0f  /* matches 1.4x visual scale */
+#define CORRIDOR_COLLISION_RADIUS 8.0f
 #define CORRIDOR_ARC_SEGMENTS 4
 
 #ifdef GAME_SIM_VERBOSE
@@ -1922,8 +1922,8 @@ static void resolve_ship_corridor_arc(world_t *w, server_player_t *sp,
     float da = ang_b - ang_a;
     while (da > PI_F) da -= TWO_PI_F;
     while (da < -PI_F) da += TWO_PI_F;
-    /* Shrink arc by 15% at each end to avoid overlapping module collision circles */
-    float margin = 0.15f;
+    /* Shrink arc slightly at each end to avoid overlapping module collision circles */
+    float margin = 0.08f;
     float sa = ang_a + da * margin;
     float sb = ang_a + da * (1.0f - margin);
     float sda = sb - sa;
@@ -2054,17 +2054,12 @@ static vec2 dock_berth_pos(const station_t *st, int berth) {
     vec2 radial = v2_from_angle(angle);  /* center → module (outward) */
     vec2 tangent = v2(-radial.y, radial.x);
     if (sub == 0) {
-        /* End berth: tangentially past the dock, capping the ring chain */
-        int slots = STATION_RING_SLOTS[ring];
-        float slot_arc = TWO_PI_F / (float)slots;
-        /* Offset in the direction away from the previous slot (toward the gap) */
-        float end_angle = angle - slot_arc * 0.18f;
-        return v2_add(st->pos, v2(cosf(end_angle) * STATION_RING_RADIUS[ring],
-                                   sinf(end_angle) * STATION_RING_RADIUS[ring]));
+        /* End berth: radially outward past the dock */
+        return v2_add(mod_pos, v2_scale(radial, DOCK_BERTH_OFFSET));
     } else {
-        /* Inner berth (toward center) / outer berth (away from center) */
+        /* Side berths: tangentially along the ring arc */
         float side = (sub == 1) ? -DOCK_BERTH_SPREAD : DOCK_BERTH_SPREAD;
-        return v2_add(mod_pos, v2_scale(radial, side));
+        return v2_add(mod_pos, v2_scale(tangent, side));
     }
 }
 
@@ -2075,9 +2070,9 @@ static float dock_berth_angle(const station_t *st, int berth) {
     int mi = station_dock_module(st, dock_idx);
     if (mi < 0) return 0.0f;
     float angle = module_angle_ring(st, st->modules[mi].ring, st->modules[mi].slot);
-    if (sub == 0) return angle + PI_F;        /* end: face toward center */
-    if (sub == 1) return angle;              /* inner: face outward (away from center) */
-    return angle + PI_F;                     /* outer: face inward (toward center) */
+    if (sub == 0) return angle + PI_F;        /* end: face inward */
+    /* Side berths: face toward the dock module (along tangent) */
+    return angle + ((sub == 1) ? PI_F * 0.5f : -PI_F * 0.5f);
 }
 
 /* Find the best (closest, unoccupied) berth slot */
