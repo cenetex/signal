@@ -529,10 +529,7 @@ void draw_hud_panels(void) {
         }
     }
 
-    if (hud_should_draw_message_panel()) {
-        get_hud_message_panel_rect(&message_x, &message_y, &message_w, &message_h);
-        draw_ui_panel(message_x, message_y, message_w, message_h, 0.05f);
-    }
+    /* Message panel background removed — text only now */
 }
 
 /* ------------------------------------------------------------------ */
@@ -753,7 +750,9 @@ void draw_hud(void) {
             sdtx_printf("SCAN PILOT // ID %d", LOCAL_PLAYER.scan_target_index);
         } else if (LOCAL_PLAYER.nearby_fragments > 0) {
             sdtx_color3b(130, 255, 235);
-            if (LOCAL_PLAYER.tractor_fragments > 0) {
+            if (LOCAL_PLAYER.ship.towed_count > 0) {
+                sdtx_printf("TOWING %d // R RELEASE", LOCAL_PLAYER.ship.towed_count);
+            } else if (LOCAL_PLAYER.tractor_fragments > 0) {
                 sdtx_printf("TRACTOR // %d FRAG", LOCAL_PLAYER.tractor_fragments);
             } else {
                 sdtx_printf("FRAGMENTS // %d", LOCAL_PLAYER.nearby_fragments);
@@ -785,37 +784,19 @@ void draw_hud(void) {
         }
 
         if (hud_should_draw_message_panel()) {
-            float message_text_x = ui_text_pos(message_x + 16.0f);
-            float message_row_0 = ui_text_pos(message_y + 14.0f);
-            float message_row_1 = ui_text_pos(message_y + 24.0f);
-            float message_row_2 = ui_text_pos(message_y + 34.0f);
-
-            /* Pulse the label for hull warning */
-            bool is_hull_warn = (message_r == 255 && message_g == 60 && message_b == 50);
-            if (is_hull_warn) {
-                float pulse = 0.5f + 0.5f * sinf((float)sapp_frame_count() * 0.06f);
-                sdtx_pos(message_text_x, message_row_0);
-                sdtx_color3b((uint8_t)(message_r * pulse), (uint8_t)(40 + 20 * pulse), (uint8_t)(40 + 10 * pulse));
-            } else {
-                sdtx_pos(message_text_x, message_row_0);
-                sdtx_color3b(message_r, message_g, message_b);
-            }
-            sdtx_puts(message_label);
-
-            sdtx_pos(message_text_x, message_row_1);
-            if (is_hull_warn) {
-                float pulse = 0.5f + 0.5f * sinf((float)sapp_frame_count() * 0.06f);
-                sdtx_color3b((uint8_t)(200 * pulse + 55), (uint8_t)(40 + 20 * pulse), (uint8_t)(40 + 10 * pulse));
-            } else {
-                sdtx_color3b(232, 241, 255);
-            }
-            sdtx_puts(message_line0);
-
-            if (message_line1[0] != '\0') {
-                sdtx_pos(message_text_x, message_row_2);
-                sdtx_color3b(169, 179, 204);
-                sdtx_puts(message_line1);
-            }
+            /* Simple centered message line at bottom of screen */
+            float cell = HUD_CELL * ui_text_zoom();
+            char full_msg[256];
+            if (message_line1[0] != '\0')
+                snprintf(full_msg, sizeof(full_msg), "[ %s ]  %s %s", message_label, message_line0, message_line1);
+            else
+                snprintf(full_msg, sizeof(full_msg), "[ %s ]  %s", message_label, message_line0);
+            float msg_w = (float)strlen(full_msg) * cell;
+            float msg_x = (screen_w * 0.5f - msg_w * 0.5f) / cell;
+            float msg_y = (screen_h - 32.0f) / cell;
+            sdtx_pos(msg_x, msg_y);
+            sdtx_color3b(message_r, message_g, message_b);
+            sdtx_puts(full_msg);
         }
 
         draw_station_services(&ui);

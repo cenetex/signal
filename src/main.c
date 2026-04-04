@@ -273,11 +273,6 @@ static void sim_step(float dt) {
     }
 
     input_intent_t intent = sample_input_intent();
-    if (intent.reset && !g.multiplayer_enabled) {
-        reset_world();
-        consume_pressed_input();
-        return;
-    }
 
     /* Tab switching while docked */
     if (LOCAL_PLAYER.docked && !g.was_docked) {
