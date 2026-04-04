@@ -1190,7 +1190,7 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
                     if (vt < 0.0f) npc->vel = v2_sub(npc->vel, v2_scale(nrad, vt * 1.0f));
                 }
             }
-            if (ccount == slots && ring > 1
+            if (ccount == slots && ring >= 1
                 && st->modules[cidx[ccount-1]].type != MODULE_DOCK
                 && st->modules[cidx[0]].type != MODULE_DOCK) {
                 /* Wrap-around corridor — same test (skip if dock at either end) */
@@ -2127,7 +2127,7 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
                 float b = module_angle_ring(st, ring, st->modules[cidx[i+1]].slot);
                 resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
             }
-            if (count == slots && ring > 1) {
+            if (count == slots && ring >= 1) {
                 if (st->modules[cidx[count-1]].type != MODULE_DOCK
                     && st->modules[cidx[0]].type != MODULE_DOCK) {
                     float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
