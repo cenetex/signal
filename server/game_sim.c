@@ -2774,6 +2774,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->input.build_module = false;
     sp->input.buy_product = false;
     sp->input.hail = false;
+    sp->input.release_tow = false;
 }
 
 /* ================================================================== */
