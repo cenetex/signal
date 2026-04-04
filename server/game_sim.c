@@ -2295,6 +2295,7 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         if (d_sq <= cr * cr && sp->ship.towed_count < max_tow) {
             sp->ship.towed_fragments[sp->ship.towed_count] = (int16_t)i;
             sp->ship.towed_count++;
+            a->last_towed_by = (int8_t)sp->id;
             sp->ship.stat_ore_mined += a->ore;
             emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
                                         .pickup = {.ore = a->ore, .fragments = 1}});
@@ -2935,14 +2936,10 @@ static void step_hopper_intake(world_t *w, float dt) {
                 /* Consume at hopper mouth */
                 if (d_sq <= consume_sq) {
                     float ore_value = a->ore * station_buy_price(st, a->commodity);
-                    /* Credit nearest connected player to the hopper */
-                    float best_pd = 1e18f;
-                    int best_p = -1;
-                    for (int p = 0; p < MAX_PLAYERS; p++) {
-                        if (!w->players[p].connected) continue;
-                        float pd = v2_dist_sq(w->players[p].ship.pos, mp);
-                        if (pd < best_pd) { best_pd = pd; best_p = p; }
-                    }
+                    /* Credit the player who last towed this fragment */
+                    int best_p = (a->last_towed_by >= 0 && a->last_towed_by < MAX_PLAYERS
+                                  && w->players[a->last_towed_by].connected)
+                                 ? a->last_towed_by : -1;
                     if (best_p >= 0 && ore_value > 0.0f) {
                         server_player_t *sp = &w->players[best_p];
                         sp->ship.credits += ore_value;

@@ -107,6 +107,7 @@ float asteroid_hp_max(asteroid_tier_t tier) {
 void clear_asteroid(asteroid_t* asteroid) {
     bool was_active = asteroid->active;
     memset(asteroid, 0, sizeof(*asteroid));
+    asteroid->last_towed_by = -1;
     if (was_active) asteroid->net_dirty = true; /* signal deactivation to network */
 }
 

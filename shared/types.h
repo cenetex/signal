@@ -248,6 +248,7 @@ typedef struct {
     float spin;
     float seed;
     float age;
+    int8_t last_towed_by;  /* player ID who last towed this, -1 = none */
     bool net_dirty;   /* needs network sync (spawn, fracture, HP change, death) */
 } asteroid_t;
 
