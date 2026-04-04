@@ -326,6 +326,15 @@ static void step_module_construction(world_t *w, float dt) {
                 st->modules[i].build_progress = 1.0f;
                 rebuild_station_services(st);
                 rebuild_signal_chain(w);
+                /* New ring: set rotation speed, alternating direction */
+                if (st->modules[i].type == MODULE_RING) {
+                    int r = st->modules[i].ring;
+                    if (r >= 1 && r <= STATION_NUM_RINGS && r - 1 < MAX_ARMS) {
+                        st->arm_count = r;
+                        float speed = STATION_RING_SPEED / (float)r;
+                        st->arm_speed[r - 1] = (r % 2 == 0) ? -speed : speed;
+                    }
+                }
                 if (st->modules[i].type == MODULE_FURNACE || st->modules[i].type == MODULE_FURNACE_CU || st->modules[i].type == MODULE_FURNACE_CR)
                     spawn_npc(w, s, NPC_ROLE_MINER);
                 if (st->modules[i].type == MODULE_FRAME_PRESS || st->modules[i].type == MODULE_LASER_FAB || st->modules[i].type == MODULE_TRACTOR_FAB)
@@ -3242,8 +3251,8 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[1], MODULE_LASER_FAB, 2, 4);
     add_module_at(&w->stations[1], MODULE_TRACTOR_FAB, 2, 5);
     w->stations[1].arm_count = 2;
-    w->stations[1].arm_speed[0] = 0.05f;  /* ring 1 */
-    w->stations[1].arm_speed[1] = 0.03f;  /* ring 2 — slower */
+    w->stations[1].arm_speed[0] =  0.05f;  /* ring 1 — CCW */
+    w->stations[1].arm_speed[1] = -0.03f;  /* ring 2 — CW, slower */
     rebuild_station_services(&w->stations[1]);
     /* Seed inventory: yard starts with frames for hold upgrades */
     w->stations[1].inventory[COMMODITY_FERRITE_INGOT] = 15.0f;
@@ -3278,9 +3287,9 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_FRAME_PRESS, 3, 4);
     add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 5);
     w->stations[2].arm_count = 3;
-    w->stations[2].arm_speed[0] = 0.05f;  /* ring 1 — fast */
-    w->stations[2].arm_speed[1] = 0.03f;  /* ring 2 — medium */
-    w->stations[2].arm_speed[2] = 0.02f;  /* ring 3 — slow */
+    w->stations[2].arm_speed[0] =  0.05f;  /* ring 1 — CCW */
+    w->stations[2].arm_speed[1] = -0.03f;  /* ring 2 — CW */
+    w->stations[2].arm_speed[2] =  0.02f;  /* ring 3 — CCW */
     rebuild_station_services(&w->stations[2]);
     /* Seed inventory: works starts with modules for mining/tractor upgrades */
     w->stations[2].inventory[COMMODITY_CUPRITE_INGOT] = 15.0f;
