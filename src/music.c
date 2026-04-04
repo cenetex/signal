@@ -180,16 +180,31 @@ static unsigned char *load_file(const char *path, int *out_size) {
 void music_init(music_state_t *m) {
     memset(m, 0, sizeof(*m));
     m->current_track = -1;
+    m->pending_track = -1;
     m->volume = 0.35f;
     m->fade_volume = 1.0f;
     m->fade_target = 1.0f;
     m->audio_buffer_size = (int)(sizeof(m->audio_buffer) / sizeof(m->audio_buffer[0]));
 }
 
+static void music_play_immediate(music_state_t *m, int track);
+
 void music_play(music_state_t *m, int track) {
     if (track < 0 || track >= MUSIC_TRACK_COUNT) return;
 
+    if (m->playing && !m->paused && m->fade_volume > 0.1f) {
+        /* Crossfade: fade out current, queue next */
+        m->pending_track = track;
+        m->fade_target = 0.0f;
+        m->fade_speed = 2.0f; /* 0.5s fade out */
+        return;
+    }
+
     music_stop(m);
+    music_play_immediate(m, track);
+}
+
+static void music_play_immediate(music_state_t *m, int track) {
     m->current_track = track;
 
     const music_track_info_t *info = &tracks[track];
@@ -258,6 +273,15 @@ void music_update(music_state_t *m, float dt) {
     } else if (m->fade_volume > m->fade_target) {
         m->fade_volume -= m->fade_speed * dt;
         if (m->fade_volume < m->fade_target) m->fade_volume = m->fade_target;
+    }
+
+    /* Crossfade: when fade-out completes, start pending track */
+    if (m->pending_track >= 0 && m->fade_volume <= 0.01f) {
+        int next = m->pending_track;
+        m->pending_track = -1;
+        music_stop(m);
+        music_play_immediate(m, next);
+        return;
     }
 
     /* Keep ring buffer fed */
