@@ -2228,16 +2228,20 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         vec2 behind = v2_from_angle(sp->ship.angle + PI_F);
         vec2 target_pos = v2_add(sp->ship.pos, v2_scale(behind, trail_dist));
 
+        /* Directly lerp toward target — no spring oscillation */
         vec2 to_target = v2_sub(target_pos, a->pos);
         float d = v2_len(to_target);
         if (d > 2.0f) {
-            /* Soft spring — follow loosely, not snap to position */
-            float spring_strength = 200.0f;
-            vec2 spring_force = v2_scale(v2_norm(to_target), spring_strength * dt);
-            a->vel = v2_add(a->vel, spring_force);
+            /* Move toward target at a fraction of the distance per second */
+            float follow_rate = 2.5f; /* lower = lazier */
+            a->vel = v2_scale(to_target, follow_rate);
+        } else {
+            a->vel = v2(0.0f, 0.0f);
         }
-        /* Gentle damping — let momentum carry them in an arc */
-        a->vel = v2_scale(a->vel, 1.0f / (1.0f + 1.5f * dt));
+        /* Hard speed cap so they never whip around */
+        float max_speed = 160.0f;
+        float spd = v2_len(a->vel);
+        if (spd > max_speed) a->vel = v2_scale(a->vel, max_speed / spd);
         sp->tractor_fragments++;
 
         /* Fragment-ship collision: keep fragment from overlapping ship */
