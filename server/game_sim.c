@@ -2054,24 +2054,44 @@ static vec2 dock_berth_pos(const station_t *st, int berth) {
     vec2 mod_pos = module_world_pos_ring(st, ring, slot);
     float angle = module_angle_ring(st, ring, slot);
     vec2 radial = v2_from_angle(angle);  /* center → module (outward) */
-    vec2 tangent = v2(-radial.y, radial.x);
+    /* U-shape: berths on 3 sides of the dock, open on the corridor side.
+     * Corridor connects toward higher slots, so U opens toward lower slots. */
+    int slots = STATION_RING_SLOTS[ring];
+    float slot_arc = TWO_PI_F / (float)slots;
+    /* Gap direction: negative tangent (toward lower slot / gap) */
+    float gap_angle = angle - slot_arc * 0.5f;
+    vec2 gap_dir = v2_from_angle(gap_angle);
+    vec2 gap_tangent = v2(-gap_dir.y, gap_dir.x); /* not used but clarifies intent */
+    (void)gap_tangent;
     if (sub == 0) {
-        /* End berth: radially outward past the dock */
+        /* Outward berth: radially away from center */
         return v2_add(mod_pos, v2_scale(radial, DOCK_BERTH_OFFSET));
+    } else if (sub == 1) {
+        /* Inward berth: radially toward center */
+        return v2_add(mod_pos, v2_scale(radial, -DOCK_BERTH_OFFSET));
     } else {
-        /* Inner/outer berths: radially offset (perpendicular to ring) */
-        float side = (sub == 1) ? -DOCK_BERTH_SPREAD : DOCK_BERTH_SPREAD;
-        return v2_add(mod_pos, v2_scale(radial, side));
+        /* Gap-side berth: tangentially toward the ring gap */
+        vec2 gap_tangent_dir = v2(-radial.y, radial.x);
+        /* Dock at slot 0: gap is at negative tangent; higher slots: positive */
+        float dir = (slot == 0) ? -1.0f : 1.0f;
+        return v2_add(mod_pos, v2_scale(gap_tangent_dir, dir * DOCK_BERTH_OFFSET));
     }
 }
 
-/* Dock berth angle: all berths face inward toward station center */
+/* Dock berth angle: face toward the dock module */
 static float dock_berth_angle(const station_t *st, int berth) {
     int dock_idx = berth / BERTHS_PER_DOCK;
+    int sub = berth % BERTHS_PER_DOCK;
     int mi = station_dock_module(st, dock_idx);
     if (mi < 0) return 0.0f;
     float angle = module_angle_ring(st, st->modules[mi].ring, st->modules[mi].slot);
-    return angle + PI_F;
+    if (sub == 0) return angle + PI_F;       /* outward: face inward */
+    if (sub == 1) return angle;              /* inward: face outward */
+    /* Gap-side: face toward dock along tangent */
+    int slot = st->modules[mi].slot;
+    float dir = (slot == 0) ? 1.0f : -1.0f;
+    float tang_angle = angle + PI_F * 0.5f * dir;
+    return tang_angle;
 }
 
 /* Find the best (closest, unoccupied) berth slot */
@@ -2126,38 +2146,30 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
     /* Cancel approach if out of range */
     if (!sp->in_dock_range) sp->docking_approach = false;
 
-    /* Smooth docking approach: ease toward berth position */
+    /* Docking approach: directly lerp toward berth (berth may be rotating) */
     if (sp->docking_approach && sp->in_dock_range) {
         const station_t *dock_st = &w->stations[sp->nearby_station];
         int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship.pos);
         vec2 target = dock_berth_pos(dock_st, berth);
-        vec2 to_target = v2_sub(target, sp->ship.pos);
-        float dist = sqrtf(v2_len_sq(to_target));
+        float dist = sqrtf(v2_dist_sq(sp->ship.pos, target));
 
-        if (dist > DOCK_SNAP_DISTANCE) {
-            /* Smooth exponential approach: lerp position toward target */
-            float approach_speed = clampf(1.0f - powf(0.05f, dt), 0.0f, 1.0f);
-            /* Blend: kill existing velocity, pull toward target */
-            sp->ship.vel = v2_scale(sp->ship.vel, fmaxf(0.0f, 1.0f - 4.0f * dt));
-            vec2 desired_vel = v2_scale(to_target, approach_speed * 3.0f);
-            sp->ship.vel = v2_add(sp->ship.vel, v2_scale(desired_vel, dt * 8.0f));
+        /* Kill velocity, move directly toward berth */
+        sp->ship.vel = v2(0.0f, 0.0f);
+        float step = fminf(120.0f * dt, dist); /* max 120 units/sec approach */
+        if (dist > 1.0f) {
+            vec2 dir = v2_scale(v2_sub(target, sp->ship.pos), step / dist);
+            sp->ship.pos = v2_add(sp->ship.pos, dir);
+        }
 
-            /* Smooth rotation toward berth angle */
-            float desired = dock_berth_angle(dock_st, berth);
-            float diff = wrap_angle(desired - sp->ship.angle);
-            sp->ship.angle += diff * 4.0f * dt;
-        } else {
-            /* Settle: glide into final position over a few frames */
-            sp->ship.pos = v2_add(sp->ship.pos, v2_scale(to_target, clampf(8.0f * dt, 0.0f, 1.0f)));
-            sp->ship.vel = v2(0.0f, 0.0f);
-            float desired = dock_berth_angle(dock_st, berth);
-            sp->ship.angle = wrap_angle(sp->ship.angle + wrap_angle(desired - sp->ship.angle) * 8.0f * dt);
+        /* Rotate toward berth angle */
+        float desired = dock_berth_angle(dock_st, berth);
+        sp->ship.angle = wrap_angle(sp->ship.angle + wrap_angle(desired - sp->ship.angle) * 6.0f * dt);
 
-            if (dist < 4.0f) {
-                sp->dock_berth = berth;
-                dock_ship(w, sp);
-                sp->docking_approach = false;
-            }
+        /* Snap when close */
+        if (dist < 10.0f) {
+            sp->dock_berth = berth;
+            dock_ship(w, sp);
+            sp->docking_approach = false;
         }
     }
 }

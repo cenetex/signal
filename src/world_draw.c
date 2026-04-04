@@ -783,14 +783,17 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                 float od = sqrtf(v2_len_sq(outward));
                 if (od > 0.001f) outward = v2_scale(outward, 1.0f / od);
                 vec2 tang = v2(-outward.y, outward.x);
-                /* End berth (outward), inner/outer berths (radially offset) */
+                /* U-shape: outward, inward, gap-side (open toward corridor) */
+                int dock_slots = STATION_RING_SLOTS[ring];
+                float gap_dir = (m->slot == 0) ? -1.0f : 1.0f;
                 vec2 berths[3];
-                berths[0] = v2_add(positions[i], v2_scale(outward, 55.0f));
-                berths[1] = v2_add(positions[i], v2_scale(outward, -28.0f));
-                berths[2] = v2_add(positions[i], v2_scale(outward, 28.0f));
+                berths[0] = v2_add(positions[i], v2_scale(outward, 55.0f));  /* outward */
+                berths[1] = v2_add(positions[i], v2_scale(outward, -55.0f)); /* inward */
+                berths[2] = v2_add(positions[i], v2_scale(tang, gap_dir * 55.0f)); /* gap-side */
+                (void)dock_slots;
                 for (int b = 0; b < 3; b++) {
-                    vec2 bdir = outward;
-                    vec2 bperp = tang;
+                    vec2 bdir = (b < 2) ? outward : tang;
+                    vec2 bperp = (b < 2) ? tang : outward;
                     float bw = 14.0f, bh = 8.0f;
                     vec2 c0 = v2_add(berths[b], v2_add(v2_scale(bdir, -bh), v2_scale(bperp, -bw)));
                     vec2 c1 = v2_add(berths[b], v2_add(v2_scale(bdir,  bh), v2_scale(bperp, -bw)));
