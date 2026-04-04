@@ -568,6 +568,7 @@ static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaff
     sgl_push_matrix();
     sgl_translate(pos.x, pos.y, 0.0f);
     sgl_rotate(angle, 0.0f, 0.0f, 1.0f);
+    sgl_scale(1.4f, 1.4f, 1.0f);
 
     draw_module_shape(type, mr, mg, mb, alpha);
 
@@ -620,16 +621,37 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
 
     (void)is_current;
 
-    /* Orbital center — faint signal pulse, not a physical structure */
-    float pulse = 0.15f + 0.1f * sinf(g.world.time * 2.0f);
-    draw_circle_outline(station->pos, 8.0f, 12, role_r * 0.4f, role_g * 0.4f, role_b * 0.4f, pulse);
+    /* Core: concentric rings + crosshair */
+    float pulse = 0.2f + 0.1f * sinf(g.world.time * 2.0f);
+    draw_circle_outline(station->pos, 12.0f, 16, role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, pulse);
+    draw_circle_outline(station->pos, 6.0f, 12, role_r * 0.35f, role_g * 0.35f, role_b * 0.35f, pulse * 0.7f);
+    draw_circle_filled(station->pos, 3.0f, 8, role_r * 0.6f, role_g * 0.6f, role_b * 0.6f, pulse * 0.5f);
+    /* Crosshair */
+    float ch = 18.0f;
+    sgl_c4f(role_r * 0.3f, role_g * 0.3f, role_b * 0.3f, pulse * 0.4f);
+    sgl_begin_lines();
+    sgl_v2f(station->pos.x - ch, station->pos.y); sgl_v2f(station->pos.x + ch, station->pos.y);
+    sgl_v2f(station->pos.x, station->pos.y - ch); sgl_v2f(station->pos.x, station->pos.y + ch);
+    sgl_end();
+
+    /* Radial spokes from core to ring 1 modules */
+    for (int i = 0; i < station->module_count; i++) {
+        if (station->modules[i].ring != 1) continue;
+        vec2 mod_pos = module_world_pos_ring(station, 1, station->modules[i].slot);
+        sgl_c4f(role_r * 0.2f, role_g * 0.2f, role_b * 0.2f, 0.25f);
+        sgl_begin_lines();
+        sgl_v2f(station->pos.x, station->pos.y);
+        sgl_v2f(mod_pos.x, mod_pos.y);
+        sgl_end();
+    }
+
     /* Faint ring orbit guides */
     for (int r = 1; r <= STATION_NUM_RINGS; r++) {
         bool has_modules = false;
         for (int i = 0; i < station->module_count; i++)
             if (station->modules[i].ring == r) { has_modules = true; break; }
         if (!has_modules) continue;
-        draw_circle_outline(station->pos, STATION_RING_RADIUS[r], 48, role_r * 0.15f, role_g * 0.15f, role_b * 0.15f, 0.12f);
+        draw_circle_outline(station->pos, STATION_RING_RADIUS[r], 48, role_r * 0.08f, role_g * 0.08f, role_b * 0.08f, 0.08f);
     }
 }
 
@@ -639,7 +661,7 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
 
 static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, float angle_b,
                                float cr, float cg, float cb, float alpha) {
-    float hw = 6.0f; /* corridor half-width */
+    float hw = 3.0f; /* corridor half-width (thin truss) */
     float r_inner = ring_radius - hw;
     float r_outer = ring_radius + hw;
 
@@ -650,7 +672,7 @@ static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, flo
     while (da < -PI_F) da += TWO_PI_F;
 
     /* Solid fill — triangle strip as quads */
-    sgl_c4f(cr * 0.2f, cg * 0.2f, cb * 0.2f, alpha * 0.8f);
+    sgl_c4f(cr * 0.15f, cg * 0.15f, cb * 0.15f, alpha * 0.6f);
     sgl_begin_triangles();
     for (int i = 0; i < CORRIDOR_ARC_SEGMENTS; i++) {
         float t0 = (float)i / (float)CORRIDOR_ARC_SEGMENTS;
@@ -666,8 +688,8 @@ static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, flo
     }
     sgl_end();
 
-    /* Edge lines (inner and outer arcs) */
-    sgl_c4f(cr * 0.4f, cg * 0.4f, cb * 0.4f, alpha * 0.6f);
+    /* Edge lines (inner and outer arcs) — brighter than fill */
+    sgl_c4f(cr * 0.55f, cg * 0.55f, cb * 0.55f, alpha * 0.7f);
     sgl_begin_line_strip();
     for (int i = 0; i <= CORRIDOR_ARC_SEGMENTS; i++) {
         float t = (float)i / (float)CORRIDOR_ARC_SEGMENTS;
