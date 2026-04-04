@@ -1991,6 +1991,8 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     ship_collision_count = 0;
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_collides(&w->stations[i])) continue;
+        /* Skip collision with the station we're docking at */
+        if (sp->docking_approach && i == sp->nearby_station) continue;
         resolve_module_collisions(w, sp, &w->stations[i]);
     }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -2127,7 +2129,7 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
     /* Cancel approach if out of range */
     if (!sp->in_dock_range) sp->docking_approach = false;
 
-    /* Tractor pull toward station core during active docking approach */
+    /* Smooth docking approach: ease toward berth position */
     if (sp->docking_approach && sp->in_dock_range) {
         const station_t *dock_st = &w->stations[sp->nearby_station];
         int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship.pos);
@@ -2135,23 +2137,30 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
         vec2 to_target = v2_sub(target, sp->ship.pos);
         float dist = sqrtf(v2_len_sq(to_target));
 
-        /* Aggressive brake + pull toward core */
-        sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + (dt * 3.5f)));
         if (dist > DOCK_SNAP_DISTANCE) {
-            float pull_strength = 80.0f + 120.0f * (1.0f - clampf(dist / DOCK_APPROACH_RANGE, 0.0f, 1.0f));
-            vec2 pull = v2_scale(to_target, pull_strength * dt / fmaxf(dist, 1.0f));
-            sp->ship.vel = v2_add(sp->ship.vel, pull);
-            /* Orient to berth angle */
+            /* Smooth exponential approach: lerp position toward target */
+            float approach_speed = clampf(1.0f - powf(0.05f, dt), 0.0f, 1.0f);
+            /* Blend: kill existing velocity, pull toward target */
+            sp->ship.vel = v2_scale(sp->ship.vel, fmaxf(0.0f, 1.0f - 4.0f * dt));
+            vec2 desired_vel = v2_scale(to_target, approach_speed * 3.0f);
+            sp->ship.vel = v2_add(sp->ship.vel, v2_scale(desired_vel, dt * 8.0f));
+
+            /* Smooth rotation toward berth angle */
             float desired = dock_berth_angle(dock_st, berth);
-            float diff = desired - sp->ship.angle;
-            while (diff > PI_F) diff -= TWO_PI_F;
-            while (diff < -PI_F) diff += TWO_PI_F;
-            sp->ship.angle += diff * 5.0f * dt;
+            float diff = wrap_angle(desired - sp->ship.angle);
+            sp->ship.angle += diff * 4.0f * dt;
         } else {
-            /* Close enough — snap to docked at this berth */
-            sp->dock_berth = berth;
-            dock_ship(w, sp);
-            sp->docking_approach = false;
+            /* Settle: glide into final position over a few frames */
+            sp->ship.pos = v2_add(sp->ship.pos, v2_scale(to_target, clampf(8.0f * dt, 0.0f, 1.0f)));
+            sp->ship.vel = v2(0.0f, 0.0f);
+            float desired = dock_berth_angle(dock_st, berth);
+            sp->ship.angle = wrap_angle(sp->ship.angle + wrap_angle(desired - sp->ship.angle) * 8.0f * dt);
+
+            if (dist < 4.0f) {
+                sp->dock_berth = berth;
+                dock_ship(w, sp);
+                sp->docking_approach = false;
+            }
         }
     }
 }
@@ -2557,7 +2566,18 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                     break;
                 }
             }
+            /* Ring 1 is service-only: slot 1 = dock, slot 2 = repair bay */
+            bool ring1_ok = true;
+            if (target_ring == 1) {
+                if (target_slot == 1 && intent->build_module_type != MODULE_DOCK)
+                    ring1_ok = false;
+                else if (target_slot == 2 && intent->build_module_type != MODULE_REPAIR_BAY)
+                    ring1_ok = false;
+                else if (target_slot == 0)
+                    ring1_ok = false; /* relay is pre-placed */
+            }
             if (sp->ship.credits >= cost
+                && ring1_ok
                 && station_has_ring(docked_st, target_ring)
                 && docked_st->module_count < MAX_MODULES_PER_STATION
                 && target_slot >= 0 && target_slot < RING_PORT_COUNT[target_ring]

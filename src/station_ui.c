@@ -501,28 +501,47 @@ void draw_station_services(const station_ui_state_t* ui) {
         if (ly > cy + 52.0f) ly += 4.0f;
         /* Available modules (only when port is selected) */
         if (g.build_slot >= 0 && has_ring) {
-            static const struct { module_type_t type; const char* name; int key; int frames; int credits; } buildable[] = {
-                { MODULE_FURNACE,        "Furnace (FE)", 1, 60,  200 },
-                { MODULE_FURNACE_CU,     "Furnace (CU)", 2, 100, 400 },
-                { MODULE_FURNACE_CR,     "Furnace (CR)", 3, 140, 600 },
-                { MODULE_FRAME_PRESS,    "Frame Press",  4, 80,  300 },
-                { MODULE_LASER_FAB,      "Laser Fab",    5, 80,  300 },
-                { MODULE_TRACTOR_FAB,    "Tractor Fab",  6, 80,  300 },
-                { MODULE_ORE_BUYER,      "Ore Buyer",    7, 40,  100 },
-                { MODULE_SIGNAL_RELAY,   "Signal Relay", 8, 40,  100 },
-                { MODULE_SHIPYARD,      "Shipyard",     9, 120, 500 },
-            };
             int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
-            for (int b = 0; b < 9; b++) {
-                if (ui->station->module_count >= MAX_MODULES_PER_STATION) continue;
-                bool can_afford = credits >= buildable[b].credits;
+            if (g.build_ring == 1) {
+                /* Ring 1: fixed layout — slot 1 = dock, slot 2 = repair */
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
-                const char *mat_name = "frames";
-                if (buildable[b].type == MODULE_FURNACE_CU || buildable[b].type == MODULE_LASER_FAB) mat_name = "CU ingots";
-                if (buildable[b].type == MODULE_FURNACE_CR || buildable[b].type == MODULE_TRACTOR_FAB) mat_name = "CR ingots";
-                sdtx_printf("[%d] %-14s %dcr + %d %s", buildable[b].key, buildable[b].name, buildable[b].credits, buildable[b].frames, mat_name);
+                if (g.build_slot == 0) {
+                    sdtx_color3b(120, 130, 150);
+                    sdtx_puts("Signal relay (pre-placed)");
+                } else if (g.build_slot == 1) {
+                    bool can_afford = credits >= 100;
+                    sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
+                    sdtx_puts("[1] Dock          100cr + 40 frames");
+                } else if (g.build_slot == 2) {
+                    bool can_afford = credits >= 100;
+                    sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
+                    sdtx_puts("[1] Repair Bay    100cr + 30 frames");
+                }
                 ly += 14.0f;
+            } else {
+                /* Ring 2+: full module list */
+                static const struct { module_type_t type; const char* name; int key; int frames; int credits; } buildable[] = {
+                    { MODULE_FURNACE,        "Furnace (FE)", 1, 60,  200 },
+                    { MODULE_FURNACE_CU,     "Furnace (CU)", 2, 100, 400 },
+                    { MODULE_FURNACE_CR,     "Furnace (CR)", 3, 140, 600 },
+                    { MODULE_FRAME_PRESS,    "Frame Press",  4, 80,  300 },
+                    { MODULE_LASER_FAB,      "Laser Fab",    5, 80,  300 },
+                    { MODULE_TRACTOR_FAB,    "Tractor Fab",  6, 80,  300 },
+                    { MODULE_ORE_BUYER,      "Ore Buyer",    7, 40,  100 },
+                    { MODULE_DOCK,           "Dock",         8, 40,  100 },
+                    { MODULE_SHIPYARD,       "Shipyard",     9, 120, 500 },
+                };
+                for (int b = 0; b < 9; b++) {
+                    if (ui->station->module_count >= MAX_MODULES_PER_STATION) continue;
+                    bool can_afford = credits >= buildable[b].credits;
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                    sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
+                    const char *mat_name = "frames";
+                    if (buildable[b].type == MODULE_FURNACE_CU || buildable[b].type == MODULE_LASER_FAB) mat_name = "CU ingots";
+                    if (buildable[b].type == MODULE_FURNACE_CR || buildable[b].type == MODULE_TRACTOR_FAB) mat_name = "CR ingots";
+                    sdtx_printf("[%d] %-14s %dcr + %d %s", buildable[b].key, buildable[b].name, buildable[b].credits, buildable[b].frames, mat_name);
+                    ly += 14.0f;
+                }
             }
         }
         return; /* overlay takes over rendering */
