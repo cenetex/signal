@@ -353,30 +353,53 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
 }
 
 /* Solid corridor tube between adjacent modules on the same ring. */
-static void draw_corridor(vec2 a, vec2 b, float cr, float cg, float cb, float alpha) {
-    vec2 delta = v2_sub(b, a);
-    float len = sqrtf(v2_len_sq(delta));
-    if (len < 1.0f) return;
-    vec2 dir = v2_scale(delta, 1.0f / len);
-    vec2 perp = v2(-dir.y, dir.x);
-    float hw = 6.0f; /* corridor half-width */
+/* Draw a curved corridor that arcs along the ring radius between two module positions. */
+#define CORRIDOR_ARC_SEGMENTS 8
 
-    /* Solid fill */
-    vec2 a0 = v2_add(a, v2_scale(perp, hw));
-    vec2 a1 = v2_sub(a, v2_scale(perp, hw));
-    vec2 b0 = v2_add(b, v2_scale(perp, hw));
-    vec2 b1 = v2_sub(b, v2_scale(perp, hw));
+static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, float angle_b,
+                               float cr, float cg, float cb, float alpha) {
+    float hw = 6.0f; /* corridor half-width */
+    float r_inner = ring_radius - hw;
+    float r_outer = ring_radius + hw;
+
+    /* Tessellate the arc */
+    float da = angle_b - angle_a;
+    /* Normalize to shortest arc */
+    while (da > PI_F) da -= TWO_PI_F;
+    while (da < -PI_F) da += TWO_PI_F;
+
+    /* Solid fill — triangle strip as quads */
     sgl_c4f(cr * 0.2f, cg * 0.2f, cb * 0.2f, alpha * 0.8f);
     sgl_begin_triangles();
-    sgl_v2f(a0.x,a0.y); sgl_v2f(b0.x,b0.y); sgl_v2f(b1.x,b1.y);
-    sgl_v2f(a0.x,a0.y); sgl_v2f(b1.x,b1.y); sgl_v2f(a1.x,a1.y);
+    for (int i = 0; i < CORRIDOR_ARC_SEGMENTS; i++) {
+        float t0 = (float)i / (float)CORRIDOR_ARC_SEGMENTS;
+        float t1 = (float)(i + 1) / (float)CORRIDOR_ARC_SEGMENTS;
+        float a0 = angle_a + da * t0;
+        float a1 = angle_a + da * t1;
+        vec2 i0 = v2_add(center, v2(cosf(a0) * r_inner, sinf(a0) * r_inner));
+        vec2 o0 = v2_add(center, v2(cosf(a0) * r_outer, sinf(a0) * r_outer));
+        vec2 i1 = v2_add(center, v2(cosf(a1) * r_inner, sinf(a1) * r_inner));
+        vec2 o1 = v2_add(center, v2(cosf(a1) * r_outer, sinf(a1) * r_outer));
+        sgl_v2f(i0.x,i0.y); sgl_v2f(o0.x,o0.y); sgl_v2f(o1.x,o1.y);
+        sgl_v2f(i0.x,i0.y); sgl_v2f(o1.x,o1.y); sgl_v2f(i1.x,i1.y);
+    }
     sgl_end();
 
-    /* Edge lines */
+    /* Edge lines (inner and outer arcs) */
     sgl_c4f(cr * 0.4f, cg * 0.4f, cb * 0.4f, alpha * 0.6f);
-    sgl_begin_lines();
-    sgl_v2f(a0.x,a0.y); sgl_v2f(b0.x,b0.y);
-    sgl_v2f(a1.x,a1.y); sgl_v2f(b1.x,b1.y);
+    sgl_begin_line_strip();
+    for (int i = 0; i <= CORRIDOR_ARC_SEGMENTS; i++) {
+        float t = (float)i / (float)CORRIDOR_ARC_SEGMENTS;
+        float a = angle_a + da * t;
+        sgl_v2f(center.x + cosf(a) * r_inner, center.y + sinf(a) * r_inner);
+    }
+    sgl_end();
+    sgl_begin_line_strip();
+    for (int i = 0; i <= CORRIDOR_ARC_SEGMENTS; i++) {
+        float t = (float)i / (float)CORRIDOR_ARC_SEGMENTS;
+        float a = angle_a + da * t;
+        sgl_v2f(center.x + cosf(a) * r_outer, center.y + sinf(a) * r_outer);
+    }
     sgl_end();
 }
 
@@ -425,15 +448,24 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             positions[i] = module_world_pos_ring(station, ring, slot_ids[i]);
         }
 
-        /* Energy tethers between adjacent occupied slots only.
-         * Don't wrap across the gap (slot 0). */
+        /* Curved corridors between adjacent occupied slots.
+         * Inner ring (ring 1): skip the wrap-around to leave a gap. */
+        float ring_r = STATION_RING_RADIUS[ring];
         for (int i = 0; i + 1 < mod_count; i++) {
-            if (slot_ids[i + 1] - slot_ids[i] == 1)
-                draw_corridor(positions[i], positions[i + 1], role_r, role_g, role_b, base_alpha * 0.7f);
+            if (slot_ids[i + 1] - slot_ids[i] == 1) {
+                float ang_a = module_angle_ring(station, ring, slot_ids[i]);
+                float ang_b = module_angle_ring(station, ring, slot_ids[i + 1]);
+                draw_corridor_arc(station->pos, ring_r, ang_a, ang_b,
+                    role_r, role_g, role_b, base_alpha * 0.7f);
+            }
         }
-        /* Wrap: last→first only if ring is completely full */
-        if (mod_count == slots)
-            draw_corridor(positions[mod_count - 1], positions[0], role_r, role_g, role_b, base_alpha * 0.7f);
+        /* Wrap: last→first if ring is full, but skip on ring 1 (leave a gap) */
+        if (mod_count == slots && ring > 1) {
+            float ang_a = module_angle_ring(station, ring, slot_ids[mod_count - 1]);
+            float ang_b = module_angle_ring(station, ring, slot_ids[0]);
+            draw_corridor_arc(station->pos, ring_r, ang_a, ang_b,
+                role_r, role_g, role_b, base_alpha * 0.7f);
+        }
 
         /* Modules + dock indicators */
         for (int i = 0; i < mod_count; i++) {

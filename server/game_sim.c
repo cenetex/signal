@@ -10,6 +10,7 @@
 
 #define MODULE_COLLISION_RADIUS 34.0f
 #define CORRIDOR_COLLISION_RADIUS 10.0f
+#define CORRIDOR_ARC_SEGMENTS 4
 
 #ifdef GAME_SIM_VERBOSE
 #define SIM_LOG(...) printf(__VA_ARGS__)
@@ -1057,9 +1058,10 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
             if (mvt < 0.0f)
                 npc->vel = v2_sub(npc->vel, v2_scale(mn, mvt * 1.2f));
         }
-        /* Corridor capsule collision for NPCs */
+        /* Curved corridor collision for NPCs */
         for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
             int slots = STATION_RING_SLOTS[ring];
+            float ring_r = STATION_RING_RADIUS[ring];
             int cidx[MAX_MODULES_PER_STATION];
             int ccount = 0;
             for (int m = 0; m < st->module_count; m++)
@@ -1076,28 +1078,18 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
                 int s0 = st->modules[cidx[ci]].slot;
                 int s1 = st->modules[cidx[ci + 1]].slot;
                 if (s1 - s0 != 1) continue;
-                vec2 ca = module_world_pos_ring(st, ring, s0);
-                vec2 cb = module_world_pos_ring(st, ring, s1);
-                float corr_min = CORRIDOR_COLLISION_RADIUS + hull->ship_radius;
-                vec2 closest = v2_closest_on_segment(npc->pos, ca, cb);
-                vec2 cd = v2_sub(npc->pos, closest);
-                float cd_sq = v2_len_sq(cd);
-                if (cd_sq >= corr_min * corr_min) continue;
-                float cdd = sqrtf(cd_sq);
-                vec2 cn = cdd > 0.001f ? v2_scale(cd, 1.0f / cdd) : v2(1.0f, 0.0f);
-                npc->pos = v2_add(closest, v2_scale(cn, corr_min));
-                float cvt = v2_dot(npc->vel, cn);
-                if (cvt < 0.0f)
-                    npc->vel = v2_sub(npc->vel, v2_scale(cn, cvt * 1.2f));
-            }
-            if (ccount >= 2) {
-                int fs = st->modules[cidx[0]].slot;
-                int ls = st->modules[cidx[ccount - 1]].slot;
-                if (fs == 0 && ls == slots - 1) {
-                    vec2 ca = module_world_pos_ring(st, ring, ls);
-                    vec2 cb = module_world_pos_ring(st, ring, fs);
+                float a0 = module_angle_ring(st, ring, s0);
+                float a1 = module_angle_ring(st, ring, s1);
+                float da = a1 - a0;
+                while (da > PI_F) da -= TWO_PI_F;
+                while (da < -PI_F) da += TWO_PI_F;
+                vec2 prev = v2_add(st->pos, v2(cosf(a0) * ring_r, sinf(a0) * ring_r));
+                for (int seg = 1; seg <= CORRIDOR_ARC_SEGMENTS; seg++) {
+                    float t = (float)seg / (float)CORRIDOR_ARC_SEGMENTS;
+                    float a = a0 + da * t;
+                    vec2 cur = v2_add(st->pos, v2(cosf(a) * ring_r, sinf(a) * ring_r));
                     float corr_min = CORRIDOR_COLLISION_RADIUS + hull->ship_radius;
-                    vec2 closest = v2_closest_on_segment(npc->pos, ca, cb);
+                    vec2 closest = v2_closest_on_segment(npc->pos, prev, cur);
                     vec2 cd = v2_sub(npc->pos, closest);
                     float cd_sq = v2_len_sq(cd);
                     if (cd_sq < corr_min * corr_min) {
@@ -1107,6 +1099,38 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
                         float cvt = v2_dot(npc->vel, cn);
                         if (cvt < 0.0f)
                             npc->vel = v2_sub(npc->vel, v2_scale(cn, cvt * 1.2f));
+                    }
+                    prev = cur;
+                }
+            }
+            /* Wrap: skip on ring 1 */
+            if (ccount >= 2 && ring > 1) {
+                int fs = st->modules[cidx[0]].slot;
+                int ls = st->modules[cidx[ccount - 1]].slot;
+                if (fs == 0 && ls == slots - 1) {
+                    float a0 = module_angle_ring(st, ring, ls);
+                    float a1 = module_angle_ring(st, ring, fs);
+                    float da = a1 - a0;
+                    while (da > PI_F) da -= TWO_PI_F;
+                    while (da < -PI_F) da += TWO_PI_F;
+                    vec2 prev = v2_add(st->pos, v2(cosf(a0) * ring_r, sinf(a0) * ring_r));
+                    for (int seg = 1; seg <= CORRIDOR_ARC_SEGMENTS; seg++) {
+                        float t = (float)seg / (float)CORRIDOR_ARC_SEGMENTS;
+                        float a = a0 + da * t;
+                        vec2 cur = v2_add(st->pos, v2(cosf(a) * ring_r, sinf(a) * ring_r));
+                        float corr_min = CORRIDOR_COLLISION_RADIUS + hull->ship_radius;
+                        vec2 closest = v2_closest_on_segment(npc->pos, prev, cur);
+                        vec2 cd = v2_sub(npc->pos, closest);
+                        float cd_sq = v2_len_sq(cd);
+                        if (cd_sq < corr_min * corr_min) {
+                            float cdd = sqrtf(cd_sq);
+                            vec2 cn = cdd > 0.001f ? v2_scale(cd, 1.0f / cdd) : v2(1.0f, 0.0f);
+                            npc->pos = v2_add(closest, v2_scale(cn, corr_min));
+                            float cvt = v2_dot(npc->vel, cn);
+                            if (cvt < 0.0f)
+                                npc->vel = v2_sub(npc->vel, v2_scale(cn, cvt * 1.2f));
+                        }
+                        prev = cur;
                     }
                 }
             }
@@ -1901,8 +1925,25 @@ static void step_ship_motion(ship_t *s, float dt, const world_t *w) {
 }
 
 /* Module collision radius — matches visual half-size. */
+/* Resolve corridor arc collision: approximate the arc between two angles
+ * on a ring with multiple capsule segments. */
+static void resolve_ship_corridor_arc(world_t *w, server_player_t *sp,
+                                       vec2 center, float ring_r, float ang_a, float ang_b) {
+    float da = ang_b - ang_a;
+    while (da > PI_F) da -= TWO_PI_F;
+    while (da < -PI_F) da += TWO_PI_F;
+    vec2 prev = v2_add(center, v2(cosf(ang_a) * ring_r, sinf(ang_a) * ring_r));
+    for (int s = 1; s <= CORRIDOR_ARC_SEGMENTS; s++) {
+        float t = (float)s / (float)CORRIDOR_ARC_SEGMENTS;
+        float a = ang_a + da * t;
+        vec2 cur = v2_add(center, v2(cosf(a) * ring_r, sinf(a) * ring_r));
+        resolve_ship_capsule(w, sp, prev, cur, CORRIDOR_COLLISION_RADIUS);
+        prev = cur;
+    }
+}
+
 /* Resolve ship-vs-module collision for all modules on a station,
- * including corridor/truss segments between adjacent modules. */
+ * including curved corridor arcs between adjacent modules. */
 static void resolve_module_collisions(world_t *w, server_player_t *sp, const station_t *st) {
     /* Per-module circle collision */
     for (int i = 0; i < st->module_count; i++) {
@@ -1911,43 +1952,38 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
         vec2 mod_pos = module_world_pos_ring(st, ring, st->modules[i].slot);
         resolve_ship_circle(w, sp, mod_pos, MODULE_COLLISION_RADIUS);
     }
-    /* Corridor capsule collision between adjacent modules on same ring */
+    /* Curved corridor collision between adjacent modules on same ring */
     for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
         int slots = STATION_RING_SLOTS[ring];
-        /* Collect modules on this ring, sorted by slot */
+        float ring_r = STATION_RING_RADIUS[ring];
         int idx[MAX_MODULES_PER_STATION];
         int count = 0;
-        for (int i = 0; i < st->module_count; i++) {
-            if (st->modules[i].ring == ring)
-                idx[count++] = i;
-        }
+        for (int i = 0; i < st->module_count; i++)
+            if (st->modules[i].ring == ring) idx[count++] = i;
         if (count < 2) continue;
-        /* Insertion sort by slot */
         for (int i = 1; i < count; i++) {
-            int tmp = idx[i];
-            int j = i - 1;
+            int tmp = idx[i]; int j = i - 1;
             while (j >= 0 && st->modules[idx[j]].slot > st->modules[tmp].slot) {
                 idx[j + 1] = idx[j]; j--;
             }
             idx[j + 1] = tmp;
         }
-        /* Check adjacent pairs (corridor exists when slots are consecutive) */
         for (int i = 0; i + 1 < count; i++) {
             int s0 = st->modules[idx[i]].slot;
             int s1 = st->modules[idx[i + 1]].slot;
             if (s1 - s0 != 1) continue;
-            vec2 a = module_world_pos_ring(st, ring, s0);
-            vec2 b = module_world_pos_ring(st, ring, s1);
-            resolve_ship_capsule(w, sp, a, b, CORRIDOR_COLLISION_RADIUS);
+            float a0 = module_angle_ring(st, ring, s0);
+            float a1 = module_angle_ring(st, ring, s1);
+            resolve_ship_corridor_arc(w, sp, st->pos, ring_r, a0, a1);
         }
-        /* Wrap-around: last slot to first if they complete the ring */
-        if (count >= 2) {
-            int first_slot = st->modules[idx[0]].slot;
-            int last_slot = st->modules[idx[count - 1]].slot;
-            if (first_slot == 0 && last_slot == slots - 1) {
-                vec2 a = module_world_pos_ring(st, ring, last_slot);
-                vec2 b = module_world_pos_ring(st, ring, first_slot);
-                resolve_ship_capsule(w, sp, a, b, CORRIDOR_COLLISION_RADIUS);
+        /* Wrap: skip on ring 1 (leave a gap) */
+        if (count >= 2 && ring > 1) {
+            int fs = st->modules[idx[0]].slot;
+            int ls = st->modules[idx[count - 1]].slot;
+            if (fs == 0 && ls == slots - 1) {
+                float a0 = module_angle_ring(st, ring, ls);
+                float a1 = module_angle_ring(st, ring, fs);
+                resolve_ship_corridor_arc(w, sp, st->pos, ring_r, a0, a1);
             }
         }
     }
