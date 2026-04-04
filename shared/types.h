@@ -173,10 +173,11 @@ typedef struct {
     /* Module system */
     station_module_t modules[MAX_MODULES_PER_STATION];
     int module_count;
-    /* Ring rotation (per-ring, stored in arm_rotation/arm_speed) */
+    /* Ring rotation — all rings share one speed, each has a fixed angular offset */
     int arm_count;                    /* number of active rings with rotation */
     float arm_rotation[MAX_ARMS];     /* per-ring rotation angle (radians) */
-    float arm_speed[MAX_ARMS];        /* per-ring rotation speed (rad/s) */
+    float arm_speed[MAX_ARMS];        /* per-ring rotation speed (rad/s) — only [0] used */
+    float ring_offset[MAX_ARMS];      /* fixed angular offset per ring (radians) */
     char hail_message[256];           /* AI-authored station message of the day */
     /* Economy ledger: per-player supply tracking for passive income */
     struct {
@@ -249,7 +250,8 @@ typedef struct {
     float spin;
     float seed;
     float age;
-    int8_t last_towed_by;  /* player ID who last towed this, -1 = none */
+    int8_t last_towed_by;      /* player ID who last towed this, -1 = none */
+    int8_t last_fractured_by;  /* player ID who fractured the parent, -1 = none */
     bool net_dirty;   /* needs network sync (spawn, fracture, HP change, death) */
 } asteroid_t;
 
@@ -452,8 +454,8 @@ enum { STATION_NUM_RINGS = 3 };
 /* Per-ring rotation: ring 1 fastest, outer rings slower. */
 static inline float station_ring_rotation(const station_t *st, int ring) {
     if (ring < 1 || ring > STATION_NUM_RINGS) return 0.0f;
-    /* Store per-ring rotation in arm_rotation[ring-1] */
-    if (ring - 1 < MAX_ARMS) return st->arm_rotation[ring - 1];
+    int idx = ring - 1;
+    if (idx < MAX_ARMS) return st->arm_rotation[idx] + st->ring_offset[idx];
     return 0.0f;
 }
 

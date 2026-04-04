@@ -348,6 +348,9 @@ static void handle_message(const uint8_t* data, int len) {
             moff++;
             for (int a = 0; a < MAX_ARMS; a++)
                 si.arm_speed[a] = read_f32_le(&data[moff + a * 4]);
+            moff += MAX_ARMS * 4;
+            for (int a = 0; a < MAX_ARMS; a++)
+                si.ring_offset[a] = read_f32_le(&data[moff + a * 4]);
             net_state.callbacks.on_station_identity(&si);
         }
         break;

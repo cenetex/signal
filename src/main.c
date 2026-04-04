@@ -148,12 +148,8 @@ static void reset_step_feedback(void) {
     LOCAL_PLAYER.beam_active = false;
     LOCAL_PLAYER.beam_hit = false;
     g.thrusting = false;
-    /* In multiplayer, nearby/tractor fragment counts come from the server
-     * via PLAYER_SHIP messages at a lower rate — don't zero them every tick. */
-    if (g.local_server.active) {
-        LOCAL_PLAYER.nearby_fragments = 0;
-        LOCAL_PLAYER.tractor_fragments = 0;
-    }
+    /* nearby/tractor fragment counts are reset inside step_fragment_collection
+     * on the authoritative sim — don't zero them here, the sync carries them. */
 }
 
 /* sample_input_intent: see input.h/c */
@@ -296,8 +292,9 @@ static void sim_step(float dt) {
         for (int s = 0; s < MAX_STATIONS; s++) {
             station_t *st = &g.world.stations[s];
             if (!station_exists(st)) continue;
+            float speed = st->arm_speed[0];
             for (int r = 0; r < STATION_NUM_RINGS && r < MAX_ARMS; r++) {
-                st->arm_rotation[r] += st->arm_speed[r] * dt;
+                st->arm_rotation[r] += speed * dt;
                 if (st->arm_rotation[r] > TWO_PI_F)
                     st->arm_rotation[r] -= TWO_PI_F;
             }

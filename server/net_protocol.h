@@ -291,11 +291,15 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
         write_f32_le(&buf[moff + 4], (m < st->module_count) ? st->modules[m].build_progress : 0.0f);
         moff += STATION_MODULE_RECORD_SIZE;
     }
-    /* Ring rotation speeds */
+    /* Ring rotation speeds + offsets */
     buf[moff] = (uint8_t)st->arm_count;
     moff++;
     for (int a = 0; a < MAX_ARMS; a++) {
         write_f32_le(&buf[moff], st->arm_speed[a]);
+        moff += 4;
+    }
+    for (int a = 0; a < MAX_ARMS; a++) {
+        write_f32_le(&buf[moff], st->ring_offset[a]);
         moff += 4;
     }
     return STATION_IDENTITY_SIZE;

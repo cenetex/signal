@@ -104,6 +104,7 @@ typedef struct {
     station_module_t modules[MAX_MODULES_PER_STATION];
     int arm_count;
     float arm_speed[MAX_ARMS];
+    float ring_offset[MAX_ARMS];
 } NetStationIdentity;
 
 /* Station identity callback: full static fields for a station slot. */

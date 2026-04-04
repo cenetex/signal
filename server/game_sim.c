@@ -345,13 +345,16 @@ static void step_module_construction(world_t *w, float dt) {
                 st->modules[i].build_progress = 1.0f;
                 rebuild_station_services(st);
                 rebuild_signal_chain(w);
-                /* New ring: set rotation speed, alternating direction */
+                /* New ring: set shared rotation speed + random offset */
                 if (st->modules[i].type == MODULE_RING) {
                     int r = st->modules[i].ring;
                     if (r >= 1 && r <= STATION_NUM_RINGS && r - 1 < MAX_ARMS) {
                         st->arm_count = r;
-                        float speed = STATION_RING_SPEED / (float)r;
-                        st->arm_speed[r - 1] = (r % 2 == 0) ? -speed : speed;
+                        st->arm_speed[0] = STATION_RING_SPEED;
+                        /* Deterministic offset from station position + ring index */
+                        uint32_t h = (uint32_t)(st->pos.x * 1000.0f) ^ ((uint32_t)(st->pos.y * 1000.0f) << 16) ^ (uint32_t)r;
+                        h = h * 2654435761u;
+                        st->ring_offset[r - 1] = TWO_PI_F * (float)(h & 0xFFFFu) / 65536.0f;
                     }
                 }
                 if (st->modules[i].type == MODULE_FURNACE || st->modules[i].type == MODULE_FURNACE_CU || st->modules[i].type == MODULE_FURNACE_CR)
@@ -786,7 +789,7 @@ static void inspect_asteroid_field(world_t *w, int *seeded_count, int *first_ina
     }
 }
 
-static void fracture_asteroid(world_t *w, int idx, vec2 outward_dir) {
+static void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_by) {
     asteroid_t parent = w->asteroids[idx];
     asteroid_tier_t child_tier = asteroid_next_tier(parent.tier);
     int desired = desired_child_count(w, parent.tier);
@@ -811,6 +814,7 @@ static void fracture_asteroid(world_t *w, int idx, vec2 outward_dir) {
         vec2 cvel = v2_add(parent.vel, v2_add(v2_scale(dir, drift), v2_scale(tangent, w_rand_range(w, -10.0f, 10.0f))));
         child->pos = cpos;
         child->vel = cvel;
+        child->last_fractured_by = fractured_by;
     }
 
     /* audio_play_fracture removed */
@@ -1537,7 +1541,7 @@ static void step_npc_ships(world_t *w, float dt) {
 
             if (a->hp <= 0.01f) {
                 vec2 outward = v2_norm(v2_sub(a->pos, npc->pos));
-                fracture_asteroid(w, npc->target_asteroid, outward);
+                fracture_asteroid(w, npc->target_asteroid, outward, -1); /* NPC: no player credit */
                 npc->target_asteroid = -1;
             }
             if (cs <= 0.5f) {
@@ -2121,19 +2125,14 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
         if (!near_module) {
             for (int i = 0; i + 1 < count; i++) {
                 if (st->modules[cidx[i+1]].slot - st->modules[cidx[i]].slot != 1) continue;
-                if (st->modules[cidx[i]].type == MODULE_DOCK) continue;
-                if (st->modules[cidx[i+1]].type == MODULE_DOCK) continue;
                 float a = module_angle_ring(st, ring, st->modules[cidx[i]].slot);
                 float b = module_angle_ring(st, ring, st->modules[cidx[i+1]].slot);
                 resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
             }
-            if (count == slots && ring >= 1) {
-                if (st->modules[cidx[count-1]].type != MODULE_DOCK
-                    && st->modules[cidx[0]].type != MODULE_DOCK) {
-                    float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
-                    float b = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
-                    resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
-                }
+            if (count == slots) {
+                float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
+                float b = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
+                resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
             }
         }
     }
@@ -2626,7 +2625,7 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
                 a->hp -= mined;
                 a->net_dirty = true;
                 if (a->hp <= 0.01f) {
-                    fracture_asteroid(w, sp->hover_asteroid, normal);
+                    fracture_asteroid(w, sp->hover_asteroid, normal, (int8_t)sp->id);
                     sp->ship.stat_asteroids_fractured++;
                 }
             }
@@ -3175,16 +3174,39 @@ static void step_hopper_intake(world_t *w, float dt) {
                 /* Consume: within mouth range (generous) */
                 if (d_sq <= consume_sq) {
                     float ore_value = a->ore * station_buy_price(st, a->commodity);
-                    /* Credit the player who last towed this fragment */
-                    int best_p = (a->last_towed_by >= 0 && a->last_towed_by < MAX_PLAYERS
-                                  && w->players[a->last_towed_by].connected)
-                                 ? a->last_towed_by : -1;
-                    if (best_p >= 0 && ore_value > 0.0f) {
-                        server_player_t *sp = &w->players[best_p];
-                        sp->ship.credits += ore_value;
-                        sp->ship.stat_credits_earned += ore_value;
-                        emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
-                        /* Clean from tow list if still there */
+                    /* Split payment between fracturer and tower.
+                     * Same player or only one exists: 100%. Different: 50/50. */
+                    int tower = (a->last_towed_by >= 0 && a->last_towed_by < MAX_PLAYERS
+                                 && w->players[a->last_towed_by].connected)
+                                ? a->last_towed_by : -1;
+                    int fracturer = (a->last_fractured_by >= 0 && a->last_fractured_by < MAX_PLAYERS
+                                     && w->players[a->last_fractured_by].connected)
+                                    ? a->last_fractured_by : -1;
+
+                    if (ore_value > 0.0f) {
+                        if (tower >= 0 && fracturer >= 0 && tower != fracturer) {
+                            /* Cooperation bonus: each gets 75% (150% total) */
+                            float share = ore_value * 0.75f;
+                            w->players[tower].ship.credits += share;
+                            w->players[tower].ship.stat_credits_earned += share;
+                            emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = tower});
+                            w->players[fracturer].ship.credits += share;
+                            w->players[fracturer].ship.stat_credits_earned += share;
+                            emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = fracturer});
+                        } else {
+                            /* Solo or only one role: 100% to that player */
+                            int best_p = (tower >= 0) ? tower : fracturer;
+                            if (best_p >= 0) {
+                                w->players[best_p].ship.credits += ore_value;
+                                w->players[best_p].ship.stat_credits_earned += ore_value;
+                                emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = best_p});
+                            }
+                        }
+                    }
+
+                    /* Clean from tower's tow list */
+                    if (tower >= 0) {
+                        server_player_t *sp = &w->players[tower];
                         for (int t = 0; t < sp->ship.towed_count; t++) {
                             if (sp->ship.towed_fragments[t] == i) {
                                 sp->ship.towed_count--;
@@ -3479,11 +3501,12 @@ static void step_contracts(world_t *w, float dt) {
 void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
     w->time += dt;
-    /* Advance per-ring rotations (stored in arm_rotation[ring-1]) */
+    /* Advance ring rotation — all rings share arm_speed[0] */
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!station_exists(&w->stations[s])) continue;
+        float speed = w->stations[s].arm_speed[0];
         for (int r = 0; r < STATION_NUM_RINGS && r < MAX_ARMS; r++) {
-            w->stations[s].arm_rotation[r] += w->stations[s].arm_speed[r] * dt;
+            w->stations[s].arm_rotation[r] += speed * dt;
             if (w->stations[s].arm_rotation[r] > TWO_PI_F)
                 w->stations[s].arm_rotation[r] -= TWO_PI_F;
         }
@@ -3589,8 +3612,9 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[0], MODULE_ORE_BUYER, 2, 1);
     add_module_at(&w->stations[0], MODULE_FURNACE, 2, 2);
     w->stations[0].arm_count = 2;
-    w->stations[0].arm_speed[0] =  0.05f;  /* ring 1 — CCW */
-    w->stations[0].arm_speed[1] = -0.03f;  /* ring 2 — CW */
+    w->stations[0].arm_speed[0] = STATION_RING_SPEED;
+    w->stations[0].ring_offset[0] = 0.0f;
+    w->stations[0].ring_offset[1] = 1.05f;  /* ~60° offset — unique silhouette */
     rebuild_station_services(&w->stations[0]);
     /* Seed inventory: refinery starts with some smelted ingots */
     w->stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
@@ -3616,8 +3640,9 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 2, 3);
     add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 2, 4);
     w->stations[1].arm_count = 2;
-    w->stations[1].arm_speed[0] =  0.05f;  /* ring 1 — CCW */
-    w->stations[1].arm_speed[1] = -0.03f;  /* ring 2 — CW, slower */
+    w->stations[1].arm_speed[0] = STATION_RING_SPEED;
+    w->stations[1].ring_offset[0] = 0.0f;
+    w->stations[1].ring_offset[1] = 2.40f;  /* ~137° offset */
     rebuild_station_services(&w->stations[1]);
     /* Seed inventory: yard starts with frames for hold upgrades */
     w->stations[1].inventory[COMMODITY_FERRITE_INGOT] = 15.0f;
@@ -3653,9 +3678,10 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_FRAME_PRESS, 3, 4);
     add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 5);
     w->stations[2].arm_count = 3;
-    w->stations[2].arm_speed[0] =  0.05f;  /* ring 1 — CCW */
-    w->stations[2].arm_speed[1] = -0.03f;  /* ring 2 — CW */
-    w->stations[2].arm_speed[2] =  0.02f;  /* ring 3 — CCW */
+    w->stations[2].arm_speed[0] = STATION_RING_SPEED;
+    w->stations[2].ring_offset[0] = 0.0f;
+    w->stations[2].ring_offset[1] = 0.52f;  /* ~30° offset */
+    w->stations[2].ring_offset[2] = 1.83f;  /* ~105° offset */
     rebuild_station_services(&w->stations[2]);
     /* Seed inventory: works starts with modules for mining/tractor upgrades */
     w->stations[2].inventory[COMMODITY_CUPRITE_INGOT] = 15.0f;
@@ -3741,6 +3767,7 @@ static bool write_station(FILE *f, const station_t *s) {
     for (int a = 0; a < MAX_ARMS; a++) {
         WRITE_FIELD(f, s->arm_rotation[a]);
         WRITE_FIELD(f, s->arm_speed[a]);
+        WRITE_FIELD(f, s->ring_offset[a]);
     }
     return true;
 }
@@ -3771,6 +3798,7 @@ static bool read_station(FILE *f, station_t *s) {
     for (int a = 0; a < MAX_ARMS; a++) {
         READ_FIELD(f, s->arm_rotation[a]);
         READ_FIELD(f, s->arm_speed[a]);
+        READ_FIELD(f, s->ring_offset[a]);
     }
     return true;
 }

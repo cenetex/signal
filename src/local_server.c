@@ -78,6 +78,10 @@ void local_server_sync_to_client(const local_server_t *ls) {
     dst->tractor_fragments = src->tractor_fragments;
     dst->nearby_fragments = src->nearby_fragments;
 
+    /* Tow state (for tether rendering) */
+    dst->ship.towed_count = src->ship.towed_count;
+    memcpy(dst->ship.towed_fragments, src->ship.towed_fragments, sizeof(dst->ship.towed_fragments));
+
     /* Sim events: copy so process_sim_events can read from g.world.events
      * in addition to the local_server path — keeps both sources consistent. */
     g.world.events = ls->world.events;

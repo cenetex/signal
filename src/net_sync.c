@@ -140,8 +140,10 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     for (int m = 0; m < si->module_count && m < MAX_MODULES_PER_STATION; m++)
         st->modules[m] = si->modules[m];
     st->arm_count = si->arm_count;
-    for (int a = 0; a < MAX_ARMS; a++)
+    for (int a = 0; a < MAX_ARMS; a++) {
         st->arm_speed[a] = si->arm_speed[a];
+        st->ring_offset[a] = si->ring_offset[a];
+    }
 }
 
 void begin_player_state_batch(void) {
