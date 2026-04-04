@@ -3182,8 +3182,8 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     world_t w = {0};
     world_reset(&w);
     ASSERT(w.stations[0].module_count > 3);
-    station_module_t orig = w.stations[0].modules[2]; /* DOCK at ring 1, slot 2 (end of service ring) */
-    ASSERT(orig.type == MODULE_DOCK);
+    station_module_t orig = w.stations[0].modules[2]; /* REPAIR_BAY at ring 1, slot 2 */
+    ASSERT(orig.type == MODULE_REPAIR_BAY);
     ASSERT(orig.ring == 1);
     ASSERT(orig.slot == 2);
     ASSERT(world_save(&w, "/tmp/test_modules.sav"));
