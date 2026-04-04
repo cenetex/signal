@@ -97,6 +97,48 @@ input_intent_t sample_input_intent(void) {
             }
         }
     }
+    /* Laser-to-activate: fire at targeted module triggers its action */
+    if (intent.mine && g.target_station >= 0 && g.target_module >= 0 && !LOCAL_PLAYER.docked) {
+        const station_t *tst = &g.world.stations[g.target_station];
+        if (g.target_module < tst->module_count) {
+            module_type_t mt = tst->modules[g.target_module].type;
+            switch (mt) {
+                case MODULE_FURNACE:
+                    intent.buy_product = true;
+                    intent.buy_commodity = COMMODITY_FERRITE_INGOT;
+                    break;
+                case MODULE_FURNACE_CU:
+                    intent.buy_product = true;
+                    intent.buy_commodity = COMMODITY_CUPRITE_INGOT;
+                    break;
+                case MODULE_FURNACE_CR:
+                    intent.buy_product = true;
+                    intent.buy_commodity = COMMODITY_CRYSTAL_INGOT;
+                    break;
+                case MODULE_FRAME_PRESS:
+                    intent.buy_product = true;
+                    intent.buy_commodity = COMMODITY_FRAME;
+                    break;
+                case MODULE_LASER_FAB:
+                    intent.buy_product = true;
+                    intent.buy_commodity = COMMODITY_LASER_MODULE;
+                    break;
+                case MODULE_TRACTOR_FAB:
+                    intent.buy_product = true;
+                    intent.buy_commodity = COMMODITY_TRACTOR_MODULE;
+                    break;
+                case MODULE_REPAIR_BAY:
+                    intent.service_repair = true;
+                    break;
+                case MODULE_DOCK:
+                    intent.interact = true;
+                    break;
+                default:
+                    break;
+            }
+        }
+    }
+
     /* Number keys: context-dependent */
     if (LOCAL_PLAYER.docked && g.build_overlay) {
         const station_t *st = current_station_ptr();

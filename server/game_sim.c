@@ -2741,6 +2741,39 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
          * when the client predicts an action before the server confirms. */
         if (!w->player_only_mode)
             step_station_interaction_system(w, sp, &sp->input);
+        /* Undocked module interactions (laser-to-activate) */
+        if (!sp->docked && sp->in_dock_range && sp->nearby_station >= 0 && !w->player_only_mode) {
+            station_t *nearby_st = &w->stations[sp->nearby_station];
+            if (sp->input.buy_product) {
+                commodity_t c = sp->input.buy_commodity;
+                if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) {
+                    float available = nearby_st->inventory[c];
+                    float price_per = station_sell_price(nearby_st, c);
+                    float afford = (price_per > FLOAT_EPSILON) ? floorf(sp->ship.credits / price_per) : 0.0f;
+                    float amount = fminf(fminf(available, 1.0f), afford); /* buy 1 at a time */
+                    if (amount > FLOAT_EPSILON) {
+                        float cost = amount * price_per;
+                        sp->ship.credits -= cost;
+                        sp->ship.stat_credits_spent += cost;
+                        sp->ship.cargo[c] += amount;
+                        nearby_st->inventory[c] -= amount;
+                        emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
+                    }
+                }
+            }
+            if (sp->input.service_repair) {
+                float damage = ship_max_hull(&sp->ship) - sp->ship.hull;
+                if (damage > 0.5f && (nearby_st->services & STATION_SERVICE_REPAIR)) {
+                    float cost = damage * STATION_REPAIR_COST_PER_HULL;
+                    if (sp->ship.credits >= cost) {
+                        sp->ship.credits -= cost;
+                        sp->ship.stat_credits_spent += cost;
+                        sp->ship.hull = ship_max_hull(&sp->ship);
+                        emit_event(w, (sim_event_t){.type = SIM_EVENT_REPAIR, .player_id = sp->id});
+                    }
+                }
+            }
+        }
         if (!sp->docked) {
             update_targeting_state(w, sp, forward);
             step_mining_system(w, sp, dt, sp->input.mine, forward);

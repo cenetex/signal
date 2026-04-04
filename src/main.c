@@ -613,23 +613,43 @@ static void render_world(void) {
             /* Module-specific info line */
             sdtx_color3b(180, 190, 210);
             sdtx_pos((sx + 60.0f) / cell, (sy - 8.0f) / cell);
+            /* Module-specific info + action hint */
+            commodity_t sell_c = -1;
             switch (tm->type) {
+                case MODULE_FURNACE:     sell_c = COMMODITY_FERRITE_INGOT; break;
+                case MODULE_FURNACE_CU:  sell_c = COMMODITY_CUPRITE_INGOT; break;
+                case MODULE_FURNACE_CR:  sell_c = COMMODITY_CRYSTAL_INGOT; break;
+                case MODULE_FRAME_PRESS: sell_c = COMMODITY_FRAME; break;
+                case MODULE_LASER_FAB:   sell_c = COMMODITY_LASER_MODULE; break;
+                case MODULE_TRACTOR_FAB: sell_c = COMMODITY_TRACTOR_MODULE; break;
+                default: break;
+            }
+            if ((int)sell_c >= 0) {
+                int stock = (int)lroundf(tst->inventory[sell_c]);
+                int price = (int)lroundf(station_sell_price(tst, sell_c));
+                if (stock > 0)
+                    sdtx_printf("FIRE to buy  %d@%dcr  [%d]", stock, price, stock);
+                else
+                    sdtx_puts("Out of stock");
+            } else switch (tm->type) {
                 case MODULE_REPAIR_BAY: {
-                    float cost = ship_max_hull(&LOCAL_PLAYER.ship) - LOCAL_PLAYER.ship.hull;
-                    if (cost > 0.5f)
-                        sdtx_printf("FIRE to repair  %dcr", (int)lroundf(cost * STATION_REPAIR_COST_PER_HULL));
+                    float dmg = ship_max_hull(&LOCAL_PLAYER.ship) - LOCAL_PLAYER.ship.hull;
+                    if (dmg > 0.5f)
+                        sdtx_printf("FIRE to repair  %dcr", (int)lroundf(dmg * STATION_REPAIR_COST_PER_HULL));
                     else
                         sdtx_puts("Hull OK");
                     break;
                 }
-                case MODULE_ORE_BUYER:
-                    sdtx_printf("Tow ore here  %d in stock", (int)lroundf(tst->inventory[COMMODITY_FERRITE_ORE] + tst->inventory[COMMODITY_CUPRITE_ORE] + tst->inventory[COMMODITY_CRYSTAL_ORE]));
+                case MODULE_ORE_BUYER: {
+                    int ore = (int)lroundf(tst->inventory[COMMODITY_FERRITE_ORE] + tst->inventory[COMMODITY_CUPRITE_ORE] + tst->inventory[COMMODITY_CRYSTAL_ORE]);
+                    sdtx_printf("Tow ore here  %d in stock", ore);
                     break;
-                case MODULE_CONTRACT_BOARD:
-                    sdtx_puts("FIRE to browse contracts");
+                }
+                case MODULE_DOCK:
+                    sdtx_puts("FIRE to dock");
                     break;
-                case MODULE_BLUEPRINT_DESK:
-                    sdtx_puts("FIRE to buy blueprints");
+                case MODULE_SIGNAL_RELAY:
+                    sdtx_printf("Signal range %.0f", tst->signal_range);
                     break;
                 default:
                     break;
