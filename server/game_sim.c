@@ -2307,8 +2307,8 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
  * all towed fragments get consumed (ore → station, credits → player).
  * Fragments don't need to individually reach the hopper — the ship does. */
 #define HOPPER_PULL_RANGE 300.0f   /* hopper attracts fragments from this far */
-#define HOPPER_PULL_ACCEL 300.0f   /* pull strength */
-#define HOPPER_CONSUME_RANGE 30.0f /* fragment consumed when this close to hopper */
+#define HOPPER_PULL_ACCEL 500.0f   /* pull strength — strong enough to overcome drift */
+#define HOPPER_CONSUME_RANGE 35.0f /* fragment consumed when this close to hopper */
 
 static void release_towed_fragments(server_player_t *sp);
 
@@ -2930,8 +2930,11 @@ static void step_hopper_intake(world_t *w, float dt) {
                     float strength = HOPPER_PULL_ACCEL * (1.0f - d / pull_range);
                     vec2 dir = v2_scale(to_mod, 1.0f / d);
                     a->vel = v2_add(a->vel, v2_scale(dir, strength * dt));
-                    /* Strong damping so fragments glide in smoothly */
-                    a->vel = v2_scale(a->vel, 1.0f / (1.0f + 3.0f * dt));
+                    /* Heavy damping — kill tangential velocity so they don't orbit */
+                    a->vel = v2_scale(a->vel, 1.0f / (1.0f + 6.0f * dt));
+                    /* Speed cap */
+                    float spd = v2_len(a->vel);
+                    if (spd > 120.0f) a->vel = v2_scale(a->vel, 120.0f / spd);
                 }
 
                 /* Consume at hopper mouth */
@@ -3231,10 +3234,10 @@ void world_sim_step(world_t *w, float dt) {
         float gdt = w->gravity_accumulator;
         w->gravity_accumulator = 0.0f;
         step_asteroid_gravity(w, gdt);
-        step_hopper_intake(w, gdt);
         resolve_asteroid_collisions(w);
         resolve_asteroid_station_collisions(w);
     }
+    step_hopper_intake(w, dt);
     sim_step_refinery_production(w, dt);
     sim_step_station_production(w, dt);
     step_module_construction(w, dt);
