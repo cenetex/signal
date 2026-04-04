@@ -766,24 +766,17 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         float ring_r = STATION_RING_RADIUS[ring];
         for (int i = 0; i + 1 < mod_count; i++) {
             if (slot_ids[i + 1] - slot_ids[i] != 1) continue;
-            /* Skip corridors adjacent to docks — docks create entry gaps */
-            if (station->modules[mod_idx[i]].type == MODULE_DOCK) continue;
-            if (station->modules[mod_idx[i + 1]].type == MODULE_DOCK) continue;
             float ang_a = module_angle_ring(station, ring, slot_ids[i]);
             float ang_b = module_angle_ring(station, ring, slot_ids[i + 1]);
             draw_corridor_arc(station->pos, ring_r, ang_a, ang_b,
                 role_r, role_g, role_b, base_alpha * 0.7f);
         }
-        /* Wrap: last→first if ring is full — skip if either end is a dock */
+        /* Wrap: last→first if ring is full */
         if (mod_count == slots) {
-            bool last_dock = station->modules[mod_idx[mod_count - 1]].type == MODULE_DOCK;
-            bool first_dock = station->modules[mod_idx[0]].type == MODULE_DOCK;
-            if (!last_dock && !first_dock) {
-                float ang_a = module_angle_ring(station, ring, slot_ids[mod_count - 1]);
-                float ang_b = module_angle_ring(station, ring, slot_ids[0]);
-                draw_corridor_arc(station->pos, ring_r, ang_a, ang_b,
-                    role_r, role_g, role_b, base_alpha * 0.7f);
-            }
+            float ang_a = module_angle_ring(station, ring, slot_ids[mod_count - 1]);
+            float ang_b = module_angle_ring(station, ring, slot_ids[0]);
+            draw_corridor_arc(station->pos, ring_r, ang_a, ang_b,
+                role_r, role_g, role_b, base_alpha * 0.7f);
         }
 
         /* Modules + dock indicators + furnace glow */

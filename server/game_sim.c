@@ -2165,16 +2165,17 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
         if (!near_module) {
             for (int i = 0; i + 1 < count; i++) {
                 if (st->modules[cidx[i+1]].slot - st->modules[cidx[i]].slot != 1) continue;
-                /* Skip corridors adjacent to docks — docks create entry gaps */
-                if (st->modules[cidx[i]].type == MODULE_DOCK) continue;
-                if (st->modules[cidx[i+1]].type == MODULE_DOCK) continue;
+                bool has_dock = (st->modules[cidx[i]].type == MODULE_DOCK)
+                             || (st->modules[cidx[i+1]].type == MODULE_DOCK);
+                if (has_dock && ship_dist >= ring_r) continue; /* dock corridor: inside only */
                 float a = module_angle_ring(st, ring, st->modules[cidx[i]].slot);
                 float b = module_angle_ring(st, ring, st->modules[cidx[i+1]].slot);
                 resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
             }
             if (count == slots) {
-                if (st->modules[cidx[count-1]].type != MODULE_DOCK
-                    && st->modules[cidx[0]].type != MODULE_DOCK) {
+                bool wrap_dock = (st->modules[cidx[count-1]].type == MODULE_DOCK)
+                              || (st->modules[cidx[0]].type == MODULE_DOCK);
+                if (!wrap_dock || ship_dist < ring_r) {
                     float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
                     float b = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
                     resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
