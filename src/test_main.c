@@ -3184,9 +3184,10 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     world_t w = {0};
     world_reset(&w);
     ASSERT(w.stations[0].module_count > 3);
-    station_module_t orig = w.stations[0].modules[2]; /* DOCK at ring 1, slot 2 (end of chain) */
+    station_module_t orig = w.stations[0].modules[2]; /* DOCK at ring 1, slot 2 (end of service ring) */
     ASSERT(orig.type == MODULE_DOCK);
     ASSERT(orig.ring == 1);
+    ASSERT(orig.slot == 2);
     ASSERT(world_save(&w, "/tmp/test_modules.sav"));
     world_t loaded = {0};
     ASSERT(world_load(&loaded, "/tmp/test_modules.sav"));
@@ -3197,7 +3198,7 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     ASSERT_EQ_INT((int)restored.scaffold, (int)orig.scaffold);
     ASSERT_EQ_FLOAT(restored.build_progress, orig.build_progress, 0.001f);
     station_module_t mod3 = loaded.stations[0].modules[3];
-    ASSERT(mod3.type == MODULE_FURNACE);
+    ASSERT(mod3.type == MODULE_ORE_BUYER);
     ASSERT_EQ_INT((int)mod3.ring, 2);
     ASSERT_EQ_INT((int)mod3.slot, 1);
     remove("/tmp/test_modules.sav");
