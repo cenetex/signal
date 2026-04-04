@@ -486,6 +486,15 @@ bool episode_is_active(episode_state_t *ep) {
 int episode_read_audio(episode_state_t *ep, float *buffer, int frames, int channels) {
     if (!ep->active) return 0;
 
+    /* Audio fade: 0.5s in, 0.5s out at end */
+    float audio_vol = 1.0f;
+    if (ep->fade_timer < 0.5f) audio_vol = ep->fade_timer / 0.5f;
+    if (ep->plm) {
+        double remaining = plm_get_duration((plm_t *)ep->plm) - plm_get_time((plm_t *)ep->plm);
+        if (remaining < 0.5) audio_vol *= (float)(remaining / 0.5);
+    }
+    if (audio_vol < 0.0f) audio_vol = 0.0f;
+
     int samples_needed = frames * channels;
     int available = audio_buf_available(ep);
     int to_read = (available < samples_needed) ? available : samples_needed;
@@ -493,7 +502,7 @@ int episode_read_audio(episode_state_t *ep, float *buffer, int frames, int chann
     if (channels == 2) {
         int pairs = to_read / 2;
         for (int i = 0; i < pairs * 2; i++) {
-            buffer[i] += ep->audio_buffer[ep->audio_read_pos];
+            buffer[i] += ep->audio_buffer[ep->audio_read_pos] * audio_vol;
             ep->audio_read_pos = (ep->audio_read_pos + 1) % ep->audio_buffer_size;
         }
         return pairs;
@@ -504,7 +513,7 @@ int episode_read_audio(episode_state_t *ep, float *buffer, int frames, int chann
             ep->audio_read_pos = (ep->audio_read_pos + 1) % ep->audio_buffer_size;
             float r = ep->audio_buffer[ep->audio_read_pos];
             ep->audio_read_pos = (ep->audio_read_pos + 1) % ep->audio_buffer_size;
-            buffer[i] += (l + r) * 0.5f;
+            buffer[i] += (l + r) * 0.5f * audio_vol;
         }
         return pairs;
     }

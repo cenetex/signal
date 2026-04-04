@@ -120,6 +120,9 @@ static void music_start_playback(music_state_t *m, unsigned char *data, int size
     m->paused = false;
     m->loading = false;
     m->track_display_timer = 0.0f;
+    m->fade_volume = 0.0f;       /* start silent */
+    m->fade_target = 1.0f;       /* fade in */
+    m->fade_speed = 2.0f;        /* 0.5s fade */
     m->audio_write_pos = 0;
     m->audio_read_pos = 0;
 
