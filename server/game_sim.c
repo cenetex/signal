@@ -2000,9 +2000,7 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!w->asteroids[i].active) continue;
         if (asteroid_is_collectible(&w->asteroids[i])) {
-            /* S-tier fragments collide with ships EXCEPT their own tower */
-            if (is_already_towed(&sp->ship, i)) continue;
-            /* Only collide if moving fast enough (hurled, not drifting) */
+            /* Only collide if moving fast enough (hurled or whiplashed) */
             if (v2_len_sq(w->asteroids[i].vel) < 40.0f * 40.0f) continue;
         }
         resolve_ship_circle(w, sp, w->asteroids[i].pos, w->asteroids[i].radius);
