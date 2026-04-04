@@ -321,6 +321,13 @@ static void handle_message(const uint8_t* data, int len) {
                 si.modules[m].build_progress = read_f32_le(&data[moff + 4]);
                 moff += STATION_MODULE_RECORD_SIZE;
             }
+            /* Skip over unused module record slots to reach arm data */
+            moff = 59 + COMMODITY_COUNT * 4 + 4 + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE;
+            si.arm_count = data[moff];
+            if (si.arm_count > MAX_ARMS) si.arm_count = MAX_ARMS;
+            moff++;
+            for (int a = 0; a < MAX_ARMS; a++)
+                si.arm_speed[a] = read_f32_le(&data[moff + a * 4]);
             net_state.callbacks.on_station_identity(&si);
         }
         break;

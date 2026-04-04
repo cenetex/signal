@@ -9,6 +9,7 @@
 #include <stdlib.h>
 
 #define MODULE_COLLISION_RADIUS 34.0f
+#define CORRIDOR_COLLISION_RADIUS 10.0f
 
 #ifdef GAME_SIM_VERBOSE
 #define SIM_LOG(...) printf(__VA_ARGS__)
@@ -487,8 +488,17 @@ static uint32_t station_upgrade_service(ship_upgrade_t upgrade) {
 /* Station helpers                                                    */
 /* ================================================================== */
 
+/* Forward declarations for module-based docking */
+static int station_dock_count(const station_t *st);
+static vec2 dock_berth_pos(const station_t *st, int dock_index);
+static float dock_berth_angle(const station_t *st, int dock_index);
+static int find_best_berth(const world_t *w, const station_t *st, int station_idx, vec2 ship_pos);
+
 static vec2 station_dock_anchor(const station_t *station, const hull_def_t *hull) {
     if (!station) return v2(0.0f, 0.0f);
+    /* Use first dock module if available, else fall back to center offset */
+    if (station_dock_count(station) > 0)
+        return dock_berth_pos(station, 0);
     return v2_add(station->pos, v2(0.0f, -(station->radius + hull->ship_radius + STATION_DOCK_APPROACH_OFFSET)));
 }
 
@@ -1047,6 +1057,60 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
             if (mvt < 0.0f)
                 npc->vel = v2_sub(npc->vel, v2_scale(mn, mvt * 1.2f));
         }
+        /* Corridor capsule collision for NPCs */
+        for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
+            int slots = STATION_RING_SLOTS[ring];
+            int cidx[MAX_MODULES_PER_STATION];
+            int ccount = 0;
+            for (int m = 0; m < st->module_count; m++)
+                if (st->modules[m].ring == ring) cidx[ccount++] = m;
+            if (ccount < 2) continue;
+            for (int ci = 1; ci < ccount; ci++) {
+                int tmp = cidx[ci]; int cj = ci - 1;
+                while (cj >= 0 && st->modules[cidx[cj]].slot > st->modules[tmp].slot) {
+                    cidx[cj + 1] = cidx[cj]; cj--;
+                }
+                cidx[cj + 1] = tmp;
+            }
+            for (int ci = 0; ci + 1 < ccount; ci++) {
+                int s0 = st->modules[cidx[ci]].slot;
+                int s1 = st->modules[cidx[ci + 1]].slot;
+                if (s1 - s0 != 1) continue;
+                vec2 ca = module_world_pos_ring(st, ring, s0);
+                vec2 cb = module_world_pos_ring(st, ring, s1);
+                float corr_min = CORRIDOR_COLLISION_RADIUS + hull->ship_radius;
+                vec2 closest = v2_closest_on_segment(npc->pos, ca, cb);
+                vec2 cd = v2_sub(npc->pos, closest);
+                float cd_sq = v2_len_sq(cd);
+                if (cd_sq >= corr_min * corr_min) continue;
+                float cdd = sqrtf(cd_sq);
+                vec2 cn = cdd > 0.001f ? v2_scale(cd, 1.0f / cdd) : v2(1.0f, 0.0f);
+                npc->pos = v2_add(closest, v2_scale(cn, corr_min));
+                float cvt = v2_dot(npc->vel, cn);
+                if (cvt < 0.0f)
+                    npc->vel = v2_sub(npc->vel, v2_scale(cn, cvt * 1.2f));
+            }
+            if (ccount >= 2) {
+                int fs = st->modules[cidx[0]].slot;
+                int ls = st->modules[cidx[ccount - 1]].slot;
+                if (fs == 0 && ls == slots - 1) {
+                    vec2 ca = module_world_pos_ring(st, ring, ls);
+                    vec2 cb = module_world_pos_ring(st, ring, fs);
+                    float corr_min = CORRIDOR_COLLISION_RADIUS + hull->ship_radius;
+                    vec2 closest = v2_closest_on_segment(npc->pos, ca, cb);
+                    vec2 cd = v2_sub(npc->pos, closest);
+                    float cd_sq = v2_len_sq(cd);
+                    if (cd_sq < corr_min * corr_min) {
+                        float cdd = sqrtf(cd_sq);
+                        vec2 cn = cdd > 0.001f ? v2_scale(cd, 1.0f / cdd) : v2(1.0f, 0.0f);
+                        npc->pos = v2_add(closest, v2_scale(cn, corr_min));
+                        float cvt = v2_dot(npc->vel, cn);
+                        if (cvt < 0.0f)
+                            npc->vel = v2_sub(npc->vel, v2_scale(cn, cvt * 1.2f));
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1516,10 +1580,6 @@ static void anchor_ship_in_station(server_player_t *sp, world_t *w) {
 static void apply_ship_damage(world_t *w, server_player_t *sp, float damage);
 
 
-/* Forward declarations for core-based docking (defined below) */
-static vec2 dock_berth_pos(const station_t *st, int slot);
-static int find_best_berth(const world_t *w, const station_t *st, int station_idx, vec2 ship_pos);
-
 static void dock_ship(world_t *w, server_player_t *sp) {
     if (sp->nearby_station >= 0) sp->current_station = sp->nearby_station;
     sp->docked = true;
@@ -1596,6 +1656,26 @@ static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
 /* ================================================================== */
 
 static int ship_collision_count; /* per-frame overlap counter for crush detection */
+
+/* Capsule collision: line segment AB with given radius. */
+static void resolve_ship_capsule(world_t *w, server_player_t *sp, vec2 a, vec2 b, float radius) {
+    vec2 closest = v2_closest_on_segment(sp->ship.pos, a, b);
+    float minimum = radius + ship_hull_def(&sp->ship)->ship_radius;
+    vec2 delta = v2_sub(sp->ship.pos, closest);
+    float d_sq = v2_len_sq(delta);
+    if (d_sq >= minimum * minimum) return;
+    float d = sqrtf(d_sq);
+    vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
+    sp->ship.pos = v2_add(closest, v2_scale(normal, minimum));
+    float vel_toward = v2_dot(sp->ship.vel, normal);
+    if (vel_toward < 0.0f) {
+        float impact = -vel_toward;
+        if (!sp->docked && impact > SHIP_COLLISION_DAMAGE_THRESHOLD)
+            apply_ship_damage(w, sp, (impact - SHIP_COLLISION_DAMAGE_THRESHOLD) * SHIP_COLLISION_DAMAGE_SCALE);
+        sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(normal, vel_toward * 1.2f));
+    }
+    ship_collision_count++;
+}
 
 static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, float radius) {
     float minimum = radius + ship_hull_def(&sp->ship)->ship_radius;
@@ -1821,14 +1901,55 @@ static void step_ship_motion(ship_t *s, float dt, const world_t *w) {
 }
 
 /* Module collision radius — matches visual half-size. */
-/* Resolve ship-vs-module collision for all modules on a station. */
+/* Resolve ship-vs-module collision for all modules on a station,
+ * including corridor/truss segments between adjacent modules. */
 static void resolve_module_collisions(world_t *w, server_player_t *sp, const station_t *st) {
+    /* Per-module circle collision */
     for (int i = 0; i < st->module_count; i++) {
         int ring = st->modules[i].ring;
         if (ring < 1 || ring > STATION_NUM_RINGS) continue;
-        int slot = st->modules[i].slot;
-        vec2 mod_pos = module_world_pos_ring(st, ring, slot);
+        vec2 mod_pos = module_world_pos_ring(st, ring, st->modules[i].slot);
         resolve_ship_circle(w, sp, mod_pos, MODULE_COLLISION_RADIUS);
+    }
+    /* Corridor capsule collision between adjacent modules on same ring */
+    for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
+        int slots = STATION_RING_SLOTS[ring];
+        /* Collect modules on this ring, sorted by slot */
+        int idx[MAX_MODULES_PER_STATION];
+        int count = 0;
+        for (int i = 0; i < st->module_count; i++) {
+            if (st->modules[i].ring == ring)
+                idx[count++] = i;
+        }
+        if (count < 2) continue;
+        /* Insertion sort by slot */
+        for (int i = 1; i < count; i++) {
+            int tmp = idx[i];
+            int j = i - 1;
+            while (j >= 0 && st->modules[idx[j]].slot > st->modules[tmp].slot) {
+                idx[j + 1] = idx[j]; j--;
+            }
+            idx[j + 1] = tmp;
+        }
+        /* Check adjacent pairs (corridor exists when slots are consecutive) */
+        for (int i = 0; i + 1 < count; i++) {
+            int s0 = st->modules[idx[i]].slot;
+            int s1 = st->modules[idx[i + 1]].slot;
+            if (s1 - s0 != 1) continue;
+            vec2 a = module_world_pos_ring(st, ring, s0);
+            vec2 b = module_world_pos_ring(st, ring, s1);
+            resolve_ship_capsule(w, sp, a, b, CORRIDOR_COLLISION_RADIUS);
+        }
+        /* Wrap-around: last slot to first if they complete the ring */
+        if (count >= 2) {
+            int first_slot = st->modules[idx[0]].slot;
+            int last_slot = st->modules[idx[count - 1]].slot;
+            if (first_slot == 0 && last_slot == slots - 1) {
+                vec2 a = module_world_pos_ring(st, ring, last_slot);
+                vec2 b = module_world_pos_ring(st, ring, first_slot);
+                resolve_ship_capsule(w, sp, a, b, CORRIDOR_COLLISION_RADIUS);
+            }
+        }
     }
 }
 
@@ -1850,43 +1971,66 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
 }
 
 
-/* Dock berth: offset to the outward side of the dock module.
- * Ship parks beside the module, not on top of it. */
-#define DOCK_BERTH_OFFSET 55.0f  /* distance from module center to berth */
-
-/* Core-based docking: 4 berth slots around the station core (stationary).
- * Ship docks at core, not at a rotating ring module. The MODULE_DOCK
- * enables the service; the berth position is at the core. */
-#define DOCK_BERTH_SLOTS 4
-#define CORE_BERTH_DISTANCE 45.0f  /* distance from core center to berth */
-#define DOCK_SNAP_DISTANCE 20.0f   /* snap-to-docked threshold */
+/* Module-based docking: ships dock at MODULE_DOCK positions on rotating rings.
+ * The dock_berth index maps to the i-th dock module on the station. */
+#define DOCK_BERTH_OFFSET 55.0f    /* offset from dock module center (outward) */
+#define DOCK_SNAP_DISTANCE 30.0f   /* snap-to-docked threshold */
 #define DOCK_APPROACH_RANGE 300.0f /* range to detect station for docking */
 
-static vec2 dock_berth_pos(const station_t *st, int slot) {
-    float angle = (float)slot * (TWO_PI_F / (float)DOCK_BERTH_SLOTS);
-    return v2_add(st->pos, v2_scale(v2_from_angle(angle), CORE_BERTH_DISTANCE));
+/* Count dock modules on a station */
+static int station_dock_count(const station_t *st) {
+    int count = 0;
+    for (int i = 0; i < st->module_count; i++)
+        if (st->modules[i].type == MODULE_DOCK && !st->modules[i].scaffold) count++;
+    return count;
 }
 
-static float dock_berth_angle(int slot) {
-    /* Face outward from core */
-    return (float)slot * (TWO_PI_F / (float)DOCK_BERTH_SLOTS);
+/* Get the i-th dock module index */
+static int station_dock_module(const station_t *st, int dock_index) {
+    int count = 0;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_DOCK && !st->modules[i].scaffold) {
+            if (count == dock_index) return i;
+            count++;
+        }
+    }
+    return -1;
 }
 
-/* Find the best (closest, unoccupied) berth slot at a station */
+/* Dock berth position: offset outward from the dock module on its ring */
+static vec2 dock_berth_pos(const station_t *st, int dock_index) {
+    int mi = station_dock_module(st, dock_index);
+    if (mi < 0) return st->pos; /* fallback to center */
+    int ring = st->modules[mi].ring;
+    int slot = st->modules[mi].slot;
+    vec2 mod_pos = module_world_pos_ring(st, ring, slot);
+    float angle = module_angle_ring(st, ring, slot);
+    /* Berth is offset outward from station center */
+    return v2_add(mod_pos, v2_scale(v2_from_angle(angle), DOCK_BERTH_OFFSET));
+}
+
+/* Dock berth angle: face inward toward station center */
+static float dock_berth_angle(const station_t *st, int dock_index) {
+    int mi = station_dock_module(st, dock_index);
+    if (mi < 0) return 0.0f;
+    float angle = module_angle_ring(st, st->modules[mi].ring, st->modules[mi].slot);
+    return angle + PI_F; /* face inward */
+}
+
+/* Find the best (closest, unoccupied) dock berth */
 static int find_best_berth(const world_t *w, const station_t *st, int station_idx, vec2 ship_pos) {
+    int ndocks = station_dock_count(st);
+    if (ndocks == 0) return 0;
     int best = 0;
     float best_d = 1e18f;
-    for (int s = 0; s < DOCK_BERTH_SLOTS; s++) {
+    for (int s = 0; s < ndocks; s++) {
         vec2 bp = dock_berth_pos(st, s);
         float d = v2_dist_sq(ship_pos, bp);
-        /* Check if another player occupies this berth */
         bool occupied = false;
         for (int p = 0; p < MAX_PLAYERS; p++) {
             if (!w->players[p].connected || !w->players[p].docked) continue;
             if (w->players[p].current_station != station_idx) continue;
-            /* Compare berth position */
-            vec2 their_berth = dock_berth_pos(st, w->players[p].dock_berth);
-            if (v2_dist_sq(their_berth, bp) < 1.0f) { occupied = true; break; }
+            if (w->players[p].dock_berth == s) { occupied = true; break; }
         }
         if (!occupied && d < best_d) { best_d = d; best = s; }
     }
@@ -1897,9 +2041,9 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
     if (sp->docked) {
         sp->in_dock_range = true;
         sp->nearby_station = sp->current_station;
-        /* Hold ship at core berth (stationary — no ring rotation) */
+        /* Hold ship at dock module berth — rotates with the ring */
         sp->ship.pos = dock_berth_pos(&w->stations[sp->current_station], sp->dock_berth);
-        sp->ship.angle = dock_berth_angle(sp->dock_berth);
+        sp->ship.angle = dock_berth_angle(&w->stations[sp->current_station], sp->dock_berth);
         sp->ship.vel = v2(0.0f, 0.0f);
         return;
     }
@@ -1940,7 +2084,7 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
             vec2 pull = v2_scale(to_target, pull_strength * dt / fmaxf(dist, 1.0f));
             sp->ship.vel = v2_add(sp->ship.vel, pull);
             /* Orient to berth angle */
-            float desired = dock_berth_angle(berth);
+            float desired = dock_berth_angle(dock_st, berth);
             float diff = desired - sp->ship.angle;
             while (diff > PI_F) diff -= TWO_PI_F;
             while (diff < -PI_F) diff += TWO_PI_F;
@@ -2308,7 +2452,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     if (intent->interact) {
         if (sp->docked) { launch_ship(w, sp); return; }
         if (sp->in_dock_range) {
-            /* Core-based docking: find nearest berth at station core */
+            /* Module-based docking: find nearest dock module berth */
             const station_t *dock_st = &w->stations[sp->nearby_station];
             int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship.pos);
             vec2 bp = dock_berth_pos(dock_st, berth);

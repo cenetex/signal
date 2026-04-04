@@ -95,6 +95,8 @@ typedef struct {
     float scaffold_progress;
     int module_count;
     station_module_t modules[MAX_MODULES_PER_STATION];
+    int arm_count;
+    float arm_speed[MAX_ARMS];
 } NetStationIdentity;
 
 /* Station identity callback: full static fields for a station slot. */

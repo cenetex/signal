@@ -89,4 +89,15 @@ static inline float lerp_angle(float a, float b, float t) {
     return wrap_angle(a + diff * t);
 }
 
+/* Closest point on line segment AB to point P. */
+static inline vec2 v2_closest_on_segment(vec2 p, vec2 a, vec2 b) {
+    vec2 ab = v2_sub(b, a);
+    float ab_sq = v2_len_sq(ab);
+    if (ab_sq < 0.0001f) return a;
+    float t = v2_dot(v2_sub(p, a), ab) / ab_sq;
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return v2_add(a, v2_scale(ab, t));
+}
+
 #endif

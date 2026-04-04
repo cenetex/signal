@@ -249,6 +249,20 @@ static void sim_step(float dt) {
     reset_step_feedback();
     audio_step(&g.audio, dt);
 
+    /* Advance station ring rotation client-side (multiplayer only —
+     * singleplayer gets rotation from the local server sync) */
+    if (g.multiplayer_enabled) {
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            station_t *st = &g.world.stations[s];
+            if (!station_exists(st)) continue;
+            for (int r = 0; r < STATION_NUM_RINGS && r < MAX_ARMS; r++) {
+                st->arm_rotation[r] += st->arm_speed[r] * dt;
+                if (st->arm_rotation[r] > TWO_PI_F)
+                    st->arm_rotation[r] -= TWO_PI_F;
+            }
+        }
+    }
+
     /* Death screen countdown — block all input while active */
     if (g.death_screen_timer > 0.0f) {
         g.death_screen_timer = fmaxf(0.0f, g.death_screen_timer - dt);
