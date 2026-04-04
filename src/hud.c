@@ -749,13 +749,18 @@ void draw_hud(void) {
             sdtx_color3b(100, 180, 255);
             sdtx_printf("SCAN PILOT // ID %d", LOCAL_PLAYER.scan_target_index);
         } else if (LOCAL_PLAYER.nearby_fragments > 0) {
-            sdtx_color3b(130, 255, 235);
-            if (LOCAL_PLAYER.ship.towed_count > 0) {
-                sdtx_printf("TOWING %d // R RELEASE", LOCAL_PLAYER.ship.towed_count);
-            } else if (LOCAL_PLAYER.tractor_fragments > 0) {
-                sdtx_printf("TRACTOR // %d FRAG", LOCAL_PLAYER.tractor_fragments);
+            if (LOCAL_PLAYER.ship.tractor_active) {
+                sdtx_color3b(130, 255, 235);
+                if (LOCAL_PLAYER.ship.towed_count > 0) {
+                    sdtx_printf("TOWING %d // (R) OFF", LOCAL_PLAYER.ship.towed_count);
+                } else if (LOCAL_PLAYER.tractor_fragments > 0) {
+                    sdtx_printf("TRACTOR ON // %d FRAG", LOCAL_PLAYER.tractor_fragments);
+                } else {
+                    sdtx_printf("(R) TRACTOR ON // %d", LOCAL_PLAYER.nearby_fragments);
+                }
             } else {
-                sdtx_printf("FRAGMENTS // %d", LOCAL_PLAYER.nearby_fragments);
+                sdtx_color3b(180, 150, 120);
+                sdtx_puts("(R) TRACTOR OFF");
             }
         } else if (cargo_units >= cargo_capacity) {
             sdtx_color3b(255, 221, 119);

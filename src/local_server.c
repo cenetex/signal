@@ -78,6 +78,7 @@ void local_server_sync_to_client(const local_server_t *ls) {
     dst->nearby_station = src->nearby_station;
     dst->dock_berth = src->dock_berth;
     dst->docking_approach = src->docking_approach;
+    dst->ship.tractor_active = src->ship.tractor_active;
 
     /* Beam/targeting state (for rendering) */
     dst->beam_active = src->beam_active;

@@ -82,6 +82,7 @@ typedef struct {
     /* Towed physical fragments (indices into asteroid array, -1 = empty) */
     int16_t towed_fragments[10];  /* max 10 with upgrades: 2 + 4*2 */
     uint8_t towed_count;
+    bool tractor_active;          /* R toggles — when off, no auto-collection */
     /* Run stats (reset on death/respawn) */
     float stat_ore_mined;
     float stat_credits_earned;

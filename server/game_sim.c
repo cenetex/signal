@@ -2611,14 +2611,13 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                     break;
                 }
             }
-            /* Ring 1 is service-only: slot 0 = relay (auto), slot 1 = dock only */
+            /* Ring 1: slot 0 = relay (auto), slot 1 = dock only, slot 2 = player choice */
             bool ring1_ok = true;
             if (target_ring == 1) {
                 if (target_slot == 0)
                     ring1_ok = false; /* relay is pre-placed */
                 else if (target_slot == 1 && intent->build_module_type != MODULE_DOCK)
                     ring1_ok = false;
-                /* slot 2 left open for entry gap */
             }
             if (sp->ship.credits >= cost
                 && ring1_ok
@@ -2771,10 +2770,13 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             update_targeting_state(w, sp, forward);
             step_mining_system(w, sp, dt, sp->input.mine, forward);
             if (!w->player_only_mode) {
-                bool released = sp->input.release_tow;
-                if (released) release_towed_fragments(sp);
+                /* R toggles tractor — OFF releases fragments */
+                if (sp->input.release_tow) {
+                    sp->ship.tractor_active = !sp->ship.tractor_active;
+                    if (!sp->ship.tractor_active) release_towed_fragments(sp);
+                }
                 step_towed_cleanup(w, sp);
-                if (!released) step_fragment_collection(w, sp, dt);
+                if (sp->ship.tractor_active) step_fragment_collection(w, sp, dt);
             }
         }
     } else {
@@ -3463,6 +3465,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->ship.credits    = 50.0f;
     sp->ship.angle      = PI_F * 0.5f;
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
+    sp->ship.tractor_active = true;
     sp->docked          = true;
     sp->current_station = 0;
     sp->nearby_station  = 0;
