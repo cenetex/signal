@@ -16,8 +16,7 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Tests and client deploy run in parallel — tests are fast (16s),
-  # no need to gate the WASM build behind them.
+  # Unit tests run in parallel with everything — fast, independent.
   test:
     runs-on: ubuntu-latest
     steps:
@@ -29,6 +28,8 @@ jobs:
           cmake --build build-test
           ./build-test/space_miner_test
 
+  # Client: build → deploy → smoke test → rollback on failure.
+  # Deploy happens BEFORE smoke tests for faster iteration (~60s to live).
   deploy-client:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
@@ -46,24 +47,11 @@ jobs:
           emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$GIT_HASH
           cmake --build build-web
 
-      # Browser smoke tests — same WASM build, no second Emscripten install
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
         with:
-          node-version: 20
-
-      - name: Browser smoke tests
-        run: |
-          npm install
-          npx playwright install chromium --with-deps
-          npx playwright test
-
-      - name: Upload smoke results
-        if: failure()
-        uses: actions/upload-artifact@v4
-        with:
-          name: playwright-report
-          path: test-results/
+          role-to-assume: arn:aws:iam::022118847419:role/github-actions-deploy
+          aws-region: us-east-1
 
       - name: Prepare artifacts
         run: |
@@ -73,20 +61,52 @@ jobs:
           cp web/music.html _site/music/index.html
           cp build-web/space_miner.js _site/play/space_miner.js
           cp build-web/space_miner.wasm _site/play/space_miner.wasm
-          cp docs/*.svg _site/docs/
+          cp docs/*.svg _site/docs/ 2>/dev/null || true
           sed -i 's|<head>|<head><script>window.SIGNAL_SERVER="wss://signal-ws.ratimics.com/ws";</script>|' _site/play/index.html
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::022118847419:role/github-actions-deploy
-          aws-region: us-east-1
+      # Snapshot previous deploy for rollback
+      - name: Snapshot previous deploy
+        run: aws s3 sync s3://signal-ratimics-client/ /tmp/rollback/ --quiet
 
+      # Deploy immediately — site is live ~60s after push
       - name: Deploy to S3
         run: aws s3 sync _site/ s3://signal-ratimics-client/ --delete
 
       - name: Invalidate CloudFront
         run: aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*"
+
+      # Smoke test the LIVE site — if it fails, rollback
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Browser smoke tests
+        id: smoke
+        continue-on-error: true
+        run: |
+          npm install
+          npx playwright install chromium --with-deps
+          npx playwright test
+
+      - name: Upload smoke results
+        if: steps.smoke.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: test-results/
+
+      # Rollback: restore previous version if smoke tests failed
+      - name: Rollback on failure
+        if: steps.smoke.outcome == 'failure'
+        run: |
+          echo "::error::Smoke tests failed — rolling back deploy"
+          aws s3 sync /tmp/rollback/ s3://signal-ratimics-client/ --delete
+          aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*"
+
+      - name: Fail if smoke tests failed
+        if: steps.smoke.outcome == 'failure'
+        run: exit 1
 
   deploy-server:
     runs-on: ubuntu-latest
