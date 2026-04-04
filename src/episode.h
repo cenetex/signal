@@ -32,6 +32,9 @@ typedef struct {
     int video_height;
     bool texture_valid;
 
+    /* Trigger tracking */
+    uint8_t stations_visited;  /* bitmask of original stations docked at (0-2) */
+
     /* Audio ring buffer for decoded video audio */
     float audio_buffer[44100 * 2 * 2]; /* ~2 seconds stereo at 44100 Hz */
     int audio_write_pos;
