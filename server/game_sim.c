@@ -2096,22 +2096,12 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
     if (st->radius > 0.0f) {
         resolve_ship_circle(w, sp, st->pos, st->radius + 4.0f);
     }
-    /* Module circles — dock modules only collide from the inside (inward half)
-     * so ships can enter through dock gaps from outside the ring. */
+    /* Module circles — all modules are solid, no special dock behavior */
     for (int i = 0; i < st->module_count; i++) {
         int ring = st->modules[i].ring;
         if (ring < 1 || ring > STATION_NUM_RINGS) continue;
         vec2 mod_pos = module_world_pos_ring(st, ring, st->modules[i].slot);
-        if (st->modules[i].type == MODULE_DOCK) {
-            /* Dock: only collide if ship is inside the ring (closer to center
-             * than the module). This lets ships fly in from outside. */
-            float ship_dist_sq = v2_dist_sq(sp->ship.pos, st->pos);
-            float mod_dist_sq = v2_dist_sq(mod_pos, st->pos);
-            if (ship_dist_sq < mod_dist_sq)
-                resolve_ship_circle(w, sp, mod_pos, MODULE_COLLISION_RADIUS);
-        } else {
-            resolve_ship_circle(w, sp, mod_pos, MODULE_COLLISION_RADIUS);
-        }
+        resolve_ship_circle(w, sp, mod_pos, MODULE_COLLISION_RADIUS);
     }
 
     /* Precompute module angular positions for corridor junction suppression */
@@ -2165,21 +2155,14 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
         if (!near_module) {
             for (int i = 0; i + 1 < count; i++) {
                 if (st->modules[cidx[i+1]].slot - st->modules[cidx[i]].slot != 1) continue;
-                bool has_dock = (st->modules[cidx[i]].type == MODULE_DOCK)
-                             || (st->modules[cidx[i+1]].type == MODULE_DOCK);
-                if (has_dock && ship_dist >= ring_r) continue; /* dock corridor: inside only */
                 float a = module_angle_ring(st, ring, st->modules[cidx[i]].slot);
                 float b = module_angle_ring(st, ring, st->modules[cidx[i+1]].slot);
                 resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
             }
             if (count == slots) {
-                bool wrap_dock = (st->modules[cidx[count-1]].type == MODULE_DOCK)
-                              || (st->modules[cidx[0]].type == MODULE_DOCK);
-                if (!wrap_dock || ship_dist < ring_r) {
-                    float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
-                    float b = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
-                    resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
-                }
+                float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
+                float b = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
+                resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
             }
         }
     }
