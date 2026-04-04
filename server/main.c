@@ -21,6 +21,14 @@
 static world_t world;
 static bool running = true;
 
+/* Dirty flags: only re-broadcast station identity when something changed */
+static bool station_identity_dirty[MAX_STATIONS];
+static bool station_econ_dirty = true;   /* station inventories changed */
+static bool contracts_dirty = true;       /* contract list changed */
+
+#define STATION_IDENTITY_FALLBACK_MS 2000
+static uint64_t last_station_identity = 0;
+
 /* Timing intervals in milliseconds */
 #define SIM_TICK_MS   33    /* ~30 Hz poll rate; sim uses SIM_DT accumulator */
 #define STATE_TICK_MS 50    /* 20 Hz player state broadcast */
@@ -471,10 +479,18 @@ static void mark_visible_asteroids_dirty(void) {
     /* Mark asteroids near any connected player as dirty so they get sent.
      * View radius ~1200u covers a generous screen at default zoom. */
     const float VIEW_RADIUS_SQ = 3000.0f * 3000.0f;
+    /* Pre-filter connected players into compact array */
+    int connected[MAX_PLAYERS];
+    int num_connected = 0;
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        if (world.players[p].connected) connected[num_connected++] = p;
+    }
+    if (num_connected == 0) return;
+
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!world.asteroids[i].active || world.asteroids[i].net_dirty) continue;
-        for (int p = 0; p < MAX_PLAYERS; p++) {
-            if (!world.players[p].connected) continue;
+        for (int cp = 0; cp < num_connected; cp++) {
+            int p = connected[cp];
             if (v2_dist_sq(world.asteroids[i].pos, world.players[p].ship.pos) < VIEW_RADIUS_SQ) {
                 world.asteroids[i].net_dirty = true;
                 break;
@@ -507,15 +523,19 @@ static void broadcast_ship_states(void) {
         ws_send(world.players[i].conn, buf, (size_t)len);
     }
 
-    /* Station state */
-    uint8_t sbuf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
-    int slen = serialize_stations(sbuf, world.stations);
-    broadcast(sbuf, (size_t)slen);
+    if (station_econ_dirty) {
+        uint8_t sbuf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
+        int slen = serialize_stations(sbuf, world.stations);
+        broadcast(sbuf, (size_t)slen);
+        station_econ_dirty = false;
+    }
 
-    /* Contracts */
-    uint8_t cbuf[2 + MAX_CONTRACTS * CONTRACT_RECORD_SIZE];
-    int clen = serialize_contracts(cbuf, world.contracts);
-    broadcast(cbuf, (size_t)clen);
+    if (contracts_dirty) {
+        uint8_t cbuf[2 + MAX_CONTRACTS * CONTRACT_RECORD_SIZE];
+        int clen = serialize_contracts(cbuf, world.contracts);
+        broadcast(cbuf, (size_t)clen);
+        contracts_dirty = false;
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -549,6 +569,7 @@ int main(void) {
         printf("[server] loaded world from %s\n", SAVE_PATH);
     else
         printf("[server] fresh world\n");
+    for (int i = 0; i < MAX_STATIONS; i++) station_identity_dirty[i] = true;
 
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
@@ -561,6 +582,7 @@ int main(void) {
     printf("[server] ALPHA BUILD — world may reset without notice\n");
 
     uint64_t last_sim = 0, last_state = 0, last_world = 0, last_ship = 0, last_save = 0;
+    uint64_t last_econ_dirty = 0;
     float sim_accum = 0.0f;
 
     while (running) {
@@ -582,6 +604,9 @@ int main(void) {
                         uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
                         int id_len = serialize_station_identity(id_buf, slot, &world.stations[slot]);
                         broadcast(id_buf, (size_t)id_len);
+                        station_identity_dirty[slot] = true;
+                        station_econ_dirty = true;
+                        contracts_dirty = true;
                     }
                     /* Send immediate ship + station state after actions that
                      * change cargo, credits, hull, or dock status — eliminates
@@ -594,17 +619,37 @@ int main(void) {
                             uint8_t buf[PLAYER_SHIP_SIZE + 4];
                             int len = serialize_player_ship(buf, (uint8_t)pid, &world.players[pid]);
                             ws_send(world.players[pid].conn, buf, (size_t)len);
-                            /* Also send updated station inventory so market UI refreshes */
-                            uint8_t sbuf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
-                            int slen = serialize_stations(sbuf, world.stations);
-                            ws_send(world.players[pid].conn, sbuf, (size_t)slen);
+                            /* Send only the station the player is at, not all stations */
+                            int st_idx = world.players[pid].current_station;
+                            if (st_idx >= 0 && st_idx < MAX_STATIONS) {
+                                uint8_t sbuf[2 + STATION_RECORD_SIZE];
+                                sbuf[0] = NET_MSG_WORLD_STATIONS;
+                                sbuf[1] = 1;
+                                uint8_t *p = &sbuf[2];
+                                p[0] = (uint8_t)st_idx;
+                                for (int c = 0; c < COMMODITY_COUNT; c++)
+                                    write_f32_le(&p[1 + c * 4], world.stations[st_idx].inventory[c]);
+                                ws_send(world.players[pid].conn, sbuf, (size_t)(2 + STATION_RECORD_SIZE));
+                            }
                         }
+                        station_econ_dirty = true;
+                        contracts_dirty = true;
+                    }
+                    if (ev->type == SIM_EVENT_CONTRACT_COMPLETE) {
+                        station_econ_dirty = true;
+                        contracts_dirty = true;
                     }
                 }
                 sim_accum -= SIM_DT;
                 steps++;
             }
             if (sim_accum > SIM_DT) sim_accum = 0.0f; /* prevent spiral */
+            /* Mark econ dirty every ~1s as fallback for production changes */
+            if (now - last_econ_dirty >= 1000) {
+                station_econ_dirty = true;
+                contracts_dirty = true;
+                last_econ_dirty = now;
+            }
         }
         /* Tick down reconnect grace timers */
         for (int i = 0; i < MAX_PLAYERS; i++) {
@@ -626,12 +671,19 @@ int main(void) {
         }
         if (now - last_world >= WORLD_TICK_MS) {
             broadcast_world();
-            /* Re-broadcast station identities so scaffold status stays synced */
+            /* Periodic fallback re-sync for scaffold progress */
+            if (now - last_station_identity >= STATION_IDENTITY_FALLBACK_MS) {
+                for (int s = 0; s < MAX_STATIONS; s++) station_identity_dirty[s] = true;
+                last_station_identity = now;
+            }
+            /* Only re-broadcast station identities when they've changed */
             for (int s = 0; s < MAX_STATIONS; s++) {
+                if (!station_identity_dirty[s]) continue;
                 if (!station_exists(&world.stations[s])) continue;
                 uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
                 int id_len = serialize_station_identity(id_buf, s, &world.stations[s]);
                 broadcast(id_buf, (size_t)id_len);
+                station_identity_dirty[s] = false;
             }
             last_world = now;
         }

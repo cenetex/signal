@@ -420,6 +420,9 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
         case NET_ACTION_HAIL:
             intent->hail = true;
             break;
+        case NET_ACTION_RELEASE_TOW:
+            intent->release_tow = true;
+            break;
         default:
             /* NET_ACTION_BUILD_MODULE + module_type (9..9+MODULE_COUNT) */
             if (action >= NET_ACTION_BUILD_MODULE && action < NET_ACTION_BUILD_MODULE + MODULE_COUNT) {

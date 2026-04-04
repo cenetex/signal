@@ -1,25 +1,77 @@
 #include <math.h>
+#include <stdbool.h>
 #include "render.h"
 #include "sokol_gfx.h"
 #include "sokol_gl.h"
+
+/* Batched line drawing — call between begin/end_line_batch */
+static bool _line_batch_active = false;
+
+void begin_line_batch(void) {
+    sgl_begin_lines();
+    _line_batch_active = true;
+}
+
+void end_line_batch(void) {
+    sgl_end();
+    _line_batch_active = false;
+}
+
+void draw_segment_batched(vec2 start, vec2 end, float r, float g0, float b, float a) {
+    sgl_c4f(r, g0, b, a);
+    sgl_v2f(start.x, start.y);
+    sgl_v2f(end.x, end.y);
+}
+
+/* Precomputed sin/cos for common circle segment counts */
+#define SINCOS_TABLE_MAX 32
+static float sincos_table_sin[SINCOS_TABLE_MAX + 1];
+static float sincos_table_cos[SINCOS_TABLE_MAX + 1];
+static int sincos_table_segs = 0;
+
+static void ensure_sincos_table(int segments) {
+    if (segments == sincos_table_segs || segments > SINCOS_TABLE_MAX) return;
+    sincos_table_segs = segments;
+    float step = TWO_PI_F / (float)segments;
+    for (int i = 0; i <= segments; i++) {
+        float angle = (float)i * step;
+        sincos_table_sin[i] = sinf(angle);
+        sincos_table_cos[i] = cosf(angle);
+    }
+}
 
 void draw_circle_filled(vec2 center, float radius, int segments, float r, float g0, float b, float a) {
     if (segments < 3) segments = 3;
     if (segments > 256) segments = 256;
     sgl_c4f(r, g0, b, a);
     sgl_begin_triangles();
-    float step = TWO_PI_F / (float)segments;
-    float prev_cx = center.x + radius;
-    float prev_cy = center.y;
-    for (int i = 1; i <= segments; i++) {
-        float angle = (float)i * step;
-        float cx = center.x + cosf(angle) * radius;
-        float cy = center.y + sinf(angle) * radius;
-        sgl_v2f(center.x, center.y);
-        sgl_v2f(prev_cx, prev_cy);
-        sgl_v2f(cx, cy);
-        prev_cx = cx;
-        prev_cy = cy;
+    if (segments <= SINCOS_TABLE_MAX) {
+        ensure_sincos_table(segments);
+        float prev_cx = center.x + sincos_table_cos[0] * radius;
+        float prev_cy = center.y + sincos_table_sin[0] * radius;
+        for (int i = 1; i <= segments; i++) {
+            float cx = center.x + sincos_table_cos[i] * radius;
+            float cy = center.y + sincos_table_sin[i] * radius;
+            sgl_v2f(center.x, center.y);
+            sgl_v2f(prev_cx, prev_cy);
+            sgl_v2f(cx, cy);
+            prev_cx = cx;
+            prev_cy = cy;
+        }
+    } else {
+        float step = TWO_PI_F / (float)segments;
+        float prev_cx = center.x + radius;
+        float prev_cy = center.y;
+        for (int i = 1; i <= segments; i++) {
+            float angle = (float)i * step;
+            float cx = center.x + cosf(angle) * radius;
+            float cy = center.y + sinf(angle) * radius;
+            sgl_v2f(center.x, center.y);
+            sgl_v2f(prev_cx, prev_cy);
+            sgl_v2f(cx, cy);
+            prev_cx = cx;
+            prev_cy = cy;
+        }
     }
     sgl_end();
 }
@@ -29,10 +81,17 @@ void draw_circle_outline(vec2 center, float radius, int segments, float r, float
     if (segments > 256) segments = 256;
     sgl_c4f(r, g0, b, a);
     sgl_begin_line_strip();
-    float step = TWO_PI_F / (float)segments;
-    for (int i = 0; i <= segments; i++) {
-        float angle = (float)i * step;
-        sgl_v2f(center.x + cosf(angle) * radius, center.y + sinf(angle) * radius);
+    if (segments <= SINCOS_TABLE_MAX) {
+        ensure_sincos_table(segments);
+        for (int i = 0; i <= segments; i++) {
+            sgl_v2f(center.x + sincos_table_cos[i] * radius, center.y + sincos_table_sin[i] * radius);
+        }
+    } else {
+        float step = TWO_PI_F / (float)segments;
+        for (int i = 0; i <= segments; i++) {
+            float angle = (float)i * step;
+            sgl_v2f(center.x + cosf(angle) * radius, center.y + sinf(angle) * radius);
+        }
     }
     sgl_end();
 }

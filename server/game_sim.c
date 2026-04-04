@@ -10,7 +10,7 @@
 #include <stdlib.h>
 
 #define MODULE_COLLISION_RADIUS 34.0f  /* matches 1.4x scaled module half-size */
-#define CORRIDOR_HW 3.0f              /* must match visual hw in draw_corridor_arc */
+#define CORRIDOR_HW 10.0f             /* must match visual hw in draw_corridor_arc */
 
 #ifdef GAME_SIM_VERBOSE
 #define SIM_LOG(...) printf(__VA_ARGS__)
@@ -84,6 +84,43 @@ static float w_rand_range(world_t *w, float lo, float hi) { return rand_range(&w
 static int   w_rand_int(world_t *w, int lo, int hi)       { return rand_int(&w->rng, lo, hi); }
 
 /* ================================================================== */
+/* Spatial grid helpers                                                */
+/* ================================================================== */
+
+static void spatial_grid_clear(spatial_grid_t *g) {
+    memset(g->cells, 0, sizeof(g->cells));
+}
+
+static void spatial_grid_cell(const spatial_grid_t *g, vec2 pos, int *cx, int *cy) {
+    *cx = (int)((pos.x + g->offset_x) / SPATIAL_CELL_SIZE);
+    *cy = (int)((pos.y + g->offset_y) / SPATIAL_CELL_SIZE);
+    if (*cx < 0) *cx = 0;
+    if (*cy < 0) *cy = 0;
+    if (*cx >= SPATIAL_GRID_DIM) *cx = SPATIAL_GRID_DIM - 1;
+    if (*cy >= SPATIAL_GRID_DIM) *cy = SPATIAL_GRID_DIM - 1;
+}
+
+static void spatial_grid_insert(spatial_grid_t *g, int idx, vec2 pos) {
+    int cx, cy;
+    spatial_grid_cell(g, pos, &cx, &cy);
+    spatial_cell_t *cell = &g->cells[cy][cx];
+    if (cell->count < SPATIAL_MAX_PER_CELL) {
+        cell->indices[cell->count++] = (int16_t)idx;
+    }
+}
+
+static void spatial_grid_build(world_t *w) {
+    spatial_grid_t *g = &w->asteroid_grid;
+    g->offset_x = (SPATIAL_GRID_DIM * SPATIAL_CELL_SIZE) * 0.5f;
+    g->offset_y = (SPATIAL_GRID_DIM * SPATIAL_CELL_SIZE) * 0.5f;
+    spatial_grid_clear(g);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) continue;
+        spatial_grid_insert(g, i, w->asteroids[i].pos);
+    }
+}
+
+/* ================================================================== */
 /* Signal strength                                                    */
 /* ================================================================== */
 
@@ -113,8 +150,9 @@ void rebuild_signal_chain(world_t *w) {
             /* Check if this station is within the signal range of any connected station */
             for (int o = 0; o < MAX_STATIONS; o++) {
                 if (!w->stations[o].signal_connected) continue;
-                float dist = sqrtf(v2_dist_sq(w->stations[s].pos, w->stations[o].pos));
-                if (dist < w->stations[o].signal_range) {
+                float dist_sq = v2_dist_sq(w->stations[s].pos, w->stations[o].pos);
+                float range = w->stations[o].signal_range;
+                if (dist_sq < range * range) {
                     w->stations[s].signal_connected = true;
                     changed = true;
                     break;
@@ -145,8 +183,7 @@ bool can_place_outpost(const world_t *w, vec2 pos) {
     /* Must not overlap existing stations */
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!station_exists(&w->stations[s])) continue;
-        float d = sqrtf(v2_dist_sq(pos, w->stations[s].pos));
-        if (d < OUTPOST_MIN_DISTANCE) return false;
+        if (v2_dist_sq(pos, w->stations[s].pos) < OUTPOST_MIN_DISTANCE * OUTPOST_MIN_DISTANCE) return false;
     }
     /* Must have a free station slot */
     for (int s = 0; s < MAX_STATIONS; s++) {
@@ -1935,12 +1972,12 @@ static void step_ship_thrust(ship_t *s, float dt, float thrust_input, vec2 forwa
     }
 }
 
-static void step_ship_motion(ship_t *s, float dt, const world_t *w) {
+static void step_ship_motion(ship_t *s, float dt, const world_t *w, float cached_signal) {
     s->vel = v2_scale(s->vel, 1.0f / (1.0f + (ship_hull_def(s)->drag * dt)));
     s->pos = v2_add(s->pos, v2_scale(s->vel, dt));
 
     /* Signal-based boundary: push back when in frontier zone */
-    float sig = signal_strength_at(w, s->pos);
+    float sig = cached_signal;
     float boundary = signal_boundary_push(sig);
     if (boundary > 0.0f) {
         float best_d_sq = 1e18f;
@@ -2306,18 +2343,22 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
         float d_sq = v2_len_sq(to_ship);
         if (d_sq <= nearby_sq) sp->nearby_fragments++;
+        int max_tow = 2 + sp->ship.tractor_level * 2; /* 2/4/6/8/10 */
         if (d_sq <= tr_sq) {
-            float d = sqrtf(d_sq);
-            float pull = 1.0f - clampf(d / tr, 0.0f, 1.0f);
-            vec2 pull_dir = d > 0.001f ? v2_scale(to_ship, 1.0f / d) : ship_forward(sp->ship.angle);
             sp->tractor_fragments++;
-            a->vel = v2_add(a->vel, v2_scale(pull_dir, FRAGMENT_TRACTOR_ACCEL * lerpf(0.35f, 1.0f, pull) * dt));
-            float speed = v2_len(a->vel);
-            if (speed > FRAGMENT_MAX_SPEED) a->vel = v2_scale(v2_norm(a->vel), FRAGMENT_MAX_SPEED);
+            /* Only pull fragments toward ship if tow chain has room.
+             * Otherwise they drift naturally — no orbiting hazard. */
+            if (sp->ship.towed_count < max_tow) {
+                float d = sqrtf(d_sq);
+                float pull = 1.0f - clampf(d / tr, 0.0f, 1.0f);
+                vec2 pull_dir = d > 0.001f ? v2_scale(to_ship, 1.0f / d) : ship_forward(sp->ship.angle);
+                a->vel = v2_add(a->vel, v2_scale(pull_dir, FRAGMENT_TRACTOR_ACCEL * lerpf(0.35f, 1.0f, pull) * dt));
+                float speed = v2_len(a->vel);
+                if (speed > FRAGMENT_MAX_SPEED) a->vel = v2_scale(v2_norm(a->vel), FRAGMENT_MAX_SPEED);
+            }
         }
         /* Tow fragment: attach to ship's tow chain (ore stays in fragment) */
         float cr = ship_collect_radius(&sp->ship) + a->radius;
-        int max_tow = 2 + sp->ship.tractor_level * 2; /* 2/4/6/8/10 */
         if (d_sq <= cr * cr && sp->ship.towed_count < max_tow) {
             sp->ship.towed_fragments[sp->ship.towed_count] = (int16_t)i;
             sp->ship.towed_count++;
@@ -2349,22 +2390,9 @@ static void step_towed_cleanup(world_t *w, server_player_t *sp) {
             sp->ship.towed_fragments[sp->ship.towed_count] = -1;
         }
     }
-    /* Auto-detach all towed fragments if ship is near any hopper */
-    if (sp->ship.towed_count == 0) return;
-    float pull_sq = HOPPER_PULL_RANGE * HOPPER_PULL_RANGE;
-    for (int si = 0; si < MAX_STATIONS; si++) {
-        const station_t *st = &w->stations[si];
-        if (st->scaffold) continue;
-        for (int mi = 0; mi < st->module_count; mi++) {
-            if (st->modules[mi].type != MODULE_ORE_BUYER || st->modules[mi].scaffold) continue;
-            vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
-            if (v2_dist_sq(sp->ship.pos, mp) <= pull_sq) {
-                /* Ship is near hopper — release all towed fragments */
-                release_towed_fragments(sp);
-                return;
-            }
-        }
-    }
+    /* Auto-release removed — player must manually release with R key.
+     * Hopper intake (step_hopper_intake) consumes nearby S-tier fragments
+     * directly, crediting the towing player. */
 }
 
 /* Release all towed fragments (manual dump). */
@@ -2462,7 +2490,7 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
     return sp->scan_target_type != 0;
 }
 
-static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool mining, vec2 forward) {
+static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool mining, vec2 forward, float cached_signal) {
     sp->beam_active = false;
     sp->beam_hit = false;
     sp->beam_ineffective = false;
@@ -2487,8 +2515,7 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
         } else {
             emit_event(w, (sim_event_t){.type = SIM_EVENT_MINING_TICK, .player_id = sp->id});
             if (!w->player_only_mode) {
-                float mining_sig = signal_strength_at(w, sp->ship.pos);
-                float mined = ship_mining_rate(&sp->ship) * dt * signal_mining_efficiency(mining_sig);
+                float mined = ship_mining_rate(&sp->ship) * dt * signal_mining_efficiency(cached_signal);
                 mined = fminf(mined, a->hp);
                 a->hp -= mined;
                 a->net_dirty = true;
@@ -2699,8 +2726,9 @@ static float calc_signal_interference(const world_t *w, const server_player_t *s
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!w->players[i].connected || w->players[i].docked) continue;
         if (&w->players[i] == sp) continue;
-        float d = sqrtf(v2_dist_sq(pos, w->players[i].ship.pos));
-        if (d < 200.0f) {
+        float dist_sq = v2_dist_sq(pos, w->players[i].ship.pos);
+        if (dist_sq < 200.0f * 200.0f) {
+            float d = sqrtf(dist_sq);
             float strength = (200.0f - d) / 200.0f;
             interference += strength * 0.5f;
         }
@@ -2711,8 +2739,9 @@ static float calc_signal_interference(const world_t *w, const server_player_t *s
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier == ASTEROID_TIER_S) continue;
         float range = a->radius * 3.0f;
-        float d = sqrtf(v2_dist_sq(pos, a->pos));
-        if (d < range) {
+        float dist_sq = v2_dist_sq(pos, a->pos);
+        if (dist_sq < range * range) {
+            float d = sqrtf(dist_sq);
             float strength = (range - d) / range;
             float mass_factor = a->radius / 80.0f;  /* bigger = more interference */
             interference += strength * mass_factor * 0.15f;
@@ -2756,7 +2785,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         step_ship_rotation(&sp->ship, dt, turn_input);
         forward = ship_forward(sp->ship.angle);           /* refresh after rotation */
         step_ship_thrust(&sp->ship, dt, thrust_input, forward);
-        step_ship_motion(&sp->ship, dt, w);
+        step_ship_motion(&sp->ship, dt, w, sig);
         /* Tow drag: each fragment adds drag, slowing the ship */
         if (sp->ship.towed_count > 0) {
             float tow_drag = 0.15f * (float)sp->ship.towed_count;
@@ -2794,7 +2823,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         }
         if (!sp->docked) {
             update_targeting_state(w, sp, forward);
-            step_mining_system(w, sp, dt, sp->input.mine, forward);
+            step_mining_system(w, sp, dt, sp->input.mine, forward, sig);
             if (!w->player_only_mode) {
                 /* R toggles tractor — OFF releases fragments */
                 if (sp->input.release_tow) {
@@ -2836,56 +2865,78 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
 /* ================================================================== */
 
 static void step_asteroid_gravity(world_t *w, float dt) {
-    /* Asteroid-asteroid attraction (non-S tier, within 400 units) */
+    /* Build spatial grid for neighbor lookups */
+    spatial_grid_build(w);
+    const spatial_grid_t *g = &w->asteroid_grid;
+
+    /* Asteroid-asteroid attraction (non-S tier, within 800 units) via spatial grid */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier == ASTEROID_TIER_S) continue;
-        for (int j = i + 1; j < MAX_ASTEROIDS; j++) {
-            asteroid_t *b = &w->asteroids[j];
-            if (!b->active || b->tier == ASTEROID_TIER_S) continue;
-            vec2 delta = v2_sub(b->pos, a->pos);
-            float dist_sq = v2_len_sq(delta);
-            if (dist_sq > 800.0f * 800.0f || dist_sq < 1.0f) continue;
-            float dist = sqrtf(dist_sq);
-            /* Don't attract asteroids at or inside collision boundary */
-            float min_dist = a->radius + b->radius;
-            if (dist < min_dist * 1.3f) continue; /* dead zone: 30% beyond contact */
-            vec2 normal = v2_scale(delta, 1.0f / dist);
-            float mass_a = a->radius * a->radius;
-            float mass_b = b->radius * b->radius;
-            /* Gravitational force proportional to both masses.
-             * Clamp against the lighter body so swapping slots cannot
-             * change the result while preserving equal/opposite force. */
-            float force_mag = (mass_a * mass_b) / dist_sq * 14.0f;
-            float max_force = 60.0f * fminf(mass_a, mass_b);
-            if (force_mag > max_force) force_mag = max_force;
-            /* F = ma, so acceleration = force / mass */
-            vec2 accel_a = v2_scale(normal, (force_mag / mass_a) * dt);
-            vec2 accel_b = v2_scale(normal, -(force_mag / mass_b) * dt);
-            a->vel = v2_add(a->vel, accel_a);
-            b->vel = v2_add(b->vel, accel_b);
+        int cx, cy;
+        spatial_grid_cell(g, a->pos, &cx, &cy);
+        int x0 = (cx > 0) ? cx - 1 : 0;
+        int x1 = (cx < SPATIAL_GRID_DIM - 1) ? cx + 1 : SPATIAL_GRID_DIM - 1;
+        int y0 = (cy > 0) ? cy - 1 : 0;
+        int y1 = (cy < SPATIAL_GRID_DIM - 1) ? cy + 1 : SPATIAL_GRID_DIM - 1;
+        for (int gy = y0; gy <= y1; gy++) {
+            for (int gx = x0; gx <= x1; gx++) {
+                const spatial_cell_t *cell = &g->cells[gy][gx];
+                for (int ci = 0; ci < cell->count; ci++) {
+                    int j = cell->indices[ci];
+                    if (j <= i) continue; /* avoid double-processing */
+                    asteroid_t *b = &w->asteroids[j];
+                    if (!b->active || b->tier == ASTEROID_TIER_S) continue;
+                    vec2 delta = v2_sub(b->pos, a->pos);
+                    float dist_sq = v2_len_sq(delta);
+                    if (dist_sq > 800.0f * 800.0f || dist_sq < 1.0f) continue;
+                    float dist = sqrtf(dist_sq);
+                    /* Don't attract asteroids at or inside collision boundary */
+                    float min_dist = a->radius + b->radius;
+                    if (dist < min_dist * 1.3f) continue; /* dead zone: 30% beyond contact */
+                    vec2 normal = v2_scale(delta, 1.0f / dist);
+                    float mass_a = a->radius * a->radius;
+                    float mass_b = b->radius * b->radius;
+                    /* Gravitational force proportional to both masses.
+                     * Clamp against the lighter body so swapping slots cannot
+                     * change the result while preserving equal/opposite force. */
+                    float force_mag = (mass_a * mass_b) / dist_sq * 14.0f;
+                    float max_force = 60.0f * fminf(mass_a, mass_b);
+                    if (force_mag > max_force) force_mag = max_force;
+                    /* F = ma, so acceleration = force / mass */
+                    vec2 accel_a = v2_scale(normal, (force_mag / mass_a) * dt);
+                    vec2 accel_b = v2_scale(normal, -(force_mag / mass_b) * dt);
+                    a->vel = v2_add(a->vel, accel_a);
+                    b->vel = v2_add(b->vel, accel_b);
+                }
+            }
         }
     }
 
     /* Industrial pull: only stations with active intake/processing modules
      * generate asteroid attraction. Pull scales with industrial activity
      * and inversely with asteroid size (fragments pulled strongly). */
+    /* Precompute per-station intake module count */
+    int station_intake[MAX_STATIONS];
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_intake[s] = 0;
+        const station_t *st = &w->stations[s];
+        if (st->scaffold) continue;
+        for (int m = 0; m < st->module_count; m++) {
+            if (st->modules[m].scaffold) continue;
+            module_type_t mt = st->modules[m].type;
+            if (mt == MODULE_ORE_BUYER || mt == MODULE_FURNACE ||
+                mt == MODULE_FURNACE_CU || mt == MODULE_FURNACE_CR)
+                station_intake[s]++;
+        }
+    }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
         for (int s = 0; s < MAX_STATIONS; s++) {
+            int intake_modules = station_intake[s];
+            if (intake_modules == 0) continue; /* relay-only or scaffold stations: no pull */
             const station_t *st = &w->stations[s];
-            if (st->scaffold) continue;
-            /* Count active industrial modules */
-            int intake_modules = 0;
-            for (int m = 0; m < st->module_count; m++) {
-                if (st->modules[m].scaffold) continue;
-                module_type_t mt = st->modules[m].type;
-                if (mt == MODULE_ORE_BUYER || mt == MODULE_FURNACE ||
-                    mt == MODULE_FURNACE_CU || mt == MODULE_FURNACE_CR)
-                    intake_modules++;
-            }
-            if (intake_modules == 0) continue; /* relay-only stations: no pull */
             vec2 delta = v2_sub(st->pos, a->pos);
             float dist_sq = v2_len_sq(delta);
             float pull_range = 600.0f + (float)intake_modules * 100.0f;
@@ -2921,11 +2972,25 @@ static void step_asteroid_gravity(world_t *w, float dt) {
         if (near_player) continue;
 
         bool near_asteroid = false;
-        for (int j = 0; j < MAX_ASTEROIDS; j++) {
-            if (j == i || !w->asteroids[j].active) continue;
-            if (v2_dist_sq(a->pos, w->asteroids[j].pos) <= 400.0f * 400.0f) {
-                near_asteroid = true;
-                break;
+        {
+            int acx, acy;
+            spatial_grid_cell(g, a->pos, &acx, &acy);
+            int ax0 = (acx > 0) ? acx - 1 : 0;
+            int ax1 = (acx < SPATIAL_GRID_DIM - 1) ? acx + 1 : SPATIAL_GRID_DIM - 1;
+            int ay0 = (acy > 0) ? acy - 1 : 0;
+            int ay1 = (acy < SPATIAL_GRID_DIM - 1) ? acy + 1 : SPATIAL_GRID_DIM - 1;
+            for (int gy = ay0; gy <= ay1 && !near_asteroid; gy++) {
+                for (int gx = ax0; gx <= ax1 && !near_asteroid; gx++) {
+                    const spatial_cell_t *cell = &g->cells[gy][gx];
+                    for (int ci = 0; ci < cell->count; ci++) {
+                        int j = cell->indices[ci];
+                        if (j == i || !w->asteroids[j].active) continue;
+                        if (v2_dist_sq(a->pos, w->asteroids[j].pos) <= 400.0f * 400.0f) {
+                            near_asteroid = true;
+                            break;
+                        }
+                    }
+                }
             }
         }
         if (near_asteroid) continue;
@@ -3026,37 +3091,51 @@ static void step_hopper_intake(world_t *w, float dt) {
 /* ================================================================== */
 
 static void resolve_asteroid_collisions(world_t *w) {
+    const spatial_grid_t *g = &w->asteroid_grid;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
-        for (int j = i + 1; j < MAX_ASTEROIDS; j++) {
-            asteroid_t *b = &w->asteroids[j];
-            if (!b->active) continue;
-            /* Skip if both are S tier */
-            if (a->tier == ASTEROID_TIER_S && b->tier == ASTEROID_TIER_S) continue;
-            float min_dist = a->radius + b->radius;
-            vec2 delta = v2_sub(a->pos, b->pos);
-            float dist_sq = v2_len_sq(delta);
-            if (dist_sq >= min_dist * min_dist) continue;
-            float dist = sqrtf(dist_sq);
-            if (dist < 0.001f) { dist = 0.001f; delta = v2(1.0f, 0.0f); }
-            vec2 normal = v2_scale(delta, 1.0f / dist);
-            float overlap = min_dist - dist;
-            /* Push apart: heavier (larger radius) moves less */
-            float mass_a = a->radius * a->radius;
-            float mass_b = b->radius * b->radius;
-            float total_mass = mass_a + mass_b;
-            float ratio_a = mass_b / total_mass; /* a moves proportional to b's mass */
-            float ratio_b = mass_a / total_mass;
-            a->pos = v2_add(a->pos, v2_scale(normal, overlap * ratio_a));
-            b->pos = v2_sub(b->pos, v2_scale(normal, overlap * ratio_b));
-            /* Transfer velocity along collision normal */
-            float rel_vel = v2_dot(v2_sub(a->vel, b->vel), normal);
-            if (rel_vel < 0.0f) {
-                vec2 impulse_a = v2_scale(normal, rel_vel * ratio_a);
-                vec2 impulse_b = v2_scale(normal, rel_vel * ratio_b);
-                a->vel = v2_sub(a->vel, impulse_a);
-                b->vel = v2_add(b->vel, impulse_b);
+        int cx, cy;
+        spatial_grid_cell(g, a->pos, &cx, &cy);
+        int x0 = (cx > 0) ? cx - 1 : 0;
+        int x1 = (cx < SPATIAL_GRID_DIM - 1) ? cx + 1 : SPATIAL_GRID_DIM - 1;
+        int y0 = (cy > 0) ? cy - 1 : 0;
+        int y1 = (cy < SPATIAL_GRID_DIM - 1) ? cy + 1 : SPATIAL_GRID_DIM - 1;
+        for (int gy = y0; gy <= y1; gy++) {
+            for (int gx = x0; gx <= x1; gx++) {
+                const spatial_cell_t *cell = &g->cells[gy][gx];
+                for (int ci = 0; ci < cell->count; ci++) {
+                    int j = cell->indices[ci];
+                    if (j <= i) continue; /* avoid double-processing */
+                    asteroid_t *b = &w->asteroids[j];
+                    if (!b->active) continue;
+                    /* Skip if both are S tier */
+                    if (a->tier == ASTEROID_TIER_S && b->tier == ASTEROID_TIER_S) continue;
+                    float min_dist = a->radius + b->radius;
+                    vec2 delta = v2_sub(a->pos, b->pos);
+                    float dist_sq = v2_len_sq(delta);
+                    if (dist_sq >= min_dist * min_dist) continue;
+                    float dist = sqrtf(dist_sq);
+                    if (dist < 0.001f) { dist = 0.001f; delta = v2(1.0f, 0.0f); }
+                    vec2 normal = v2_scale(delta, 1.0f / dist);
+                    float overlap = min_dist - dist;
+                    /* Push apart: heavier (larger radius) moves less */
+                    float mass_a = a->radius * a->radius;
+                    float mass_b = b->radius * b->radius;
+                    float total_mass = mass_a + mass_b;
+                    float ratio_a = mass_b / total_mass; /* a moves proportional to b's mass */
+                    float ratio_b = mass_a / total_mass;
+                    a->pos = v2_add(a->pos, v2_scale(normal, overlap * ratio_a));
+                    b->pos = v2_sub(b->pos, v2_scale(normal, overlap * ratio_b));
+                    /* Transfer velocity along collision normal */
+                    float rel_vel = v2_dot(v2_sub(a->vel, b->vel), normal);
+                    if (rel_vel < 0.0f) {
+                        vec2 impulse_a = v2_scale(normal, rel_vel * ratio_a);
+                        vec2 impulse_b = v2_scale(normal, rel_vel * ratio_b);
+                        a->vel = v2_sub(a->vel, impulse_a);
+                        b->vel = v2_add(b->vel, impulse_b);
+                    }
+                }
             }
         }
     }
@@ -3083,17 +3162,30 @@ static void resolve_asteroid_module_collision(asteroid_t *a, vec2 mod_pos, float
 }
 
 static void resolve_asteroid_station_collisions(world_t *w) {
+    /* Precompute module world positions */
+    struct { vec2 pos; bool valid; } mod_cache[MAX_STATIONS][MAX_MODULES_PER_STATION];
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!station_exists(&w->stations[s])) {
+            for (int m = 0; m < MAX_MODULES_PER_STATION; m++) mod_cache[s][m].valid = false;
+            continue;
+        }
+        for (int m = 0; m < w->stations[s].module_count; m++) {
+            int ring = w->stations[s].modules[m].ring;
+            if (ring < 1 || ring > STATION_NUM_RINGS) { mod_cache[s][m].valid = false; continue; }
+            mod_cache[s][m].pos = module_world_pos_ring(&w->stations[s], ring, w->stations[s].modules[m].slot);
+            mod_cache[s][m].valid = true;
+        }
+        for (int m = w->stations[s].module_count; m < MAX_MODULES_PER_STATION; m++)
+            mod_cache[s][m].valid = false;
+    }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
         for (int s = 0; s < MAX_STATIONS; s++) {
             if (!station_exists(&w->stations[s])) continue;
-            /* Module collisions only — no physical core */
             for (int m = 0; m < w->stations[s].module_count; m++) {
-                int ring = w->stations[s].modules[m].ring;
-                if (ring < 1 || ring > STATION_NUM_RINGS) continue;
-                vec2 mod_pos = module_world_pos_ring(&w->stations[s], ring, w->stations[s].modules[m].slot);
-                resolve_asteroid_module_collision(a, mod_pos, MODULE_COLLISION_RADIUS);
+                if (!mod_cache[s][m].valid) continue;
+                resolve_asteroid_module_collision(a, mod_cache[s][m].pos, MODULE_COLLISION_RADIUS);
             }
         }
     }

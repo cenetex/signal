@@ -52,6 +52,24 @@ static const float COLLECTION_FEEDBACK_TIME = 1.1f;
 
 
 /* ------------------------------------------------------------------ */
+/* Spatial grid for O(1) neighbor lookups instead of O(N^2)           */
+/* ------------------------------------------------------------------ */
+
+#define SPATIAL_CELL_SIZE 800.0f
+#define SPATIAL_GRID_DIM 128
+#define SPATIAL_MAX_PER_CELL 16
+
+typedef struct {
+    int16_t indices[SPATIAL_MAX_PER_CELL];
+    uint8_t count;
+} spatial_cell_t;
+
+typedef struct {
+    spatial_cell_t cells[SPATIAL_GRID_DIM][SPATIAL_GRID_DIM];
+    float offset_x, offset_y;  /* world offset to center grid */
+} spatial_grid_t;
+
+/* ------------------------------------------------------------------ */
 /* Server-specific types                                              */
 /* ------------------------------------------------------------------ */
 
@@ -123,6 +141,7 @@ typedef struct {
     contract_t contracts[MAX_CONTRACTS];
     bool player_only_mode;
     belt_field_t belt;
+    spatial_grid_t asteroid_grid;
 } world_t;
 
 /* ------------------------------------------------------------------ */

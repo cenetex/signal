@@ -66,26 +66,26 @@ float ui_text_pos(float pixel_value) {
 /* ------------------------------------------------------------------ */
 
 void draw_ui_scanlines(float x, float y, float width, float height, float spacing, float alpha) {
+    begin_line_batch();
     for (float scan_y = y + 10.0f; scan_y < (y + height - 10.0f); scan_y += spacing) {
-        draw_segment(v2(x + 10.0f, scan_y), v2(x + width - 10.0f, scan_y), 0.08f, 0.14f, 0.20f, alpha);
+        draw_segment_batched(v2(x + 10.0f, scan_y), v2(x + width - 10.0f, scan_y), 0.08f, 0.14f, 0.20f, alpha);
     }
+    end_line_batch();
 }
 
 void draw_ui_corner_brackets(float x, float y, float width, float height, float r, float g0, float b, float alpha) {
     float arm = fminf(26.0f, fminf(width, height) * 0.16f);
     float inset = 3.0f;
-
-    draw_segment(v2(x + inset, y + arm), v2(x + inset, y + inset), r, g0, b, alpha);
-    draw_segment(v2(x + inset, y + inset), v2(x + arm, y + inset), r, g0, b, alpha);
-
-    draw_segment(v2(x + width - arm, y + inset), v2(x + width - inset, y + inset), r, g0, b, alpha);
-    draw_segment(v2(x + width - inset, y + inset), v2(x + width - inset, y + arm), r, g0, b, alpha);
-
-    draw_segment(v2(x + inset, y + height - arm), v2(x + inset, y + height - inset), r, g0, b, alpha);
-    draw_segment(v2(x + inset, y + height - inset), v2(x + arm, y + height - inset), r, g0, b, alpha);
-
-    draw_segment(v2(x + width - arm, y + height - inset), v2(x + width - inset, y + height - inset), r, g0, b, alpha);
-    draw_segment(v2(x + width - inset, y + height - inset), v2(x + width - inset, y + height - arm), r, g0, b, alpha);
+    begin_line_batch();
+    draw_segment_batched(v2(x + inset, y + arm), v2(x + inset, y + inset), r, g0, b, alpha);
+    draw_segment_batched(v2(x + inset, y + inset), v2(x + arm, y + inset), r, g0, b, alpha);
+    draw_segment_batched(v2(x + width - arm, y + inset), v2(x + width - inset, y + inset), r, g0, b, alpha);
+    draw_segment_batched(v2(x + width - inset, y + inset), v2(x + width - inset, y + arm), r, g0, b, alpha);
+    draw_segment_batched(v2(x + inset, y + height - arm), v2(x + inset, y + height - inset), r, g0, b, alpha);
+    draw_segment_batched(v2(x + inset, y + height - inset), v2(x + arm, y + height - inset), r, g0, b, alpha);
+    draw_segment_batched(v2(x + width - arm, y + height - inset), v2(x + width - inset, y + height - inset), r, g0, b, alpha);
+    draw_segment_batched(v2(x + width - inset, y + height - inset), v2(x + width - inset, y + height - arm), r, g0, b, alpha);
+    end_line_batch();
 }
 
 void draw_ui_rule(float x0, float x1, float y, float r, float g0, float b, float alpha) {

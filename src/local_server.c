@@ -25,25 +25,13 @@ void local_server_step(local_server_t *ls, int player_slot,
 void local_server_sync_to_client(const local_server_t *ls) {
     if (!ls->active) return;
 
-    /* Asteroids: copy authoritative state directly into the client world
-     * (no latency to interpolate over in singleplayer) and into interp
-     * buffers so multiplayer-shared rendering code stays consistent. */
+    /* Asteroids: copy authoritative state directly into the client world.
+     * Interp buffers are skipped — interpolate_world_for_render() returns
+     * early in singleplayer mode, so these copies were wasted work. */
     memcpy(g.world.asteroids, ls->world.asteroids, sizeof(g.world.asteroids));
-    memcpy(g.asteroid_interp.prev, g.asteroid_interp.curr,
-           sizeof(g.asteroid_interp.prev));
-    memcpy(g.asteroid_interp.curr, ls->world.asteroids,
-           sizeof(g.asteroid_interp.curr));
-    g.asteroid_interp.interval = SIM_DT;
-    g.asteroid_interp.t = 0.0f;
 
-    /* NPCs: same pattern */
+    /* NPCs: same — skip interp copies */
     memcpy(g.world.npc_ships, ls->world.npc_ships, sizeof(g.world.npc_ships));
-    memcpy(g.npc_interp.prev, g.npc_interp.curr,
-           sizeof(g.npc_interp.prev));
-    memcpy(g.npc_interp.curr, ls->world.npc_ships,
-           sizeof(g.npc_interp.curr));
-    g.npc_interp.interval = SIM_DT;
-    g.npc_interp.t = 0.0f;
 
     /* Stations: direct copy (no interpolation) */
     memcpy(g.world.stations, ls->world.stations, sizeof(g.world.stations));

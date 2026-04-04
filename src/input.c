@@ -326,7 +326,8 @@ void submit_input(const input_intent_t *intent, float dt) {
         intent->service_repair || intent->upgrade_mining ||
         intent->upgrade_hold || intent->upgrade_tractor ||
         intent->place_outpost || intent->buy_scaffold_kit ||
-        intent->build_module || intent->buy_product || intent->hail;
+        intent->build_module || intent->buy_product || intent->hail ||
+        intent->release_tow;
 
     if (has_action)
         g.action_predict_timer = 0.5f;
@@ -359,5 +360,7 @@ void submit_input(const input_intent_t *intent, float dt) {
             g.pending_net_action = NET_ACTION_BUY_PRODUCT + (uint8_t)intent->buy_commodity;
         else if (intent->hail)
             g.pending_net_action = NET_ACTION_HAIL;
+        else if (intent->release_tow)
+            g.pending_net_action = NET_ACTION_RELEASE_TOW;
     }
 }

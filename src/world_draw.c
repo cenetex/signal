@@ -48,12 +48,20 @@ float asteroid_profile(const asteroid_t* asteroid, float angle) {
 }
 
 void draw_background(vec2 camera) {
+    sgl_begin_quads();
     for (int i = 0; i < MAX_STARS; i++) {
         const star_t* star = &g.stars[i];
         vec2 parallax_pos = v2_add(star->pos, v2_scale(camera, 1.0f - star->depth));
+        if (!on_screen(parallax_pos.x, parallax_pos.y, star->size * 2.0f)) continue;
         float tint = star->brightness;
-        draw_rect_centered(parallax_pos, star->size, star->size, 0.65f * tint, 0.75f * tint, tint, 0.9f);
+        float r = 0.65f * tint, g0 = 0.75f * tint, b = tint;
+        sgl_c4f(r, g0, b, 0.9f);
+        sgl_v2f(parallax_pos.x - star->size, parallax_pos.y - star->size);
+        sgl_v2f(parallax_pos.x + star->size, parallax_pos.y - star->size);
+        sgl_v2f(parallax_pos.x + star->size, parallax_pos.y + star->size);
+        sgl_v2f(parallax_pos.x - star->size, parallax_pos.y + star->size);
     }
+    sgl_end();
 }
 
 /* ------------------------------------------------------------------ */
@@ -663,7 +671,7 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
 
 static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, float angle_b,
                                float cr, float cg, float cb, float alpha) {
-    float hw = 3.0f; /* corridor half-width (thin truss) */
+    float hw = 10.0f; /* corridor half-width — wide enough to hint at collision footprint */
     float r_inner = ring_radius - hw;
     float r_outer = ring_radius + hw;
 
