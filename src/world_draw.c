@@ -840,13 +840,14 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
 }
 
 void draw_ship_tractor_field(void) {
-    if (LOCAL_PLAYER.nearby_fragments <= 0) {
+    if (LOCAL_PLAYER.nearby_fragments <= 0 && LOCAL_PLAYER.tractor_fragments <= 0
+        && LOCAL_PLAYER.ship.towed_count <= 0) {
         return;
     }
 
     float pulse = 0.28f + (sinf(g.world.time * 7.0f) * 0.08f);
     draw_circle_outline(LOCAL_PLAYER.ship.pos, ship_tractor_range(&LOCAL_PLAYER.ship), 40, 0.24f, 0.86f, 1.0f, pulse);
-    if (LOCAL_PLAYER.tractor_fragments > 0) {
+    if (LOCAL_PLAYER.tractor_fragments > 0 || LOCAL_PLAYER.ship.towed_count > 0) {
         draw_circle_outline(LOCAL_PLAYER.ship.pos, ship_collect_radius(&LOCAL_PLAYER.ship) + 6.0f, 28, 0.50f, 1.0f, 0.82f, 0.75f);
     }
 }

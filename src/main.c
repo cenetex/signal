@@ -190,6 +190,13 @@ static void process_sim_events(const sim_events_t *events) {
                 if (ev->player_id == g.local_player_slot) {
                     audio_play_dock(&g.audio);
                     set_notice("Docked at %s.", g.world.stations[LOCAL_PLAYER.current_station].name);
+                    /* Track visited original stations for Ep 1 */
+                    int ds = LOCAL_PLAYER.current_station;
+                    if (ds < 3) {
+                        g.episode.stations_visited |= (1 << ds);
+                        if (g.episode.stations_visited == 7) /* all 3 */
+                            episode_trigger(&g.episode, 1); /* Ep 1: Kepler's Law */
+                    }
                 }
                 break;
             case SIM_EVENT_LAUNCH:
@@ -207,6 +214,7 @@ static void process_sim_events(const sim_events_t *events) {
                 if (ev->player_id == g.local_player_slot) {
                     audio_play_sale(&g.audio);
                     onboarding_mark_sold();
+                    episode_trigger(&g.episode, 2); /* Ep 2: Furnace — first smelt */
                 }
                 break;
             case SIM_EVENT_REPAIR:
@@ -222,10 +230,12 @@ static void process_sim_events(const sim_events_t *events) {
                 if (ev->player_id == g.local_player_slot) audio_play_damage(&g.audio, ev->damage.amount);
                 break;
             case SIM_EVENT_CONTRACT_COMPLETE:
-                if (ev->contract_complete.action == CONTRACT_SUPPLY)
+                if (ev->contract_complete.action == CONTRACT_SUPPLY) {
                     set_notice("Supply contract fulfilled.");
-                else if (ev->contract_complete.action == CONTRACT_DESTROY)
+                    episode_trigger(&g.episode, 6); /* Ep 6: Hauler */
+                } else if (ev->contract_complete.action == CONTRACT_DESTROY) {
                     set_notice("Target destroyed. Contract complete.");
+                }
                 break;
             case SIM_EVENT_DEATH:
                 if (ev->player_id == g.local_player_slot) {
@@ -235,6 +245,10 @@ static void process_sim_events(const sim_events_t *events) {
                     g.death_credits_spent = ev->death.credits_spent;
                     g.death_asteroids_fractured = ev->death.asteroids_fractured;
                     episode_trigger(&g.episode, 9); /* Ep 9: Death */
+                    /* Reset episode milestones — replay on next life */
+                    memset(g.episode.watched, 0, sizeof(g.episode.watched));
+                    g.episode.stations_visited = 0;
+                    episode_save(&g.episode);
                 }
                 break;
             default:
@@ -269,6 +283,15 @@ static void episode_per_frame(void) {
     /* Ep 4: Naming — placed first outpost */
     if (!g.episode.watched[4] && g.onboarding.placed_outpost)
         episode_trigger(&g.episode, 4);
+
+    /* Ep 5: Drones — triggered server-side when NPC spawns at player outpost (TODO) */
+
+    /* Ep 7: Dark Sector — enter zero-signal space */
+    if (!g.episode.watched[7]) {
+        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        if (sig < 0.01f)
+            episode_trigger(&g.episode, 7);
+    }
 
     /* Ep 8: Every AI Dreams — 5+ connected stations */
     if (!g.episode.watched[8]) {
@@ -387,6 +410,20 @@ static void sim_step(float dt) {
     /* ESC dismisses episode popup */
     if (episode_is_active(&g.episode) && g.input.key_pressed[SAPP_KEYCODE_ESCAPE])
         episode_skip(&g.episode);
+
+    /* Music controls: M = mute/unmute, [ = prev, ] = next */
+    if (g.input.key_pressed[SAPP_KEYCODE_M]) {
+        if (g.music.playing)
+            g.music.paused ? music_resume(&g.music) : music_pause(&g.music);
+        else
+            music_play(&g.music, 0);
+    }
+    if (g.input.key_pressed[SAPP_KEYCODE_RIGHT_BRACKET] && g.music.playing)
+        music_next_track(&g.music);
+    if (g.input.key_pressed[SAPP_KEYCODE_LEFT_BRACKET] && g.music.playing) {
+        int prev = (g.music.current_track - 1 + MUSIC_TRACK_COUNT) % MUSIC_TRACK_COUNT;
+        music_play(&g.music, prev);
+    }
 
     step_notice_timer(dt);
     if (g.action_predict_timer > 0.0f)
@@ -735,8 +772,43 @@ static void render_ui(void) {
     draw_hud();
 
     /* Episode video popup — bottom-right corner, doesn't block gameplay */
-    if (episode_is_active(&g.episode) && g.episode.texture_valid) {
+    if (episode_is_active(&g.episode)) {
         episode_render(&g.episode, screen_w, screen_h);
+    }
+
+    /* Music track display — bottom-left, fades after 5s */
+    if (g.music.playing && g.music.current_track >= 0) {
+        float mt = g.music.track_display_timer;
+        float music_alpha = 1.0f;
+        if (mt < 0.5f) music_alpha = mt / 0.5f;              /* fade in */
+        else if (mt > 5.0f) music_alpha = 1.0f - (mt - 5.0f) / 2.0f; /* fade out */
+        if (g.music.paused) music_alpha = 1.0f;               /* always visible when paused */
+        if (music_alpha > 0.01f) {
+            const music_track_info_t *track = music_get_info(g.music.current_track);
+            if (track) {
+                sdtx_canvas(screen_w, screen_h);
+                sdtx_origin(0.0f, 0.0f);
+                float cell = 8.0f;
+                float row = (screen_h - 16.0f) / cell;
+                uint8_t a = (uint8_t)(music_alpha * 255.0f);
+                /* Right-align: measure total width */
+                char label[128];
+                if (g.music.paused)
+                    snprintf(label, sizeof(label), "PAUSED %s  [/] M", track->title);
+                else
+                    snprintf(label, sizeof(label), "%s  [/] M", track->title);
+                float tw = (float)strlen(label) * cell;
+                sdtx_pos((screen_w - tw - 12.0f) / cell, row);
+                if (g.music.paused) {
+                    sdtx_color4b(120, 100, 70, a);
+                    sdtx_puts("PAUSED ");
+                }
+                sdtx_color4b(100, 90, 65, a);
+                sdtx_puts(track->title);
+                sdtx_color4b(60, 55, 45, a);
+                sdtx_puts("  [/] M");
+            }
+        }
     }
 }
 

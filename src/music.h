@@ -15,6 +15,7 @@ typedef struct {
     bool paused;
     bool loading;       /* async download in progress (Emscripten) */
     int current_track;
+    float track_display_timer; /* seconds since track changed, for fade */
     float volume;       /* 0.0 - 1.0 */
     float fade_volume;  /* for fade in/out transitions */
     float fade_target;

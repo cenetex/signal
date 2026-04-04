@@ -119,6 +119,7 @@ static void music_start_playback(music_state_t *m, unsigned char *data, int size
     m->playing = true;
     m->paused = false;
     m->loading = false;
+    m->track_display_timer = 0.0f;
     m->audio_write_pos = 0;
     m->audio_read_pos = 0;
 
@@ -244,6 +245,8 @@ void music_fade_to(music_state_t *m, float vol, float seconds) {
 
 void music_update(music_state_t *m, float dt) {
     if (!m->playing || m->paused) return;
+
+    m->track_display_timer += dt;
 
     /* Fade volume */
     if (m->fade_volume < m->fade_target) {

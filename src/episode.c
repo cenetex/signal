@@ -9,6 +9,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <math.h>
 
 #define PL_MPEG_IMPLEMENTATION
 #include "pl_mpeg.h"
@@ -298,20 +299,19 @@ void episode_update(episode_state_t *ep, float dt) {
 }
 
 void episode_render(episode_state_t *ep, float screen_w, float screen_h) {
-    if (!ep->active || !ep->texture_valid) return;
+    if (!ep->active) return;
 
-    float alpha = 1.0f;
-    if (ep->fade_timer < ep->fade_duration) {
-        alpha = ep->fade_timer / ep->fade_duration;
-    }
+    float t = ep->fade_timer;
+    const float INTRO_DURATION = 2.0f; /* flicker intro before video */
+    bool in_intro = (t < INTRO_DURATION) || !ep->texture_valid;
 
     /* Size: ~35% of screen width, bottom-right with margin */
     float margin = 12.0f;
-    float vid_aspect = (float)ep->video_width / (float)ep->video_height;
+    float vid_w = (ep->video_width > 0) ? (float)ep->video_width : 640.0f;
+    float vid_h = (ep->video_height > 0) ? (float)ep->video_height : 360.0f;
+    float vid_aspect = vid_w / vid_h;
     float quad_w = screen_w * 0.35f;
     float quad_h = quad_w / vid_aspect;
-
-    /* Clamp height if screen is short */
     if (quad_h > screen_h * 0.4f) {
         quad_h = screen_h * 0.4f;
         quad_w = quad_h * vid_aspect;
@@ -321,63 +321,145 @@ void episode_render(episode_state_t *ep, float screen_w, float screen_h) {
     float y0 = screen_h - quad_h - margin;
     float x1 = x0 + quad_w;
     float y1 = y0 + quad_h;
-
-    /* Dark panel background with border */
     float pad = 4.0f;
+
+    /* Panel alpha — quick fade in over 0.3s */
+    float alpha = (t < 0.3f) ? t / 0.3f : 1.0f;
+
+    /* Dark panel background — darker during intro so text is readable */
+    float bg_opacity = in_intro ? 0.92f : 0.85f;
     sgl_begin_quads();
-    sgl_c4f(0.0f, 0.0f, 0.0f, 0.75f * alpha);
-    sgl_v2f(x0 - pad, y0 - pad - 14.0f); /* extra space for title */
+    sgl_c4f(0.02f, 0.02f, 0.04f, bg_opacity * alpha);
+    sgl_v2f(x0 - pad, y0 - pad - 14.0f);
     sgl_v2f(x1 + pad, y0 - pad - 14.0f);
     sgl_v2f(x1 + pad, y1 + pad);
     sgl_v2f(x0 - pad, y1 + pad);
     sgl_end();
 
-    /* Gold border */
+    /* Gold border with flicker */
+    float border_alpha = 0.6f * alpha;
+    if (in_intro) {
+        /* Flicker effect: rapid on/off with static bursts */
+        float flicker = sinf(t * 31.0f) * sinf(t * 47.0f) * sinf(t * 13.0f);
+        border_alpha *= (flicker > 0.0f) ? 1.0f : 0.15f;
+    }
     float bw = 1.0f;
     sgl_begin_quads();
-    sgl_c4f(0.78f, 0.63f, 0.19f, 0.6f * alpha);
-    /* Top */
+    sgl_c4f(0.78f, 0.63f, 0.19f, border_alpha);
     sgl_v2f(x0 - pad, y0 - pad - 14.0f);
     sgl_v2f(x1 + pad, y0 - pad - 14.0f);
     sgl_v2f(x1 + pad, y0 - pad - 14.0f + bw);
     sgl_v2f(x0 - pad, y0 - pad - 14.0f + bw);
-    /* Bottom */
     sgl_v2f(x0 - pad, y1 + pad - bw);
     sgl_v2f(x1 + pad, y1 + pad - bw);
     sgl_v2f(x1 + pad, y1 + pad);
     sgl_v2f(x0 - pad, y1 + pad);
-    /* Left */
     sgl_v2f(x0 - pad, y0 - pad - 14.0f);
     sgl_v2f(x0 - pad + bw, y0 - pad - 14.0f);
     sgl_v2f(x0 - pad + bw, y1 + pad);
     sgl_v2f(x0 - pad, y1 + pad);
-    /* Right */
     sgl_v2f(x1 + pad - bw, y0 - pad - 14.0f);
     sgl_v2f(x1 + pad, y0 - pad - 14.0f);
     sgl_v2f(x1 + pad, y1 + pad);
     sgl_v2f(x1 + pad - bw, y1 + pad);
     sgl_end();
 
-    /* Textured video quad */
-    sgl_enable_texture();
-    sgl_texture((sg_view){ ep->view_id }, (sg_sampler){ ep->sampler_id });
-    sgl_begin_quads();
-    sgl_c4f(1.0f, 1.0f, 1.0f, alpha);
-    sgl_v2f_t2f(x0, y0, 0.0f, 0.0f);
-    sgl_v2f_t2f(x1, y0, 1.0f, 0.0f);
-    sgl_v2f_t2f(x1, y1, 1.0f, 1.0f);
-    sgl_v2f_t2f(x0, y1, 0.0f, 1.0f);
-    sgl_end();
-    sgl_disable_texture();
-
-    /* Title text above video */
-    const episode_info_t *info = episode_get_info(ep->current);
-    if (info) {
+    if (in_intro) {
+        /* Flicker intro: "SIGNAL RECEIVED" then episode title */
         sdtx_canvas(screen_w, screen_h);
         sdtx_origin(0.0f, 0.0f);
-        sdtx_color3b(200, 160, 48); /* signal gold */
-        sdtx_pos((x0) / 8.0f, (y0 - pad - 12.0f) / 8.0f);
-        sdtx_puts(info->title);
+        float cell = 8.0f;
+        float cx = (x0 + x1) * 0.5f;
+        float cy = (y0 + y1) * 0.5f;
+
+        /* Static noise scanlines in the panel */
+        float noise_alpha = 0.12f * alpha;
+        if (sinf(t * 47.0f) > 0.3f) noise_alpha *= 2.5f;
+        sgl_begin_quads();
+        for (float sy = y0; sy < y1; sy += 4.0f) {
+            float line_noise = sinf(sy * 0.7f + t * 120.0f) * 0.5f + 0.5f;
+            if (line_noise > 0.6f) {
+                sgl_c4f(0.78f, 0.63f, 0.19f, noise_alpha * line_noise);
+                sgl_v2f(x0, sy);
+                sgl_v2f(x1, sy);
+                sgl_v2f(x1, sy + 1.0f);
+                sgl_v2f(x0, sy + 1.0f);
+            }
+        }
+        sgl_end();
+
+        if (t < 1.2f) {
+            /* Phase 1: "SIGNAL RECEIVED" flickering */
+            const char *msg = "SIGNAL RECEIVED";
+            float tw = (float)strlen(msg) * cell;
+            float flicker = sinf(t * 23.0f) * sinf(t * 37.0f);
+            uint8_t bright = (flicker > -0.2f) ? 200 : 40;
+            sdtx_color3b(bright, (uint8_t)(bright * 0.8f), (uint8_t)(bright * 0.24f));
+            sdtx_pos((cx - tw * 0.5f) / cell, (cy - 8.0f) / cell);
+            sdtx_puts(msg);
+        } else {
+            /* Phase 2: episode title + "MILESTONE ACHIEVED" */
+            const episode_info_t *info = episode_get_info(ep->current);
+            if (info) {
+                float tw = (float)strlen(info->title) * cell;
+                sdtx_color3b(200, 160, 48);
+                sdtx_pos((cx - tw * 0.5f) / cell, (cy - 16.0f) / cell);
+                sdtx_puts(info->title);
+            }
+            const char *sub = "MILESTONE ACHIEVED";
+            float sw = (float)strlen(sub) * cell;
+            uint8_t sub_bright = (uint8_t)(100.0f + 40.0f * sinf(t * 5.0f));
+            sdtx_color3b(sub_bright, sub_bright, sub_bright);
+            sdtx_pos((cx - sw * 0.5f) / cell, (cy + 8.0f) / cell);
+            sdtx_puts(sub);
+        }
+    } else {
+        /* Video playback — blue-shifted desaturated look (signal ghost aesthetic) */
+        if (ep->texture_valid) {
+            /* Fade video in from intro, fade out near end */
+            float vid_fade = 1.0f;
+            float since_intro = t - INTRO_DURATION;
+            if (since_intro < 0.8f) vid_fade = since_intro / 0.8f; /* fade in */
+            plm_t *plm_check = (plm_t *)ep->plm;
+            if (plm_check) {
+                double remaining = plm_get_duration(plm_check) - plm_get_time(plm_check);
+                if (remaining < 1.0) vid_fade *= (float)remaining; /* fade out */
+            }
+            if (vid_fade < 0.0f) vid_fade = 0.0f;
+
+            sgl_enable_texture();
+            sgl_texture((sg_view){ ep->view_id }, (sg_sampler){ ep->sampler_id });
+            sgl_begin_quads();
+            /* Tint: suppress red/green, boost blue — gives cold transmission feel */
+            sgl_c4f(0.55f * vid_fade, 0.65f * vid_fade, 1.0f * vid_fade, alpha);
+            sgl_v2f_t2f(x0, y0, 0.0f, 0.0f);
+            sgl_v2f_t2f(x1, y0, 1.0f, 0.0f);
+            sgl_v2f_t2f(x1, y1, 1.0f, 1.0f);
+            sgl_v2f_t2f(x0, y1, 0.0f, 1.0f);
+            sgl_end();
+            sgl_disable_texture();
+
+            /* Scanline overlay for retro transmission look */
+            sgl_begin_quads();
+            for (float sy = y0; sy < y1; sy += 3.0f) {
+                sgl_c4f(0.0f, 0.0f, 0.0f, 0.12f);
+                sgl_v2f(x0, sy);
+                sgl_v2f(x1, sy);
+                sgl_v2f(x1, sy + 1.0f);
+                sgl_v2f(x0, sy + 1.0f);
+            }
+            sgl_end();
+        }
+
+        /* Title text above video */
+        const episode_info_t *info = episode_get_info(ep->current);
+        if (info) {
+            sdtx_canvas(screen_w, screen_h);
+            sdtx_origin(0.0f, 0.0f);
+            sdtx_color3b(200, 160, 48);
+            sdtx_pos(x0 / 8.0f, (y0 - pad - 12.0f) / 8.0f);
+            sdtx_puts(info->title);
+        }
     }
 }
 
