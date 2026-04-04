@@ -9,9 +9,9 @@
 #include "rng.h"
 #include <stdlib.h>
 
-#define MODULE_COLLISION_RADIUS 42.0f  /* matches 1.4x visual scale */
-#define CORRIDOR_COLLISION_RADIUS 8.0f
-#define CORRIDOR_ARC_SEGMENTS 4
+#define MODULE_COLLISION_RADIUS 36.0f  /* slightly larger than visual half-size */
+#define CORRIDOR_COLLISION_RADIUS 6.0f /* thin, matching visual corridor width */
+#define CORRIDOR_ARC_SEGMENTS 6
 
 #ifdef GAME_SIM_VERBOSE
 #define SIM_LOG(...) printf(__VA_ARGS__)
@@ -1922,8 +1922,8 @@ static void resolve_ship_corridor_arc(world_t *w, server_player_t *sp,
     float da = ang_b - ang_a;
     while (da > PI_F) da -= TWO_PI_F;
     while (da < -PI_F) da += TWO_PI_F;
-    /* Shrink arc slightly at each end to avoid overlapping module collision circles */
-    float margin = 0.08f;
+    /* Shrink arc at each end to avoid overlapping module collision circles */
+    float margin = 0.20f;
     float sa = ang_a + da * margin;
     float sb = ang_a + da * (1.0f - margin);
     float sda = sb - sa;
