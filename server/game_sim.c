@@ -2128,6 +2128,11 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
         sp->ship.pos = dock_berth_pos(&w->stations[sp->current_station], sp->dock_berth);
         sp->ship.angle = dock_berth_angle(&w->stations[sp->current_station], sp->dock_berth);
         sp->ship.vel = v2(0.0f, 0.0f);
+        /* Passive hull repair while docked */
+        float max_hull = ship_max_hull(&sp->ship);
+        if (sp->ship.hull < max_hull) {
+            sp->ship.hull = fminf(max_hull, sp->ship.hull + 8.0f * dt);
+        }
         return;
     }
 
@@ -2606,15 +2611,14 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                     break;
                 }
             }
-            /* Ring 1 is service-only: slot 1 = dock, slot 2 = repair bay */
+            /* Ring 1 is service-only: slot 0 = relay (auto), slot 1 = dock only */
             bool ring1_ok = true;
             if (target_ring == 1) {
-                if (target_slot == 1 && intent->build_module_type != MODULE_DOCK)
-                    ring1_ok = false;
-                else if (target_slot == 2 && intent->build_module_type != MODULE_REPAIR_BAY)
-                    ring1_ok = false;
-                else if (target_slot == 0)
+                if (target_slot == 0)
                     ring1_ok = false; /* relay is pre-placed */
+                else if (target_slot == 1 && intent->build_module_type != MODULE_DOCK)
+                    ring1_ok = false;
+                /* slot 2 left open for entry gap */
             }
             if (sp->ship.credits >= cost
                 && ring1_ok
@@ -2761,18 +2765,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                     }
                 }
             }
-            if (sp->input.service_repair) {
-                float damage = ship_max_hull(&sp->ship) - sp->ship.hull;
-                if (damage > 0.5f && (nearby_st->services & STATION_SERVICE_REPAIR)) {
-                    float cost = damage * STATION_REPAIR_COST_PER_HULL;
-                    if (sp->ship.credits >= cost) {
-                        sp->ship.credits -= cost;
-                        sp->ship.stat_credits_spent += cost;
-                        sp->ship.hull = ship_max_hull(&sp->ship);
-                        emit_event(w, (sim_event_t){.type = SIM_EVENT_REPAIR, .player_id = sp->id});
-                    }
-                }
-            }
+            /* Repair is now passive while docked — no laser interaction needed */
         }
         if (!sp->docked) {
             update_targeting_state(w, sp, forward);
@@ -3357,7 +3350,7 @@ void world_reset(world_t *w) {
     /* Ring 1 (service): dock + relay (center) + repair */
     add_module_at(&w->stations[0], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 1);
-    add_module_at(&w->stations[0], MODULE_REPAIR_BAY, 1, 2);
+    /* Slot 2 empty — gap for ship entry */
     /* Ring 2 (industrial): ore hopper + furnace */
     add_module_at(&w->stations[0], MODULE_ORE_BUYER, 2, 1);
     add_module_at(&w->stations[0], MODULE_FURNACE, 2, 2);
@@ -3381,7 +3374,7 @@ void world_reset(world_t *w) {
     /* Ring 1 (service): dock + relay (center) + repair */
     add_module_at(&w->stations[1], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 1, 1);
-    add_module_at(&w->stations[1], MODULE_REPAIR_BAY, 1, 2);
+    /* Slot 2 empty — gap for ship entry */
     /* Ring 2 (industrial): fabrication + services */
     add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 2, 0);
     add_module_at(&w->stations[1], MODULE_LASER_FAB, 2, 1);
@@ -3411,7 +3404,7 @@ void world_reset(world_t *w) {
     /* Ring 1 (service): dock + relay (center) + repair */
     add_module_at(&w->stations[2], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
-    add_module_at(&w->stations[2], MODULE_REPAIR_BAY, 1, 2);
+    /* Slot 2 empty — gap for ship entry */
     /* Ring 2 (industrial): production + services */
     add_module_at(&w->stations[2], MODULE_FURNACE, 2, 0);
     add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 1);

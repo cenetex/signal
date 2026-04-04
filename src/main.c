@@ -632,14 +632,9 @@ static void render_world(void) {
                 else
                     sdtx_puts("Out of stock");
             } else switch (tm->type) {
-                case MODULE_REPAIR_BAY: {
-                    float dmg = ship_max_hull(&LOCAL_PLAYER.ship) - LOCAL_PLAYER.ship.hull;
-                    if (dmg > 0.5f)
-                        sdtx_printf("FIRE to repair  %dcr", (int)lroundf(dmg * STATION_REPAIR_COST_PER_HULL));
-                    else
-                        sdtx_puts("Hull OK");
+                case MODULE_REPAIR_BAY:
+                    sdtx_puts("Dock to repair hull");
                     break;
-                }
                 case MODULE_ORE_BUYER: {
                     int ore = (int)lroundf(tst->inventory[COMMODITY_FERRITE_ORE] + tst->inventory[COMMODITY_CUPRITE_ORE] + tst->inventory[COMMODITY_CRYSTAL_ORE]);
                     sdtx_printf("Tow ore here  %d in stock", ore);

@@ -127,9 +127,7 @@ input_intent_t sample_input_intent(void) {
                     intent.buy_product = true;
                     intent.buy_commodity = COMMODITY_TRACTOR_MODULE;
                     break;
-                case MODULE_REPAIR_BAY:
-                    intent.service_repair = true;
-                    break;
+                /* Repair bay removed — docking repairs hull passively */
                 case MODULE_DOCK:
                     intent.interact = true;
                     break;

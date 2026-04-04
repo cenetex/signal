@@ -503,7 +503,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         if (g.build_slot >= 0 && has_ring) {
             int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
             if (g.build_ring == 1) {
-                /* Ring 1: fixed layout — slot 1 = dock, slot 2 = repair */
+                /* Ring 1: relay (auto) + dock only */
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                 if (g.build_slot == 0) {
                     sdtx_color3b(120, 130, 150);
@@ -512,10 +512,9 @@ void draw_station_services(const station_ui_state_t* ui) {
                     bool can_afford = credits >= 100;
                     sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
                     sdtx_puts("[1] Dock          100cr + 40 frames");
-                } else if (g.build_slot == 2) {
-                    bool can_afford = credits >= 100;
-                    sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
-                    sdtx_puts("[1] Repair Bay    100cr + 30 frames");
+                } else {
+                    sdtx_color3b(120, 130, 150);
+                    sdtx_puts("(entry gap)");
                 }
                 ly += 14.0f;
             } else {
