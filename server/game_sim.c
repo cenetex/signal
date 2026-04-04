@@ -9,9 +9,8 @@
 #include "rng.h"
 #include <stdlib.h>
 
-#define MODULE_COLLISION_RADIUS 36.0f  /* slightly larger than visual half-size */
-#define CORRIDOR_COLLISION_RADIUS 6.0f /* thin, matching visual corridor width */
-#define CORRIDOR_ARC_SEGMENTS 6
+#define MODULE_COLLISION_RADIUS 34.0f  /* matches 1.4x scaled module half-size */
+#define CORRIDOR_HW 3.0f              /* must match visual hw in draw_corridor_arc */
 
 #ifdef GAME_SIM_VERBOSE
 #define SIM_LOG(...) printf(__VA_ARGS__)
@@ -1051,7 +1050,7 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
             npc->pos = v2_add(st->pos, v2_scale(normal, minimum));
             float vel_toward = v2_dot(npc->vel, normal);
             if (vel_toward < 0.0f)
-                npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.2f));
+                npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.0f));
         }
         /* Per-module collision for NPCs */
         for (int m = 0; m < st->module_count; m++) {
@@ -1067,9 +1066,83 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
             npc->pos = v2_add(mod_pos, v2_scale(mn, mod_min));
             float mvt = v2_dot(npc->vel, mn);
             if (mvt < 0.0f)
-                npc->vel = v2_sub(npc->vel, v2_scale(mn, mvt * 1.2f));
+                npc->vel = v2_sub(npc->vel, v2_scale(mn, mvt * 1.0f));
         }
-        /* Corridor collision removed — trusses are visual only */
+        /* Corridor annular sectors for NPCs */
+        for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
+            int slots = STATION_RING_SLOTS[ring];
+            int cidx[MAX_MODULES_PER_STATION];
+            int ccount = 0;
+            for (int m = 0; m < st->module_count; m++)
+                if (st->modules[m].ring == ring) cidx[ccount++] = m;
+            if (ccount < 2) continue;
+            for (int ci = 1; ci < ccount; ci++) {
+                int tmp = cidx[ci]; int cj = ci - 1;
+                while (cj >= 0 && st->modules[cidx[cj]].slot > st->modules[tmp].slot)
+                    { cidx[cj+1] = cidx[cj]; cj--; }
+                cidx[cj+1] = tmp;
+            }
+            for (int ci = 0; ci + 1 < ccount; ci++) {
+                if (st->modules[cidx[ci+1]].slot - st->modules[cidx[ci]].slot != 1) continue;
+                float ca = module_angle_ring(st, ring, st->modules[cidx[ci]].slot);
+                float cb = module_angle_ring(st, ring, st->modules[cidx[ci+1]].slot);
+                /* Annular sector test for NPC */
+                vec2 nd = v2_sub(npc->pos, st->pos);
+                float ndist = sqrtf(v2_len_sq(nd));
+                if (ndist < 1.0f) continue;
+                float nr_inner = STATION_RING_RADIUS[ring] - CORRIDOR_HW - hull->ship_radius;
+                float nr_outer = STATION_RING_RADIUS[ring] + CORRIDOR_HW + hull->ship_radius;
+                if (ndist <= nr_inner || ndist >= nr_outer) continue;
+                float nang = atan2f(nd.y, nd.x);
+                float nda = cb - ca;
+                while (nda > PI_F) nda -= TWO_PI_F;
+                while (nda < -PI_F) nda += TWO_PI_F;
+                if (angle_in_arc(nang, ca, nda) < 0.0f) continue;
+                /* Push radially */
+                vec2 nrad = v2_scale(nd, 1.0f / ndist);
+                float d_in = ndist - (STATION_RING_RADIUS[ring] - CORRIDOR_HW);
+                float d_out = (STATION_RING_RADIUS[ring] + CORRIDOR_HW) - ndist;
+                if (d_in < d_out) {
+                    npc->pos = v2_add(st->pos, v2_scale(nrad, nr_inner));
+                    float vt = v2_dot(npc->vel, nrad);
+                    if (vt > 0.0f) npc->vel = v2_sub(npc->vel, v2_scale(nrad, vt * 1.0f));
+                } else {
+                    npc->pos = v2_add(st->pos, v2_scale(nrad, nr_outer));
+                    float vt = v2_dot(npc->vel, nrad);
+                    if (vt < 0.0f) npc->vel = v2_sub(npc->vel, v2_scale(nrad, vt * 1.0f));
+                }
+            }
+            if (ccount == slots && ring > 1) {
+                /* Wrap-around corridor — same test */
+                float ca = module_angle_ring(st, ring, st->modules[cidx[ccount-1]].slot);
+                float cb = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
+                vec2 nd = v2_sub(npc->pos, st->pos);
+                float ndist = sqrtf(v2_len_sq(nd));
+                if (ndist > 1.0f) {
+                    float nr_inner = STATION_RING_RADIUS[ring] - CORRIDOR_HW - hull->ship_radius;
+                    float nr_outer = STATION_RING_RADIUS[ring] + CORRIDOR_HW + hull->ship_radius;
+                    if (ndist > nr_inner && ndist < nr_outer) {
+                        float nang = atan2f(nd.y, nd.x);
+                        float nda = cb - ca;
+                        while (nda > PI_F) nda -= TWO_PI_F;
+                        while (nda < -PI_F) nda += TWO_PI_F;
+                        if (angle_in_arc(nang, ca, nda) >= 0.0f) {
+                            vec2 nrad = v2_scale(nd, 1.0f / ndist);
+                            float d_in = ndist - (STATION_RING_RADIUS[ring] - CORRIDOR_HW);
+                            float d_out = (STATION_RING_RADIUS[ring] + CORRIDOR_HW) - ndist;
+                            if (d_in < d_out) {
+                                npc->pos = v2_add(st->pos, v2_scale(nrad, nr_inner));
+                            } else {
+                                npc->pos = v2_add(st->pos, v2_scale(nrad, nr_outer));
+                            }
+                            float vt = v2_dot(npc->vel, nrad);
+                            if ((d_in < d_out && vt > 0.0f) || (d_in >= d_out && vt < 0.0f))
+                                npc->vel = v2_sub(npc->vel, v2_scale(nrad, vt * 1.0f));
+                        }
+                    }
+                }
+            }
+        }
     }
 }
 
@@ -1087,7 +1160,7 @@ static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
         npc->pos = v2_add(a->pos, v2_scale(normal, minimum));
         float vel_toward = v2_dot(npc->vel, normal);
         if (vel_toward < 0.0f)
-            npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.2f));
+            npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.0f));
     }
 }
 
@@ -1619,26 +1692,6 @@ static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
 
 static int ship_collision_count; /* per-frame overlap counter for crush detection */
 
-/* Capsule collision: line segment AB with given radius. */
-static void resolve_ship_capsule(world_t *w, server_player_t *sp, vec2 a, vec2 b, float radius) {
-    vec2 closest = v2_closest_on_segment(sp->ship.pos, a, b);
-    float minimum = radius + ship_hull_def(&sp->ship)->ship_radius;
-    vec2 delta = v2_sub(sp->ship.pos, closest);
-    float d_sq = v2_len_sq(delta);
-    if (d_sq >= minimum * minimum) return;
-    float d = sqrtf(d_sq);
-    vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
-    sp->ship.pos = v2_add(closest, v2_scale(normal, minimum));
-    float vel_toward = v2_dot(sp->ship.vel, normal);
-    if (vel_toward < 0.0f) {
-        float impact = -vel_toward;
-        if (!sp->docked && impact > SHIP_COLLISION_DAMAGE_THRESHOLD)
-            apply_ship_damage(w, sp, (impact - SHIP_COLLISION_DAMAGE_THRESHOLD) * SHIP_COLLISION_DAMAGE_SCALE);
-        sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(normal, vel_toward * 1.2f));
-    }
-    ship_collision_count++;
-}
-
 static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, float radius) {
     float minimum = radius + ship_hull_def(&sp->ship)->ship_radius;
     vec2 delta = v2_sub(sp->ship.pos, center);
@@ -1652,9 +1705,53 @@ static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, fl
         float impact = -vel_toward;
         if (!sp->docked && impact > SHIP_COLLISION_DAMAGE_THRESHOLD)
             apply_ship_damage(w, sp, (impact - SHIP_COLLISION_DAMAGE_THRESHOLD) * SHIP_COLLISION_DAMAGE_SCALE);
-        sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(normal, vel_toward * 1.2f));
+        sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(normal, vel_toward * 1.0f));
     }
     ship_collision_count++;
+}
+
+/* Annular sector collision: test ship against the corridor band exactly
+ * matching the visual arc. No ghost walls — geometry is pixel-exact. */
+static void resolve_ship_annular_sector(world_t *w, server_player_t *sp,
+                                         vec2 center, float ring_r,
+                                         float angle_a, float angle_b) {
+    float ship_r = ship_hull_def(&sp->ship)->ship_radius;
+    vec2 delta = v2_sub(sp->ship.pos, center);
+    float dist = sqrtf(v2_len_sq(delta));
+    if (dist < 1.0f) return;
+
+    /* Radial test: ship within inflated band? */
+    float r_inner = ring_r - CORRIDOR_HW - ship_r;
+    float r_outer = ring_r + CORRIDOR_HW + ship_r;
+    if (dist <= r_inner || dist >= r_outer) return;
+
+    /* Angular test: ship angle within the arc? */
+    float ship_angle = atan2f(delta.y, delta.x);
+    float da = angle_b - angle_a;
+    while (da > PI_F) da -= TWO_PI_F;
+    while (da < -PI_F) da += TWO_PI_F;
+    if (angle_in_arc(ship_angle, angle_a, da) < 0.0f) return;
+
+    /* Ship is inside corridor — push radially to nearest edge */
+    vec2 radial = v2_scale(delta, 1.0f / dist);
+    float d_inner = dist - (ring_r - CORRIDOR_HW);
+    float d_outer = (ring_r + CORRIDOR_HW) - dist;
+    vec2 push_normal;
+    if (d_inner < d_outer) {
+        sp->ship.pos = v2_add(center, v2_scale(radial, ring_r - CORRIDOR_HW - ship_r));
+        push_normal = v2_scale(radial, -1.0f);
+    } else {
+        sp->ship.pos = v2_add(center, v2_scale(radial, ring_r + CORRIDOR_HW + ship_r));
+        push_normal = radial;
+    }
+
+    float vel_toward = v2_dot(sp->ship.vel, push_normal);
+    if (vel_toward < 0.0f) {
+        float impact = -vel_toward;
+        if (!sp->docked && impact > SHIP_COLLISION_DAMAGE_THRESHOLD)
+            apply_ship_damage(w, sp, (impact - SHIP_COLLISION_DAMAGE_THRESHOLD) * SHIP_COLLISION_DAMAGE_SCALE);
+        sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(push_normal, vel_toward * 1.0f));
+    }
 }
 
 /* ================================================================== */
@@ -1862,42 +1959,40 @@ static void step_ship_motion(ship_t *s, float dt, const world_t *w) {
     }
 }
 
-/* Module collision radius — matches visual half-size. */
-/* Resolve corridor arc collision: approximate the arc between two module
- * angles with capsule segments. Shrinks endpoints inward to avoid overlap
- * with module circle collision. Does NOT increment ship_collision_count
- * (modules already count for crush detection). */
-static void resolve_ship_corridor_arc(world_t *w, server_player_t *sp,
-                                       vec2 center, float ring_r, float ang_a, float ang_b) {
-    float da = ang_b - ang_a;
-    while (da > PI_F) da -= TWO_PI_F;
-    while (da < -PI_F) da += TWO_PI_F;
-    /* Shrink arc at each end to avoid overlapping module collision circles */
-    float margin = 0.20f;
-    float sa = ang_a + da * margin;
-    float sb = ang_a + da * (1.0f - margin);
-    float sda = sb - sa;
-    vec2 prev = v2_add(center, v2(cosf(sa) * ring_r, sinf(sa) * ring_r));
-    int saved_count = ship_collision_count;
-    for (int s = 1; s <= CORRIDOR_ARC_SEGMENTS; s++) {
-        float t = (float)s / (float)CORRIDOR_ARC_SEGMENTS;
-        float a = sa + sda * t;
-        vec2 cur = v2_add(center, v2(cosf(a) * ring_r, sinf(a) * ring_r));
-        resolve_ship_capsule(w, sp, prev, cur, CORRIDOR_COLLISION_RADIUS);
-        prev = cur;
-    }
-    /* Corridor segments don't count toward crush detection */
-    ship_collision_count = saved_count;
-}
-
-/* Resolve ship-vs-module collision (module circles only, no corridor collision).
- * Corridors are thin visual trusses — ships fly through them freely. */
+/* Resolve ship vs station: module circles + corridor annular sectors. */
 static void resolve_module_collisions(world_t *w, server_player_t *sp, const station_t *st) {
+    /* Module circles */
     for (int i = 0; i < st->module_count; i++) {
         int ring = st->modules[i].ring;
         if (ring < 1 || ring > STATION_NUM_RINGS) continue;
         vec2 mod_pos = module_world_pos_ring(st, ring, st->modules[i].slot);
         resolve_ship_circle(w, sp, mod_pos, MODULE_COLLISION_RADIUS);
+    }
+    /* Corridor annular sectors — same enumeration as rendering */
+    for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
+        int slots = STATION_RING_SLOTS[ring];
+        int idx[MAX_MODULES_PER_STATION];
+        int count = 0;
+        for (int i = 0; i < st->module_count; i++)
+            if (st->modules[i].ring == ring) idx[count++] = i;
+        if (count < 2) continue;
+        for (int i = 1; i < count; i++) {
+            int tmp = idx[i]; int j = i - 1;
+            while (j >= 0 && st->modules[idx[j]].slot > st->modules[tmp].slot)
+                { idx[j+1] = idx[j]; j--; }
+            idx[j+1] = tmp;
+        }
+        for (int i = 0; i + 1 < count; i++) {
+            if (st->modules[idx[i+1]].slot - st->modules[idx[i]].slot != 1) continue;
+            float a = module_angle_ring(st, ring, st->modules[idx[i]].slot);
+            float b = module_angle_ring(st, ring, st->modules[idx[i+1]].slot);
+            resolve_ship_annular_sector(w, sp, st->pos, STATION_RING_RADIUS[ring], a, b);
+        }
+        if (count == slots && ring > 1) {
+            float a = module_angle_ring(st, ring, st->modules[idx[count-1]].slot);
+            float b = module_angle_ring(st, ring, st->modules[idx[0]].slot);
+            resolve_ship_annular_sector(w, sp, st->pos, STATION_RING_RADIUS[ring], a, b);
+        }
     }
 }
 
@@ -2983,7 +3078,7 @@ static void resolve_asteroid_module_collision(asteroid_t *a, vec2 mod_pos, float
     a->pos = v2_add(a->pos, v2_scale(normal, overlap + 1.0f));
     float vel_along = v2_dot(a->vel, normal);
     if (vel_along < 0.0f)
-        a->vel = v2_sub(a->vel, v2_scale(normal, vel_along * 1.2f));
+        a->vel = v2_sub(a->vel, v2_scale(normal, vel_along * 1.0f));
     a->net_dirty = true;
 }
 

@@ -89,6 +89,20 @@ static inline float lerp_angle(float a, float b, float t) {
     return wrap_angle(a + diff * t);
 }
 
+/* Test if angle falls within arc from arc_start spanning arc_delta radians.
+ * Returns parametric t in [0,1] if inside, -1.0f if outside. */
+static inline float angle_in_arc(float test, float arc_start, float arc_delta) {
+    if (fabsf(arc_delta) < 0.0001f) return -1.0f;
+    float rel = wrap_angle(test - arc_start);
+    if (arc_delta > 0.0f) {
+        if (rel < 0.0f) rel += TWO_PI_F;
+        return (rel <= arc_delta) ? (rel / arc_delta) : -1.0f;
+    } else {
+        if (rel > 0.0f) rel -= TWO_PI_F;
+        return (rel >= arc_delta) ? (rel / arc_delta) : -1.0f;
+    }
+}
+
 /* Closest point on line segment AB to point P. */
 static inline vec2 v2_closest_on_segment(vec2 p, vec2 a, vec2 b) {
     vec2 ab = v2_sub(b, a);
