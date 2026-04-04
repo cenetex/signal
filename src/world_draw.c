@@ -754,22 +754,26 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             float angle = module_angle_ring(station, ring, m->slot);
             draw_module_at(positions[i], angle, m->type, m->scaffold, m->build_progress, station->pos);
 
-            /* Dock berth indicators: 3 berths per dock (center, left, right) */
+            /* Dock berth indicators: end + left side + right side */
             if (m->type == MODULE_DOCK && is_nearby && !m->scaffold) {
                 float dp = 0.5f + 0.4f * sinf(g.world.time * 4.0f);
                 vec2 outward = v2_sub(positions[i], station->pos);
                 float od = sqrtf(v2_len_sq(outward));
                 if (od > 0.001f) outward = v2_scale(outward, 1.0f / od);
                 vec2 tang = v2(-outward.y, outward.x);
-                float spreads[3] = { 0.0f, -28.0f, 28.0f };
+                /* End berth (outward), left side, right side */
+                vec2 berths[3];
+                berths[0] = v2_add(positions[i], v2_scale(outward, 55.0f));
+                berths[1] = v2_add(v2_add(positions[i], v2_scale(outward, 55.0f * 0.4f)), v2_scale(tang, -28.0f));
+                berths[2] = v2_add(v2_add(positions[i], v2_scale(outward, 55.0f * 0.4f)), v2_scale(tang, 28.0f));
                 for (int b = 0; b < 3; b++) {
-                    vec2 berth = v2_add(positions[i], v2_scale(outward, 55.0f));
-                    berth = v2_add(berth, v2_scale(tang, spreads[b]));
+                    vec2 bdir = (b == 0) ? outward : tang;
+                    vec2 bperp = (b == 0) ? tang : outward;
                     float bw = 14.0f, bh = 8.0f;
-                    vec2 c0 = v2_add(berth, v2_add(v2_scale(tang, -bw), v2_scale(outward, -bh)));
-                    vec2 c1 = v2_add(berth, v2_add(v2_scale(tang, bw), v2_scale(outward, -bh)));
-                    vec2 c2 = v2_add(berth, v2_add(v2_scale(tang, bw), v2_scale(outward, bh)));
-                    vec2 c3 = v2_add(berth, v2_add(v2_scale(tang, -bw), v2_scale(outward, bh)));
+                    vec2 c0 = v2_add(berths[b], v2_add(v2_scale(bdir, -bh), v2_scale(bperp, -bw)));
+                    vec2 c1 = v2_add(berths[b], v2_add(v2_scale(bdir,  bh), v2_scale(bperp, -bw)));
+                    vec2 c2 = v2_add(berths[b], v2_add(v2_scale(bdir,  bh), v2_scale(bperp,  bw)));
+                    vec2 c3 = v2_add(berths[b], v2_add(v2_scale(bdir, -bh), v2_scale(bperp,  bw)));
                     sgl_c4f(0.2f, 1.0f, 0.6f, dp * (b == 0 ? 1.0f : 0.6f));
                     sgl_begin_lines();
                     sgl_v2f(c0.x, c0.y); sgl_v2f(c1.x, c1.y);
