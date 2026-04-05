@@ -7,7 +7,7 @@ set -euo pipefail
 API_BASE="https://staging-swarm.rati.chat/api/v1"
 API_KEY="${SWARM_API_KEY:-sk-rati--hO4iZYH3jj4DhjiWfEJPeAjrdDdhJCR13LuJzPjRuQ}"
 S3_BUCKET="signal-ratimics-assets"
-PROMPT="A miner just hailed your station on the radio. Give a short, in-character greeting and message of the day. Plain text, no markdown, under 40 words."
+PROMPT="A miner just hailed your station on the radio. Respond in character with a short greeting and message of the day. No markdown. No thinking or reasoning. Under 40 words. Only the radio message."
 
 for SLUG in signal-prospect signal-kepler signal-helios; do
   SHORT="${SLUG#signal-}"
@@ -29,10 +29,16 @@ try:
     r = json.load(sys.stdin)
     text = r['choices'][0]['message']['content'].strip()
     # Clean up markdown artifacts
-    text = text.replace('**', '').replace('*', '')
+    for ch in ['**', '*', '#', '>', '---']:
+        text = text.replace(ch, '')
+    # Remove leading/trailing whitespace and newlines
+    text = ' '.join(text.split())
     # Truncate to 255 chars (hail_message limit)
-    print(text[:255])
-except:
+    if text:
+        print(text[:255])
+    else:
+        print('Station online. Welcome, pilot.')
+except Exception as e:
     print('Station online. Welcome, pilot.')
 " 2>/dev/null)
 
