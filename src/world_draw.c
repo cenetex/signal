@@ -76,8 +76,8 @@ static void module_color(module_type_t type, float *r, float *g, float *b) {
     case MODULE_ORE_SILO:        *r=0.35f; *g=0.65f; *b=0.40f; return; /* muted green */
     /* Kepler identity: yellow/gold family */
     case MODULE_FRAME_PRESS:     *r=0.90f; *g=0.75f; *b=0.20f; return; /* gold — Kepler dominant */
-    case MODULE_LASER_FAB:       *r=0.85f; *g=0.55f; *b=0.25f; return; /* warm amber */
-    case MODULE_TRACTOR_FAB:     *r=0.80f; *g=0.70f; *b=0.15f; return; /* yellow */
+    case MODULE_LASER_FAB:       *r=0.55f; *g=0.45f; *b=0.50f; return; /* mauve-grey (neutral) */
+    case MODULE_TRACTOR_FAB:     *r=0.45f; *g=0.50f; *b=0.48f; return; /* sage-grey (neutral) */
     /* Helios identity: blue family */
     case MODULE_FURNACE_CU:      *r=0.25f; *g=0.50f; *b=0.90f; return; /* bright blue */
     case MODULE_FURNACE_CR:      *r=0.40f; *g=0.35f; *b=0.85f; return; /* indigo */

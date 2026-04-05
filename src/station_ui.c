@@ -125,9 +125,9 @@ void station_role_color(const station_t* station, float* r, float* g0, float* b)
         case MODULE_FRAME_PRESS:
             *r = 0.90f; *g0 = 0.75f; *b = 0.20f; break;  /* gold */
         case MODULE_LASER_FAB:
-            *r = 0.85f; *g0 = 0.55f; *b = 0.25f; break;  /* amber */
+            *r = 0.55f; *g0 = 0.45f; *b = 0.50f; break;  /* mauve-grey */
         case MODULE_TRACTOR_FAB:
-            *r = 0.80f; *g0 = 0.70f; *b = 0.15f; break;  /* yellow */
+            *r = 0.45f; *g0 = 0.50f; *b = 0.48f; break;  /* sage-grey */
         case MODULE_SIGNAL_RELAY:
             *r = 0.35f; *g0 = 0.55f; *b = 0.50f; break;  /* teal-grey */
         default:
