@@ -2989,13 +2989,20 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         }
         return;
     }
-    /* Outpost placement: must be undocked with scaffold kit in open space */
-    if (intent->place_outpost && !sp->docked && sp->ship.has_scaffold_kit) {
-        vec2 forward = v2_from_angle(sp->ship.angle);
-        vec2 place_pos = v2_add(sp->ship.pos, v2_scale(forward, 150.0f));
-        int slot = try_place_outpost(w, sp, place_pos);
-        if (slot >= 0) sp->ship.has_scaffold_kit = false;
-        return;
+    /* Outpost placement: towed scaffold takes priority over old kit flow */
+    if (intent->place_outpost && !sp->docked) {
+        if (sp->ship.towed_scaffold >= 0) {
+            place_towed_scaffold(w, sp);
+            return;
+        }
+        /* Legacy: scaffold kit placement (will be removed) */
+        if (sp->ship.has_scaffold_kit) {
+            vec2 forward = v2_from_angle(sp->ship.angle);
+            vec2 place_pos = v2_add(sp->ship.pos, v2_scale(forward, 150.0f));
+            int slot = try_place_outpost(w, sp, place_pos);
+            if (slot >= 0) sp->ship.has_scaffold_kit = false;
+            return;
+        }
     }
     if (intent->interact) {
         if (sp->docked) { launch_ship(w, sp); return; }
