@@ -3684,6 +3684,72 @@ static void step_contracts(world_t *w, float dt) {
 }
 
 /* ================================================================== */
+/* Scaffolds: spawn + physics                                         */
+/* ================================================================== */
+
+static const float SCAFFOLD_RADIUS = 32.0f;
+static const float SCAFFOLD_DRAG = 0.98f;  /* gentle drag when loose */
+
+int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner) {
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        if (w->scaffolds[i].active) continue;
+        scaffold_t *sc = &w->scaffolds[i];
+        memset(sc, 0, sizeof(*sc));
+        sc->active = true;
+        sc->module_type = type;
+        sc->state = SCAFFOLD_LOOSE;
+        sc->owner = owner;
+        sc->pos = pos;
+        sc->vel = v2(0.0f, 0.0f);
+        sc->radius = SCAFFOLD_RADIUS;
+        sc->rotation = 0.0f;
+        sc->spin = 0.3f + (float)(w->rng % 100) * 0.004f;
+        w->rng = w->rng * 1103515245u + 12345u;
+        sc->age = 0.0f;
+        sc->placed_station = -1;
+        sc->placed_ring = -1;
+        sc->placed_slot = -1;
+        sc->towed_by = -1;
+        return i;
+    }
+    return -1; /* no free slot */
+}
+
+static void step_scaffolds(world_t *w, float dt) {
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        scaffold_t *sc = &w->scaffolds[i];
+        if (!sc->active) continue;
+        sc->age += dt;
+        sc->rotation += sc->spin * dt;
+
+        if (sc->state == SCAFFOLD_LOOSE) {
+            /* Apply drag so loose scaffolds settle near where they spawned */
+            sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
+            sc->vel = v2_scale(sc->vel, SCAFFOLD_DRAG);
+
+            /* Station vortex: loose scaffolds near stations get pulled into orbit */
+            for (int s = 0; s < MAX_STATIONS; s++) {
+                station_t *st = &w->stations[s];
+                if (!station_is_active(st)) continue;
+                vec2 delta = v2_sub(st->pos, sc->pos);
+                float dist = sqrtf(v2_len_sq(delta));
+                float vortex_range = st->dock_radius * 2.0f;
+                if (dist < 10.0f || dist > vortex_range) continue;
+                vec2 norm = v2_scale(delta, 1.0f / dist);
+                /* Tangential orbit + gentle inward pull */
+                vec2 tangent = v2(-norm.y, norm.x);
+                float orbit_speed = 15.0f;
+                float pull = 5.0f;
+                sc->vel = v2_add(sc->vel, v2_scale(tangent, orbit_speed * dt));
+                sc->vel = v2_add(sc->vel, v2_scale(norm, pull * dt));
+            }
+        }
+        /* SCAFFOLD_TOWING: position controlled by tow physics in step_player */
+        /* SCAFFOLD_PLACED: static, owned by station module system */
+    }
+}
+
+/* ================================================================== */
 /* Public: world_sim_step                                             */
 /* ================================================================== */
 
@@ -3715,6 +3781,7 @@ void world_sim_step(world_t *w, float dt) {
     sim_step_refinery_production(w, dt);
     sim_step_station_production(w, dt);
     step_module_construction(w, dt);
+    step_scaffolds(w, dt);
     step_contracts(w, dt);
     step_npc_ships(w, dt);
     generate_npc_distress_contracts(w);
@@ -3921,6 +3988,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->ship.credits    = 50.0f;
     sp->ship.angle      = PI_F * 0.5f;
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
+    sp->ship.towed_scaffold = -1;
     sp->ship.tractor_active = true;
     sp->docked          = true;
     sp->current_station = 0;
