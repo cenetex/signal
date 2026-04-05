@@ -780,22 +780,22 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         ring_cr[r] = role_r; ring_cg[r] = role_g; ring_cb[r] = role_b;
     }
     {
-        /* Find dominant module per ring (first non-dock, non-relay, non-scaffold) */
-        static const module_type_t color_prio[] = {
-            MODULE_FURNACE_CU, MODULE_FURNACE_CR, MODULE_FURNACE,
-            MODULE_FRAME_PRESS, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
-            MODULE_ORE_BUYER, MODULE_SIGNAL_RELAY,
-        };
+        /* Blend all module colors on each ring */
         for (int r = 1; r <= STATION_NUM_RINGS; r++) {
-            for (int p = 0; p < (int)(sizeof(color_prio)/sizeof(color_prio[0])); p++) {
-                bool found = false;
-                for (int i = 0; i < station->module_count; i++) {
-                    if (station->modules[i].ring == r && station->modules[i].type == color_prio[p]) {
-                        module_color(color_prio[p], &ring_cr[r], &ring_cg[r], &ring_cb[r]);
-                        found = true; break;
-                    }
-                }
-                if (found) break;
+            float sum_r = 0, sum_g = 0, sum_b = 0;
+            int count = 0;
+            for (int i = 0; i < station->module_count; i++) {
+                if (station->modules[i].ring != r) continue;
+                if (station->modules[i].type == MODULE_DOCK) continue;
+                float mr, mg, mb;
+                module_color(station->modules[i].type, &mr, &mg, &mb);
+                sum_r += mr; sum_g += mg; sum_b += mb;
+                count++;
+            }
+            if (count > 0) {
+                ring_cr[r] = sum_r / (float)count;
+                ring_cg[r] = sum_g / (float)count;
+                ring_cb[r] = sum_b / (float)count;
             }
         }
     }
