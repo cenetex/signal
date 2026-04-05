@@ -1509,36 +1509,41 @@ TEST(test_scenario_full_mining_cycle) {
     w.players[0].ship.towed_fragments[0] = (int16_t)frag;
     w.players[0].ship.towed_count = 1;
 
-    /* Find ore buyer (hopper) module on station 0 */
-    int hopper_idx = -1;
+    /* Find furnace and ore_silo modules on station 0 for dual-reach smelting */
+    int furnace_idx = -1, silo_idx = -1;
     for (int m = 0; m < w.stations[0].module_count; m++) {
-        if (w.stations[0].modules[m].type == MODULE_ORE_BUYER && !w.stations[0].modules[m].scaffold) {
-            hopper_idx = m; break;
-        }
+        if (w.stations[0].modules[m].type == MODULE_FURNACE && !w.stations[0].modules[m].scaffold)
+            furnace_idx = m;
+        if (w.stations[0].modules[m].type == MODULE_ORE_SILO && !w.stations[0].modules[m].scaffold)
+            silo_idx = m;
     }
-    ASSERT(hopper_idx >= 0);
-    vec2 hopper_pos = module_world_pos_ring(&w.stations[0],
-        w.stations[0].modules[hopper_idx].ring, w.stations[0].modules[hopper_idx].slot);
+    ASSERT(furnace_idx >= 0);
+    ASSERT(silo_idx >= 0);
     float start_credits = w.players[0].ship.credits;
 
     /* Clear station ore inventory */
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
         w.stations[0].inventory[i] = 0.0f;
 
-    /* Stop rotation, place fragment AT hopper mouth, ship nearby */
+    /* Stop rotation, place fragment at midpoint between furnace and silo */
     for (int a = 0; a < MAX_ARMS; a++) {
         w.stations[0].arm_speed[a] = 0.0f;
         w.stations[0].arm_rotation[a] = 0.0f;
     }
-    hopper_pos = module_world_pos_ring(&w.stations[0],
-        w.stations[0].modules[hopper_idx].ring, w.stations[0].modules[hopper_idx].slot);
+    vec2 furnace_pos = module_world_pos_ring(&w.stations[0],
+        w.stations[0].modules[furnace_idx].ring, w.stations[0].modules[furnace_idx].slot);
+    vec2 silo_pos = module_world_pos_ring(&w.stations[0],
+        w.stations[0].modules[silo_idx].ring, w.stations[0].modules[silo_idx].slot);
+    vec2 midpoint = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
     ASSERT(station_buy_price(&w.stations[0], COMMODITY_FERRITE_ORE) > 0.0f);
-    w.asteroids[frag].pos = hopper_pos;
+    w.asteroids[frag].pos = midpoint;
     w.asteroids[frag].vel = v2(0.0f, 0.0f);
-    w.players[0].ship.pos = v2_add(hopper_pos, v2(100.0f, 0.0f));
+    w.asteroids[frag].last_fractured_by = 0;
+    w.asteroids[frag].last_towed_by = 0;
+    w.players[0].ship.pos = v2_add(midpoint, v2(100.0f, 0.0f));
     w.players[0].ship.vel = v2(0.0f, 0.0f);
-    /* Run enough steps for the 30Hz hopper intake to fire */
-    for (int i = 0; i < 10; i++) world_sim_step(&w, SIM_DT);
+    /* Run enough steps for smelt_progress to reach 1.0 (~2 seconds at 120Hz) */
+    for (int i = 0; i < 300; i++) world_sim_step(&w, SIM_DT);
 
     /* Fragment should be consumed, credits earned */
     ASSERT(w.players[0].ship.towed_count == 0);
@@ -3131,10 +3136,10 @@ TEST(test_world_load_rejects_stale_version) {
 TEST(test_world_save_load_preserves_module_ring_slot) {
     world_t w = {0};
     world_reset(&w);
-    ASSERT(w.stations[0].module_count > 2);
-    station_module_t orig = w.stations[0].modules[2]; /* first ring 2 module (ORE_BUYER) */
-    ASSERT(orig.type == MODULE_ORE_BUYER);
-    ASSERT(orig.ring == 2);
+    ASSERT(w.stations[0].module_count > 3);
+    station_module_t orig = w.stations[0].modules[2]; /* ring 1: furnace at slot 2 */
+    ASSERT(orig.type == MODULE_FURNACE);
+    ASSERT(orig.ring == 1);
     ASSERT(world_save(&w, "/tmp/test_modules.sav"));
     world_t loaded = {0};
     ASSERT(world_load(&loaded, "/tmp/test_modules.sav"));
@@ -3145,9 +3150,9 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     ASSERT_EQ_INT((int)restored.scaffold, (int)orig.scaffold);
     ASSERT_EQ_FLOAT(restored.build_progress, orig.build_progress, 0.001f);
     station_module_t mod3 = loaded.stations[0].modules[3];
-    ASSERT(mod3.type == MODULE_FURNACE);
+    ASSERT(mod3.type == MODULE_ORE_SILO);
     ASSERT_EQ_INT((int)mod3.ring, 2);
-    ASSERT_EQ_INT((int)mod3.slot, 2);
+    ASSERT_EQ_INT((int)mod3.slot, 3);
     remove("/tmp/test_modules.sav");
 }
 
@@ -3767,9 +3772,8 @@ TEST(test_refinery_smelts_after_ore_sale) {
     w.players[0].docked = true;
     w.players[0].current_station = 0;
     w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
-    /* Verify Prospect has a furnace */
+    /* Verify Prospect has a furnace (furnaces handle ore buying now) */
     ASSERT(station_has_module(&w.stations[0], MODULE_FURNACE));
-    ASSERT(w.stations[0].services & STATION_SERVICE_ORE_BUYER);
     /* Sell ore */
     w.players[0].input.service_sell = true;
     world_sim_step(&w, SIM_DT);
@@ -3782,8 +3786,8 @@ TEST(test_refinery_smelts_after_ore_sale) {
     ASSERT(ingots > 0.0f);
 }
 
-TEST(test_furnace_without_adjacent_hopper_no_smelt) {
-    /* A furnace with no adjacent hopper should not smelt ore. */
+TEST(test_furnace_without_adjacent_hopper_smelts) {
+    /* Furnaces smelt from station inventory regardless of adjacency. */
     world_t w = {0};
     world_reset(&w);
     /* Remove all modules from station 0 and place furnace alone */
@@ -3791,14 +3795,14 @@ TEST(test_furnace_without_adjacent_hopper_no_smelt) {
     rebuild_station_services(&w.stations[0]);
     w.stations[0].modules[0] = (station_module_t){ .type = MODULE_FURNACE, .ring = 2, .slot = 0, .scaffold = false, .build_progress = 1.0f };
     w.stations[0].module_count = 1;
-    /* No hopper on ring 2 — furnace is isolated */
+    /* Furnace is isolated — no hopper — but should still smelt */
     w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 100.0f;
     float initial_ingots = w.stations[0].inventory[COMMODITY_FERRITE_INGOT];
     /* Run sim for 5 seconds */
     for (int i = 0; i < (int)(5.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
-    /* No smelting should have occurred */
-    ASSERT_EQ_FLOAT(w.stations[0].inventory[COMMODITY_FERRITE_INGOT], initial_ingots, 0.01f);
+    /* Smelting should have occurred — furnaces smelt directly from inventory */
+    ASSERT(w.stations[0].inventory[COMMODITY_FERRITE_INGOT] > initial_ingots);
 }
 
 /* ================================================================== */
@@ -3863,20 +3867,20 @@ TEST(test_238_module_circle_blocks_player) {
 }
 
 TEST(test_238_corridor_blocks_radial_approach) {
-    /* Corridor between hopper@1 and furnace@2 on ring 2 of station 0.
+    /* Corridor between relay@1 and furnace@2 on ring 1 of station 0.
+     * Dock@0 is skipped, so the relay-furnace corridor should block.
      * Approach radially — should be pushed out. */
     world_t w;
     setup_collision_world(&w);
     vec2 st_pos = w.stations[0].pos;
 
-    /* Midpoint angle between slot 1 and slot 2 on ring 2 (accounts for ring_offset) */
-    float ang1 = module_angle_ring(&w.stations[0], 2, 1);
-    float ang2 = module_angle_ring(&w.stations[0], 2, 2);
+    /* Midpoint angle between slot 1 and slot 2 on ring 1 (accounts for ring_offset) */
+    float ang1 = module_angle_ring(&w.stations[0], 1, 1);
+    float ang2 = module_angle_ring(&w.stations[0], 1, 2);
     float mid_ang = (ang1 + ang2) * 0.5f;
-    float ring_r = 340.0f; /* STATION_RING_RADIUS[2] */
+    float ring_r = 180.0f; /* STATION_RING_RADIUS[1] */
 
     /* Place player at the ring radius at the corridor midpoint, approaching inward */
-    vec2 corridor_point = v2_add(st_pos, v2(cosf(mid_ang) * ring_r, sinf(mid_ang) * ring_r));
     w.players[0].ship.pos = v2_add(st_pos, v2(cosf(mid_ang) * (ring_r + 60.0f), sinf(mid_ang) * (ring_r + 60.0f)));
     vec2 inward = v2_norm(v2_sub(st_pos, w.players[0].ship.pos));
     w.players[0].ship.vel = v2_scale(inward, 300.0f);
@@ -3895,19 +3899,19 @@ TEST(test_238_corridor_blocks_radial_approach) {
 }
 
 TEST(test_238_dock_gap_allows_entry) {
-    /* Dock modules create gaps — player should fly through.
-     * Station 0 ring 1 has dock@0, relay@1, gap@2.
-     * Approach through the gap between dock@0 and relay@1 (dock side). */
+    /* Dock creates gap on one side (corridor skipped where dock is first module).
+     * Station 0 ring 1: dock@0, relay@1, furnace@2.
+     * Gap is between dock@0 and relay@1 — fly through midpoint. */
     world_t w;
     setup_collision_world(&w);
     vec2 st_pos = w.stations[0].pos;
     float ring_r = 180.0f; /* STATION_RING_RADIUS[1] */
 
-    /* Dock is at slot 0. The dock should create a gap on both sides.
-     * Fly radially inward through the dock's angular position. */
-    float dock_ang = TWO_PI_F * 0.0f / 3.0f; /* slot 0 of 3 */
-    vec2 outside = v2_add(st_pos, v2(cosf(dock_ang) * (ring_r + 80.0f), sinf(dock_ang) * (ring_r + 80.0f)));
-    vec2 inside_target = v2_add(st_pos, v2(cosf(dock_ang) * (ring_r - 80.0f), sinf(dock_ang) * (ring_r - 80.0f)));
+    float dock_ang = module_angle_ring(&w.stations[0], 1, 0);
+    float relay_ang = module_angle_ring(&w.stations[0], 1, 1);
+    float gap_mid = (dock_ang + relay_ang) * 0.5f;
+    vec2 outside = v2_add(st_pos, v2(cosf(gap_mid) * (ring_r + 80.0f), sinf(gap_mid) * (ring_r + 80.0f)));
+    vec2 inside_target = v2_add(st_pos, v2(cosf(gap_mid) * (ring_r - 80.0f), sinf(gap_mid) * (ring_r - 80.0f)));
 
     w.players[0].ship.pos = outside;
     vec2 dir = v2_norm(v2_sub(inside_target, outside));
@@ -3916,22 +3920,20 @@ TEST(test_238_dock_gap_allows_entry) {
     for (int i = 0; i < 120; i++)
         world_sim_step(&w, SIM_DT);
 
-    /* Player should have crossed the ring radius (passed through the dock gap) */
     float dist_from_center = v2_len(v2_sub(w.players[0].ship.pos, st_pos));
     ASSERT(dist_from_center < ring_r);
 }
 
 TEST(test_238_corridor_angular_edge_no_clip) {
-    /* The corridor between hopper@1 and furnace@2 on ring 2.
-     * Approach at the angular edge near the furnace end — ship should not clip through. */
+    /* Corridor between relay@1 and furnace@2 on ring 1.
+     * Approach at the angular edge near the furnace end — should not clip through. */
     world_t w;
     setup_collision_world(&w);
     vec2 st_pos = w.stations[0].pos;
-    float ring_r = 340.0f;
+    float ring_r = 180.0f; /* STATION_RING_RADIUS[1] */
 
-    /* Module at slot 2 (furnace) — approach the corridor from just past this module's angle */
-    float slot2_ang = TWO_PI_F * 2.0f / 6.0f;
-    /* Place player at the ring radius, slightly before the module angle (inside corridor arc) */
+    /* Furnace at slot 2 on ring 1 — approach from just before its angle */
+    float slot2_ang = module_angle_ring(&w.stations[0], 1, 2);
     float test_ang = slot2_ang - 0.02f; /* just inside corridor end */
     w.players[0].ship.pos = v2_add(st_pos, v2(cosf(test_ang) * (ring_r + 50.0f), sinf(test_ang) * (ring_r + 50.0f)));
     vec2 inward = v2_norm(v2_sub(st_pos, w.players[0].ship.pos));
@@ -3940,7 +3942,6 @@ TEST(test_238_corridor_angular_edge_no_clip) {
     for (int i = 0; i < 60; i++)
         world_sim_step(&w, SIM_DT);
 
-    /* Player should NOT have reached ring_r (blocked by corridor) */
     float dist = v2_len(v2_sub(w.players[0].ship.pos, st_pos));
     float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius;
     float outer_edge = ring_r + 10.0f + ship_r;
@@ -4276,7 +4277,7 @@ int main(void) {
 
     printf("\nRefinery smelt test:\n");
     RUN(test_refinery_smelts_after_ore_sale);
-    RUN(test_furnace_without_adjacent_hopper_no_smelt);
+    RUN(test_furnace_without_adjacent_hopper_smelts);
 
     printf("\nCollision accuracy (#238):\n");
     RUN(test_238_station_core_blocks_player);
