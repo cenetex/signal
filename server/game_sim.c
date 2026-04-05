@@ -3847,7 +3847,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 16  /* bumped: added ring_offset per station ring */
+#define SAVE_VERSION 17  /* bumped: furnace on Ring 1, ore_silo on Ring 2, removed ORE_BUYER */
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
