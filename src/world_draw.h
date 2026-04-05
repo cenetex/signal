@@ -38,6 +38,10 @@ void draw_towed_tethers(void);
 /* --- Module visuals --- */
 void module_color_fn(module_type_t type, float *r, float *g, float *b);
 
+/* --- Scaffolds --- */
+void draw_scaffolds(void);
+void draw_scaffold_tether(void);
+
 /* --- Compass ring --- */
 void draw_compass_ring(void);
 

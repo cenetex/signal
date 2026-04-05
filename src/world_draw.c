@@ -1465,3 +1465,95 @@ void draw_remote_players(void) {
         }
     }
 }
+
+/* ================================================================== */
+/* Scaffold world objects                                             */
+/* ================================================================== */
+
+void draw_scaffolds(void) {
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        const scaffold_t *sc = &g.world.scaffolds[i];
+        if (!sc->active) continue;
+        if (!on_screen(sc->pos.x, sc->pos.y, sc->radius + 20.0f)) continue;
+
+        float amb_r = 1.0f, amb_g = 0.85f, amb_b = 0.47f; /* construction amber */
+        float pulse = 0.5f + 0.2f * sinf(g.world.time * 2.5f + sc->age * 3.0f);
+
+        /* Module-type tint blended with amber */
+        float mr, mg, mb;
+        module_color_fn(sc->module_type, &mr, &mg, &mb);
+        amb_r = lerpf(amb_r, mr, 0.3f);
+        amb_g = lerpf(amb_g, mg, 0.3f);
+        amb_b = lerpf(amb_b, mb, 0.3f);
+
+        sgl_push_matrix();
+        sgl_translate(sc->pos.x, sc->pos.y, 0.0f);
+        sgl_rotate(sc->rotation, 0.0f, 0.0f, 1.0f);
+
+        float r = sc->radius;
+
+        /* Wireframe octagon */
+        sgl_begin_lines();
+        int segs = 8;
+        float alpha = (sc->state == SCAFFOLD_SNAPPING) ? pulse + 0.3f : pulse;
+        sgl_c4f(amb_r, amb_g, amb_b, alpha);
+        for (int s = 0; s < segs; s++) {
+            float a0 = TWO_PI_F * (float)s / (float)segs;
+            float a1 = TWO_PI_F * (float)(s + 1) / (float)segs;
+            sgl_v2f(cosf(a0) * r, sinf(a0) * r);
+            sgl_v2f(cosf(a1) * r, sinf(a1) * r);
+        }
+        /* Internal cross-brace — scaffolding structure */
+        float inner = r * 0.6f;
+        sgl_c4f(amb_r * 0.7f, amb_g * 0.7f, amb_b * 0.7f, alpha * 0.6f);
+        sgl_v2f(-inner, -inner); sgl_v2f(inner, inner);
+        sgl_v2f(-inner, inner); sgl_v2f(inner, -inner);
+        sgl_v2f(-inner, 0); sgl_v2f(inner, 0);
+        sgl_v2f(0, -inner); sgl_v2f(0, inner);
+        sgl_end();
+
+        /* Module type indicator: small filled circle at center */
+        sgl_begin_triangles();
+        sgl_c4f(mr * 0.8f, mg * 0.8f, mb * 0.8f, pulse * 0.5f);
+        int csegs = 8;
+        float cr2 = 6.0f;
+        for (int s = 0; s < csegs; s++) {
+            float a0 = TWO_PI_F * (float)s / (float)csegs;
+            float a1 = TWO_PI_F * (float)(s + 1) / (float)csegs;
+            sgl_v2f(0, 0);
+            sgl_v2f(cosf(a0) * cr2, sinf(a0) * cr2);
+            sgl_v2f(cosf(a1) * cr2, sinf(a1) * cr2);
+        }
+        sgl_end();
+
+        sgl_pop_matrix();
+
+        /* SNAPPING state: draw tendrils from station to scaffold */
+        if (sc->state == SCAFFOLD_SNAPPING && sc->placed_station >= 0) {
+            const station_t *st = &g.world.stations[sc->placed_station];
+            vec2 target = module_world_pos_ring(st, sc->placed_ring, sc->placed_slot);
+            float t_pulse = 0.4f + 0.3f * sinf(g.world.time * 4.0f);
+
+            /* Main tendril: station slot → scaffold */
+            draw_segment(target, sc->pos, amb_r * 0.6f, amb_g * 0.6f, amb_b * 0.4f, t_pulse);
+
+            /* Secondary tendrils from station center */
+            draw_segment(st->pos, sc->pos, amb_r * 0.3f, amb_g * 0.3f, amb_b * 0.2f, t_pulse * 0.4f);
+
+            /* Target slot indicator: pulsing ring at the destination */
+            draw_circle_outline(target, sc->radius + 4.0f, 12,
+                amb_r * 0.5f, amb_g * 0.5f, amb_b * 0.3f, t_pulse * 0.6f);
+        }
+    }
+}
+
+void draw_scaffold_tether(void) {
+    /* Tether line from player ship to towed scaffold */
+    int idx = LOCAL_PLAYER.ship.towed_scaffold;
+    if (idx < 0 || idx >= MAX_SCAFFOLDS) return;
+    const scaffold_t *sc = &g.world.scaffolds[idx];
+    if (!sc->active) return;
+
+    float pulse = 0.5f + 0.2f * sinf(g.world.time * 3.0f);
+    draw_segment(LOCAL_PLAYER.ship.pos, sc->pos, 0.5f, 0.85f, 0.75f, pulse);
+}

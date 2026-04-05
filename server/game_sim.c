@@ -2897,7 +2897,11 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                 spend_credits(&sp->ship, price);
                 sp->ship.has_scaffold_kit = true;
                 sp->ship.scaffold_kit_type = kit_type;
-                SIM_LOG("[sim] player %d bought %s scaffold kit\n", sp->id,
+                /* Spawn a physical scaffold near the station for tow-to-outpost */
+                vec2 spawn_offset = v2(st->dock_radius + 60.0f, 0.0f);
+                vec2 spawn_pos = v2_add(st->pos, spawn_offset);
+                spawn_scaffold(w, kit_type, spawn_pos, sp->id);
+                SIM_LOG("[sim] player %d bought %s scaffold kit + world scaffold\n", sp->id,
                         module_type_name(kit_type));
             }
         }
