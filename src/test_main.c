@@ -624,7 +624,7 @@ TEST(test_bug2_angle_lerp_wraparound) {
 TEST(test_bug3_event_buffer_too_small) {
     /* FIXED: SIM_MAX_EVENTS should be >= MAX_PLAYERS so all players get events */
     /* This FAILS because SIM_MAX_EVENTS is 16 but MAX_PLAYERS is 32 */
-    ASSERT(SIM_MAX_EVENTS >= MAX_PLAYERS);
+    ASSERT((int)SIM_MAX_EVENTS >= (int)MAX_PLAYERS);
 }
 
 TEST(test_bug4_pending_action_lost) {

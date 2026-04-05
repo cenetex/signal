@@ -278,7 +278,7 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
     write_f32_le(&buf[19], st->dock_radius);
     write_f32_le(&buf[23], st->signal_range);
     memset(&buf[27], 0, 32);
-    memcpy(&buf[27], st->name, strnlen(st->name, 31));
+    { size_t n = strlen(st->name); if (n > 31) n = 31; memcpy(&buf[27], st->name, n); }
     for (int c = 0; c < COMMODITY_COUNT; c++)
         write_f32_le(&buf[59 + c * 4], st->base_price[c]);
     write_f32_le(&buf[59 + COMMODITY_COUNT * 4], st->scaffold_progress);
