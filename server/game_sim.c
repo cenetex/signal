@@ -3933,6 +3933,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_VERSION 19  /* bumped: Kepler Ring 1 ore_silo, dock half-collision */
+#define MIN_SAVE_VERSION 19  /* oldest version we can migrate from */
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
@@ -4154,8 +4155,9 @@ bool world_load(world_t *w, const char *path) {
     uint32_t magic, version;
     READ_FIELD(f, magic);
     READ_FIELD(f, version);
-    if (magic != SAVE_MAGIC || version < SAVE_VERSION || version > SAVE_VERSION) {
-        printf("[save] rejected save: magic=0x%08x version=%u (need %d)\n", magic, version, SAVE_VERSION);
+    if (magic != SAVE_MAGIC || version < MIN_SAVE_VERSION || version > SAVE_VERSION) {
+        printf("[save] rejected save: magic=0x%08x version=%u (need %d-%d)\n",
+               magic, version, MIN_SAVE_VERSION, SAVE_VERSION);
         fclose(f); return false;
     }
 
@@ -4179,6 +4181,17 @@ bool world_load(world_t *w, const char *path) {
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         if (!read_contract(f, &w->contracts[i])) return false;
     }
+
+    /* ---- Version migrations ----
+     * Each block migrates from version N to N+1.  They run in sequence so
+     * a v19 save loaded by a v21 binary walks through 19->20->21.
+     * When adding a new version:
+     *   1. Bump SAVE_VERSION
+     *   2. Add a migration block here (if (version < NEW) { ... })
+     *   3. Update EXPECTED_V{N}_SAVE_SIZE in test_main.c
+     */
+    /* (v19 is the baseline — no migration needed yet) */
+    /* if (version < 20) { ... migrate 19->20 ... } */
 
     /* Post-load migration: ensure built-in stations have blueprint service.
      * Saves created before the outpost feature lack this bit. */

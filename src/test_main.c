@@ -3173,6 +3173,139 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
 }
 
 /* ================================================================== */
+/* Save format stability — catch accidental layout changes            */
+/* ================================================================== */
+
+/*
+ * EXPECTED_V19_SAVE_SIZE is the exact byte count of a world.sav written
+ * by SAVE_VERSION 19.  If a field is added to write_station / write_asteroid /
+ * write_npc / write_contract or the header, this number changes and the test
+ * fails.  That failure is the reminder to:
+ *   1. Bump SAVE_VERSION
+ *   2. Add a migration block in world_load()
+ *   3. Update this constant to the new size
+ */
+#define EXPECTED_V19_SAVE_SIZE 20094
+
+TEST(test_save_file_size_stable) {
+    world_t w = {0};
+    world_reset(&w);
+    ASSERT(world_save(&w, "/tmp/test_size.sav"));
+    FILE *f = fopen("/tmp/test_size.sav", "rb");
+    ASSERT(f != NULL);
+    fseek(f, 0, SEEK_END);
+    long size = ftell(f);
+    fclose(f);
+    /* If this fails you changed the binary save format.
+     * Bump SAVE_VERSION, add a migration, and update EXPECTED_V19_SAVE_SIZE. */
+    ASSERT_EQ_INT((int)size, EXPECTED_V19_SAVE_SIZE);
+    remove("/tmp/test_size.sav");
+}
+
+TEST(test_save_header_golden_bytes) {
+    world_t w = {0};
+    w.rng = 2037u;  /* default seed */
+    world_reset(&w);
+    w.time = 0.0f;
+    w.field_spawn_timer = 0.0f;
+    ASSERT(world_save(&w, "/tmp/test_header.sav"));
+    FILE *f = fopen("/tmp/test_header.sav", "rb");
+    ASSERT(f != NULL);
+    uint32_t magic, version, rng;
+    float time_val, spawn_timer;
+    fread(&magic, 4, 1, f);
+    fread(&version, 4, 1, f);
+    fread(&rng, 4, 1, f);
+    fread(&time_val, 4, 1, f);
+    fread(&spawn_timer, 4, 1, f);
+    fclose(f);
+    ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
+    ASSERT_EQ_INT((int)version, 19);
+    ASSERT(rng != 0);  /* seed is set */
+    ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
+    remove("/tmp/test_header.sav");
+}
+
+TEST(test_save_load_preserves_player_outpost) {
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;  /* must be undocked to place */
+    w.players[0].ship.has_scaffold_kit = true;
+    w.players[0].ship.scaffold_kit_type = MODULE_SIGNAL_RELAY;
+    w.players[0].ship.credits = 1000.0f;
+    /* Place outpost within signal range of station 0 but >800 units away */
+    vec2 pos = v2(2000.0f, -2400.0f);
+    int slot = try_place_outpost(&w, &w.players[0], pos);
+    ASSERT(slot >= 0);
+    ASSERT(station_exists(&w.stations[slot]));
+    ASSERT(w.stations[slot].scaffold);
+    /* Deliver some frames to advance progress */
+    w.stations[slot].inventory[COMMODITY_FRAME] = 30.0f;
+    for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
+    float progress = w.stations[slot].scaffold_progress;
+    int mod_count = w.stations[slot].module_count;
+    char name_buf[32];
+    memcpy(name_buf, w.stations[slot].name, 32);
+    /* Save and reload */
+    ASSERT(world_save(&w, "/tmp/test_outpost.sav"));
+    world_t loaded = {0};
+    ASSERT(world_load(&loaded, "/tmp/test_outpost.sav"));
+    /* Outpost must survive */
+    ASSERT(station_exists(&loaded.stations[slot]));
+    ASSERT(loaded.stations[slot].scaffold);
+    ASSERT_EQ_FLOAT(loaded.stations[slot].pos.x, 2000.0f, 1.0f);
+    ASSERT_EQ_FLOAT(loaded.stations[slot].pos.y, -2400.0f, 1.0f);
+    ASSERT_EQ_FLOAT(loaded.stations[slot].scaffold_progress, progress, 0.01f);
+    ASSERT_EQ_INT(loaded.stations[slot].module_count, mod_count);
+    ASSERT_STR_EQ(loaded.stations[slot].name, name_buf);
+    /* Signal chain rebuilt — outpost may or may not be connected depending on
+     * scaffold state, but the station slot must still exist */
+    ASSERT(loaded.stations[slot].signal_range > 0.0f);
+    remove("/tmp/test_outpost.sav");
+}
+
+TEST(test_save_backward_compat_version_accepted) {
+    /* Save at current version, patch version down to MIN, verify load works.
+     * This validates the migration path doesn't reject old-but-supported saves. */
+    world_t w = {0};
+    world_reset(&w);
+    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 77.0f;
+    ASSERT(world_save(&w, "/tmp/test_compat.sav"));
+    /* Patch version field (bytes 4-7) to MIN_SAVE_VERSION (19) — currently
+     * same as SAVE_VERSION, so this is a no-op.  When SAVE_VERSION is bumped
+     * to 20+, this test verifies that v19 saves still load. */
+    FILE *f = fopen("/tmp/test_compat.sav", "r+b");
+    ASSERT(f != NULL);
+    fseek(f, 4, SEEK_SET);
+    uint32_t min_ver = 19;  /* MIN_SAVE_VERSION at time of writing */
+    fwrite(&min_ver, sizeof(min_ver), 1, f);
+    fclose(f);
+    world_t loaded = {0};
+    ASSERT(world_load(&loaded, "/tmp/test_compat.sav"));
+    ASSERT_EQ_FLOAT(loaded.stations[0].inventory[COMMODITY_FERRITE_ORE], 77.0f, 0.01f);
+    remove("/tmp/test_compat.sav");
+}
+
+TEST(test_save_future_version_rejected) {
+    /* A save with version > SAVE_VERSION must be rejected (can't load future formats) */
+    world_t w = {0};
+    world_reset(&w);
+    ASSERT(world_save(&w, "/tmp/test_future.sav"));
+    FILE *f = fopen("/tmp/test_future.sav", "r+b");
+    ASSERT(f != NULL);
+    fseek(f, 4, SEEK_SET);
+    uint32_t future = 9999;
+    fwrite(&future, sizeof(future), 1, f);
+    fclose(f);
+    world_t loaded = {0};
+    ASSERT(!world_load(&loaded, "/tmp/test_future.sav"));
+    remove("/tmp/test_future.sav");
+}
+
+/* ================================================================== */
 /* STRATEGIC TDD: Station construction (#83)                          */
 /* ================================================================== */
 
@@ -4270,6 +4403,13 @@ int main(void) {
     RUN(test_world_load_rejects_stale_version);
     RUN(test_world_save_load_preserves_module_ring_slot);
     RUN(test_world_save_load_preserves_smelted_ingots);
+
+    printf("\nSave format stability:\n");
+    RUN(test_save_file_size_stable);
+    RUN(test_save_header_golden_bytes);
+    RUN(test_save_load_preserves_player_outpost);
+    RUN(test_save_backward_compat_version_accepted);
+    RUN(test_save_future_version_rejected);
 
     printf("\nRefinery tiers:\n");
     RUN(test_furnace_only_smelts_ferrite);
