@@ -280,12 +280,12 @@ static void episode_per_frame(void) {
     if (!g.episode.watched[3] && LOCAL_PLAYER.ship.has_scaffold_kit)
         episode_trigger(&g.episode, 3);
 
-    /* Ep 4: Naming — placed an outpost this life */
-    if (!g.episode.watched[4] && g.onboarding.placed_outpost)
+    /* Ep 4: Naming — placed an outpost (skip while docked to avoid post-death retrigger) */
+    if (!g.episode.watched[4] && g.onboarding.placed_outpost && !LOCAL_PLAYER.docked)
         episode_trigger(&g.episode, 4);
 
-    /* Ep 5: Drones — NPC mining drone active at a player outpost */
-    if (!g.episode.watched[5]) {
+    /* Ep 5: Drones — NPC mining drone active at a player outpost (skip while docked) */
+    if (!g.episode.watched[5] && !LOCAL_PLAYER.docked) {
         for (int n = 0; n < MAX_NPC_SHIPS; n++) {
             npc_ship_t *npc = &g.world.npc_ships[n];
             if (!npc->active || npc->role != NPC_ROLE_MINER) continue;
