@@ -20,7 +20,8 @@ for SLUG in signal-prospect signal-kepler signal-helios; do
       \"model\": \"avatar:$SLUG\",
       \"messages\": [{\"role\": \"user\", \"content\": \"$PROMPT\"}],
       \"max_tokens\": 100,
-      \"temperature\": 0.9
+      \"temperature\": 0.9,
+      \"include_audio\": true
     }" 2>/dev/null)
 
   MOTD=$(echo "$RESPONSE" | python3 -c "
@@ -55,7 +56,28 @@ except:
   echo -n "$MOTD" > "/tmp/${SHORT}_motd.txt"
   aws s3 cp "/tmp/${SHORT}_motd.txt" "s3://$S3_BUCKET/stations/$SHORT/motd.txt" \
     --content-type "text/plain" --quiet
-  echo "  Uploaded to S3"
+
+  # Extract audio URL if present
+  AUDIO_URL=$(echo "$RESPONSE" | python3 -c "
+import sys, json
+try:
+    r = json.load(sys.stdin)
+    audio = r['choices'][0]['message'].get('audio', {})
+    print(audio.get('url', ''))
+except:
+    print('')
+" 2>/dev/null)
+
+  if [ -n "$AUDIO_URL" ]; then
+    echo "  Voice: $AUDIO_URL"
+    curl -s "$AUDIO_URL" -o "/tmp/${SHORT}_hail.wav" 2>/dev/null
+    if [ -s "/tmp/${SHORT}_hail.wav" ]; then
+      aws s3 cp "/tmp/${SHORT}_hail.wav" "s3://$S3_BUCKET/stations/$SHORT/hail.wav" \
+        --content-type "audio/wav" --quiet
+      echo "  Voice uploaded to S3"
+    fi
+  fi
+  echo "  Done"
 done
 
 echo "All MOTDs generated and uploaded."
