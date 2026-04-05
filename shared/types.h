@@ -191,6 +191,7 @@ typedef struct {
     float arm_speed[MAX_ARMS];        /* per-ring rotation speed (rad/s) — only [0] used */
     float ring_offset[MAX_ARMS];      /* fixed angular offset per ring (radians) */
     char hail_message[256];           /* AI-authored station message of the day */
+    char station_slug[32];            /* URL slug for CDN assets (e.g. "prospect") */
     /* Economy ledger: per-player supply tracking for passive income */
     struct {
         uint8_t player_token[8];      /* session token of the supplier */

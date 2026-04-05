@@ -7,6 +7,7 @@
 #include "net.h"
 #include "net_sync.h"
 #include "onboarding.h"
+#include "avatar.h"
 #include "signal_model.h"
 
 /* ------------------------------------------------------------------ */
@@ -1020,13 +1021,58 @@ void draw_hud(void) {
         }
     }
 
-    /* Station hail overlay — radio-style message */
+    /* Station hail overlay — portrait panel + radio-style message */
     if (g.hail_timer > 0.0f && g.hail_station[0]) {
-        float alpha = fminf(g.hail_timer / 0.5f, 1.0f); /* fade out last 0.5s */
+        float alpha = fminf(g.hail_timer / 0.5f, 1.0f);
         float cell = 8.0f;
-        float hx = screen_w * 0.5f - 160.0f;
-        float hy = screen_h * 0.35f;
+        float portrait_size = 64.0f;
+        float pad = 12.0f;
+        float hx = screen_w * 0.5f - 120.0f;
+        float hy = screen_h * 0.30f;
 
+        /* Portrait (if loaded) */
+        const avatar_cache_t *av = avatar_get(g.hail_station_index);
+        if (av && av->texture_valid) {
+            float ax = hx - portrait_size - pad;
+            float ay = hy - 4.0f;
+            /* Set screen-space projection for textured quad */
+            sgl_defaults();
+            sgl_matrix_mode_projection();
+            sgl_load_identity();
+            sgl_ortho(0, screen_w, screen_h, 0, -1, 1);
+            sgl_matrix_mode_modelview();
+            sgl_load_identity();
+            sgl_enable_texture();
+            sgl_texture((sg_view){ av->view_id }, (sg_sampler){ av->sampler_id });
+            sgl_begin_quads();
+            sgl_c4f(alpha, alpha, alpha, alpha);
+            sgl_v2f_t2f(ax, ay, 0.0f, 0.0f);
+            sgl_v2f_t2f(ax + portrait_size, ay, 1.0f, 0.0f);
+            sgl_v2f_t2f(ax + portrait_size, ay + portrait_size, 1.0f, 1.0f);
+            sgl_v2f_t2f(ax, ay + portrait_size, 0.0f, 1.0f);
+            sgl_end();
+            sgl_disable_texture();
+            /* Scanline overlay */
+            sgl_begin_quads();
+            for (float sy = ay; sy < ay + portrait_size; sy += 3.0f) {
+                sgl_c4f(0.0f, 0.0f, 0.0f, 0.15f * alpha);
+                sgl_v2f(ax, sy);
+                sgl_v2f(ax + portrait_size, sy);
+                sgl_v2f(ax + portrait_size, sy + 1.0f);
+                sgl_v2f(ax, sy + 1.0f);
+            }
+            sgl_end();
+            /* Border */
+            sgl_begin_lines();
+            sgl_c4f(0.5f, 0.6f, 0.8f, 0.4f * alpha);
+            sgl_v2f(ax, ay); sgl_v2f(ax + portrait_size, ay);
+            sgl_v2f(ax + portrait_size, ay); sgl_v2f(ax + portrait_size, ay + portrait_size);
+            sgl_v2f(ax + portrait_size, ay + portrait_size); sgl_v2f(ax, ay + portrait_size);
+            sgl_v2f(ax, ay + portrait_size); sgl_v2f(ax, ay);
+            sgl_end();
+        }
+
+        /* Text */
         sdtx_pos(hx / cell, hy / cell);
         sdtx_color3b((uint8_t)(130*alpha), (uint8_t)(200*alpha), (uint8_t)(255*alpha));
         sdtx_printf("// %s //", g.hail_station);

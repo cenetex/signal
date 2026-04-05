@@ -3806,6 +3806,7 @@ void world_reset(world_t *w) {
     rebuild_station_services(&w->stations[0]);
     /* Seed inventory: refinery starts with some smelted ingots */
     w->stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
+    snprintf(w->stations[0].station_slug, sizeof(w->stations[0].station_slug), "prospect");
     snprintf(w->stations[0].hail_message, sizeof(w->stations[0].hail_message),
              "Prospect Refinery. We buy ferrite ore. Dock and deliver.");
 
@@ -3837,6 +3838,7 @@ void world_reset(world_t *w) {
     /* Seed inventory: yard starts with frames for hold upgrades */
     w->stations[1].inventory[COMMODITY_FERRITE_INGOT] = 15.0f;
     w->stations[1].inventory[COMMODITY_FRAME] = 12.0f;
+    snprintf(w->stations[1].station_slug, sizeof(w->stations[1].station_slug), "kepler");
     snprintf(w->stations[1].hail_message, sizeof(w->stations[1].hail_message),
              "Kepler Yard. Fabrication and scaffold kits. Build the frontier.");
 
@@ -3880,6 +3882,7 @@ void world_reset(world_t *w) {
     w->stations[2].inventory[COMMODITY_CRYSTAL_INGOT] = 15.0f;
     w->stations[2].inventory[COMMODITY_LASER_MODULE] = 10.0f;
     w->stations[2].inventory[COMMODITY_TRACTOR_MODULE] = 10.0f;
+    snprintf(w->stations[2].station_slug, sizeof(w->stations[2].station_slug), "helios");
     snprintf(w->stations[2].hail_message, sizeof(w->stations[2].hail_message),
              "Helios Works. Advanced smelting. Copper and crystal refined here.");
     rebuild_signal_chain(w);

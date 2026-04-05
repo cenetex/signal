@@ -12,6 +12,7 @@
 #include "input.h"
 #include "net_sync.h"
 #include "onboarding.h"
+#include "avatar.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -261,9 +262,13 @@ static void process_sim_events(const sim_events_t *events) {
                         snprintf(g.hail_station, sizeof(g.hail_station), "%s", g.world.stations[hs].name);
                         snprintf(g.hail_message, sizeof(g.hail_message), "%s", g.world.stations[hs].hail_message);
                         g.hail_credits = ev->hail_response.credits;
+                        g.hail_station_index = hs;
                         g.hail_timer = 6.0f;
                         if (g.hail_credits > 0.5f)
                             audio_play_sale(&g.audio);
+                        /* Fetch portrait if station has a slug */
+                        if (g.world.stations[hs].station_slug[0])
+                            avatar_fetch(hs, g.world.stations[hs].station_slug);
                     }
                 }
                 break;
@@ -520,6 +525,7 @@ static void init(void) {
     episode_init(&g.episode);
     episode_load(&g.episode);
     music_init(&g.music);
+    avatar_init();
 
     g.pass_action.colors[0].load_action = SG_LOADACTION_CLEAR;
     g.pass_action.colors[0].clear_value = (sg_color){ 0.018f, 0.024f, 0.045f, 1.0f };
@@ -1015,6 +1021,7 @@ static void frame(void) {
 }
 
 static void cleanup(void) {
+    avatar_shutdown();
     episode_shutdown(&g.episode);
     music_shutdown(&g.music);
     if (g.multiplayer_enabled) {

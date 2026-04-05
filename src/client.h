@@ -149,6 +149,7 @@ typedef struct {
     char hail_station[64];       /* station name */
     char hail_message[256];      /* station MOTD */
     float hail_credits;          /* credits collected */
+    int hail_station_index;      /* which station was hailed (-1 = none) */
     /* --- Camera --- */
     vec2 camera_pos;         /* smoothed camera position */
     bool camera_initialized;
