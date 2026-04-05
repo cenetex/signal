@@ -1157,6 +1157,7 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
         for (int m = 0; m < st->module_count; m++) {
             int ring = st->modules[m].ring;
             if (ring < 1 || ring > STATION_NUM_RINGS) continue;
+            if (st->modules[m].type == MODULE_DOCK) continue; /* dock = passage */
             vec2 mod_pos = module_world_pos_ring(st, ring, st->modules[m].slot);
             float mod_min = MODULE_COLLISION_RADIUS + hull->ship_radius;
             vec2 md = v2_sub(npc->pos, mod_pos);
@@ -3852,7 +3853,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 17  /* bumped: furnace on Ring 1, ore_silo on Ring 2, removed ORE_BUYER */
+#define SAVE_VERSION 18  /* bumped: Helios 3-ring layout with bidirectional furnace pairing */
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
