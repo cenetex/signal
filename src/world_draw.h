@@ -38,6 +38,9 @@ void draw_towed_tethers(void);
 /* --- Module visuals --- */
 void module_color_fn(module_type_t type, float *r, float *g, float *b);
 
+/* --- Compass ring --- */
+void draw_compass_ring(void);
+
 /* --- Multiplayer rendering --- */
 void draw_remote_players(void);
 

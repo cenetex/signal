@@ -721,6 +721,7 @@ static void render_world(void) {
     draw_ship();
     draw_npc_ships();
     draw_remote_players(); /* Multiplayer: remote player ships */
+    draw_compass_ring();   /* Navigation compass around player ship */
 
     /* Ring trusses and modules render ON TOP of ships */
     for (int i = 0; i < MAX_STATIONS; i++) {

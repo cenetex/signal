@@ -1005,121 +1005,19 @@ void draw_hud(void) {
         }
     }
 
-    /* --- Edge pips --- */
+    /* Nearest station name — bottom left */
     if (!LOCAL_PLAYER.docked) {
-        float half_w = sapp_widthf() * 0.5f / fmaxf(1.0f, sapp_dpi_scale());
-        float half_h = sapp_heightf() * 0.5f / fmaxf(1.0f, sapp_dpi_scale());
-
-        /* Helper: draw a chevron pip on a ring around the ship in world space */
-        #define COMPASS_RING_RADIUS 120.0f
-        #define DRAW_PIP(target_pos, pr, pg, pb) do { \
-            vec2 _to = v2_sub(target_pos, LOCAL_PLAYER.ship.pos); \
-            float _dist_sq = v2_len_sq(_to); \
-            if (_dist_sq > 2500.0f) { \
-                float _a = atan2f(_to.y, _to.x); \
-                float _px = LOCAL_PLAYER.ship.pos.x + cosf(_a) * COMPASS_RING_RADIUS; \
-                float _py = LOCAL_PLAYER.ship.pos.y + sinf(_a) * COMPASS_RING_RADIUS; \
-                float _ar = 8.0f, _ca = cosf(_a), _sa = sinf(_a); \
-                float _pulse = 0.6f + 0.3f * sinf(g.world.time * 3.0f); \
-                sgl_begin_lines(); sgl_c4f(pr, pg, pb, _pulse); \
-                sgl_v2f(_px+(-_ca*_ar-_sa*_ar*0.6f), _py+(-_sa*_ar+_ca*_ar*0.6f)); sgl_v2f(_px, _py); \
-                sgl_v2f(_px, _py); sgl_v2f(_px+(-_ca*_ar+_sa*_ar*0.6f), _py+(-_sa*_ar-_ca*_ar*0.6f)); \
-                sgl_end(); \
-            } \
-        } while(0)
-
-        /* Nearest station name — bottom left */
-        {
-            const station_t* nav_st = navigation_station_ptr();
-            if (nav_st && nav_st->name[0] != '\0') {
-                sdtx_pos(ui_text_pos(16.0f), ui_text_pos(screen_h - 20.0f));
-                sdtx_color3b(100, 130, 120);
-                sdtx_puts(nav_st->name);
-            }
+        const station_t* nav_st = navigation_station_ptr();
+        if (nav_st && nav_st->name[0] != '\0') {
+            sdtx_pos(ui_text_pos(16.0f), ui_text_pos(screen_h - 20.0f));
+            sdtx_color3b(100, 130, 120);
+            sdtx_puts(nav_st->name);
         }
-
-        /* Nav pips: blueprint (yellow) and/or station (green) */
-        if (g.nav_pip_active && g.nav_pip_is_blueprint)
-            DRAW_PIP(g.nav_pip_pos, 1.0f, 0.87f, 0.20f);
-        {
-            /* Always show green pip to nearest station */
-            const station_t* nav_st = navigation_station_ptr();
-            if (nav_st)
-                DRAW_PIP(nav_st->pos, 0.34f, 0.96f, 0.76f);
-        }
-
-        /* Target pip: nearest off-screen asteroid (red) */
-        {
-            float best_d = 1e18f;
-            vec2 best_pos = LOCAL_PLAYER.ship.pos;
-            bool found = false;
-            for (int i = 0; i < MAX_ASTEROIDS; i++) {
-                if (!g.world.asteroids[i].active) continue;
-                if (asteroid_is_collectible(&g.world.asteroids[i])) continue;
-                float d = v2_dist_sq(g.world.asteroids[i].pos, LOCAL_PLAYER.ship.pos);
-                if (d < best_d) { best_d = d; best_pos = g.world.asteroids[i].pos; found = true; }
-            }
-            if (found)
-                DRAW_PIP(best_pos, 0.9f, 0.25f, 0.2f);
-        }
-
-        /* Nearest 3 remote players (callsign pips) */
-        if (g.multiplayer_enabled) {
-            const NetPlayerState* rplayers = net_get_interpolated_players();
-            /* Find nearest 3 */
-            int nearest[3] = {-1, -1, -1};
-            float nearest_d[3] = {1e18f, 1e18f, 1e18f};
-            for (int i = 0; i < NET_MAX_PLAYERS; i++) {
-                if (!rplayers[i].active) continue;
-                if (i == (int)net_local_id()) continue;
-                if (rplayers[i].callsign[0] == '\0') continue;
-                float d = v2_dist_sq(v2(rplayers[i].x, rplayers[i].y), LOCAL_PLAYER.ship.pos);
-                for (int slot = 0; slot < 3; slot++) {
-                    if (d < nearest_d[slot]) {
-                        for (int j = 2; j > slot; j--) { nearest[j] = nearest[j-1]; nearest_d[j] = nearest_d[j-1]; }
-                        nearest[slot] = i; nearest_d[slot] = d;
-                        break;
-                    }
-                }
-            }
-            static const float pcols[][3] = {
-                {1.0f, 0.45f, 0.25f}, {0.25f, 1.0f, 0.55f}, {0.55f, 0.35f, 1.0f},
-                {1.0f, 0.85f, 0.15f}, {0.15f, 0.85f, 1.0f}, {1.0f, 0.35f, 0.75f},
-            };
-            for (int s = 0; s < 3; s++) {
-                int pi = nearest[s];
-                if (pi < 0) continue;
-                int ci = pi % 6;
-                vec2 ppos = v2(rplayers[pi].x, rplayers[pi].y);
-                DRAW_PIP(ppos, pcols[ci][0], pcols[ci][1], pcols[ci][2]);
-                /* Draw callsign label near the pip (world → screen) */
-                vec2 _to2 = v2_sub(ppos, LOCAL_PLAYER.ship.pos);
-                float _a2 = atan2f(_to2.y, _to2.x);
-                float _lx = COMPASS_RING_RADIUS * 1.15f * cosf(_a2);
-                float _ly = COMPASS_RING_RADIUS * 1.15f * sinf(_a2);
-                /* Convert world offset to screen position */
-                float _sx = screen_w * 0.5f + _lx;
-                float _sy = screen_h * 0.5f - _ly;
-                sdtx_pos(_sx / 8.0f, _sy / 8.0f);
-                sdtx_color3b((uint8_t)(pcols[ci][0]*180), (uint8_t)(pcols[ci][1]*180), (uint8_t)(pcols[ci][2]*180));
-                sdtx_puts(rplayers[pi].callsign);
-            }
-        }
-
-        /* Tracked contract pip (yellow) */
+        /* Expire tracked contract */
         if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
-            contract_t *ct = &g.world.contracts[g.tracked_contract];
-            if (ct->active) {
-                vec2 target = (ct->action == CONTRACT_SUPPLY)
-                    ? g.world.stations[ct->station_index].pos
-                    : ct->target_pos;
-                DRAW_PIP(target, 1.0f, 0.87f, 0.20f);
-            } else {
-                g.tracked_contract = -1; /* contract completed/expired */
-            }
+            if (!g.world.contracts[g.tracked_contract].active)
+                g.tracked_contract = -1;
         }
-
-        #undef DRAW_PIP
     }
 
     /* Module inspect pane */

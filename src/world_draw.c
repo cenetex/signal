@@ -1214,6 +1214,117 @@ void draw_towed_tethers(void) {
     }
 }
 
+/* --- Compass ring: navigation pips around the player ship --- */
+void draw_compass_ring(void) {
+    if (LOCAL_PLAYER.docked) return;
+    vec2 ship = LOCAL_PLAYER.ship.pos;
+    float ring_r = 120.0f;
+    float pip_size = 8.0f;
+
+    /* Faint ring outline */
+    draw_circle_outline(ship, ring_r, 32, 0.3f, 0.35f, 0.4f, 0.12f);
+
+    /* Local callsign under ship */
+    const char *my_cs = net_local_callsign();
+    if (my_cs[0] != '\0') {
+        float cw = 5.0f;
+        float start_x = ship.x - (float)strlen(my_cs) * cw * 0.5f;
+        float ly = ship.y + 28.0f;
+        sgl_begin_lines();
+        sgl_c4f(0.5f, 0.6f, 0.7f, 0.5f);
+        for (int ch = 0; my_cs[ch]; ch++) {
+            float cx = start_x + (float)ch * cw;
+            /* Minimal letter: vertical bar + top bar */
+            sgl_v2f(cx, ly); sgl_v2f(cx, ly + 5.0f);
+            sgl_v2f(cx, ly); sgl_v2f(cx + 3.0f, ly);
+            if (my_cs[ch] != '-')
+                { sgl_v2f(cx + 3.0f, ly); sgl_v2f(cx + 3.0f, ly + 5.0f); }
+        }
+        sgl_end();
+    }
+
+    /* Helper: draw a chevron pip at position on the ring */
+    #define COMPASS_PIP(target, pr, pg, pb) do { \
+        vec2 _to = v2_sub(target, ship); \
+        float _dsq = v2_len_sq(_to); \
+        if (_dsq > 2500.0f) { \
+            float _a = atan2f(_to.y, _to.x); \
+            float _px = ship.x + cosf(_a) * ring_r; \
+            float _py = ship.y + sinf(_a) * ring_r; \
+            float _ca = cosf(_a), _sa = sinf(_a); \
+            float _pulse = 0.6f + 0.3f * sinf(g.world.time * 3.0f); \
+            sgl_begin_lines(); sgl_c4f(pr, pg, pb, _pulse); \
+            sgl_v2f(_px+(-_ca*pip_size-_sa*pip_size*0.6f), _py+(-_sa*pip_size+_ca*pip_size*0.6f)); sgl_v2f(_px, _py); \
+            sgl_v2f(_px, _py); sgl_v2f(_px+(-_ca*pip_size+_sa*pip_size*0.6f), _py+(-_sa*pip_size-_ca*pip_size*0.6f)); \
+            sgl_end(); \
+        } \
+    } while(0)
+
+    /* Nearest station pip (green) */
+    {
+        const station_t *nav = navigation_station_ptr();
+        if (nav) COMPASS_PIP(nav->pos, 0.34f, 0.96f, 0.76f);
+    }
+
+    /* Nav pip (yellow, blueprint placement) */
+    if (g.nav_pip_active && g.nav_pip_is_blueprint)
+        COMPASS_PIP(g.nav_pip_pos, 1.0f, 0.87f, 0.20f);
+
+    /* Nearest minable asteroid pip (red) */
+    {
+        float best_d = 1e18f;
+        vec2 best_pos = ship;
+        bool found = false;
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            if (!g.world.asteroids[i].active) continue;
+            if (asteroid_is_collectible(&g.world.asteroids[i])) continue;
+            float d = v2_dist_sq(g.world.asteroids[i].pos, ship);
+            if (d < best_d) { best_d = d; best_pos = g.world.asteroids[i].pos; found = true; }
+        }
+        if (found) COMPASS_PIP(best_pos, 0.9f, 0.25f, 0.2f);
+    }
+
+    /* Tracked contract pip (yellow) */
+    if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
+        contract_t *ct = &g.world.contracts[g.tracked_contract];
+        if (ct->active) {
+            vec2 target = (ct->action == CONTRACT_SUPPLY)
+                ? g.world.stations[ct->station_index].pos : ct->target_pos;
+            COMPASS_PIP(target, 1.0f, 0.87f, 0.20f);
+        }
+    }
+
+    /* Nearest 3 remote players (colored pips) */
+    if (g.multiplayer_enabled) {
+        const NetPlayerState *rp = net_get_interpolated_players();
+        int nearest[3] = {-1, -1, -1};
+        float nearest_d[3] = {1e18f, 1e18f, 1e18f};
+        for (int i = 0; i < NET_MAX_PLAYERS; i++) {
+            if (!rp[i].active || i == (int)net_local_id()) continue;
+            if (rp[i].callsign[0] == '\0') continue;
+            float d = v2_dist_sq(v2(rp[i].x, rp[i].y), ship);
+            for (int s = 0; s < 3; s++) {
+                if (d < nearest_d[s]) {
+                    for (int j = 2; j > s; j--) { nearest[j] = nearest[j-1]; nearest_d[j] = nearest_d[j-1]; }
+                    nearest[s] = i; nearest_d[s] = d; break;
+                }
+            }
+        }
+        static const float pcols[][3] = {
+            {1.0f, 0.45f, 0.25f}, {0.25f, 1.0f, 0.55f}, {0.55f, 0.35f, 1.0f},
+            {1.0f, 0.85f, 0.15f}, {0.15f, 0.85f, 1.0f}, {1.0f, 0.35f, 0.75f},
+        };
+        for (int s = 0; s < 3; s++) {
+            int pi = nearest[s];
+            if (pi < 0) continue;
+            int ci = pi % 6;
+            COMPASS_PIP(v2(rp[pi].x, rp[pi].y), pcols[ci][0], pcols[ci][1], pcols[ci][2]);
+        }
+    }
+
+    #undef COMPASS_PIP
+}
+
 /* --- Multiplayer: draw remote players as colored triangles --- */
 void draw_remote_players(void) {
     if (!g.multiplayer_enabled) return;
