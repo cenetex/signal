@@ -5,6 +5,7 @@
 #include "client.h"
 #include "render.h"
 #include "net.h"
+#include "net_sync.h"
 #include "onboarding.h"
 #include "signal_model.h"
 
@@ -1064,6 +1065,50 @@ void draw_hud(void) {
             }
             if (found)
                 DRAW_PIP(best_pos, 0.9f, 0.25f, 0.2f);
+        }
+
+        /* Nearest 3 remote players (callsign pips) */
+        if (g.multiplayer_enabled) {
+            const NetPlayerState* rplayers = net_get_interpolated_players();
+            /* Find nearest 3 */
+            int nearest[3] = {-1, -1, -1};
+            float nearest_d[3] = {1e18f, 1e18f, 1e18f};
+            for (int i = 0; i < NET_MAX_PLAYERS; i++) {
+                if (!rplayers[i].active) continue;
+                if (i == (int)net_local_id()) continue;
+                if (rplayers[i].callsign[0] == '\0') continue;
+                float d = v2_dist_sq(v2(rplayers[i].x, rplayers[i].y), LOCAL_PLAYER.ship.pos);
+                for (int slot = 0; slot < 3; slot++) {
+                    if (d < nearest_d[slot]) {
+                        for (int j = 2; j > slot; j--) { nearest[j] = nearest[j-1]; nearest_d[j] = nearest_d[j-1]; }
+                        nearest[slot] = i; nearest_d[slot] = d;
+                        break;
+                    }
+                }
+            }
+            static const float pcols[][3] = {
+                {1.0f, 0.45f, 0.25f}, {0.25f, 1.0f, 0.55f}, {0.55f, 0.35f, 1.0f},
+                {1.0f, 0.85f, 0.15f}, {0.15f, 0.85f, 1.0f}, {1.0f, 0.35f, 0.75f},
+            };
+            for (int s = 0; s < 3; s++) {
+                int pi = nearest[s];
+                if (pi < 0) continue;
+                int ci = pi % 6;
+                vec2 ppos = v2(rplayers[pi].x, rplayers[pi].y);
+                DRAW_PIP(ppos, pcols[ci][0], pcols[ci][1], pcols[ci][2]);
+                /* Draw callsign label near the pip */
+                vec2 _to2 = v2_sub(ppos, LOCAL_PLAYER.ship.pos);
+                float _a2 = atan2f(-_to2.y, _to2.x);
+                float _m2 = 40.0f, _cx2 = screen_w*0.5f, _cy2 = screen_h*0.5f;
+                float _ex2 = _cx2 + cosf(_a2)*(_cx2-_m2), _ey2 = _cy2 + sinf(_a2)*(_cy2-_m2);
+                if (_ex2 < _m2) _ex2 = _m2; if (_ex2 > screen_w-_m2) _ex2 = screen_w-_m2;
+                if (_ey2 < _m2) _ey2 = _m2; if (_ey2 > screen_h-_m2) _ey2 = screen_h-_m2;
+                float dist = sqrtf(nearest_d[s]);
+                int du = (int)(dist / 100.0f);  /* display in hectounits */
+                sdtx_pos(_ex2 / 8.0f + 1.5f, _ey2 / 8.0f);
+                sdtx_color3b((uint8_t)(pcols[ci][0]*180), (uint8_t)(pcols[ci][1]*180), (uint8_t)(pcols[ci][2]*180));
+                sdtx_printf("%s %d", rplayers[pi].callsign, du);
+            }
         }
 
         /* Tracked contract pip (yellow) */
