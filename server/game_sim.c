@@ -1581,8 +1581,18 @@ static void step_npc_ships(world_t *w, float dt) {
         }
         case NPC_STATE_RETURN_TO_STATION: {
             station_t *home = &w->stations[npc->home_station];
-            vec2 miner_approach = station_approach_target(home, npc->pos);
-            npc_steer_toward(npc, miner_approach, hull->accel, hull->turn_speed, dt);
+
+            /* Find the nearest furnace on this station to deliver to */
+            vec2 delivery_target = home->pos;
+            for (int fm = 0; fm < home->module_count; fm++) {
+                module_type_t fmt = home->modules[fm].type;
+                if (fmt != MODULE_FURNACE && fmt != MODULE_FURNACE_CU && fmt != MODULE_FURNACE_CR) continue;
+                if (home->modules[fm].scaffold) continue;
+                delivery_target = module_world_pos_ring(home, home->modules[fm].ring, home->modules[fm].slot);
+                break;
+            }
+
+            npc_steer_toward(npc, delivery_target, hull->accel, hull->turn_speed, dt);
             npc_apply_physics(npc, hull->drag, dt, w);
 
             /* Tow the fragment — drag it along with spring physics */
@@ -1593,25 +1603,27 @@ static void step_npc_ships(world_t *w, float dt) {
                     float td = sqrtf(v2_len_sq(to_npc));
                     float safe = 40.0f + tow->radius;
                     if (td > safe && td > 0.1f) {
-                        vec2 pull = v2_scale(to_npc, 3.0f / td);
-                        tow->vel = v2_add(tow->vel, v2_scale(pull, 300.0f * dt));
+                        vec2 pull_dir = v2_scale(to_npc, 1.0f / td);
+                        tow->vel = v2_add(tow->vel, v2_scale(pull_dir, 300.0f * dt));
                         tow->vel = v2_scale(tow->vel, 1.0f / (1.0f + 3.0f * dt));
                         float spd = v2_len(tow->vel);
                         if (spd > 150.0f) tow->vel = v2_scale(tow->vel, 150.0f / spd);
                     }
+                    /* Release when close to the furnace — let the furnace tractor take over */
+                    float furnace_d = v2_dist_sq(tow->pos, delivery_target);
+                    if (furnace_d < 150.0f * 150.0f) {
+                        npc->towed_fragment = -1;
+                    }
                 } else {
-                    npc->towed_fragment = -1; /* fragment died */
+                    npc->towed_fragment = -1;
                 }
             }
 
-            float dock_r = home->dock_radius * 0.7f;
-            if (v2_dist_sq(npc->pos, home->pos) < dock_r * dock_r) {
-                /* Release towed fragment near the station — furnace tractor takes over */
-                npc->towed_fragment = -1;
-                npc->vel = v2(0.0f, 0.0f);
-                npc->pos = v2_add(home->pos, v2(30.0f * (float)(n % 3 - 1), -(home->radius + hull->ship_radius + 50.0f)));
-                npc->state = NPC_STATE_DOCKED;
-                npc->state_timer = NPC_DOCK_TIME;
+            /* Once fragment is delivered (or lost), go find more ore */
+            if (npc->towed_fragment < 0) {
+                /* Drift away from the furnace, then look for next target */
+                npc->state = NPC_STATE_IDLE;
+                npc->state_timer = 2.0f;
                 npc->target_asteroid = -1;
             }
             break;
