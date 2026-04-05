@@ -4333,6 +4333,68 @@ TEST(test_scaffold_tow_release_on_dock) {
     }
 }
 
+TEST(test_scaffold_snap_to_slot) {
+    world_t w = {0};
+    world_reset(&w);
+
+    /* We need a player outpost (index >= 3). Place one. */
+    w.players[0].connected = true;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].docked = false;
+    w.players[0].ship.has_scaffold_kit = true;
+    w.players[0].ship.credits = 1000.0f;
+    vec2 outpost_pos = v2_add(w.stations[0].pos, v2(3000.0f, 0.0f));
+    int outpost = try_place_outpost(&w, &w.players[0], outpost_pos);
+    ASSERT(outpost >= 3);
+    /* Activate the outpost so it can accept scaffolds */
+    w.stations[outpost].scaffold = false;
+    w.stations[outpost].scaffold_progress = 1.0f;
+    w.stations[outpost].signal_range = 6000.0f;
+    w.stations[outpost].arm_count = 1;
+    w.stations[outpost].arm_speed[0] = 0.04f;
+    rebuild_signal_chain(&w);
+
+    /* Count existing modules */
+    int before_count = w.stations[outpost].module_count;
+
+    /* Spawn a scaffold near ring 1 of the outpost */
+    vec2 ring1_near = v2_add(outpost_pos, v2(180.0f, 0.0f));
+    int idx = spawn_scaffold(&w, MODULE_FURNACE, ring1_near, 0);
+    ASSERT(idx >= 0);
+
+    /* Run sim — station should grab it and pull it into a slot */
+    for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
+
+    /* Scaffold should have been consumed (deactivated) */
+    ASSERT(!w.scaffolds[idx].active);
+
+    /* Station should have a new module */
+    ASSERT(w.stations[outpost].module_count == before_count + 1);
+
+    /* The new module should be a furnace scaffold (under construction) */
+    station_module_t *m = &w.stations[outpost].modules[before_count];
+    ASSERT_EQ_INT(m->type, MODULE_FURNACE);
+    ASSERT(m->scaffold); /* still under construction */
+    ASSERT(m->ring >= 1);
+}
+
+TEST(test_scaffold_snap_ignores_starter_stations) {
+    world_t w = {0};
+    world_reset(&w);
+
+    /* Spawn scaffold near station 0 (starter station, index < 3) */
+    vec2 near_prospect = v2_add(w.stations[0].pos, v2(180.0f, 0.0f));
+    int idx = spawn_scaffold(&w, MODULE_FURNACE, near_prospect, 0);
+    ASSERT(idx >= 0);
+
+    /* Run sim */
+    for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
+
+    /* Scaffold should still be active (not grabbed by starter station) */
+    ASSERT(w.scaffolds[idx].active);
+    ASSERT(w.scaffolds[idx].state != SCAFFOLD_SNAPPING);
+}
+
 TEST(test_scaffold_tow_speed_cap) {
     world_t w = {0};
     world_reset(&w);
@@ -4641,6 +4703,8 @@ int main(void) {
     RUN(test_scaffold_tow_release_on_r);
     RUN(test_scaffold_tow_release_on_dock);
     RUN(test_scaffold_tow_speed_cap);
+    RUN(test_scaffold_snap_to_slot);
+    RUN(test_scaffold_snap_ignores_starter_stations);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

@@ -3808,6 +3808,51 @@ int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner) {
     return -1; /* no free slot */
 }
 
+/* Snap range: how close a LOOSE scaffold must be to a ring slot for the
+ * station to reach out and grab it. */
+static const float SCAFFOLD_SNAP_RANGE = 200.0f;
+/* How fast the station's tendrils pull a scaffold into position. */
+static const float SCAFFOLD_SNAP_PULL = 4.0f;
+/* Distance threshold to finalize placement. */
+static const float SCAFFOLD_SNAP_ARRIVE = 8.0f;
+
+/* Find the nearest open ring slot on a station within snap range of a position.
+ * Returns true and fills out_ring/out_slot if found. */
+static bool find_nearest_open_slot(const station_t *st, vec2 pos, int *out_ring, int *out_slot) {
+    float best_d_sq = SCAFFOLD_SNAP_RANGE * SCAFFOLD_SNAP_RANGE;
+    bool found = false;
+    for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
+        if (ring > 1 && !ring_has_dock(st, ring - 1)) continue; /* dock gates next ring */
+        int slots = STATION_RING_SLOTS[ring];
+        for (int slot = 0; slot < slots; slot++) {
+            /* Check if occupied */
+            bool taken = false;
+            for (int m = 0; m < st->module_count; m++)
+                if (st->modules[m].ring == ring && st->modules[m].slot == slot) { taken = true; break; }
+            if (taken) continue;
+            vec2 slot_pos = module_world_pos_ring(st, ring, slot);
+            float d_sq = v2_dist_sq(pos, slot_pos);
+            if (d_sq < best_d_sq) {
+                best_d_sq = d_sq;
+                *out_ring = ring;
+                *out_slot = slot;
+                found = true;
+            }
+        }
+    }
+    return found;
+}
+
+/* Convert a snapped scaffold into a station module and start construction. */
+static void finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
+    station_t *st = &w->stations[sc->placed_station];
+    /* Create the module as a scaffold (under construction) */
+    begin_module_construction_at(w, st, sc->placed_station,
+                                 sc->module_type, sc->placed_ring, sc->placed_slot);
+    /* Deactivate the world scaffold entity — the module system owns it now */
+    sc->active = false;
+}
+
 static void step_scaffolds(world_t *w, float dt) {
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {
         scaffold_t *sc = &w->scaffolds[i];
@@ -3836,7 +3881,56 @@ static void step_scaffolds(world_t *w, float dt) {
                 sc->vel = v2_add(sc->vel, v2_scale(tangent, orbit_speed * dt));
                 sc->vel = v2_add(sc->vel, v2_scale(norm, pull * dt));
             }
+
+            /* Check if near an open ring slot — station reaches out */
+            for (int s = 0; s < MAX_STATIONS; s++) {
+                station_t *st = &w->stations[s];
+                if (!station_is_active(st)) continue;
+                /* Only player outposts (index >= 3) accept scaffolds */
+                if (s < 3) continue;
+                int ring, slot;
+                if (find_nearest_open_slot(st, sc->pos, &ring, &slot)) {
+                    sc->state = SCAFFOLD_SNAPPING;
+                    sc->placed_station = s;
+                    sc->placed_ring = ring;
+                    sc->placed_slot = slot;
+                    sc->vel = v2(0.0f, 0.0f);
+                    break;
+                }
+            }
         }
+
+        if (sc->state == SCAFFOLD_SNAPPING) {
+            /* Station tendrils pull the scaffold toward its target slot.
+             * The target rotates with the ring, so we chase it each frame. */
+            station_t *st = &w->stations[sc->placed_station];
+            vec2 target = module_world_pos_ring(st, sc->placed_ring, sc->placed_slot);
+            vec2 delta = v2_sub(target, sc->pos);
+            float dist = sqrtf(v2_len_sq(delta));
+
+            if (dist < SCAFFOLD_SNAP_ARRIVE) {
+                /* Close enough — lock into place and become a module */
+                sc->pos = target;
+                finalize_scaffold_placement(w, sc);
+                continue; /* scaffold is now deactivated */
+            }
+
+            /* Accelerating pull — gets stronger as it gets closer (tendril grip tightens) */
+            float pull_strength = SCAFFOLD_SNAP_PULL * (1.0f + 2.0f * (1.0f - dist / SCAFFOLD_SNAP_RANGE));
+            if (pull_strength < SCAFFOLD_SNAP_PULL) pull_strength = SCAFFOLD_SNAP_PULL;
+            vec2 pull_dir = v2_scale(delta, pull_strength);
+            sc->vel = v2_add(sc->vel, v2_scale(pull_dir, dt));
+            /* Heavy damping so it doesn't overshoot */
+            sc->vel = v2_scale(sc->vel, 1.0f / (1.0f + 5.0f * dt));
+            sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
+
+            /* Safety: if station was destroyed or slot got taken, release back to LOOSE */
+            if (!station_is_active(st)) {
+                sc->state = SCAFFOLD_LOOSE;
+                sc->placed_station = -1;
+            }
+        }
+
         /* SCAFFOLD_TOWING: position controlled by tow physics in step_player */
         /* SCAFFOLD_PLACED: static, owned by station module system */
     }

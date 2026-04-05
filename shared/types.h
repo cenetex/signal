@@ -240,7 +240,8 @@ static inline bool station_collides(const station_t *st) {
 typedef enum {
     SCAFFOLD_LOOSE,     /* floating near shipyard after purchase */
     SCAFFOLD_TOWING,    /* attached to player/NPC tractor beam */
-    SCAFFOLD_PLACED,    /* snapped to ring slot, awaiting supply */
+    SCAFFOLD_SNAPPING,  /* station tendrils pulling scaffold into ring slot */
+    SCAFFOLD_PLACED,    /* locked to ring slot, awaiting supply → becomes module */
 } scaffold_state_t;
 
 typedef struct {
