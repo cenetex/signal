@@ -3811,7 +3811,7 @@ void world_reset(world_t *w) {
 void player_init_ship(server_player_t *sp, world_t *w) {
     memset(&sp->ship, 0, sizeof(sp->ship));
     sp->ship.hull_class = HULL_CLASS_MINER;
-    sp->ship.hull       = HULL_DEFS[HULL_CLASS_MINER].max_hull;
+    sp->ship.hull       = HULL_DEFS[HULL_CLASS_MINER].max_hull * 0.94f;
     sp->ship.credits    = 50.0f;
     sp->ship.angle      = PI_F * 0.5f;
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
