@@ -9,7 +9,8 @@ test.describe('Browser smoke tests', () => {
       if (msg.type() === 'error') consoleErrors.push(msg.text());
     });
 
-    await page.goto('/space_miner.html');
+    const url = process.env.SMOKE_URL ? '/' : '/space_miner.html';
+    await page.goto(url);
 
     // Wait for the Emscripten canvas to appear
     const canvas = page.locator('canvas');
@@ -35,7 +36,8 @@ test.describe('Browser smoke tests', () => {
     const errors: string[] = [];
     page.on('pageerror', (err) => errors.push(err.message));
 
-    await page.goto('/space_miner.html');
+    const url = process.env.SMOKE_URL ? '/' : '/space_miner.html';
+    await page.goto(url);
     const canvas = page.locator('canvas');
     await expect(canvas).toBeVisible({ timeout: 15_000 });
 
@@ -56,7 +58,8 @@ test.describe('Browser smoke tests', () => {
     const errors: string[] = [];
     page.on('pageerror', (err) => errors.push(err.message));
 
-    await page.goto('/space_miner.html');
+    const url = process.env.SMOKE_URL ? '/' : '/space_miner.html';
+    await page.goto(url);
     const canvas = page.locator('canvas');
     await expect(canvas).toBeVisible({ timeout: 15_000 });
 

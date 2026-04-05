@@ -101,13 +101,16 @@ jobs:
         with:
           node-version: 20
 
-      - name: Browser smoke tests
+      - name: Wait for CloudFront invalidation
+        run: sleep 15
+
+      - name: Browser smoke tests (live site)
         id: smoke
         continue-on-error: true
         run: |
           npm install
           npx playwright install chromium --with-deps
-          npx playwright test
+          SMOKE_URL=https://signal.ratimics.com/play/ npx playwright test
 
       - name: Upload smoke results
         if: steps.smoke.outcome == 'failure'
