@@ -120,7 +120,7 @@ bool onboarding_hint(char *label, size_t label_size,
     if (!g.onboarding.bought) {
         if (LOCAL_PLAYER.docked) {
             snprintf(label, label_size, "GUIDE");
-            snprintf(message, message_size, "Press F to buy products from the station market.");
+            snprintf(message, message_size, "Press F to buy frames from the station.");
             return true;
         }
         return false;
