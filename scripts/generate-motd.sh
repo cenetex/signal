@@ -24,21 +24,30 @@ for SLUG in signal-prospect signal-kepler signal-helios; do
     }" 2>/dev/null)
 
   MOTD=$(echo "$RESPONSE" | python3 -c "
-import sys, json
+import sys, json, re
 try:
     r = json.load(sys.stdin)
     text = r['choices'][0]['message']['content'].strip()
-    # Clean up markdown artifacts
+    # Strip thinking/reasoning leaks (lines that describe what the AI is doing)
+    lines = text.split('\n')
+    clean = []
+    for line in lines:
+        line = line.strip()
+        if not line: continue
+        # Skip meta lines
+        if any(skip in line.lower() for skip in ['the user', 'i should', 'i am ', 'i need to', 'let me', 'my persona', 'stay in character', 'thinking']):
+            continue
+        clean.append(line)
+    text = ' '.join(clean)
+    # Clean up markdown
     for ch in ['**', '*', '#', '>', '---']:
         text = text.replace(ch, '')
-    # Remove leading/trailing whitespace and newlines
     text = ' '.join(text.split())
-    # Truncate to 255 chars (hail_message limit)
     if text:
         print(text[:255])
     else:
         print('Station online. Welcome, pilot.')
-except Exception as e:
+except:
     print('Station online. Welcome, pilot.')
 " 2>/dev/null)
 
