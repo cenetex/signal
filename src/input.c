@@ -4,6 +4,7 @@
 #include <stdarg.h>
 #include "input.h"
 #include "local_server.h"
+#include "music.h"
 #include "net.h"
 
 void clear_input_state(void) {
@@ -355,7 +356,18 @@ input_intent_t sample_input_intent(void) {
             }
         }
     }
-/* H key: hail nearby station to collect pending credits */
+    /* [ ] keys: prev/next track */
+    if (is_key_pressed(SAPP_KEYCODE_LEFT_BRACKET)) {
+        music_prev_track(&g.music);
+        const music_track_info_t *info = music_get_info(g.music.current_track);
+        if (info) set_notice("%s", info->title);
+    }
+    if (is_key_pressed(SAPP_KEYCODE_RIGHT_BRACKET)) {
+        music_next_track(&g.music);
+        const music_track_info_t *info = music_get_info(g.music.current_track);
+        if (info) set_notice("%s", info->title);
+    }
+    /* H key: hail nearby station to collect pending credits */
     if (is_key_pressed(SAPP_KEYCODE_H) && !LOCAL_PLAYER.docked) {
         intent.hail = true;
     }

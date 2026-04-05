@@ -39,6 +39,7 @@ typedef struct {
     /* Shuffle playlist */
     int playlist[MUSIC_TRACK_COUNT];
     int playlist_pos;
+    int playlist_len;
     bool playlist_ready;
 } music_state_t;
 
@@ -51,6 +52,7 @@ void music_set_volume(music_state_t *m, float vol);
 void music_fade_to(music_state_t *m, float vol, float seconds);
 void music_update(music_state_t *m, float dt);
 void music_next_track(music_state_t *m);
+void music_prev_track(music_state_t *m);
 void music_shutdown(music_state_t *m);
 
 /* Called by audio_generate_stream to mix music into output */

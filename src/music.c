@@ -292,19 +292,20 @@ void music_update(music_state_t *m, float dt) {
 }
 
 static void shuffle_playlist(music_state_t *m) {
-    /* Initialize playlist indices */
-    for (int i = 0; i < MUSIC_TRACK_COUNT; i++)
-        m->playlist[i] = i;
-    /* Fisher-Yates shuffle using a simple LCG */
+    /* Full shuffle, then take 80% — some tracks sit out each rotation */
+    int all[MUSIC_TRACK_COUNT];
+    for (int i = 0; i < MUSIC_TRACK_COUNT; i++) all[i] = i;
     static uint32_t shuffle_seed = 0;
     if (shuffle_seed == 0) shuffle_seed = (uint32_t)time(NULL);
     for (int i = MUSIC_TRACK_COUNT - 1; i > 0; i--) {
         shuffle_seed = shuffle_seed * 1103515245u + 12345u;
         int j = (int)((shuffle_seed >> 16) % (unsigned)(i + 1));
-        int tmp = m->playlist[i];
-        m->playlist[i] = m->playlist[j];
-        m->playlist[j] = tmp;
+        int tmp = all[i]; all[i] = all[j]; all[j] = tmp;
     }
+    m->playlist_len = (MUSIC_TRACK_COUNT * 4 + 2) / 5; /* 80% rounded */
+    if (m->playlist_len < 2) m->playlist_len = 2;
+    for (int i = 0; i < m->playlist_len; i++)
+        m->playlist[i] = all[i];
     m->playlist_pos = 0;
     m->playlist_ready = true;
 }
@@ -312,7 +313,14 @@ static void shuffle_playlist(music_state_t *m) {
 void music_next_track(music_state_t *m) {
     if (!m->playlist_ready) shuffle_playlist(m);
     m->playlist_pos++;
-    if (m->playlist_pos >= MUSIC_TRACK_COUNT) shuffle_playlist(m);
+    if (m->playlist_pos >= m->playlist_len) shuffle_playlist(m);
+    music_play(m, m->playlist[m->playlist_pos]);
+}
+
+void music_prev_track(music_state_t *m) {
+    if (!m->playlist_ready) shuffle_playlist(m);
+    m->playlist_pos--;
+    if (m->playlist_pos < 0) m->playlist_pos = m->playlist_len - 1;
     music_play(m, m->playlist[m->playlist_pos]);
 }
 
