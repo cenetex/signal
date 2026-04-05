@@ -762,21 +762,19 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         }
 
         /* Curved corridors between adjacent occupied slots.
-         * Dock modules are portals — skip corridors touching a dock. */
+         * Dock connects on one side, opens on the other (dock as first = gap). */
         float ring_r = STATION_RING_RADIUS[ring];
         for (int i = 0; i + 1 < mod_count; i++) {
             if (slot_ids[i + 1] - slot_ids[i] != 1) continue;
             if (station->modules[mod_idx[i]].type == MODULE_DOCK) continue;
-            if (station->modules[mod_idx[i + 1]].type == MODULE_DOCK) continue;
             float ang_a = module_angle_ring(station, ring, slot_ids[i]);
             float ang_b = module_angle_ring(station, ring, slot_ids[i + 1]);
             draw_corridor_arc(station->pos, ring_r, ang_a, ang_b,
                 role_r, role_g, role_b, base_alpha * 0.7f);
         }
-        /* Wrap: last→first if ring is full — skip if dock at either end */
+        /* Wrap: last→first if ring is full — skip if last is dock (entry gap) */
         if (mod_count == slots) {
-            if (station->modules[mod_idx[mod_count - 1]].type != MODULE_DOCK
-                && station->modules[mod_idx[0]].type != MODULE_DOCK) {
+            if (station->modules[mod_idx[mod_count - 1]].type != MODULE_DOCK) {
                 float ang_a = module_angle_ring(station, ring, slot_ids[mod_count - 1]);
                 float ang_b = module_angle_ring(station, ring, slot_ids[0]);
                 draw_corridor_arc(station->pos, ring_r, ang_a, ang_b,

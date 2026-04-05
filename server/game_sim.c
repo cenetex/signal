@@ -1186,9 +1186,8 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
             }
             for (int ci = 0; ci + 1 < ccount; ci++) {
                 if (st->modules[cidx[ci+1]].slot - st->modules[cidx[ci]].slot != 1) continue;
-                /* Docks create gaps — no corridor collision on either side */
+                /* Dock entry gap: skip where dock is first */
                 if (st->modules[cidx[ci]].type == MODULE_DOCK) continue;
-                if (st->modules[cidx[ci+1]].type == MODULE_DOCK) continue;
                 float ca = module_angle_ring(st, ring, st->modules[cidx[ci]].slot);
                 float cb = module_angle_ring(st, ring, st->modules[cidx[ci+1]].slot);
                 /* Annular sector test for NPC */
@@ -1218,9 +1217,8 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
                 }
             }
             if (ccount == slots && ring >= 1
-                && st->modules[cidx[ccount-1]].type != MODULE_DOCK
-                && st->modules[cidx[0]].type != MODULE_DOCK) {
-                /* Wrap-around corridor — same test (skip if dock at either end) */
+                && st->modules[cidx[ccount-1]].type != MODULE_DOCK) {
+                /* Wrap: skip if last is dock (entry gap) */
                 float ca = module_angle_ring(st, ring, st->modules[cidx[ccount-1]].slot);
                 float cb = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
                 vec2 nd = v2_sub(npc->pos, st->pos);
@@ -2175,16 +2173,15 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
         if (!near_module) {
             for (int i = 0; i + 1 < count; i++) {
                 if (st->modules[cidx[i+1]].slot - st->modules[cidx[i]].slot != 1) continue;
-                /* Skip corridor segments that touch a dock — dock is a portal */
+                /* Dock entry gap: skip corridor where dock is first (open side) */
                 if (st->modules[cidx[i]].type == MODULE_DOCK) continue;
-                if (st->modules[cidx[i+1]].type == MODULE_DOCK) continue;
                 float a = module_angle_ring(st, ring, st->modules[cidx[i]].slot);
                 float b = module_angle_ring(st, ring, st->modules[cidx[i+1]].slot);
                 resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
             }
             if (count == slots) {
-                if (st->modules[cidx[count-1]].type != MODULE_DOCK
-                    && st->modules[cidx[0]].type != MODULE_DOCK) {
+                /* Wrap: last→first. Skip if last is dock (dock is "first" of this pair) */
+                if (st->modules[cidx[count-1]].type != MODULE_DOCK) {
                     float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
                     float b = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
                     resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
