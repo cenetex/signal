@@ -1778,6 +1778,9 @@ static void launch_ship(world_t *w, server_player_t *sp) {
     } else {
         sp->ship.vel = v2(0.0f, -40.0f);
     }
+    /* First launch: "Hull integrity 94%" */
+    if (sp->ship.stat_ore_mined < 0.01f && sp->ship.stat_credits_earned < 0.01f)
+        sp->ship.hull = ship_max_hull(&sp->ship) * 0.94f;
     SIM_LOG("[sim] player %d launched\n", sp->id);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_LAUNCH, .player_id = sp->id});
 }
@@ -2170,14 +2173,20 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
         if (!near_module) {
             for (int i = 0; i + 1 < count; i++) {
                 if (st->modules[cidx[i+1]].slot - st->modules[cidx[i]].slot != 1) continue;
+                /* Skip corridor on entry side of dock (dock is first module) */
+                if (st->modules[cidx[i]].type == MODULE_DOCK) continue;
                 float a = module_angle_ring(st, ring, st->modules[cidx[i]].slot);
                 float b = module_angle_ring(st, ring, st->modules[cidx[i+1]].slot);
                 resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
             }
             if (count == slots) {
-                float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
-                float b = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
-                resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
+                /* Skip wrap-around if last module is dock (entry gap) */
+                if (st->modules[cidx[count-1]].type == MODULE_DOCK) { /* skip */ }
+                else {
+                    float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
+                    float b = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
+                    resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
+                }
             }
         }
     }
@@ -3811,7 +3820,7 @@ void world_reset(world_t *w) {
 void player_init_ship(server_player_t *sp, world_t *w) {
     memset(&sp->ship, 0, sizeof(sp->ship));
     sp->ship.hull_class = HULL_CLASS_MINER;
-    sp->ship.hull       = HULL_DEFS[HULL_CLASS_MINER].max_hull * 0.94f;
+    sp->ship.hull       = HULL_DEFS[HULL_CLASS_MINER].max_hull;
     sp->ship.credits    = 50.0f;
     sp->ship.angle      = PI_F * 0.5f;
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
