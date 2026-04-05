@@ -2596,14 +2596,21 @@ static void release_towed_fragments(server_player_t *sp) {
 static const float SCAFFOLD_TOW_SPEED_CAP = 55.0f;  /* slower than ore fragments */
 static const float SCAFFOLD_PICKUP_RANGE = 80.0f;    /* how close to grab one */
 
+/* Simple release — scaffold floats loose. */
 static void release_towed_scaffold(world_t *w, server_player_t *sp) {
     int idx = sp->ship.towed_scaffold;
-    if (idx < 0 || idx >= MAX_SCAFFOLDS || !w->scaffolds[idx].active) {
-        sp->ship.towed_scaffold = -1;
-        return;
+    if (idx >= 0 && idx < MAX_SCAFFOLDS && w->scaffolds[idx].active) {
+        w->scaffolds[idx].state = SCAFFOLD_LOOSE;
+        w->scaffolds[idx].towed_by = -1;
     }
-    scaffold_t *sc = &w->scaffolds[idx];
     sp->ship.towed_scaffold = -1;
+}
+
+/* Intentional placement — snap to outpost or found new station. */
+static void place_towed_scaffold(world_t *w, server_player_t *sp) {
+    int idx = sp->ship.towed_scaffold;
+    if (idx < 0 || idx >= MAX_SCAFFOLDS || !w->scaffolds[idx].active) return;
+    scaffold_t *sc = &w->scaffolds[idx];
 
     /* Try to snap to a nearby outpost ring slot */
     for (int s = 3; s < MAX_STATIONS; s++) {
@@ -2617,13 +2624,13 @@ static void release_towed_scaffold(world_t *w, server_player_t *sp) {
             sc->placed_slot = slot;
             sc->vel = v2(0.0f, 0.0f);
             sc->towed_by = -1;
+            sp->ship.towed_scaffold = -1;
             return;
         }
     }
 
     /* Not near an outpost — found a new station if in signal range */
     if (signal_strength_at(w, sc->pos) > 0.0f && can_place_outpost(w, sc->pos)) {
-        /* Find free station slot */
         int slot = -1;
         for (int s = 3; s < MAX_STATIONS; s++) {
             if (!station_exists(&w->stations[s])) { slot = s; break; }
@@ -2641,7 +2648,6 @@ static void release_towed_scaffold(world_t *w, server_player_t *sp) {
             add_module_at(st, MODULE_DOCK, 0, 0xFF);
             add_module_at(st, MODULE_SIGNAL_RELAY, 0, 0xFF);
             rebuild_station_services(st);
-            /* Generate supply contract for outpost activation */
             for (int k = 0; k < MAX_CONTRACTS; k++) {
                 if (!w->contracts[k].active) {
                     w->contracts[k] = (contract_t){
@@ -2655,7 +2661,6 @@ static void release_towed_scaffold(world_t *w, server_player_t *sp) {
                     break;
                 }
             }
-            /* Queue the first module scaffold for after activation */
             begin_module_construction_at(w, st, slot,
                 sc->module_type, 1, 0);
             emit_event(w, (sim_event_t){
@@ -2663,13 +2668,11 @@ static void release_towed_scaffold(world_t *w, server_player_t *sp) {
                 .outpost_placed = { .slot = slot },
             });
             sc->active = false;
+            sp->ship.towed_scaffold = -1;
             return;
         }
     }
-
-    /* Fallback: just release loose */
-    sc->state = SCAFFOLD_LOOSE;
-    sc->towed_by = -1;
+    /* Can't place here — do nothing, keep towing */
 }
 
 static void step_scaffold_tow(world_t *w, server_player_t *sp, float dt) {
@@ -3255,6 +3258,12 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 step_towed_cleanup(w, sp);
                 if (sp->ship.tractor_active) step_fragment_collection(w, sp, dt);
                 step_scaffold_tow(w, sp, dt);
+
+                /* B while towing scaffold = place it (snap to outpost or found station) */
+                if (sp->input.place_outpost && sp->ship.towed_scaffold >= 0) {
+                    place_towed_scaffold(w, sp);
+                    sp->input.place_outpost = false; /* consume the intent */
+                }
 
                 /* Laser-to-snap: firing at a scaffold triggers snap if near open slot */
                 if (sp->input.mine && sp->beam_active) {

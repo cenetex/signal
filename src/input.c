@@ -325,7 +325,10 @@ input_intent_t sample_input_intent(void) {
             g.placing_outpost = false;
         }
     } else if (is_key_pressed(SAPP_KEYCODE_B)) {
-        if (LOCAL_PLAYER.docked) {
+        if (!LOCAL_PLAYER.docked && LOCAL_PLAYER.ship.towed_scaffold >= 0) {
+            /* Towing a scaffold: B = place it (snap to outpost or found station) */
+            intent.place_outpost = true;
+        } else if (LOCAL_PLAYER.docked) {
             if (g.build_overlay) {
                 g.build_overlay = false;
             } else if (LOCAL_PLAYER.current_station >= 3) {
