@@ -39,6 +39,9 @@ void local_server_sync_to_client(const local_server_t *ls) {
     /* Contracts: direct copy */
     memcpy(g.world.contracts, ls->world.contracts, sizeof(g.world.contracts));
 
+    /* Scaffolds: direct copy */
+    memcpy(g.world.scaffolds, ls->world.scaffolds, sizeof(g.world.scaffolds));
+
     /* Player state: copy authoritative ship data unless client is
      * predicting a one-shot action (action_predict_timer). */
     const server_player_t *src = &ls->world.players[g.local_player_slot];
@@ -82,6 +85,7 @@ void local_server_sync_to_client(const local_server_t *ls) {
     /* Tow state (for tether rendering) */
     dst->ship.towed_count = src->ship.towed_count;
     memcpy(dst->ship.towed_fragments, src->ship.towed_fragments, sizeof(dst->ship.towed_fragments));
+    dst->ship.towed_scaffold = src->ship.towed_scaffold;
 
     /* Sim events: copy so process_sim_events can read from g.world.events
      * in addition to the local_server path — keeps both sources consistent. */
