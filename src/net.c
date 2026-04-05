@@ -105,17 +105,18 @@ static void ensure_session_token(void) {
 
 static void ensure_callsign(void) {
     if (net_state.callsign_ready) return;
-    static const char letters[] = "ABCDEFGHJKLMNPQRSTUVWXYZ"; /* no I, O */
+    /* 6 alphanumeric chars with a dash at a random position (1-5).
+     * Mix of uppercase letters (no I,O) and digits. e.g. SK-2a9 */
 #ifdef __EMSCRIPTEN__
     const char *cs = emscripten_run_script_string(
         "(function(){"
         "var k='signal_callsign',s=localStorage.getItem(k);"
         "if(s&&s.length===7)return s;"
-        "var L='ABCDEFGHJKLMNPQRSTUVWXYZ';"
-        "var c='';"
-        "for(var i=0;i<3;i++)c+=L[Math.floor(Math.random()*24)];"
-        "c+='-';"
-        "for(var i=0;i<3;i++)c+=Math.floor(Math.random()*10);"
+        "var A='ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';"
+        "var chars=[];for(var i=0;i<6;i++)chars.push(A[Math.floor(Math.random()*34)]);"
+        "var d=1+Math.floor(Math.random()*5);"
+        "chars.splice(d,0,'-');"
+        "var c=chars.join('');"
         "localStorage.setItem(k,c);return c;"
         "})()"
     );
@@ -125,15 +126,19 @@ static void ensure_callsign(void) {
     }
 #else
     /* Native: generate random callsign */
+    static const char alnum[] = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
     uint32_t seed = (uint32_t)time(NULL) ^ (uint32_t)(uintptr_t)&net_state;
-    for (int i = 0; i < 3; i++) {
+    char chars[6];
+    for (int i = 0; i < 6; i++) {
         seed = seed * 1103515245u + 12345u;
-        net_state.callsign[i] = letters[(seed >> 16) % 24];
+        chars[i] = alnum[(seed >> 16) % 34];
     }
-    net_state.callsign[3] = '-';
-    for (int i = 0; i < 3; i++) {
-        seed = seed * 1103515245u + 12345u;
-        net_state.callsign[4 + i] = '0' + ((seed >> 16) % 10);
+    seed = seed * 1103515245u + 12345u;
+    int dash = 1 + (int)((seed >> 16) % 5); /* dash at position 1-5 */
+    int ci = 0;
+    for (int i = 0; i < 7; i++) {
+        if (i == dash) net_state.callsign[i] = '-';
+        else net_state.callsign[i] = chars[ci++];
     }
     net_state.callsign[7] = '\0';
 #endif
