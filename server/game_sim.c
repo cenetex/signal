@@ -421,6 +421,10 @@ static void step_module_construction(world_t *w, float dt) {
                     spawn_npc(w, s, NPC_ROLE_MINER);
                 if (st->modules[i].type == MODULE_FRAME_PRESS || st->modules[i].type == MODULE_LASER_FAB || st->modules[i].type == MODULE_TRACTOR_FAB)
                     spawn_npc(w, s, NPC_ROLE_HAULER);
+                emit_event(w, (sim_event_t){
+                    .type = SIM_EVENT_MODULE_ACTIVATED,
+                    .module_activated = { .station = s, .module_idx = i, .module_type = (int)st->modules[i].type },
+                });
                 SIM_LOG("[sim] module %d activated at station %d\n", st->modules[i].type, s);
             }
         }

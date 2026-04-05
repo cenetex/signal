@@ -211,6 +211,14 @@ void audio_play_upgrade(audio_state_t* a, ship_upgrade_t upgrade) {
     audio_play_voice(a, AUDIO_WAVE_SINE, root * 1.5f, 480.0f, 0.04f, 0.18f, 0.0f, 0.0f);
 }
 
+void audio_play_commission(audio_state_t* a) {
+    /* Rising chord: module coming online. Three voices stepping up. */
+    audio_play_voice(a, AUDIO_WAVE_SINE,     330.0f, 200.0f, 0.06f, 0.25f, -0.15f, 0.0f);
+    audio_play_voice(a, AUDIO_WAVE_SINE,     440.0f, 260.0f, 0.05f, 0.30f,  0.15f, 0.0f);
+    audio_play_voice(a, AUDIO_WAVE_SINE,     550.0f, 330.0f, 0.04f, 0.35f,  0.0f,  0.0f);
+    audio_play_voice(a, AUDIO_WAVE_TRIANGLE, 220.0f, 110.0f, 0.03f, 0.40f,  0.0f,  0.0f);
+}
+
 void audio_play_damage(audio_state_t* a, float damage) {
     float gain = clampf(0.035f + (damage * 0.0018f), 0.04f, 0.10f);
     audio_play_voice(a, AUDIO_WAVE_NOISE, 180.0f, -80.0f, gain, 0.12f, audio_rand_bipolar(a) * 0.22f, 1.0f);

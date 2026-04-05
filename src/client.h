@@ -121,6 +121,10 @@ typedef struct {
         bool complete;       /* all steps done — stop showing hints */
         bool loaded;         /* state loaded from localStorage */
     } onboarding;
+    /* --- Module activation effect --- */
+    float commission_timer;     /* countdown for activation flash */
+    vec2 commission_pos;        /* world position of activated module */
+    float commission_cr, commission_cg, commission_cb; /* module color */
     /* --- Death screen --- */
     float death_screen_timer;
     float death_ore_mined;

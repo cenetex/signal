@@ -167,10 +167,28 @@ input_intent_t sample_input_intent(void) {
                     if (LOCAL_PLAYER.ship.has_scaffold_kit) {
                         set_notice("Already carrying a scaffold kit.");
                     } else {
-                        intent.buy_scaffold_kit = true;
-                        intent.scaffold_kit_module = sellable[si];
-                        set_notice("Bought %s scaffold.", module_type_name(sellable[si]));
-                        g.build_overlay = false;
+                        /* Price must match server scaffold_kit_price() */
+                        int price = 200;
+                        switch (sellable[si]) {
+                            case MODULE_DOCK: price = 100; break;
+                            case MODULE_SIGNAL_RELAY: price = 150; break;
+                            case MODULE_ORE_BUYER: price = 150; break;
+                            case MODULE_FRAME_PRESS: price = 300; break;
+                            case MODULE_FURNACE_CU: price = 400; break;
+                            case MODULE_FURNACE_CR: price = 500; break;
+                            case MODULE_LASER_FAB: price = 400; break;
+                            case MODULE_TRACTOR_FAB: price = 400; break;
+                            default: break;
+                        }
+                        if (LOCAL_PLAYER.ship.credits < (float)price) {
+                            set_notice("Need %d cr for %s scaffold.", price, module_type_name(sellable[si]));
+                        } else {
+                            intent.buy_scaffold_kit = true;
+                            intent.scaffold_kit_module = sellable[si];
+                            LOCAL_PLAYER.ship.credits -= (float)price;
+                            set_notice("Bought %s scaffold. -%d cr", module_type_name(sellable[si]), price);
+                            g.build_overlay = false;
+                        }
                     }
                     break;
                 }

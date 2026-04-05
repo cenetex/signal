@@ -92,6 +92,10 @@ static void module_color(module_type_t type, float *r, float *g, float *b) {
     }
 }
 
+void module_color_fn(module_type_t type, float *r, float *g, float *b) {
+    module_color(type, r, g, b);
+}
+
 /* ------------------------------------------------------------------ */
 /* Solid module block + corridor to core                              */
 /* ------------------------------------------------------------------ */

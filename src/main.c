@@ -251,9 +251,24 @@ static void process_sim_events(const sim_events_t *events) {
                     episode_save(&g.episode);
                 }
                 break;
+            case SIM_EVENT_MODULE_ACTIVATED: {
+                int si = ev->module_activated.station;
+                int mi = ev->module_activated.module_idx;
+                station_t *act_st = &g.world.stations[si];
+                vec2 mpos = module_world_pos_ring(act_st,
+                    act_st->modules[mi].ring, act_st->modules[mi].slot);
+                g.commission_timer = 1.5f;
+                g.commission_pos = mpos;
+                module_color_fn((module_type_t)ev->module_activated.module_type,
+                    &g.commission_cr, &g.commission_cg, &g.commission_cb);
+                audio_play_commission(&g.audio);
+                set_notice("%s online.", module_type_name((module_type_t)ev->module_activated.module_type));
+                break;
+            }
             case SIM_EVENT_OUTPOST_ACTIVATED:
                 if (!g.episode.watched[4])
                     episode_trigger(&g.episode, 4); /* Ep 4: Naming */
+                audio_play_commission(&g.audio);
                 break;
             case SIM_EVENT_NPC_SPAWNED:
                 /* Ep 5: Drones — first miner at a player outpost */
@@ -323,6 +338,10 @@ static void sim_step(float dt) {
             }
         }
     }
+
+    /* Commission flash countdown */
+    if (g.commission_timer > 0.0f)
+        g.commission_timer = fmaxf(0.0f, g.commission_timer - dt);
 
     /* Death screen countdown — block all input while active */
     if (g.death_screen_timer > 0.0f) {
@@ -557,6 +576,18 @@ static void render_world(void) {
         draw_station(st, is_current, is_nearby);
     }
     /* Outpost placement preview */
+    /* Module commissioning flash */
+    if (g.commission_timer > 0.0f) {
+        float t = g.commission_timer / 1.5f; /* 1.0 → 0.0 */
+        float flash_r = (1.0f - t) * 80.0f + 30.0f; /* expanding ring */
+        float alpha = t * 0.8f; /* fading out */
+        draw_circle_filled(g.commission_pos, flash_r * 0.4f, 12,
+            g.commission_cr, g.commission_cg, g.commission_cb, alpha * 0.3f);
+        draw_circle_outline(g.commission_pos, flash_r, 20,
+            g.commission_cr, g.commission_cg, g.commission_cb, alpha);
+        draw_circle_outline(g.commission_pos, flash_r * 0.6f, 16,
+            g.commission_cr * 0.8f, g.commission_cg * 0.8f, g.commission_cb * 0.8f, alpha * 0.6f);
+    }
     if (g.placing_outpost && !LOCAL_PLAYER.docked) {
         vec2 forward = v2_from_angle(LOCAL_PLAYER.ship.angle);
         vec2 target = v2_add(LOCAL_PLAYER.ship.pos, v2_scale(forward, 150.0f));
