@@ -774,13 +774,40 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
 
     (void)max_ring;
 
-    /* Draw all corridors from the geometry emitter (single source of truth) */
+    /* Per-ring dominant color for corridors */
+    float ring_cr[STATION_NUM_RINGS + 1], ring_cg[STATION_NUM_RINGS + 1], ring_cb[STATION_NUM_RINGS + 1];
+    for (int r = 0; r <= STATION_NUM_RINGS; r++) {
+        ring_cr[r] = role_r; ring_cg[r] = role_g; ring_cb[r] = role_b;
+    }
+    {
+        /* Find dominant module per ring (first non-dock, non-relay, non-scaffold) */
+        static const module_type_t color_prio[] = {
+            MODULE_FURNACE_CU, MODULE_FURNACE_CR, MODULE_FURNACE,
+            MODULE_FRAME_PRESS, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
+            MODULE_ORE_BUYER, MODULE_SIGNAL_RELAY,
+        };
+        for (int r = 1; r <= STATION_NUM_RINGS; r++) {
+            for (int p = 0; p < (int)(sizeof(color_prio)/sizeof(color_prio[0])); p++) {
+                bool found = false;
+                for (int i = 0; i < station->module_count; i++) {
+                    if (station->modules[i].ring == r && station->modules[i].type == color_prio[p]) {
+                        module_color(color_prio[p], &ring_cr[r], &ring_cg[r], &ring_cb[r]);
+                        found = true; break;
+                    }
+                }
+                if (found) break;
+            }
+        }
+    }
+
+    /* Draw all corridors from the geometry emitter, colored per ring */
     station_geom_t geom;
     station_build_geom(station, &geom);
     for (int ci = 0; ci < geom.corridor_count; ci++) {
+        int r = geom.corridors[ci].ring;
         draw_corridor_arc(station->pos, geom.corridors[ci].ring_radius,
             geom.corridors[ci].angle_a, geom.corridors[ci].angle_b,
-            role_r, role_g, role_b, base_alpha * 0.7f);
+            ring_cr[r], ring_cg[r], ring_cb[r], base_alpha * 0.7f);
     }
 
     /* Per-ring: tethers + modules (each ring rotates independently) */

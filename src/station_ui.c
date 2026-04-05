@@ -118,6 +118,10 @@ void station_role_color(const station_t* station, float* r, float* g0, float* b)
     switch (dom) {
         case MODULE_FURNACE:
             *r = 0.34f; *g0 = 0.96f; *b = 0.76f; break;
+        case MODULE_FURNACE_CU:
+            *r = 0.35f; *g0 = 0.60f; *b = 0.95f; break;
+        case MODULE_FURNACE_CR:
+            *r = 0.50f; *g0 = 0.45f; *b = 1.0f; break;
         case MODULE_FRAME_PRESS:
             *r = 0.98f; *g0 = 0.74f; *b = 0.30f; break;
         case MODULE_LASER_FAB:
