@@ -4040,8 +4040,8 @@ TEST(test_station_geom_emitter_prospect) {
     /* Core: Prospect has radius 40 */
     ASSERT(geom.has_core == true);
 
-    /* Circles: relay + furnace (ring 1) + ore_silo (ring 2) = 3 (docks excluded) */
-    ASSERT(geom.circle_count == 3);
+    /* Circles: dock (half-size) + relay + furnace (ring 1) + ore_silo (ring 2) = 4 */
+    ASSERT(geom.circle_count == 4);
 
     /* Corridors: relay→furnace (ring 1, slots 1→2) + wrap furnace→dock (ring 1 full, 3 slots)
      * = 2. Ring 2 has only 1 module so no corridors there. */

@@ -2143,8 +2143,6 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     ship_collision_count = 0;
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_collides(&w->stations[i])) continue;
-        /* Skip collision with the station we're docking at */
-        if (sp->docking_approach && i == sp->nearby_station) continue;
         resolve_module_collisions(w, sp, &w->stations[i]);
     }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -3696,6 +3694,7 @@ void world_reset(world_t *w) {
     /* Ring 1 (service): dock + relay (center) + repair */
     add_module_at(&w->stations[1], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 1, 1);
+    add_module_at(&w->stations[1], MODULE_ORE_SILO, 1, 2);
     /* Slot 2 empty — gap for ship entry */
     /* Ring 2 (industrial): fabrication + services */
     add_module_at(&w->stations[1], MODULE_DOCK, 2, 0);

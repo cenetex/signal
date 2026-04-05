@@ -124,6 +124,14 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
                     out->docks[out->dock_count].slot = mod->slot;
                     out->dock_count++;
                 }
+                /* Dock gets a smaller collision circle — narrow passage, not wide hole */
+                if (out->circle_count < STATION_GEOM_MAX_CIRCLES) {
+                    out->circles[out->circle_count].center = mpos;
+                    out->circles[out->circle_count].radius = STATION_MODULE_COL_RADIUS * 0.5f;
+                    out->circles[out->circle_count].ring = ring;
+                    out->circles[out->circle_count].angle = mang;
+                    out->circle_count++;
+                }
             } else {
                 if (out->circle_count < STATION_GEOM_MAX_CIRCLES) {
                     out->circles[out->circle_count].center = mpos;

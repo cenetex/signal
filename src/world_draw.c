@@ -671,7 +671,9 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
 
 static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, float angle_b,
                                float cr, float cg, float cb, float alpha) {
-    float hw = STATION_CORRIDOR_HW; /* corridor half-width — matches collision footprint */
+    /* Corridor visual band — slightly wider than STATION_CORRIDOR_HW to account
+     * for the angular margin expansion in collision (ship radius ~12-15 units). */
+    float hw = STATION_CORRIDOR_HW + 4.0f;
     float r_inner = ring_radius - hw;
     float r_outer = ring_radius + hw;
 
