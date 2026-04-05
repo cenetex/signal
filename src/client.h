@@ -144,6 +144,11 @@ typedef struct {
     int target_module;       /* module index within station, -1 = none */
     int inspect_station;     /* module info pane: station index, -1 = closed */
     int inspect_module;      /* module info pane: module index */
+    /* --- Hail overlay --- */
+    float hail_timer;            /* countdown for hail display */
+    char hail_station[64];       /* station name */
+    char hail_message[256];      /* station MOTD */
+    float hail_credits;          /* credits collected */
     /* --- Camera --- */
     vec2 camera_pos;         /* smoothed camera position */
     bool camera_initialized;

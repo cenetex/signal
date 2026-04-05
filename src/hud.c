@@ -1020,6 +1020,30 @@ void draw_hud(void) {
         }
     }
 
+    /* Station hail overlay — radio-style message */
+    if (g.hail_timer > 0.0f && g.hail_station[0]) {
+        float alpha = fminf(g.hail_timer / 0.5f, 1.0f); /* fade out last 0.5s */
+        float cell = 8.0f;
+        float hx = screen_w * 0.5f - 160.0f;
+        float hy = screen_h * 0.35f;
+
+        sdtx_pos(hx / cell, hy / cell);
+        sdtx_color3b((uint8_t)(130*alpha), (uint8_t)(200*alpha), (uint8_t)(255*alpha));
+        sdtx_printf("// %s //", g.hail_station);
+
+        if (g.hail_message[0]) {
+            sdtx_pos(hx / cell, (hy + 14.0f) / cell);
+            sdtx_color3b((uint8_t)(180*alpha), (uint8_t)(190*alpha), (uint8_t)(210*alpha));
+            sdtx_puts(g.hail_message);
+        }
+
+        if (g.hail_credits > 0.5f) {
+            sdtx_pos(hx / cell, (hy + 32.0f) / cell);
+            sdtx_color3b((uint8_t)(130*alpha), (uint8_t)(255*alpha), (uint8_t)(235*alpha));
+            sdtx_printf("+%d cr collected", (int)lroundf(g.hail_credits));
+        }
+    }
+
     /* Module inspect pane */
     if (g.inspect_station >= 0 && g.inspect_station < MAX_STATIONS &&
         g.inspect_module >= 0 && !LOCAL_PLAYER.docked) {

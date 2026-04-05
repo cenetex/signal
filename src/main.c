@@ -254,6 +254,19 @@ static void process_sim_events(const sim_events_t *events) {
                     episode_save(&g.episode);
                 }
                 break;
+            case SIM_EVENT_HAIL_RESPONSE:
+                if (ev->player_id == g.local_player_slot) {
+                    int hs = ev->hail_response.station;
+                    if (hs >= 0 && hs < MAX_STATIONS) {
+                        snprintf(g.hail_station, sizeof(g.hail_station), "%s", g.world.stations[hs].name);
+                        snprintf(g.hail_message, sizeof(g.hail_message), "%s", g.world.stations[hs].hail_message);
+                        g.hail_credits = ev->hail_response.credits;
+                        g.hail_timer = 6.0f;
+                        if (g.hail_credits > 0.5f)
+                            audio_play_sale(&g.audio);
+                    }
+                }
+                break;
             case SIM_EVENT_MODULE_ACTIVATED: {
                 int si = ev->module_activated.station;
                 int mi = ev->module_activated.module_idx;
@@ -345,6 +358,8 @@ static void sim_step(float dt) {
     /* Commission flash countdown */
     if (g.commission_timer > 0.0f)
         g.commission_timer = fmaxf(0.0f, g.commission_timer - dt);
+    if (g.hail_timer > 0.0f)
+        g.hail_timer = fmaxf(0.0f, g.hail_timer - dt);
 
     /* Death screen countdown — block all input while active */
     if (g.death_screen_timer > 0.0f) {

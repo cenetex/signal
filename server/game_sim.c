@@ -2754,6 +2754,19 @@ static void handle_hail(world_t *w, server_player_t *sp) {
     float sig = signal_strength_at(w, sp->ship.pos);
     if (sig < 0.90f) return;
 
+    /* Find nearest station in range */
+    int nearest = -1;
+    float best_d = 1e18f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (st->signal_range <= 0.0f) continue;
+        float d = v2_dist_sq(sp->ship.pos, st->pos);
+        if (d < best_d && sqrtf(d) <= st->signal_range) {
+            best_d = d;
+            nearest = s;
+        }
+    }
+
     float total_collected = 0.0f;
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
@@ -2771,6 +2784,15 @@ static void handle_hail(world_t *w, server_player_t *sp) {
     if (total_collected > 0.01f) {
         earn_credits(&sp->ship, total_collected);
         SIM_LOG("[sim] player %d hail collected %.0f credits\n", sp->id, total_collected);
+    }
+
+    /* Emit hail response event */
+    if (nearest >= 0) {
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_HAIL_RESPONSE,
+            .player_id = sp->id,
+            .hail_response = { .station = nearest, .credits = total_collected },
+        });
     }
 }
 
@@ -3784,6 +3806,8 @@ void world_reset(world_t *w) {
     rebuild_station_services(&w->stations[0]);
     /* Seed inventory: refinery starts with some smelted ingots */
     w->stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
+    snprintf(w->stations[0].hail_message, sizeof(w->stations[0].hail_message),
+             "Prospect Refinery. We buy ferrite ore. Dock and deliver.");
 
     snprintf(w->stations[1].name, sizeof(w->stations[1].name), "%s", "Kepler Yard");
     w->stations[1].pos         = v2(-3200.0f, 2300.0f);
@@ -3813,6 +3837,8 @@ void world_reset(world_t *w) {
     /* Seed inventory: yard starts with frames for hold upgrades */
     w->stations[1].inventory[COMMODITY_FERRITE_INGOT] = 15.0f;
     w->stations[1].inventory[COMMODITY_FRAME] = 12.0f;
+    snprintf(w->stations[1].hail_message, sizeof(w->stations[1].hail_message),
+             "Kepler Yard. Fabrication and scaffold kits. Build the frontier.");
 
     snprintf(w->stations[2].name, sizeof(w->stations[2].name), "%s", "Helios Works");
     w->stations[2].pos         = v2(3200.0f, 2300.0f);
@@ -3854,6 +3880,8 @@ void world_reset(world_t *w) {
     w->stations[2].inventory[COMMODITY_CRYSTAL_INGOT] = 15.0f;
     w->stations[2].inventory[COMMODITY_LASER_MODULE] = 10.0f;
     w->stations[2].inventory[COMMODITY_TRACTOR_MODULE] = 10.0f;
+    snprintf(w->stations[2].hail_message, sizeof(w->stations[2].hail_message),
+             "Helios Works. Advanced smelting. Copper and crystal refined here.");
     rebuild_signal_chain(w);
 
     /* --- Initial asteroid field: spawn as clumps along belt density --- */
