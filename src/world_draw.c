@@ -957,37 +957,25 @@ void draw_npc_ships(void) {
     }
 }
 
-/* Draw hopper intake: tractor tendrils + laser fracture beam on closest fragment.
- * Also draws ore flow stream from hopper to adjacent furnace. */
+/* Draw furnace tractor beams: orange tendrils to nearby S-tier fragments.
+ * Fragments being smelted glow brighter with sparks. */
 void draw_hopper_tractors(void) {
-    float pull_range = 200.0f;
+    float pull_range = 300.0f;
     float pull_sq = pull_range * pull_range;
-    float consume_range = 50.0f;
-    float consume_sq = consume_range * consume_range;
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &g.world.stations[s];
         if (st->scaffold) continue;
         for (int m = 0; m < st->module_count; m++) {
-            if (st->modules[m].type != MODULE_ORE_BUYER || st->modules[m].scaffold) continue;
-            int hopper_ring = st->modules[m].ring;
-            int hopper_slot = st->modules[m].slot;
-            vec2 mp = module_world_pos_ring(st, hopper_ring, hopper_slot);
+            if (st->modules[m].scaffold) continue;
+            module_type_t mt = st->modules[m].type;
+            if (mt != MODULE_FURNACE && mt != MODULE_FURNACE_CU && mt != MODULE_FURNACE_CR) continue;
+            vec2 mp = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
             if (!on_screen(mp.x, mp.y, pull_range + 50.0f)) continue;
 
-            /* Find closest S-tier fragment for the laser beam */
-            int closest_frag = -1;
-            float closest_d_sq = pull_sq;
-            for (int i = 0; i < MAX_ASTEROIDS; i++) {
-                const asteroid_t *a = &g.world.asteroids[i];
-                if (!a->active || a->tier != ASTEROID_TIER_S) continue;
-                float d_sq = v2_dist_sq(a->pos, mp);
-                if (d_sq < closest_d_sq) {
-                    closest_d_sq = d_sq;
-                    closest_frag = i;
-                }
-            }
+            float fr, fg, fb;
+            module_color(mt, &fr, &fg, &fb);
 
-            /* Draw tendrils to all fragments in range */
+            /* Draw orange tractor tendrils to all S-tier fragments in range */
             for (int i = 0; i < MAX_ASTEROIDS; i++) {
                 const asteroid_t *a = &g.world.asteroids[i];
                 if (!a->active || a->tier != ASTEROID_TIER_S) continue;
@@ -996,64 +984,23 @@ void draw_hopper_tractors(void) {
                 float d = sqrtf(d_sq);
                 float t = 1.0f - d / pull_range;
                 float pulse = 0.5f + 0.3f * sinf(g.world.time * 6.0f + (float)i * 1.7f);
-                /* Tractor tendril */
-                draw_segment(mp, a->pos, 0.75f, 0.50f, 0.20f, t * pulse * 0.5f);
-                draw_segment(mp, a->pos, 1.0f, 0.75f, 0.30f, t * pulse * 0.25f);
-            }
 
-            /* Laser fracture beam on the closest fragment near the mouth */
-            if (closest_frag >= 0 && closest_d_sq < consume_sq * 9.0f) {
-                const asteroid_t *target = &g.world.asteroids[closest_frag];
-                float flicker = 0.8f + 0.2f * sinf(g.world.time * 18.0f);
-                /* Hot mining laser — orange/white, like the player beam but hotter */
-                draw_segment(mp, target->pos, 1.0f, 0.65f, 0.15f, 0.9f * flicker);
-                draw_segment(mp, target->pos, 1.0f, 0.85f, 0.40f, 0.35f * flicker);
-                /* Sparks at contact point */
-                float spark = sinf(g.world.time * 24.0f + (float)closest_frag * 3.1f);
-                if (spark > 0.3f) {
-                    float sr = target->radius * 0.6f;
-                    vec2 sp1 = v2_add(target->pos, v2(sr * sinf(g.world.time * 11.0f), sr * cosf(g.world.time * 13.0f)));
-                    vec2 sp2 = v2_add(target->pos, v2(-sr * cosf(g.world.time * 9.0f), sr * sinf(g.world.time * 7.0f)));
-                    draw_segment(target->pos, sp1, 1.0f, 0.9f, 0.4f, spark * 0.5f);
-                    draw_segment(target->pos, sp2, 1.0f, 0.7f, 0.2f, spark * 0.4f);
+                /* Tractor tendril — brighter when fragment is smelting */
+                float brightness = (a->smelt_progress > 0.01f) ? (0.6f + a->smelt_progress * 0.4f) : 0.3f;
+                draw_segment(mp, a->pos, fr, fg, fb, t * pulse * brightness);
+                draw_segment(mp, a->pos, fr * 1.2f, fg * 0.8f, fb * 0.5f, t * pulse * brightness * 0.4f);
+
+                /* Sparks on smelting fragments */
+                if (a->smelt_progress > 0.2f) {
+                    float spark = sinf(g.world.time * 24.0f + (float)i * 3.1f);
+                    if (spark > 0.2f) {
+                        float sr = a->radius * 0.8f;
+                        vec2 sp1 = v2_add(a->pos, v2(sr * sinf(g.world.time * 11.0f), sr * cosf(g.world.time * 13.0f)));
+                        vec2 sp2 = v2_add(a->pos, v2(-sr * cosf(g.world.time * 9.0f), sr * sinf(g.world.time * 7.0f)));
+                        draw_segment(a->pos, sp1, 1.0f, 0.9f, 0.4f, spark * a->smelt_progress * 0.6f);
+                        draw_segment(a->pos, sp2, 1.0f, 0.7f, 0.2f, spark * a->smelt_progress * 0.4f);
+                    }
                 }
-            }
-
-            /* Ore flow stream: hopper → adjacent furnace along the ring.
-             * Visual: pulsing colored dots traveling from hopper to furnace. */
-            int slots = STATION_RING_SLOTS[hopper_ring];
-            if (slots <= 0) continue;
-            int prev_slot = (hopper_slot - 1 + slots) % slots;
-            int next_slot = (hopper_slot + 1) % slots;
-            for (int fm = 0; fm < st->module_count; fm++) {
-                module_type_t ft = st->modules[fm].type;
-                if (ft != MODULE_FURNACE && ft != MODULE_FURNACE_CU && ft != MODULE_FURNACE_CR) continue;
-                if (st->modules[fm].scaffold) continue;
-                if (st->modules[fm].ring != hopper_ring) continue;
-                if (st->modules[fm].slot != prev_slot && st->modules[fm].slot != next_slot) continue;
-
-                /* This furnace is adjacent — check if it has ore to smelt */
-                commodity_t ore = COMMODITY_FERRITE_ORE;
-                if (ft == MODULE_FURNACE_CU) ore = COMMODITY_CUPRITE_ORE;
-                if (ft == MODULE_FURNACE_CR) ore = COMMODITY_CRYSTAL_ORE;
-                if (st->inventory[ore] < 0.1f) continue;
-
-                vec2 fp = module_world_pos_ring(st, st->modules[fm].ring, st->modules[fm].slot);
-
-                /* Ore color */
-                float or_r, or_g, or_b;
-                commodity_material_tint(ore, &or_r, &or_g, &or_b);
-
-                /* Animated dots traveling from hopper to furnace */
-                float base_alpha = 0.5f + 0.2f * sinf(g.world.time * 3.0f);
-                for (int dot = 0; dot < 4; dot++) {
-                    float phase = fmodf(g.world.time * 0.8f + (float)dot * 0.25f, 1.0f);
-                    vec2 dp = v2_add(v2_scale(mp, 1.0f - phase), v2_scale(fp, phase));
-                    float sz = 2.0f + 1.0f * sinf(phase * PI_F);
-                    draw_rect_centered(dp, sz, sz, or_r, or_g, or_b, base_alpha * (0.6f + 0.4f * sinf(phase * PI_F)));
-                }
-                /* Faint connection line */
-                draw_segment(mp, fp, or_r * 0.5f, or_g * 0.5f, or_b * 0.5f, 0.15f);
             }
         }
     }
