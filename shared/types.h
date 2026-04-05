@@ -286,6 +286,7 @@ typedef struct {
     float state_timer;
     bool thrusting;
     float tint_r, tint_g, tint_b;  /* accumulated ore color (starts white) */
+    int towed_fragment;             /* asteroid index being towed, -1 = none */
 } npc_ship_t;
 
 typedef struct {

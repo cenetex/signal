@@ -385,6 +385,7 @@ static int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     npc->pos = v2_add(st->pos, v2(30.0f * (float)(slot % 3 - 1), -(st->radius + HULL_DEFS[hc].ship_radius + 50.0f)));
     npc->angle = PI_F * 0.5f;
     npc->target_asteroid = -1;
+    npc->towed_fragment = -1;
     npc->home_station = station_idx;
     npc->dest_station = station_idx;
     npc->state_timer = (role == NPC_ROLE_MINER) ? NPC_DOCK_TIME : HAULER_DOCK_TIME;
@@ -1516,7 +1517,8 @@ static void step_npc_ships(world_t *w, float dt) {
         }
         case NPC_STATE_MINING: {
             if (!npc_target_valid(w, npc)) {
-                if (npc_total_cargo(npc) > 0.5f) {
+                /* Target gone — look for a fragment to tow, or find new target */
+                if (npc->towed_fragment >= 0) {
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                 } else {
                     int target = npc_find_mineable_asteroid(w, npc);
@@ -1528,9 +1530,9 @@ static void step_npc_ships(world_t *w, float dt) {
             asteroid_t *a = &w->asteroids[npc->target_asteroid];
             float dist_sq = v2_dist_sq(npc->pos, a->pos);
             float standoff = a->radius + 60.0f;
-            float approach = standoff + 20.0f;
+            float approach_r = standoff + 20.0f;
 
-            if (dist_sq > approach * approach) {
+            if (dist_sq > approach_r * approach_r) {
                 npc_steer_toward(npc, a->pos, hull->accel, hull->turn_speed, dt);
                 npc_apply_physics(npc, hull->drag, dt, w);
                 break;
@@ -1556,18 +1558,24 @@ static void step_npc_ships(world_t *w, float dt) {
             a->hp -= mined;
             a->net_dirty = true;
 
-            float cs = hull->ore_capacity - npc_total_cargo(npc);
-            float ore_gained = fminf(mined * 0.15f, cs);
-            if (ore_gained > 0.0f) npc->cargo[a->commodity] += ore_gained;
-
             if (a->hp <= 0.01f) {
                 vec2 outward = v2_norm(v2_sub(a->pos, npc->pos));
-                fracture_asteroid(w, npc->target_asteroid, outward, -1); /* NPC: no player credit */
+                fracture_asteroid(w, npc->target_asteroid, outward, -1);
                 npc->target_asteroid = -1;
-            }
-            if (cs <= 0.5f) {
-                npc->state = NPC_STATE_RETURN_TO_STATION;
-                npc->target_asteroid = -1;
+
+                /* Grab the nearest S-tier fragment to tow home */
+                float best_frag_d = 200.0f * 200.0f;
+                int best_frag = -1;
+                for (int fi = 0; fi < MAX_ASTEROIDS; fi++) {
+                    asteroid_t *f = &w->asteroids[fi];
+                    if (!f->active || f->tier != ASTEROID_TIER_S) continue;
+                    float fd = v2_dist_sq(npc->pos, f->pos);
+                    if (fd < best_frag_d) { best_frag_d = fd; best_frag = fi; }
+                }
+                if (best_frag >= 0) {
+                    npc->towed_fragment = best_frag;
+                    npc->state = NPC_STATE_RETURN_TO_STATION;
+                }
             }
             break;
         }
@@ -1576,18 +1584,32 @@ static void step_npc_ships(world_t *w, float dt) {
             vec2 miner_approach = station_approach_target(home, npc->pos);
             npc_steer_toward(npc, miner_approach, hull->accel, hull->turn_speed, dt);
             npc_apply_physics(npc, hull->drag, dt, w);
+
+            /* Tow the fragment — drag it along with spring physics */
+            if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS) {
+                asteroid_t *tow = &w->asteroids[npc->towed_fragment];
+                if (tow->active) {
+                    vec2 to_npc = v2_sub(npc->pos, tow->pos);
+                    float td = sqrtf(v2_len_sq(to_npc));
+                    float safe = 40.0f + tow->radius;
+                    if (td > safe && td > 0.1f) {
+                        vec2 pull = v2_scale(to_npc, 3.0f / td);
+                        tow->vel = v2_add(tow->vel, v2_scale(pull, 300.0f * dt));
+                        tow->vel = v2_scale(tow->vel, 1.0f / (1.0f + 3.0f * dt));
+                        float spd = v2_len(tow->vel);
+                        if (spd > 150.0f) tow->vel = v2_scale(tow->vel, 150.0f / spd);
+                    }
+                } else {
+                    npc->towed_fragment = -1; /* fragment died */
+                }
+            }
+
             float dock_r = home->dock_radius * 0.7f;
             if (v2_dist_sq(npc->pos, home->pos) < dock_r * dock_r) {
+                /* Release towed fragment near the station — furnace tractor takes over */
+                npc->towed_fragment = -1;
                 npc->vel = v2(0.0f, 0.0f);
                 npc->pos = v2_add(home->pos, v2(30.0f * (float)(n % 3 - 1), -(home->radius + hull->ship_radius + 50.0f)));
-                if (station_has_module(home, MODULE_FURNACE) || station_has_module(home, MODULE_FURNACE_CU) || station_has_module(home, MODULE_FURNACE_CR)) {
-                    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
-                        float space = REFINERY_HOPPER_CAPACITY - home->inventory[i];
-                        float deposit = fminf(npc->cargo[i], fmaxf(0.0f, space));
-                        home->inventory[i] += deposit;
-                        npc->cargo[i] -= deposit;
-                    }
-                }
                 npc->state = NPC_STATE_DOCKED;
                 npc->state_timer = NPC_DOCK_TIME;
                 npc->target_asteroid = -1;
@@ -3172,7 +3194,8 @@ static void step_furnace_smelting(world_t *w, float dt) {
                 if (st->modules[m].scaffold) continue;
                 if (st->modules[m].type != MODULE_FURNACE &&
                     st->modules[m].type != MODULE_FURNACE_CU &&
-                    st->modules[m].type != MODULE_FURNACE_CR) continue;
+                    st->modules[m].type != MODULE_FURNACE_CR &&
+                    st->modules[m].type != MODULE_ORE_SILO) continue;
 
                 int ring = st->modules[m].ring;
                 vec2 mp = module_world_pos_ring(st, ring, st->modules[m].slot);

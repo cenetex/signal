@@ -785,21 +785,70 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             float angle = module_angle_ring(station, ring, m->slot);
             draw_module_at(positions[i], angle, m->type, m->scaffold, m->build_progress, station->pos);
 
-            /* Active furnace glow: brighter when smelting ore */
+            /* Furnace: glow + red laser beam to target module when smelting */
             if (!m->scaffold && (m->type == MODULE_FURNACE || m->type == MODULE_FURNACE_CU || m->type == MODULE_FURNACE_CR)) {
-                commodity_t ore = COMMODITY_FERRITE_ORE;
-                if (m->type == MODULE_FURNACE_CU) ore = COMMODITY_CUPRITE_ORE;
-                if (m->type == MODULE_FURNACE_CR) ore = COMMODITY_CRYSTAL_ORE;
-                float ore_level = station->inventory[ore];
-                if (ore_level > 0.1f) {
-                    /* Furnace is smelting — pulsing glow around module */
-                    float intensity = fminf(ore_level / 100.0f, 1.0f);
-                    float glow_pulse = 0.4f + 0.3f * sinf(g.world.time * 4.0f + (float)m->slot * 2.0f);
-                    float gr, gg, gb;
-                    commodity_material_tint(ore, &gr, &gg, &gb);
-                    /* Warm glow circle behind the module */
-                    draw_circle_filled(positions[i], 44.0f, 12, gr * 0.6f, gg * 0.3f, gb * 0.15f, intensity * glow_pulse * 0.25f);
-                    draw_circle_filled(positions[i], 28.0f, 10, gr * 0.9f, gg * 0.5f, gb * 0.2f, intensity * glow_pulse * 0.35f);
+                float fr, fg, fb;
+                module_color(m->type, &fr, &fg, &fb);
+                float pulse = 0.3f + 0.15f * sinf(g.world.time * 3.0f + (float)m->slot);
+
+                /* Always: warm glow at furnace */
+                draw_circle_filled(positions[i], 44.0f, 12, fr * 0.6f, fg * 0.3f, fb * 0.15f, pulse * 0.3f);
+                draw_circle_filled(positions[i], 28.0f, 10, fr * 0.9f, fg * 0.5f, fb * 0.2f, pulse * 0.4f);
+
+                /* Find target module on next ring */
+                float mod_angle = module_angle_ring(station, ring, m->slot);
+                float outer_r = (ring < STATION_NUM_RINGS) ? STATION_RING_RADIUS[ring + 1] : STATION_RING_RADIUS[ring] + 180.0f;
+                vec2 target = v2_add(station->pos, v2(cosf(mod_angle) * outer_r, sinf(mod_angle) * outer_r));
+                int next_ring = ring + 1;
+                if (next_ring <= STATION_NUM_RINGS) {
+                    float best_d = 1e18f;
+                    for (int mi2 = 0; mi2 < station->module_count; mi2++) {
+                        if (station->modules[mi2].ring != next_ring) continue;
+                        vec2 mp2 = module_world_pos_ring(station, next_ring, station->modules[mi2].slot);
+                        float dd = v2_dist_sq(positions[i], mp2);
+                        if (dd < best_d) { best_d = dd; target = mp2; }
+                    }
+                }
+
+                /* Check if any fragment is smelting near this furnace */
+                bool has_smelting = false;
+                for (int ai = 0; ai < MAX_ASTEROIDS; ai++) {
+                    const asteroid_t *fa = &g.world.asteroids[ai];
+                    if (!fa->active || fa->smelt_progress < 0.05f) continue;
+                    if (v2_dist_sq(fa->pos, positions[i]) < 300.0f * 300.0f) {
+                        has_smelting = true; break;
+                    }
+                }
+
+                if (has_smelting) {
+                    /* RED LASER between furnace and target — zappy flicker */
+                    float flicker = 0.7f + 0.3f * sinf(g.world.time * 47.0f);
+                    float zap1 = sinf(g.world.time * 31.0f) * 0.5f + 0.5f;
+                    float zap2 = sinf(g.world.time * 53.0f) * 0.5f + 0.5f;
+                    vec2 bdir = v2_sub(target, positions[i]);
+                    float blen = sqrtf(v2_len_sq(bdir));
+                    if (blen > 1.0f) {
+                        vec2 nd = v2_scale(bdir, 1.0f / blen);
+                        vec2 perp = v2(-nd.y, nd.x);
+                        vec2 mid = v2_scale(v2_add(positions[i], target), 0.5f);
+                        vec2 j1 = v2_add(mid, v2_scale(perp, 5.0f * zap1));
+                        vec2 j2 = v2_add(mid, v2_scale(perp, -5.0f * zap2));
+                        /* Main red beam */
+                        draw_segment(positions[i], target, 1.0f, 0.2f, 0.1f, 0.8f * flicker);
+                        /* Jittering side beams */
+                        draw_segment(positions[i], j1, 1.0f, 0.35f, 0.1f, 0.5f * flicker);
+                        draw_segment(j1, target, 1.0f, 0.35f, 0.1f, 0.5f * flicker);
+                        draw_segment(positions[i], j2, 1.0f, 0.15f, 0.05f, 0.4f * flicker);
+                        draw_segment(j2, target, 1.0f, 0.15f, 0.05f, 0.4f * flicker);
+                        /* Hot white core */
+                        draw_segment(positions[i], target, 1.0f, 0.9f, 0.7f, 0.25f * flicker);
+                    }
+                    /* Glow at both ends */
+                    draw_circle_filled(positions[i], 36.0f, 10, 1.0f, 0.3f, 0.1f, 0.3f * flicker);
+                    draw_circle_filled(target, 28.0f, 8, 1.0f, 0.2f, 0.05f, 0.2f * flicker);
+                } else {
+                    /* Idle: faint connection line to target */
+                    draw_segment(positions[i], target, fr, fg, fb, pulse * 0.15f);
                 }
             }
 
@@ -954,6 +1003,15 @@ void draw_npc_ships(void) {
         if (!on_screen(g.world.npc_ships[i].pos.x, g.world.npc_ships[i].pos.y, 50.0f)) continue;
         draw_npc_ship(&g.world.npc_ships[i]);
         draw_npc_mining_beam(&g.world.npc_ships[i]);
+        /* NPC tow tether */
+        const npc_ship_t *tnpc = &g.world.npc_ships[i];
+        if (tnpc->towed_fragment >= 0 && tnpc->towed_fragment < MAX_ASTEROIDS) {
+            const asteroid_t *ta = &g.world.asteroids[tnpc->towed_fragment];
+            if (ta->active) {
+                float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)i * 1.5f);
+                draw_segment(tnpc->pos, ta->pos, 0.7f, 0.5f, 0.2f, tp);
+            }
+        }
     }
 }
 
@@ -968,7 +1026,8 @@ void draw_hopper_tractors(void) {
         for (int m = 0; m < st->module_count; m++) {
             if (st->modules[m].scaffold) continue;
             module_type_t mt = st->modules[m].type;
-            if (mt != MODULE_FURNACE && mt != MODULE_FURNACE_CU && mt != MODULE_FURNACE_CR) continue;
+            if (mt != MODULE_FURNACE && mt != MODULE_FURNACE_CU && mt != MODULE_FURNACE_CR
+                && mt != MODULE_ORE_SILO) continue;
             vec2 mp = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
             if (!on_screen(mp.x, mp.y, pull_range + 50.0f)) continue;
 
@@ -985,20 +1044,39 @@ void draw_hopper_tractors(void) {
                 float t = 1.0f - d / pull_range;
                 float pulse = 0.5f + 0.3f * sinf(g.world.time * 6.0f + (float)i * 1.7f);
 
-                /* Tractor tendril — brighter when fragment is smelting */
+                /* Zappy tractor tendril — jittery, electrical feel */
                 float brightness = (a->smelt_progress > 0.01f) ? (0.6f + a->smelt_progress * 0.4f) : 0.3f;
-                draw_segment(mp, a->pos, fr, fg, fb, t * pulse * brightness);
-                draw_segment(mp, a->pos, fr * 1.2f, fg * 0.8f, fb * 0.5f, t * pulse * brightness * 0.4f);
+                float zap = sinf(g.world.time * 37.0f + (float)i * 5.3f);
+                float jitter = 4.0f * zap;
+                vec2 mid = v2_scale(v2_add(mp, a->pos), 0.5f);
+                vec2 perp = v2(-((a->pos.y - mp.y)), (a->pos.x - mp.x));
+                float plen = sqrtf(v2_len_sq(perp));
+                if (plen > 0.1f) perp = v2_scale(perp, jitter / plen);
+                vec2 mid_jitter = v2_add(mid, perp);
+                /* Two-segment zap line through jittered midpoint */
+                draw_segment(mp, mid_jitter, fr, fg, fb, t * pulse * brightness);
+                draw_segment(mid_jitter, a->pos, fr, fg, fb, t * pulse * brightness);
+                /* Hot core line — straighter, brighter */
+                draw_segment(mp, a->pos, 1.0f, 0.85f, 0.4f, t * pulse * brightness * 0.3f);
 
-                /* Sparks on smelting fragments */
-                if (a->smelt_progress > 0.2f) {
-                    float spark = sinf(g.world.time * 24.0f + (float)i * 3.1f);
-                    if (spark > 0.2f) {
-                        float sr = a->radius * 0.8f;
-                        vec2 sp1 = v2_add(a->pos, v2(sr * sinf(g.world.time * 11.0f), sr * cosf(g.world.time * 13.0f)));
-                        vec2 sp2 = v2_add(a->pos, v2(-sr * cosf(g.world.time * 9.0f), sr * sinf(g.world.time * 7.0f)));
-                        draw_segment(a->pos, sp1, 1.0f, 0.9f, 0.4f, spark * a->smelt_progress * 0.6f);
-                        draw_segment(a->pos, sp2, 1.0f, 0.7f, 0.2f, spark * a->smelt_progress * 0.4f);
+                /* Sparks on smelting fragments — more intense */
+                if (a->smelt_progress > 0.1f) {
+                    float spark1 = sinf(g.world.time * 31.0f + (float)i * 3.1f);
+                    float spark2 = sinf(g.world.time * 43.0f + (float)i * 7.3f);
+                    float spark3 = sinf(g.world.time * 19.0f + (float)i * 2.7f);
+                    float sr = a->radius * 1.2f;
+                    float sp = a->smelt_progress;
+                    if (spark1 > 0.0f) {
+                        vec2 s1 = v2_add(a->pos, v2(sr * sinf(g.world.time * 11.0f), sr * cosf(g.world.time * 13.0f)));
+                        draw_segment(a->pos, s1, 1.0f, 0.9f, 0.3f, spark1 * sp * 0.7f);
+                    }
+                    if (spark2 > 0.0f) {
+                        vec2 s2 = v2_add(a->pos, v2(-sr * cosf(g.world.time * 9.0f), sr * sinf(g.world.time * 7.0f)));
+                        draw_segment(a->pos, s2, 1.0f, 0.7f, 0.15f, spark2 * sp * 0.5f);
+                    }
+                    if (spark3 > 0.0f) {
+                        vec2 s3 = v2_add(a->pos, v2(sr * cosf(g.world.time * 17.0f), -sr * sinf(g.world.time * 23.0f)));
+                        draw_segment(a->pos, s3, 0.9f, 0.5f, 0.1f, spark3 * sp * 0.4f);
                     }
                 }
             }
