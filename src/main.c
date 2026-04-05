@@ -284,7 +284,17 @@ static void episode_per_frame(void) {
     if (!g.episode.watched[4] && g.onboarding.placed_outpost)
         episode_trigger(&g.episode, 4);
 
-    /* Ep 5: Drones — triggered server-side when NPC spawns at player outpost (TODO) */
+    /* Ep 5: Drones — NPC mining drone active at a player outpost */
+    if (!g.episode.watched[5]) {
+        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+            npc_ship_t *npc = &g.world.npc_ships[n];
+            if (!npc->active || npc->role != NPC_ROLE_MINER) continue;
+            if (npc->home_station >= 3 && station_exists(&g.world.stations[npc->home_station])) {
+                episode_trigger(&g.episode, 5);
+                break;
+            }
+        }
+    }
 
     /* Ep 7: Dark Sector — enter zero-signal space */
     if (!g.episode.watched[7]) {
