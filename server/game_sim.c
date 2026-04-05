@@ -2598,11 +2598,78 @@ static const float SCAFFOLD_PICKUP_RANGE = 80.0f;    /* how close to grab one */
 
 static void release_towed_scaffold(world_t *w, server_player_t *sp) {
     int idx = sp->ship.towed_scaffold;
-    if (idx >= 0 && idx < MAX_SCAFFOLDS && w->scaffolds[idx].active) {
-        w->scaffolds[idx].state = SCAFFOLD_LOOSE;
-        w->scaffolds[idx].towed_by = -1;
+    if (idx < 0 || idx >= MAX_SCAFFOLDS || !w->scaffolds[idx].active) {
+        sp->ship.towed_scaffold = -1;
+        return;
     }
+    scaffold_t *sc = &w->scaffolds[idx];
     sp->ship.towed_scaffold = -1;
+
+    /* Try to snap to a nearby outpost ring slot */
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        int ring, slot;
+        if (find_nearest_open_slot(st, sc->pos, &ring, &slot)) {
+            sc->state = SCAFFOLD_SNAPPING;
+            sc->placed_station = s;
+            sc->placed_ring = ring;
+            sc->placed_slot = slot;
+            sc->vel = v2(0.0f, 0.0f);
+            sc->towed_by = -1;
+            return;
+        }
+    }
+
+    /* Not near an outpost — found a new station if in signal range */
+    if (signal_strength_at(w, sc->pos) > 0.0f && can_place_outpost(w, sc->pos)) {
+        /* Find free station slot */
+        int slot = -1;
+        for (int s = 3; s < MAX_STATIONS; s++) {
+            if (!station_exists(&w->stations[s])) { slot = s; break; }
+        }
+        if (slot >= 0) {
+            station_t *st = &w->stations[slot];
+            memset(st, 0, sizeof(*st));
+            snprintf(st->name, sizeof(st->name), "Outpost %d", slot);
+            st->pos = sc->pos;
+            st->radius = OUTPOST_RADIUS;
+            st->dock_radius = OUTPOST_DOCK_RADIUS;
+            st->signal_range = OUTPOST_SIGNAL_RANGE;
+            st->scaffold = true;
+            st->scaffold_progress = 0.0f;
+            add_module_at(st, MODULE_DOCK, 0, 0xFF);
+            add_module_at(st, MODULE_SIGNAL_RELAY, 0, 0xFF);
+            rebuild_station_services(st);
+            /* Generate supply contract for outpost activation */
+            for (int k = 0; k < MAX_CONTRACTS; k++) {
+                if (!w->contracts[k].active) {
+                    w->contracts[k] = (contract_t){
+                        .active = true, .action = CONTRACT_SUPPLY,
+                        .station_index = (uint8_t)slot,
+                        .commodity = COMMODITY_FRAME,
+                        .quantity_needed = SCAFFOLD_MATERIAL_NEEDED,
+                        .base_price = 23.0f,
+                        .target_index = -1, .claimed_by = -1,
+                    };
+                    break;
+                }
+            }
+            /* Queue the first module scaffold for after activation */
+            begin_module_construction_at(w, st, slot,
+                sc->module_type, 1, 0);
+            emit_event(w, (sim_event_t){
+                .type = SIM_EVENT_OUTPOST_PLACED,
+                .outpost_placed = { .slot = slot },
+            });
+            sc->active = false;
+            return;
+        }
+    }
+
+    /* Fallback: just release loose */
+    sc->state = SCAFFOLD_LOOSE;
+    sc->towed_by = -1;
 }
 
 static void step_scaffold_tow(world_t *w, server_player_t *sp, float dt) {

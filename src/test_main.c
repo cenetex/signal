@@ -4395,6 +4395,98 @@ TEST(test_scaffold_snap_ignores_starter_stations) {
     ASSERT(w.scaffolds[idx].state != SCAFFOLD_SNAPPING);
 }
 
+TEST(test_scaffold_full_pipeline) {
+    /* End-to-end: spawn → snap → supply → activate */
+    world_t w = {0};
+    world_reset(&w);
+
+    /* Create and activate a player outpost */
+    w.players[0].connected = true;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].docked = false;
+    w.players[0].ship.has_scaffold_kit = true;
+    w.players[0].ship.credits = 1000.0f;
+    vec2 outpost_pos = v2_add(w.stations[0].pos, v2(3000.0f, 0.0f));
+    int outpost = try_place_outpost(&w, &w.players[0], outpost_pos);
+    ASSERT(outpost >= 3);
+    w.stations[outpost].scaffold = false;
+    w.stations[outpost].scaffold_progress = 1.0f;
+    w.stations[outpost].signal_range = 6000.0f;
+    w.stations[outpost].arm_count = 1;
+    w.stations[outpost].arm_speed[0] = 0.04f;
+    rebuild_signal_chain(&w);
+
+    int before_count = w.stations[outpost].module_count;
+
+    /* Step 1: Spawn scaffold near ring 1 → station grabs it */
+    vec2 ring1_near = v2_add(outpost_pos, v2(180.0f, 0.0f));
+    int idx = spawn_scaffold(&w, MODULE_FURNACE, ring1_near, 0);
+    ASSERT(idx >= 0);
+
+    /* Run until scaffold is consumed (snapped + placed as module) */
+    for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
+    ASSERT(!w.scaffolds[idx].active);
+    ASSERT(w.stations[outpost].module_count == before_count + 1);
+
+    /* The new module should be a furnace scaffold under construction */
+    station_module_t *m = &w.stations[outpost].modules[before_count];
+    ASSERT_EQ_INT(m->type, MODULE_FURNACE);
+    ASSERT(m->scaffold);
+    ASSERT(m->build_progress < 1.0f); /* not yet supplied */
+
+    /* Step 2: Supply — put frames in station inventory (simulates NPC delivery) */
+    float cost = 60.0f; /* MODULE_FURNACE build cost (frames) */
+    commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
+    w.stations[outpost].inventory[mat] = cost;
+
+    /* Run until materials are consumed and build timer completes */
+    for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
+
+    /* Module should be fully activated */
+    ASSERT(!m->scaffold);
+    ASSERT_EQ_FLOAT(m->build_progress, 1.0f, 0.01f);
+}
+
+TEST(test_scaffold_ship_drag) {
+    world_t w = {0};
+    world_reset(&w);
+    w.players[0].connected = true;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].docked = false;
+    w.players[0].ship.tractor_active = true;
+    w.players[0].ship.pos = v2(5000.0f, 5000.0f);
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+
+    /* Spawn and attach scaffold */
+    int idx = spawn_scaffold(&w, MODULE_FURNACE, v2(5050.0f, 5000.0f), 0);
+    w.players[0].ship.towed_scaffold = (int16_t)idx;
+    w.scaffolds[idx].state = SCAFFOLD_TOWING;
+    w.scaffolds[idx].towed_by = 0;
+
+    /* Thrust for a while */
+    for (int i = 0; i < 600; i++) {
+        w.players[0].input.thrust = 1.0f;
+        world_sim_step(&w, SIM_DT);
+    }
+
+    /* Ship speed should be capped (much slower than free flight) */
+    float spd = v2_len(w.players[0].ship.vel);
+    ASSERT(spd <= 70.0f); /* some tolerance above the 55 cap for thrust/drag balance */
+
+    /* Compare to free-flight speed: reset and thrust without scaffold */
+    w.players[0].ship.towed_scaffold = -1;
+    w.scaffolds[idx].state = SCAFFOLD_LOOSE;
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    for (int i = 0; i < 600; i++) {
+        w.players[0].input.thrust = 1.0f;
+        world_sim_step(&w, SIM_DT);
+    }
+    float free_spd = v2_len(w.players[0].ship.vel);
+
+    /* Free flight should be significantly faster */
+    ASSERT(free_spd > spd * 1.5f);
+}
+
 TEST(test_scaffold_tow_speed_cap) {
     world_t w = {0};
     world_reset(&w);
@@ -4705,6 +4797,8 @@ int main(void) {
     RUN(test_scaffold_tow_speed_cap);
     RUN(test_scaffold_snap_to_slot);
     RUN(test_scaffold_snap_ignores_starter_stations);
+    RUN(test_scaffold_full_pipeline);
+    RUN(test_scaffold_ship_drag);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
