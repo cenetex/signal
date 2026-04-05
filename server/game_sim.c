@@ -2957,22 +2957,19 @@ static void handle_hail(world_t *w, server_player_t *sp) {
 }
 
 static void step_station_interaction_system(world_t *w, server_player_t *sp, const input_intent_t *intent) {
-    /* Buy typed scaffold kit: station must have that module type installed */
+    /* Buy scaffold: spawn a physical world object near the station */
     if (intent->buy_scaffold_kit && sp->docked && !w->player_only_mode) {
         module_type_t kit_type = intent->scaffold_kit_module;
         station_t *st = &w->stations[sp->current_station];
-        if (!sp->ship.has_scaffold_kit
-            && station_sells_scaffold(st, kit_type)) {
+        if (station_sells_scaffold(st, kit_type)) {
             float price = scaffold_kit_price(kit_type);
             if (sp->ship.credits >= price) {
                 spend_credits(&sp->ship, price);
-                sp->ship.has_scaffold_kit = true;
-                sp->ship.scaffold_kit_type = kit_type;
-                /* Spawn a physical scaffold near the station for tow-to-outpost */
+                /* Spawn a physical scaffold near the station */
                 vec2 spawn_offset = v2(st->dock_radius + 60.0f, 0.0f);
                 vec2 spawn_pos = v2_add(st->pos, spawn_offset);
                 spawn_scaffold(w, kit_type, spawn_pos, sp->id);
-                SIM_LOG("[sim] player %d bought %s scaffold kit + world scaffold\n", sp->id,
+                SIM_LOG("[sim] player %d bought %s scaffold\n", sp->id,
                         module_type_name(kit_type));
             }
         }

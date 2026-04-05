@@ -148,9 +148,7 @@ input_intent_t sample_input_intent(void) {
             for (int si = 0; si < (int)(sizeof(sellable)/sizeof(sellable[0])); si++) {
                 if (!station_has_module(st, sellable[si])) continue;
                 if (is_key_pressed(SAPP_KEYCODE_1 + shown)) {
-                    if (LOCAL_PLAYER.ship.has_scaffold_kit) {
-                        set_notice("Already carrying a scaffold kit.");
-                    } else {
+                    {
                         /* Price must match server scaffold_kit_price() */
                         int price = 200;
                         switch (sellable[si]) {
