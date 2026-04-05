@@ -243,25 +243,40 @@ input_intent_t sample_input_intent(void) {
         /* Default: service keys */
         intent.service_sell = is_key_pressed(SAPP_KEYCODE_1);
         if (intent.service_sell) {
-            /* Optimistic prediction: deliver primary buy commodity */
             const station_t *sell_st = current_station_ptr();
-            float est_payout = 0.0f;
+            bool delivered_to_scaffold = false;
+            /* Check if we can deliver to any scaffold module */
             if (sell_st) {
-                commodity_t buy = station_primary_buy(sell_st);
-                if ((int)buy >= 0 && LOCAL_PLAYER.ship.cargo[buy] > FLOAT_EPSILON) {
-                    float capacity = (buy < COMMODITY_RAW_ORE_COUNT)
-                        ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
-                    float space = fmaxf(0.0f, capacity - sell_st->inventory[buy]);
-                    float sellable = fminf(LOCAL_PLAYER.ship.cargo[buy], space);
-                    est_payout = sellable * station_buy_price(sell_st, buy);
-                    LOCAL_PLAYER.ship.cargo[buy] -= sellable;
-                    LOCAL_PLAYER.ship.credits += est_payout;
+                for (int mi = 0; mi < sell_st->module_count; mi++) {
+                    if (!sell_st->modules[mi].scaffold) continue;
+                    commodity_t mat = module_build_material_lookup(sell_st->modules[mi].type);
+                    if (LOCAL_PLAYER.ship.cargo[mat] > 0.01f) {
+                        set_notice("Delivering to %s scaffold.", module_type_name(sell_st->modules[mi].type));
+                        delivered_to_scaffold = true;
+                        break;
+                    }
                 }
             }
-            if (est_payout > FLOAT_EPSILON) {
-                set_notice("Delivered  +%d cr", (int)lroundf(est_payout));
-            } else {
-                set_notice("Nothing to deliver here.");
+            if (!delivered_to_scaffold) {
+                /* Optimistic prediction: deliver primary buy commodity */
+                float est_payout = 0.0f;
+                if (sell_st) {
+                    commodity_t buy = station_primary_buy(sell_st);
+                    if ((int)buy >= 0 && LOCAL_PLAYER.ship.cargo[buy] > FLOAT_EPSILON) {
+                        float capacity = (buy < COMMODITY_RAW_ORE_COUNT)
+                            ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
+                        float space = fmaxf(0.0f, capacity - sell_st->inventory[buy]);
+                        float sellable = fminf(LOCAL_PLAYER.ship.cargo[buy], space);
+                        est_payout = sellable * station_buy_price(sell_st, buy);
+                        LOCAL_PLAYER.ship.cargo[buy] -= sellable;
+                        LOCAL_PLAYER.ship.credits += est_payout;
+                    }
+                }
+                if (est_payout > FLOAT_EPSILON) {
+                    set_notice("Delivered  +%d cr", (int)lroundf(est_payout));
+                } else {
+                    set_notice("Nothing to deliver here.");
+                }
             }
         }
         intent.service_repair = is_key_pressed(SAPP_KEYCODE_2);

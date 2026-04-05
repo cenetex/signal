@@ -145,6 +145,17 @@ static inline const char* module_type_name(module_type_t type) {
 }
 
 
+/* What material a module requires for construction (shared with client for UI) */
+static inline commodity_t module_build_material_lookup(module_type_t type) {
+    switch (type) {
+        case MODULE_FURNACE_CU:  return COMMODITY_CUPRITE_INGOT;
+        case MODULE_FURNACE_CR:  return COMMODITY_CRYSTAL_INGOT;
+        case MODULE_LASER_FAB:   return COMMODITY_CUPRITE_INGOT;
+        case MODULE_TRACTOR_FAB: return COMMODITY_CRYSTAL_INGOT;
+        default:                 return COMMODITY_FRAME;
+    }
+}
+
 typedef struct {
     module_type_t type;
     uint8_t ring;           /* which ring tier (0xFF=core, 1=inner, 2=mid, 3=outer) */

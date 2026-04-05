@@ -1638,8 +1638,19 @@ static void step_npc_ships(world_t *w, float dt) {
                 break;
             }
 
-            npc_steer_toward(npc, delivery_target, hull->accel, hull->turn_speed, dt);
+            /* Slow down when towing so the fragment can keep up */
+            float tow_accel = hull->accel;
+            if (npc->towed_fragment >= 0) tow_accel *= 0.5f;
+            npc_steer_toward(npc, delivery_target, tow_accel, hull->turn_speed, dt);
             npc_apply_physics(npc, hull->drag, dt, w);
+
+            /* Speed cap when towing */
+            if (npc->towed_fragment >= 0) {
+                float spd = v2_len(npc->vel);
+                float max_tow_speed = 80.0f;
+                if (spd > max_tow_speed)
+                    npc->vel = v2_scale(npc->vel, max_tow_speed / spd);
+            }
 
             /* Tow the fragment — drag it along with spring physics */
             if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS) {
@@ -1650,7 +1661,7 @@ static void step_npc_ships(world_t *w, float dt) {
                     float safe = 40.0f + tow->radius;
                     if (td > safe && td > 0.1f) {
                         vec2 pull_dir = v2_scale(to_npc, 1.0f / td);
-                        tow->vel = v2_add(tow->vel, v2_scale(pull_dir, 300.0f * dt));
+                        tow->vel = v2_add(tow->vel, v2_scale(pull_dir, 500.0f * dt));
                         tow->vel = v2_scale(tow->vel, 1.0f / (1.0f + 3.0f * dt));
                         float spd = v2_len(tow->vel);
                         if (spd > 150.0f) tow->vel = v2_scale(tow->vel, 150.0f / spd);
