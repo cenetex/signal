@@ -613,10 +613,6 @@ static void clear_ship_cargo(ship_t *s) {
     memset(s->cargo, 0, sizeof(s->cargo));
 }
 
-static float ship_cargo_space(const ship_t *s) {
-    return fmaxf(0.0f, ship_cargo_capacity(s) - ship_total_cargo(s));
-}
-
 static uint32_t station_upgrade_service(ship_upgrade_t upgrade) {
     switch (upgrade) {
     case SHIP_UPGRADE_MINING:  return STATION_SERVICE_UPGRADE_LASER;
@@ -1111,12 +1107,6 @@ static void sim_step_station_production(world_t *w, float dt) {
 /* ================================================================== */
 /* NPC ships                                                          */
 /* ================================================================== */
-
-static float npc_total_cargo(const npc_ship_t *npc) {
-    float t = 0.0f;
-    for (int i = 0; i < COMMODITY_COUNT; i++) t += npc->cargo[i];
-    return t;
-}
 
 static bool npc_target_valid(const world_t *w, const npc_ship_t *npc) {
     if (npc->target_asteroid < 0 || npc->target_asteroid >= MAX_ASTEROIDS) return false;

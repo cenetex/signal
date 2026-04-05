@@ -16,17 +16,37 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  # Unit tests run in parallel with everything — fast, independent.
+  # Unit tests + static analysis — fast, independent.
   test:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
 
-      - name: Build and run tests
+      - name: Install analysis tools
+        run: sudo apt-get update && sudo apt-get install -y cppcheck
+
+      - name: Build and run tests (warnings are errors)
         run: |
-          cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON
+          cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
+            -DCMAKE_C_FLAGS="-Werror"
           cmake --build build-test
           ./build-test/space_miner_test
+
+      - name: cppcheck static analysis
+        run: |
+          cppcheck --enable=warning,performance,portability \
+            --error-exitcode=1 \
+            --suppress=missingIncludeSystem \
+            --suppress=unusedFunction \
+            --suppress='*:src/pl_mpeg.h' \
+            --suppress='*:src/minimp3.h' \
+            -I shared/ -I src/ -I server/ \
+            src/*.c server/game_sim.c 2>&1
+
+      - name: Clang static analyzer (scan-build)
+        run: |
+          cmake -S . -B build-scan -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON
+          scan-build --status-bugs cmake --build build-scan
 
   # Client: build → deploy → smoke test → rollback on failure.
   # Deploy happens BEFORE smoke tests for faster iteration (~60s to live).

@@ -3998,7 +3998,7 @@ TEST(test_238_invisible_wall_repro) {
     vec2 st_pos = w.stations[0].pos;
     float ring_r = 340.0f;
     float corridor_hw = 10.0f;
-    float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius;
+    (void)HULL_DEFS; /* ship_r available if needed */
 
     /* Midpoint of corridor between slot 1 and slot 2 */
     float mid_ang = TWO_PI_F * 1.5f / 6.0f;
