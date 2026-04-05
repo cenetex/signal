@@ -982,9 +982,26 @@ void draw_hud(void) {
             sdtx_color3b(80, 100, 80);
             sdtx_printf("v%s", client_hash);
         }
-        sdtx_pos(info_x, ui_text_pos(18.0f));
-        sdtx_color3b(70, 60, 50);
-        sdtx_puts("ALPHA // world resets daily");
+        /* Alpha banner: repeating ticker across the top */
+        {
+            float bw = sapp_widthf() / fmaxf(1.0f, sapp_dpi_scale());
+            int cols = (int)(bw / 8.0f); /* sdtx char width ~8px */
+            char banner[512];
+            char segment[64];
+            snprintf(segment, sizeof(segment), "ALPHA // v%s // frequent server resets // ", client_hash);
+            int seg_len = (int)strlen(segment);
+            int pos = 0;
+            while (pos < cols && pos < (int)sizeof(banner) - 1) {
+                int left = (int)sizeof(banner) - 1 - pos;
+                int copy = seg_len < left ? seg_len : left;
+                memcpy(&banner[pos], segment, copy);
+                pos += copy;
+            }
+            banner[pos < (int)sizeof(banner) ? pos : (int)sizeof(banner) - 1] = '\0';
+            sdtx_pos(0.0f, 0.0f);
+            sdtx_color3b(180, 160, 60);
+            sdtx_puts(banner);
+        }
     }
 
     /* --- Edge pips --- */
