@@ -2526,7 +2526,7 @@ static void step_towed_cleanup(world_t *w, server_player_t *sp) {
         }
     }
     /* Auto-release removed — player must manually release with R key.
-     * Hopper intake (step_hopper_intake) consumes nearby S-tier fragments
+     * Furnace smelting (step_furnace_smelting) consumes S-tier fragments held by 2+ tractors
      * directly, crediting the towing player. */
 }
 
@@ -3170,90 +3170,125 @@ static void step_asteroid_gravity(world_t *w, float dt) {
     }
 }
 
-/* Hopper intake: ore buyer modules pull and consume nearby TIER_S fragments */
-/* Hopper intake: pull nearby S-tier fragments and consume on contact.
- * Credits the player who was towing the fragment (if any). */
-static void step_hopper_intake(world_t *w, float dt) {
+/* Furnace smelting: furnaces tractor S-tier fragments. When a fragment is
+ * held by 2+ tractor sources (furnaces and/or players), it smelts.
+ * This lets a solo player hold a rock while a furnace grabs it too. */
+static void step_furnace_smelting(world_t *w, float dt) {
     float pull_range = HOPPER_PULL_RANGE;
     float pull_sq = pull_range * pull_range;
-    float consume_sq = HOPPER_CONSUME_RANGE * HOPPER_CONSUME_RANGE;
+    float smelt_range = HOPPER_CONSUME_RANGE;
+    float smelt_sq = smelt_range * smelt_range;
 
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        station_t *st = &w->stations[s];
-        if (st->scaffold) continue;
-        for (int m = 0; m < st->module_count; m++) {
-            if (st->modules[m].type != MODULE_ORE_BUYER || st->modules[m].scaffold) continue;
-            vec2 mp = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        asteroid_t *a = &w->asteroids[i];
+        if (!a->active || a->tier != ASTEROID_TIER_S) continue;
 
-            for (int i = 0; i < MAX_ASTEROIDS; i++) {
-                asteroid_t *a = &w->asteroids[i];
-                if (!a->active || a->tier != ASTEROID_TIER_S) continue;
+        int tractor_count = 0;  /* how many sources are tractoring this fragment */
+        int smelt_station = -1; /* station that owns the furnace (for inventory) */
+
+        /* Count furnace tractor beams on this fragment */
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            station_t *st = &w->stations[s];
+            if (st->scaffold) continue;
+            for (int m = 0; m < st->module_count; m++) {
+                if (st->modules[m].scaffold) continue;
+                if (st->modules[m].type != MODULE_FURNACE &&
+                    st->modules[m].type != MODULE_FURNACE_CU &&
+                    st->modules[m].type != MODULE_FURNACE_CR) continue;
+                /* Check if this furnace can smelt this ore type */
+                bool can_smelt = false;
+                if (st->modules[m].type == MODULE_FURNACE && a->commodity == COMMODITY_FERRITE_ORE) can_smelt = true;
+                if (st->modules[m].type == MODULE_FURNACE_CU && a->commodity == COMMODITY_CUPRITE_ORE) can_smelt = true;
+                if (st->modules[m].type == MODULE_FURNACE_CR && a->commodity == COMMODITY_CRYSTAL_ORE) can_smelt = true;
+                if (!can_smelt) continue;
+
+                vec2 mp = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
                 vec2 to_mod = v2_sub(mp, a->pos);
                 float d_sq = v2_len_sq(to_mod);
                 if (d_sq > pull_sq) continue;
 
-                /* Pull fragment toward hopper */
+                /* Pull fragment toward furnace */
                 float d = sqrtf(d_sq);
                 if (d > 0.5f) {
                     float strength = HOPPER_PULL_ACCEL * (1.0f - d / pull_range);
                     vec2 dir = v2_scale(to_mod, 1.0f / d);
                     a->vel = v2_add(a->vel, v2_scale(dir, strength * dt));
-                    /* Heavy damping — kill tangential velocity so they don't orbit */
                     a->vel = v2_scale(a->vel, 1.0f / (1.0f + 6.0f * dt));
-                    /* Speed cap */
                     float spd = v2_len(a->vel);
                     if (spd > 120.0f) a->vel = v2_scale(a->vel, 120.0f / spd);
                 }
 
-                /* Consume: within mouth range (generous) */
-                if (d_sq <= consume_sq) {
-                    float ore_value = a->ore * station_buy_price(st, a->commodity);
-                    /* Split payment between fracturer and tower.
-                     * Same player or only one exists: 100%. Different: 50/50. */
-                    int tower = (a->last_towed_by >= 0 && a->last_towed_by < MAX_PLAYERS
-                                 && w->players[a->last_towed_by].connected)
-                                ? a->last_towed_by : -1;
-                    int fracturer = (a->last_fractured_by >= 0 && a->last_fractured_by < MAX_PLAYERS
-                                     && w->players[a->last_fractured_by].connected)
-                                    ? a->last_fractured_by : -1;
-
-                    if (ore_value > 0.0f) {
-                        if (tower >= 0 && fracturer >= 0 && tower != fracturer) {
-                            /* Cooperation bonus: each gets 75% (150% total) */
-                            float share = ore_value * 0.75f;
-                            w->players[tower].ship.credits += share;
-                            w->players[tower].ship.stat_credits_earned += share;
-                            emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = tower});
-                            w->players[fracturer].ship.credits += share;
-                            w->players[fracturer].ship.stat_credits_earned += share;
-                            emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = fracturer});
-                        } else {
-                            /* Solo or only one role: 100% to that player */
-                            int best_p = (tower >= 0) ? tower : fracturer;
-                            if (best_p >= 0) {
-                                w->players[best_p].ship.credits += ore_value;
-                                w->players[best_p].ship.stat_credits_earned += ore_value;
-                                emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = best_p});
-                            }
-                        }
-                    }
-
-                    /* Clean from tower's tow list */
-                    if (tower >= 0) {
-                        server_player_t *sp = &w->players[tower];
-                        for (int t = 0; t < sp->ship.towed_count; t++) {
-                            if (sp->ship.towed_fragments[t] == i) {
-                                sp->ship.towed_count--;
-                                sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
-                                sp->ship.towed_fragments[sp->ship.towed_count] = -1;
-                                break;
-                            }
-                        }
-                    }
-                    st->inventory[a->commodity] += a->ore;
-                    clear_asteroid(a);
+                if (d_sq <= smelt_sq) {
+                    tractor_count++;
+                    smelt_station = s;
                 }
             }
+        }
+
+        /* Count player tractor beams on this fragment */
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            server_player_t *sp = &w->players[p];
+            if (!sp->connected || sp->docked) continue;
+            if (!sp->ship.tractor_active) continue;
+            float tr = ship_tractor_range(&sp->ship);
+            float d_sq = v2_dist_sq(sp->ship.pos, a->pos);
+            if (d_sq <= tr * tr) {
+                tractor_count++;
+            }
+        }
+
+        /* Smelt: 2+ tractor sources on this fragment */
+        if (tractor_count >= 2 && smelt_station >= 0) {
+            station_t *st = &w->stations[smelt_station];
+            float ore_value = a->ore * station_buy_price(st, a->commodity);
+
+            /* Credit fracturer and tower */
+            int tower = (a->last_towed_by >= 0 && a->last_towed_by < MAX_PLAYERS
+                         && w->players[a->last_towed_by].connected)
+                        ? a->last_towed_by : -1;
+            int fracturer = (a->last_fractured_by >= 0 && a->last_fractured_by < MAX_PLAYERS
+                             && w->players[a->last_fractured_by].connected)
+                            ? a->last_fractured_by : -1;
+
+            if (ore_value > 0.0f) {
+                if (tower >= 0 && fracturer >= 0 && tower != fracturer) {
+                    float share = ore_value * 0.75f;
+                    w->players[tower].ship.credits += share;
+                    w->players[tower].ship.stat_credits_earned += share;
+                    emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = tower});
+                    w->players[fracturer].ship.credits += share;
+                    w->players[fracturer].ship.stat_credits_earned += share;
+                    emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = fracturer});
+                } else {
+                    int best_p = (tower >= 0) ? tower : fracturer;
+                    if (best_p >= 0) {
+                        w->players[best_p].ship.credits += ore_value;
+                        w->players[best_p].ship.stat_credits_earned += ore_value;
+                        emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = best_p});
+                    }
+                }
+            }
+
+            /* Clean from tower's tow list */
+            if (tower >= 0) {
+                server_player_t *sp = &w->players[tower];
+                for (int t = 0; t < sp->ship.towed_count; t++) {
+                    if (sp->ship.towed_fragments[t] == i) {
+                        sp->ship.towed_count--;
+                        sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
+                        sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+                        break;
+                    }
+                }
+            }
+
+            /* Smelt: ore → ingot in station inventory */
+            commodity_t ingot = commodity_refined_form(a->commodity);
+            if (ingot != a->commodity)
+                st->inventory[ingot] += a->ore;
+            else
+                st->inventory[a->commodity] += a->ore;
+            clear_asteroid(a);
         }
     }
 }
@@ -3556,7 +3591,7 @@ void world_sim_step(world_t *w, float dt) {
         resolve_asteroid_collisions(w);
         resolve_asteroid_station_collisions(w);
     }
-    step_hopper_intake(w, dt);
+    step_furnace_smelting(w, dt);
     sim_step_refinery_production(w, dt);
     sim_step_station_production(w, dt);
     step_module_construction(w, dt);
