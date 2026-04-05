@@ -112,6 +112,7 @@ typedef struct {
         bool launched;       /* pressed E to launch */
         bool mined;          /* fired the mining beam */
         bool collected;      /* picked up ore fragments */
+        bool towed;          /* towed fragments to a furnace */
         bool sold;           /* sold cargo at a station */
         bool bought;         /* bought a product with F */
         bool upgraded;       /* applied a ship upgrade */

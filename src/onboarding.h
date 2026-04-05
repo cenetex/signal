@@ -11,6 +11,7 @@ void onboarding_load(void);
 void onboarding_mark_launched(void);
 void onboarding_mark_mined(void);
 void onboarding_mark_collected(void);
+void onboarding_mark_towed(void);
 void onboarding_mark_sold(void);
 void onboarding_mark_bought(void);
 void onboarding_mark_upgraded(void);

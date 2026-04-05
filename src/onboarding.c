@@ -26,11 +26,12 @@ void onboarding_load(void) {
     g.onboarding.launched       = (flags & (1 << 0)) != 0;
     g.onboarding.mined          = (flags & (1 << 1)) != 0;
     g.onboarding.collected      = (flags & (1 << 2)) != 0;
-    g.onboarding.sold           = (flags & (1 << 3)) != 0;
-    g.onboarding.bought         = (flags & (1 << 4)) != 0;
-    g.onboarding.upgraded       = (flags & (1 << 5)) != 0;
-    g.onboarding.got_scaffold   = (flags & (1 << 6)) != 0;
-    g.onboarding.placed_outpost = (flags & (1 << 7)) != 0;
+    g.onboarding.towed          = (flags & (1 << 3)) != 0;
+    g.onboarding.sold           = (flags & (1 << 4)) != 0;
+    g.onboarding.bought         = (flags & (1 << 5)) != 0;
+    g.onboarding.upgraded       = (flags & (1 << 6)) != 0;
+    g.onboarding.got_scaffold   = (flags & (1 << 7)) != 0;
+    g.onboarding.placed_outpost = (flags & (1 << 8)) != 0;
     g.onboarding.complete = g.onboarding.placed_outpost;
 #endif
 }
@@ -41,11 +42,12 @@ static void onboarding_save(void) {
     if (g.onboarding.launched)       flags |= (1 << 0);
     if (g.onboarding.mined)          flags |= (1 << 1);
     if (g.onboarding.collected)      flags |= (1 << 2);
-    if (g.onboarding.sold)           flags |= (1 << 3);
-    if (g.onboarding.bought)         flags |= (1 << 4);
-    if (g.onboarding.upgraded)       flags |= (1 << 5);
-    if (g.onboarding.got_scaffold)   flags |= (1 << 6);
-    if (g.onboarding.placed_outpost) flags |= (1 << 7);
+    if (g.onboarding.towed)          flags |= (1 << 3);
+    if (g.onboarding.sold)           flags |= (1 << 4);
+    if (g.onboarding.bought)         flags |= (1 << 5);
+    if (g.onboarding.upgraded)       flags |= (1 << 6);
+    if (g.onboarding.got_scaffold)   flags |= (1 << 7);
+    if (g.onboarding.placed_outpost) flags |= (1 << 8);
     char js[80];
     snprintf(js, sizeof(js), "localStorage.setItem('signal_onboarding','%d')", flags);
     emscripten_run_script(js);
@@ -65,6 +67,7 @@ static void complete_step(bool *step) {
 void onboarding_mark_launched(void)       { complete_step(&g.onboarding.launched); }
 void onboarding_mark_mined(void)          { complete_step(&g.onboarding.mined); }
 void onboarding_mark_collected(void)      { complete_step(&g.onboarding.collected); }
+void onboarding_mark_towed(void)          { complete_step(&g.onboarding.towed); }
 void onboarding_mark_sold(void)           { complete_step(&g.onboarding.sold); }
 void onboarding_mark_bought(void)         { complete_step(&g.onboarding.bought); }
 void onboarding_mark_upgraded(void)       { complete_step(&g.onboarding.upgraded); }
@@ -97,7 +100,12 @@ bool onboarding_hint(char *label, size_t label_size,
     }
     if (!g.onboarding.collected) {
         snprintf(label, label_size, "GUIDE");
-        snprintf(message, message_size, "Fly through the debris to collect ore fragments.");
+        snprintf(message, message_size, "Fly through ore fragments to collect them.");
+        return true;
+    }
+    if (!g.onboarding.towed) {
+        snprintf(label, label_size, "GUIDE");
+        snprintf(message, message_size, "Tow fragments to a furnace and press R to release.");
         return true;
     }
     if (!g.onboarding.sold) {
@@ -107,7 +115,7 @@ bool onboarding_hint(char *label, size_t label_size,
             snprintf(message, message_size, "Head back to a station, dock with E, and press 1 to sell ore.");
             return true;
         }
-        return false; /* let normal hints show while hold is empty */
+        return false;
     }
     if (!g.onboarding.bought) {
         if (LOCAL_PLAYER.docked) {

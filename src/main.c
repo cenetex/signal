@@ -278,8 +278,11 @@ static void process_sim_events(const sim_events_t *events) {
 
 static void onboarding_per_frame(void) {
     if (g.onboarding.complete) return;
-    if (!g.onboarding.collected && ship_total_cargo(&LOCAL_PLAYER.ship) > 0.5f)
+    if (!g.onboarding.collected && LOCAL_PLAYER.ship.towed_count > 0)
         onboarding_mark_collected();
+    if (!g.onboarding.towed && g.onboarding.collected && LOCAL_PLAYER.ship.towed_count == 0 &&
+        LOCAL_PLAYER.nearby_station >= 0)
+        onboarding_mark_towed();
     if (!g.onboarding.bought) {
         for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
             if (LOCAL_PLAYER.ship.cargo[c] > 0.5f) { onboarding_mark_bought(); break; }
