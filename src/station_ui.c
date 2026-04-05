@@ -117,21 +117,21 @@ void station_role_color(const station_t* station, float* r, float* g0, float* b)
     module_type_t dom = station_dominant_module(station);
     switch (dom) {
         case MODULE_FURNACE:
-            *r = 0.34f; *g0 = 0.96f; *b = 0.76f; break;
+            *r = 0.85f; *g0 = 0.35f; *b = 0.10f; break;
         case MODULE_FURNACE_CU:
-            *r = 0.35f; *g0 = 0.60f; *b = 0.95f; break;
+            *r = 0.82f; *g0 = 0.50f; *b = 0.22f; break;
         case MODULE_FURNACE_CR:
-            *r = 0.50f; *g0 = 0.45f; *b = 1.0f; break;
+            *r = 0.45f; *g0 = 0.30f; *b = 0.80f; break;
         case MODULE_FRAME_PRESS:
-            *r = 0.98f; *g0 = 0.74f; *b = 0.30f; break;
+            *r = 0.45f; *g0 = 0.62f; *b = 0.78f; break;
         case MODULE_LASER_FAB:
-            *r = 0.42f; *g0 = 0.86f; *b = 1.0f; break;
+            *r = 0.85f; *g0 = 0.25f; *b = 0.45f; break;
         case MODULE_TRACTOR_FAB:
-            *r = 0.42f; *g0 = 0.86f; *b = 1.0f; break;
+            *r = 0.20f; *g0 = 0.75f; *b = 0.45f; break;
         case MODULE_SIGNAL_RELAY:
-            *r = 0.72f; *g0 = 0.92f; *b = 0.52f; break;
+            *r = 0.25f; *g0 = 0.70f; *b = 0.85f; break;
         default:
-            *r = 0.45f; *g0 = 0.85f; *b = 1.0f; break;
+            *r = 0.45f; *g0 = 0.62f; *b = 0.78f; break;
     }
 }
 
