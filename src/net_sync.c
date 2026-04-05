@@ -10,13 +10,9 @@ void on_player_join(uint8_t player_id) {
     if (player_id >= MAX_PLAYERS) return;
     g.world.players[player_id].connected = true;
     g.world.players[player_id].id = player_id;
-    if ((int)player_id != g.local_player_slot) {
-        const NetPlayerState *ps = &net_get_players()[player_id];
-        if (ps->callsign[0])
-            set_notice("%s joined.", ps->callsign);
-        else
-            set_notice("Pilot joined.");
-    }
+    /* Don't show join notice here — callsign hasn't arrived yet.
+     * We detect new players in apply_remote_player_state instead. */
+    (void)0;
 }
 
 void on_player_leave(uint8_t player_id) {
@@ -196,7 +192,11 @@ void apply_remote_player_state(const NetPlayerState* state) {
     } else {
         /* Remote player: update curr for interpolation.
          * begin_player_state_batch() already shifted prev←curr. */
+        bool was_active = g.player_interp.curr[state->player_id].active;
         g.player_interp.curr[state->player_id] = *state;
+        /* First time we see this player with a callsign — show join notice */
+        if (!was_active && state->active && state->callsign[0])
+            set_notice("%s joined.", state->callsign);
     }
 }
 
