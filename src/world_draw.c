@@ -780,22 +780,25 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         ring_cr[r] = role_r; ring_cg[r] = role_g; ring_cb[r] = role_b;
     }
     {
-        /* Blend all module colors on each ring */
+        /* Pick the most saturated module color on each ring.
+         * Averaging complementary hues produces mud — instead,
+         * the ring takes the identity of its most vivid module. */
         for (int r = 1; r <= STATION_NUM_RINGS; r++) {
-            float sum_r = 0, sum_g = 0, sum_b = 0;
-            int count = 0;
+            float best_sat = -1.0f;
             for (int i = 0; i < station->module_count; i++) {
                 if (station->modules[i].ring != r) continue;
                 if (station->modules[i].type == MODULE_DOCK) continue;
                 float mr, mg, mb;
                 module_color(station->modules[i].type, &mr, &mg, &mb);
-                sum_r += mr; sum_g += mg; sum_b += mb;
-                count++;
-            }
-            if (count > 0) {
-                ring_cr[r] = sum_r / (float)count;
-                ring_cg[r] = sum_g / (float)count;
-                ring_cb[r] = sum_b / (float)count;
+                float cmax = fmaxf(mr, fmaxf(mg, mb));
+                float cmin = fminf(mr, fminf(mg, mb));
+                float sat = (cmax > 0.001f) ? (cmax - cmin) / cmax : 0.0f;
+                if (sat > best_sat) {
+                    best_sat = sat;
+                    ring_cr[r] = mr;
+                    ring_cg[r] = mg;
+                    ring_cb[r] = mb;
+                }
             }
         }
     }
