@@ -23,6 +23,8 @@ typedef struct {
     bool texture_valid;
     int width, height;
     char slug[32];         /* cached slug to detect changes */
+    char motd[256];        /* fetched MOTD text */
+    bool motd_fetched;
 } avatar_cache_t;
 
 void avatar_init(void);

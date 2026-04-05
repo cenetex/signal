@@ -260,7 +260,12 @@ static void process_sim_events(const sim_events_t *events) {
                     int hs = ev->hail_response.station;
                     if (hs >= 0 && hs < MAX_STATIONS) {
                         snprintf(g.hail_station, sizeof(g.hail_station), "%s", g.world.stations[hs].name);
-                        snprintf(g.hail_message, sizeof(g.hail_message), "%s", g.world.stations[hs].hail_message);
+                        /* Use CDN MOTD if fetched, otherwise fall back to hardcoded */
+                        const avatar_cache_t *av = avatar_get(hs);
+                        if (av && av->motd_fetched && av->motd[0])
+                            snprintf(g.hail_message, sizeof(g.hail_message), "%s", av->motd);
+                        else
+                            snprintf(g.hail_message, sizeof(g.hail_message), "%s", g.world.stations[hs].hail_message);
                         g.hail_credits = ev->hail_response.credits;
                         g.hail_station_index = hs;
                         g.hail_timer = 6.0f;

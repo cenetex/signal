@@ -97,8 +97,22 @@ static void on_fetch_success(void *user, void *data, int size) {
 
 static void on_fetch_error(void *user) {
     avatar_cache_t *entry = (avatar_cache_t *)user;
-    fprintf(stderr, "[avatar] fetch failed for '%s'\n", entry->slug);
+    fprintf(stderr, "[avatar] portrait fetch failed for '%s'\n", entry->slug);
     entry->state = AVATAR_STATE_FAILED;
+}
+
+static void on_motd_success(void *user, void *data, int size) {
+    avatar_cache_t *entry = (avatar_cache_t *)user;
+    int len = size < 255 ? size : 255;
+    memcpy(entry->motd, data, (size_t)len);
+    entry->motd[len] = '\0';
+    entry->motd_fetched = true;
+    printf("[avatar] MOTD loaded for '%s': %.40s...\n", entry->slug, entry->motd);
+}
+
+static void on_motd_error(void *user) {
+    avatar_cache_t *entry = (avatar_cache_t *)user;
+    fprintf(stderr, "[avatar] MOTD fetch failed for '%s'\n", entry->slug);
 }
 
 #else
@@ -138,6 +152,12 @@ void avatar_fetch(int station_index, const char *station_slug) {
 
 #ifdef __EMSCRIPTEN__
     emscripten_async_wget_data(url, entry, on_fetch_success, on_fetch_error);
+    /* Also fetch MOTD text */
+    if (!entry->motd_fetched) {
+        char motd_url[256];
+        snprintf(motd_url, sizeof(motd_url), "%s/stations/%s/motd.txt", ASSET_CDN, station_slug);
+        emscripten_async_wget_data(motd_url, entry, on_motd_success, on_motd_error);
+    }
 #else
     /* Native: try local file first, then URL would need libcurl (not available) */
     char local_path[256];
