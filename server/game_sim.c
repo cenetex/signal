@@ -1821,6 +1821,7 @@ static void anchor_ship_in_station(server_player_t *sp, world_t *w) {
 
 static void apply_ship_damage(world_t *w, server_player_t *sp, float damage);
 static void release_towed_scaffold(world_t *w, server_player_t *sp);
+static bool find_nearest_open_slot(const station_t *st, vec2 pos, int *out_ring, int *out_slot);
 
 static void dock_ship(world_t *w, server_player_t *sp) {
     if (sp->nearby_station >= 0) sp->current_station = sp->nearby_station;
@@ -3132,6 +3133,13 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             float tow_drag = 0.15f * (float)sp->ship.towed_count;
             sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + tow_drag * dt));
         }
+        /* Scaffold tow drag: heavy — ship feels the mass */
+        if (sp->ship.towed_scaffold >= 0) {
+            sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + 0.8f * dt));
+            float spd = v2_len(sp->ship.vel);
+            if (spd > SCAFFOLD_TOW_SPEED_CAP)
+                sp->ship.vel = v2_scale(sp->ship.vel, SCAFFOLD_TOW_SPEED_CAP / spd);
+        }
         /* Skip collision in client prediction — authoritative server handles it.
          * Running collision on both client and server worlds with slightly
          * different ring rotations causes jitter and invisible walls. */
@@ -3180,6 +3188,34 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 step_towed_cleanup(w, sp);
                 if (sp->ship.tractor_active) step_fragment_collection(w, sp, dt);
                 step_scaffold_tow(w, sp, dt);
+
+                /* Laser-to-snap: firing at a scaffold triggers snap if near open slot */
+                if (sp->input.mine && sp->beam_active) {
+                    for (int si = 0; si < MAX_SCAFFOLDS; si++) {
+                        scaffold_t *sc = &w->scaffolds[si];
+                        if (!sc->active || sc->state != SCAFFOLD_LOOSE) continue;
+                        float d_sq = v2_dist_sq(sp->beam_end, sc->pos);
+                        if (d_sq > (sc->radius + 30.0f) * (sc->radius + 30.0f)) continue;
+                        /* Hit — check if near a player outpost open slot */
+                        for (int s = 3; s < MAX_STATIONS; s++) {
+                            station_t *st = &w->stations[s];
+                            if (!station_is_active(st)) continue;
+                            int ring, slot;
+                            if (find_nearest_open_slot(st, sc->pos, &ring, &slot)) {
+                                sc->state = SCAFFOLD_SNAPPING;
+                                sc->placed_station = s;
+                                sc->placed_ring = ring;
+                                sc->placed_slot = slot;
+                                sc->vel = v2(0.0f, 0.0f);
+                                /* Release from tow if we were towing it */
+                                if (sp->ship.towed_scaffold == si)
+                                    sp->ship.towed_scaffold = -1;
+                                break;
+                            }
+                        }
+                        break; /* only one scaffold per laser frame */
+                    }
+                }
             }
         }
     } else {
