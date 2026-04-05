@@ -157,8 +157,9 @@ input_intent_t sample_input_intent(void) {
             /* Starter station: buy scaffold kits for module types it has */
             static const module_type_t sellable[] = {
                 MODULE_DOCK, MODULE_SIGNAL_RELAY, MODULE_FURNACE,
-                MODULE_ORE_BUYER, MODULE_FRAME_PRESS, MODULE_FURNACE_CU,
-                MODULE_FURNACE_CR, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
+                MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_FRAME_PRESS,
+                MODULE_FURNACE_CU, MODULE_FURNACE_CR,
+                MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
             };
             int shown = 0;
             for (int si = 0; si < (int)(sizeof(sellable)/sizeof(sellable[0])); si++) {
@@ -173,6 +174,7 @@ input_intent_t sample_input_intent(void) {
                             case MODULE_DOCK: price = 100; break;
                             case MODULE_SIGNAL_RELAY: price = 150; break;
                             case MODULE_ORE_BUYER: price = 150; break;
+                            case MODULE_ORE_SILO: price = 100; break;
                             case MODULE_FRAME_PRESS: price = 300; break;
                             case MODULE_FURNACE_CU: price = 400; break;
                             case MODULE_FURNACE_CR: price = 500; break;
@@ -353,7 +355,7 @@ input_intent_t sample_input_intent(void) {
             }
         }
     }
-    /* H key: hail nearby station to collect pending credits */
+/* H key: hail nearby station to collect pending credits */
     if (is_key_pressed(SAPP_KEYCODE_H) && !LOCAL_PLAYER.docked) {
         intent.hail = true;
     }

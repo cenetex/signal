@@ -477,8 +477,9 @@ void draw_station_services(const station_ui_state_t* ui) {
             float ly = cy + 32.0f;
             static const module_type_t sellable[] = {
                 MODULE_DOCK, MODULE_SIGNAL_RELAY, MODULE_FURNACE,
-                MODULE_ORE_BUYER, MODULE_FRAME_PRESS, MODULE_FURNACE_CU,
-                MODULE_FURNACE_CR, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
+                MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_FRAME_PRESS,
+                MODULE_FURNACE_CU, MODULE_FURNACE_CR,
+                MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
             };
             int shown = 0;
             int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
@@ -491,6 +492,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                     case MODULE_SIGNAL_RELAY: price = 150; break;
                     case MODULE_FURNACE: price = 200; break;
                     case MODULE_ORE_BUYER: price = 150; break;
+                    case MODULE_ORE_SILO: price = 100; break;
                     case MODULE_FRAME_PRESS: price = 300; break;
                     case MODULE_FURNACE_CU: price = 400; break;
                     case MODULE_FURNACE_CR: price = 500; break;

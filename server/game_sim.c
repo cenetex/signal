@@ -250,6 +250,7 @@ static float scaffold_kit_price(module_type_t type) {
         case MODULE_SIGNAL_RELAY:   return 150.0f;
         case MODULE_FURNACE:        return 200.0f;
         case MODULE_ORE_BUYER:      return 150.0f;
+        case MODULE_ORE_SILO:       return 100.0f;
         case MODULE_FRAME_PRESS:    return 300.0f;
         case MODULE_FURNACE_CU:     return 400.0f;
         case MODULE_FURNACE_CR:     return 500.0f;
@@ -3829,11 +3830,11 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_FURNACE_CR, 2, 2);
     add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 3);
     add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 4);
-    /* Ring 3: silos for copper/crystal + production */
+    /* Ring 3: silos + advanced smelting overflow + services */
     add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 0);
     add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 1);
-    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 2);
-    add_module_at(&w->stations[2], MODULE_FRAME_PRESS, 3, 3);
+    add_module_at(&w->stations[2], MODULE_FURNACE_CU, 3, 2);
+    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 3, 3);
     add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 3, 4);
     add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 3, 5);
     w->stations[2].arm_count = 3;

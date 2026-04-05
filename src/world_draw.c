@@ -73,7 +73,7 @@ static void module_color(module_type_t type, float *r, float *g, float *b) {
     /* Prospect identity: green family */
     case MODULE_FURNACE:         *r=0.30f; *g=0.80f; *b=0.35f; return; /* green — Prospect dominant */
     case MODULE_ORE_BUYER:       *r=0.40f; *g=0.72f; *b=0.30f; return; /* yellow-green */
-    case MODULE_ORE_SILO:        *r=0.35f; *g=0.65f; *b=0.40f; return; /* muted green */
+    case MODULE_ORE_SILO:        *r=0.45f; *g=0.48f; *b=0.50f; return; /* cool grey (neutral — shared) */
     /* Kepler identity: yellow/gold family */
     case MODULE_FRAME_PRESS:     *r=0.90f; *g=0.75f; *b=0.20f; return; /* gold — Kepler dominant */
     case MODULE_LASER_FAB:       *r=0.55f; *g=0.45f; *b=0.50f; return; /* mauve-grey (neutral) */
