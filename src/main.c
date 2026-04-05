@@ -568,13 +568,13 @@ static void render_world(void) {
     {
         float dt = 1.0f / 60.0f;
 
-        /* Look-ahead: camera target is ahead of the ship based on velocity */
-        float lookahead = 0.4f; /* seconds of velocity to lead by */
+        /* Look-ahead: camera target leads ahead of ship velocity */
+        float lookahead = 0.8f; /* seconds of velocity to lead by */
         vec2 target = v2_add(ship, v2_scale(LOCAL_PLAYER.ship.vel, lookahead));
 
         /* Exponential damping: smooth approach to target.
-         * Higher = snappier, lower = floatier. ~3.0 feels cinematic. */
-        float smoothing = 3.0f;
+         * Lower = floatier/more cinematic. 0.8 gives ~1.2s to catch up. */
+        float smoothing = 0.8f;
         float t = 1.0f - expf(-smoothing * dt);
         g.camera_pos.x += (target.x - g.camera_pos.x) * t;
         g.camera_pos.y += (target.y - g.camera_pos.y) * t;

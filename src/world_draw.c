@@ -1222,7 +1222,7 @@ void draw_compass_ring(void) {
     float pip_size = 8.0f;
 
     /* Faint ring outline */
-    draw_circle_outline(ship, ring_r, 32, 0.3f, 0.35f, 0.4f, 0.12f);
+    draw_circle_outline(ship, ring_r, 32, 0.25f, 0.27f, 0.30f, 0.07f);
 
     /* Local callsign under ship */
     const char *my_cs = net_local_callsign();
