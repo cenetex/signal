@@ -3788,14 +3788,12 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[1], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 1, 1);
     add_module_at(&w->stations[1], MODULE_ORE_SILO, 1, 2);
-    /* Slot 2 empty — gap for ship entry */
     /* Ring 2 (industrial): fabrication + services */
-    add_module_at(&w->stations[1], MODULE_DOCK, 2, 0);
-    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 2, 1);
-    add_module_at(&w->stations[1], MODULE_LASER_FAB, 2, 2);
-    add_module_at(&w->stations[1], MODULE_TRACTOR_FAB, 2, 3);
-    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 2, 4);
-    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 2, 5);
+    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 2, 0);
+    add_module_at(&w->stations[1], MODULE_LASER_FAB, 2, 1);
+    add_module_at(&w->stations[1], MODULE_TRACTOR_FAB, 2, 2);
+    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 2, 3);
+    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 2, 4);
     w->stations[1].arm_count = 2;
     w->stations[1].arm_speed[0] = STATION_RING_SPEED;
     w->stations[1].ring_offset[0] = 0.0f;
@@ -3821,15 +3819,14 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
     add_module_at(&w->stations[2], MODULE_FURNACE, 1, 2);
-    /* Ring 2: dock + ore silo (ferrite target) + copper/crystal furnaces + services */
-    add_module_at(&w->stations[2], MODULE_DOCK, 2, 0);
-    add_module_at(&w->stations[2], MODULE_ORE_SILO, 2, 1);
-    add_module_at(&w->stations[2], MODULE_FURNACE_CU, 2, 2);
-    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 2, 3);
-    add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 4);
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 5);
-    /* Ring 3: dock + silos for copper/crystal + production */
-    add_module_at(&w->stations[2], MODULE_DOCK, 3, 0);
+    /* Ring 2: ore silo + copper/crystal furnaces + services */
+    add_module_at(&w->stations[2], MODULE_ORE_SILO, 2, 0);
+    add_module_at(&w->stations[2], MODULE_FURNACE_CU, 2, 1);
+    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 2, 2);
+    add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 3);
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 4);
+    /* Ring 3: silos for copper/crystal + production */
+    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 0);
     add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 1);
     add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 2);
     add_module_at(&w->stations[2], MODULE_FRAME_PRESS, 3, 3);
