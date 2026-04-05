@@ -2920,6 +2920,13 @@ static float calc_signal_interference(const world_t *w, const server_player_t *s
 }
 
 static void step_player(world_t *w, server_player_t *sp, float dt) {
+    /* Self-destruct: X key */
+    if (sp->input.reset && !sp->docked) {
+        sp->ship.hull = 0.0f;
+        emergency_recover_ship(w, sp);
+        return;
+    }
+
     sp->hover_asteroid = -1;
     sp->nearby_fragments = 0;
     sp->tractor_fragments = 0;

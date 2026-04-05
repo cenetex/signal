@@ -49,6 +49,7 @@ input_intent_t sample_input_intent(void) {
 
     intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
     intent.release_tow = is_key_pressed(SAPP_KEYCODE_R);
+    intent.reset = is_key_pressed(SAPP_KEYCODE_X) && !LOCAL_PLAYER.docked;
     /* Safety: close build overlay if not docked */
     if (!LOCAL_PLAYER.docked) g.build_overlay = false;
     /* E key: cycle module targets when near station, else dock/launch */
@@ -362,5 +363,7 @@ void submit_input(const input_intent_t *intent, float dt) {
             g.pending_net_action = NET_ACTION_HAIL;
         else if (intent->release_tow)
             g.pending_net_action = NET_ACTION_RELEASE_TOW;
+        else if (intent->reset)
+            g.pending_net_action = NET_ACTION_RESET;
     }
 }

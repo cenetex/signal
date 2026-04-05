@@ -73,6 +73,7 @@ enum {
     NET_ACTION_BUY_SCAFFOLD   = 25,
     NET_ACTION_HAIL           = 26,  /* collect pending credits via signal hail */
     NET_ACTION_RELEASE_TOW    = 27,  /* toggle tractor / release towed fragments */
+    NET_ACTION_RESET          = 28,  /* self-destruct — respawn at nearest station */
     NET_ACTION_BUY_PRODUCT    = 30, /* +commodity offset, range [30..30+COMMODITY_COUNT) */
 };
 

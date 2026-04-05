@@ -405,6 +405,7 @@ static void sim_step(float dt) {
      * Must run BEFORE was_docked is updated to detect the transition. */
     if (g.was_docked && !LOCAL_PLAYER.docked) {
         /* Just launched */
+        fprintf(stderr, "LAUNCH: triggering ep 0 + music\n");
         episode_trigger(&g.episode, 0);
         if (!g.music.playing && !g.music.loading)
             music_play(&g.music, 0);
@@ -439,6 +440,8 @@ static void sim_step(float dt) {
     episode_per_frame();
     episode_update(&g.episode, dt);
     music_update(&g.music, dt);
+
+    /* X = self-destruct handled via input intent (works in both modes) */
 
     /* ESC dismisses episode popup */
     if (episode_is_active(&g.episode) && g.input.key_pressed[SAPP_KEYCODE_ESCAPE])
