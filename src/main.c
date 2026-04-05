@@ -559,29 +559,34 @@ static void render_world(void) {
     float half_h = sapp_heightf() * 0.5f;
     vec2 ship = LOCAL_PLAYER.ship.pos;
 
-    /* Cinematic camera: stays put until player reaches 20% from edge,
-     * then follows to keep player in the safe zone. Slowly recenters
-     * when player moves in a straight line. */
+    /* Cinematic camera: target leads ahead of ship velocity,
+     * camera smoothly damps toward the target. No hard edges. */
     if (!g.camera_initialized) {
         g.camera_pos = ship;
         g.camera_initialized = true;
     }
     {
-        float margin_x = half_w * 0.6f; /* 60% = player can drift 40% before push */
-        float margin_y = half_h * 0.6f;
-        vec2 offset = v2_sub(ship, g.camera_pos);
-
-        /* Hard follow: if player exceeds margin, push camera to keep them in */
-        if (offset.x > margin_x)  g.camera_pos.x = ship.x - margin_x;
-        if (offset.x < -margin_x) g.camera_pos.x = ship.x + margin_x;
-        if (offset.y > margin_y)  g.camera_pos.y = ship.y - margin_y;
-        if (offset.y < -margin_y) g.camera_pos.y = ship.y + margin_y;
-
-        /* Soft recenter: slowly drift toward the player */
         float dt = 1.0f / 60.0f;
-        float recenter_speed = 0.8f; /* slow drift */
-        g.camera_pos.x += (ship.x - g.camera_pos.x) * recenter_speed * dt;
-        g.camera_pos.y += (ship.y - g.camera_pos.y) * recenter_speed * dt;
+
+        /* Look-ahead: camera target is ahead of the ship based on velocity */
+        float lookahead = 0.4f; /* seconds of velocity to lead by */
+        vec2 target = v2_add(ship, v2_scale(LOCAL_PLAYER.ship.vel, lookahead));
+
+        /* Exponential damping: smooth approach to target.
+         * Higher = snappier, lower = floatier. ~3.0 feels cinematic. */
+        float smoothing = 3.0f;
+        float t = 1.0f - expf(-smoothing * dt);
+        g.camera_pos.x += (target.x - g.camera_pos.x) * t;
+        g.camera_pos.y += (target.y - g.camera_pos.y) * t;
+
+        /* Safety clamp: never let the ship leave the screen */
+        float max_drift_x = half_w * 0.7f;
+        float max_drift_y = half_h * 0.7f;
+        vec2 offset = v2_sub(ship, g.camera_pos);
+        if (offset.x > max_drift_x)  g.camera_pos.x = ship.x - max_drift_x;
+        if (offset.x < -max_drift_x) g.camera_pos.x = ship.x + max_drift_x;
+        if (offset.y > max_drift_y)  g.camera_pos.y = ship.y - max_drift_y;
+        if (offset.y < -max_drift_y) g.camera_pos.y = ship.y + max_drift_y;
     }
     vec2 camera = g.camera_pos;
 
