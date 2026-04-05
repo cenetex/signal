@@ -70,20 +70,24 @@ void draw_background(vec2 camera) {
 
 static void module_color(module_type_t type, float *r, float *g, float *b) {
     switch (type) {
-    case MODULE_ORE_BUYER:       *r=0.80f; *g=0.55f; *b=0.20f; return; /* amber */
-    case MODULE_FURNACE:         *r=0.85f; *g=0.35f; *b=0.10f; return; /* hot orange */
-    case MODULE_FURNACE_CU:      *r=0.82f; *g=0.50f; *b=0.22f; return; /* copper */
-    case MODULE_FURNACE_CR:      *r=0.45f; *g=0.30f; *b=0.80f; return; /* crystal violet */
-    case MODULE_FRAME_PRESS:     *r=0.45f; *g=0.62f; *b=0.78f; return; /* steel blue */
-    case MODULE_LASER_FAB:       *r=0.85f; *g=0.25f; *b=0.45f; return; /* hot pink */
-    case MODULE_TRACTOR_FAB:     *r=0.20f; *g=0.75f; *b=0.45f; return; /* emerald */
-    case MODULE_SIGNAL_RELAY:    *r=0.25f; *g=0.70f; *b=0.85f; return; /* sky blue */
-    case MODULE_REPAIR_BAY:      *r=0.40f; *g=0.80f; *b=0.55f; return; /* mint */
-    case MODULE_CONTRACT_BOARD:  *r=0.75f; *g=0.70f; *b=0.30f; return; /* gold */
-    case MODULE_BLUEPRINT_DESK:  *r=0.55f; *g=0.50f; *b=0.80f; return; /* soft purple */
-    case MODULE_ORE_SILO:        *r=0.60f; *g=0.52f; *b=0.35f; return; /* warm tan */
-    case MODULE_INGOT_SELLER:    *r=0.70f; *g=0.60f; *b=0.40f; return; /* bronze */
-    case MODULE_SHIPYARD:        *r=0.90f; *g=0.72f; *b=0.18f; return; /* bright gold */
+    /* Prospect identity: green family */
+    case MODULE_FURNACE:         *r=0.30f; *g=0.80f; *b=0.35f; return; /* green — Prospect dominant */
+    case MODULE_ORE_BUYER:       *r=0.40f; *g=0.72f; *b=0.30f; return; /* yellow-green */
+    case MODULE_ORE_SILO:        *r=0.35f; *g=0.65f; *b=0.40f; return; /* muted green */
+    /* Kepler identity: yellow/gold family */
+    case MODULE_FRAME_PRESS:     *r=0.90f; *g=0.75f; *b=0.20f; return; /* gold — Kepler dominant */
+    case MODULE_LASER_FAB:       *r=0.85f; *g=0.55f; *b=0.25f; return; /* warm amber */
+    case MODULE_TRACTOR_FAB:     *r=0.80f; *g=0.70f; *b=0.15f; return; /* yellow */
+    /* Helios identity: blue family */
+    case MODULE_FURNACE_CU:      *r=0.25f; *g=0.50f; *b=0.90f; return; /* bright blue */
+    case MODULE_FURNACE_CR:      *r=0.40f; *g=0.35f; *b=0.85f; return; /* indigo */
+    /* Infrastructure: neutral, won't dominate */
+    case MODULE_SIGNAL_RELAY:    *r=0.35f; *g=0.55f; *b=0.50f; return; /* teal-grey */
+    case MODULE_REPAIR_BAY:      *r=0.40f; *g=0.60f; *b=0.50f; return; /* sage */
+    case MODULE_CONTRACT_BOARD:  *r=0.55f; *g=0.52f; *b=0.40f; return; /* warm grey */
+    case MODULE_BLUEPRINT_DESK:  *r=0.50f; *g=0.48f; *b=0.55f; return; /* cool grey */
+    case MODULE_INGOT_SELLER:    *r=0.60f; *g=0.55f; *b=0.40f; return; /* bronze */
+    case MODULE_SHIPYARD:        *r=0.85f; *g=0.70f; *b=0.20f; return; /* bright gold */
     default:                     *r=0.35f; *g=0.40f; *b=0.45f; return; /* neutral slate */
     }
 }
