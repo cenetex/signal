@@ -312,8 +312,14 @@ input_intent_t sample_input_intent(void) {
         }
     }
     /* B key: build mode */
-    if (g.placing_outpost) {
-        /* Outpost placement: B/Enter confirms, Esc cancels */
+    if (!LOCAL_PLAYER.docked && LOCAL_PLAYER.ship.towed_scaffold >= 0) {
+        /* Towing a scaffold: B = place it. Takes priority over all old flows. */
+        if (is_key_pressed(SAPP_KEYCODE_B)) {
+            intent.place_outpost = true;
+            g.placing_outpost = false; /* cancel old placement mode if active */
+        }
+    } else if (g.placing_outpost) {
+        /* Old outpost placement: B/Enter confirms, Esc cancels */
         if (is_key_pressed(SAPP_KEYCODE_B) || is_key_pressed(SAPP_KEYCODE_ENTER) || is_key_pressed(SAPP_KEYCODE_KP_ENTER)) {
             intent.place_outpost = true;
             g.placing_outpost = false;
@@ -325,10 +331,7 @@ input_intent_t sample_input_intent(void) {
             g.placing_outpost = false;
         }
     } else if (is_key_pressed(SAPP_KEYCODE_B)) {
-        if (!LOCAL_PLAYER.docked && LOCAL_PLAYER.ship.towed_scaffold >= 0) {
-            /* Towing a scaffold: B = place it (snap to outpost or found station) */
-            intent.place_outpost = true;
-        } else if (LOCAL_PLAYER.docked) {
+        if (LOCAL_PLAYER.docked) {
             if (g.build_overlay) {
                 g.build_overlay = false;
             } else if (LOCAL_PLAYER.current_station >= 3) {
