@@ -1103,11 +1103,9 @@ void draw_hud(void) {
                 float _ex2 = _cx2 + cosf(_a2)*(_cx2-_m2), _ey2 = _cy2 + sinf(_a2)*(_cy2-_m2);
                 if (_ex2 < _m2) _ex2 = _m2; if (_ex2 > screen_w-_m2) _ex2 = screen_w-_m2;
                 if (_ey2 < _m2) _ey2 = _m2; if (_ey2 > screen_h-_m2) _ey2 = screen_h-_m2;
-                float dist = sqrtf(nearest_d[s]);
-                int du = (int)(dist / 100.0f);  /* display in hectounits */
                 sdtx_pos(_ex2 / 8.0f + 1.5f, _ey2 / 8.0f);
                 sdtx_color3b((uint8_t)(pcols[ci][0]*180), (uint8_t)(pcols[ci][1]*180), (uint8_t)(pcols[ci][2]*180));
-                sdtx_printf("%s %d", rplayers[pi].callsign, du);
+                sdtx_puts(rplayers[pi].callsign);
             }
         }
 
