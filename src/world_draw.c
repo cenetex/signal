@@ -863,9 +863,16 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                 float od = sqrtf(v2_len_sq(outward));
                 if (od > 0.001f) outward = v2_scale(outward, 1.0f / od);
                 vec2 tang = v2(-outward.y, outward.x);
-                /* U-shape: outward, inward, gap-side (open toward corridor) */
+                /* U-shape: outward, inward, gap-side.
+                 * Gap is on the clockwise side of the dock (entry side —
+                 * where we skip drawing the corridor). */
                 int dock_slots = STATION_RING_SLOTS[ring];
-                float gap_dir = (m->slot == 0) ? -1.0f : 1.0f;
+                /* Next slot angle minus dock angle — positive = CCW, negative = CW.
+                 * The gap is where the dock is "first" (clockwise/positive direction). */
+                float next_ang = module_angle_ring(station, ring, (m->slot + 1) % dock_slots);
+                float dock_ang = module_angle_ring(station, ring, m->slot);
+                float ang_to_next = wrap_angle(next_ang - dock_ang);
+                float gap_dir = (ang_to_next > 0.0f) ? 1.0f : -1.0f;
                 vec2 berths[3];
                 berths[0] = v2_add(positions[i], v2_scale(outward, 55.0f));  /* outward */
                 berths[1] = v2_add(positions[i], v2_scale(outward, -55.0f)); /* inward */
