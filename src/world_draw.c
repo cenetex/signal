@@ -800,18 +800,20 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                 draw_circle_filled(positions[i], 44.0f, 12, fr * 0.6f, fg * 0.3f, fb * 0.15f, pulse * 0.3f);
                 draw_circle_filled(positions[i], 28.0f, 10, fr * 0.9f, fg * 0.5f, fb * 0.2f, pulse * 0.4f);
 
-                /* Find target module on next ring */
-                float mod_angle = module_angle_ring(station, ring, m->slot);
-                float outer_r = (ring < STATION_NUM_RINGS) ? STATION_RING_RADIUS[ring + 1] : STATION_RING_RADIUS[ring] + 180.0f;
-                vec2 target = v2_add(station->pos, v2(cosf(mod_angle) * outer_r, sinf(mod_angle) * outer_r));
-                int next_ring = ring + 1;
-                if (next_ring <= STATION_NUM_RINGS) {
+                /* Find nearest module on an adjacent ring (inner or outer) */
+                vec2 target = positions[i];
+                {
                     float best_d = 1e18f;
-                    for (int mi2 = 0; mi2 < station->module_count; mi2++) {
-                        if (station->modules[mi2].ring != next_ring) continue;
-                        vec2 mp2 = module_world_pos_ring(station, next_ring, station->modules[mi2].slot);
-                        float dd = v2_dist_sq(positions[i], mp2);
-                        if (dd < best_d) { best_d = dd; target = mp2; }
+                    int adj_rings[] = { ring + 1, ring - 1 };
+                    for (int ri = 0; ri < 2; ri++) {
+                        int adj = adj_rings[ri];
+                        if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+                        for (int mi2 = 0; mi2 < station->module_count; mi2++) {
+                            if (station->modules[mi2].ring != adj) continue;
+                            vec2 mp2 = module_world_pos_ring(station, adj, station->modules[mi2].slot);
+                            float dd = v2_dist_sq(positions[i], mp2);
+                            if (dd < best_d) { best_d = dd; target = mp2; }
+                        }
                     }
                 }
 

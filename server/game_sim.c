@@ -3224,15 +3224,17 @@ static void step_furnace_smelting(world_t *w, float dt) {
                 int ring = st->modules[m].ring;
                 vec2 furnace_pos = module_world_pos_ring(st, ring, st->modules[m].slot);
 
-                /* Find nearest module on the next ring (the silo/target) */
-                int next_ring = ring + 1;
-                vec2 silo_pos = furnace_pos; /* fallback */
+                /* Find nearest module on an adjacent ring (inner or outer) */
+                vec2 silo_pos = furnace_pos;
                 bool has_silo = false;
-                if (next_ring <= STATION_NUM_RINGS) {
-                    float best_d = 1e18f;
+                float best_d = 1e18f;
+                int adj_rings[] = { ring + 1, ring - 1 };
+                for (int ri = 0; ri < 2; ri++) {
+                    int adj = adj_rings[ri];
+                    if (adj < 1 || adj > STATION_NUM_RINGS) continue;
                     for (int m2 = 0; m2 < st->module_count; m2++) {
-                        if (st->modules[m2].ring != next_ring) continue;
-                        vec2 mp2 = module_world_pos_ring(st, next_ring, st->modules[m2].slot);
+                        if (st->modules[m2].ring != adj) continue;
+                        vec2 mp2 = module_world_pos_ring(st, adj, st->modules[m2].slot);
                         float dd = v2_dist_sq(furnace_pos, mp2);
                         if (dd < best_d) { best_d = dd; silo_pos = mp2; has_silo = true; }
                     }
@@ -3773,20 +3775,22 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
     w->stations[2].base_price[COMMODITY_LASER_MODULE] = 28.0f;
     w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
-    /* Ring 1: dock + relay + furnace (smelts in Ring 1-2 gap) */
+    /* Ring 1: dock + relay + ferrite furnace */
     add_module_at(&w->stations[2], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
     add_module_at(&w->stations[2], MODULE_FURNACE, 1, 2);
-    /* Ring 2: services */
-    add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 1);
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 2);
-    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 2, 3);
-    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 2, 4);
-    /* Ring 3: copper + crystal furnaces (smelt in Ring 2-3 gap) */
-    add_module_at(&w->stations[2], MODULE_FURNACE_CU, 3, 1);
-    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 3, 2);
-    add_module_at(&w->stations[2], MODULE_FRAME_PRESS, 3, 4);
-    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 5);
+    /* Ring 2: ore silo (ferrite target) + copper/crystal furnaces + services */
+    add_module_at(&w->stations[2], MODULE_ORE_SILO, 2, 0);
+    add_module_at(&w->stations[2], MODULE_FURNACE_CU, 2, 1);
+    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 2, 2);
+    add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 3);
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 4);
+    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 2, 5);
+    /* Ring 3: silos for copper/crystal + production */
+    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 1);
+    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 2);
+    add_module_at(&w->stations[2], MODULE_FRAME_PRESS, 3, 3);
+    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 3, 4);
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[0] = STATION_RING_SPEED;
     w->stations[2].ring_offset[0] = 0.0f;
