@@ -1010,24 +1010,20 @@ void draw_hud(void) {
         float half_w = sapp_widthf() * 0.5f / fmaxf(1.0f, sapp_dpi_scale());
         float half_h = sapp_heightf() * 0.5f / fmaxf(1.0f, sapp_dpi_scale());
 
-        /* Helper: draw a chevron pip at screen edge toward a world position */
+        /* Helper: draw a chevron pip on a ring around the ship in world space */
+        #define COMPASS_RING_RADIUS 120.0f
         #define DRAW_PIP(target_pos, pr, pg, pb) do { \
             vec2 _to = v2_sub(target_pos, LOCAL_PLAYER.ship.pos); \
             float _dist_sq = v2_len_sq(_to); \
-            bool _on = (fabsf(_to.x) < half_w * 0.85f) && (fabsf(_to.y) < half_h * 0.85f); \
-            if (_dist_sq > 2500.0f && !_on) { \
-                float _a = atan2f(-_to.y, _to.x); \
-                float _m = 40.0f, _cx = screen_w*0.5f, _cy = screen_h*0.5f; \
-                float _ex = _cx + cosf(_a)*(_cx-_m), _ey = _cy + sinf(_a)*(_cy-_m); \
-                if (_ex < _m) _ex = _m; if (_ex > screen_w-_m) _ex = screen_w-_m; \
-                if (_ey < _m) _ey = _m; if (_ey > screen_h-_m) _ey = screen_h-_m; \
+            if (_dist_sq > 2500.0f) { \
+                float _a = atan2f(_to.y, _to.x); \
+                float _px = LOCAL_PLAYER.ship.pos.x + cosf(_a) * COMPASS_RING_RADIUS; \
+                float _py = LOCAL_PLAYER.ship.pos.y + sinf(_a) * COMPASS_RING_RADIUS; \
                 float _ar = 8.0f, _ca = cosf(_a), _sa = sinf(_a); \
                 float _pulse = 0.6f + 0.3f * sinf(g.world.time * 3.0f); \
-                sgl_defaults(); sgl_matrix_mode_projection(); sgl_load_identity(); \
-                sgl_ortho(0,screen_w,screen_h,0,-1,1); sgl_matrix_mode_modelview(); sgl_load_identity(); \
                 sgl_begin_lines(); sgl_c4f(pr, pg, pb, _pulse); \
-                sgl_v2f(_ex+(-_ca*_ar-_sa*_ar*0.6f), _ey+(-_sa*_ar+_ca*_ar*0.6f)); sgl_v2f(_ex, _ey); \
-                sgl_v2f(_ex, _ey); sgl_v2f(_ex+(-_ca*_ar+_sa*_ar*0.6f), _ey+(-_sa*_ar-_ca*_ar*0.6f)); \
+                sgl_v2f(_px+(-_ca*_ar-_sa*_ar*0.6f), _py+(-_sa*_ar+_ca*_ar*0.6f)); sgl_v2f(_px, _py); \
+                sgl_v2f(_px, _py); sgl_v2f(_px+(-_ca*_ar+_sa*_ar*0.6f), _py+(-_sa*_ar-_ca*_ar*0.6f)); \
                 sgl_end(); \
             } \
         } while(0)
@@ -1096,14 +1092,15 @@ void draw_hud(void) {
                 int ci = pi % 6;
                 vec2 ppos = v2(rplayers[pi].x, rplayers[pi].y);
                 DRAW_PIP(ppos, pcols[ci][0], pcols[ci][1], pcols[ci][2]);
-                /* Draw callsign label near the pip */
+                /* Draw callsign label near the pip (world → screen) */
                 vec2 _to2 = v2_sub(ppos, LOCAL_PLAYER.ship.pos);
-                float _a2 = atan2f(-_to2.y, _to2.x);
-                float _m2 = 40.0f, _cx2 = screen_w*0.5f, _cy2 = screen_h*0.5f;
-                float _ex2 = _cx2 + cosf(_a2)*(_cx2-_m2), _ey2 = _cy2 + sinf(_a2)*(_cy2-_m2);
-                if (_ex2 < _m2) _ex2 = _m2; if (_ex2 > screen_w-_m2) _ex2 = screen_w-_m2;
-                if (_ey2 < _m2) _ey2 = _m2; if (_ey2 > screen_h-_m2) _ey2 = screen_h-_m2;
-                sdtx_pos(_ex2 / 8.0f + 1.5f, _ey2 / 8.0f);
+                float _a2 = atan2f(_to2.y, _to2.x);
+                float _lx = COMPASS_RING_RADIUS * 1.15f * cosf(_a2);
+                float _ly = COMPASS_RING_RADIUS * 1.15f * sinf(_a2);
+                /* Convert world offset to screen position */
+                float _sx = screen_w * 0.5f + _lx;
+                float _sy = screen_h * 0.5f - _ly;
+                sdtx_pos(_sx / 8.0f, _sy / 8.0f);
                 sdtx_color3b((uint8_t)(pcols[ci][0]*180), (uint8_t)(pcols[ci][1]*180), (uint8_t)(pcols[ci][2]*180));
                 sdtx_puts(rplayers[pi].callsign);
             }
