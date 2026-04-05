@@ -544,6 +544,10 @@ typedef enum {
     SIM_EVENT_UPGRADE,
     SIM_EVENT_DAMAGE,
     SIM_EVENT_OUTPOST_PLACED,
+    SIM_EVENT_OUTPOST_ACTIVATED,
+    SIM_EVENT_NPC_SPAWNED,
+    SIM_EVENT_SIGNAL_LOST,
+    SIM_EVENT_STATION_CONNECTED,
     SIM_EVENT_CONTRACT_COMPLETE,
     SIM_EVENT_DEATH,
 } sim_event_type_t;
@@ -557,6 +561,9 @@ typedef struct {
         struct { ship_upgrade_t upgrade; } upgrade;
         struct { float amount; } damage;
         struct { int slot; } outpost_placed;
+        struct { int slot; } outpost_activated;
+        struct { int slot; npc_role_t role; int home_station; } npc_spawned;
+        struct { int connected_count; } station_connected;
         struct { contract_action_t action; } contract_complete;
         struct {
             float ore_mined;

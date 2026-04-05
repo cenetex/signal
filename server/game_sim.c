@@ -213,6 +213,22 @@ static void activate_outpost(world_t *w, int station_idx) {
     st->arm_speed[0] = STATION_RING_SPEED;
     rebuild_station_services(st);
     rebuild_signal_chain(w);
+    /* Count connected stations for milestone tracking */
+    int connected = 0;
+    for (int s = 0; s < MAX_STATIONS; s++)
+        if (station_is_active(&w->stations[s]) && w->stations[s].signal_connected)
+            connected++;
+
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_OUTPOST_ACTIVATED,
+        .outpost_activated = { .slot = station_idx },
+    });
+    if (connected >= 5) {
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_STATION_CONNECTED,
+            .station_connected = { .connected_count = connected },
+        });
+    }
     SIM_LOG("[sim] outpost %d activated (signal_range=%.0f)\n", station_idx, OUTPOST_SIGNAL_RANGE);
 }
 
@@ -388,6 +404,10 @@ static int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     npc->dest_station = station_idx;
     npc->state_timer = (role == NPC_ROLE_MINER) ? NPC_DOCK_TIME : HAULER_DOCK_TIME;
     npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_NPC_SPAWNED,
+        .npc_spawned = { .slot = slot, .role = role, .home_station = station_idx },
+    });
     SIM_LOG("[sim] spawned %s at station %d (slot %d)\n",
             role == NPC_ROLE_MINER ? "miner" : "hauler", station_idx, slot);
     return slot;
@@ -2307,28 +2327,29 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
     /* Cancel approach if out of range */
     if (!sp->in_dock_range) sp->docking_approach = false;
 
-    /* Docking approach: directly lerp toward berth (berth may be rotating) */
+    /* Docking approach: decelerate and glide toward locked berth */
     if (sp->docking_approach && sp->in_dock_range) {
         const station_t *dock_st = &w->stations[sp->nearby_station];
-        int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship.pos);
-        vec2 target = dock_berth_pos(dock_st, berth);
+        vec2 target = dock_berth_pos(dock_st, sp->dock_berth);
         float dist = sqrtf(v2_dist_sq(sp->ship.pos, target));
 
-        /* Kill velocity, move directly toward berth */
-        sp->ship.vel = v2(0.0f, 0.0f);
-        float step = fminf(120.0f * dt, dist); /* max 120 units/sec approach */
-        if (dist > 1.0f) {
+        /* Decelerate: approach speed scales with distance for smooth arrival */
+        float approach_speed = fminf(160.0f, 40.0f + dist * 0.8f);
+        float damping = 1.0f / (1.0f + 8.0f * dt);
+        sp->ship.vel = v2_scale(sp->ship.vel, damping);
+        float step = fminf(approach_speed * dt, dist);
+        if (dist > 0.5f) {
             vec2 dir = v2_scale(v2_sub(target, sp->ship.pos), step / dist);
             sp->ship.pos = v2_add(sp->ship.pos, dir);
         }
 
         /* Rotate toward berth angle */
-        float desired = dock_berth_angle(dock_st, berth);
-        sp->ship.angle = wrap_angle(sp->ship.angle + wrap_angle(desired - sp->ship.angle) * 6.0f * dt);
+        float desired = dock_berth_angle(dock_st, sp->dock_berth);
+        float rot_speed = fminf(8.0f, 3.0f + (1.0f - fminf(dist, 100.0f) / 100.0f) * 5.0f);
+        sp->ship.angle = wrap_angle(sp->ship.angle + wrap_angle(desired - sp->ship.angle) * rot_speed * dt);
 
-        /* Snap when close */
-        if (dist < 10.0f) {
-            sp->dock_berth = berth;
+        /* Snap when close — berth was locked at approach start */
+        if (dist < 20.0f) {
             dock_ship(w, sp);
             sp->docking_approach = false;
         }
@@ -2716,13 +2737,13 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     if (intent->interact) {
         if (sp->docked) { launch_ship(w, sp); return; }
         if (sp->in_dock_range) {
-            /* Module-based docking: find nearest dock module berth */
+            /* Module-based docking: lock berth at approach start */
             const station_t *dock_st = &w->stations[sp->nearby_station];
             int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship.pos);
+            sp->dock_berth = berth;
             vec2 bp = dock_berth_pos(dock_st, berth);
             float d = sqrtf(v2_dist_sq(sp->ship.pos, bp));
             if (d <= DOCK_SNAP_DISTANCE) {
-                sp->dock_berth = berth;
                 dock_ship(w, sp);
             } else {
                 sp->docking_approach = true;
@@ -2880,6 +2901,13 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     if (!sp->docked) {
         /* Signal attenuation: scale controls by station signal strength */
         float sig = signal_strength_at(w, sp->ship.pos);
+        bool in_signal = sig > 0.01f;
+        if (sp->was_in_signal && !in_signal) {
+            emit_event(w, (sim_event_t){
+                .type = SIM_EVENT_SIGNAL_LOST, .player_id = sp->id,
+            });
+        }
+        sp->was_in_signal = in_signal;
         float signal_scale = signal_control_scale(sig);
         float turn_input = sp->input.turn * signal_scale;
         float thrust_input = sp->input.thrust * signal_scale;

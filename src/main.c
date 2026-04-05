@@ -251,6 +251,25 @@ static void process_sim_events(const sim_events_t *events) {
                     episode_save(&g.episode);
                 }
                 break;
+            case SIM_EVENT_OUTPOST_ACTIVATED:
+                if (!g.episode.watched[4])
+                    episode_trigger(&g.episode, 4); /* Ep 4: Naming */
+                break;
+            case SIM_EVENT_NPC_SPAWNED:
+                /* Ep 5: Drones — first miner at a player outpost */
+                if (!g.episode.watched[5] &&
+                    ev->npc_spawned.role == NPC_ROLE_MINER &&
+                    ev->npc_spawned.home_station >= 3)
+                    episode_trigger(&g.episode, 5);
+                break;
+            case SIM_EVENT_SIGNAL_LOST:
+                if (ev->player_id == g.local_player_slot && !g.episode.watched[7])
+                    episode_trigger(&g.episode, 7); /* Ep 7: Dark Sector */
+                break;
+            case SIM_EVENT_STATION_CONNECTED:
+                if (!g.episode.watched[8] && ev->station_connected.connected_count >= 5)
+                    episode_trigger(&g.episode, 8); /* Ep 8: Every AI Dreams */
+                break;
             default:
                 break;
         }
@@ -280,39 +299,7 @@ static void episode_per_frame(void) {
     if (!g.episode.watched[3] && LOCAL_PLAYER.ship.has_scaffold_kit)
         episode_trigger(&g.episode, 3);
 
-    /* Ep 4: Naming — placed an outpost (skip while docked to avoid post-death retrigger) */
-    if (!g.episode.watched[4] && g.onboarding.placed_outpost && !LOCAL_PLAYER.docked)
-        episode_trigger(&g.episode, 4);
-
-    /* Ep 5: Drones — NPC mining drone active at a player outpost (skip while docked) */
-    if (!g.episode.watched[5] && !LOCAL_PLAYER.docked) {
-        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
-            npc_ship_t *npc = &g.world.npc_ships[n];
-            if (!npc->active || npc->role != NPC_ROLE_MINER) continue;
-            if (npc->home_station >= 3 && station_exists(&g.world.stations[npc->home_station])) {
-                episode_trigger(&g.episode, 5);
-                break;
-            }
-        }
-    }
-
-    /* Ep 7: Dark Sector — enter zero-signal space */
-    if (!g.episode.watched[7]) {
-        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
-        if (sig < 0.01f)
-            episode_trigger(&g.episode, 7);
-    }
-
-    /* Ep 8: Every AI Dreams — 5+ connected stations */
-    if (!g.episode.watched[8]) {
-        int connected = 0;
-        for (int s = 0; s < MAX_STATIONS; s++) {
-            if (station_exists(&g.world.stations[s]) && g.world.stations[s].signal_connected)
-                connected++;
-        }
-        if (connected >= 5)
-            episode_trigger(&g.episode, 8);
-    }
+    /* Ep 4, 5, 7, 8 are now event-driven (see process_events) */
 }
 
 static void sim_step(float dt) {

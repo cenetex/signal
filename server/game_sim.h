@@ -126,6 +126,7 @@ typedef struct {
     float cargo_sale_value;
     int nearby_fragments;
     int tractor_fragments;
+    bool was_in_signal;     /* previous frame's signal state, for edge detection */
 } server_player_t;
 
 typedef struct {
