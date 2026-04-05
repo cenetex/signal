@@ -148,7 +148,7 @@ static inline commodity_t belt_ore_at(const belt_field_t *bf, float x, float y) 
 
     if (fe >= cu && fe >= cr) return COMMODITY_FERRITE_ORE;
     if (cr >= cu) return COMMODITY_CRYSTAL_ORE;
-    return COMMODITY_CRYSTAL_ORE;
+    return COMMODITY_CUPRITE_ORE;
 }
 
 #endif /* BELT_H */

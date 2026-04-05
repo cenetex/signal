@@ -326,16 +326,25 @@ void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *sh
     for (int i = 0; i < st->module_count; i++) {
         if (!st->modules[i].scaffold) continue;
         commodity_t mat = module_build_material(st->modules[i].type);
-        if (ship->cargo[mat] < 0.01f) continue;
         float cost = module_build_cost(st->modules[i].type);
         float needed = cost - st->modules[i].build_progress * cost;
         if (needed < 0.01f) continue;
-        float deliver = fminf(ship->cargo[mat], needed);
-        ship->cargo[mat] -= deliver;
-        /* Store delivered amount as fractional progress toward 1.0.
-         * build_progress tracks total delivered / cost. Construction
-         * activation is gated by build_timer in step_module_construction. */
-        st->modules[i].build_progress += deliver / cost;
+
+        /* Pull from docked ship cargo */
+        if (ship->cargo[mat] > 0.01f) {
+            float deliver = fminf(ship->cargo[mat], needed);
+            ship->cargo[mat] -= deliver;
+            st->modules[i].build_progress += deliver / cost;
+            needed -= deliver;
+        }
+
+        /* Also pull from station inventory (NPC deliveries land here) */
+        if (needed > 0.01f && st->inventory[mat] > 0.01f) {
+            float deliver = fminf(st->inventory[mat], needed);
+            st->inventory[mat] -= deliver;
+            st->modules[i].build_progress += deliver / cost;
+        }
+
         if (st->modules[i].build_progress > 1.0f)
             st->modules[i].build_progress = 1.0f;
     }
@@ -348,6 +357,22 @@ static const float MODULE_BUILD_TIME = 10.0f;  /* seconds after full delivery */
 static void step_module_construction(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
+        /* Route station inventory to scaffold modules (NPC deliveries) */
+        for (int i = 0; i < st->module_count; i++) {
+            if (!st->modules[i].scaffold) continue;
+            if (st->modules[i].build_progress >= 1.0f) continue;
+            commodity_t mat = module_build_material(st->modules[i].type);
+            if (st->inventory[mat] < 0.01f) continue;
+            float cost = module_build_cost(st->modules[i].type);
+            float needed = cost - st->modules[i].build_progress * cost;
+            if (needed < 0.01f) continue;
+            float deliver = fminf(st->inventory[mat], needed);
+            st->inventory[mat] -= deliver;
+            st->modules[i].build_progress += deliver / cost;
+            if (st->modules[i].build_progress > 1.0f)
+                st->modules[i].build_progress = 1.0f;
+        }
+        /* Activate fully-supplied scaffold modules after build timer */
         for (int i = 0; i < st->module_count; i++) {
             if (!st->modules[i].scaffold) continue;
             if (st->modules[i].build_progress < 1.0f) continue; /* not fully supplied */
