@@ -3194,9 +3194,9 @@ static void step_asteroid_gravity(world_t *w, float dt) {
     }
 }
 
-/* Furnace smelting: each furnace straddles two rings. It tractors S-tier
- * fragments and smelts them when they enter the inter-ring gap — the space
- * between the furnace's ring and the next inner ring (or core). */
+/* Furnace smelting: furnaces pull S-tier fragments, but only when both the
+ * furnace AND its paired silo/module on the next ring can reach the fragment.
+ * Smelting happens in the overlap zone between the two modules. */
 static void step_furnace_smelting(world_t *w, float dt) {
     float pull_range = HOPPER_PULL_RANGE;
     float pull_sq = pull_range * pull_range;
@@ -3211,49 +3211,58 @@ static void step_furnace_smelting(world_t *w, float dt) {
         for (int s = 0; s < MAX_STATIONS && !smelted; s++) {
             station_t *st = &w->stations[s];
             if (st->scaffold) continue;
+
+            /* Find furnace+target pairs: furnace on one ring, nearest module on next ring */
             for (int m = 0; m < st->module_count && !smelted; m++) {
                 if (st->modules[m].scaffold) continue;
-                if (st->modules[m].type != MODULE_FURNACE &&
-                    st->modules[m].type != MODULE_FURNACE_CU &&
-                    st->modules[m].type != MODULE_FURNACE_CR &&
-                    st->modules[m].type != MODULE_ORE_SILO) continue;
+                bool is_furnace = (st->modules[m].type == MODULE_FURNACE)
+                               || (st->modules[m].type == MODULE_FURNACE_CU)
+                               || (st->modules[m].type == MODULE_FURNACE_CR);
+                if (!is_furnace) continue;
 
                 int ring = st->modules[m].ring;
-                vec2 mp = module_world_pos_ring(st, ring, st->modules[m].slot);
-                vec2 to_mod = v2_sub(mp, a->pos);
-                float d_sq = v2_len_sq(to_mod);
-                if (d_sq > pull_sq) continue;
+                vec2 furnace_pos = module_world_pos_ring(st, ring, st->modules[m].slot);
 
-                /* Pull fragment toward furnace */
-                float d = sqrtf(d_sq);
-                if (d > 0.5f) {
-                    float strength = HOPPER_PULL_ACCEL * (1.0f - d / pull_range);
-                    vec2 dir = v2_scale(to_mod, 1.0f / d);
+                /* Find nearest module on the next ring (the silo/target) */
+                int next_ring = ring + 1;
+                vec2 silo_pos = furnace_pos; /* fallback */
+                bool has_silo = false;
+                if (next_ring <= STATION_NUM_RINGS) {
+                    float best_d = 1e18f;
+                    for (int m2 = 0; m2 < st->module_count; m2++) {
+                        if (st->modules[m2].ring != next_ring) continue;
+                        vec2 mp2 = module_world_pos_ring(st, next_ring, st->modules[m2].slot);
+                        float dd = v2_dist_sq(furnace_pos, mp2);
+                        if (dd < best_d) { best_d = dd; silo_pos = mp2; has_silo = true; }
+                    }
+                }
+                if (!has_silo) continue;
+
+                /* Check if BOTH furnace and silo can reach this fragment */
+                float d_furnace_sq = v2_dist_sq(a->pos, furnace_pos);
+                float d_silo_sq = v2_dist_sq(a->pos, silo_pos);
+                if (d_furnace_sq > pull_sq && d_silo_sq > pull_sq) continue;
+                bool furnace_reach = (d_furnace_sq <= pull_sq);
+                bool silo_reach = (d_silo_sq <= pull_sq);
+                if (!furnace_reach || !silo_reach) continue;  /* both must reach */
+
+                /* Pull toward midpoint between furnace and silo — strong pull */
+                vec2 midpoint = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
+                vec2 to_mid = v2_sub(midpoint, a->pos);
+                float d_mid = sqrtf(v2_len_sq(to_mid));
+                if (d_mid > 0.5f) {
+                    float strength = HOPPER_PULL_ACCEL * 1.5f * (1.0f - d_mid / pull_range);
+                    vec2 dir = v2_scale(to_mid, 1.0f / d_mid);
                     a->vel = v2_add(a->vel, v2_scale(dir, strength * dt));
-                    a->vel = v2_scale(a->vel, 1.0f / (1.0f + 6.0f * dt));
+                    a->vel = v2_scale(a->vel, 1.0f / (1.0f + 8.0f * dt));
                     float spd = v2_len(a->vel);
-                    if (spd > 120.0f) a->vel = v2_scale(a->vel, 120.0f / spd);
+                    if (spd > 100.0f) a->vel = v2_scale(a->vel, 100.0f / spd);
                 }
 
-                /* Smelt zone: narrow beam corridor from furnace to target module.
-                 * Fragment must be within the beam (close to the radial line
-                 * from furnace outward) AND between the two rings. */
-                float inner_r = STATION_RING_RADIUS[ring];
-                float outer_r = (ring < STATION_NUM_RINGS) ? STATION_RING_RADIUS[ring + 1] : inner_r + 180.0f;
-                float frag_dist = sqrtf(v2_dist_sq(a->pos, st->pos));
-                if (frag_dist > inner_r && frag_dist < outer_r) {
-                    /* Angular check: fragment must be near the furnace's radial line */
-                    vec2 frag_delta = v2_sub(a->pos, st->pos);
-                    float frag_angle = atan2f(frag_delta.y, frag_delta.x);
-                    float furnace_angle = module_angle_ring(st, ring, st->modules[m].slot);
-                    float ang_diff = frag_angle - furnace_angle;
-                    while (ang_diff > PI_F) ang_diff -= TWO_PI_F;
-                    while (ang_diff < -PI_F) ang_diff += TWO_PI_F;
-                    float beam_hw = 0.15f; /* ~8.5 degrees half-width */
-                    if (fabsf(ang_diff) < beam_hw) {
-                        smelt_station = s;
-                        smelted = true;
-                    }
+                /* Smelt when fragment is close to the midpoint */
+                if (d_mid < 80.0f) {
+                    smelt_station = s;
+                    smelted = true;
                 }
             }
         }
