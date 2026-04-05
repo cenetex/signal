@@ -144,6 +144,9 @@ typedef struct {
     int target_module;       /* module index within station, -1 = none */
     int inspect_station;     /* module info pane: station index, -1 = closed */
     int inspect_module;      /* module info pane: module index */
+    /* --- Camera --- */
+    vec2 camera_pos;         /* smoothed camera position */
+    bool camera_initialized;
     /* --- Contract tracking --- */
     int tracked_contract;    /* index into world.contracts, -1 = none */
     /* --- Navigation breadcrumb (last docked station or placed blueprint) --- */

@@ -555,9 +555,35 @@ static void init(void) {
 /* on_player_join ... sync_local_player_slot_from_network: see net_sync.h/c */
 
 static void render_world(void) {
-    vec2 camera = LOCAL_PLAYER.ship.pos;
     float half_w = sapp_widthf() * 0.5f;
     float half_h = sapp_heightf() * 0.5f;
+    vec2 ship = LOCAL_PLAYER.ship.pos;
+
+    /* Cinematic camera: stays put until player reaches 20% from edge,
+     * then follows to keep player in the safe zone. Slowly recenters
+     * when player moves in a straight line. */
+    if (!g.camera_initialized) {
+        g.camera_pos = ship;
+        g.camera_initialized = true;
+    }
+    {
+        float margin_x = half_w * 0.6f; /* 60% = player can drift 40% before push */
+        float margin_y = half_h * 0.6f;
+        vec2 offset = v2_sub(ship, g.camera_pos);
+
+        /* Hard follow: if player exceeds margin, push camera to keep them in */
+        if (offset.x > margin_x)  g.camera_pos.x = ship.x - margin_x;
+        if (offset.x < -margin_x) g.camera_pos.x = ship.x + margin_x;
+        if (offset.y > margin_y)  g.camera_pos.y = ship.y - margin_y;
+        if (offset.y < -margin_y) g.camera_pos.y = ship.y + margin_y;
+
+        /* Soft recenter: slowly drift toward the player */
+        float dt = 1.0f / 60.0f;
+        float recenter_speed = 0.8f; /* slow drift */
+        g.camera_pos.x += (ship.x - g.camera_pos.x) * recenter_speed * dt;
+        g.camera_pos.y += (ship.y - g.camera_pos.y) * recenter_speed * dt;
+    }
+    vec2 camera = g.camera_pos;
 
     set_camera_bounds(camera, half_w, half_h);
 
