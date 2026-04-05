@@ -3136,8 +3136,9 @@ TEST(test_world_load_rejects_stale_version) {
 TEST(test_world_save_load_preserves_module_ring_slot) {
     world_t w = {0};
     world_reset(&w);
-    ASSERT(w.stations[0].module_count > 3);
-    station_module_t orig = w.stations[0].modules[2]; /* ring 1: furnace at slot 2 */
+    ASSERT(w.stations[0].module_count >= 4);
+    /* Verify furnace on ring 1 and silo on ring 2 survive save/load */
+    station_module_t orig = w.stations[0].modules[2]; /* furnace at ring 1 slot 2 */
     ASSERT(orig.type == MODULE_FURNACE);
     ASSERT(orig.ring == 1);
     ASSERT(world_save(&w, "/tmp/test_modules.sav"));
@@ -3149,10 +3150,13 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     ASSERT_EQ_INT((int)restored.slot, (int)orig.slot);
     ASSERT_EQ_INT((int)restored.scaffold, (int)orig.scaffold);
     ASSERT_EQ_FLOAT(restored.build_progress, orig.build_progress, 0.001f);
+    /* modules[3] = dock on ring 2, modules[4] = ore_silo on ring 2 */
     station_module_t mod3 = loaded.stations[0].modules[3];
-    ASSERT(mod3.type == MODULE_ORE_SILO);
+    ASSERT(mod3.type == MODULE_DOCK);
     ASSERT_EQ_INT((int)mod3.ring, 2);
-    ASSERT_EQ_INT((int)mod3.slot, 3);
+    station_module_t mod4 = loaded.stations[0].modules[4];
+    ASSERT(mod4.type == MODULE_ORE_SILO);
+    ASSERT_EQ_INT((int)mod4.ring, 2);
     remove("/tmp/test_modules.sav");
 }
 
