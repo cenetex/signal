@@ -129,6 +129,7 @@ typedef struct {
     int nearby_fragments;
     int tractor_fragments;
     bool was_in_signal;     /* previous frame's signal state, for edge detection */
+    char callsign[8];       /* e.g. "KRX-472" */
 } server_player_t;
 
 typedef struct {

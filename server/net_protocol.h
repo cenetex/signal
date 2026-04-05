@@ -109,6 +109,8 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
             int16_t fi = (t < players[i].ship.towed_count) ? players[i].ship.towed_fragments[t] : -1;
             p[24 + t] = (fi >= 0 && fi < 255) ? (uint8_t)fi : 0xFF;
         }
+        /* Callsign: 7 bytes (e.g. "KRX-472") */
+        memcpy(&p[34], players[i].callsign, 7);
         count++;
     }
     buf[0] = NET_MSG_WORLD_PLAYERS;
@@ -221,7 +223,7 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
  * (in shared/net_protocol.h) and all buffers that depend on it. */
 /* Compile-time guards: record sizes must match serialization layouts. */
 _Static_assert(
-    1 + 5 * 4 + 1 + 1 + 1 + 10 == PLAYER_RECORD_SIZE,
+    1 + 5 * 4 + 1 + 1 + 1 + 10 + 7 == PLAYER_RECORD_SIZE,
     "PLAYER_RECORD_SIZE must match serialized player state layout"
 );
 _Static_assert(

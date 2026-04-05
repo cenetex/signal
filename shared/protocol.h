@@ -99,7 +99,7 @@ _Static_assert(NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT <= 256,
 #define STATION_RECORD_SIZE (1 + COMMODITY_COUNT * 4)  /* 37 bytes when COMMODITY_COUNT == 9 */
 
 /* Player state record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:10] */
-#define PLAYER_RECORD_SIZE 34
+#define PLAYER_RECORD_SIZE 41  /* 34 + 7 bytes callsign */
 
 /* Asteroid record: [id+flags:1][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32] */
 #define ASTEROID_RECORD_SIZE 30

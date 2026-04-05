@@ -110,6 +110,12 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     case NET_MSG_SESSION:
         if (len >= 9 && !world.players[pid].session_ready) {
             const uint8_t *token = &data[1];
+            /* Extract callsign if present (bytes 9-15) */
+            if (len >= 16) {
+                memcpy(world.players[pid].callsign, &data[9], 7);
+                world.players[pid].callsign[7] = '\0';
+                printf("[server] player %d callsign: %s\n", pid, world.players[pid].callsign);
+            }
             /* Check for existing grace-period player with same token */
             int reattach = -1;
             for (int i = 0; i < MAX_PLAYERS; i++) {

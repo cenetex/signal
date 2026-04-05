@@ -749,6 +749,9 @@ void draw_hud(void) {
         } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 3) {
             sdtx_color3b(100, 180, 255);
             sdtx_printf("SCAN PILOT // ID %d", LOCAL_PLAYER.scan_target_index);
+        } else if (LOCAL_PLAYER.ship.towed_count > 0) {
+            sdtx_color3b(130, 255, 235);
+            sdtx_printf("TOWING %d // [R] release", LOCAL_PLAYER.ship.towed_count);
         } else if (LOCAL_PLAYER.nearby_fragments > 0) {
             if (LOCAL_PLAYER.ship.tractor_active) {
                 sdtx_color3b(130, 255, 235);

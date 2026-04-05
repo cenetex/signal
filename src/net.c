@@ -24,6 +24,8 @@ static struct {
     char server_hash[12];
     uint8_t session_token[8];
     bool session_token_ready;
+    char callsign[8];
+    bool callsign_ready;
 } net_state;
 
 /* ---------- Protocol helpers (shared between WASM and native) ------------ */
@@ -101,12 +103,51 @@ static void ensure_session_token(void) {
     net_state.session_token_ready = true;
 }
 
+static void ensure_callsign(void) {
+    if (net_state.callsign_ready) return;
+    static const char letters[] = "ABCDEFGHJKLMNPQRSTUVWXYZ"; /* no I, O */
+#ifdef __EMSCRIPTEN__
+    const char *cs = emscripten_run_script_string(
+        "(function(){"
+        "var k='signal_callsign',s=localStorage.getItem(k);"
+        "if(s&&s.length===7)return s;"
+        "var L='ABCDEFGHJKLMNPQRSTUVWXYZ';"
+        "var c='';"
+        "for(var i=0;i<3;i++)c+=L[Math.floor(Math.random()*24)];"
+        "c+='-';"
+        "for(var i=0;i<3;i++)c+=Math.floor(Math.random()*10);"
+        "localStorage.setItem(k,c);return c;"
+        "})()"
+    );
+    if (cs && strlen(cs) == 7) {
+        memcpy(net_state.callsign, cs, 7);
+        net_state.callsign[7] = '\0';
+    }
+#else
+    /* Native: generate random callsign */
+    uint32_t seed = (uint32_t)time(NULL) ^ (uint32_t)(uintptr_t)&net_state;
+    for (int i = 0; i < 3; i++) {
+        seed = seed * 1103515245u + 12345u;
+        net_state.callsign[i] = letters[(seed >> 16) % 24];
+    }
+    net_state.callsign[3] = '-';
+    for (int i = 0; i < 3; i++) {
+        seed = seed * 1103515245u + 12345u;
+        net_state.callsign[4 + i] = '0' + ((seed >> 16) % 10);
+    }
+    net_state.callsign[7] = '\0';
+#endif
+    net_state.callsign_ready = true;
+    printf("[net] callsign: %s\n", net_state.callsign);
+}
+
 static void send_session_token(void) {
-    uint8_t buf[9];
+    uint8_t buf[16]; /* type(1) + token(8) + callsign(7) */
     buf[0] = NET_MSG_SESSION;
     memcpy(&buf[1], net_state.session_token, 8);
-    ws_send_binary(buf, 9);
-    printf("[net] sent session token\n");
+    memcpy(&buf[9], net_state.callsign, 7);
+    ws_send_binary(buf, 16);
+    printf("[net] sent session token + callsign %s\n", net_state.callsign);
 }
 
 static void handle_message(const uint8_t* data, int len) {
@@ -199,6 +240,8 @@ static void handle_message(const uint8_t* data, int len) {
                 ps->tractor_level = p[22];
                 ps->towed_count = p[23];
                 for (int t = 0; t < 10; t++) ps->towed_fragments[t] = p[24 + t];
+                memcpy(ps->callsign, &p[34], 7);
+                ps->callsign[7] = '\0';
                 ps->active = true;
                 if (net_state.callbacks.on_state) {
                     net_state.callbacks.on_state(ps);
@@ -431,6 +474,7 @@ static EM_BOOL on_ws_open(int eventType, const EmscriptenWebSocketOpenEvent* eve
     printf("[net] connected to relay server\n");
     /* Send session token immediately so server can match grace slots */
     ensure_session_token();
+    ensure_callsign();
     send_session_token();
     return EM_TRUE;
 }
@@ -562,6 +606,7 @@ static void net_ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         ws_conn = c;
         printf("[net] connected to server\n");
         ensure_session_token();
+        ensure_callsign();
         send_session_token();
     } else if (ev == MG_EV_WS_MSG) {
         struct mg_ws_message *wm = (struct mg_ws_message *)ev_data;
@@ -659,6 +704,11 @@ bool net_is_connected(void) {
 
 uint8_t net_local_id(void) {
     return net_state.local_id;
+}
+
+const char* net_local_callsign(void) {
+    ensure_callsign();
+    return net_state.callsign;
 }
 
 const NetPlayerState* net_get_players(void) {

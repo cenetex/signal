@@ -1272,6 +1272,52 @@ void draw_remote_players(void) {
 
         sgl_pop_matrix();
 
+        /* Callsign label above ship */
+        if (players[i].callsign[0] != '\0') {
+            /* Convert world pos to screen-relative for debugtext.
+             * sdtx uses a grid coordinate system, so we render the
+             * callsign as small colored text above the ship. */
+            float lx = players[i].x;
+            float ly = players[i].y - 30.0f;
+            sgl_c4f(cr * 0.7f, cg * 0.7f, cb * 0.7f, 0.7f);
+            sgl_begin_lines();
+            /* Small underline tick under the label */
+            sgl_v2f(lx - 16.0f, ly + 4.0f);
+            sgl_v2f(lx + 16.0f, ly + 4.0f);
+            sgl_end();
+            /* Render callsign chars as tiny line segments */
+            float char_w = 5.0f;
+            float start_x = lx - (float)strlen(players[i].callsign) * char_w * 0.5f;
+            for (int ch = 0; players[i].callsign[ch]; ch++) {
+                float cx0 = start_x + (float)ch * char_w;
+                float cy0 = ly;
+                char c = players[i].callsign[ch];
+                /* Minimal 3x5 pixel font as line segments */
+                sgl_c4f(cr, cg, cb, 0.8f);
+                sgl_begin_lines();
+                if (c >= '0' && c <= '9') {
+                    /* Digit: draw as a small box with distinguishing features */
+                    sgl_v2f(cx0, cy0); sgl_v2f(cx0+3, cy0);
+                    sgl_v2f(cx0+3, cy0); sgl_v2f(cx0+3, cy0-5);
+                    sgl_v2f(cx0+3, cy0-5); sgl_v2f(cx0, cy0-5);
+                    sgl_v2f(cx0, cy0-5); sgl_v2f(cx0, cy0);
+                    if (c == '1') { sgl_v2f(cx0+1.5f, cy0); sgl_v2f(cx0+1.5f, cy0-5); }
+                    if (c == '4' || c == '5' || c == '6' || c == '8' || c == '9' || c == '0')
+                        { sgl_v2f(cx0, cy0-2.5f); sgl_v2f(cx0+3, cy0-2.5f); }
+                } else if (c == '-') {
+                    sgl_v2f(cx0+0.5f, cy0-2.5f); sgl_v2f(cx0+2.5f, cy0-2.5f);
+                } else {
+                    /* Letter: vertical bar + distinguishing strokes */
+                    sgl_v2f(cx0, cy0); sgl_v2f(cx0, cy0-5);
+                    sgl_v2f(cx0, cy0); sgl_v2f(cx0+3, cy0);
+                    if (c != 'L') { sgl_v2f(cx0+3, cy0); sgl_v2f(cx0+3, cy0-5); }
+                    if (c >= 'N') { sgl_v2f(cx0, cy0-5); sgl_v2f(cx0+3, cy0-5); }
+                    if (c < 'N' && c != 'L') { sgl_v2f(cx0, cy0-2.5f); sgl_v2f(cx0+3, cy0-2.5f); }
+                }
+                sgl_end();
+            }
+        }
+
         /* Mining or scan beam */
         if (mining) {
             bool scanning = (players[i].flags & 8) != 0;

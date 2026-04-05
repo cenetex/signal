@@ -33,6 +33,7 @@ typedef struct {
     uint8_t tractor_level;
     uint8_t towed_count;
     uint8_t towed_fragments[10]; /* asteroid indices, 0xFF = unused */
+    char callsign[8];            /* e.g. "KRX-472" */
     bool active;
 } NetPlayerState;
 
@@ -157,6 +158,7 @@ bool net_is_connected(void);
 
 /* Returns the local player's assigned ID, or 0xFF if not assigned. */
 uint8_t net_local_id(void);
+const char* net_local_callsign(void);
 
 /* Access remote player state array (NET_MAX_PLAYERS entries). */
 const NetPlayerState* net_get_players(void);
