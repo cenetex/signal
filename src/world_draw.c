@@ -572,20 +572,60 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
 static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaffold, float progress, vec2 station_center) {
     float mr, mg, mb;
     module_color(type, &mr, &mg, &mb);
-    float alpha = scaffold ? 0.25f : 0.92f;
     (void)station_center;
 
     sgl_push_matrix();
     sgl_translate(pos.x, pos.y, 0.0f);
-    sgl_rotate(angle + PI_F * 0.5f, 0.0f, 0.0f, 1.0f);  /* +90° so local -Y = outward (+X) */
+    sgl_rotate(angle + PI_F * 0.5f, 0.0f, 0.0f, 1.0f);
     sgl_scale(1.4f, 1.4f, 1.0f);
 
-    draw_module_shape(type, mr, mg, mb, alpha);
+    if (scaffold) {
+        /* Wireframe outline circle — construction amber (#FFD977) */
+        float amb_r = 1.0f, amb_g = 0.85f, amb_b = 0.47f;
+        float pulse = 0.3f + 0.15f * sinf((float)(pos.x + pos.y) * 0.1f + progress * 10.0f);
 
-    if (scaffold && progress > 0.01f) {
-        float bar_w = 48.0f * progress;
-        sgl_c4f(0.3f, 1.0f, 0.6f, 0.7f);
-        fill_quad(-24, 30, -24+bar_w, 30, -24+bar_w, 34, -24, 34);
+        /* Progress fill: partial circle from bottom */
+        float fill = fminf(progress, 1.0f);
+        if (fill > 0.01f) {
+            int segs = (int)(16.0f * fill);
+            if (segs < 2) segs = 2;
+            sgl_begin_triangles();
+            sgl_c4f(amb_r * 0.3f, amb_g * 0.3f, amb_b * 0.3f, pulse * 0.6f);
+            float fill_angle = fill * TWO_PI_F;
+            float start = PI_F * 0.5f; /* bottom */
+            for (int i = 0; i < segs; i++) {
+                float a0 = start + fill_angle * (float)i / (float)segs;
+                float a1 = start + fill_angle * (float)(i + 1) / (float)segs;
+                sgl_v2f(0, 0);
+                sgl_v2f(cosf(a0) * 22.0f, sinf(a0) * 22.0f);
+                sgl_v2f(cosf(a1) * 22.0f, sinf(a1) * 22.0f);
+            }
+            sgl_end();
+        }
+
+        /* Wireframe circle outline */
+        sgl_begin_lines();
+        sgl_c4f(amb_r, amb_g, amb_b, pulse + 0.3f);
+        int wire_segs = 16;
+        for (int i = 0; i < wire_segs; i++) {
+            float a0 = TWO_PI_F * (float)i / (float)wire_segs;
+            float a1 = TWO_PI_F * (float)(i + 1) / (float)wire_segs;
+            sgl_v2f(cosf(a0) * 22.0f, sinf(a0) * 22.0f);
+            sgl_v2f(cosf(a1) * 22.0f, sinf(a1) * 22.0f);
+        }
+        /* Cross-hatch for scaffolding feel */
+        sgl_v2f(-16, -16); sgl_v2f(16, 16);
+        sgl_v2f(-16, 16); sgl_v2f(16, -16);
+        sgl_end();
+
+        /* Progress bar below */
+        if (fill > 0.01f) {
+            float bar_w = 48.0f * fill;
+            sgl_c4f(amb_r * 0.8f, amb_g * 0.8f, amb_b * 0.4f, 0.7f);
+            fill_quad(-24, 30, -24 + bar_w, 30, -24 + bar_w, 34, -24, 34);
+        }
+    } else {
+        draw_module_shape(type, mr, mg, mb, 0.92f);
     }
 
     sgl_pop_matrix();

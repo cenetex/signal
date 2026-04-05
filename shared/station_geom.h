@@ -30,7 +30,9 @@ typedef struct {
     vec2  center;
     float radius;
     int   ring;
-    float angle;    /* angular position relative to station center */
+    float angle;          /* angular position relative to station center */
+    bool  is_scaffold;    /* true = under construction */
+    float build_progress; /* 0..1 material delivery, 1..2 construction timer */
 } geom_circle_t;
 
 typedef struct {
@@ -126,27 +128,32 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
                 }
                 /* Dock gets a smaller collision circle — narrow passage, not wide hole */
                 if (out->circle_count < STATION_GEOM_MAX_CIRCLES) {
-                    out->circles[out->circle_count].center = mpos;
-                    out->circles[out->circle_count].radius = STATION_MODULE_COL_RADIUS * 0.5f;
-                    out->circles[out->circle_count].ring = ring;
-                    out->circles[out->circle_count].angle = mang;
-                    out->circle_count++;
+                    geom_circle_t *c = &out->circles[out->circle_count++];
+                    c->center = mpos;
+                    c->radius = STATION_MODULE_COL_RADIUS * 0.5f;
+                    c->ring = ring;
+                    c->angle = mang;
+                    c->is_scaffold = mod->scaffold;
+                    c->build_progress = mod->build_progress;
                 }
             } else {
                 if (out->circle_count < STATION_GEOM_MAX_CIRCLES) {
-                    out->circles[out->circle_count].center = mpos;
-                    out->circles[out->circle_count].radius = STATION_MODULE_COL_RADIUS;
-                    out->circles[out->circle_count].ring = ring;
-                    out->circles[out->circle_count].angle = mang;
-                    out->circle_count++;
+                    geom_circle_t *c = &out->circles[out->circle_count++];
+                    c->center = mpos;
+                    c->radius = STATION_MODULE_COL_RADIUS;
+                    c->ring = ring;
+                    c->angle = mang;
+                    c->is_scaffold = mod->scaffold;
+                    c->build_progress = mod->build_progress;
                 }
             }
         }
 
-        /* Corridors: adjacent pairs, skip where dock is first */
+        /* Corridors: adjacent pairs, skip where dock or scaffold is first */
         for (int ci = 0; ci + 1 < count; ci++) {
             if (st->modules[idx[ci+1]].slot - st->modules[idx[ci]].slot != 1) continue;
             if (st->modules[idx[ci]].type == MODULE_DOCK) continue;
+            if (st->modules[idx[ci]].scaffold || st->modules[idx[ci+1]].scaffold) continue;
             if (out->corridor_count < STATION_GEOM_MAX_CORRIDORS) {
                 float a = module_angle_ring(st, ring, st->modules[idx[ci]].slot);
                 float b = module_angle_ring(st, ring, st->modules[idx[ci+1]].slot);
