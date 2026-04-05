@@ -3779,7 +3779,7 @@ void world_reset(world_t *w) {
     w->stations[1].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
     w->stations[1].base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
     w->stations[1].base_price[COMMODITY_FRAME] = 20.0f;
-    /* Ring 1 (service): dock + relay (center) + repair */
+    /* Ring 1: dock + relay + ore silo */
     add_module_at(&w->stations[1], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 1, 1);
     add_module_at(&w->stations[1], MODULE_ORE_SILO, 1, 2);
