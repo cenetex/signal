@@ -59,7 +59,7 @@ jobs:
       - name: Install Emscripten
         uses: mymindstorm/setup-emsdk@v14
         with:
-          version: 4.0.8
+          version: 5.0.4
 
       - name: Build WASM
         run: |
