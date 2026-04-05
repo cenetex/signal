@@ -2143,6 +2143,8 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     ship_collision_count = 0;
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!station_collides(&w->stations[i])) continue;
+        /* Skip collision with docking target during approach lerp */
+        if (sp->docking_approach && i == sp->nearby_station) continue;
         resolve_module_collisions(w, sp, &w->stations[i]);
     }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
