@@ -319,11 +319,10 @@ static void sim_step(float dt) {
     reset_step_feedback();
     audio_step(&g.audio, dt);
 
-    /* Derive ring rotation from world time (multiplayer only —
-     * singleplayer gets rotation from local server sync).
-     * Using world.time ensures client and server produce identical
-     * rotation, preventing collision/visual desync. */
+    /* Advance world time locally in multiplayer (server doesn't send it).
+     * Derive ring rotation from world time — deterministic from speed * time. */
     if (g.multiplayer_enabled) {
+        g.world.time += dt;
         for (int s = 0; s < MAX_STATIONS; s++) {
             station_t *st = &g.world.stations[s];
             if (!station_exists(st)) continue;
