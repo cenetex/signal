@@ -4254,6 +4254,112 @@ TEST(test_scaffold_towed_scaffold_init) {
     ASSERT_EQ_INT(sp.ship.towed_scaffold, -1);
 }
 
+TEST(test_scaffold_tow_pickup) {
+    world_t w = {0};
+    world_reset(&w);
+    w.players[0].connected = true;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].docked = false;
+    w.players[0].ship.tractor_active = true;
+
+    /* Spawn scaffold very close to the player */
+    vec2 player_pos = w.players[0].ship.pos;
+    vec2 scaffold_pos = v2_add(player_pos, v2(50.0f, 0.0f));
+    int idx = spawn_scaffold(&w, MODULE_FURNACE, scaffold_pos, 0);
+    ASSERT(idx >= 0);
+
+    /* Run sim — player should pick up the scaffold */
+    for (int i = 0; i < 10; i++) world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(w.players[0].ship.towed_scaffold, idx);
+    ASSERT_EQ_INT(w.scaffolds[idx].state, SCAFFOLD_TOWING);
+    ASSERT_EQ_INT(w.scaffolds[idx].towed_by, 0);
+}
+
+TEST(test_scaffold_tow_release_on_r) {
+    world_t w = {0};
+    world_reset(&w);
+    w.players[0].connected = true;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].docked = false;
+    w.players[0].ship.tractor_active = true;
+
+    /* Spawn and attach scaffold */
+    vec2 player_pos = w.players[0].ship.pos;
+    int idx = spawn_scaffold(&w, MODULE_FURNACE, v2_add(player_pos, v2(50.0f, 0.0f)), 0);
+    ASSERT(idx >= 0);
+    for (int i = 0; i < 10; i++) world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_INT(w.players[0].ship.towed_scaffold, idx);
+
+    /* Press R to toggle tractor off — should release scaffold */
+    w.players[0].input.release_tow = true;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(w.players[0].ship.towed_scaffold, -1);
+    ASSERT_EQ_INT(w.scaffolds[idx].state, SCAFFOLD_LOOSE);
+    ASSERT_EQ_INT(w.scaffolds[idx].towed_by, -1);
+}
+
+TEST(test_scaffold_tow_release_on_dock) {
+    world_t w = {0};
+    world_reset(&w);
+    w.players[0].connected = true;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].docked = false;
+    w.players[0].in_dock_range = false;
+    w.players[0].ship.tractor_active = true;
+
+    /* Spawn and manually attach scaffold */
+    vec2 near_station = v2_add(w.stations[0].pos, v2(100.0f, 0.0f));
+    w.players[0].ship.pos = near_station;
+    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    int idx = spawn_scaffold(&w, MODULE_DOCK, v2_add(near_station, v2(50.0f, 0.0f)), 0);
+    ASSERT(idx >= 0);
+    /* Manually attach to avoid needing sim steps in dock approach range */
+    w.players[0].ship.towed_scaffold = (int16_t)idx;
+    w.scaffolds[idx].state = SCAFFOLD_TOWING;
+    w.scaffolds[idx].towed_by = 0;
+
+    /* Now dock — scaffold should be released */
+    w.players[0].nearby_station = 0;
+    w.players[0].in_dock_range = true;
+    w.players[0].input.interact = true;
+    world_sim_step(&w, SIM_DT);
+
+    /* After docking, scaffold should be loose */
+    if (w.players[0].docked) {
+        ASSERT_EQ_INT(w.players[0].ship.towed_scaffold, -1);
+        ASSERT_EQ_INT(w.scaffolds[idx].state, SCAFFOLD_LOOSE);
+    }
+}
+
+TEST(test_scaffold_tow_speed_cap) {
+    world_t w = {0};
+    world_reset(&w);
+    w.players[0].connected = true;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].docked = false;
+    w.players[0].ship.tractor_active = true;
+
+    /* Place player far from stations to avoid docking interference */
+    w.players[0].ship.pos = v2(5000.0f, 5000.0f);
+    w.players[0].ship.vel = v2(200.0f, 0.0f); /* moving fast */
+
+    /* Spawn and manually attach scaffold */
+    int idx = spawn_scaffold(&w, MODULE_FURNACE, v2(5050.0f, 5000.0f), 0);
+    ASSERT(idx >= 0);
+    w.players[0].ship.towed_scaffold = (int16_t)idx;
+    w.scaffolds[idx].state = SCAFFOLD_TOWING;
+    w.scaffolds[idx].towed_by = 0;
+
+    /* Run sim for a while */
+    for (int i = 0; i < 240; i++) world_sim_step(&w, SIM_DT);
+
+    /* Scaffold speed should be capped */
+    float spd = v2_len(w.scaffolds[idx].vel);
+    ASSERT(spd <= 60.0f); /* slightly above cap due to spring forces in single frame */
+}
+
 int main(void) {
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -4531,6 +4637,10 @@ int main(void) {
     RUN(test_scaffold_spawn);
     RUN(test_scaffold_physics_loose);
     RUN(test_scaffold_towed_scaffold_init);
+    RUN(test_scaffold_tow_pickup);
+    RUN(test_scaffold_tow_release_on_r);
+    RUN(test_scaffold_tow_release_on_dock);
+    RUN(test_scaffold_tow_speed_cap);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

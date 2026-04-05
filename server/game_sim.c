@@ -1820,12 +1820,14 @@ static void anchor_ship_in_station(server_player_t *sp, world_t *w) {
 }
 
 static void apply_ship_damage(world_t *w, server_player_t *sp, float damage);
-
+static void release_towed_scaffold(world_t *w, server_player_t *sp);
 
 static void dock_ship(world_t *w, server_player_t *sp) {
     if (sp->nearby_station >= 0) sp->current_station = sp->nearby_station;
     sp->docked = true;
     sp->in_dock_range = true;
+    /* Release towed scaffold on dock — can't tow while docked */
+    if (sp->ship.towed_scaffold >= 0) release_towed_scaffold(w, sp);
     /* Keep ship at its current position (already in dock range) — just stop it */
     sp->ship.vel = v2(0.0f, 0.0f);
     SIM_LOG("[sim] player %d docked at station %d\n", sp->id, sp->current_station);
@@ -2588,6 +2590,93 @@ static void release_towed_fragments(server_player_t *sp) {
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
 }
 
+/* ---- Scaffold tow physics ---- */
+
+static const float SCAFFOLD_TOW_SPEED_CAP = 55.0f;  /* slower than ore fragments */
+static const float SCAFFOLD_PICKUP_RANGE = 80.0f;    /* how close to grab one */
+
+static void release_towed_scaffold(world_t *w, server_player_t *sp) {
+    int idx = sp->ship.towed_scaffold;
+    if (idx >= 0 && idx < MAX_SCAFFOLDS && w->scaffolds[idx].active) {
+        w->scaffolds[idx].state = SCAFFOLD_LOOSE;
+        w->scaffolds[idx].towed_by = -1;
+    }
+    sp->ship.towed_scaffold = -1;
+}
+
+static void step_scaffold_tow(world_t *w, server_player_t *sp, float dt) {
+    int idx = sp->ship.towed_scaffold;
+
+    /* Validate existing tow */
+    if (idx >= 0) {
+        if (idx >= MAX_SCAFFOLDS || !w->scaffolds[idx].active ||
+            w->scaffolds[idx].state != SCAFFOLD_TOWING) {
+            sp->ship.towed_scaffold = -1;
+            idx = -1;
+        }
+    }
+
+    /* If towing a scaffold, apply spring physics */
+    if (idx >= 0) {
+        scaffold_t *sc = &w->scaffolds[idx];
+        float ship_r = ship_hull_def(&sp->ship)->ship_radius;
+        float safe_dist = sc->radius + ship_r + 20.0f;
+        vec2 to_ship = v2_sub(sp->ship.pos, sc->pos);
+        float dist = v2_len(to_ship);
+
+        /* Pull toward ship if too far */
+        float tractor_r = ship_tractor_range(&sp->ship);
+        if (dist > tractor_r * 0.8f) {
+            /* Strong pull to catch up */
+            vec2 pull = v2_scale(to_ship, 3.0f);
+            sc->vel = v2_add(sc->vel, v2_scale(pull, dt));
+        } else if (dist > safe_dist) {
+            /* Gentle pull */
+            vec2 pull = v2_scale(to_ship, 1.2f);
+            sc->vel = v2_add(sc->vel, v2_scale(pull, dt));
+        }
+
+        /* Push away if too close */
+        if (dist < safe_dist && dist > 0.1f) {
+            vec2 push = v2_scale(to_ship, -(safe_dist - dist) * 6.0f);
+            sc->vel = v2_add(sc->vel, v2_scale(push, dt));
+        }
+
+        /* Heavy drag — scaffolds feel massive */
+        sc->vel = v2_scale(sc->vel, 1.0f / (1.0f + 3.0f * dt));
+
+        /* Speed cap */
+        float spd = v2_len(sc->vel);
+        if (spd > SCAFFOLD_TOW_SPEED_CAP)
+            sc->vel = v2_scale(sc->vel, SCAFFOLD_TOW_SPEED_CAP / spd);
+
+        /* Move scaffold */
+        sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
+
+        /* If scaffold drifts too far (tractor broke), release */
+        if (dist > tractor_r * 1.5f) {
+            release_towed_scaffold(w, sp);
+        }
+        return;
+    }
+
+    /* Not towing — check if we can pick one up */
+    if (!sp->ship.tractor_active) return;
+
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        scaffold_t *sc = &w->scaffolds[i];
+        if (!sc->active || sc->state != SCAFFOLD_LOOSE) continue;
+        float d_sq = v2_dist_sq(sp->ship.pos, sc->pos);
+        if (d_sq > SCAFFOLD_PICKUP_RANGE * SCAFFOLD_PICKUP_RANGE) continue;
+
+        /* Attach */
+        sp->ship.towed_scaffold = (int16_t)i;
+        sc->state = SCAFFOLD_TOWING;
+        sc->towed_by = sp->id;
+        return; /* one scaffold at a time */
+    }
+}
+
 /* Find scan target (station module, NPC, or player) along beam ray.
  * Returns true if a scan target was found, populating sp->scan_* fields. */
 static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 forward) {
@@ -3076,13 +3165,17 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             update_targeting_state(w, sp, forward);
             step_mining_system(w, sp, dt, sp->input.mine, forward, sig);
             if (!w->player_only_mode) {
-                /* R toggles tractor — OFF releases fragments */
+                /* R toggles tractor — OFF releases fragments + scaffold */
                 if (sp->input.release_tow) {
                     sp->ship.tractor_active = !sp->ship.tractor_active;
-                    if (!sp->ship.tractor_active) release_towed_fragments(sp);
+                    if (!sp->ship.tractor_active) {
+                        release_towed_fragments(sp);
+                        release_towed_scaffold(w, sp);
+                    }
                 }
                 step_towed_cleanup(w, sp);
                 if (sp->ship.tractor_active) step_fragment_collection(w, sp, dt);
+                step_scaffold_tow(w, sp, dt);
             }
         }
     } else {
