@@ -780,25 +780,42 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         ring_cr[r] = role_r; ring_cg[r] = role_g; ring_cb[r] = role_b;
     }
     {
-        /* Pick the most saturated module color on each ring.
-         * Averaging complementary hues produces mud — instead,
-         * the ring takes the identity of its most vivid module. */
+        /* Most saturated module sets the base, others tint it.
+         * 80% base + 20% influence from the rest — enough to
+         * shift the hue without muddying it. */
         for (int r = 1; r <= STATION_NUM_RINGS; r++) {
+            float colors[MAX_MODULES_PER_STATION][3];
+            float sats[MAX_MODULES_PER_STATION];
+            int count = 0;
+            int best = 0;
             float best_sat = -1.0f;
             for (int i = 0; i < station->module_count; i++) {
                 if (station->modules[i].ring != r) continue;
                 if (station->modules[i].type == MODULE_DOCK) continue;
-                float mr, mg, mb;
-                module_color(station->modules[i].type, &mr, &mg, &mb);
-                float cmax = fmaxf(mr, fmaxf(mg, mb));
-                float cmin = fminf(mr, fminf(mg, mb));
-                float sat = (cmax > 0.001f) ? (cmax - cmin) / cmax : 0.0f;
-                if (sat > best_sat) {
-                    best_sat = sat;
-                    ring_cr[r] = mr;
-                    ring_cg[r] = mg;
-                    ring_cb[r] = mb;
+                module_color(station->modules[i].type, &colors[count][0], &colors[count][1], &colors[count][2]);
+                float cmax = fmaxf(colors[count][0], fmaxf(colors[count][1], colors[count][2]));
+                float cmin = fminf(colors[count][0], fminf(colors[count][1], colors[count][2]));
+                sats[count] = (cmax > 0.001f) ? (cmax - cmin) / cmax : 0.0f;
+                if (sats[count] > best_sat) { best_sat = sats[count]; best = count; }
+                count++;
+            }
+            if (count == 0) continue;
+            /* Start with the dominant color */
+            ring_cr[r] = colors[best][0];
+            ring_cg[r] = colors[best][1];
+            ring_cb[r] = colors[best][2];
+            if (count > 1) {
+                /* Tint: lerp 20% toward the average of the others */
+                float tr = 0, tg = 0, tb = 0;
+                for (int c = 0; c < count; c++) {
+                    if (c == best) continue;
+                    tr += colors[c][0]; tg += colors[c][1]; tb += colors[c][2];
                 }
+                float n = (float)(count - 1);
+                float blend = 0.2f;
+                ring_cr[r] = ring_cr[r] * (1.0f - blend) + (tr / n) * blend;
+                ring_cg[r] = ring_cg[r] * (1.0f - blend) + (tg / n) * blend;
+                ring_cb[r] = ring_cb[r] * (1.0f - blend) + (tb / n) * blend;
             }
         }
     }
