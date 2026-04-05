@@ -84,35 +84,41 @@ jobs:
           cp docs/*.svg _site/docs/ 2>/dev/null || true
           sed -i 's|<head>|<head><script>window.SIGNAL_SERVER="wss://signal-ws.ratimics.com/ws";</script>|' _site/play/index.html
 
-      # Snapshot previous deploy for rollback
-      - name: Snapshot previous deploy
-        run: aws s3 sync s3://signal-ratimics-client/ /tmp/rollback/ --quiet
+      # Pre-deploy: smoke test current site to see if rollback is viable
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
 
-      # Deploy immediately — site is live ~60s after push
+      - name: Check if current deploy is healthy
+        id: precheck
+        continue-on-error: true
+        run: |
+          npm install
+          npx playwright install chromium --with-deps
+          SMOKE_URL=https://signal.ratimics.com/play/ npx playwright test
+
+      - name: Snapshot previous deploy (only if healthy)
+        if: steps.precheck.outcome == 'success'
+        run: |
+          echo "Current site is healthy — snapshotting for rollback"
+          aws s3 sync s3://signal-ratimics-client/ /tmp/rollback/ --quiet
+
+      # Deploy
       - name: Deploy to S3
         run: aws s3 sync _site/ s3://signal-ratimics-client/ --delete
 
       - name: Invalidate CloudFront
         run: aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*"
 
-      # Smoke test the LIVE site — if it fails, rollback
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
+      - name: Wait for CDN propagation
+        run: sleep 60
 
-      - name: Wait for CloudFront invalidation
-        run: |
-          INVALIDATION_ID=$(aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*" --query 'Invalidation.Id' --output text)
-          aws cloudfront wait invalidation-completed --distribution-id E32W3RMW5O86FJ --id "$INVALIDATION_ID" || sleep 30
-
+      # Post-deploy smoke test
       - name: Browser smoke tests (live site)
         id: smoke
         continue-on-error: true
-        run: |
-          npm install
-          npx playwright install chromium --with-deps
-          SMOKE_URL=https://signal.ratimics.com/play/ npx playwright test
+        run: SMOKE_URL=https://signal.ratimics.com/play/ npx playwright test
 
       - name: Upload smoke results
         if: steps.smoke.outcome == 'failure'
@@ -121,11 +127,11 @@ jobs:
           name: playwright-report
           path: test-results/
 
-      # Rollback: restore previous version if smoke tests failed
+      # Rollback only if we have a healthy snapshot
       - name: Rollback on failure
-        if: steps.smoke.outcome == 'failure'
+        if: steps.smoke.outcome == 'failure' && steps.precheck.outcome == 'success'
         run: |
-          echo "::error::Smoke tests failed — rolling back deploy"
+          echo "::error::Smoke tests failed — rolling back to healthy snapshot"
           aws s3 sync /tmp/rollback/ s3://signal-ratimics-client/ --delete
           aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*"
 
