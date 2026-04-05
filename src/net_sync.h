@@ -26,6 +26,9 @@ void apply_remote_player_ship(const NetPlayerShipState* state);
 /* Death event from server. */
 void on_remote_death(uint8_t player_id);
 
+/* World time sync from server. */
+void on_remote_world_time(float server_time);
+
 /* Sync local player slot to the network-assigned ID. */
 void sync_local_player_slot_from_network(void);
 

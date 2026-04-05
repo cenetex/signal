@@ -124,6 +124,7 @@ typedef struct {
     net_on_player_ship_fn on_player_ship;
     net_on_contracts_fn on_contracts;
     void (*on_death)(uint8_t player_id);
+    void (*on_world_time)(float server_time);
 } NetCallbacks;
 
 /* Initialize networking and connect to the relay server.

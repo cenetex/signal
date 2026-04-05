@@ -327,3 +327,7 @@ void on_remote_death(uint8_t player_id) {
     g.episode.stations_visited = 0;
     episode_save(&g.episode);
 }
+
+void on_remote_world_time(float server_time) {
+    g.world.time = server_time;
+}

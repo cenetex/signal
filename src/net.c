@@ -371,6 +371,13 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_WORLD_TIME:
+        if (len >= 5 && net_state.callbacks.on_world_time) {
+            float server_time = read_f32_le(&data[1]);
+            net_state.callbacks.on_world_time(server_time);
+        }
+        break;
+
     case NET_MSG_CONTRACTS:
         if (len >= 2 && net_state.callbacks.on_contracts) {
             uint8_t count = data[1];

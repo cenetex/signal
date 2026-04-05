@@ -512,6 +512,12 @@ static void broadcast_world(void) {
     uint8_t nbuf[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
     int nlen = serialize_npcs(nbuf, world.npc_ships);
     broadcast(nbuf, (size_t)nlen);
+
+    /* World time sync (5 bytes: type + float) */
+    uint8_t tbuf[5];
+    tbuf[0] = NET_MSG_WORLD_TIME;
+    write_f32_le(&tbuf[1], world.time);
+    broadcast(tbuf, 5);
 }
 
 static void broadcast_ship_states(void) {

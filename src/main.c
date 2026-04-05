@@ -527,6 +527,7 @@ static void init(void) {
             cbs.on_player_ship = apply_remote_player_ship;
             cbs.on_contracts = apply_remote_contracts;
             cbs.on_death = on_remote_death;
+            cbs.on_world_time = on_remote_world_time;
             g.multiplayer_enabled = net_init(server_url, &cbs);
             if (g.multiplayer_enabled) {
                 /* Deactivate the local server — the remote server is authoritative.
