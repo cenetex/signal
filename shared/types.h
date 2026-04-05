@@ -79,6 +79,7 @@ typedef struct {
     int hold_level;
     int tractor_level;
     bool has_scaffold_kit;
+    int scaffold_kit_type; /* module_type_t — what module this kit builds */
     /* Towed physical fragments (indices into asteroid array, -1 = empty) */
     int16_t towed_fragments[10];  /* max 10 with upgrades: 2 + 4*2 */
     uint8_t towed_count;

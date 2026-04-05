@@ -322,7 +322,7 @@ static inline int serialize_player_ship(uint8_t *buf, uint8_t id, const server_p
     buf[12] = (uint8_t)sp->ship.mining_level;
     buf[13] = (uint8_t)sp->ship.hold_level;
     buf[14] = (uint8_t)sp->ship.tractor_level;
-    buf[15] = sp->ship.has_scaffold_kit ? 1 : 0;
+    buf[15] = sp->ship.has_scaffold_kit ? (1 + (uint8_t)sp->ship.scaffold_kit_type) : 0;
     for (int c = 0; c < COMMODITY_COUNT; c++)
         write_f32_le(&buf[16 + c * 4], sp->ship.cargo[c]);
     int off = 16 + COMMODITY_COUNT * 4;
@@ -421,6 +421,9 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
         case NET_ACTION_BUY_SCAFFOLD:
             intent->buy_scaffold_kit = true;
             break;
+        case NET_ACTION_PLACE_MODULE:
+            intent->place_module = true;
+            break;
         case NET_ACTION_HAIL:
             intent->hail = true;
             break;
@@ -440,6 +443,11 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
             else if (action >= NET_ACTION_BUY_PRODUCT && action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT) {
                 intent->buy_product = true;
                 intent->buy_commodity = (commodity_t)(action - NET_ACTION_BUY_PRODUCT);
+            }
+            /* NET_ACTION_BUY_SCAFFOLD_TYPED + module_type (50..50+MODULE_COUNT) */
+            else if (action >= NET_ACTION_BUY_SCAFFOLD_TYPED && action < NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT) {
+                intent->buy_scaffold_kit = true;
+                intent->scaffold_kit_module = (module_type_t)(action - NET_ACTION_BUY_SCAFFOLD_TYPED);
             }
             break;
         }

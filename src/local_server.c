@@ -56,6 +56,7 @@ void local_server_sync_to_client(const local_server_t *ls) {
         dst->ship.hold_level = src->ship.hold_level;
         dst->ship.tractor_level = src->ship.tractor_level;
         dst->ship.has_scaffold_kit = src->ship.has_scaffold_kit;
+        dst->ship.scaffold_kit_type = src->ship.scaffold_kit_type;
         memcpy(dst->ship.cargo, src->ship.cargo, sizeof(dst->ship.cargo));
     }
 

@@ -220,6 +220,7 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
         sp->ship.hold_level = (int)state->hold_level;
         sp->ship.tractor_level = (int)state->tractor_level;
         sp->ship.has_scaffold_kit = state->has_scaffold_kit;
+        sp->ship.scaffold_kit_type = (module_type_t)state->scaffold_kit_type;
         for (int c = 0; c < COMMODITY_COUNT; c++)
             sp->ship.cargo[c] = state->cargo[c];
         sp->nearby_fragments = (int)state->nearby_fragments;

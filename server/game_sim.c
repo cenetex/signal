@@ -243,6 +243,27 @@ static commodity_t module_build_material(module_type_t type) {
     }
 }
 
+/* Scaffold kit credit price (paid at purchase) */
+static float scaffold_kit_price(module_type_t type) {
+    switch (type) {
+        case MODULE_DOCK:           return 100.0f;
+        case MODULE_SIGNAL_RELAY:   return 150.0f;
+        case MODULE_FURNACE:        return 200.0f;
+        case MODULE_ORE_BUYER:      return 150.0f;
+        case MODULE_FRAME_PRESS:    return 300.0f;
+        case MODULE_FURNACE_CU:     return 400.0f;
+        case MODULE_FURNACE_CR:     return 500.0f;
+        case MODULE_LASER_FAB:      return 400.0f;
+        case MODULE_TRACTOR_FAB:    return 400.0f;
+        default:                    return 200.0f;
+    }
+}
+
+/* A station sells scaffolds for module types it has installed. */
+static bool station_sells_scaffold(const station_t *st, module_type_t type) {
+    return station_has_module(st, type);
+}
+
 /* Module construction cost in ingots */
 static float module_build_cost(module_type_t type) {
     switch (type) {
@@ -2739,19 +2760,35 @@ static void handle_hail(world_t *w, server_player_t *sp) {
 }
 
 static void step_station_interaction_system(world_t *w, server_player_t *sp, const input_intent_t *intent) {
-    /* Buy scaffold kit: docked at station with blueprint desk */
+    /* Buy typed scaffold kit: station must have that module type installed */
     if (intent->buy_scaffold_kit && sp->docked && !w->player_only_mode) {
+        module_type_t kit_type = intent->scaffold_kit_module;
         station_t *st = &w->stations[sp->current_station];
-        if (station_has_module(st, MODULE_BLUEPRINT_DESK)
-            && sp->ship.credits >= OUTPOST_CREDIT_COST
-            && !sp->ship.has_scaffold_kit) {
-            sp->ship.credits -= OUTPOST_CREDIT_COST;
-            sp->ship.has_scaffold_kit = true;
-            SIM_LOG("[sim] player %d bought scaffold kit\n", sp->id);
+        if (!sp->ship.has_scaffold_kit
+            && station_sells_scaffold(st, kit_type)) {
+            float price = scaffold_kit_price(kit_type);
+            if (sp->ship.credits >= price) {
+                sp->ship.credits -= price;
+                sp->ship.has_scaffold_kit = true;
+                sp->ship.scaffold_kit_type = kit_type;
+                SIM_LOG("[sim] player %d bought %s scaffold kit\n", sp->id,
+                        module_type_name(kit_type));
+            }
         }
-        /* Don't return — allow other intents (like interact/launch) to process */
     }
-    /* Outpost placement: must be undocked with scaffold kit */
+    /* Module placement: attach scaffold kit to own station */
+    if (intent->place_module && !sp->docked && sp->ship.has_scaffold_kit
+        && sp->nearby_station >= 3 && sp->in_dock_range) {
+        station_t *st = &w->stations[sp->nearby_station];
+        if (st->module_count < MAX_MODULES_PER_STATION) {
+            begin_module_construction(w, st, sp->nearby_station, sp->ship.scaffold_kit_type);
+            sp->ship.has_scaffold_kit = false;
+            SIM_LOG("[sim] player %d placed %s scaffold at station %d\n",
+                    sp->id, module_type_name(sp->ship.scaffold_kit_type), sp->nearby_station);
+        }
+        return;
+    }
+    /* Outpost placement: must be undocked with scaffold kit in open space */
     if (intent->place_outpost && !sp->docked && sp->ship.has_scaffold_kit) {
         vec2 forward = v2_from_angle(sp->ship.angle);
         vec2 place_pos = v2_add(sp->ship.pos, v2_scale(forward, 150.0f));
@@ -3031,6 +3068,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->input.upgrade_hold = false;
     sp->input.upgrade_tractor = false;
     sp->input.place_outpost = false;
+    sp->input.place_module = false;
     sp->input.buy_scaffold_kit = false;
     sp->input.build_module = false;
     sp->input.buy_product = false;

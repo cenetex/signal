@@ -295,6 +295,7 @@ static void handle_message(const uint8_t* data, int len) {
                 pss.hold_level      = data[13];
                 pss.tractor_level   = data[14];
                 pss.has_scaffold_kit = data[15] != 0;
+                pss.scaffold_kit_type = data[15] > 0 ? (int)(data[15] - 1) : 0;
                 for (int c = 0; c < COMMODITY_COUNT; c++)
                     pss.cargo[c] = read_f32_le(&data[16 + c * 4]);
                 int off = 16 + COMMODITY_COUNT * 4;

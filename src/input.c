@@ -153,30 +153,55 @@ input_intent_t sample_input_intent(void) {
     /* Number keys: context-dependent */
     if (LOCAL_PLAYER.docked && g.build_overlay) {
         const station_t *st = current_station_ptr();
-        /* 1-8: pick module type, auto-placed at next slot */
-        static const struct { module_type_t type; const char *name; } build_keys[] = {
-            { MODULE_FURNACE,      "Furnace (FE)" },
-            { MODULE_FURNACE_CU,   "Furnace (CU)" },
-            { MODULE_FURNACE_CR,   "Furnace (CR)" },
-            { MODULE_FRAME_PRESS,  "Frame Press" },
-            { MODULE_LASER_FAB,    "Laser Fab" },
-            { MODULE_TRACTOR_FAB,  "Tractor Fab" },
-            { MODULE_ORE_BUYER,    "Ore Buyer" },
-            { MODULE_SIGNAL_RELAY, "Signal Relay" },
-        };
-        for (int k = 0; k < 8; k++) {
-            if (!is_key_pressed(SAPP_KEYCODE_1 + k)) continue;
-            if (st->module_count >= MAX_MODULES_PER_STATION) {
-                set_notice("Station is full.");
-            } else {
-                intent.build_module = true;
-                intent.build_module_type = build_keys[k].type;
-                intent.build_ring = 1;
-                intent.build_slot = (uint8_t)st->module_count;
-                set_notice("Building %s", build_keys[k].name);
-                g.build_overlay = false;
+        if (LOCAL_PLAYER.current_station < 3) {
+            /* Starter station: buy scaffold kits for module types it has */
+            static const module_type_t sellable[] = {
+                MODULE_DOCK, MODULE_SIGNAL_RELAY, MODULE_FURNACE,
+                MODULE_ORE_BUYER, MODULE_FRAME_PRESS, MODULE_FURNACE_CU,
+                MODULE_FURNACE_CR, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
+            };
+            int shown = 0;
+            for (int si = 0; si < (int)(sizeof(sellable)/sizeof(sellable[0])); si++) {
+                if (!station_has_module(st, sellable[si])) continue;
+                if (is_key_pressed(SAPP_KEYCODE_1 + shown)) {
+                    if (LOCAL_PLAYER.ship.has_scaffold_kit) {
+                        set_notice("Already carrying a scaffold kit.");
+                    } else {
+                        intent.buy_scaffold_kit = true;
+                        intent.scaffold_kit_module = sellable[si];
+                        set_notice("Bought %s scaffold.", module_type_name(sellable[si]));
+                        g.build_overlay = false;
+                    }
+                    break;
+                }
+                shown++;
             }
-            break;
+        } else {
+            /* Player outpost: build modules directly */
+            static const struct { module_type_t type; const char *name; } build_keys[] = {
+                { MODULE_FURNACE,      "Furnace (FE)" },
+                { MODULE_FURNACE_CU,   "Furnace (CU)" },
+                { MODULE_FURNACE_CR,   "Furnace (CR)" },
+                { MODULE_FRAME_PRESS,  "Frame Press" },
+                { MODULE_LASER_FAB,    "Laser Fab" },
+                { MODULE_TRACTOR_FAB,  "Tractor Fab" },
+                { MODULE_ORE_BUYER,    "Ore Buyer" },
+                { MODULE_SIGNAL_RELAY, "Signal Relay" },
+            };
+            for (int k = 0; k < 8; k++) {
+                if (!is_key_pressed(SAPP_KEYCODE_1 + k)) continue;
+                if (st->module_count >= MAX_MODULES_PER_STATION) {
+                    set_notice("Station is full.");
+                } else {
+                    intent.build_module = true;
+                    intent.build_module_type = build_keys[k].type;
+                    intent.build_ring = 1;
+                    intent.build_slot = (uint8_t)st->module_count;
+                    set_notice("Building %s", build_keys[k].name);
+                    g.build_overlay = false;
+                }
+                break;
+            }
         }
         if (is_key_pressed(SAPP_KEYCODE_ESCAPE) || is_key_pressed(SAPP_KEYCODE_B)
             || is_key_pressed(SAPP_KEYCODE_TAB))
@@ -285,29 +310,28 @@ input_intent_t sample_input_intent(void) {
         if (LOCAL_PLAYER.docked) {
             if (g.build_overlay) {
                 g.build_overlay = false;
-            } else if (!LOCAL_PLAYER.ship.has_scaffold_kit) {
-                /* Buy scaffold kit */
-                const station_t *st = current_station_ptr();
-                if (st && station_has_module(st, MODULE_BLUEPRINT_DESK)) {
-                    if (LOCAL_PLAYER.ship.credits >= OUTPOST_CREDIT_COST) {
-                        intent.buy_scaffold_kit = true;
-                        set_notice("Scaffold kit purchased. Undock and press B to deploy.");
-                    } else {
-                        set_notice("Need %d cr for scaffold kit.", (int)OUTPOST_CREDIT_COST);
-                    }
-                } else {
-                    set_notice("No blueprint desk here.");
-                }
+            } else if (LOCAL_PLAYER.current_station >= 3) {
+                /* Player outpost: open build overlay */
+                g.build_overlay = true;
+                g.build_ring = 1;
+                g.build_slot = -1;
             } else {
+                /* Starter station: show scaffold kit shop */
                 g.build_overlay = true;
                 g.build_ring = 1;
                 g.build_slot = -1;
             }
         } else {
             if (LOCAL_PLAYER.ship.has_scaffold_kit) {
-                g.placing_outpost = true;
+                if (LOCAL_PLAYER.in_dock_range && LOCAL_PLAYER.nearby_station >= 3) {
+                    /* Near own station: place module scaffold */
+                    intent.place_module = true;
+                } else {
+                    /* Open space: place outpost */
+                    g.placing_outpost = true;
+                }
             } else {
-                set_notice("Buy a scaffold kit at a station first.");
+                set_notice("Buy a scaffold kit at Kepler Yard or Helios Works.");
             }
         }
     }
@@ -338,7 +362,8 @@ void submit_input(const input_intent_t *intent, float dt) {
     bool has_action = intent->interact || intent->service_sell ||
         intent->service_repair || intent->upgrade_mining ||
         intent->upgrade_hold || intent->upgrade_tractor ||
-        intent->place_outpost || intent->buy_scaffold_kit ||
+        intent->place_outpost || intent->place_module ||
+        intent->buy_scaffold_kit ||
         intent->build_module || intent->buy_product || intent->hail ||
         intent->release_tow;
 
@@ -365,8 +390,10 @@ void submit_input(const input_intent_t *intent, float dt) {
             g.pending_net_action = 7;
         else if (intent->place_outpost)
             g.pending_net_action = 8;
-        else if (intent->buy_scaffold_kit)
-            g.pending_net_action = NET_ACTION_BUY_SCAFFOLD;
+        else if (intent->place_module)
+            g.pending_net_action = NET_ACTION_PLACE_MODULE;
+        else if (intent->buy_scaffold_kit && (uint8_t)intent->scaffold_kit_module < MODULE_COUNT)
+            g.pending_net_action = NET_ACTION_BUY_SCAFFOLD_TYPED + (uint8_t)intent->scaffold_kit_module;
         else if (intent->build_module && (uint8_t)intent->build_module_type < MODULE_COUNT)
             g.pending_net_action = NET_ACTION_BUILD_MODULE + (uint8_t)intent->build_module_type;
         else if (intent->buy_product && (uint8_t)intent->buy_commodity < COMMODITY_COUNT)

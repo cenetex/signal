@@ -77,15 +77,19 @@ enum {
     NET_ACTION_RELEASE_TOW    = 27,  /* toggle tractor / release towed fragments */
     NET_ACTION_RESET          = 28,  /* self-destruct — respawn at nearest station */
     NET_ACTION_BUY_PRODUCT    = 30, /* +commodity offset, range [30..30+COMMODITY_COUNT) */
+    NET_ACTION_PLACE_MODULE   = 49, /* place scaffold kit as module at own station */
+    NET_ACTION_BUY_SCAFFOLD_TYPED = 50, /* +module_type offset, range [50..50+MODULE_COUNT) */
 };
 
-/* Compile-time check: module and scaffold action ranges must not overlap */
+/* Compile-time check: action ranges must not overlap */
 _Static_assert(NET_ACTION_BUILD_MODULE + MODULE_COUNT <= NET_ACTION_BUY_SCAFFOLD,
                "BUILD_MODULE range overlaps BUY_SCAFFOLD");
 _Static_assert(NET_ACTION_BUY_SCAFFOLD < NET_ACTION_BUY_PRODUCT,
                "BUY_SCAFFOLD overlaps BUY_PRODUCT range");
-_Static_assert(NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT <= 256,
-               "BUY_PRODUCT range overflows uint8_t");
+_Static_assert(NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT <= NET_ACTION_PLACE_MODULE,
+               "BUY_PRODUCT range overlaps PLACE_MODULE");
+_Static_assert(NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT <= 256,
+               "BUY_SCAFFOLD_TYPED range overflows uint8_t");
 
 /* ------------------------------------------------------------------ */
 /* Record sizes                                                       */

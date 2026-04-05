@@ -462,11 +462,52 @@ void draw_station_services(const station_ui_state_t* ui) {
 
     /* ---- Build overlay (drawn on top of any tab) ---- */
     if (g.build_overlay && !ui->station->scaffold) {
+        bool is_starter = (LOCAL_PLAYER.current_station < 3);
         sdtx_color3b(255, 221, 119);
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-        sdtx_puts("BUILD");
+        sdtx_puts(is_starter ? "SCAFFOLD SHOP" : "BUILD");
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
         sdtx_color3b(145, 160, 188);
+        if (is_starter) {
+            sdtx_puts("[1-9] buy scaffold kit  [Esc] close");
+            float ly = cy + 32.0f;
+            static const module_type_t sellable[] = {
+                MODULE_DOCK, MODULE_SIGNAL_RELAY, MODULE_FURNACE,
+                MODULE_ORE_BUYER, MODULE_FRAME_PRESS, MODULE_FURNACE_CU,
+                MODULE_FURNACE_CR, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
+            };
+            int shown = 0;
+            int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
+            for (int si = 0; si < (int)(sizeof(sellable)/sizeof(sellable[0])); si++) {
+                if (!station_has_module(ui->station, sellable[si])) continue;
+                /* Price lookup — must match server scaffold_kit_price() */
+                int price = 200;
+                switch (sellable[si]) {
+                    case MODULE_DOCK: price = 100; break;
+                    case MODULE_SIGNAL_RELAY: price = 150; break;
+                    case MODULE_FURNACE: price = 200; break;
+                    case MODULE_ORE_BUYER: price = 150; break;
+                    case MODULE_FRAME_PRESS: price = 300; break;
+                    case MODULE_FURNACE_CU: price = 400; break;
+                    case MODULE_FURNACE_CR: price = 500; break;
+                    case MODULE_LASER_FAB: price = 400; break;
+                    case MODULE_TRACTOR_FAB: price = 400; break;
+                    default: break;
+                }
+                bool can_afford = credits >= price;
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
+                sdtx_printf("[%d] %-14s %dcr", shown + 1, module_type_name(sellable[si]), price);
+                ly += 14.0f;
+                shown++;
+            }
+            if (LOCAL_PLAYER.ship.has_scaffold_kit) {
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly + 8.0f));
+                sdtx_color3b(255, 221, 119);
+                sdtx_printf("Carrying: %s scaffold", module_type_name((module_type_t)LOCAL_PLAYER.ship.scaffold_kit_type));
+            }
+            return;
+        }
         sdtx_puts("[W/S] ring  [A/D] port  [1-8] module  [Enter] ring  [Esc] close");
         float ly = cy + 32.0f;
         /* Ring/slot selection */

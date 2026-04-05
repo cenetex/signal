@@ -84,7 +84,9 @@ typedef struct {
     bool upgrade_hold;
     bool upgrade_tractor;
     bool place_outpost;
+    bool place_module;          /* attach scaffold kit as module at own station */
     bool buy_scaffold_kit;
+    module_type_t scaffold_kit_module; /* what module type the kit builds */
     bool build_module;
     module_type_t build_module_type;
     uint8_t build_ring;       /* target ring (1 or 2) */
