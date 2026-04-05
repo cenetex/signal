@@ -276,11 +276,11 @@ static void onboarding_per_frame(void) {
 static void episode_per_frame(void) {
     if (episode_is_active(&g.episode)) return;
 
-    /* Ep 3: Scaffold — bought first scaffold kit */
-    if (!g.episode.watched[3] && g.onboarding.got_scaffold)
+    /* Ep 3: Scaffold — currently holding a scaffold kit */
+    if (!g.episode.watched[3] && LOCAL_PLAYER.ship.has_scaffold_kit)
         episode_trigger(&g.episode, 3);
 
-    /* Ep 4: Naming — placed first outpost */
+    /* Ep 4: Naming — placed an outpost this life */
     if (!g.episode.watched[4] && g.onboarding.placed_outpost)
         episode_trigger(&g.episode, 4);
 
