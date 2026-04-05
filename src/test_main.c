@@ -686,10 +686,10 @@ TEST(test_bug10_damage_event_has_amount) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
+    w.players[0].ship.stat_ore_mined = 1.0f; /* prevent 94% hull first-launch */
     /* Place ship near a ring 1 module and moving fast into it.
-     * Ring 1 modules orbit at 140.0f radius; target the signal relay (slot 0)
-     * which at rotation=0 is at angle=0, so position is station.x + 140. */
-    vec2 mod_pos = module_world_pos_ring(&w.stations[0], 1, 0);
+     * Target signal relay at slot 1 (slot 0 is dock — no collision). */
+    vec2 mod_pos = module_world_pos_ring(&w.stations[0], 1, 1);
     w.players[0].ship.pos = v2(mod_pos.x + 60.0f, mod_pos.y);
     w.players[0].ship.vel = v2(-2000.0f, 0.0f);
     /* Damage happens on first collision tick — check events immediately */
@@ -1730,8 +1730,8 @@ TEST(test_scenario_emergency_recovery) {
     w.players[0].ship.hull = 1.0f;
 
     /* Give high velocity towards a ring 1 module to trigger collision damage.
-     * Signal relay is at ring 1, slot 0. */
-    vec2 mod = module_world_pos_ring(&w.stations[0], 1, 0);
+     * Signal relay is at ring 1, slot 1 (slot 0 is dock — no collision). */
+    vec2 mod = module_world_pos_ring(&w.stations[0], 1, 1);
     w.players[0].ship.pos = v2(mod.x + 60.0f, mod.y);
     w.players[0].ship.vel = v2(-2000.0f, 0.0f);
 

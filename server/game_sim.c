@@ -2114,10 +2114,11 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
     if (st->radius > 0.0f) {
         resolve_ship_circle(w, sp, st->pos, st->radius + 4.0f);
     }
-    /* Module circles — all modules are solid, no special dock behavior */
+    /* Module circles — dock modules have no collision (they're portals) */
     for (int i = 0; i < st->module_count; i++) {
         int ring = st->modules[i].ring;
         if (ring < 1 || ring > STATION_NUM_RINGS) continue;
+        if (st->modules[i].type == MODULE_DOCK) continue;  /* dock = passage */
         vec2 mod_pos = module_world_pos_ring(st, ring, st->modules[i].slot);
         resolve_ship_circle(w, sp, mod_pos, MODULE_COLLISION_RADIUS);
     }
@@ -2173,16 +2174,16 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
         if (!near_module) {
             for (int i = 0; i + 1 < count; i++) {
                 if (st->modules[cidx[i+1]].slot - st->modules[cidx[i]].slot != 1) continue;
-                /* Skip corridor on entry side of dock (dock is first module) */
+                /* Skip corridor segments that touch a dock — dock is a portal */
                 if (st->modules[cidx[i]].type == MODULE_DOCK) continue;
+                if (st->modules[cidx[i+1]].type == MODULE_DOCK) continue;
                 float a = module_angle_ring(st, ring, st->modules[cidx[i]].slot);
                 float b = module_angle_ring(st, ring, st->modules[cidx[i+1]].slot);
                 resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
             }
             if (count == slots) {
-                /* Skip wrap-around if last module is dock (entry gap) */
-                if (st->modules[cidx[count-1]].type == MODULE_DOCK) { /* skip */ }
-                else {
+                if (st->modules[cidx[count-1]].type != MODULE_DOCK
+                    && st->modules[cidx[0]].type != MODULE_DOCK) {
                     float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
                     float b = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
                     resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
