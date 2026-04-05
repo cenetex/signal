@@ -319,17 +319,8 @@ input_intent_t sample_input_intent(void) {
             g.placing_outpost = false; /* cancel old placement mode if active */
         }
     } else if (g.placing_outpost) {
-        /* Old outpost placement: B/Enter confirms, Esc cancels */
-        if (is_key_pressed(SAPP_KEYCODE_B) || is_key_pressed(SAPP_KEYCODE_ENTER) || is_key_pressed(SAPP_KEYCODE_KP_ENTER)) {
-            intent.place_outpost = true;
-            g.placing_outpost = false;
-            vec2 fwd = v2_from_angle(LOCAL_PLAYER.ship.angle);
-            g.nav_pip_active = true;
-            g.nav_pip_pos = v2_add(LOCAL_PLAYER.ship.pos, v2_scale(fwd, 150.0f));
-            g.nav_pip_is_blueprint = true;
-        } else if (is_key_pressed(SAPP_KEYCODE_ESCAPE) || is_key_pressed(SAPP_KEYCODE_Q)) {
-            g.placing_outpost = false;
-        }
+        /* Legacy — cancel if somehow entered */
+        g.placing_outpost = false;
     } else if (is_key_pressed(SAPP_KEYCODE_B)) {
         if (LOCAL_PLAYER.docked) {
             if (g.build_overlay) {
@@ -346,17 +337,8 @@ input_intent_t sample_input_intent(void) {
                 g.build_slot = -1;
             }
         } else {
-            if (LOCAL_PLAYER.ship.has_scaffold_kit) {
-                if (LOCAL_PLAYER.in_dock_range && LOCAL_PLAYER.nearby_station >= 3) {
-                    /* Near own station: place module scaffold */
-                    intent.place_module = true;
-                } else {
-                    /* Open space: place outpost */
-                    g.placing_outpost = true;
-                }
-            } else {
-                set_notice("Buy a scaffold kit at Kepler Yard or Helios Works.");
-            }
+            /* Undocked without towed scaffold — hint */
+            set_notice("Tow a scaffold here, then press B to place.");
         }
     }
     /* [ ] keys: prev/next track */
