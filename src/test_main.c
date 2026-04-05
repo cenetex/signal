@@ -4184,6 +4184,76 @@ TEST(test_station_geom_emitter_prospect) {
     ASSERT(geom.dock_count == 1);
 }
 
+/* ================================================================== */
+/* Scaffold entity tests (#277)                                       */
+/* ================================================================== */
+
+TEST(test_scaffold_spawn) {
+    world_t w = {0};
+    world_reset(&w);
+
+    /* Spawn a furnace scaffold near station 0 */
+    vec2 spawn_pos = v2_add(w.stations[0].pos, v2(100.0f, 0.0f));
+    int idx = spawn_scaffold(&w, MODULE_FURNACE, spawn_pos, 0);
+    ASSERT(idx >= 0);
+    ASSERT(idx < MAX_SCAFFOLDS);
+    ASSERT(w.scaffolds[idx].active);
+    ASSERT_EQ_INT(w.scaffolds[idx].module_type, MODULE_FURNACE);
+    ASSERT_EQ_INT(w.scaffolds[idx].state, SCAFFOLD_LOOSE);
+    ASSERT_EQ_INT(w.scaffolds[idx].owner, 0);
+    ASSERT_EQ_INT(w.scaffolds[idx].placed_station, -1);
+    ASSERT_EQ_INT(w.scaffolds[idx].towed_by, -1);
+    ASSERT(w.scaffolds[idx].radius > 0.0f);
+
+    /* Spawn fills slots until full */
+    for (int i = 1; i < MAX_SCAFFOLDS; i++) {
+        int s = spawn_scaffold(&w, MODULE_DOCK, spawn_pos, 0);
+        ASSERT(s >= 0);
+    }
+    /* No free slots left */
+    int overflow = spawn_scaffold(&w, MODULE_DOCK, spawn_pos, 0);
+    ASSERT_EQ_INT(overflow, -1);
+}
+
+TEST(test_scaffold_physics_loose) {
+    world_t w = {0};
+    world_reset(&w);
+
+    /* Spawn scaffold with initial velocity */
+    vec2 spawn_pos = v2_add(w.stations[0].pos, v2(200.0f, 0.0f));
+    int idx = spawn_scaffold(&w, MODULE_FRAME_PRESS, spawn_pos, 0);
+    ASSERT(idx >= 0);
+    w.scaffolds[idx].vel = v2(50.0f, 0.0f);
+
+    vec2 start_pos = w.scaffolds[idx].pos;
+
+    /* Run a few sim steps */
+    for (int i = 0; i < 120; i++) {
+        world_sim_step(&w, SIM_DT);
+    }
+
+    /* Scaffold should have moved from its starting position */
+    float dist = v2_dist_sq(w.scaffolds[idx].pos, start_pos);
+    ASSERT(dist > 1.0f);
+
+    /* Age should have advanced */
+    ASSERT(w.scaffolds[idx].age > 0.5f);
+
+    /* Rotation should have advanced */
+    ASSERT(w.scaffolds[idx].rotation != 0.0f);
+}
+
+TEST(test_scaffold_towed_scaffold_init) {
+    world_t w = {0};
+    world_reset(&w);
+
+    /* Player ship should start with no towed scaffold */
+    server_player_t sp = {0};
+    sp.connected = true;
+    player_init_ship(&sp, &w);
+    ASSERT_EQ_INT(sp.ship.towed_scaffold, -1);
+}
+
 int main(void) {
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -4456,6 +4526,11 @@ int main(void) {
 
     printf("\nStation geometry emitter:\n");
     RUN(test_station_geom_emitter_prospect);
+
+    printf("\nScaffold entity (#277):\n");
+    RUN(test_scaffold_spawn);
+    RUN(test_scaffold_physics_loose);
+    RUN(test_scaffold_towed_scaffold_init);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;

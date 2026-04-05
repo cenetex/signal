@@ -136,6 +136,7 @@ typedef struct {
     station_t stations[MAX_STATIONS];
     asteroid_t asteroids[MAX_ASTEROIDS];
     npc_ship_t npc_ships[MAX_NPC_SHIPS];
+    scaffold_t scaffolds[MAX_SCAFFOLDS];
     server_player_t players[MAX_PLAYERS];
     uint32_t rng;
     float time;
@@ -168,6 +169,7 @@ void begin_module_construction(world_t *w, station_t *st, int station_idx, modul
 void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int ring, int slot);
 void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *ship);
 int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos);
+int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner);
 bool world_save(const world_t *w, const char *path);
 bool world_load(world_t *w, const char *path);
 bool player_save(const server_player_t *sp, const char *dir, int slot);

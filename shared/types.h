@@ -11,6 +11,7 @@ enum {
     MAX_STARS = 120,
     MAX_STATIONS = 8,
     MAX_NPC_SHIPS = 16,
+    MAX_SCAFFOLDS = 16,
     AUDIO_VOICE_COUNT = 24,
     AUDIO_MIX_FRAMES = 512,
 };
@@ -83,6 +84,7 @@ typedef struct {
     /* Towed physical fragments (indices into asteroid array, -1 = empty) */
     int16_t towed_fragments[10];  /* max 10 with upgrades: 2 + 4*2 */
     uint8_t towed_count;
+    int16_t towed_scaffold;       /* scaffold index being towed, -1 = none */
     bool tractor_active;          /* R toggles — when off, no auto-collection */
     /* Run stats (reset on death/respawn) */
     float stat_ore_mined;
@@ -230,6 +232,33 @@ static inline bool station_provides_signal(const station_t *st) {
 static inline bool station_collides(const station_t *st) {
     return st->radius > 0.0f;
 }
+
+/* ------------------------------------------------------------------ */
+/* Scaffolds — physical construction objects                          */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    SCAFFOLD_LOOSE,     /* floating near shipyard after purchase */
+    SCAFFOLD_TOWING,    /* attached to player/NPC tractor beam */
+    SCAFFOLD_PLACED,    /* snapped to ring slot, awaiting supply */
+} scaffold_state_t;
+
+typedef struct {
+    bool active;
+    module_type_t module_type;  /* what module this scaffold becomes */
+    scaffold_state_t state;
+    int owner;                  /* player ID who purchased, -1 = NPC-produced */
+    vec2 pos;
+    vec2 vel;
+    float radius;               /* collision radius (~30-40) */
+    float rotation;             /* visual spin */
+    float spin;                 /* rotation speed */
+    float age;                  /* time since spawned */
+    int placed_station;         /* station index when PLACED, -1 otherwise */
+    int placed_ring;
+    int placed_slot;
+    int towed_by;               /* player index towing this, -1 = none */
+} scaffold_t;
 
 typedef enum {
     ASTEROID_TIER_XXL,
