@@ -962,36 +962,18 @@ static commodity_t furnace_ore_type(module_type_t mt) {
     }
 }
 
-/* Check if a furnace at (ring, slot) has an adjacent hopper (slot ±1, wrapping). */
-static bool furnace_has_adjacent_hopper(const station_t *st, int ring, int slot) {
-    int slots = STATION_RING_SLOTS[ring];
-    if (slots <= 0) return false;
-    int prev_slot = (slot - 1 + slots) % slots;
-    int next_slot = (slot + 1) % slots;
-    for (int m = 0; m < st->module_count; m++) {
-        if (st->modules[m].type != MODULE_ORE_BUYER) continue;
-        if (st->modules[m].scaffold) continue;
-        if (st->modules[m].ring != ring) continue;
-        if (st->modules[m].slot == prev_slot || st->modules[m].slot == next_slot)
-            return true;
-    }
-    return false;
-}
-
-/* Per-furnace smelting with hopper adjacency.
- * Each furnace only smelts if an adjacent hopper exists on the same ring.
- * Smelting rate is split across active furnaces to avoid instant consumption. */
+/* Per-furnace smelting: any furnace smelts ore from station inventory into ingots.
+ * Rate split across active furnaces to avoid instant consumption. */
 static void sim_step_refinery_production(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
 
-        /* Count active furnaces (those with adjacent hoppers and ore to smelt) */
+        /* Count active furnaces with ore to smelt */
         int active = 0;
         for (int m = 0; m < st->module_count; m++) {
             module_type_t mt = st->modules[m].type;
             if (mt != MODULE_FURNACE && mt != MODULE_FURNACE_CU && mt != MODULE_FURNACE_CR) continue;
             if (st->modules[m].scaffold) continue;
-            if (!furnace_has_adjacent_hopper(st, st->modules[m].ring, st->modules[m].slot)) continue;
             commodity_t ore = furnace_ore_type(mt);
             if (ore < 0 || st->inventory[ore] <= 0.01f) continue;
             active++;
@@ -1005,7 +987,6 @@ static void sim_step_refinery_production(world_t *w, float dt) {
             module_type_t mt = st->modules[m].type;
             if (mt != MODULE_FURNACE && mt != MODULE_FURNACE_CU && mt != MODULE_FURNACE_CR) continue;
             if (st->modules[m].scaffold) continue;
-            if (!furnace_has_adjacent_hopper(st, st->modules[m].ring, st->modules[m].slot)) continue;
             commodity_t ore = furnace_ore_type(mt);
             if (ore < 0 || st->inventory[ore] <= 0.01f) continue;
             commodity_t ingot = commodity_refined_form(ore);
@@ -2508,9 +2489,9 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
 /* Deposit towed fragments: when the SHIP is near an ore buyer module,
  * all towed fragments get consumed (ore → station, credits → player).
  * Fragments don't need to individually reach the hopper — the ship does. */
-#define HOPPER_PULL_RANGE 300.0f   /* hopper attracts fragments from this far */
-#define HOPPER_PULL_ACCEL 500.0f   /* pull strength — strong enough to overcome drift */
-#define HOPPER_CONSUME_RANGE 50.0f /* fragment consumed when this close to hopper */
+#define HOPPER_PULL_RANGE 300.0f    /* furnace attracts fragments from this far */
+#define HOPPER_PULL_ACCEL 500.0f    /* pull strength */
+#define FURNACE_SMELT_RANGE 250.0f  /* fragment counts as "held" by furnace within this range */
 
 static void release_towed_fragments(server_player_t *sp);
 
@@ -3170,39 +3151,31 @@ static void step_asteroid_gravity(world_t *w, float dt) {
     }
 }
 
-/* Furnace smelting: furnaces tractor S-tier fragments. When a fragment is
- * held by 2+ tractor sources (furnaces and/or players), it smelts.
- * This lets a solo player hold a rock while a furnace grabs it too. */
+/* Furnace smelting: each furnace straddles two rings. It tractors S-tier
+ * fragments and smelts them when they enter the inter-ring gap — the space
+ * between the furnace's ring and the next inner ring (or core). */
 static void step_furnace_smelting(world_t *w, float dt) {
     float pull_range = HOPPER_PULL_RANGE;
     float pull_sq = pull_range * pull_range;
-    float smelt_range = HOPPER_CONSUME_RANGE;
-    float smelt_sq = smelt_range * smelt_range;
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier != ASTEROID_TIER_S) continue;
 
-        int tractor_count = 0;  /* how many sources are tractoring this fragment */
-        int smelt_station = -1; /* station that owns the furnace (for inventory) */
+        int smelt_station = -1;
+        bool smelted = false;
 
-        /* Count furnace tractor beams on this fragment */
-        for (int s = 0; s < MAX_STATIONS; s++) {
+        for (int s = 0; s < MAX_STATIONS && !smelted; s++) {
             station_t *st = &w->stations[s];
             if (st->scaffold) continue;
-            for (int m = 0; m < st->module_count; m++) {
+            for (int m = 0; m < st->module_count && !smelted; m++) {
                 if (st->modules[m].scaffold) continue;
                 if (st->modules[m].type != MODULE_FURNACE &&
                     st->modules[m].type != MODULE_FURNACE_CU &&
                     st->modules[m].type != MODULE_FURNACE_CR) continue;
-                /* Check if this furnace can smelt this ore type */
-                bool can_smelt = false;
-                if (st->modules[m].type == MODULE_FURNACE && a->commodity == COMMODITY_FERRITE_ORE) can_smelt = true;
-                if (st->modules[m].type == MODULE_FURNACE_CU && a->commodity == COMMODITY_CUPRITE_ORE) can_smelt = true;
-                if (st->modules[m].type == MODULE_FURNACE_CR && a->commodity == COMMODITY_CRYSTAL_ORE) can_smelt = true;
-                if (!can_smelt) continue;
 
-                vec2 mp = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
+                int ring = st->modules[m].ring;
+                vec2 mp = module_world_pos_ring(st, ring, st->modules[m].slot);
                 vec2 to_mod = v2_sub(mp, a->pos);
                 float d_sq = v2_len_sq(to_mod);
                 if (d_sq > pull_sq) continue;
@@ -3218,27 +3191,45 @@ static void step_furnace_smelting(world_t *w, float dt) {
                     if (spd > 120.0f) a->vel = v2_scale(a->vel, 120.0f / spd);
                 }
 
-                if (d_sq <= smelt_sq) {
-                    tractor_count++;
-                    smelt_station = s;
+                /* Smelt zone: narrow beam corridor from furnace to target module.
+                 * Fragment must be within the beam (close to the radial line
+                 * from furnace outward) AND between the two rings. */
+                float inner_r = STATION_RING_RADIUS[ring];
+                float outer_r = (ring < STATION_NUM_RINGS) ? STATION_RING_RADIUS[ring + 1] : inner_r + 180.0f;
+                float frag_dist = sqrtf(v2_dist_sq(a->pos, st->pos));
+                if (frag_dist > inner_r && frag_dist < outer_r) {
+                    /* Angular check: fragment must be near the furnace's radial line */
+                    vec2 frag_delta = v2_sub(a->pos, st->pos);
+                    float frag_angle = atan2f(frag_delta.y, frag_delta.x);
+                    float furnace_angle = module_angle_ring(st, ring, st->modules[m].slot);
+                    float ang_diff = frag_angle - furnace_angle;
+                    while (ang_diff > PI_F) ang_diff -= TWO_PI_F;
+                    while (ang_diff < -PI_F) ang_diff += TWO_PI_F;
+                    float beam_hw = 0.15f; /* ~8.5 degrees half-width */
+                    if (fabsf(ang_diff) < beam_hw) {
+                        smelt_station = s;
+                        smelted = true;
+                    }
                 }
             }
         }
 
-        /* Count player tractor beams on this fragment */
-        for (int p = 0; p < MAX_PLAYERS; p++) {
-            server_player_t *sp = &w->players[p];
-            if (!sp->connected || sp->docked) continue;
-            if (!sp->ship.tractor_active) continue;
-            float tr = ship_tractor_range(&sp->ship);
-            float d_sq = v2_dist_sq(sp->ship.pos, a->pos);
-            if (d_sq <= tr * tr) {
-                tractor_count++;
+        /* If not in any smelt beam this tick, decay progress */
+        if (!smelted) {
+            if (a->smelt_progress > 0.0f) {
+                a->smelt_progress -= dt * 0.5f;
+                if (a->smelt_progress < 0.0f) a->smelt_progress = 0.0f;
             }
+            continue;
         }
 
-        /* Smelt: 2+ tractor sources on this fragment */
-        if (tractor_count >= 2 && smelt_station >= 0) {
+        /* Accumulate smelt progress (~2 seconds to fully smelt) */
+        a->smelt_progress += dt * 0.5f;
+
+        /* Hold fragment in place while smelting — dampen velocity */
+        a->vel = v2_scale(a->vel, 1.0f / (1.0f + 10.0f * dt));
+
+        if (a->smelt_progress >= 1.0f && smelt_station >= 0) {
             station_t *st = &w->stations[smelt_station];
             float ore_value = a->ore * station_buy_price(st, a->commodity);
 
@@ -3673,13 +3664,12 @@ void world_reset(world_t *w) {
     w->stations[0].base_price[COMMODITY_CUPRITE_INGOT] = 32.0f;
     w->stations[0].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
     w->stations[0].signal_range = 18000.0f;
-    /* Ring 1 (service): dock + relay (center) + repair */
+    /* Ring 1: dock + relay + furnace (furnace beams to Ring 2 ore silo) */
     add_module_at(&w->stations[0], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 1);
-    /* Slot 2 empty — gap for ship entry */
-    /* Ring 2 (industrial): ore hopper + furnace */
-    add_module_at(&w->stations[0], MODULE_ORE_BUYER, 2, 1);
-    add_module_at(&w->stations[0], MODULE_FURNACE, 2, 2);
+    add_module_at(&w->stations[0], MODULE_FURNACE, 1, 2);
+    /* Ring 2: ore silo directly across from furnace */
+    add_module_at(&w->stations[0], MODULE_ORE_SILO, 2, 3);
     w->stations[0].arm_count = 2;
     w->stations[0].arm_speed[0] = STATION_RING_SPEED;
     w->stations[0].ring_offset[0] = 0.0f;
@@ -3729,21 +3719,18 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
     w->stations[2].base_price[COMMODITY_LASER_MODULE] = 28.0f;
     w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
-    /* Ring 1 (service): dock + relay (center) + repair */
+    /* Ring 1: dock + relay + furnace (smelts in Ring 1-2 gap) */
     add_module_at(&w->stations[2], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
-    /* Slot 2 empty — gap for ship entry */
-    /* Ring 2 (industrial): production + services */
-    add_module_at(&w->stations[2], MODULE_ORE_BUYER, 2, 0);
-    add_module_at(&w->stations[2], MODULE_FURNACE, 2, 1);
-    add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 2);
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 3);
-    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 2, 4);
-    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 2, 5);
-    /* Ring 3: heavy industry — hopper feeds adjacent furnaces */
+    add_module_at(&w->stations[2], MODULE_FURNACE, 1, 2);
+    /* Ring 2: services */
+    add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 1);
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 2);
+    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 2, 3);
+    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 2, 4);
+    /* Ring 3: copper + crystal furnaces (smelt in Ring 2-3 gap) */
     add_module_at(&w->stations[2], MODULE_FURNACE_CU, 3, 1);
-    add_module_at(&w->stations[2], MODULE_ORE_BUYER, 3, 2);
-    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 3, 3);
+    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 3, 2);
     add_module_at(&w->stations[2], MODULE_FRAME_PRESS, 3, 4);
     add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 5);
     w->stations[2].arm_count = 3;

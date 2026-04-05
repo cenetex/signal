@@ -252,6 +252,7 @@ typedef struct {
     float age;
     int8_t last_towed_by;      /* player ID who last towed this, -1 = none */
     int8_t last_fractured_by;  /* player ID who fractured the parent, -1 = none */
+    float smelt_progress;      /* 0.0-1.0: how far through smelting (in furnace beam) */
     bool net_dirty;   /* needs network sync (spawn, fracture, HP change, death) */
 } asteroid_t;
 

@@ -591,6 +591,14 @@ static void render_world(void) {
         float body_r, body_g, body_b;
         asteroid_body_color(a->tier, a->commodity, progress_ratio, &body_r, &body_g, &body_b);
 
+        /* Smelting glow: fragment turns bright orange-white as it cooks */
+        if (a->smelt_progress > 0.01f) {
+            float sp = a->smelt_progress;
+            body_r = body_r + (1.0f - body_r) * sp * 0.8f;
+            body_g = body_g + (0.6f - body_g) * sp * 0.6f;
+            body_b = body_b + (0.2f - body_b) * sp * 0.3f;
+        }
+
         int base_segs = 18;
         switch (a->tier) {
             case ASTEROID_TIER_XXL: base_segs = 28; break;
