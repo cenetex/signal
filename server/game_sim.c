@@ -17,6 +17,17 @@
 #endif
 
 
+/* Centralized credit operations — all spending/earning goes through these */
+static void spend_credits(ship_t *s, float amount) {
+    s->credits -= amount;
+    s->stat_credits_spent += amount;
+}
+
+static void earn_credits(ship_t *s, float amount) {
+    s->credits += amount;
+    s->stat_credits_earned += amount;
+}
+
 static void emit_event(world_t *w, sim_event_t ev) {
     if (w->events.count < SIM_MAX_EVENTS) {
         w->events.events[w->events.count++] = ev;
@@ -1787,8 +1798,8 @@ static void generate_npc_distress_contracts(world_t *w) {
 static bool try_spend_credits(ship_t *s, float amount) {
     if (amount <= 0.0f) return true;
     if (s->credits + 0.01f < amount) return false;
-    s->credits = fmaxf(0.0f, s->credits - amount);
-    s->stat_credits_spent += amount;
+    spend_credits(s, amount);
+    if (s->credits < 0.0f) s->credits = 0.0f;
     return true;
 }
 
@@ -2081,8 +2092,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     }
 
     if (payout > 0.01f) {
-        sp->ship.credits += payout;
-        sp->ship.stat_credits_earned += payout;
+        earn_credits(&sp->ship, payout);
         SIM_LOG("[sim] player %d sold cargo for %.0f cr\n", sp->id, payout);
         emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
     }
@@ -2759,8 +2769,7 @@ static void handle_hail(world_t *w, server_player_t *sp) {
         }
     }
     if (total_collected > 0.01f) {
-        sp->ship.credits += total_collected;
-        sp->ship.stat_credits_earned += total_collected;
+        earn_credits(&sp->ship, total_collected);
         SIM_LOG("[sim] player %d hail collected %.0f credits\n", sp->id, total_collected);
     }
 }
@@ -2774,7 +2783,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             && station_sells_scaffold(st, kit_type)) {
             float price = scaffold_kit_price(kit_type);
             if (sp->ship.credits >= price) {
-                sp->ship.credits -= price;
+                spend_credits(&sp->ship, price);
                 sp->ship.has_scaffold_kit = true;
                 sp->ship.scaffold_kit_type = kit_type;
                 SIM_LOG("[sim] player %d bought %s scaffold kit\n", sp->id,
@@ -2839,7 +2848,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                 && !station_has_ring(docked_st, target_ring)
                 && docked_st->module_count < MAX_MODULES_PER_STATION
                 && (target_ring == 1 || ring_has_dock(docked_st, target_ring - 1))) {
-                sp->ship.credits -= cost;
+                spend_credits(&sp->ship, cost);
                 begin_module_construction_at(w, docked_st, sp->current_station, MODULE_RING, target_ring, 0xFF);
             }
         } else {
@@ -2876,7 +2885,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                 && docked_st->module_count < MAX_MODULES_PER_STATION
                 && target_slot >= 0 && target_slot < RING_PORT_COUNT[target_ring]
                 && slot_free) {
-                sp->ship.credits -= cost;
+                spend_credits(&sp->ship, cost);
                 begin_module_construction_at(w, docked_st, sp->current_station,
                                             intent->build_module_type, target_ring, target_slot);
             }
@@ -2905,7 +2914,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             float amount = fminf(fminf(available, space), afford);
             float total_cost = amount * price_per;
             if (amount > 0.01f) {
-                sp->ship.credits -= total_cost;
+                spend_credits(&sp->ship, total_cost);
                 sp->ship.cargo[c] += amount;
                 docked_st->inventory[c] -= amount;
                 SIM_LOG("[sim] player %d bought %.0f of commodity %d for %.0f cr\n",
@@ -3032,8 +3041,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                     float amount = fminf(fminf(available, 1.0f), afford); /* buy 1 at a time */
                     if (amount > FLOAT_EPSILON) {
                         float cost = amount * price_per;
-                        sp->ship.credits -= cost;
-                        sp->ship.stat_credits_spent += cost;
+                        spend_credits(&sp->ship, cost);
                         sp->ship.cargo[c] += amount;
                         nearby_st->inventory[c] -= amount;
                         emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
@@ -3348,17 +3356,14 @@ static void step_furnace_smelting(world_t *w, float dt) {
             if (ore_value > 0.0f) {
                 if (tower >= 0 && fracturer >= 0 && tower != fracturer) {
                     float share = ore_value * 0.75f;
-                    w->players[tower].ship.credits += share;
-                    w->players[tower].ship.stat_credits_earned += share;
+                    earn_credits(&w->players[tower].ship, share);
                     emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = tower});
-                    w->players[fracturer].ship.credits += share;
-                    w->players[fracturer].ship.stat_credits_earned += share;
+                    earn_credits(&w->players[fracturer].ship, share);
                     emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = fracturer});
                 } else {
                     int best_p = (tower >= 0) ? tower : fracturer;
                     if (best_p >= 0) {
-                        w->players[best_p].ship.credits += ore_value;
-                        w->players[best_p].ship.stat_credits_earned += ore_value;
+                        earn_credits(&w->players[best_p].ship, ore_value);
                         emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = best_p});
                     }
                 }
