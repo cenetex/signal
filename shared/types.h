@@ -587,4 +587,7 @@ typedef struct {
     int8_t claimed_by;      /* player/NPC id, -1 = open */
 } contract_t;
 
+/* Unified station collision/render geometry — must come after all station types */
+#include "station_geom.h"
+
 #endif

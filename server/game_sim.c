@@ -9,8 +9,9 @@
 #include "rng.h"
 #include <stdlib.h>
 
-#define MODULE_COLLISION_RADIUS 34.0f  /* matches 1.4x scaled module half-size */
-#define CORRIDOR_HW 10.0f             /* must match visual hw in draw_corridor_arc */
+/* Use unified constants from station_geom.h */
+#define MODULE_COLLISION_RADIUS STATION_MODULE_COL_RADIUS
+#define CORRIDOR_HW             STATION_CORRIDOR_HW
 
 #ifdef GAME_SIM_VERBOSE
 #define SIM_LOG(...) printf(__VA_ARGS__)
@@ -2106,64 +2107,38 @@ static void step_ship_motion(ship_t *s, float dt, const world_t *w, float cached
     }
 }
 
-/* Resolve ship vs station: core + module circles + corridor annular sectors. */
+/* Resolve ship vs station using shared geometry emitter. */
 static void resolve_module_collisions(world_t *w, server_player_t *sp, const station_t *st) {
+    station_geom_t geom;
+    station_build_geom(st, &geom);
     float ship_r = ship_hull_def(&sp->ship)->ship_radius;
-    /* Station core collision (same as NPCs get) */
-    if (st->radius > 0.0f) {
-        resolve_ship_circle(w, sp, st->pos, st->radius + 4.0f);
-    }
-    /* Module circles — dock modules have no collision (they're portals) */
-    for (int i = 0; i < st->module_count; i++) {
-        int ring = st->modules[i].ring;
-        if (ring < 1 || ring > STATION_NUM_RINGS) continue;
-        if (st->modules[i].type == MODULE_DOCK) continue;  /* dock = passage */
-        vec2 mod_pos = module_world_pos_ring(st, ring, st->modules[i].slot);
-        resolve_ship_circle(w, sp, mod_pos, MODULE_COLLISION_RADIUS);
-    }
 
-    /* Precompute module angular positions for corridor junction suppression */
-    float mod_angles[MAX_MODULES_PER_STATION];
-    float mod_angular_size[MAX_MODULES_PER_STATION];
-    for (int i = 0; i < st->module_count; i++) {
-        int ring = st->modules[i].ring;
-        if (ring < 1 || ring > STATION_NUM_RINGS) { mod_angles[i] = 0; mod_angular_size[i] = 0; continue; }
-        vec2 mp = module_world_pos_ring(st, ring, st->modules[i].slot);
-        vec2 d = v2_sub(mp, st->pos);
-        mod_angles[i] = atan2f(d.y, d.x);
-        float ring_r = STATION_RING_RADIUS[ring];
-        mod_angular_size[i] = (ring_r > 1.0f) ? (MODULE_COLLISION_RADIUS + ship_r) / ring_r : 0.0f;
-    }
+    /* Core */
+    if (geom.has_core)
+        resolve_ship_circle(w, sp, geom.core.center, geom.core.radius);
 
-    /* Corridor annular sectors — same enumeration as rendering.
-     * Skip corridors adjacent to dock modules — docks create entry gaps.
-     * Also skip corridor test when ship is within a module's angular footprint
-     * (module circle takes priority, prevents junction jitter). */
+    /* Module circles */
+    for (int i = 0; i < geom.circle_count; i++)
+        resolve_ship_circle(w, sp, geom.circles[i].center, geom.circles[i].radius);
+
+    /* Near-module suppression: if ship is angularly close to any module
+     * on a corridor's ring, skip corridor tests (module circle takes priority,
+     * prevents junction jitter). */
     float ship_dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
     vec2 ship_delta = v2_sub(sp->ship.pos, st->pos);
     float ship_ang = atan2f(ship_delta.y, ship_delta.x);
 
-    for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
-        int slots = STATION_RING_SLOTS[ring];
-        int cidx[MAX_MODULES_PER_STATION];
-        int count = 0;
-        for (int i = 0; i < st->module_count; i++)
-            if (st->modules[i].ring == ring) cidx[count++] = i;
-        if (count < 2) continue;
-        for (int i = 1; i < count; i++) {
-            int tmp = cidx[i]; int j = i - 1;
-            while (j >= 0 && st->modules[cidx[j]].slot > st->modules[tmp].slot)
-                { cidx[j+1] = cidx[j]; j--; }
-            cidx[j+1] = tmp;
-        }
+    for (int ci = 0; ci < geom.corridor_count; ci++) {
+        float ring_r = geom.corridors[ci].ring_radius;
 
-        /* Check if ship is near any module on this ring (suppress corridor) */
+        /* Check if ship is near any module on this corridor's ring */
         bool near_module = false;
-        float ring_r = STATION_RING_RADIUS[ring];
         if (fabsf(ship_dist - ring_r) < CORRIDOR_HW + ship_r + MODULE_COLLISION_RADIUS) {
-            for (int ci = 0; ci < count; ci++) {
-                float ang_diff = wrap_angle(ship_ang - mod_angles[cidx[ci]]);
-                if (fabsf(ang_diff) < mod_angular_size[cidx[ci]]) {
+            for (int mi = 0; mi < geom.circle_count; mi++) {
+                if (geom.circles[mi].ring != geom.corridors[ci].ring) continue;
+                float ang_diff = wrap_angle(ship_ang - geom.circles[mi].angle);
+                float angular_size = (ring_r > 1.0f) ? (MODULE_COLLISION_RADIUS + ship_r) / ring_r : 0.0f;
+                if (fabsf(ang_diff) < angular_size) {
                     near_module = true;
                     break;
                 }
@@ -2171,22 +2146,8 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
         }
 
         if (!near_module) {
-            for (int i = 0; i + 1 < count; i++) {
-                if (st->modules[cidx[i+1]].slot - st->modules[cidx[i]].slot != 1) continue;
-                /* Dock entry gap: skip corridor where dock is first (open side) */
-                if (st->modules[cidx[i]].type == MODULE_DOCK) continue;
-                float a = module_angle_ring(st, ring, st->modules[cidx[i]].slot);
-                float b = module_angle_ring(st, ring, st->modules[cidx[i+1]].slot);
-                resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
-            }
-            if (count == slots) {
-                /* Wrap: last→first. Skip if last is dock (dock is "first" of this pair) */
-                if (st->modules[cidx[count-1]].type != MODULE_DOCK) {
-                    float a = module_angle_ring(st, ring, st->modules[cidx[count-1]].slot);
-                    float b = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
-                    resolve_ship_annular_sector(w, sp, st->pos, ring_r, a, b);
-                }
-            }
+            resolve_ship_annular_sector(w, sp, geom.center,
+                ring_r, geom.corridors[ci].angle_a, geom.corridors[ci].angle_b);
         }
     }
 }
