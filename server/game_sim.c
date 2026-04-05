@@ -3722,8 +3722,7 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[0], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 1);
     add_module_at(&w->stations[0], MODULE_FURNACE, 1, 2);
-    /* Ring 2: ore silo directly across from furnace */
-    add_module_at(&w->stations[0], MODULE_DOCK, 2, 0);
+    /* Ring 2: ore silo (incomplete ring — gaps are natural) */
     add_module_at(&w->stations[0], MODULE_ORE_SILO, 2, 3);
     w->stations[0].arm_count = 2;
     w->stations[0].arm_speed[0] = STATION_RING_SPEED;
