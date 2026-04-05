@@ -635,6 +635,17 @@ int main(void) {
                         station_econ_dirty = true;
                         contracts_dirty = true;
                     }
+                    if (ev->type == SIM_EVENT_DEATH) {
+                        int pid = ev->player_id;
+                        if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected && world.players[pid].conn) {
+                            uint8_t msg[] = { NET_MSG_DEATH, (uint8_t)pid };
+                            ws_send(world.players[pid].conn, msg, 2);
+                            /* Also send updated ship state (hull restored, docked) */
+                            uint8_t buf[PLAYER_SHIP_SIZE + 4];
+                            int len = serialize_player_ship(buf, (uint8_t)pid, &world.players[pid]);
+                            ws_send(world.players[pid].conn, buf, (size_t)len);
+                        }
+                    }
                     if (ev->type == SIM_EVENT_CONTRACT_COMPLETE) {
                         station_econ_dirty = true;
                         contracts_dirty = true;

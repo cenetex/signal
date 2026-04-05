@@ -41,6 +41,7 @@ enum {
     NET_MSG_WORLD_PLAYERS   = 0x18,
     NET_MSG_CONTRACTS       = 0x19,
     NET_MSG_SESSION         = 0x20, /* client -> server: [type:1][token:8] */
+    NET_MSG_DEATH           = 0x21, /* server -> client: [type:1][player_id:1] */
 };
 
 /* ------------------------------------------------------------------ */

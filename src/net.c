@@ -365,6 +365,12 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_DEATH:
+        if (len >= 2 && net_state.callbacks.on_death) {
+            net_state.callbacks.on_death(data[1]);
+        }
+        break;
+
     case NET_MSG_CONTRACTS:
         if (len >= 2 && net_state.callbacks.on_contracts) {
             uint8_t count = data[1];
