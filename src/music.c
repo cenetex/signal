@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdio.h>
+#include <time.h>
 #include "music.h"
 
 #ifdef __EMSCRIPTEN__
@@ -290,9 +291,29 @@ void music_update(music_state_t *m, float dt) {
     }
 }
 
+static void shuffle_playlist(music_state_t *m) {
+    /* Initialize playlist indices */
+    for (int i = 0; i < MUSIC_TRACK_COUNT; i++)
+        m->playlist[i] = i;
+    /* Fisher-Yates shuffle using a simple LCG */
+    static uint32_t shuffle_seed = 0;
+    if (shuffle_seed == 0) shuffle_seed = (uint32_t)time(NULL);
+    for (int i = MUSIC_TRACK_COUNT - 1; i > 0; i--) {
+        shuffle_seed = shuffle_seed * 1103515245u + 12345u;
+        int j = (int)((shuffle_seed >> 16) % (unsigned)(i + 1));
+        int tmp = m->playlist[i];
+        m->playlist[i] = m->playlist[j];
+        m->playlist[j] = tmp;
+    }
+    m->playlist_pos = 0;
+    m->playlist_ready = true;
+}
+
 void music_next_track(music_state_t *m) {
-    int next = (m->current_track + 1) % MUSIC_TRACK_COUNT;
-    music_play(m, next);
+    if (!m->playlist_ready) shuffle_playlist(m);
+    m->playlist_pos++;
+    if (m->playlist_pos >= MUSIC_TRACK_COUNT) shuffle_playlist(m);
+    music_play(m, m->playlist[m->playlist_pos]);
 }
 
 void music_shutdown(music_state_t *m) {

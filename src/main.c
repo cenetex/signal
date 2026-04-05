@@ -205,9 +205,10 @@ static void process_sim_events(const sim_events_t *events) {
                     set_notice("Launch corridor clear.");
                     onboarding_mark_launched();
                     episode_trigger(&g.episode, 0); /* Ep 0: First Light */
-                    /* Start music on first launch */
-                    if (!g.music.playing && !g.music.loading)
-                        music_play(&g.music, 0);
+                    /* Start music on first launch — shuffled */
+                    if (!g.music.playing && !g.music.loading) {
+                        music_next_track(&g.music);
+                    }
                 }
                 break;
             case SIM_EVENT_SELL:

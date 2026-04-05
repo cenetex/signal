@@ -35,6 +35,11 @@ typedef struct {
     int audio_buffer_size;
     int sample_rate;
     int channels;
+
+    /* Shuffle playlist */
+    int playlist[MUSIC_TRACK_COUNT];
+    int playlist_pos;
+    bool playlist_ready;
 } music_state_t;
 
 void music_init(music_state_t *m);
