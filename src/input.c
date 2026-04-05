@@ -53,6 +53,8 @@ input_intent_t sample_input_intent(void) {
     intent.reset = is_key_pressed(SAPP_KEYCODE_X) && !LOCAL_PLAYER.docked;
     /* Safety: close build overlay if not docked */
     if (!LOCAL_PLAYER.docked) g.build_overlay = false;
+    /* Close inspect pane when docked or thrusting */
+    if (LOCAL_PLAYER.docked) { g.inspect_station = -1; g.inspect_module = -1; }
     /* SPACE (laser) auto-targets nearest module in beam cone */
     if (intent.mine && !LOCAL_PLAYER.docked &&
         LOCAL_PLAYER.in_dock_range && LOCAL_PLAYER.nearby_station >= 0) {
@@ -107,40 +109,20 @@ input_intent_t sample_input_intent(void) {
             /* Launch */
             intent.interact = true;
         } else if (g.target_station >= 0 && g.target_module >= 0) {
-            /* Activate targeted module */
+            /* E on targeted module: dock if it's a dock, otherwise inspect */
             const station_t *tst = &g.world.stations[g.target_station];
             if (g.target_module < tst->module_count) {
-                module_type_t mt = tst->modules[g.target_module].type;
-                switch (mt) {
-                    case MODULE_FURNACE:
-                        intent.buy_product = true;
-                        intent.buy_commodity = COMMODITY_FERRITE_INGOT;
-                        break;
-                    case MODULE_FURNACE_CU:
-                        intent.buy_product = true;
-                        intent.buy_commodity = COMMODITY_CUPRITE_INGOT;
-                        break;
-                    case MODULE_FURNACE_CR:
-                        intent.buy_product = true;
-                        intent.buy_commodity = COMMODITY_CRYSTAL_INGOT;
-                        break;
-                    case MODULE_FRAME_PRESS:
-                        intent.buy_product = true;
-                        intent.buy_commodity = COMMODITY_FRAME;
-                        break;
-                    case MODULE_LASER_FAB:
-                        intent.buy_product = true;
-                        intent.buy_commodity = COMMODITY_LASER_MODULE;
-                        break;
-                    case MODULE_TRACTOR_FAB:
-                        intent.buy_product = true;
-                        intent.buy_commodity = COMMODITY_TRACTOR_MODULE;
-                        break;
-                    case MODULE_DOCK:
-                        intent.interact = true;
-                        break;
-                    default:
-                        break;
+                if (tst->modules[g.target_module].type == MODULE_DOCK) {
+                    intent.interact = true;
+                } else {
+                    /* Toggle module info pane */
+                    if (g.inspect_station == g.target_station && g.inspect_module == g.target_module) {
+                        g.inspect_station = -1;
+                        g.inspect_module = -1;
+                    } else {
+                        g.inspect_station = g.target_station;
+                        g.inspect_module = g.target_module;
+                    }
                 }
             }
             g.target_station = -1;

@@ -110,6 +110,8 @@ static void reset_world(void) {
     g.tracked_contract = -1;
     g.target_station = -1;
     g.target_module = -1;
+    g.inspect_station = -1;
+    g.inspect_module = -1;
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
     g.asteroid_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));

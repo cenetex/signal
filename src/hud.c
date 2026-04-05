@@ -1122,5 +1122,47 @@ void draw_hud(void) {
         #undef DRAW_PIP
     }
 
+    /* Module inspect pane */
+    if (g.inspect_station >= 0 && g.inspect_station < MAX_STATIONS &&
+        g.inspect_module >= 0 && !LOCAL_PLAYER.docked) {
+        const station_t *ist = &g.world.stations[g.inspect_station];
+        if (station_exists(ist) && g.inspect_module < ist->module_count) {
+            const station_module_t *im = &ist->modules[g.inspect_module];
+            float px = screen_w - 260.0f;
+            float py = 60.0f;
+            float cell = 8.0f;
+
+            sdtx_pos(px / cell, py / cell);
+            sdtx_color3b(255, 221, 119);
+            sdtx_printf("[ %s ]", module_type_name(im->type));
+
+            sdtx_pos(px / cell, (py + 14.0f) / cell);
+            sdtx_color3b(145, 160, 188);
+            sdtx_printf("Station: %s", ist->name);
+
+            sdtx_pos(px / cell, (py + 28.0f) / cell);
+            sdtx_color3b(130, 200, 255);
+            sdtx_printf("Ring %d  Slot %d", im->ring, im->slot);
+
+            if (im->scaffold) {
+                int pct = (int)lroundf(im->build_progress * 100.0f);
+                sdtx_pos(px / cell, (py + 42.0f) / cell);
+                sdtx_color3b(255, 180, 60);
+                sdtx_printf("BUILDING: %d%%", pct);
+            } else {
+                sdtx_pos(px / cell, (py + 42.0f) / cell);
+                sdtx_color3b(130, 255, 235);
+                sdtx_puts("ONLINE");
+            }
+
+            /* Close hint */
+            sdtx_pos(px / cell, (py + 60.0f) / cell);
+            sdtx_color3b(100, 110, 120);
+            sdtx_puts("[E] close");
+        } else {
+            g.inspect_station = -1;
+        }
+    }
+
     draw_station_services(&ui);
 }

@@ -142,6 +142,8 @@ typedef struct {
     /* --- Module interaction --- */
     int target_station;      /* station index of targeted module, -1 = none */
     int target_module;       /* module index within station, -1 = none */
+    int inspect_station;     /* module info pane: station index, -1 = closed */
+    int inspect_module;      /* module info pane: module index */
     /* --- Contract tracking --- */
     int tracked_contract;    /* index into world.contracts, -1 = none */
     /* --- Navigation breadcrumb (last docked station or placed blueprint) --- */
