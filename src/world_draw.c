@@ -671,7 +671,7 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
 
 static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, float angle_b,
                                float cr, float cg, float cb, float alpha) {
-    float hw = 10.0f; /* corridor half-width — wide enough to hint at collision footprint */
+    float hw = STATION_CORRIDOR_HW; /* corridor half-width — matches collision footprint */
     float r_inner = ring_radius - hw;
     float r_outer = ring_radius + hw;
 
@@ -732,10 +732,17 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
 
     (void)max_ring;
 
+    /* Draw all corridors from the geometry emitter (single source of truth) */
+    station_geom_t geom;
+    station_build_geom(station, &geom);
+    for (int ci = 0; ci < geom.corridor_count; ci++) {
+        draw_corridor_arc(station->pos, geom.corridors[ci].ring_radius,
+            geom.corridors[ci].angle_a, geom.corridors[ci].angle_b,
+            role_r, role_g, role_b, base_alpha * 0.7f);
+    }
+
     /* Per-ring: tethers + modules (each ring rotates independently) */
     for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
-        int slots = STATION_RING_SLOTS[ring];
-
         int mod_idx[MAX_MODULES_PER_STATION];
         int mod_count = 0;
         for (int i = 0; i < station->module_count; i++) {
@@ -755,31 +762,8 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         }
 
         vec2 positions[MAX_MODULES_PER_STATION];
-        int slot_ids[MAX_MODULES_PER_STATION];
         for (int i = 0; i < mod_count; i++) {
-            slot_ids[i] = station->modules[mod_idx[i]].slot;
-            positions[i] = module_world_pos_ring(station, ring, slot_ids[i]);
-        }
-
-        /* Curved corridors between adjacent occupied slots.
-         * Dock connects on one side, opens on the other (dock as first = gap). */
-        float ring_r = STATION_RING_RADIUS[ring];
-        for (int i = 0; i + 1 < mod_count; i++) {
-            if (slot_ids[i + 1] - slot_ids[i] != 1) continue;
-            if (station->modules[mod_idx[i]].type == MODULE_DOCK) continue;
-            float ang_a = module_angle_ring(station, ring, slot_ids[i]);
-            float ang_b = module_angle_ring(station, ring, slot_ids[i + 1]);
-            draw_corridor_arc(station->pos, ring_r, ang_a, ang_b,
-                role_r, role_g, role_b, base_alpha * 0.7f);
-        }
-        /* Wrap: last→first if ring is full — skip if last is dock (entry gap) */
-        if (mod_count == slots) {
-            if (station->modules[mod_idx[mod_count - 1]].type != MODULE_DOCK) {
-                float ang_a = module_angle_ring(station, ring, slot_ids[mod_count - 1]);
-                float ang_b = module_angle_ring(station, ring, slot_ids[0]);
-                draw_corridor_arc(station->pos, ring_r, ang_a, ang_b,
-                    role_r, role_g, role_b, base_alpha * 0.7f);
-            }
+            positions[i] = module_world_pos_ring(station, ring, station->modules[mod_idx[i]].slot);
         }
 
         /* Modules + dock indicators + furnace glow */

@@ -9,9 +9,6 @@
 #include "rng.h"
 #include <stdlib.h>
 
-/* Use unified constants from station_geom.h */
-#define MODULE_COLLISION_RADIUS STATION_MODULE_COL_RADIUS
-#define CORRIDOR_HW             STATION_CORRIDOR_HW
 
 #ifdef GAME_SIM_VERBOSE
 #define SIM_LOG(...) printf(__VA_ARGS__)
@@ -1138,115 +1135,103 @@ static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world
 }
 
 
+/* Push NPC out of a circle (no damage, unlike player collision). */
+static void resolve_npc_circle(npc_ship_t *npc, vec2 center, float radius) {
+    const hull_def_t *hull = npc_hull_def(npc);
+    float minimum = radius + hull->ship_radius;
+    vec2 delta = v2_sub(npc->pos, center);
+    float d_sq = v2_len_sq(delta);
+    if (d_sq >= minimum * minimum) return;
+    float d = sqrtf(d_sq);
+    vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
+    npc->pos = v2_add(center, v2_scale(normal, minimum));
+    float vel_toward = v2_dot(npc->vel, normal);
+    if (vel_toward < 0.0f)
+        npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.0f));
+}
+
+/* Push NPC out of a corridor annular sector (with angular margin). */
+static void resolve_npc_annular_sector(npc_ship_t *npc, vec2 center,
+                                        float ring_r, float angle_a, float angle_b) {
+    const hull_def_t *hull = npc_hull_def(npc);
+    float ship_r = hull->ship_radius;
+    vec2 delta = v2_sub(npc->pos, center);
+    float dist = sqrtf(v2_len_sq(delta));
+    if (dist < 1.0f) return;
+
+    float r_inner = ring_r - STATION_CORRIDOR_HW - ship_r;
+    float r_outer = ring_r + STATION_CORRIDOR_HW + ship_r;
+    if (dist <= r_inner || dist >= r_outer) return;
+
+    /* Angular test with margin (matches player collision) */
+    float npc_angle = atan2f(delta.y, delta.x);
+    float angular_margin = (dist > 1.0f) ? asinf(fminf(ship_r / dist, 1.0f)) : 0.0f;
+    float da = angle_b - angle_a;
+    while (da > PI_F) da -= TWO_PI_F;
+    while (da < -PI_F) da += TWO_PI_F;
+    float expanded_start = angle_a - (da > 0 ? angular_margin : -angular_margin);
+    float expanded_da = da + (da > 0 ? 2.0f : -2.0f) * angular_margin;
+    if (angle_in_arc(npc_angle, expanded_start, expanded_da) < 0.0f) return;
+
+    /* Push radially to nearest edge */
+    vec2 radial = v2_scale(delta, 1.0f / dist);
+    float d_inner = dist - (ring_r - STATION_CORRIDOR_HW);
+    float d_outer = (ring_r + STATION_CORRIDOR_HW) - dist;
+    if (d_inner < d_outer) {
+        npc->pos = v2_add(center, v2_scale(radial, r_inner));
+        float vt = v2_dot(npc->vel, radial);
+        if (vt > 0.0f) npc->vel = v2_sub(npc->vel, v2_scale(radial, vt * 1.0f));
+    } else {
+        npc->pos = v2_add(center, v2_scale(radial, r_outer));
+        float vt = v2_dot(npc->vel, radial);
+        if (vt < 0.0f) npc->vel = v2_sub(npc->vel, v2_scale(radial, vt * 1.0f));
+    }
+}
+
 static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
     const hull_def_t *hull = npc_hull_def(npc);
+    float ship_r = hull->ship_radius;
     for (int i = 0; i < MAX_STATIONS; i++) {
         station_t *st = &w->stations[i];
+        if (!station_collides(st)) continue;
+
+        station_geom_t geom;
+        station_build_geom(st, &geom);
+
         /* Core collision */
-        float minimum = st->radius + 4.0f + hull->ship_radius;
-        vec2 delta = v2_sub(npc->pos, st->pos);
-        float d_sq = v2_len_sq(delta);
-        if (d_sq < minimum * minimum) {
-            float d = sqrtf(d_sq);
-            vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
-            npc->pos = v2_add(st->pos, v2_scale(normal, minimum));
-            float vel_toward = v2_dot(npc->vel, normal);
-            if (vel_toward < 0.0f)
-                npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.0f));
-        }
-        /* Per-module collision for NPCs */
-        for (int m = 0; m < st->module_count; m++) {
-            int ring = st->modules[m].ring;
-            if (ring < 1 || ring > STATION_NUM_RINGS) continue;
-            if (st->modules[m].type == MODULE_DOCK) continue; /* dock = passage */
-            vec2 mod_pos = module_world_pos_ring(st, ring, st->modules[m].slot);
-            float mod_min = MODULE_COLLISION_RADIUS + hull->ship_radius;
-            vec2 md = v2_sub(npc->pos, mod_pos);
-            float md_sq = v2_len_sq(md);
-            if (md_sq >= mod_min * mod_min) continue;
-            float mdd = sqrtf(md_sq);
-            vec2 mn = mdd > 0.001f ? v2_scale(md, 1.0f / mdd) : v2(1.0f, 0.0f);
-            npc->pos = v2_add(mod_pos, v2_scale(mn, mod_min));
-            float mvt = v2_dot(npc->vel, mn);
-            if (mvt < 0.0f)
-                npc->vel = v2_sub(npc->vel, v2_scale(mn, mvt * 1.0f));
-        }
-        /* Corridor annular sectors for NPCs */
-        for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
-            int slots = STATION_RING_SLOTS[ring];
-            int cidx[MAX_MODULES_PER_STATION];
-            int ccount = 0;
-            for (int m = 0; m < st->module_count; m++)
-                if (st->modules[m].ring == ring) cidx[ccount++] = m;
-            if (ccount < 2) continue;
-            for (int ci = 1; ci < ccount; ci++) {
-                int tmp = cidx[ci]; int cj = ci - 1;
-                while (cj >= 0 && st->modules[cidx[cj]].slot > st->modules[tmp].slot)
-                    { cidx[cj+1] = cidx[cj]; cj--; }
-                cidx[cj+1] = tmp;
-            }
-            for (int ci = 0; ci + 1 < ccount; ci++) {
-                if (st->modules[cidx[ci+1]].slot - st->modules[cidx[ci]].slot != 1) continue;
-                /* Dock entry gap: skip where dock is first */
-                if (st->modules[cidx[ci]].type == MODULE_DOCK) continue;
-                float ca = module_angle_ring(st, ring, st->modules[cidx[ci]].slot);
-                float cb = module_angle_ring(st, ring, st->modules[cidx[ci+1]].slot);
-                /* Annular sector test for NPC */
-                vec2 nd = v2_sub(npc->pos, st->pos);
-                float ndist = sqrtf(v2_len_sq(nd));
-                if (ndist < 1.0f) continue;
-                float nr_inner = STATION_RING_RADIUS[ring] - CORRIDOR_HW - hull->ship_radius;
-                float nr_outer = STATION_RING_RADIUS[ring] + CORRIDOR_HW + hull->ship_radius;
-                if (ndist <= nr_inner || ndist >= nr_outer) continue;
-                float nang = atan2f(nd.y, nd.x);
-                float nda = cb - ca;
-                while (nda > PI_F) nda -= TWO_PI_F;
-                while (nda < -PI_F) nda += TWO_PI_F;
-                if (angle_in_arc(nang, ca, nda) < 0.0f) continue;
-                /* Push radially */
-                vec2 nrad = v2_scale(nd, 1.0f / ndist);
-                float d_in = ndist - (STATION_RING_RADIUS[ring] - CORRIDOR_HW);
-                float d_out = (STATION_RING_RADIUS[ring] + CORRIDOR_HW) - ndist;
-                if (d_in < d_out) {
-                    npc->pos = v2_add(st->pos, v2_scale(nrad, nr_inner));
-                    float vt = v2_dot(npc->vel, nrad);
-                    if (vt > 0.0f) npc->vel = v2_sub(npc->vel, v2_scale(nrad, vt * 1.0f));
-                } else {
-                    npc->pos = v2_add(st->pos, v2_scale(nrad, nr_outer));
-                    float vt = v2_dot(npc->vel, nrad);
-                    if (vt < 0.0f) npc->vel = v2_sub(npc->vel, v2_scale(nrad, vt * 1.0f));
-                }
-            }
-            if (ccount == slots && ring >= 1
-                && st->modules[cidx[ccount-1]].type != MODULE_DOCK) {
-                /* Wrap: skip if last is dock (entry gap) */
-                float ca = module_angle_ring(st, ring, st->modules[cidx[ccount-1]].slot);
-                float cb = module_angle_ring(st, ring, st->modules[cidx[0]].slot);
-                vec2 nd = v2_sub(npc->pos, st->pos);
-                float ndist = sqrtf(v2_len_sq(nd));
-                if (ndist > 1.0f) {
-                    float nr_inner = STATION_RING_RADIUS[ring] - CORRIDOR_HW - hull->ship_radius;
-                    float nr_outer = STATION_RING_RADIUS[ring] + CORRIDOR_HW + hull->ship_radius;
-                    if (ndist > nr_inner && ndist < nr_outer) {
-                        float nang = atan2f(nd.y, nd.x);
-                        float nda = cb - ca;
-                        while (nda > PI_F) nda -= TWO_PI_F;
-                        while (nda < -PI_F) nda += TWO_PI_F;
-                        if (angle_in_arc(nang, ca, nda) >= 0.0f) {
-                            vec2 nrad = v2_scale(nd, 1.0f / ndist);
-                            float d_in = ndist - (STATION_RING_RADIUS[ring] - CORRIDOR_HW);
-                            float d_out = (STATION_RING_RADIUS[ring] + CORRIDOR_HW) - ndist;
-                            if (d_in < d_out) {
-                                npc->pos = v2_add(st->pos, v2_scale(nrad, nr_inner));
-                            } else {
-                                npc->pos = v2_add(st->pos, v2_scale(nrad, nr_outer));
-                            }
-                            float vt = v2_dot(npc->vel, nrad);
-                            if ((d_in < d_out && vt > 0.0f) || (d_in >= d_out && vt < 0.0f))
-                                npc->vel = v2_sub(npc->vel, v2_scale(nrad, vt * 1.0f));
-                        }
+        if (geom.has_core)
+            resolve_npc_circle(npc, geom.core.center, geom.core.radius);
+
+        /* Module circles */
+        for (int ci = 0; ci < geom.circle_count; ci++)
+            resolve_npc_circle(npc, geom.circles[ci].center, geom.circles[ci].radius);
+
+        /* Near-module suppression + corridor annular sectors
+         * (matches player collision logic) */
+        float npc_dist = sqrtf(v2_dist_sq(npc->pos, st->pos));
+        vec2 npc_delta = v2_sub(npc->pos, st->pos);
+        float npc_ang = atan2f(npc_delta.y, npc_delta.x);
+
+        for (int ci = 0; ci < geom.corridor_count; ci++) {
+            float ring_r = geom.corridors[ci].ring_radius;
+
+            /* Check if NPC is near any module on this corridor's ring */
+            bool near_module = false;
+            if (fabsf(npc_dist - ring_r) < STATION_CORRIDOR_HW + ship_r + STATION_MODULE_COL_RADIUS) {
+                for (int mi = 0; mi < geom.circle_count; mi++) {
+                    if (geom.circles[mi].ring != geom.corridors[ci].ring) continue;
+                    float ang_diff = wrap_angle(npc_ang - geom.circles[mi].angle);
+                    float angular_size = (ring_r > 1.0f) ? (STATION_MODULE_COL_RADIUS + ship_r) / ring_r : 0.0f;
+                    if (fabsf(ang_diff) < angular_size) {
+                        near_module = true;
+                        break;
                     }
                 }
+            }
+
+            if (!near_module) {
+                resolve_npc_annular_sector(npc, geom.center,
+                    ring_r, geom.corridors[ci].angle_a, geom.corridors[ci].angle_b);
             }
         }
     }
@@ -1863,8 +1848,8 @@ static void resolve_ship_annular_sector(world_t *w, server_player_t *sp,
     if (dist < 1.0f) return;
 
     /* Radial test: ship within inflated band? */
-    float r_inner = ring_r - CORRIDOR_HW - ship_r;
-    float r_outer = ring_r + CORRIDOR_HW + ship_r;
+    float r_inner = ring_r - STATION_CORRIDOR_HW - ship_r;
+    float r_outer = ring_r + STATION_CORRIDOR_HW + ship_r;
     if (dist <= r_inner || dist >= r_outer) return;
 
     /* Angular test: ship angle within the arc?
@@ -1882,14 +1867,14 @@ static void resolve_ship_annular_sector(world_t *w, server_player_t *sp,
 
     /* Ship is inside corridor — push radially to nearest edge */
     vec2 radial = v2_scale(delta, 1.0f / dist);
-    float d_inner = dist - (ring_r - CORRIDOR_HW);
-    float d_outer = (ring_r + CORRIDOR_HW) - dist;
+    float d_inner = dist - (ring_r - STATION_CORRIDOR_HW);
+    float d_outer = (ring_r + STATION_CORRIDOR_HW) - dist;
     vec2 push_normal;
     if (d_inner < d_outer) {
-        sp->ship.pos = v2_add(center, v2_scale(radial, ring_r - CORRIDOR_HW - ship_r));
+        sp->ship.pos = v2_add(center, v2_scale(radial, ring_r - STATION_CORRIDOR_HW - ship_r));
         push_normal = v2_scale(radial, -1.0f);
     } else {
-        sp->ship.pos = v2_add(center, v2_scale(radial, ring_r + CORRIDOR_HW + ship_r));
+        sp->ship.pos = v2_add(center, v2_scale(radial, ring_r + STATION_CORRIDOR_HW + ship_r));
         push_normal = radial;
     }
 
@@ -2133,11 +2118,11 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
 
         /* Check if ship is near any module on this corridor's ring */
         bool near_module = false;
-        if (fabsf(ship_dist - ring_r) < CORRIDOR_HW + ship_r + MODULE_COLLISION_RADIUS) {
+        if (fabsf(ship_dist - ring_r) < STATION_CORRIDOR_HW + ship_r + STATION_MODULE_COL_RADIUS) {
             for (int mi = 0; mi < geom.circle_count; mi++) {
                 if (geom.circles[mi].ring != geom.corridors[ci].ring) continue;
                 float ang_diff = wrap_angle(ship_ang - geom.circles[mi].angle);
-                float angular_size = (ring_r > 1.0f) ? (MODULE_COLLISION_RADIUS + ship_r) / ring_r : 0.0f;
+                float angular_size = (ring_r > 1.0f) ? (STATION_MODULE_COL_RADIUS + ship_r) / ring_r : 0.0f;
                 if (fabsf(ang_diff) < angular_size) {
                     near_module = true;
                     break;
@@ -2555,12 +2540,12 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
             if (mproj > 0.0f && mproj < best_dist) {
                 vec2 closest = v2_add(muzzle, v2_scale(forward, mproj));
                 float perp = v2_len(v2_sub(closest, mp));
-                if (perp < MODULE_COLLISION_RADIUS) {
+                if (perp < STATION_MODULE_COL_RADIUS) {
                     best_dist = mproj;
                     sp->scan_target_type = 1;
                     sp->scan_target_index = si;
                     sp->scan_module_index = mi;
-                    sp->beam_end = v2_sub(mp, v2_scale(v2_norm(to_mod), MODULE_COLLISION_RADIUS * 0.9f));
+                    sp->beam_end = v2_sub(mp, v2_scale(v2_norm(to_mod), STATION_MODULE_COL_RADIUS * 0.9f));
                 }
             }
         }
@@ -3382,31 +3367,29 @@ static void resolve_asteroid_module_collision(asteroid_t *a, vec2 mod_pos, float
 }
 
 static void resolve_asteroid_station_collisions(world_t *w) {
-    /* Precompute module world positions */
-    struct { vec2 pos; bool valid; } mod_cache[MAX_STATIONS][MAX_MODULES_PER_STATION];
+    /* Build geometry for all active stations once */
+    station_geom_t geom_cache[MAX_STATIONS];
+    bool geom_valid[MAX_STATIONS];
     for (int s = 0; s < MAX_STATIONS; s++) {
-        if (!station_exists(&w->stations[s])) {
-            for (int m = 0; m < MAX_MODULES_PER_STATION; m++) mod_cache[s][m].valid = false;
-            continue;
+        if (station_exists(&w->stations[s])) {
+            station_build_geom(&w->stations[s], &geom_cache[s]);
+            geom_valid[s] = true;
+        } else {
+            geom_valid[s] = false;
         }
-        for (int m = 0; m < w->stations[s].module_count; m++) {
-            int ring = w->stations[s].modules[m].ring;
-            if (ring < 1 || ring > STATION_NUM_RINGS) { mod_cache[s][m].valid = false; continue; }
-            mod_cache[s][m].pos = module_world_pos_ring(&w->stations[s], ring, w->stations[s].modules[m].slot);
-            mod_cache[s][m].valid = true;
-        }
-        for (int m = w->stations[s].module_count; m < MAX_MODULES_PER_STATION; m++)
-            mod_cache[s][m].valid = false;
     }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
         for (int s = 0; s < MAX_STATIONS; s++) {
-            if (!station_exists(&w->stations[s])) continue;
-            for (int m = 0; m < w->stations[s].module_count; m++) {
-                if (!mod_cache[s][m].valid) continue;
-                resolve_asteroid_module_collision(a, mod_cache[s][m].pos, MODULE_COLLISION_RADIUS);
-            }
+            if (!geom_valid[s]) continue;
+            const station_geom_t *geom = &geom_cache[s];
+            /* Core collision */
+            if (geom->has_core)
+                resolve_asteroid_module_collision(a, geom->core.center, geom->core.radius);
+            /* Module circles (docks already excluded by emitter) */
+            for (int ci = 0; ci < geom->circle_count; ci++)
+                resolve_asteroid_module_collision(a, geom->circles[ci].center, geom->circles[ci].radius);
         }
     }
 }

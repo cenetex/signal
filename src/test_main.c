@@ -3405,8 +3405,8 @@ TEST(test_bug90_station_bounce_no_extra_energy) {
     w.asteroids[0].tier = ASTEROID_TIER_M;
     w.asteroids[0].radius = 25.0f;
     w.asteroids[0].hp = 100.0f; w.asteroids[0].max_hp = 100.0f;
-    /* Position just above the signal relay (ring 1, slot 0) */
-    vec2 mod_pos = module_world_pos_ring(&w.stations[0], 1, 0);
+    /* Position just above the signal relay (ring 1, slot 1 — slot 0 is dock) */
+    vec2 mod_pos = module_world_pos_ring(&w.stations[0], 1, 1);
     w.asteroids[0].pos = v2(mod_pos.x, mod_pos.y + 34.0f + 25.0f - 5.0f);
     w.asteroids[0].vel = v2(0.0f, -10.0f); /* moving toward module */
     float speed_before = v2_len(w.asteroids[0].vel);
@@ -4026,6 +4026,31 @@ TEST(test_238_invisible_wall_repro) {
     ASSERT(end_r >= start_r - 1.0f);
 }
 
+TEST(test_station_geom_emitter_prospect) {
+    /* Verify the geometry emitter produces correct shapes for Prospect (station 0).
+     * Prospect ring 1: dock(slot 0), relay(slot 1), furnace(slot 2)
+     * Prospect ring 2: ore_silo(slot 3) */
+    world_t w;
+    w.rng = 2037u;
+    world_reset(&w);
+
+    station_geom_t geom;
+    station_build_geom(&w.stations[0], &geom);
+
+    /* Core: Prospect has radius 40 */
+    ASSERT(geom.has_core == true);
+
+    /* Circles: relay + furnace (ring 1) + ore_silo (ring 2) = 3 (docks excluded) */
+    ASSERT(geom.circle_count == 3);
+
+    /* Corridors: relay→furnace (ring 1, slots 1→2) + wrap furnace→dock (ring 1 full, 3 slots)
+     * = 2. Ring 2 has only 1 module so no corridors there. */
+    ASSERT(geom.corridor_count == 2);
+
+    /* Docks: 1 dock on ring 1 */
+    ASSERT(geom.dock_count == 1);
+}
+
 int main(void) {
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -4288,6 +4313,9 @@ int main(void) {
     RUN(test_238_corridor_angular_edge_no_clip);
     RUN(test_238_module_corridor_junction_no_jitter);
     RUN(test_238_invisible_wall_repro);
+
+    printf("\nStation geometry emitter:\n");
+    RUN(test_station_geom_emitter_prospect);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
