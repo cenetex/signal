@@ -271,8 +271,10 @@ static float scaffold_kit_price(module_type_t type) {
     }
 }
 
-/* A station sells scaffolds for module types it has installed. */
+/* A station sells scaffolds only if it has a SHIPYARD module AND an
+ * installed example of the requested type (it "knows how to build" that). */
 static bool station_sells_scaffold(const station_t *st, module_type_t type) {
+    if (!station_has_module(st, MODULE_SHIPYARD)) return false;
     return station_has_module(st, type);
 }
 
@@ -2958,11 +2960,15 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     if (intent->buy_scaffold_kit && sp->docked && !w->player_only_mode) {
         module_type_t kit_type = intent->scaffold_kit_module;
         station_t *st = &w->stations[sp->current_station];
-        if (station_sells_scaffold(st, kit_type)
-            && st->pending_scaffold_count < 4) {
-            /* Order fee (small deposit — real cost is the materials) */
-            float fee = scaffold_kit_price(kit_type) * 0.25f;
-            if (sp->ship.credits >= fee) {
+        if (!station_sells_scaffold(st, kit_type)) {
+            emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
+        } else if (st->pending_scaffold_count >= 4) {
+            emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
+        } else {
+            float fee = (float)scaffold_order_fee(kit_type);
+            if (sp->ship.credits < fee) {
+                emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
+            } else {
                 spend_credits(&sp->ship, fee);
                 /* Queue pending scaffold */
                 int idx = st->pending_scaffold_count++;
@@ -3919,7 +3925,8 @@ static const float SCAFFOLD_RADIUS = 32.0f;
 static const float SCAFFOLD_DRAG = 0.98f;  /* gentle drag when loose */
 
 /* Manufacture pending scaffolds when materials are available.
- * Called from step_scaffolds each frame. */
+ * Called from step_scaffolds each frame. Processes head of queue only
+ * (FIFO) — later orders wait their turn even if other materials exist. */
 static void step_shipyard_manufacture(world_t *w) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
@@ -3933,16 +3940,22 @@ static void step_shipyard_manufacture(world_t *w) {
         float needed = module_build_cost(type);
 
         if (st->inventory[mat] >= needed) {
-            /* Consume materials, spawn scaffold near the dock */
+            /* Consume materials, spawn scaffold in a clear spot */
             st->inventory[mat] -= needed;
-            vec2 spawn_offset = v2(st->dock_radius + 60.0f, 0.0f);
-            vec2 spawn_pos = v2_add(st->pos, spawn_offset);
+            /* Spawn opposite the dock gap (angle 0) to avoid berth collisions */
+            float spawn_angle = PI_F; /* -X side of station */
+            float spawn_r = st->dock_radius + 80.0f;
+            vec2 spawn_pos = v2_add(st->pos, v2(cosf(spawn_angle) * spawn_r, sinf(spawn_angle) * spawn_r));
             spawn_scaffold(w, type, spawn_pos, (int)owner);
             /* Shift queue */
             for (int i = 0; i < st->pending_scaffold_count - 1; i++) {
                 st->pending_scaffolds[i] = st->pending_scaffolds[i + 1];
             }
             st->pending_scaffold_count--;
+            emit_event(w, (sim_event_t){
+                .type = SIM_EVENT_SCAFFOLD_READY,
+                .scaffold_ready = { .station = s, .module_type = (int)type },
+            });
             SIM_LOG("[sim] station %d manufactured %s scaffold\n", s, module_type_name(type));
         }
     }
@@ -4260,7 +4273,7 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[1], MODULE_LASER_FAB, 2, 1);
     add_module_at(&w->stations[1], MODULE_TRACTOR_FAB, 2, 2);
     add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 2, 3);
-    add_module_at(&w->stations[1], MODULE_BLUEPRINT_DESK, 2, 4);
+    add_module_at(&w->stations[1], MODULE_SHIPYARD, 2, 4);
     w->stations[1].arm_count = 2;
     w->stations[1].arm_speed[0] = STATION_RING_SPEED;
     w->stations[1].ring_offset[0] = 0.0f;
@@ -4300,7 +4313,7 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 1);
     add_module_at(&w->stations[2], MODULE_FURNACE_CU, 3, 2);
     add_module_at(&w->stations[2], MODULE_FURNACE_CR, 3, 3);
-    add_module_at(&w->stations[2], MODULE_BLUEPRINT_DESK, 3, 4);
+    add_module_at(&w->stations[2], MODULE_SHIPYARD, 3, 4);
     add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 3, 5);
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[0] = STATION_RING_SPEED;
