@@ -418,6 +418,9 @@ void draw_station_services(const station_ui_state_t* ui) {
     visible_tabs[tab_count++] = STATION_TAB_STATUS;
     visible_tabs[tab_count++] = STATION_TAB_MARKET;
     visible_tabs[tab_count++] = STATION_TAB_CONTRACTS;
+    if (station_has_module(ui->station, MODULE_SHIPYARD)) {
+        visible_tabs[tab_count++] = STATION_TAB_SHIPYARD;
+    }
     float tab_w = fminf(inner_w / (float)tab_count, 120.0f);
 
     /* Station name + role header */
@@ -459,81 +462,19 @@ void draw_station_services(const station_ui_state_t* ui) {
                 case STATION_TAB_STATUS:    sdtx_puts("STATUS"); break;
                 case STATION_TAB_MARKET:    sdtx_puts("MARKET"); break;
                 case STATION_TAB_CONTRACTS: sdtx_puts("CONTRACTS"); break;
+                case STATION_TAB_SHIPYARD:  sdtx_puts("SHIPYARD"); break;
                 default: break;
             }
         }
     }
 
-    /* ---- Shipyard overlay (drawn on top of any tab) ---- */
-    if (g.build_overlay && !ui->station->scaffold
-        && station_has_module(ui->station, MODULE_SHIPYARD)) {
-        sdtx_color3b(255, 221, 119);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-        sdtx_puts("SHIPYARD");
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
-        sdtx_color3b(180, 200, 230);
-        sdtx_puts("[1-9] order  [Esc] close");
-        float ly = cy + 30.0f;
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-        sdtx_color3b(180, 200, 230);
-        sdtx_puts("deposit + deliver materials -> tow it away");
-        ly += 18.0f;
+    /* Legacy build_overlay flag — always cleared now that shipyard is a tab */
+    if (g.build_overlay) g.build_overlay = false;
 
-        static const module_type_t sellable[] = {
-            MODULE_DOCK, MODULE_SIGNAL_RELAY, MODULE_FURNACE,
-            MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_FRAME_PRESS,
-            MODULE_FURNACE_CU, MODULE_FURNACE_CR,
-            MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
-        };
-        int shown = 0;
-        int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
-        for (int si = 0; si < (int)(sizeof(sellable)/sizeof(sellable[0])); si++) {
-            if (!station_has_module(ui->station, sellable[si])) continue;
-            int fee = scaffold_order_fee(sellable[si]);
-            int mat = (int)module_build_cost_lookup(sellable[si]);
-            commodity_t mat_type = module_build_material_lookup(sellable[si]);
-            const char *mat_name = commodity_short_label(mat_type);
-            bool can_afford = credits >= fee;
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
-            sdtx_printf("[%d] %-14s %dcr + %d %s",
-                shown + 1, module_type_name(sellable[si]), fee, mat, mat_name);
-            ly += 14.0f;
-            shown++;
-        }
-
-        /* Pending orders — progress reflects queue position correctly.
-         * Head of queue uses actual inventory; later orders start at 0. */
-        if (ui->station->pending_scaffold_count > 0) {
-            ly += 6.0f;
-            sdtx_color3b(255, 221, 119);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            sdtx_printf("PENDING ORDERS (%d)", ui->station->pending_scaffold_count);
-            ly += 14.0f;
-            for (int p = 0; p < ui->station->pending_scaffold_count; p++) {
-                module_type_t t = ui->station->pending_scaffolds[p].type;
-                commodity_t mat_type = module_build_material_lookup(t);
-                float need = module_build_cost_lookup(t);
-                /* Only the head of the queue can draw from station inventory */
-                float have = (p == 0) ? ui->station->inventory[mat_type] : 0.0f;
-                int pct = (need > 0) ? (int)(100.0f * have / need) : 0;
-                if (pct > 100) pct = 100;
-                sdtx_color3b(180, 200, 230);
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                if (p == 0) {
-                    sdtx_printf("  %d. %s  %d%%", p + 1, module_type_name(t), pct);
-                } else {
-                    sdtx_printf("  %d. %s  queued", p + 1, module_type_name(t));
-                }
-                ly += 12.0f;
-            }
-        }
-        return;
-    }
-    /* If the overlay flag is set but the station has no shipyard, clear it
-     * so nothing stale stays on screen. */
-    if (g.build_overlay && !ui->station->scaffold) {
-        g.build_overlay = false;
+    /* Auto-switch away from SHIPYARD tab if station has none */
+    if (g.station_tab == STATION_TAB_SHIPYARD
+        && !station_has_module(ui->station, MODULE_SHIPYARD)) {
+        g.station_tab = STATION_TAB_STATUS;
     }
 
     /* ---- Tab content ---- */
@@ -987,6 +928,72 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
             sdtx_color3b(145, 160, 188);
             sdtx_puts("No active contracts.");
+        }
+        break;
+    }
+
+    case STATION_TAB_SHIPYARD: {
+        sdtx_color3b(255, 221, 119);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+        sdtx_puts("SHIPYARD");
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
+        sdtx_color3b(145, 160, 188);
+        sdtx_puts("deposit + deliver materials -> tow scaffold away");
+
+        float ly = cy + 34.0f;
+
+        static const module_type_t sellable[] = {
+            MODULE_DOCK, MODULE_SIGNAL_RELAY, MODULE_FURNACE,
+            MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_FRAME_PRESS,
+            MODULE_FURNACE_CU, MODULE_FURNACE_CR,
+            MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
+        };
+        int shown = 0;
+        int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
+        for (int si = 0; si < (int)(sizeof(sellable)/sizeof(sellable[0])); si++) {
+            if (!station_has_module(ui->station, sellable[si])) continue;
+            int fee = scaffold_order_fee(sellable[si]);
+            int mat = (int)module_build_cost_lookup(sellable[si]);
+            commodity_t mat_type = module_build_material_lookup(sellable[si]);
+            const char *mat_name = commodity_short_label(mat_type);
+            bool can_afford = credits >= fee;
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
+            sdtx_printf("[%d] %-14s %dcr + %d %s",
+                shown + 1, module_type_name(sellable[si]), fee, mat, mat_name);
+            ly += 14.0f;
+            shown++;
+        }
+
+        /* Pending orders */
+        if (ui->station->pending_scaffold_count > 0) {
+            ly += 8.0f;
+            sdtx_color3b(255, 221, 119);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_printf("PENDING ORDERS (%d/4)", ui->station->pending_scaffold_count);
+            ly += 14.0f;
+            for (int p = 0; p < ui->station->pending_scaffold_count; p++) {
+                module_type_t t = ui->station->pending_scaffolds[p].type;
+                commodity_t mat_type = module_build_material_lookup(t);
+                float need = module_build_cost_lookup(t);
+                float have = (p == 0) ? ui->station->inventory[mat_type] : 0.0f;
+                int pct = (need > 0) ? (int)(100.0f * have / need) : 0;
+                if (pct > 100) pct = 100;
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                if (p == 0) {
+                    sdtx_color3b(180, 220, 255);
+                    sdtx_printf("  %d. %s  %d%%", p + 1, module_type_name(t), pct);
+                } else {
+                    sdtx_color3b(120, 135, 160);
+                    sdtx_printf("  %d. %s  queued", p + 1, module_type_name(t));
+                }
+                ly += 12.0f;
+            }
+        } else {
+            ly += 8.0f;
+            sdtx_color3b(100, 115, 138);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_puts("No pending orders.");
         }
         break;
     }

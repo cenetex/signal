@@ -134,9 +134,9 @@ input_intent_t sample_input_intent(void) {
     }
 
     /* Number keys: context-dependent */
-    if (LOCAL_PLAYER.docked && g.build_overlay) {
+    if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_SHIPYARD) {
         const station_t *st = current_station_ptr();
-        /* Shipyard order panel — works at any station with a SHIPYARD module */
+        /* Shipyard tab: 1-9 order a scaffold */
         static const module_type_t sellable[] = {
             MODULE_DOCK, MODULE_SIGNAL_RELAY, MODULE_FURNACE,
             MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_FRAME_PRESS,
@@ -155,15 +155,11 @@ input_intent_t sample_input_intent(void) {
                     intent.buy_scaffold_kit = true;
                     intent.scaffold_kit_module = sellable[si];
                     set_notice("Ordered %s scaffold.", module_type_name(sellable[si]));
-                    g.build_overlay = false;
                 }
                 break;
             }
             shown++;
         }
-        if (is_key_pressed(SAPP_KEYCODE_ESCAPE) || is_key_pressed(SAPP_KEYCODE_B)
-            || is_key_pressed(SAPP_KEYCODE_TAB))
-            g.build_overlay = false;
     } else if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONTRACTS) {
         /* Contracts tab: 1/2/3 track contract */
         for (int k = 0; k < 3; k++) {
@@ -278,11 +274,10 @@ input_intent_t sample_input_intent(void) {
         g.placing_outpost = false;
     } else if (is_key_pressed(SAPP_KEYCODE_B)) {
         if (LOCAL_PLAYER.docked) {
+            /* B shortcut: jump to shipyard tab if available */
             const station_t *st = current_station_ptr();
-            if (g.build_overlay) {
-                g.build_overlay = false;
-            } else if (st && station_has_module(st, MODULE_SHIPYARD)) {
-                g.build_overlay = true;
+            if (st && station_has_module(st, MODULE_SHIPYARD)) {
+                g.station_tab = STATION_TAB_SHIPYARD;
             } else {
                 set_notice("No shipyard here.");
             }
