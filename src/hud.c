@@ -352,26 +352,29 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
     if (LOCAL_PLAYER.docked) {
         if (station != NULL) {
             /* Rotate tips based on time */
-            int tip_cycle = (int)(g.world.time / 5.0f) % 3;
+            /* Cycle through context-specific tips. Each tip is one
+             * concrete game action with the keybind in [brackets]. */
+            int tip_cycle = (int)(g.world.time / 5.0f) % 4;
+            bool has_shipyard = station_has_module(station, MODULE_SHIPYARD);
             bool has_market = false;
             for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
                 if (station->inventory[c] > 0.5f) { has_market = true; break; }
 
-            if (tip_cycle == 1 && has_market) {
+            if (tip_cycle == 0 && station_has_module(station, MODULE_ORE_BUYER)) {
+                snprintf(label, label_size, "SELL");
+                snprintf(message, message_size, "Press [1] to sell raw ore at this hopper.");
+            } else if (tip_cycle == 1 && has_market) {
                 snprintf(label, label_size, "MARKET");
-                snprintf(message, message_size, "Press F to buy ingots. Haul them to your outpost blueprints.");
-            } else if (tip_cycle == 2 && station_has_module(station, MODULE_ORE_BUYER)) {
-                snprintf(label, label_size, "TIP");
-                snprintf(message, message_size, "Press 1 to sell ore. Press B to place an outpost blueprint.");
+                snprintf(message, message_size, "Press [F] to buy frames or ingots from this station.");
+            } else if (tip_cycle == 2 && has_shipyard) {
+                snprintf(label, label_size, "SHIPYARD");
+                snprintf(message, message_size, "Open the SHIPYARD tab [Tab] then [1-9] to order a scaffold.");
+            } else if (tip_cycle == 3) {
+                snprintf(label, label_size, "LAUNCH");
+                snprintf(message, message_size, "Press [E] to undock and head back to the belt.");
             } else {
                 snprintf(label, label_size, "%s", station_role_name(station));
-                if (station_has_module(station, MODULE_FURNACE)) {
-                    snprintf(message, message_size, "Sell raw ore here, repair up, then head back into the belt.");
-                } else if (station_has_module(station, MODULE_FRAME_PRESS)) {
-                    snprintf(message, message_size, "Press F to buy ingots. Haul to blueprints.");
-                } else {
-                    snprintf(message, message_size, "Tune the laser or tractor, then get back on the run.");
-                }
+                snprintf(message, message_size, "Press [Tab] to switch panels.");
             }
             *r = 164;
             *g0 = 177;
@@ -416,9 +419,9 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
     if (LOCAL_PLAYER.nearby_fragments > 0) {
         snprintf(label, label_size, "TRACTOR");
         if (LOCAL_PLAYER.tractor_fragments > 0) {
-            snprintf(message, message_size, "Sweep through the debris cloud and let the tractor finish the pull.");
+            snprintf(message, message_size, "Tractor [R] is locked on. Drift through to scoop the fragments.");
         } else {
-            snprintf(message, message_size, "Close in on the fragments and let the tractor catch them.");
+            snprintf(message, message_size, "Press [R] to fire the tractor and pull fragments in.");
         }
         *r = 114;
         *g0 = 255;
@@ -427,16 +430,40 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
     }
 
     if ((LOCAL_PLAYER.hover_asteroid >= 0) && g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
-        snprintf(label, label_size, "TIP");
-        snprintf(message, message_size, "Hold the beam steady, crack the rock down, then sweep the fragments.");
+        snprintf(label, label_size, "MINE");
+        snprintf(message, message_size, "Hold [Space] to fire the mining laser. Crack the rock down to fragments.");
         *r = 164;
         *g0 = 177;
         *b = 205;
         return true;
     }
 
-    snprintf(label, label_size, "TIP");
-    snprintf(message, message_size, "Crack rocks, sweep fragments, and run raw ore back to the refinery.");
+    /* Default tip cycle: rotate through actionable hints based on context */
+    int idle_tip = (int)(g.world.time / 6.0f) % 4;
+    if (LOCAL_PLAYER.ship.towed_scaffold >= 0) {
+        snprintf(label, label_size, "PLACE");
+        snprintf(message, message_size, "You're towing a scaffold. Press [B] to lock it into a ring slot.");
+        *r = 255; *g0 = 221; *b = 119;
+        return true;
+    }
+    switch (idle_tip) {
+        case 0:
+            snprintf(label, label_size, "MINE");
+            snprintf(message, message_size, "Find an asteroid and hold [Space] to mine it.");
+            break;
+        case 1:
+            snprintf(label, label_size, "TRACTOR");
+            snprintf(message, message_size, "Press [R] to toggle your tractor and pull fragments in.");
+            break;
+        case 2:
+            snprintf(label, label_size, "DOCK");
+            snprintf(message, message_size, "Approach a station and press [E] to dock.");
+            break;
+        default:
+            snprintf(label, label_size, "BUILD");
+            snprintf(message, message_size, "Order a scaffold at any [Tab] SHIPYARD, then tow it to your outpost.");
+            break;
+    }
     *r = 164;
     *g0 = 177;
     *b = 205;

@@ -87,61 +87,63 @@ bool onboarding_hint(char *label, size_t label_size,
 
     if (!g.onboarding.launched) {
         if (LOCAL_PLAYER.docked) {
-            snprintf(label, label_size, "GUIDE");
-            snprintf(message, message_size, "Welcome, pilot. Press E to launch and start mining.");
+            snprintf(label, label_size, "LAUNCH");
+            snprintf(message, message_size, "Press [E] to undock and fly into the belt.");
             return true;
         }
         return false;
     }
     if (!g.onboarding.mined) {
-        snprintf(label, label_size, "GUIDE");
-        snprintf(message, message_size, "Fly toward an asteroid and hold Space to fire the mining beam.");
+        snprintf(label, label_size, "MINE");
+        snprintf(message, message_size, "Aim at an asteroid and hold [Space] to fire the mining laser.");
         return true;
     }
     if (!g.onboarding.collected) {
-        snprintf(label, label_size, "GUIDE");
-        snprintf(message, message_size, "Fly through ore fragments to collect them.");
+        snprintf(label, label_size, "COLLECT");
+        snprintf(message, message_size, "Fly close to ore fragments — your tractor [R] sweeps them up.");
         return true;
     }
     if (!g.onboarding.towed) {
-        snprintf(label, label_size, "GUIDE");
-        snprintf(message, message_size, "Tow fragments to a furnace and press R to release.");
+        snprintf(label, label_size, "HAUL");
+        snprintf(message, message_size, "Tow fragments back to the refinery to drop them in the hopper.");
         return true;
     }
     if (!g.onboarding.sold) {
         int cargo = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
         if (cargo > 0) {
-            snprintf(label, label_size, "GUIDE");
-            snprintf(message, message_size, "Head back to a station, dock with E, and press 1 to sell ore.");
+            snprintf(label, label_size, "SELL");
+            snprintf(message, message_size, "Dock at the refinery [E], press [1] to sell ore for credits.");
             return true;
         }
         return false;
     }
     if (!g.onboarding.bought) {
         if (LOCAL_PLAYER.docked) {
-            snprintf(label, label_size, "GUIDE");
-            snprintf(message, message_size, "Press F to buy frames from the station.");
+            snprintf(label, label_size, "MARKET");
+            snprintf(message, message_size, "Press [F] to buy refined goods (frames, ingots).");
             return true;
         }
         return false;
     }
     if (!g.onboarding.upgraded) {
-        snprintf(label, label_size, "GUIDE");
-        snprintf(message, message_size, "Dock at Kepler Yard or Helios Works and upgrade your ship.");
+        snprintf(label, label_size, "UPGRADE");
+        snprintf(message, message_size, "Dock at Kepler or Helios. Press [3]/[4]/[5] to upgrade hold/laser/tractor.");
         return true;
     }
     if (!g.onboarding.got_scaffold) {
-        snprintf(label, label_size, "GUIDE");
-        snprintf(message, message_size, "Buy a scaffold kit at a Blueprint Desk station (Kepler or Helios).");
+        snprintf(label, label_size, "SHIPYARD");
+        snprintf(message, message_size, "Dock at Kepler. Open the SHIPYARD tab [Tab] and press [1-9] to order a scaffold.");
         return true;
     }
     if (!g.onboarding.placed_outpost) {
-        if (LOCAL_PLAYER.ship.has_scaffold_kit) {
-            snprintf(label, label_size, "GUIDE");
-            snprintf(message, message_size, "Press B in open space to place your outpost, then supply it.");
+        if (LOCAL_PLAYER.ship.towed_scaffold >= 0) {
+            snprintf(label, label_size, "PLACE");
+            snprintf(message, message_size, "Tow it out, then press [B] to anchor it as your new outpost.");
             return true;
         }
-        return false;
+        snprintf(label, label_size, "TOW");
+        snprintf(message, message_size, "Find your scaffold near the shipyard and grab it with the tractor [R].");
+        return true;
     }
     return false;
 }
