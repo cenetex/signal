@@ -1578,34 +1578,73 @@ static module_type_t producer_for_commodity_client(commodity_t c) {
 
 void draw_placement_reticle(void) {
     if (!g.placement_reticle_active) return;
-    int s = g.placement_target_station;
-    int ring = g.placement_target_ring;
-    int slot = g.placement_target_slot;
-    if (s < 0 || s >= MAX_STATIONS) return;
-    const station_t *st = &g.world.stations[s];
-    if (!station_exists(st)) return;
 
-    vec2 target = module_world_pos_ring(st, ring, slot);
+    vec2 target;
+    bool slot_mode = (g.placement_target_station >= 0);
+    bool valid = true;
+
+    if (slot_mode) {
+        int s = g.placement_target_station;
+        if (s < 0 || s >= MAX_STATIONS) return;
+        const station_t *st = &g.world.stations[s];
+        if (!station_exists(st)) return;
+        target = module_world_pos_ring(st, g.placement_target_ring, g.placement_target_slot);
+    } else {
+        /* Found-new-outpost preview: show reticle at the scaffold's position.
+         * Color it red if signal is too weak / placement is invalid. */
+        int idx = LOCAL_PLAYER.ship.towed_scaffold;
+        if (idx < 0 || idx >= MAX_SCAFFOLDS) return;
+        const scaffold_t *sc = &g.world.scaffolds[idx];
+        if (!sc->active) return;
+        target = sc->pos;
+        /* Validity: signal range present and no station too close */
+        valid = signal_strength_at(&g.world, target) > 0.0f;
+        if (valid) {
+            for (int s = 0; s < MAX_STATIONS; s++) {
+                const station_t *st = &g.world.stations[s];
+                if (!station_exists(st)) continue;
+                if (v2_dist_sq(st->pos, target) < OUTPOST_MIN_DISTANCE * OUTPOST_MIN_DISTANCE) {
+                    valid = false; break;
+                }
+            }
+        }
+    }
+
     float pulse = 0.5f + 0.4f * sinf(g.world.time * 5.0f);
+    float r = valid ? 0.4f : 1.0f;
+    float g0 = valid ? 1.0f : 0.3f;
+    float b = valid ? 1.0f : 0.3f;
 
-    /* Bright cyan reticle ring */
-    draw_circle_outline(target, 30.0f, 24, 0.4f, 1.0f, 1.0f, pulse);
-    draw_circle_outline(target, 24.0f, 24, 0.4f, 1.0f, 1.0f, pulse * 0.6f);
-
-    /* Crosshair tick marks */
-    sgl_begin_lines();
-    sgl_c4f(0.4f, 1.0f, 1.0f, pulse);
-    float tick = 8.0f;
-    sgl_v2f(target.x - 36.0f, target.y); sgl_v2f(target.x - 36.0f + tick, target.y);
-    sgl_v2f(target.x + 36.0f, target.y); sgl_v2f(target.x + 36.0f - tick, target.y);
-    sgl_v2f(target.x, target.y - 36.0f); sgl_v2f(target.x, target.y - 36.0f + tick);
-    sgl_v2f(target.x, target.y + 36.0f); sgl_v2f(target.x, target.y + 36.0f - tick);
-    sgl_end();
-
-    /* Tether from player ship to reticle target so the player sees
-     * where it will land */
-    draw_segment(LOCAL_PLAYER.ship.pos, target,
-        0.4f, 1.0f, 1.0f, pulse * 0.5f);
+    if (slot_mode) {
+        /* Slot reticle: small precise crosshair */
+        draw_circle_outline(target, 30.0f, 24, r, g0, b, pulse);
+        draw_circle_outline(target, 24.0f, 24, r, g0, b, pulse * 0.6f);
+        sgl_begin_lines();
+        sgl_c4f(r, g0, b, pulse);
+        float tick = 8.0f;
+        sgl_v2f(target.x - 36.0f, target.y); sgl_v2f(target.x - 36.0f + tick, target.y);
+        sgl_v2f(target.x + 36.0f, target.y); sgl_v2f(target.x + 36.0f - tick, target.y);
+        sgl_v2f(target.x, target.y - 36.0f); sgl_v2f(target.x, target.y - 36.0f + tick);
+        sgl_v2f(target.x, target.y + 36.0f); sgl_v2f(target.x, target.y + 36.0f - tick);
+        sgl_end();
+        draw_segment(LOCAL_PLAYER.ship.pos, target, r, g0, b, pulse * 0.5f);
+    } else {
+        /* Outpost-founding reticle: larger, dashed circle showing the
+         * approximate dock radius of the outpost-to-be. */
+        draw_circle_outline(target, OUTPOST_DOCK_RADIUS, 32, r, g0, b, pulse * 0.7f);
+        draw_circle_outline(target, OUTPOST_RADIUS, 18, r, g0, b, pulse);
+        /* Compass tick marks */
+        sgl_begin_lines();
+        sgl_c4f(r, g0, b, pulse);
+        for (int i = 0; i < 4; i++) {
+            float a = (float)i * (TWO_PI_F / 4.0f);
+            float r1 = OUTPOST_DOCK_RADIUS - 6.0f;
+            float r2 = OUTPOST_DOCK_RADIUS + 6.0f;
+            sgl_v2f(target.x + cosf(a) * r1, target.y + sinf(a) * r1);
+            sgl_v2f(target.x + cosf(a) * r2, target.y + sinf(a) * r2);
+        }
+        sgl_end();
+    }
 }
 
 void draw_shipyard_intake_beams(void) {

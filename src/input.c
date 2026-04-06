@@ -303,48 +303,30 @@ input_intent_t sample_input_intent(void) {
     }
     /* B key: build mode */
     if (!LOCAL_PLAYER.docked && LOCAL_PLAYER.ship.towed_scaffold >= 0) {
-        /* Towing a scaffold: reticle-based placement.
-         * B = enter reticle / cycle next target
-         * E = confirm placement
-         * Esc = cancel reticle
-         * If no targets in range, B falls back to founding a new outpost. */
+        /* Towing a scaffold: reticle is always on. Two modes:
+         * - Targets in range → cyan ring on a slot. B cycles, E confirms snap.
+         * - No targets → "found new outpost" reticle at scaffold pos. E confirms.
+         * Esc cancels (just hides — towing continues). */
         reticle_target_t targets[RETICLE_MAX_TARGETS];
         int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
 
-        if (g.placement_reticle_active) {
-            if (is_key_pressed(SAPP_KEYCODE_ESCAPE)) {
-                g.placement_reticle_active = false;
-                set_notice("Placement cancelled.");
-            } else if (is_key_pressed(SAPP_KEYCODE_B)) {
-                /* Cycle to next target */
-                if (n > 0) {
-                    int cur = -1;
-                    for (int i = 0; i < n; i++) {
-                        if (targets[i].station == g.placement_target_station &&
-                            targets[i].ring == g.placement_target_ring &&
-                            targets[i].slot == g.placement_target_slot) {
-                            cur = i; break;
-                        }
-                    }
-                    int next = (cur + 1) % n;
-                    g.placement_target_station = targets[next].station;
-                    g.placement_target_ring = targets[next].ring;
-                    g.placement_target_slot = targets[next].slot;
-                } else {
-                    g.placement_reticle_active = false;
-                    set_notice("No slots in range.");
-                }
-            } else if (is_key_pressed(SAPP_KEYCODE_E)) {
-                /* Confirm */
-                intent.place_outpost = true;
-                intent.place_target_station = (int8_t)g.placement_target_station;
-                intent.place_target_ring = (int8_t)g.placement_target_ring;
-                intent.place_target_slot = (int8_t)g.placement_target_slot;
-                g.placement_reticle_active = false;
-                set_notice("Placing scaffold...");
+        /* Always active while towing (Esc temporarily hides) */
+        if (is_key_pressed(SAPP_KEYCODE_ESCAPE)) {
+            g.placement_reticle_active = false;
+        } else if (!g.placement_reticle_active) {
+            g.placement_reticle_active = true;
+            if (n > 0) {
+                g.placement_target_station = targets[0].station;
+                g.placement_target_ring = targets[0].ring;
+                g.placement_target_slot = targets[0].slot;
+            } else {
+                g.placement_target_station = -1;
             }
-            /* Auto-validate: if our chosen target was filled, refresh */
-            if (g.placement_reticle_active && n > 0) {
+        }
+
+        if (g.placement_reticle_active) {
+            if (n > 0) {
+                /* Refresh: if our chosen target was filled or out of range, snap to first */
                 bool still_valid = false;
                 for (int i = 0; i < n; i++) {
                     if (targets[i].station == g.placement_target_station &&
@@ -358,21 +340,39 @@ input_intent_t sample_input_intent(void) {
                     g.placement_target_ring = targets[0].ring;
                     g.placement_target_slot = targets[0].slot;
                 }
-            }
-            if (g.placement_reticle_active && n == 0) {
-                g.placement_reticle_active = false;
-            }
-        } else if (is_key_pressed(SAPP_KEYCODE_B)) {
-            if (n > 0) {
-                /* Enter reticle mode on first target */
-                g.placement_reticle_active = true;
-                g.placement_target_station = targets[0].station;
-                g.placement_target_ring = targets[0].ring;
-                g.placement_target_slot = targets[0].slot;
-                set_notice("Aim: B cycles, E confirms, Esc cancels.");
+
+                if (is_key_pressed(SAPP_KEYCODE_B)) {
+                    /* Cycle to next target */
+                    int cur = -1;
+                    for (int i = 0; i < n; i++) {
+                        if (targets[i].station == g.placement_target_station &&
+                            targets[i].ring == g.placement_target_ring &&
+                            targets[i].slot == g.placement_target_slot) {
+                            cur = i; break;
+                        }
+                    }
+                    int next = (cur + 1) % n;
+                    g.placement_target_station = targets[next].station;
+                    g.placement_target_ring = targets[next].ring;
+                    g.placement_target_slot = targets[next].slot;
+                } else if (is_key_pressed(SAPP_KEYCODE_E)) {
+                    /* Confirm placement at chosen slot */
+                    intent.place_outpost = true;
+                    intent.place_target_station = (int8_t)g.placement_target_station;
+                    intent.place_target_ring = (int8_t)g.placement_target_ring;
+                    intent.place_target_slot = (int8_t)g.placement_target_slot;
+                    g.placement_reticle_active = false;
+                    set_notice("Placing scaffold...");
+                }
             } else {
-                /* No outpost in range — found a new station */
-                intent.place_outpost = true;
+                /* No targets — "found outpost here" preview */
+                g.placement_target_station = -1;
+                if (is_key_pressed(SAPP_KEYCODE_E) || is_key_pressed(SAPP_KEYCODE_B)) {
+                    /* Confirm: found a new outpost at scaffold pos (server handles) */
+                    intent.place_outpost = true;
+                    g.placement_reticle_active = false;
+                    set_notice("Founding outpost...");
+                }
             }
         }
     } else if (g.placing_outpost) {
