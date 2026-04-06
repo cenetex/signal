@@ -4568,8 +4568,8 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 19  /* bumped: Kepler Ring 1 ore_silo, dock half-collision */
-#define MIN_SAVE_VERSION 19  /* oldest version we can migrate from */
+#define SAVE_VERSION 20  /* bumped: pending_scaffolds + module_buffer + scaffolds[] */
+#define MIN_SAVE_VERSION 20  /* oldest version we can migrate from */
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
@@ -4599,6 +4599,14 @@ static bool write_station(FILE *f, const station_t *s) {
         WRITE_FIELD(f, s->arm_rotation[a]);
         WRITE_FIELD(f, s->arm_speed[a]);
         WRITE_FIELD(f, s->ring_offset[a]);
+    }
+    /* Production layer v1: shipyard order queue + per-module buffer */
+    WRITE_FIELD(f, s->pending_scaffold_count);
+    for (int p = 0; p < 4; p++) {
+        WRITE_FIELD(f, s->pending_scaffolds[p]);
+    }
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
+        WRITE_FIELD(f, s->module_buffer[m]);
     }
     return true;
 }
@@ -4630,6 +4638,16 @@ static bool read_station(FILE *f, station_t *s) {
         READ_FIELD(f, s->arm_rotation[a]);
         READ_FIELD(f, s->arm_speed[a]);
         READ_FIELD(f, s->ring_offset[a]);
+    }
+    /* Production layer v1: shipyard order queue + per-module buffer */
+    READ_FIELD(f, s->pending_scaffold_count);
+    if (s->pending_scaffold_count < 0) s->pending_scaffold_count = 0;
+    if (s->pending_scaffold_count > 4) s->pending_scaffold_count = 4;
+    for (int p = 0; p < 4; p++) {
+        READ_FIELD(f, s->pending_scaffolds[p]);
+    }
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
+        READ_FIELD(f, s->module_buffer[m]);
     }
     return true;
 }
@@ -4776,6 +4794,10 @@ bool world_save(const world_t *w, const char *path) {
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         if (!write_contract(f, &w->contracts[i])) { fclose(f); remove(tmp_path); return false; }
     }
+    /* Scaffolds (whole array, fixed-size) */
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        WRITE_FIELD(f, w->scaffolds[i]);
+    }
 
     fclose(f);
     /* Atomic rename — on POSIX this is atomic; on Windows it overwrites. */
@@ -4816,6 +4838,10 @@ bool world_load(world_t *w, const char *path) {
     /* Contracts */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         if (!read_contract(f, &w->contracts[i])) return false;
+    }
+    /* Scaffolds (v20+) */
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        READ_FIELD(f, w->scaffolds[i]);
     }
 
     /* ---- Version migrations ----

@@ -3178,15 +3178,15 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
 /* ================================================================== */
 
 /*
- * EXPECTED_V19_SAVE_SIZE is the exact byte count of a world.sav written
- * by SAVE_VERSION 19.  If a field is added to write_station / write_asteroid /
- * write_npc / write_contract or the header, this number changes and the test
- * fails.  That failure is the reminder to:
+ * EXPECTED_SAVE_SIZE is the exact byte count of a world.sav written by the
+ * current SAVE_VERSION. If a field is added to write_station / write_asteroid /
+ * write_npc / write_contract / the scaffolds array, or the header, this
+ * number changes and the test fails. That failure is the reminder to:
  *   1. Bump SAVE_VERSION
  *   2. Add a migration block in world_load()
  *   3. Update this constant to the new size
  */
-#define EXPECTED_V19_SAVE_SIZE 20094
+#define EXPECTED_SAVE_SIZE 22046  /* v20: + per-station shipyard state + scaffolds[] */
 
 TEST(test_save_file_size_stable) {
     world_t w = {0};
@@ -3198,8 +3198,8 @@ TEST(test_save_file_size_stable) {
     long size = ftell(f);
     fclose(f);
     /* If this fails you changed the binary save format.
-     * Bump SAVE_VERSION, add a migration, and update EXPECTED_V19_SAVE_SIZE. */
-    ASSERT_EQ_INT((int)size, EXPECTED_V19_SAVE_SIZE);
+     * Bump SAVE_VERSION, add a migration, and update EXPECTED_SAVE_SIZE. */
+    ASSERT_EQ_INT((int)size, EXPECTED_SAVE_SIZE);
     remove("/tmp/test_size.sav");
 }
 
@@ -3221,7 +3221,7 @@ TEST(test_save_header_golden_bytes) {
     fread(&spawn_timer, 4, 1, f);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 19);
+    ASSERT_EQ_INT((int)version, 20);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -3275,13 +3275,13 @@ TEST(test_save_backward_compat_version_accepted) {
     world_reset(&w);
     w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 77.0f;
     ASSERT(world_save(&w, "/tmp/test_compat.sav"));
-    /* Patch version field (bytes 4-7) to MIN_SAVE_VERSION (19) — currently
-     * same as SAVE_VERSION, so this is a no-op.  When SAVE_VERSION is bumped
-     * to 20+, this test verifies that v19 saves still load. */
+    /* Patch version field (bytes 4-7) to MIN_SAVE_VERSION — currently
+     * same as SAVE_VERSION, so this is a no-op. When SAVE_VERSION is bumped
+     * past MIN_SAVE_VERSION, this test verifies older saves still load. */
     FILE *f = fopen("/tmp/test_compat.sav", "r+b");
     ASSERT(f != NULL);
     fseek(f, 4, SEEK_SET);
-    uint32_t min_ver = 19;  /* MIN_SAVE_VERSION at time of writing */
+    uint32_t min_ver = 20;  /* MIN_SAVE_VERSION at time of writing */
     fwrite(&min_ver, sizeof(min_ver), 1, f);
     fclose(f);
     world_t loaded = {0};
@@ -4511,6 +4511,46 @@ TEST(test_scaffold_tow_speed_cap) {
     ASSERT(spd <= 60.0f); /* slightly above cap due to spring forces in single frame */
 }
 
+TEST(test_save_preserves_pending_scaffolds) {
+    /* Save/load round-trip should preserve shipyard pending orders,
+     * per-module buffers, and active scaffolds. */
+    world_t w = {0};
+    world_reset(&w);
+
+    /* Add a pending order at Kepler (station 1, has shipyard) */
+    w.stations[1].pending_scaffolds[0].type = MODULE_FURNACE;
+    w.stations[1].pending_scaffolds[0].owner = 0;
+    w.stations[1].pending_scaffold_count = 1;
+    /* Some module buffer state */
+    w.stations[1].module_buffer[3] = 42.5f;
+    /* Spawn a nascent scaffold */
+    int sidx = spawn_scaffold(&w, MODULE_FRAME_PRESS, w.stations[1].pos, 0);
+    ASSERT(sidx >= 0);
+    w.scaffolds[sidx].state = SCAFFOLD_NASCENT;
+    w.scaffolds[sidx].built_at_station = 1;
+    w.scaffolds[sidx].build_amount = 17.0f;
+
+    ASSERT(world_save(&w, "/tmp/test_pending.sav"));
+
+    world_t loaded = {0};
+    ASSERT(world_load(&loaded, "/tmp/test_pending.sav"));
+
+    /* Verify pending order survived */
+    ASSERT_EQ_INT(loaded.stations[1].pending_scaffold_count, 1);
+    ASSERT_EQ_INT(loaded.stations[1].pending_scaffolds[0].type, MODULE_FURNACE);
+    ASSERT_EQ_INT(loaded.stations[1].pending_scaffolds[0].owner, 0);
+    ASSERT_EQ_FLOAT(loaded.stations[1].module_buffer[3], 42.5f, 0.01f);
+
+    /* Verify scaffold survived */
+    ASSERT(loaded.scaffolds[sidx].active);
+    ASSERT_EQ_INT(loaded.scaffolds[sidx].module_type, MODULE_FRAME_PRESS);
+    ASSERT_EQ_INT(loaded.scaffolds[sidx].state, SCAFFOLD_NASCENT);
+    ASSERT_EQ_INT(loaded.scaffolds[sidx].built_at_station, 1);
+    ASSERT_EQ_FLOAT(loaded.scaffolds[sidx].build_amount, 17.0f, 0.01f);
+
+    remove("/tmp/test_pending.sav");
+}
+
 int main(void) {
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
@@ -4796,6 +4836,7 @@ int main(void) {
     RUN(test_scaffold_snap_ignores_starter_stations);
     RUN(test_scaffold_full_pipeline);
     RUN(test_scaffold_ship_drag);
+    RUN(test_save_preserves_pending_scaffolds);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
