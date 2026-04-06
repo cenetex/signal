@@ -2643,26 +2643,23 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             st->radius = OUTPOST_RADIUS;
             st->dock_radius = OUTPOST_DOCK_RADIUS;
             st->signal_range = OUTPOST_SIGNAL_RANGE;
-            st->scaffold = true;
-            st->scaffold_progress = 0.0f;
+            /* Outpost activates immediately — the scaffold you towed here
+             * IS the seed. Dock + relay come online on arrival. */
+            st->scaffold = false;
+            st->scaffold_progress = 1.0f;
             add_module_at(st, MODULE_DOCK, 0, 0xFF);
             add_module_at(st, MODULE_SIGNAL_RELAY, 0, 0xFF);
             rebuild_station_services(st);
-            for (int k = 0; k < MAX_CONTRACTS; k++) {
-                if (!w->contracts[k].active) {
-                    w->contracts[k] = (contract_t){
-                        .active = true, .action = CONTRACT_SUPPLY,
-                        .station_index = (uint8_t)slot,
-                        .commodity = COMMODITY_FRAME,
-                        .quantity_needed = SCAFFOLD_MATERIAL_NEEDED,
-                        .base_price = 23.0f,
-                        .target_index = -1, .claimed_by = -1,
-                    };
-                    break;
-                }
+            rebuild_signal_chain(w);
+            /* Queue the module scaffold — materials already provided at shipyard */
+            if (st->module_count < MAX_MODULES_PER_STATION) {
+                station_module_t *m = &st->modules[st->module_count++];
+                m->type = sc->module_type;
+                m->ring = 1;
+                m->slot = 0;
+                m->scaffold = true;
+                m->build_progress = 1.0f;
             }
-            begin_module_construction_at(w, st, slot,
-                sc->module_type, 1, 0);
             emit_event(w, (sim_event_t){
                 .type = SIM_EVENT_OUTPOST_PLACED,
                 .outpost_placed = { .slot = slot },
@@ -4011,13 +4008,24 @@ static bool find_nearest_open_slot(const station_t *st, vec2 pos, int *out_ring,
     return found;
 }
 
-/* Convert a snapped scaffold into a station module and start construction. */
+/* Convert a snapped scaffold into a station module.
+ * Materials were already consumed at the shipyard during manufacture —
+ * placement goes straight to the 10s construction timer, no supply phase. */
 static void finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
+    (void)w;
     station_t *st = &w->stations[sc->placed_station];
-    /* Create the module as a scaffold (under construction) */
-    begin_module_construction_at(w, st, sc->placed_station,
-                                 sc->module_type, sc->placed_ring, sc->placed_slot);
-    /* Deactivate the world scaffold entity — the module system owns it now */
+    if (st->module_count >= MAX_MODULES_PER_STATION) {
+        sc->active = false;
+        return;
+    }
+    station_module_t *m = &st->modules[st->module_count++];
+    m->type = sc->module_type;
+    m->ring = (uint8_t)sc->placed_ring;
+    m->slot = (uint8_t)sc->placed_slot;
+    m->scaffold = true;
+    m->build_progress = 1.0f; /* materials already delivered — skip supply phase */
+    SIM_LOG("[sim] placed %s at station %d ring %d slot %d (no supply needed)\n",
+            module_type_name(sc->module_type), sc->placed_station, sc->placed_ring, sc->placed_slot);
     sc->active = false;
 }
 

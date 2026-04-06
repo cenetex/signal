@@ -4428,18 +4428,14 @@ TEST(test_scaffold_full_pipeline) {
     ASSERT(!w.scaffolds[idx].active);
     ASSERT(w.stations[outpost].module_count == before_count + 1);
 
-    /* The new module should be a furnace scaffold under construction */
+    /* The new module should be a furnace scaffold with materials pre-paid
+     * (build_progress >= 1.0 — materials consumed at shipyard during
+     * manufacture). The construction timer runs from 1.0 → 2.0. */
     station_module_t *m = &w.stations[outpost].modules[before_count];
     ASSERT_EQ_INT(m->type, MODULE_FURNACE);
-    ASSERT(m->scaffold);
-    ASSERT(m->build_progress < 1.0f); /* not yet supplied */
+    ASSERT(m->build_progress >= 1.0f); /* supply phase already skipped */
 
-    /* Step 2: Supply — put frames in station inventory (simulates NPC delivery) */
-    float cost = 60.0f; /* MODULE_FURNACE build cost (frames) */
-    commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
-    w.stations[outpost].inventory[mat] = cost;
-
-    /* Run until materials are consumed and build timer completes */
+    /* Run construction timer (10s) */
     for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
 
     /* Module should be fully activated */
