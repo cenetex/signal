@@ -2605,13 +2605,41 @@ static void release_towed_scaffold(world_t *w, server_player_t *sp) {
     sp->ship.towed_scaffold = -1;
 }
 
-/* Intentional placement — snap to outpost or found new station. */
+/* Intentional placement — snap to outpost or found new station.
+ * If the player chose an explicit target via the placement reticle
+ * (place_target_station >= 0), use that. Otherwise auto-snap. */
 static void place_towed_scaffold(world_t *w, server_player_t *sp) {
     int idx = sp->ship.towed_scaffold;
     if (idx < 0 || idx >= MAX_SCAFFOLDS || !w->scaffolds[idx].active) return;
     scaffold_t *sc = &w->scaffolds[idx];
 
-    /* Try to snap to a nearby outpost ring slot */
+    /* Explicit target from client reticle */
+    if (sp->input.place_target_station >= 0) {
+        int s = sp->input.place_target_station;
+        int ring = sp->input.place_target_ring;
+        int slot = sp->input.place_target_slot;
+        if (s >= 0 && s < MAX_STATIONS && station_is_active(&w->stations[s])) {
+            station_t *st = &w->stations[s];
+            /* Verify the slot is still open */
+            bool taken = false;
+            for (int m = 0; m < st->module_count; m++)
+                if (st->modules[m].ring == ring && st->modules[m].slot == slot) {
+                    taken = true; break;
+                }
+            if (!taken) {
+                sc->state = SCAFFOLD_SNAPPING;
+                sc->placed_station = s;
+                sc->placed_ring = ring;
+                sc->placed_slot = slot;
+                sc->vel = v2(0.0f, 0.0f);
+                sc->towed_by = -1;
+                sp->ship.towed_scaffold = -1;
+                return;
+            }
+        }
+    }
+
+    /* Auto-snap fallback: try to snap to a nearby outpost ring slot */
     for (int s = 3; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;

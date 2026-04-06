@@ -84,6 +84,12 @@ typedef struct {
     bool upgrade_hold;
     bool upgrade_tractor;
     bool place_outpost;
+    /* Optional explicit target for tow placement. If place_target_station >= 0,
+     * the server places the towed scaffold at that ring/slot; otherwise it
+     * auto-snaps to the closest valid slot or founds a new outpost. */
+    int8_t place_target_station;
+    int8_t place_target_ring;
+    int8_t place_target_slot;
     bool place_module;          /* attach scaffold kit as module at own station */
     bool buy_scaffold_kit;
     module_type_t scaffold_kit_module; /* what module type the kit builds */
