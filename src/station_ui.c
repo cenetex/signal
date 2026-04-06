@@ -972,19 +972,28 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             sdtx_printf("PENDING ORDERS (%d/4)", ui->station->pending_scaffold_count);
             ly += 14.0f;
-            /* Find the shipyard module to read its intake buffer */
-            int yard_idx = -1;
-            for (int i = 0; i < ui->station->module_count; i++) {
-                if (ui->station->modules[i].type == MODULE_SHIPYARD && !ui->station->modules[i].scaffold) {
-                    yard_idx = i; break;
+            /* Find the nascent scaffold being built at this station */
+            const scaffold_t *nascent = NULL;
+            for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+                if (g.world.scaffolds[i].active &&
+                    g.world.scaffolds[i].state == SCAFFOLD_NASCENT) {
+                    /* Match by station — find ours */
+                    for (int s = 0; s < MAX_STATIONS; s++) {
+                        if (&g.world.stations[s] == ui->station &&
+                            g.world.scaffolds[i].built_at_station == s) {
+                            nascent = &g.world.scaffolds[i];
+                            break;
+                        }
+                    }
+                    if (nascent) break;
                 }
             }
             for (int p = 0; p < ui->station->pending_scaffold_count; p++) {
                 module_type_t t = ui->station->pending_scaffolds[p].type;
                 commodity_t mat_type = module_build_material_lookup(t);
                 float need = module_build_cost_lookup(t);
-                /* Head of queue uses shipyard intake buffer; rest are queued */
-                float have = (p == 0 && yard_idx >= 0) ? ui->station->module_buffer[yard_idx] : 0.0f;
+                /* Head of queue uses nascent's build_amount */
+                float have = (p == 0 && nascent) ? nascent->build_amount : 0.0f;
                 float station_have = ui->station->inventory[mat_type];
                 int got = (int)lroundf(have);
                 int total = (int)lroundf(need);

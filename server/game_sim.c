@@ -3964,9 +3964,21 @@ static float shipyard_intake_rate(const station_t *st, int shipyard_idx, commodi
     return 0.5f; /* no producer, just background trickle from inventory */
 }
 
-/* Production layer v1: shipyards slowly pull material from station inventory
- * into their own intake buffer. Rate scales with adjacency to a producer
- * module on the same ring. When the buffer is full, manufacture a scaffold. */
+/* Find an existing nascent scaffold being built at this station, if any. */
+static int find_nascent_scaffold(const world_t *w, int station_idx) {
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        if (!w->scaffolds[i].active) continue;
+        if (w->scaffolds[i].state != SCAFFOLD_NASCENT) continue;
+        if (w->scaffolds[i].built_at_station != station_idx) continue;
+        return i;
+    }
+    return -1;
+}
+
+/* Production layer v1: a nascent scaffold appears at the station center
+ * when there's a pending order. Producer modules beam material to it.
+ * The intake rate is layout-aware (same-ring fast, cross-ring slow).
+ * When complete, the scaffold becomes LOOSE and can be towed away. */
 static void step_shipyard_manufacture(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
@@ -3988,27 +4000,41 @@ static void step_shipyard_manufacture(world_t *w, float dt) {
         commodity_t mat = module_build_material(type);
         float needed = module_build_cost(type);
 
-        /* Pull from station inventory into shipyard's local intake buffer
-         * at a layout-aware rate. */
-        if (st->module_buffer[yard_idx] < needed) {
+        /* Make sure a nascent scaffold exists at the station center */
+        int nidx = find_nascent_scaffold(w, s);
+        if (nidx < 0) {
+            nidx = spawn_scaffold(w, type, st->pos, (int)owner);
+            if (nidx < 0) continue; /* no slots */
+            w->scaffolds[nidx].state = SCAFFOLD_NASCENT;
+            w->scaffolds[nidx].built_at_station = s;
+            w->scaffolds[nidx].build_amount = 0.0f;
+            w->scaffolds[nidx].vel = v2(0.0f, 0.0f);
+            w->scaffolds[nidx].pos = st->pos;
+        }
+        scaffold_t *nascent = &w->scaffolds[nidx];
+
+        /* Pull material from station inventory into the nascent scaffold's
+         * build pool at a layout-aware rate. */
+        if (nascent->build_amount < needed) {
             float rate = shipyard_intake_rate(st, yard_idx, mat);
             float pull = rate * dt;
             if (pull > st->inventory[mat]) pull = st->inventory[mat];
-            float room = needed - st->module_buffer[yard_idx];
+            float room = needed - nascent->build_amount;
             if (pull > room) pull = room;
             if (pull > 0.0f) {
                 st->inventory[mat] -= pull;
-                st->module_buffer[yard_idx] += pull;
+                nascent->build_amount += pull;
             }
         }
 
-        /* Manufacture when buffer is full */
-        if (st->module_buffer[yard_idx] >= needed) {
-            st->module_buffer[yard_idx] = 0.0f;
-            float spawn_angle = PI_F; /* -X side of station */
-            float spawn_r = st->dock_radius + 80.0f;
-            vec2 spawn_pos = v2_add(st->pos, v2(cosf(spawn_angle) * spawn_r, sinf(spawn_angle) * spawn_r));
-            spawn_scaffold(w, type, spawn_pos, (int)owner);
+        /* Manufacture complete: nascent → loose, drift it gently outward */
+        if (nascent->build_amount >= needed) {
+            nascent->state = SCAFFOLD_LOOSE;
+            nascent->built_at_station = -1;
+            nascent->build_amount = 0.0f;
+            /* Push outward toward -X so it leaves the construction area */
+            float angle = PI_F;
+            nascent->vel = v2(cosf(angle) * 30.0f, sinf(angle) * 30.0f);
             /* Shift queue */
             for (int i = 0; i < st->pending_scaffold_count - 1; i++) {
                 st->pending_scaffolds[i] = st->pending_scaffolds[i + 1];
@@ -4043,6 +4069,8 @@ int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner) {
         sc->placed_ring = -1;
         sc->placed_slot = -1;
         sc->towed_by = -1;
+        sc->built_at_station = -1;
+        sc->build_amount = 0.0f;
         return i;
     }
     return -1; /* no free slot */
@@ -4111,6 +4139,14 @@ static void step_scaffolds(world_t *w, float dt) {
         if (!sc->active) continue;
         sc->age += dt;
         sc->rotation += sc->spin * dt;
+
+        /* Nascent scaffolds: anchored at station center, no movement */
+        if (sc->state == SCAFFOLD_NASCENT) {
+            if (sc->built_at_station >= 0 && sc->built_at_station < MAX_STATIONS) {
+                sc->pos = w->stations[sc->built_at_station].pos;
+            }
+            continue;
+        }
 
         if (sc->state == SCAFFOLD_LOOSE) {
             /* Apply drag so loose scaffolds settle near where they spawned */

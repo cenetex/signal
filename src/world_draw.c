@@ -680,18 +680,10 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
 
     (void)is_current;
 
-    /* Core: concentric rings + crosshair */
-    float pulse = 0.2f + 0.1f * sinf(g.world.time * 2.0f);
-    draw_circle_outline(station->pos, 12.0f, 16, role_r * 0.5f, role_g * 0.5f, role_b * 0.5f, pulse);
-    draw_circle_outline(station->pos, 6.0f, 12, role_r * 0.35f, role_g * 0.35f, role_b * 0.35f, pulse * 0.7f);
-    draw_circle_filled(station->pos, 3.0f, 8, role_r * 0.6f, role_g * 0.6f, role_b * 0.6f, pulse * 0.5f);
-    /* Crosshair */
-    float ch = 18.0f;
-    sgl_c4f(role_r * 0.3f, role_g * 0.3f, role_b * 0.3f, pulse * 0.4f);
-    sgl_begin_lines();
-    sgl_v2f(station->pos.x - ch, station->pos.y); sgl_v2f(station->pos.x + ch, station->pos.y);
-    sgl_v2f(station->pos.x, station->pos.y - ch); sgl_v2f(station->pos.x, station->pos.y + ch);
-    sgl_end();
+    /* Station center is empty space — the construction yard.
+     * Just a faint marker so the player can locate the geometric center. */
+    float pulse = 0.15f + 0.08f * sinf(g.world.time * 2.0f);
+    draw_circle_outline(station->pos, 4.0f, 8, role_r * 0.4f, role_g * 0.4f, role_b * 0.4f, pulse);
 
     /* Radial spokes from core to ring 1 modules */
     for (int i = 0; i < station->module_count; i++) {
@@ -1487,11 +1479,23 @@ void draw_scaffolds(void) {
         amb_g = lerpf(amb_g, mg, 0.3f);
         amb_b = lerpf(amb_b, mb, 0.3f);
 
+        /* Nascent build progress (0..1) — drives visual fill */
+        float build_frac = 0.0f;
+        if (sc->state == SCAFFOLD_NASCENT) {
+            float total = module_build_cost_lookup(sc->module_type);
+            if (total > 0.0f) build_frac = sc->build_amount / total;
+            if (build_frac > 1.0f) build_frac = 1.0f;
+        }
+
         sgl_push_matrix();
         sgl_translate(sc->pos.x, sc->pos.y, 0.0f);
         sgl_rotate(sc->rotation, 0.0f, 0.0f, 1.0f);
 
         float r = sc->radius;
+        /* Nascent scaffolds grow visually as build progress advances */
+        if (sc->state == SCAFFOLD_NASCENT) {
+            r = sc->radius * (0.4f + 0.6f * build_frac);
+        }
 
         /* Wireframe octagon */
         sgl_begin_lines();
@@ -1573,65 +1577,48 @@ static module_type_t producer_for_commodity_client(commodity_t c) {
 }
 
 void draw_shipyard_intake_beams(void) {
-    for (int s = 0; s < MAX_STATIONS; s++) {
+    /* Find each nascent scaffold and draw beams from contributing modules
+     * (producer modules of the required commodity, plus the shipyard itself)
+     * converging on the scaffold at the station center. */
+    for (int si = 0; si < MAX_SCAFFOLDS; si++) {
+        const scaffold_t *sc = &g.world.scaffolds[si];
+        if (!sc->active || sc->state != SCAFFOLD_NASCENT) continue;
+        int s = sc->built_at_station;
+        if (s < 0 || s >= MAX_STATIONS) continue;
         const station_t *st = &g.world.stations[s];
-        if (!station_exists(st) || st->scaffold) continue;
-        if (st->pending_scaffold_count == 0) continue;
+        if (!station_exists(st)) continue;
 
-        /* Find a shipyard module */
-        int yard_idx = -1;
-        for (int i = 0; i < st->module_count; i++) {
-            if (st->modules[i].type == MODULE_SHIPYARD && !st->modules[i].scaffold) {
-                yard_idx = i; break;
-            }
-        }
-        if (yard_idx < 0) continue;
-
-        module_type_t needed_type = st->pending_scaffolds[0].type;
-        commodity_t mat = module_build_material_lookup(needed_type);
+        commodity_t mat = module_build_material_lookup(sc->module_type);
         module_type_t prod_type = producer_for_commodity_client(mat);
-        if (prod_type == MODULE_COUNT) continue;
 
-        vec2 yard_pos = module_world_pos_ring(st, st->modules[yard_idx].ring, st->modules[yard_idx].slot);
-
-        /* Find best producer: prefer same-ring, closest slot */
-        int best = -1;
-        bool best_same_ring = false;
-        int best_dist = 999;
-        for (int i = 0; i < st->module_count; i++) {
-            if (i == yard_idx) continue;
-            if (st->modules[i].scaffold) continue;
-            if (st->modules[i].type != prod_type) continue;
-            bool same_ring = (st->modules[i].ring == st->modules[yard_idx].ring);
-            int dist = same_ring
-                ? abs((int)st->modules[i].slot - (int)st->modules[yard_idx].slot)
-                : 100; /* cross-ring penalty */
-            if (best < 0 ||
-                (same_ring && !best_same_ring) ||
-                (same_ring == best_same_ring && dist < best_dist)) {
-                best = i;
-                best_same_ring = same_ring;
-                best_dist = dist;
-            }
-        }
-        if (best < 0) continue;
-
-        vec2 prod_pos = module_world_pos_ring(st, st->modules[best].ring, st->modules[best].slot);
-
-        /* Pulse stronger when same-ring */
+        vec2 target = sc->pos;
         float t = g.world.time * 4.0f;
-        float pulse = 0.4f + 0.3f * sinf(t);
-        if (!best_same_ring) pulse *= 0.5f;
 
-        /* Amber-cyan beam: producer warm, shipyard cold */
-        draw_segment(prod_pos, yard_pos, 1.0f, 0.85f, 0.47f, pulse);
+        /* Beam from each contributing module */
+        for (int i = 0; i < st->module_count; i++) {
+            if (st->modules[i].scaffold) continue;
+            bool is_yard = (st->modules[i].type == MODULE_SHIPYARD);
+            bool is_prod = (st->modules[i].type == prod_type);
+            if (!is_yard && !is_prod) continue;
 
-        /* Pulsing dots traveling along the line for "flow" feel */
-        int dots = 4;
-        for (int d = 0; d < dots; d++) {
-            float frac = fmodf((t * 0.15f) + (float)d / (float)dots, 1.0f);
-            vec2 p = v2_add(prod_pos, v2_scale(v2_sub(yard_pos, prod_pos), frac));
-            draw_circle_filled(p, 2.5f, 6, 1.0f, 0.85f, 0.47f, pulse + 0.2f);
+            vec2 mod_pos = module_world_pos_ring(st, st->modules[i].ring, st->modules[i].slot);
+            float pulse = 0.4f + 0.3f * sinf(t + (float)i * 0.7f);
+            if (is_yard) pulse *= 0.7f; /* shipyard line is steadier */
+
+            /* Different color for shipyard vs producer */
+            float r = is_yard ? 0.5f : 1.0f;
+            float gc = is_yard ? 0.75f : 0.85f;
+            float b = is_yard ? 1.0f : 0.47f;
+
+            draw_segment(mod_pos, target, r, gc, b, pulse);
+
+            /* Flow dots along the beam */
+            int dots = 4;
+            for (int d = 0; d < dots; d++) {
+                float frac = fmodf((t * 0.18f) + (float)d / (float)dots, 1.0f);
+                vec2 p = v2_add(mod_pos, v2_scale(v2_sub(target, mod_pos), frac));
+                draw_circle_filled(p, 2.5f, 6, r, gc, b, pulse + 0.15f);
+            }
         }
     }
 }

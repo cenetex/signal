@@ -297,7 +297,8 @@ static inline bool station_collides(const station_t *st) {
 /* ------------------------------------------------------------------ */
 
 typedef enum {
-    SCAFFOLD_LOOSE,     /* floating near shipyard after purchase */
+    SCAFFOLD_NASCENT,   /* under construction at station center */
+    SCAFFOLD_LOOSE,     /* floating after manufacture, ready to tow */
     SCAFFOLD_TOWING,    /* attached to player/NPC tractor beam */
     SCAFFOLD_SNAPPING,  /* station tendrils pulling scaffold into ring slot */
     SCAFFOLD_PLACED,    /* locked to ring slot, awaiting supply → becomes module */
@@ -318,6 +319,9 @@ typedef struct {
     int placed_ring;
     int placed_slot;
     int towed_by;               /* player index towing this, -1 = none */
+    /* Nascent state: built at station center while NASCENT */
+    int built_at_station;       /* station building this scaffold (-1 if not nascent) */
+    float build_amount;         /* material accumulated, complete at module_build_cost() */
 } scaffold_t;
 
 typedef enum {
