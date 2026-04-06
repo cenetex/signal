@@ -778,6 +778,7 @@ static void render_world(void) {
     }
     draw_scaffolds();
     draw_shipyard_intake_beams();
+    draw_placement_reticle();
     draw_beam();
     draw_ship_tractor_field();
     draw_towed_tethers();

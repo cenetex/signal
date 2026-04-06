@@ -32,8 +32,42 @@ bool is_key_pressed(sapp_keycode key) {
     return (key >= 0) && (key < KEY_COUNT) && g.input.key_pressed[key];
 }
 
+/* Build a flat list of (station, ring, slot) tuples for every open slot
+ * across all player outposts in snap range of a position. Returns the
+ * count. Used by the placement reticle to cycle through valid targets. */
+typedef struct { int station; int ring; int slot; } reticle_target_t;
+#define RETICLE_MAX_TARGETS 32
+static int collect_reticle_targets(vec2 pos, reticle_target_t *out, int max) {
+    int count = 0;
+    const float SNAP_RANGE_SQ = 600.0f * 600.0f;
+    for (int s = 3; s < MAX_STATIONS && count < max; s++) {
+        const station_t *st = &g.world.stations[s];
+        if (!station_exists(st) || st->scaffold) continue;
+        if (v2_dist_sq(st->pos, pos) > SNAP_RANGE_SQ) continue;
+        for (int ring = 1; ring <= STATION_NUM_RINGS && count < max; ring++) {
+            int slots = STATION_RING_SLOTS[ring];
+            for (int slot = 0; slot < slots && count < max; slot++) {
+                bool taken = false;
+                for (int m = 0; m < st->module_count; m++)
+                    if (st->modules[m].ring == ring && st->modules[m].slot == slot) {
+                        taken = true; break;
+                    }
+                if (taken) continue;
+                out[count].station = s;
+                out[count].ring = ring;
+                out[count].slot = slot;
+                count++;
+            }
+        }
+    }
+    return count;
+}
+
 input_intent_t sample_input_intent(void) {
     input_intent_t intent = { 0 };
+    intent.place_target_station = -1;
+    intent.place_target_ring = -1;
+    intent.place_target_slot = -1;
 
     if (is_key_down(SAPP_KEYCODE_A) || is_key_down(SAPP_KEYCODE_LEFT)) {
         intent.turn += 1.0f;
@@ -53,6 +87,11 @@ input_intent_t sample_input_intent(void) {
     intent.reset = is_key_pressed(SAPP_KEYCODE_X) && !LOCAL_PLAYER.docked;
     /* Safety: close build overlay if not docked */
     if (!LOCAL_PLAYER.docked) g.build_overlay = false;
+    /* Safety: clear placement reticle if no longer towing or now docked */
+    if (g.placement_reticle_active &&
+        (LOCAL_PLAYER.docked || LOCAL_PLAYER.ship.towed_scaffold < 0)) {
+        g.placement_reticle_active = false;
+    }
     /* Close inspect pane when docked or thrusting */
     if (LOCAL_PLAYER.docked) { g.inspect_station = -1; g.inspect_module = -1; }
     /* SPACE (laser) auto-targets nearest module in beam cone */
@@ -264,10 +303,77 @@ input_intent_t sample_input_intent(void) {
     }
     /* B key: build mode */
     if (!LOCAL_PLAYER.docked && LOCAL_PLAYER.ship.towed_scaffold >= 0) {
-        /* Towing a scaffold: B = place it. Takes priority over all old flows. */
-        if (is_key_pressed(SAPP_KEYCODE_B)) {
-            intent.place_outpost = true;
-            g.placing_outpost = false; /* cancel old placement mode if active */
+        /* Towing a scaffold: reticle-based placement.
+         * B = enter reticle / cycle next target
+         * E = confirm placement
+         * Esc = cancel reticle
+         * If no targets in range, B falls back to founding a new outpost. */
+        reticle_target_t targets[RETICLE_MAX_TARGETS];
+        int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
+
+        if (g.placement_reticle_active) {
+            if (is_key_pressed(SAPP_KEYCODE_ESCAPE)) {
+                g.placement_reticle_active = false;
+                set_notice("Placement cancelled.");
+            } else if (is_key_pressed(SAPP_KEYCODE_B)) {
+                /* Cycle to next target */
+                if (n > 0) {
+                    int cur = -1;
+                    for (int i = 0; i < n; i++) {
+                        if (targets[i].station == g.placement_target_station &&
+                            targets[i].ring == g.placement_target_ring &&
+                            targets[i].slot == g.placement_target_slot) {
+                            cur = i; break;
+                        }
+                    }
+                    int next = (cur + 1) % n;
+                    g.placement_target_station = targets[next].station;
+                    g.placement_target_ring = targets[next].ring;
+                    g.placement_target_slot = targets[next].slot;
+                } else {
+                    g.placement_reticle_active = false;
+                    set_notice("No slots in range.");
+                }
+            } else if (is_key_pressed(SAPP_KEYCODE_E)) {
+                /* Confirm */
+                intent.place_outpost = true;
+                intent.place_target_station = (int8_t)g.placement_target_station;
+                intent.place_target_ring = (int8_t)g.placement_target_ring;
+                intent.place_target_slot = (int8_t)g.placement_target_slot;
+                g.placement_reticle_active = false;
+                set_notice("Placing scaffold...");
+            }
+            /* Auto-validate: if our chosen target was filled, refresh */
+            if (g.placement_reticle_active && n > 0) {
+                bool still_valid = false;
+                for (int i = 0; i < n; i++) {
+                    if (targets[i].station == g.placement_target_station &&
+                        targets[i].ring == g.placement_target_ring &&
+                        targets[i].slot == g.placement_target_slot) {
+                        still_valid = true; break;
+                    }
+                }
+                if (!still_valid) {
+                    g.placement_target_station = targets[0].station;
+                    g.placement_target_ring = targets[0].ring;
+                    g.placement_target_slot = targets[0].slot;
+                }
+            }
+            if (g.placement_reticle_active && n == 0) {
+                g.placement_reticle_active = false;
+            }
+        } else if (is_key_pressed(SAPP_KEYCODE_B)) {
+            if (n > 0) {
+                /* Enter reticle mode on first target */
+                g.placement_reticle_active = true;
+                g.placement_target_station = targets[0].station;
+                g.placement_target_ring = targets[0].ring;
+                g.placement_target_slot = targets[0].slot;
+                set_notice("Aim: B cycles, E confirms, Esc cancels.");
+            } else {
+                /* No outpost in range — found a new station */
+                intent.place_outpost = true;
+            }
         }
     } else if (g.placing_outpost) {
         /* Legacy — cancel if somehow entered */

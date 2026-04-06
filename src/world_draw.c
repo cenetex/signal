@@ -1576,6 +1576,38 @@ static module_type_t producer_for_commodity_client(commodity_t c) {
     }
 }
 
+void draw_placement_reticle(void) {
+    if (!g.placement_reticle_active) return;
+    int s = g.placement_target_station;
+    int ring = g.placement_target_ring;
+    int slot = g.placement_target_slot;
+    if (s < 0 || s >= MAX_STATIONS) return;
+    const station_t *st = &g.world.stations[s];
+    if (!station_exists(st)) return;
+
+    vec2 target = module_world_pos_ring(st, ring, slot);
+    float pulse = 0.5f + 0.4f * sinf(g.world.time * 5.0f);
+
+    /* Bright cyan reticle ring */
+    draw_circle_outline(target, 30.0f, 24, 0.4f, 1.0f, 1.0f, pulse);
+    draw_circle_outline(target, 24.0f, 24, 0.4f, 1.0f, 1.0f, pulse * 0.6f);
+
+    /* Crosshair tick marks */
+    sgl_begin_lines();
+    sgl_c4f(0.4f, 1.0f, 1.0f, pulse);
+    float tick = 8.0f;
+    sgl_v2f(target.x - 36.0f, target.y); sgl_v2f(target.x - 36.0f + tick, target.y);
+    sgl_v2f(target.x + 36.0f, target.y); sgl_v2f(target.x + 36.0f - tick, target.y);
+    sgl_v2f(target.x, target.y - 36.0f); sgl_v2f(target.x, target.y - 36.0f + tick);
+    sgl_v2f(target.x, target.y + 36.0f); sgl_v2f(target.x, target.y + 36.0f - tick);
+    sgl_end();
+
+    /* Tether from player ship to reticle target so the player sees
+     * where it will land */
+    draw_segment(LOCAL_PLAYER.ship.pos, target,
+        0.4f, 1.0f, 1.0f, pulse * 0.5f);
+}
+
 void draw_shipyard_intake_beams(void) {
     /* Find each nascent scaffold and draw beams from contributing modules
      * (producer modules of the required commodity, plus the shipyard itself)
