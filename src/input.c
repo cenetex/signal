@@ -148,31 +148,11 @@ input_intent_t sample_input_intent(void) {
             for (int si = 0; si < (int)(sizeof(sellable)/sizeof(sellable[0])); si++) {
                 if (!station_has_module(st, sellable[si])) continue;
                 if (is_key_pressed(SAPP_KEYCODE_1 + shown)) {
-                    {
-                        /* Price must match server scaffold_kit_price() */
-                        int price = 200;
-                        switch (sellable[si]) {
-                            case MODULE_DOCK: price = 100; break;
-                            case MODULE_SIGNAL_RELAY: price = 150; break;
-                            case MODULE_ORE_BUYER: price = 150; break;
-                            case MODULE_ORE_SILO: price = 100; break;
-                            case MODULE_FRAME_PRESS: price = 300; break;
-                            case MODULE_FURNACE_CU: price = 400; break;
-                            case MODULE_FURNACE_CR: price = 500; break;
-                            case MODULE_LASER_FAB: price = 400; break;
-                            case MODULE_TRACTOR_FAB: price = 400; break;
-                            default: break;
-                        }
-                        if (LOCAL_PLAYER.ship.credits < (float)price) {
-                            set_notice("Need %d cr for %s scaffold.", price, module_type_name(sellable[si]));
-                        } else {
-                            intent.buy_scaffold_kit = true;
-                            intent.scaffold_kit_module = sellable[si];
-                            LOCAL_PLAYER.ship.credits -= (float)price;
-                            set_notice("Bought %s scaffold. -%d cr", module_type_name(sellable[si]), price);
-                            g.build_overlay = false;
-                        }
-                    }
+                    /* Server handles fee + contract generation */
+                    intent.buy_scaffold_kit = true;
+                    intent.scaffold_kit_module = sellable[si];
+                    set_notice("Ordered %s scaffold.", module_type_name(sellable[si]));
+                    g.build_overlay = false;
                     break;
                 }
                 shown++;
