@@ -3924,14 +3924,63 @@ static void step_contracts(world_t *w, float dt) {
 static const float SCAFFOLD_RADIUS = 32.0f;
 static const float SCAFFOLD_DRAG = 0.98f;  /* gentle drag when loose */
 
-/* Manufacture pending scaffolds when materials are available.
- * Called from step_scaffolds each frame. Processes head of queue only
- * (FIFO) — later orders wait their turn even if other materials exist. */
-static void step_shipyard_manufacture(world_t *w) {
+/* What commodity does a producer module output? */
+static module_type_t producer_module_for_commodity(commodity_t c) {
+    switch (c) {
+        case COMMODITY_FRAME:         return MODULE_FRAME_PRESS;
+        case COMMODITY_FERRITE_INGOT: return MODULE_FURNACE;
+        case COMMODITY_CUPRITE_INGOT: return MODULE_FURNACE_CU;
+        case COMMODITY_CRYSTAL_INGOT: return MODULE_FURNACE_CR;
+        default:                      return MODULE_COUNT;
+    }
+}
+
+/* Compute intake rate for a shipyard pulling a given commodity, based on
+ * the station layout. Same-ring producers feed faster than cross-ring. */
+static float shipyard_intake_rate(const station_t *st, int shipyard_idx, commodity_t mat) {
+    module_type_t prod_type = producer_module_for_commodity(mat);
+    if (prod_type == MODULE_COUNT) return 0.5f; /* unknown commodity, slow trickle */
+
+    int yard_ring = st->modules[shipyard_idx].ring;
+    int best_same_ring_dist = -1;
+    bool found_cross_ring = false;
+    for (int i = 0; i < st->module_count; i++) {
+        if (i == shipyard_idx) continue;
+        if (st->modules[i].scaffold) continue;
+        if (st->modules[i].type != prod_type) continue;
+        if (st->modules[i].ring == yard_ring) {
+            int dist = abs((int)st->modules[i].slot - (int)st->modules[shipyard_idx].slot);
+            if (best_same_ring_dist < 0 || dist < best_same_ring_dist)
+                best_same_ring_dist = dist;
+        } else {
+            found_cross_ring = true;
+        }
+    }
+    if (best_same_ring_dist >= 0) {
+        /* Same ring: 5 units/sec for adjacent (dist=1), drops with distance */
+        return 5.0f / (float)(best_same_ring_dist > 0 ? best_same_ring_dist : 1);
+    }
+    if (found_cross_ring) return 1.0f; /* cross-ring trickle (drones come later) */
+    return 0.5f; /* no producer, just background trickle from inventory */
+}
+
+/* Production layer v1: shipyards slowly pull material from station inventory
+ * into their own intake buffer. Rate scales with adjacency to a producer
+ * module on the same ring. When the buffer is full, manufacture a scaffold. */
+static void step_shipyard_manufacture(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
         if (st->pending_scaffold_count == 0) continue;
+
+        /* Find a SHIPYARD module on this station */
+        int yard_idx = -1;
+        for (int i = 0; i < st->module_count; i++) {
+            if (st->modules[i].type == MODULE_SHIPYARD && !st->modules[i].scaffold) {
+                yard_idx = i; break;
+            }
+        }
+        if (yard_idx < 0) continue;
 
         /* Process the head of the queue */
         module_type_t type = st->pending_scaffolds[0].type;
@@ -3939,10 +3988,23 @@ static void step_shipyard_manufacture(world_t *w) {
         commodity_t mat = module_build_material(type);
         float needed = module_build_cost(type);
 
-        if (st->inventory[mat] >= needed) {
-            /* Consume materials, spawn scaffold in a clear spot */
-            st->inventory[mat] -= needed;
-            /* Spawn opposite the dock gap (angle 0) to avoid berth collisions */
+        /* Pull from station inventory into shipyard's local intake buffer
+         * at a layout-aware rate. */
+        if (st->module_buffer[yard_idx] < needed) {
+            float rate = shipyard_intake_rate(st, yard_idx, mat);
+            float pull = rate * dt;
+            if (pull > st->inventory[mat]) pull = st->inventory[mat];
+            float room = needed - st->module_buffer[yard_idx];
+            if (pull > room) pull = room;
+            if (pull > 0.0f) {
+                st->inventory[mat] -= pull;
+                st->module_buffer[yard_idx] += pull;
+            }
+        }
+
+        /* Manufacture when buffer is full */
+        if (st->module_buffer[yard_idx] >= needed) {
+            st->module_buffer[yard_idx] = 0.0f;
             float spawn_angle = PI_F; /* -X side of station */
             float spawn_r = st->dock_radius + 80.0f;
             vec2 spawn_pos = v2_add(st->pos, v2(cosf(spawn_angle) * spawn_r, sinf(spawn_angle) * spawn_r));
@@ -4043,7 +4105,7 @@ static void finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
 }
 
 static void step_scaffolds(world_t *w, float dt) {
-    step_shipyard_manufacture(w);
+    step_shipyard_manufacture(w, dt);
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {
         scaffold_t *sc = &w->scaffolds[i];
         if (!sc->active) continue;

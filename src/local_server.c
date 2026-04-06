@@ -33,7 +33,8 @@ void local_server_sync_to_client(const local_server_t *ls) {
     /* NPCs: same — skip interp copies */
     memcpy(g.world.npc_ships, ls->world.npc_ships, sizeof(g.world.npc_ships));
 
-    /* Stations: direct copy (no interpolation) */
+    /* Stations: direct copy (no interpolation). station_t includes
+     * module_buffer[] so production-layer state stays in sync. */
     memcpy(g.world.stations, ls->world.stations, sizeof(g.world.stations));
 
     /* Contracts: direct copy */

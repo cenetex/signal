@@ -8,6 +8,7 @@
 #include "npc.h"
 #include "net.h"
 #include "net_sync.h"
+#include <stdlib.h>
 
 /* --- Frustum culling: skip objects entirely off-screen --- */
 static float g_cam_left, g_cam_right, g_cam_top, g_cam_bottom;
@@ -1556,4 +1557,81 @@ void draw_scaffold_tether(void) {
 
     float pulse = 0.5f + 0.2f * sinf(g.world.time * 3.0f);
     draw_segment(LOCAL_PLAYER.ship.pos, sc->pos, 0.5f, 0.85f, 0.75f, pulse);
+}
+
+/* Draw beams from producer modules to active shipyard intakes.
+ * Shipyards with a pending order get a pulsing line to the nearest
+ * same-ring producer of the required commodity. */
+static module_type_t producer_for_commodity_client(commodity_t c) {
+    switch (c) {
+        case COMMODITY_FRAME:         return MODULE_FRAME_PRESS;
+        case COMMODITY_FERRITE_INGOT: return MODULE_FURNACE;
+        case COMMODITY_CUPRITE_INGOT: return MODULE_FURNACE_CU;
+        case COMMODITY_CRYSTAL_INGOT: return MODULE_FURNACE_CR;
+        default:                      return MODULE_COUNT;
+    }
+}
+
+void draw_shipyard_intake_beams(void) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &g.world.stations[s];
+        if (!station_exists(st) || st->scaffold) continue;
+        if (st->pending_scaffold_count == 0) continue;
+
+        /* Find a shipyard module */
+        int yard_idx = -1;
+        for (int i = 0; i < st->module_count; i++) {
+            if (st->modules[i].type == MODULE_SHIPYARD && !st->modules[i].scaffold) {
+                yard_idx = i; break;
+            }
+        }
+        if (yard_idx < 0) continue;
+
+        module_type_t needed_type = st->pending_scaffolds[0].type;
+        commodity_t mat = module_build_material_lookup(needed_type);
+        module_type_t prod_type = producer_for_commodity_client(mat);
+        if (prod_type == MODULE_COUNT) continue;
+
+        vec2 yard_pos = module_world_pos_ring(st, st->modules[yard_idx].ring, st->modules[yard_idx].slot);
+
+        /* Find best producer: prefer same-ring, closest slot */
+        int best = -1;
+        bool best_same_ring = false;
+        int best_dist = 999;
+        for (int i = 0; i < st->module_count; i++) {
+            if (i == yard_idx) continue;
+            if (st->modules[i].scaffold) continue;
+            if (st->modules[i].type != prod_type) continue;
+            bool same_ring = (st->modules[i].ring == st->modules[yard_idx].ring);
+            int dist = same_ring
+                ? abs((int)st->modules[i].slot - (int)st->modules[yard_idx].slot)
+                : 100; /* cross-ring penalty */
+            if (best < 0 ||
+                (same_ring && !best_same_ring) ||
+                (same_ring == best_same_ring && dist < best_dist)) {
+                best = i;
+                best_same_ring = same_ring;
+                best_dist = dist;
+            }
+        }
+        if (best < 0) continue;
+
+        vec2 prod_pos = module_world_pos_ring(st, st->modules[best].ring, st->modules[best].slot);
+
+        /* Pulse stronger when same-ring */
+        float t = g.world.time * 4.0f;
+        float pulse = 0.4f + 0.3f * sinf(t);
+        if (!best_same_ring) pulse *= 0.5f;
+
+        /* Amber-cyan beam: producer warm, shipyard cold */
+        draw_segment(prod_pos, yard_pos, 1.0f, 0.85f, 0.47f, pulse);
+
+        /* Pulsing dots traveling along the line for "flow" feel */
+        int dots = 4;
+        for (int d = 0; d < dots; d++) {
+            float frac = fmodf((t * 0.15f) + (float)d / (float)dots, 1.0f);
+            vec2 p = v2_add(prod_pos, v2_scale(v2_sub(yard_pos, prod_pos), frac));
+            draw_circle_filled(p, 2.5f, 6, 1.0f, 0.85f, 0.47f, pulse + 0.2f);
+        }
+    }
 }

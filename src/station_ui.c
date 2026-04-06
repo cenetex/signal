@@ -972,17 +972,27 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             sdtx_printf("PENDING ORDERS (%d/4)", ui->station->pending_scaffold_count);
             ly += 14.0f;
+            /* Find the shipyard module to read its intake buffer */
+            int yard_idx = -1;
+            for (int i = 0; i < ui->station->module_count; i++) {
+                if (ui->station->modules[i].type == MODULE_SHIPYARD && !ui->station->modules[i].scaffold) {
+                    yard_idx = i; break;
+                }
+            }
             for (int p = 0; p < ui->station->pending_scaffold_count; p++) {
                 module_type_t t = ui->station->pending_scaffolds[p].type;
                 commodity_t mat_type = module_build_material_lookup(t);
                 float need = module_build_cost_lookup(t);
-                float have = (p == 0) ? ui->station->inventory[mat_type] : 0.0f;
-                int pct = (need > 0) ? (int)(100.0f * have / need) : 0;
-                if (pct > 100) pct = 100;
+                /* Head of queue uses shipyard intake buffer; rest are queued */
+                float have = (p == 0 && yard_idx >= 0) ? ui->station->module_buffer[yard_idx] : 0.0f;
+                float station_have = ui->station->inventory[mat_type];
+                int got = (int)lroundf(have);
+                int total = (int)lroundf(need);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                 if (p == 0) {
                     sdtx_color3b(180, 220, 255);
-                    sdtx_printf("  %d. %s  %d%%", p + 1, module_type_name(t), pct);
+                    sdtx_printf("  %d. %s  intake %d/%d  (stock: %d)",
+                        p + 1, module_type_name(t), got, total, (int)lroundf(station_have));
                 } else {
                     sdtx_color3b(120, 135, 160);
                     sdtx_printf("  %d. %s  queued", p + 1, module_type_name(t));

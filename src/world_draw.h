@@ -41,6 +41,7 @@ void module_color_fn(module_type_t type, float *r, float *g, float *b);
 /* --- Scaffolds --- */
 void draw_scaffolds(void);
 void draw_scaffold_tether(void);
+void draw_shipyard_intake_beams(void);
 
 /* --- Compass ring --- */
 void draw_compass_ring(void);

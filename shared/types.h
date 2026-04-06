@@ -257,6 +257,9 @@ typedef struct {
         int8_t owner;  /* player id who placed the order, -1 = NPC/anyone */
     } pending_scaffolds[4];
     int pending_scaffold_count;
+    /* Production layer v1: per-module intake buffer.
+     * Indexed parallel to modules[]. Currently only shipyards use this. */
+    float module_buffer[MAX_MODULES_PER_STATION];
 } station_t;
 
 /* ------------------------------------------------------------------ */
