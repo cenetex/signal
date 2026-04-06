@@ -492,6 +492,10 @@ void draw_hud_panels(void) {
         visible_tabs[tab_count++] = STATION_TAB_STATUS;
         visible_tabs[tab_count++] = STATION_TAB_MARKET;
         visible_tabs[tab_count++] = STATION_TAB_CONTRACTS;
+        const station_t *cur_st = current_station_ptr();
+        if (cur_st && station_has_module(cur_st, MODULE_SHIPYARD)) {
+            visible_tabs[tab_count++] = STATION_TAB_SHIPYARD;
+        }
         float tab_w = fminf(inner_w / (float)tab_count, 120.0f);
 
         for (int t = 0; t < tab_count; t++) {

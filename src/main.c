@@ -400,12 +400,16 @@ static void sim_step(float dt) {
             g.nav_pip_pos = st->pos;
         }
     }
-    if (LOCAL_PLAYER.docked && !g.build_overlay && (is_key_pressed(SAPP_KEYCODE_TAB) || is_key_pressed(SAPP_KEYCODE_Q))) {
+    if (LOCAL_PLAYER.docked && (is_key_pressed(SAPP_KEYCODE_TAB) || is_key_pressed(SAPP_KEYCODE_Q))) {
         station_tab_t vtabs[STATION_TAB_COUNT];
         int vtab_count = 0;
         vtabs[vtab_count++] = STATION_TAB_STATUS;
         vtabs[vtab_count++] = STATION_TAB_MARKET;
         vtabs[vtab_count++] = STATION_TAB_CONTRACTS;
+        const station_t *cst = current_station_ptr();
+        if (cst && station_has_module(cst, MODULE_SHIPYARD)) {
+            vtabs[vtab_count++] = STATION_TAB_SHIPYARD;
+        }
         int cur = 0;
         for (int i = 0; i < vtab_count; i++) { if (vtabs[i] == g.station_tab) { cur = i; break; } }
         int dir = is_key_pressed(SAPP_KEYCODE_TAB) ? 1 : (vtab_count - 1);
