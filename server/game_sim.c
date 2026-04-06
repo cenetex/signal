@@ -1272,9 +1272,7 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
         station_geom_t geom;
         station_build_geom(st, &geom);
 
-        /* Core collision */
-        if (geom.has_core)
-            resolve_npc_circle(npc, geom.core.center, geom.core.radius);
+        /* Core: empty space, no collision */
 
         /* Module circles */
         for (int ci = 0; ci < geom.circle_count; ci++)
@@ -2185,9 +2183,8 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
     station_build_geom(st, &geom);
     float ship_r = ship_hull_def(&sp->ship)->ship_radius;
 
-    /* Core */
-    if (geom.has_core)
-        resolve_ship_circle(w, sp, geom.core.center, geom.core.radius);
+    /* Core: station center is empty space (construction yard).
+     * Modules and corridors form the structure; the center is fly-through. */
 
     /* Module circles */
     for (int i = 0; i < geom.circle_count; i++)
@@ -4084,31 +4081,63 @@ static const float SCAFFOLD_SNAP_PULL = 4.0f;
 /* Distance threshold to finalize placement. */
 static const float SCAFFOLD_SNAP_ARRIVE = 8.0f;
 
-/* Find the nearest open ring slot on a station within snap range of a position.
- * Returns true and fills out_ring/out_slot if found. */
+/* Find the open ring slot on a station that best matches a scaffold's
+ * approach. The RING is chosen by the scaffold's distance from the station
+ * center (closest ring radius wins). The SLOT is chosen by the scaffold's
+ * angle around the station. This lets the player aim by flying to the
+ * inner area for ring 1, outer area for ring 3, and aiming the angle. */
 static bool find_nearest_open_slot(const station_t *st, vec2 pos, int *out_ring, int *out_slot) {
-    float best_d_sq = SCAFFOLD_SNAP_RANGE * SCAFFOLD_SNAP_RANGE;
-    bool found = false;
+    vec2 delta = v2_sub(pos, st->pos);
+    float dist = sqrtf(v2_len_sq(delta));
+    if (dist > SCAFFOLD_SNAP_RANGE + STATION_RING_RADIUS[STATION_NUM_RINGS]) return false;
+
+    /* Pick ring by distance match — closest STATION_RING_RADIUS wins */
+    int best_ring = -1;
+    float best_ring_diff = 1e18f;
     for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
         if (ring > 1 && !ring_has_dock(st, ring - 1)) continue; /* dock gates next ring */
+        /* Check if any slot on this ring is open */
         int slots = STATION_RING_SLOTS[ring];
+        bool any_open = false;
         for (int slot = 0; slot < slots; slot++) {
-            /* Check if occupied */
             bool taken = false;
             for (int m = 0; m < st->module_count; m++)
                 if (st->modules[m].ring == ring && st->modules[m].slot == slot) { taken = true; break; }
-            if (taken) continue;
-            vec2 slot_pos = module_world_pos_ring(st, ring, slot);
-            float d_sq = v2_dist_sq(pos, slot_pos);
-            if (d_sq < best_d_sq) {
-                best_d_sq = d_sq;
-                *out_ring = ring;
-                *out_slot = slot;
-                found = true;
-            }
+            if (!taken) { any_open = true; break; }
+        }
+        if (!any_open) continue;
+        float ring_r = STATION_RING_RADIUS[ring];
+        float diff = fabsf(dist - ring_r);
+        if (diff < best_ring_diff) {
+            best_ring_diff = diff;
+            best_ring = ring;
         }
     }
-    return found;
+    if (best_ring < 0) return false;
+
+    /* Pick the open slot on that ring whose angle best matches the
+     * scaffold's angle (slot angle includes ring rotation). */
+    float scaffold_angle = atan2f(delta.y, delta.x);
+    int best_slot = -1;
+    float best_slot_diff = 1e18f;
+    int slots = STATION_RING_SLOTS[best_ring];
+    for (int slot = 0; slot < slots; slot++) {
+        bool taken = false;
+        for (int m = 0; m < st->module_count; m++)
+            if (st->modules[m].ring == best_ring && st->modules[m].slot == slot) { taken = true; break; }
+        if (taken) continue;
+        float slot_angle = module_angle_ring(st, best_ring, slot);
+        float diff = fabsf(wrap_angle(slot_angle - scaffold_angle));
+        if (diff < best_slot_diff) {
+            best_slot_diff = diff;
+            best_slot = slot;
+        }
+    }
+    if (best_slot < 0) return false;
+
+    *out_ring = best_ring;
+    *out_slot = best_slot;
+    return true;
 }
 
 /* Convert a snapped scaffold into a station module.

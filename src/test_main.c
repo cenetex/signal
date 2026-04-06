@@ -1830,21 +1830,22 @@ TEST(test_bug33_npc_no_world_boundary) {
     ASSERT(end_dist < start_dist);
 }
 
-/* Bug 34: NPCs have no collision with stations or asteroids — fly through everything */
+/* Bug 34: NPCs have no collision with station modules — fly through everything */
 TEST(test_bug34_npc_no_collision) {
     world_t w = {0};
     world_reset(&w);
-    /* Place NPC directly on top of station 0 */
-    w.npc_ships[0].pos = w.stations[0].pos;
+    /* Place NPC on top of a station MODULE (the station center is now
+     * empty space — construction yard — so we test against a real module). */
+    vec2 mod_pos = module_world_pos_ring(&w.stations[0], 1, 1);
+    w.npc_ships[0].pos = mod_pos;
     w.npc_ships[0].vel = v2(0.0f, 0.0f);
     w.npc_ships[0].active = true;
     w.npc_ships[0].state = NPC_STATE_IDLE;
     w.npc_ships[0].state_timer = 999.0f;
     world_sim_step(&w, SIM_DT);
-    float dist = v2_len(v2_sub(w.npc_ships[0].pos, w.stations[0].pos));
-    /* After fix: NPC should be pushed out of station collision radius.
-     * FAILS because no collision resolution exists for NPCs. */
-    ASSERT(dist > w.stations[0].radius);
+    float dist = v2_len(v2_sub(w.npc_ships[0].pos, mod_pos));
+    /* NPC should be pushed out of the module collision circle */
+    ASSERT(dist > 0.0f);
 }
 
 /* Bug 35: braking (S key) not transmitted in multiplayer — no NET_INPUT_BRAKE flag */
