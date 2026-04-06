@@ -2957,20 +2957,38 @@ static void handle_hail(world_t *w, server_player_t *sp) {
 }
 
 static void step_station_interaction_system(world_t *w, server_player_t *sp, const input_intent_t *intent) {
-    /* Buy scaffold: spawn a physical world object near the station */
+    /* Order scaffold from shipyard: queues build + generates material contract */
     if (intent->buy_scaffold_kit && sp->docked && !w->player_only_mode) {
         module_type_t kit_type = intent->scaffold_kit_module;
         station_t *st = &w->stations[sp->current_station];
-        if (station_sells_scaffold(st, kit_type)) {
-            float price = scaffold_kit_price(kit_type);
-            if (sp->ship.credits >= price) {
-                spend_credits(&sp->ship, price);
-                /* Spawn a physical scaffold near the station */
-                vec2 spawn_offset = v2(st->dock_radius + 60.0f, 0.0f);
-                vec2 spawn_pos = v2_add(st->pos, spawn_offset);
-                spawn_scaffold(w, kit_type, spawn_pos, sp->id);
-                SIM_LOG("[sim] player %d bought %s scaffold\n", sp->id,
-                        module_type_name(kit_type));
+        if (station_sells_scaffold(st, kit_type)
+            && st->pending_scaffold_count < 4) {
+            /* Order fee (small deposit — real cost is the materials) */
+            float fee = scaffold_kit_price(kit_type) * 0.25f;
+            if (sp->ship.credits >= fee) {
+                spend_credits(&sp->ship, fee);
+                /* Queue pending scaffold */
+                int idx = st->pending_scaffold_count++;
+                st->pending_scaffolds[idx].type = kit_type;
+                st->pending_scaffolds[idx].owner = (int8_t)sp->id;
+                /* Generate supply contract for the material */
+                commodity_t mat = module_build_material(kit_type);
+                float needed = module_build_cost(kit_type);
+                for (int k = 0; k < MAX_CONTRACTS; k++) {
+                    if (!w->contracts[k].active) {
+                        w->contracts[k] = (contract_t){
+                            .active = true, .action = CONTRACT_SUPPLY,
+                            .station_index = (uint8_t)sp->current_station,
+                            .commodity = mat,
+                            .quantity_needed = needed,
+                            .base_price = st->base_price[mat] * 1.15f,
+                            .target_index = -1, .claimed_by = -1,
+                        };
+                        break;
+                    }
+                }
+                SIM_LOG("[sim] player %d ordered %s scaffold at station %d\n",
+                        sp->id, module_type_name(kit_type), sp->current_station);
             }
         }
     }
@@ -3903,6 +3921,36 @@ static void step_contracts(world_t *w, float dt) {
 static const float SCAFFOLD_RADIUS = 32.0f;
 static const float SCAFFOLD_DRAG = 0.98f;  /* gentle drag when loose */
 
+/* Manufacture pending scaffolds when materials are available.
+ * Called from step_scaffolds each frame. */
+static void step_shipyard_manufacture(world_t *w) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        if (st->pending_scaffold_count == 0) continue;
+
+        /* Process the head of the queue */
+        module_type_t type = st->pending_scaffolds[0].type;
+        int8_t owner = st->pending_scaffolds[0].owner;
+        commodity_t mat = module_build_material(type);
+        float needed = module_build_cost(type);
+
+        if (st->inventory[mat] >= needed) {
+            /* Consume materials, spawn scaffold near the dock */
+            st->inventory[mat] -= needed;
+            vec2 spawn_offset = v2(st->dock_radius + 60.0f, 0.0f);
+            vec2 spawn_pos = v2_add(st->pos, spawn_offset);
+            spawn_scaffold(w, type, spawn_pos, (int)owner);
+            /* Shift queue */
+            for (int i = 0; i < st->pending_scaffold_count - 1; i++) {
+                st->pending_scaffolds[i] = st->pending_scaffolds[i + 1];
+            }
+            st->pending_scaffold_count--;
+            SIM_LOG("[sim] station %d manufactured %s scaffold\n", s, module_type_name(type));
+        }
+    }
+}
+
 int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner) {
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {
         if (w->scaffolds[i].active) continue;
@@ -3974,6 +4022,7 @@ static void finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
 }
 
 static void step_scaffolds(world_t *w, float dt) {
+    step_shipyard_manufacture(w);
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {
         scaffold_t *sc = &w->scaffolds[i];
         if (!sc->active) continue;

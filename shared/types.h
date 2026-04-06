@@ -201,6 +201,12 @@ typedef struct {
         float lifetime_supply;        /* total ore contributed */
     } ledger[16];
     int ledger_count;
+    /* Shipyard: pending scaffold orders awaiting materials */
+    struct {
+        module_type_t type;
+        int8_t owner;  /* player id who placed the order, -1 = NPC/anyone */
+    } pending_scaffolds[4];
+    int pending_scaffold_count;
 } station_t;
 
 /* ------------------------------------------------------------------ */

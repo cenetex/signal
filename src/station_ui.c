@@ -473,44 +473,70 @@ void draw_station_services(const station_ui_state_t* ui) {
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
         sdtx_color3b(145, 160, 188);
         if (is_starter) {
-            sdtx_puts("[1-9] buy scaffold kit  [Esc] close");
-            float ly = cy + 32.0f;
+            sdtx_color3b(180, 200, 230);
+            sdtx_puts("SHIPYARD  [1-9] order  [Esc] close");
+            float ly = cy + 28.0f;
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_color3b(130, 145, 168);
+            sdtx_puts("order fee + deliver materials -> manufactured");
+            ly += 18.0f;
+
             static const module_type_t sellable[] = {
                 MODULE_DOCK, MODULE_SIGNAL_RELAY, MODULE_FURNACE,
                 MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_FRAME_PRESS,
                 MODULE_FURNACE_CU, MODULE_FURNACE_CR,
                 MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
             };
+            /* Prices must match server scaffold_kit_price() */
+            static const int full_prices[] = {
+                100, 150, 200, 150, 100, 300, 400, 500, 400, 400,
+            };
+            /* Material costs (frames or ingots) — must match module_build_cost() */
+            static const int mat_costs[] = {
+                20, 20, 60, 40, 20, 80, 100, 140, 80, 80,
+            };
             int shown = 0;
             int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
             for (int si = 0; si < (int)(sizeof(sellable)/sizeof(sellable[0])); si++) {
                 if (!station_has_module(ui->station, sellable[si])) continue;
-                /* Price lookup — must match server scaffold_kit_price() */
-                int price = 200;
-                switch (sellable[si]) {
-                    case MODULE_DOCK: price = 100; break;
-                    case MODULE_SIGNAL_RELAY: price = 150; break;
-                    case MODULE_FURNACE: price = 200; break;
-                    case MODULE_ORE_BUYER: price = 150; break;
-                    case MODULE_ORE_SILO: price = 100; break;
-                    case MODULE_FRAME_PRESS: price = 300; break;
-                    case MODULE_FURNACE_CU: price = 400; break;
-                    case MODULE_FURNACE_CR: price = 500; break;
-                    case MODULE_LASER_FAB: price = 400; break;
-                    case MODULE_TRACTOR_FAB: price = 400; break;
-                    default: break;
-                }
-                bool can_afford = credits >= price;
+                int fee = full_prices[si] / 4; /* 25% deposit */
+                int mat = mat_costs[si];
+                commodity_t mat_type = module_build_material_lookup(sellable[si]);
+                const char *mat_name = (mat_type == COMMODITY_FRAME) ? "frames"
+                    : (mat_type == COMMODITY_CUPRITE_INGOT) ? "cu ingots"
+                    : (mat_type == COMMODITY_CRYSTAL_INGOT) ? "cr ingots"
+                    : "ingots";
+                bool can_afford = credits >= fee;
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                 sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
-                sdtx_printf("[%d] %-14s %dcr", shown + 1, module_type_name(sellable[si]), price);
+                sdtx_printf("[%d] %-14s %dcr + %d %s",
+                    shown + 1, module_type_name(sellable[si]), fee, mat, mat_name);
                 ly += 14.0f;
                 shown++;
             }
-            if (LOCAL_PLAYER.ship.has_scaffold_kit) {
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly + 8.0f));
+
+            /* Pending orders */
+            if (ui->station->pending_scaffold_count > 0) {
+                ly += 6.0f;
                 sdtx_color3b(255, 221, 119);
-                sdtx_printf("Carrying: %s scaffold", module_type_name((module_type_t)LOCAL_PLAYER.ship.scaffold_kit_type));
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                sdtx_puts("PENDING ORDERS");
+                ly += 14.0f;
+                for (int p = 0; p < ui->station->pending_scaffold_count; p++) {
+                    module_type_t t = ui->station->pending_scaffolds[p].type;
+                    commodity_t mat_type = module_build_material_lookup(t);
+                    float have = ui->station->inventory[mat_type];
+                    float need = 0.0f;
+                    for (int si = 0; si < (int)(sizeof(sellable)/sizeof(sellable[0])); si++) {
+                        if (sellable[si] == t) { need = (float)mat_costs[si]; break; }
+                    }
+                    int pct = (need > 0) ? (int)(100.0f * have / need) : 0;
+                    if (pct > 100) pct = 100;
+                    sdtx_color3b(180, 200, 230);
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                    sdtx_printf("  %s (%d%%)", module_type_name(t), pct);
+                    ly += 12.0f;
+                }
             }
             return;
         }
