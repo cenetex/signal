@@ -241,6 +241,16 @@ static void process_sim_events(const sim_events_t *events) {
                     set_notice("Fracture contract complete.");
                 }
                 break;
+            case SIM_EVENT_SCAFFOLD_READY: {
+                int sidx = ev->scaffold_ready.station;
+                int mtype = ev->scaffold_ready.module_type;
+                if (sidx >= 0 && sidx < MAX_STATIONS) {
+                    set_notice("%s scaffold ready at %s.",
+                        module_type_name((module_type_t)mtype),
+                        g.world.stations[sidx].name);
+                }
+                break;
+            }
             case SIM_EVENT_DEATH:
                 if (ev->player_id == g.local_player_slot) {
                     g.death_screen_timer = 4.0f;

@@ -407,7 +407,10 @@ static void step_module_construction(world_t *w, float dt) {
             if (st->modules[i].build_progress > 1.0f)
                 st->modules[i].build_progress = 1.0f;
         }
-        /* Activate fully-supplied scaffold modules after build timer */
+        /* Activate fully-supplied scaffold modules after build timer.
+         * Modules do NOT tick while their station is itself still under
+         * construction — the station has to be born first. */
+        if (st->scaffold) continue;
         for (int i = 0; i < st->module_count; i++) {
             if (!st->modules[i].scaffold) continue;
             if (st->modules[i].build_progress < 1.0f) continue; /* not fully supplied */
@@ -2670,15 +2673,30 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             st->radius = OUTPOST_RADIUS;
             st->dock_radius = OUTPOST_DOCK_RADIUS;
             st->signal_range = OUTPOST_SIGNAL_RANGE;
-            /* Outpost activates immediately — the scaffold you towed here
-             * IS the seed. Dock + relay come online on arrival. */
-            st->scaffold = false;
-            st->scaffold_progress = 1.0f;
+            /* Outpost is born under construction — needs frames delivered to
+             * activate. The scaffold you towed becomes the first module
+             * (pre-paid), but it can't go live until the station does. */
+            st->scaffold = true;
+            st->scaffold_progress = 0.0f;
             add_module_at(st, MODULE_DOCK, 0, 0xFF);
             add_module_at(st, MODULE_SIGNAL_RELAY, 0, 0xFF);
             rebuild_station_services(st);
-            rebuild_signal_chain(w);
-            /* Queue the module scaffold — materials already provided at shipyard */
+            /* Generate supply contract for the outpost activation frames */
+            for (int k = 0; k < MAX_CONTRACTS; k++) {
+                if (!w->contracts[k].active) {
+                    w->contracts[k] = (contract_t){
+                        .active = true, .action = CONTRACT_TRACTOR,
+                        .station_index = (uint8_t)slot,
+                        .commodity = COMMODITY_FRAME,
+                        .quantity_needed = SCAFFOLD_MATERIAL_NEEDED,
+                        .base_price = 23.0f,
+                        .target_index = -1, .claimed_by = -1,
+                    };
+                    break;
+                }
+            }
+            /* Queue the player's module scaffold — materials pre-paid at
+             * shipyard, but build timer waits until the station activates. */
             if (st->module_count < MAX_MODULES_PER_STATION) {
                 station_module_t *m = &st->modules[st->module_count++];
                 m->type = sc->module_type;
