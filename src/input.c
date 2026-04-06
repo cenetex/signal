@@ -34,9 +34,16 @@ bool is_key_pressed(sapp_keycode key) {
 
 /* Build a flat list of (station, ring, slot) tuples for every open slot
  * across all player outposts in snap range of a position. Returns the
- * count. Used by the placement reticle to cycle through valid targets. */
-typedef struct { int station; int ring; int slot; } reticle_target_t;
+ * count. Sorted so the slot whose world position is closest to `pos`
+ * comes first — that becomes the default reticle target. */
+typedef struct {
+    int station;
+    int ring;
+    int slot;
+    float dist_sq; /* sort key */
+} reticle_target_t;
 #define RETICLE_MAX_TARGETS 32
+
 static int collect_reticle_targets(vec2 pos, reticle_target_t *out, int max) {
     int count = 0;
     const float SNAP_RANGE_SQ = 600.0f * 600.0f;
@@ -53,12 +60,24 @@ static int collect_reticle_targets(vec2 pos, reticle_target_t *out, int max) {
                         taken = true; break;
                     }
                 if (taken) continue;
+                vec2 sp = module_world_pos_ring(st, ring, slot);
                 out[count].station = s;
                 out[count].ring = ring;
                 out[count].slot = slot;
+                out[count].dist_sq = v2_dist_sq(sp, pos);
                 count++;
             }
         }
+    }
+    /* Sort by distance ascending (insertion sort, count is small) */
+    for (int i = 1; i < count; i++) {
+        reticle_target_t key = out[i];
+        int j = i - 1;
+        while (j >= 0 && out[j].dist_sq > key.dist_sq) {
+            out[j + 1] = out[j];
+            j--;
+        }
+        out[j + 1] = key;
     }
     return count;
 }
