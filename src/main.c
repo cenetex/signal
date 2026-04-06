@@ -234,11 +234,11 @@ static void process_sim_events(const sim_events_t *events) {
                 if (ev->player_id == g.local_player_slot) audio_play_damage(&g.audio, ev->damage.amount);
                 break;
             case SIM_EVENT_CONTRACT_COMPLETE:
-                if (ev->contract_complete.action == CONTRACT_SUPPLY) {
-                    set_notice("Supply contract fulfilled.");
+                if (ev->contract_complete.action == CONTRACT_TRACTOR) {
+                    set_notice("Tractor contract fulfilled.");
                     episode_trigger(&g.episode, 6); /* Ep 6: Hauler */
-                } else if (ev->contract_complete.action == CONTRACT_DESTROY) {
-                    set_notice("Target destroyed. Contract complete.");
+                } else if (ev->contract_complete.action == CONTRACT_FRACTURE) {
+                    set_notice("Fracture contract complete.");
                 }
                 break;
             case SIM_EVENT_DEATH:
@@ -877,12 +877,12 @@ static void render_world(void) {
         contract_t *ct = &g.world.contracts[g.tracked_contract];
         if (ct->active) {
             float pulse = 0.5f + 0.3f * sinf(g.world.time * 3.0f);
-            if (ct->action == CONTRACT_DESTROY && ct->target_index >= 0 && ct->target_index < MAX_ASTEROIDS
+            if (ct->action == CONTRACT_FRACTURE && ct->target_index >= 0 && ct->target_index < MAX_ASTEROIDS
                 && g.world.asteroids[ct->target_index].active) {
                 /* Outline the target asteroid */
                 asteroid_t *a = &g.world.asteroids[ct->target_index];
                 draw_circle_outline(a->pos, a->radius + 16.0f, 24, 1.0f, 0.87f, 0.20f, pulse);
-            } else if (ct->action == CONTRACT_SUPPLY && ct->station_index < MAX_STATIONS) {
+            } else if (ct->action == CONTRACT_TRACTOR && ct->station_index < MAX_STATIONS) {
                 /* Outline the target station */
                 station_t *st = &g.world.stations[ct->station_index];
                 if (station_exists(st))

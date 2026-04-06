@@ -1281,7 +1281,7 @@ void draw_compass_ring(void) {
     if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
         contract_t *ct = &g.world.contracts[g.tracked_contract];
         if (ct->active) {
-            vec2 target = (ct->action == CONTRACT_SUPPLY)
+            vec2 target = (ct->action == CONTRACT_TRACTOR)
                 ? g.world.stations[ct->station_index].pos : ct->target_pos;
             COMPASS_PIP(target, 1.0f, 0.87f, 0.20f);
         }

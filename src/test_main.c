@@ -3681,7 +3681,7 @@ TEST(test_destroy_contract_completes_when_asteroid_gone) {
     /* DESTROY contracts should close when their target_index is invalid or inactive.
      * Test without full sim to avoid respawn interference. */
     contract_t c = {
-        .active = true, .action = CONTRACT_DESTROY,
+        .active = true, .action = CONTRACT_FRACTURE,
         .target_index = -1,  /* invalid = gone */
         .base_price = 30.0f, .claimed_by = -1,
     };
@@ -3711,7 +3711,7 @@ TEST(test_supply_contract_uses_correct_material) {
     /* The generated contract should be for cuprite ingots */
     bool found = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
-        if (w.contracts[k].active && w.contracts[k].action == CONTRACT_SUPPLY
+        if (w.contracts[k].active && w.contracts[k].action == CONTRACT_TRACTOR
             && w.contracts[k].station_index == 0
             && w.contracts[k].commodity == COMMODITY_CUPRITE_INGOT) {
             found = true; break;
@@ -3831,7 +3831,7 @@ TEST(test_deliver_ingots_to_contract) {
     float credits_before = w.players[0].ship.credits;
     /* Create a contract at station 1 (Kepler Yard) for ferrite ingots */
     w.contracts[0] = (contract_t){
-        .active = true, .action = CONTRACT_SUPPLY,
+        .active = true, .action = CONTRACT_TRACTOR,
         .station_index = 1,
         .commodity = COMMODITY_FERRITE_INGOT,
         .quantity_needed = 20.0f,
@@ -3860,7 +3860,7 @@ TEST(test_mixed_cargo_sell_and_deliver) {
     w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 20.0f;
     /* Contract at refinery for ferrite ingots (unusual but valid) */
     w.contracts[0] = (contract_t){
-        .active = true, .action = CONTRACT_SUPPLY,
+        .active = true, .action = CONTRACT_TRACTOR,
         .station_index = 0,
         .commodity = COMMODITY_FERRITE_INGOT,
         .quantity_needed = 15.0f,

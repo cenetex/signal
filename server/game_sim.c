@@ -327,7 +327,7 @@ void begin_module_construction_at(world_t *w, station_t *st, int station_idx, mo
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (!w->contracts[k].active) {
             w->contracts[k] = (contract_t){
-                .active = true, .action = CONTRACT_SUPPLY,
+                .active = true, .action = CONTRACT_TRACTOR,
                 .station_index = (uint8_t)station_idx,
                 .commodity = material,
                 .quantity_needed = cost,
@@ -585,7 +585,7 @@ int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (!w->contracts[k].active) {
             w->contracts[k] = (contract_t){
-                .active = true, .action = CONTRACT_SUPPLY,
+                .active = true, .action = CONTRACT_TRACTOR,
                 .station_index = (uint8_t)slot,
                 .commodity = COMMODITY_FRAME,
                 .quantity_needed = SCAFFOLD_MATERIAL_NEEDED,
@@ -1130,7 +1130,7 @@ static bool npc_target_valid(const world_t *w, const npc_ship_t *npc) {
 static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     /* Priority: DESTROY contract targets first */
     for (int k = 0; k < MAX_CONTRACTS; k++) {
-        if (!w->contracts[k].active || w->contracts[k].action != CONTRACT_DESTROY) continue;
+        if (!w->contracts[k].active || w->contracts[k].action != CONTRACT_FRACTURE) continue;
         int idx = w->contracts[k].target_index;
         if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
         /* Check not already taken by another miner */
@@ -1367,7 +1367,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             float best_score = 0.0f;
             for (int k = 0; k < MAX_CONTRACTS; k++) {
                 if (!w->contracts[k].active) continue;
-                if (w->contracts[k].action != CONTRACT_SUPPLY) continue;
+                if (w->contracts[k].action != CONTRACT_TRACTOR) continue;
                 if (w->contracts[k].station_index >= MAX_STATIONS) continue;
                 commodity_t c = w->contracts[k].commodity;
                 if (c < COMMODITY_RAW_ORE_COUNT) continue; /* haulers carry ingots only */
@@ -1766,7 +1766,7 @@ static void generate_npc_distress_contracts(world_t *w) {
         /* Check if a DESTROY contract already exists for this asteroid */
         bool exists = false;
         for (int k = 0; k < MAX_CONTRACTS; k++) {
-            if (w->contracts[k].active && w->contracts[k].action == CONTRACT_DESTROY
+            if (w->contracts[k].active && w->contracts[k].action == CONTRACT_FRACTURE
                 && w->contracts[k].target_index == blocker) {
                 exists = true; break;
             }
@@ -1776,7 +1776,7 @@ static void generate_npc_distress_contracts(world_t *w) {
         for (int k = 0; k < MAX_CONTRACTS; k++) {
             if (!w->contracts[k].active) {
                 w->contracts[k] = (contract_t){
-                    .active = true, .action = CONTRACT_DESTROY,
+                    .active = true, .action = CONTRACT_FRACTURE,
                     .station_index = (uint8_t)npc->home_station,
                     .target_pos = w->asteroids[blocker].pos,
                     .target_index = blocker,
@@ -2048,7 +2048,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
             float price = station_buy_price(st, buy);
             /* Check for active contract bonus */
             for (int k = 0; k < MAX_CONTRACTS; k++) {
-                if (w->contracts[k].active && w->contracts[k].action == CONTRACT_SUPPLY
+                if (w->contracts[k].active && w->contracts[k].action == CONTRACT_TRACTOR
                     && w->contracts[k].station_index == sp->current_station
                     && w->contracts[k].commodity == buy) {
                     price = contract_price(&w->contracts[k]);
@@ -2056,7 +2056,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
                     if (w->contracts[k].quantity_needed <= 0.01f) {
                         w->contracts[k].active = false;
                         emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
-                            .contract_complete.action = CONTRACT_SUPPLY});
+                            .contract_complete.action = CONTRACT_TRACTOR});
                     }
                     break;
                 }
@@ -2073,7 +2073,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     /* Also deliver any cargo matching active supply contracts at this station */
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         contract_t *ct = &w->contracts[k];
-        if (!ct->active || ct->action != CONTRACT_SUPPLY) continue;
+        if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
         if (ct->station_index != sp->current_station) continue;
         commodity_t c = ct->commodity;
         if (c == buy) continue; /* already handled above */
@@ -2090,7 +2090,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         if (ct->quantity_needed <= 0.01f) {
             ct->active = false;
             emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
-                .contract_complete.action = CONTRACT_SUPPLY});
+                .contract_complete.action = CONTRACT_TRACTOR});
         }
     }
 
@@ -2977,7 +2977,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                 for (int k = 0; k < MAX_CONTRACTS; k++) {
                     if (!w->contracts[k].active) {
                         w->contracts[k] = (contract_t){
-                            .active = true, .action = CONTRACT_SUPPLY,
+                            .active = true, .action = CONTRACT_TRACTOR,
                             .station_index = (uint8_t)sp->current_station,
                             .commodity = mat,
                             .quantity_needed = needed,
@@ -3766,7 +3766,7 @@ static void step_contracts(world_t *w, float dt) {
         w->contracts[i].age += dt;
 
         switch (w->contracts[i].action) {
-        case CONTRACT_SUPPLY: {
+        case CONTRACT_TRACTOR: {
             /* Close when station buffer is sufficiently full */
             if (w->contracts[i].station_index >= MAX_STATIONS) break;
             station_t *st = &w->stations[w->contracts[i].station_index];
@@ -3775,25 +3775,20 @@ static void step_contracts(world_t *w, float dt) {
             float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.8f : MAX_PRODUCT_STOCK * 0.8f;
             if (current >= threshold) {
                 w->contracts[i].active = false;
-                emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_SUPPLY});
+                emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_TRACTOR});
             }
             break;
         }
-        case CONTRACT_DESTROY: {
+        case CONTRACT_FRACTURE: {
             /* Close when target asteroid is gone or index invalid */
             int idx = w->contracts[i].target_index;
             bool target_gone = (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active);
             if (target_gone) {
                 w->contracts[i].active = false;
-                emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_DESTROY});
+                emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_FRACTURE});
             }
             /* Expire after 60 seconds if unfulfilled */
             if (w->contracts[i].active && w->contracts[i].age > 60.0f) w->contracts[i].active = false;
-            break;
-        }
-        case CONTRACT_SCAN: {
-            /* Expire after 120 seconds */
-            if (w->contracts[i].age > 120.0f) w->contracts[i].active = false;
             break;
         }
         }
@@ -3827,7 +3822,7 @@ static void step_contracts(world_t *w, float dt) {
             float remaining = cost * (1.0f - st->modules[m].build_progress);
             if (remaining > 0.5f) {
                 need = (contract_t){
-                    .active = true, .action = CONTRACT_SUPPLY,
+                    .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
                     .commodity = module_build_material(st->modules[m].type),
                     .quantity_needed = remaining,
@@ -3843,7 +3838,7 @@ static void step_contracts(world_t *w, float dt) {
             float remaining = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
             if (remaining > 0.5f) {
                 need = (contract_t){
-                    .active = true, .action = CONTRACT_SUPPLY,
+                    .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
                     .commodity = COMMODITY_FRAME,
                     .quantity_needed = remaining,
@@ -3866,7 +3861,7 @@ static void step_contracts(world_t *w, float dt) {
             }
             if (worst_ore >= 0) {
                 need = (contract_t){
-                    .active = true, .action = CONTRACT_SUPPLY,
+                    .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
                     .commodity = (commodity_t)worst_ore,
                     .quantity_needed = worst_deficit,
@@ -3892,7 +3887,7 @@ static void step_contracts(world_t *w, float dt) {
             }
             if (worst_idx >= 0) {
                 need = (contract_t){
-                    .active = true, .action = CONTRACT_SUPPLY,
+                    .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
                     .commodity = checks[worst_idx].ingot,
                     .quantity_needed = worst_deficit,
@@ -3972,6 +3967,20 @@ static int find_nascent_scaffold(const world_t *w, int station_idx) {
     return -1;
 }
 
+/* Is there a LOOSE scaffold still occupying the construction area near
+ * this station's center? Used to gate spawning the next nascent. */
+static bool construction_area_blocked(const world_t *w, int station_idx) {
+    const station_t *st = &w->stations[station_idx];
+    float clear_r = STATION_RING_RADIUS[1] * 0.6f; /* roughly inside ring 1 */
+    float clear_r_sq = clear_r * clear_r;
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        if (!w->scaffolds[i].active) continue;
+        if (w->scaffolds[i].state != SCAFFOLD_LOOSE) continue;
+        if (v2_dist_sq(w->scaffolds[i].pos, st->pos) < clear_r_sq) return true;
+    }
+    return false;
+}
+
 /* Production layer v1: a nascent scaffold appears at the station center
  * when there's a pending order. Producer modules beam material to it.
  * The intake rate is layout-aware (same-ring fast, cross-ring slow).
@@ -3997,9 +4006,12 @@ static void step_shipyard_manufacture(world_t *w, float dt) {
         commodity_t mat = module_build_material(type);
         float needed = module_build_cost(type);
 
-        /* Make sure a nascent scaffold exists at the station center */
+        /* Make sure a nascent scaffold exists at the station center.
+         * If a previously-completed scaffold is still in the construction
+         * area, wait for it to drift clear before starting the next one. */
         int nidx = find_nascent_scaffold(w, s);
         if (nidx < 0) {
+            if (construction_area_blocked(w, s)) continue;
             nidx = spawn_scaffold(w, type, st->pos, (int)owner);
             if (nidx < 0) continue; /* no slots */
             w->scaffolds[nidx].state = SCAFFOLD_NASCENT;
@@ -4024,14 +4036,17 @@ static void step_shipyard_manufacture(world_t *w, float dt) {
             }
         }
 
-        /* Manufacture complete: nascent → loose, drift it gently outward */
+        /* Manufacture complete: nascent → loose, eject from the center */
         if (nascent->build_amount >= needed) {
             nascent->state = SCAFFOLD_LOOSE;
             nascent->built_at_station = -1;
             nascent->build_amount = 0.0f;
-            /* Push outward toward -X so it leaves the construction area */
-            float angle = PI_F;
-            nascent->vel = v2(cosf(angle) * 30.0f, sinf(angle) * 30.0f);
+            /* Eject in a deterministic direction based on time so successive
+             * builds spread around the station instead of stacking. Push
+             * hard enough to clear the inner ring quickly. */
+            float angle = w->time * 0.7f; /* slow rotation through directions */
+            nascent->pos = v2_add(st->pos, v2(cosf(angle) * 12.0f, sinf(angle) * 12.0f));
+            nascent->vel = v2(cosf(angle) * 90.0f, sinf(angle) * 90.0f);
             /* Shift queue */
             for (int i = 0; i < st->pending_scaffold_count - 1; i++) {
                 st->pending_scaffolds[i] = st->pending_scaffolds[i + 1];

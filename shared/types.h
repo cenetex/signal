@@ -632,10 +632,18 @@ static const float UPGRADE_BASE_PRODUCT = 8.0f;
 static const int SHIP_UPGRADE_MAX_LEVEL = 4;
 
 typedef enum {
-    CONTRACT_SUPPLY,
-    CONTRACT_DESTROY,
-    CONTRACT_SCAN,
+    /* TRACTOR: tow / deliver thing(s) to a destination.
+     * - target_index >= 0  → specific entity (scaffold, fragment) to destination
+     * - target_index == -1 → quota of `commodity` to station_index
+     * Replaces the old SUPPLY (deliver N units of X). */
+    CONTRACT_TRACTOR = 0,
+    /* FRACTURE: laser-break thing(s) into fragments.
+     * - target_index >= 0  → specific asteroid to destroy
+     * - target_index == -1 → quota of asteroid type (mining contract)
+     * Replaces DESTROY and absorbs SCAN. */
+    CONTRACT_FRACTURE = 1,
 } contract_action_t;
+
 
 enum { SIM_MAX_EVENTS = 64 };
 

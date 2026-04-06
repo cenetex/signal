@@ -173,7 +173,7 @@ input_intent_t sample_input_intent(void) {
                 contract_t *ct = &g.world.contracts[ci];
                 if (!ct->active || ct->station_index >= MAX_STATIONS) continue;
                 if (!station_exists(&g.world.stations[ct->station_index])) continue;
-                vec2 target = (ct->action == CONTRACT_SUPPLY) ? g.world.stations[ct->station_index].pos : ct->target_pos;
+                vec2 target = (ct->action == CONTRACT_TRACTOR) ? g.world.stations[ct->station_index].pos : ct->target_pos;
                 float d = v2_dist_sq(here, target);
                 for (int slot = 0; slot < 3; slot++) {
                     if (d < nearest_d[slot]) {

@@ -879,7 +879,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             if (!ct->active) continue;
             if (ct->station_index >= MAX_STATIONS) continue;
             if (!station_exists(&g.world.stations[ct->station_index])) continue;
-            vec2 target = (ct->action == CONTRACT_SUPPLY) ? g.world.stations[ct->station_index].pos : ct->target_pos;
+            vec2 target = (ct->action == CONTRACT_TRACTOR) ? g.world.stations[ct->station_index].pos : ct->target_pos;
             float d = v2_dist_sq(here, target);
             for (int slot = 0; slot < 3; slot++) {
                 if (d < nearest_d[slot]) {
@@ -901,9 +901,9 @@ void draw_station_services(const station_ui_state_t* ui) {
             bool tracked = (g.tracked_contract == nearest[slot]);
             /* Action-based pip color */
             float pip_r = 0.5f, pip_g = 0.5f, pip_b = 0.5f;
-            if (ct->action == CONTRACT_DESTROY) { pip_r = 0.95f; pip_g = 0.30f; pip_b = 0.20f; }
-            else if (ct->action == CONTRACT_SCAN) { pip_r = 0.30f; pip_g = 0.70f; pip_b = 0.95f; }
-            else {
+            if (ct->action == CONTRACT_FRACTURE) {
+                pip_r = 0.95f; pip_g = 0.30f; pip_b = 0.20f;
+            } else { /* TRACTOR */
                 if (ct->commodity == COMMODITY_FERRITE_ORE) { pip_r = 0.85f; pip_g = 0.50f; pip_b = 0.35f; }
                 else if (ct->commodity == COMMODITY_CUPRITE_ORE) { pip_r = 0.40f; pip_g = 0.55f; pip_b = 0.90f; }
                 else if (ct->commodity == COMMODITY_CRYSTAL_ORE) { pip_r = 0.40f; pip_g = 0.85f; pip_b = 0.50f; }
@@ -912,12 +912,10 @@ void draw_station_services(const station_ui_state_t* ui) {
             draw_rect_centered(v2(cx + 3.0f, line_y + 5.0f), 3.0f, 3.0f, pip_r, pip_g, pip_b, 0.9f);
             sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(line_y));
             sdtx_color3b(tracked ? 255 : 203, tracked ? 255 : 220, tracked ? 130 : 248);
-            if (ct->action == CONTRACT_DESTROY) {
-                sdtx_printf("[%d] DESTROY: %.0f cr%s", shown + 1, cprice, tracked ? " *" : "");
-            } else if (ct->action == CONTRACT_SCAN) {
-                sdtx_printf("[%d] SCAN: %.0f cr%s", shown + 1, cprice, tracked ? " *" : "");
+            if (ct->action == CONTRACT_FRACTURE) {
+                sdtx_printf("[%d] FRACTURE: %.0f cr%s", shown + 1, cprice, tracked ? " *" : "");
             } else {
-                sdtx_printf("[%d] %s @ %s: %.0f cr%s", shown + 1,
+                sdtx_printf("[%d] TRACTOR %s -> %s: %.0f cr%s", shown + 1,
                     commodity_short_name(ct->commodity),
                     g.world.stations[ct->station_index].name,
                     cprice, tracked ? " *" : "");
