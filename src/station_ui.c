@@ -39,6 +39,27 @@ int nearest_station_index(vec2 pos) {
     return best_index;
 }
 
+int player_planned_types(module_type_t *out, int max) {
+    if (!out || max <= 0) return 0;
+    int local_id = g.local_player_slot;
+    int count = 0;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &g.world.stations[s];
+        for (int p = 0; p < st->placement_plan_count; p++) {
+            if (st->placement_plans[p].owner != local_id) continue;
+            module_type_t t = st->placement_plans[p].type;
+            bool dup = false;
+            for (int k = 0; k < count; k++) {
+                if (out[k] == t) { dup = true; break; }
+            }
+            if (dup) continue;
+            if (count >= max) return count;
+            out[count++] = t;
+        }
+    }
+    return count;
+}
+
 const station_t* navigation_station_ptr(void) {
     if (LOCAL_PLAYER.docked) {
         return current_station_ptr();
@@ -924,32 +945,57 @@ void draw_station_services(const station_ui_state_t* ui) {
         sdtx_puts("SHIPYARD");
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
         sdtx_color3b(145, 160, 188);
-        sdtx_puts("deposit + deliver materials -> tow scaffold away");
+        sdtx_puts("kits match your active plan (B in flight)");
 
         float ly = cy + 34.0f;
 
-        static const module_type_t sellable[] = {
-            MODULE_DOCK, MODULE_SIGNAL_RELAY, MODULE_FURNACE,
-            MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_FRAME_PRESS,
-            MODULE_FURNACE_CU, MODULE_FURNACE_CR,
-            MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
-            MODULE_CARGO_BAY, MODULE_REPAIR_BAY,
-        };
-        int shown = 0;
-        int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
-        for (int si = 0; si < (int)(sizeof(sellable)/sizeof(sellable[0])); si++) {
-            if (!station_has_module(ui->station, sellable[si])) continue;
-            int fee = scaffold_order_fee(sellable[si]);
-            int mat = (int)module_build_cost_lookup(sellable[si]);
-            commodity_t mat_type = module_build_material_lookup(sellable[si]);
-            const char *mat_name = commodity_short_label(mat_type);
-            bool can_afford = credits >= fee;
+        /* Only kits the player has currently planned in plan mode appear
+         * here. The plan-mode reticle is the source of truth — players
+         * are limited to PLAYER_PLAN_TYPE_LIMIT distinct types at once. */
+        module_type_t planned[PLAYER_PLAN_TYPE_LIMIT];
+        int planned_n = player_planned_types(planned, PLAYER_PLAN_TYPE_LIMIT);
+
+        if (planned_n == 0) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
-            sdtx_printf("[%d] %-14s %dcr + %d %s",
-                shown + 1, module_type_name(sellable[si]), fee, mat, mat_name);
+            sdtx_color3b(140, 150, 175);
+            sdtx_puts("No active plans.  Launch and press B to plan.");
             ly += 14.0f;
-            shown++;
+        } else {
+            int shown = 0;
+            int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
+            for (int si = 0; si < planned_n; si++) {
+                module_type_t kit = planned[si];
+                if (!station_has_module(ui->station, kit)) {
+                    /* Shipyard can only print kits this station can fab. */
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                    sdtx_color3b(120, 130, 155);
+                    sdtx_printf("[--] %-14s NO LINE AT THIS YARD",
+                        module_type_name(kit));
+                    ly += 14.0f;
+                    continue;
+                }
+                int fee = scaffold_order_fee(kit);
+                int mat = (int)module_build_cost_lookup(kit);
+                commodity_t mat_type = module_build_material_lookup(kit);
+                const char *mat_name = commodity_short_label(mat_type);
+                bool can_afford = credits >= fee;
+                bool unlocked = module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules, kit);
+                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+                if (!unlocked) {
+                    int prereq = module_schema(kit)->prerequisite;
+                    sdtx_color3b(80, 90, 110);
+                    sdtx_printf("[--] %-14s LOCKED (need %s)",
+                        module_type_name(kit),
+                        (prereq >= 0 && prereq < MODULE_COUNT)
+                            ? module_type_name((module_type_t)prereq) : "?");
+                } else {
+                    sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
+                    sdtx_printf("[%d] %-14s %dcr + %d %s",
+                        shown + 1, module_type_name(kit), fee, mat, mat_name);
+                    shown++;
+                }
+                ly += 14.0f;
+            }
         }
 
         /* Pending orders */

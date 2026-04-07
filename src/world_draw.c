@@ -1170,6 +1170,68 @@ void draw_hopper_tractors(void) {
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Spark burst — short, jittery streaks at a contact point.            */
+/* Used by the mining laser impact and ship collisions. The "seed"     */
+/* parameter de-correlates per-call patterns so two simultaneous       */
+/* bursts (e.g. beam + crash) don't pulse in lockstep.                 */
+/* ------------------------------------------------------------------ */
+
+static float hash11(float x) {
+    /* Cheap deterministic noise: returns ~[-1, 1]. */
+    float s = sinf(x * 127.1f + 311.7f) * 43758.5453f;
+    return s - floorf(s) * 2.0f - 1.0f;
+}
+
+void draw_spark_burst(vec2 pos, float intensity, bool red, float seed) {
+    if (intensity <= 0.01f) return;
+    if (intensity > 1.5f) intensity = 1.5f;
+    float t = g.world.time;
+    /* Time bucket changes ~30 times/sec → spark positions reroll fast,
+     * giving the "jumpy" frame-to-frame look. */
+    float bucket = floorf(t * 32.0f) + seed * 71.3f;
+
+    /* Hot core cross — 4 short rays, jitter angle each bucket */
+    float core_r = red ? 1.0f : 1.0f;
+    float core_g = red ? 0.42f : 0.95f;
+    float core_b = red ? 0.18f : 0.78f;
+    for (int k = 0; k < 4; k++) {
+        float ang = hash11(bucket + (float)k * 3.7f) * PI_F;
+        float len = 3.0f + 4.0f * fabsf(hash11(bucket * 1.3f + (float)k * 5.1f));
+        vec2 tip = v2_add(pos, v2(cosf(ang) * len, sinf(ang) * len));
+        draw_segment(pos, tip, core_r, core_g, core_b, 0.85f * intensity);
+    }
+
+    /* Main spark plume — 12 streaks, each on its own random bucket */
+    int streaks = 12;
+    for (int k = 0; k < streaks; k++) {
+        float kseed = bucket + (float)k * 2.71f + seed;
+        float gate = hash11(kseed * 0.91f);
+        if (gate < -0.2f) continue; /* drop ~40% of streaks each frame */
+        float ang = hash11(kseed) * PI_F;
+        float len = 5.0f + 11.0f * fabsf(hash11(kseed * 1.7f));
+        vec2 tip = v2_add(pos, v2(cosf(ang) * len, sinf(ang) * len));
+        float r = red ? 1.0f : 1.0f;
+        float g = red ? (0.45f + 0.2f * fabsf(hash11(kseed * 0.5f))) : 0.85f;
+        float b = red ? 0.15f : (0.25f + 0.3f * fabsf(hash11(kseed * 0.7f)));
+        draw_segment(pos, tip, r, g, b, (0.55f + 0.35f * gate) * intensity);
+    }
+
+    /* Outer chunk debris — slightly slower, longer reach */
+    for (int k = 0; k < 5; k++) {
+        float kseed = bucket * 0.5f + (float)k * 4.3f + seed * 0.5f;
+        float gate = hash11(kseed * 0.61f);
+        if (gate < 0.1f) continue;
+        float ang = hash11(kseed * 1.9f) * PI_F;
+        float len = 10.0f + 8.0f * fabsf(hash11(kseed));
+        vec2 tip = v2_add(pos, v2(cosf(ang) * len, sinf(ang) * len));
+        float r = red ? 0.9f : 0.5f;
+        float g = red ? 0.30f : 0.95f;
+        float b = red ? 0.10f : 0.80f;
+        draw_segment(pos, tip, r, g, b, gate * 0.45f * intensity);
+    }
+}
+
 void draw_beam(void) {
     if (!LOCAL_PLAYER.beam_active) {
         return;
@@ -1190,6 +1252,70 @@ void draw_beam(void) {
     } else {
         /* Beam into empty space */
         draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.9f, 0.75f, 0.30f, 0.55f);
+    }
+
+    /* Impact sparks at the beam contact point. Skip on scan beam and
+     * on misses into empty space. */
+    if (LOCAL_PLAYER.beam_hit && !LOCAL_PLAYER.scan_active) {
+        draw_spark_burst(LOCAL_PLAYER.beam_end,
+                         LOCAL_PLAYER.beam_ineffective ? 0.7f : 1.0f,
+                         LOCAL_PLAYER.beam_ineffective,
+                         3.14f);
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Collision sparks — emit a burst at any point where the local ship  */
+/* hull is currently in contact with an asteroid or station body.     */
+/* Pure visual; the server is authoritative for damage.               */
+/* ------------------------------------------------------------------ */
+
+void draw_collision_sparks(void) {
+    if (LOCAL_PLAYER.docked) return;
+    vec2 sp = LOCAL_PLAYER.ship.pos;
+    vec2 sv = LOCAL_PLAYER.ship.vel;
+    float ship_r = ship_hull_def(&LOCAL_PLAYER.ship)->ship_radius;
+    /* Generous overlap window so sparks read on glancing scrapes too. */
+    float pad = 6.0f;
+
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &g.world.asteroids[i];
+        if (!a->active) continue;
+        float reach = ship_r + a->radius + pad;
+        vec2 d = v2_sub(a->pos, sp);
+        float d_sq = v2_len_sq(d);
+        if (d_sq > reach * reach) continue;
+        if (d_sq < 0.01f) continue;
+        float dist = sqrtf(d_sq);
+        vec2 normal = v2_scale(d, 1.0f / dist);
+        /* Closing speed (component of relative velocity along contact normal) */
+        vec2 rel = v2_sub(sv, a->vel);
+        float closing = v2_dot(rel, normal);
+        /* Always at least a faint scrape spark; ramp with closing speed. */
+        float intensity = 0.35f + fmaxf(0.0f, closing) * 0.012f;
+        if (intensity > 1.4f) intensity = 1.4f;
+        vec2 contact = v2_add(sp, v2_scale(normal, ship_r - 1.0f));
+        draw_spark_burst(contact, intensity, false, (float)i * 0.37f);
+    }
+
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        const station_t *st = &g.world.stations[i];
+        if (!station_exists(st)) continue;
+        if (st->planned) continue;
+        /* Use core radius — dock ring overlap shouldn't spark. */
+        float reach = ship_r + st->radius + pad;
+        vec2 d = v2_sub(st->pos, sp);
+        float d_sq = v2_len_sq(d);
+        if (d_sq > reach * reach) continue;
+        if (d_sq < 0.01f) continue;
+        float dist = sqrtf(d_sq);
+        vec2 normal = v2_scale(d, 1.0f / dist);
+        float closing = v2_dot(sv, normal);
+        float intensity = 0.45f + fmaxf(0.0f, closing) * 0.015f;
+        if (intensity > 1.5f) intensity = 1.5f;
+        vec2 contact = v2_add(sp, v2_scale(normal, ship_r - 1.0f));
+        /* Station scrapes spark hot/orange — feels metallic vs rock */
+        draw_spark_burst(contact, intensity, true, (float)i * 1.13f + 17.0f);
     }
 }
 
@@ -1217,24 +1343,7 @@ void draw_compass_ring(void) {
     /* Faint ring outline */
     draw_circle_outline(ship, ring_r, 32, 0.25f, 0.27f, 0.30f, 0.07f);
 
-    /* Local callsign under ship */
-    const char *my_cs = net_local_callsign();
-    if (my_cs[0] != '\0') {
-        float cw = 5.0f;
-        float start_x = ship.x - (float)strlen(my_cs) * cw * 0.5f;
-        float ly = ship.y + 28.0f;
-        sgl_begin_lines();
-        sgl_c4f(0.5f, 0.6f, 0.7f, 0.5f);
-        for (int ch = 0; my_cs[ch]; ch++) {
-            float cx = start_x + (float)ch * cw;
-            /* Minimal letter: vertical bar + top bar */
-            sgl_v2f(cx, ly); sgl_v2f(cx, ly + 5.0f);
-            sgl_v2f(cx, ly); sgl_v2f(cx + 3.0f, ly);
-            if (my_cs[ch] != '-')
-                { sgl_v2f(cx + 3.0f, ly); sgl_v2f(cx + 3.0f, ly + 5.0f); }
-        }
-        sgl_end();
-    }
+    /* Local callsign rendered with sdtx — see draw_callsigns() pass below. */
 
     /* Helper: draw a chevron pip at position on the ring */
     #define COMPASS_PIP(target, pr, pg, pb) do { \
@@ -1377,50 +1486,7 @@ void draw_remote_players(void) {
         sgl_pop_matrix();
 
         /* Callsign label above ship */
-        if (players[i].callsign[0] != '\0') {
-            /* Convert world pos to screen-relative for debugtext.
-             * sdtx uses a grid coordinate system, so we render the
-             * callsign as small colored text above the ship. */
-            float lx = players[i].x;
-            float ly = players[i].y - 30.0f;
-            sgl_c4f(cr * 0.7f, cg * 0.7f, cb * 0.7f, 0.7f);
-            sgl_begin_lines();
-            /* Small underline tick under the label */
-            sgl_v2f(lx - 16.0f, ly + 4.0f);
-            sgl_v2f(lx + 16.0f, ly + 4.0f);
-            sgl_end();
-            /* Render callsign chars as tiny line segments */
-            float char_w = 5.0f;
-            float start_x = lx - (float)strlen(players[i].callsign) * char_w * 0.5f;
-            for (int ch = 0; players[i].callsign[ch]; ch++) {
-                float cx0 = start_x + (float)ch * char_w;
-                float cy0 = ly;
-                char c = players[i].callsign[ch];
-                /* Minimal 3x5 pixel font as line segments */
-                sgl_c4f(cr, cg, cb, 0.8f);
-                sgl_begin_lines();
-                if (c >= '0' && c <= '9') {
-                    /* Digit: draw as a small box with distinguishing features */
-                    sgl_v2f(cx0, cy0); sgl_v2f(cx0+3, cy0);
-                    sgl_v2f(cx0+3, cy0); sgl_v2f(cx0+3, cy0-5);
-                    sgl_v2f(cx0+3, cy0-5); sgl_v2f(cx0, cy0-5);
-                    sgl_v2f(cx0, cy0-5); sgl_v2f(cx0, cy0);
-                    if (c == '1') { sgl_v2f(cx0+1.5f, cy0); sgl_v2f(cx0+1.5f, cy0-5); }
-                    if (c == '4' || c == '5' || c == '6' || c == '8' || c == '9' || c == '0')
-                        { sgl_v2f(cx0, cy0-2.5f); sgl_v2f(cx0+3, cy0-2.5f); }
-                } else if (c == '-') {
-                    sgl_v2f(cx0+0.5f, cy0-2.5f); sgl_v2f(cx0+2.5f, cy0-2.5f);
-                } else {
-                    /* Letter: vertical bar + distinguishing strokes */
-                    sgl_v2f(cx0, cy0); sgl_v2f(cx0, cy0-5);
-                    sgl_v2f(cx0, cy0); sgl_v2f(cx0+3, cy0);
-                    if (c != 'L') { sgl_v2f(cx0+3, cy0); sgl_v2f(cx0+3, cy0-5); }
-                    if (c >= 'N') { sgl_v2f(cx0, cy0-5); sgl_v2f(cx0+3, cy0-5); }
-                    if (c < 'N' && c != 'L') { sgl_v2f(cx0, cy0-2.5f); sgl_v2f(cx0+3, cy0-2.5f); }
-                }
-                sgl_end();
-            }
-        }
+        /* Callsign rendered with sdtx (real font) — see callsign pass below. */
 
         /* Mining or scan beam */
         if (mining) {
@@ -1457,6 +1523,51 @@ void draw_remote_players(void) {
             }
         }
     }
+}
+
+/* ================================================================== */
+/* Callsigns — readable sdtx labels above all visible ships           */
+/* ================================================================== */
+
+void draw_callsigns(void) {
+    /* Set up sdtx in screen-space (this temporarily switches sdtx out
+     * of any prior canvas — main.c re-establishes after this pass). */
+    float screen_w = ui_screen_width();
+    float screen_h = ui_screen_height();
+    sdtx_canvas(screen_w, screen_h);
+    sdtx_origin(0.0f, 0.0f);
+    const float cell = 8.0f;
+
+    vec2 cam = LOCAL_PLAYER.ship.pos;
+
+    /* World-to-screen helper inline */
+    #define WS_TO_SCREEN(wx, wy, ox, oy) do { \
+        float _sx = (wx - cam.x) + screen_w * 0.5f + (ox); \
+        float _sy = (wy - cam.y) + screen_h * 0.5f + (oy); \
+        sdtx_pos(_sx / cell, _sy / cell); \
+    } while (0)
+
+    /* Local player callsign is rendered in the HUD (see draw_hud) — drawing
+     * it in the world stuck to the ship is distracting and jitters with the
+     * camera lerp. */
+
+    /* Remote player callsigns */
+    if (g.multiplayer_enabled) {
+        const NetPlayerState *players = net_get_interpolated_players();
+        int local_id = (int)net_local_id();
+        for (int i = 0; i < NET_MAX_PLAYERS; i++) {
+            if (!players[i].active) continue;
+            if (i == local_id) continue;
+            if (players[i].callsign[0] == '\0') continue;
+            if (!on_screen(players[i].x, players[i].y, 60.0f)) continue;
+            sdtx_color3b(180, 220, 240);
+            int len = (int)strlen(players[i].callsign);
+            WS_TO_SCREEN(players[i].x, players[i].y, -len * cell * 0.5f, -36.0f);
+            sdtx_puts(players[i].callsign);
+        }
+    }
+
+    #undef WS_TO_SCREEN
 }
 
 /* ================================================================== */

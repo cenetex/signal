@@ -217,26 +217,27 @@ input_intent_t sample_input_intent(void) {
     /* Number keys: context-dependent */
     if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_SHIPYARD) {
         const station_t *st = current_station_ptr();
-        /* Shipyard tab: 1-9 order a scaffold */
-        static const module_type_t sellable[] = {
-            MODULE_DOCK, MODULE_SIGNAL_RELAY, MODULE_FURNACE,
-            MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_FRAME_PRESS,
-            MODULE_FURNACE_CU, MODULE_FURNACE_CR,
-            MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
-            MODULE_CARGO_BAY, MODULE_REPAIR_BAY,
-        };
+        /* Shipyard tab: 1-9 order a scaffold.
+         * The order menu is restricted to module types the player has
+         * currently planned (from plan mode), so the shipyard surfaces
+         * exactly the kits needed for the active build queue. */
+        module_type_t planned[PLAYER_PLAN_TYPE_LIMIT];
+        int planned_n = player_planned_types(planned, PLAYER_PLAN_TYPE_LIMIT);
         int shown = 0;
-        for (int si = 0; si < (int)(sizeof(sellable)/sizeof(sellable[0])); si++) {
-            if (!station_has_module(st, sellable[si])) continue;
+        for (int si = 0; si < planned_n; si++) {
+            module_type_t kit = planned[si];
+            if (!station_has_module(st, kit)) continue;
+            /* Tech-tree gate (defensive — plan mode already enforces this) */
+            if (!module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules, kit)) continue;
             if (is_key_pressed(SAPP_KEYCODE_1 + shown)) {
                 if (st->pending_scaffold_count >= 4) {
                     set_notice("Shipyard queue full.");
-                } else if ((int)lroundf(LOCAL_PLAYER.ship.credits) < scaffold_order_fee(sellable[si])) {
-                    set_notice("Need %d cr to order.", scaffold_order_fee(sellable[si]));
+                } else if ((int)lroundf(LOCAL_PLAYER.ship.credits) < scaffold_order_fee(kit)) {
+                    set_notice("Need %d cr to order.", scaffold_order_fee(kit));
                 } else {
                     intent.buy_scaffold_kit = true;
-                    intent.scaffold_kit_module = sellable[si];
-                    set_notice("Ordered %s scaffold.", module_type_name(sellable[si]));
+                    intent.scaffold_kit_module = kit;
+                    set_notice("Ordered %s scaffold.", module_type_name(kit));
                 }
                 break;
             }
@@ -405,19 +406,54 @@ input_intent_t sample_input_intent(void) {
                     MODULE_SHIPYARD,
                 };
                 int count = (int)(sizeof(plannable)/sizeof(plannable[0]));
+                /* If the player has already committed to PLAYER_PLAN_TYPE_LIMIT
+                 * distinct types, R cycles only through those. Otherwise it
+                 * cycles through every tech-tree-unlocked type. */
+                module_type_t planned[PLAYER_PLAN_TYPE_LIMIT];
+                int planned_n = player_planned_types(planned, PLAYER_PLAN_TYPE_LIMIT);
+                uint32_t mask = LOCAL_PLAYER.ship.unlocked_modules;
                 int cur = 0;
                 for (int i = 0; i < count; i++)
                     if ((int)plannable[i] == g.plan_type) { cur = i; break; }
-                g.plan_type = (int)plannable[(cur + 1) % count];
+                int next = -1;
+                for (int step = 1; step <= count; step++) {
+                    int idx = (cur + step) % count;
+                    module_type_t t = plannable[idx];
+                    if (!module_unlocked_for_player(mask, t)) continue;
+                    if (planned_n >= PLAYER_PLAN_TYPE_LIMIT) {
+                        bool match = false;
+                        for (int k = 0; k < planned_n; k++)
+                            if (planned[k] == t) { match = true; break; }
+                        if (!match) continue;
+                    }
+                    next = (int)t;
+                    break;
+                }
+                if (next >= 0) g.plan_type = next;
                 intent.release_tow = false;
             } else if (is_key_pressed(SAPP_KEYCODE_E)) {
-                intent.add_plan = true;
-                intent.plan_station = (int8_t)g.placement_target_station;
-                intent.plan_ring = (int8_t)g.placement_target_ring;
-                intent.plan_slot = (int8_t)g.placement_target_slot;
-                intent.plan_type = (module_type_t)g.plan_type;
-                set_notice("Planned %s. [R] type [E] place [B] exit",
-                    module_type_name((module_type_t)g.plan_type));
+                /* Enforce per-player 2-type cap. Allow if the type is already
+                 * in the planned set or we have headroom. */
+                module_type_t planned[PLAYER_PLAN_TYPE_LIMIT];
+                int planned_n = player_planned_types(planned, PLAYER_PLAN_TYPE_LIMIT);
+                bool already = false;
+                for (int k = 0; k < planned_n; k++)
+                    if (planned[k] == (module_type_t)g.plan_type) { already = true; break; }
+                if (!module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules,
+                                                (module_type_t)g.plan_type)) {
+                    set_notice("%s is locked.", module_type_name((module_type_t)g.plan_type));
+                } else if (!already && planned_n >= PLAYER_PLAN_TYPE_LIMIT) {
+                    set_notice("Plan limit %d types. Cancel one first.",
+                        PLAYER_PLAN_TYPE_LIMIT);
+                } else {
+                    intent.add_plan = true;
+                    intent.plan_station = (int8_t)g.placement_target_station;
+                    intent.plan_ring = (int8_t)g.placement_target_ring;
+                    intent.plan_slot = (int8_t)g.placement_target_slot;
+                    intent.plan_type = (module_type_t)g.plan_type;
+                    set_notice("Planned %s. [R] type [E] place [B] exit",
+                        module_type_name((module_type_t)g.plan_type));
+                }
             }
         }
     } else if (is_key_pressed(SAPP_KEYCODE_B)) {
@@ -516,6 +552,32 @@ void submit_input(const input_intent_t *intent, float dt) {
 
     if (has_action)
         g.action_predict_timer = 0.5f;
+
+    /* Multiplayer: plan intents ride a dedicated message — they carry
+     * richer payloads (target station/ring/slot/type or world position)
+     * that don't fit in the 1-byte action slot. Send them directly. */
+    if (g.multiplayer_enabled && net_is_connected()) {
+        if (intent->create_planned_outpost) {
+            net_send_plan(NET_PLAN_OP_CREATE_OUTPOST,
+                          -1, -1, -1, 0,
+                          intent->planned_outpost_pos.x,
+                          intent->planned_outpost_pos.y);
+        }
+        if (intent->add_plan) {
+            net_send_plan(NET_PLAN_OP_ADD_SLOT,
+                          intent->plan_station,
+                          intent->plan_ring,
+                          intent->plan_slot,
+                          (uint8_t)intent->plan_type,
+                          0.0f, 0.0f);
+        }
+        if (intent->cancel_planned_outpost) {
+            net_send_plan(NET_PLAN_OP_CANCEL_OUTPOST,
+                          intent->cancel_planned_station,
+                          -1, -1, 0,
+                          0.0f, 0.0f);
+        }
+    }
 
     /* Multiplayer: encode the action and queue for network send */
     if (has_action && g.multiplayer_enabled && net_is_connected()) {

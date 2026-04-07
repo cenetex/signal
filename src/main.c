@@ -782,12 +782,14 @@ static void render_world(void) {
     draw_shipyard_intake_beams();
     draw_placement_reticle();
     draw_beam();
+    draw_collision_sparks();
     draw_ship_tractor_field();
     draw_towed_tethers();
     draw_scaffold_tether();
     draw_ship();
     draw_npc_ships();
     draw_remote_players(); /* Multiplayer: remote player ships */
+    draw_callsigns();      /* Readable sdtx labels above local + remote ships */
     draw_compass_ring();   /* Navigation compass around player ship */
 
     /* Ring trusses and modules render ON TOP of ships */

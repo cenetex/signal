@@ -716,7 +716,11 @@ void draw_hud(void) {
 
         sdtx_pos(top_text_x, top_row_0);
         sdtx_color3b(232, 241, 255);
-        sdtx_printf("%s // CR %d", LOCAL_PLAYER.docked ? "RUN" : "SHIP", credits);
+        {
+            const char *cs = net_local_callsign();
+            const char *tag = (cs && cs[0] != '\0') ? cs : (LOCAL_PLAYER.docked ? "RUN" : "SHIP");
+            sdtx_printf("%s // CR %d", tag, credits);
+        }
 
         sdtx_pos(top_text_x, top_row_1);
         sdtx_color3b(203, 220, 248);
@@ -838,7 +842,14 @@ void draw_hud(void) {
 
     sdtx_pos(top_text_x, top_row_0);
     sdtx_color3b(232, 241, 255);
-    sdtx_puts(LOCAL_PLAYER.docked ? "RUN STATUS" : "SHIP STATUS");
+    {
+        const char *cs = net_local_callsign();
+        const char *fallback = LOCAL_PLAYER.docked ? "RUN STATUS" : "SHIP STATUS";
+        if (cs && cs[0] != '\0')
+            sdtx_printf("%s // %s", cs, LOCAL_PLAYER.docked ? "DOCKED" : "FLIGHT");
+        else
+            sdtx_puts(fallback);
+    }
 
     sdtx_pos(top_text_x, top_row_1);
     sdtx_color3b(203, 220, 248);

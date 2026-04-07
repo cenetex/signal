@@ -43,7 +43,23 @@ enum {
     NET_MSG_SESSION         = 0x20, /* client -> server: [type:1][token:8] */
     NET_MSG_DEATH           = 0x21, /* server -> client: [type:1][player_id:1] */
     NET_MSG_WORLD_TIME      = 0x22, /* server -> client: [type:1][time:f32] */
+    NET_MSG_PLAN            = 0x23, /* client -> server: outpost planning intents */
 };
+
+/* ------------------------------------------------------------------ */
+/* Plan operations (NET_MSG_PLAN payload byte 1)                      */
+/* Layout: [type:1][op:1][station:1][ring:1][slot:1][module_type:1]   */
+/*         [px:f32][py:f32]  = 14 bytes                               */
+/* ------------------------------------------------------------------ */
+
+enum {
+    NET_PLAN_OP_NONE              = 0,
+    NET_PLAN_OP_CREATE_OUTPOST    = 1, /* uses px,py */
+    NET_PLAN_OP_ADD_SLOT          = 2, /* uses station,ring,slot,module_type */
+    NET_PLAN_OP_CANCEL_OUTPOST    = 3, /* uses station */
+};
+
+#define NET_PLAN_MSG_SIZE 14
 
 /* ------------------------------------------------------------------ */
 /* Input flags (client -> server), packed into one byte                */

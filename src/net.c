@@ -570,6 +570,20 @@ void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target) {
     ws_send_binary(buf, 4);
 }
 
+void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
+                   uint8_t module_type, float px, float py) {
+    uint8_t buf[NET_PLAN_MSG_SIZE];
+    buf[0] = NET_MSG_PLAN;
+    buf[1] = op;
+    buf[2] = (uint8_t)station;
+    buf[3] = (uint8_t)ring;
+    buf[4] = (uint8_t)slot;
+    buf[5] = module_type;
+    write_f32_le(&buf[6], px);
+    write_f32_le(&buf[10], py);
+    ws_send_binary(buf, NET_PLAN_MSG_SIZE);
+}
+
 void net_send_state(float x, float y, float vx, float vy, float angle) {
     uint8_t buf[23];
     buf[0] = NET_MSG_STATE;
@@ -677,6 +691,20 @@ void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target) {
     buf[2] = action;
     buf[3] = mining_target;
     ws_send_binary(buf, 4);
+}
+
+void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
+                   uint8_t module_type, float px, float py) {
+    uint8_t buf[NET_PLAN_MSG_SIZE];
+    buf[0] = NET_MSG_PLAN;
+    buf[1] = op;
+    buf[2] = (uint8_t)station;
+    buf[3] = (uint8_t)ring;
+    buf[4] = (uint8_t)slot;
+    buf[5] = module_type;
+    write_f32_le(&buf[6], px);
+    write_f32_le(&buf[10], py);
+    ws_send_binary(buf, NET_PLAN_MSG_SIZE);
 }
 
 void net_send_state(float x, float y, float vx, float vy, float angle) {
