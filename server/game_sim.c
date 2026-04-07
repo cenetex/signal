@@ -3331,6 +3331,15 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     /* Create a planned outpost (server-side ghost) */
     if (sp->input.create_planned_outpost && !w->player_only_mode) {
         vec2 pos = sp->input.planned_outpost_pos;
+        /* One blueprint per player: cancel any existing planned outpost
+         * owned by this player before creating a new one. */
+        for (int s = 3; s < MAX_STATIONS; s++) {
+            station_t *old = &w->stations[s];
+            if (old->planned && old->planned_owner == (int8_t)sp->id) {
+                memset(old, 0, sizeof(*old));
+                SIM_LOG("[sim] player %d cancelled previous blueprint at slot %d\n", sp->id, s);
+            }
+        }
         /* Validate position */
         bool too_close = false;
         for (int s = 0; s < MAX_STATIONS; s++) {
