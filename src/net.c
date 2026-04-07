@@ -399,6 +399,18 @@ static void handle_message(const uint8_t* data, int len) {
             moff += MAX_ARMS * 4;
             for (int a = 0; a < MAX_ARMS; a++)
                 si.ring_offset[a] = read_f32_le(&data[moff + a * 4]);
+            moff += MAX_ARMS * 4;
+            /* Placement plans */
+            si.plan_count = data[moff];
+            if (si.plan_count > STATION_PLAN_RECORD_COUNT) si.plan_count = STATION_PLAN_RECORD_COUNT;
+            moff++;
+            for (int p = 0; p < STATION_PLAN_RECORD_COUNT; p++) {
+                si.plans[p].type  = (module_type_t)data[moff + 0];
+                si.plans[p].ring  = data[moff + 1];
+                si.plans[p].slot  = data[moff + 2];
+                si.plans[p].owner = (int8_t)data[moff + 3];
+                moff += STATION_PLAN_RECORD_SIZE;
+            }
             net_state.callbacks.on_station_identity(&si);
         }
         break;

@@ -41,12 +41,12 @@ int nearest_station_index(vec2 pos) {
 
 int player_planned_types(module_type_t *out, int max) {
     if (!out || max <= 0) return 0;
-    int local_id = g.local_player_slot;
+    /* Faction-shared blueprints: count distinct types across all
+     * planned slots regardless of who placed them. */
     int count = 0;
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &g.world.stations[s];
         for (int p = 0; p < st->placement_plan_count; p++) {
-            if (st->placement_plans[p].owner != local_id) continue;
             module_type_t t = st->placement_plans[p].type;
             bool dup = false;
             for (int k = 0; k < count; k++) {

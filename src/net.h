@@ -90,7 +90,8 @@ typedef void (*net_on_stations_fn)(uint8_t index, const float* inventory);
 /* Contracts callback: full replacement of contract array. */
 typedef void (*net_on_contracts_fn)(const contract_t* contracts, int count);
 
-/* Packed station identity for network sync. */
+/* Packed station identity for network sync.
+ * flags: bit0=scaffold, bit1=planned. */
 typedef struct {
     uint8_t index;
     uint8_t flags;
@@ -105,6 +106,13 @@ typedef struct {
     int arm_count;
     float arm_speed[MAX_ARMS];
     float ring_offset[MAX_ARMS];
+    int plan_count;
+    struct {
+        module_type_t type;
+        uint8_t ring;
+        uint8_t slot;
+        int8_t owner;
+    } plans[STATION_PLAN_RECORD_COUNT];
 } NetStationIdentity;
 
 /* Station identity callback: full static fields for a station slot. */

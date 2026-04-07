@@ -271,6 +271,7 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
     buf[1] = (uint8_t)index;
     buf[2] = 0;
     if (st->scaffold) buf[2] |= 1;  /* bit 0: scaffold */
+    if (st->planned)  buf[2] |= 2;  /* bit 1: planned */
     write_u32_le(&buf[3], st->services);
     write_f32_le(&buf[7], st->pos.x);
     write_f32_le(&buf[11], st->pos.y);
@@ -303,6 +304,25 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
     for (int a = 0; a < MAX_ARMS; a++) {
         write_f32_le(&buf[moff], st->ring_offset[a]);
         moff += 4;
+    }
+    /* Placement plans (faction-shared blueprint slots) */
+    int plan_n = st->placement_plan_count;
+    if (plan_n > STATION_PLAN_RECORD_COUNT) plan_n = STATION_PLAN_RECORD_COUNT;
+    buf[moff] = (uint8_t)plan_n;
+    moff++;
+    for (int p = 0; p < STATION_PLAN_RECORD_COUNT; p++) {
+        if (p < plan_n) {
+            buf[moff + 0] = (uint8_t)st->placement_plans[p].type;
+            buf[moff + 1] = st->placement_plans[p].ring;
+            buf[moff + 2] = st->placement_plans[p].slot;
+            buf[moff + 3] = (uint8_t)st->placement_plans[p].owner;
+        } else {
+            buf[moff + 0] = 0;
+            buf[moff + 1] = 0;
+            buf[moff + 2] = 0;
+            buf[moff + 3] = 0xFF;
+        }
+        moff += STATION_PLAN_RECORD_SIZE;
     }
     return STATION_IDENTITY_SIZE;
 }

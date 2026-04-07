@@ -3315,15 +3315,14 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                     existing = p; break;
                 }
             }
-            /* Per-player cap: at most PLAYER_PLAN_TYPE_LIMIT distinct
-             * planned module types across all stations. Replacing an
-             * existing slot with the same type is always allowed. */
+            /* Faction-shared cap: at most PLAYER_PLAN_TYPE_LIMIT distinct
+             * planned module types across all stations, regardless of who
+             * placed them. Replacing an existing slot is always allowed. */
             module_type_t distinct[PLAYER_PLAN_TYPE_LIMIT];
             int distinct_n = 0;
             for (int ss = 0; ss < MAX_STATIONS && distinct_n < PLAYER_PLAN_TYPE_LIMIT; ss++) {
                 const station_t *sct = &w->stations[ss];
                 for (int p = 0; p < sct->placement_plan_count; p++) {
-                    if (sct->placement_plans[p].owner != (int8_t)sp->id) continue;
                     /* Skip the slot we're replacing — its type may change. */
                     if (sct == st && p == existing) continue;
                     module_type_t pt = sct->placement_plans[p].type;
@@ -3356,13 +3355,14 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     /* Create a planned outpost (server-side ghost) */
     if (sp->input.create_planned_outpost && !w->player_only_mode) {
         vec2 pos = sp->input.planned_outpost_pos;
-        /* One blueprint per player: cancel any existing planned outpost
-         * owned by this player before creating a new one. */
+        /* Faction-shared: only one planned outpost in the world at a time.
+         * Any player creating a new blueprint cancels every existing one. */
         for (int s = 3; s < MAX_STATIONS; s++) {
             station_t *old = &w->stations[s];
-            if (old->planned && old->planned_owner == (int8_t)sp->id) {
+            if (old->planned) {
+                SIM_LOG("[sim] player %d cancelled blueprint at slot %d (was owner %d)\n",
+                    sp->id, s, old->planned_owner);
                 memset(old, 0, sizeof(*old));
-                SIM_LOG("[sim] player %d cancelled previous blueprint at slot %d\n", sp->id, s);
             }
         }
         /* Validate position */
@@ -3407,12 +3407,12 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         }
     }
 
-    /* Cancel a planned outpost (only the owner) */
+    /* Cancel a planned outpost (faction-shared — anyone can cancel). */
     if (sp->input.cancel_planned_outpost && !w->player_only_mode) {
         int s = sp->input.cancel_planned_station;
         if (s >= 3 && s < MAX_STATIONS) {
             station_t *st = &w->stations[s];
-            if (st->planned && st->planned_owner == (int8_t)sp->id) {
+            if (st->planned) {
                 memset(st, 0, sizeof(*st));
                 SIM_LOG("[sim] player %d cancelled planned outpost at slot %d\n", sp->id, s);
             }

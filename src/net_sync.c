@@ -134,6 +134,7 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     if (si->index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[si->index];
     st->scaffold = (si->flags & 1) != 0;
+    st->planned  = (si->flags & 2) != 0;
     st->scaffold_progress = si->scaffold_progress;
     st->services = si->services;
     st->pos = v2(si->pos_x, si->pos_y);
@@ -150,6 +151,14 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     for (int a = 0; a < MAX_ARMS; a++) {
         st->arm_speed[a] = si->arm_speed[a];
         st->ring_offset[a] = si->ring_offset[a];
+    }
+    /* Placement plans (faction-shared blueprint slots) */
+    st->placement_plan_count = si->plan_count;
+    for (int p = 0; p < si->plan_count && p < 8; p++) {
+        st->placement_plans[p].type  = si->plans[p].type;
+        st->placement_plans[p].ring  = si->plans[p].ring;
+        st->placement_plans[p].slot  = si->plans[p].slot;
+        st->placement_plans[p].owner = si->plans[p].owner;
     }
 }
 
