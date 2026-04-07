@@ -1178,57 +1178,46 @@ void draw_hopper_tractors(void) {
 /* ------------------------------------------------------------------ */
 
 static float hash11(float x) {
-    /* Cheap deterministic noise: returns ~[-1, 1]. */
+    /* Cheap deterministic noise in [-1, 1]: take the fractional part of
+     * a chaotic sine, remap [0,1) -> [-1, 1). */
     float s = sinf(x * 127.1f + 311.7f) * 43758.5453f;
-    return s - floorf(s) * 2.0f - 1.0f;
+    float f = s - floorf(s);          /* [0, 1) */
+    return f * 2.0f - 1.0f;           /* [-1, 1) */
 }
 
 void draw_spark_burst(vec2 pos, float intensity, bool red, float seed) {
     if (intensity <= 0.01f) return;
-    if (intensity > 1.5f) intensity = 1.5f;
+    /* Intensity > 1 grows the burst (used for damaging-velocity hits). */
+    if (intensity > 2.5f) intensity = 2.5f;
+    float scale = intensity > 1.0f ? intensity : 1.0f;
     float t = g.world.time;
-    /* Time bucket changes ~30 times/sec → spark positions reroll fast,
-     * giving the "jumpy" frame-to-frame look. */
     float bucket = floorf(t * 32.0f) + seed * 71.3f;
 
-    /* Hot core cross — 4 short rays, jitter angle each bucket */
+    /* Hot core cross — 3 very short rays */
     float core_r = red ? 1.0f : 1.0f;
     float core_g = red ? 0.42f : 0.95f;
     float core_b = red ? 0.18f : 0.78f;
-    for (int k = 0; k < 4; k++) {
+    for (int k = 0; k < 3; k++) {
         float ang = hash11(bucket + (float)k * 3.7f) * PI_F;
-        float len = 3.0f + 4.0f * fabsf(hash11(bucket * 1.3f + (float)k * 5.1f));
+        float len = (1.5f + 1.5f * fabsf(hash11(bucket * 1.3f + (float)k * 5.1f))) * scale;
         vec2 tip = v2_add(pos, v2(cosf(ang) * len, sinf(ang) * len));
-        draw_segment(pos, tip, core_r, core_g, core_b, 0.85f * intensity);
+        draw_segment(pos, tip, core_r, core_g, core_b, 0.85f * fminf(intensity, 1.0f));
     }
 
-    /* Main spark plume — 12 streaks, each on its own random bucket */
-    int streaks = 12;
+    /* Main spark plume — 6 streaks (8 when overdriven), tight radius */
+    int streaks = (intensity > 1.0f) ? 8 : 6;
     for (int k = 0; k < streaks; k++) {
         float kseed = bucket + (float)k * 2.71f + seed;
         float gate = hash11(kseed * 0.91f);
-        if (gate < -0.2f) continue; /* drop ~40% of streaks each frame */
+        if (gate < 0.0f) continue; /* drop ~50% of streaks each frame */
         float ang = hash11(kseed) * PI_F;
-        float len = 5.0f + 11.0f * fabsf(hash11(kseed * 1.7f));
+        float len = (2.0f + 4.0f * fabsf(hash11(kseed * 1.7f))) * scale;
         vec2 tip = v2_add(pos, v2(cosf(ang) * len, sinf(ang) * len));
         float r = red ? 1.0f : 1.0f;
         float g = red ? (0.45f + 0.2f * fabsf(hash11(kseed * 0.5f))) : 0.85f;
         float b = red ? 0.15f : (0.25f + 0.3f * fabsf(hash11(kseed * 0.7f)));
-        draw_segment(pos, tip, r, g, b, (0.55f + 0.35f * gate) * intensity);
-    }
-
-    /* Outer chunk debris — slightly slower, longer reach */
-    for (int k = 0; k < 5; k++) {
-        float kseed = bucket * 0.5f + (float)k * 4.3f + seed * 0.5f;
-        float gate = hash11(kseed * 0.61f);
-        if (gate < 0.1f) continue;
-        float ang = hash11(kseed * 1.9f) * PI_F;
-        float len = 10.0f + 8.0f * fabsf(hash11(kseed));
-        vec2 tip = v2_add(pos, v2(cosf(ang) * len, sinf(ang) * len));
-        float r = red ? 0.9f : 0.5f;
-        float g = red ? 0.30f : 0.95f;
-        float b = red ? 0.10f : 0.80f;
-        draw_segment(pos, tip, r, g, b, gate * 0.45f * intensity);
+        float a = (0.55f + 0.35f * gate) * fminf(intensity, 1.0f);
+        draw_segment(pos, tip, r, g, b, a);
     }
 }
 
@@ -1254,13 +1243,20 @@ void draw_beam(void) {
         draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.9f, 0.75f, 0.30f, 0.55f);
     }
 
-    /* Impact sparks at the beam contact point. Skip on scan beam and
-     * on misses into empty space. */
-    if (LOCAL_PLAYER.beam_hit && !LOCAL_PLAYER.scan_active) {
-        draw_spark_burst(LOCAL_PLAYER.beam_end,
-                         LOCAL_PLAYER.beam_ineffective ? 0.7f : 1.0f,
-                         LOCAL_PLAYER.beam_ineffective,
-                         3.14f);
+    /* Impact sparks at the beam contact point. */
+    if (LOCAL_PLAYER.beam_hit) {
+        bool is_station = LOCAL_PLAYER.scan_active &&
+            LOCAL_PLAYER.scan_target_type == 1;
+        bool is_asteroid = !LOCAL_PLAYER.scan_active;
+        if (is_asteroid) {
+            draw_spark_burst(LOCAL_PLAYER.beam_end,
+                             LOCAL_PLAYER.beam_ineffective ? 0.7f : 1.0f,
+                             LOCAL_PLAYER.beam_ineffective,
+                             3.14f);
+        } else if (is_station) {
+            /* Lasering a station/module — hot orange metal sparks. */
+            draw_spark_burst(LOCAL_PLAYER.beam_end, 0.9f, true, 9.7f);
+        }
     }
 }
 
@@ -1275,47 +1271,72 @@ void draw_collision_sparks(void) {
     vec2 sp = LOCAL_PLAYER.ship.pos;
     vec2 sv = LOCAL_PLAYER.ship.vel;
     float ship_r = ship_hull_def(&LOCAL_PLAYER.ship)->ship_radius;
-    /* Generous overlap window so sparks read on glancing scrapes too. */
-    float pad = 6.0f;
+    /* Only spark on actual hull contact (no slack). */
+    const float pad = 0.0f;
 
+    /* Pick the single deepest asteroid contact this frame and the deepest
+     * station contact — avoids the screen-filling cluster effect when
+     * threading through a tight rock field. */
+    int best_a = -1;
+    float best_a_overlap = 0.0f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &g.world.asteroids[i];
         if (!a->active) continue;
         float reach = ship_r + a->radius + pad;
         vec2 d = v2_sub(a->pos, sp);
         float d_sq = v2_len_sq(d);
-        if (d_sq > reach * reach) continue;
-        if (d_sq < 0.01f) continue;
-        float dist = sqrtf(d_sq);
-        vec2 normal = v2_scale(d, 1.0f / dist);
-        /* Closing speed (component of relative velocity along contact normal) */
-        vec2 rel = v2_sub(sv, a->vel);
-        float closing = v2_dot(rel, normal);
-        /* Always at least a faint scrape spark; ramp with closing speed. */
-        float intensity = 0.35f + fmaxf(0.0f, closing) * 0.012f;
-        if (intensity > 1.4f) intensity = 1.4f;
-        vec2 contact = v2_add(sp, v2_scale(normal, ship_r - 1.0f));
-        draw_spark_burst(contact, intensity, false, (float)i * 0.37f);
+        if (d_sq >= reach * reach) continue;
+        float overlap = reach - sqrtf(d_sq);
+        if (overlap > best_a_overlap) { best_a_overlap = overlap; best_a = i; }
+    }
+    if (best_a >= 0) {
+        const asteroid_t *a = &g.world.asteroids[best_a];
+        vec2 d = v2_sub(a->pos, sp);
+        float dist = sqrtf(v2_len_sq(d));
+        if (dist > 0.01f) {
+            vec2 normal = v2_scale(d, 1.0f / dist);
+            vec2 rel = v2_sub(sv, a->vel);
+            float closing = v2_dot(rel, normal);
+            /* SHIP_COLLISION_DAMAGE_THRESHOLD = 115. Below = scrape, above
+             * = damaging hit, where the burst grows past 1.0 intensity. */
+            float intensity;
+            if (closing < 115.0f)
+                intensity = 0.30f + fmaxf(0.0f, closing) * (0.7f / 115.0f);
+            else
+                intensity = 1.0f + fminf((closing - 115.0f) / 100.0f, 1.5f);
+            vec2 contact = v2_add(sp, v2_scale(normal, ship_r - 1.0f));
+            draw_spark_burst(contact, intensity, false, (float)best_a * 0.37f);
+        }
     }
 
+    int best_s = -1;
+    float best_s_overlap = 0.0f;
     for (int i = 0; i < MAX_STATIONS; i++) {
         const station_t *st = &g.world.stations[i];
         if (!station_exists(st)) continue;
         if (st->planned) continue;
-        /* Use core radius — dock ring overlap shouldn't spark. */
         float reach = ship_r + st->radius + pad;
         vec2 d = v2_sub(st->pos, sp);
         float d_sq = v2_len_sq(d);
-        if (d_sq > reach * reach) continue;
-        if (d_sq < 0.01f) continue;
-        float dist = sqrtf(d_sq);
-        vec2 normal = v2_scale(d, 1.0f / dist);
-        float closing = v2_dot(sv, normal);
-        float intensity = 0.45f + fmaxf(0.0f, closing) * 0.015f;
-        if (intensity > 1.5f) intensity = 1.5f;
-        vec2 contact = v2_add(sp, v2_scale(normal, ship_r - 1.0f));
-        /* Station scrapes spark hot/orange — feels metallic vs rock */
-        draw_spark_burst(contact, intensity, true, (float)i * 1.13f + 17.0f);
+        if (d_sq >= reach * reach) continue;
+        float overlap = reach - sqrtf(d_sq);
+        if (overlap > best_s_overlap) { best_s_overlap = overlap; best_s = i; }
+    }
+    if (best_s >= 0) {
+        const station_t *st = &g.world.stations[best_s];
+        vec2 d = v2_sub(st->pos, sp);
+        float dist = sqrtf(v2_len_sq(d));
+        if (dist > 0.01f) {
+            vec2 normal = v2_scale(d, 1.0f / dist);
+            float closing = v2_dot(sv, normal);
+            float intensity;
+            if (closing < 115.0f)
+                intensity = 0.40f + fmaxf(0.0f, closing) * (0.6f / 115.0f);
+            else
+                intensity = 1.0f + fminf((closing - 115.0f) / 100.0f, 1.5f);
+            vec2 contact = v2_add(sp, v2_scale(normal, ship_r - 1.0f));
+            draw_spark_burst(contact, intensity, true, (float)best_s * 1.13f + 17.0f);
+        }
     }
 }
 

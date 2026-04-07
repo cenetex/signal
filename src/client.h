@@ -158,6 +158,9 @@ typedef struct {
     /* --- Camera --- */
     vec2 camera_pos;         /* smoothed camera position */
     bool camera_initialized;
+    /* Screen shake on damage. amplitude decays exponentially each frame. */
+    float screen_shake;      /* current shake amplitude in world units */
+    float screen_shake_seed; /* monotonic phase for noise lookup */
     /* --- Contract tracking --- */
     int tracked_contract;    /* index into world.contracts, -1 = none */
     /* --- Navigation breadcrumb (last docked station or placed blueprint) --- */
@@ -244,6 +247,10 @@ void get_station_panel_rect(float* x, float* y, float* width, float* height);
 /* HUD drawing (call from render_ui) */
 void draw_hud_panels(void);
 void draw_hud(void);
+
+/* Pre-bake the radial fog vignette textures (one per damage tier).
+ * Must be called once after sg_setup. */
+void hull_fog_init(void);
 
 /* ------------------------------------------------------------------ */
 /* Station UI functions (implemented in station_ui.c)                 */

@@ -231,7 +231,15 @@ static void process_sim_events(const sim_events_t *events) {
                 }
                 break;
             case SIM_EVENT_DAMAGE:
-                if (ev->player_id == g.local_player_slot) audio_play_damage(&g.audio, ev->damage.amount);
+                if (ev->player_id == g.local_player_slot) {
+                    audio_play_damage(&g.audio, ev->damage.amount);
+                    /* Screen shake scales with damage. Tunables chosen so a
+                     * minor scrape (~2 hp) wiggles a few pixels and a
+                     * full ramming hit (~30 hp) noticeably jolts. */
+                    float kick = sqrtf(ev->damage.amount) * 4.0f;
+                    if (kick > 40.0f) kick = 40.0f;
+                    if (kick > g.screen_shake) g.screen_shake = kick;
+                }
                 break;
             case SIM_EVENT_CONTRACT_COMPLETE:
                 if (ev->contract_complete.action == CONTRACT_TRACTOR) {
@@ -551,6 +559,7 @@ static void init(void) {
     episode_load(&g.episode);
     music_init(&g.music);
     avatar_init();
+    hull_fog_init();
 
     g.pass_action.colors[0].load_action = SG_LOADACTION_CLEAR;
     g.pass_action.colors[0].clear_value = (sg_color){ 0.018f, 0.024f, 0.045f, 1.0f };
@@ -635,6 +644,22 @@ static void render_world(void) {
         if (offset.y < -max_drift_y) g.camera_pos.y = ship.y + max_drift_y;
     }
     vec2 camera = g.camera_pos;
+
+    /* Screen shake: chaotic offset overlay that decays exponentially.
+     * Uses a pair of phase-shifted sines so the motion is biaxial and
+     * doesn't trace a clean line. */
+    if (g.screen_shake > 0.05f) {
+        g.screen_shake_seed += 1.0f;
+        float t = g.screen_shake_seed;
+        float ox = sinf(t * 1.71f) * cosf(t * 0.93f);
+        float oy = sinf(t * 1.13f + 1.7f) * cosf(t * 1.41f);
+        camera.x += ox * g.screen_shake;
+        camera.y += oy * g.screen_shake;
+        /* Decay ~20%/frame at 60fps → ~0.5s tail at moderate hits */
+        g.screen_shake *= 0.82f;
+    } else {
+        g.screen_shake = 0.0f;
+    }
 
     set_camera_bounds(camera, half_w, half_h);
 

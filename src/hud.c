@@ -465,8 +465,193 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
 /* draw_hud_panels -- background panel geometry for the flight HUD     */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Hull-fog textures — generated radial vignettes, one per damage tier */
+/* ------------------------------------------------------------------ */
+
+#define HULL_FOG_LEVELS 4
+#define HULL_FOG_TEX_SIZE 256
+
+static struct {
+    bool initialized;
+    uint32_t image_id[HULL_FOG_LEVELS];
+    uint32_t view_id[HULL_FOG_LEVELS];
+    uint32_t sampler_id;
+    uint32_t blend_pip_id; /* sgl pipeline with alpha blending enabled */
+} hull_fog;
+
+static float fog_smoothstep(float edge0, float edge1, float x) {
+    float t = (x - edge0) / (edge1 - edge0);
+    if (t < 0.0f) t = 0.0f;
+    if (t > 1.0f) t = 1.0f;
+    return t * t * (3.0f - 2.0f * t);
+}
+
+void hull_fog_init(void) {
+    if (hull_fog.initialized) return;
+
+    sg_sampler samp = sg_make_sampler(&(sg_sampler_desc){
+        .min_filter = SG_FILTER_LINEAR,
+        .mag_filter = SG_FILTER_LINEAR,
+        .wrap_u = SG_WRAP_CLAMP_TO_EDGE,
+        .wrap_v = SG_WRAP_CLAMP_TO_EDGE,
+    });
+    hull_fog.sampler_id = samp.id;
+
+    /* Custom sokol_gl pipeline with alpha blending enabled. The default
+     * sgl pipeline has blend.enabled=false and write_mask=RGB, so any
+     * alpha in vertex colors or textures is completely ignored. */
+    sgl_pipeline blend_pip = sgl_make_pipeline(&(sg_pipeline_desc){
+        .colors[0] = {
+            .write_mask = SG_COLORMASK_RGBA,
+            .blend = {
+                .enabled = true,
+                .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE_MINUS_SRC_ALPHA,
+            },
+        },
+    });
+    hull_fog.blend_pip_id = blend_pip.id;
+
+    /* Generate one radial vignette per damage tier. The "clear hole" in
+     * the middle gets smaller and the surrounding fog gets darker as
+     * the tier rises. RGB is white so the vertex color can tint it. */
+    static const float clear_radius[HULL_FOG_LEVELS] = {
+        0.70f, /* tier 0: caution — barely any darkening */
+        0.50f, /* tier 1: warn */
+        0.32f, /* tier 2: danger */
+        0.18f, /* tier 3: critical — tight aperture */
+    };
+    static const float peak_alpha[HULL_FOG_LEVELS] = {
+        0.45f, 0.65f, 0.82f, 0.95f,
+    };
+
+    /* Separate buffer per tier so the immutable image uploads each
+     * see distinct data, no aliasing. */
+    static uint8_t pixels[HULL_FOG_LEVELS][HULL_FOG_TEX_SIZE * HULL_FOG_TEX_SIZE * 4];
+    for (int level = 0; level < HULL_FOG_LEVELS; level++) {
+        uint8_t *pix = pixels[level];
+        float r0 = clear_radius[level];
+        float r1 = 1.10f; /* fog reaches full alpha just past the corners */
+        float pa = peak_alpha[level];
+        for (int y = 0; y < HULL_FOG_TEX_SIZE; y++) {
+            for (int x = 0; x < HULL_FOG_TEX_SIZE; x++) {
+                float fx = ((float)x / (float)(HULL_FOG_TEX_SIZE - 1)) * 2.0f - 1.0f;
+                float fy = ((float)y / (float)(HULL_FOG_TEX_SIZE - 1)) * 2.0f - 1.0f;
+                float d = sqrtf(fx * fx + fy * fy);
+                float a = fog_smoothstep(r0, r1, d) * pa;
+                int p = (y * HULL_FOG_TEX_SIZE + x) * 4;
+                pix[p + 0] = 255;
+                pix[p + 1] = 255;
+                pix[p + 2] = 255;
+                pix[p + 3] = (uint8_t)(a * 255.0f);
+            }
+        }
+        /* IMMUTABLE image with .data inline. sg_make_image uploads
+         * synchronously and bypasses sg_update_image's frame-index
+         * check that silently drops updates at init time
+         * (upd_frame_index == frame_index == 0 → validation fails). */
+        sg_image img = sg_make_image(&(sg_image_desc){
+            .width = HULL_FOG_TEX_SIZE,
+            .height = HULL_FOG_TEX_SIZE,
+            .pixel_format = SG_PIXELFORMAT_RGBA8,
+            .data.mip_levels[0] = {
+                .ptr = pix,
+                .size = (size_t)(HULL_FOG_TEX_SIZE * HULL_FOG_TEX_SIZE * 4),
+            },
+        });
+        sg_view view = sg_make_view(&(sg_view_desc){ .texture.image = img });
+        hull_fog.image_id[level] = img.id;
+        hull_fog.view_id[level] = view.id;
+    }
+    hull_fog.initialized = true;
+}
+
+/* Hull-integrity overlay: dark blood-red fog vignette that closes in as
+ * hull drops. Crossfades between four pre-baked radial textures so each
+ * threshold gets its own clear-hole radius. */
+static void draw_hull_warning_overlay(void) {
+    if (LOCAL_PLAYER.docked) return;
+    if (!hull_fog.initialized) return;
+    float frac = LOCAL_PLAYER.ship.hull / fmaxf(1.0f, ship_max_hull(&LOCAL_PLAYER.ship));
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac > 1.0f) frac = 1.0f;
+    if (frac >= 0.99f) return; /* spotless hull, no fog at all */
+
+    float screen_w = ui_screen_width();
+    float screen_h = ui_screen_height();
+    float t = g.world.time;
+    float damage = 1.0f - frac;
+
+    /* Continuous tier value in [0, HULL_FOG_LEVELS - 1]. Lerp the texture
+     * pair around it so transitions are smooth across the whole range. */
+    float tier = damage * (float)(HULL_FOG_LEVELS - 1);
+    int t0 = (int)floorf(tier);
+    if (t0 < 0) t0 = 0;
+    if (t0 > HULL_FOG_LEVELS - 1) t0 = HULL_FOG_LEVELS - 1;
+    int t1 = t0 + 1;
+    if (t1 > HULL_FOG_LEVELS - 1) t1 = HULL_FOG_LEVELS - 1;
+    float blend = tier - (float)t0;
+    if (blend < 0.0f) blend = 0.0f;
+    if (blend > 1.0f) blend = 1.0f;
+
+    /* Heartbeat pulse: speeds up and bites harder as damage rises. */
+    float beat = 1.5f + damage * 7.0f;
+    float thump = sinf(t * beat) + 0.6f * sinf(t * beat * 2.0f);
+    if (thump < 0.0f) thump = 0.0f;
+    float pulse = (0.85f + 0.15f * damage) + 0.18f * thump * (0.5f + damage);
+
+    /* Dark blood red tint. Brightens slightly with damage. */
+    float r = 0.20f + 0.25f * damage;
+    float g = 0.005f + 0.01f * damage;
+    float b = 0.01f + 0.02f * damage;
+
+    /* Push our alpha-blending pipeline so the texture's alpha actually
+     * affects the framebuffer. The default sokol_gl pipeline disables
+     * blending and writes RGB only — alpha is silently discarded. */
+    sgl_push_pipeline();
+    sgl_load_pipeline((sgl_pipeline){ hull_fog.blend_pip_id });
+    sgl_enable_texture();
+
+    /* Lower tier (full strength) */
+    {
+        float a = (1.0f - blend) * pulse;
+        sgl_texture(
+            (sg_view){ hull_fog.view_id[t0] },
+            (sg_sampler){ hull_fog.sampler_id });
+        sgl_begin_quads();
+        sgl_c4f(r, g, b, a);
+        sgl_v2f_t2f(0.0f,     0.0f,     0.0f, 0.0f);
+        sgl_v2f_t2f(screen_w, 0.0f,     1.0f, 0.0f);
+        sgl_v2f_t2f(screen_w, screen_h, 1.0f, 1.0f);
+        sgl_v2f_t2f(0.0f,     screen_h, 0.0f, 1.0f);
+        sgl_end();
+    }
+
+    /* Upper tier (blended weight) */
+    if (t1 != t0) {
+        float a = blend * pulse;
+        sgl_texture(
+            (sg_view){ hull_fog.view_id[t1] },
+            (sg_sampler){ hull_fog.sampler_id });
+        sgl_begin_quads();
+        sgl_c4f(r, g, b, a);
+        sgl_v2f_t2f(0.0f,     0.0f,     0.0f, 0.0f);
+        sgl_v2f_t2f(screen_w, 0.0f,     1.0f, 0.0f);
+        sgl_v2f_t2f(screen_w, screen_h, 1.0f, 1.0f);
+        sgl_v2f_t2f(0.0f,     screen_h, 0.0f, 1.0f);
+        sgl_end();
+    }
+
+    sgl_disable_texture();
+    sgl_pop_pipeline();
+}
+
 void draw_hud_panels(void) {
     if (g.death_screen_timer > 0.0f) return;
+    draw_hull_warning_overlay();
     float top_x = 0.0f;
     float top_y = 0.0f;
     float top_w = 0.0f;
