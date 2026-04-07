@@ -975,7 +975,31 @@ static void sim_step_refinery_production(world_t *w, float dt) {
             float consume = fminf(fminf(st->inventory[ore], rate * dt), room);
             st->inventory[ore] -= consume;
             st->inventory[ingot] += consume;
+            /* Mirror to module output buffer for the flow graph (#280).
+             * Capped at the schema's per-module buffer capacity. */
+            float cap = module_buffer_capacity(mt);
+            if (cap > 0.0f) {
+                float overflow = (st->module_output[m] + consume) - cap;
+                float to_buffer = (overflow > 0.0f) ? consume - overflow : consume;
+                if (to_buffer > 0.0f) st->module_output[m] += to_buffer;
+            }
         }
+    }
+}
+
+/* Mirror produced material into a producer module's output buffer
+ * for the flow graph. Capped at schema buffer capacity. */
+static void mirror_to_module_output(station_t *st, module_type_t mt, float amount) {
+    float cap = module_buffer_capacity(mt);
+    if (cap <= 0.0f) return;
+    for (int m = 0; m < st->module_count; m++) {
+        if (st->modules[m].type != mt) continue;
+        if (st->modules[m].scaffold) continue;
+        float room = cap - st->module_output[m];
+        if (room <= 0.0f) return;
+        float add = (amount > room) ? room : amount;
+        st->module_output[m] += add;
+        return; /* one module per type per call */
     }
 }
 
@@ -990,6 +1014,7 @@ static void sim_step_station_production(world_t *w, float dt) {
                     float consume = fminf(buf, fminf(STATION_PRODUCTION_RATE * dt, room));
                     st->inventory[COMMODITY_FERRITE_INGOT] -= consume;
                     st->inventory[COMMODITY_FRAME] += consume;
+                    mirror_to_module_output(st, MODULE_FRAME_PRESS, consume);
                 }
             }
         }
@@ -1001,6 +1026,7 @@ static void sim_step_station_production(world_t *w, float dt) {
                     float consume = fminf(buf_co, fminf(STATION_PRODUCTION_RATE * dt, room));
                     st->inventory[COMMODITY_CUPRITE_INGOT] -= consume;
                     st->inventory[COMMODITY_LASER_MODULE] += consume;
+                    mirror_to_module_output(st, MODULE_LASER_FAB, consume);
                 }
             }
         }
@@ -1012,6 +1038,7 @@ static void sim_step_station_production(world_t *w, float dt) {
                     float consume = fminf(buf_ln, fminf(STATION_PRODUCTION_RATE * dt, room));
                     st->inventory[COMMODITY_CRYSTAL_INGOT] -= consume;
                     st->inventory[COMMODITY_TRACTOR_MODULE] += consume;
+                    mirror_to_module_output(st, MODULE_TRACTOR_FAB, consume);
                 }
             }
         }

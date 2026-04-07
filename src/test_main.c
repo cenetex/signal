@@ -4643,6 +4643,30 @@ TEST(test_module_flow_same_ring_transfer) {
     ASSERT(total > 9.5f);
 }
 
+TEST(test_module_flow_production_fills_buffers) {
+    /* Real production should fill module output buffers (mirrored from
+     * station inventory). Run sim with seeded ore at Kepler and verify
+     * the frame press output buffer fills. */
+    world_t w = {0};
+    world_reset(&w);
+    /* Seed Kepler with frame-press input */
+    w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 50.0f;
+    /* Find frame press */
+    int press_idx = -1;
+    for (int i = 0; i < w.stations[1].module_count; i++) {
+        if (w.stations[1].modules[i].type == MODULE_FRAME_PRESS) {
+            press_idx = i; break;
+        }
+    }
+    if (press_idx < 0) return;
+
+    /* Run a few seconds of sim — production should mirror to output buffer */
+    for (int i = 0; i < 240; i++) world_sim_step(&w, SIM_DT);
+
+    /* Frame press output buffer should have some material */
+    ASSERT(w.stations[1].module_output[press_idx] > 0.0f);
+}
+
 TEST(test_module_flow_does_not_overflow_capacity) {
     /* Material should never exceed buffer capacity at the consumer. */
     world_t w = {0};
@@ -5024,6 +5048,7 @@ int main(void) {
     RUN(test_module_schema_helpers);
     RUN(test_module_schema_build_costs_match);
     RUN(test_module_flow_same_ring_transfer);
+    RUN(test_module_flow_production_fills_buffers);
     RUN(test_module_flow_does_not_overflow_capacity);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
