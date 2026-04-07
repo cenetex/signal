@@ -728,4 +728,7 @@ typedef struct {
 /* Unified station collision/render geometry — must come after all station types */
 #include "station_geom.h"
 
+/* Module schema table — must come after all module/commodity types */
+#include "module_schema.h"
+
 #endif
