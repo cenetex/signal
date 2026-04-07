@@ -32,6 +32,39 @@ bool is_key_pressed(sapp_keycode key) {
     return (key >= 0) && (key < KEY_COUNT) && g.input.key_pressed[key];
 }
 
+/* Compute which rings are unlocked on a station.
+ * Ring 1 is always available.
+ * Ring 2 unlocks when ring 1 has 2+ committed entries (modules + plans).
+ * Ring 3 unlocks when ring 2 has 4+ committed entries. */
+static int station_max_unlocked_ring(const station_t *st) {
+    int counts[STATION_NUM_RINGS + 1] = {0};
+    for (int m = 0; m < st->module_count; m++) {
+        int r = st->modules[m].ring;
+        if (r >= 1 && r <= STATION_NUM_RINGS) counts[r]++;
+    }
+    for (int p = 0; p < st->placement_plan_count; p++) {
+        int r = st->placement_plans[p].ring;
+        if (r >= 1 && r <= STATION_NUM_RINGS) counts[r]++;
+    }
+    int unlocked = 1;
+    if (counts[1] >= 2) unlocked = 2;
+    if (counts[2] >= 4) unlocked = 3;
+    return unlocked;
+}
+
+/* Same for the client-side ghost outpost. */
+static int ghost_max_unlocked_ring(void) {
+    int counts[STATION_NUM_RINGS + 1] = {0};
+    for (int p = 0; p < g.ghost_outpost_slot_count; p++) {
+        int r = g.ghost_outpost_slots[p].ring;
+        if (r >= 1 && r <= STATION_NUM_RINGS) counts[r]++;
+    }
+    int unlocked = 1;
+    if (counts[1] >= 2) unlocked = 2;
+    if (counts[2] >= 4) unlocked = 3;
+    return unlocked;
+}
+
 /* Build a flat list of (station, ring, slot) tuples for every open slot
  * across all player outposts in snap range of a position. Returns the
  * count. Sorted so the slot whose world position is closest to `pos`
@@ -51,7 +84,8 @@ static int collect_reticle_targets(vec2 pos, reticle_target_t *out, int max) {
         const station_t *st = &g.world.stations[s];
         if (!station_exists(st) || st->scaffold) continue;
         if (v2_dist_sq(st->pos, pos) > SNAP_RANGE_SQ) continue;
-        for (int ring = 1; ring <= STATION_NUM_RINGS && count < max; ring++) {
+        int max_ring = station_max_unlocked_ring(st);
+        for (int ring = 1; ring <= max_ring && count < max; ring++) {
             int slots = STATION_RING_SLOTS[ring];
             for (int slot = 0; slot < slots && count < max; slot++) {
                 bool taken = false;
@@ -464,12 +498,13 @@ input_intent_t sample_input_intent(void) {
             intent.release_tow = false;
         } else if (is_key_pressed(SAPP_KEYCODE_E)) {
             /* Add a slot to the ghost. Pick ring by player distance from
-             * ghost center, slot by player angle around ghost. */
+             * ghost center, clamped to unlocked rings. */
+            int max_ring = ghost_max_unlocked_ring();
             vec2 delta = v2_sub(LOCAL_PLAYER.ship.pos, g.ghost_outpost_pos);
             float dist = sqrtf(v2_len_sq(delta));
             int best_ring = 1;
             float best_diff = 1e18f;
-            for (int r = 1; r <= STATION_NUM_RINGS; r++) {
+            for (int r = 1; r <= max_ring; r++) {
                 float diff = fabsf(dist - STATION_RING_RADIUS[r]);
                 if (diff < best_diff) { best_diff = diff; best_ring = r; }
             }

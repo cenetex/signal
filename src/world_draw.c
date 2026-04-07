@@ -1576,14 +1576,28 @@ static module_type_t producer_for_commodity_client(commodity_t c) {
     }
 }
 
+/* Compute unlocked ring count for the ghost outpost (mirrors input.c). */
+static int ghost_unlocked_rings_client(void) {
+    int counts[STATION_NUM_RINGS + 1] = {0};
+    for (int p = 0; p < g.ghost_outpost_slot_count; p++) {
+        int r = g.ghost_outpost_slots[p].ring;
+        if (r >= 1 && r <= STATION_NUM_RINGS) counts[r]++;
+    }
+    int unlocked = 1;
+    if (counts[1] >= 2) unlocked = 2;
+    if (counts[2] >= 4) unlocked = 3;
+    return unlocked;
+}
+
 /* Draw the client-side ghost outpost (B-in-open-space planning). */
 static void draw_ghost_outpost(void) {
     if (!g.ghost_outpost_active) return;
     vec2 c = g.ghost_outpost_pos;
     float pulse = 0.4f + 0.3f * sinf(g.world.time * 2.5f);
+    int max_ring = ghost_unlocked_rings_client();
 
-    /* Wireframe rings — dashed cyan */
-    for (int r = 1; r <= STATION_NUM_RINGS; r++) {
+    /* Wireframe rings — dashed cyan, only unlocked rings */
+    for (int r = 1; r <= max_ring; r++) {
         float radius = STATION_RING_RADIUS[r];
         int dashes = 32;
         sgl_begin_lines();
@@ -1629,12 +1643,12 @@ static void draw_ghost_outpost(void) {
         draw_circle_filled(pos, 5.0f, 8, mr, mg, mb, pulse * 1.5f);
     }
 
-    /* Aim preview: where the next E press would land */
+    /* Aim preview: where the next E press would land (clamped to unlocked rings) */
     vec2 delta = v2_sub(LOCAL_PLAYER.ship.pos, c);
     float dist = sqrtf(v2_len_sq(delta));
     int best_ring = 1;
     float best_diff = 1e18f;
-    for (int r = 1; r <= STATION_NUM_RINGS; r++) {
+    for (int r = 1; r <= max_ring; r++) {
         float diff = fabsf(dist - STATION_RING_RADIUS[r]);
         if (diff < best_diff) { best_diff = diff; best_ring = r; }
     }
