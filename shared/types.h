@@ -219,9 +219,14 @@ typedef struct {
         int8_t owner; /* player id who planned it */
     } placement_plans[8];
     int placement_plan_count;
-    /* Production layer v1: per-module intake buffer.
-     * Indexed parallel to modules[]. Currently only shipyards use this. */
-    float module_buffer[MAX_MODULES_PER_STATION];
+    /* Production layer v2: per-module input + output buffers.
+     * Indexed parallel to modules[]. Producers fill output_buffer from
+     * their inputs; the flow graph (step_module_flow) drains output_buffer
+     * into downstream consumers' input_buffer. Storage modules use input
+     * only (drains to downstream). Shipyards use input only (drains to
+     * manufacture). Service modules leave both at 0. */
+    float module_input[MAX_MODULES_PER_STATION];
+    float module_output[MAX_MODULES_PER_STATION];
 } station_t;
 
 /* ------------------------------------------------------------------ */

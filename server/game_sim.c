@@ -4564,8 +4564,12 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 20  /* bumped: pending_scaffolds + module_buffer + scaffolds[] */
-#define MIN_SAVE_VERSION 20  /* oldest version we can migrate from */
+#define SAVE_VERSION 21  /* bumped: split module_buffer → input + output */
+#define MIN_SAVE_VERSION 20  /* migrate v20 by mapping old module_buffer → input */
+
+/* Set by world_load() before read_station() so per-station readers know
+ * which version they're parsing and can handle field additions. */
+static int g_loaded_save_version = SAVE_VERSION;
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
@@ -4596,13 +4600,16 @@ static bool write_station(FILE *f, const station_t *s) {
         WRITE_FIELD(f, s->arm_speed[a]);
         WRITE_FIELD(f, s->ring_offset[a]);
     }
-    /* Production layer v1: shipyard order queue + per-module buffer */
+    /* Production layer v2: shipyard queue + per-module input/output buffers */
     WRITE_FIELD(f, s->pending_scaffold_count);
     for (int p = 0; p < 4; p++) {
         WRITE_FIELD(f, s->pending_scaffolds[p]);
     }
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
-        WRITE_FIELD(f, s->module_buffer[m]);
+        WRITE_FIELD(f, s->module_input[m]);
+    }
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
+        WRITE_FIELD(f, s->module_output[m]);
     }
     /* Placement plans + planned-station fields (v20+) */
     WRITE_FIELD(f, s->placement_plan_count);
@@ -4642,15 +4649,25 @@ static bool read_station(FILE *f, station_t *s) {
         READ_FIELD(f, s->arm_speed[a]);
         READ_FIELD(f, s->ring_offset[a]);
     }
-    /* Production layer v1: shipyard order queue + per-module buffer */
+    /* Production layer v2: shipyard queue + per-module input/output buffers */
     READ_FIELD(f, s->pending_scaffold_count);
     if (s->pending_scaffold_count < 0) s->pending_scaffold_count = 0;
     if (s->pending_scaffold_count > 4) s->pending_scaffold_count = 4;
     for (int p = 0; p < 4; p++) {
         READ_FIELD(f, s->pending_scaffolds[p]);
     }
+    /* v20: single module_buffer[] → migrate to module_input[].
+     * v21+: explicit input + output. */
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
-        READ_FIELD(f, s->module_buffer[m]);
+        READ_FIELD(f, s->module_input[m]);
+    }
+    if (g_loaded_save_version >= 21) {
+        for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
+            READ_FIELD(f, s->module_output[m]);
+        }
+    } else {
+        /* v20: no output buffers — initialize to 0 */
+        memset(s->module_output, 0, sizeof(s->module_output));
     }
     /* Placement plans + planned-station fields (v20+) */
     READ_FIELD(f, s->placement_plan_count);
@@ -4830,6 +4847,7 @@ bool world_load(world_t *w, const char *path) {
                magic, version, MIN_SAVE_VERSION, SAVE_VERSION);
         fclose(f); return false;
     }
+    g_loaded_save_version = (int)version;
 
     READ_FIELD(f, w->rng);
     READ_FIELD(f, w->time);
