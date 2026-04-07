@@ -3183,7 +3183,9 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  *   2. Add a migration block in world_load()
  *   3. Update this constant to the new size
  */
-#define EXPECTED_SAVE_SIZE 23118  /* v21: split module_buffer → input + output */
+/* v22: dead module enum entries removed (#280); seed worlds drop 2
+ * CONTRACT_BOARD modules — 24 fewer bytes than v21. */
+#define EXPECTED_SAVE_SIZE 23094
 
 TEST(test_save_file_size_stable) {
     world_t w = {0};
@@ -3218,7 +3220,7 @@ TEST(test_save_header_golden_bytes) {
     fread(&spawn_timer, 4, 1, f);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 21);
+    ASSERT_EQ_INT((int)version, 22);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -3308,6 +3310,62 @@ TEST(test_save_backward_compat_version_accepted) {
     ASSERT(world_load(&loaded, "/tmp/test_compat.sav"));
     ASSERT_EQ_FLOAT(loaded.stations[0].inventory[COMMODITY_FERRITE_ORE], 77.0f, 0.01f);
     remove("/tmp/test_compat.sav");
+}
+
+TEST(test_save_v21_module_remap) {
+    /* Craft a save with raw module type integers in the v21 enum space,
+     * patch the version header down to 21, and verify world_load remaps
+     * surviving modules and drops dead ones.
+     *
+     * v21 type → v22 outcome
+     *   0  DOCK           → MODULE_DOCK         (kept)
+     *   5  INGOT_SELLER   → dropped
+     *   6  REPAIR_BAY     → MODULE_REPAIR_BAY   (kept)
+     *  11  CONTRACT_BOARD → dropped
+     *  12  ORE_SILO       → MODULE_ORE_SILO     (kept)
+     *  15  SHIPYARD       → MODULE_SHIPYARD     (kept)
+     */
+    world_t w = {0};
+    world_reset(&w);
+    /* Hand-build station[3]: 6 modules, 4 will survive. */
+    memset(&w.stations[3], 0, sizeof(w.stations[3]));
+    snprintf(w.stations[3].name, sizeof(w.stations[3].name), "%s", "TestRig");
+    w.stations[3].pos = v2(5000.0f, 5000.0f);
+    w.stations[3].radius = 36.0f;
+    w.stations[3].signal_range = 3000.0f;
+    static const int kV21Types[6] = { 0, 5, 6, 11, 12, 15 };
+    w.stations[3].module_count = 6;
+    for (int i = 0; i < 6; i++) {
+        w.stations[3].modules[i].type = (module_type_t)kV21Types[i];
+        w.stations[3].modules[i].ring = 1;
+        w.stations[3].modules[i].slot = (uint8_t)i;
+        w.stations[3].modules[i].scaffold = false;
+        w.stations[3].modules[i].build_progress = 1.0f;
+        w.stations[3].module_input[i] = (float)(i + 1);
+        w.stations[3].module_output[i] = (float)(i + 100);
+    }
+    ASSERT(world_save(&w, "/tmp/test_v21_remap.sav"));
+    /* Patch version field (offset 4) down to 21 to force the v22 migration. */
+    FILE *f = fopen("/tmp/test_v21_remap.sav", "r+b");
+    ASSERT(f != NULL);
+    fseek(f, 4, SEEK_SET);
+    uint32_t v21 = 21;
+    fwrite(&v21, sizeof(v21), 1, f);
+    fclose(f);
+    world_t loaded = {0};
+    ASSERT(world_load(&loaded, "/tmp/test_v21_remap.sav"));
+    /* 4 of 6 survive: indices 0, 2, 4, 5 in the original list. */
+    ASSERT_EQ_INT(loaded.stations[3].module_count, 4);
+    ASSERT_EQ_INT((int)loaded.stations[3].modules[0].type, (int)MODULE_DOCK);
+    ASSERT_EQ_INT((int)loaded.stations[3].modules[1].type, (int)MODULE_REPAIR_BAY);
+    ASSERT_EQ_INT((int)loaded.stations[3].modules[2].type, (int)MODULE_ORE_SILO);
+    ASSERT_EQ_INT((int)loaded.stations[3].modules[3].type, (int)MODULE_SHIPYARD);
+    /* Per-module input/output buffers should follow the same compaction. */
+    ASSERT_EQ_FLOAT(loaded.stations[3].module_input[0], 1.0f, 0.001f);  /* was idx 0 */
+    ASSERT_EQ_FLOAT(loaded.stations[3].module_input[1], 3.0f, 0.001f);  /* was idx 2 */
+    ASSERT_EQ_FLOAT(loaded.stations[3].module_input[2], 5.0f, 0.001f);  /* was idx 4 */
+    ASSERT_EQ_FLOAT(loaded.stations[3].module_input[3], 6.0f, 0.001f);  /* was idx 5 */
+    remove("/tmp/test_v21_remap.sav");
 }
 
 TEST(test_save_future_version_rejected) {
@@ -4538,11 +4596,6 @@ TEST(test_module_schema_basic_kinds) {
     ASSERT_EQ_INT(module_kind(MODULE_ORE_BUYER), MODULE_KIND_STORAGE);
     ASSERT_EQ_INT(module_kind(MODULE_ORE_SILO), MODULE_KIND_STORAGE);
     ASSERT_EQ_INT(module_kind(MODULE_SHIPYARD), MODULE_KIND_SHIPYARD);
-    /* Dead modules report NONE */
-    ASSERT_EQ_INT(module_kind(MODULE_INGOT_SELLER), MODULE_KIND_NONE);
-    ASSERT_EQ_INT(module_kind(MODULE_BLUEPRINT_DESK), MODULE_KIND_NONE);
-    ASSERT_EQ_INT(module_kind(MODULE_CONTRACT_BOARD), MODULE_KIND_NONE);
-    ASSERT_EQ_INT(module_kind(MODULE_RING), MODULE_KIND_NONE);
 }
 
 TEST(test_module_schema_producer_io) {
@@ -4590,10 +4643,6 @@ TEST(test_module_schema_helpers) {
     ASSERT(module_is_storage(MODULE_ORE_BUYER));
     ASSERT(module_is_storage(MODULE_ORE_SILO));
     ASSERT(module_is_shipyard(MODULE_SHIPYARD));
-    ASSERT(module_is_dead(MODULE_INGOT_SELLER));
-    ASSERT(module_is_dead(MODULE_BLUEPRINT_DESK));
-    ASSERT(module_is_dead(MODULE_CONTRACT_BOARD));
-    ASSERT(module_is_dead(MODULE_RING));
     ASSERT(!module_is_dead(MODULE_FURNACE));
 }
 
@@ -4979,6 +5028,7 @@ int main(void) {
     RUN(test_save_header_golden_bytes);
     RUN(test_save_load_preserves_player_outpost);
     RUN(test_save_backward_compat_version_accepted);
+    RUN(test_save_v21_module_remap);
     RUN(test_save_future_version_rejected);
 
     printf("\nRefinery tiers:\n");

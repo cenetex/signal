@@ -249,13 +249,6 @@ static commodity_t module_build_material(module_type_t type) {
     return module_schema(type)->build_commodity;
 }
 
-/* Scaffold order fee (deposit paid at shipyard, ~25% of full credit cost) */
-static float scaffold_kit_price(module_type_t type) {
-    /* Schema stores the deposit; legacy code expected 4× this as the
-     * "full price". Return the full price for callers that still use it. */
-    return (float)module_schema(type)->order_fee * 4.0f;
-}
-
 /* A station sells scaffolds only if it has a SHIPYARD module AND an
  * installed example of the requested type (it "knows how to build" that). */
 static bool station_sells_scaffold(const station_t *st, module_type_t type) {
@@ -303,10 +296,10 @@ void begin_module_construction_at(world_t *w, station_t *st, int station_idx, mo
 void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type) {
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
     int target_ring = 1;
-    for (int r = MAX_RING_COUNT - 1; r >= 1; r--) {
+    for (int r = STATION_NUM_RINGS; r >= 1; r--) {
         if (station_has_ring(st, r)) { target_ring = r; break; }
     }
-    int target_slot = station_ring_free_slot(st, target_ring, RING_PORT_COUNT[target_ring]);
+    int target_slot = station_ring_free_slot(st, target_ring, STATION_RING_SLOTS[target_ring]);
     if (target_slot < 0) target_slot = 0xFF; /* ring module or full */
     begin_module_construction_at(w, st, station_idx, type, target_ring, target_slot);
 }
@@ -381,18 +374,6 @@ static void step_module_construction(world_t *w, float dt) {
                 st->modules[i].build_progress = 1.0f;
                 rebuild_station_services(st);
                 rebuild_signal_chain(w);
-                /* New ring: set shared rotation speed + random offset */
-                if (st->modules[i].type == MODULE_RING) {
-                    int r = st->modules[i].ring;
-                    if (r >= 1 && r <= STATION_NUM_RINGS && r - 1 < MAX_ARMS) {
-                        st->arm_count = r;
-                        st->arm_speed[0] = STATION_RING_SPEED;
-                        /* Deterministic offset from station position + ring index */
-                        uint32_t h = (uint32_t)(st->pos.x * 1000.0f) ^ ((uint32_t)(st->pos.y * 1000.0f) << 16) ^ (uint32_t)r;
-                        h = h * 2654435761u;
-                        st->ring_offset[r - 1] = TWO_PI_F * (float)(h & 0xFFFFu) / 65536.0f;
-                    }
-                }
                 if (st->modules[i].type == MODULE_FURNACE || st->modules[i].type == MODULE_FURNACE_CU || st->modules[i].type == MODULE_FURNACE_CR)
                     spawn_npc(w, s, NPC_ROLE_MINER);
                 if (st->modules[i].type == MODULE_FRAME_PRESS || st->modules[i].type == MODULE_LASER_FAB || st->modules[i].type == MODULE_TRACTOR_FAB)
@@ -4612,8 +4593,7 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 2, 0);
     add_module_at(&w->stations[1], MODULE_LASER_FAB, 2, 1);
     add_module_at(&w->stations[1], MODULE_TRACTOR_FAB, 2, 2);
-    add_module_at(&w->stations[1], MODULE_CONTRACT_BOARD, 2, 3);
-    add_module_at(&w->stations[1], MODULE_SHIPYARD, 2, 4);
+    add_module_at(&w->stations[1], MODULE_SHIPYARD, 2, 3);
     w->stations[1].arm_count = 2;
     w->stations[1].arm_speed[0] = STATION_RING_SPEED;
     w->stations[1].ring_offset[0] = 0.0f;
@@ -4654,7 +4634,6 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_FURNACE_CU, 3, 2);
     add_module_at(&w->stations[2], MODULE_FURNACE_CR, 3, 3);
     add_module_at(&w->stations[2], MODULE_SHIPYARD, 3, 4);
-    add_module_at(&w->stations[2], MODULE_CONTRACT_BOARD, 3, 5);
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[0] = STATION_RING_SPEED;
     w->stations[2].ring_offset[0] = 0.0f;
@@ -4720,7 +4699,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
 /* ================================================================== */
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 21  /* bumped: split module_buffer → input + output */
+#define SAVE_VERSION 22  /* bumped: dead module enum entries removed (#280 cleanup) */
 #define MIN_SAVE_VERSION 20  /* migrate v20 by mapping old module_buffer → input */
 
 /* Set by world_load() before read_station() so per-station readers know
@@ -5041,11 +5020,91 @@ bool world_load(world_t *w, const char *path) {
     /* (v19 is the baseline — no migration needed yet) */
     /* if (version < 20) { ... migrate 19->20 ... } */
 
-    /* Post-load migration: ensure built-in stations have blueprint service.
-     * Saves created before the outpost feature lack this bit. */
-    for (int i = 0; i < 3 && i < MAX_STATIONS; i++) {
-        if (station_is_active(&w->stations[i]))
-            w->stations[i].services |= STATION_SERVICE_BLUEPRINT;
+    /* v22: dead module enum entries removed (INGOT_SELLER, CONTRACT_BOARD,
+     * BLUEPRINT_DESK, RING). Remap surviving module type IDs and drop
+     * any module/plan/scaffold whose old type no longer exists. The
+     * migration is keyed by old indices, so the table values are written
+     * as raw integers — do NOT replace with enum names. */
+    if (version < 22) {
+        static const int REMAP[17] = {
+            0,  /* old 0  DOCK           -> DOCK           */
+            1,  /* old 1  ORE_BUYER      -> ORE_BUYER      */
+            2,  /* old 2  FURNACE        -> FURNACE        */
+            3,  /* old 3  FURNACE_CU     -> FURNACE_CU     */
+            4,  /* old 4  FURNACE_CR     -> FURNACE_CR     */
+           -1,  /* old 5  INGOT_SELLER   -> dropped        */
+            5,  /* old 6  REPAIR_BAY     -> REPAIR_BAY     */
+            6,  /* old 7  SIGNAL_RELAY   -> SIGNAL_RELAY   */
+            7,  /* old 8  FRAME_PRESS    -> FRAME_PRESS    */
+            8,  /* old 9  LASER_FAB      -> LASER_FAB      */
+            9,  /* old 10 TRACTOR_FAB    -> TRACTOR_FAB    */
+           -1,  /* old 11 CONTRACT_BOARD -> dropped        */
+           10,  /* old 12 ORE_SILO       -> ORE_SILO       */
+           -1,  /* old 13 BLUEPRINT_DESK -> dropped        */
+           -1,  /* old 14 RING           -> dropped        */
+           11,  /* old 15 SHIPYARD       -> SHIPYARD       */
+           12,  /* old 16 CARGO_BAY      -> CARGO_BAY      */
+        };
+        for (int i = 0; i < MAX_STATIONS; i++) {
+            station_t *st = &w->stations[i];
+            /* Remap modules[] in place, compacting and renumbering input/output. */
+            int kept = 0;
+            for (int m = 0; m < st->module_count; m++) {
+                int old_t = (int)st->modules[m].type;
+                int new_t = (old_t >= 0 && old_t < 17) ? REMAP[old_t] : -1;
+                if (new_t < 0) continue;
+                if (kept != m) {
+                    st->modules[kept] = st->modules[m];
+                    st->module_input[kept] = st->module_input[m];
+                    st->module_output[kept] = st->module_output[m];
+                }
+                st->modules[kept].type = (module_type_t)new_t;
+                kept++;
+            }
+            for (int m = kept; m < st->module_count; m++) {
+                memset(&st->modules[m], 0, sizeof(st->modules[m]));
+                st->module_input[m] = 0.0f;
+                st->module_output[m] = 0.0f;
+            }
+            st->module_count = kept;
+            /* Drop pending shipyard orders for dropped types. */
+            int psk = 0;
+            for (int p = 0; p < st->pending_scaffold_count; p++) {
+                int old_t = (int)st->pending_scaffolds[p].type;
+                int new_t = (old_t >= 0 && old_t < 17) ? REMAP[old_t] : -1;
+                if (new_t < 0) continue;
+                st->pending_scaffolds[psk] = st->pending_scaffolds[p];
+                st->pending_scaffolds[psk].type = (module_type_t)new_t;
+                psk++;
+            }
+            st->pending_scaffold_count = psk;
+            /* Drop placement plans for dropped types. */
+            int pp = 0;
+            for (int p = 0; p < st->placement_plan_count; p++) {
+                int old_t = (int)st->placement_plans[p].type;
+                int new_t = (old_t >= 0 && old_t < 17) ? REMAP[old_t] : -1;
+                if (new_t < 0) continue;
+                st->placement_plans[pp] = st->placement_plans[p];
+                st->placement_plans[pp].type = (module_type_t)new_t;
+                pp++;
+            }
+            st->placement_plan_count = pp;
+            /* STATION_SERVICE_BLUEPRINT (bit 5) is gone — clear stale bit
+             * and rebuild from current modules. */
+            st->services &= ~(1u << 5);
+            rebuild_station_services(st);
+        }
+        /* Remap loose scaffolds in the world. */
+        for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+            if (!w->scaffolds[i].active) continue;
+            int old_t = (int)w->scaffolds[i].module_type;
+            int new_t = (old_t >= 0 && old_t < 17) ? REMAP[old_t] : -1;
+            if (new_t < 0) {
+                w->scaffolds[i].active = false;
+                continue;
+            }
+            w->scaffolds[i].module_type = (module_type_t)new_t;
+        }
     }
 
     /* Clear transient state */
@@ -5065,7 +5124,8 @@ bool world_load(world_t *w, const char *path) {
 /* Player persistence                                                  */
 /* ================================================================== */
 
-#define PLAYER_MAGIC 0x504C5952u  /* "PLYR" */
+#define PLAYER_MAGIC    0x504C5932u  /* "PLY2" — v22+: post #280 enum cleanup */
+#define PLAYER_MAGIC_V1 0x504C5952u  /* "PLYR" — v21 and earlier */
 
 typedef struct {
     uint32_t magic;
@@ -5116,8 +5176,24 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     player_save_data_t data;
     if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
     fclose(f);
-    if (data.magic != PLAYER_MAGIC) return false;
+    if (data.magic != PLAYER_MAGIC && data.magic != PLAYER_MAGIC_V1) return false;
+    bool is_v1 = (data.magic == PLAYER_MAGIC_V1);
     sp->ship = data.ship;
+    if (is_v1) {
+        /* v1 → v2: remap unlocked_modules bits across the #280 enum cleanup.
+         * Same REMAP table as world_load(). Bits for dropped types are cleared. */
+        static const int REMAP[17] = {
+            0, 1, 2, 3, 4, -1, 5, 6, 7, 8, 9, -1, 10, -1, -1, 11, 12,
+        };
+        uint32_t old_mask = sp->ship.unlocked_modules;
+        uint32_t new_mask = 0;
+        for (int b = 0; b < 17; b++) {
+            if (!(old_mask & (1u << b))) continue;
+            int new_t = REMAP[b];
+            if (new_t >= 0) new_mask |= (1u << (uint32_t)new_t);
+        }
+        sp->ship.unlocked_modules = new_mask;
+    }
     /* Validate hull class */
     if (sp->ship.hull_class < 0 || sp->ship.hull_class >= HULL_CLASS_COUNT)
         sp->ship.hull_class = HULL_CLASS_MINER;

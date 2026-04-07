@@ -120,11 +120,6 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .variant_count = 0,
         .prerequisite = MODULE_FRAME_PRESS, /* tier 4 */
     },
-    [MODULE_INGOT_SELLER] = {
-        /* DEAD — to be deleted in commit 6 */
-        .name = "Ingot Seller",
-        .kind = MODULE_KIND_NONE,
-    },
     [MODULE_REPAIR_BAY] = {
         .name = "Repair Bay",
         .kind = MODULE_KIND_SERVICE,
@@ -188,13 +183,6 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .variant_count = 0,
         .prerequisite = MODULE_FURNACE_CR, /* tier 5 — needs cr ingots */
     },
-    [MODULE_CONTRACT_BOARD] = {
-        /* DEAD — to be deleted in commit 6 */
-        .name = "Contract Board",
-        .kind = MODULE_KIND_NONE,
-        .build_material = 20.0f, .build_commodity = COMMODITY_FRAME,
-        .order_fee = 25,
-    },
     [MODULE_ORE_SILO] = {
         .name = "Ore Silo",
         .kind = MODULE_KIND_STORAGE,
@@ -207,17 +195,6 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
         .prerequisite = MODULE_FURNACE, /* tier 3 — overflow storage */
-    },
-    [MODULE_BLUEPRINT_DESK] = {
-        /* DEAD — to be deleted in commit 6 */
-        .name = "Blueprint Desk",
-        .kind = MODULE_KIND_NONE,
-        .services = STATION_SERVICE_BLUEPRINT,
-    },
-    [MODULE_RING] = {
-        /* DEAD — rings are structural, not modules. To be removed. */
-        .name = "Ring Truss",
-        .kind = MODULE_KIND_NONE,
     },
     [MODULE_SHIPYARD] = {
         .name = "Shipyard",
