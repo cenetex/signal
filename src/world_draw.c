@@ -85,9 +85,6 @@ static void module_color(module_type_t type, float *r, float *g, float *b) {
     /* Infrastructure: neutral, won't dominate */
     case MODULE_SIGNAL_RELAY:    *r=0.35f; *g=0.55f; *b=0.50f; return; /* teal-grey */
     case MODULE_REPAIR_BAY:      *r=0.40f; *g=0.60f; *b=0.50f; return; /* sage */
-    case MODULE_CONTRACT_BOARD:  *r=0.55f; *g=0.52f; *b=0.40f; return; /* warm grey */
-    case MODULE_BLUEPRINT_DESK:  *r=0.50f; *g=0.48f; *b=0.55f; return; /* cool grey */
-    case MODULE_INGOT_SELLER:    *r=0.60f; *g=0.55f; *b=0.40f; return; /* bronze */
     case MODULE_SHIPYARD:        *r=0.85f; *g=0.70f; *b=0.20f; return; /* bright gold */
     default:                     *r=0.35f; *g=0.40f; *b=0.45f; return; /* neutral slate */
     }
@@ -378,34 +375,6 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
         sgl_end();
         break;
     }
-    case MODULE_CONTRACT_BOARD: {
-        /* Rectangular bulletin board with horizontal text lines */
-        /* Board backing */
-        sgl_c4f(mr*0.3f, mg*0.3f, mb*0.3f, alpha);
-        fill_quad(-20, -24, 20, -24, 20, 24, -20, 24);
-        /* Board face (lighter) */
-        sgl_c4f(mr*0.45f, mg*0.45f, mb*0.45f, alpha);
-        fill_quad(-16, -20, 16, -20, 16, 20, -16, 20);
-        /* Text lines */
-        sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha*0.8f);
-        sgl_begin_lines();
-        sgl_v2f(-12, -14); sgl_v2f(12, -14);
-        sgl_v2f(-12, -8); sgl_v2f(10, -8);
-        sgl_v2f(-12, -2); sgl_v2f(12, -2);
-        sgl_v2f(-12, 4); sgl_v2f(8, 4);
-        sgl_v2f(-12, 10); sgl_v2f(12, 10);
-        sgl_v2f(-12, 16); sgl_v2f(6, 16);
-        sgl_end();
-        /* Pin / tack at top */
-        fill_circle_local(0, -22, 3, 6, mr*0.9f, mg*0.4f, mb*0.3f, alpha);
-        /* Frame outline */
-        sgl_c4f(mr*0.6f, mg*0.6f, mb*0.6f, alpha);
-        sgl_begin_lines();
-        sgl_v2f(-20,-24); sgl_v2f(20,-24); sgl_v2f(20,-24); sgl_v2f(20,24);
-        sgl_v2f(20,24); sgl_v2f(-20,24); sgl_v2f(-20,24); sgl_v2f(-20,-24);
-        sgl_end();
-        break;
-    }
     case MODULE_ORE_SILO: {
         /* Tall cylindrical tank with dome top and rivet bands */
         /* Main cylinder body */
@@ -437,41 +406,6 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
         sgl_v2f(-16, 26); sgl_v2f(16, 26);
         sgl_v2f(-16, -16); sgl_v2f(0, -28);
         sgl_v2f(16, -16); sgl_v2f(0, -28);
-        sgl_end();
-        break;
-    }
-    case MODULE_BLUEPRINT_DESK: {
-        /* Drafting table with T-square and paper */
-        /* Table surface */
-        sgl_c4f(mr*0.3f, mg*0.3f, mb*0.3f, alpha);
-        fill_quad(-24, -16, 24, -16, 22, 20, -22, 20);
-        /* Table legs (trapezoidal profile) */
-        sgl_c4f(mr*0.25f, mg*0.25f, mb*0.25f, alpha);
-        fill_quad(-22, 20, -18, 20, -16, 26, -24, 26);
-        fill_quad(18, 20, 22, 20, 24, 26, 16, 26);
-        /* Paper sheet */
-        sgl_c4f(mr*0.55f, mg*0.55f, mb*0.55f, alpha*0.7f);
-        fill_quad(-14, -12, 14, -12, 14, 14, -14, 14);
-        /* T-square (horizontal bar + vertical stem) */
-        sgl_c4f(mr*0.8f, mg*0.8f, mb*0.8f, alpha);
-        sgl_begin_lines();
-        /* Horizontal bar across top of paper */
-        sgl_v2f(-18, -6); sgl_v2f(18, -6);
-        /* Vertical stem down */
-        sgl_v2f(0, -6); sgl_v2f(0, 14);
-        sgl_end();
-        /* Draft lines on paper */
-        sgl_c4f(mr*0.5f, mg*0.5f, mb*0.5f, alpha*0.4f);
-        sgl_begin_lines();
-        sgl_v2f(-10, 0); sgl_v2f(10, 0);
-        sgl_v2f(-10, 6); sgl_v2f(8, 6);
-        sgl_end();
-        /* Table edge */
-        sgl_c4f(mr*0.6f, mg*0.6f, mb*0.6f, alpha);
-        sgl_begin_lines();
-        sgl_v2f(-24, -16); sgl_v2f(24, -16);
-        sgl_v2f(-24, -16); sgl_v2f(-22, 20);
-        sgl_v2f(24, -16); sgl_v2f(22, 20);
         sgl_end();
         break;
     }
@@ -510,47 +444,6 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
         sgl_begin_lines();
         sgl_v2f(-30, -22); sgl_v2f(30, -22); sgl_v2f(30, -22); sgl_v2f(30, 22);
         sgl_v2f(30, 22); sgl_v2f(-30, 22); sgl_v2f(-30, 22); sgl_v2f(-30, -22);
-        sgl_end();
-        break;
-    }
-    case MODULE_INGOT_SELLER: {
-        /* Crate/pallet with stacked ingot bars */
-        /* Pallet base */
-        sgl_c4f(mr*0.25f, mg*0.25f, mb*0.25f, alpha);
-        fill_quad(-24, 16, 24, 16, 24, 24, -24, 24);
-        /* Pallet slats */
-        sgl_c4f(mr*0.35f, mg*0.35f, mb*0.35f, alpha);
-        fill_quad(-24, 18, 24, 18, 24, 20, -24, 20);
-        /* Crate body */
-        sgl_c4f(mr*0.3f, mg*0.3f, mb*0.3f, alpha);
-        fill_quad(-20, -12, 20, -12, 20, 16, -20, 16);
-        /* Stacked ingot bars (3 rows) */
-        sgl_c4f(mr*0.65f, mg*0.65f, mb*0.65f, alpha);
-        fill_quad(-16, 4, -2, 4, -2, 12, -16, 12);
-        fill_quad(2, 4, 16, 4, 16, 12, 2, 12);
-        sgl_c4f(mr*0.55f, mg*0.55f, mb*0.55f, alpha);
-        fill_quad(-12, -4, 4, -4, 4, 2, -12, 2);
-        fill_quad(6, -4, 16, -4, 16, 2, 6, 2);
-        sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha);
-        fill_quad(-8, -12, 8, -12, 8, -6, -8, -6);
-        /* Crate outline */
-        sgl_c4f(mr*0.5f, mg*0.5f, mb*0.5f, alpha);
-        sgl_begin_lines();
-        sgl_v2f(-20,-12); sgl_v2f(20,-12); sgl_v2f(20,-12); sgl_v2f(20,16);
-        sgl_v2f(20,16); sgl_v2f(-20,16); sgl_v2f(-20,16); sgl_v2f(-20,-12);
-        sgl_end();
-        break;
-    }
-    case MODULE_RING: {
-        /* Simple ring segment arc */
-        sgl_c4f(mr*0.4f, mg*0.4f, mb*0.4f, alpha);
-        sgl_begin_lines();
-        for (int i = 0; i < 16; i++) {
-            float a0 = TWO_PI_F * (float)i / 16.0f;
-            float a1 = TWO_PI_F * (float)(i+1) / 16.0f;
-            sgl_v2f(cosf(a0)*22, sinf(a0)*22);
-            sgl_v2f(cosf(a1)*22, sinf(a1)*22);
-        }
         sgl_end();
         break;
     }

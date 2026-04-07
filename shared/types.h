@@ -22,7 +22,7 @@ enum {
     STATION_SERVICE_UPGRADE_LASER = 1 << 2,
     STATION_SERVICE_UPGRADE_HOLD = 1 << 3,
     STATION_SERVICE_UPGRADE_TRACTOR = 1 << 4,
-    STATION_SERVICE_BLUEPRINT = 1 << 5,
+    /* bit 5 was STATION_SERVICE_BLUEPRINT — removed in #280 */
 };
 
 typedef enum {
@@ -111,18 +111,14 @@ typedef enum {
     MODULE_FURNACE,           /* smelts ferrite ore */
     MODULE_FURNACE_CU,        /* smelts cuprite ore */
     MODULE_FURNACE_CR,        /* smelts crystal ore */
-    MODULE_INGOT_SELLER,      /* DEAD — kept for save compat (#280) */
     MODULE_REPAIR_BAY,
     MODULE_SIGNAL_RELAY,
     MODULE_FRAME_PRESS,
     MODULE_LASER_FAB,
     MODULE_TRACTOR_FAB,
-    MODULE_CONTRACT_BOARD,    /* DEAD — kept for save compat (#280) */
     MODULE_ORE_SILO,
-    MODULE_BLUEPRINT_DESK,    /* DEAD — kept for save compat (#280) */
-    MODULE_RING,              /* DEAD — rings are structural (#280) */
     MODULE_SHIPYARD,
-    MODULE_CARGO_BAY,         /* generic large storage (#280) */
+    MODULE_CARGO_BAY,         /* generic large storage */
     MODULE_COUNT
 } module_type_t;
 
@@ -153,7 +149,6 @@ typedef struct {
 enum {
     MAX_MODULES_PER_STATION = 16,
     MAX_ARMS = 4,
-    MAX_RING_COUNT = 3,     /* legacy compat — used by save format */
     PLAYER_PLAN_TYPE_LIMIT = 2, /* max distinct planned module types per player */
 };
 
@@ -446,7 +441,6 @@ static inline void rebuild_station_services(station_t *st) {
             case MODULE_LASER_FAB:      st->services |= STATION_SERVICE_UPGRADE_LASER; break;
             case MODULE_TRACTOR_FAB:    st->services |= STATION_SERVICE_UPGRADE_TRACTOR; break;
             case MODULE_FRAME_PRESS:    st->services |= STATION_SERVICE_UPGRADE_HOLD; break;
-            case MODULE_BLUEPRINT_DESK: st->services |= STATION_SERVICE_BLUEPRINT; break;
             default: break;
         }
     }
@@ -542,9 +536,6 @@ static inline int ring_module_count(const station_t *st, int ring) {
         if (st->modules[i].ring == ring) count++;
     return count;
 }
-
-/* Legacy compat — used by begin_module_construction auto-assign */
-static const int RING_PORT_COUNT[] = { 0, 3, 6, 9 }; /* matches STATION_RING_SLOTS */
 
 static inline bool station_has_ring(const station_t *st, int ring) {
     /* A ring "exists" if any module is placed on it */
