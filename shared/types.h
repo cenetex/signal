@@ -255,6 +255,16 @@ typedef struct {
         int8_t owner;  /* player id who placed the order, -1 = NPC/anyone */
     } pending_scaffolds[4];
     int pending_scaffold_count;
+    /* Placement plans: slots the player has reserved for a specific
+     * module type. When a matching scaffold is towed near, the reticle
+     * locks to the planned slot. Filled by planning-mode reticle. */
+    struct {
+        module_type_t type;
+        uint8_t ring;
+        uint8_t slot;
+        int8_t owner; /* player id who planned it */
+    } placement_plans[8];
+    int placement_plan_count;
     /* Production layer v1: per-module intake buffer.
      * Indexed parallel to modules[]. Currently only shipyards use this. */
     float module_buffer[MAX_MODULES_PER_STATION];
