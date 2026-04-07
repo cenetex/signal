@@ -825,14 +825,7 @@ static void render_world(void) {
             float cell = 8.0f;
             sdtx_color3b(130, 255, 200);
             sdtx_pos((sx + 60.0f) / cell, (sy - 20.0f) / cell);
-            const char *mod_names[] = {
-                "DOCK", "ORE HOPPER", "FURNACE (FE)", "FURNACE (CU)", "FURNACE (CR)",
-                "INGOT SELLER", "REPAIR BAY", "SIGNAL RELAY", "FRAME PRESS",
-                "LASER FAB", "TRACTOR FAB", "CONTRACTS", "ORE SILO",
-                "BLUEPRINTS", "RING", "SHIPYARD"
-            };
-            const char *name = (tm->type < MODULE_COUNT) ? mod_names[tm->type] : "MODULE";
-            sdtx_puts(name);
+            sdtx_puts(module_type_name(tm->type));
             /* Module-specific info line */
             sdtx_color3b(180, 190, 210);
             sdtx_pos((sx + 60.0f) / cell, (sy - 8.0f) / cell);

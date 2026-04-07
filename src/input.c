@@ -223,6 +223,7 @@ input_intent_t sample_input_intent(void) {
             MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_FRAME_PRESS,
             MODULE_FURNACE_CU, MODULE_FURNACE_CR,
             MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
+            MODULE_CARGO_BAY, MODULE_REPAIR_BAY,
         };
         int shown = 0;
         for (int si = 0; si < (int)(sizeof(sellable)/sizeof(sellable[0])); si++) {
@@ -399,8 +400,9 @@ input_intent_t sample_input_intent(void) {
                 static const module_type_t plannable[] = {
                     MODULE_FURNACE, MODULE_FURNACE_CU, MODULE_FURNACE_CR,
                     MODULE_FRAME_PRESS, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
-                    MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_REPAIR_BAY,
-                    MODULE_SIGNAL_RELAY, MODULE_DOCK, MODULE_SHIPYARD,
+                    MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_CARGO_BAY,
+                    MODULE_REPAIR_BAY, MODULE_SIGNAL_RELAY, MODULE_DOCK,
+                    MODULE_SHIPYARD,
                 };
                 int count = (int)(sizeof(plannable)/sizeof(plannable[0]));
                 int cur = 0;

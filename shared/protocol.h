@@ -71,7 +71,7 @@ enum {
     NET_ACTION_UPGRADE_HOLD   = 6,
     NET_ACTION_UPGRADE_TRACTOR= 7,
     NET_ACTION_PLACE_OUTPOST  = 8,
-    NET_ACTION_BUILD_MODULE   = 9,  /* +module_type offset, range [9..9+MODULE_COUNT) */
+    NET_ACTION_BUILD_MODULE   = 9,  /* DEPRECATED — legacy build menu, no-op */
     NET_ACTION_BUY_SCAFFOLD   = 25,
     NET_ACTION_HAIL           = 26,  /* collect pending credits via signal hail */
     NET_ACTION_RELEASE_TOW    = 27,  /* toggle tractor / release towed fragments */
@@ -81,9 +81,9 @@ enum {
     NET_ACTION_BUY_SCAFFOLD_TYPED = 50, /* +module_type offset, range [50..50+MODULE_COUNT) */
 };
 
-/* Compile-time check: action ranges must not overlap */
-_Static_assert(NET_ACTION_BUILD_MODULE + MODULE_COUNT <= NET_ACTION_BUY_SCAFFOLD,
-               "BUILD_MODULE range overlaps BUY_SCAFFOLD");
+/* Compile-time check: action ranges must not overlap.
+ * BUILD_MODULE is deprecated and no-op, so its range collapses to a
+ * single byte; new module types can grow MODULE_COUNT freely. */
 _Static_assert(NET_ACTION_BUY_SCAFFOLD < NET_ACTION_BUY_PRODUCT,
                "BUY_SCAFFOLD overlaps BUY_PRODUCT range");
 _Static_assert(NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT <= NET_ACTION_PLACE_MODULE,

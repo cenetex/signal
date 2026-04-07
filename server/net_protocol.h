@@ -436,12 +436,9 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
             intent->reset = true;
             break;
         default:
-            /* NET_ACTION_BUILD_MODULE + module_type — legacy, no-op */
-            if (action >= NET_ACTION_BUILD_MODULE && action < NET_ACTION_BUILD_MODULE + MODULE_COUNT) {
-                /* deprecated: module placement is via towed scaffold reticle */
-            }
+            /* NET_ACTION_BUILD_MODULE legacy: no-op (range collapsed) */
             /* NET_ACTION_BUY_PRODUCT + commodity (30..30+COMMODITY_COUNT) */
-            else if (action >= NET_ACTION_BUY_PRODUCT && action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT) {
+            if (action >= NET_ACTION_BUY_PRODUCT && action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT) {
                 intent->buy_product = true;
                 intent->buy_commodity = (commodity_t)(action - NET_ACTION_BUY_PRODUCT);
             }
