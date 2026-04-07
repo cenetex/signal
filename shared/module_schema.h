@@ -66,7 +66,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .variant_count = 0,
     },
     [MODULE_ORE_BUYER] = {
-        .name = "Hopper",
+        .name = "Hopper", /* renamed from "Ore Buyer" — now hopper-style */
         .kind = MODULE_KIND_STORAGE,
         .input = COMMODITY_FERRITE_ORE, /* primary; accepts all ore types */
         .output = COMMODITY_COUNT,
@@ -78,7 +78,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .variant_count = 0,
     },
     [MODULE_FURNACE] = {
-        .name = "Furnace",
+        .name = "Iron Furnace",
         .kind = MODULE_KIND_PRODUCER,
         .input = COMMODITY_FERRITE_ORE,
         .output = COMMODITY_FERRITE_INGOT,
@@ -87,12 +87,10 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .order_fee = 50, /* 200/4 */
         .services = 0,
         .valid_rings = MODULE_RINGS_OUTER,
-        .variant_count = 3, /* Iron / Copper / Crystal */
+        .variant_count = 0,
     },
     [MODULE_FURNACE_CU] = {
-        /* Will be collapsed into MODULE_FURNACE variant 1 in commit 5.
-         * For now, keep as separate entry with the same shape. */
-        .name = "Furnace (Copper)",
+        .name = "Copper Furnace",
         .kind = MODULE_KIND_PRODUCER,
         .input = COMMODITY_CUPRITE_ORE,
         .output = COMMODITY_CUPRITE_INGOT,
@@ -104,7 +102,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .variant_count = 0,
     },
     [MODULE_FURNACE_CR] = {
-        .name = "Furnace (Crystal)",
+        .name = "Crystal Furnace",
         .kind = MODULE_KIND_PRODUCER,
         .input = COMMODITY_CRYSTAL_ORE,
         .output = COMMODITY_CRYSTAL_INGOT,
@@ -155,7 +153,6 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .variant_count = 0,
     },
     [MODULE_LASER_FAB] = {
-        /* Will become MODULE_FAB variant 0 in commit 5 */
         .name = "Laser Fab",
         .kind = MODULE_KIND_PRODUCER,
         .input = COMMODITY_CUPRITE_INGOT,
@@ -168,7 +165,6 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .variant_count = 0,
     },
     [MODULE_TRACTOR_FAB] = {
-        /* Will become MODULE_FAB variant 1 in commit 5 */
         .name = "Tractor Fab",
         .kind = MODULE_KIND_PRODUCER,
         .input = COMMODITY_CRYSTAL_INGOT,
@@ -276,6 +272,11 @@ static inline float module_buffer_capacity(module_type_t type) {
 static inline bool module_valid_on_ring(module_type_t type, int ring) {
     if (ring < 0 || ring > 3) return false;
     return (module_schema(type)->valid_rings & (1u << ring)) != 0;
+}
+
+/* Display name for a module type — single source of truth. */
+static inline const char *module_type_name(module_type_t type) {
+    return module_schema(type)->name;
 }
 
 /* ----- Legacy lookup helpers (now schema-backed) -----

@@ -268,10 +268,6 @@ static float module_build_cost(module_type_t type) {
     return module_schema(type)->build_material;
 }
 
-/* Credit cost (legacy; now derived from order fee × 4) */
-static float module_credit_cost(module_type_t type) {
-    return scaffold_kit_price(type);
-}
 
 /* Add a scaffold module to a station and generate a supply contract */
 void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int arm, int chain_pos) {

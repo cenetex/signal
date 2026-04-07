@@ -122,27 +122,7 @@ typedef enum {
     MODULE_COUNT
 } module_type_t;
 
-static inline const char* module_type_name(module_type_t type) {
-    switch (type) {
-        case MODULE_DOCK:           return "Dock";
-        case MODULE_ORE_BUYER:      return "Ore Buyer";
-        case MODULE_FURNACE:        return "Furnace (FE)";
-        case MODULE_FURNACE_CU:     return "Furnace (CU)";
-        case MODULE_FURNACE_CR:     return "Furnace (CR)";
-        case MODULE_INGOT_SELLER:   return "Ingot Seller";
-        case MODULE_REPAIR_BAY:     return "Repair Bay";
-        case MODULE_SIGNAL_RELAY:   return "Signal Relay";
-        case MODULE_FRAME_PRESS:    return "Frame Press";
-        case MODULE_LASER_FAB:      return "Laser Fab";
-        case MODULE_TRACTOR_FAB:    return "Tractor Fab";
-        case MODULE_CONTRACT_BOARD: return "Contract Board";
-        case MODULE_ORE_SILO:       return "Ore Silo";
-        case MODULE_BLUEPRINT_DESK: return "Blueprint Desk";
-        case MODULE_RING:           return "Ring Truss";
-        case MODULE_SHIPYARD:       return "Shipyard";
-        default:                    return "Unknown";
-    }
-}
+/* module_type_name moved to module_schema.h — reads from schema. */
 
 
 /* Module build material/cost/fee lookups moved to module_schema.h
