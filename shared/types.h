@@ -104,21 +104,22 @@ typedef enum {
 
 typedef enum {
     MODULE_DOCK,
-    MODULE_ORE_BUYER,
-    MODULE_FURNACE,         /* smelts ferrite ore only */
-    MODULE_FURNACE_CU,      /* smelts cuprite ore */
-    MODULE_FURNACE_CR,      /* smelts crystal ore */
-    MODULE_INGOT_SELLER,
+    MODULE_ORE_BUYER,         /* aka Hopper — accepts ore from players */
+    MODULE_FURNACE,           /* smelts ferrite ore */
+    MODULE_FURNACE_CU,        /* smelts cuprite ore */
+    MODULE_FURNACE_CR,        /* smelts crystal ore */
+    MODULE_INGOT_SELLER,      /* DEAD — kept for save compat (#280) */
     MODULE_REPAIR_BAY,
     MODULE_SIGNAL_RELAY,
     MODULE_FRAME_PRESS,
     MODULE_LASER_FAB,
     MODULE_TRACTOR_FAB,
-    MODULE_CONTRACT_BOARD,
+    MODULE_CONTRACT_BOARD,    /* DEAD — kept for save compat (#280) */
     MODULE_ORE_SILO,
-    MODULE_BLUEPRINT_DESK,
-    MODULE_RING,            /* physical ring truss structure */
-    MODULE_SHIPYARD,        /* builds ship blueprints */
+    MODULE_BLUEPRINT_DESK,    /* DEAD — kept for save compat (#280) */
+    MODULE_RING,              /* DEAD — rings are structural (#280) */
+    MODULE_SHIPYARD,
+    MODULE_CARGO_BAY,         /* generic large storage (#280) */
     MODULE_COUNT
 } module_type_t;
 

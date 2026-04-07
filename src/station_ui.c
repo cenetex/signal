@@ -933,6 +933,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_FRAME_PRESS,
             MODULE_FURNACE_CU, MODULE_FURNACE_CR,
             MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
+            MODULE_CARGO_BAY, MODULE_REPAIR_BAY,
         };
         int shown = 0;
         int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);

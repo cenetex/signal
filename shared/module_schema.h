@@ -218,6 +218,18 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
     },
+    [MODULE_CARGO_BAY] = {
+        .name = "Cargo Bay",
+        .kind = MODULE_KIND_STORAGE,
+        .input = COMMODITY_FERRITE_INGOT, /* generic — accepts any commodity in flow graph */
+        .output = COMMODITY_COUNT,
+        .rate = 0.0f, .buffer_capacity = 120.0f, /* large storage */
+        .build_material = 60.0f, .build_commodity = COMMODITY_FRAME,
+        .order_fee = 60,
+        .services = 0,
+        .valid_rings = MODULE_RINGS_OUTER,
+        .variant_count = 0,
+    },
 };
 
 /* ----- Lookup helpers -----
