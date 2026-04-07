@@ -4017,6 +4017,100 @@ static bool construction_area_blocked(const world_t *w, int station_idx) {
  * when there's a pending order. Producer modules beam material to it.
  * The intake rate is layout-aware (same-ring fast, cross-ring slow).
  * When complete, the scaffold becomes LOOSE and can be towed away. */
+/* ================================================================== */
+/* Material flow graph (#280)                                         */
+/* ================================================================== */
+
+/* Adjacency-aware transfer rate between two modules on the same station.
+ * Same ring + adjacent slots = fast. Same ring + far slots = medium.
+ * Cross-ring = slow trickle (drones will speed this up later, #281). */
+static float module_flow_rate(const station_t *st, int producer_idx, int consumer_idx) {
+    const station_module_t *p = &st->modules[producer_idx];
+    const station_module_t *c = &st->modules[consumer_idx];
+    if (p->ring == c->ring && p->ring >= 1) {
+        int slot_dist = abs((int)p->slot - (int)c->slot);
+        if (slot_dist == 0) slot_dist = 1;
+        /* Same ring: 5/sec for adjacent, drops with distance */
+        return 5.0f / (float)slot_dist;
+    }
+    /* Cross-ring or core: trickle (drones will improve this) */
+    return 1.0f;
+}
+
+/* Match a producer's output commodity against any module's input commodity.
+ * Returns true if the consumer should accept this material. */
+static bool module_accepts_input(const station_module_t *consumer, commodity_t commodity) {
+    const module_schema_t *cs = module_schema(consumer->type);
+    /* Producers consume their declared input */
+    if (cs->kind == MODULE_KIND_PRODUCER && cs->input == commodity) return true;
+    /* Storage modules accept anything they're typed for (input == primary).
+     * For now: ore silos and hoppers only accept ore types. */
+    if (cs->kind == MODULE_KIND_STORAGE) {
+        /* Hopper and ore silo accept any raw ore */
+        if (commodity == COMMODITY_FERRITE_ORE ||
+            commodity == COMMODITY_CUPRITE_ORE ||
+            commodity == COMMODITY_CRYSTAL_ORE) return true;
+    }
+    /* Shipyards accept whatever their pending order needs (handled separately) */
+    return false;
+}
+
+/* Move material from producers' output buffers into matching consumers'
+ * input buffers, prioritizing closer modules. Runs each tick. */
+static void step_module_flow(world_t *w, float dt) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+
+        /* For each module with material in its output buffer, find the
+         * best consumer for that commodity and transfer. */
+        for (int p = 0; p < st->module_count; p++) {
+            if (st->modules[p].scaffold) continue;
+            if (st->module_output[p] <= 0.0f) continue;
+            commodity_t output = module_schema_output(st->modules[p].type);
+            /* Storage modules also push their stored material (treat as output) */
+            if (output == COMMODITY_COUNT) {
+                module_kind_t k = module_kind(st->modules[p].type);
+                if (k == MODULE_KIND_STORAGE) {
+                    /* Storage's output commodity is whatever it's holding;
+                     * for now we don't track per-storage commodity, so skip
+                     * unless the schema declares one. Leave as future work. */
+                    continue;
+                }
+                continue;
+            }
+
+            /* Find the best consumer (closest, has space) */
+            int best_consumer = -1;
+            float best_rate = 0.0f;
+            for (int c = 0; c < st->module_count; c++) {
+                if (c == p) continue;
+                if (st->modules[c].scaffold) continue;
+                if (!module_accepts_input(&st->modules[c], output)) continue;
+                float cap = module_buffer_capacity(st->modules[c].type);
+                if (cap <= 0.0f) continue;
+                if (st->module_input[c] >= cap) continue;
+                float rate = module_flow_rate(st, p, c);
+                if (rate > best_rate) {
+                    best_rate = rate;
+                    best_consumer = c;
+                }
+            }
+            if (best_consumer < 0) continue;
+
+            float room = module_buffer_capacity(st->modules[best_consumer].type)
+                       - st->module_input[best_consumer];
+            float pull = best_rate * dt;
+            if (pull > st->module_output[p]) pull = st->module_output[p];
+            if (pull > room) pull = room;
+            if (pull > 0.0f) {
+                st->module_output[p] -= pull;
+                st->module_input[best_consumer] += pull;
+            }
+        }
+    }
+}
+
 static void step_shipyard_manufacture(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
@@ -4341,6 +4435,7 @@ void world_sim_step(world_t *w, float dt) {
     step_furnace_smelting(w, dt);
     sim_step_refinery_production(w, dt);
     sim_step_station_production(w, dt);
+    step_module_flow(w, dt);
     step_module_construction(w, dt);
     step_scaffolds(w, dt);
     step_contracts(w, dt);
