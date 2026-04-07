@@ -101,6 +101,9 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     case NET_MSG_INPUT:
         parse_input(data, len, &world.players[pid].input);
         break;
+    case NET_MSG_PLAN:
+        parse_plan(data, len, &world.players[pid].input);
+        break;
     case NET_MSG_STATE:
         /* Ignored -- server is authoritative. */
         break;

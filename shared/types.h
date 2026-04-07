@@ -84,6 +84,9 @@ typedef struct {
     uint8_t towed_count;
     int16_t towed_scaffold;       /* scaffold index being towed, -1 = none */
     bool tractor_active;          /* R toggles — when off, no auto-collection */
+    /* Tech tree: bit per module type. Set when the player orders a
+     * scaffold of that type. Drives the order menu unlock check. */
+    uint32_t unlocked_modules;
     /* Run stats (reset on death/respawn) */
     float stat_ore_mined;
     float stat_credits_earned;
@@ -151,6 +154,7 @@ enum {
     MAX_MODULES_PER_STATION = 16,
     MAX_ARMS = 4,
     MAX_RING_COUNT = 3,     /* legacy compat — used by save format */
+    PLAYER_PLAN_TYPE_LIMIT = 2, /* max distinct planned module types per player */
 };
 
 typedef struct {

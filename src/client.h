@@ -280,4 +280,15 @@ void format_station_market_detail(const station_ui_state_t* ui, bool compact, ch
 int build_station_service_lines(const station_ui_state_t* ui, station_service_line_t lines[3]);
 void draw_station_service_text_line(float x, float y, const station_service_line_t* line, bool compact);
 
+/* ------------------------------------------------------------------ */
+/* Plan helpers — module types the local player has currently planned */
+/* across all stations. Used by plan-mode (R cycling) and the shipyard */
+/* order menu so kits only appear for things the player actually plans. */
+/* PLAYER_PLAN_TYPE_LIMIT is defined in shared/types.h. */
+/* ------------------------------------------------------------------ */
+
+/* Returns count of distinct planned module types for the local player.
+ * Writes them into out (deduped, capped at max). */
+int player_planned_types(module_type_t *out, int max);
+
 #endif /* CLIENT_H */

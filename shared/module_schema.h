@@ -47,7 +47,9 @@ typedef struct {
     int            order_fee;       /* shipyard deposit in credits */
     uint32_t       services;        /* STATION_SERVICE_* bitmask */
     uint16_t       valid_rings;     /* MODULE_RING_* bitmask */
-    uint8_t        variant_count;   /* >0 if module has variants (furnace=3, fab=2) */
+    uint8_t        variant_count;   /* >0 if module has variants */
+    int            prerequisite;    /* module type that must be built first
+                                     * (MODULE_COUNT = no prerequisite, root) */
 } module_schema_t;
 
 /* The schema table. Indexed by module_type_t.
@@ -64,6 +66,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = 0,
         .valid_rings = MODULE_RINGS_ANY,
         .variant_count = 0,
+        .prerequisite = MODULE_SIGNAL_RELAY, /* tier 1 */
     },
     [MODULE_ORE_BUYER] = {
         .name = "Hopper", /* renamed from "Ore Buyer" — now hopper-style */
@@ -76,6 +79,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = STATION_SERVICE_ORE_BUYER,
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
+        .prerequisite = MODULE_SIGNAL_RELAY, /* tier 1 */
     },
     [MODULE_FURNACE] = {
         .name = "Iron Furnace",
@@ -88,6 +92,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = 0,
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
+        .prerequisite = MODULE_ORE_BUYER, /* tier 2 — needs hopper */
     },
     [MODULE_FURNACE_CU] = {
         .name = "Copper Furnace",
@@ -100,6 +105,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = 0,
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
+        .prerequisite = MODULE_FRAME_PRESS, /* tier 4 — needs frames */
     },
     [MODULE_FURNACE_CR] = {
         .name = "Crystal Furnace",
@@ -112,6 +118,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = 0,
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
+        .prerequisite = MODULE_FRAME_PRESS, /* tier 4 */
     },
     [MODULE_INGOT_SELLER] = {
         /* DEAD — to be deleted in commit 6 */
@@ -128,6 +135,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = STATION_SERVICE_REPAIR,
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
+        .prerequisite = MODULE_DOCK, /* tier 2 — needs ships docking first */
     },
     [MODULE_SIGNAL_RELAY] = {
         .name = "Signal Relay",
@@ -139,6 +147,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = 0,
         .valid_rings = MODULE_RINGS_ANY,
         .variant_count = 0,
+        .prerequisite = MODULE_COUNT, /* root — always available */
     },
     [MODULE_FRAME_PRESS] = {
         .name = "Frame Press",
@@ -151,6 +160,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = 0,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
+        .prerequisite = MODULE_FURNACE, /* tier 3 — needs ingots */
     },
     [MODULE_LASER_FAB] = {
         .name = "Laser Fab",
@@ -163,6 +173,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = STATION_SERVICE_UPGRADE_LASER,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
+        .prerequisite = MODULE_FURNACE_CU, /* tier 5 — needs cu ingots */
     },
     [MODULE_TRACTOR_FAB] = {
         .name = "Tractor Fab",
@@ -175,6 +186,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = STATION_SERVICE_UPGRADE_TRACTOR,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
+        .prerequisite = MODULE_FURNACE_CR, /* tier 5 — needs cr ingots */
     },
     [MODULE_CONTRACT_BOARD] = {
         /* DEAD — to be deleted in commit 6 */
@@ -194,6 +206,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = 0,
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
+        .prerequisite = MODULE_FURNACE, /* tier 3 — overflow storage */
     },
     [MODULE_BLUEPRINT_DESK] = {
         /* DEAD — to be deleted in commit 6 */
@@ -217,6 +230,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = 0,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
+        .prerequisite = MODULE_FRAME_PRESS, /* tier 4 — needs frames */
     },
     [MODULE_CARGO_BAY] = {
         .name = "Cargo Bay",
@@ -229,6 +243,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = 0,
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
+        .prerequisite = MODULE_FURNACE, /* tier 3 — needs production to store */
     },
 };
 
@@ -284,6 +299,15 @@ static inline float module_buffer_capacity(module_type_t type) {
 static inline bool module_valid_on_ring(module_type_t type, int ring) {
     if (ring < 0 || ring > 3) return false;
     return (module_schema(type)->valid_rings & (1u << ring)) != 0;
+}
+
+/* Tech-tree gate: a module is unlocked for a player when they have
+ * built (ordered) its prerequisite at least once. Root modules
+ * (prerequisite = MODULE_COUNT) are always available. */
+static inline bool module_unlocked_for_player(uint32_t unlocked_mask, module_type_t type) {
+    int prereq = module_schema(type)->prerequisite;
+    if (prereq < 0 || prereq >= MODULE_COUNT) return true; /* root */
+    return (unlocked_mask & (1u << prereq)) != 0;
 }
 
 /* Display name for a module type — single source of truth. */

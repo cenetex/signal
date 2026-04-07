@@ -33,6 +33,8 @@ void draw_npc_mining_beam(const npc_ship_t* npc);
 void draw_npc_ships(void);
 void draw_hopper_tractors(void);
 void draw_beam(void);
+void draw_collision_sparks(void);
+void draw_spark_burst(vec2 pos, float intensity, bool red, float seed);
 void draw_towed_tethers(void);
 
 /* --- Module visuals --- */
@@ -49,5 +51,6 @@ void draw_compass_ring(void);
 
 /* --- Multiplayer rendering --- */
 void draw_remote_players(void);
+void draw_callsigns(void);
 
 #endif /* WORLD_DRAW_H */

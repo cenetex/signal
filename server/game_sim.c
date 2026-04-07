@@ -2996,12 +2996,18 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
         } else if (st->pending_scaffold_count >= 4) {
             emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
+        } else if (!module_unlocked_for_player(sp->ship.unlocked_modules, kit_type)) {
+            /* Tech tree gate: prereq not yet unlocked */
+            emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
         } else {
             float fee = (float)scaffold_order_fee(kit_type);
             if (sp->ship.credits < fee) {
                 emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
             } else {
                 spend_credits(&sp->ship, fee);
+                /* Tech tree: ordering this type unlocks any module that
+                 * lists it as prerequisite. */
+                sp->ship.unlocked_modules |= (1u << (uint32_t)kit_type);
                 /* Queue pending scaffold */
                 int idx = st->pending_scaffold_count++;
                 st->pending_scaffolds[idx].type = kit_type;
@@ -3309,7 +3315,30 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                     existing = p; break;
                 }
             }
-            if (!taken) {
+            /* Per-player cap: at most PLAYER_PLAN_TYPE_LIMIT distinct
+             * planned module types across all stations. Replacing an
+             * existing slot with the same type is always allowed. */
+            module_type_t distinct[PLAYER_PLAN_TYPE_LIMIT];
+            int distinct_n = 0;
+            for (int ss = 0; ss < MAX_STATIONS && distinct_n < PLAYER_PLAN_TYPE_LIMIT; ss++) {
+                const station_t *sct = &w->stations[ss];
+                for (int p = 0; p < sct->placement_plan_count; p++) {
+                    if (sct->placement_plans[p].owner != (int8_t)sp->id) continue;
+                    /* Skip the slot we're replacing — its type may change. */
+                    if (sct == st && p == existing) continue;
+                    module_type_t pt = sct->placement_plans[p].type;
+                    bool dup = false;
+                    for (int k = 0; k < distinct_n; k++)
+                        if (distinct[k] == pt) { dup = true; break; }
+                    if (!dup && distinct_n < PLAYER_PLAN_TYPE_LIMIT)
+                        distinct[distinct_n++] = pt;
+                }
+            }
+            bool already = false;
+            for (int k = 0; k < distinct_n; k++)
+                if (distinct[k] == type) { already = true; break; }
+            bool over_cap = !already && distinct_n >= PLAYER_PLAN_TYPE_LIMIT;
+            if (!taken && !over_cap) {
                 if (existing >= 0) {
                     st->placement_plans[existing].type = type;
                     st->placement_plans[existing].owner = (int8_t)sp->id;

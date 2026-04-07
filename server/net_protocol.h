@@ -461,4 +461,47 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
     }
 }
 
+/*
+ * PLAN message (NET_PLAN_MSG_SIZE bytes):
+ * [type:1][op:1][station:1][ring:1][slot:1][module_type:1][px:f32][py:f32]
+ *
+ * Accumulates onto the player's pending intent so the next sim step can
+ * apply it. Plan ops can stack across messages without colliding with the
+ * one-shot action byte in NET_MSG_INPUT.
+ */
+static inline void parse_plan(const uint8_t *data, int len, input_intent_t *intent) {
+    if (len < NET_PLAN_MSG_SIZE) return;
+    uint8_t op = data[1];
+    int8_t station = (int8_t)data[2];
+    int8_t ring = (int8_t)data[3];
+    int8_t slot = (int8_t)data[4];
+    uint8_t mtype = data[5];
+    float px, py;
+    memcpy(&px, &data[6], 4);
+    memcpy(&py, &data[10], 4);
+
+    switch (op) {
+    case NET_PLAN_OP_CREATE_OUTPOST:
+        intent->create_planned_outpost = true;
+        intent->planned_outpost_pos.x = px;
+        intent->planned_outpost_pos.y = py;
+        break;
+    case NET_PLAN_OP_ADD_SLOT:
+        if ((int)mtype < MODULE_COUNT) {
+            intent->add_plan = true;
+            intent->plan_station = station;
+            intent->plan_ring = ring;
+            intent->plan_slot = slot;
+            intent->plan_type = (module_type_t)mtype;
+        }
+        break;
+    case NET_PLAN_OP_CANCEL_OUTPOST:
+        intent->cancel_planned_outpost = true;
+        intent->cancel_planned_station = station;
+        break;
+    default:
+        break;
+    }
+}
+
 #endif /* NET_PROTOCOL_H */

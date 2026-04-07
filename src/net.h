@@ -145,6 +145,10 @@ void net_send_session(const uint8_t token[8]);
  * mining_target: client's hover_asteroid index (255=none) */
 void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target);
 
+/* Send a planning intent (outpost create / module slot / cancel). */
+void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
+                   uint8_t module_type, float px, float py);
+
 /* Send the local player's full state to the server for relay. */
 void net_send_state(float x, float y, float vx, float vy, float angle);
 
