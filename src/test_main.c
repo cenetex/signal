@@ -3183,7 +3183,7 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  *   2. Add a migration block in world_load()
  *   3. Update this constant to the new size
  */
-#define EXPECTED_SAVE_SIZE 22606  /* v20: + per-station plans + planned flag */
+#define EXPECTED_SAVE_SIZE 23118  /* v21: split module_buffer → input + output */
 
 TEST(test_save_file_size_stable) {
     world_t w = {0};
@@ -3218,7 +3218,7 @@ TEST(test_save_header_golden_bytes) {
     fread(&spawn_timer, 4, 1, f);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 20);
+    ASSERT_EQ_INT((int)version, 21);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -4625,7 +4625,8 @@ TEST(test_save_preserves_pending_scaffolds) {
     w.stations[1].pending_scaffolds[0].owner = 0;
     w.stations[1].pending_scaffold_count = 1;
     /* Some module buffer state */
-    w.stations[1].module_buffer[3] = 42.5f;
+    w.stations[1].module_input[3] = 42.5f;
+    w.stations[1].module_output[5] = 17.0f;
     /* Spawn a nascent scaffold */
     int sidx = spawn_scaffold(&w, MODULE_FRAME_PRESS, w.stations[1].pos, 0);
     ASSERT(sidx >= 0);
@@ -4642,7 +4643,8 @@ TEST(test_save_preserves_pending_scaffolds) {
     ASSERT_EQ_INT(loaded.stations[1].pending_scaffold_count, 1);
     ASSERT_EQ_INT(loaded.stations[1].pending_scaffolds[0].type, MODULE_FURNACE);
     ASSERT_EQ_INT(loaded.stations[1].pending_scaffolds[0].owner, 0);
-    ASSERT_EQ_FLOAT(loaded.stations[1].module_buffer[3], 42.5f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded.stations[1].module_input[3], 42.5f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded.stations[1].module_output[5], 17.0f, 0.01f);
 
     /* Verify scaffold survived */
     ASSERT(loaded.scaffolds[sidx].active);
