@@ -244,31 +244,16 @@ static void activate_outpost(world_t *w, int station_idx) {
 }
 
 /* What material each module requires for construction */
+/* Production module helpers — all read from the schema in module_schema.h */
 static commodity_t module_build_material(module_type_t type) {
-    switch (type) {
-        case MODULE_FURNACE_CU:  return COMMODITY_CUPRITE_INGOT;
-        case MODULE_FURNACE_CR:  return COMMODITY_CRYSTAL_INGOT;
-        case MODULE_LASER_FAB:   return COMMODITY_CUPRITE_INGOT;
-        case MODULE_TRACTOR_FAB: return COMMODITY_CRYSTAL_INGOT;
-        default:                 return COMMODITY_FRAME;
-    }
+    return module_schema(type)->build_commodity;
 }
 
-/* Scaffold kit credit price (paid at purchase) */
+/* Scaffold order fee (deposit paid at shipyard, ~25% of full credit cost) */
 static float scaffold_kit_price(module_type_t type) {
-    switch (type) {
-        case MODULE_DOCK:           return 100.0f;
-        case MODULE_SIGNAL_RELAY:   return 150.0f;
-        case MODULE_FURNACE:        return 200.0f;
-        case MODULE_ORE_BUYER:      return 150.0f;
-        case MODULE_ORE_SILO:       return 100.0f;
-        case MODULE_FRAME_PRESS:    return 300.0f;
-        case MODULE_FURNACE_CU:     return 400.0f;
-        case MODULE_FURNACE_CR:     return 500.0f;
-        case MODULE_LASER_FAB:      return 400.0f;
-        case MODULE_TRACTOR_FAB:    return 400.0f;
-        default:                    return 200.0f;
-    }
+    /* Schema stores the deposit; legacy code expected 4× this as the
+     * "full price". Return the full price for callers that still use it. */
+    return (float)module_schema(type)->order_fee * 4.0f;
 }
 
 /* A station sells scaffolds only if it has a SHIPYARD module AND an
@@ -278,36 +263,14 @@ static bool station_sells_scaffold(const station_t *st, module_type_t type) {
     return station_has_module(st, type);
 }
 
-/* Module construction cost in ingots */
+/* Module construction cost (material quantity to manufacture scaffold) */
 static float module_build_cost(module_type_t type) {
-    switch (type) {
-        case MODULE_REPAIR_BAY:     return 30.0f;
-        case MODULE_ORE_BUYER:      return 40.0f;
-        case MODULE_FURNACE:        return 60.0f;
-        case MODULE_FURNACE_CU:     return 100.0f;
-        case MODULE_FURNACE_CR:     return 140.0f;
-        case MODULE_FRAME_PRESS:    return 80.0f;
-        case MODULE_LASER_FAB:      return 80.0f;
-        case MODULE_TRACTOR_FAB:    return 80.0f;
-        case MODULE_CONTRACT_BOARD: return 20.0f;
-        case MODULE_BLUEPRINT_DESK: return 50.0f;
-        case MODULE_SIGNAL_RELAY:   return 40.0f;
-        case MODULE_ORE_SILO:       return 30.0f;
-        default:                    return 20.0f;
-    }
+    return module_schema(type)->build_material;
 }
 
-/* Credit cost to begin module construction */
+/* Credit cost (legacy; now derived from order fee × 4) */
 static float module_credit_cost(module_type_t type) {
-    switch (type) {
-        case MODULE_FURNACE:     return 200.0f;
-        case MODULE_FURNACE_CU:  return 400.0f;
-        case MODULE_FURNACE_CR:  return 600.0f;
-        case MODULE_FRAME_PRESS: return 300.0f;
-        case MODULE_LASER_FAB:   return 300.0f;
-        case MODULE_TRACTOR_FAB: return 300.0f;
-        default:                 return 100.0f;
-    }
+    return scaffold_kit_price(type);
 }
 
 /* Add a scaffold module to a station and generate a supply contract */

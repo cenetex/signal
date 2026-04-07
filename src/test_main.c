@@ -4598,22 +4598,20 @@ TEST(test_module_schema_helpers) {
 }
 
 TEST(test_module_schema_build_costs_match) {
-    /* Schema build costs should match the existing lookup helpers
-     * (this verifies the schema is the same source of truth and won't
-     * cause behavior drift when production loops switch to it). */
-    ASSERT_EQ_FLOAT(module_schema(MODULE_FURNACE)->build_material,
-                    module_build_cost_lookup(MODULE_FURNACE), 0.01f);
-    ASSERT_EQ_FLOAT(module_schema(MODULE_FRAME_PRESS)->build_material,
-                    module_build_cost_lookup(MODULE_FRAME_PRESS), 0.01f);
-    ASSERT_EQ_FLOAT(module_schema(MODULE_SHIPYARD)->build_material,
-                    module_build_cost_lookup(MODULE_SHIPYARD), 0.01f);
-    /* Build commodity matches too */
-    ASSERT_EQ_INT(module_schema(MODULE_FURNACE)->build_commodity,
-                  module_build_material_lookup(MODULE_FURNACE));
-    ASSERT_EQ_INT(module_schema(MODULE_FURNACE_CU)->build_commodity,
-                  module_build_material_lookup(MODULE_FURNACE_CU));
-    ASSERT_EQ_INT(module_schema(MODULE_LASER_FAB)->build_commodity,
-                  module_build_material_lookup(MODULE_LASER_FAB));
+    /* Schema build costs match the existing lookup helpers for ALL
+     * non-dead modules. Once production code starts reading from the
+     * schema in commit 2, drift would change behavior — this test
+     * catches it. */
+    for (int t = 0; t < MODULE_COUNT; t++) {
+        if (module_is_dead((module_type_t)t)) continue;
+        const module_schema_t *s = module_schema((module_type_t)t);
+        ASSERT_EQ_FLOAT(s->build_material,
+                        module_build_cost_lookup((module_type_t)t), 0.01f);
+        ASSERT_EQ_INT(s->build_commodity,
+                      module_build_material_lookup((module_type_t)t));
+        ASSERT_EQ_INT(s->order_fee,
+                      scaffold_order_fee((module_type_t)t));
+    }
 }
 
 TEST(test_save_preserves_pending_scaffolds) {

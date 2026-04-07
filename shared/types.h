@@ -145,56 +145,8 @@ static inline const char* module_type_name(module_type_t type) {
 }
 
 
-/* What material a module requires for construction (shared with client for UI) */
-static inline commodity_t module_build_material_lookup(module_type_t type) {
-    switch (type) {
-        case MODULE_FURNACE_CU:  return COMMODITY_CUPRITE_INGOT;
-        case MODULE_FURNACE_CR:  return COMMODITY_CRYSTAL_INGOT;
-        case MODULE_LASER_FAB:   return COMMODITY_CUPRITE_INGOT;
-        case MODULE_TRACTOR_FAB: return COMMODITY_CRYSTAL_INGOT;
-        default:                 return COMMODITY_FRAME;
-    }
-}
-
-/* Material quantity needed to manufacture a scaffold (shared) */
-static inline float module_build_cost_lookup(module_type_t type) {
-    switch (type) {
-        case MODULE_REPAIR_BAY:     return 30.0f;
-        case MODULE_ORE_BUYER:      return 40.0f;
-        case MODULE_FURNACE:        return 60.0f;
-        case MODULE_FURNACE_CU:     return 100.0f;
-        case MODULE_FURNACE_CR:     return 140.0f;
-        case MODULE_FRAME_PRESS:    return 80.0f;
-        case MODULE_LASER_FAB:      return 80.0f;
-        case MODULE_TRACTOR_FAB:    return 80.0f;
-        case MODULE_CONTRACT_BOARD: return 20.0f;
-        case MODULE_BLUEPRINT_DESK: return 50.0f;
-        case MODULE_SIGNAL_RELAY:   return 40.0f;
-        case MODULE_ORE_SILO:       return 30.0f;
-        case MODULE_SHIPYARD:       return 120.0f;
-        default:                    return 20.0f;
-    }
-}
-
-/* Scaffold order fee: 25% deposit, rest paid as materials (shared) */
-static inline int scaffold_order_fee(module_type_t type) {
-    int full = 200;
-    switch (type) {
-        case MODULE_DOCK:           full = 100; break;
-        case MODULE_SIGNAL_RELAY:   full = 150; break;
-        case MODULE_FURNACE:        full = 200; break;
-        case MODULE_ORE_BUYER:      full = 150; break;
-        case MODULE_ORE_SILO:       full = 100; break;
-        case MODULE_FRAME_PRESS:    full = 300; break;
-        case MODULE_FURNACE_CU:     full = 400; break;
-        case MODULE_FURNACE_CR:     full = 500; break;
-        case MODULE_LASER_FAB:      full = 400; break;
-        case MODULE_TRACTOR_FAB:    full = 400; break;
-        case MODULE_SHIPYARD:       full = 500; break;
-        default:                    full = 200; break;
-    }
-    return full / 4;
-}
+/* Module build material/cost/fee lookups moved to module_schema.h
+ * (included at the bottom of this file) to read from the schema table. */
 
 static inline const char *commodity_short_label(commodity_t c) {
     switch (c) {

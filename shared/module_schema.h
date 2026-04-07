@@ -60,7 +60,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .input = COMMODITY_COUNT, .output = COMMODITY_COUNT,
         .rate = 0.0f, .buffer_capacity = 0.0f,
         .build_material = 20.0f, .build_commodity = COMMODITY_FRAME,
-        .order_fee = 25,
+        .order_fee = 25, /* 100/4 */
         .services = 0,
         .valid_rings = MODULE_RINGS_ANY,
         .variant_count = 0,
@@ -71,8 +71,8 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .input = COMMODITY_FERRITE_ORE, /* primary; accepts all ore types */
         .output = COMMODITY_COUNT,
         .rate = 0.0f, .buffer_capacity = 30.0f,
-        .build_material = 30.0f, .build_commodity = COMMODITY_FRAME,
-        .order_fee = 38,
+        .build_material = 40.0f, .build_commodity = COMMODITY_FRAME,
+        .order_fee = 37, /* 150/4 */
         .services = STATION_SERVICE_ORE_BUYER,
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
@@ -84,7 +84,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .output = COMMODITY_FERRITE_INGOT,
         .rate = 1.0f, .buffer_capacity = 12.0f,
         .build_material = 60.0f, .build_commodity = COMMODITY_FRAME,
-        .order_fee = 50,
+        .order_fee = 50, /* 200/4 */
         .services = 0,
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 3, /* Iron / Copper / Crystal */
@@ -136,8 +136,8 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .kind = MODULE_KIND_SERVICE,
         .input = COMMODITY_COUNT, .output = COMMODITY_COUNT,
         .rate = 0.0f, .buffer_capacity = 0.0f,
-        .build_material = 20.0f, .build_commodity = COMMODITY_FRAME,
-        .order_fee = 38,
+        .build_material = 40.0f, .build_commodity = COMMODITY_FRAME,
+        .order_fee = 37, /* 150/4 */
         .services = 0,
         .valid_rings = MODULE_RINGS_ANY,
         .variant_count = 0,
@@ -276,6 +276,21 @@ static inline float module_buffer_capacity(module_type_t type) {
 static inline bool module_valid_on_ring(module_type_t type, int ring) {
     if (ring < 0 || ring > 3) return false;
     return (module_schema(type)->valid_rings & (1u << ring)) != 0;
+}
+
+/* ----- Legacy lookup helpers (now schema-backed) -----
+ * Used by client UI and onboarding. Internally delegate to the schema. */
+
+static inline commodity_t module_build_material_lookup(module_type_t type) {
+    return module_schema(type)->build_commodity;
+}
+
+static inline float module_build_cost_lookup(module_type_t type) {
+    return module_schema(type)->build_material;
+}
+
+static inline int scaffold_order_fee(module_type_t type) {
+    return module_schema(type)->order_fee;
 }
 
 #endif /* MODULE_SCHEMA_H */
