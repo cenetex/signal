@@ -342,8 +342,12 @@ input_intent_t sample_input_intent(void) {
             }
         }
     } else if (g.plan_mode_active) {
-        /* PLAN MODE: cycle module type with B, confirm with E. Position
-         * auto-picks the closest open slot on the closest player outpost. */
+        /* PLAN MODE (existing outpost):
+         * R = cycle module type
+         * E = reserve slot (creates plan)
+         * B = exit plan mode
+         * Esc = exit plan mode
+         * Position auto-picks the closest open slot. */
         reticle_target_t targets[RETICLE_MAX_TARGETS];
         int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
 
@@ -356,11 +360,11 @@ input_intent_t sample_input_intent(void) {
             g.placement_target_slot = targets[0].slot;
         }
 
-        if (is_key_pressed(SAPP_KEYCODE_ESCAPE)) {
+        if (is_key_pressed(SAPP_KEYCODE_ESCAPE) || is_key_pressed(SAPP_KEYCODE_B)) {
             g.plan_mode_active = false;
         } else if (g.plan_mode_active) {
-            if (is_key_pressed(SAPP_KEYCODE_B)) {
-                /* Cycle through plannable module types */
+            if (is_key_pressed(SAPP_KEYCODE_R)) {
+                /* R cycles module type. Suppress the tractor toggle. */
                 static const module_type_t plannable[] = {
                     MODULE_FURNACE, MODULE_FURNACE_CU, MODULE_FURNACE_CR,
                     MODULE_FRAME_PRESS, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
@@ -372,6 +376,7 @@ input_intent_t sample_input_intent(void) {
                 for (int i = 0; i < count; i++)
                     if ((int)plannable[i] == g.plan_type) { cur = i; break; }
                 g.plan_type = (int)plannable[(cur + 1) % count];
+                intent.release_tow = false; /* don't toggle tractor */
             } else if (is_key_pressed(SAPP_KEYCODE_E)) {
                 intent.add_plan = true;
                 intent.plan_station = (int8_t)g.placement_target_station;
@@ -379,7 +384,7 @@ input_intent_t sample_input_intent(void) {
                 intent.plan_slot = (int8_t)g.placement_target_slot;
                 intent.plan_type = (module_type_t)g.plan_type;
                 set_notice("Planned %s.", module_type_name((module_type_t)g.plan_type));
-                g.plan_mode_active = false;
+                /* Stay in plan mode for repeat planning */
             }
         }
     } else if (is_key_pressed(SAPP_KEYCODE_B)) {
@@ -391,10 +396,15 @@ input_intent_t sample_input_intent(void) {
             } else {
                 set_notice("No shipyard here.");
             }
+        } else if (g.ghost_outpost_active) {
+            /* B while ghost is active → exit ghost mode */
+            g.ghost_outpost_active = false;
+            g.ghost_outpost_slot_count = 0;
+            set_notice("Outpost design closed.");
         } else {
-            /* Undocked, not towing.
+            /* Undocked, not towing, no ghost.
              * Near an existing outpost → plan mode on it.
-             * Otherwise → ghost outpost mode (design a future station). */
+             * Otherwise → create a new ghost outpost. */
             reticle_target_t targets[RETICLE_MAX_TARGETS];
             int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
             if (n > 0) {
@@ -403,20 +413,7 @@ input_intent_t sample_input_intent(void) {
                 g.placement_target_ring = targets[0].ring;
                 g.placement_target_slot = targets[0].slot;
                 if (g.plan_type == 0) g.plan_type = MODULE_FURNACE;
-                set_notice("Plan: B cycles type, E confirms.");
-            } else if (g.ghost_outpost_active) {
-                /* Already have a ghost — cycle type */
-                static const module_type_t plannable[] = {
-                    MODULE_FURNACE, MODULE_FURNACE_CU, MODULE_FURNACE_CR,
-                    MODULE_FRAME_PRESS, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
-                    MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_REPAIR_BAY,
-                    MODULE_SIGNAL_RELAY, MODULE_DOCK, MODULE_SHIPYARD,
-                };
-                int count = (int)(sizeof(plannable)/sizeof(plannable[0]));
-                int cur = 0;
-                for (int i = 0; i < count; i++)
-                    if ((int)plannable[i] == g.plan_type) { cur = i; break; }
-                g.plan_type = (int)plannable[(cur + 1) % count];
+                set_notice("Plan: [R] type  [E] reserve  [B] exit");
             } else {
                 /* Create ghost outpost at player position — but only if
                  * the spot is far enough from existing stations and within
@@ -445,12 +442,26 @@ input_intent_t sample_input_intent(void) {
             }
         }
     }
-    /* Ghost outpost handling: E adds slot, Esc cancels */
+    /* Ghost outpost handling: R cycles type, E adds slot, Esc cancels */
     if (g.ghost_outpost_active && !LOCAL_PLAYER.docked && LOCAL_PLAYER.ship.towed_scaffold < 0) {
         if (is_key_pressed(SAPP_KEYCODE_ESCAPE)) {
             g.ghost_outpost_active = false;
             g.ghost_outpost_slot_count = 0;
             set_notice("Outpost design cancelled.");
+        } else if (is_key_pressed(SAPP_KEYCODE_R)) {
+            /* R cycles type — suppress the tractor toggle */
+            static const module_type_t plannable[] = {
+                MODULE_FURNACE, MODULE_FURNACE_CU, MODULE_FURNACE_CR,
+                MODULE_FRAME_PRESS, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
+                MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_REPAIR_BAY,
+                MODULE_SIGNAL_RELAY, MODULE_DOCK, MODULE_SHIPYARD,
+            };
+            int count = (int)(sizeof(plannable)/sizeof(plannable[0]));
+            int cur = 0;
+            for (int i = 0; i < count; i++)
+                if ((int)plannable[i] == g.plan_type) { cur = i; break; }
+            g.plan_type = (int)plannable[(cur + 1) % count];
+            intent.release_tow = false;
         } else if (is_key_pressed(SAPP_KEYCODE_E)) {
             /* Add a slot to the ghost. Pick ring by player distance from
              * ghost center, slot by player angle around ghost. */
