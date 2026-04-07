@@ -2577,6 +2577,74 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
         }
     }
 
+    /* Materialize a nearby planned station if scaffold is close to it. */
+    {
+        const float MATERIALIZE_RANGE = 600.0f;
+        const float MATERIALIZE_RANGE_SQ = MATERIALIZE_RANGE * MATERIALIZE_RANGE;
+        for (int s = 3; s < MAX_STATIONS; s++) {
+            station_t *st = &w->stations[s];
+            if (!st->planned) continue;
+            if (v2_dist_sq(st->pos, sc->pos) > MATERIALIZE_RANGE_SQ) continue;
+            /* Materialize: planned → scaffold-state */
+            st->planned = false;
+            st->scaffold = true;
+            st->scaffold_progress = 0.0f;
+            st->radius = OUTPOST_RADIUS;
+            st->dock_radius = OUTPOST_DOCK_RADIUS;
+            st->signal_range = OUTPOST_SIGNAL_RANGE;
+            add_module_at(st, MODULE_DOCK, 0, 0xFF);
+            add_module_at(st, MODULE_SIGNAL_RELAY, 0, 0xFF);
+            rebuild_station_services(st);
+            /* Generate supply contract for activation frames */
+            for (int k = 0; k < MAX_CONTRACTS; k++) {
+                if (!w->contracts[k].active) {
+                    w->contracts[k] = (contract_t){
+                        .active = true, .action = CONTRACT_TRACTOR,
+                        .station_index = (uint8_t)s,
+                        .commodity = COMMODITY_FRAME,
+                        .quantity_needed = SCAFFOLD_MATERIAL_NEEDED,
+                        .base_price = 23.0f,
+                        .target_index = -1, .claimed_by = -1,
+                    };
+                    break;
+                }
+            }
+            /* Try to find a planned slot matching the scaffold's type. */
+            int chosen_ring = -1, chosen_slot = -1;
+            for (int p = 0; p < st->placement_plan_count; p++) {
+                if (st->placement_plans[p].type == sc->module_type) {
+                    chosen_ring = st->placement_plans[p].ring;
+                    chosen_slot = st->placement_plans[p].slot;
+                    /* Remove the plan — it's being fulfilled */
+                    for (int q = p; q < st->placement_plan_count - 1; q++)
+                        st->placement_plans[q] = st->placement_plans[q + 1];
+                    st->placement_plan_count--;
+                    break;
+                }
+            }
+            if (chosen_ring < 0) {
+                chosen_ring = 1;
+                chosen_slot = 0;
+            }
+            if (st->module_count < MAX_MODULES_PER_STATION) {
+                station_module_t *m = &st->modules[st->module_count++];
+                m->type = sc->module_type;
+                m->ring = (uint8_t)chosen_ring;
+                m->slot = (uint8_t)chosen_slot;
+                m->scaffold = true;
+                m->build_progress = 1.0f;
+            }
+            sc->active = false;
+            sp->ship.towed_scaffold = -1;
+            emit_event(w, (sim_event_t){
+                .type = SIM_EVENT_OUTPOST_PLACED,
+                .player_id = sp->id,
+                .outpost_placed = { .slot = s },
+            });
+            return;
+        }
+    }
+
     /* Auto-snap fallback: try to snap to a nearby outpost ring slot */
     for (int s = 3; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
@@ -3229,13 +3297,14 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         handle_hail(w, sp);
     }
 
-    /* Add placement plan to a player outpost */
+    /* Add placement plan to a player outpost (active or planned) */
     if (sp->input.add_plan && !w->player_only_mode) {
         int s = sp->input.plan_station;
         int ring = sp->input.plan_ring;
         int slot = sp->input.plan_slot;
         module_type_t type = sp->input.plan_type;
-        if (s >= 3 && s < MAX_STATIONS && station_is_active(&w->stations[s])
+        if (s >= 3 && s < MAX_STATIONS && station_exists(&w->stations[s])
+            && !w->stations[s].scaffold
             && ring >= 1 && ring <= STATION_NUM_RINGS
             && slot >= 0 && slot < STATION_RING_SLOTS[ring]
             && (int)type < MODULE_COUNT) {
@@ -3269,6 +3338,63 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         }
     }
 
+    /* Create a planned outpost (server-side ghost) */
+    if (sp->input.create_planned_outpost && !w->player_only_mode) {
+        vec2 pos = sp->input.planned_outpost_pos;
+        /* Validate position */
+        bool too_close = false;
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            if (!station_exists(&w->stations[s])) continue;
+            if (v2_dist_sq(w->stations[s].pos, pos) < OUTPOST_MIN_DISTANCE * OUTPOST_MIN_DISTANCE) {
+                too_close = true; break;
+            }
+        }
+        if (!too_close && signal_strength_at(w, pos) > 0.0f) {
+            /* Find free slot */
+            int slot = -1;
+            for (int s = 3; s < MAX_STATIONS; s++) {
+                if (!station_exists(&w->stations[s])) { slot = s; break; }
+            }
+            if (slot >= 0) {
+                station_t *st = &w->stations[slot];
+                memset(st, 0, sizeof(*st));
+                generate_outpost_name(st->name, sizeof(st->name), pos, slot);
+                st->pos = pos;
+                st->planned = true;
+                st->planned_owner = (int8_t)sp->id;
+                st->radius = 0.0f;          /* no collision */
+                st->dock_radius = 0.0f;     /* no docking */
+                st->signal_range = 0.0f;    /* no signal until built */
+                /* Use deterministic ring rotation so planned slots match
+                 * what the player sees when the station materializes. */
+                st->arm_count = 0;
+                for (int r = 0; r < MAX_ARMS; r++) {
+                    st->arm_rotation[r] = 0.0f;
+                    st->ring_offset[r] = 0.0f;
+                    st->arm_speed[r] = 0.0f;
+                }
+                emit_event(w, (sim_event_t){
+                    .type = SIM_EVENT_OUTPOST_PLACED,
+                    .player_id = sp->id,
+                    .outpost_placed = { .slot = slot },
+                });
+                SIM_LOG("[sim] player %d created planned outpost at slot %d\n", sp->id, slot);
+            }
+        }
+    }
+
+    /* Cancel a planned outpost (only the owner) */
+    if (sp->input.cancel_planned_outpost && !w->player_only_mode) {
+        int s = sp->input.cancel_planned_station;
+        if (s >= 3 && s < MAX_STATIONS) {
+            station_t *st = &w->stations[s];
+            if (st->planned && st->planned_owner == (int8_t)sp->id) {
+                memset(st, 0, sizeof(*st));
+                SIM_LOG("[sim] player %d cancelled planned outpost at slot %d\n", sp->id, s);
+            }
+        }
+    }
+
     /* Clear one-shot action flags after the sim has consumed them. */
     sp->input.interact = false;
     sp->input.service_sell = false;
@@ -3282,6 +3408,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->input.hail = false;
     sp->input.release_tow = false;
     sp->input.add_plan = false;
+    sp->input.create_planned_outpost = false;
+    sp->input.cancel_planned_outpost = false;
 }
 
 /* ================================================================== */
@@ -4513,6 +4641,13 @@ static bool write_station(FILE *f, const station_t *s) {
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
         WRITE_FIELD(f, s->module_buffer[m]);
     }
+    /* Placement plans + planned-station fields (v20+) */
+    WRITE_FIELD(f, s->placement_plan_count);
+    for (int p = 0; p < 8; p++) {
+        WRITE_FIELD(f, s->placement_plans[p]);
+    }
+    WRITE_FIELD(f, s->planned);
+    WRITE_FIELD(f, s->planned_owner);
     return true;
 }
 
@@ -4554,6 +4689,15 @@ static bool read_station(FILE *f, station_t *s) {
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
         READ_FIELD(f, s->module_buffer[m]);
     }
+    /* Placement plans + planned-station fields (v20+) */
+    READ_FIELD(f, s->placement_plan_count);
+    if (s->placement_plan_count < 0) s->placement_plan_count = 0;
+    if (s->placement_plan_count > 8) s->placement_plan_count = 8;
+    for (int p = 0; p < 8; p++) {
+        READ_FIELD(f, s->placement_plans[p]);
+    }
+    READ_FIELD(f, s->planned);
+    READ_FIELD(f, s->planned_owner);
     return true;
 }
 

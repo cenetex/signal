@@ -3183,7 +3183,7 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  *   2. Add a migration block in world_load()
  *   3. Update this constant to the new size
  */
-#define EXPECTED_SAVE_SIZE 22046  /* v20: + per-station shipyard state + scaffolds[] */
+#define EXPECTED_SAVE_SIZE 22606  /* v20: + per-station plans + planned flag */
 
 TEST(test_save_file_size_stable) {
     world_t w = {0};

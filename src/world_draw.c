@@ -1576,11 +1576,15 @@ static module_type_t producer_for_commodity_client(commodity_t c) {
     }
 }
 
-/* Compute unlocked ring count for the ghost outpost (mirrors input.c). */
-static int ghost_unlocked_rings_client(void) {
+/* Compute max unlocked ring on a station. */
+static int station_unlocked_rings_client(const station_t *st) {
     int counts[STATION_NUM_RINGS + 1] = {0};
-    for (int p = 0; p < g.ghost_outpost_slot_count; p++) {
-        int r = g.ghost_outpost_slots[p].ring;
+    for (int m = 0; m < st->module_count; m++) {
+        int r = st->modules[m].ring;
+        if (r >= 1 && r <= STATION_NUM_RINGS) counts[r]++;
+    }
+    for (int p = 0; p < st->placement_plan_count; p++) {
+        int r = st->placement_plans[p].ring;
         if (r >= 1 && r <= STATION_NUM_RINGS) counts[r]++;
     }
     int unlocked = 1;
@@ -1589,90 +1593,49 @@ static int ghost_unlocked_rings_client(void) {
     return unlocked;
 }
 
-/* Draw the client-side ghost outpost (B-in-open-space planning). */
-static void draw_ghost_outpost(void) {
-    if (!g.ghost_outpost_active) return;
-    vec2 c = g.ghost_outpost_pos;
-    float pulse = 0.4f + 0.3f * sinf(g.world.time * 2.5f);
-    int max_ring = ghost_unlocked_rings_client();
+/* Draw planned stations (server-side ghost outposts) as wireframe rings.
+ * Visible to all players. Materialized when a scaffold is towed near. */
+static void draw_planned_stations(void) {
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        const station_t *st = &g.world.stations[s];
+        if (!st->planned) continue;
+        vec2 c = st->pos;
+        float pulse = 0.4f + 0.3f * sinf(g.world.time * 2.5f);
+        int max_ring = station_unlocked_rings_client(st);
 
-    /* Wireframe rings — dashed cyan, only unlocked rings */
-    for (int r = 1; r <= max_ring; r++) {
-        float radius = STATION_RING_RADIUS[r];
-        int dashes = 32;
-        sgl_begin_lines();
-        sgl_c4f(0.4f, 0.85f, 1.0f, pulse * 0.6f);
-        for (int i = 0; i < dashes; i += 2) {
-            float a0 = TWO_PI_F * (float)i / (float)dashes;
-            float a1 = TWO_PI_F * (float)(i + 1) / (float)dashes;
-            sgl_v2f(c.x + cosf(a0) * radius, c.y + sinf(a0) * radius);
-            sgl_v2f(c.x + cosf(a1) * radius, c.y + sinf(a1) * radius);
+        /* Wireframe rings — dashed cyan, only unlocked */
+        for (int r = 1; r <= max_ring; r++) {
+            float radius = STATION_RING_RADIUS[r];
+            int dashes = 32;
+            sgl_begin_lines();
+            sgl_c4f(0.4f, 0.85f, 1.0f, pulse * 0.6f);
+            for (int i = 0; i < dashes; i += 2) {
+                float a0 = TWO_PI_F * (float)i / (float)dashes;
+                float a1 = TWO_PI_F * (float)(i + 1) / (float)dashes;
+                sgl_v2f(c.x + cosf(a0) * radius, c.y + sinf(a0) * radius);
+                sgl_v2f(c.x + cosf(a1) * radius, c.y + sinf(a1) * radius);
+            }
+            sgl_end();
         }
-        sgl_end();
-    }
-
-    /* Dashed dock-radius perimeter */
-    {
-        int dashes = 48;
-        sgl_begin_lines();
-        sgl_c4f(0.4f, 1.0f, 1.0f, pulse * 0.4f);
-        float radius = OUTPOST_DOCK_RADIUS;
-        for (int i = 0; i < dashes; i += 2) {
-            float a0 = TWO_PI_F * (float)i / (float)dashes;
-            float a1 = TWO_PI_F * (float)(i + 1) / (float)dashes;
-            sgl_v2f(c.x + cosf(a0) * radius, c.y + sinf(a0) * radius);
-            sgl_v2f(c.x + cosf(a1) * radius, c.y + sinf(a1) * radius);
+        /* Dashed dock-radius perimeter */
+        {
+            int dashes = 48;
+            sgl_begin_lines();
+            sgl_c4f(0.4f, 1.0f, 1.0f, pulse * 0.4f);
+            float radius = OUTPOST_DOCK_RADIUS;
+            for (int i = 0; i < dashes; i += 2) {
+                float a0 = TWO_PI_F * (float)i / (float)dashes;
+                float a1 = TWO_PI_F * (float)(i + 1) / (float)dashes;
+                sgl_v2f(c.x + cosf(a0) * radius, c.y + sinf(a0) * radius);
+                sgl_v2f(c.x + cosf(a1) * radius, c.y + sinf(a1) * radius);
+            }
+            sgl_end();
         }
-        sgl_end();
-    }
+        /* Center marker */
+        draw_circle_outline(c, 6.0f, 12, 0.4f, 1.0f, 1.0f, pulse);
 
-    /* Center marker */
-    draw_circle_outline(c, 6.0f, 12, 0.4f, 1.0f, 1.0f, pulse);
-
-    /* Already-planned slots: colored ghost markers */
-    for (int p = 0; p < g.ghost_outpost_slot_count; p++) {
-        int ring = g.ghost_outpost_slots[p].ring;
-        int slot = g.ghost_outpost_slots[p].slot;
-        module_type_t type = g.ghost_outpost_slots[p].type;
-        float angle = TWO_PI_F * (float)slot / (float)STATION_RING_SLOTS[ring];
-        float radius = STATION_RING_RADIUS[ring];
-        vec2 pos = v2(c.x + cosf(angle) * radius, c.y + sinf(angle) * radius);
-        float mr, mg, mb;
-        module_color_fn(type, &mr, &mg, &mb);
-        draw_circle_outline(pos, 22.0f, 16, mr, mg, mb, pulse);
-        draw_circle_filled(pos, 5.0f, 8, mr, mg, mb, pulse * 1.5f);
+        /* Planned slot ghosts (already drawn by draw_placement_plans below) */
     }
-
-    /* Aim preview: where the next E press would land (clamped to unlocked rings) */
-    vec2 delta = v2_sub(LOCAL_PLAYER.ship.pos, c);
-    float dist = sqrtf(v2_len_sq(delta));
-    int best_ring = 1;
-    float best_diff = 1e18f;
-    for (int r = 1; r <= max_ring; r++) {
-        float diff = fabsf(dist - STATION_RING_RADIUS[r]);
-        if (diff < best_diff) { best_diff = diff; best_ring = r; }
-    }
-    float player_angle = atan2f(delta.y, delta.x);
-    int slots = STATION_RING_SLOTS[best_ring];
-    int best_slot = 0;
-    float best_slot_diff = 1e18f;
-    for (int slot = 0; slot < slots; slot++) {
-        float slot_angle = TWO_PI_F * (float)slot / (float)slots;
-        float a_diff = fabsf(slot_angle - player_angle);
-        while (a_diff > PI_F) a_diff = TWO_PI_F - a_diff;
-        if (a_diff < best_slot_diff) { best_slot_diff = a_diff; best_slot = slot; }
-    }
-    float aim_angle = TWO_PI_F * (float)best_slot / (float)slots;
-    float aim_radius = STATION_RING_RADIUS[best_ring];
-    vec2 aim_pos = v2(c.x + cosf(aim_angle) * aim_radius, c.y + sinf(aim_angle) * aim_radius);
-    float mr, mg, mb;
-    module_color_fn((module_type_t)g.plan_type, &mr, &mg, &mb);
-    float aim_pulse = 0.6f + 0.4f * sinf(g.world.time * 6.0f);
-    draw_circle_outline(aim_pos, 32.0f, 24, mr, mg, mb, aim_pulse);
-    draw_circle_outline(aim_pos, 26.0f, 24, mr, mg, mb, aim_pulse * 0.7f);
-    draw_circle_filled(aim_pos, 6.0f, 8, mr, mg, mb, aim_pulse);
-    /* Tether from ship to aim point */
-    draw_segment(LOCAL_PLAYER.ship.pos, aim_pos, mr, mg, mb, aim_pulse * 0.4f);
 }
 
 /* Draw existing placement plans as faint colored ghosts at their slots. */
@@ -1697,10 +1660,10 @@ static void draw_placement_plans(void) {
 }
 
 void draw_placement_reticle(void) {
-    /* Always draw existing plans (not gated on reticle mode) */
+    /* Always draw planned stations (server-side ghosts) */
+    draw_planned_stations();
+    /* Always draw existing plans on stations (active or planned) */
     draw_placement_plans();
-    /* Always draw the ghost outpost design if active */
-    draw_ghost_outpost();
 
     /* Plan mode: draw the cycling-type ghost at the current target slot */
     if (g.plan_mode_active && g.placement_target_station >= 0) {

@@ -96,6 +96,12 @@ typedef struct {
     int8_t plan_ring;
     int8_t plan_slot;
     module_type_t plan_type;
+    /* Create a new planned outpost (server-side ghost). */
+    bool create_planned_outpost;
+    vec2 planned_outpost_pos;
+    /* Cancel a planned outpost (only the owner can). */
+    bool cancel_planned_outpost;
+    int8_t cancel_planned_station;
     bool buy_scaffold_kit;
     module_type_t scaffold_kit_module; /* what module type the kit builds */
     bool buy_product;

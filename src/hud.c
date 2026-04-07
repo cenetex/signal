@@ -310,21 +310,11 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
-    /* Persistent ghost outpost hint while designing */
-    if (g.ghost_outpost_active) {
-        snprintf(label, label_size, "DESIGN");
-        snprintf(message, message_size,
-            "[R] %s  [E] place (%d/8)  [B/Esc] exit",
-            module_type_name((module_type_t)g.plan_type),
-            g.ghost_outpost_slot_count);
-        *r = 130; *g0 = 220; *b = 255;
-        return true;
-    }
-    /* Persistent plan mode hint */
+    /* Persistent plan mode hint (existing or planned outpost) */
     if (g.plan_mode_active) {
         snprintf(label, label_size, "PLAN");
         snprintf(message, message_size,
-            "[R] %s  [E] reserve slot  [B/Esc] exit",
+            "[R] %s  [E] place slot  [B/Esc] exit",
             module_type_name((module_type_t)g.plan_type));
         *r = 130; *g0 = 220; *b = 255;
         return true;

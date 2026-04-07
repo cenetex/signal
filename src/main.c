@@ -252,18 +252,10 @@ static void process_sim_events(const sim_events_t *events) {
                 break;
             }
             case SIM_EVENT_OUTPOST_PLACED: {
-                /* If the player has a ghost outpost design, queue its
-                 * slots to be transferred to the new station via add_plan
-                 * intents. The transfer happens in submit_input across
-                 * the next several frames. */
-                if (ev->player_id == g.local_player_slot && g.ghost_outpost_active) {
-                    g.ghost_pending_transfer = true;
-                    /* Re-target the ghost slots to the new station's slot index */
-                    /* (slot field already set, we just remember the station) */
-                    int new_station = ev->outpost_placed.slot;
-                    /* Stash station index in placement_target_station so submit_input
-                     * can pick it up. */
-                    g.placement_target_station = new_station;
+                /* If we just created a planned outpost, remember its
+                 * station index so the next frame's input loop can target it. */
+                if (ev->player_id == g.local_player_slot) {
+                    g.plan_target_station = ev->outpost_placed.slot;
                 }
                 break;
             }

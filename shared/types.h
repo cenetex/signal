@@ -228,6 +228,8 @@ typedef struct {
     float signal_range;
     bool signal_connected;   /* true = can trace signal path to a root station */
     bool scaffold;           /* true = under construction, not yet active */
+    bool planned;            /* true = design phase only, no physical presence */
+    int8_t planned_owner;    /* player id who created the plan, -1 = system */
     float scaffold_progress; /* 0.0 to 1.0 */
     float base_price[COMMODITY_COUNT];
     float inventory[COMMODITY_COUNT]; /* unified storage for all commodities */
@@ -275,29 +277,29 @@ typedef struct {
 /* ------------------------------------------------------------------ */
 
 /* A station slot is in use if it has signal range, is under construction,
- * or has a dock radius.  Empty/zeroed slots return false. */
+ * is planned, or has a dock radius. Empty/zeroed slots return false. */
 static inline bool station_exists(const station_t *st) {
-    return st->signal_range > 0.0f || st->scaffold || st->dock_radius > 0.0f;
+    return st->signal_range > 0.0f || st->scaffold || st->planned || st->dock_radius > 0.0f;
 }
 
 /* A station is active (fully built and operational). */
 static inline bool station_is_active(const station_t *st) {
-    return st->signal_range > 0.0f && !st->scaffold;
+    return st->signal_range > 0.0f && !st->scaffold && !st->planned;
 }
 
 /* Should this station provide a dock ring? */
 static inline bool station_provides_docking(const station_t *st) {
-    return st->dock_radius > 0.0f;
+    return st->dock_radius > 0.0f && !st->planned;
 }
 
 /* Should this station contribute to signal coverage? */
 static inline bool station_provides_signal(const station_t *st) {
-    return st->signal_range > 0.0f && st->signal_connected;
+    return st->signal_range > 0.0f && st->signal_connected && !st->planned;
 }
 
 /* Should this station participate in collision? */
 static inline bool station_collides(const station_t *st) {
-    return st->radius > 0.0f;
+    return st->radius > 0.0f && !st->planned;
 }
 
 /* ------------------------------------------------------------------ */

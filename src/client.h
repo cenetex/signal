@@ -140,21 +140,10 @@ typedef struct {
     int placement_target_station;  /* station index, -1 = none */
     int placement_target_ring;     /* 1..STATION_NUM_RINGS */
     int placement_target_slot;     /* 0..STATION_RING_SLOTS[ring]-1 */
-    /* --- Plan mode (B near outpost, not towing) --- */
+    /* --- Plan mode (B near outpost or planned outpost, not towing) --- */
     bool plan_mode_active;
-    int plan_type;                 /* module_type_t cycled with B */
-    /* --- Ghost outpost (B in open space, not towing) --- */
-    bool ghost_outpost_active;
-    vec2 ghost_outpost_pos;
-    struct {
-        int type;     /* module_type_t */
-        uint8_t ring;
-        uint8_t slot;
-    } ghost_outpost_slots[8];
-    int ghost_outpost_slot_count;
-    /* When the player founds a real outpost, the ghost layout is queued
-     * for transfer to the new station once OUTPOST_PLACED arrives. */
-    bool ghost_pending_transfer;
+    int plan_type;                 /* module_type_t cycled with R */
+    int plan_target_station;       /* server-side station index being planned (-1 = none) */
     /* --- Module interaction --- */
     int target_station;      /* station index of targeted module, -1 = none */
     int target_module;       /* module index within station, -1 = none */

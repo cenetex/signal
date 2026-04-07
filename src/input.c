@@ -52,19 +52,6 @@ static int station_max_unlocked_ring(const station_t *st) {
     return unlocked;
 }
 
-/* Same for the client-side ghost outpost. */
-static int ghost_max_unlocked_ring(void) {
-    int counts[STATION_NUM_RINGS + 1] = {0};
-    for (int p = 0; p < g.ghost_outpost_slot_count; p++) {
-        int r = g.ghost_outpost_slots[p].ring;
-        if (r >= 1 && r <= STATION_NUM_RINGS) counts[r]++;
-    }
-    int unlocked = 1;
-    if (counts[1] >= 2) unlocked = 2;
-    if (counts[2] >= 4) unlocked = 3;
-    return unlocked;
-}
-
 /* Build a flat list of (station, ring, slot) tuples for every open slot
  * across all player outposts in snap range of a position. Returns the
  * count. Sorted so the slot whose world position is closest to `pos`
@@ -83,6 +70,8 @@ static int collect_reticle_targets(vec2 pos, reticle_target_t *out, int max) {
     for (int s = 3; s < MAX_STATIONS && count < max; s++) {
         const station_t *st = &g.world.stations[s];
         if (!station_exists(st) || st->scaffold) continue;
+        /* Include planned stations — they accept plans even though they
+         * have no physical presence yet. */
         if (v2_dist_sq(st->pos, pos) > SNAP_RANGE_SQ) continue;
         int max_ring = station_max_unlocked_ring(st);
         for (int ring = 1; ring <= max_ring && count < max; ring++) {
@@ -124,6 +113,7 @@ input_intent_t sample_input_intent(void) {
     intent.plan_station = -1;
     intent.plan_ring = -1;
     intent.plan_slot = -1;
+    intent.cancel_planned_station = -1;
 
     if (is_key_down(SAPP_KEYCODE_A) || is_key_down(SAPP_KEYCODE_LEFT)) {
         intent.turn += 1.0f;
@@ -353,12 +343,12 @@ input_intent_t sample_input_intent(void) {
             }
         }
     }
-    /* B / E: placement (tow mode) and planning (plan mode).
-     * Position picks the slot. B cycles MODULE TYPE in plan mode.
-     * In tow mode the type is fixed (scaffold you carry); no reticle. */
+    /* B / R / E: placement (tow mode) and planning (plan mode).
+     * Tow mode: position auto-picks slot, E commits, no reticle.
+     * Plan mode: position auto-picks slot, R cycles type, E reserves slot.
+     * B enters/exits plan mode. Plans are server-side. */
     if (!LOCAL_PLAYER.docked && LOCAL_PLAYER.ship.towed_scaffold >= 0) {
-        /* TOW MODE: no slot reticle. Position auto-picks the slot.
-         * E confirms placement, server snaps to closest valid slot. */
+        /* TOW MODE: server snaps to closest slot on E. */
         g.placement_reticle_active = false;
         if (is_key_pressed(SAPP_KEYCODE_E)) {
             reticle_target_t targets[RETICLE_MAX_TARGETS];
@@ -370,23 +360,20 @@ input_intent_t sample_input_intent(void) {
                 intent.place_target_slot = (int8_t)targets[0].slot;
                 set_notice("Placing scaffold...");
             } else {
-                /* No outpost in range — found a new station */
+                /* No outpost in range — let server decide:
+                 * - materialize a nearby planned station, or
+                 * - found a new outpost from scratch */
                 intent.place_outpost = true;
-                set_notice("Founding outpost...");
+                set_notice("Placing scaffold...");
             }
         }
     } else if (g.plan_mode_active) {
-        /* PLAN MODE (existing outpost):
-         * R = cycle module type
-         * E = reserve slot (creates plan)
-         * B = exit plan mode
-         * Esc = exit plan mode
-         * Position auto-picks the closest open slot. */
+        /* PLAN MODE: cycle types with R, place with E, exit with B/Esc.
+         * Targets a server-side station (player outpost or planned). */
         reticle_target_t targets[RETICLE_MAX_TARGETS];
         int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
 
         if (n == 0) {
-            /* Drifted out of range — exit plan mode */
             g.plan_mode_active = false;
         } else {
             g.placement_target_station = targets[0].station;
@@ -395,10 +382,20 @@ input_intent_t sample_input_intent(void) {
         }
 
         if (is_key_pressed(SAPP_KEYCODE_ESCAPE) || is_key_pressed(SAPP_KEYCODE_B)) {
+            /* Exiting plan mode. If the target is a planned station with
+             * no slots reserved yet, cancel it entirely so B+B is a clean
+             * "never mind" gesture instead of a flicker. */
+            int s = g.placement_target_station;
+            if (s >= 3 && s < MAX_STATIONS &&
+                g.world.stations[s].planned &&
+                g.world.stations[s].placement_plan_count == 0) {
+                intent.cancel_planned_outpost = true;
+                intent.cancel_planned_station = (int8_t)s;
+                set_notice("Outpost design cancelled.");
+            }
             g.plan_mode_active = false;
         } else if (g.plan_mode_active) {
             if (is_key_pressed(SAPP_KEYCODE_R)) {
-                /* R cycles module type. Suppress the tractor toggle. */
                 static const module_type_t plannable[] = {
                     MODULE_FURNACE, MODULE_FURNACE_CU, MODULE_FURNACE_CR,
                     MODULE_FRAME_PRESS, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
@@ -410,15 +407,15 @@ input_intent_t sample_input_intent(void) {
                 for (int i = 0; i < count; i++)
                     if ((int)plannable[i] == g.plan_type) { cur = i; break; }
                 g.plan_type = (int)plannable[(cur + 1) % count];
-                intent.release_tow = false; /* don't toggle tractor */
+                intent.release_tow = false;
             } else if (is_key_pressed(SAPP_KEYCODE_E)) {
                 intent.add_plan = true;
                 intent.plan_station = (int8_t)g.placement_target_station;
                 intent.plan_ring = (int8_t)g.placement_target_ring;
                 intent.plan_slot = (int8_t)g.placement_target_slot;
                 intent.plan_type = (module_type_t)g.plan_type;
-                set_notice("Planned %s.", module_type_name((module_type_t)g.plan_type));
-                /* Stay in plan mode for repeat planning */
+                set_notice("Planned %s. [R] type [E] place [B] exit",
+                    module_type_name((module_type_t)g.plan_type));
             }
         }
     } else if (is_key_pressed(SAPP_KEYCODE_B)) {
@@ -430,15 +427,10 @@ input_intent_t sample_input_intent(void) {
             } else {
                 set_notice("No shipyard here.");
             }
-        } else if (g.ghost_outpost_active) {
-            /* B while ghost is active → exit ghost mode */
-            g.ghost_outpost_active = false;
-            g.ghost_outpost_slot_count = 0;
-            set_notice("Outpost design closed.");
         } else {
-            /* Undocked, not towing, no ghost.
-             * Near an existing outpost → plan mode on it.
-             * Otherwise → create a new ghost outpost. */
+            /* Undocked, not towing.
+             * Near an existing outpost or planned station → enter plan mode.
+             * Otherwise → ask the server to create a planned outpost. */
             reticle_target_t targets[RETICLE_MAX_TARGETS];
             int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
             if (n > 0) {
@@ -446,19 +438,17 @@ input_intent_t sample_input_intent(void) {
                 g.placement_target_station = targets[0].station;
                 g.placement_target_ring = targets[0].ring;
                 g.placement_target_slot = targets[0].slot;
+                g.plan_target_station = targets[0].station;
                 if (g.plan_type == 0) g.plan_type = MODULE_FURNACE;
-                set_notice("Plan: [R] type  [E] reserve  [B] exit");
+                set_notice("Plan: [R] type [E] place [B] exit");
             } else {
-                /* Create ghost outpost at player position — but only if
-                 * the spot is far enough from existing stations and within
-                 * signal range of an existing outpost. */
+                /* No outpost in range — request a planned outpost from server */
                 vec2 pos = LOCAL_PLAYER.ship.pos;
                 bool too_close = false;
                 for (int s = 0; s < MAX_STATIONS; s++) {
                     const station_t *st = &g.world.stations[s];
                     if (!station_exists(st)) continue;
-                    float min_d = OUTPOST_MIN_DISTANCE;
-                    if (v2_dist_sq(st->pos, pos) < min_d * min_d) {
+                    if (v2_dist_sq(st->pos, pos) < OUTPOST_MIN_DISTANCE * OUTPOST_MIN_DISTANCE) {
                         too_close = true; break;
                     }
                 }
@@ -467,77 +457,13 @@ input_intent_t sample_input_intent(void) {
                 } else if (signal_strength_at(&g.world, pos) <= 0.0f) {
                     set_notice("No signal here. Move closer to a station.");
                 } else {
-                    g.ghost_outpost_active = true;
-                    g.ghost_outpost_pos = pos;
-                    g.ghost_outpost_slot_count = 0;
+                    intent.create_planned_outpost = true;
+                    intent.planned_outpost_pos = pos;
                     if (g.plan_type == 0) g.plan_type = MODULE_FURNACE;
-                    set_notice("Design: [B] cycle type  [E] place  [Esc] cancel.");
+                    /* Plan mode will activate next frame when the new
+                     * planned station shows up in collect_reticle_targets. */
+                    set_notice("Designing outpost...");
                 }
-            }
-        }
-    }
-    /* Ghost outpost handling: R cycles type, E adds slot, Esc cancels */
-    if (g.ghost_outpost_active && !LOCAL_PLAYER.docked && LOCAL_PLAYER.ship.towed_scaffold < 0) {
-        if (is_key_pressed(SAPP_KEYCODE_ESCAPE)) {
-            g.ghost_outpost_active = false;
-            g.ghost_outpost_slot_count = 0;
-            set_notice("Outpost design cancelled.");
-        } else if (is_key_pressed(SAPP_KEYCODE_R)) {
-            /* R cycles type — suppress the tractor toggle */
-            static const module_type_t plannable[] = {
-                MODULE_FURNACE, MODULE_FURNACE_CU, MODULE_FURNACE_CR,
-                MODULE_FRAME_PRESS, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
-                MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_REPAIR_BAY,
-                MODULE_SIGNAL_RELAY, MODULE_DOCK, MODULE_SHIPYARD,
-            };
-            int count = (int)(sizeof(plannable)/sizeof(plannable[0]));
-            int cur = 0;
-            for (int i = 0; i < count; i++)
-                if ((int)plannable[i] == g.plan_type) { cur = i; break; }
-            g.plan_type = (int)plannable[(cur + 1) % count];
-            intent.release_tow = false;
-        } else if (is_key_pressed(SAPP_KEYCODE_E)) {
-            /* Add a slot to the ghost. Pick ring by player distance from
-             * ghost center, clamped to unlocked rings. */
-            int max_ring = ghost_max_unlocked_ring();
-            vec2 delta = v2_sub(LOCAL_PLAYER.ship.pos, g.ghost_outpost_pos);
-            float dist = sqrtf(v2_len_sq(delta));
-            int best_ring = 1;
-            float best_diff = 1e18f;
-            for (int r = 1; r <= max_ring; r++) {
-                float diff = fabsf(dist - STATION_RING_RADIUS[r]);
-                if (diff < best_diff) { best_diff = diff; best_ring = r; }
-            }
-            /* Pick slot whose canonical angle (no rotation since ghost has none)
-             * is closest to player angle relative to ghost. */
-            float player_angle = atan2f(delta.y, delta.x);
-            int slots = STATION_RING_SLOTS[best_ring];
-            int best_slot = 0;
-            float best_slot_diff = 1e18f;
-            for (int slot = 0; slot < slots; slot++) {
-                float slot_angle = TWO_PI_F * (float)slot / (float)slots;
-                float a_diff = fabsf(slot_angle - player_angle);
-                while (a_diff > PI_F) a_diff = TWO_PI_F - a_diff;
-                if (a_diff < best_slot_diff) { best_slot_diff = a_diff; best_slot = slot; }
-            }
-            /* Don't double-add the same slot — replace the type */
-            int existing = -1;
-            for (int p = 0; p < g.ghost_outpost_slot_count; p++) {
-                if (g.ghost_outpost_slots[p].ring == best_ring &&
-                    g.ghost_outpost_slots[p].slot == best_slot) {
-                    existing = p; break;
-                }
-            }
-            if (existing >= 0) {
-                g.ghost_outpost_slots[existing].type = g.plan_type;
-                set_notice("Replaced slot with %s.", module_type_name((module_type_t)g.plan_type));
-            } else if (g.ghost_outpost_slot_count < 8) {
-                int idx = g.ghost_outpost_slot_count++;
-                g.ghost_outpost_slots[idx].ring = (uint8_t)best_ring;
-                g.ghost_outpost_slots[idx].slot = (uint8_t)best_slot;
-                g.ghost_outpost_slots[idx].type = g.plan_type;
-                set_notice("Planned %s at ring %d slot %d.",
-                    module_type_name((module_type_t)g.plan_type), best_ring, best_slot);
             }
         }
     }
@@ -576,30 +502,6 @@ void submit_input(const input_intent_t *intent, float dt) {
         local_server_sync_to_client(&g.local_server);
     }
 
-    /* Ghost outpost transfer: after a successful founding, send the
-     * ghost slots as add_plan intents — one per sim step. */
-    if (g.ghost_pending_transfer && g.local_server.active &&
-        g.placement_target_station >= 0) {
-        if (g.ghost_outpost_slot_count > 0) {
-            int idx = g.ghost_outpost_slot_count - 1;
-            input_intent_t plan_intent = { 0 };
-            plan_intent.place_target_station = -1;
-            plan_intent.place_target_ring = -1;
-            plan_intent.place_target_slot = -1;
-            plan_intent.add_plan = true;
-            plan_intent.plan_station = (int8_t)g.placement_target_station;
-            plan_intent.plan_ring = g.ghost_outpost_slots[idx].ring;
-            plan_intent.plan_slot = g.ghost_outpost_slots[idx].slot;
-            plan_intent.plan_type = (module_type_t)g.ghost_outpost_slots[idx].type;
-            local_server_step(&g.local_server, g.local_player_slot, &plan_intent, 0.0f);
-            local_server_sync_to_client(&g.local_server);
-            g.ghost_outpost_slot_count--;
-        } else {
-            g.ghost_pending_transfer = false;
-            g.ghost_outpost_active = false;
-            set_notice("Outpost design transferred.");
-        }
-    }
 
     /* Detect one-shot actions for prediction suppression and network send */
     bool has_action = intent->interact || intent->service_sell ||
@@ -607,7 +509,8 @@ void submit_input(const input_intent_t *intent, float dt) {
         intent->upgrade_hold || intent->upgrade_tractor ||
         intent->place_outpost || intent->buy_scaffold_kit ||
         intent->buy_product || intent->hail ||
-        intent->release_tow || intent->add_plan;
+        intent->release_tow || intent->add_plan ||
+        intent->create_planned_outpost || intent->cancel_planned_outpost;
 
     if (has_action)
         g.action_predict_timer = 0.5f;
