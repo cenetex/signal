@@ -75,8 +75,6 @@ typedef struct {
     uint8_t mining_level;
     uint8_t hold_level;
     uint8_t tractor_level;
-    bool has_scaffold_kit;
-    int scaffold_kit_type;
     float cargo[COMMODITY_COUNT];
     uint8_t nearby_fragments;
     uint8_t tractor_fragments;

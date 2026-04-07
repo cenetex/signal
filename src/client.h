@@ -135,11 +135,6 @@ typedef struct {
     /* --- Episode & Music --- */
     episode_state_t episode;
     music_state_t music;
-    /* --- Build mode --- */
-    bool placing_outpost;    /* undocked: outpost placement (legacy) */
-    bool build_overlay;      /* docked: module build menu open */
-    int build_ring;          /* selected ring in build overlay (1 or 2) */
-    int build_slot;          /* selected port on ring (-1 = ring itself) */
     /* --- Scaffold placement reticle (when towing a scaffold) --- */
     bool placement_reticle_active;
     int placement_target_station;  /* station index, -1 = none */

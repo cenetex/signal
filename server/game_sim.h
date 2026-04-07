@@ -90,13 +90,8 @@ typedef struct {
     int8_t place_target_station;
     int8_t place_target_ring;
     int8_t place_target_slot;
-    bool place_module;          /* attach scaffold kit as module at own station */
     bool buy_scaffold_kit;
     module_type_t scaffold_kit_module; /* what module type the kit builds */
-    bool build_module;
-    module_type_t build_module_type;
-    uint8_t build_ring;       /* target ring (1 or 2) */
-    uint8_t build_slot;       /* target port (0-7, or 0xFF for ring itself) */
     bool buy_product;
     commodity_t buy_commodity;
     int mining_target_hint;  /* client's hover_asteroid, -1 = none */
@@ -174,7 +169,6 @@ bool can_place_outpost(const world_t *w, vec2 pos);
 void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type);
 void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int ring, int slot);
 void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *ship);
-int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos);
 int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner);
 bool world_save(const world_t *w, const char *path);
 bool world_load(world_t *w, const char *path);

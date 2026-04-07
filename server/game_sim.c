@@ -497,116 +497,51 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     }
 }
 
-/* Place an outpost at pos using scaffold kit from cargo.
- * Returns the station slot index on success, -1 on failure.
- * Must NOT be called in player_only_mode (client prediction). */
-int try_place_outpost(world_t *w, server_player_t *sp, vec2 pos) {
-    if (w->player_only_mode) return -1;
-    if (sp->docked) return -1;
-    if (!sp->ship.has_scaffold_kit) return -1;
-    if (!can_place_outpost(w, pos)) return -1;
-
-    /* Find free slot */
-    int slot = -1;
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        if (!station_exists(&w->stations[s])) { slot = s; break; }
-    }
-    if (slot < 0) return -1;
-
-    station_t *st = &w->stations[slot];
-    memset(st, 0, sizeof(*st));
-    /* Generate a name from the position hash */
-    {
-        static const char *prefixes[] = {
-            /* distance/direction */
-            "Far", "Deep", "Outer", "Edge", "Inner", "High", "Low",
-            "Near", "Mid", "Upper", "Lower", "North", "South",
-            /* void/emptiness */
-            "Void", "Drift", "Pale", "Dim", "Faint", "Thin", "Hollow",
-            "Blank", "Null", "Silent", "Still", "Quiet", "Hush",
-            /* material/industrial */
-            "Iron", "Rust", "Ash", "Slag", "Ore", "Copper", "Tin",
-            "Lead", "Salt", "Flint", "Basalt", "Granite", "Cobalt",
-            "Carbon", "Nickel", "Sulfur", "Zinc",
-            /* temperature/light */
-            "Cold", "Dark", "Red", "Black", "Grey", "White", "Burnt",
-            "Ember", "Cinder", "Frost", "Char",
-            /* mood/frontier */
-            "Grim", "Last", "Lost", "Worn", "Lone", "Stark", "Bleak",
-            "Gaunt", "Bare", "Stern", "Hard", "Grit", "Dusk", "Dawn",
-            "Wane", "Rift", "Brink", "Fringe", "Verge", "Scarp",
-            /* celestial */
-            "Sol", "Arc", "Zenith", "Nadir", "Apex", "Nova", "Vega",
-            "Polar", "Umbra", "Halo", "Corona", "Nebula",
-            /* structural */
-            "Bolt", "Rivet", "Weld", "Truss", "Strut", "Keel",
-            "Anvil", "Hammer", "Crucible",
-        };
-        static const char *suffixes[] = {
-            /* position/geography */
-            "Reach", "Point", "Gate", "Rock", "Ridge", "Ledge",
-            "Spur", "Pike", "Notch", "Gap", "Pass", "Shelf",
-            "Rim", "Crest", "Bluff", "Mesa", "Knoll", "Butte",
-            /* structure/settlement */
-            "Anchor", "Post", "Haven", "Hold", "Watch", "Keep",
-            "Fort", "Camp", "Rest", "Berth", "Dock", "Pier",
-            "Mooring", "Station", "Depot", "Outpost",
-            /* industrial */
-            "Forge", "Yard", "Works", "Mill", "Foundry", "Smelter",
-            "Refinery", "Quarry", "Pit", "Mine", "Shaft", "Kiln",
-            "Furnace", "Press", "Crucible",
-            /* light/signal */
-            "Light", "Mark", "Beacon", "Signal", "Relay", "Spark",
-            "Flare", "Pulse", "Lantern", "Lamp",
-            /* water/well (frontier) */
-            "Well", "Spring", "Basin", "Cistern", "Trough",
-            /* path/boundary */
-            "Cairn", "Marker", "Waypoint", "Crossing", "Threshold",
-            "Border", "Margin", "Line", "Terminus",
-            /* shelter */
-            "Hollow", "Shelter", "Cove", "Nook", "Pocket", "Nest",
-        };
-        enum { NUM_PREFIXES = sizeof(prefixes) / sizeof(prefixes[0]) };
-        enum { NUM_SUFFIXES = sizeof(suffixes) / sizeof(suffixes[0]) };
-        uint32_t h = (uint32_t)(pos.x * 7.13f) ^ (uint32_t)(pos.y * 13.37f) ^ (uint32_t)slot;
-        h ^= h >> 16; h *= 0x45d9f3bu; h ^= h >> 16;
-        int pi = (int)(h % NUM_PREFIXES);
-        int si = (int)((h >> 8) % NUM_SUFFIXES);
-        snprintf(st->name, sizeof(st->name), "%s %s", prefixes[pi], suffixes[si]);
-    }
-    st->pos = pos;
-    st->radius = OUTPOST_RADIUS;
-    st->dock_radius = OUTPOST_DOCK_RADIUS;
-    st->signal_range = OUTPOST_SIGNAL_RANGE;
-    st->scaffold = true;
-    st->scaffold_progress = 0.0f;
-    add_module_at(st, MODULE_DOCK, 0, 0xFF);
-    add_module_at(st, MODULE_SIGNAL_RELAY, 0, 0xFF);
-    rebuild_station_services(st);
-
-    /* Generate supply contract for outpost construction */
-    for (int k = 0; k < MAX_CONTRACTS; k++) {
-        if (!w->contracts[k].active) {
-            w->contracts[k] = (contract_t){
-                .active = true, .action = CONTRACT_TRACTOR,
-                .station_index = (uint8_t)slot,
-                .commodity = COMMODITY_FRAME,
-                .quantity_needed = SCAFFOLD_MATERIAL_NEEDED,
-                .base_price = 23.0f, .age = 0.0f,
-                .target_index = -1, .claimed_by = -1,
-            };
-            break;
-        }
-    }
-
-    emit_event(w, (sim_event_t){
-        .type = SIM_EVENT_OUTPOST_PLACED,
-        .player_id = sp->id,
-        .outpost_placed = { .slot = slot },
-    });
-    SIM_LOG("[sim] player %d placed outpost at (%.0f, %.0f) in slot %d\n",
-            sp->id, pos.x, pos.y, slot);
-    return slot;
+/* Generate a frontier-flavored name from a world position hash.
+ * Used by tow-founded outposts. */
+static void generate_outpost_name(char *out, size_t out_size, vec2 pos, int slot) {
+    static const char *prefixes[] = {
+        "Far", "Deep", "Outer", "Edge", "Inner", "High", "Low", "Near",
+        "Mid", "Upper", "Lower", "North", "South",
+        "Void", "Drift", "Pale", "Dim", "Faint", "Thin", "Hollow",
+        "Blank", "Null", "Silent", "Still", "Quiet", "Hush",
+        "Iron", "Rust", "Ash", "Slag", "Ore", "Copper", "Tin",
+        "Lead", "Salt", "Flint", "Basalt", "Granite", "Cobalt",
+        "Carbon", "Nickel", "Sulfur", "Zinc",
+        "Cold", "Dark", "Red", "Black", "Grey", "White", "Burnt",
+        "Ember", "Cinder", "Frost", "Char",
+        "Grim", "Last", "Lost", "Worn", "Lone", "Stark", "Bleak",
+        "Gaunt", "Bare", "Stern", "Hard", "Grit", "Dusk", "Dawn",
+        "Wane", "Rift", "Brink", "Fringe", "Verge", "Scarp",
+        "Sol", "Arc", "Zenith", "Nadir", "Apex", "Nova", "Vega",
+        "Polar", "Umbra", "Halo", "Corona", "Nebula",
+        "Bolt", "Rivet", "Weld", "Truss", "Strut", "Keel",
+        "Anvil", "Hammer", "Crucible",
+    };
+    static const char *suffixes[] = {
+        "Reach", "Point", "Gate", "Rock", "Ridge", "Ledge",
+        "Spur", "Pike", "Notch", "Gap", "Pass", "Shelf",
+        "Rim", "Crest", "Bluff", "Mesa", "Knoll", "Butte",
+        "Anchor", "Post", "Haven", "Hold", "Watch", "Keep",
+        "Fort", "Camp", "Rest", "Berth", "Dock", "Pier",
+        "Mooring", "Station", "Depot", "Outpost",
+        "Forge", "Yard", "Works", "Mill", "Foundry", "Smelter",
+        "Refinery", "Quarry", "Pit", "Mine", "Shaft", "Kiln",
+        "Furnace", "Press", "Crucible",
+        "Light", "Mark", "Beacon", "Signal", "Relay", "Spark",
+        "Flare", "Pulse", "Lantern", "Lamp",
+        "Well", "Spring", "Basin", "Cistern", "Trough",
+        "Cairn", "Marker", "Waypoint", "Crossing", "Threshold",
+        "Border", "Margin", "Line", "Terminus",
+        "Hollow", "Shelter", "Cove", "Nook", "Pocket", "Nest",
+    };
+    enum { NUM_PREFIXES = sizeof(prefixes) / sizeof(prefixes[0]) };
+    enum { NUM_SUFFIXES = sizeof(suffixes) / sizeof(suffixes[0]) };
+    uint32_t h = (uint32_t)(pos.x * 7.13f) ^ (uint32_t)(pos.y * 13.37f) ^ (uint32_t)slot;
+    h ^= h >> 16; h *= 0x45d9f3bu; h ^= h >> 16;
+    int pi = (int)(h % NUM_PREFIXES);
+    int si = (int)((h >> 8) % NUM_SUFFIXES);
+    snprintf(out, out_size, "%s %s", prefixes[pi], suffixes[si]);
 }
 
 static bool point_within_signal_margin(const world_t *w, vec2 pos, float margin) {
@@ -2668,7 +2603,7 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
         if (slot >= 0) {
             station_t *st = &w->stations[slot];
             memset(st, 0, sizeof(*st));
-            snprintf(st->name, sizeof(st->name), "Outpost %d", slot);
+            generate_outpost_name(st->name, sizeof(st->name), sc->pos, slot);
             st->pos = sc->pos;
             st->radius = OUTPOST_RADIUS;
             st->dock_radius = OUTPOST_DOCK_RADIUS;
@@ -3038,32 +2973,10 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             }
         }
     }
-    /* Module placement: attach scaffold kit to own station */
-    if (intent->place_module && !sp->docked && sp->ship.has_scaffold_kit
-        && sp->nearby_station >= 3 && sp->in_dock_range) {
-        station_t *st = &w->stations[sp->nearby_station];
-        if (st->module_count < MAX_MODULES_PER_STATION) {
-            begin_module_construction(w, st, sp->nearby_station, sp->ship.scaffold_kit_type);
-            sp->ship.has_scaffold_kit = false;
-            SIM_LOG("[sim] player %d placed %s scaffold at station %d\n",
-                    sp->id, module_type_name(sp->ship.scaffold_kit_type), sp->nearby_station);
-        }
+    /* Outpost / module placement via towed scaffold + reticle. */
+    if (intent->place_outpost && !sp->docked && sp->ship.towed_scaffold >= 0) {
+        place_towed_scaffold(w, sp);
         return;
-    }
-    /* Outpost placement: towed scaffold takes priority over old kit flow */
-    if (intent->place_outpost && !sp->docked) {
-        if (sp->ship.towed_scaffold >= 0) {
-            place_towed_scaffold(w, sp);
-            return;
-        }
-        /* Legacy: scaffold kit placement (will be removed) */
-        if (sp->ship.has_scaffold_kit) {
-            vec2 forward = v2_from_angle(sp->ship.angle);
-            vec2 place_pos = v2_add(sp->ship.pos, v2_scale(forward, 150.0f));
-            int slot = try_place_outpost(w, sp, place_pos);
-            if (slot >= 0) sp->ship.has_scaffold_kit = false;
-            return;
-        }
     }
     if (intent->interact) {
         if (sp->docked) { launch_ship(w, sp); return; }
@@ -3088,63 +3001,6 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     }
     if (!sp->docked) return;
     station_t *docked_st = &w->stations[sp->current_station];
-    /* Module construction: player requests to build a module */
-    if (intent->build_module && !w->player_only_mode) {
-        int target_ring = (int)intent->build_ring;
-        int target_slot = (int)intent->build_slot;
-        if (target_ring < 1) target_ring = 1;
-        if (target_ring >= MAX_RING_COUNT) target_ring = MAX_RING_COUNT - 1;
-
-        if (intent->build_module_type == MODULE_RING) {
-            /* Building a new ring */
-            float cost = module_credit_cost(MODULE_RING);
-            if (sp->ship.credits >= cost
-                && !station_has_ring(docked_st, target_ring)
-                && docked_st->module_count < MAX_MODULES_PER_STATION
-                && (target_ring == 1 || ring_has_dock(docked_st, target_ring - 1))) {
-                spend_credits(&sp->ship, cost);
-                begin_module_construction_at(w, docked_st, sp->current_station, MODULE_RING, target_ring, 0xFF);
-            }
-        } else {
-            /* Building a module at a specific port */
-            float cost = module_credit_cost(intent->build_module_type);
-            bool slot_free = true;
-            for (int m = 0; m < docked_st->module_count; m++) {
-                if (docked_st->modules[m].ring == target_ring && docked_st->modules[m].slot == target_slot) {
-                    slot_free = false;
-                    break;
-                }
-            }
-            /* Ring 1: slot 0 = relay (auto), slot 1 = dock only, slot 2 = player choice */
-            bool ring1_ok = true;
-            if (target_ring == 1) {
-                if (target_slot == 0)
-                    ring1_ok = false; /* relay is pre-placed */
-                else if (target_slot == 1 && intent->build_module_type != MODULE_DOCK)
-                    ring1_ok = false;
-            }
-            /* Every ring must have at least one dock for a gap.
-             * If this would fill the last slot and the ring has no dock,
-             * only allow it if this IS a dock. */
-            bool dock_ok = true;
-            if (target_ring >= 2 && intent->build_module_type != MODULE_DOCK) {
-                int filled = ring_module_count(docked_st, target_ring);
-                int capacity = RING_PORT_COUNT[target_ring];
-                if (filled + 1 >= capacity && !ring_has_dock(docked_st, target_ring))
-                    dock_ok = false; /* must reserve last slot for a dock */
-            }
-            if (sp->ship.credits >= cost
-                && ring1_ok && dock_ok
-                && station_has_ring(docked_st, target_ring)
-                && docked_st->module_count < MAX_MODULES_PER_STATION
-                && target_slot >= 0 && target_slot < RING_PORT_COUNT[target_ring]
-                && slot_free) {
-                spend_credits(&sp->ship, cost);
-                begin_module_construction_at(w, docked_st, sp->current_station,
-                                            intent->build_module_type, target_ring, target_slot);
-            }
-        }
-    }
     if (intent->service_sell) {
         /* Deliver to scaffolds/modules first, then sell remaining */
         step_scaffold_delivery(w, sp);
@@ -3381,9 +3237,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->input.upgrade_hold = false;
     sp->input.upgrade_tractor = false;
     sp->input.place_outpost = false;
-    sp->input.place_module = false;
     sp->input.buy_scaffold_kit = false;
-    sp->input.build_module = false;
     sp->input.buy_product = false;
     sp->input.hail = false;
     sp->input.release_tow = false;

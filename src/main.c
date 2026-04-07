@@ -338,7 +338,7 @@ static void onboarding_per_frame(void) {
         for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
             if (LOCAL_PLAYER.ship.cargo[c] > 0.5f) { onboarding_mark_bought(); break; }
     }
-    if (!g.onboarding.got_scaffold && LOCAL_PLAYER.ship.has_scaffold_kit)
+    if (!g.onboarding.got_scaffold && LOCAL_PLAYER.ship.towed_scaffold >= 0)
         onboarding_mark_got_scaffold();
     if (!g.onboarding.placed_outpost) {
         for (int s = 3; s < MAX_STATIONS; s++)
@@ -349,8 +349,8 @@ static void onboarding_per_frame(void) {
 static void episode_per_frame(void) {
     if (episode_is_active(&g.episode)) return;
 
-    /* Ep 3: Scaffold — currently holding a scaffold kit */
-    if (!g.episode.watched[3] && LOCAL_PLAYER.ship.has_scaffold_kit)
+    /* Ep 3: Scaffold — currently towing a scaffold */
+    if (!g.episode.watched[3] && LOCAL_PLAYER.ship.towed_scaffold >= 0)
         episode_trigger(&g.episode, 3);
 
     /* Ep 4, 5, 7, 8 are now event-driven (see process_events) */
@@ -395,8 +395,6 @@ static void sim_step(float dt) {
         /* Just docked — reset to overview (or construction for scaffolds) */
         const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
         g.station_tab = STATION_TAB_STATUS;
-        g.build_overlay = false;
-        g.placing_outpost = false;
         /* Clear blueprint pip if we docked at the blueprint station */
         if (g.nav_pip_is_blueprint) {
             float d = sqrtf(v2_dist_sq(st->pos, g.nav_pip_pos));
@@ -661,20 +659,6 @@ static void render_world(void) {
             g.commission_cr, g.commission_cg, g.commission_cb, alpha);
         draw_circle_outline(g.commission_pos, flash_r * 0.6f, 16,
             g.commission_cr * 0.8f, g.commission_cg * 0.8f, g.commission_cb * 0.8f, alpha * 0.6f);
-    }
-    if (g.placing_outpost && !LOCAL_PLAYER.docked) {
-        vec2 forward = v2_from_angle(LOCAL_PLAYER.ship.angle);
-        vec2 target = v2_add(LOCAL_PLAYER.ship.pos, v2_scale(forward, 150.0f));
-        bool valid = can_place_outpost(&g.world, target);
-        float cr = valid ? 0.3f : 0.9f;
-        float cg = valid ? 0.9f : 0.2f;
-        float cb = valid ? 0.5f : 0.2f;
-        float pulse = 0.5f + 0.3f * sinf(g.world.time * 4.0f);
-        draw_circle_outline(target, OUTPOST_RADIUS, 18, cr, cg, cb, pulse);
-        draw_circle_outline(target, OUTPOST_DOCK_RADIUS, 24, cr * 0.6f, cg * 0.6f, cb * 0.6f, pulse * 0.5f);
-        /* Crosshair */
-        draw_segment(v2_add(target, v2(-20.0f, 0.0f)), v2_add(target, v2(20.0f, 0.0f)), cr, cg, cb, pulse * 0.7f);
-        draw_segment(v2_add(target, v2(0.0f, -20.0f)), v2_add(target, v2(0.0f, 20.0f)), cr, cg, cb, pulse * 0.7f);
     }
 
     /* --- Batched asteroid rendering with frustum culling + LOD --- */

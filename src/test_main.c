@@ -1027,7 +1027,6 @@ TEST(test_roundtrip_player_ship) {
     sp.ship.cargo[COMMODITY_CUPRITE_ORE] = 12.5f;
     sp.ship.cargo[COMMODITY_CRYSTAL_ORE] = 8.0f;
     sp.ship.cargo[COMMODITY_FERRITE_INGOT] = 20.0f;
-    sp.ship.has_scaffold_kit = true;
 
     uint8_t buf[128];
     int len = serialize_player_ship(buf, 3, &sp);
@@ -1042,7 +1041,7 @@ TEST(test_roundtrip_player_ship) {
     ASSERT_EQ_INT(buf[12], 3);   /* mining_level */
     ASSERT_EQ_INT(buf[13], 2);   /* hold_level */
     ASSERT_EQ_INT(buf[14], 1);   /* tractor_level */
-    ASSERT_EQ_INT(buf[15], 1);   /* has_scaffold_kit */
+    ASSERT_EQ_INT(buf[15], 0);   /* reserved (was has_scaffold_kit) */
     ASSERT_EQ_FLOAT(read_f32_le(&buf[16]), 45.0f, 0.1f);   /* ferrite ore */
     ASSERT_EQ_FLOAT(read_f32_le(&buf[16 + 3*4]), 20.0f, 0.1f); /* ferrite ingot */
 }
@@ -1169,14 +1168,12 @@ TEST(test_bug14_player_ship_syncs_all_cargo) {
     sp.ship.cargo[COMMODITY_CRYSTAL_ORE] = 30.0f;
     sp.ship.cargo[COMMODITY_FERRITE_INGOT] = 5.0f;
     sp.ship.cargo[COMMODITY_CUPRITE_INGOT] = 3.0f;
-    sp.ship.has_scaffold_kit = true;
     uint8_t buf[128];
     int len = serialize_player_ship(buf, 0, &sp);
     ASSERT(len == PLAYER_SHIP_SIZE);
     /* Verify ingot cargo round-trips */
     ASSERT_EQ_FLOAT(read_f32_le(&buf[16 + COMMODITY_FERRITE_INGOT * 4]), 5.0f, 0.1f);
     ASSERT_EQ_FLOAT(read_f32_le(&buf[16 + COMMODITY_CUPRITE_INGOT * 4]), 3.0f, 0.1f);
-    ASSERT_EQ_INT(buf[15], 1); /* scaffold kit */
 }
 
 /* Bug 15: server STATE message size must match expected layout.
@@ -3228,18 +3225,41 @@ TEST(test_save_header_golden_bytes) {
     remove("/tmp/test_header.sav");
 }
 
+/* Test helper: place an outpost via the new tow flow without doing the full
+ * tow physics. Spawns a scaffold near `pos`, attaches it to the player,
+ * and runs place_towed_scaffold via place_outpost intent. */
+static int test_place_outpost_via_tow(world_t *w, server_player_t *sp, vec2 pos) {
+    int sidx = spawn_scaffold(w, MODULE_SIGNAL_RELAY, pos, sp->id);
+    if (sidx < 0) return -1;
+    sp->ship.towed_scaffold = (int16_t)sidx;
+    w->scaffolds[sidx].state = SCAFFOLD_TOWING;
+    w->scaffolds[sidx].towed_by = sp->id;
+    sp->input.place_outpost = true;
+    sp->input.place_target_station = -1;
+    sp->input.place_target_ring = -1;
+    sp->input.place_target_slot = -1;
+    world_sim_step(w, SIM_DT);
+    /* Find the new outpost (slot >= 3) */
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        if (station_exists(&w->stations[s])
+            && fabsf(w->stations[s].pos.x - pos.x) < 5.0f
+            && fabsf(w->stations[s].pos.y - pos.y) < 5.0f) {
+            return s;
+        }
+    }
+    return -1;
+}
+
 TEST(test_save_load_preserves_player_outpost) {
     world_t w = {0};
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;  /* must be undocked to place */
-    w.players[0].ship.has_scaffold_kit = true;
-    w.players[0].ship.scaffold_kit_type = MODULE_SIGNAL_RELAY;
     w.players[0].ship.credits = 1000.0f;
     /* Place outpost within signal range of station 0 but >800 units away */
     vec2 pos = v2(2000.0f, -2400.0f);
-    int slot = try_place_outpost(&w, &w.players[0], pos);
+    int slot = test_place_outpost_via_tow(&w, &w.players[0], pos);
     ASSERT(slot >= 0);
     ASSERT(station_exists(&w.stations[slot]));
     ASSERT(w.stations[slot].scaffold);
@@ -3334,9 +3354,9 @@ TEST(test_outpost_extends_signal_range) {
     w.players[0].connected = true;
     w.players[0].docked = false;
     w.players[0].ship.credits = 1000.0f;
-    w.players[0].ship.has_scaffold_kit = true;
+    
 
-    int slot = try_place_outpost(&w, &w.players[0], outpost_pos);
+    int slot = test_place_outpost_via_tow(&w, &w.players[0], outpost_pos);
     ASSERT(slot >= 3);
     /* Scaffold doesn't provide signal — only the parent refinery covers this point */
     ASSERT(signal_strength_at(&w, outpost_pos) > 0.0f);
@@ -3362,14 +3382,13 @@ TEST(test_disconnected_station_goes_dark) {
     ASSERT(w.stations[2].signal_connected);
 
     /* Place an outpost within signal range of station 0 */
-    server_player_t sp = {0};
-    player_init_ship(&sp, &w);
-    sp.connected = true;
-    sp.ship.credits = 10000.0f;
-    sp.docked = false;
-    sp.ship.has_scaffold_kit = true;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].ship.credits = 10000.0f;
+    w.players[0].docked = false;
+
     vec2 outpost_pos = v2_add(w.stations[0].pos, v2(5000.0f, 0.0f));
-    int slot = try_place_outpost(&w, &sp, outpost_pos);
+    int slot = test_place_outpost_via_tow(&w, &w.players[0], outpost_pos);
     ASSERT(slot >= 0);
     /* Finish construction */
     w.stations[slot].scaffold_progress = 1.0f;
@@ -3405,42 +3424,35 @@ TEST(test_outpost_requires_undocked) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].ship.credits = 1000.0f;
-    w.players[0].ship.has_scaffold_kit = true;
+    
 
     /* Docked — should fail */
     w.players[0].docked = true;
-    int slot = try_place_outpost(&w, &w.players[0], v2(500.0f, -240.0f));
+    int slot = test_place_outpost_via_tow(&w, &w.players[0], v2(500.0f, -240.0f));
     ASSERT_EQ_INT(slot, -1);
 
     /* Undocked — should succeed */
     w.players[0].docked = false;
-    slot = try_place_outpost(&w, &w.players[0], v2(500.0f, -240.0f));
+    slot = test_place_outpost_via_tow(&w, &w.players[0], v2(500.0f, -240.0f));
     ASSERT(slot >= 3);
 }
 
-TEST(test_outpost_requires_scaffold_kit) {
-    world_t w = {0};
-    world_reset(&w);
-    player_init_ship(&w.players[0], &w);
-    w.players[0].connected = true;
-    w.players[0].docked = false;
-    w.players[0].ship.has_scaffold_kit = false; /* No kit */
-    int slot = try_place_outpost(&w, &w.players[0], v2_add(w.stations[0].pos, v2(500.0f, 0.0f)));
-    ASSERT_EQ_INT(slot, -1);
-}
-
-TEST(test_outpost_skipped_in_prediction) {
+TEST(test_outpost_requires_towed_scaffold) {
+    /* Without a towed scaffold, place_outpost intent is a no-op. */
     world_t w = {0};
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
     w.players[0].ship.credits = 1000.0f;
-    w.players[0].ship.has_scaffold_kit = true;
-    w.player_only_mode = true; /* Simulate client prediction */
-    int slot = try_place_outpost(&w, &w.players[0], v2_add(w.stations[0].pos, v2(500.0f, 0.0f)));
-    ASSERT_EQ_INT(slot, -1);
-    w.player_only_mode = false;
+    /* No spawn_scaffold call — ship has no towed_scaffold */
+    w.players[0].input.place_outpost = true;
+    world_sim_step(&w, SIM_DT);
+    /* No new outpost should exist */
+    bool any_new = false;
+    for (int s = 3; s < MAX_STATIONS; s++)
+        if (station_exists(&w.stations[s])) { any_new = true; break; }
+    ASSERT(!any_new);
 }
 
 TEST(test_outpost_min_distance) {
@@ -3450,9 +3462,9 @@ TEST(test_outpost_min_distance) {
     w.players[0].connected = true;
     w.players[0].docked = false;
     w.players[0].ship.credits = 1000.0f;
-    w.players[0].ship.has_scaffold_kit = true;
+    
     /* Too close to Prospect Refinery at (0,-2400) — within OUTPOST_MIN_DISTANCE (800) */
-    int slot = try_place_outpost(&w, &w.players[0], v2_add(w.stations[0].pos, v2(500.0f, 0.0f)));
+    int slot = test_place_outpost_via_tow(&w, &w.players[0], v2_add(w.stations[0].pos, v2(500.0f, 0.0f)));
     ASSERT_EQ_INT(slot, -1);
 }
 
@@ -4342,10 +4354,10 @@ TEST(test_scaffold_snap_to_slot) {
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
     w.players[0].docked = false;
-    w.players[0].ship.has_scaffold_kit = true;
+    
     w.players[0].ship.credits = 1000.0f;
     vec2 outpost_pos = v2_add(w.stations[0].pos, v2(3000.0f, 0.0f));
-    int outpost = try_place_outpost(&w, &w.players[0], outpost_pos);
+    int outpost = test_place_outpost_via_tow(&w, &w.players[0], outpost_pos);
     ASSERT(outpost >= 3);
     /* Activate the outpost so it can accept scaffolds */
     w.stations[outpost].scaffold = false;
@@ -4405,10 +4417,10 @@ TEST(test_scaffold_full_pipeline) {
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
     w.players[0].docked = false;
-    w.players[0].ship.has_scaffold_kit = true;
+    
     w.players[0].ship.credits = 1000.0f;
     vec2 outpost_pos = v2_add(w.stations[0].pos, v2(3000.0f, 0.0f));
-    int outpost = try_place_outpost(&w, &w.players[0], outpost_pos);
+    int outpost = test_place_outpost_via_tow(&w, &w.players[0], outpost_pos);
     ASSERT(outpost >= 3);
     w.stations[outpost].scaffold = false;
     w.stations[outpost].scaffold_progress = 1.0f;
@@ -4739,8 +4751,7 @@ int main(void) {
     /* test_outpost_upgrade_to_refinery — not implemented, tracked in backlog */
     RUN(test_disconnected_station_goes_dark);
     RUN(test_outpost_requires_undocked);
-    RUN(test_outpost_requires_scaffold_kit);
-    RUN(test_outpost_skipped_in_prediction);
+    RUN(test_outpost_requires_towed_scaffold);
     RUN(test_outpost_min_distance);
 
     printf("\nBug regression (bugs 88-90):\n");

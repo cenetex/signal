@@ -468,9 +468,6 @@ void draw_station_services(const station_ui_state_t* ui) {
         }
     }
 
-    /* Legacy build_overlay flag — always cleared now that shipyard is a tab */
-    if (g.build_overlay) g.build_overlay = false;
-
     /* Auto-switch away from SHIPYARD tab if station has none */
     if (g.station_tab == STATION_TAB_SHIPYARD
         && !station_has_module(ui->station, MODULE_SHIPYARD)) {
@@ -635,13 +632,6 @@ void draw_station_services(const station_ui_state_t* ui) {
                     sdtx_printf("x%d", amt);
                     ly += 11.0f;
                 }
-                if (ship->has_scaffold_kit) {
-                    has_cargo = true;
-                    sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(ly));
-                    sdtx_color3b(255, 221, 119);
-                    sdtx_puts("Scaffold Kit");
-                    ly += 11.0f;
-                }
                 if (!has_cargo) {
                     sdtx_color3b(90, 105, 130);
                     sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(ly));
@@ -674,12 +664,10 @@ void draw_station_services(const station_ui_state_t* ui) {
                 /* Build / launch hint */
                 sdtx_color3b(90, 115, 110);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                if (ship->has_scaffold_kit)
-                    sdtx_puts("[B] Build  [E] Launch + deploy");
-                else if (station_has_module(ui->station, MODULE_BLUEPRINT_DESK))
-                    sdtx_printf("[B] Scaffold kit %dcr  [E] Launch", (int)OUTPOST_CREDIT_COST);
+                if (station_has_module(ui->station, MODULE_SHIPYARD))
+                    sdtx_puts("[B] Shipyard tab  [E] Launch");
                 else
-                    sdtx_puts("[B] Build module  [E] Launch");
+                    sdtx_puts("[E] Launch");
             }
         }
         break;

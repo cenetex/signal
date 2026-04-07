@@ -324,7 +324,7 @@ static inline int serialize_player_ship(uint8_t *buf, uint8_t id, const server_p
     buf[12] = (uint8_t)sp->ship.mining_level;
     buf[13] = (uint8_t)sp->ship.hold_level;
     buf[14] = (uint8_t)sp->ship.tractor_level;
-    buf[15] = sp->ship.has_scaffold_kit ? (1 + (uint8_t)sp->ship.scaffold_kit_type) : 0;
+    buf[15] = 0; /* reserved (was has_scaffold_kit) */
     for (int c = 0; c < COMMODITY_COUNT; c++)
         write_f32_le(&buf[16 + c * 4], sp->ship.cargo[c]);
     int off = 16 + COMMODITY_COUNT * 4;
@@ -424,7 +424,7 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
             intent->buy_scaffold_kit = true;
             break;
         case NET_ACTION_PLACE_MODULE:
-            intent->place_module = true;
+            /* Legacy: no-op (module placement now via towed scaffold + reticle) */
             break;
         case NET_ACTION_HAIL:
             intent->hail = true;
@@ -436,10 +436,9 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
             intent->reset = true;
             break;
         default:
-            /* NET_ACTION_BUILD_MODULE + module_type (9..9+MODULE_COUNT) */
+            /* NET_ACTION_BUILD_MODULE + module_type — legacy, no-op */
             if (action >= NET_ACTION_BUILD_MODULE && action < NET_ACTION_BUILD_MODULE + MODULE_COUNT) {
-                intent->build_module = true;
-                intent->build_module_type = (module_type_t)(action - NET_ACTION_BUILD_MODULE);
+                /* deprecated: module placement is via towed scaffold reticle */
             }
             /* NET_ACTION_BUY_PRODUCT + commodity (30..30+COMMODITY_COUNT) */
             else if (action >= NET_ACTION_BUY_PRODUCT && action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT) {

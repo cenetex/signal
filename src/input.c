@@ -104,8 +104,6 @@ input_intent_t sample_input_intent(void) {
     intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
     intent.release_tow = is_key_pressed(SAPP_KEYCODE_R);
     intent.reset = is_key_pressed(SAPP_KEYCODE_X) && !LOCAL_PLAYER.docked;
-    /* Safety: close build overlay if not docked */
-    if (!LOCAL_PLAYER.docked) g.build_overlay = false;
     /* Safety: clear placement reticle if no longer towing or now docked */
     if (g.placement_reticle_active &&
         (LOCAL_PLAYER.docked || LOCAL_PLAYER.ship.towed_scaffold < 0)) {
@@ -161,8 +159,6 @@ input_intent_t sample_input_intent(void) {
     }
     /* E key: activate targeted module, or dock/launch if no target */
     if (is_key_pressed(SAPP_KEYCODE_E)) {
-        g.build_overlay = false;
-        g.placing_outpost = false;
         if (LOCAL_PLAYER.docked) {
             /* Launch */
             intent.interact = true;
@@ -394,9 +390,6 @@ input_intent_t sample_input_intent(void) {
                 }
             }
         }
-    } else if (g.placing_outpost) {
-        /* Legacy — cancel if somehow entered */
-        g.placing_outpost = false;
     } else if (is_key_pressed(SAPP_KEYCODE_B)) {
         if (LOCAL_PLAYER.docked) {
             /* B shortcut: jump to shipyard tab if available */
@@ -449,9 +442,8 @@ void submit_input(const input_intent_t *intent, float dt) {
     bool has_action = intent->interact || intent->service_sell ||
         intent->service_repair || intent->upgrade_mining ||
         intent->upgrade_hold || intent->upgrade_tractor ||
-        intent->place_outpost || intent->place_module ||
-        intent->buy_scaffold_kit ||
-        intent->build_module || intent->buy_product || intent->hail ||
+        intent->place_outpost || intent->buy_scaffold_kit ||
+        intent->buy_product || intent->hail ||
         intent->release_tow;
 
     if (has_action)
@@ -477,12 +469,8 @@ void submit_input(const input_intent_t *intent, float dt) {
             g.pending_net_action = 7;
         else if (intent->place_outpost)
             g.pending_net_action = 8;
-        else if (intent->place_module)
-            g.pending_net_action = NET_ACTION_PLACE_MODULE;
         else if (intent->buy_scaffold_kit && (uint8_t)intent->scaffold_kit_module < MODULE_COUNT)
             g.pending_net_action = NET_ACTION_BUY_SCAFFOLD_TYPED + (uint8_t)intent->scaffold_kit_module;
-        else if (intent->build_module && (uint8_t)intent->build_module_type < MODULE_COUNT)
-            g.pending_net_action = NET_ACTION_BUILD_MODULE + (uint8_t)intent->build_module_type;
         else if (intent->buy_product && (uint8_t)intent->buy_commodity < COMMODITY_COUNT)
             g.pending_net_action = NET_ACTION_BUY_PRODUCT + (uint8_t)intent->buy_commodity;
         else if (intent->hail)
