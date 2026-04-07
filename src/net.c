@@ -426,8 +426,22 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_DEATH:
-        if (len >= 2 && net_state.callbacks.on_death) {
-            net_state.callbacks.on_death(data[1]);
+        if (len >= 38 && net_state.callbacks.on_death) {
+            uint8_t pid = data[1];
+            float px = read_f32_le(&data[2]);
+            float py = read_f32_le(&data[6]);
+            float vx = read_f32_le(&data[10]);
+            float vy = read_f32_le(&data[14]);
+            float ang = read_f32_le(&data[18]);
+            float ore = read_f32_le(&data[22]);
+            float earned = read_f32_le(&data[26]);
+            float spent = read_f32_le(&data[30]);
+            int asteroids = (int)read_f32_le(&data[34]);
+            net_state.callbacks.on_death(pid, px, py, vx, vy, ang,
+                                         ore, earned, spent, asteroids);
+        } else if (len >= 2 && net_state.callbacks.on_death) {
+            /* Legacy short packet — fall back to position-less death. */
+            net_state.callbacks.on_death(data[1], 0, 0, 0, 0, 0, 0, 0, 0, 0);
         }
         break;
 

@@ -633,6 +633,9 @@ typedef struct {
             float credits_earned;
             float credits_spent;
             int asteroids_fractured;
+            float pos_x, pos_y;     /* where the ship died (pre-respawn) */
+            float vel_x, vel_y;     /* velocity at moment of death */
+            float angle;            /* hull orientation at moment of death */
         } death;
         struct { int station; int module_type; } scaffold_ready;
     };

@@ -23,8 +23,11 @@ void begin_player_state_batch(void);
 void apply_remote_player_state(const NetPlayerState* state);
 void apply_remote_player_ship(const NetPlayerShipState* state);
 
-/* Death event from server. */
-void on_remote_death(uint8_t player_id);
+/* Death event from server — drives the death cinematic. */
+void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
+                     float vel_x, float vel_y, float angle,
+                     float ore_mined, float credits_earned, float credits_spent,
+                     int asteroids_fractured);
 
 /* World time sync from server. */
 void on_remote_world_time(float server_time);

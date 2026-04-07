@@ -573,17 +573,20 @@ void hull_fog_init(void) {
  * hull drops. Crossfades between four pre-baked radial textures so each
  * threshold gets its own clear-hole radius. */
 static void draw_hull_warning_overlay(void) {
-    if (LOCAL_PLAYER.docked) return;
+    /* Drawn whenever the smoothed fog intensity is non-zero. While docked
+     * the tint shifts to blue and the intensity recedes naturally as the
+     * dock repairs the hull. */
     if (!hull_fog.initialized) return;
-    float frac = LOCAL_PLAYER.ship.hull / fmaxf(1.0f, ship_max_hull(&LOCAL_PLAYER.ship));
-    if (frac < 0.0f) frac = 0.0f;
-    if (frac > 1.0f) frac = 1.0f;
-    if (frac >= 0.99f) return; /* spotless hull, no fog at all */
+
+    /* Use the smoothed fog accumulator (advanced in advance_simulation_frame). */
+    float damage = g.fog_intensity;
+    if (damage < 0.0f) damage = 0.0f;
+    if (damage > 1.0f) damage = 1.0f;
+    if (damage <= 0.01f) return; /* spotless hull, no fog at all */
 
     float screen_w = ui_screen_width();
     float screen_h = ui_screen_height();
     float t = g.world.time;
-    float damage = 1.0f - frac;
 
     /* Continuous tier value in [0, HULL_FOG_LEVELS - 1]. Lerp the texture
      * pair around it so transitions are smooth across the whole range. */
@@ -597,11 +600,12 @@ static void draw_hull_warning_overlay(void) {
     if (blend < 0.0f) blend = 0.0f;
     if (blend > 1.0f) blend = 1.0f;
 
-    /* Heartbeat pulse: speeds up and bites harder as damage rises. */
-    float beat = 1.5f + damage * 7.0f;
-    float thump = sinf(t * beat) + 0.6f * sinf(t * beat * 2.0f);
-    if (thump < 0.0f) thump = 0.0f;
-    float pulse = (0.85f + 0.15f * damage) + 0.18f * thump * (0.5f + damage);
+    /* Lava-lamp wobble — slow, gentle, multi-frequency drift. No spikes,
+     * no strobing. Bites slightly harder as damage rises. */
+    float wob = 0.55f * sinf(t * 0.43f)
+              + 0.30f * sinf(t * 0.71f + 1.3f)
+              + 0.15f * sinf(t * 1.07f + 2.7f);
+    float pulse = 0.92f + 0.08f * wob + 0.04f * damage;
 
     /* Dark blood red tint. Brightens slightly with damage. */
     float r = 0.20f + 0.25f * damage;
@@ -651,6 +655,12 @@ static void draw_hull_warning_overlay(void) {
 
 void draw_hud_panels(void) {
     if (g.death_screen_timer > 0.0f) return;
+    /* Suppress HUD chrome during the death cinematic — we want a clean
+     * shot of the wreckage and stats menu. */
+    if (g.death_cinematic.active || g.death_cinematic.menu_alpha > 0.001f) {
+        draw_hull_warning_overlay();
+        return;
+    }
     draw_hull_warning_overlay();
     float top_x = 0.0f;
     float top_y = 0.0f;
@@ -750,17 +760,22 @@ void draw_hud(void) {
     float screen_w = ui_screen_width();
     float screen_h = ui_screen_height();
 
-    /* --- Death screen overlay --- */
-    if (g.death_screen_timer > 0.0f) {
-        /* Dark overlay */
-        float alpha = fminf(g.death_screen_timer, 1.0f);
+    /* --- Death screen overlay (driven by the death cinematic) --- */
+    if (g.death_cinematic.active || g.death_cinematic.menu_alpha > 0.001f) {
+        float menu_alpha = g.death_cinematic.menu_alpha;
+        if (menu_alpha < 0.0f) menu_alpha = 0.0f;
+        if (menu_alpha > 1.0f) menu_alpha = 1.0f;
+        float scrim = 0.55f * menu_alpha;
+
+        /* Dark scrim under the menu */
         sgl_begin_quads();
-        sgl_c4f(0.0f, 0.0f, 0.0f, 0.7f * alpha);
+        sgl_c4f(0.0f, 0.0f, 0.0f, scrim);
         sgl_v2f(0.0f, 0.0f);
         sgl_v2f(screen_w, 0.0f);
         sgl_v2f(screen_w, screen_h);
         sgl_v2f(0.0f, screen_h);
         sgl_end();
+        float alpha = menu_alpha;
 
         /* Use 1:1 canvas so text fills the screen */
         sdtx_canvas(screen_w, screen_h);
@@ -768,18 +783,19 @@ void draw_hud(void) {
         float cx = screen_w * 0.5f;
         float cy = screen_h * 0.5f;
         float cell = 8.0f;
+        uint8_t a8 = (uint8_t)(alpha * 255.0f);
 
         /* Title */
         const char *title = "SHIP DESTROYED";
         float title_w = (float)strlen(title) * cell;
         sdtx_pos((cx - title_w * 0.5f) / cell, (cy - 60.0f) / cell);
-        sdtx_color3b(255, 80, 60);
+        sdtx_color4b(255, 80, 60, a8);
         sdtx_puts(title);
 
         /* Stats */
         float row = (cy - 16.0f) / cell;
         float left = (cx - 110.0f) / cell;
-        sdtx_color3b(180, 180, 180);
+        sdtx_color4b(180, 180, 180, a8);
 
         sdtx_pos(left, row);
         sdtx_printf("Ore mined:     %8.0f", g.death_ore_mined);
@@ -790,18 +806,20 @@ void draw_hud(void) {
         row += 2.5f;
 
         sdtx_pos(left, row);
-        sdtx_color3b(120, 200, 120);
+        sdtx_color4b(120, 200, 120, a8);
         sdtx_printf("Credits earned:%8.0f", g.death_credits_earned);
         row += 2.5f;
 
         sdtx_pos(left, row);
-        sdtx_color3b(200, 120, 120);
+        sdtx_color4b(200, 120, 120, a8);
         sdtx_printf("Credits spent: %8.0f", g.death_credits_spent);
         row += 4.0f;
 
-        /* Prompt */
-        sdtx_color3b(120, 120, 120);
-        const char *prompt = "respawning...";
+        /* Prompt — RED, hard FLASH on/off */
+        float flash = (sinf(g.world.time * 7.0f) > 0.0f) ? 1.0f : 0.25f;
+        uint8_t pa = (uint8_t)(flash * (float)a8);
+        sdtx_color4b(255, 30, 20, pa);
+        const char *prompt = "[ E ] launch";
         float prompt_w = (float)strlen(prompt) * cell;
         sdtx_pos((cx - prompt_w * 0.5f) / cell, row);
         sdtx_puts(prompt);

@@ -2,6 +2,7 @@
  * net_sync.c -- Multiplayer network state synchronization for the
  * Signal Space Miner client.
  */
+#include <stdlib.h>  /* rand, RAND_MAX */
 #include "net_sync.h"
 #include "input.h"   /* set_notice() */
 #include "episode.h"
@@ -219,20 +220,9 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
      * confirmed yet.  Skip overwriting mutable ship state to prevent
      * flicker from stale PLAYER_SHIP messages. */
     if (g.action_predict_timer <= 0.0f) {
-        /* Detect death: hull was critical, now full + docked + cargo cleared */
-        if (sp->ship.hull <= FLOAT_EPSILON && state->hull > 10.0f && state->docked
-            && g.death_screen_timer <= 0.0f) {
-            g.death_screen_timer = 4.0f;
-            g.death_ore_mined = sp->ship.stat_ore_mined;
-            g.death_credits_earned = sp->ship.stat_credits_earned;
-            g.death_credits_spent = sp->ship.stat_credits_spent;
-            g.death_asteroids_fractured = sp->ship.stat_asteroids_fractured;
-            /* Reset run stats */
-            sp->ship.stat_ore_mined = 0.0f;
-            sp->ship.stat_credits_earned = 0.0f;
-            sp->ship.stat_credits_spent = 0.0f;
-            sp->ship.stat_asteroids_fractured = 0;
-        }
+        /* Death detection moved to on_remote_death (NET_MSG_DEATH).
+         * The packet now carries position + stats so the cinematic can
+         * anchor at the wreckage. */
         sp->ship.hull = state->hull;
         sp->ship.credits = state->credits;
         sp->ship.mining_level = (int)state->mining_level;
@@ -333,13 +323,37 @@ const NetPlayerState* net_get_interpolated_players(void) {
     return result;
 }
 
-void on_remote_death(uint8_t player_id) {
+void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
+                     float vel_x, float vel_y, float angle,
+                     float ore_mined, float credits_earned, float credits_spent,
+                     int asteroids_fractured) {
     if ((int)player_id != g.local_player_slot) return;
-    g.death_screen_timer = 4.0f;
-    g.death_ore_mined = LOCAL_PLAYER.ship.stat_ore_mined;
-    g.death_credits_earned = LOCAL_PLAYER.ship.stat_credits_earned;
-    g.death_credits_spent = LOCAL_PLAYER.ship.stat_credits_spent;
-    g.death_asteroids_fractured = LOCAL_PLAYER.ship.stat_asteroids_fractured;
+    g.death_ore_mined = ore_mined;
+    g.death_credits_earned = credits_earned;
+    g.death_credits_spent = credits_spent;
+    g.death_asteroids_fractured = asteroids_fractured;
+    /* Fire the cinematic at the death position. */
+    g.death_cinematic.active = true;
+    g.death_cinematic.phase = 0;
+    g.death_cinematic.pos = v2(pos_x, pos_y);
+    g.death_cinematic.vel = v2(vel_x, vel_y);
+    g.death_cinematic.angle = angle;
+    g.death_cinematic.spin = (((float)rand() / (float)RAND_MAX) - 0.5f) * 3.0f;
+    g.death_cinematic.age = 0.0f;
+    g.death_cinematic.menu_alpha = 0.0f;
+    for (int i = 0; i < 8; i++) {
+        float ang = ((float)i / 8.0f) * 2.0f * PI_F + (float)(i * 13 % 7) * 0.15f;
+        float speed = 30.0f + (float)((i * 7 + 3) % 5) * 12.0f;
+        g.death_cinematic.fragments[i][0] = 0.0f;
+        g.death_cinematic.fragments[i][1] = 0.0f;
+        g.death_cinematic.fragments[i][2] = cosf(ang) * speed + vel_x * 0.6f;
+        g.death_cinematic.fragments[i][3] = sinf(ang) * speed + vel_y * 0.6f;
+        g.death_cinematic.fragments[i][4] = ang;
+        g.death_cinematic.fragments[i][5] = ((float)((i * 19 + 7) % 11) - 5.0f) * 0.6f;
+    }
+    /* Suppress the legacy detector path */
+    g.death_screen_timer = 0.0f;
+    g.death_screen_max = 0.0f;
     episode_trigger(&g.episode, 9);
     memset(g.episode.watched, 0, sizeof(g.episode.watched));
     g.episode.stations_visited = 0;

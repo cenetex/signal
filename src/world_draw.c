@@ -881,6 +881,9 @@ void draw_ship_tractor_field(void) {
 }
 
 void draw_ship(void) {
+    /* While the death cinematic is rolling, the player ship is hidden —
+     * we draw the wreckage at the death position via draw_death_wreckage. */
+    if (g.death_cinematic.active) return;
     sgl_push_matrix();
     sgl_translate(LOCAL_PLAYER.ship.pos.x, LOCAL_PLAYER.ship.pos.y, 0.0f);
     sgl_rotate(LOCAL_PLAYER.ship.angle, 0.0f, 0.0f, 1.0f);
@@ -913,6 +916,99 @@ void draw_ship(void) {
     draw_segment(v2(-9.0f, -8.0f), v2(-15.0f, -17.0f), 0.55f, 0.72f, 0.92f, 0.85f);
 
     sgl_pop_matrix();
+}
+
+/* Death wreckage — drawn at the cinematic position when the player has
+ * died. Charred core hull + 8 shards drifting outward, plus an ember
+ * burst right after the impact. */
+void draw_death_wreckage(void) {
+    if (!g.death_cinematic.active) return;
+    float age = g.death_cinematic.age;
+    vec2 wp = g.death_cinematic.pos;
+
+    /* --- Initial explosion flare (first ~0.4s) --- */
+    if (age < 0.4f) {
+        float flare = 1.0f - (age / 0.4f);
+        float r1 = 50.0f + (1.0f - flare) * 60.0f;
+        draw_circle_outline(wp, r1, 24, 1.0f, 0.55f, 0.20f, flare * 0.85f);
+        draw_circle_outline(wp, r1 * 0.6f, 18, 1.0f, 0.85f, 0.40f, flare * 0.60f);
+        draw_circle_outline(wp, r1 * 0.3f, 14, 1.0f, 0.95f, 0.70f, flare * 0.40f);
+    }
+
+    /* --- Charred hull core: a few jagged triangles, scorched colors --- */
+    sgl_push_matrix();
+    sgl_translate(wp.x, wp.y, 0.0f);
+    sgl_rotate(g.death_cinematic.angle, 0.0f, 0.0f, 1.0f);
+
+    /* Scorched body — broken outline */
+    sgl_c4f(0.32f, 0.10f, 0.06f, 0.95f);
+    sgl_begin_triangles();
+    sgl_v2f(8.0f, 0.0f);
+    sgl_v2f(-10.0f, 9.0f);
+    sgl_v2f(-12.0f, -3.0f);
+    sgl_end();
+    sgl_c4f(0.20f, 0.06f, 0.04f, 0.95f);
+    sgl_begin_triangles();
+    sgl_v2f(6.0f, -2.0f);
+    sgl_v2f(-12.0f, -3.0f);
+    sgl_v2f(-9.0f, -10.0f);
+    sgl_end();
+    /* Cracked outline */
+    sgl_c4f(0.55f, 0.18f, 0.10f, 0.85f);
+    sgl_begin_lines();
+    sgl_v2f(8.0f, 0.0f); sgl_v2f(-10.0f, 9.0f);
+    sgl_v2f(-10.0f, 9.0f); sgl_v2f(-12.0f, -3.0f);
+    sgl_v2f(-12.0f, -3.0f); sgl_v2f(-9.0f, -10.0f);
+    sgl_v2f(-9.0f, -10.0f); sgl_v2f(8.0f, 0.0f);
+    /* Fissures */
+    sgl_v2f(-2.0f, 4.0f); sgl_v2f(2.0f, -4.0f);
+    sgl_v2f(0.0f, 0.0f); sgl_v2f(-7.0f, -2.0f);
+    sgl_end();
+    sgl_pop_matrix();
+
+    /* --- Shards drifting outward --- */
+    for (int i = 0; i < 8; i++) {
+        float *f = g.death_cinematic.fragments[i];
+        float fx = wp.x + f[0];
+        float fy = wp.y + f[1];
+        sgl_push_matrix();
+        sgl_translate(fx, fy, 0.0f);
+        sgl_rotate(f[4], 0.0f, 0.0f, 1.0f);
+        /* Shard color tints darker over time */
+        float fade = expf(-age * 0.25f);
+        sgl_c4f(0.45f * fade, 0.18f * fade, 0.10f * fade, 0.85f);
+        sgl_begin_triangles();
+        float sz = 4.5f + (float)(i % 3) * 0.8f;
+        sgl_v2f(sz, 0.0f);
+        sgl_v2f(-sz * 0.6f, sz * 0.7f);
+        sgl_v2f(-sz * 0.6f, -sz * 0.7f);
+        sgl_end();
+        /* Faint trailing line */
+        sgl_c4f(0.30f * fade, 0.10f * fade, 0.05f * fade, 0.45f);
+        sgl_begin_lines();
+        sgl_v2f(-sz * 0.6f, 0.0f);
+        sgl_v2f(-sz * 2.0f, 0.0f);
+        sgl_end();
+        sgl_pop_matrix();
+    }
+
+    /* --- Smoldering embers near the wreckage --- */
+    for (int i = 0; i < 5; i++) {
+        float t = g.world.time;
+        float seed = (float)i * 1.7f;
+        float ang = t * 0.6f + seed;
+        float r = 12.0f + 4.0f * sinf(t * 1.3f + seed);
+        float ex = wp.x + cosf(ang) * r;
+        float ey = wp.y + sinf(ang) * r - age * 6.0f; /* embers drift up */
+        float a = 0.4f + 0.3f * sinf(t * 5.0f + seed * 3.0f);
+        if (a < 0.0f) a = 0.0f;
+        sgl_begin_triangles();
+        sgl_c4f(1.0f, 0.55f, 0.15f, a);
+        sgl_v2f(ex - 1.0f, ey - 1.0f);
+        sgl_v2f(ex + 1.0f, ey - 1.0f);
+        sgl_v2f(ex,        ey + 2.0f);
+        sgl_end();
+    }
 }
 
 void draw_npc_ship(const npc_ship_t* npc) {

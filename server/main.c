@@ -653,8 +653,26 @@ int main(void) {
                     if (ev->type == SIM_EVENT_DEATH) {
                         int pid = ev->player_id;
                         if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected && world.players[pid].conn) {
-                            uint8_t msg[] = { NET_MSG_DEATH, (uint8_t)pid };
-                            ws_send(world.players[pid].conn, msg, 2);
+                            /* Death packet now carries position + stats so
+                             * the client cinematic anchors at the wreckage
+                             * before the server-side respawn moves the
+                             * ship. Layout:
+                             * [type:1][pid:1][px:f32][py:f32][vx:f32][vy:f32]
+                             * [ang:f32][ore:f32][earned:f32][spent:f32]
+                             * [asteroids:f32] = 38 bytes */
+                            uint8_t msg[38];
+                            msg[0] = NET_MSG_DEATH;
+                            msg[1] = (uint8_t)pid;
+                            write_f32_le(&msg[2],  ev->death.pos_x);
+                            write_f32_le(&msg[6],  ev->death.pos_y);
+                            write_f32_le(&msg[10], ev->death.vel_x);
+                            write_f32_le(&msg[14], ev->death.vel_y);
+                            write_f32_le(&msg[18], ev->death.angle);
+                            write_f32_le(&msg[22], ev->death.ore_mined);
+                            write_f32_le(&msg[26], ev->death.credits_earned);
+                            write_f32_le(&msg[30], ev->death.credits_spent);
+                            write_f32_le(&msg[34], (float)ev->death.asteroids_fractured);
+                            ws_send(world.players[pid].conn, msg, sizeof(msg));
                             /* Also send updated ship state (hull restored, docked) */
                             uint8_t buf[PLAYER_SHIP_SIZE + 4];
                             int len = serialize_player_ship(buf, (uint8_t)pid, &world.players[pid]);

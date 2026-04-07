@@ -127,11 +127,32 @@ typedef struct {
     vec2 commission_pos;        /* world position of activated module */
     float commission_cr, commission_cg, commission_cb; /* module color */
     /* --- Death screen --- */
-    float death_screen_timer;
+    float death_screen_timer;       /* legacy countdown — unused while cinematic.active */
+    float death_screen_max;
     float death_ore_mined;
     float death_credits_earned;
     float death_credits_spent;
     int death_asteroids_fractured;
+    /* Smoothed fog intensity (0..1). Tracks 1 - (hull/max_hull) but
+     * eases in/out so the vignette rolls smoothly instead of snapping. */
+    float fog_intensity;
+    /* Death cinematic — anchors the camera to a shattered wreckage at
+     * the place the player died, regardless of where the server has
+     * respawned the actual ship. Phases:
+     *   0 = drift (aftermath, no UI)
+     *   1 = stats (death menu visible, prompt to launch)
+     *   2 = closing (cinematic releases, normal flow resumes) */
+    struct {
+        bool active;
+        int phase;
+        vec2 pos;
+        vec2 vel;
+        float angle;
+        float spin;
+        float age;
+        float menu_alpha;  /* eased toward 1 in phase 1 */
+        float fragments[8][6]; /* per-shard: dx, dy, vx, vy, angle, spin */
+    } death_cinematic;
     /* --- Episode & Music --- */
     episode_state_t episode;
     music_state_t music;
@@ -158,6 +179,10 @@ typedef struct {
     /* --- Camera --- */
     vec2 camera_pos;         /* smoothed camera position */
     bool camera_initialized;
+    float camera_drift_timer; /* seconds the ship has been outside the deadzone — drives lazy recenter */
+    int camera_station_side;  /* +1 = anchor station on right, -1 = left, 0 = unset */
+    int camera_station_v_side; /* +1 = bottom, -1 = top, 0 = unset */
+    int camera_station_index;  /* which station the cinematic is anchored to */
     /* Screen shake on damage. amplitude decays exponentially each frame. */
     float screen_shake;      /* current shake amplitude in world units */
     float screen_shake_seed; /* monotonic phase for noise lookup */

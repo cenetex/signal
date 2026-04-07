@@ -28,6 +28,7 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby);
 void draw_station_rings(const station_t* station, bool is_current, bool is_nearby);
 void draw_ship_tractor_field(void);
 void draw_ship(void);
+void draw_death_wreckage(void);
 void draw_npc_ship(const npc_ship_t* npc);
 void draw_npc_mining_beam(const npc_ship_t* npc);
 void draw_npc_ships(void);

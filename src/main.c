@@ -269,13 +269,40 @@ static void process_sim_events(const sim_events_t *events) {
             }
             case SIM_EVENT_DEATH:
                 if (ev->player_id == g.local_player_slot) {
-                    g.death_screen_timer = 4.0f;
                     g.death_ore_mined = ev->death.ore_mined;
                     g.death_credits_earned = ev->death.credits_earned;
                     g.death_credits_spent = ev->death.credits_spent;
                     g.death_asteroids_fractured = ev->death.asteroids_fractured;
+                    /* Snapshot the wreckage at the death position. The
+                     * server has already respawned the ship at a station,
+                     * so we use the position from the death event payload
+                     * (captured before the server moved the hull). */
+                    g.death_cinematic.active = true;
+                    g.death_cinematic.phase = 0;
+                    g.death_cinematic.pos = v2(ev->death.pos_x, ev->death.pos_y);
+                    g.death_cinematic.vel = v2(ev->death.vel_x, ev->death.vel_y);
+                    g.death_cinematic.angle = ev->death.angle;
+                    g.death_cinematic.spin = (((float)rand() / (float)RAND_MAX) - 0.5f) * 3.0f;
+                    g.death_cinematic.age = 0.0f;
+                    g.death_cinematic.menu_alpha = 0.0f;
+                    /* 8 shards radiating outward from the wreck. Each shard
+                     * starts at the ship origin with a randomized velocity
+                     * and spin. Components: [dx, dy, vx, vy, ang, spin]. */
+                    for (int i = 0; i < 8; i++) {
+                        float ang = ((float)i / 8.0f) * 2.0f * PI_F + (float)(i * 13 % 7) * 0.15f;
+                        float speed = 30.0f + (float)((i * 7 + 3) % 5) * 12.0f;
+                        g.death_cinematic.fragments[i][0] = 0.0f;
+                        g.death_cinematic.fragments[i][1] = 0.0f;
+                        g.death_cinematic.fragments[i][2] = cosf(ang) * speed + ev->death.vel_x * 0.6f;
+                        g.death_cinematic.fragments[i][3] = sinf(ang) * speed + ev->death.vel_y * 0.6f;
+                        g.death_cinematic.fragments[i][4] = ang;
+                        g.death_cinematic.fragments[i][5] = ((float)((i * 19 + 7) % 11) - 5.0f) * 0.6f;
+                    }
+                    /* Legacy timer kept for the auto-fade fallback path
+                     * but cinematic logic ignores it. */
+                    g.death_screen_timer = 0.0f;
+                    g.death_screen_max = 0.0f;
                     episode_trigger(&g.episode, 9); /* Ep 9: Death */
-                    /* Reset episode milestones — replay on next life */
                     memset(g.episode.watched, 0, sizeof(g.episode.watched));
                     g.episode.stations_visited = 0;
                     episode_save(&g.episode);
@@ -397,7 +424,84 @@ static void sim_step(float dt) {
     if (g.hail_timer > 0.0f)
         g.hail_timer = fmaxf(0.0f, g.hail_timer - dt);
 
-    /* Death screen countdown — block all input while active */
+    /* Smoothed fog intensity. Tracks 1 - hull/max_hull, but eases in
+     * (slow ramp up) and out (faster ramp down) so the vignette rolls
+     * cinematically. Forced to 1.0 while the death cinematic is active. */
+    {
+        float frac = LOCAL_PLAYER.ship.hull / fmaxf(1.0f, ship_max_hull(&LOCAL_PLAYER.ship));
+        if (frac < 0.0f) frac = 0.0f;
+        if (frac > 1.0f) frac = 1.0f;
+        float target = 1.0f - frac;
+        if (g.death_cinematic.active) target = 1.0f;
+        if (g.death_screen_timer > 0.0f) target = 1.0f;
+        /* In = ~1s ease, out = ~2s ease (recovery is more languid) */
+        float k = (target > g.fog_intensity) ? (1.0f - expf(-dt / 1.0f))
+                                              : (1.0f - expf(-dt / 2.0f));
+        g.fog_intensity += (target - g.fog_intensity) * k;
+    }
+
+    /* Death cinematic.
+     *   Phase 0 (drift): wreckage tumbles, fog rolls in. After 2s the
+     *      cinematic auto-advances to phase 1 — no input required.
+     *   Phase 1 (stats): the stat menu fades in over the wreckage.
+     *      Pressing E (after the menu has settled) releases the
+     *      cinematic and lets the same E press fall through to the
+     *      normal docked-launch handler.
+     *   Phase 2 (closing): cinematic.active is false but menu_alpha
+     *      decays back toward 0 so the stat screen visibly disappears. */
+    if (g.death_cinematic.active) {
+        if (g.death_cinematic.phase == 0 && g.death_cinematic.age >= 2.0f) {
+            g.death_cinematic.phase = 1;
+        }
+        if (g.death_cinematic.phase == 1 && g.death_cinematic.menu_alpha >= 0.85f
+            && is_key_pressed(SAPP_KEYCODE_E)) {
+            g.death_cinematic.active = false;
+            g.death_cinematic.phase = 2;
+            /* Don't consume the E press — normal input below picks it
+             * up and launches the (now-respawned) docked ship. */
+        }
+    }
+
+    /* Menu alpha — eases in during phase 1, eases out otherwise.
+     * Lives outside the active block so it keeps fading after release. */
+    {
+        float menu_target = (g.death_cinematic.active && g.death_cinematic.phase >= 1) ? 1.0f : 0.0f;
+        float mk = 1.0f - expf(-dt / 0.5f);
+        g.death_cinematic.menu_alpha += (menu_target - g.death_cinematic.menu_alpha) * mk;
+        if (g.death_cinematic.menu_alpha < 0.005f) g.death_cinematic.menu_alpha = 0.0f;
+    }
+
+    if (g.death_cinematic.active) {
+        g.death_cinematic.age += dt;
+        /* Wreckage hull drift with mild damping */
+        g.death_cinematic.pos.x += g.death_cinematic.vel.x * dt;
+        g.death_cinematic.pos.y += g.death_cinematic.vel.y * dt;
+        float damp = expf(-dt * 0.4f);
+        g.death_cinematic.vel.x *= damp;
+        g.death_cinematic.vel.y *= damp;
+        g.death_cinematic.angle += g.death_cinematic.spin * dt;
+        g.death_cinematic.spin *= expf(-dt * 0.2f);
+        /* Shards drift outward with damping */
+        for (int i = 0; i < 8; i++) {
+            float *f = g.death_cinematic.fragments[i];
+            f[0] += f[2] * dt;
+            f[1] += f[3] * dt;
+            f[2] *= expf(-dt * 0.6f);
+            f[3] *= expf(-dt * 0.6f);
+            f[4] += f[5] * dt;
+            f[5] *= expf(-dt * 0.3f);
+        }
+
+        /* Force-stop the ship at the station so it doesn't drift while
+         * we're showing the wreckage. (Server has it docked but cargo /
+         * hull updates may still arrive — we keep velocity zero locally.) */
+        LOCAL_PLAYER.ship.vel = v2(0.0f, 0.0f);
+
+        consume_pressed_input();
+        return;
+    }
+
+    /* Legacy death screen countdown (unused while cinematic is active) */
     if (g.death_screen_timer > 0.0f) {
         g.death_screen_timer = fmaxf(0.0f, g.death_screen_timer - dt);
         consume_pressed_input();
@@ -612,36 +716,110 @@ static void init(void) {
 static void render_world(void) {
     float half_w = sapp_widthf() * 0.5f;
     float half_h = sapp_heightf() * 0.5f;
-    vec2 ship = LOCAL_PLAYER.ship.pos;
-
-    /* Cinematic camera: target leads ahead of ship velocity,
-     * camera smoothly damps toward the target. No hard edges. */
+    /* Camera modes:
+     *   1. Death cinematic — anchor to wreckage, mild damping
+     *   2. Station encounter — lock the station to one side of the screen
+     *      (left or right) based on which way the player approached
+     *   3. Free flight — DEADZONE camera. The ship moves freely inside
+     *      a center deadzone. When it hits the edge of the deadzone the
+     *      camera latches to that edge and follows. Sustained high-speed
+     *      motion lazily recenters the camera onto the ship. */
     if (!g.camera_initialized) {
-        g.camera_pos = ship;
+        g.camera_pos = LOCAL_PLAYER.ship.pos;
         g.camera_initialized = true;
     }
+
     {
         float dt = 1.0f / 60.0f;
+        const station_t *anchor_station = NULL;
+        if (LOCAL_PLAYER.docked && LOCAL_PLAYER.current_station >= 0
+            && LOCAL_PLAYER.current_station < MAX_STATIONS)
+            anchor_station = &g.world.stations[LOCAL_PLAYER.current_station];
+        else if (LOCAL_PLAYER.nearby_station >= 0
+                 && LOCAL_PLAYER.nearby_station < MAX_STATIONS
+                 && station_exists(&g.world.stations[LOCAL_PLAYER.nearby_station]))
+            anchor_station = &g.world.stations[LOCAL_PLAYER.nearby_station];
 
-        /* Look-ahead: camera target leads ahead of ship velocity */
-        float lookahead = 0.8f; /* seconds of velocity to lead by */
-        vec2 target = v2_add(ship, v2_scale(LOCAL_PLAYER.ship.vel, lookahead));
+        if (g.death_cinematic.active) {
+            /* (1) DEATH — snap camera onto the wreckage. We use the
+             * cinematic age as a "first-frame" check: at age 0 the
+             * camera was potentially at the now-respawned ship's
+             * station, so jump straight to the wreckage. After that
+             * just track it directly (the wreckage drifts mildly). */
+            g.camera_pos = g.death_cinematic.pos;
+            g.camera_drift_timer = 0.0f;
+            g.camera_station_index = -1;
+        } else if (anchor_station) {
+            /* (2) STATION — lock the station to L/R + T/B side of the
+             * screen depending on which way the ship approached from.
+             * Latch the side once and hold so the camera doesn't flip
+             * if the player drifts past the station mid-encounter. */
+            int station_idx = (LOCAL_PLAYER.docked ? LOCAL_PLAYER.current_station : LOCAL_PLAYER.nearby_station);
+            if (g.camera_station_index != station_idx) {
+                g.camera_station_index = station_idx;
+                /* Snapshot side based on the ship→station vector at first
+                 * sight. If ship is left of station, station goes on the
+                 * right side of the screen (1/4 from right edge). */
+                g.camera_station_side = (LOCAL_PLAYER.ship.pos.x <= anchor_station->pos.x) ? +1 : -1;
+                g.camera_station_v_side = (LOCAL_PLAYER.ship.pos.y <= anchor_station->pos.y) ? +1 : -1;
+            }
+            /* Position station ~25% from the chosen edge. Target camera
+             * is shifted away from the station by that offset. */
+            float anchor_x_off = -(float)g.camera_station_side * half_w * 0.45f;
+            float anchor_y_off = -(float)g.camera_station_v_side * half_h * 0.30f;
+            vec2 target = v2(anchor_station->pos.x + anchor_x_off,
+                             anchor_station->pos.y + anchor_y_off);
+            float k = 1.0f - expf(-1.6f * dt);
+            g.camera_pos.x += (target.x - g.camera_pos.x) * k;
+            g.camera_pos.y += (target.y - g.camera_pos.y) * k;
+            g.camera_drift_timer = 0.0f;
+        } else {
+            /* (3) FREE FLIGHT — deadzone camera. */
+            g.camera_station_index = -1;
+            vec2 ship = LOCAL_PLAYER.ship.pos;
+            float dz_x = half_w * 0.45f;  /* deadzone half-width */
+            float dz_y = half_h * 0.40f;  /* deadzone half-height */
+            float dx = ship.x - g.camera_pos.x;
+            float dy = ship.y - g.camera_pos.y;
 
-        /* Exponential damping: smooth approach to target.
-         * Lower = floatier/more cinematic. 0.8 gives ~1.2s to catch up. */
-        float smoothing = 0.8f;
-        float t = 1.0f - expf(-smoothing * dt);
-        g.camera_pos.x += (target.x - g.camera_pos.x) * t;
-        g.camera_pos.y += (target.y - g.camera_pos.y) * t;
+            /* Edge follow: when the ship pushes past the deadzone edge,
+             * SMOOTHLY approach the latched position (ship sitting on
+             * the boundary) rather than snapping. */
+            float k = 1.0f - expf(-6.0f * dt);
+            if (dx >  dz_x) {
+                float target_x = ship.x - dz_x;
+                g.camera_pos.x += (target_x - g.camera_pos.x) * k;
+            }
+            if (dx < -dz_x) {
+                float target_x = ship.x + dz_x;
+                g.camera_pos.x += (target_x - g.camera_pos.x) * k;
+            }
+            if (dy >  dz_y) {
+                float target_y = ship.y - dz_y;
+                g.camera_pos.y += (target_y - g.camera_pos.y) * k;
+            }
+            if (dy < -dz_y) {
+                float target_y = ship.y + dz_y;
+                g.camera_pos.y += (target_y - g.camera_pos.y) * k;
+            }
 
-        /* Safety clamp: never let the ship leave the screen */
-        float max_drift_x = half_w * 0.7f;
-        float max_drift_y = half_h * 0.7f;
-        vec2 offset = v2_sub(ship, g.camera_pos);
-        if (offset.x > max_drift_x)  g.camera_pos.x = ship.x - max_drift_x;
-        if (offset.x < -max_drift_x) g.camera_pos.x = ship.x + max_drift_x;
-        if (offset.y > max_drift_y)  g.camera_pos.y = ship.y - max_drift_y;
-        if (offset.y < -max_drift_y) g.camera_pos.y = ship.y + max_drift_y;
+            /* Lazy recenter: if the ship has been outside the deadzone
+             * for >1.5s while moving fast, slowly drift the camera
+             * toward the ship so the framing eventually catches up. */
+            bool outside_dz = fabsf(dx) >= dz_x * 0.98f || fabsf(dy) >= dz_y * 0.98f;
+            float speed_sq = LOCAL_PLAYER.ship.vel.x * LOCAL_PLAYER.ship.vel.x
+                           + LOCAL_PLAYER.ship.vel.y * LOCAL_PLAYER.ship.vel.y;
+            if (outside_dz && speed_sq > 90.0f * 90.0f) {
+                g.camera_drift_timer += dt;
+            } else {
+                g.camera_drift_timer = 0.0f;
+            }
+            if (g.camera_drift_timer > 1.5f) {
+                float drift_k = 1.0f - expf(-0.8f * dt);
+                g.camera_pos.x += (ship.x - g.camera_pos.x) * drift_k;
+                g.camera_pos.y += (ship.y - g.camera_pos.y) * drift_k;
+            }
+        }
     }
     vec2 camera = g.camera_pos;
 
@@ -812,6 +990,7 @@ static void render_world(void) {
     draw_towed_tethers();
     draw_scaffold_tether();
     draw_ship();
+    draw_death_wreckage();
     draw_npc_ships();
     draw_remote_players(); /* Multiplayer: remote player ships */
     draw_callsigns();      /* Readable sdtx labels above local + remote ships */

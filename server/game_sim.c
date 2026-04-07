@@ -1769,6 +1769,11 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
             .credits_earned = sp->ship.stat_credits_earned,
             .credits_spent = sp->ship.stat_credits_spent,
             .asteroids_fractured = sp->ship.stat_asteroids_fractured,
+            .pos_x = sp->ship.pos.x,
+            .pos_y = sp->ship.pos.y,
+            .vel_x = sp->ship.vel.x,
+            .vel_y = sp->ship.vel.y,
+            .angle = sp->ship.angle,
         }
     });
     clear_ship_cargo(&sp->ship);
@@ -2785,6 +2790,36 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
                 sp->scan_module_index = -1; /* core */
                 sp->beam_end = v2_sub(st->pos, v2_scale(v2_norm(to_core), st->radius * 0.9f));
             }
+        }
+        /* Check structural rings — ray vs annulus. Each station ring
+         * is a thin band of girders at STATION_RING_RADIUS[r]. Cast the
+         * beam against each ring circle and pick the nearest entry point. */
+        for (int r = 1; r <= STATION_NUM_RINGS; r++) {
+            float rr = STATION_RING_RADIUS[r];
+            if (rr <= 0.0f) continue;
+            const float ring_thickness = 12.0f;
+            /* Ray-circle intersection: |muzzle + t*forward - st->pos|^2 = rr^2 */
+            vec2 oc = v2_sub(muzzle, st->pos);
+            float b_coef = v2_dot(oc, forward);
+            float c_coef = v2_dot(oc, oc) - rr * rr;
+            float disc = b_coef * b_coef - c_coef;
+            if (disc < 0.0f) continue;
+            float sq = sqrtf(disc);
+            float t_near = -b_coef - sq;
+            float t_far  = -b_coef + sq;
+            /* Choose the first positive intersection (entry point) */
+            float t_hit = (t_near > 0.0f) ? t_near : ((t_far > 0.0f) ? t_far : -1.0f);
+            if (t_hit < 0.0f || t_hit >= best_dist) continue;
+            /* Verify the hit is on the ring band, not just crossing the
+             * inner empty space (annulus check via distance from station). */
+            vec2 hit = v2_add(muzzle, v2_scale(forward, t_hit));
+            float hit_dist = v2_len(v2_sub(hit, st->pos));
+            if (fabsf(hit_dist - rr) > ring_thickness) continue;
+            best_dist = t_hit;
+            sp->scan_target_type = 1;
+            sp->scan_target_index = si;
+            sp->scan_module_index = -1;
+            sp->beam_end = hit;
         }
         /* Check individual modules */
         for (int mi = 0; mi < st->module_count; mi++) {
