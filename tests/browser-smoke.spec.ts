@@ -9,7 +9,11 @@ test.describe('Browser smoke tests', () => {
       if (msg.type() === 'error') consoleErrors.push(msg.text());
     });
 
-    const url = process.env.SMOKE_URL ? '/' : '/space_miner.html';
+    // Go to SMOKE_URL directly (not '/'), because Playwright's baseURL
+    // contributes its origin only — page.goto('/') against
+    // baseURL=https://signal.ratimics.com/play/ would land on the
+    // marketing root, which has no canvas.
+    const url = process.env.SMOKE_URL || '/space_miner.html';
     await page.goto(url);
 
     // Wait for the Emscripten canvas to appear
@@ -36,7 +40,11 @@ test.describe('Browser smoke tests', () => {
     const errors: string[] = [];
     page.on('pageerror', (err) => errors.push(err.message));
 
-    const url = process.env.SMOKE_URL ? '/' : '/space_miner.html';
+    // Go to SMOKE_URL directly (not '/'), because Playwright's baseURL
+    // contributes its origin only — page.goto('/') against
+    // baseURL=https://signal.ratimics.com/play/ would land on the
+    // marketing root, which has no canvas.
+    const url = process.env.SMOKE_URL || '/space_miner.html';
     await page.goto(url);
     const canvas = page.locator('canvas');
     await expect(canvas).toBeVisible({ timeout: 15_000 });
@@ -58,7 +66,11 @@ test.describe('Browser smoke tests', () => {
     const errors: string[] = [];
     page.on('pageerror', (err) => errors.push(err.message));
 
-    const url = process.env.SMOKE_URL ? '/' : '/space_miner.html';
+    // Go to SMOKE_URL directly (not '/'), because Playwright's baseURL
+    // contributes its origin only — page.goto('/') against
+    // baseURL=https://signal.ratimics.com/play/ would land on the
+    // marketing root, which has no canvas.
+    const url = process.env.SMOKE_URL || '/space_miner.html';
     await page.goto(url);
     const canvas = page.locator('canvas');
     await expect(canvas).toBeVisible({ timeout: 15_000 });

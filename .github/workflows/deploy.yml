@@ -40,6 +40,7 @@ jobs:
             --suppress=unusedFunction \
             --suppress='*:src/pl_mpeg.h' \
             --suppress='*:src/minimp3.h' \
+            --suppress='*:src/stb_image.h' \
             -I shared/ -I src/ -I server/ \
             src/*.c server/game_sim.c 2>&1
 

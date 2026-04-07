@@ -88,6 +88,7 @@ static void decode_chunk(music_state_t *m) {
         }
 
         int total_samples = samples * info.channels;
+        if (total_samples <= 0) continue; /* defensive: codec should never report this */
         if (audio_buf_free(m) < total_samples + 1024) break;
 
         float fbuf[MINIMP3_MAX_SAMPLES_PER_FRAME];
