@@ -4523,6 +4523,99 @@ TEST(test_scaffold_tow_speed_cap) {
     ASSERT(spd <= 60.0f); /* slightly above cap due to spring forces in single frame */
 }
 
+/* ================================================================== */
+/* Module schema (#280)                                               */
+/* ================================================================== */
+
+TEST(test_module_schema_basic_kinds) {
+    /* Each kind classification should be consistent */
+    ASSERT_EQ_INT(module_kind(MODULE_DOCK), MODULE_KIND_SERVICE);
+    ASSERT_EQ_INT(module_kind(MODULE_REPAIR_BAY), MODULE_KIND_SERVICE);
+    ASSERT_EQ_INT(module_kind(MODULE_SIGNAL_RELAY), MODULE_KIND_SERVICE);
+    ASSERT_EQ_INT(module_kind(MODULE_FURNACE), MODULE_KIND_PRODUCER);
+    ASSERT_EQ_INT(module_kind(MODULE_FRAME_PRESS), MODULE_KIND_PRODUCER);
+    ASSERT_EQ_INT(module_kind(MODULE_LASER_FAB), MODULE_KIND_PRODUCER);
+    ASSERT_EQ_INT(module_kind(MODULE_ORE_BUYER), MODULE_KIND_STORAGE);
+    ASSERT_EQ_INT(module_kind(MODULE_ORE_SILO), MODULE_KIND_STORAGE);
+    ASSERT_EQ_INT(module_kind(MODULE_SHIPYARD), MODULE_KIND_SHIPYARD);
+    /* Dead modules report NONE */
+    ASSERT_EQ_INT(module_kind(MODULE_INGOT_SELLER), MODULE_KIND_NONE);
+    ASSERT_EQ_INT(module_kind(MODULE_BLUEPRINT_DESK), MODULE_KIND_NONE);
+    ASSERT_EQ_INT(module_kind(MODULE_CONTRACT_BOARD), MODULE_KIND_NONE);
+    ASSERT_EQ_INT(module_kind(MODULE_RING), MODULE_KIND_NONE);
+}
+
+TEST(test_module_schema_producer_io) {
+    /* Producers have matching input/output commodities */
+    ASSERT_EQ_INT(module_schema_input(MODULE_FURNACE), COMMODITY_FERRITE_ORE);
+    ASSERT_EQ_INT(module_schema_output(MODULE_FURNACE), COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(module_schema_input(MODULE_FURNACE_CU), COMMODITY_CUPRITE_ORE);
+    ASSERT_EQ_INT(module_schema_output(MODULE_FURNACE_CU), COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(module_schema_input(MODULE_FRAME_PRESS), COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(module_schema_output(MODULE_FRAME_PRESS), COMMODITY_FRAME);
+    ASSERT_EQ_INT(module_schema_input(MODULE_LASER_FAB), COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(module_schema_output(MODULE_LASER_FAB), COMMODITY_LASER_MODULE);
+    /* Services have no input/output */
+    ASSERT_EQ_INT(module_schema_input(MODULE_DOCK), COMMODITY_COUNT);
+    ASSERT_EQ_INT(module_schema_output(MODULE_DOCK), COMMODITY_COUNT);
+}
+
+TEST(test_module_schema_valid_rings) {
+    /* Service modules can go anywhere */
+    ASSERT(module_valid_on_ring(MODULE_DOCK, 0));
+    ASSERT(module_valid_on_ring(MODULE_DOCK, 1));
+    ASSERT(module_valid_on_ring(MODULE_DOCK, 3));
+    ASSERT(module_valid_on_ring(MODULE_SIGNAL_RELAY, 0));
+    ASSERT(module_valid_on_ring(MODULE_SIGNAL_RELAY, 2));
+    /* Outer-only modules reject ring 0 */
+    ASSERT(!module_valid_on_ring(MODULE_FURNACE, 0));
+    ASSERT(module_valid_on_ring(MODULE_FURNACE, 1));
+    ASSERT(module_valid_on_ring(MODULE_FURNACE, 3));
+    /* Industrial modules need ring 2+ */
+    ASSERT(!module_valid_on_ring(MODULE_FRAME_PRESS, 1));
+    ASSERT(module_valid_on_ring(MODULE_FRAME_PRESS, 2));
+    ASSERT(module_valid_on_ring(MODULE_FRAME_PRESS, 3));
+    ASSERT(!module_valid_on_ring(MODULE_SHIPYARD, 1));
+    ASSERT(module_valid_on_ring(MODULE_SHIPYARD, 2));
+}
+
+TEST(test_module_schema_helpers) {
+    /* Boolean kind helpers */
+    ASSERT(module_is_producer(MODULE_FURNACE));
+    ASSERT(module_is_producer(MODULE_FRAME_PRESS));
+    ASSERT(!module_is_producer(MODULE_DOCK));
+    ASSERT(module_is_service(MODULE_DOCK));
+    ASSERT(module_is_service(MODULE_REPAIR_BAY));
+    ASSERT(!module_is_service(MODULE_FURNACE));
+    ASSERT(module_is_storage(MODULE_ORE_BUYER));
+    ASSERT(module_is_storage(MODULE_ORE_SILO));
+    ASSERT(module_is_shipyard(MODULE_SHIPYARD));
+    ASSERT(module_is_dead(MODULE_INGOT_SELLER));
+    ASSERT(module_is_dead(MODULE_BLUEPRINT_DESK));
+    ASSERT(module_is_dead(MODULE_CONTRACT_BOARD));
+    ASSERT(module_is_dead(MODULE_RING));
+    ASSERT(!module_is_dead(MODULE_FURNACE));
+}
+
+TEST(test_module_schema_build_costs_match) {
+    /* Schema build costs should match the existing lookup helpers
+     * (this verifies the schema is the same source of truth and won't
+     * cause behavior drift when production loops switch to it). */
+    ASSERT_EQ_FLOAT(module_schema(MODULE_FURNACE)->build_material,
+                    module_build_cost_lookup(MODULE_FURNACE), 0.01f);
+    ASSERT_EQ_FLOAT(module_schema(MODULE_FRAME_PRESS)->build_material,
+                    module_build_cost_lookup(MODULE_FRAME_PRESS), 0.01f);
+    ASSERT_EQ_FLOAT(module_schema(MODULE_SHIPYARD)->build_material,
+                    module_build_cost_lookup(MODULE_SHIPYARD), 0.01f);
+    /* Build commodity matches too */
+    ASSERT_EQ_INT(module_schema(MODULE_FURNACE)->build_commodity,
+                  module_build_material_lookup(MODULE_FURNACE));
+    ASSERT_EQ_INT(module_schema(MODULE_FURNACE_CU)->build_commodity,
+                  module_build_material_lookup(MODULE_FURNACE_CU));
+    ASSERT_EQ_INT(module_schema(MODULE_LASER_FAB)->build_commodity,
+                  module_build_material_lookup(MODULE_LASER_FAB));
+}
+
 TEST(test_save_preserves_pending_scaffolds) {
     /* Save/load round-trip should preserve shipyard pending orders,
      * per-module buffers, and active scaffolds. */
@@ -4848,6 +4941,13 @@ int main(void) {
     RUN(test_scaffold_full_pipeline);
     RUN(test_scaffold_ship_drag);
     RUN(test_save_preserves_pending_scaffolds);
+
+    printf("\nModule schema (#280):\n");
+    RUN(test_module_schema_basic_kinds);
+    RUN(test_module_schema_producer_io);
+    RUN(test_module_schema_valid_rings);
+    RUN(test_module_schema_helpers);
+    RUN(test_module_schema_build_costs_match);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
