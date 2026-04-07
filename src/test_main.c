@@ -4597,6 +4597,81 @@ TEST(test_module_schema_helpers) {
     ASSERT(!module_is_dead(MODULE_FURNACE));
 }
 
+TEST(test_module_flow_same_ring_transfer) {
+    /* Furnace produces ferrite ingots into output_buffer.
+     * Frame Press accepts ferrite ingots as input.
+     * On the same ring, material should flow at ~5/sec adjacent. */
+    world_t w = {0};
+    world_reset(&w);
+    /* Use Kepler (station 1) which has both furnace logic and ring layout.
+     * Find a furnace and a frame press by index. */
+    int furnace_idx = -1, press_idx = -1;
+    for (int i = 0; i < w.stations[1].module_count; i++) {
+        if (w.stations[1].modules[i].type == MODULE_FRAME_PRESS && press_idx < 0)
+            press_idx = i;
+    }
+    /* Manually create a furnace adjacent to the press if not present */
+    if (press_idx >= 0 && furnace_idx < 0) {
+        /* Add a furnace at the same ring as the press */
+        if (w.stations[1].module_count < MAX_MODULES_PER_STATION) {
+            int idx = w.stations[1].module_count++;
+            w.stations[1].modules[idx].type = MODULE_FURNACE;
+            w.stations[1].modules[idx].ring = w.stations[1].modules[press_idx].ring;
+            w.stations[1].modules[idx].slot = (uint8_t)
+                ((w.stations[1].modules[press_idx].slot + 1)
+                 % STATION_RING_SLOTS[w.stations[1].modules[press_idx].ring]);
+            w.stations[1].modules[idx].scaffold = false;
+            w.stations[1].modules[idx].build_progress = 1.0f;
+            furnace_idx = idx;
+        }
+    }
+    if (furnace_idx < 0 || press_idx < 0) return; /* setup failed, skip */
+
+    /* Seed the furnace's output with ferrite ingots */
+    w.stations[1].module_output[furnace_idx] = 10.0f;
+    w.stations[1].module_input[press_idx] = 0.0f;
+
+    /* Run one full second of sim */
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+
+    /* Material should have moved from furnace output to press input */
+    ASSERT(w.stations[1].module_output[furnace_idx] < 10.0f);
+    ASSERT(w.stations[1].module_input[press_idx] > 0.0f);
+    /* Total material conserved (modulo any consumption) */
+    float total = w.stations[1].module_output[furnace_idx]
+                + w.stations[1].module_input[press_idx];
+    ASSERT(total > 9.5f);
+}
+
+TEST(test_module_flow_does_not_overflow_capacity) {
+    /* Material should never exceed buffer capacity at the consumer. */
+    world_t w = {0};
+    world_reset(&w);
+    int furnace_idx = -1, press_idx = -1;
+    for (int i = 0; i < w.stations[1].module_count; i++) {
+        if (w.stations[1].modules[i].type == MODULE_FRAME_PRESS) press_idx = i;
+    }
+    if (press_idx < 0) return;
+    if (w.stations[1].module_count < MAX_MODULES_PER_STATION) {
+        int idx = w.stations[1].module_count++;
+        w.stations[1].modules[idx].type = MODULE_FURNACE;
+        w.stations[1].modules[idx].ring = w.stations[1].modules[press_idx].ring;
+        w.stations[1].modules[idx].slot = (uint8_t)
+            ((w.stations[1].modules[press_idx].slot + 1)
+             % STATION_RING_SLOTS[w.stations[1].modules[press_idx].ring]);
+        furnace_idx = idx;
+    }
+    if (furnace_idx < 0) return;
+
+    /* Seed a huge amount of output, run for many ticks */
+    w.stations[1].module_output[furnace_idx] = 1000.0f;
+    for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
+
+    /* Press input must not exceed its capacity */
+    float cap = module_buffer_capacity(MODULE_FRAME_PRESS);
+    ASSERT(w.stations[1].module_input[press_idx] <= cap + 0.01f);
+}
+
 TEST(test_module_schema_build_costs_match) {
     /* Schema build costs match the existing lookup helpers for ALL
      * non-dead modules. Once production code starts reading from the
@@ -4948,6 +5023,8 @@ int main(void) {
     RUN(test_module_schema_valid_rings);
     RUN(test_module_schema_helpers);
     RUN(test_module_schema_build_costs_match);
+    RUN(test_module_flow_same_ring_transfer);
+    RUN(test_module_flow_does_not_overflow_capacity);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
