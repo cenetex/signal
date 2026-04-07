@@ -90,6 +90,12 @@ typedef struct {
     int8_t place_target_station;
     int8_t place_target_ring;
     int8_t place_target_slot;
+    /* Planning mode: add a placement plan to a station. */
+    bool add_plan;
+    int8_t plan_station;
+    int8_t plan_ring;
+    int8_t plan_slot;
+    module_type_t plan_type;
     bool buy_scaffold_kit;
     module_type_t scaffold_kit_module; /* what module type the kit builds */
     bool buy_product;

@@ -87,6 +87,9 @@ input_intent_t sample_input_intent(void) {
     intent.place_target_station = -1;
     intent.place_target_ring = -1;
     intent.place_target_slot = -1;
+    intent.plan_station = -1;
+    intent.plan_ring = -1;
+    intent.plan_slot = -1;
 
     if (is_key_down(SAPP_KEYCODE_A) || is_key_down(SAPP_KEYCODE_LEFT)) {
         intent.turn += 1.0f;
@@ -316,20 +319,20 @@ input_intent_t sample_input_intent(void) {
             }
         }
     }
-    /* B key: build mode */
+    /* B / E: placement (tow mode) and planning (plan mode).
+     * Position picks the slot. B cycles MODULE TYPE in plan mode.
+     * In tow mode the type is fixed (scaffold you carry); B does nothing. */
     if (!LOCAL_PLAYER.docked && LOCAL_PLAYER.ship.towed_scaffold >= 0) {
-        /* Towing a scaffold: reticle is always on. Two modes:
-         * - Targets in range → cyan ring on a slot. B cycles, E confirms snap.
-         * - No targets → "found new outpost" reticle at scaffold pos. E confirms.
-         * Esc cancels (just hides — towing continues). */
+        /* TOW MODE: reticle always shows where the scaffold would land.
+         * Position auto-picks the slot. E confirms. */
         reticle_target_t targets[RETICLE_MAX_TARGETS];
         int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
 
-        /* Always active while towing (Esc temporarily hides) */
         if (is_key_pressed(SAPP_KEYCODE_ESCAPE)) {
             g.placement_reticle_active = false;
-        } else if (!g.placement_reticle_active) {
+        } else {
             g.placement_reticle_active = true;
+            /* Always re-aim to the closest open slot each frame */
             if (n > 0) {
                 g.placement_target_station = targets[0].station;
                 g.placement_target_ring = targets[0].ring;
@@ -339,55 +342,61 @@ input_intent_t sample_input_intent(void) {
             }
         }
 
-        if (g.placement_reticle_active) {
+        if (is_key_pressed(SAPP_KEYCODE_E)) {
             if (n > 0) {
-                /* Refresh: if our chosen target was filled or out of range, snap to first */
-                bool still_valid = false;
-                for (int i = 0; i < n; i++) {
-                    if (targets[i].station == g.placement_target_station &&
-                        targets[i].ring == g.placement_target_ring &&
-                        targets[i].slot == g.placement_target_slot) {
-                        still_valid = true; break;
-                    }
-                }
-                if (!still_valid) {
-                    g.placement_target_station = targets[0].station;
-                    g.placement_target_ring = targets[0].ring;
-                    g.placement_target_slot = targets[0].slot;
-                }
-
-                if (is_key_pressed(SAPP_KEYCODE_B)) {
-                    /* Cycle to next target */
-                    int cur = -1;
-                    for (int i = 0; i < n; i++) {
-                        if (targets[i].station == g.placement_target_station &&
-                            targets[i].ring == g.placement_target_ring &&
-                            targets[i].slot == g.placement_target_slot) {
-                            cur = i; break;
-                        }
-                    }
-                    int next = (cur + 1) % n;
-                    g.placement_target_station = targets[next].station;
-                    g.placement_target_ring = targets[next].ring;
-                    g.placement_target_slot = targets[next].slot;
-                } else if (is_key_pressed(SAPP_KEYCODE_E)) {
-                    /* Confirm placement at chosen slot */
-                    intent.place_outpost = true;
-                    intent.place_target_station = (int8_t)g.placement_target_station;
-                    intent.place_target_ring = (int8_t)g.placement_target_ring;
-                    intent.place_target_slot = (int8_t)g.placement_target_slot;
-                    g.placement_reticle_active = false;
-                    set_notice("Placing scaffold...");
-                }
+                /* Confirm snap to current closest slot */
+                intent.place_outpost = true;
+                intent.place_target_station = (int8_t)g.placement_target_station;
+                intent.place_target_ring = (int8_t)g.placement_target_ring;
+                intent.place_target_slot = (int8_t)g.placement_target_slot;
+                g.placement_reticle_active = false;
+                set_notice("Placing scaffold...");
             } else {
-                /* No targets — "found outpost here" preview */
-                g.placement_target_station = -1;
-                if (is_key_pressed(SAPP_KEYCODE_E) || is_key_pressed(SAPP_KEYCODE_B)) {
-                    /* Confirm: found a new outpost at scaffold pos (server handles) */
-                    intent.place_outpost = true;
-                    g.placement_reticle_active = false;
-                    set_notice("Founding outpost...");
-                }
+                /* No outpost in range — found a new station */
+                intent.place_outpost = true;
+                g.placement_reticle_active = false;
+                set_notice("Founding outpost...");
+            }
+        }
+    } else if (g.plan_mode_active) {
+        /* PLAN MODE: cycle module type with B, confirm with E. Position
+         * auto-picks the closest open slot on the closest player outpost. */
+        reticle_target_t targets[RETICLE_MAX_TARGETS];
+        int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
+
+        if (n == 0) {
+            /* Drifted out of range — exit plan mode */
+            g.plan_mode_active = false;
+        } else {
+            g.placement_target_station = targets[0].station;
+            g.placement_target_ring = targets[0].ring;
+            g.placement_target_slot = targets[0].slot;
+        }
+
+        if (is_key_pressed(SAPP_KEYCODE_ESCAPE)) {
+            g.plan_mode_active = false;
+        } else if (g.plan_mode_active) {
+            if (is_key_pressed(SAPP_KEYCODE_B)) {
+                /* Cycle through plannable module types */
+                static const module_type_t plannable[] = {
+                    MODULE_FURNACE, MODULE_FURNACE_CU, MODULE_FURNACE_CR,
+                    MODULE_FRAME_PRESS, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
+                    MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_REPAIR_BAY,
+                    MODULE_SIGNAL_RELAY, MODULE_DOCK, MODULE_SHIPYARD,
+                };
+                int count = (int)(sizeof(plannable)/sizeof(plannable[0]));
+                int cur = 0;
+                for (int i = 0; i < count; i++)
+                    if ((int)plannable[i] == g.plan_type) { cur = i; break; }
+                g.plan_type = (int)plannable[(cur + 1) % count];
+            } else if (is_key_pressed(SAPP_KEYCODE_E)) {
+                intent.add_plan = true;
+                intent.plan_station = (int8_t)g.placement_target_station;
+                intent.plan_ring = (int8_t)g.placement_target_ring;
+                intent.plan_slot = (int8_t)g.placement_target_slot;
+                intent.plan_type = (module_type_t)g.plan_type;
+                set_notice("Planned %s.", module_type_name((module_type_t)g.plan_type));
+                g.plan_mode_active = false;
             }
         }
     } else if (is_key_pressed(SAPP_KEYCODE_B)) {
@@ -400,8 +409,19 @@ input_intent_t sample_input_intent(void) {
                 set_notice("No shipyard here.");
             }
         } else {
-            /* Undocked without towed scaffold — hint */
-            set_notice("Tow a scaffold here, then press B to place.");
+            /* Undocked, not towing — try to enter plan mode if near an outpost */
+            reticle_target_t targets[RETICLE_MAX_TARGETS];
+            int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
+            if (n > 0) {
+                g.plan_mode_active = true;
+                g.placement_target_station = targets[0].station;
+                g.placement_target_ring = targets[0].ring;
+                g.placement_target_slot = targets[0].slot;
+                if (g.plan_type == 0) g.plan_type = MODULE_FURNACE;
+                set_notice("Plan: B cycles type, E confirms.");
+            } else {
+                set_notice("Tow a scaffold or get near an outpost to plan.");
+            }
         }
     }
     /* [ ] keys: prev/next track */
@@ -444,7 +464,7 @@ void submit_input(const input_intent_t *intent, float dt) {
         intent->upgrade_hold || intent->upgrade_tractor ||
         intent->place_outpost || intent->buy_scaffold_kit ||
         intent->buy_product || intent->hail ||
-        intent->release_tow;
+        intent->release_tow || intent->add_plan;
 
     if (has_action)
         g.action_predict_timer = 0.5f;

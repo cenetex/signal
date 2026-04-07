@@ -3229,6 +3229,46 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         handle_hail(w, sp);
     }
 
+    /* Add placement plan to a player outpost */
+    if (sp->input.add_plan && !w->player_only_mode) {
+        int s = sp->input.plan_station;
+        int ring = sp->input.plan_ring;
+        int slot = sp->input.plan_slot;
+        module_type_t type = sp->input.plan_type;
+        if (s >= 3 && s < MAX_STATIONS && station_is_active(&w->stations[s])
+            && ring >= 1 && ring <= STATION_NUM_RINGS
+            && slot >= 0 && slot < STATION_RING_SLOTS[ring]
+            && (int)type < MODULE_COUNT) {
+            station_t *st = &w->stations[s];
+            /* Slot must be open */
+            bool taken = false;
+            for (int m = 0; m < st->module_count; m++)
+                if (st->modules[m].ring == ring && st->modules[m].slot == slot) {
+                    taken = true; break;
+                }
+            /* Already a plan for this slot? Replace its type. */
+            int existing = -1;
+            for (int p = 0; p < st->placement_plan_count; p++) {
+                if (st->placement_plans[p].ring == ring &&
+                    st->placement_plans[p].slot == slot) {
+                    existing = p; break;
+                }
+            }
+            if (!taken) {
+                if (existing >= 0) {
+                    st->placement_plans[existing].type = type;
+                    st->placement_plans[existing].owner = (int8_t)sp->id;
+                } else if (st->placement_plan_count < 8) {
+                    int idx = st->placement_plan_count++;
+                    st->placement_plans[idx].type = type;
+                    st->placement_plans[idx].ring = (uint8_t)ring;
+                    st->placement_plans[idx].slot = (uint8_t)slot;
+                    st->placement_plans[idx].owner = (int8_t)sp->id;
+                }
+            }
+        }
+    }
+
     /* Clear one-shot action flags after the sim has consumed them. */
     sp->input.interact = false;
     sp->input.service_sell = false;
@@ -3241,6 +3281,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->input.buy_product = false;
     sp->input.hail = false;
     sp->input.release_tow = false;
+    sp->input.add_plan = false;
 }
 
 /* ================================================================== */
@@ -4071,6 +4112,16 @@ static void finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
     m->slot = (uint8_t)sc->placed_slot;
     m->scaffold = true;
     m->build_progress = 1.0f; /* materials already delivered — skip supply phase */
+    /* If this slot was planned, fulfill the plan (remove it). */
+    for (int p = 0; p < st->placement_plan_count; p++) {
+        if (st->placement_plans[p].ring == sc->placed_ring &&
+            st->placement_plans[p].slot == sc->placed_slot) {
+            for (int q = p; q < st->placement_plan_count - 1; q++)
+                st->placement_plans[q] = st->placement_plans[q + 1];
+            st->placement_plan_count--;
+            break;
+        }
+    }
     SIM_LOG("[sim] placed %s at station %d ring %d slot %d (no supply needed)\n",
             module_type_name(sc->module_type), sc->placed_station, sc->placed_ring, sc->placed_slot);
     sc->active = false;

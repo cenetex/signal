@@ -1576,7 +1576,57 @@ static module_type_t producer_for_commodity_client(commodity_t c) {
     }
 }
 
+/* Draw existing placement plans as faint colored ghosts at their slots. */
+static void draw_placement_plans(void) {
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        const station_t *st = &g.world.stations[s];
+        if (!station_exists(st) || st->scaffold) continue;
+        if (st->placement_plan_count == 0) continue;
+        for (int p = 0; p < st->placement_plan_count; p++) {
+            int ring = st->placement_plans[p].ring;
+            int slot = st->placement_plans[p].slot;
+            module_type_t type = st->placement_plans[p].type;
+            vec2 pos = module_world_pos_ring(st, ring, slot);
+            float mr, mg, mb;
+            module_color_fn(type, &mr, &mg, &mb);
+            float pulse = 0.25f + 0.15f * sinf(g.world.time * 1.5f + (float)p * 0.7f);
+            /* Faint dashed outline + filled core in module color */
+            draw_circle_outline(pos, 22.0f, 16, mr, mg, mb, pulse);
+            draw_circle_filled(pos, 4.0f, 8, mr, mg, mb, pulse * 1.5f);
+        }
+    }
+}
+
 void draw_placement_reticle(void) {
+    /* Always draw existing plans (not gated on reticle mode) */
+    draw_placement_plans();
+
+    /* Plan mode: draw the cycling-type ghost at the current target slot */
+    if (g.plan_mode_active && g.placement_target_station >= 0) {
+        const station_t *st = &g.world.stations[g.placement_target_station];
+        if (station_exists(st)) {
+            vec2 target = module_world_pos_ring(st, g.placement_target_ring, g.placement_target_slot);
+            float mr, mg, mb;
+            module_color_fn((module_type_t)g.plan_type, &mr, &mg, &mb);
+            float pulse = 0.5f + 0.4f * sinf(g.world.time * 5.0f);
+            /* Bright module-tinted ring */
+            draw_circle_outline(target, 32.0f, 24, mr, mg, mb, pulse);
+            draw_circle_outline(target, 26.0f, 24, mr, mg, mb, pulse * 0.7f);
+            draw_circle_filled(target, 6.0f, 8, mr, mg, mb, pulse);
+            /* Crosshair tick marks */
+            sgl_begin_lines();
+            sgl_c4f(mr, mg, mb, pulse);
+            float tick = 10.0f;
+            sgl_v2f(target.x - 40.0f, target.y); sgl_v2f(target.x - 40.0f + tick, target.y);
+            sgl_v2f(target.x + 40.0f, target.y); sgl_v2f(target.x + 40.0f - tick, target.y);
+            sgl_v2f(target.x, target.y - 40.0f); sgl_v2f(target.x, target.y - 40.0f + tick);
+            sgl_v2f(target.x, target.y + 40.0f); sgl_v2f(target.x, target.y + 40.0f - tick);
+            sgl_end();
+            /* Tether line from ship to target */
+            draw_segment(LOCAL_PLAYER.ship.pos, target, mr, mg, mb, pulse * 0.5f);
+        }
+    }
+
     if (!g.placement_reticle_active) return;
 
     vec2 target;
