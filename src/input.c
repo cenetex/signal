@@ -418,12 +418,30 @@ input_intent_t sample_input_intent(void) {
                     if ((int)plannable[i] == g.plan_type) { cur = i; break; }
                 g.plan_type = (int)plannable[(cur + 1) % count];
             } else {
-                /* Create ghost outpost at player position */
-                g.ghost_outpost_active = true;
-                g.ghost_outpost_pos = LOCAL_PLAYER.ship.pos;
-                g.ghost_outpost_slot_count = 0;
-                if (g.plan_type == 0) g.plan_type = MODULE_FURNACE;
-                set_notice("Designing outpost: B cycles type, E places, X commits.");
+                /* Create ghost outpost at player position — but only if
+                 * the spot is far enough from existing stations and within
+                 * signal range of an existing outpost. */
+                vec2 pos = LOCAL_PLAYER.ship.pos;
+                bool too_close = false;
+                for (int s = 0; s < MAX_STATIONS; s++) {
+                    const station_t *st = &g.world.stations[s];
+                    if (!station_exists(st)) continue;
+                    float min_d = OUTPOST_MIN_DISTANCE;
+                    if (v2_dist_sq(st->pos, pos) < min_d * min_d) {
+                        too_close = true; break;
+                    }
+                }
+                if (too_close) {
+                    set_notice("Too close to an existing station.");
+                } else if (signal_strength_at(&g.world, pos) <= 0.0f) {
+                    set_notice("No signal here. Move closer to a station.");
+                } else {
+                    g.ghost_outpost_active = true;
+                    g.ghost_outpost_pos = pos;
+                    g.ghost_outpost_slot_count = 0;
+                    if (g.plan_type == 0) g.plan_type = MODULE_FURNACE;
+                    set_notice("Design: [B] cycle type  [E] place  [Esc] cancel.");
+                }
             }
         }
     }
