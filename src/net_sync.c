@@ -293,9 +293,13 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
         for (int t = 0; t < 10; t++)
             sp->ship.towed_fragments[t] = (state->towed_fragments[t] == 0xFF)
                 ? -1 : (int16_t)state->towed_fragments[t];
+        /* Autopilot is also predict-protected: the [O] press triggers an
+         * optimistic local toggle, and stale PLAYER_SHIP messages can
+         * arrive carrying the pre-toggle value before the server has
+         * processed the action. Without this guard the HUD label flickered
+         * on/off during the round-trip window. */
+        sp->autopilot_mode = state->autopilot_mode;
     }
-    /* Autopilot is server-authoritative — always sync */
-    sp->autopilot_mode = state->autopilot_mode;
     /* Dock-state reconciliation:
      * - Server says undocked -> always accept.
      * - Server says docked  -> only accept if we locally agree
