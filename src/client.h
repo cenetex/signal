@@ -165,6 +165,11 @@ typedef struct {
     bool plan_mode_active;
     int plan_type;                 /* module_type_t cycled with R */
     int plan_target_station;       /* server-side station index being planned (-1 = none) */
+    /* Grace window after pressing B in empty space: stay in plan mode
+     * until the server-created planned outpost shows up in reticle
+     * targets. Without this, the user has to press B twice — once to
+     * create, once to actually enter plan mode after the ghost arrives. */
+    float plan_mode_grace_until;
     /* --- Module interaction --- */
     int target_station;      /* station index of targeted module, -1 = none */
     int target_module;       /* module index within station, -1 = none */

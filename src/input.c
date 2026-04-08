@@ -375,11 +375,18 @@ input_intent_t sample_input_intent(void) {
         int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
 
         if (n == 0) {
-            g.plan_mode_active = false;
+            /* If we just sent create_planned_outpost, give the server time
+             * to round-trip the new ghost station to us before tearing
+             * plan mode down. Without this grace window the player has to
+             * press B twice to plan on a fresh outpost. */
+            if (g.world.time >= g.plan_mode_grace_until) {
+                g.plan_mode_active = false;
+            }
         } else {
             g.placement_target_station = targets[0].station;
             g.placement_target_ring = targets[0].ring;
             g.placement_target_slot = targets[0].slot;
+            g.plan_mode_grace_until = 0.0f; /* arrived */
         }
 
         if (is_key_pressed(SAPP_KEYCODE_ESCAPE) || is_key_pressed(SAPP_KEYCODE_B)) {
@@ -467,16 +474,27 @@ input_intent_t sample_input_intent(void) {
         } else {
             /* Undocked, not towing.
              * Near an existing outpost or planned station → enter plan mode.
-             * Otherwise → ask the server to create a planned outpost. */
+             * Otherwise → ask the server to create a planned outpost AND
+             * enter plan mode immediately so the second B press isn't
+             * needed. The plan mode loop holds open via plan_mode_grace_until
+             * until the new ghost arrives in the reticle. */
             reticle_target_t targets[RETICLE_MAX_TARGETS];
             int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
+            uint32_t mask = LOCAL_PLAYER.ship.unlocked_modules;
+            /* Pick the first useful unlocked plannable type. SIGNAL_RELAY
+             * is always unlocked (root), so it's a safe default for the
+             * first entry. If the player has progressed, the cycle picks
+             * up from whatever they last selected. */
+            if (g.plan_type == 0 || g.plan_type == MODULE_DOCK ||
+                !module_unlocked_for_player(mask, (module_type_t)g.plan_type)) {
+                g.plan_type = MODULE_SIGNAL_RELAY;
+            }
             if (n > 0) {
                 g.plan_mode_active = true;
                 g.placement_target_station = targets[0].station;
                 g.placement_target_ring = targets[0].ring;
                 g.placement_target_slot = targets[0].slot;
                 g.plan_target_station = targets[0].station;
-                if (g.plan_type == 0) g.plan_type = MODULE_FURNACE;
                 set_notice("Plan: [R] type [E] place [B] exit");
             } else {
                 /* No outpost in range — request a planned outpost from server */
@@ -496,10 +514,11 @@ input_intent_t sample_input_intent(void) {
                 } else {
                     intent.create_planned_outpost = true;
                     intent.planned_outpost_pos = pos;
-                    if (g.plan_type == 0) g.plan_type = MODULE_FURNACE;
-                    /* Plan mode will activate next frame when the new
-                     * planned station shows up in collect_reticle_targets. */
-                    set_notice("Designing outpost...");
+                    /* Activate plan mode immediately and hold it open
+                     * across the create_planned_outpost round-trip. */
+                    g.plan_mode_active = true;
+                    g.plan_mode_grace_until = g.world.time + 1.5f;
+                    set_notice("Plan: [R] type [E] place");
                 }
             }
         }
