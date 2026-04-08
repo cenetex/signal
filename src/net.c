@@ -342,7 +342,7 @@ static void handle_message(const uint8_t* data, int len) {
                 pss.mining_level    = data[12];
                 pss.hold_level      = data[13];
                 pss.tractor_level   = data[14];
-                /* byte 15 was has_scaffold_kit — now reserved */
+                pss.autopilot_mode  = data[15]; /* repurposed reserved byte */
                 for (int c = 0; c < COMMODITY_COUNT; c++)
                     pss.cargo[c] = read_f32_le(&data[16 + c * 4]);
                 int off = 16 + COMMODITY_COUNT * 4;

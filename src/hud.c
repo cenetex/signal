@@ -320,6 +320,15 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
+    /* Persistent autopilot indicator. Manual movement / mining cancels. */
+    if (LOCAL_PLAYER.autopilot_mode) {
+        snprintf(label, label_size, "AUTOPILOT");
+        snprintf(message, message_size,
+            "Mining loop active. Any movement key cancels. [O] toggle");
+        *r = 255; *g0 = 200; *b = 90;
+        return true;
+    }
+
     if (onboarding_hint(label, label_size, message, message_size)) {
         *r = 114; *g0 = 230; *b = 255;
         return true;

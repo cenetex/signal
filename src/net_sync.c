@@ -294,6 +294,8 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
             sp->ship.towed_fragments[t] = (state->towed_fragments[t] == 0xFF)
                 ? -1 : (int16_t)state->towed_fragments[t];
     }
+    /* Autopilot is server-authoritative — always sync */
+    sp->autopilot_mode = state->autopilot_mode;
     /* Dock-state reconciliation:
      * - Server says undocked -> always accept.
      * - Server says docked  -> only accept if we locally agree
