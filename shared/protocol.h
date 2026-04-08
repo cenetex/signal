@@ -44,6 +44,8 @@ enum {
     NET_MSG_DEATH           = 0x21, /* server -> client: [type:1][player_id:1] */
     NET_MSG_WORLD_TIME      = 0x22, /* server -> client: [type:1][time:f32] */
     NET_MSG_PLAN            = 0x23, /* client -> server: outpost planning intents */
+    NET_MSG_WORLD_SCAFFOLDS = 0x24, /* server -> client: active scaffold pool */
+    NET_MSG_HAIL_RESPONSE   = 0x25, /* server -> client: hail collected payout */
 };
 
 /* ------------------------------------------------------------------ */
@@ -127,14 +129,22 @@ _Static_assert(NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT <= 256,
  * [base_price:COMMODITY_COUNT×f32][scaffold_progress:f32][module_count:1][modules:MAX_MODULES×8]
  * [arm_count:1][arm_speed:MAX_ARMS×f32][ring_offset:MAX_ARMS×f32]
  * [plan_count:1][plans:8 × (type:1, ring:1, slot:1, owner:1)]
+ * [pending_count:1][pending:4 × (type:1, owner:1)]
  * flags: bit0=scaffold, bit1=planned */
 #define STATION_MODULE_RECORD_SIZE 8  /* type:1 + scaffold:1 + ring:1 + slot:1 + build_progress:f32 */
 #define STATION_PLAN_RECORD_SIZE 4    /* type:1 + ring:1 + slot:1 + owner:1 */
 #define STATION_PLAN_RECORD_COUNT 8
+#define STATION_PENDING_SCAFFOLD_RECORD_SIZE 2  /* type:1 + owner:1 */
+#define STATION_PENDING_SCAFFOLD_RECORD_COUNT 4
 #define STATION_IDENTITY_SIZE (59 + COMMODITY_COUNT * 4 + 4 \
     + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE \
     + 1 + MAX_ARMS * 4 + MAX_ARMS * 4 \
-    + 1 + STATION_PLAN_RECORD_COUNT * STATION_PLAN_RECORD_SIZE)
+    + 1 + STATION_PLAN_RECORD_COUNT * STATION_PLAN_RECORD_SIZE \
+    + 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT * STATION_PENDING_SCAFFOLD_RECORD_SIZE)
+
+/* Scaffold record: [id:1][state+owner_sign:1][module_type:1][owner:1]
+ *                  [pos:2xf32][vel:2xf32][radius:f32][build_amount:f32] = 28 bytes */
+#define SCAFFOLD_RECORD_SIZE 28
 
 /* Player ship state: [type:1][id:1][hull:f32][credits:f32][docked:1][station:1]
  * [mining:1][hold:1][tractor:1][scaffold_kit:1][cargo:COMMODITY_COUNT×f32]

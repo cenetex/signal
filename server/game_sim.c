@@ -1809,6 +1809,12 @@ static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
 
 static int ship_collision_count; /* per-frame overlap counter for crush detection */
 
+/* Skin width: tiny gap between ship surface and obstacle surface after a
+ * push-out. Eliminates per-tick boundary chatter on large radii (titan
+ * asteroids, station modules) where small numerical drift would otherwise
+ * trigger another collision the next tick. */
+#define COLLISION_SKIN 1.5f
+
 static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, float radius) {
     float minimum = radius + ship_hull_def(&sp->ship)->ship_radius;
     vec2 delta = v2_sub(sp->ship.pos, center);
@@ -1816,13 +1822,16 @@ static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, fl
     if (d_sq >= minimum * minimum) return;
     float d = sqrtf(d_sq);
     vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
-    sp->ship.pos = v2_add(center, v2_scale(normal, minimum));
+    /* Push past the surface by the skin width so we're cleanly outside. */
+    sp->ship.pos = v2_add(center, v2_scale(normal, minimum + COLLISION_SKIN));
     float vel_toward = v2_dot(sp->ship.vel, normal);
     if (vel_toward < 0.0f) {
         float impact = -vel_toward;
         if (!sp->docked && impact > SHIP_COLLISION_DAMAGE_THRESHOLD)
             apply_ship_damage(w, sp, (impact - SHIP_COLLISION_DAMAGE_THRESHOLD) * SHIP_COLLISION_DAMAGE_SCALE);
-        sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(normal, vel_toward * 1.0f));
+        /* Clamp inward velocity component to zero — slide along the surface
+         * tangent on the next tick instead of bouncing back through it. */
+        sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(normal, vel_toward));
     }
     ship_collision_count++;
 }
@@ -1855,16 +1864,18 @@ static void resolve_ship_annular_sector(world_t *w, server_player_t *sp,
     float expanded_da = da + (da > 0 ? 2.0f : -2.0f) * angular_margin;
     if (angle_in_arc(ship_angle, expanded_start, expanded_da) < 0.0f) return;
 
-    /* Ship is inside corridor — push radially to nearest edge */
+    /* Ship is inside corridor — push radially to nearest edge.
+     * Add COLLISION_SKIN past the edge so the next frame's tangential
+     * slide doesn't immediately re-trigger this same corridor. */
     vec2 radial = v2_scale(delta, 1.0f / dist);
     float d_inner = dist - (ring_r - STATION_CORRIDOR_HW);
     float d_outer = (ring_r + STATION_CORRIDOR_HW) - dist;
     vec2 push_normal;
     if (d_inner < d_outer) {
-        sp->ship.pos = v2_add(center, v2_scale(radial, ring_r - STATION_CORRIDOR_HW - ship_r));
+        sp->ship.pos = v2_add(center, v2_scale(radial, ring_r - STATION_CORRIDOR_HW - ship_r - COLLISION_SKIN));
         push_normal = v2_scale(radial, -1.0f);
     } else {
-        sp->ship.pos = v2_add(center, v2_scale(radial, ring_r + STATION_CORRIDOR_HW + ship_r));
+        sp->ship.pos = v2_add(center, v2_scale(radial, ring_r + STATION_CORRIDOR_HW + ship_r + COLLISION_SKIN));
         push_normal = radial;
     }
 
@@ -2953,7 +2964,11 @@ static void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_
 static void handle_hail(world_t *w, server_player_t *sp) {
     if (sp->docked) return;
     float sig = signal_strength_at(w, sp->ship.pos);
-    if (sig < 0.90f) return;
+    /* Any signal at all qualifies. The README says "press H in signal range
+     * to hail a station" — that's the loosest, most permissive threshold.
+     * The 0.90 cap from earlier required CORE-band proximity, which the
+     * player almost never has when hauling. */
+    if (sig <= 0.0f) return;
 
     /* Find nearest station in range */
     int nearest = -1;

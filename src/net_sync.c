@@ -161,6 +161,63 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
         st->placement_plans[p].slot  = si->plans[p].slot;
         st->placement_plans[p].owner = si->plans[p].owner;
     }
+    /* Pending shipyard orders — head-of-queue first */
+    st->pending_scaffold_count = si->pending_scaffold_count;
+    if (st->pending_scaffold_count > 4) st->pending_scaffold_count = 4;
+    for (int p = 0; p < st->pending_scaffold_count; p++) {
+        st->pending_scaffolds[p].type  = si->pending_scaffolds[p].type;
+        st->pending_scaffolds[p].owner = si->pending_scaffolds[p].owner;
+    }
+}
+
+void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
+    /* Server sends a snapshot of every active scaffold each tick. Anything
+     * not in the snapshot is gone — clear locally so the SHIPYARD UI and
+     * tow targeting reflect server truth. */
+    bool seen[MAX_SCAFFOLDS] = { false };
+    for (int i = 0; i < count; i++) {
+        uint8_t idx = received[i].index;
+        if (idx >= MAX_SCAFFOLDS) continue;
+        scaffold_t *sc = &g.world.scaffolds[idx];
+        sc->active = true;
+        sc->state = (scaffold_state_t)received[i].state;
+        sc->module_type = (module_type_t)received[i].module_type;
+        sc->owner = received[i].owner;
+        sc->pos = v2(received[i].pos_x, received[i].pos_y);
+        sc->vel = v2(received[i].vel_x, received[i].vel_y);
+        sc->radius = received[i].radius;
+        sc->build_amount = received[i].build_amount;
+        if (sc->state == SCAFFOLD_NASCENT) {
+            /* Nascent scaffolds need built_at_station so the SHIPYARD UI
+             * can match them. We don't network it explicitly; instead,
+             * derive from nearest station while NASCENT. */
+            float best_d = 1e18f;
+            int best_s = -1;
+            for (int s = 0; s < MAX_STATIONS; s++) {
+                const station_t *st = &g.world.stations[s];
+                if (!station_exists(st)) continue;
+                float d = v2_dist_sq(sc->pos, st->pos);
+                if (d < best_d) { best_d = d; best_s = s; }
+            }
+            sc->built_at_station = best_s;
+        } else {
+            sc->built_at_station = -1;
+        }
+        seen[idx] = true;
+    }
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        if (!seen[i]) g.world.scaffolds[i].active = false;
+    }
+}
+
+void apply_remote_hail_response(uint8_t station, float credits) {
+    if (credits > 0.5f) {
+        set_notice("Hail collected: +%d cr", (int)lroundf(credits));
+    } else if (station < MAX_STATIONS) {
+        set_notice("%s acknowledges your hail.", g.world.stations[station].name);
+    } else {
+        set_notice("No station in range to hail.");
+    }
 }
 
 void begin_player_state_batch(void) {

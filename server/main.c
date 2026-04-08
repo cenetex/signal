@@ -100,6 +100,18 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     switch (data[0]) {
     case NET_MSG_INPUT:
         parse_input(data, len, &world.players[pid].input);
+        /* If the player just queued a shipyard order, refresh that station's
+         * identity on the next world tick so the SHIPYARD tab sees the new
+         * pending count immediately instead of waiting for the 2s fallback. */
+        if (len >= 3) {
+            uint8_t action = data[2];
+            if ((action >= NET_ACTION_BUY_SCAFFOLD_TYPED &&
+                 action < NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT) ||
+                action == NET_ACTION_BUY_SCAFFOLD) {
+                int s = world.players[pid].current_station;
+                if (s >= 0 && s < MAX_STATIONS) station_identity_dirty[s] = true;
+            }
+        }
         break;
     case NET_MSG_PLAN:
         parse_plan(data, len, &world.players[pid].input);
@@ -522,6 +534,11 @@ static void broadcast_world(void) {
     int nlen = serialize_npcs(nbuf, world.npc_ships);
     broadcast(nbuf, (size_t)nlen);
 
+    /* Scaffolds (full snapshot — at most 16 entries, ~450 bytes) */
+    uint8_t scbuf[2 + MAX_SCAFFOLDS * SCAFFOLD_RECORD_SIZE];
+    int sclen = serialize_scaffolds(scbuf, world.scaffolds);
+    broadcast(scbuf, (size_t)sclen);
+
     /* World time sync (5 bytes: type + float) */
     uint8_t tbuf[5];
     tbuf[0] = NET_MSG_WORLD_TIME;
@@ -682,6 +699,29 @@ int main(void) {
                     if (ev->type == SIM_EVENT_CONTRACT_COMPLETE) {
                         station_econ_dirty = true;
                         contracts_dirty = true;
+                    }
+                    if (ev->type == SIM_EVENT_HAIL_RESPONSE) {
+                        int pid = ev->player_id;
+                        if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected && world.players[pid].conn) {
+                            uint8_t msg[6];
+                            msg[0] = NET_MSG_HAIL_RESPONSE;
+                            msg[1] = (uint8_t)ev->hail_response.station;
+                            write_f32_le(&msg[2], ev->hail_response.credits);
+                            ws_send(world.players[pid].conn, msg, sizeof(msg));
+                            /* Push fresh ship state so the credit bump is visible immediately */
+                            uint8_t buf[PLAYER_SHIP_SIZE + 4];
+                            int len = serialize_player_ship(buf, (uint8_t)pid, &world.players[pid]);
+                            ws_send(world.players[pid].conn, buf, (size_t)len);
+                        }
+                    }
+                    if (ev->type == SIM_EVENT_OUTPOST_PLACED ||
+                        ev->type == SIM_EVENT_OUTPOST_ACTIVATED ||
+                        ev->type == SIM_EVENT_MODULE_ACTIVATED ||
+                        ev->type == SIM_EVENT_SCAFFOLD_READY) {
+                        /* Any structure event needs the station identity refreshed
+                         * so the client sees the updated module/pending list. */
+                        for (int s = 0; s < MAX_STATIONS; s++)
+                            station_identity_dirty[s] = true;
                     }
                 }
                 sim_accum -= SIM_DT;

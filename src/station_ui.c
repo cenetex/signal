@@ -664,31 +664,18 @@ void draw_station_services(const station_ui_state_t* ui) {
 
             /* === ACTIONS === */
             {
-                /* Sell/deliver */
-                if (ui->payout > 0) {
-                    sdtx_color3b(130, 255, 235);
-                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                    sdtx_printf("[1] Deliver  +%d cr", ui->payout);
-                } else {
-                    sdtx_color3b(90, 105, 130);
-                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                    sdtx_puts("[1] Nothing to deliver");
-                }
-                /* Repair on same line, right side */
+                /* Repair stays — it's a station service, not a tab shortcut. */
                 if (ui->repair_cost > 0) {
                     sdtx_color3b(255, 221, 119);
-                    sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
+                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                     sdtx_printf("[2] Repair -%dcr", ui->repair_cost);
+                    ly += 14.0f;
                 }
-                ly += 14.0f;
 
-                /* Build / launch hint */
+                /* Launch hint — the only persistent action on STATUS. */
                 sdtx_color3b(90, 115, 110);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                if (station_has_module(ui->station, MODULE_SHIPYARD))
-                    sdtx_puts("[B] Shipyard tab  [E] Launch");
-                else
-                    sdtx_puts("[E] Launch");
+                sdtx_puts("[E] Launch");
             }
         }
         break;
@@ -945,57 +932,49 @@ void draw_station_services(const station_ui_state_t* ui) {
         sdtx_puts("SHIPYARD");
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
         sdtx_color3b(145, 160, 188);
-        sdtx_puts("kits match your active plan (B in flight)");
+        sdtx_puts("press [1-9] to order a scaffold kit");
 
         float ly = cy + 34.0f;
 
-        /* Only kits the player has currently planned in plan mode appear
-         * here. The plan-mode reticle is the source of truth — players
-         * are limited to PLAYER_PLAN_TYPE_LIMIT distinct types at once. */
-        module_type_t planned[PLAYER_PLAN_TYPE_LIMIT];
-        int planned_n = player_planned_types(planned, PLAYER_PLAN_TYPE_LIMIT);
-
-        if (planned_n == 0) {
+        /* List every unlocked module type this yard can fabricate. The
+         * yard knows how to build a type if an example of it is installed
+         * on the station. Locked types appear greyed-out so the player
+         * can see what the tech tree is hiding. */
+        int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
+        int shown = 0;
+        bool any = false;
+        for (int t = 0; t < MODULE_COUNT && shown < 9; t++) {
+            module_type_t kit = (module_type_t)t;
+            if (module_kind(kit) == MODULE_KIND_NONE) continue;
+            if (!station_has_module(ui->station, kit)) continue;
+            any = true;
+            int fee = scaffold_order_fee(kit);
+            int mat = (int)module_build_cost_lookup(kit);
+            commodity_t mat_type = module_build_material_lookup(kit);
+            const char *mat_name = commodity_short_label(mat_type);
+            bool can_afford = credits >= fee;
+            bool unlocked = module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules, kit);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            if (!unlocked) {
+                int prereq = module_schema(kit)->prerequisite;
+                sdtx_color3b(80, 90, 110);
+                sdtx_printf("[--] %-14s LOCKED (need %s)",
+                    module_type_name(kit),
+                    (prereq >= 0 && prereq < MODULE_COUNT)
+                        ? module_type_name((module_type_t)prereq) : "?");
+            } else {
+                sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
+                sdtx_printf("[%d] %-14s %dcr + %d %s",
+                    shown + 1, module_type_name(kit), fee, mat, mat_name);
+                shown++;
+            }
+            ly += 14.0f;
+        }
+        if (!any) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             sdtx_color3b(140, 150, 175);
-            sdtx_puts("No active plans.  Launch and press B to plan.");
+            sdtx_puts("This yard has no production lines installed.");
             ly += 14.0f;
-        } else {
-            int shown = 0;
-            int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
-            for (int si = 0; si < planned_n; si++) {
-                module_type_t kit = planned[si];
-                if (!station_has_module(ui->station, kit)) {
-                    /* Shipyard can only print kits this station can fab. */
-                    sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                    sdtx_color3b(120, 130, 155);
-                    sdtx_printf("[--] %-14s NO LINE AT THIS YARD",
-                        module_type_name(kit));
-                    ly += 14.0f;
-                    continue;
-                }
-                int fee = scaffold_order_fee(kit);
-                int mat = (int)module_build_cost_lookup(kit);
-                commodity_t mat_type = module_build_material_lookup(kit);
-                const char *mat_name = commodity_short_label(mat_type);
-                bool can_afford = credits >= fee;
-                bool unlocked = module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules, kit);
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-                if (!unlocked) {
-                    int prereq = module_schema(kit)->prerequisite;
-                    sdtx_color3b(80, 90, 110);
-                    sdtx_printf("[--] %-14s LOCKED (need %s)",
-                        module_type_name(kit),
-                        (prereq >= 0 && prereq < MODULE_COUNT)
-                            ? module_type_name((module_type_t)prereq) : "?");
-                } else {
-                    sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
-                    sdtx_printf("[%d] %-14s %dcr + %d %s",
-                        shown + 1, module_type_name(kit), fee, mat, mat_name);
-                    shown++;
-                }
-                ly += 14.0f;
-            }
         }
 
         /* Pending orders */

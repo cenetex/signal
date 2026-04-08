@@ -11,10 +11,14 @@
 static const float REFINERY_HOPPER_CAPACITY = 500.0f;
 static const float REFINERY_BASE_SMELT_RATE = 2.0f;
 static const int   REFINERY_MAX_FURNACES = 3;
-static const float STATION_PRODUCTION_RATE = 0.3f;
+/* Production: ~1 unit/sec → conversions are visible inside 5-10s of docked
+ * dwell time. Slower felt like nothing was happening. */
+static const float STATION_PRODUCTION_RATE = 1.0f;
 static const float STATION_REPAIR_COST_PER_HULL = 2.0f;
-static const float MAX_PRODUCT_STOCK = 40.0f;
-static const float HAULER_RESERVE = 8.0f;  /* keep 20% stock for player purchases */
+/* Refined-product stockpile cap: needs to be wide enough that a full hold
+ * of ingots can be converted without stalling at the cap. */
+static const float MAX_PRODUCT_STOCK = 120.0f;
+static const float HAULER_RESERVE = 24.0f;  /* keep 20% stock for player purchases */
 
 /* --- Outpost construction --- */
 static const float SCAFFOLD_MATERIAL_NEEDED = 60.0f;   /* total frames needed */
