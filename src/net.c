@@ -411,7 +411,51 @@ static void handle_message(const uint8_t* data, int len) {
                 si.plans[p].owner = (int8_t)data[moff + 3];
                 moff += STATION_PLAN_RECORD_SIZE;
             }
+            /* Pending shipyard orders */
+            si.pending_scaffold_count = data[moff];
+            if (si.pending_scaffold_count > STATION_PENDING_SCAFFOLD_RECORD_COUNT)
+                si.pending_scaffold_count = STATION_PENDING_SCAFFOLD_RECORD_COUNT;
+            moff++;
+            for (int p = 0; p < STATION_PENDING_SCAFFOLD_RECORD_COUNT; p++) {
+                si.pending_scaffolds[p].type  = (module_type_t)data[moff + 0];
+                int8_t owner = (int8_t)data[moff + 1];
+                si.pending_scaffolds[p].owner = (data[moff + 1] == 0xFF) ? -1 : owner;
+                moff += STATION_PENDING_SCAFFOLD_RECORD_SIZE;
+            }
             net_state.callbacks.on_station_identity(&si);
+        }
+        break;
+
+    case NET_MSG_WORLD_SCAFFOLDS:
+        if (len >= 2 && net_state.callbacks.on_scaffolds) {
+            int count = data[1];
+            if (count < 0) count = 0;
+            if (count * SCAFFOLD_RECORD_SIZE + 2 > len)
+                count = (len - 2) / SCAFFOLD_RECORD_SIZE;
+            NetScaffoldState scaffolds[16];
+            int max = (count > 16) ? 16 : count;
+            for (int i = 0; i < max; i++) {
+                const uint8_t *p = &data[2 + i * SCAFFOLD_RECORD_SIZE];
+                scaffolds[i].index       = p[0];
+                scaffolds[i].state       = p[1];
+                scaffolds[i].module_type = p[2];
+                scaffolds[i].owner       = (p[3] == 0xFF) ? -1 : (int8_t)p[3];
+                scaffolds[i].pos_x       = read_f32_le(&p[4]);
+                scaffolds[i].pos_y       = read_f32_le(&p[8]);
+                scaffolds[i].vel_x       = read_f32_le(&p[12]);
+                scaffolds[i].vel_y       = read_f32_le(&p[16]);
+                scaffolds[i].radius      = read_f32_le(&p[20]);
+                scaffolds[i].build_amount= read_f32_le(&p[24]);
+            }
+            net_state.callbacks.on_scaffolds(scaffolds, max);
+        }
+        break;
+
+    case NET_MSG_HAIL_RESPONSE:
+        if (len >= 6 && net_state.callbacks.on_hail_response) {
+            uint8_t station = data[1];
+            float credits = read_f32_le(&data[2]);
+            net_state.callbacks.on_hail_response(station, credits);
         }
         break;
 

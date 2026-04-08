@@ -218,16 +218,15 @@ input_intent_t sample_input_intent(void) {
     if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_SHIPYARD) {
         const station_t *st = current_station_ptr();
         /* Shipyard tab: 1-9 order a scaffold.
-         * The order menu is restricted to module types the player has
-         * currently planned (from plan mode), so the shipyard surfaces
-         * exactly the kits needed for the active build queue. */
-        module_type_t planned[PLAYER_PLAN_TYPE_LIMIT];
-        int planned_n = player_planned_types(planned, PLAYER_PLAN_TYPE_LIMIT);
+         * Surface every unlocked module type this yard can fabricate.
+         * (Plans are still useful for slot reservation in plan mode, but
+         * are no longer required to *order* a kit — the chicken-and-egg
+         * for the very first SIGNAL_RELAY would be unsolvable otherwise.) */
         int shown = 0;
-        for (int si = 0; si < planned_n; si++) {
-            module_type_t kit = planned[si];
+        for (int t = 0; t < MODULE_COUNT && shown < 9; t++) {
+            module_type_t kit = (module_type_t)t;
+            if (module_kind(kit) == MODULE_KIND_NONE) continue;
             if (!station_has_module(st, kit)) continue;
-            /* Tech-tree gate (defensive — plan mode already enforces this) */
             if (!module_unlocked_for_player(LOCAL_PLAYER.ship.unlocked_modules, kit)) continue;
             if (is_key_pressed(SAPP_KEYCODE_1 + shown)) {
                 if (st->pending_scaffold_count >= 4) {

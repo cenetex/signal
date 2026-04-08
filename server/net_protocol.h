@@ -324,7 +324,53 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
         }
         moff += STATION_PLAN_RECORD_SIZE;
     }
+    /* Pending shipyard orders (head-of-queue first). Count + fixed-size
+     * trailer so the message size stays a compile-time constant. */
+    int pend_n = st->pending_scaffold_count;
+    if (pend_n > STATION_PENDING_SCAFFOLD_RECORD_COUNT) pend_n = STATION_PENDING_SCAFFOLD_RECORD_COUNT;
+    buf[moff] = (uint8_t)pend_n;
+    moff++;
+    for (int p = 0; p < STATION_PENDING_SCAFFOLD_RECORD_COUNT; p++) {
+        if (p < pend_n) {
+            buf[moff + 0] = (uint8_t)st->pending_scaffolds[p].type;
+            buf[moff + 1] = (uint8_t)st->pending_scaffolds[p].owner;
+        } else {
+            buf[moff + 0] = 0;
+            buf[moff + 1] = 0xFF;
+        }
+        moff += STATION_PENDING_SCAFFOLD_RECORD_SIZE;
+    }
     return STATION_IDENTITY_SIZE;
+}
+
+/*
+ * WORLD_SCAFFOLDS message: active scaffold pool (NASCENT/LOOSE/TOWING/SNAPPING/PLACED).
+ * [type:1][count:1] + count * SCAFFOLD_RECORD_SIZE
+ * Per record: [id:1][state:1][module_type:1][owner:1][pos:2xf32][vel:2xf32][radius:f32][build_amount:f32]
+ * = 28 bytes
+ */
+static inline int serialize_scaffolds(uint8_t *buf, const scaffold_t *scaffolds) {
+    int count = 0;
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        const scaffold_t *sc = &scaffolds[i];
+        if (!sc->active) continue;
+        uint8_t *p = &buf[2 + count * SCAFFOLD_RECORD_SIZE];
+        p[0] = (uint8_t)i;
+        p[1] = (uint8_t)sc->state;
+        p[2] = (uint8_t)sc->module_type;
+        /* owner is signed (-1 = NPC); pack into uint8 with 0xFF sentinel */
+        p[3] = (sc->owner < 0) ? 0xFFu : (uint8_t)sc->owner;
+        write_f32_le(&p[4],  sc->pos.x);
+        write_f32_le(&p[8],  sc->pos.y);
+        write_f32_le(&p[12], sc->vel.x);
+        write_f32_le(&p[16], sc->vel.y);
+        write_f32_le(&p[20], sc->radius);
+        write_f32_le(&p[24], sc->build_amount);
+        count++;
+    }
+    buf[0] = NET_MSG_WORLD_SCAFFOLDS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * SCAFFOLD_RECORD_SIZE;
 }
 
 /*

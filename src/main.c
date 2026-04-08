@@ -695,6 +695,8 @@ static void init(void) {
             cbs.on_npcs = apply_remote_npcs;
             cbs.on_stations = apply_remote_stations;
             cbs.on_station_identity = apply_remote_station_identity;
+            cbs.on_scaffolds = apply_remote_scaffolds;
+            cbs.on_hail_response = apply_remote_hail_response;
             cbs.on_player_ship = apply_remote_player_ship;
             cbs.on_contracts = apply_remote_contracts;
             cbs.on_death = on_remote_death;
@@ -730,7 +732,13 @@ static void render_world(void) {
     }
 
     {
-        float dt = 1.0f / 60.0f;
+        /* Camera lerp uses real frame duration so the smoothing rate is
+         * frame-rate independent. The previous hardcoded 1/60 caused the
+         * camera to over- or under-step at non-60Hz refresh rates, which
+         * showed up as a "jump" when the ship hit the deadzone edge. */
+        float dt = (float)sapp_frame_duration();
+        if (dt <= 0.0f) dt = 1.0f / 60.0f;
+        if (dt > 0.1f) dt = 0.1f; /* clamp on tab-resume / hitches */
         const station_t *anchor_station = NULL;
         if (LOCAL_PLAYER.docked && LOCAL_PLAYER.current_station >= 0
             && LOCAL_PLAYER.current_station < MAX_STATIONS)

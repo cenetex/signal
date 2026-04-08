@@ -113,10 +113,32 @@ typedef struct {
         uint8_t slot;
         int8_t owner;
     } plans[STATION_PLAN_RECORD_COUNT];
+    int pending_scaffold_count;
+    struct {
+        module_type_t type;
+        int8_t owner;
+    } pending_scaffolds[STATION_PENDING_SCAFFOLD_RECORD_COUNT];
 } NetStationIdentity;
+
+/* Packed scaffold state — server pushes the active scaffold pool.
+ * Mirrors enough of scaffold_t for client rendering + tow logic. */
+typedef struct {
+    uint8_t index;
+    uint8_t state;        /* scaffold_state_t enum */
+    uint8_t module_type;
+    int8_t  owner;        /* -1 for NPC-produced */
+    float   pos_x, pos_y;
+    float   vel_x, vel_y;
+    float   radius;
+    float   build_amount;
+} NetScaffoldState;
 
 /* Station identity callback: full static fields for a station slot. */
 typedef void (*net_on_station_identity_fn)(const NetStationIdentity* station);
+/* Scaffold pool snapshot callback. */
+typedef void (*net_on_scaffolds_fn)(const NetScaffoldState* scaffolds, int count);
+/* Hail response callback: server confirmed payout from a hail attempt. */
+typedef void (*net_on_hail_response_fn)(uint8_t station, float credits);
 
 typedef void (*net_on_players_begin_fn)(void);
 
@@ -129,6 +151,8 @@ typedef struct {
     net_on_npcs_fn on_npcs;
     net_on_stations_fn on_stations;
     net_on_station_identity_fn on_station_identity;
+    net_on_scaffolds_fn on_scaffolds;
+    net_on_hail_response_fn on_hail_response;
     net_on_player_ship_fn on_player_ship;
     net_on_contracts_fn on_contracts;
     void (*on_death)(uint8_t player_id, float pos_x, float pos_y,
