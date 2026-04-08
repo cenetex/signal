@@ -388,6 +388,8 @@ static void step_module_construction(world_t *w, float dt) {
                     spawn_npc(w, s, NPC_ROLE_MINER);
                 if (st->modules[i].type == MODULE_FRAME_PRESS || st->modules[i].type == MODULE_LASER_FAB || st->modules[i].type == MODULE_TRACTOR_FAB)
                     spawn_npc(w, s, NPC_ROLE_HAULER);
+                if (st->modules[i].type == MODULE_SHIPYARD)
+                    spawn_npc(w, s, NPC_ROLE_TOW);
                 emit_event(w, (sim_event_t){
                     .type = SIM_EVENT_MODULE_ACTIVATED,
                     .module_activated = { .station = s, .module_idx = i, .module_type = (int)st->modules[i].type },
@@ -406,7 +408,13 @@ static int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     }
     if (slot < 0) return -1;
     station_t *st = &w->stations[station_idx];
-    hull_class_t hc = (role == NPC_ROLE_MINER) ? HULL_CLASS_NPC_MINER : HULL_CLASS_HAULER;
+    hull_class_t hc;
+    switch (role) {
+    case NPC_ROLE_MINER: hc = HULL_CLASS_NPC_MINER; break;
+    case NPC_ROLE_HAULER: hc = HULL_CLASS_HAULER; break;
+    case NPC_ROLE_TOW:    hc = HULL_CLASS_HAULER; break; /* tow drone uses hauler hull */
+    default: hc = HULL_CLASS_NPC_MINER; break;
+    }
     npc_ship_t *npc = &w->npc_ships[slot];
     memset(npc, 0, sizeof(*npc));
     npc->active = true;
@@ -417,16 +425,23 @@ static int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     npc->angle = PI_F * 0.5f;
     npc->target_asteroid = -1;
     npc->towed_fragment = -1;
+    npc->towed_scaffold = -1;
     npc->home_station = station_idx;
     npc->dest_station = station_idx;
     npc->state_timer = (role == NPC_ROLE_MINER) ? NPC_DOCK_TIME : HAULER_DOCK_TIME;
     npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
+    /* Tow drones get a distinct yellow-amber tint */
+    if (role == NPC_ROLE_TOW) {
+        npc->tint_r = 1.0f; npc->tint_g = 0.85f; npc->tint_b = 0.30f;
+    }
     emit_event(w, (sim_event_t){
         .type = SIM_EVENT_NPC_SPAWNED,
         .npc_spawned = { .slot = slot, .role = role, .home_station = station_idx },
     });
     SIM_LOG("[sim] spawned %s at station %d (slot %d)\n",
-            role == NPC_ROLE_MINER ? "miner" : "hauler", station_idx, slot);
+            role == NPC_ROLE_MINER ? "miner" :
+            role == NPC_ROLE_HAULER ? "hauler" : "tow drone",
+            station_idx, slot);
     return slot;
 }
 
@@ -1527,6 +1542,191 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     }
 }
 
+/* Find an open ring slot at any active player outpost (s >= 3) that
+ * matches the given module type. Used by tow drones to pick a delivery
+ * destination for a loose scaffold. Returns -1 if none. */
+static int find_destination_for_scaffold(const world_t *w, module_type_t type) {
+    /* Prefer outposts that have a placement plan for this type — those
+     * are slots the player explicitly reserved for this build. */
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        for (int p = 0; p < st->placement_plan_count; p++) {
+            if (st->placement_plans[p].type == type) return s;
+        }
+    }
+    /* Fallback: any active outpost with at least one open ring slot. */
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
+            if (ring > 1 && !ring_has_dock(st, ring - 1)) continue;
+            if (station_ring_free_slot(st, ring, STATION_RING_SLOTS[ring]) >= 0)
+                return s;
+        }
+    }
+    return -1;
+}
+
+/* Find a loose scaffold near this NPC's home station that has a known
+ * destination. Returns scaffold index or -1. */
+static int find_loose_scaffold_for_tow(const world_t *w, const npc_ship_t *npc) {
+    const station_t *home = &w->stations[npc->home_station];
+    const float pickup_range_sq = 4000.0f * 4000.0f;
+    int best = -1;
+    float best_d = 1e18f;
+    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+        const scaffold_t *sc = &w->scaffolds[i];
+        if (!sc->active) continue;
+        if (sc->state != SCAFFOLD_LOOSE) continue;
+        /* Skip scaffolds being towed by a player or another drone */
+        if (sc->towed_by >= 0) continue;
+        /* Must be near the home shipyard */
+        float d_home = v2_dist_sq(sc->pos, home->pos);
+        if (d_home > pickup_range_sq) continue;
+        /* Must have a place to deliver */
+        if (find_destination_for_scaffold(w, sc->module_type) < 0) continue;
+        if (d_home < best_d) { best_d = d_home; best = i; }
+    }
+    return best;
+}
+
+/* Tow drone: spawned at shipyards, picks up loose scaffolds, delivers
+ * them to player outposts with placement plans, returns home. Reuses
+ * the existing NPC state enum but interprets the states for tow logic.
+ *
+ *   DOCKED → look for a loose scaffold + matching destination
+ *   TRAVEL_TO_ASTEROID → fly to scaffold position (ASTEROID = "thing to grab")
+ *   MINING → grab phase: tractor it, set towed_scaffold
+ *   TRAVEL_TO_DEST → tow it to destination outpost
+ *   UNLOADING → release near open slot, let it snap
+ *   RETURN_TO_STATION → fly back to home shipyard
+ */
+static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
+    (void)n;
+    const hull_def_t *hull = npc_hull_def(npc);
+
+    /* If we lost our towed scaffold mid-flight (destroyed, snapped early,
+     * picked up by a player), drop back to idle. */
+    if (npc->towed_scaffold >= 0) {
+        scaffold_t *sc = &w->scaffolds[npc->towed_scaffold];
+        if (!sc->active || sc->state == SCAFFOLD_PLACED ||
+            sc->state == SCAFFOLD_SNAPPING || sc->towed_by != -2 - n) {
+            npc->towed_scaffold = -1;
+            if (npc->state == NPC_STATE_TRAVEL_TO_DEST ||
+                npc->state == NPC_STATE_UNLOADING) {
+                npc->state = NPC_STATE_RETURN_TO_STATION;
+            }
+        }
+    }
+
+    switch (npc->state) {
+    case NPC_STATE_DOCKED: {
+        npc->state_timer -= dt;
+        npc->vel = v2(0.0f, 0.0f);
+        if (npc->state_timer > 0.0f) break;
+        int sc_idx = find_loose_scaffold_for_tow(w, npc);
+        if (sc_idx < 0) {
+            npc->state_timer = 2.0f; /* nothing to tow, idle and recheck */
+            break;
+        }
+        npc->target_asteroid = sc_idx;  /* repurpose: scaffold idx for tow */
+        npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+        break;
+    }
+    case NPC_STATE_TRAVEL_TO_ASTEROID: {
+        if (npc->target_asteroid < 0 || npc->target_asteroid >= MAX_SCAFFOLDS) {
+            npc->state = NPC_STATE_DOCKED;
+            npc->state_timer = HAULER_DOCK_TIME;
+            break;
+        }
+        scaffold_t *sc = &w->scaffolds[npc->target_asteroid];
+        if (!sc->active || sc->state != SCAFFOLD_LOOSE || sc->towed_by >= 0) {
+            npc->target_asteroid = -1;
+            npc->state = NPC_STATE_DOCKED;
+            npc->state_timer = HAULER_DOCK_TIME;
+            break;
+        }
+        npc_steer_with_avoidance(w, npc, sc->pos, hull->accel, hull->turn_speed, dt);
+        npc_apply_physics(npc, hull->drag, dt, w);
+        if (v2_dist_sq(npc->pos, sc->pos) < 80.0f * 80.0f) {
+            /* Grab — claim the scaffold and switch to tow mode.
+             * Use towed_by = -2 - drone_index so positive values keep
+             * meaning "player id" and negative values < -1 mean "drone n". */
+            sc->towed_by = -2 - n;
+            sc->state = SCAFFOLD_TOWING;
+            npc->towed_scaffold = npc->target_asteroid;
+            int dest = find_destination_for_scaffold(w, sc->module_type);
+            if (dest < 0) {
+                /* Destination vanished while we were en route; drop and reset */
+                sc->towed_by = -1;
+                sc->state = SCAFFOLD_LOOSE;
+                npc->towed_scaffold = -1;
+                npc->target_asteroid = -1;
+                npc->state = NPC_STATE_DOCKED;
+                npc->state_timer = HAULER_DOCK_TIME;
+                break;
+            }
+            npc->dest_station = dest;
+            npc->state = NPC_STATE_TRAVEL_TO_DEST;
+        }
+        break;
+    }
+    case NPC_STATE_TRAVEL_TO_DEST: {
+        if (npc->towed_scaffold < 0 ||
+            npc->dest_station < 0 || npc->dest_station >= MAX_STATIONS) {
+            npc->state = NPC_STATE_RETURN_TO_STATION;
+            break;
+        }
+        scaffold_t *sc = &w->scaffolds[npc->towed_scaffold];
+        station_t *dest = &w->stations[npc->dest_station];
+        /* Drag the scaffold along behind us with simple spring chase. */
+        vec2 to_drone = v2_sub(npc->pos, sc->pos);
+        float td = sqrtf(v2_len_sq(to_drone));
+        float tow_dist = 60.0f;
+        if (td > tow_dist && td > 0.1f) {
+            vec2 dir = v2_scale(to_drone, 1.0f / td);
+            float over = td - tow_dist;
+            sc->vel = v2_add(sc->vel, v2_scale(dir, over * 8.0f * dt));
+        }
+        sc->vel = v2_scale(sc->vel, 1.0f / (1.0f + 0.6f * dt));
+        sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
+
+        vec2 approach = station_approach_target(dest, npc->pos);
+        npc_steer_with_avoidance(w, npc, approach, hull->accel * 0.6f, hull->turn_speed, dt);
+        /* Speed cap while towing — heavy load */
+        float spd = v2_len(npc->vel);
+        if (spd > 60.0f) npc->vel = v2_scale(npc->vel, 60.0f / spd);
+        npc_apply_physics(npc, hull->drag, dt, w);
+        if (v2_dist_sq(npc->pos, dest->pos) < 600.0f * 600.0f) {
+            /* Release — let the existing snap-to-slot logic in step_scaffolds
+             * pick up the loose scaffold near the outpost ring. */
+            sc->towed_by = -1;
+            sc->state = SCAFFOLD_LOOSE;
+            npc->towed_scaffold = -1;
+            npc->state = NPC_STATE_RETURN_TO_STATION;
+        }
+        break;
+    }
+    case NPC_STATE_RETURN_TO_STATION: {
+        station_t *home = &w->stations[npc->home_station];
+        vec2 approach = station_approach_target(home, npc->pos);
+        npc_steer_with_avoidance(w, npc, approach, hull->accel, hull->turn_speed, dt);
+        npc_apply_physics(npc, hull->drag, dt, w);
+        if (v2_dist_sq(npc->pos, home->pos) < (home->dock_radius * 0.7f) * (home->dock_radius * 0.7f)) {
+            npc->vel = v2(0.0f, 0.0f);
+            npc->state = NPC_STATE_DOCKED;
+            npc->state_timer = HAULER_DOCK_TIME;
+        }
+        break;
+    }
+    default:
+        npc->state = NPC_STATE_DOCKED;
+        npc->state_timer = HAULER_DOCK_TIME;
+        break;
+    }
+}
+
 static void step_npc_ships(world_t *w, float dt) {
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         npc_ship_t *npc = &w->npc_ships[n];
@@ -1536,6 +1736,14 @@ static void step_npc_ships(world_t *w, float dt) {
 
         if (npc->role == NPC_ROLE_HAULER) {
             step_hauler(w, npc, n, dt);
+            if (npc->state != NPC_STATE_DOCKED) {
+                npc_resolve_station_collisions(w, npc);
+                npc_resolve_asteroid_collisions(w, npc);
+            }
+            continue;
+        }
+        if (npc->role == NPC_ROLE_TOW) {
+            step_tow_drone(w, npc, n, dt);
             if (npc->state != NPC_STATE_DOCKED) {
                 npc_resolve_station_collisions(w, npc);
                 npc_resolve_asteroid_collisions(w, npc);
@@ -3272,7 +3480,332 @@ static float calc_signal_interference(const world_t *w, const server_player_t *s
     return clampf(interference, 0.0f, 0.7f);  /* cap at 70% interference */
 }
 
+/* ================================================================== */
+/* Player autopilot — server-side AI driving the player's own ship    */
+/* ================================================================== */
+
+/* Autopilot state machine cursor (mode 1: mining loop). */
+enum {
+    AUTOPILOT_STEP_FIND_TARGET = 0,
+    AUTOPILOT_STEP_FLY_TO_TARGET,
+    AUTOPILOT_STEP_MINE,
+    AUTOPILOT_STEP_COLLECT,
+    AUTOPILOT_STEP_RETURN_TO_REFINERY,
+    AUTOPILOT_STEP_DOCK,
+    AUTOPILOT_STEP_SELL,
+    AUTOPILOT_STEP_LAUNCH,
+};
+
+/* Find the nearest active station with an ore-buyer module — that's
+ * where the autopilot will sell. */
+static int autopilot_find_refinery(const world_t *w, vec2 pos) {
+    int best = -1;
+    float best_d = 1e18f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        if (!station_has_module(st, MODULE_DOCK)) continue;
+        if (!station_has_module(st, MODULE_ORE_BUYER) &&
+            !station_has_module(st, MODULE_FURNACE) &&
+            !station_has_module(st, MODULE_FURNACE_CU) &&
+            !station_has_module(st, MODULE_FURNACE_CR)) continue;
+        float d = v2_dist_sq(pos, st->pos);
+        if (d < best_d) { best_d = d; best = s; }
+    }
+    return best;
+}
+
+/* Pick the most autopilot-friendly mining target: tier S fragments to
+ * pick up directly, otherwise the nearest non-titan asteroid that the
+ * ship's laser level can crack. */
+static int autopilot_find_mining_target(const world_t *w, const server_player_t *sp) {
+    int best = -1;
+    float best_d = 1e18f;
+    asteroid_tier_t max_tier = max_mineable_tier(sp->ship.mining_level);
+    /* Prefer drifting fragments over chunks — easier credits, no laser fight */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        if (a->tier != ASTEROID_TIER_S) continue;
+        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        float d = v2_dist_sq(sp->ship.pos, a->pos);
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    if (best >= 0) return best;
+    /* No fragments — pick a mineable rock */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        if (a->tier == ASTEROID_TIER_S) continue;
+        if ((int)a->tier < (int)max_tier) continue; /* skip too-easy ones; we want bigger payouts */
+        if ((int)a->tier > (int)max_tier) continue; /* skip too-tough ones */
+        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        float d = v2_dist_sq(sp->ship.pos, a->pos);
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    if (best >= 0) return best;
+    /* Fallback: any mineable rock at our level or below */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        if (a->tier == ASTEROID_TIER_S) continue;
+        if ((int)a->tier > (int)max_tier) continue;
+        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        float d = v2_dist_sq(sp->ship.pos, a->pos);
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    return best;
+}
+
+/* True if the cargo hold has nothing left to deliver. */
+static bool autopilot_hold_empty(const ship_t *s) {
+    for (int c = 0; c < COMMODITY_COUNT; c++)
+        if (s->cargo[c] > 0.5f) return false;
+    return true;
+}
+
+/* True if the cargo hold is roughly full (90%+ of capacity). */
+static bool autopilot_hold_full(const ship_t *s) {
+    float total = ship_total_cargo(s);
+    float cap = ship_cargo_capacity(s);
+    return cap > 0.0f && total / cap >= 0.85f;
+}
+
+/* Drive the player's ship via simulated input. The autopilot writes
+ * sp->input each tick, and the existing physics/mining/dock systems
+ * consume those intents like they would for a human player. */
+static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
+    if (sp->autopilot_mode == 0) return;
+
+    sp->autopilot_timer += dt;
+
+    /* Mode 1: mining loop. */
+    switch (sp->autopilot_state) {
+    case AUTOPILOT_STEP_FIND_TARGET: {
+        if (sp->docked) {
+            sp->input.interact = true; /* launch */
+            sp->autopilot_state = AUTOPILOT_STEP_LAUNCH;
+            break;
+        }
+        if (autopilot_hold_full(&sp->ship)) {
+            sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+            break;
+        }
+        int t = autopilot_find_mining_target(w, sp);
+        if (t < 0) {
+            /* Nothing reachable — return to refinery and try again next cycle. */
+            sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+            break;
+        }
+        sp->autopilot_target = t;
+        sp->autopilot_state = AUTOPILOT_STEP_FLY_TO_TARGET;
+        sp->autopilot_timer = 0.0f;
+        break;
+    }
+    case AUTOPILOT_STEP_FLY_TO_TARGET: {
+        if (sp->autopilot_target < 0 || sp->autopilot_target >= MAX_ASTEROIDS) {
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            break;
+        }
+        const asteroid_t *a = &w->asteroids[sp->autopilot_target];
+        if (!a->active) {
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            break;
+        }
+        if (autopilot_hold_full(&sp->ship)) {
+            sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+            break;
+        }
+        /* Steer toward the rock — write turn + thrust into input. */
+        vec2 to_a = v2_sub(a->pos, sp->ship.pos);
+        float desired = atan2f(to_a.y, to_a.x);
+        float diff = wrap_angle(desired - sp->ship.angle);
+        sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
+        float facing_dot = cosf(diff);
+        sp->input.thrust = (facing_dot > 0.7f) ? 1.0f : 0.0f;
+        sp->input.mine = false;
+        float mining_arrive = (a->tier == ASTEROID_TIER_S)
+            ? FRAGMENT_NEARBY_RANGE * 0.7f
+            : MINING_RANGE * 0.85f;
+        if (v2_dist_sq(sp->ship.pos, a->pos) < mining_arrive * mining_arrive) {
+            /* Brake and switch to mine/collect */
+            sp->input.thrust = 0.0f;
+            if (a->tier == ASTEROID_TIER_S) {
+                sp->autopilot_state = AUTOPILOT_STEP_COLLECT;
+                sp->autopilot_timer = 0.0f;
+            } else {
+                sp->autopilot_state = AUTOPILOT_STEP_MINE;
+                sp->autopilot_timer = 0.0f;
+            }
+        }
+        /* Stuck-fly safety: if we've been flying >60s and haven't arrived,
+         * pick a new target. */
+        if (sp->autopilot_timer > 60.0f) {
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+        }
+        break;
+    }
+    case AUTOPILOT_STEP_MINE: {
+        if (sp->autopilot_target < 0 || sp->autopilot_target >= MAX_ASTEROIDS) {
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            break;
+        }
+        const asteroid_t *a = &w->asteroids[sp->autopilot_target];
+        if (!a->active) {
+            /* Asteroid fractured or vanished — go collect fragments. */
+            sp->autopilot_state = AUTOPILOT_STEP_COLLECT;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        /* Aim at the rock and fire the laser. */
+        vec2 to_a = v2_sub(a->pos, sp->ship.pos);
+        float desired = atan2f(to_a.y, to_a.x);
+        float diff = wrap_angle(desired - sp->ship.angle);
+        sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
+        sp->input.thrust = 0.0f;
+        sp->input.mine = (fabsf(diff) < 0.15f);
+        sp->input.mining_target_hint = sp->autopilot_target;
+        /* If we drift away, close in */
+        if (v2_dist_sq(sp->ship.pos, a->pos) > MINING_RANGE * MINING_RANGE) {
+            sp->autopilot_state = AUTOPILOT_STEP_FLY_TO_TARGET;
+            sp->autopilot_timer = 0.0f;
+        }
+        break;
+    }
+    case AUTOPILOT_STEP_COLLECT: {
+        /* Sweep nearby fragments by toggling tractor on (already on by
+         * default) and gently moving toward the densest fragment cluster. */
+        sp->ship.tractor_active = true;
+        sp->input.mine = false;
+        int best = -1;
+        float best_d = 1e18f;
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            const asteroid_t *a = &w->asteroids[i];
+            if (!a->active || !asteroid_is_collectible(a)) continue;
+            float d = v2_dist_sq(sp->ship.pos, a->pos);
+            if (d < best_d) { best_d = d; best = i; }
+        }
+        if (best < 0 || autopilot_hold_full(&sp->ship)) {
+            sp->autopilot_state = autopilot_hold_empty(&sp->ship)
+                ? AUTOPILOT_STEP_FIND_TARGET
+                : AUTOPILOT_STEP_RETURN_TO_REFINERY;
+            sp->autopilot_target = -1;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        const asteroid_t *frag = &w->asteroids[best];
+        vec2 to = v2_sub(frag->pos, sp->ship.pos);
+        float desired = atan2f(to.y, to.x);
+        float diff = wrap_angle(desired - sp->ship.angle);
+        sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
+        sp->input.thrust = (cosf(diff) > 0.5f) ? 0.6f : 0.0f;
+        if (sp->autopilot_timer > 8.0f) {
+            /* Don't loiter forever; head home with whatever we have */
+            sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+            sp->autopilot_timer = 0.0f;
+        }
+        break;
+    }
+    case AUTOPILOT_STEP_RETURN_TO_REFINERY: {
+        if (sp->docked) {
+            sp->autopilot_state = AUTOPILOT_STEP_SELL;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        int s = autopilot_find_refinery(w, sp->ship.pos);
+        if (s < 0) {
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            break;
+        }
+        const station_t *st = &w->stations[s];
+        sp->autopilot_target = s;
+        vec2 to = v2_sub(st->pos, sp->ship.pos);
+        float dist = sqrtf(v2_len_sq(to));
+        float desired = atan2f(to.y, to.x);
+        float diff = wrap_angle(desired - sp->ship.angle);
+        sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
+        sp->input.thrust = (cosf(diff) > 0.7f && dist > 250.0f) ? 1.0f : 0.0f;
+        sp->input.mine = false;
+        if (dist < DOCK_APPROACH_RANGE && sp->in_dock_range) {
+            sp->input.interact = true;
+            sp->autopilot_state = AUTOPILOT_STEP_DOCK;
+            sp->autopilot_timer = 0.0f;
+        }
+        break;
+    }
+    case AUTOPILOT_STEP_DOCK: {
+        if (sp->docked) {
+            sp->autopilot_state = AUTOPILOT_STEP_SELL;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        if (sp->autopilot_timer > 6.0f) {
+            /* Approach didn't snap. Re-issue interact and re-aim. */
+            sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+            sp->autopilot_timer = 0.0f;
+        }
+        break;
+    }
+    case AUTOPILOT_STEP_SELL: {
+        if (!sp->docked) {
+            sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+            break;
+        }
+        sp->input.service_sell = true;
+        sp->input.service_sell_only = COMMODITY_COUNT; /* deliver all */
+        if (sp->autopilot_timer > 0.6f) {
+            /* Allow one frame for delivery to settle, then launch */
+            sp->input.interact = true;
+            sp->autopilot_state = AUTOPILOT_STEP_LAUNCH;
+            sp->autopilot_timer = 0.0f;
+        }
+        break;
+    }
+    case AUTOPILOT_STEP_LAUNCH: {
+        if (!sp->docked) {
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_target = -1;
+            sp->autopilot_timer = 0.0f;
+        } else if (sp->autopilot_timer > 2.0f) {
+            sp->input.interact = true; /* re-issue */
+            sp->autopilot_timer = 0.0f;
+        }
+        break;
+    }
+    default:
+        sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+        break;
+    }
+}
+
 static void step_player(world_t *w, server_player_t *sp, float dt) {
+    /* One-shot: toggle autopilot from network action. */
+    if (sp->input.toggle_autopilot) {
+        sp->autopilot_mode = sp->autopilot_mode ? 0 : 1;
+        sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+        sp->autopilot_target = -1;
+        sp->autopilot_timer = 0.0f;
+        sp->input.toggle_autopilot = false;
+    }
+
+    /* Manual override: any directional / mining input cancels autopilot.
+     * Detected BEFORE autopilot writes to sp->input so we don't loop. */
+    if (sp->autopilot_mode && !w->player_only_mode) {
+        bool manual_input =
+            fabsf(sp->input.turn) > 0.01f ||
+            fabsf(sp->input.thrust) > 0.01f ||
+            sp->input.mine ||
+            sp->input.release_tow ||
+            sp->input.reset;
+        if (manual_input) {
+            sp->autopilot_mode = 0;
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_target = -1;
+        } else {
+            step_autopilot(w, sp, dt);
+        }
+    }
+
     /* Self-destruct: X key */
     if (sp->input.reset && !sp->docked) {
         sp->ship.hull = 0.0f;
@@ -4822,13 +5355,16 @@ void world_reset(world_t *w) {
         }
     }
 
-    /* --- NPC ships: 2 miners at refinery, 2 haulers for logistics --- */
+    /* --- NPC ships: 2 miners at refinery, 2 haulers for logistics,
+     *     1 tow drone at each shipyard for autonomous scaffold delivery --- */
     spawn_npc(w, 0, NPC_ROLE_MINER);
     spawn_npc(w, 0, NPC_ROLE_MINER);
     spawn_npc(w, 0, NPC_ROLE_HAULER);
     spawn_npc(w, 0, NPC_ROLE_HAULER);
+    spawn_npc(w, 1, NPC_ROLE_TOW); /* Kepler shipyard */
+    spawn_npc(w, 2, NPC_ROLE_TOW); /* Helios shipyard */
 
-    SIM_LOG("[sim] world reset complete (%d asteroids, 4 NPCs)\n", FIELD_ASTEROID_TARGET);
+    SIM_LOG("[sim] world reset complete (%d asteroids, 6 NPCs)\n", FIELD_ASTEROID_TARGET);
 }
 
 /* ================================================================== */
@@ -4852,6 +5388,10 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     /* Default to "deliver everything matching" — selective delivery
      * is opt-in via NET_ACTION_DELIVER_COMMODITY. */
     sp->input.service_sell_only = COMMODITY_COUNT;
+    sp->autopilot_mode = 0;
+    sp->autopilot_state = 0;
+    sp->autopilot_target = -1;
+    sp->autopilot_timer = 0.0f;
     anchor_ship_in_station(sp, w);
 }
 

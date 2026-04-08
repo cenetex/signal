@@ -98,6 +98,7 @@ enum {
     NET_ACTION_PLACE_MODULE   = 49, /* place scaffold kit as module at own station */
     NET_ACTION_BUY_SCAFFOLD_TYPED = 50, /* +module_type offset, range [50..50+MODULE_COUNT) */
     NET_ACTION_DELIVER_COMMODITY  = 70, /* +commodity offset, range [70..70+COMMODITY_COUNT) */
+    NET_ACTION_AUTOPILOT_TOGGLE   = 90, /* toggle player mining autopilot on/off */
 };
 
 /* Compile-time check: action ranges must not overlap.

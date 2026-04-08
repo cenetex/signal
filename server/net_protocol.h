@@ -390,7 +390,7 @@ static inline int serialize_player_ship(uint8_t *buf, uint8_t id, const server_p
     buf[12] = (uint8_t)sp->ship.mining_level;
     buf[13] = (uint8_t)sp->ship.hold_level;
     buf[14] = (uint8_t)sp->ship.tractor_level;
-    buf[15] = 0; /* reserved (was has_scaffold_kit) */
+    buf[15] = sp->autopilot_mode; /* repurposed reserved byte */
     for (int c = 0; c < COMMODITY_COUNT; c++)
         write_f32_le(&buf[16 + c * 4], sp->ship.cargo[c]);
     int off = 16 + COMMODITY_COUNT * 4;
@@ -500,6 +500,9 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
             break;
         case NET_ACTION_RESET:
             intent->reset = true;
+            break;
+        case NET_ACTION_AUTOPILOT_TOGGLE:
+            intent->toggle_autopilot = true;
             break;
         default:
             /* NET_ACTION_BUILD_MODULE legacy: no-op (range collapsed) */

@@ -116,6 +116,7 @@ typedef struct {
     bool hail;               /* collect pending credits from nearby station */
     bool release_tow;        /* drop all towed fragments */
     bool reset;
+    bool toggle_autopilot;   /* one-shot: flip autopilot_mode on/off */
 } input_intent_t;
 
 typedef struct {
@@ -149,6 +150,14 @@ typedef struct {
     int tractor_fragments;
     bool was_in_signal;     /* previous frame's signal state, for edge detection */
     char callsign[8];       /* e.g. "KRX-472" */
+    /* Autopilot — server-side AI driving the player's ship.
+     * 0 = off (manual control)
+     * 1 = mining loop: mine → tow → dock → sell → undock → repeat
+     * Manual input (turn/thrust/mine) cancels the autopilot. */
+    uint8_t autopilot_mode;
+    int autopilot_target;       /* asteroid idx or -1 */
+    int autopilot_state;        /* internal state machine cursor */
+    float autopilot_timer;
 } server_player_t;
 
 typedef struct {

@@ -341,6 +341,7 @@ typedef struct {
     bool thrusting;
     float tint_r, tint_g, tint_b;  /* accumulated ore color (starts white) */
     int towed_fragment;             /* asteroid index being towed, -1 = none */
+    int towed_scaffold;             /* scaffold index being towed (NPC_ROLE_TOW), -1 = none */
 } npc_ship_t;
 
 typedef struct {

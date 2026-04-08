@@ -78,6 +78,10 @@ static void mirror_player_always(server_player_t *dst, const server_player_t *sr
     dst->nearby_station  = src->nearby_station;
     dst->dock_berth      = src->dock_berth;
     dst->docking_approach= src->docking_approach;
+    /* Autopilot state — read by HUD for indicator */
+    dst->autopilot_mode  = src->autopilot_mode;
+    dst->autopilot_state = src->autopilot_state;
+    dst->autopilot_target= src->autopilot_target;
     /* Beam / targeting (render hints) */
     dst->beam_active      = src->beam_active;
     dst->beam_hit         = src->beam_hit;

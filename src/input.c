@@ -602,6 +602,12 @@ input_intent_t sample_input_intent(void) {
     if (is_key_pressed(SAPP_KEYCODE_H) && !LOCAL_PLAYER.docked) {
         intent.hail = true;
     }
+    /* O key: toggle mining autopilot — server-side AI runs the mining
+     * loop on the player's ship. Any manual movement or mine input
+     * cancels it. Works docked or undocked. */
+    if (is_key_pressed(SAPP_KEYCODE_O)) {
+        intent.toggle_autopilot = true;
+    }
     return intent;
 }
 
@@ -629,7 +635,8 @@ void submit_input(const input_intent_t *intent, float dt) {
         intent->place_outpost || intent->buy_scaffold_kit ||
         intent->buy_product || intent->hail ||
         intent->release_tow || intent->add_plan ||
-        intent->create_planned_outpost || intent->cancel_planned_outpost;
+        intent->create_planned_outpost || intent->cancel_planned_outpost ||
+        intent->toggle_autopilot;
 
     if (has_action)
         g.action_predict_timer = 0.5f;
@@ -692,5 +699,7 @@ void submit_input(const input_intent_t *intent, float dt) {
             g.pending_net_action = NET_ACTION_RELEASE_TOW;
         else if (intent->reset)
             g.pending_net_action = NET_ACTION_RESET;
+        else if (intent->toggle_autopilot)
+            g.pending_net_action = NET_ACTION_AUTOPILOT_TOGGLE;
     }
 }
