@@ -5,13 +5,33 @@
 #include <stdint.h>
 #include "math_util.h"
 
+/*
+ * ⚠️  ENTITY POOL CAPS — read this before bumping any MAX_* constant.  ⚠️
+ *
+ * These caps are not arbitrary tuning numbers. They are pinned by the
+ * v1 wire protocol, which budgets entity identity at ONE BYTE per type:
+ *
+ *   - asteroid id is uint8 in WORLD_ASTEROIDS, NPC_RECORD, etc.
+ *   - station id is uint8 in STATION_IDENTITY / WORLD_STATIONS records
+ *   - npc id is uint8 in WORLD_NPCS records
+ *
+ * Bumping any cap past these limits requires a wire protocol revision —
+ * tracked as #285 (streaming entity pool + protocol v2). Anything that
+ * pushes the world past these caps is structurally a slice of #285, not
+ * a tuning change. File it against #285 instead of editing here.
+ *
+ * Do NOT raise MAX_STATIONS, MAX_ASTEROIDS, MAX_NPC_SHIPS, or
+ * MAX_SCAFFOLDS without a paired wire-protocol bump and a deserializer
+ * change in src/net.c. Tests will silently keep passing while production
+ * traffic gets corrupted.
+ */
 enum {
     KEY_COUNT = 512,
-    MAX_ASTEROIDS = 255, /* limited by uint8 index in network protocol */
+    MAX_ASTEROIDS = 255, /* uint8 index — see banner above (#285 to lift) */
     MAX_STARS = 120,
-    MAX_STATIONS = 8,
-    MAX_NPC_SHIPS = 16,
-    MAX_SCAFFOLDS = 16,
+    MAX_STATIONS = 8,    /* uint8 index — see banner above (#285 to lift) */
+    MAX_NPC_SHIPS = 16,  /* uint8 index — see banner above (#285 to lift) */
+    MAX_SCAFFOLDS = 16,  /* uint8 index — see banner above (#285 to lift) */
     AUDIO_VOICE_COUNT = 24,
     AUDIO_MIX_FRAMES = 512,
 };
@@ -286,6 +306,13 @@ typedef struct {
 typedef enum {
     NPC_ROLE_MINER,
     NPC_ROLE_HAULER,
+    /* NPC_ROLE_TOW: reserved for autonomous scaffold delivery (#277 step 6).
+     * Picks up loose scaffolds near a shipyard and tows them to placement
+     * targets. Not yet wired in step_npc_ships — currently never spawned.
+     * The wire protocol packs role into 2 bits so adding a value here is
+     * forward-compatible: clients that don't recognize the role render it
+     * as a hauler. */
+    NPC_ROLE_TOW,
 } npc_role_t;
 
 typedef enum {

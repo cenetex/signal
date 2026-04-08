@@ -16,12 +16,21 @@ static int tests_passed = 0;
 static int tests_failed = 0;
 
 #define TEST(name) static void name(void)
+/* RUN snapshots tests_failed before/after the test body. The body uses
+ * `return` from inside ASSERT* on failure, so RUN cannot return a value
+ * — instead we observe whether the global failure counter moved. This
+ * matters: the previous version unconditionally incremented tests_passed
+ * and printed "ok" even after an ASSERT had already failed and bumped
+ * tests_failed, causing the summary line to lie. (#261) */
 #define RUN(name) do { \
+    int _failed_before = tests_failed; \
     tests_run++; \
     printf("  %s ... ", #name); \
     name(); \
-    tests_passed++; \
-    printf("ok\n"); \
+    if (tests_failed == _failed_before) { \
+        tests_passed++; \
+        printf("ok\n"); \
+    } \
 } while(0)
 
 #define ASSERT(cond) do { \

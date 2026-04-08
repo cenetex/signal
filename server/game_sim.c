@@ -3,6 +3,22 @@
  * Used by both the authoritative server and the client (local sim).
  * All rendering, audio, and sokol references are excluded.
  * Global state replaced with world_t *w and server_player_t *sp parameters.
+ *
+ * ⚠️  DO NOT MECHANICALLY SPLIT THIS FILE.  ⚠️
+ *
+ * Yes, this file is large (~5k LOC). The split is tracked as #272 slices
+ * 2-6. Those slices are intentionally BLOCKED on the engine refactor in
+ * #285 (streaming entity pool + persistent station catalog). Splitting
+ * along the current data shape would lock in `MAX_STATIONS=8`-style
+ * assumptions across six new files; every one of them would need to be
+ * re-touched when #285 lands. The only universally-correct slice was
+ * slice 1 (save/load → server/sim_save.c, commit 8611749), which doesn't
+ * depend on the data shape. Until #285 Phase 3 lands, keep edits in this
+ * file behind banner comments and resist the urge to extract.
+ *
+ * If you're reading this because the file is unwieldy: feature work that
+ * touches `MAX_*` constants, `WORLD_RADIUS`, or the spatial grid IS a
+ * slice of #285 in disguise — file it against #285, not as a refactor.
  */
 #include "game_sim.h"
 #include "signal_model.h"
@@ -1069,10 +1085,96 @@ static vec2 station_approach_target(const station_t *st, vec2 from) {
     return st->pos;
 }
 
+/* Compute an obstacle-avoidance offset for an NPC heading toward `target`.
+ * Probes a forward cone for nearby asteroids and station modules; returns
+ * a steering vector that, when added to `(target - pos)`, biases the path
+ * around blockers. Pure lookahead — does not move the NPC.
+ *
+ * Cheap O(N) over MAX_ASTEROIDS + station modules. Skipped for far targets
+ * via the early-out so haulers crossing empty space pay nothing. (#282) */
+static vec2 npc_avoidance_steer(const world_t *w, const npc_ship_t *npc, vec2 target) {
+    const float lookahead = 220.0f;        /* probe range */
+    const float lookahead_sq = lookahead * lookahead;
+    const hull_def_t *hull = npc_hull_def(npc);
+    float ship_r = hull->ship_radius;
+    vec2 to_target = v2_sub(target, npc->pos);
+    float dist_to_target = sqrtf(v2_len_sq(to_target));
+    if (dist_to_target < 1.0f) return v2(0.0f, 0.0f);
+    vec2 forward = v2_scale(to_target, 1.0f / dist_to_target);
+
+    vec2 push = v2(0.0f, 0.0f);
+
+    /* Asteroids */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        if (asteroid_is_collectible(a)) continue;
+        vec2 to_a = v2_sub(a->pos, npc->pos);
+        float d_sq = v2_len_sq(to_a);
+        if (d_sq > lookahead_sq) continue;
+        float forward_proj = v2_dot(to_a, forward);
+        if (forward_proj < -a->radius) continue; /* behind */
+        if (forward_proj > lookahead) continue;
+        float lateral = fabsf(v2_cross(to_a, forward));
+        float clearance = a->radius + ship_r + 12.0f;
+        if (lateral > clearance) continue; /* not in cone */
+        /* Push perpendicular to forward, away from the obstacle */
+        vec2 perp = v2(-forward.y, forward.x);
+        float side = (v2_cross(to_a, forward) >= 0.0f) ? -1.0f : 1.0f;
+        float urgency = 1.0f - (forward_proj / lookahead);
+        push = v2_add(push, v2_scale(perp, side * (clearance - lateral) * urgency * 4.0f));
+    }
+
+    /* Station modules + corridor bands */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+        if (v2_dist_sq(st->pos, npc->pos) > (lookahead + 600.0f) * (lookahead + 600.0f))
+            continue; /* station too far for any module to be in cone */
+        station_geom_t geom;
+        station_build_geom(st, &geom);
+        for (int ci = 0; ci < geom.circle_count; ci++) {
+            vec2 to_m = v2_sub(geom.circles[ci].center, npc->pos);
+            float d_sq = v2_len_sq(to_m);
+            if (d_sq > lookahead_sq) continue;
+            float forward_proj = v2_dot(to_m, forward);
+            if (forward_proj < -geom.circles[ci].radius) continue;
+            if (forward_proj > lookahead) continue;
+            float lateral = fabsf(v2_cross(to_m, forward));
+            float clearance = geom.circles[ci].radius + ship_r + 16.0f;
+            if (lateral > clearance) continue;
+            vec2 perp = v2(-forward.y, forward.x);
+            float side = (v2_cross(to_m, forward) >= 0.0f) ? -1.0f : 1.0f;
+            float urgency = 1.0f - (forward_proj / lookahead);
+            push = v2_add(push, v2_scale(perp, side * (clearance - lateral) * urgency * 6.0f));
+        }
+    }
+
+    return push;
+}
+
 static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float turn_speed, float dt) {
     vec2 delta = v2_sub(target, npc->pos);
     float desired = atan2f(delta.y, delta.x);
     float diff = wrap_angle(desired - npc->angle);
+    float max_turn = turn_speed * dt;
+    if (diff > max_turn) diff = max_turn;
+    else if (diff < -max_turn) diff = -max_turn;
+    npc->angle = wrap_angle(npc->angle + diff);
+    vec2 fwd = v2_from_angle(npc->angle);
+    npc->vel = v2_add(npc->vel, v2_scale(fwd, accel * dt));
+    npc->thrusting = accel > 0.0f;
+}
+
+/* Steer toward a target with obstacle avoidance. Drop-in replacement for
+ * npc_steer_toward in long-distance hauler/miner travel paths. */
+static void npc_steer_with_avoidance(const world_t *w, npc_ship_t *npc, vec2 target,
+                                     float accel, float turn_speed, float dt) {
+    vec2 to_target = v2_sub(target, npc->pos);
+    vec2 avoidance = npc_avoidance_steer(w, npc, target);
+    vec2 desired = v2_add(to_target, avoidance);
+    float angle = atan2f(desired.y, desired.x);
+    float diff = wrap_angle(angle - npc->angle);
     float max_turn = turn_speed * dt;
     if (diff > max_turn) diff = max_turn;
     else if (diff < -max_turn) diff = -max_turn;
@@ -1355,7 +1457,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_TRAVEL_TO_DEST: {
         station_t *dest = &w->stations[npc->dest_station];
         vec2 approach = station_approach_target(dest, npc->pos);
-        npc_steer_toward(npc, approach, hull->accel, hull->turn_speed, dt);
+        npc_steer_with_avoidance(w, npc, approach, hull->accel, hull->turn_speed, dt);
         npc_apply_physics(npc, hull->drag, dt, w);
         float dock_r = dest->dock_radius * 0.7f;
         if (v2_dist_sq(npc->pos, dest->pos) < dock_r * dock_r) {
@@ -1407,7 +1509,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_RETURN_TO_STATION: {
         station_t *home = &w->stations[npc->home_station];
         vec2 approach_home = station_approach_target(home, npc->pos);
-        npc_steer_toward(npc, approach_home, hull->accel, hull->turn_speed, dt);
+        npc_steer_with_avoidance(w, npc, approach_home, hull->accel, hull->turn_speed, dt);
         npc_apply_physics(npc, hull->drag, dt, w);
         float dock_r = home->dock_radius * 0.7f;
         if (v2_dist_sq(npc->pos, home->pos) < dock_r * dock_r) {
@@ -1465,7 +1567,7 @@ static void step_npc_ships(world_t *w, float dt) {
                 else { npc->target_asteroid = -1; npc->state = NPC_STATE_RETURN_TO_STATION; break; }
             }
             asteroid_t *a = &w->asteroids[npc->target_asteroid];
-            npc_steer_toward(npc, a->pos, hull->accel, hull->turn_speed, dt);
+            npc_steer_with_avoidance(w, npc, a->pos, hull->accel, hull->turn_speed, dt);
             npc_apply_physics(npc, hull->drag, dt, w);
             if (v2_dist_sq(npc->pos, a->pos) < MINING_RANGE * MINING_RANGE)
                 npc->state = NPC_STATE_MINING;
@@ -1551,7 +1653,7 @@ static void step_npc_ships(world_t *w, float dt) {
             /* Slow down when towing so the fragment can keep up */
             float tow_accel = hull->accel;
             if (npc->towed_fragment >= 0) tow_accel *= 0.5f;
-            npc_steer_toward(npc, delivery_target, tow_accel, hull->turn_speed, dt);
+            npc_steer_with_avoidance(w, npc, delivery_target, tow_accel, hull->turn_speed, dt);
             npc_apply_physics(npc, hull->drag, dt, w);
 
             /* Speed cap when towing */
