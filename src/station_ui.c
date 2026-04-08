@@ -864,42 +864,89 @@ void draw_station_services(const station_ui_state_t* ui) {
         sdtx_puts("CONTRACTS");
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
         sdtx_color3b(145, 160, 188);
-        sdtx_puts("Press 1-3 to track");
+        if (g.selected_contract >= 0)
+            sdtx_puts("[E] deliver selected  [1-3] reselect");
+        else
+            sdtx_puts("[E] deliver all  [1-3] select one");
 
-        /* Find top 3 nearest contracts by distance from current station */
-        int nearest[3] = {-1, -1, -1};
-        float nearest_d[3] = {1e18f, 1e18f, 1e18f};
-        vec2 here = ui->station->pos;
-        for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
+        /* Build the listing in two passes: contracts deliverable AT THIS
+         * station (player can fulfill them right now) come first, then
+         * the nearest other contracts. The [1] slot is always the most
+         * fulfillable contract here so it pairs with try_sell_station_cargo. */
+        int slots[3] = {-1, -1, -1};
+        int slot_count = 0;
+        bool slot_fulfillable[3] = {false, false, false};
+        int slot_held[3] = {0, 0, 0};
+
+        /* Pass 1: contracts where THIS station is the destination AND we
+         * have matching cargo. These come first so [1] is always the
+         * "deliver this now" slot. */
+        int here_idx = LOCAL_PLAYER.current_station;
+        for (int ci = 0; ci < MAX_CONTRACTS && slot_count < 3; ci++) {
             contract_t *ct = &g.world.contracts[ci];
             if (!ct->active) continue;
-            if (ct->station_index >= MAX_STATIONS) continue;
-            if (!station_exists(&g.world.stations[ct->station_index])) continue;
-            vec2 target = (ct->action == CONTRACT_TRACTOR) ? g.world.stations[ct->station_index].pos : ct->target_pos;
-            float d = v2_dist_sq(here, target);
-            for (int slot = 0; slot < 3; slot++) {
-                if (d < nearest_d[slot]) {
-                    /* Shift down */
-                    for (int j = 2; j > slot; j--) { nearest[j] = nearest[j-1]; nearest_d[j] = nearest_d[j-1]; }
-                    nearest[slot] = ci;
-                    nearest_d[slot] = d;
-                    break;
+            if (ct->action != CONTRACT_TRACTOR) continue;
+            if (here_idx < 0 || ct->station_index != here_idx) continue;
+            float held = LOCAL_PLAYER.ship.cargo[ct->commodity];
+            if (held < 0.5f) continue;
+            slots[slot_count] = ci;
+            slot_fulfillable[slot_count] = true;
+            slot_held[slot_count] = (int)lroundf(held);
+            slot_count++;
+        }
+
+        /* Pass 2: fill remaining slots with nearest other contracts. */
+        if (slot_count < 3) {
+            int nearest[3] = {-1, -1, -1};
+            float nearest_d[3] = {1e18f, 1e18f, 1e18f};
+            vec2 here = ui->station->pos;
+            for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
+                contract_t *ct = &g.world.contracts[ci];
+                if (!ct->active) continue;
+                if (ct->station_index >= MAX_STATIONS) continue;
+                if (!station_exists(&g.world.stations[ct->station_index])) continue;
+                /* Skip ones already in pass 1 */
+                bool already = false;
+                for (int s = 0; s < slot_count; s++) if (slots[s] == ci) { already = true; break; }
+                if (already) continue;
+                vec2 target = (ct->action == CONTRACT_TRACTOR) ? g.world.stations[ct->station_index].pos : ct->target_pos;
+                float d = v2_dist_sq(here, target);
+                for (int s = 0; s < 3; s++) {
+                    if (d < nearest_d[s]) {
+                        for (int j = 2; j > s; j--) { nearest[j] = nearest[j-1]; nearest_d[j] = nearest_d[j-1]; }
+                        nearest[s] = ci;
+                        nearest_d[s] = d;
+                        break;
+                    }
                 }
+            }
+            for (int s = 0; s < 3 && slot_count < 3; s++) {
+                if (nearest[s] < 0) continue;
+                slots[slot_count] = nearest[s];
+                slot_fulfillable[slot_count] = false;
+                slot_held[slot_count] = 0;
+                slot_count++;
             }
         }
 
-        int shown = 0;
-        for (int slot = 0; slot < 3; slot++) {
-            if (nearest[slot] < 0) continue;
-            contract_t *ct = &g.world.contracts[nearest[slot]];
+        if (slot_count == 0) {
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 32.0f));
+            sdtx_color3b(145, 160, 188);
+            sdtx_puts("No active contracts.");
+            break;
+        }
+
+        for (int s = 0; s < slot_count; s++) {
+            contract_t *ct = &g.world.contracts[slots[s]];
             float cprice = ct->base_price * (1.0f + fminf(ct->age / 300.0f, 1.0f) * 0.2f);
-            float line_y = cy + 32.0f + (float)shown * 20.0f;
-            bool tracked = (g.tracked_contract == nearest[slot]);
+            float line_y = cy + 32.0f + (float)s * 20.0f;
+            bool tracked = (g.tracked_contract == slots[s]);
+            bool selected = (g.selected_contract == slots[s]);
             /* Action-based pip color */
             float pip_r = 0.5f, pip_g = 0.5f, pip_b = 0.5f;
             if (ct->action == CONTRACT_FRACTURE) {
                 pip_r = 0.95f; pip_g = 0.30f; pip_b = 0.20f;
-            } else { /* TRACTOR */
+            } else {
                 if (ct->commodity == COMMODITY_FERRITE_ORE) { pip_r = 0.85f; pip_g = 0.50f; pip_b = 0.35f; }
                 else if (ct->commodity == COMMODITY_CUPRITE_ORE) { pip_r = 0.40f; pip_g = 0.55f; pip_b = 0.90f; }
                 else if (ct->commodity == COMMODITY_CRYSTAL_ORE) { pip_r = 0.40f; pip_g = 0.85f; pip_b = 0.50f; }
@@ -907,21 +954,28 @@ void draw_station_services(const station_ui_state_t* ui) {
             }
             draw_rect_centered(v2(cx + 3.0f, line_y + 5.0f), 3.0f, 3.0f, pip_r, pip_g, pip_b, 0.9f);
             sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(line_y));
-            sdtx_color3b(tracked ? 255 : 203, tracked ? 255 : 220, tracked ? 130 : 248);
-            if (ct->action == CONTRACT_FRACTURE) {
-                sdtx_printf("[%d] FRACTURE: %.0f cr%s", shown + 1, cprice, tracked ? " *" : "");
+            if (selected) {
+                sdtx_color3b(255, 240, 130); /* bright yellow = will deliver on E */
+            } else if (slot_fulfillable[s]) {
+                sdtx_color3b(130, 255, 180); /* green = ready to deliver */
+            } else if (tracked) {
+                sdtx_color3b(220, 230, 160);
             } else {
-                sdtx_printf("[%d] TRACTOR %s -> %s: %.0f cr%s", shown + 1,
-                    commodity_short_name(ct->commodity),
-                    g.world.stations[ct->station_index].name,
-                    cprice, tracked ? " *" : "");
+                sdtx_color3b(160, 175, 200);
             }
-            shown++;
-        }
-        if (shown == 0) {
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 20.0f));
-            sdtx_color3b(145, 160, 188);
-            sdtx_puts("No active contracts.");
+            const char *marker = selected ? " <" : (tracked ? " *" : "");
+            if (ct->action == CONTRACT_FRACTURE) {
+                sdtx_printf("[%d] FRACTURE %.0f cr%s",
+                    s + 1, cprice, marker);
+            } else if (slot_fulfillable[s]) {
+                sdtx_printf("[%d] DELIVER %dx %s -> %.0f cr%s",
+                    s + 1, slot_held[s], commodity_short_name(ct->commodity), cprice, marker);
+            } else {
+                sdtx_printf("[%d] %s -> %s: %.0f cr%s",
+                    s + 1, commodity_short_name(ct->commodity),
+                    g.world.stations[ct->station_index].name,
+                    cprice, marker);
+            }
         }
         break;
     }

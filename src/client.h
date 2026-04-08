@@ -170,6 +170,10 @@ typedef struct {
      * targets. Without this, the user has to press B twice — once to
      * create, once to actually enter plan mode after the ghost arrives. */
     float plan_mode_grace_until;
+    /* CONTRACTS tab selective delivery: -1 = no selection (E delivers
+     * everything matching), otherwise the contract index whose
+     * commodity will be the only one delivered on next E press. */
+    int selected_contract;
     /* --- Module interaction --- */
     int target_station;      /* station index of targeted module, -1 = none */
     int target_module;       /* module index within station, -1 = none */

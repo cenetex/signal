@@ -513,6 +513,14 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
                 intent->buy_scaffold_kit = true;
                 intent->scaffold_kit_module = (module_type_t)(action - NET_ACTION_BUY_SCAFFOLD_TYPED);
             }
+            /* NET_ACTION_DELIVER_COMMODITY + commodity (70..70+COMMODITY_COUNT)
+             * — selective fulfillment from the contracts tab. Sets
+             * service_sell with a one-shot filter so try_sell_station_cargo
+             * only consumes the chosen commodity. */
+            else if (action >= NET_ACTION_DELIVER_COMMODITY && action < NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT) {
+                intent->service_sell = true;
+                intent->service_sell_only = (commodity_t)(action - NET_ACTION_DELIVER_COMMODITY);
+            }
             break;
         }
     }

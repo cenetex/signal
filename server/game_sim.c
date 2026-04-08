@@ -2053,10 +2053,18 @@ static void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_
 static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
     float payout = 0.0f;
+    /* Optional one-shot filter: if the client requested selective
+     * delivery via NET_ACTION_DELIVER_COMMODITY, only commodities
+     * matching `filter` are delivered. COMMODITY_COUNT (the default)
+     * means "deliver everything that fits", which is the legacy
+     * "deliver all" behavior triggered by NET_ACTION_SELL_CARGO. */
+    commodity_t filter = sp->input.service_sell_only;
+    bool selective = (filter < COMMODITY_COUNT);
 
     /* Station buys its primary input commodity from the player */
     commodity_t buy = station_primary_buy(st);
-    if ((int)buy >= 0 && sp->ship.cargo[buy] > 0.01f) {
+    if ((int)buy >= 0 && sp->ship.cargo[buy] > 0.01f &&
+        (!selective || filter == buy)) {
         float capacity = (buy < COMMODITY_RAW_ORE_COUNT)
             ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
         float space = capacity - st->inventory[buy];
@@ -2094,6 +2102,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         if (ct->station_index != sp->current_station) continue;
         commodity_t c = ct->commodity;
         if (c == buy) continue; /* already handled above */
+        if (selective && filter != c) continue;
         if (sp->ship.cargo[c] < 0.01f) continue;
         float capacity = (c < COMMODITY_RAW_ORE_COUNT)
             ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
@@ -2116,6 +2125,9 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         SIM_LOG("[sim] player %d sold cargo for %.0f cr\n", sp->id, payout);
         emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
     }
+    /* Clear the one-shot filter so the next plain SELL_CARGO press
+     * resumes the default "deliver all" behavior. */
+    sp->input.service_sell_only = COMMODITY_COUNT;
 }
 
 static void try_repair_ship(world_t *w, server_player_t *sp) {
@@ -4837,6 +4849,9 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->nearby_station  = 0;
     sp->in_dock_range   = true;
     sp->hover_asteroid  = -1;
+    /* Default to "deliver everything matching" — selective delivery
+     * is opt-in via NET_ACTION_DELIVER_COMMODITY. */
+    sp->input.service_sell_only = COMMODITY_COUNT;
     anchor_ship_in_station(sp, w);
 }
 

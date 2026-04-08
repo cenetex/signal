@@ -114,6 +114,7 @@ input_intent_t sample_input_intent(void) {
     intent.plan_ring = -1;
     intent.plan_slot = -1;
     intent.cancel_planned_station = -1;
+    intent.service_sell_only = COMMODITY_COUNT; /* default: deliver all */
 
     if (is_key_down(SAPP_KEYCODE_A) || is_key_down(SAPP_KEYCODE_LEFT)) {
         intent.turn += 1.0f;
@@ -184,8 +185,12 @@ input_intent_t sample_input_intent(void) {
             }
         }
     }
-    /* E key: activate targeted module, or dock/launch if no target */
-    if (is_key_pressed(SAPP_KEYCODE_E)) {
+    /* E key: activate targeted module, or dock/launch if no target.
+     * Special case: while docked on the CONTRACTS tab, [E] is the
+     * "deliver" key (handled in the per-tab block below), not launch. */
+    bool e_handled_by_contracts_tab =
+        LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONTRACTS;
+    if (is_key_pressed(SAPP_KEYCODE_E) && !e_handled_by_contracts_tab) {
         if (LOCAL_PLAYER.docked) {
             /* Launch */
             intent.interact = true;
@@ -243,34 +248,92 @@ input_intent_t sample_input_intent(void) {
             shown++;
         }
     } else if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONTRACTS) {
-        /* Contracts tab: 1/2/3 track contract */
-        for (int k = 0; k < 3; k++) {
-            if (!is_key_pressed(SAPP_KEYCODE_1 + k)) continue;
+        /* Contracts tab keys:
+         *   [1/2/3] select a contract slot for selective delivery
+         *   [E]     deliver — selective if a slot is selected, else all
+         *
+         * The display in station_ui.c sorts deliverable contracts first
+         * so [1] usually picks "the contract you can fulfill right now".
+         * Selecting via [1/2/3] also tracks that contract for the HUD.
+         *
+         * The selection persists until [E] consumes it or the player
+         * switches tabs. Player walks away with their iridium intact
+         * by selecting the ferrite contract before pressing E. */
+        const station_t *here_st = current_station_ptr();
+        int here_idx = LOCAL_PLAYER.current_station;
+
+        /* Re-derive the same slot ordering as station_ui.c so the
+         * keypress maps to the visible row. */
+        int slot_contract[3] = {-1, -1, -1};
+        int slot_count = 0;
+        for (int ci = 0; ci < MAX_CONTRACTS && slot_count < 3; ci++) {
+            const contract_t *ct = &g.world.contracts[ci];
+            if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
+            if (here_idx < 0 || ct->station_index != here_idx) continue;
+            if (LOCAL_PLAYER.ship.cargo[ct->commodity] < 0.5f) continue;
+            slot_contract[slot_count++] = ci;
+        }
+        if (slot_count < 3 && here_st) {
             int nearest[3] = {-1, -1, -1};
             float nearest_d[3] = {1e18f, 1e18f, 1e18f};
-            const station_t *here_st = current_station_ptr();
-            if (!here_st) break;
             vec2 here = here_st->pos;
             for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
-                contract_t *ct = &g.world.contracts[ci];
+                const contract_t *ct = &g.world.contracts[ci];
                 if (!ct->active || ct->station_index >= MAX_STATIONS) continue;
                 if (!station_exists(&g.world.stations[ct->station_index])) continue;
+                bool already = false;
+                for (int s = 0; s < slot_count; s++)
+                    if (slot_contract[s] == ci) { already = true; break; }
+                if (already) continue;
                 vec2 target = (ct->action == CONTRACT_TRACTOR) ? g.world.stations[ct->station_index].pos : ct->target_pos;
                 float d = v2_dist_sq(here, target);
-                for (int slot = 0; slot < 3; slot++) {
-                    if (d < nearest_d[slot]) {
-                        for (int j = 2; j > slot; j--) { nearest[j] = nearest[j-1]; nearest_d[j] = nearest_d[j-1]; }
-                        nearest[slot] = ci;
-                        nearest_d[slot] = d;
+                for (int s = 0; s < 3; s++) {
+                    if (d < nearest_d[s]) {
+                        for (int j = 2; j > s; j--) { nearest[j] = nearest[j-1]; nearest_d[j] = nearest_d[j-1]; }
+                        nearest[s] = ci;
+                        nearest_d[s] = d;
                         break;
                     }
                 }
             }
-            if (nearest[k] >= 0) {
-                g.tracked_contract = nearest[k];
-                set_notice("Contract tracked.");
+            for (int s = 0; s < 3 && slot_count < 3; s++) {
+                if (nearest[s] >= 0) slot_contract[slot_count++] = nearest[s];
             }
+        }
+
+        /* [1/2/3] select a contract slot. */
+        for (int k = 0; k < 3; k++) {
+            if (!is_key_pressed(SAPP_KEYCODE_1 + k)) continue;
+            if (slot_contract[k] < 0) break;
+            g.selected_contract = slot_contract[k];
+            g.tracked_contract = slot_contract[k];
+            const contract_t *ct = &g.world.contracts[slot_contract[k]];
+            set_notice("Selected: %s. [E] deliver.",
+                       commodity_short_name(ct->commodity));
             break;
+        }
+
+        /* [E] deliver. Selective if a slot is selected, else everything. */
+        if (is_key_pressed(SAPP_KEYCODE_E)) {
+            if (g.selected_contract >= 0 && g.selected_contract < MAX_CONTRACTS) {
+                const contract_t *ct = &g.world.contracts[g.selected_contract];
+                if (ct->active) {
+                    intent.service_sell = true;
+                    intent.service_sell_only = ct->commodity;
+                    set_notice("Delivering %s...",
+                               commodity_short_name(ct->commodity));
+                } else {
+                    /* Selected contract was completed/cancelled; fall back. */
+                    intent.service_sell = true;
+                    intent.service_sell_only = COMMODITY_COUNT;
+                    set_notice("Delivering all matching cargo...");
+                }
+                g.selected_contract = -1;
+            } else {
+                intent.service_sell = true;
+                intent.service_sell_only = COMMODITY_COUNT;
+                set_notice("Delivering all matching cargo...");
+            }
         }
     } else {
         /* Default: service keys */
@@ -605,7 +668,9 @@ void submit_input(const input_intent_t *intent, float dt) {
                 LOCAL_PLAYER.docked = false;
                 LOCAL_PLAYER.in_dock_range = false;
             }
-        } else if (intent->service_sell)
+        } else if (intent->service_sell && intent->service_sell_only < COMMODITY_COUNT)
+            g.pending_net_action = NET_ACTION_DELIVER_COMMODITY + (uint8_t)intent->service_sell_only;
+        else if (intent->service_sell)
             g.pending_net_action = 3;
         else if (intent->service_repair)
             g.pending_net_action = 4;

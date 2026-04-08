@@ -79,6 +79,12 @@ typedef struct {
     bool mine;
     bool interact;
     bool service_sell;
+    /* Selective delivery filter for service_sell. COMMODITY_COUNT means
+     * "deliver everything that fits a contract or the primary buy slot"
+     * (the default). Setting this to a specific commodity restricts the
+     * delivery to that one commodity, so the player can keep e.g. their
+     * crystal cargo while still delivering ferrite. */
+    commodity_t service_sell_only;
     bool service_repair;
     bool upgrade_mining;
     bool upgrade_hold;

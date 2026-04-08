@@ -109,6 +109,7 @@ static void reset_world(void) {
 
     g.local_player_slot = 0;
     g.tracked_contract = -1;
+    g.selected_contract = -1;
     g.target_station = -1;
     g.target_module = -1;
     g.inspect_station = -1;
@@ -515,6 +516,7 @@ static void sim_step(float dt) {
         /* Just docked — reset to overview (or construction for scaffolds) */
         const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
         g.station_tab = STATION_TAB_STATUS;
+        g.selected_contract = -1; /* fresh dock — no carryover selection */
         /* Clear blueprint pip if we docked at the blueprint station */
         if (g.nav_pip_is_blueprint) {
             float d = sqrtf(v2_dist_sq(st->pos, g.nav_pip_pos));
@@ -542,6 +544,7 @@ static void sim_step(float dt) {
         for (int i = 0; i < vtab_count; i++) { if (vtabs[i] == g.station_tab) { cur = i; break; } }
         int dir = is_key_pressed(SAPP_KEYCODE_TAB) ? 1 : (vtab_count - 1);
         g.station_tab = vtabs[(cur + dir) % vtab_count];
+        g.selected_contract = -1; /* tab change clears stale selection */
     }
 
     submit_input(&intent, dt);
