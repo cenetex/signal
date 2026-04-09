@@ -4200,16 +4200,20 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         break;
     }
     case AUTOPILOT_STEP_COLLECT: {
-        /* Sweep nearby fragments by toggling tractor on (already on by
-         * default) and gently moving toward the densest fragment cluster. */
+        /* Sweep nearby fragments only — DON'T chase fragments across
+         * the world. The COLLECT state is for the cluster spawned by
+         * the rock we just fractured, not for vacuuming the belt.
+         * Once nothing's within ~600u, return home with what we have. */
         sp->ship.tractor_active = true;
         sp->input.mine = false;
+        const float collect_range_sq = 600.0f * 600.0f;
         int best = -1;
         float best_d = 1e18f;
         for (int i = 0; i < MAX_ASTEROIDS; i++) {
             const asteroid_t *a = &w->asteroids[i];
             if (!a->active || !asteroid_is_collectible(a)) continue;
             float d = v2_dist_sq(sp->ship.pos, a->pos);
+            if (d > collect_range_sq) continue; /* too far — leave it */
             if (d < best_d) { best_d = d; best = i; }
         }
         if (best < 0 || autopilot_hold_full(&sp->ship)) {
