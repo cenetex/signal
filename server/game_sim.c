@@ -3860,6 +3860,18 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         sp->autopilot_timer = 0.0f;
     }
 
+    /* Tractor management: keep the tractor ON whenever we're in a
+     * field state, so fragments from fractured rocks are pulled in
+     * the instant they appear. RETURN_TO_REFINERY explicitly drops
+     * the tractor on station approach (via release_tow toggle), and
+     * DOCK/SELL/LAUNCH leave it however RETURN left it. */
+    if (sp->autopilot_state == AUTOPILOT_STEP_FIND_TARGET ||
+        sp->autopilot_state == AUTOPILOT_STEP_FLY_TO_TARGET ||
+        sp->autopilot_state == AUTOPILOT_STEP_MINE ||
+        sp->autopilot_state == AUTOPILOT_STEP_COLLECT) {
+        sp->ship.tractor_active = true;
+    }
+
     /* Mode 1: mining loop. */
     switch (sp->autopilot_state) {
     case AUTOPILOT_STEP_FIND_TARGET: {
