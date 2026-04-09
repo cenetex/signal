@@ -4088,12 +4088,10 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float facing = cosf(diff);
 
         /* Velocity-controlled approach: compute target speed from distance,
-         * then use thrust/reverse to hold that speed. The desired speed
-         * tapers from MAX_APPROACH_SPEED down to 0 at the standoff. */
-        const float MAX_APPROACH_SPEED = 240.0f;
+         * then use thrust/reverse to hold that speed. */
+        const float MAX_APPROACH_SPEED = 150.0f;
         float target_speed = autopilot_approach_speed(effective_dist, MAX_APPROACH_SPEED);
-        /* Project the current velocity onto the forward axis (toward target).
-         * If we're moving sideways or backwards, approach_v can be negative. */
+        /* Project the current velocity onto the forward axis (toward target). */
         vec2 to_target_dir = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
         if (dist_to_a > 0.5f) {
             to_target_dir = v2_scale(v2_sub(a->pos, sp->ship.pos), 1.0f / dist_to_a);
@@ -4101,12 +4099,25 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float approach_v = v2_dot(sp->ship.vel, to_target_dir);
         float thrust_cmd = autopilot_speed_control(approach_v, target_speed);
 
-        /* Don't push forward while turning hard around an obstacle.
-         * Brake is always allowed (we want to slow down). */
-        if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
-        /* Honor the avoidance brake factor on forward thrust only. */
-        if (thrust_cmd > 0.0f) thrust_cmd *= pa.thrust_scale;
-        sp->input.thrust = thrust_cmd;
+        if (pa.blocked) {
+            /* HARD brake — the path is blocked by a station ring or
+             * other unavoidable obstacle. Force reverse thrust until
+             * we're slow enough that the rotation can find a way
+             * around. The avoidance steering keeps trying to bend
+             * the heading toward an opening; we just have to not
+             * crash while it works. */
+            float current_speed = sqrtf(v2_len_sq(sp->ship.vel));
+            if (current_speed > 25.0f) {
+                sp->input.thrust = -1.0f;
+            } else {
+                /* Slow enough to maneuver — coast and let turn find a gap. */
+                sp->input.thrust = 0.0f;
+            }
+        } else {
+            /* Path clear — normal velocity-controlled approach. */
+            if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
+            sp->input.thrust = thrust_cmd;
+        }
         sp->input.mine = false;
 
         /* Stuck-fly safety: if we've been flying >60s and haven't arrived,
@@ -4263,17 +4274,29 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float diff = wrap_angle(desired - sp->ship.angle);
         sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
         float facing = cosf(diff);
-        float throttle = pa.thrust_scale * ((facing > 0.6f) ? 1.0f : 0.0f);
-        /* Brake earlier on station approach: slow from ~600u out so the
-         * dock berth lerp can do its job without a high-speed slam. */
         float dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
-        if (dist < 600.0f) {
-            float t = (dist - 200.0f) / 400.0f;
-            if (t < 0.0f) t = 0.0f;
-            if (t > 1.0f) t = 1.0f;
-            throttle *= t;
+
+        if (pa.blocked) {
+            /* HARD brake — same as FLY_TO_TARGET. The path is blocked
+             * (probably a station ring); stop and let rotation find
+             * the gap. */
+            float current_speed = sqrtf(v2_len_sq(sp->ship.vel));
+            if (current_speed > 25.0f) {
+                sp->input.thrust = -1.0f;
+            } else {
+                sp->input.thrust = 0.0f;
+            }
+        } else {
+            /* Path clear — normal approach with distance-based brake. */
+            float throttle = (facing > 0.6f) ? 1.0f : 0.0f;
+            if (dist < 600.0f) {
+                float t = (dist - 200.0f) / 400.0f;
+                if (t < 0.0f) t = 0.0f;
+                if (t > 1.0f) t = 1.0f;
+                throttle *= t;
+            }
+            sp->input.thrust = throttle;
         }
-        sp->input.thrust = throttle;
         sp->input.mine = false;
         if (dist < DOCK_APPROACH_RANGE && sp->in_dock_range) {
             sp->input.interact = true;
