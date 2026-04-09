@@ -65,10 +65,12 @@ static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_
     write_f32_le(&buf[18], sp->ship.angle);
     uint8_t flags = 0;
     if (sp->actual_thrusting) flags |= 1;
-    if (sp->beam_active && sp->beam_hit) flags |= 2;
+    if (sp->beam_active) flags |= 2;
     if (sp->docked) flags |= 4;
     if (sp->scan_active) flags |= 8;
     if (sp->ship.tractor_active) flags |= 16;
+    if (sp->beam_ineffective) flags |= 32;
+    if (sp->beam_hit) flags |= 64;
     buf[22] = flags;
     buf[23] = (uint8_t)sp->ship.tractor_level;
     buf[24] = sp->ship.towed_count;

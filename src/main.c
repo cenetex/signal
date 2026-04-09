@@ -149,11 +149,15 @@ static void reset_world(void) {
 
 static void reset_step_feedback(void) {
     LOCAL_PLAYER.hover_asteroid = -1;
-    LOCAL_PLAYER.beam_active = false;
-    LOCAL_PLAYER.beam_hit = false;
+    /* Beam state is server-authoritative in multiplayer — don't clear it
+     * here or we wipe what apply_remote_player_state just set before
+     * render gets a chance to draw it. In singleplayer the local server
+     * mirror overwrites beam state every tick anyway. */
+    if (!g.multiplayer_enabled) {
+        LOCAL_PLAYER.beam_active = false;
+        LOCAL_PLAYER.beam_hit = false;
+    }
     g.thrusting = false;
-    /* nearby/tractor fragment counts are reset inside step_fragment_collection
-     * on the authoritative sim — don't zero them here, the sync carries them. */
 }
 
 /* sample_input_intent: see input.h/c */
