@@ -1236,6 +1236,92 @@ static path_avoidance_t compute_path_avoidance(const world_t *w, vec2 pos, vec2 
             }
         }
 
+        /* Ring-radial wall check — the killer feature. A station's rings
+         * are continuous circular walls except at dock module positions.
+         * Local steering can't see the walls (they're continuous, not
+         * discrete obstacles). Instead, we cast the forward ray against
+         * each ring's circular boundary; if the crossing is NOT at a
+         * dock gap angle, treat the ring as a wall and STEER TOWARD the
+         * nearest dock gap on that ring.
+         *
+         * This makes ships naturally find dock gaps even when arriving
+         * from arbitrary angles. */
+        for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
+            float ring_r = STATION_RING_RADIUS[ring];
+            /* Ray-circle intersection. Local space relative to station. */
+            vec2 lp = v2_sub(pos, st->pos);
+            float bb = 2.0f * v2_dot(lp, forward);
+            float cc = v2_len_sq(lp) - ring_r * ring_r;
+            float disc = bb * bb - 4.0f * cc;
+            if (disc < 0.0f) continue; /* ray misses ring entirely */
+            float sqd = sqrtf(disc);
+            float t1 = (-bb - sqd) * 0.5f;
+            float t2 = (-bb + sqd) * 0.5f;
+            float t = -1.0f;
+            /* Closest forward intersection within lookahead */
+            if (t1 > 0.0f && t1 < lookahead) t = t1;
+            else if (t2 > 0.0f && t2 < lookahead) t = t2;
+            if (t < 0.0f) continue;
+
+            /* Crossing point relative to station */
+            vec2 cross_local = v2_add(lp, v2_scale(forward, t));
+            float cross_ang = atan2f(cross_local.y, cross_local.x);
+
+            /* Is the crossing angle aligned with a dock module on this ring? */
+            const float dock_gap_half = 0.30f; /* ~17° each side */
+            bool in_gap = false;
+            for (int mi = 0; mi < st->module_count; mi++) {
+                if (st->modules[mi].ring != ring) continue;
+                if (st->modules[mi].type != MODULE_DOCK) continue;
+                if (st->modules[mi].scaffold) continue;
+                float dock_ang = module_angle_ring(st, ring, st->modules[mi].slot);
+                float adiff = wrap_angle(cross_ang - dock_ang);
+                if (fabsf(adiff) < dock_gap_half) { in_gap = true; break; }
+            }
+            /* If the ring has NO dock at all, also treat it as a "first
+             * pass" target — ships approaching from outside should at
+             * least slow at the wall. */
+            if (in_gap) continue;
+
+            /* Wall hit. Steer toward the nearest dock-gap angle on this
+             * ring (so the ship rotates around the station to find a
+             * gap), and brake based on closeness. */
+            float best_dock_ang = cross_ang;
+            float best_diff = 1e9f;
+            bool found_dock = false;
+            for (int mi = 0; mi < st->module_count; mi++) {
+                if (st->modules[mi].ring != ring) continue;
+                if (st->modules[mi].type != MODULE_DOCK) continue;
+                if (st->modules[mi].scaffold) continue;
+                float dock_ang = module_angle_ring(st, ring, st->modules[mi].slot);
+                float adiff = fabsf(wrap_angle(cross_ang - dock_ang));
+                if (adiff < best_diff) { best_diff = adiff; best_dock_ang = dock_ang; found_dock = true; }
+            }
+            out.blocked = true;
+            float urgency = 1.0f - (t / lookahead);
+            /* Hard brake — ring walls are non-negotiable */
+            float closeness = urgency;
+            if (closeness > worst_brake) worst_brake = closeness;
+
+            if (found_dock) {
+                /* Aim at a point slightly outside the ring at the dock
+                 * angle, so the ship rotates around the station tangentially
+                 * to find the gap. */
+                float aim_r = ring_r + 80.0f;
+                vec2 dock_world = v2_add(st->pos,
+                    v2(cosf(best_dock_ang) * aim_r, sinf(best_dock_ang) * aim_r));
+                /* Override desired_dir toward this aim point — the ring
+                 * wall trumps individual obstacle steering. */
+                vec2 to_dock = v2_sub(dock_world, pos);
+                float ld = sqrtf(v2_len_sq(to_dock));
+                if (ld > 0.001f) {
+                    out.desired_dir = v2_scale(to_dock, 1.0f / ld);
+                    /* Reset perp accumulator since we're overriding */
+                    steer_accum = 0.0f;
+                }
+            }
+        }
+
         /* Corridor arcs — sample the arc at multiple points and treat each
          * as a small circle obstacle. The corridors are the "walls"
          * between modules; without these the ship steers between modules
@@ -3706,6 +3792,22 @@ static bool autopilot_hold_empty(const ship_t *s) {
     return true;
 }
 
+/* True if the ship is damaged enough that the autopilot should bail
+ * out of mining and return for repair. Also returns true any time
+ * we've ALREADY started returning (so the threshold doesn't oscillate
+ * if the hull regenerates back to 80%+ momentarily). */
+static bool autopilot_needs_repair(const ship_t *s) {
+    float max = ship_max_hull(s);
+    if (max <= 0.0f) return false;
+    return (s->hull / max) < 0.80f;
+}
+
+static bool autopilot_hull_full(const ship_t *s) {
+    float max = ship_max_hull(s);
+    if (max <= 0.0f) return true;
+    return s->hull >= max - 0.5f;
+}
+
 /* Velocity-controlled approach: returns the thrust input (-1..1) needed
  * to hold the ship at a target speed along its forward axis, given its
  * current approach velocity along that axis. -1 = full reverse thrust,
@@ -3743,6 +3845,20 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
     if (sp->autopilot_mode == 0) return;
 
     sp->autopilot_timer += dt;
+
+    /* Damage check: if hull dropped below 80%, bail out of mining and
+     * return to a refinery for repair. The ship will hold in dock
+     * until hull is at 100% before relaunching (handled in SELL state).
+     * Skip the bail if we're already heading home or docked. */
+    if (autopilot_needs_repair(&sp->ship) &&
+        sp->autopilot_state != AUTOPILOT_STEP_RETURN_TO_REFINERY &&
+        sp->autopilot_state != AUTOPILOT_STEP_DOCK &&
+        sp->autopilot_state != AUTOPILOT_STEP_SELL &&
+        sp->autopilot_state != AUTOPILOT_STEP_LAUNCH) {
+        sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+        sp->autopilot_target = -1;
+        sp->autopilot_timer = 0.0f;
+    }
 
     /* Mode 1: mining loop. */
     switch (sp->autopilot_state) {
@@ -3970,6 +4086,15 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         }
         const station_t *st = &w->stations[s];
         sp->autopilot_target = s;
+        /* Once we're inside hopper-pull range of the destination, release
+         * the tractor so towed fragments drop free and get caught by the
+         * station's smelt beams. We only do this once per delivery —
+         * otherwise the toggle would flip back on every tick. */
+        float station_dist_sq = v2_dist_sq(sp->ship.pos, st->pos);
+        if (station_dist_sq < 600.0f * 600.0f &&
+            sp->ship.tractor_active && sp->ship.towed_count > 0) {
+            sp->input.release_tow = true;
+        }
         /* Path avoidance toward the dock approach point (offset from
          * the station center so we don't head straight at the core).
          * Skip the player's towed fragments so we don't dodge our own
@@ -4026,14 +4151,29 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
-        sp->input.service_sell = true;
-        sp->input.service_sell_only = COMMODITY_COUNT; /* deliver all */
-        if (sp->autopilot_timer > 0.6f) {
-            /* Allow one frame for delivery to settle, then launch */
-            sp->input.interact = true;
-            sp->autopilot_state = AUTOPILOT_STEP_LAUNCH;
-            sp->autopilot_timer = 0.0f;
+        /* Phase 1 (first ~0.6s): trigger sell + repair, then hold while
+         * the docked passive heal brings hull back up. The 0.6s gives
+         * the sim a few sub-steps to process the sell action and the
+         * repair action before we start checking hull. */
+        if (sp->autopilot_timer < 0.6f) {
+            sp->input.service_sell = true;
+            sp->input.service_sell_only = COMMODITY_COUNT;
+            /* If a repair bay exists at this station, also pay for an
+             * instant repair. Falls back to passive heal if not. */
+            sp->input.service_repair = true;
+            break;
         }
+        /* Phase 2: wait until hull is full before launching. The dock
+         * passive heal is 8 hp/sec — even from 0%, that's <15s for the
+         * miner hull (100 max). The autopilot just sits in dock. */
+        if (!autopilot_hull_full(&sp->ship)) {
+            /* Stay docked, no action needed. Loop again next tick. */
+            break;
+        }
+        /* Hull repaired AND cargo sold — launch back into the field. */
+        sp->input.interact = true;
+        sp->autopilot_state = AUTOPILOT_STEP_LAUNCH;
+        sp->autopilot_timer = 0.0f;
         break;
     }
     case AUTOPILOT_STEP_LAUNCH: {
