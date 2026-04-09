@@ -59,6 +59,13 @@ enum {
     NET_PLAN_OP_CREATE_OUTPOST    = 1, /* uses px,py */
     NET_PLAN_OP_ADD_SLOT          = 2, /* uses station,ring,slot,module_type */
     NET_PLAN_OP_CANCEL_OUTPOST    = 3, /* uses station */
+    /* Atomic create + first plan: outpost is born at (px,py) AND the
+     * first slot plan is added in the same input pulse. The client uses
+     * this when leaving "ghost preview" mode so the lock-in position is
+     * the player's current ship pos at the moment they pressed E. */
+    NET_PLAN_OP_CREATE_AND_ADD    = 4, /* uses px,py + ring,slot,module_type */
+    /* Cancel a single plan slot (red/clear state). */
+    NET_PLAN_OP_CANCEL_PLAN_SLOT  = 5, /* uses station,ring,slot */
 };
 
 #define NET_PLAN_MSG_SIZE 14

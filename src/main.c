@@ -261,10 +261,12 @@ static void process_sim_events(const sim_events_t *events) {
                 break;
             }
             case SIM_EVENT_OUTPOST_PLACED: {
-                /* If we just created a planned outpost, remember its
-                 * station index so the next frame's input loop can target it. */
+                /* Transition from ghost preview to real plan mode:
+                 * the server just created the planned station at the
+                 * position where the player locked it. */
                 if (ev->player_id == g.local_player_slot) {
                     g.plan_target_station = ev->outpost_placed.slot;
+                    g.placement_target_station = ev->outpost_placed.slot;
                 }
                 break;
             }
@@ -424,6 +426,8 @@ static void sim_step(float dt) {
         g.commission_timer = fmaxf(0.0f, g.commission_timer - dt);
     if (g.hail_timer > 0.0f)
         g.hail_timer = fmaxf(0.0f, g.hail_timer - dt);
+    if (g.outpost_lock_timer > 0.0f)
+        g.outpost_lock_timer = fmaxf(0.0f, g.outpost_lock_timer - dt);
 
     /* Smoothed fog intensity. Tracks 1 - hull/max_hull, but eases in
      * (slow ramp up) and out (faster ramp down) so the vignette rolls
@@ -577,7 +581,14 @@ static void sim_step(float dt) {
     g.npc_interp.t += dt / fmaxf(g.npc_interp.interval, 0.01f);
     g.player_interp.t += dt / fmaxf(g.player_interp.interval, 0.01f);
 
-    g.thrusting = (intent.thrust > 0.0f) && !LOCAL_PLAYER.docked;
+    /* Thrust flame: local input for manual, server input for autopilot.
+     * In SP the local server mirrors input.thrust; in MP the PLAYER_STATE
+     * flags carry bit0=thrust which we decode into g.server_thrusting. */
+    if (LOCAL_PLAYER.autopilot_mode) {
+        g.thrusting = g.server_thrusting && !LOCAL_PLAYER.docked;
+    } else {
+        g.thrusting = (intent.thrust > 0.0f) && !LOCAL_PLAYER.docked;
+    }
 
     /* Play audio from sim events (singleplayer only — multiplayer has no server events) */
     process_sim_events(&g.world.events);

@@ -266,6 +266,13 @@ void apply_remote_player_state(const NetPlayerState* state) {
         sp->scan_active      = (state->flags & 8) != 0;
         sp->beam_start = v2(state->beam_start_x, state->beam_start_y);
         sp->beam_end   = v2(state->beam_end_x,   state->beam_end_y);
+        /* Tractor active is server-authoritative — autopilot owns it
+         * server-side and the client never predicts toggles in MP mode.
+         * Without this, the HUD shows stale "TRACTOR OFF" while the
+         * server is actively pulling fragments. */
+        sp->ship.tractor_active = (state->flags & 16) != 0;
+        /* Thrust flag — drives flame visual when autopilot is active. */
+        g.server_thrusting = (state->flags & 1) != 0;
     } else {
         /* Remote player: update curr for interpolation.
          * begin_player_state_batch() already shifted prev←curr. */

@@ -64,7 +64,7 @@ static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_
     write_f32_le(&buf[14], sp->ship.vel.y);
     write_f32_le(&buf[18], sp->ship.angle);
     uint8_t flags = 0;
-    if (sp->input.thrust > 0.0f) flags |= 1;
+    if (sp->actual_thrusting) flags |= 1;
     if (sp->beam_active && sp->beam_hit) flags |= 2;
     if (sp->docked) flags |= 4;
     if (sp->scan_active) flags |= 8;
@@ -97,7 +97,7 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
         write_f32_le(&p[13], players[i].ship.vel.y);
         write_f32_le(&p[17], players[i].ship.angle);
         uint8_t flags = 0;
-        if (players[i].input.thrust > 0.0f) flags |= 1;
+        if (players[i].actual_thrusting) flags |= 1;
         /* bit 1 was "beam_active && beam_hit" — now just "beam_active" so
          * the client can render the beam even when it's firing into empty
          * space (no rock target). beam_hit is implied by the beam_end
@@ -589,6 +589,26 @@ static inline void parse_plan(const uint8_t *data, int len, input_intent_t *inte
     case NET_PLAN_OP_CANCEL_OUTPOST:
         intent->cancel_planned_outpost = true;
         intent->cancel_planned_station = station;
+        break;
+    case NET_PLAN_OP_CREATE_AND_ADD:
+        /* Atomic create + first plan: born at (px,py), plan at ring/slot/type.
+         * plan_station=-2 is a sentinel resolved at processing time. */
+        intent->create_planned_outpost = true;
+        intent->planned_outpost_pos.x = px;
+        intent->planned_outpost_pos.y = py;
+        if ((int)mtype < MODULE_COUNT) {
+            intent->add_plan = true;
+            intent->plan_station = -2; /* sentinel: just-created station */
+            intent->plan_ring = ring;
+            intent->plan_slot = slot;
+            intent->plan_type = (module_type_t)mtype;
+        }
+        break;
+    case NET_PLAN_OP_CANCEL_PLAN_SLOT:
+        intent->cancel_plan_slot = true;
+        intent->cancel_plan_st = station;
+        intent->cancel_plan_ring = ring;
+        intent->cancel_plan_sl = slot;
         break;
     default:
         break;

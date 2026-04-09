@@ -725,7 +725,7 @@ TEST(test_roundtrip_player_state) {
     sp.ship.vel = v2(1.5f, -2.5f);
     sp.ship.angle = 2.34f;
     sp.docked = true;
-    sp.input.thrust = 1.0f;
+    sp.actual_thrusting = true;
     sp.beam_active = true;
     sp.beam_hit = true;
 
@@ -760,7 +760,7 @@ TEST(test_roundtrip_batched_player_states) {
     players[0].ship.pos = v2(100.0f, 200.0f);
     players[0].ship.vel = v2(1.0f, -1.0f);
     players[0].ship.angle = 1.5f;
-    players[0].input.thrust = 1.0f;
+    players[0].actual_thrusting = true;
     players[0].docked = false;
 
     players[3].connected = true;

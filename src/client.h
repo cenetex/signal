@@ -88,6 +88,7 @@ typedef struct {
     input_state_t input;
     star_t stars[MAX_STARS];
     bool thrusting;
+    bool server_thrusting;  /* server-authoritative thrust (for autopilot flames) */
     char notice[128];
     float notice_timer;
     float collection_feedback_ore;
@@ -164,12 +165,16 @@ typedef struct {
     /* --- Plan mode (B near outpost or planned outpost, not towing) --- */
     bool plan_mode_active;
     int plan_type;                 /* module_type_t cycled with R */
-    int plan_target_station;       /* server-side station index being planned (-1 = none) */
+    int plan_target_station;       /* server-side station index being planned (-1 = ghost, >=3 = real) */
     /* Grace window after pressing B in empty space: stay in plan mode
      * until the server-created planned outpost shows up in reticle
      * targets. Without this, the user has to press B twice — once to
      * create, once to actually enter plan mode after the ghost arrives. */
     float plan_mode_grace_until;
+    /* Lock effect: flash/pulse at the position where a planned outpost
+     * is locked by its first placement plan. */
+    float outpost_lock_timer;
+    vec2  outpost_lock_pos;
     /* CONTRACTS tab selective delivery: -1 = no selection (E delivers
      * everything matching), otherwise the contract index whose
      * commodity will be the only one delivered on next E press. */

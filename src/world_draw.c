@@ -1382,16 +1382,23 @@ void draw_compass_ring(void) {
     if (g.nav_pip_active && g.nav_pip_is_blueprint)
         COMPASS_PIP(g.nav_pip_pos, 1.0f, 0.87f, 0.20f);
 
-    /* Nearest minable asteroid pip (red) */
+    /* Nearest minable asteroid pip (red) — filtered by mining level
+     * so the pip matches what the autopilot would target. */
     {
         float best_d = 1e18f;
         vec2 best_pos = ship;
         bool found = false;
+        /* Inline max_mineable_tier: level 0→M, 1→L, 2→XL */
+        asteroid_tier_t max_tier = (LOCAL_PLAYER.ship.mining_level >= 2) ? ASTEROID_TIER_XL
+                                 : (LOCAL_PLAYER.ship.mining_level >= 1) ? ASTEROID_TIER_L
+                                 : ASTEROID_TIER_M;
         for (int i = 0; i < MAX_ASTEROIDS; i++) {
-            if (!g.world.asteroids[i].active) continue;
-            if (asteroid_is_collectible(&g.world.asteroids[i])) continue;
-            float d = v2_dist_sq(g.world.asteroids[i].pos, ship);
-            if (d < best_d) { best_d = d; best_pos = g.world.asteroids[i].pos; found = true; }
+            const asteroid_t *a = &g.world.asteroids[i];
+            if (!a->active) continue;
+            if (a->tier == ASTEROID_TIER_S) continue;
+            if ((int)a->tier < (int)max_tier) continue; /* too tough */
+            float d = v2_dist_sq(a->pos, ship);
+            if (d < best_d) { best_d = d; best_pos = a->pos; found = true; }
         }
         if (found) COMPASS_PIP(best_pos, 0.9f, 0.25f, 0.2f);
     }
@@ -1784,7 +1791,46 @@ void draw_placement_reticle(void) {
     /* Always draw existing plans on stations (active or planned) */
     draw_placement_plans();
 
-    /* Plan mode: draw the cycling-type ghost at the current target slot */
+    /* Ghost preview: draw wireframe rings around the player's ship. */
+    if (g.plan_mode_active && g.plan_target_station == -1) {
+        vec2 c = LOCAL_PLAYER.ship.pos;
+        float pulse = 0.4f + 0.3f * sinf(g.world.time * 2.5f);
+        /* Ring 1 wireframe (dashed cyan, same style as planned stations) */
+        float radius = STATION_RING_RADIUS[1];
+        int dashes = 32;
+        sgl_begin_lines();
+        sgl_c4f(0.4f, 0.85f, 1.0f, pulse * 0.6f);
+        for (int i = 0; i < dashes; i += 2) {
+            float a0 = TWO_PI_F * (float)i / (float)dashes;
+            float a1 = TWO_PI_F * (float)(i + 1) / (float)dashes;
+            sgl_v2f(c.x + cosf(a0) * radius, c.y + sinf(a0) * radius);
+            sgl_v2f(c.x + cosf(a1) * radius, c.y + sinf(a1) * radius);
+        }
+        sgl_end();
+        /* Center marker */
+        draw_circle_outline(c, 6.0f, 12, 0.4f, 1.0f, 1.0f, pulse);
+        /* Slot dots around ring 1 — all slots shown as small circles */
+        int slots_n = STATION_RING_SLOTS[1];
+        for (int slot = 0; slot < slots_n; slot++) {
+            float angle = TWO_PI_F * (float)slot / (float)slots_n;
+            vec2 sp = v2_add(c, v2(cosf(angle) * radius, sinf(angle) * radius));
+            bool active = (slot == g.placement_target_slot && g.placement_target_ring == 1);
+            if (active) {
+                float mr, mg, mb;
+                module_color_fn((module_type_t)g.plan_type, &mr, &mg, &mb);
+                float ap = 0.5f + 0.4f * sinf(g.world.time * 5.0f);
+                draw_circle_outline(sp, 32.0f, 24, mr, mg, mb, ap);
+                draw_circle_outline(sp, 26.0f, 24, mr, mg, mb, ap * 0.7f);
+                draw_circle_filled(sp, 6.0f, 8, mr, mg, mb, ap);
+            } else {
+                /* Green dot = empty slot available */
+                draw_circle_filled(sp, 4.0f, 8, 0.3f, 0.9f, 0.5f, pulse * 0.7f);
+            }
+        }
+    }
+
+    /* Plan mode on real station: draw the cycling-type ghost at the
+     * current target slot. */
     if (g.plan_mode_active && g.placement_target_station >= 0) {
         const station_t *st = &g.world.stations[g.placement_target_station];
         if (station_exists(st)) {
@@ -1808,6 +1854,16 @@ void draw_placement_reticle(void) {
             /* Tether line from ship to target */
             draw_segment(LOCAL_PLAYER.ship.pos, target, mr, mg, mb, pulse * 0.5f);
         }
+    }
+
+    /* Outpost lock effect: expanding ring flash at lock position. */
+    if (g.outpost_lock_timer > 0.0f) {
+        float t = 1.0f - (g.outpost_lock_timer / 1.5f); /* 0→1 over lifetime */
+        float expand_r = STATION_RING_RADIUS[1] * (0.8f + 0.5f * t);
+        float alpha = (1.0f - t) * 1.2f;
+        if (alpha > 1.0f) alpha = 1.0f;
+        draw_circle_outline(g.outpost_lock_pos, expand_r, 48, 0.4f, 1.0f, 0.8f, alpha);
+        draw_circle_outline(g.outpost_lock_pos, expand_r * 0.6f, 32, 0.6f, 1.0f, 1.0f, alpha * 0.6f);
     }
 
     if (!g.placement_reticle_active) return;

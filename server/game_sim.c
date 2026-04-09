@@ -1094,10 +1094,29 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     return best;
 }
 
-/* NPC approach: aim for the station core center. */
+/* Approach target: aim for the dock module on the side nearest `from`.
+ * This puts the ship on a heading that naturally threads a dock opening
+ * instead of flying into a corridor wall. Falls back to station center
+ * if no dock module exists. */
 static vec2 station_approach_target(const station_t *st, vec2 from) {
-    (void)from;
-    return st->pos;
+    float best_d = 1e18f;
+    vec2 best_pos = st->pos;
+    bool found = false;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type != MODULE_DOCK) continue;
+        if (st->modules[i].scaffold) continue;
+        vec2 mp = module_world_pos_ring(st, st->modules[i].ring, st->modules[i].slot);
+        /* Aim at a point slightly outside the ring so the ship approaches
+         * from outside rather than trying to cross through the core. */
+        vec2 outward = v2_sub(mp, st->pos);
+        float len = v2_len(outward);
+        if (len > 1.0f) {
+            mp = v2_add(mp, v2_scale(outward, 60.0f / len));
+        }
+        float d = v2_dist_sq(from, mp);
+        if (d < best_d) { best_d = d; best_pos = mp; found = true; }
+    }
+    return best_pos;
 }
 
 /* ================================================================== */
@@ -1424,6 +1443,308 @@ static path_avoidance_t compute_path_avoidance(const world_t *w, vec2 pos, vec2 
     return out;
 }
 
+/* ================================================================== */
+/* A* Pathfinding — sparse navigation graph through station docks     */
+/* ================================================================== */
+
+enum {
+    NAV_MAX_NODES = 96,
+    NAV_MAX_PATH  = 12,
+};
+
+typedef struct {
+    vec2 pos;
+} nav_node_t;
+
+typedef struct {
+    nav_node_t nodes[NAV_MAX_NODES];
+    int count;
+} nav_graph_t;
+
+typedef struct {
+    vec2  waypoints[NAV_MAX_PATH];
+    int   count;
+    int   current;
+    float age;
+} nav_path_t;
+
+static nav_path_t s_npc_paths[MAX_NPC_SHIPS];
+static nav_path_t s_player_paths[MAX_PLAYERS];
+
+/* Test if a line segment a→b is clear of station ring walls and large
+ * asteroids. Reuses the same ring-wall math as compute_path_avoidance
+ * but returns a simple boolean. */
+static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
+    vec2 delta = v2_sub(b, a);
+    float seg_len = v2_len(delta);
+    if (seg_len < 1.0f) return true;
+    vec2 fwd = v2_scale(delta, 1.0f / seg_len);
+
+    /* Check large asteroids */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *ast = &w->asteroids[i];
+        if (!ast->active || ast->tier == ASTEROID_TIER_S) continue;
+        vec2 to_a = v2_sub(ast->pos, a);
+        float proj = v2_dot(to_a, fwd);
+        if (proj < -ast->radius || proj > seg_len + ast->radius) continue;
+        float perp = fabsf(v2_cross(to_a, fwd));
+        if (perp < ast->radius + clearance) return false;
+    }
+
+    /* Check station structures */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+        float st_d = v2_dist_sq(st->pos, a);
+        float max_r = 600.0f; /* conservative max ring + margin */
+        if (st_d > (seg_len + max_r) * (seg_len + max_r)) continue;
+
+        /* Core circle */
+        if (st->radius > 0.0f) {
+            vec2 to_c = v2_sub(st->pos, a);
+            float proj = v2_dot(to_c, fwd);
+            if (proj > -st->radius && proj < seg_len + st->radius) {
+                float perp = fabsf(v2_cross(to_c, fwd));
+                if (perp < st->radius + clearance) return false;
+            }
+        }
+
+        /* Ring walls: ray-circle intersection for each ring */
+        for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
+            float ring_r = STATION_RING_RADIUS[ring];
+            /* Check if any module exists on this ring */
+            bool has_modules = false;
+            for (int mi = 0; mi < st->module_count; mi++)
+                if (st->modules[mi].ring == ring) { has_modules = true; break; }
+            if (!has_modules) continue;
+
+            vec2 lp = v2_sub(a, st->pos);
+            float bb = 2.0f * v2_dot(lp, fwd);
+            float cc = v2_len_sq(lp) - ring_r * ring_r;
+            float disc = bb * bb - 4.0f * cc;
+            if (disc < 0.0f) continue;
+            float sqd = sqrtf(disc);
+            float t1 = (-bb - sqd) * 0.5f;
+            float t2 = (-bb + sqd) * 0.5f;
+            /* Check both intersection points */
+            for (int ti = 0; ti < 2; ti++) {
+                float t = (ti == 0) ? t1 : t2;
+                if (t < 0.0f || t > seg_len) continue;
+                vec2 cross_local = v2_add(lp, v2_scale(fwd, t));
+                float cross_ang = atan2f(cross_local.y, cross_local.x);
+                /* Is this a dock slot? If so, passable. */
+                bool dock_slot = false;
+                for (int mi = 0; mi < st->module_count; mi++) {
+                    if (st->modules[mi].ring != ring) continue;
+                    if (st->modules[mi].type != MODULE_DOCK) continue;
+                    if (st->modules[mi].scaffold) continue;
+                    float dock_ang = module_angle_ring(st, ring, st->modules[mi].slot);
+                    int slots_n = STATION_RING_SLOTS[ring];
+                    float slot_arc = (slots_n > 0) ? (TWO_PI_F / (float)slots_n) : TWO_PI_F;
+                    if (fabsf(wrap_angle(cross_ang - dock_ang)) < slot_arc * 0.35f) {
+                        dock_slot = true; break;
+                    }
+                }
+                if (dock_slot) continue;
+                /* Check if crossing hits a corridor or non-dock module */
+                bool in_wall = false;
+                for (int mi = 0; mi < st->module_count; mi++) {
+                    if (st->modules[mi].ring != ring) continue;
+                    if (st->modules[mi].type == MODULE_DOCK) continue;
+                    if (st->modules[mi].scaffold) continue;
+                    float mod_ang = module_angle_ring(st, ring, st->modules[mi].slot);
+                    float ang_size = (STATION_MODULE_COL_RADIUS + clearance) / ring_r;
+                    if (fabsf(wrap_angle(cross_ang - mod_ang)) < ang_size) {
+                        in_wall = true; break;
+                    }
+                }
+                if (!in_wall) {
+                    /* Check corridor arcs between modules */
+                    station_geom_t geom;
+                    station_build_geom(st, &geom);
+                    for (int co = 0; co < geom.corridor_count; co++) {
+                        if (geom.corridors[co].ring != ring) continue;
+                        float a0 = geom.corridors[co].angle_a;
+                        float a1 = geom.corridors[co].angle_b;
+                        float da = wrap_angle(a1 - a0);
+                        if (angle_in_arc(cross_ang, a0, da) >= 0.0f) {
+                            in_wall = true; break;
+                        }
+                    }
+                }
+                if (in_wall) return false;
+            }
+        }
+    }
+    return true;
+}
+
+/* Build a sparse navigation graph with dock waypoints around stations. */
+static void nav_build_graph(const world_t *w, vec2 start, vec2 goal,
+                            float clearance, nav_graph_t *g) {
+    g->count = 0;
+    /* Node 0 = start, Node 1 = goal */
+    g->nodes[g->count++].pos = start;
+    g->nodes[g->count++].pos = goal;
+
+    /* Station dock nodes: for each dock on each ring, place a waypoint
+     * pair that threads the opening. The outer node sits just outside
+     * the ring, the inner node just inside. A path through outer→inner
+     * naturally flies through the dock gap. */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+        /* Only include stations near the travel corridor */
+        vec2 mid = v2_scale(v2_add(start, goal), 0.5f);
+        float corridor = v2_dist_sq(start, goal);
+        if (v2_dist_sq(st->pos, mid) > corridor + 2000.0f * 2000.0f) continue;
+
+        for (int mi = 0; mi < st->module_count && g->count < NAV_MAX_NODES - 4; mi++) {
+            if (st->modules[mi].type != MODULE_DOCK) continue;
+            if (st->modules[mi].scaffold) continue;
+            int ring = st->modules[mi].ring;
+            float ring_r = STATION_RING_RADIUS[ring];
+            float dock_ang = module_angle_ring(st, ring, st->modules[mi].slot);
+            vec2 dir = v2(cosf(dock_ang), sinf(dock_ang));
+            /* Outer: 100u outside ring along dock radial */
+            g->nodes[g->count++].pos = v2_add(st->pos, v2_scale(dir, ring_r + 100.0f));
+            /* Inner: 100u inside ring along dock radial */
+            g->nodes[g->count++].pos = v2_add(st->pos, v2_scale(dir, ring_r - 100.0f));
+        }
+
+        /* Station center node: allows paths that transit through the core */
+        if (g->count < NAV_MAX_NODES)
+            g->nodes[g->count++].pos = st->pos;
+
+        /* 8 exterior waypoints around the outermost ring (every 45°).
+         * These let the A* route around the station when no dock faces
+         * the approach direction. */
+        float outer_r = 0.0f;
+        for (int mi = 0; mi < st->module_count; mi++) {
+            int r = st->modules[mi].ring;
+            if (r >= 1 && r <= STATION_NUM_RINGS && STATION_RING_RADIUS[r] > outer_r)
+                outer_r = STATION_RING_RADIUS[r];
+        }
+        if (outer_r > 0.0f) {
+            for (int q = 0; q < 8 && g->count < NAV_MAX_NODES; q++) {
+                float ang = (float)q * (PI_F * 0.25f);
+                g->nodes[g->count++].pos = v2_add(st->pos,
+                    v2(cosf(ang) * (outer_r + 140.0f), sinf(ang) * (outer_r + 140.0f)));
+            }
+        }
+    }
+}
+
+/* A* search through the navigation graph. Returns true if a path was found. */
+static bool nav_find_path(const world_t *w, vec2 start, vec2 goal,
+                          float clearance, nav_path_t *out) {
+    out->count = 0;
+    out->current = 0;
+    out->age = 0.0f;
+
+    /* Fast path: direct line is clear AND no station is between
+     * start and goal → skip the graph entirely. We check for nearby
+     * stations so the A* always kicks in when approaching a station. */
+    if (nav_line_clear(w, start, goal, clearance)) {
+        bool station_nearby = false;
+        vec2 mid = v2_scale(v2_add(start, goal), 0.5f);
+        float half_len = sqrtf(v2_dist_sq(start, goal)) * 0.5f + 400.0f;
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            const station_t *st = &w->stations[s];
+            if (!station_collides(st)) continue;
+            if (v2_dist_sq(st->pos, mid) < half_len * half_len) {
+                station_nearby = true; break;
+            }
+        }
+        if (!station_nearby) return true;
+    }
+
+    nav_graph_t graph;
+    nav_build_graph(w, start, goal, clearance, &graph);
+    int n = graph.count;
+    if (n < 2) return false;
+
+    float g_cost[NAV_MAX_NODES];
+    float f_cost[NAV_MAX_NODES];
+    int   came_from[NAV_MAX_NODES];
+    bool  closed[NAV_MAX_NODES];
+    bool  in_open[NAV_MAX_NODES];
+    for (int i = 0; i < n; i++) {
+        g_cost[i] = 1e18f;
+        f_cost[i] = 1e18f;
+        came_from[i] = -1;
+        closed[i] = false;
+        in_open[i] = false;
+    }
+    g_cost[0] = 0.0f;
+    f_cost[0] = v2_dist_sq(start, goal); /* use dist_sq as heuristic for speed */
+    in_open[0] = true;
+
+    for (int iter = 0; iter < n * n; iter++) {
+        /* Find open node with lowest f_cost */
+        int cur = -1;
+        float best_f = 1e18f;
+        for (int i = 0; i < n; i++) {
+            if (in_open[i] && !closed[i] && f_cost[i] < best_f) {
+                best_f = f_cost[i]; cur = i;
+            }
+        }
+        if (cur < 0) break; /* no path */
+        if (cur == 1) {     /* reached goal */
+            /* Reconstruct path */
+            int path[NAV_MAX_NODES];
+            int path_len = 0;
+            int c = 1;
+            while (c >= 0 && path_len < NAV_MAX_NODES) {
+                path[path_len++] = c;
+                c = came_from[c];
+            }
+            /* Reverse and skip node 0 (start) and node 1 (goal is final target) */
+            out->count = 0;
+            for (int i = path_len - 2; i >= 0; i--) {
+                if (out->count < NAV_MAX_PATH)
+                    out->waypoints[out->count++] = graph.nodes[path[i]].pos;
+            }
+            return true;
+        }
+
+        closed[cur] = true;
+        in_open[cur] = false;
+
+        /* Expand neighbors: check visibility to all other nodes */
+        for (int nb = 0; nb < n; nb++) {
+            if (nb == cur || closed[nb]) continue;
+            if (!nav_line_clear(w, graph.nodes[cur].pos, graph.nodes[nb].pos, clearance))
+                continue;
+            float edge = sqrtf(v2_dist_sq(graph.nodes[cur].pos, graph.nodes[nb].pos));
+            float new_g = g_cost[cur] + edge;
+            if (new_g < g_cost[nb]) {
+                g_cost[nb] = new_g;
+                f_cost[nb] = new_g + sqrtf(v2_dist_sq(graph.nodes[nb].pos, goal));
+                came_from[nb] = cur;
+                in_open[nb] = true;
+            }
+        }
+    }
+    return false; /* no path found */
+}
+
+/* Advance along a computed path, returning the next waypoint to steer toward. */
+static vec2 nav_next_waypoint(nav_path_t *path, vec2 ship_pos, vec2 final_target, float dt) {
+    path->age += dt;
+    if (path->count == 0 || path->current >= path->count)
+        return final_target;
+    /* Advance when within 80u of the current waypoint */
+    while (path->current < path->count &&
+           v2_dist_sq(ship_pos, path->waypoints[path->current]) < 80.0f * 80.0f) {
+        path->current++;
+    }
+    if (path->current >= path->count) return final_target;
+    return path->waypoints[path->current];
+}
+
+/* ================================================================== */
+
 static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float turn_speed, float dt) {
     vec2 delta = v2_sub(target, npc->pos);
     float desired = atan2f(delta.y, delta.x);
@@ -1466,9 +1787,29 @@ static void npc_steer_with_avoidance(const world_t *w, npc_ship_t *npc, vec2 tar
      * turning hard around an obstacle. */
     float facing = cosf(diff);
     float thrust_gate = (facing > 0.5f) ? facing : 0.0f;
-    float effective_accel = accel * pa.thrust_scale * thrust_gate;
+    /* When very close to the target, don't let avoidance kill thrust
+     * completely — let the ship coast in rather than stalling outside
+     * the station. */
+    float dist_to_target = v2_dist_sq(npc->pos, target);
+    float effective_brake = pa.thrust_scale;
+    if (dist_to_target < 400.0f * 400.0f && effective_brake < 0.3f)
+        effective_brake = 0.3f;
+    float effective_accel = accel * effective_brake * thrust_gate;
     npc->vel = v2_add(npc->vel, v2_scale(fwd, effective_accel * dt));
     npc->thrusting = effective_accel > 0.0f;
+}
+
+/* A*-guided NPC steering: compute path on first call or when stale,
+ * then steer toward the next waypoint using reactive avoidance. */
+static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
+                                vec2 final_target, float accel, float turn_speed, float dt) {
+    nav_path_t *path = &s_npc_paths[npc_idx];
+    if (path->age > 5.0f || (path->count == 0 && path->age > 0.5f)) {
+        const hull_def_t *hull = npc_hull_def(npc);
+        nav_find_path(w, npc->pos, final_target, hull->ship_radius + 30.0f, path);
+    }
+    vec2 wp = nav_next_waypoint(path, npc->pos, final_target, dt);
+    npc_steer_with_avoidance(w, npc, wp, accel, turn_speed, dt);
 }
 
 static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world_t *w) {
@@ -1744,7 +2085,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_TRAVEL_TO_DEST: {
         station_t *dest = &w->stations[npc->dest_station];
         vec2 approach = station_approach_target(dest, npc->pos);
-        npc_steer_with_avoidance(w, npc, approach, hull->accel, hull->turn_speed, dt);
+        npc_steer_with_path(w, n, npc, approach, hull->accel, hull->turn_speed, dt);
         npc_apply_physics(npc, hull->drag, dt, w);
         float dock_r = dest->dock_radius * 0.7f;
         if (v2_dist_sq(npc->pos, dest->pos) < dock_r * dock_r) {
@@ -1796,7 +2137,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_RETURN_TO_STATION: {
         station_t *home = &w->stations[npc->home_station];
         vec2 approach_home = station_approach_target(home, npc->pos);
-        npc_steer_with_avoidance(w, npc, approach_home, hull->accel, hull->turn_speed, dt);
+        npc_steer_with_path(w, n, npc, approach_home, hull->accel, hull->turn_speed, dt);
         npc_apply_physics(npc, hull->drag, dt, w);
         float dock_r = home->dock_radius * 0.7f;
         if (v2_dist_sq(npc->pos, home->pos) < dock_r * dock_r) {
@@ -1933,7 +2274,7 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
             npc->state_timer = HAULER_DOCK_TIME;
             break;
         }
-        npc_steer_with_avoidance(w, npc, sc->pos, hull->accel, hull->turn_speed, dt);
+        npc_steer_with_path(w, n, npc, sc->pos, hull->accel, hull->turn_speed, dt);
         npc_apply_physics(npc, hull->drag, dt, w);
         if (v2_dist_sq(npc->pos, sc->pos) < 80.0f * 80.0f) {
             /* Grab — claim the scaffold and switch to tow mode.
@@ -1979,7 +2320,7 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
         sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
 
         vec2 approach = station_approach_target(dest, npc->pos);
-        npc_steer_with_avoidance(w, npc, approach, hull->accel * 0.6f, hull->turn_speed, dt);
+        npc_steer_with_path(w, n, npc, approach, hull->accel * 0.6f, hull->turn_speed, dt);
         /* Speed cap while towing — heavy load */
         float spd = v2_len(npc->vel);
         if (spd > 60.0f) npc->vel = v2_scale(npc->vel, 60.0f / spd);
@@ -1997,7 +2338,7 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_RETURN_TO_STATION: {
         station_t *home = &w->stations[npc->home_station];
         vec2 approach = station_approach_target(home, npc->pos);
-        npc_steer_with_avoidance(w, npc, approach, hull->accel, hull->turn_speed, dt);
+        npc_steer_with_path(w, n, npc, approach, hull->accel, hull->turn_speed, dt);
         npc_apply_physics(npc, hull->drag, dt, w);
         if (v2_dist_sq(npc->pos, home->pos) < (home->dock_radius * 0.7f) * (home->dock_radius * 0.7f)) {
             npc->vel = v2(0.0f, 0.0f);
@@ -2061,7 +2402,7 @@ static void step_npc_ships(world_t *w, float dt) {
                 else { npc->target_asteroid = -1; npc->state = NPC_STATE_RETURN_TO_STATION; break; }
             }
             asteroid_t *a = &w->asteroids[npc->target_asteroid];
-            npc_steer_with_avoidance(w, npc, a->pos, hull->accel, hull->turn_speed, dt);
+            npc_steer_with_path(w, n, npc, a->pos, hull->accel, hull->turn_speed, dt);
             npc_apply_physics(npc, hull->drag, dt, w);
             if (v2_dist_sq(npc->pos, a->pos) < MINING_RANGE * MINING_RANGE)
                 npc->state = NPC_STATE_MINING;
@@ -2147,7 +2488,7 @@ static void step_npc_ships(world_t *w, float dt) {
             /* Slow down when towing so the fragment can keep up */
             float tow_accel = hull->accel;
             if (npc->towed_fragment >= 0) tow_accel *= 0.5f;
-            npc_steer_with_avoidance(w, npc, delivery_target, tow_accel, hull->turn_speed, dt);
+            npc_steer_with_path(w, n, npc, delivery_target, tow_accel, hull->turn_speed, dt);
             npc_apply_physics(npc, hull->drag, dt, w);
 
             /* Speed cap when towing */
@@ -3516,6 +3857,12 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
 }
 
 static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool mining, vec2 forward, float cached_signal) {
+    /* Beam state is server-authoritative — client prediction must NOT touch it.
+     * Server PLAYER_STATE messages set beam_active/start/end/hit fields directly.
+     * This matters for autopilot (server drives intent.mine, client's intent is false)
+     * and for future combat prediction. */
+    if (w->player_only_mode) return;
+
     sp->beam_active = false;
     sp->beam_hit = false;
     sp->beam_ineffective = false;
@@ -3861,34 +4208,20 @@ static int autopilot_find_mining_target(const world_t *w, const server_player_t 
     asteroid_tier_t max_tier = max_mineable_tier(sp->ship.mining_level);
     float ship_r = ship_hull_def(&sp->ship)->ship_radius;
 
-    /* Pass 1: target rocks AT our laser level WITH a clear path. */
+    /* Pass 1: nearest rock AT our laser level (prefer hardest we can crack).
+     * A* handles routing around obstacles, so no path_clear filter needed. */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
         if (a->tier == ASTEROID_TIER_S) continue;
         if ((int)a->tier != (int)max_tier) continue;
         if (signal_strength_at(w, a->pos) <= 0.0f) continue;
-        if (!autopilot_path_clear(w, sp->ship.pos, a->pos, i, ship_r)) continue;
         float d = v2_dist_sq(sp->ship.pos, a->pos);
         if (d < best_d) { best_d = d; best = i; }
     }
     if (best >= 0) return best;
 
-    /* Pass 2: any mineable rock with a clear path. */
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        const asteroid_t *a = &w->asteroids[i];
-        if (!a->active) continue;
-        if (a->tier == ASTEROID_TIER_S) continue;
-        if ((int)a->tier < (int)max_tier) continue;
-        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
-        if (!autopilot_path_clear(w, sp->ship.pos, a->pos, i, ship_r)) continue;
-        float d = v2_dist_sq(sp->ship.pos, a->pos);
-        if (d < best_d) { best_d = d; best = i; }
-    }
-    if (best >= 0) return best;
-
-    /* Pass 3: any mineable rock at or below our level (clear path no
-     * longer required — fall back to the closest available). */
+    /* Pass 2: any mineable rock at or below our level — nearest wins. */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
@@ -3974,6 +4307,31 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
 
     sp->autopilot_timer += dt;
 
+    /* Stuck detection: if the ship hasn't moved >50u in 8 seconds
+     * while in a transit state, pick a new target. This breaks
+     * deadlocks where avoidance oscillates against station walls. */
+    if (sp->autopilot_state == AUTOPILOT_STEP_FLY_TO_TARGET ||
+        sp->autopilot_state == AUTOPILOT_STEP_RETURN_TO_REFINERY) {
+        float moved = v2_dist_sq(sp->ship.pos, sp->autopilot_last_pos);
+        if (moved > 50.0f * 50.0f) {
+            sp->autopilot_last_pos = sp->ship.pos;
+            sp->autopilot_stuck_timer = 0.0f;
+        } else {
+            sp->autopilot_stuck_timer += dt;
+            if (sp->autopilot_stuck_timer > 8.0f) {
+                SIM_LOG("[autopilot] player %d stuck for 8s, re-planning\n", sp->id);
+                sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+                sp->autopilot_target = -1;
+                sp->autopilot_timer = 0.0f;
+                sp->autopilot_stuck_timer = 0.0f;
+                sp->autopilot_last_pos = sp->ship.pos;
+            }
+        }
+    } else {
+        sp->autopilot_last_pos = sp->ship.pos;
+        sp->autopilot_stuck_timer = 0.0f;
+    }
+
     /* Damage check: if hull dropped below 80%, bail out of mining and
      * return to a refinery for repair. The ship will hold in dock
      * until hull is at 100% before relaunching (handled in SELL state).
@@ -3988,14 +4346,15 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         sp->autopilot_timer = 0.0f;
     }
 
-    /* Tractor management: ON only when mining or collecting fragments.
-     * OFF during FIND_TARGET and FLY_TO_TARGET so the visual reflects
-     * "actively mining or hauling," not "transit." RETURN_TO_REFINERY
-     * leaves the tractor in whatever state COLLECT set it (ON, with
-     * fragments in tow), and the release_tow toggle on station
-     * approach drops it AND releases the tow chain. */
+    /* Tractor management: ON when mining, collecting, or hauling home.
+     * OFF during FIND_TARGET and FLY_TO_TARGET (transit without cargo).
+     * RETURN_TO_REFINERY keeps tractor ON so spring physics pull towed
+     * fragments along — this matters when the user toggles autopilot ON
+     * while already carrying fragments. */
     if (sp->autopilot_state == AUTOPILOT_STEP_MINE ||
-        sp->autopilot_state == AUTOPILOT_STEP_COLLECT) {
+        sp->autopilot_state == AUTOPILOT_STEP_COLLECT ||
+        (sp->autopilot_state == AUTOPILOT_STEP_RETURN_TO_REFINERY &&
+         sp->ship.towed_count > 0)) {
         sp->ship.tractor_active = true;
     } else if (sp->autopilot_state == AUTOPILOT_STEP_FIND_TARGET ||
                sp->autopilot_state == AUTOPILOT_STEP_FLY_TO_TARGET) {
@@ -4017,13 +4376,25 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         }
         int t = autopilot_find_mining_target(w, sp);
         if (t < 0) {
-            /* Nothing reachable — return to refinery and try again next cycle. */
-            sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+            /* Nothing minable — if near a station, dock and wait.
+             * Otherwise head to the refinery. This prevents the
+             * FIND→RETURN→FIND oscillation loop. */
+            if (sp->in_dock_range && sp->nearby_station >= 0) {
+                sp->input.interact = true; /* dock */
+                sp->autopilot_state = AUTOPILOT_STEP_SELL;
+                sp->autopilot_timer = 0.0f;
+            } else {
+                sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+            }
             break;
         }
         sp->autopilot_target = t;
         sp->autopilot_state = AUTOPILOT_STEP_FLY_TO_TARGET;
         sp->autopilot_timer = 0.0f;
+        /* Compute A* path to the mining target */
+        nav_find_path(w, sp->ship.pos, w->asteroids[t].pos,
+                      ship_hull_def(&sp->ship)->ship_radius + 30.0f,
+                      &s_player_paths[sp->id]);
         break;
     }
     case AUTOPILOT_STEP_FLY_TO_TARGET: {
@@ -4070,9 +4441,16 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             break;
         }
 
-        /* Path avoidance: compute corrected heading around obstacles.
-         * Skip the player's currently-towed fragments AND the target rock
-         * itself so we don't dodge things we're hauling. */
+        /* Follow A* path waypoints instead of straight line to target.
+         * Re-plan if the path is stale (>5s). */
+        nav_path_t *path = &s_player_paths[sp->id];
+        if (path->age > 5.0f) {
+            nav_find_path(w, sp->ship.pos, a->pos,
+                          hull->ship_radius + 30.0f, path);
+        }
+        vec2 steer_target = nav_next_waypoint(path, sp->ship.pos, a->pos, dt);
+
+        /* Reactive avoidance along the current path segment. */
         int16_t ignore[12];
         int ignore_n = 0;
         for (int t = 0; t < sp->ship.towed_count && ignore_n < 11; t++) {
@@ -4081,7 +4459,7 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         }
         ignore[ignore_n++] = (int16_t)sp->autopilot_target;
         path_avoidance_t pa = compute_path_avoidance(w, sp->ship.pos, sp->ship.vel,
-                                                     a->pos, hull->ship_radius,
+                                                     steer_target, hull->ship_radius,
                                                      ignore, ignore_n);
         float desired = atan2f(pa.desired_dir.y, pa.desired_dir.x);
         float diff = wrap_angle(desired - sp->ship.angle);
@@ -4101,18 +4479,16 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float thrust_cmd = autopilot_speed_control(approach_v, target_speed);
 
         if (pa.blocked) {
-            /* HARD brake — the path is blocked by a station ring or
-             * other unavoidable obstacle. Force reverse thrust until
-             * we're slow enough that the rotation can find a way
-             * around. The avoidance steering keeps trying to bend
-             * the heading toward an opening; we just have to not
-             * crash while it works. */
+            /* Obstacle ahead. Brake first, then once slow, apply gentle
+             * REVERSE thrust to back away and create separation. This
+             * prevents the ship from sitting dead at thrust=0 inside
+             * station rings — the reverse opens up space so avoidance
+             * steering can find a dock opening or gap. */
             float current_speed = sqrtf(v2_len_sq(sp->ship.vel));
-            if (current_speed > 25.0f) {
+            if (current_speed > 30.0f) {
                 sp->input.thrust = -1.0f;
             } else {
-                /* Slow enough to maneuver — coast and let turn find a gap. */
-                sp->input.thrust = 0.0f;
+                sp->input.thrust = -0.3f; /* gentle reverse */
             }
         } else {
             /* Path clear — normal velocity-controlled approach. */
@@ -4277,9 +4653,16 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->ship.tractor_active && sp->ship.towed_count > 0) {
             sp->input.release_tow = true;
         }
-        /* Path avoidance toward the dock approach point. */
+        /* A* path toward the dock approach point. */
         vec2 dock_target = station_approach_target(st, sp->ship.pos);
         const hull_def_t *hull = ship_hull_def(&sp->ship);
+        nav_path_t *path = &s_player_paths[sp->id];
+        if (path->age > 5.0f || path->count == 0) {
+            nav_find_path(w, sp->ship.pos, dock_target,
+                          hull->ship_radius + 30.0f, path);
+        }
+        vec2 steer_target = nav_next_waypoint(path, sp->ship.pos, dock_target, dt);
+
         int16_t ignore[12];
         int ignore_n = 0;
         for (int t = 0; t < sp->ship.towed_count && ignore_n < 12; t++) {
@@ -4287,7 +4670,7 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             if (fi >= 0 && fi < MAX_ASTEROIDS) ignore[ignore_n++] = fi;
         }
         path_avoidance_t pa = compute_path_avoidance(w, sp->ship.pos, sp->ship.vel,
-                                                     dock_target, hull->ship_radius,
+                                                     steer_target, hull->ship_radius,
                                                      ignore, ignore_n);
         float desired = atan2f(pa.desired_dir.y, pa.desired_dir.x);
         float diff = wrap_angle(desired - sp->ship.angle);
@@ -4295,17 +4678,21 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float facing = cosf(diff);
         float dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
 
+        /* The A* path routes through dock waypoints — trust it.
+         * Just apply normal velocity-controlled approach toward the
+         * current waypoint (steer_target). */
         if (pa.blocked) {
             float current_speed = sqrtf(v2_len_sq(sp->ship.vel));
-            if (current_speed > 25.0f) sp->input.thrust = -1.0f;
+            if (current_speed > 30.0f) sp->input.thrust = -1.0f;
             else sp->input.thrust = 0.0f;
         } else {
-            float throttle = (facing > 0.6f) ? 1.0f : 0.0f;
-            if (dist < 600.0f) {
-                float t = (dist - 200.0f) / 400.0f;
-                if (t < 0.0f) t = 0.0f;
-                if (t > 1.0f) t = 1.0f;
+            float throttle = (facing > 0.5f) ? 1.0f : 0.0f;
+            /* Slow down when close to the current waypoint */
+            float wp_dist = sqrtf(v2_dist_sq(sp->ship.pos, steer_target));
+            if (wp_dist < 300.0f) {
+                float t = wp_dist / 300.0f;
                 throttle *= t;
+                if (throttle < 0.15f && wp_dist > 40.0f) throttle = 0.15f;
             }
             sp->input.thrust = throttle;
         }
@@ -4395,7 +4782,14 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     /* One-shot: toggle autopilot from network action. */
     if (sp->input.toggle_autopilot) {
         sp->autopilot_mode = sp->autopilot_mode ? 0 : 1;
-        sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+        /* If toggling ON while carrying towed fragments, skip straight to
+         * RETURN_TO_REFINERY so the ship delivers instead of trying to
+         * mine more. Otherwise start at FIND_TARGET. */
+        if (sp->autopilot_mode && sp->ship.towed_count > 0) {
+            sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+        } else {
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+        }
         sp->autopilot_target = -1;
         sp->autopilot_timer = 0.0f;
         sp->input.toggle_autopilot = false;
@@ -4593,9 +4987,70 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         handle_hail(w, sp);
     }
 
-    /* Add placement plan to a player outpost (active or planned) */
+    /* --- Outpost planning: create → add → cancel (order matters) --- */
+
+    /* 1. Create a planned outpost (server-side ghost).
+     * Runs FIRST so a combined CREATE_AND_ADD op can resolve the
+     * plan_station=-2 sentinel for the add_plan below. */
+    int just_created_planned_station = -1;
+    if (sp->input.create_planned_outpost && !w->player_only_mode) {
+        vec2 pos = sp->input.planned_outpost_pos;
+        /* Faction-shared: only one planned outpost in the world at a time.
+         * Any player creating a new blueprint cancels every existing one. */
+        for (int s = 3; s < MAX_STATIONS; s++) {
+            station_t *old = &w->stations[s];
+            if (old->planned) {
+                SIM_LOG("[sim] player %d cancelled blueprint at slot %d (was owner %d)\n",
+                    sp->id, s, old->planned_owner);
+                memset(old, 0, sizeof(*old));
+            }
+        }
+        /* Validate position */
+        bool too_close = false;
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            if (!station_exists(&w->stations[s])) continue;
+            if (v2_dist_sq(w->stations[s].pos, pos) < OUTPOST_MIN_DISTANCE * OUTPOST_MIN_DISTANCE) {
+                too_close = true; break;
+            }
+        }
+        if (!too_close && signal_strength_at(w, pos) > 0.0f) {
+            int slot = -1;
+            for (int s = 3; s < MAX_STATIONS; s++) {
+                if (!station_exists(&w->stations[s])) { slot = s; break; }
+            }
+            if (slot >= 0) {
+                station_t *st = &w->stations[slot];
+                memset(st, 0, sizeof(*st));
+                generate_outpost_name(st->name, sizeof(st->name), pos, slot);
+                st->pos = pos;
+                st->planned = true;
+                st->planned_owner = (int8_t)sp->id;
+                st->radius = 0.0f;
+                st->dock_radius = 0.0f;
+                st->signal_range = 0.0f;
+                st->arm_count = 0;
+                for (int r = 0; r < MAX_ARMS; r++) {
+                    st->arm_rotation[r] = 0.0f;
+                    st->ring_offset[r] = 0.0f;
+                    st->arm_speed[r] = 0.0f;
+                }
+                emit_event(w, (sim_event_t){
+                    .type = SIM_EVENT_OUTPOST_PLACED,
+                    .player_id = sp->id,
+                    .outpost_placed = { .slot = slot },
+                });
+                just_created_planned_station = slot;
+                SIM_LOG("[sim] player %d created planned outpost at slot %d\n", sp->id, slot);
+            }
+        }
+    }
+
+    /* 2. Add placement plan to a player outpost (active or planned).
+     * plan_station=-2 is a sentinel: use the station just created above. */
     if (sp->input.add_plan && !w->player_only_mode) {
-        int s = sp->input.plan_station;
+        int s = (sp->input.plan_station == -2 && just_created_planned_station >= 0)
+                ? just_created_planned_station
+                : (int)sp->input.plan_station;
         int ring = sp->input.plan_ring;
         int slot = sp->input.plan_slot;
         module_type_t type = sp->input.plan_type;
@@ -4605,13 +5060,11 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             && slot >= 0 && slot < STATION_RING_SLOTS[ring]
             && (int)type < MODULE_COUNT) {
             station_t *st = &w->stations[s];
-            /* Slot must be open */
             bool taken = false;
             for (int m = 0; m < st->module_count; m++)
                 if (st->modules[m].ring == ring && st->modules[m].slot == slot) {
                     taken = true; break;
                 }
-            /* Already a plan for this slot? Replace its type. */
             int existing = -1;
             for (int p = 0; p < st->placement_plan_count; p++) {
                 if (st->placement_plans[p].ring == ring &&
@@ -4619,15 +5072,11 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                     existing = p; break;
                 }
             }
-            /* Faction-shared cap: at most PLAYER_PLAN_TYPE_LIMIT distinct
-             * planned module types across all stations, regardless of who
-             * placed them. Replacing an existing slot is always allowed. */
             module_type_t distinct[PLAYER_PLAN_TYPE_LIMIT];
             int distinct_n = 0;
             for (int ss = 0; ss < MAX_STATIONS && distinct_n < PLAYER_PLAN_TYPE_LIMIT; ss++) {
                 const station_t *sct = &w->stations[ss];
                 for (int p = 0; p < sct->placement_plan_count; p++) {
-                    /* Skip the slot we're replacing — its type may change. */
                     if (sct == st && p == existing) continue;
                     module_type_t pt = sct->placement_plans[p].type;
                     bool dup = false;
@@ -4656,62 +5105,26 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         }
     }
 
-    /* Create a planned outpost (server-side ghost) */
-    if (sp->input.create_planned_outpost && !w->player_only_mode) {
-        vec2 pos = sp->input.planned_outpost_pos;
-        /* Faction-shared: only one planned outpost in the world at a time.
-         * Any player creating a new blueprint cancels every existing one. */
-        for (int s = 3; s < MAX_STATIONS; s++) {
-            station_t *old = &w->stations[s];
-            if (old->planned) {
-                SIM_LOG("[sim] player %d cancelled blueprint at slot %d (was owner %d)\n",
-                    sp->id, s, old->planned_owner);
-                memset(old, 0, sizeof(*old));
-            }
-        }
-        /* Validate position */
-        bool too_close = false;
-        for (int s = 0; s < MAX_STATIONS; s++) {
-            if (!station_exists(&w->stations[s])) continue;
-            if (v2_dist_sq(w->stations[s].pos, pos) < OUTPOST_MIN_DISTANCE * OUTPOST_MIN_DISTANCE) {
-                too_close = true; break;
-            }
-        }
-        if (!too_close && signal_strength_at(w, pos) > 0.0f) {
-            /* Find free slot */
-            int slot = -1;
-            for (int s = 3; s < MAX_STATIONS; s++) {
-                if (!station_exists(&w->stations[s])) { slot = s; break; }
-            }
-            if (slot >= 0) {
-                station_t *st = &w->stations[slot];
-                memset(st, 0, sizeof(*st));
-                generate_outpost_name(st->name, sizeof(st->name), pos, slot);
-                st->pos = pos;
-                st->planned = true;
-                st->planned_owner = (int8_t)sp->id;
-                st->radius = 0.0f;          /* no collision */
-                st->dock_radius = 0.0f;     /* no docking */
-                st->signal_range = 0.0f;    /* no signal until built */
-                /* Use deterministic ring rotation so planned slots match
-                 * what the player sees when the station materializes. */
-                st->arm_count = 0;
-                for (int r = 0; r < MAX_ARMS; r++) {
-                    st->arm_rotation[r] = 0.0f;
-                    st->ring_offset[r] = 0.0f;
-                    st->arm_speed[r] = 0.0f;
+    /* 3. Cancel a single plan slot (red/clear state). */
+    if (sp->input.cancel_plan_slot && !w->player_only_mode) {
+        int s = sp->input.cancel_plan_st;
+        int ring = sp->input.cancel_plan_ring;
+        int slot = sp->input.cancel_plan_sl;
+        if (s >= 3 && s < MAX_STATIONS && station_exists(&w->stations[s])) {
+            station_t *st = &w->stations[s];
+            for (int p = 0; p < st->placement_plan_count; p++) {
+                if (st->placement_plans[p].ring == ring &&
+                    st->placement_plans[p].slot == slot) {
+                    for (int q = p; q < st->placement_plan_count - 1; q++)
+                        st->placement_plans[q] = st->placement_plans[q + 1];
+                    st->placement_plan_count--;
+                    break;
                 }
-                emit_event(w, (sim_event_t){
-                    .type = SIM_EVENT_OUTPOST_PLACED,
-                    .player_id = sp->id,
-                    .outpost_placed = { .slot = slot },
-                });
-                SIM_LOG("[sim] player %d created planned outpost at slot %d\n", sp->id, slot);
             }
         }
     }
 
-    /* Cancel a planned outpost (faction-shared — anyone can cancel). */
+    /* 4. Cancel a planned outpost (faction-shared — anyone can cancel). */
     if (sp->input.cancel_planned_outpost && !w->player_only_mode) {
         int s = sp->input.cancel_planned_station;
         if (s >= 3 && s < MAX_STATIONS) {
@@ -4738,6 +5151,11 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->input.add_plan = false;
     sp->input.create_planned_outpost = false;
     sp->input.cancel_planned_outpost = false;
+    sp->input.cancel_plan_slot = false;
+
+    /* Snapshot actual thrust state BEFORE restoring manual inputs.
+     * This survives the restore so serialization and mirroring see it. */
+    sp->actual_thrusting = (sp->input.thrust > 0.01f) && !sp->docked;
 
     /* Restore the network-provided continuous inputs so the autopilot's
      * per-tick writes don't leak into the next sub-step's manual-override

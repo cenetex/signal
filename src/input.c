@@ -433,36 +433,58 @@ input_intent_t sample_input_intent(void) {
         }
     } else if (g.plan_mode_active) {
         /* PLAN MODE: cycle types with R, place with E, exit with B/Esc.
-         * Targets a server-side station (player outpost or planned). */
-        reticle_target_t targets[RETICLE_MAX_TARGETS];
-        int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
+         *
+         * Two sub-modes:
+         *   plan_target_station == -1  →  GHOST PREVIEW: rings draw
+         *     around the player's ship; nothing committed server-side yet.
+         *   plan_target_station >= 3   →  REAL: targeting a server-side
+         *     planned station (created by E in ghost mode or by legacy path).
+         */
+        bool ghost_mode = (g.plan_target_station == -1);
 
-        if (n == 0) {
-            /* If we just sent create_planned_outpost, give the server time
-             * to round-trip the new ghost station to us before tearing
-             * plan mode down. Without this grace window the player has to
-             * press B twice to plan on a fresh outpost. */
-            if (g.world.time >= g.plan_mode_grace_until) {
-                g.plan_mode_active = false;
+        if (!ghost_mode) {
+            /* Real station: find reticle targets normally. */
+            reticle_target_t targets[RETICLE_MAX_TARGETS];
+            int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
+            if (n == 0) {
+                if (g.world.time >= g.plan_mode_grace_until) {
+                    g.plan_mode_active = false;
+                }
+            } else {
+                g.placement_target_station = targets[0].station;
+                g.placement_target_ring = targets[0].ring;
+                g.placement_target_slot = targets[0].slot;
+                g.plan_mode_grace_until = 0.0f;
             }
         } else {
-            g.placement_target_station = targets[0].station;
-            g.placement_target_ring = targets[0].ring;
-            g.placement_target_slot = targets[0].slot;
-            g.plan_mode_grace_until = 0.0f; /* arrived */
+            /* Ghost mode: pick the slot closest to the ship's forward. */
+            vec2 fwd = v2_from_angle(LOCAL_PLAYER.ship.angle);
+            float best_dot = -2.0f;
+            int best_ring = 1, best_slot = 0;
+            for (int ring = 1; ring <= 1; ring++) { /* ghost starts with ring 1 only */
+                int slots_n = STATION_RING_SLOTS[ring];
+                for (int slot = 0; slot < slots_n; slot++) {
+                    float angle = TWO_PI_F * (float)slot / (float)slots_n;
+                    vec2 dir = v2(cosf(angle), sinf(angle));
+                    float d = v2_dot(fwd, dir);
+                    if (d > best_dot) { best_dot = d; best_ring = ring; best_slot = slot; }
+                }
+            }
+            g.placement_target_station = -1;
+            g.placement_target_ring = best_ring;
+            g.placement_target_slot = best_slot;
         }
 
         if (is_key_pressed(SAPP_KEYCODE_ESCAPE) || is_key_pressed(SAPP_KEYCODE_B)) {
-            /* Exiting plan mode. If the target is a planned station with
-             * no slots reserved yet, cancel it entirely so B+B is a clean
-             * "never mind" gesture instead of a flicker. */
-            int s = g.placement_target_station;
-            if (s >= 3 && s < MAX_STATIONS &&
-                g.world.stations[s].planned &&
-                g.world.stations[s].placement_plan_count == 0) {
-                intent.cancel_planned_outpost = true;
-                intent.cancel_planned_station = (int8_t)s;
-                set_notice("Outpost design cancelled.");
+            if (!ghost_mode) {
+                int s = g.placement_target_station;
+                if (s >= 3 && s < MAX_STATIONS &&
+                    g.world.stations[s].planned &&
+                    g.world.stations[s].placement_plan_count == 0) {
+                    intent.cancel_planned_outpost = true;
+                    intent.cancel_planned_station = (int8_t)s;
+                    set_notice("Outpost design cancelled.");
+                }
             }
             g.plan_mode_active = false;
         } else if (g.plan_mode_active) {
@@ -475,9 +497,6 @@ input_intent_t sample_input_intent(void) {
                     MODULE_SHIPYARD,
                 };
                 int count = (int)(sizeof(plannable)/sizeof(plannable[0]));
-                /* If the player has already committed to PLAYER_PLAN_TYPE_LIMIT
-                 * distinct types, R cycles only through those. Otherwise it
-                 * cycles through every tech-tree-unlocked type. */
                 module_type_t planned[PLAYER_PLAN_TYPE_LIMIT];
                 int planned_n = player_planned_types(planned, PLAYER_PLAN_TYPE_LIMIT);
                 uint32_t mask = LOCAL_PLAYER.ship.unlocked_modules;
@@ -501,8 +520,6 @@ input_intent_t sample_input_intent(void) {
                 if (next >= 0) g.plan_type = next;
                 intent.release_tow = false;
             } else if (is_key_pressed(SAPP_KEYCODE_E)) {
-                /* Enforce per-player 2-type cap. Allow if the type is already
-                 * in the planned set or we have headroom. */
                 module_type_t planned[PLAYER_PLAN_TYPE_LIMIT];
                 int planned_n = player_planned_types(planned, PLAYER_PLAN_TYPE_LIMIT);
                 bool already = false;
@@ -514,7 +531,43 @@ input_intent_t sample_input_intent(void) {
                 } else if (!already && planned_n >= PLAYER_PLAN_TYPE_LIMIT) {
                     set_notice("Plan limit %d types. Cancel one first.",
                         PLAYER_PLAN_TYPE_LIMIT);
+                } else if (ghost_mode) {
+                    /* Ghost → lock: create planned outpost + first plan
+                     * in one atomic message. The station materializes at
+                     * the player's current ship position. */
+                    vec2 pos = LOCAL_PLAYER.ship.pos;
+                    bool too_close = false;
+                    for (int s = 0; s < MAX_STATIONS; s++) {
+                        const station_t *st = &g.world.stations[s];
+                        if (!station_exists(st)) continue;
+                        if (v2_dist_sq(st->pos, pos) < OUTPOST_MIN_DISTANCE * OUTPOST_MIN_DISTANCE) {
+                            too_close = true; break;
+                        }
+                    }
+                    if (too_close) {
+                        set_notice("Too close to an existing station.");
+                    } else if (signal_strength_at(&g.world, pos) <= 0.0f) {
+                        set_notice("No signal here.");
+                    } else {
+                        /* Atomic create + first plan */
+                        intent.create_planned_outpost = true;
+                        intent.planned_outpost_pos = pos;
+                        intent.add_plan = true;
+                        intent.plan_station = -2; /* sentinel: just-created */
+                        intent.plan_ring = (int8_t)g.placement_target_ring;
+                        intent.plan_slot = (int8_t)g.placement_target_slot;
+                        intent.plan_type = (module_type_t)g.plan_type;
+                        /* Lock effect */
+                        g.outpost_lock_timer = 1.5f;
+                        g.outpost_lock_pos = pos;
+                        /* Transition to grace mode — wait for server to
+                         * send back the created station, then switch to
+                         * real plan mode targeting it. */
+                        g.plan_mode_grace_until = g.world.time + 1.5f;
+                        set_notice("Station locked! [R] type [E] place [B] exit");
+                    }
                 } else {
+                    /* Real station: add plan normally. */
                     intent.add_plan = true;
                     intent.plan_station = (int8_t)g.placement_target_station;
                     intent.plan_ring = (int8_t)g.placement_target_ring;
@@ -527,7 +580,6 @@ input_intent_t sample_input_intent(void) {
         }
     } else if (is_key_pressed(SAPP_KEYCODE_B)) {
         if (LOCAL_PLAYER.docked) {
-            /* B shortcut: jump to shipyard tab if available */
             const station_t *st = current_station_ptr();
             if (st && station_has_module(st, MODULE_SHIPYARD)) {
                 g.station_tab = STATION_TAB_SHIPYARD;
@@ -536,18 +588,12 @@ input_intent_t sample_input_intent(void) {
             }
         } else {
             /* Undocked, not towing.
-             * Near an existing outpost or planned station → enter plan mode.
-             * Otherwise → ask the server to create a planned outpost AND
-             * enter plan mode immediately so the second B press isn't
-             * needed. The plan mode loop holds open via plan_mode_grace_until
-             * until the new ghost arrives in the reticle. */
+             * Near an existing outpost or planned station → enter plan
+             * mode targeting it. Otherwise → enter ghost preview mode
+             * (rings follow ship, nothing committed until E). */
             reticle_target_t targets[RETICLE_MAX_TARGETS];
             int n = collect_reticle_targets(LOCAL_PLAYER.ship.pos, targets, RETICLE_MAX_TARGETS);
             uint32_t mask = LOCAL_PLAYER.ship.unlocked_modules;
-            /* Pick the first useful unlocked plannable type. SIGNAL_RELAY
-             * is always unlocked (root), so it's a safe default for the
-             * first entry. If the player has progressed, the cycle picks
-             * up from whatever they last selected. */
             if (g.plan_type == 0 || g.plan_type == MODULE_DOCK ||
                 !module_unlocked_for_player(mask, (module_type_t)g.plan_type)) {
                 g.plan_type = MODULE_SIGNAL_RELAY;
@@ -560,29 +606,13 @@ input_intent_t sample_input_intent(void) {
                 g.plan_target_station = targets[0].station;
                 set_notice("Plan: [R] type [E] place [B] exit");
             } else {
-                /* No outpost in range — request a planned outpost from server */
-                vec2 pos = LOCAL_PLAYER.ship.pos;
-                bool too_close = false;
-                for (int s = 0; s < MAX_STATIONS; s++) {
-                    const station_t *st = &g.world.stations[s];
-                    if (!station_exists(st)) continue;
-                    if (v2_dist_sq(st->pos, pos) < OUTPOST_MIN_DISTANCE * OUTPOST_MIN_DISTANCE) {
-                        too_close = true; break;
-                    }
-                }
-                if (too_close) {
-                    set_notice("Too close to an existing station.");
-                } else if (signal_strength_at(&g.world, pos) <= 0.0f) {
-                    set_notice("No signal here. Move closer to a station.");
-                } else {
-                    intent.create_planned_outpost = true;
-                    intent.planned_outpost_pos = pos;
-                    /* Activate plan mode immediately and hold it open
-                     * across the create_planned_outpost round-trip. */
-                    g.plan_mode_active = true;
-                    g.plan_mode_grace_until = g.world.time + 1.5f;
-                    set_notice("Plan: [R] type [E] place");
-                }
+                /* Ghost preview: rings follow the ship, no server message. */
+                g.plan_mode_active = true;
+                g.plan_target_station = -1; /* sentinel: ghost */
+                g.placement_target_station = -1;
+                g.placement_target_ring = 1;
+                g.placement_target_slot = 0;
+                set_notice("Plan: [R] type [E] lock [B] exit");
             }
         }
     }
@@ -636,7 +666,7 @@ void submit_input(const input_intent_t *intent, float dt) {
         intent->buy_product || intent->hail ||
         intent->release_tow || intent->add_plan ||
         intent->create_planned_outpost || intent->cancel_planned_outpost ||
-        intent->toggle_autopilot;
+        intent->cancel_plan_slot || intent->toggle_autopilot;
 
     if (has_action)
         g.action_predict_timer = 0.5f;
@@ -645,25 +675,44 @@ void submit_input(const input_intent_t *intent, float dt) {
      * richer payloads (target station/ring/slot/type or world position)
      * that don't fit in the 1-byte action slot. Send them directly. */
     if (g.multiplayer_enabled && net_is_connected()) {
-        if (intent->create_planned_outpost) {
-            net_send_plan(NET_PLAN_OP_CREATE_OUTPOST,
-                          -1, -1, -1, 0,
-                          intent->planned_outpost_pos.x,
-                          intent->planned_outpost_pos.y);
-        }
-        if (intent->add_plan) {
-            net_send_plan(NET_PLAN_OP_ADD_SLOT,
-                          intent->plan_station,
+        if (intent->create_planned_outpost && intent->add_plan &&
+            intent->plan_station == -2) {
+            /* Atomic create + first plan — single message. */
+            net_send_plan(NET_PLAN_OP_CREATE_AND_ADD,
+                          -1,
                           intent->plan_ring,
                           intent->plan_slot,
                           (uint8_t)intent->plan_type,
-                          0.0f, 0.0f);
+                          intent->planned_outpost_pos.x,
+                          intent->planned_outpost_pos.y);
+        } else {
+            if (intent->create_planned_outpost) {
+                net_send_plan(NET_PLAN_OP_CREATE_OUTPOST,
+                              -1, -1, -1, 0,
+                              intent->planned_outpost_pos.x,
+                              intent->planned_outpost_pos.y);
+            }
+            if (intent->add_plan) {
+                net_send_plan(NET_PLAN_OP_ADD_SLOT,
+                              intent->plan_station,
+                              intent->plan_ring,
+                              intent->plan_slot,
+                              (uint8_t)intent->plan_type,
+                              0.0f, 0.0f);
+            }
         }
         if (intent->cancel_planned_outpost) {
             net_send_plan(NET_PLAN_OP_CANCEL_OUTPOST,
                           intent->cancel_planned_station,
                           -1, -1, 0,
                           0.0f, 0.0f);
+        }
+        if (intent->cancel_plan_slot) {
+            net_send_plan(NET_PLAN_OP_CANCEL_PLAN_SLOT,
+                          intent->cancel_plan_st,
+                          intent->cancel_plan_ring,
+                          intent->cancel_plan_sl,
+                          0, 0.0f, 0.0f);
         }
     }
 

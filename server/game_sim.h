@@ -108,6 +108,11 @@ typedef struct {
     /* Cancel a planned outpost (only the owner can). */
     bool cancel_planned_outpost;
     int8_t cancel_planned_station;
+    /* Cancel a single placement plan on a station slot. */
+    bool cancel_plan_slot;
+    int8_t cancel_plan_st;
+    int8_t cancel_plan_ring;
+    int8_t cancel_plan_sl;
     bool buy_scaffold_kit;
     module_type_t scaffold_kit_module; /* what module type the kit builds */
     bool buy_product;
@@ -154,10 +159,13 @@ typedef struct {
      * 0 = off (manual control)
      * 1 = mining loop: mine → tow → dock → sell → undock → repeat
      * Manual input (turn/thrust/mine) cancels the autopilot. */
+    bool actual_thrusting;      /* true if the ship thrusted this tick (survives input restore) */
     uint8_t autopilot_mode;
     int autopilot_target;       /* asteroid idx or -1 */
     int autopilot_state;        /* internal state machine cursor */
     float autopilot_timer;
+    vec2 autopilot_last_pos;    /* position snapshot for stuck detection */
+    float autopilot_stuck_timer;/* seconds since meaningful movement */
 } server_player_t;
 
 typedef struct {
