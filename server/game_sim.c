@@ -3915,11 +3915,16 @@ static int autopilot_find_mining_target(const world_t *w, const server_player_t 
     return best;
 }
 
-/* True if the cargo hold has nothing left to deliver. */
-static bool autopilot_hold_empty(const ship_t *s) {
-    for (int c = 0; c < COMMODITY_COUNT; c++)
-        if (s->cargo[c] > 0.5f) return false;
-    return true;
+/* Tractor capacity = 2 + 2 × tractor_level (2/4/6/8/10).
+ * The autopilot's mining loop is bounded by THIS, not by cargo capacity:
+ * mined fragments live in the tow chain, not ship.cargo, and only
+ * become credits when smelted at a station's furnace. */
+static int autopilot_tractor_capacity(const ship_t *s) {
+    return 2 + s->tractor_level * 2;
+}
+
+static bool autopilot_tractor_full(const ship_t *s) {
+    return s->towed_count >= (uint8_t)autopilot_tractor_capacity(s);
 }
 
 /* True if the ship is damaged enough that the autopilot should bail
@@ -3959,13 +3964,6 @@ static float autopilot_approach_speed(float dist, float max_speed) {
     if (v > max_speed) v = max_speed;
     if (v < 30.0f && dist > 5.0f) v = 30.0f;
     return v;
-}
-
-/* True if the cargo hold is roughly full (90%+ of capacity). */
-static bool autopilot_hold_full(const ship_t *s) {
-    float total = ship_total_cargo(s);
-    float cap = ship_cargo_capacity(s);
-    return cap > 0.0f && total / cap >= 0.85f;
 }
 
 /* Drive the player's ship via simulated input. The autopilot writes
@@ -4012,7 +4010,8 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_LAUNCH;
             break;
         }
-        if (autopilot_hold_full(&sp->ship)) {
+        /* Tractor full = time to dump fragments at the nearest hopper. */
+        if (autopilot_tractor_full(&sp->ship)) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
@@ -4037,7 +4036,9 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             break;
         }
-        if (autopilot_hold_full(&sp->ship)) {
+        /* Bail to delivery if the tractor filled up while in transit
+         * (e.g., we passed through fragments from another miner). */
+        if (autopilot_tractor_full(&sp->ship)) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
@@ -4202,10 +4203,16 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
     case AUTOPILOT_STEP_COLLECT: {
         /* Sweep nearby fragments only — DON'T chase fragments across
          * the world. The COLLECT state is for the cluster spawned by
-         * the rock we just fractured, not for vacuuming the belt.
-         * Once nothing's within ~600u, return home with what we have. */
+         * the rock we just fractured. Bail out the instant the tractor
+         * is full OR nothing's nearby OR we've been loitering too long. */
         sp->ship.tractor_active = true;
         sp->input.mine = false;
+        if (autopilot_tractor_full(&sp->ship)) {
+            sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+            sp->autopilot_target = -1;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
         const float collect_range_sq = 600.0f * 600.0f;
         int best = -1;
         float best_d = 1e18f;
@@ -4213,13 +4220,16 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             const asteroid_t *a = &w->asteroids[i];
             if (!a->active || !asteroid_is_collectible(a)) continue;
             float d = v2_dist_sq(sp->ship.pos, a->pos);
-            if (d > collect_range_sq) continue; /* too far — leave it */
+            if (d > collect_range_sq) continue;
             if (d < best_d) { best_d = d; best = i; }
         }
-        if (best < 0 || autopilot_hold_full(&sp->ship)) {
-            sp->autopilot_state = autopilot_hold_empty(&sp->ship)
-                ? AUTOPILOT_STEP_FIND_TARGET
-                : AUTOPILOT_STEP_RETURN_TO_REFINERY;
+        if (best < 0) {
+            /* No more fragments in range. If we're carrying anything,
+             * dump it at the nearest refinery; otherwise look for a
+             * new mining target. */
+            sp->autopilot_state = (sp->ship.towed_count > 0)
+                ? AUTOPILOT_STEP_RETURN_TO_REFINERY
+                : AUTOPILOT_STEP_FIND_TARGET;
             sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;
             break;
@@ -4231,8 +4241,10 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
         sp->input.thrust = (cosf(diff) > 0.5f) ? 0.6f : 0.0f;
         if (sp->autopilot_timer > 8.0f) {
-            /* Don't loiter forever; head home with whatever we have */
-            sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+            sp->autopilot_state = (sp->ship.towed_count > 0)
+                ? AUTOPILOT_STEP_RETURN_TO_REFINERY
+                : AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;
         }
         break;
@@ -4250,19 +4262,22 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         }
         const station_t *st = &w->stations[s];
         sp->autopilot_target = s;
+        /* Damage routing: if hull is below the repair threshold, this
+         * is a "dock for repair" run; we approach the dock berth and
+         * trigger interact when close. Otherwise it's a "drop fragments
+         * at the hopper" run; we just need to get within hopper-pull
+         * range, release the tractor, and head out again. */
+        bool need_repair = autopilot_needs_repair(&sp->ship);
+
         /* Once we're inside hopper-pull range of the destination, release
          * the tractor so towed fragments drop free and get caught by the
-         * station's smelt beams. We only do this once per delivery —
-         * otherwise the toggle would flip back on every tick. */
+         * station's smelt beams. */
         float station_dist_sq = v2_dist_sq(sp->ship.pos, st->pos);
         if (station_dist_sq < 600.0f * 600.0f &&
             sp->ship.tractor_active && sp->ship.towed_count > 0) {
             sp->input.release_tow = true;
         }
-        /* Path avoidance toward the dock approach point (offset from
-         * the station center so we don't head straight at the core).
-         * Skip the player's towed fragments so we don't dodge our own
-         * cargo trail. */
+        /* Path avoidance toward the dock approach point. */
         vec2 dock_target = station_approach_target(st, sp->ship.pos);
         const hull_def_t *hull = ship_hull_def(&sp->ship);
         int16_t ignore[12];
@@ -4281,17 +4296,10 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
 
         if (pa.blocked) {
-            /* HARD brake — same as FLY_TO_TARGET. The path is blocked
-             * (probably a station ring); stop and let rotation find
-             * the gap. */
             float current_speed = sqrtf(v2_len_sq(sp->ship.vel));
-            if (current_speed > 25.0f) {
-                sp->input.thrust = -1.0f;
-            } else {
-                sp->input.thrust = 0.0f;
-            }
+            if (current_speed > 25.0f) sp->input.thrust = -1.0f;
+            else sp->input.thrust = 0.0f;
         } else {
-            /* Path clear — normal approach with distance-based brake. */
             float throttle = (facing > 0.6f) ? 1.0f : 0.0f;
             if (dist < 600.0f) {
                 float t = (dist - 200.0f) / 400.0f;
@@ -4302,7 +4310,21 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->input.thrust = throttle;
         }
         sp->input.mine = false;
-        if (dist < DOCK_APPROACH_RANGE && sp->in_dock_range) {
+
+        /* Drop-and-leave path (no damage): once we've released the
+         * tractor and are inside the hopper area, we don't need to
+         * dock — the furnace beam smelts our fragments asynchronously
+         * and credits us directly. Just turn around and find the next
+         * mining target. */
+        if (!need_repair && sp->ship.towed_count == 0 && dist < 700.0f) {
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_target = -1;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+
+        /* Damage path: dock for passive heal once close enough. */
+        if (need_repair && dist < DOCK_APPROACH_RANGE && sp->in_dock_range) {
             sp->input.interact = true;
             sp->autopilot_state = AUTOPILOT_STEP_DOCK;
             sp->autopilot_timer = 0.0f;
