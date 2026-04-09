@@ -256,6 +256,16 @@ void apply_remote_player_state(const NetPlayerState* state) {
             sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.2f);
         }
         sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.3f);
+        /* Beam state is server-authoritative for the local player too —
+         * the autopilot fires server-side and the client never predicts
+         * its laser. Combat / hit prediction will eventually rely on
+         * this same path. */
+        sp->beam_active      = (state->flags & 2) != 0;
+        sp->beam_ineffective = (state->flags & 32) != 0;
+        sp->beam_hit         = (state->flags & 64) != 0;
+        sp->scan_active      = (state->flags & 8) != 0;
+        sp->beam_start = v2(state->beam_start_x, state->beam_start_y);
+        sp->beam_end   = v2(state->beam_end_x,   state->beam_end_y);
     } else {
         /* Remote player: update curr for interpolation.
          * begin_player_state_batch() already shifted prev←curr. */

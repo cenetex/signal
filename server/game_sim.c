@@ -1818,16 +1818,19 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
  * matches the given module type. Used by tow drones to pick a delivery
  * destination for a loose scaffold. Returns -1 if none. */
 static int find_destination_for_scaffold(const world_t *w, module_type_t type) {
-    /* Prefer outposts that have a placement plan for this type — those
-     * are slots the player explicitly reserved for this build. */
+    /* Pass 1: outposts (active OR planned) with a placement plan for
+     * this type — those are slots the player explicitly reserved. A
+     * planned outpost is a valid destination too: when the scaffold
+     * arrives the planned ghost can be promoted via the existing
+     * snap-to-slot logic, with the relay as its founding module. */
     for (int s = 3; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
-        if (!station_is_active(st)) continue;
+        if (!station_exists(st)) continue;
         for (int p = 0; p < st->placement_plan_count; p++) {
             if (st->placement_plans[p].type == type) return s;
         }
     }
-    /* Fallback: any active outpost with at least one open ring slot. */
+    /* Pass 2: any active outpost with at least one open ring slot. */
     for (int s = 3; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
@@ -1835,6 +1838,17 @@ static int find_destination_for_scaffold(const world_t *w, module_type_t type) {
             if (ring > 1 && !ring_has_dock(st, ring - 1)) continue;
             if (station_ring_free_slot(st, ring, STATION_RING_SLOTS[ring]) >= 0)
                 return s;
+        }
+    }
+    /* Pass 3: SIGNAL_RELAY is special — it founds new outposts. If the
+     * player has a planned (ghost) outpost waiting, deliver the relay
+     * there even without an explicit placement plan, so the chicken-
+     * and-egg of "first relay needs an outpost that needs a relay" is
+     * resolved by the drone. */
+    if (type == MODULE_SIGNAL_RELAY) {
+        for (int s = 3; s < MAX_STATIONS; s++) {
+            const station_t *st = &w->stations[s];
+            if (st->planned) return s;
         }
     }
     return -1;
@@ -3787,46 +3801,88 @@ static int autopilot_find_refinery(const world_t *w, vec2 pos) {
     return best;
 }
 
+/* Quick line-of-sight check from `from` to `to`, ignoring `target_idx`.
+ * Returns true if the cone of width (ship_radius + a->radius + 30) is
+ * clear of every other non-S-tier asteroid along the path. Used by the
+ * autopilot's target picker so it doesn't aim at rocks on the far side
+ * of a clump. */
+static bool autopilot_path_clear(const world_t *w, vec2 from, vec2 to,
+                                  int target_idx, float ship_radius) {
+    vec2 delta = v2_sub(to, from);
+    float dist = sqrtf(v2_len_sq(delta));
+    if (dist < 1.0f) return true;
+    vec2 forward = v2_scale(delta, 1.0f / dist);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (i == target_idx) continue;
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        if (a->tier == ASTEROID_TIER_S) continue;
+        vec2 to_a = v2_sub(a->pos, from);
+        float proj = v2_dot(to_a, forward);
+        if (proj < -a->radius) continue;
+        if (proj > dist) continue; /* past the target */
+        float perp = fabsf(v2_cross(to_a, forward));
+        if (perp < a->radius + ship_radius + 30.0f) return false;
+    }
+    return true;
+}
+
 /* Pick the most autopilot-friendly mining target.
  *
  * Priority order (the autopilot should look like a miner, not a scavenger):
- *   1. The hardest rock the ship's current laser level can crack
- *      (so the player sees the laser fire and rocks fracture)
- *   2. Any rock at our level or below
- *   3. As a last resort, drifting S-tier fragments — but ONLY if we
- *      happen to be passing them (within ~600u). Otherwise we'd
- *      vacuum the entire belt without ever firing the laser.
+ *   1. The hardest rock the ship's current laser level can crack with
+ *      a clear forward path (so the ship doesn't need to bend around
+ *      other rocks to reach it)
+ *   2. Same level rocks even with a clump in the way (better than nothing)
+ *   3. Any rock at our level or below
+ *   4. As a last resort, nearby drifting S-tier fragments
  */
 static int autopilot_find_mining_target(const world_t *w, const server_player_t *sp) {
     int best = -1;
     float best_d = 1e18f;
     asteroid_tier_t max_tier = max_mineable_tier(sp->ship.mining_level);
+    float ship_r = ship_hull_def(&sp->ship)->ship_radius;
 
-    /* Pass 1: target rocks AT our laser level. */
+    /* Pass 1: target rocks AT our laser level WITH a clear path. */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
         if (a->tier == ASTEROID_TIER_S) continue;
         if ((int)a->tier != (int)max_tier) continue;
         if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        if (!autopilot_path_clear(w, sp->ship.pos, a->pos, i, ship_r)) continue;
         float d = v2_dist_sq(sp->ship.pos, a->pos);
         if (d < best_d) { best_d = d; best = i; }
     }
     if (best >= 0) return best;
 
-    /* Pass 2: any mineable rock at or below our level. */
+    /* Pass 2: any mineable rock with a clear path. */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
         if (a->tier == ASTEROID_TIER_S) continue;
-        if ((int)a->tier < (int)max_tier) continue; /* tier number INCREASES as size decreases */
+        if ((int)a->tier < (int)max_tier) continue;
+        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        if (!autopilot_path_clear(w, sp->ship.pos, a->pos, i, ship_r)) continue;
+        float d = v2_dist_sq(sp->ship.pos, a->pos);
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    if (best >= 0) return best;
+
+    /* Pass 3: any mineable rock at or below our level (clear path no
+     * longer required — fall back to the closest available). */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        if (a->tier == ASTEROID_TIER_S) continue;
+        if ((int)a->tier < (int)max_tier) continue;
         if (signal_strength_at(w, a->pos) <= 0.0f) continue;
         float d = v2_dist_sq(sp->ship.pos, a->pos);
         if (d < best_d) { best_d = d; best = i; }
     }
     if (best >= 0) return best;
 
-    /* Pass 3 (fallback): nearby drifting fragments only — within 600u
+    /* Pass 4 (fallback): nearby drifting fragments only — within 600u
      * so we don't scavenge instead of mining. */
     const float frag_pickup_sq = 600.0f * 600.0f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {

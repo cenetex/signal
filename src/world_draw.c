@@ -1498,13 +1498,11 @@ void draw_remote_players(void) {
         /* Callsign label above ship */
         /* Callsign rendered with sdtx (real font) — see callsign pass below. */
 
-        /* Mining or scan beam */
+        /* Mining or scan beam — server-authoritative endpoints. */
         if (mining) {
             bool scanning = (players[i].flags & 8) != 0;
-            vec2 pos = v2(players[i].x, players[i].y);
-            vec2 forward = v2_from_angle(players[i].angle);
-            vec2 muzzle = v2_add(pos, v2_scale(forward, 24.0f));
-            vec2 beam_end = v2_add(muzzle, v2_scale(forward, MINING_RANGE));
+            vec2 muzzle  = v2(players[i].beam_start_x, players[i].beam_start_y);
+            vec2 beam_end = v2(players[i].beam_end_x, players[i].beam_end_y);
             if (scanning) {
                 draw_segment(muzzle, beam_end, 0.30f, 0.70f, 1.0f, 0.6f);
             } else {

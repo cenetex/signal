@@ -29,11 +29,24 @@ typedef struct {
     float x, y;
     float vx, vy;
     float angle;
-    uint8_t flags;  /* bit0=thrust, bit1=mining, bit2=docked, bit3=scan, bit4=tractor */
+    /* Flags bit layout:
+     *   bit0 = thrust
+     *   bit1 = beam_active (the beam is firing — may or may not have hit)
+     *   bit2 = docked
+     *   bit3 = scan_active
+     *   bit4 = tractor_active
+     *   bit5 = beam_ineffective (laser too weak for the target tier)
+     *   bit6 = beam_hit (beam terminates on a target instead of empty space)
+     */
+    uint8_t flags;
     uint8_t tractor_level;
     uint8_t towed_count;
     uint8_t towed_fragments[10]; /* asteroid indices, 0xFF = unused */
     char callsign[8];            /* e.g. "KRX-472" */
+    /* Beam endpoints — server-authoritative. Used for both local and
+     * remote player beam visuals. */
+    float beam_start_x, beam_start_y;
+    float beam_end_x, beam_end_y;
     bool active;
 } NetPlayerState;
 

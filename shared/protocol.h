@@ -120,8 +120,12 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 /* Station economic snapshot: [index:1][inventory:COMMODITY_COUNT×f32] */
 #define STATION_RECORD_SIZE (1 + COMMODITY_COUNT * 4)  /* 37 bytes when COMMODITY_COUNT == 9 */
 
-/* Player state record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:10] */
-#define PLAYER_RECORD_SIZE 41  /* 34 + 7 bytes callsign */
+/* Player state record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:10][callsign:7]
+ * [beam_start_x:f32][beam_start_y:f32][beam_end_x:f32][beam_end_y:f32]
+ * flags bits: 1=thrust 2=beam_active+hit 4=docked 8=scan 16=tractor 32=beam_ineffective
+ * Beam coords are server-authoritative — fixes autopilot mining visuals
+ * and (eventually) combat hit prediction. */
+#define PLAYER_RECORD_SIZE 57  /* 41 + 16 bytes beam coords */
 
 /* Asteroid record: [id+flags:1][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32] */
 #define ASTEROID_RECORD_SIZE 30

@@ -247,6 +247,10 @@ static void handle_message(const uint8_t* data, int len) {
                 for (int t = 0; t < 10; t++) ps->towed_fragments[t] = p[24 + t];
                 memcpy(ps->callsign, &p[34], 7);
                 ps->callsign[7] = '\0';
+                ps->beam_start_x = read_f32_le(&p[41]);
+                ps->beam_start_y = read_f32_le(&p[45]);
+                ps->beam_end_x   = read_f32_le(&p[49]);
+                ps->beam_end_y   = read_f32_le(&p[53]);
                 ps->active = true;
                 if (net_state.callbacks.on_state) {
                     net_state.callbacks.on_state(ps);

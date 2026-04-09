@@ -98,10 +98,16 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
         write_f32_le(&p[17], players[i].ship.angle);
         uint8_t flags = 0;
         if (players[i].input.thrust > 0.0f) flags |= 1;
-        if (players[i].beam_active && players[i].beam_hit) flags |= 2;
+        /* bit 1 was "beam_active && beam_hit" — now just "beam_active" so
+         * the client can render the beam even when it's firing into empty
+         * space (no rock target). beam_hit is implied by the beam_end
+         * coords matching a target. */
+        if (players[i].beam_active) flags |= 2;
         if (players[i].docked) flags |= 4;
         if (players[i].scan_active) flags |= 8;
         if (players[i].ship.tractor_active) flags |= 16;
+        if (players[i].beam_ineffective) flags |= 32;
+        if (players[i].beam_hit) flags |= 64;
         p[21] = flags;
         p[22] = (uint8_t)players[i].ship.tractor_level;
         p[23] = players[i].ship.towed_count;
@@ -111,6 +117,14 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
         }
         /* Callsign: 7 bytes (e.g. "KRX-472") */
         memcpy(&p[34], players[i].callsign, 7);
+        /* Beam coordinates — server-authoritative. The client mirrors
+         * these into LOCAL_PLAYER.beam_start/end so the autopilot's
+         * laser visual works (and so combat hits are deterministic
+         * once we have weapons). */
+        write_f32_le(&p[41], players[i].beam_start.x);
+        write_f32_le(&p[45], players[i].beam_start.y);
+        write_f32_le(&p[49], players[i].beam_end.x);
+        write_f32_le(&p[53], players[i].beam_end.y);
         count++;
     }
     buf[0] = NET_MSG_WORLD_PLAYERS;
@@ -223,7 +237,7 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
  * (in shared/net_protocol.h) and all buffers that depend on it. */
 /* Compile-time guards: record sizes must match serialization layouts. */
 _Static_assert(
-    1 + 5 * 4 + 1 + 1 + 1 + 10 + 7 == PLAYER_RECORD_SIZE,
+    1 + 5 * 4 + 1 + 1 + 1 + 10 + 7 + 4 * 4 == PLAYER_RECORD_SIZE,
     "PLAYER_RECORD_SIZE must match serialized player state layout"
 );
 _Static_assert(
