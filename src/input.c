@@ -567,14 +567,36 @@ input_intent_t sample_input_intent(void) {
                         set_notice("Station locked! [R] type [E] place [B] exit");
                     }
                 } else {
-                    /* Real station: add plan normally. */
-                    intent.add_plan = true;
-                    intent.plan_station = (int8_t)g.placement_target_station;
-                    intent.plan_ring = (int8_t)g.placement_target_ring;
-                    intent.plan_slot = (int8_t)g.placement_target_slot;
-                    intent.plan_type = (module_type_t)g.plan_type;
-                    set_notice("Planned %s. [R] type [E] place [B] exit",
-                        module_type_name((module_type_t)g.plan_type));
+                    /* Real station: check if this slot already has a plan.
+                     * If so, E clears it (cancel). Otherwise E adds. */
+                    int ps = g.placement_target_station;
+                    int pr = g.placement_target_ring;
+                    int psl = g.placement_target_slot;
+                    bool has_existing = false;
+                    if (ps >= 0 && ps < MAX_STATIONS) {
+                        const station_t *pst = &g.world.stations[ps];
+                        for (int p = 0; p < pst->placement_plan_count; p++) {
+                            if (pst->placement_plans[p].ring == pr &&
+                                pst->placement_plans[p].slot == psl) {
+                                has_existing = true; break;
+                            }
+                        }
+                    }
+                    if (has_existing) {
+                        intent.cancel_plan_slot = true;
+                        intent.cancel_plan_st = (int8_t)ps;
+                        intent.cancel_plan_ring = (int8_t)pr;
+                        intent.cancel_plan_sl = (int8_t)psl;
+                        set_notice("Plan cleared. [R] type [E] place [B] exit");
+                    } else {
+                        intent.add_plan = true;
+                        intent.plan_station = (int8_t)ps;
+                        intent.plan_ring = (int8_t)pr;
+                        intent.plan_slot = (int8_t)psl;
+                        intent.plan_type = (module_type_t)g.plan_type;
+                        set_notice("Planned %s. [R] type [E] place [B] exit",
+                            module_type_name((module_type_t)g.plan_type));
+                    }
                 }
             }
         }
