@@ -1101,20 +1101,16 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
 static vec2 station_approach_target(const station_t *st, vec2 from) {
     float best_d = 1e18f;
     vec2 best_pos = st->pos;
-    bool found = false;
     for (int i = 0; i < st->module_count; i++) {
         if (st->modules[i].type != MODULE_DOCK) continue;
         if (st->modules[i].scaffold) continue;
         vec2 mp = module_world_pos_ring(st, st->modules[i].ring, st->modules[i].slot);
-        /* Aim at a point slightly outside the ring so the ship approaches
-         * from outside rather than trying to cross through the core. */
         vec2 outward = v2_sub(mp, st->pos);
         float len = v2_len(outward);
-        if (len > 1.0f) {
+        if (len > 1.0f)
             mp = v2_add(mp, v2_scale(outward, 60.0f / len));
-        }
         float d = v2_dist_sq(from, mp);
-        if (d < best_d) { best_d = d; best_pos = mp; found = true; }
+        if (d < best_d) { best_d = d; best_pos = mp; }
     }
     return best_pos;
 }
@@ -1466,6 +1462,7 @@ typedef struct {
     int   count;
     int   current;
     float age;
+    vec2  goal;   /* destination this path was computed for */
 } nav_path_t;
 
 static nav_path_t s_npc_paths[MAX_NPC_SHIPS];
@@ -1582,6 +1579,7 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
 /* Build a sparse navigation graph with dock waypoints around stations. */
 static void nav_build_graph(const world_t *w, vec2 start, vec2 goal,
                             float clearance, nav_graph_t *g) {
+    (void)clearance;
     g->count = 0;
     /* Node 0 = start, Node 1 = goal */
     g->nodes[g->count++].pos = start;
@@ -1641,6 +1639,7 @@ static bool nav_find_path(const world_t *w, vec2 start, vec2 goal,
     out->count = 0;
     out->current = 0;
     out->age = 0.0f;
+    out->goal = goal;
 
     /* Fast path: direct line is clear AND no station is between
      * start and goal → skip the graph entirely. We check for nearby
@@ -1804,7 +1803,9 @@ static void npc_steer_with_avoidance(const world_t *w, npc_ship_t *npc, vec2 tar
 static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
                                 vec2 final_target, float accel, float turn_speed, float dt) {
     nav_path_t *path = &s_npc_paths[npc_idx];
-    if (path->age > 5.0f || (path->count == 0 && path->age > 0.5f)) {
+    /* Invalidate if destination changed (state transition) or stale. */
+    bool dest_changed = v2_dist_sq(path->goal, final_target) > 100.0f * 100.0f;
+    if (dest_changed || path->age > 5.0f || (path->count == 0 && path->age > 0.5f)) {
         const hull_def_t *hull = npc_hull_def(npc);
         nav_find_path(w, npc->pos, final_target, hull->ship_radius + 30.0f, path);
     }
@@ -4166,31 +4167,6 @@ static int autopilot_find_refinery(const world_t *w, vec2 pos) {
     return best;
 }
 
-/* Quick line-of-sight check from `from` to `to`, ignoring `target_idx`.
- * Returns true if the cone of width (ship_radius + a->radius + 30) is
- * clear of every other non-S-tier asteroid along the path. Used by the
- * autopilot's target picker so it doesn't aim at rocks on the far side
- * of a clump. */
-static bool autopilot_path_clear(const world_t *w, vec2 from, vec2 to,
-                                  int target_idx, float ship_radius) {
-    vec2 delta = v2_sub(to, from);
-    float dist = sqrtf(v2_len_sq(delta));
-    if (dist < 1.0f) return true;
-    vec2 forward = v2_scale(delta, 1.0f / dist);
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (i == target_idx) continue;
-        const asteroid_t *a = &w->asteroids[i];
-        if (!a->active) continue;
-        if (a->tier == ASTEROID_TIER_S) continue;
-        vec2 to_a = v2_sub(a->pos, from);
-        float proj = v2_dot(to_a, forward);
-        if (proj < -a->radius) continue;
-        if (proj > dist) continue; /* past the target */
-        float perp = fabsf(v2_cross(to_a, forward));
-        if (perp < a->radius + ship_radius + 30.0f) return false;
-    }
-    return true;
-}
 
 /* Pick the most autopilot-friendly mining target.
  *
@@ -4206,7 +4182,6 @@ static int autopilot_find_mining_target(const world_t *w, const server_player_t 
     int best = -1;
     float best_d = 1e18f;
     asteroid_tier_t max_tier = max_mineable_tier(sp->ship.mining_level);
-    float ship_r = ship_hull_def(&sp->ship)->ship_radius;
 
     /* Pass 1: nearest rock AT our laser level (prefer hardest we can crack).
      * A* handles routing around obstacles, so no path_clear filter needed. */
@@ -4444,7 +4419,8 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         /* Follow A* path waypoints instead of straight line to target.
          * Re-plan if the path is stale (>5s). */
         nav_path_t *path = &s_player_paths[sp->id];
-        if (path->age > 5.0f) {
+        bool dest_changed = v2_dist_sq(path->goal, a->pos) > 100.0f * 100.0f;
+        if (dest_changed || path->age > 5.0f) {
             nav_find_path(w, sp->ship.pos, a->pos,
                           hull->ship_radius + 30.0f, path);
         }
@@ -4657,7 +4633,8 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         vec2 dock_target = station_approach_target(st, sp->ship.pos);
         const hull_def_t *hull = ship_hull_def(&sp->ship);
         nav_path_t *path = &s_player_paths[sp->id];
-        if (path->age > 5.0f || path->count == 0) {
+        bool dest_changed = v2_dist_sq(path->goal, dock_target) > 100.0f * 100.0f;
+        if (dest_changed || path->age > 5.0f || path->count == 0) {
             nav_find_path(w, sp->ship.pos, dock_target,
                           hull->ship_radius + 30.0f, path);
         }
