@@ -1236,16 +1236,18 @@ static path_avoidance_t compute_path_avoidance(const world_t *w, vec2 pos, vec2 
             }
         }
 
-        /* Ring-radial wall check — the killer feature. A station's rings
-         * are continuous circular walls except at dock module positions.
-         * Local steering can't see the walls (they're continuous, not
-         * discrete obstacles). Instead, we cast the forward ray against
-         * each ring's circular boundary; if the crossing is NOT at a
-         * dock gap angle, treat the ring as a wall and STEER TOWARD the
-         * nearest dock gap on that ring.
+        /* Ring-radial wall check — a station's rings are circular walls
+         * with two kinds of openings: (a) dock modules, which are
+         * passable in their own right, and (b) empty slots between
+         * modules, where no corridor connects.
          *
-         * This makes ships naturally find dock gaps even when arriving
-         * from arbitrary angles. */
+         * Cast the forward ray against each ring's circular boundary.
+         * If the crossing point lands on a corridor arc OR a non-dock
+         * module circle, it's a wall. Otherwise it's an opening.
+         *
+         * On wall hits, prefer aiming at a dock module if one exists
+         * on this ring; otherwise steer tangent to the ring (rotating
+         * around the station) so the ship sweeps until a gap appears. */
         for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
             float ring_r = STATION_RING_RADIUS[ring];
             /* Ray-circle intersection. Local space relative to station. */
@@ -1258,34 +1260,71 @@ static path_avoidance_t compute_path_avoidance(const world_t *w, vec2 pos, vec2 
             float t1 = (-bb - sqd) * 0.5f;
             float t2 = (-bb + sqd) * 0.5f;
             float t = -1.0f;
-            /* Closest forward intersection within lookahead */
             if (t1 > 0.0f && t1 < lookahead) t = t1;
             else if (t2 > 0.0f && t2 < lookahead) t = t2;
             if (t < 0.0f) continue;
 
-            /* Crossing point relative to station */
             vec2 cross_local = v2_add(lp, v2_scale(forward, t));
             float cross_ang = atan2f(cross_local.y, cross_local.x);
 
-            /* Is the crossing angle aligned with a dock module on this ring? */
-            const float dock_gap_half = 0.30f; /* ~17° each side */
-            bool in_gap = false;
+            /* Hard override: if the crossing is at a dock module's
+             * angular slot, it's ALWAYS passable. The wrap-around
+             * corridor logic in station_geom can sweep through a dock's
+             * slot angle and would otherwise mark it as a wall. */
+            bool dock_slot = false;
             for (int mi = 0; mi < st->module_count; mi++) {
                 if (st->modules[mi].ring != ring) continue;
                 if (st->modules[mi].type != MODULE_DOCK) continue;
                 if (st->modules[mi].scaffold) continue;
                 float dock_ang = module_angle_ring(st, ring, st->modules[mi].slot);
-                float adiff = wrap_angle(cross_ang - dock_ang);
-                if (fabsf(adiff) < dock_gap_half) { in_gap = true; break; }
+                float adiff = fabsf(wrap_angle(cross_ang - dock_ang));
+                int slots_n = STATION_RING_SLOTS[ring];
+                float slot_arc = (slots_n > 0) ? (TWO_PI_F / (float)slots_n) : TWO_PI_F;
+                if (adiff < slot_arc * 0.40f) {
+                    dock_slot = true;
+                    break;
+                }
             }
-            /* If the ring has NO dock at all, also treat it as a "first
-             * pass" target — ships approaching from outside should at
-             * least slow at the wall. */
-            if (in_gap) continue;
+            if (dock_slot) continue; /* fly through the dock */
 
-            /* Wall hit. Steer toward the nearest dock-gap angle on this
-             * ring (so the ship rotates around the station to find a
-             * gap), and brake based on closeness. */
+            /* Is this crossing angle inside any corridor arc on this ring? */
+            bool in_wall = false;
+            for (int co = 0; co < geom.corridor_count; co++) {
+                if (geom.corridors[co].ring != ring) continue;
+                float a0 = geom.corridors[co].angle_a;
+                float a1 = geom.corridors[co].angle_b;
+                float da = wrap_angle(a1 - a0);
+                if (angle_in_arc(cross_ang, a0, da) >= 0.0f) {
+                    in_wall = true;
+                    break;
+                }
+            }
+            /* Also: is the crossing at a non-dock module's angular slot? */
+            if (!in_wall) {
+                for (int mi = 0; mi < st->module_count; mi++) {
+                    if (st->modules[mi].ring != ring) continue;
+                    if (st->modules[mi].type == MODULE_DOCK) continue;
+                    if (st->modules[mi].scaffold) continue;
+                    float mod_ang = module_angle_ring(st, ring, st->modules[mi].slot);
+                    float adiff = fabsf(wrap_angle(cross_ang - mod_ang));
+                    /* Angular footprint of the module circle at this radius
+                     * (with ship_radius safety margin). */
+                    float ang_size = (STATION_MODULE_COL_RADIUS + ship_radius + 30.0f) / ring_r;
+                    if (adiff < ang_size) {
+                        in_wall = true;
+                        break;
+                    }
+                }
+            }
+            if (!in_wall) continue; /* opening — fly through */
+
+            /* Wall hit. Brake hard and pick an aim direction. */
+            out.blocked = true;
+            float urgency = 1.0f - (t / lookahead);
+            if (urgency > worst_brake) worst_brake = urgency;
+
+            /* Look for a dock module on this ring to aim at directly.
+             * If none, steer tangent to the ring (rotate around station). */
             float best_dock_ang = cross_ang;
             float best_diff = 1e9f;
             bool found_dock = false;
@@ -1297,28 +1336,33 @@ static path_avoidance_t compute_path_avoidance(const world_t *w, vec2 pos, vec2 
                 float adiff = fabsf(wrap_angle(cross_ang - dock_ang));
                 if (adiff < best_diff) { best_diff = adiff; best_dock_ang = dock_ang; found_dock = true; }
             }
-            out.blocked = true;
-            float urgency = 1.0f - (t / lookahead);
-            /* Hard brake — ring walls are non-negotiable */
-            float closeness = urgency;
-            if (closeness > worst_brake) worst_brake = closeness;
-
+            vec2 aim_world;
             if (found_dock) {
-                /* Aim at a point slightly outside the ring at the dock
-                 * angle, so the ship rotates around the station tangentially
-                 * to find the gap. */
+                /* Aim at a point slightly outside the ring at the dock angle. */
                 float aim_r = ring_r + 80.0f;
-                vec2 dock_world = v2_add(st->pos,
+                aim_world = v2_add(st->pos,
                     v2(cosf(best_dock_ang) * aim_r, sinf(best_dock_ang) * aim_r));
-                /* Override desired_dir toward this aim point — the ring
-                 * wall trumps individual obstacle steering. */
-                vec2 to_dock = v2_sub(dock_world, pos);
-                float ld = sqrtf(v2_len_sq(to_dock));
-                if (ld > 0.001f) {
-                    out.desired_dir = v2_scale(to_dock, 1.0f / ld);
-                    /* Reset perp accumulator since we're overriding */
-                    steer_accum = 0.0f;
-                }
+            } else {
+                /* No dock on this ring — steer tangent in the direction
+                 * that brings us closer to the original target, so we
+                 * sweep around the station until an opening appears. */
+                vec2 radial_out = v2_scale(cross_local,
+                    1.0f / fmaxf(0.001f, sqrtf(v2_len_sq(cross_local))));
+                vec2 tangent = v2(-radial_out.y, radial_out.x);
+                vec2 to_target_from_st = v2_sub(target, st->pos);
+                float side = (v2_dot(tangent, to_target_from_st) >= 0.0f) ? 1.0f : -1.0f;
+                tangent = v2_scale(tangent, side);
+                /* Aim a bit ahead along the tangent, slightly outside the ring */
+                float aim_r = ring_r + 100.0f;
+                vec2 aim_local = v2_add(v2_scale(radial_out, aim_r),
+                                         v2_scale(tangent, 200.0f));
+                aim_world = v2_add(st->pos, aim_local);
+            }
+            vec2 to_aim = v2_sub(aim_world, pos);
+            float la = sqrtf(v2_len_sq(to_aim));
+            if (la > 0.001f) {
+                out.desired_dir = v2_scale(to_aim, 1.0f / la);
+                steer_accum = 0.0f; /* override perp accumulator */
             }
         }
 
@@ -3743,43 +3787,55 @@ static int autopilot_find_refinery(const world_t *w, vec2 pos) {
     return best;
 }
 
-/* Pick the most autopilot-friendly mining target: tier S fragments to
- * pick up directly, otherwise the nearest non-titan asteroid that the
- * ship's laser level can crack. */
+/* Pick the most autopilot-friendly mining target.
+ *
+ * Priority order (the autopilot should look like a miner, not a scavenger):
+ *   1. The hardest rock the ship's current laser level can crack
+ *      (so the player sees the laser fire and rocks fracture)
+ *   2. Any rock at our level or below
+ *   3. As a last resort, drifting S-tier fragments — but ONLY if we
+ *      happen to be passing them (within ~600u). Otherwise we'd
+ *      vacuum the entire belt without ever firing the laser.
+ */
 static int autopilot_find_mining_target(const world_t *w, const server_player_t *sp) {
     int best = -1;
     float best_d = 1e18f;
     asteroid_tier_t max_tier = max_mineable_tier(sp->ship.mining_level);
-    /* Prefer drifting fragments over chunks — easier credits, no laser fight */
+
+    /* Pass 1: target rocks AT our laser level. */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        if (a->tier == ASTEROID_TIER_S) continue;
+        if ((int)a->tier != (int)max_tier) continue;
+        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        float d = v2_dist_sq(sp->ship.pos, a->pos);
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    if (best >= 0) return best;
+
+    /* Pass 2: any mineable rock at or below our level. */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        if (a->tier == ASTEROID_TIER_S) continue;
+        if ((int)a->tier < (int)max_tier) continue; /* tier number INCREASES as size decreases */
+        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        float d = v2_dist_sq(sp->ship.pos, a->pos);
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    if (best >= 0) return best;
+
+    /* Pass 3 (fallback): nearby drifting fragments only — within 600u
+     * so we don't scavenge instead of mining. */
+    const float frag_pickup_sq = 600.0f * 600.0f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
         if (a->tier != ASTEROID_TIER_S) continue;
         if (signal_strength_at(w, a->pos) <= 0.0f) continue;
         float d = v2_dist_sq(sp->ship.pos, a->pos);
-        if (d < best_d) { best_d = d; best = i; }
-    }
-    if (best >= 0) return best;
-    /* No fragments — pick a mineable rock */
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        const asteroid_t *a = &w->asteroids[i];
-        if (!a->active) continue;
-        if (a->tier == ASTEROID_TIER_S) continue;
-        if ((int)a->tier < (int)max_tier) continue; /* skip too-easy ones; we want bigger payouts */
-        if ((int)a->tier > (int)max_tier) continue; /* skip too-tough ones */
-        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
-        float d = v2_dist_sq(sp->ship.pos, a->pos);
-        if (d < best_d) { best_d = d; best = i; }
-    }
-    if (best >= 0) return best;
-    /* Fallback: any mineable rock at our level or below */
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        const asteroid_t *a = &w->asteroids[i];
-        if (!a->active) continue;
-        if (a->tier == ASTEROID_TIER_S) continue;
-        if ((int)a->tier > (int)max_tier) continue;
-        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
-        float d = v2_dist_sq(sp->ship.pos, a->pos);
+        if (d > frag_pickup_sq) continue;
         if (d < best_d) { best_d = d; best = i; }
     }
     return best;
@@ -3860,16 +3916,18 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         sp->autopilot_timer = 0.0f;
     }
 
-    /* Tractor management: keep the tractor ON whenever we're in a
-     * field state, so fragments from fractured rocks are pulled in
-     * the instant they appear. RETURN_TO_REFINERY explicitly drops
-     * the tractor on station approach (via release_tow toggle), and
-     * DOCK/SELL/LAUNCH leave it however RETURN left it. */
-    if (sp->autopilot_state == AUTOPILOT_STEP_FIND_TARGET ||
-        sp->autopilot_state == AUTOPILOT_STEP_FLY_TO_TARGET ||
-        sp->autopilot_state == AUTOPILOT_STEP_MINE ||
+    /* Tractor management: ON only when mining or collecting fragments.
+     * OFF during FIND_TARGET and FLY_TO_TARGET so the visual reflects
+     * "actively mining or hauling," not "transit." RETURN_TO_REFINERY
+     * leaves the tractor in whatever state COLLECT set it (ON, with
+     * fragments in tow), and the release_tow toggle on station
+     * approach drops it AND releases the tow chain. */
+    if (sp->autopilot_state == AUTOPILOT_STEP_MINE ||
         sp->autopilot_state == AUTOPILOT_STEP_COLLECT) {
         sp->ship.tractor_active = true;
+    } else if (sp->autopilot_state == AUTOPILOT_STEP_FIND_TARGET ||
+               sp->autopilot_state == AUTOPILOT_STEP_FLY_TO_TARGET) {
+        sp->ship.tractor_active = false;
     }
 
     /* Mode 1: mining loop. */
@@ -3911,12 +3969,16 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         }
         const hull_def_t *hull = ship_hull_def(&sp->ship);
         /* Standoff distance: where the autopilot wants the ship to "park"
-         * relative to the asteroid surface so the laser can reach but the
-         * hull doesn't collide. Fragments (S-tier) need to be at the ship
-         * itself for tractor pickup. */
+         * relative to the asteroid surface. Laser MINING_RANGE is 170u
+         * so anywhere within radius+170 reaches; we sit at radius+120
+         * which gives ~100u of clearance from the surface (after the
+         * 16u ship_radius) — enough to absorb fracture spawn velocity,
+         * tracking jitter, and gravity perturbations without grinding
+         * the hull on the rock. Fragments (S-tier) need to be at the
+         * ship itself for tractor pickup. */
         float standoff = (a->tier == ASTEROID_TIER_S)
             ? 0.0f
-            : (a->radius + 90.0f);
+            : (a->radius + 120.0f);
         float dist_to_a = sqrtf(v2_dist_sq(sp->ship.pos, a->pos));
         float effective_dist = fmaxf(0.0f, dist_to_a - standoff);
 
@@ -3994,11 +4056,12 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         }
         /* Hover near the rock at a safe standoff. Same logic as the NPC
          * miner: if too close, push away; if too far, pull in; mine when
-         * we're in the sweet spot AND facing the rock. */
+         * we're in the sweet spot AND facing the rock. Standoff matches
+         * the FLY_TO_TARGET arrival distance so transitions are smooth. */
         float dist = sqrtf(v2_dist_sq(sp->ship.pos, a->pos));
-        float standoff = a->radius + 80.0f;
-        float sweet_min = standoff - 10.0f;
-        float sweet_max = standoff + 40.0f;
+        float standoff = a->radius + 120.0f;
+        float sweet_min = standoff - 15.0f;
+        float sweet_max = standoff + 30.0f;
 
         /* If we drifted way out, return to FLY_TO_TARGET (which handles
          * the fast-cruise approach properly). */
