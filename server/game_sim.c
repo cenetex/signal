@@ -1100,72 +1100,185 @@ static vec2 station_approach_target(const station_t *st, vec2 from) {
     return st->pos;
 }
 
-/* Compute an obstacle-avoidance offset for an NPC heading toward `target`.
- * Probes a forward cone for nearby asteroids and station modules; returns
- * a steering vector that, when added to `(target - pos)`, biases the path
- * around blockers. Pure lookahead — does not move the NPC.
+/* ================================================================== */
+/* Path avoidance — shared by NPC steering and player autopilot       */
+/* ================================================================== */
+
+typedef struct {
+    vec2  desired_dir;   /* normalized direction the ship should aim */
+    float thrust_scale;  /* 0..1 multiplier on thrust (0 = full brake) */
+    bool  blocked;       /* true if any obstacle was in range */
+} path_avoidance_t;
+
+/* Probe a forward cone from `pos` toward `target` and compute:
+ *   - a corrected heading that bends around obstacles, and
+ *   - a thrust scale that brakes when the path is blocked.
  *
- * Cheap O(N) over MAX_ASTEROIDS + station modules. Skipped for far targets
- * via the early-out so haulers crossing empty space pay nothing. (#282) */
-static vec2 npc_avoidance_steer(const world_t *w, const npc_ship_t *npc, vec2 target) {
-    const float lookahead = 220.0f;        /* probe range */
-    const float lookahead_sq = lookahead * lookahead;
-    const hull_def_t *hull = npc_hull_def(npc);
-    float ship_r = hull->ship_radius;
-    vec2 to_target = v2_sub(target, npc->pos);
+ * Lookahead scales with speed so a fast ship sees obstacles in time
+ * to slow down. Includes station cores, station modules, and large
+ * asteroids (S-tier fragments are too small to matter).
+ *
+ * The destination station/asteroid (if `target` is near one) is
+ * NOT counted as an obstacle — otherwise the ship could never reach
+ * its target. */
+static path_avoidance_t compute_path_avoidance(const world_t *w, vec2 pos, vec2 vel,
+                                                vec2 target, float ship_radius) {
+    path_avoidance_t out = { .desired_dir = v2(1.0f, 0.0f),
+                             .thrust_scale = 1.0f, .blocked = false };
+    vec2 to_target = v2_sub(target, pos);
     float dist_to_target = sqrtf(v2_len_sq(to_target));
-    if (dist_to_target < 1.0f) return v2(0.0f, 0.0f);
+    if (dist_to_target < 1.0f) {
+        out.thrust_scale = 0.0f;
+        return out;
+    }
     vec2 forward = v2_scale(to_target, 1.0f / dist_to_target);
+    vec2 perp = v2(-forward.y, forward.x);
+    out.desired_dir = forward;
 
-    vec2 push = v2(0.0f, 0.0f);
+    float speed = sqrtf(v2_len_sq(vel));
+    /* Lookahead = max(180, 1.6s of travel), capped at 700u or distance to target. */
+    float lookahead = fmaxf(180.0f, speed * 1.6f);
+    if (lookahead > 700.0f) lookahead = 700.0f;
+    if (lookahead > dist_to_target) lookahead = dist_to_target;
+    if (lookahead < 60.0f) lookahead = 60.0f;
 
-    /* Asteroids */
+    float steer_accum = 0.0f;
+    float worst_brake = 0.0f;
+    /* Skip-radius around the target so we don't avoid our own destination */
+    const float target_skip = 220.0f;
+
+    /* --- Asteroids --- */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
-        if (asteroid_is_collectible(a)) continue;
-        vec2 to_a = v2_sub(a->pos, npc->pos);
-        float d_sq = v2_len_sq(to_a);
-        if (d_sq > lookahead_sq) continue;
-        float forward_proj = v2_dot(to_a, forward);
-        if (forward_proj < -a->radius) continue; /* behind */
-        if (forward_proj > lookahead) continue;
-        float lateral = fabsf(v2_cross(to_a, forward));
-        float clearance = a->radius + ship_r + 12.0f;
-        if (lateral > clearance) continue; /* not in cone */
-        /* Push perpendicular to forward, away from the obstacle */
-        vec2 perp = v2(-forward.y, forward.x);
-        float side = (v2_cross(to_a, forward) >= 0.0f) ? -1.0f : 1.0f;
-        float urgency = 1.0f - (forward_proj / lookahead);
-        push = v2_add(push, v2_scale(perp, side * (clearance - lateral) * urgency * 4.0f));
-    }
-
-    /* Station modules + corridor bands */
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        const station_t *st = &w->stations[s];
-        if (!station_collides(st)) continue;
-        if (v2_dist_sq(st->pos, npc->pos) > (lookahead + 600.0f) * (lookahead + 600.0f))
-            continue; /* station too far for any module to be in cone */
-        station_geom_t geom;
-        station_build_geom(st, &geom);
-        for (int ci = 0; ci < geom.circle_count; ci++) {
-            vec2 to_m = v2_sub(geom.circles[ci].center, npc->pos);
-            float d_sq = v2_len_sq(to_m);
-            if (d_sq > lookahead_sq) continue;
-            float forward_proj = v2_dot(to_m, forward);
-            if (forward_proj < -geom.circles[ci].radius) continue;
-            if (forward_proj > lookahead) continue;
-            float lateral = fabsf(v2_cross(to_m, forward));
-            float clearance = geom.circles[ci].radius + ship_r + 16.0f;
-            if (lateral > clearance) continue;
-            vec2 perp = v2(-forward.y, forward.x);
-            float side = (v2_cross(to_m, forward) >= 0.0f) ? -1.0f : 1.0f;
-            float urgency = 1.0f - (forward_proj / lookahead);
-            push = v2_add(push, v2_scale(perp, side * (clearance - lateral) * urgency * 6.0f));
+        if (a->tier == ASTEROID_TIER_S) continue; /* fragments are tiny */
+        /* Skip the asteroid that IS our target */
+        if (v2_dist_sq(a->pos, target) < target_skip * target_skip) continue;
+        vec2 to_obs = v2_sub(a->pos, pos);
+        float fd = v2_dot(to_obs, forward);
+        if (fd < -a->radius) continue;
+        if (fd > lookahead) continue;
+        float lat = v2_dot(to_obs, perp);
+        float clearance = a->radius + ship_radius + 30.0f;
+        if (fabsf(lat) > clearance) continue;
+        out.blocked = true;
+        float urgency = 1.0f - (fd / lookahead);
+        float side = (lat > 0.0f) ? -1.0f : 1.0f;
+        steer_accum += side * (clearance - fabsf(lat)) * urgency * 0.012f;
+        /* Brake if dead-on within stopping range */
+        if (fabsf(lat) < (a->radius + ship_radius * 1.5f)) {
+            float closeness = 1.0f - (fd / lookahead);
+            if (closeness > worst_brake) worst_brake = closeness;
         }
     }
 
-    return push;
+    /* --- Stations: core circle + module circles --- */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+        bool is_destination = v2_dist_sq(st->pos, target) < target_skip * target_skip;
+        /* Coarse cull: station too far for anything to matter */
+        float coarse_d_sq = v2_dist_sq(st->pos, pos);
+        if (coarse_d_sq > (lookahead + 800.0f) * (lookahead + 800.0f)) continue;
+
+        /* Core circle (only if NOT the destination — we want to dock there) */
+        if (st->radius > 0.0f && !is_destination) {
+            vec2 to_obs = v2_sub(st->pos, pos);
+            float fd = v2_dot(to_obs, forward);
+            if (fd >= -st->radius && fd <= lookahead) {
+                float lat = v2_dot(to_obs, perp);
+                float clearance = st->radius + ship_radius + 80.0f;
+                if (fabsf(lat) <= clearance) {
+                    out.blocked = true;
+                    float urgency = 1.0f - (fd / lookahead);
+                    float side = (lat > 0.0f) ? -1.0f : 1.0f;
+                    steer_accum += side * (clearance - fabsf(lat)) * urgency * 0.020f;
+                    if (fabsf(lat) < st->radius + ship_radius * 2.0f) {
+                        float closeness = 1.0f - (fd / lookahead);
+                        if (closeness > worst_brake) worst_brake = closeness;
+                    }
+                }
+            }
+        }
+
+        /* Module circles — even at the destination, we want to avoid
+         * smashing into modules; the dock berth lerp handles arrival. */
+        station_geom_t geom;
+        station_build_geom(st, &geom);
+        for (int ci = 0; ci < geom.circle_count; ci++) {
+            vec2 to_obs = v2_sub(geom.circles[ci].center, pos);
+            float fd = v2_dot(to_obs, forward);
+            if (fd < -geom.circles[ci].radius) continue;
+            if (fd > lookahead) continue;
+            float lat = v2_dot(to_obs, perp);
+            float clearance = geom.circles[ci].radius + ship_radius + 24.0f;
+            if (fabsf(lat) > clearance) continue;
+            out.blocked = true;
+            float urgency = 1.0f - (fd / lookahead);
+            float side = (lat > 0.0f) ? -1.0f : 1.0f;
+            steer_accum += side * (clearance - fabsf(lat)) * urgency * 0.018f;
+            if (fabsf(lat) < geom.circles[ci].radius + ship_radius * 1.5f) {
+                float closeness = 1.0f - (fd / lookahead);
+                if (closeness > worst_brake) worst_brake = closeness;
+            }
+        }
+
+        /* Corridor arcs — sample the arc at multiple points and treat each
+         * as a small circle obstacle. The corridors are the "walls"
+         * between modules; without these the ship steers between modules
+         * but slams straight into the connecting arcs. */
+        for (int co = 0; co < geom.corridor_count; co++) {
+            const geom_corridor_t *cor = &geom.corridors[co];
+            float ring_r = cor->ring_radius;
+            float a0 = cor->angle_a;
+            float a1 = cor->angle_b;
+            float da = a1 - a0;
+            while (da > PI_F) da -= TWO_PI_F;
+            while (da < -PI_F) da += TWO_PI_F;
+            /* Sample density: roughly one sample every 25u of arc length */
+            float arc_len = fabsf(da) * ring_r;
+            int samples = (int)(arc_len / 25.0f) + 2;
+            if (samples > 12) samples = 12;
+            if (samples < 2) samples = 2;
+            for (int sm = 0; sm < samples; sm++) {
+                float t = (float)sm / (float)(samples - 1);
+                float ang = a0 + da * t;
+                vec2 sample_pos = v2_add(geom.center, v2(cosf(ang) * ring_r, sinf(ang) * ring_r));
+                vec2 to_obs = v2_sub(sample_pos, pos);
+                float fd = v2_dot(to_obs, forward);
+                if (fd < -STATION_CORRIDOR_HW) continue;
+                if (fd > lookahead) continue;
+                float lat = v2_dot(to_obs, perp);
+                float clearance = STATION_CORRIDOR_HW + ship_radius + 30.0f;
+                if (fabsf(lat) > clearance) continue;
+                out.blocked = true;
+                float urgency = 1.0f - (fd / lookahead);
+                float side = (lat > 0.0f) ? -1.0f : 1.0f;
+                steer_accum += side * (clearance - fabsf(lat)) * urgency * 0.020f;
+                if (fabsf(lat) < STATION_CORRIDOR_HW + ship_radius * 1.5f) {
+                    float closeness = 1.0f - (fd / lookahead);
+                    if (closeness > worst_brake) worst_brake = closeness;
+                }
+            }
+        }
+    }
+
+    /* Apply the perpendicular steer to the forward direction. */
+    if (steer_accum != 0.0f) {
+        /* Clamp the bend so we don't get stuck spinning in tight clusters */
+        if (steer_accum > 1.5f) steer_accum = 1.5f;
+        if (steer_accum < -1.5f) steer_accum = -1.5f;
+        vec2 corrected = v2_add(forward, v2_scale(perp, steer_accum));
+        float len = sqrtf(v2_len_sq(corrected));
+        if (len > 0.001f) {
+            out.desired_dir = v2_scale(corrected, 1.0f / len);
+        }
+    }
+
+    /* Brake harder the closer the impactor gets. worst_brake in [0,1]. */
+    out.thrust_scale = 1.0f - worst_brake;
+    if (out.thrust_scale < 0.0f) out.thrust_scale = 0.0f;
+    return out;
 }
 
 static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float turn_speed, float dt) {
@@ -1181,22 +1294,29 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
     npc->thrusting = accel > 0.0f;
 }
 
-/* Steer toward a target with obstacle avoidance. Drop-in replacement for
- * npc_steer_toward in long-distance hauler/miner travel paths. */
+/* Steer toward a target with brake-aware obstacle avoidance. NPCs use
+ * this for all long-distance travel. The brake factor scales acceleration
+ * down to 0 when an obstacle is dead-ahead within the urgency window —
+ * the NPC literally stops thrusting and lets drag carry it past. */
 static void npc_steer_with_avoidance(const world_t *w, npc_ship_t *npc, vec2 target,
                                      float accel, float turn_speed, float dt) {
-    vec2 to_target = v2_sub(target, npc->pos);
-    vec2 avoidance = npc_avoidance_steer(w, npc, target);
-    vec2 desired = v2_add(to_target, avoidance);
-    float angle = atan2f(desired.y, desired.x);
+    const hull_def_t *hull = npc_hull_def(npc);
+    path_avoidance_t pa = compute_path_avoidance(w, npc->pos, npc->vel, target, hull->ship_radius);
+    float angle = atan2f(pa.desired_dir.y, pa.desired_dir.x);
     float diff = wrap_angle(angle - npc->angle);
     float max_turn = turn_speed * dt;
     if (diff > max_turn) diff = max_turn;
     else if (diff < -max_turn) diff = -max_turn;
     npc->angle = wrap_angle(npc->angle + diff);
     vec2 fwd = v2_from_angle(npc->angle);
-    npc->vel = v2_add(npc->vel, v2_scale(fwd, accel * dt));
-    npc->thrusting = accel > 0.0f;
+    /* Only thrust forward if we're roughly facing the desired direction.
+     * Combined with the brake factor, this means: don't accelerate while
+     * turning hard around an obstacle. */
+    float facing = cosf(diff);
+    float thrust_gate = (facing > 0.5f) ? facing : 0.0f;
+    float effective_accel = accel * pa.thrust_scale * thrust_gate;
+    npc->vel = v2_add(npc->vel, v2_scale(fwd, effective_accel * dt));
+    npc->thrusting = effective_accel > 0.0f;
 }
 
 static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world_t *w) {
@@ -3564,6 +3684,29 @@ static bool autopilot_hold_empty(const ship_t *s) {
     return true;
 }
 
+/* Velocity-controlled approach: returns the thrust input (-1..1) needed
+ * to hold the ship at a target speed along its forward axis, given its
+ * current approach velocity along that axis. -1 = full reverse thrust,
+ * +1 = full forward thrust. */
+static float autopilot_speed_control(float current_approach_speed, float target_speed) {
+    if (current_approach_speed > target_speed * 1.10f) return -1.0f; /* brake */
+    if (current_approach_speed < target_speed * 0.85f) return 1.0f;  /* speed up */
+    return 0.0f; /* coast in the deadband */
+}
+
+/* Compute desired approach speed from distance to target.
+ * Uses sqrt(2 * decel * dist) so the ship slows linearly with distance.
+ * Capped at max_speed and at a low minimum so we don't crawl forever. */
+static float autopilot_approach_speed(float dist, float max_speed) {
+    /* Effective brake decel: SHIP_BRAKE (180) for active reverse + drag.
+     * Be conservative — assume only ~150 u/s² of effective deceleration. */
+    const float decel = 150.0f;
+    float v = sqrtf(2.0f * decel * fmaxf(dist, 0.0f));
+    if (v > max_speed) v = max_speed;
+    if (v < 30.0f && dist > 5.0f) v = 30.0f;
+    return v;
+}
+
 /* True if the cargo hold is roughly full (90%+ of capacity). */
 static bool autopilot_hold_full(const ship_t *s) {
     float total = ship_total_cargo(s);
@@ -3616,28 +3759,60 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
-        /* Steer toward the rock — write turn + thrust into input. */
-        vec2 to_a = v2_sub(a->pos, sp->ship.pos);
-        float desired = atan2f(to_a.y, to_a.x);
-        float diff = wrap_angle(desired - sp->ship.angle);
-        sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
-        float facing_dot = cosf(diff);
-        sp->input.thrust = (facing_dot > 0.7f) ? 1.0f : 0.0f;
-        sp->input.mine = false;
-        float mining_arrive = (a->tier == ASTEROID_TIER_S)
-            ? FRAGMENT_NEARBY_RANGE * 0.7f
-            : MINING_RANGE * 0.85f;
-        if (v2_dist_sq(sp->ship.pos, a->pos) < mining_arrive * mining_arrive) {
-            /* Brake and switch to mine/collect */
+        const hull_def_t *hull = ship_hull_def(&sp->ship);
+        /* Standoff distance: where the autopilot wants the ship to "park"
+         * relative to the asteroid surface so the laser can reach but the
+         * hull doesn't collide. Fragments (S-tier) need to be at the ship
+         * itself for tractor pickup. */
+        float standoff = (a->tier == ASTEROID_TIER_S)
+            ? 0.0f
+            : (a->radius + 90.0f);
+        float dist_to_a = sqrtf(v2_dist_sq(sp->ship.pos, a->pos));
+        float effective_dist = fmaxf(0.0f, dist_to_a - standoff);
+
+        /* Transition to MINE/COLLECT once close enough AND moving slowly. */
+        float current_speed = sqrtf(v2_len_sq(sp->ship.vel));
+        if (effective_dist < 30.0f && current_speed < 80.0f) {
             sp->input.thrust = 0.0f;
             if (a->tier == ASTEROID_TIER_S) {
                 sp->autopilot_state = AUTOPILOT_STEP_COLLECT;
-                sp->autopilot_timer = 0.0f;
             } else {
                 sp->autopilot_state = AUTOPILOT_STEP_MINE;
-                sp->autopilot_timer = 0.0f;
             }
+            sp->autopilot_timer = 0.0f;
+            break;
         }
+
+        /* Path avoidance: compute corrected heading around obstacles. */
+        path_avoidance_t pa = compute_path_avoidance(w, sp->ship.pos, sp->ship.vel,
+                                                     a->pos, hull->ship_radius);
+        float desired = atan2f(pa.desired_dir.y, pa.desired_dir.x);
+        float diff = wrap_angle(desired - sp->ship.angle);
+        sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
+        float facing = cosf(diff);
+
+        /* Velocity-controlled approach: compute target speed from distance,
+         * then use thrust/reverse to hold that speed. The desired speed
+         * tapers from MAX_APPROACH_SPEED down to 0 at the standoff. */
+        const float MAX_APPROACH_SPEED = 240.0f;
+        float target_speed = autopilot_approach_speed(effective_dist, MAX_APPROACH_SPEED);
+        /* Project the current velocity onto the forward axis (toward target).
+         * If we're moving sideways or backwards, approach_v can be negative. */
+        vec2 to_target_dir = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
+        if (dist_to_a > 0.5f) {
+            to_target_dir = v2_scale(v2_sub(a->pos, sp->ship.pos), 1.0f / dist_to_a);
+        }
+        float approach_v = v2_dot(sp->ship.vel, to_target_dir);
+        float thrust_cmd = autopilot_speed_control(approach_v, target_speed);
+
+        /* Don't push forward while turning hard around an obstacle.
+         * Brake is always allowed (we want to slow down). */
+        if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
+        /* Honor the avoidance brake factor on forward thrust only. */
+        if (thrust_cmd > 0.0f) thrust_cmd *= pa.thrust_scale;
+        sp->input.thrust = thrust_cmd;
+        sp->input.mine = false;
+
         /* Stuck-fly safety: if we've been flying >60s and haven't arrived,
          * pick a new target. */
         if (sp->autopilot_timer > 60.0f) {
@@ -3657,18 +3832,62 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_timer = 0.0f;
             break;
         }
-        /* Aim at the rock and fire the laser. */
-        vec2 to_a = v2_sub(a->pos, sp->ship.pos);
-        float desired = atan2f(to_a.y, to_a.x);
-        float diff = wrap_angle(desired - sp->ship.angle);
-        sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
-        sp->input.thrust = 0.0f;
-        sp->input.mine = (fabsf(diff) < 0.15f);
-        sp->input.mining_target_hint = sp->autopilot_target;
-        /* If we drift away, close in */
-        if (v2_dist_sq(sp->ship.pos, a->pos) > MINING_RANGE * MINING_RANGE) {
+        /* Hover near the rock at a safe standoff. Same logic as the NPC
+         * miner: if too close, push away; if too far, pull in; mine when
+         * we're in the sweet spot AND facing the rock. */
+        float dist = sqrtf(v2_dist_sq(sp->ship.pos, a->pos));
+        float standoff = a->radius + 80.0f;
+        float sweet_min = standoff - 10.0f;
+        float sweet_max = standoff + 40.0f;
+
+        /* If we drifted way out, return to FLY_TO_TARGET (which handles
+         * the fast-cruise approach properly). */
+        if (dist > sweet_max + 200.0f) {
             sp->autopilot_state = AUTOPILOT_STEP_FLY_TO_TARGET;
             sp->autopilot_timer = 0.0f;
+            break;
+        }
+
+        if (dist < sweet_min) {
+            /* Too close — turn AWAY from the rock and burn forward to escape. */
+            vec2 away = v2_sub(sp->ship.pos, a->pos);
+            float push_angle = atan2f(away.y, away.x);
+            float diff = wrap_angle(push_angle - sp->ship.angle);
+            sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
+            sp->input.thrust = (cosf(diff) > 0.6f) ? 0.6f : 0.0f;
+            sp->input.mine = false;
+        } else if (dist > sweet_max) {
+            /* Drifted out — close in slowly. */
+            vec2 to_a = v2_sub(a->pos, sp->ship.pos);
+            float face = atan2f(to_a.y, to_a.x);
+            float diff = wrap_angle(face - sp->ship.angle);
+            sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
+            float approach_v = v2_dot(sp->ship.vel, v2_scale(to_a, 1.0f / dist));
+            /* Hold approach speed at ~50 u/s */
+            sp->input.thrust = autopilot_speed_control(approach_v, 50.0f);
+            if (cosf(diff) < 0.5f) sp->input.thrust = 0.0f;
+            sp->input.mine = false;
+        } else {
+            /* In the sweet spot — face the rock and fire. */
+            vec2 to_a = v2_sub(a->pos, sp->ship.pos);
+            float face = atan2f(to_a.y, to_a.x);
+            float diff = wrap_angle(face - sp->ship.angle);
+            sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
+            /* Brake any residual velocity so we hover. */
+            float speed = sqrtf(v2_len_sq(sp->ship.vel));
+            if (speed > 30.0f) {
+                /* Reverse thrust along current motion direction to bleed speed. */
+                vec2 vel_dir = v2_scale(sp->ship.vel, 1.0f / speed);
+                vec2 fwd = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
+                float vel_along_fwd = v2_dot(vel_dir, fwd) * speed;
+                if (vel_along_fwd > 30.0f) sp->input.thrust = -1.0f;
+                else if (vel_along_fwd < -30.0f) sp->input.thrust = 1.0f;
+                else sp->input.thrust = 0.0f;
+            } else {
+                sp->input.thrust = 0.0f;
+            }
+            sp->input.mine = (fabsf(diff) < 0.20f);
+            sp->input.mining_target_hint = sp->autopilot_target;
         }
         break;
     }
@@ -3719,12 +3938,27 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         }
         const station_t *st = &w->stations[s];
         sp->autopilot_target = s;
-        vec2 to = v2_sub(st->pos, sp->ship.pos);
-        float dist = sqrtf(v2_len_sq(to));
-        float desired = atan2f(to.y, to.x);
+        /* Path avoidance toward the dock approach point (offset from
+         * the station center so we don't head straight at the core). */
+        vec2 dock_target = station_approach_target(st, sp->ship.pos);
+        const hull_def_t *hull = ship_hull_def(&sp->ship);
+        path_avoidance_t pa = compute_path_avoidance(w, sp->ship.pos, sp->ship.vel,
+                                                     dock_target, hull->ship_radius);
+        float desired = atan2f(pa.desired_dir.y, pa.desired_dir.x);
         float diff = wrap_angle(desired - sp->ship.angle);
         sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
-        sp->input.thrust = (cosf(diff) > 0.7f && dist > 250.0f) ? 1.0f : 0.0f;
+        float facing = cosf(diff);
+        float throttle = pa.thrust_scale * ((facing > 0.6f) ? 1.0f : 0.0f);
+        /* Brake earlier on station approach: slow from ~600u out so the
+         * dock berth lerp can do its job without a high-speed slam. */
+        float dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
+        if (dist < 600.0f) {
+            float t = (dist - 200.0f) / 400.0f;
+            if (t < 0.0f) t = 0.0f;
+            if (t > 1.0f) t = 1.0f;
+            throttle *= t;
+        }
+        sp->input.thrust = throttle;
         sp->input.mine = false;
         if (dist < DOCK_APPROACH_RANGE && sp->in_dock_range) {
             sp->input.interact = true;
@@ -3788,13 +4022,27 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         sp->input.toggle_autopilot = false;
     }
 
+    /* Snapshot the network-provided continuous inputs BEFORE the autopilot
+     * gets a chance to overwrite them. The MP server sub-steps at 120Hz
+     * but parse_input only runs when a NET_MSG_INPUT arrives (~30Hz), so
+     * sp->input is the last network state. The autopilot writes turn /
+     * thrust / mine each tick to drive physics — without this snapshot,
+     * the NEXT sub-step's manual-override check would see the autopilot's
+     * own writes and cancel itself after one frame. We restore at the end
+     * so sp->input continues to reflect "what the player actually pressed."
+     */
+    float net_turn   = sp->input.turn;
+    float net_thrust = sp->input.thrust;
+    bool  net_mine   = sp->input.mine;
+    int   net_target = sp->input.mining_target_hint;
+
     /* Manual override: any directional / mining input cancels autopilot.
-     * Detected BEFORE autopilot writes to sp->input so we don't loop. */
+     * Checks the snapshot, NOT sp->input — autopilot writes don't count. */
     if (sp->autopilot_mode && !w->player_only_mode) {
         bool manual_input =
-            fabsf(sp->input.turn) > 0.01f ||
-            fabsf(sp->input.thrust) > 0.01f ||
-            sp->input.mine ||
+            fabsf(net_turn) > 0.01f ||
+            fabsf(net_thrust) > 0.01f ||
+            net_mine ||
             sp->input.release_tow ||
             sp->input.reset;
         if (manual_input) {
@@ -3812,6 +4060,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         emergency_recover_ship(w, sp);
         return;
     }
+    /* Mark that we still need to restore inputs at end of step_player */
+    bool restore_net_input = sp->autopilot_mode != 0;
 
     sp->hover_asteroid = -1;
     sp->nearby_fragments = 0;
@@ -4106,6 +4356,17 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->input.add_plan = false;
     sp->input.create_planned_outpost = false;
     sp->input.cancel_planned_outpost = false;
+
+    /* Restore the network-provided continuous inputs so the autopilot's
+     * per-tick writes don't leak into the next sub-step's manual-override
+     * check. parse_input on the next NET_MSG_INPUT will overwrite these
+     * with whatever the player is actually pressing. */
+    if (restore_net_input) {
+        sp->input.turn = net_turn;
+        sp->input.thrust = net_thrust;
+        sp->input.mine = net_mine;
+        sp->input.mining_target_hint = net_target;
+    }
 }
 
 /* ================================================================== */
