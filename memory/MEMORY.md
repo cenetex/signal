@@ -1,7 +1,12 @@
-- [Game identity](project_game_identity.md) — live at signal.ratimics.com/play, PvP rock-flinging is the hook
-- [Station construction direction](project_station_construction.md) — modules are physical world-space objects, not list items; BUILD tab is interim
-- [Scaffold design](project_scaffold_design.md) — scaffolds are shipyard-manufactured goods, not blueprint menu purchases; #231 gates #224
-- [Sector architecture direction](project_sector_direction.md) — game moving from single-world to sector grid with fuel, research epic #23
-- [RATi Foundation](reference_rati_foundation.md) — Canadian non-profit holding RATi trademark; Cenetex Inc. is commercial arm
-- [Anime integration](project_anime_integration.md) — signal ghost narrative system; 9 episodes mapped to game phases; audio-first delivery
-- [Collision architecture](project_collision_architecture.md) — 4 fragmented collision paths need unified geometry emitter; stop patching symptoms
+- [README](../README.md) — current gameplay identity, shipped controls, and
+  starter-station behavior
+- [Construction plan](../CONSTRUCTION_PLAN.md) — current scaffold, plan-mode,
+  and shipyard flow, plus follow-on construction gaps
+- [Sector X whitepaper](../docs/sector-x-whitepaper.md) — long-term endgame and
+  sector-expansion direction; aspirational, not current gameplay
+- [Anime integration](project_anime_integration.md) — signal ghost narrative
+  system; 9 episodes mapped to game phases; audio-first delivery
+- [Anime framework](../docs/anime-framework.md) — episode structure and visual
+  style targets
+- [Collision architecture](project_collision_architecture.md) — 4 fragmented
+  collision paths need unified geometry emitter; stop patching symptoms

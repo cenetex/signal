@@ -1,211 +1,150 @@
-# Physical Construction
+# Construction Flow
+
+## Status
+
+This file describes the construction loop that is currently implemented in the
+repo. The longer-term target is still the fuller physical post-placement supply
+loop discussed in `#214` and `#224`, but that is not the shipped behavior
+today.
 
 ## One Sentence
 
-Scaffolds are manufactured at shipyards, towed through space, placed on station rings, supplied with materials, and activated — all using game verbs, no menus.
+Shipyards manufacture typed scaffolds, players plan destinations with `B`, tow
+the loose scaffold through space with the tractor, and commit placement with
+`E`.
 
-## Lifecycle
+## Current Lifecycle
 
 ```
-SHIPYARD produces typed scaffold (world object near yard)
-  → PLAYER/NPC tows scaffold through space (tractor beam, spring physics)
-    → RELEASE near open ring slot → scaffold snaps into place
-      → SUPPLY materials (haul frames/ingots to placed scaffold)
-        → CONSTRUCTION TIMER (10s)
-          → MODULE ACTIVATES (services, NPCs, corridors)
+PLAYER enters plan mode with B
+  → reserve slot or create planned outpost with E
+    → dock at SHIPYARD and order matching scaffold
+      → station inventory feeds a nascent scaffold at station center
+        → completed scaffold ejects as a loose world entity
+          → PLAYER tractors scaffold through space
+            → press E while towing to snap onto a ring slot
+              → MODULE TIMER (10s) or OUTPOST FRAME DELIVERY
+                → station/module activates
 ```
 
-Every phase is physical. Every phase is interruptible. Every phase is visible.
+## Current Flow
 
-## Five Phases
+### 1. Plan
 
-### 1. Assemble (at shipyard)
+While undocked and not towing, `B` enters plan mode.
 
-Dock at a station with a SHIPYARD module. Buy a typed scaffold — "Furnace (FE) scaffold", "Frame Press scaffold", etc. Credits paid at purchase. Module type is baked in.
+- Near an existing outpost or planned station: plan mode targets the nearest
+  open slot.
+- In open signal-covered space: plan mode creates a planned outpost ghost.
+- In plan mode, `R` cycles the module type and `E` reserves the current slot.
 
-The scaffold spawns as a **world entity** near the shipyard dock. It floats there until someone tows it away.
+While docked, `B` is a shortcut to the SHIPYARD tab if the station has one.
 
-Starter stations (Kepler Yard) act as the initial shipyard. Player outposts need a SHIPYARD module to produce scaffolds — this is the bootstrapping constraint that makes shipyard placement strategic.
+### 2. Order
 
-**Outpost founding** is the special case: the scaffold kit becomes the station itself. Buy at any shipyard, carry as cargo (it's small enough), fly to location, place with B. This flow is unchanged.
+Dock at a station with a `MODULE_SHIPYARD`, open the SHIPYARD tab, and press
+`1-9` to order a scaffold that matches one of the currently planned module
+types.
 
-### 2. Tow (through space)
+- Credits are charged up front.
+- The order goes into that station's pending scaffold queue.
+- Material cost is pulled from station inventory during manufacture, not after
+  placement.
 
-Hook the scaffold with tractor beam. Spring physics, speed cap, tether line — same mechanics as towing ore fragments, but heavier. Scaffold mass determines tow speed.
+### 3. Manufacture
 
-Scaffolds are **vulnerable in transit**. Other players can intercept. PvP emerges naturally.
+Pending shipyard orders create a nascent scaffold at the station center.
+Station inventory feeds that nascent scaffold until its build amount reaches
+the module's material cost.
 
-NPC role: `NPC_ROLE_TOW` picks up scaffolds and tows them to stations posting construction contracts.
+When complete, the scaffold ejects as a loose world entity near the station and
+can be tractored away.
 
-### 3. Place (at station ring)
+### 4. Tow
 
-Release the scaffold near an open slot on the target station's ring. Spatial detection determines which slot — no menu picker needed. The scaffold snaps to the ring position and begins rotating with the ring.
+The tractor beam is toggled with `R`.
 
-Visual: ghost/wireframe circle locks into ring geometry. Construction-amber color.
+- Turning the tractor off drops towed fragments and scaffolds.
+- Scaffolds use spring-style tow physics and a speed cap.
+- Loose scaffolds can be picked up from shipyards and moved across the map.
 
-### 4. Supply (deliver materials)
+### 5. Place
 
-A supply contract is auto-generated when the scaffold is placed. The station needs N units of a specific material:
+While towing a scaffold, press `E` to place it.
 
-| Module Type | Material | Quantity |
-|-------------|----------|----------|
-| Furnace (FE) | Frames | 60 |
-| Furnace (CU) | Cuprite Ingots | 100 |
-| Furnace (CR) | Crystal Ingots | 140 |
-| Frame Press | Frames | 80 |
-| Laser Fab | Cuprite Ingots | 80 |
-| Tractor Fab | Crystal Ingots | 80 |
-| Repair Bay | Frames | 30 |
-| Ore Buyer | Frames | 40 |
-| Others | Frames | 20-40 |
+- Near a planned outpost ghost: the ghost materializes into a scaffolded
+  outpost.
+- Near an active outpost ring: the scaffold snaps to the nearest valid open
+  slot.
+- Away from existing outposts: placement can found a new outpost if the
+  position is inside signal coverage and respects minimum station spacing.
 
-Materials arrive via:
-- Player docking and delivering cargo (existing `step_module_delivery()`)
-- NPCs fulfilling supply contracts → station inventory → routed to scaffold
-- Other players delivering to the contract
+The old build overlay is gone. Placement is now commit-based rather than
+menu-based.
 
-`build_progress` advances as materials arrive. 0.0 → 1.0.
+### 6. Activate
 
-### 5. Activate (commissioning)
+There are two activation paths in the current implementation:
 
-Materials complete → 10s construction timer (`build_progress` 1.0 → 2.0) → module goes live.
+- **Outpost founding**: the newly founded outpost is itself scaffolded and
+  still requires frame delivery before it activates.
+- **Placed module scaffolds**: after snap-to-slot, placed modules currently
+  enter the 10-second construction timer immediately. They do not yet require a
+  second post-placement material delivery pass.
 
-On activation:
-- `scaffold = false`
-- Services rebuild (ore buying, repairs, etc.)
-- Corridors appear connecting to adjacent modules
-- NPCs spawn if production module (miners for furnaces, haulers for fabs)
-- Signal chain recalculated if relay
-- Visual/audio commissioning moment
+On module activation:
 
-## What Gets Deleted
+- `scaffold` flips off
+- station services are rebuilt
+- signal is recalculated if needed
+- production modules can spawn NPC miners or haulers
 
-- **BUILD overlay** (`build_overlay`, `build_ring`, `build_slot`) — the docked menu for module selection
-- **B key docked behavior** — no more BUILD menu when docked
-- **`intent.build_module` / `intent.build_module_type`** — menu-driven construction intents
-- **Dual-path split** in input.c (starter station scaffold shop vs. player outpost BUILD menu)
-- **Blueprint Desk module** — replaced by SHIPYARD
+## Implemented Data Model
 
-## What Gets Added
+### Scaffold states
 
-### Scaffold world entity
+The current scaffold entity supports:
 
-```c
-typedef struct {
-    bool active;
-    module_type_t module_type;  // what it becomes
-    int owner;                  // player who bought it
-    vec2 pos;
-    vec2 vel;
-    float radius;               // collision, ~30-40 units
-    float mass;                 // affects tow speed
-    enum { SCAFFOLD_LOOSE,      // floating near shipyard
-           SCAFFOLD_TOWING,     // attached to player/NPC tractor
-           SCAFFOLD_PLACED      // snapped to ring slot, awaiting supply
-    } state;
-    int placed_station;         // station index when PLACED
-    int placed_ring;
-    int placed_slot;
-} scaffold_t;
+- `SCAFFOLD_NASCENT`
+- `SCAFFOLD_LOOSE`
+- `SCAFFOLD_TOWING`
+- `SCAFFOLD_SNAPPING`
+- `SCAFFOLD_PLACED`
 
-#define MAX_SCAFFOLDS 16
-```
+The important difference from the earlier design doc is that module scaffolds
+do not currently linger in a post-placement supply state. Placement finalizes
+them with `build_progress = 1.0f`, then the timer finishes the job.
 
-When state transitions from `SCAFFOLD_PLACED`, it becomes a `station_module_t` with `scaffold=true` — the existing module construction system takes over for supply + activation.
+### Planning model
 
-### Tow generalization
+Planning is server-side and faction-shared:
 
-Current `towed_fragments[]` on ship indexes asteroids only. Add:
+- planned outpost ghosts live in the station array
+- placement plans reserve ring/slot/module-type combinations
+- shipyard menus only surface scaffold types that are already present in the
+  shared planned set
 
-```c
-int16_t towed_scaffold;  // scaffold index, -1 = none
-```
+## Known Gaps Relative to the Target Design
 
-Tow physics (spring, speed cap, tether) shared between fragments and scaffolds. Scaffolds are heavier → lower speed cap.
-
-### Snap-to-slot
-
-When a towed scaffold is released within range of a station ring with open slots:
-- Find nearest open slot on nearest ring
-- Scaffold lerps to slot world position over ~0.5s
-- Transitions to `SCAFFOLD_PLACED`
-- Converts to `station_module_t` with `scaffold=true, build_progress=0.0`
-- Supply contract generated
-- Scaffold entity deactivated (module system owns it now)
-
-### NPC_ROLE_TOW
-
-New NPC role. Behavior:
-- Check for scaffolds in `SCAFFOLD_LOOSE` state near home station
-- Check for construction contracts at nearby stations
-- Pick up scaffold, tow to destination station
-- Release near open ring slot
-
-Uses same tow physics as player, same speed cap.
-
-## What Stays
-
-- **`has_scaffold_kit` / `scaffold_kit_type`** on ship — outpost founding only (the one case where scaffold IS the station)
-- **`step_module_delivery()`** — supply delivery from docked cargo
-- **`step_module_construction()`** — build timer + inventory routing
-- **Supply contract system** — scaffolds generate contracts, NPCs/players fulfill them
-- **All tow spring physics** — generalized to cover scaffolds
-- **Collision geometry emitter** — already supports `is_scaffold` flag
-- **Outpost founding flow** — unchanged (scaffold kit → place → supply → activate)
-
-## Scaffold Prices (credits, at shipyard)
-
-| Module | Price |
-|--------|-------|
-| Dock | 100 |
-| Signal Relay | 150 |
-| Furnace (FE) | 200 |
-| Ore Buyer | 150 |
-| Ore Silo | 100 |
-| Frame Press | 300 |
-| Furnace (CU) | 400 |
-| Furnace (CR) | 600 |
-| Laser Fab | 300 |
-| Tractor Fab | 300 |
-| Repair Bay | 200 |
-
-## Bootstrap Problem
-
-Your first outpost has no shipyard. Solutions:
-- Starter stations (Kepler Yard) have a built-in shipyard that sells scaffolds
-- First quest (#269) guides the player through buying a scaffold at Kepler → towing to outpost → supplying → activating
-- Player outpost needs a SHIPYARD module before it can produce scaffolds for self-expansion
-- SHIPYARD scaffold is itself bought at Kepler and towed to the outpost — the chicken-and-egg moment
-
-## Implementation Order
-
-1. **Scaffold entity** — `scaffold_t` array, spawn at shipyard on purchase, basic physics
-2. **Tow generalization** — `towed_scaffold` on ship, shared spring/speed-cap logic
-3. **Snap-to-slot** — release near ring → spatial detection → convert to module scaffold
-4. **Supply delivery** — already half-built; ensure inventory routing works for NPC deliveries
-5. **Commissioning** — activation effects, corridor appearance, NPC spawn
-6. **NPC_ROLE_TOW** — NPC picks up loose scaffolds, tows to contract destinations
-7. **BUILD overlay deletion** — remove menu, B-key docked path, related intents
-8. **Outpost founding alignment** — verify founding still works, update onboarding text
+- Post-placement material delivery for module scaffolds is not landed yet.
+- `NPC_ROLE_TOW` autonomous scaffold delivery is still reserved, not active.
+- Construction contracts are still station-level and can outlive the scaffold
+  need they were originally posted for.
+- Full physical intermediate-goods flow (`#266`) is still future work.
 
 ## Verification
 
-1. Dock at Kepler → buy Furnace scaffold → it appears floating near station
-2. Tractor the scaffold → tow it across space → spring physics, speed cap, tether visible
-3. Release near your outpost ring → scaffold snaps to open slot
-4. Supply contract appears → haul frames → `build_progress` advances
-5. Timer completes → furnace activates with visual payoff
-6. NPC picks up loose scaffold → tows to station with construction contract
-7. No BUILD overlay exists. B key does nothing while docked (or repurposed).
-8. Outpost founding unchanged: scaffold kit → place in open space → supply → activate
-9. All tests pass, Emscripten build succeeds
+1. Press `B` in flight to create a planned outpost or reserve a module slot.
+2. Dock at Kepler or Helios, open SHIPYARD, and order a scaffold that matches
+   the active plan.
+3. Wait for the scaffold to eject as a loose object near the station.
+4. Toggle the tractor with `R`, tow the scaffold, and press `E` to place it.
+5. For a new outpost, deliver frames until the station activates.
+6. For a placed module, wait out the 10-second commissioning timer.
 
-## Issues Absorbed
+## Follow-On Issues
 
-- #214 (Unified scaffold construction)
-- #216 (Commissioning payoff)
-- #217 (Outpost founding pass)
-- #224 (Module scaffolds as manufactured goods)
-- #266 (Physical station output — partial; scaffold supply side)
-- #267 (Typed scaffold kits — superseded)
-- CONSTRUCTION_PLAN.md (this document, rewritten)
+- `#214` unified post-placement supply for module scaffolds
+- `#216` stronger commissioning payoff
+- `#224` fuller physical scaffold construction loop
+- `#266` physical station output and intermediate goods
