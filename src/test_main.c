@@ -4545,9 +4545,10 @@ TEST(test_scaffold_ship_drag) {
         world_sim_step(&w, SIM_DT);
     }
 
-    /* Ship speed should be capped (much slower than free flight) */
+    /* Ship speed should be capped (much slower than free flight). Cap
+     * is now engine-coupled — miner accel 300 → tow cap ~82 u/s. */
     float spd = v2_len(w.players[0].ship.vel);
-    ASSERT(spd <= 70.0f); /* some tolerance above the 55 cap for thrust/drag balance */
+    ASSERT(spd <= 100.0f); /* engine-coupled cap + thrust/drag balance */
 
     /* Compare to free-flight speed: reset and thrust without scaffold */
     w.players[0].ship.towed_scaffold = -1;

@@ -3115,8 +3115,22 @@ static void release_towed_fragments(server_player_t *sp) {
 
 /* ---- Scaffold tow physics ---- */
 
-static const float SCAFFOLD_TOW_SPEED_CAP = 55.0f;  /* slower than ore fragments */
+/* Base tow cap at hull accel = 200 (the rough average of the hull
+ * classes). The actual cap scales with the towing ship's accel so
+ * a powerful engine can pull harder. */
+static const float SCAFFOLD_TOW_SPEED_BASE = 55.0f;
 static const float SCAFFOLD_PICKUP_RANGE = 80.0f;    /* how close to grab one */
+
+/* Compute the effective tow speed cap for a ship hull. Engine
+ * horsepower (accel) is the only input — bigger accel pulls the
+ * scaffold faster. Floored at 30 so weak hulls can still move it. */
+static float scaffold_tow_speed_cap(const hull_def_t *hull) {
+    float scale = hull->accel / 200.0f;
+    float cap = SCAFFOLD_TOW_SPEED_BASE * scale;
+    if (cap < 30.0f) cap = 30.0f;
+    if (cap > 180.0f) cap = 180.0f;
+    return cap;
+}
 
 /* Simple release — scaffold floats loose. */
 static void release_towed_scaffold(world_t *w, server_player_t *sp) {
@@ -3346,10 +3360,14 @@ static void step_scaffold_tow(world_t *w, server_player_t *sp, float dt) {
         /* Heavy drag — scaffolds feel massive */
         sc->vel = v2_scale(sc->vel, 1.0f / (1.0f + 3.0f * dt));
 
-        /* Speed cap */
+        /* Speed cap scaled by engine power. A miner (accel 300) tows
+         * faster than a hauler (accel 140). Multiple ships pulling
+         * the same scaffold can each contribute, but in practice the
+         * primary tower's cap dominates. */
+        float tow_cap = scaffold_tow_speed_cap(ship_hull_def(&sp->ship));
         float spd = v2_len(sc->vel);
-        if (spd > SCAFFOLD_TOW_SPEED_CAP)
-            sc->vel = v2_scale(sc->vel, SCAFFOLD_TOW_SPEED_CAP / spd);
+        if (spd > tow_cap)
+            sc->vel = v2_scale(sc->vel, tow_cap / spd);
 
         /* Move scaffold */
         sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
@@ -4421,12 +4439,15 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             float tow_drag = 0.15f * (float)sp->ship.towed_count;
             sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + tow_drag * dt));
         }
-        /* Scaffold tow drag: heavy — ship feels the mass */
+        /* Scaffold tow drag: heavy — ship feels the mass. Speed cap
+         * scales with engine accel (so the ship and the scaffold are
+         * limited by the same engine-coupled cap). */
         if (sp->ship.towed_scaffold >= 0) {
             sp->ship.vel = v2_scale(sp->ship.vel, 1.0f / (1.0f + 0.8f * dt));
+            float tow_cap = scaffold_tow_speed_cap(ship_hull_def(&sp->ship));
             float spd = v2_len(sp->ship.vel);
-            if (spd > SCAFFOLD_TOW_SPEED_CAP)
-                sp->ship.vel = v2_scale(sp->ship.vel, SCAFFOLD_TOW_SPEED_CAP / spd);
+            if (spd > tow_cap)
+                sp->ship.vel = v2_scale(sp->ship.vel, tow_cap / spd);
         }
         /* Skip collision in client prediction — authoritative server handles it.
          * Running collision on both client and server worlds with slightly
