@@ -1115,14 +1115,21 @@ typedef struct {
  *   - a thrust scale that brakes when the path is blocked.
  *
  * Lookahead scales with speed so a fast ship sees obstacles in time
- * to slow down. Includes station cores, station modules, and large
- * asteroids (S-tier fragments are too small to matter).
+ * to slow down. Includes station cores, station modules, station
+ * corridor arcs, and large asteroids (S-tier fragments are too small
+ * to matter and are filtered out unconditionally).
+ *
+ * `ignore_list` is an optional array of asteroid indices to skip
+ * entirely — typically the caller's own towed fragments and tow
+ * targets, so the autopilot doesn't try to dodge what it's currently
+ * dragging or hauling.
  *
  * The destination station/asteroid (if `target` is near one) is
  * NOT counted as an obstacle — otherwise the ship could never reach
  * its target. */
 static path_avoidance_t compute_path_avoidance(const world_t *w, vec2 pos, vec2 vel,
-                                                vec2 target, float ship_radius) {
+                                                vec2 target, float ship_radius,
+                                                const int16_t *ignore_list, int ignore_count) {
     path_avoidance_t out = { .desired_dir = v2(1.0f, 0.0f),
                              .thrust_scale = 1.0f, .blocked = false };
     vec2 to_target = v2_sub(target, pos);
@@ -1152,6 +1159,12 @@ static path_avoidance_t compute_path_avoidance(const world_t *w, vec2 pos, vec2 
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
         if (a->tier == ASTEROID_TIER_S) continue; /* fragments are tiny */
+        /* Skip caller-provided ignore list (e.g., towed fragments) */
+        bool ignored = false;
+        for (int ig = 0; ig < ignore_count; ig++) {
+            if (ignore_list[ig] == i) { ignored = true; break; }
+        }
+        if (ignored) continue;
         /* Skip the asteroid that IS our target */
         if (v2_dist_sq(a->pos, target) < target_skip * target_skip) continue;
         vec2 to_obs = v2_sub(a->pos, pos);
@@ -1297,11 +1310,20 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
 /* Steer toward a target with brake-aware obstacle avoidance. NPCs use
  * this for all long-distance travel. The brake factor scales acceleration
  * down to 0 when an obstacle is dead-ahead within the urgency window —
- * the NPC literally stops thrusting and lets drag carry it past. */
+ * the NPC literally stops thrusting and lets drag carry it past.
+ *
+ * The NPC's currently-towed fragment is excluded from avoidance so a
+ * miner doesn't try to dodge the rock it's hauling home. */
 static void npc_steer_with_avoidance(const world_t *w, npc_ship_t *npc, vec2 target,
                                      float accel, float turn_speed, float dt) {
     const hull_def_t *hull = npc_hull_def(npc);
-    path_avoidance_t pa = compute_path_avoidance(w, npc->pos, npc->vel, target, hull->ship_radius);
+    int16_t ignore[1];
+    int ignore_n = 0;
+    if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS) {
+        ignore[ignore_n++] = (int16_t)npc->towed_fragment;
+    }
+    path_avoidance_t pa = compute_path_avoidance(w, npc->pos, npc->vel, target,
+                                                  hull->ship_radius, ignore, ignore_n);
     float angle = atan2f(pa.desired_dir.y, pa.desired_dir.x);
     float diff = wrap_angle(angle - npc->angle);
     float max_turn = turn_speed * dt;
@@ -3783,9 +3805,19 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             break;
         }
 
-        /* Path avoidance: compute corrected heading around obstacles. */
+        /* Path avoidance: compute corrected heading around obstacles.
+         * Skip the player's currently-towed fragments AND the target rock
+         * itself so we don't dodge things we're hauling. */
+        int16_t ignore[12];
+        int ignore_n = 0;
+        for (int t = 0; t < sp->ship.towed_count && ignore_n < 11; t++) {
+            int16_t fi = sp->ship.towed_fragments[t];
+            if (fi >= 0 && fi < MAX_ASTEROIDS) ignore[ignore_n++] = fi;
+        }
+        ignore[ignore_n++] = (int16_t)sp->autopilot_target;
         path_avoidance_t pa = compute_path_avoidance(w, sp->ship.pos, sp->ship.vel,
-                                                     a->pos, hull->ship_radius);
+                                                     a->pos, hull->ship_radius,
+                                                     ignore, ignore_n);
         float desired = atan2f(pa.desired_dir.y, pa.desired_dir.x);
         float diff = wrap_angle(desired - sp->ship.angle);
         sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
@@ -3939,11 +3971,20 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         const station_t *st = &w->stations[s];
         sp->autopilot_target = s;
         /* Path avoidance toward the dock approach point (offset from
-         * the station center so we don't head straight at the core). */
+         * the station center so we don't head straight at the core).
+         * Skip the player's towed fragments so we don't dodge our own
+         * cargo trail. */
         vec2 dock_target = station_approach_target(st, sp->ship.pos);
         const hull_def_t *hull = ship_hull_def(&sp->ship);
+        int16_t ignore[12];
+        int ignore_n = 0;
+        for (int t = 0; t < sp->ship.towed_count && ignore_n < 12; t++) {
+            int16_t fi = sp->ship.towed_fragments[t];
+            if (fi >= 0 && fi < MAX_ASTEROIDS) ignore[ignore_n++] = fi;
+        }
         path_avoidance_t pa = compute_path_avoidance(w, sp->ship.pos, sp->ship.vel,
-                                                     dock_target, hull->ship_radius);
+                                                     dock_target, hull->ship_radius,
+                                                     ignore, ignore_n);
         float desired = atan2f(pa.desired_dir.y, pa.desired_dir.x);
         float diff = wrap_angle(desired - sp->ship.angle);
         sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
