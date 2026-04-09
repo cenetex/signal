@@ -17,10 +17,12 @@ outposts at the edge of signal range. Every AI dreams of being a space station.
 3. Sell ore or deliver contract cargo at docked stations.
 4. Let stations smelt ore into ingots and fabricate ship parts, then buy what
    you need with `F`.
-5. Upgrade your miner, buy a scaffold kit, and deploy an outpost inside signal
-   coverage.
-6. Deliver frames and ingots to scaffolds and module blueprints so the network
-   grows and NPC miners and haulers can help keep it supplied.
+5. Press `B` in flight to create a planned outpost or reserve module slots on
+   an existing outpost, then dock at a station with a shipyard and order a
+   matching scaffold.
+6. Use the tractor to tow loose scaffolds into place. New outposts still need
+   frames delivered before they activate; placed module scaffolds currently go
+   straight into a short commissioning timer once snapped onto a ring slot.
 7. Throw rocks at other players. This is the main thing.
 
 Signal range matters. Weak signal cuts ship response and mining speed, and both
@@ -29,47 +31,48 @@ players and NPCs are pushed back toward the connected station chain.
 ## Stations
 
 Stations are ring structures that rotate, with module ports around the arc and
-a dock gap for ships to fly through. Players expand outposts by building rings,
-then filling ports with modules. Each station is (or will be) operated by an AI
-— setting prices, posting contracts, and hailing pilots who fly through its
-signal field.
+a dock gap for ships to fly through. Players expand outposts through plan mode
+plus shipyard-manufactured scaffolds. Station behavior is currently
+simulation-authored: prices derive from inventory pressure, contracts are
+generated from station need, and hail displays stored station text.
 
-- `Prospect Refinery`: buys raw ore, repairs hulls, smelts ore, and posts
-  supply contracts.
-- `Kepler Yard`: repairs hulls, presses frames, upgrades hold capacity, sells
-  frames, and issues blueprint work.
-- `Helios Works`: repairs hulls, fabricates laser and tractor modules, upgrades
-  mining and tractor systems, and issues blueprint work.
-- `Outposts`: begin as scaffolded relay hubs, then grow module by module into
-  new industrial nodes.
+- `Prospect Refinery`: starter ferrite refinery. Smelts ferrite ore and sells
+  ferrite ingots.
+- `Kepler Yard`: frame press and shipyard hub. Sells frames and offers ship
+  upgrades.
+- `Helios Works`: cuprite/crystal processing plus mining and tractor upgrades,
+  with its own shipyard.
+- `Outposts`: begin as scaffolded relay hubs, then gain planned slots and
+  shipyard-printed module scaffolds.
 
-## Artificial Station Intelligence
+## Current Station Ops
 
-Each station runs a daily planning session — one short LLM call to review its
-economy, adjust prices, post contracts, and write three hail messages at
-ferrite/cuprite/crystal rarity tiers. Press `H` in signal range to hail a
-station; the message you get depends on which band of the signal field you're
-in.
+Press `H` while undocked in strong signal coverage to collect pending supplier
+credits and show the nearest station's hail message. Starter stations ship with
+static hail text, and fetched CDN MOTDs can override that copy at runtime.
 
-AI stations see only what's within their signal range. When two stations'
-signals overlap, their operators can communicate. Destroy a relay station and
-everything beyond it goes dark. The intelligence persists as long as the signal
-does.
+Daily external planning, per-band hail variants, and richer AI station
+operators are planned, but they are not implemented in this repository today.
 
 ## Controls
 
 - Flight: `W/S` or arrows thrust and brake, `A/D` or arrows turn, `Space`
   mine, `E` dock or launch.
-- Station services: `1` sell or deliver cargo, `2` repair, `3` laser upgrade,
-  `4` hold upgrade, `5` tractor upgrade.
-- Station navigation: `Tab` or `Q` cycle station tabs.
-- Market: `F` buys the station's primary product.
-- Construction: `B` buys a scaffold kit or opens build mode while docked.
-- Outpost placement: undock with a scaffold kit, press `B`, then press `B` or
-  `Enter` to place the outpost. `Esc` or `Q` cancels placement.
-- Module build overlay: `1-8` choose a module blueprint.
-- Contracts tab: `1-3` track the nearest listed contracts.
-- Global: `R` resets singleplayer, `Esc` quits.
+- Tractor: `R` toggles the tractor beam. Turning it off releases towed
+  fragments or scaffolds.
+- Docked station controls: `1` sell or deliver cargo, `2` repair if available,
+  `3` laser upgrade, `4` hold upgrade, `5` tractor upgrade, `F` buy the
+  station's primary product.
+- Station navigation: `Tab` or `Q` cycle station tabs while docked. `B` jumps
+  directly to the SHIPYARD tab when the station has one.
+- Plan mode: while undocked and not towing, `B` enters or exits plan mode, `R`
+  cycles module type, and `E` reserves the current slot. Press `B` in open
+  signal to create a planned outpost.
+- Scaffold placement: tow a scaffold with the tractor and press `E` to place
+  it on a ring slot or found/materialize an outpost.
+- Utility: `H` hail the nearest station in strong signal, `O` toggle mining
+  autopilot, `[` and `]` switch music tracks, `X` self-destruct/reset in
+  singleplayer, `Esc` quits.
 
 ## Build
 
