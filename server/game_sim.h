@@ -69,6 +69,17 @@ typedef struct {
     float offset_x, offset_y;  /* world offset to center grid */
 } spatial_grid_t;
 
+/* Map a world position to a grid cell (clamped). Shared by game_sim.c
+ * and sim_nav.c, so declared here as static inline. */
+static inline void spatial_grid_cell(const spatial_grid_t *g, vec2 pos, int *cx, int *cy) {
+    *cx = (int)((pos.x + g->offset_x) / SPATIAL_CELL_SIZE);
+    *cy = (int)((pos.y + g->offset_y) / SPATIAL_CELL_SIZE);
+    if (*cx < 0) *cx = 0;
+    if (*cy < 0) *cy = 0;
+    if (*cx >= SPATIAL_GRID_DIM) *cx = SPATIAL_GRID_DIM - 1;
+    if (*cy >= SPATIAL_GRID_DIM) *cy = SPATIAL_GRID_DIM - 1;
+}
+
 /* ------------------------------------------------------------------ */
 /* Server-specific types                                              */
 /* ------------------------------------------------------------------ */
