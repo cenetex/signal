@@ -1477,7 +1477,10 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
     if (seg_len < 1.0f) return true;
     vec2 fwd = v2_scale(delta, 1.0f / seg_len);
 
-    /* Check large asteroids */
+    /* Check large asteroids. Use extra margin (2x clearance) so the A*
+     * path is MORE conservative than the reactive avoidance cone. This
+     * prevents the ship from picking a "clear" line that the cone-based
+     * avoidance then blocks, causing oscillation. */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *ast = &w->asteroids[i];
         if (!ast->active || ast->tier == ASTEROID_TIER_S) continue;
@@ -1485,7 +1488,7 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
         float proj = v2_dot(to_a, fwd);
         if (proj < -ast->radius || proj > seg_len + ast->radius) continue;
         float perp = fabsf(v2_cross(to_a, fwd));
-        if (perp < ast->radius + clearance) return false;
+        if (perp < ast->radius + clearance * 2.0f) return false;
     }
 
     /* Check station structures */
@@ -1631,6 +1634,32 @@ static void nav_build_graph(const world_t *w, vec2 start, vec2 goal,
             }
         }
     }
+
+    /* Asteroid bypass waypoints: for each large asteroid that blocks
+     * the direct start→goal line, add two waypoints perpendicular to
+     * the travel direction, letting A* route around the obstacle. */
+    vec2 sg_delta = v2_sub(goal, start);
+    float sg_len = v2_len(sg_delta);
+    if (sg_len > 1.0f) {
+        vec2 sg_fwd = v2_scale(sg_delta, 1.0f / sg_len);
+        vec2 sg_perp = v2(-sg_fwd.y, sg_fwd.x);
+        for (int i = 0; i < MAX_ASTEROIDS && g->count < NAV_MAX_NODES - 2; i++) {
+            const asteroid_t *a = &w->asteroids[i];
+            if (!a->active || a->tier == ASTEROID_TIER_S) continue;
+            if (a->radius < 30.0f) continue; /* skip small rocks */
+            vec2 to_a = v2_sub(a->pos, start);
+            float proj = v2_dot(to_a, sg_fwd);
+            if (proj < 0.0f || proj > sg_len) continue;
+            float lat = fabsf(v2_dot(to_a, sg_perp));
+            float margin = a->radius + clearance * 2.0f;
+            if (lat > margin) continue; /* not blocking */
+            /* Add waypoints on both sides of the asteroid */
+            float bypass = a->radius + clearance * 2.5f;
+            g->nodes[g->count++].pos = v2_add(a->pos, v2_scale(sg_perp, bypass));
+            if (g->count < NAV_MAX_NODES)
+                g->nodes[g->count++].pos = v2_add(a->pos, v2_scale(sg_perp, -bypass));
+        }
+    }
 }
 
 /* A* search through the navigation graph. Returns true if a path was found. */
@@ -1743,6 +1772,15 @@ static vec2 nav_next_waypoint(nav_path_t *path, vec2 ship_pos, vec2 final_target
 }
 
 /* ================================================================== */
+
+int nav_compute_path(const world_t *w, vec2 start, vec2 goal, float clearance,
+                     vec2 *out_waypoints, int max_count) {
+    nav_path_t p;
+    nav_find_path(w, start, goal, clearance, &p);
+    int n = p.count < max_count ? p.count : max_count;
+    for (int i = 0; i < n; i++) out_waypoints[i] = p.waypoints[i];
+    return n;
+}
 
 int nav_get_player_path(int player_id, vec2 *out_waypoints, int max_count, int *out_current) {
     if (player_id < 0 || player_id >= MAX_PLAYERS) return 0;
