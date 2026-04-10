@@ -1133,34 +1133,22 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
  * the A* path already routes around station walls and large asteroids. */
 static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
                                 vec2 final_target, float accel, float turn_speed, float dt) {
-    nav_path_t *path = &g_npc_paths[npc_idx];
-    /* Invalidate if destination changed (state transition) or stale. */
-    bool dest_changed = v2_dist_sq(path->goal, final_target) > 100.0f * 100.0f;
-    if (dest_changed || path->age > 5.0f || (path->count == 0 && path->age > 0.5f)) {
-        const hull_def_t *hull = npc_hull_def(npc);
-        nav_find_path(w, npc->pos, final_target, hull->ship_radius + 30.0f, path);
-    }
-    vec2 wp = nav_next_waypoint(path, npc->pos, final_target, dt);
+    const hull_def_t *hull = npc_hull_def(npc);
+    nav_path_t *path = nav_npc_path(npc_idx);
+    nav_follow_path(w, path, npc->pos, final_target, hull->ship_radius + 30.0f, dt);
+    nav_steer_t st = nav_steer_toward_waypoint(path, npc->pos, final_target, dt);
 
-    /* Steer directly toward waypoint. */
-    vec2 to_wp = v2_sub(wp, npc->pos);
-    float wp_dist = v2_len(to_wp);
-    float angle = (wp_dist > 0.001f)
-        ? atan2f(to_wp.y, to_wp.x)
-        : npc->angle;
-    float diff = wrap_angle(angle - npc->angle);
+    float diff = wrap_angle(st.desired_heading - npc->angle);
     float max_turn = turn_speed * dt;
     if (diff > max_turn) diff = max_turn;
     else if (diff < -max_turn) diff = -max_turn;
     npc->angle = wrap_angle(npc->angle + diff);
 
-    /* Thrust: speed-controlled approach, slow near waypoint turns. */
     float facing = cosf(diff);
     float thrust_gate = (facing > 0.5f) ? facing : 0.0f;
-    /* Slow down near intermediate waypoints so NPC doesn't overshoot docks. */
     float speed_cap = accel;
-    if (wp_dist < 200.0f && path->current < path->count)
-        speed_cap *= fmaxf(0.2f, wp_dist / 200.0f);
+    if (st.wp_dist < 200.0f && st.at_intermediate)
+        speed_cap *= fmaxf(0.2f, st.wp_dist / 200.0f);
     vec2 fwd = v2_from_angle(npc->angle);
     npc->vel = v2_add(npc->vel, v2_scale(fwd, speed_cap * thrust_gate * dt));
     npc->thrusting = (speed_cap * thrust_gate) > 0.0f;
@@ -3604,29 +3592,6 @@ static bool autopilot_hull_full(const ship_t *s) {
     return s->hull >= max - 0.5f;
 }
 
-/* Velocity-controlled approach: returns the thrust input (-1..1) needed
- * to hold the ship at a target speed along its forward axis, given its
- * current approach velocity along that axis. -1 = full reverse thrust,
- * +1 = full forward thrust. */
-static float autopilot_speed_control(float current_approach_speed, float target_speed) {
-    if (current_approach_speed > target_speed * 1.10f) return -1.0f; /* brake */
-    if (current_approach_speed < target_speed * 0.85f) return 1.0f;  /* speed up */
-    return 0.0f; /* coast in the deadband */
-}
-
-/* Compute desired approach speed from distance to target.
- * Uses sqrt(2 * decel * dist) so the ship slows linearly with distance.
- * Capped at max_speed and at a low minimum so we don't crawl forever. */
-static float autopilot_approach_speed(float dist, float max_speed) {
-    /* Effective brake decel: SHIP_BRAKE (180) for active reverse + drag.
-     * Be conservative — assume only ~150 u/s² of effective deceleration. */
-    const float decel = 150.0f;
-    float v = sqrtf(2.0f * decel * fmaxf(dist, 0.0f));
-    if (v > max_speed) v = max_speed;
-    if (v < 30.0f && dist > 5.0f) v = 30.0f;
-    return v;
-}
-
 /* Drive the player's ship via simulated input. The autopilot writes
  * sp->input each tick, and the existing physics/mining/dock systems
  * consume those intents like they would for a human player. */
@@ -3654,7 +3619,7 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
                  * from the station toward a new mining target. */
                 if (sp->ship.towed_count > 0 &&
                     sp->autopilot_state == AUTOPILOT_STEP_RETURN_TO_REFINERY) {
-                    g_player_paths[sp->id].age = 999.0f; /* force replan */
+                    nav_force_replan(nav_player_path(sp->id));
                 } else {
                     sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
                 }
@@ -3733,7 +3698,7 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         /* Compute A* path to the mining target */
         nav_find_path(w, sp->ship.pos, w->asteroids[t].pos,
                       ship_hull_def(&sp->ship)->ship_radius + 30.0f,
-                      &g_player_paths[sp->id]);
+                      nav_player_path(sp->id));
         break;
     }
     case AUTOPILOT_STEP_FLY_TO_TARGET: {
@@ -3780,41 +3745,25 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             break;
         }
 
-        /* Follow A* path waypoints instead of straight line to target.
-         * Re-plan if the path is stale (>5s). */
-        nav_path_t *path = &g_player_paths[sp->id];
-        bool dest_changed = v2_dist_sq(path->goal, a->pos) > 100.0f * 100.0f;
-        if (dest_changed || path->age > 5.0f) {
-            nav_find_path(w, sp->ship.pos, a->pos,
-                          hull->ship_radius + 30.0f, path);
-        }
-        vec2 steer_target = nav_next_waypoint(path, sp->ship.pos, a->pos, dt);
-
-        /* Steer directly toward the A* waypoint — no reactive avoidance.
-         * The A* path already routes around station walls and large
-         * asteroids. Reactive avoidance was fighting the path (stalling
-         * at docks, flipping direction, thrust flicker). */
-        vec2 to_wp = v2_sub(steer_target, sp->ship.pos);
-        float wp_dist = v2_len(to_wp);
-        float desired = atan2f(to_wp.y, to_wp.x);
-        float diff = wrap_angle(desired - sp->ship.angle);
+        /* Follow A* path via shared helpers. */
+        nav_path_t *path = nav_player_path(sp->id);
+        nav_follow_path(w, path, sp->ship.pos, a->pos, hull->ship_radius + 30.0f, dt);
+        nav_steer_t st = nav_steer_toward_waypoint(path, sp->ship.pos, a->pos, dt);
+        float diff = wrap_angle(st.desired_heading - sp->ship.angle);
         sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
         float facing = cosf(diff);
 
-        /* Velocity-controlled approach: compute target speed from distance,
-         * then use thrust/reverse to hold that speed. */
-        const float MAX_APPROACH_SPEED = 150.0f;
-        float target_speed = autopilot_approach_speed(effective_dist, MAX_APPROACH_SPEED);
-        /* Slow down near waypoint turns so the ship doesn't overshoot. */
-        if (wp_dist < 200.0f && path->current < path->count) {
-            float wp_speed = autopilot_approach_speed(wp_dist, 80.0f);
+        /* Velocity-controlled approach. */
+        float target_speed = nav_approach_speed(effective_dist, 150.0f);
+        if (st.wp_dist < 200.0f && st.at_intermediate) {
+            float wp_speed = nav_approach_speed(st.wp_dist, 80.0f);
             if (wp_speed < target_speed) target_speed = wp_speed;
         }
         vec2 to_target_dir = (dist_to_a > 0.5f)
             ? v2_scale(v2_sub(a->pos, sp->ship.pos), 1.0f / dist_to_a)
             : v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
         float approach_v = v2_dot(sp->ship.vel, to_target_dir);
-        float thrust_cmd = autopilot_speed_control(approach_v, target_speed);
+        float thrust_cmd = nav_speed_control(approach_v, target_speed);
         if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
         sp->input.thrust = thrust_cmd;
         sp->input.mine = false;
@@ -3878,7 +3827,7 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
             float approach_v = v2_dot(sp->ship.vel, v2_scale(to_a, 1.0f / dist));
             /* Hold approach speed at ~50 u/s */
-            sp->input.thrust = autopilot_speed_control(approach_v, 50.0f);
+            sp->input.thrust = nav_speed_control(approach_v, 50.0f);
             if (cosf(diff) < 0.5f) sp->input.thrust = 0.0f;
             sp->input.mine = false;
         } else {
@@ -3984,36 +3933,26 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         }
         /* A* path toward the dock approach point. */
         vec2 dock_target = station_approach_target(st, sp->ship.pos);
+        /* Follow A* path via shared helpers. */
         const hull_def_t *hull = ship_hull_def(&sp->ship);
-        nav_path_t *path = &g_player_paths[sp->id];
-        bool dest_changed = v2_dist_sq(path->goal, dock_target) > 100.0f * 100.0f;
-        if (dest_changed || path->age > 5.0f || path->count == 0) {
-            nav_find_path(w, sp->ship.pos, dock_target,
-                          hull->ship_radius + 30.0f, path);
-        }
-        vec2 steer_target = nav_next_waypoint(path, sp->ship.pos, dock_target, dt);
-
-        /* Steer directly toward A* waypoint — no reactive avoidance. */
-        vec2 to_wp = v2_sub(steer_target, sp->ship.pos);
-        float wp_dist = v2_len(to_wp);
-        float desired = atan2f(to_wp.y, to_wp.x);
-        float diff = wrap_angle(desired - sp->ship.angle);
+        nav_path_t *path = nav_player_path(sp->id);
+        nav_follow_path(w, path, sp->ship.pos, dock_target, hull->ship_radius + 30.0f, dt);
+        nav_steer_t st2 = nav_steer_toward_waypoint(path, sp->ship.pos, dock_target, dt);
+        float diff = wrap_angle(st2.desired_heading - sp->ship.angle);
         sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
         float facing = cosf(diff);
         float dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
 
-        /* Velocity-controlled approach toward the station. Slow down
-         * near waypoint turns so the ship doesn't overshoot docks. */
-        float target_speed = autopilot_approach_speed(dist, 120.0f);
-        if (wp_dist < 200.0f && path->current < path->count) {
-            float wp_speed = autopilot_approach_speed(wp_dist, 80.0f);
+        float target_speed = nav_approach_speed(dist, 120.0f);
+        if (st2.wp_dist < 200.0f && st2.at_intermediate) {
+            float wp_speed = nav_approach_speed(st2.wp_dist, 80.0f);
             if (wp_speed < target_speed) target_speed = wp_speed;
         }
         vec2 to_st_dir = (dist > 0.5f)
             ? v2_scale(v2_sub(st->pos, sp->ship.pos), 1.0f / dist)
             : v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
         float approach_v = v2_dot(sp->ship.vel, to_st_dir);
-        float thrust_cmd = autopilot_speed_control(approach_v, target_speed);
+        float thrust_cmd = nav_speed_control(approach_v, target_speed);
         if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
         sp->input.thrust = thrust_cmd;
         sp->input.mine = false;

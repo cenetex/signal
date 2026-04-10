@@ -437,8 +437,22 @@ static vec2 snav_node_world_pos(const station_t *st, const snav_node_t *n) {
                                sinf(n->angle) * n->radius));
 }
 
-nav_path_t g_npc_paths[MAX_NPC_SHIPS];
-nav_path_t g_player_paths[MAX_PLAYERS];
+static nav_path_t s_npc_paths[MAX_NPC_SHIPS];
+static nav_path_t s_player_paths[MAX_PLAYERS];
+
+nav_path_t *nav_npc_path(int npc_idx) {
+    if (npc_idx < 0 || npc_idx >= MAX_NPC_SHIPS) return &s_npc_paths[0];
+    return &s_npc_paths[npc_idx];
+}
+
+nav_path_t *nav_player_path(int player_id) {
+    if (player_id < 0 || player_id >= MAX_PLAYERS) return &s_player_paths[0];
+    return &s_player_paths[player_id];
+}
+
+void nav_force_replan(nav_path_t *path) {
+    path->age = 999.0f;
+}
 
 /* Test if a line segment a->b is clear of station ring walls and large
  * asteroids. Reuses the same ring-wall math as compute_path_avoidance
@@ -889,9 +903,54 @@ int nav_compute_path(const world_t *w, vec2 start, vec2 goal, float clearance,
 
 int nav_get_player_path(int player_id, vec2 *out_waypoints, int max_count, int *out_current) {
     if (player_id < 0 || player_id >= MAX_PLAYERS) return 0;
-    const nav_path_t *p = &g_player_paths[player_id];
+    const nav_path_t *p = &s_player_paths[player_id];
     int n = p->count < max_count ? p->count : max_count;
     for (int i = 0; i < n; i++) out_waypoints[i] = p->waypoints[i];
     if (out_current) *out_current = p->current;
     return n;
+}
+
+/* ================================================================== */
+/* Shared flight helpers                                               */
+/* ================================================================== */
+
+vec2 nav_follow_path(const world_t *w, nav_path_t *path,
+                     vec2 ship_pos, vec2 destination,
+                     float clearance, float dt) {
+    bool dest_changed = v2_dist_sq(path->goal, destination) > 100.0f * 100.0f;
+    if (dest_changed || path->age > 5.0f || (path->count == 0 && path->age > 0.5f)) {
+        nav_find_path(w, ship_pos, destination, clearance, path);
+    }
+    return nav_next_waypoint(path, ship_pos, destination, dt);
+}
+
+nav_steer_t nav_steer_toward_waypoint(nav_path_t *path, vec2 ship_pos,
+                                       vec2 destination, float dt) {
+    (void)dt;
+    vec2 wp = (path->count > 0 && path->current < path->count)
+        ? path->waypoints[path->current]
+        : destination;
+    vec2 to_wp = v2_sub(wp, ship_pos);
+    float dist = v2_len(to_wp);
+    nav_steer_t out;
+    out.desired_heading = (dist > 0.001f)
+        ? atan2f(to_wp.y, to_wp.x)
+        : 0.0f;
+    out.wp_dist = dist;
+    out.at_intermediate = (path->current < path->count);
+    return out;
+}
+
+float nav_approach_speed(float dist, float max_speed) {
+    const float decel = 150.0f;
+    float v = sqrtf(2.0f * decel * fmaxf(dist, 0.0f));
+    if (v > max_speed) v = max_speed;
+    if (v < 30.0f && dist > 5.0f) v = 30.0f;
+    return v;
+}
+
+float nav_speed_control(float current_speed, float target_speed) {
+    if (current_speed > target_speed * 1.10f) return -1.0f;
+    if (current_speed < target_speed * 0.85f) return  1.0f;
+    return 0.0f;
 }
