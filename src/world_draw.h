@@ -36,6 +36,7 @@ void draw_hopper_tractors(void);
 void draw_beam(void);
 void draw_collision_sparks(void);
 void draw_spark_burst(vec2 pos, float intensity, bool red, float seed);
+void draw_autopilot_path(void);
 void draw_towed_tethers(void);
 
 /* --- Module visuals --- */

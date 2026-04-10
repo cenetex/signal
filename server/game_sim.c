@@ -1744,6 +1744,15 @@ static vec2 nav_next_waypoint(nav_path_t *path, vec2 ship_pos, vec2 final_target
 
 /* ================================================================== */
 
+int nav_get_player_path(int player_id, vec2 *out_waypoints, int max_count, int *out_current) {
+    if (player_id < 0 || player_id >= MAX_PLAYERS) return 0;
+    const nav_path_t *p = &s_player_paths[player_id];
+    int n = p->count < max_count ? p->count : max_count;
+    for (int i = 0; i < n; i++) out_waypoints[i] = p->waypoints[i];
+    if (out_current) *out_current = p->current;
+    return n;
+}
+
 static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float turn_speed, float dt) {
     vec2 delta = v2_sub(target, npc->pos);
     float desired = atan2f(delta.y, delta.x);
@@ -4758,17 +4767,23 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
 static void step_player(world_t *w, server_player_t *sp, float dt) {
     /* One-shot: toggle autopilot from network action. */
     if (sp->input.toggle_autopilot) {
-        sp->autopilot_mode = sp->autopilot_mode ? 0 : 1;
-        /* If toggling ON while carrying towed fragments, skip straight to
-         * RETURN_TO_REFINERY so the ship delivers instead of trying to
-         * mine more. Otherwise start at FIND_TARGET. */
-        if (sp->autopilot_mode && sp->ship.towed_count > 0) {
-            sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+        if (sp->autopilot_mode) {
+            /* Turning OFF — always allowed. */
+            sp->autopilot_mode = 0;
         } else {
-            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            /* Turning ON — requires 80%+ signal. */
+            float sig = signal_strength_at(w, sp->ship.pos);
+            if (sig >= 0.80f) {
+                sp->autopilot_mode = 1;
+                if (sp->ship.towed_count > 0) {
+                    sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+                } else {
+                    sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+                }
+                sp->autopilot_target = -1;
+                sp->autopilot_timer = 0.0f;
+            }
         }
-        sp->autopilot_target = -1;
-        sp->autopilot_timer = 0.0f;
         sp->input.toggle_autopilot = false;
     }
 
@@ -4785,6 +4800,18 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     float net_thrust = sp->input.thrust;
     bool  net_mine   = sp->input.mine;
     int   net_target = sp->input.mining_target_hint;
+
+    /* Autopilot requires 80%+ signal strength. If signal drops below
+     * that threshold, disengage — the ship is too far from a relay. */
+    if (sp->autopilot_mode && !w->player_only_mode) {
+        float ap_sig = signal_strength_at(w, sp->ship.pos);
+        if (ap_sig < 0.80f) {
+            sp->autopilot_mode = 0;
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_target = -1;
+            emit_event(w, (sim_event_t){.type = SIM_EVENT_SIGNAL_LOST, .player_id = sp->id});
+        }
+    }
 
     /* Manual override: any directional / mining input cancels autopilot.
      * Checks the snapshot, NOT sp->input — autopilot writes don't count. */

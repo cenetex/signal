@@ -200,6 +200,10 @@ typedef struct {
     /* Screen shake on damage. amplitude decays exponentially each frame. */
     float screen_shake;      /* current shake amplitude in world units */
     float screen_shake_seed; /* monotonic phase for noise lookup */
+    /* --- Autopilot path preview (dotted line showing next waypoints) --- */
+    vec2 autopilot_path[12];
+    int  autopilot_path_count;
+    int  autopilot_path_current;
     /* --- Contract tracking --- */
     int tracked_contract;    /* index into world.contracts, -1 = none */
     /* --- Navigation breadcrumb (last docked station or placed blueprint) --- */

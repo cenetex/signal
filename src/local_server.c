@@ -114,9 +114,11 @@ void local_server_sync_to_client(const local_server_t *ls) {
     server_player_t *dst = &g.world.players[g.local_player_slot];
     const server_player_t *src = &ls->world.players[g.local_player_slot];
     mirror_player_always(dst, src);
-    /* Server-authoritative thrust flag — drives flames in autopilot.
-     * Uses actual_thrusting which is captured BEFORE the input restore. */
+    /* Server-authoritative thrust flag — drives flames in autopilot. */
     g.server_thrusting = src->actual_thrusting;
+    /* Mirror autopilot path for dotted-line preview. */
+    g.autopilot_path_count = nav_get_player_path(
+        g.local_player_slot, g.autopilot_path, 12, &g.autopilot_path_current);
     if (g.action_predict_timer <= 0.0f)
         mirror_player_predicted(dst, src);
 }

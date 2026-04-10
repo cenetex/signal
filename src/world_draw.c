@@ -1329,6 +1329,47 @@ void draw_collision_sparks(void) {
     }
 }
 
+/* Draw autopilot path preview: dotted line from ship through next waypoints.
+ * Only draws one screen-width worth (~1200u) so it doesn't clutter. */
+void draw_autopilot_path(void) {
+    if (!LOCAL_PLAYER.autopilot_mode) return;
+    if (g.autopilot_path_count == 0) return;
+    vec2 prev = LOCAL_PLAYER.ship.pos;
+    float total_drawn = 0.0f;
+    const float MAX_DRAW_DIST = 1200.0f;
+    const float DASH_LEN = 20.0f;
+    const float GAP_LEN = 15.0f;
+    for (int i = g.autopilot_path_current; i < g.autopilot_path_count; i++) {
+        vec2 wp = g.autopilot_path[i];
+        vec2 delta = v2_sub(wp, prev);
+        float seg_len = v2_len(delta);
+        if (seg_len < 1.0f) { prev = wp; continue; }
+        float remaining = MAX_DRAW_DIST - total_drawn;
+        if (remaining <= 0.0f) break;
+        if (seg_len > remaining) seg_len = remaining;
+        vec2 dir = v2_scale(delta, 1.0f / v2_len(delta));
+        /* Draw dashed line along this segment */
+        float t = 0.0f;
+        float pulse = 0.35f + 0.15f * sinf(g.world.time * 2.0f);
+        sgl_begin_lines();
+        sgl_c4f(0.3f, 0.85f, 1.0f, pulse);
+        while (t < seg_len) {
+            float dash_end = t + DASH_LEN;
+            if (dash_end > seg_len) dash_end = seg_len;
+            vec2 a = v2_add(prev, v2_scale(dir, t));
+            vec2 b = v2_add(prev, v2_scale(dir, dash_end));
+            sgl_v2f(a.x, a.y);
+            sgl_v2f(b.x, b.y);
+            t = dash_end + GAP_LEN;
+        }
+        sgl_end();
+        /* Small dot at waypoint */
+        draw_circle_filled(wp, 3.0f, 6, 0.3f, 0.85f, 1.0f, pulse * 1.2f);
+        total_drawn += seg_len;
+        prev = wp;
+    }
+}
+
 /* Draw tractor tether lines from ship to towed fragments */
 void draw_towed_tethers(void) {
     if (LOCAL_PLAYER.ship.towed_count == 0) return;

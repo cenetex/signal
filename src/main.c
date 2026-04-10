@@ -1020,6 +1020,7 @@ static void render_world(void) {
     draw_npc_ships();
     draw_remote_players(); /* Multiplayer: remote player ships */
     draw_callsigns();      /* Readable sdtx labels above local + remote ships */
+    draw_autopilot_path(); /* Dotted line showing A* path ahead */
     draw_compass_ring();   /* Navigation compass around player ship */
 
     /* Ring trusses and modules render ON TOP of ships */
