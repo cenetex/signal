@@ -1752,11 +1752,17 @@ static void station_build_nav(const world_t *w, int station_idx) {
     }
 
     /* --- Validate edges: test all pairs with nav_line_clear --- */
-    /* Use a representative clearance (player ship radius + margin). */
+    /* Only precompute edges where both nodes are rotation-invariant:
+     * RING↔RING (all rings share one rotation speed, so relative
+     * geometry is constant) or FIXED↔FIXED. Mixed FIXED↔RING edges
+     * go stale as rings rotate, so those are left for runtime
+     * nav_line_clear during A* expansion. */
     const float clearance = 46.0f; /* 16 ship_radius + 30 margin */
     for (int i = 0; i < nav->node_count && nav->edge_count < SNAV_MAX_EDGES; i++) {
-        vec2 pi = snav_node_world_pos(st, &nav->nodes[i]);
         for (int j = i + 1; j < nav->node_count && nav->edge_count < SNAV_MAX_EDGES; j++) {
+            bool same_kind = (nav->nodes[i].kind == nav->nodes[j].kind);
+            if (!same_kind) continue; /* skip FIXED↔RING — stale after rotation */
+            vec2 pi = snav_node_world_pos(st, &nav->nodes[i]);
             vec2 pj = snav_node_world_pos(st, &nav->nodes[j]);
             if (nav_line_clear(w, pi, pj, clearance)) {
                 nav->edges[nav->edge_count].a = (uint8_t)i;
@@ -4534,7 +4540,16 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_stuck_timer += dt;
             if (sp->autopilot_stuck_timer > 8.0f) {
                 SIM_LOG("[autopilot] player %d stuck for 8s, re-planning\n", sp->id);
-                sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+                /* If carrying fragments, stay in RETURN_TO_REFINERY but
+                 * force a path recompute (clear path age). Don't abandon
+                 * the delivery — that causes the ship to tow rocks away
+                 * from the station toward a new mining target. */
+                if (sp->ship.towed_count > 0 &&
+                    sp->autopilot_state == AUTOPILOT_STEP_RETURN_TO_REFINERY) {
+                    s_player_paths[sp->id].age = 999.0f; /* force replan */
+                } else {
+                    sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+                }
                 sp->autopilot_target = -1;
                 sp->autopilot_timer = 0.0f;
                 sp->autopilot_stuck_timer = 0.0f;
@@ -4583,8 +4598,10 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_LAUNCH;
             break;
         }
-        /* Tractor full = time to dump fragments at the nearest hopper. */
-        if (autopilot_tractor_full(&sp->ship)) {
+        /* Carrying anything = deliver first. Don't mine with a loaded
+         * tow chain — fragments trail behind looking broken and cause
+         * edge cases where the ship flies away from the station. */
+        if (sp->ship.towed_count > 0) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
@@ -4621,9 +4638,9 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             break;
         }
-        /* Bail to delivery if the tractor filled up while in transit
-         * (e.g., we passed through fragments from another miner). */
-        if (autopilot_tractor_full(&sp->ship)) {
+        /* Bail to delivery if we picked up fragments in transit
+         * (e.g., passed through fragments from another miner). */
+        if (sp->ship.towed_count > 0) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
@@ -4901,13 +4918,20 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float facing = cosf(diff);
         float dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
 
-        /* The A* path routes through dock waypoints — trust it.
-         * Just apply normal velocity-controlled approach toward the
-         * current waypoint (steer_target). */
+        /* The A* path routes through dock waypoints — trust the
+         * avoidance steering direction (which bends around walls)
+         * even when blocked. Creep forward slowly so the ship
+         * threads through dock gaps instead of stalling. */
         if (pa.blocked) {
             float current_speed = sqrtf(v2_len_sq(sp->ship.vel));
-            if (current_speed > 30.0f) sp->input.thrust = -1.0f;
-            else sp->input.thrust = 0.0f;
+            if (current_speed > 50.0f) {
+                sp->input.thrust = -1.0f; /* brake if going too fast */
+            } else if (facing > 0.3f) {
+                /* Facing roughly the avoidance direction — creep forward */
+                sp->input.thrust = 0.25f * pa.thrust_scale;
+            } else {
+                sp->input.thrust = 0.0f; /* turning to face avoidance dir */
+            }
         } else {
             float throttle = (facing > 0.5f) ? 1.0f : 0.0f;
             /* Slow down when close to the current waypoint */
