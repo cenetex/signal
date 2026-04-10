@@ -597,10 +597,12 @@ int main(void) {
 
     /* Initialise world. */
     world_reset(&world);
-    if (world_load(&world, SAVE_PATH))
+    if (world_load(&world, SAVE_PATH)) {
         printf("[server] loaded world from %s\n", SAVE_PATH);
-    else
+        station_rebuild_all_nav(&world); /* save may have different modules */
+    } else {
         printf("[server] fresh world\n");
+    }
     for (int i = 0; i < MAX_STATIONS; i++) station_identity_dirty[i] = true;
 
     struct mg_mgr mgr;

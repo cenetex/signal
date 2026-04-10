@@ -215,6 +215,7 @@ int nav_get_player_path(int player_id, vec2 *out_waypoints, int max_count, int *
 int nav_compute_path(const world_t *w, vec2 start, vec2 goal, float clearance,
                      vec2 *out_waypoints, int max_count);
 void rebuild_signal_chain(world_t *w);
+void station_rebuild_all_nav(const world_t *w);
 bool can_place_outpost(const world_t *w, vec2 pos);
 void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type);
 void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int ring, int slot);

@@ -98,6 +98,9 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
 /* RNG -- thin wrappers over shared rng.h (pass &w->rng)             */
 /* ================================================================== */
 
+/* Forward declarations */
+static void station_build_nav(const world_t *w, int station_idx);
+
 static float w_randf(world_t *w)                          { return randf(&w->rng); }
 static float w_rand_range(world_t *w, float lo, float hi) { return rand_range(&w->rng, lo, hi); }
 static int   w_rand_int(world_t *w, int lo, int hi)       { return rand_int(&w->rng, lo, hi); }
@@ -395,6 +398,8 @@ static void step_module_construction(world_t *w, float dt) {
                     .module_activated = { .station = s, .module_idx = i, .module_type = (int)st->modules[i].type },
                 });
                 SIM_LOG("[sim] module %d activated at station %d\n", st->modules[i].type, s);
+                /* Rebuild nav mesh — station geometry changed. */
+                station_build_nav(w, s);
             }
         }
     }
@@ -1452,9 +1457,15 @@ typedef struct {
     vec2 pos;
 } nav_node_t;
 
+/* Extended graph node: position + optional precomputed edge info. */
 typedef struct {
     nav_node_t nodes[NAV_MAX_NODES];
     int count;
+    /* Precomputed edge bitfield: edge_ok[i] has bit j set if nodes
+     * i and j are pre-validated (skip nav_line_clear). Only used for
+     * station-internal edges injected by the precomputed nav mesh. */
+    uint64_t edge_ok[NAV_MAX_NODES]; /* NAV_MAX_NODES <= 96, need 2 words */
+    uint64_t edge_ok_hi[NAV_MAX_NODES]; /* bits 64..95 */
 } nav_graph_t;
 
 typedef struct {
@@ -1465,30 +1476,115 @@ typedef struct {
     vec2  goal;   /* destination this path was computed for */
 } nav_path_t;
 
+/* ------------------------------------------------------------------ */
+/* Precomputed station nav mesh ("roads" between rings)               */
+/* ------------------------------------------------------------------ */
+/* Station geometry is semi-static (changes only when modules are
+ * added/activated). We precompute the navigable road network once and
+ * inject it into the A* graph at query time. Node positions are stored
+ * in local polar coords so ring rotation is handled at conversion. */
+
+enum {
+    SNAV_MAX_NODES = 28,  /* center + 8 exterior + up to ~9 dock pairs */
+    SNAV_MAX_EDGES = 64,
+};
+
+typedef enum {
+    SNAV_FIXED,   /* position is fixed angle+radius from station center */
+    SNAV_RING,    /* position tracks a ring slot (rotates with ring) */
+} snav_node_kind_t;
+
+typedef struct {
+    snav_node_kind_t kind;
+    /* SNAV_FIXED: angle + radius from station center */
+    /* SNAV_RING:  ring + slot, r_offset from ring radius */
+    float angle;      /* fixed angle, or unused for RING */
+    float radius;     /* fixed radius from center, or r_offset for RING */
+    int   ring;       /* 0 for FIXED, 1-3 for RING */
+    int   slot;       /* slot index for RING nodes */
+} snav_node_t;
+
+typedef struct {
+    uint8_t a, b;
+} snav_edge_t;
+
+typedef struct {
+    snav_node_t nodes[SNAV_MAX_NODES];
+    int         node_count;
+    snav_edge_t edges[SNAV_MAX_EDGES];
+    int         edge_count;
+    bool        valid;  /* false = needs rebuild */
+} station_nav_t;
+
+static station_nav_t s_station_nav[MAX_STATIONS];
+
+/* Convert a precomputed nav node to world-space for a given station. */
+static vec2 snav_node_world_pos(const station_t *st, const snav_node_t *n) {
+    if (n->kind == SNAV_RING) {
+        float ang = module_angle_ring(st, n->ring, n->slot);
+        float r = STATION_RING_RADIUS[n->ring] + n->radius;
+        return v2_add(st->pos, v2(cosf(ang) * r, sinf(ang) * r));
+    }
+    /* SNAV_FIXED */
+    return v2_add(st->pos, v2(cosf(n->angle) * n->radius,
+                               sinf(n->angle) * n->radius));
+}
+
 static nav_path_t s_npc_paths[MAX_NPC_SHIPS];
 static nav_path_t s_player_paths[MAX_PLAYERS];
 
 /* Test if a line segment a→b is clear of station ring walls and large
  * asteroids. Reuses the same ring-wall math as compute_path_avoidance
- * but returns a simple boolean. */
+ * but returns a simple boolean.
+ *
+ * Asteroid checks use the spatial grid to avoid scanning ALL asteroids.
+ * We walk cells along the segment's bounding box (expanded by the max
+ * asteroid radius + clearance margin) and only test asteroids in those
+ * cells. */
 static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
     vec2 delta = v2_sub(b, a);
     float seg_len = v2_len(delta);
     if (seg_len < 1.0f) return true;
     vec2 fwd = v2_scale(delta, 1.0f / seg_len);
 
-    /* Check large asteroids. Use extra margin (2x clearance) so the A*
-     * path is MORE conservative than the reactive avoidance cone. This
-     * prevents the ship from picking a "clear" line that the cone-based
-     * avoidance then blocks, causing oscillation. */
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        const asteroid_t *ast = &w->asteroids[i];
-        if (!ast->active || ast->tier == ASTEROID_TIER_S) continue;
-        vec2 to_a = v2_sub(ast->pos, a);
-        float proj = v2_dot(to_a, fwd);
-        if (proj < -ast->radius || proj > seg_len + ast->radius) continue;
-        float perp = fabsf(v2_cross(to_a, fwd));
-        if (perp < ast->radius + clearance * 2.0f) return false;
+    /* Check large asteroids via spatial grid. Expand the AABB by the
+     * max possible asteroid radius (~120u for XL) + 2x clearance so we
+     * don't miss rocks whose center is outside the tight corridor but
+     * whose body overlaps. */
+    {
+        const spatial_grid_t *g = &w->asteroid_grid;
+        const float margin = 150.0f + clearance * 2.0f;
+        float min_x = fminf(a.x, b.x) - margin;
+        float min_y = fminf(a.y, b.y) - margin;
+        float max_x = fmaxf(a.x, b.x) + margin;
+        float max_y = fmaxf(a.y, b.y) + margin;
+        int cx0, cy0, cx1, cy1;
+        spatial_grid_cell(g, v2(min_x, min_y), &cx0, &cy0);
+        spatial_grid_cell(g, v2(max_x, max_y), &cx1, &cy1);
+        /* Deduplicate: track which asteroid indices we've already tested.
+         * Use a small bitset — MAX_ASTEROIDS is typically ≤ 512. */
+        uint64_t checked[MAX_ASTEROIDS / 64 + 1];
+        memset(checked, 0, sizeof(checked));
+        for (int cy = cy0; cy <= cy1; cy++) {
+            for (int cx = cx0; cx <= cx1; cx++) {
+                const spatial_cell_t *cell = &g->cells[cy][cx];
+                for (int ci = 0; ci < cell->count; ci++) {
+                    int idx = cell->indices[ci];
+                    if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+                    /* Dedup check */
+                    int word = idx / 64, bit = idx % 64;
+                    if (checked[word] & (1ULL << bit)) continue;
+                    checked[word] |= (1ULL << bit);
+                    const asteroid_t *ast = &w->asteroids[idx];
+                    if (!ast->active || ast->tier == ASTEROID_TIER_S) continue;
+                    vec2 to_a = v2_sub(ast->pos, a);
+                    float proj = v2_dot(to_a, fwd);
+                    if (proj < -ast->radius || proj > seg_len + ast->radius) continue;
+                    float perp = fabsf(v2_cross(to_a, fwd));
+                    if (perp < ast->radius + clearance * 2.0f) return false;
+                }
+            }
+        }
     }
 
     /* Check station structures */
@@ -1579,59 +1675,153 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
     return true;
 }
 
-/* Build a sparse navigation graph with dock waypoints around stations. */
+/* ------------------------------------------------------------------ */
+/* station_build_nav — precompute navigable road network for a station */
+/* ------------------------------------------------------------------ */
+/* Nodes:
+ *   - Station center (FIXED)
+ *   - Per dock: outer waypoint (ring_r + 100) and inner (ring_r - 100), both RING
+ *   - 8 exterior waypoints around the outermost ring (FIXED, every 45°)
+ *
+ * Edges: every pair of nodes is tested with nav_line_clear. Validated
+ * pairs are stored so the A* graph can skip the expensive check later.
+ *
+ * Must be called after module changes (activation, placement, init). */
+static void station_build_nav(const world_t *w, int station_idx) {
+    const station_t *st = &w->stations[station_idx];
+    station_nav_t *nav = &s_station_nav[station_idx];
+    nav->node_count = 0;
+    nav->edge_count = 0;
+    nav->valid = false;
+
+    if (!station_collides(st)) return;
+
+    /* --- Add center node (FIXED) --- */
+    if (nav->node_count < SNAV_MAX_NODES) {
+        snav_node_t *n = &nav->nodes[nav->node_count++];
+        n->kind = SNAV_FIXED;
+        n->angle = 0.0f;
+        n->radius = 0.0f;
+        n->ring = 0;
+        n->slot = 0;
+    }
+
+    /* --- Add dock inner/outer pairs (RING) --- */
+    for (int mi = 0; mi < st->module_count && nav->node_count < SNAV_MAX_NODES - 2; mi++) {
+        if (st->modules[mi].type != MODULE_DOCK) continue;
+        if (st->modules[mi].scaffold) continue;
+        int ring = st->modules[mi].ring;
+        int slot = st->modules[mi].slot;
+
+        /* Outer: 100u outside the ring */
+        snav_node_t *outer = &nav->nodes[nav->node_count++];
+        outer->kind = SNAV_RING;
+        outer->angle = 0.0f;
+        outer->radius = 100.0f;  /* offset from ring radius */
+        outer->ring = ring;
+        outer->slot = slot;
+
+        /* Inner: 100u inside the ring */
+        if (nav->node_count < SNAV_MAX_NODES) {
+            snav_node_t *inner = &nav->nodes[nav->node_count++];
+            inner->kind = SNAV_RING;
+            inner->angle = 0.0f;
+            inner->radius = -100.0f;
+            inner->ring = ring;
+            inner->slot = slot;
+        }
+    }
+
+    /* --- Add 8 exterior waypoints around outermost occupied ring (FIXED) --- */
+    float outer_r = 0.0f;
+    for (int mi = 0; mi < st->module_count; mi++) {
+        int r = st->modules[mi].ring;
+        if (r >= 1 && r <= STATION_NUM_RINGS && STATION_RING_RADIUS[r] > outer_r)
+            outer_r = STATION_RING_RADIUS[r];
+    }
+    if (outer_r > 0.0f) {
+        for (int q = 0; q < 8 && nav->node_count < SNAV_MAX_NODES; q++) {
+            float ang = (float)q * (PI_F * 0.25f);
+            snav_node_t *n = &nav->nodes[nav->node_count++];
+            n->kind = SNAV_FIXED;
+            n->angle = ang;
+            n->radius = outer_r + 140.0f;
+            n->ring = 0;
+            n->slot = 0;
+        }
+    }
+
+    /* --- Validate edges: test all pairs with nav_line_clear --- */
+    /* Use a representative clearance (player ship radius + margin). */
+    const float clearance = 46.0f; /* 16 ship_radius + 30 margin */
+    for (int i = 0; i < nav->node_count && nav->edge_count < SNAV_MAX_EDGES; i++) {
+        vec2 pi = snav_node_world_pos(st, &nav->nodes[i]);
+        for (int j = i + 1; j < nav->node_count && nav->edge_count < SNAV_MAX_EDGES; j++) {
+            vec2 pj = snav_node_world_pos(st, &nav->nodes[j]);
+            if (nav_line_clear(w, pi, pj, clearance)) {
+                nav->edges[nav->edge_count].a = (uint8_t)i;
+                nav->edges[nav->edge_count].b = (uint8_t)j;
+                nav->edge_count++;
+            }
+        }
+    }
+
+    nav->valid = true;
+}
+
+/* Rebuild nav for all stations. Called at world init and after save load. */
+void station_rebuild_all_nav(const world_t *w) {
+    for (int s = 0; s < MAX_STATIONS; s++)
+        station_build_nav(w, s);
+}
+
+/* Helper: set prevalidated edge bit in both directions. */
+static void nav_graph_set_edge(nav_graph_t *g, int i, int j) {
+    if (j < 64) g->edge_ok[i] |= (1ULL << j);
+    else        g->edge_ok_hi[i] |= (1ULL << (j - 64));
+    if (i < 64) g->edge_ok[j] |= (1ULL << i);
+    else        g->edge_ok_hi[j] |= (1ULL << (i - 64));
+}
+
+static bool nav_graph_has_edge(const nav_graph_t *g, int i, int j) {
+    if (j < 64) return (g->edge_ok[i] >> j) & 1;
+    return (g->edge_ok_hi[i] >> (j - 64)) & 1;
+}
+
+/* Build a sparse navigation graph with precomputed station roads +
+ * dynamic asteroid bypass waypoints. */
 static void nav_build_graph(const world_t *w, vec2 start, vec2 goal,
                             float clearance, nav_graph_t *g) {
-    (void)clearance;
     g->count = 0;
+    memset(g->edge_ok, 0, sizeof(g->edge_ok));
+    memset(g->edge_ok_hi, 0, sizeof(g->edge_ok_hi));
+
     /* Node 0 = start, Node 1 = goal */
     g->nodes[g->count++].pos = start;
     g->nodes[g->count++].pos = goal;
 
-    /* Station dock nodes: for each dock on each ring, place a waypoint
-     * pair that threads the opening. The outer node sits just outside
-     * the ring, the inner node just inside. A path through outer→inner
-     * naturally flies through the dock gap. */
+    /* Inject precomputed station nav meshes. Convert local coords to
+     * world-space and translate precomputed edges into graph edge bits. */
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
-        if (!station_collides(st)) continue;
+        const station_nav_t *nav = &s_station_nav[s];
+        if (!nav->valid || nav->node_count == 0) continue;
         /* Only include stations near the travel corridor */
         vec2 mid = v2_scale(v2_add(start, goal), 0.5f);
-        float corridor = v2_dist_sq(start, goal);
-        if (v2_dist_sq(st->pos, mid) > corridor + 2000.0f * 2000.0f) continue;
+        float corridor_sq = v2_dist_sq(start, goal);
+        if (v2_dist_sq(st->pos, mid) > corridor_sq + 2000.0f * 2000.0f) continue;
 
-        for (int mi = 0; mi < st->module_count && g->count < NAV_MAX_NODES - 4; mi++) {
-            if (st->modules[mi].type != MODULE_DOCK) continue;
-            if (st->modules[mi].scaffold) continue;
-            int ring = st->modules[mi].ring;
-            float ring_r = STATION_RING_RADIUS[ring];
-            float dock_ang = module_angle_ring(st, ring, st->modules[mi].slot);
-            vec2 dir = v2(cosf(dock_ang), sinf(dock_ang));
-            /* Outer: 100u outside ring along dock radial */
-            g->nodes[g->count++].pos = v2_add(st->pos, v2_scale(dir, ring_r + 100.0f));
-            /* Inner: 100u inside ring along dock radial */
-            g->nodes[g->count++].pos = v2_add(st->pos, v2_scale(dir, ring_r - 100.0f));
-        }
+        /* Map: snav node index → graph node index */
+        int base = g->count;
+        for (int ni = 0; ni < nav->node_count && g->count < NAV_MAX_NODES; ni++)
+            g->nodes[g->count++].pos = snav_node_world_pos(st, &nav->nodes[ni]);
 
-        /* Station center node: allows paths that transit through the core */
-        if (g->count < NAV_MAX_NODES)
-            g->nodes[g->count++].pos = st->pos;
-
-        /* 8 exterior waypoints around the outermost ring (every 45°).
-         * These let the A* route around the station when no dock faces
-         * the approach direction. */
-        float outer_r = 0.0f;
-        for (int mi = 0; mi < st->module_count; mi++) {
-            int r = st->modules[mi].ring;
-            if (r >= 1 && r <= STATION_NUM_RINGS && STATION_RING_RADIUS[r] > outer_r)
-                outer_r = STATION_RING_RADIUS[r];
-        }
-        if (outer_r > 0.0f) {
-            for (int q = 0; q < 8 && g->count < NAV_MAX_NODES; q++) {
-                float ang = (float)q * (PI_F * 0.25f);
-                g->nodes[g->count++].pos = v2_add(st->pos,
-                    v2(cosf(ang) * (outer_r + 140.0f), sinf(ang) * (outer_r + 140.0f)));
-            }
+        /* Translate precomputed edges into graph edge bitfield */
+        for (int ei = 0; ei < nav->edge_count; ei++) {
+            int ga = base + nav->edges[ei].a;
+            int gb = base + nav->edges[ei].b;
+            if (ga < g->count && gb < g->count)
+                nav_graph_set_edge(g, ga, gb);
         }
     }
 
@@ -1739,10 +1929,12 @@ static bool nav_find_path(const world_t *w, vec2 start, vec2 goal,
         closed[cur] = true;
         in_open[cur] = false;
 
-        /* Expand neighbors: check visibility to all other nodes */
+        /* Expand neighbors: use precomputed edges when available,
+         * fall back to nav_line_clear for dynamic connections. */
         for (int nb = 0; nb < n; nb++) {
             if (nb == cur || closed[nb]) continue;
-            if (!nav_line_clear(w, graph.nodes[cur].pos, graph.nodes[nb].pos, clearance))
+            if (!nav_graph_has_edge(&graph, cur, nb) &&
+                !nav_line_clear(w, graph.nodes[cur].pos, graph.nodes[nb].pos, clearance))
                 continue;
             float edge = sqrtf(v2_dist_sq(graph.nodes[cur].pos, graph.nodes[nb].pos));
             float new_g = g_cost[cur] + edge;
@@ -4532,6 +4724,13 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             break;
         }
+        /* Don't laser with a full tow — go dump first. */
+        if (autopilot_tractor_full(&sp->ship)) {
+            sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+            sp->autopilot_target = -1;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
         const asteroid_t *a = &w->asteroids[sp->autopilot_target];
         if (!a->active) {
             /* Asteroid fractured or vanished — go collect fragments. */
@@ -6466,6 +6665,9 @@ void world_reset(world_t *w) {
     spawn_npc(w, 0, NPC_ROLE_HAULER);
     spawn_npc(w, 1, NPC_ROLE_TOW); /* Kepler shipyard */
     spawn_npc(w, 2, NPC_ROLE_TOW); /* Helios shipyard */
+
+    /* Precompute station nav meshes now that geometry is finalized. */
+    station_rebuild_all_nav(w);
 
     SIM_LOG("[sim] world reset complete (%d asteroids, 6 NPCs)\n", FIELD_ASTEROID_TARGET);
 }
