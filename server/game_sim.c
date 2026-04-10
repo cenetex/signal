@@ -1147,6 +1147,7 @@ typedef struct {
  * The destination station/asteroid (if `target` is near one) is
  * NOT counted as an obstacle — otherwise the ship could never reach
  * its target. */
+__attribute__((unused))
 static path_avoidance_t compute_path_avoidance(const world_t *w, vec2 pos, vec2 vel,
                                                 vec2 target, float ship_radius,
                                                 const int16_t *ignore_list, int ignore_count) {
@@ -1306,6 +1307,36 @@ static path_avoidance_t compute_path_avoidance(const world_t *w, vec2 pos, vec2 
                 }
             }
             if (dock_slot) continue; /* fly through the dock */
+
+            /* If the steer target itself is near a dock on this ring,
+             * the A* path is routing through it — don't override. */
+            {
+                bool target_at_dock = false;
+                for (int mi = 0; mi < st->module_count; mi++) {
+                    if (st->modules[mi].ring != ring) continue;
+                    if (st->modules[mi].type != MODULE_DOCK) continue;
+                    if (st->modules[mi].scaffold) continue;
+                    vec2 dock_pos = module_world_pos_ring(st, ring, st->modules[mi].slot);
+                    float dock_r = STATION_RING_RADIUS[ring];
+                    /* Check if target is within 200u of the dock opening
+                     * (either side of the ring) */
+                    if (v2_dist_sq(target, dock_pos) < 200.0f * 200.0f) {
+                        target_at_dock = true;
+                        break;
+                    }
+                    /* Also check if target is on the radial line through
+                     * the dock (inner waypoint) */
+                    float dock_ang = module_angle_ring(st, ring, st->modules[mi].slot);
+                    vec2 inner_pos = v2_add(st->pos,
+                        v2(cosf(dock_ang) * (dock_r - 100.0f),
+                           sinf(dock_ang) * (dock_r - 100.0f)));
+                    if (v2_dist_sq(target, inner_pos) < 200.0f * 200.0f) {
+                        target_at_dock = true;
+                        break;
+                    }
+                }
+                if (target_at_dock) continue; /* A* is routing through a dock — trust it */
+            }
 
             /* Is this crossing angle inside any corridor arc on this ring? */
             bool in_wall = false;
@@ -2002,49 +2033,13 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
     npc->thrusting = accel > 0.0f;
 }
 
-/* Steer toward a target with brake-aware obstacle avoidance. NPCs use
- * this for all long-distance travel. The brake factor scales acceleration
- * down to 0 when an obstacle is dead-ahead within the urgency window —
- * the NPC literally stops thrusting and lets drag carry it past.
- *
- * The NPC's currently-towed fragment is excluded from avoidance so a
- * miner doesn't try to dodge the rock it's hauling home. */
-static void npc_steer_with_avoidance(const world_t *w, npc_ship_t *npc, vec2 target,
-                                     float accel, float turn_speed, float dt) {
-    const hull_def_t *hull = npc_hull_def(npc);
-    int16_t ignore[1];
-    int ignore_n = 0;
-    if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS) {
-        ignore[ignore_n++] = (int16_t)npc->towed_fragment;
-    }
-    path_avoidance_t pa = compute_path_avoidance(w, npc->pos, npc->vel, target,
-                                                  hull->ship_radius, ignore, ignore_n);
-    float angle = atan2f(pa.desired_dir.y, pa.desired_dir.x);
-    float diff = wrap_angle(angle - npc->angle);
-    float max_turn = turn_speed * dt;
-    if (diff > max_turn) diff = max_turn;
-    else if (diff < -max_turn) diff = -max_turn;
-    npc->angle = wrap_angle(npc->angle + diff);
-    vec2 fwd = v2_from_angle(npc->angle);
-    /* Only thrust forward if we're roughly facing the desired direction.
-     * Combined with the brake factor, this means: don't accelerate while
-     * turning hard around an obstacle. */
-    float facing = cosf(diff);
-    float thrust_gate = (facing > 0.5f) ? facing : 0.0f;
-    /* When very close to the target, don't let avoidance kill thrust
-     * completely — let the ship coast in rather than stalling outside
-     * the station. */
-    float dist_to_target = v2_dist_sq(npc->pos, target);
-    float effective_brake = pa.thrust_scale;
-    if (dist_to_target < 400.0f * 400.0f && effective_brake < 0.3f)
-        effective_brake = 0.3f;
-    float effective_accel = accel * effective_brake * thrust_gate;
-    npc->vel = v2_add(npc->vel, v2_scale(fwd, effective_accel * dt));
-    npc->thrusting = effective_accel > 0.0f;
-}
+/* (Reactive avoidance steering removed — all NPC/autopilot navigation
+ * now uses A* paths via npc_steer_with_path. compute_path_avoidance
+ * is retained for potential future use by manual-play collision hints.) */
 
 /* A*-guided NPC steering: compute path on first call or when stale,
- * then steer toward the next waypoint using reactive avoidance. */
+ * then steer directly toward the next waypoint. No reactive avoidance —
+ * the A* path already routes around station walls and large asteroids. */
 static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
                                 vec2 final_target, float accel, float turn_speed, float dt) {
     nav_path_t *path = &s_npc_paths[npc_idx];
@@ -2055,7 +2050,29 @@ static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
         nav_find_path(w, npc->pos, final_target, hull->ship_radius + 30.0f, path);
     }
     vec2 wp = nav_next_waypoint(path, npc->pos, final_target, dt);
-    npc_steer_with_avoidance(w, npc, wp, accel, turn_speed, dt);
+
+    /* Steer directly toward waypoint. */
+    vec2 to_wp = v2_sub(wp, npc->pos);
+    float wp_dist = v2_len(to_wp);
+    float angle = (wp_dist > 0.001f)
+        ? atan2f(to_wp.y, to_wp.x)
+        : npc->angle;
+    float diff = wrap_angle(angle - npc->angle);
+    float max_turn = turn_speed * dt;
+    if (diff > max_turn) diff = max_turn;
+    else if (diff < -max_turn) diff = -max_turn;
+    npc->angle = wrap_angle(npc->angle + diff);
+
+    /* Thrust: speed-controlled approach, slow near waypoint turns. */
+    float facing = cosf(diff);
+    float thrust_gate = (facing > 0.5f) ? facing : 0.0f;
+    /* Slow down near intermediate waypoints so NPC doesn't overshoot docks. */
+    float speed_cap = accel;
+    if (wp_dist < 200.0f && path->current < path->count)
+        speed_cap *= fmaxf(0.2f, wp_dist / 200.0f);
+    vec2 fwd = v2_from_angle(npc->angle);
+    npc->vel = v2_add(npc->vel, v2_scale(fwd, speed_cap * thrust_gate * dt));
+    npc->thrusting = (speed_cap * thrust_gate) > 0.0f;
 }
 
 static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world_t *w) {
@@ -4682,18 +4699,13 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         }
         vec2 steer_target = nav_next_waypoint(path, sp->ship.pos, a->pos, dt);
 
-        /* Reactive avoidance along the current path segment. */
-        int16_t ignore[12];
-        int ignore_n = 0;
-        for (int t = 0; t < sp->ship.towed_count && ignore_n < 11; t++) {
-            int16_t fi = sp->ship.towed_fragments[t];
-            if (fi >= 0 && fi < MAX_ASTEROIDS) ignore[ignore_n++] = fi;
-        }
-        ignore[ignore_n++] = (int16_t)sp->autopilot_target;
-        path_avoidance_t pa = compute_path_avoidance(w, sp->ship.pos, sp->ship.vel,
-                                                     steer_target, hull->ship_radius,
-                                                     ignore, ignore_n);
-        float desired = atan2f(pa.desired_dir.y, pa.desired_dir.x);
+        /* Steer directly toward the A* waypoint — no reactive avoidance.
+         * The A* path already routes around station walls and large
+         * asteroids. Reactive avoidance was fighting the path (stalling
+         * at docks, flipping direction, thrust flicker). */
+        vec2 to_wp = v2_sub(steer_target, sp->ship.pos);
+        float wp_dist = v2_len(to_wp);
+        float desired = atan2f(to_wp.y, to_wp.x);
         float diff = wrap_angle(desired - sp->ship.angle);
         sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
         float facing = cosf(diff);
@@ -4702,31 +4714,18 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * then use thrust/reverse to hold that speed. */
         const float MAX_APPROACH_SPEED = 150.0f;
         float target_speed = autopilot_approach_speed(effective_dist, MAX_APPROACH_SPEED);
-        /* Project the current velocity onto the forward axis (toward target). */
-        vec2 to_target_dir = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
-        if (dist_to_a > 0.5f) {
-            to_target_dir = v2_scale(v2_sub(a->pos, sp->ship.pos), 1.0f / dist_to_a);
+        /* Slow down near waypoint turns so the ship doesn't overshoot. */
+        if (wp_dist < 200.0f && path->current < path->count) {
+            float wp_speed = autopilot_approach_speed(wp_dist, 80.0f);
+            if (wp_speed < target_speed) target_speed = wp_speed;
         }
+        vec2 to_target_dir = (dist_to_a > 0.5f)
+            ? v2_scale(v2_sub(a->pos, sp->ship.pos), 1.0f / dist_to_a)
+            : v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
         float approach_v = v2_dot(sp->ship.vel, to_target_dir);
         float thrust_cmd = autopilot_speed_control(approach_v, target_speed);
-
-        if (pa.blocked) {
-            /* Obstacle ahead. Brake first, then once slow, apply gentle
-             * REVERSE thrust to back away and create separation. This
-             * prevents the ship from sitting dead at thrust=0 inside
-             * station rings — the reverse opens up space so avoidance
-             * steering can find a dock opening or gap. */
-            float current_speed = sqrtf(v2_len_sq(sp->ship.vel));
-            if (current_speed > 30.0f) {
-                sp->input.thrust = -1.0f;
-            } else {
-                sp->input.thrust = -0.3f; /* gentle reverse */
-            }
-        } else {
-            /* Path clear — normal velocity-controlled approach. */
-            if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
-            sp->input.thrust = thrust_cmd;
-        }
+        if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
+        sp->input.thrust = thrust_cmd;
         sp->input.mine = false;
 
         /* Stuck-fly safety: if we've been flying >60s and haven't arrived,
@@ -4903,46 +4902,29 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         }
         vec2 steer_target = nav_next_waypoint(path, sp->ship.pos, dock_target, dt);
 
-        int16_t ignore[12];
-        int ignore_n = 0;
-        for (int t = 0; t < sp->ship.towed_count && ignore_n < 12; t++) {
-            int16_t fi = sp->ship.towed_fragments[t];
-            if (fi >= 0 && fi < MAX_ASTEROIDS) ignore[ignore_n++] = fi;
-        }
-        path_avoidance_t pa = compute_path_avoidance(w, sp->ship.pos, sp->ship.vel,
-                                                     steer_target, hull->ship_radius,
-                                                     ignore, ignore_n);
-        float desired = atan2f(pa.desired_dir.y, pa.desired_dir.x);
+        /* Steer directly toward A* waypoint — no reactive avoidance. */
+        vec2 to_wp = v2_sub(steer_target, sp->ship.pos);
+        float wp_dist = v2_len(to_wp);
+        float desired = atan2f(to_wp.y, to_wp.x);
         float diff = wrap_angle(desired - sp->ship.angle);
         sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
         float facing = cosf(diff);
         float dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
 
-        /* The A* path routes through dock waypoints — trust the
-         * avoidance steering direction (which bends around walls)
-         * even when blocked. Creep forward slowly so the ship
-         * threads through dock gaps instead of stalling. */
-        if (pa.blocked) {
-            float current_speed = sqrtf(v2_len_sq(sp->ship.vel));
-            if (current_speed > 50.0f) {
-                sp->input.thrust = -1.0f; /* brake if going too fast */
-            } else if (facing > 0.3f) {
-                /* Facing roughly the avoidance direction — creep forward */
-                sp->input.thrust = 0.25f * pa.thrust_scale;
-            } else {
-                sp->input.thrust = 0.0f; /* turning to face avoidance dir */
-            }
-        } else {
-            float throttle = (facing > 0.5f) ? 1.0f : 0.0f;
-            /* Slow down when close to the current waypoint */
-            float wp_dist = sqrtf(v2_dist_sq(sp->ship.pos, steer_target));
-            if (wp_dist < 300.0f) {
-                float t = wp_dist / 300.0f;
-                throttle *= t;
-                if (throttle < 0.15f && wp_dist > 40.0f) throttle = 0.15f;
-            }
-            sp->input.thrust = throttle;
+        /* Velocity-controlled approach toward the station. Slow down
+         * near waypoint turns so the ship doesn't overshoot docks. */
+        float target_speed = autopilot_approach_speed(dist, 120.0f);
+        if (wp_dist < 200.0f && path->current < path->count) {
+            float wp_speed = autopilot_approach_speed(wp_dist, 80.0f);
+            if (wp_speed < target_speed) target_speed = wp_speed;
         }
+        vec2 to_st_dir = (dist > 0.5f)
+            ? v2_scale(v2_sub(st->pos, sp->ship.pos), 1.0f / dist)
+            : v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
+        float approach_v = v2_dot(sp->ship.vel, to_st_dir);
+        float thrust_cmd = autopilot_speed_control(approach_v, target_speed);
+        if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
+        sp->input.thrust = thrust_cmd;
         sp->input.mine = false;
 
         /* Drop-and-leave path (no damage): once we've released the
