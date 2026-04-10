@@ -1627,7 +1627,7 @@ void draw_callsigns(void) {
     sdtx_origin(0.0f, 0.0f);
     const float cell = 8.0f;
 
-    vec2 cam = LOCAL_PLAYER.ship.pos;
+    vec2 cam = g.camera_pos;
 
     /* World-to-screen helper inline */
     #define WS_TO_SCREEN(wx, wy, ox, oy) do { \
