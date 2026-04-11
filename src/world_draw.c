@@ -1717,29 +1717,23 @@ void draw_remote_players(void) {
 /* ================================================================== */
 
 void draw_callsigns(void) {
-    /* Set up sdtx in screen-space (this temporarily switches sdtx out
-     * of any prior canvas — main.c re-establishes after this pass). */
     float screen_w = ui_screen_width();
     float screen_h = ui_screen_height();
     sdtx_canvas(screen_w, screen_h);
     sdtx_origin(0.0f, 0.0f);
     const float cell = 8.0f;
 
-    /* Use the same camera as the sgl projection (includes screen shake)
-     * so callsign labels stay aligned with ship sprites. */
-    float cam_x = cam_left() + screen_w * 0.5f;
-    float cam_y = cam_top()  + screen_h * 0.5f;
+    /* Map world position to screen-space sdtx grid.
+     * sgl_ortho maps [cam_left..cam_right] → [0..screen_w] and
+     * [cam_top..cam_bottom] → [0..screen_h]. */
+    float view_w = cam_right() - cam_left();
+    float view_h = cam_bottom() - cam_top();
 
-    /* World-to-screen helper inline */
     #define WS_TO_SCREEN(wx, wy, ox, oy) do { \
-        float _sx = (wx - cam_x) + screen_w * 0.5f + (ox); \
-        float _sy = (wy - cam_y) + screen_h * 0.5f + (oy); \
+        float _sx = ((wx) - cam_left()) / view_w * screen_w + (ox); \
+        float _sy = ((wy) - cam_top())  / view_h * screen_h + (oy); \
         sdtx_pos(_sx / cell, _sy / cell); \
     } while (0)
-
-    /* Local player callsign is rendered in the HUD (see draw_hud) — drawing
-     * it in the world stuck to the ship is distracting and jitters with the
-     * camera lerp. */
 
     /* Remote player callsigns */
     if (g.multiplayer_enabled) {
@@ -1767,12 +1761,12 @@ void draw_npc_chatter(void) {
     sdtx_origin(0.0f, 0.0f);
     const float cell = 8.0f;
 
-    float cam_x = cam_left() + screen_w * 0.5f;
-    float cam_y = cam_top()  + screen_h * 0.5f;
+    float view_w = cam_right() - cam_left();
+    float view_h = cam_bottom() - cam_top();
 
     #define WS_TO_SCREEN(wx, wy, ox, oy) do { \
-        float _sx = (wx - cam_x) + screen_w * 0.5f + (ox); \
-        float _sy = (wy - cam_y) + screen_h * 0.5f + (oy); \
+        float _sx = ((wx) - cam_left()) / view_w * screen_w + (ox); \
+        float _sy = ((wy) - cam_top())  / view_h * screen_h + (oy); \
         sdtx_pos(_sx / cell, _sy / cell); \
     } while (0)
 
