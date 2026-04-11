@@ -85,6 +85,7 @@ static bool read_station(FILE *f, station_t *s) {
     READ_FIELD(f, s->dock_radius);
     READ_FIELD(f, s->signal_range);
     READ_FIELD(f, s->scaffold);
+    { uint8_t raw; memcpy(&raw, &s->scaffold, 1); s->scaffold = (raw != 0); }
     READ_FIELD(f, s->scaffold_progress);
     READ_FIELD(f, s->base_price);
     READ_FIELD(f, s->inventory);
@@ -95,6 +96,11 @@ static bool read_station(FILE *f, station_t *s) {
     if (s->module_count > MAX_MODULES_PER_STATION) s->module_count = MAX_MODULES_PER_STATION;
     for (int m = 0; m < s->module_count; m++) {
         READ_FIELD(f, s->modules[m]);
+        /* Sanitize bool — old saves may have non-0/1 byte values which
+         * are undefined behavior when read as _Bool in C99. Read the
+         * raw byte to avoid UB on the load itself. */
+        { uint8_t raw; memcpy(&raw, &s->modules[m].scaffold, 1);
+          s->modules[m].scaffold = (raw != 0); }
     }
     /* Ring rotation */
     READ_FIELD(f, s->arm_count);
@@ -133,6 +139,7 @@ static bool read_station(FILE *f, station_t *s) {
         READ_FIELD(f, s->placement_plans[p]);
     }
     READ_FIELD(f, s->planned);
+    { uint8_t raw; memcpy(&raw, &s->planned, 1); s->planned = (raw != 0); }
     READ_FIELD(f, s->planned_owner);
     return true;
 }
