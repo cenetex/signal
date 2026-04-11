@@ -21,6 +21,14 @@ static int tests_failed = 0;
 static void world_auto_cleanup(world_t *w) { world_cleanup(w); }
 #define WORLD_DECL world_t __attribute__((cleanup(world_auto_cleanup))) w = {0}
 
+/* Auto-cleanup for heap-allocated world_t pointers — frees signal cache
+ * and the world itself when the pointer goes out of scope (including
+ * early returns from ASSERT failures). */
+static void world_ptr_auto_cleanup(world_t **wp) {
+    if (*wp) { world_cleanup(*wp); free(*wp); *wp = NULL; }
+}
+#define WORLD_HEAP __attribute__((cleanup(world_ptr_auto_cleanup))) world_t *
+
 #define TEST(name) static void name(void)
 /* RUN snapshots tests_failed before/after the test body. The body uses
  * `return` from inside ASSERT* on failure, so RUN cannot return a value
@@ -2961,57 +2969,51 @@ TEST(test_hauler_fills_highest_value_contract) {
 /* ================================================================== */
 
 TEST(test_player_save_load_roundtrip) {
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     player_init_ship(&w->players[0], w);
     w->players[0].connected = true;
     w->players[0].ship.credits = 1234.0f;
     ASSERT(world_save(w, "/tmp/test_player.sav"));
-    world_t *loaded = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, "/tmp/test_player.sav"));
     /* Players are cleared on load (they reconnect) */
     ASSERT(!loaded->players[0].connected);
     /* But world state (stations, etc.) survives */
     ASSERT_EQ_FLOAT(loaded->stations[0].signal_range, w->stations[0].signal_range, 0.01f);
-    world_cleanup(loaded);
-    free(loaded);
-    world_cleanup(w);
-    free(w);
+    /* loaded auto-freed by WORLD_HEAP cleanup */
+    /* w auto-freed by WORLD_HEAP cleanup */
     remove("/tmp/test_player.sav");
 }
 
 TEST(test_world_save_load_preserves_stations) {
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 42.0f;
     w->stations[0].inventory[COMMODITY_FRAME] = 15.0f;
     ASSERT(world_save(w, "/tmp/test_world.sav"));
-    world_t *loaded = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, "/tmp/test_world.sav"));
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_ORE], 42.0f, 0.01f);
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FRAME], 15.0f, 0.01f);
-    world_cleanup(loaded);
-    free(loaded);
-    world_cleanup(w);
-    free(w);
+    /* loaded auto-freed by WORLD_HEAP cleanup */
+    /* w auto-freed by WORLD_HEAP cleanup */
     remove("/tmp/test_world.sav");
 }
 
 TEST(test_world_save_load_preserves_npcs) {
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     for (int i = 0; i < 600; i++) world_sim_step(w, SIM_DT);
     ASSERT(world_save(w, "/tmp/test_npcs.sav"));
-    world_t *loaded = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, "/tmp/test_npcs.sav"));
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         ASSERT_EQ_FLOAT(loaded->npc_ships[i].pos.x, w->npc_ships[i].pos.x, 0.01f);
         ASSERT_EQ_FLOAT(loaded->npc_ships[i].pos.y, w->npc_ships[i].pos.y, 0.01f);
     }
-    world_cleanup(loaded);
-    free(loaded);
-    world_cleanup(w);
-    free(w);
+    /* loaded auto-freed by WORLD_HEAP cleanup */
+    /* w auto-freed by WORLD_HEAP cleanup */
     remove("/tmp/test_npcs.sav");
 }
 
@@ -3143,7 +3145,7 @@ TEST(test_player_load_bad_magic_fails) {
 }
 
 TEST(test_world_load_rejects_stale_version) {
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     ASSERT(world_save(w, "/tmp/test_stale.sav"));
     /* Overwrite version (bytes 4-7) with old version 11 */
@@ -3153,17 +3155,15 @@ TEST(test_world_load_rejects_stale_version) {
     uint32_t old_version = 11;
     fwrite(&old_version, sizeof(old_version), 1, f);
     fclose(f);
-    world_t *loaded = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(!world_load(loaded, "/tmp/test_stale.sav"));
-    world_cleanup(loaded);
-    free(loaded);
-    world_cleanup(w);
-    free(w);
+    /* loaded auto-freed by WORLD_HEAP cleanup */
+    /* w auto-freed by WORLD_HEAP cleanup */
     remove("/tmp/test_stale.sav");
 }
 
 TEST(test_world_save_load_preserves_module_ring_slot) {
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     ASSERT(w->stations[0].module_count >= 4);
     /* Verify furnace on ring 1 and silo on ring 2 survive save/load */
@@ -3171,7 +3171,7 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     ASSERT(orig.type == MODULE_FURNACE);
     ASSERT(orig.ring == 1);
     ASSERT(world_save(w, "/tmp/test_modules.sav"));
-    world_t *loaded = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, "/tmp/test_modules.sav"));
     station_module_t restored = loaded->stations[0].modules[2];
     ASSERT_EQ_INT((int)restored.type, (int)orig.type);
@@ -3183,16 +3183,14 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     station_module_t mod3 = loaded->stations[0].modules[3];
     ASSERT(mod3.type == MODULE_ORE_SILO);
     ASSERT_EQ_INT((int)mod3.ring, 2);
-    world_cleanup(loaded);
-    free(loaded);
-    world_cleanup(w);
-    free(w);
+    /* loaded auto-freed by WORLD_HEAP cleanup */
+    /* w auto-freed by WORLD_HEAP cleanup */
     remove("/tmp/test_modules.sav");
 }
 
 TEST(test_world_save_load_preserves_smelted_ingots) {
     /* world_t is ~600KB — use heap to avoid stack overflow on CI. */
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
     w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 20.0f;
@@ -3205,7 +3203,7 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
     ASSERT(ingots_before > 0.0f);
     ASSERT(world_save(w, "/tmp/test_ingots.sav"));
     fprintf(stderr, "[smelted] saved, allocating loaded...\n");
-    world_t *loaded = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(loaded != NULL);
     fprintf(stderr, "[smelted] loading...\n");
     ASSERT(world_load(loaded, "/tmp/test_ingots.sav"));
@@ -3213,11 +3211,9 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_INGOT], ingots_before, 0.01f);
     fprintf(stderr, "[smelted] check passed, cleanup...\n");
     remove("/tmp/test_ingots.sav");
-    world_cleanup(loaded);
-    free(loaded);
+    /* loaded auto-freed by WORLD_HEAP cleanup */
     fprintf(stderr, "[smelted] freed loaded\n");
-    world_cleanup(w);
-    free(w);
+    /* w auto-freed by WORLD_HEAP cleanup */
     fprintf(stderr, "[smelted] done\n");
 }
 
@@ -3239,12 +3235,11 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
 #define EXPECTED_SAVE_SIZE 23094
 
 TEST(test_save_file_size_stable) {
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
     ASSERT(world_save(w, "/tmp/test_size.sav"));
-    world_cleanup(w);
-    free(w);
+    /* w auto-freed by WORLD_HEAP cleanup */
     FILE *f = fopen("/tmp/test_size.sav", "rb");
     ASSERT(f != NULL);
     fseek(f, 0, SEEK_END);
@@ -3307,7 +3302,7 @@ static int test_place_outpost_via_tow(world_t *w, server_player_t *sp, vec2 pos)
 }
 
 TEST(test_save_load_preserves_player_outpost) {
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     player_init_ship(&w->players[0], w);
     w->players[0].connected = true;
@@ -3328,7 +3323,7 @@ TEST(test_save_load_preserves_player_outpost) {
     memcpy(name_buf, w->stations[slot].name, 32);
     /* Save and reload */
     ASSERT(world_save(w, "/tmp/test_outpost.sav"));
-    world_t *loaded = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, "/tmp/test_outpost.sav"));
     /* Outpost must survive */
     ASSERT(station_exists(&loaded->stations[slot]));
@@ -3341,17 +3336,15 @@ TEST(test_save_load_preserves_player_outpost) {
     /* Signal chain rebuilt — outpost may or may not be connected depending on
      * scaffold state, but the station slot must still exist */
     ASSERT(loaded->stations[slot].signal_range > 0.0f);
-    world_cleanup(loaded);
-    free(loaded);
-    world_cleanup(w);
-    free(w);
+    /* loaded auto-freed by WORLD_HEAP cleanup */
+    /* w auto-freed by WORLD_HEAP cleanup */
     remove("/tmp/test_outpost.sav");
 }
 
 TEST(test_save_backward_compat_version_accepted) {
     /* Save at current version, patch version down to MIN, verify load works.
      * This validates the migration path doesn't reject old-but-supported saves. */
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 77.0f;
     ASSERT(world_save(w, "/tmp/test_compat.sav"));
@@ -3364,13 +3357,11 @@ TEST(test_save_backward_compat_version_accepted) {
     uint32_t min_ver = 20;  /* MIN_SAVE_VERSION at time of writing */
     fwrite(&min_ver, sizeof(min_ver), 1, f);
     fclose(f);
-    world_t *loaded = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, "/tmp/test_compat.sav"));
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_ORE], 77.0f, 0.01f);
-    world_cleanup(loaded);
-    free(loaded);
-    world_cleanup(w);
-    free(w);
+    /* loaded auto-freed by WORLD_HEAP cleanup */
+    /* w auto-freed by WORLD_HEAP cleanup */
     remove("/tmp/test_compat.sav");
 }
 
@@ -3387,7 +3378,7 @@ TEST(test_save_v21_module_remap) {
      *  12  ORE_SILO       → MODULE_ORE_SILO     (kept)
      *  15  SHIPYARD       → MODULE_SHIPYARD     (kept)
      */
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     /* Hand-build station[3]: 6 modules, 4 will survive. */
     memset(&w->stations[3], 0, sizeof(w->stations[3]));
@@ -3414,7 +3405,7 @@ TEST(test_save_v21_module_remap) {
     uint32_t v21 = 21;
     fwrite(&v21, sizeof(v21), 1, f);
     fclose(f);
-    world_t *loaded = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, "/tmp/test_v21_remap.sav"));
     /* 4 of 6 survive: indices 0, 2, 4, 5 in the original list. */
     ASSERT_EQ_INT(loaded->stations[3].module_count, 4);
@@ -3427,16 +3418,14 @@ TEST(test_save_v21_module_remap) {
     ASSERT_EQ_FLOAT(loaded->stations[3].module_input[1], 3.0f, 0.001f);  /* was idx 2 */
     ASSERT_EQ_FLOAT(loaded->stations[3].module_input[2], 5.0f, 0.001f);  /* was idx 4 */
     ASSERT_EQ_FLOAT(loaded->stations[3].module_input[3], 6.0f, 0.001f);  /* was idx 5 */
-    world_cleanup(loaded);
-    free(loaded);
-    world_cleanup(w);
-    free(w);
+    /* loaded auto-freed by WORLD_HEAP cleanup */
+    /* w auto-freed by WORLD_HEAP cleanup */
     remove("/tmp/test_v21_remap.sav");
 }
 
 TEST(test_save_future_version_rejected) {
     /* A save with version > SAVE_VERSION must be rejected (can't load future formats) */
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     ASSERT(world_save(w, "/tmp/test_future.sav"));
     FILE *f = fopen("/tmp/test_future.sav", "r+b");
@@ -3445,12 +3434,10 @@ TEST(test_save_future_version_rejected) {
     uint32_t future = 9999;
     fwrite(&future, sizeof(future), 1, f);
     fclose(f);
-    world_t *loaded = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(!world_load(loaded, "/tmp/test_future.sav"));
-    world_cleanup(loaded);
-    free(loaded);
-    world_cleanup(w);
-    free(w);
+    /* loaded auto-freed by WORLD_HEAP cleanup */
+    /* w auto-freed by WORLD_HEAP cleanup */
     remove("/tmp/test_future.sav");
 }
 
@@ -4183,7 +4170,7 @@ static world_t *setup_collision_world_heap(void) {
 TEST(test_238_station_core_blocks_player) {
     /* Issue 1: player should not fly through station center.
      * Place player on a collision course with station 0 core. */
-    world_t *w = setup_collision_world_heap();
+    WORLD_HEAP w = setup_collision_world_heap();
     
     vec2 st_pos = w->stations[0].pos;
     float st_r = w->stations[0].radius; /* 40 */
@@ -4206,7 +4193,7 @@ TEST(test_238_station_core_blocks_player) {
 TEST(test_238_module_circle_blocks_player) {
     /* Module collision circles should block the player.
      * Fly directly at the signal relay on ring 1, slot 1 of station 0. */
-    world_t *w = setup_collision_world_heap();
+    WORLD_HEAP w = setup_collision_world_heap();
     
     vec2 mod_pos = module_world_pos_ring(&w->stations[0], 1, 1);
     float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius;
@@ -4228,7 +4215,7 @@ TEST(test_238_corridor_blocks_radial_approach) {
     /* Corridor between relay@1 and furnace@2 on ring 1 of station 0.
      * Dock@0 is skipped, so the relay-furnace corridor should block.
      * Approach radially — should be pushed out. */
-    world_t *w = setup_collision_world_heap();
+    WORLD_HEAP w = setup_collision_world_heap();
     
     vec2 st_pos = w->stations[0].pos;
 
@@ -4260,7 +4247,7 @@ TEST(test_238_dock_gap_allows_entry) {
     /* Dock creates gap on one side (corridor skipped where dock is first module).
      * Station 0 ring 1: dock@0, relay@1, furnace@2.
      * Gap is between dock@0 and relay@1 — fly through midpoint. */
-    world_t *w = setup_collision_world_heap();
+    WORLD_HEAP w = setup_collision_world_heap();
     
     vec2 st_pos = w->stations[0].pos;
     float ring_r = 180.0f; /* STATION_RING_RADIUS[1] */
@@ -4285,7 +4272,7 @@ TEST(test_238_dock_gap_allows_entry) {
 TEST(test_238_corridor_angular_edge_no_clip) {
     /* Corridor between relay@1 and furnace@2 on ring 1.
      * Approach at the angular edge near the furnace end — should not clip through. */
-    world_t *w = setup_collision_world_heap();
+    WORLD_HEAP w = setup_collision_world_heap();
     
     vec2 st_pos = w->stations[0].pos;
     float ring_r = 180.0f; /* STATION_RING_RADIUS[1] */
@@ -4309,7 +4296,7 @@ TEST(test_238_corridor_angular_edge_no_clip) {
 TEST(test_238_module_corridor_junction_no_jitter) {
     /* Place player at the junction between a module circle and a corridor arc.
      * Run 240 ticks. Ship should settle — not oscillate between collision handlers. */
-    world_t *w = setup_collision_world_heap();
+    WORLD_HEAP w = setup_collision_world_heap();
     
     vec2 st_pos = w->stations[0].pos;
     float ring_r = 340.0f;
@@ -4350,7 +4337,7 @@ TEST(test_238_invisible_wall_repro) {
      * collision distance bounces off "nothing visible".
      * Test: fly tangentially just outside the visual corridor width (ring_r + hw)
      * but inside the collision band (ring_r + hw + ship_r). Should collide. */
-    world_t *w = setup_collision_world_heap();
+    WORLD_HEAP w = setup_collision_world_heap();
     
     vec2 st_pos = w->stations[0].pos;
     float ring_r = 340.0f;
@@ -4387,7 +4374,7 @@ TEST(test_station_geom_emitter_prospect) {
     /* Verify the geometry emitter produces correct shapes for Prospect (station 0).
      * Prospect ring 1: dock(slot 0), relay(slot 1), furnace(slot 2)
      * Prospect ring 2: ore_silo(slot 3) */
-    world_t *w = setup_collision_world_heap();
+    WORLD_HEAP w = setup_collision_world_heap();
     w->rng = 2037u;
     world_reset(w);
 
@@ -5201,7 +5188,7 @@ TEST(test_module_schema_build_costs_match) {
 TEST(test_save_preserves_pending_scaffolds) {
     /* Save/load round-trip should preserve shipyard pending orders,
      * per-module buffers, and active scaffolds. */
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
 
     /* Add a pending order at Kepler (station 1, has shipyard) */
@@ -5220,7 +5207,7 @@ TEST(test_save_preserves_pending_scaffolds) {
 
     ASSERT(world_save(w, "/tmp/test_pending.sav"));
 
-    world_t *loaded = calloc(1, sizeof(world_t));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, "/tmp/test_pending.sav"));
 
     /* Verify pending order survived */
@@ -5237,10 +5224,8 @@ TEST(test_save_preserves_pending_scaffolds) {
     ASSERT_EQ_INT(loaded->scaffolds[sidx].built_at_station, 1);
     ASSERT_EQ_FLOAT(loaded->scaffolds[sidx].build_amount, 17.0f, 0.01f);
 
-    world_cleanup(loaded);
-    free(loaded);
-    world_cleanup(w);
-    free(w);
+    /* loaded auto-freed by WORLD_HEAP cleanup */
+    /* w auto-freed by WORLD_HEAP cleanup */
     remove("/tmp/test_pending.sav");
 }
 
@@ -5266,7 +5251,7 @@ TEST(test_autopilot_completes_mining_cycle) {
      * 180s gives time for: fly to target (~25s), mine (~15s),
      * collect (~5s), return (~25s), dock+sell (~5s) = ~75s minimum,
      * with margin for path replanning and gravity drift. */
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     player_init_ship(&w->players[0], w);
     w->players[0].connected = true;
@@ -5279,14 +5264,13 @@ TEST(test_autopilot_completes_mining_cycle) {
     /* Should have earned credits. Timing-sensitive — warn don't fail. */
     if (w->players[0].ship.credits <= credits_before)
         printf("      [WARN] no credits earned in 90s (timing sensitive)\n");
-    world_cleanup(w);
-    free(w);
+    /* w auto-freed by WORLD_HEAP cleanup */
 }
 
 TEST(test_autopilot_does_not_orbit_fragment) {
     /* Run autopilot for 30 seconds. At no point should the ship be in
      * COLLECT state for more than 10 continuous seconds (8s timeout + margin). */
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     player_init_ship(&w->players[0], w);
     w->players[0].connected = true;
@@ -5306,14 +5290,13 @@ TEST(test_autopilot_does_not_orbit_fragment) {
     }
     /* 10 seconds at 120Hz = 1200 ticks. Should never exceed this. */
     ASSERT(max_collect_ticks < 1200);
-    world_cleanup(w);
-    free(w);
+    /* w auto-freed by WORLD_HEAP cleanup */
 }
 
 TEST(test_autopilot_does_not_leave_signal) {
     /* Run autopilot for 60 seconds. Ship should always stay within
      * signal range (signal > 0.01). */
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     player_init_ship(&w->players[0], w);
     w->players[0].connected = true;
@@ -5329,14 +5312,13 @@ TEST(test_autopilot_does_not_leave_signal) {
     /* Autopilot requires 80% signal. It might briefly dip below during
      * transitions but should never reach zero. */
     ASSERT(min_signal > 0.01f);
-    world_cleanup(w);
-    free(w);
+    /* w auto-freed by WORLD_HEAP cleanup */
 }
 
 TEST(test_autopilot_multiple_players) {
     /* Run 3 autopilot players for 180 seconds. All should make progress
      * (earn credits) and none should crash into each other fatally. */
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     float credits[3];
     for (int p = 0; p < 3; p++) {
@@ -5365,15 +5347,14 @@ TEST(test_autopilot_multiple_players) {
     for (int p = 0; p < 3; p++) {
         ASSERT(w->players[p].ship.hull > 0.0f || w->players[p].docked);
     }
-    world_cleanup(w);
-    free(w);
+    /* w auto-freed by WORLD_HEAP cleanup */
 }
 
 TEST(test_autopilot_follows_path_waypoints) {
     /* Verify the ship actually passes near each A* waypoint in order.
      * Set up a scenario where the path has intermediate waypoints
      * (station between ship and target forces a detour). */
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     player_init_ship(&w->players[0], w);
     w->players[0].connected = true;
@@ -5416,15 +5397,14 @@ TEST(test_autopilot_follows_path_waypoints) {
                 printf("      [WARN] waypoint %d: closest approach %.0fu (expected <150u)\n", j, min_dist);
         }
     }
-    world_cleanup(w);
-    free(w);
+    /* w auto-freed by WORLD_HEAP cleanup */
 }
 
 TEST(test_autopilot_path_matches_preview) {
     /* Verify that nav_player_path (what the server follows) and
      * nav_compute_path (what the client preview draws) target the
      * same destination when using the same target selection logic. */
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     player_init_ship(&w->players[0], w);
     w->players[0].connected = true;
@@ -5468,8 +5448,7 @@ TEST(test_autopilot_path_matches_preview) {
                        server_target, server_dist, client_target, client_dist);
         }
     }
-    world_cleanup(w);
-    free(w);
+    /* w auto-freed by WORLD_HEAP cleanup */
 }
 
 /* ================================================================== */
@@ -5543,19 +5522,18 @@ static void test_nav_speed_control_deadband(void) {
 }
 
 static void test_nav_forward_clearance_empty(void) {
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     /* Clear all asteroids so nothing is in the way */
     for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
     spatial_grid_build(w);
     float c = nav_forward_clearance(w, v2(-9000, -9000), v2(100, 0), 16.0f, 0.0f);
     ASSERT_EQ_FLOAT(c, 1.0f, 0.01f);
-    world_cleanup(w);
-    free(w);
+    /* w auto-freed by WORLD_HEAP cleanup */
 }
 
 static void test_nav_forward_clearance_blocked(void) {
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     /* Clear field, place one big rock dead ahead */
     for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
@@ -5568,12 +5546,11 @@ static void test_nav_forward_clearance_blocked(void) {
      * Speed 200 → lookahead = min(300, 500) = 300u, well past the rock. */
     float c = nav_forward_clearance(w, v2(5000, 5000), v2(200, 0), 16.0f, 0.0f);
     ASSERT(c < 0.8f); /* should be significantly reduced */
-    world_cleanup(w);
-    free(w);
+    /* w auto-freed by WORLD_HEAP cleanup */
 }
 
 static void test_nav_find_path_direct(void) {
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     /* Path between two points far from stations/asteroids = direct */
     nav_path_t path;
@@ -5581,12 +5558,11 @@ static void test_nav_find_path_direct(void) {
     /* Direct path = no intermediate waypoints (or trivially short) */
     (void)found;
     ASSERT(path.count <= 1);
-    world_cleanup(w);
-    free(w);
+    /* w auto-freed by WORLD_HEAP cleanup */
 }
 
 static void test_nav_find_path_around_asteroid(void) {
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     /* Clear field, place one large rock between start and goal
      * far from stations so the fast-path line-clear check fails
@@ -5604,12 +5580,11 @@ static void test_nav_find_path_around_asteroid(void) {
     /* A* should find a detour (count >= 1) OR return direct if it
      * can't build a graph. Either way the path should be usable. */
     ASSERT(path.count >= 0); /* relaxed: just verify no crash */
-    world_cleanup(w);
-    free(w);
+    /* w auto-freed by WORLD_HEAP cleanup */
 }
 
 static void test_nav_follow_path_replans_on_stale(void) {
-    world_t *w = calloc(1, sizeof(world_t));
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     nav_path_t path = {0};
     path.age = 10.0f; /* very stale */
@@ -5619,8 +5594,7 @@ static void test_nav_follow_path_replans_on_stale(void) {
     /* Should have replanned: goal updated */
     float goal_dist = v2_dist_sq(path.goal, dest);
     ASSERT(goal_dist < 200.0f * 200.0f);
-    world_cleanup(w);
-    free(w);
+    /* w auto-freed by WORLD_HEAP cleanup */
 }
 
 static void test_nav_force_replan(void) {
