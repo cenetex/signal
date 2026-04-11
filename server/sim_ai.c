@@ -140,10 +140,14 @@ static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
     float speed_cap = accel;
     if (st.wp_dist < 200.0f && st.at_intermediate)
         speed_cap *= fmaxf(0.2f, st.wp_dist / 200.0f);
-    /* Brake if asteroid dead ahead */
+    /* Brake if asteroid dead ahead (check heading + velocity direction) */
     float fwd_clear = nav_forward_clearance(w, npc->pos, npc->vel,
                                              hull->ship_radius, npc->angle);
-    speed_cap *= fwd_clear;
+    float vel_ang = atan2f(npc->vel.y, npc->vel.x);
+    float vel_clear = nav_forward_clearance(w, npc->pos, npc->vel,
+                                             hull->ship_radius, vel_ang);
+    float worst_clear = fminf(fwd_clear, vel_clear);
+    speed_cap *= worst_clear;
     vec2 fwd = v2_from_angle(npc->angle);
     npc->vel = v2_add(npc->vel, v2_scale(fwd, speed_cap * thrust_gate * dt));
     npc->thrusting = (speed_cap * thrust_gate) > 0.0f;
