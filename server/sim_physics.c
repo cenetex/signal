@@ -101,14 +101,23 @@ void step_asteroid_gravity(world_t *w, float dt) {
     }
 
     /* Weak-signal current keeps isolated field rocks drifting inward. */
+
+    /* Prebuild connected player positions once — avoids scanning all
+     * MAX_PLAYERS (32) for every asteroid in the weak-signal loop. */
+    vec2 player_positions[MAX_PLAYERS];
+    int player_count = 0;
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        if (w->players[p].connected)
+            player_positions[player_count++] = w->players[p].ship.pos;
+    }
+
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier == ASTEROID_TIER_S) continue;
 
         bool near_player = false;
-        for (int p = 0; p < MAX_PLAYERS; p++) {
-            if (!w->players[p].connected) continue;
-            if (v2_dist_sq(a->pos, w->players[p].ship.pos) <= 600.0f * 600.0f) {
+        for (int p = 0; p < player_count; p++) {
+            if (v2_dist_sq(a->pos, player_positions[p]) <= 600.0f * 600.0f) {
                 near_player = true;
                 break;
             }

@@ -113,7 +113,13 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
 /* ================================================================== */
 
 static void spatial_grid_clear(spatial_grid_t *g) {
-    memset(g->cells, 0, sizeof(g->cells));
+    /* Only clear cells that were previously occupied — avoids memset of
+     * the full 128x128 grid (~540 KB) when only ~50-100 cells have data. */
+    for (int i = 0; i < g->occupied_count; i++) {
+        spatial_cell_coord_t c = g->occupied[i];
+        g->cells[c.y][c.x].count = 0;
+    }
+    g->occupied_count = 0;
 }
 
 
@@ -122,6 +128,10 @@ static void spatial_grid_insert(spatial_grid_t *g, int idx, vec2 pos) {
     spatial_grid_cell(g, pos, &cx, &cy);
     spatial_cell_t *cell = &g->cells[cy][cx];
     if (cell->count < SPATIAL_MAX_PER_CELL) {
+        /* Track newly occupied cells for efficient clearing. */
+        if (cell->count == 0 && g->occupied_count < MAX_ASTEROIDS) {
+            g->occupied[g->occupied_count++] = (spatial_cell_coord_t){(uint8_t)cx, (uint8_t)cy};
+        }
         cell->indices[cell->count++] = (int16_t)idx;
     }
 }
@@ -140,6 +150,8 @@ void spatial_grid_build(world_t *w) {
 /* ================================================================== */
 /* Signal strength                                                    */
 /* ================================================================== */
+
+static void signal_grid_build(world_t *w); /* forward decl */
 
 /*
  * Recompute signal_connected for all stations via flood-fill.
@@ -177,9 +189,14 @@ void rebuild_signal_chain(world_t *w) {
             }
         }
     }
+
+    /* Rebuild the signal strength cache grid now that connectivity is settled. */
+    signal_grid_build(w);
 }
 
-float signal_strength_at(const world_t *w, vec2 pos) {
+/* Raw signal computation — scans all stations. Used to build the cache
+ * and as fallback for positions outside the cached grid. */
+static float signal_strength_raw(const world_t *w, vec2 pos) {
     float best = 0.0f;
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!station_provides_signal(&w->stations[s])) continue;
@@ -188,6 +205,55 @@ float signal_strength_at(const world_t *w, vec2 pos) {
         if (strength > best) best = strength;
     }
     return best;
+}
+
+/* Build/rebuild the signal cache grid. Called after topology changes
+ * (station activation, signal chain rebuild). O(GRID² × N_stations)
+ * but runs infrequently — only on structural world changes. */
+static void signal_grid_build(world_t *w) {
+    signal_grid_t *sg = &w->signal_cache;
+    if (!sg->strength) {
+        sg->strength = (float *)calloc((size_t)SIGNAL_GRID_DIM * SIGNAL_GRID_DIM, sizeof(float));
+        if (!sg->strength) return;
+    }
+    sg->offset_x = (SIGNAL_GRID_DIM * SIGNAL_CELL_SIZE) * 0.5f;
+    sg->offset_y = (SIGNAL_GRID_DIM * SIGNAL_CELL_SIZE) * 0.5f;
+    for (int y = 0; y < SIGNAL_GRID_DIM; y++) {
+        for (int x = 0; x < SIGNAL_GRID_DIM; x++) {
+            float wx = ((float)x + 0.5f) * SIGNAL_CELL_SIZE - sg->offset_x;
+            float wy = ((float)y + 0.5f) * SIGNAL_CELL_SIZE - sg->offset_y;
+            sg->strength[y * SIGNAL_GRID_DIM + x] = signal_strength_raw(w, v2(wx, wy));
+        }
+    }
+    sg->valid = true;
+}
+
+/* O(1) signal lookup via cached grid with bilinear interpolation.
+ * Falls back to raw computation for out-of-bounds positions or
+ * when the cache hasn't been built yet. */
+float signal_strength_at(const world_t *w, vec2 pos) {
+    const signal_grid_t *sg = &w->signal_cache;
+    if (!sg->valid || !sg->strength) return signal_strength_raw(w, pos);
+
+    /* Map world position to continuous grid coordinate. */
+    float gx = (pos.x + sg->offset_x) / SIGNAL_CELL_SIZE - 0.5f;
+    float gy = (pos.y + sg->offset_y) / SIGNAL_CELL_SIZE - 0.5f;
+
+    /* Bounds check — fall back to raw for positions outside the grid. */
+    if (gx < 0.0f || gy < 0.0f ||
+        gx >= (float)(SIGNAL_GRID_DIM - 1) || gy >= (float)(SIGNAL_GRID_DIM - 1))
+        return signal_strength_raw(w, pos);
+
+    /* Bilinear interpolation from the 4 nearest cell centers. */
+    int x0 = (int)gx, y0 = (int)gy;
+    float fx = gx - (float)x0, fy = gy - (float)y0;
+    float s00 = sg->strength[y0 * SIGNAL_GRID_DIM + x0];
+    float s10 = sg->strength[y0 * SIGNAL_GRID_DIM + x0 + 1];
+    float s01 = sg->strength[(y0 + 1) * SIGNAL_GRID_DIM + x0];
+    float s11 = sg->strength[(y0 + 1) * SIGNAL_GRID_DIM + x0 + 1];
+    float top = s00 + (s10 - s00) * fx;
+    float bot = s01 + (s11 - s01) * fx;
+    return top + (bot - top) * fy;
 }
 
 /* ================================================================== */
@@ -2926,7 +2992,9 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
 
 void world_reset(world_t *w) {
     uint32_t seed = w->rng;  /* caller may pre-set seed; 0 = default */
+    float *sig_buf = w->signal_cache.strength; /* preserve heap allocation */
     memset(w, 0, sizeof(*w));
+    w->signal_cache.strength = sig_buf; /* restore — signal_grid_build reuses it */
     w->rng = seed ? seed : 2037u;
     belt_field_init(&w->belt, w->rng, WORLD_RADIUS);
 

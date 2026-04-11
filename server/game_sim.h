@@ -64,9 +64,17 @@ typedef struct {
     uint8_t count;
 } spatial_cell_t;
 
+/* Packed cell coordinate for the occupied-cell list. */
+typedef struct {
+    uint8_t x, y;
+} spatial_cell_coord_t;
+
 typedef struct {
     spatial_cell_t cells[SPATIAL_GRID_DIM][SPATIAL_GRID_DIM];
     float offset_x, offset_y;  /* world offset to center grid */
+    /* Occupied cell tracking: only clear cells that had entries. */
+    spatial_cell_coord_t occupied[MAX_ASTEROIDS];
+    int occupied_count;
 } spatial_grid_t;
 
 /* Map a world position to a grid cell (clamped). Shared by game_sim.c
@@ -79,6 +87,19 @@ static inline void spatial_grid_cell(const spatial_grid_t *g, vec2 pos, int *cx,
     if (*cx >= SPATIAL_GRID_DIM) *cx = SPATIAL_GRID_DIM - 1;
     if (*cy >= SPATIAL_GRID_DIM) *cy = SPATIAL_GRID_DIM - 1;
 }
+
+/* ------------------------------------------------------------------ */
+/* Cached signal strength grid — O(1) lookups instead of O(N_stations)*/
+/* ------------------------------------------------------------------ */
+
+#define SIGNAL_GRID_DIM  256
+#define SIGNAL_CELL_SIZE 200.0f  /* covers ±25,600 units from origin */
+
+typedef struct {
+    float *strength;           /* heap-allocated SIGNAL_GRID_DIM² floats */
+    float offset_x, offset_y;  /* world offset to center grid */
+    bool  valid;                /* false = needs rebuild */
+} signal_grid_t;
 
 /* ------------------------------------------------------------------ */
 /* Server-specific types                                              */
@@ -194,6 +215,7 @@ typedef struct {
     bool player_only_mode;
     belt_field_t belt;
     spatial_grid_t asteroid_grid;
+    signal_grid_t signal_cache;
 } world_t;
 
 /* ------------------------------------------------------------------ */

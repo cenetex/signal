@@ -23,8 +23,9 @@ void draw_segment_batched(vec2 start, vec2 end, float r, float g0, float b, floa
     sgl_v2f(end.x, end.y);
 }
 
-/* Precomputed sin/cos for common circle segment counts */
-#define SINCOS_TABLE_MAX 32
+/* Precomputed sin/cos for common circle segment counts.
+ * 64 covers all LOD tiers including medium-distance asteroids. */
+#define SINCOS_TABLE_MAX 64
 static float sincos_table_sin[SINCOS_TABLE_MAX + 1];
 static float sincos_table_cos[SINCOS_TABLE_MAX + 1];
 static int sincos_table_segs = 0;

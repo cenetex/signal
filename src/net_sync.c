@@ -317,6 +317,11 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
          * on/off during the round-trip window. */
         sp->autopilot_mode = state->autopilot_mode;
         sp->autopilot_target = (state->autopilot_target == 0xFF) ? -1 : (int)state->autopilot_target;
+        /* Apply server's actual A* path for preview rendering. */
+        g.autopilot_path_count = (int)state->path_count;
+        g.autopilot_path_current = (int)state->path_current;
+        for (int i = 0; i < state->path_count && i < 12; i++)
+            g.autopilot_path[i] = v2(state->path_x[i], state->path_y[i]);
     }
     /* Dock-state reconciliation:
      * - Server says undocked -> always accept.

@@ -1335,25 +1335,9 @@ void draw_collision_sparks(void) {
 void draw_autopilot_path(void) {
     if (!LOCAL_PLAYER.autopilot_mode) return;
 
-    /* In MP mode, use the server-synced autopilot target to compute
-     * the preview path. This matches what the ship is actually flying to. */
-    if (!g.local_server.active) {
-        static float mp_path_timer = 0.0f;
-        mp_path_timer += sapp_frame_duration();
-        if (g.autopilot_path_count == 0 || mp_path_timer > 2.0f) {
-            mp_path_timer = 0.0f;
-            int tgt = LOCAL_PLAYER.autopilot_target;
-            if (tgt >= 0 && tgt < MAX_ASTEROIDS && g.world.asteroids[tgt].active) {
-                float clearance = ship_hull_def(&LOCAL_PLAYER.ship)->ship_radius + 30.0f;
-                g.autopilot_path_count = nav_compute_path(
-                    &g.world, LOCAL_PLAYER.ship.pos, g.world.asteroids[tgt].pos,
-                    clearance, g.autopilot_path, 12);
-                g.autopilot_path_current = 0;
-            } else {
-                g.autopilot_path_count = 0;
-            }
-        }
-    }
+    /* In MP mode, the server syncs its actual A* path waypoints via
+     * PLAYER_SHIP message. g.autopilot_path is already populated by
+     * apply_remote_player_ship in net_sync.c. No client computation. */
 
     if (g.autopilot_path_count == 0) return;
     vec2 prev = LOCAL_PLAYER.ship.pos;
