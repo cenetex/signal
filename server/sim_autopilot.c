@@ -434,11 +434,15 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->ship.tractor_active && sp->ship.towed_count > 0) {
             sp->input.release_tow = true;
         }
-        /* A* path toward the dock approach point via flight controller. */
-        vec2 dock_target = station_approach_target(st, sp->ship.pos);
+        /* Drop-and-leave: fly toward the station center (not dock berth).
+         * We just need to get within hopper range (~600u) and release.
+         * Only use dock approach if we need to dock for repair. */
+        vec2 fly_target = need_repair
+            ? station_approach_target(st, sp->ship.pos)
+            : st->pos;
         nav_path_t *path = nav_player_path(sp->id);
-        flight_cmd_t cmd = flight_steer_to(w, &sp->ship, path, dock_target,
-                                            0.0f, 120.0f, dt);
+        flight_cmd_t cmd = flight_steer_to(w, &sp->ship, path, fly_target,
+                                            need_repair ? 0.0f : 500.0f, 120.0f, dt);
         sp->input.turn = cmd.turn;
         sp->input.thrust = cmd.thrust;
         sp->input.mine = false;
