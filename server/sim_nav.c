@@ -90,12 +90,20 @@ static nav_path_t s_npc_paths[MAX_NPC_SHIPS];
 static nav_path_t s_player_paths[MAX_PLAYERS];
 
 nav_path_t *nav_npc_path(int npc_idx) {
-    if (npc_idx < 0 || npc_idx >= MAX_NPC_SHIPS) return &s_npc_paths[0];
+    if (npc_idx < 0 || npc_idx >= MAX_NPC_SHIPS) {
+        /* Out-of-bounds: return slot 0 with a forced replan so it
+         * doesn't silently alias another actor's path. */
+        s_npc_paths[0].age = 999.0f;
+        return &s_npc_paths[0];
+    }
     return &s_npc_paths[npc_idx];
 }
 
 nav_path_t *nav_player_path(int player_id) {
-    if (player_id < 0 || player_id >= MAX_PLAYERS) return &s_player_paths[0];
+    if (player_id < 0 || player_id >= MAX_PLAYERS) {
+        s_player_paths[0].age = 999.0f;
+        return &s_player_paths[0];
+    }
     return &s_player_paths[player_id];
 }
 
