@@ -111,10 +111,11 @@ typedef struct {
     bool was_docked;
     /* --- Onboarding (first-run progression hints) --- */
     struct {
+        bool moved;          /* pressed a movement key */
         bool fractured;      /* broke an asteroid */
         bool tractored;      /* collected ore fragments */
         bool hailed;         /* pressed H to hail a station */
-        bool complete;       /* all 3 steps done — stations take over */
+        bool complete;       /* all 4 steps done — stations take over */
         bool loaded;         /* state loaded from localStorage */
     } onboarding;
     /* --- Module activation effect --- */

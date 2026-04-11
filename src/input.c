@@ -6,6 +6,7 @@
 #include "local_server.h"
 #include "music.h"
 #include "net.h"
+#include "onboarding.h"
 
 void clear_input_state(void) {
     memset(g.input.key_down, 0, sizeof(g.input.key_down));
@@ -128,6 +129,9 @@ input_intent_t sample_input_intent(void) {
     if (is_key_down(SAPP_KEYCODE_S) || is_key_down(SAPP_KEYCODE_DOWN)) {
         intent.thrust -= 1.0f;
     }
+
+    if (intent.thrust != 0.0f || intent.turn != 0.0f)
+        onboarding_mark_moved();
 
     intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
     intent.release_tow = is_key_pressed(SAPP_KEYCODE_R);
