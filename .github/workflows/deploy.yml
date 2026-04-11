@@ -30,6 +30,9 @@ jobs:
           cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
             -DCMAKE_C_FLAGS="-Werror"
           cmake --build build-test
+          # world_t is ~600KB; tests that save+load use two on the stack (~1.2MB).
+          # Default 8MB stack is tight with debug frames, so bump to 16MB.
+          ulimit -s 16384
           ./build-test/space_miner_test
 
       - name: Build and run tests with AddressSanitizer
@@ -38,6 +41,7 @@ jobs:
             -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
           cmake --build build-san
+          ulimit -s 16384
           ./build-san/space_miner_test
 
       - name: cppcheck static analysis
@@ -72,12 +76,13 @@ jobs:
         run: |
           cmake -S . -B build-valgrind -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON
           cmake --build build-valgrind
+          ulimit -s 16384
           valgrind --error-exitcode=1 \
             --leak-check=full \
             --show-leak-kinds=definite \
             --errors-for-leak-kinds=definite \
-            --suppressions=/dev/null \
             --track-origins=yes \
+            --main-stacksize=16777216 \
             ./build-valgrind/space_miner_test 2>&1 | tail -30
 
   # Client: build → deploy → smoke test → rollback on failure.

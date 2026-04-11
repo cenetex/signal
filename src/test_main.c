@@ -3166,18 +3166,23 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
 }
 
 TEST(test_world_save_load_preserves_smelted_ingots) {
-    world_t w = {0};
-    world_reset(&w);
-    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 20.0f;
+    /* world_t is ~600KB — use heap to avoid stack overflow on CI. */
+    world_t *w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 20.0f;
     for (int i = 0; i < (int)(10.0f / SIM_DT); i++)
-        world_sim_step(&w, SIM_DT);
-    float ingots_before = w.stations[0].inventory[COMMODITY_FERRITE_INGOT];
+        world_sim_step(w, SIM_DT);
+    float ingots_before = w->stations[0].inventory[COMMODITY_FERRITE_INGOT];
     ASSERT(ingots_before > 0.0f);
-    ASSERT(world_save(&w, "/tmp/test_ingots.sav"));
-    world_t loaded = {0};
-    ASSERT(world_load(&loaded, "/tmp/test_ingots.sav"));
-    ASSERT_EQ_FLOAT(loaded.stations[0].inventory[COMMODITY_FERRITE_INGOT], ingots_before, 0.01f);
+    ASSERT(world_save(w, "/tmp/test_ingots.sav"));
+    world_t *loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    ASSERT(world_load(loaded, "/tmp/test_ingots.sav"));
+    ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_INGOT], ingots_before, 0.01f);
     remove("/tmp/test_ingots.sav");
+    free(loaded);
+    free(w);
 }
 
 /* ================================================================== */
