@@ -299,7 +299,10 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         nav_follow_path(w, path, sp->ship.pos, a->pos, hull->ship_radius + 30.0f, dt);
         nav_steer_t st = nav_steer_toward_waypoint(path, sp->ship.pos, a->pos, dt);
         float diff = wrap_angle(st.desired_heading - sp->ship.angle);
-        sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
+        /* Proportional turn: full rate when far off, gentle near target
+         * heading. Prevents overshoot oscillation ("spinning"). */
+        float turn_strength = fminf(fabsf(diff) * 3.0f, 1.0f);
+        sp->input.turn = (diff > 0.02f) ? turn_strength : (diff < -0.02f ? -turn_strength : 0.0f);
         float facing = cosf(diff);
 
         /* Velocity-controlled approach. */
@@ -314,11 +317,20 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float approach_v = v2_dot(sp->ship.vel, to_target_dir);
         float thrust_cmd = nav_speed_control(approach_v, target_speed);
         if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
-        /* Brake if an asteroid is dead ahead (between A* waypoints). */
+        /* Brake if an asteroid is dead ahead. Check both heading and
+         * velocity direction so sideways drift is also caught. */
         float fwd_clear = nav_forward_clearance(w, sp->ship.pos, sp->ship.vel,
                                                  hull->ship_radius, sp->ship.angle);
-        if (fwd_clear < 1.0f && thrust_cmd > 0.0f)
-            thrust_cmd *= fwd_clear;
+        float vel_angle = atan2f(sp->ship.vel.y, sp->ship.vel.x);
+        float vel_clear = nav_forward_clearance(w, sp->ship.pos, sp->ship.vel,
+                                                 hull->ship_radius, vel_angle);
+        float worst_clear = fminf(fwd_clear, vel_clear);
+        if (worst_clear < 1.0f) {
+            if (worst_clear < 0.3f)
+                thrust_cmd = -1.0f; /* hard brake — impact imminent */
+            else if (thrust_cmd > 0.0f)
+                thrust_cmd *= worst_clear;
+        }
         sp->input.thrust = thrust_cmd;
         sp->input.mine = false;
 
@@ -493,7 +505,8 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         nav_follow_path(w, path, sp->ship.pos, dock_target, hull->ship_radius + 30.0f, dt);
         nav_steer_t st2 = nav_steer_toward_waypoint(path, sp->ship.pos, dock_target, dt);
         float diff = wrap_angle(st2.desired_heading - sp->ship.angle);
-        sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
+        float turn_strength = fminf(fabsf(diff) * 3.0f, 1.0f);
+        sp->input.turn = (diff > 0.02f) ? turn_strength : (diff < -0.02f ? -turn_strength : 0.0f);
         float facing = cosf(diff);
         float dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
 
@@ -510,8 +523,16 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
         float fwd_clear = nav_forward_clearance(w, sp->ship.pos, sp->ship.vel,
                                                  hull->ship_radius, sp->ship.angle);
-        if (fwd_clear < 1.0f && thrust_cmd > 0.0f)
-            thrust_cmd *= fwd_clear;
+        float vel_angle = atan2f(sp->ship.vel.y, sp->ship.vel.x);
+        float vel_clear = nav_forward_clearance(w, sp->ship.pos, sp->ship.vel,
+                                                 hull->ship_radius, vel_angle);
+        float worst_clear = fminf(fwd_clear, vel_clear);
+        if (worst_clear < 1.0f) {
+            if (worst_clear < 0.3f)
+                thrust_cmd = -1.0f;
+            else if (thrust_cmd > 0.0f)
+                thrust_cmd *= worst_clear;
+        }
         sp->input.thrust = thrust_cmd;
         sp->input.mine = false;
 
