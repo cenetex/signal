@@ -1945,12 +1945,13 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     sp->nearby_fragments = 0;
     sp->tractor_fragments = 0;
 
-    /* In client prediction mode (player_only_mode), skip ship physics
-     * when autopilot is active — the server drives the ship and sends
-     * authoritative state. Running local physics with stale inputs
-     * causes the ship to spin/fight the server's angle updates. */
+    /* In client prediction mode (player_only_mode) with autopilot,
+     * zero local inputs so we don't fight the server's steering.
+     * Motion physics (drag + position) still runs for smooth camera. */
     if (sp->autopilot_mode && w->player_only_mode) {
-        goto end_of_step;
+        sp->input.turn = 0.0f;
+        sp->input.thrust = 0.0f;
+        sp->input.mine = false;
     }
 
     if (!sp->docked) {
@@ -2274,7 +2275,6 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
      * per-tick writes don't leak into the next sub-step's manual-override
      * check. parse_input on the next NET_MSG_INPUT will overwrite these
      * with whatever the player is actually pressing. */
-end_of_step:
     if (restore_net_input) {
         sp->input.turn = net_turn;
         sp->input.thrust = net_thrust;
