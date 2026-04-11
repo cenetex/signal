@@ -85,9 +85,9 @@ jobs:
             --main-stacksize=16777216 \
             ./build-valgrind/space_miner_test 2>&1 | tail -30
 
-  # Client: build → deploy → smoke test → rollback on failure.
-  # Deploy happens BEFORE smoke tests for faster iteration (~60s to live).
-  deploy-client:
+  # Build client and server in parallel, deploy together atomically.
+  # Both must succeed or neither goes live — prevents protocol desync.
+  build-client:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
     steps:
@@ -104,12 +104,6 @@ jobs:
           emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$GIT_HASH
           cmake --build build-web
 
-      - name: Configure AWS credentials
-        uses: aws-actions/configure-aws-credentials@v4
-        with:
-          role-to-assume: arn:aws:iam::022118847419:role/github-actions-deploy
-          aws-region: us-east-1
-
       - name: Prepare artifacts
         run: |
           mkdir -p _site/play _site/music _site/ost _site/docs
@@ -122,64 +116,17 @@ jobs:
           cp docs/*.svg _site/docs/ 2>/dev/null || true
           sed -i 's|<head>|<head><script>window.SIGNAL_SERVER="wss://signal-ws.ratimics.com/ws";</script>|' _site/play/index.html
 
-      # Pre-deploy: smoke test current site to see if rollback is viable
-      - name: Setup Node.js
-        uses: actions/setup-node@v4
-        with:
-          node-version: 20
-
-      - name: Check if current deploy is healthy
-        id: precheck
-        continue-on-error: true
-        run: |
-          npm install
-          npx playwright install chromium --with-deps
-          SMOKE_URL=https://signal.ratimics.com/play/ npx playwright test
-
-      - name: Snapshot previous deploy (only if healthy)
-        if: steps.precheck.outcome == 'success'
-        run: |
-          echo "Current site is healthy — snapshotting for rollback"
-          aws s3 sync s3://signal-ratimics-client/ /tmp/rollback/ --quiet
-
-      # Deploy
-      - name: Deploy to S3
-        run: aws s3 sync _site/ s3://signal-ratimics-client/ --delete
-
-      - name: Invalidate CloudFront
-        run: aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*"
-
-      - name: Wait for CDN propagation
-        run: sleep 60
-
-      # Post-deploy smoke test
-      - name: Browser smoke tests (live site)
-        id: smoke
-        continue-on-error: true
-        run: SMOKE_URL=https://signal.ratimics.com/play/ npx playwright test
-
-      - name: Upload smoke results
-        if: steps.smoke.outcome == 'failure'
+      - name: Upload client artifact
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
-          path: test-results/
+          name: client-site
+          path: _site/
 
-      # Rollback only if we have a healthy snapshot
-      - name: Rollback on failure
-        if: steps.smoke.outcome == 'failure' && steps.precheck.outcome == 'success'
-        run: |
-          echo "::error::Smoke tests failed — rolling back to healthy snapshot"
-          aws s3 sync /tmp/rollback/ s3://signal-ratimics-client/ --delete
-          aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*"
-
-      - name: Fail if smoke tests failed
-        if: steps.smoke.outcome == 'failure'
-        run: exit 1
-
-  deploy-server:
+  build-server:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    outputs:
+      image_tag: ${{ steps.vars.outputs.short_sha }}
     steps:
       - uses: actions/checkout@v4
 
@@ -209,19 +156,64 @@ jobs:
           file: server/Dockerfile
           platforms: linux/arm64
           push: true
-          tags: 022118847419.dkr.ecr.us-east-1.amazonaws.com/signal-relay:latest
+          tags: 022118847419.dkr.ecr.us-east-1.amazonaws.com/signal-relay:${{ steps.vars.outputs.short_sha }}
           build-args: GIT_HASH=${{ steps.vars.outputs.short_sha }}
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-      - name: Deploy to ECS
+  # Gate: both builds must pass, then deploy + smoke test atomically.
+  deploy:
+    runs-on: ubuntu-latest
+    needs: [build-client, build-server]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Configure AWS credentials
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::022118847419:role/github-actions-deploy
+          aws-region: us-east-1
+
+      - name: Download client artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: client-site
+          path: _site/
+
+      # --- Snapshot current state for rollback ---
+      - name: Snapshot current client
+        id: snapshot-client
+        continue-on-error: true
+        run: |
+          aws s3 sync s3://signal-ratimics-client/ /tmp/rollback-client/ --quiet
+          echo "has_snapshot=true" >> "$GITHUB_OUTPUT"
+
+      - name: Snapshot current server task definition
+        id: snapshot-server
+        run: |
+          CURRENT_TASK_DEF=$(aws ecs describe-services \
+            --cluster default \
+            --services signal-relay \
+            --query 'services[0].taskDefinition' \
+            --output text)
+          echo "task_def_arn=$CURRENT_TASK_DEF" >> "$GITHUB_OUTPUT"
+
+      # --- Deploy both ---
+      - name: Deploy client to S3
+        run: aws s3 sync _site/ s3://signal-ratimics-client/ --delete
+
+      - name: Invalidate CloudFront
+        run: aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*"
+
+      - name: Deploy server to ECS
         run: |
           set -euo pipefail
           IMAGE_REPO=022118847419.dkr.ecr.us-east-1.amazonaws.com/signal-relay
+          IMAGE_TAG=${{ needs.build-server.outputs.image_tag }}
           ARM64_DIGEST=$(
             aws ecr batch-get-image \
               --repository-name signal-relay \
-              --image-ids imageTag=latest \
+              --image-ids imageTag=$IMAGE_TAG \
               --accepted-media-types application/vnd.oci.image.index.v1+json \
               --query 'images[0].imageManifest' \
               --output text |
@@ -252,7 +244,58 @@ jobs:
             --cluster default \
             --service signal-relay \
             --task-definition "$TASK_DEF_ARN"
-          # Fire and forget — don't wait for ECS stabilization
+
+      - name: Wait for ECS stabilization
+        run: |
+          echo "Waiting for new server task to be running..."
+          aws ecs wait services-stable --cluster default --services signal-relay
+
+      - name: Wait for CDN propagation
+        run: sleep 60
+
+      # --- Smoke test: validates client + server together ---
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+
+      - name: Install test dependencies
+        run: |
+          npm install
+          npx playwright install chromium --with-deps
+
+      - name: Smoke test (client + server coherence)
+        id: smoke
+        continue-on-error: true
+        run: SMOKE_URL=https://signal.ratimics.com/play/ npx playwright test
+
+      - name: Upload smoke results
+        if: steps.smoke.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: test-results/
+
+      # --- Rollback BOTH on failure ---
+      - name: Rollback client
+        if: steps.smoke.outcome == 'failure' && steps.snapshot-client.outputs.has_snapshot == 'true'
+        run: |
+          echo "::error::Smoke tests failed — rolling back client"
+          aws s3 sync /tmp/rollback-client/ s3://signal-ratimics-client/ --delete
+          aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*"
+
+      - name: Rollback server
+        if: steps.smoke.outcome == 'failure'
+        run: |
+          echo "::error::Smoke tests failed — rolling back server to previous task definition"
+          aws ecs update-service \
+            --cluster default \
+            --service signal-relay \
+            --task-definition "${{ steps.snapshot-server.outputs.task_def_arn }}"
+
+      - name: Fail if smoke tests failed
+        if: steps.smoke.outcome == 'failure'
+        run: exit 1
 
   native:
     needs: test
