@@ -255,7 +255,7 @@ _Static_assert(
     "STATION_RECORD_SIZE must match serialized station econ layout"
 );
 _Static_assert(
-    16 + COMMODITY_COUNT * 4 + 13 == PLAYER_SHIP_SIZE,
+    16 + COMMODITY_COUNT * 4 + 14 == PLAYER_SHIP_SIZE,
     "PLAYER_SHIP_SIZE must match serialized player ship layout"
 );
 
@@ -417,6 +417,9 @@ static inline int serialize_player_ship(uint8_t *buf, uint8_t id, const server_p
         int16_t fi = (t < sp->ship.towed_count) ? sp->ship.towed_fragments[t] : -1;
         buf[off++] = (fi >= 0 && fi < 255) ? (uint8_t)fi : 0xFF;
     }
+    /* Autopilot target asteroid index (0xFF = none). */
+    buf[off++] = (sp->autopilot_target >= 0 && sp->autopilot_target < 255)
+        ? (uint8_t)sp->autopilot_target : 0xFF;
     return off;
 }
 

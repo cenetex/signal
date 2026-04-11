@@ -12,12 +12,14 @@
 
 /* --- Frustum culling: skip objects entirely off-screen --- */
 static float g_cam_left, g_cam_right, g_cam_top, g_cam_bottom;
+static float g_cam_half_w; /* cached for LOD calculations */
 
 void set_camera_bounds(vec2 camera, float half_w, float half_h) {
     g_cam_left   = camera.x - half_w;
     g_cam_right  = camera.x + half_w;
     g_cam_top    = camera.y - half_h;
     g_cam_bottom = camera.y + half_h;
+    g_cam_half_w = half_w;
 }
 
 bool on_screen(float x, float y, float radius) {
@@ -32,8 +34,7 @@ float cam_bottom(void) { return g_cam_bottom; }
 
 /* --- LOD: reduce asteroid segments when small on screen --- */
 int lod_segments(int base_segments, float radius) {
-    float half_w = (g_cam_right - g_cam_left) * 0.5f;
-    float screen_ratio = radius / half_w;
+    float screen_ratio = radius / g_cam_half_w;
     if (screen_ratio < 0.005f) return 6;
     if (screen_ratio < 0.015f) return base_segments / 2;
     if (screen_ratio < 0.03f)  return (base_segments * 3) / 4;
@@ -1334,12 +1335,25 @@ void draw_collision_sparks(void) {
 void draw_autopilot_path(void) {
     if (!LOCAL_PLAYER.autopilot_mode) return;
 
-    /* In MP mode the server path isn't synced over the wire.
-     * Don't draw a fake preview — it targets a different asteroid
-     * than the server autopilot and misleads the player. The ship
-     * follows the server's actual A* path correctly (proven by tests).
-     * Path preview only works in SP mode where we read the real path. */
-    if (!g.local_server.active) return;
+    /* In MP mode, use the server-synced autopilot target to compute
+     * the preview path. This matches what the ship is actually flying to. */
+    if (!g.local_server.active) {
+        static float mp_path_timer = 0.0f;
+        mp_path_timer += sapp_frame_duration();
+        if (g.autopilot_path_count == 0 || mp_path_timer > 2.0f) {
+            mp_path_timer = 0.0f;
+            int tgt = LOCAL_PLAYER.autopilot_target;
+            if (tgt >= 0 && tgt < MAX_ASTEROIDS && g.world.asteroids[tgt].active) {
+                float clearance = ship_hull_def(&LOCAL_PLAYER.ship)->ship_radius + 30.0f;
+                g.autopilot_path_count = nav_compute_path(
+                    &g.world, LOCAL_PLAYER.ship.pos, g.world.asteroids[tgt].pos,
+                    clearance, g.autopilot_path, 12);
+                g.autopilot_path_current = 0;
+            } else {
+                g.autopilot_path_count = 0;
+            }
+        }
+    }
 
     if (g.autopilot_path_count == 0) return;
     vec2 prev = LOCAL_PLAYER.ship.pos;

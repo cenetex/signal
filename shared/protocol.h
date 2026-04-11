@@ -163,7 +163,8 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 
 /* Player ship state: [type:1][id:1][hull:f32][credits:f32][docked:1][station:1]
  * [mining:1][hold:1][tractor:1][scaffold_kit:1][cargo:COMMODITY_COUNT×f32]
- * [nearby_frags:1][tractor_frags:1][towed_count:1][towed_frags:10] */
-#define PLAYER_SHIP_SIZE (29 + COMMODITY_COUNT * 4)  /* 65 bytes when COMMODITY_COUNT == 9 */
+ * [nearby_frags:1][tractor_frags:1][towed_count:1][towed_frags:10]
+ * [autopilot_target:1] */
+#define PLAYER_SHIP_SIZE (30 + COMMODITY_COUNT * 4)  /* 66 bytes when COMMODITY_COUNT == 9 */
 
 #endif /* SHARED_PROTOCOL_H */
