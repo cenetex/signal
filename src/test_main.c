@@ -1386,7 +1386,8 @@ TEST(test_bug24_ingot_buffer_no_cap) {
 TEST(test_bug25_rng_deterministic_every_reset) {
     /* Deterministic RNG is intentional — same seed produces identical
      * worlds for reproducibility and testing.  Verify that property. */
-    world_t w1 = {0}, w2 = {0};
+    world_t __attribute__((cleanup(world_auto_cleanup))) w1 = {0};
+    world_t __attribute__((cleanup(world_auto_cleanup))) w2 = {0};
     world_reset(&w1);
     world_reset(&w2);
     bool all_same = true;
@@ -3589,7 +3590,8 @@ TEST(test_outpost_min_distance) {
 TEST(test_bug88_interference_seed_no_world_time) {
     /* Two worlds with same player state but different w->time should
      * produce the same interference jitter. */
-    world_t w1 = {0}, w2 = {0};
+    world_t __attribute__((cleanup(world_auto_cleanup))) w1 = {0};
+    world_t __attribute__((cleanup(world_auto_cleanup))) w2 = {0};
     world_reset(&w1); world_reset(&w2);
     player_init_ship(&w1.players[0], &w1);
     player_init_ship(&w2.players[0], &w2);
@@ -3621,7 +3623,8 @@ TEST(test_bug88_interference_seed_no_world_time) {
 TEST(test_bug89_gravity_symmetric) {
     /* Use a Titan/small-body pair close enough to hit the gravity clamp.
      * Swapping indices must not change the resulting accelerations. */
-    world_t w1 = {0}, w2 = {0};
+    world_t __attribute__((cleanup(world_auto_cleanup))) w1 = {0};
+    world_t __attribute__((cleanup(world_auto_cleanup))) w2 = {0};
     world_reset(&w1); world_reset(&w2);
     for (int i = 0; i < MAX_ASTEROIDS; i++) { w1.asteroids[i].active = false; w2.asteroids[i].active = false; }
     for (int s = 0; s < MAX_STATIONS; s++) {
