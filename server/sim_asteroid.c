@@ -72,7 +72,7 @@ static void sim_configure_asteroid(world_t *w, asteroid_t *a, asteroid_tier_t ti
     a->net_dirty = true;
 }
 
-asteroid_tier_t random_field_asteroid_tier(world_t *w) {
+static asteroid_tier_t random_field_asteroid_tier(world_t *w) {
     float roll = w_randf(w);
     if (roll < 0.03f) return ASTEROID_TIER_XXL;
     if (roll < 0.26f) return ASTEROID_TIER_XL;
@@ -191,6 +191,10 @@ void seed_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier
     a->fracture_child = false;
     a->pos = pos;
     a->vel = v2(w_rand_range(w, -4.0f, 4.0f), w_rand_range(w, -4.0f, 4.0f));
+}
+
+void seed_random_field_asteroid(world_t *w, asteroid_t *a) {
+    seed_field_asteroid_of_tier(w, a, random_field_asteroid_tier(w));
 }
 
 static void set_inbound_field_velocity(world_t *w, asteroid_t *a, vec2 inward) {

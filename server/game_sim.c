@@ -3021,7 +3021,7 @@ void world_reset(world_t *w) {
             int placed = seed_asteroid_clump(w, slot);
             if (placed == 0) {
                 /* Fallback: single rock if no good clump center found */
-                seed_field_asteroid_of_tier(w, &w->asteroids[slot], random_field_asteroid_tier(w));
+                seed_random_field_asteroid(w, &w->asteroids[slot]);
                 placed = 1;
             }
             slot += placed;
