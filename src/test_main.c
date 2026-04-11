@@ -16,6 +16,11 @@ static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
+/* Auto-cleanup for stack-allocated world_t — frees the heap-allocated
+ * signal cache grid when the world goes out of scope. */
+static void world_auto_cleanup(world_t *w) { world_cleanup(w); }
+#define WORLD_DECL world_t __attribute__((cleanup(world_auto_cleanup))) w = {0}
+
 #define TEST(name) static void name(void)
 /* RUN snapshots tests_failed before/after the test body. The body uses
  * `return` from inside ASSERT* on failure, so RUN cannot return a value
@@ -424,7 +429,7 @@ TEST(test_can_afford_upgrade_no_product) {
 /* ---- World Sim Tests ---- */
 
 TEST(test_world_reset_creates_stations) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     ASSERT_STR_EQ(w.stations[0].name, "Prospect Refinery");
     ASSERT(station_has_module(&w.stations[0], MODULE_FURNACE));
@@ -433,7 +438,7 @@ TEST(test_world_reset_creates_stations) {
 }
 
 TEST(test_world_reset_spawns_asteroids) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     int count = 0;
     for (int i = 0; i < MAX_ASTEROIDS; i++)
@@ -442,7 +447,7 @@ TEST(test_world_reset_spawns_asteroids) {
 }
 
 TEST(test_world_reset_spawns_npcs) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     int miners = 0, haulers = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
@@ -455,7 +460,7 @@ TEST(test_world_reset_spawns_npcs) {
 }
 
 TEST(test_player_init_ship_docked) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -465,7 +470,7 @@ TEST(test_player_init_ship_docked) {
 }
 
 TEST(test_world_sim_step_advances_time) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -475,7 +480,7 @@ TEST(test_world_sim_step_advances_time) {
 }
 
 TEST(test_world_sim_step_moves_ship_with_thrust) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -490,7 +495,7 @@ TEST(test_world_sim_step_moves_ship_with_thrust) {
 }
 
 TEST(test_world_sim_step_mining_damages_asteroid) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -516,7 +521,7 @@ TEST(test_world_sim_step_mining_damages_asteroid) {
 }
 
 TEST(test_world_sim_step_docking) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -540,7 +545,7 @@ TEST(test_world_sim_step_docking) {
 }
 
 TEST(test_world_sim_step_sell_ore) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -554,7 +559,7 @@ TEST(test_world_sim_step_sell_ore) {
 }
 
 TEST(test_world_sim_step_refinery_produces_ingots) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 50.0f;
     for (int i = 0; i < 600; i++)
@@ -564,7 +569,7 @@ TEST(test_world_sim_step_refinery_produces_ingots) {
 }
 
 TEST(test_world_sim_step_events_emitted) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -580,7 +585,7 @@ TEST(test_world_sim_step_events_emitted) {
 }
 
 TEST(test_world_sim_step_npc_miners_work) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Run for 5 seconds of sim time */
     for (int i = 0; i < 600; i++)
@@ -599,7 +604,7 @@ TEST(test_world_sim_step_npc_miners_work) {
 TEST(test_world_network_writes_persist) {
     /* Simulate: world_sim_step runs, then network callback overwrites asteroid,
      * next world_sim_step should see the overwritten state */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -663,7 +668,7 @@ TEST(test_bug5_asteroid_missing_network_fields) {
 TEST(test_bug7_player_slot_mismatch) {
     /* FIXED: client should use server-assigned player ID, not hardcoded 0.
      * If server assigns ID 5, client should predict into slot 5. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     int server_id = 5;
     player_init_ship(&w.players[server_id], &w);
@@ -691,7 +696,7 @@ TEST(test_bug10_damage_event_has_amount) {
     /* FIXED: emit_event for DAMAGE should set damage.amount to actual impact force.
      * Simulate what emit_event currently does — memset then set type/player only. */
     /* Run a world with a player colliding into a station at high speed */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -984,7 +989,7 @@ TEST(test_bug92_station_record_size_matches_buffer) {
 }
 
 TEST(test_bug93_hint_mines_small_shard_with_minor_desync) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     memset(w.asteroids, 0, sizeof(w.asteroids));
     memset(w.npc_ships, 0, sizeof(w.npc_ships));
@@ -1203,7 +1208,7 @@ TEST(test_bug16_npc_target_bounds_checked) {
      * Currently it would access out-of-bounds memory.
      * We test by setting a valid-looking but OOB value and expecting the sim
      * doesn't crash or misbehave. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     w.npc_ships[0].active = true;
     w.npc_ships[0].role = NPC_ROLE_MINER;
@@ -1237,7 +1242,7 @@ TEST(test_bug17_no_duplicate_refinery) {
 /* Bug 18: emergency recovery should dock at NEAREST station, not last docked station.
  * FIX: find nearest station in emergency_recover_ship instead of using current_station. */
 TEST(test_bug18_emergency_recover_nearest_station) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -1304,7 +1309,7 @@ TEST(test_bug21_commodity_bits_fragile) {
 /* Bug 22: hauler that can't load stays docked and retries every HAULER_LOAD_TIME,
  * but never considers going to a DIFFERENT station to find cargo. */
 TEST(test_bug22_hauler_stuck_at_empty_station) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Empty the refinery inventory so haulers can't load from home */
     for (int i = 0; i < COMMODITY_COUNT; i++)
@@ -1329,7 +1334,7 @@ TEST(test_bug22_hauler_stuck_at_empty_station) {
 /* Bug 23: NPC miners don't lose cargo when they can't deposit (hopper full).
  * Ore stays in NPC cargo forever, inflating the economy. */
 TEST(test_bug23_npc_cargo_stuck_when_hopper_full) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Fill all hoppers to capacity */
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
@@ -1356,7 +1361,7 @@ TEST(test_bug23_npc_cargo_stuck_when_hopper_full) {
 /* Bug 24: hauler ingot_buffer has no capacity limit — unbounded accumulation */
 TEST(test_bug24_ingot_buffer_no_cap) {
     /* Verify ingot buffer is capped during hauler unloading. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Pre-fill dest ingot buffer near capacity */
     w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 40.0f;
@@ -1385,7 +1390,7 @@ TEST(test_bug25_rng_deterministic_every_reset) {
 
 /* Bug 26: hauler unloading dumps ingots without checking dest ingot_buffer capacity */
 TEST(test_bug26_hauler_unload_no_cap) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Pre-fill dest ingot buffer */
     w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 100.0f;
@@ -1402,7 +1407,7 @@ TEST(test_bug26_hauler_unload_no_cap) {
 
 /* Bug 27: cargo can go slightly negative due to float imprecision in sell loop */
 TEST(test_bug27_cargo_negative_after_sell) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -1419,7 +1424,7 @@ TEST(test_bug27_cargo_negative_after_sell) {
 
 /* Bug 28: credits can go slightly negative due to float comparison in try_spend_credits */
 TEST(test_bug28_credits_negative_edge) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -1452,7 +1457,7 @@ TEST(test_bug29_collection_feedback_accumulates) {
 /* Bug 30: two players collecting the same TIER_S fragment simultaneously
  * can both get the full ore — no atomic check on ore remaining */
 TEST(test_bug30_double_collect_fragment) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Create a fragment with 10 ore */
     w.asteroids[0].active = true;
@@ -1488,7 +1493,7 @@ TEST(test_bug30_double_collect_fragment) {
 
 TEST(test_scenario_full_mining_cycle) {
     /* Test the physical ore flow: create S fragment → tow → deposit at hopper → earn credits */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -1558,7 +1563,7 @@ TEST(test_scenario_full_mining_cycle) {
 }
 
 TEST(test_scenario_two_players_mining) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     player_init_ship(&w.players[1], &w);
@@ -1627,7 +1632,7 @@ TEST(test_scenario_two_players_mining) {
 }
 
 TEST(test_scenario_npc_economy_30_seconds) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
 
     /* Run for 3600 ticks (30 seconds at 120Hz) with no players */
@@ -1673,7 +1678,7 @@ TEST(test_scenario_npc_economy_30_seconds) {
 }
 
 TEST(test_scenario_upgrade_requires_products) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -1719,7 +1724,7 @@ TEST(test_scenario_upgrade_requires_products) {
 }
 
 TEST(test_scenario_emergency_recovery) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -1757,7 +1762,7 @@ TEST(test_scenario_emergency_recovery) {
 }
 
 TEST(test_scenario_product_cap_pauses_production) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
 
     /* Set station 1 (Kepler Yard) inventory[COMMODITY_FRAME] to MAX_PRODUCT_STOCK */
@@ -1802,7 +1807,7 @@ TEST(test_bug31_no_server_reconciliation) {
 
 /* Bug 32: collision restitution 1.2x adds energy — ship speeds up on bounce */
 TEST(test_bug32_collision_adds_energy) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -1821,7 +1826,7 @@ TEST(test_bug32_collision_adds_energy) {
 
 /* Bug 33: NPCs have no world boundary check — can fly past signal range */
 TEST(test_bug33_npc_no_world_boundary) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Place NPC outside all station signal ranges with outward velocity */
     w.npc_ships[0].pos = v2_add(w.stations[0].pos, v2(19000.0f, 0.0f)); /* beyond refinery signal_range 18000 */
@@ -1839,7 +1844,7 @@ TEST(test_bug33_npc_no_world_boundary) {
 
 /* Bug 34: NPCs have no collision with station modules — fly through everything */
 TEST(test_bug34_npc_no_collision) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Place NPC on top of a station MODULE (the station center is now
      * empty space — construction yard — so we test against a real module). */
@@ -1884,7 +1889,7 @@ TEST(test_bug36_stale_input_between_sends) {
 
 /* Bug 37: mining beam doesn't check if hover_asteroid is still active */
 TEST(test_bug37_mine_inactive_asteroid) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -1935,7 +1940,7 @@ TEST(test_bug38_dock_dampening_framerate_dependent) {
 
 /* Bug 39: launch_ship sets in_dock_range = true, causing immediate re-dock if E held */
 TEST(test_bug39_launch_immediate_redock) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -1966,7 +1971,7 @@ TEST(test_bug39_launch_immediate_redock) {
 
 /* Bug 40: two players can push each other through stations via collision chain */
 TEST(test_bug40_no_player_player_collision) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     player_init_ship(&w.players[1], &w);
@@ -1994,7 +1999,7 @@ TEST(test_bug41_gravity_asymmetric) {
      * Force on a from b should equal force on b from a (Newton's third law).
      * Currently: force_a uses b->radius², force_b uses a->radius².
      * These are different. The system gains/loses net momentum. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Clear field, place two asteroids */
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
@@ -2015,7 +2020,7 @@ TEST(test_bug41_gravity_asymmetric) {
 
 /* Bug 42: station attraction doesn't depend on asteroid mass */
 TEST(test_bug42_station_gravity_ignores_mass) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
     /* Tiny fragment and huge XL at same distance from station */
@@ -2035,7 +2040,7 @@ TEST(test_bug42_station_gravity_ignores_mass) {
 
 /* Bug 43: fracture inside station collision loop can spawn children inside stations */
 TEST(test_bug43_fracture_children_inside_station) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
     /* Place an asteroid heading fast toward station 0 */
@@ -2061,7 +2066,7 @@ TEST(test_bug43_fracture_children_inside_station) {
 
 /* Bug 44: gravity + collision oscillation — touching asteroids vibrate */
 TEST(test_bug44_gravity_collision_oscillation) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
     /* Two asteroids barely touching */
@@ -2088,7 +2093,7 @@ TEST(test_bug44_gravity_collision_oscillation) {
 
 /* Bug 45: world_sim_step_player_only still runs mining damage */
 TEST(test_bug45_player_only_still_mines) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -2115,7 +2120,7 @@ TEST(test_bug45_player_only_still_mines) {
 
 /* Bug 46: world_sim_step_player_only advances w->time causing client time drift */
 TEST(test_bug46_player_only_advances_time) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -2129,7 +2134,7 @@ TEST(test_bug46_player_only_advances_time) {
 
 /* Bug 47: signal interference uses world RNG — diverges client/server */
 TEST(test_bug47_interference_uses_world_rng) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -2151,7 +2156,7 @@ TEST(test_bug47_interference_uses_world_rng) {
 
 /* Bug 48: Titan (XXL) fracture creates 8-14 children but MAX_ASTEROIDS is 48 */
 TEST(test_bug48_titan_fracture_overflow) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* World has FIELD_ASTEROID_TARGET (32) asteroids. Titan fracture creates 8-14 more.
      * 32 + 14 = 46 < 48, so it fits. But if field has 40+ asteroids
@@ -2170,7 +2175,7 @@ TEST(test_bug48_titan_fracture_overflow) {
  * gets zero bounce (vel_along = 0, no branch entered) but gravity
  * keeps pushing it back next tick. The asteroid sticks to the station. */
 TEST(test_bug49_asteroid_sticks_to_station) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
     /* Place asteroid exactly at station collision boundary, zero velocity */
@@ -2192,7 +2197,7 @@ TEST(test_bug49_asteroid_sticks_to_station) {
 /* Bug 50: player ship collision with asteroid uses restitution 1.2 (energy gain)
  * but asteroid-station uses 0.6 (energy loss). Inconsistent physics model. */
 TEST(test_bug50_ship_collision_energy_gain) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -2215,7 +2220,7 @@ TEST(test_bug50_ship_collision_energy_gain) {
 
 /* Bug 51: NPC miner discards ALL cargo on dock, not just undepositable */
 TEST(test_bug51_npc_cargo_zeroed_on_dock) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Fill hopper so only 5 units can be deposited */
     w.stations[0].inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY - 5.0f;
@@ -2236,7 +2241,7 @@ TEST(test_bug52_server_repair_cost_no_service_check) {
     /* game_sim.c has its own static station_repair_cost(const ship_t*)
      * that doesn't take a station param and doesn't check services.
      * economy.c's version checks services. The server uses the wrong one. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -2263,7 +2268,7 @@ TEST(test_bug52_server_repair_cost_no_service_check) {
 TEST(test_bug53_npc_cargo_commodity_bounds) {
     /* npc.cargo is now sized [COMMODITY_COUNT] (unified with player ship_t).
      * Asteroids should only have raw ore commodities, but verify. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Check all asteroids have commodity < RAW_ORE_COUNT */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
@@ -2280,7 +2285,7 @@ TEST(test_bug53_npc_cargo_commodity_bounds) {
 
 /* Bug 54: multiple players dock at exact same position — overlap */
 TEST(test_bug54_multiple_players_same_dock_position) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     w.players[0].id = 0;
     w.players[1].id = 1;
@@ -2299,7 +2304,7 @@ TEST(test_bug54_multiple_players_same_dock_position) {
 
 /* Bug 55: NPC deposits ore at non-refinery home station — ore never smelts */
 TEST(test_bug55_npc_deposits_at_non_refinery) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Reassign a miner's home to station 1 (Yard) */
     w.npc_ships[0].home_station = 1;
@@ -2321,7 +2326,7 @@ TEST(test_bug56_asteroid_drag_constant) {
      * tuned alongside ship drag and dock dampening. */
     /* Can't test directly — this is a code quality issue.
      * But we can verify the drag value produces reasonable behavior: */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
     w.asteroids[0].active = true; w.asteroids[0].tier = ASTEROID_TIER_L;
@@ -2336,7 +2341,7 @@ TEST(test_bug56_asteroid_drag_constant) {
 
 /* Bug 57: ship collision restitution 1.2x adds energy to the system */
 TEST(test_bug57_ship_collision_restitution_energy) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -2363,7 +2368,7 @@ TEST(test_bug57_ship_collision_restitution_energy) {
 
 /* Bug 58: Titan fracture at full capacity produces fewer children than requested */
 TEST(test_bug58_titan_fracture_at_capacity) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Fill most asteroid slots */
     for (int i = 0; i < MAX_ASTEROIDS - 3; i++) {
@@ -2393,7 +2398,7 @@ TEST(test_bug58_titan_fracture_at_capacity) {
 
 /* Bug 59: emergency recovery docks at last station even if far away */
 TEST(test_bug59_emergency_recover_teleports) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -2426,7 +2431,7 @@ TEST(test_bug59_emergency_recover_teleports) {
 
 /* Bug 60: mining TIER_S fragments shouldn't be possible — they're collectible, not mineable */
 TEST(test_bug60_cannot_mine_fragment) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -2461,7 +2466,7 @@ TEST(test_bug61_interp_prev_zero_on_connect) {
      * any t produces the correct position. This is a client-side concern
      * (apply_remote_asteroids copies curr to prev on each snapshot).
      * Verify the lerp math is correct when prev == curr. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     ASSERT(w.asteroids[0].active);
     float real_x = w.asteroids[0].pos.x;
@@ -2472,7 +2477,7 @@ TEST(test_bug61_interp_prev_zero_on_connect) {
 
 /* Bug 62: sell event doesn't carry payout — HUD can't show earnings */
 TEST(test_bug62_sell_event_no_payout) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -2496,7 +2501,7 @@ TEST(test_bug62_sell_event_no_payout) {
 
 /* Bug 63: NPCs fly through asteroids — no NPC-asteroid collision */
 TEST(test_bug63_npc_asteroid_collision) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Place NPC directly on top of an asteroid */
     int target = -1;
@@ -2532,7 +2537,7 @@ TEST(test_bug64_hull_class_bounds) {
 
 /* Bug 65: emergency recovery at station with no repair leaves player stuck */
 TEST(test_bug65_emergency_recover_no_repair_station) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -2556,7 +2561,7 @@ TEST(test_bug65_emergency_recover_no_repair_station) {
 
 /* Bug 66: multiple NPC miners can target the same asteroid */
 TEST(test_bug66_npc_miners_same_target) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Run 10 seconds — miners should have found targets */
     for (int i = 0; i < 1200; i++) world_sim_step(&w, SIM_DT);
@@ -2587,7 +2592,7 @@ TEST(test_bug67_dock_station_bounds) {
     ASSERT(MAX_STATIONS == 8);
     /* After fix: dock_ship should check nearby_station < MAX_STATIONS.
      * Currently it only checks >= 0. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -2612,7 +2617,7 @@ TEST(test_bug68_gravity_uses_radius_not_mass) {
      * The real issue: radius changes after partial collection of TIER_S.
      * A half-collected fragment has reduced radius but same mass —
      * its gravity incorrectly weakens as it's collected. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
     w.asteroids[0].active = true;
@@ -2628,7 +2633,7 @@ TEST(test_bug68_gravity_uses_radius_not_mass) {
 
 /* Bug 69: NPC idle state applies physics but not world boundary */
 TEST(test_bug69_npc_idle_no_boundary) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Place NPC at world edge in idle state with outward velocity */
     w.npc_ships[0].pos = v2(WORLD_RADIUS - 50.0f, 0.0f);
@@ -2663,7 +2668,7 @@ TEST(test_bug70_upgrade_cost_level_zero) {
 
 TEST(test_signal_strength_at_station) {
     /* At a station's position, signal should be 1.0 (full strength) */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     ASSERT_EQ_FLOAT(signal_strength_at(&w, w.stations[0].pos), 1.0f, 0.01f);
     ASSERT_EQ_FLOAT(signal_strength_at(&w, w.stations[1].pos), 1.0f, 0.01f);
@@ -2672,7 +2677,7 @@ TEST(test_signal_strength_at_station) {
 
 TEST(test_signal_strength_falls_off) {
     /* Signal should decrease linearly from 1.0 at station to 0.0 at range edge */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Station 0 at (0, -2400), signal_range = 18000. Point 9000u to the right. */
     float half = signal_strength_at(&w, v2_add(w.stations[0].pos, v2(9000.0f, 0.0f)));
@@ -2681,14 +2686,14 @@ TEST(test_signal_strength_falls_off) {
 
 TEST(test_signal_zero_outside_range) {
     /* Far from all stations, signal should be 0.0 */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     ASSERT_EQ_FLOAT(signal_strength_at(&w, v2(100000.0f, 100000.0f)), 0.0f, 0.01f);
 }
 
 TEST(test_signal_max_of_stations) {
     /* When inside multiple stations' ranges, signal is the maximum, not sum */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Midpoint between station 0 and station 1 should get max of the two signals,
      * not their sum. Signal is never > 1.0. */
@@ -2699,7 +2704,7 @@ TEST(test_signal_max_of_stations) {
 
 TEST(test_ship_thrust_scales_with_signal) {
     /* At low signal, ship should accelerate slower */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -2723,7 +2728,7 @@ TEST(test_ship_thrust_scales_with_signal) {
 }
 
 TEST(test_asteroid_outside_signal_despawns) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
     w.asteroids[0].active = true;
@@ -2738,7 +2743,7 @@ TEST(test_asteroid_outside_signal_despawns) {
 }
 
 TEST(test_npc_miners_avoid_zero_signal_asteroids) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
     for (int i = 1; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
@@ -2773,7 +2778,7 @@ TEST(test_npc_miners_avoid_zero_signal_asteroids) {
 }
 
 TEST(test_field_respawn_starts_beyond_signal_edge) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
 
@@ -2810,7 +2815,7 @@ TEST(test_field_respawn_starts_beyond_signal_edge) {
 }
 
 TEST(test_asteroids_drift_toward_stronger_signal) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
     for (int s = 1; s < MAX_STATIONS; s++) w.stations[s].signal_range = 0.0f;
@@ -2837,7 +2842,7 @@ TEST(test_asteroids_drift_toward_stronger_signal) {
 
 TEST(test_contract_generated_from_hopper_deficit) {
     /* A refinery with low ore_buffer should generate an ore contract */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Make ferrite the biggest deficit by filling the others */
     w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 10.0f;
@@ -2868,7 +2873,7 @@ TEST(test_contract_price_escalates_with_age) {
 
 TEST(test_contract_closes_when_deficit_filled) {
     /* When ore_buffer rises to 80% threshold, contract should close */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 10.0f;
     world_sim_step(&w, SIM_DT); /* generates contract */
@@ -2887,7 +2892,7 @@ TEST(test_contract_closes_when_deficit_filled) {
 TEST(test_sell_price_uses_contract_price) {
     /* When a contract exists, selling at that station should pay the
      * escalated contract price, not the base buy_price */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Create a contract with aged price */
     w.contracts[0] = (contract_t){
@@ -2915,7 +2920,7 @@ TEST(test_sell_price_uses_contract_price) {
 TEST(test_hauler_fills_highest_value_contract) {
     /* NPC hauler at a station should pick the highest-value contract
      * fillable from local inventory, not a hardcoded destination */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Set up two contracts: one cheap at station 1, one expensive at station 2 */
     w.contracts[0] = (contract_t){
@@ -2968,7 +2973,9 @@ TEST(test_player_save_load_roundtrip) {
     ASSERT(!loaded->players[0].connected);
     /* But world state (stations, etc.) survives */
     ASSERT_EQ_FLOAT(loaded->stations[0].signal_range, w->stations[0].signal_range, 0.01f);
+    world_cleanup(loaded);
     free(loaded);
+    world_cleanup(w);
     free(w);
     remove("/tmp/test_player.sav");
 }
@@ -2983,7 +2990,9 @@ TEST(test_world_save_load_preserves_stations) {
     ASSERT(world_load(loaded, "/tmp/test_world.sav"));
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_ORE], 42.0f, 0.01f);
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FRAME], 15.0f, 0.01f);
+    world_cleanup(loaded);
     free(loaded);
+    world_cleanup(w);
     free(w);
     remove("/tmp/test_world.sav");
 }
@@ -2999,18 +3008,20 @@ TEST(test_world_save_load_preserves_npcs) {
         ASSERT_EQ_FLOAT(loaded->npc_ships[i].pos.x, w->npc_ships[i].pos.x, 0.01f);
         ASSERT_EQ_FLOAT(loaded->npc_ships[i].pos.y, w->npc_ships[i].pos.y, 0.01f);
     }
+    world_cleanup(loaded);
     free(loaded);
+    world_cleanup(w);
     free(w);
     remove("/tmp/test_npcs.sav");
 }
 
 TEST(test_world_load_missing_file) {
-    world_t w = {0};
+    WORLD_DECL;
     ASSERT(!world_load(&w, "/tmp/nonexistent_save_file.sav"));
 }
 
 TEST(test_player_save_load_preserves_ship) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     server_player_t sp = {0};
     player_init_ship(&sp, &w);
@@ -3040,7 +3051,7 @@ TEST(test_player_save_load_preserves_ship) {
 }
 
 TEST(test_player_load_clamps_negative_credits) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     server_player_t sp = {0};
     player_init_ship(&sp, &w);
@@ -3055,7 +3066,7 @@ TEST(test_player_load_clamps_negative_credits) {
 }
 
 TEST(test_player_load_clamps_negative_cargo) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     server_player_t sp = {0};
     player_init_ship(&sp, &w);
@@ -3070,7 +3081,7 @@ TEST(test_player_load_clamps_negative_cargo) {
 }
 
 TEST(test_player_load_clamps_hull_hp) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     server_player_t sp = {0};
     player_init_ship(&sp, &w);
@@ -3085,7 +3096,7 @@ TEST(test_player_load_clamps_hull_hp) {
 }
 
 TEST(test_player_load_clamps_upgrade_levels) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     server_player_t sp = {0};
     player_init_ship(&sp, &w);
@@ -3102,7 +3113,7 @@ TEST(test_player_load_clamps_upgrade_levels) {
 }
 
 TEST(test_player_load_invalid_station_falls_back) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     server_player_t sp = {0};
     player_init_ship(&sp, &w);
@@ -3124,7 +3135,7 @@ TEST(test_player_load_bad_magic_fails) {
     fwrite(&bad_magic, sizeof(bad_magic), 1, f);
     fclose(f);
 
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     server_player_t loaded = {0};
     ASSERT(!player_load(&loaded, &w, "/tmp", 93));
@@ -3144,7 +3155,9 @@ TEST(test_world_load_rejects_stale_version) {
     fclose(f);
     world_t *loaded = calloc(1, sizeof(world_t));
     ASSERT(!world_load(loaded, "/tmp/test_stale.sav"));
+    world_cleanup(loaded);
     free(loaded);
+    world_cleanup(w);
     free(w);
     remove("/tmp/test_stale.sav");
 }
@@ -3170,7 +3183,9 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     station_module_t mod3 = loaded->stations[0].modules[3];
     ASSERT(mod3.type == MODULE_ORE_SILO);
     ASSERT_EQ_INT((int)mod3.ring, 2);
+    world_cleanup(loaded);
     free(loaded);
+    world_cleanup(w);
     free(w);
     remove("/tmp/test_modules.sav");
 }
@@ -3198,8 +3213,10 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_INGOT], ingots_before, 0.01f);
     fprintf(stderr, "[smelted] check passed, cleanup...\n");
     remove("/tmp/test_ingots.sav");
+    world_cleanup(loaded);
     free(loaded);
     fprintf(stderr, "[smelted] freed loaded\n");
+    world_cleanup(w);
     free(w);
     fprintf(stderr, "[smelted] done\n");
 }
@@ -3226,6 +3243,7 @@ TEST(test_save_file_size_stable) {
     ASSERT(w != NULL);
     world_reset(w);
     ASSERT(world_save(w, "/tmp/test_size.sav"));
+    world_cleanup(w);
     free(w);
     FILE *f = fopen("/tmp/test_size.sav", "rb");
     ASSERT(f != NULL);
@@ -3239,7 +3257,7 @@ TEST(test_save_file_size_stable) {
 }
 
 TEST(test_save_header_golden_bytes) {
-    world_t w = {0};
+    WORLD_DECL;
     w.rng = 2037u;  /* default seed */
     world_reset(&w);
     w.time = 0.0f;
@@ -3323,7 +3341,9 @@ TEST(test_save_load_preserves_player_outpost) {
     /* Signal chain rebuilt — outpost may or may not be connected depending on
      * scaffold state, but the station slot must still exist */
     ASSERT(loaded->stations[slot].signal_range > 0.0f);
+    world_cleanup(loaded);
     free(loaded);
+    world_cleanup(w);
     free(w);
     remove("/tmp/test_outpost.sav");
 }
@@ -3347,7 +3367,9 @@ TEST(test_save_backward_compat_version_accepted) {
     world_t *loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, "/tmp/test_compat.sav"));
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_ORE], 77.0f, 0.01f);
+    world_cleanup(loaded);
     free(loaded);
+    world_cleanup(w);
     free(w);
     remove("/tmp/test_compat.sav");
 }
@@ -3405,7 +3427,9 @@ TEST(test_save_v21_module_remap) {
     ASSERT_EQ_FLOAT(loaded->stations[3].module_input[1], 3.0f, 0.001f);  /* was idx 2 */
     ASSERT_EQ_FLOAT(loaded->stations[3].module_input[2], 5.0f, 0.001f);  /* was idx 4 */
     ASSERT_EQ_FLOAT(loaded->stations[3].module_input[3], 6.0f, 0.001f);  /* was idx 5 */
+    world_cleanup(loaded);
     free(loaded);
+    world_cleanup(w);
     free(w);
     remove("/tmp/test_v21_remap.sav");
 }
@@ -3423,7 +3447,9 @@ TEST(test_save_future_version_rejected) {
     fclose(f);
     world_t *loaded = calloc(1, sizeof(world_t));
     ASSERT(!world_load(loaded, "/tmp/test_future.sav"));
+    world_cleanup(loaded);
     free(loaded);
+    world_cleanup(w);
     free(w);
     remove("/tmp/test_future.sav");
 }
@@ -3433,7 +3459,7 @@ TEST(test_save_future_version_rejected) {
 /* ================================================================== */
 
 TEST(test_outpost_requires_signal_range) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Can't place outside signal range */
     bool ok = can_place_outpost(&w, v2(100000.0f, 100000.0f));
@@ -3444,7 +3470,7 @@ TEST(test_outpost_requires_signal_range) {
 }
 
 TEST(test_outpost_extends_signal_range) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Place point at edge of refinery signal — within range but far */
     vec2 outpost_pos = v2_add(w.stations[0].pos, v2(16000.0f, 0.0f));
@@ -3476,7 +3502,7 @@ TEST(test_outpost_extends_signal_range) {
 }
 
 TEST(test_disconnected_station_goes_dark) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* All 3 starter stations should be connected */
     ASSERT(w.stations[0].signal_connected);
@@ -3521,7 +3547,7 @@ TEST(test_disconnected_station_goes_dark) {
 
 TEST(test_outpost_requires_undocked) {
     /* Must be undocked to place an outpost */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -3541,7 +3567,7 @@ TEST(test_outpost_requires_undocked) {
 
 TEST(test_outpost_requires_towed_scaffold) {
     /* Without a towed scaffold, place_outpost intent is a no-op. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -3558,7 +3584,7 @@ TEST(test_outpost_requires_towed_scaffold) {
 }
 
 TEST(test_outpost_min_distance) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -3644,7 +3670,7 @@ TEST(test_bug89_gravity_symmetric) {
 TEST(test_bug90_station_bounce_no_extra_energy) {
     /* A low-speed impact should lose energy; it should not be boosted
      * by an anti-sticking shove layered on top of restitution. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
     /* Asteroid approaching a ring 1 module at low speed.
@@ -3715,7 +3741,7 @@ TEST(test_no_furnace_no_smelting) {
 
 TEST(test_module_build_material_types) {
     /* Verify each module requires the correct ingot type */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     station_t *st = &w.stations[0];
     /* Laser fab should generate a cuprite ingot contract */
@@ -3730,7 +3756,7 @@ TEST(test_module_build_material_types) {
 }
 
 TEST(test_module_construction_and_delivery) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     station_t *st = &w.stations[0];
     int mc_before = st->module_count;
@@ -3751,7 +3777,7 @@ TEST(test_module_construction_and_delivery) {
 }
 
 TEST(test_module_activation_spawns_npc) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     int npc_before = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_before++;
@@ -3776,7 +3802,7 @@ TEST(test_module_activation_spawns_npc) {
 /* ================================================================== */
 
 TEST(test_one_contract_per_station) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Empty all hoppers to create demand */
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
@@ -3818,7 +3844,7 @@ TEST(test_destroy_contract_completes_when_asteroid_gone) {
 }
 
 TEST(test_supply_contract_uses_correct_material) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Build a laser fab scaffold on station 0 */
     begin_module_construction(&w, &w.stations[0], 0, MODULE_LASER_FAB);
@@ -3920,7 +3946,7 @@ TEST(test_belt_ore_distribution) {
 /* ================================================================== */
 
 TEST(test_sell_ore_at_refinery) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -3936,7 +3962,7 @@ TEST(test_sell_ore_at_refinery) {
 }
 
 TEST(test_deliver_ingots_to_contract) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -3965,7 +3991,7 @@ TEST(test_deliver_ingots_to_contract) {
 }
 
 TEST(test_mixed_cargo_sell_and_deliver) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -3995,7 +4021,7 @@ TEST(test_mixed_cargo_sell_and_deliver) {
 
 TEST(test_no_delivery_without_matching_contract) {
     /* Ingots for a commodity with no contract should not be delivered */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -4013,7 +4039,7 @@ TEST(test_no_delivery_without_matching_contract) {
 }
 
 TEST(test_refinery_smelts_after_ore_sale) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Player docks at Prospect Refinery (station 0) with ferrite ore */
     w.players[0].connected = true;
@@ -4037,7 +4063,7 @@ TEST(test_refinery_smelts_after_ore_sale) {
 
 TEST(test_furnace_without_adjacent_hopper_smelts) {
     /* Furnaces smelt from station inventory regardless of adjacency. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Remove all modules from station 0 and place furnace alone */
     w.stations[0].module_count = 0;
@@ -4083,7 +4109,7 @@ static void seed_test_asteroid(asteroid_t *a, asteroid_tier_t tier, vec2 pos, fl
 }
 
 TEST(test_autopilot_prefers_nearest_mineable_asteroid) {
-    world_t w = {0};
+    WORLD_DECL;
     setup_autopilot_world(&w);
     server_player_t *sp = &w.players[0];
     vec2 base = sp->ship.pos;
@@ -4100,7 +4126,7 @@ TEST(test_autopilot_prefers_nearest_mineable_asteroid) {
 }
 
 TEST(test_autopilot_prefers_clear_mineable_asteroid_over_blocked_one) {
-    world_t w = {0};
+    WORLD_DECL;
     setup_autopilot_world(&w);
     server_player_t *sp = &w.players[0];
     vec2 base = sp->ship.pos;
@@ -4118,7 +4144,7 @@ TEST(test_autopilot_prefers_clear_mineable_asteroid_over_blocked_one) {
 TEST(test_autopilot_ignores_fragments_targets_rocks) {
     /* Autopilot should target mineable rocks, not fragments (S-tier).
      * Fragments are auto-collected by the tractor during flight. */
-    world_t w = {0};
+    WORLD_DECL;
     setup_autopilot_world(&w);
     server_player_t *sp = &w.players[0];
     vec2 base = sp->ship.pos;
@@ -4387,7 +4413,7 @@ TEST(test_station_geom_emitter_prospect) {
 /* ================================================================== */
 
 TEST(test_scaffold_spawn) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
 
     /* Spawn a furnace scaffold near station 0 */
@@ -4414,7 +4440,7 @@ TEST(test_scaffold_spawn) {
 }
 
 TEST(test_scaffold_physics_loose) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
 
     /* Spawn scaffold with initial velocity */
@@ -4442,7 +4468,7 @@ TEST(test_scaffold_physics_loose) {
 }
 
 TEST(test_scaffold_towed_scaffold_init) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
 
     /* Player ship should start with no towed scaffold */
@@ -4453,7 +4479,7 @@ TEST(test_scaffold_towed_scaffold_init) {
 }
 
 TEST(test_scaffold_tow_pickup) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
@@ -4475,7 +4501,7 @@ TEST(test_scaffold_tow_pickup) {
 }
 
 TEST(test_scaffold_tow_release_on_r) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
@@ -4499,7 +4525,7 @@ TEST(test_scaffold_tow_release_on_r) {
 }
 
 TEST(test_scaffold_tow_release_on_dock) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
@@ -4532,7 +4558,7 @@ TEST(test_scaffold_tow_release_on_dock) {
 }
 
 TEST(test_scaffold_snap_to_slot) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
 
     /* We need a player outpost (index >= 3). Place one. */
@@ -4577,7 +4603,7 @@ TEST(test_scaffold_snap_to_slot) {
 }
 
 TEST(test_scaffold_snap_ignores_starter_stations) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
 
     /* Spawn scaffold near station 0 (starter station, index < 3) */
@@ -4595,7 +4621,7 @@ TEST(test_scaffold_snap_ignores_starter_stations) {
 
 TEST(test_scaffold_full_pipeline) {
     /* End-to-end: spawn → snap → supply → build timer → activate */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
 
     /* Create and activate a player outpost */
@@ -4655,7 +4681,7 @@ TEST(test_scaffold_full_pipeline) {
 }
 
 TEST(test_scaffold_ship_drag) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
@@ -4696,7 +4722,7 @@ TEST(test_scaffold_ship_drag) {
 }
 
 TEST(test_tow_drone_delivers_to_planned_outpost) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
@@ -4757,7 +4783,7 @@ TEST(test_tow_drone_delivers_to_planned_outpost) {
 }
 
 TEST(test_scaffold_tow_speed_cap) {
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
@@ -4822,7 +4848,7 @@ static int test_setup_placed_scaffold(world_t *w, int *out_mod_idx) {
 TEST(test_placed_scaffold_supply_phase) {
     /* After snap, module starts at build_progress=0. Delivering material
      * advances it to 1.0, then the 10s build timer runs 1.0 → 2.0. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     int mod_idx;
     int outpost = test_setup_placed_scaffold(&w, &mod_idx);
@@ -4853,7 +4879,7 @@ TEST(test_placed_scaffold_supply_phase) {
 TEST(test_placed_scaffold_player_delivery) {
     /* A docked player delivering the build material should advance the
      * scaffold's build_progress via step_module_delivery. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     int mod_idx;
     int outpost = test_setup_placed_scaffold(&w, &mod_idx);
@@ -4878,7 +4904,7 @@ TEST(test_placed_scaffold_player_delivery) {
 TEST(test_construction_contract_closes_on_activation) {
     /* When the scaffold module activates, any supply contract at
      * this station for the build material should close. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     int mod_idx;
     int outpost = test_setup_placed_scaffold(&w, &mod_idx);
@@ -4919,7 +4945,7 @@ TEST(test_construction_contract_closes_on_activation) {
 TEST(test_stale_contract_does_not_block_next_need) {
     /* After a construction contract completes, the station should be
      * able to generate its next need contract (e.g. ore hopper). */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     int mod_idx;
     int outpost = test_setup_placed_scaffold(&w, &mod_idx);
@@ -4955,7 +4981,7 @@ TEST(test_construction_contract_checks_scaffold_not_threshold) {
     /* A construction supply contract should NOT close based on the
      * 80% station inventory threshold — it should stay open while
      * the scaffold still needs material, regardless of inventory level. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     int mod_idx;
     int outpost = test_setup_placed_scaffold(&w, &mod_idx);
@@ -5060,7 +5086,7 @@ TEST(test_module_flow_same_ring_transfer) {
     /* Furnace produces ferrite ingots into output_buffer.
      * Frame Press accepts ferrite ingots as input.
      * On the same ring, material should flow at ~5/sec adjacent. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Use Kepler (station 1) which has both furnace logic and ring layout.
      * Find a furnace and a frame press by index. */
@@ -5106,7 +5132,7 @@ TEST(test_module_flow_production_fills_buffers) {
     /* Real production should fill module output buffers (mirrored from
      * station inventory). Run sim with seeded ore at Kepler and verify
      * the frame press output buffer fills. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     /* Seed Kepler with frame-press input */
     w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 50.0f;
@@ -5128,7 +5154,7 @@ TEST(test_module_flow_production_fills_buffers) {
 
 TEST(test_module_flow_does_not_overflow_capacity) {
     /* Material should never exceed buffer capacity at the consumer. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     int furnace_idx = -1, press_idx = -1;
     for (int i = 0; i < w.stations[1].module_count; i++) {
@@ -5211,7 +5237,9 @@ TEST(test_save_preserves_pending_scaffolds) {
     ASSERT_EQ_INT(loaded->scaffolds[sidx].built_at_station, 1);
     ASSERT_EQ_FLOAT(loaded->scaffolds[sidx].build_amount, 17.0f, 0.01f);
 
+    world_cleanup(loaded);
     free(loaded);
+    world_cleanup(w);
     free(w);
     remove("/tmp/test_pending.sav");
 }
@@ -5251,6 +5279,7 @@ TEST(test_autopilot_completes_mining_cycle) {
     /* Should have earned credits. Timing-sensitive — warn don't fail. */
     if (w->players[0].ship.credits <= credits_before)
         printf("      [WARN] no credits earned in 90s (timing sensitive)\n");
+    world_cleanup(w);
     free(w);
 }
 
@@ -5277,6 +5306,7 @@ TEST(test_autopilot_does_not_orbit_fragment) {
     }
     /* 10 seconds at 120Hz = 1200 ticks. Should never exceed this. */
     ASSERT(max_collect_ticks < 1200);
+    world_cleanup(w);
     free(w);
 }
 
@@ -5299,6 +5329,7 @@ TEST(test_autopilot_does_not_leave_signal) {
     /* Autopilot requires 80% signal. It might briefly dip below during
      * transitions but should never reach zero. */
     ASSERT(min_signal > 0.01f);
+    world_cleanup(w);
     free(w);
 }
 
@@ -5334,6 +5365,7 @@ TEST(test_autopilot_multiple_players) {
     for (int p = 0; p < 3; p++) {
         ASSERT(w->players[p].ship.hull > 0.0f || w->players[p].docked);
     }
+    world_cleanup(w);
     free(w);
 }
 
@@ -5384,6 +5416,7 @@ TEST(test_autopilot_follows_path_waypoints) {
                 printf("      [WARN] waypoint %d: closest approach %.0fu (expected <150u)\n", j, min_dist);
         }
     }
+    world_cleanup(w);
     free(w);
 }
 
@@ -5435,6 +5468,7 @@ TEST(test_autopilot_path_matches_preview) {
                        server_target, server_dist, client_target, client_dist);
         }
     }
+    world_cleanup(w);
     free(w);
 }
 
@@ -5446,7 +5480,7 @@ TEST(test_259_furnace_station_accepts_ore_sale) {
     /* Prospect Refinery has MODULE_FURNACE but no MODULE_ORE_BUYER.
      * Selling ore should still work — station_primary_buy() returns
      * FERRITE_ORE based on the furnace, not the service flag. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -5468,7 +5502,7 @@ TEST(test_259_furnace_station_accepts_ore_sale) {
 TEST(test_259_passive_repair_at_any_station) {
     /* Passive repair (8 hp/s) runs at ANY station while docked,
      * regardless of STATION_SERVICE_REPAIR flag. */
-    world_t w = {0};
+    WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
@@ -5516,6 +5550,7 @@ static void test_nav_forward_clearance_empty(void) {
     spatial_grid_build(w);
     float c = nav_forward_clearance(w, v2(-9000, -9000), v2(100, 0), 16.0f, 0.0f);
     ASSERT_EQ_FLOAT(c, 1.0f, 0.01f);
+    world_cleanup(w);
     free(w);
 }
 
@@ -5533,6 +5568,7 @@ static void test_nav_forward_clearance_blocked(void) {
      * Speed 200 → lookahead = min(300, 500) = 300u, well past the rock. */
     float c = nav_forward_clearance(w, v2(5000, 5000), v2(200, 0), 16.0f, 0.0f);
     ASSERT(c < 0.8f); /* should be significantly reduced */
+    world_cleanup(w);
     free(w);
 }
 
@@ -5545,6 +5581,7 @@ static void test_nav_find_path_direct(void) {
     /* Direct path = no intermediate waypoints (or trivially short) */
     (void)found;
     ASSERT(path.count <= 1);
+    world_cleanup(w);
     free(w);
 }
 
@@ -5567,6 +5604,7 @@ static void test_nav_find_path_around_asteroid(void) {
     /* A* should find a detour (count >= 1) OR return direct if it
      * can't build a graph. Either way the path should be usable. */
     ASSERT(path.count >= 0); /* relaxed: just verify no crash */
+    world_cleanup(w);
     free(w);
 }
 
@@ -5581,6 +5619,7 @@ static void test_nav_follow_path_replans_on_stale(void) {
     /* Should have replanned: goal updated */
     float goal_dist = v2_dist_sq(path.goal, dest);
     ASSERT(goal_dist < 200.0f * 200.0f);
+    world_cleanup(w);
     free(w);
 }
 
