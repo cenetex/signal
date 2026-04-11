@@ -118,14 +118,6 @@ static int autopilot_find_mining_target(const world_t *w, const server_player_t 
  * The autopilot's mining loop is bounded by THIS, not by cargo capacity:
  * mined fragments live in the tow chain, not ship.cargo, and only
  * become credits when smelted at a station's furnace. */
-static int autopilot_tractor_capacity(const ship_t *s) {
-    return 2 + s->tractor_level * 2;
-}
-
-static bool autopilot_tractor_full(const ship_t *s) {
-    return s->towed_count >= (uint8_t)autopilot_tractor_capacity(s);
-}
-
 /* True if the ship is damaged enough that the autopilot should bail
  * out of mining and return for repair. Also returns true any time
  * we've ALREADY started returning (so the threshold doesn't oscillate
@@ -374,7 +366,9 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * is full OR nothing's nearby OR we've been loitering too long. */
         sp->ship.tractor_active = true;
         sp->input.mine = false;
-        if (autopilot_tractor_full(&sp->ship)) {
+        /* Carrying anything = go deliver. Don't chase more fragments
+         * when we already have one — causes orbiting behavior. */
+        if (sp->ship.towed_count > 0) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;
