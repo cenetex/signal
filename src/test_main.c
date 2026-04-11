@@ -4990,6 +4990,7 @@ TEST(test_autopilot_multiple_players) {
     float credits[3];
     for (int p = 0; p < 3; p++) {
         player_init_ship(&w->players[p], w);
+        w->players[p].id = (uint8_t)p;
         w->players[p].connected = true;
         w->players[p].autopilot_mode = 1;
         w->players[p].autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
