@@ -9,6 +9,7 @@
 #include "net.h"
 #include "net_sync.h"
 #include "station_voice.h"
+#include "signal_model.h"
 #include <stdlib.h>
 
 /* --- Frustum culling: skip objects entirely off-screen --- */
@@ -63,6 +64,129 @@ void draw_background(vec2 camera) {
         sgl_v2f(parallax_pos.x + star->size, parallax_pos.y - star->size);
         sgl_v2f(parallax_pos.x + star->size, parallax_pos.y + star->size);
         sgl_v2f(parallax_pos.x - star->size, parallax_pos.y + star->size);
+    }
+    sgl_end();
+}
+
+/* ------------------------------------------------------------------ */
+/* Signal border rendering — marching squares on signal field          */
+/* ------------------------------------------------------------------ */
+
+/* Sample signal strength at a world position using the same function
+ * the server uses. On the client, signal_cache may not be synced, so
+ * this falls back to signal_strength_raw (loop over stations). With
+ * MAX_STATIONS=8 and a coarse sample grid, this is cheap. */
+
+/* Marching squares: emit a line segment for each cell edge that
+ * straddles the threshold. Interpolate position along the edge. */
+static void signal_contour_line(float threshold, float cell_size,
+                                int gx, int gy, float offset_x, float offset_y,
+                                float s00, float s10, float s01, float s11,
+                                float r, float g0, float b, float a) {
+    /* Classify corners: 1 = above threshold, 0 = below */
+    int code = 0;
+    if (s00 >= threshold) code |= 1;
+    if (s10 >= threshold) code |= 2;
+    if (s01 >= threshold) code |= 4;
+    if (s11 >= threshold) code |= 8;
+    if (code == 0 || code == 15) return; /* fully inside or outside */
+
+    /* Cell corner world positions */
+    float x0 = (float)gx * cell_size - offset_x;
+    float y0 = (float)gy * cell_size - offset_y;
+    float x1 = x0 + cell_size;
+    float y1 = y0 + cell_size;
+
+    /* Interpolation helpers: find where threshold crosses each edge */
+    #define LERP_EDGE(va, vb, pa, pb) \
+        ((fabsf((vb)-(va)) > 0.001f) ? (pa) + ((pb)-(pa)) * ((threshold-(va))/((vb)-(va))) : (pa))
+
+    /* Edge midpoints where contour crosses */
+    float top_x    = LERP_EDGE(s00, s10, x0, x1); /* top edge (y0) */
+    float bottom_x = LERP_EDGE(s01, s11, x0, x1); /* bottom edge (y1) */
+    float left_y   = LERP_EDGE(s00, s01, y0, y1); /* left edge (x0) */
+    float right_y  = LERP_EDGE(s10, s11, y0, y1); /* right edge (x1) */
+
+    /* Emit line segments based on marching squares case.
+     * 16 cases, but symmetric pairs share the same segment topology. */
+    vec2 seg[4]; /* max 2 segments = 4 endpoints */
+    int seg_count = 0;
+
+    switch (code) {
+    case 1: case 14: seg[0]=v2(x0,left_y);  seg[1]=v2(top_x,y0);    seg_count=1; break;
+    case 2: case 13: seg[0]=v2(top_x,y0);   seg[1]=v2(x1,right_y);  seg_count=1; break;
+    case 4: case 11: seg[0]=v2(x0,left_y);  seg[1]=v2(bottom_x,y1); seg_count=1; break;
+    case 8: case 7:  seg[0]=v2(bottom_x,y1);seg[1]=v2(x1,right_y);  seg_count=1; break;
+    case 3: case 12: seg[0]=v2(x0,left_y);  seg[1]=v2(x1,right_y);  seg_count=1; break;
+    case 6: case 9:  seg[0]=v2(top_x,y0);   seg[1]=v2(bottom_x,y1); seg_count=1; break;
+    case 5:  /* saddle */
+        seg[0]=v2(x0,left_y); seg[1]=v2(top_x,y0);
+        seg[2]=v2(bottom_x,y1); seg[3]=v2(x1,right_y); seg_count=2; break;
+    case 10: /* saddle */
+        seg[0]=v2(top_x,y0); seg[1]=v2(x1,right_y);
+        seg[2]=v2(x0,left_y); seg[3]=v2(bottom_x,y1); seg_count=2; break;
+    default: break;
+    }
+    #undef LERP_EDGE
+
+    for (int i = 0; i < seg_count; i++) {
+        sgl_c4f(r, g0, b, a);
+        sgl_v2f(seg[i*2].x, seg[i*2].y);
+        sgl_v2f(seg[i*2+1].x, seg[i*2+1].y);
+    }
+}
+
+void draw_signal_borders(void) {
+    /* Sample grid covers the visible frustum with some padding */
+    const float CELL = 400.0f; /* sample every 400 world units */
+    float vl = cam_left()   - CELL;
+    float vr = cam_right()  + CELL;
+    float vt = cam_top()    - CELL;
+    float vb = cam_bottom() + CELL;
+
+    int cols = (int)((vr - vl) / CELL) + 1;
+    int rows = (int)((vb - vt) / CELL) + 1;
+    if (cols < 2 || rows < 2) return;
+    if (cols > 128) cols = 128;
+    if (rows > 128) rows = 128;
+
+    /* Sample signal strength into a local grid */
+    float samples[128][128];
+    for (int y = 0; y < rows; y++) {
+        for (int x = 0; x < cols; x++) {
+            float wx = vl + (float)x * CELL;
+            float wy = vt + (float)y * CELL;
+            samples[y][x] = signal_strength_at(&g.world, v2(wx, wy));
+        }
+    }
+
+    /* Three contour layers with distinct colors and intensities.
+     * Drawn as batched lines for efficiency. */
+    static const struct {
+        float threshold;
+        float r, g, b, a;
+    } bands[] = {
+        { SIGNAL_BAND_OPERATIONAL, 0.95f, 0.80f, 0.30f, 0.25f }, /* core:    warm gold */
+        { SIGNAL_BAND_FRINGE,     0.80f, 0.55f, 0.20f, 0.18f }, /* fringe:  amber */
+        { SIGNAL_BAND_FRONTIER,   0.50f, 0.35f, 0.15f, 0.12f }, /* frontier: dim ochre */
+    };
+
+    sgl_begin_lines();
+    for (int band = 0; band < 3; band++) {
+        float thr = bands[band].threshold;
+        /* Slight jitter on threshold for crackling effect */
+        float time_noise = sinf(g.world.time * 1.7f + (float)band * 2.1f) * 0.008f;
+        thr += time_noise;
+
+        for (int y = 0; y < rows - 1; y++) {
+            for (int x = 0; x < cols - 1; x++) {
+                signal_contour_line(thr, CELL, x, y, -vl, -vt,
+                    samples[y][x], samples[y][x+1],
+                    samples[y+1][x], samples[y+1][x+1],
+                    bands[band].r, bands[band].g, bands[band].b,
+                    bands[band].a);
+            }
+        }
     }
     sgl_end();
 }

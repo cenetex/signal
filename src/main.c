@@ -949,6 +949,7 @@ static void render_world(void) {
     sgl_load_identity();
 
     draw_background(camera);
+    draw_signal_borders();
 
     for (int i = 0; i < MAX_STATIONS; i++) {
         const station_t* st = &g.world.stations[i];
