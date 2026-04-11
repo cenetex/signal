@@ -316,6 +316,7 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
          * processed the action. Without this guard the HUD label flickered
          * on/off during the round-trip window. */
         sp->autopilot_mode = state->autopilot_mode;
+        sp->autopilot_target = (state->autopilot_target == 0xFF) ? -1 : (int)state->autopilot_target;
     }
     /* Dock-state reconciliation:
      * - Server says undocked -> always accept.
@@ -359,10 +360,14 @@ void interpolate_world_for_render(void) {
     float t = clampf(g.asteroid_interp.t, 0.0f, 1.0f);
 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        asteroid_t *dst = &g.world.asteroids[i];
-        const asteroid_t *prev = &g.asteroid_interp.prev[i];
         const asteroid_t *curr = &g.asteroid_interp.curr[i];
-        /* Use current state for everything except position */
+        const asteroid_t *prev = &g.asteroid_interp.prev[i];
+        /* Skip inactive slots — avoid ~100-byte struct copy for empty entries. */
+        if (!curr->active && !prev->active) {
+            g.world.asteroids[i].active = false;
+            continue;
+        }
+        asteroid_t *dst = &g.world.asteroids[i];
         *dst = *curr;
         if (prev->active && curr->active) {
             dst->pos.x = lerpf(prev->pos.x, curr->pos.x, t);
@@ -373,9 +378,13 @@ void interpolate_world_for_render(void) {
 
     float nt = clampf(g.npc_interp.t, 0.0f, 1.0f);
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        npc_ship_t *dst = &g.world.npc_ships[i];
-        const npc_ship_t *prev = &g.npc_interp.prev[i];
         const npc_ship_t *curr = &g.npc_interp.curr[i];
+        const npc_ship_t *prev = &g.npc_interp.prev[i];
+        if (!curr->active && !prev->active) {
+            g.world.npc_ships[i].active = false;
+            continue;
+        }
+        npc_ship_t *dst = &g.world.npc_ships[i];
         *dst = *curr;
         if (prev->active && curr->active) {
             dst->pos.x = lerpf(prev->pos.x, curr->pos.x, nt);

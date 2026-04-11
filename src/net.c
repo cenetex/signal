@@ -356,8 +356,10 @@ static void handle_message(const uint8_t* data, int len) {
                     pss.towed_count = data[off + 2];
                     for (int t = 0; t < 10; t++)
                         pss.towed_fragments[t] = data[off + 3 + t];
+                    pss.autopilot_target = (len >= off + 14) ? data[off + 13] : 0xFF;
                 } else {
                     memset(pss.towed_fragments, 0xFF, 10);
+                    pss.autopilot_target = 0xFF;
                 }
                 net_state.callbacks.on_player_ship(&pss);
             }

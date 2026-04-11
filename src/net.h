@@ -94,6 +94,7 @@ typedef struct {
     uint8_t tractor_fragments;
     uint8_t towed_count;
     uint8_t towed_fragments[10]; /* asteroid indices, 0xFF = unused */
+    uint8_t autopilot_target;    /* asteroid index, 0xFF = none */
 } NetPlayerShipState;
 
 typedef void (*net_on_player_ship_fn)(const NetPlayerShipState* state);
