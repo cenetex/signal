@@ -48,6 +48,9 @@ void draw_scaffold_tether(void);
 void draw_shipyard_intake_beams(void);
 void draw_placement_reticle(void);
 
+/* --- Signal borders --- */
+void draw_signal_borders(void);
+
 /* --- Compass ring --- */
 void draw_compass_ring(void);
 
