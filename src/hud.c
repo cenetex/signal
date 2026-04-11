@@ -1228,8 +1228,8 @@ void draw_hud(void) {
                 sdtx_puts("syncing...");
             }
         } else if (g.multiplayer_enabled) {
-            sdtx_color3b(220, 200, 60);
-            sdtx_puts("connecting...");
+            sdtx_color3b(180, 120, 60);
+            sdtx_puts("offline [P] reconnect");
         } else {
             sdtx_color3b(80, 100, 80);
             sdtx_printf("v%s", client_hash);

@@ -26,6 +26,7 @@ static struct {
     bool session_token_ready;
     char callsign[8];
     bool callsign_ready;
+    char server_url[256];
 } net_state;
 
 /* ---------- Protocol helpers (shared between WASM and native) ------------ */
@@ -601,6 +602,7 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
         printf("[net] no server URL provided, multiplayer disabled\n");
         return false;
     }
+    snprintf(net_state.server_url, sizeof(net_state.server_url), "%s", url);
     if (!emscripten_websocket_is_supported()) {
         printf("[net] WebSocket not supported in this browser\n");
         return false;
@@ -624,6 +626,37 @@ bool net_init(const char* url, const NetCallbacks* callbacks) {
     emscripten_websocket_set_onclose_callback(ws_socket, NULL, on_ws_close);
 
     printf("[net] connecting to %s\n", url);
+    return true;
+}
+
+bool net_reconnect(void) {
+    if (net_state.server_url[0] == '\0') return false;
+    if (ws_socket > 0) {
+        emscripten_websocket_delete(ws_socket);
+        ws_socket = 0;
+    }
+    /* Preserve callbacks and session token, reset connection state */
+    net_state.connected = false;
+    net_state.local_id = 0xFF;
+    net_state.server_hash[0] = '\0';
+    memset(net_state.players, 0, sizeof(net_state.players));
+
+    EmscriptenWebSocketCreateAttributes attr;
+    emscripten_websocket_init_create_attributes(&attr);
+    attr.url = net_state.server_url;
+    attr.protocols = NULL;
+    attr.createOnMainThread = EM_TRUE;
+
+    ws_socket = emscripten_websocket_new(&attr);
+    if (ws_socket <= 0) {
+        printf("[net] reconnect failed\n");
+        return false;
+    }
+    emscripten_websocket_set_onopen_callback(ws_socket, NULL, on_ws_open);
+    emscripten_websocket_set_onmessage_callback(ws_socket, NULL, on_ws_message);
+    emscripten_websocket_set_onerror_callback(ws_socket, NULL, on_ws_error);
+    emscripten_websocket_set_onclose_callback(ws_socket, NULL, on_ws_close);
+    printf("[net] reconnecting to %s\n", net_state.server_url);
     return true;
 }
 
@@ -805,6 +838,19 @@ void net_send_state(float x, float y, float vx, float vy, float angle) {
     write_f32_le(&buf[18], angle);
     buf[22] = 0;
     ws_send_binary(buf, 23);
+}
+
+bool net_reconnect(void) {
+    /* Native: reconnect via mongoose */
+    if (net_state.server_url[0] == '\0') return false;
+    if (ws_conn) { ws_conn->is_closing = 1; ws_conn = NULL; }
+    net_state.connected = false;
+    net_state.local_id = 0xFF;
+    net_state.server_hash[0] = '\0';
+    memset(net_state.players, 0, sizeof(net_state.players));
+    ws_conn = mg_ws_connect(&net_mgr, net_state.server_url, net_ev_handler, NULL, NULL);
+    printf("[net] reconnecting to %s\n", net_state.server_url);
+    return ws_conn != NULL;
 }
 
 void net_poll(void) {

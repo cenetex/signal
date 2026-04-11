@@ -186,6 +186,9 @@ typedef struct {
  * Returns true if connection was initiated. */
 bool net_init(const char* url, const NetCallbacks* callbacks);
 
+/* Reconnect to the same server using stored URL + session token. */
+bool net_reconnect(void);
+
 /* Shut down the connection and free resources. */
 void net_shutdown(void);
 
