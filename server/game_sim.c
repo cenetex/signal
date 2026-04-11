@@ -704,9 +704,20 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
                     price = contract_price(&w->contracts[k]);
                     w->contracts[k].quantity_needed -= accepted;
                     if (w->contracts[k].quantity_needed <= 0.01f) {
-                        w->contracts[k].active = false;
-                        emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
-                            .contract_complete.action = CONTRACT_TRACTOR});
+                        /* Don't close if scaffold modules still need this material —
+                         * step_contracts() and step_module_activation() handle that. */
+                        bool scaffold_still_needs = false;
+                        for (int m2 = 0; m2 < st->module_count; m2++) {
+                            if (st->modules[m2].scaffold && st->modules[m2].build_progress < 1.0f
+                                && module_build_material(st->modules[m2].type) == buy) {
+                                scaffold_still_needs = true; break;
+                            }
+                        }
+                        if (!scaffold_still_needs) {
+                            w->contracts[k].active = false;
+                            emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
+                                .contract_complete.action = CONTRACT_TRACTOR});
+                        }
                     }
                     break;
                 }
@@ -739,9 +750,19 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         st->inventory[c] += deliver;
         ct->quantity_needed -= deliver;
         if (ct->quantity_needed <= 0.01f) {
-            ct->active = false;
-            emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
-                .contract_complete.action = CONTRACT_TRACTOR});
+            /* Don't close if scaffold modules still need this material */
+            bool scaffold_still_needs = false;
+            for (int m2 = 0; m2 < st->module_count; m2++) {
+                if (st->modules[m2].scaffold && st->modules[m2].build_progress < 1.0f
+                    && module_build_material(st->modules[m2].type) == c) {
+                    scaffold_still_needs = true; break;
+                }
+            }
+            if (!scaffold_still_needs) {
+                ct->active = false;
+                emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
+                    .contract_complete.action = CONTRACT_TRACTOR});
+            }
         }
     }
 
@@ -1360,7 +1381,7 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
                 m->ring = (uint8_t)chosen_ring;
                 m->slot = (uint8_t)chosen_slot;
                 m->scaffold = true;
-                m->build_progress = 1.0f;
+                m->build_progress = 0.0f; /* needs supply after outpost activates */
             }
             sc->active = false;
             sp->ship.towed_scaffold = -1;
@@ -1426,15 +1447,15 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
                     break;
                 }
             }
-            /* Queue the player's module scaffold — materials pre-paid at
-             * shipyard, but build timer waits until the station activates. */
+            /* Queue the player's module scaffold — needs material delivery
+             * after the outpost activates before the build timer starts. */
             if (st->module_count < MAX_MODULES_PER_STATION) {
                 station_module_t *m = &st->modules[st->module_count++];
                 m->type = sc->module_type;
                 m->ring = 1;
                 m->slot = 0;
                 m->scaffold = true;
-                m->build_progress = 1.0f;
+                m->build_progress = 0.0f; /* needs supply after outpost activates */
             }
             emit_event(w, (sim_event_t){
                 .type = SIM_EVENT_OUTPOST_PLACED,
@@ -2383,15 +2404,46 @@ static void step_contracts(world_t *w, float dt) {
 
         switch (w->contracts[i].action) {
         case CONTRACT_TRACTOR: {
-            /* Close when station buffer is sufficiently full */
             if (w->contracts[i].station_index >= MAX_STATIONS) break;
             station_t *st = &w->stations[w->contracts[i].station_index];
             commodity_t c = w->contracts[i].commodity;
-            float current = st->inventory[c];
-            float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.8f : MAX_PRODUCT_STOCK * 0.8f;
-            if (current >= threshold) {
-                w->contracts[i].active = false;
-                emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_TRACTOR});
+
+            /* Check if any scaffold module at this station still needs
+             * this commodity — if so, close on scaffold progress, not
+             * on the generic inventory threshold. */
+            bool scaffold_needs = false;
+            for (int m = 0; m < st->module_count; m++) {
+                if (!st->modules[m].scaffold) continue;
+                if (st->modules[m].build_progress >= 1.0f) continue;
+                if (module_build_material(st->modules[m].type) != c) continue;
+                scaffold_needs = true;
+                break;
+            }
+            if (st->scaffold && c == COMMODITY_FRAME && st->scaffold_progress < 1.0f)
+                scaffold_needs = true;
+
+            if (scaffold_needs) {
+                /* Close when ALL scaffolds needing this commodity are supplied */
+                bool all_supplied = true;
+                for (int m = 0; m < st->module_count; m++) {
+                    if (!st->modules[m].scaffold) continue;
+                    if (module_build_material(st->modules[m].type) != c) continue;
+                    if (st->modules[m].build_progress < 1.0f) { all_supplied = false; break; }
+                }
+                if (st->scaffold && c == COMMODITY_FRAME && st->scaffold_progress < 1.0f)
+                    all_supplied = false;
+                if (all_supplied) {
+                    w->contracts[i].active = false;
+                    emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_TRACTOR});
+                }
+            } else {
+                /* Non-construction: close on generic inventory threshold */
+                float current = st->inventory[c];
+                float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.8f : MAX_PRODUCT_STOCK * 0.8f;
+                if (current >= threshold) {
+                    w->contracts[i].active = false;
+                    emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_TRACTOR});
+                }
             }
             break;
         }
@@ -2774,10 +2826,9 @@ static bool find_nearest_open_slot(const station_t *st, vec2 pos, int *out_ring,
 }
 
 /* Convert a snapped scaffold into a station module.
- * Materials were already consumed at the shipyard during manufacture —
- * placement goes straight to the 10s construction timer, no supply phase. */
+ * The placed module enters a supply phase (build_progress 0→1) where
+ * material must be delivered before the 10s construction timer starts. */
 static void finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
-    (void)w;
     station_t *st = &w->stations[sc->placed_station];
     if (st->module_count >= MAX_MODULES_PER_STATION) {
         sc->active = false;
@@ -2788,7 +2839,7 @@ static void finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
     m->ring = (uint8_t)sc->placed_ring;
     m->slot = (uint8_t)sc->placed_slot;
     m->scaffold = true;
-    m->build_progress = 1.0f; /* materials already delivered — skip supply phase */
+    m->build_progress = 0.0f; /* enter post-placement supply phase */
     /* If this slot was planned, fulfill the plan (remove it). */
     for (int p = 0; p < st->placement_plan_count; p++) {
         if (st->placement_plans[p].ring == sc->placed_ring &&
@@ -2799,8 +2850,26 @@ static void finalize_scaffold_placement(world_t *w, scaffold_t *sc) {
             break;
         }
     }
-    SIM_LOG("[sim] placed %s at station %d ring %d slot %d (no supply needed)\n",
-            module_type_name(sc->module_type), sc->placed_station, sc->placed_ring, sc->placed_slot);
+    /* Post a supply contract so NPCs can deliver the build material.
+     * step_contracts() Priority 1 will also regenerate if this closes. */
+    float cost = module_build_cost(sc->module_type);
+    commodity_t material = module_build_material(sc->module_type);
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (!w->contracts[k].active) {
+            w->contracts[k] = (contract_t){
+                .active = true, .action = CONTRACT_TRACTOR,
+                .station_index = (uint8_t)sc->placed_station,
+                .commodity = material,
+                .quantity_needed = cost,
+                .base_price = st->base_price[material] * 1.15f,
+                .target_index = -1, .claimed_by = -1,
+            };
+            break;
+        }
+    }
+    SIM_LOG("[sim] placed %s at station %d ring %d slot %d (needs %.0f %s)\n",
+            module_type_name(sc->module_type), sc->placed_station,
+            sc->placed_ring, sc->placed_slot, cost, commodity_name(material));
     sc->active = false;
 }
 

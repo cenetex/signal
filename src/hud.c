@@ -1358,10 +1358,16 @@ void draw_hud(void) {
             sdtx_printf("Ring %d  Slot %d", im->ring, im->slot);
 
             if (im->scaffold) {
-                int pct = (int)lroundf(im->build_progress * 100.0f);
                 sdtx_pos(px / cell, (py + 42.0f) / cell);
-                sdtx_color3b(255, 180, 60);
-                sdtx_printf("BUILDING: %d%%", pct);
+                if (im->build_progress < 1.0f) {
+                    int pct = (int)lroundf(im->build_progress * 100.0f);
+                    sdtx_color3b(255, 140, 40); /* orange — awaiting material */
+                    sdtx_printf("SUPPLYING: %d%%", pct);
+                } else {
+                    int pct = (int)lroundf((im->build_progress - 1.0f) * 100.0f);
+                    sdtx_color3b(255, 180, 60); /* amber — build timer */
+                    sdtx_printf("BUILDING: %d%%", pct);
+                }
             } else {
                 sdtx_pos(px / cell, (py + 42.0f) / cell);
                 sdtx_color3b(130, 255, 235);

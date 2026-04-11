@@ -158,6 +158,32 @@ void step_module_activation(world_t *w, float dt) {
                     spawn_npc(w, s, NPC_ROLE_HAULER);
                 if (st->modules[i].type == MODULE_SHIPYARD)
                     spawn_npc(w, s, NPC_ROLE_TOW);
+                /* Close any construction supply contracts that targeted
+                 * this module's build material, unless another scaffold
+                 * at this station still needs it. */
+                commodity_t mat = module_build_material(st->modules[i].type);
+                for (int k = 0; k < MAX_CONTRACTS; k++) {
+                    if (!w->contracts[k].active) continue;
+                    if (w->contracts[k].action != CONTRACT_TRACTOR) continue;
+                    if (w->contracts[k].station_index != s) continue;
+                    if (w->contracts[k].commodity != mat) continue;
+                    bool still_needed = false;
+                    for (int j = 0; j < st->module_count; j++) {
+                        if (j == i) continue;
+                        if (!st->modules[j].scaffold) continue;
+                        if (st->modules[j].build_progress >= 1.0f) continue;
+                        if (module_build_material(st->modules[j].type) == mat) {
+                            still_needed = true; break;
+                        }
+                    }
+                    if (!still_needed) {
+                        w->contracts[k].active = false;
+                        emit_event(w, (sim_event_t){
+                            .type = SIM_EVENT_CONTRACT_COMPLETE,
+                            .contract_complete.action = CONTRACT_TRACTOR,
+                        });
+                    }
+                }
                 emit_event(w, (sim_event_t){
                     .type = SIM_EVENT_MODULE_ACTIVATED,
                     .module_activated = { .station = s, .module_idx = i, .module_type = (int)st->modules[i].type },

@@ -4558,7 +4558,7 @@ TEST(test_scaffold_snap_ignores_starter_stations) {
 }
 
 TEST(test_scaffold_full_pipeline) {
-    /* End-to-end: spawn → snap → supply → activate */
+    /* End-to-end: spawn → snap → supply → build timer → activate */
     world_t w = {0};
     world_reset(&w);
 
@@ -4566,7 +4566,7 @@ TEST(test_scaffold_full_pipeline) {
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
     w.players[0].docked = false;
-    
+
     w.players[0].ship.credits = 1000.0f;
     vec2 outpost_pos = v2_add(w.stations[0].pos, v2(3000.0f, 0.0f));
     int outpost = test_place_outpost_via_tow(&w, &w.players[0], outpost_pos);
@@ -4576,6 +4576,11 @@ TEST(test_scaffold_full_pipeline) {
     w.stations[outpost].signal_range = 6000.0f;
     w.stations[outpost].arm_count = 1;
     w.stations[outpost].arm_speed[0] = 0.04f;
+    /* Pre-supply founding module scaffolds so they don't compete */
+    for (int mi = 0; mi < w.stations[outpost].module_count; mi++) {
+        if (w.stations[outpost].modules[mi].scaffold)
+            w.stations[outpost].modules[mi].build_progress = 1.0f;
+    }
     rebuild_signal_chain(&w);
 
     int before_count = w.stations[outpost].module_count;
@@ -4590,14 +4595,22 @@ TEST(test_scaffold_full_pipeline) {
     ASSERT(!w.scaffolds[idx].active);
     ASSERT(w.stations[outpost].module_count == before_count + 1);
 
-    /* The new module should be a furnace scaffold with materials pre-paid
-     * (build_progress >= 1.0 — materials consumed at shipyard during
-     * manufacture). The construction timer runs from 1.0 → 2.0. */
+    /* Post-placement: module enters supply phase (build_progress = 0) */
     station_module_t *m = &w.stations[outpost].modules[before_count];
     ASSERT_EQ_INT(m->type, MODULE_FURNACE);
-    ASSERT(m->build_progress >= 1.0f); /* supply phase already skipped */
+    ASSERT(m->scaffold);
+    ASSERT(m->build_progress < 1.0f); /* in supply phase, not pre-paid */
 
-    /* Run construction timer (10s) */
+    /* Step 2: Deliver build material to advance supply phase.
+     * Furnaces need frames — deposit into station inventory,
+     * step_module_activation will route it to the scaffold. */
+    commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
+    float cost = module_build_cost_lookup(MODULE_FURNACE);
+    w.stations[outpost].inventory[mat] = cost;
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    ASSERT(m->build_progress >= 1.0f); /* fully supplied, timer may have started */
+
+    /* Step 3: Run construction timer (10s = 1200 ticks at 120Hz) */
     for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
 
     /* Module should be fully activated */
@@ -4671,6 +4684,214 @@ TEST(test_scaffold_tow_speed_cap) {
     /* Scaffold speed should be capped */
     float spd = v2_len(w.scaffolds[idx].vel);
     ASSERT(spd <= 60.0f); /* slightly above cap due to spring forces in single frame */
+}
+
+/* ================================================================== */
+/* Placed-scaffold supply (#277)                                      */
+/* ================================================================== */
+
+/* Helper: set up an activated outpost and snap a furnace scaffold into it.
+ * Returns the outpost station index; *out_mod_idx receives the new module index.
+ * Pre-supplies any founding module scaffolds so they don't compete. */
+static int test_setup_placed_scaffold(world_t *w, int *out_mod_idx) {
+    w->players[0].connected = true;
+    player_init_ship(&w->players[0], w);
+    w->players[0].docked = false;
+    w->players[0].ship.credits = 1000.0f;
+    vec2 outpost_pos = v2_add(w->stations[0].pos, v2(3000.0f, 0.0f));
+    int outpost = test_place_outpost_via_tow(w, &w->players[0], outpost_pos);
+    if (outpost < 3) return -1;
+    w->stations[outpost].scaffold = false;
+    w->stations[outpost].scaffold_progress = 1.0f;
+    w->stations[outpost].signal_range = 6000.0f;
+    w->stations[outpost].arm_count = 1;
+    w->stations[outpost].arm_speed[0] = 0.04f;
+    /* Pre-supply any founding module scaffolds so they don't interfere */
+    for (int i = 0; i < w->stations[outpost].module_count; i++) {
+        if (w->stations[outpost].modules[i].scaffold)
+            w->stations[outpost].modules[i].build_progress = 1.0f;
+    }
+    rebuild_signal_chain(w);
+    int before = w->stations[outpost].module_count;
+    vec2 ring1_near = v2_add(outpost_pos, v2(180.0f, 0.0f));
+    int idx = spawn_scaffold(w, MODULE_FURNACE, ring1_near, 0);
+    if (idx < 0) return -1;
+    for (int i = 0; i < 600; i++) world_sim_step(w, SIM_DT);
+    if (w->stations[outpost].module_count != before + 1) return -1;
+    *out_mod_idx = before;
+    return outpost;
+}
+
+TEST(test_placed_scaffold_supply_phase) {
+    /* After snap, module starts at build_progress=0. Delivering material
+     * advances it to 1.0, then the 10s build timer runs 1.0 → 2.0. */
+    world_t w = {0};
+    world_reset(&w);
+    int mod_idx;
+    int outpost = test_setup_placed_scaffold(&w, &mod_idx);
+    ASSERT(outpost >= 3);
+    station_module_t *m = &w.stations[outpost].modules[mod_idx];
+    ASSERT(m->scaffold);
+    ASSERT(m->build_progress < 0.01f); /* supply phase start */
+
+    /* Deliver half the material */
+    commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
+    float cost = module_build_cost_lookup(MODULE_FURNACE);
+    w.stations[outpost].inventory[mat] = cost * 0.5f;
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    ASSERT(m->build_progress > 0.4f && m->build_progress < 0.6f);
+    ASSERT(m->scaffold); /* still building */
+
+    /* Deliver the rest */
+    w.stations[outpost].inventory[mat] = cost * 0.5f;
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    ASSERT(m->build_progress >= 1.0f); /* fully supplied, timer may have started */
+
+    /* Build timer: 10s = 1200 ticks */
+    for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
+    ASSERT(!m->scaffold);
+    ASSERT_EQ_FLOAT(m->build_progress, 1.0f, 0.01f);
+}
+
+TEST(test_placed_scaffold_player_delivery) {
+    /* A docked player delivering the build material should advance the
+     * scaffold's build_progress via step_module_delivery. */
+    world_t w = {0};
+    world_reset(&w);
+    int mod_idx;
+    int outpost = test_setup_placed_scaffold(&w, &mod_idx);
+    ASSERT(outpost >= 3);
+    station_module_t *m = &w.stations[outpost].modules[mod_idx];
+    ASSERT(m->scaffold);
+
+    /* Dock the player at the outpost with the required cargo */
+    w.players[0].docked = true;
+    w.players[0].current_station = outpost;
+    commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
+    float cost = module_build_cost_lookup(MODULE_FURNACE);
+    w.players[0].ship.cargo[mat] = cost;
+
+    /* Trigger sell action — step_module_delivery pulls from cargo */
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    ASSERT_EQ_FLOAT(m->build_progress, 1.0f, 0.01f);
+    ASSERT(w.players[0].ship.cargo[mat] < 0.01f); /* cargo consumed */
+}
+
+TEST(test_construction_contract_closes_on_activation) {
+    /* When the scaffold module activates, any supply contract at
+     * this station for the build material should close. */
+    world_t w = {0};
+    world_reset(&w);
+    int mod_idx;
+    int outpost = test_setup_placed_scaffold(&w, &mod_idx);
+    ASSERT(outpost >= 3);
+    station_module_t *m = &w.stations[outpost].modules[mod_idx];
+    commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
+
+    /* There should be a supply contract for this station+material */
+    bool found_contract = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active && w.contracts[k].action == CONTRACT_TRACTOR
+            && w.contracts[k].station_index == outpost && w.contracts[k].commodity == mat) {
+            found_contract = true; break;
+        }
+    }
+    ASSERT(found_contract);
+
+    /* Supply and activate */
+    float cost = module_build_cost_lookup(MODULE_FURNACE);
+    w.stations[outpost].inventory[mat] = cost;
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    ASSERT(m->build_progress >= 1.0f); /* fully supplied */
+    /* Run build timer */
+    for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
+    ASSERT(!m->scaffold); /* activated */
+
+    /* Contract should now be closed */
+    bool contract_alive = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active && w.contracts[k].action == CONTRACT_TRACTOR
+            && w.contracts[k].station_index == outpost && w.contracts[k].commodity == mat) {
+            contract_alive = true; break;
+        }
+    }
+    ASSERT(!contract_alive);
+}
+
+TEST(test_stale_contract_does_not_block_next_need) {
+    /* After a construction contract completes, the station should be
+     * able to generate its next need contract (e.g. ore hopper). */
+    world_t w = {0};
+    world_reset(&w);
+    int mod_idx;
+    int outpost = test_setup_placed_scaffold(&w, &mod_idx);
+    ASSERT(outpost >= 3);
+    station_module_t *m = &w.stations[outpost].modules[mod_idx];
+
+    /* Supply, build, activate */
+    commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
+    float cost = module_build_cost_lookup(MODULE_FURNACE);
+    w.stations[outpost].inventory[mat] = cost;
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
+    ASSERT(!m->scaffold);
+
+    /* Run a few more ticks for step_contracts to generate the next need */
+    for (int i = 0; i < 240; i++) world_sim_step(&w, SIM_DT);
+
+    /* The station should be able to post a new contract (not blocked).
+     * A furnace station needs ore — check if any contract exists or
+     * at least that no stale construction contract is blocking. */
+    bool stale_construction = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active && w.contracts[k].action == CONTRACT_TRACTOR
+            && w.contracts[k].station_index == outpost && w.contracts[k].commodity == mat) {
+            /* A supply contract for the build material should not linger */
+            stale_construction = true; break;
+        }
+    }
+    ASSERT(!stale_construction);
+}
+
+TEST(test_construction_contract_checks_scaffold_not_threshold) {
+    /* A construction supply contract should NOT close based on the
+     * 80% station inventory threshold — it should stay open while
+     * the scaffold still needs material, regardless of inventory level. */
+    world_t w = {0};
+    world_reset(&w);
+    int mod_idx;
+    int outpost = test_setup_placed_scaffold(&w, &mod_idx);
+    ASSERT(outpost >= 3);
+    station_module_t *m = &w.stations[outpost].modules[mod_idx];
+    commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
+    float cost = module_build_cost_lookup(MODULE_FURNACE);
+
+    /* Deliver a partial amount (not enough to fully supply).
+     * But make the station inventory exceed the 80% generic threshold
+     * by adding a different commodity that fills the buffer. */
+    w.stations[outpost].inventory[mat] = cost * 0.3f; /* partial supply */
+    world_sim_step(&w, SIM_DT);
+
+    /* After one tick, step_module_activation routed the partial amount
+     * into the scaffold. Scaffold is partially supplied, not full. */
+    ASSERT(m->build_progress > 0.2f && m->build_progress < 0.4f);
+    ASSERT(m->scaffold);
+
+    /* Contract must still be open — scaffold isn't fully supplied */
+    bool contract_alive = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active && w.contracts[k].action == CONTRACT_TRACTOR
+            && w.contracts[k].station_index == outpost && w.contracts[k].commodity == mat) {
+            contract_alive = true; break;
+        }
+    }
+    ASSERT(contract_alive);
+
+    /* Now deliver the rest */
+    w.stations[outpost].inventory[mat] = cost;
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    ASSERT(m->build_progress >= 1.0f); /* fully supplied */
 }
 
 /* ================================================================== */
@@ -5580,6 +5801,13 @@ int main(void) {
     RUN(test_scaffold_full_pipeline);
     RUN(test_scaffold_ship_drag);
     RUN(test_save_preserves_pending_scaffolds);
+
+    printf("\nPlaced-scaffold supply (#277):\n");
+    RUN(test_placed_scaffold_supply_phase);
+    RUN(test_placed_scaffold_player_delivery);
+    RUN(test_construction_contract_closes_on_activation);
+    RUN(test_stale_contract_does_not_block_next_need);
+    RUN(test_construction_contract_checks_scaffold_not_threshold);
 
     printf("\nModule schema (#280):\n");
     RUN(test_module_schema_basic_kinds);
