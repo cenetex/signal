@@ -6,6 +6,8 @@
  * After that, stations take over via contextual hail responses.
  */
 #include "client.h"
+#include "station_voice.h"
+#include "world_draw.h"
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -84,7 +86,23 @@ void onboarding_mark_hailed(void)    { complete_step(&g.onboarding.hailed); }
 
 bool onboarding_hint(char *label, size_t label_size,
                      char *message, size_t message_size) {
-    if (g.onboarding.complete) return false;
+    if (g.onboarding.complete) {
+        /* Show welcome message once, from nearest station */
+        if (!g.onboarding.welcomed) {
+            g.onboarding.welcomed = true;
+            int ns = nearest_signal_station(LOCAL_PLAYER.ship.pos);
+            if (ns >= 0 && ns < 3) {
+                snprintf(label, label_size, "%s", g.world.stations[ns].name);
+                snprintf(message, message_size, "%s",
+                    STATION_ONBOARD[ns][VOICE_ONBOARD_COMPLETE]);
+            } else {
+                snprintf(label, label_size, "SIGNAL");
+                snprintf(message, message_size, "Signal chain active. Welcome to the network.");
+            }
+            return true;
+        }
+        return false;
+    }
 
     snprintf(label, label_size, "SIGNAL");
     snprintf(message, message_size, "%s [W/A/S/D] move  %s [Space] fracture  %s [R] tractor  %s [H] hail",

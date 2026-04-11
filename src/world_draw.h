@@ -48,7 +48,8 @@ void draw_scaffold_tether(void);
 void draw_shipyard_intake_beams(void);
 void draw_placement_reticle(void);
 
-/* --- Signal borders --- */
+/* --- Signal field helpers --- */
+int nearest_signal_station(vec2 pos);
 void draw_signal_borders(void);
 
 /* --- Compass ring --- */

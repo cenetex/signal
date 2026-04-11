@@ -116,6 +116,7 @@ typedef struct {
         bool tractored;      /* collected ore fragments */
         bool hailed;         /* pressed H to hail a station */
         bool complete;       /* all 4 steps done — stations take over */
+        bool welcomed;       /* completion message shown */
         bool loaded;         /* state loaded from localStorage */
     } onboarding;
     /* --- Module activation effect --- */
