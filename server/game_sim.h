@@ -241,8 +241,11 @@ bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot);
 bool player_load_by_token(server_player_t *sp, world_t *w, const char *dir,
                           const uint8_t token[8]);
 
-/* Cross-module sim helpers — defined in game_sim.c, used by sim_*.c.
- * Anchors a docked player ship to its current station's berth. */
+/* Cross-module sim helpers — defined in game_sim.c, used by sim_*.c. */
 void anchor_ship_in_station(server_player_t *sp, world_t *w);
+asteroid_tier_t max_mineable_tier(int mining_level);
+vec2 station_approach_target(const station_t *st, vec2 from);
+
+#define DOCK_APPROACH_RANGE 300.0f /* range to detect station for docking */
 
 #endif /* GAME_SIM_H */
