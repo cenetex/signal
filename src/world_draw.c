@@ -129,7 +129,13 @@ static void signal_contour_line(float threshold, float cell_size,
     }
     #undef LERP_EDGE
 
+    /* Dotted: skip segments based on position hash for a dash pattern */
     for (int i = 0; i < seg_count; i++) {
+        float mx = (seg[i*2].x + seg[i*2+1].x) * 0.5f;
+        float my = (seg[i*2].y + seg[i*2+1].y) * 0.5f;
+        /* Hash position to create consistent dash pattern */
+        int hash = (int)(mx * 0.03f) + (int)(my * 0.03f);
+        if (hash & 1) continue; /* skip every other dash */
         sgl_c4f(r, g0, b, a);
         sgl_v2f(seg[i*2].x, seg[i*2].y);
         sgl_v2f(seg[i*2+1].x, seg[i*2+1].y);
@@ -174,9 +180,6 @@ void draw_signal_borders(void) {
     sgl_begin_lines();
     for (int band = 0; band < 3; band++) {
         float thr = bands[band].threshold;
-        /* Slight jitter on threshold for crackling effect */
-        float time_noise = sinf(g.world.time * 1.7f + (float)band * 2.1f) * 0.008f;
-        thr += time_noise;
 
         for (int y = 0; y < rows - 1; y++) {
             for (int x = 0; x < cols - 1; x++) {
