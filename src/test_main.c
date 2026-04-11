@@ -4923,11 +4923,8 @@ TEST(test_autopilot_completes_mining_cycle) {
 
     run_autopilot_ticks(w, &w->players[0], 180.0f);
 
-    /* Should have earned credits from at least one delivery.
-     * Known issue: flight_hover_near overshoots through asteroids,
-     * ship spends most time flying back instead of mining. */
-    if (w->players[0].ship.credits <= credits_before)
-        printf("      [WARN] autopilot did not complete mining cycle in 180s\n");
+    /* Should have earned credits from at least one delivery. */
+    ASSERT(w->players[0].ship.credits > credits_before);
     free(w);
 }
 

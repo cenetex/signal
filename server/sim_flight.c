@@ -86,44 +86,53 @@ flight_cmd_t flight_steer_to(const world_t *w, const ship_t *ship,
 
 flight_cmd_t flight_hover_near(const world_t *w, const ship_t *ship,
                                 vec2 target, float standoff) {
-    (void)w;   /* reserved for future obstacle checks */
+    (void)w;
 
     flight_cmd_t cmd = {0.0f, 0.0f};
     float dist = sqrtf(v2_dist_sq(ship->pos, target));
+    float speed = sqrtf(v2_len_sq(ship->vel));
     float sweet_min = standoff - 15.0f;
     float sweet_max = standoff + 30.0f;
 
+    /* Priority 1: if going too fast, brake regardless of zone.
+     * This prevents the overshoot-rocket cycle where the ship
+     * passes through the asteroid and accelerates away. */
+    if (speed > 40.0f) {
+        cmd = flight_brake(ship);
+        return cmd;
+    }
+
+    /* Direction to target (for facing). */
+    vec2 to_target = v2_sub(target, ship->pos);
+
     if (dist < sweet_min) {
-        /* Too close — turn AWAY from the target and burn forward. */
+        /* Too close — drift away gently. Don't thrust hard or we
+         * overshoot and enter the rocket cycle. */
         vec2 away = v2_sub(ship->pos, target);
         float push_angle = atan2f(away.y, away.x);
         cmd.turn = flight_face_heading(ship, push_angle);
         float facing = cosf(wrap_angle(push_angle - ship->angle));
-        cmd.thrust = (facing > 0.6f) ? 0.6f : 0.0f;
+        cmd.thrust = (facing > 0.6f) ? 0.3f : 0.0f;
     } else if (dist > sweet_max) {
-        /* Drifted out — close in slowly. */
-        vec2 to_target = v2_sub(target, ship->pos);
+        /* Drifted out — close in slowly at max 40 u/s. */
         float face = atan2f(to_target.y, to_target.x);
         cmd.turn = flight_face_heading(ship, face);
         float facing = cosf(wrap_angle(face - ship->angle));
         float approach_v = v2_dot(ship->vel, v2_scale(to_target, 1.0f / dist));
-        cmd.thrust = nav_speed_control(approach_v, 50.0f);
+        cmd.thrust = nav_speed_control(approach_v, 40.0f);
         if (facing < 0.5f) cmd.thrust = 0.0f;
     } else {
-        /* In the sweet spot — face the target and brake residual velocity. */
-        vec2 to_target = v2_sub(target, ship->pos);
+        /* Sweet spot — face target, hold position. */
         float face = atan2f(to_target.y, to_target.x);
         cmd.turn = flight_face_heading(ship, face);
-        float speed = sqrtf(v2_len_sq(ship->vel));
-        if (speed > 30.0f) {
-            vec2 vel_dir = v2_scale(ship->vel, 1.0f / speed);
-            vec2 fwd = v2(cosf(ship->angle), sinf(ship->angle));
-            float vel_along_fwd = v2_dot(vel_dir, fwd) * speed;
-            if (vel_along_fwd > 30.0f) cmd.thrust = -1.0f;
-            else if (vel_along_fwd < -30.0f) cmd.thrust = 1.0f;
-            else cmd.thrust = 0.0f;
-        } else {
-            cmd.thrust = 0.0f;
+        /* Gently oppose any residual drift. */
+        if (speed > 10.0f) {
+            float vel_angle = atan2f(ship->vel.y, ship->vel.x);
+            float brake_heading = wrap_angle(vel_angle + PI_F);
+            float brake_facing = cosf(wrap_angle(brake_heading - ship->angle));
+            if (brake_facing > 0.3f)
+                cmd.thrust = fminf(speed / 30.0f, 0.5f);
+            /* else: turning to face, let it happen */
         }
     }
     return cmd;
