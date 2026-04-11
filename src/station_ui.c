@@ -39,6 +39,20 @@ int nearest_station_index(vec2 pos) {
     return best_index;
 }
 
+int nearest_signal_station(vec2 pos) {
+    float best = 0.0f;
+    int best_idx = -1;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &g.world.stations[s];
+        if (!station_provides_signal(st)) continue;
+        float dist = sqrtf(v2_dist_sq(pos, st->pos));
+        if (dist > st->signal_range) continue;
+        float strength = 1.0f - dist / st->signal_range;
+        if (strength > best) { best = strength; best_idx = s; }
+    }
+    return (best_idx >= 0) ? best_idx : nearest_station_index(pos);
+}
+
 int player_planned_types(module_type_t *out, int max) {
     if (!out || max <= 0) return 0;
     /* Faction-shared blueprints: count distinct types across all

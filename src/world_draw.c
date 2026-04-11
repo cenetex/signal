@@ -8,6 +8,7 @@
 #include "npc.h"
 #include "net.h"
 #include "net_sync.h"
+#include "station_voice.h"
 #include <stdlib.h>
 
 /* --- Frustum culling: skip objects entirely off-screen --- */
@@ -1630,6 +1631,50 @@ void draw_callsigns(void) {
             WS_TO_SCREEN(players[i].x, players[i].y, -len * cell * 0.5f, -36.0f);
             sdtx_puts(players[i].callsign);
         }
+    }
+
+    #undef WS_TO_SCREEN
+}
+
+void draw_npc_chatter(void) {
+    float screen_w = ui_screen_width();
+    float screen_h = ui_screen_height();
+    sdtx_canvas(screen_w, screen_h);
+    sdtx_origin(0.0f, 0.0f);
+    const float cell = 8.0f;
+
+    float cam_x = cam_left() + screen_w * 0.5f;
+    float cam_y = cam_top()  + screen_h * 0.5f;
+
+    #define WS_TO_SCREEN(wx, wy, ox, oy) do { \
+        float _sx = (wx - cam_x) + screen_w * 0.5f + (ox); \
+        float _sy = (wy - cam_y) + screen_h * 0.5f + (oy); \
+        sdtx_pos(_sx / cell, _sy / cell); \
+    } while (0)
+
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        const npc_ship_t *npc = &g.world.npc_ships[i];
+        if (!npc->active) continue;
+        if (npc->role == NPC_ROLE_TOW) continue; /* tow drones: silent */
+        if (!on_screen(npc->pos.x, npc->pos.y, 50.0f)) continue;
+        float dx = npc->pos.x - LOCAL_PLAYER.ship.pos.x;
+        float dy = npc->pos.y - LOCAL_PLAYER.ship.pos.y;
+        if (dx * dx + dy * dy > 500.0f * 500.0f) continue; /* too far */
+
+        /* Rotate line every 8 seconds, offset by NPC index */
+        const char *line;
+        if (npc->role == NPC_ROLE_MINER) {
+            int idx = (i + (int)(g.world.time / 8.0f)) % NPC_CHATTER_MINER_COUNT;
+            line = NPC_CHATTER_MINER[idx];
+        } else {
+            int idx = (i + (int)(g.world.time / 8.0f)) % NPC_CHATTER_HAULER_COUNT;
+            line = NPC_CHATTER_HAULER[idx];
+        }
+
+        int len = (int)strlen(line);
+        sdtx_color3b(100, 130, 110); /* faded radio green */
+        WS_TO_SCREEN(npc->pos.x, npc->pos.y, -len * cell * 0.5f, 24.0f);
+        sdtx_puts(line);
     }
 
     #undef WS_TO_SCREEN
