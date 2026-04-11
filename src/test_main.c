@@ -2956,45 +2956,51 @@ TEST(test_hauler_fills_highest_value_contract) {
 /* ================================================================== */
 
 TEST(test_player_save_load_roundtrip) {
-    world_t w = {0};
-    world_reset(&w);
-    player_init_ship(&w.players[0], &w);
-    w.players[0].connected = true;
-    w.players[0].ship.credits = 1234.0f;
-    ASSERT(world_save(&w, "/tmp/test_player.sav"));
-    world_t loaded = {0};
-    ASSERT(world_load(&loaded, "/tmp/test_player.sav"));
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    player_init_ship(&w->players[0], w);
+    w->players[0].connected = true;
+    w->players[0].ship.credits = 1234.0f;
+    ASSERT(world_save(w, "/tmp/test_player.sav"));
+    world_t *loaded = calloc(1, sizeof(world_t));
+    ASSERT(world_load(loaded, "/tmp/test_player.sav"));
     /* Players are cleared on load (they reconnect) */
-    ASSERT(!loaded.players[0].connected);
+    ASSERT(!loaded->players[0].connected);
     /* But world state (stations, etc.) survives */
-    ASSERT_EQ_FLOAT(loaded.stations[0].signal_range, w.stations[0].signal_range, 0.01f);
+    ASSERT_EQ_FLOAT(loaded->stations[0].signal_range, w->stations[0].signal_range, 0.01f);
+    free(loaded);
+    free(w);
     remove("/tmp/test_player.sav");
 }
 
 TEST(test_world_save_load_preserves_stations) {
-    world_t w = {0};
-    world_reset(&w);
-    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 42.0f;
-    w.stations[0].inventory[COMMODITY_FRAME] = 15.0f;
-    ASSERT(world_save(&w, "/tmp/test_world.sav"));
-    world_t loaded = {0};
-    ASSERT(world_load(&loaded, "/tmp/test_world.sav"));
-    ASSERT_EQ_FLOAT(loaded.stations[0].inventory[COMMODITY_FERRITE_ORE], 42.0f, 0.01f);
-    ASSERT_EQ_FLOAT(loaded.stations[0].inventory[COMMODITY_FRAME], 15.0f, 0.01f);
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 42.0f;
+    w->stations[0].inventory[COMMODITY_FRAME] = 15.0f;
+    ASSERT(world_save(w, "/tmp/test_world.sav"));
+    world_t *loaded = calloc(1, sizeof(world_t));
+    ASSERT(world_load(loaded, "/tmp/test_world.sav"));
+    ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_ORE], 42.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FRAME], 15.0f, 0.01f);
+    free(loaded);
+    free(w);
     remove("/tmp/test_world.sav");
 }
 
 TEST(test_world_save_load_preserves_npcs) {
-    world_t w = {0};
-    world_reset(&w);
-    for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
-    ASSERT(world_save(&w, "/tmp/test_npcs.sav"));
-    world_t loaded = {0};
-    ASSERT(world_load(&loaded, "/tmp/test_npcs.sav"));
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < 600; i++) world_sim_step(w, SIM_DT);
+    ASSERT(world_save(w, "/tmp/test_npcs.sav"));
+    world_t *loaded = calloc(1, sizeof(world_t));
+    ASSERT(world_load(loaded, "/tmp/test_npcs.sav"));
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        ASSERT_EQ_FLOAT(loaded.npc_ships[i].pos.x, w.npc_ships[i].pos.x, 0.01f);
-        ASSERT_EQ_FLOAT(loaded.npc_ships[i].pos.y, w.npc_ships[i].pos.y, 0.01f);
+        ASSERT_EQ_FLOAT(loaded->npc_ships[i].pos.x, w->npc_ships[i].pos.x, 0.01f);
+        ASSERT_EQ_FLOAT(loaded->npc_ships[i].pos.y, w->npc_ships[i].pos.y, 0.01f);
     }
+    free(loaded);
+    free(w);
     remove("/tmp/test_npcs.sav");
 }
 
@@ -3126,9 +3132,9 @@ TEST(test_player_load_bad_magic_fails) {
 }
 
 TEST(test_world_load_rejects_stale_version) {
-    world_t w = {0};
-    world_reset(&w);
-    ASSERT(world_save(&w, "/tmp/test_stale.sav"));
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    ASSERT(world_save(w, "/tmp/test_stale.sav"));
     /* Overwrite version (bytes 4-7) with old version 11 */
     FILE *f = fopen("/tmp/test_stale.sav", "r+b");
     ASSERT(f != NULL);
@@ -3136,32 +3142,36 @@ TEST(test_world_load_rejects_stale_version) {
     uint32_t old_version = 11;
     fwrite(&old_version, sizeof(old_version), 1, f);
     fclose(f);
-    world_t loaded = {0};
-    ASSERT(!world_load(&loaded, "/tmp/test_stale.sav"));
+    world_t *loaded = calloc(1, sizeof(world_t));
+    ASSERT(!world_load(loaded, "/tmp/test_stale.sav"));
+    free(loaded);
+    free(w);
     remove("/tmp/test_stale.sav");
 }
 
 TEST(test_world_save_load_preserves_module_ring_slot) {
-    world_t w = {0};
-    world_reset(&w);
-    ASSERT(w.stations[0].module_count >= 4);
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    ASSERT(w->stations[0].module_count >= 4);
     /* Verify furnace on ring 1 and silo on ring 2 survive save/load */
-    station_module_t orig = w.stations[0].modules[2]; /* furnace at ring 1 slot 2 */
+    station_module_t orig = w->stations[0].modules[2]; /* furnace at ring 1 slot 2 */
     ASSERT(orig.type == MODULE_FURNACE);
     ASSERT(orig.ring == 1);
-    ASSERT(world_save(&w, "/tmp/test_modules.sav"));
-    world_t loaded = {0};
-    ASSERT(world_load(&loaded, "/tmp/test_modules.sav"));
-    station_module_t restored = loaded.stations[0].modules[2];
+    ASSERT(world_save(w, "/tmp/test_modules.sav"));
+    world_t *loaded = calloc(1, sizeof(world_t));
+    ASSERT(world_load(loaded, "/tmp/test_modules.sav"));
+    station_module_t restored = loaded->stations[0].modules[2];
     ASSERT_EQ_INT((int)restored.type, (int)orig.type);
     ASSERT_EQ_INT((int)restored.ring, (int)orig.ring);
     ASSERT_EQ_INT((int)restored.slot, (int)orig.slot);
     ASSERT_EQ_INT((int)restored.scaffold, (int)orig.scaffold);
     ASSERT_EQ_FLOAT(restored.build_progress, orig.build_progress, 0.001f);
     /* modules[3] = ore_silo on ring 2 */
-    station_module_t mod3 = loaded.stations[0].modules[3];
+    station_module_t mod3 = loaded->stations[0].modules[3];
     ASSERT(mod3.type == MODULE_ORE_SILO);
     ASSERT_EQ_INT((int)mod3.ring, 2);
+    free(loaded);
+    free(w);
     remove("/tmp/test_modules.sav");
 }
 
@@ -3171,18 +3181,27 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
     ASSERT(w != NULL);
     world_reset(w);
     w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 20.0f;
-    for (int i = 0; i < (int)(10.0f / SIM_DT); i++)
+    for (int i = 0; i < (int)(10.0f / SIM_DT); i++) {
         world_sim_step(w, SIM_DT);
+        if (i % 100 == 0) fprintf(stderr, "[smelted] step %d\n", i);
+    }
     float ingots_before = w->stations[0].inventory[COMMODITY_FERRITE_INGOT];
+    fprintf(stderr, "[smelted] ingots=%.2f, saving...\n", ingots_before);
     ASSERT(ingots_before > 0.0f);
     ASSERT(world_save(w, "/tmp/test_ingots.sav"));
+    fprintf(stderr, "[smelted] saved, allocating loaded...\n");
     world_t *loaded = calloc(1, sizeof(world_t));
     ASSERT(loaded != NULL);
+    fprintf(stderr, "[smelted] loading...\n");
     ASSERT(world_load(loaded, "/tmp/test_ingots.sav"));
+    fprintf(stderr, "[smelted] loaded, checking...\n");
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_INGOT], ingots_before, 0.01f);
+    fprintf(stderr, "[smelted] check passed, cleanup...\n");
     remove("/tmp/test_ingots.sav");
     free(loaded);
+    fprintf(stderr, "[smelted] freed loaded\n");
     free(w);
+    fprintf(stderr, "[smelted] done\n");
 }
 
 /* ================================================================== */
@@ -3203,9 +3222,11 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
 #define EXPECTED_SAVE_SIZE 23094
 
 TEST(test_save_file_size_stable) {
-    world_t w = {0};
-    world_reset(&w);
-    ASSERT(world_save(&w, "/tmp/test_size.sav"));
+    world_t *w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    ASSERT(world_save(w, "/tmp/test_size.sav"));
+    free(w);
     FILE *f = fopen("/tmp/test_size.sav", "rb");
     ASSERT(f != NULL);
     fseek(f, 0, SEEK_END);
@@ -3268,50 +3289,52 @@ static int test_place_outpost_via_tow(world_t *w, server_player_t *sp, vec2 pos)
 }
 
 TEST(test_save_load_preserves_player_outpost) {
-    world_t w = {0};
-    world_reset(&w);
-    player_init_ship(&w.players[0], &w);
-    w.players[0].connected = true;
-    w.players[0].docked = false;  /* must be undocked to place */
-    w.players[0].ship.credits = 1000.0f;
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    player_init_ship(&w->players[0], w);
+    w->players[0].connected = true;
+    w->players[0].docked = false;  /* must be undocked to place */
+    w->players[0].ship.credits = 1000.0f;
     /* Place outpost within signal range of station 0 but >800 units away */
     vec2 pos = v2(2000.0f, -2400.0f);
-    int slot = test_place_outpost_via_tow(&w, &w.players[0], pos);
+    int slot = test_place_outpost_via_tow(w, &w->players[0], pos);
     ASSERT(slot >= 0);
-    ASSERT(station_exists(&w.stations[slot]));
-    ASSERT(w.stations[slot].scaffold);
+    ASSERT(station_exists(&w->stations[slot]));
+    ASSERT(w->stations[slot].scaffold);
     /* Deliver some frames to advance progress */
-    w.stations[slot].inventory[COMMODITY_FRAME] = 30.0f;
-    for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
-    float progress = w.stations[slot].scaffold_progress;
-    int mod_count = w.stations[slot].module_count;
+    w->stations[slot].inventory[COMMODITY_FRAME] = 30.0f;
+    for (int i = 0; i < 600; i++) world_sim_step(w, SIM_DT);
+    float progress = w->stations[slot].scaffold_progress;
+    int mod_count = w->stations[slot].module_count;
     char name_buf[32];
-    memcpy(name_buf, w.stations[slot].name, 32);
+    memcpy(name_buf, w->stations[slot].name, 32);
     /* Save and reload */
-    ASSERT(world_save(&w, "/tmp/test_outpost.sav"));
-    world_t loaded = {0};
-    ASSERT(world_load(&loaded, "/tmp/test_outpost.sav"));
+    ASSERT(world_save(w, "/tmp/test_outpost.sav"));
+    world_t *loaded = calloc(1, sizeof(world_t));
+    ASSERT(world_load(loaded, "/tmp/test_outpost.sav"));
     /* Outpost must survive */
-    ASSERT(station_exists(&loaded.stations[slot]));
-    ASSERT(loaded.stations[slot].scaffold);
-    ASSERT_EQ_FLOAT(loaded.stations[slot].pos.x, 2000.0f, 1.0f);
-    ASSERT_EQ_FLOAT(loaded.stations[slot].pos.y, -2400.0f, 1.0f);
-    ASSERT_EQ_FLOAT(loaded.stations[slot].scaffold_progress, progress, 0.01f);
-    ASSERT_EQ_INT(loaded.stations[slot].module_count, mod_count);
-    ASSERT_STR_EQ(loaded.stations[slot].name, name_buf);
+    ASSERT(station_exists(&loaded->stations[slot]));
+    ASSERT(loaded->stations[slot].scaffold);
+    ASSERT_EQ_FLOAT(loaded->stations[slot].pos.x, 2000.0f, 1.0f);
+    ASSERT_EQ_FLOAT(loaded->stations[slot].pos.y, -2400.0f, 1.0f);
+    ASSERT_EQ_FLOAT(loaded->stations[slot].scaffold_progress, progress, 0.01f);
+    ASSERT_EQ_INT(loaded->stations[slot].module_count, mod_count);
+    ASSERT_STR_EQ(loaded->stations[slot].name, name_buf);
     /* Signal chain rebuilt — outpost may or may not be connected depending on
      * scaffold state, but the station slot must still exist */
-    ASSERT(loaded.stations[slot].signal_range > 0.0f);
+    ASSERT(loaded->stations[slot].signal_range > 0.0f);
+    free(loaded);
+    free(w);
     remove("/tmp/test_outpost.sav");
 }
 
 TEST(test_save_backward_compat_version_accepted) {
     /* Save at current version, patch version down to MIN, verify load works.
      * This validates the migration path doesn't reject old-but-supported saves. */
-    world_t w = {0};
-    world_reset(&w);
-    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 77.0f;
-    ASSERT(world_save(&w, "/tmp/test_compat.sav"));
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 77.0f;
+    ASSERT(world_save(w, "/tmp/test_compat.sav"));
     /* Patch version field (bytes 4-7) to MIN_SAVE_VERSION — currently
      * same as SAVE_VERSION, so this is a no-op. When SAVE_VERSION is bumped
      * past MIN_SAVE_VERSION, this test verifies older saves still load. */
@@ -3321,9 +3344,11 @@ TEST(test_save_backward_compat_version_accepted) {
     uint32_t min_ver = 20;  /* MIN_SAVE_VERSION at time of writing */
     fwrite(&min_ver, sizeof(min_ver), 1, f);
     fclose(f);
-    world_t loaded = {0};
-    ASSERT(world_load(&loaded, "/tmp/test_compat.sav"));
-    ASSERT_EQ_FLOAT(loaded.stations[0].inventory[COMMODITY_FERRITE_ORE], 77.0f, 0.01f);
+    world_t *loaded = calloc(1, sizeof(world_t));
+    ASSERT(world_load(loaded, "/tmp/test_compat.sav"));
+    ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_ORE], 77.0f, 0.01f);
+    free(loaded);
+    free(w);
     remove("/tmp/test_compat.sav");
 }
 
@@ -3340,26 +3365,26 @@ TEST(test_save_v21_module_remap) {
      *  12  ORE_SILO       → MODULE_ORE_SILO     (kept)
      *  15  SHIPYARD       → MODULE_SHIPYARD     (kept)
      */
-    world_t w = {0};
-    world_reset(&w);
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
     /* Hand-build station[3]: 6 modules, 4 will survive. */
-    memset(&w.stations[3], 0, sizeof(w.stations[3]));
-    snprintf(w.stations[3].name, sizeof(w.stations[3].name), "%s", "TestRig");
-    w.stations[3].pos = v2(5000.0f, 5000.0f);
-    w.stations[3].radius = 36.0f;
-    w.stations[3].signal_range = 3000.0f;
+    memset(&w->stations[3], 0, sizeof(w->stations[3]));
+    snprintf(w->stations[3].name, sizeof(w->stations[3].name), "%s", "TestRig");
+    w->stations[3].pos = v2(5000.0f, 5000.0f);
+    w->stations[3].radius = 36.0f;
+    w->stations[3].signal_range = 3000.0f;
     static const int kV21Types[6] = { 0, 5, 6, 11, 12, 15 };
-    w.stations[3].module_count = 6;
+    w->stations[3].module_count = 6;
     for (int i = 0; i < 6; i++) {
-        w.stations[3].modules[i].type = (module_type_t)kV21Types[i];
-        w.stations[3].modules[i].ring = 1;
-        w.stations[3].modules[i].slot = (uint8_t)i;
-        w.stations[3].modules[i].scaffold = false;
-        w.stations[3].modules[i].build_progress = 1.0f;
-        w.stations[3].module_input[i] = (float)(i + 1);
-        w.stations[3].module_output[i] = (float)(i + 100);
+        w->stations[3].modules[i].type = (module_type_t)kV21Types[i];
+        w->stations[3].modules[i].ring = 1;
+        w->stations[3].modules[i].slot = (uint8_t)i;
+        w->stations[3].modules[i].scaffold = false;
+        w->stations[3].modules[i].build_progress = 1.0f;
+        w->stations[3].module_input[i] = (float)(i + 1);
+        w->stations[3].module_output[i] = (float)(i + 100);
     }
-    ASSERT(world_save(&w, "/tmp/test_v21_remap.sav"));
+    ASSERT(world_save(w, "/tmp/test_v21_remap.sav"));
     /* Patch version field (offset 4) down to 21 to force the v22 migration. */
     FILE *f = fopen("/tmp/test_v21_remap.sav", "r+b");
     ASSERT(f != NULL);
@@ -3367,35 +3392,39 @@ TEST(test_save_v21_module_remap) {
     uint32_t v21 = 21;
     fwrite(&v21, sizeof(v21), 1, f);
     fclose(f);
-    world_t loaded = {0};
-    ASSERT(world_load(&loaded, "/tmp/test_v21_remap.sav"));
+    world_t *loaded = calloc(1, sizeof(world_t));
+    ASSERT(world_load(loaded, "/tmp/test_v21_remap.sav"));
     /* 4 of 6 survive: indices 0, 2, 4, 5 in the original list. */
-    ASSERT_EQ_INT(loaded.stations[3].module_count, 4);
-    ASSERT_EQ_INT((int)loaded.stations[3].modules[0].type, (int)MODULE_DOCK);
-    ASSERT_EQ_INT((int)loaded.stations[3].modules[1].type, (int)MODULE_REPAIR_BAY);
-    ASSERT_EQ_INT((int)loaded.stations[3].modules[2].type, (int)MODULE_ORE_SILO);
-    ASSERT_EQ_INT((int)loaded.stations[3].modules[3].type, (int)MODULE_SHIPYARD);
+    ASSERT_EQ_INT(loaded->stations[3].module_count, 4);
+    ASSERT_EQ_INT((int)loaded->stations[3].modules[0].type, (int)MODULE_DOCK);
+    ASSERT_EQ_INT((int)loaded->stations[3].modules[1].type, (int)MODULE_REPAIR_BAY);
+    ASSERT_EQ_INT((int)loaded->stations[3].modules[2].type, (int)MODULE_ORE_SILO);
+    ASSERT_EQ_INT((int)loaded->stations[3].modules[3].type, (int)MODULE_SHIPYARD);
     /* Per-module input/output buffers should follow the same compaction. */
-    ASSERT_EQ_FLOAT(loaded.stations[3].module_input[0], 1.0f, 0.001f);  /* was idx 0 */
-    ASSERT_EQ_FLOAT(loaded.stations[3].module_input[1], 3.0f, 0.001f);  /* was idx 2 */
-    ASSERT_EQ_FLOAT(loaded.stations[3].module_input[2], 5.0f, 0.001f);  /* was idx 4 */
-    ASSERT_EQ_FLOAT(loaded.stations[3].module_input[3], 6.0f, 0.001f);  /* was idx 5 */
+    ASSERT_EQ_FLOAT(loaded->stations[3].module_input[0], 1.0f, 0.001f);  /* was idx 0 */
+    ASSERT_EQ_FLOAT(loaded->stations[3].module_input[1], 3.0f, 0.001f);  /* was idx 2 */
+    ASSERT_EQ_FLOAT(loaded->stations[3].module_input[2], 5.0f, 0.001f);  /* was idx 4 */
+    ASSERT_EQ_FLOAT(loaded->stations[3].module_input[3], 6.0f, 0.001f);  /* was idx 5 */
+    free(loaded);
+    free(w);
     remove("/tmp/test_v21_remap.sav");
 }
 
 TEST(test_save_future_version_rejected) {
     /* A save with version > SAVE_VERSION must be rejected (can't load future formats) */
-    world_t w = {0};
-    world_reset(&w);
-    ASSERT(world_save(&w, "/tmp/test_future.sav"));
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    ASSERT(world_save(w, "/tmp/test_future.sav"));
     FILE *f = fopen("/tmp/test_future.sav", "r+b");
     ASSERT(f != NULL);
     fseek(f, 4, SEEK_SET);
     uint32_t future = 9999;
     fwrite(&future, sizeof(future), 1, f);
     fclose(f);
-    world_t loaded = {0};
-    ASSERT(!world_load(&loaded, "/tmp/test_future.sav"));
+    world_t *loaded = calloc(1, sizeof(world_t));
+    ASSERT(!world_load(loaded, "/tmp/test_future.sav"));
+    free(loaded);
+    free(w);
     remove("/tmp/test_future.sav");
 }
 
@@ -4111,7 +4140,8 @@ TEST(test_autopilot_ignores_fragments_targets_rocks) {
 /* ================================================================== */
 
 /* Helper: set up a minimal world with station 0 and a connected player */
-static void setup_collision_world(world_t *w) {
+static world_t *setup_collision_world_heap(void) {
+    world_t *w = calloc(1, sizeof(world_t));
     world_reset(w);
     /* Clear asteroids and NPCs to isolate collision testing */
     for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
@@ -4121,26 +4151,27 @@ static void setup_collision_world(world_t *w) {
     w->players[0].id = 0;
     player_init_ship(&w->players[0], w);
     w->players[0].docked = false;
+    return w;
 }
 
 TEST(test_238_station_core_blocks_player) {
     /* Issue 1: player should not fly through station center.
      * Place player on a collision course with station 0 core. */
-    world_t w;
-    setup_collision_world(&w);
-    vec2 st_pos = w.stations[0].pos;
-    float st_r = w.stations[0].radius; /* 40 */
+    world_t *w = setup_collision_world_heap();
+    
+    vec2 st_pos = w->stations[0].pos;
+    float st_r = w->stations[0].radius; /* 40 */
     float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius; /* 16 */
 
     /* Start 200 units away, heading straight at center */
-    w.players[0].ship.pos = v2(st_pos.x + 200.0f, st_pos.y);
-    w.players[0].ship.vel = v2(-500.0f, 0.0f);
+    w->players[0].ship.pos = v2(st_pos.x + 200.0f, st_pos.y);
+    w->players[0].ship.vel = v2(-500.0f, 0.0f);
 
     /* Run 120 ticks (~1 second) */
     for (int i = 0; i < 120; i++)
-        world_sim_step(&w, SIM_DT);
+        world_sim_step(w, SIM_DT);
 
-    float dist = v2_len(v2_sub(w.players[0].ship.pos, st_pos));
+    float dist = v2_len(v2_sub(w->players[0].ship.pos, st_pos));
     float min_allowed = st_r + 4.0f + ship_r;
     /* Player must be outside the core collision boundary */
     ASSERT(dist >= min_allowed - 1.0f);
@@ -4149,20 +4180,20 @@ TEST(test_238_station_core_blocks_player) {
 TEST(test_238_module_circle_blocks_player) {
     /* Module collision circles should block the player.
      * Fly directly at the signal relay on ring 1, slot 1 of station 0. */
-    world_t w;
-    setup_collision_world(&w);
-    vec2 mod_pos = module_world_pos_ring(&w.stations[0], 1, 1);
+    world_t *w = setup_collision_world_heap();
+    
+    vec2 mod_pos = module_world_pos_ring(&w->stations[0], 1, 1);
     float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius;
 
     /* Approach from outside, heading at module */
-    vec2 approach_dir = v2_norm(v2_sub(mod_pos, w.stations[0].pos));
-    w.players[0].ship.pos = v2_add(mod_pos, v2_scale(approach_dir, 100.0f));
-    w.players[0].ship.vel = v2_scale(approach_dir, -400.0f);
+    vec2 approach_dir = v2_norm(v2_sub(mod_pos, w->stations[0].pos));
+    w->players[0].ship.pos = v2_add(mod_pos, v2_scale(approach_dir, 100.0f));
+    w->players[0].ship.vel = v2_scale(approach_dir, -400.0f);
 
     for (int i = 0; i < 120; i++)
-        world_sim_step(&w, SIM_DT);
+        world_sim_step(w, SIM_DT);
 
-    float dist = v2_len(v2_sub(w.players[0].ship.pos, mod_pos));
+    float dist = v2_len(v2_sub(w->players[0].ship.pos, mod_pos));
     float min_allowed = 34.0f /* MODULE_COLLISION_RADIUS */ + ship_r;
     ASSERT(dist >= min_allowed - 2.0f);
 }
@@ -4171,27 +4202,27 @@ TEST(test_238_corridor_blocks_radial_approach) {
     /* Corridor between relay@1 and furnace@2 on ring 1 of station 0.
      * Dock@0 is skipped, so the relay-furnace corridor should block.
      * Approach radially — should be pushed out. */
-    world_t w;
-    setup_collision_world(&w);
-    vec2 st_pos = w.stations[0].pos;
+    world_t *w = setup_collision_world_heap();
+    
+    vec2 st_pos = w->stations[0].pos;
 
     /* Midpoint angle between slot 1 and slot 2 on ring 1 (accounts for ring_offset) */
-    float ang1 = module_angle_ring(&w.stations[0], 1, 1);
-    float ang2 = module_angle_ring(&w.stations[0], 1, 2);
+    float ang1 = module_angle_ring(&w->stations[0], 1, 1);
+    float ang2 = module_angle_ring(&w->stations[0], 1, 2);
     float mid_ang = (ang1 + ang2) * 0.5f;
     float ring_r = 180.0f; /* STATION_RING_RADIUS[1] */
 
     /* Place player at the ring radius at the corridor midpoint, approaching inward */
-    w.players[0].ship.pos = v2_add(st_pos, v2(cosf(mid_ang) * (ring_r + 60.0f), sinf(mid_ang) * (ring_r + 60.0f)));
-    vec2 inward = v2_norm(v2_sub(st_pos, w.players[0].ship.pos));
-    w.players[0].ship.vel = v2_scale(inward, 300.0f);
+    w->players[0].ship.pos = v2_add(st_pos, v2(cosf(mid_ang) * (ring_r + 60.0f), sinf(mid_ang) * (ring_r + 60.0f)));
+    vec2 inward = v2_norm(v2_sub(st_pos, w->players[0].ship.pos));
+    w->players[0].ship.vel = v2_scale(inward, 300.0f);
 
     for (int i = 0; i < 120; i++)
-        world_sim_step(&w, SIM_DT);
+        world_sim_step(w, SIM_DT);
 
     /* Player should have been pushed to outer edge of corridor band.
      * Corridor outer edge = ring_r + CORRIDOR_HW + ship_r */
-    float dist_from_center = v2_len(v2_sub(w.players[0].ship.pos, st_pos));
+    float dist_from_center = v2_len(v2_sub(w->players[0].ship.pos, st_pos));
     float corridor_hw = 10.0f; /* CORRIDOR_HW */
     float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius;
     float outer_edge = ring_r + corridor_hw + ship_r;
@@ -4203,47 +4234,47 @@ TEST(test_238_dock_gap_allows_entry) {
     /* Dock creates gap on one side (corridor skipped where dock is first module).
      * Station 0 ring 1: dock@0, relay@1, furnace@2.
      * Gap is between dock@0 and relay@1 — fly through midpoint. */
-    world_t w;
-    setup_collision_world(&w);
-    vec2 st_pos = w.stations[0].pos;
+    world_t *w = setup_collision_world_heap();
+    
+    vec2 st_pos = w->stations[0].pos;
     float ring_r = 180.0f; /* STATION_RING_RADIUS[1] */
 
-    float dock_ang = module_angle_ring(&w.stations[0], 1, 0);
-    float relay_ang = module_angle_ring(&w.stations[0], 1, 1);
+    float dock_ang = module_angle_ring(&w->stations[0], 1, 0);
+    float relay_ang = module_angle_ring(&w->stations[0], 1, 1);
     float gap_mid = (dock_ang + relay_ang) * 0.5f;
     vec2 outside = v2_add(st_pos, v2(cosf(gap_mid) * (ring_r + 80.0f), sinf(gap_mid) * (ring_r + 80.0f)));
     vec2 inside_target = v2_add(st_pos, v2(cosf(gap_mid) * (ring_r - 80.0f), sinf(gap_mid) * (ring_r - 80.0f)));
 
-    w.players[0].ship.pos = outside;
+    w->players[0].ship.pos = outside;
     vec2 dir = v2_norm(v2_sub(inside_target, outside));
-    w.players[0].ship.vel = v2_scale(dir, 200.0f);
+    w->players[0].ship.vel = v2_scale(dir, 200.0f);
 
     for (int i = 0; i < 120; i++)
-        world_sim_step(&w, SIM_DT);
+        world_sim_step(w, SIM_DT);
 
-    float dist_from_center = v2_len(v2_sub(w.players[0].ship.pos, st_pos));
+    float dist_from_center = v2_len(v2_sub(w->players[0].ship.pos, st_pos));
     ASSERT(dist_from_center < ring_r);
 }
 
 TEST(test_238_corridor_angular_edge_no_clip) {
     /* Corridor between relay@1 and furnace@2 on ring 1.
      * Approach at the angular edge near the furnace end — should not clip through. */
-    world_t w;
-    setup_collision_world(&w);
-    vec2 st_pos = w.stations[0].pos;
+    world_t *w = setup_collision_world_heap();
+    
+    vec2 st_pos = w->stations[0].pos;
     float ring_r = 180.0f; /* STATION_RING_RADIUS[1] */
 
     /* Furnace at slot 2 on ring 1 — approach from just before its angle */
-    float slot2_ang = module_angle_ring(&w.stations[0], 1, 2);
+    float slot2_ang = module_angle_ring(&w->stations[0], 1, 2);
     float test_ang = slot2_ang - 0.02f; /* just inside corridor end */
-    w.players[0].ship.pos = v2_add(st_pos, v2(cosf(test_ang) * (ring_r + 50.0f), sinf(test_ang) * (ring_r + 50.0f)));
-    vec2 inward = v2_norm(v2_sub(st_pos, w.players[0].ship.pos));
-    w.players[0].ship.vel = v2_scale(inward, 300.0f);
+    w->players[0].ship.pos = v2_add(st_pos, v2(cosf(test_ang) * (ring_r + 50.0f), sinf(test_ang) * (ring_r + 50.0f)));
+    vec2 inward = v2_norm(v2_sub(st_pos, w->players[0].ship.pos));
+    w->players[0].ship.vel = v2_scale(inward, 300.0f);
 
     for (int i = 0; i < 60; i++)
-        world_sim_step(&w, SIM_DT);
+        world_sim_step(w, SIM_DT);
 
-    float dist = v2_len(v2_sub(w.players[0].ship.pos, st_pos));
+    float dist = v2_len(v2_sub(w->players[0].ship.pos, st_pos));
     float ship_r = HULL_DEFS[HULL_CLASS_MINER].ship_radius;
     float outer_edge = ring_r + 10.0f + ship_r;
     ASSERT(dist >= outer_edge - 2.0f);
@@ -4252,30 +4283,30 @@ TEST(test_238_corridor_angular_edge_no_clip) {
 TEST(test_238_module_corridor_junction_no_jitter) {
     /* Place player at the junction between a module circle and a corridor arc.
      * Run 240 ticks. Ship should settle — not oscillate between collision handlers. */
-    world_t w;
-    setup_collision_world(&w);
-    vec2 st_pos = w.stations[0].pos;
+    world_t *w = setup_collision_world_heap();
+    
+    vec2 st_pos = w->stations[0].pos;
     float ring_r = 340.0f;
 
     /* Stop ring rotation so module positions are stable during test */
-    w.stations[0].arm_speed[0] = 0.0f;
-    w.stations[0].arm_speed[1] = 0.0f;
-    w.stations[0].arm_rotation[0] = 0.0f;
-    w.stations[0].arm_rotation[1] = 0.0f;
+    w->stations[0].arm_speed[0] = 0.0f;
+    w->stations[0].arm_speed[1] = 0.0f;
+    w->stations[0].arm_rotation[0] = 0.0f;
+    w->stations[0].arm_rotation[1] = 0.0f;
 
     /* Furnace at slot 2 on ring 2 — get actual module angle */
-    float mod_ang = module_angle_ring(&w.stations[0], 2, 2);
+    float mod_ang = module_angle_ring(&w->stations[0], 2, 2);
     /* Place ship just corridor-side of the module at the ring radius */
     float junction_ang = mod_ang - 0.05f;
-    w.players[0].ship.pos = v2_add(st_pos, v2(cosf(junction_ang) * ring_r, sinf(junction_ang) * ring_r));
-    w.players[0].ship.vel = v2(0.0f, 0.0f);
+    w->players[0].ship.pos = v2_add(st_pos, v2(cosf(junction_ang) * ring_r, sinf(junction_ang) * ring_r));
+    w->players[0].ship.vel = v2(0.0f, 0.0f);
 
     /* Record position every 30 ticks, check for oscillation */
     vec2 positions[8];
     for (int snap = 0; snap < 8; snap++) {
-        positions[snap] = w.players[0].ship.pos;
+        positions[snap] = w->players[0].ship.pos;
         for (int i = 0; i < 30; i++)
-            world_sim_step(&w, SIM_DT);
+            world_sim_step(w, SIM_DT);
     }
 
     /* Check that ship settled — last 4 snapshots should be within 5 units of each other */
@@ -4293,9 +4324,9 @@ TEST(test_238_invisible_wall_repro) {
      * collision distance bounces off "nothing visible".
      * Test: fly tangentially just outside the visual corridor width (ring_r + hw)
      * but inside the collision band (ring_r + hw + ship_r). Should collide. */
-    world_t w;
-    setup_collision_world(&w);
-    vec2 st_pos = w.stations[0].pos;
+    world_t *w = setup_collision_world_heap();
+    
+    vec2 st_pos = w->stations[0].pos;
     float ring_r = 340.0f;
     float corridor_hw = 10.0f;
     (void)HULL_DEFS; /* ship_r available if needed */
@@ -4304,22 +4335,22 @@ TEST(test_238_invisible_wall_repro) {
     float mid_ang = TWO_PI_F * 1.5f / 6.0f;
     /* Place at ring_r + corridor_hw + 5 (inside collision band but outside visual) */
     float test_r = ring_r + corridor_hw + 5.0f; /* between visual edge and collision edge */
-    w.players[0].ship.pos = v2_add(st_pos, v2(cosf(mid_ang) * test_r, sinf(mid_ang) * test_r));
+    w->players[0].ship.pos = v2_add(st_pos, v2(cosf(mid_ang) * test_r, sinf(mid_ang) * test_r));
     /* Fly tangentially (no radial component) */
-    vec2 radial = v2_norm(v2_sub(w.players[0].ship.pos, st_pos));
+    vec2 radial = v2_norm(v2_sub(w->players[0].ship.pos, st_pos));
     vec2 tangent = v2(-radial.y, radial.x);
-    w.players[0].ship.vel = v2_scale(tangent, 200.0f);
+    w->players[0].ship.vel = v2_scale(tangent, 200.0f);
 
-    vec2 start_pos = w.players[0].ship.pos;
+    vec2 start_pos = w->players[0].ship.pos;
     for (int i = 0; i < 60; i++)
-        world_sim_step(&w, SIM_DT);
+        world_sim_step(w, SIM_DT);
 
     /* The ship is inside the collision band (ring_r+hw+ship_r) but outside
      * the visual corridor (ring_r+hw). This IS the "invisible wall" —
      * the collision is correct (ship has physical radius) but the visual
      * doesn't show it. Verify the collision fires: ship should be pushed outward. */
     float start_r = v2_len(v2_sub(start_pos, st_pos));
-    float end_r = v2_len(v2_sub(w.players[0].ship.pos, st_pos));
+    float end_r = v2_len(v2_sub(w->players[0].ship.pos, st_pos));
     /* Ship should have been pushed outward (end_r >= start_r) because it was
      * inside the collision band. If this FAILS, the collision isn't detecting
      * the ship at this distance. */
@@ -4330,12 +4361,12 @@ TEST(test_station_geom_emitter_prospect) {
     /* Verify the geometry emitter produces correct shapes for Prospect (station 0).
      * Prospect ring 1: dock(slot 0), relay(slot 1), furnace(slot 2)
      * Prospect ring 2: ore_silo(slot 3) */
-    world_t w;
-    w.rng = 2037u;
-    world_reset(&w);
+    world_t *w = setup_collision_world_heap();
+    w->rng = 2037u;
+    world_reset(w);
 
     station_geom_t geom;
-    station_build_geom(&w.stations[0], &geom);
+    station_build_geom(&w->stations[0], &geom);
 
     /* Core: Prospect has radius 40 */
     ASSERT(geom.has_core == true);
@@ -4662,6 +4693,67 @@ TEST(test_scaffold_ship_drag) {
 
     /* Free flight should be significantly faster */
     ASSERT(free_spd > spd * 1.5f);
+}
+
+TEST(test_tow_drone_delivers_to_planned_outpost) {
+    world_t w = {0};
+    world_reset(&w);
+    w.players[0].connected = true;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].docked = false;
+    w.players[0].ship.credits = 1000.0f;
+
+    /* Create a planned outpost within signal range of station 0 */
+    vec2 plan_pos = v2_add(w.stations[0].pos, v2(4000.0f, 0.0f));
+    w.players[0].input.create_planned_outpost = true;
+    w.players[0].input.planned_outpost_pos = plan_pos;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.create_planned_outpost = false;
+
+    int plan_slot = -1;
+    for (int s = 3; s < MAX_STATIONS; s++) {
+        if (w.stations[s].planned) { plan_slot = s; break; }
+    }
+    ASSERT(plan_slot >= 0);
+
+    /* Spawn a loose signal relay near Kepler (station 1) */
+    vec2 near_kepler = v2_add(w.stations[1].pos, v2(200.0f, 0.0f));
+    int sc_idx = spawn_scaffold(&w, MODULE_SIGNAL_RELAY, near_kepler, 0);
+    ASSERT(sc_idx >= 0);
+    w.scaffolds[sc_idx].state = SCAFFOLD_LOOSE;
+    w.scaffolds[sc_idx].towed_by = -1;
+
+    /* Find Kepler's tow drone */
+    int drone_idx = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_TOW
+            && w.npc_ships[i].home_station == 1) {
+            drone_idx = i; break;
+        }
+    }
+    ASSERT(drone_idx >= 0);
+    w.npc_ships[drone_idx].state = NPC_STATE_DOCKED;
+    w.npc_ships[drone_idx].state_timer = 0.0f;
+    w.npc_ships[drone_idx].pos = w.stations[1].pos;
+
+    /* Run up to 30s — wait for drone to grab the scaffold */
+    npc_ship_t *drone = &w.npc_ships[drone_idx];
+    for (int i = 0; i < 120 * 30 && drone->towed_scaffold < 0; i++)
+        world_sim_step(&w, SIM_DT);
+
+    /* Drone must have grabbed the scaffold */
+    ASSERT(drone->towed_scaffold >= 0);
+    /* Destination must be the planned outpost, not a starter station */
+    ASSERT(drone->dest_station >= 3);
+    ASSERT_EQ_INT(drone->dest_station, plan_slot);
+
+    /* Run 4 minutes — drone tows at 60 u/s, distance is ~8500u ≈ 142s */
+    for (int i = 0; i < 120 * 240; i++) world_sim_step(&w, SIM_DT);
+
+    station_t *outpost = &w.stations[plan_slot];
+    bool materialized = (!outpost->planned && outpost->scaffold) ||
+                        station_is_active(outpost);
+    ASSERT(materialized);
 }
 
 TEST(test_scaffold_tow_speed_cap) {
@@ -5083,42 +5175,44 @@ TEST(test_module_schema_build_costs_match) {
 TEST(test_save_preserves_pending_scaffolds) {
     /* Save/load round-trip should preserve shipyard pending orders,
      * per-module buffers, and active scaffolds. */
-    world_t w = {0};
-    world_reset(&w);
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
 
     /* Add a pending order at Kepler (station 1, has shipyard) */
-    w.stations[1].pending_scaffolds[0].type = MODULE_FURNACE;
-    w.stations[1].pending_scaffolds[0].owner = 0;
-    w.stations[1].pending_scaffold_count = 1;
+    w->stations[1].pending_scaffolds[0].type = MODULE_FURNACE;
+    w->stations[1].pending_scaffolds[0].owner = 0;
+    w->stations[1].pending_scaffold_count = 1;
     /* Some module buffer state */
-    w.stations[1].module_input[3] = 42.5f;
-    w.stations[1].module_output[5] = 17.0f;
+    w->stations[1].module_input[3] = 42.5f;
+    w->stations[1].module_output[5] = 17.0f;
     /* Spawn a nascent scaffold */
-    int sidx = spawn_scaffold(&w, MODULE_FRAME_PRESS, w.stations[1].pos, 0);
+    int sidx = spawn_scaffold(w, MODULE_FRAME_PRESS, w->stations[1].pos, 0);
     ASSERT(sidx >= 0);
-    w.scaffolds[sidx].state = SCAFFOLD_NASCENT;
-    w.scaffolds[sidx].built_at_station = 1;
-    w.scaffolds[sidx].build_amount = 17.0f;
+    w->scaffolds[sidx].state = SCAFFOLD_NASCENT;
+    w->scaffolds[sidx].built_at_station = 1;
+    w->scaffolds[sidx].build_amount = 17.0f;
 
-    ASSERT(world_save(&w, "/tmp/test_pending.sav"));
+    ASSERT(world_save(w, "/tmp/test_pending.sav"));
 
-    world_t loaded = {0};
-    ASSERT(world_load(&loaded, "/tmp/test_pending.sav"));
+    world_t *loaded = calloc(1, sizeof(world_t));
+    ASSERT(world_load(loaded, "/tmp/test_pending.sav"));
 
     /* Verify pending order survived */
-    ASSERT_EQ_INT(loaded.stations[1].pending_scaffold_count, 1);
-    ASSERT_EQ_INT(loaded.stations[1].pending_scaffolds[0].type, MODULE_FURNACE);
-    ASSERT_EQ_INT(loaded.stations[1].pending_scaffolds[0].owner, 0);
-    ASSERT_EQ_FLOAT(loaded.stations[1].module_input[3], 42.5f, 0.01f);
-    ASSERT_EQ_FLOAT(loaded.stations[1].module_output[5], 17.0f, 0.01f);
+    ASSERT_EQ_INT(loaded->stations[1].pending_scaffold_count, 1);
+    ASSERT_EQ_INT(loaded->stations[1].pending_scaffolds[0].type, MODULE_FURNACE);
+    ASSERT_EQ_INT(loaded->stations[1].pending_scaffolds[0].owner, 0);
+    ASSERT_EQ_FLOAT(loaded->stations[1].module_input[3], 42.5f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded->stations[1].module_output[5], 17.0f, 0.01f);
 
     /* Verify scaffold survived */
-    ASSERT(loaded.scaffolds[sidx].active);
-    ASSERT_EQ_INT(loaded.scaffolds[sidx].module_type, MODULE_FRAME_PRESS);
-    ASSERT_EQ_INT(loaded.scaffolds[sidx].state, SCAFFOLD_NASCENT);
-    ASSERT_EQ_INT(loaded.scaffolds[sidx].built_at_station, 1);
-    ASSERT_EQ_FLOAT(loaded.scaffolds[sidx].build_amount, 17.0f, 0.01f);
+    ASSERT(loaded->scaffolds[sidx].active);
+    ASSERT_EQ_INT(loaded->scaffolds[sidx].module_type, MODULE_FRAME_PRESS);
+    ASSERT_EQ_INT(loaded->scaffolds[sidx].state, SCAFFOLD_NASCENT);
+    ASSERT_EQ_INT(loaded->scaffolds[sidx].built_at_station, 1);
+    ASSERT_EQ_FLOAT(loaded->scaffolds[sidx].build_amount, 17.0f, 0.01f);
 
+    free(loaded);
+    free(w);
     remove("/tmp/test_pending.sav");
 }
 
@@ -5512,6 +5606,7 @@ static void test_nav_waypoint_advancement(void) {
 }
 
 int main(void) {
+    setbuf(stdout, NULL); /* unbuffered so crash location is visible */
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
     RUN(test_refined_form_ingots_return_self);
@@ -5805,6 +5900,7 @@ int main(void) {
     RUN(test_scaffold_snap_ignores_starter_stations);
     RUN(test_scaffold_full_pipeline);
     RUN(test_scaffold_ship_drag);
+    RUN(test_tow_drone_delivers_to_planned_outpost);
     RUN(test_save_preserves_pending_scaffolds);
 
     printf("\nPlaced-scaffold supply (#277):\n");
