@@ -32,6 +32,14 @@ jobs:
           cmake --build build-test
           ./build-test/space_miner_test
 
+      - name: Build and run tests with sanitizers (ASan + UBSan)
+        run: |
+          cmake -S . -B build-san -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
+            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+          cmake --build build-san
+          ./build-san/space_miner_test
+
       - name: cppcheck static analysis
         run: |
           cppcheck --enable=warning,performance,portability \
@@ -42,7 +50,7 @@ jobs:
             --suppress='*:src/minimp3.h' \
             --suppress='*:src/stb_image.h' \
             -I shared/ -I src/ -I server/ \
-            src/*.c server/game_sim.c 2>&1
+            src/*.c server/game_sim.c server/sim_nav.c server/sim_autopilot.c server/sim_ai.c server/sim_save.c 2>&1
 
       - name: Clang static analyzer (scan-build)
         run: |

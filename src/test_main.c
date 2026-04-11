@@ -1281,7 +1281,7 @@ TEST(test_bug20_player_ship_checks_id) {
     server_player_t sp;
     memset(&sp, 0, sizeof(sp));
     sp.ship.credits = 500.0f;
-    uint8_t buf[64];
+    uint8_t buf[128];
     serialize_player_ship(buf, 7, &sp);
     ASSERT_EQ_INT(buf[1], 7);
 }
@@ -4893,6 +4893,119 @@ TEST(test_save_preserves_pending_scaffolds) {
 }
 
 /* ================================================================== */
+/* Autopilot stress tests                                             */
+/* ================================================================== */
+
+#include "sim_autopilot.h"
+
+/* Run autopilot for N seconds of sim time, return the state. */
+static int run_autopilot_ticks(world_t *w, server_player_t *sp, float seconds) {
+    int ticks = (int)(seconds * 120.0f); /* 120 Hz */
+    for (int i = 0; i < ticks; i++) {
+        world_sim_step(w, 1.0f / 120.0f);
+    }
+    return sp->autopilot_state;
+}
+
+TEST(test_autopilot_completes_mining_cycle) {
+    /* Run one autopilot player for 60 seconds. It should mine at least
+     * one asteroid and earn credits (complete a full cycle). */
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    player_init_ship(&w->players[0], w);
+    w->players[0].connected = true;
+    w->players[0].autopilot_mode = 1;
+    w->players[0].autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+    float credits_before = w->players[0].ship.credits;
+
+    run_autopilot_ticks(w, &w->players[0], 60.0f);
+
+    /* Should have earned credits from at least one delivery. */
+    ASSERT(w->players[0].ship.credits > credits_before);
+    free(w);
+}
+
+TEST(test_autopilot_does_not_orbit_fragment) {
+    /* Run autopilot for 30 seconds. At no point should the ship be in
+     * COLLECT state for more than 10 continuous seconds (8s timeout + margin). */
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    player_init_ship(&w->players[0], w);
+    w->players[0].connected = true;
+    w->players[0].autopilot_mode = 1;
+    w->players[0].autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+
+    int collect_ticks = 0;
+    int max_collect_ticks = 0;
+    for (int i = 0; i < 30 * 120; i++) {
+        world_sim_step(w, 1.0f / 120.0f);
+        if (w->players[0].autopilot_state == AUTOPILOT_STEP_COLLECT) {
+            collect_ticks++;
+            if (collect_ticks > max_collect_ticks) max_collect_ticks = collect_ticks;
+        } else {
+            collect_ticks = 0;
+        }
+    }
+    /* 10 seconds at 120Hz = 1200 ticks. Should never exceed this. */
+    ASSERT(max_collect_ticks < 1200);
+    free(w);
+}
+
+TEST(test_autopilot_does_not_leave_signal) {
+    /* Run autopilot for 60 seconds. Ship should always stay within
+     * signal range (signal > 0.01). */
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    player_init_ship(&w->players[0], w);
+    w->players[0].connected = true;
+    w->players[0].autopilot_mode = 1;
+    w->players[0].autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+
+    float min_signal = 1.0f;
+    for (int i = 0; i < 60 * 120; i++) {
+        world_sim_step(w, 1.0f / 120.0f);
+        float sig = signal_strength_at(w, w->players[0].ship.pos);
+        if (sig < min_signal) min_signal = sig;
+    }
+    /* Autopilot requires 80% signal. It might briefly dip below during
+     * transitions but should never reach zero. */
+    ASSERT(min_signal > 0.01f);
+    free(w);
+}
+
+TEST(test_autopilot_multiple_players) {
+    /* Run 3 autopilot players for 30 seconds. All should make progress
+     * (earn credits) and none should crash into each other fatally. */
+    world_t *w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    float credits[3];
+    for (int p = 0; p < 3; p++) {
+        player_init_ship(&w->players[p], w);
+        w->players[p].connected = true;
+        w->players[p].autopilot_mode = 1;
+        w->players[p].autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+        credits[p] = w->players[p].ship.credits;
+    }
+
+    for (int i = 0; i < 30 * 120; i++) {
+        world_sim_step(w, 1.0f / 120.0f);
+    }
+
+    /* At least 2 of 3 should have earned credits. */
+    int earned = 0;
+    for (int p = 0; p < 3; p++) {
+        if (w->players[p].ship.credits > credits[p]) earned++;
+    }
+    ASSERT(earned >= 2);
+
+    /* All should still be alive (hull > 0 or docked). */
+    for (int p = 0; p < 3; p++) {
+        ASSERT(w->players[p].ship.hull > 0.0f || w->players[p].docked);
+    }
+    free(w);
+}
+
+/* ================================================================== */
 /* Station service semantics (#259)                                   */
 /* ================================================================== */
 
@@ -5375,6 +5488,12 @@ int main(void) {
     RUN(test_nav_follow_path_replans_on_stale);
     RUN(test_nav_force_replan);
     RUN(test_nav_waypoint_advancement);
+
+    printf("\nAutopilot stress tests:\n");
+    RUN(test_autopilot_completes_mining_cycle);
+    RUN(test_autopilot_does_not_orbit_fragment);
+    RUN(test_autopilot_does_not_leave_signal);
+    RUN(test_autopilot_multiple_players);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
