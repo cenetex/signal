@@ -37,6 +37,11 @@ void nav_force_replan(nav_path_t *path);
 bool nav_find_path(const world_t *w, vec2 start, vec2 goal,
                    float clearance, nav_path_t *out);
 
+/* True if the straight corridor between two points is clear of
+ * station walls and large asteroids for the given clearance. */
+bool nav_segment_clear(const world_t *w, vec2 start, vec2 goal,
+                       float clearance);
+
 /* Advance along a computed path, returning the next waypoint. */
 vec2 nav_next_waypoint(nav_path_t *path, vec2 ship_pos, vec2 final_target, float dt);
 

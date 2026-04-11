@@ -220,6 +220,8 @@ void world_sim_step(world_t *w, float dt);
 void world_sim_step_player_only(world_t *w, int player_idx, float dt);
 void player_init_ship(server_player_t *sp, world_t *w);
 float signal_strength_at(const world_t *w, vec2 pos);
+void spatial_grid_build(world_t *w);
+
 /* Nav API — canonical declarations in sim_nav.h; repeated here for
  * client code (src/) that includes game_sim.h without sim_nav.h. */
 int nav_get_player_path(int player_id, vec2 *out_waypoints, int max_count, int *out_current);

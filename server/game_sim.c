@@ -122,7 +122,7 @@ static void spatial_grid_insert(spatial_grid_t *g, int idx, vec2 pos) {
     }
 }
 
-static void spatial_grid_build(world_t *w) {
+void spatial_grid_build(world_t *w) {
     spatial_grid_t *g = &w->asteroid_grid;
     g->offset_x = (SPATIAL_GRID_DIM * SPATIAL_CELL_SIZE) * 0.5f;
     g->offset_y = (SPATIAL_GRID_DIM * SPATIAL_CELL_SIZE) * 0.5f;
@@ -3221,6 +3221,19 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
 
     if (sp->hover_asteroid >= 0) {
         asteroid_t *a = &w->asteroids[sp->hover_asteroid];
+        if (!a->active || asteroid_is_collectible(a)) {
+            sp->hover_asteroid = -1;
+            a = NULL;
+        }
+        if (a == NULL) {
+            if (find_scan_target(w, sp, muzzle, forward)) {
+                sp->scan_active = true;
+                sp->beam_hit = true;
+            } else {
+                sp->beam_end = v2_add(muzzle, v2_scale(forward, MINING_RANGE));
+            }
+            return;
+        }
         vec2 to_a = v2_sub(a->pos, muzzle);
         vec2 normal = v2_norm(to_a);
         sp->beam_end = v2_sub(a->pos, v2_scale(normal, a->radius * 0.85f));
@@ -3513,49 +3526,62 @@ static int autopilot_find_refinery(const world_t *w, vec2 pos) {
 }
 
 
+static bool autopilot_can_mine_asteroid(const server_player_t *sp, const asteroid_t *a) {
+    if (!a->active || asteroid_is_collectible(a)) return false;
+    return (int)a->tier >= (int)max_mineable_tier(sp->ship.mining_level);
+}
+
+static bool autopilot_clear_mining_approach(const world_t *w, const server_player_t *sp,
+                                            const asteroid_t *a) {
+    const hull_def_t *hull = ship_hull_def(&sp->ship);
+    vec2 from_rock = v2_sub(sp->ship.pos, a->pos);
+    float from_len = v2_len(from_rock);
+    if (from_len < 1.0f) return true;
+    vec2 outward = v2_scale(from_rock, 1.0f / from_len);
+    vec2 approach = v2_add(a->pos, v2_scale(outward, a->radius + 120.0f));
+    return nav_segment_clear(w, sp->ship.pos, approach, hull->ship_radius + 30.0f);
+}
+
 /* Pick the most autopilot-friendly mining target.
  *
- * Priority order (the autopilot should look like a miner, not a scavenger):
- *   1. The hardest rock the ship's current laser level can crack with
- *      a clear forward path (so the ship doesn't need to bend around
- *      other rocks to reach it)
- *   2. Same level rocks even with a clump in the way (better than nothing)
- *   3. Any rock at our level or below
- *   4. As a last resort, nearby drifting S-tier fragments
+ * Priority order:
+ *   0. Fragments already inside the ship's local working radius
+ *   1. Nearest mineable rock with a clear direct approach
+ *   2. Nearby drifting fragments worth scooping up immediately
+ *   3. Nearest mineable rock even if the final approach is cluttered
  */
 static int autopilot_find_mining_target(const world_t *w, const server_player_t *sp) {
     int best = -1;
     float best_d = 1e18f;
-    asteroid_tier_t max_tier = max_mineable_tier(sp->ship.mining_level);
-
-    /* Pass 1: nearest rock AT our laser level (prefer hardest we can crack).
-     * A* handles routing around obstacles, so no path_clear filter needed. */
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        const asteroid_t *a = &w->asteroids[i];
-        if (!a->active) continue;
-        if (a->tier == ASTEROID_TIER_S) continue;
-        if ((int)a->tier != (int)max_tier) continue;
-        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
-        float d = v2_dist_sq(sp->ship.pos, a->pos);
-        if (d < best_d) { best_d = d; best = i; }
-    }
-    if (best >= 0) return best;
-
-    /* Pass 2: any mineable rock at or below our level — nearest wins. */
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        const asteroid_t *a = &w->asteroids[i];
-        if (!a->active) continue;
-        if (a->tier == ASTEROID_TIER_S) continue;
-        if ((int)a->tier < (int)max_tier) continue;
-        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
-        float d = v2_dist_sq(sp->ship.pos, a->pos);
-        if (d < best_d) { best_d = d; best = i; }
-    }
-    if (best >= 0) return best;
-
-    /* Pass 4 (fallback): nearby drifting fragments only — within 600u
-     * so we don't scavenge instead of mining. */
+    const float immediate_frag_range = ship_tractor_range(&sp->ship) + 120.0f;
+    const float immediate_frag_sq = immediate_frag_range * immediate_frag_range;
     const float frag_pickup_sq = 600.0f * 600.0f;
+
+    /* Pass 0: fragments already in our local scoop radius. */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active) continue;
+        if (a->tier != ASTEROID_TIER_S) continue;
+        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        float d = v2_dist_sq(sp->ship.pos, a->pos);
+        if (d > immediate_frag_sq) continue;
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    if (best >= 0) return best;
+
+    /* Pass 1: nearest mineable rock with a clear final approach. */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!autopilot_can_mine_asteroid(sp, a)) continue;
+        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        if (!autopilot_clear_mining_approach(w, sp, a)) continue;
+        float d = v2_dist_sq(sp->ship.pos, a->pos);
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    if (best >= 0) return best;
+
+    /* Pass 2: nearby drifting fragments only — don't cruise across the
+     * belt scavenging, but do scoop up fragments already in our orbit. */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
@@ -3563,6 +3589,18 @@ static int autopilot_find_mining_target(const world_t *w, const server_player_t 
         if (signal_strength_at(w, a->pos) <= 0.0f) continue;
         float d = v2_dist_sq(sp->ship.pos, a->pos);
         if (d > frag_pickup_sq) continue;
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    if (best >= 0) return best;
+
+    /* Pass 3: any mineable rock — A* can still get there, but this is
+     * lower priority than rocks we can work cleanly or fragments already
+     * nearby. */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!autopilot_can_mine_asteroid(sp, a)) continue;
+        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        float d = v2_dist_sq(sp->ship.pos, a->pos);
         if (d < best_d) { best_d = d; best = i; }
     }
     return best;
@@ -5748,4 +5786,3 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->autopilot_timer = 0.0f;
     anchor_ship_in_station(sp, w);
 }
-

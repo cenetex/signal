@@ -596,6 +596,10 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
     return true;
 }
 
+bool nav_segment_clear(const world_t *w, vec2 start, vec2 goal, float clearance) {
+    return nav_line_clear(w, start, goal, clearance);
+}
+
 /* ------------------------------------------------------------------ */
 /* station_build_nav — precompute navigable road network for a station */
 /* ------------------------------------------------------------------ */
