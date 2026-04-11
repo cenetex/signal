@@ -281,9 +281,11 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float dist_to_a = sqrtf(v2_dist_sq(sp->ship.pos, a->pos));
         float effective_dist = fmaxf(0.0f, dist_to_a - standoff);
 
-        /* Transition to MINE/COLLECT once close enough AND moving slowly. */
+        /* Transition to MINE/COLLECT once close enough AND slow enough
+         * for the hover controller to manage. 30 u/s prevents the
+         * overshoot-through-asteroid cycle. */
         float current_speed = sqrtf(v2_len_sq(sp->ship.vel));
-        if (effective_dist < 30.0f && current_speed < 80.0f) {
+        if (effective_dist < 30.0f && current_speed < 30.0f) {
             sp->input.thrust = 0.0f;
             if (a->tier == ASTEROID_TIER_S) {
                 sp->autopilot_state = AUTOPILOT_STEP_COLLECT;
@@ -314,8 +316,8 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             break;
         }
-        /* Don't laser with a full tow — go dump first. */
-        if (autopilot_tractor_full(&sp->ship)) {
+        /* Don't mine while carrying fragments — deliver first. */
+        if (sp->ship.towed_count > 0) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;
