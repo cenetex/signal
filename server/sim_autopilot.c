@@ -97,6 +97,16 @@ static int autopilot_find_mining_target(const world_t *w, const server_player_t 
  * The autopilot's mining loop is bounded by THIS, not by cargo capacity:
  * mined fragments live in the tow chain, not ship.cargo, and only
  * become credits when smelted at a station's furnace. */
+/* True if the ship is near enough to any station that towed fragments
+ * will auto-release and get smelted. Don't bail to RETURN in this case. */
+static bool near_station_hopper(const world_t *w, vec2 pos) {
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (!station_is_active(&w->stations[i])) continue;
+        if (v2_dist_sq(pos, w->stations[i].pos) < 700.0f * 700.0f) return true;
+    }
+    return false;
+}
+
 /* True if the ship is damaged enough that the autopilot should bail
  * out of mining and return for repair. Also returns true any time
  * we've ALREADY started returning (so the threshold doesn't oscillate
@@ -192,10 +202,10 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_LAUNCH;
             break;
         }
-        /* Carrying anything = deliver first. Don't mine with a loaded
-         * tow chain — fragments trail behind looking broken and cause
-         * edge cases where the ship flies away from the station. */
-        if (sp->ship.towed_count > 0) {
+        /* Carrying fragments and NOT near a station = go deliver.
+         * Near a station, fragments auto-release to the hopper so
+         * don't bail (prevents pickup-release-bail oscillation). */
+        if (sp->ship.towed_count > 0 && !near_station_hopper(w, sp->ship.pos)) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
@@ -228,12 +238,12 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             break;
         }
         const asteroid_t *a = &w->asteroids[sp->autopilot_target];
-        if (!a->active) {
+        if (!a->active || asteroid_is_collectible(a)) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             break;
         }
-        /* Bail to delivery if we picked up fragments in transit. */
-        if (sp->ship.towed_count > 0) {
+        /* Bail to delivery if carrying fragments away from a station. */
+        if (sp->ship.towed_count > 0 && !near_station_hopper(w, sp->ship.pos)) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
@@ -298,16 +308,17 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             break;
         }
-        /* Don't mine while carrying fragments — deliver first. */
-        if (sp->ship.towed_count > 0) {
+        /* Don't mine while carrying fragments away from a station. */
+        if (sp->ship.towed_count > 0 && !near_station_hopper(w, sp->ship.pos)) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;
             break;
         }
         const asteroid_t *a = &w->asteroids[sp->autopilot_target];
-        if (!a->active) {
-            /* Asteroid fractured or vanished — go collect fragments. */
+        if (!a->active || asteroid_is_collectible(a)) {
+            /* Asteroid fractured, vanished, or became a fragment
+             * (slot recycled). Re-evaluate. */
             sp->autopilot_state = AUTOPILOT_STEP_COLLECT;
             sp->autopilot_timer = 0.0f;
             break;
@@ -363,8 +374,8 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_timer = 0.0f;
             break;
         }
-        /* Carrying anything = go deliver. */
-        if (sp->ship.towed_count > 0) {
+        /* Carrying fragments away from station = go deliver. */
+        if (sp->ship.towed_count > 0 && !near_station_hopper(w, sp->ship.pos)) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;
