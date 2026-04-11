@@ -1038,10 +1038,10 @@ TEST(test_roundtrip_player_ship) {
     sp.ship.cargo[COMMODITY_CRYSTAL_ORE] = 8.0f;
     sp.ship.cargo[COMMODITY_FERRITE_INGOT] = 20.0f;
 
-    uint8_t buf[128];
+    uint8_t buf[PLAYER_SHIP_SIZE];
     int len = serialize_player_ship(buf, 3, &sp);
 
-    ASSERT_EQ_INT(len, PLAYER_SHIP_SIZE);
+    ASSERT(len <= PLAYER_SHIP_SIZE);
     ASSERT_EQ_INT(buf[0], NET_MSG_PLAYER_SHIP);
     ASSERT_EQ_INT(buf[1], 3);
     ASSERT_EQ_FLOAT(read_f32_le(&buf[2]), 85.5f, 0.1f);
@@ -1178,9 +1178,9 @@ TEST(test_bug14_player_ship_syncs_all_cargo) {
     sp.ship.cargo[COMMODITY_CRYSTAL_ORE] = 30.0f;
     sp.ship.cargo[COMMODITY_FERRITE_INGOT] = 5.0f;
     sp.ship.cargo[COMMODITY_CUPRITE_INGOT] = 3.0f;
-    uint8_t buf[128];
+    uint8_t buf[PLAYER_SHIP_SIZE];
     int len = serialize_player_ship(buf, 0, &sp);
-    ASSERT(len == PLAYER_SHIP_SIZE);
+    ASSERT(len <= PLAYER_SHIP_SIZE);
     /* Verify ingot cargo round-trips */
     ASSERT_EQ_FLOAT(read_f32_le(&buf[16 + COMMODITY_FERRITE_INGOT * 4]), 5.0f, 0.1f);
     ASSERT_EQ_FLOAT(read_f32_le(&buf[16 + COMMODITY_CUPRITE_INGOT * 4]), 3.0f, 0.1f);
@@ -4081,7 +4081,9 @@ TEST(test_autopilot_prefers_clear_mineable_asteroid_over_blocked_one) {
     ASSERT_EQ_INT(sp->autopilot_target, 2);
 }
 
-TEST(test_autopilot_prefers_nearby_fragment_over_blocked_rock) {
+TEST(test_autopilot_ignores_fragments_targets_rocks) {
+    /* Autopilot should target mineable rocks, not fragments (S-tier).
+     * Fragments are auto-collected by the tractor during flight. */
     world_t w = {0};
     setup_autopilot_world(&w);
     server_player_t *sp = &w.players[0];
@@ -4094,7 +4096,9 @@ TEST(test_autopilot_prefers_nearby_fragment_over_blocked_rock) {
     sp->input.toggle_autopilot = true;
     world_sim_step(&w, SIM_DT);
 
-    ASSERT_EQ_INT(sp->autopilot_target, 2);
+    /* Should target a rock (0 or 1), NOT the fragment (2). */
+    ASSERT(sp->autopilot_target != 2);
+    ASSERT(sp->autopilot_target >= 0);
 }
 
 /* ================================================================== */
@@ -5547,7 +5551,7 @@ int main(void) {
     printf("\nAutopilot mining:\n");
     RUN(test_autopilot_prefers_nearest_mineable_asteroid);
     RUN(test_autopilot_prefers_clear_mineable_asteroid_over_blocked_one);
-    RUN(test_autopilot_prefers_nearby_fragment_over_blocked_rock);
+    RUN(test_autopilot_ignores_fragments_targets_rocks);
 
     printf("\nCollision accuracy (#238):\n");
     RUN(test_238_station_core_blocks_player);

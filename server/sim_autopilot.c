@@ -53,53 +53,32 @@ static bool autopilot_clear_mining_approach(const world_t *w, const server_playe
 /* Pick the most autopilot-friendly mining target.
  *
  * Priority order:
- *   0. Fragments already inside the ship's local working radius
  *   1. Nearest mineable rock with a clear direct approach
- *   2. Nearby drifting fragments worth scooping up immediately
- *   3. Nearest mineable rock even if the final approach is cluttered
+ *   2. Nearest mineable rock even if the final approach is cluttered
+ * Fragments are NOT targeted — the tractor auto-collects nearby ones
+ * during flight. Explicitly targeting fragments caused orbit loops.
  */
 static int autopilot_find_mining_target(const world_t *w, const server_player_t *sp) {
     int best = -1;
     float best_d = 1e18f;
-    const float immediate_frag_range = ship_tractor_range(&sp->ship) + 120.0f;
-    const float immediate_frag_sq = immediate_frag_range * immediate_frag_range;
-    const float frag_pickup_sq = 600.0f * 600.0f;
 
-    /* Pass 0: fragments already in our local scoop radius. */
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        const asteroid_t *a = &w->asteroids[i];
-        if (!a->active) continue;
-        if (a->tier != ASTEROID_TIER_S) continue;
-        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
-        float d = v2_dist_sq(sp->ship.pos, a->pos);
-        if (d > immediate_frag_sq) continue;
-        if (d < best_d) { best_d = d; best = i; }
-    }
-    if (best >= 0) return best;
+    /* Pass 0 removed: don't explicitly target fragments. The tractor
+     * auto-collects nearby fragments during flight. Targeting fragments
+     * caused the ship to orbit them endlessly near stations when the
+     * tractor couldn't grab them (chase → timeout → re-target loop). */
 
     /* Pass 1: nearest mineable rock with a clear final approach. */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!autopilot_can_mine_asteroid(sp, a)) continue;
-        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        if (signal_strength_at(w, a->pos) < 0.5f) continue;
         if (!autopilot_clear_mining_approach(w, sp, a)) continue;
         float d = v2_dist_sq(sp->ship.pos, a->pos);
         if (d < best_d) { best_d = d; best = i; }
     }
     if (best >= 0) return best;
 
-    /* Pass 2: nearby drifting fragments only — don't cruise across the
-     * belt scavenging, but do scoop up fragments already in our orbit. */
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        const asteroid_t *a = &w->asteroids[i];
-        if (!a->active) continue;
-        if (a->tier != ASTEROID_TIER_S) continue;
-        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
-        float d = v2_dist_sq(sp->ship.pos, a->pos);
-        if (d > frag_pickup_sq) continue;
-        if (d < best_d) { best_d = d; best = i; }
-    }
-    if (best >= 0) return best;
+    /* Pass 2 removed: same fragment-orbiting issue as pass 0. */
 
     /* Pass 3: any mineable rock — A* can still get there, but this is
      * lower priority than rocks we can work cleanly or fragments already
@@ -107,7 +86,7 @@ static int autopilot_find_mining_target(const world_t *w, const server_player_t 
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!autopilot_can_mine_asteroid(sp, a)) continue;
-        if (signal_strength_at(w, a->pos) <= 0.0f) continue;
+        if (signal_strength_at(w, a->pos) < 0.5f) continue;
         float d = v2_dist_sq(sp->ship.pos, a->pos);
         if (d < best_d) { best_d = d; best = i; }
     }
@@ -253,10 +232,21 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             break;
         }
-        /* Bail to delivery if we picked up fragments in transit
-         * (e.g., passed through fragments from another miner). */
+        /* Bail to delivery if we picked up fragments in transit. */
         if (sp->ship.towed_count > 0) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
+            break;
+        }
+        /* Don't fly into weak signal — the target may have drifted. */
+        if (signal_strength_at(w, sp->ship.pos) < 0.5f) {
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_target = -1;
+            break;
+        }
+        /* Also check the target's signal — don't fly to a dead zone. */
+        if (signal_strength_at(w, a->pos) < 0.3f) {
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_target = -1;
             break;
         }
         /* Standoff distance: where the autopilot wants the ship to "park"
@@ -366,8 +356,14 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * is full OR nothing's nearby OR we've been loitering too long. */
         sp->ship.tractor_active = true;
         sp->input.mine = false;
-        /* Carrying anything = go deliver. Don't chase more fragments
-         * when we already have one — causes orbiting behavior. */
+        /* Signal check — don't collect in weak signal. */
+        if (signal_strength_at(w, sp->ship.pos) < 0.5f) {
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_target = -1;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        /* Carrying anything = go deliver. */
         if (sp->ship.towed_count > 0) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             sp->autopilot_target = -1;
