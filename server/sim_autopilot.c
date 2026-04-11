@@ -332,10 +332,17 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float standoff = a->radius + 120.0f;
         float dist = sqrtf(v2_dist_sq(sp->ship.pos, a->pos));
 
-        /* If we drifted way out, return to FLY_TO_TARGET (which handles
-         * the fast-cruise approach properly). */
+        /* If we drifted way out, return to FLY_TO_TARGET. */
         if (dist > standoff + 30.0f + 200.0f) {
             sp->autopilot_state = AUTOPILOT_STEP_FLY_TO_TARGET;
+            sp->autopilot_timer = 0.0f;
+            break;
+        }
+        /* If gravity dragged us (and the asteroid) out of signal,
+         * abandon this rock and find a new target closer to home. */
+        if (signal_strength_at(w, sp->ship.pos) < 0.5f) {
+            sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
+            sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;
             break;
         }
@@ -343,13 +350,14 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         flight_cmd_t cmd = flight_hover_near(w, &sp->ship, a->pos, standoff);
         sp->input.turn = cmd.turn;
         sp->input.thrust = cmd.thrust;
-        /* Mine when facing the rock in the sweet spot. */
+        /* Mine when roughly facing the rock within mining range.
+         * MINING_RANGE is 170u, so anything within standoff+50 works.
+         * Angle threshold widened to 0.35 rad (~20°) to prevent the
+         * proportional turn from oscillating past the fire window. */
         vec2 to_a = v2_sub(a->pos, sp->ship.pos);
         float face = atan2f(to_a.y, to_a.x);
         float diff = wrap_angle(face - sp->ship.angle);
-        float sweet_min = standoff - 15.0f;
-        float sweet_max = standoff + 30.0f;
-        if (dist >= sweet_min && dist <= sweet_max && fabsf(diff) < 0.20f) {
+        if (dist < standoff + 50.0f && fabsf(diff) < 0.35f) {
             sp->input.mine = true;
             sp->input.mining_target_hint = sp->autopilot_target;
         } else {
