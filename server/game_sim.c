@@ -271,7 +271,13 @@ static void generate_outpost_name(char *out, size_t out_size, vec2 pos, int slot
     };
     enum { NUM_PREFIXES = sizeof(prefixes) / sizeof(prefixes[0]) };
     enum { NUM_SUFFIXES = sizeof(suffixes) / sizeof(suffixes[0]) };
-    uint32_t h = (uint32_t)(pos.x * 7.13f) ^ (uint32_t)(pos.y * 13.37f) ^ (uint32_t)slot;
+    /* Use memcpy to bit-cast floats to uint32 — avoids UB from
+     * negative float → unsigned int conversion. */
+    float fx = pos.x * 7.13f, fy = pos.y * 13.37f;
+    uint32_t hx, hy;
+    memcpy(&hx, &fx, sizeof(hx));
+    memcpy(&hy, &fy, sizeof(hy));
+    uint32_t h = hx ^ hy ^ (uint32_t)slot;
     h ^= h >> 16; h *= 0x45d9f3bu; h ^= h >> 16;
     int pi = (int)(h % NUM_PREFIXES);
     int si = (int)((h >> 8) % NUM_SUFFIXES);
@@ -1974,7 +1980,12 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             /* Add jitter to controls proportional to interference.
              * Use a local RNG seeded from player position to avoid
              * mutating world RNG state (bug 47). */
-            uint32_t local_rng = (uint32_t)(sp->ship.pos.x * 1000.0f) ^ (uint32_t)(sp->ship.pos.y * 1000.0f) ^ ((uint32_t)sp->id * 0x9E3779B9u);
+            /* Bit-cast floats to uint32 to avoid UB from negative float→uint. */
+            float rx = sp->ship.pos.x * 1000.0f, ry = sp->ship.pos.y * 1000.0f;
+            uint32_t ux, uy;
+            memcpy(&ux, &rx, sizeof(ux));
+            memcpy(&uy, &ry, sizeof(uy));
+            uint32_t local_rng = ux ^ uy ^ ((uint32_t)sp->id * 0x9E3779B9u);
             if (local_rng == 0) local_rng = 0xA341316Cu;
             local_rng ^= local_rng << 13; local_rng ^= local_rng >> 17; local_rng ^= local_rng << 5;
             float r1 = (float)(local_rng & 0x00FFFFFFu) / 16777215.0f;

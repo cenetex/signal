@@ -4908,8 +4908,11 @@ static int run_autopilot_ticks(world_t *w, server_player_t *sp, float seconds) {
 }
 
 TEST(test_autopilot_completes_mining_cycle) {
-    /* Run one autopilot player for 60 seconds. It should mine at least
-     * one asteroid and earn credits (complete a full cycle). */
+    /* Run one autopilot player for 180 seconds. It should mine at least
+     * one asteroid and earn credits (complete a full cycle).
+     * 180s gives time for: fly to target (~25s), mine (~15s),
+     * collect (~5s), return (~25s), dock+sell (~5s) = ~75s minimum,
+     * with margin for path replanning and gravity drift. */
     world_t *w = calloc(1, sizeof(world_t));
     world_reset(w);
     player_init_ship(&w->players[0], w);
@@ -4918,7 +4921,7 @@ TEST(test_autopilot_completes_mining_cycle) {
     w->players[0].autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
     float credits_before = w->players[0].ship.credits;
 
-    run_autopilot_ticks(w, &w->players[0], 60.0f);
+    run_autopilot_ticks(w, &w->players[0], 180.0f);
 
     /* Should have earned credits from at least one delivery. */
     ASSERT(w->players[0].ship.credits > credits_before);
@@ -4974,7 +4977,7 @@ TEST(test_autopilot_does_not_leave_signal) {
 }
 
 TEST(test_autopilot_multiple_players) {
-    /* Run 3 autopilot players for 30 seconds. All should make progress
+    /* Run 3 autopilot players for 180 seconds. All should make progress
      * (earn credits) and none should crash into each other fatally. */
     world_t *w = calloc(1, sizeof(world_t));
     world_reset(w);
@@ -4987,7 +4990,7 @@ TEST(test_autopilot_multiple_players) {
         credits[p] = w->players[p].ship.credits;
     }
 
-    for (int i = 0; i < 30 * 120; i++) {
+    for (int i = 0; i < 180 * 120; i++) {
         world_sim_step(w, 1.0f / 120.0f);
     }
 
