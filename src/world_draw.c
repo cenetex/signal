@@ -1343,19 +1343,40 @@ void draw_autopilot_path(void) {
         if (g.autopilot_path_count == 0 || mp_path_timer > 2.0f) {
             mp_path_timer = 0.0f;
             /* Find nearest minable asteroid — match server's autopilot
-             * target selection: any rock at or above max_mineable_tier,
-             * with valid signal, nearest by distance. */
+             * target selection. Pass 1: clear approach. Pass 2: any. */
             asteroid_tier_t min_tier = max_mineable_tier(LOCAL_PLAYER.ship.mining_level);
+            float clearance = ship_hull_def(&LOCAL_PLAYER.ship)->ship_radius + 30.0f;
             float best_d = 1e18f;
             vec2 best_pos = LOCAL_PLAYER.ship.pos;
             bool found = false;
+            /* Pass 1: nearest with clear approach (matches server pass 1). */
             for (int i = 0; i < MAX_ASTEROIDS; i++) {
                 const asteroid_t *a = &g.world.asteroids[i];
                 if (!a->active || a->tier == ASTEROID_TIER_S) continue;
                 if ((int)a->tier < (int)min_tier) continue;
                 if (signal_strength_at(&g.world, a->pos) <= 0.0f) continue;
+                /* Check clear approach — same as server's autopilot_clear_mining_approach */
+                vec2 from_rock = v2_sub(LOCAL_PLAYER.ship.pos, a->pos);
+                float from_len = v2_len(from_rock);
+                if (from_len > 0.5f) {
+                    vec2 outward = v2_scale(from_rock, 1.0f / from_len);
+                    vec2 approach = v2_add(a->pos, v2_scale(outward, a->radius + 120.0f));
+                    if (!nav_segment_clear(&g.world, LOCAL_PLAYER.ship.pos, approach, clearance))
+                        continue;
+                }
                 float d = v2_dist_sq(a->pos, LOCAL_PLAYER.ship.pos);
                 if (d < best_d) { best_d = d; best_pos = a->pos; found = true; }
+            }
+            /* Pass 2: fallback to any mineable (no approach check). */
+            if (!found) {
+                for (int i = 0; i < MAX_ASTEROIDS; i++) {
+                    const asteroid_t *a = &g.world.asteroids[i];
+                    if (!a->active || a->tier == ASTEROID_TIER_S) continue;
+                    if ((int)a->tier < (int)min_tier) continue;
+                    if (signal_strength_at(&g.world, a->pos) <= 0.0f) continue;
+                    float d = v2_dist_sq(a->pos, LOCAL_PLAYER.ship.pos);
+                    if (d < best_d) { best_d = d; best_pos = a->pos; found = true; }
+                }
             }
             if (found) {
                 float clearance = ship_hull_def(&LOCAL_PLAYER.ship)->ship_radius + 30.0f;

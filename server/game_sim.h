@@ -228,6 +228,7 @@ void spatial_grid_build(world_t *w);
 int nav_get_player_path(int player_id, vec2 *out_waypoints, int max_count, int *out_current);
 int nav_compute_path(const world_t *w, vec2 start, vec2 goal, float clearance,
                      vec2 *out_waypoints, int max_count);
+bool nav_segment_clear(const world_t *w, vec2 start, vec2 goal, float clearance);
 void station_rebuild_all_nav(const world_t *w);
 void rebuild_signal_chain(world_t *w);
 bool can_place_outpost(const world_t *w, vec2 pos);
