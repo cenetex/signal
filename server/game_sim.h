@@ -245,6 +245,9 @@ bool player_load_by_token(server_player_t *sp, world_t *w, const char *dir,
 void anchor_ship_in_station(server_player_t *sp, world_t *w);
 asteroid_tier_t max_mineable_tier(int mining_level);
 vec2 station_approach_target(const station_t *st, vec2 from);
+void emit_event(world_t *w, sim_event_t ev);
+void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_by);
+void activate_outpost(world_t *w, int station_idx);
 
 #define DOCK_APPROACH_RANGE 300.0f /* range to detect station for docking */
 
