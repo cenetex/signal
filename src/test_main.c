@@ -16,18 +16,22 @@ static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
-/* Auto-cleanup for stack-allocated world_t — frees the heap-allocated
- * signal cache grid when the world goes out of scope. */
+/* Auto-cleanup for world_t — frees the heap-allocated signal cache grid.
+ * Uses __attribute__((cleanup)) on GCC/Clang; on MSVC, leaks are
+ * acceptable in tests (no cleanup on early ASSERT return). */
+#ifdef _MSC_VER
+#define WORLD_DECL world_t w = {0}
+#define WORLD_DECL_NAME(name) world_t name = {0}
+#define WORLD_HEAP world_t *
+#else
 static void world_auto_cleanup(world_t *w) { world_cleanup(w); }
-#define WORLD_DECL world_t __attribute__((cleanup(world_auto_cleanup))) w = {0}
-
-/* Auto-cleanup for heap-allocated world_t pointers — frees signal cache
- * and the world itself when the pointer goes out of scope (including
- * early returns from ASSERT failures). */
 static void world_ptr_auto_cleanup(world_t **wp) {
     if (*wp) { world_cleanup(*wp); free(*wp); *wp = NULL; }
 }
+#define WORLD_DECL world_t __attribute__((cleanup(world_auto_cleanup))) w = {0}
+#define WORLD_DECL_NAME(name) world_t __attribute__((cleanup(world_auto_cleanup))) name = {0}
 #define WORLD_HEAP __attribute__((cleanup(world_ptr_auto_cleanup))) world_t *
+#endif
 
 #define TEST(name) static void name(void)
 /* RUN snapshots tests_failed before/after the test body. The body uses
@@ -1386,8 +1390,8 @@ TEST(test_bug24_ingot_buffer_no_cap) {
 TEST(test_bug25_rng_deterministic_every_reset) {
     /* Deterministic RNG is intentional — same seed produces identical
      * worlds for reproducibility and testing.  Verify that property. */
-    world_t __attribute__((cleanup(world_auto_cleanup))) w1 = {0};
-    world_t __attribute__((cleanup(world_auto_cleanup))) w2 = {0};
+    WORLD_DECL_NAME(w1);
+    WORLD_DECL_NAME(w2);
     world_reset(&w1);
     world_reset(&w2);
     bool all_same = true;
@@ -3590,8 +3594,8 @@ TEST(test_outpost_min_distance) {
 TEST(test_bug88_interference_seed_no_world_time) {
     /* Two worlds with same player state but different w->time should
      * produce the same interference jitter. */
-    world_t __attribute__((cleanup(world_auto_cleanup))) w1 = {0};
-    world_t __attribute__((cleanup(world_auto_cleanup))) w2 = {0};
+    WORLD_DECL_NAME(w1);
+    WORLD_DECL_NAME(w2);
     world_reset(&w1); world_reset(&w2);
     player_init_ship(&w1.players[0], &w1);
     player_init_ship(&w2.players[0], &w2);
@@ -3623,8 +3627,8 @@ TEST(test_bug88_interference_seed_no_world_time) {
 TEST(test_bug89_gravity_symmetric) {
     /* Use a Titan/small-body pair close enough to hit the gravity clamp.
      * Swapping indices must not change the resulting accelerations. */
-    world_t __attribute__((cleanup(world_auto_cleanup))) w1 = {0};
-    world_t __attribute__((cleanup(world_auto_cleanup))) w2 = {0};
+    WORLD_DECL_NAME(w1);
+    WORLD_DECL_NAME(w2);
     world_reset(&w1); world_reset(&w2);
     for (int i = 0; i < MAX_ASTEROIDS; i++) { w1.asteroids[i].active = false; w2.asteroids[i].active = false; }
     for (int s = 0; s < MAX_STATIONS; s++) {
