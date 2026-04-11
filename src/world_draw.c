@@ -122,7 +122,7 @@ void draw_signal_borders(void) {
     /* Sample the signal field across the visible frustum and draw
      * contour lines at the three band thresholds. Reads from the same
      * signal_strength_at used by gameplay — field-level, not per-station. */
-    const float CELL = 300.0f;
+    const float CELL = 120.0f;
     float vl = cam_left()   - CELL;
     float vr = cam_right()  + CELL;
     float vt = cam_top()    - CELL;
@@ -131,18 +131,18 @@ void draw_signal_borders(void) {
     int cols = (int)((vr - vl) / CELL) + 1;
     int rows = (int)((vb - vt) / CELL) + 1;
     if (cols < 2 || rows < 2) return;
-    if (cols > 128) cols = 128;
-    if (rows > 128) rows = 128;
+    if (cols > 256) cols = 256;
+    if (rows > 256) rows = 256;
 
-    float samples[128][128];
+    float samples[256][256];
     for (int y = 0; y < rows; y++)
         for (int x = 0; x < cols; x++)
             samples[y][x] = signal_strength_at(&g.world, v2(vl + (float)x * CELL, vt + (float)y * CELL));
 
     static const struct { float threshold; float r, g, b, a; } bands[] = {
-        { SIGNAL_BAND_OPERATIONAL, 0.45f, 0.40f, 0.20f, 0.10f },
-        { SIGNAL_BAND_FRINGE,     0.40f, 0.30f, 0.15f, 0.08f },
-        { SIGNAL_BAND_FRONTIER,   0.30f, 0.20f, 0.10f, 0.06f },
+        { SIGNAL_BAND_OPERATIONAL, 0.35f, 0.30f, 0.18f, 0.06f },
+        { SIGNAL_BAND_FRINGE,     0.30f, 0.25f, 0.12f, 0.05f },
+        { SIGNAL_BAND_FRONTIER,   0.25f, 0.18f, 0.08f, 0.04f },
     };
 
     sgl_begin_lines();
