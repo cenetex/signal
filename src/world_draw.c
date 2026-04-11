@@ -1717,23 +1717,17 @@ void draw_remote_players(void) {
 /* ================================================================== */
 
 void draw_callsigns(void) {
-    float screen_w = ui_screen_width();
-    float screen_h = ui_screen_height();
-    sdtx_canvas(screen_w, screen_h);
-    sdtx_origin(0.0f, 0.0f);
-    const float cell = 8.0f;
-
-    /* Map world position to screen-space sdtx grid.
-     * sgl_ortho maps [cam_left..cam_right] → [0..screen_w] and
-     * [cam_top..cam_bottom] → [0..screen_h]. */
+    /* Set sdtx canvas to match the sgl world projection exactly.
+     * sgl_ortho uses [cam_left..cam_right, cam_top..cam_bottom].
+     * sdtx_canvas(w, h) maps [0..w, 0..h] with 8px character cells.
+     * By using the world view dimensions as canvas size and offsetting
+     * the origin to cam_left/cam_top, sdtx_pos takes world coordinates
+     * directly — no manual mapping needed. */
     float view_w = cam_right() - cam_left();
     float view_h = cam_bottom() - cam_top();
-
-    #define WS_TO_SCREEN(wx, wy, ox, oy) do { \
-        float _sx = ((wx) - cam_left()) / view_w * screen_w + (ox); \
-        float _sy = ((wy) - cam_top())  / view_h * screen_h + (oy); \
-        sdtx_pos(_sx / cell, _sy / cell); \
-    } while (0)
+    const float cell = 8.0f;
+    sdtx_canvas(view_w, view_h);
+    sdtx_origin(cam_left() / cell, cam_top() / cell);
 
     /* Remote player callsigns */
     if (g.multiplayer_enabled) {
@@ -1746,29 +1740,21 @@ void draw_callsigns(void) {
             if (!on_screen(players[i].x, players[i].y, 60.0f)) continue;
             sdtx_color3b(180, 220, 240);
             int len = (int)strlen(players[i].callsign);
-            WS_TO_SCREEN(players[i].x, players[i].y, -len * cell * 0.5f, -36.0f);
+            /* Position in world coords — canvas is set to world view */
+            sdtx_pos((players[i].x - len * cell * 0.5f) / cell,
+                     (players[i].y - 36.0f) / cell);
             sdtx_puts(players[i].callsign);
         }
     }
-
-    #undef WS_TO_SCREEN
 }
 
 void draw_npc_chatter(void) {
-    float screen_w = ui_screen_width();
-    float screen_h = ui_screen_height();
-    sdtx_canvas(screen_w, screen_h);
-    sdtx_origin(0.0f, 0.0f);
-    const float cell = 8.0f;
-
+    /* Same world-space canvas as draw_callsigns */
     float view_w = cam_right() - cam_left();
     float view_h = cam_bottom() - cam_top();
-
-    #define WS_TO_SCREEN(wx, wy, ox, oy) do { \
-        float _sx = ((wx) - cam_left()) / view_w * screen_w + (ox); \
-        float _sy = ((wy) - cam_top())  / view_h * screen_h + (oy); \
-        sdtx_pos(_sx / cell, _sy / cell); \
-    } while (0)
+    const float cell = 8.0f;
+    sdtx_canvas(view_w, view_h);
+    sdtx_origin(cam_left() / cell, cam_top() / cell);
 
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *npc = &g.world.npc_ships[i];
@@ -1791,11 +1777,10 @@ void draw_npc_chatter(void) {
 
         int len = (int)strlen(line);
         sdtx_color3b(100, 130, 110); /* faded radio green */
-        WS_TO_SCREEN(npc->pos.x, npc->pos.y, -len * cell * 0.5f, 24.0f);
+        sdtx_pos((npc->pos.x - len * cell * 0.5f) / cell,
+                 (npc->pos.y + 24.0f) / cell);
         sdtx_puts(line);
     }
-
-    #undef WS_TO_SCREEN
 }
 
 /* ================================================================== */
