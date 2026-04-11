@@ -1149,6 +1149,10 @@ static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
     float speed_cap = accel;
     if (st.wp_dist < 200.0f && st.at_intermediate)
         speed_cap *= fmaxf(0.2f, st.wp_dist / 200.0f);
+    /* Brake if asteroid dead ahead */
+    float fwd_clear = nav_forward_clearance(w, npc->pos, npc->vel,
+                                             hull->ship_radius, npc->angle);
+    speed_cap *= fwd_clear;
     vec2 fwd = v2_from_angle(npc->angle);
     npc->vel = v2_add(npc->vel, v2_scale(fwd, speed_cap * thrust_gate * dt));
     npc->thrusting = (speed_cap * thrust_gate) > 0.0f;
@@ -3765,6 +3769,11 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float approach_v = v2_dot(sp->ship.vel, to_target_dir);
         float thrust_cmd = nav_speed_control(approach_v, target_speed);
         if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
+        /* Brake if an asteroid is dead ahead (between A* waypoints). */
+        float fwd_clear = nav_forward_clearance(w, sp->ship.pos, sp->ship.vel,
+                                                 hull->ship_radius, sp->ship.angle);
+        if (fwd_clear < 1.0f && thrust_cmd > 0.0f)
+            thrust_cmd *= fwd_clear;
         sp->input.thrust = thrust_cmd;
         sp->input.mine = false;
 
@@ -3954,6 +3963,10 @@ static void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         float approach_v = v2_dot(sp->ship.vel, to_st_dir);
         float thrust_cmd = nav_speed_control(approach_v, target_speed);
         if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
+        float fwd_clear = nav_forward_clearance(w, sp->ship.pos, sp->ship.vel,
+                                                 hull->ship_radius, sp->ship.angle);
+        if (fwd_clear < 1.0f && thrust_cmd > 0.0f)
+            thrust_cmd *= fwd_clear;
         sp->input.thrust = thrust_cmd;
         sp->input.mine = false;
 

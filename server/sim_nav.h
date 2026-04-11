@@ -76,6 +76,14 @@ float nav_approach_speed(float dist, float max_speed);
  * Deadband at 85-110% avoids oscillation. */
 float nav_speed_control(float current_speed, float target_speed);
 
+/* Lightweight forward collision probe: returns a thrust scale (0..1)
+ * based on whether an asteroid is dead ahead. 1.0 = clear, 0.0 = stop.
+ * Only checks asteroids (not station walls — A* handles those).
+ * Used as a thrust gate so the ship brakes before hitting rocks
+ * between A* waypoints. */
+float nav_forward_clearance(const world_t *w, vec2 pos, vec2 vel,
+                            float ship_radius, float heading);
+
 /* Build/rebuild the precomputed nav mesh for a single station. */
 void station_build_nav(const world_t *w, int station_idx);
 

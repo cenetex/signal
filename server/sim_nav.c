@@ -954,3 +954,54 @@ float nav_speed_control(float current_speed, float target_speed) {
     if (current_speed < target_speed * 0.85f) return  1.0f;
     return 0.0f;
 }
+
+float nav_forward_clearance(const world_t *w, vec2 pos, vec2 vel,
+                            float ship_radius, float heading) {
+    vec2 fwd = v2(cosf(heading), sinf(heading));
+    float speed = v2_len(vel);
+    /* Lookahead: 1.5s of travel, min 100u, max 500u */
+    float lookahead = fmaxf(100.0f, fminf(speed * 1.5f, 500.0f));
+    float worst = 1.0f; /* 1.0 = fully clear */
+
+    /* Use spatial grid for efficiency */
+    const spatial_grid_t *g = &w->asteroid_grid;
+    float margin = 150.0f + ship_radius;
+    vec2 probe_end = v2_add(pos, v2_scale(fwd, lookahead));
+    float min_x = fminf(pos.x, probe_end.x) - margin;
+    float min_y = fminf(pos.y, probe_end.y) - margin;
+    float max_x = fmaxf(pos.x, probe_end.x) + margin;
+    float max_y = fmaxf(pos.y, probe_end.y) + margin;
+    int cx0, cy0, cx1, cy1;
+    spatial_grid_cell(g, v2(min_x, min_y), &cx0, &cy0);
+    spatial_grid_cell(g, v2(max_x, max_y), &cx1, &cy1);
+    uint64_t checked[MAX_ASTEROIDS / 64 + 1];
+    memset(checked, 0, sizeof(checked));
+
+    for (int cy = cy0; cy <= cy1; cy++) {
+        for (int cx = cx0; cx <= cx1; cx++) {
+            const spatial_cell_t *cell = &g->cells[cy][cx];
+            for (int ci = 0; ci < cell->count; ci++) {
+                int idx = cell->indices[ci];
+                if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+                int word = idx / 64, bit = idx % 64;
+                if (checked[word] & (1ULL << bit)) continue;
+                checked[word] |= (1ULL << bit);
+                const asteroid_t *a = &w->asteroids[idx];
+                if (!a->active || a->tier == ASTEROID_TIER_S) continue;
+                vec2 to_a = v2_sub(a->pos, pos);
+                float fd = v2_dot(to_a, fwd);
+                if (fd < -a->radius || fd > lookahead) continue;
+                vec2 perp = v2(-fwd.y, fwd.x);
+                float lat = fabsf(v2_dot(to_a, perp));
+                float clearance = a->radius + ship_radius + 20.0f;
+                if (lat < clearance) {
+                    /* How urgent: 1.0 at ship, 0.0 at lookahead edge */
+                    float urgency = 1.0f - (fd / lookahead);
+                    float scale = 1.0f - urgency;
+                    if (scale < worst) worst = scale;
+                }
+            }
+        }
+    }
+    return worst;
+}
