@@ -3,8 +3,8 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Signal</title>
-    <meta name="description" content="Multiplayer space mining game. Fracture asteroids, supply stations, build outposts to push signal deeper into the belt. Pure C + Sokol, no external assets. Play in your browser.">
+    <title>Signal — Coming Soon</title>
+    <meta name="description" content="Signal: a multiplayer space mining game. Fracture asteroids, supply stations, build outposts. Coming soon.">
     <style>
       @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap");
 
@@ -26,8 +26,7 @@
       body {
         color: var(--ink);
         display: flex; flex-direction: column; align-items: center;
-        justify-content: center;
-        padding: 32px 20px 48px;
+        padding: 48px 20px 64px;
       }
       body::before, body::after { content: ""; position: fixed; inset: 0; pointer-events: none; }
       body::before {
@@ -42,23 +41,32 @@
                     radial-gradient(circle at center, transparent 44%, rgba(0,0,0,0.42) 100%);
       }
 
-      .page { position: relative; z-index: 1; width: min(640px, 100%); text-align: center; }
+      .page { position: relative; z-index: 1; width: min(800px, 100%); text-align: center; }
 
       h1 {
         font-size: clamp(72px, 16vw, 140px);
         line-height: 0.88; letter-spacing: 0.06em;
         text-transform: uppercase; font-weight: 600;
-        margin-bottom: 16px;
+        margin-bottom: 12px;
       }
       h1 .a { color: var(--signal); }
 
-      .tag {
-        font-size: clamp(18px, 3vw, 26px);
-        line-height: 1.1; color: rgba(245,239,223,0.88);
-        margin-bottom: 28px;
+      .coming-soon {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: clamp(14px, 2.5vw, 20px);
+        letter-spacing: 0.3em; text-transform: uppercase;
+        color: var(--ore);
+        margin-bottom: 8px;
       }
 
-      .actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-bottom: 20px; }
+      .tag {
+        font-size: clamp(16px, 2.5vw, 22px);
+        line-height: 1.3; color: var(--muted);
+        margin-bottom: 36px;
+        max-width: 480px; margin-left: auto; margin-right: auto;
+      }
+
+      .actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-bottom: 48px; }
 
       .btn {
         display: inline-flex; align-items: center; justify-content: center;
@@ -78,49 +86,92 @@
       }
       .btn.go:hover { background: linear-gradient(135deg, #92ffdc, #b7ffe2 70%); }
 
-      .sub {
-        margin-bottom: 32px; color: var(--faint);
+      /* --- Roadmap --- */
+      .roadmap-header {
         font-family: "IBM Plex Mono", monospace;
-        font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase;
+        font-size: 11px; letter-spacing: 0.2em; text-transform: uppercase;
+        color: var(--faint); margin-bottom: 16px;
       }
 
-      .steps {
-        display: grid; grid-template-columns: repeat(3, 1fr);
-        gap: 1px; margin-bottom: 20px;
+      .roadmap {
+        display: grid; grid-template-columns: 1fr 1fr;
+        gap: 16px; margin-bottom: 48px; text-align: left;
+      }
+
+      .sector-card {
         border: 1px solid var(--line); border-radius: 14px;
-        background: var(--line); overflow: hidden;
+        background: var(--panel); overflow: hidden;
+        transition: border-color 0.3s;
       }
-      .step {
-        background: var(--panel); padding: 16px 14px; text-align: left;
+      .sector-card:hover { border-color: rgba(245,239,223,0.2); }
+
+      .sector-screenshot {
+        width: 100%; aspect-ratio: 16/9;
+        background: var(--bg-0);
+        display: flex; align-items: center; justify-content: center;
+        overflow: hidden; position: relative;
       }
-      .step-label {
-        color: var(--signal); font-family: "IBM Plex Mono", monospace;
+      .sector-screenshot img,
+      .sector-screenshot svg {
+        width: 100%; height: 100%; object-fit: cover;
+      }
+
+      .sector-body { padding: 16px 18px; }
+
+      .sector-label {
+        font-family: "IBM Plex Mono", monospace;
         font-size: 10px; letter-spacing: 0.16em; text-transform: uppercase;
         margin-bottom: 6px;
       }
-      .step-title { font-size: 16px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.02em; margin-bottom: 4px; }
-      .step-desc { color: var(--faint); font-size: 13px; line-height: 1.5; }
+      .sector-one .sector-label { color: var(--ore); }
+      .sector-x .sector-label { color: var(--signal); }
 
-      .controls {
-        border: 1px solid var(--line); border-radius: 14px;
-        background: var(--panel); padding: 14px 18px;
-        margin-bottom: 24px; text-align: center;
+      .sector-title {
+        font-size: 20px; font-weight: 600; text-transform: uppercase;
+        letter-spacing: 0.04em; margin-bottom: 8px;
       }
-      .controls span { color: var(--faint); font-size: 13px; }
-      code {
-        padding: 1px 5px; border: 1px solid rgba(245,239,223,0.12);
-        border-radius: 999px; background: rgba(245,239,223,0.05);
+
+      .sector-desc {
+        color: var(--faint); font-size: 13px; line-height: 1.6;
+      }
+
+      .sector-status {
+        display: inline-block; margin-top: 10px; padding: 3px 10px;
+        border-radius: 999px; font-family: "IBM Plex Mono", monospace;
+        font-size: 10px; letter-spacing: 0.1em; text-transform: uppercase;
+      }
+      .sector-one .sector-status {
+        background: rgba(241,181,102,0.12); color: var(--ore);
+        border: 1px solid rgba(241,181,102,0.25);
+      }
+      .sector-x .sector-status {
+        background: rgba(128,255,213,0.08); color: var(--signal);
+        border: 1px solid rgba(128,255,213,0.2);
+      }
+
+      /* --- Checklist --- */
+      .sector-checklist {
+        list-style: none; margin: 12px 0 0; padding: 0;
         font-family: "IBM Plex Mono", monospace; font-size: 11px;
+        line-height: 1.9;
+      }
+      .sector-checklist li::before {
+        display: inline-block; width: 16px; margin-right: 6px;
+        text-align: center; font-size: 10px;
+      }
+      .sector-checklist .done { color: var(--signal); }
+      .sector-checklist .done::before { content: "\2713"; }
+      .sector-checklist .wip { color: var(--ore); }
+      .sector-checklist .wip::before { content: "\25CB"; }
+      .sector-checklist .todo { color: var(--faint); }
+      .sector-checklist .todo::before { content: "\00B7"; }
+
+      /* --- Screenshot placeholders (inline SVG scenes) --- */
+      .scene-placeholder {
+        width: 100%; height: 100%; position: relative;
       }
 
-      .pitch {
-        border: 1px solid var(--line); border-radius: 14px;
-        background: var(--panel); padding: 18px 20px;
-        margin-bottom: 20px; text-align: left;
-        color: var(--muted); font-size: 14px; line-height: 1.7;
-      }
-      .pitch strong { color: var(--ink); font-weight: 500; }
-
+      /* --- Footer --- */
       .links {
         display: flex; gap: 20px; justify-content: center;
         font-family: "IBM Plex Mono", monospace;
@@ -129,9 +180,9 @@
       .links a { color: var(--faint); text-decoration: none; text-transform: uppercase; transition: color 0.2s; }
       .links a:hover { color: var(--ink); }
 
-      @media (max-width: 600px) {
-        body { padding: 24px 14px 36px; }
-        .steps { grid-template-columns: 1fr; }
+      @media (max-width: 640px) {
+        body { padding: 32px 14px 48px; }
+        .roadmap { grid-template-columns: 1fr; }
         .btn { width: 100%; }
         .links { flex-wrap: wrap; gap: 14px; }
       }
@@ -139,56 +190,147 @@
   </head>
   <body>
     <div class="page">
+
       <h1>S<span class="a">i</span>gnal</h1>
-      <p class="tag">Mine the belt. Extend the chain.</p>
+      <p class="coming-soon">Coming Soon</p>
+      <p class="tag">Broadcast your signal.</p>
 
       <div class="actions">
-        <a class="btn go" href="/play">Play</a>
-        <a class="btn" href="/music">Soundtrack</a>
+        <a class="btn go" href="/play">Try the Alpha Playtest</a>
         <a class="btn" href="https://github.com/cenetex/signal" target="_blank">GitHub</a>
       </div>
 
-      <p class="sub">C + Sokol &bull; No external assets &bull; Singleplayer / Multiplayer</p>
+      <!-- Roadmap -->
+      <p class="roadmap-header">Roadmap</p>
 
-      <div class="steps">
-        <div class="step">
-          <div class="step-label">01 Mine</div>
-          <div class="step-title">Fracture</div>
-          <div class="step-desc">Break asteroids from XL down to fragments. Sweep ore into the hold with the tractor beam.</div>
+      <div class="roadmap">
+        <!-- Sector One -->
+        <div class="sector-card sector-one">
+          <div class="sector-screenshot">
+            <svg viewBox="0 0 640 360" xmlns="http://www.w3.org/2000/svg" class="scene-placeholder">
+              <rect width="640" height="360" fill="#0a0908"/>
+              <!-- Stars -->
+              <circle cx="45" cy="30" r="0.8" fill="#f5efdf" opacity="0.6"/>
+              <circle cx="120" cy="80" r="0.5" fill="#f5efdf" opacity="0.4"/>
+              <circle cx="200" cy="45" r="0.7" fill="#f5efdf" opacity="0.5"/>
+              <circle cx="310" cy="20" r="0.6" fill="#f5efdf" opacity="0.3"/>
+              <circle cx="420" cy="60" r="0.9" fill="#f5efdf" opacity="0.7"/>
+              <circle cx="500" cy="35" r="0.5" fill="#f5efdf" opacity="0.4"/>
+              <circle cx="580" cy="70" r="0.7" fill="#f5efdf" opacity="0.5"/>
+              <circle cx="90" cy="150" r="0.6" fill="#f5efdf" opacity="0.3"/>
+              <circle cx="550" cy="140" r="0.8" fill="#f5efdf" opacity="0.4"/>
+              <circle cx="350" cy="100" r="0.5" fill="#f5efdf" opacity="0.6"/>
+              <!-- Station (Prospect Refinery) -->
+              <g transform="translate(320,180)">
+                <circle r="60" fill="none" stroke="#ffbb44" stroke-width="0.5" opacity="0.15"/>
+                <circle r="30" fill="none" stroke="#ffbb44" stroke-width="0.5" opacity="0.25"/>
+                <rect x="-12" y="-12" width="24" height="24" fill="none" stroke="#ffbb44" stroke-width="1.5" rx="2" opacity="0.8"/>
+                <rect x="-6" y="-6" width="12" height="12" fill="#33281a" stroke="#ffbb44" stroke-width="1" rx="1"/>
+                <line x1="12" y1="0" x2="28" y2="0" stroke="#ffbb44" stroke-width="0.5" opacity="0.4"/>
+                <line x1="-12" y1="0" x2="-28" y2="0" stroke="#ffbb44" stroke-width="0.5" opacity="0.4"/>
+                <line x1="0" y1="-12" x2="0" y2="-28" stroke="#ffbb44" stroke-width="0.5" opacity="0.4"/>
+              </g>
+              <!-- Asteroids -->
+              <circle cx="150" cy="220" r="18" fill="#2a2218" stroke="#4a3d2a" stroke-width="0.5"/>
+              <circle cx="160" cy="210" r="8" fill="#332a1a" stroke="#4a3d2a" stroke-width="0.3"/>
+              <circle cx="480" cy="260" r="22" fill="#2a2218" stroke="#4a3d2a" stroke-width="0.5"/>
+              <circle cx="495" cy="248" r="10" fill="#332a1a" stroke="#4a3d2a" stroke-width="0.3"/>
+              <circle cx="250" cy="300" r="12" fill="#2a2218" stroke="#4a3d2a" stroke-width="0.3"/>
+              <!-- Ship -->
+              <g transform="translate(260,200) rotate(-30)">
+                <polygon points="0,-8 5,6 -5,6" fill="none" stroke="#80ffd5" stroke-width="1" opacity="0.9"/>
+                <line x1="0" y1="6" x2="0" y2="14" stroke="#80ffd5" stroke-width="0.5" opacity="0.4"/>
+              </g>
+              <!-- Mining beam -->
+              <line x1="258" y1="195" x2="160" y2="218" stroke="#f1b566" stroke-width="0.8" opacity="0.5" stroke-dasharray="3,3"/>
+              <!-- Signal range circle -->
+              <circle cx="320" cy="180" r="120" fill="none" stroke="#80ffd5" stroke-width="0.3" opacity="0.2" stroke-dasharray="4,4"/>
+              <!-- Label -->
+              <text x="320" y="340" text-anchor="middle" fill="#ffbb44" font-family="'IBM Plex Mono', monospace" font-size="10" letter-spacing="0.15em" opacity="0.6">PROSPECT BASIN — A-BAND</text>
+            </svg>
+          </div>
+          <div class="sector-body">
+            <div class="sector-label">Roadmap</div>
+            <div class="sector-title">Sector One</div>
+            <div class="sector-desc">
+              Three stations. A thin ring of signal. Everything outside it is yours to claim &mdash; if you can keep the lights on.
+            </div>
+            <ul class="sector-checklist">
+              <li class="done">Fracture asteroids, haul ore, trade up</li>
+              <li class="done">Found outposts, extend signal coverage</li>
+              <li class="done">NPC miners and haulers working the belt</li>
+              <li class="done">Multiplayer and singleplayer with persistence</li>
+              <li class="wip">Station construction and supply lines</li>
+              <li class="wip">Stations that talk back</li>
+              <li class="todo">Your first real job from the community</li>
+            </ul>
+            <span class="sector-status">Alpha — Playable Now</span>
+          </div>
         </div>
-        <div class="step">
-          <div class="step-label">02 Supply</div>
-          <div class="step-title">Trade</div>
-          <div class="step-desc">Sell ore at refineries. Stations smelt ingots, fabricate parts, and post contracts for what they need.</div>
-        </div>
-        <div class="step">
-          <div class="step-label">03 Expand</div>
-          <div class="step-title">Build</div>
-          <div class="step-desc">Order scaffolds, tow them into place, found outposts. Push signal coverage deeper into the belt.</div>
-        </div>
-      </div>
 
-      <div class="pitch">
-        <strong>Signal range determines everything.</strong>
-        Ship response, mining speed, NPC autonomy, and station connectivity all degrade outside coverage.
-        Three starter stations form a strained frontier community. Expand the network or work the edges &mdash; and throw rocks at anyone who gets in the way.
-      </div>
-
-      <div class="controls">
-        <span>
-          <code>W/S</code> thrust &nbsp;
-          <code>A/D</code> turn &nbsp;
-          <code>Space</code> mine &nbsp;
-          <code>E</code> dock &nbsp;
-          <code>R</code> tractor &nbsp;
-          <code>B</code> build &nbsp;
-          <code>O</code> autopilot &nbsp;
-          <code>H</code> hail
-        </span>
+        <!-- Sector X -->
+        <div class="sector-card sector-x">
+          <div class="sector-screenshot">
+            <svg viewBox="0 0 640 360" xmlns="http://www.w3.org/2000/svg" class="scene-placeholder">
+              <rect width="640" height="360" fill="#060a08"/>
+              <!-- Stars (sparser, deeper space) -->
+              <circle cx="80" cy="50" r="0.5" fill="#f5efdf" opacity="0.3"/>
+              <circle cx="200" cy="30" r="0.6" fill="#f5efdf" opacity="0.2"/>
+              <circle cx="400" cy="55" r="0.4" fill="#f5efdf" opacity="0.3"/>
+              <circle cx="550" cy="40" r="0.7" fill="#f5efdf" opacity="0.2"/>
+              <circle cx="100" cy="130" r="0.5" fill="#f5efdf" opacity="0.15"/>
+              <circle cx="500" cy="160" r="0.4" fill="#f5efdf" opacity="0.2"/>
+              <!-- Nebula / deep space glow -->
+              <radialGradient id="nebula" cx="50%" cy="50%" r="50%">
+                <stop offset="0%" stop-color="#80ffd5" stop-opacity="0.04"/>
+                <stop offset="100%" stop-color="transparent" stop-opacity="0"/>
+              </radialGradient>
+              <circle cx="320" cy="180" r="200" fill="url(#nebula)"/>
+              <!-- Unknown structures -->
+              <g transform="translate(320,180)" opacity="0.6">
+                <circle r="40" fill="none" stroke="#80ffd5" stroke-width="0.3" stroke-dasharray="2,6"/>
+                <circle r="80" fill="none" stroke="#80ffd5" stroke-width="0.2" stroke-dasharray="1,8"/>
+                <circle r="120" fill="none" stroke="#80ffd5" stroke-width="0.15" stroke-dasharray="1,12"/>
+                <!-- Anomaly -->
+                <circle r="6" fill="none" stroke="#80ffd5" stroke-width="1.5" opacity="0.8"/>
+                <circle r="3" fill="#80ffd5" opacity="0.3"/>
+                <line x1="-10" y1="0" x2="10" y2="0" stroke="#80ffd5" stroke-width="0.3" opacity="0.5"/>
+                <line x1="0" y1="-10" x2="0" y2="10" stroke="#80ffd5" stroke-width="0.3" opacity="0.5"/>
+              </g>
+              <!-- Anomalies -->
+              <circle cx="180" cy="140" r="4" fill="#1a3a2a" stroke="#72ffb6" stroke-width="0.5" opacity="0.5"/>
+              <circle cx="460" cy="220" r="3" fill="#1a3a2a" stroke="#72ffb6" stroke-width="0.5" opacity="0.4"/>
+              <circle cx="220" cy="280" r="5" fill="#1a3a2a" stroke="#72ffb6" stroke-width="0.5" opacity="0.3"/>
+              <circle cx="440" cy="120" r="3.5" fill="#1a3a2a" stroke="#72ffb6" stroke-width="0.5" opacity="0.35"/>
+              <!-- "?" markers -->
+              <text x="180" y="143" text-anchor="middle" fill="#72ffb6" font-family="'IBM Plex Mono', monospace" font-size="6" opacity="0.5">?</text>
+              <text x="460" y="223" text-anchor="middle" fill="#72ffb6" font-family="'IBM Plex Mono', monospace" font-size="6" opacity="0.4">?</text>
+              <!-- Static / noise lines -->
+              <line x1="100" y1="200" x2="140" y2="200" stroke="#80ffd5" stroke-width="0.3" opacity="0.1"/>
+              <line x1="480" y1="160" x2="530" y2="160" stroke="#80ffd5" stroke-width="0.3" opacity="0.08"/>
+              <line x1="300" y1="300" x2="360" y2="300" stroke="#80ffd5" stroke-width="0.3" opacity="0.06"/>
+              <!-- Label -->
+              <text x="320" y="340" text-anchor="middle" fill="#80ffd5" font-family="'IBM Plex Mono', monospace" font-size="10" letter-spacing="0.15em" opacity="0.5">BEYOND THE BELT — C-BAND</text>
+            </svg>
+          </div>
+          <div class="sector-body">
+            <div class="sector-label">Roadmap</div>
+            <div class="sector-title">Sector X</div>
+            <div class="sector-desc">
+              Past the edge of coverage, something is out there. Go dark to find it.
+            </div>
+            <ul class="sector-checklist">
+              <li class="todo">The Anomaly</li>
+              <li class="todo">???</li>
+            </ul>
+            <span class="sector-status">In Development</span>
+          </div>
+        </div>
       </div>
 
       <div class="links">
-        <a href="/music">Soundtrack</a>
+        <a href="/play">Playtest</a>
+        <a href="/ost">Soundtrack</a>
         <a href="https://github.com/cenetex/signal" target="_blank">Source</a>
         <a href="https://ratimics.com">ratimics</a>
       </div>
