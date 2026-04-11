@@ -6,6 +6,7 @@
  */
 #include "sim_ai.h"
 #include "sim_nav.h"
+#include "sim_flight.h"
 #include "signal_model.h"
 #include <math.h>
 #include <string.h>
@@ -31,6 +32,8 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     }
     npc_ship_t *npc = &w->npc_ships[slot];
     memset(npc, 0, sizeof(*npc));
+    /* Clear stale path from previous occupant of this slot. */
+    *nav_npc_path(slot) = (nav_path_t){0};
     npc->active = true;
     npc->role = role;
     npc->hull_class = hc;
@@ -119,38 +122,34 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
  * now uses A* paths via npc_steer_with_path. compute_path_avoidance
  * is retained for potential future use by manual-play collision hints.) */
 
-/* A*-guided NPC steering: compute path on first call or when stale,
- * then steer directly toward the next waypoint. No reactive avoidance —
- * the A* path already routes around station walls and large asteroids. */
+/* A*-guided NPC steering via the shared flight controller.
+ * Creates a temporary ship_t so flight_steer_to can read pos/vel/angle/hull_class.
+ * Phase 2 will give NPCs a real ship_t; this is intentionally transitional. */
 static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
                                 vec2 final_target, float accel, float turn_speed, float dt) {
-    const hull_def_t *hull = npc_hull_def(npc);
+    /* Build a temporary ship_t for the flight controller. */
+    ship_t tmp_ship = {0};
+    tmp_ship.pos = npc->pos;
+    tmp_ship.vel = npc->vel;
+    tmp_ship.angle = npc->angle;
+    tmp_ship.hull_class = npc->hull_class;
+
     nav_path_t *path = nav_npc_path(npc_idx);
-    nav_follow_path(w, path, npc->pos, final_target, hull->ship_radius + 30.0f, dt);
-    nav_steer_t st = nav_steer_toward_waypoint(path, npc->pos, final_target, dt);
+    flight_cmd_t cmd = flight_steer_to(w, &tmp_ship, path, final_target,
+                                        0.0f, 200.0f, dt);
 
-    float diff = wrap_angle(st.desired_heading - npc->angle);
+    /* Apply turn (rate-limited by turn_speed). */
+    float turn_angle = cmd.turn * turn_speed * dt;
     float max_turn = turn_speed * dt;
-    if (diff > max_turn) diff = max_turn;
-    else if (diff < -max_turn) diff = -max_turn;
-    npc->angle = wrap_angle(npc->angle + diff);
+    if (turn_angle > max_turn) turn_angle = max_turn;
+    if (turn_angle < -max_turn) turn_angle = -max_turn;
+    npc->angle = wrap_angle(npc->angle + turn_angle);
 
-    float facing = cosf(diff);
-    float thrust_gate = (facing > 0.5f) ? facing : 0.0f;
-    float speed_cap = accel;
-    if (st.wp_dist < 200.0f && st.at_intermediate)
-        speed_cap *= fmaxf(0.2f, st.wp_dist / 200.0f);
-    /* Brake if asteroid dead ahead (check heading + velocity direction) */
-    float fwd_clear = nav_forward_clearance(w, npc->pos, npc->vel,
-                                             hull->ship_radius, npc->angle);
-    float vel_ang = atan2f(npc->vel.y, npc->vel.x);
-    float vel_clear = nav_forward_clearance(w, npc->pos, npc->vel,
-                                             hull->ship_radius, vel_ang);
-    float worst_clear = fminf(fwd_clear, vel_clear);
-    speed_cap *= worst_clear;
+    /* Apply thrust as acceleration. */
+    float thrust_gate = (cmd.thrust > 0.0f) ? cmd.thrust : 0.0f;
     vec2 fwd = v2_from_angle(npc->angle);
-    npc->vel = v2_add(npc->vel, v2_scale(fwd, speed_cap * thrust_gate * dt));
-    npc->thrusting = (speed_cap * thrust_gate) > 0.0f;
+    npc->vel = v2_add(npc->vel, v2_scale(fwd, accel * thrust_gate * dt));
+    npc->thrusting = thrust_gate > 0.0f;
 }
 
 static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world_t *w) {
@@ -772,17 +771,30 @@ void step_npc_ships(world_t *w, float dt) {
                 break;
             }
 
-            vec2 face_dir = v2_sub(a->pos, npc->pos);
-            float desired = atan2f(face_dir.y, face_dir.x);
-            float diff = wrap_angle(desired - npc->angle);
-            float max_turn = hull->turn_speed * dt;
-            if (diff > max_turn) diff = max_turn;
-            else if (diff < -max_turn) diff = -max_turn;
-            npc->angle = wrap_angle(npc->angle + diff);
-
-            if (dist_sq < standoff * standoff) {
-                vec2 away = v2_norm(v2_sub(npc->pos, a->pos));
-                npc->vel = v2_add(npc->vel, v2_scale(away, hull->accel * 0.5f * dt));
+            /* Hover near the rock via flight controller. */
+            {
+                ship_t tmp_ship = {0};
+                tmp_ship.pos = npc->pos;
+                tmp_ship.vel = npc->vel;
+                tmp_ship.angle = npc->angle;
+                tmp_ship.hull_class = npc->hull_class;
+                flight_cmd_t cmd = flight_hover_near(w, &tmp_ship, a->pos, standoff);
+                /* Apply turn (rate-limited by turn_speed). */
+                float turn_angle = cmd.turn * hull->turn_speed * dt;
+                float max_turn = hull->turn_speed * dt;
+                if (turn_angle > max_turn) turn_angle = max_turn;
+                if (turn_angle < -max_turn) turn_angle = -max_turn;
+                npc->angle = wrap_angle(npc->angle + turn_angle);
+                /* Apply thrust as acceleration. */
+                float thrust_gate = (cmd.thrust > 0.0f) ? cmd.thrust : 0.0f;
+                if (cmd.thrust < 0.0f) {
+                    /* Braking: push away from current velocity */
+                    vec2 away = v2_norm(v2_sub(npc->pos, a->pos));
+                    npc->vel = v2_add(npc->vel, v2_scale(away, hull->accel * 0.5f * dt));
+                } else if (thrust_gate > 0.0f) {
+                    vec2 fwd = v2_from_angle(npc->angle);
+                    npc->vel = v2_add(npc->vel, v2_scale(fwd, hull->accel * thrust_gate * dt));
+                }
             }
             npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (4.0f * dt)));
             npc_apply_physics(npc, hull->drag, dt, w);

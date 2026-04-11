@@ -7,6 +7,7 @@
  */
 #include "sim_autopilot.h"
 #include "sim_nav.h"
+#include "sim_flight.h"
 #include "signal_model.h"
 
 /* ================================================================== */
@@ -266,7 +267,6 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
-        const hull_def_t *hull = ship_hull_def(&sp->ship);
         /* Standoff distance: where the autopilot wants the ship to "park"
          * relative to the asteroid surface. Laser MINING_RANGE is 170u
          * so anywhere within radius+170 reaches; we sit at radius+120
@@ -294,44 +294,12 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             break;
         }
 
-        /* Follow A* path via shared helpers. */
+        /* Follow A* path via flight controller. */
         nav_path_t *path = nav_player_path(sp->id);
-        nav_follow_path(w, path, sp->ship.pos, a->pos, hull->ship_radius + 30.0f, dt);
-        nav_steer_t st = nav_steer_toward_waypoint(path, sp->ship.pos, a->pos, dt);
-        float diff = wrap_angle(st.desired_heading - sp->ship.angle);
-        /* Proportional turn: full rate when far off, gentle near target
-         * heading. Prevents overshoot oscillation ("spinning"). */
-        float turn_strength = fminf(fabsf(diff) * 3.0f, 1.0f);
-        sp->input.turn = (diff > 0.02f) ? turn_strength : (diff < -0.02f ? -turn_strength : 0.0f);
-        float facing = cosf(diff);
-
-        /* Velocity-controlled approach. */
-        float target_speed = nav_approach_speed(effective_dist, 150.0f);
-        if (st.wp_dist < 200.0f && st.at_intermediate) {
-            float wp_speed = nav_approach_speed(st.wp_dist, 80.0f);
-            if (wp_speed < target_speed) target_speed = wp_speed;
-        }
-        vec2 to_target_dir = (dist_to_a > 0.5f)
-            ? v2_scale(v2_sub(a->pos, sp->ship.pos), 1.0f / dist_to_a)
-            : v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
-        float approach_v = v2_dot(sp->ship.vel, to_target_dir);
-        float thrust_cmd = nav_speed_control(approach_v, target_speed);
-        if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
-        /* Brake if an asteroid is dead ahead. Check both heading and
-         * velocity direction so sideways drift is also caught. */
-        float fwd_clear = nav_forward_clearance(w, sp->ship.pos, sp->ship.vel,
-                                                 hull->ship_radius, sp->ship.angle);
-        float vel_angle = atan2f(sp->ship.vel.y, sp->ship.vel.x);
-        float vel_clear = nav_forward_clearance(w, sp->ship.pos, sp->ship.vel,
-                                                 hull->ship_radius, vel_angle);
-        float worst_clear = fminf(fwd_clear, vel_clear);
-        if (worst_clear < 1.0f) {
-            if (worst_clear < 0.3f)
-                thrust_cmd = -1.0f; /* hard brake — impact imminent */
-            else if (thrust_cmd > 0.0f)
-                thrust_cmd *= worst_clear;
-        }
-        sp->input.thrust = thrust_cmd;
+        flight_cmd_t cmd = flight_steer_to(w, &sp->ship, path, a->pos,
+                                            standoff, 150.0f, dt);
+        sp->input.turn = cmd.turn;
+        sp->input.thrust = cmd.thrust;
         sp->input.mine = false;
 
         /* Stuck-fly safety: if we've been flying >60s and haven't arrived,
@@ -360,63 +328,32 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_timer = 0.0f;
             break;
         }
-        /* Hover near the rock at a safe standoff. Same logic as the NPC
-         * miner: if too close, push away; if too far, pull in; mine when
-         * we're in the sweet spot AND facing the rock. Standoff matches
-         * the FLY_TO_TARGET arrival distance so transitions are smooth. */
-        float dist = sqrtf(v2_dist_sq(sp->ship.pos, a->pos));
+        /* Hover near the rock at a safe standoff via flight controller. */
         float standoff = a->radius + 120.0f;
-        float sweet_min = standoff - 15.0f;
-        float sweet_max = standoff + 30.0f;
+        float dist = sqrtf(v2_dist_sq(sp->ship.pos, a->pos));
 
         /* If we drifted way out, return to FLY_TO_TARGET (which handles
          * the fast-cruise approach properly). */
-        if (dist > sweet_max + 200.0f) {
+        if (dist > standoff + 30.0f + 200.0f) {
             sp->autopilot_state = AUTOPILOT_STEP_FLY_TO_TARGET;
             sp->autopilot_timer = 0.0f;
             break;
         }
 
-        if (dist < sweet_min) {
-            /* Too close — turn AWAY from the rock and burn forward to escape. */
-            vec2 away = v2_sub(sp->ship.pos, a->pos);
-            float push_angle = atan2f(away.y, away.x);
-            float diff = wrap_angle(push_angle - sp->ship.angle);
-            sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
-            sp->input.thrust = (cosf(diff) > 0.6f) ? 0.6f : 0.0f;
-            sp->input.mine = false;
-        } else if (dist > sweet_max) {
-            /* Drifted out — close in slowly. */
-            vec2 to_a = v2_sub(a->pos, sp->ship.pos);
-            float face = atan2f(to_a.y, to_a.x);
-            float diff = wrap_angle(face - sp->ship.angle);
-            sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
-            float approach_v = v2_dot(sp->ship.vel, v2_scale(to_a, 1.0f / dist));
-            /* Hold approach speed at ~50 u/s */
-            sp->input.thrust = nav_speed_control(approach_v, 50.0f);
-            if (cosf(diff) < 0.5f) sp->input.thrust = 0.0f;
-            sp->input.mine = false;
-        } else {
-            /* In the sweet spot — face the rock and fire. */
-            vec2 to_a = v2_sub(a->pos, sp->ship.pos);
-            float face = atan2f(to_a.y, to_a.x);
-            float diff = wrap_angle(face - sp->ship.angle);
-            sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
-            /* Brake any residual velocity so we hover. */
-            float speed = sqrtf(v2_len_sq(sp->ship.vel));
-            if (speed > 30.0f) {
-                /* Reverse thrust along current motion direction to bleed speed. */
-                vec2 vel_dir = v2_scale(sp->ship.vel, 1.0f / speed);
-                vec2 fwd = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
-                float vel_along_fwd = v2_dot(vel_dir, fwd) * speed;
-                if (vel_along_fwd > 30.0f) sp->input.thrust = -1.0f;
-                else if (vel_along_fwd < -30.0f) sp->input.thrust = 1.0f;
-                else sp->input.thrust = 0.0f;
-            } else {
-                sp->input.thrust = 0.0f;
-            }
-            sp->input.mine = (fabsf(diff) < 0.20f);
+        flight_cmd_t cmd = flight_hover_near(w, &sp->ship, a->pos, standoff);
+        sp->input.turn = cmd.turn;
+        sp->input.thrust = cmd.thrust;
+        /* Mine when facing the rock in the sweet spot. */
+        vec2 to_a = v2_sub(a->pos, sp->ship.pos);
+        float face = atan2f(to_a.y, to_a.x);
+        float diff = wrap_angle(face - sp->ship.angle);
+        float sweet_min = standoff - 15.0f;
+        float sweet_max = standoff + 30.0f;
+        if (dist >= sweet_min && dist <= sweet_max && fabsf(diff) < 0.20f) {
+            sp->input.mine = true;
             sp->input.mining_target_hint = sp->autopilot_target;
+        } else {
+            sp->input.mine = false;
         }
         break;
     }
@@ -457,8 +394,8 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         const asteroid_t *frag = &w->asteroids[best];
         vec2 to = v2_sub(frag->pos, sp->ship.pos);
         float desired = atan2f(to.y, to.x);
+        sp->input.turn = flight_face_heading(&sp->ship, desired);
         float diff = wrap_angle(desired - sp->ship.angle);
-        sp->input.turn = (diff > 0.05f) ? 1.0f : (diff < -0.05f ? -1.0f : 0.0f);
         sp->input.thrust = (cosf(diff) > 0.5f) ? 0.6f : 0.0f;
         if (sp->autopilot_timer > 8.0f) {
             sp->autopilot_state = (sp->ship.towed_count > 0)
@@ -497,44 +434,15 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->ship.tractor_active && sp->ship.towed_count > 0) {
             sp->input.release_tow = true;
         }
-        /* A* path toward the dock approach point. */
+        /* A* path toward the dock approach point via flight controller. */
         vec2 dock_target = station_approach_target(st, sp->ship.pos);
-        /* Follow A* path via shared helpers. */
-        const hull_def_t *hull = ship_hull_def(&sp->ship);
         nav_path_t *path = nav_player_path(sp->id);
-        nav_follow_path(w, path, sp->ship.pos, dock_target, hull->ship_radius + 30.0f, dt);
-        nav_steer_t st2 = nav_steer_toward_waypoint(path, sp->ship.pos, dock_target, dt);
-        float diff = wrap_angle(st2.desired_heading - sp->ship.angle);
-        float turn_strength = fminf(fabsf(diff) * 3.0f, 1.0f);
-        sp->input.turn = (diff > 0.02f) ? turn_strength : (diff < -0.02f ? -turn_strength : 0.0f);
-        float facing = cosf(diff);
-        float dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
-
-        float target_speed = nav_approach_speed(dist, 120.0f);
-        if (st2.wp_dist < 200.0f && st2.at_intermediate) {
-            float wp_speed = nav_approach_speed(st2.wp_dist, 80.0f);
-            if (wp_speed < target_speed) target_speed = wp_speed;
-        }
-        vec2 to_st_dir = (dist > 0.5f)
-            ? v2_scale(v2_sub(st->pos, sp->ship.pos), 1.0f / dist)
-            : v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
-        float approach_v = v2_dot(sp->ship.vel, to_st_dir);
-        float thrust_cmd = nav_speed_control(approach_v, target_speed);
-        if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
-        float fwd_clear = nav_forward_clearance(w, sp->ship.pos, sp->ship.vel,
-                                                 hull->ship_radius, sp->ship.angle);
-        float vel_angle = atan2f(sp->ship.vel.y, sp->ship.vel.x);
-        float vel_clear = nav_forward_clearance(w, sp->ship.pos, sp->ship.vel,
-                                                 hull->ship_radius, vel_angle);
-        float worst_clear = fminf(fwd_clear, vel_clear);
-        if (worst_clear < 1.0f) {
-            if (worst_clear < 0.3f)
-                thrust_cmd = -1.0f;
-            else if (thrust_cmd > 0.0f)
-                thrust_cmd *= worst_clear;
-        }
-        sp->input.thrust = thrust_cmd;
+        flight_cmd_t cmd = flight_steer_to(w, &sp->ship, path, dock_target,
+                                            0.0f, 120.0f, dt);
+        sp->input.turn = cmd.turn;
+        sp->input.thrust = cmd.thrust;
         sp->input.mine = false;
+        float dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
 
         /* Drop-and-leave path (no damage): once we've released the
          * tractor and are inside the hopper area, we don't need to
