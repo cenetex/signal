@@ -1342,17 +1342,18 @@ void draw_autopilot_path(void) {
         mp_path_timer += sapp_frame_duration();
         if (g.autopilot_path_count == 0 || mp_path_timer > 2.0f) {
             mp_path_timer = 0.0f;
-            /* Find nearest minable asteroid (same logic as red pip) */
-            asteroid_tier_t max_tier = (LOCAL_PLAYER.ship.mining_level >= 2) ? ASTEROID_TIER_XL
-                                     : (LOCAL_PLAYER.ship.mining_level >= 1) ? ASTEROID_TIER_L
-                                     : ASTEROID_TIER_M;
+            /* Find nearest minable asteroid — match server's autopilot
+             * target selection: any rock at or above max_mineable_tier,
+             * with valid signal, nearest by distance. */
+            asteroid_tier_t min_tier = max_mineable_tier(LOCAL_PLAYER.ship.mining_level);
             float best_d = 1e18f;
             vec2 best_pos = LOCAL_PLAYER.ship.pos;
             bool found = false;
             for (int i = 0; i < MAX_ASTEROIDS; i++) {
                 const asteroid_t *a = &g.world.asteroids[i];
                 if (!a->active || a->tier == ASTEROID_TIER_S) continue;
-                if ((int)a->tier < (int)max_tier) continue;
+                if ((int)a->tier < (int)min_tier) continue;
+                if (signal_strength_at(&g.world, a->pos) <= 0.0f) continue;
                 float d = v2_dist_sq(a->pos, LOCAL_PLAYER.ship.pos);
                 if (d < best_d) { best_d = d; best_pos = a->pos; found = true; }
             }
