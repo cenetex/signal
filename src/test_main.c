@@ -4893,6 +4893,50 @@ TEST(test_save_preserves_pending_scaffolds) {
 }
 
 /* ================================================================== */
+/* Station service semantics (#259)                                   */
+/* ================================================================== */
+
+TEST(test_259_furnace_station_accepts_ore_sale) {
+    /* Prospect Refinery has MODULE_FURNACE but no MODULE_ORE_BUYER.
+     * Selling ore should still work — station_primary_buy() returns
+     * FERRITE_ORE based on the furnace, not the service flag. */
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 50.0f;
+    float credits_before = w.players[0].ship.credits;
+    /* Verify Prospect (station 0) has no ORE_BUYER service flag */
+    ASSERT(!(w.stations[0].services & STATION_SERVICE_ORE_BUYER));
+    /* But station_primary_buy says it buys ferrite ore */
+    ASSERT_EQ_INT((int)station_primary_buy(&w.stations[0]), (int)COMMODITY_FERRITE_ORE);
+    /* Dock and sell */
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    ASSERT(w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] < 50.0f);
+    ASSERT(w.players[0].ship.credits > credits_before);
+}
+
+TEST(test_259_passive_repair_at_any_station) {
+    /* Passive repair (8 hp/s) runs at ANY station while docked,
+     * regardless of STATION_SERVICE_REPAIR flag. */
+    world_t w = {0};
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].ship.hull = 50.0f; /* damaged */
+    /* Dock at station 0 (no REPAIR_BAY module) */
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+    ASSERT(!(w.stations[0].services & STATION_SERVICE_REPAIR));
+    /* Run a few ticks — hull should increase from passive repair */
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    ASSERT(w.players[0].ship.hull > 50.0f);
+}
+
+/* ================================================================== */
 /* Navigation tests (sim_nav)                                         */
 /* ================================================================== */
 
@@ -5271,6 +5315,10 @@ int main(void) {
     RUN(test_deliver_ingots_to_contract);
     RUN(test_mixed_cargo_sell_and_deliver);
     RUN(test_no_delivery_without_matching_contract);
+
+    printf("\nStation service semantics (#259):\n");
+    RUN(test_259_furnace_station_accepts_ore_sale);
+    RUN(test_259_passive_repair_at_any_station);
 
     printf("\nRefinery smelt test:\n");
     RUN(test_refinery_smelts_after_ore_sale);
