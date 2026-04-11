@@ -7,6 +7,7 @@
 #include "net.h"
 #include "net_sync.h"
 #include "onboarding.h"
+#include "station_voice.h"
 #include "avatar.h"
 #include "signal_model.h"
 
@@ -351,9 +352,13 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
 
     if (LOCAL_PLAYER.docked) {
         if (station != NULL) {
-            /* Rotate tips based on time */
-            /* Cycle through context-specific tips. Each tip is one
-             * concrete game action with the keybind in [brackets]. */
+            int si = LOCAL_PLAYER.current_station;
+            int vi = (si >= 0 && si < 3) ? si : 0;
+            /* Use station name as label for starter stations,
+             * role name for player outposts */
+            const char *speaker = (si >= 0 && si < 3)
+                ? g.world.stations[si].name : station_role_name(station);
+            /* Cycle through context-specific tips, station-voiced. */
             int tip_cycle = (int)(g.world.time / 5.0f) % 4;
             bool has_shipyard = station_has_module(station, MODULE_SHIPYARD);
             bool has_market = false;
@@ -361,20 +366,20 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
                 if (station->inventory[c] > 0.5f) { has_market = true; break; }
 
             if (tip_cycle == 0 && station_has_module(station, MODULE_ORE_BUYER)) {
-                snprintf(label, label_size, "SELL");
-                snprintf(message, message_size, "Press [1] to sell raw ore at this hopper.");
+                snprintf(label, label_size, "%s", speaker);
+                snprintf(message, message_size, "%s", STATION_DOCK_TIPS[vi][DOCK_TIP_SELL]);
             } else if (tip_cycle == 1 && has_market) {
-                snprintf(label, label_size, "MARKET");
-                snprintf(message, message_size, "Press [F] to buy frames or ingots from this station.");
+                snprintf(label, label_size, "%s", speaker);
+                snprintf(message, message_size, "%s", STATION_DOCK_TIPS[vi][DOCK_TIP_MARKET]);
             } else if (tip_cycle == 2 && has_shipyard) {
-                snprintf(label, label_size, "SHIPYARD");
-                snprintf(message, message_size, "Open the SHIPYARD tab [Tab] then [1-9] to order a scaffold.");
+                snprintf(label, label_size, "%s", speaker);
+                snprintf(message, message_size, "%s", STATION_DOCK_TIPS[vi][DOCK_TIP_SHIPYARD]);
             } else if (tip_cycle == 3) {
-                snprintf(label, label_size, "LAUNCH");
-                snprintf(message, message_size, "Press [E] to undock and head back to the belt.");
+                snprintf(label, label_size, "%s", speaker);
+                snprintf(message, message_size, "%s", STATION_DOCK_TIPS[vi][DOCK_TIP_LAUNCH]);
             } else {
-                snprintf(label, label_size, "%s", station_role_name(station));
-                snprintf(message, message_size, "Press [Tab] to switch panels.");
+                snprintf(label, label_size, "%s", speaker);
+                snprintf(message, message_size, "%s", STATION_DOCK_TIPS[vi][DOCK_TIP_DEFAULT]);
             }
             *r = 164;
             *g0 = 177;
@@ -854,7 +859,7 @@ void draw_hud(void) {
     float top_row_1 = ui_text_pos(top_y + (compact ? 24.0f : 30.0f));
     float top_row_2 = ui_text_pos(top_y + (compact ? 32.0f : 44.0f));
     float top_row_3 = ui_text_pos(top_y + (compact ? 40.0f : 58.0f));
-    char message_label[16] = { 0 };
+    char message_label[32] = { 0 };
     char message_text[160] = { 0 };
     char message_line0[96] = { 0 };
     char message_line1[96] = { 0 };

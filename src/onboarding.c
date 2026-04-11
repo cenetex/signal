@@ -2,8 +2,11 @@
  * onboarding.c — First-run progression hints for Signal Space Miner.
  * Tracks which game actions the player has completed and provides
  * contextual hints for the next step in the loop.
+ *
+ * #249: Hints now come from stations, not a disembodied "GUIDE".
  */
 #include "client.h"
+#include "station_voice.h"
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -81,68 +84,75 @@ void onboarding_mark_placed_outpost(void) {
 /* Hint text (returns false if onboarding is complete)                 */
 /* ------------------------------------------------------------------ */
 
+/* Pick the station that should "speak" for the current hint. */
+static int onboard_speaker(int fallback) {
+    if (LOCAL_PLAYER.docked && LOCAL_PLAYER.current_station >= 0)
+        return LOCAL_PLAYER.current_station;
+    int sig = nearest_signal_station(LOCAL_PLAYER.ship.pos);
+    return (sig >= 0) ? sig : fallback;
+}
+
+/* Clamp to 0-2 for voice table lookup (outposts fall back to Prospect). */
+static int voice_idx(int station) {
+    return (station >= 0 && station < 3) ? station : 0;
+}
+
+static void say(int station, int line, char *label, size_t label_size,
+                char *message, size_t message_size) {
+    int vi = voice_idx(station);
+    if (station >= 0 && station < MAX_STATIONS && g.world.stations[station].name[0])
+        snprintf(label, label_size, "%s", g.world.stations[station].name);
+    else
+        snprintf(label, label_size, "SIGNAL");
+    snprintf(message, message_size, "%s", STATION_ONBOARD[vi][line]);
+}
+
 bool onboarding_hint(char *label, size_t label_size,
                      char *message, size_t message_size) {
     if (g.onboarding.complete) return false;
 
     if (!g.onboarding.launched) {
-        if (LOCAL_PLAYER.docked) {
-            snprintf(label, label_size, "LAUNCH");
-            snprintf(message, message_size, "Press [E] to undock and fly into the belt.");
-            return true;
-        }
-        return false;
+        if (!LOCAL_PLAYER.docked) return false;
+        say(0, VOICE_ONBOARD_LAUNCH, label, label_size, message, message_size);
+        return true;
     }
     if (!g.onboarding.mined) {
-        snprintf(label, label_size, "MINE");
-        snprintf(message, message_size, "Aim at an asteroid and hold [Space] to fire the mining laser.");
+        say(onboard_speaker(0), VOICE_ONBOARD_MINE, label, label_size, message, message_size);
         return true;
     }
     if (!g.onboarding.collected) {
-        snprintf(label, label_size, "COLLECT");
-        snprintf(message, message_size, "Fly close to ore fragments — your tractor [R] sweeps them up.");
+        say(onboard_speaker(0), VOICE_ONBOARD_COLLECT, label, label_size, message, message_size);
         return true;
     }
     if (!g.onboarding.towed) {
-        snprintf(label, label_size, "HAUL");
-        snprintf(message, message_size, "Tow fragments back to the refinery to drop them in the hopper.");
+        say(onboard_speaker(0), VOICE_ONBOARD_HAUL, label, label_size, message, message_size);
         return true;
     }
     if (!g.onboarding.sold) {
-        int cargo = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
-        if (cargo > 0) {
-            snprintf(label, label_size, "SELL");
-            snprintf(message, message_size, "Dock at the refinery [E], press [1] to sell ore for credits.");
-            return true;
-        }
-        return false;
+        if ((int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship)) <= 0) return false;
+        say(onboard_speaker(0), VOICE_ONBOARD_SELL, label, label_size, message, message_size);
+        return true;
     }
     if (!g.onboarding.bought) {
-        if (LOCAL_PLAYER.docked) {
-            snprintf(label, label_size, "MARKET");
-            snprintf(message, message_size, "Press [F] to buy refined goods (frames, ingots).");
-            return true;
-        }
-        return false;
+        if (!LOCAL_PLAYER.docked) return false;
+        say(onboard_speaker(0), VOICE_ONBOARD_BUY, label, label_size, message, message_size);
+        return true;
     }
     if (!g.onboarding.upgraded) {
-        snprintf(label, label_size, "UPGRADE");
-        snprintf(message, message_size, "Dock at Kepler or Helios. Press [3]/[4]/[5] to upgrade hold/laser/tractor.");
+        /* Milestone 6: handoff moment — the speaker depends on where you are */
+        say(onboard_speaker(0), VOICE_ONBOARD_UPGRADE, label, label_size, message, message_size);
         return true;
     }
     if (!g.onboarding.got_scaffold) {
-        snprintf(label, label_size, "SHIPYARD");
-        snprintf(message, message_size, "Dock at Kepler. Open the SHIPYARD tab [Tab] and press [1-9] to order a scaffold.");
+        say(onboard_speaker(1), VOICE_ONBOARD_SCAFFOLD, label, label_size, message, message_size);
         return true;
     }
     if (!g.onboarding.placed_outpost) {
         if (LOCAL_PLAYER.ship.towed_scaffold >= 0) {
-            snprintf(label, label_size, "PLACE");
-            snprintf(message, message_size, "Tow it out, then press [B] to anchor it as your new outpost.");
-            return true;
+            say(onboard_speaker(1), VOICE_ONBOARD_PLACE_ANCHOR, label, label_size, message, message_size);
+        } else {
+            say(onboard_speaker(1), VOICE_ONBOARD_PLACE_TOW, label, label_size, message, message_size);
         }
-        snprintf(label, label_size, "TOW");
-        snprintf(message, message_size, "Find your scaffold near the shipyard and grab it with the tractor [R].");
         return true;
     }
     return false;

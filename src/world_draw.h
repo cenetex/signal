@@ -54,5 +54,6 @@ void draw_compass_ring(void);
 /* --- Multiplayer rendering --- */
 void draw_remote_players(void);
 void draw_callsigns(void);
+void draw_npc_chatter(void);
 
 #endif /* WORLD_DRAW_H */
