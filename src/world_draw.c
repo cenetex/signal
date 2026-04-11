@@ -1627,12 +1627,15 @@ void draw_callsigns(void) {
     sdtx_origin(0.0f, 0.0f);
     const float cell = 8.0f;
 
-    vec2 cam = g.camera_pos;
+    /* Use the same camera as the sgl projection (includes screen shake)
+     * so callsign labels stay aligned with ship sprites. */
+    float cam_x = cam_left() + screen_w * 0.5f;
+    float cam_y = cam_top()  + screen_h * 0.5f;
 
     /* World-to-screen helper inline */
     #define WS_TO_SCREEN(wx, wy, ox, oy) do { \
-        float _sx = (wx - cam.x) + screen_w * 0.5f + (ox); \
-        float _sy = (wy - cam.y) + screen_h * 0.5f + (oy); \
+        float _sx = (wx - cam_x) + screen_w * 0.5f + (ox); \
+        float _sy = (wy - cam_y) + screen_h * 0.5f + (oy); \
         sdtx_pos(_sx / cell, _sy / cell); \
     } while (0)
 
