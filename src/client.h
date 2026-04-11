@@ -111,16 +111,10 @@ typedef struct {
     bool was_docked;
     /* --- Onboarding (first-run progression hints) --- */
     struct {
-        bool launched;       /* pressed E to launch */
-        bool mined;          /* fired the mining beam */
-        bool collected;      /* picked up ore fragments */
-        bool towed;          /* towed fragments to a furnace */
-        bool sold;           /* sold cargo at a station */
-        bool bought;         /* bought a product with F */
-        bool upgraded;       /* applied a ship upgrade */
-        bool got_scaffold;   /* bought a scaffold kit */
-        bool placed_outpost; /* placed and activated an outpost */
-        bool complete;       /* all steps done — stop showing hints */
+        bool fractured;      /* broke an asteroid */
+        bool tractored;      /* collected ore fragments */
+        bool hailed;         /* pressed H to hail a station */
+        bool complete;       /* all 3 steps done — stations take over */
         bool loaded;         /* state loaded from localStorage */
     } onboarding;
     /* --- Module activation effect --- */

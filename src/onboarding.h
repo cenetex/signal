@@ -1,5 +1,6 @@
 /*
- * onboarding.h — First-run progression hints.
+ * onboarding.h — Minimal first-run hints (3 steps).
+ * After HAIL, stations take over via contextual hail responses.
  */
 #ifndef ONBOARDING_H
 #define ONBOARDING_H
@@ -8,15 +9,9 @@
 #include <stdbool.h>
 
 void onboarding_load(void);
-void onboarding_mark_launched(void);
-void onboarding_mark_mined(void);
-void onboarding_mark_collected(void);
-void onboarding_mark_towed(void);
-void onboarding_mark_sold(void);
-void onboarding_mark_bought(void);
-void onboarding_mark_upgraded(void);
-void onboarding_mark_got_scaffold(void);
-void onboarding_mark_placed_outpost(void);
+void onboarding_mark_fractured(void);
+void onboarding_mark_tractored(void);
+void onboarding_mark_hailed(void);
 
 /* Returns true and fills label/message if onboarding has a hint to show. */
 bool onboarding_hint(char *label, size_t label_size,

@@ -12,6 +12,7 @@
 #include "input.h"
 #include "net_sync.h"
 #include "onboarding.h"
+#include "station_voice.h"
 #include "avatar.h"
 
 #ifdef __EMSCRIPTEN__
@@ -181,17 +182,99 @@ static void step_notice_timer(float dt) {
 
 /* sync_world_to_globals removed — everything reads from g.world directly */
 
+/* ------------------------------------------------------------------ */
+/* Contextual hail: pick station-voiced message based on player state */
+/* ------------------------------------------------------------------ */
+
+static bool check_hail_condition(hail_cond_t cond) {
+    const ship_t *ship = &LOCAL_PLAYER.ship;
+    switch (cond) {
+    case HAIL_COND_HAS_ORE:
+        return ship_raw_ore_total(ship) > 0.5f;
+    case HAIL_COND_HAS_CREDITS_NO_OUTPOST: {
+        if (ship->credits < 200.0f) return false;
+        for (int s = 3; s < MAX_STATIONS; s++)
+            if (station_exists(&g.world.stations[s])) return false;
+        return true;
+    }
+    case HAIL_COND_HAS_OUTPOST_NO_FURNACE:
+        for (int s = 3; s < MAX_STATIONS; s++) {
+            if (!station_is_active(&g.world.stations[s])) continue;
+            if (!station_has_module(&g.world.stations[s], MODULE_FURNACE)) return true;
+        }
+        return false;
+    case HAIL_COND_HAS_FURNACE:
+        for (int s = 3; s < MAX_STATIONS; s++) {
+            if (!station_is_active(&g.world.stations[s])) continue;
+            if (station_has_module(&g.world.stations[s], MODULE_FURNACE)) return true;
+        }
+        return false;
+    case HAIL_COND_HAS_NO_FRAMES:
+        return ship->cargo[COMMODITY_FRAME] < 0.5f;
+    case HAIL_COND_HAS_NO_SCAFFOLD:
+        return ship->towed_scaffold < 0;
+    case HAIL_COND_HAS_OUTPOST_NO_PRESS:
+        for (int s = 3; s < MAX_STATIONS; s++) {
+            if (!station_is_active(&g.world.stations[s])) continue;
+            if (!station_has_module(&g.world.stations[s], MODULE_FRAME_PRESS)) return true;
+        }
+        return false;
+    case HAIL_COND_HAS_PRESS:
+        for (int s = 3; s < MAX_STATIONS; s++) {
+            if (!station_is_active(&g.world.stations[s])) continue;
+            if (station_has_module(&g.world.stations[s], MODULE_FRAME_PRESS)) return true;
+        }
+        return false;
+    case HAIL_COND_HAS_SPECIALTY_ORE:
+        return ship->cargo[COMMODITY_CUPRITE_ORE] > 0.5f
+            || ship->cargo[COMMODITY_CRYSTAL_ORE] > 0.5f;
+    case HAIL_COND_NEVER_UPGRADED:
+        return ship->mining_level == 0 && ship->hold_level == 0
+            && ship->tractor_level == 0;
+    case HAIL_COND_NO_SPECIALTY_FURNACE:
+        for (int s = 3; s < MAX_STATIONS; s++) {
+            if (!station_is_active(&g.world.stations[s])) continue;
+            if (!station_has_module(&g.world.stations[s], MODULE_FURNACE_CU)
+                && !station_has_module(&g.world.stations[s], MODULE_FURNACE_CR))
+                return true;
+        }
+        return false;
+    case HAIL_COND_ONE_OUTPOST: {
+        int count = 0;
+        for (int s = 3; s < MAX_STATIONS; s++)
+            if (station_is_active(&g.world.stations[s])) count++;
+        return count == 1;
+    }
+    case HAIL_COND_DEFAULT:
+        return true;
+    default:
+        return false;
+    }
+}
+
+static const char *contextual_hail_message(int station_index) {
+    if (station_index < 0 || station_index >= 3) return NULL;
+    const hail_response_t *table = STATION_HAIL_TABLES[station_index];
+    int count = STATION_HAIL_COUNTS[station_index];
+    for (int i = 0; i < count; i++) {
+        if (check_hail_condition(table[i].condition))
+            return table[i].message;
+    }
+    return NULL;
+}
+
 static void process_sim_events(const sim_events_t *events) {
     for (int i = 0; i < events->count; i++) {
         const sim_event_t* ev = &events->events[i];
         switch (ev->type) {
             case SIM_EVENT_FRACTURE:
                 audio_play_fracture(&g.audio, ev->fracture.tier);
+                if (ev->player_id == g.local_player_slot)
+                    onboarding_mark_fractured();
                 break;
             case SIM_EVENT_MINING_TICK:
                 if (ev->player_id == g.local_player_slot) {
                     audio_play_mining_tick(&g.audio);
-                    onboarding_mark_mined();
                 }
                 break;
             case SIM_EVENT_DOCK:
@@ -211,7 +294,6 @@ static void process_sim_events(const sim_events_t *events) {
                 if (ev->player_id == g.local_player_slot) {
                     audio_play_launch(&g.audio);
                     set_notice("Launch corridor clear.");
-                    onboarding_mark_launched();
                     episode_trigger(&g.episode, 0); /* Ep 0: First Light */
                     /* Start music on first launch — shuffled */
                     if (!g.music.playing && !g.music.loading) {
@@ -222,7 +304,6 @@ static void process_sim_events(const sim_events_t *events) {
             case SIM_EVENT_SELL:
                 if (ev->player_id == g.local_player_slot) {
                     audio_play_sale(&g.audio);
-                    onboarding_mark_sold();
                     episode_trigger(&g.episode, 2); /* Ep 2: Furnace — first smelt */
                 }
                 break;
@@ -232,7 +313,6 @@ static void process_sim_events(const sim_events_t *events) {
             case SIM_EVENT_UPGRADE:
                 if (ev->player_id == g.local_player_slot) {
                     audio_play_upgrade(&g.audio, ev->upgrade.upgrade);
-                    onboarding_mark_upgraded();
                 }
                 break;
             case SIM_EVENT_DAMAGE:
@@ -320,20 +400,25 @@ static void process_sim_events(const sim_events_t *events) {
                     int hs = ev->hail_response.station;
                     if (hs >= 0 && hs < MAX_STATIONS) {
                         snprintf(g.hail_station, sizeof(g.hail_station), "%s", g.world.stations[hs].name);
-                        /* Use CDN MOTD if fetched, otherwise fall back to hardcoded */
-                        const avatar_cache_t *av = avatar_get(hs);
-                        if (av && av->motd_fetched && av->motd[0])
-                            snprintf(g.hail_message, sizeof(g.hail_message), "%s", av->motd);
-                        else
-                            snprintf(g.hail_message, sizeof(g.hail_message), "%s", g.world.stations[hs].hail_message);
+                        /* Priority: contextual response > CDN MOTD > hardcoded */
+                        const char *ctx = contextual_hail_message(hs);
+                        if (ctx)
+                            snprintf(g.hail_message, sizeof(g.hail_message), "%s", ctx);
+                        else {
+                            const avatar_cache_t *av = avatar_get(hs);
+                            if (av && av->motd_fetched && av->motd[0])
+                                snprintf(g.hail_message, sizeof(g.hail_message), "%s", av->motd);
+                            else
+                                snprintf(g.hail_message, sizeof(g.hail_message), "%s", g.world.stations[hs].hail_message);
+                        }
                         g.hail_credits = ev->hail_response.credits;
                         g.hail_station_index = hs;
                         g.hail_timer = 6.0f;
                         if (g.hail_credits > 0.5f)
                             audio_play_sale(&g.audio);
-                        /* Fetch portrait if station has a slug */
                         if (g.world.stations[hs].station_slug[0])
                             avatar_fetch(hs, g.world.stations[hs].station_slug);
+                        onboarding_mark_hailed();
                     }
                 }
                 break;
@@ -379,21 +464,10 @@ static void process_sim_events(const sim_events_t *events) {
 
 static void onboarding_per_frame(void) {
     if (g.onboarding.complete) return;
-    if (!g.onboarding.collected && LOCAL_PLAYER.ship.towed_count > 0)
-        onboarding_mark_collected();
-    if (!g.onboarding.towed && g.onboarding.collected && LOCAL_PLAYER.ship.towed_count == 0 &&
-        LOCAL_PLAYER.nearby_station >= 0)
-        onboarding_mark_towed();
-    if (!g.onboarding.bought) {
-        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
-            if (LOCAL_PLAYER.ship.cargo[c] > 0.5f) { onboarding_mark_bought(); break; }
-    }
-    if (!g.onboarding.got_scaffold && LOCAL_PLAYER.ship.towed_scaffold >= 0)
-        onboarding_mark_got_scaffold();
-    if (!g.onboarding.placed_outpost) {
-        for (int s = 3; s < MAX_STATIONS; s++)
-            if (station_exists(&g.world.stations[s])) { onboarding_mark_placed_outpost(); break; }
-    }
+    /* Tractor milestone: detect ore collection via towed_count */
+    if (!g.onboarding.tractored && g.onboarding.fractured
+        && ship_raw_ore_total(&LOCAL_PLAYER.ship) > 0.5f)
+        onboarding_mark_tractored();
 }
 
 static void episode_per_frame(void) {

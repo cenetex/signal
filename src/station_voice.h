@@ -149,4 +149,85 @@ static const char *NPC_CHATTER_HAULER[NPC_CHATTER_HAULER_COUNT] = {
 
 /* Tow drones: silent. The silence is characterization. */
 
+/* ------------------------------------------------------------------ */
+/* Contextual hail responses — condition → message per station        */
+/* Checked in priority order; first match wins.                       */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    HAIL_COND_HAS_ORE,              /* player has raw ore in cargo */
+    HAIL_COND_HAS_CREDITS_NO_OUTPOST, /* credits > 200 but no outpost */
+    HAIL_COND_HAS_OUTPOST_NO_FURNACE, /* outpost exists but no furnace */
+    HAIL_COND_HAS_FURNACE,          /* outpost has a furnace */
+    HAIL_COND_HAS_NO_FRAMES,        /* never bought frames */
+    HAIL_COND_HAS_NO_SCAFFOLD,      /* hasn't ordered a scaffold yet */
+    HAIL_COND_HAS_OUTPOST_NO_PRESS,  /* outpost but no frame press */
+    HAIL_COND_HAS_PRESS,            /* outpost has a frame press */
+    HAIL_COND_HAS_SPECIALTY_ORE,    /* cuprite or crystal ore in cargo */
+    HAIL_COND_NEVER_UPGRADED,       /* no upgrades applied */
+    HAIL_COND_NO_SPECIALTY_FURNACE,  /* outpost but no cu/cr furnace */
+    HAIL_COND_ONE_OUTPOST,          /* exactly 1 outpost, could build more */
+    HAIL_COND_DEFAULT,              /* always matches — ambient chatter */
+    HAIL_COND_COUNT,
+} hail_cond_t;
+
+typedef struct {
+    hail_cond_t condition;
+    const char *message;
+} hail_response_t;
+
+/* Prospect Refinery — teaches the mining loop */
+static const hail_response_t PROSPECT_HAILS[] = {
+    { HAIL_COND_HAS_ORE,
+      "Hold's not empty. Dock up and press [1]." },
+    { HAIL_COND_HAS_CREDITS_NO_OUTPOST,
+      "You've got credits. Think about building out there." },
+    { HAIL_COND_HAS_OUTPOST_NO_FURNACE,
+      "Your outpost needs a smelter. Talk to Kepler about a kit." },
+    { HAIL_COND_HAS_FURNACE,
+      "Your furnace is running. Keep it fed." },
+    { HAIL_COND_DEFAULT,
+      "Belt's quiet today." },
+};
+#define PROSPECT_HAIL_COUNT (int)(sizeof(PROSPECT_HAILS) / sizeof(PROSPECT_HAILS[0]))
+
+/* Kepler Yard — teaches construction */
+static const hail_response_t KEPLER_HAILS[] = {
+    { HAIL_COND_HAS_NO_FRAMES,
+      "Frames are the bones of everything. Press [F] to buy." },
+    { HAIL_COND_HAS_NO_SCAFFOLD,
+      "Shipyard's open. [Tab] then [1-9] to order a kit." },
+    { HAIL_COND_HAS_OUTPOST_NO_PRESS,
+      "Your outpost could use a frame press." },
+    { HAIL_COND_HAS_PRESS,
+      "Good setup. You're making your own frames now." },
+    { HAIL_COND_DEFAULT,
+      "Bay clear. Mind the scaffold arm." },
+};
+#define KEPLER_HAIL_COUNT (int)(sizeof(KEPLER_HAILS) / sizeof(KEPLER_HAILS[0]))
+
+/* Helios Works — teaches expansion */
+static const hail_response_t HELIOS_HAILS[] = {
+    { HAIL_COND_HAS_SPECIALTY_ORE,
+      "Beautiful ore. Dock up — we pay well for crystal." },
+    { HAIL_COND_NEVER_UPGRADED,
+      "New face. We should talk about upgrades. [3]/[4]/[5]." },
+    { HAIL_COND_NO_SPECIALTY_FURNACE,
+      "Copper changes everything. Build a furnace for it." },
+    { HAIL_COND_ONE_OUTPOST,
+      "One outpost is a start. The network should be bigger." },
+    { HAIL_COND_DEFAULT,
+      "Welcome to Helios. Always expanding." },
+};
+#define HELIOS_HAIL_COUNT (int)(sizeof(HELIOS_HAILS) / sizeof(HELIOS_HAILS[0]))
+
+/* Lookup table for station index → response array */
+static const hail_response_t *STATION_HAIL_TABLES[] = {
+    PROSPECT_HAILS, KEPLER_HAILS, HELIOS_HAILS,
+};
+static const int STATION_HAIL_COUNTS[] = {
+    PROSPECT_HAIL_COUNT, KEPLER_HAIL_COUNT, HELIOS_HAIL_COUNT,
+};
+
 #endif /* STATION_VOICE_H */
+
