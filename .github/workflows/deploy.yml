@@ -112,10 +112,11 @@ jobs:
 
       - name: Prepare artifacts
         run: |
-          mkdir -p _site/play _site/music _site/docs
+          mkdir -p _site/play _site/music _site/ost _site/docs
           cp web/index.html _site/index.html
           cp web/play.html _site/play/index.html
           cp web/music.html _site/music/index.html
+          cp web/music.html _site/ost/index.html
           cp build-web/space_miner.js _site/play/space_miner.js
           cp build-web/space_miner.wasm _site/play/space_miner.wasm
           cp docs/*.svg _site/docs/ 2>/dev/null || true
