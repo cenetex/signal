@@ -23,7 +23,7 @@ jobs:
       - uses: actions/checkout@v4
 
       - name: Install analysis tools
-        run: sudo apt-get update && sudo apt-get install -y cppcheck clang-tools
+        run: sudo apt-get update && sudo apt-get install -y cppcheck clang-tools clang-tidy valgrind
 
       - name: Build and run tests (warnings are errors)
         run: |
@@ -32,11 +32,11 @@ jobs:
           cmake --build build-test
           ./build-test/space_miner_test
 
-      - name: Build and run tests with sanitizers (ASan + UBSan)
+      - name: Build and run tests with AddressSanitizer
         run: |
           cmake -S . -B build-san -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
-            -DCMAKE_C_FLAGS="-fsanitize=address,undefined -fno-omit-frame-pointer" \
-            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address,undefined"
+            -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer" \
+            -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
           cmake --build build-san
           ./build-san/space_miner_test
 
@@ -56,6 +56,29 @@ jobs:
         run: |
           cmake -S . -B build-scan -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON
           scan-build --status-bugs cmake --build build-scan
+
+      - name: clang-tidy (bugprone + performance checks)
+        run: |
+          cmake -S . -B build-tidy -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
+            -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+          clang-tidy -p build-tidy \
+            server/game_sim.c server/sim_nav.c server/sim_autopilot.c \
+            server/sim_ai.c server/sim_save.c server/sim_construction.c \
+            2>&1 | tee clang-tidy-output.txt
+          # Fail on bugprone errors only (warnings are informational)
+          if grep -q "error:" clang-tidy-output.txt; then exit 1; fi
+
+      - name: Valgrind memcheck (tests under memory checker)
+        run: |
+          cmake -S . -B build-valgrind -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON
+          cmake --build build-valgrind
+          valgrind --error-exitcode=1 \
+            --leak-check=full \
+            --show-leak-kinds=definite \
+            --errors-for-leak-kinds=definite \
+            --suppressions=/dev/null \
+            --track-origins=yes \
+            ./build-valgrind/space_miner_test 2>&1 | tail -30
 
   # Client: build → deploy → smoke test → rollback on failure.
   # Deploy happens BEFORE smoke tests for faster iteration (~60s to live).

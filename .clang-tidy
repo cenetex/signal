@@ -1,0 +1,28 @@
+---
+# clang-tidy config for Signal Space Miner (C99)
+#
+# Focus on bug-finding and correctness. Skip style/naming checks
+# (the codebase has its own conventions). Skip C++ checks entirely.
+
+Checks: >
+  -*,
+  bugprone-*,
+  -bugprone-easily-swappable-parameters,
+  -bugprone-narrowing-conversions,
+  -bugprone-assignment-in-if-condition,
+  performance-*,
+  portability-*,
+  misc-redundant-expression,
+  misc-unused-using-decls,
+
+# Treat all enabled checks as warnings (CI uses --warnings-as-errors
+# selectively, not blanket).
+WarningsAsErrors: ''
+
+CheckOptions:
+  # Allow short variable names (C style)
+  - key: readability-identifier-length.MinimumVariableNameLength
+    value: '1'
+
+# Only scan project headers, not system/sokol/stb
+HeaderFilterRegex: '(shared|server|src)/.*\.h$'
