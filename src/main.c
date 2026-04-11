@@ -1301,10 +1301,18 @@ static void frame(void) {
         net_poll();
         sync_local_player_slot_from_network();
         if (was_connected && !net_is_connected()) {
-            set_notice("Connection lost. Continuing offline.");
+            set_notice("Connection lost. Press [P] to reconnect.");
             /* Fall back to local server using current world state */
             g.local_server.world = g.world;
             g.local_server.active = true;
+        }
+        /* P key: reconnect to server */
+        if (!net_is_connected() && g.local_server.active &&
+            is_key_pressed(SAPP_KEYCODE_P)) {
+            if (net_reconnect()) {
+                set_notice("Reconnecting...");
+                g.local_server.active = false;
+            }
         }
         /* Send input at ~30 Hz, or immediately if there's a one-shot action. */
         {
