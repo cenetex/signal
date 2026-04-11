@@ -95,6 +95,10 @@ typedef struct {
     uint8_t towed_count;
     uint8_t towed_fragments[10]; /* asteroid indices, 0xFF = unused */
     uint8_t autopilot_target;    /* asteroid index, 0xFF = none */
+    uint8_t path_count;          /* A* path waypoint count (0-12) */
+    uint8_t path_current;        /* current waypoint index */
+    float path_x[12];           /* waypoint X coords */
+    float path_y[12];           /* waypoint Y coords */
 } NetPlayerShipState;
 
 typedef void (*net_on_player_ship_fn)(const NetPlayerShipState* state);

@@ -9,6 +9,7 @@
 #define NET_PROTOCOL_H
 
 #include "game_sim.h"
+#include "sim_nav.h"
 #include "protocol.h"   /* shared/protocol.h — protocol enums & constants */
 
 /* ------------------------------------------------------------------ */
@@ -254,10 +255,9 @@ _Static_assert(
     1 + COMMODITY_COUNT * 4 == STATION_RECORD_SIZE,
     "STATION_RECORD_SIZE must match serialized station econ layout"
 );
-_Static_assert(
-    16 + COMMODITY_COUNT * 4 + 14 == PLAYER_SHIP_SIZE,
-    "PLAYER_SHIP_SIZE must match serialized player ship layout"
-);
+/* PLAYER_SHIP_SIZE is now a maximum (variable length due to path waypoints).
+ * The fixed header is 16 + COMMODITY_COUNT*4 + 14 = 66 bytes, plus up to
+ * 2 + 12*8 = 98 bytes of path data. */
 
 static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
     int count = 0;
@@ -420,6 +420,19 @@ static inline int serialize_player_ship(uint8_t *buf, uint8_t id, const server_p
     /* Autopilot target asteroid index (0xFF = none). */
     buf[off++] = (sp->autopilot_target >= 0 && sp->autopilot_target < 255)
         ? (uint8_t)sp->autopilot_target : 0xFF;
+    /* Autopilot A* path waypoints — the actual path the server is following.
+     * [count:1][wp0_x:f32][wp0_y:f32][wp1_x:f32]... */
+    {
+        nav_path_t *path = nav_player_path(sp->id);
+        int pc = (sp->autopilot_mode && path->count > 0) ? path->count : 0;
+        if (pc > 12) pc = 12;
+        buf[off++] = (uint8_t)pc;
+        buf[off++] = (pc > 0) ? (uint8_t)path->current : 0;
+        for (int i = 0; i < pc; i++) {
+            write_f32_le(&buf[off], path->waypoints[i].x); off += 4;
+            write_f32_le(&buf[off], path->waypoints[i].y); off += 4;
+        }
+    }
     return off;
 }
 

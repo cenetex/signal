@@ -440,20 +440,22 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
         /* Once we're inside hopper-pull range of the destination, release
          * the tractor so towed fragments drop free and get caught by the
          * station's smelt beams. */
-        float station_dist_sq = v2_dist_sq(sp->ship.pos, st->pos);
-        if (station_dist_sq < 600.0f * 600.0f &&
+        float station_dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
+        /* Release fragments when close to station — inside furnace pull
+         * range so they actually get smelted. HOPPER_PULL_RANGE = 300u,
+         * release a bit outside that so the ship can slow down first. */
+        if (station_dist < 400.0f &&
             sp->ship.tractor_active && sp->ship.towed_count > 0) {
             sp->input.release_tow = true;
         }
-        /* Drop-and-leave: fly toward the station center (not dock berth).
-         * We just need to get within hopper range (~600u) and release.
-         * Only use dock approach if we need to dock for repair. */
+        /* Drop-and-leave: fly close to station center. Standoff 200u
+         * puts the ship inside furnace pull range from ring 1 modules. */
         vec2 fly_target = need_repair
             ? station_approach_target(st, sp->ship.pos)
             : st->pos;
         nav_path_t *path = nav_player_path(sp->id);
         flight_cmd_t cmd = flight_steer_to(w, &sp->ship, path, fly_target,
-                                            need_repair ? 0.0f : 500.0f, 120.0f, dt);
+                                            need_repair ? 0.0f : 200.0f, 120.0f, dt);
         sp->input.turn = cmd.turn;
         sp->input.thrust = cmd.thrust;
         sp->input.mine = false;
@@ -464,7 +466,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * dock — the furnace beam smelts our fragments asynchronously
          * and credits us directly. Just turn around and find the next
          * mining target. */
-        if (!need_repair && sp->ship.towed_count == 0 && dist < 700.0f) {
+        if (!need_repair && sp->ship.towed_count == 0 && dist < 500.0f) {
             sp->autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
             sp->autopilot_target = -1;
             sp->autopilot_timer = 0.0f;

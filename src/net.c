@@ -357,6 +357,17 @@ static void handle_message(const uint8_t* data, int len) {
                     for (int t = 0; t < 10; t++)
                         pss.towed_fragments[t] = data[off + 3 + t];
                     pss.autopilot_target = (len >= off + 14) ? data[off + 13] : 0xFF;
+                    /* A* path waypoints from server. */
+                    int path_off = off + 14;
+                    if (len >= path_off + 2) {
+                        pss.path_count = data[path_off];
+                        pss.path_current = data[path_off + 1];
+                        if (pss.path_count > 12) pss.path_count = 12;
+                        for (int i = 0; i < pss.path_count && path_off + 2 + i * 8 + 8 <= len; i++) {
+                            pss.path_x[i] = read_f32_le(&data[path_off + 2 + i * 8]);
+                            pss.path_y[i] = read_f32_le(&data[path_off + 2 + i * 8 + 4]);
+                        }
+                    }
                 } else {
                     memset(pss.towed_fragments, 0xFF, 10);
                     pss.autopilot_target = 0xFF;
