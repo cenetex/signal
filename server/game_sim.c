@@ -3120,6 +3120,12 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
 /* Public: world_reset                                                */
 /* ================================================================== */
 
+void world_cleanup(world_t *w) {
+    free(w->signal_cache.strength);
+    w->signal_cache.strength = NULL;
+    w->signal_cache.valid = false;
+}
+
 void world_reset(world_t *w) {
     uint32_t seed = w->rng;  /* caller may pre-set seed; 0 = default */
     float *sig_buf = w->signal_cache.strength; /* preserve heap allocation */
