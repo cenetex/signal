@@ -2894,7 +2894,7 @@ static void step_scaffolds(world_t *w, float dt) {
             sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
             sc->vel = v2_scale(sc->vel, SCAFFOLD_DRAG);
 
-            /* Station vortex: loose scaffolds near stations get pulled into orbit */
+            /* Station vortex: loose scaffolds near active stations orbit */
             for (int s = 0; s < MAX_STATIONS; s++) {
                 station_t *st = &w->stations[s];
                 if (!station_is_active(st)) continue;
@@ -2911,12 +2911,73 @@ static void step_scaffolds(world_t *w, float dt) {
                 sc->vel = v2_add(sc->vel, v2_scale(norm, pull * dt));
             }
 
-            /* Check if near an open ring slot — station reaches out */
-            for (int s = 0; s < MAX_STATIONS; s++) {
+            /* Planned station tractor: blueprints pull matching scaffolds
+             * straight toward center. No orbit — ghosts aren't rotating.
+             * On arrival, materialize the ghost into a real station. */
+            for (int s = 3; s < MAX_STATIONS; s++) {
+                station_t *st = &w->stations[s];
+                if (!st->planned) continue;
+                bool type_matches = (sc->module_type == MODULE_SIGNAL_RELAY);
+                if (!type_matches) {
+                    for (int p = 0; p < st->placement_plan_count; p++)
+                        if (st->placement_plans[p].type == sc->module_type) { type_matches = true; break; }
+                }
+                if (!type_matches) continue;
+                vec2 delta = v2_sub(st->pos, sc->pos);
+                float dist_sq = v2_len_sq(delta);
+                const float PLAN_PULL_RANGE = 800.0f;
+                if (dist_sq > PLAN_PULL_RANGE * PLAN_PULL_RANGE) continue;
+                float dist = sqrtf(dist_sq);
+                if (dist < 1.0f) dist = 1.0f;
+                vec2 norm = v2_scale(delta, 1.0f / dist);
+                /* Strong direct pull — no orbit, tractor-like */
+                float pull_strength = 25.0f * (1.0f + 2.0f * (1.0f - dist / PLAN_PULL_RANGE));
+                sc->vel = v2_add(sc->vel, v2_scale(norm, pull_strength * dt));
+                sc->vel = v2_scale(sc->vel, 1.0f / (1.0f + 3.0f * dt)); /* heavy damping */
+                /* Materialize on arrival */
+                if (dist < 40.0f) {
+                    st->planned = false;
+                    st->scaffold = true;
+                    st->scaffold_progress = 0.0f;
+                    st->radius = OUTPOST_RADIUS;
+                    st->dock_radius = OUTPOST_DOCK_RADIUS;
+                    st->signal_range = OUTPOST_SIGNAL_RANGE;
+                    add_module_at(st, MODULE_DOCK, 0, 0xFF);
+                    add_module_at(st, MODULE_SIGNAL_RELAY, 0, 0xFF);
+                    rebuild_station_services(st);
+                    int chosen_ring = 1, chosen_slot = 0;
+                    for (int p = 0; p < st->placement_plan_count; p++) {
+                        if (st->placement_plans[p].type == sc->module_type) {
+                            chosen_ring = st->placement_plans[p].ring;
+                            chosen_slot = st->placement_plans[p].slot;
+                            for (int q = p; q < st->placement_plan_count - 1; q++)
+                                st->placement_plans[q] = st->placement_plans[q + 1];
+                            st->placement_plan_count--;
+                            break;
+                        }
+                    }
+                    if (st->module_count < MAX_MODULES_PER_STATION) {
+                        station_module_t *m = &st->modules[st->module_count++];
+                        m->type = sc->module_type;
+                        m->ring = (uint8_t)chosen_ring;
+                        m->slot = (uint8_t)chosen_slot;
+                        m->scaffold = true;
+                        m->build_progress = 0.0f;
+                    }
+                    sc->active = false;
+                    emit_event(w, (sim_event_t){
+                        .type = SIM_EVENT_OUTPOST_PLACED,
+                        .outpost_placed = { .slot = s },
+                    });
+                    break;
+                }
+            }
+            if (!sc->active) continue; /* consumed by planned station above */
+
+            /* Check if near an open ring slot on active outpost */
+            for (int s = 3; s < MAX_STATIONS; s++) {
                 station_t *st = &w->stations[s];
                 if (!station_is_active(st)) continue;
-                /* Only player outposts (index >= 3) accept scaffolds */
-                if (s < 3) continue;
                 int ring, slot;
                 if (find_nearest_open_slot(st, sc->pos, &ring, &slot)) {
                     sc->state = SCAFFOLD_SNAPPING;

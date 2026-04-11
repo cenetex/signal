@@ -313,8 +313,12 @@ static void npc_validate_stations(world_t *w, npc_ship_t *npc) {
     if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS ||
         !station_is_active(&w->stations[npc->home_station]))
         npc->home_station = nearest_active_dock_station(w, npc->pos);
-    if (npc->dest_station < 0 || npc->dest_station >= MAX_STATIONS ||
-        !station_is_active(&w->stations[npc->dest_station]))
+    if (npc->dest_station < 0 || npc->dest_station >= MAX_STATIONS)
+        npc->dest_station = npc->home_station;
+    /* Tow drones can deliver to planned stations (blueprints) which are
+     * not active yet. Only reset dest for non-tow roles. */
+    else if (npc->role != NPC_ROLE_TOW &&
+             !station_is_active(&w->stations[npc->dest_station]))
         npc->dest_station = npc->home_station;
 }
 
@@ -498,13 +502,15 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
 /* Find an open ring slot at any active player outpost (s >= 3) that
  * matches the given module type. Used by tow drones to pick a delivery
  * destination for a loose scaffold. Returns -1 if none. */
-static int find_destination_for_scaffold(const world_t *w, module_type_t type) {
+static int find_destination_for_scaffold(const world_t *w, module_type_t type,
+                                        int exclude_station) {
     /* Pass 1: outposts (active OR planned) with a placement plan for
      * this type — those are slots the player explicitly reserved. A
      * planned outpost is a valid destination too: when the scaffold
      * arrives the planned ghost can be promoted via the existing
      * snap-to-slot logic, with the relay as its founding module. */
     for (int s = 3; s < MAX_STATIONS; s++) {
+        if (s == exclude_station) continue;
         const station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
         for (int p = 0; p < st->placement_plan_count; p++) {
@@ -513,6 +519,7 @@ static int find_destination_for_scaffold(const world_t *w, module_type_t type) {
     }
     /* Pass 2: any active outpost with at least one open ring slot. */
     for (int s = 3; s < MAX_STATIONS; s++) {
+        if (s == exclude_station) continue;
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
         for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
@@ -528,6 +535,7 @@ static int find_destination_for_scaffold(const world_t *w, module_type_t type) {
      * resolved by the drone. */
     if (type == MODULE_SIGNAL_RELAY) {
         for (int s = 3; s < MAX_STATIONS; s++) {
+            if (s == exclude_station) continue;
             const station_t *st = &w->stations[s];
             if (st->planned) return s;
         }
@@ -551,8 +559,8 @@ static int find_loose_scaffold_for_tow(const world_t *w, const npc_ship_t *npc) 
         /* Must be near the home shipyard */
         float d_home = v2_dist_sq(sc->pos, home->pos);
         if (d_home > pickup_range_sq) continue;
-        /* Must have a place to deliver */
-        if (find_destination_for_scaffold(w, sc->module_type) < 0) continue;
+        /* Must have a place to deliver (not back to home station) */
+        if (find_destination_for_scaffold(w, sc->module_type, npc->home_station) < 0) continue;
         if (d_home < best_d) { best_d = d_home; best = i; }
     }
     return best;
@@ -570,7 +578,6 @@ static int find_loose_scaffold_for_tow(const world_t *w, const npc_ship_t *npc) 
  *   RETURN_TO_STATION → fly back to home shipyard
  */
 static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
-    (void)n;
     const hull_def_t *hull = npc_hull_def(npc);
 
     /* If we lost our towed scaffold mid-flight (destroyed, snapped early,
@@ -623,7 +630,7 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
             sc->towed_by = -2 - n;
             sc->state = SCAFFOLD_TOWING;
             npc->towed_scaffold = npc->target_asteroid;
-            int dest = find_destination_for_scaffold(w, sc->module_type);
+            int dest = find_destination_for_scaffold(w, sc->module_type, npc->home_station);
             if (dest < 0) {
                 /* Destination vanished while we were en route; drop and reset */
                 sc->towed_by = -1;
