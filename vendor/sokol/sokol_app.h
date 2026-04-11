@@ -67,7 +67,7 @@
     Link with the following system libraries:
 
     - on macOS:
-        - all backends: Foundation, Cocoa, QuartzCore
+        - all backends: AppKit, QuartzCore
         - with SOKOL_METAL: Metal
         - with SOKOL_GLCORE: OpenGL
         - with SOKOL_WGPU: a WebGPU implementation library (tested with webgpu_dawn)
@@ -288,8 +288,11 @@
             in more strongly typed languages than C and C++.
 
         double sapp_frame_duration(void)
-            Returns the frame duration in seconds averaged over a number of
-            frames to smooth out any jittering spikes.
+            Returns a smoothed frame duration.
+
+        double sapp_frame_duration_unfiltered(void)
+            Returns the unfiltered frame duration with varying degree of
+            jitter (depending on platform and backend).
 
         int sapp_color_format(void)
         int sapp_depth_format(void)
@@ -1860,7 +1863,7 @@ typedef enum sapp_pixel_format {
     SAPP_PIXELFORMAT_SBGRA8,
     SAPP_PIXELFORMAT_DEPTH,
     SAPP_PIXELFORMAT_DEPTH_STENCIL,
-    _SA_PPPIXELFORMAT_FORCE_U32 = 0x7FFFFFFF
+    _SAPP_PIXELFORMAT_FORCE_U32 = 0x7FFFFFFF
 } sapp_pixel_format;
 
 /*
@@ -2186,6 +2189,8 @@ SOKOL_APP_API_DECL void sapp_consume_event(void);
 SOKOL_APP_API_DECL uint64_t sapp_frame_count(void);
 /* get an averaged/smoothed frame duration in seconds */
 SOKOL_APP_API_DECL double sapp_frame_duration(void);
+/* get 'raw' unfiltered frame duration in seconds */
+SOKOL_APP_API_DECL double sapp_frame_duration_unfiltered(void);
 /* write string into clipboard */
 SOKOL_APP_API_DECL void sapp_set_clipboard_string(const char* str);
 /* read string from clipboard (usually during SAPP_EVENTTYPE_CLIPBOARD_PASTED) */
@@ -2304,17 +2309,11 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
         #if !defined(SOKOL_METAL) && !defined(SOKOL_GLCORE) && !defined(SOKOL_WGPU)
         #error("sokol_app.h: unknown 3D API selected for MacOS, must be SOKOL_METAL, SOKOL_GLCORE or SOKOL_WGPU")
         #endif
-        #if !defined(SOKOL_METAL)
-        #define _SAPP_USE_FILTERED_FRAME_TIMING (1)
-        #endif
     #else
         // iOS or iOS Simulator
         #define _SAPP_IOS (1)
         #if !defined(SOKOL_METAL) && !defined(SOKOL_GLES3)
         #error("sokol_app.h: unknown 3D API selected for iOS, must be SOKOL_METAL or SOKOL_GLES3")
-        #endif
-        #if !defined(SOKOL_METAL)
-        #define _SAPP_USE_FILTERED_FRAME_TIMING (1)
         #endif
         #if TARGET_OS_TV
         #define _SAPP_TVOS (1)
@@ -2323,14 +2322,12 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
 #elif defined(__EMSCRIPTEN__)
     // Emscripten
     #define _SAPP_EMSCRIPTEN (1)
-    #define _SAPP_USE_FILTERED_FRAME_TIMING (1)
     #if !defined(SOKOL_GLES3) && !defined(SOKOL_WGPU)
     #error("sokol_app.h: unknown 3D API selected for emscripten, must be SOKOL_GLES3 or SOKOL_WGPU")
     #endif
 #elif defined(_WIN32)
     // Windows (D3D11 or GL)
     #define _SAPP_WIN32 (1)
-    #define _SAPP_USE_FILTERED_FRAME_TIMING (1)
     #if !defined(SOKOL_D3D11) && !defined(SOKOL_GLCORE) && !defined(SOKOL_WGPU) && !defined(SOKOL_VULKAN) && !defined(SOKOL_NOAPI)
     #error("sokol_app.h: unknown 3D API selected for Win32, must be SOKOL_D3D11, SOKOL_GLCORE, SOKOL_WGPU, SOKOL_VULKAN or SOKOL_NOAPI")
     #endif
@@ -2341,7 +2338,6 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
 #elif defined(__ANDROID__)
     // Android
     #define _SAPP_ANDROID (1)
-    #define _SAPP_USE_FILTERED_FRAME_TIMING (1)
     #if !defined(SOKOL_GLES3)
     #error("sokol_app.h: unknown 3D API selected for Android, must be SOKOL_GLES3")
     #endif
@@ -2351,7 +2347,6 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
 #elif defined(__linux__) || defined(__unix__)
     // Linux
     #define _SAPP_LINUX (1)
-    #define _SAPP_USE_FILTERED_FRAME_TIMING (1)
     #if !defined(SOKOL_GLCORE) && !defined(SOKOL_GLES3) && !defined(SOKOL_WGPU) && !defined(SOKOL_VULKAN)
         #error("sokol_app.h: unknown 3D API selected for Linux, must be SOKOL_GLCORE, SOKOL_GLES3, SOKOL_WGPU or SOKOL_VULKAN")
     #endif
@@ -2418,7 +2413,7 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
     #define GL_SILENCE_DEPRECATION
     #endif
     #if defined(_SAPP_MACOS)
-        #import <Cocoa/Cocoa.h>
+        #import <AppKit/AppKit.h>
         #if defined(SOKOL_METAL)
             #import <Metal/Metal.h>
             #import <QuartzCore/CAMetalLayer.h>
@@ -2556,7 +2551,6 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
 #endif
 
 
-#if defined(_SAPP_USE_FILTERED_FRAME_TIMING)
 // ███████ ██████   █████  ███    ███ ███████     ████████ ██ ███    ███ ██ ███    ██  ██████
 // ██      ██   ██ ██   ██ ████  ████ ██             ██    ██ ████  ████ ██ ████   ██ ██
 // █████   ██████  ███████ ██ ████ ██ █████          ██    ██ ██ ████ ██ ██ ██ ██  ██ ██   ███
@@ -2564,54 +2558,6 @@ inline void sapp_run(const sapp_desc& desc) { return sapp_run(&desc); }
 // ██      ██   ██ ██   ██ ██      ██ ███████        ██    ██ ██      ██ ██ ██   ████  ██████
 //
 // >>frame timing
-#define _SAPP_RING_NUM_SLOTS (256)
-typedef struct {
-    int head;
-    int tail;
-    double buf[_SAPP_RING_NUM_SLOTS];
-} _sapp_ring_t;
-
-_SOKOL_PRIVATE int _sapp_ring_idx(int i) {
-    return i % _SAPP_RING_NUM_SLOTS;
-}
-
-_SOKOL_PRIVATE void _sapp_ring_init(_sapp_ring_t* ring) {
-    ring->head = 0;
-    ring->tail = 0;
-}
-
-_SOKOL_PRIVATE bool _sapp_ring_full(_sapp_ring_t* ring) {
-    return _sapp_ring_idx(ring->head + 1) == ring->tail;
-}
-
-_SOKOL_PRIVATE bool _sapp_ring_empty(_sapp_ring_t* ring) {
-    return ring->head == ring->tail;
-}
-
-_SOKOL_PRIVATE int _sapp_ring_count(_sapp_ring_t* ring) {
-    int count;
-    if (ring->head >= ring->tail) {
-        count = ring->head - ring->tail;
-    } else {
-        count = (ring->head + _SAPP_RING_NUM_SLOTS) - ring->tail;
-    }
-    SOKOL_ASSERT((count >= 0) && (count < _SAPP_RING_NUM_SLOTS));
-    return count;
-}
-
-_SOKOL_PRIVATE void _sapp_ring_enqueue(_sapp_ring_t* ring, double val) {
-    SOKOL_ASSERT(!_sapp_ring_full(ring));
-    ring->buf[ring->head] = val;
-    ring->head = _sapp_ring_idx(ring->head + 1);
-}
-
-_SOKOL_PRIVATE double _sapp_ring_dequeue(_sapp_ring_t* ring) {
-    SOKOL_ASSERT(!_sapp_ring_empty(ring));
-    double val = ring->buf[ring->tail];
-    ring->tail = _sapp_ring_idx(ring->tail + 1);
-    return val;
-}
-
 typedef struct {
     #if defined(_SAPP_APPLE)
         struct {
@@ -2683,85 +2629,74 @@ _SOKOL_PRIVATE double _sapp_timestamp_now(_sapp_timestamp_t* ts) {
 }
 
 typedef struct {
-    double last;
-    double accum;
-    double avg;
-    int spike_count;
-    int num;
     _sapp_timestamp_t timestamp;
-    _sapp_ring_t ring;
+    double dt_min;          // config: min clamp value for unfiltered time delta (seconds)
+    double dt_max;          // config: max clamp value for unfiltered time delta (seconds)
+    double dt_threshold;    // config: threshold time delta for 'resetting' filtering (default: 0.004s, 4ms)
+    double alpha;           // config: smoothing constant, lower values smoother, higher values faster response
+    double last;        // last absolute time in seconds
+    double dt;          // unfiltered frame delta in seconds, clamped to dt_min/dt_max
+    double ema;         // intermediate ema-filter result
+    double smooth_dt;   // smoothed frame delta in seconds
 } _sapp_timing_t;
 
-_SOKOL_PRIVATE void _sapp_timing_reset(_sapp_timing_t* t) {
-    t->last = 0.0;
-    t->accum = 0.0;
-    t->spike_count = 0;
-    t->num = 0;
-    _sapp_ring_init(&t->ring);
-}
-
 _SOKOL_PRIVATE void _sapp_timing_init(_sapp_timing_t* t) {
-    t->avg = 1.0 / 60.0;    // dummy value until first actual value is available
-    _sapp_timing_reset(t);
     _sapp_timestamp_init(&t->timestamp);
+    t->dt_min = 0.000001;       // 1 us
+    t->dt_max = 0.1;            // 100 ms
+    t->dt_threshold = 0.004;    // 4ms
+    t->alpha = 0.025;
+    t->dt = 1.0 / 60.0;         // a 'likely' non-null value
+    t->ema = t->dt;
+    t->smooth_dt = t->dt;
 }
 
-_SOKOL_PRIVATE void _sapp_timing_put(_sapp_timing_t* t, double dur) {
-    // arbitrary upper limit to ignore outliers (e.g. during window resizing, or debugging)
-    double min_dur = 0.0;
-    double max_dur = 0.1;
-    // if we have enough samples for a useful average, use a much tighter 'valid window'
-    if (_sapp_ring_full(&t->ring)) {
-        min_dur = t->avg * 0.8;
-        max_dur = t->avg * 1.2;
+_SOKOL_PRIVATE double _sapp_timing_clamp(_sapp_timing_t* t, double dt) {
+    SOKOL_ASSERT((t->dt_min > 0.0) && (t->dt_max > 0.0) && (t->dt_max >= t->dt_min));
+    if (dt < t->dt_min) {
+        return t->dt_min;
+    } else if (dt > t->dt_max) {
+        return t->dt_max;
+    } else {
+        return dt;
     }
-    if ((dur < min_dur) || (dur > max_dur)) {
-        t->spike_count++;
-        // if there have been many spikes in a row, the display refresh rate
-        // might have changed, so a timing reset is needed
-        if (t->spike_count > 20) {
-            _sapp_timing_reset(t);
-        }
-        return;
-    }
-    if (_sapp_ring_full(&t->ring)) {
-        double old_val = _sapp_ring_dequeue(&t->ring);
-        t->accum -= old_val;
-        t->num -= 1;
-    }
-    _sapp_ring_enqueue(&t->ring, dur);
-    t->accum += dur;
-    t->num += 1;
-    SOKOL_ASSERT(t->num > 0);
-    t->avg = t->accum / t->num;
-    t->spike_count = 0;
 }
 
-_SOKOL_PRIVATE void _sapp_timing_discontinuity(_sapp_timing_t* t) {
-    t->last = 0.0;
+_SOKOL_PRIVATE void _sapp_timing_delta(_sapp_timing_t* t, double dt) {
+    // first clamp raw dt against min/max (min avoid division by zero, max
+    // may avoids glitches and 'death-spirals' during debugging
+    dt = _sapp_timing_clamp(t, dt);
+    t->dt = dt;
+    const double error = fabs(dt - t->smooth_dt);
+    if (error > t->dt_threshold) {
+        // 'reset' filter when new delta is outside threshold
+        t->ema = dt;
+        t->smooth_dt = dt;
+    } else {
+        // simple ema-filter with fixed alpha
+        t->ema = t->ema + t->alpha * (dt - t->ema);
+        t->smooth_dt = _sapp_timing_clamp(t, t->ema);
+    }
 }
 
-_SOKOL_PRIVATE void _sapp_timing_measure(_sapp_timing_t* t) {
-    const double now = _sapp_timestamp_now(&t->timestamp);
+_SOKOL_PRIVATE void _sapp_timing_update(_sapp_timing_t* t, double external_now) {
+    double now;
+    if (external_now == 0.0) {
+        now = _sapp_timestamp_now(&t->timestamp);
+    } else {
+        now = external_now;
+    }
     if (t->last > 0.0) {
-        double dur = now - t->last;
-        _sapp_timing_put(t, dur);
+        double dt = now - t->last;
+        _sapp_timing_delta(t, dt);
     }
     t->last = now;
+
 }
 
-_SOKOL_PRIVATE void _sapp_timing_external(_sapp_timing_t* t, double now) {
-    if (t->last > 0.0) {
-        double dur = now - t->last;
-        _sapp_timing_put(t, dur);
-    }
-    t->last = now;
+_SOKOL_PRIVATE double _sapp_timing_get(_sapp_timing_t* t) {
+    return t->smooth_dt;
 }
-
-_SOKOL_PRIVATE double _sapp_timing_get_avg(_sapp_timing_t* t) {
-    return t->avg;
-}
-#endif
 
 // ███████ ████████ ██████  ██    ██  ██████ ████████ ███████
 // ██         ██    ██   ██ ██    ██ ██         ██    ██
@@ -2945,8 +2880,6 @@ typedef struct {
     DXGI_SWAP_CHAIN_DESC swap_chain_desc;
     IDXGISwapChain* swap_chain;
     IDXGIDevice1* dxgi_device;
-    bool use_dxgi_frame_stats;
-    UINT sync_refresh_count;
 } _sapp_d3d11_t;
 #endif
 
@@ -3331,9 +3264,7 @@ typedef struct {
     _sapp_drop_t drop;
     sapp_icon_desc default_icon_desc;
     uint32_t* default_icon_pixels;
-    #if defined(_SAPP_USE_FILTERED_FRAME_TIMING)
-        _sapp_timing_t timing;
-    #endif
+    _sapp_timing_t timing;
     #if defined(SOKOL_WGPU)
         _sapp_wgpu_t wgpu;
     #endif
@@ -3635,9 +3566,7 @@ _SOKOL_PRIVATE void _sapp_init_state(const sapp_desc* desc) {
     _sapp.dpi_scale = 1.0f;
     _sapp.fullscreen = _sapp.desc.fullscreen;
     _sapp.mouse.shown = true;
-    #if defined(_SAPP_USE_FILTERED_FRAME_TIMING)
     _sapp_timing_init(&_sapp.timing);
-    #endif
 }
 
 _SOKOL_PRIVATE void _sapp_discard_state(void) {
@@ -5075,8 +5004,7 @@ _SOKOL_PRIVATE void _sapp_vk_frame(void) {
 // >>macos
 #if defined(_SAPP_MACOS)
 
-#define _SAPP_MACOS_MTL_OBSCURED_FRAME_DURATION_IN_SECONDS (0.01667)
-#define _SAPP_MACOS_MTL_MAX_FRAME_DURATION_IN_SECONDS (0.25)
+#define _SAPP_MACOS_MTL_OBSCURED_FRAME_DURATION_IN_SECONDS (0.0166667)
 
 _SOKOL_PRIVATE NSInteger _sapp_macos_max_fps(void) {
     return [NSScreen.mainScreen maximumFramesPerSecond];
@@ -5154,34 +5082,28 @@ _SOKOL_PRIVATE void _sapp_macos_mtl_timing_init(void) {
 }
 
 _SOKOL_PRIVATE void _sapp_macos_mtl_timing_update(void) {
-    CFTimeInterval cur_timestamp = 0.0;
+    // NOTE: if display link is not active, frame duration will be provided
+    // by the regular platform-agnostic timing code
     if (_sapp_macos_mtl_display_link_active()) {
-        cur_timestamp = _sapp.macos.mtl.display_link.timestamp;
-    } else {
-        // fallback timer is active (NOTE: this assumes that the application is starting
-        // in display-link mode, so that the currently stored timestamp is valid
-        cur_timestamp = _sapp.macos.mtl.timing.timestamp + _SAPP_MACOS_MTL_OBSCURED_FRAME_DURATION_IN_SECONDS;
-    }
-    // skip first frame (frame_duration had been initialized to display refresh rate)
-    if (_sapp.macos.mtl.timing.timestamp > 0.0) {
-        _sapp.macos.mtl.timing.frame_duration_sec = cur_timestamp - _sapp.macos.mtl.timing.timestamp;
-        if (_sapp.macos.mtl.timing.frame_duration_sec <= 0.00001) {
-            // this should never actually happen, but just to be sure we don't end up with
-            // a negative or zero frame duration for some reason
-            _sapp.macos.mtl.timing.frame_duration_sec = 1.0 / _sapp_macos_max_fps();
-        } else if (_sapp.macos.mtl.timing.frame_duration_sec > _SAPP_MACOS_MTL_MAX_FRAME_DURATION_IN_SECONDS) {
-            // avoid death-spiral in case of ultra-slow framerate (e.g. when debugging)
-            _sapp.macos.mtl.timing.frame_duration_sec = _SAPP_MACOS_MTL_MAX_FRAME_DURATION_IN_SECONDS;
+        CFTimeInterval cur_timestamp = _sapp.macos.mtl.display_link.timestamp;
+        // skip first frame (frame_duration had been initialized to display refresh rate)
+        if (_sapp.macos.mtl.timing.timestamp > 0.0) {
+            const double dt = cur_timestamp - _sapp.macos.mtl.timing.timestamp;
+            _sapp.macos.mtl.timing.frame_duration_sec = _sapp_timing_clamp(&_sapp.timing, dt);
+        } else {
+            SOKOL_ASSERT(_sapp.macos.mtl.timing.frame_duration_sec > 0.0);
         }
-    } else {
-        SOKOL_ASSERT(_sapp.macos.mtl.timing.frame_duration_sec > 0.0);
+        _sapp.macos.mtl.timing.timestamp = cur_timestamp;
     }
-    _sapp.macos.mtl.timing.timestamp = cur_timestamp;
 }
 
 _SOKOL_PRIVATE double _sapp_macos_mtl_timing_frame_duration(void) {
-    SOKOL_ASSERT(_sapp.macos.mtl.timing.frame_duration_sec > 0.0);
-    return _sapp.macos.mtl.timing.frame_duration_sec;
+    if (_sapp_macos_mtl_display_link_active()) {
+        SOKOL_ASSERT(_sapp.macos.mtl.timing.frame_duration_sec > 0.0);
+        return _sapp.macos.mtl.timing.frame_duration_sec;
+    } else {
+        return _sapp_timing_get(&_sapp.timing);
+    }
 }
 
 _SOKOL_PRIVATE void _sapp_macos_mtl_start_display_link(void) {
@@ -5878,12 +5800,9 @@ _SOKOL_PRIVATE void _sapp_macos_set_icon(const sapp_icon_desc* icon_desc, int nu
 }
 
 _SOKOL_PRIVATE void _sapp_macos_frame(void) {
-    #if defined(_SAPP_USE_FILTERED_FRAME_TIMING)
-    _sapp_timing_measure(&_sapp.timing);
-    #elif defined(SOKOL_METAL)
+    _sapp_timing_update(&_sapp.timing, 0.0);
+    #if defined(SOKOL_METAL)
     _sapp_macos_mtl_timing_update();
-    #else
-    #error "FIXME: invalid frame timing configuration"
     #endif
     #if defined(_SAPP_ANY_GL)
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, (GLint*)&_sapp.gl.framebuffer);
@@ -6023,9 +5942,6 @@ _SOKOL_PRIVATE void _sapp_macos_frame(void) {
 
 - (void)windowDidChangeScreen:(NSNotification*)notification {
     _SOKOL_UNUSED(notification);
-    #if defined(_SAPP_USE_FILTERED_FRAME_TIMING)
-    _sapp_timing_reset(&_sapp.timing);
-    #endif
     _sapp_macos_update_dimensions();
 }
 
@@ -6244,7 +6160,7 @@ static void _sapp_gl_make_current(void) {
     _sapp_macos_mouse_update_from_nsevent(event, false);
     if (2 == event.buttonNumber) {
         _sapp_macos_mouse_event(SAPP_EVENTTYPE_MOUSE_UP, SAPP_MOUSEBUTTON_MIDDLE, _sapp_macos_mods(event));
-        _sapp.macos.mouse_buttons &= (1<<SAPP_MOUSEBUTTON_MIDDLE);
+        _sapp.macos.mouse_buttons &= ~(1<<SAPP_MOUSEBUTTON_MIDDLE);
     }
 }
 - (void)otherMouseDragged:(NSEvent*)event {
@@ -6400,8 +6316,6 @@ static void _sapp_gl_make_current(void) {
 // >>ios
 #if defined(_SAPP_IOS)
 
-#define _SAPP_IOS_MTL_MAX_FRAME_DURATION_IN_SECONDS (0.25)
-
 _SOKOL_PRIVATE NSInteger _sapp_ios_max_fps(void) {
     return _sapp.ios.window.windowScene.screen.maximumFramesPerSecond;
 }
@@ -6478,15 +6392,8 @@ _SOKOL_PRIVATE void _sapp_ios_mtl_timing_update(void) {
     const CFTimeInterval cur_timestamp = _sapp.ios.mtl.display_link.timestamp;
     // skip first frame (frame_duration had been initialized to display refresh rate)
     if (_sapp.ios.mtl.timing.timestamp > 0.0) {
-        _sapp.ios.mtl.timing.frame_duration_sec = cur_timestamp - _sapp.ios.mtl.timing.timestamp;
-        if (_sapp.ios.mtl.timing.frame_duration_sec <= 0.00001) {
-            // this should never actually happen, but just to be sure we don't end up with
-            // a negative or zero frame duration for some reason
-            _sapp.ios.mtl.timing.frame_duration_sec = 1.0 / _sapp_ios_max_fps();
-        } else if (_sapp.ios.mtl.timing.frame_duration_sec > _SAPP_IOS_MTL_MAX_FRAME_DURATION_IN_SECONDS) {
-            // avoid death-spiral in case of ultra-slow framerate (e.g. when debugging)
-            _sapp.ios.mtl.timing.frame_duration_sec = _SAPP_IOS_MTL_MAX_FRAME_DURATION_IN_SECONDS;
-        }
+        const double dt = cur_timestamp - _sapp.ios.mtl.timing.timestamp;
+        _sapp.ios.mtl.timing.frame_duration_sec = _sapp_timing_clamp(&_sapp.timing, dt);
     } else {
         SOKOL_ASSERT(_sapp.ios.mtl.timing.frame_duration_sec > 0.0);
     }
@@ -6706,12 +6613,9 @@ _SOKOL_PRIVATE void _sapp_ios_update_dimensions(void) {
 }
 
 _SOKOL_PRIVATE void _sapp_ios_frame(void) {
-    #if defined(_SAPP_USE_FILTERED_FRAME_TIMING)
-    _sapp_timing_measure(&_sapp.timing);
-    #elif defined(SOKOL_METAL)
+    _sapp_timing_update(&_sapp.timing, 0.0);
+    #if defined(SOKOL_METAL)
     _sapp_ios_mtl_timing_update();
-    #else
-    #error "FIXME: Invalid frame timing configuration"
     #endif
     #if defined(_SAPP_ANY_GL)
     glGetIntegerv(GL_FRAMEBUFFER_BINDING, (GLint*)&_sapp.gl.framebuffer);
@@ -6796,6 +6700,11 @@ _SOKOL_PRIVATE void _sapp_ios_show_keyboard(bool shown) {
 - (void)sceneWillResignActive:(UIScene*)scene {
     if (!_sapp.ios.suspended) {
         _sapp.ios.suspended = true;
+        #if defined(SOKOL_METAL)
+        if (nil != _sapp.ios.mtl.display_link) {
+            _sapp.ios.mtl.display_link.paused = YES;
+        }
+        #endif
         _sapp_ios_app_event(SAPP_EVENTTYPE_SUSPENDED);
     }
 }
@@ -6803,6 +6712,11 @@ _SOKOL_PRIVATE void _sapp_ios_show_keyboard(bool shown) {
 - (void)sceneDidBecomeActive:(UIScene*)scene {
     if (_sapp.ios.suspended) {
         _sapp.ios.suspended = false;
+        #if defined(SOKOL_METAL)
+        if (nil != _sapp.ios.mtl.display_link) {
+            _sapp.ios.mtl.display_link.paused = NO;
+        }
+        #endif
         _sapp_ios_app_event(SAPP_EVENTTYPE_RESUMED);
     }
 }
@@ -8026,7 +7940,7 @@ _SOKOL_PRIVATE void _sapp_emsc_unregister_eventhandlers(void) {
 
 _SOKOL_PRIVATE EM_BOOL _sapp_emsc_frame_animation_loop(double time, void* userData) {
     _SOKOL_UNUSED(userData);
-    _sapp_timing_external(&_sapp.timing, time / 1000.0);
+    _sapp_timing_update(&_sapp.timing, time / 1000.0);
 
     #if defined(SOKOL_WGPU)
         _sapp_wgpu_frame();
@@ -8597,11 +8511,9 @@ _SOKOL_PRIVATE void _sapp_d3d11_create_device_and_swapchain(void) {
     if (_sapp.win32.is_win10_or_greater) {
         sc_desc->BufferCount = 2;
         sc_desc->SwapEffect = (DXGI_SWAP_EFFECT) _SAPP_DXGI_SWAP_EFFECT_FLIP_DISCARD;
-        _sapp.d3d11.use_dxgi_frame_stats = true;
     } else {
         sc_desc->BufferCount = 1;
         sc_desc->SwapEffect = DXGI_SWAP_EFFECT_DISCARD;
-        _sapp.d3d11.use_dxgi_frame_stats = false;
     }
     sc_desc->SampleDesc.Count = 1;
     sc_desc->SampleDesc.Quality = 0;
@@ -9076,6 +8988,12 @@ _SOKOL_PRIVATE bool _sapp_win32_update_dimensions(void) {
     if (GetClientRect(_sapp.win32.hwnd, &rect)) {
         float window_width = (float)(rect.right - rect.left) / _sapp.win32.dpi.window_scale;
         float window_height = (float)(rect.bottom - rect.top) / _sapp.win32.dpi.window_scale;
+        if ((window_width == 0.0f) && (window_height == 0.0f)) {
+            // both width and height being zero means the window is minimized, in that
+            // case pretend that the size didn't change (this is consistent with other
+            // window systems) - also see: https://github.com/floooh/sokol/issues/1465
+            return false;
+        }
         _sapp.window_width = _sapp_roundf_gzero(window_width);
         _sapp.window_height = _sapp_roundf_gzero(window_height);
         // NOTE: on Vulkan, updating the framebuffer dimensions and firing the resize-event
@@ -9472,11 +9390,9 @@ _SOKOL_PRIVATE void _sapp_win32_char_event(uint32_t c, bool repeat) {
 }
 
 _SOKOL_PRIVATE void _sapp_win32_dpi_changed(HWND hWnd, LPRECT proposed_win_rect) {
-    /* called on WM_DPICHANGED, which will only be sent to the application
-        if sapp_desc.high_dpi is true and the Windows version is recent enough
-        to support DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2
-    */
-    SOKOL_ASSERT(_sapp.desc.high_dpi);
+    if (!_sapp.win32.dpi.aware) {
+        return;
+    }
     HINSTANCE user32 = LoadLibraryA("user32.dll");
     if (!user32) {
         return;
@@ -9485,10 +9401,15 @@ _SOKOL_PRIVATE void _sapp_win32_dpi_changed(HWND hWnd, LPRECT proposed_win_rect)
     GETDPIFORWINDOW_T fn_getdpiforwindow = (GETDPIFORWINDOW_T)(void*)GetProcAddress(user32, "GetDpiForWindow");
     if (fn_getdpiforwindow) {
         UINT dpix = fn_getdpiforwindow(_sapp.win32.hwnd);
-        // NOTE: for high-dpi apps, mouse_scale remains one
         _sapp.win32.dpi.window_scale = (float)dpix / 96.0f;
-        _sapp.win32.dpi.content_scale = _sapp.win32.dpi.window_scale;
-        _sapp.dpi_scale = _sapp.win32.dpi.window_scale;
+        if (_sapp.desc.high_dpi) {
+            _sapp.win32.dpi.content_scale = _sapp.win32.dpi.window_scale;
+            _sapp.win32.dpi.mouse_scale = 1.0f;
+        } else {
+            _sapp.win32.dpi.content_scale = 1.0f;
+            _sapp.win32.dpi.mouse_scale = 1.0f / _sapp.win32.dpi.window_scale;
+        }
+        _sapp.dpi_scale = _sapp.win32.dpi.content_scale;
         SetWindowPos(hWnd, 0,
             proposed_win_rect->left,
             proposed_win_rect->top,
@@ -9528,29 +9449,6 @@ _SOKOL_PRIVATE void _sapp_win32_files_dropped(HDROP hdrop) {
         _sapp_clear_drop_buffer();
         _sapp.drop.num_files = 0;
     }
-}
-
-_SOKOL_PRIVATE void _sapp_win32_timing_measure(void) {
-    #if defined(SOKOL_D3D11)
-        // on D3D11, use the more precise DXGI timestamp
-        if (_sapp.d3d11.use_dxgi_frame_stats) {
-            _SAPP_STRUCT(DXGI_FRAME_STATISTICS, dxgi_stats);
-            HRESULT hr = _sapp_dxgi_GetFrameStatistics(_sapp.d3d11.swap_chain, &dxgi_stats);
-            if (SUCCEEDED(hr)) {
-                if (dxgi_stats.SyncRefreshCount != _sapp.d3d11.sync_refresh_count) {
-                    _sapp.d3d11.sync_refresh_count = dxgi_stats.SyncRefreshCount;
-                    LARGE_INTEGER qpc = dxgi_stats.SyncQPCTime;
-                    const uint64_t now = (uint64_t)_sapp_int64_muldiv(qpc.QuadPart - _sapp.timing.timestamp.win.start.QuadPart, 1000000000, _sapp.timing.timestamp.win.freq.QuadPart);
-                    _sapp_timing_external(&_sapp.timing, (double)now / 1000000000.0);
-                }
-                return;
-            }
-        }
-        // fallback if swap model isn't "flip-discard" or GetFrameStatistics failed for another reason
-        _sapp_timing_measure(&_sapp.timing);
-    #else
-        _sapp_timing_measure(&_sapp.timing);
-    #endif
 }
 
 _SOKOL_PRIVATE void _sapp_win32_frame(bool from_winproc) {
@@ -9764,14 +9662,16 @@ _SOKOL_PRIVATE LRESULT CALLBACK _sapp_win32_wndproc(HWND hWnd, UINT uMsg, WPARAM
                 KillTimer(_sapp.win32.hwnd, 1);
                 break;
             case WM_TIMER:
-                _sapp_win32_timing_measure();
+                _sapp_timing_update(&_sapp.timing, 0.0);
                 _sapp_win32_frame(true);
-                /* NOTE: resizing the swap-chain during resize leads to a substantial
-                   memory spike (hundreds of megabytes for a few seconds).
-
+                /*
+                * NOTE: resizing each frame explodes memory usage
+                *
                 if (_sapp_win32_update_dimensions()) {
                     #if defined(SOKOL_D3D11)
                     _sapp_d3d11_resize_default_render_target();
+                    #elif defined(SOKOL_WGPU)
+                    _sapp_wgpu_swapchain_size_changed();
                     #endif
                     _sapp_win32_app_event(SAPP_EVENTTYPE_RESIZED);
                 }
@@ -9791,10 +9691,6 @@ _SOKOL_PRIVATE LRESULT CALLBACK _sapp_win32_wndproc(HWND hWnd, UINT uMsg, WPARAM
                 break;
             case WM_DROPFILES:
                 _sapp_win32_files_dropped((HDROP)wParam);
-                break;
-            case WM_DISPLAYCHANGE:
-                // refresh rate might have changed
-                _sapp_timing_reset(&_sapp.timing);
                 break;
 
             default:
@@ -9938,28 +9834,33 @@ _SOKOL_PRIVATE void _sapp_win32_init_dpi(void) {
         to newest. SetProcessDpiAwarenessContext() is required for the new
         DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 method.
     */
-    if (fn_setprocessdpiawareness) {
-        if (_sapp.desc.high_dpi) {
-            /* app requests HighDPI rendering, first try the Win10 Creator Update per-monitor-dpi awareness,
-               if that fails, fall back to system-dpi-awareness
-            */
+    bool init_dpi_awareness = true;
+    #if !defined(SOKOL_D3D11)
+        // special case for GL and Vulkan: if no high-dpi is requested, need to set the
+        // process to dpi-unaware, so that Windows takes care of upscaling
+        if (!_sapp.desc.high_dpi) {
+            _sapp.win32.dpi.aware = false;
+            fn_setprocessdpiawareness(PROCESS_DPI_UNAWARE);
+            init_dpi_awareness = false;
+        }
+    #endif
+    if (init_dpi_awareness) {
+        if (fn_setprocessdpiawareness) {
+            // first try the Win10 Creator Update per-monitor-dpi awareness, if that fails, fall back to system-dpi-awareness
+            // NOTE: if DPI awareness had already been set otherwise (e.g. via manifest.xml) both calls will fail
             _sapp.win32.dpi.aware = true;
             DPI_AWARENESS_CONTEXT_T per_monitor_aware_v2 = (DPI_AWARENESS_CONTEXT_T)-4;
             if (!(fn_setprocessdpiawarenesscontext && fn_setprocessdpiawarenesscontext(per_monitor_aware_v2))) {
                 // fallback to system-dpi-aware
                 fn_setprocessdpiawareness(PROCESS_SYSTEM_DPI_AWARE);
             }
-        } else {
-            /* if the app didn't request HighDPI rendering, let Windows do the upscaling */
-            _sapp.win32.dpi.aware = false;
-            fn_setprocessdpiawareness(PROCESS_DPI_UNAWARE);
+        } else if (fn_setprocessdpiaware) {
+            // fallback for Windows 7
+            _sapp.win32.dpi.aware = true;
+            fn_setprocessdpiaware();
         }
-    } else if (fn_setprocessdpiaware) {
-        // fallback for Windows 7
-        _sapp.win32.dpi.aware = true;
-        fn_setprocessdpiaware();
     }
-    /* get dpi scale factor for main monitor */
+    // get dpi scale factor for main monitor
     if (fn_getdpiformonitor && _sapp.win32.dpi.aware) {
         POINT pt = { 1, 1 };
         HMONITOR hm = MonitorFromPoint(pt, MONITOR_DEFAULTTONEAREST);
@@ -9967,7 +9868,7 @@ _SOKOL_PRIVATE void _sapp_win32_init_dpi(void) {
         HRESULT hr = fn_getdpiformonitor(hm, MDT_EFFECTIVE_DPI, &dpix, &dpiy);
         _SOKOL_UNUSED(hr);
         SOKOL_ASSERT(SUCCEEDED(hr));
-        /* clamp window scale to an integer factor */
+        // clamp window scale to an integer factor
         _sapp.win32.dpi.window_scale = (float)dpix / 96.0f;
     } else {
         _sapp.win32.dpi.window_scale = 1.0f;
@@ -10182,7 +10083,7 @@ _SOKOL_PRIVATE void _sapp_win32_run(const sapp_desc* desc) {
 
     bool done = false;
     while (!(done || _sapp.quit_ordered)) {
-        _sapp_win32_timing_measure();
+        _sapp_timing_update(&_sapp.timing, 0.0);
         MSG msg;
         while (PeekMessageW(&msg, NULL, 0, 0, PM_REMOVE)) {
             if (WM_QUIT == msg.message) {
@@ -10204,12 +10105,6 @@ _SOKOL_PRIVATE void _sapp_win32_run(const sapp_desc* desc) {
             _sapp_wgpu_swapchain_size_changed();
             #endif
             _sapp_win32_app_event(SAPP_EVENTTYPE_RESIZED);
-        }
-        /* check if the window monitor has changed, need to reset timing because
-           the new monitor might have a different refresh rate
-        */
-        if (_sapp_win32_update_monitor()) {
-            _sapp_timing_reset(&_sapp.timing);
         }
         if (_sapp.quit_requested) {
             PostMessage(_sapp.win32.hwnd, WM_CLOSE, 0, 0);
@@ -10520,7 +10415,7 @@ _SOKOL_PRIVATE void _sapp_android_frame(void) {
     SOKOL_ASSERT(_sapp.android.display != EGL_NO_DISPLAY);
     SOKOL_ASSERT(_sapp.android.context != EGL_NO_CONTEXT);
     SOKOL_ASSERT(_sapp.android.surface != EGL_NO_SURFACE);
-    _sapp_timing_measure(&_sapp.timing);
+    _sapp_timing_update(&_sapp.timing, 0.0);
     _sapp_android_update_dimensions(_sapp.android.current.window, false);
     _sapp_frame();
     eglSwapBuffers(_sapp.android.display, _sapp.android.surface);
@@ -12205,8 +12100,8 @@ _SOKOL_PRIVATE void _sapp_x11_init_keytable(void) {
                 continue;
             }
             for (int j = 0; j < num_keymap_items; j++) {
-                if (strncmp(desc->names->key_aliases[i].alias, keymap[i].name, XkbKeyNameLength) == 0) {
-                    key = keymap[i].key;
+                if (strncmp(desc->names->key_aliases[i].alias, keymap[j].name, XkbKeyNameLength) == 0) {
+                    key = keymap[j].key;
                     break;
                 }
             }
@@ -12654,7 +12549,7 @@ _SOKOL_PRIVATE void _sapp_x11_create_standard_cursors(void) {
     _sapp_x11_create_standard_cursor(SAPP_MOUSECURSOR_RESIZE_NWSE, "nwse-resize", cursor_theme, size, 0);
     _sapp_x11_create_standard_cursor(SAPP_MOUSECURSOR_RESIZE_NESW, "nesw-resize", cursor_theme, size, 0);
     _sapp_x11_create_standard_cursor(SAPP_MOUSECURSOR_RESIZE_ALL, "all-scroll", cursor_theme, size, XC_fleur);
-    _sapp_x11_create_standard_cursor(SAPP_MOUSECURSOR_NOT_ALLOWED, "no-allowed", cursor_theme, size, 0);
+    _sapp_x11_create_standard_cursor(SAPP_MOUSECURSOR_NOT_ALLOWED, "not-allowed", cursor_theme, size, 0);
     _sapp_x11_create_hidden_cursor();
 }
 
@@ -13830,7 +13725,7 @@ _SOKOL_PRIVATE void _sapp_linux_run(const sapp_desc* desc) {
 
     XFlush(_sapp.x11.display);
     while (!_sapp.quit_ordered) {
-        _sapp_timing_measure(&_sapp.timing);
+        _sapp_timing_update(&_sapp.timing, 0.0);
         int count = XPending(_sapp.x11.display);
         while (count--) {
             XEvent event;
@@ -13935,8 +13830,12 @@ SOKOL_API_IMPL double sapp_frame_duration(void) {
     #elif defined(_SAPP_IOS) && defined(SOKOL_METAL)
         return _sapp_ios_mtl_timing_frame_duration();
     #else
-        return _sapp_timing_get_avg(&_sapp.timing);
+        return _sapp_timing_get(&_sapp.timing);
     #endif
+}
+
+SOKOL_API_IMPL double sapp_frame_duration_unfiltered(void) {
+    return _sapp.timing.dt;
 }
 
 SOKOL_API_IMPL int sapp_width(void) {
@@ -14256,17 +14155,18 @@ SOKOL_API_IMPL void sapp_set_icon(const sapp_icon_desc* desc) {
 }
 
 SOKOL_API_IMPL int sapp_get_num_dropped_files(void) {
-    SOKOL_ASSERT(_sapp.drop.enabled);
+    if (!_sapp.drop.enabled) {
+        return 0;
+    }
     return _sapp.drop.num_files;
 }
 
 SOKOL_API_IMPL const char* sapp_get_dropped_file_path(int index) {
-    SOKOL_ASSERT(_sapp.drop.enabled);
     SOKOL_ASSERT((index >= 0) && (index < _sapp.drop.num_files));
-    SOKOL_ASSERT(_sapp.drop.buffer);
     if (!_sapp.drop.enabled) {
         return "";
     }
+    SOKOL_ASSERT(_sapp.drop.buffer);
     if ((index < 0) || (index >= _sapp.drop.max_files)) {
         return "";
     }
@@ -14274,7 +14174,6 @@ SOKOL_API_IMPL const char* sapp_get_dropped_file_path(int index) {
 }
 
 SOKOL_API_IMPL uint32_t sapp_html5_get_dropped_file_size(int index) {
-    SOKOL_ASSERT(_sapp.drop.enabled);
     SOKOL_ASSERT((index >= 0) && (index < _sapp.drop.num_files));
     #if defined(_SAPP_EMSCRIPTEN)
         if (!_sapp.drop.enabled) {
