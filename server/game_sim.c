@@ -1124,9 +1124,6 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
     npc->thrusting = accel > 0.0f;
 }
 
-/* (Reactive avoidance steering removed — all NPC/autopilot navigation
- * now uses A* paths via npc_steer_with_path. compute_path_avoidance
- * is retained for potential future use by manual-play collision hints.) */
 
 /* A*-guided NPC steering: compute path on first call or when stale,
  * then steer directly toward the next waypoint. No reactive avoidance —
