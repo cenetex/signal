@@ -14,7 +14,7 @@ void maintain_asteroid_field(world_t *w, float dt);
 /* Field seeding — called from world_reset */
 int  seed_asteroid_clump(world_t *w, int first_slot);
 void seed_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier);
-asteroid_tier_t random_field_asteroid_tier(world_t *w);
+void seed_random_field_asteroid(world_t *w, asteroid_t *a);
 
 /*
  * Already declared in game_sim.h:
