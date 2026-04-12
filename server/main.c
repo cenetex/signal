@@ -200,25 +200,74 @@ static int parse_station_id(struct mg_http_message *hm) {
     /* Extract station index from /api/station/<id>/... */
     /* URI looks like /api/station/0/state or /api/station/2/command */
     const char *p = hm->uri.buf + 13; /* skip "/api/station/" */
-    if (p >= hm->uri.buf + (int)hm->uri.len) return -1;
-    int id = atoi(p);
+    const char *end = hm->uri.buf + hm->uri.len;
+    if (p >= end) return -1;
+    /* Length-safe integer parse: only read digits up to next '/' or URI end */
+    int id = 0;
+    bool has_digit = false;
+    while (p < end && *p >= '0' && *p <= '9') {
+        has_digit = true;
+        id = id * 10 + (*p - '0');
+        if (id >= MAX_STATIONS) return -1;
+        p++;
+    }
+    if (!has_digit) return -1;
     if (id < 0 || id >= MAX_STATIONS) return -1;
     if (!station_exists(&world.stations[id])) return -1;
     return id;
 }
 
+/* Append a JSON-escaped string to buf at *pos, respecting bufsz.
+ * Escapes quotes, backslashes, and control characters. */
+static void json_escape_append(char *buf, int *pos, int bufsz, const char *s) {
+    int p = *pos;
+    if (p >= bufsz - 1) return;
+    for (; *s && p < bufsz - 1; s++) {
+        char esc = 0;
+        switch (*s) {
+            case '"':  esc = '"';  break;
+            case '\\': esc = '\\'; break;
+            case '\n': esc = 'n';  break;
+            case '\r': esc = 'r';  break;
+            case '\t': esc = 't';  break;
+        }
+        if (esc) {
+            if (p + 2 > bufsz - 1) break;
+            buf[p++] = '\\';
+            buf[p++] = esc;
+        } else if ((unsigned char)*s < 0x20) {
+            /* Other control chars: emit as \u00XX */
+            if (p + 6 > bufsz - 1) break;
+            p += snprintf(buf + p, (size_t)(bufsz - p), "\\u%04x", (unsigned char)*s);
+        } else {
+            buf[p++] = *s;
+        }
+    }
+    *pos = p;
+}
+
+/* Safe snprintf append: clamp pos so it never exceeds bufsz */
+#define BUF_APPEND(pos, buf, bufsz, ...) do { \
+    int _n = snprintf((buf) + (pos), (size_t)((bufsz) - (pos)), __VA_ARGS__); \
+    if (_n > 0) (pos) += _n; \
+    if ((pos) > (bufsz)) (pos) = (bufsz); \
+} while (0)
+
 static void handle_station_state(struct mg_connection *c, int sid) {
     const station_t *st = &world.stations[sid];
     /* Build JSON response with signal-range-scoped world view */
-    char buf[8192];
+    enum { BUFSZ = 8192 };
+    char buf[BUFSZ];
     int pos = 0;
 
     /* Station info */
-    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
-        "{\"station\":{\"index\":%d,\"name\":\"%s\","
-        "\"signal_range\":%.1f,\"scaffold\":%s,"
+    BUF_APPEND(pos, buf, BUFSZ,
+        "{\"station\":{\"index\":%d,\"name\":\"", sid);
+    json_escape_append(buf, &pos, BUFSZ, st->name);
+    BUF_APPEND(pos, buf, BUFSZ,
+        "\",\"signal_range\":%.1f,\"scaffold\":%s,"
         "\"inventory\":{",
-        sid, st->name, st->signal_range, st->scaffold ? "true" : "false");
+        st->signal_range, st->scaffold ? "true" : "false");
 
     static const char *cnames[] = {
         "ferrite_ore","cuprite_ore","crystal_ore",
@@ -226,14 +275,14 @@ static void handle_station_state(struct mg_connection *c, int sid) {
         "frame","laser_module","tractor_module"
     };
     for (int i = 0; i < COMMODITY_COUNT; i++) {
-        if (i > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+        if (i > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
+        BUF_APPEND(pos, buf, BUFSZ,
             "\"%s\":%.1f", cnames[i], st->inventory[i]);
     }
-    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "},\"modules\":[");
+    BUF_APPEND(pos, buf, BUFSZ, "},\"modules\":[");
     for (int m = 0; m < st->module_count; m++) {
-        if (m > 0) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+        if (m > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
+        BUF_APPEND(pos, buf, BUFSZ,
             "{\"type\":\"%s\",\"ring\":%d,\"slot\":%d,\"scaffold\":%s,\"progress\":%.2f}",
             module_type_name(st->modules[m].type),
             st->modules[m].ring, st->modules[m].slot,
@@ -241,69 +290,74 @@ static void handle_station_state(struct mg_connection *c, int sid) {
             st->modules[m].build_progress);
     }
 
-    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "]},");
+    BUF_APPEND(pos, buf, BUFSZ, "]},");
 
     /* Visible asteroids within signal range */
     float sr_sq = st->signal_range * st->signal_range;
-    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "\"visible_asteroids\":[");
+    BUF_APPEND(pos, buf, BUFSZ, "\"visible_asteroids\":[");
     bool first = true;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &world.asteroids[i];
         if (!a->active) continue;
         if (v2_dist_sq(a->pos, st->pos) > sr_sq) continue;
-        if (!first) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
+        if (!first) BUF_APPEND(pos, buf, BUFSZ, ",");
         first = false;
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+        BUF_APPEND(pos, buf, BUFSZ,
             "{\"index\":%d,\"tier\":%d,\"commodity\":%d,\"x\":%.0f,\"y\":%.0f,\"hp\":%.0f}",
             i, a->tier, a->commodity, a->pos.x, a->pos.y, a->hp);
-        if (pos > (int)sizeof(buf) - 256) break;
+        if (pos > BUFSZ - 256) break;
     }
 
     /* Visible players within signal range */
-    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "],\"visible_players\":[");
+    BUF_APPEND(pos, buf, BUFSZ, "],\"visible_players\":[");
     first = true;
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!world.players[i].connected || world.players[i].grace_period) continue;
         if (v2_dist_sq(world.players[i].ship.pos, st->pos) > sr_sq) continue;
-        if (!first) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
+        if (!first) BUF_APPEND(pos, buf, BUFSZ, ",");
         first = false;
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+        BUF_APPEND(pos, buf, BUFSZ,
             "{\"id\":%d,\"x\":%.0f,\"y\":%.0f,\"docked\":%s}",
             i, world.players[i].ship.pos.x, world.players[i].ship.pos.y,
             world.players[i].docked ? "true" : "false");
     }
 
     /* Visible stations within signal range */
-    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "],\"visible_stations\":[");
+    BUF_APPEND(pos, buf, BUFSZ, "],\"visible_stations\":[");
     first = true;
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (i == sid || !station_exists(&world.stations[i])) continue;
         float d_sq = v2_dist_sq(world.stations[i].pos, st->pos);
         if (d_sq > sr_sq) continue;
-        if (!first) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
+        if (!first) BUF_APPEND(pos, buf, BUFSZ, ",");
         first = false;
         float overlap = st->signal_range + world.stations[i].signal_range - sqrtf(d_sq);
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
-            "{\"index\":%d,\"name\":\"%s\",\"x\":%.0f,\"y\":%.0f,\"signal_overlap\":%s}",
-            i, world.stations[i].name, world.stations[i].pos.x, world.stations[i].pos.y,
+        BUF_APPEND(pos, buf, BUFSZ,
+            "{\"index\":%d,\"name\":\"", i);
+        json_escape_append(buf, &pos, BUFSZ, world.stations[i].name);
+        BUF_APPEND(pos, buf, BUFSZ,
+            "\",\"x\":%.0f,\"y\":%.0f,\"signal_overlap\":%s}",
+            world.stations[i].pos.x, world.stations[i].pos.y,
             overlap > 0.0f ? "true" : "false");
     }
 
     /* Active contracts */
-    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "],\"active_contracts\":[");
+    BUF_APPEND(pos, buf, BUFSZ, "],\"active_contracts\":[");
     first = true;
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         const contract_t *ct = &world.contracts[i];
         if (!ct->active || ct->station_index != sid) continue;
-        if (!first) pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, ",");
+        if (!first) BUF_APPEND(pos, buf, BUFSZ, ",");
         first = false;
-        pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos,
+        BUF_APPEND(pos, buf, BUFSZ,
             "{\"index\":%d,\"action\":%d,\"commodity\":%d,\"quantity\":%.0f,\"base_price\":%.1f,\"age\":%.0f}",
             i, ct->action, ct->commodity, ct->quantity_needed, ct->base_price, ct->age);
     }
 
     /* Hail message */
-    pos += snprintf(buf + pos, sizeof(buf) - (size_t)pos, "],\"hail\":\"%s\"}", st->hail_message);
+    BUF_APPEND(pos, buf, BUFSZ, "],\"hail\":\"");
+    json_escape_append(buf, &pos, BUFSZ, st->hail_message);
+    BUF_APPEND(pos, buf, BUFSZ, "\"}");
 
     mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n", "%s", buf);
 }

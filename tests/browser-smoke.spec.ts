@@ -13,7 +13,7 @@ test.describe('Browser smoke tests', () => {
     // contributes its origin only — page.goto('/') against
     // baseURL=https://signal.ratimics.com/play/ would land on the
     // marketing root, which has no canvas.
-    const url = process.env.SMOKE_URL || '/space_miner.html';
+    const url = process.env.SMOKE_URL || '/signal.html';
     await page.goto(url);
 
     // Wait for the Emscripten canvas to appear
@@ -44,7 +44,7 @@ test.describe('Browser smoke tests', () => {
     // contributes its origin only — page.goto('/') against
     // baseURL=https://signal.ratimics.com/play/ would land on the
     // marketing root, which has no canvas.
-    const url = process.env.SMOKE_URL || '/space_miner.html';
+    const url = process.env.SMOKE_URL || '/signal.html';
     await page.goto(url);
     const canvas = page.locator('canvas');
     await expect(canvas).toBeVisible({ timeout: 15_000 });
@@ -70,7 +70,7 @@ test.describe('Browser smoke tests', () => {
     // contributes its origin only — page.goto('/') against
     // baseURL=https://signal.ratimics.com/play/ would land on the
     // marketing root, which has no canvas.
-    const url = process.env.SMOKE_URL || '/space_miner.html';
+    const url = process.env.SMOKE_URL || '/signal.html';
     await page.goto(url);
     const canvas = page.locator('canvas');
     await expect(canvas).toBeVisible({ timeout: 15_000 });

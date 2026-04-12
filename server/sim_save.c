@@ -292,8 +292,9 @@ bool world_save(const world_t *w, const char *path) {
     }
 
     fclose(f);
-    /* Atomic rename — on POSIX this is atomic; on Windows it overwrites. */
-    remove(path);
+    /* Atomic rename — on POSIX rename() atomically replaces the target.
+     * Do NOT remove(path) first: that creates a window where a crash
+     * would leave no valid save file at all. */
     if (rename(tmp_path, path) != 0) { remove(tmp_path); return false; }
     return true;
 }
