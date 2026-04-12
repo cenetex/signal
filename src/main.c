@@ -1356,7 +1356,7 @@ static void frame(void) {
         net_poll();
         sync_local_player_slot_from_network();
         if (was_connected && !net_is_connected()) {
-            set_notice("Connection lost. Press [P] to reconnect.");
+            set_notice("Connection lost. Reload to reconnect.");
             /* Fall back to local server using current world state */
             g.local_server.world = g.world;
             g.local_server.active = true;
