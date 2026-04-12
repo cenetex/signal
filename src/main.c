@@ -254,6 +254,10 @@ static bool check_hail_condition(hail_cond_t cond) {
             if (station_is_active(&g.world.stations[s])) count++;
         return count == 1;
     }
+    case HAIL_COND_NEAR_EDGE: {
+        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        return sig > 0.0f && sig < SIGNAL_BAND_FRINGE;
+    }
     case HAIL_COND_DEFAULT:
         return true;
     default:

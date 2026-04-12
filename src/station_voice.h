@@ -169,6 +169,7 @@ typedef enum {
     HAIL_COND_NEVER_UPGRADED,       /* no upgrades applied */
     HAIL_COND_NO_SPECIALTY_FURNACE,  /* outpost but no cu/cr furnace */
     HAIL_COND_ONE_OUTPOST,          /* exactly 1 outpost, could build more */
+    HAIL_COND_NEAR_EDGE,            /* player in fringe/frontier signal */
     HAIL_COND_DEFAULT,              /* always matches — ambient chatter */
     HAIL_COND_COUNT,
 } hail_cond_t;
@@ -192,6 +193,8 @@ static const hail_response_t PROSPECT_HAILS[] = {
       "Your outpost needs a smelter. Talk to Kepler about a kit." },
     { HAIL_COND_HAS_FURNACE,
       "Your furnace is running. Keep it fed." },
+    { HAIL_COND_NEAR_EDGE,
+      "Signal's thin where you are. Belt drops off past the markers." },
     { HAIL_COND_DEFAULT,
       "Belt's quiet today." },
 };
@@ -209,6 +212,8 @@ static const hail_response_t KEPLER_HAILS[] = {
       "Your outpost could use a frame press." },
     { HAIL_COND_HAS_PRESS,
       "Good setup. You're making your own frames now." },
+    { HAIL_COND_NEAR_EDGE,
+      "Something pinged the relay last night. Probably noise." },
     { HAIL_COND_DEFAULT,
       "Bay clear. Mind the scaffold arm." },
 };
@@ -226,6 +231,8 @@ static const hail_response_t HELIOS_HAILS[] = {
       "Copper changes everything. Build a furnace for it." },
     { HAIL_COND_ONE_OUTPOST,
       "One outpost is a start. The network should be bigger." },
+    { HAIL_COND_NEAR_EDGE,
+      "We should build further out. There's more out there than rocks." },
     { HAIL_COND_DEFAULT,
       "Welcome to Helios. Always expanding." },
 };
