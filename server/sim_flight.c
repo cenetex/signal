@@ -61,8 +61,9 @@ flight_cmd_t flight_steer_to(const world_t *w, const ship_t *ship,
     /* Don't thrust while facing away from the waypoint. */
     if (facing < 0.5f && thrust_cmd > 0.0f) thrust_cmd = 0.0f;
 
-    /* Brake if an asteroid is dead ahead.  Check both the ship's
-     * heading and its velocity direction so sideways drift is caught. */
+    /* Obstacle avoidance: check forward clearance in heading AND velocity
+     * direction. When an obstacle is detected, both brake AND steer
+     * laterally to deflect around it. */
     float fwd_clear = nav_forward_clearance(w, ship->pos, ship->vel,
                                              hull->ship_radius, ship->angle);
     float vel_angle = atan2f(ship->vel.y, ship->vel.x);
@@ -71,9 +72,24 @@ flight_cmd_t flight_steer_to(const world_t *w, const ship_t *ship,
     float worst_clear = fminf(fwd_clear, vel_clear);
     if (worst_clear < 1.0f) {
         if (worst_clear < 0.3f)
-            thrust_cmd = -1.0f;   /* hard brake — impact imminent */
+            thrust_cmd = -1.0f;
         else if (thrust_cmd > 0.0f)
             thrust_cmd *= worst_clear;
+
+        /* Lateral deflection: check clearance 45 degrees to each side,
+         * steer toward the clearer side. This prevents the ship from
+         * braking into a standstill against a rock face. */
+        float left_angle  = ship->angle + 0.7f;
+        float right_angle = ship->angle - 0.7f;
+        float left_clear  = nav_forward_clearance(w, ship->pos, ship->vel,
+                                                   hull->ship_radius, left_angle);
+        float right_clear = nav_forward_clearance(w, ship->pos, ship->vel,
+                                                   hull->ship_radius, right_angle);
+        float deflect = (1.0f - worst_clear) * 0.8f;
+        if (left_clear > right_clear)
+            cmd.turn = fminf(cmd.turn + deflect, 1.0f);
+        else
+            cmd.turn = fmaxf(cmd.turn - deflect, -1.0f);
     }
 
     cmd.thrust = thrust_cmd;
