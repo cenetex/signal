@@ -324,7 +324,7 @@ void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_b
 
     /* audio_play_fracture removed */
     SIM_LOG("[sim] asteroid %d fractured into %d children\n", idx, child_count);
-    emit_event(w, (sim_event_t){.type = SIM_EVENT_FRACTURE, .fracture.tier = parent.tier});
+    emit_event(w, (sim_event_t){.type = SIM_EVENT_FRACTURE, .player_id = fractured_by, .fracture.tier = parent.tier});
 }
 
 /* ------------------------------------------------------------------ */

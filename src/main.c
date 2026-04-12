@@ -295,6 +295,7 @@ static void process_sim_events(const sim_events_t *events) {
             case SIM_EVENT_MINING_TICK:
                 if (ev->player_id == g.local_player_slot) {
                     audio_play_mining_tick(&g.audio);
+                    onboarding_mark_fractured();  /* "mine" milestone = fired laser */
                 }
                 break;
             case SIM_EVENT_DOCK:
@@ -427,9 +428,13 @@ static void process_sim_events(const sim_events_t *events) {
                      * but cinematic logic ignores it. */
                     g.death_screen_timer = 0.0f;
                     g.death_screen_max = 0.0f;
-                    episode_trigger(&g.episode, 9); /* Ep 9: Death */
+                    /* Force-stop any playing episode, reset state, then
+                     * trigger death episode so it plays during the cinematic. */
+                    if (episode_is_active(&g.episode))
+                        episode_skip(&g.episode);
                     memset(g.episode.watched, 0, sizeof(g.episode.watched));
                     g.episode.stations_visited = 0;
+                    episode_trigger(&g.episode, 9); /* Ep 9: Death */
                     episode_save(&g.episode);
                 }
                 break;
