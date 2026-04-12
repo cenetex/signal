@@ -284,177 +284,97 @@ static void split_hud_message_lines(const char* text, int max_cols, char* line0,
 }
 
 static bool build_hud_message(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
-    int cargo_units = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
-    int cargo_capacity = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
-    const station_t* station = current_station_ptr();
+    /* ================================================================
+     * SYSTEM HINT PANEL — bottom-right, muted colors, no personality.
+     * Shows the single most relevant system message or nothing.
+     * Stations never speak here — they use the hail overlay.
+     * ================================================================ */
 
-    /* Hull integrity warning — highest priority, replaces red vignette */
+    /* P0: Hull critical */
     if (!LOCAL_PLAYER.docked && g.death_screen_timer <= 0.0f) {
         float max_hull = ship_max_hull(&LOCAL_PLAYER.ship);
-        if (max_hull > 0.0f) {
-            float hp_ratio = LOCAL_PLAYER.ship.hull / max_hull;
-            if (hp_ratio < 0.20f) {
-                snprintf(label, label_size, "WARNING");
-                int hp_pct = (int)lroundf(hp_ratio * 100.0f);
-                snprintf(message, message_size, "[ HULL INTEGRITY FAILING ] %d%%", hp_pct);
-                *r = 255; *g0 = 60; *b = 50;
-                return true;
-            }
+        if (max_hull > 0.0f && LOCAL_PLAYER.ship.hull / max_hull < 0.20f) {
+            snprintf(label, label_size, "WARNING");
+            snprintf(message, message_size, "[ HULL INTEGRITY FAILING ] %d%%",
+                (int)lroundf(LOCAL_PLAYER.ship.hull / max_hull * 100.0f));
+            *r = 255; *g0 = 60; *b = 50;
+            return true;
         }
     }
 
+    /* P1: Transient notice (set_notice: reconnect, connection lost, etc.) */
     if (g.notice_timer > 0.0f) {
         snprintf(label, label_size, "NOTICE");
         snprintf(message, message_size, "%s", g.notice);
-        *r = 114;
-        *g0 = 255;
-        *b = 192;
+        *r = 140; *g0 = 140; *b = 140;
         return true;
     }
 
-    /* Persistent plan mode hint (existing or planned outpost) */
+    /* P2: Active mode indicators */
     if (g.plan_mode_active) {
         snprintf(label, label_size, "PLAN");
-        snprintf(message, message_size,
-            "[R] %s  [E] place slot  [B/Esc] exit",
+        snprintf(message, message_size, "[R] %s  [E] place  [B] exit",
             module_type_name((module_type_t)g.plan_type));
-        *r = 130; *g0 = 220; *b = 255;
+        *r = 130; *g0 = 180; *b = 200;
         return true;
     }
-
-    /* Persistent autopilot indicator. Manual movement / mining cancels. */
     if (LOCAL_PLAYER.autopilot_mode) {
-        snprintf(label, label_size, "AUTOPILOT");
-        snprintf(message, message_size,
-            "Mining loop active. Any movement key cancels. [O] toggle");
-        *r = 255; *g0 = 200; *b = 90;
+        snprintf(label, label_size, "AUTO");
+        snprintf(message, message_size, "Mining loop. Movement cancels. [O]");
+        *r = 180; *g0 = 160; *b = 90;
         return true;
     }
 
+    /* P3: Onboarding checklist (pre-completion only) */
     if (onboarding_hint(label, label_size, message, message_size)) {
-        *r = 114; *g0 = 230; *b = 255;
+        *r = 130; *g0 = 180; *b = 200;
         return true;
     }
 
-
-    if (g.collection_feedback_timer > 0.0f) {
-        int recovered_ore = (int)lroundf(g.collection_feedback_ore);
-        snprintf(label, label_size, "RECOVERY");
-        if (g.collection_feedback_fragments > 0) {
-            snprintf(message, message_size, "Recovered %d ore from %d fragment%s.", recovered_ore, g.collection_feedback_fragments, g.collection_feedback_fragments == 1 ? "" : "s");
-        } else {
-            snprintf(message, message_size, "Recovered %d ore.", recovered_ore);
-        }
-        *r = 114;
-        *g0 = 255;
-        *b = 192;
+    /* P4: Scaffold tow */
+    if (LOCAL_PLAYER.ship.towed_scaffold >= 0) {
+        snprintf(label, label_size, "TOW");
+        snprintf(message, message_size, "[E] place  [R] release  [B] plan");
+        *r = 160; *g0 = 150; *b = 100;
         return true;
     }
 
-    if (LOCAL_PLAYER.docked) {
-        if (station != NULL) {
-            int si = LOCAL_PLAYER.current_station;
-            int vi = (si >= 0 && si < 3) ? si : 0;
-            /* Use station name as label for starter stations,
-             * role name for player outposts */
-            const char *speaker = (si >= 0 && si < 3)
-                ? g.world.stations[si].name : station_role_name(station);
-            /* Cycle through context-specific tips, station-voiced. */
-            int tip_cycle = (int)(g.world.time / 5.0f) % 4;
-            bool has_shipyard = station_has_module(station, MODULE_SHIPYARD);
-            bool has_market = false;
-            for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
-                if (station->inventory[c] > 0.5f) { has_market = true; break; }
-
-            if (tip_cycle == 0 && station_has_module(station, MODULE_ORE_BUYER)) {
-                snprintf(label, label_size, "%s", speaker);
-                snprintf(message, message_size, "%s", STATION_DOCK_TIPS[vi][DOCK_TIP_SELL]);
-            } else if (tip_cycle == 1 && has_market) {
-                snprintf(label, label_size, "%s", speaker);
-                snprintf(message, message_size, "%s", STATION_DOCK_TIPS[vi][DOCK_TIP_MARKET]);
-            } else if (tip_cycle == 2 && has_shipyard) {
-                snprintf(label, label_size, "%s", speaker);
-                snprintf(message, message_size, "%s", STATION_DOCK_TIPS[vi][DOCK_TIP_SHIPYARD]);
-            } else if (tip_cycle == 3) {
-                snprintf(label, label_size, "%s", speaker);
-                snprintf(message, message_size, "%s", STATION_DOCK_TIPS[vi][DOCK_TIP_LAUNCH]);
-            } else {
-                snprintf(label, label_size, "%s", speaker);
-                snprintf(message, message_size, "%s", STATION_DOCK_TIPS[vi][DOCK_TIP_DEFAULT]);
-            }
-            *r = 164;
-            *g0 = 177;
-            *b = 205;
+    /* P5: Cargo warnings */
+    {
+        int cargo = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
+        int cap = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
+        if (cargo >= cap) {
+            snprintf(label, label_size, "HOLD FULL");
+            snprintf(message, message_size, "Dock at a station to sell. [E]");
+            *r = 180; *g0 = 150; *b = 80;
             return true;
         }
-        return false;
     }
 
-    if ((cargo_units >= cargo_capacity) && (LOCAL_PLAYER.nearby_fragments > 0)) {
-        snprintf(label, label_size, "WARN");
-        snprintf(message, message_size, "Hold full. Fragments are still drifting outside the scoop.");
-        *r = 255;
-        *g0 = 221;
-        *b = 119;
-        return true;
-    }
-
-    if (cargo_units >= cargo_capacity) {
-        snprintf(label, label_size, "WARN");
-        snprintf(message, message_size, "Hold full. Run the ore home to the refinery.");
-        *r = 255;
-        *g0 = 221;
-        *b = 119;
-        return true;
-    }
-
+    /* P6: Docking */
     if (LOCAL_PLAYER.docking_approach) {
         snprintf(label, label_size, "DOCKING");
-        snprintf(message, message_size, "Tractor lock. Thrust W/S to cancel.");
-        *r = 112; *g0 = 255; *b = 214;
+        snprintf(message, message_size, "Tractor lock. [W/S] to cancel.");
+        *r = 120; *g0 = 160; *b = 150;
         return true;
     }
-
     if (LOCAL_PLAYER.in_dock_range) {
         snprintf(label, label_size, "DOCK");
-        snprintf(message, message_size, "Dock module in range. Press E.");
-        *r = 112; *g0 = 255; *b = 214;
+        snprintf(message, message_size, "[E] to dock");
+        *r = 120; *g0 = 160; *b = 150;
         return true;
     }
 
-    if (LOCAL_PLAYER.nearby_fragments > 0) {
-        snprintf(label, label_size, "TRACTOR");
-        if (LOCAL_PLAYER.tractor_fragments > 0) {
-            snprintf(message, message_size, "Tractor [R] is locked on. Drift through to scoop the fragments.");
-        } else {
-            snprintf(message, message_size, "Press [R] to fire the tractor and pull fragments in.");
-        }
-        *r = 114;
-        *g0 = 255;
-        *b = 192;
+    /* P7: Collection feedback */
+    if (g.collection_feedback_timer > 0.0f) {
+        int ore = (int)lroundf(g.collection_feedback_ore);
+        snprintf(label, label_size, "SCOOP");
+        snprintf(message, message_size, "+%d ore", ore);
+        *r = 120; *g0 = 150; *b = 120;
         return true;
     }
 
-    if ((LOCAL_PLAYER.hover_asteroid >= 0) && g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
-        snprintf(label, label_size, "MINE");
-        snprintf(message, message_size, "Hold [Space] to fire the mining laser. Crack the rock down to fragments.");
-        *r = 164;
-        *g0 = 177;
-        *b = 205;
-        return true;
-    }
-
-    /* Scaffold tow hint — always shown while towing */
-    if (LOCAL_PLAYER.ship.towed_scaffold >= 0) {
-        snprintf(label, label_size, "PLACE");
-        snprintf(message, message_size, "You're towing a scaffold. Press [B] to lock it into a ring slot.");
-        *r = 255; *g0 = 221; *b = 119;
-        return true;
-    }
-
-    /* No idle tips — context hints (MINE/TRACTOR/DOCK above) cover
-     * active situations. Empty space = empty panel. Stations speak
-     * when hailed. The game doesn't nag. */
+    /* Nothing to say. Panel is empty. */
     return false;
 }
 

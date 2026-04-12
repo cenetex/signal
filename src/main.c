@@ -288,7 +288,23 @@ static void process_sim_events(const sim_events_t *events) {
             case SIM_EVENT_DOCK:
                 if (ev->player_id == g.local_player_slot) {
                     audio_play_dock(&g.audio);
-                    set_notice("Docked at %s.", g.world.stations[LOCAL_PLAYER.current_station].name);
+                    /* Station greets you on dock — same overlay as hail */
+                    {
+                        int ds = LOCAL_PLAYER.current_station;
+                        if (ds >= 0 && ds < MAX_STATIONS) {
+                            snprintf(g.hail_station, sizeof(g.hail_station), "%s",
+                                g.world.stations[ds].name);
+                            const char *ctx = contextual_hail_message(ds);
+                            if (ctx)
+                                snprintf(g.hail_message, sizeof(g.hail_message), "%s", ctx);
+                            else
+                                snprintf(g.hail_message, sizeof(g.hail_message), "%s",
+                                    g.world.stations[ds].hail_message);
+                            g.hail_credits = 0.0f;
+                            g.hail_station_index = ds;
+                            g.hail_timer = 4.0f;
+                        }
+                    }
                     /* Track visited original stations for Ep 1 */
                     int ds = LOCAL_PLAYER.current_station;
                     if (ds < 3) {
