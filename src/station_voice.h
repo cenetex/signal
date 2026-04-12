@@ -12,7 +12,7 @@
 #define STATION_VOICE_H
 
 /* ------------------------------------------------------------------ */
-/* Onboarding voice lines — indexed [station][milestone]              */
+/* Onboarding voice lines -indexed [station][milestone]              */
 /* ------------------------------------------------------------------ */
 
 /* Milestone indices (must match onboarding step order) */
@@ -34,13 +34,13 @@ enum {
 /* Station 0 = Prospect, 1 = Kepler, 2 = Helios.
  * Only the "speaker" station's line is used per milestone. */
 static const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
-    /* Prospect Refinery — terse, practical */
+    /* Prospect Refinery -terse, practical */
     {
         /* LAUNCH  */ "Signal tag registered. Launch when you're ready.",
         /* MINE    */ "Belt's hot. Point your laser at a rock. Start small.",
-        /* COLLECT */ "Debris in your wake. Fly through it — tractor does the rest.",
+        /* COLLECT */ "Debris in your wake. Fly through it -tractor does the rest.",
         /* HAUL    */ "Full hold's no good out here. Bring it home.",
-        /* SELL    */ "Hold's not empty. Sell at the market — I'll take what you've got.",
+        /* SELL    */ "Hold's not empty. Sell at the market - I'll take what you've got.",
         /* BUY     */ "Credits in your account. Check the market.",
         /* UPGRADE */ "Your rig's stock. Kepler and Helios handle upgrades.",
         /* SCAFFOLD*/ "Dock at Kepler. Check the shipyard tab, order a kit.",
@@ -48,11 +48,11 @@ static const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
         /* PLACE_A */ "Tow it out. Anchor your outpost when you find a spot.",
         /* COMPLETE*/ "You know the basics. Next: build a furnace at your own outpost.",
     },
-    /* Kepler Yard — technical, trails off */
+    /* Kepler Yard -technical, trails off */
     {
         /* LAUNCH  */ "Bay clear. Undock when ready.",
         /* MINE    */ "Asteroids are fragile. Fire your laser to crack one.",
-        /* COLLECT */ "Fragments drift. Fly close — tractor pulls them in.",
+        /* COLLECT */ "Fragments drift. Fly close -tractor pulls them in.",
         /* HAUL    */ "Ore's no good floating. Get it to a hopper.",
         /* SELL    */ "Raw ore on board? Sell it at the refinery.",
         /* BUY     */ "Check the market. Frames, ingots...",
@@ -62,24 +62,24 @@ static const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
         /* PLACE_A */ "Good spot? Anchor it down.",
         /* COMPLETE*/ "Good setup. Next step: get a furnace running out there.",
     },
-    /* Helios Works — enthusiastic, ambitious */
+    /* Helios Works -enthusiastic, ambitious */
     {
-        /* LAUNCH  */ "Welcome to Helios. Launch — always more to find.",
+        /* LAUNCH  */ "Welcome to Helios. Launch -always more to find.",
         /* MINE    */ "Rich veins out there. Laser a big one.",
         /* COLLECT */ "Don't leave ore behind. Fly through the debris.",
         /* HAUL    */ "Bring it home. We'll make something of it.",
-        /* SELL    */ "Beautiful ore. Sell it here — we pay well.",
+        /* SELL    */ "Beautiful ore. Sell it here -we pay well.",
         /* BUY     */ "Check the market. We've got materials if you've got credits.",
         /* UPGRADE */ "New face. We should talk about upgrades.",
         /* SCAFFOLD*/ "Talk to Kepler for scaffold kits. Check their shipyard.",
         /* PLACE_T */ "Your scaffold's waiting outside. Tractor it.",
         /* PLACE_A */ "Building out there? Anchor it. Good.",
-        /* COMPLETE*/ "You're ready. Build a furnace — we'll show you what copper can do.",
+        /* COMPLETE*/ "You're ready. Build a furnace - we'll show you what copper can do.",
     },
 };
 
 /* ------------------------------------------------------------------ */
-/* Docked context tips — indexed [station][tip_cycle]                 */
+/* Docked context tips -indexed [station][tip_cycle]                 */
 /* ------------------------------------------------------------------ */
 
 enum {
@@ -110,7 +110,7 @@ static const char *STATION_DOCK_TIPS[3][DOCK_TIP_COUNT] = {
     },
     /* Helios */
     {
-        /* SELL    */ "Cuprite, crystal — we take it all.",
+        /* SELL    */ "Cuprite, crystal -we take it all.",
         /* MARKET  */ "We've got specialty alloys. Check the market.",
         /* SHIPYARD*/ "No shipyard. Kepler handles kits.",
         /* LAUNCH  */ "More out there than rocks.",
@@ -119,7 +119,7 @@ static const char *STATION_DOCK_TIPS[3][DOCK_TIP_COUNT] = {
 };
 
 /* ------------------------------------------------------------------ */
-/* NPC radio chatter — short one-liners near sprites                  */
+/* NPC radio chatter -short one-liners near sprites                  */
 /* ------------------------------------------------------------------ */
 
 #define NPC_CHATTER_MINER_COUNT  8
@@ -150,14 +150,14 @@ static const char *NPC_CHATTER_HAULER[NPC_CHATTER_HAULER_COUNT] = {
 /* Tow drones: silent. The silence is characterization. */
 
 /* ------------------------------------------------------------------ */
-/* Contextual hail responses — condition → message per station        */
+/* Contextual hail responses -condition → message per station        */
 /* Checked in priority order; first match wins.                       */
 /* ------------------------------------------------------------------ */
 
 typedef enum {
-    HAIL_COND_EMPTY_HOLD,           /* no cargo at all — brand new player */
+    HAIL_COND_EMPTY_HOLD,           /* no cargo at all -brand new player */
     HAIL_COND_HAS_ORE,              /* player has raw ore in cargo */
-    HAIL_COND_LOW_CREDITS,          /* credits < 50, no outpost — early game */
+    HAIL_COND_LOW_CREDITS,          /* credits < 50, no outpost -early game */
     HAIL_COND_HAS_CREDITS_NO_OUTPOST, /* credits > 200 but no outpost */
     HAIL_COND_HAS_OUTPOST_NO_FURNACE, /* outpost exists but no furnace */
     HAIL_COND_HAS_FURNACE,          /* outpost has a furnace */
@@ -170,7 +170,7 @@ typedef enum {
     HAIL_COND_NO_SPECIALTY_FURNACE,  /* outpost but no cu/cr furnace */
     HAIL_COND_ONE_OUTPOST,          /* exactly 1 outpost, could build more */
     HAIL_COND_NEAR_EDGE,            /* player in fringe/frontier signal */
-    HAIL_COND_DEFAULT,              /* always matches — ambient chatter */
+    HAIL_COND_DEFAULT,              /* always matches -ambient chatter */
     HAIL_COND_COUNT,
 } hail_cond_t;
 
@@ -179,10 +179,10 @@ typedef struct {
     const char *message;
 } hail_response_t;
 
-/* Prospect Refinery — teaches the mining loop */
+/* Prospect Refinery -teaches the mining loop */
 static const hail_response_t PROSPECT_HAILS[] = {
     { HAIL_COND_EMPTY_HOLD,
-      "Hold's empty. Crack a rock — point your laser at an asteroid." },
+      "Hold's empty. Crack a rock. Point your laser at an asteroid." },
     { HAIL_COND_HAS_ORE,
       "Hold's not empty. Dock up and sell." },
     { HAIL_COND_LOW_CREDITS,
@@ -200,7 +200,7 @@ static const hail_response_t PROSPECT_HAILS[] = {
 };
 #define PROSPECT_HAIL_COUNT (int)(sizeof(PROSPECT_HAILS) / sizeof(PROSPECT_HAILS[0]))
 
-/* Kepler Yard — teaches construction */
+/* Kepler Yard -teaches construction */
 static const hail_response_t KEPLER_HAILS[] = {
     { HAIL_COND_EMPTY_HOLD,
       "Nothing to sell here. Go mine something first." },
@@ -219,12 +219,12 @@ static const hail_response_t KEPLER_HAILS[] = {
 };
 #define KEPLER_HAIL_COUNT (int)(sizeof(KEPLER_HAILS) / sizeof(KEPLER_HAILS[0]))
 
-/* Helios Works — teaches expansion */
+/* Helios Works -teaches expansion */
 static const hail_response_t HELIOS_HAILS[] = {
     { HAIL_COND_EMPTY_HOLD,
       "Empty hold? There's ore everywhere. Go get some." },
     { HAIL_COND_HAS_SPECIALTY_ORE,
-      "Beautiful ore. Dock up — we pay well for crystal." },
+      "Beautiful ore. Dock up - we pay well for crystal." },
     { HAIL_COND_NEVER_UPGRADED,
       "New face. We should talk about upgrades." },
     { HAIL_COND_NO_SPECIALTY_FURNACE,
