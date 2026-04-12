@@ -69,44 +69,72 @@ void draw_background(vec2 camera) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Signal border rendering — dot field at band thresholds              */
+/* Signal border rendering — union-of-circles arc clipping            */
 /* ------------------------------------------------------------------ */
 
 void draw_signal_borders(void) {
-    /* Place a tiny dot at each sample point where signal strength is
-     * near a band threshold. The boundary emerges as a scatter of
-     * points — no lines, no grid artifacts. */
-    const float CELL = 200.0f;
-    const float DOT  = 1.5f;
-    const float BAND_HW = 0.04f;
-    float vl = cam_left()   - CELL;
-    float vr = cam_right()  + CELL;
-    float vt = cam_top()    - CELL;
-    float vb = cam_bottom() + CELL;
+    /* S(p) >= t iff p is inside any circle of radius R_i*(1-t).
+     * The contour is the boundary of the union of those circles.
+     * For each station, draw only the arc NOT inside another circle.
+     * Exact geometry — perfectly smooth, no grid, no sampling. */
 
-    static const struct { float threshold; float r, g, b; } bands[] = {
-        { SIGNAL_BAND_OPERATIONAL, 0.50f, 0.45f, 0.25f },
-        { SIGNAL_BAND_FRINGE,     0.40f, 0.30f, 0.15f },
-        { SIGNAL_BAND_FRONTIER,   0.30f, 0.20f, 0.10f },
+    static const struct { float threshold; float r, g, b, a; float width; } bands[] = {
+        { SIGNAL_BAND_OPERATIONAL, 0.12f, 0.22f, 0.45f, 0.18f, 3.0f },
+        { SIGNAL_BAND_FRINGE,     0.45f, 0.28f, 0.08f, 0.15f, 2.5f },
+        { SIGNAL_BAND_FRONTIER,   0.42f, 0.10f, 0.08f, 0.12f, 2.0f },
     };
 
-    sgl_begin_quads();
-    for (float wy = vt; wy < vb; wy += CELL) {
-        for (float wx = vl; wx < vr; wx += CELL) {
-            float sig = signal_strength_at(&g.world, v2(wx, wy));
-            for (int b = 0; b < 3; b++) {
-                float d = fabsf(sig - bands[b].threshold);
-                if (d > BAND_HW) continue;
-                float a = (1.0f - d / BAND_HW) * 0.12f;
-                sgl_c4f(bands[b].r, bands[b].g, bands[b].b, a);
-                sgl_v2f(wx - DOT, wy - DOT);
-                sgl_v2f(wx + DOT, wy - DOT);
-                sgl_v2f(wx + DOT, wy + DOT);
-                sgl_v2f(wx - DOT, wy + DOT);
+    const int SEGS = 180;
+    const float STEP = TWO_PI_F / (float)SEGS;
+
+    for (int band = 0; band < 3; band++) {
+        float thr = bands[band].threshold;
+        float hw = bands[band].width;
+
+        float radii[MAX_STATIONS];
+        for (int s = 0; s < MAX_STATIONS; s++)
+            radii[s] = station_provides_signal(&g.world.stations[s])
+                ? g.world.stations[s].signal_range * (1.0f - thr) : 0.0f;
+
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            if (radii[s] <= 0.0f) continue;
+            const station_t *st = &g.world.stations[s];
+            float r = radii[s];
+            if (!on_screen(st->pos.x, st->pos.y, r)) continue;
+
+            sgl_begin_triangle_strip();
+            sgl_c4f(bands[band].r, bands[band].g, bands[band].b, bands[band].a);
+            bool active = false;
+
+            for (int i = 0; i <= SEGS; i++) {
+                float a = (float)(i % SEGS) * STEP;
+                float ca = cosf(a), sa = sinf(a);
+                float px = st->pos.x + ca * r;
+                float py = st->pos.y + sa * r;
+
+                /* Clip: skip if inside another station's circle */
+                bool clipped = false;
+                for (int o = 0; o < MAX_STATIONS; o++) {
+                    if (o == s || radii[o] <= 0.0f) continue;
+                    float dx = px - g.world.stations[o].pos.x;
+                    float dy = py - g.world.stations[o].pos.y;
+                    if (dx*dx + dy*dy < radii[o]*radii[o]) { clipped = true; break; }
+                }
+
+                if (!clipped && (i % 4 < 3)) { /* 3 on, 1 off = dashed */
+                    sgl_v2f(px - ca * hw, py - sa * hw);
+                    sgl_v2f(px + ca * hw, py + sa * hw);
+                    active = true;
+                } else if (active) {
+                    sgl_end();
+                    sgl_begin_triangle_strip();
+                    sgl_c4f(bands[band].r, bands[band].g, bands[band].b, bands[band].a);
+                    active = false;
+                }
             }
+            sgl_end();
         }
     }
-    sgl_end();
 }
 
 /* ------------------------------------------------------------------ */

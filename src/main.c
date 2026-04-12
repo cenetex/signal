@@ -151,30 +151,17 @@ static void reset_world(void) {
 
 static void reset_step_feedback(void) {
     LOCAL_PLAYER.hover_asteroid = -1;
-    /* Beam prediction: in multiplayer, server beam coords arrive at 10 Hz
-     * with RTT latency. Predict the beam visually on the client when the
-     * player holds Space. Server still owns hit/damage/fracture. */
+    /* Beam prediction: in multiplayer, predict beam START position from
+     * local ship state (eliminates 10Hz lag on muzzle position). Server
+     * owns beam_active, beam_hit, beam_ineffective, and beam_end — those
+     * arrive via WORLD_PLAYERS and are not overwritten here.
+     * In singleplayer, local server provides everything each tick. */
     if (g.multiplayer_enabled) {
-        if (is_key_down(SAPP_KEYCODE_SPACE) && !LOCAL_PLAYER.docked) {
-            vec2 fwd = ship_forward(LOCAL_PLAYER.ship.angle);
-            vec2 muzzle = ship_muzzle(LOCAL_PLAYER.ship.pos,
-                                       LOCAL_PLAYER.ship.angle,
-                                       &LOCAL_PLAYER.ship);
-            LOCAL_PLAYER.beam_active = true;
-            LOCAL_PLAYER.beam_start = muzzle;
-            /* Aim at hover asteroid if we have one, otherwise max range */
-            if (LOCAL_PLAYER.hover_asteroid >= 0 &&
-                LOCAL_PLAYER.hover_asteroid < MAX_ASTEROIDS &&
-                g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
-                LOCAL_PLAYER.beam_end = g.world.asteroids[LOCAL_PLAYER.hover_asteroid].pos;
-                LOCAL_PLAYER.beam_hit = true;
-            } else {
-                LOCAL_PLAYER.beam_end = v2_add(muzzle, v2_scale(fwd, MINING_RANGE));
-                LOCAL_PLAYER.beam_hit = false;
-            }
+        /* Only predict the muzzle — server owns everything else */
+        if (LOCAL_PLAYER.beam_active) {
+            LOCAL_PLAYER.beam_start = ship_muzzle(LOCAL_PLAYER.ship.pos,
+                LOCAL_PLAYER.ship.angle, &LOCAL_PLAYER.ship);
         }
-        /* Server corrections (hit/ineffective flags) override prediction
-         * when they arrive via WORLD_PLAYERS — applied in net_sync.c */
     } else {
         LOCAL_PLAYER.beam_active = false;
         LOCAL_PLAYER.beam_hit = false;
