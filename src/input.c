@@ -134,7 +134,7 @@ input_intent_t sample_input_intent(void) {
     if (intent.thrust != 0.0f || intent.turn != 0.0f)
         onboarding_mark_moved();
 
-    intent.mine = is_key_down(SAPP_KEYCODE_F);
+    intent.mine = is_key_down(SAPP_KEYCODE_M);
 
     /* Tractor: hold Space = grab, tap Space = release.
      * Track press time; on release, if held < 200ms = tap (release). */

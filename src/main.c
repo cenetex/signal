@@ -750,8 +750,8 @@ static void sim_step(float dt) {
     if (episode_is_active(&g.episode) && g.input.key_pressed[SAPP_KEYCODE_ESCAPE])
         episode_skip(&g.episode);
 
-    /* Music controls: M = mute/unmute, [ = prev, ] = next */
-    if (g.input.key_pressed[SAPP_KEYCODE_M]) {
+    /* Music controls: P = pause/unpause, [ = prev, ] = next */
+    if (g.input.key_pressed[SAPP_KEYCODE_P]) {
         if (g.music.playing)
             g.music.paused ? music_resume(&g.music) : music_pause(&g.music);
         else
@@ -1374,7 +1374,7 @@ static void frame(void) {
                     flags |= NET_INPUT_LEFT;
                 if (g.input.key_down[SAPP_KEYCODE_D] || g.input.key_down[SAPP_KEYCODE_RIGHT])
                     flags |= NET_INPUT_RIGHT;
-                if (g.input.key_down[SAPP_KEYCODE_F])
+                if (g.input.key_down[SAPP_KEYCODE_M])
                     flags |= NET_INPUT_FIRE;
                 if (g.input.key_down[SAPP_KEYCODE_SPACE] && !g.plan_mode_active)
                     flags |= NET_INPUT_TRACTOR;
