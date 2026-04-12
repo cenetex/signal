@@ -3,10 +3,20 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <title>Signal — Coming Soon</title>
-    <meta name="description" content="Signal: a multiplayer space mining game. Fracture asteroids, supply stations, build outposts. Coming soon.">
+    <title>Signal — A Multiplayer Space Mining Game</title>
+    <meta name="description" content="Signal: a multiplayer space mining game. Fracture asteroids, supply stations, extend your reach. Alpha playtest live now.">
+    <meta property="og:title" content="Signal — A Multiplayer Space Mining Game">
+    <meta property="og:description" content="Fracture asteroids, supply stations, extend your reach. Alpha playtest live now.">
+    <meta property="og:type" content="website">
+    <meta property="og:url" content="https://signal.ratimics.com">
+    <meta name="twitter:card" content="summary">
+    <meta name="twitter:title" content="Signal — A Multiplayer Space Mining Game">
+    <meta name="twitter:description" content="Fracture asteroids, supply stations, extend your reach. Alpha playtest live now.">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><rect width='32' height='32' rx='6' fill='%23080706'/><polygon points='16,6 21,22 11,22' fill='none' stroke='%2380ffd5' stroke-width='2'/></svg>">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap">
     <style>
-      @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap");
 
       :root {
         color-scheme: dark;
@@ -50,14 +60,6 @@
         margin-bottom: 12px;
       }
       h1 .a { color: var(--signal); }
-
-      .coming-soon {
-        font-family: "IBM Plex Mono", monospace;
-        font-size: clamp(14px, 2.5vw, 20px);
-        letter-spacing: 0.3em; text-transform: uppercase;
-        color: var(--ore);
-        margin-bottom: 8px;
-      }
 
       .tag {
         font-size: clamp(16px, 2.5vw, 22px);
@@ -192,11 +194,10 @@
     <div class="page">
 
       <h1>S<span class="a">i</span>gnal</h1>
-      <p class="coming-soon">Coming Soon</p>
-      <p class="tag">Broadcast your signal.</p>
+      <p class="tag">A multiplayer space mining game.<br>Fracture asteroids, supply stations, extend your reach.</p>
 
       <div class="actions">
-        <a class="btn go" href="/play">Try the Alpha Playtest</a>
+        <a class="btn go" href="/play">Play the Alpha</a>
         <a class="btn" href="https://github.com/cenetex/signal" target="_blank">GitHub</a>
       </div>
 
@@ -250,19 +251,19 @@
             </svg>
           </div>
           <div class="sector-body">
-            <div class="sector-label">Roadmap</div>
+            <div class="sector-label">Now Playing</div>
             <div class="sector-title">Sector One</div>
             <div class="sector-desc">
-              Three stations. A thin ring of signal. Everything outside it is yours to claim &mdash; if you can keep the lights on.
+              <span style="white-space:nowrap">Three stations.</span> <span style="white-space:nowrap">A thin ring of signal.</span> <span style="white-space:nowrap">Everything outside it is yours to claim</span> &mdash; <span style="white-space:nowrap">if you can keep the lights on.</span>
             </div>
             <ul class="sector-checklist">
               <li class="done">Fracture asteroids, haul ore, trade up</li>
               <li class="done">Found outposts, extend signal coverage</li>
               <li class="done">NPC miners and haulers working the belt</li>
               <li class="done">Multiplayer and singleplayer with persistence</li>
-              <li class="wip">Station construction and supply lines</li>
-              <li class="wip">Stations that talk back</li>
-              <li class="todo">Your first real job from the community</li>
+              <li class="done">Build scaffolds, tow them, supply your stations</li>
+              <li class="done">Stations that talk — hail for guidance</li>
+              <li class="done">Signal borders visible on the map</li>
             </ul>
             <span class="sector-status">Alpha — Playable Now</span>
           </div>
@@ -314,10 +315,10 @@
             </svg>
           </div>
           <div class="sector-body">
-            <div class="sector-label">Roadmap</div>
+            <div class="sector-label">What's Next</div>
             <div class="sector-title">Sector X</div>
             <div class="sector-desc">
-              Past the edge of coverage, something is out there. Go dark to find it.
+              <span style="white-space:nowrap">Past the edge of coverage,</span> <span style="white-space:nowrap">something is out there.</span> <span style="white-space:nowrap">Go dark to find it.</span>
             </div>
             <ul class="sector-checklist">
               <li class="todo">The Anomaly</li>
