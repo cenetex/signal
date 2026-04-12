@@ -26,6 +26,20 @@
         {
           "name": "PORT",
           "value": "8080"
+        },
+        {
+          "name": "SIGNAL_ALLOWED_ORIGIN",
+          "value": "https://signal.ratimics.com"
+        },
+        {
+          "name": "SIGNAL_REQUIRE_API_TOKEN",
+          "value": "1"
+        }
+      ],
+      "secrets": [
+        {
+          "name": "SIGNAL_API_TOKEN",
+          "valueFrom": "arn:aws:secretsmanager:us-east-1:022118847419:secret:signal/api-token-cfXder"
         }
       ],
       "logConfiguration": {
