@@ -189,338 +189,212 @@ static void fill_circle_local(float cx, float cy, float r, int segs, float cr, f
     sgl_end();
 }
 
-/* Per-type shape internals (drawn in local rotated space, 64x64 bounding) */
+/* 6-shape module system: shape=function, hull color=faction, accent=product/ore.
+ *   Dock(+repair) = U-shape    Intake(hopper+silo) = Triangle
+ *   Furnace       = Circle     Fabricator(all)     = Pentagon
+ *   Relay         = Diamond    Shipyard            = Open frame
+ * Drawn in local rotated space, ~64x64 bounding. */
+
+/* Helper: outline a regular polygon */
+static void outline_ngon(int n, float r, float cr, float cg, float cb, float ca) {
+    sgl_c4f(cr, cg, cb, ca);
+    sgl_begin_lines();
+    for (int i = 0; i < n; i++) {
+        float a0 = TWO_PI_F * (float)i / (float)n - PI_F * 0.5f;
+        float a1 = TWO_PI_F * (float)(i+1) / (float)n - PI_F * 0.5f;
+        sgl_v2f(cosf(a0)*r, sinf(a0)*r);
+        sgl_v2f(cosf(a1)*r, sinf(a1)*r);
+    }
+    sgl_end();
+}
+
+/* Helper: fill a regular polygon */
+static void fill_ngon(int n, float r, float cr, float cg, float cb, float ca) {
+    sgl_c4f(cr, cg, cb, ca);
+    sgl_begin_triangles();
+    for (int i = 0; i < n; i++) {
+        float a0 = TWO_PI_F * (float)i / (float)n - PI_F * 0.5f;
+        float a1 = TWO_PI_F * (float)(i+1) / (float)n - PI_F * 0.5f;
+        sgl_v2f(0, 0);
+        sgl_v2f(cosf(a0)*r, sinf(a0)*r);
+        sgl_v2f(cosf(a1)*r, sinf(a1)*r);
+    }
+    sgl_end();
+}
+
 static void draw_module_shape(module_type_t type, float mr, float mg, float mb, float alpha) {
     switch (type) {
-    case MODULE_DOCK: {
-        /* Open berth clamp -- U-shaped bracket with docking arms */
-        /* Back plate */
-        sgl_c4f(mr*0.25f, mg*0.25f, mb*0.25f, alpha);
-        fill_quad(-24, 16, 24, 16, 24, 24, -24, 24);
-        /* Left arm */
-        sgl_c4f(mr*0.4f, mg*0.4f, mb*0.4f, alpha);
-        fill_quad(-24, -20, -18, -20, -18, 24, -24, 24);
-        /* Right arm */
-        fill_quad(18, -20, 24, -20, 24, 24, 18, 24);
-        /* Clamp tips (inward-facing) */
-        sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha);
-        fill_quad(-18, -20, -10, -20, -10, -14, -18, -14);
-        fill_quad(10, -20, 18, -20, 18, -14, 10, -14);
-        /* Inner docking guide lights */
-        fill_circle_local(-14, 0, 3, 6, mr*0.9f, mg*0.9f, mb*0.9f, alpha*0.7f);
-        fill_circle_local( 14, 0, 3, 6, mr*0.9f, mg*0.9f, mb*0.9f, alpha*0.7f);
-        /* Accent edges */
-        sgl_c4f(mr, mg, mb, alpha*0.8f);
-        sgl_begin_lines();
-        sgl_v2f(-24, 24); sgl_v2f(-24, -20);
-        sgl_v2f(-24, -20); sgl_v2f(-10, -20);
-        sgl_v2f(10, -20); sgl_v2f(24, -20);
-        sgl_v2f(24, -20); sgl_v2f(24, 24);
-        sgl_v2f(-24, 24); sgl_v2f(24, 24);
-        sgl_end();
-        break;
-    }
-    case MODULE_ORE_BUYER: {
-        /* Wide funnel/hopper -- mouth at -Y (outward after -90° rotation).
-         * Chute at +Y feeds inward toward station center. */
-        /* Funnel walls */
-        sgl_c4f(mr*0.35f, mg*0.35f, mb*0.35f, alpha);
-        sgl_begin_triangles();
-        sgl_v2f(-28, -22); sgl_v2f(-10, 6); sgl_v2f(-10, -22);
-        sgl_v2f(28, -22); sgl_v2f(10, -22); sgl_v2f(10, 6);
-        sgl_end();
-        /* Funnel interior (dark void) */
-        sgl_c4f(0.02f, 0.02f, 0.03f, alpha);
-        fill_quad(-10, -22, 10, -22, 10, 6, -10, 6);
-        /* Chute body (feeds inward) */
-        sgl_c4f(mr*0.4f, mg*0.4f, mb*0.4f, alpha);
-        fill_quad(-10, 6, 10, 6, 8, 24, -8, 24);
-        /* Hopper rim (wide mouth) */
-        sgl_c4f(mr*0.8f, mg*0.8f, mb*0.8f, alpha);
-        fill_quad(-28, -24, 28, -24, 28, -20, -28, -20);
-        /* Left/right funnel lips */
-        fill_quad(-28, -24, -24, -24, -10, 6, -10, 2);
-        fill_quad(24, -24, 28, -24, 10, 2, 10, 6);
-        /* Accent lines */
-        sgl_c4f(mr*0.9f, mg*0.9f, mb*0.9f, alpha);
-        sgl_begin_lines();
-        sgl_v2f(-28, -24); sgl_v2f(-10, 6);
-        sgl_v2f(28, -24); sgl_v2f(10, 6);
-        sgl_v2f(-10, 6); sgl_v2f(-8, 24);
-        sgl_v2f(10, 6); sgl_v2f(8, 24);
-        sgl_end();
-        break;
-    }
-    case MODULE_FURNACE: case MODULE_FURNACE_CU: case MODULE_FURNACE_CR: {
-        /* Heavy industrial box with chimney/vent and inner glow */
-        /* Main body -- thick rectangle */
-        sgl_c4f(mr*0.25f, mg*0.25f, mb*0.25f, alpha);
-        fill_quad(-24, -18, 24, -18, 24, 24, -24, 24);
-        /* Chimney / exhaust stack */
-        sgl_c4f(mr*0.3f, mg*0.3f, mb*0.3f, alpha);
-        fill_quad(-8, -28, 8, -28, 8, -18, -8, -18);
-        /* Chimney cap */
-        sgl_c4f(mr*0.5f, mg*0.5f, mb*0.5f, alpha);
-        fill_quad(-10, -28, 10, -28, 10, -26, -10, -26);
-        /* Inner glow (color varies per furnace type via mr/mg/mb) */
-        fill_circle_local(0, 4, 14, 10, mr*0.5f, mg*0.15f, mb*0.08f, alpha*0.45f);
-        fill_circle_local(0, 4, 8, 8, mr*0.85f, mg*0.4f, mb*0.15f, alpha*0.7f);
-        fill_circle_local(0, 4, 3, 6, mr*1.0f, mg*0.7f, mb*0.3f, alpha*0.9f);
-        /* Grate bars across firebox */
-        sgl_c4f(mr*0.5f, mg*0.5f, mb*0.5f, alpha);
-        sgl_begin_lines();
-        sgl_v2f(-16, 14); sgl_v2f(16, 14);
-        sgl_v2f(-16, 18); sgl_v2f(16, 18);
-        sgl_end();
-        /* Heavy outline */
-        sgl_c4f(mr*0.6f, mg*0.6f, mb*0.6f, alpha);
-        sgl_begin_lines();
-        sgl_v2f(-24, -18); sgl_v2f(24, -18); sgl_v2f(24, -18); sgl_v2f(24, 24);
-        sgl_v2f(24, 24); sgl_v2f(-24, 24); sgl_v2f(-24, 24); sgl_v2f(-24, -18);
-        sgl_v2f(-8, -18); sgl_v2f(-8, -28);
-        sgl_v2f(8, -18); sgl_v2f(8, -28);
-        sgl_end();
-        break;
-    }
-    case MODULE_FRAME_PRESS: {
-        /* Wide heavy rectangle with stamping ram and press marks */
-        /* Press bed (bottom plate) */
-        sgl_c4f(mr*0.3f, mg*0.3f, mb*0.3f, alpha);
-        fill_quad(-30, 4, 30, 4, 30, 22, -30, 22);
-        /* Press head (top plate) */
-        sgl_c4f(mr*0.35f, mg*0.35f, mb*0.35f, alpha);
-        fill_quad(-30, -22, 30, -22, 30, -4, -30, -4);
-        /* Ram/piston columns */
-        sgl_c4f(mr*0.5f, mg*0.5f, mb*0.5f, alpha);
-        fill_quad(-28, -22, -22, -22, -22, 22, -28, 22);
-        fill_quad(22, -22, 28, -22, 28, 22, 22, 22);
-        /* Stamp crosshair on bed */
-        sgl_c4f(mr*0.8f, mg*0.8f, mb*0.8f, alpha);
-        sgl_begin_lines();
-        sgl_v2f(-14, 0); sgl_v2f(14, 0);
-        sgl_v2f(0, -4); sgl_v2f(0, 4);
-        /* Press marks / scoring */
-        sgl_v2f(-10, -2); sgl_v2f(-10, 2);
-        sgl_v2f(10, -2); sgl_v2f(10, 2);
-        sgl_end();
-        /* Outline */
-        sgl_c4f(mr*0.6f, mg*0.6f, mb*0.6f, alpha);
-        sgl_begin_lines();
-        sgl_v2f(-30, -22); sgl_v2f(30, -22); sgl_v2f(30, -22); sgl_v2f(30, 22);
-        sgl_v2f(30, 22); sgl_v2f(-30, 22); sgl_v2f(-30, 22); sgl_v2f(-30, -22);
-        sgl_end();
-        break;
-    }
-    case MODULE_LASER_FAB: {
-        /* Octagon housing with precision crosshairs and lens */
-        float s = 24.0f;
-        float c = s * 0.414f; /* tan(PI/8) -- octagon corner cut */
-        /* Octagon body */
-        sgl_c4f(mr*0.3f, mg*0.3f, mb*0.3f, alpha);
-        sgl_begin_triangles();
-        /* Fan-fill octagon from center */
-        float ox[8] = { -c, c, s, s, c, -c, -s, -s };
-        float oy[8] = { -s, -s, -c, c, s, s, c, -c };
-        for (int i = 0; i < 8; i++) {
-            int j = (i + 1) % 8;
-            sgl_v2f(0, 0); sgl_v2f(ox[i], oy[i]); sgl_v2f(ox[j], oy[j]);
-        }
-        sgl_end();
-        /* Lens center */
-        fill_circle_local(0, 0, 6, 8, mr*0.6f, mg*0.6f, mb*0.6f, alpha*0.7f);
-        /* Precision crosshairs */
-        sgl_c4f(mr*0.9f, mg*0.9f, mb*0.9f, alpha);
-        sgl_begin_lines();
-        sgl_v2f(-20, 0); sgl_v2f(-8, 0);
-        sgl_v2f(8, 0); sgl_v2f(20, 0);
-        sgl_v2f(0, -20); sgl_v2f(0, -8);
-        sgl_v2f(0, 8); sgl_v2f(0, 20);
-        sgl_end();
-        /* Octagon outline */
-        sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha);
-        sgl_begin_lines();
-        for (int i = 0; i < 8; i++) {
-            int j = (i + 1) % 8;
-            sgl_v2f(ox[i], oy[i]); sgl_v2f(ox[j], oy[j]);
-        }
-        sgl_end();
-        break;
-    }
-    case MODULE_TRACTOR_FAB: {
-        /* Circle with concentric field emitter rings */
-        /* Outer housing disc */
-        fill_circle_local(0, 0, 24, 20, mr*0.25f, mg*0.25f, mb*0.25f, alpha);
-        /* Middle emitter ring */
-        fill_circle_local(0, 0, 16, 16, mr*0.35f, mg*0.35f, mb*0.35f, alpha);
-        /* Inner core */
-        fill_circle_local(0, 0, 8, 10, mr*0.55f, mg*0.55f, mb*0.55f, alpha*0.8f);
-        /* Center dot */
-        fill_circle_local(0, 0, 3, 6, mr*0.9f, mg*0.9f, mb*0.9f, alpha);
-        /* Ring outlines (field emitter bands) */
-        sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha*0.8f);
-        for (int ring = 0; ring < 3; ring++) {
-            float rad = 8.0f + (float)ring * 8.0f;
-            int segs = 16 + ring * 4;
+
+    /* ---- DOCK (+repair): U-shape ---- */
+    case MODULE_DOCK:
+    case MODULE_REPAIR_BAY: {
+        /* Solid backplate covers corridor end underneath */
+        sgl_c4f(mr*0.12f, mg*0.12f, mb*0.12f, alpha);
+        fill_quad(-30, -26, 30, -26, 30, 26, -30, 26);
+        /* U-shape fill: back plate + two arms */
+        sgl_c4f(mr*0.30f, mg*0.30f, mb*0.30f, alpha);
+        fill_quad(-28, 24, 28, 24, 28, 12, -28, 12);   /* back plate */
+        fill_quad(-28, -24, -14, -24, -14, 24, -28, 24); /* left arm */
+        fill_quad(14, -24, 28, -24, 28, 24, 14, 24);     /* right arm */
+        /* Clamp teeth */
+        sgl_c4f(mr*0.55f, mg*0.55f, mb*0.55f, alpha);
+        fill_quad(-14, -24, -6, -24, -6, -18, -14, -18);
+        fill_quad(6, -24, 14, -24, 14, -18, 6, -18);
+        /* Guide lights */
+        fill_circle_local(-8, -4, 4, 6, mr*0.9f, mg*0.9f, mb*0.9f, alpha*0.7f);
+        fill_circle_local( 8, -4, 4, 6, mr*0.9f, mg*0.9f, mb*0.9f, alpha*0.7f);
+        /* Repair wrench hint (small, bottom-right) */
+        if (type == MODULE_REPAIR_BAY) {
+            sgl_c4f(mr*0.6f, mg*0.6f, mb*0.6f, alpha*0.5f);
             sgl_begin_lines();
-            for (int i = 0; i < segs; i++) {
-                float a0 = TWO_PI_F * (float)i / (float)segs;
-                float a1 = TWO_PI_F * (float)(i+1) / (float)segs;
-                sgl_v2f(cosf(a0)*rad, sinf(a0)*rad);
-                sgl_v2f(cosf(a1)*rad, sinf(a1)*rad);
-            }
+            sgl_v2f(4, 20); sgl_v2f(14, 10);
+            sgl_end();
+            fill_circle_local(3, 21, 3, 6, mr*0.4f, mg*0.4f, mb*0.4f, alpha*0.4f);
+        }
+        /* Bold outline */
+        sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha);
+        sgl_begin_lines();
+        sgl_v2f(-28, 24); sgl_v2f(-28, -24);
+        sgl_v2f(-28, -24); sgl_v2f(-6, -24);
+        sgl_v2f(6, -24); sgl_v2f(28, -24);
+        sgl_v2f(28, -24); sgl_v2f(28, 24);
+        sgl_v2f(28, 24); sgl_v2f(-28, 24);
+        sgl_end();
+        break;
+    }
+
+    /* ---- INTAKE (hopper+silo): Triangle ---- */
+    case MODULE_ORE_BUYER:
+    case MODULE_ORE_SILO:
+    case MODULE_CARGO_BAY: {
+        /* Triangle pointing outward (-Y) = funnel mouth */
+        sgl_c4f(mr*0.30f, mg*0.30f, mb*0.30f, alpha);
+        sgl_begin_triangles();
+        sgl_v2f(-32, -20); sgl_v2f(32, -20); sgl_v2f(0, 28);
+        sgl_end();
+        /* Mouth rim highlight */
+        sgl_c4f(mr*0.8f, mg*0.8f, mb*0.8f, alpha);
+        fill_quad(-32, -22, 32, -22, 32, -18, -32, -18);
+        /* Ore accent glow in center */
+        fill_circle_local(0, 0, 7, 8, mr*0.5f, mg*0.5f, mb*0.5f, alpha*0.2f);
+        fill_circle_local(0, 0, 3, 6, mr*0.7f, mg*0.7f, mb*0.7f, alpha*0.35f);
+        /* Bold outline */
+        sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha);
+        sgl_begin_lines();
+        sgl_v2f(-32, -20); sgl_v2f(32, -20);
+        sgl_v2f(32, -20); sgl_v2f(0, 28);
+        sgl_v2f(0, 28); sgl_v2f(-32, -20);
+        sgl_end();
+        break;
+    }
+
+    /* ---- FURNACE (all ore types): Circle ---- */
+    case MODULE_FURNACE:
+    case MODULE_FURNACE_CU:
+    case MODULE_FURNACE_CR: {
+        /* Filled circle hull */
+        fill_circle_local(0, 0, 28, 20, mr*0.30f, mg*0.30f, mb*0.30f, alpha);
+        /* Ore-type accent glow — warm layered halo */
+        fill_circle_local(0, 0, 24, 16, mr*0.12f, mg*0.04f, mb*0.02f, alpha*0.4f);
+        fill_circle_local(0, 0, 18, 14, mr*0.25f, mg*0.10f, mb*0.04f, alpha*0.5f);
+        fill_circle_local(0, 0, 12, 12, mr*0.50f, mg*0.20f, mb*0.08f, alpha*0.6f);
+        fill_circle_local(0, 0, 7,  10, mr*0.80f, mg*0.40f, mb*0.15f, alpha*0.75f);
+        fill_circle_local(0, 0, 3,  8,  mr*1.0f,  mg*0.70f, mb*0.30f, alpha*0.95f);
+        /* Bright hot core dot */
+        fill_circle_local(0, 0, 1.5f, 6, 1.0f, 0.95f, 0.7f, alpha*0.8f);
+        /* Bold outline */
+        outline_ngon(20, 28, mr*0.7f, mg*0.7f, mb*0.7f, alpha);
+        break;
+    }
+
+    /* ---- FABRICATOR (press, laser, tractor): Pentagon ---- */
+    case MODULE_FRAME_PRESS:
+    case MODULE_LASER_FAB:
+    case MODULE_TRACTOR_FAB: {
+        /* Filled pentagon hull */
+        fill_ngon(5, 28, mr*0.30f, mg*0.30f, mb*0.30f, alpha);
+        /* Inner pentagon (product chamber) */
+        fill_ngon(5, 14, mr*0.15f, mg*0.15f, mb*0.15f, alpha*0.8f);
+        /* Product accent dot */
+        fill_circle_local(0, 2, 4, 6, mr*0.8f, mg*0.8f, mb*0.8f, alpha*0.4f);
+        /* Crosshair for press type */
+        if (type == MODULE_FRAME_PRESS) {
+            sgl_c4f(mr*0.8f, mg*0.8f, mb*0.8f, alpha*0.5f);
+            sgl_begin_lines();
+            sgl_v2f(-8, 2); sgl_v2f(8, 2);
+            sgl_v2f(0, -6); sgl_v2f(0, 10);
             sgl_end();
         }
-        /* Field direction spokes */
-        sgl_c4f(mr*0.5f, mg*0.5f, mb*0.5f, alpha*0.5f);
-        sgl_begin_lines();
-        for (int i = 0; i < 4; i++) {
-            float a = TWO_PI_F * (float)i / 4.0f + PI_F * 0.25f;
-            sgl_v2f(cosf(a)*10, sinf(a)*10);
-            sgl_v2f(cosf(a)*22, sinf(a)*22);
-        }
-        sgl_end();
+        /* Bold outline */
+        outline_ngon(5, 28, mr*0.7f, mg*0.7f, mb*0.7f, alpha);
         break;
     }
+
+    /* ---- RELAY: Diamond ---- */
     case MODULE_SIGNAL_RELAY: {
-        /* Tall antenna mast */
-        sgl_c4f(mr*0.3f, mg*0.3f, mb*0.3f, alpha);
-        fill_quad(-3, 28, 3, 28, 3, -20, -3, -20);
-        /* Cross-arms */
-        sgl_c4f(mr*0.5f, mg*0.5f, mb*0.5f, alpha);
-        fill_quad(-16, 6, 16, 6, 16, 2, -16, 2);
-        fill_quad(-12, -8, 12, -8, 12, -12, -12, -12);
-        /* Tip beacon */
-        fill_circle_local(0, -22, 5, 8, mr*1.0f, mg*1.0f, mb*1.0f, alpha * 0.9f);
-        /* Radiating signal arcs — emanate from beacon toward -Y (outward) */
-        sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha * 0.5f);
-        sgl_begin_lines();
-        for (int r = 1; r <= 2; r++) {
-            float rad = 14.0f + (float)r * 10.0f;
-            for (int i = 0; i < 6; i++) {
-                /* Arc sweep centered on -Y axis (angle = -PI/2) */
-                float a0 = -PI_F * 0.5f - PI_F * 0.4f + (float)i * PI_F * 0.8f / 6.0f;
-                float a1 = -PI_F * 0.5f - PI_F * 0.4f + (float)(i+1) * PI_F * 0.8f / 6.0f;
-                sgl_v2f(cosf(a0)*rad, sinf(a0)*rad - 16);
-                sgl_v2f(cosf(a1)*rad, sinf(a1)*rad - 16);
-            }
-        }
-        sgl_end();
-        break;
-    }
-    case MODULE_REPAIR_BAY: {
-        /* Open bay with refined wrench cross */
-        /* Base plate */
-        sgl_c4f(mr*0.28f, mg*0.28f, mb*0.28f, alpha);
-        fill_quad(-24, -24, 24, -24, 24, 24, -24, 24);
-        /* Wrench shaft (diagonal) */
-        sgl_c4f(mr*0.6f, mg*0.6f, mb*0.6f, alpha);
-        fill_quad(-3, -3, 3, -3, 16, 10, 10, 16);
-        fill_quad(-16, -10, -10, -16, 3, 3, -3, 3);
-        /* Wrench head (open jaw at top-right) */
-        sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha);
-        fill_quad(10, 16, 16, 10, 22, 16, 16, 22);
-        fill_quad(16, 10, 22, 10, 22, 16, 16, 16);
-        /* Wrench ring (bottom-left) */
-        fill_circle_local(-13, -13, 8, 10, mr*0.35f, mg*0.35f, mb*0.35f, alpha);
-        sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha);
-        sgl_begin_lines();
-        for (int i = 0; i < 12; i++) {
-            float a0 = TWO_PI_F * (float)i / 12.0f;
-            float a1 = TWO_PI_F * (float)(i+1) / 12.0f;
-            sgl_v2f(-13+cosf(a0)*8, -13+sinf(a0)*8);
-            sgl_v2f(-13+cosf(a1)*8, -13+sinf(a1)*8);
-        }
-        sgl_end();
-        /* Corner bolts */
-        fill_circle_local(-20, -20, 2, 4, mr*0.5f, mg*0.5f, mb*0.5f, alpha);
-        fill_circle_local( 20, -20, 2, 4, mr*0.5f, mg*0.5f, mb*0.5f, alpha);
-        fill_circle_local(-20,  20, 2, 4, mr*0.5f, mg*0.5f, mb*0.5f, alpha);
-        fill_circle_local( 20,  20, 2, 4, mr*0.5f, mg*0.5f, mb*0.5f, alpha);
-        /* Outline */
-        sgl_c4f(mr*0.5f, mg*0.5f, mb*0.5f, alpha);
-        sgl_begin_lines();
-        sgl_v2f(-24,-24); sgl_v2f(24,-24); sgl_v2f(24,-24); sgl_v2f(24,24);
-        sgl_v2f(24,24); sgl_v2f(-24,24); sgl_v2f(-24,24); sgl_v2f(-24,-24);
-        sgl_end();
-        break;
-    }
-    case MODULE_ORE_SILO: {
-        /* Tall cylindrical tank with dome top and rivet bands */
-        /* Main cylinder body */
-        sgl_c4f(mr*0.3f, mg*0.3f, mb*0.3f, alpha);
-        fill_quad(-16, -16, 16, -16, 16, 26, -16, 26);
-        /* Dome top (triangular approximation) */
-        sgl_c4f(mr*0.4f, mg*0.4f, mb*0.4f, alpha);
+        /* Filled diamond (rotated square) */
+        sgl_c4f(mr*0.30f, mg*0.30f, mb*0.30f, alpha);
         sgl_begin_triangles();
-        sgl_v2f(-16, -16); sgl_v2f(16, -16); sgl_v2f(0, -28);
+        sgl_v2f(0, -32); sgl_v2f(26, 0); sgl_v2f(0, 32);
+        sgl_v2f(0, -32); sgl_v2f(0, 32); sgl_v2f(-26, 0);
         sgl_end();
-        /* Base flange */
-        sgl_c4f(mr*0.45f, mg*0.45f, mb*0.45f, alpha);
-        fill_quad(-20, 22, 20, 22, 20, 26, -20, 26);
-        /* Rivet / band lines */
-        sgl_c4f(mr*0.55f, mg*0.55f, mb*0.55f, alpha*0.7f);
+        /* Beacon center */
+        fill_circle_local(0, 0, 7, 8, mr*0.4f, mg*0.4f, mb*0.4f, alpha*0.8f);
+        fill_circle_local(0, 0, 3, 6, mr*1.0f, mg*1.0f, mb*1.0f, alpha*0.8f);
+        /* Signal ripple diamond (inner echo) */
+        sgl_c4f(mr*0.6f, mg*0.6f, mb*0.6f, alpha*0.15f);
         sgl_begin_lines();
-        sgl_v2f(-16, -6); sgl_v2f(16, -6);
-        sgl_v2f(-16, 4); sgl_v2f(16, 4);
-        sgl_v2f(-16, 14); sgl_v2f(16, 14);
+        sgl_v2f(0, -18); sgl_v2f(14, 0);
+        sgl_v2f(14, 0); sgl_v2f(0, 18);
+        sgl_v2f(0, 18); sgl_v2f(-14, 0);
+        sgl_v2f(-14, 0); sgl_v2f(0, -18);
         sgl_end();
-        /* Fill level indicator */
-        sgl_c4f(mr*0.7f, mg*0.5f, mb*0.2f, alpha*0.4f);
-        fill_quad(-14, 4, 14, 4, 14, 22, -14, 22);
-        /* Outline */
-        sgl_c4f(mr*0.6f, mg*0.6f, mb*0.6f, alpha);
-        sgl_begin_lines();
-        sgl_v2f(-16, -16); sgl_v2f(-16, 26);
-        sgl_v2f(16, -16); sgl_v2f(16, 26);
-        sgl_v2f(-16, 26); sgl_v2f(16, 26);
-        sgl_v2f(-16, -16); sgl_v2f(0, -28);
-        sgl_v2f(16, -16); sgl_v2f(0, -28);
-        sgl_end();
-        break;
-    }
-    case MODULE_SHIPYARD: {
-        /* Large scaffold frame with crane arm */
-        /* Main scaffold frame (open) */
-        sgl_c4f(mr*0.3f, mg*0.3f, mb*0.3f, alpha);
-        /* Left pillar */
-        fill_quad(-30, -22, -24, -22, -24, 22, -30, 22);
-        /* Right pillar */
-        fill_quad(24, -22, 30, -22, 30, 22, 24, 22);
-        /* Top beam */
-        fill_quad(-30, -22, 30, -22, 30, -16, -30, -16);
-        /* Bottom beam */
-        fill_quad(-30, 16, 30, 16, 30, 22, -30, 22);
-        /* Crane arm (extends from top-right, angled) */
-        sgl_c4f(mr*0.5f, mg*0.5f, mb*0.5f, alpha);
-        fill_quad(10, -22, 16, -22, 24, -30, 18, -30);
-        /* Crane hook (dangling line + hook) */
+        /* Bold outline */
         sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha);
         sgl_begin_lines();
-        sgl_v2f(21, -30); sgl_v2f(14, -16);
-        sgl_v2f(14, -16); sgl_v2f(14, -6);
-        /* Hook */
-        sgl_v2f(14, -6); sgl_v2f(10, -2);
-        sgl_v2f(10, -2); sgl_v2f(14, 0);
-        sgl_end();
-        /* Cross-bracing inside frame */
-        sgl_c4f(mr*0.4f, mg*0.4f, mb*0.4f, alpha*0.5f);
-        sgl_begin_lines();
-        sgl_v2f(-24, -16); sgl_v2f(24, 16);
-        sgl_v2f(24, -16); sgl_v2f(-24, 16);
-        sgl_end();
-        /* Scaffold outline */
-        sgl_c4f(mr*0.6f, mg*0.6f, mb*0.6f, alpha);
-        sgl_begin_lines();
-        sgl_v2f(-30, -22); sgl_v2f(30, -22); sgl_v2f(30, -22); sgl_v2f(30, 22);
-        sgl_v2f(30, 22); sgl_v2f(-30, 22); sgl_v2f(-30, 22); sgl_v2f(-30, -22);
+        sgl_v2f(0, -32); sgl_v2f(26, 0);
+        sgl_v2f(26, 0); sgl_v2f(0, 32);
+        sgl_v2f(0, 32); sgl_v2f(-26, 0);
+        sgl_v2f(-26, 0); sgl_v2f(0, -32);
         sgl_end();
         break;
     }
+
+    /* ---- SHIPYARD: Open square frame ---- */
+    case MODULE_SHIPYARD: {
+        /* Solid backplate covers corridor end underneath */
+        sgl_c4f(mr*0.12f, mg*0.12f, mb*0.12f, alpha);
+        fill_quad(-30, -30, 30, -30, 30, 30, -30, 30);
+        /* Corner blocks (filled) */
+        sgl_c4f(mr*0.30f, mg*0.30f, mb*0.30f, alpha);
+        fill_quad(-28, -28, -16, -28, -16, -16, -28, -16); /* TL */
+        fill_quad( 16, -28,  28, -28,  28, -16,  16, -16); /* TR */
+        fill_quad(-28,  16, -16,  16, -16,  28, -28,  28); /* BL */
+        fill_quad( 16,  16,  28,  16,  28,  28,  16,  28); /* BR */
+        /* Cross-bracing */
+        sgl_c4f(mr*0.5f, mg*0.5f, mb*0.5f, alpha*0.4f);
+        sgl_begin_lines();
+        sgl_v2f(-16, -16); sgl_v2f(16, 16);
+        sgl_v2f(16, -16); sgl_v2f(-16, 16);
+        sgl_end();
+        /* Work lights */
+        fill_circle_local(-22, 0, 2.5f, 4, mr*0.9f, mg*0.7f, mb*0.2f, alpha*0.35f);
+        fill_circle_local( 22, 0, 2.5f, 4, mr*0.9f, mg*0.7f, mb*0.2f, alpha*0.35f);
+        /* Bold frame outline */
+        sgl_c4f(mr*0.7f, mg*0.7f, mb*0.7f, alpha);
+        sgl_begin_lines();
+        sgl_v2f(-28, -28); sgl_v2f(28, -28);
+        sgl_v2f(28, -28); sgl_v2f(28, 28);
+        sgl_v2f(28, 28); sgl_v2f(-28, 28);
+        sgl_v2f(-28, 28); sgl_v2f(-28, -28);
+        sgl_end();
+        break;
+    }
+
     default: {
         /* Generic chamfered square fallback */
-        float ch = 6.0f; /* chamfer size */
+        float ch = 6.0f;
         sgl_c4f(mr*0.35f, mg*0.35f, mb*0.35f, alpha);
-        /* Fill as center rect + corner triangles for chamfer */
         fill_quad(-24+ch, -24, 24-ch, -24, 24-ch, 24, -24+ch, 24);
         fill_quad(-24, -24+ch, -24+ch, -24, -24+ch, 24, -24, 24-ch);
         fill_quad(24-ch, -24, 24, -24+ch, 24, 24-ch, 24-ch, 24);
