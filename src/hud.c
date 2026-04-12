@@ -348,7 +348,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
     /* MSG_TOW: Scaffold tow active */
     if (LOCAL_PLAYER.ship.towed_scaffold >= 0) {
         snprintf(label, label_size, "TOW");
-        snprintf(message, message_size, "[E] place  [R] release  [B] plan");
+        snprintf(message, message_size, "[E] place  [Space] release  [B] plan");
         *r = 160; *g0 = 150; *b = 100;
         return true;
     }
@@ -911,7 +911,7 @@ void draw_hud(void) {
             if (LOCAL_PLAYER.ship.tractor_active) {
                 sdtx_printf("TOWING %d // TRACTOR", LOCAL_PLAYER.ship.towed_count);
             } else {
-                sdtx_printf("TOWING %d // tap [R] release", LOCAL_PLAYER.ship.towed_count);
+                sdtx_printf("TOWING %d // tap [Space] release", LOCAL_PLAYER.ship.towed_count);
             }
         } else if (LOCAL_PLAYER.nearby_fragments > 0) {
             if (LOCAL_PLAYER.ship.tractor_active) {
@@ -919,11 +919,11 @@ void draw_hud(void) {
                 if (LOCAL_PLAYER.tractor_fragments > 0) {
                     sdtx_printf("TRACTOR // %d FRAG", LOCAL_PLAYER.tractor_fragments);
                 } else {
-                    sdtx_printf("hold [R] TRACTOR // %d", LOCAL_PLAYER.nearby_fragments);
+                    sdtx_printf("hold [Space] TRACTOR // %d", LOCAL_PLAYER.nearby_fragments);
                 }
             } else {
                 sdtx_color3b(PAL_TRACTOR_OFF);
-                sdtx_printf("hold [R] TRACTOR // %d nearby", LOCAL_PLAYER.nearby_fragments);
+                sdtx_printf("hold [Space] TRACTOR // %d nearby", LOCAL_PLAYER.nearby_fragments);
             }
         } else if (cargo_units >= cargo_capacity) {
             sdtx_color3b(PAL_ORE_AMBER);

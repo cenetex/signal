@@ -1374,9 +1374,9 @@ static void frame(void) {
                     flags |= NET_INPUT_LEFT;
                 if (g.input.key_down[SAPP_KEYCODE_D] || g.input.key_down[SAPP_KEYCODE_RIGHT])
                     flags |= NET_INPUT_RIGHT;
-                if (g.input.key_down[SAPP_KEYCODE_SPACE])
+                if (g.input.key_down[SAPP_KEYCODE_R])
                     flags |= NET_INPUT_FIRE;
-                if (g.input.key_down[SAPP_KEYCODE_R] && !g.plan_mode_active)
+                if (g.input.key_down[SAPP_KEYCODE_SPACE] && !g.plan_mode_active)
                     flags |= NET_INPUT_TRACTOR;
                 g.pending_net_action = 0;
                 uint8_t mining_target = (LOCAL_PLAYER.hover_asteroid >= 0 && LOCAL_PLAYER.hover_asteroid < 255)
