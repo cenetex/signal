@@ -111,6 +111,7 @@ typedef struct {
     station_tab_t station_tab;
     bool was_docked;
     bool was_autopilot;
+    float dock_settle_timer;  /* delay before showing station panel after dock */
     /* --- Onboarding (first-run progression hints) --- */
     struct {
         bool moved;          /* pressed a movement key */

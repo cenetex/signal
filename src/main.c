@@ -301,6 +301,7 @@ static void process_sim_events(const sim_events_t *events) {
                 if (ev->player_id == g.local_player_slot) {
                     audio_play_dock(&g.audio);
                     g.screen_shake = fmaxf(g.screen_shake, 3.0f); /* dock clunk */
+                    g.dock_settle_timer = 1.0f; /* show ship settling before panel */
                     /* Station greets you on dock — same overlay as hail */
                     {
                         int ds = LOCAL_PLAYER.current_station;
@@ -648,7 +649,8 @@ static void sim_step(float dt) {
             g.nav_pip_pos = st->pos;
         }
     }
-    if (LOCAL_PLAYER.docked && (is_key_pressed(SAPP_KEYCODE_TAB) || is_key_pressed(SAPP_KEYCODE_Q))) {
+    if (LOCAL_PLAYER.docked && g.dock_settle_timer <= 0.0f &&
+        (is_key_pressed(SAPP_KEYCODE_TAB) || is_key_pressed(SAPP_KEYCODE_Q))) {
         station_tab_t vtabs[STATION_TAB_COUNT];
         int vtab_count = 0;
         vtabs[vtab_count++] = STATION_TAB_STATUS;
@@ -767,6 +769,8 @@ static void sim_step(float dt) {
     step_notice_timer(dt);
     if (g.action_predict_timer > 0.0f)
         g.action_predict_timer = fmaxf(0.0f, g.action_predict_timer - dt);
+    if (g.dock_settle_timer > 0.0f)
+        g.dock_settle_timer = fmaxf(0.0f, g.dock_settle_timer - dt);
 
     consume_pressed_input();
 }

@@ -599,7 +599,7 @@ void draw_hud_panels(void) {
 
     draw_ui_panel(top_x, top_y, top_w, top_h, 0.03f);
 
-    if (LOCAL_PLAYER.docked) {
+    if (LOCAL_PLAYER.docked && g.dock_settle_timer <= 0.0f) {
         float panel_x = 0.0f;
         float panel_y = 0.0f;
         float panel_w = 0.0f;
@@ -867,7 +867,7 @@ void draw_hud(void) {
             sdtx_printf("%s // E launch", dock_role);
         } else if (LOCAL_PLAYER.in_dock_range) {
             sdtx_color3b(PAL_SIGNAL_MINT);
-            sdtx_puts("DOCK RING // H hail to dock");
+            sdtx_puts("DOCK RING // E dock");
         } else {
             sdtx_color3b(PAL_NAV_BLUE);
             sdtx_printf("%s %d u // %d %s", nav_role, station_distance, bearing_degrees, bearing_mark);
