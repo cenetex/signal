@@ -211,11 +211,17 @@ void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
     }
 }
 
+/* Defined in main.c — process events for audio + UI */
+extern void process_sim_events(const sim_events_t *events);
+
 void apply_remote_events(const sim_event_t *events, int count) {
-    /* Copy into g.world.events so process_sim_events() picks them up */
+    /* Process immediately — Emscripten WebSocket callbacks fire async,
+     * so we can't rely on g.world.events surviving until sim_step. */
     if (count > SIM_MAX_EVENTS) count = SIM_MAX_EVENTS;
-    memcpy(g.world.events.events, events, (size_t)count * sizeof(sim_event_t));
-    g.world.events.count = count;
+    sim_events_t temp;
+    memcpy(temp.events, events, (size_t)count * sizeof(sim_event_t));
+    temp.count = count;
+    process_sim_events(&temp);
 }
 
 void apply_remote_hail_response(uint8_t station, float credits) {

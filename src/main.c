@@ -283,7 +283,7 @@ const char *contextual_hail_message(int station_index) {
     return NULL;
 }
 
-static void process_sim_events(const sim_events_t *events) {
+void process_sim_events(const sim_events_t *events) {
     for (int i = 0; i < events->count; i++) {
         const sim_event_t* ev = &events->events[i];
         switch (ev->type) {
