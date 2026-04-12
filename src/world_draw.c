@@ -10,6 +10,7 @@
 #include "net_sync.h"
 #include "station_voice.h"
 #include "signal_model.h"
+#include "palette.h"
 #include <stdlib.h>
 
 /* --- Frustum culling: skip objects entirely off-screen --- */
@@ -1684,7 +1685,7 @@ void draw_callsigns(void) {
             if (i == local_id) continue;
             if (players[i].callsign[0] == '\0') continue;
             if (!on_screen(players[i].x, players[i].y, 60.0f)) continue;
-            sdtx_color3b(180, 220, 240);
+            sdtx_color3b(PAL_WORLD_STATION_CYAN);
             int len = (int)strlen(players[i].callsign);
             /* Position in world coords — canvas is set to world view */
             sdtx_pos((players[i].x - len * cell * 0.5f) / cell,
@@ -1722,7 +1723,7 @@ void draw_npc_chatter(void) {
         }
 
         int len = (int)strlen(line);
-        sdtx_color3b(100, 130, 110); /* faded radio green */
+        sdtx_color3b(PAL_RADIO_GREEN); /* faded radio green */
         sdtx_pos((npc->pos.x - len * cell * 0.5f) / cell,
                  (npc->pos.y + 24.0f) / cell);
         sdtx_puts(line);

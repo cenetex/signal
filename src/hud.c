@@ -11,6 +11,7 @@
 #include "world_draw.h"
 #include "avatar.h"
 #include "signal_model.h"
+#include "palette.h"
 
 /* ------------------------------------------------------------------ */
 /* UI scaling / layout helpers                                         */
@@ -290,19 +291,19 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
      * Stations never speak here — they use the hail overlay.
      * ================================================================ */
 
-    /* P0: Hull critical */
+    /* MSG_HULL_CRITICAL: Hull integrity < 20% */
     if (!LOCAL_PLAYER.docked && g.death_screen_timer <= 0.0f) {
         float max_hull = ship_max_hull(&LOCAL_PLAYER.ship);
         if (max_hull > 0.0f && LOCAL_PLAYER.ship.hull / max_hull < 0.20f) {
             snprintf(label, label_size, "WARNING");
             snprintf(message, message_size, "[ HULL INTEGRITY FAILING ] %d%%",
                 (int)lroundf(LOCAL_PLAYER.ship.hull / max_hull * 100.0f));
-            *r = 255; *g0 = 60; *b = 50;
+            *r = PAL_WARNING; *g0 = 60; *b = 50;
             return true;
         }
     }
 
-    /* P1: Transient notice (set_notice: reconnect, connection lost, etc.) */
+    /* MSG_NOTICE: Transient notice (reconnect, connection lost, etc.) */
     if (g.notice_timer > 0.0f) {
         snprintf(label, label_size, "NOTICE");
         snprintf(message, message_size, "%s", g.notice);
@@ -310,7 +311,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
-    /* P2: Active mode indicators */
+    /* MSG_PLAN_MODE: Plan mode active */
     if (g.plan_mode_active) {
         snprintf(label, label_size, "PLAN");
         snprintf(message, message_size, "[R] %s  [E] place  [B] exit",
@@ -318,6 +319,8 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         *r = 130; *g0 = 180; *b = 200;
         return true;
     }
+
+    /* MSG_AUTOPILOT: Autopilot mining loop */
     if (LOCAL_PLAYER.autopilot_mode) {
         snprintf(label, label_size, "AUTO");
         snprintf(message, message_size, "Mining loop. Movement cancels. [O]");
@@ -325,13 +328,13 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
-    /* P3: Onboarding checklist (pre-completion only) */
+    /* MSG_ONBOARDING: Onboarding checklist progress */
     if (onboarding_hint(label, label_size, message, message_size)) {
         *r = 130; *g0 = 180; *b = 200;
         return true;
     }
 
-    /* P4: Scaffold tow */
+    /* MSG_TOW: Scaffold tow active */
     if (LOCAL_PLAYER.ship.towed_scaffold >= 0) {
         snprintf(label, label_size, "TOW");
         snprintf(message, message_size, "[E] place  [R] release  [B] plan");
@@ -339,7 +342,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
-    /* P5: Cargo warnings */
+    /* MSG_CARGO: Hold full warning */
     {
         int cargo = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
         int cap = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
@@ -351,7 +354,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         }
     }
 
-    /* P6: Docking */
+    /* MSG_DOCKING: Docking approach or dock ring hot */
     if (LOCAL_PLAYER.docking_approach) {
         snprintf(label, label_size, "DOCKING");
         snprintf(message, message_size, "Tractor lock. [W/S] to cancel.");
@@ -365,7 +368,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
-    /* P7: Collection feedback */
+    /* MSG_SCOOP: Collection feedback */
     if (g.collection_feedback_timer > 0.0f) {
         int ore = (int)lroundf(g.collection_feedback_ore);
         snprintf(label, label_size, "SCOOP");
@@ -696,13 +699,13 @@ void draw_hud(void) {
         const char *title = "SHIP DESTROYED";
         float title_w = (float)strlen(title) * cell;
         sdtx_pos((cx - title_w * 0.5f) / cell, (cy - 60.0f) / cell);
-        sdtx_color4b(255, 80, 60, a8);
+        sdtx_color4b(PAL_DEATH_TITLE, a8);
         sdtx_puts(title);
 
         /* Stats */
         float row = (cy - 16.0f) / cell;
         float left = (cx - 110.0f) / cell;
-        sdtx_color4b(180, 180, 180, a8);
+        sdtx_color4b(PAL_NOTICE, a8);
 
         sdtx_pos(left, row);
         sdtx_printf("Ore mined:     %8.0f", g.death_ore_mined);
@@ -713,19 +716,19 @@ void draw_hud(void) {
         row += 2.5f;
 
         sdtx_pos(left, row);
-        sdtx_color4b(120, 200, 120, a8);
+        sdtx_color4b(PAL_DEATH_EARNED, a8);
         sdtx_printf("Credits earned:%8.0f", g.death_credits_earned);
         row += 2.5f;
 
         sdtx_pos(left, row);
-        sdtx_color4b(200, 120, 120, a8);
+        sdtx_color4b(PAL_DEATH_SPENT, a8);
         sdtx_printf("Credits spent: %8.0f", g.death_credits_spent);
         row += 4.0f;
 
         /* Prompt — RED, hard FLASH on/off */
         float flash = (sinf(g.world.time * 7.0f) > 0.0f) ? 1.0f : 0.25f;
         uint8_t pa = (uint8_t)(flash * (float)a8);
-        sdtx_color4b(255, 30, 20, pa);
+        sdtx_color4b(PAL_DEATH_PROMPT, pa);
         const char *prompt = "[ E ] launch";
         float prompt_w = (float)strlen(prompt) * cell;
         sdtx_pos((cx - prompt_w * 0.5f) / cell, row);
@@ -825,7 +828,7 @@ void draw_hud(void) {
         }
 
         sdtx_pos(top_text_x, top_row_0);
-        sdtx_color3b(232, 241, 255);
+        sdtx_color3b(PAL_TEXT_PRIMARY);
         {
             const char *cs = net_local_callsign();
             const char *tag = (cs && cs[0] != '\0') ? cs : (LOCAL_PLAYER.docked ? "RUN" : "SHIP");
@@ -833,7 +836,7 @@ void draw_hud(void) {
         }
 
         sdtx_pos(top_text_x, top_row_1);
-        sdtx_color3b(203, 220, 248);
+        sdtx_color3b(PAL_TEXT_SECONDARY);
         sdtx_printf("H %d/%d  C %d/%d  ", hull_units, hull_capacity, cargo_units, cargo_capacity);
         sdtx_color3b(sig_r, sig_g, sig_b);
         sdtx_printf("%s %d%%", sig_band, sig_pct);
@@ -844,19 +847,19 @@ void draw_hud(void) {
 
         sdtx_pos(top_text_x, top_row_2);
         if (LOCAL_PLAYER.docked) {
-            sdtx_color3b(112, 255, 214);
+            sdtx_color3b(PAL_SIGNAL_MINT);
             sdtx_printf("%s // E launch", dock_role);
         } else if (LOCAL_PLAYER.in_dock_range) {
-            sdtx_color3b(112, 255, 214);
+            sdtx_color3b(PAL_SIGNAL_MINT);
             sdtx_puts("DOCK RING // E dock");
         } else {
-            sdtx_color3b(199, 222, 255);
+            sdtx_color3b(PAL_NAV_BLUE);
             sdtx_printf("%s %d u // %d %s", nav_role, station_distance, bearing_degrees, bearing_mark);
         }
 
         sdtx_pos(top_text_x, top_row_3);
         if (LOCAL_PLAYER.docked) {
-            sdtx_color3b(130, 255, 235);
+            sdtx_color3b(PAL_ACTIVE);
             if (station_has_service(STATION_SERVICE_ORE_BUYER)) {
                 if (cargo_units > 0) {
                     sdtx_printf("ORE BOARD // HAUL %d", payout_preview);
@@ -869,11 +872,11 @@ void draw_hud(void) {
         } else if ((LOCAL_PLAYER.hover_asteroid >= 0) && g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
             const asteroid_t* asteroid = &g.world.asteroids[LOCAL_PLAYER.hover_asteroid];
             int integrity_left = (int)lroundf(asteroid->hp);
-            sdtx_color3b(130, 255, 235);
+            sdtx_color3b(PAL_ACTIVE);
             sdtx_printf("TGT %s // %s // %d HP", asteroid_tier_name(asteroid->tier), commodity_code(asteroid->commodity), integrity_left);
         } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 1) {
             const station_t *st = &g.world.stations[LOCAL_PLAYER.scan_target_index];
-            sdtx_color3b(100, 180, 255);
+            sdtx_color3b(PAL_SCAN_ACTIVE);
             if (LOCAL_PLAYER.scan_module_index >= 0) {
                 const station_module_t *m = &st->modules[LOCAL_PLAYER.scan_module_index];
                 sdtx_printf("SCAN %s // %s", st->name, module_type_name(m->type));
@@ -882,17 +885,17 @@ void draw_hud(void) {
             }
         } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 2) {
             const npc_ship_t *npc = &g.world.npc_ships[LOCAL_PLAYER.scan_target_index];
-            sdtx_color3b(100, 180, 255);
+            sdtx_color3b(PAL_SCAN_ACTIVE);
             sdtx_printf("SCAN NPC // %s", npc->role == NPC_ROLE_MINER ? "MINER" : "HAULER");
         } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 3) {
-            sdtx_color3b(100, 180, 255);
+            sdtx_color3b(PAL_SCAN_ACTIVE);
             sdtx_printf("SCAN PILOT // ID %d", LOCAL_PLAYER.scan_target_index);
         } else if (LOCAL_PLAYER.ship.towed_count > 0) {
-            sdtx_color3b(130, 255, 235);
+            sdtx_color3b(PAL_ACTIVE);
             sdtx_printf("TOWING %d // [R] release", LOCAL_PLAYER.ship.towed_count);
         } else if (LOCAL_PLAYER.nearby_fragments > 0) {
             if (LOCAL_PLAYER.ship.tractor_active) {
-                sdtx_color3b(130, 255, 235);
+                sdtx_color3b(PAL_ACTIVE);
                 if (LOCAL_PLAYER.ship.towed_count > 0) {
                     sdtx_printf("TOWING %d // (R) OFF", LOCAL_PLAYER.ship.towed_count);
                 } else if (LOCAL_PLAYER.tractor_fragments > 0) {
@@ -901,11 +904,11 @@ void draw_hud(void) {
                     sdtx_printf("(R) TRACTOR ON // %d", LOCAL_PLAYER.nearby_fragments);
                 }
             } else {
-                sdtx_color3b(180, 150, 120);
+                sdtx_color3b(PAL_TRACTOR_OFF);
                 sdtx_puts("(R) TRACTOR OFF");
             }
         } else if (cargo_units >= cargo_capacity) {
-            sdtx_color3b(255, 221, 119);
+            sdtx_color3b(PAL_ORE_AMBER);
             sdtx_puts("HOLD FULL // RETURN");
         } else {
             /* Check for pending credits from ledger (singleplayer) */
@@ -922,10 +925,10 @@ void draw_hud(void) {
                 }
             }
             if (pending > 0.5f) {
-                sdtx_color3b(255, 221, 119);
+                sdtx_color3b(PAL_ORE_AMBER);
                 sdtx_printf("H HAIL // %d CR", (int)lroundf(pending));
             } else {
-                sdtx_color3b(169, 179, 204);
+                sdtx_color3b(PAL_TEXT_MUTED);
                 sdtx_puts("FIELD CLEAR // SCAN");
             }
         }
@@ -974,13 +977,13 @@ void draw_hud(void) {
 
     sdtx_pos(top_text_x, top_row_2);
     if (LOCAL_PLAYER.docked && current_station) {
-        sdtx_color3b(112, 255, 214);
+        sdtx_color3b(PAL_SIGNAL_MINT);
         sdtx_printf("%s // docked // E launch", current_station->name);
     } else if (LOCAL_PLAYER.in_dock_range) {
-        sdtx_color3b(112, 255, 214);
+        sdtx_color3b(PAL_SIGNAL_MINT);
         sdtx_puts("Dock ring hot // E to dock");
     } else {
-        sdtx_color3b(199, 222, 255);
+        sdtx_color3b(PAL_NAV_BLUE);
         sdtx_printf("%s %d u // %d deg %s",
             navigation_station != NULL ? navigation_station->name : "Station",
             station_distance,
@@ -990,7 +993,7 @@ void draw_hud(void) {
 
     sdtx_pos(top_text_x, top_row_3);
     if (LOCAL_PLAYER.docked) {
-        sdtx_color3b(130, 255, 235);
+        sdtx_color3b(PAL_ACTIVE);
         if (station_has_service(STATION_SERVICE_ORE_BUYER)) {
             if (cargo_units > 0) {
                 sdtx_printf("Ore board // haul %d", payout_preview);
@@ -1003,11 +1006,11 @@ void draw_hud(void) {
     } else if ((LOCAL_PLAYER.hover_asteroid >= 0) && g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
         const asteroid_t* asteroid = &g.world.asteroids[LOCAL_PLAYER.hover_asteroid];
         int integrity_left = (int)lroundf(asteroid->hp);
-        sdtx_color3b(130, 255, 235);
+        sdtx_color3b(PAL_ACTIVE);
         sdtx_printf("Target %s // %s // %d hp", asteroid_tier_kind(asteroid->tier), commodity_short_name(asteroid->commodity), integrity_left);
     } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 1) {
         const station_t *st = &g.world.stations[LOCAL_PLAYER.scan_target_index];
-        sdtx_color3b(100, 180, 255);
+        sdtx_color3b(PAL_SCAN_ACTIVE);
         if (LOCAL_PLAYER.scan_module_index >= 0) {
             const station_module_t *m = &st->modules[LOCAL_PLAYER.scan_module_index];
             sdtx_printf("Scan %s // %s", st->name, module_type_name(m->type));
@@ -1019,22 +1022,22 @@ void draw_hud(void) {
         int npc_cargo = 0;
         for (int ci = 0; ci < COMMODITY_COUNT; ci++)
             npc_cargo += (int)lroundf(npc->cargo[ci]);
-        sdtx_color3b(100, 180, 255);
+        sdtx_color3b(PAL_SCAN_ACTIVE);
         sdtx_printf("Scan NPC %s // cargo %d", npc->role == NPC_ROLE_MINER ? "miner" : "hauler", npc_cargo);
     } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 3) {
         const server_player_t *other = &g.world.players[LOCAL_PLAYER.scan_target_index];
         int other_hull = (int)lroundf(other->ship.hull);
-        sdtx_color3b(100, 180, 255);
+        sdtx_color3b(PAL_SCAN_ACTIVE);
         sdtx_printf("Scan pilot %d // hull %d", LOCAL_PLAYER.scan_target_index, other_hull);
     } else if (LOCAL_PLAYER.nearby_fragments > 0) {
-        sdtx_color3b(130, 255, 235);
+        sdtx_color3b(PAL_ACTIVE);
         if (LOCAL_PLAYER.tractor_fragments > 0) {
             sdtx_printf("Tractor lock // %d frag%s", LOCAL_PLAYER.tractor_fragments, LOCAL_PLAYER.tractor_fragments == 1 ? "" : "s");
         } else {
             sdtx_printf("Nearby fragments // %d", LOCAL_PLAYER.nearby_fragments);
         }
     } else if (cargo_units >= cargo_capacity) {
-        sdtx_color3b(255, 221, 119);
+        sdtx_color3b(PAL_ORE_AMBER);
         sdtx_puts("Hold full // return run");
     } else {
         /* Check for pending credits from ledger (singleplayer) */
@@ -1051,10 +1054,10 @@ void draw_hud(void) {
             }
         }
         if (pending_n > 0.5f) {
-            sdtx_color3b(255, 221, 119);
+            sdtx_color3b(PAL_ORE_AMBER);
             sdtx_printf("H to hail // collect %d cr", (int)lroundf(pending_n));
         } else {
-            sdtx_color3b(169, 179, 204);
+            sdtx_color3b(PAL_TEXT_MUTED);
             sdtx_puts("No target // line up a rock");
         }
     }
@@ -1082,13 +1085,13 @@ void draw_hud(void) {
             sdtx_puts(message_label);
 
             sdtx_pos(message_text_x, message_row_1);
-            sdtx_color3b(232, 241, 255);
+            sdtx_color3b(PAL_TEXT_PRIMARY);
             sdtx_puts(message_line0);
         }
 
         if (message_line1[0] != '\0') {
             sdtx_pos(message_text_x, message_row_2);
-            sdtx_color3b(169, 179, 204);
+            sdtx_color3b(PAL_TEXT_MUTED);
             sdtx_puts(message_line1);
         }
     }
@@ -1103,7 +1106,7 @@ void draw_hud(void) {
         float ex = ui_text_pos(message_x + 16.0f);
         float ey = ui_text_pos(message_y + message_h + 6.0f);
         sdtx_pos(ex, ey);
-        sdtx_color3b(100, 110, 100);
+        sdtx_color3b(PAL_TEXT_GREY);
         sdtx_puts(e_action);
     }
 
@@ -1123,22 +1126,22 @@ void draw_hud(void) {
             bool match = srv[0] != '\0' && strcmp(client_hash, srv) == 0;
             if (match) {
                 /* Synced: show version */
-                sdtx_color3b(80, 180, 120);
+                sdtx_color3b(PAL_SYNC_OK);
                 sdtx_printf("v%s", client_hash);
             } else if (srv[0] == '\0') {
                 /* Connecting */
-                sdtx_color3b(220, 200, 60);
+                sdtx_color3b(PAL_SYNC_CONNECTING);
                 sdtx_puts("connecting...");
             } else {
                 /* Version mismatch — reloading (shown briefly before redirect) */
-                sdtx_color3b(255, 160, 60);
+                sdtx_color3b(PAL_SYNC_RESYNCING);
                 sdtx_puts("syncing...");
             }
         } else if (g.multiplayer_enabled) {
-            sdtx_color3b(180, 120, 60);
+            sdtx_color3b(PAL_SYNC_OFFLINE);
             sdtx_puts("offline [P] reconnect");
         } else {
-            sdtx_color3b(80, 100, 80);
+            sdtx_color3b(100, 100, 100); /* offline version display */
             sdtx_printf("v%s", client_hash);
         }
         /* Alpha banner: repeating ticker across the top */
@@ -1158,7 +1161,7 @@ void draw_hud(void) {
             }
             banner[pos < (int)sizeof(banner) ? pos : (int)sizeof(banner) - 1] = '\0';
             sdtx_pos(0.0f, 0.0f);
-            sdtx_color3b(180, 160, 60);
+            sdtx_color3b(PAL_ALPHA_BANNER);
             sdtx_puts(banner);
         }
     }
@@ -1168,7 +1171,7 @@ void draw_hud(void) {
         const station_t* nav_st = navigation_station_ptr();
         if (nav_st && nav_st->name[0] != '\0') {
             sdtx_pos(ui_text_pos(16.0f), ui_text_pos(screen_h - 20.0f));
-            sdtx_color3b(100, 130, 120);
+            sdtx_color3b(PAL_TEXT_FADED);
             sdtx_puts(nav_st->name);
         }
         /* Expire tracked contract */
@@ -1231,18 +1234,18 @@ void draw_hud(void) {
 
         /* Text */
         sdtx_pos(hx / cell, hy / cell);
-        sdtx_color3b((uint8_t)(130*alpha), (uint8_t)(200*alpha), (uint8_t)(255*alpha));
+        sdtx_color3b((uint8_t)(130*alpha), (uint8_t)(200*alpha), (uint8_t)(255*alpha)); /* hail station */
         sdtx_printf("// %s //", g.hail_station);
 
         if (g.hail_message[0]) {
             sdtx_pos(hx / cell, (hy + 14.0f) / cell);
-            sdtx_color3b((uint8_t)(180*alpha), (uint8_t)(190*alpha), (uint8_t)(210*alpha));
+            sdtx_color3b((uint8_t)(180*alpha), (uint8_t)(190*alpha), (uint8_t)(210*alpha)); /* hail message */
             sdtx_puts(g.hail_message);
         }
 
         if (g.hail_credits > 0.5f) {
             sdtx_pos(hx / cell, (hy + 32.0f) / cell);
-            sdtx_color3b((uint8_t)(130*alpha), (uint8_t)(255*alpha), (uint8_t)(235*alpha));
+            sdtx_color3b((uint8_t)(130*alpha), (uint8_t)(255*alpha), (uint8_t)(235*alpha)); /* hail credits */
             sdtx_printf("+%d cr collected", (int)lroundf(g.hail_credits));
         }
     }
@@ -1258,31 +1261,31 @@ void draw_hud(void) {
             float cell = 8.0f;
 
             sdtx_pos(px / cell, py / cell);
-            sdtx_color3b(255, 221, 119);
+            sdtx_color3b(PAL_ORE_AMBER);
             sdtx_printf("[ %s ]", module_type_name(im->type));
 
             sdtx_pos(px / cell, (py + 14.0f) / cell);
-            sdtx_color3b(145, 160, 188);
+            sdtx_color3b(PAL_INSPECT_STATION);
             sdtx_printf("Station: %s", ist->name);
 
             sdtx_pos(px / cell, (py + 28.0f) / cell);
-            sdtx_color3b(130, 200, 255);
+            sdtx_color3b(PAL_INSPECT_LOCATION);
             sdtx_printf("Ring %d  Slot %d", im->ring, im->slot);
 
             if (im->scaffold) {
                 sdtx_pos(px / cell, (py + 42.0f) / cell);
                 if (im->build_progress < 1.0f) {
                     int pct = (int)lroundf(im->build_progress * 100.0f);
-                    sdtx_color3b(255, 140, 40); /* orange — awaiting material */
+                    sdtx_color3b(PAL_BUILD_SUPPLYING); /* orange — awaiting material */
                     sdtx_printf("SUPPLYING: %d%%", pct);
                 } else {
                     int pct = (int)lroundf((im->build_progress - 1.0f) * 100.0f);
-                    sdtx_color3b(255, 180, 60); /* amber — build timer */
+                    sdtx_color3b(PAL_BUILD_BUILDING); /* amber — build timer */
                     sdtx_printf("BUILDING: %d%%", pct);
                 }
             } else {
                 sdtx_pos(px / cell, (py + 42.0f) / cell);
-                sdtx_color3b(130, 255, 235);
+                sdtx_color3b(PAL_ACTIVE);
                 sdtx_puts("ONLINE");
             }
 

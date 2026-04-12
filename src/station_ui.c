@@ -4,6 +4,7 @@
  */
 #include "client.h"
 #include "render.h"
+#include "palette.h"
 
 /* ------------------------------------------------------------------ */
 /* Station lookup helpers                                              */
@@ -152,13 +153,13 @@ void station_role_color(const station_t* station, float* r, float* g0, float* b)
     module_type_t dom = station_dominant_module(station);
     switch (dom) {
         case MODULE_FURNACE:
-            *r = 0.30f; *g0 = 0.80f; *b = 0.35f; break;  /* green */
+            *r = 0.30f; *g0 = 0.80f; *b = 0.35f; break;  /* green — Prospect */
         case MODULE_FURNACE_CU:
-            *r = 0.25f; *g0 = 0.50f; *b = 0.90f; break;  /* blue */
+            *r = 0.25f; *g0 = 0.50f; *b = 0.90f; break;  /* blue — Helios */
         case MODULE_FURNACE_CR:
-            *r = 0.40f; *g0 = 0.35f; *b = 0.85f; break;  /* indigo */
+            *r = 0.40f; *g0 = 0.35f; *b = 0.85f; break;  /* indigo — Helios */
         case MODULE_FRAME_PRESS:
-            *r = 0.90f; *g0 = 0.75f; *b = 0.20f; break;  /* gold */
+            *r = 0.90f; *g0 = 0.75f; *b = 0.20f; break;  /* gold — Kepler */
         case MODULE_LASER_FAB:
             *r = 0.55f; *g0 = 0.45f; *b = 0.50f; break;  /* mauve-grey */
         case MODULE_TRACTOR_FAB:
@@ -423,7 +424,7 @@ int build_station_service_lines(const station_ui_state_t* ui, station_service_li
 
 void draw_station_service_text_line(float x, float y, const station_service_line_t* line, bool compact) {
     sdtx_pos(ui_text_pos(x), ui_text_pos(y));
-    sdtx_color3b(line->r, line->g0, line->b);
+    sdtx_color3b(line->r, line->g0, line->b); /* line color override */
     if (compact) {
         sdtx_printf("%-16s %s", line->action, line->state);
     } else {
@@ -459,16 +460,16 @@ void draw_station_services(const station_ui_state_t* ui) {
     float tab_w = fminf(inner_w / (float)tab_count, 120.0f);
 
     /* Station name + role header */
-    sdtx_color3b(232, 241, 255);
+    sdtx_color3b(PAL_TEXT_PRIMARY);
     sdtx_pos(ui_text_pos(panel_x + 20.0f), ui_text_pos(panel_y + 16.0f));
     sdtx_puts(ui->station->name);
     if (ui->station->scaffold) {
         sdtx_pos(ui_text_pos(panel_x + 20.0f), ui_text_pos(panel_y + 32.0f));
-        sdtx_color3b(255, 221, 119);
+        sdtx_color3b(PAL_ORE_AMBER);
         sdtx_puts("UNDER CONSTRUCTION");
     } else {
         sdtx_pos(ui_text_pos(panel_x + 20.0f), ui_text_pos(panel_y + 32.0f));
-        sdtx_color3b(118, 255, 221);
+        sdtx_color3b(PAL_HOLD_CYAN);
         sdtx_puts(station_role_hub_label(ui->station));
     }
 
@@ -477,7 +478,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         char header_badge[32] = { 0 };
         format_station_header_badge(ui, header_badge, sizeof(header_badge));
         sdtx_pos(ui_text_pos(panel_x + panel_w - 152.0f), ui_text_pos(panel_y + 16.0f));
-        sdtx_color3b(203, 220, 248);
+        sdtx_color3b(PAL_TEXT_SECONDARY);
         sdtx_puts(header_badge);
         sdtx_pos(ui_text_pos(panel_x + panel_w - 152.0f), ui_text_pos(panel_y + 32.0f));
         sdtx_color3b(145, 160, 188);
@@ -522,7 +523,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         if (ui->station->scaffold) {
             int pct = (int)lroundf(ui->station->scaffold_progress * 100.0f);
             int held = (int)lroundf(ship_cargo_amount(ship, COMMODITY_FRAME));
-            sdtx_color3b(255, 221, 119);
+            sdtx_color3b(PAL_ORE_AMBER);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             sdtx_printf("SCAFFOLD  %d%%", pct);
             ly += 18.0f;
@@ -535,7 +536,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         } else {
             /* === SHIP STATUS === */
             {
-                sdtx_color3b(100, 120, 145);
+                sdtx_color3b(PAL_HOLD_STATUS);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                 sdtx_puts("SHIP");
                 draw_ui_rule(cx, cx + meter_w + 80.0f, ly + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
@@ -549,7 +550,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_puts("Hull");
                 draw_ui_meter(cx + 48.0f, ly + 1.0f, meter_w - 48.0f, 8.0f, clampf(hull_frac, 0.0f, 1.0f),
                     hull_low ? 0.95f : 0.30f, hull_low ? 0.35f : 0.85f, hull_low ? 0.25f : 0.55f);
-                sdtx_color3b(145, 160, 188);
+                sdtx_color3b(PAL_INSPECT_STATION);
                 sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
                 sdtx_printf("%d/%d", (int)lroundf(ship->hull), (int)lroundf(ship_max_hull(ship)));
                 ly += 13.0f;
@@ -564,7 +565,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_puts("Cargo");
                 draw_ui_meter(cx + 48.0f, ly + 1.0f, meter_w - 48.0f, 8.0f, clampf(cargo_frac, 0.0f, 1.0f),
                     0.26f, 0.85f, 0.68f);
-                sdtx_color3b(145, 160, 188);
+                sdtx_color3b(PAL_INSPECT_STATION);
                 sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
                 sdtx_printf("%d/%d", (int)lroundf(cargo_total), (int)lroundf(cargo_cap));
                 ly += compact ? 16.0f : 18.0f;
@@ -572,7 +573,7 @@ void draw_station_services(const station_ui_state_t* ui) {
 
             /* === SYSTEMS === */
             {
-                sdtx_color3b(100, 120, 145);
+                sdtx_color3b(PAL_HOLD_STATUS);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                 sdtx_puts("SYSTEMS");
                 draw_ui_rule(cx, cx + meter_w + 80.0f, ly + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
@@ -582,17 +583,17 @@ void draw_station_services(const station_ui_state_t* ui) {
                 {
                     bool maxed = ship_upgrade_maxed(ship, SHIP_UPGRADE_MINING);
                     bool available = station_has_module(ui->station, MODULE_LASER_FAB);
-                    sdtx_color3b(180, 195, 215);
+                    sdtx_color3b(PAL_SERVICE_HEADER);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                     sdtx_puts("Laser");
                     draw_upgrade_pips(cx + 56.0f, ly, ship->mining_level, 0.34f, 0.88f, 1.0f);
-                    sdtx_color3b(120, 140, 165);
+                    sdtx_color3b(PAL_SERVICE_CONTENT);
                     sdtx_pos(ui_text_pos(cx + 120.0f), ui_text_pos(ly));
                     sdtx_printf("%.0f dps", ship_mining_rate(ship));
                     if (available && !maxed) {
                         int cost = ship_upgrade_cost(ship, SHIP_UPGRADE_MINING);
                         bool afford = can_afford_upgrade(ui->station, ship, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, cost);
-                        sdtx_color3b(afford ? 130 : 90, afford ? 255 : 105, afford ? 235 : 130);
+                        sdtx_color3b(afford ? 130 : 90, afford ? 255 : 105, afford ? 235 : 130); /* affordability conditional */
                         sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
                         sdtx_printf("[3] %dcr", cost);
                     }
@@ -603,17 +604,17 @@ void draw_station_services(const station_ui_state_t* ui) {
                 {
                     bool maxed = ship_upgrade_maxed(ship, SHIP_UPGRADE_HOLD);
                     bool available = station_has_module(ui->station, MODULE_FRAME_PRESS);
-                    sdtx_color3b(180, 195, 215);
+                    sdtx_color3b(PAL_SERVICE_HEADER);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                     sdtx_puts("Hold");
                     draw_upgrade_pips(cx + 56.0f, ly, ship->hold_level, 0.50f, 0.82f, 1.0f);
-                    sdtx_color3b(120, 140, 165);
+                    sdtx_color3b(PAL_SERVICE_CONTENT);
                     sdtx_pos(ui_text_pos(cx + 120.0f), ui_text_pos(ly));
                     sdtx_printf("%.0f cap", ship_cargo_capacity(ship));
                     if (available && !maxed) {
                         int cost = ship_upgrade_cost(ship, SHIP_UPGRADE_HOLD);
                         bool afford = can_afford_upgrade(ui->station, ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost);
-                        sdtx_color3b(afford ? 130 : 90, afford ? 255 : 105, afford ? 235 : 130);
+                        sdtx_color3b(afford ? 130 : 90, afford ? 255 : 105, afford ? 235 : 130); /* affordability conditional */
                         sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
                         sdtx_printf("[4] %dcr", cost);
                     }
@@ -624,17 +625,17 @@ void draw_station_services(const station_ui_state_t* ui) {
                 {
                     bool maxed = ship_upgrade_maxed(ship, SHIP_UPGRADE_TRACTOR);
                     bool available = station_has_module(ui->station, MODULE_TRACTOR_FAB);
-                    sdtx_color3b(180, 195, 215);
+                    sdtx_color3b(PAL_SERVICE_HEADER);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                     sdtx_puts("Tractor");
                     draw_upgrade_pips(cx + 56.0f, ly, ship->tractor_level, 0.42f, 1.0f, 0.86f);
-                    sdtx_color3b(120, 140, 165);
+                    sdtx_color3b(PAL_SERVICE_CONTENT);
                     sdtx_pos(ui_text_pos(cx + 120.0f), ui_text_pos(ly));
                     sdtx_printf("%.0f rng", ship_tractor_range(ship));
                     if (available && !maxed) {
                         int cost = ship_upgrade_cost(ship, SHIP_UPGRADE_TRACTOR);
                         bool afford = can_afford_upgrade(ui->station, ship, SHIP_UPGRADE_TRACTOR, STATION_SERVICE_UPGRADE_TRACTOR, cost);
-                        sdtx_color3b(afford ? 130 : 90, afford ? 255 : 105, afford ? 235 : 130);
+                        sdtx_color3b(afford ? 130 : 90, afford ? 255 : 105, afford ? 235 : 130); /* affordability conditional */
                         sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
                         sdtx_printf("[5] %dcr", cost);
                     }
@@ -644,7 +645,7 @@ void draw_station_services(const station_ui_state_t* ui) {
 
             /* === CARGO HOLD === */
             {
-                sdtx_color3b(100, 120, 145);
+                sdtx_color3b(PAL_HOLD_STATUS);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                 sdtx_puts("CARGO HOLD");
                 draw_ui_rule(cx, cx + meter_w + 80.0f, ly + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
@@ -659,16 +660,16 @@ void draw_station_services(const station_ui_state_t* ui) {
                     commodity_material_tint(commodity_ore_form((commodity_t)c), &mr, &mg, &mb);
                     draw_rect_centered(v2(cx + 3.0f, ly + 4.0f), 2.5f, 2.5f,
                         fminf(1.0f, mr * 1.6f), fminf(1.0f, mg * 1.6f), fminf(1.0f, mb * 1.6f), 0.8f);
-                    sdtx_color3b(180, 195, 215);
+                    sdtx_color3b(PAL_SERVICE_HEADER);
                     sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(ly));
                     sdtx_printf("%-12s", commodity_short_name((commodity_t)c));
-                    sdtx_color3b(203, 220, 248);
+                    sdtx_color3b(PAL_TEXT_SECONDARY);
                     sdtx_pos(ui_text_pos(cx + 120.0f), ui_text_pos(ly));
                     sdtx_printf("x%d", amt);
                     ly += 11.0f;
                 }
                 if (!has_cargo) {
-                    sdtx_color3b(90, 105, 130);
+                    sdtx_color3b(PAL_COND_DISABLE_AFFORD);
                     sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(ly));
                     sdtx_puts("Empty");
                     ly += 11.0f;
@@ -680,14 +681,14 @@ void draw_station_services(const station_ui_state_t* ui) {
             {
                 /* Repair stays — it's a station service, not a tab shortcut. */
                 if (ui->repair_cost > 0) {
-                    sdtx_color3b(255, 221, 119);
+                    sdtx_color3b(PAL_ORE_AMBER);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                     sdtx_printf("[2] Repair -%dcr", ui->repair_cost);
                     ly += 14.0f;
                 }
 
                 /* Launch hint — the only persistent action on STATUS. */
-                sdtx_color3b(90, 115, 110);
+                sdtx_color3b(100, 120, 110); /* contract status muted */
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                 sdtx_puts("[E] Launch");
             }
@@ -698,7 +699,7 @@ void draw_station_services(const station_ui_state_t* ui) {
     case STATION_TAB_MARKET: {
         if (ui->station->scaffold) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-            sdtx_color3b(145, 160, 188);
+            sdtx_color3b(PAL_INSPECT_STATION);
             sdtx_puts("Under construction.");
             break;
         }
@@ -712,7 +713,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             commodity_t buy = station_primary_buy(ui->station);
             if ((int)buy >= 0) {
                 /* Section label */
-                sdtx_color3b(100, 120, 145);
+                sdtx_color3b(PAL_HOLD_STATUS);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
                 sdtx_puts("SELL TO STATION");
                 draw_ui_rule(cx, cx + meter_w + 80.0f, my + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
@@ -723,11 +724,11 @@ void draw_station_services(const station_ui_state_t* ui) {
                 commodity_material_tint(commodity_ore_form(buy), &mr, &mg, &mb);
                 draw_rect_centered(v2(cx + 3.0f, my + 5.0f), 3.0f, 3.0f,
                     fminf(1.0f, mr * 1.8f), fminf(1.0f, mg * 1.8f), fminf(1.0f, mb * 1.8f), 0.9f);
-                sdtx_color3b(203, 220, 248);
+                sdtx_color3b(PAL_TEXT_SECONDARY);
                 sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(my));
                 sdtx_puts(commodity_short_name(buy));
                 int buy_price = (int)lroundf(station_buy_price(ui->station, buy));
-                sdtx_color3b(145, 160, 188);
+                sdtx_color3b(PAL_INSPECT_STATION);
                 sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
                 sdtx_printf("%d cr/u", buy_price);
                 my += 14.0f;
@@ -738,7 +739,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 float fill = inv / fmaxf(1.0f, capacity);
                 draw_ui_meter(cx, my, meter_w, 8.0f, clampf(fill, 0.0f, 1.0f),
                     fminf(1.0f, mr * 1.5f), fminf(1.0f, mg * 1.5f), fminf(1.0f, mb * 1.5f));
-                sdtx_color3b(130, 145, 168);
+                sdtx_color3b(PAL_SHIPYARD_AFFORD);
                 sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
                 sdtx_printf("%d/%d", (int)lroundf(inv), (int)lroundf(capacity));
                 my += 14.0f;
@@ -746,14 +747,14 @@ void draw_station_services(const station_ui_state_t* ui) {
                 /* Action line */
                 int held = (int)lroundf(ship_cargo_amount(&LOCAL_PLAYER.ship, buy));
                 if (held > 0) {
-                    sdtx_color3b(130, 255, 235);
+                    sdtx_color3b(PAL_CONTRACT_AFFORD);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
                     sdtx_printf("[1] Deliver x%d", held);
-                    sdtx_color3b(90, 220, 170);
+                    sdtx_color3b(PAL_CARGO_ITEM);
                     sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
                     sdtx_printf("+%d cr", held * buy_price);
                 } else {
-                    sdtx_color3b(90, 105, 130);
+                    sdtx_color3b(PAL_COND_DISABLE_AFFORD);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
                     sdtx_puts("[1] No cargo to deliver");
                 }
@@ -766,7 +767,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             commodity_t sell = station_primary_sell(ui->station);
             if ((int)sell >= 0) {
                 /* Section label */
-                sdtx_color3b(100, 120, 145);
+                sdtx_color3b(PAL_HOLD_STATUS);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
                 sdtx_puts("BUY FROM STATION");
                 draw_ui_rule(cx, cx + meter_w + 80.0f, my + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
@@ -779,10 +780,10 @@ void draw_station_services(const station_ui_state_t* ui) {
                     fminf(1.0f, mr * 1.8f), fminf(1.0f, mg * 1.8f), fminf(1.0f, mb * 1.8f), 0.9f);
                 float price_f = station_sell_price(ui->station, sell);
                 int price = (int)lroundf(price_f);
-                sdtx_color3b(203, 220, 248);
+                sdtx_color3b(PAL_TEXT_SECONDARY);
                 sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(my));
                 sdtx_puts(commodity_short_name(sell));
-                sdtx_color3b(145, 160, 188);
+                sdtx_color3b(PAL_INSPECT_STATION);
                 sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
                 sdtx_printf("%d cr/u", price);
                 my += 14.0f;
@@ -793,7 +794,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 float fill = avail / fmaxf(1.0f, capacity);
                 draw_ui_meter(cx, my, meter_w, 8.0f, clampf(fill, 0.0f, 1.0f),
                     fminf(1.0f, mr * 1.5f), fminf(1.0f, mg * 1.5f), fminf(1.0f, mb * 1.5f));
-                sdtx_color3b(130, 145, 168);
+                sdtx_color3b(PAL_SHIPYARD_AFFORD);
                 sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
                 sdtx_printf("%d/%d", (int)lroundf(avail), (int)lroundf(capacity));
                 my += 14.0f;
@@ -805,18 +806,18 @@ void draw_station_services(const station_ui_state_t* ui) {
                     ? (int)fminf(fminf(avail, player_space), floorf(player_credits / price_f))
                     : 0;
                 if (can_buy > 0) {
-                    sdtx_color3b(130, 255, 235);
+                    sdtx_color3b(PAL_CONTRACT_AFFORD);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
                     sdtx_printf("[F] Buy x%d", can_buy);
-                    sdtx_color3b(220, 160, 100);
+                    sdtx_color3b(250, 160, 90); /* ore trade highlight */
                     sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
                     sdtx_printf("-%d cr", can_buy * price);
                 } else if ((int)lroundf(avail) > 0) {
-                    sdtx_color3b(90, 105, 130);
+                    sdtx_color3b(PAL_COND_DISABLE_AFFORD);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
                     sdtx_puts(player_space < 0.5f ? "[F] Hold full" : "[F] Cannot afford");
                 } else {
-                    sdtx_color3b(90, 105, 130);
+                    sdtx_color3b(PAL_COND_DISABLE_AFFORD);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
                     sdtx_puts("[F] Out of stock");
                 }
@@ -826,7 +827,7 @@ void draw_station_services(const station_ui_state_t* ui) {
 
         /* === COMMODITIES LEDGER === */
         if (!compact) {
-            sdtx_color3b(85, 100, 120);
+            sdtx_color3b(PAL_SHIPYARD_HEADER);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
             sdtx_puts("COMMODITIES");
             draw_ui_rule(cx, cx + meter_w + 80.0f, my + 11.0f, 0.08f, 0.15f, 0.22f, 0.30f);
@@ -846,7 +847,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 /* Pip + name */
                 draw_rect_centered(v2(cx + 3.0f, my + 4.0f), 2.5f, 2.5f,
                     fminf(1.0f, mr * 1.6f), fminf(1.0f, mg * 1.6f), fminf(1.0f, mb * 1.6f), 0.8f);
-                sdtx_color3b(150, 165, 185);
+                sdtx_color3b(PAL_SHIPYARD_HINT);
                 sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(my));
                 sdtx_printf("%-10s", commodity_code((commodity_t)c));
 
@@ -856,13 +857,13 @@ void draw_station_services(const station_ui_state_t* ui) {
                     fminf(1.0f, mr * 1.3f), fminf(1.0f, mg * 1.3f), fminf(1.0f, mb * 1.3f));
 
                 /* Amount */
-                sdtx_color3b(130, 145, 168);
+                sdtx_color3b(PAL_SHIPYARD_AFFORD);
                 sdtx_pos(ui_text_pos(bar_x + mini_w + 8.0f), ui_text_pos(my));
                 sdtx_printf("%3d", (int)lroundf(inv));
 
                 /* Base price */
                 if (base > FLOAT_EPSILON) {
-                    sdtx_color3b(100, 115, 138);
+                    sdtx_color3b(PAL_STATUS_DISABLED);
                     sdtx_pos(ui_text_pos(bar_x + mini_w + 44.0f), ui_text_pos(my));
                     sdtx_printf("@%d", (int)lroundf(base));
                 }
@@ -945,7 +946,7 @@ void draw_station_services(const station_ui_state_t* ui) {
 
         if (slot_count == 0) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 32.0f));
-            sdtx_color3b(145, 160, 188);
+            sdtx_color3b(PAL_INSPECT_STATION);
             sdtx_puts("No active contracts.");
             break;
         }
@@ -969,13 +970,13 @@ void draw_station_services(const station_ui_state_t* ui) {
             draw_rect_centered(v2(cx + 3.0f, line_y + 5.0f), 3.0f, 3.0f, pip_r, pip_g, pip_b, 0.9f);
             sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(line_y));
             if (selected) {
-                sdtx_color3b(255, 240, 130); /* bright yellow = will deliver on E */
+                sdtx_color3b(PAL_CONTRACT_PENDING); /* bright yellow = will deliver on E */
             } else if (slot_fulfillable[s]) {
-                sdtx_color3b(130, 255, 180); /* green = ready to deliver */
+                sdtx_color3b(PAL_CONTRACT_READY); /* green = ready to deliver */
             } else if (tracked) {
-                sdtx_color3b(220, 230, 160);
+                sdtx_color3b(PAL_CONTRACT_STATUS);
             } else {
-                sdtx_color3b(160, 175, 200);
+                sdtx_color3b(PAL_CONTRACT_HINT);
             }
             const char *marker = selected ? " <" : (tracked ? " *" : "");
             if (ct->action == CONTRACT_FRACTURE) {
@@ -995,7 +996,7 @@ void draw_station_services(const station_ui_state_t* ui) {
     }
 
     case STATION_TAB_SHIPYARD: {
-        sdtx_color3b(255, 221, 119);
+        sdtx_color3b(PAL_ORE_AMBER);
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
         sdtx_puts("SHIPYARD");
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
@@ -1025,13 +1026,13 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             if (!unlocked) {
                 int prereq = module_schema(kit)->prerequisite;
-                sdtx_color3b(80, 90, 110);
+                sdtx_color3b(PAL_AFFORD_INACTIVE);
                 sdtx_printf("[--] %-14s LOCKED (need %s)",
                     module_type_name(kit),
                     (prereq >= 0 && prereq < MODULE_COUNT)
                         ? module_type_name((module_type_t)prereq) : "?");
             } else {
-                sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150);
+                sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150); /* affordability status */
                 sdtx_printf("[%d] %-14s %dcr + %d %s",
                     shown + 1, module_type_name(kit), fee, mat, mat_name);
                 shown++;
@@ -1040,7 +1041,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         }
         if (!any) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            sdtx_color3b(140, 150, 175);
+            sdtx_color3b(150, 160, 180); /* status note text */
             sdtx_puts("This yard has no production lines installed.");
             ly += 14.0f;
         }
@@ -1048,7 +1049,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         /* Pending orders */
         if (ui->station->pending_scaffold_count > 0) {
             ly += 8.0f;
-            sdtx_color3b(255, 221, 119);
+            sdtx_color3b(PAL_ORE_AMBER);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             sdtx_printf("PENDING ORDERS (%d/4)", ui->station->pending_scaffold_count);
             ly += 14.0f;
@@ -1079,11 +1080,11 @@ void draw_station_services(const station_ui_state_t* ui) {
                 int total = (int)lroundf(need);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                 if (p == 0) {
-                    sdtx_color3b(180, 220, 255);
+                    sdtx_color3b(PAL_DELIVERY_BLUE);
                     sdtx_printf("  %d. %s  intake %d/%d  (stock: %d)",
                         p + 1, module_type_name(t), got, total, (int)lroundf(station_have));
                 } else {
-                    sdtx_color3b(120, 135, 160);
+                    sdtx_color3b(PAL_SUPPLY_DIM);
                     sdtx_printf("  %d. %s  queued", p + 1, module_type_name(t));
                 }
                 ly += 12.0f;
