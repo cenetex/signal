@@ -1511,6 +1511,8 @@ TEST(test_scenario_full_mining_cycle) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = false;
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x42, 8);  /* test token */
 
     /* Create a collectible S-tier fragment directly */
     int frag = -1;
@@ -1570,8 +1572,13 @@ TEST(test_scenario_full_mining_cycle) {
     /* Run enough steps for smelt_progress to reach 1.0 (~2 seconds at 120Hz) */
     for (int i = 0; i < 300; i++) world_sim_step(&w, SIM_DT);
 
-    /* Fragment should be consumed, credits earned */
+    /* Fragment should be consumed */
     ASSERT(w.players[0].ship.towed_count == 0);
+
+    /* Credits are in the station ledger — hail to collect */
+    w.players[0].input.hail = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.hail = false;
     ASSERT(w.players[0].ship.credits > start_credits);
 }
 

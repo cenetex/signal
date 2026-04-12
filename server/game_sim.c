@@ -673,7 +673,7 @@ static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, i
 /* ================================================================== */
 
 /* Forward declarations for ledger functions (defined below step_station_interaction_system) */
-static void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
+void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
 
 static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
@@ -725,9 +725,8 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
             payout += accepted * price;
             st->inventory[buy] += accepted;
             sp->ship.cargo[buy] -= accepted;
-            /* Credit ledger for passive income on ore supply */
-            if (sp->session_ready && buy < COMMODITY_RAW_ORE_COUNT)
-                ledger_credit_supply(st, sp->session_token, accepted * price);
+            /* Manual sell is immediate — no ledger credit.
+             * Ledger is for fragment smelting (furnace pays via hail). */
         }
     }
 
@@ -1787,10 +1786,10 @@ static int ledger_find_or_create(station_t *st, const uint8_t *token) {
 }
 
 /* Credit a player's ledger when they supply ore to a station */
-static void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) {
+void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) {
     int idx = ledger_find_or_create(st, token);
     if (idx < 0) return;
-    /* Supplier gets 80% of ore value as passive income */
+    /* Station keeps 20% cut for smelting — supplier gets 80% */
     float supplier_share = ore_value * 0.80f;
     st->ledger[idx].pending_credits += supplier_share;
     st->ledger[idx].lifetime_supply += ore_value;

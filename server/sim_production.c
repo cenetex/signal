@@ -243,17 +243,22 @@ void step_furnace_smelting(world_t *w, float dt) {
                              && w->players[a->last_fractured_by].connected)
                             ? a->last_fractured_by : -1;
 
+            /* Smelting credits go to the station ledger — collected on hail.
+             * Tower and fracturer each get credited if both contributed. */
             if (ore_value > 0.0f) {
                 if (tower >= 0 && fracturer >= 0 && tower != fracturer) {
                     float share = ore_value * 0.75f;
-                    earn_credits(&w->players[tower].ship, share);
+                    if (w->players[tower].session_ready)
+                        ledger_credit_supply(st, w->players[tower].session_token, share);
+                    if (w->players[fracturer].session_ready)
+                        ledger_credit_supply(st, w->players[fracturer].session_token, share);
                     emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = tower});
-                    earn_credits(&w->players[fracturer].ship, share);
                     emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = fracturer});
                 } else {
                     int best_p = (tower >= 0) ? tower : fracturer;
                     if (best_p >= 0) {
-                        earn_credits(&w->players[best_p].ship, ore_value);
+                        if (w->players[best_p].session_ready)
+                            ledger_credit_supply(st, w->players[best_p].session_token, ore_value);
                         emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = best_p});
                     }
                 }

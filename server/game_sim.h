@@ -245,6 +245,7 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt);
 void player_init_ship(server_player_t *sp, world_t *w);
 float signal_strength_at(const world_t *w, vec2 pos);
 void spatial_grid_build(world_t *w);
+void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
 
 /* Nav API — canonical declarations in sim_nav.h.
  * Repeated here because sim_nav.h includes game_sim.h (circular).
