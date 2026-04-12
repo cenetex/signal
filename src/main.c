@@ -9,6 +9,7 @@
 #include "asteroid_field.h"
 #include "net.h"
 #include "world_draw.h"
+#include "signal_model.h"
 #include "input.h"
 #include "net_sync.h"
 #include "onboarding.h"
@@ -713,6 +714,14 @@ static void sim_step(float dt) {
                 episode_trigger(&g.episode, 1);
         }
     }
+
+    /* Autopilot disengage detection — notify player why it stopped */
+    if (g.was_autopilot && !LOCAL_PLAYER.autopilot_mode) {
+        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        if (sig < SIGNAL_BAND_OPERATIONAL)
+            set_notice("Autopilot disengaged — weak signal.");
+    }
+    g.was_autopilot = LOCAL_PLAYER.autopilot_mode;
 
     /* Death: handled by SIM_EVENT_DEATH (singleplayer) or NET_MSG_DEATH (multiplayer) */
 
