@@ -893,29 +893,56 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                 }
             }
 
-            /* Dock berth indicators: end + left side + right side */
+            /* Dock berth indicator: show assigned berth when docking,
+             * or all unoccupied berths dimly when in range */
             if (m->type == MODULE_DOCK && is_nearby && !m->scaffold) {
-                float dp = 0.5f + 0.4f * sinf(g.world.time * 4.0f);
                 vec2 outward = v2_sub(positions[i], station->pos);
                 float od = sqrtf(v2_len_sq(outward));
                 if (od > 0.001f) outward = v2_scale(outward, 1.0f / od);
                 vec2 tang = v2(-outward.y, outward.x);
-                /* U-shape: outward, inward, gap-side.
-                 * Gap is on the clockwise side of the dock (entry side —
-                 * where we skip drawing the corridor). */
                 int dock_slots = STATION_RING_SLOTS[ring];
-                /* Next slot angle minus dock angle — positive = CCW, negative = CW.
-                 * The gap is where the dock is "first" (clockwise/positive direction). */
                 float next_ang = module_angle_ring(station, ring, (m->slot + 1) % dock_slots);
                 float dock_ang = module_angle_ring(station, ring, m->slot);
                 float ang_to_next = wrap_angle(next_ang - dock_ang);
                 float gap_dir = (ang_to_next > 0.0f) ? 1.0f : -1.0f;
                 vec2 berths[3];
-                berths[0] = v2_add(positions[i], v2_scale(outward, 55.0f));  /* outward */
-                berths[1] = v2_add(positions[i], v2_scale(outward, -55.0f)); /* inward */
-                berths[2] = v2_add(positions[i], v2_scale(tang, gap_dir * 55.0f)); /* gap-side */
+                berths[0] = v2_add(positions[i], v2_scale(outward, 55.0f));
+                berths[1] = v2_add(positions[i], v2_scale(outward, -55.0f));
+                berths[2] = v2_add(positions[i], v2_scale(tang, gap_dir * 55.0f));
                 (void)dock_slots;
+
+                /* Which dock module is this? Compute berth index offset. */
+                int dock_idx = 0;
+                for (int di = 0; di < station->module_count; di++) {
+                    if (station->modules[di].type != MODULE_DOCK) continue;
+                    if (di == mod_idx[i]) break;
+                    dock_idx++;
+                }
+                int berth_base = dock_idx * 3;  /* BERTHS_PER_DOCK = 3 */
+
+                int station_idx = (int)(station - g.world.stations);
+                bool approaching = LOCAL_PLAYER.docking_approach &&
+                    LOCAL_PLAYER.nearby_station == station_idx;
+                float dp = 0.5f + 0.4f * sinf(g.world.time * 4.0f);
+
                 for (int b = 0; b < 3; b++) {
+                    int global_berth = berth_base + b;
+                    bool is_assigned = approaching &&
+                        LOCAL_PLAYER.dock_berth == global_berth;
+
+                    /* When approaching: only show the assigned berth */
+                    /* When just nearby: show all dimly */
+                    float alpha;
+                    float cr, cg, cb;
+                    if (approaching) {
+                        if (!is_assigned) continue;  /* hide non-assigned */
+                        cr = 0.2f; cg = 1.0f; cb = 0.6f;
+                        alpha = dp;
+                    } else {
+                        cr = 0.15f; cg = 0.5f; cb = 0.4f;
+                        alpha = 0.15f;
+                    }
+
                     vec2 bdir = (b < 2) ? outward : tang;
                     vec2 bperp = (b < 2) ? tang : outward;
                     float bw = 14.0f, bh = 8.0f;
@@ -923,7 +950,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                     vec2 c1 = v2_add(berths[b], v2_add(v2_scale(bdir,  bh), v2_scale(bperp, -bw)));
                     vec2 c2 = v2_add(berths[b], v2_add(v2_scale(bdir,  bh), v2_scale(bperp,  bw)));
                     vec2 c3 = v2_add(berths[b], v2_add(v2_scale(bdir, -bh), v2_scale(bperp,  bw)));
-                    sgl_c4f(0.2f, 1.0f, 0.6f, dp * (b == 0 ? 1.0f : 0.6f));
+                    sgl_c4f(cr, cg, cb, alpha);
                     sgl_begin_lines();
                     sgl_v2f(c0.x, c0.y); sgl_v2f(c1.x, c1.y);
                     sgl_v2f(c1.x, c1.y); sgl_v2f(c2.x, c2.y);
