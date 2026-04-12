@@ -2,6 +2,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#include <unistd.h>
 
 #include "math_util.h"
 #include "types.h"
@@ -3244,7 +3245,7 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  */
 /* v22: dead module enum entries removed (#280); seed worlds drop 2
  * CONTRACT_BOARD modules — 24 fewer bytes than v21. */
-#define EXPECTED_SAVE_SIZE 23094
+#define EXPECTED_SAVE_SIZE 23102  /* 23094 data + 8 CRC32 trailer */
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -3360,15 +3361,18 @@ TEST(test_save_backward_compat_version_accepted) {
     world_reset(w);
     w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 77.0f;
     ASSERT(world_save(w, "/tmp/test_compat.sav"));
-    /* Patch version field (bytes 4-7) to MIN_SAVE_VERSION — currently
-     * same as SAVE_VERSION, so this is a no-op. When SAVE_VERSION is bumped
-     * past MIN_SAVE_VERSION, this test verifies older saves still load. */
+    /* Patch version field (bytes 4-7) to MIN_SAVE_VERSION and strip CRC
+     * trailer (patching invalidates the checksum; stripping lets the loader
+     * treat it as a legacy save without verification). */
     FILE *f = fopen("/tmp/test_compat.sav", "r+b");
     ASSERT(f != NULL);
     fseek(f, 4, SEEK_SET);
     uint32_t min_ver = 20;  /* MIN_SAVE_VERSION at time of writing */
     fwrite(&min_ver, sizeof(min_ver), 1, f);
+    fseek(f, 0, SEEK_END);
+    long compat_size = ftell(f) - 8;
     fclose(f);
+    truncate("/tmp/test_compat.sav", compat_size);
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, "/tmp/test_compat.sav"));
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_ORE], 77.0f, 0.01f);
@@ -3410,13 +3414,19 @@ TEST(test_save_v21_module_remap) {
         w->stations[3].module_output[i] = (float)(i + 100);
     }
     ASSERT(world_save(w, "/tmp/test_v21_remap.sav"));
-    /* Patch version field (offset 4) down to 21 to force the v22 migration. */
+    /* Patch version field (offset 4) down to 21 to force the v22 migration.
+     * Also strip the CRC32 trailer since the patched version invalidates it;
+     * the loader treats saves without a trailer as legacy. */
     FILE *f = fopen("/tmp/test_v21_remap.sav", "r+b");
     ASSERT(f != NULL);
     fseek(f, 4, SEEK_SET);
     uint32_t v21 = 21;
     fwrite(&v21, sizeof(v21), 1, f);
+    /* Truncate the 8-byte CRC trailer */
+    fseek(f, 0, SEEK_END);
+    long patched_size = ftell(f) - 8;
     fclose(f);
+    truncate("/tmp/test_v21_remap.sav", patched_size);
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, "/tmp/test_v21_remap.sav"));
     /* 4 of 6 survive: indices 0, 2, 4, 5 in the original list. */

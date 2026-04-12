@@ -26,7 +26,9 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
     target_compile_definitions(signal_server PRIVATE GIT_HASH="${GIT_HASH}" SIM_LOG_ENABLED=0)
     if(NOT MSVC)
         target_link_libraries(signal_server PRIVATE m)
-        target_compile_options(signal_server PRIVATE -Wall -Wextra -Wpedantic)
+        target_compile_options(signal_server PRIVATE -Wall -Wextra -Wpedantic -fstack-protector-strong)
+        # _FORTIFY_SOURCE requires optimization; only set for Release/RelWithDebInfo
+        target_compile_definitions(signal_server PRIVATE $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
     endif()
 
     add_executable(signal_test src/test_main.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)

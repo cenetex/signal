@@ -19,6 +19,30 @@
 /* World persistence                                                   */
 /* ================================================================== */
 
+/* ---- CRC32 (IEEE 802.3 polynomial, public domain) ---- */
+static uint32_t crc32_update(uint32_t crc, const void *buf, size_t len) {
+    const uint8_t *p = (const uint8_t *)buf;
+    crc = ~crc;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= p[i];
+        for (int j = 0; j < 8; j++)
+            crc = (crc >> 1) ^ (0xEDB88320u & -(crc & 1u));
+    }
+    return ~crc;
+}
+
+static uint32_t crc32_file(FILE *f) {
+    uint32_t crc = 0;
+    long start = ftell(f);
+    fseek(f, 0, SEEK_SET);
+    uint8_t chunk[4096];
+    size_t n;
+    while ((n = fread(chunk, 1, sizeof(chunk), f)) > 0)
+        crc = crc32_update(crc, chunk, n);
+    fseek(f, start, SEEK_SET);
+    return crc;
+}
+
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
 #define SAVE_VERSION 22  /* bumped: dead module enum entries removed (#280 cleanup) */
 #define MIN_SAVE_VERSION 20  /* migrate v20 by mapping old module_buffer → input */
@@ -292,6 +316,20 @@ bool world_save(const world_t *w, const char *path) {
     }
 
     fclose(f);
+
+    /* Append CRC32 trailer: reopen to read data, compute CRC, then append */
+    {
+        FILE *rf = fopen(tmp_path, "rb");
+        if (!rf) { remove(tmp_path); return false; }
+        uint32_t crc = crc32_file(rf);
+        fclose(rf);
+        FILE *af = fopen(tmp_path, "ab");
+        if (!af) { remove(tmp_path); return false; }
+        uint32_t crc_magic = 0x43524332u; /* "CRC2" */
+        fwrite(&crc_magic, sizeof(crc_magic), 1, af);
+        fwrite(&crc, sizeof(crc), 1, af);
+        fclose(af);
+    }
     /* Atomic rename — on POSIX rename() atomically replaces the target.
      * Do NOT remove(path) first: that creates a window where a crash
      * would leave no valid save file at all. */
@@ -336,6 +374,40 @@ bool world_load(world_t *w, const char *path) {
     /* Scaffolds (v20+) */
     for (int i = 0; i < MAX_SCAFFOLDS; i++) {
         READ_FIELD(f, w->scaffolds[i]);
+    }
+
+    /* Check for CRC32 trailer after all data fields.
+     * If the next 4 bytes are the CRC2 magic, verify the checksum
+     * against everything read so far. Legacy saves without the trailer
+     * are loaded without verification. */
+    {
+        long data_end = ftell(f);
+        uint32_t trail_magic = 0;
+        if (fread(&trail_magic, sizeof(trail_magic), 1, f) == 1 &&
+            trail_magic == 0x43524332u) { /* "CRC2" */
+            uint32_t stored_crc;
+            if (fread(&stored_crc, sizeof(stored_crc), 1, f) != 1) {
+                printf("[save] truncated CRC32 trailer\n");
+                fclose(f); return false;
+            }
+            /* Recompute CRC over bytes [0, data_end) */
+            fseek(f, 0, SEEK_SET);
+            uint32_t crc = 0;
+            long remaining = data_end;
+            uint8_t chunk[4096];
+            while (remaining > 0) {
+                size_t to_read = (remaining > (long)sizeof(chunk)) ? sizeof(chunk) : (size_t)remaining;
+                size_t n = fread(chunk, 1, to_read, f);
+                if (n == 0) break;
+                crc = crc32_update(crc, chunk, n);
+                remaining -= (long)n;
+            }
+            if (crc != stored_crc) {
+                printf("[save] CRC32 mismatch: computed=0x%08x stored=0x%08x -- save may be corrupt\n",
+                       crc, stored_crc);
+                fclose(f); return false;
+            }
+        }
     }
 
     /* ---- Version migrations ----
@@ -494,6 +566,12 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
         .last_angle = sp->ship.angle,
     };
     bool ok = fwrite(&data, sizeof(data), 1, f) == 1;
+    if (ok) {
+        uint32_t crc_magic = 0x43524332u; /* "CRC2" */
+        uint32_t crc = crc32_update(0, &data, sizeof(data));
+        ok = fwrite(&crc_magic, sizeof(crc_magic), 1, f) == 1 &&
+             fwrite(&crc, sizeof(crc), 1, f) == 1;
+    }
     fclose(f);
     if (ok) SIM_LOG("[sim] saved player %d\n", slot);
     return ok;
@@ -504,6 +582,18 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     if (!f) return false;
     player_save_data_t data;
     if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
+    /* Verify CRC32 if CRC2 trailer present */
+    uint32_t trail_magic, stored_crc;
+    if (fread(&trail_magic, sizeof(trail_magic), 1, f) == 1 &&
+        fread(&stored_crc, sizeof(stored_crc), 1, f) == 1 &&
+        trail_magic == 0x43524332u) { /* "CRC2" */
+        uint32_t crc = crc32_update(0, &data, sizeof(data));
+        if (crc != stored_crc) {
+            printf("[save] player CRC32 mismatch -- save may be corrupt\n");
+            fclose(f);
+            return false;
+        }
+    }
     fclose(f);
     if (data.magic != PLAYER_MAGIC && data.magic != PLAYER_MAGIC_V1) return false;
     bool is_v1 = (data.magic == PLAYER_MAGIC_V1);

@@ -20,6 +20,10 @@
 
 static world_t world;
 static bool running = true;
+static const char *allowed_origin = NULL;
+
+/* Shared HTTP response headers for API endpoints */
+static char api_headers[256];
 
 /* Dirty flags: only re-broadcast station identity when something changed */
 static bool station_identity_dirty[MAX_STATIONS];
@@ -69,7 +73,7 @@ static void ws_send(struct mg_connection *c, const void *data, size_t len) {
 
 static void broadcast(const void *data, size_t len) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
-        if (world.players[i].connected && world.players[i].conn)
+        if (world.players[i].connected && world.players[i].session_ready && world.players[i].conn)
             ws_send(world.players[i].conn, data, len);
     }
 }
@@ -77,7 +81,7 @@ static void broadcast(const void *data, size_t len) {
 static void broadcast_except(int exclude, const void *data, size_t len) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (i == exclude) continue;
-        if (world.players[i].connected && world.players[i].conn)
+        if (world.players[i].connected && world.players[i].session_ready && world.players[i].conn)
             ws_send(world.players[i].conn, data, len);
     }
 }
@@ -86,12 +90,25 @@ static void broadcast_except(int exclude, const void *data, size_t len) {
 /* WS message handler                                                 */
 /* ------------------------------------------------------------------ */
 
+/* Per-player WebSocket message rate limiting */
+static struct { uint64_t window_start; int msg_count; } ws_rate[MAX_PLAYERS];
+#define WS_RATE_WINDOW_MS 1000
+#define WS_RATE_LIMIT 60  /* 60 msgs/sec -- generous for 30Hz game input */
+
 static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm) {
     int pid = -1;
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (world.players[i].conn == c) { pid = i; break; }
     }
     if (pid < 0) return;
+
+    /* Rate limit: silently drop excess messages */
+    uint64_t now = mg_millis();
+    if (now - ws_rate[pid].window_start > WS_RATE_WINDOW_MS) {
+        ws_rate[pid].window_start = now;
+        ws_rate[pid].msg_count = 0;
+    }
+    if (++ws_rate[pid].msg_count > WS_RATE_LIMIT) return;
 
     const uint8_t *data = (const uint8_t *)wm->data.buf;
     int len = (int)wm->data.len;
@@ -359,7 +376,7 @@ static void handle_station_state(struct mg_connection *c, int sid) {
     json_escape_append(buf, &pos, BUFSZ, st->hail_message);
     BUF_APPEND(pos, buf, BUFSZ, "\"}");
 
-    mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n", "%s", buf);
+    mg_http_reply(c, 200, api_headers, "%s", buf);
 }
 
 static void handle_station_command(struct mg_connection *c, struct mg_http_message *hm, int sid) {
@@ -373,7 +390,7 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
     char *hail = mg_json_get_str(body, "$.hail");
 
     if (!action) {
-        mg_http_reply(c, 400, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+        mg_http_reply(c, 400, api_headers,
                       "{\"ok\":false,\"error\":\"missing action\"}");
         free(hail);
         return;
@@ -381,7 +398,7 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
 
     if (strcmp(action, "set_hail") == 0 && hail && hail[0] != '\0') {
         snprintf(st->hail_message, sizeof(st->hail_message), "%s", hail);
-        mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+        mg_http_reply(c, 200, api_headers,
                       "{\"ok\":true,\"action\":\"set_hail\"}");
     } else if (strcmp(action, "set_price") == 0 && commodity >= 0 && commodity < COMMODITY_COUNT && price_val > 0) {
         /* Clamp to 0.5x-2.0x of default */
@@ -390,19 +407,19 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
         if (clamped < default_price * 0.5f) clamped = default_price * 0.5f;
         if (clamped > default_price * 2.0f) clamped = default_price * 2.0f;
         st->base_price[commodity] = clamped;
-        mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+        mg_http_reply(c, 200, api_headers,
                       "{\"ok\":true,\"action\":\"set_price\",\"commodity\":%ld,\"price\":%.1f}", commodity, clamped);
     } else if (strcmp(action, "build_module") == 0 && module_type >= 0 && module_type < MODULE_COUNT) {
         if (st->module_count >= MAX_MODULES_PER_STATION) {
-            mg_http_reply(c, 400, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+            mg_http_reply(c, 400, api_headers,
                           "{\"ok\":false,\"error\":\"station full\"}");
         } else {
             begin_module_construction(&world, st, sid, (module_type_t)module_type);
-            mg_http_reply(c, 200, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+            mg_http_reply(c, 200, api_headers,
                           "{\"ok\":true,\"action\":\"build_module\",\"type\":%ld}", module_type);
         }
     } else {
-        mg_http_reply(c, 400, "Content-Type: application/json\r\nAccess-Control-Allow-Origin: *\r\n",
+        mg_http_reply(c, 400, api_headers,
                       "{\"ok\":false,\"error\":\"unknown action\"}");
     }
     free(action);
@@ -413,29 +430,57 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
 /* Mongoose event handler                                             */
 /* ------------------------------------------------------------------ */
 
+/* REST API token-bucket rate limiter: 20 tokens/sec, 40 burst cap */
+static uint64_t api_rate_last_refill = 0;
+static int api_rate_bucket = 40;
+#define API_RATE_REFILL_PER_SEC 20
+#define API_RATE_BUCKET_MAX 40
+
+static bool api_rate_check(void) {
+    uint64_t now = mg_millis();
+    uint64_t elapsed = now - api_rate_last_refill;
+    if (elapsed >= 50) {  /* refill every 50ms to smooth out bursts */
+        int refill = (int)(elapsed * API_RATE_REFILL_PER_SEC / 1000);
+        if (refill > 0) {
+            api_rate_bucket += refill;
+            if (api_rate_bucket > API_RATE_BUCKET_MAX)
+                api_rate_bucket = API_RATE_BUCKET_MAX;
+            api_rate_last_refill = now;
+        }
+    }
+    if (api_rate_bucket <= 0) return false;
+    api_rate_bucket--;
+    return true;
+}
+
 static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
     if (ev == MG_EV_HTTP_MSG) {
         struct mg_http_message *hm = ev_data;
         if (mg_match(hm->uri, mg_str("/ws"), NULL)) {
             mg_ws_upgrade(c, hm, NULL);
         } else if (mg_match(hm->uri, mg_str("/api/station/+/state"), NULL)) {
+            if (!api_rate_check()) {
+                mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
+            } else
             if (!api_auth_ok(hm)) {
-                mg_http_reply(c, 401, "Content-Type: application/json\r\n", "{\"error\":\"unauthorized\"}");
+                mg_http_reply(c, 401, api_headers, "{\"error\":\"unauthorized\"}");
             } else {
                 int sid = parse_station_id(hm);
                 if (sid < 0) {
-                    mg_http_reply(c, 404, "Content-Type: application/json\r\n", "{\"error\":\"station not found\"}");
+                    mg_http_reply(c, 404, api_headers, "{\"error\":\"station not found\"}");
                 } else {
                     handle_station_state(c, sid);
                 }
             }
         } else if (mg_match(hm->uri, mg_str("/api/station/+/command"), NULL)) {
-            if (!api_auth_ok(hm)) {
-                mg_http_reply(c, 401, "Content-Type: application/json\r\n", "{\"error\":\"unauthorized\"}");
+            if (!api_rate_check()) {
+                mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
+            } else if (!api_auth_ok(hm)) {
+                mg_http_reply(c, 401, api_headers, "{\"error\":\"unauthorized\"}");
             } else {
                 int sid = parse_station_id(hm);
                 if (sid < 0) {
-                    mg_http_reply(c, 404, "Content-Type: application/json\r\n", "{\"error\":\"station not found\"}");
+                    mg_http_reply(c, 404, api_headers, "{\"error\":\"station not found\"}");
                 } else {
                     handle_station_command(c, hm, sid);
                 }
@@ -445,16 +490,33 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             for (int i = 0; i < MAX_PLAYERS; i++)
                 if (world.players[i].connected) count++;
 #ifdef GIT_HASH
-            mg_http_reply(c, 200, "Content-Type: application/json\r\n",
+            mg_http_reply(c, 200, api_headers,
                           "{\"status\":\"ok\",\"players\":%d,\"version\":\"%s\"}", count, GIT_HASH);
 #else
-            mg_http_reply(c, 200, "Content-Type: application/json\r\n",
+            mg_http_reply(c, 200, api_headers,
                           "{\"status\":\"ok\",\"players\":%d,\"version\":\"dev\"}", count);
 #endif
         } else {
             mg_http_reply(c, 404, "", "Not found");
         }
     } else if (ev == MG_EV_WS_OPEN) {
+        /* Per-IP connection limit to mitigate slot exhaustion */
+        #define MAX_CONNS_PER_IP 4
+        {
+            int ip_count = 0;
+            for (int i = 0; i < MAX_PLAYERS; i++) {
+                if (world.players[i].connected && world.players[i].conn) {
+                    struct mg_connection *pc = (struct mg_connection *)world.players[i].conn;
+                    if (memcmp(&pc->rem.addr, &c->rem.addr, sizeof(c->rem.addr)) == 0)
+                        ip_count++;
+                }
+            }
+            if (ip_count >= MAX_CONNS_PER_IP) {
+                printf("[server] per-IP limit reached for connection, rejecting\n");
+                mg_ws_send(c, NULL, 0, WEBSOCKET_OP_CLOSE);
+                return;
+            }
+        }
         int pid = alloc_player();
         if (pid < 0) {
             mg_ws_send(c, NULL, 0, WEBSOCKET_OP_CLOSE);
@@ -466,6 +528,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         sp->id = (uint8_t)pid;
         sp->conn = c;
         sp->session_ready = false;
+        sp->grace_timer = 5.0f;  /* Must send SESSION within 5 seconds */
         /* Start with fresh ship — save is loaded when client sends SESSION */
         player_init_ship(sp, &world);
         printf("[server] player %d: awaiting session token\n", pid);
@@ -637,8 +700,21 @@ int main(void) {
     api_token = getenv("SIGNAL_API_TOKEN");
     if (api_token && api_token[0] != '\0')
         printf("[server] Station API enabled (token set)\n");
-    else
-        printf("[server] Station API disabled (set SIGNAL_API_TOKEN to enable)\n");
+    else {
+        fprintf(stderr, "[WARN] SIGNAL_API_TOKEN is unset -- REST API will reject all requests\n");
+        if (getenv("SIGNAL_REQUIRE_API_TOKEN")) {
+            fprintf(stderr, "[FATAL] SIGNAL_REQUIRE_API_TOKEN set but no token provided\n");
+            return 1;
+        }
+    }
+    allowed_origin = getenv("SIGNAL_ALLOWED_ORIGIN");
+    if (!allowed_origin) allowed_origin = "*";
+    snprintf(api_headers, sizeof(api_headers),
+        "Content-Type: application/json\r\n"
+        "Access-Control-Allow-Origin: %s\r\n"
+        "X-Content-Type-Options: nosniff\r\n"
+        "Cache-Control: no-store\r\n", allowed_origin);
+    printf("[server] CORS origin: %s\n", allowed_origin);
     char listen_url[64];
     snprintf(listen_url, sizeof(listen_url), "http://0.0.0.0:%s", port);
 
@@ -797,7 +873,7 @@ int main(void) {
                 last_econ_dirty = now;
             }
         }
-        /* Tick down reconnect grace timers */
+        /* Tick down reconnect grace timers and session auth timeouts */
         for (int i = 0; i < MAX_PLAYERS; i++) {
             server_player_t *sp = &world.players[i];
             if (sp->connected && sp->grace_period) {
@@ -808,6 +884,18 @@ int main(void) {
                     uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
                     broadcast(leave_msg, 2);
                     printf("[server] player %d grace expired, fully disconnected\n", i);
+                }
+            }
+            /* Kick clients that never sent SESSION within the auth window */
+            if (sp->connected && !sp->session_ready && !sp->grace_period) {
+                sp->grace_timer -= (float)SIM_TICK_MS / 1000.0f;
+                if (sp->grace_timer <= 0.0f) {
+                    printf("[server] player %d: session timeout, disconnecting\n", i);
+                    mg_ws_send(sp->conn, NULL, 0, WEBSOCKET_OP_CLOSE);
+                    sp->connected = false;
+                    sp->conn = NULL;
+                    uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
+                    broadcast(leave_msg, 2);
                 }
             }
         }
