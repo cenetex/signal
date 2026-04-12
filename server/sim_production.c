@@ -29,21 +29,6 @@ static commodity_t furnace_ore_type(module_type_t mt) {
     }
 }
 
-/* Mirror produced material into a producer module's output buffer
- * for the flow graph. Capped at schema buffer capacity. */
-static void mirror_to_module_output(station_t *st, module_type_t mt, float amount) {
-    float cap = module_buffer_capacity(mt);
-    if (cap <= 0.0f) return;
-    for (int m = 0; m < st->module_count; m++) {
-        if (st->modules[m].type != mt) continue;
-        if (st->modules[m].scaffold) continue;
-        float room = cap - st->module_output[m];
-        if (room <= 0.0f) return;
-        float add = (amount > room) ? room : amount;
-        st->module_output[m] += add;
-        return; /* one module per type per call */
-    }
-}
 
 /* ------------------------------------------------------------------ */
 /* Refinery production                                                 */
@@ -96,44 +81,63 @@ void sim_step_refinery_production(world_t *w, float dt) {
 
 /* ------------------------------------------------------------------ */
 /* Station production (frame press, laser fab, tractor fab)            */
+/* Uses module input buffers from the flow graph — placement matters.  */
+/* Fabs also pull directly from inventory as a slow fallback so        */
+/* production never fully stalls, but flow-fed fabs run much faster.   */
 /* ------------------------------------------------------------------ */
 
 void sim_step_station_production(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
-        if (station_has_module(st, MODULE_FRAME_PRESS)) {
-            if (st->inventory[COMMODITY_FRAME] < MAX_PRODUCT_STOCK) {
-                float buf = st->inventory[COMMODITY_FERRITE_INGOT];
-                if (buf > 0.01f) {
-                    float room = MAX_PRODUCT_STOCK - st->inventory[COMMODITY_FRAME];
-                    float consume = fminf(buf, fminf(STATION_PRODUCTION_RATE * dt, room));
-                    st->inventory[COMMODITY_FERRITE_INGOT] -= consume;
-                    st->inventory[COMMODITY_FRAME] += consume;
-                    mirror_to_module_output(st, MODULE_FRAME_PRESS, consume);
-                }
+
+        for (int m = 0; m < st->module_count; m++) {
+            module_type_t mt = st->modules[m].type;
+            if (st->modules[m].scaffold) continue;
+
+            const module_schema_t *schema = module_schema(mt);
+            if (schema->kind != MODULE_KIND_PRODUCER) continue;
+            /* Furnaces handled separately in sim_step_refinery_production */
+            if (mt == MODULE_FURNACE || mt == MODULE_FURNACE_CU || mt == MODULE_FURNACE_CR) continue;
+
+            commodity_t input_com = schema->input;
+            commodity_t output_com = schema->output;
+            if (input_com >= COMMODITY_COUNT || output_com >= COMMODITY_COUNT) continue;
+            if (st->inventory[output_com] >= MAX_PRODUCT_STOCK) continue;
+
+            float room = MAX_PRODUCT_STOCK - st->inventory[output_com];
+            float rate = schema->rate > 0.0f ? schema->rate : STATION_PRODUCTION_RATE;
+
+            /* Primary: consume from module input buffer (filled by flow graph).
+             * This is the fast path — placement-dependent throughput. */
+            float produced = 0.0f;
+            if (st->module_input[m] > 0.01f) {
+                float from_buffer = fminf(st->module_input[m], fminf(rate * dt, room));
+                st->module_input[m] -= from_buffer;
+                st->inventory[output_com] += from_buffer;
+                room -= from_buffer;
+                produced += from_buffer;
             }
-        }
-        if (station_has_module(st, MODULE_LASER_FAB)) {
-            if (st->inventory[COMMODITY_LASER_MODULE] < MAX_PRODUCT_STOCK) {
-                float buf_co = st->inventory[COMMODITY_CUPRITE_INGOT];
-                if (buf_co > 0.01f) {
-                    float room = MAX_PRODUCT_STOCK - st->inventory[COMMODITY_LASER_MODULE];
-                    float consume = fminf(buf_co, fminf(STATION_PRODUCTION_RATE * dt, room));
-                    st->inventory[COMMODITY_CUPRITE_INGOT] -= consume;
-                    st->inventory[COMMODITY_LASER_MODULE] += consume;
-                    mirror_to_module_output(st, MODULE_LASER_FAB, consume);
-                }
+
+            /* Fallback: slow trickle from station inventory (0.2x rate).
+             * Only kicks in when the flow graph delivered nothing this tick.
+             * Prevents total stall for poorly-placed fabs. */
+            if (produced < 0.001f && room > 0.01f && st->inventory[input_com] > 0.01f) {
+                float fallback_rate = rate * 0.2f;
+                float from_inv = fminf(st->inventory[input_com], fminf(fallback_rate * dt, room));
+                st->inventory[input_com] -= from_inv;
+                st->inventory[output_com] += from_inv;
+                produced += from_inv;
             }
-        }
-        if (station_has_module(st, MODULE_TRACTOR_FAB)) {
-            if (st->inventory[COMMODITY_TRACTOR_MODULE] < MAX_PRODUCT_STOCK) {
-                float buf_ln = st->inventory[COMMODITY_CRYSTAL_INGOT];
-                if (buf_ln > 0.01f) {
-                    float room = MAX_PRODUCT_STOCK - st->inventory[COMMODITY_TRACTOR_MODULE];
-                    float consume = fminf(buf_ln, fminf(STATION_PRODUCTION_RATE * dt, room));
-                    st->inventory[COMMODITY_CRYSTAL_INGOT] -= consume;
-                    st->inventory[COMMODITY_TRACTOR_MODULE] += consume;
-                    mirror_to_module_output(st, MODULE_TRACTOR_FAB, consume);
+
+            /* Mirror produced amount to output buffer for downstream flow */
+            if (produced > 0.0f) {
+                float cap = module_buffer_capacity(mt);
+                if (cap > 0.0f) {
+                    float buf_room = cap - st->module_output[m];
+                    if (buf_room > 0.0f) {
+                        float add = fminf(produced, buf_room);
+                        st->module_output[m] += add;
+                    }
                 }
             }
         }
@@ -292,20 +296,41 @@ void step_furnace_smelting(world_t *w, float dt) {
 /* Material flow graph (#280)                                          */
 /* ------------------------------------------------------------------ */
 
+/* Shortest slot distance on a ring, accounting for wrap-around.
+ * e.g. on a 6-slot ring, slot 0 and slot 5 are distance 1, not 5. */
+static int ring_slot_distance(int slot_a, int slot_b, int total_slots) {
+    int d = abs(slot_a - slot_b);
+    if (total_slots > 0 && d > total_slots / 2)
+        d = total_slots - d;
+    return d > 0 ? d : 1;
+}
+
 /* Adjacency-aware transfer rate between two modules on the same station.
- * Same ring + adjacent slots = fast. Same ring + far slots = medium.
- * Cross-ring = slow trickle (drones will speed this up later, #281). */
+ * Same ring: fast when adjacent, drops with slot distance (wrap-aware).
+ * Cross-ring: based on angular distance — closer angles = faster beam.
+ * Layout shapes throughput: placement matters. */
 static float module_flow_rate(const station_t *st, int producer_idx, int consumer_idx) {
     const station_module_t *p = &st->modules[producer_idx];
     const station_module_t *c = &st->modules[consumer_idx];
     if (p->ring == c->ring && p->ring >= 1) {
-        int slot_dist = abs((int)p->slot - (int)c->slot);
-        if (slot_dist == 0) slot_dist = 1;
-        /* Same ring: 5/sec for adjacent, drops with distance */
-        return 5.0f / (float)slot_dist;
+        int slots = STATION_RING_SLOTS[p->ring];
+        int d = ring_slot_distance((int)p->slot, (int)c->slot, slots);
+        /* Same ring: 5/sec adjacent, drops with distance along ring */
+        return 5.0f / (float)d;
     }
-    /* Cross-ring or core: trickle (drones will improve this) */
-    return 1.0f;
+    /* Cross-ring: rate depends on angular proximity.
+     * Uses base slot angles (ignoring ring rotation) so the rate is
+     * stable — placement matters, not the current rotation phase. */
+    if (p->ring >= 1 && c->ring >= 1) {
+        float p_angle = TWO_PI_F * (float)p->slot / (float)STATION_RING_SLOTS[p->ring];
+        float c_angle = TWO_PI_F * (float)c->slot / (float)STATION_RING_SLOTS[c->ring];
+        float da = fabsf(p_angle - c_angle);
+        if (da > PI_F) da = TWO_PI_F - da;
+        /* da=0 (same angle) → 3.0/sec. da=PI (opposite) → 0.5/sec. */
+        float t = da / PI_F;
+        return 3.0f - t * 2.5f;
+    }
+    return 0.5f;
 }
 
 /* Match a producer's output commodity against any module's input commodity.
@@ -339,16 +364,53 @@ void step_module_flow(world_t *w, float dt) {
             if (st->modules[p].scaffold) continue;
             if (st->module_output[p] <= 0.0f) continue;
             commodity_t output = module_schema_output(st->modules[p].type);
-            /* Storage modules also push their stored material (treat as output) */
+            /* Storage modules pull from station inventory and push into the
+             * flow graph. They feed both furnaces (with ore) and fabs (with
+             * ingots), acting as buffers in the production chain. */
             if (output == COMMODITY_COUNT) {
                 module_kind_t k = module_kind(st->modules[p].type);
-                if (k == MODULE_KIND_STORAGE) {
-                    /* Storage's output commodity is whatever it's holding;
-                     * for now we don't track per-storage commodity, so skip
-                     * unless the schema declares one. Leave as future work. */
-                    continue;
+                if (k != MODULE_KIND_STORAGE) continue;
+
+                float cap = module_buffer_capacity(st->modules[p].type);
+                if (cap <= 0.0f) continue;
+
+                /* Scan all commodities that downstream modules want.
+                 * Pull the first available one from inventory. */
+                if (st->module_output[p] < cap * 0.5f) {
+                    /* Check what consumers on this station need */
+                    commodity_t feedable[] = {
+                        COMMODITY_FERRITE_ORE, COMMODITY_CUPRITE_ORE, COMMODITY_CRYSTAL_ORE,
+                        COMMODITY_FERRITE_INGOT, COMMODITY_CUPRITE_INGOT, COMMODITY_CRYSTAL_INGOT
+                    };
+                    for (int fi = 0; fi < 6; fi++) {
+                        commodity_t com = feedable[fi];
+                        if (st->inventory[com] <= 0.1f) continue;
+                        /* Check if any module on this station actually wants this */
+                        bool wanted = false;
+                        for (int c = 0; c < st->module_count; c++) {
+                            if (c == p || st->modules[c].scaffold) continue;
+                            if (module_accepts_input(&st->modules[c], com)) {
+                                float c_cap = module_buffer_capacity(st->modules[c].type);
+                                if (c_cap > 0.0f && st->module_input[c] < c_cap) {
+                                    wanted = true; break;
+                                }
+                            }
+                        }
+                        if (!wanted) continue;
+                        float pull = fminf(st->inventory[com], (cap - st->module_output[p]) * 0.5f);
+                        if (pull > 0.01f) {
+                            st->inventory[com] -= pull;
+                            st->module_output[p] += pull;
+                            output = com; /* remember what we're carrying */
+                        }
+                        break;
+                    }
                 }
-                continue;
+                if (st->module_output[p] <= 0.0f) continue;
+                /* If we didn't just pull, we're draining residual buffer.
+                 * Use ferrite ore as a fallback output type — consumers
+                 * re-check via module_accepts_input anyway. */
+                if (output == COMMODITY_COUNT) output = COMMODITY_FERRITE_ORE;
             }
 
             /* Find the best consumer (closest, has space) */

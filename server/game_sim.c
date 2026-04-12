@@ -1200,6 +1200,8 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
     }
 
     int max_tow = 2 + sp->ship.tractor_level * 2; /* 2/4/6/8/10 */
+    float collect_r = ship_collect_radius(&sp->ship);
+    float collect_sq = collect_r * collect_r;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!asteroid_is_collectible(a)) continue;
@@ -1209,15 +1211,24 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         if (d_sq <= nearby_sq) sp->nearby_fragments++;
         if (d_sq <= tr_sq) {
             sp->tractor_fragments++;
-            /* Instant grab: tractor pulse snaps fragments to tow chain.
-             * No drift phase — if it's in range and there's room, grab it. */
-            if (sp->ship.towed_count < max_tow) {
-                sp->ship.towed_fragments[sp->ship.towed_count] = (int16_t)i;
-                sp->ship.towed_count++;
-                a->last_towed_by = (int8_t)sp->id;
-                sp->ship.stat_ore_mined += a->ore;
-                emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
-                                            .pickup = {.ore = a->ore, .fragments = 1}});
+            if (d_sq <= collect_sq) {
+                /* Close enough to attach */
+                if (sp->ship.towed_count < max_tow) {
+                    sp->ship.towed_fragments[sp->ship.towed_count] = (int16_t)i;
+                    sp->ship.towed_count++;
+                    a->last_towed_by = (int8_t)sp->id;
+                    sp->ship.stat_ore_mined += a->ore;
+                    emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
+                                                .pickup = {.ore = a->ore, .fragments = 1}});
+                }
+            } else {
+                /* In tractor range but not close: pull toward ship */
+                float dist = sqrtf(d_sq);
+                vec2 dir = v2_scale(to_ship, 1.0f / dist);
+                float pull = 300.0f * dt;
+                a->vel = v2_add(a->vel, v2_scale(dir, pull));
+                /* Light drag so fragments don't overshoot wildly */
+                a->vel = v2_scale(a->vel, 1.0f / (1.0f + 2.0f * dt));
             }
         }
     }
@@ -2642,26 +2653,32 @@ static float shipyard_intake_rate(const station_t *st, int shipyard_idx, commodi
     if (prod_type == MODULE_COUNT) return 0.5f; /* unknown commodity, slow trickle */
 
     int yard_ring = st->modules[shipyard_idx].ring;
-    int best_same_ring_dist = -1;
-    bool found_cross_ring = false;
+    int yard_slot = (int)st->modules[shipyard_idx].slot;
+    float best_rate = 0.0f;
     for (int i = 0; i < st->module_count; i++) {
         if (i == shipyard_idx) continue;
         if (st->modules[i].scaffold) continue;
         if (st->modules[i].type != prod_type) continue;
+        float rate;
         if (st->modules[i].ring == yard_ring) {
-            int dist = abs((int)st->modules[i].slot - (int)st->modules[shipyard_idx].slot);
-            if (best_same_ring_dist < 0 || dist < best_same_ring_dist)
-                best_same_ring_dist = dist;
+            /* Same ring: wrap-aware slot distance */
+            int slots = STATION_RING_SLOTS[yard_ring];
+            int d = abs((int)st->modules[i].slot - yard_slot);
+            if (slots > 0 && d > slots / 2) d = slots - d;
+            if (d < 1) d = 1;
+            rate = 5.0f / (float)d;
         } else {
-            found_cross_ring = true;
+            /* Cross-ring: angular distance via base slot angles (rotation-independent) */
+            float y_angle = TWO_PI_F * (float)yard_slot / (float)STATION_RING_SLOTS[yard_ring];
+            float p_angle = TWO_PI_F * (float)st->modules[i].slot / (float)STATION_RING_SLOTS[st->modules[i].ring];
+            float da = fabsf(y_angle - p_angle);
+            if (da > PI_F) da = TWO_PI_F - da;
+            float t = da / PI_F;
+            rate = 3.0f - t * 2.5f;
         }
+        if (rate > best_rate) best_rate = rate;
     }
-    if (best_same_ring_dist >= 0) {
-        /* Same ring: 5 units/sec for adjacent (dist=1), drops with distance */
-        return 5.0f / (float)(best_same_ring_dist > 0 ? best_same_ring_dist : 1);
-    }
-    if (found_cross_ring) return 1.0f; /* cross-ring trickle (drones come later) */
-    return 0.5f; /* no producer, just background trickle from inventory */
+    return best_rate > 0.0f ? best_rate : 0.5f;
 }
 
 /* Find an existing nascent scaffold being built at this station, if any. */

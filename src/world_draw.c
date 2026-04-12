@@ -767,6 +767,62 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                 }
             }
 
+            /* Fabricator: beam to nearest supplier when input buffer has material */
+            if (!m->scaffold && (m->type == MODULE_FRAME_PRESS ||
+                                  m->type == MODULE_LASER_FAB ||
+                                  m->type == MODULE_TRACTOR_FAB)) {
+                float fr, fg, fb;
+                module_color(m->type, &fr, &fg, &fb);
+                bool producing = station->module_input[mod_idx[i]] > 0.1f;
+
+                /* Find nearest module that could supply this fab (furnace or storage) */
+                vec2 supplier = positions[i];
+                {
+                    float best_d = 1e18f;
+                    for (int mi2 = 0; mi2 < station->module_count; mi2++) {
+                        if (mi2 == mod_idx[i]) continue;
+                        if (station->modules[mi2].scaffold) continue;
+                        module_type_t st = station->modules[mi2].type;
+                        /* Suppliers: furnaces, silos, or other producers */
+                        bool is_supplier = (st == MODULE_FURNACE || st == MODULE_FURNACE_CU ||
+                                           st == MODULE_FURNACE_CR || st == MODULE_ORE_SILO ||
+                                           st == MODULE_CARGO_BAY);
+                        if (!is_supplier) continue;
+                        vec2 sp = module_world_pos_ring(station, station->modules[mi2].ring,
+                                                       station->modules[mi2].slot);
+                        float dd = v2_dist_sq(positions[i], sp);
+                        if (dd < best_d) { best_d = dd; supplier = sp; }
+                    }
+                }
+
+                if (producing) {
+                    /* Active: colored beam from supplier to fab */
+                    float flicker = 0.7f + 0.3f * sinf(g.world.time * 37.0f + (float)m->slot * 2.0f);
+                    float zap = sinf(g.world.time * 29.0f) * 0.5f + 0.5f;
+                    vec2 bdir = v2_sub(supplier, positions[i]);
+                    float blen = sqrtf(v2_len_sq(bdir));
+                    if (blen > 1.0f) {
+                        vec2 nd = v2_scale(bdir, 1.0f / blen);
+                        vec2 perp = v2(-nd.y, nd.x);
+                        vec2 mid = v2_scale(v2_add(positions[i], supplier), 0.5f);
+                        vec2 j1 = v2_add(mid, v2_scale(perp, 4.0f * zap));
+                        /* Main colored beam */
+                        draw_segment(positions[i], supplier, fr, fg, fb, 0.6f * flicker);
+                        /* Jitter beam */
+                        draw_segment(positions[i], j1, fr * 0.7f, fg * 0.7f, fb * 0.7f, 0.35f * flicker);
+                        draw_segment(j1, supplier, fr * 0.7f, fg * 0.7f, fb * 0.7f, 0.35f * flicker);
+                        /* White core */
+                        draw_segment(positions[i], supplier, 1.0f, 0.95f, 0.9f, 0.15f * flicker);
+                    }
+                    /* Glow at fab */
+                    draw_circle_filled(positions[i], 30.0f, 8, fr * 0.8f, fg * 0.8f, fb * 0.8f, 0.2f * flicker);
+                } else {
+                    /* Idle: faint connection line */
+                    float pulse = 0.3f + 0.15f * sinf(g.world.time * 2.0f + (float)m->slot);
+                    draw_segment(positions[i], supplier, fr, fg, fb, pulse * 0.1f);
+                }
+            }
+
             /* Dock berth indicator: show assigned berth when docking,
              * or all unoccupied berths dimly when in range */
             if (m->type == MODULE_DOCK && is_nearby && !m->scaffold) {
