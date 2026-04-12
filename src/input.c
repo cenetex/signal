@@ -7,6 +7,7 @@
 #include "music.h"
 #include "net.h"
 #include "onboarding.h"
+#include "signal_model.h"
 
 void clear_input_state(void) {
     memset(g.input.key_down, 0, sizeof(g.input.key_down));
@@ -662,7 +663,16 @@ input_intent_t sample_input_intent(void) {
      * loop on the player's ship. Any manual movement or mine input
      * cancels it. Works docked or undocked. */
     if (is_key_pressed(SAPP_KEYCODE_O)) {
-        intent.toggle_autopilot = true;
+        if (!LOCAL_PLAYER.autopilot_mode) {
+            float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+            if (sig < SIGNAL_BAND_OPERATIONAL) {
+                set_notice("Signal too weak for autopilot.");
+            } else {
+                intent.toggle_autopilot = true;
+            }
+        } else {
+            intent.toggle_autopilot = true; /* always allow turning off */
+        }
     }
     return intent;
 }
