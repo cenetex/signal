@@ -940,25 +940,12 @@ void draw_ship_tractor_field(void) {
     float tr = ship_tractor_range(&LOCAL_PLAYER.ship);
 
     if (LOCAL_PLAYER.ship.tractor_active) {
-        /* Pulse ring: expands from ship to tractor range over ~0.3s,
-         * then holds at full range while R is held. */
+        /* Pulse ring: expands from ship to tractor range over ~0.3s */
         float hold_time = g.world.time - g.input.tractor_press_time;
         float expand = clampf(hold_time / 0.3f, 0.0f, 1.0f);
         float radius = 20.0f + (tr - 20.0f) * expand;
-        float alpha = 0.6f - 0.25f * expand;  /* brighter at start, settles */
+        float alpha = (0.6f - 0.25f * expand) * (expand < 1.0f ? 1.0f : 0.5f);
         draw_circle_outline(LOCAL_PLAYER.ship.pos, radius, 40, PAL_F_SIGNAL_MINT, alpha);
-        /* Steady range ring at full expansion */
-        if (expand >= 1.0f) {
-            float pulse = 0.18f + (sinf(g.world.time * 5.0f) * 0.06f);
-            draw_circle_outline(LOCAL_PLAYER.ship.pos, tr, 40, 0.24f, 0.86f, 1.0f, pulse);
-        }
-    } else if (LOCAL_PLAYER.ship.towed_count > 0) {
-        /* Not tractoring but carrying — dim range indicator */
-        float pulse = 0.12f + (sinf(g.world.time * 3.0f) * 0.04f);
-        draw_circle_outline(LOCAL_PLAYER.ship.pos, tr, 40, 0.20f, 0.60f, 0.70f, pulse);
-    } else if (LOCAL_PLAYER.nearby_fragments > 0) {
-        /* Fragments nearby but not holding R — subtle hint */
-        draw_circle_outline(LOCAL_PLAYER.ship.pos, tr, 40, 0.15f, 0.50f, 0.60f, 0.10f);
     }
 }
 

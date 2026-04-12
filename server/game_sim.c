@@ -1135,22 +1135,23 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             continue;
         }
         asteroid_t *a = &w->asteroids[idx];
-        /* Tractor drag: pull toward a point behind the ship, maintaining
-         * safe distance. Fragments feel heavy and tactile, not springy. */
+        /* Tow physics: fragments match ship velocity + spring toward ship.
+         * Start by inheriting ship velocity so they keep pace. */
         float tractor_r = ship_tractor_range(&sp->ship);
         float safe_dist = 40.0f + a->radius + ship_hull_def(&sp->ship)->ship_radius;
         vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
         float dist_to_ship = v2_len(to_ship);
 
-        /* If too far, pull toward ship (but not closer than safe distance) */
-        if (dist_to_ship > tractor_r * 0.7f) {
-            /* Strong pull to catch up */
-            vec2 pull = v2_scale(to_ship, 4.0f);
-            a->vel = v2_add(a->vel, v2_scale(pull, dt));
-        } else if (dist_to_ship > safe_dist) {
-            /* Gentle pull — keep in tow range */
-            vec2 pull = v2_scale(to_ship, 1.5f);
-            a->vel = v2_add(a->vel, v2_scale(pull, dt));
+        /* Blend fragment velocity toward ship velocity — keeps pace */
+        float blend = clampf(8.0f * dt, 0.0f, 1.0f);
+        a->vel = v2_add(v2_scale(a->vel, 1.0f - blend), v2_scale(sp->ship.vel, blend));
+
+        /* Spring toward ship — stronger when further away */
+        if (dist_to_ship > safe_dist && dist_to_ship > 0.1f) {
+            vec2 dir = v2_scale(to_ship, 1.0f / dist_to_ship);
+            float urgency = clampf((dist_to_ship - safe_dist) / tractor_r, 0.0f, 1.0f);
+            float strength = 400.0f + 800.0f * urgency;
+            a->vel = v2_add(a->vel, v2_scale(dir, strength * dt));
         }
 
         /* Push away if too close (don't slam into ship) */
@@ -1159,8 +1160,8 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             a->vel = v2_add(a->vel, v2_scale(push, dt));
         }
 
-        /* Drag — fragments feel heavy, bleed speed over time */
-        a->vel = v2_scale(a->vel, 1.0f / (1.0f + 2.0f * dt));
+        /* Light drag — just enough to prevent oscillation */
+        a->vel = v2_scale(a->vel, 1.0f / (1.0f + 1.0f * dt));
 
         /* Never faster than the ship + some slack */
         float ship_spd = v2_len(sp->ship.vel);
