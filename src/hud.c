@@ -579,18 +579,8 @@ void draw_hud_panels(void) {
         return;
     }
     draw_hull_warning_overlay();
-    float top_x = 0.0f;
-    float top_y = 0.0f;
-    float top_w = 0.0f;
-    float top_h = 0.0f;
-    float bottom_x = 0.0f;
-    float bottom_y = 0.0f;
-    float bottom_w = 0.0f;
-    float bottom_h = 0.0f;
-    float message_x = 0.0f;
-    float message_y = 0.0f;
-    float message_w = 0.0f;
-    float message_h = 0.0f;
+    float top_x = 0.0f, top_y = 0.0f, top_w = 0.0f, top_h = 0.0f;
+    float bottom_x = 0.0f, bottom_y = 0.0f, bottom_w = 0.0f, bottom_h = 0.0f;
     get_flight_hud_rects(&top_x, &top_y, &top_w, &top_h, &bottom_x, &bottom_y, &bottom_w, &bottom_h);
 
     draw_ui_panel(top_x, top_y, top_w, top_h, 0.03f);
