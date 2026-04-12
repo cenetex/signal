@@ -946,6 +946,23 @@ void draw_ship_tractor_field(void) {
         float radius = 20.0f + (tr - 20.0f) * expand;
         float alpha = (0.6f - 0.25f * expand) * (expand < 1.0f ? 1.0f : 0.5f);
         draw_circle_outline(LOCAL_PLAYER.ship.pos, radius, 40, PAL_F_SIGNAL_MINT, alpha);
+    } else if (LOCAL_PLAYER.ship.towed_count > 0) {
+        /* LEASHED: draw beam lines to fragments, color by stretch */
+        float slack = tr * 0.5f;
+        float band = tr - slack;
+        for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
+            int idx = LOCAL_PLAYER.ship.towed_fragments[t];
+            if (idx < 0 || idx >= MAX_ASTEROIDS || !g.world.asteroids[idx].active) continue;
+            vec2 fpos = g.world.asteroids[idx].pos;
+            float dist = sqrtf(v2_dist_sq(LOCAL_PLAYER.ship.pos, fpos));
+            float stretch = clampf((dist - slack) / band, 0.0f, 1.0f);
+            /* Green when slack, amber when taut, red near snap */
+            float beam_r = stretch;
+            float beam_g = 1.0f - stretch * 0.6f;
+            float beam_b = 0.3f * (1.0f - stretch);
+            float beam_a = 0.15f + 0.45f * stretch;
+            draw_segment(LOCAL_PLAYER.ship.pos, fpos, beam_r, beam_g, beam_b, beam_a);
+        }
     }
 }
 

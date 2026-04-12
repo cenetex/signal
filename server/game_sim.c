@@ -1224,6 +1224,56 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
     }
 }
 
+/* ---- Leashed fragment physics ---- */
+
+/* When fragments are towed but tractor is OFF (LEASHED state):
+ * elastic band physics with slack zone, quadratic ramp, and snap. */
+static void step_leashed_fragments(world_t *w, server_player_t *sp, float dt) {
+    float tractor_r = ship_tractor_range(&sp->ship);
+    float slack_length = tractor_r * 0.5f;  /* no force below 50% range */
+    float band_range = tractor_r - slack_length;
+    int max_tow = 2 + sp->ship.tractor_level * 2;
+
+    for (int t = sp->ship.towed_count - 1; t >= 0; t--) {
+        int idx = sp->ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
+        asteroid_t *a = &w->asteroids[idx];
+        vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
+        float dist = v2_len(to_ship);
+
+        /* Snap: beam breaks at max tractor range */
+        if (dist > tractor_r) {
+            sp->ship.towed_count--;
+            sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
+            sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+            continue;
+        }
+
+        /* Slack zone: no force below slack_length */
+        if (dist <= slack_length || dist < 0.1f) continue;
+
+        /* Elastic: quadratic ramp from slack to max */
+        float stretch = (dist - slack_length) / band_range;  /* 0..1 */
+        stretch = clampf(stretch, 0.0f, 1.0f);
+
+        /* Pull fragment toward ship */
+        vec2 dir = v2_scale(to_ship, 1.0f / dist);
+        float pull_strength = stretch * stretch * 200.0f;
+        a->vel = v2_add(a->vel, v2_scale(dir, pull_strength * dt));
+
+        /* Drag on ship: reduce ship velocity proportionally */
+        float drag = 0.3f * stretch * ((float)(sp->ship.towed_count) / (float)max_tow);
+        sp->ship.vel = v2_scale(sp->ship.vel, 1.0f - drag * dt);
+    }
+
+    /* Light drag on leashed fragments so they don't orbit forever */
+    for (int t = 0; t < sp->ship.towed_count; t++) {
+        int idx = sp->ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+        w->asteroids[idx].vel = v2_scale(w->asteroids[idx].vel, 1.0f / (1.0f + 0.5f * dt));
+    }
+}
+
 /* Deposit towed fragments: when the SHIP is near an ore buyer module,
  * all towed fragments get consumed (ore → station, credits → player).
  * Fragments don't need to individually reach the hopper — the ship does. */
@@ -2139,7 +2189,10 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                     release_towed_scaffold(w, sp);
                 }
                 step_towed_cleanup(w, sp);
-                if (sp->ship.tractor_active) step_fragment_collection(w, sp, dt);
+                if (sp->ship.tractor_active)
+                    step_fragment_collection(w, sp, dt);
+                else if (sp->ship.towed_count > 0)
+                    step_leashed_fragments(w, sp, dt);
                 step_scaffold_tow(w, sp, dt);
 
                 /* B while towing scaffold = place it (snap to outpost or found station) */
