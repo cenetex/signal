@@ -663,5 +663,92 @@ float nav_forward_clearance(const world_t *w, vec2 pos, vec2 vel,
             }
         }
     }
+    /* Check station structures — core, ring walls, and modules */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+        float st_dsq = v2_dist_sq(st->pos, pos);
+        float max_r = 600.0f;
+        if (st_dsq > (lookahead + max_r) * (lookahead + max_r)) continue;
+
+        /* Core circle */
+        if (st->radius > 0.0f) {
+            vec2 to_c = v2_sub(st->pos, pos);
+            float fd = v2_dot(to_c, fwd);
+            if (fd > -st->radius && fd < lookahead + st->radius) {
+                vec2 perp_v = v2(-fwd.y, fwd.x);
+                float lat = fabsf(v2_dot(to_c, perp_v));
+                float core_clear = st->radius + ship_radius + 30.0f;
+                if (lat < core_clear && fd > 0.0f) {
+                    float urgency = 1.0f - clampf(fd / lookahead, 0.0f, 1.0f);
+                    float scale = 1.0f - urgency;
+                    if (scale < worst) worst = scale;
+                }
+            }
+        }
+
+        /* Module positions on rings */
+        for (int mi = 0; mi < st->module_count; mi++) {
+            if (st->modules[mi].scaffold) continue;
+            vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
+            vec2 to_m = v2_sub(mp, pos);
+            float fd = v2_dot(to_m, fwd);
+            if (fd < -STATION_MODULE_COL_RADIUS || fd > lookahead) continue;
+            vec2 perp_v = v2(-fwd.y, fwd.x);
+            float lat = fabsf(v2_dot(to_m, perp_v));
+            float mod_clear = STATION_MODULE_COL_RADIUS + ship_radius + 15.0f;
+            if (lat < mod_clear && fd > 0.0f) {
+                float urgency = 1.0f - clampf(fd / lookahead, 0.0f, 1.0f);
+                float scale = 1.0f - urgency;
+                if (scale < worst) worst = scale;
+            }
+        }
+
+        /* Ring corridor walls — simplified check: treat each ring as a
+         * circle obstacle when the probe ray crosses near a corridor arc.
+         * Full ray-circle intersection is expensive; instead, check if
+         * the ship is heading toward a ring band and there's no dock gap. */
+        for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
+            bool has_modules = false;
+            for (int mi = 0; mi < st->module_count; mi++)
+                if (st->modules[mi].ring == ring) { has_modules = true; break; }
+            if (!has_modules) continue;
+
+            float ring_r = STATION_RING_RADIUS[ring];
+            /* Quick check: is the probe ray near this ring radius? */
+            vec2 to_c = v2_sub(st->pos, pos);
+            float dist_to_center = sqrtf(v2_len_sq(to_c));
+            /* Ship approaching ring from outside or inside? */
+            float ring_dist = fabsf(dist_to_center - ring_r);
+            if (ring_dist > lookahead + ship_radius + 40.0f) continue;
+
+            /* Check angle at closest approach to ring — is there a dock? */
+            float approach_ang = atan2f(-to_c.y + fwd.y * dist_to_center,
+                                        -to_c.x + fwd.x * dist_to_center);
+            /* Simplified: just check if the heading points toward the ring
+             * and there's no dock at that angle */
+            float ship_ang = atan2f(pos.y - st->pos.y, pos.x - st->pos.x);
+            bool dock_gap = false;
+            for (int mi = 0; mi < st->module_count; mi++) {
+                if (st->modules[mi].ring != ring) continue;
+                if (st->modules[mi].type != MODULE_DOCK) continue;
+                if (st->modules[mi].scaffold) continue;
+                float dock_ang = module_angle_ring(st, ring, st->modules[mi].slot);
+                int slots_n = STATION_RING_SLOTS[ring];
+                float slot_arc = (slots_n > 0) ? (TWO_PI_F / (float)slots_n) : TWO_PI_F;
+                if (fabsf(wrap_angle(ship_ang - dock_ang)) < slot_arc * 0.4f) {
+                    dock_gap = true; break;
+                }
+            }
+            (void)approach_ang;
+
+            if (!dock_gap && ring_dist < ship_radius + 40.0f) {
+                float urgency = 1.0f - clampf(ring_dist / (ship_radius + 80.0f), 0.0f, 1.0f);
+                float scale = 1.0f - urgency;
+                if (scale < worst) worst = scale;
+            }
+        }
+    }
+
     return worst;
 }
