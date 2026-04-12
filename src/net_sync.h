@@ -21,6 +21,7 @@ void apply_remote_contracts(const contract_t* contracts, int count);
 void apply_remote_station_identity(const NetStationIdentity* si);
 void apply_remote_scaffolds(const NetScaffoldState* scaffolds, int count);
 void apply_remote_hail_response(uint8_t station, float credits);
+void apply_remote_events(const sim_event_t *events, int count);
 void begin_player_state_batch(void);
 void apply_remote_player_state(const NetPlayerState* state);
 void apply_remote_player_ship(const NetPlayerShipState* state);

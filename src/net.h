@@ -179,6 +179,7 @@ typedef struct {
                      float ore_mined, float credits_earned, float credits_spent,
                      int asteroids_fractured);
     void (*on_world_time)(float server_time);
+    void (*on_events)(const sim_event_t *events, int count);
 } NetCallbacks;
 
 /* Initialize networking and connect to the relay server.

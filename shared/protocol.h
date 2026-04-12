@@ -46,6 +46,7 @@ enum {
     NET_MSG_PLAN            = 0x23, /* client -> server: outpost planning intents */
     NET_MSG_WORLD_SCAFFOLDS = 0x24, /* server -> client: active scaffold pool */
     NET_MSG_HAIL_RESPONSE   = 0x25, /* server -> client: hail collected payout */
+    NET_MSG_EVENTS          = 0x26, /* server -> client: sim event batch */
 };
 
 /* ------------------------------------------------------------------ */
@@ -107,6 +108,16 @@ enum {
     NET_ACTION_BUY_SCAFFOLD_TYPED = 50, /* +module_type offset, range [50..50+MODULE_COUNT) */
     NET_ACTION_DELIVER_COMMODITY  = 70, /* +commodity offset, range [70..70+COMMODITY_COUNT) */
     NET_ACTION_AUTOPILOT_TOGGLE   = 90, /* toggle player mining autopilot on/off */
+};
+
+/* ------------------------------------------------------------------ */
+/* Event broadcast (NET_MSG_EVENTS)                                   */
+/* ------------------------------------------------------------------ */
+
+/* Fixed-size event record: [type:1][player_id:1][payload:16] = 18 bytes.
+ * Payload meaning depends on type — unused bytes are zero. */
+enum {
+    NET_EVENT_RECORD_SIZE   = 18,
 };
 
 /* Compile-time check: action ranges must not overlap.

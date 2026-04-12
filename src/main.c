@@ -704,7 +704,7 @@ static void sim_step(float dt) {
         g.thrusting = (intent.thrust > 0.0f) && !LOCAL_PLAYER.docked;
     }
 
-    /* Play audio from sim events (singleplayer only — multiplayer has no server events) */
+    /* Play audio + trigger UI from sim events (both local and multiplayer) */
     process_sim_events(&g.world.events);
 
     /* Detect state transitions for music/episode triggers (works in both modes).
@@ -837,6 +837,7 @@ static void init(void) {
             cbs.on_contracts = apply_remote_contracts;
             cbs.on_death = on_remote_death;
             cbs.on_world_time = on_remote_world_time;
+            cbs.on_events = apply_remote_events;
             g.multiplayer_enabled = net_init(server_url, &cbs);
             if (g.multiplayer_enabled) {
                 /* Deactivate the local server — the remote server is authoritative.

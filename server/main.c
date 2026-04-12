@@ -726,6 +726,12 @@ int main(void) {
                             station_identity_dirty[s] = true;
                     }
                 }
+                /* Broadcast all events to clients for audio + UI */
+                if (world.events.count > 0) {
+                    uint8_t ebuf[2 + SIM_MAX_EVENTS * NET_EVENT_RECORD_SIZE];
+                    int elen = serialize_events(ebuf, &world.events);
+                    if (elen > 2) broadcast(ebuf, (size_t)elen);
+                }
                 sim_accum -= SIM_DT;
                 steps++;
             }

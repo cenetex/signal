@@ -211,6 +211,13 @@ void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
     }
 }
 
+void apply_remote_events(const sim_event_t *events, int count) {
+    /* Copy into g.world.events so process_sim_events() picks them up */
+    if (count > SIM_MAX_EVENTS) count = SIM_MAX_EVENTS;
+    memcpy(g.world.events.events, events, (size_t)count * sizeof(sim_event_t));
+    g.world.events.count = count;
+}
+
 void apply_remote_hail_response(uint8_t station, float credits) {
     if (station >= MAX_STATIONS) {
         set_notice("No station in range to hail.");

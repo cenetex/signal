@@ -477,6 +477,54 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_EVENTS:
+        if (len >= 2 && net_state.callbacks.on_events) {
+            int ecount = data[1];
+            if (ecount > SIM_MAX_EVENTS) ecount = SIM_MAX_EVENTS;
+            if ((int)len < 2 + ecount * NET_EVENT_RECORD_SIZE) break;
+            sim_event_t evbuf[SIM_MAX_EVENTS];
+            for (int i = 0; i < ecount; i++) {
+                const uint8_t *p = &data[2 + i * NET_EVENT_RECORD_SIZE];
+                sim_event_t *ev = &evbuf[i];
+                memset(ev, 0, sizeof(*ev));
+                ev->type = (sim_event_type_t)p[0];
+                ev->player_id = (int)p[1];
+                switch (ev->type) {
+                case SIM_EVENT_FRACTURE:
+                    ev->fracture.tier = (asteroid_tier_t)p[2]; break;
+                case SIM_EVENT_PICKUP:
+                    ev->pickup.ore = read_f32_le(&p[2]);
+                    ev->pickup.fragments = (int)p[6]; break;
+                case SIM_EVENT_UPGRADE:
+                    ev->upgrade.upgrade = (ship_upgrade_t)p[2]; break;
+                case SIM_EVENT_DAMAGE:
+                    ev->damage.amount = read_f32_le(&p[2]); break;
+                case SIM_EVENT_OUTPOST_PLACED:
+                    ev->outpost_placed.slot = (int)p[2]; break;
+                case SIM_EVENT_OUTPOST_ACTIVATED:
+                    ev->outpost_activated.slot = (int)p[2]; break;
+                case SIM_EVENT_MODULE_ACTIVATED:
+                    ev->module_activated.station = (int)p[2];
+                    ev->module_activated.module_idx = (int)p[3];
+                    ev->module_activated.module_type = (int)p[4]; break;
+                case SIM_EVENT_NPC_SPAWNED:
+                    ev->npc_spawned.slot = (int)p[2];
+                    ev->npc_spawned.role = (npc_role_t)p[3];
+                    ev->npc_spawned.home_station = (int)p[4]; break;
+                case SIM_EVENT_STATION_CONNECTED:
+                    ev->station_connected.connected_count = (int)p[2]; break;
+                case SIM_EVENT_CONTRACT_COMPLETE:
+                    ev->contract_complete.action = (contract_action_t)p[2]; break;
+                case SIM_EVENT_SCAFFOLD_READY:
+                    ev->scaffold_ready.station = (int)p[2];
+                    ev->scaffold_ready.module_type = (int)p[3]; break;
+                default: break;
+                }
+            }
+            net_state.callbacks.on_events(evbuf, ecount);
+        }
+        break;
+
     case NET_MSG_SERVER_INFO:
         if (len >= 2) {
             int hash_len = len - 1;

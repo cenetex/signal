@@ -634,4 +634,76 @@ static inline void parse_plan(const uint8_t *data, int len, input_intent_t *inte
     }
 }
 
+/* ------------------------------------------------------------------ */
+/* Event broadcast serialization                                       */
+/* ------------------------------------------------------------------ */
+
+/* Serialize all events from the current sim step into a NET_MSG_EVENTS
+ * packet. Skips DEATH (has its own message) and HAIL_RESPONSE (ditto).
+ * Returns total packet length. */
+static inline int serialize_events(uint8_t *buf, const sim_events_t *events) {
+    int count = 0;
+    for (int i = 0; i < events->count; i++) {
+        const sim_event_t *ev = &events->events[i];
+        /* Skip types that already have dedicated messages */
+        if (ev->type == SIM_EVENT_DEATH) continue;
+        if (ev->type == SIM_EVENT_HAIL_RESPONSE) continue;
+
+        uint8_t *p = &buf[2 + count * NET_EVENT_RECORD_SIZE];
+        memset(p, 0, NET_EVENT_RECORD_SIZE);
+        p[0] = (uint8_t)ev->type;
+        p[1] = (uint8_t)ev->player_id;
+
+        switch (ev->type) {
+        case SIM_EVENT_FRACTURE:
+            p[2] = (uint8_t)ev->fracture.tier;
+            break;
+        case SIM_EVENT_PICKUP:
+            write_f32_le(&p[2], ev->pickup.ore);
+            p[6] = (uint8_t)ev->pickup.fragments;
+            break;
+        case SIM_EVENT_UPGRADE:
+            p[2] = (uint8_t)ev->upgrade.upgrade;
+            break;
+        case SIM_EVENT_DAMAGE:
+            write_f32_le(&p[2], ev->damage.amount);
+            break;
+        case SIM_EVENT_OUTPOST_PLACED:
+            p[2] = (uint8_t)ev->outpost_placed.slot;
+            break;
+        case SIM_EVENT_OUTPOST_ACTIVATED:
+            p[2] = (uint8_t)ev->outpost_activated.slot;
+            break;
+        case SIM_EVENT_MODULE_ACTIVATED:
+            p[2] = (uint8_t)ev->module_activated.station;
+            p[3] = (uint8_t)ev->module_activated.module_idx;
+            p[4] = (uint8_t)ev->module_activated.module_type;
+            break;
+        case SIM_EVENT_NPC_SPAWNED:
+            p[2] = (uint8_t)ev->npc_spawned.slot;
+            p[3] = (uint8_t)ev->npc_spawned.role;
+            p[4] = (uint8_t)ev->npc_spawned.home_station;
+            break;
+        case SIM_EVENT_STATION_CONNECTED:
+            p[2] = (uint8_t)ev->station_connected.connected_count;
+            break;
+        case SIM_EVENT_CONTRACT_COMPLETE:
+            p[2] = (uint8_t)ev->contract_complete.action;
+            break;
+        case SIM_EVENT_SCAFFOLD_READY:
+            p[2] = (uint8_t)ev->scaffold_ready.station;
+            p[3] = (uint8_t)ev->scaffold_ready.module_type;
+            break;
+        default:
+            /* MINING_TICK, DOCK, LAUNCH, SELL, REPAIR, SIGNAL_LOST,
+             * ORDER_REJECTED: type + player_id is sufficient */
+            break;
+        }
+        count++;
+    }
+    buf[0] = NET_MSG_EVENTS;
+    buf[1] = (uint8_t)count;
+    return 2 + count * NET_EVENT_RECORD_SIZE;
+}
+
 #endif /* NET_PROTOCOL_H */
