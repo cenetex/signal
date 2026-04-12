@@ -713,6 +713,7 @@ static void sim_step(float dt) {
 
     /* Play audio + trigger UI from sim events (both local and multiplayer) */
     process_sim_events(&g.world.events);
+    g.world.events.count = 0;  /* consume — don't replay on next sim step */
 
     /* Detect state transitions for music/episode triggers (works in both modes).
      * Must run BEFORE was_docked is updated to detect the transition. */
