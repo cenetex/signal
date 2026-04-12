@@ -27,7 +27,7 @@ jobs:
             -DCMAKE_C_FLAGS="-Werror"
           cmake --build build-test
           ulimit -s 16384
-          ./build-test/space_miner_test
+          ./build-test/signal_test
 
   # ASan: parallel with basic tests.
   test-asan:
@@ -41,7 +41,7 @@ jobs:
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
           cmake --build build-san
           ulimit -s 16384
-          ./build-san/space_miner_test
+          ./build-san/signal_test
 
   # Static analysis: parallel with tests.
   test-static:
@@ -97,7 +97,7 @@ jobs:
             --errors-for-leak-kinds=definite \
             --track-origins=yes \
             --main-stacksize=16777216 \
-            ./build-valgrind/space_miner_test 2>&1 | tail -30
+            ./build-valgrind/signal_test 2>&1 | tail -30
 
   # Client WASM build — parallel with tests.
   build-client:
@@ -124,8 +124,8 @@ jobs:
           cp web/play.html _site/play/index.html
           cp web/music.html _site/music/index.html
           cp web/music.html _site/ost/index.html
-          cp build-web/space_miner.js _site/play/space_miner.js
-          cp build-web/space_miner.wasm _site/play/space_miner.wasm
+          cp build-web/signal.js _site/play/signal.js
+          cp build-web/signal.wasm _site/play/signal.wasm
           cp docs/*.svg _site/docs/ 2>/dev/null || true
           sed -i 's|<head>|<head><script>window.SIGNAL_SERVER="wss://signal-ws.ratimics.com/ws";</script>|' _site/play/index.html
 

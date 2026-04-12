@@ -15,15 +15,15 @@ jobs:
         include:
           - os: ubuntu-latest
             name: linux-x64
-            artifact: space_miner
+            artifact: signal
             cmake_flags: ""
           - os: macos-latest
             name: macos-arm64
-            artifact: space_miner
+            artifact: signal
             cmake_flags: ""
           - os: windows-latest
             name: windows-x64
-            artifact: space_miner.exe
+            artifact: signal.exe
             cmake_flags: ""
     runs-on: ${{ matrix.os }}
     steps:
@@ -38,27 +38,27 @@ jobs:
       - name: Build
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=${{ github.ref_name }}
-          cmake --build build --config Release --target space_miner
+          cmake --build build --config Release --target signal
 
       - name: Package (Unix)
         if: runner.os != 'Windows'
         run: |
           mkdir -p dist
           cp build/${{ matrix.artifact }} dist/
-          cd dist && tar czf ../space_miner-${{ matrix.name }}.tar.gz *
+          cd dist && tar czf ../signal-${{ matrix.name }}.tar.gz *
 
       - name: Package (Windows)
         if: runner.os == 'Windows'
         run: |
           mkdir dist
           copy build\Release\${{ matrix.artifact }} dist\
-          cd dist && Compress-Archive -Path * -DestinationPath ..\space_miner-${{ matrix.name }}.zip
+          cd dist && Compress-Archive -Path * -DestinationPath ..\signal-${{ matrix.name }}.zip
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: space_miner-${{ matrix.name }}
-          path: space_miner-${{ matrix.name }}.*
+          name: signal-${{ matrix.name }}
+          path: signal-${{ matrix.name }}.*
 
   build-server:
     runs-on: ubuntu-latest
@@ -68,19 +68,19 @@ jobs:
       - name: Build server
         run: |
           cmake -S . -B build -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=${{ github.ref_name }}
-          cmake --build build --config Release --target space_miner_server
+          cmake --build build --config Release --target signal_server
 
       - name: Package
         run: |
           mkdir -p dist
-          cp build/space_miner_server dist/
-          cd dist && tar czf ../space_miner_server-linux-x64.tar.gz *
+          cp build/signal_server dist/
+          cd dist && tar czf ../signal_server-linux-x64.tar.gz *
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: space_miner_server-linux-x64
-          path: space_miner_server-linux-x64.tar.gz
+          name: signal_server-linux-x64
+          path: signal_server-linux-x64.tar.gz
 
   attach-to-release:
     needs: [build-native, build-server]

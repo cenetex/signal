@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.21)
 
-project(space_miner C)
+project(signal C)
 
 set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
@@ -21,28 +21,28 @@ endif()
 
 if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
     # --- Headless game server ---
-    add_executable(space_miner_server server/main.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c server/mongoose.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c)
-    target_include_directories(space_miner_server PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
-    target_compile_definitions(space_miner_server PRIVATE GIT_HASH="${GIT_HASH}" SIM_LOG_ENABLED=0)
+    add_executable(signal_server server/main.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c server/mongoose.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c)
+    target_include_directories(signal_server PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
+    target_compile_definitions(signal_server PRIVATE GIT_HASH="${GIT_HASH}" SIM_LOG_ENABLED=0)
     if(NOT MSVC)
-        target_link_libraries(space_miner_server PRIVATE m)
-        target_compile_options(space_miner_server PRIVATE -Wall -Wextra -Wpedantic)
+        target_link_libraries(signal_server PRIVATE m)
+        target_compile_options(signal_server PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 
-    add_executable(space_miner_test src/test_main.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)
-    target_include_directories(space_miner_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
+    add_executable(signal_test src/test_main.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)
+    target_include_directories(signal_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
     if(NOT MSVC)
-        target_link_libraries(space_miner_test PRIVATE m)
-        target_compile_options(space_miner_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_link_libraries(signal_test PRIVATE m)
+        target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic)
     endif()
 endif()
 
 if(BUILD_TESTS_ONLY)
-    add_executable(space_miner_test src/test_main.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)
-    target_include_directories(space_miner_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
+    add_executable(signal_test src/test_main.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)
+    target_include_directories(signal_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
     if(NOT MSVC)
-        target_link_libraries(space_miner_test PRIVATE m)
-        target_compile_options(space_miner_test PRIVATE -Wall -Wextra -Wpedantic)
+        target_link_libraries(signal_test PRIVATE m)
+        target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic)
     endif()
     return()
 endif()
@@ -59,37 +59,37 @@ if(NOT EMSCRIPTEN)
 endif()
 
 if(WIN32 AND NOT EMSCRIPTEN)
-    add_executable(space_miner WIN32 ${GAME_SOURCES})
+    add_executable(signal WIN32 ${GAME_SOURCES})
 else()
-    add_executable(space_miner ${GAME_SOURCES})
+    add_executable(signal ${GAME_SOURCES})
 endif()
 
-target_include_directories(space_miner PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/sokol" "${CMAKE_CURRENT_SOURCE_DIR}/vendor" "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
-target_compile_definitions(space_miner PRIVATE GIT_HASH="${GIT_HASH}")
+target_include_directories(signal PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/sokol" "${CMAKE_CURRENT_SOURCE_DIR}/vendor" "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
+target_compile_definitions(signal PRIVATE GIT_HASH="${GIT_HASH}")
 
 if(MSVC)
-    target_compile_definitions(space_miner PRIVATE _CRT_SECURE_NO_WARNINGS)
-    target_compile_options(space_miner PRIVATE /W4)
+    target_compile_definitions(signal PRIVATE _CRT_SECURE_NO_WARNINGS)
+    target_compile_options(signal PRIVATE /W4)
 else()
-    target_compile_options(space_miner PRIVATE -Wall -Wextra -Wpedantic)
+    target_compile_options(signal PRIVATE -Wall -Wextra -Wpedantic)
 endif()
 
 if(EMSCRIPTEN)
-    target_compile_definitions(space_miner PRIVATE SOKOL_GLES3)
+    target_compile_definitions(signal PRIVATE SOKOL_GLES3)
 elseif(APPLE)
-    target_compile_definitions(space_miner PRIVATE SOKOL_METAL)
-    target_compile_options(space_miner PRIVATE "-x" "objective-c")
+    target_compile_definitions(signal PRIVATE SOKOL_METAL)
+    target_compile_options(signal PRIVATE "-x" "objective-c")
 else()
-    target_compile_definitions(space_miner PRIVATE SOKOL_GLCORE)
+    target_compile_definitions(signal PRIVATE SOKOL_GLCORE)
 endif()
 
 if(NOT MSVC)
-    target_link_libraries(space_miner PRIVATE m)
+    target_link_libraries(signal PRIVATE m)
 endif()
 
 if(EMSCRIPTEN)
-    set_target_properties(space_miner PROPERTIES SUFFIX ".html")
-    target_link_options(space_miner PRIVATE
+    set_target_properties(signal PROPERTIES SUFFIX ".html")
+    target_link_options(signal PRIVATE
         "SHELL:-sWASM=1"
         "SHELL:-sALLOW_MEMORY_GROWTH=1"
         "SHELL:-sUSE_WEBGL2=1"
@@ -102,7 +102,7 @@ if(EMSCRIPTEN)
         "SHELL:-lwebsocket.js"
     )
 elseif(APPLE)
-    target_link_libraries(space_miner PRIVATE
+    target_link_libraries(signal PRIVATE
         objc
         "-framework Cocoa"
         "-framework AudioToolbox"
@@ -111,7 +111,7 @@ elseif(APPLE)
         "-framework MetalKit"
     )
 elseif(WIN32)
-    target_link_libraries(space_miner PRIVATE
+    target_link_libraries(signal PRIVATE
         gdi32
         user32
         shell32
@@ -123,11 +123,11 @@ else()
     find_package(OpenGL REQUIRED)
     find_package(X11 REQUIRED)
 
-    target_include_directories(space_miner PRIVATE
+    target_include_directories(signal PRIVATE
         "${X11_INCLUDE_DIR}"
         ${ALSA_INCLUDE_DIRS}
     )
-    target_link_libraries(space_miner PRIVATE
+    target_link_libraries(signal PRIVATE
         OpenGL::GL
         ${ALSA_LIBRARIES}
         ${X11_LIBRARIES}
