@@ -1199,6 +1199,7 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         }
     }
 
+    int max_tow = 2 + sp->ship.tractor_level * 2; /* 2/4/6/8/10 */
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!asteroid_is_collectible(a)) continue;
@@ -1206,29 +1207,18 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
         float d_sq = v2_len_sq(to_ship);
         if (d_sq <= nearby_sq) sp->nearby_fragments++;
-        int max_tow = 2 + sp->ship.tractor_level * 2; /* 2/4/6/8/10 */
         if (d_sq <= tr_sq) {
             sp->tractor_fragments++;
-            /* Only pull fragments toward ship if tow chain has room.
-             * Otherwise they drift naturally — no orbiting hazard. */
+            /* Instant grab: tractor pulse snaps fragments to tow chain.
+             * No drift phase — if it's in range and there's room, grab it. */
             if (sp->ship.towed_count < max_tow) {
-                float d = sqrtf(d_sq);
-                float pull = 1.0f - clampf(d / tr, 0.0f, 1.0f);
-                vec2 pull_dir = d > 0.001f ? v2_scale(to_ship, 1.0f / d) : ship_forward(sp->ship.angle);
-                a->vel = v2_add(a->vel, v2_scale(pull_dir, FRAGMENT_TRACTOR_ACCEL * lerpf(0.35f, 1.0f, pull) * dt));
-                float speed = v2_len(a->vel);
-                if (speed > FRAGMENT_MAX_SPEED) a->vel = v2_scale(v2_norm(a->vel), FRAGMENT_MAX_SPEED);
+                sp->ship.towed_fragments[sp->ship.towed_count] = (int16_t)i;
+                sp->ship.towed_count++;
+                a->last_towed_by = (int8_t)sp->id;
+                sp->ship.stat_ore_mined += a->ore;
+                emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
+                                            .pickup = {.ore = a->ore, .fragments = 1}});
             }
-        }
-        /* Tow fragment: attach to ship's tow chain (ore stays in fragment) */
-        float cr = ship_collect_radius(&sp->ship) + a->radius;
-        if (d_sq <= cr * cr && sp->ship.towed_count < max_tow) {
-            sp->ship.towed_fragments[sp->ship.towed_count] = (int16_t)i;
-            sp->ship.towed_count++;
-            a->last_towed_by = (int8_t)sp->id;
-            sp->ship.stat_ore_mined += a->ore;
-            emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
-                                        .pickup = {.ore = a->ore, .fragments = 1}});
         }
     }
 }
