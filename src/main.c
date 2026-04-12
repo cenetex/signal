@@ -151,11 +151,31 @@ static void reset_world(void) {
 
 static void reset_step_feedback(void) {
     LOCAL_PLAYER.hover_asteroid = -1;
-    /* Beam state is server-authoritative in multiplayer — don't clear it
-     * here or we wipe what apply_remote_player_state just set before
-     * render gets a chance to draw it. In singleplayer the local server
-     * mirror overwrites beam state every tick anyway. */
-    if (!g.multiplayer_enabled) {
+    /* Beam prediction: in multiplayer, server beam coords arrive at 10 Hz
+     * with RTT latency. Predict the beam visually on the client when the
+     * player holds Space. Server still owns hit/damage/fracture. */
+    if (g.multiplayer_enabled) {
+        if (is_key_down(SAPP_KEYCODE_SPACE) && !LOCAL_PLAYER.docked) {
+            vec2 fwd = ship_forward(LOCAL_PLAYER.ship.angle);
+            vec2 muzzle = ship_muzzle(LOCAL_PLAYER.ship.pos,
+                                       LOCAL_PLAYER.ship.angle,
+                                       &LOCAL_PLAYER.ship);
+            LOCAL_PLAYER.beam_active = true;
+            LOCAL_PLAYER.beam_start = muzzle;
+            /* Aim at hover asteroid if we have one, otherwise max range */
+            if (LOCAL_PLAYER.hover_asteroid >= 0 &&
+                LOCAL_PLAYER.hover_asteroid < MAX_ASTEROIDS &&
+                g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
+                LOCAL_PLAYER.beam_end = g.world.asteroids[LOCAL_PLAYER.hover_asteroid].pos;
+                LOCAL_PLAYER.beam_hit = true;
+            } else {
+                LOCAL_PLAYER.beam_end = v2_add(muzzle, v2_scale(fwd, MINING_RANGE));
+                LOCAL_PLAYER.beam_hit = false;
+            }
+        }
+        /* Server corrections (hit/ineffective flags) override prediction
+         * when they arrive via WORLD_PLAYERS — applied in net_sync.c */
+    } else {
         LOCAL_PLAYER.beam_active = false;
         LOCAL_PLAYER.beam_hit = false;
     }
