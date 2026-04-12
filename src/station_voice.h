@@ -155,7 +155,9 @@ static const char *NPC_CHATTER_HAULER[NPC_CHATTER_HAULER_COUNT] = {
 /* ------------------------------------------------------------------ */
 
 typedef enum {
+    HAIL_COND_EMPTY_HOLD,           /* no cargo at all — brand new player */
     HAIL_COND_HAS_ORE,              /* player has raw ore in cargo */
+    HAIL_COND_LOW_CREDITS,          /* credits < 50, no outpost — early game */
     HAIL_COND_HAS_CREDITS_NO_OUTPOST, /* credits > 200 but no outpost */
     HAIL_COND_HAS_OUTPOST_NO_FURNACE, /* outpost exists but no furnace */
     HAIL_COND_HAS_FURNACE,          /* outpost has a furnace */
@@ -178,8 +180,12 @@ typedef struct {
 
 /* Prospect Refinery — teaches the mining loop */
 static const hail_response_t PROSPECT_HAILS[] = {
+    { HAIL_COND_EMPTY_HOLD,
+      "Hold's empty. Crack a rock — hold [Space] on an asteroid." },
     { HAIL_COND_HAS_ORE,
       "Hold's not empty. Dock up and press [1]." },
+    { HAIL_COND_LOW_CREDITS,
+      "Keep mining. Ore pays. Every run counts." },
     { HAIL_COND_HAS_CREDITS_NO_OUTPOST,
       "You've got credits. Think about building out there." },
     { HAIL_COND_HAS_OUTPOST_NO_FURNACE,
@@ -193,6 +199,8 @@ static const hail_response_t PROSPECT_HAILS[] = {
 
 /* Kepler Yard — teaches construction */
 static const hail_response_t KEPLER_HAILS[] = {
+    { HAIL_COND_EMPTY_HOLD,
+      "Nothing to sell here. Go mine something first." },
     { HAIL_COND_HAS_NO_FRAMES,
       "Frames are the bones of everything. Press [F] to buy." },
     { HAIL_COND_HAS_NO_SCAFFOLD,
@@ -208,6 +216,8 @@ static const hail_response_t KEPLER_HAILS[] = {
 
 /* Helios Works — teaches expansion */
 static const hail_response_t HELIOS_HAILS[] = {
+    { HAIL_COND_EMPTY_HOLD,
+      "Empty hold? There's ore everywhere. Go get some." },
     { HAIL_COND_HAS_SPECIALTY_ORE,
       "Beautiful ore. Dock up — we pay well for crystal." },
     { HAIL_COND_NEVER_UPGRADED,

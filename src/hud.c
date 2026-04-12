@@ -452,21 +452,29 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
-    /* Idle tips from the nearest station — stations guide, not the game */
+    /* Default idle tips — generic system hints, not station-voiced.
+     * Stations only speak when hailed (H key) or when docked. */
     {
-        int ns = nearest_signal_station(LOCAL_PLAYER.ship.pos);
-        const char *speaker = (ns >= 0 && ns < MAX_STATIONS)
-            ? g.world.stations[ns].name : "SIGNAL";
-        int vi = (ns >= 0 && ns < 3) ? ns : 0;
-        /* Use station-voiced onboarding lines as idle hints */
         int tip = (int)(g.world.time / 6.0f) % 4;
-        static const int tip_map[] = {
-            VOICE_ONBOARD_MINE, VOICE_ONBOARD_COLLECT,
-            VOICE_ONBOARD_HAUL, VOICE_ONBOARD_SELL,
-        };
-        snprintf(label, label_size, "%s", speaker);
-        snprintf(message, message_size, "%s", STATION_ONBOARD[vi][tip_map[tip]]);
-        *r = 164; *g0 = 177; *b = 205;
+        switch (tip) {
+        case 0:
+            snprintf(label, label_size, "MINE");
+            snprintf(message, message_size, "Find an asteroid and hold [Space] to mine it.");
+            break;
+        case 1:
+            snprintf(label, label_size, "TRACTOR");
+            snprintf(message, message_size, "Press [R] to toggle your tractor and pull fragments in.");
+            break;
+        case 2:
+            snprintf(label, label_size, "HAIL");
+            snprintf(message, message_size, "Press [H] near a station to hail it.");
+            break;
+        default:
+            snprintf(label, label_size, "BUILD");
+            snprintf(message, message_size, "Order a scaffold at any [Tab] SHIPYARD, then tow it to your outpost.");
+            break;
+        }
+        *r = 100; *g0 = 100; *b = 110;
         return true;
     }
 }

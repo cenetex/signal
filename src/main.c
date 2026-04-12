@@ -189,8 +189,16 @@ static void step_notice_timer(float dt) {
 static bool check_hail_condition(hail_cond_t cond) {
     const ship_t *ship = &LOCAL_PLAYER.ship;
     switch (cond) {
+    case HAIL_COND_EMPTY_HOLD:
+        return ship_total_cargo(ship) < 0.5f;
     case HAIL_COND_HAS_ORE:
         return ship_raw_ore_total(ship) > 0.5f;
+    case HAIL_COND_LOW_CREDITS: {
+        if (ship->credits >= 50.0f) return false;
+        for (int s = 3; s < MAX_STATIONS; s++)
+            if (station_exists(&g.world.stations[s])) return false;
+        return true;
+    }
     case HAIL_COND_HAS_CREDITS_NO_OUTPOST: {
         if (ship->credits < 200.0f) return false;
         for (int s = 3; s < MAX_STATIONS; s++)
