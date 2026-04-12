@@ -43,4 +43,8 @@ void interpolate_world_for_render(void);
 /* Get interpolated remote player states for rendering. */
 const NetPlayerState* net_get_interpolated_players(void);
 
+/* Contextual hail message for a starter station (0-2). Returns NULL for
+ * outposts or if no condition matches. Defined in main.c. */
+const char *contextual_hail_message(int station_index);
+
 #endif /* NET_SYNC_H */

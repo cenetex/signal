@@ -5,6 +5,7 @@
 #include <stdlib.h>  /* rand, RAND_MAX */
 #include "net_sync.h"
 #include "input.h"   /* set_notice() */
+#include "onboarding.h"
 #include "episode.h"
 
 void on_player_join(uint8_t player_id) {
@@ -211,13 +212,23 @@ void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
 }
 
 void apply_remote_hail_response(uint8_t station, float credits) {
-    if (credits > 0.5f) {
-        set_notice("Hail collected: +%d cr", (int)lroundf(credits));
-    } else if (station < MAX_STATIONS) {
-        set_notice("%s acknowledges your hail.", g.world.stations[station].name);
-    } else {
+    if (station >= MAX_STATIONS) {
         set_notice("No station in range to hail.");
+        return;
     }
+    /* Use the same hail overlay as singleplayer — station name + contextual
+     * voice line + credits. The notice system is for transient alerts;
+     * hails get their own 6-second radio-style overlay in the HUD. */
+    snprintf(g.hail_station, sizeof(g.hail_station), "%s", g.world.stations[station].name);
+    const char *ctx = contextual_hail_message(station);
+    if (ctx)
+        snprintf(g.hail_message, sizeof(g.hail_message), "%s", ctx);
+    else
+        snprintf(g.hail_message, sizeof(g.hail_message), "%s", g.world.stations[station].hail_message);
+    g.hail_credits = credits;
+    g.hail_station_index = station;
+    g.hail_timer = 6.0f;
+    onboarding_mark_hailed();
 }
 
 void begin_player_state_batch(void) {

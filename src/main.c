@@ -260,7 +260,7 @@ static bool check_hail_condition(hail_cond_t cond) {
     }
 }
 
-static const char *contextual_hail_message(int station_index) {
+const char *contextual_hail_message(int station_index) {
     if (station_index < 0 || station_index >= 3) return NULL;
     const hail_response_t *table = STATION_HAIL_TABLES[station_index];
     int count = STATION_HAIL_COUNTS[station_index];
