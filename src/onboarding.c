@@ -19,33 +19,8 @@
 void onboarding_load(void) {
     if (g.onboarding.loaded) return;
     g.onboarding.loaded = true;
-#ifdef __EMSCRIPTEN__
-    int flags = emscripten_run_script_int(
-        "(function(){"
-        "var s=localStorage.getItem('signal_onboarding');"
-        "if(!s)return 0;"
-        "return parseInt(s,10)||0;"
-        "})()"
-    );
-    /* Backward compat: old onboarding used bits 0-2 for 3 milestones.
-     * If old bit 2 (hailed) is set, player finished the old tutorial. */
-    if (flags & ~0xF) {
-        g.onboarding.moved     = true;
-        g.onboarding.fractured = true;
-        g.onboarding.tractored = true;
-        g.onboarding.hailed    = true;
-        g.onboarding.complete  = true;
-    } else {
-        g.onboarding.moved     = (flags & (1 << 0)) != 0;
-        g.onboarding.fractured = (flags & (1 << 1)) != 0;
-        g.onboarding.tractored = (flags & (1 << 2)) != 0;
-        g.onboarding.hailed    = (flags & (1 << 3)) != 0;
-        g.onboarding.complete  = g.onboarding.moved &&
-                                  g.onboarding.fractured &&
-                                  g.onboarding.tractored &&
-                                  g.onboarding.hailed;
-    }
-#endif
+    /* Always start fresh — controls change between versions,
+     * so the checklist re-teaches bindings every session. */
 }
 
 static void onboarding_save(void) {

@@ -182,7 +182,7 @@ typedef struct {
 /* Prospect Refinery — teaches the mining loop */
 static const hail_response_t PROSPECT_HAILS[] = {
     { HAIL_COND_EMPTY_HOLD,
-      "Hold's empty. Crack a rock — hold [R] on an asteroid." },
+      "Hold's empty. Crack a rock — hold [M] on an asteroid." },
     { HAIL_COND_HAS_ORE,
       "Hold's not empty. Dock up and press [1]." },
     { HAIL_COND_LOW_CREDITS,
