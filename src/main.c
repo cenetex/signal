@@ -293,6 +293,7 @@ static void process_sim_events(const sim_events_t *events) {
             case SIM_EVENT_DOCK:
                 if (ev->player_id == g.local_player_slot) {
                     audio_play_dock(&g.audio);
+                    g.screen_shake = fmaxf(g.screen_shake, 3.0f); /* dock clunk */
                     /* Station greets you on dock — same overlay as hail */
                     {
                         int ds = LOCAL_PLAYER.current_station;
@@ -322,7 +323,7 @@ static void process_sim_events(const sim_events_t *events) {
             case SIM_EVENT_LAUNCH:
                 if (ev->player_id == g.local_player_slot) {
                     audio_play_launch(&g.audio);
-                    set_notice("Launch corridor clear.");
+                    g.screen_shake = fmaxf(g.screen_shake, 5.0f); /* launch kick */
                     episode_trigger(&g.episode, 0); /* Ep 0: First Light */
                     /* Start music on first launch — shuffled */
                     if (!g.music.playing && !g.music.loading) {
