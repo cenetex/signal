@@ -1899,22 +1899,20 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         place_towed_scaffold(w, sp);
         return;
     }
-    if (intent->interact) {
-        if (sp->docked) { launch_ship(w, sp); return; }
-        if (sp->in_dock_range) {
-            /* Module-based docking: lock berth at approach start */
-            const station_t *dock_st = &w->stations[sp->nearby_station];
-            int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship.pos);
-            sp->dock_berth = berth;
-            vec2 bp = dock_berth_pos(dock_st, berth);
-            float d = sqrtf(v2_dist_sq(sp->ship.pos, bp));
-            if (d <= DOCK_SNAP_DISTANCE) {
-                dock_ship(w, sp);
-            } else {
-                sp->docking_approach = true;
-            }
-            return;
+    if (intent->interact && sp->docked) { launch_ship(w, sp); return; }
+    /* Hail within dock range initiates docking approach */
+    if (intent->hail && !sp->docked && sp->in_dock_range) {
+        const station_t *dock_st = &w->stations[sp->nearby_station];
+        int berth = find_best_berth(w, dock_st, sp->nearby_station, sp->ship.pos);
+        sp->dock_berth = berth;
+        vec2 bp = dock_berth_pos(dock_st, berth);
+        float d = sqrtf(v2_dist_sq(sp->ship.pos, bp));
+        if (d <= DOCK_SNAP_DISTANCE) {
+            dock_ship(w, sp);
+        } else {
+            sp->docking_approach = true;
         }
+        return;
     }
     /* Cancel docking approach if player thrusts away */
     if (sp->docking_approach && (intent->thrust > 0.1f || intent->thrust < -0.1f)) {

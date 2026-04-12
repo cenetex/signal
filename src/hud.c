@@ -867,7 +867,7 @@ void draw_hud(void) {
             sdtx_printf("%s // E launch", dock_role);
         } else if (LOCAL_PLAYER.in_dock_range) {
             sdtx_color3b(PAL_SIGNAL_MINT);
-            sdtx_puts("DOCK RING // E dock");
+            sdtx_puts("DOCK RING // H hail to dock");
         } else {
             sdtx_color3b(PAL_NAV_BLUE);
             sdtx_printf("%s %d u // %d %s", nav_role, station_distance, bearing_degrees, bearing_mark);
