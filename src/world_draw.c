@@ -69,90 +69,43 @@ void draw_background(vec2 camera) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Signal border rendering — marching squares on signal field          */
+/* Signal border rendering — dot field at band thresholds              */
 /* ------------------------------------------------------------------ */
 
-/* Marching squares: emit a line segment where the signal field crosses
- * a threshold between adjacent grid cells. Contours are field-level,
- * not per-station — they merge where station coverage overlaps. */
-static void signal_contour_cell(float threshold, float cell_size,
-                                int gx, int gy, float origin_x, float origin_y,
-                                float s00, float s10, float s01, float s11,
-                                float r, float g0, float b, float a) {
-    int code = 0;
-    if (s00 >= threshold) code |= 1;
-    if (s10 >= threshold) code |= 2;
-    if (s01 >= threshold) code |= 4;
-    if (s11 >= threshold) code |= 8;
-    if (code == 0 || code == 15) return;
-
-    float x0 = origin_x + (float)gx * cell_size;
-    float y0 = origin_y + (float)gy * cell_size;
-    float x1 = x0 + cell_size;
-    float y1 = y0 + cell_size;
-
-    #define LERP_E(va, vb, pa, pb) \
-        ((fabsf((vb)-(va)) > 0.001f) ? (pa) + ((pb)-(pa)) * ((threshold-(va))/((vb)-(va))) : (pa))
-
-    float tx = LERP_E(s00, s10, x0, x1);
-    float bx = LERP_E(s01, s11, x0, x1);
-    float ly = LERP_E(s00, s01, y0, y1);
-    float ry = LERP_E(s10, s11, y0, y1);
-
-    #define EMIT(ax,ay,bx_,by) do { \
-        sgl_c4f(r, g0, b, a); sgl_v2f(ax,ay); sgl_v2f(bx_,by); \
-    } while(0)
-
-    switch (code) {
-    case 1: case 14: EMIT(x0,ly,tx,y0); break;
-    case 2: case 13: EMIT(tx,y0,x1,ry); break;
-    case 4: case 11: EMIT(x0,ly,bx,y1); break;
-    case 8: case 7:  EMIT(bx,y1,x1,ry); break;
-    case 3: case 12: EMIT(x0,ly,x1,ry); break;
-    case 6: case 9:  EMIT(tx,y0,bx,y1); break;
-    case 5:  EMIT(x0,ly,tx,y0); EMIT(bx,y1,x1,ry); break;
-    case 10: EMIT(tx,y0,x1,ry); EMIT(x0,ly,bx,y1); break;
-    default: break;
-    }
-    #undef LERP_E
-    #undef EMIT
-}
-
 void draw_signal_borders(void) {
-    /* Sample the signal field across the visible frustum and draw
-     * contour lines at the three band thresholds. Reads from the same
-     * signal_strength_at used by gameplay — field-level, not per-station. */
-    const float CELL = 120.0f;
+    /* Place a tiny dot at each sample point where signal strength is
+     * near a band threshold. The boundary emerges as a scatter of
+     * points — no lines, no grid artifacts. */
+    const float CELL = 200.0f;
+    const float DOT  = 1.5f;
+    const float BAND_HW = 0.04f;
     float vl = cam_left()   - CELL;
     float vr = cam_right()  + CELL;
     float vt = cam_top()    - CELL;
     float vb = cam_bottom() + CELL;
 
-    int cols = (int)((vr - vl) / CELL) + 1;
-    int rows = (int)((vb - vt) / CELL) + 1;
-    if (cols < 2 || rows < 2) return;
-    if (cols > 256) cols = 256;
-    if (rows > 256) rows = 256;
-
-    float samples[256][256];
-    for (int y = 0; y < rows; y++)
-        for (int x = 0; x < cols; x++)
-            samples[y][x] = signal_strength_at(&g.world, v2(vl + (float)x * CELL, vt + (float)y * CELL));
-
-    static const struct { float threshold; float r, g, b, a; } bands[] = {
-        { SIGNAL_BAND_OPERATIONAL, 0.35f, 0.30f, 0.18f, 0.06f },
-        { SIGNAL_BAND_FRINGE,     0.30f, 0.25f, 0.12f, 0.05f },
-        { SIGNAL_BAND_FRONTIER,   0.25f, 0.18f, 0.08f, 0.04f },
+    static const struct { float threshold; float r, g, b; } bands[] = {
+        { SIGNAL_BAND_OPERATIONAL, 0.50f, 0.45f, 0.25f },
+        { SIGNAL_BAND_FRINGE,     0.40f, 0.30f, 0.15f },
+        { SIGNAL_BAND_FRONTIER,   0.30f, 0.20f, 0.10f },
     };
 
-    sgl_begin_lines();
-    for (int band = 0; band < 3; band++)
-        for (int y = 0; y < rows - 1; y++)
-            for (int x = 0; x < cols - 1; x++)
-                signal_contour_cell(bands[band].threshold, CELL, x, y, vl, vt,
-                    samples[y][x], samples[y][x+1],
-                    samples[y+1][x], samples[y+1][x+1],
-                    bands[band].r, bands[band].g, bands[band].b, bands[band].a);
+    sgl_begin_quads();
+    for (float wy = vt; wy < vb; wy += CELL) {
+        for (float wx = vl; wx < vr; wx += CELL) {
+            float sig = signal_strength_at(&g.world, v2(wx, wy));
+            for (int b = 0; b < 3; b++) {
+                float d = fabsf(sig - bands[b].threshold);
+                if (d > BAND_HW) continue;
+                float a = (1.0f - d / BAND_HW) * 0.12f;
+                sgl_c4f(bands[b].r, bands[b].g, bands[b].b, a);
+                sgl_v2f(wx - DOT, wy - DOT);
+                sgl_v2f(wx + DOT, wy - DOT);
+                sgl_v2f(wx + DOT, wy + DOT);
+                sgl_v2f(wx - DOT, wy + DOT);
+            }
+        }
+    }
     sgl_end();
 }
 
