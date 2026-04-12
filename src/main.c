@@ -1374,7 +1374,7 @@ static void frame(void) {
                     flags |= NET_INPUT_LEFT;
                 if (g.input.key_down[SAPP_KEYCODE_D] || g.input.key_down[SAPP_KEYCODE_RIGHT])
                     flags |= NET_INPUT_RIGHT;
-                if (g.input.key_down[SAPP_KEYCODE_R])
+                if (g.input.key_down[SAPP_KEYCODE_F])
                     flags |= NET_INPUT_FIRE;
                 if (g.input.key_down[SAPP_KEYCODE_SPACE] && !g.plan_mode_active)
                     flags |= NET_INPUT_TRACTOR;

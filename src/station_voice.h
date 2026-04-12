@@ -37,7 +37,7 @@ static const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
     /* Prospect Refinery — terse, practical */
     {
         /* LAUNCH  */ "Signal tag registered. Press [E] when you're ready.",
-        /* MINE    */ "Belt's hot. Hold [R] on a rock. Start small.",
+        /* MINE    */ "Belt's hot. Hold [F] on a rock. Start small.",
         /* COLLECT */ "Debris in your wake. Fly through it — tractor does the rest.",
         /* HAUL    */ "Full hold's no good out here. Bring it home.",
         /* SELL    */ "Hold's not empty. Press [1] — I'll take what you've got.",
@@ -51,7 +51,7 @@ static const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
     /* Kepler Yard — technical, trails off */
     {
         /* LAUNCH  */ "Bay clear. Press [E] to undock.",
-        /* MINE    */ "Asteroids are fragile. Hold [R] to crack one.",
+        /* MINE    */ "Asteroids are fragile. Hold [F] to crack one.",
         /* COLLECT */ "Fragments drift. Fly close — tractor pulls them in.",
         /* HAUL    */ "Ore's no good floating. Get it to a hopper.",
         /* SELL    */ "Raw ore on board? Press [1] at the refinery.",
@@ -65,7 +65,7 @@ static const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
     /* Helios Works — enthusiastic, ambitious */
     {
         /* LAUNCH  */ "Welcome to Helios. Press [E] — always more to find.",
-        /* MINE    */ "Rich veins out there. Hold [R] on a big one.",
+        /* MINE    */ "Rich veins out there. Hold [F] on a big one.",
         /* COLLECT */ "Don't leave ore behind. Fly through the debris.",
         /* HAUL    */ "Bring it home. We'll make something of it.",
         /* SELL    */ "Beautiful ore. Press [1] — we pay well.",
