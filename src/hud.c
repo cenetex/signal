@@ -452,31 +452,10 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
-    /* Default idle tips — generic system hints, not station-voiced.
-     * Stations only speak when hailed (H key) or when docked. */
-    {
-        int tip = (int)(g.world.time / 6.0f) % 4;
-        switch (tip) {
-        case 0:
-            snprintf(label, label_size, "MINE");
-            snprintf(message, message_size, "Find an asteroid and hold [Space] to mine it.");
-            break;
-        case 1:
-            snprintf(label, label_size, "TRACTOR");
-            snprintf(message, message_size, "Press [R] to toggle your tractor and pull fragments in.");
-            break;
-        case 2:
-            snprintf(label, label_size, "HAIL");
-            snprintf(message, message_size, "Press [H] near a station to hail it.");
-            break;
-        default:
-            snprintf(label, label_size, "BUILD");
-            snprintf(message, message_size, "Order a scaffold at any [Tab] SHIPYARD, then tow it to your outpost.");
-            break;
-        }
-        *r = 100; *g0 = 100; *b = 110;
-        return true;
-    }
+    /* No idle tips — context hints (MINE/TRACTOR/DOCK above) cover
+     * active situations. Empty space = empty panel. Stations speak
+     * when hailed. The game doesn't nag. */
+    return false;
 }
 
 /* ------------------------------------------------------------------ */
