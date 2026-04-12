@@ -79,7 +79,8 @@ enum {
     NET_INPUT_LEFT   = 1 << 1,
     NET_INPUT_RIGHT  = 1 << 2,
     NET_INPUT_FIRE   = 1 << 3,
-    NET_INPUT_BRAKE  = 1 << 4,
+    NET_INPUT_BRAKE   = 1 << 4,
+    NET_INPUT_TRACTOR = 1 << 5,
 };
 
 /* ------------------------------------------------------------------ */
@@ -99,7 +100,7 @@ enum {
     NET_ACTION_BUILD_MODULE   = 9,  /* DEPRECATED — legacy build menu, no-op */
     NET_ACTION_BUY_SCAFFOLD   = 25,
     NET_ACTION_HAIL           = 26,  /* collect pending credits via signal hail */
-    NET_ACTION_RELEASE_TOW    = 27,  /* toggle tractor / release towed fragments */
+    NET_ACTION_RELEASE_TOW    = 27,  /* tap R: release towed fragments (no longer toggles) */
     NET_ACTION_RESET          = 28,  /* self-destruct — respawn at nearest station */
     NET_ACTION_BUY_PRODUCT    = 30, /* +commodity offset, range [30..30+COMMODITY_COUNT) */
     NET_ACTION_PLACE_MODULE   = 49, /* place scaffold kit as module at own station */

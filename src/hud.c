@@ -112,6 +112,17 @@ void draw_ui_panel(float x, float y, float width, float height, float accent) {
     draw_ui_rule(x + width - fminf(56.0f, width * 0.18f), x + width - 14.0f, y + 14.0f, 0.18f, 0.28f, 0.38f, 0.55f);
 }
 
+void draw_ui_panel_colored(float x, float y, float width, float height, float ar, float ag, float ab) {
+    vec2 center = v2(x + (width * 0.5f), y + (height * 0.5f));
+    draw_rect_centered(center, width * 0.5f, height * 0.5f, 0.015f, 0.028f, 0.05f, 0.94f);
+    draw_rect_centered(center, (width * 0.5f) - 2.0f, (height * 0.5f) - 2.0f, 0.018f, 0.044f, 0.072f, 0.86f);
+    draw_ui_scanlines(x, y, width, height, 8.0f, 0.06f);
+    draw_rect_outline(center, width * 0.5f, height * 0.5f, 0.09f, 0.18f, 0.28f, 0.34f);
+    draw_ui_corner_brackets(x, y, width, height, ar, ag, ab, 0.82f);
+    draw_ui_rule(x + 14.0f, x + fminf(116.0f, width * 0.28f), y + 14.0f, ar, ag, ab, 0.82f);
+    draw_ui_rule(x + width - fminf(56.0f, width * 0.18f), x + width - 14.0f, y + 14.0f, 0.18f, 0.28f, 0.38f, 0.55f);
+}
+
 void get_station_panel_rect(float* x, float* y, float* width, float* height) {
     float screen_w = ui_screen_width();
     float screen_h = ui_screen_height();
@@ -598,7 +609,12 @@ void draw_hud_panels(void) {
         build_station_ui_state(&ui);
         get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
         draw_ui_scrim(0.34f);
-        draw_ui_panel(panel_x, panel_y, panel_w, panel_h, 0.08f);
+        /* Tint panel accent by station role color */
+        {
+            float sr, sg, sb;
+            station_role_color(ui.station, &sr, &sg, &sb);
+            draw_ui_panel_colored(panel_x, panel_y, panel_w, panel_h, sr, sg, sb);
+        }
 
         float inner_x = panel_x + 18.0f;
         float inner_y = panel_y + 18.0f;
@@ -892,20 +908,22 @@ void draw_hud(void) {
             sdtx_printf("SCAN PILOT // ID %d", LOCAL_PLAYER.scan_target_index);
         } else if (LOCAL_PLAYER.ship.towed_count > 0) {
             sdtx_color3b(PAL_ACTIVE);
-            sdtx_printf("TOWING %d // [R] release", LOCAL_PLAYER.ship.towed_count);
+            if (LOCAL_PLAYER.ship.tractor_active) {
+                sdtx_printf("TOWING %d // TRACTOR", LOCAL_PLAYER.ship.towed_count);
+            } else {
+                sdtx_printf("TOWING %d // tap [R] release", LOCAL_PLAYER.ship.towed_count);
+            }
         } else if (LOCAL_PLAYER.nearby_fragments > 0) {
             if (LOCAL_PLAYER.ship.tractor_active) {
                 sdtx_color3b(PAL_ACTIVE);
-                if (LOCAL_PLAYER.ship.towed_count > 0) {
-                    sdtx_printf("TOWING %d // (R) OFF", LOCAL_PLAYER.ship.towed_count);
-                } else if (LOCAL_PLAYER.tractor_fragments > 0) {
-                    sdtx_printf("TRACTOR ON // %d FRAG", LOCAL_PLAYER.tractor_fragments);
+                if (LOCAL_PLAYER.tractor_fragments > 0) {
+                    sdtx_printf("TRACTOR // %d FRAG", LOCAL_PLAYER.tractor_fragments);
                 } else {
-                    sdtx_printf("(R) TRACTOR ON // %d", LOCAL_PLAYER.nearby_fragments);
+                    sdtx_printf("hold [R] TRACTOR // %d", LOCAL_PLAYER.nearby_fragments);
                 }
             } else {
                 sdtx_color3b(PAL_TRACTOR_OFF);
-                sdtx_puts("(R) TRACTOR OFF");
+                sdtx_printf("hold [R] TRACTOR // %d nearby", LOCAL_PLAYER.nearby_fragments);
             }
         } else if (cargo_units >= cargo_capacity) {
             sdtx_color3b(PAL_ORE_AMBER);

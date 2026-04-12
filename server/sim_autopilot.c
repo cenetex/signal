@@ -184,15 +184,12 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
      * RETURN_TO_REFINERY keeps tractor ON so spring physics pull towed
      * fragments along — this matters when the user toggles autopilot ON
      * while already carrying fragments. */
-    if (sp->autopilot_state == AUTOPILOT_STEP_MINE ||
-        sp->autopilot_state == AUTOPILOT_STEP_COLLECT ||
-        (sp->autopilot_state == AUTOPILOT_STEP_RETURN_TO_REFINERY &&
-         sp->ship.towed_count > 0)) {
-        sp->ship.tractor_active = true;
-    } else if (sp->autopilot_state == AUTOPILOT_STEP_FIND_TARGET ||
-               sp->autopilot_state == AUTOPILOT_STEP_FLY_TO_TARGET) {
-        sp->ship.tractor_active = false;
-    }
+    /* Autopilot holds tractor during mining/collecting/returning with cargo */
+    sp->input.tractor_hold =
+        (sp->autopilot_state == AUTOPILOT_STEP_MINE ||
+         sp->autopilot_state == AUTOPILOT_STEP_COLLECT ||
+         (sp->autopilot_state == AUTOPILOT_STEP_RETURN_TO_REFINERY &&
+          sp->ship.towed_count > 0));
 
     /* Mode 1: mining loop. */
     switch (sp->autopilot_state) {
@@ -365,7 +362,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * the world. The COLLECT state is for the cluster spawned by
          * the rock we just fractured. Bail out the instant the tractor
          * is full OR nothing's nearby OR we've been loitering too long. */
-        sp->ship.tractor_active = true;
+        sp->input.tractor_hold = true;
         sp->input.mine = false;
         /* Signal check — don't collect in weak signal. */
         if (signal_strength_at(w, sp->ship.pos) < 0.5f) {
@@ -437,18 +434,8 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * range, release the tractor, and head out again. */
         bool need_repair = autopilot_needs_repair(&sp->ship);
 
-        /* Once we're inside hopper-pull range of the destination, release
-         * the tractor so towed fragments drop free and get caught by the
-         * station's smelt beams. */
-        float station_dist = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
-        /* Release fragments when close to station — inside furnace pull
-         * range so they actually get smelted. HOPPER_PULL_RANGE = 300u,
-         * release a bit outside that so the ship can slow down first. */
-        if (station_dist < 400.0f &&
-            sp->ship.tractor_active && sp->ship.towed_count > 0) {
-            sp->input.release_tow = true;
-        }
-        /* Drop-and-leave: fly close to station center. Standoff 200u
+        /* Fragments stay towed — furnace smelting claims them directly.
+         * Just fly close enough for furnace range. Standoff 200u
          * puts the ship inside furnace pull range from ring 1 modules. */
         vec2 fly_target = need_repair
             ? station_approach_target(st, sp->ship.pos)

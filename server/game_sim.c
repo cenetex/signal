@@ -2141,13 +2141,11 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             update_targeting_state(w, sp, forward);
             step_mining_system(w, sp, dt, sp->input.mine, forward, sig);
             if (!w->player_only_mode) {
-                /* R toggles tractor — OFF releases fragments + scaffold */
+                /* Hold R = tractor active; tap R = release fragments + scaffold */
+                sp->ship.tractor_active = sp->input.tractor_hold;
                 if (sp->input.release_tow) {
-                    sp->ship.tractor_active = !sp->ship.tractor_active;
-                    if (!sp->ship.tractor_active) {
-                        release_towed_fragments(sp);
-                        release_towed_scaffold(w, sp);
-                    }
+                    release_towed_fragments(sp);
+                    release_towed_scaffold(w, sp);
                 }
                 step_towed_cleanup(w, sp);
                 if (sp->ship.tractor_active) step_fragment_collection(w, sp, dt);
@@ -3279,7 +3277,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->ship.angle      = PI_F * 0.5f;
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
     sp->ship.towed_scaffold = -1;
-    sp->ship.tractor_active = true;
+    sp->ship.tractor_active = false;  /* driven by tractor_hold each frame */
     sp->docked          = true;
     sp->current_station = 0;
     sp->nearby_station  = 0;

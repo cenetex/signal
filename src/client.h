@@ -78,6 +78,7 @@ typedef struct {
 typedef struct {
     bool key_down[KEY_COUNT];
     bool key_pressed[KEY_COUNT];
+    float tractor_press_time;  /* world time when R was pressed, 0 = not held */
 } input_state_t;
 
 typedef struct {

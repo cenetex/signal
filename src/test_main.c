@@ -4478,7 +4478,7 @@ TEST(test_scaffold_tow_pickup) {
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
     w.players[0].docked = false;
-    w.players[0].ship.tractor_active = true;
+    w.players[0].input.tractor_hold = true;  /* hold R to grab */
 
     /* Spawn scaffold very close to the player */
     vec2 player_pos = w.players[0].ship.pos;
@@ -4500,7 +4500,7 @@ TEST(test_scaffold_tow_release_on_r) {
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
     w.players[0].docked = false;
-    w.players[0].ship.tractor_active = true;
+    w.players[0].input.tractor_hold = true;  /* hold R to grab */
 
     /* Spawn and attach scaffold */
     vec2 player_pos = w.players[0].ship.pos;
@@ -4509,7 +4509,8 @@ TEST(test_scaffold_tow_release_on_r) {
     for (int i = 0; i < 10; i++) world_sim_step(&w, SIM_DT);
     ASSERT_EQ_INT(w.players[0].ship.towed_scaffold, idx);
 
-    /* Press R to toggle tractor off — should release scaffold */
+    /* Tap R = release scaffold */
+    w.players[0].input.tractor_hold = false;
     w.players[0].input.release_tow = true;
     world_sim_step(&w, SIM_DT);
 
@@ -4525,7 +4526,7 @@ TEST(test_scaffold_tow_release_on_dock) {
     player_init_ship(&w.players[0], &w);
     w.players[0].docked = false;
     w.players[0].in_dock_range = false;
-    w.players[0].ship.tractor_active = true;
+    w.players[0].input.tractor_hold = true;
 
     /* Spawn and manually attach scaffold */
     vec2 near_station = v2_add(w.stations[0].pos, v2(100.0f, 0.0f));
@@ -4680,7 +4681,7 @@ TEST(test_scaffold_ship_drag) {
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
     w.players[0].docked = false;
-    w.players[0].ship.tractor_active = true;
+    w.players[0].input.tractor_hold = true;
     w.players[0].ship.pos = v2(5000.0f, 5000.0f);
     w.players[0].ship.vel = v2(0.0f, 0.0f);
 
@@ -4782,7 +4783,7 @@ TEST(test_scaffold_tow_speed_cap) {
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
     w.players[0].docked = false;
-    w.players[0].ship.tractor_active = true;
+    w.players[0].input.tractor_hold = true;
 
     /* Place player far from stations to avoid docking interference */
     w.players[0].ship.pos = v2(5000.0f, 5000.0f);

@@ -135,7 +135,21 @@ input_intent_t sample_input_intent(void) {
         onboarding_mark_moved();
 
     intent.mine = is_key_down(SAPP_KEYCODE_SPACE);
-    intent.release_tow = is_key_pressed(SAPP_KEYCODE_R);
+
+    /* Tractor: hold R = grab, tap R = release.
+     * Track press time; on release, if held < 200ms = tap (release). */
+    if (is_key_down(SAPP_KEYCODE_R) && !g.plan_mode_active) {
+        if (g.input.tractor_press_time == 0.0f)
+            g.input.tractor_press_time = g.world.time;
+        intent.tractor_hold = true;
+    } else {
+        if (g.input.tractor_press_time > 0.0f) {
+            float held = g.world.time - g.input.tractor_press_time;
+            if (held < 0.2f)
+                intent.release_tow = true;  /* tap = release */
+            g.input.tractor_press_time = 0.0f;
+        }
+    }
     intent.reset = is_key_pressed(SAPP_KEYCODE_X) && !LOCAL_PLAYER.docked;
     /* Safety: clear placement reticle if no longer towing or now docked */
     if (g.placement_reticle_active &&

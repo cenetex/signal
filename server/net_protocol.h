@@ -491,6 +491,7 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
     else if ((flags & NET_INPUT_RIGHT) && !(flags & NET_INPUT_LEFT))
         intent->turn = -1.0f;
     intent->mine = (flags & NET_INPUT_FIRE) != 0;
+    intent->tractor_hold = (flags & NET_INPUT_TRACTOR) != 0;
 
     /* One-shot actions — accumulate until the sim consumes them. */
     {

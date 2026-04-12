@@ -151,7 +151,8 @@ typedef struct {
     commodity_t buy_commodity;
     int mining_target_hint;  /* client's hover_asteroid, -1 = none */
     bool hail;               /* collect pending credits from nearby station */
-    bool release_tow;        /* drop all towed fragments */
+    bool tractor_hold;       /* R held — tractor active this frame */
+    bool release_tow;        /* R tapped — drop all towed fragments */
     bool reset;
     bool toggle_autopilot;   /* one-shot: flip autopilot_mode on/off */
 } input_intent_t;

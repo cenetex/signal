@@ -501,9 +501,8 @@ static void process_sim_events(const sim_events_t *events) {
 
 static void onboarding_per_frame(void) {
     if (g.onboarding.complete) return;
-    /* Tractor milestone: detect ore collection via towed_count */
-    if (!g.onboarding.tractored && g.onboarding.fractured
-        && ship_raw_ore_total(&LOCAL_PLAYER.ship) > 0.5f)
+    /* Tractor milestone: detect fragment pickup via towed_count */
+    if (!g.onboarding.tractored && LOCAL_PLAYER.ship.towed_count > 0)
         onboarding_mark_tractored();
 }
 
@@ -1376,6 +1375,8 @@ static void frame(void) {
                     flags |= NET_INPUT_RIGHT;
                 if (g.input.key_down[SAPP_KEYCODE_SPACE])
                     flags |= NET_INPUT_FIRE;
+                if (g.input.key_down[SAPP_KEYCODE_R] && !g.plan_mode_active)
+                    flags |= NET_INPUT_TRACTOR;
                 g.pending_net_action = 0;
                 uint8_t mining_target = (LOCAL_PLAYER.hover_asteroid >= 0 && LOCAL_PLAYER.hover_asteroid < 255)
                     ? (uint8_t)LOCAL_PLAYER.hover_asteroid : 255;

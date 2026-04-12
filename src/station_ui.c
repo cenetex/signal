@@ -152,22 +152,14 @@ const char* station_role_fit_title(const station_t* station) {
 void station_role_color(const station_t* station, float* r, float* g0, float* b) {
     module_type_t dom = station_dominant_module(station);
     switch (dom) {
-        case MODULE_FURNACE:
-            *r = 0.30f; *g0 = 0.80f; *b = 0.35f; break;  /* green — Prospect */
-        case MODULE_FURNACE_CU:
-            *r = 0.25f; *g0 = 0.50f; *b = 0.90f; break;  /* blue — Helios */
-        case MODULE_FURNACE_CR:
-            *r = 0.40f; *g0 = 0.35f; *b = 0.85f; break;  /* indigo — Helios */
-        case MODULE_FRAME_PRESS:
-            *r = 0.90f; *g0 = 0.75f; *b = 0.20f; break;  /* gold — Kepler */
-        case MODULE_LASER_FAB:
-            *r = 0.55f; *g0 = 0.45f; *b = 0.50f; break;  /* mauve-grey */
-        case MODULE_TRACTOR_FAB:
-            *r = 0.45f; *g0 = 0.50f; *b = 0.48f; break;  /* sage-grey */
-        case MODULE_SIGNAL_RELAY:
-            *r = 0.35f; *g0 = 0.55f; *b = 0.50f; break;  /* teal-grey */
-        default:
-            *r = 0.45f; *g0 = 0.55f; *b = 0.50f; break;
+        case MODULE_FURNACE:     PAL_UNPACK3(PAL_MODULE_FURNACE,     *r, *g0, *b); break;
+        case MODULE_FURNACE_CU:  PAL_UNPACK3(PAL_MODULE_FURNACE_CU,  *r, *g0, *b); break;
+        case MODULE_FURNACE_CR:  PAL_UNPACK3(PAL_MODULE_FURNACE_CR,  *r, *g0, *b); break;
+        case MODULE_FRAME_PRESS: PAL_UNPACK3(PAL_MODULE_FRAME_PRESS, *r, *g0, *b); break;
+        case MODULE_LASER_FAB:   PAL_UNPACK3(PAL_MODULE_LASER_FAB,   *r, *g0, *b); break;
+        case MODULE_TRACTOR_FAB: PAL_UNPACK3(PAL_MODULE_TRACTOR_FAB, *r, *g0, *b); break;
+        case MODULE_SIGNAL_RELAY:PAL_UNPACK3(PAL_MODULE_SIGNAL_RELAY, *r, *g0, *b); break;
+        default:                 PAL_UNPACK3(PAL_STATION_NEUTRAL,     *r, *g0, *b); break;
     }
 }
 

@@ -144,22 +144,18 @@ void draw_signal_borders(void) {
 
 static void module_color(module_type_t type, float *r, float *g, float *b) {
     switch (type) {
-    /* Prospect identity: green family */
-    case MODULE_FURNACE:         *r=0.30f; *g=0.80f; *b=0.35f; return; /* green — Prospect dominant */
-    case MODULE_ORE_BUYER:       *r=0.40f; *g=0.72f; *b=0.30f; return; /* yellow-green */
-    case MODULE_ORE_SILO:        *r=0.45f; *g=0.48f; *b=0.50f; return; /* cool grey (neutral — shared) */
-    /* Kepler identity: yellow/gold family */
-    case MODULE_FRAME_PRESS:     *r=0.90f; *g=0.75f; *b=0.20f; return; /* gold — Kepler dominant */
-    case MODULE_LASER_FAB:       *r=0.55f; *g=0.45f; *b=0.50f; return; /* mauve-grey (neutral) */
-    case MODULE_TRACTOR_FAB:     *r=0.45f; *g=0.50f; *b=0.48f; return; /* sage-grey (neutral) */
-    /* Helios identity: blue family */
-    case MODULE_FURNACE_CU:      *r=0.25f; *g=0.50f; *b=0.90f; return; /* bright blue */
-    case MODULE_FURNACE_CR:      *r=0.40f; *g=0.35f; *b=0.85f; return; /* indigo */
-    /* Infrastructure: neutral, won't dominate */
-    case MODULE_SIGNAL_RELAY:    *r=0.35f; *g=0.55f; *b=0.50f; return; /* teal-grey */
-    case MODULE_REPAIR_BAY:      *r=0.40f; *g=0.60f; *b=0.50f; return; /* sage */
-    case MODULE_SHIPYARD:        *r=0.85f; *g=0.70f; *b=0.20f; return; /* bright gold */
-    default:                     *r=0.35f; *g=0.40f; *b=0.45f; return; /* neutral slate */
+    case MODULE_FURNACE:      PAL_UNPACK3(PAL_MODULE_FURNACE,      *r, *g, *b); return;
+    case MODULE_ORE_BUYER:    PAL_UNPACK3(PAL_MODULE_ORE_BUYER,    *r, *g, *b); return;
+    case MODULE_ORE_SILO:     PAL_UNPACK3(PAL_MODULE_ORE_SILO,     *r, *g, *b); return;
+    case MODULE_FRAME_PRESS:  PAL_UNPACK3(PAL_MODULE_FRAME_PRESS,  *r, *g, *b); return;
+    case MODULE_LASER_FAB:    PAL_UNPACK3(PAL_MODULE_LASER_FAB,    *r, *g, *b); return;
+    case MODULE_TRACTOR_FAB:  PAL_UNPACK3(PAL_MODULE_TRACTOR_FAB,  *r, *g, *b); return;
+    case MODULE_FURNACE_CU:   PAL_UNPACK3(PAL_MODULE_FURNACE_CU,   *r, *g, *b); return;
+    case MODULE_FURNACE_CR:   PAL_UNPACK3(PAL_MODULE_FURNACE_CR,   *r, *g, *b); return;
+    case MODULE_SIGNAL_RELAY: PAL_UNPACK3(PAL_MODULE_SIGNAL_RELAY,  *r, *g, *b); return;
+    case MODULE_REPAIR_BAY:   PAL_UNPACK3(PAL_MODULE_REPAIR_BAY,    *r, *g, *b); return;
+    case MODULE_SHIPYARD:     PAL_UNPACK3(PAL_MODULE_SHIPYARD,      *r, *g, *b); return;
+    default:                  PAL_UNPACK3(PAL_MODULE_GENERIC,        *r, *g, *b); return;
     }
 }
 

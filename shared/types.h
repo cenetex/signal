@@ -103,7 +103,7 @@ typedef struct {
     int16_t towed_fragments[10];  /* max 10 with upgrades: 2 + 4*2 */
     uint8_t towed_count;
     int16_t towed_scaffold;       /* scaffold index being towed, -1 = none */
-    bool tractor_active;          /* R toggles — when off, no auto-collection */
+    bool tractor_active;          /* true while R held — drives fragment collection */
     /* Tech tree: bit per module type. Set when the player orders a
      * scaffold of that type. Drives the order menu unlock check. */
     uint32_t unlocked_modules;

@@ -105,7 +105,7 @@ bool onboarding_hint(char *label, size_t label_size,
     }
 
     snprintf(label, label_size, "SIGNAL");
-    snprintf(message, message_size, "%s [W/A/S/D] move  %s [Space] fracture  %s [R] tractor  %s [H] hail",
+    snprintf(message, message_size, "%s [W/A/S/D] move  %s [Space] fracture  %s hold [R] tractor  %s [H] hail",
         g.onboarding.moved     ? "+" : "-",
         g.onboarding.fractured ? "+" : "-",
         g.onboarding.tractored ? "+" : "-",

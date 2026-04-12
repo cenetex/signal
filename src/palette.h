@@ -5,7 +5,17 @@
  * Naming convention:
  *   PAL_<SEMANTIC>: bytes (0-255 range)
  *   PAL_F_<SEMANTIC>: floats (0.0-1.0 range)
+ *
+ * Usage:
+ *   sdtx_color3b(PAL_TEXT_PRIMARY);   -- direct in function args
+ *   sgl_c4f(PAL_F_WARNING, 1.0f);    -- direct in function args
+ *   PAL_UNPACK3(PAL_F_*, r, g, b);   -- assign to three variables/pointers
  */
+
+/* Unpack a 3-component palette macro into three lvalue assignments */
+#define PAL_UNPACK3(pal, a, b, c) do { \
+    float _pal[] = { pal }; (a) = _pal[0]; (b) = _pal[1]; (c) = _pal[2]; \
+} while (0)
 
 /* ================================================================
  * TEXT COLORS
