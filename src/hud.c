@@ -1103,26 +1103,18 @@ void draw_hud(void) {
         }
     }
 
-    /* --- [E] context prompt — always visible, below message panel --- */
-    if (!g.death_cinematic.active) {
-        const char *e_action = NULL;
-        if (LOCAL_PLAYER.docked) {
-            if (g.station_tab == STATION_TAB_CONTRACTS && g.selected_contract >= 0)
-                e_action = "[E] deliver";
-            else
-                e_action = "[E] launch";
-        } else if (LOCAL_PLAYER.docking_approach || LOCAL_PLAYER.in_dock_range) {
-            e_action = "[E] dock";
-        } else if (LOCAL_PLAYER.ship.towed_scaffold >= 0) {
-            e_action = "[E] place";
-        }
-        if (e_action) {
-            float ex = ui_text_pos(message_x + 16.0f);
-            float ey = ui_text_pos(message_y + message_h + 6.0f);
-            sdtx_pos(ex, ey);
-            sdtx_color3b(100, 110, 100);
-            sdtx_puts(e_action);
-        }
+    /* --- [E] context prompt — only when docked (hint panel doesn't show E) --- */
+    if (!g.death_cinematic.active && LOCAL_PLAYER.docked) {
+        const char *e_action;
+        if (g.station_tab == STATION_TAB_CONTRACTS && g.selected_contract >= 0)
+            e_action = "[E] deliver";
+        else
+            e_action = "[E] launch";
+        float ex = ui_text_pos(message_x + 16.0f);
+        float ey = ui_text_pos(message_y + message_h + 6.0f);
+        sdtx_pos(ex, ey);
+        sdtx_color3b(100, 110, 100);
+        sdtx_puts(e_action);
     }
 
     /* --- Multiplayer HUD indicator + version --- */
