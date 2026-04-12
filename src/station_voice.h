@@ -46,7 +46,7 @@ static const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
         /* SCAFFOLD*/ "Dock at Kepler. Tab for SHIPYARD, [1-9] to order a kit.",
         /* PLACE_T */ "Find your scaffold near the yard. Grab it with [R].",
         /* PLACE_A */ "Tow it out. Press [B] to anchor your outpost.",
-        /* COMPLETE*/ "New signal online. Welcome to the network.",
+        /* COMPLETE*/ "You know the basics. Next: build a furnace at your own outpost.",
     },
     /* Kepler Yard — technical, trails off */
     {
@@ -60,7 +60,7 @@ static const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
         /* SCAFFOLD*/ "Shipyard's tab four. Press [1-9] to queue a kit.",
         /* PLACE_T */ "Scaffold's ready. Grab it with [R] outside.",
         /* PLACE_A */ "Good spot? Press [B] to lock it down.",
-        /* COMPLETE*/ "Signal chain looks clean from here.",
+        /* COMPLETE*/ "Good setup. Next step: get a furnace running out there.",
     },
     /* Helios Works — enthusiastic, ambitious */
     {
@@ -74,7 +74,7 @@ static const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
         /* SCAFFOLD*/ "Talk to Kepler for scaffold kits. Tab, then [1-9].",
         /* PLACE_T */ "Your scaffold's waiting. Grab it with [R].",
         /* PLACE_A */ "Building out there? Press [B] to place it. Good.",
-        /* COMPLETE*/ "New signal! We should talk about modules.",
+        /* COMPLETE*/ "You're ready. Build a furnace — we'll show you what copper can do.",
     },
 };
 
