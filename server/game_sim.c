@@ -722,9 +722,14 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     }
 
     if (payout > 0.01f) {
-        earn_credits(&sp->ship, payout);
-        SIM_LOG("[sim] player %d sold cargo for %.0f cr\n", sp->id, payout);
-        emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
+        /* Pay from station credit pool — cap at what station can afford */
+        if (payout > st->credit_pool) payout = st->credit_pool;
+        if (payout > 0.01f) {
+            st->credit_pool -= payout;
+            earn_credits(&sp->ship, payout);
+            SIM_LOG("[sim] player %d sold cargo for %.0f cr\n", sp->id, payout);
+            emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
+        }
     }
     /* Clear the one-shot filter so the next plain SELL_CARGO press
      * resumes the default "deliver all" behavior. */

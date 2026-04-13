@@ -5418,6 +5418,136 @@ TEST(test_autopilot_path_matches_preview) {
 }
 
 /* ================================================================== */
+/* Economy simulations (#312)                                         */
+/* ================================================================== */
+
+TEST(test_econ_sim_npc_only_5min) {
+    /* Run the world for 5 minutes with NO players — just NPCs.
+     * Report: station credit pools, inventories, NPC activity. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    float pool0 = w->stations[0].credit_pool;
+    float pool1 = w->stations[1].credit_pool;
+    float pool2 = w->stations[2].credit_pool;
+    printf("    t=0: pools [%.0f, %.0f, %.0f]\n", pool0, pool1, pool2);
+
+    int ticks = (int)(300.0f / SIM_DT); /* 5 minutes */
+    for (int i = 0; i < ticks; i++) {
+        world_sim_step(w, SIM_DT);
+        if ((i % (ticks / 5)) == 0 && i > 0) {
+            float t = (float)i * SIM_DT;
+            printf("    t=%.0fs: pools [%.0f, %.0f, %.0f]  ingots [FE=%.0f CU=%.0f CR=%.0f]  frames=%.0f\n",
+                t,
+                w->stations[0].credit_pool, w->stations[1].credit_pool, w->stations[2].credit_pool,
+                w->stations[0].inventory[COMMODITY_FERRITE_INGOT],
+                w->stations[2].inventory[COMMODITY_CUPRITE_INGOT],
+                w->stations[2].inventory[COMMODITY_CRYSTAL_INGOT],
+                w->stations[1].inventory[COMMODITY_FRAME]);
+        }
+    }
+    printf("    t=300s: pools [%.0f, %.0f, %.0f]\n",
+        w->stations[0].credit_pool, w->stations[1].credit_pool, w->stations[2].credit_pool);
+    printf("    total credits: %.0f (started at %.0f)\n",
+        w->stations[0].credit_pool + w->stations[1].credit_pool + w->stations[2].credit_pool,
+        pool0 + pool1 + pool2);
+
+    /* Invariant: total credits in station pools should not increase
+     * (NPC smelting pays from pool, no player spending to refill) */
+    float total_now = w->stations[0].credit_pool + w->stations[1].credit_pool + w->stations[2].credit_pool;
+    ASSERT(total_now <= pool0 + pool1 + pool2 + 0.01f);
+    /* w auto-freed by WORLD_HEAP cleanup */
+}
+
+TEST(test_econ_sim_credit_circulation) {
+    /* Simulate: player smelts at Prospect, collects credits, buys ingots,
+     * hauls to Kepler, buys frames. Track credit flow. */
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+
+    float initial_pool_0 = w.stations[0].credit_pool;
+    float initial_pool_1 = w.stations[1].credit_pool;
+    float player_start = w.players[0].ship.credits;
+
+    printf("    initial: player=%.0f  prospect=%.0f  kepler=%.0f\n",
+        player_start, initial_pool_0, initial_pool_1);
+
+    /* Simulate smelting: put ore value into ledger (as if fragments smelted) */
+    uint8_t token[8] = {1,2,3,4,5,6,7,8};
+    memcpy(w.players[0].session_token, token, 8);
+    w.players[0].session_ready = true;
+    ledger_credit_supply(&w.stations[0], token, 100.0f); /* 100 cr ore value */
+
+    printf("    after smelt: prospect pool=%.0f (paid out from pool)\n",
+        w.stations[0].credit_pool);
+
+    /* Hail at Prospect to collect */
+    w.players[0].ship.pos = w.stations[0].pos;
+    w.players[0].input.hail = true;
+    w.players[0].docked = false;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.hail = false;
+
+    printf("    after hail: player=%.0f  prospect pool=%.0f\n",
+        w.players[0].ship.credits, w.stations[0].credit_pool);
+
+    /* Dock at Prospect and buy ferrite ingots */
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+    w.stations[0].inventory[COMMODITY_FERRITE_INGOT] = 50.0f;
+    w.players[0].input.buy_product = true;
+    w.players[0].input.buy_commodity = COMMODITY_FERRITE_INGOT;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.buy_product = false;
+
+    printf("    after buy at prospect: player=%.0f  prospect pool=%.0f  cargo FE=%0.f\n",
+        w.players[0].ship.credits, w.stations[0].credit_pool,
+        w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT]);
+
+    /* Deliver ingots to Kepler via contract */
+    w.contracts[0] = (contract_t){
+        .active = true, .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 10.0f,
+        .base_price = 24.0f,
+        .target_index = -1, .claimed_by = -1,
+    };
+    w.players[0].docked = true;
+    w.players[0].current_station = 1;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.service_sell = false;
+
+    printf("    after deliver to kepler: player=%.0f  kepler pool=%.0f\n",
+        w.players[0].ship.credits, w.stations[1].credit_pool);
+
+    /* Buy frames from Kepler */
+    w.stations[1].inventory[COMMODITY_FRAME] = 20.0f;
+    w.players[0].input.buy_product = true;
+    w.players[0].input.buy_commodity = COMMODITY_FRAME;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.buy_product = false;
+
+    printf("    after buy frames: player=%.0f  kepler pool=%.0f  cargo frames=%.0f\n",
+        w.players[0].ship.credits, w.stations[1].credit_pool,
+        w.players[0].ship.cargo[COMMODITY_FRAME]);
+
+    float total_credits = w.players[0].ship.credits
+        + w.stations[0].credit_pool
+        + w.stations[1].credit_pool
+        + w.stations[2].credit_pool;
+    printf("    total system credits: %.0f (started at %.0f)\n",
+        total_credits, player_start + initial_pool_0 + initial_pool_1 + w.stations[2].credit_pool);
+
+    /* Key invariant: total credits in the system should be conserved */
+    float expected_total = player_start + initial_pool_0 + initial_pool_1 + w.stations[2].credit_pool;
+    ASSERT_EQ_FLOAT(total_credits, expected_total, 1.0f);
+}
+
+/* ================================================================== */
 /* Station service semantics (#259)                                   */
 /* ================================================================== */
 
@@ -5887,6 +6017,11 @@ int main(void) {
     RUN(test_autopilot_multiple_players);
     RUN(test_autopilot_follows_path_waypoints);
     RUN(test_autopilot_path_matches_preview);
+
+    /* Economy simulations — run extended sim and report state */
+    printf("\nEconomy simulations:\n");
+    RUN(test_econ_sim_npc_only_5min);
+    RUN(test_econ_sim_credit_circulation);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
