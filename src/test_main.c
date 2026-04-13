@@ -241,7 +241,7 @@ TEST(test_ship_hull_def_miner) {
     const hull_def_t* hull = ship_hull_def(&ship);
     ASSERT_STR_EQ(hull->name, "Mining Cutter");
     ASSERT_EQ_FLOAT(hull->max_hull, 100.0f, 0.01f);
-    ASSERT_EQ_FLOAT(hull->cargo_capacity, 120.0f, 0.01f);
+    ASSERT_EQ_FLOAT(hull->cargo_capacity, 24.0f, 0.01f);
     ASSERT_EQ_FLOAT(hull->mining_rate, 28.0f, 0.01f);
 }
 
@@ -266,9 +266,9 @@ TEST(test_ship_cargo_capacity_with_upgrades) {
     ship_t ship = {0};
     ship.hull_class = HULL_CLASS_MINER;
     ship.hold_level = 0;
-    ASSERT_EQ_FLOAT(ship_cargo_capacity(&ship), 120.0f, 0.01f);
+    ASSERT_EQ_FLOAT(ship_cargo_capacity(&ship), 24.0f, 0.01f);
     ship.hold_level = 2;
-    ASSERT_EQ_FLOAT(ship_cargo_capacity(&ship), 120.0f + 2 * 24.0f, 0.01f);
+    ASSERT_EQ_FLOAT(ship_cargo_capacity(&ship), 24.0f + 2 * 8.0f, 0.01f);
 }
 
 TEST(test_ship_mining_rate_with_upgrades) {
@@ -321,7 +321,7 @@ TEST(test_npc_hull_def) {
     npc.hull_class = HULL_CLASS_NPC_MINER;
     const hull_def_t* hull = npc_hull_def(&npc);
     ASSERT_STR_EQ(hull->name, "Mining Drone");
-    ASSERT_EQ_FLOAT(hull->cargo_capacity, 40.0f, 0.01f);
+    ASSERT_EQ_FLOAT(hull->cargo_capacity, 16.0f, 0.01f);
 }
 
 TEST(test_product_name) {
