@@ -127,7 +127,7 @@ typedef enum {
 
 typedef enum {
     MODULE_DOCK,
-    MODULE_ORE_BUYER,         /* aka Hopper — accepts ore from players */
+    MODULE_HOPPER,            /* ore intake + beam anchor for furnaces */
     MODULE_FURNACE,           /* smelts ferrite ore */
     MODULE_FURNACE_CU,        /* smelts cuprite ore */
     MODULE_FURNACE_CR,        /* smelts crystal ore */

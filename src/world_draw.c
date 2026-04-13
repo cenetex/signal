@@ -145,7 +145,7 @@ void draw_signal_borders(void) {
 static void module_color(module_type_t type, float *r, float *g, float *b) {
     switch (type) {
     case MODULE_FURNACE:      PAL_UNPACK3(PAL_MODULE_FURNACE,      *r, *g, *b); return;
-    case MODULE_ORE_BUYER:    PAL_UNPACK3(PAL_MODULE_ORE_BUYER,    *r, *g, *b); return;
+    case MODULE_HOPPER:    PAL_UNPACK3(PAL_MODULE_HOPPER,    *r, *g, *b); return;
     case MODULE_ORE_SILO:     PAL_UNPACK3(PAL_MODULE_ORE_SILO,     *r, *g, *b); return;
     case MODULE_FRAME_PRESS:  PAL_UNPACK3(PAL_MODULE_FRAME_PRESS,  *r, *g, *b); return;
     case MODULE_LASER_FAB:    PAL_UNPACK3(PAL_MODULE_LASER_FAB,    *r, *g, *b); return;
@@ -264,7 +264,7 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
     }
 
     /* ---- INTAKE (hopper+silo): Triangle ---- */
-    case MODULE_ORE_BUYER:
+    case MODULE_HOPPER:
     case MODULE_ORE_SILO:
     case MODULE_CARGO_BAY: {
         /* Triangle pointing outward (-Y) = funnel mouth */

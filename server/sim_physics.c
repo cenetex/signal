@@ -69,7 +69,7 @@ void step_asteroid_gravity(world_t *w, float dt) {
         for (int m = 0; m < st->module_count; m++) {
             if (st->modules[m].scaffold) continue;
             module_type_t mt = st->modules[m].type;
-            if (mt == MODULE_ORE_BUYER || mt == MODULE_FURNACE ||
+            if (mt == MODULE_HOPPER || mt == MODULE_FURNACE ||
                 mt == MODULE_FURNACE_CU || mt == MODULE_FURNACE_CR)
                 station_intake[s]++;
         }

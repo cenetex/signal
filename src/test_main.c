@@ -4972,7 +4972,7 @@ TEST(test_module_schema_basic_kinds) {
     ASSERT_EQ_INT(module_kind(MODULE_FURNACE), MODULE_KIND_PRODUCER);
     ASSERT_EQ_INT(module_kind(MODULE_FRAME_PRESS), MODULE_KIND_PRODUCER);
     ASSERT_EQ_INT(module_kind(MODULE_LASER_FAB), MODULE_KIND_PRODUCER);
-    ASSERT_EQ_INT(module_kind(MODULE_ORE_BUYER), MODULE_KIND_STORAGE);
+    ASSERT_EQ_INT(module_kind(MODULE_HOPPER), MODULE_KIND_STORAGE);
     ASSERT_EQ_INT(module_kind(MODULE_ORE_SILO), MODULE_KIND_STORAGE);
     ASSERT_EQ_INT(module_kind(MODULE_SHIPYARD), MODULE_KIND_SHIPYARD);
 }
@@ -5019,7 +5019,7 @@ TEST(test_module_schema_helpers) {
     ASSERT(module_is_service(MODULE_DOCK));
     ASSERT(module_is_service(MODULE_REPAIR_BAY));
     ASSERT(!module_is_service(MODULE_FURNACE));
-    ASSERT(module_is_storage(MODULE_ORE_BUYER));
+    ASSERT(module_is_storage(MODULE_HOPPER));
     ASSERT(module_is_storage(MODULE_ORE_SILO));
     ASSERT(module_is_shipyard(MODULE_SHIPYARD));
     ASSERT(!module_is_dead(MODULE_FURNACE));

@@ -148,7 +148,7 @@
 
 /* Prospect modules */
 #define PAL_MODULE_FURNACE   0.30f, 0.80f, 0.35f
-#define PAL_MODULE_ORE_BUYER 0.40f, 0.72f, 0.30f
+#define PAL_MODULE_HOPPER 0.40f, 0.72f, 0.30f
 
 /* Kepler modules */
 #define PAL_MODULE_FRAME_PRESS 0.90f, 0.75f, 0.20f

@@ -429,7 +429,7 @@ bool world_load(world_t *w, const char *path) {
     if (version < 22) {
         static const int REMAP[17] = {
             0,  /* old 0  DOCK           -> DOCK           */
-            1,  /* old 1  ORE_BUYER      -> ORE_BUYER      */
+            1,  /* old 1  ORE_BUYER      -> HOPPER          */
             2,  /* old 2  FURNACE        -> FURNACE        */
             3,  /* old 3  FURNACE_CU     -> FURNACE_CU     */
             4,  /* old 4  FURNACE_CR     -> FURNACE_CR     */

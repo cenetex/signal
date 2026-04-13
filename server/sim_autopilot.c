@@ -23,7 +23,7 @@ static int autopilot_find_refinery(const world_t *w, vec2 pos) {
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
         if (!station_has_module(st, MODULE_DOCK)) continue;
-        if (!station_has_module(st, MODULE_ORE_BUYER) &&
+        if (!station_has_module(st, MODULE_HOPPER) &&
             !station_has_module(st, MODULE_FURNACE) &&
             !station_has_module(st, MODULE_FURNACE_CU) &&
             !station_has_module(st, MODULE_FURNACE_CR)) continue;

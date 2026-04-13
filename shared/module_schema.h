@@ -68,8 +68,8 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .variant_count = 0,
         .prerequisite = MODULE_SIGNAL_RELAY, /* tier 1 */
     },
-    [MODULE_ORE_BUYER] = {
-        .name = "Hopper", /* renamed from "Ore Buyer" — now hopper-style */
+    [MODULE_HOPPER] = {
+        .name = "Hopper", /* ore intake + beam anchor for furnaces */
         .kind = MODULE_KIND_STORAGE,
         .input = COMMODITY_FERRITE_ORE, /* primary; accepts all ore types */
         .output = COMMODITY_COUNT,
@@ -92,7 +92,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = 0,
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
-        .prerequisite = MODULE_ORE_BUYER, /* tier 2 — needs hopper */
+        .prerequisite = MODULE_HOPPER, /* tier 2 — needs hopper */
     },
     [MODULE_FURNACE_CU] = {
         .name = "Copper Furnace",
