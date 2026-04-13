@@ -1200,8 +1200,6 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
     }
 
     int max_tow = 2 + sp->ship.tractor_level * 2; /* 2/4/6/8/10 */
-    float collect_r = ship_collect_radius(&sp->ship);
-    float collect_sq = collect_r * collect_r;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!asteroid_is_collectible(a)) continue;
@@ -1211,24 +1209,15 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         if (d_sq <= nearby_sq) sp->nearby_fragments++;
         if (d_sq <= tr_sq) {
             sp->tractor_fragments++;
-            if (d_sq <= collect_sq) {
-                /* Close enough to attach */
-                if (sp->ship.towed_count < max_tow) {
-                    sp->ship.towed_fragments[sp->ship.towed_count] = (int16_t)i;
-                    sp->ship.towed_count++;
-                    a->last_towed_by = (int8_t)sp->id;
-                    sp->ship.stat_ore_mined += a->ore;
-                    emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
-                                                .pickup = {.ore = a->ore, .fragments = 1}});
-                }
-            } else {
-                /* In tractor range but not close: pull toward ship */
-                float dist = sqrtf(d_sq);
-                vec2 dir = v2_scale(to_ship, 1.0f / dist);
-                float pull = 300.0f * dt;
-                a->vel = v2_add(a->vel, v2_scale(dir, pull));
-                /* Light drag so fragments don't overshoot wildly */
-                a->vel = v2_scale(a->vel, 1.0f / (1.0f + 2.0f * dt));
+            /* Instant grab: tractor pulse snaps fragments to tow chain.
+             * No drift phase — if it's in range and there's room, grab it. */
+            if (sp->ship.towed_count < max_tow) {
+                sp->ship.towed_fragments[sp->ship.towed_count] = (int16_t)i;
+                sp->ship.towed_count++;
+                a->last_towed_by = (int8_t)sp->id;
+                sp->ship.stat_ore_mined += a->ore;
+                emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
+                                            .pickup = {.ore = a->ore, .fragments = 1}});
             }
         }
     }
