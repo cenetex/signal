@@ -3,7 +3,19 @@
 #include <stdlib.h>
 #include <string.h>
 #include <math.h>
+#ifdef _WIN32
+#include <io.h>
+#include <fcntl.h>
+static int truncate(const char *path, long size) {
+    int fd = _open(path, _O_RDWR);
+    if (fd < 0) return -1;
+    int r = _chsize(fd, size);
+    _close(fd);
+    return r;
+}
+#else
 #include <unistd.h>
+#endif
 
 #include "math_util.h"
 #include "types.h"
