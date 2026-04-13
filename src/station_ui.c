@@ -190,16 +190,6 @@ uint32_t station_upgrade_service(ship_upgrade_t upgrade) {
 /* Formatting helpers                                                  */
 /* ------------------------------------------------------------------ */
 
-void format_ore_manifest(char* text, size_t text_size) {
-    int ferrite = (int)lroundf(ship_cargo_amount(&LOCAL_PLAYER.ship,COMMODITY_FERRITE_ORE));
-    int cuprite = (int)lroundf(ship_cargo_amount(&LOCAL_PLAYER.ship,COMMODITY_CUPRITE_ORE));
-    int crystal = (int)lroundf(ship_cargo_amount(&LOCAL_PLAYER.ship,COMMODITY_CRYSTAL_ORE));
-    snprintf(text, text_size, "%s %d  %s %d  %s %d",
-        commodity_code(COMMODITY_FERRITE_ORE), ferrite,
-        commodity_code(COMMODITY_CUPRITE_ORE), cuprite,
-        commodity_code(COMMODITY_CRYSTAL_ORE), crystal);
-}
-
 void format_ore_hopper_line(const station_t* station, char* text, size_t text_size) {
     int cap = (int)lroundf(REFINERY_HOPPER_CAPACITY);
     int ferrite = (int)lroundf(station->inventory[COMMODITY_FERRITE_ORE]);
@@ -238,16 +228,11 @@ void build_station_ui_state(station_ui_state_t* ui) {
 
     ui->hull_now = (int)lroundf(LOCAL_PLAYER.ship.hull);
     ui->hull_max = (int)lroundf(ship_max_hull(&LOCAL_PLAYER.ship));
-    float ore_total = ship_raw_ore_total(&LOCAL_PLAYER.ship);
     float repair = station_repair_cost(&LOCAL_PLAYER.ship, current_station_ptr());
-    ui->cargo_units = (int)lroundf(ore_total);
-    ui->cargo_capacity = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
-    ui->payout = (int)lroundf(station_cargo_sale_value(&LOCAL_PLAYER.ship, current_station_ptr()));
     ui->repair_cost = (int)lroundf(repair);
     ui->mining_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_MINING);
     ui->hold_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_HOLD);
     ui->tractor_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_TRACTOR);
-    ui->can_sell = ((int)station_primary_buy(current_station_ptr()) >= 0) && (ore_total > FLOAT_EPSILON);
     ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (repair > 0.0f) && (LOCAL_PLAYER.ship.credits + FLOAT_EPSILON >= repair);
     ui->can_upgrade_mining = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, ui->mining_cost);
     ui->can_upgrade_hold = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, ui->hold_cost);
@@ -273,13 +258,15 @@ void format_station_market_summary(const station_ui_state_t* ui, bool compact, c
         return;
     }
 
-    if (station_has_module(ui->station, MODULE_ORE_BUYER)) {
-        char manifest[64] = { 0 };
-        format_ore_manifest(manifest, sizeof(manifest));
+    if (station_has_module(ui->station, MODULE_FURNACE) ||
+        station_has_module(ui->station, MODULE_FURNACE_CU) ||
+        station_has_module(ui->station, MODULE_FURNACE_CR)) {
+        char stock[64] = { 0 };
+        format_ingot_stock_line(ui->station, stock, sizeof(stock));
         if (compact) {
-            snprintf(text, text_size, "%s %d/%d", manifest, ui->cargo_units, ui->cargo_capacity);
+            snprintf(text, text_size, "Smelter // %s", stock);
         } else {
-            snprintf(text, text_size, "%s // %d/%d", manifest, ui->cargo_units, ui->cargo_capacity);
+            snprintf(text, text_size, "Smelter active // %s", stock);
         }
     } else if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
         snprintf(text, text_size, "%s", compact ? "Hull service + hold refit" : "Hull service and hold refits.");
@@ -296,14 +283,12 @@ void format_station_market_detail(const station_ui_state_t* ui, bool compact, ch
         return;
     }
 
-    if (station_has_module(ui->station, MODULE_ORE_BUYER)) {
-        if (compact) {
-            snprintf(text, text_size, "Haul %d cr", ui->payout);
-        } else {
-            char stock[64] = { 0 };
-            format_ingot_stock_line(ui->station, stock, sizeof(stock));
-            snprintf(text, text_size, "Value %d cr // Stock %s", ui->payout, stock);
-        }
+    if (station_has_module(ui->station, MODULE_FURNACE) ||
+        station_has_module(ui->station, MODULE_FURNACE_CU) ||
+        station_has_module(ui->station, MODULE_FURNACE_CR)) {
+        char stock[64] = { 0 };
+        format_ingot_stock_line(ui->station, stock, sizeof(stock));
+        snprintf(text, text_size, "%s", compact ? stock : stock);
     } else if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
         int buf = (int)lroundf(ui->station->inventory[COMMODITY_FERRITE_INGOT]);
         int prod = (int)lroundf(ui->station->inventory[COMMODITY_FRAME]);
@@ -327,28 +312,6 @@ int build_station_service_lines(const station_ui_state_t* ui, station_service_li
     }
 
     memset(lines, 0, sizeof(station_service_line_t) * 3);
-
-    if (station_has_module(ui->station, MODULE_ORE_BUYER)) {
-        lines[0].action = "[1] Sell ore";
-        snprintf(lines[0].state, sizeof(lines[0].state), "%s", ui->cargo_units > 0 ? "ready" : "empty");
-        lines[0].r = ui->can_sell ? 114 : 169;
-        lines[0].g0 = ui->can_sell ? 255 : 179;
-        lines[0].b = ui->can_sell ? 192 : 204;
-
-        lines[1].action = "[2] Repair hull";
-        if (ui->repair_cost > 0) {
-            snprintf(lines[1].state, sizeof(lines[1].state), "%d cr", ui->repair_cost);
-            lines[1].r = 255;
-            lines[1].g0 = 221;
-            lines[1].b = 119;
-        } else {
-            snprintf(lines[1].state, sizeof(lines[1].state), "nominal");
-            lines[1].r = 169;
-            lines[1].g0 = 179;
-            lines[1].b = 204;
-        }
-        return 2;
-    }
 
     lines[0].action = "[2] Repair hull";
     if (ui->repair_cost > 0) {

@@ -116,14 +116,6 @@ float ship_total_cargo(const ship_t* ship) {
     return total;
 }
 
-float ship_raw_ore_total(const ship_t* ship) {
-    float total = 0.0f;
-    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
-        total += ship->cargo[i];
-    }
-    return total;
-}
-
 float ship_cargo_amount(const ship_t* ship, commodity_t commodity) {
     return ship->cargo[commodity];
 }

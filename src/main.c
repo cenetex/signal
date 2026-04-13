@@ -61,9 +61,9 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 
 /* commodity_refined_form, commodity_name, commodity_code, commodity_short_name: see commodity.h/c */
 
-/* ship_total_cargo, ship_raw_ore_total, ship_cargo_amount, station_buy_price, station_inventory_amount: see commodity.h/c */
+/* ship_total_cargo, ship_cargo_amount, station_buy_price, station_inventory_amount: see commodity.h/c */
 
-/* format_ore_manifest ... format_refinery_price_line: see station_ui.c */
+/* format_ore_hopper_line ... format_refinery_price_line: see station_ui.c */
 /* station_at ... navigation_station_ptr: see station_ui.c */
 /* station_role_name, station_role_short_name: see station_ui.c */
 /* station_has_service, station_upgrade_service: see station_ui.c */
@@ -197,10 +197,10 @@ static void step_notice_timer(float dt) {
 static bool check_hail_condition(hail_cond_t cond) {
     const ship_t *ship = &LOCAL_PLAYER.ship;
     switch (cond) {
-    case HAIL_COND_EMPTY_HOLD:
-        return ship_total_cargo(ship) < 0.5f;
-    case HAIL_COND_HAS_ORE:
-        return ship_raw_ore_total(ship) > 0.5f;
+    case HAIL_COND_NO_TOWED:
+        return ship->towed_count == 0;
+    case HAIL_COND_HAS_TOWED:
+        return ship->towed_count > 0;
     case HAIL_COND_LOW_CREDITS: {
         if (ship->credits >= 50.0f) return false;
         for (int s = 3; s < MAX_STATIONS; s++)
@@ -241,9 +241,6 @@ static bool check_hail_condition(hail_cond_t cond) {
             if (station_has_module(&g.world.stations[s], MODULE_FRAME_PRESS)) return true;
         }
         return false;
-    case HAIL_COND_HAS_SPECIALTY_ORE:
-        return ship->cargo[COMMODITY_CUPRITE_ORE] > 0.5f
-            || ship->cargo[COMMODITY_CRYSTAL_ORE] > 0.5f;
     case HAIL_COND_NEVER_UPGRADED:
         return ship->mining_level == 0 && ship->hold_level == 0
             && ship->tractor_level == 0;

@@ -136,15 +136,6 @@ TEST(test_commodity_short_name) {
     ASSERT_STR_EQ(commodity_short_name(COMMODITY_FERRITE_INGOT), "FE Ingot");
 }
 
-TEST(test_ship_raw_ore_total) {
-    ship_t ship = {0};
-    ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
-    ship.cargo[COMMODITY_CUPRITE_ORE] = 20.0f;
-    ship.cargo[COMMODITY_CRYSTAL_ORE] = 5.0f;
-    ship.cargo[COMMODITY_FERRITE_INGOT] = 100.0f;
-    ASSERT_EQ_FLOAT(ship_raw_ore_total(&ship), 35.0f, 0.01f);
-}
-
 TEST(test_ship_total_cargo) {
     ship_t ship = {0};
     ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
@@ -385,22 +376,6 @@ TEST(test_station_production_beamworks_makes_modules) {
     ASSERT(station.inventory[COMMODITY_TRACTOR_MODULE] > 0.0f);
 }
 
-TEST(test_station_cargo_sale_value) {
-    ship_t ship = {0};
-    station_t station = {0};
-    station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FURNACE };
-    ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
-    station.base_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    /* Furnace station buys ferrite ore: empty hopper = 1× base = 100 */
-    ASSERT_EQ_FLOAT(station_cargo_sale_value(&ship, &station), 100.0f, 0.01f);
-}
-
-TEST(test_station_cargo_sale_value_null_station) {
-    ship_t ship = {0};
-    ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
-    ASSERT_EQ_FLOAT(station_cargo_sale_value(&ship, NULL), 0.0f, 0.01f);
-}
-
 TEST(test_station_repair_cost_no_damage) {
     ship_t ship = {0};
     ship.hull_class = HULL_CLASS_MINER;
@@ -568,20 +543,6 @@ TEST(test_world_sim_step_docking) {
     w.players[0].current_station = 0;
     w.players[0].nearby_station = 0;
     ASSERT(w.players[0].docked);
-}
-
-TEST(test_world_sim_step_sell_ore) {
-    WORLD_DECL;
-    world_reset(&w);
-    player_init_ship(&w.players[0], &w);
-    w.players[0].connected = true;
-    ASSERT(w.players[0].docked);
-    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
-    float credits_before = w.players[0].ship.credits;
-    w.players[0].input.service_sell = true;
-    world_sim_step(&w, 1.0f / 120.0f);
-    ASSERT(w.players[0].ship.credits > credits_before);
-    ASSERT(w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] < 10.0f);
 }
 
 TEST(test_world_sim_step_refinery_produces_ingots) {
@@ -1149,26 +1110,7 @@ TEST(test_parse_input_action_accumulates) {
 /* Bug regression tests — batch 2 (10 more bugs)                      */
 /* ================================================================== */
 
-/* Bug 11: game_sim.c has station_cargo_sale_value with swapped params vs economy.c.
- * FIX: remove the duplicate from game_sim.c, use economy.c's version everywhere. */
-TEST(test_bug11_no_duplicate_sale_value) {
-    /* After fix: game_sim.c should NOT have its own station_cargo_sale_value.
-     * The economy.c version (ship, station) should be the only one.
-     * This fails because game_sim.c still has a static duplicate with (station, ship) order. */
-    ship_t ship;
-    memset(&ship, 0, sizeof(ship));
-    ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
-    station_t st = {0};
-    memset(&st, 0, sizeof(st));
-    st.modules[st.module_count++] = (station_module_t){ .type = MODULE_FURNACE };
-    st.base_price[COMMODITY_FERRITE_ORE] = 10.0f;
-    float val = station_cargo_sale_value(&ship, &st);
-    ASSERT_EQ_FLOAT(val, 100.0f, 0.01f); /* furnace buys ore: empty = 1× base */
-    /* The real test: there should be no static version in game_sim.c.
-     * We verify by checking economy.c's extern version is the one called by world_sim_step.
-     * If duplicates exist, this line count assertion will fail when they're removed: */
-    ASSERT(sizeof(station_t) > 0);  /* placeholder until duplicate is removed */
-}
+/* Bug 11: removed in #259 — station_cargo_sale_value was removed with ore-as-cargo. */
 
 /* Bug 12: station_repair_cost should return 0 if station lacks REPAIR service.
  * FIX: check station->services & STATION_SERVICE_REPAIR inside the function. */
@@ -1656,10 +1598,6 @@ TEST(test_scenario_two_players_mining) {
     ASSERT(w.asteroids[ast1].hp < hp1_before);
 
     /* No state bleed: player 0's cargo didn't affect player 1 */
-    float cargo0 = ship_raw_ore_total(&w.players[0].ship);
-    float cargo1 = ship_raw_ore_total(&w.players[1].ship);
-    /* Both should have zero or independent cargo (S fragments, not direct ore from non-S) */
-    (void)cargo0; (void)cargo1;
     /* Verify credits are independent (both start at 50 from player_init_ship) */
     ASSERT_EQ_FLOAT(w.players[0].ship.credits, 50.0f, 0.01f);
     ASSERT_EQ_FLOAT(w.players[1].ship.credits, 50.0f, 0.01f);
@@ -1792,7 +1730,7 @@ TEST(test_scenario_emergency_recovery) {
     ASSERT_EQ_FLOAT(w.players[0].ship.hull, ship_max_hull(&w.players[0].ship), 0.01f);
 
     /* Verify: cargo is cleared (lost on recovery) */
-    ASSERT(ship_raw_ore_total(&w.players[0].ship) < 0.01f);
+    ASSERT(ship_total_cargo(&w.players[0].ship) < 0.01f);
 }
 
 TEST(test_scenario_product_cap_pauses_production) {
@@ -3969,22 +3907,6 @@ TEST(test_belt_ore_distribution) {
 /* Mixed cargo sell/deliver                                            */
 /* ================================================================== */
 
-TEST(test_sell_ore_at_refinery) {
-    WORLD_DECL;
-    world_reset(&w);
-    player_init_ship(&w.players[0], &w);
-    w.players[0].connected = true;
-    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 50.0f;
-    float credits_before = w.players[0].ship.credits;
-    /* Dock at refinery (station 0) and sell */
-    w.players[0].docked = true;
-    w.players[0].current_station = 0;
-    w.players[0].input.service_sell = true;
-    world_sim_step(&w, SIM_DT);
-    ASSERT(w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] < 50.0f);
-    ASSERT(w.players[0].ship.credits > credits_before);
-}
-
 TEST(test_deliver_ingots_to_contract) {
     WORLD_DECL;
     world_reset(&w);
@@ -5498,29 +5420,6 @@ TEST(test_autopilot_path_matches_preview) {
 /* Station service semantics (#259)                                   */
 /* ================================================================== */
 
-TEST(test_259_furnace_station_accepts_ore_sale) {
-    /* Prospect Refinery has MODULE_FURNACE but no MODULE_ORE_BUYER.
-     * Selling ore should still work — station_primary_buy() returns
-     * FERRITE_ORE based on the furnace, not the service flag. */
-    WORLD_DECL;
-    world_reset(&w);
-    player_init_ship(&w.players[0], &w);
-    w.players[0].connected = true;
-    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 50.0f;
-    float credits_before = w.players[0].ship.credits;
-    /* Verify Prospect (station 0) has no ORE_BUYER service flag */
-    ASSERT(!(w.stations[0].services & STATION_SERVICE_ORE_BUYER));
-    /* But station_primary_buy says it buys ferrite ore */
-    ASSERT_EQ_INT((int)station_primary_buy(&w.stations[0]), (int)COMMODITY_FERRITE_ORE);
-    /* Dock and sell */
-    w.players[0].docked = true;
-    w.players[0].current_station = 0;
-    w.players[0].input.service_sell = true;
-    world_sim_step(&w, SIM_DT);
-    ASSERT(w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] < 50.0f);
-    ASSERT(w.players[0].ship.credits > credits_before);
-}
-
 TEST(test_259_passive_repair_at_any_station) {
     /* Passive repair (8 hp/s) runs at ANY station while docked,
      * regardless of STATION_SERVICE_REPAIR flag. */
@@ -5669,7 +5568,6 @@ int main(void) {
     RUN(test_commodity_name);
     RUN(test_commodity_code);
     RUN(test_commodity_short_name);
-    RUN(test_ship_raw_ore_total);
     RUN(test_ship_total_cargo);
     RUN(test_ship_cargo_amount);
     RUN(test_station_buy_price);
@@ -5706,8 +5604,6 @@ int main(void) {
     RUN(test_refinery_skips_non_refinery);
     RUN(test_station_production_yard_makes_frames);
     RUN(test_station_production_beamworks_makes_modules);
-    RUN(test_station_cargo_sale_value);
-    RUN(test_station_cargo_sale_value_null_station);
     RUN(test_station_repair_cost_no_damage);
     RUN(test_station_repair_cost_with_damage);
     RUN(test_can_afford_upgrade_all_conditions);
@@ -5723,7 +5619,6 @@ int main(void) {
     RUN(test_world_sim_step_moves_ship_with_thrust);
     RUN(test_world_sim_step_mining_damages_asteroid);
     RUN(test_world_sim_step_docking);
-    RUN(test_world_sim_step_sell_ore);
     RUN(test_world_sim_step_refinery_produces_ingots);
     RUN(test_world_sim_step_events_emitted);
     RUN(test_world_sim_step_npc_miners_work);
@@ -5754,7 +5649,6 @@ int main(void) {
     RUN(test_parse_input_action_accumulates);
 
     printf("\nBug regression tests (batch 2):\n");
-    RUN(test_bug11_no_duplicate_sale_value);
     RUN(test_bug12_repair_cost_checks_service);
     RUN(test_bug13_buy_price_correct_size);
     RUN(test_bug14_player_ship_syncs_all_cargo);
@@ -5914,13 +5808,11 @@ int main(void) {
     RUN(test_belt_ore_distribution);
 
     printf("\nMixed cargo sell/deliver:\n");
-    RUN(test_sell_ore_at_refinery);
     RUN(test_deliver_ingots_to_contract);
     RUN(test_mixed_cargo_sell_and_deliver);
     RUN(test_no_delivery_without_matching_contract);
 
     printf("\nStation service semantics (#259):\n");
-    RUN(test_259_furnace_station_accepts_ore_sale);
     RUN(test_259_passive_repair_at_any_station);
 
     printf("\nRefinery smelt test:\n");

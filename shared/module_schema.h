@@ -76,7 +76,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .rate = 0.0f, .buffer_capacity = 30.0f,
         .build_material = 40.0f, .build_commodity = COMMODITY_FRAME,
         .order_fee = 37, /* 150/4 */
-        .services = STATION_SERVICE_ORE_BUYER,
+        .services = 0,
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
         .prerequisite = MODULE_SIGNAL_RELAY, /* tier 1 */

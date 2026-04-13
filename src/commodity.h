@@ -10,7 +10,6 @@ const char* commodity_code(commodity_t commodity);
 const char* commodity_short_name(commodity_t commodity);
 
 float ship_total_cargo(const ship_t* ship);
-float ship_raw_ore_total(const ship_t* ship);
 float ship_cargo_amount(const ship_t* ship, commodity_t commodity);
 
 /* Station buys from player at this price (lower when overstocked) */

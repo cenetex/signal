@@ -49,14 +49,10 @@ typedef struct {
     const station_t* station;
     int hull_now;
     int hull_max;
-    int cargo_units;
-    int cargo_capacity;
-    int payout;
     int repair_cost;
     int mining_cost;
     int hold_cost;
     int tractor_cost;
-    bool can_sell;
     bool can_repair;
     bool can_upgrade_mining;
     bool can_upgrade_hold;
@@ -320,7 +316,6 @@ bool station_has_service(uint32_t service);
 uint32_t station_upgrade_service(ship_upgrade_t upgrade);
 
 /* Formatting helpers (implemented in station_ui.c) */
-void format_ore_manifest(char* text, size_t text_size);
 void format_ore_hopper_line(const station_t* station, char* text, size_t text_size);
 void format_ingot_stock_line(const station_t* station, char* text, size_t text_size);
 void format_refinery_price_line(const station_t* station, char* text, size_t text_size);

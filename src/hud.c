@@ -786,7 +786,6 @@ void draw_hud(void) {
     int cargo_units = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
     int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
     int cargo_capacity = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
-    int payout_preview = (int)lroundf(station_cargo_sale_value(&LOCAL_PLAYER.ship, current_station_ptr()));
     const station_t* current_station = current_station_ptr();
     const station_t* navigation_station = navigation_station_ptr();
     station_ui_state_t ui = { 0 };
@@ -876,15 +875,7 @@ void draw_hud(void) {
         sdtx_pos(top_text_x, top_row_3);
         if (LOCAL_PLAYER.docked) {
             sdtx_color3b(PAL_ACTIVE);
-            if (station_has_service(STATION_SERVICE_ORE_BUYER)) {
-                if (cargo_units > 0) {
-                    sdtx_printf("ORE BOARD // HAUL %d", payout_preview);
-                } else {
-                    sdtx_puts("ORE BOARD // HOLD EMPTY");
-                }
-            } else {
-                sdtx_printf("%s CONSOLE", dock_role);
-            }
+            sdtx_printf("%s CONSOLE", dock_role);
         } else if ((LOCAL_PLAYER.hover_asteroid >= 0) && g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
             const asteroid_t* asteroid = &g.world.asteroids[LOCAL_PLAYER.hover_asteroid];
             int integrity_left = (int)lroundf(asteroid->hp);
@@ -1012,15 +1003,7 @@ void draw_hud(void) {
     sdtx_pos(top_text_x, top_row_3);
     if (LOCAL_PLAYER.docked) {
         sdtx_color3b(PAL_ACTIVE);
-        if (station_has_service(STATION_SERVICE_ORE_BUYER)) {
-            if (cargo_units > 0) {
-                sdtx_printf("Ore board // haul %d", payout_preview);
-            } else {
-                sdtx_puts("Ore board // hold empty");
-            }
-        } else {
-            sdtx_printf("%s console", station_role_name(current_station));
-        }
+        sdtx_printf("%s console", station_role_name(current_station));
     } else if ((LOCAL_PLAYER.hover_asteroid >= 0) && g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
         const asteroid_t* asteroid = &g.world.asteroids[LOCAL_PLAYER.hover_asteroid];
         int integrity_left = (int)lroundf(asteroid->hp);

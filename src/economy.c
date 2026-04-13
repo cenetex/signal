@@ -80,20 +80,6 @@ void step_station_production(station_t* stations, int count, float dt) {
     }
 }
 
-float station_cargo_sale_value(const ship_t* ship, const station_t* station) {
-    if (!station) return 0.0f;
-    commodity_t buy = station_primary_buy(station);
-    if ((int)buy < 0) return 0.0f;
-    float held = ship_cargo_amount(ship, buy);
-    if (held <= FLOAT_EPSILON) return 0.0f;
-    float capacity = (buy < COMMODITY_RAW_ORE_COUNT)
-        ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
-    float space = capacity - station->inventory[buy];
-    if (space < 0.0f) space = 0.0f;
-    float sellable = fminf(held, space);
-    return sellable * station_buy_price(station, buy);
-}
-
 float station_repair_cost(const ship_t* ship, const station_t* station) {
     if (!station) return 0.0f;
     if (!(station->services & STATION_SERVICE_REPAIR)) return 0.0f;

@@ -37,7 +37,7 @@ enum {
 };
 
 enum {
-    STATION_SERVICE_ORE_BUYER = 1 << 0,
+    /* bit 0 was STATION_SERVICE_ORE_BUYER — removed in #259 */
     STATION_SERVICE_REPAIR = 1 << 1,
     STATION_SERVICE_UPGRADE_LASER = 1 << 2,
     STATION_SERVICE_UPGRADE_HOLD = 1 << 3,

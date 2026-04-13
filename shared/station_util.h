@@ -87,7 +87,6 @@ static inline void rebuild_station_services(station_t *st) {
     for (int i = 0; i < st->module_count; i++) {
         if (st->modules[i].scaffold) continue;
         switch (st->modules[i].type) {
-            case MODULE_ORE_BUYER:      st->services |= STATION_SERVICE_ORE_BUYER; break;
             case MODULE_REPAIR_BAY:     st->services |= STATION_SERVICE_REPAIR; break;
             case MODULE_LASER_FAB:      st->services |= STATION_SERVICE_UPGRADE_LASER; break;
             case MODULE_TRACTOR_FAB:    st->services |= STATION_SERVICE_UPGRADE_TRACTOR; break;
@@ -127,7 +126,6 @@ static inline commodity_t station_primary_buy(const station_t *st) {
         case MODULE_TRACTOR_FAB: return COMMODITY_CRYSTAL_INGOT;
         default: break;
     }
-    if (station_has_module(st, MODULE_ORE_BUYER)) return COMMODITY_FERRITE_ORE;
     return (commodity_t)-1;
 }
 

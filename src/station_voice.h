@@ -155,8 +155,8 @@ static const char *NPC_CHATTER_HAULER[NPC_CHATTER_HAULER_COUNT] = {
 /* ------------------------------------------------------------------ */
 
 typedef enum {
-    HAIL_COND_EMPTY_HOLD,           /* no cargo at all -brand new player */
-    HAIL_COND_HAS_ORE,              /* player has raw ore in cargo */
+    HAIL_COND_NO_TOWED,             /* not towing any fragments */
+    HAIL_COND_HAS_TOWED,            /* towing S-tier fragments */
     HAIL_COND_LOW_CREDITS,          /* credits < 50, no outpost -early game */
     HAIL_COND_HAS_CREDITS_NO_OUTPOST, /* credits > 200 but no outpost */
     HAIL_COND_HAS_OUTPOST_NO_FURNACE, /* outpost exists but no furnace */
@@ -165,7 +165,7 @@ typedef enum {
     HAIL_COND_HAS_NO_SCAFFOLD,      /* hasn't ordered a scaffold yet */
     HAIL_COND_HAS_OUTPOST_NO_PRESS,  /* outpost but no frame press */
     HAIL_COND_HAS_PRESS,            /* outpost has a frame press */
-    HAIL_COND_HAS_SPECIALTY_ORE,    /* cuprite or crystal ore in cargo */
+    /* HAIL_COND_HAS_SPECIALTY_ORE removed in #259 — ore-as-cargo is dead */
     HAIL_COND_NEVER_UPGRADED,       /* no upgrades applied */
     HAIL_COND_NO_SPECIALTY_FURNACE,  /* outpost but no cu/cr furnace */
     HAIL_COND_ONE_OUTPOST,          /* exactly 1 outpost, could build more */
@@ -181,10 +181,10 @@ typedef struct {
 
 /* Prospect Refinery -teaches the mining loop */
 static const hail_response_t PROSPECT_HAILS[] = {
-    { HAIL_COND_EMPTY_HOLD,
-      "Hold's empty. Crack a rock. Point your laser at an asteroid." },
-    { HAIL_COND_HAS_ORE,
-      "Hold's not empty. Dock up and sell." },
+    { HAIL_COND_NO_TOWED,
+      "Nothing on the line. Crack a rock. Point your laser at an asteroid." },
+    { HAIL_COND_HAS_TOWED,
+      "Fragments on the line. Tow them to a furnace." },
     { HAIL_COND_LOW_CREDITS,
       "Keep mining. Ore pays. Every run counts." },
     { HAIL_COND_HAS_CREDITS_NO_OUTPOST,
@@ -202,8 +202,8 @@ static const hail_response_t PROSPECT_HAILS[] = {
 
 /* Kepler Yard -teaches construction */
 static const hail_response_t KEPLER_HAILS[] = {
-    { HAIL_COND_EMPTY_HOLD,
-      "Nothing to sell here. Go mine something first." },
+    { HAIL_COND_NO_TOWED,
+      "Nothing to haul here. Go mine something first." },
     { HAIL_COND_HAS_NO_FRAMES,
       "Frames are the bones of everything. Check the market." },
     { HAIL_COND_HAS_NO_SCAFFOLD,
@@ -221,10 +221,8 @@ static const hail_response_t KEPLER_HAILS[] = {
 
 /* Helios Works -teaches expansion */
 static const hail_response_t HELIOS_HAILS[] = {
-    { HAIL_COND_EMPTY_HOLD,
-      "Empty hold? There's ore everywhere. Go get some." },
-    { HAIL_COND_HAS_SPECIALTY_ORE,
-      "Beautiful ore. Dock up - we pay well for crystal." },
+    { HAIL_COND_NO_TOWED,
+      "Nothing on the line? There's ore everywhere. Go crack some." },
     { HAIL_COND_NEVER_UPGRADED,
       "New face. We should talk about upgrades." },
     { HAIL_COND_NO_SPECIALTY_FURNACE,
