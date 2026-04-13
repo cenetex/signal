@@ -1781,12 +1781,11 @@ static void handle_hail(world_t *w, server_player_t *sp) {
         }
     }
 
+    /* Collect from nearest station only — credits are earned locally,
+     * player must visit each station to collect. */
     float total_collected = 0.0f;
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        station_t *st = &w->stations[s];
-        if (st->signal_range <= 0.0f) continue;
-        float d = sqrtf(v2_dist_sq(sp->ship.pos, st->pos));
-        if (d > st->signal_range) continue;
+    if (nearest >= 0) {
+        station_t *st = &w->stations[nearest];
         for (int i = 0; i < st->ledger_count; i++) {
             if (memcmp(st->ledger[i].player_token, sp->session_token, 8) != 0) continue;
             if (st->ledger[i].pending_credits > 0.01f) {
