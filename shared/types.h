@@ -227,6 +227,9 @@ typedef struct {
      * manufacture). Service modules leave both at 0. */
     float module_input[MAX_MODULES_PER_STATION];
     float module_output[MAX_MODULES_PER_STATION];
+    /* Station credit pool: fixed money supply, no inflation.
+     * Smelting pays from pool, player spending refills it. */
+    float credit_pool;
 } station_t;
 
 /* Station lifecycle helpers, module queries, and ring/geometry helpers

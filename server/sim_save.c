@@ -44,7 +44,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 22  /* bumped: dead module enum entries removed (#280 cleanup) */
+#define SAVE_VERSION 23  /* bumped: station credit pool (#312) */
 #define MIN_SAVE_VERSION 20  /* migrate v20 by mapping old module_buffer → input */
 
 /* Set by world_load() before read_station() so per-station readers know
@@ -98,6 +98,8 @@ static bool write_station(FILE *f, const station_t *s) {
     }
     WRITE_FIELD(f, s->planned);
     WRITE_FIELD(f, s->planned_owner);
+    /* v23: station credit pool */
+    WRITE_FIELD(f, s->credit_pool);
     return true;
 }
 
@@ -165,6 +167,14 @@ static bool read_station(FILE *f, station_t *s) {
     READ_FIELD(f, s->planned);
     { uint8_t raw; memcpy(&raw, &s->planned, 1); s->planned = (raw != 0); }
     READ_FIELD(f, s->planned_owner);
+    /* v23: station credit pool */
+    if (g_loaded_save_version >= 23) {
+        READ_FIELD(f, s->credit_pool);
+    } else {
+        /* Pre-v23 saves don't have this field — seed starter stations
+         * (indices 0-2) with a pool, others start at zero. */
+        s->credit_pool = (s->signal_range > 0.0f) ? 10000.0f : 0.0f;
+    }
     return true;
 }
 

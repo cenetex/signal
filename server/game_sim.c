@@ -35,9 +35,10 @@
 /* SIM_LOG moved to game_sim.h so all sim_*.c files share the same macro. */
 
 /* Centralized credit operations — all spending/earning goes through these */
-static void spend_credits(ship_t *s, float amount) {
+static void spend_credits(ship_t *s, station_t *st, float amount) {
     s->credits -= amount;
     s->stat_credits_spent += amount;
+    if (st) st->credit_pool += amount;
 }
 
 void earn_credits(ship_t *s, float amount) {
@@ -421,10 +422,10 @@ vec2 station_approach_target(const station_t *st, vec2 from) {
 
 /* ship_forward, ship_muzzle: see ship.h/c */
 
-static bool try_spend_credits(ship_t *s, float amount) {
+static bool try_spend_credits(ship_t *s, station_t *st, float amount) {
     if (amount <= 0.0f) return true;
     if (s->credits + 0.01f < amount) return false;
-    spend_credits(s, amount);
+    spend_credits(s, st, amount);
     if (s->credits < 0.0f) s->credits = 0.0f;
     return true;
 }
@@ -735,7 +736,7 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
     if (!station_has_service(st, STATION_SERVICE_REPAIR)) return;
     float cost = sim_station_repair_cost(&sp->ship);
     if (cost <= 0.0f) return;
-    if (!try_spend_credits(&sp->ship, cost)) return;
+    if (!try_spend_credits(&sp->ship, st, cost)) return;
     sp->ship.hull = ship_max_hull(&sp->ship);
     SIM_LOG("[sim] player %d repaired for %.0f cr\n", sp->id, cost);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_REPAIR, .player_id = sp->id});
@@ -751,7 +752,7 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
     float pcost = upgrade_product_cost(&sp->ship, upgrade);
     if (st->inventory[COMMODITY_FRAME + required] < pcost - 0.01f) return;
     int cost = ship_upgrade_cost(&sp->ship, upgrade);
-    if (!try_spend_credits(&sp->ship, (float)cost)) return;
+    if (!try_spend_credits(&sp->ship, st, (float)cost)) return;
     st->inventory[COMMODITY_FRAME + required] -= pcost;
 
     switch (upgrade) {
@@ -1748,12 +1749,18 @@ static int ledger_find_or_create(station_t *st, const uint8_t *token) {
     return idx;
 }
 
-/* Credit a player's ledger when they supply ore to a station */
+/* Credit a player's ledger when they supply ore to a station.
+ * Pays from the station's credit pool — no credits created. */
 void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) {
     int idx = ledger_find_or_create(st, token);
     if (idx < 0) return;
     /* Station keeps 35% cut for smelting — supplier gets 65% */
     float supplier_share = ore_value * 0.65f;
+    /* Cap payout at what the station can afford */
+    if (supplier_share > st->credit_pool)
+        supplier_share = st->credit_pool;
+    if (supplier_share < 0.01f) return;
+    st->credit_pool -= supplier_share;
     st->ledger[idx].pending_credits += supplier_share;
     st->ledger[idx].lifetime_supply += ore_value;
 }
@@ -1826,7 +1833,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             if (sp->ship.credits < fee) {
                 emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
             } else {
-                spend_credits(&sp->ship, fee);
+                spend_credits(&sp->ship, st, fee);
                 /* Tech tree: ordering this type unlocks any module that
                  * lists it as prerequisite. */
                 sp->ship.unlocked_modules |= (1u << (uint32_t)kit_type);
@@ -1905,7 +1912,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             float amount = fminf(fminf(available, space), afford);
             float total_cost = amount * price_per;
             if (amount > 0.01f) {
-                spend_credits(&sp->ship, total_cost);
+                spend_credits(&sp->ship, docked_st, total_cost);
                 sp->ship.cargo[c] += amount;
                 docked_st->inventory[c] -= amount;
                 SIM_LOG("[sim] player %d bought %.0f of commodity %d for %.0f cr\n",
@@ -2129,7 +2136,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                     float amount = fminf(fminf(available, 1.0f), afford); /* buy 1 at a time */
                     if (amount > FLOAT_EPSILON) {
                         float cost = amount * price_per;
-                        spend_credits(&sp->ship, cost);
+                        spend_credits(&sp->ship, nearby_st, cost);
                         sp->ship.cargo[c] += amount;
                         nearby_st->inventory[c] -= amount;
                         emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
@@ -3172,8 +3179,9 @@ void world_reset(world_t *w) {
     w->stations[0].ring_offset[0] = 0.0f;
     w->stations[0].ring_offset[1] = 1.05f;  /* ~60° offset — unique silhouette */
     rebuild_station_services(&w->stations[0]);
-    /* Seed inventory: refinery starts with some smelted ingots */
+    /* Seed inventory and credit pool */
     w->stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
+    w->stations[0].credit_pool = 10000.0f;
     snprintf(w->stations[0].station_slug, sizeof(w->stations[0].station_slug), "prospect");
     snprintf(w->stations[0].hail_message, sizeof(w->stations[0].hail_message),
              "Prospect Refinery. We buy ferrite ore. Dock and deliver.");
@@ -3202,9 +3210,10 @@ void world_reset(world_t *w) {
     w->stations[1].ring_offset[0] = 0.0f;
     w->stations[1].ring_offset[1] = 2.40f;  /* ~137° offset */
     rebuild_station_services(&w->stations[1]);
-    /* Seed inventory: yard starts with frames for hold upgrades */
+    /* Seed inventory and credit pool */
     w->stations[1].inventory[COMMODITY_FERRITE_INGOT] = 15.0f;
     w->stations[1].inventory[COMMODITY_FRAME] = 12.0f;
+    w->stations[1].credit_pool = 10000.0f;
     snprintf(w->stations[1].station_slug, sizeof(w->stations[1].station_slug), "kepler");
     snprintf(w->stations[1].hail_message, sizeof(w->stations[1].hail_message),
              "Kepler Yard. Fabrication and scaffold kits. Build the frontier.");
@@ -3243,11 +3252,12 @@ void world_reset(world_t *w) {
     w->stations[2].ring_offset[1] = 0.52f;  /* ~30° offset */
     w->stations[2].ring_offset[2] = 1.83f;  /* ~105° offset */
     rebuild_station_services(&w->stations[2]);
-    /* Seed inventory: works starts with modules for mining/tractor upgrades */
+    /* Seed inventory and credit pool */
     w->stations[2].inventory[COMMODITY_CUPRITE_INGOT] = 15.0f;
     w->stations[2].inventory[COMMODITY_CRYSTAL_INGOT] = 15.0f;
     w->stations[2].inventory[COMMODITY_LASER_MODULE] = 10.0f;
     w->stations[2].inventory[COMMODITY_TRACTOR_MODULE] = 10.0f;
+    w->stations[2].credit_pool = 10000.0f;
     snprintf(w->stations[2].station_slug, sizeof(w->stations[2].station_slug), "helios");
     snprintf(w->stations[2].hail_message, sizeof(w->stations[2].hail_message),
              "Helios Works. Advanced smelting. Copper and crystal refined here.");
