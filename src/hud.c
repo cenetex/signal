@@ -379,11 +379,11 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         return true;
     }
 
-    /* MSG_SCOOP: Collection feedback */
+    /* MSG_SCOOP: Tractor pickup feedback */
     if (g.collection_feedback_timer > 0.0f) {
-        int ore = (int)lroundf(g.collection_feedback_ore);
-        snprintf(label, label_size, "SCOOP");
-        snprintf(message, message_size, "+%d ore", ore);
+        int frags = g.collection_feedback_fragments;
+        snprintf(label, label_size, "TRACTOR");
+        snprintf(message, message_size, "+%d frag", frags);
         *r = 120; *g0 = 150; *b = 120;
         return true;
     }
@@ -724,7 +724,7 @@ void draw_hud(void) {
         sdtx_color4b(PAL_NOTICE, a8);
 
         sdtx_pos(left, row);
-        sdtx_printf("Ore mined:     %8.0f", g.death_ore_mined);
+        sdtx_printf("Ore smelted:   %8.0f", g.death_ore_mined);
         row += 2.5f;
 
         sdtx_pos(left, row);

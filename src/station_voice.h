@@ -38,10 +38,10 @@ static const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
     {
         /* LAUNCH  */ "Signal tag registered. Launch when you're ready.",
         /* MINE    */ "Belt's hot. Point your laser at a rock. Start small.",
-        /* COLLECT */ "Debris in your wake. Fly through it -tractor does the rest.",
-        /* HAUL    */ "Full hold's no good out here. Bring it home.",
-        /* SELL    */ "Hold's not empty. Sell at the market - I'll take what you've got.",
-        /* BUY     */ "Credits in your account. Check the market.",
+        /* COLLECT */ "Fragments in your wake. Tractor them -tow to a furnace.",
+        /* HAUL    */ "Fragments on the line. Tow them home to the smelter.",
+        /* SELL    */ "Smelting done. Hail to check your balance.",
+        /* BUY     */ "Credits in your ledger. Check the market.",
         /* UPGRADE */ "Your rig's stock. Kepler and Helios handle upgrades.",
         /* SCAFFOLD*/ "Dock at Kepler. Check the shipyard tab, order a kit.",
         /* PLACE_T */ "Find your scaffold near the yard. Tractor it.",
@@ -52,9 +52,9 @@ static const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
     {
         /* LAUNCH  */ "Bay clear. Undock when ready.",
         /* MINE    */ "Asteroids are fragile. Fire your laser to crack one.",
-        /* COLLECT */ "Fragments drift. Fly close -tractor pulls them in.",
-        /* HAUL    */ "Ore's no good floating. Get it to a hopper.",
-        /* SELL    */ "Raw ore on board? Sell it at the refinery.",
+        /* COLLECT */ "Fragments drift. Tractor them -tow to a furnace.",
+        /* HAUL    */ "Fragments are no good floating. Get them to a smelter.",
+        /* SELL    */ "Furnace is running. Hail to check your balance.",
         /* BUY     */ "Check the market. Frames, ingots...",
         /* UPGRADE */ "New hull class. Let's see what we can do with it.",
         /* SCAFFOLD*/ "Shipyard's the last tab. Queue a kit from there.",
@@ -66,9 +66,9 @@ static const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
     {
         /* LAUNCH  */ "Welcome to Helios. Launch -always more to find.",
         /* MINE    */ "Rich veins out there. Laser a big one.",
-        /* COLLECT */ "Don't leave ore behind. Fly through the debris.",
-        /* HAUL    */ "Bring it home. We'll make something of it.",
-        /* SELL    */ "Beautiful ore. Sell it here -we pay well.",
+        /* COLLECT */ "Don't leave fragments behind. Tractor them up.",
+        /* HAUL    */ "Tow them home. We'll smelt something good.",
+        /* SELL    */ "Smelting done. Hail for your cut.",
         /* BUY     */ "Check the market. We've got materials if you've got credits.",
         /* UPGRADE */ "New face. We should talk about upgrades.",
         /* SCAFFOLD*/ "Talk to Kepler for scaffold kits. Check their shipyard.",
@@ -94,7 +94,7 @@ enum {
 static const char *STATION_DOCK_TIPS[3][DOCK_TIP_COUNT] = {
     /* Prospect */
     {
-        /* SELL    */ "We buy ferrite. Dump it in the hopper.",
+        /* SELL    */ "Smelter's running. Tow fragments to the furnace.",
         /* MARKET  */ "Want ingots? Check the market. Not cheap.",
         /* SHIPYARD*/ "No shipyard here. Try Kepler.",
         /* LAUNCH  */ "Belt's waiting. Launch when ready.",
@@ -102,7 +102,7 @@ static const char *STATION_DOCK_TIPS[3][DOCK_TIP_COUNT] = {
     },
     /* Kepler */
     {
-        /* SELL    */ "We take ore. Sell from the market tab.",
+        /* SELL    */ "Deliver ingots here. Check the contracts tab.",
         /* MARKET  */ "Frames and ingots. Browse the market.",
         /* SHIPYARD*/ "Shipyard's open. Order a kit from there.",
         /* LAUNCH  */ "Mind the scaffold arm on the way out.",
@@ -110,7 +110,7 @@ static const char *STATION_DOCK_TIPS[3][DOCK_TIP_COUNT] = {
     },
     /* Helios */
     {
-        /* SELL    */ "Cuprite, crystal -we take it all.",
+        /* SELL    */ "Copper and crystal smelting. Tow fragments here.",
         /* MARKET  */ "We've got specialty alloys. Check the market.",
         /* SHIPYARD*/ "No shipyard. Kepler handles kits.",
         /* LAUNCH  */ "More out there than rocks.",
@@ -138,7 +138,7 @@ static const char *NPC_CHATTER_MINER[NPC_CHATTER_MINER_COUNT] = {
 
 static const char *NPC_CHATTER_HAULER[NPC_CHATTER_HAULER_COUNT] = {
     "load secured",
-    "ore inbound",
+    "ingots inbound",
     "heading home",
     "hopper's full",
     "nothing to load",

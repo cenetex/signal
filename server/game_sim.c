@@ -3189,7 +3189,7 @@ void world_reset(world_t *w) {
     w->stations[0].credit_pool = 10000.0f;
     snprintf(w->stations[0].station_slug, sizeof(w->stations[0].station_slug), "prospect");
     snprintf(w->stations[0].hail_message, sizeof(w->stations[0].hail_message),
-             "Prospect Refinery. We buy ferrite ore. Dock and deliver.");
+             "Prospect Refinery. Ferrite smelting. Tow fragments to the furnace.");
 
     snprintf(w->stations[1].name, sizeof(w->stations[1].name), "%s", "Kepler Yard");
     w->stations[1].pos         = v2(-3200.0f, 2300.0f);

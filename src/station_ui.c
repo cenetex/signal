@@ -116,7 +116,7 @@ const char* station_role_short_name(const station_t* station) {
 const char* station_role_hub_label(const station_t* station) {
     module_type_t dom = station_dominant_module(station);
     switch (dom) {
-        case MODULE_FURNACE:     return "REFINERY // ore intake";
+        case MODULE_FURNACE:     return "REFINERY // smelter";
         case MODULE_FRAME_PRESS: return "YARD // frame bay";
         case MODULE_LASER_FAB:   return "BEAMWORKS // field bench";
         case MODULE_TRACTOR_FAB: return "BEAMWORKS // field bench";
@@ -128,7 +128,7 @@ const char* station_role_hub_label(const station_t* station) {
 const char* station_role_market_title(const station_t* station) {
     module_type_t dom = station_dominant_module(station);
     switch (dom) {
-        case MODULE_FURNACE:     return "ORE BOARD";
+        case MODULE_FURNACE:     return "SMELTER";
         case MODULE_FRAME_PRESS: return "FRAME BAY";
         case MODULE_LASER_FAB:   return "FIELD BENCH";
         case MODULE_TRACTOR_FAB: return "FIELD BENCH";
