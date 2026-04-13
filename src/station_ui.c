@@ -190,14 +190,6 @@ uint32_t station_upgrade_service(ship_upgrade_t upgrade) {
 /* Formatting helpers                                                  */
 /* ------------------------------------------------------------------ */
 
-void format_ore_hopper_line(const station_t* station, char* text, size_t text_size) {
-    int cap = (int)lroundf(REFINERY_HOPPER_CAPACITY);
-    int ferrite = (int)lroundf(station->inventory[COMMODITY_FERRITE_ORE]);
-    int cuprite = (int)lroundf(station->inventory[COMMODITY_CUPRITE_ORE]);
-    int crystal = (int)lroundf(station->inventory[COMMODITY_CRYSTAL_ORE]);
-    snprintf(text, text_size, "FE %d/%d  CU %d/%d  CR %d/%d", ferrite, cap, cuprite, cap, crystal, cap);
-}
-
 void format_ingot_stock_line(const station_t* station, char* text, size_t text_size) {
     int frame = (int)lroundf(station_inventory_amount(station, COMMODITY_FERRITE_INGOT));
     int conductor = (int)lroundf(station_inventory_amount(station, COMMODITY_CUPRITE_INGOT));
@@ -206,13 +198,6 @@ void format_ingot_stock_line(const station_t* station, char* text, size_t text_s
         commodity_code(COMMODITY_FERRITE_INGOT), frame,
         commodity_code(COMMODITY_CUPRITE_INGOT), conductor,
         commodity_code(COMMODITY_CRYSTAL_INGOT), lens);
-}
-
-void format_refinery_price_line(const station_t* station, char* text, size_t text_size) {
-    int ferrite = (int)lroundf(station_buy_price(station, COMMODITY_FERRITE_ORE));
-    int cuprite = (int)lroundf(station_buy_price(station, COMMODITY_CUPRITE_ORE));
-    int crystal = (int)lroundf(station_buy_price(station, COMMODITY_CRYSTAL_ORE));
-    snprintf(text, text_size, "FE %d  CU %d  CR %d", ferrite, cuprite, crystal);
 }
 
 /* ------------------------------------------------------------------ */

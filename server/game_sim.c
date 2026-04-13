@@ -2519,7 +2519,9 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
 
-        /* Priority 3: ore hopper with biggest deficit (only for ore types this station can smelt) */
+        /* Priority 3: ore hopper with biggest deficit (only for ore types this station can smelt).
+         * Ore contracts are inventory-driven — fulfilled by fragment smelting, not cargo
+         * delivery. quantity_needed is unused; contract closes when inventory > 80%. */
         if (!need.active && (station_has_module(st, MODULE_FURNACE)
             || station_has_module(st, MODULE_FURNACE_CU)
             || station_has_module(st, MODULE_FURNACE_CR))) {
@@ -2535,7 +2537,7 @@ static void step_contracts(world_t *w, float dt) {
                     .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
                     .commodity = (commodity_t)worst_ore,
-                    .quantity_needed = worst_deficit,
+                    .quantity_needed = 0.0f, /* inventory-driven, not delivery-driven */
                     .base_price = st->base_price[worst_ore],
                     .target_index = -1, .claimed_by = -1,
                 };

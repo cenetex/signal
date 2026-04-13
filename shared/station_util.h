@@ -114,13 +114,11 @@ static inline module_type_t station_dominant_module(const station_t *st) {
 }
 
 /* Primary trade slot: the one commodity this station buys from players.
- * Derived from the dominant production module. Returns -1 if none. */
+ * Furnaces don't buy from players (ore arrives via fragment smelting).
+ * Returns -1 if no player trade. */
 static inline commodity_t station_primary_buy(const station_t *st) {
     module_type_t dom = station_dominant_module(st);
     switch (dom) {
-        case MODULE_FURNACE:     return COMMODITY_FERRITE_ORE;
-        case MODULE_FURNACE_CU:  return COMMODITY_CUPRITE_ORE;
-        case MODULE_FURNACE_CR:  return COMMODITY_CRYSTAL_ORE;
         case MODULE_FRAME_PRESS: return COMMODITY_FERRITE_INGOT;
         case MODULE_LASER_FAB:   return COMMODITY_CUPRITE_INGOT;
         case MODULE_TRACTOR_FAB: return COMMODITY_CRYSTAL_INGOT;

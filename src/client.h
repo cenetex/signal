@@ -316,9 +316,7 @@ bool station_has_service(uint32_t service);
 uint32_t station_upgrade_service(ship_upgrade_t upgrade);
 
 /* Formatting helpers (implemented in station_ui.c) */
-void format_ore_hopper_line(const station_t* station, char* text, size_t text_size);
 void format_ingot_stock_line(const station_t* station, char* text, size_t text_size);
-void format_refinery_price_line(const station_t* station, char* text, size_t text_size);
 void format_station_header_badge(const station_ui_state_t* ui, char* text, size_t text_size);
 void format_station_market_summary(const station_ui_state_t* ui, bool compact, char* text, size_t text_size);
 void format_station_market_detail(const station_ui_state_t* ui, bool compact, char* text, size_t text_size);

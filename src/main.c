@@ -63,7 +63,7 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 
 /* ship_total_cargo, ship_cargo_amount, station_buy_price, station_inventory_amount: see commodity.h/c */
 
-/* format_ore_hopper_line ... format_refinery_price_line: see station_ui.c */
+/* format_ingot_stock_line: see station_ui.c */
 /* station_at ... navigation_station_ptr: see station_ui.c */
 /* station_role_name, station_role_short_name: see station_ui.c */
 /* station_has_service, station_upgrade_service: see station_ui.c */

@@ -237,7 +237,19 @@ void step_furnace_smelting(world_t *w, float dt) {
 
         if (a->smelt_progress >= 1.0f && smelt_station >= 0) {
             station_t *st = &w->stations[smelt_station];
-            float ore_value = a->ore * station_buy_price(st, a->commodity);
+            /* Check for active ore contract — apply premium if one exists */
+            float price = station_buy_price(st, a->commodity);
+            for (int k = 0; k < MAX_CONTRACTS; k++) {
+                if (w->contracts[k].active
+                    && w->contracts[k].action == CONTRACT_TRACTOR
+                    && w->contracts[k].station_index == smelt_station
+                    && w->contracts[k].commodity == a->commodity) {
+                    float cp = contract_price(&w->contracts[k]);
+                    if (cp > price) price = cp;
+                    break;
+                }
+            }
+            float ore_value = a->ore * price;
 
             /* Credit fracturer and tower */
             int tower = (a->last_towed_by >= 0 && a->last_towed_by < MAX_PLAYERS
