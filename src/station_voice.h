@@ -157,7 +157,7 @@ static const char *NPC_CHATTER_HAULER[NPC_CHATTER_HAULER_COUNT] = {
 typedef enum {
     HAIL_COND_NO_TOWED,             /* not towing any fragments */
     HAIL_COND_HAS_TOWED,            /* towing S-tier fragments */
-    HAIL_COND_LOW_CREDITS,          /* credits < 50, no outpost -early game */
+    HAIL_COND_LOW_CREDITS,          /* credits < 50, no outpost — early game */
     HAIL_COND_HAS_CREDITS_NO_OUTPOST, /* credits > 200 but no outpost */
     HAIL_COND_HAS_OUTPOST_NO_FURNACE, /* outpost exists but no furnace */
     HAIL_COND_HAS_FURNACE,          /* outpost has a furnace */
@@ -186,7 +186,7 @@ static const hail_response_t PROSPECT_HAILS[] = {
     { HAIL_COND_HAS_TOWED,
       "Fragments on the line. Tow them to a furnace." },
     { HAIL_COND_LOW_CREDITS,
-      "Keep mining. Ore pays. Every run counts." },
+      "Keep smelting. Tow fragments to a furnace, hail to collect." },
     { HAIL_COND_HAS_CREDITS_NO_OUTPOST,
       "You've got credits. Think about building out there." },
     { HAIL_COND_HAS_OUTPOST_NO_FURNACE,

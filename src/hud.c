@@ -847,7 +847,12 @@ void draw_hud(void) {
         {
             const char *cs = net_local_callsign();
             const char *tag = (cs && cs[0] != '\0') ? cs : (LOCAL_PLAYER.docked ? "RUN" : "SHIP");
-            sdtx_printf("%s // CR %d", tag, credits);
+            if (LOCAL_PLAYER.docked && current_station) {
+                int pool = (int)lroundf(current_station->credit_pool);
+                sdtx_printf("%s // CR %d // STN %d", tag, credits, pool);
+            } else {
+                sdtx_printf("%s // CR %d", tag, credits);
+            }
         }
 
         sdtx_pos(top_text_x, top_row_1);
@@ -975,7 +980,12 @@ void draw_hud(void) {
 
     sdtx_pos(top_text_x, top_row_1);
     sdtx_color3b(203, 220, 248);
-    sdtx_printf("CR %d  H %d/%d  C %d/%d  ", credits, hull_units, hull_capacity, cargo_units, cargo_capacity);
+    if (LOCAL_PLAYER.docked && current_station) {
+        int pool = (int)lroundf(current_station->credit_pool);
+        sdtx_printf("CR %d  STN %d  H %d/%d  C %d/%d  ", credits, pool, hull_units, hull_capacity, cargo_units, cargo_capacity);
+    } else {
+        sdtx_printf("CR %d  H %d/%d  C %d/%d  ", credits, hull_units, hull_capacity, cargo_units, cargo_capacity);
+    }
     sdtx_color3b(sig_r, sig_g, sig_b);
     sdtx_printf("%s %d%%", sig_band, sig_pct);
     if (sig_quality < SIGNAL_BAND_OPERATIONAL) {
@@ -1244,10 +1254,18 @@ void draw_hud(void) {
             sdtx_puts(g.hail_message);
         }
 
-        if (g.hail_credits > 0.5f) {
+        {
             sdtx_pos(hx / cell, (hy + 32.0f) / cell);
-            sdtx_color3b((uint8_t)(130*alpha), (uint8_t)(255*alpha), (uint8_t)(235*alpha)); /* hail credits */
-            sdtx_printf("+%d cr collected", (int)lroundf(g.hail_credits));
+            if (g.hail_credits > 0.5f) {
+                sdtx_color3b((uint8_t)(130*alpha), (uint8_t)(255*alpha), (uint8_t)(235*alpha));
+                sdtx_printf("+%d cr", (int)lroundf(g.hail_credits));
+            }
+            /* Show station pool balance */
+            if (g.hail_station_index >= 0 && g.hail_station_index < MAX_STATIONS) {
+                int pool = (int)lroundf(g.world.stations[g.hail_station_index].credit_pool);
+                sdtx_color3b((uint8_t)(130*alpha), (uint8_t)(180*alpha), (uint8_t)(210*alpha));
+                sdtx_printf("  pool %d cr", pool);
+            }
         }
     }
 

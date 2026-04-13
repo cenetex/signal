@@ -648,6 +648,28 @@ void draw_station_services(const station_ui_state_t* ui) {
         float right_col = cx + meter_w + 16.0f;
         bool compact = ui_is_compact();
 
+        /* === SMELTER STATUS (furnace stations only) === */
+        if ((int)station_primary_buy(ui->station) < 0 &&
+            (station_has_module(ui->station, MODULE_FURNACE) ||
+             station_has_module(ui->station, MODULE_FURNACE_CU) ||
+             station_has_module(ui->station, MODULE_FURNACE_CR))) {
+            sdtx_color3b(PAL_HOLD_STATUS);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+            sdtx_puts("SMELTER");
+            draw_ui_rule(cx, cx + meter_w + 80.0f, my + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
+            my += 16.0f;
+            /* Show ingot stock */
+            char stock[64] = {0};
+            format_ingot_stock_line(ui->station, stock, sizeof(stock));
+            sdtx_color3b(PAL_TEXT_SECONDARY);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+            sdtx_puts(stock);
+            sdtx_color3b(PAL_INSPECT_STATION);
+            sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
+            sdtx_printf("pool %d cr", (int)lroundf(ui->station->credit_pool));
+            my += compact ? 18.0f : 22.0f;
+        }
+
         /* === SELL TO STATION === */
         {
             commodity_t buy = station_primary_buy(ui->station);
