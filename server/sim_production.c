@@ -251,7 +251,10 @@ void step_furnace_smelting(world_t *w, float dt) {
             }
             float ore_value = a->ore * price;
 
-            /* Credit fracturer and tower */
+            /* Credit fracturer and tower.
+             * When neither maps to a connected player (e.g. NPC miners), no
+             * credits are issued — NPCs are station infrastructure, not profit
+             * centers. The value they produce is ingots in station inventory. */
             int tower = (a->last_towed_by >= 0 && a->last_towed_by < MAX_PLAYERS
                          && w->players[a->last_towed_by].connected)
                         ? a->last_towed_by : -1;

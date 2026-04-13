@@ -24,7 +24,7 @@ static const float HAULER_RESERVE = 24.0f;  /* keep 20% stock for player purchas
 static const float SCAFFOLD_MATERIAL_NEEDED = 60.0f;   /* total frames needed */
 
 /* --- Ship upgrades --- */
-static const float SHIP_HOLD_UPGRADE_STEP = 24.0f;
+static const float SHIP_HOLD_UPGRADE_STEP = 8.0f;
 static const float SHIP_MINING_UPGRADE_STEP = 7.0f;
 static const float SHIP_TRACTOR_UPGRADE_STEP = 24.0f;
 static const float SHIP_BASE_COLLECT_RADIUS = 30.0f;

@@ -62,7 +62,7 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .accel         = 300.0f,
         .turn_speed    = 2.75f,
         .drag          = 0.45f,
-        .cargo_capacity  = 120.0f,
+        .cargo_capacity  = 24.0f,
         .ingot_capacity= 0.0f,
         .mining_rate   = 28.0f,
         .tractor_range = 150.0f,
@@ -88,7 +88,7 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .accel         = 140.0f,
         .turn_speed    = 1.8f,
         .drag          = 0.5f,
-        .cargo_capacity  = 40.0f,
+        .cargo_capacity  = 16.0f,
         .ingot_capacity= 0.0f,
         .mining_rate   = 8.0f,
         .tractor_range = 0.0f,
@@ -1752,8 +1752,8 @@ static int ledger_find_or_create(station_t *st, const uint8_t *token) {
 void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) {
     int idx = ledger_find_or_create(st, token);
     if (idx < 0) return;
-    /* Station keeps 20% cut for smelting — supplier gets 80% */
-    float supplier_share = ore_value * 0.80f;
+    /* Station keeps 35% cut for smelting — supplier gets 65% */
+    float supplier_share = ore_value * 0.65f;
     st->ledger[idx].pending_credits += supplier_share;
     st->ledger[idx].lifetime_supply += ore_value;
 }
@@ -2465,47 +2465,52 @@ static void step_contracts(world_t *w, float dt) {
         }
     }
 
-    /* Generate ONE contract per station — its top need.
+    /* Generate up to TWO contracts per station: one ore, one non-ore.
      * Priority: scaffold modules > empty hoppers > empty ingot buffers.
-     * Skip if station already has an active contract. */
+     * Ore and production contracts can coexist at the same station. */
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
 
-        /* Check if this station already has an active contract */
-        bool has_contract = false;
+        /* Check which contract types this station already has */
+        bool has_ore_contract = false;
+        bool has_production_contract = false;
         for (int k = 0; k < MAX_CONTRACTS; k++) {
-            if (w->contracts[k].active && w->contracts[k].station_index == s) {
-                has_contract = true; break;
-            }
+            if (!w->contracts[k].active || w->contracts[k].station_index != s) continue;
+            if (w->contracts[k].commodity < COMMODITY_RAW_ORE_COUNT)
+                has_ore_contract = true;
+            else
+                has_production_contract = true;
         }
-        if (has_contract) continue;
+        if (has_ore_contract && has_production_contract) continue;
 
         /* Evaluate station's top need */
         contract_t need = {0};
         need.target_index = -1;
         need.claimed_by = -1;
 
-        /* Priority 1: scaffold modules need ingots */
-        for (int m = 0; m < st->module_count; m++) {
-            if (!st->modules[m].scaffold) continue;
-            float cost = module_build_cost(st->modules[m].type);
-            float remaining = cost * (1.0f - st->modules[m].build_progress);
-            if (remaining > 0.5f) {
-                need = (contract_t){
-                    .active = true, .action = CONTRACT_TRACTOR,
-                    .station_index = (uint8_t)s,
-                    .commodity = module_build_material(st->modules[m].type),
-                    .quantity_needed = remaining,
-                    .base_price = st->base_price[module_build_material(st->modules[m].type)] * 1.15f,
-                    .target_index = -1, .claimed_by = -1,
-                };
-                break;
+        /* Priority 1: scaffold modules need ingots (production slot) */
+        if (!has_production_contract) {
+            for (int m = 0; m < st->module_count; m++) {
+                if (!st->modules[m].scaffold) continue;
+                float cost = module_build_cost(st->modules[m].type);
+                float remaining = cost * (1.0f - st->modules[m].build_progress);
+                if (remaining > 0.5f) {
+                    need = (contract_t){
+                        .active = true, .action = CONTRACT_TRACTOR,
+                        .station_index = (uint8_t)s,
+                        .commodity = module_build_material(st->modules[m].type),
+                        .quantity_needed = remaining,
+                        .base_price = st->base_price[module_build_material(st->modules[m].type)] * 1.15f,
+                        .target_index = -1, .claimed_by = -1,
+                    };
+                    break;
+                }
             }
         }
 
-        /* Priority 2: station scaffold needs frames */
-        if (!need.active && st->scaffold) {
+        /* Priority 2: station scaffold needs frames (production slot) */
+        if (!need.active && !has_production_contract && st->scaffold) {
             float remaining = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
             if (remaining > 0.5f) {
                 need = (contract_t){
@@ -2519,10 +2524,10 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
 
-        /* Priority 3: ore hopper with biggest deficit (only for ore types this station can smelt).
+        /* Priority 3: ore hopper with biggest deficit (ore slot).
          * Ore contracts are inventory-driven — fulfilled by fragment smelting, not cargo
          * delivery. quantity_needed is unused; contract closes when inventory > 80%. */
-        if (!need.active && (station_has_module(st, MODULE_FURNACE)
+        if (!need.active && !has_ore_contract && (station_has_module(st, MODULE_FURNACE)
             || station_has_module(st, MODULE_FURNACE_CU)
             || station_has_module(st, MODULE_FURNACE_CR))) {
             float worst_deficit = 0.0f;
@@ -2544,8 +2549,8 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
 
-        /* Priority 4: ingot buffer deficit (for production stations) */
-        if (!need.active) {
+        /* Priority 4: ingot buffer deficit (production slot) */
+        if (!need.active && !has_production_contract) {
             struct { module_type_t mod; commodity_t ingot; } checks[] = {
                 { MODULE_FRAME_PRESS, COMMODITY_FERRITE_INGOT },
                 { MODULE_LASER_FAB, COMMODITY_CUPRITE_INGOT },
