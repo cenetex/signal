@@ -1,3 +1,4 @@
+#define _DEFAULT_SOURCE  /* truncate() on glibc */
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
