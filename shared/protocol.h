@@ -98,13 +98,13 @@ enum {
     NET_ACTION_UPGRADE_HOLD   = 6,
     NET_ACTION_UPGRADE_TRACTOR= 7,
     NET_ACTION_PLACE_OUTPOST  = 8,
-    NET_ACTION_BUILD_MODULE   = 9,  /* DEPRECATED — legacy build menu, no-op */
+    NET_ACTION_BUILD_MODULE   = 9,  /* DEPRECATED #259 — legacy build menu, no-op on server */
     NET_ACTION_BUY_SCAFFOLD   = 25,
     NET_ACTION_HAIL           = 26,  /* collect pending credits via signal hail */
     NET_ACTION_RELEASE_TOW    = 27,  /* tap R: release towed fragments (no longer toggles) */
     NET_ACTION_RESET          = 28,  /* self-destruct — respawn at nearest station */
     NET_ACTION_BUY_PRODUCT    = 30, /* +commodity offset, range [30..30+COMMODITY_COUNT) */
-    NET_ACTION_PLACE_MODULE   = 49, /* place scaffold kit as module at own station */
+    NET_ACTION_PLACE_MODULE   = 49, /* DEPRECATED #259 — legacy placement, no-op on server (range sentinel) */
     NET_ACTION_BUY_SCAFFOLD_TYPED = 50, /* +module_type offset, range [50..50+MODULE_COUNT) */
     NET_ACTION_DELIVER_COMMODITY  = 70, /* +commodity offset, range [70..70+COMMODITY_COUNT) */
     NET_ACTION_AUTOPILOT_TOGGLE   = 90, /* toggle player mining autopilot on/off */

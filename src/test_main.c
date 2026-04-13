@@ -241,7 +241,7 @@ TEST(test_ship_hull_def_miner) {
     const hull_def_t* hull = ship_hull_def(&ship);
     ASSERT_STR_EQ(hull->name, "Mining Cutter");
     ASSERT_EQ_FLOAT(hull->max_hull, 100.0f, 0.01f);
-    ASSERT_EQ_FLOAT(hull->ore_capacity, 120.0f, 0.01f);
+    ASSERT_EQ_FLOAT(hull->cargo_capacity, 120.0f, 0.01f);
     ASSERT_EQ_FLOAT(hull->mining_rate, 28.0f, 0.01f);
 }
 
@@ -321,7 +321,7 @@ TEST(test_npc_hull_def) {
     npc.hull_class = HULL_CLASS_NPC_MINER;
     const hull_def_t* hull = npc_hull_def(&npc);
     ASSERT_STR_EQ(hull->name, "Mining Drone");
-    ASSERT_EQ_FLOAT(hull->ore_capacity, 40.0f, 0.01f);
+    ASSERT_EQ_FLOAT(hull->cargo_capacity, 40.0f, 0.01f);
 }
 
 TEST(test_product_name) {
@@ -3941,8 +3941,7 @@ TEST(test_mixed_cargo_sell_and_deliver) {
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
-    /* Player carries both ore and ingots */
-    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 40.0f;
+    /* Player carries ingots */
     w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 20.0f;
     /* Contract at refinery for ferrite ingots (unusual but valid) */
     w.contracts[0] = (contract_t){
@@ -3954,13 +3953,12 @@ TEST(test_mixed_cargo_sell_and_deliver) {
         .target_index = -1, .claimed_by = -1,
     };
     float credits_before = w.players[0].ship.credits;
-    /* Dock at refinery and sell */
+    /* Dock at refinery and deliver */
     w.players[0].docked = true;
     w.players[0].current_station = 0;
     w.players[0].input.service_sell = true;
     world_sim_step(&w, SIM_DT);
-    /* Both ore sold AND ingots delivered */
-    ASSERT(w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] < 40.0f);
+    /* Ingots delivered via contract */
     ASSERT(w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] < 20.0f);
     ASSERT(w.players[0].ship.credits > credits_before);
 }
@@ -3984,22 +3982,15 @@ TEST(test_no_delivery_without_matching_contract) {
     ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_CRYSTAL_INGOT], 20.0f, 0.01f);
 }
 
-TEST(test_refinery_smelts_after_ore_sale) {
+TEST(test_refinery_smelts_ore_in_inventory) {
     WORLD_DECL;
     world_reset(&w);
-    /* Player docks at Prospect Refinery (station 0) with ferrite ore */
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
-    w.players[0].docked = true;
-    w.players[0].current_station = 0;
-    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
-    /* Verify Prospect has a furnace (furnaces handle ore buying now) */
+    /* Verify Prospect has a furnace */
     ASSERT(station_has_module(&w.stations[0], MODULE_FURNACE));
-    /* Sell ore */
-    w.players[0].input.service_sell = true;
-    world_sim_step(&w, SIM_DT);
-    float ore_in_hopper = w.stations[0].inventory[COMMODITY_FERRITE_ORE];
-    ASSERT(ore_in_hopper > 0.0f);
+    /* Put ore directly in station inventory (as if delivered by fragments) */
+    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 10.0f;
     /* Run sim for 10 seconds — should smelt ore into ingots */
     for (int i = 0; i < (int)(10.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
@@ -5816,7 +5807,7 @@ int main(void) {
     RUN(test_259_passive_repair_at_any_station);
 
     printf("\nRefinery smelt test:\n");
-    RUN(test_refinery_smelts_after_ore_sale);
+    RUN(test_refinery_smelts_ore_in_inventory);
     RUN(test_furnace_without_adjacent_hopper_smelts);
 
     printf("\nAutopilot mining:\n");

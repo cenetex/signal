@@ -78,7 +78,7 @@ typedef struct {
     float accel;
     float turn_speed;
     float drag;
-    float ore_capacity;
+    float cargo_capacity;
     float ingot_capacity;
     float mining_rate;
     float tractor_range;

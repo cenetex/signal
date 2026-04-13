@@ -62,7 +62,7 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .accel         = 300.0f,
         .turn_speed    = 2.75f,
         .drag          = 0.45f,
-        .ore_capacity  = 120.0f,
+        .cargo_capacity  = 120.0f,
         .ingot_capacity= 0.0f,
         .mining_rate   = 28.0f,
         .tractor_range = 150.0f,
@@ -75,7 +75,7 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .accel         = 140.0f,
         .turn_speed    = 1.6f,
         .drag          = 0.55f,
-        .ore_capacity  = 0.0f,
+        .cargo_capacity  = 0.0f,
         .ingot_capacity= 40.0f,
         .mining_rate   = 0.0f,
         .tractor_range = 0.0f,
@@ -88,7 +88,7 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
         .accel         = 140.0f,
         .turn_speed    = 1.8f,
         .drag          = 0.5f,
-        .ore_capacity  = 40.0f,
+        .cargo_capacity  = 40.0f,
         .ingot_capacity= 0.0f,
         .mining_rate   = 8.0f,
         .tractor_range = 0.0f,
@@ -686,57 +686,12 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     commodity_t filter = sp->input.service_sell_only;
     bool selective = (filter < COMMODITY_COUNT);
 
-    /* Station buys its primary input commodity from the player */
-    commodity_t buy = station_primary_buy(st);
-    if ((int)buy >= 0 && sp->ship.cargo[buy] > 0.01f &&
-        (!selective || filter == buy)) {
-        float capacity = (buy < COMMODITY_RAW_ORE_COUNT)
-            ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
-        float space = capacity - st->inventory[buy];
-        if (space > 0.01f) {
-            float accepted = fminf(sp->ship.cargo[buy], space);
-            float price = station_buy_price(st, buy);
-            /* Check for active contract bonus */
-            for (int k = 0; k < MAX_CONTRACTS; k++) {
-                if (w->contracts[k].active && w->contracts[k].action == CONTRACT_TRACTOR
-                    && w->contracts[k].station_index == sp->current_station
-                    && w->contracts[k].commodity == buy) {
-                    price = contract_price(&w->contracts[k]);
-                    w->contracts[k].quantity_needed -= accepted;
-                    if (w->contracts[k].quantity_needed <= 0.01f) {
-                        /* Don't close if scaffold modules still need this material —
-                         * step_contracts() and step_module_activation() handle that. */
-                        bool scaffold_still_needs = false;
-                        for (int m2 = 0; m2 < st->module_count; m2++) {
-                            if (st->modules[m2].scaffold && st->modules[m2].build_progress < 1.0f
-                                && module_build_material(st->modules[m2].type) == buy) {
-                                scaffold_still_needs = true; break;
-                            }
-                        }
-                        if (!scaffold_still_needs) {
-                            w->contracts[k].active = false;
-                            emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE,
-                                .contract_complete.action = CONTRACT_TRACTOR});
-                        }
-                    }
-                    break;
-                }
-            }
-            payout += accepted * price;
-            st->inventory[buy] += accepted;
-            sp->ship.cargo[buy] -= accepted;
-            /* Manual sell is immediate — no ledger credit.
-             * Ledger is for fragment smelting (furnace pays via hail). */
-        }
-    }
-
-    /* Also deliver any cargo matching active supply contracts at this station */
+    /* Deliver any cargo matching active supply contracts at this station */
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         contract_t *ct = &w->contracts[k];
         if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
         if (ct->station_index != sp->current_station) continue;
         commodity_t c = ct->commodity;
-        if (c == buy) continue; /* already handled above */
         if (selective && filter != c) continue;
         if (sp->ship.cargo[c] < 0.01f) continue;
         float capacity = (c < COMMODITY_RAW_ORE_COUNT)

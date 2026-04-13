@@ -22,7 +22,7 @@ float ship_max_hull(const ship_t* ship) {
 }
 
 float ship_cargo_capacity(const ship_t* ship) {
-    return ship_hull_def(ship)->ore_capacity + ((float)ship->hold_level * SHIP_HOLD_UPGRADE_STEP);
+    return ship_hull_def(ship)->cargo_capacity + ((float)ship->hold_level * SHIP_HOLD_UPGRADE_STEP);
 }
 
 float ship_mining_rate(const ship_t* ship) {

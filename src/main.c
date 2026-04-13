@@ -1195,11 +1195,6 @@ static void render_world(void) {
                 case MODULE_REPAIR_BAY:
                     sdtx_puts("Dock to repair hull");
                     break;
-                case MODULE_ORE_BUYER: {
-                    int ore = (int)lroundf(tst->inventory[COMMODITY_FERRITE_ORE] + tst->inventory[COMMODITY_CUPRITE_ORE] + tst->inventory[COMMODITY_CRYSTAL_ORE]);
-                    sdtx_printf("Tow ore here  %d in stock", ore);
-                    break;
-                }
                 case MODULE_DOCK:
                     sdtx_puts("FIRE to dock");
                     break;

@@ -511,7 +511,7 @@ input_intent_t sample_input_intent(void) {
                 static const module_type_t plannable[] = {
                     MODULE_FURNACE, MODULE_FURNACE_CU, MODULE_FURNACE_CR,
                     MODULE_FRAME_PRESS, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
-                    MODULE_ORE_BUYER, MODULE_ORE_SILO, MODULE_CARGO_BAY,
+                    MODULE_ORE_SILO, MODULE_CARGO_BAY,
                     MODULE_REPAIR_BAY, MODULE_SIGNAL_RELAY, MODULE_DOCK,
                     MODULE_SHIPYARD,
                 };
