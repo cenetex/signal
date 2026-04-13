@@ -1095,12 +1095,16 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
 
 static void update_targeting_state(world_t *w, server_player_t *sp, vec2 forward) {
     vec2 muzzle = ship_muzzle(sp->ship.pos, sp->ship.angle, &sp->ship);
-    /* Prefer client's mining target hint if valid, in range, and in front */
+    /* Prefer client's mining target hint if valid, in range, and in front.
+     * Server re-validates: must be active, minable, within mining range,
+     * and inside the forward cone. Prevents desynced hints from steering. */
     int hint = sp->input.mining_target_hint;
     if (hint >= 0 && hint < MAX_ASTEROIDS && w->asteroids[hint].active
         && !asteroid_is_collectible(&w->asteroids[hint])) {
         const asteroid_t *a = &w->asteroids[hint];
-        if (hinted_target_in_mining_cone(muzzle, forward, a)) {
+        float d_sq = v2_dist_sq(muzzle, a->pos);
+        float max_r = MINING_RANGE + a->radius + 12.0f;
+        if (d_sq <= max_r * max_r && hinted_target_in_mining_cone(muzzle, forward, a)) {
             sp->hover_asteroid = hint;
             return;
         }
@@ -1134,23 +1138,21 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             continue;
         }
         asteroid_t *a = &w->asteroids[idx];
-        /* Tow physics: fragments match ship velocity + spring toward ship.
-         * Start by inheriting ship velocity so they keep pace. */
+        /* Tractor drag: pull toward ship, maintaining safe distance.
+         * No velocity blending — fragments trail naturally via spring
+         * forces and heavy damping. Feels heavy and tactile. */
         float tractor_r = ship_tractor_range(&sp->ship);
         float safe_dist = 40.0f + a->radius + ship_hull_def(&sp->ship)->ship_radius;
         vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
         float dist_to_ship = v2_len(to_ship);
 
-        /* Blend fragment velocity toward ship velocity — keeps pace */
-        float blend = clampf(8.0f * dt, 0.0f, 1.0f);
-        a->vel = v2_add(v2_scale(a->vel, 1.0f - blend), v2_scale(sp->ship.vel, blend));
-
-        /* Spring toward ship — stronger when further away */
-        if (dist_to_ship > safe_dist && dist_to_ship > 0.1f) {
-            vec2 dir = v2_scale(to_ship, 1.0f / dist_to_ship);
-            float urgency = clampf((dist_to_ship - safe_dist) / tractor_r, 0.0f, 1.0f);
-            float strength = 400.0f + 800.0f * urgency;
-            a->vel = v2_add(a->vel, v2_scale(dir, strength * dt));
+        /* Two-zone pull: gentle within range, strong when lagging */
+        if (dist_to_ship > tractor_r * 0.7f) {
+            vec2 pull = v2_scale(to_ship, 4.0f);
+            a->vel = v2_add(a->vel, v2_scale(pull, dt));
+        } else if (dist_to_ship > safe_dist) {
+            vec2 pull = v2_scale(to_ship, 1.5f);
+            a->vel = v2_add(a->vel, v2_scale(pull, dt));
         }
 
         /* Push away if too close (don't slam into ship) */
@@ -1159,8 +1161,8 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             a->vel = v2_add(a->vel, v2_scale(push, dt));
         }
 
-        /* Light drag — just enough to prevent oscillation */
-        a->vel = v2_scale(a->vel, 1.0f / (1.0f + 1.0f * dt));
+        /* Heavy drag — fragments bleed speed, trail behind naturally */
+        a->vel = v2_scale(a->vel, 1.0f / (1.0f + 2.0f * dt));
 
         /* Never faster than the ship + some slack */
         float ship_spd = v2_len(sp->ship.vel);
@@ -1200,12 +1202,18 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
     }
 
     int max_tow = 2 + sp->ship.tractor_level * 2; /* 2/4/6/8/10 */
+    /* Use nearby range (the larger of the two) for the broad check */
+    float broad_sq = (nearby_sq > tr_sq) ? nearby_sq : tr_sq;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
-        if (!asteroid_is_collectible(a)) continue;
+        if (!a->active || a->tier != ASTEROID_TIER_S) continue;
+        /* Cheap axis-aligned pre-check before expensive distance calc */
+        float dx = sp->ship.pos.x - a->pos.x;
+        float dy = sp->ship.pos.y - a->pos.y;
+        if (dx * dx > broad_sq || dy * dy > broad_sq) continue;
         if (is_already_towed(&sp->ship, i)) continue;
-        vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
-        float d_sq = v2_len_sq(to_ship);
+        vec2 to_ship = v2(dx, dy);
+        float d_sq = dx * dx + dy * dy;
         if (d_sq <= nearby_sq) sp->nearby_fragments++;
         if (d_sq <= tr_sq) {
             sp->tractor_fragments++;
@@ -1240,8 +1248,9 @@ static void step_leashed_fragments(world_t *w, server_player_t *sp, float dt) {
         vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
         float dist = v2_len(to_ship);
 
-        /* Snap: beam breaks at max tractor range */
-        if (dist > tractor_r) {
+        /* Snap: beam breaks at 150% tractor range — generous leash
+         * so fragments don't immediately pop off after release */
+        if (dist > tractor_r * 1.5f) {
             sp->ship.towed_count--;
             sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
             sp->ship.towed_fragments[sp->ship.towed_count] = -1;

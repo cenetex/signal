@@ -333,13 +333,33 @@ void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_b
 
 void sim_step_asteroid_dynamics(world_t *w, float dt) {
     float cleanup_d_sq = FRACTURE_CHILD_CLEANUP_DISTANCE * FRACTURE_CHILD_CLEANUP_DISTANCE;
+
+    /* Build "currently towed" set so we can skip ambient drag on them.
+     * Towed fragments have their own drag in the tractor physics. */
+    bool towed[MAX_ASTEROIDS];
+    memset(towed, 0, sizeof(towed));
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        if (!w->players[p].connected) continue;
+        for (int t = 0; t < w->players[p].ship.towed_count; t++) {
+            int idx = w->players[p].ship.towed_fragments[t];
+            if (idx >= 0 && idx < MAX_ASTEROIDS) towed[idx] = true;
+        }
+    }
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active) continue;
+        int idx = w->npc_ships[n].towed_fragment;
+        if (idx >= 0 && idx < MAX_ASTEROIDS) towed[idx] = true;
+    }
+
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
 
         a->rotation += a->spin * dt;
         a->pos = v2_add(a->pos, v2_scale(a->vel, dt));
-        a->vel = v2_scale(a->vel, 1.0f / (1.0f + (0.42f * dt)));
+        /* Ambient drag — skip towed fragments (they have their own drag) */
+        if (!towed[i])
+            a->vel = v2_scale(a->vel, 1.0f / (1.0f + (0.42f * dt)));
         a->age += dt;
 
         /* Despawn asteroids that leave station-supported space. */
