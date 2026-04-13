@@ -1212,7 +1212,6 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         float dy = sp->ship.pos.y - a->pos.y;
         if (dx * dx > broad_sq || dy * dy > broad_sq) continue;
         if (is_already_towed(&sp->ship, i)) continue;
-        vec2 to_ship = v2(dx, dy);
         float d_sq = dx * dx + dy * dy;
         if (d_sq <= nearby_sq) sp->nearby_fragments++;
         if (d_sq <= tr_sq) {
