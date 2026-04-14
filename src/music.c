@@ -384,6 +384,21 @@ static void rebuild_signal_playlist(music_state_t *m, float signal) {
     m->last_signal = signal;
 }
 
+/* Compute the eligible track window for a given signal strength. */
+static void signal_window(float signal, int *out_lo, int *out_hi) {
+    if (signal < 0.0f) signal = 0.0f;
+    if (signal > 1.0f) signal = 1.0f;
+    int window = 8;
+    float center = 4.0f + signal * 15.0f;
+    int lo = (int)(center - (float)window * 0.5f);
+    int hi = lo + window - 1;
+    if (lo < 0) { lo = 0; hi = window - 1; }
+    if (hi >= MUSIC_TRACK_COUNT) { hi = MUSIC_TRACK_COUNT - 1; lo = hi - window + 1; }
+    if (lo < 0) lo = 0;
+    *out_lo = lo;
+    *out_hi = hi;
+}
+
 void music_update_signal(music_state_t *m, float signal_strength) {
     if (m->death_mode) return; /* death music overrides */
 
@@ -391,8 +406,16 @@ void music_update_signal(music_state_t *m, float signal_strength) {
     float drift = signal_strength - m->last_signal;
     if (drift < 0.0f) drift = -drift;
     if (!m->playlist_ready || drift > 0.15f) {
-        /* Preserve current track if it's still in the new window */
         rebuild_signal_playlist(m, signal_strength);
+
+        /* Crossfade if the current track fell outside the new window */
+        if (m->playing && m->current_track >= 0) {
+            int lo, hi;
+            signal_window(signal_strength, &lo, &hi);
+            if (m->current_track < lo || m->current_track > hi) {
+                music_next_track(m); /* crossfades via music_play */
+            }
+        }
     }
 }
 
