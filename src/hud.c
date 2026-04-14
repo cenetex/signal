@@ -963,7 +963,7 @@ void draw_hud(void) {
     }
 
     sdtx_pos(top_text_x, top_row_0);
-    sdtx_color3b(232, 241, 255);
+    sdtx_color3b(PAL_TEXT_PRIMARY);
     {
         const char *cs = net_local_callsign();
         const char *fallback = LOCAL_PLAYER.docked ? "RUN STATUS" : "SHIP STATUS";
@@ -974,7 +974,7 @@ void draw_hud(void) {
     }
 
     sdtx_pos(top_text_x, top_row_1);
-    sdtx_color3b(203, 220, 248);
+    sdtx_color3b(PAL_TEXT_SECONDARY);
     sdtx_printf("CR %d  H %d/%d  C %d/%d  ", credits, hull_units, hull_capacity, cargo_units, cargo_capacity);
     sdtx_color3b(sig_r, sig_g, sig_b);
     sdtx_printf("%s %d%%", sig_band, sig_pct);
@@ -1142,7 +1142,7 @@ void draw_hud(void) {
             sdtx_color3b(PAL_SYNC_OFFLINE);
             sdtx_puts("offline [P] reconnect");
         } else {
-            sdtx_color3b(100, 100, 100); /* offline version display */
+            sdtx_color3b(PAL_TEXT_GREY); /* offline version display */
             sdtx_printf("v%s", client_hash);
         }
         /* Alpha banner: repeating ticker across the top */
@@ -1294,7 +1294,7 @@ void draw_hud(void) {
 
             /* Close hint */
             sdtx_pos(px / cell, (py + 60.0f) / cell);
-            sdtx_color3b(100, 110, 120);
+            sdtx_color3b(PAL_TEXT_GREY);
             sdtx_puts("[E] close");
         } else {
             g.inspect_station = -1;

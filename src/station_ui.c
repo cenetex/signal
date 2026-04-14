@@ -258,11 +258,12 @@ void format_station_market_summary(const station_ui_state_t* ui, bool compact, c
     } else if (station_has_module(ui->station, MODULE_LASER_FAB) || station_has_module(ui->station, MODULE_TRACTOR_FAB)) {
         snprintf(text, text_size, "%s", compact ? "Laser + tractor tuning" : "Laser and tractor tuning.");
     } else {
-        snprintf(text, text_size, "%s", compact ? "Signal relay outpost" : "Signal relay outpost.");
+        snprintf(text, text_size, "Signal relay outpost.");
     }
 }
 
 void format_station_market_detail(const station_ui_state_t* ui, bool compact, char* text, size_t text_size) {
+    (void)compact;
     if (!ui->station) {
         text[0] = '\0';
         return;
@@ -273,7 +274,7 @@ void format_station_market_detail(const station_ui_state_t* ui, bool compact, ch
         station_has_module(ui->station, MODULE_FURNACE_CR)) {
         char stock[64] = { 0 };
         format_ingot_stock_line(ui->station, stock, sizeof(stock));
-        snprintf(text, text_size, "%s", compact ? stock : stock);
+        snprintf(text, text_size, "%s", stock);
     } else if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
         int buf = (int)lroundf(ui->station->inventory[COMMODITY_FERRITE_INGOT]);
         int prod = (int)lroundf(ui->station->inventory[COMMODITY_FRAME]);
@@ -435,7 +436,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         sdtx_color3b(PAL_TEXT_SECONDARY);
         sdtx_puts(header_badge);
         sdtx_pos(ui_text_pos(panel_x + panel_w - 152.0f), ui_text_pos(panel_y + 32.0f));
-        sdtx_color3b(145, 160, 188);
+        sdtx_color3b(PAL_STATION_HINT);
         sdtx_puts("Tab: switch  E: launch");
     }
 
@@ -644,7 +645,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 }
 
                 /* Launch hint — the only persistent action on STATUS. */
-                sdtx_color3b(100, 120, 110); /* contract status muted */
+                sdtx_color3b(PAL_TEXT_FADED);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                 sdtx_puts("[E] Launch");
             }
@@ -854,7 +855,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
         sdtx_puts("CONTRACTS");
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
-        sdtx_color3b(145, 160, 188);
+        sdtx_color3b(PAL_STATION_HINT);
         if (g.selected_contract >= 0)
             sdtx_puts("[E] deliver selected  [1-3] reselect");
         else
@@ -962,9 +963,12 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_printf("[%d] DELIVER %dx %s -> %.0f cr%s",
                     s + 1, slot_held[s], commodity_short_name(ct->commodity), cprice, marker);
             } else {
-                sdtx_printf("[%d] %s -> %s: %.0f cr%s",
+                const char *stn = g.world.stations[ct->station_index].name;
+                int max_name = (int)((inner_w - 48.0f) / 8.0f) - 20;
+                if (max_name < 6) max_name = 6;
+                sdtx_printf("[%d] %s -> %.*s: %.0f cr%s",
                     s + 1, commodity_short_name(ct->commodity),
-                    g.world.stations[ct->station_index].name,
+                    max_name, stn,
                     cprice, marker);
             }
         }
@@ -976,7 +980,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
         sdtx_puts("SHIPYARD");
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
-        sdtx_color3b(145, 160, 188);
+        sdtx_color3b(PAL_STATION_HINT);
         sdtx_puts("press [1-9] to order a scaffold kit");
 
         float ly = cy + 34.0f;
@@ -1008,7 +1012,8 @@ void draw_station_services(const station_ui_state_t* ui) {
                     (prereq >= 0 && prereq < MODULE_COUNT)
                         ? module_type_name((module_type_t)prereq) : "?");
             } else {
-                sdtx_color3b(can_afford ? 203 : 120, can_afford ? 220 : 130, can_afford ? 248 : 150); /* affordability status */
+                if (can_afford) sdtx_color3b(PAL_TEXT_SECONDARY);
+                else sdtx_color3b(PAL_CANNOT_AFFORD);
                 sdtx_printf("[%d] %-14s %dcr + %d %s",
                     shown + 1, module_type_name(kit), fee, mat, mat_name);
                 shown++;
@@ -1017,7 +1022,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         }
         if (!any) {
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            sdtx_color3b(150, 160, 180); /* status note text */
+            sdtx_color3b(PAL_SHIPYARD_HINT);
             sdtx_puts("This yard has no production lines installed.");
             ly += 14.0f;
         }
@@ -1067,7 +1072,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             }
         } else {
             ly += 8.0f;
-            sdtx_color3b(100, 115, 138);
+            sdtx_color3b(PAL_STATUS_DISABLED);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             sdtx_puts("No pending orders.");
         }
