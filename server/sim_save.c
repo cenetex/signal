@@ -52,7 +52,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 24  /* bumped: layered persistence — catalog split, derived data removal (#314) */
+#define SAVE_VERSION 25  /* bumped: MAX_STATIONS 8→64, station_count in header (#285 Phase 1) */
 #define MIN_SAVE_VERSION 20  /* migrate v20 by mapping old module_buffer → input */
 
 /* Set by world_load() before read_station() so per-station readers know
@@ -343,6 +343,9 @@ bool world_save(const world_t *w, const char *path) {
     WRITE_FIELD(f, w->rng);
     WRITE_FIELD(f, w->time);
     WRITE_FIELD(f, w->field_spawn_timer);
+    /* v25: station count header */
+    { int32_t sc = (int32_t)w->station_count;
+      WRITE_FIELD(f, sc); }
 
     /* Stations — session-tier only (identity lives in station catalog) */
     for (int i = 0; i < MAX_STATIONS; i++) {
@@ -399,12 +402,28 @@ bool world_load(world_t *w, const char *path) {
     READ_FIELD(f, w->time);
     READ_FIELD(f, w->field_spawn_timer);
 
+    /* v25+: station_count header; v24: fixed at 8 */
+    int save_station_slots = 8; /* v24 and earlier had MAX_STATIONS=8 */
+    if (version >= 25) {
+        int32_t sc;
+        READ_FIELD(f, sc);
+        w->station_count = (int)sc;
+        save_station_slots = MAX_STATIONS; /* v25 writes all 64 slots */
+    }
+
     if (version >= 24) {
         /* v24+: station identity comes from catalog; read session only */
-        for (int i = 0; i < MAX_STATIONS; i++) {
+        for (int i = 0; i < save_station_slots; i++) {
             if (!read_station_session(f, &w->stations[i])) return false;
         }
-        /* No asteroids or scaffolds in v24 */
+        /* v24→v25 migration: scan for active stations to set station_count */
+        if (version < 25) {
+            w->station_count = 3;
+            for (int i = 3; i < save_station_slots; i++)
+                if (station_exists(&w->stations[i]) && i >= w->station_count)
+                    w->station_count = i + 1;
+        }
+        /* No asteroids or scaffolds in v24+ */
     } else {
         /* v20-v23: full station data (identity will be written to catalog on next save) */
         for (int i = 0; i < MAX_STATIONS; i++) {

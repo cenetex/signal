@@ -20,16 +20,16 @@
  * pushes the world past these caps is structurally a slice of #285, not
  * a tuning change. File it against #285 instead of editing here.
  *
- * Do NOT raise MAX_STATIONS, MAX_ASTEROIDS, MAX_NPC_SHIPS, or
- * MAX_SCAFFOLDS without a paired wire-protocol bump and a deserializer
- * change in src/net.c. Tests will silently keep passing while production
- * traffic gets corrupted.
+ * Do NOT raise MAX_ASTEROIDS, MAX_NPC_SHIPS, or MAX_SCAFFOLDS without
+ * a paired wire-protocol bump and a deserializer change in src/net.c.
+ * MAX_STATIONS was lifted to 64 in #285 Phase 1 — wire format uses
+ * uint8 index which supports up to 255.
  */
 enum {
     KEY_COUNT = 512,
     MAX_ASTEROIDS = 255, /* uint8 index — see banner above (#285 to lift) */
     MAX_STARS = 120,
-    MAX_STATIONS = 8,    /* uint8 index — see banner above (#285 to lift) */
+    MAX_STATIONS = 64,   /* lifted from 8 in #285 Phase 1; uint8 wire index supports 255 */
     MAX_NPC_SHIPS = 16,  /* uint8 index — see banner above (#285 to lift) */
     MAX_SCAFFOLDS = 16,  /* uint8 index — see banner above (#285 to lift) */
     AUDIO_VOICE_COUNT = 24,

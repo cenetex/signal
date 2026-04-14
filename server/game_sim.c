@@ -2264,6 +2264,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 if (!station_exists(&w->stations[s])) { slot = s; break; }
             }
             if (slot >= 0) {
+                if (slot >= w->station_count) w->station_count = slot + 1;
                 station_t *st = &w->stations[slot];
                 memset(st, 0, sizeof(*st));
                 generate_outpost_name(st->name, sizeof(st->name), pos, slot);
@@ -3294,6 +3295,7 @@ void world_reset(world_t *w) {
     snprintf(w->stations[2].station_slug, sizeof(w->stations[2].station_slug), "helios");
     snprintf(w->stations[2].hail_message, sizeof(w->stations[2].hail_message),
              "Helios Works. Advanced smelting. Copper and crystal refined here.");
+    w->station_count = 3; /* 3 starter stations */
     rebuild_signal_chain(w);
 
     /* --- Initial asteroid field: spawn as clumps along belt density --- */

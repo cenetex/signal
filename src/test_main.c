@@ -2566,7 +2566,7 @@ TEST(test_bug67_dock_station_bounds) {
     /* dock_ship: if (sp->nearby_station >= 0) sp->current_station = sp->nearby_station
      * No upper bound check. If nearby_station is somehow >= MAX_STATIONS,
      * current_station becomes invalid → all station accesses OOB. */
-    ASSERT(MAX_STATIONS == 8);
+    ASSERT(MAX_STATIONS == 64);
     /* After fix: dock_ship should check nearby_station < MAX_STATIONS.
      * Currently it only checks >= 0. */
     WORLD_DECL;
@@ -3207,7 +3207,7 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  *   3. Update this constant to the new size
  */
 /* v23: station credit pool added (#312) — +4 bytes per station (8×4=32). */
-#define EXPECTED_SAVE_SIZE 7004  /* v24+: layered persistence, no asteroids/scaffolds */
+#define EXPECTED_SAVE_SIZE 38984  /* v25: 64 stations, station_count header */
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -3244,7 +3244,7 @@ TEST(test_save_header_golden_bytes) {
     fread(&spawn_timer, 4, 1, f);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 24);
+    ASSERT_EQ_INT((int)version, 25);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
