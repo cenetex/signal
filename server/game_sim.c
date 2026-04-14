@@ -837,7 +837,9 @@ static void step_ship_motion(ship_t *s, float dt, const world_t *w, float cached
         vec2 to_station = v2_sub(w->stations[best_s].pos, s->pos);
         float d = sqrtf(v2_len_sq(to_station));
         if (d > 0.001f) {
-            float push_strength = boundary * 0.5f;
+            /* Strong pull — at zero signal this is the only way back.
+             * Scales with boundary (0 at frontier, 1 at zero signal). */
+            float push_strength = boundary * 2.0f;
             vec2 push = v2_scale(to_station, push_strength / d);
             s->vel = v2_add(s->vel, push);
         }

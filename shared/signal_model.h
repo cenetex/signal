@@ -31,10 +31,16 @@ static inline float signal_mining_efficiency(float quality) {
     return 0.2f + 0.8f * quality;
 }
 
-/* Control responsiveness: 30% minimum at zero signal.
- * Affects thrust and turn input scaling. */
+/* Control responsiveness: zero at no signal, full at core.
+ * No signal = engine cutout, drift only. Battery mode (#250)
+ * will override this to allow thrust in the dark. */
 static inline float signal_control_scale(float quality) {
-    return 0.3f + 0.7f * quality;
+    if (quality < 0.01f) return 0.0f;
+    /* Steep ramp in frontier band so controls recover quickly
+     * once you drift back into even marginal coverage. */
+    if (quality < SIGNAL_BAND_FRONTIER)
+        return 0.15f * (quality / SIGNAL_BAND_FRONTIER);
+    return 0.15f + 0.85f * ((quality - SIGNAL_BAND_FRONTIER) / (1.0f - SIGNAL_BAND_FRONTIER));
 }
 
 /* NPC confidence: 0.0 below frontier, ramps to 1.0 at operational.
