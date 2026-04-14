@@ -2267,6 +2267,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 if (slot >= w->station_count) w->station_count = slot + 1;
                 station_t *st = &w->stations[slot];
                 memset(st, 0, sizeof(*st));
+                st->id = w->next_station_id++;
                 generate_outpost_name(st->name, sizeof(st->name), pos, slot);
                 st->pos = pos;
                 st->planned = true;
@@ -3191,6 +3192,8 @@ void world_reset(world_t *w) {
     belt_field_init(&w->belt, w->rng, WORLD_RADIUS);
 
     /* --- Stations --- */
+    w->next_station_id = 1; /* IDs start at 1; 0 = unassigned */
+    w->stations[0].id = w->next_station_id++;
     snprintf(w->stations[0].name, sizeof(w->stations[0].name), "%s", "Prospect Refinery");
     w->stations[0].pos         = v2(0.0f, -2400.0f);
     w->stations[0].radius      = 40.0f;
@@ -3220,6 +3223,7 @@ void world_reset(world_t *w) {
     snprintf(w->stations[0].hail_message, sizeof(w->stations[0].hail_message),
              "Prospect Refinery. Ferrite smelting. Tow fragments to the furnace.");
 
+    w->stations[1].id = w->next_station_id++;
     snprintf(w->stations[1].name, sizeof(w->stations[1].name), "%s", "Kepler Yard");
     w->stations[1].pos         = v2(-3200.0f, 2300.0f);
     w->stations[1].radius      = 36.0f;
@@ -3252,6 +3256,7 @@ void world_reset(world_t *w) {
     snprintf(w->stations[1].hail_message, sizeof(w->stations[1].hail_message),
              "Kepler Yard. Fabrication and scaffold kits. Build the frontier.");
 
+    w->stations[2].id = w->next_station_id++;
     snprintf(w->stations[2].name, sizeof(w->stations[2].name), "%s", "Helios Works");
     w->stations[2].pos         = v2(3200.0f, 2300.0f);
     w->stations[2].radius      = 36.0f;

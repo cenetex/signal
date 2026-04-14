@@ -172,6 +172,7 @@ enum {
 };
 
 typedef struct {
+    uint32_t id;             /* stable ID, survives array slot changes (0 = unassigned) */
     char name[32];
     vec2 pos;
     float radius;

@@ -343,9 +343,10 @@ bool world_save(const world_t *w, const char *path) {
     WRITE_FIELD(f, w->rng);
     WRITE_FIELD(f, w->time);
     WRITE_FIELD(f, w->field_spawn_timer);
-    /* v25: station count header */
+    /* v25: station count + next ID counter */
     { int32_t sc = (int32_t)w->station_count;
       WRITE_FIELD(f, sc); }
+    WRITE_FIELD(f, w->next_station_id);
 
     /* Stations — session-tier only (identity lives in station catalog) */
     for (int i = 0; i < MAX_STATIONS; i++) {
@@ -408,6 +409,7 @@ bool world_load(world_t *w, const char *path) {
         int32_t sc;
         READ_FIELD(f, sc);
         w->station_count = (int)sc;
+        READ_FIELD(f, w->next_station_id);
         save_station_slots = MAX_STATIONS; /* v25 writes all 64 slots */
     }
 

@@ -3207,7 +3207,7 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  *   3. Update this constant to the new size
  */
 /* v23: station credit pool added (#312) — +4 bytes per station (8×4=32). */
-#define EXPECTED_SAVE_SIZE 38984  /* v25: 64 stations, station_count header */
+#define EXPECTED_SAVE_SIZE 38988  /* v25: 64 stations, station_count + next_station_id header */
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));

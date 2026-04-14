@@ -43,7 +43,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define CATALOG_MAGIC   0x53544E43  /* "STNC" */
-#define CATALOG_VERSION 1
+#define CATALOG_VERSION 2  /* v2: added station ID field */
 
 /* ---- helper macros (same pattern as sim_save.c) ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
@@ -80,6 +80,7 @@ bool station_catalog_save(const station_t *st, int index, const char *dir) {
     { uint32_t ver   = CATALOG_VERSION; WRITE_FIELD(f, ver); }
 
     /* Identity fields */
+    WRITE_FIELD(f, st->id);
     WRITE_FIELD(f, st->name);
     WRITE_FIELD(f, st->pos);
     WRITE_FIELD(f, st->radius);
@@ -152,6 +153,11 @@ static bool station_catalog_load_one(station_t *st, int index, const char *dir) 
     }
 
     /* Identity fields */
+    if (ver >= 2) {
+        READ_FIELD(f, st->id);
+    } else {
+        st->id = 0; /* v1 catalogs have no ID — assigned on next save */
+    }
     READ_FIELD(f, st->name);
     READ_FIELD(f, st->pos);
     READ_FIELD(f, st->radius);

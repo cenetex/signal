@@ -204,6 +204,7 @@ typedef struct {
 typedef struct {
     station_t stations[MAX_STATIONS];
     int station_count;              /* highest active slot + 1 (3 at reset, grows with outposts) */
+    uint32_t next_station_id;      /* monotonic counter for stable station IDs */
     asteroid_t asteroids[MAX_ASTEROIDS];
     npc_ship_t npc_ships[MAX_NPC_SHIPS];
     scaffold_t scaffolds[MAX_SCAFFOLDS];

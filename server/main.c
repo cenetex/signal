@@ -766,6 +766,13 @@ int main(void) {
         }
     }
 
+    /* Assign stable IDs to any stations loaded from v1 catalogs (id == 0) */
+    if (world.next_station_id == 0) world.next_station_id = 1;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (station_exists(&world.stations[i]) && world.stations[i].id == 0)
+            world.stations[i].id = world.next_station_id++;
+    }
+
     rebuild_signal_chain(&world);
     station_rebuild_all_nav(&world);
     for (int i = 0; i < MAX_STATIONS; i++) station_identity_dirty[i] = true;
