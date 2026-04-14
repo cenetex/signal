@@ -664,9 +664,6 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_color3b(PAL_TEXT_SECONDARY);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
             sdtx_puts(stock);
-            sdtx_color3b(PAL_INSPECT_STATION);
-            sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
-            sdtx_printf("pool %d cr", (int)lroundf(ui->station->credit_pool));
             my += compact ? 18.0f : 22.0f;
         }
 
