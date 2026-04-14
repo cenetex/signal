@@ -721,6 +721,23 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         }
     }
 
+    /* Fallback: deliver the station's primary input commodity at base price,
+     * even without an active contract. Fab stations always accept their input
+     * (e.g. frame press accepts ferrite ingots). */
+    commodity_t buy = station_primary_buy(st);
+    if ((int)buy >= 0 && sp->ship.cargo[buy] > 0.01f &&
+        (!selective || filter == buy)) {
+        float capacity = MAX_PRODUCT_STOCK;
+        float space = fmaxf(0.0f, capacity - st->inventory[buy]);
+        if (space > 0.01f) {
+            float accepted = fminf(sp->ship.cargo[buy], space);
+            float price = station_buy_price(st, buy);
+            payout += accepted * price;
+            sp->ship.cargo[buy] -= accepted;
+            st->inventory[buy] += accepted;
+        }
+    }
+
     if (payout > 0.01f) {
         /* Pay from station credit pool — cap at what station can afford */
         if (payout > st->credit_pool) payout = st->credit_pool;
