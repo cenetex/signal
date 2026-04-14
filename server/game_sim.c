@@ -3305,19 +3305,19 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     memset(&sp->ship, 0, sizeof(sp->ship));
     sp->ship.hull_class = HULL_CLASS_MINER;
     sp->ship.hull       = HULL_DEFS[HULL_CLASS_MINER].max_hull;
-    /* Starting credits come from the docked station's pool — not thin air */
-    sp->ship.credits    = 0.0f;
-    if (sp->current_station >= 0 && sp->current_station < MAX_STATIONS) {
-        float seed = fminf(50.0f, w->stations[sp->current_station].credit_pool);
-        sp->ship.credits = seed;
-        w->stations[sp->current_station].credit_pool -= seed;
-    }
     sp->ship.angle      = PI_F * 0.5f;
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
     sp->ship.towed_scaffold = -1;
     sp->ship.tractor_active = false;  /* driven by tractor_hold each frame */
     sp->docked          = true;
     sp->current_station = 0;
+    /* Starting credits come from the docked station's pool — not thin air */
+    sp->ship.credits    = 0.0f;
+    {
+        float seed = fminf(50.0f, w->stations[sp->current_station].credit_pool);
+        sp->ship.credits = seed;
+        w->stations[sp->current_station].credit_pool -= seed;
+    }
     sp->nearby_station  = 0;
     sp->in_dock_range   = true;
     sp->hover_asteroid  = -1;
