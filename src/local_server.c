@@ -46,6 +46,7 @@ void local_server_init(local_server_t *ls, uint32_t seed) {
     /* Deterministic token so the ledger can track singleplayer credits */
     memset(ls->world.players[0].session_token, 0x01, sizeof(ls->world.players[0].session_token));
     player_init_ship(&ls->world.players[0], &ls->world);
+    player_seed_credits(&ls->world.players[0], &ls->world);
     ls->active = true;
 }
 

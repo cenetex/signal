@@ -1932,8 +1932,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             float afford = (price_per > 0.01f) ? floorf(bal / price_per) : 0.0f;
             float amount = fminf(fminf(available, space), afford);
             float total_cost = amount * price_per;
-            if (amount > 0.01f) {
-                ledger_spend(docked_st, sp->session_token, total_cost, &sp->ship);
+            if (amount > 0.01f && ledger_spend(docked_st, sp->session_token, total_cost, &sp->ship)) {
                 sp->ship.cargo[c] += amount;
                 docked_st->inventory[c] -= amount;
                 SIM_LOG("[sim] player %d bought %.0f of commodity %d for %.0f cr\n",
@@ -2158,10 +2157,11 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                     float amount = fminf(fminf(available, 1.0f), afford); /* buy 1 at a time */
                     if (amount > FLOAT_EPSILON) {
                         float cost = amount * price_per;
-                        ledger_spend(nearby_st, sp->session_token, cost, &sp->ship);
-                        sp->ship.cargo[c] += amount;
-                        nearby_st->inventory[c] -= amount;
-                        emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
+                        if (ledger_spend(nearby_st, sp->session_token, cost, &sp->ship)) {
+                            sp->ship.cargo[c] += amount;
+                            nearby_st->inventory[c] -= amount;
+                            emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
+                        }
                     }
                 }
             }
@@ -3337,12 +3337,8 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->ship.tractor_active = false;  /* driven by tractor_hold each frame */
     sp->docked          = true;
     sp->current_station = 0;
-    /* Starting credits go into the docked station's ledger — not a global wallet */
-    {
-        float seed = fminf(50.0f, w->stations[sp->current_station].credit_pool);
-        w->stations[sp->current_station].credit_pool -= seed;
-        ledger_earn(&w->stations[sp->current_station], sp->session_token, seed);
-    }
+    /* Seed credits are granted by player_seed_credits() AFTER session_token is set.
+     * Calling ledger_earn here would use the wrong (zero) token on the server. */
     sp->nearby_station  = 0;
     sp->in_dock_range   = true;
     sp->hover_asteroid  = -1;
@@ -3354,4 +3350,15 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->autopilot_target = -1;
     sp->autopilot_timer = 0.0f;
     anchor_ship_in_station(sp, w);
+}
+
+/* Grant starting credits at the docked station. Call AFTER session_token is set. */
+void player_seed_credits(server_player_t *sp, world_t *w) {
+    int st = sp->current_station;
+    if (st < 0 || st >= MAX_STATIONS) st = 0;
+    /* Already has balance at this station? Skip (e.g., loaded from save). */
+    if (ledger_balance(&w->stations[st], sp->session_token) > 0.01f) return;
+    float seed = fminf(50.0f, w->stations[st].credit_pool);
+    w->stations[st].credit_pool -= seed;
+    ledger_earn(&w->stations[st], sp->session_token, seed);
 }

@@ -188,6 +188,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 } else {
                     printf("[server] player %d: no save for session, fresh ship\n", pid);
                 }
+                /* Seed starting credits now that session_token is set */
+                player_seed_credits(&world.players[pid], &world);
             }
         }
         break;

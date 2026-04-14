@@ -25,10 +25,9 @@ static float client_station_balance(int station_idx) {
         return g.station_balance;
     if (station_idx < 0 || station_idx >= MAX_STATIONS) return 0.0f;
     const station_t *st = &g.world.stations[station_idx];
+    const uint8_t *token = g.world.players[g.local_player_slot].session_token;
     for (int i = 0; i < st->ledger_count; i++) {
-        /* In singleplayer the local_server mirrors the full world,
-         * so the ledger is present. Match on token 0x01 (set in local_server_init). */
-        if (st->ledger[i].balance > 0.0f || i == 0)
+        if (memcmp(st->ledger[i].player_token, token, 8) == 0)
             return st->ledger[i].balance;
     }
     return 0.0f;

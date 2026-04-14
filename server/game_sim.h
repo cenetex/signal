@@ -280,6 +280,7 @@ void emit_event(world_t *w, sim_event_t ev);
 float ledger_balance(const station_t *st, const uint8_t *token);
 void ledger_earn(station_t *st, const uint8_t *token, float amount);
 void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
+void player_seed_credits(server_player_t *sp, world_t *w);
 void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_by);
 void activate_outpost(world_t *w, int station_idx);
 

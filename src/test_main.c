@@ -1537,6 +1537,8 @@ TEST(test_scenario_two_players_mining) {
     memset(w.players[1].session_token, 0x02, 8);
     player_init_ship(&w.players[0], &w);
     player_init_ship(&w.players[1], &w);
+    player_seed_credits(&w.players[0], &w);
+    player_seed_credits(&w.players[1], &w);
     w.players[0].connected = true;
     w.players[1].connected = true;
     w.players[0].ship.mining_level = SHIP_UPGRADE_MAX_LEVEL;
@@ -5472,6 +5474,7 @@ TEST(test_econ_sim_credit_circulation) {
     memcpy(w.players[0].session_token, token, 8);
     w.players[0].session_ready = true;
     player_init_ship(&w.players[0], &w);
+    player_seed_credits(&w.players[0], &w);
     w.players[0].connected = true;
 
     float initial_pool_0 = w.stations[0].credit_pool;
