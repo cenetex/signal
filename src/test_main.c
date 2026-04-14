@@ -25,6 +25,7 @@ static int truncate(const char *path, long size) {
 #include "game_sim.h"
 #include "sim_catalog.h"
 #include "sim_nav.h"
+#include "chunk.h"
 #include "net_protocol.h"
 
 static int tests_run = 0;
@@ -3913,6 +3914,52 @@ TEST(test_belt_ore_distribution) {
     ASSERT(cr < fe);    /* less than ferrite */
 }
 
+TEST(test_chunk_determinism) {
+    /* Same chunk coordinates + seed must produce identical asteroids */
+    belt_field_t bf;
+    belt_field_init(&bf, 2037, 50000.0f);
+    chunk_asteroid_t a[CHUNK_MAX_ASTEROIDS], b[CHUNK_MAX_ASTEROIDS];
+    int na = chunk_generate(&bf, 2037, 5, -3, a, CHUNK_MAX_ASTEROIDS);
+    int nb = chunk_generate(&bf, 2037, 5, -3, b, CHUNK_MAX_ASTEROIDS);
+    ASSERT_EQ_INT(na, nb);
+    for (int i = 0; i < na; i++) {
+        ASSERT_EQ_FLOAT(a[i].pos.x, b[i].pos.x, 0.001f);
+        ASSERT_EQ_FLOAT(a[i].pos.y, b[i].pos.y, 0.001f);
+        ASSERT_EQ_INT((int)a[i].tier, (int)b[i].tier);
+        ASSERT_EQ_INT((int)a[i].commodity, (int)b[i].commodity);
+        ASSERT_EQ_FLOAT(a[i].radius, b[i].radius, 0.001f);
+        ASSERT_EQ_FLOAT(a[i].hp, b[i].hp, 0.001f);
+    }
+}
+
+TEST(test_chunk_different_coords_differ) {
+    belt_field_t bf;
+    belt_field_init(&bf, 2037, 50000.0f);
+    chunk_asteroid_t a[CHUNK_MAX_ASTEROIDS], b[CHUNK_MAX_ASTEROIDS];
+    int na = 0, nb = 0;
+    for (int cx = -5; cx < 5 && na == 0; cx++)
+        na = chunk_generate(&bf, 2037, cx, 0, a, CHUNK_MAX_ASTEROIDS);
+    for (int cx = 10; cx < 20 && nb == 0; cx++)
+        nb = chunk_generate(&bf, 2037, cx, 3, b, CHUNK_MAX_ASTEROIDS);
+    if (na > 0 && nb > 0) {
+        ASSERT(fabsf(a[0].pos.x - b[0].pos.x) > 1.0f ||
+               fabsf(a[0].pos.y - b[0].pos.y) > 1.0f);
+    }
+}
+
+TEST(test_chunk_respects_belt_density) {
+    /* Chunks at belt density > 0 should produce asteroids */
+    belt_field_t bf;
+    belt_field_init(&bf, 2037, 50000.0f);
+    /* Station 0 is at (0, -2400). Belt density should be nonzero nearby. */
+    chunk_asteroid_t out[CHUNK_MAX_ASTEROIDS];
+    int total = 0;
+    for (int cx = -10; cx < 10; cx++)
+        for (int cy = -16; cy < -4; cy++)
+            total += chunk_generate(&bf, 2037, cx, cy, out, CHUNK_MAX_ASTEROIDS);
+    ASSERT(total > 0); /* at least some asteroids near the belt */
+}
+
 /* ================================================================== */
 /* Mixed cargo sell/deliver                                            */
 /* ================================================================== */
@@ -5956,6 +6003,11 @@ int main(void) {
     printf("\nBelt generation:\n");
     RUN(test_belt_density_varies);
     RUN(test_belt_ore_distribution);
+
+    printf("\nChunk terrain generation:\n");
+    RUN(test_chunk_determinism);
+    RUN(test_chunk_different_coords_differ);
+    RUN(test_chunk_respects_belt_density);
 
     printf("\nMixed cargo sell/deliver:\n");
     RUN(test_deliver_ingots_to_contract);
