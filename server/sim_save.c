@@ -64,52 +64,9 @@ static int g_loaded_save_version = SAVE_VERSION;
 #define READ_FIELD(f, val)  do { if (fread(&(val), sizeof(val), 1, (f)) != 1)  { fclose(f); return false; } } while(0)
 
 /* ---- station field-by-field I/O ---- */
-static bool write_station(FILE *f, const station_t *s) {
-    WRITE_FIELD(f, s->name);
-    { uint32_t reserved = 0; WRITE_FIELD(f, reserved); } /* was: role */
-    WRITE_FIELD(f, s->pos);
-    WRITE_FIELD(f, s->radius);
-    WRITE_FIELD(f, s->dock_radius);
-    WRITE_FIELD(f, s->signal_range);
-    WRITE_FIELD(f, s->scaffold);
-    WRITE_FIELD(f, s->scaffold_progress);
-    WRITE_FIELD(f, s->base_price);
-    WRITE_FIELD(f, s->inventory);
-    WRITE_FIELD(f, s->services);
-    /* Modules */
-    WRITE_FIELD(f, s->module_count);
-    for (int m = 0; m < s->module_count && m < MAX_MODULES_PER_STATION; m++) {
-        WRITE_FIELD(f, s->modules[m]);
-    }
-    /* Ring rotation */
-    WRITE_FIELD(f, s->arm_count);
-    for (int a = 0; a < MAX_ARMS; a++) {
-        WRITE_FIELD(f, s->arm_rotation[a]);
-        WRITE_FIELD(f, s->arm_speed[a]);
-        WRITE_FIELD(f, s->ring_offset[a]);
-    }
-    /* Production layer v2: shipyard queue + per-module input/output buffers */
-    WRITE_FIELD(f, s->pending_scaffold_count);
-    for (int p = 0; p < 4; p++) {
-        WRITE_FIELD(f, s->pending_scaffolds[p]);
-    }
-    for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
-        WRITE_FIELD(f, s->module_input[m]);
-    }
-    for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
-        WRITE_FIELD(f, s->module_output[m]);
-    }
-    /* Placement plans + planned-station fields (v20+) */
-    WRITE_FIELD(f, s->placement_plan_count);
-    for (int p = 0; p < 8; p++) {
-        WRITE_FIELD(f, s->placement_plans[p]);
-    }
-    WRITE_FIELD(f, s->planned);
-    WRITE_FIELD(f, s->planned_owner);
-    /* v23: station credit pool */
-    WRITE_FIELD(f, s->credit_pool);
-    return true;
-}
+/* write_station removed in v24 — station identity now persisted via
+ * sim_catalog.c; session-tier data via write_station_session(). The
+ * read_station() below is kept for loading v23 saves. */
 
 static bool read_station(FILE *f, station_t *s) {
     READ_FIELD(f, s->name);
