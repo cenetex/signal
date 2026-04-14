@@ -199,6 +199,8 @@ typedef struct {
     float autopilot_timer;
     vec2 autopilot_last_pos;    /* position snapshot for stuck detection */
     float autopilot_stuck_timer;/* seconds since meaningful movement */
+    /* Per-player relevance: tracks which asteroids this player has received */
+    bool asteroid_sent[MAX_ASTEROIDS];
 } server_player_t;
 
 typedef struct {

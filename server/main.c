@@ -557,11 +557,15 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             ws_send(c, id_buf, (size_t)id_len);
         }
 
-        /* Send full asteroid sync to new player. */
+        /* Send full asteroid sync to new player and mark all as sent. */
         {
             uint8_t sync_buf[2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
             int sync_len = serialize_asteroids_full(sync_buf, world.asteroids);
             ws_send(c, sync_buf, (size_t)sync_len);
+            /* Initialize per-player sent tracking */
+            server_player_t *sp = &world.players[pid];
+            for (int ai = 0; ai < MAX_ASTEROIDS; ai++)
+                sp->asteroid_sent[ai] = world.asteroids[ai].active;
         }
 
         /* Send server version hash. */
@@ -616,38 +620,27 @@ static void broadcast_player_states(void) {
     broadcast(buf, (size_t)len);
 }
 
-static void mark_visible_asteroids_dirty(void) {
-    /* Mark asteroids near any connected player as dirty so they get sent.
-     * View radius ~1200u covers a generous screen at default zoom. */
-    const float VIEW_RADIUS_SQ = 3000.0f * 3000.0f;
-    /* Pre-filter connected players into compact array */
-    int connected[MAX_PLAYERS];
-    int num_connected = 0;
-    for (int p = 0; p < MAX_PLAYERS; p++) {
-        if (world.players[p].connected) connected[num_connected++] = p;
-    }
-    if (num_connected == 0) return;
-
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!world.asteroids[i].active || world.asteroids[i].net_dirty) continue;
-        for (int cp = 0; cp < num_connected; cp++) {
-            int p = connected[cp];
-            if (v2_dist_sq(world.asteroids[i].pos, world.players[p].ship.pos) < VIEW_RADIUS_SQ) {
-                world.asteroids[i].net_dirty = true;
-                break;
-            }
-        }
-    }
-}
+/* mark_visible_asteroids_dirty removed — per-player relevance filtering
+ * in serialize_asteroids_for_player handles viewport culling. */
 
 static void broadcast_world(void) {
-    /* Mark asteroids in player views as dirty before serializing */
-    mark_visible_asteroids_dirty();
-
-    /* Asteroids (delta: only dirty) */
-    uint8_t abuf[2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
-    int alen = serialize_asteroids(abuf, world.asteroids);
-    broadcast(abuf, (size_t)alen);
+    /* Asteroids: per-player relevance filtering.
+     * Each player gets only asteroids in their view radius.
+     * Deactivation records sent when asteroids leave a player's view. */
+    {
+        uint8_t abuf[2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            server_player_t *sp = &world.players[p];
+            if (!sp->connected || !sp->conn) continue;
+            int alen = serialize_asteroids_for_player(
+                abuf, world.asteroids, sp->ship.pos, sp->asteroid_sent);
+            if (alen > 2) /* skip empty messages */
+                ws_send(sp->conn, abuf, (size_t)alen);
+        }
+        /* Bulk clear dirty flags after all players served */
+        for (int i = 0; i < MAX_ASTEROIDS; i++)
+            world.asteroids[i].net_dirty = false;
+    }
 
     /* NPCs */
     uint8_t nbuf[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];

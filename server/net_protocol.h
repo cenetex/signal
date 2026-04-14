@@ -140,26 +140,47 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
  * [type:1][count:1] + count * ASTEROID_RECORD_SIZE-byte records
  */
 /* Serialize only dirty asteroids (delta update). Clears dirty flags after serialization. */
-static inline int serialize_asteroids(uint8_t *buf, asteroid_t *asteroids) {
+/* serialize_asteroids removed — replaced by per-player relevance filtering */
+
+/* Per-player asteroid serialization with relevance filtering.
+ * Sends asteroids that are: (a) dirty AND in view, or (b) previously sent
+ * but now inactive or out of view (deactivation). Updates sent[] bitset.
+ * Does NOT clear net_dirty — caller does bulk clear after all players. */
+#define ASTEROID_VIEW_RADIUS_SQ (3000.0f * 3000.0f)
+static inline int serialize_asteroids_for_player(
+    uint8_t *buf, const asteroid_t *asteroids, vec2 player_pos, bool *sent) {
     int count = 0;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!asteroids[i].net_dirty) continue;
-        asteroid_t *a = &asteroids[i];
-        uint8_t *p = &buf[2 + count * ASTEROID_RECORD_SIZE];
-        p[0] = (uint8_t)i;
-        p[1] = a->active ? 1 : 0;  /* inactive = deactivation signal */
-        if (a->fracture_child) p[1] |= (1 << 1);
-        p[1] |= (((uint8_t)a->tier & 0x7) << 2);
-        p[1] |= (((uint8_t)a->commodity & 0x7) << 5);
-        write_f32_le(&p[2],  a->pos.x);
-        write_f32_le(&p[6],  a->pos.y);
-        write_f32_le(&p[10], a->vel.x);
-        write_f32_le(&p[14], a->vel.y);
-        write_f32_le(&p[18], a->hp);
-        write_f32_le(&p[22], a->ore);
-        write_f32_le(&p[26], a->radius);
-        a->net_dirty = false;
-        count++;
+        const asteroid_t *a = &asteroids[i];
+        bool in_view = a->active &&
+            v2_dist_sq(a->pos, player_pos) < ASTEROID_VIEW_RADIUS_SQ;
+
+        if (in_view && (a->net_dirty || !sent[i])) {
+            /* Send update (or first-time add) */
+            uint8_t *p = &buf[2 + count * ASTEROID_RECORD_SIZE];
+            p[0] = (uint8_t)i;
+            p[1] = 1;
+            if (a->fracture_child) p[1] |= (1 << 1);
+            p[1] |= (((uint8_t)a->tier & 0x7) << 2);
+            p[1] |= (((uint8_t)a->commodity & 0x7) << 5);
+            write_f32_le(&p[2],  a->pos.x);
+            write_f32_le(&p[6],  a->pos.y);
+            write_f32_le(&p[10], a->vel.x);
+            write_f32_le(&p[14], a->vel.y);
+            write_f32_le(&p[18], a->hp);
+            write_f32_le(&p[22], a->ore);
+            write_f32_le(&p[26], a->radius);
+            sent[i] = true;
+            count++;
+        } else if (sent[i] && !in_view) {
+            /* Deactivation: asteroid left view or was destroyed */
+            uint8_t *p = &buf[2 + count * ASTEROID_RECORD_SIZE];
+            memset(p, 0, ASTEROID_RECORD_SIZE);
+            p[0] = (uint8_t)i;
+            p[1] = 0; /* active = false */
+            sent[i] = false;
+            count++;
+        }
     }
     buf[0] = NET_MSG_WORLD_ASTEROIDS;
     buf[1] = (uint8_t)count;

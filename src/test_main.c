@@ -811,10 +811,12 @@ TEST(test_roundtrip_asteroids) {
     asteroids[5].radius = 14.0f;
 
     uint8_t buf[2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
-    int len = serialize_asteroids(buf, asteroids);
+    bool sent[MAX_ASTEROIDS] = {0};
+    vec2 view_pos = v2(0.0f, 0.0f); /* both asteroids are within 3000u */
+    int len = serialize_asteroids_for_player(buf, asteroids, view_pos, sent);
 
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_ASTEROIDS);
-    ASSERT_EQ_INT(buf[1], 2);  /* 2 dirty asteroids */
+    ASSERT_EQ_INT(buf[1], 2);  /* 2 visible asteroids */
     ASSERT_EQ_INT(len, 2 + 2 * ASTEROID_RECORD_SIZE);
 
     /* First asteroid (index 0) */
