@@ -642,15 +642,62 @@ static void broadcast_world(void) {
             world.asteroids[i].net_dirty = false;
     }
 
-    /* NPCs */
-    uint8_t nbuf[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
-    int nlen = serialize_npcs(nbuf, world.npc_ships);
-    broadcast(nbuf, (size_t)nlen);
+    /* NPCs: per-player view filtering (same radius as asteroids) */
+    {
+        uint8_t nbuf[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            server_player_t *sp = &world.players[p];
+            if (!sp->connected || !sp->conn) continue;
+            int count = 0;
+            for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+                if (!world.npc_ships[i].active) continue;
+                if (v2_dist_sq(world.npc_ships[i].pos, sp->ship.pos) > ASTEROID_VIEW_RADIUS_SQ)
+                    continue;
+                const npc_ship_t *n = &world.npc_ships[i];
+                uint8_t *q = &nbuf[2 + count * NPC_RECORD_SIZE];
+                q[0] = (uint8_t)i;
+                q[1] = 1;
+                q[1] |= (((uint8_t)n->role & 0x3) << 1);
+                q[1] |= (((uint8_t)n->state & 0x7) << 3);
+                if (n->thrusting) q[1] |= (1 << 6);
+                write_f32_le(&q[2],  n->pos.x);
+                write_f32_le(&q[6],  n->pos.y);
+                write_f32_le(&q[10], n->vel.x);
+                write_f32_le(&q[14], n->vel.y);
+                write_f32_le(&q[18], n->angle);
+                q[22] = (uint8_t)(int8_t)n->target_asteroid;
+                q[23] = (uint8_t)(n->tint_r * 255.0f);
+                q[24] = (uint8_t)(n->tint_g * 255.0f);
+                q[25] = (uint8_t)(n->tint_b * 255.0f);
+                count++;
+            }
+            nbuf[0] = NET_MSG_WORLD_NPCS;
+            nbuf[1] = (uint8_t)count;
+            if (count > 0)
+                ws_send(sp->conn, nbuf, (size_t)(2 + count * NPC_RECORD_SIZE));
+        }
+    }
 
-    /* Scaffolds (full snapshot — at most 16 entries, ~450 bytes) */
-    uint8_t scbuf[2 + MAX_SCAFFOLDS * SCAFFOLD_RECORD_SIZE];
-    int sclen = serialize_scaffolds(scbuf, world.scaffolds);
-    broadcast(scbuf, (size_t)sclen);
+    /* Scaffolds: per-player view filtering */
+    {
+        uint8_t scbuf[2 + MAX_SCAFFOLDS * SCAFFOLD_RECORD_SIZE];
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            server_player_t *sp = &world.players[p];
+            if (!sp->connected || !sp->conn) continue;
+            int count = 0;
+            for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+                if (!world.scaffolds[i].active) continue;
+                if (v2_dist_sq(world.scaffolds[i].pos, sp->ship.pos) > ASTEROID_VIEW_RADIUS_SQ)
+                    continue;
+                serialize_one_scaffold(&scbuf[2 + count * SCAFFOLD_RECORD_SIZE], i, &world.scaffolds[i]);
+                count++;
+            }
+            scbuf[0] = NET_MSG_WORLD_SCAFFOLDS;
+            scbuf[1] = (uint8_t)count;
+            if (count > 0)
+                ws_send(sp->conn, scbuf, (size_t)(2 + count * SCAFFOLD_RECORD_SIZE));
+        }
+    }
 
     /* World time sync (5 bytes: type + float) */
     uint8_t tbuf[5];
@@ -945,13 +992,18 @@ int main(void) {
                 for (int s = 0; s < MAX_STATIONS; s++) station_identity_dirty[s] = true;
                 last_station_identity = now;
             }
-            /* Only re-broadcast station identities when they've changed */
+            /* Re-broadcast dirty station identities only to players in signal range */
             for (int s = 0; s < MAX_STATIONS; s++) {
                 if (!station_identity_dirty[s]) continue;
                 if (!station_exists(&world.stations[s])) continue;
                 uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
                 int id_len = serialize_station_identity(id_buf, s, &world.stations[s]);
-                broadcast(id_buf, (size_t)id_len);
+                float sr_sq = world.stations[s].signal_range * world.stations[s].signal_range;
+                for (int p = 0; p < MAX_PLAYERS; p++) {
+                    if (!world.players[p].connected || !world.players[p].conn) continue;
+                    if (v2_dist_sq(world.players[p].ship.pos, world.stations[s].pos) <= sr_sq)
+                        ws_send(world.players[p].conn, id_buf, (size_t)id_len);
+                }
                 station_identity_dirty[s] = false;
             }
             last_world = now;
