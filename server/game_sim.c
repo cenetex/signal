@@ -2495,6 +2495,15 @@ static void step_contracts(world_t *w, float dt) {
         }
         if (has_ore_contract && has_production_contract) continue;
 
+        /* Skip contract generation if station is nearly broke */
+        if (st->credit_pool < 100.0f) continue;
+
+        /* Pool factor: rich stations offer better prices.
+         * 0.2x at 1000 cr, 1.0x at 5000 cr, 1.5x at 10000+ cr */
+        float pool_factor = st->credit_pool / 5000.0f;
+        if (pool_factor < 0.2f) pool_factor = 0.2f;
+        if (pool_factor > 1.5f) pool_factor = 1.5f;
+
         /* Evaluate station's top need */
         contract_t need = {0};
         need.target_index = -1;
@@ -2512,7 +2521,7 @@ static void step_contracts(world_t *w, float dt) {
                         .station_index = (uint8_t)s,
                         .commodity = module_build_material(st->modules[m].type),
                         .quantity_needed = remaining,
-                        .base_price = st->base_price[module_build_material(st->modules[m].type)] * 1.15f,
+                        .base_price = st->base_price[module_build_material(st->modules[m].type)] * 1.15f * pool_factor,
                         .target_index = -1, .claimed_by = -1,
                     };
                     break;
@@ -2529,7 +2538,7 @@ static void step_contracts(world_t *w, float dt) {
                     .station_index = (uint8_t)s,
                     .commodity = COMMODITY_FRAME,
                     .quantity_needed = remaining,
-                    .base_price = 23.0f,
+                    .base_price = 23.0f * pool_factor,
                     .target_index = -1, .claimed_by = -1,
                 };
             }
@@ -2554,7 +2563,7 @@ static void step_contracts(world_t *w, float dt) {
                     .station_index = (uint8_t)s,
                     .commodity = (commodity_t)worst_ore,
                     .quantity_needed = 0.0f, /* inventory-driven, not delivery-driven */
-                    .base_price = st->base_price[worst_ore],
+                    .base_price = st->base_price[worst_ore] * pool_factor,
                     .target_index = -1, .claimed_by = -1,
                 };
             }
@@ -2580,7 +2589,7 @@ static void step_contracts(world_t *w, float dt) {
                     .station_index = (uint8_t)s,
                     .commodity = checks[worst_idx].ingot,
                     .quantity_needed = worst_deficit,
-                    .base_price = st->base_price[checks[worst_idx].ingot] * 1.15f,
+                    .base_price = st->base_price[checks[worst_idx].ingot] * 1.15f * pool_factor,
                     .target_index = -1, .claimed_by = -1,
                 };
             }
