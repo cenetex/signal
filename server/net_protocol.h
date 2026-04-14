@@ -155,7 +155,8 @@ static inline int serialize_asteroids_for_player(
         bool in_view = a->active &&
             v2_dist_sq(a->pos, player_pos) < ASTEROID_VIEW_RADIUS_SQ;
 
-        if (in_view && (a->net_dirty || !sent[i])) {
+        if (in_view) {
+            /* Always send in-view asteroids — they move every frame */
             /* Send update (or first-time add) */
             uint8_t *p = &buf[2 + count * ASTEROID_RECORD_SIZE];
             p[0] = (uint8_t)i;
