@@ -2226,7 +2226,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
     }
 
     /* Hail: collect pending credits from nearby station(s) */
-    if (sp->input.hail && !w->player_only_mode) {
+    if (sp->input.hail) {
         handle_hail(w, sp);
     }
 

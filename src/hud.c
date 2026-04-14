@@ -720,7 +720,7 @@ void draw_hud(void) {
 
         /* Stats */
         float row = (cy - 16.0f) / cell;
-        float left = (cx - 110.0f) / cell;
+        float left = fmaxf(1.0f, (cx - 110.0f) / cell);
         sdtx_color4b(PAL_NOTICE, a8);
 
         sdtx_pos(left, row);
@@ -1114,7 +1114,7 @@ void draw_hud(void) {
     /* --- Multiplayer HUD indicator + version --- */
     /* Version / connection status — top right */
     {
-        float info_x = ui_text_pos(screen_w - (compact ? 100.0f : 140.0f));
+        float info_x = ui_text_pos(fmaxf(8.0f, screen_w - (compact ? 100.0f : 140.0f)));
         float info_y = ui_text_pos(8.0f);
         sdtx_pos(info_x, info_y);
 #ifdef GIT_HASH
@@ -1173,7 +1173,8 @@ void draw_hud(void) {
         if (nav_st && nav_st->name[0] != '\0') {
             sdtx_pos(ui_text_pos(16.0f), ui_text_pos(screen_h - 20.0f));
             sdtx_color3b(PAL_TEXT_FADED);
-            sdtx_puts(nav_st->name);
+            int name_cols = (int)((screen_w - 24.0f) / 8.0f);
+            sdtx_printf("%.*s", name_cols, nav_st->name);
         }
         /* Expire tracked contract */
         if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
@@ -1189,6 +1190,7 @@ void draw_hud(void) {
         float portrait_size = 64.0f;
         float pad = 12.0f;
         float hx = screen_w * 0.5f - 120.0f;
+        hx = fmaxf(portrait_size + pad + 8.0f, hx);
         float hy = screen_h * 0.30f;
 
         /* Portrait (if loaded) */
@@ -1257,7 +1259,7 @@ void draw_hud(void) {
         const station_t *ist = &g.world.stations[g.inspect_station];
         if (station_exists(ist) && g.inspect_module < ist->module_count) {
             const station_module_t *im = &ist->modules[g.inspect_module];
-            float px = screen_w - 260.0f;
+            float px = fmaxf(16.0f, screen_w - 260.0f);
             float py = 60.0f;
             float cell = 8.0f;
 

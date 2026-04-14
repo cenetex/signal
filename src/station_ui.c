@@ -471,6 +471,8 @@ void draw_station_services(const station_ui_state_t* ui) {
         float ly = cy;
         bool compact = ui_is_compact();
         float meter_w = fminf(200.0f, inner_w - 120.0f);
+        float stat_col = cx + fminf(120.0f, (inner_w - 36.0f) * 0.55f);
+        float rule_right = fminf(cx + meter_w + 80.0f, panel_x + panel_w - 18.0f);
         float right_col = cx + meter_w + 16.0f;
         const ship_t* ship = &LOCAL_PLAYER.ship;
 
@@ -493,7 +495,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_color3b(PAL_HOLD_STATUS);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                 sdtx_puts("SHIP");
-                draw_ui_rule(cx, cx + meter_w + 80.0f, ly + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
+                draw_ui_rule(cx, rule_right, ly + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
                 ly += 16.0f;
 
                 /* Hull meter */
@@ -530,7 +532,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_color3b(PAL_HOLD_STATUS);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                 sdtx_puts("SYSTEMS");
-                draw_ui_rule(cx, cx + meter_w + 80.0f, ly + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
+                draw_ui_rule(cx, rule_right, ly + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
                 ly += 16.0f;
 
                 /* Laser */
@@ -542,7 +544,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                     sdtx_puts("Laser");
                     draw_upgrade_pips(cx + 56.0f, ly, ship->mining_level, 0.34f, 0.88f, 1.0f);
                     sdtx_color3b(PAL_SERVICE_CONTENT);
-                    sdtx_pos(ui_text_pos(cx + 120.0f), ui_text_pos(ly));
+                    sdtx_pos(ui_text_pos(stat_col), ui_text_pos(ly));
                     sdtx_printf("%.0f dps", ship_mining_rate(ship));
                     if (available && !maxed) {
                         int cost = ship_upgrade_cost(ship, SHIP_UPGRADE_MINING);
@@ -563,7 +565,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                     sdtx_puts("Hold");
                     draw_upgrade_pips(cx + 56.0f, ly, ship->hold_level, 0.50f, 0.82f, 1.0f);
                     sdtx_color3b(PAL_SERVICE_CONTENT);
-                    sdtx_pos(ui_text_pos(cx + 120.0f), ui_text_pos(ly));
+                    sdtx_pos(ui_text_pos(stat_col), ui_text_pos(ly));
                     sdtx_printf("%.0f cap", ship_cargo_capacity(ship));
                     if (available && !maxed) {
                         int cost = ship_upgrade_cost(ship, SHIP_UPGRADE_HOLD);
@@ -584,7 +586,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                     sdtx_puts("Tractor");
                     draw_upgrade_pips(cx + 56.0f, ly, ship->tractor_level, 0.42f, 1.0f, 0.86f);
                     sdtx_color3b(PAL_SERVICE_CONTENT);
-                    sdtx_pos(ui_text_pos(cx + 120.0f), ui_text_pos(ly));
+                    sdtx_pos(ui_text_pos(stat_col), ui_text_pos(ly));
                     sdtx_printf("%.0f rng", ship_tractor_range(ship));
                     if (available && !maxed) {
                         int cost = ship_upgrade_cost(ship, SHIP_UPGRADE_TRACTOR);
@@ -602,7 +604,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_color3b(PAL_HOLD_STATUS);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
                 sdtx_puts("CARGO HOLD");
-                draw_ui_rule(cx, cx + meter_w + 80.0f, ly + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
+                draw_ui_rule(cx, rule_right, ly + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
                 ly += 16.0f;
 
                 bool has_cargo = false;
@@ -618,7 +620,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                     sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(ly));
                     sdtx_printf("%-12s", commodity_short_name((commodity_t)c));
                     sdtx_color3b(PAL_TEXT_SECONDARY);
-                    sdtx_pos(ui_text_pos(cx + 120.0f), ui_text_pos(ly));
+                    sdtx_pos(ui_text_pos(stat_col), ui_text_pos(ly));
                     sdtx_printf("x%d", amt);
                     ly += 11.0f;
                 }
@@ -659,6 +661,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         }
         float my = cy;
         float meter_w = fminf(200.0f, inner_w - 120.0f);
+        float rule_right_m = fminf(cx + meter_w + 80.0f, panel_x + panel_w - 18.0f);
         float right_col = cx + meter_w + 16.0f;
         bool compact = ui_is_compact();
 
@@ -670,7 +673,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_color3b(PAL_HOLD_STATUS);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
             sdtx_puts("SMELTER");
-            draw_ui_rule(cx, cx + meter_w + 80.0f, my + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
+            draw_ui_rule(cx, rule_right_m, my + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
             my += 16.0f;
             /* Show ingot stock */
             char stock[64] = {0};
@@ -689,7 +692,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_color3b(PAL_HOLD_STATUS);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
                 sdtx_puts("SELL TO STATION");
-                draw_ui_rule(cx, cx + meter_w + 80.0f, my + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
+                draw_ui_rule(cx, rule_right_m, my + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
                 my += 16.0f;
 
                 /* Commodity pip + name + price */
@@ -743,7 +746,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_color3b(PAL_HOLD_STATUS);
                 sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
                 sdtx_puts("BUY FROM STATION");
-                draw_ui_rule(cx, cx + meter_w + 80.0f, my + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
+                draw_ui_rule(cx, rule_right_m, my + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
                 my += 16.0f;
 
                 /* Commodity pip + name + price */
@@ -803,7 +806,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_color3b(PAL_SHIPYARD_HEADER);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
             sdtx_puts("COMMODITIES");
-            draw_ui_rule(cx, cx + meter_w + 80.0f, my + 11.0f, 0.08f, 0.15f, 0.22f, 0.30f);
+            draw_ui_rule(cx, rule_right_m, my + 11.0f, 0.08f, 0.15f, 0.22f, 0.30f);
             my += 16.0f;
 
             float mini_w = fminf(90.0f, meter_w * 0.5f);
