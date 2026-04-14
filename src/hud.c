@@ -1327,5 +1327,24 @@ void draw_hud(void) {
         }
     }
 
+    /* --- SIGNAL LOST warning — center screen, blinking --- */
+    if (sig_quality < 0.01f && !LOCAL_PLAYER.docked && g.death_screen_timer <= 0.0f
+        && !g.death_cinematic.active) {
+        float blink = sinf(g.world.time * 3.0f); /* ~0.5Hz blink */
+        if (blink > 0.0f) {
+            float cell = 8.0f;
+            const char *warn = "[ SIGNAL LOST ]";
+            float tw = (float)strlen(warn) * cell;
+            float wx = (screen_w * 0.5f - tw * 0.5f) / cell;
+            float wy = (screen_h * 0.40f) / cell;
+            sdtx_canvas(screen_w, screen_h);
+            sdtx_origin(0.0f, 0.0f);
+            uint8_t ba = (uint8_t)(blink * 200.0f);
+            sdtx_color4b(255, 70, 50, ba);
+            sdtx_pos(wx, wy);
+            sdtx_puts(warn);
+        }
+    }
+
     draw_station_services(&ui);
 }
