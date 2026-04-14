@@ -64,8 +64,13 @@
       .tag {
         font-size: clamp(16px, 2.5vw, 22px);
         line-height: 1.3; color: var(--muted);
-        margin-bottom: 36px;
-        max-width: 480px; margin-left: auto; margin-right: auto;
+        margin-bottom: 14px;
+        max-width: 620px; margin-left: auto; margin-right: auto;
+      }
+
+      .support {
+        max-width: 560px; margin: 0 auto 36px;
+        color: var(--faint); font-size: 14px; line-height: 1.6;
       }
 
       .actions { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; margin-bottom: 48px; }
@@ -137,6 +142,20 @@
         color: var(--faint); font-size: 13px; line-height: 1.6;
       }
 
+      .sector-moments {
+        list-style: none; margin: 16px 0 0; padding: 0;
+        display: grid; gap: 12px;
+      }
+      .sector-moments li {
+        padding-left: 12px; border-left: 1px solid rgba(245, 239, 223, 0.12);
+        color: var(--muted); font-size: 14px; line-height: 1.5;
+      }
+      .sector-moments strong {
+        display: block; margin-bottom: 4px;
+        color: var(--ink); font-size: 10px; letter-spacing: 0.16em;
+        text-transform: uppercase; font-family: "IBM Plex Mono", monospace;
+      }
+
       .sector-status {
         display: inline-block; margin-top: 10px; padding: 3px 10px;
         border-radius: 999px; font-family: "IBM Plex Mono", monospace;
@@ -194,15 +213,16 @@
     <div class="page">
 
       <h1>S<span class="a">i</span>gnal</h1>
-      <p class="tag">A multiplayer space mining game.<br>Fracture asteroids, supply stations, extend your reach.</p>
+      <p class="tag">Dock under refinery lights, cut ore from dead rock, and make one more run before the signal thins out.</p>
+      <p class="support">Three stations hold Sector One together. Everything beyond their glow is quieter, darker, and worth more than it should be.</p>
 
       <div class="actions">
-        <a class="btn go" href="/play">Play the Alpha</a>
-        <a class="btn" href="https://github.com/cenetex/signal" target="_blank">GitHub</a>
+        <a class="btn go" href="/play">Enter Sector One</a>
+        <a class="btn" href="/ost">Hear the Belt</a>
       </div>
 
       <!-- Roadmap -->
-      <p class="roadmap-header">Roadmap</p>
+      <p class="roadmap-header">Sector One And Beyond</p>
 
       <div class="roadmap">
         <!-- Sector One -->
@@ -254,16 +274,12 @@
             <div class="sector-label">Now Playing</div>
             <div class="sector-title">Sector One</div>
             <div class="sector-desc">
-              <span style="white-space:nowrap">Three stations.</span> <span style="white-space:nowrap">A thin ring of signal.</span> <span style="white-space:nowrap">Everything outside it is yours to claim</span> &mdash; <span style="white-space:nowrap">if you can keep the lights on.</span>
+              You launch from Prospect with station chatter still in your ear. The first rocks are easy money. The farther hauls are where the belt starts to feel like it might keep part of you.
             </div>
-            <ul class="sector-checklist">
-              <li class="done">Fracture asteroids, haul ore, trade up</li>
-              <li class="done">Found outposts, extend signal coverage</li>
-              <li class="done">NPC miners and haulers working the belt</li>
-              <li class="done">Multiplayer and singleplayer with persistence</li>
-              <li class="done">Build scaffolds, tow them, supply your stations</li>
-              <li class="done">Stations that talk — hail for guidance</li>
-              <li class="done">Signal borders visible on the map</li>
+            <ul class="sector-moments">
+              <li><strong>Launch</strong>Cut ore loose in the dark and watch the refinery glow pull you home.</li>
+              <li><strong>Dock</strong>Come in hot, sell the haul, and hear the stations tell you what the belt needs next.</li>
+              <li><strong>Push Out</strong>Go one trip farther, tow back what you can, and start leaving your own structures out there.</li>
             </ul>
             <span class="sector-status">Alpha — Playable Now</span>
           </div>
