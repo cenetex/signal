@@ -144,7 +144,8 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
         memset(checked, 0, sizeof(checked));
         for (int cy = cy0; cy <= cy1; cy++) {
             for (int cx = cx0; cx <= cx1; cx++) {
-                const spatial_cell_t *cell = &g->cells[cy][cx];
+                const spatial_cell_t *cell = spatial_grid_lookup(g, cx, cy);
+                if (!cell) continue;
                 for (int ci = 0; ci < cell->count; ci++) {
                     int idx = cell->indices[ci];
                     if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
@@ -639,7 +640,8 @@ float nav_forward_clearance(const world_t *w, vec2 pos, vec2 vel,
 
     for (int cy = cy0; cy <= cy1; cy++) {
         for (int cx = cx0; cx <= cx1; cx++) {
-            const spatial_cell_t *cell = &g->cells[cy][cx];
+            const spatial_cell_t *cell = spatial_grid_lookup(g, cx, cy);
+            if (!cell) continue;
             for (int ci = 0; ci < cell->count; ci++) {
                 int idx = cell->indices[ci];
                 if (idx < 0 || idx >= MAX_ASTEROIDS) continue;

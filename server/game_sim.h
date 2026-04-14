@@ -52,40 +52,46 @@ static const float COLLECTION_FEEDBACK_TIME = 1.1f;
 
 
 /* ------------------------------------------------------------------ */
-/* Spatial grid for O(1) neighbor lookups instead of O(N^2)           */
+/* Sparse spatial hash for O(1) neighbor lookups — no world bounds     */
 /* ------------------------------------------------------------------ */
 
 #define SPATIAL_CELL_SIZE 800.0f
-#define SPATIAL_GRID_DIM 128
 #define SPATIAL_MAX_PER_CELL 16
+#define SPATIAL_HASH_INITIAL_CAP 512  /* power of 2 */
 
 typedef struct {
     int16_t indices[SPATIAL_MAX_PER_CELL];
     uint8_t count;
 } spatial_cell_t;
 
-/* Packed cell coordinate for the occupied-cell list. */
 typedef struct {
-    uint8_t x, y;
-} spatial_cell_coord_t;
+    int32_t key_x, key_y;    /* cell coordinates; key_x == INT32_MIN = empty */
+    spatial_cell_t cell;
+} sparse_cell_entry_t;
 
 typedef struct {
-    spatial_cell_t cells[SPATIAL_GRID_DIM][SPATIAL_GRID_DIM];
-    float offset_x, offset_y;  /* world offset to center grid */
-    /* Occupied cell tracking: only clear cells that had entries. */
-    spatial_cell_coord_t occupied[MAX_ASTEROIDS];
-    int occupied_count;
+    sparse_cell_entry_t *entries; /* heap-allocated, power-of-2 capacity */
+    uint32_t capacity;            /* always power of 2 */
+    uint32_t mask;                /* capacity - 1 */
+    uint32_t occupied;            /* number of occupied slots */
 } spatial_grid_t;
 
-/* Map a world position to a grid cell (clamped). Shared by game_sim.c
- * and sim_nav.c, so declared here as static inline. */
+/* Map world position to cell coordinates (unbounded). */
 static inline void spatial_grid_cell(const spatial_grid_t *g, vec2 pos, int *cx, int *cy) {
-    *cx = (int)((pos.x + g->offset_x) / SPATIAL_CELL_SIZE);
-    *cy = (int)((pos.y + g->offset_y) / SPATIAL_CELL_SIZE);
-    if (*cx < 0) *cx = 0;
-    if (*cy < 0) *cy = 0;
-    if (*cx >= SPATIAL_GRID_DIM) *cx = SPATIAL_GRID_DIM - 1;
-    if (*cy >= SPATIAL_GRID_DIM) *cy = SPATIAL_GRID_DIM - 1;
+    (void)g;
+    *cx = (int)floorf(pos.x / SPATIAL_CELL_SIZE);
+    *cy = (int)floorf(pos.y / SPATIAL_CELL_SIZE);
+}
+
+/* Look up a cell by coordinates. Returns NULL if empty. */
+static inline const spatial_cell_t *spatial_grid_lookup(const spatial_grid_t *g, int cx, int cy) {
+    if (!g->entries) return NULL;
+    uint32_t h = (uint32_t)((cx * 73856093) ^ (cy * 19349663));
+    for (uint32_t i = h & g->mask; ; i = (i + 1) & g->mask) {
+        const sparse_cell_entry_t *e = &g->entries[i];
+        if (e->key_x == INT32_MIN) return NULL;      /* empty slot */
+        if (e->key_x == cx && e->key_y == cy) return &e->cell;
+    }
 }
 
 /* ------------------------------------------------------------------ */

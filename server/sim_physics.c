@@ -19,13 +19,10 @@ void step_asteroid_gravity(world_t *w, float dt) {
         if (!a->active || a->tier == ASTEROID_TIER_S) continue;
         int cx, cy;
         spatial_grid_cell(g, a->pos, &cx, &cy);
-        int x0 = (cx > 0) ? cx - 1 : 0;
-        int x1 = (cx < SPATIAL_GRID_DIM - 1) ? cx + 1 : SPATIAL_GRID_DIM - 1;
-        int y0 = (cy > 0) ? cy - 1 : 0;
-        int y1 = (cy < SPATIAL_GRID_DIM - 1) ? cy + 1 : SPATIAL_GRID_DIM - 1;
-        for (int gy = y0; gy <= y1; gy++) {
-            for (int gx = x0; gx <= x1; gx++) {
-                const spatial_cell_t *cell = &g->cells[gy][gx];
+        for (int gy = cy - 1; gy <= cy + 1; gy++) {
+            for (int gx = cx - 1; gx <= cx + 1; gx++) {
+                const spatial_cell_t *cell = spatial_grid_lookup(g, gx, gy);
+                if (!cell) continue;
                 for (int ci = 0; ci < cell->count; ci++) {
                     int j = cell->indices[ci];
                     if (j <= i) continue; /* avoid double-processing */
@@ -128,13 +125,10 @@ void step_asteroid_gravity(world_t *w, float dt) {
         {
             int acx, acy;
             spatial_grid_cell(g, a->pos, &acx, &acy);
-            int ax0 = (acx > 0) ? acx - 1 : 0;
-            int ax1 = (acx < SPATIAL_GRID_DIM - 1) ? acx + 1 : SPATIAL_GRID_DIM - 1;
-            int ay0 = (acy > 0) ? acy - 1 : 0;
-            int ay1 = (acy < SPATIAL_GRID_DIM - 1) ? acy + 1 : SPATIAL_GRID_DIM - 1;
-            for (int gy = ay0; gy <= ay1 && !near_asteroid; gy++) {
-                for (int gx = ax0; gx <= ax1 && !near_asteroid; gx++) {
-                    const spatial_cell_t *cell = &g->cells[gy][gx];
+            for (int gy = acy - 1; gy <= acy + 1 && !near_asteroid; gy++) {
+                for (int gx = acx - 1; gx <= acx + 1 && !near_asteroid; gx++) {
+                    const spatial_cell_t *cell = spatial_grid_lookup(g, gx, gy);
+                    if (!cell) continue;
                     for (int ci = 0; ci < cell->count; ci++) {
                         int j = cell->indices[ci];
                         if (j == i || !w->asteroids[j].active) continue;
@@ -185,13 +179,10 @@ void resolve_asteroid_collisions(world_t *w) {
         if (!a->active) continue;
         int cx, cy;
         spatial_grid_cell(g, a->pos, &cx, &cy);
-        int x0 = (cx > 0) ? cx - 1 : 0;
-        int x1 = (cx < SPATIAL_GRID_DIM - 1) ? cx + 1 : SPATIAL_GRID_DIM - 1;
-        int y0 = (cy > 0) ? cy - 1 : 0;
-        int y1 = (cy < SPATIAL_GRID_DIM - 1) ? cy + 1 : SPATIAL_GRID_DIM - 1;
-        for (int gy = y0; gy <= y1; gy++) {
-            for (int gx = x0; gx <= x1; gx++) {
-                const spatial_cell_t *cell = &g->cells[gy][gx];
+        for (int gy = cy - 1; gy <= cy + 1; gy++) {
+            for (int gx = cx - 1; gx <= cx + 1; gx++) {
+                const spatial_cell_t *cell = spatial_grid_lookup(g, gx, gy);
+                if (!cell) continue;
                 for (int ci = 0; ci < cell->count; ci++) {
                     int j = cell->indices[ci];
                     if (j <= i) continue; /* avoid double-processing */

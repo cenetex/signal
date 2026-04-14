@@ -134,34 +134,55 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
 /* Spatial grid helpers                                                */
 /* ================================================================== */
 
-static void spatial_grid_clear(spatial_grid_t *g) {
-    /* Only clear cells that were previously occupied — avoids memset of
-     * the full 128x128 grid (~540 KB) when only ~50-100 cells have data. */
-    for (int i = 0; i < g->occupied_count; i++) {
-        spatial_cell_coord_t c = g->occupied[i];
-        g->cells[c.y][c.x].count = 0;
-    }
-    g->occupied_count = 0;
+/* Sparse spatial hash — no world bounds, heap-allocated */
+
+static void spatial_grid_ensure(spatial_grid_t *g) {
+    if (g->entries) return;
+    g->capacity = SPATIAL_HASH_INITIAL_CAP;
+    g->mask = g->capacity - 1;
+    g->entries = (sparse_cell_entry_t *)calloc(g->capacity, sizeof(sparse_cell_entry_t));
+    for (uint32_t i = 0; i < g->capacity; i++)
+        g->entries[i].key_x = INT32_MIN; /* empty sentinel */
+    g->occupied = 0;
 }
 
+static void spatial_grid_clear(spatial_grid_t *g) {
+    if (!g->entries) return;
+    for (uint32_t i = 0; i < g->capacity; i++) {
+        g->entries[i].key_x = INT32_MIN;
+        g->entries[i].cell.count = 0;
+    }
+    g->occupied = 0;
+}
+
+static spatial_cell_t *spatial_grid_get_or_create(spatial_grid_t *g, int cx, int cy) {
+    spatial_grid_ensure(g);
+    uint32_t h = (uint32_t)((cx * 73856093) ^ (cy * 19349663));
+    for (uint32_t i = h & g->mask; ; i = (i + 1) & g->mask) {
+        sparse_cell_entry_t *e = &g->entries[i];
+        if (e->key_x == INT32_MIN) {
+            e->key_x = cx;
+            e->key_y = cy;
+            e->cell.count = 0;
+            g->occupied++;
+            return &e->cell;
+        }
+        if (e->key_x == cx && e->key_y == cy) return &e->cell;
+    }
+}
 
 static void spatial_grid_insert(spatial_grid_t *g, int idx, vec2 pos) {
     int cx, cy;
     spatial_grid_cell(g, pos, &cx, &cy);
-    spatial_cell_t *cell = &g->cells[cy][cx];
+    spatial_cell_t *cell = spatial_grid_get_or_create(g, cx, cy);
     if (cell->count < SPATIAL_MAX_PER_CELL) {
-        /* Track newly occupied cells for efficient clearing. */
-        if (cell->count == 0 && g->occupied_count < MAX_ASTEROIDS) {
-            g->occupied[g->occupied_count++] = (spatial_cell_coord_t){(uint8_t)cx, (uint8_t)cy};
-        }
         cell->indices[cell->count++] = (int16_t)idx;
     }
 }
 
 void spatial_grid_build(world_t *w) {
     spatial_grid_t *g = &w->asteroid_grid;
-    g->offset_x = (SPATIAL_GRID_DIM * SPATIAL_CELL_SIZE) * 0.5f;
-    g->offset_y = (SPATIAL_GRID_DIM * SPATIAL_CELL_SIZE) * 0.5f;
+    spatial_grid_ensure(g);
     spatial_grid_clear(g);
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!w->asteroids[i].active) continue;
@@ -3181,6 +3202,8 @@ void world_cleanup(world_t *w) {
     free(w->signal_cache.strength);
     w->signal_cache.strength = NULL;
     w->signal_cache.valid = false;
+    free(w->asteroid_grid.entries);
+    w->asteroid_grid.entries = NULL;
 }
 
 void world_reset(world_t *w) {
