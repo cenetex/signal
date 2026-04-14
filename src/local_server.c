@@ -103,7 +103,7 @@ static void mirror_player_always(server_player_t *dst, const server_player_t *sr
 /* (2b) Local player ship — predict-protected fields. */
 static void mirror_player_predicted(server_player_t *dst, const server_player_t *src) {
     dst->ship.hull          = src->ship.hull;
-    dst->ship.credits       = src->ship.credits;
+    /* credits removed — balance lives in station ledger (mirrored via stations memcpy) */
     dst->ship.mining_level  = src->ship.mining_level;
     dst->ship.hold_level    = src->ship.hold_level;
     dst->ship.tractor_level = src->ship.tractor_level;

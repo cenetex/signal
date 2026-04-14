@@ -82,7 +82,7 @@ typedef void (*net_on_npcs_fn)(const NetNpcState* npcs, int count);
 typedef struct {
     uint8_t player_id;
     float hull;
-    float credits;
+    float station_balance;
     bool docked;
     uint8_t current_station;
     uint8_t mining_level;

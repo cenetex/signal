@@ -14,6 +14,33 @@
 #include "palette.h"
 
 /* ------------------------------------------------------------------ */
+/* Station-local balance helper                                        */
+/* ------------------------------------------------------------------ */
+
+/* Returns the player's credit balance at the given station.
+ * In singleplayer reads the mirrored ledger; in multiplayer uses
+ * the cached value from the last PLAYER_SHIP message. */
+static float client_station_balance(int station_idx) {
+    if (g.multiplayer_enabled)
+        return g.station_balance;
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) return 0.0f;
+    const station_t *st = &g.world.stations[station_idx];
+    for (int i = 0; i < st->ledger_count; i++) {
+        /* In singleplayer the local_server mirrors the full world,
+         * so the ledger is present. Match on token 0x01 (set in local_server_init). */
+        if (st->ledger[i].balance > 0.0f || i == 0)
+            return st->ledger[i].balance;
+    }
+    return 0.0f;
+}
+
+/* Balance at the player's current docked/nearby station. */
+float player_current_balance(void) {
+    int st = LOCAL_PLAYER.docked ? LOCAL_PLAYER.current_station : LOCAL_PLAYER.nearby_station;
+    return client_station_balance(st);
+}
+
+/* ------------------------------------------------------------------ */
 /* UI scaling / layout helpers                                         */
 /* ------------------------------------------------------------------ */
 
@@ -784,7 +811,7 @@ void draw_hud(void) {
     /* --- Low HP warning: pulsing red text in message area instead of vignette --- */
     /* (hull warning state is used by build_hud_message to show HULL INTEGRITY FAILING) */
     int cargo_units = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
-    int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
+    int credits = (int)lroundf(player_current_balance());
     int cargo_capacity = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
     const station_t* current_station = current_station_ptr();
     const station_t* navigation_station = navigation_station_ptr();
@@ -928,7 +955,7 @@ void draw_hud(void) {
                     for (int li = 0; li < st->ledger_count; li++) {
                         if (memcmp(st->ledger[li].player_token,
                                    LOCAL_PLAYER.session_token, 8) == 0) {
-                            pending += st->ledger[li].pending_credits;
+                            pending += st->ledger[li].balance;
                         }
                     }
                 }
@@ -1049,7 +1076,7 @@ void draw_hud(void) {
                 for (int li = 0; li < st->ledger_count; li++) {
                     if (memcmp(st->ledger[li].player_token,
                                LOCAL_PLAYER.session_token, 8) == 0) {
-                        pending_n += st->ledger[li].pending_credits;
+                        pending_n += st->ledger[li].balance;
                     }
                 }
             }

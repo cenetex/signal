@@ -7,7 +7,7 @@ WORKDIR /app
 COPY shared/ ./shared/
 COPY src/*.h src/*.c ./src/
 COPY server/*.c server/*.h ./
-RUN gcc -O2 -static -fstack-protector-strong -D_FORTIFY_SOURCE=2 -Ishared -Isrc -o signal-server main.c game_sim.c sim_ai.c sim_autopilot.c sim_flight.c sim_nav.c sim_save.c sim_asteroid.c sim_physics.c sim_production.c sim_construction.c mongoose.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c -lm -DMG_ENABLE_LOG=0 -DGAME_SIM_VERBOSE -DGIT_HASH=\"$GIT_HASH\"
+RUN gcc -O2 -static -fstack-protector-strong -D_FORTIFY_SOURCE=2 -Ishared -Isrc -o signal-server main.c game_sim.c sim_ai.c sim_autopilot.c sim_flight.c sim_nav.c sim_save.c sim_catalog.c sim_asteroid.c sim_physics.c sim_production.c sim_construction.c mongoose.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c -lm -DMG_ENABLE_LOG=0 -DGAME_SIM_VERBOSE -DGIT_HASH=\"$GIT_HASH\"
 
 FROM alpine:3.19
 RUN apk --no-cache add ca-certificates

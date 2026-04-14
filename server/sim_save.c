@@ -5,11 +5,19 @@
  *
  * On-disk format owners:
  *   - World save: SAVE_MAGIC "SIGN", versioned, atomic temp+rename.
- *     Per-station / per-asteroid / per-npc / per-contract field-by-field
- *     I/O so adding new struct fields requires bumping SAVE_VERSION and
- *     adding a migration block in world_load().
+ *     Per-station / per-npc / per-contract field-by-field I/O so adding
+ *     new struct fields requires bumping SAVE_VERSION and adding a
+ *     migration block in world_load().
  *   - Player save: PLAYER_MAGIC "PLY2", per-session token in filename.
  *     v1 -> v2 migrates unlocked_modules bits across the #280 enum cleanup.
+ *
+ * v24 (#314): Layered persistence refactor.
+ *   - Station identity now lives in the station catalog (sim_catalog.c).
+ *     world_save only writes session-tier station data (inventories, etc.).
+ *   - Asteroids removed — derived state, regenerated from belt seed.
+ *   - Scaffolds removed — transient in-flight construction.
+ *   - v23 saves migrated by reading full station/asteroid/scaffold data,
+ *     then the next autosave writes the catalog.
  */
 #include "game_sim.h"
 #include <stdio.h>
@@ -44,7 +52,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 23  /* bumped: station credit pool (#312) */
+#define SAVE_VERSION 24  /* bumped: layered persistence — catalog split, derived data removal (#314) */
 #define MIN_SAVE_VERSION 20  /* migrate v20 by mapping old module_buffer → input */
 
 /* Set by world_load() before read_station() so per-station readers know
@@ -178,26 +186,101 @@ static bool read_station(FILE *f, station_t *s) {
     return true;
 }
 
-/* ---- asteroid field-by-field I/O ---- */
-static bool write_asteroid(FILE *f, const asteroid_t *a) {
-    WRITE_FIELD(f, a->active);
-    WRITE_FIELD(f, a->fracture_child);
-    WRITE_FIELD(f, a->tier);
-    WRITE_FIELD(f, a->pos);
-    WRITE_FIELD(f, a->vel);
-    WRITE_FIELD(f, a->radius);
-    WRITE_FIELD(f, a->hp);
-    WRITE_FIELD(f, a->max_hp);
-    WRITE_FIELD(f, a->ore);
-    WRITE_FIELD(f, a->max_ore);
-    WRITE_FIELD(f, a->commodity);
-    WRITE_FIELD(f, a->rotation);
-    WRITE_FIELD(f, a->spin);
-    WRITE_FIELD(f, a->seed);
-    WRITE_FIELD(f, a->age);
+/* ================================================================== */
+/* Session-tier station I/O (v24+) — writes only volatile economic    */
+/* state.  Identity fields (name, pos, modules, geometry) come from   */
+/* the station catalog (sim_catalog.c).  signal_connected is derived  */
+/* (rebuilt by rebuild_signal_chain) and belongs in neither catalog    */
+/* nor session.                                                       */
+/* ================================================================== */
+
+static bool write_station_session(FILE *f, const station_t *s) {
+    /* Inventory */
+    WRITE_FIELD(f, s->inventory);
+    /* Per-module production buffers */
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+        WRITE_FIELD(f, s->module_input[m]);
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+        WRITE_FIELD(f, s->module_output[m]);
+    /* Station credit pool */
+    WRITE_FIELD(f, s->credit_pool);
+    /* Economy ledger */
+    WRITE_FIELD(f, s->ledger_count);
+    for (int i = 0; i < 16; i++) {
+        WRITE_FIELD(f, s->ledger[i].player_token);
+        WRITE_FIELD(f, s->ledger[i].balance);
+        WRITE_FIELD(f, s->ledger[i].lifetime_supply);
+    }
+    /* Shipyard queue */
+    WRITE_FIELD(f, s->pending_scaffold_count);
+    for (int p = 0; p < 4; p++)
+        WRITE_FIELD(f, s->pending_scaffolds[p]);
+    /* Placement plans */
+    WRITE_FIELD(f, s->placement_plan_count);
+    for (int p = 0; p < 8; p++)
+        WRITE_FIELD(f, s->placement_plans[p]);
+    /* Construction state */
+    WRITE_FIELD(f, s->scaffold);
+    WRITE_FIELD(f, s->scaffold_progress);
+    /* Planning state */
+    WRITE_FIELD(f, s->planned);
+    WRITE_FIELD(f, s->planned_owner);
+    /* Live rotation angles and speeds */
+    for (int a = 0; a < MAX_ARMS; a++) {
+        WRITE_FIELD(f, s->arm_rotation[a]);
+        WRITE_FIELD(f, s->arm_speed[a]);
+    }
     return true;
 }
 
+static bool read_station_session(FILE *f, station_t *s) {
+    /* Inventory */
+    READ_FIELD(f, s->inventory);
+    /* Per-module production buffers */
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+        READ_FIELD(f, s->module_input[m]);
+    for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
+        READ_FIELD(f, s->module_output[m]);
+    /* Station credit pool */
+    READ_FIELD(f, s->credit_pool);
+    /* Economy ledger */
+    READ_FIELD(f, s->ledger_count);
+    if (s->ledger_count < 0) s->ledger_count = 0;
+    if (s->ledger_count > 16) s->ledger_count = 16;
+    for (int i = 0; i < 16; i++) {
+        READ_FIELD(f, s->ledger[i].player_token);
+        READ_FIELD(f, s->ledger[i].balance);
+        READ_FIELD(f, s->ledger[i].lifetime_supply);
+    }
+    /* Shipyard queue */
+    READ_FIELD(f, s->pending_scaffold_count);
+    if (s->pending_scaffold_count < 0) s->pending_scaffold_count = 0;
+    if (s->pending_scaffold_count > 4) s->pending_scaffold_count = 4;
+    for (int p = 0; p < 4; p++)
+        READ_FIELD(f, s->pending_scaffolds[p]);
+    /* Placement plans */
+    READ_FIELD(f, s->placement_plan_count);
+    if (s->placement_plan_count < 0) s->placement_plan_count = 0;
+    if (s->placement_plan_count > 8) s->placement_plan_count = 8;
+    for (int p = 0; p < 8; p++)
+        READ_FIELD(f, s->placement_plans[p]);
+    /* Construction state */
+    READ_FIELD(f, s->scaffold);
+    { uint8_t raw; memcpy(&raw, &s->scaffold, 1); s->scaffold = (raw != 0); }
+    READ_FIELD(f, s->scaffold_progress);
+    /* Planning state */
+    READ_FIELD(f, s->planned);
+    { uint8_t raw; memcpy(&raw, &s->planned, 1); s->planned = (raw != 0); }
+    READ_FIELD(f, s->planned_owner);
+    /* Live rotation angles and speeds */
+    for (int a = 0; a < MAX_ARMS; a++) {
+        READ_FIELD(f, s->arm_rotation[a]);
+        READ_FIELD(f, s->arm_speed[a]);
+    }
+    return true;
+}
+
+/* ---- asteroid field-by-field I/O (read-only, for v23 migration) ---- */
 static bool read_asteroid(FILE *f, asteroid_t *a) {
     READ_FIELD(f, a->active);
     READ_FIELD(f, a->fracture_child);
@@ -304,14 +387,12 @@ bool world_save(const world_t *w, const char *path) {
     WRITE_FIELD(f, w->time);
     WRITE_FIELD(f, w->field_spawn_timer);
 
-    /* Stations */
+    /* Stations — session-tier only (identity lives in station catalog) */
     for (int i = 0; i < MAX_STATIONS; i++) {
-        if (!write_station(f, &w->stations[i])) { fclose(f); remove(tmp_path); return false; }
+        if (!write_station_session(f, &w->stations[i])) { fclose(f); remove(tmp_path); return false; }
     }
-    /* Asteroids */
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!write_asteroid(f, &w->asteroids[i])) { fclose(f); remove(tmp_path); return false; }
-    }
+    /* Asteroids: removed in v24 — derived state, regenerated from belt seed */
+    /* Scaffolds: removed in v24 — transient in-flight construction */
     /* NPC ships */
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!write_npc(f, &w->npc_ships[i])) { fclose(f); remove(tmp_path); return false; }
@@ -319,10 +400,6 @@ bool world_save(const world_t *w, const char *path) {
     /* Contracts */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         if (!write_contract(f, &w->contracts[i])) { fclose(f); remove(tmp_path); return false; }
-    }
-    /* Scaffolds (whole array, fixed-size) */
-    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
-        WRITE_FIELD(f, w->scaffolds[i]);
     }
 
     fclose(f);
@@ -365,13 +442,24 @@ bool world_load(world_t *w, const char *path) {
     READ_FIELD(f, w->time);
     READ_FIELD(f, w->field_spawn_timer);
 
-    /* Stations */
-    for (int i = 0; i < MAX_STATIONS; i++) {
-        if (!read_station(f, &w->stations[i])) return false;
-    }
-    /* Asteroids */
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!read_asteroid(f, &w->asteroids[i])) return false;
+    if (version >= 24) {
+        /* v24+: station identity comes from catalog; read session only */
+        for (int i = 0; i < MAX_STATIONS; i++) {
+            if (!read_station_session(f, &w->stations[i])) return false;
+        }
+        /* No asteroids or scaffolds in v24 */
+    } else {
+        /* v20-v23: full station data (identity will be written to catalog on next save) */
+        for (int i = 0; i < MAX_STATIONS; i++) {
+            if (!read_station(f, &w->stations[i])) return false;
+        }
+        /* v23 migration: read and discard asteroid data to advance cursor */
+        {
+            asteroid_t dummy;
+            for (int i = 0; i < MAX_ASTEROIDS; i++) {
+                if (!read_asteroid(f, &dummy)) return false;
+            }
+        }
     }
     /* NPC ships */
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
@@ -381,9 +469,12 @@ bool world_load(world_t *w, const char *path) {
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         if (!read_contract(f, &w->contracts[i])) return false;
     }
-    /* Scaffolds (v20+) */
-    for (int i = 0; i < MAX_SCAFFOLDS; i++) {
-        READ_FIELD(f, w->scaffolds[i]);
+    /* v23 migration: read scaffolds so v22 module-remap can process them,
+     * then they'll be zeroed after migrations complete */
+    if (version < 24) {
+        for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+            READ_FIELD(f, w->scaffolds[i]);
+        }
     }
 
     /* Check for CRC32 trailer after all data fields.
@@ -518,6 +609,22 @@ bool world_load(world_t *w, const char *path) {
         }
     }
 
+    /* v24: asteroids and scaffolds no longer saved — ensure arrays are
+     * clean whether we read-and-discarded legacy data or skipped them.
+     * Asteroids regenerate via belt spawn timer; scaffolds start empty. */
+    memset(w->asteroids, 0, sizeof(w->asteroids));
+    memset(w->scaffolds, 0, sizeof(w->scaffolds));
+
+    if (version < 24) {
+        /* First migration to v24. Full station data was loaded by
+         * read_station(). On next autosave, station_catalog_save_all()
+         * extracts identity to catalog files. Reset spawn timer to
+         * trigger immediate asteroid repopulation. */
+        w->field_spawn_timer = 0.0f;
+        printf("[save] migrated v%d -> v24: catalog will be written on next save\n",
+               (int)version);
+    }
+
     /* Clear transient state */
     w->events.count = 0;
     w->player_only_mode = false;
@@ -535,7 +642,8 @@ bool world_load(world_t *w, const char *path) {
 /* Player persistence                                                  */
 /* ================================================================== */
 
-#define PLAYER_MAGIC    0x504C5932u  /* "PLY2" — v22+: post #280 enum cleanup */
+#define PLAYER_MAGIC    0x504C5933u  /* "PLY3" — v25+: station-local credits (#312) */
+#define PLAYER_MAGIC_V2 0x504C5932u  /* "PLY2" — v22-v24: post #280 enum cleanup */
 #define PLAYER_MAGIC_V1 0x504C5952u  /* "PLYR" — v21 and earlier */
 
 typedef struct {
@@ -545,6 +653,28 @@ typedef struct {
     vec2 last_pos;
     float last_angle;
 } player_save_data_t;
+
+/* Old ship layout with global credits field — for PLY2 migration */
+typedef struct {
+    vec2 pos; vec2 vel; float angle; float hull;
+    float cargo[COMMODITY_COUNT];
+    float credits; /* REMOVED in PLY3 */
+    hull_class_t hull_class;
+    int mining_level, hold_level, tractor_level;
+    int16_t towed_fragments[10]; uint8_t towed_count;
+    int16_t towed_scaffold; bool tractor_active;
+    uint32_t unlocked_modules;
+    float stat_ore_mined, stat_credits_earned, stat_credits_spent;
+    int stat_asteroids_fractured;
+} ship_v2_t;
+
+typedef struct {
+    uint32_t magic;
+    ship_v2_t ship;
+    int last_station;
+    vec2 last_pos;
+    float last_angle;
+} player_save_v2_t;
 
 static void session_token_to_hex(const uint8_t token[8], char hex[17]) {
     static const char digits[] = "0123456789abcdef";
@@ -587,30 +717,67 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
     return ok;
 }
 
+/* Migrate PLY2 (old ship_t with global credits) to current ship_t */
+static void migrate_v2_ship(ship_t *dst, const ship_v2_t *src) {
+    dst->pos = src->pos;
+    dst->vel = src->vel;
+    dst->angle = src->angle;
+    dst->hull = src->hull;
+    memcpy(dst->cargo, src->cargo, sizeof(dst->cargo));
+    dst->hull_class = src->hull_class;
+    dst->mining_level = src->mining_level;
+    dst->hold_level = src->hold_level;
+    dst->tractor_level = src->tractor_level;
+    memcpy(dst->towed_fragments, src->towed_fragments, sizeof(dst->towed_fragments));
+    dst->towed_count = src->towed_count;
+    dst->towed_scaffold = src->towed_scaffold;
+    dst->tractor_active = src->tractor_active;
+    dst->unlocked_modules = src->unlocked_modules;
+    dst->stat_ore_mined = src->stat_ore_mined;
+    dst->stat_credits_earned = src->stat_credits_earned;
+    dst->stat_credits_spent = src->stat_credits_spent;
+    dst->stat_asteroids_fractured = src->stat_asteroids_fractured;
+}
+
 static bool player_load_from_path(server_player_t *sp, world_t *w, const char *path, int slot) {
     FILE *f = fopen(path, "rb");
     if (!f) return false;
-    player_save_data_t data;
-    if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
-    /* Verify CRC32 if CRC2 trailer present */
-    uint32_t trail_magic, stored_crc;
-    if (fread(&trail_magic, sizeof(trail_magic), 1, f) == 1 &&
-        fread(&stored_crc, sizeof(stored_crc), 1, f) == 1 &&
-        trail_magic == 0x43524332u) { /* "CRC2" */
-        uint32_t crc = crc32_update(0, &data, sizeof(data));
-        if (crc != stored_crc) {
-            printf("[save] player CRC32 mismatch -- save may be corrupt\n");
-            fclose(f);
-            return false;
-        }
+
+    /* Peek at magic to determine format */
+    uint32_t magic;
+    if (fread(&magic, sizeof(magic), 1, f) != 1) { fclose(f); return false; }
+    rewind(f);
+
+    float migrated_credits = 0.0f;
+    bool is_v1 = false;
+
+    if (magic == PLAYER_MAGIC) {
+        /* Current format (PLY3) */
+        player_save_data_t data;
+        if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
+        fclose(f);
+        sp->ship = data.ship;
+        sp->current_station = data.last_station;
+        sp->ship.pos = data.last_pos;
+        sp->ship.angle = data.last_angle;
+    } else if (magic == PLAYER_MAGIC_V2 || magic == PLAYER_MAGIC_V1) {
+        /* PLY2 or PLY1 — old ship_t with global credits */
+        player_save_v2_t data;
+        if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
+        fclose(f);
+        is_v1 = (magic == PLAYER_MAGIC_V1);
+        migrate_v2_ship(&sp->ship, &data.ship);
+        migrated_credits = data.ship.credits;
+        sp->current_station = data.last_station;
+        sp->ship.pos = data.last_pos;
+        sp->ship.angle = data.last_angle;
+    } else {
+        fclose(f);
+        return false;
     }
-    fclose(f);
-    if (data.magic != PLAYER_MAGIC && data.magic != PLAYER_MAGIC_V1) return false;
-    bool is_v1 = (data.magic == PLAYER_MAGIC_V1);
-    sp->ship = data.ship;
+
     if (is_v1) {
-        /* v1 → v2: remap unlocked_modules bits across the #280 enum cleanup.
-         * Same REMAP table as world_load(). Bits for dropped types are cleared. */
+        /* v1 → v2: remap unlocked_modules bits across the #280 enum cleanup */
         static const int REMAP[17] = {
             0, 1, 2, 3, 4, -1, 5, 6, 7, 8, 9, -1, 10, -1, -1, 11, 12,
         };
@@ -627,7 +794,6 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     if (sp->ship.hull_class < 0 || sp->ship.hull_class >= HULL_CLASS_COUNT)
         sp->ship.hull_class = HULL_CLASS_MINER;
     /* Validate station index */
-    sp->current_station = data.last_station;
     if (sp->current_station < 0 || sp->current_station >= MAX_STATIONS ||
         !station_exists(&w->stations[sp->current_station]))
         sp->current_station = 0;
@@ -635,8 +801,6 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     if (sp->ship.mining_level < 0 || sp->ship.mining_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship.mining_level = 0;
     if (sp->ship.hold_level < 0 || sp->ship.hold_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship.hold_level = 0;
     if (sp->ship.tractor_level < 0 || sp->ship.tractor_level > SHIP_UPGRADE_MAX_LEVEL) sp->ship.tractor_level = 0;
-    /* Clamp credits (no negative, no NaN) */
-    if (!(sp->ship.credits >= 0.0f)) sp->ship.credits = 0.0f;
     /* Clamp hull HP */
     float max_hull = ship_max_hull(&sp->ship);
     if (!(sp->ship.hull > 0.0f)) sp->ship.hull = max_hull;
@@ -645,16 +809,19 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     for (int i = 0; i < COMMODITY_COUNT; i++) {
         if (!(sp->ship.cargo[i] >= 0.0f)) sp->ship.cargo[i] = 0.0f;
     }
-    sp->ship.pos = data.last_pos;
-    sp->ship.angle = data.last_angle;
     /* Dock the player at their last station for safety */
     sp->docked = true;
     sp->nearby_station = sp->current_station;
     sp->in_dock_range = true;
     anchor_ship_in_station(sp, w);
+    /* Migrate old global credits → station ledger balance */
+    if (migrated_credits > 0.01f) {
+        ledger_earn(&w->stations[sp->current_station], sp->session_token, migrated_credits);
+        SIM_LOG("[sim] migrated %.0f global credits to station %d ledger\n",
+                migrated_credits, sp->current_station);
+    }
     (void)slot;
-    SIM_LOG("[sim] loaded player %d (%.0f credits, station %d)\n",
-            slot, sp->ship.credits, sp->current_station);
+    SIM_LOG("[sim] loaded player %d (station %d)\n", slot, sp->current_station);
     return true;
 }
 

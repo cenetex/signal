@@ -323,7 +323,7 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
          * The packet now carries position + stats so the cinematic can
          * anchor at the wreckage. */
         sp->ship.hull = state->hull;
-        sp->ship.credits = state->credits;
+        g.station_balance = state->station_balance;
         sp->ship.mining_level = (int)state->mining_level;
         sp->ship.hold_level = (int)state->hold_level;
         sp->ship.tractor_level = (int)state->tractor_level;

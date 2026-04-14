@@ -41,6 +41,7 @@ static uint64_t last_station_identity = 0;
 #define MAX_SIM_STEPS 8     /* cap sub-steps per poll to prevent spiral */
 #define SAVE_PATH "world.sav"
 #define PLAYER_SAVE_DIR "saves"
+#define STATION_CATALOG_DIR "stations"
 #define AUTOSAVE_MS 30000   /* autosave every 30 seconds */
 
 /* ------------------------------------------------------------------ */
@@ -663,11 +664,22 @@ static void broadcast_world(void) {
     broadcast(tbuf, 5);
 }
 
+/* Compute station-local balance for a player at their current/nearby station */
+static float player_station_balance(const server_player_t *sp) {
+    int st = sp->docked ? sp->current_station : sp->nearby_station;
+    if (st < 0 || st >= MAX_STATIONS) return 0.0f;
+    return ledger_balance(&world.stations[st], sp->session_token);
+}
+
+static int send_player_ship(uint8_t *buf, uint8_t id, const server_player_t *sp) {
+    return serialize_player_ship_bal(buf, id, sp, player_station_balance(sp));
+}
+
 static void broadcast_ship_states(void) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!world.players[i].connected || !world.players[i].conn) continue;
         uint8_t buf[PLAYER_SHIP_SIZE + 4]; /* +4 headroom */
-        int len = serialize_player_ship(buf, (uint8_t)i, &world.players[i]);
+        int len = send_player_ship(buf, (uint8_t)i, &world.players[i]);
         /* Full ship state sent only to the owning player. */
         ws_send(world.players[i].conn, buf, (size_t)len);
     }
@@ -718,21 +730,42 @@ int main(void) {
     char listen_url[64];
     snprintf(listen_url, sizeof(listen_url), "http://0.0.0.0:%s", port);
 
-    /* Ensure saves directory exists. */
+    /* Ensure persistence directories exist. */
 #ifdef _WIN32
     _mkdir(PLAYER_SAVE_DIR);
+    _mkdir(STATION_CATALOG_DIR);
 #else
     mkdir(PLAYER_SAVE_DIR, 0755);
+    mkdir(STATION_CATALOG_DIR, 0755);
 #endif
 
-    /* Initialise world. */
+    /* Initialise world — layered persistence (#314):
+     * 1. world_reset() seeds starter stations + belt field
+     * 2. Catalog overwrites identity for any persisted stations
+     * 3. Session snapshot overlays economy state (inventories, NPCs, contracts)
+     * 4. Rebuild derived structures */
     world_reset(&world);
+
+    int catalog_count = station_catalog_load_all(world.stations, MAX_STATIONS,
+                                                  STATION_CATALOG_DIR);
+    if (catalog_count > 0)
+        printf("[server] loaded %d station(s) from catalog\n", catalog_count);
+
     if (world_load(&world, SAVE_PATH)) {
-        printf("[server] loaded world from %s\n", SAVE_PATH);
-        station_rebuild_all_nav(&world); /* save may have different modules */
+        printf("[server] loaded session from %s\n", SAVE_PATH);
     } else {
-        printf("[server] fresh world\n");
+        printf("[server] no session save — fresh economy\n");
+        /* If catalog exists but session doesn't, seed economy for active stations */
+        if (catalog_count > 0) {
+            for (int i = 0; i < MAX_STATIONS; i++) {
+                if (station_exists(&world.stations[i]) && world.stations[i].credit_pool == 0.0f)
+                    world.stations[i].credit_pool = 10000.0f;
+            }
+        }
     }
+
+    rebuild_signal_chain(&world);
+    station_rebuild_all_nav(&world);
     for (int i = 0; i < MAX_STATIONS; i++) station_identity_dirty[i] = true;
 
     struct mg_mgr mgr;
@@ -781,7 +814,7 @@ int main(void) {
                         int pid = ev->player_id;
                         if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected && world.players[pid].conn) {
                             uint8_t buf[PLAYER_SHIP_SIZE + 4];
-                            int len = serialize_player_ship(buf, (uint8_t)pid, &world.players[pid]);
+                            int len = send_player_ship(buf, (uint8_t)pid, &world.players[pid]);
                             ws_send(world.players[pid].conn, buf, (size_t)len);
                             /* Send only the station the player is at, not all stations */
                             int st_idx = world.players[pid].current_station;
@@ -824,7 +857,7 @@ int main(void) {
                             ws_send(world.players[pid].conn, msg, sizeof(msg));
                             /* Also send updated ship state (hull restored, docked) */
                             uint8_t buf[PLAYER_SHIP_SIZE + 4];
-                            int len = serialize_player_ship(buf, (uint8_t)pid, &world.players[pid]);
+                            int len = send_player_ship(buf, (uint8_t)pid, &world.players[pid]);
                             ws_send(world.players[pid].conn, buf, (size_t)len);
                         }
                     }
@@ -842,7 +875,7 @@ int main(void) {
                             ws_send(world.players[pid].conn, msg, sizeof(msg));
                             /* Push fresh ship state so the credit bump is visible immediately */
                             uint8_t buf[PLAYER_SHIP_SIZE + 4];
-                            int len = serialize_player_ship(buf, (uint8_t)pid, &world.players[pid]);
+                            int len = send_player_ship(buf, (uint8_t)pid, &world.players[pid]);
                             ws_send(world.players[pid].conn, buf, (size_t)len);
                         }
                     }
@@ -926,12 +959,14 @@ int main(void) {
             last_ship = now;
         }
         if (now - last_save >= AUTOSAVE_MS) {
+            station_catalog_save_all(world.stations, MAX_STATIONS, STATION_CATALOG_DIR);
             world_save(&world, SAVE_PATH);
             last_save = now;
         }
     }
 
     mg_mgr_free(&mgr);
+    station_catalog_save_all(world.stations, MAX_STATIONS, STATION_CATALOG_DIR);
     world_save(&world, SAVE_PATH);
     printf("[server] world saved\n");
     printf("[server] shutdown\n");

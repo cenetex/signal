@@ -342,7 +342,7 @@ static void handle_message(const uint8_t* data, int len) {
                 NetPlayerShipState pss = {0};
                 pss.player_id       = id;
                 pss.hull            = read_f32_le(&data[2]);
-                pss.credits         = read_f32_le(&data[6]);
+                pss.station_balance  = read_f32_le(&data[6]);
                 pss.docked          = data[10] != 0;
                 pss.current_station = data[11];
                 pss.mining_level    = data[12];

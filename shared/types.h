@@ -94,7 +94,6 @@ typedef struct {
     float angle;
     float hull;
     float cargo[COMMODITY_COUNT];
-    float credits;
     hull_class_t hull_class;
     int mining_level;
     int hold_level;
@@ -199,7 +198,7 @@ typedef struct {
     /* Economy ledger: per-player supply tracking for passive income */
     struct {
         uint8_t player_token[8];      /* session token of the supplier */
-        float pending_credits;        /* uncollected earnings */
+        float balance;                /* spendable station-local credits */
         float lifetime_supply;        /* total ore contributed */
     } ledger[16];
     int ledger_count;

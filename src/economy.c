@@ -88,10 +88,10 @@ float station_repair_cost(const ship_t* ship, const station_t* station) {
     return damage * STATION_REPAIR_COST_PER_HULL;
 }
 
-bool can_afford_upgrade(const station_t* station, const ship_t* ship, ship_upgrade_t upgrade, uint32_t service, int credit_cost) {
+bool can_afford_upgrade(const station_t* station, const ship_t* ship, ship_upgrade_t upgrade, uint32_t service, int credit_cost, float balance) {
     if (!station || !(station->services & service)) return false;
     if (ship_upgrade_maxed(ship, upgrade)) return false;
-    if (ship->credits + FLOAT_EPSILON < (float)credit_cost) return false;
+    if (balance + FLOAT_EPSILON < (float)credit_cost) return false;
     if (station->inventory[COMMODITY_FRAME + upgrade_required_product(upgrade)] + FLOAT_EPSILON < upgrade_product_cost(ship, upgrade)) return false;
     return true;
 }

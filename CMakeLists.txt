@@ -21,7 +21,7 @@ endif()
 
 if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
     # --- Headless game server ---
-    add_executable(signal_server server/main.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c server/mongoose.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c)
+    add_executable(signal_server server/main.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_catalog.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c server/mongoose.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c)
     target_include_directories(signal_server PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
     target_compile_definitions(signal_server PRIVATE GIT_HASH="${GIT_HASH}" SIM_LOG_ENABLED=0)
     if(NOT MSVC)
@@ -31,7 +31,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
         target_compile_definitions(signal_server PRIVATE $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
     endif()
 
-    add_executable(signal_test src/test_main.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)
+    add_executable(signal_test src/test_main.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_catalog.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)
     target_include_directories(signal_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
     if(NOT MSVC)
         target_link_libraries(signal_test PRIVATE m)
@@ -40,7 +40,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
 endif()
 
 if(BUILD_TESTS_ONLY)
-    add_executable(signal_test src/test_main.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)
+    add_executable(signal_test src/test_main.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_catalog.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)
     target_include_directories(signal_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
     if(NOT MSVC)
         target_link_libraries(signal_test PRIVATE m)
@@ -49,7 +49,7 @@ if(BUILD_TESTS_ONLY)
     return()
 endif()
 
-set(GAME_SOURCES src/main.c src/net.c src/station_ui.c src/hud.c src/world_draw.c src/commodity.c src/ship.c src/audio.c src/economy.c src/asteroid.c src/asteroid_field.c src/npc.c src/render.c src/rng.c src/input.c src/net_sync.c src/local_server.c src/onboarding.c src/episode.c src/music.c src/avatar.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)
+set(GAME_SOURCES src/main.c src/net.c src/station_ui.c src/hud.c src/world_draw.c src/commodity.c src/ship.c src/audio.c src/economy.c src/asteroid.c src/asteroid_field.c src/npc.c src/render.c src/rng.c src/input.c src/net_sync.c src/local_server.c src/onboarding.c src/episode.c src/music.c src/avatar.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_catalog.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)
 
 # Native builds link mongoose for WebSocket client networking
 if(NOT EMSCRIPTEN)

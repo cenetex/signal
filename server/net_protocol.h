@@ -392,16 +392,16 @@ static inline int serialize_scaffolds(uint8_t *buf, const scaffold_t *scaffolds)
 
 /*
  * PLAYER_SHIP message:
- * [type:1][id:1][hull:f32][credits:f32][docked:1][station:1]
+ * [type:1][id:1][hull:f32][station_balance:f32][docked:1][station:1]
  * [mining_lvl:1][hold_lvl:1][tractor_lvl:1][flags:1]
  * [cargo: COMMODITY_COUNT × f32]
  * [nearby_frags:1][tractor_frags:1][towed_count:1][towed_frags:10]
  */
-static inline int serialize_player_ship(uint8_t *buf, uint8_t id, const server_player_t *sp) {
+static inline int serialize_player_ship_bal(uint8_t *buf, uint8_t id, const server_player_t *sp, float station_balance) {
     buf[0] = NET_MSG_PLAYER_SHIP;
     buf[1] = id;
     write_f32_le(&buf[2], sp->ship.hull);
-    write_f32_le(&buf[6], sp->ship.credits);
+    write_f32_le(&buf[6], station_balance);
     buf[10] = sp->docked ? 1 : 0;
     buf[11] = (uint8_t)sp->current_station;
     buf[12] = (uint8_t)sp->ship.mining_level;

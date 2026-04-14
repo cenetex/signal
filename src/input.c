@@ -255,7 +255,7 @@ input_intent_t sample_input_intent(void) {
             if (is_key_pressed(SAPP_KEYCODE_1 + shown)) {
                 if (st->pending_scaffold_count >= 4) {
                     set_notice("Shipyard queue full.");
-                } else if ((int)lroundf(LOCAL_PLAYER.ship.credits) < scaffold_order_fee(kit)) {
+                } else if ((int)lroundf(player_current_balance()) < scaffold_order_fee(kit)) {
                     set_notice("Need %d cr to order.", scaffold_order_fee(kit));
                 } else {
                     intent.buy_scaffold_kit = true;
@@ -375,16 +375,25 @@ input_intent_t sample_input_intent(void) {
                 float price = station_sell_price(st, sell);
                 if (space < 0.5f) {
                     set_notice("Hold full.");
-                } else if (LOCAL_PLAYER.ship.credits < price) {
+                } else if (player_current_balance() < price) {
                     set_notice("Need %d cr.", (int)lroundf(price));
                 } else {
+                    float bal = player_current_balance();
                     float avail = st->inventory[sell];
-                    float afford = floorf(LOCAL_PLAYER.ship.credits / price);
+                    float afford = floorf(bal / price);
                     int amount = (int)fminf(fminf(avail, space), afford);
                     intent.buy_product = true;
                     intent.buy_commodity = sell;
                     LOCAL_PLAYER.ship.cargo[sell] += (float)amount;
-                    LOCAL_PLAYER.ship.credits -= (float)amount * price;
+                    /* Optimistic deduct from local ledger (singleplayer mirrors full world) */
+                    if (!g.multiplayer_enabled) {
+                        station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
+                        for (int li = 0; li < mst->ledger_count; li++)
+                            if (mst->ledger[li].balance >= (float)amount * price) {
+                                mst->ledger[li].balance -= (float)amount * price;
+                                break;
+                            }
+                    }
                     set_notice("Bought %d %s  -%d cr", amount, commodity_short_name(sell), (int)(amount * price));
                 }
             } else {

@@ -56,7 +56,7 @@ int main(int argc, char **argv) {
         w->players[p].connected = true;
         w->players[p].autopilot_mode = 1;
         w->players[p].autopilot_state = AUTOPILOT_STEP_FIND_TARGET;
-        evals[p].credits_start = w->players[p].ship.credits;
+        evals[p].credits_start = w->players[p].ship.stat_credits_earned;
         evals[p].min_signal = 1.0f;
         prev_state[p] = AUTOPILOT_STEP_FIND_TARGET;
     }
@@ -105,7 +105,7 @@ int main(int argc, char **argv) {
             printf("--- t=%.0fs ---\n", t);
             for (int p = 0; p < num_ships; p++) {
                 server_player_t *sp = &w->players[p];
-                float earned = sp->ship.credits - evals[p].credits_start;
+                float earned = sp->ship.stat_credits_earned - evals[p].credits_start;
                 printf("  P%d: state=%d credits=+%.0f cycles=%d towed=%d sig=%.2f pos=(%.0f,%.0f)\n",
                     p, sp->autopilot_state, earned, evals[p].cycles_completed,
                     sp->ship.towed_count, signal_strength_at(w, sp->ship.pos),
@@ -126,7 +126,7 @@ int main(int argc, char **argv) {
 
     for (int p = 0; p < num_ships; p++) {
         server_player_t *sp = &w->players[p];
-        evals[p].credits_end = sp->ship.credits;
+        evals[p].credits_end = sp->ship.stat_credits_earned;
         evals[p].final_pos = sp->ship.pos;
         float earned = evals[p].credits_end - evals[p].credits_start;
         total_credits += earned;

@@ -183,7 +183,8 @@ typedef struct {
     float hail_timer;            /* countdown for hail display */
     char hail_station[64];       /* station name */
     char hail_message[256];      /* station MOTD */
-    float hail_credits;          /* credits collected */
+    float hail_credits;          /* balance at hailed station */
+    float station_balance;       /* balance at current/nearby station (multiplayer) */
     int hail_station_index;      /* which station was hailed (-1 = none) */
     /* --- Camera --- */
     vec2 camera_pos;         /* smoothed camera position */
@@ -285,6 +286,7 @@ void get_station_panel_rect(float* x, float* y, float* width, float* height);
 /* HUD drawing (call from render_ui) */
 void draw_hud_panels(void);
 void draw_hud(void);
+float player_current_balance(void);
 
 /* Pre-bake the radial fog vignette textures (one per damage tier).
  * Must be called once after sg_setup. */

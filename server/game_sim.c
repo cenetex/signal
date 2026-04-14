@@ -34,16 +34,37 @@
 
 /* SIM_LOG moved to game_sim.h so all sim_*.c files share the same macro. */
 
-/* Centralized credit operations — all spending/earning goes through these */
-static void spend_credits(ship_t *s, station_t *st, float amount) {
-    s->credits -= amount;
-    s->stat_credits_spent += amount;
-    if (st) st->credit_pool += amount;
+/* --- Station-local ledger economy ---
+ * All credits are per-station. There is no global wallet.
+ * Players earn by smelting/delivering at a station and spend at that station.
+ * Cross-station wealth transfer requires physically hauling goods. */
+
+/* Find or create a ledger entry — forward decl (defined with other ledger code below) */
+static int ledger_find_or_create(station_t *st, const uint8_t *token);
+
+float ledger_balance(const station_t *st, const uint8_t *token) {
+    for (int i = 0; i < st->ledger_count; i++)
+        if (memcmp(st->ledger[i].player_token, token, 8) == 0)
+            return st->ledger[i].balance;
+    return 0.0f;
 }
 
-void earn_credits(ship_t *s, float amount) {
-    s->credits += amount;
-    s->stat_credits_earned += amount;
+void ledger_earn(station_t *st, const uint8_t *token, float amount) {
+    int idx = ledger_find_or_create(st, token);
+    if (idx < 0) return;
+    st->ledger[idx].balance += amount;
+}
+
+static bool ledger_spend(station_t *st, const uint8_t *token, float amount, ship_t *ship) {
+    if (amount <= 0.0f) return true;
+    int idx = ledger_find_or_create(st, token);
+    if (idx < 0) return false;
+    if (st->ledger[idx].balance + 0.01f < amount) return false;
+    st->ledger[idx].balance -= amount;
+    if (st->ledger[idx].balance < 0.0f) st->ledger[idx].balance = 0.0f;
+    ship->stat_credits_spent += amount;
+    st->credit_pool += amount;
+    return true;
 }
 
 void emit_event(world_t *w, sim_event_t ev) {
@@ -422,13 +443,7 @@ vec2 station_approach_target(const station_t *st, vec2 from) {
 
 /* ship_forward, ship_muzzle: see ship.h/c */
 
-static bool try_spend_credits(ship_t *s, station_t *st, float amount) {
-    if (amount <= 0.0f) return true;
-    if (s->credits + 0.01f < amount) return false;
-    spend_credits(s, st, amount);
-    if (s->credits < 0.0f) s->credits = 0.0f;
-    return true;
-}
+/* try_spend_credits removed — all spending goes through ledger_spend */
 
 void anchor_ship_in_station(server_player_t *sp, world_t *w) {
     const station_t *st = &w->stations[sp->current_station];
@@ -673,8 +688,7 @@ static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, i
 /* Station interactions                                               */
 /* ================================================================== */
 
-/* Forward declarations for ledger functions (defined below step_station_interaction_system) */
-void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
+/* ledger_credit_supply declared in game_sim.h */
 
 static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
@@ -743,8 +757,9 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         if (payout > st->credit_pool) payout = st->credit_pool;
         if (payout > 0.01f) {
             st->credit_pool -= payout;
-            earn_credits(&sp->ship, payout);
-            SIM_LOG("[sim] player %d sold cargo for %.0f cr\n", sp->id, payout);
+            ledger_earn(st, sp->session_token, payout);
+            sp->ship.stat_credits_earned += payout;
+            SIM_LOG("[sim] player %d sold cargo for %.0f cr at %s\n", sp->id, payout, st->name);
             emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
         }
     }
@@ -758,7 +773,7 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
     if (!station_has_service(st, STATION_SERVICE_REPAIR)) return;
     float cost = sim_station_repair_cost(&sp->ship);
     if (cost <= 0.0f) return;
-    if (!try_spend_credits(&sp->ship, st, cost)) return;
+    if (!ledger_spend(st, sp->session_token, cost, &sp->ship)) return;
     sp->ship.hull = ship_max_hull(&sp->ship);
     SIM_LOG("[sim] player %d repaired for %.0f cr\n", sp->id, cost);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_REPAIR, .player_id = sp->id});
@@ -774,7 +789,7 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
     float pcost = upgrade_product_cost(&sp->ship, upgrade);
     if (st->inventory[COMMODITY_FRAME + required] < pcost - 0.01f) return;
     int cost = ship_upgrade_cost(&sp->ship, upgrade);
-    if (!try_spend_credits(&sp->ship, st, (float)cost)) return;
+    if (!ledger_spend(st, sp->session_token, (float)cost, &sp->ship)) return;
     st->inventory[COMMODITY_FRAME + required] -= pcost;
 
     switch (upgrade) {
@@ -1766,7 +1781,7 @@ static int ledger_find_or_create(station_t *st, const uint8_t *token) {
     if (st->ledger_count >= 16) return -1;
     int idx = st->ledger_count++;
     memcpy(st->ledger[idx].player_token, token, 8);
-    st->ledger[idx].pending_credits = 0.0f;
+    st->ledger[idx].balance = 0.0f;
     st->ledger[idx].lifetime_supply = 0.0f;
     return idx;
 }
@@ -1783,18 +1798,14 @@ void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) 
         supplier_share = st->credit_pool;
     if (supplier_share < 0.01f) return;
     st->credit_pool -= supplier_share;
-    st->ledger[idx].pending_credits += supplier_share;
+    st->ledger[idx].balance += supplier_share;
     st->ledger[idx].lifetime_supply += ore_value;
 }
 
-/* Hail: collect pending credits from a station (requires signal > 90%) */
+/* Hail: report station-local balance (informational — no withdrawal). */
 static void handle_hail(world_t *w, server_player_t *sp) {
     if (sp->docked) return;
     float sig = signal_strength_at(w, sp->ship.pos);
-    /* Any signal at all qualifies. The README says "press H in signal range
-     * to hail a station" — that's the loosest, most permissive threshold.
-     * The 0.90 cap from earlier required CORE-band proximity, which the
-     * player almost never has when hauling. */
     if (sig <= 0.0f) return;
 
     /* Find nearest station in range */
@@ -1810,30 +1821,18 @@ static void handle_hail(world_t *w, server_player_t *sp) {
         }
     }
 
-    /* Collect from nearest station only — credits are earned locally,
-     * player must visit each station to collect. */
-    float total_collected = 0.0f;
+    /* Report balance at nearest station */
+    float balance = 0.0f;
     if (nearest >= 0) {
-        station_t *st = &w->stations[nearest];
-        for (int i = 0; i < st->ledger_count; i++) {
-            if (memcmp(st->ledger[i].player_token, sp->session_token, 8) != 0) continue;
-            if (st->ledger[i].pending_credits > 0.01f) {
-                total_collected += st->ledger[i].pending_credits;
-                st->ledger[i].pending_credits = 0.0f;
-            }
-        }
-    }
-    if (total_collected > 0.01f) {
-        earn_credits(&sp->ship, total_collected);
-        SIM_LOG("[sim] player %d hail collected %.0f credits\n", sp->id, total_collected);
+        balance = ledger_balance(&w->stations[nearest], sp->session_token);
     }
 
-    /* Emit hail response event */
+    /* Emit hail response with current balance */
     if (nearest >= 0) {
         emit_event(w, (sim_event_t){
             .type = SIM_EVENT_HAIL_RESPONSE,
             .player_id = sp->id,
-            .hail_response = { .station = nearest, .credits = total_collected },
+            .hail_response = { .station = nearest, .credits = balance },
         });
     }
 }
@@ -1852,10 +1851,9 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
         } else {
             float fee = (float)scaffold_order_fee(kit_type);
-            if (sp->ship.credits < fee) {
+            if (!ledger_spend(st, sp->session_token, fee, &sp->ship)) {
                 emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
             } else {
-                spend_credits(&sp->ship, st, fee);
                 /* Tech tree: ordering this type unlocks any module that
                  * lists it as prerequisite. */
                 sp->ship.unlocked_modules |= (1u << (uint32_t)kit_type);
@@ -1930,11 +1928,12 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             float space = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
             float price_per = station_sell_price(docked_st, c);
             /* Buy as much as you can afford and carry */
-            float afford = (price_per > 0.01f) ? floorf(sp->ship.credits / price_per) : 0.0f;
+            float bal = ledger_balance(docked_st, sp->session_token);
+            float afford = (price_per > 0.01f) ? floorf(bal / price_per) : 0.0f;
             float amount = fminf(fminf(available, space), afford);
             float total_cost = amount * price_per;
             if (amount > 0.01f) {
-                spend_credits(&sp->ship, docked_st, total_cost);
+                ledger_spend(docked_st, sp->session_token, total_cost, &sp->ship);
                 sp->ship.cargo[c] += amount;
                 docked_st->inventory[c] -= amount;
                 SIM_LOG("[sim] player %d bought %.0f of commodity %d for %.0f cr\n",
@@ -2154,11 +2153,12 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) {
                     float available = nearby_st->inventory[c];
                     float price_per = station_sell_price(nearby_st, c);
-                    float afford = (price_per > FLOAT_EPSILON) ? floorf(sp->ship.credits / price_per) : 0.0f;
+                    float nbal = ledger_balance(nearby_st, sp->session_token);
+                    float afford = (price_per > FLOAT_EPSILON) ? floorf(nbal / price_per) : 0.0f;
                     float amount = fminf(fminf(available, 1.0f), afford); /* buy 1 at a time */
                     if (amount > FLOAT_EPSILON) {
                         float cost = amount * price_per;
-                        spend_credits(&sp->ship, nearby_st, cost);
+                        ledger_spend(nearby_st, sp->session_token, cost, &sp->ship);
                         sp->ship.cargo[c] += amount;
                         nearby_st->inventory[c] -= amount;
                         emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
@@ -3337,12 +3337,11 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->ship.tractor_active = false;  /* driven by tractor_hold each frame */
     sp->docked          = true;
     sp->current_station = 0;
-    /* Starting credits come from the docked station's pool — not thin air */
-    sp->ship.credits    = 0.0f;
+    /* Starting credits go into the docked station's ledger — not a global wallet */
     {
         float seed = fminf(50.0f, w->stations[sp->current_station].credit_pool);
-        sp->ship.credits = seed;
         w->stations[sp->current_station].credit_pool -= seed;
+        ledger_earn(&w->stations[sp->current_station], sp->session_token, seed);
     }
     sp->nearby_station  = 0;
     sp->in_dock_range   = true;

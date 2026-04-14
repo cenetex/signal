@@ -202,13 +202,13 @@ static bool check_hail_condition(hail_cond_t cond) {
     case HAIL_COND_HAS_TOWED:
         return ship->towed_count > 0;
     case HAIL_COND_LOW_CREDITS: {
-        if (ship->credits >= 50.0f) return false;
+        if (player_current_balance() >= 50.0f) return false;
         for (int s = 3; s < MAX_STATIONS; s++)
             if (station_exists(&g.world.stations[s])) return false;
         return true;
     }
     case HAIL_COND_HAS_CREDITS_NO_OUTPOST: {
-        if (ship->credits < 200.0f) return false;
+        if (player_current_balance() < 200.0f) return false;
         for (int s = 3; s < MAX_STATIONS; s++)
             if (station_exists(&g.world.stations[s])) return false;
         return true;

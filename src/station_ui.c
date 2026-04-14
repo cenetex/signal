@@ -218,10 +218,11 @@ void build_station_ui_state(station_ui_state_t* ui) {
     ui->mining_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_MINING);
     ui->hold_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_HOLD);
     ui->tractor_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_TRACTOR);
-    ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (repair > 0.0f) && (LOCAL_PLAYER.ship.credits + FLOAT_EPSILON >= repair);
-    ui->can_upgrade_mining = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, ui->mining_cost);
-    ui->can_upgrade_hold = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, ui->hold_cost);
-    ui->can_upgrade_tractor = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_TRACTOR, STATION_SERVICE_UPGRADE_TRACTOR, ui->tractor_cost);
+    ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (repair > 0.0f) && (player_current_balance() + FLOAT_EPSILON >= repair);
+    float bal = player_current_balance();
+    ui->can_upgrade_mining = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, ui->mining_cost, bal);
+    ui->can_upgrade_hold = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, ui->hold_cost, bal);
+    ui->can_upgrade_tractor = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_TRACTOR, STATION_SERVICE_UPGRADE_TRACTOR, ui->tractor_cost, bal);
 }
 
 /* ------------------------------------------------------------------ */
@@ -549,7 +550,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                     sdtx_printf("%.0f dps", ship_mining_rate(ship));
                     if (available && !maxed) {
                         int cost = ship_upgrade_cost(ship, SHIP_UPGRADE_MINING);
-                        bool afford = can_afford_upgrade(ui->station, ship, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, cost);
+                        bool afford = can_afford_upgrade(ui->station, ship, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, cost, player_current_balance());
                         sdtx_color3b(afford ? 130 : 90, afford ? 255 : 105, afford ? 235 : 130); /* affordability conditional */
                         sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
                         sdtx_printf("[3] %dcr", cost);
@@ -570,7 +571,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                     sdtx_printf("%.0f cap", ship_cargo_capacity(ship));
                     if (available && !maxed) {
                         int cost = ship_upgrade_cost(ship, SHIP_UPGRADE_HOLD);
-                        bool afford = can_afford_upgrade(ui->station, ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost);
+                        bool afford = can_afford_upgrade(ui->station, ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost, player_current_balance());
                         sdtx_color3b(afford ? 130 : 90, afford ? 255 : 105, afford ? 235 : 130); /* affordability conditional */
                         sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
                         sdtx_printf("[4] %dcr", cost);
@@ -591,7 +592,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                     sdtx_printf("%.0f rng", ship_tractor_range(ship));
                     if (available && !maxed) {
                         int cost = ship_upgrade_cost(ship, SHIP_UPGRADE_TRACTOR);
-                        bool afford = can_afford_upgrade(ui->station, ship, SHIP_UPGRADE_TRACTOR, STATION_SERVICE_UPGRADE_TRACTOR, cost);
+                        bool afford = can_afford_upgrade(ui->station, ship, SHIP_UPGRADE_TRACTOR, STATION_SERVICE_UPGRADE_TRACTOR, cost, player_current_balance());
                         sdtx_color3b(afford ? 130 : 90, afford ? 255 : 105, afford ? 235 : 130); /* affordability conditional */
                         sdtx_pos(ui_text_pos(right_col), ui_text_pos(ly));
                         sdtx_printf("[5] %dcr", cost);
@@ -778,7 +779,7 @@ void draw_station_services(const station_ui_state_t* ui) {
 
                 /* Action line */
                 float player_space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
-                float player_credits = LOCAL_PLAYER.ship.credits;
+                float player_credits = player_current_balance();
                 int can_buy = (avail > 0.5f && price_f > FLOAT_EPSILON)
                     ? (int)fminf(fminf(avail, player_space), floorf(player_credits / price_f))
                     : 0;
@@ -989,7 +990,7 @@ void draw_station_services(const station_ui_state_t* ui) {
          * yard knows how to build a type if an example of it is installed
          * on the station. Locked types appear greyed-out so the player
          * can see what the tech tree is hiding. */
-        int credits = (int)lroundf(LOCAL_PLAYER.ship.credits);
+        int credits = (int)lroundf(player_current_balance());
         int shown = 0;
         bool any = false;
         for (int t = 0; t < MODULE_COUNT && shown < 9; t++) {

@@ -263,6 +263,9 @@ void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *sh
 int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner);
 bool world_save(const world_t *w, const char *path);
 bool world_load(world_t *w, const char *path);
+/* Station catalog — per-station identity persistence (sim_catalog.c) */
+int  station_catalog_load_all(station_t *stations, int max, const char *dir);
+bool station_catalog_save_all(const station_t *stations, int count, const char *dir);
 bool player_save(const server_player_t *sp, const char *dir, int slot);
 bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot);
 bool player_load_by_token(server_player_t *sp, world_t *w, const char *dir,
@@ -273,7 +276,10 @@ void anchor_ship_in_station(server_player_t *sp, world_t *w);
 asteroid_tier_t max_mineable_tier(int mining_level);
 vec2 station_approach_target(const station_t *st, vec2 from);
 void emit_event(world_t *w, sim_event_t ev);
-void earn_credits(ship_t *s, float amount);
+/* Station-local ledger economy */
+float ledger_balance(const station_t *st, const uint8_t *token);
+void ledger_earn(station_t *st, const uint8_t *token, float amount);
+void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
 void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_by);
 void activate_outpost(world_t *w, int station_idx);
 
