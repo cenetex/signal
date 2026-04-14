@@ -252,7 +252,7 @@ _Static_assert(
     "NPC_RECORD_SIZE must match serialized NPC layout"
 );
 _Static_assert(
-    1 + COMMODITY_COUNT * 4 == STATION_RECORD_SIZE,
+    1 + COMMODITY_COUNT * 4 + 4 == STATION_RECORD_SIZE,
     "STATION_RECORD_SIZE must match serialized station econ layout"
 );
 /* PLAYER_SHIP_SIZE is now a maximum (variable length due to path waypoints).
@@ -268,6 +268,7 @@ static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
         p[0] = (uint8_t)i;
         for (int c = 0; c < COMMODITY_COUNT; c++)
             write_f32_le(&p[1 + c * 4], st->inventory[c]);
+        write_f32_le(&p[1 + COMMODITY_COUNT * 4], st->credit_pool);
         count++;
     }
     buf[0] = NET_MSG_WORLD_STATIONS;

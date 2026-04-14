@@ -137,7 +137,7 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 /* ------------------------------------------------------------------ */
 
 /* Station economic snapshot: [index:1][inventory:COMMODITY_COUNT×f32] */
-#define STATION_RECORD_SIZE (1 + COMMODITY_COUNT * 4)  /* 37 bytes when COMMODITY_COUNT == 9 */
+#define STATION_RECORD_SIZE (1 + COMMODITY_COUNT * 4 + 4)  /* 41 bytes: index + inventory + credit_pool */
 
 /* Player state record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:10][callsign:7]
  * [beam_start_x:f32][beam_start_y:f32][beam_end_x:f32][beam_end_y:f32]

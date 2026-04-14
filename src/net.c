@@ -326,7 +326,8 @@ static void handle_message(const uint8_t* data, int len) {
                     float inv[COMMODITY_COUNT];
                     for (int j = 0; j < COMMODITY_COUNT; j++)
                         inv[j] = read_f32_le(&p[1 + j * 4]);
-                    net_state.callbacks.on_stations(idx, inv);
+                    float pool = read_f32_le(&p[1 + COMMODITY_COUNT * 4]);
+                    net_state.callbacks.on_stations(idx, inv, pool);
                 }
             }
         }

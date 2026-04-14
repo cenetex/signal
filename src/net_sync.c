@@ -117,11 +117,12 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
     /* World NPCs updated by interpolate_world_for_render(). */
 }
 
-void apply_remote_stations(uint8_t index, const float* inventory) {
+void apply_remote_stations(uint8_t index, const float* inventory, float credit_pool) {
     if (index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[index];
     for (int i = 0; i < COMMODITY_COUNT; i++)
         st->inventory[i] = inventory[i];
+    st->credit_pool = credit_pool;
 }
 
 void apply_remote_contracts(const contract_t* contracts, int count) {

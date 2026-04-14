@@ -103,8 +103,8 @@ typedef struct {
 
 typedef void (*net_on_player_ship_fn)(const NetPlayerShipState* state);
 
-/* Station update callback: index + full inventory[COMMODITY_COUNT]. */
-typedef void (*net_on_stations_fn)(uint8_t index, const float* inventory);
+/* Station update callback: index + full inventory[COMMODITY_COUNT] + credit pool. */
+typedef void (*net_on_stations_fn)(uint8_t index, const float* inventory, float credit_pool);
 
 /* Contracts callback: full replacement of contract array. */
 typedef void (*net_on_contracts_fn)(const contract_t* contracts, int count);
