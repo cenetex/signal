@@ -604,6 +604,10 @@ static void sim_step(float dt) {
          * hull updates may still arrive — we keep velocity zero locally.) */
         LOCAL_PLAYER.ship.vel = v2(0.0f, 0.0f);
 
+        /* Keep episode video and music running during death cinematic */
+        episode_update(&g.episode, dt);
+        music_update(&g.music, dt);
+
         consume_pressed_input();
         return;
     }
