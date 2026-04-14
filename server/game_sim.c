@@ -3303,17 +3303,28 @@ void world_reset(world_t *w) {
     w->station_count = 3; /* 3 starter stations */
     rebuild_signal_chain(w);
 
-    /* --- Initial asteroid field: spawn as clumps along belt density --- */
+    /* --- Initial asteroid field: materialize terrain chunks near stations --- */
     {
         int slot = 0;
-        while (slot < FIELD_ASTEROID_TARGET && slot < MAX_ASTEROIDS) {
-            int placed = seed_asteroid_clump(w, slot);
-            if (placed == 0) {
-                /* Fallback: single rock if no good clump center found */
-                seed_random_field_asteroid(w, &w->asteroids[slot]);
-                placed = 1;
+        int budget = FIELD_ASTEROID_TARGET; /* leave headroom for fracture children */
+        for (int s = 0; s < 3 && slot < budget; s++) {
+            vec2 sp = w->stations[s].pos;
+            int32_t scx, scy;
+            chunk_coord(sp.x, sp.y, &scx, &scy);
+            int r = 8; /* ~3200u radius in chunks */
+            for (int dy = -r; dy <= r && slot < budget; dy++) {
+                for (int dx = -r; dx <= r && slot < budget; dx++) {
+                    int32_t cx = scx + dx;
+                    int32_t cy = scy + dy;
+                    chunk_asteroid_t rocks[CHUNK_MAX_ASTEROIDS];
+                    int count = chunk_generate(&w->belt, w->rng, cx, cy,
+                                                rocks, CHUNK_MAX_ASTEROIDS);
+                    for (int ri = 0; ri < count && slot < budget; ri++) {
+                        materialize_asteroid(w, slot, &rocks[ri], cx, cy);
+                        slot++;
+                    }
+                }
             }
-            slot += placed;
         }
     }
 

@@ -208,6 +208,11 @@ typedef struct {
     int station_count;              /* highest active slot + 1 (3 at reset, grows with outposts) */
     uint32_t next_station_id;      /* monotonic counter for stable station IDs */
     asteroid_t asteroids[MAX_ASTEROIDS];
+    /* Chunk origin tracking — server-only, not serialized */
+    struct {
+        int32_t chunk_x, chunk_y;
+        bool from_chunk;   /* true = terrain, false = fracture child */
+    } asteroid_origin[MAX_ASTEROIDS];
     npc_ship_t npc_ships[MAX_NPC_SHIPS];
     scaffold_t scaffolds[MAX_SCAFFOLDS];
     server_player_t players[MAX_PLAYERS];

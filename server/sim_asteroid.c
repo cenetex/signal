@@ -3,6 +3,7 @@
  * maintenance, and per-frame dynamics.  Extracted from game_sim.c.
  */
 #include "sim_asteroid.h"
+#include "chunk.h"
 #include "rng.h"
 
 /* ------------------------------------------------------------------ */
@@ -29,13 +30,7 @@ static bool point_within_signal_margin(const world_t *w, vec2 pos, float margin)
     return false;
 }
 
-static float max_signal_range(const world_t *w) {
-    float best = 0.0f;
-    for (int i = 0; i < MAX_STATIONS; i++) {
-        if (w->stations[i].signal_range > best) best = w->stations[i].signal_range;
-    }
-    return best > 0.0f ? best : WORLD_RADIUS;
-}
+/* max_signal_range removed — chunk materialization uses per-station checks */
 
 /* Pick a random active station (skip empty slots). */
 static int pick_active_station(world_t *w) {
@@ -197,68 +192,8 @@ void seed_random_field_asteroid(world_t *w, asteroid_t *a) {
     seed_field_asteroid_of_tier(w, a, random_field_asteroid_tier(w));
 }
 
-static void set_inbound_field_velocity(world_t *w, asteroid_t *a, vec2 inward) {
-    float speed_lo = 12.0f, speed_hi = 20.0f, tangent_jitter = 6.0f;
-    switch (a->tier) {
-    case ASTEROID_TIER_XXL:
-        speed_lo = 18.0f; speed_hi = 30.0f; tangent_jitter = 4.0f;
-        break;
-    case ASTEROID_TIER_XL:
-        speed_lo = 16.0f; speed_hi = 26.0f; tangent_jitter = 5.0f;
-        break;
-    case ASTEROID_TIER_L:
-        speed_lo = 14.0f; speed_hi = 22.0f; tangent_jitter = 6.0f;
-        break;
-    case ASTEROID_TIER_M:
-        speed_lo = 12.0f; speed_hi = 18.0f; tangent_jitter = 7.0f;
-        break;
-    case ASTEROID_TIER_S:
-    default:
-        break;
-    }
-    vec2 tangent = v2_perp(inward);
-    a->vel = v2_add(v2_scale(inward, w_rand_range(w, speed_lo, speed_hi)),
-                    v2_scale(tangent, w_rand_range(w, -tangent_jitter, tangent_jitter)));
-}
-
-static void spawn_inbound_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier) {
-    clear_asteroid(a);
-    a->fracture_child = false;
-
-    /* Spawn at 30-60% of signal range -- close enough to reach the action
-     * in 1-3 minutes, not 10-15. Prefer belt-dense positions. */
-    int stn = pick_active_station(w);
-    vec2 center = w->stations[stn].pos;
-    float sr = w->stations[stn].signal_range;
-    if (sr <= 0.0f) sr = max_signal_range(w);
-
-    vec2 spawn_pos = center;
-    vec2 inward = v2(-1.0f, 0.0f);
-    float best_density = 0.0f;
-
-    for (int attempt = 0; attempt < 32; attempt++) {
-        float angle = w_rand_range(w, 0.0f, TWO_PI_F);
-        vec2 outward = v2_from_angle(angle);
-        float dist = w_rand_range(w, sr * 0.30f, sr * 0.60f);
-        vec2 pos = v2_add(center, v2_scale(outward, dist));
-        float d = belt_density_at(&w->belt, pos.x, pos.y);
-        if (d > best_density) {
-            best_density = d;
-            spawn_pos = pos;
-            inward = v2_scale(outward, -1.0f);
-        }
-        if (d > 0.15f) break;
-    }
-
-    commodity_t ore = belt_ore_at(&w->belt, spawn_pos.x, spawn_pos.y);
-    sim_configure_asteroid(w, a, tier, ore);
-    a->pos = spawn_pos;
-    set_inbound_field_velocity(w, a, inward);
-}
-
-static void spawn_field_asteroid(world_t *w, asteroid_t *a) {
-    spawn_inbound_field_asteroid_of_tier(w, a, random_field_asteroid_tier(w));
-}
+/* set_inbound_field_velocity, spawn_inbound_field_asteroid_of_tier,
+ * and spawn_field_asteroid removed — chunk materialization replaces it */
 
 static void spawn_child_asteroid(world_t *w, asteroid_t *a, asteroid_tier_t tier, commodity_t commodity, vec2 pos, vec2 vel) {
     clear_asteroid(a);
@@ -278,17 +213,7 @@ static int desired_child_count(world_t *w, asteroid_tier_t tier) {
     }
 }
 
-static void inspect_asteroid_field(world_t *w, int *seeded_count, int *first_inactive_slot) {
-    *seeded_count = 0;
-    *first_inactive_slot = -1;
-    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-        if (!w->asteroids[i].active) {
-            if (*first_inactive_slot < 0) *first_inactive_slot = i;
-            continue;
-        }
-        if (!w->asteroids[i].fracture_child) (*seeded_count)++;
-    }
-}
+/* inspect_asteroid_field removed — chunk materialization replaces it */
 
 /* ------------------------------------------------------------------ */
 /* Fracture                                                            */
@@ -413,21 +338,153 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
 /* Field maintenance                                                   */
 /* ------------------------------------------------------------------ */
 
+/* ------------------------------------------------------------------ */
+/* Chunk-based terrain materialization                                 */
+/* ------------------------------------------------------------------ */
+
+/* Materialize radius: slightly larger than view radius so rocks appear
+ * before the player reaches the edge. */
+#define MATERIALIZE_RADIUS 3500.0f
+
+/* Check if a chunk center is within signal coverage of any station. */
+static bool chunk_in_signal(const world_t *w, int32_t cx, int32_t cy) {
+    float wx = ((float)cx + 0.5f) * CHUNK_SIZE;
+    float wy = ((float)cy + 0.5f) * CHUNK_SIZE;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!station_provides_signal(&w->stations[s])) continue;
+        float sr = w->stations[s].signal_range;
+        if (v2_dist_sq(w->stations[s].pos, v2(wx, wy)) <= sr * sr)
+            return true;
+    }
+    return false;
+}
+
+/* Find a free asteroid slot. Returns -1 if pool full. */
+static int find_free_slot(const world_t *w) {
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        if (!w->asteroids[i].active) return i;
+    return -1;
+}
+
+/* Materialize a chunk_asteroid_t into a world asteroid slot. */
+void materialize_asteroid(world_t *w, int slot, const chunk_asteroid_t *ca,
+                           int32_t cx, int32_t cy) {
+    asteroid_t *a = &w->asteroids[slot];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ca->tier;
+    a->commodity = ca->commodity;
+    a->pos = ca->pos;
+    a->vel = v2(0.0f, 0.0f); /* terrain is stationary until disturbed */
+    a->radius = ca->radius;
+    a->hp = ca->hp;
+    a->max_hp = ca->hp;
+    a->ore = ca->ore;
+    a->max_ore = ca->ore;
+    a->rotation = ca->rotation;
+    a->spin = ca->spin;
+    a->seed = ca->seed;
+    a->last_towed_by = -1;
+    a->last_fractured_by = -1;
+    a->net_dirty = true;
+    w->asteroid_origin[slot].chunk_x = cx;
+    w->asteroid_origin[slot].chunk_y = cy;
+    w->asteroid_origin[slot].from_chunk = true;
+}
+
+/* Check if a chunk is already materialized (has at least one active terrain
+ * asteroid from this chunk). */
+static bool chunk_materialized(const world_t *w, int32_t cx, int32_t cy) {
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) continue;
+        if (w->asteroid_origin[i].from_chunk &&
+            w->asteroid_origin[i].chunk_x == cx &&
+            w->asteroid_origin[i].chunk_y == cy)
+            return true;
+    }
+    return false;
+}
+
+/* Is this asteroid "disturbed" (moved by gameplay, shouldn't auto-despawn)? */
+static bool asteroid_disturbed(const asteroid_t *a) {
+    return v2_len_sq(a->vel) > 4.0f || /* velocity > 2 u/s */
+           a->hp < a->max_hp ||        /* damaged */
+           a->last_towed_by >= 0;       /* being towed */
+}
+
 void maintain_asteroid_field(world_t *w, float dt) {
-    int seeded = 0, first_slot = -1;
-    inspect_asteroid_field(w, &seeded, &first_slot);
-    if (seeded >= FIELD_ASTEROID_TARGET) { w->field_spawn_timer = 0.0f; return; }
     w->field_spawn_timer += dt;
     if (w->field_spawn_timer < FIELD_ASTEROID_RESPAWN_DELAY) return;
-    if (first_slot >= 0) {
-        /* Spawn a small wave of 2-4 inbound rocks from the belt edge */
-        int wave = 2 + w_rand_int(w, 0, 2);
-        int spawned = 0;
-        for (int i = first_slot; i < MAX_ASTEROIDS && spawned < wave; i++) {
-            if (w->asteroids[i].active) continue;
-            spawn_field_asteroid(w, &w->asteroids[i]);
-            spawned++;
+    w->field_spawn_timer = 0.0f;
+
+    /* --- Compute needed chunks from player + NPC viewports --- */
+
+    /* Collect viewport centers */
+    vec2 viewports[MAX_PLAYERS + MAX_NPC_SHIPS];
+    int nv = 0;
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        if (!w->players[p].connected) continue;
+        viewports[nv++] = w->players[p].ship.pos;
+    }
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active) continue;
+        viewports[nv++] = w->npc_ships[n].pos;
+    }
+    if (nv == 0) return;
+
+    /* --- Materialize needed chunks --- */
+    float mr = MATERIALIZE_RADIUS;
+    int chunks_in_radius = (int)ceilf(mr / CHUNK_SIZE);
+
+    for (int vi = 0; vi < nv; vi++) {
+        int32_t vcx, vcy;
+        chunk_coord(viewports[vi].x, viewports[vi].y, &vcx, &vcy);
+
+        for (int dy = -chunks_in_radius; dy <= chunks_in_radius; dy++) {
+            for (int dx = -chunks_in_radius; dx <= chunks_in_radius; dx++) {
+                int32_t cx = vcx + dx;
+                int32_t cy = vcy + dy;
+
+                /* Skip if already materialized */
+                if (chunk_materialized(w, cx, cy)) continue;
+
+                /* Skip if outside signal coverage */
+                if (!chunk_in_signal(w, cx, cy)) continue;
+
+                /* Generate and place */
+                chunk_asteroid_t rocks[CHUNK_MAX_ASTEROIDS];
+                int count = chunk_generate(&w->belt, w->rng, cx, cy,
+                                            rocks, CHUNK_MAX_ASTEROIDS);
+                for (int r = 0; r < count; r++) {
+                    int slot = find_free_slot(w);
+                    if (slot < 0) goto pool_full;
+                    materialize_asteroid(w, slot, &rocks[r], cx, cy);
+                }
+            }
         }
     }
-    w->field_spawn_timer = 0.0f;
+    pool_full:
+
+    /* --- Despawn terrain asteroids in chunks no longer needed --- */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) continue;
+        if (!w->asteroid_origin[i].from_chunk) continue;
+        if (asteroid_disturbed(&w->asteroids[i])) continue;
+
+        /* Check if any viewport still needs this chunk */
+        bool needed = false;
+        for (int vi = 0; vi < nv; vi++) {
+            float dx = w->asteroids[i].pos.x - viewports[vi].x;
+            float dy = w->asteroids[i].pos.y - viewports[vi].y;
+            if (dx * dx + dy * dy < (mr + 500.0f) * (mr + 500.0f)) {
+                needed = true;
+                break;
+            }
+        }
+        if (!needed) {
+            /* Also check signal coverage — keep if still in signal */
+            if (!point_within_signal_margin(w, w->asteroids[i].pos, 260.0f))
+                clear_asteroid(&w->asteroids[i]);
+        }
+    }
 }

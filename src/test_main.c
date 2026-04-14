@@ -1217,8 +1217,8 @@ TEST(test_bug18_emergency_recover_nearest_station) {
     w.players[0].input.interact = true;
     world_sim_step(&w, SIM_DT);
     w.players[0].input.interact = false;
-    /* Position near station 2 (Helios Works at 320, 230), far from station 0 */
-    w.players[0].ship.pos = v2(320.0f, 200.0f);
+    /* Position near station 2 (Helios Works at 3200, 2300), far from station 0 */
+    w.players[0].ship.pos = v2(3200.0f, 2200.0f);
     w.players[0].nearby_station = 2;
     w.players[0].current_station = 0;  /* last docked at 0, but 2 is closer */
     w.players[0].ship.hull = 0.5f;
@@ -2787,8 +2787,9 @@ TEST(test_field_respawn_starts_beyond_signal_edge) {
     }
     ASSERT(near_station);
 
-    /* Asteroid should have some velocity (drifting inward) */
-    ASSERT(v2_len(a->vel) > 1.0f);
+    /* Chunk-based terrain: asteroids spawn stationary (vel ~0).
+     * Gravity/physics will give them velocity over time. */
+    ASSERT(v2_len(a->vel) < 50.0f); /* not launched at high speed */
 
     world_sim_step(&w, SIM_DT);
     ASSERT(w.asteroids[spawned].active);
@@ -4349,7 +4350,9 @@ TEST(test_238_invisible_wall_repro) {
      * Test: fly tangentially just outside the visual corridor width (ring_r + hw)
      * but inside the collision band (ring_r + hw + ship_r). Should collide. */
     WORLD_HEAP w = setup_collision_world_heap();
-    
+    /* Suppress chunk materialization so terrain doesn't interfere with collision test */
+    w->field_spawn_timer = -9999.0f;
+
     vec2 st_pos = w->stations[0].pos;
     float ring_r = 340.0f;
     float corridor_hw = 10.0f;
