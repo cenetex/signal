@@ -259,8 +259,18 @@ static void signal_grid_build(world_t *w) {
         sg->strength = (float *)calloc((size_t)SIGNAL_GRID_DIM * SIGNAL_GRID_DIM, sizeof(float));
         if (!sg->strength) return;
     }
-    sg->offset_x = (SIGNAL_GRID_DIM * SIGNAL_CELL_SIZE) * 0.5f;
-    sg->offset_y = (SIGNAL_GRID_DIM * SIGNAL_CELL_SIZE) * 0.5f;
+    /* Center grid on station centroid so it covers the active network */
+    float cx = 0.0f, cy = 0.0f;
+    int n = 0;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!station_provides_signal(&w->stations[s])) continue;
+        cx += w->stations[s].pos.x;
+        cy += w->stations[s].pos.y;
+        n++;
+    }
+    if (n > 0) { cx /= (float)n; cy /= (float)n; }
+    sg->offset_x = (SIGNAL_GRID_DIM * SIGNAL_CELL_SIZE) * 0.5f - cx;
+    sg->offset_y = (SIGNAL_GRID_DIM * SIGNAL_CELL_SIZE) * 0.5f - cy;
     for (int y = 0; y < SIGNAL_GRID_DIM; y++) {
         for (int x = 0; x < SIGNAL_GRID_DIM; x++) {
             float wx = ((float)x + 0.5f) * SIGNAL_CELL_SIZE - sg->offset_x;
