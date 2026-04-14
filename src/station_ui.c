@@ -297,38 +297,52 @@ int build_station_service_lines(const station_ui_state_t* ui, station_service_li
     }
 
     memset(lines, 0, sizeof(station_service_line_t) * 3);
+    int count = 0;
 
-    lines[0].action = "[2] Repair hull";
-    if (ui->repair_cost > 0) {
-        snprintf(lines[0].state, sizeof(lines[0].state), "%d cr", ui->repair_cost);
-        lines[0].r = 255;
-        lines[0].g0 = 221;
-        lines[0].b = 119;
-    } else {
-        snprintf(lines[0].state, sizeof(lines[0].state), "nominal");
-        lines[0].r = 169;
-        lines[0].g0 = 179;
-        lines[0].b = 204;
-    }
-
-    if (station_has_module(ui->station, MODULE_FRAME_PRESS)) {
-        lines[1].action = "[4] Hold racks";
-        if (ship_upgrade_maxed(&LOCAL_PLAYER.ship,SHIP_UPGRADE_HOLD)) {
-            snprintf(lines[1].state, sizeof(lines[1].state), "maxed");
-            lines[1].r = 169;
-            lines[1].g0 = 179;
-            lines[1].b = 204;
+    /* [1] Deliver — for stations that accept player cargo (ingots/frames) */
+    commodity_t buy = station_primary_buy(ui->station);
+    if ((int)buy >= 0) {
+        int held = (int)lroundf(ship_cargo_amount(&LOCAL_PLAYER.ship, buy));
+        lines[count].action = "[1] Deliver";
+        if (held > 0) {
+            snprintf(lines[count].state, sizeof(lines[count].state), "%s x%d", commodity_short_name(buy), held);
+            lines[count].r = 114; lines[count].g0 = 255; lines[count].b = 192;
         } else {
-            snprintf(lines[1].state, sizeof(lines[1].state), "%d cr", ui->hold_cost);
-            lines[1].r = ui->can_upgrade_hold ? 203 : 169;
-            lines[1].g0 = ui->can_upgrade_hold ? 220 : 179;
-            lines[1].b = ui->can_upgrade_hold ? 248 : 204;
+            snprintf(lines[count].state, sizeof(lines[count].state), "no %s", commodity_short_name(buy));
+            lines[count].r = 169; lines[count].g0 = 179; lines[count].b = 204;
         }
-        return 2;
+        count++;
     }
 
-    int count = 1;
-    if (station_has_module(ui->station, MODULE_LASER_FAB)) {
+    lines[count].action = "[2] Repair hull";
+    if (ui->repair_cost > 0) {
+        snprintf(lines[count].state, sizeof(lines[count].state), "%d cr", ui->repair_cost);
+        lines[count].r = 255;
+        lines[count].g0 = 221;
+        lines[count].b = 119;
+    } else {
+        snprintf(lines[count].state, sizeof(lines[count].state), "nominal");
+        lines[count].r = 169;
+        lines[count].g0 = 179;
+        lines[count].b = 204;
+    }
+    count++;
+
+    if (station_has_module(ui->station, MODULE_FRAME_PRESS) && count < 3) {
+        lines[count].action = "[4] Hold racks";
+        if (ship_upgrade_maxed(&LOCAL_PLAYER.ship,SHIP_UPGRADE_HOLD)) {
+            snprintf(lines[count].state, sizeof(lines[count].state), "maxed");
+            lines[count].r = 169; lines[count].g0 = 179; lines[count].b = 204;
+        } else {
+            snprintf(lines[count].state, sizeof(lines[count].state), "%d cr", ui->hold_cost);
+            lines[count].r = ui->can_upgrade_hold ? 203 : 169;
+            lines[count].g0 = ui->can_upgrade_hold ? 220 : 179;
+            lines[count].b = ui->can_upgrade_hold ? 248 : 204;
+        }
+        count++;
+    }
+
+    if (station_has_module(ui->station, MODULE_LASER_FAB) && count < 3) {
         lines[count].action = "[3] Laser array";
         if (ship_upgrade_maxed(&LOCAL_PLAYER.ship,SHIP_UPGRADE_MINING)) {
             snprintf(lines[count].state, sizeof(lines[count].state), "maxed");
@@ -344,7 +358,7 @@ int build_station_service_lines(const station_ui_state_t* ui, station_service_li
         count++;
     }
 
-    if (station_has_module(ui->station, MODULE_TRACTOR_FAB)) {
+    if (station_has_module(ui->station, MODULE_TRACTOR_FAB) && count < 3) {
         lines[count].action = "[5] Tractor coil";
         if (ship_upgrade_maxed(&LOCAL_PLAYER.ship,SHIP_UPGRADE_TRACTOR)) {
             snprintf(lines[count].state, sizeof(lines[count].state), "maxed");
