@@ -3,7 +3,8 @@
 
 #include <stdbool.h>
 
-#define MUSIC_TRACK_COUNT 12
+#define MUSIC_TRACK_COUNT 24
+#define MUSIC_DEATH_TRACK_COUNT 4
 
 typedef struct {
     const char *filename;
@@ -36,11 +37,16 @@ typedef struct {
     int sample_rate;
     int channels;
 
-    /* Shuffle playlist */
+    /* Signal-driven shuffle playlist */
     int playlist[MUSIC_TRACK_COUNT];
     int playlist_pos;
     int playlist_len;
     bool playlist_ready;
+    float last_signal;  /* signal strength when playlist was built */
+
+    /* Death music */
+    bool death_mode;    /* true during death cinematic */
+    int death_track;    /* index into death track array */
 } music_state_t;
 
 void music_init(music_state_t *m);
@@ -55,9 +61,20 @@ void music_next_track(music_state_t *m);
 void music_prev_track(music_state_t *m);
 void music_shutdown(music_state_t *m);
 
+/* Signal-driven pool: call each frame with current signal strength.
+ * Rebuilds the shuffle pool when signal drifts enough. */
+void music_update_signal(music_state_t *m, float signal_strength);
+
+/* Death music: crossfade to a death track, or back to gameplay. */
+void music_enter_death(music_state_t *m);
+void music_exit_death(music_state_t *m);
+
 /* Called by audio_generate_stream to mix music into output */
 int music_read_audio(music_state_t *m, float *buffer, int frames, int channels);
 
 const music_track_info_t *music_get_info(int index);
+
+/* Death track info (indices 0..MUSIC_DEATH_TRACK_COUNT-1) */
+const music_track_info_t *music_get_death_info(int index);
 
 #endif

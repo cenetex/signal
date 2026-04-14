@@ -2,8 +2,12 @@
  * music.c — MP3 background music playback for Signal Space Miner.
  * Uses minimp3 for decoding, mixes into sokol_audio via the audio system.
  *
- * All platforms fetch from S3 CDN. Emscripten uses async XHR, native uses
- * local file fallback.
+ * Track selection is signal-driven: 24 gameplay tracks are ordered from
+ * low-signal (deep space, sparse belt) to high-signal (station core).
+ * A sliding window of ~8 tracks is eligible at any signal strength.
+ * The pool reshuffles when signal drifts significantly.
+ *
+ * 4 death tracks are a separate pool, crossfaded on death cinematic.
  */
 
 #define MINIMP3_IMPLEMENTATION
@@ -21,25 +25,55 @@
 
 #define ASSET_CDN "https://signal-ratimics-assets.s3.amazonaws.com"
 
-/* S3 uses underscores — these must match the bucket keys */
+/* Gameplay tracks ordered low→high signal.
+ * Tracks 0-7: deep space / sparse belt / lonely drift
+ * Tracks 8-15: mid-belt / mining / hauling
+ * Tracks 16-23: station proximity / docked / busy network */
 static const music_track_info_t tracks[MUSIC_TRACK_COUNT] = {
-    { "music/belt_drifters.mp3",          "Belt Drifters" },
-    { "music/belt_drifters_2.mp3",        "Belt Drifters II" },
-    { "music/belt_drifters_3.mp3",        "Belt Drifters III" },
-    { "music/belt_drifters_4.mp3",        "Belt Drifters IV" },
+    /* 0-7: low signal — ambient, sparse, lonely */
+    { "music/nebula_drift_protocol.mp3",  "Nebula Drift Protocol" },
+    { "music/nebula_drift_protocol_2.mp3","Nebula Drift Protocol II" },
+    { "music/last_light_in_the_belt.mp3", "Last Light in the Belt" },
+    { "music/last_light_in_the_belt_2.mp3","Last Light in the Belt II" },
     { "music/echoes.mp3",                 "Echoes in the Belt" },
     { "music/echoes_2.mp3",               "Echoes in the Belt II" },
     { "music/echoes_3.mp3",               "Echoes in the Belt III" },
     { "music/lofi_drift_jam.mp3",         "Lo-Fi Drift Jam" },
+    /* 8-15: mid signal — mining, working, belt activity */
+    { "music/belt_drifters.mp3",          "Belt Drifters" },
+    { "music/belt_drifters_2.mp3",        "Belt Drifters II" },
+    { "music/belt_drifters_3.mp3",        "Belt Drifters III" },
+    { "music/belt_drifters_4.mp3",        "Belt Drifters IV" },
+    { "music/clock_thunder.mp3",          "Clock Thunder" },
+    { "music/clock_thunder_2.mp3",        "Clock Thunder II" },
     { "music/vector_miners_epoch.mp3",    "Vector Miners Epoch" },
     { "music/vector_miners_epoch_2.mp3",  "Vector Miners Epoch II" },
+    /* 16-23: high signal — station core, economy, network */
+    { "music/kings_of_nowhere.mp3",       "Kings of Nowhere" },
+    { "music/kings_of_nowhere_2.mp3",     "Kings of Nowhere II" },
     { "music/vector_economy.mp3",         "Vector Space Economy" },
     { "music/vector_economy_2.mp3",       "Vector Space Economy II" },
+    { "music/vector_veins.mp3",           "Vector Veins" },
+    { "music/vector_veins_lofi.mp3",      "Vector Veins (Lo-Fi)" },
+    { "music/vector_veins_80s.mp3",       "Vector Veins (80s)" },
+    { "music/vector_veins_80s_2.mp3",     "Vector Veins (80s) II" },
+};
+
+static const music_track_info_t death_tracks[MUSIC_DEATH_TRACK_COUNT] = {
+    { "music/fade_out_at_seventeen.mp3",  "Fade Out at Seventeen" },
+    { "music/fade_out_at_seventeen_2.mp3","Fade Out at Seventeen II" },
+    { "music/vacuum_in_my_lungs.mp3",     "Vacuum in My Lungs" },
+    { "music/vacuum_in_my_lungs_2.mp3",   "Vacuum in My Lungs II" },
 };
 
 const music_track_info_t *music_get_info(int index) {
     if (index < 0 || index >= MUSIC_TRACK_COUNT) return NULL;
     return &tracks[index];
+}
+
+const music_track_info_t *music_get_death_info(int index) {
+    if (index < 0 || index >= MUSIC_DEATH_TRACK_COUNT) return NULL;
+    return &death_tracks[index];
 }
 
 /* --- Audio ring buffer helpers --- */
@@ -88,7 +122,7 @@ static void decode_chunk(music_state_t *m) {
         }
 
         int total_samples = samples * info.channels;
-        if (total_samples <= 0) continue; /* defensive: codec should never report this */
+        if (total_samples <= 0) continue;
         if (audio_buf_free(m) < total_samples + 1024) break;
 
         float fbuf[MINIMP3_MAX_SAMPLES_PER_FRAME];
@@ -150,10 +184,10 @@ static void on_music_fetch_success(void *user, void *data, int size) {
 
 static void on_music_fetch_error(void *user) {
     music_state_t *m = (music_state_t *)user;
-    fprintf(stderr, "music: fetch failed for track %d (no internet?)\n", m->current_track);
+    fprintf(stderr, "music: fetch failed for track %d\n", m->current_track);
     m->loading = false;
     /* Try next track after a failure */
-    m->current_track = (m->current_track + 1) % MUSIC_TRACK_COUNT;
+    music_next_track(m);
 }
 #endif
 
@@ -177,6 +211,27 @@ static unsigned char *load_file(const char *path, int *out_size) {
 }
 #endif
 
+/* --- Internal: play a track by filename from the track tables --- */
+
+static void music_play_file(music_state_t *m, const char *filename) {
+#ifdef __EMSCRIPTEN__
+    char url[256];
+    snprintf(url, sizeof(url), "%s/%s", ASSET_CDN, filename);
+    m->loading = true;
+    emscripten_async_wget_data(url, m, on_music_fetch_success, on_music_fetch_error);
+#else
+    char path[256];
+    snprintf(path, sizeof(path), "assets/%s", filename);
+    int file_size = 0;
+    unsigned char *data = load_file(path, &file_size);
+    if (!data) {
+        fprintf(stderr, "music: %s not found locally, skipping\n", path);
+        return;
+    }
+    music_start_playback(m, data, file_size);
+#endif
+}
+
 /* --- Public API --- */
 
 void music_init(music_state_t *m) {
@@ -187,6 +242,8 @@ void music_init(music_state_t *m) {
     m->fade_volume = 1.0f;
     m->fade_target = 1.0f;
     m->audio_buffer_size = (int)(sizeof(m->audio_buffer) / sizeof(m->audio_buffer[0]));
+    m->last_signal = -1.0f;
+    m->death_track = -1;
 }
 
 static void music_play_immediate(music_state_t *m, int track);
@@ -208,26 +265,7 @@ void music_play(music_state_t *m, int track) {
 
 static void music_play_immediate(music_state_t *m, int track) {
     m->current_track = track;
-
-    const music_track_info_t *info = &tracks[track];
-
-#ifdef __EMSCRIPTEN__
-    char url[256];
-    snprintf(url, sizeof(url), "%s/%s", ASSET_CDN, info->filename);
-    m->loading = true;
-    emscripten_async_wget_data(url, m, on_music_fetch_success, on_music_fetch_error);
-#else
-    /* Native: try local file with underscore naming (matching S3) */
-    char path[256];
-    snprintf(path, sizeof(path), "assets/%s", info->filename);
-    int file_size = 0;
-    unsigned char *data = load_file(path, &file_size);
-    if (!data) {
-        fprintf(stderr, "music: %s not found locally, skipping\n", path);
-        return;
-    }
-    music_start_playback(m, data, file_size);
-#endif
+    music_play_file(m, tracks[track].filename);
 }
 
 void music_stop(music_state_t *m) {
@@ -282,7 +320,13 @@ void music_update(music_state_t *m, float dt) {
         int next = m->pending_track;
         m->pending_track = -1;
         music_stop(m);
-        music_play_immediate(m, next);
+        if (m->death_mode) {
+            /* Pending is a death track index (negative offset trick not needed,
+             * death_mode handles it in music_enter_death) */
+            music_play_immediate(m, next);
+        } else {
+            music_play_immediate(m, next);
+        }
         return;
     }
 
@@ -292,37 +336,115 @@ void music_update(music_state_t *m, float dt) {
     }
 }
 
-static void shuffle_playlist(music_state_t *m) {
-    /* Full shuffle, then take 80% — some tracks sit out each rotation */
-    int all[MUSIC_TRACK_COUNT];
-    for (int i = 0; i < MUSIC_TRACK_COUNT; i++) all[i] = i;
-    static uint32_t shuffle_seed = 0;
-    if (shuffle_seed == 0) shuffle_seed = (uint32_t)time(NULL);
-    for (int i = MUSIC_TRACK_COUNT - 1; i > 0; i--) {
-        shuffle_seed = shuffle_seed * 1103515245u + 12345u;
-        int j = (int)((shuffle_seed >> 16) % (unsigned)(i + 1));
-        int tmp = all[i]; all[i] = all[j]; all[j] = tmp;
+/* --- Signal-driven sliding shuffle --- */
+
+static uint32_t shuffle_rng = 0;
+
+static void shuffle_array(int *arr, int len) {
+    if (shuffle_rng == 0) shuffle_rng = (uint32_t)time(NULL);
+    for (int i = len - 1; i > 0; i--) {
+        shuffle_rng = shuffle_rng * 1103515245u + 12345u;
+        int j = (int)((shuffle_rng >> 16) % (unsigned)(i + 1));
+        int tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
     }
-    m->playlist_len = (MUSIC_TRACK_COUNT * 4 + 2) / 5; /* 80% rounded */
+}
+
+/* Build playlist from tracks whose index falls in the signal window.
+ * Tracks are ordered 0-23 low→high. Window is ~8 tracks centered on
+ * the signal-proportional position in the array. */
+static void rebuild_signal_playlist(music_state_t *m, float signal) {
+    if (signal < 0.0f) signal = 0.0f;
+    if (signal > 1.0f) signal = 1.0f;
+
+    /* Window: 8 tracks (a third of 24) */
+    int window = 8;
+    /* Center of the window slides from index 4 (sig=0) to index 19 (sig=1) */
+    float center = 4.0f + signal * 15.0f;
+    int lo = (int)(center - (float)window * 0.5f);
+    int hi = lo + window - 1;
+    if (lo < 0) { lo = 0; hi = window - 1; }
+    if (hi >= MUSIC_TRACK_COUNT) { hi = MUSIC_TRACK_COUNT - 1; lo = hi - window + 1; }
+    if (lo < 0) lo = 0;
+
+    /* Fill playlist with eligible tracks */
+    int pool[MUSIC_TRACK_COUNT];
+    int pool_len = 0;
+    for (int i = lo; i <= hi; i++)
+        pool[pool_len++] = i;
+
+    /* Shuffle and take 80% */
+    shuffle_array(pool, pool_len);
+    m->playlist_len = (pool_len * 4 + 2) / 5;
     if (m->playlist_len < 2) m->playlist_len = 2;
+    if (m->playlist_len > pool_len) m->playlist_len = pool_len;
     for (int i = 0; i < m->playlist_len; i++)
-        m->playlist[i] = all[i];
+        m->playlist[i] = pool[i];
     m->playlist_pos = 0;
     m->playlist_ready = true;
+    m->last_signal = signal;
+}
+
+void music_update_signal(music_state_t *m, float signal_strength) {
+    if (m->death_mode) return; /* death music overrides */
+
+    /* Rebuild playlist when signal drifts by >0.15 */
+    float drift = signal_strength - m->last_signal;
+    if (drift < 0.0f) drift = -drift;
+    if (!m->playlist_ready || drift > 0.15f) {
+        /* Preserve current track if it's still in the new window */
+        rebuild_signal_playlist(m, signal_strength);
+    }
 }
 
 void music_next_track(music_state_t *m) {
-    if (!m->playlist_ready) shuffle_playlist(m);
+    if (m->death_mode) return;
+    if (!m->playlist_ready) rebuild_signal_playlist(m, m->last_signal >= 0.0f ? m->last_signal : 0.5f);
     m->playlist_pos++;
-    if (m->playlist_pos >= m->playlist_len) shuffle_playlist(m);
+    if (m->playlist_pos >= m->playlist_len) rebuild_signal_playlist(m, m->last_signal);
     music_play(m, m->playlist[m->playlist_pos]);
 }
 
 void music_prev_track(music_state_t *m) {
-    if (!m->playlist_ready) shuffle_playlist(m);
+    if (m->death_mode) return;
+    if (!m->playlist_ready) rebuild_signal_playlist(m, m->last_signal >= 0.0f ? m->last_signal : 0.5f);
     m->playlist_pos--;
     if (m->playlist_pos < 0) m->playlist_pos = m->playlist_len - 1;
     music_play(m, m->playlist[m->playlist_pos]);
+}
+
+/* --- Death music --- */
+
+void music_enter_death(music_state_t *m) {
+    m->death_mode = true;
+    /* Pick a random death track */
+    if (shuffle_rng == 0) shuffle_rng = (uint32_t)time(NULL);
+    shuffle_rng = shuffle_rng * 1103515245u + 12345u;
+    int idx = (int)((shuffle_rng >> 16) % MUSIC_DEATH_TRACK_COUNT);
+    m->death_track = idx;
+
+    /* Crossfade: fade out current, then start death track */
+    if (m->playing && m->fade_volume > 0.1f) {
+        m->fade_target = 0.0f;
+        m->fade_speed = 1.5f; /* ~0.7s fade out */
+        /* We can't use pending_track for death tracks since they're
+         * in a different table. Stop current and play death directly
+         * once fade completes — handled in music_update via death_mode. */
+    }
+    music_stop(m);
+    /* Play death track directly */
+    m->current_track = -1; /* not a gameplay track */
+    music_play_file(m, death_tracks[idx].filename);
+}
+
+void music_exit_death(music_state_t *m) {
+    if (!m->death_mode) return;
+    m->death_mode = false;
+    m->death_track = -1;
+    /* Fade out death music, then next gameplay track starts via auto-advance */
+    if (m->playing) {
+        m->fade_target = 0.0f;
+        m->fade_speed = 1.0f; /* 1s fade out */
+    }
 }
 
 void music_shutdown(music_state_t *m) {
@@ -359,7 +481,13 @@ int music_read_audio(music_state_t *m, float *buffer, int frames, int channels) 
 
     /* Auto-advance to next track when buffer runs dry and file is consumed */
     if (to_read == 0 && m->file_data && m->file_offset >= m->file_size) {
-        music_next_track(m);
+        if (m->death_mode) {
+            /* Loop death track */
+            m->file_offset = 0;
+            if (m->decoder) mp3dec_init((mp3dec_t *)m->decoder);
+        } else {
+            music_next_track(m);
+        }
     }
 
     return to_read;

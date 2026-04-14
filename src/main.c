@@ -416,6 +416,7 @@ void process_sim_events(const sim_events_t *events) {
                     g.episode.stations_visited = 0;
                     episode_trigger(&g.episode, 9); /* Ep 9: Death */
                     episode_save(&g.episode);
+                    music_enter_death(&g.music);
                 }
                 break;
             case SIM_EVENT_HAIL_RESPONSE:
@@ -562,6 +563,7 @@ static void sim_step(float dt) {
             && is_key_pressed(SAPP_KEYCODE_E)) {
             g.death_cinematic.active = false;
             g.death_cinematic.phase = 2;
+            music_exit_death(&g.music);
             /* Don't consume the E press — normal input below picks it
              * up and launches the (now-respawned) docked ship. */
         }
@@ -702,7 +704,7 @@ static void sim_step(float dt) {
         fprintf(stderr, "LAUNCH: triggering ep 0 + music\n");
         episode_trigger(&g.episode, 0);
         if (!g.music.playing && !g.music.loading)
-            music_play(&g.music, 0);
+            music_next_track(&g.music);
     }
     if (!g.was_docked && LOCAL_PLAYER.docked) {
         /* Just docked */
@@ -731,6 +733,10 @@ static void sim_step(float dt) {
     episode_per_frame();
     episode_update(&g.episode, dt);
     music_update(&g.music, dt);
+    {
+        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        music_update_signal(&g.music, sig);
+    }
 
     /* X = self-destruct handled via input intent (works in both modes) */
 
@@ -743,14 +749,12 @@ static void sim_step(float dt) {
         if (g.music.playing)
             g.music.paused ? music_resume(&g.music) : music_pause(&g.music);
         else
-            music_play(&g.music, 0);
+            music_next_track(&g.music);
     }
     if (g.input.key_pressed[SAPP_KEYCODE_RIGHT_BRACKET] && g.music.playing)
         music_next_track(&g.music);
-    if (g.input.key_pressed[SAPP_KEYCODE_LEFT_BRACKET] && g.music.playing) {
-        int prev = (g.music.current_track - 1 + MUSIC_TRACK_COUNT) % MUSIC_TRACK_COUNT;
-        music_play(&g.music, prev);
-    }
+    if (g.input.key_pressed[SAPP_KEYCODE_LEFT_BRACKET] && g.music.playing)
+        music_prev_track(&g.music);
 
     step_notice_timer(dt);
     if (g.action_predict_timer > 0.0f)
@@ -1245,14 +1249,16 @@ static void render_ui(void) {
     }
 
     /* Music track display — bottom-left, fades after 5s */
-    if (g.music.playing && g.music.current_track >= 0) {
+    if (g.music.playing && (g.music.current_track >= 0 || g.music.death_mode)) {
         float mt = g.music.track_display_timer;
         float music_alpha = 1.0f;
         if (mt < 0.5f) music_alpha = mt / 0.5f;              /* fade in */
         else if (mt > 5.0f) music_alpha = 1.0f - (mt - 5.0f) / 2.0f; /* fade out */
         if (g.music.paused) music_alpha = 1.0f;               /* always visible when paused */
         if (music_alpha > 0.01f) {
-            const music_track_info_t *track = music_get_info(g.music.current_track);
+            const music_track_info_t *track = g.music.death_mode
+                ? music_get_death_info(g.music.death_track)
+                : music_get_info(g.music.current_track);
             if (track) {
                 sdtx_canvas(screen_w, screen_h);
                 sdtx_origin(0.0f, 0.0f);
