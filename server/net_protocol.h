@@ -587,13 +587,10 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
         }
     }
 
-    /* Mining target hint */
+    /* Mining target hint (uint8 — always valid with MAX_ASTEROIDS=2048) */
     {
         uint8_t target = data[3];
-        if ((int)target < MAX_ASTEROIDS)
-            intent->mining_target_hint = (int)target;
-        else
-            intent->mining_target_hint = -1;
+        intent->mining_target_hint = (target == 0xFF) ? -1 : (int)target;
     }
 }
 
