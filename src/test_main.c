@@ -817,28 +817,28 @@ TEST(test_roundtrip_asteroids) {
     int len = serialize_asteroids_for_player(buf, asteroids, view_pos, sent);
 
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_ASTEROIDS);
-    ASSERT_EQ_INT(buf[1], 2);  /* 2 visible asteroids */
-    ASSERT_EQ_INT(len, 2 + 2 * ASTEROID_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[1] | (buf[2] << 8), 2);  /* 2 visible asteroids (uint16 count) */
+    ASSERT_EQ_INT(len, ASTEROID_MSG_HEADER + 2 * ASTEROID_RECORD_SIZE);
 
     /* First asteroid (index 0) */
-    uint8_t *p0 = &buf[2];
-    ASSERT_EQ_INT(p0[0], 0);  /* index */
-    ASSERT(p0[1] & 1);         /* active */
-    ASSERT(!(p0[1] & 2));      /* not fracture_child */
-    ASSERT_EQ_INT((p0[1] >> 2) & 0x7, ASTEROID_TIER_XL);
-    ASSERT_EQ_INT((p0[1] >> 5) & 0x7, COMMODITY_FERRITE_ORE);
-    ASSERT_EQ_FLOAT(read_f32_le(&p0[2]), 500.0f, 0.1f);
-    ASSERT_EQ_FLOAT(read_f32_le(&p0[18]), 150.0f, 0.1f);
+    uint8_t *p0 = &buf[ASTEROID_MSG_HEADER];
+    ASSERT_EQ_INT(p0[0] | (p0[1] << 8), 0);  /* uint16 index */
+    ASSERT(p0[2] & 1);         /* active */
+    ASSERT(!(p0[2] & 2));      /* not fracture_child */
+    ASSERT_EQ_INT((p0[2] >> 2) & 0x7, ASTEROID_TIER_XL);
+    ASSERT_EQ_INT((p0[2] >> 5) & 0x7, COMMODITY_FERRITE_ORE);
+    ASSERT_EQ_FLOAT(read_f32_le(&p0[3]), 500.0f, 0.1f);   /* pos.x */
+    ASSERT_EQ_FLOAT(read_f32_le(&p0[19]), 150.0f, 0.1f);  /* hp */
 
     /* Second asteroid (index 5) */
-    uint8_t *p1 = &buf[2 + 30];
-    ASSERT_EQ_INT(p1[0], 5);  /* index */
-    ASSERT(p1[1] & 1);         /* active */
-    ASSERT(p1[1] & 2);         /* fracture_child */
-    ASSERT_EQ_INT((p1[1] >> 2) & 0x7, ASTEROID_TIER_S);
-    ASSERT_EQ_INT((p1[1] >> 5) & 0x7, COMMODITY_CRYSTAL_ORE);
-    ASSERT_EQ_FLOAT(read_f32_le(&p1[22]), 10.5f, 0.1f);  /* ore */
-    ASSERT_EQ_FLOAT(read_f32_le(&p1[26]), 14.0f, 0.1f);  /* radius */
+    uint8_t *p1 = &buf[ASTEROID_MSG_HEADER + ASTEROID_RECORD_SIZE];
+    ASSERT_EQ_INT(p1[0] | (p1[1] << 8), 5);  /* uint16 index */
+    ASSERT(p1[2] & 1);         /* active */
+    ASSERT(p1[2] & 2);         /* fracture_child */
+    ASSERT_EQ_INT((p1[2] >> 2) & 0x7, ASTEROID_TIER_S);
+    ASSERT_EQ_INT((p1[2] >> 5) & 0x7, COMMODITY_CRYSTAL_ORE);
+    ASSERT_EQ_FLOAT(read_f32_le(&p1[23]), 10.5f, 0.1f);  /* ore */
+    ASSERT_EQ_FLOAT(read_f32_le(&p1[27]), 14.0f, 0.1f);  /* radius */
 }
 
 TEST(test_roundtrip_asteroids_full_includes_inactive_slots) {
@@ -862,36 +862,32 @@ TEST(test_roundtrip_asteroids_full_includes_inactive_slots) {
     asteroids[5].ore = 11.0f;
     asteroids[5].radius = 21.0f;
 
-    uint8_t buf[2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
+    uint8_t *buf = calloc(1, ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE);
     int len = serialize_asteroids_full(buf, asteroids);
 
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_ASTEROIDS);
-    ASSERT_EQ_INT(buf[1], MAX_ASTEROIDS);
-    ASSERT_EQ_INT(len, 2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE);
+    int full_count = buf[1] | (buf[2] << 8);
+    ASSERT_EQ_INT(full_count, 2);  /* only active slots sent */
+    ASSERT_EQ_INT(len, ASTEROID_MSG_HEADER + 2 * ASTEROID_RECORD_SIZE);
 
-    /* Active slot keeps its state. */
-    uint8_t *p0 = &buf[2];
-    ASSERT_EQ_INT(p0[0], 0);
-    ASSERT(p0[1] & 1);
-    ASSERT_EQ_INT((p0[1] >> 2) & 0x7, ASTEROID_TIER_L);
-    ASSERT_EQ_FLOAT(read_f32_le(&p0[2]), 42.0f, 0.1f);
-    ASSERT_EQ_FLOAT(read_f32_le(&p0[18]), 77.0f, 0.1f);
+    /* First active slot (index 0) */
+    uint8_t *p0 = &buf[ASTEROID_MSG_HEADER];
+    ASSERT_EQ_INT(p0[0] | (p0[1] << 8), 0);
+    ASSERT(p0[2] & 1);
+    ASSERT_EQ_INT((p0[2] >> 2) & 0x7, ASTEROID_TIER_L);
+    ASSERT_EQ_FLOAT(read_f32_le(&p0[3]), 42.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p0[19]), 77.0f, 0.1f);
 
-    /* Inactive slot is explicitly present and cleared. */
-    uint8_t *p1 = &buf[2 + ASTEROID_RECORD_SIZE];
-    ASSERT_EQ_INT(p1[0], 1);
-    ASSERT_EQ_INT(p1[1], 0);
-    ASSERT_EQ_FLOAT(read_f32_le(&p1[2]), 0.0f, 0.001f);
-    ASSERT_EQ_FLOAT(read_f32_le(&p1[18]), 0.0f, 0.001f);
-
-    /* Another active slot still round-trips later in the full snapshot. */
-    uint8_t *p5 = &buf[2 + 5 * ASTEROID_RECORD_SIZE];
-    ASSERT_EQ_INT(p5[0], 5);
-    ASSERT(p5[1] & 1);
-    ASSERT(p5[1] & 2);
-    ASSERT_EQ_INT((p5[1] >> 2) & 0x7, ASTEROID_TIER_M);
-    ASSERT_EQ_FLOAT(read_f32_le(&p5[22]), 11.0f, 0.1f);
-    ASSERT_EQ_FLOAT(read_f32_le(&p5[26]), 21.0f, 0.1f);
+    /* Inactive slots are skipped in full snapshot (too many at 2048).
+     * Second record should be the other active slot (index 5). */
+    uint8_t *p5 = &buf[ASTEROID_MSG_HEADER + ASTEROID_RECORD_SIZE];
+    ASSERT_EQ_INT(p5[0] | (p5[1] << 8), 5);
+    ASSERT(p5[2] & 1);
+    ASSERT(p5[2] & 2);
+    ASSERT_EQ_INT((p5[2] >> 2) & 0x7, ASTEROID_TIER_M);
+    ASSERT_EQ_FLOAT(read_f32_le(&p5[23]), 11.0f, 0.1f);
+    ASSERT_EQ_FLOAT(read_f32_le(&p5[27]), 21.0f, 0.1f);
+    free(buf);
 }
 
 TEST(test_roundtrip_npcs) {
@@ -2042,6 +2038,7 @@ TEST(test_bug44_gravity_collision_oscillation) {
     WORLD_DECL;
     world_reset(&w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    w.field_spawn_timer = -9999.0f; /* suppress chunk materialization */
     /* Two asteroids barely touching */
     w.asteroids[0].active = true; w.asteroids[0].tier = ASTEROID_TIER_L;
     w.asteroids[0].radius = 40.0f; w.asteroids[0].hp = 80.0f; w.asteroids[0].max_hp = 80.0f;
@@ -4726,6 +4723,7 @@ TEST(test_scaffold_ship_drag) {
 TEST(test_tow_drone_delivers_to_planned_outpost) {
     WORLD_DECL;
     world_reset(&w);
+    w.field_spawn_timer = -9999.0f; /* suppress chunk re-materialization */
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
     w.players[0].docked = false;

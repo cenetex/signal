@@ -43,7 +43,7 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
     memset(received, 0, sizeof(received));
 
     for (int i = 0; i < count; i++) {
-        uint8_t idx = asteroids[i].index;
+        uint16_t idx = asteroids[i].index;
         if (idx >= MAX_ASTEROIDS) continue;
         received[idx] = true;
 

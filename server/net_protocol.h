@@ -25,6 +25,15 @@ static inline void write_f32_le(uint8_t *buf, float v) {
     buf[3] = (uint8_t)(conv.u >> 24);
 }
 
+static inline void write_u16_le(uint8_t *buf, uint16_t v) {
+    buf[0] = (uint8_t)(v);
+    buf[1] = (uint8_t)(v >> 8);
+}
+
+static inline uint16_t read_u16_le(const uint8_t *buf) {
+    return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+}
+
 static inline void write_u32_le(uint8_t *buf, uint32_t v) {
     buf[0] = (uint8_t)(v);
     buf[1] = (uint8_t)(v >> 8);
@@ -136,16 +145,13 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
 }
 
 /*
- * WORLD_ASTEROIDS message:
- * [type:1][count:1] + count * ASTEROID_RECORD_SIZE-byte records
+ * WORLD_ASTEROIDS message (v2 — uint16 indices):
+ * [type:1][count:2] + count * ASTEROID_RECORD_SIZE-byte records
+ * Record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32] = 31 bytes
  */
-/* Serialize only dirty asteroids (delta update). Clears dirty flags after serialization. */
-/* serialize_asteroids removed — replaced by per-player relevance filtering */
+#define ASTEROID_MSG_HEADER 3  /* type + uint16 count */
 
-/* Per-player asteroid serialization with relevance filtering.
- * Sends asteroids that are: (a) dirty AND in view, or (b) previously sent
- * but now inactive or out of view (deactivation). Updates sent[] bitset.
- * Does NOT clear net_dirty — caller does bulk clear after all players. */
+/* Per-player asteroid serialization with relevance filtering. */
 #define ASTEROID_VIEW_RADIUS_SQ (3000.0f * 3000.0f)
 static inline int serialize_asteroids_for_player(
     uint8_t *buf, const asteroid_t *asteroids, vec2 player_pos, bool *sent) {
@@ -156,36 +162,33 @@ static inline int serialize_asteroids_for_player(
             v2_dist_sq(a->pos, player_pos) < ASTEROID_VIEW_RADIUS_SQ;
 
         if (in_view) {
-            /* Always send in-view asteroids — they move every frame */
-            /* Send update (or first-time add) */
-            uint8_t *p = &buf[2 + count * ASTEROID_RECORD_SIZE];
-            p[0] = (uint8_t)i;
-            p[1] = 1;
-            if (a->fracture_child) p[1] |= (1 << 1);
-            p[1] |= (((uint8_t)a->tier & 0x7) << 2);
-            p[1] |= (((uint8_t)a->commodity & 0x7) << 5);
-            write_f32_le(&p[2],  a->pos.x);
-            write_f32_le(&p[6],  a->pos.y);
-            write_f32_le(&p[10], a->vel.x);
-            write_f32_le(&p[14], a->vel.y);
-            write_f32_le(&p[18], a->hp);
-            write_f32_le(&p[22], a->ore);
-            write_f32_le(&p[26], a->radius);
+            uint8_t *p = &buf[ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE];
+            write_u16_le(&p[0], (uint16_t)i);
+            p[2] = 1;
+            if (a->fracture_child) p[2] |= (1 << 1);
+            p[2] |= (((uint8_t)a->tier & 0x7) << 2);
+            p[2] |= (((uint8_t)a->commodity & 0x7) << 5);
+            write_f32_le(&p[3],  a->pos.x);
+            write_f32_le(&p[7],  a->pos.y);
+            write_f32_le(&p[11], a->vel.x);
+            write_f32_le(&p[15], a->vel.y);
+            write_f32_le(&p[19], a->hp);
+            write_f32_le(&p[23], a->ore);
+            write_f32_le(&p[27], a->radius);
             sent[i] = true;
             count++;
         } else if (sent[i] && !in_view) {
-            /* Deactivation: asteroid left view or was destroyed */
-            uint8_t *p = &buf[2 + count * ASTEROID_RECORD_SIZE];
+            uint8_t *p = &buf[ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE];
             memset(p, 0, ASTEROID_RECORD_SIZE);
-            p[0] = (uint8_t)i;
-            p[1] = 0; /* active = false */
+            write_u16_le(&p[0], (uint16_t)i);
+            p[2] = 0; /* active = false */
             sent[i] = false;
             count++;
         }
     }
     buf[0] = NET_MSG_WORLD_ASTEROIDS;
-    buf[1] = (uint8_t)count;
-    return 2 + count * ASTEROID_RECORD_SIZE;
+    write_u16_le(&buf[1], (uint16_t)count);
+    return ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE;
 }
 
 /* Serialize every asteroid slot (full snapshot for new player join).
@@ -196,27 +199,26 @@ static inline int serialize_asteroids_full(uint8_t *buf, const asteroid_t *aster
     int count = 0;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &asteroids[i];
-        uint8_t *p = &buf[2 + count * ASTEROID_RECORD_SIZE];
+        if (!a->active) continue; /* skip inactive for full snapshot — too many slots at 2048 */
+        uint8_t *p = &buf[ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE];
         memset(p, 0, ASTEROID_RECORD_SIZE);
-        p[0] = (uint8_t)i;
-        if (a->active) {
-            p[1] = 1;
-            if (a->fracture_child) p[1] |= (1 << 1);
-            p[1] |= (((uint8_t)a->tier & 0x7) << 2);
-            p[1] |= (((uint8_t)a->commodity & 0x7) << 5);
-            write_f32_le(&p[2],  a->pos.x);
-            write_f32_le(&p[6],  a->pos.y);
-            write_f32_le(&p[10], a->vel.x);
-            write_f32_le(&p[14], a->vel.y);
-            write_f32_le(&p[18], a->hp);
-            write_f32_le(&p[22], a->ore);
-            write_f32_le(&p[26], a->radius);
-        }
+        write_u16_le(&p[0], (uint16_t)i);
+        p[2] = 1;
+        if (a->fracture_child) p[2] |= (1 << 1);
+        p[2] |= (((uint8_t)a->tier & 0x7) << 2);
+        p[2] |= (((uint8_t)a->commodity & 0x7) << 5);
+        write_f32_le(&p[3],  a->pos.x);
+        write_f32_le(&p[7],  a->pos.y);
+        write_f32_le(&p[11], a->vel.x);
+        write_f32_le(&p[15], a->vel.y);
+        write_f32_le(&p[19], a->hp);
+        write_f32_le(&p[23], a->ore);
+        write_f32_le(&p[27], a->radius);
         count++;
     }
     buf[0] = NET_MSG_WORLD_ASTEROIDS;
-    buf[1] = (uint8_t)count;
-    return 2 + count * ASTEROID_RECORD_SIZE;
+    write_u16_le(&buf[1], (uint16_t)count);
+    return ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE;
 }
 
 /*
@@ -266,7 +268,7 @@ _Static_assert(
     "PLAYER_RECORD_SIZE must match serialized player state layout"
 );
 _Static_assert(
-    1 + 1 + 7 * 4 == ASTEROID_RECORD_SIZE,
+    2 + 1 + 7 * 4 == ASTEROID_RECORD_SIZE,  /* uint16 index + flags + 7 floats */
     "ASTEROID_RECORD_SIZE must match serialized asteroid layout"
 );
 _Static_assert(
@@ -588,7 +590,7 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
     /* Mining target hint */
     {
         uint8_t target = data[3];
-        if (target < MAX_ASTEROIDS)
+        if ((int)target < MAX_ASTEROIDS)
             intent->mining_target_hint = (int)target;
         else
             intent->mining_target_hint = -1;

@@ -261,25 +261,26 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_WORLD_ASTEROIDS:
-        if (len < 2) break;
+        if (len < 3) break;
         {
-            int count = (int)data[1];
-            int expected = 2 + count * ASTEROID_RECORD_SIZE;
+            int count = (int)(data[1] | ((uint16_t)data[2] << 8));
+            int expected = 3 + count * ASTEROID_RECORD_SIZE;
             if (len < expected) break;
             if (net_state.callbacks.on_asteroids) {
-                NetAsteroidState arr[MAX_ASTEROIDS];
-                int decoded = (count > MAX_ASTEROIDS) ? MAX_ASTEROIDS : count;
+                /* Per-player relevance caps at ~200; stack array of 512 is safe */
+                NetAsteroidState arr[512];
+                int decoded = (count > 512) ? 512 : count;
                 for (int i = 0; i < decoded; i++) {
-                    const uint8_t* p = &data[2 + i * ASTEROID_RECORD_SIZE];
-                    arr[i].index  = p[0];
-                    arr[i].flags  = p[1];
-                    arr[i].x      = read_f32_le(&p[2]);
-                    arr[i].y      = read_f32_le(&p[6]);
-                    arr[i].vx     = read_f32_le(&p[10]);
-                    arr[i].vy     = read_f32_le(&p[14]);
-                    arr[i].hp     = read_f32_le(&p[18]);
-                    arr[i].ore    = read_f32_le(&p[22]);
-                    arr[i].radius = read_f32_le(&p[26]);
+                    const uint8_t* p = &data[3 + i * ASTEROID_RECORD_SIZE];
+                    arr[i].index  = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
+                    arr[i].flags  = p[2];
+                    arr[i].x      = read_f32_le(&p[3]);
+                    arr[i].y      = read_f32_le(&p[7]);
+                    arr[i].vx     = read_f32_le(&p[11]);
+                    arr[i].vy     = read_f32_le(&p[15]);
+                    arr[i].hp     = read_f32_le(&p[19]);
+                    arr[i].ore    = read_f32_le(&p[23]);
+                    arr[i].radius = read_f32_le(&p[27]);
                 }
                 net_state.callbacks.on_asteroids(arr, decoded);
             }

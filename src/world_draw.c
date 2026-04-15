@@ -1618,8 +1618,8 @@ void draw_remote_players(void) {
 
             /* Tether lines to towed fragments */
             for (int t = 0; t < players[i].towed_count && t < 10; t++) {
-                uint8_t fi = players[i].towed_fragments[t];
-                if (fi >= MAX_ASTEROIDS || fi == 0xFF) continue;
+                int fi = (int)players[i].towed_fragments[t];
+                if (fi < 0 || fi >= MAX_ASTEROIDS || players[i].towed_fragments[t] == 0xFF) continue;
                 const asteroid_t *a = &g.world.asteroids[fi];
                 if (!a->active) continue;
                 float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)t * 1.5f);

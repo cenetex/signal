@@ -50,9 +50,9 @@ typedef struct {
     bool active;
 } NetPlayerState;
 
-/* Packed asteroid state for world sync (30 bytes per asteroid). */
+/* Packed asteroid state for world sync (31 bytes per asteroid). */
 typedef struct {
-    uint8_t index;      /* asteroid slot 0-254 */
+    uint16_t index;     /* asteroid slot 0-2047 */
     uint8_t flags;      /* bit0=active, bit1=fracture_child, bits2-4=tier(3), bits5-7=commodity(3) */
     float x, y;         /* position */
     float vx, vy;       /* velocity */

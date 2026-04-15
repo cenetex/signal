@@ -146,8 +146,8 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
  * and (eventually) combat hit prediction. */
 #define PLAYER_RECORD_SIZE 57  /* 41 + 16 bytes beam coords */
 
-/* Asteroid record: [id+flags:1][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32] */
-#define ASTEROID_RECORD_SIZE 30
+/* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32] */
+#define ASTEROID_RECORD_SIZE 31  /* uint16 index (was uint8) */
 
 /* NPC record: [id+flags:1][flags:1][pos:2xf32][vel:2xf32][angle:f32][target:1][tint:3] */
 #define NPC_RECORD_SIZE 26
