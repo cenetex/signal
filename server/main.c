@@ -461,7 +461,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         struct mg_http_message *hm = ev_data;
         if (mg_match(hm->uri, mg_str("/ws"), NULL)) {
             mg_ws_upgrade(c, hm, NULL);
-        } else if (mg_match(hm->uri, mg_str("/api/station/+/state"), NULL)) {
+        } else if (mg_match(hm->uri, mg_str("/api/station/*/state"), NULL)) {
             if (!api_rate_check()) {
                 mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
             } else
@@ -475,7 +475,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                     handle_station_state(c, sid);
                 }
             }
-        } else if (mg_match(hm->uri, mg_str("/api/station/+/command"), NULL)) {
+        } else if (mg_match(hm->uri, mg_str("/api/station/*/command"), NULL)) {
             if (!api_rate_check()) {
                 mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
             } else if (!api_auth_ok(hm)) {
