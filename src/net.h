@@ -41,7 +41,7 @@ typedef struct {
     uint8_t flags;
     uint8_t tractor_level;
     uint8_t towed_count;
-    uint8_t towed_fragments[10]; /* asteroid indices, 0xFF = unused */
+    uint16_t towed_fragments[10]; /* asteroid indices, 0xFFFF = unused */
     char callsign[8];            /* e.g. "KRX-472" */
     /* Beam endpoints — server-authoritative. Used for both local and
      * remote player beam visuals. */
@@ -93,7 +93,7 @@ typedef struct {
     uint8_t nearby_fragments;
     uint8_t tractor_fragments;
     uint8_t towed_count;
-    uint8_t towed_fragments[10]; /* asteroid indices, 0xFF = unused */
+    uint16_t towed_fragments[10]; /* asteroid indices, 0xFFFF = unused */
     uint8_t autopilot_target;    /* asteroid index, 0xFF = none */
     uint8_t path_count;          /* A* path waypoint count (0-12) */
     uint8_t path_current;        /* current waypoint index */

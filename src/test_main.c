@@ -724,8 +724,8 @@ TEST(test_roundtrip_player_state) {
     uint8_t buf[64];
     int len = serialize_player_state(buf, 7, &sp);
 
-    /* Size must be 35 (was 23 before tractor data added) */
-    ASSERT_EQ_INT(len, 35);
+    /* Size must be 45 (widened towed_frags uint8→uint16 in #285 Phase 3) */
+    ASSERT_EQ_INT(len, 45);
     ASSERT_EQ_INT(buf[0], NET_MSG_STATE);
     ASSERT_EQ_INT(buf[1], 7);
 
@@ -1162,7 +1162,7 @@ TEST(test_bug15_state_size_symmetric) {
     memset(&sp, 0, sizeof(sp));
     uint8_t buf[64];
     int server_len = serialize_player_state(buf, 0, &sp);
-    ASSERT_EQ_INT(server_len, 35);  /* 1+1+5*f32+1+1+1+10 = 35 bytes */
+    ASSERT_EQ_INT(server_len, 45);  /* 1+1+5*f32+1+1+1+20 = 45 bytes (uint16 towed_frags) */
 }
 
 /* Bug 16: npc_target_valid should bounds-check target_asteroid < MAX_ASTEROIDS.

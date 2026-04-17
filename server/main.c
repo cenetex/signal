@@ -276,7 +276,7 @@ static void json_escape_append(char *buf, int *pos, int bufsz, const char *s) {
 static void handle_station_state(struct mg_connection *c, int sid) {
     const station_t *st = &world.stations[sid];
     /* Build JSON response with signal-range-scoped world view */
-    enum { BUFSZ = 8192 };
+    enum { BUFSZ = 32768 };
     char buf[BUFSZ];
     int pos = 0;
 

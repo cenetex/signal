@@ -333,7 +333,7 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
         sp->tractor_fragments = (int)state->tractor_fragments;
         sp->ship.towed_count = state->towed_count;
         for (int t = 0; t < 10; t++)
-            sp->ship.towed_fragments[t] = (state->towed_fragments[t] == 0xFF)
+            sp->ship.towed_fragments[t] = (state->towed_fragments[t] == 0xFFFFu)
                 ? -1 : (int16_t)state->towed_fragments[t];
         /* Autopilot is also predict-protected: the [O] press triggers an
          * optimistic local toggle, and stale PLAYER_SHIP messages can

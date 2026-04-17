@@ -62,8 +62,10 @@ static inline float read_f32_le(const uint8_t *buf) {
 /* ------------------------------------------------------------------ */
 
 /*
- * STATE message (35 bytes):
- * [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:10]
+ * STATE message (45 bytes):
+ * [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20]
+ * towed_frags = 10 × uint16_t (little-endian), 0xFFFF = unused. Widened
+ * from uint8_t so slots 255-2047 aren't silently dropped (#285 Phase 3).
  */
 static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_player_t *sp) {
     buf[0] = NET_MSG_STATE;
@@ -86,15 +88,19 @@ static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_
     buf[24] = sp->ship.towed_count;
     for (int t = 0; t < 10; t++) {
         int16_t fi = (t < sp->ship.towed_count) ? sp->ship.towed_fragments[t] : -1;
-        buf[25 + t] = (fi >= 0 && fi < 255) ? (uint8_t)fi : 0xFF;
+        uint16_t wire = (fi >= 0 && fi < MAX_ASTEROIDS) ? (uint16_t)fi : 0xFFFFu;
+        buf[25 + t * 2]     = (uint8_t)(wire & 0xFFu);
+        buf[25 + t * 2 + 1] = (uint8_t)(wire >> 8);
     }
-    return 35;
+    return 45;
 }
 
 /*
  * WORLD_PLAYERS message (batched):
- * [type:1][count:1] + count * 22-byte records
+ * [type:1][count:1] + count * PLAYER_RECORD_SIZE records
  * Each record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1]
+ *              [tractor_lvl:1][towed_count:1][towed_frags:20][callsign:7]
+ *              [beam_start_x:f32][beam_start_y:f32][beam_end_x:f32][beam_end_y:f32]
  */
 /* PLAYER_RECORD_SIZE defined in shared/net_protocol.h */
 static inline int serialize_all_player_states(uint8_t *buf, const server_player_t *players) {
@@ -125,18 +131,20 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
         p[23] = players[i].ship.towed_count;
         for (int t = 0; t < 10; t++) {
             int16_t fi = (t < players[i].ship.towed_count) ? players[i].ship.towed_fragments[t] : -1;
-            p[24 + t] = (fi >= 0 && fi < 255) ? (uint8_t)fi : 0xFF;
+            uint16_t wire = (fi >= 0 && fi < MAX_ASTEROIDS) ? (uint16_t)fi : 0xFFFFu;
+            p[24 + t * 2]     = (uint8_t)(wire & 0xFFu);
+            p[24 + t * 2 + 1] = (uint8_t)(wire >> 8);
         }
         /* Callsign: 7 bytes (e.g. "KRX-472") */
-        memcpy(&p[34], players[i].callsign, 7);
+        memcpy(&p[44], players[i].callsign, 7);
         /* Beam coordinates — server-authoritative. The client mirrors
          * these into LOCAL_PLAYER.beam_start/end so the autopilot's
          * laser visual works (and so combat hits are deterministic
          * once we have weapons). */
-        write_f32_le(&p[41], players[i].beam_start.x);
-        write_f32_le(&p[45], players[i].beam_start.y);
-        write_f32_le(&p[49], players[i].beam_end.x);
-        write_f32_le(&p[53], players[i].beam_end.y);
+        write_f32_le(&p[51], players[i].beam_start.x);
+        write_f32_le(&p[55], players[i].beam_start.y);
+        write_f32_le(&p[59], players[i].beam_end.x);
+        write_f32_le(&p[63], players[i].beam_end.y);
         count++;
     }
     buf[0] = NET_MSG_WORLD_PLAYERS;
@@ -264,7 +272,7 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
  * (in shared/net_protocol.h) and all buffers that depend on it. */
 /* Compile-time guards: record sizes must match serialization layouts. */
 _Static_assert(
-    1 + 5 * 4 + 1 + 1 + 1 + 10 + 7 + 4 * 4 == PLAYER_RECORD_SIZE,
+    1 + 5 * 4 + 1 + 1 + 1 + 20 + 7 + 4 * 4 == PLAYER_RECORD_SIZE,
     "PLAYER_RECORD_SIZE must match serialized player state layout"
 );
 _Static_assert(
@@ -420,7 +428,8 @@ static inline int serialize_scaffolds(uint8_t *buf, const scaffold_t *scaffolds)
  * [type:1][id:1][hull:f32][station_balance:f32][docked:1][station:1]
  * [mining_lvl:1][hold_lvl:1][tractor_lvl:1][flags:1]
  * [cargo: COMMODITY_COUNT × f32]
- * [nearby_frags:1][tractor_frags:1][towed_count:1][towed_frags:10]
+ * [nearby_frags:1][tractor_frags:1][towed_count:1][towed_frags:20]
+ * towed_frags = 10 × uint16_t (little-endian), 0xFFFF = unused.
  */
 static inline int serialize_player_ship_bal(uint8_t *buf, uint8_t id, const server_player_t *sp, float station_balance) {
     buf[0] = NET_MSG_PLAYER_SHIP;
@@ -441,7 +450,9 @@ static inline int serialize_player_ship_bal(uint8_t *buf, uint8_t id, const serv
     buf[off++] = sp->ship.towed_count;
     for (int t = 0; t < 10; t++) {
         int16_t fi = (t < sp->ship.towed_count) ? sp->ship.towed_fragments[t] : -1;
-        buf[off++] = (fi >= 0 && fi < 255) ? (uint8_t)fi : 0xFF;
+        uint16_t wire = (fi >= 0 && fi < MAX_ASTEROIDS) ? (uint16_t)fi : 0xFFFFu;
+        buf[off++] = (uint8_t)(wire & 0xFFu);
+        buf[off++] = (uint8_t)(wire >> 8);
     }
     /* Autopilot target asteroid index (0xFF = none). */
     buf[off++] = (sp->autopilot_target >= 0 && sp->autopilot_target < 255)

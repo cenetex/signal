@@ -6,7 +6,7 @@
  * Packet layouts (little-endian):
  *   JOIN            (0x01): [type:1][player_id:1]
  *   LEAVE           (0x02): [type:1][player_id:1]
- *   STATE           (0x03): [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:10]  = 35 bytes
+ *   STATE           (0x03): [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20]  = 45 bytes (towed_frags = 10 × uint16_t, 0xFFFF = unused)
  *   INPUT           (0x04): [type:1][flags:1][action:1][mining_target:1]  = 4 bytes
  *   WORLD_ASTEROIDS (0x10): [type:1][count:1] + count * 30-byte records
  *   WORLD_NPCS      (0x11): [type:1][count:1] + count * 26-byte records
@@ -139,12 +139,14 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 /* Station economic snapshot: [index:1][inventory:COMMODITY_COUNT×f32] */
 #define STATION_RECORD_SIZE (1 + COMMODITY_COUNT * 4 + 4)  /* 41 bytes: index + inventory + credit_pool */
 
-/* Player state record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:10][callsign:7]
+/* Player state record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20][callsign:7]
  * [beam_start_x:f32][beam_start_y:f32][beam_end_x:f32][beam_end_y:f32]
+ * towed_frags: 10 × uint16_t asteroid index, 0xFFFF = unused. Widened
+ * from uint8_t in #285 Phase 3 so slots 255-2047 survive the wire.
  * flags bits: 1=thrust 2=beam_active+hit 4=docked 8=scan 16=tractor 32=beam_ineffective
  * Beam coords are server-authoritative — fixes autopilot mining visuals
  * and (eventually) combat hit prediction. */
-#define PLAYER_RECORD_SIZE 57  /* 41 + 16 bytes beam coords */
+#define PLAYER_RECORD_SIZE 67  /* 51 + 16 bytes beam coords */
 
 /* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32] */
 #define ASTEROID_RECORD_SIZE 31  /* uint16 index (was uint8) */
@@ -175,8 +177,9 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 
 /* Player ship state: [type:1][id:1][hull:f32][credits:f32][docked:1][station:1]
  * [mining:1][hold:1][tractor:1][scaffold_kit:1][cargo:COMMODITY_COUNT×f32]
- * [nearby_frags:1][tractor_frags:1][towed_count:1][towed_frags:10]
- * [autopilot_target:1][path_count:1][path_current:1][waypoints: count×(x:f32,y:f32)] */
-#define PLAYER_SHIP_SIZE (32 + COMMODITY_COUNT * 4 + 12 * 8)  /* 164 bytes max */
+ * [nearby_frags:1][tractor_frags:1][towed_count:1][towed_frags:20]
+ * [autopilot_target:1][path_count:1][path_current:1][waypoints: count×(x:f32,y:f32)]
+ * towed_frags: 10 × uint16_t asteroid index, 0xFFFF = unused. */
+#define PLAYER_SHIP_SIZE (42 + COMMODITY_COUNT * 4 + 12 * 8)  /* 174 bytes max */
 
 #endif /* SHARED_PROTOCOL_H */

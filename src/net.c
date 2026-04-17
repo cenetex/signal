@@ -210,10 +210,12 @@ static void handle_message(const uint8_t* data, int len) {
             ps->flags = (len >= 23) ? data[22] : 0;
             ps->tractor_level = (len >= 24) ? data[23] : 0;
             ps->towed_count = (len >= 25) ? data[24] : 0;
-            if (len >= 35) {
-                for (int t = 0; t < 10; t++) ps->towed_fragments[t] = data[25 + t];
+            if (len >= 45) {
+                for (int t = 0; t < 10; t++)
+                    ps->towed_fragments[t] = (uint16_t)data[25 + t * 2]
+                                           | ((uint16_t)data[25 + t * 2 + 1] << 8);
             } else {
-                memset(ps->towed_fragments, 0xFF, 10);
+                for (int t = 0; t < 10; t++) ps->towed_fragments[t] = 0xFFFFu;
             }
             ps->active = true;
 
@@ -245,13 +247,15 @@ static void handle_message(const uint8_t* data, int len) {
                 ps->flags = p[21];
                 ps->tractor_level = p[22];
                 ps->towed_count = p[23];
-                for (int t = 0; t < 10; t++) ps->towed_fragments[t] = p[24 + t];
-                memcpy(ps->callsign, &p[34], 7);
+                for (int t = 0; t < 10; t++)
+                    ps->towed_fragments[t] = (uint16_t)p[24 + t * 2]
+                                           | ((uint16_t)p[24 + t * 2 + 1] << 8);
+                memcpy(ps->callsign, &p[44], 7);
                 ps->callsign[7] = '\0';
-                ps->beam_start_x = read_f32_le(&p[41]);
-                ps->beam_start_y = read_f32_le(&p[45]);
-                ps->beam_end_x   = read_f32_le(&p[49]);
-                ps->beam_end_y   = read_f32_le(&p[53]);
+                ps->beam_start_x = read_f32_le(&p[51]);
+                ps->beam_start_y = read_f32_le(&p[55]);
+                ps->beam_end_x   = read_f32_le(&p[59]);
+                ps->beam_end_y   = read_f32_le(&p[63]);
                 ps->active = true;
                 if (net_state.callbacks.on_state) {
                     net_state.callbacks.on_state(ps);
@@ -267,9 +271,12 @@ static void handle_message(const uint8_t* data, int len) {
             int expected = 3 + count * ASTEROID_RECORD_SIZE;
             if (len < expected) break;
             if (net_state.callbacks.on_asteroids) {
-                /* Per-player relevance caps at ~200; stack array of 512 is safe */
-                NetAsteroidState arr[512];
-                int decoded = (count > 512) ? 512 : count;
+                /* File-scope buffer sized to MAX_ASTEROIDS so a dense belt
+                 * view (which can now exceed 512 rocks post-#285) isn't
+                 * truncated. Stack allocation would blow the WASM main
+                 * thread's 64KB stack. */
+                static NetAsteroidState arr[MAX_ASTEROIDS];
+                int decoded = (count > MAX_ASTEROIDS) ? MAX_ASTEROIDS : count;
                 for (int i = 0; i < decoded; i++) {
                     const uint8_t* p = &data[3 + i * ASTEROID_RECORD_SIZE];
                     arr[i].index  = (uint16_t)(p[0] | ((uint16_t)p[1] << 8));
@@ -353,15 +360,16 @@ static void handle_message(const uint8_t* data, int len) {
                 for (int c = 0; c < COMMODITY_COUNT; c++)
                     pss.cargo[c] = read_f32_le(&data[16 + c * 4]);
                 int off = 16 + COMMODITY_COUNT * 4;
-                if (len >= off + 13) {
+                if (len >= off + 23) {
                     pss.nearby_fragments = data[off];
                     pss.tractor_fragments = data[off + 1];
                     pss.towed_count = data[off + 2];
                     for (int t = 0; t < 10; t++)
-                        pss.towed_fragments[t] = data[off + 3 + t];
-                    pss.autopilot_target = (len >= off + 14) ? data[off + 13] : 0xFF;
+                        pss.towed_fragments[t] = (uint16_t)data[off + 3 + t * 2]
+                                               | ((uint16_t)data[off + 3 + t * 2 + 1] << 8);
+                    pss.autopilot_target = (len >= off + 24) ? data[off + 23] : 0xFF;
                     /* A* path waypoints from server. */
-                    int path_off = off + 14;
+                    int path_off = off + 24;
                     if (len >= path_off + 2) {
                         pss.path_count = data[path_off];
                         pss.path_current = data[path_off + 1];
@@ -372,7 +380,7 @@ static void handle_message(const uint8_t* data, int len) {
                         }
                     }
                 } else {
-                    memset(pss.towed_fragments, 0xFF, 10);
+                    for (int t = 0; t < 10; t++) pss.towed_fragments[t] = 0xFFFFu;
                     pss.autopilot_target = 0xFF;
                 }
                 net_state.callbacks.on_player_ship(&pss);
