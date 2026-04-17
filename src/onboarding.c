@@ -79,11 +79,17 @@ bool onboarding_hint(char *label, size_t label_size,
         return false;
     }
 
-    snprintf(label, label_size, "SIGNAL");
-    snprintf(message, message_size, "%s [W/A/S/D] move  %s [M] fracture  %s hold [Space] tractor  %s [H] hail",
-        g.onboarding.moved     ? "+" : "-",
-        g.onboarding.fractured ? "+" : "-",
-        g.onboarding.tractored ? "+" : "-",
-        g.onboarding.hailed    ? "+" : "-");
+    /* Subtitle-style: show the NEXT thing to learn, not a checklist */
+    label[0] = '\0';
+    if (!g.onboarding.moved)
+        snprintf(message, message_size, "Use W A S D to fly your ship.");
+    else if (!g.onboarding.fractured)
+        snprintf(message, message_size, "Aim at a rock and press M to fracture it.");
+    else if (!g.onboarding.tractored)
+        snprintf(message, message_size, "Hold SPACE near fragments to tractor them.");
+    else if (!g.onboarding.hailed)
+        snprintf(message, message_size, "Press H in signal range to hail a station.");
+    else
+        snprintf(message, message_size, "");
     return true;
 }

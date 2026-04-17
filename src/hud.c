@@ -328,88 +328,91 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
      * Stations never speak here — they use the hail overlay.
      * ================================================================ */
 
-    /* MSG_HULL_CRITICAL: Hull integrity < 20% */
+    /* Subtitle-style messages: one clean line, no label brackets.
+     * Priority order — only the most important message shows. */
+
+    /* Hull critical */
     if (!LOCAL_PLAYER.docked && g.death_screen_timer <= 0.0f) {
         float max_hull = ship_max_hull(&LOCAL_PLAYER.ship);
         if (max_hull > 0.0f && LOCAL_PLAYER.ship.hull / max_hull < 0.20f) {
-            snprintf(label, label_size, "WARNING");
-            snprintf(message, message_size, "[ HULL INTEGRITY FAILING ] %d%%",
-                (int)lroundf(LOCAL_PLAYER.ship.hull / max_hull * 100.0f));
+            label[0] = '\0';
+            snprintf(message, message_size, "Hull failing. Dock for repairs.");
             *r = PAL_WARNING; *g0 = 60; *b = 50;
             return true;
         }
     }
 
-    /* MSG_NOTICE: Transient notice (reconnect, connection lost, etc.) */
+    /* Transient notice */
     if (g.notice_timer > 0.0f) {
-        snprintf(label, label_size, "NOTICE");
+        label[0] = '\0';
         snprintf(message, message_size, "%s", g.notice);
         *r = 140; *g0 = 140; *b = 140;
         return true;
     }
 
-    /* MSG_PLAN_MODE: Plan mode active */
+    /* Plan mode */
     if (g.plan_mode_active) {
-        snprintf(label, label_size, "PLAN");
-        snprintf(message, message_size, "[R] %s  [E] place  [B] exit",
+        label[0] = '\0';
+        snprintf(message, message_size, "Planning %s. R cycle, E place, B exit.",
             module_type_name((module_type_t)g.plan_type));
         *r = 130; *g0 = 180; *b = 200;
         return true;
     }
 
-    /* MSG_AUTOPILOT: Autopilot mining loop */
+    /* Autopilot */
     if (LOCAL_PLAYER.autopilot_mode) {
-        snprintf(label, label_size, "AUTO");
-        snprintf(message, message_size, "Mining loop. Movement cancels. [O]");
+        label[0] = '\0';
+        snprintf(message, message_size, "Autopilot active. Move to cancel.");
         *r = 180; *g0 = 160; *b = 90;
         return true;
     }
 
-    /* MSG_ONBOARDING: Onboarding checklist progress */
+    /* Onboarding */
     if (onboarding_hint(label, label_size, message, message_size)) {
         *r = 130; *g0 = 180; *b = 200;
         return true;
     }
 
-    /* MSG_TOW: Scaffold tow active */
+    /* Scaffold tow */
     if (LOCAL_PLAYER.ship.towed_scaffold >= 0) {
-        snprintf(label, label_size, "TOW");
-        snprintf(message, message_size, "[E] place  [Space] release  [B] plan");
+        label[0] = '\0';
+        snprintf(message, message_size, "Towing scaffold. E place, SPACE release.");
         *r = 160; *g0 = 150; *b = 100;
         return true;
     }
 
-    /* MSG_CARGO: Hold full warning */
+    /* Hold full */
     {
         int cargo = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
         int cap = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
         if (cargo >= cap) {
-            snprintf(label, label_size, "HOLD FULL");
-            snprintf(message, message_size, "Dock at a station to sell. [E]");
+            label[0] = '\0';
+            snprintf(message, message_size, "Hold full. Dock to sell.");
             *r = 180; *g0 = 150; *b = 80;
             return true;
         }
     }
 
-    /* MSG_DOCKING: Docking approach or dock ring hot */
+    /* Docking */
     if (LOCAL_PLAYER.docking_approach) {
-        snprintf(label, label_size, "DOCKING");
-        snprintf(message, message_size, "Tractor lock. [W/S] to cancel.");
+        label[0] = '\0';
+        snprintf(message, message_size, "Docking. W or S to cancel.");
         *r = 120; *g0 = 160; *b = 150;
         return true;
     }
     if (LOCAL_PLAYER.in_dock_range) {
-        snprintf(label, label_size, "DOCK");
-        snprintf(message, message_size, "[E] to dock");
+        label[0] = '\0';
+        snprintf(message, message_size, "Press E to dock.");
         *r = 120; *g0 = 160; *b = 150;
         return true;
     }
 
-    /* MSG_SCOOP: Tractor pickup feedback */
+    /* Tractor pickup */
     if (g.collection_feedback_timer > 0.0f) {
-        int frags = g.collection_feedback_fragments;
-        snprintf(label, label_size, "TRACTOR");
-        snprintf(message, message_size, "+%d frag", frags);
+        label[0] = '\0';
+        snprintf(message, message_size, "+%d fragment%s collected.",
+            g.collection_feedback_fragments,
+            g.collection_feedback_fragments == 1 ? "" : "s");
         *r = 120; *g0 = 150; *b = 120;
         return true;
     }
@@ -969,13 +972,13 @@ void draw_hud(void) {
         }
 
         if (hud_should_draw_message_panel()) {
-            /* Simple centered message line at bottom of screen */
+            /* Subtitle: one clean line, centered at bottom */
             float cell = HUD_CELL * ui_text_zoom();
             char full_msg[256];
-            if (message_line1[0] != '\0')
-                snprintf(full_msg, sizeof(full_msg), "[ %s ]  %s %s", message_label, message_line0, message_line1);
+            if (message_label[0] != '\0')
+                snprintf(full_msg, sizeof(full_msg), "%s: %s", message_label, message_line0);
             else
-                snprintf(full_msg, sizeof(full_msg), "[ %s ]  %s", message_label, message_line0);
+                snprintf(full_msg, sizeof(full_msg), "%s", message_line0);
             float msg_w = (float)strlen(full_msg) * cell;
             float msg_x = (screen_w * 0.5f - msg_w * 0.5f) / cell;
             float msg_y = (screen_h - 32.0f) / cell;
@@ -1089,38 +1092,28 @@ void draw_hud(void) {
         }
     }
 
+    /* Subtitle: one clean line, centered at bottom-center */
     if (hud_should_draw_message_panel()) {
-        float message_text_x = ui_text_pos(message_x + 16.0f);
-        float message_row_0 = ui_text_pos(message_y + 16.0f);
-        float message_row_1 = ui_text_pos(message_y + 30.0f);
-        float message_row_2 = ui_text_pos(message_y + 42.0f);
+        float cell = 8.0f;
+        char full_msg[256];
+        if (message_label[0] != '\0')
+            snprintf(full_msg, sizeof(full_msg), "%s: %s", message_label, message_line0);
+        else
+            snprintf(full_msg, sizeof(full_msg), "%s", message_line0);
+        float msg_w = (float)strlen(full_msg) * cell;
+        float msg_x_c = (screen_w * 0.5f - msg_w * 0.5f) / cell;
+        float msg_y_c = (screen_h * 0.82f) / cell;
 
-        /* Pulse the label for hull warning */
-        bool is_hull_warn_n = (message_r == 255 && message_g == 60 && message_b == 50);
-        if (is_hull_warn_n) {
+        bool is_hull_warn = (message_r == 255 && message_g == 60);
+        if (is_hull_warn) {
             float pulse = 0.5f + 0.5f * sinf((float)sapp_frame_count() * 0.06f);
-            sdtx_pos(message_text_x, message_row_0);
+            sdtx_pos(msg_x_c, msg_y_c);
             sdtx_color3b((uint8_t)(message_r * pulse), (uint8_t)(40 + 20 * pulse), (uint8_t)(40 + 10 * pulse));
-            sdtx_puts(message_label);
-
-            sdtx_pos(message_text_x, message_row_1);
-            sdtx_color3b((uint8_t)(200 * pulse + 55), (uint8_t)(40 + 20 * pulse), (uint8_t)(40 + 10 * pulse));
-            sdtx_puts(message_line0);
         } else {
-            sdtx_pos(message_text_x, message_row_0);
+            sdtx_pos(msg_x_c, msg_y_c);
             sdtx_color3b(message_r, message_g, message_b);
-            sdtx_puts(message_label);
-
-            sdtx_pos(message_text_x, message_row_1);
-            sdtx_color3b(PAL_TEXT_PRIMARY);
-            sdtx_puts(message_line0);
         }
-
-        if (message_line1[0] != '\0') {
-            sdtx_pos(message_text_x, message_row_2);
-            sdtx_color3b(PAL_TEXT_MUTED);
-            sdtx_puts(message_line1);
-        }
+        sdtx_puts(full_msg);
     }
 
     /* --- [E] context prompt — only when docked (hint panel doesn't show E) --- */
