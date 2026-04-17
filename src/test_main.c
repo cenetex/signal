@@ -3238,11 +3238,11 @@ TEST(test_save_header_golden_bytes) {
     ASSERT(f != NULL);
     uint32_t magic, version, rng;
     float time_val, spawn_timer;
-    fread(&magic, 4, 1, f);
-    fread(&version, 4, 1, f);
-    fread(&rng, 4, 1, f);
-    fread(&time_val, 4, 1, f);
-    fread(&spawn_timer, 4, 1, f);
+    ASSERT_EQ_INT((int)fread(&magic,       4, 1, f), 1);
+    ASSERT_EQ_INT((int)fread(&version,     4, 1, f), 1);
+    ASSERT_EQ_INT((int)fread(&rng,         4, 1, f), 1);
+    ASSERT_EQ_INT((int)fread(&time_val,    4, 1, f), 1);
+    ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
     ASSERT_EQ_INT((int)version, 25);
@@ -3386,7 +3386,7 @@ TEST(test_save_v21_module_remap) {
     fseek(f, 0, SEEK_END);
     long patched_size = ftell(f) - 8;
     fclose(f);
-    truncate("/tmp/test_v21_remap.sav", patched_size);
+    ASSERT_EQ_INT(truncate("/tmp/test_v21_remap.sav", patched_size), 0);
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, "/tmp/test_v21_remap.sav"));
     /* 4 of 6 survive: indices 0, 2, 4, 5 in the original list. */
