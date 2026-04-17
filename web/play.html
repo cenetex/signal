@@ -92,13 +92,51 @@
         }
       });
 
-      var script = document.createElement('script');
-      script.src = './signal.js';
-      script.onload = function() {
-        document.getElementById('loading').classList.add('done');
-        canvas.focus();
-      };
-      document.body.appendChild(script);
+      function loadGame(src) {
+        var s = document.createElement('script');
+        s.src = src;
+        s.onload = function() {
+          document.getElementById('loading').classList.add('done');
+          canvas.focus();
+        };
+        document.body.appendChild(s);
+      }
+
+      /* Pin the WASM bundle to whatever version the server is running.
+       * Prevents silent wire desync when the server lags behind the CDN:
+       * if /play/v/<server_hash>/ exists on CDN, we load that bundle
+       * instead of ./signal.js (which may have newer wire format).
+       * Any failure path (no SIGNAL_SERVER, /health down, dev build,
+       * archive missing, timeout) falls back to the latest root bundle. */
+      (function pickBundle() {
+        var ws = window.SIGNAL_SERVER || '';
+        if (!ws) { loadGame('./signal.js'); return; }
+        var healthUrl = ws.replace(/^ws/, 'http').replace(/\/ws$/, '/health');
+
+        var timedOut = false;
+        var timer = setTimeout(function() {
+          timedOut = true;
+          loadGame('./signal.js');
+        }, 3000);
+
+        fetch(healthUrl, { cache: 'no-store' })
+          .then(function(r) { return r.json(); })
+          .then(function(info) {
+            if (timedOut) return;
+            clearTimeout(timer);
+            var v = info && info.version;
+            if (!v || v === 'dev') { loadGame('./signal.js'); return; }
+            var pinned = '/play/v/' + encodeURIComponent(v) + '/signal.js';
+            fetch(pinned, { method: 'HEAD' })
+              .then(function(r) { loadGame(r.ok ? pinned : './signal.js'); })
+              .catch(function() { loadGame('./signal.js'); });
+          })
+          .catch(function() {
+            if (timedOut) return;
+            clearTimeout(timer);
+            loadGame('./signal.js');
+          });
+      })();
     </script>
   </body>
 </html>

@@ -112,20 +112,29 @@ jobs:
           version: 4.0.8
 
       - name: Build WASM
+        id: build_wasm
         run: |
           GIT_HASH=$(git rev-parse --short HEAD)
+          echo "git_hash=$GIT_HASH" >> "$GITHUB_OUTPUT"
           emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$GIT_HASH
           cmake --build build-web
 
       - name: Prepare artifacts
+        env:
+          GIT_HASH: ${{ steps.build_wasm.outputs.git_hash }}
         run: |
           mkdir -p _site/play _site/music _site/ost _site/docs
+          mkdir -p "_site/play/v/$GIT_HASH"
           cp web/index.html _site/index.html
           cp web/play.html _site/play/index.html
           cp web/music.html _site/music/index.html
           cp web/music.html _site/ost/index.html
           cp build-web/signal.js _site/play/signal.js
           cp build-web/signal.wasm _site/play/signal.wasm
+          # Version-pinned archive — bootstrap loads this when server
+          # advertises an older hash, preventing wire-format desync.
+          cp build-web/signal.js "_site/play/v/$GIT_HASH/signal.js"
+          cp build-web/signal.wasm "_site/play/v/$GIT_HASH/signal.wasm"
           cp docs/*.svg _site/docs/ 2>/dev/null || true
           sed -i 's|<head>|<head><script>window.SIGNAL_SERVER="wss://signal-ws.ratimics.com/ws";</script>|' _site/play/index.html
 
@@ -214,7 +223,13 @@ jobs:
 
       # --- Deploy both ---
       - name: Deploy client to S3
-        run: aws s3 sync _site/ s3://signal-ratimics-client/ --delete
+        run: |
+          # Root assets: --delete strips anything removed from _site/ —
+          # but we exclude the versioned archive so old pinned bundles
+          # stay reachable when the server is still on their hash.
+          aws s3 sync _site/ s3://signal-ratimics-client/ --delete --exclude "play/v/*"
+          # Versioned bundles are additive — never delete prior versions.
+          aws s3 sync _site/play/v/ s3://signal-ratimics-client/play/v/
 
       - name: Invalidate CloudFront
         run: aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*"
