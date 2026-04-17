@@ -149,11 +149,13 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
             }
         }
 
-        /* Corridors: adjacent pairs, skip where dock or scaffold is first */
+        /* Corridors: connect adjacent module pairs on the same ring.
+         * Scaffolds get corridors once build_progress > 0 (structure emerging). */
         for (int ci = 0; ci + 1 < count; ci++) {
             if (st->modules[idx[ci+1]].slot - st->modules[idx[ci]].slot != 1) continue;
+            /* Skip dock as FIRST module — corridor starts from the non-dock side */
             if (st->modules[idx[ci]].type == MODULE_DOCK) continue;
-            if (st->modules[idx[ci]].scaffold || st->modules[idx[ci+1]].scaffold) continue;
+            /* Allow scaffolds — corridors emerge as modules build */
             if (out->corridor_count < STATION_GEOM_MAX_CORRIDORS) {
                 float a = module_angle_ring(st, ring, st->modules[idx[ci]].slot);
                 float b = module_angle_ring(st, ring, st->modules[idx[ci+1]].slot);
