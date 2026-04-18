@@ -438,6 +438,10 @@ void process_sim_events(const sim_events_t *events) {
                         g.hail_credits = ev->hail_response.credits;
                         g.hail_station_index = hs;
                         g.hail_timer = 6.0f;
+                        /* Auto-track the quest the station just issued. */
+                        int ci = ev->hail_response.contract_index;
+                        if (ci >= 0 && ci < MAX_CONTRACTS)
+                            g.tracked_contract = ci;
                         if (g.hail_credits > 0.5f)
                             audio_play_sale(&g.audio);
                         if (g.world.stations[hs].station_slug[0])
@@ -1373,6 +1377,9 @@ static void frame(void) {
                     flags |= NET_INPUT_FIRE;
                 if (g.input.key_down[SAPP_KEYCODE_SPACE] && !g.plan_mode_active)
                     flags |= NET_INPUT_TRACTOR;
+                if ((g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT] || g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT])
+                    && !LOCAL_PLAYER.docked)
+                    flags |= NET_INPUT_BOOST;
                 g.pending_net_action = 0;
                 uint8_t mining_target = (LOCAL_PLAYER.hover_asteroid >= 0 && LOCAL_PLAYER.hover_asteroid < 255)
                     ? (uint8_t)LOCAL_PLAYER.hover_asteroid : 255;
@@ -1402,23 +1409,30 @@ static void cleanup(void) {
 
 static void event(const sapp_event* event) {
     switch (event->type) {
-        case SAPP_EVENTTYPE_KEY_DOWN:
-            if ((event->key_code >= 0) && (event->key_code < KEY_COUNT)) {
-                g.input.key_down[event->key_code] = true;
+        case SAPP_EVENTTYPE_KEY_DOWN: {
+            /* Cast to int: sapp_keycode and KEY_COUNT are different enum
+             * types and gcc -Werror=enum-compare rejects the direct
+             * comparison. key_code values are always non-negative. */
+            int kc = (int)event->key_code;
+            if (kc >= 0 && kc < KEY_COUNT) {
+                g.input.key_down[kc] = true;
                 if (!event->key_repeat) {
-                    g.input.key_pressed[event->key_code] = true;
+                    g.input.key_pressed[kc] = true;
                 }
             }
             if (event->key_code == SAPP_KEYCODE_ESCAPE) {
                 sapp_request_quit();
             }
             break;
+        }
 
-        case SAPP_EVENTTYPE_KEY_UP:
-            if ((event->key_code >= 0) && (event->key_code < KEY_COUNT)) {
-                g.input.key_down[event->key_code] = false;
+        case SAPP_EVENTTYPE_KEY_UP: {
+            int kc = (int)event->key_code;
+            if (kc >= 0 && kc < KEY_COUNT) {
+                g.input.key_down[kc] = false;
             }
             break;
+        }
 
         case SAPP_EVENTTYPE_UNFOCUSED:
         case SAPP_EVENTTYPE_SUSPENDED:

@@ -11,6 +11,15 @@
 #ifndef STATION_VOICE_H
 #define STATION_VOICE_H
 
+/* Not every TU that includes this header uses every table. gcc's
+ * -Werror=unused-variable fires per-TU on the ones it doesn't touch.
+ * STATION_VOICE_UNUSED silences that without hiding a real unused var. */
+#if defined(__GNUC__) || defined(__clang__)
+#  define STATION_VOICE_UNUSED __attribute__((unused))
+#else
+#  define STATION_VOICE_UNUSED
+#endif
+
 /* ------------------------------------------------------------------ */
 /* Onboarding voice lines -indexed [station][milestone]              */
 /* ------------------------------------------------------------------ */
@@ -33,7 +42,7 @@ enum {
 
 /* Station 0 = Prospect, 1 = Kepler, 2 = Helios.
  * Only the "speaker" station's line is used per milestone. */
-static const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
+static STATION_VOICE_UNUSED const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] = {
     /* Prospect Refinery -terse, practical */
     {
         /* LAUNCH  */ "Signal tag registered. Launch when you're ready.",
@@ -91,7 +100,7 @@ enum {
     DOCK_TIP_COUNT,
 };
 
-static const char *STATION_DOCK_TIPS[3][DOCK_TIP_COUNT] = {
+static STATION_VOICE_UNUSED const char *STATION_DOCK_TIPS[3][DOCK_TIP_COUNT] = {
     /* Prospect */
     {
         /* SELL    */ "Smelter's running. Tow fragments to the furnace.",
@@ -125,7 +134,7 @@ static const char *STATION_DOCK_TIPS[3][DOCK_TIP_COUNT] = {
 #define NPC_CHATTER_MINER_COUNT  8
 #define NPC_CHATTER_HAULER_COUNT 8
 
-static const char *NPC_CHATTER_MINER[NPC_CHATTER_MINER_COUNT] = {
+static STATION_VOICE_UNUSED const char *NPC_CHATTER_MINER[NPC_CHATTER_MINER_COUNT] = {
     "big one",
     "vein looks rich",
     "drilling",
@@ -136,7 +145,7 @@ static const char *NPC_CHATTER_MINER[NPC_CHATTER_MINER_COUNT] = {
     "heading back",
 };
 
-static const char *NPC_CHATTER_HAULER[NPC_CHATTER_HAULER_COUNT] = {
+static STATION_VOICE_UNUSED const char *NPC_CHATTER_HAULER[NPC_CHATTER_HAULER_COUNT] = {
     "load secured",
     "ingots inbound",
     "heading home",
