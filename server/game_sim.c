@@ -851,9 +851,23 @@ static void step_ship_rotation(ship_t *s, float dt, float turn_input) {
     s->angle = wrap_angle(s->angle + (turn_input * ship_hull_def(s)->turn_speed * dt));
 }
 
-static void step_ship_thrust(ship_t *s, float dt, float thrust_input, vec2 forward, bool boost) {
+/* Boost thrust multiplier: 2.0× for the first 1.0s of held-boost,
+ * decaying exponentially to 1.6× steady-state. Gives the boost a
+ * takeoff "kick" that settles into a cruise burn. hold_t=0 when not
+ * boosting. */
+static float boost_thrust_mult(bool boost, float hold_t) {
+    if (!boost) return 1.0f;
+    const float steady = 1.6f;
+    const float peak   = 2.0f;
+    /* exp(-3t) ≈ 1.0 at t=0, 0.05 at t=1.0s — most of the kick in
+     * the first ~500ms, tail blends into the steady burn. */
+    float kick = expf(-3.0f * hold_t);
+    return steady + (peak - steady) * kick;
+}
+
+static void step_ship_thrust(ship_t *s, float dt, float thrust_input, vec2 forward, bool boost, float boost_hold) {
     const hull_def_t *hull = ship_hull_def(s);
-    float mult = boost ? 1.6f : 1.0f;
+    float mult = boost_thrust_mult(boost, boost_hold);
     if (thrust_input > 0.0f) {
         s->vel = v2_add(s->vel, v2_scale(forward, hull->accel * thrust_input * mult * dt));
     } else if (thrust_input < 0.0f) {
@@ -2258,7 +2272,9 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         step_ship_rotation(&sp->ship, dt, turn_input);
         forward = ship_forward(sp->ship.angle);           /* refresh after rotation */
         bool boost = sp->input.boost && !sp->docked;
-        step_ship_thrust(&sp->ship, dt, thrust_input, forward, boost);
+        if (boost) sp->boost_hold_timer += dt;
+        else       sp->boost_hold_timer  = 0.0f;
+        step_ship_thrust(&sp->ship, dt, thrust_input, forward, boost, sp->boost_hold_timer);
         step_ship_boost_drain(w, sp, dt, boost, turn_input);
         step_ship_motion(&sp->ship, dt, w, sig);
         /* Tow drag: each fragment adds drag, slowing the ship */

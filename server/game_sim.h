@@ -184,6 +184,7 @@ typedef struct {
     float grace_timer;        /* seconds remaining in grace window */
     ship_t ship;
     input_intent_t input;
+    float boost_hold_timer;    /* seconds SHIFT has been held — drives "takeoff" burst */
     int current_station;
     int nearby_station;
     bool docked;

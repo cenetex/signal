@@ -197,6 +197,12 @@ typedef struct {
     /* --- Camera --- */
     vec2 camera_pos;         /* smoothed camera position */
     bool camera_initialized;
+    /* Boost camera: eases in + recenters on the ship while SHIFT is
+     * held, releases smoothly on let-go. Inverse of the hail ping zoom.
+     * boost_zoom multiplies camera half-extents (<1 = zoomed in).
+     * boost_center_blend blends extra centering on top of the deadzone. */
+    float boost_zoom;
+    float boost_center_blend;
     float camera_drift_timer; /* seconds the ship has been outside the deadzone — drives lazy recenter */
     int camera_station_side;  /* +1 = anchor station on right, -1 = left, 0 = unset */
     int camera_station_v_side; /* +1 = bottom, -1 = top, 0 = unset */

@@ -869,6 +869,27 @@ static void render_world(void) {
     if (!g.camera_initialized) {
         g.camera_pos = LOCAL_PLAYER.ship.pos;
         g.camera_initialized = true;
+        g.boost_zoom = 1.0f;
+        g.boost_center_blend = 0.0f;
+    }
+
+    /* Boost camera: target zoom-in + center-on-ship while SHIFT is
+     * held, smooth return on release. Inverse of the hail ping. */
+    {
+        float cdt = (float)sapp_frame_duration();
+        if (cdt <= 0.0f) cdt = 1.0f / 60.0f;
+        if (cdt > 0.1f) cdt = 0.1f;
+        bool boosting = (g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT]
+                       || g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT])
+                       && !LOCAL_PLAYER.docked && !g.death_cinematic.active;
+        float target_zoom  = boosting ? 0.82f : 1.0f;
+        float target_blend = boosting ? 1.0f  : 0.0f;
+        /* Slower ease-in than ease-out so the zoom feels like it locks
+         * on gradually while active, and release is equally gentle. */
+        float kz = 1.0f - expf(-cdt / 0.9f);
+        float kb = 1.0f - expf(-cdt / 0.7f);
+        g.boost_zoom         += (target_zoom  - g.boost_zoom)         * kz;
+        g.boost_center_blend += (target_blend - g.boost_center_blend) * kb;
     }
 
     {
@@ -967,6 +988,15 @@ static void render_world(void) {
                 g.camera_pos.x += (ship.x - g.camera_pos.x) * drift_k;
                 g.camera_pos.y += (ship.y - g.camera_pos.y) * drift_k;
             }
+
+            /* Boost centering: scale the ease-to-ship by boost_center_blend
+             * so as the player holds SHIFT the deadzone softly dissolves
+             * and the ship slides into dead-center. Releases the same way. */
+            if (g.boost_center_blend > 0.001f) {
+                float kcen = (1.0f - expf(-3.0f * dt)) * g.boost_center_blend;
+                g.camera_pos.x += (ship.x - g.camera_pos.x) * kcen;
+                g.camera_pos.y += (ship.y - g.camera_pos.y) * kcen;
+            }
         }
     }
     vec2 camera = g.camera_pos;
@@ -987,11 +1017,13 @@ static void render_world(void) {
         g.screen_shake = 0.0f;
     }
 
-    /* Ping zoom: widens the view while the hail ping is active so the
-     * expanding ring stays on-screen. Eases in + out on the same timer
-     * as the ring animation. */
+    /* Composed camera zoom:
+     *   ping_zoom   — widens on H-hail, slow drift back.
+     *   boost_zoom  — tightens while SHIFT boost is held, smooth release.
+     * They multiply cleanly: hail while boosting gives a ~1.0x "net" view. */
     float ping_zoom = hail_ping_camera_zoom();
-    set_camera_bounds(camera, half_w * ping_zoom, half_h * ping_zoom);
+    float total_zoom = ping_zoom * g.boost_zoom;
+    set_camera_bounds(camera, half_w * total_zoom, half_h * total_zoom);
 
     sgl_defaults();
     sgl_matrix_mode_projection();
