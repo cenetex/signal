@@ -3283,8 +3283,8 @@ TEST(test_save_load_preserves_player_outpost) {
     player_init_ship(&w->players[0], w);
     w->players[0].connected = true;
     w->players[0].docked = false;  /* must be undocked to place */
-    /* Place outpost within signal range of station 0 but >800 units away */
-    vec2 pos = v2(2000.0f, -2400.0f);
+    /* Place outside Prospect's core coverage (signal < 0.80 at placement). */
+    vec2 pos = v2(6000.0f, -2400.0f);
     int slot = test_place_outpost_via_tow(w, &w->players[0], pos);
     ASSERT(slot >= 0);
     ASSERT(station_exists(&w->stations[slot]));
@@ -3305,7 +3305,7 @@ TEST(test_save_load_preserves_player_outpost) {
     /* Outpost must survive */
     ASSERT(station_exists(&loaded->stations[slot]));
     ASSERT(loaded->stations[slot].scaffold);
-    ASSERT_EQ_FLOAT(loaded->stations[slot].pos.x, 2000.0f, 1.0f);
+    ASSERT_EQ_FLOAT(loaded->stations[slot].pos.x, 6000.0f, 1.0f);
     ASSERT_EQ_FLOAT(loaded->stations[slot].pos.y, -2400.0f, 1.0f);
     ASSERT_EQ_FLOAT(loaded->stations[slot].scaffold_progress, progress, 0.01f);
     ASSERT_EQ_INT(loaded->stations[slot].module_count, mod_count);
@@ -3525,12 +3525,12 @@ TEST(test_outpost_requires_undocked) {
 
     /* Docked — should fail */
     w.players[0].docked = true;
-    int slot = test_place_outpost_via_tow(&w, &w.players[0], v2(500.0f, -240.0f));
+    int slot = test_place_outpost_via_tow(&w, &w.players[0], v2(6000.0f, -2400.0f));
     ASSERT_EQ_INT(slot, -1);
 
     /* Undocked — should succeed */
     w.players[0].docked = false;
-    slot = test_place_outpost_via_tow(&w, &w.players[0], v2(500.0f, -240.0f));
+    slot = test_place_outpost_via_tow(&w, &w.players[0], v2(6000.0f, -2400.0f));
     ASSERT(slot >= 3);
 }
 
@@ -4086,6 +4086,9 @@ static void setup_autopilot_world(world_t *w) {
     w->players[0].docked = false;
     w->players[0].nearby_station = -1;
     w->players[0].in_dock_range = false;
+    /* Place in core signal so autopilot can engage (>= 0.80). At 3000u
+     * from Prospect, signal is 0.833. Autopilot tests don't exercise
+     * outpost placement so the OUTPOST_MAX_SIGNAL gate isn't involved. */
     w->players[0].ship.pos = v2_add(w->stations[0].pos, v2(3000.0f, 0.0f));
     w->players[0].ship.vel = v2(0.0f, 0.0f);
     w->players[0].ship.angle = 0.0f;
@@ -4566,7 +4569,7 @@ TEST(test_scaffold_snap_to_slot) {
     w.players[0].docked = false;
     
     /* credits are station-local (ledger) — no ship.credits field */
-    vec2 outpost_pos = v2_add(w.stations[0].pos, v2(3000.0f, 0.0f));
+    vec2 outpost_pos = v2_add(w.stations[0].pos, v2(6000.0f, 0.0f));
     int outpost = test_place_outpost_via_tow(&w, &w.players[0], outpost_pos);
     ASSERT(outpost >= 3);
     /* Activate the outpost so it can accept scaffolds */
@@ -4629,7 +4632,7 @@ TEST(test_scaffold_full_pipeline) {
     w.players[0].docked = false;
 
     /* credits are station-local (ledger) — no ship.credits field */
-    vec2 outpost_pos = v2_add(w.stations[0].pos, v2(3000.0f, 0.0f));
+    vec2 outpost_pos = v2_add(w.stations[0].pos, v2(6000.0f, 0.0f));
     int outpost = test_place_outpost_via_tow(&w, &w.players[0], outpost_pos);
     ASSERT(outpost >= 3);
     w.stations[outpost].scaffold = false;
@@ -4821,7 +4824,7 @@ static int test_setup_placed_scaffold(world_t *w, int *out_mod_idx) {
     player_init_ship(&w->players[0], w);
     w->players[0].docked = false;
     /* credits are station-local (ledger) — no ship.credits field */
-    vec2 outpost_pos = v2_add(w->stations[0].pos, v2(3000.0f, 0.0f));
+    vec2 outpost_pos = v2_add(w->stations[0].pos, v2(6000.0f, 0.0f));
     int outpost = test_place_outpost_via_tow(w, &w->players[0], outpost_pos);
     if (outpost < 3) return -1;
     w->stations[outpost].scaffold = false;
@@ -5615,6 +5618,135 @@ TEST(test_econ_sim_credit_circulation) {
 }
 
 /* ================================================================== */
+/* #312 follow-up: regression tests for the 4-bug fix (fd3a977)       */
+/* ================================================================== */
+
+/* Bug 1: buy-product path must honor ledger_spend return value.
+ * Pre-fix, cargo was added unconditionally even when spend failed —
+ * giving free cargo when ledger_find_or_create ran out of slots. */
+TEST(test_bug312_1_docked_buy_honors_spend_failure) {
+    WORLD_DECL;
+    world_reset(&w);
+    /* Pick a station that produces frames (has MODULE_FRAME_PRESS). */
+    int kepler = -1;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (w.stations[i].id != 0 && station_produces(&w.stations[i], COMMODITY_FRAME)) {
+            kepler = i; break;
+        }
+    }
+    ASSERT(kepler >= 0);
+    station_t *st = &w.stations[kepler];
+
+    /* Fill the ledger with 16 dummy tokens so find_or_create rejects ours. */
+    for (int i = 0; i < 16; i++) {
+        uint8_t dummy[8] = { (uint8_t)(0xA0 + i), 0,0,0,0,0,0,0 };
+        ledger_earn(st, dummy, 1.0f);
+    }
+    ASSERT_EQ_INT(st->ledger_count, 16);
+
+    /* Player dockged at the station with no ledger entry available.
+     * Give the station inventory and the player cargo space. */
+    uint8_t token[8] = {9,9,9,9,9,9,9,9};
+    memcpy(w.players[0].session_token, token, 8);
+    w.players[0].session_ready = true;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = true;
+    w.players[0].current_station = kepler;
+    st->inventory[COMMODITY_FRAME] = 10.0f;
+    float pool_before = st->credit_pool;
+    float cargo_before = w.players[0].ship.cargo[COMMODITY_FRAME];
+
+    w.players[0].input.buy_product = true;
+    w.players[0].input.buy_commodity = COMMODITY_FRAME;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.buy_product = false;
+
+    /* Post-fix: no cargo delivered and no pool change. Skip inventory:
+     * station production may trickle frames in or out during a sim step,
+     * but cargo and pool are only touched by the buy path. Together they
+     * fully prove the exploit (pre-fix: cargo would rise, pool unchanged
+     * because ledger_spend still returns false — the whole point is
+     * "cargo moved without payment"). */
+    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_FRAME], cargo_before, 0.001f);
+    ASSERT_EQ_FLOAT(st->credit_pool, pool_before, 0.001f);
+}
+
+/* Bug 2: ledger_balance must match on session_token — not return the
+ * first entry with a positive balance. The pre-fix HUD lookup in
+ * client_station_balance used the latter, letting a player see another
+ * player's balance in singleplayer-mirrored multiplayer worlds. This
+ * test pins the underlying primitive that the fix depends on. */
+TEST(test_bug312_2_ledger_balance_matches_by_token) {
+    station_t st = {0};
+    uint8_t alice[8] = {0xAA,0,0,0,0,0,0,0};
+    uint8_t bob[8]   = {0xBB,0,0,0,0,0,0,0};
+    uint8_t eve[8]   = {0xEE,0,0,0,0,0,0,0};
+
+    ledger_earn(&st, alice, 100.0f);
+    ledger_earn(&st, bob,   250.0f);
+
+    /* Exact token match returns the right balance. */
+    ASSERT_EQ_FLOAT(ledger_balance(&st, alice), 100.0f, 0.001f);
+    ASSERT_EQ_FLOAT(ledger_balance(&st, bob),   250.0f, 0.001f);
+
+    /* An unknown token returns 0 — must NOT return the first
+     * positive-balance entry (that was the pre-fix bug). */
+    ASSERT_EQ_FLOAT(ledger_balance(&st, eve),   0.0f,   0.001f);
+
+    /* Bob's balance is not leaked even after Alice spends down to zero. */
+    uint8_t sink[8] = {1,2,3,4,5,6,7,8};
+    ledger_earn(&st, sink, 50.0f);
+    /* Manually drain alice via earn of negative? ledger_earn doesn't
+     * clamp, so instead verify the "first positive" fallback is dead:
+     * set Alice's balance to zero directly. */
+    for (int i = 0; i < st.ledger_count; i++)
+        if (memcmp(st.ledger[i].player_token, alice, 8) == 0)
+            st.ledger[i].balance = 0.0f;
+    ASSERT_EQ_FLOAT(ledger_balance(&st, alice), 0.0f,   0.001f);
+    ASSERT_EQ_FLOAT(ledger_balance(&st, bob),   250.0f, 0.001f);
+    ASSERT_EQ_FLOAT(ledger_balance(&st, eve),   0.0f,   0.001f);
+}
+
+/* Bug 3: player_init_ship must NOT seed credits — that happens in
+ * player_seed_credits() after session_token is set. Pre-fix, calling
+ * ledger_earn with the zero token created a ghost ledger entry at
+ * every station any new player docked at. */
+TEST(test_bug312_3_init_ship_does_not_seed_with_zero_token) {
+    WORLD_DECL;
+    world_reset(&w);
+    float pool_before = w.stations[0].credit_pool;
+    int ledger_before = w.stations[0].ledger_count;
+
+    /* Intentionally leave session_token zeroed — simulates the race
+     * where player_init_ship runs before the handshake sets the token. */
+    memset(w.players[0].session_token, 0, 8);
+    w.players[0].session_ready = false;
+    player_init_ship(&w.players[0], &w);
+
+    /* Post-fix: no ledger entry, no pool withdrawal. */
+    ASSERT_EQ_INT(w.stations[0].ledger_count, ledger_before);
+    ASSERT_EQ_FLOAT(w.stations[0].credit_pool, pool_before, 0.001f);
+
+    /* Now set the real token and seed — credits should land on the
+     * real token, and no zero-token entry should exist. */
+    uint8_t token[8] = {0x42,1,2,3,4,5,6,7};
+    memcpy(w.players[0].session_token, token, 8);
+    w.players[0].session_ready = true;
+    player_seed_credits(&w.players[0], &w);
+
+    ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0], token), 50.0f, 0.001f);
+    uint8_t zero[8] = {0};
+    ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0], zero), 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.stations[0].credit_pool, pool_before - 50.0f, 0.001f);
+
+    /* Double-seed is idempotent (guard against credit leak on reconnect). */
+    player_seed_credits(&w.players[0], &w);
+    ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0], token), 50.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.stations[0].credit_pool, pool_before - 50.0f, 0.001f);
+}
+
+/* ================================================================== */
 /* Station service semantics (#259)                                   */
 /* ================================================================== */
 
@@ -6094,6 +6226,12 @@ int main(void) {
     printf("\nEconomy simulations:\n");
     RUN(test_econ_sim_npc_only_5min);
     RUN(test_econ_sim_credit_circulation);
+
+    /* #312 follow-up: regression tests for the 4-bug fix (fd3a977) */
+    printf("\n#312 4-bug-fix regressions:\n");
+    RUN(test_bug312_1_docked_buy_honors_spend_failure);
+    RUN(test_bug312_2_ledger_balance_matches_by_token);
+    RUN(test_bug312_3_init_ship_does_not_seed_with_zero_token);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
