@@ -8,6 +8,7 @@
 #include "client.h"
 #include "station_voice.h"
 #include "world_draw.h"
+#include "signal_model.h"  /* SIGNAL_BAND_OPERATIONAL threshold */
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -46,7 +47,8 @@ static void complete_step(bool *step) {
     g.onboarding.complete = g.onboarding.moved &&
                              g.onboarding.fractured &&
                              g.onboarding.tractored &&
-                             g.onboarding.hailed;
+                             g.onboarding.hailed &&
+                             g.onboarding.boosted;
     onboarding_save();
 }
 
@@ -54,6 +56,7 @@ void onboarding_mark_moved(void)     { complete_step(&g.onboarding.moved); }
 void onboarding_mark_fractured(void) { complete_step(&g.onboarding.fractured); }
 void onboarding_mark_tractored(void) { complete_step(&g.onboarding.tractored); }
 void onboarding_mark_hailed(void)    { complete_step(&g.onboarding.hailed); }
+void onboarding_mark_boosted(void)   { complete_step(&g.onboarding.boosted); }
 
 /* ------------------------------------------------------------------ */
 /* Checklist hint                                                      */
@@ -79,16 +82,25 @@ bool onboarding_hint(char *label, size_t label_size,
         return false;
     }
 
-    /* Subtitle-style: show the NEXT thing to learn, not a checklist */
+    /* Subtitle-style: show the NEXT thing to learn, not a checklist. */
     label[0] = '\0';
+    /* Contextual: if the player has left core signal and hasn't
+     * discovered SHIFT yet, that teaching beats the normal queue. */
+    if (g.onboarding.moved && !g.onboarding.boosted) {
+        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        if (sig > 0.0f && sig < SIGNAL_BAND_OPERATIONAL) {
+            snprintf(message, message_size, "Signal degraded — hold SHIFT to boost through");
+            return true;
+        }
+    }
     if (!g.onboarding.moved)
         snprintf(message, message_size, "Use W A S D to fly your ship.");
     else if (!g.onboarding.fractured)
-        snprintf(message, message_size, "Aim at a rock and press M to fracture it.");
+        snprintf(message, message_size, "Aim at a rock and press M");
     else if (!g.onboarding.tractored)
-        snprintf(message, message_size, "Hold SPACE near fragments to tractor them.");
+        snprintf(message, message_size, "Tractor fragments to a furnace beam");
     else if (!g.onboarding.hailed)
-        snprintf(message, message_size, "Press H in signal range to hail a station.");
+        snprintf(message, message_size, "Press H in signal range to hail");
     else
         snprintf(message, message_size, "");
     return true;

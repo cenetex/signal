@@ -59,6 +59,7 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
         a->hp    = asteroids[i].hp;
         a->ore   = asteroids[i].ore;
         a->radius = asteroids[i].radius;
+        a->smelt_progress = asteroids[i].smelt_progress;
         if (a->max_hp < a->hp) a->max_hp = a->hp;
         if (a->max_ore < a->ore) a->max_ore = a->ore;
     }
@@ -170,6 +171,7 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
         st->pending_scaffolds[p].type  = si->pending_scaffolds[p].type;
         st->pending_scaffolds[p].owner = si->pending_scaffolds[p].owner;
     }
+    snprintf(st->currency_name, sizeof(st->currency_name), "%s", si->currency_name);
 }
 
 void apply_remote_scaffolds(const NetScaffoldState* received, int count) {
@@ -225,9 +227,15 @@ void apply_remote_events(const sim_event_t *events, int count) {
     process_sim_events(&temp);
 }
 
-void apply_remote_hail_response(uint8_t station, float credits) {
+void apply_remote_hail_response(uint8_t station, float credits, int contract_index) {
     if (station >= MAX_STATIONS) {
         set_notice("No station in range to hail.");
+        return;
+    }
+    /* credits == -1 sentinel: ping reached this station's chirp range
+     * (2× comm_range) but not its comms range. Show just a bearing. */
+    if (credits < 0.0f) {
+        set_notice("Too far — nearest: %s", g.world.stations[station].name);
         return;
     }
     /* Use the same hail overlay as singleplayer — station name + contextual
@@ -242,6 +250,10 @@ void apply_remote_hail_response(uint8_t station, float credits) {
     g.hail_credits = credits;
     g.hail_station_index = station;
     g.hail_timer = 6.0f;
+    /* Auto-track the contract the station just issued, so the yellow
+     * ring + compass pip appear without any tab navigation. */
+    if (contract_index >= 0 && contract_index < MAX_CONTRACTS)
+        g.tracked_contract = contract_index;
     onboarding_mark_hailed();
 }
 

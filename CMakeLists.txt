@@ -6,8 +6,12 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
-option(BUILD_TESTS_ONLY "Only build the test executable" OFF)
+# Build-mode toggles. Exactly one of these may be ON at a time; with none
+# set, every target (server, test, client) is built.
+option(BUILD_TESTS_ONLY  "Only build the test executable"       OFF)
+option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
 
+# --- GIT_HASH baked into binaries for /health and client mismatch checks ---
 if(NOT DEFINED GIT_HASH)
     execute_process(COMMAND git rev-parse --short HEAD
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
@@ -19,45 +23,131 @@ if(NOT GIT_HASH)
     set(GIT_HASH "dev")
 endif()
 
+# ------------------------------------------------------------------
+# Canonical source lists — every target picks from these. Adding a
+# new server .c file only needs editing here.
+# ------------------------------------------------------------------
+
+# Headless simulation — used by signal_server, signal_test, and the
+# client (which runs the same sim in-process for singleplayer via
+# local_server.c). New server sim files go here.
+set(SIGNAL_SIM_SOURCES
+    server/game_sim.c
+    server/sim_ai.c
+    server/sim_autopilot.c
+    server/sim_flight.c
+    server/sim_nav.c
+    server/sim_save.c
+    server/sim_catalog.c
+    server/sim_asteroid.c
+    server/sim_physics.c
+    server/sim_production.c
+    server/sim_construction.c
+)
+
+# Shared libraries used by both sim and client render — pure C, no
+# sokol / audio / GL dependencies.
+set(SIGNAL_SIM_HELPERS
+    src/commodity.c
+    src/ship.c
+    src/economy.c
+    src/asteroid.c
+    src/rng.c
+)
+
+# Client-only: rendering, input, HUD, audio, network plumbing. Not
+# compiled into signal_server or signal_test.
+set(SIGNAL_CLIENT_SOURCES
+    src/main.c
+    src/net.c
+    src/station_ui.c
+    src/hud.c
+    src/world_draw.c
+    src/audio.c
+    src/asteroid_field.c
+    src/npc.c
+    src/render.c
+    src/input.c
+    src/net_sync.c
+    src/local_server.c
+    src/onboarding.c
+    src/episode.c
+    src/music.c
+    src/avatar.c
+)
+
+set(SIGNAL_INCLUDE_DIRS
+    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/shared"
+    "${CMAKE_CURRENT_SOURCE_DIR}/server"
+)
+
+# ------------------------------------------------------------------
+# signal_server — authoritative game server (also the Docker image).
+# ------------------------------------------------------------------
 if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
-    # --- Headless game server ---
-    add_executable(signal_server server/main.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_catalog.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c server/mongoose.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c)
-    target_include_directories(signal_server PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
-    target_compile_definitions(signal_server PRIVATE GIT_HASH="${GIT_HASH}" SIM_LOG_ENABLED=0)
+    add_executable(signal_server
+        server/main.c
+        server/mongoose.c
+        ${SIGNAL_SIM_SOURCES}
+        ${SIGNAL_SIM_HELPERS}
+    )
+    target_include_directories(signal_server PRIVATE ${SIGNAL_INCLUDE_DIRS})
+    target_compile_definitions(signal_server PRIVATE
+        GIT_HASH="${GIT_HASH}"
+        MG_ENABLE_LOG=0    # silence mongoose's internal [INFO]/[ERROR] spam
+        GAME_SIM_VERBOSE   # enable [sim] log lines (matches prod Docker)
+    )
     if(NOT MSVC)
         target_link_libraries(signal_server PRIVATE m)
-        target_compile_options(signal_server PRIVATE -Wall -Wextra -Wpedantic -Werror -fstack-protector-strong)
-        # _FORTIFY_SOURCE requires optimization; only set for Release/RelWithDebInfo
-        target_compile_definitions(signal_server PRIVATE $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
+        target_compile_options(signal_server PRIVATE
+            -Wall -Wextra -Wpedantic -Werror -fstack-protector-strong)
+        # _FORTIFY_SOURCE requires optimization; only set for Release-ish.
+        target_compile_definitions(signal_server PRIVATE
+            $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
     endif()
+    # mongoose.c needs POSIX + BSD APIs on Linux (ip_mreq, alloca, etc.)
+    if(UNIX AND NOT APPLE)
+        target_compile_definitions(signal_server PRIVATE _GNU_SOURCE)
+    endif()
+endif()
 
-    add_executable(signal_test src/test_main.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_catalog.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)
-    target_include_directories(signal_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
+# ------------------------------------------------------------------
+# signal_test — unit + integration tests. Skipped for Docker-only
+# builds and for emscripten.
+# ------------------------------------------------------------------
+if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
+    add_executable(signal_test
+        src/test_main.c
+        ${SIGNAL_SIM_SOURCES}
+        ${SIGNAL_SIM_HELPERS}
+    )
+    target_include_directories(signal_test PRIVATE ${SIGNAL_INCLUDE_DIRS})
     if(NOT MSVC)
         target_link_libraries(signal_test PRIVATE m)
         target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
     endif()
 endif()
 
-if(BUILD_TESTS_ONLY)
-    add_executable(signal_test src/test_main.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_catalog.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)
-    target_include_directories(signal_test PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
-    if(NOT MSVC)
-        target_link_libraries(signal_test PRIVATE m)
-        target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
-    endif()
+# Short-circuit before wiring up the sokol-dependent client target so
+# server-only / tests-only builds don't require vendor/sokol, X11, or
+# Emscripten on the builder.
+if(BUILD_TESTS_ONLY OR BUILD_SERVER_ONLY)
     return()
 endif()
 
-set(GAME_SOURCES src/main.c src/net.c src/station_ui.c src/hud.c src/world_draw.c src/commodity.c src/ship.c src/audio.c src/economy.c src/asteroid.c src/asteroid_field.c src/npc.c src/render.c src/rng.c src/input.c src/net_sync.c src/local_server.c src/onboarding.c src/episode.c src/music.c src/avatar.c server/game_sim.c server/sim_ai.c server/sim_autopilot.c server/sim_flight.c server/sim_nav.c server/sim_save.c server/sim_catalog.c server/sim_asteroid.c server/sim_physics.c server/sim_production.c server/sim_construction.c)
+# ------------------------------------------------------------------
+# signal — native desktop + WebAssembly client.
+# ------------------------------------------------------------------
+set(GAME_SOURCES
+    ${SIGNAL_CLIENT_SOURCES}
+    ${SIGNAL_SIM_SOURCES}
+    ${SIGNAL_SIM_HELPERS}
+)
 
-# Native builds link mongoose for WebSocket client networking
+# Native builds link mongoose for WebSocket client networking.
 if(NOT EMSCRIPTEN)
     list(APPEND GAME_SOURCES server/mongoose.c)
-    # mongoose.c needs POSIX + BSD APIs on Linux (ip_mreq, alloca, etc.)
-    if(UNIX AND NOT APPLE)
-        add_compile_definitions(_GNU_SOURCE)
-    endif()
 endif()
 
 if(WIN32 AND NOT EMSCRIPTEN)
@@ -66,13 +156,24 @@ else()
     add_executable(signal ${GAME_SOURCES})
 endif()
 
-target_include_directories(signal PRIVATE "${CMAKE_CURRENT_SOURCE_DIR}/vendor/sokol" "${CMAKE_CURRENT_SOURCE_DIR}/vendor" "${CMAKE_CURRENT_SOURCE_DIR}/src" "${CMAKE_CURRENT_SOURCE_DIR}/shared" "${CMAKE_CURRENT_SOURCE_DIR}/server")
+target_include_directories(signal PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}/vendor/sokol"
+    "${CMAKE_CURRENT_SOURCE_DIR}/vendor"
+    ${SIGNAL_INCLUDE_DIRS}
+)
 target_compile_definitions(signal PRIVATE GIT_HASH="${GIT_HASH}")
+
+# mongoose on Linux needs _GNU_SOURCE (same reason as signal_server).
+if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)
+    target_compile_definitions(signal PRIVATE _GNU_SOURCE)
+endif()
 
 if(MSVC)
     target_compile_definitions(signal PRIVATE _CRT_SECURE_NO_WARNINGS)
     target_compile_options(signal PRIVATE /W4)
 else()
+    # -Wno-strict-prototypes is client-only: sokol_* headers intentionally
+    # use K&R-style () prototypes for C++ compat.
     target_compile_options(signal PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-strict-prototypes)
 endif()
 

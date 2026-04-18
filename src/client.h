@@ -114,7 +114,8 @@ typedef struct {
         bool fractured;      /* broke an asteroid */
         bool tractored;      /* collected ore fragments */
         bool hailed;         /* pressed H to hail a station */
-        bool complete;       /* all 4 steps done — stations take over */
+        bool boosted;        /* held SHIFT outside core signal */
+        bool complete;       /* all 5 steps done — stations take over */
         bool welcomed;       /* completion message shown */
         bool loaded;         /* state loaded from localStorage */
     } onboarding;
@@ -186,6 +187,12 @@ typedef struct {
     float hail_credits;          /* balance at hailed station */
     float station_balance;       /* balance at current/nearby station (multiplayer) */
     int hail_station_index;      /* which station was hailed (-1 = none) */
+    /* Hail ping visual: expanding ring from the ship on H-press. Driven
+     * locally from input.c so the click has immediate feedback even if
+     * the server takes a frame to respond. */
+    float hail_ping_timer;       /* seconds since last ping, 0 = inactive */
+    vec2  hail_ping_origin;      /* world-space origin (ship pos at press) */
+    float hail_ping_range;       /* ship comm_range at press time */
     /* --- Camera --- */
     vec2 camera_pos;         /* smoothed camera position */
     bool camera_initialized;
@@ -286,6 +293,8 @@ void get_station_panel_rect(float* x, float* y, float* width, float* height);
 /* HUD drawing (call from render_ui) */
 void draw_hud_panels(void);
 void draw_hud(void);
+void draw_hail_ping(void);
+float hail_ping_camera_zoom(void);
 float player_current_balance(void);
 
 /* Pre-bake the radial fog vignette textures (one per damage tier).

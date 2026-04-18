@@ -1265,10 +1265,18 @@ void draw_hud(void) {
             sdtx_puts(g.hail_message);
         }
 
-        if (g.hail_credits > 0.5f) {
+        /* Per-station currency label — AI-editable. Falls back to "credits".
+         * hail_response.credits is the player's current balance at this
+         * station (not a delta), so we render a single "balance: N unit"
+         * line rather than duplicating it as "+N" plus "balance: N". */
+        if (g.hail_station_index >= 0 && g.hail_station_index < MAX_STATIONS) {
+            const char *unit = "credits";
+            const char *cn = g.world.stations[g.hail_station_index].currency_name;
+            if (cn[0]) unit = cn;
+            float bal = client_station_balance(g.hail_station_index);
             sdtx_pos(hx / cell, (hy + 32.0f) / cell);
-            sdtx_color3b((uint8_t)(130*alpha), (uint8_t)(255*alpha), (uint8_t)(235*alpha));
-            sdtx_printf("+%d cr", (int)lroundf(g.hail_credits));
+            sdtx_color3b((uint8_t)(200*alpha), (uint8_t)(210*alpha), (uint8_t)(160*alpha));
+            sdtx_printf("station balance: %d %s", (int)lroundf(bal), unit);
         }
     }
 
@@ -1341,3 +1349,4 @@ void draw_hud(void) {
 
     draw_station_services(&ui);
 }
+

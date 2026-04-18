@@ -13,6 +13,7 @@ void onboarding_mark_moved(void);
 void onboarding_mark_fractured(void);
 void onboarding_mark_tractored(void);
 void onboarding_mark_hailed(void);
+void onboarding_mark_boosted(void);
 
 /* Returns true and fills label/message with checklist if onboarding active. */
 bool onboarding_hint(char *label, size_t label_size,

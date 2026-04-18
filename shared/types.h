@@ -103,6 +103,7 @@ typedef struct {
     uint8_t towed_count;
     int16_t towed_scaffold;       /* scaffold index being towed, -1 = none */
     bool tractor_active;          /* true while R held — drives fragment collection */
+    float comm_range;             /* hail ping range (H pings stations within this). 0 = use default. */
     /* Tech tree: bit per module type. Set when the player orders a
      * scaffold of that type. Drives the order menu unlock check. */
     uint32_t unlocked_modules;
@@ -196,6 +197,8 @@ typedef struct {
     float ring_offset[MAX_ARMS];      /* fixed angular offset per ring (radians) */
     char hail_message[256];           /* AI-authored station message of the day */
     char station_slug[32];            /* URL slug for CDN assets (e.g. "prospect") */
+    char currency_name[32];           /* station-local currency label, e.g. "helios credits".
+                                       * Empty string → HUD falls back to "credits". */
     /* Economy ledger: per-player supply tracking for passive income */
     struct {
         uint8_t player_token[8];      /* session token of the supplier */
@@ -454,7 +457,7 @@ typedef struct {
         struct { ship_upgrade_t upgrade; } upgrade;
         struct { float amount; } damage;
         struct { int slot; } outpost_placed;
-        struct { int station; float credits; } hail_response;
+        struct { int station; float credits; int contract_index; } hail_response;
         struct { int slot; } outpost_activated;
         struct { int station; int module_idx; int module_type; } module_activated;
         struct { int slot; npc_role_t role; int home_station; } npc_spawned;

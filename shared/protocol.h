@@ -82,6 +82,7 @@ enum {
     NET_INPUT_FIRE   = 1 << 3,
     NET_INPUT_BRAKE   = 1 << 4,
     NET_INPUT_TRACTOR = 1 << 5,
+    NET_INPUT_BOOST   = 1 << 6,
 };
 
 /* ------------------------------------------------------------------ */
@@ -149,7 +150,7 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 #define PLAYER_RECORD_SIZE 67  /* 51 + 16 bytes beam coords */
 
 /* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32] */
-#define ASTEROID_RECORD_SIZE 31  /* uint16 index (was uint8) */
+#define ASTEROID_RECORD_SIZE 32  /* uint16 index + flags + 7 floats + smelt:u8 */
 
 /* NPC record: [id+flags:1][flags:1][pos:2xf32][vel:2xf32][angle:f32][target:1][tint:3] */
 #define NPC_RECORD_SIZE 26
@@ -165,11 +166,13 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 #define STATION_PLAN_RECORD_COUNT 8
 #define STATION_PENDING_SCAFFOLD_RECORD_SIZE 2  /* type:1 + owner:1 */
 #define STATION_PENDING_SCAFFOLD_RECORD_COUNT 4
+#define STATION_IDENTITY_CURRENCY_NAME_LEN 32  /* trailer: per-station scrip label */
 #define STATION_IDENTITY_SIZE (59 + COMMODITY_COUNT * 4 + 4 \
     + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE \
     + 1 + MAX_ARMS * 4 + MAX_ARMS * 4 \
     + 1 + STATION_PLAN_RECORD_COUNT * STATION_PLAN_RECORD_SIZE \
-    + 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT * STATION_PENDING_SCAFFOLD_RECORD_SIZE)
+    + 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT * STATION_PENDING_SCAFFOLD_RECORD_SIZE \
+    + STATION_IDENTITY_CURRENCY_NAME_LEN)
 
 /* Scaffold record: [id:1][state+owner_sign:1][module_type:1][owner:1]
  *                  [pos:2xf32][vel:2xf32][radius:f32][build_amount:f32] = 28 bytes */

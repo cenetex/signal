@@ -150,6 +150,9 @@ input_intent_t sample_input_intent(void) {
             g.input.tractor_press_time = 0.0f;
         }
     }
+    intent.boost = (is_key_down(SAPP_KEYCODE_LEFT_SHIFT) || is_key_down(SAPP_KEYCODE_RIGHT_SHIFT))
+                   && !LOCAL_PLAYER.docked;
+    if (intent.boost) onboarding_mark_boosted();
     intent.reset = is_key_pressed(SAPP_KEYCODE_X) && !LOCAL_PLAYER.docked;
     /* Safety: clear placement reticle if no longer towing or now docked */
     if (g.placement_reticle_active &&
@@ -538,10 +541,13 @@ input_intent_t sample_input_intent(void) {
                             too_close = true; break;
                         }
                     }
+                    float here_sig = signal_strength_at(&g.world, pos);
                     if (too_close) {
                         set_notice("Too close to an existing station.");
-                    } else if (signal_strength_at(&g.world, pos) <= 0.0f) {
+                    } else if (here_sig <= 0.0f) {
                         set_notice("No signal here.");
+                    } else if (here_sig >= OUTPOST_MAX_SIGNAL) {
+                        set_notice("Too deep in station coverage. Move to the fringe.");
                     } else {
                         /* Atomic create + first plan */
                         intent.create_planned_outpost = true;
@@ -644,9 +650,15 @@ input_intent_t sample_input_intent(void) {
         const music_track_info_t *info = music_get_info(g.music.current_track);
         if (info) set_notice("%s", info->title);
     }
-    /* H key: hail nearby station to collect pending credits */
+    /* H key: hail ping. Visual expanding ring fires locally so the
+     * press feels instant; server decides which (if any) station to
+     * respond with based on ship.comm_range. */
     if (is_key_pressed(SAPP_KEYCODE_H) && !LOCAL_PLAYER.docked) {
         intent.hail = true;
+        g.hail_ping_timer  = 0.001f; /* any nonzero = active */
+        g.hail_ping_origin = LOCAL_PLAYER.ship.pos;
+        g.hail_ping_range  = (LOCAL_PLAYER.ship.comm_range > 0.0f)
+                             ? LOCAL_PLAYER.ship.comm_range : 1500.0f;
     }
     /* O key: toggle mining autopilot — server-side AI runs the mining
      * loop on the player's ship. Any manual movement or mine input

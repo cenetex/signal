@@ -529,7 +529,7 @@ static void sim_step(float dt) {
         g.hail_timer = fmaxf(0.0f, g.hail_timer - dt);
     if (g.hail_ping_timer > 0.0f) {
         g.hail_ping_timer += dt;
-        if (g.hail_ping_timer > 1.60f) g.hail_ping_timer = 0.0f; /* HAIL_PING_LIFECYCLE */
+        if (g.hail_ping_timer > 8.00f) g.hail_ping_timer = 0.0f; /* HAIL_PING_LIFECYCLE */
     }
     if (g.outpost_lock_timer > 0.0f)
         g.outpost_lock_timer = fmaxf(0.0f, g.outpost_lock_timer - dt);
@@ -1241,6 +1241,10 @@ static void render_world(void) {
             }
         }
     }
+
+    /* Hail ping — draw last so the ring sits on top of stations and
+     * modules, hard to miss. */
+    draw_hail_ping();
 }
 
 static void render_ui(void) {

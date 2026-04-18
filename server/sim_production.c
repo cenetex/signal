@@ -262,24 +262,26 @@ void step_furnace_smelting(world_t *w, float dt) {
                              && w->players[a->last_fractured_by].connected)
                             ? a->last_fractured_by : -1;
 
-            /* Smelting credits go to the station ledger — collected on hail.
-             * Tower and fracturer each get credited if both contributed. */
+            /* Smelting credits. The tractor work is the main effort —
+             * fracturing is cheap once, towing is the repeated grind —
+             * so the tower takes the full ore value, with the fracturer
+             * getting a 25% finder's fee when they're a different
+             * player. If no one tractored (fragment drifted into the
+             * furnace on its own), the fracturer collects half. */
             if (ore_value > 0.0f) {
-                if (tower >= 0 && fracturer >= 0 && tower != fracturer) {
-                    float share = ore_value * 0.75f;
+                if (tower >= 0) {
                     if (w->players[tower].session_ready)
-                        ledger_credit_supply(st, w->players[tower].session_token, share);
-                    if (w->players[fracturer].session_ready)
-                        ledger_credit_supply(st, w->players[fracturer].session_token, share);
+                        ledger_credit_supply(st, w->players[tower].session_token, ore_value);
                     emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = tower});
-                    emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = fracturer});
-                } else {
-                    int best_p = (tower >= 0) ? tower : fracturer;
-                    if (best_p >= 0) {
-                        if (w->players[best_p].session_ready)
-                            ledger_credit_supply(st, w->players[best_p].session_token, ore_value);
-                        emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = best_p});
+                    if (fracturer >= 0 && fracturer != tower) {
+                        if (w->players[fracturer].session_ready)
+                            ledger_credit_supply(st, w->players[fracturer].session_token, ore_value * 0.25f);
+                        emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = fracturer});
                     }
+                } else if (fracturer >= 0) {
+                    if (w->players[fracturer].session_ready)
+                        ledger_credit_supply(st, w->players[fracturer].session_token, ore_value * 0.5f);
+                    emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = fracturer});
                 }
             }
 

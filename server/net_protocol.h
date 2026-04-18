@@ -183,6 +183,14 @@ static inline int serialize_asteroids_for_player(
             write_f32_le(&p[19], a->hp);
             write_f32_le(&p[23], a->ore);
             write_f32_le(&p[27], a->radius);
+            /* smelt_progress: 0.0-1.0 quantized to uint8 so the client
+             * furnace-glow + laser-beam visuals fire in multiplayer. */
+            {
+                float sp_f = a->smelt_progress;
+                if (sp_f < 0.0f) sp_f = 0.0f;
+                if (sp_f > 1.0f) sp_f = 1.0f;
+                p[31] = (uint8_t)(sp_f * 255.0f);
+            }
             sent[i] = true;
             count++;
         } else if (sent[i] && !in_view) {
@@ -222,6 +230,12 @@ static inline int serialize_asteroids_full(uint8_t *buf, const asteroid_t *aster
         write_f32_le(&p[19], a->hp);
         write_f32_le(&p[23], a->ore);
         write_f32_le(&p[27], a->radius);
+        {
+            float sp_f = a->smelt_progress;
+            if (sp_f < 0.0f) sp_f = 0.0f;
+            if (sp_f > 1.0f) sp_f = 1.0f;
+            p[31] = (uint8_t)(sp_f * 255.0f);
+        }
         count++;
     }
     buf[0] = NET_MSG_WORLD_ASTEROIDS;
@@ -276,7 +290,7 @@ _Static_assert(
     "PLAYER_RECORD_SIZE must match serialized player state layout"
 );
 _Static_assert(
-    2 + 1 + 7 * 4 == ASTEROID_RECORD_SIZE,  /* uint16 index + flags + 7 floats */
+    2 + 1 + 7 * 4 + 1 == ASTEROID_RECORD_SIZE,  /* uint16 index + flags + 7 floats + smelt:u8 */
     "ASTEROID_RECORD_SIZE must match serialized asteroid layout"
 );
 _Static_assert(
@@ -389,6 +403,15 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
         }
         moff += STATION_PENDING_SCAFFOLD_RECORD_SIZE;
     }
+    /* Currency name trailer — 32 bytes, zero-padded. Empty → client
+     * shows "credits". AI-editable via /api/station/<id>/command. */
+    memset(&buf[moff], 0, STATION_IDENTITY_CURRENCY_NAME_LEN);
+    {
+        size_t n = strlen(st->currency_name);
+        if (n > STATION_IDENTITY_CURRENCY_NAME_LEN - 1) n = STATION_IDENTITY_CURRENCY_NAME_LEN - 1;
+        memcpy(&buf[moff], st->currency_name, n);
+    }
+    moff += STATION_IDENTITY_CURRENCY_NAME_LEN;
     return STATION_IDENTITY_SIZE;
 }
 
@@ -529,6 +552,7 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
         intent->turn = -1.0f;
     intent->mine = (flags & NET_INPUT_FIRE) != 0;
     intent->tractor_hold = (flags & NET_INPUT_TRACTOR) != 0;
+    intent->boost = (flags & NET_INPUT_BOOST) != 0;
 
     /* One-shot actions — accumulate until the sim consumes them. */
     {

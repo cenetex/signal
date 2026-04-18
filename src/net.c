@@ -288,6 +288,7 @@ static void handle_message(const uint8_t* data, int len) {
                     arr[i].hp     = read_f32_le(&p[19]);
                     arr[i].ore    = read_f32_le(&p[23]);
                     arr[i].radius = read_f32_le(&p[27]);
+                    arr[i].smelt_progress = (float)p[31] / 255.0f;
                 }
                 net_state.callbacks.on_asteroids(arr, decoded);
             }
@@ -450,6 +451,9 @@ static void handle_message(const uint8_t* data, int len) {
                 si.pending_scaffolds[p].owner = (data[moff + 1] == 0xFF) ? -1 : owner;
                 moff += STATION_PENDING_SCAFFOLD_RECORD_SIZE;
             }
+            /* Currency name trailer — 32 bytes, null-padded. */
+            memcpy(si.currency_name, &data[moff], STATION_IDENTITY_CURRENCY_NAME_LEN - 1);
+            si.currency_name[STATION_IDENTITY_CURRENCY_NAME_LEN - 1] = '\0';
             net_state.callbacks.on_station_identity(&si);
         }
         break;
@@ -483,7 +487,10 @@ static void handle_message(const uint8_t* data, int len) {
         if (len >= 6 && net_state.callbacks.on_hail_response) {
             uint8_t station = data[1];
             float credits = read_f32_le(&data[2]);
-            net_state.callbacks.on_hail_response(station, credits);
+            /* Contract idx added in the hail-as-quest change; old servers
+             * that don't send it decode as "no contract" (0xFF). */
+            int contract_index = (len >= 7 && data[6] != 0xFF) ? (int)data[6] : -1;
+            net_state.callbacks.on_hail_response(station, credits, contract_index);
         }
         break;
 

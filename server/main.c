@@ -273,11 +273,26 @@ static void json_escape_append(char *buf, int *pos, int bufsz, const char *s) {
     if ((pos) > (bufsz)) (pos) = (bufsz); \
 } while (0)
 
+/* Cap visible_asteroids in the agent-facing JSON. Populated stations
+ * at 15-18k signal range can see 1000+ rocks once chunk gen has run,
+ * and at ~80 bytes/record that explodes past any reasonable response
+ * buffer. Agents don't need 1000 rocks — the nearest N is plenty. */
+#define STATION_API_MAX_ASTEROIDS 150
+/* Safety margin left in the buffer after the asteroid loop so the
+ * trailing players/stations/contracts/hail fields and their braces
+ * always fit and the JSON closes cleanly. */
+#define STATION_API_TAIL_MARGIN   2048
+
 static void handle_station_state(struct mg_connection *c, int sid) {
     const station_t *st = &world.stations[sid];
-    /* Build JSON response with signal-range-scoped world view */
-    enum { BUFSZ = 32768 };
-    char buf[BUFSZ];
+    /* Heap-allocated so we aren't bound by the event-loop thread's
+     * stack (alpine musl main stack is ~80KB by default). */
+    enum { BUFSZ = 131072 };
+    char *buf = (char *)malloc(BUFSZ);
+    if (!buf) {
+        mg_http_reply(c, 500, api_headers, "{\"error\":\"out of memory\"}");
+        return;
+    }
     int pos = 0;
 
     /* Station info */
@@ -312,20 +327,26 @@ static void handle_station_state(struct mg_connection *c, int sid) {
 
     BUF_APPEND(pos, buf, BUFSZ, "]},");
 
-    /* Visible asteroids within signal range */
+    /* Visible asteroids within signal range. Capped at
+     * STATION_API_MAX_ASTEROIDS — agents don't need 1000+ rocks and
+     * serializing them all blew past 32KB and truncated the tail of
+     * the JSON mid-field (prod bug, April 2026). */
     float sr_sq = st->signal_range * st->signal_range;
     BUF_APPEND(pos, buf, BUFSZ, "\"visible_asteroids\":[");
     bool first = true;
+    int asteroid_count = 0;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &world.asteroids[i];
         if (!a->active) continue;
         if (v2_dist_sq(a->pos, st->pos) > sr_sq) continue;
+        if (asteroid_count >= STATION_API_MAX_ASTEROIDS) break;
         if (!first) BUF_APPEND(pos, buf, BUFSZ, ",");
         first = false;
         BUF_APPEND(pos, buf, BUFSZ,
             "{\"index\":%d,\"tier\":%d,\"commodity\":%d,\"x\":%.0f,\"y\":%.0f,\"hp\":%.0f}",
             i, a->tier, a->commodity, a->pos.x, a->pos.y, a->hp);
-        if (pos > BUFSZ - 256) break;
+        asteroid_count++;
+        if (pos > BUFSZ - STATION_API_TAIL_MARGIN) break;
     }
 
     /* Visible players within signal range */
@@ -380,6 +401,7 @@ static void handle_station_state(struct mg_connection *c, int sid) {
     BUF_APPEND(pos, buf, BUFSZ, "\"}");
 
     mg_http_reply(c, 200, api_headers, "%s", buf);
+    free(buf);
 }
 
 static void handle_station_command(struct mg_connection *c, struct mg_http_message *hm, int sid) {
@@ -391,18 +413,41 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
     mg_json_get_num(body, "$.price", &price_val);
     long module_type = mg_json_get_long(body, "$.module_type", -1);
     char *hail = mg_json_get_str(body, "$.hail");
+    char *currency = mg_json_get_str(body, "$.currency_name");
 
     if (!action) {
         mg_http_reply(c, 400, api_headers,
                       "{\"ok\":false,\"error\":\"missing action\"}");
         free(hail);
+        free(currency);
         return;
     }
 
     if (strcmp(action, "set_hail") == 0 && hail && hail[0] != '\0') {
         snprintf(st->hail_message, sizeof(st->hail_message), "%s", hail);
+        station_identity_dirty[sid] = true;
         mg_http_reply(c, 200, api_headers,
                       "{\"ok\":true,\"action\":\"set_hail\"}");
+    } else if (strcmp(action, "set_currency_name") == 0 && currency && currency[0] != '\0') {
+        /* ASCII-ish trim; drop anything that would mess with the HUD
+         * renderer (control chars, quotes). 31 chars max so the wire
+         * serializer's null terminator survives. */
+        char sanitized[32] = {0};
+        int out = 0;
+        for (int i = 0; currency[i] && out < (int)sizeof(sanitized) - 1; i++) {
+            unsigned char ch = (unsigned char)currency[i];
+            if (ch < 0x20 || ch == 0x7F || ch == '"' || ch == '\\') continue;
+            sanitized[out++] = (char)ch;
+        }
+        if (out == 0) {
+            mg_http_reply(c, 400, api_headers,
+                          "{\"ok\":false,\"error\":\"currency_name empty after sanitize\"}");
+        } else {
+            memcpy(st->currency_name, sanitized, sizeof(sanitized));
+            station_identity_dirty[sid] = true;
+            mg_http_reply(c, 200, api_headers,
+                          "{\"ok\":true,\"action\":\"set_currency_name\",\"value\":\"%s\"}", sanitized);
+        }
     } else if (strcmp(action, "set_price") == 0 && commodity >= 0 && commodity < COMMODITY_COUNT && price_val > 0) {
         /* Clamp to 0.5x-2.0x of default */
         float default_price = st->base_price[commodity];
@@ -427,6 +472,7 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
     }
     free(action);
     free(hail);
+    free(currency);
 }
 
 /* ------------------------------------------------------------------ */
@@ -917,11 +963,15 @@ int main(void) {
                     if (ev->type == SIM_EVENT_HAIL_RESPONSE) {
                         int pid = ev->player_id;
                         if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected && world.players[pid].conn) {
-                            uint8_t msg[6];
+                            uint8_t msg[7];
                             msg[0] = NET_MSG_HAIL_RESPONSE;
                             msg[1] = (uint8_t)ev->hail_response.station;
                             write_f32_le(&msg[2], ev->hail_response.credits);
+                            int ci = ev->hail_response.contract_index;
+                            msg[6] = (ci >= 0 && ci < MAX_CONTRACTS) ? (uint8_t)ci : 0xFF;
                             ws_send(world.players[pid].conn, msg, sizeof(msg));
+                            /* Contracts table changed — push fresh list. */
+                            contracts_dirty = true;
                             /* Push fresh ship state so the credit bump is visible immediately */
                             uint8_t buf[PLAYER_SHIP_SIZE + 4];
                             int len = send_player_ship(buf, (uint8_t)pid, &world.players[pid]);

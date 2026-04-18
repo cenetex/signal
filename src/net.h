@@ -59,6 +59,7 @@ typedef struct {
     float hp;           /* current HP */
     float ore;          /* ore amount (for TIER_S) */
     float radius;       /* radius */
+    float smelt_progress; /* 0.0-1.0, decoded from uint8 trailer */
 } NetAsteroidState;
 
 /* Packed NPC state for world sync (23 bytes per NPC). */
@@ -137,6 +138,7 @@ typedef struct {
         module_type_t type;
         int8_t owner;
     } pending_scaffolds[STATION_PENDING_SCAFFOLD_RECORD_COUNT];
+    char currency_name[32];   /* station-local scrip label, empty = "credits" */
 } NetStationIdentity;
 
 /* Packed scaffold state — server pushes the active scaffold pool.
@@ -157,7 +159,7 @@ typedef void (*net_on_station_identity_fn)(const NetStationIdentity* station);
 /* Scaffold pool snapshot callback. */
 typedef void (*net_on_scaffolds_fn)(const NetScaffoldState* scaffolds, int count);
 /* Hail response callback: server confirmed payout from a hail attempt. */
-typedef void (*net_on_hail_response_fn)(uint8_t station, float credits);
+typedef void (*net_on_hail_response_fn)(uint8_t station, float credits, int contract_index);
 
 typedef void (*net_on_players_begin_fn)(void);
 

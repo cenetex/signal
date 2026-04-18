@@ -315,7 +315,12 @@ float signal_strength_at(const world_t *w, vec2 pos) {
 
 bool can_place_outpost(const world_t *w, vec2 pos) {
     /* Must be within signal range of an existing station */
-    if (signal_strength_at(w, pos) <= 0.0f) return false;
+    float sig = signal_strength_at(w, pos);
+    if (sig <= 0.0f) return false;
+    /* Must NOT be deep inside an existing station's coverage — forces
+     * new outposts to the fringe so the network extends instead of
+     * stacking on the starter ring. */
+    if (sig >= OUTPOST_MAX_SIGNAL) return false;
     /* Must not overlap existing stations */
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!station_exists(&w->stations[s])) continue;
@@ -669,10 +674,14 @@ static void resolve_ship_annular_sector(world_t *w, server_player_t *sp,
 /* Max asteroid tier mineable at each laser level:
  * Level 0: M, Level 1: L, Level 2: XL, Level 3: XXL, Level 4: all */
 asteroid_tier_t max_mineable_tier(int mining_level) {
+    /* Tier enum is inverted: TIER_XXL=0 (toughest) → TIER_S=4 (softest).
+     * Post-#285 belt is denser near spawn, so level-0 miners kept hitting
+     * L rocks that showed the beam but did no damage ("laser broken").
+     * Starter laser now mines L-and-softer so the common belt rock is
+     * always a valid target; upgrades unlock XL, XXL. */
     switch (mining_level) {
-        case 0: return ASTEROID_TIER_M;
-        case 1: return ASTEROID_TIER_L;
-        case 2: return ASTEROID_TIER_XL;
+        case 0: return ASTEROID_TIER_L;
+        case 1: return ASTEROID_TIER_XL;
         default: return ASTEROID_TIER_XXL;
     }
 }
@@ -842,13 +851,28 @@ static void step_ship_rotation(ship_t *s, float dt, float turn_input) {
     s->angle = wrap_angle(s->angle + (turn_input * ship_hull_def(s)->turn_speed * dt));
 }
 
-static void step_ship_thrust(ship_t *s, float dt, float thrust_input, vec2 forward) {
+static void step_ship_thrust(ship_t *s, float dt, float thrust_input, vec2 forward, bool boost) {
     const hull_def_t *hull = ship_hull_def(s);
+    float mult = boost ? 1.6f : 1.0f;
     if (thrust_input > 0.0f) {
-        s->vel = v2_add(s->vel, v2_scale(forward, hull->accel * thrust_input * dt));
+        s->vel = v2_add(s->vel, v2_scale(forward, hull->accel * thrust_input * mult * dt));
     } else if (thrust_input < 0.0f) {
         s->vel = v2_add(s->vel, v2_scale(forward, SHIP_BRAKE * thrust_input * dt));
     }
+}
+
+/* Boost hull drain: 0.1 HP/s baseline, +1.4 HP/s per unit of |turn_input|.
+ * Straight-line cruise costs ~1 HP every 10 seconds; yanking the stick at
+ * full turn costs ~1.5 HP/s. Silent drain (no DAMAGE event) — emitting
+ * one per tick would spam screen-shake and damage audio. If the drain
+ * empties the hull, route through emergency_recover_ship so the usual
+ * death/respawn UX fires. */
+static void step_ship_boost_drain(world_t *w, server_player_t *sp, float dt, bool boost, float turn_input) {
+    if (!boost || sp->ship.hull <= 0.0f) return;
+    float turn_abs = turn_input < 0.0f ? -turn_input : turn_input;
+    float drain = (0.1f + 1.4f * turn_abs) * dt;
+    sp->ship.hull = fmaxf(0.0f, sp->ship.hull - drain);
+    if (sp->ship.hull <= 0.01f) emergency_recover_ship(w, sp);
 }
 
 static void step_ship_motion(ship_t *s, float dt, const world_t *w, float cached_signal) {
@@ -1836,38 +1860,123 @@ void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) 
 }
 
 /* Hail: report station-local balance (informational — no withdrawal). */
-static void handle_hail(world_t *w, server_player_t *sp) {
-    if (sp->docked) return;
-    float sig = signal_strength_at(w, sp->ship.pos);
-    if (sig <= 0.0f) return;
+/* Hail-as-quest: if the player has no open claimed contract, pick an
+ * appropriate one — FRACTURE if they're empty-holded, TRACTOR if they
+ * already have fragments/ore on board. Returns slot index, or -1 if
+ * the contract pool is full. Reuses an existing claimed contract when
+ * present so H-mashing doesn't spam the board. */
+static int hail_find_or_issue_contract(world_t *w, server_player_t *sp, int issuer_station) {
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        contract_t *c = &w->contracts[i];
+        if (c->active && c->claimed_by == (int8_t)sp->id) return i;
+    }
+    int slot = -1;
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        if (!w->contracts[i].active) { slot = i; break; }
+    }
+    if (slot < 0) return -1;
 
-    /* Find nearest station in range */
-    int nearest = -1;
-    float best_d = 1e18f;
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        station_t *st = &w->stations[s];
-        if (st->signal_range <= 0.0f) continue;
-        float d = v2_dist_sq(sp->ship.pos, st->pos);
-        if (d < best_d && sqrtf(d) <= st->signal_range) {
-            best_d = d;
-            nearest = s;
+    bool has_payload = (sp->ship.towed_count > 0);
+    if (!has_payload) {
+        for (int k = 0; k < COMMODITY_COUNT; k++) {
+            if (sp->ship.cargo[k] > 0.1f) { has_payload = true; break; }
         }
     }
 
-    /* Report balance at nearest station */
-    float balance = 0.0f;
-    if (nearest >= 0) {
-        balance = ledger_balance(&w->stations[nearest], sp->session_token);
+    contract_t *c = &w->contracts[slot];
+    memset(c, 0, sizeof(*c));
+
+    if (has_payload) {
+        /* TRACTOR: deliver raw ore to the nearest station with a furnace. */
+        int dest = -1;
+        float best_d = 1e18f;
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            station_t *st = &w->stations[s];
+            if (!station_is_active(st)) continue;
+            if (!station_has_module(st, MODULE_FURNACE) &&
+                !station_has_module(st, MODULE_FURNACE_CU) &&
+                !station_has_module(st, MODULE_FURNACE_CR)) continue;
+            float d = v2_dist_sq(sp->ship.pos, st->pos);
+            if (d < best_d) { best_d = d; dest = s; }
+        }
+        if (dest < 0) return -1;
+        c->active = true;
+        c->action = CONTRACT_TRACTOR;
+        c->station_index = (uint8_t)dest;
+        c->commodity = COMMODITY_FERRITE_ORE;
+        c->quantity_needed = 10.0f;
+        c->base_price = w->stations[dest].base_price[COMMODITY_FERRITE_ORE] * 1.2f;
+        c->target_index = -1;
+        c->claimed_by = (int8_t)sp->id;
+    } else {
+        /* FRACTURE: nearest mineable rock in signal coverage. */
+        int best_a = -1;
+        float best_d = 1e18f;
+        for (int a = 0; a < MAX_ASTEROIDS; a++) {
+            asteroid_t *ast = &w->asteroids[a];
+            if (!ast->active) continue;
+            if (ast->tier == ASTEROID_TIER_S) continue;
+            if (signal_strength_at(w, ast->pos) <= 0.0f) continue;
+            float d = v2_dist_sq(sp->ship.pos, ast->pos);
+            if (d < best_d) { best_d = d; best_a = a; }
+        }
+        if (best_a < 0) return -1;
+        c->active = true;
+        c->action = CONTRACT_FRACTURE;
+        c->station_index = (uint8_t)((issuer_station >= 0) ? issuer_station : 0);
+        c->target_pos = w->asteroids[best_a].pos;
+        c->target_index = best_a;
+        c->base_price = 25.0f;
+        c->claimed_by = (int8_t)sp->id;
+    }
+    return slot;
+}
+
+static void handle_hail(world_t *w, server_player_t *sp) {
+    if (sp->docked) return;
+
+    /* Ship-based ping: the player is the transmitter. Stations inside
+     * comm_range respond normally; stations within 2× comm_range chirp
+     * back "out of range" with a bearing so the player knows which way
+     * to fly. Stations further than that stay silent.
+     *
+     * credits == -1.0f is the out-of-range sentinel on the wire; the
+     * client renders a short "too far — nearest: <name>" overlay
+     * instead of the full hail UI. */
+    float comm = (sp->ship.comm_range > 0.0f) ? sp->ship.comm_range : 1500.0f;
+    float comm_sq = comm * comm;
+    float chirp_sq = (2.0f * comm) * (2.0f * comm);
+
+    int nearest_in = -1;    float best_in = 1e18f;
+    int nearest_chirp = -1; float best_chirp = 1e18f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (st->signal_range <= 0.0f) continue;
+        float d_sq = v2_dist_sq(sp->ship.pos, st->pos);
+        if (d_sq <= comm_sq) {
+            if (d_sq < best_in) { best_in = d_sq; nearest_in = s; }
+        } else if (d_sq <= chirp_sq) {
+            if (d_sq < best_chirp) { best_chirp = d_sq; nearest_chirp = s; }
+        }
     }
 
-    /* Emit hail response with current balance */
-    if (nearest >= 0) {
+    if (nearest_in >= 0) {
+        float balance = ledger_balance(&w->stations[nearest_in], sp->session_token);
+        int contract_idx = hail_find_or_issue_contract(w, sp, nearest_in);
         emit_event(w, (sim_event_t){
             .type = SIM_EVENT_HAIL_RESPONSE,
             .player_id = sp->id,
-            .hail_response = { .station = nearest, .credits = balance },
+            .hail_response = { .station = nearest_in, .credits = balance, .contract_index = contract_idx },
+        });
+    } else if (nearest_chirp >= 0) {
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_HAIL_RESPONSE,
+            .player_id = sp->id,
+            .hail_response = { .station = nearest_chirp, .credits = -1.0f, .contract_index = -1 },
         });
     }
+    /* No station even in chirp range → silent ping. Client already
+     * drew its local expanding ring so the press isn't lost. */
 }
 
 static void step_station_interaction_system(world_t *w, server_player_t *sp, const input_intent_t *intent) {
@@ -2148,7 +2257,9 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         vec2 forward = ship_forward(sp->ship.angle);
         step_ship_rotation(&sp->ship, dt, turn_input);
         forward = ship_forward(sp->ship.angle);           /* refresh after rotation */
-        step_ship_thrust(&sp->ship, dt, thrust_input, forward);
+        bool boost = sp->input.boost && !sp->docked;
+        step_ship_thrust(&sp->ship, dt, thrust_input, forward, boost);
+        step_ship_boost_drain(w, sp, dt, boost, turn_input);
         step_ship_motion(&sp->ship, dt, w, sig);
         /* Tow drag: each fragment adds drag, slowing the ship */
         if (sp->ship.towed_count > 0) {
@@ -2289,7 +2400,10 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 too_close = true; break;
             }
         }
-        if (!too_close && signal_strength_at(w, pos) > 0.0f) {
+        float plan_sig = signal_strength_at(w, pos);
+        /* Reject: too close, no signal, or deep in an existing station's
+         * core coverage (>= OPERATIONAL band). */
+        if (!too_close && plan_sig > 0.0f && plan_sig < OUTPOST_MAX_SIGNAL) {
             int slot = -1;
             for (int s = 3; s < MAX_STATIONS; s++) {
                 if (!station_exists(&w->stations[s])) { slot = s; break; }
@@ -3222,7 +3336,7 @@ void world_reset(world_t *w) {
     memset(w, 0, sizeof(*w));
     w->signal_cache.strength = sig_buf; /* restore — signal_grid_build reuses it */
     w->rng = seed ? seed : 2037u;
-    belt_field_init(&w->belt, w->rng, WORLD_RADIUS);
+    belt_field_init(&w->belt, w->rng, BELT_SCALE);
 
     /* --- Stations --- */
     w->next_station_id = 1; /* IDs start at 1; 0 = unassigned */
@@ -3253,6 +3367,7 @@ void world_reset(world_t *w) {
     w->stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
     w->stations[0].credit_pool = 10000.0f;
     snprintf(w->stations[0].station_slug, sizeof(w->stations[0].station_slug), "prospect");
+    snprintf(w->stations[0].currency_name, sizeof(w->stations[0].currency_name), "prospect vouchers");
     snprintf(w->stations[0].hail_message, sizeof(w->stations[0].hail_message),
              "Prospect Refinery. Ferrite smelting. Tow fragments to the furnace.");
 
@@ -3286,6 +3401,7 @@ void world_reset(world_t *w) {
     w->stations[1].inventory[COMMODITY_FRAME] = 12.0f;
     w->stations[1].credit_pool = 10000.0f;
     snprintf(w->stations[1].station_slug, sizeof(w->stations[1].station_slug), "kepler");
+    snprintf(w->stations[1].currency_name, sizeof(w->stations[1].currency_name), "kepler bonds");
     snprintf(w->stations[1].hail_message, sizeof(w->stations[1].hail_message),
              "Kepler Yard. Fabrication and scaffold kits. Build the frontier.");
 
@@ -3331,6 +3447,7 @@ void world_reset(world_t *w) {
     w->stations[2].inventory[COMMODITY_TRACTOR_MODULE] = 10.0f;
     w->stations[2].credit_pool = 10000.0f;
     snprintf(w->stations[2].station_slug, sizeof(w->stations[2].station_slug), "helios");
+    snprintf(w->stations[2].currency_name, sizeof(w->stations[2].currency_name), "helios credits");
     snprintf(w->stations[2].hail_message, sizeof(w->stations[2].hail_message),
              "Helios Works. Advanced smelting. Copper and crystal refined here.");
     w->station_count = 3; /* 3 starter stations */
@@ -3388,6 +3505,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
     sp->ship.towed_scaffold = -1;
     sp->ship.tractor_active = false;  /* driven by tractor_hold each frame */
+    sp->ship.comm_range     = 1500.0f; /* H-ping reach — roughly one screen */
     sp->docked          = true;
     sp->current_station = 0;
     /* Seed credits are granted by player_seed_credits() AFTER session_token is set.

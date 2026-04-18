@@ -17,6 +17,7 @@
 #include "ship.h"
 #include "asteroid.h"
 #include "economy.h"
+#include "signal_model.h"  /* SIGNAL_BAND_OPERATIONAL for outpost placement gate */
 
 /* ------------------------------------------------------------------ */
 /* Constants (server-only)                                            */
@@ -27,11 +28,20 @@ enum {
 };
 
 static const float WORLD_RADIUS = 50000.0f;  /* safety net; gameplay bounded by station signal_range */
+/* Belt noise scale: world units per noise period divisor. Smaller =
+ * tighter belt structure (more rivers/lakes per signal bubble), larger =
+ * broader continents. At 15000, the ridged-noise period is ~5000u so a
+ * starting 18000u signal range spans 3-4 belt features. */
+static const float BELT_SCALE = 15000.0f;
 static const float OUTPOST_CREDIT_COST = 500.0f;
 static const float OUTPOST_RADIUS = 40.0f;
 static const float OUTPOST_DOCK_RADIUS = 96.0f;
 static const float OUTPOST_SIGNAL_RANGE = 6000.0f;
-static const float OUTPOST_MIN_DISTANCE = 800.0f; /* min distance between stations */
+static const float OUTPOST_MIN_DISTANCE = 1500.0f; /* min distance between stations */
+/* Signal quality above which new outposts are rejected: the "core" band
+ * (>= 0.80) belongs to the existing station's coverage. Forces new
+ * outposts out to the fringe, extending the network instead of stacking. */
+#define OUTPOST_MAX_SIGNAL SIGNAL_BAND_OPERATIONAL
 static const float SIM_DT = 1.0f / 120.0f;
 static const float MINING_RANGE = 170.0f;
 static const float SHIP_BRAKE = 180.0f;
@@ -161,6 +171,7 @@ typedef struct {
     bool release_tow;        /* R tapped — drop all towed fragments */
     bool reset;
     bool toggle_autopilot;   /* one-shot: flip autopilot_mode on/off */
+    bool boost;              /* Shift held — thrust multiplier + hull drain */
 } input_intent_t;
 
 typedef struct {

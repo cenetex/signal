@@ -1,18 +1,45 @@
 # Multi-stage build for the Signal authoritative game server.
-# Build from repo root: docker build -f server/Dockerfile --build-arg GIT_HASH=abc1234 .
+#
+# Uses the canonical CMake build so flags, sources, and defines match
+# every other build (CI tests, local dev, `cmake --build`). Adding a
+# new server source file means editing SIGNAL_SIM_SOURCES in the
+# top-level CMakeLists.txt only — no change here.
+#
+# Build from repo root:
+#   docker build -f server/Dockerfile --build-arg GIT_HASH=abc1234 .
 FROM alpine:3.19 AS builder
-RUN apk add --no-cache gcc musl-dev make
+RUN apk add --no-cache gcc musl-dev make cmake
 ARG GIT_HASH=dev
 WORKDIR /app
+
+# Only the files the server target actually needs — vendor/sokol is
+# for the client, so we skip it (BUILD_SERVER_ONLY short-circuits the
+# client block before it's referenced).
+COPY CMakeLists.txt ./
 COPY shared/ ./shared/
-COPY src/*.h src/*.c ./src/
-COPY server/*.c server/*.h ./
-RUN gcc -O2 -static -fstack-protector-strong -D_FORTIFY_SOURCE=2 -Ishared -Isrc -o signal-server main.c game_sim.c sim_ai.c sim_autopilot.c sim_flight.c sim_nav.c sim_save.c sim_catalog.c sim_asteroid.c sim_physics.c sim_production.c sim_construction.c mongoose.c src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c -lm -DMG_ENABLE_LOG=0 -DGAME_SIM_VERBOSE -DGIT_HASH=\"$GIT_HASH\"
+COPY src/ ./src/
+COPY server/ ./server/
+
+# Flags preserved from the old hand-rolled gcc invocation:
+#   -static                          (fully static musl binary)
+#   -O2                              (match prior prod; CMake default
+#                                     would be -O3 for Release)
+#   -fstack-protector-strong         (via CMakeLists.txt server target)
+#   -D_FORTIFY_SOURCE=2              (via CMakeLists.txt, Release-only)
+#   -DMG_ENABLE_LOG=0                (via CMakeLists.txt server target)
+#   -DGAME_SIM_VERBOSE               (via CMakeLists.txt server target)
+RUN cmake -S . -B build \
+      -DCMAKE_BUILD_TYPE=Release \
+      -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
+      -DCMAKE_EXE_LINKER_FLAGS="-static" \
+      -DBUILD_SERVER_ONLY=ON \
+      -DGIT_HASH=${GIT_HASH} \
+    && cmake --build build --target signal_server --parallel
 
 FROM alpine:3.19
 RUN apk --no-cache add ca-certificates
 WORKDIR /app
-COPY --from=builder /app/signal-server .
+COPY --from=builder /app/build/signal_server ./signal-server
 
 EXPOSE 8080
 ENV PORT=8080

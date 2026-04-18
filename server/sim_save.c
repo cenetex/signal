@@ -611,7 +611,7 @@ bool world_load(world_t *w, const char *path) {
     }
 
     fclose(f);
-    belt_field_init(&w->belt, w->rng, WORLD_RADIUS);
+    belt_field_init(&w->belt, w->rng, BELT_SCALE);
     rebuild_signal_chain(w);
     return true;
 }

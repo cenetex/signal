@@ -933,7 +933,26 @@ void draw_ship(void) {
 
     if (g.thrusting) {
         float flicker = 10.0f + sinf(g.world.time * 42.0f) * 3.0f;
-        sgl_c4f(1.0f, 0.74f, 0.24f, 0.95f);
+        /* Flame color reads the ship's current situation:
+         *   boost held      → blue   (exhaust is hotter, burning hull)
+         *   frontier signal → red    (matches the red frontier ring)
+         *   fringe signal   → amber  (matches the fringe ring)
+         *   core            → orange default
+         * Boost wins — you can always see it even in a desert. */
+        bool boost_on = g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT]
+                        || g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT];
+        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        float fr, fg, fb;
+        if (boost_on && !LOCAL_PLAYER.docked) {
+            fr = 0.35f; fg = 0.80f; fb = 1.00f;
+        } else if (sig < SIGNAL_BAND_FRONTIER) {
+            fr = 1.00f; fg = 0.28f; fb = 0.18f;
+        } else if (sig < SIGNAL_BAND_FRINGE) {
+            fr = 1.00f; fg = 0.55f; fb = 0.20f;
+        } else {
+            fr = 1.00f; fg = 0.74f; fb = 0.24f;
+        }
+        sgl_c4f(fr, fg, fb, 0.95f);
         sgl_begin_triangles();
         sgl_v2f(-12.0f, 0.0f);
         sgl_v2f(-26.0f - flicker, 6.0f);
@@ -2001,8 +2020,9 @@ void draw_placement_reticle(void) {
         const scaffold_t *sc = &g.world.scaffolds[idx];
         if (!sc->active) return;
         target = sc->pos;
-        /* Validity: signal range present and no station too close */
-        valid = signal_strength_at(&g.world, target) > 0.0f;
+        /* Validity: has signal, not deep in core coverage, and not too close */
+        float gsig = signal_strength_at(&g.world, target);
+        valid = gsig > 0.0f && gsig < OUTPOST_MAX_SIGNAL;
         if (valid) {
             for (int s = 0; s < MAX_STATIONS; s++) {
                 const station_t *st = &g.world.stations[s];
@@ -2096,4 +2116,69 @@ void draw_shipyard_intake_beams(void) {
             }
         }
     }
+}
+
+
+/* ================================================================== */
+/* Hail ping — expanding yellow ring from ship on H-press             */
+/* ================================================================== */
+
+/* Zoom-out is relatively quick (~0.5s) so the player feels the camera
+ * react to the ping. Zoom-BACK is deliberately long (~5s, ~88% of the
+ * lifecycle) so the drift home is almost imperceptible — you notice
+ * the world opening up, you don't notice it closing. */
+#define HAIL_PING_DURATION   1.50f   /* ring sweep — gentle, not a shockwave */
+#define HAIL_PING_LIFECYCLE  8.00f   /* widen + very long drift back */
+#define HAIL_PING_PEAK_ZOOM  1.18f   /* half-extent multiplier — subtle */
+#define HAIL_PING_IN_END     0.10f   /* lifecycle frac where widen finishes (~0.8s) */
+#define HAIL_PING_HOLD_END   0.20f   /* lifecycle frac where slow zoom-back starts */
+
+static float ping_ease_out(float t) {
+    float u = 1.0f - t;
+    return 1.0f - (u * u * u);
+}
+
+static float ping_smoothstep(float edge0, float edge1, float x) {
+    float t = (x - edge0) / (edge1 - edge0);
+    if (t < 0.0f) t = 0.0f;
+    else if (t > 1.0f) t = 1.0f;
+    return t * t * (3.0f - 2.0f * t);
+}
+
+/* Camera zoom envelope: quick smoothstep out, brief hold, very slow
+ * smoothstep back. The return is stretched across ~5s so it drifts
+ * in almost imperceptibly while the player is back in normal flight. */
+float hail_ping_camera_zoom(void) {
+    if (g.hail_ping_timer <= 0.0f || g.hail_ping_timer > HAIL_PING_LIFECYCLE) return 1.0f;
+    float n = g.hail_ping_timer / HAIL_PING_LIFECYCLE;
+    float ramp_in  = ping_smoothstep(0.00f, HAIL_PING_IN_END, n);
+    float ramp_out = 1.0f - ping_smoothstep(HAIL_PING_HOLD_END, 1.00f, n);
+    float envelope = ramp_in < ramp_out ? ramp_in : ramp_out;
+    return 1.0f + (HAIL_PING_PEAK_ZOOM - 1.0f) * envelope;
+}
+
+void draw_hail_ping(void) {
+    if (g.hail_ping_timer <= 0.0f) return;
+    float t = g.hail_ping_timer / HAIL_PING_DURATION;
+    if (t >= 1.0f) return;
+    float e = ping_ease_out(t);
+    /* Scale the visual ring to the camera view so the sweep is always
+     * on-screen regardless of comm_range vs. window size. Treats the
+     * ring as a radar-pulse indicator rather than a literal radius
+     * (the hail overlay is what tells you which station responded). */
+    float cam_half = (g_cam_right - g_cam_left) * 0.5f;
+    float cam_v    = (g_cam_bottom - g_cam_top) * 0.5f;
+    if (cam_v < cam_half) cam_half = cam_v;
+    float visual_max = cam_half * 0.88f;
+    /* Cap by the actual comm_range too so a tiny comm upgrade doesn't
+     * draw a ring bigger than the sphere it represents. */
+    if (visual_max > g.hail_ping_range) visual_max = g.hail_ping_range;
+    float r = visual_max * e;
+    /* Softer: lower alpha, thinner pad, drop the inner afterglow. */
+    float alpha = (1.0f - t) * 0.45f;
+    float soft  = (1.0f - t) * 0.18f;
+    const float pad = 2.0f;
+    draw_circle_outline(g.hail_ping_origin, r,        96, 1.0f, 0.88f, 0.32f, alpha);
+    draw_circle_outline(g.hail_ping_origin, r + pad,  96, 1.0f, 0.88f, 0.32f, soft);
+    draw_circle_outline(g.hail_ping_origin, r - pad,  96, 1.0f, 0.80f, 0.22f, soft);
 }
