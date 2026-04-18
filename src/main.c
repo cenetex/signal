@@ -840,6 +840,7 @@ static void init(void) {
             cbs.on_death = on_remote_death;
             cbs.on_world_time = on_remote_world_time;
             cbs.on_events = apply_remote_events;
+            cbs.on_signal_channel = apply_remote_signal_channel;
             g.multiplayer_enabled = net_init(server_url, &cbs);
             if (g.multiplayer_enabled) {
                 /* Deactivate the local server — the remote server is authoritative.

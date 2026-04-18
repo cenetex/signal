@@ -542,6 +542,33 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_SIGNAL_CHANNEL:
+        if (len >= 3 && net_state.callbacks.on_signal_channel) {
+            int count = (int)(data[1] | ((uint16_t)data[2] << 8));
+            int expected = 3 + count * SIGNAL_CHANNEL_RECORD_SIZE;
+            if (len < expected) break;
+            /* Cap at CAPACITY so we don't blow the static buffer if a
+             * server version sends more records than we expect. */
+            if (count > 100) count = 100;
+            static NetSignalChannelMsg msgs[100];
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[3 + i * SIGNAL_CHANNEL_RECORD_SIZE];
+                uint64_t id = 0;
+                for (int k = 0; k < 8; k++) id |= ((uint64_t)p[k]) << (8 * k);
+                uint32_t ts = 0;
+                for (int k = 0; k < 4; k++) ts |= ((uint32_t)p[8 + k]) << (8 * k);
+                msgs[i].id = id;
+                msgs[i].timestamp_ms = ts;
+                msgs[i].sender_station = (int8_t)p[12];
+                int tlen = p[13];
+                if (tlen >= SIGNAL_CHANNEL_TEXT_MAX) tlen = SIGNAL_CHANNEL_TEXT_MAX - 1;
+                memcpy(msgs[i].text, &p[14], tlen);
+                msgs[i].text[tlen] = '\0';
+            }
+            net_state.callbacks.on_signal_channel(msgs, count);
+        }
+        break;
+
     case NET_MSG_SERVER_INFO:
         if (len >= 2) {
             int hash_len = len - 1;

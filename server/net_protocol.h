@@ -12,6 +12,9 @@
 #include "sim_nav.h"
 #include "protocol.h"   /* shared/protocol.h — protocol enums & constants */
 
+/* Forward declaration — defined below. */
+static inline int serialize_signal_channel(uint8_t *buf, const signal_channel_t *ch);
+
 /* ------------------------------------------------------------------ */
 /* Helpers                                                            */
 /* ------------------------------------------------------------------ */
@@ -241,6 +244,28 @@ static inline int serialize_asteroids_full(uint8_t *buf, const asteroid_t *aster
     buf[0] = NET_MSG_WORLD_ASTEROIDS;
     write_u16_le(&buf[1], (uint16_t)count);
     return ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE;
+}
+
+/* Signal channel (#316) snapshot — the client dedupes by id so this
+ * works as both the connect-time full sync and the per-post update. */
+static inline int serialize_signal_channel(uint8_t *buf, const signal_channel_t *ch) {
+    int n = ch->count;
+    if (n > SIGNAL_CHANNEL_CAPACITY) n = SIGNAL_CHANNEL_CAPACITY;
+    buf[0] = NET_MSG_SIGNAL_CHANNEL;
+    write_u16_le(&buf[1], (uint16_t)n);
+    int start = (ch->head - n + SIGNAL_CHANNEL_CAPACITY) % SIGNAL_CHANNEL_CAPACITY;
+    for (int i = 0; i < n; i++) {
+        int slot = (start + i) % SIGNAL_CHANNEL_CAPACITY;
+        const signal_channel_msg_t *m = &ch->msgs[slot];
+        uint8_t *p = &buf[3 + i * SIGNAL_CHANNEL_RECORD_SIZE];
+        memset(p, 0, SIGNAL_CHANNEL_RECORD_SIZE);
+        for (int k = 0; k < 8; k++) p[k] = (uint8_t)(m->id >> (8 * k));
+        for (int k = 0; k < 4; k++) p[8 + k] = (uint8_t)(m->timestamp_ms >> (8 * k));
+        p[12] = (uint8_t)(m->sender_station & 0xFF);
+        p[13] = m->text_len;
+        memcpy(&p[14], m->text, m->text_len);
+    }
+    return 3 + n * SIGNAL_CHANNEL_RECORD_SIZE;
 }
 
 /*

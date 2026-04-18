@@ -38,6 +38,7 @@ typedef enum {
     STATION_TAB_MARKET,
     STATION_TAB_CONTRACTS,
     STATION_TAB_SHIPYARD,
+    STATION_TAB_NETWORK,
     STATION_TAB_COUNT
 } station_tab_t;
 

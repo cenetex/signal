@@ -243,6 +243,7 @@ typedef struct {
     belt_field_t belt;
     spatial_grid_t asteroid_grid;
     signal_grid_t signal_cache;
+    signal_channel_t signal_channel;  /* station broadcast log (#316) */
 } world_t;
 
 /* ------------------------------------------------------------------ */
@@ -306,6 +307,9 @@ void emit_event(world_t *w, sim_event_t ev);
 float ledger_balance(const station_t *st, const uint8_t *token);
 void ledger_earn(station_t *st, const uint8_t *token, float amount);
 void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
+/* Signal channel — station broadcast log (#316). */
+uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, const char *audio_url);
+const signal_channel_msg_t *signal_channel_at(const world_t *w, int i);
 void player_seed_credits(server_player_t *sp, world_t *w);
 void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_by);
 void activate_outpost(world_t *w, int station_idx);

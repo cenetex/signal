@@ -534,6 +534,98 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                     handle_station_command(c, hm, sid);
                 }
             }
+        } else if (mg_match(hm->uri, mg_str("/api/station/*/signal_channel"), NULL)) {
+            /* Station posts to the broadcast log (#316). */
+            if (!api_rate_check()) {
+                mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
+            } else if (!api_auth_ok(hm)) {
+                mg_http_reply(c, 401, api_headers, "{\"error\":\"unauthorized\"}");
+            } else {
+                int sid = parse_station_id(hm);
+                if (sid < 0) {
+                    mg_http_reply(c, 404, api_headers, "{\"error\":\"station not found\"}");
+                } else {
+                    char *text = mg_json_get_str(hm->body, "$.text");
+                    char *audio = mg_json_get_str(hm->body, "$.audio_url");
+                    if (!text || text[0] == '\0' || strlen(text) > SIGNAL_CHANNEL_TEXT_MAX - 1) {
+                        mg_http_reply(c, 400, api_headers,
+                                      "{\"ok\":false,\"error\":\"text missing or >200 chars\"}");
+                    } else if (audio && audio[0] && strncmp(audio, "https://", 8) != 0) {
+                        mg_http_reply(c, 400, api_headers,
+                                      "{\"ok\":false,\"error\":\"audio_url must be https\"}");
+                    } else if (audio && strlen(audio) > SIGNAL_CHANNEL_AUDIO_MAX - 1) {
+                        mg_http_reply(c, 400, api_headers,
+                                      "{\"ok\":false,\"error\":\"audio_url too long\"}");
+                    } else {
+                        uint64_t id = signal_channel_post(&world, sid, text, audio ? audio : "");
+                        uint32_t ts = (uint32_t)(world.time * 1000.0f);
+                        /* Push snapshot to every connected ship so the
+                         * Network tab updates in-game without polling. */
+                        {
+                            size_t cap = (size_t)(3 + world.signal_channel.count * SIGNAL_CHANNEL_RECORD_SIZE);
+                            uint8_t *msg = (uint8_t *)malloc(cap);
+                            if (msg) {
+                                int len = serialize_signal_channel(msg, &world.signal_channel);
+                                broadcast(msg, (size_t)len);
+                                free(msg);
+                            }
+                        }
+                        mg_http_reply(c, 200, api_headers,
+                                      "{\"ok\":true,\"id\":%llu,\"timestamp\":%u}",
+                                      (unsigned long long)id, ts);
+                    }
+                    free(text);
+                    free(audio);
+                }
+            }
+        } else if (mg_match(hm->uri, mg_str("/api/signal_channel/messages"), NULL)) {
+            if (!api_rate_check()) {
+                mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
+            } else if (!api_auth_ok(hm)) {
+                mg_http_reply(c, 401, api_headers, "{\"error\":\"unauthorized\"}");
+            } else {
+                /* Parse ?since=<id>&limit=<1..100> — crude query scan
+                 * since mongoose gives us hm->query as a raw string. */
+                long since = 0, limit = 50;
+                char tmp[32];
+                if (mg_http_get_var(&hm->query, "since", tmp, sizeof(tmp)) > 0) since = atol(tmp);
+                if (mg_http_get_var(&hm->query, "limit", tmp, sizeof(tmp)) > 0) limit = atol(tmp);
+                if (limit < 1) limit = 1;
+                if (limit > 100) limit = 100;
+
+                /* Response sized for worst case: 100 × 440 bytes + framing ≈ 50KB. */
+                enum { RESP_BUFSZ = 65536 };
+                char *out = (char *)malloc(RESP_BUFSZ);
+                if (!out) {
+                    mg_http_reply(c, 500, api_headers, "{\"error\":\"out of memory\"}");
+                } else {
+                    int pos = 0;
+                    BUF_APPEND(pos, out, RESP_BUFSZ, "{\"messages\":[");
+                    bool first = true;
+                    int emitted = 0;
+                    for (int i = 0; i < world.signal_channel.count && emitted < (int)limit; i++) {
+                        const signal_channel_msg_t *m = signal_channel_at(&world, i);
+                        if (!m || (long long)m->id <= since) continue;
+                        if (!first) BUF_APPEND(pos, out, RESP_BUFSZ, ",");
+                        first = false;
+                        BUF_APPEND(pos, out, RESP_BUFSZ,
+                            "{\"id\":%llu,\"timestamp\":%u,\"sender_station_id\":%d,\"text\":\"",
+                            (unsigned long long)m->id, m->timestamp_ms, (int)m->sender_station);
+                        json_escape_append(out, &pos, RESP_BUFSZ, m->text);
+                        BUF_APPEND(pos, out, RESP_BUFSZ, "\"");
+                        if (m->audio_url[0]) {
+                            BUF_APPEND(pos, out, RESP_BUFSZ, ",\"audio_url\":\"");
+                            json_escape_append(out, &pos, RESP_BUFSZ, m->audio_url);
+                            BUF_APPEND(pos, out, RESP_BUFSZ, "\"");
+                        }
+                        BUF_APPEND(pos, out, RESP_BUFSZ, "}");
+                        emitted++;
+                    }
+                    BUF_APPEND(pos, out, RESP_BUFSZ, "]}");
+                    mg_http_reply(c, 200, api_headers, "%s", out);
+                    free(out);
+                }
+            }
         } else if (mg_match(hm->uri, mg_str("/health"), NULL)) {
             int count = 0;
             for (int i = 0; i < MAX_PLAYERS; i++)
@@ -612,6 +704,18 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             server_player_t *sp = &world.players[pid];
             for (int ai = 0; ai < MAX_ASTEROIDS; ai++)
                 sp->asteroid_sent[ai] = world.asteroids[ai].active;
+        }
+
+        /* Signal channel snapshot (#316): newcomer gets the full ring
+         * buffer so the Network tab has content immediately. */
+        if (world.signal_channel.count > 0) {
+            size_t cap = (size_t)(3 + world.signal_channel.count * SIGNAL_CHANNEL_RECORD_SIZE);
+            uint8_t *msg = (uint8_t *)malloc(cap);
+            if (msg) {
+                int len = serialize_signal_channel(msg, &world.signal_channel);
+                ws_send(c, msg, (size_t)len);
+                free(msg);
+            }
         }
 
         /* Send server version hash. */

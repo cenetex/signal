@@ -413,6 +413,7 @@ void draw_station_services(const station_ui_state_t* ui) {
     if (station_has_module(ui->station, MODULE_SHIPYARD)) {
         visible_tabs[tab_count++] = STATION_TAB_SHIPYARD;
     }
+    visible_tabs[tab_count++] = STATION_TAB_NETWORK;
     float tab_w = fminf(inner_w / (float)tab_count, 120.0f);
 
     /* Station name + role header */
@@ -455,6 +456,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 case STATION_TAB_MARKET:    sdtx_puts("MARKET"); break;
                 case STATION_TAB_CONTRACTS: sdtx_puts("CONTRACTS"); break;
                 case STATION_TAB_SHIPYARD:  sdtx_puts("SHIPYARD"); break;
+                case STATION_TAB_NETWORK:   sdtx_puts("NETWORK"); break;
                 default: break;
             }
         }
@@ -1076,6 +1078,47 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_color3b(PAL_STATUS_DISABLED);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
             sdtx_puts("No pending orders.");
+        }
+        break;
+    }
+
+    case STATION_TAB_NETWORK: {
+        sdtx_color3b(PAL_HOLD_CYAN);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+        sdtx_puts("SIGNAL CHANNEL");
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
+        sdtx_color3b(PAL_STATION_HINT);
+        sdtx_puts("most recent station chatter");
+
+        const signal_channel_t *ch = &g.world.signal_channel;
+        float ly = cy + 34.0f;
+        if (ch->count == 0) {
+            sdtx_color3b(PAL_STATUS_DISABLED);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_puts("(quiet on the wire)");
+            break;
+        }
+        /* Show up to the last 3 messages, most recent first. */
+        int show = ch->count < 3 ? ch->count : 3;
+        for (int i = 0; i < show; i++) {
+            /* Walk from the end: index count-1 = newest. */
+            int slot_idx = ch->count - 1 - i;
+            int start = (ch->head - ch->count + SIGNAL_CHANNEL_CAPACITY) % SIGNAL_CHANNEL_CAPACITY;
+            int slot = (start + slot_idx) % SIGNAL_CHANNEL_CAPACITY;
+            const signal_channel_msg_t *m = &ch->msgs[slot];
+            const char *sender = "SYSTEM";
+            if (m->sender_station >= 0 && m->sender_station < MAX_STATIONS
+                && station_exists(&g.world.stations[m->sender_station])) {
+                sender = g.world.stations[m->sender_station].name;
+            }
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_color3b(PAL_TEXT_PRIMARY);
+            sdtx_printf("[%s]", sender);
+            ly += 12.0f;
+            sdtx_pos(ui_text_pos(cx + 8.0f), ui_text_pos(ly));
+            sdtx_color3b(PAL_TEXT_SECONDARY);
+            sdtx_puts(m->text);
+            ly += 20.0f;
         }
         break;
     }

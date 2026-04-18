@@ -409,6 +409,33 @@ enum { STATION_NUM_RINGS = 3 };
 /* Station query/geometry helpers moved to shared/station_util.h (#273).
  * Economy and ship-upgrade constants moved to shared/economy_const.h. */
 
+/* Signal channel — station broadcast log. Fixed-size ring buffer of
+ * recent messages; stations post via REST, everyone reads. Sized to
+ * 100 × ~440B ≈ 44KB which fits save + wire snapshot budgets. */
+enum {
+    SIGNAL_CHANNEL_TEXT_MAX   = 200,   /* chars incl. null terminator */
+    SIGNAL_CHANNEL_AUDIO_MAX  = 256,   /* https URL — 256 keeps wire tight */
+    SIGNAL_CHANNEL_CAPACITY   = 100,   /* ring slots; spec calls for 200,
+                                          we ship 100 for V1 save footprint */
+};
+
+typedef struct {
+    uint64_t id;                         /* monotonic, never resets (0 = empty slot) */
+    uint32_t timestamp_ms;               /* server world_time * 1000 at post */
+    int16_t  sender_station;             /* source station index, -1 = system */
+    uint8_t  text_len;
+    uint8_t  audio_len;
+    char     text[SIGNAL_CHANNEL_TEXT_MAX];
+    char     audio_url[SIGNAL_CHANNEL_AUDIO_MAX];
+} signal_channel_msg_t;
+
+typedef struct {
+    signal_channel_msg_t msgs[SIGNAL_CHANNEL_CAPACITY];
+    int      head;      /* next write slot (0..CAPACITY-1) */
+    int      count;     /* active slots (0..CAPACITY) */
+    uint64_t next_id;   /* next id to assign (monotonic, survives wrap) */
+} signal_channel_t;
+
 typedef enum {
     /* TRACTOR: tow / deliver thing(s) to a destination.
      * - target_index >= 0  → specific entity (scaffold, fragment) to destination

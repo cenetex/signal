@@ -227,6 +227,29 @@ void apply_remote_events(const sim_event_t *events, int count) {
     process_sim_events(&temp);
 }
 
+void apply_remote_signal_channel(const NetSignalChannelMsg *msgs, int count) {
+    /* Rebuild the client-side ring buffer from the snapshot. Server is
+     * authoritative; on every post we get the current tail. */
+    signal_channel_t *ch = &g.world.signal_channel;
+    memset(ch, 0, sizeof(*ch));
+    int n = count;
+    if (n > SIGNAL_CHANNEL_CAPACITY) n = SIGNAL_CHANNEL_CAPACITY;
+    for (int i = 0; i < n; i++) {
+        signal_channel_msg_t *dst = &ch->msgs[i];
+        memset(dst, 0, sizeof(*dst));
+        dst->id = msgs[i].id;
+        dst->timestamp_ms = msgs[i].timestamp_ms;
+        dst->sender_station = msgs[i].sender_station;
+        size_t tn = strlen(msgs[i].text);
+        if (tn > SIGNAL_CHANNEL_TEXT_MAX - 1) tn = SIGNAL_CHANNEL_TEXT_MAX - 1;
+        memcpy(dst->text, msgs[i].text, tn);
+        dst->text_len = (uint8_t)tn;
+        if (msgs[i].id > ch->next_id) ch->next_id = msgs[i].id;
+    }
+    ch->count = n;
+    ch->head = n % SIGNAL_CHANNEL_CAPACITY;
+}
+
 void apply_remote_hail_response(uint8_t station, float credits, int contract_index) {
     if (station >= MAX_STATIONS) {
         set_notice("No station in range to hail.");

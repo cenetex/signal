@@ -3232,6 +3232,48 @@ static void step_scaffolds(world_t *w, float dt) {
 /* Public: world_sim_step                                             */
 /* ================================================================== */
 
+/* Signal-channel append. Returns the new message's id (0 on reject).
+ * sender_station == -1 is allowed for system-origin posts (e.g. map
+ * events). Text is trimmed to SIGNAL_CHANNEL_TEXT_MAX-1 chars;
+ * audio_url must be empty or start with https: (enforced by the
+ * REST handler, not this helper). */
+uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, const char *audio_url) {
+    if (!w || !text || text[0] == '\0') return 0;
+    signal_channel_t *ch = &w->signal_channel;
+    int slot = ch->head;
+    signal_channel_msg_t *m = &ch->msgs[slot];
+    memset(m, 0, sizeof(*m));
+    ch->next_id++;
+    m->id = ch->next_id;
+    m->timestamp_ms = (uint32_t)(w->time * 1000.0f);
+    m->sender_station = (int16_t)sender_station;
+    size_t tn = strlen(text);
+    if (tn > SIGNAL_CHANNEL_TEXT_MAX - 1) tn = SIGNAL_CHANNEL_TEXT_MAX - 1;
+    memcpy(m->text, text, tn);
+    m->text[tn] = '\0';
+    m->text_len = (uint8_t)tn;
+    if (audio_url && audio_url[0]) {
+        size_t an = strlen(audio_url);
+        if (an > SIGNAL_CHANNEL_AUDIO_MAX - 1) an = SIGNAL_CHANNEL_AUDIO_MAX - 1;
+        memcpy(m->audio_url, audio_url, an);
+        m->audio_url[an] = '\0';
+        m->audio_len = (uint8_t)(an > 255 ? 255 : an);
+    }
+    ch->head = (ch->head + 1) % SIGNAL_CHANNEL_CAPACITY;
+    if (ch->count < SIGNAL_CHANNEL_CAPACITY) ch->count++;
+    return m->id;
+}
+
+/* Iterate messages in post order (oldest first) via callback-free index
+ * walk. Caller passes index 0..count-1 and receives a pointer. */
+const signal_channel_msg_t *signal_channel_at(const world_t *w, int i) {
+    const signal_channel_t *ch = &w->signal_channel;
+    if (i < 0 || i >= ch->count) return NULL;
+    int start = (ch->head - ch->count + SIGNAL_CHANNEL_CAPACITY) % SIGNAL_CHANNEL_CAPACITY;
+    int slot = (start + i) % SIGNAL_CHANNEL_CAPACITY;
+    return &ch->msgs[slot];
+}
+
 void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
     w->time += dt;

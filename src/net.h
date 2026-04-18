@@ -161,6 +161,17 @@ typedef void (*net_on_scaffolds_fn)(const NetScaffoldState* scaffolds, int count
 /* Hail response callback: server confirmed payout from a hail attempt. */
 typedef void (*net_on_hail_response_fn)(uint8_t station, float credits, int contract_index);
 
+/* Signal-channel wire record (#316). audio_url isn't on the wire in V1;
+ * agents reach it via the REST endpoint. */
+typedef struct {
+    uint64_t id;
+    uint32_t timestamp_ms;
+    int16_t  sender_station;  /* -1 = system */
+    char     text[SIGNAL_CHANNEL_TEXT_MAX];
+} NetSignalChannelMsg;
+
+typedef void (*net_on_signal_channel_fn)(const NetSignalChannelMsg *msgs, int count);
+
 typedef void (*net_on_players_begin_fn)(void);
 
 typedef struct {
@@ -182,6 +193,7 @@ typedef struct {
                      int asteroids_fractured);
     void (*on_world_time)(float server_time);
     void (*on_events)(const sim_event_t *events, int count);
+    net_on_signal_channel_fn on_signal_channel;
 } NetCallbacks;
 
 /* Initialize networking and connect to the relay server.

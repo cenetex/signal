@@ -47,7 +47,12 @@ enum {
     NET_MSG_WORLD_SCAFFOLDS = 0x24, /* server -> client: active scaffold pool */
     NET_MSG_HAIL_RESPONSE   = 0x25, /* server -> client: hail collected payout */
     NET_MSG_EVENTS          = 0x26, /* server -> client: sim event batch */
+    NET_MSG_SIGNAL_CHANNEL  = 0x27, /* server -> client: broadcast-log snapshot / append (#316) */
 };
+
+/* Signal channel wire record: [id:u64][ts_ms:u32][sender:i8][text_len:u8][text:200] = 214 bytes
+ * audio_url is server-side only for V1; agents read it via REST. */
+#define SIGNAL_CHANNEL_RECORD_SIZE (8 + 4 + 1 + 1 + 200)
 
 /* ------------------------------------------------------------------ */
 /* Plan operations (NET_MSG_PLAN payload byte 1)                      */
