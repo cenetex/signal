@@ -438,10 +438,6 @@ void process_sim_events(const sim_events_t *events) {
                         g.hail_credits = ev->hail_response.credits;
                         g.hail_station_index = hs;
                         g.hail_timer = 6.0f;
-                        /* Auto-track the quest the station just issued. */
-                        int ci = ev->hail_response.contract_index;
-                        if (ci >= 0 && ci < MAX_CONTRACTS)
-                            g.tracked_contract = ci;
                         if (g.hail_credits > 0.5f)
                             audio_play_sale(&g.audio);
                         if (g.world.stations[hs].station_slug[0])
@@ -531,6 +527,10 @@ static void sim_step(float dt) {
         g.commission_timer = fmaxf(0.0f, g.commission_timer - dt);
     if (g.hail_timer > 0.0f)
         g.hail_timer = fmaxf(0.0f, g.hail_timer - dt);
+    if (g.hail_ping_timer > 0.0f) {
+        g.hail_ping_timer += dt;
+        if (g.hail_ping_timer > 1.60f) g.hail_ping_timer = 0.0f; /* HAIL_PING_LIFECYCLE */
+    }
     if (g.outpost_lock_timer > 0.0f)
         g.outpost_lock_timer = fmaxf(0.0f, g.outpost_lock_timer - dt);
 
@@ -986,7 +986,11 @@ static void render_world(void) {
         g.screen_shake = 0.0f;
     }
 
-    set_camera_bounds(camera, half_w, half_h);
+    /* Ping zoom: widens the view while the hail ping is active so the
+     * expanding ring stays on-screen. Eases in + out on the same timer
+     * as the ring animation. */
+    float ping_zoom = hail_ping_camera_zoom();
+    set_camera_bounds(camera, half_w * ping_zoom, half_h * ping_zoom);
 
     sgl_defaults();
     sgl_matrix_mode_projection();
@@ -1377,9 +1381,6 @@ static void frame(void) {
                     flags |= NET_INPUT_FIRE;
                 if (g.input.key_down[SAPP_KEYCODE_SPACE] && !g.plan_mode_active)
                     flags |= NET_INPUT_TRACTOR;
-                if ((g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT] || g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT])
-                    && !LOCAL_PLAYER.docked)
-                    flags |= NET_INPUT_BOOST;
                 g.pending_net_action = 0;
                 uint8_t mining_target = (LOCAL_PLAYER.hover_asteroid >= 0 && LOCAL_PLAYER.hover_asteroid < 255)
                     ? (uint8_t)LOCAL_PLAYER.hover_asteroid : 255;
