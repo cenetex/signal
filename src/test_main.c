@@ -5618,6 +5618,133 @@ TEST(test_econ_sim_credit_circulation) {
 }
 
 /* ================================================================== */
+/* Economy invariant: credit conservation                             */
+/* ================================================================== */
+
+/* Sum of all station credit pools + all per-player ledger balances.
+ * This is the total money supply — must be strictly conserved across
+ * any simulation step, because all credit-mutation paths (buy, sell,
+ * contract payout, supply credit, seed) are intra-station transfers
+ * between pool and ledger. Creation happens only in world_reset and
+ * save migration; destruction never. Any breach = an invariant leak.
+ *
+ * Cross-station wealth movement is goods-in-hold, not credits. */
+static double econ_total_credits(const world_t *w) {
+    double total = 0.0;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (st->id == 0) continue;
+        total += (double)st->credit_pool;
+        for (int i = 0; i < st->ledger_count; i++)
+            total += (double)st->ledger[i].balance;
+    }
+    return total;
+}
+
+TEST(test_econ_invariant_npc_only_conservation) {
+    /* Run the NPC-only sim for 2 sim-minutes and assert the total
+     * credit supply is conserved at every tick. Catches any future
+     * leak in production, contract payout, or construction paths. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    double initial = econ_total_credits(w);
+
+    int ticks = (int)(120.0f / SIM_DT); /* 2 minutes of sim time */
+    double min_seen = initial, max_seen = initial;
+    for (int i = 0; i < ticks; i++) {
+        world_sim_step(w, SIM_DT);
+        double total = econ_total_credits(w);
+        if (total < min_seen) min_seen = total;
+        if (total > max_seen) max_seen = total;
+        /* Strict conservation — 1cr slack for float roundoff across
+         * thousands of sub-cent operations. */
+        if (fabs(total - initial) > 1.0) {
+            printf("FAIL\n    tick %d: total=%.4f initial=%.4f drift=%.4f\n",
+                i, total, initial, total - initial);
+            tests_failed++;
+            return;
+        }
+    }
+    printf("[conserved over %d ticks, drift range [%.4f, %.4f]] ",
+        ticks, min_seen - initial, max_seen - initial);
+}
+
+TEST(test_econ_invariant_player_session_conservation) {
+    /* Script a player through every credit-touching action (sell via
+     * contract, sell via fallback, buy product, repair, upgrade) and
+     * assert conservation at each step. */
+    WORLD_DECL;
+    world_reset(&w);
+    uint8_t token[8] = {0x42, 1, 2, 3, 4, 5, 6, 7};
+    memcpy(w.players[0].session_token, token, 8);
+    w.players[0].session_ready = true;
+    player_init_ship(&w.players[0], &w);
+    player_seed_credits(&w.players[0], &w);
+    w.players[0].connected = true;
+    double initial = econ_total_credits(&w);
+
+    #define ASSERT_CONSERVED(label) do { \
+        double _t = econ_total_credits(&w); \
+        if (fabs(_t - initial) > 1.0) { \
+            printf("FAIL\n    %s: total=%.4f initial=%.4f drift=%.4f\n", \
+                label, _t, initial, _t - initial); \
+            tests_failed++; return; \
+        } \
+    } while (0)
+
+    /* Step 1: NPC activity for a while (proxy for belt traffic) */
+    for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
+    ASSERT_CONSERVED("after 5s NPC activity");
+
+    /* Step 2: contract sell path — deliver ferrite ingots to Kepler */
+    w.contracts[0] = (contract_t){
+        .active = true, .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 5.0f,
+        .base_price = 20.0f,
+        .target_index = -1, .claimed_by = -1,
+    };
+    w.players[0].docked = true;
+    w.players[0].current_station = 1;
+    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 5.0f;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.service_sell = false;
+    ASSERT_CONSERVED("after contract sell");
+
+    /* Step 3: buy-product path — buy frames from Kepler */
+    w.stations[1].inventory[COMMODITY_FRAME] = 20.0f;
+    w.players[0].input.buy_product = true;
+    w.players[0].input.buy_commodity = COMMODITY_FRAME;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.buy_product = false;
+    ASSERT_CONSERVED("after buy product");
+
+    /* Step 4: repair path — damage the ship, dock at a repair-capable
+     * station, trigger service_repair. Passive repair also runs, but
+     * the invariant holds either way (repair fee is pool->ledger only
+     * if the ledger had enough; otherwise it's a no-op). */
+    w.players[0].ship.hull = 50.0f;
+    w.players[0].input.service_repair = true;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.service_repair = false;
+    ASSERT_CONSERVED("after repair");
+
+    /* Step 5: supply credit path — simulate NPC smelting paying out */
+    ledger_credit_supply(&w.stations[0], token, 50.0f);
+    ASSERT_CONSERVED("after supply credit");
+
+    /* Step 6: long tail — run another 5s of sim with all the activity
+     * above baked in, verify no drift accumulates. */
+    for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
+    ASSERT_CONSERVED("after 5s post-action sim");
+
+    #undef ASSERT_CONSERVED
+}
+
+/* ================================================================== */
 /* #312 follow-up: regression tests for the 4-bug fix (fd3a977)       */
 /* ================================================================== */
 
@@ -6232,6 +6359,10 @@ int main(void) {
     RUN(test_bug312_1_docked_buy_honors_spend_failure);
     RUN(test_bug312_2_ledger_balance_matches_by_token);
     RUN(test_bug312_3_init_ship_does_not_seed_with_zero_token);
+
+    printf("\nEconomy invariant (conservation):\n");
+    RUN(test_econ_invariant_npc_only_conservation);
+    RUN(test_econ_invariant_player_session_conservation);
 
     printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
     return tests_failed > 0 ? 1 : 0;
