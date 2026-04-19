@@ -848,6 +848,20 @@ void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target) {
     ws_send_binary(buf, 4);
 }
 
+void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {
+    uint8_t buf[33];
+    buf[0] = NET_MSG_BUY_INGOT;
+    memcpy(&buf[1], ingot_pubkey, 32);
+    ws_send_binary(buf, 33);
+}
+
+void net_send_deliver_ingot(uint8_t hold_index) {
+    uint8_t buf[2];
+    buf[0] = NET_MSG_DELIVER_INGOT;
+    buf[1] = hold_index;
+    ws_send_binary(buf, 2);
+}
+
 void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
                    uint8_t module_type, float px, float py) {
     uint8_t buf[NET_PLAN_MSG_SIZE];
@@ -970,6 +984,20 @@ void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target) {
     buf[2] = action;
     buf[3] = mining_target;
     ws_send_binary(buf, 4);
+}
+
+void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {
+    uint8_t buf[33];
+    buf[0] = NET_MSG_BUY_INGOT;
+    memcpy(&buf[1], ingot_pubkey, 32);
+    ws_send_binary(buf, 33);
+}
+
+void net_send_deliver_ingot(uint8_t hold_index) {
+    uint8_t buf[2];
+    buf[0] = NET_MSG_DELIVER_INGOT;
+    buf[1] = hold_index;
+    ws_send_binary(buf, 2);
 }
 
 void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,

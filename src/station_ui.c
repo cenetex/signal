@@ -756,7 +756,45 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_printf("(+%d more)", ui->station->named_ingots_count - show);
                 my += 12.0f;
             }
-            my += compact ? 8.0f : 12.0f;
+            sdtx_pos(ui_text_pos(cx + 3.0f), ui_text_pos(my));
+            sdtx_color3b(PAL_STATION_HINT);
+            sdtx_puts("[B] buy first lot");
+            my += compact ? 12.0f : 16.0f;
+        }
+
+        /* === YOUR HOLD (RATi v2 named ingots in player's cargo) === */
+        if (LOCAL_PLAYER.ship.hold_ingots_count > 0) {
+            sdtx_color3b(PAL_HOLD_STATUS);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+            sdtx_puts("YOUR HOLD");
+            draw_ui_rule(cx, rule_right_m, my + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
+            my += 16.0f;
+            static const char *grade_letter_h[INGOT_PREFIX_COUNT] = {
+                "?", "M", "H", "T", "S", "F", "K", "RATi", "★"
+            };
+            for (int i = 0; i < LOCAL_PLAYER.ship.hold_ingots_count; i++) {
+                const named_ingot_t *ing = &LOCAL_PLAYER.ship.hold_ingots[i];
+                const char *grade = (ing->prefix_class < INGOT_PREFIX_COUNT)
+                    ? grade_letter_h[ing->prefix_class] : "?";
+                char rendered[12];
+                mining_render_callsign(ing->pubkey, rendered);
+                const char *suffix = strchr(rendered, '-');
+                suffix = suffix ? suffix + 1 : rendered;
+                sdtx_pos(ui_text_pos(cx + 3.0f), ui_text_pos(my));
+                if (ing->prefix_class >= INGOT_PREFIX_RATI)
+                    sdtx_color3b(PAL_ORE_AMBER);
+                else
+                    sdtx_color3b(PAL_TEXT_SECONDARY);
+                sdtx_printf("%s-grade %s lot %s",
+                            grade,
+                            commodity_short_name((commodity_t)ing->metal),
+                            suffix);
+                my += 12.0f;
+            }
+            sdtx_pos(ui_text_pos(cx + 3.0f), ui_text_pos(my));
+            sdtx_color3b(PAL_STATION_HINT);
+            sdtx_puts("[N] deliver first lot");
+            my += compact ? 12.0f : 16.0f;
         }
 
         /* === SELL TO STATION === */

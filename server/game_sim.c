@@ -63,7 +63,7 @@ void ledger_earn(station_t *st, const uint8_t *token, float amount) {
     st->ledger[idx].balance += amount;
 }
 
-static bool ledger_spend(station_t *st, const uint8_t *token, float amount, ship_t *ship) {
+bool ledger_spend(station_t *st, const uint8_t *token, float amount, ship_t *ship) {
     if (amount <= 0.0f) return true;
     int idx = ledger_find_or_create(st, token);
     if (idx < 0) return false;

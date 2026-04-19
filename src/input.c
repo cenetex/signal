@@ -8,6 +8,15 @@
 #include "net.h"
 #include "onboarding.h"
 #include "signal_model.h"
+#include "mining.h"
+
+/* Local helper — station's currency_name with fallback. station_ui.c
+ * has its own private copy; we duplicate here to avoid leaking a
+ * private string through a header just for one keybind. */
+static const char *input_station_currency(const station_t *st) {
+    if (!st) return "cr";
+    return (st->currency_name[0]) ? st->currency_name : "cr";
+}
 
 void clear_input_state(void) {
     memset(g.input.key_down, 0, sizeof(g.input.key_down));
@@ -370,6 +379,91 @@ input_intent_t sample_input_intent(void) {
         intent.upgrade_hold = is_key_pressed(SAPP_KEYCODE_4);
         intent.upgrade_tractor = is_key_pressed(SAPP_KEYCODE_5);
     }
+    /* RATi v2: B key buys the first named ingot in the station's
+     * stockpile (player can repeatedly press to walk down the list).
+     * N key delivers the first hold ingot into the docked station's
+     * stockpile. Slice 3 — single-action keys keep the UX simple
+     * before per-row pickers land. */
+    if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_B)) {
+        const station_t *st = current_station_ptr();
+        if (st && st->named_ingots_count > 0) {
+            ship_t *ship = &LOCAL_PLAYER.ship;
+            if (ship->hold_ingots_count >= 8) {
+                set_notice("Hold full — can't carry more lots.");
+            } else {
+                const named_ingot_t *ing = &st->named_ingots[0];
+                int price;
+                switch (ing->prefix_class) {
+                case INGOT_PREFIX_RATI:         price = INGOT_PRICE_RATI; break;
+                case INGOT_PREFIX_COMMISSIONED: price = INGOT_PRICE_COMMISSIONED; break;
+                default:                        price = INGOT_PRICE_M; break;
+                }
+                if (player_current_balance() < (float)price) {
+                    set_notice("Need %d %s.", price, input_station_currency(st));
+                } else {
+                    char cs[12]; mining_render_callsign(ing->pubkey, cs);
+                    if (g.multiplayer_enabled) {
+                        net_send_buy_ingot(ing->pubkey);
+                    } else {
+                        /* Singleplayer mirror: shift first ingot from
+                         * station stockpile into hold, drop balance
+                         * from the local ledger directly. */
+                        station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
+                        ship->hold_ingots[ship->hold_ingots_count++] = mst->named_ingots[0];
+                        for (int i = 0; i < mst->named_ingots_count - 1; i++)
+                            mst->named_ingots[i] = mst->named_ingots[i + 1];
+                        mst->named_ingots_count--;
+                        memset(&mst->named_ingots[mst->named_ingots_count], 0, sizeof(named_ingot_t));
+                        const uint8_t *tk = g.world.players[g.local_player_slot].session_token;
+                        for (int li = 0; li < mst->ledger_count; li++) {
+                            if (memcmp(mst->ledger[li].player_token, tk, 8) == 0) {
+                                mst->ledger[li].balance -= (float)price;
+                                if (mst->ledger[li].balance < 0.0f) mst->ledger[li].balance = 0.0f;
+                                mst->credit_pool += (float)price;
+                                break;
+                            }
+                        }
+                    }
+                    set_notice("Bought %s for %d %s.", cs, price, input_station_currency(st));
+                }
+            }
+        } else if (st) {
+            set_notice("No high-grade lots in stock.");
+        }
+    }
+    if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_N)) {
+        const station_t *st = current_station_ptr();
+        ship_t *ship = &LOCAL_PLAYER.ship;
+        if (st && ship->hold_ingots_count > 0) {
+            const named_ingot_t *ing = &ship->hold_ingots[0];
+            char cs[12]; mining_render_callsign(ing->pubkey, cs);
+            if (g.multiplayer_enabled) {
+                net_send_deliver_ingot(0);
+            } else {
+                /* Singleplayer mirror: shift first hold ingot into
+                 * the local station stockpile and pay the credit. */
+                station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
+                if (mst->named_ingots_count < STATION_NAMED_INGOTS_MAX) {
+                    mst->named_ingots[mst->named_ingots_count++] = ship->hold_ingots[0];
+                }
+                for (int i = 0; i < ship->hold_ingots_count - 1; i++)
+                    ship->hold_ingots[i] = ship->hold_ingots[i + 1];
+                ship->hold_ingots_count--;
+                memset(&ship->hold_ingots[ship->hold_ingots_count], 0, sizeof(named_ingot_t));
+                const uint8_t *tk = g.world.players[g.local_player_slot].session_token;
+                for (int li = 0; li < mst->ledger_count; li++) {
+                    if (memcmp(mst->ledger[li].player_token, tk, 8) == 0) {
+                        mst->ledger[li].balance += (float)INGOT_DELIVERY_CREDIT;
+                        break;
+                    }
+                }
+            }
+            set_notice("Delivered %s. +%d %s.", cs, INGOT_DELIVERY_CREDIT, input_station_currency(st));
+        } else if (st) {
+            set_notice("No lots in your hold.");
+        }
+    }
+
     /* Buy product from station (F key while docked) */
     if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_F)) {
         const station_t *st = current_station_ptr();

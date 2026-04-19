@@ -228,6 +228,14 @@ void net_send_session(const uint8_t token[8]);
  * mining_target: client's hover_asteroid index (255=none) */
 void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target);
 
+/* RATi v2: purchase a specific named ingot from the docked station's
+ * stockpile. Server will validate ledger balance + hold space. */
+void net_send_buy_ingot(const uint8_t ingot_pubkey[32]);
+
+/* RATi v2: deposit a hold ingot into the docked station's stockpile.
+ * Pays a small delivery credit; LRU evicts on full. */
+void net_send_deliver_ingot(uint8_t hold_index);
+
 /* Send a planning intent (outpost create / module slot / cancel). */
 void net_send_plan(uint8_t op, int8_t station, int8_t ring, int8_t slot,
                    uint8_t module_type, float px, float py);

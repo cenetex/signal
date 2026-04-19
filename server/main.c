@@ -6,6 +6,7 @@
  */
 #include "mongoose.h"
 #include "game_sim.h"
+#include "mining.h"  /* mining_render_callsign for chain log copy */
 #include "net_protocol.h"
 
 #include <stdio.h>
@@ -139,6 +140,83 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         break;
     case NET_MSG_MINING_ACTION:
         /* Legacy -- mining handled via INPUT flags now. */
+        break;
+    case NET_MSG_BUY_INGOT:
+        /* RATi v2: purchase a specific named ingot from the docked
+         * station's stockpile. Payload: [type:1][pubkey:32]. */
+        if (len >= 33 && world.players[pid].docked) {
+            int sidx = world.players[pid].current_station;
+            if (sidx < 0 || sidx >= MAX_STATIONS) break;
+            station_t *st = &world.stations[sidx];
+            ship_t *ship = &world.players[pid].ship;
+            const uint8_t *pk = &data[1];
+            int slot = -1;
+            for (int i = 0; i < st->named_ingots_count; i++) {
+                if (memcmp(st->named_ingots[i].pubkey, pk, 32) == 0) { slot = i; break; }
+            }
+            if (slot < 0) break;
+            named_ingot_t *src = &st->named_ingots[slot];
+            int price;
+            switch (src->prefix_class) {
+            case INGOT_PREFIX_RATI:         price = INGOT_PRICE_RATI; break;
+            case INGOT_PREFIX_COMMISSIONED: price = INGOT_PRICE_COMMISSIONED; break;
+            case INGOT_PREFIX_ANONYMOUS:    price = 0; break;
+            default:                        price = INGOT_PRICE_M; break;
+            }
+            if (price <= 0) break;
+            if (ship->hold_ingots_count >= SHIP_HOLD_INGOTS_MAX) break;
+            /* Use ledger_spend so the credit pool stays conserved. */
+            if (!ledger_spend(st, world.players[pid].session_token, (float)price, ship)) break;
+            /* Move ingot: append to hold, compact stockpile. */
+            ship->hold_ingots[ship->hold_ingots_count++] = *src;
+            *src = st->named_ingots[--st->named_ingots_count];
+            memset(&st->named_ingots[st->named_ingots_count], 0, sizeof(named_ingot_t));
+            st->named_ingots_dirty = true;
+            char cs[12]; mining_render_callsign(ship->hold_ingots[ship->hold_ingots_count - 1].pubkey, cs);
+            char msg[96];
+            snprintf(msg, sizeof(msg), "%s purchased %s for %d", world.players[pid].callsign, cs, price);
+            signal_channel_post(&world, sidx, msg, "");
+        }
+        break;
+    case NET_MSG_DELIVER_INGOT:
+        /* RATi v2: deposit a specific hold-ingot into the docked
+         * station's stockpile. Payload: [type:1][hold_index:1]. */
+        if (len >= 2 && world.players[pid].docked) {
+            int sidx = world.players[pid].current_station;
+            if (sidx < 0 || sidx >= MAX_STATIONS) break;
+            station_t *st = &world.stations[sidx];
+            ship_t *ship = &world.players[pid].ship;
+            int hidx = data[1];
+            if (hidx < 0 || hidx >= ship->hold_ingots_count) break;
+            /* LRU evict on full stockpile, same path as smelt. */
+            if (st->named_ingots_count >= STATION_NAMED_INGOTS_MAX) {
+                int worst = 0;
+                uint64_t oldest = st->named_ingots[0].mined_block;
+                for (int k = 1; k < STATION_NAMED_INGOTS_MAX; k++) {
+                    if (st->named_ingots[k].mined_block < oldest) {
+                        oldest = st->named_ingots[k].mined_block;
+                        worst = k;
+                    }
+                }
+                char ev_cs[12]; mining_render_callsign(st->named_ingots[worst].pubkey, ev_cs);
+                char ev_msg[96];
+                snprintf(ev_msg, sizeof(ev_msg), "stockpile full — voided %s", ev_cs);
+                signal_channel_post(&world, sidx, ev_msg, "");
+                st->named_ingots[worst] = st->named_ingots[STATION_NAMED_INGOTS_MAX - 1];
+                st->named_ingots_count = STATION_NAMED_INGOTS_MAX - 1;
+            }
+            st->named_ingots[st->named_ingots_count++] = ship->hold_ingots[hidx];
+            ship->hold_ingots[hidx] = ship->hold_ingots[--ship->hold_ingots_count];
+            memset(&ship->hold_ingots[ship->hold_ingots_count], 0, sizeof(named_ingot_t));
+            /* Pay delivery credit through the ledger so supply stays balanced. */
+            ledger_credit_supply(st, world.players[pid].session_token, (float)INGOT_DELIVERY_CREDIT);
+            st->named_ingots_dirty = true;
+            const named_ingot_t *deposited = &st->named_ingots[st->named_ingots_count - 1];
+            char cs[12]; mining_render_callsign(deposited->pubkey, cs);
+            char msg[96];
+            snprintf(msg, sizeof(msg), "%s delivered %s", world.players[pid].callsign, cs);
+            signal_channel_post(&world, sidx, msg, "");
+        }
         break;
     case NET_MSG_SESSION:
         if (len >= 9 && !world.players[pid].session_ready) {

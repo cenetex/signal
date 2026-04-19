@@ -308,6 +308,10 @@ void emit_event(world_t *w, sim_event_t ev);
 float ledger_balance(const station_t *st, const uint8_t *token);
 void ledger_earn(station_t *st, const uint8_t *token, float amount);
 void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
+/* Returns false if the player can't afford `amount` at this station;
+ * otherwise debits the ledger, refunds the credit_pool, and bumps the
+ * ship's stat_credits_spent. */
+bool ledger_spend(station_t *st, const uint8_t *token, float amount, ship_t *ship);
 /* Signal channel — station broadcast log (#316). */
 uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, const char *audio_url);
 const signal_channel_msg_t *signal_channel_at(const world_t *w, int i);

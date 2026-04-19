@@ -50,7 +50,24 @@ enum {
     NET_MSG_SIGNAL_CHANNEL  = 0x27, /* server -> client: broadcast-log snapshot / append (#316) */
     NET_MSG_STATION_INGOTS  = 0x28, /* server -> client: station's named-ingot stockpile (RATi v2) */
     NET_MSG_HOLD_INGOTS     = 0x29, /* server -> client: local player's hold ingots (RATi v2) */
+    NET_MSG_BUY_INGOT       = 0x2A, /* client -> server: [type:1][pubkey:32] purchase from current docked station */
+    NET_MSG_DELIVER_INGOT   = 0x2B, /* client -> server: [type:1][hold_index:1] deposit to current docked station */
 };
+
+/* Per-class buy price at any station's stockpile. RATi/commissioned
+ * are an order of magnitude scarcer so they cost proportionally more.
+ * Indexed by ingot_prefix_t. Anonymous = 0 (not purchasable). */
+#define INGOT_PRICE_M             1500
+#define INGOT_PRICE_H             1500
+#define INGOT_PRICE_T             1500
+#define INGOT_PRICE_S             1500
+#define INGOT_PRICE_F             1500
+#define INGOT_PRICE_K             1500
+#define INGOT_PRICE_RATI          35000
+#define INGOT_PRICE_COMMISSIONED  100000
+/* Delivery credit paid to the player when they deposit a named ingot
+ * at a station's stockpile — small flat reward for transit. */
+#define INGOT_DELIVERY_CREDIT     100
 
 /* Named ingot wire record: [pubkey:32][prefix:1][metal:1][_pad:2][mined_block:8][origin:1][_pad2:7] = 52 bytes
  * Mirrors named_ingot_t exactly so the server can write the struct
