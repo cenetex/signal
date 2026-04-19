@@ -156,11 +156,11 @@ else()
     add_executable(signal ${GAME_SOURCES})
 endif()
 
-target_include_directories(signal PRIVATE
+target_include_directories(signal SYSTEM PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor/sokol"
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor"
-    ${SIGNAL_INCLUDE_DIRS}
 )
+target_include_directories(signal PRIVATE ${SIGNAL_INCLUDE_DIRS})
 target_compile_definitions(signal PRIVATE GIT_HASH="${GIT_HASH}")
 
 # mongoose on Linux needs _GNU_SOURCE (same reason as signal_server).
