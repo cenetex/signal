@@ -655,6 +655,9 @@ void draw_hud_panels(void) {
         /* Tab bar */
         float tab_y = inner_y + 32.0f;
         float tab_h = compact ? 16.0f : 20.0f;
+        /* Must mirror the visible-tab list + tab_w cap in
+         * station_ui.c's draw_station_services exactly, or the
+         * active-tab highlight rect ends up under the wrong label. */
         station_tab_t visible_tabs[STATION_TAB_COUNT];
         int tab_count = 0;
         visible_tabs[tab_count++] = STATION_TAB_STATUS;
@@ -664,7 +667,8 @@ void draw_hud_panels(void) {
         if (cur_st && station_has_module(cur_st, MODULE_SHIPYARD)) {
             visible_tabs[tab_count++] = STATION_TAB_SHIPYARD;
         }
-        float tab_w = fminf(inner_w / (float)tab_count, 120.0f);
+        visible_tabs[tab_count++] = STATION_TAB_NETWORK;
+        float tab_w = fminf(inner_w / (float)tab_count, 96.0f);
 
         for (int t = 0; t < tab_count; t++) {
             float tx = inner_x + (float)t * tab_w;

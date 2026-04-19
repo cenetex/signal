@@ -175,6 +175,15 @@ else()
     # -Wno-strict-prototypes is client-only: sokol_* headers intentionally
     # use K&R-style () prototypes for C++ compat.
     target_compile_options(signal PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-strict-prototypes)
+
+    # src/main.c is the single SOKOL_IMPL translation unit. GCC still emits
+    # -Wpedantic warnings from system headers when they are "required
+    # diagnostics" — e.g. ISO C's forbid on object↔function pointer casts
+    # inside sokol_app.h's GLX loader. The SYSTEM include above isn't enough.
+    # Suppress -Wpedantic only for this one TU, so all other sources stay
+    # strict.
+    set_source_files_properties(src/main.c PROPERTIES
+        COMPILE_OPTIONS "-Wno-pedantic;-Wno-error=pedantic")
 endif()
 
 if(EMSCRIPTEN)
