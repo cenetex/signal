@@ -30,7 +30,15 @@
 #include "sim_construction.h"
 #include "signal_model.h"
 #include "rng.h"
+#include "sha256.h"   /* signal_chain_hash_block */
 #include <stdlib.h>
+#include <stdio.h>
+#include <sys/stat.h>
+#ifdef _WIN32
+#include <direct.h>   /* _mkdir */
+#else
+#include <dirent.h>
+#endif
 
 /* SIM_LOG moved to game_sim.h so all sim_*.c files share the same macro. */
 
@@ -1281,7 +1289,9 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
         if (d_sq <= tr_sq) {
             sp->tractor_fragments++;
             /* Instant grab: tractor pulse snaps fragments to tow chain.
-             * No drift phase — if it's in range and there's room, grab it. */
+             * No drift phase — if it's in range and there's room, grab it.
+             * Grade was rolled at fracture and is already on the rock; we
+             * just stamp ownership for the smelt-time payout split. */
             if (sp->ship.towed_count < max_tow) {
                 sp->ship.towed_fragments[sp->ship.towed_count] = (int16_t)i;
                 sp->ship.towed_count++;
@@ -1844,13 +1854,31 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
 
 /* --- Economy ledger helpers --- */
 
-/* Find or create a ledger entry for a player at a station */
+/* Find or create a ledger entry for a player at a station.
+ * When the 16-slot table is full, evict the entry with the smallest
+ * lifetime_supply (the least-active contributor). Their remaining
+ * balance is returned to the station's credit_pool so the money
+ * supply stays conserved. */
 static int ledger_find_or_create(station_t *st, const uint8_t *token) {
     for (int i = 0; i < st->ledger_count; i++) {
         if (memcmp(st->ledger[i].player_token, token, 8) == 0) return i;
     }
-    if (st->ledger_count >= 16) return -1;
-    int idx = st->ledger_count++;
+    int idx;
+    if (st->ledger_count < 16) {
+        idx = st->ledger_count++;
+    } else {
+        /* Evict least-supplied. Ties resolved by lowest index. */
+        int evict = 0;
+        float worst = st->ledger[0].lifetime_supply;
+        for (int i = 1; i < 16; i++) {
+            if (st->ledger[i].lifetime_supply < worst) {
+                worst = st->ledger[i].lifetime_supply;
+                evict = i;
+            }
+        }
+        st->credit_pool += st->ledger[evict].balance;
+        idx = evict;
+    }
     memcpy(st->ledger[idx].player_token, token, 8);
     st->ledger[idx].balance = 0.0f;
     st->ledger[idx].lifetime_supply = 0.0f;
@@ -3253,9 +3281,57 @@ static void step_scaffolds(world_t *w, float dt) {
  * events). Text is trimmed to SIGNAL_CHANNEL_TEXT_MAX-1 chars;
  * audio_url must be empty or start with https: (enforced by the
  * REST handler, not this helper). */
+/* Compute a block's entry_hash given its content and the prev block's hash.
+ * Layout hashed: prev_hash(32) || id(8 LE) || ts(4 LE) || sender(2 LE) ||
+ * text_len(1) || text(text_len). Stable across server restarts. */
+static void signal_chain_hash_block(const uint8_t prev_hash[32],
+                                    const signal_channel_msg_t *m,
+                                    uint8_t out[32]) {
+    sha256_ctx_t ctx;
+    sha256_init(&ctx);
+    sha256_update(&ctx, prev_hash, 32);
+    uint8_t header[15];
+    for (int k = 0; k < 8; k++) header[k]      = (uint8_t)(m->id >> (8 * k));
+    for (int k = 0; k < 4; k++) header[8 + k]  = (uint8_t)(m->timestamp_ms >> (8 * k));
+    header[12] = (uint8_t)(m->sender_station & 0xFF);
+    header[13] = (uint8_t)((uint16_t)m->sender_station >> 8);
+    header[14] = m->text_len;
+    sha256_update(&ctx, header, sizeof(header));
+    sha256_update(&ctx, m->text, m->text_len);
+    sha256_final(&ctx, out);
+}
+
+/* Append a sealed block to the per-station chain log on disk. The log
+ * is the durable source of truth — the in-memory ring is just a cache.
+ * Format: each record is a fixed-size signal_channel_msg_t blob (no
+ * prev_hash field needed since prev_hash = previous record's entry_hash;
+ * genesis is the all-zero hash). */
+static void signal_chain_persist(int station, const signal_channel_msg_t *m) {
+    char dir[]  = "chain";
+    char path[64];
+    snprintf(path, sizeof(path), "%s/%d.chain", dir, station);
+#ifdef _WIN32
+    _mkdir(dir);
+#else
+    mkdir(dir, 0755);
+#endif
+    FILE *f = fopen(path, "ab");
+    if (!f) return;
+    fwrite(m, sizeof(*m), 1, f);
+    fclose(f);
+}
+
 uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, const char *audio_url) {
     if (!w || !text || text[0] == '\0') return 0;
     signal_channel_t *ch = &w->signal_channel;
+
+    /* Prev hash = the most recent block's entry_hash, or genesis (zeroes). */
+    uint8_t prev_hash[32] = {0};
+    if (ch->count > 0) {
+        int prev_slot = (ch->head - 1 + SIGNAL_CHANNEL_CAPACITY) % SIGNAL_CHANNEL_CAPACITY;
+        memcpy(prev_hash, ch->msgs[prev_slot].entry_hash, 32);
+    }
+
     int slot = ch->head;
     signal_channel_msg_t *m = &ch->msgs[slot];
     memset(m, 0, sizeof(*m));
@@ -3275,9 +3351,77 @@ uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, c
         m->audio_url[an] = '\0';
         m->audio_len = (uint8_t)(an > 255 ? 255 : an);
     }
+
+    /* Seal the block: hash content + prev → entry_hash, then persist. */
+    signal_chain_hash_block(prev_hash, m, m->entry_hash);
+    signal_chain_persist(sender_station, m);
+
     ch->head = (ch->head + 1) % SIGNAL_CHANNEL_CAPACITY;
     if (ch->count < SIGNAL_CHANNEL_CAPACITY) ch->count++;
     return m->id;
+}
+
+/* Replay the on-disk chain on server boot. Reads the tail of each
+ * station's chain file (last SIGNAL_CHANNEL_CAPACITY blocks) into the
+ * world's ring buffer so the Network tab survives restarts. Bumps
+ * ch->next_id past the highest block id seen. */
+void signal_chain_load(world_t *w) {
+    if (!w) return;
+    signal_channel_t *ch = &w->signal_channel;
+    /* Two-pass: first pass collects all blocks across all stations into
+     * a sortable buffer; second sorts by id and inserts the latest
+     * SIGNAL_CHANNEL_CAPACITY into the ring. The chain spans the whole
+     * world (single feed across stations), so a single ordering matters. */
+    enum { SCRATCH_CAP = 4096 };
+    static signal_channel_msg_t scratch[SCRATCH_CAP];
+    int collected = 0;
+#ifndef _WIN32
+    /* POSIX directory walk. Windows server is build-only (no production
+     * deploy), so we no-op there to keep the cross-compile clean. */
+    DIR *dir = opendir("chain");
+    if (!dir) return;
+    struct dirent *de;
+    while ((de = readdir(dir)) != NULL && collected < SCRATCH_CAP) {
+        const char *name = de->d_name;
+        size_t n = strlen(name);
+        if (n < 7 || strcmp(name + n - 6, ".chain") != 0) continue;
+        /* dirent_t::d_name can be up to 255 bytes; precision-cap so
+         * gcc -Werror=format-truncation is happy. "chain/" is 6 chars,
+         * +null = 7, leaving 73 for the filename. */
+        char path[80];
+        snprintf(path, sizeof(path), "chain/%.73s", name);
+        FILE *f = fopen(path, "rb");
+        if (!f) continue;
+        while (collected < SCRATCH_CAP &&
+               fread(&scratch[collected], sizeof(signal_channel_msg_t), 1, f) == 1) {
+            collected++;
+        }
+        fclose(f);
+    }
+    closedir(dir);
+#endif
+
+    /* Sort by id (insertion sort — collected is small in practice). */
+    for (int i = 1; i < collected; i++) {
+        signal_channel_msg_t key = scratch[i];
+        int j = i - 1;
+        while (j >= 0 && scratch[j].id > key.id) {
+            scratch[j + 1] = scratch[j]; j--;
+        }
+        scratch[j + 1] = key;
+    }
+
+    /* Take the most recent SIGNAL_CHANNEL_CAPACITY into the ring. */
+    int start = (collected > SIGNAL_CHANNEL_CAPACITY)
+        ? collected - SIGNAL_CHANNEL_CAPACITY : 0;
+    ch->head = 0;
+    ch->count = 0;
+    for (int i = start; i < collected; i++) {
+        ch->msgs[ch->head] = scratch[i];
+        ch->head = (ch->head + 1) % SIGNAL_CHANNEL_CAPACITY;
+        if (ch->count < SIGNAL_CHANNEL_CAPACITY) ch->count++;
+        if (scratch[i].id > ch->next_id) ch->next_id = scratch[i].id;
+    }
 }
 
 /* Iterate messages in post order (oldest first) via callback-free index

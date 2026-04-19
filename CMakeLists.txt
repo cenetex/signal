@@ -74,6 +74,7 @@ set(SIGNAL_CLIENT_SOURCES
     src/episode.c
     src/music.c
     src/avatar.c
+    src/mining_client.c
 )
 
 set(SIGNAL_INCLUDE_DIRS

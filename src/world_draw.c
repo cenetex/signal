@@ -44,6 +44,20 @@ int lod_segments(int base_segments, float radius) {
     return base_segments;
 }
 
+/* RATi grade → tint. Common is a neutral ore tone; higher grades
+ * shift warmer and brighter. Visible in two places: the rock's glow
+ * core (the in-world dot — every observer sees it from any range)
+ * and the tow-line tether (only on rocks the player has grabbed). */
+void grade_tint(uint8_t grade, float *r, float *g, float *b) {
+    switch (grade) {
+    case 1:  *r = 0.55f; *g = 0.95f; *b = 0.70f; break; /* fine — pale mint */
+    case 2:  *r = 1.00f; *g = 0.78f; *b = 0.32f; break; /* rare — warm amber */
+    case 3:  *r = 1.00f; *g = 0.86f; *b = 0.20f; break; /* RATi — gold */
+    case 4:  *r = 0.85f; *g = 0.45f; *b = 1.00f; break; /* commissioned — violet */
+    default: *r = 0.25f; *g = 0.85f; *b = 0.80f; break; /* common — teal */
+    }
+}
+
 float asteroid_profile(const asteroid_t* asteroid, float angle) {
     float bump1 = sinf(angle * 3.0f + asteroid->seed);
     float bump2 = sinf(angle * 7.0f + asteroid->seed * 1.71f);
@@ -904,20 +918,27 @@ void draw_ship_tractor_field(void) {
         float alpha = (0.6f - 0.25f * expand) * (expand < 1.0f ? 1.0f : 0.5f);
         draw_circle_outline(LOCAL_PLAYER.ship.pos, radius, 40, PAL_F_SIGNAL_MINT, alpha);
     } else if (LOCAL_PLAYER.ship.towed_count > 0) {
-        /* LEASHED: draw beam lines to fragments, color by stretch */
+        /* LEASHED: beam lines to fragments. Base color reflects ore
+         * grade (RATi visible during tow), brightness ramps with leash
+         * stretch so taut still reads as urgent. */
         float slack = tr * 0.5f;
         float band = tr - slack;
         for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
             int idx = LOCAL_PLAYER.ship.towed_fragments[t];
             if (idx < 0 || idx >= MAX_ASTEROIDS || !g.world.asteroids[idx].active) continue;
-            vec2 fpos = g.world.asteroids[idx].pos;
+            const asteroid_t *a = &g.world.asteroids[idx];
+            vec2 fpos = a->pos;
             float dist = sqrtf(v2_dist_sq(LOCAL_PLAYER.ship.pos, fpos));
             float stretch = clampf((dist - slack) / band, 0.0f, 1.0f);
-            /* Green when slack, amber when taut, red near snap */
-            float beam_r = stretch;
-            float beam_g = 1.0f - stretch * 0.6f;
-            float beam_b = 0.3f * (1.0f - stretch);
-            float beam_a = 0.15f + 0.45f * stretch;
+            float gr, gg, gb;
+            grade_tint(a->grade, &gr, &gg, &gb);
+            /* Stretch boosts saturation so a strained tether on RATi ore
+             * reads as "danger of snapping the chain on a strike". */
+            float boost = 1.0f + 0.5f * stretch;
+            float beam_r = fminf(1.0f, gr * boost);
+            float beam_g = fminf(1.0f, gg * boost);
+            float beam_b = fminf(1.0f, gb * boost);
+            float beam_a = 0.20f + 0.55f * stretch;
             draw_segment(LOCAL_PLAYER.ship.pos, fpos, beam_r, beam_g, beam_b, beam_a);
         }
     }
@@ -1437,7 +1458,9 @@ void draw_autopilot_path(void) {
     }
 }
 
-/* Draw tractor tether lines from ship to towed fragments */
+/* Draw tractor tether lines from ship to towed fragments. Color is
+ * the fragment's RATi grade so the player can see at a glance which
+ * tow contains a strike. */
 void draw_towed_tethers(void) {
     if (LOCAL_PLAYER.ship.towed_count == 0) return;
     for (int t = 0; t < LOCAL_PLAYER.ship.towed_count; t++) {
@@ -1445,9 +1468,12 @@ void draw_towed_tethers(void) {
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         const asteroid_t *a = &g.world.asteroids[idx];
         if (!a->active) continue;
-        /* Faint teal tether line */
+        float r, gg, b;
+        grade_tint(a->grade, &r, &gg, &b);
         float pulse = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)t * 1.5f);
-        draw_segment(LOCAL_PLAYER.ship.pos, a->pos, 0.25f, 0.85f, 0.80f, pulse);
+        /* Rare+ tethers pulse a bit faster so they catch the eye. */
+        if (a->grade >= 2) pulse += 0.12f * sinf(g.world.time * 7.0f + (float)t);
+        draw_segment(LOCAL_PLAYER.ship.pos, a->pos, r, gg, b, pulse);
     }
 }
 

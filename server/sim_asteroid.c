@@ -3,8 +3,10 @@
  * maintenance, and per-frame dynamics.  Extracted from game_sim.c.
  */
 #include "sim_asteroid.h"
+#include "sim_production.h"  /* sim_roll_fragment_grade */
 #include "chunk.h"
 #include "rng.h"
+#include "mining.h"  /* fracture_seed_compute */
 
 /* ------------------------------------------------------------------ */
 /* RNG wrappers — use underlying randf() with &w->rng                  */
@@ -245,11 +247,37 @@ void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_b
         child->pos = cpos;
         child->vel = cvel;
         child->last_fractured_by = fractured_by;
+        child->last_towed_by = -1;
+        child->grade = 0;
+
+        /* Stamp the fracture_seed on each child. Deterministic from
+         * the child's birth state — every observer reproduces it. */
+        mining_fracture_inputs_t mi;
+        memset(&mi, 0, sizeof(mi));
+        mi.asteroid_id         = (uint16_t)child_slots[i];
+        mi.asteroid_pos_x_q    = mining_q100_(child->pos.x);
+        mi.asteroid_pos_y_q    = mining_q100_(child->pos.y);
+        mi.asteroid_rotation_q = mining_q1000_(child->rotation);
+        mi.ship_pos_x_q        = mining_q100_(parent.pos.x);
+        mi.ship_pos_y_q        = mining_q100_(parent.pos.y);
+        mi.world_time_ms       = (uint64_t)(w->time * 1000.0);
+        mi.fractured_by        = (uint8_t)fractured_by;
+        mining_fracture_seed_compute(&mi, child->fracture_seed);
+
+        /* Universe-rolled grade is public from birth. Only S-tier
+         * children carry payable ore; others stay grade 0 and don't
+         * roll (saves CPU on the cascade). */
+        if (child->tier == ASTEROID_TIER_S && child->ore > 0.0f) {
+            child->grade = (uint8_t)sim_roll_fragment_grade(child);
+        } else {
+            child->grade = 0;
+        }
     }
 
     /* audio_play_fracture removed */
     SIM_LOG("[sim] asteroid %d fractured into %d children\n", idx, child_count);
-    emit_event(w, (sim_event_t){.type = SIM_EVENT_FRACTURE, .player_id = fractured_by, .fracture.tier = parent.tier});
+    emit_event(w, (sim_event_t){.type = SIM_EVENT_FRACTURE, .player_id = fractured_by,
+                                  .fracture = { .tier = parent.tier, .asteroid_id = idx }});
 }
 
 /* ------------------------------------------------------------------ */

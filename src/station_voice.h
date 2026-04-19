@@ -245,11 +245,20 @@ static const hail_response_t HELIOS_HAILS[] = {
 };
 #define HELIOS_HAIL_COUNT (int)(sizeof(HELIOS_HAILS) / sizeof(HELIOS_HAILS[0]))
 
-/* Lookup table for station index → response array */
-static const hail_response_t *STATION_HAIL_TABLES[] = {
+/* Lookup table for station index → response array.
+   Marked unused because most TUs that include this header don't dereference
+   these — only main.c does. GCC/Clang -Werror=unused-variable fires in the
+   others otherwise. MSVC has no equivalent warning at default levels. */
+#if defined(__GNUC__) || defined(__clang__)
+#  define SIGNAL_HAIL_MAYBE_UNUSED __attribute__((unused))
+#else
+#  define SIGNAL_HAIL_MAYBE_UNUSED
+#endif
+
+static const hail_response_t *STATION_HAIL_TABLES[] SIGNAL_HAIL_MAYBE_UNUSED = {
     PROSPECT_HAILS, KEPLER_HAILS, HELIOS_HAILS,
 };
-static const int STATION_HAIL_COUNTS[] = {
+static const int STATION_HAIL_COUNTS[] SIGNAL_HAIL_MAYBE_UNUSED = {
     PROSPECT_HAIL_COUNT, KEPLER_HAIL_COUNT, HELIOS_HAIL_COUNT,
 };
 

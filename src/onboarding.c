@@ -101,7 +101,7 @@ bool onboarding_hint(char *label, size_t label_size,
         snprintf(message, message_size, "Tractor fragments to a furnace beam");
     else if (!g.onboarding.hailed)
         snprintf(message, message_size, "Press H in signal range to hail");
-    else
-        snprintf(message, message_size, "");
+    else if (message_size > 0)
+        message[0] = '\0';
     return true;
 }

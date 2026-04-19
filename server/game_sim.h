@@ -311,6 +311,11 @@ void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
 /* Signal channel — station broadcast log (#316). */
 uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, const char *audio_url);
 const signal_channel_msg_t *signal_channel_at(const world_t *w, int i);
+
+/* Replay the on-disk hash chain into the world's signal_channel ring
+ * buffer at server boot. Idempotent — safe to call once after world
+ * init. Reads chain dir entries written by signal_channel_post. */
+void signal_chain_load(world_t *w);
 void player_seed_credits(server_player_t *sp, world_t *w);
 void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_by);
 void activate_outpost(world_t *w, int station_idx);

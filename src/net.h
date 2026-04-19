@@ -60,6 +60,7 @@ typedef struct {
     float ore;          /* ore amount (for TIER_S) */
     float radius;       /* radius */
     float smelt_progress; /* 0.0-1.0, decoded from uint8 trailer */
+    uint8_t grade;        /* mining_grade_t — 0 = common, set on tractor */
 } NetAsteroidState;
 
 /* Packed NPC state for world sync (23 bytes per NPC). */
@@ -162,12 +163,14 @@ typedef void (*net_on_scaffolds_fn)(const NetScaffoldState* scaffolds, int count
 typedef void (*net_on_hail_response_fn)(uint8_t station, float credits, int contract_index);
 
 /* Signal-channel wire record (#316). audio_url isn't on the wire in V1;
- * agents reach it via the REST endpoint. */
+ * agents reach it via the REST endpoint. entry_hash carries the SHA-256
+ * chain link so clients can verify continuity locally. */
 typedef struct {
     uint64_t id;
     uint32_t timestamp_ms;
     int16_t  sender_station;  /* -1 = system */
     char     text[SIGNAL_CHANNEL_TEXT_MAX];
+    uint8_t  entry_hash[32];
 } NetSignalChannelMsg;
 
 typedef void (*net_on_signal_channel_fn)(const NetSignalChannelMsg *msgs, int count);
@@ -233,6 +236,11 @@ bool net_is_connected(void);
 /* Returns the local player's assigned ID, or 0xFF if not assigned. */
 uint8_t net_local_id(void);
 const char* net_local_callsign(void);
+
+/* Returns a pointer to the 8-byte session token used to identify this
+ * client to the server. NULL until ensure_session_token has run.
+ * Used by mining_client to derive the player's mining identity. */
+const uint8_t* net_local_session_token(void);
 
 /* Access remote player state array (NET_MAX_PLAYERS entries). */
 const NetPlayerState* net_get_players(void);

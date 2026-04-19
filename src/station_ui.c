@@ -5,6 +5,7 @@
 #include "client.h"
 #include "render.h"
 #include "palette.h"
+#include "mining_client.h"
 
 /* ------------------------------------------------------------------ */
 /* Station lookup helpers                                              */
@@ -238,6 +239,12 @@ void format_station_header_badge(const station_ui_state_t* ui, char* text, size_
     snprintf(text, text_size, "%s", station_role_market_title(ui->station));
 }
 
+/* Station-local currency label, falls back to "cr". */
+static const char *ui_station_currency(const station_t *st) {
+    if (!st) return "cr";
+    return (st->currency_name[0]) ? st->currency_name : "cr";
+}
+
 void format_station_market_summary(const station_ui_state_t* ui, bool compact, char* text, size_t text_size) {
     if (!ui->station) {
         text[0] = '\0';
@@ -318,7 +325,7 @@ int build_station_service_lines(const station_ui_state_t* ui, station_service_li
 
     lines[count].action = "[2] Repair hull";
     if (ui->repair_cost > 0) {
-        snprintf(lines[count].state, sizeof(lines[count].state), "%d cr", ui->repair_cost);
+        snprintf(lines[count].state, sizeof(lines[count].state), "%d %s", ui->repair_cost, ui_station_currency(ui->station));
         lines[count].r = 255;
         lines[count].g0 = 221;
         lines[count].b = 119;
@@ -336,7 +343,7 @@ int build_station_service_lines(const station_ui_state_t* ui, station_service_li
             snprintf(lines[count].state, sizeof(lines[count].state), "maxed");
             lines[count].r = 169; lines[count].g0 = 179; lines[count].b = 204;
         } else {
-            snprintf(lines[count].state, sizeof(lines[count].state), "%d cr", ui->hold_cost);
+            snprintf(lines[count].state, sizeof(lines[count].state), "%d %s", ui->hold_cost, ui_station_currency(ui->station));
             lines[count].r = ui->can_upgrade_hold ? 203 : 169;
             lines[count].g0 = ui->can_upgrade_hold ? 220 : 179;
             lines[count].b = ui->can_upgrade_hold ? 248 : 204;
@@ -352,7 +359,7 @@ int build_station_service_lines(const station_ui_state_t* ui, station_service_li
             lines[count].g0 = 179;
             lines[count].b = 204;
         } else {
-            snprintf(lines[count].state, sizeof(lines[count].state), "%d cr", ui->mining_cost);
+            snprintf(lines[count].state, sizeof(lines[count].state), "%d %s", ui->mining_cost, ui_station_currency(ui->station));
             lines[count].r = ui->can_upgrade_mining ? 203 : 169;
             lines[count].g0 = ui->can_upgrade_mining ? 220 : 179;
             lines[count].b = ui->can_upgrade_mining ? 248 : 204;
@@ -368,7 +375,7 @@ int build_station_service_lines(const station_ui_state_t* ui, station_service_li
             lines[count].g0 = 179;
             lines[count].b = 204;
         } else {
-            snprintf(lines[count].state, sizeof(lines[count].state), "%d cr", ui->tractor_cost);
+            snprintf(lines[count].state, sizeof(lines[count].state), "%d %s", ui->tractor_cost, ui_station_currency(ui->station));
             lines[count].r = ui->can_upgrade_tractor ? 203 : 169;
             lines[count].g0 = ui->can_upgrade_tractor ? 220 : 179;
             lines[count].b = ui->can_upgrade_tractor ? 248 : 204;
@@ -414,7 +421,8 @@ void draw_station_services(const station_ui_state_t* ui) {
         visible_tabs[tab_count++] = STATION_TAB_SHIPYARD;
     }
     visible_tabs[tab_count++] = STATION_TAB_NETWORK;
-    float tab_w = fminf(inner_w / (float)tab_count, 120.0f);
+    visible_tabs[tab_count++] = STATION_TAB_GRADES;
+    float tab_w = fminf(inner_w / (float)tab_count, 96.0f);
 
     /* Station name + role header */
     sdtx_color3b(PAL_TEXT_PRIMARY);
@@ -430,16 +438,25 @@ void draw_station_services(const station_ui_state_t* ui) {
         sdtx_puts(station_role_hub_label(ui->station));
     }
 
-    /* Credits badge (right side of header) */
+    /* Credits badge + tab hint (right-aligned, measured from string
+     * length so they can't overflow the panel edge). */
     if (panel_w >= 480.0f) {
+        const float cell_w = 8.0f;
+        const float right_margin = 20.0f;
         char header_badge[32] = { 0 };
         format_station_header_badge(ui, header_badge, sizeof(header_badge));
-        sdtx_pos(ui_text_pos(panel_x + panel_w - 152.0f), ui_text_pos(panel_y + 16.0f));
+        float badge_w = (float)strlen(header_badge) * cell_w;
+        sdtx_pos(ui_text_pos(panel_x + panel_w - right_margin - badge_w),
+                 ui_text_pos(panel_y + 16.0f));
         sdtx_color3b(PAL_TEXT_SECONDARY);
         sdtx_puts(header_badge);
-        sdtx_pos(ui_text_pos(panel_x + panel_w - 152.0f), ui_text_pos(panel_y + 32.0f));
+
+        const char *hint = "[Tab] [E] launch";
+        float hint_w = (float)strlen(hint) * cell_w;
+        sdtx_pos(ui_text_pos(panel_x + panel_w - right_margin - hint_w),
+                 ui_text_pos(panel_y + 32.0f));
         sdtx_color3b(PAL_STATION_HINT);
-        sdtx_puts("Tab: switch  E: launch");
+        sdtx_puts(hint);
     }
 
     /* Tab labels */
@@ -457,6 +474,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 case STATION_TAB_CONTRACTS: sdtx_puts("CONTRACTS"); break;
                 case STATION_TAB_SHIPYARD:  sdtx_puts("SHIPYARD"); break;
                 case STATION_TAB_NETWORK:   sdtx_puts("NETWORK"); break;
+                case STATION_TAB_GRADES:    sdtx_puts("GRADES"); break;
                 default: break;
             }
         }
@@ -710,7 +728,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 int buy_price = (int)lroundf(station_buy_price(ui->station, buy));
                 sdtx_color3b(PAL_INSPECT_STATION);
                 sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
-                sdtx_printf("%d cr/u", buy_price);
+                sdtx_printf("%d %s/u", buy_price, ui_station_currency(ui->station));
                 my += 14.0f;
 
                 /* Inventory meter */
@@ -732,7 +750,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                     sdtx_printf("[1] Deliver x%d", held);
                     sdtx_color3b(PAL_CARGO_ITEM);
                     sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
-                    sdtx_printf("+%d cr", held * buy_price);
+                    sdtx_printf("+%d %s", held * buy_price, ui_station_currency(ui->station));
                 } else {
                     sdtx_color3b(PAL_COND_DISABLE_AFFORD);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
@@ -765,7 +783,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_puts(commodity_short_name(sell));
                 sdtx_color3b(PAL_INSPECT_STATION);
                 sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
-                sdtx_printf("%d cr/u", price);
+                sdtx_printf("%d %s/u", price, ui_station_currency(ui->station));
                 my += 14.0f;
 
                 /* Stock meter */
@@ -791,7 +809,7 @@ void draw_station_services(const station_ui_state_t* ui) {
                     sdtx_printf("[F] Buy x%d", can_buy);
                     sdtx_color3b(250, 160, 90); /* ore trade highlight */
                     sdtx_pos(ui_text_pos(right_col), ui_text_pos(my));
-                    sdtx_printf("-%d cr", can_buy * price);
+                    sdtx_printf("-%d %s", can_buy * price, ui_station_currency(ui->station));
                 } else if ((int)lroundf(avail) > 0) {
                     sdtx_color3b(PAL_COND_DISABLE_AFFORD);
                     sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
@@ -1017,8 +1035,10 @@ void draw_station_services(const station_ui_state_t* ui) {
             } else {
                 if (can_afford) sdtx_color3b(PAL_TEXT_SECONDARY);
                 else sdtx_color3b(PAL_CANNOT_AFFORD);
-                sdtx_printf("[%d] %-14s %dcr + %d %s",
-                    shown + 1, module_type_name(kit), fee, mat, mat_name);
+                sdtx_printf("[%d] %-14s %d %s + %d %s",
+                    shown + 1, module_type_name(kit),
+                    fee, ui_station_currency(ui->station),
+                    mat, mat_name);
                 shown++;
             }
             ly += 14.0f;
@@ -1120,6 +1140,52 @@ void draw_station_services(const station_ui_state_t* ui) {
             sdtx_puts(m->text);
             ly += 20.0f;
         }
+        break;
+    }
+
+    case STATION_TAB_GRADES: {
+        const mining_client_t *mc = mining_client_get();
+        sdtx_color3b(PAL_HOLD_CYAN);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
+        sdtx_printf("CALLSIGN  %s", mc->player_callsign);
+        sdtx_color3b(PAL_STATION_HINT);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
+        sdtx_puts("session ore grades — bonus paid at the refinery");
+
+        static const char *const grade_labels[MINING_GRADE_COUNT] = {
+            "common", "fine", "rare", "RATi", "commissioned"
+        };
+
+        float ly = cy + 34.0f;
+        int total_strikes = 0;
+        for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
+            total_strikes += mc->strikes_by_grade[gi];
+
+        if (total_strikes == 0) {
+            sdtx_color3b(PAL_STATUS_DISABLED);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            sdtx_puts("(no ore delivered yet — tow a fragment in)");
+            break;
+        }
+
+        for (int gi = MINING_GRADE_COUNT - 1; gi >= 0; gi--) {
+            int n = mc->strikes_by_grade[gi];
+            if (n == 0) continue;
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+            /* Avoid PAL_X inside a ternary — the macros are 3-arg
+             * comma-separated literals, gcc -Werror=unused-value flags
+             * the comma operator that the ternary creates. */
+            if (gi >= (int)MINING_GRADE_RATI)
+                sdtx_color3b(PAL_ORE_AMBER);
+            else
+                sdtx_color3b(PAL_TEXT_SECONDARY);
+            sdtx_printf("%-13s  x%d", grade_labels[gi], n);
+            ly += 14.0f;
+        }
+        ly += 8.0f;
+        sdtx_color3b(PAL_TEXT_PRIMARY);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
+        sdtx_printf("bonus this session: +%d cr", mc->bonus_cr_total);
         break;
     }
 

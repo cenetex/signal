@@ -32,6 +32,14 @@ static int tests_run = 0;
 static int tests_passed = 0;
 static int tests_failed = 0;
 
+/* Shard filtering so N workers can fan out the suite via xargs -P N.
+ * Each RUN() bumps a sequential index; only indices where
+ * (index % g_shard_total) == g_shard_index actually execute. When
+ * unset (default), all tests run. */
+static int g_shard_total = 1;
+static int g_shard_index = 0;
+static int g_test_seq    = 0;
+
 /* Auto-cleanup for world_t — frees the heap-allocated signal cache grid.
  * Uses __attribute__((cleanup)) on GCC/Clang; on MSVC, leaks are
  * acceptable in tests (no cleanup on early ASSERT return). */
@@ -57,6 +65,8 @@ static void world_ptr_auto_cleanup(world_t **wp) {
  * and printed "ok" even after an ASSERT had already failed and bumped
  * tests_failed, causing the summary line to lie. (#261) */
 #define RUN(name) do { \
+    int _seq = g_test_seq++; \
+    if ((_seq % g_shard_total) != g_shard_index) break; \
     int _failed_before = tests_failed; \
     tests_run++; \
     printf("  %s ... ", #name); \
@@ -6017,8 +6027,22 @@ static void test_nav_waypoint_advancement(void) {
     ASSERT(wp.x >= 199.0f);
 }
 
-int main(void) {
+int main(int argc, char **argv) {
     setbuf(stdout, NULL); /* unbuffered so crash location is visible */
+
+    /* --shard=K/N splits the suite across N workers; worker K runs
+     * every Nth test starting at index K. Unset = run everything. */
+    for (int i = 1; i < argc; i++) {
+        if (strncmp(argv[i], "--shard=", 8) == 0) {
+            int k = 0, n = 1;
+            if (sscanf(argv[i] + 8, "%d/%d", &k, &n) == 2 && n > 0 && k >= 0 && k < n) {
+                g_shard_index = k;
+                g_shard_total = n;
+                printf("[shard %d/%d] ", k, n);
+            }
+        }
+    }
+
     printf("Commodity tests:\n");
     RUN(test_refined_form_mapping);
     RUN(test_refined_form_ingots_return_self);

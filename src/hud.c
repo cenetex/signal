@@ -10,6 +10,7 @@
 #include "station_voice.h"
 #include "world_draw.h"
 #include "avatar.h"
+#include "mining_client.h"
 #include "signal_model.h"
 #include "palette.h"
 
@@ -39,6 +40,15 @@ float player_current_balance(void) {
     return client_station_balance(st);
 }
 
+/* Currency label at the player's current (docked or nearby) station.
+ * Falls back to "cr" when the station hasn't set a currency_name. */
+static const char *player_current_currency(void) {
+    int st = LOCAL_PLAYER.docked ? LOCAL_PLAYER.current_station : LOCAL_PLAYER.nearby_station;
+    if (st < 0 || st >= MAX_STATIONS) return "cr";
+    const char *cn = g.world.stations[st].currency_name;
+    return (cn && cn[0]) ? cn : "cr";
+}
+
 /* ------------------------------------------------------------------ */
 /* UI scaling / layout helpers                                         */
 /* ------------------------------------------------------------------ */
@@ -48,12 +58,26 @@ static const float UI_SCALE_COMPACT = 1.60f;
 static const float UI_SCALE_DEFAULT = 1.42f;
 static const float UI_SCALE_WIDE    = 1.28f;
 
+/* Safari has been seen to return NaN briefly from sapp_widthf /
+ * sapp_dpi_scale on the frame the audio context resumes (the gesture
+ * that also fires LAUNCH). NaN here propagates into ui_scale, then
+ * into sdtx_canvas, which fails a hard assert. Clamp each sokol
+ * reading to something sane — the ortho/text layout is wrong for one
+ * frame but the app keeps running. */
+static inline float ui_safe_positive(float v, float fallback) {
+    return (isfinite(v) && v > 0.0f) ? v : fallback;
+}
+
 float ui_window_width(void) {
-    return sapp_widthf() / fmaxf(1.0f, sapp_dpi_scale());
+    float px  = ui_safe_positive(sapp_widthf(), 1280.0f);
+    float dpi = ui_safe_positive(sapp_dpi_scale(), 1.0f);
+    return px / fmaxf(1.0f, dpi);
 }
 
 float ui_window_height(void) {
-    return sapp_heightf() / fmaxf(1.0f, sapp_dpi_scale());
+    float px  = ui_safe_positive(sapp_heightf(), 720.0f);
+    float dpi = ui_safe_positive(sapp_dpi_scale(), 1.0f);
+    return px / fmaxf(1.0f, dpi);
 }
 
 float ui_scale(void) {
@@ -292,7 +316,7 @@ static void split_hud_message_lines(const char* text, int max_cols, char* line0,
 
     size_t len = strlen(text);
     if ((int)len <= max_cols) {
-        snprintf(line0, line0_size, "%s", text);
+        snprintf(line0, line0_size, "%.*s", (int)(line0_size - 1), text);
         line1[0] = '\0';
         return;
     }
@@ -313,11 +337,11 @@ static void split_hud_message_lines(const char* text, int max_cols, char* line0,
     }
 
     if ((int)strlen(rest) <= max_cols) {
-        snprintf(line1, line1_size, "%s", rest);
+        snprintf(line1, line1_size, "%.*s", (int)(line1_size - 1), rest);
     } else if (max_cols > 3) {
         snprintf(line1, line1_size, "%.*s...", max_cols - 3, rest);
     } else {
-        snprintf(line1, line1_size, "%s", rest);
+        snprintf(line1, line1_size, "%.*s", (int)(line1_size - 1), rest);
     }
 }
 
@@ -337,7 +361,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
         if (max_hull > 0.0f && LOCAL_PLAYER.ship.hull / max_hull < 0.20f) {
             label[0] = '\0';
             snprintf(message, message_size, "Hull failing. Dock for repairs.");
-            *r = PAL_WARNING; *g0 = 60; *b = 50;
+            *r = 255; *g0 = 60; *b = 50;
             return true;
         }
     }
@@ -668,6 +692,7 @@ void draw_hud_panels(void) {
             visible_tabs[tab_count++] = STATION_TAB_SHIPYARD;
         }
         visible_tabs[tab_count++] = STATION_TAB_NETWORK;
+        visible_tabs[tab_count++] = STATION_TAB_GRADES;
         float tab_w = fminf(inner_w / (float)tab_count, 96.0f);
 
         for (int t = 0; t < tab_count; t++) {
@@ -878,9 +903,13 @@ void draw_hud(void) {
         sdtx_pos(top_text_x, top_row_0);
         sdtx_color3b(PAL_TEXT_PRIMARY);
         {
-            const char *cs = net_local_callsign();
+            const char *mc = mining_client_get()->player_callsign;
+            const char *cs = (mc && mc[0] != '\0' && mc[0] != '_') ? mc : net_local_callsign();
             const char *tag = (cs && cs[0] != '\0') ? cs : (LOCAL_PLAYER.docked ? "RUN" : "SHIP");
-            sdtx_printf("%s // CR %d", tag, credits);
+            if (LOCAL_PLAYER.docked)
+                sdtx_printf("%s // %d %s", tag, credits, player_current_currency());
+            else
+                sdtx_puts(tag);
         }
 
         sdtx_pos(top_text_x, top_row_1);
@@ -998,7 +1027,8 @@ void draw_hud(void) {
     sdtx_pos(top_text_x, top_row_0);
     sdtx_color3b(PAL_TEXT_PRIMARY);
     {
-        const char *cs = net_local_callsign();
+        const char *mc = mining_client_get()->player_callsign;
+        const char *cs = (mc && mc[0] != '\0' && mc[0] != '_') ? mc : net_local_callsign();
         const char *fallback = LOCAL_PLAYER.docked ? "RUN STATUS" : "SHIP STATUS";
         if (cs && cs[0] != '\0')
             sdtx_printf("%s // %s", cs, LOCAL_PLAYER.docked ? "DOCKED" : "FLIGHT");
@@ -1008,7 +1038,14 @@ void draw_hud(void) {
 
     sdtx_pos(top_text_x, top_row_1);
     sdtx_color3b(PAL_TEXT_SECONDARY);
-    sdtx_printf("CR %d  H %d/%d  C %d/%d  ", credits, hull_units, hull_capacity, cargo_units, cargo_capacity);
+    if (LOCAL_PLAYER.docked) {
+        sdtx_printf("%d %s  H %d/%d  C %d/%d  ",
+                    credits, player_current_currency(),
+                    hull_units, hull_capacity, cargo_units, cargo_capacity);
+    } else {
+        sdtx_printf("H %d/%d  C %d/%d  ",
+                    hull_units, hull_capacity, cargo_units, cargo_capacity);
+    }
     sdtx_color3b(sig_r, sig_g, sig_b);
     sdtx_printf("%s %d%%", sig_band, sig_pct);
     if (sig_quality < SIGNAL_BAND_OPERATIONAL) {

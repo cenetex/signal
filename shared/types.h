@@ -307,6 +307,12 @@ typedef struct {
     int8_t last_fractured_by;  /* player ID who fractured the parent, -1 = none */
     float smelt_progress;      /* 0.0-1.0: how far through smelting (in furnace beam) */
     bool net_dirty;   /* needs network sync (spawn, fracture, HP change, death) */
+    /* RATi mining: fracture_seed is set once when the fragment is born
+     * and stays constant; grade is rolled fresh every time last_towed_by
+     * changes, keyed on (fracture_seed, new tower's session identity).
+     * Published on the chain at smelt time. */
+    uint8_t fracture_seed[32];
+    uint8_t grade;             /* mining_grade_t, 0 = common */
 } asteroid_t;
 
 typedef enum {
@@ -427,6 +433,12 @@ typedef struct {
     uint8_t  audio_len;
     char     text[SIGNAL_CHANNEL_TEXT_MAX];
     char     audio_url[SIGNAL_CHANNEL_AUDIO_MAX];
+    /* Hash chain: entry_hash = sha256(prev_entry_hash || id || timestamp_ms ||
+     * sender_station || text_len || text). Genesis block uses zeroes for the
+     * previous hash. Server-side only — populated by signal_channel_post and
+     * persisted to disk; not sent on the wire (clients trust the snapshot
+     * they get and don't reverify in V1). */
+    uint8_t  entry_hash[32];
 } signal_channel_msg_t;
 
 typedef struct {
@@ -479,10 +491,14 @@ typedef struct {
     sim_event_type_t type;
     int player_id;
     union {
-        struct { asteroid_tier_t tier; } fracture;
+        struct { asteroid_tier_t tier; int asteroid_id; } fracture;
         struct { float ore; int fragments; } pickup;
         struct { ship_upgrade_t upgrade; } upgrade;
         struct { float amount; } damage;
+        /* SIM_EVENT_SELL: populated when a fragment is smelted. grade
+         * is mining_grade_t; base_cr is ore * station_buy_price;
+         * bonus_cr is the extra credits the multiplier added on top. */
+        struct { int station; uint8_t grade; int base_cr; int bonus_cr; } sell;
         struct { int slot; } outpost_placed;
         struct { int station; float credits; int contract_index; } hail_response;
         struct { int slot; } outpost_activated;

@@ -60,6 +60,7 @@ void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
         a->ore   = asteroids[i].ore;
         a->radius = asteroids[i].radius;
         a->smelt_progress = asteroids[i].smelt_progress;
+        a->grade = asteroids[i].grade;
         if (a->max_hp < a->hp) a->max_hp = a->hp;
         if (a->max_ore < a->ore) a->max_ore = a->ore;
     }

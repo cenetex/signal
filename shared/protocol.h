@@ -50,9 +50,12 @@ enum {
     NET_MSG_SIGNAL_CHANNEL  = 0x27, /* server -> client: broadcast-log snapshot / append (#316) */
 };
 
-/* Signal channel wire record: [id:u64][ts_ms:u32][sender:i8][text_len:u8][text:200] = 214 bytes
- * audio_url is server-side only for V1; agents read it via REST. */
-#define SIGNAL_CHANNEL_RECORD_SIZE (8 + 4 + 1 + 1 + 200)
+/* Signal channel wire record:
+ *   [id:u64][ts_ms:u32][sender:i8][text_len:u8][text:200][entry_hash:32] = 246 bytes
+ * audio_url is server-side only for V1; agents read it via REST.
+ * entry_hash is the SHA-256 chain link — clients can recompute and
+ * verify against this value to detect tampering / desync. */
+#define SIGNAL_CHANNEL_RECORD_SIZE (8 + 4 + 1 + 1 + 200 + 32)
 
 /* ------------------------------------------------------------------ */
 /* Plan operations (NET_MSG_PLAN payload byte 1)                      */
@@ -154,8 +157,8 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
  * and (eventually) combat hit prediction. */
 #define PLAYER_RECORD_SIZE 67  /* 51 + 16 bytes beam coords */
 
-/* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32] */
-#define ASTEROID_RECORD_SIZE 32  /* uint16 index + flags + 7 floats + smelt:u8 */
+/* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32][smelt:u8][grade:u8] */
+#define ASTEROID_RECORD_SIZE 33  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 */
 
 /* NPC record: [id+flags:1][flags:1][pos:2xf32][vel:2xf32][angle:f32][target:1][tint:3] */
 #define NPC_RECORD_SIZE 26

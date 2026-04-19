@@ -4,7 +4,9 @@
  */
 #include "sim_production.h"
 #include "sim_construction.h"  /* module_build_material, module_build_cost */
+#include "mining.h"            /* grade roll at smelt time */
 #include <stdlib.h>            /* abs */
+#include <math.h>              /* lroundf */
 
 /* ------------------------------------------------------------------ */
 /* Smelting helpers                                                    */
@@ -145,6 +147,34 @@ void sim_step_station_production(world_t *w, float dt) {
 }
 
 /* ------------------------------------------------------------------ */
+/* Grade roll at fracture (universe-determined, public)                */
+/* ------------------------------------------------------------------ */
+
+/* Roll the capped burst against the fragment's fracture_seed using a
+ * fixed "universe key" (no per-player input). Grade is a property of
+ * the rock itself: every observer sees the same value, the rock's dot
+ * color reveals it instantly, theft is for a known prize. Budget is
+ * MINING_CANDIDATES_PER_TON × ore_tons. */
+static const uint8_t MINING_UNIVERSE_KEY[32] = {
+    'R','A','T','i',  '/','o','r','e',  '/','u','n','i', 'v','e','r','s',
+    'e','/','v','1',  0,0,0,0,           0,0,0,0,         0,0,0,0
+};
+
+mining_grade_t sim_roll_fragment_grade(const asteroid_t *a) {
+    (void)a; /* ore tonnage no longer scales burst — flat per-fragment */
+    mining_grade_t best = MINING_GRADE_COMMON;
+    for (int i = 0; i < MINING_BURST_PER_FRAGMENT; i++) {
+        mining_keypair_t kp;
+        mining_keypair_derive(a->fracture_seed, MINING_UNIVERSE_KEY, (uint32_t)i, &kp);
+        char callsign[8];
+        mining_callsign_from_pubkey(kp.pub, callsign);
+        mining_grade_t g = mining_classify_base58(callsign);
+        if (g > best) best = g;
+    }
+    return best;
+}
+
+/* ------------------------------------------------------------------ */
 /* Furnace smelting (fragment hopper pull + smelt)                     */
 /* ------------------------------------------------------------------ */
 
@@ -262,26 +292,60 @@ void step_furnace_smelting(world_t *w, float dt) {
                              && w->players[a->last_fractured_by].connected)
                             ? a->last_fractured_by : -1;
 
-            /* Smelting credits. The tractor work is the main effort —
-             * fracturing is cheap once, towing is the repeated grind —
-             * so the tower takes the full ore value, with the fracturer
-             * getting a 25% finder's fee when they're a different
-             * player. If no one tractored (fragment drifted into the
-             * furnace on its own), the fracturer collects half. */
+            /* Grade was stamped on the asteroid the moment the current
+             * tower grabbed it (sim_roll_fragment_grade). Smelt just
+             * publishes that grade — no fresh dice. */
+            mining_grade_t grade = (mining_grade_t)a->grade;
+            float bonus_mult = mining_payout_multiplier(grade);
+            float graded_value = ore_value * bonus_mult;
+            int base_cr  = (int)lroundf(ore_value);
+            int bonus_cr = (int)lroundf(graded_value - ore_value);
+            int roller = (tower >= 0) ? tower : fracturer;
+
+            /* Announce rare strikes on the station signal channel so
+             * other players see them flicker across the Network tab. */
+            if (grade >= MINING_GRADE_RATI && roller >= 0) {
+                char msg[96];
+                uint8_t pk[32];
+                sha256_bytes(w->players[roller].session_token, 8, pk);
+                char cs[8];
+                mining_callsign_from_pubkey(pk, cs);
+                if (grade == MINING_GRADE_COMMISSIONED)
+                    snprintf(msg, sizeof(msg), "%s published commissioned ore  +%d",
+                             cs, bonus_cr);
+                else
+                    snprintf(msg, sizeof(msg), "%s published RATi ore  +%d",
+                             cs, bonus_cr);
+                signal_channel_post(w, smelt_station, msg, "");
+            }
+
             if (ore_value > 0.0f) {
                 if (tower >= 0) {
                     if (w->players[tower].session_ready)
-                        ledger_credit_supply(st, w->players[tower].session_token, ore_value);
-                    emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = tower});
+                        ledger_credit_supply(st, w->players[tower].session_token, graded_value);
+                    emit_event(w, (sim_event_t){
+                        .type = SIM_EVENT_SELL, .player_id = tower,
+                        .sell = { .station = smelt_station, .grade = (uint8_t)grade,
+                                  .base_cr = base_cr, .bonus_cr = bonus_cr }});
                     if (fracturer >= 0 && fracturer != tower) {
+                        float finders = graded_value * 0.25f;
                         if (w->players[fracturer].session_ready)
-                            ledger_credit_supply(st, w->players[fracturer].session_token, ore_value * 0.25f);
-                        emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = fracturer});
+                            ledger_credit_supply(st, w->players[fracturer].session_token, finders);
+                        emit_event(w, (sim_event_t){
+                            .type = SIM_EVENT_SELL, .player_id = fracturer,
+                            .sell = { .station = smelt_station, .grade = (uint8_t)grade,
+                                      .base_cr = (int)lroundf(finders / bonus_mult),
+                                      .bonus_cr = (int)lroundf(finders - finders / bonus_mult) }});
                     }
                 } else if (fracturer >= 0) {
+                    float half = graded_value * 0.5f;
                     if (w->players[fracturer].session_ready)
-                        ledger_credit_supply(st, w->players[fracturer].session_token, ore_value * 0.5f);
-                    emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = fracturer});
+                        ledger_credit_supply(st, w->players[fracturer].session_token, half);
+                    emit_event(w, (sim_event_t){
+                        .type = SIM_EVENT_SELL, .player_id = fracturer,
+                        .sell = { .station = smelt_station, .grade = (uint8_t)grade,
+                                  .base_cr = (int)lroundf(half / bonus_mult),
+                                  .bonus_cr = (int)lroundf(half - half / bonus_mult) }});
                 }
             }
 

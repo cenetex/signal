@@ -967,6 +967,11 @@ int main(void) {
     station_rebuild_all_nav(&world);
     for (int i = 0; i < MAX_STATIONS; i++) station_identity_dirty[i] = true;
 
+    /* Replay the on-disk hash chain so the Network tab survives a
+     * server restart and the chain links continue from where we left
+     * off (no fork at the genesis block). */
+    signal_chain_load(&world);
+
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
     mg_http_listen(&mgr, listen_url, ev_handler, NULL);

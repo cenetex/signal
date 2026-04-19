@@ -22,6 +22,9 @@ float cam_bottom(void);
 /* --- Asteroid helpers --- */
 float asteroid_profile(const asteroid_t* asteroid, float angle);
 
+/* RATi grade → rgb. Used by the in-world rock dot and the tow tether. */
+void grade_tint(uint8_t grade, float *r, float *g, float *b);
+
 /* --- World object drawing --- */
 void draw_background(vec2 camera);
 void draw_station(const station_t* station, bool is_current, bool is_nearby);

@@ -15,6 +15,7 @@
 #include "onboarding.h"
 #include "station_voice.h"
 #include "avatar.h"
+#include "mining_client.h"
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -324,6 +325,8 @@ void process_sim_events(const sim_events_t *events) {
                 if (ev->player_id == g.local_player_slot) {
                     audio_play_sale(&g.audio);
                     episode_trigger(&g.episode, 2); /* Ep 2: Furnace — first smelt */
+                    mining_client_record_strike((mining_grade_t)ev->sell.grade,
+                                                ev->sell.bonus_cr);
                 }
                 break;
             case SIM_EVENT_REPAIR:
@@ -533,6 +536,7 @@ static void sim_step(float dt) {
     }
     if (g.outpost_lock_timer > 0.0f)
         g.outpost_lock_timer = fmaxf(0.0f, g.outpost_lock_timer - dt);
+    mining_client_tick(dt);
 
     /* Smoothed fog intensity. Tracks 1 - hull/max_hull, but eases in
      * (slow ramp up) and out (faster ramp down) so the vignette rolls
@@ -655,6 +659,8 @@ static void sim_step(float dt) {
         if (cst && station_has_module(cst, MODULE_SHIPYARD)) {
             vtabs[vtab_count++] = STATION_TAB_SHIPYARD;
         }
+        vtabs[vtab_count++] = STATION_TAB_NETWORK;
+        vtabs[vtab_count++] = STATION_TAB_GRADES;
         int cur = 0;
         for (int i = 0; i < vtab_count; i++) { if (vtabs[i] == g.station_tab) { cur = i; break; } }
         int dir = is_key_pressed(SAPP_KEYCODE_TAB) ? 1 : (vtab_count - 1);
@@ -809,6 +815,11 @@ static void init(void) {
     init_starfield();
     reset_world();
     onboarding_load();
+    mining_client_init();
+    /* Bind to whatever session token the local server seeded — the
+     * multiplayer connect path will rebind to the real one once the
+     * WS handshake completes. */
+    mining_client_set_session_token(g.world.players[g.local_player_slot].session_token);
 
     /* --- Multiplayer: auto-connect if server URL is available --- */
     {
@@ -1145,13 +1156,35 @@ static void render_world(void) {
         }
         sgl_end();
 
-        /* Glow core for small/medium asteroids */
+        /* Glow core (the "dot"). Common fragments keep the original
+         * muted commodity tint — the belt should look mostly the
+         * same. Fine+ rocks get the grade tint with a halo + pulse so
+         * a strike actually catches the eye against the sea of dim
+         * dots. M-tier always uses commodity tint (no payable ore). */
         if (a->tier == ASTEROID_TIER_S) {
-            float cr, cg, cb;
-            commodity_material_tint(a->commodity, &cr, &cg, &cb);
-            draw_circle_filled(a->pos, a->radius * lerpf(0.14f, 0.24f, progress_ratio), 10,
-                lerpf(0.48f, cr * 1.6f, 0.5f), lerpf(0.96f, cg * 1.6f, 0.5f),
-                lerpf(0.78f, cb * 1.6f, 0.5f), lerpf(0.35f, 0.8f, progress_ratio));
+            if (a->grade == 0) {
+                /* Common: original commodity-tinted glow, untouched. */
+                float cr, cg, cb;
+                commodity_material_tint(a->commodity, &cr, &cg, &cb);
+                draw_circle_filled(a->pos, a->radius * lerpf(0.14f, 0.24f, progress_ratio), 10,
+                    lerpf(0.48f, cr * 1.6f, 0.5f), lerpf(0.96f, cg * 1.6f, 0.5f),
+                    lerpf(0.78f, cb * 1.6f, 0.5f), lerpf(0.35f, 0.8f, progress_ratio));
+            } else {
+                /* Graded: special tint, bloom + halo scale with grade. */
+                float cr, cg, cb;
+                grade_tint(a->grade, &cr, &cg, &cb);
+                float bloom = 1.10f + 0.18f * (float)(a->grade - 1);
+                float pulse = (a->grade >= 3)
+                    ? (1.0f + 0.18f * sinf(g.world.time * 6.0f))
+                    : 1.0f;
+                float base_r = a->radius * lerpf(0.18f, 0.30f, progress_ratio) * bloom * pulse;
+                draw_circle_filled(a->pos, base_r, 12,
+                    cr, cg, cb, lerpf(0.65f, 0.95f, progress_ratio));
+                if (a->grade >= 2) {
+                    draw_circle_outline(a->pos, base_r * 1.9f, 18,
+                        cr, cg, cb, 0.45f * pulse);
+                }
+            }
         } else if (a->tier == ASTEROID_TIER_M) {
             float cr, cg, cb;
             commodity_material_tint(a->commodity, &cr, &cg, &cb);

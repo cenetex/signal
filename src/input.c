@@ -27,11 +27,13 @@ void set_notice(const char* fmt, ...) {
 }
 
 bool is_key_down(sapp_keycode key) {
-    return (key >= 0) && (key < KEY_COUNT) && g.input.key_down[key];
+    /* Cast to int both sides so gcc -Werror=enum-compare doesn't flag
+     * comparing the sokol enum against KEY_COUNT (different anon enum). */
+    return ((int)key >= 0) && ((int)key < (int)KEY_COUNT) && g.input.key_down[key];
 }
 
 bool is_key_pressed(sapp_keycode key) {
-    return (key >= 0) && (key < KEY_COUNT) && g.input.key_pressed[key];
+    return ((int)key >= 0) && ((int)key < (int)KEY_COUNT) && g.input.key_pressed[key];
 }
 
 /* Compute which rings are unlocked on a station.

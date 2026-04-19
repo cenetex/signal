@@ -194,6 +194,7 @@ static inline int serialize_asteroids_for_player(
                 if (sp_f > 1.0f) sp_f = 1.0f;
                 p[31] = (uint8_t)(sp_f * 255.0f);
             }
+            p[32] = a->grade;
             sent[i] = true;
             count++;
         } else if (sent[i] && !in_view) {
@@ -239,6 +240,7 @@ static inline int serialize_asteroids_full(uint8_t *buf, const asteroid_t *aster
             if (sp_f > 1.0f) sp_f = 1.0f;
             p[31] = (uint8_t)(sp_f * 255.0f);
         }
+        p[32] = a->grade;
         count++;
     }
     buf[0] = NET_MSG_WORLD_ASTEROIDS;
@@ -264,6 +266,7 @@ static inline int serialize_signal_channel(uint8_t *buf, const signal_channel_t 
         p[12] = (uint8_t)(m->sender_station & 0xFF);
         p[13] = m->text_len;
         memcpy(&p[14], m->text, m->text_len);
+        memcpy(&p[14 + 200], m->entry_hash, 32);
     }
     return 3 + n * SIGNAL_CHANNEL_RECORD_SIZE;
 }
@@ -315,7 +318,7 @@ _Static_assert(
     "PLAYER_RECORD_SIZE must match serialized player state layout"
 );
 _Static_assert(
-    2 + 1 + 7 * 4 + 1 == ASTEROID_RECORD_SIZE,  /* uint16 index + flags + 7 floats + smelt:u8 */
+    2 + 1 + 7 * 4 + 1 + 1 == ASTEROID_RECORD_SIZE,  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 */
     "ASTEROID_RECORD_SIZE must match serialized asteroid layout"
 );
 _Static_assert(
@@ -777,8 +780,14 @@ static inline int serialize_events(uint8_t *buf, const sim_events_t *events) {
             p[2] = (uint8_t)ev->scaffold_ready.station;
             p[3] = (uint8_t)ev->scaffold_ready.module_type;
             break;
+        case SIM_EVENT_SELL:
+            p[2] = (uint8_t)ev->sell.station;
+            p[3] = (uint8_t)ev->sell.grade;
+            write_u32_le(&p[4], (uint32_t)ev->sell.base_cr);
+            write_u32_le(&p[8], (uint32_t)ev->sell.bonus_cr);
+            break;
         default:
-            /* MINING_TICK, DOCK, LAUNCH, SELL, REPAIR, SIGNAL_LOST,
+            /* MINING_TICK, DOCK, LAUNCH, REPAIR, SIGNAL_LOST,
              * ORDER_REJECTED: type + player_id is sufficient */
             break;
         }
