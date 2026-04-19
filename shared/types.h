@@ -88,6 +88,43 @@ typedef struct {
 
 extern const hull_def_t HULL_DEFS[HULL_CLASS_COUNT];
 
+/* RATi mining v2 — class authorization encoded in the leading char(s)
+ * of base58(pubkey). Determines what hull class an ingot can mint.
+ *   M / H / T / S / F / K = single-letter classes
+ *   RATi (4-char prefix)  = brand fleet
+ *   anything else         = anonymous (bulk material only)
+ * Reserved letters R/A/T/i (RATi disambiguation) and digits/lowercase
+ * fall into anonymous. */
+typedef enum {
+    INGOT_PREFIX_ANONYMOUS = 0,
+    INGOT_PREFIX_M,
+    INGOT_PREFIX_H,
+    INGOT_PREFIX_T,
+    INGOT_PREFIX_S,
+    INGOT_PREFIX_F,
+    INGOT_PREFIX_K,
+    INGOT_PREFIX_RATI,
+    INGOT_PREFIX_COMMISSIONED,  /* reserved for v1.5 station bounties */
+    INGOT_PREFIX_COUNT
+} ingot_prefix_t;
+
+/* A named ingot is a uniquely-identified unit of refined ore. The
+ * pubkey IS the future hull's name; the prefix decides which hull
+ * class can be minted from it. Provenance fields let any client trace
+ * the ingot's history through the chain log. */
+typedef struct {
+    uint8_t  pubkey[32];      /* identity, set at smelt */
+    uint8_t  prefix_class;    /* ingot_prefix_t */
+    uint8_t  metal;           /* commodity_t — FERRITE/CUPRITE/CRYSTAL_INGOT */
+    uint8_t  _pad[2];
+    uint64_t mined_block;     /* chain block id at mint */
+    uint8_t  origin_station;  /* refinery that smelted it */
+    uint8_t  _pad2[7];
+} named_ingot_t;
+
+#define STATION_NAMED_INGOTS_MAX 64
+#define SHIP_HOLD_INGOTS_MAX     8
+
 typedef struct {
     vec2 pos;
     vec2 vel;
@@ -112,6 +149,11 @@ typedef struct {
     float stat_credits_earned;
     float stat_credits_spent;
     int stat_asteroids_fractured;
+    /* Named ingots in the player's hold — carried between stations
+     * for sale or hull construction. Bulk anonymous ingots still ride
+     * in cargo[] as fungible counts; this list holds identified ones. */
+    named_ingot_t hold_ingots[SHIP_HOLD_INGOTS_MAX];
+    int           hold_ingots_count;
 } ship_t;
 
 typedef enum {
@@ -233,6 +275,13 @@ typedef struct {
     /* Station credit pool: fixed money supply, no inflation.
      * Smelting pays from pool, player spending refills it. */
     float credit_pool;
+    /* Named ingot stockpile (RATi v2). Refinery deposits here on smelt
+     * when the winning pubkey carries a class prefix. Players buy from
+     * this list at the MARKET tab; shipyards consume entries to mint
+     * hulls bound to the ingot's pubkey identity. LRU evict on full. */
+    named_ingot_t named_ingots[STATION_NAMED_INGOTS_MAX];
+    int           named_ingots_count;
+    bool          named_ingots_dirty;  /* server-only: drives wire push */
 } station_t;
 
 /* Station lifecycle helpers, module queries, and ring/geometry helpers

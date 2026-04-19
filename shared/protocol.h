@@ -48,7 +48,21 @@ enum {
     NET_MSG_HAIL_RESPONSE   = 0x25, /* server -> client: hail collected payout */
     NET_MSG_EVENTS          = 0x26, /* server -> client: sim event batch */
     NET_MSG_SIGNAL_CHANNEL  = 0x27, /* server -> client: broadcast-log snapshot / append (#316) */
+    NET_MSG_STATION_INGOTS  = 0x28, /* server -> client: station's named-ingot stockpile (RATi v2) */
+    NET_MSG_HOLD_INGOTS     = 0x29, /* server -> client: local player's hold ingots (RATi v2) */
 };
+
+/* Named ingot wire record: [pubkey:32][prefix:1][metal:1][_pad:2][mined_block:8][origin:1][_pad2:7] = 52 bytes
+ * Mirrors named_ingot_t exactly so the server can write the struct
+ * directly. Class authorization is in the leading char(s) of base58(pubkey). */
+#define NAMED_INGOT_RECORD_SIZE 52
+
+/* NET_MSG_STATION_INGOTS layout:
+ *   [type:1][station_id:1][count:1] + count × NAMED_INGOT_RECORD_SIZE
+ * NET_MSG_HOLD_INGOTS layout (player is implicit — local pilot):
+ *   [type:1][count:1] + count × NAMED_INGOT_RECORD_SIZE */
+#define STATION_INGOTS_HEADER 3
+#define HOLD_INGOTS_HEADER    2
 
 /* Signal channel wire record:
  *   [id:u64][ts_ms:u32][sender:i8][text_len:u8][text:200][entry_hash:32] = 246 bytes

@@ -52,7 +52,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 25  /* bumped: MAX_STATIONS 8→64, station_count in header (#285 Phase 1) */
+#define SAVE_VERSION 26  /* RATi v2: per-station named ingot stockpile */
 #define MIN_SAVE_VERSION 20  /* migrate v20 by mapping old module_buffer → input */
 
 /* Set by world_load() before read_station() so per-station readers know
@@ -187,6 +187,10 @@ static bool write_station_session(FILE *f, const station_t *s) {
         WRITE_FIELD(f, s->arm_rotation[a]);
         WRITE_FIELD(f, s->arm_speed[a]);
     }
+    /* RATi v2: named ingot stockpile (v26+). */
+    WRITE_FIELD(f, s->named_ingots_count);
+    for (int i = 0; i < STATION_NAMED_INGOTS_MAX; i++)
+        WRITE_FIELD(f, s->named_ingots[i]);
     return true;
 }
 
@@ -233,6 +237,16 @@ static bool read_station_session(FILE *f, station_t *s) {
     for (int a = 0; a < MAX_ARMS; a++) {
         READ_FIELD(f, s->arm_rotation[a]);
         READ_FIELD(f, s->arm_speed[a]);
+    }
+    /* RATi v2: named ingot stockpile (v26+). Older saves leave the
+     * stockpile zero-initialized, which is the empty state. */
+    if (g_loaded_save_version >= 26) {
+        READ_FIELD(f, s->named_ingots_count);
+        if (s->named_ingots_count < 0) s->named_ingots_count = 0;
+        if (s->named_ingots_count > STATION_NAMED_INGOTS_MAX)
+            s->named_ingots_count = STATION_NAMED_INGOTS_MAX;
+        for (int i = 0; i < STATION_NAMED_INGOTS_MAX; i++)
+            READ_FIELD(f, s->named_ingots[i]);
     }
     return true;
 }
@@ -620,9 +634,59 @@ bool world_load(world_t *w, const char *path) {
 /* Player persistence                                                  */
 /* ================================================================== */
 
-#define PLAYER_MAGIC    0x504C5933u  /* "PLY3" — v25+: station-local credits (#312) */
+#define PLAYER_MAGIC    0x504C5934u  /* "PLY4" — v26+: ship_t.hold_ingots[] for RATi v2 */
+#define PLAYER_MAGIC_V3 0x504C5933u  /* "PLY3" — v25: station-local credits (#312) */
 #define PLAYER_MAGIC_V2 0x504C5932u  /* "PLY2" — v22-v24: post #280 enum cleanup */
 #define PLAYER_MAGIC_V1 0x504C5952u  /* "PLYR" — v21 and earlier */
+
+/* PLY3 ship layout — same as current ship_t but WITHOUT hold_ingots.
+ * Kept here so we can read PLY3 files and zero-init the new field. */
+typedef struct {
+    vec2 pos; vec2 vel; float angle; float hull;
+    float cargo[COMMODITY_COUNT];
+    hull_class_t hull_class;
+    int mining_level, hold_level, tractor_level;
+    int16_t towed_fragments[10]; uint8_t towed_count;
+    int16_t towed_scaffold; bool tractor_active;
+    float comm_range;
+    uint32_t unlocked_modules;
+    float stat_ore_mined, stat_credits_earned, stat_credits_spent;
+    int stat_asteroids_fractured;
+} ship_v3_t;
+
+typedef struct {
+    uint32_t magic;
+    ship_v3_t ship;
+    int last_station;
+    vec2 last_pos;
+    float last_angle;
+} player_save_v3_t;
+
+static void migrate_v3_ship(ship_t *dst, const ship_v3_t *src) {
+    /* All fields are identical except dst gains hold_ingots[]. */
+    dst->pos = src->pos;
+    dst->vel = src->vel;
+    dst->angle = src->angle;
+    dst->hull = src->hull;
+    memcpy(dst->cargo, src->cargo, sizeof(dst->cargo));
+    dst->hull_class = src->hull_class;
+    dst->mining_level = src->mining_level;
+    dst->hold_level = src->hold_level;
+    dst->tractor_level = src->tractor_level;
+    memcpy(dst->towed_fragments, src->towed_fragments, sizeof(dst->towed_fragments));
+    dst->towed_count = src->towed_count;
+    dst->towed_scaffold = src->towed_scaffold;
+    dst->tractor_active = src->tractor_active;
+    dst->comm_range = src->comm_range;
+    dst->unlocked_modules = src->unlocked_modules;
+    dst->stat_ore_mined = src->stat_ore_mined;
+    dst->stat_credits_earned = src->stat_credits_earned;
+    dst->stat_credits_spent = src->stat_credits_spent;
+    dst->stat_asteroids_fractured = src->stat_asteroids_fractured;
+    /* New fields — zero-init. */
+    memset(dst->hold_ingots, 0, sizeof(dst->hold_ingots));
+    dst->hold_ingots_count = 0;
+}
 
 typedef struct {
     uint32_t magic;
@@ -715,6 +779,10 @@ static void migrate_v2_ship(ship_t *dst, const ship_v2_t *src) {
     dst->stat_credits_earned = src->stat_credits_earned;
     dst->stat_credits_spent = src->stat_credits_spent;
     dst->stat_asteroids_fractured = src->stat_asteroids_fractured;
+    /* RATi v2 fields not present in PLY2 — zero-init. */
+    dst->comm_range = 0.0f;
+    memset(dst->hold_ingots, 0, sizeof(dst->hold_ingots));
+    dst->hold_ingots_count = 0;
 }
 
 static bool player_load_from_path(server_player_t *sp, world_t *w, const char *path, int slot) {
@@ -730,11 +798,20 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     bool is_v1 = false;
 
     if (magic == PLAYER_MAGIC) {
-        /* Current format (PLY3) */
+        /* Current format (PLY4 — RATi v2 with hold_ingots) */
         player_save_data_t data;
         if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
         fclose(f);
         sp->ship = data.ship;
+        sp->current_station = data.last_station;
+        sp->ship.pos = data.last_pos;
+        sp->ship.angle = data.last_angle;
+    } else if (magic == PLAYER_MAGIC_V3) {
+        /* PLY3 → PLY4: migrate ship_v3_t → ship_t, zero-init hold_ingots. */
+        player_save_v3_t data;
+        if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
+        fclose(f);
+        migrate_v3_ship(&sp->ship, &data.ship);
         sp->current_station = data.last_station;
         sp->ship.pos = data.last_pos;
         sp->ship.angle = data.last_angle;

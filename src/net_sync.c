@@ -127,6 +127,28 @@ void apply_remote_stations(uint8_t index, const float* inventory, float credit_p
     st->credit_pool = credit_pool;
 }
 
+void apply_remote_station_ingots(uint8_t station_id,
+                                 const named_ingot_t *ingots, int count) {
+    if (station_id >= MAX_STATIONS) return;
+    if (count < 0) count = 0;
+    if (count > STATION_NAMED_INGOTS_MAX) count = STATION_NAMED_INGOTS_MAX;
+    station_t *st = &g.world.stations[station_id];
+    /* Full replacement — server is the source of truth. */
+    memset(st->named_ingots, 0, sizeof(st->named_ingots));
+    for (int i = 0; i < count; i++) st->named_ingots[i] = ingots[i];
+    st->named_ingots_count = count;
+}
+
+void apply_remote_hold_ingots(const named_ingot_t *ingots, int count) {
+    if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
+    if (count < 0) count = 0;
+    if (count > SHIP_HOLD_INGOTS_MAX) count = SHIP_HOLD_INGOTS_MAX;
+    ship_t *ship = &g.world.players[g.local_player_slot].ship;
+    memset(ship->hold_ingots, 0, sizeof(ship->hold_ingots));
+    for (int i = 0; i < count; i++) ship->hold_ingots[i] = ingots[i];
+    ship->hold_ingots_count = count;
+}
+
 void apply_remote_contracts(const contract_t* contracts, int count) {
     /* Full replacement: clear all, then copy received */
     for (int i = 0; i < MAX_CONTRACTS; i++)

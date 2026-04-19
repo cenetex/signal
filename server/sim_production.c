@@ -161,16 +161,36 @@ static const uint8_t MINING_UNIVERSE_KEY[32] = {
 };
 
 mining_grade_t sim_roll_fragment_grade(const asteroid_t *a) {
-    (void)a; /* ore tonnage no longer scales burst — flat per-fragment */
+    mining_keypair_t winner;
+    return sim_roll_fragment_winner(a, &winner);
+}
+
+/* RATi v2: also surface the keypair of the highest-grade candidate so
+ * the refinery can stamp it onto a named ingot. The roll is identical
+ * to sim_roll_fragment_grade — same seed, same universe key, same loop —
+ * we just remember which nonce won. Deterministic; any client could
+ * recompute this from the rock's fracture_seed. */
+mining_grade_t sim_roll_fragment_winner(const asteroid_t *a, mining_keypair_t *out_winner) {
     mining_grade_t best = MINING_GRADE_COMMON;
+    mining_keypair_t best_kp;
+    memset(&best_kp, 0, sizeof(best_kp));
+    /* Seed the winner with the very first roll so we always return
+     * SOMETHING valid even when every candidate is COMMON. */
+    bool have_winner = false;
     for (int i = 0; i < MINING_BURST_PER_FRAGMENT; i++) {
         mining_keypair_t kp;
         mining_keypair_derive(a->fracture_seed, MINING_UNIVERSE_KEY, (uint32_t)i, &kp);
         char callsign[8];
         mining_callsign_from_pubkey(kp.pub, callsign);
         mining_grade_t g = mining_classify_base58(callsign);
-        if (g > best) best = g;
+        /* Prefer higher grade; break ties to first-seen (lower nonce). */
+        if (!have_winner || g > best) {
+            best = g;
+            best_kp = kp;
+            have_winner = true;
+        }
     }
+    if (out_winner) *out_winner = best_kp;
     return best;
 }
 
@@ -368,6 +388,55 @@ void step_furnace_smelting(world_t *w, float dt) {
                 st->inventory[ingot] += a->ore;
             else
                 st->inventory[a->commodity] += a->ore;
+
+            /* RATi v2: also re-roll the winning candidate's keypair
+             * and, if its base58 carries a class-letter prefix,
+             * deposit a named ingot into the station's stockpile. The
+             * player still gets paid the bulk credits above; this is
+             * an additional output unique per-fragment. */
+            mining_keypair_t winner;
+            sim_roll_fragment_winner(a, &winner);
+            int prefix = mining_pubkey_class(winner.pub);
+            if (prefix != MINING_CLASS_ANONYMOUS) {
+                /* If the stockpile is full, LRU-evict the entry with
+                 * the smallest mined_block (oldest first). The evicted
+                 * pubkey is voided to the chain so it can never be
+                 * re-deposited, keeping namespace honest. */
+                if (st->named_ingots_count >= STATION_NAMED_INGOTS_MAX) {
+                    int worst = 0;
+                    uint64_t oldest = st->named_ingots[0].mined_block;
+                    for (int k = 1; k < STATION_NAMED_INGOTS_MAX; k++) {
+                        if (st->named_ingots[k].mined_block < oldest) {
+                            oldest = st->named_ingots[k].mined_block;
+                            worst = k;
+                        }
+                    }
+                    char ev_cs[12];
+                    mining_render_callsign(st->named_ingots[worst].pubkey, ev_cs);
+                    char ev_msg[96];
+                    snprintf(ev_msg, sizeof(ev_msg),
+                             "stockpile full — voided %s", ev_cs);
+                    signal_channel_post(w, smelt_station, ev_msg, "");
+                    /* Compact: move last into evicted slot. */
+                    st->named_ingots[worst] = st->named_ingots[STATION_NAMED_INGOTS_MAX - 1];
+                    st->named_ingots_count = STATION_NAMED_INGOTS_MAX - 1;
+                }
+
+                named_ingot_t *ing = &st->named_ingots[st->named_ingots_count++];
+                memset(ing, 0, sizeof(*ing));
+                memcpy(ing->pubkey, winner.pub, 32);
+                ing->prefix_class   = (uint8_t)prefix;
+                ing->metal          = (uint8_t)ingot;
+                ing->origin_station = (uint8_t)smelt_station;
+
+                char cs[12];
+                mining_render_callsign(winner.pub, cs);
+                char text[96];
+                snprintf(text, sizeof(text), "smelted %s", cs);
+                ing->mined_block = signal_channel_post(w, smelt_station, text, "");
+                st->named_ingots_dirty = true;
+            }
+
             clear_asteroid(a);
         }
     }

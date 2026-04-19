@@ -248,6 +248,51 @@ static inline int serialize_asteroids_full(uint8_t *buf, const asteroid_t *aster
     return ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE;
 }
 
+/* RATi v2 — write a single named ingot record into the buffer.
+ * Layout matches the on-wire NAMED_INGOT_RECORD_SIZE definition. */
+static inline void write_named_ingot(uint8_t *p, const named_ingot_t *m) {
+    memset(p, 0, NAMED_INGOT_RECORD_SIZE);
+    memcpy(&p[0], m->pubkey, 32);
+    p[32] = m->prefix_class;
+    p[33] = m->metal;
+    /* p[34..35] pad */
+    for (int k = 0; k < 8; k++) p[36 + k] = (uint8_t)(m->mined_block >> (8 * k));
+    p[44] = m->origin_station;
+    /* p[45..51] pad */
+}
+
+/* Per-station named-ingot stockpile snapshot. Sent on dock + on
+ * stockpile change. */
+static inline int serialize_station_ingots(uint8_t *buf, int station_idx,
+                                           const station_t *st) {
+    int n = st->named_ingots_count;
+    if (n < 0) n = 0;
+    if (n > STATION_NAMED_INGOTS_MAX) n = STATION_NAMED_INGOTS_MAX;
+    if (n > 255) n = 255; /* count fits in u8 */
+    buf[0] = NET_MSG_STATION_INGOTS;
+    buf[1] = (uint8_t)station_idx;
+    buf[2] = (uint8_t)n;
+    for (int i = 0; i < n; i++) {
+        uint8_t *p = &buf[STATION_INGOTS_HEADER + i * NAMED_INGOT_RECORD_SIZE];
+        write_named_ingot(p, &st->named_ingots[i]);
+    }
+    return STATION_INGOTS_HEADER + n * NAMED_INGOT_RECORD_SIZE;
+}
+
+/* Local player's hold-ingot snapshot. Sent on contents change. */
+static inline int serialize_hold_ingots(uint8_t *buf, const ship_t *ship) {
+    int n = ship->hold_ingots_count;
+    if (n < 0) n = 0;
+    if (n > SHIP_HOLD_INGOTS_MAX) n = SHIP_HOLD_INGOTS_MAX;
+    buf[0] = NET_MSG_HOLD_INGOTS;
+    buf[1] = (uint8_t)n;
+    for (int i = 0; i < n; i++) {
+        uint8_t *p = &buf[HOLD_INGOTS_HEADER + i * NAMED_INGOT_RECORD_SIZE];
+        write_named_ingot(p, &ship->hold_ingots[i]);
+    }
+    return HOLD_INGOTS_HEADER + n * NAMED_INGOT_RECORD_SIZE;
+}
+
 /* Signal channel (#316) snapshot — the client dedupes by id so this
  * works as both the connect-time full sync and the per-post update. */
 static inline int serialize_signal_channel(uint8_t *buf, const signal_channel_t *ch) {

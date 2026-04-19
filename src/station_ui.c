@@ -706,6 +706,59 @@ void draw_station_services(const station_ui_state_t* ui) {
             my += compact ? 18.0f : 22.0f;
         }
 
+        /* === HIGH-GRADE STOCK (RATi v2 named ingots) ===
+         * Player-facing copy treats these as "ore quality grades" — the
+         * cryptographic identity is hidden until the player notices the
+         * grade letter and the eventual hull's callsign share characters.
+         * Listed at any station holding them, not just refineries. */
+        if (ui->station->named_ingots_count > 0) {
+            sdtx_color3b(PAL_HOLD_STATUS);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+            sdtx_puts("HIGH-GRADE STOCK");
+            draw_ui_rule(cx, rule_right_m, my + 11.0f, 0.12f, 0.22f, 0.34f, 0.45f);
+            my += 16.0f;
+            /* Map ingot_prefix_t → display letter / brand. Player reads
+             * these as quality designations; later they'll spot the
+             * letter showing up on a hull's callsign. */
+            static const char *grade_letter[INGOT_PREFIX_COUNT] = {
+                "?", "M", "H", "T", "S", "F", "K", "RATi", "★"
+            };
+            int show = ui->station->named_ingots_count;
+            int max_rows = compact ? 4 : 6;
+            if (show > max_rows) show = max_rows;
+            for (int i = 0; i < show; i++) {
+                const named_ingot_t *ing = &ui->station->named_ingots[i];
+                const char *grade = (ing->prefix_class < INGOT_PREFIX_COUNT)
+                    ? grade_letter[ing->prefix_class] : "?";
+                /* Suffix = base58[1..3] for single-letter classes,
+                 * base58[4..6] for RATi. Read off the pubkey. */
+                char rendered[12];
+                mining_render_callsign(ing->pubkey, rendered);
+                /* Find the dash; the suffix is everything after it. */
+                const char *suffix = strchr(rendered, '-');
+                suffix = suffix ? suffix + 1 : rendered;
+                sdtx_pos(ui_text_pos(cx + 3.0f), ui_text_pos(my));
+                /* PAL_X macros are 3-arg comma literals — using one
+                 * inside a ternary trips gcc -Werror=unused-value. */
+                if (ing->prefix_class >= INGOT_PREFIX_RATI)
+                    sdtx_color3b(PAL_ORE_AMBER);
+                else
+                    sdtx_color3b(PAL_TEXT_SECONDARY);
+                sdtx_printf("%s-grade %s lot %s",
+                            grade,
+                            commodity_short_name((commodity_t)ing->metal),
+                            suffix);
+                my += 12.0f;
+            }
+            if (ui->station->named_ingots_count > show) {
+                sdtx_pos(ui_text_pos(cx + 3.0f), ui_text_pos(my));
+                sdtx_color3b(PAL_STATUS_DISABLED);
+                sdtx_printf("(+%d more)", ui->station->named_ingots_count - show);
+                my += 12.0f;
+            }
+            my += compact ? 8.0f : 12.0f;
+        }
+
         /* === SELL TO STATION === */
         {
             commodity_t buy = station_primary_buy(ui->station);

@@ -22,6 +22,12 @@ void apply_remote_station_identity(const NetStationIdentity* si);
 void apply_remote_scaffolds(const NetScaffoldState* scaffolds, int count);
 void apply_remote_hail_response(uint8_t station, float credits, int contract_index);
 void apply_remote_signal_channel(const NetSignalChannelMsg *msgs, int count);
+/* RATi v2 — copy a station's named-ingot stockpile into world.stations[]
+ * so the MARKET tab can render it. */
+void apply_remote_station_ingots(uint8_t station_id,
+                                 const named_ingot_t *ingots, int count);
+/* RATi v2 — copy local pilot's hold-ingot snapshot into LOCAL_PLAYER.ship. */
+void apply_remote_hold_ingots(const named_ingot_t *ingots, int count);
 void apply_remote_events(const sim_event_t *events, int count);
 void begin_player_state_batch(void);
 void apply_remote_player_state(const NetPlayerState* state);

@@ -242,4 +242,75 @@ static inline void mining_callsign_from_pubkey(const uint8_t pub[MINING_PUBKEY_B
     out[7] = '\0';
 }
 
+/* Class prefix indices — must mirror ingot_prefix_t in shared/types.h.
+ * Kept as plain integers here so this header has no types.h dependency.
+ * Single source of truth lives in types.h; v2 callers should compare
+ * against the typed enum names. */
+enum {
+    MINING_CLASS_ANONYMOUS    = 0,
+    MINING_CLASS_M            = 1,
+    MINING_CLASS_H            = 2,
+    MINING_CLASS_T            = 3,
+    MINING_CLASS_S            = 4,
+    MINING_CLASS_F            = 5,
+    MINING_CLASS_K            = 6,
+    MINING_CLASS_RATI         = 7,
+    MINING_CLASS_COMMISSIONED = 8,
+};
+
+/* Inspect the leading character(s) of base58(pubkey) to determine
+ * which hull class an ingot can mint. Returns one of MINING_CLASS_*. */
+static inline int mining_pubkey_class(const uint8_t pub[MINING_PUBKEY_BYTES]) {
+    char b58[MINING_BASE58_CAP];
+    size_t n = base58_encode(pub, MINING_PUBKEY_BYTES, b58, sizeof(b58));
+    if (n < 4) return MINING_CLASS_ANONYMOUS;
+    if (b58[0]=='R' && b58[1]=='A' && b58[2]=='T' && b58[3]=='i')
+        return MINING_CLASS_RATI;
+    switch (b58[0]) {
+    case 'M': return MINING_CLASS_M;
+    case 'H': return MINING_CLASS_H;
+    case 'T': return MINING_CLASS_T;
+    case 'S': return MINING_CLASS_S;
+    case 'F': return MINING_CLASS_F;
+    case 'K': return MINING_CLASS_K;
+    /* R/A/T/i alone are reserved (RATi disambiguation) — anonymous. */
+    default:  return MINING_CLASS_ANONYMOUS;
+    }
+}
+
+/* Render a pubkey as its display callsign, with the class-prefix dash
+ * inserted at the boundary:
+ *   M-class:    "M-ABCDEF"   (8 chars + null = 9)
+ *   RATi-class: "RATi-XYZ"   (8 chars + null = 9)
+ *   anonymous:  "ABCDEFG"    (7 chars + null = 8)
+ * Caller buffer must be at least 12 bytes. */
+static inline void mining_render_callsign(const uint8_t pub[MINING_PUBKEY_BYTES],
+                                          char out[12]) {
+    char b58[MINING_BASE58_CAP];
+    size_t n = base58_encode(pub, MINING_PUBKEY_BYTES, b58, sizeof(b58));
+    if (n < 7) {
+        /* Should never happen with a 32B pubkey, but be defensive. */
+        size_t i;
+        for (i = 0; i < n && i < 11; i++) out[i] = b58[i];
+        out[i] = '\0';
+        return;
+    }
+    int cls = mining_pubkey_class(pub);
+    if (cls == MINING_CLASS_RATI) {
+        /* Skip the 4 RATi chars, render 3 of the body chars. */
+        out[0]='R'; out[1]='A'; out[2]='T'; out[3]='i'; out[4]='-';
+        out[5]=b58[4]; out[6]=b58[5]; out[7]=b58[6];
+        out[8]='\0';
+    } else if (cls != MINING_CLASS_ANONYMOUS) {
+        out[0] = b58[0];
+        out[1] = '-';
+        out[2] = b58[1]; out[3] = b58[2]; out[4] = b58[3];
+        out[5] = b58[4]; out[6] = b58[5]; out[7] = b58[6];
+        out[8] = '\0';
+    } else {
+        memcpy(out, b58, 7);
+        out[7] = '\0';
+    }
+}
+
 #endif /* SHARED_MINING_H */

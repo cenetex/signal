@@ -718,6 +718,16 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             }
         }
 
+        /* RATi v2: per-station named-ingot stockpile snapshot. New
+         * client sees what's currently on offer at every station so
+         * the MARKET stockpile UI is populated immediately. */
+        for (int sidx = 0; sidx < MAX_STATIONS; sidx++) {
+            if (world.stations[sidx].named_ingots_count <= 0) continue;
+            uint8_t buf[STATION_INGOTS_HEADER + STATION_NAMED_INGOTS_MAX * NAMED_INGOT_RECORD_SIZE];
+            int len = serialize_station_ingots(buf, sidx, &world.stations[sidx]);
+            ws_send(c, buf, (size_t)len);
+        }
+
         /* Send server version hash. */
         {
 #ifdef GIT_HASH
@@ -874,6 +884,12 @@ static void broadcast_ship_states(void) {
         int len = send_player_ship(buf, (uint8_t)i, &world.players[i]);
         /* Full ship state sent only to the owning player. */
         ws_send(world.players[i].conn, buf, (size_t)len);
+
+        /* RATi v2: also push hold-ingot snapshot. Cheap (max 8 × 52B
+         * = 416B + header). Ride along with the per-player ship tick. */
+        uint8_t hbuf[HOLD_INGOTS_HEADER + SHIP_HOLD_INGOTS_MAX * NAMED_INGOT_RECORD_SIZE];
+        int hlen = serialize_hold_ingots(hbuf, &world.players[i].ship);
+        ws_send(world.players[i].conn, hbuf, (size_t)hlen);
     }
 
     if (station_econ_dirty) {
@@ -1164,6 +1180,22 @@ int main(void) {
                         ws_send(world.players[p].conn, id_buf, (size_t)id_len);
                 }
                 station_identity_dirty[s] = false;
+            }
+
+            /* RATi v2: re-broadcast dirty named-ingot stockpiles to all
+             * connected players. Smaller payload than identity (~3KB
+             * worst case for a full stockpile) so we send to everyone
+             * regardless of signal range — the MARKET tab is global. */
+            for (int s = 0; s < MAX_STATIONS; s++) {
+                if (!world.stations[s].named_ingots_dirty) continue;
+                if (!station_exists(&world.stations[s])) continue;
+                uint8_t buf[STATION_INGOTS_HEADER + STATION_NAMED_INGOTS_MAX * NAMED_INGOT_RECORD_SIZE];
+                int len = serialize_station_ingots(buf, s, &world.stations[s]);
+                for (int p = 0; p < MAX_PLAYERS; p++) {
+                    if (!world.players[p].connected || !world.players[p].conn) continue;
+                    ws_send(world.players[p].conn, buf, (size_t)len);
+                }
+                world.stations[s].named_ingots_dirty = false;
             }
             last_world = now;
         }

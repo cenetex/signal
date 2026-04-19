@@ -22,6 +22,12 @@ bool sim_can_smelt_ore(const station_t *st, commodity_t ore);
  * stable for the rock's lifetime — the in-world dot reveals it. */
 mining_grade_t sim_roll_fragment_grade(const asteroid_t *a);
 
+/* Variant that also returns the keypair of the winning candidate
+ * (the one whose base58 callsign achieved best grade). Used by
+ * the refinery to stamp the winning pubkey onto a named ingot. */
+mining_grade_t sim_roll_fragment_winner(const asteroid_t *a,
+                                        mining_keypair_t *out_winner);
+
 /*
  * Already declared in game_sim.h:
  *   step_module_delivery

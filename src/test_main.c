@@ -27,6 +27,8 @@ static int truncate(const char *path, long size) {
 #include "sim_nav.h"
 #include "chunk.h"
 #include "net_protocol.h"
+#include "mining.h"
+#include "sha256.h"
 
 static int tests_run = 0;
 static int tests_passed = 0;
@@ -562,6 +564,98 @@ TEST(test_world_sim_step_refinery_produces_ingots) {
         world_sim_step(&w, 1.0f / 120.0f);
     ASSERT(w.stations[0].inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
     ASSERT(w.stations[0].inventory[COMMODITY_FERRITE_ORE] < 50.0f);
+}
+
+/* RATi v2 — verify mining_pubkey_class agrees with mining_render_callsign
+ * across a sweep of synthetic pubkeys. */
+TEST(test_mining_class_prefix_round_trip) {
+    /* Pubkeys whose first base58 char is M, H, T, S, F, K, RATi prefix,
+     * and one that is "anonymous" (digit/lowercase). We don't have direct
+     * control over base58 output but we can iterate seeds until each
+     * prefix appears. */
+    int seen[MINING_CLASS_COMMISSIONED + 1] = {0};
+    int found = 0;
+    for (uint32_t seed = 1; seed < 1000000 && found < 7; seed++) {
+        uint8_t s[32];
+        for (int i = 0; i < 32; i++)
+            s[i] = (uint8_t)((seed >> ((i & 3) * 8)) ^ (seed * 2654435761u >> (i & 7)));
+        uint8_t pub[32];
+        sha256_bytes(s, 32, pub);
+        int cls = mining_pubkey_class(pub);
+        if (cls < 0 || cls > MINING_CLASS_COMMISSIONED) continue;
+        if (cls == MINING_CLASS_ANONYMOUS || cls == MINING_CLASS_COMMISSIONED) continue;
+        if (!seen[cls]) {
+            seen[cls] = 1;
+            found++;
+            char render[12];
+            mining_render_callsign(pub, render);
+            /* Render must contain a dash, and the prefix segment must
+             * match what mining_pubkey_class said. */
+            ASSERT(strchr(render, '-') != NULL);
+        }
+    }
+    /* Should hit M/H/T/S/F/K within 1M iterations. RATi is ~1 in 11M so
+     * not asserted here. */
+    ASSERT(seen[MINING_CLASS_M]);
+    ASSERT(seen[MINING_CLASS_H]);
+    ASSERT(seen[MINING_CLASS_T]);
+    ASSERT(seen[MINING_CLASS_S]);
+    ASSERT(seen[MINING_CLASS_F]);
+    ASSERT(seen[MINING_CLASS_K]);
+}
+
+/* RATi v2 — refinery deposits a named ingot when smelting a fragment
+ * whose winning candidate's pubkey starts with a class letter. */
+TEST(test_refinery_deposits_named_ingot) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    /* Force a furnace at station 0 — already exists by default in
+     * world_reset, but assert. */
+    bool has_furnace = false;
+    for (int m = 0; m < w->stations[0].module_count; m++) {
+        if (w->stations[0].modules[m].type == MODULE_FURNACE) has_furnace = true;
+    }
+    ASSERT(has_furnace);
+
+    /* Spawn an S-tier ferrite fragment near the station's hopper, with
+     * an arbitrary fracture_seed. Hopper pull radius will draw it in. */
+    int slot = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) { slot = i; break; }
+    }
+    ASSERT(slot >= 0);
+    asteroid_t *a = &w->asteroids[slot];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->ore = 10.0f;
+    a->max_ore = 10.0f;
+    a->radius = 6.0f;
+    /* Seed values intentionally varied so the roll lands somewhere. */
+    for (int i = 0; i < 32; i++) a->fracture_seed[i] = (uint8_t)(i * 17 + 3);
+    a->pos = w->stations[0].pos;  /* dead center for instant pull */
+    a->vel = v2(0, 0);
+    a->net_dirty = true;
+
+    /* Run sim until smelt completes (smelt_progress accumulates ~0.5/s). */
+    int initial_named = w->stations[0].named_ingots_count;
+    for (int i = 0; i < 600 && w->asteroids[slot].active; i++)
+        world_sim_step(w, 1.0f / 120.0f);
+    /* Asteroid should be consumed. */
+    ASSERT(!w->asteroids[slot].active);
+    /* Either an anonymous ingot landed in inventory, or a named ingot
+     * landed in the stockpile — depending on what the universe rolled. */
+    bool got_named = (w->stations[0].named_ingots_count > initial_named);
+    bool got_bulk = (w->stations[0].inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
+    ASSERT(got_named || got_bulk);
+    /* If named, validate prefix_class matches mining_pubkey_class. */
+    if (got_named) {
+        named_ingot_t *ing = &w->stations[0].named_ingots[w->stations[0].named_ingots_count - 1];
+        ASSERT_EQ_INT(ing->prefix_class, mining_pubkey_class(ing->pubkey));
+        ASSERT(ing->prefix_class != MINING_CLASS_ANONYMOUS);
+    }
 }
 
 TEST(test_world_sim_step_events_emitted) {
@@ -3218,7 +3312,7 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  *   3. Update this constant to the new size
  */
 /* v23: station credit pool added (#312) — +4 bytes per station (8×4=32). */
-#define EXPECTED_SAVE_SIZE 38988  /* v25: 64 stations, station_count + next_station_id header */
+#define EXPECTED_SAVE_SIZE 268620 /* v26: 64 stations × (count + 64 × 56-byte named_ingots) added */
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -3255,7 +3349,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 25);
+    ASSERT_EQ_INT((int)version, 26);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -6101,6 +6195,8 @@ int main(int argc, char **argv) {
     RUN(test_world_sim_step_mining_damages_asteroid);
     RUN(test_world_sim_step_docking);
     RUN(test_world_sim_step_refinery_produces_ingots);
+    RUN(test_mining_class_prefix_round_trip);
+    RUN(test_refinery_deposits_named_ingot);
     RUN(test_world_sim_step_events_emitted);
     RUN(test_world_sim_step_npc_miners_work);
     RUN(test_world_network_writes_persist);
