@@ -63,8 +63,11 @@ static inline bool station_consumes(const station_t *st, commodity_t c) {
         case COMMODITY_CUPRITE_ORE:   return station_has_module(st, MODULE_FURNACE_CU);
         case COMMODITY_CRYSTAL_ORE:   return station_has_module(st, MODULE_FURNACE_CR);
         case COMMODITY_FERRITE_INGOT: return station_has_module(st, MODULE_FRAME_PRESS);
-        case COMMODITY_CUPRITE_INGOT: return station_has_module(st, MODULE_LASER_FAB);
-        case COMMODITY_CRYSTAL_INGOT: return station_has_module(st, MODULE_TRACTOR_FAB);
+        case COMMODITY_CUPRITE_INGOT:
+            return station_has_module(st, MODULE_LASER_FAB) ||
+                   station_has_module(st, MODULE_TRACTOR_FAB);
+        case COMMODITY_CRYSTAL_INGOT:
+            return station_has_module(st, MODULE_LASER_FAB);
         default: return false;
     }
 }
@@ -121,7 +124,7 @@ static inline commodity_t station_primary_buy(const station_t *st) {
     switch (dom) {
         case MODULE_FRAME_PRESS: return COMMODITY_FERRITE_INGOT;
         case MODULE_LASER_FAB:   return COMMODITY_CUPRITE_INGOT;
-        case MODULE_TRACTOR_FAB: return COMMODITY_CRYSTAL_INGOT;
+        case MODULE_TRACTOR_FAB: return COMMODITY_CUPRITE_INGOT;
         default: break;
     }
     return (commodity_t)-1;

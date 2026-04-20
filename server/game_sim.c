@@ -784,20 +784,24 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         }
     }
 
-    /* Fallback: deliver the station's primary input commodity at base price,
-     * even without an active contract. Fab stations always accept their input
-     * (e.g. frame press accepts ferrite ingots). */
-    commodity_t buy = station_primary_buy(st);
-    if ((int)buy >= 0 && sp->ship.cargo[buy] > 0.01f &&
-        (!selective || filter == buy)) {
-        float capacity = MAX_PRODUCT_STOCK;
-        float space = fmaxf(0.0f, capacity - st->inventory[buy]);
-        if (space > 0.01f) {
-            float accepted = fminf(sp->ship.cargo[buy], space);
-            float price = station_buy_price(st, buy);
-            payout += accepted * price;
-            sp->ship.cargo[buy] -= accepted;
-            st->inventory[buy] += accepted;
+    /* Fallback: fab stations accept any ingot they consume, even without
+     * an active contract. This lets multi-input recipes source their
+     * secondary ingredient through the normal station sell path. */
+    for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
+        commodity_t buy = (commodity_t)i;
+        if (!station_consumes(st, buy)) continue;
+        if (sp->ship.cargo[buy] <= 0.01f) continue;
+        if (selective && filter != buy) continue;
+        {
+            float capacity = MAX_PRODUCT_STOCK;
+            float space = fmaxf(0.0f, capacity - st->inventory[buy]);
+            if (space > 0.01f) {
+                float accepted = fminf(sp->ship.cargo[buy], space);
+                float price = station_buy_price(st, buy);
+                payout += accepted * price;
+                sp->ship.cargo[buy] -= accepted;
+                st->inventory[buy] += accepted;
+            }
         }
     }
 
@@ -2790,15 +2794,17 @@ static void step_contracts(world_t *w, float dt) {
 
         /* Priority 4: ingot buffer deficit (production slot) */
         if (!need.active && !has_production_contract) {
-            struct { module_type_t mod; commodity_t ingot; } checks[] = {
-                { MODULE_FRAME_PRESS, COMMODITY_FERRITE_INGOT },
-                { MODULE_LASER_FAB, COMMODITY_CUPRITE_INGOT },
-                { MODULE_TRACTOR_FAB, COMMODITY_CRYSTAL_INGOT },
+            struct { commodity_t ingot; bool needed; } checks[] = {
+                { COMMODITY_FERRITE_INGOT, station_has_module(st, MODULE_FRAME_PRESS) },
+                { COMMODITY_CUPRITE_INGOT,
+                  station_has_module(st, MODULE_LASER_FAB) ||
+                  station_has_module(st, MODULE_TRACTOR_FAB) },
+                { COMMODITY_CRYSTAL_INGOT, station_has_module(st, MODULE_LASER_FAB) },
             };
             float worst_deficit = 0.0f;
             int worst_idx = -1;
             for (int j = 0; j < 3; j++) {
-                if (!station_has_module(st, checks[j].mod)) continue;
+                if (!checks[j].needed) continue;
                 float deficit = MAX_PRODUCT_STOCK * 0.5f - st->inventory[checks[j].ingot];
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
             }

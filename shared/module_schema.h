@@ -38,7 +38,8 @@ typedef enum {
 typedef struct {
     const char    *name;          /* base display name (variants override) */
     module_kind_t  kind;
-    commodity_t    input;         /* COMMODITY_COUNT = none */
+    commodity_t    input;         /* primary input commodity; some recipes also
+                                   * consume a secondary inventory ingredient */
     commodity_t    output;        /* COMMODITY_COUNT = none */
     float          rate;          /* units per second (PRODUCER only) */
     float          buffer_capacity; /* per-module local buffer size */
@@ -160,7 +161,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
     [MODULE_LASER_FAB] = {
         .name = "Laser Fab",
         .kind = MODULE_KIND_PRODUCER,
-        .input = COMMODITY_CUPRITE_INGOT,
+        .input = COMMODITY_CUPRITE_INGOT, /* plus crystal ingots */
         .output = COMMODITY_LASER_MODULE,
         .rate = 0.5f, .buffer_capacity = 12.0f,
         .build_material = 80.0f, .build_commodity = COMMODITY_CUPRITE_INGOT,
@@ -173,7 +174,7 @@ static const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
     [MODULE_TRACTOR_FAB] = {
         .name = "Tractor Fab",
         .kind = MODULE_KIND_PRODUCER,
-        .input = COMMODITY_CRYSTAL_INGOT,
+        .input = COMMODITY_CUPRITE_INGOT,
         .output = COMMODITY_TRACTOR_MODULE,
         .rate = 0.5f, .buffer_capacity = 12.0f,
         .build_material = 80.0f, .build_commodity = COMMODITY_CRYSTAL_INGOT,

@@ -41,6 +41,140 @@ static bool station_manifest_push_ingot(station_t *st, const cargo_unit_t *unit)
     return manifest_push(&st->manifest, unit);
 }
 
+static bool station_manifest_push_finished(station_t *st, const cargo_unit_t *unit) {
+    if (!st || !unit) return false;
+    if (st->manifest.cap == 0 || st->manifest.units == NULL) {
+        if (!station_manifest_bootstrap(st)) return false;
+    }
+    if (st->manifest.count >= st->manifest.cap) return false;
+    return manifest_push(&st->manifest, unit);
+}
+
+static bool manifest_unit_matches_recipe_input(const cargo_unit_t *unit,
+                                               commodity_t commodity) {
+    return unit != NULL &&
+           (cargo_kind_t)unit->kind == CARGO_KIND_INGOT &&
+           (commodity_t)unit->commodity == commodity;
+}
+
+static bool station_manifest_select_recipe_inputs(const station_t *st,
+                                                  const recipe_def_t *recipe,
+                                                  uint16_t out_indices[2],
+                                                  cargo_unit_t out_inputs[2]) {
+    if (!st || !recipe || !out_indices || !out_inputs ||
+        !st->manifest.units || recipe->input_count == 0 || recipe->input_count > 2) {
+        return false;
+    }
+
+    for (size_t want = 0; want < recipe->input_count; want++) {
+        bool found = false;
+        for (uint16_t i = 0; i < st->manifest.count; i++) {
+            bool already_selected = false;
+            for (size_t prev = 0; prev < want; prev++) {
+                if (out_indices[prev] == i) {
+                    already_selected = true;
+                    break;
+                }
+            }
+            if (already_selected) continue;
+            if (!manifest_unit_matches_recipe_input(&st->manifest.units[i],
+                                                    recipe->input_commodities[want])) {
+                continue;
+            }
+            out_indices[want] = i;
+            out_inputs[want] = st->manifest.units[i];
+            found = true;
+            break;
+        }
+        if (!found) return false;
+    }
+
+    return true;
+}
+
+static bool station_manifest_consume_selected_inputs(station_t *st,
+                                                     const uint16_t *indices,
+                                                     size_t count) {
+    if (!st || !indices || count == 0 || count > 2) return false;
+    if (!st->manifest.units) return false;
+
+    if (count == 2) {
+        uint16_t hi = indices[0] > indices[1] ? indices[0] : indices[1];
+        uint16_t lo = indices[0] > indices[1] ? indices[1] : indices[0];
+        return manifest_remove(&st->manifest, hi, NULL) &&
+               manifest_remove(&st->manifest, lo, NULL);
+    }
+
+    return manifest_remove(&st->manifest, indices[0], NULL);
+}
+
+static bool station_manifest_craft_product(station_t *st, recipe_id_t recipe_id) {
+    const recipe_def_t *recipe = recipe_get(recipe_id);
+    uint16_t indices[2] = {0, 0};
+    cargo_unit_t inputs[2] = {{0}};
+    cargo_unit_t product = {0};
+
+    if (!st || !recipe || recipe->input_count == 0 || recipe->input_count > 2) return false;
+    if (st->manifest.cap == 0 || st->manifest.units == NULL) {
+        if (!station_manifest_bootstrap(st)) return false;
+    }
+    if (!station_manifest_select_recipe_inputs(st, recipe, indices, inputs)) return false;
+    if (!hash_product(recipe_id, inputs, recipe->input_count, 0, &product)) return false;
+    if (!station_manifest_consume_selected_inputs(st, indices, recipe->input_count)) return false;
+    return station_manifest_push_finished(st, &product);
+}
+
+typedef struct {
+    recipe_id_t recipe_id;
+    commodity_t primary_input;
+    float primary_units_per_output;
+    commodity_t secondary_input;
+    float secondary_units_per_output;
+    commodity_t output;
+} producer_recipe_t;
+
+static bool producer_recipe_for_module(module_type_t mt, producer_recipe_t *out_recipe) {
+    recipe_id_t recipe_id;
+    const recipe_def_t *recipe;
+    commodity_t primary;
+
+    if (!out_recipe) return false;
+    memset(out_recipe, 0, sizeof(*out_recipe));
+    out_recipe->secondary_input = COMMODITY_COUNT;
+
+    switch (mt) {
+    case MODULE_FRAME_PRESS: recipe_id = RECIPE_FRAME_BASIC; break;
+    case MODULE_LASER_FAB:   recipe_id = RECIPE_LASER_BASIC; break;
+    case MODULE_TRACTOR_FAB: recipe_id = RECIPE_TRACTOR_COIL; break;
+    default: return false;
+    }
+
+    recipe = recipe_get(recipe_id);
+    if (!recipe) return false;
+    out_recipe->recipe_id = recipe_id;
+    primary = module_schema_input(mt);
+    out_recipe->primary_input = primary;
+    out_recipe->output = recipe->output_commodity;
+
+    for (size_t i = 0; i < recipe->input_count; i++) {
+        commodity_t input = recipe->input_commodities[i];
+        if (input == primary) {
+            out_recipe->primary_units_per_output += 1.0f;
+            continue;
+        }
+        if (out_recipe->secondary_input == COMMODITY_COUNT ||
+            out_recipe->secondary_input == input) {
+            out_recipe->secondary_input = input;
+            out_recipe->secondary_units_per_output += 1.0f;
+            continue;
+        }
+        return false;
+    }
+
+    return out_recipe->primary_units_per_output > 0.0f &&
+           out_recipe->output == module_schema_output(mt);
+}
+
 bool sim_can_smelt_ore(const station_t *st, commodity_t ore) {
     switch (ore) {
         case COMMODITY_FERRITE_ORE: return station_has_module(st, MODULE_FURNACE);
@@ -123,18 +257,22 @@ void sim_step_station_production(world_t *w, float dt) {
 
         for (int m = 0; m < st->module_count; m++) {
             module_type_t mt = st->modules[m].type;
+            producer_recipe_t recipe;
             if (st->modules[m].scaffold) continue;
 
             const module_schema_t *schema = module_schema(mt);
             if (schema->kind != MODULE_KIND_PRODUCER) continue;
             /* Furnaces handled separately in sim_step_refinery_production */
             if (mt == MODULE_FURNACE || mt == MODULE_FURNACE_CU || mt == MODULE_FURNACE_CR) continue;
+            if (!producer_recipe_for_module(mt, &recipe)) continue;
 
-            commodity_t input_com = schema->input;
-            commodity_t output_com = schema->output;
+            commodity_t input_com = recipe.primary_input;
+            commodity_t output_com = recipe.output;
+            float stock_before;
             if (input_com >= COMMODITY_COUNT || output_com >= COMMODITY_COUNT) continue;
             if (st->inventory[output_com] >= MAX_PRODUCT_STOCK) continue;
 
+            stock_before = st->inventory[output_com];
             float room = MAX_PRODUCT_STOCK - st->inventory[output_com];
             float rate = schema->rate > 0.0f ? schema->rate : STATION_PRODUCTION_RATE;
 
@@ -142,11 +280,23 @@ void sim_step_station_production(world_t *w, float dt) {
              * This is the fast path — placement-dependent throughput. */
             float produced = 0.0f;
             if (st->module_input[m] > 0.01f) {
-                float from_buffer = fminf(st->module_input[m], fminf(rate * dt, room));
-                st->module_input[m] -= from_buffer;
-                st->inventory[output_com] += from_buffer;
-                room -= from_buffer;
-                produced += from_buffer;
+                float from_buffer = fminf(rate * dt, room);
+                from_buffer = fminf(from_buffer,
+                                    st->module_input[m] / recipe.primary_units_per_output);
+                if (recipe.secondary_input < COMMODITY_COUNT) {
+                    from_buffer = fminf(from_buffer,
+                                        st->inventory[recipe.secondary_input] /
+                                        recipe.secondary_units_per_output);
+                }
+                if (from_buffer > 0.0f) {
+                    st->module_input[m] -= from_buffer * recipe.primary_units_per_output;
+                    if (recipe.secondary_input < COMMODITY_COUNT)
+                        st->inventory[recipe.secondary_input] -=
+                            from_buffer * recipe.secondary_units_per_output;
+                    st->inventory[output_com] += from_buffer;
+                    room -= from_buffer;
+                    produced += from_buffer;
+                }
             }
 
             /* Fallback: slow trickle from station inventory (0.2x rate).
@@ -154,10 +304,22 @@ void sim_step_station_production(world_t *w, float dt) {
              * Prevents total stall for poorly-placed fabs. */
             if (produced < 0.001f && room > 0.01f && st->inventory[input_com] > 0.01f) {
                 float fallback_rate = rate * 0.2f;
-                float from_inv = fminf(st->inventory[input_com], fminf(fallback_rate * dt, room));
-                st->inventory[input_com] -= from_inv;
-                st->inventory[output_com] += from_inv;
-                produced += from_inv;
+                float from_inv = fminf(fallback_rate * dt, room);
+                from_inv = fminf(from_inv,
+                                 st->inventory[input_com] / recipe.primary_units_per_output);
+                if (recipe.secondary_input < COMMODITY_COUNT) {
+                    from_inv = fminf(from_inv,
+                                     st->inventory[recipe.secondary_input] /
+                                     recipe.secondary_units_per_output);
+                }
+                if (from_inv > 0.0f) {
+                    st->inventory[input_com] -= from_inv * recipe.primary_units_per_output;
+                    if (recipe.secondary_input < COMMODITY_COUNT)
+                        st->inventory[recipe.secondary_input] -=
+                            from_inv * recipe.secondary_units_per_output;
+                    st->inventory[output_com] += from_inv;
+                    produced += from_inv;
+                }
             }
 
             /* Mirror produced amount to output buffer for downstream flow */
@@ -168,6 +330,21 @@ void sim_step_station_production(world_t *w, float dt) {
                     if (buf_room > 0.0f) {
                         float add = fminf(produced, buf_room);
                         st->module_output[m] += add;
+                    }
+                }
+
+                /* Dual-write whole finished goods only when the legacy
+                 * float path actually crosses an integer boundary and
+                 * we can prove provenance from manifest-tracked ingots.
+                 * Older seeded stock and pre-transfer deliveries still
+                 * live only in floats until the consumer/migration slices. */
+                {
+                    int units_before = (int)floorf(stock_before + 0.0001f);
+                    int units_after = (int)floorf(st->inventory[output_com] + 0.0001f);
+                    int manifest_units = units_after - units_before;
+                    for (int idx = 0; idx < manifest_units; idx++) {
+                        if (!station_manifest_craft_product(st, recipe.recipe_id))
+                            break;
                     }
                 }
             }
@@ -557,14 +734,13 @@ void step_module_flow(world_t *w, float dt) {
          * best consumer for that commodity and transfer. */
         for (int p = 0; p < st->module_count; p++) {
             if (st->modules[p].scaffold) continue;
-            if (st->module_output[p] <= 0.0f) continue;
             commodity_t output = module_schema_output(st->modules[p].type);
+            module_kind_t producer_kind = module_kind(st->modules[p].type);
             /* Storage modules pull from station inventory and push into the
              * flow graph. They feed both furnaces (with ore) and fabs (with
              * ingots), acting as buffers in the production chain. */
             if (output == COMMODITY_COUNT) {
-                module_kind_t k = module_kind(st->modules[p].type);
-                if (k != MODULE_KIND_STORAGE) continue;
+                if (producer_kind != MODULE_KIND_STORAGE) continue;
 
                 float cap = module_buffer_capacity(st->modules[p].type);
                 if (cap <= 0.0f) continue;
@@ -594,19 +770,21 @@ void step_module_flow(world_t *w, float dt) {
                         if (!wanted) continue;
                         float pull = fminf(st->inventory[com], (cap - st->module_output[p]) * 0.5f);
                         if (pull > 0.01f) {
-                            st->inventory[com] -= pull;
                             st->module_output[p] += pull;
                             output = com; /* remember what we're carrying */
                         }
                         break;
                     }
                 }
-                if (st->module_output[p] <= 0.0f) continue;
-                /* If we didn't just pull, we're draining residual buffer.
-                 * Use ferrite ore as a fallback output type — consumers
-                 * re-check via module_accepts_input anyway. */
-                if (output == COMMODITY_COUNT) output = COMMODITY_FERRITE_ORE;
+                /* Storage output is only a mirror of inventory. If we
+                 * can't refresh it with a concrete commodity this tick,
+                 * drop any stale residue rather than guessing wrong. */
+                if (output == COMMODITY_COUNT) {
+                    st->module_output[p] = 0.0f;
+                    continue;
+                }
             }
+            if (st->module_output[p] <= 0.0f) continue;
 
             /* Find the best consumer (closest, has space) */
             int best_consumer = -1;
@@ -630,9 +808,13 @@ void step_module_flow(world_t *w, float dt) {
                        - st->module_input[best_consumer];
             float pull = best_rate * dt;
             if (pull > st->module_output[p]) pull = st->module_output[p];
+            if (producer_kind == MODULE_KIND_STORAGE && pull > st->inventory[output])
+                pull = st->inventory[output];
             if (pull > room) pull = room;
             if (pull > 0.0f) {
                 st->module_output[p] -= pull;
+                if (producer_kind == MODULE_KIND_STORAGE)
+                    st->inventory[output] -= pull;
                 st->module_input[best_consumer] += pull;
             }
         }

@@ -23,6 +23,7 @@ static int truncate(const char *path, long size) {
 #include "ship.h"
 #include "economy.h"
 #include "game_sim.h"
+#include "sim_production.h"
 #include "sim_catalog.h"
 #include "sim_nav.h"
 #include "chunk.h"
@@ -568,8 +569,8 @@ TEST(test_station_production_yard_makes_frames) {
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
     station.inventory[COMMODITY_FERRITE_INGOT] = 5.0f;
     step_station_production(&station, 1, 1.0f);
-    ASSERT(station.inventory[COMMODITY_FERRITE_INGOT] < 5.0f);
-    ASSERT(station.inventory[COMMODITY_FRAME] > 0.0f);
+    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_FERRITE_INGOT], 3.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_FRAME], 1.0f, 0.001f);
 }
 
 TEST(test_station_production_beamworks_makes_modules) {
@@ -579,8 +580,10 @@ TEST(test_station_production_beamworks_makes_modules) {
     station.inventory[COMMODITY_CUPRITE_INGOT] = 5.0f;
     station.inventory[COMMODITY_CRYSTAL_INGOT] = 5.0f;
     step_station_production(&station, 1, 1.0f);
-    ASSERT(station.inventory[COMMODITY_LASER_MODULE] > 0.0f);
-    ASSERT(station.inventory[COMMODITY_TRACTOR_MODULE] > 0.0f);
+    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_CUPRITE_INGOT], 3.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_CRYSTAL_INGOT], 4.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_LASER_MODULE], 0.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_TRACTOR_MODULE], 0.5f, 0.001f);
 }
 
 TEST(test_station_repair_cost_no_damage) {
@@ -897,6 +900,126 @@ TEST(test_refinery_deposits_named_ingot) {
         ASSERT_EQ_INT(ing->prefix_class, mining_pubkey_class(ing->pubkey));
         ASSERT(ing->prefix_class != MINING_CLASS_ANONYMOUS);
     }
+}
+
+TEST(test_station_production_dual_writes_frame_manifest) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    cargo_unit_t inputs[2] = {{0}};
+    cargo_unit_t expected = {0};
+    int press_idx = -1;
+    uint8_t fragment_a[32] = {0};
+    uint8_t fragment_b[32] = {0};
+
+    fragment_a[31] = 0x11;
+    fragment_b[31] = 0x22;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_FRAME_PRESS) {
+            press_idx = i;
+            break;
+        }
+    }
+    ASSERT(press_idx >= 0);
+
+    manifest_clear(&st->manifest);
+    memset(st->inventory, 0, sizeof(st->inventory));
+    memset(st->module_input, 0, sizeof(st->module_input));
+    memset(st->module_output, 0, sizeof(st->module_output));
+
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RATI, fragment_a, 0, &inputs[0]));
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_COMMON, fragment_b, 0, &inputs[1]));
+    ASSERT(hash_product(RECIPE_FRAME_BASIC, inputs, 2, 0, &expected));
+    ASSERT(manifest_push(&st->manifest, &inputs[0]));
+    ASSERT(manifest_push(&st->manifest, &inputs[1]));
+
+    st->module_input[press_idx] = 2.0f;
+    sim_step_station_production(&w, 1.0f);
+
+    ASSERT_EQ_FLOAT(st->inventory[COMMODITY_FRAME], 1.0f, 0.001f);
+    ASSERT_EQ_INT(st->manifest.count, 1);
+    ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[0].pub), -1);
+    ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[1].pub), -1);
+    ASSERT(memcmp(st->manifest.units[0].pub, expected.pub, 32) == 0);
+    ASSERT(memcmp(st->manifest.units[0].parent_merkle, expected.parent_merkle, 32) == 0);
+    ASSERT_EQ_INT(st->manifest.units[0].kind, CARGO_KIND_FRAME);
+    ASSERT_EQ_INT(st->manifest.units[0].commodity, COMMODITY_FRAME);
+    ASSERT_EQ_INT(st->manifest.units[0].grade, MINING_GRADE_COMMON);
+    ASSERT_EQ_INT(st->manifest.units[0].recipe_id, RECIPE_FRAME_BASIC);
+}
+
+TEST(test_station_production_dual_writes_laser_manifest) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    cargo_unit_t inputs[2] = {{0}};
+    cargo_unit_t expected = {0};
+    int laser_idx = -1;
+    uint8_t fragment_cu[32] = {0};
+    uint8_t fragment_cr[32] = {0};
+
+    fragment_cu[31] = 0x33;
+    fragment_cr[31] = 0x44;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_LASER_FAB) {
+            laser_idx = i;
+            break;
+        }
+    }
+    ASSERT(laser_idx >= 0);
+
+    manifest_clear(&st->manifest);
+    memset(st->inventory, 0, sizeof(st->inventory));
+    memset(st->module_input, 0, sizeof(st->module_input));
+    memset(st->module_output, 0, sizeof(st->module_output));
+
+    ASSERT(hash_ingot(COMMODITY_CUPRITE_INGOT, MINING_GRADE_RARE, fragment_cu, 0, &inputs[0]));
+    ASSERT(hash_ingot(COMMODITY_CRYSTAL_INGOT, MINING_GRADE_FINE, fragment_cr, 0, &inputs[1]));
+    ASSERT(hash_product(RECIPE_LASER_BASIC, inputs, 2, 0, &expected));
+    ASSERT(manifest_push(&st->manifest, &inputs[0]));
+    ASSERT(manifest_push(&st->manifest, &inputs[1]));
+
+    st->module_input[laser_idx] = 1.0f;
+    st->inventory[COMMODITY_CRYSTAL_INGOT] = 1.0f;
+    sim_step_station_production(&w, 2.0f);
+
+    ASSERT_EQ_FLOAT(st->inventory[COMMODITY_LASER_MODULE], 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(st->inventory[COMMODITY_CRYSTAL_INGOT], 0.0f, 0.001f);
+    ASSERT_EQ_INT(st->manifest.count, 1);
+    ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[0].pub), -1);
+    ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[1].pub), -1);
+    ASSERT(memcmp(st->manifest.units[0].pub, expected.pub, 32) == 0);
+    ASSERT(memcmp(st->manifest.units[0].parent_merkle, expected.parent_merkle, 32) == 0);
+    ASSERT_EQ_INT(st->manifest.units[0].kind, CARGO_KIND_LASER);
+    ASSERT_EQ_INT(st->manifest.units[0].commodity, COMMODITY_LASER_MODULE);
+    ASSERT_EQ_INT(st->manifest.units[0].grade, MINING_GRADE_FINE);
+    ASSERT_EQ_INT(st->manifest.units[0].recipe_id, RECIPE_LASER_BASIC);
+}
+
+TEST(test_station_production_without_manifest_inputs_keeps_float_path) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[1];
+    int press_idx = -1;
+
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type == MODULE_FRAME_PRESS) {
+            press_idx = i;
+            break;
+        }
+    }
+    ASSERT(press_idx >= 0);
+
+    manifest_clear(&st->manifest);
+    memset(st->inventory, 0, sizeof(st->inventory));
+    memset(st->module_input, 0, sizeof(st->module_input));
+    memset(st->module_output, 0, sizeof(st->module_output));
+
+    st->module_input[press_idx] = 2.0f;
+    sim_step_station_production(&w, 1.0f);
+
+    ASSERT_EQ_FLOAT(st->inventory[COMMODITY_FRAME], 1.0f, 0.001f);
+    ASSERT_EQ_INT(st->manifest.count, 0);
 }
 
 TEST(test_world_sim_step_events_emitted) {
@@ -1622,8 +1745,9 @@ TEST(test_bug22_hauler_stuck_at_empty_station) {
     /* Empty the refinery inventory so haulers can't load from home */
     for (int i = 0; i < COMMODITY_COUNT; i++)
         w.stations[0].inventory[i] = 0.0f;
-    /* Put some ingots at station 1 so haulers have a reason to move */
-    w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
+    /* Put enough ingots at station 1 to exceed the hauler reserve, so
+     * relocation can actually result in a load. */
+    w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 40.0f;
     float initial_stock = w.stations[1].inventory[COMMODITY_FERRITE_INGOT];
     /* Run 60 seconds — haulers should relocate, load from station 1, and deliver */
     for (int i = 0; i < 7200; i++)
@@ -4395,13 +4519,14 @@ TEST(test_mixed_cargo_sell_and_deliver) {
 }
 
 TEST(test_no_delivery_without_matching_contract) {
-    /* Ingots for a commodity with no contract should not be delivered */
+    /* Cargo with no matching contract or production sink should not be delivered */
     WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
-    /* Player carries crystal ingots — no station needs them */
-    w.players[0].ship.cargo[COMMODITY_CRYSTAL_INGOT] = 20.0f;
+    /* Player carries a finished module — stations don't buy this via
+     * fallback input delivery. */
+    w.players[0].ship.cargo[COMMODITY_TRACTOR_MODULE] = 20.0f;
     /* Clear all contracts */
     for (int k = 0; k < MAX_CONTRACTS; k++) w.contracts[k].active = false;
     /* Dock at yard and try to sell */
@@ -4409,8 +4534,7 @@ TEST(test_no_delivery_without_matching_contract) {
     w.players[0].current_station = 1;
     w.players[0].input.service_sell = true;
     world_sim_step(&w, SIM_DT);
-    /* Crystal ingots should NOT be taken — no contract for them */
-    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_CRYSTAL_INGOT], 20.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_TRACTOR_MODULE], 20.0f, 0.01f);
 }
 
 TEST(test_refinery_smelts_ore_in_inventory) {
@@ -5410,7 +5534,7 @@ TEST(test_module_schema_basic_kinds) {
 }
 
 TEST(test_module_schema_producer_io) {
-    /* Producers have matching input/output commodities */
+    /* Producers expose their primary input and output commodity. */
     ASSERT_EQ_INT(module_schema_input(MODULE_FURNACE), COMMODITY_FERRITE_ORE);
     ASSERT_EQ_INT(module_schema_output(MODULE_FURNACE), COMMODITY_FERRITE_INGOT);
     ASSERT_EQ_INT(module_schema_input(MODULE_FURNACE_CU), COMMODITY_CUPRITE_ORE);
@@ -5419,6 +5543,8 @@ TEST(test_module_schema_producer_io) {
     ASSERT_EQ_INT(module_schema_output(MODULE_FRAME_PRESS), COMMODITY_FRAME);
     ASSERT_EQ_INT(module_schema_input(MODULE_LASER_FAB), COMMODITY_CUPRITE_INGOT);
     ASSERT_EQ_INT(module_schema_output(MODULE_LASER_FAB), COMMODITY_LASER_MODULE);
+    ASSERT_EQ_INT(module_schema_input(MODULE_TRACTOR_FAB), COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(module_schema_output(MODULE_TRACTOR_FAB), COMMODITY_TRACTOR_MODULE);
     /* Services have no input/output */
     ASSERT_EQ_INT(module_schema_input(MODULE_DOCK), COMMODITY_COUNT);
     ASSERT_EQ_INT(module_schema_output(MODULE_DOCK), COMMODITY_COUNT);
@@ -5496,16 +5622,12 @@ TEST(test_module_flow_same_ring_transfer) {
 
     /* Material should have moved from furnace output to press input.
      * The press now actively consumes from its input buffer to produce
-     * frames, so we check that flow happened (furnace drained) and
-     * that product appeared (frames in inventory or press output). */
+     * frames at a 2-ingot recipe, so we just check that flow happened
+     * and some downstream work is visible. */
     ASSERT(w.stations[1].module_output[furnace_idx] < 10.0f);
-    /* Total material conserved across furnace output + press input + press output + inventory.
-     * Some ingots became frames via the press's production. */
-    float total = w.stations[1].module_output[furnace_idx]
-                + w.stations[1].module_input[press_idx]
-                + w.stations[1].module_output[press_idx]
-                + w.stations[1].inventory[COMMODITY_FRAME];
-    ASSERT(total > 9.0f);
+    ASSERT(w.stations[1].module_input[press_idx] > 0.0f ||
+           w.stations[1].module_output[press_idx] > 0.0f ||
+           w.stations[1].inventory[COMMODITY_FRAME] > 0.0f);
 }
 
 TEST(test_module_flow_production_fills_buffers) {
@@ -5516,6 +5638,7 @@ TEST(test_module_flow_production_fills_buffers) {
     world_reset(&w);
     /* Seed Kepler with frame-press input */
     w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 50.0f;
+    float frames_before = w.stations[1].inventory[COMMODITY_FRAME];
     /* Find frame press */
     int press_idx = -1;
     for (int i = 0; i < w.stations[1].module_count; i++) {
@@ -5528,8 +5651,12 @@ TEST(test_module_flow_production_fills_buffers) {
     /* Run a few seconds of sim — production should mirror to output buffer */
     for (int i = 0; i < 240; i++) world_sim_step(&w, SIM_DT);
 
-    /* Frame press output buffer should have some material */
-    ASSERT(w.stations[1].module_output[press_idx] > 0.0f);
+    /* Production should have pulled ferrite into the chain, and either
+     * buffered or stocked some downstream result. */
+    ASSERT(w.stations[1].inventory[COMMODITY_FERRITE_INGOT] < 50.0f);
+    ASSERT(w.stations[1].module_input[press_idx] > 0.0f ||
+           w.stations[1].module_output[press_idx] > 0.0f ||
+           w.stations[1].inventory[COMMODITY_FRAME] > frames_before);
 }
 
 TEST(test_module_flow_does_not_overflow_capacity) {
@@ -6474,6 +6601,9 @@ int main(int argc, char **argv) {
     RUN(test_world_sim_step_refinery_produces_ingots);
     RUN(test_mining_class_prefix_round_trip);
     RUN(test_refinery_deposits_named_ingot);
+    RUN(test_station_production_dual_writes_frame_manifest);
+    RUN(test_station_production_dual_writes_laser_manifest);
+    RUN(test_station_production_without_manifest_inputs_keeps_float_path);
     RUN(test_world_sim_step_events_emitted);
     RUN(test_world_sim_step_npc_miners_work);
     RUN(test_world_network_writes_persist);

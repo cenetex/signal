@@ -333,7 +333,6 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             float carried = 0.0f;
             for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) carried += npc->cargo[c];
             float space = hull->ingot_capacity - carried;
-            bool loaded = false;
 
             /* Contract-driven routing: find highest-value fillable contract */
             int best_contract = -1;
@@ -362,40 +361,48 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 if (take > 0.5f) {
                     npc->cargo[ingot] += take;
                     home->inventory[ingot] -= take;
-                    loaded = true;
                 }
             } else {
                 /* Fallback: original round-trip behavior (leave reserve for players) */
                 station_t *dest = &w->stations[npc->dest_station];
-                if (station_has_module(dest, MODULE_FRAME_PRESS)) {
-                    commodity_t ingot = COMMODITY_FERRITE_INGOT;
+                commodity_t wants[3];
+                int want_count = 0;
+                commodity_t best_ingot = COMMODITY_COUNT;
+                float best_need = -1.0f;
+
+                if (station_has_module(dest, MODULE_FRAME_PRESS))
+                    wants[want_count++] = COMMODITY_FERRITE_INGOT;
+                if (station_has_module(dest, MODULE_LASER_FAB)) {
+                    wants[want_count++] = COMMODITY_CUPRITE_INGOT;
+                    wants[want_count++] = COMMODITY_CRYSTAL_INGOT;
+                }
+                if (station_has_module(dest, MODULE_TRACTOR_FAB))
+                    wants[want_count++] = COMMODITY_CUPRITE_INGOT;
+
+                for (int wi = 0; wi < want_count; wi++) {
+                    commodity_t ingot = wants[wi];
                     float avail = fmaxf(0.0f, home->inventory[ingot] - HAULER_RESERVE);
-                    float take = fminf(avail, space);
-                    if (take > 0.5f) {
-                        npc->cargo[ingot] += take;
-                        home->inventory[ingot] -= take;
-                        loaded = true;
+                    float need;
+                    bool seen = false;
+
+                    for (int wj = 0; wj < wi; wj++) {
+                        if (wants[wj] == ingot) { seen = true; break; }
+                    }
+                    if (seen || avail <= 0.5f) continue;
+
+                    need = fmaxf(0.0f, MAX_PRODUCT_STOCK * 0.5f - dest->inventory[ingot]);
+                    if (need > best_need) {
+                        best_need = need;
+                        best_ingot = ingot;
                     }
                 }
-                if (!loaded && station_has_module(dest, MODULE_LASER_FAB)) {
-                    commodity_t ingot = COMMODITY_CUPRITE_INGOT;
-                    float avail = fmaxf(0.0f, home->inventory[ingot] - HAULER_RESERVE);
+
+                if (best_ingot < COMMODITY_COUNT) {
+                    float avail = fmaxf(0.0f, home->inventory[best_ingot] - HAULER_RESERVE);
                     float take = fminf(avail, space);
                     if (take > 0.5f) {
-                        npc->cargo[ingot] += take;
-                        home->inventory[ingot] -= take;
-                        space -= take;
-                        loaded = true;
-                    }
-                }
-                if (!loaded && station_has_module(dest, MODULE_TRACTOR_FAB)) {
-                    commodity_t ingot = COMMODITY_CRYSTAL_INGOT;
-                    float avail = fmaxf(0.0f, home->inventory[ingot] - HAULER_RESERVE);
-                    float take = fminf(avail, space);
-                    if (take > 0.5f) {
-                        npc->cargo[ingot] += take;
-                        home->inventory[ingot] -= take;
-                        loaded = true;
+                        npc->cargo[best_ingot] += take;
+                        home->inventory[best_ingot] -= take;
                     }
                 }
             }
