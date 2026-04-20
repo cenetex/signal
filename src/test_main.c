@@ -3482,7 +3482,7 @@ TEST(test_player_save_load_preserves_ship) {
     sp.current_station = 1;
     ASSERT(player_save(&sp, "/tmp", 99));
 
-    server_player_t loaded = {0};
+    SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, "/tmp", 99));
     ASSERT_EQ_FLOAT(loaded.ship.hull, 42.0f, 0.01f);
     ASSERT_EQ_FLOAT(loaded.ship.cargo[COMMODITY_FERRITE_ORE], 10.0f, 0.01f);
@@ -3517,7 +3517,7 @@ TEST(test_player_load_clamps_negative_credits) {
     sp.connected = true;
     ASSERT(player_save(&sp, "/tmp", 98));
 
-    server_player_t loaded = {0};
+    SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, "/tmp", 98));
     /* No credits field to clamp — ledger balances are always >= 0 */
     remove("/tmp/player_98.sav");
@@ -3547,7 +3547,7 @@ TEST(test_player_load_clamps_negative_cargo) {
     sp.ship.cargo[COMMODITY_FERRITE_ORE] = -50.0f;
     ASSERT(player_save(&sp, "/tmp", 97));
 
-    server_player_t loaded = {0};
+    SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, "/tmp", 97));
     ASSERT(loaded.ship.cargo[COMMODITY_FERRITE_ORE] >= 0.0f);
     remove("/tmp/player_97.sav");
@@ -3562,7 +3562,7 @@ TEST(test_player_load_clamps_hull_hp) {
     sp.ship.hull = 99999.0f;  /* way above max */
     ASSERT(player_save(&sp, "/tmp", 96));
 
-    server_player_t loaded = {0};
+    SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, "/tmp", 96));
     ASSERT(loaded.ship.hull <= ship_max_hull(&loaded.ship));
     remove("/tmp/player_96.sav");
@@ -3578,7 +3578,7 @@ TEST(test_player_load_clamps_upgrade_levels) {
     sp.ship.hold_level = -5;
     ASSERT(player_save(&sp, "/tmp", 95));
 
-    server_player_t loaded = {0};
+    SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, "/tmp", 95));
     ASSERT(loaded.ship.mining_level >= 0 && loaded.ship.mining_level <= SHIP_UPGRADE_MAX_LEVEL);
     ASSERT(loaded.ship.hold_level >= 0 && loaded.ship.hold_level <= SHIP_UPGRADE_MAX_LEVEL);
@@ -3594,7 +3594,7 @@ TEST(test_player_load_invalid_station_falls_back) {
     sp.current_station = 99;  /* out of range */
     ASSERT(player_save(&sp, "/tmp", 94));
 
-    server_player_t loaded = {0};
+    SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, "/tmp", 94));
     ASSERT(loaded.current_station >= 0 && loaded.current_station < MAX_STATIONS);
     remove("/tmp/player_94.sav");
@@ -3610,7 +3610,7 @@ TEST(test_player_load_bad_magic_fails) {
 
     WORLD_DECL;
     world_reset(&w);
-    server_player_t loaded = {0};
+    SERVER_PLAYER_DECL(loaded);
     ASSERT(!player_load(&loaded, &w, "/tmp", 93));
     remove("/tmp/player_93.sav");
 }
