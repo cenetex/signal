@@ -49,6 +49,7 @@ set(SIGNAL_SIM_SOURCES
 # sokol / audio / GL dependencies.
 set(SIGNAL_SIM_HELPERS
     src/commodity.c
+    src/manifest.c
     src/ship.c
     src/economy.c
     src/asteroid.c

@@ -28,6 +28,7 @@ static int truncate(const char *path, long size) {
 #include "chunk.h"
 #include "net_protocol.h"
 #include "mining.h"
+#include "manifest.h"
 #include "sha256.h"
 
 static int tests_run = 0;
@@ -114,6 +115,40 @@ static void world_ptr_auto_cleanup(world_t **wp) {
     } \
 } while(0)
 
+static bool parse_hex32(const char *hex, uint8_t out[32]) {
+    static const char digits[] = "0123456789abcdef";
+    if (!hex || strlen(hex) != 64) return false;
+    for (int i = 0; i < 32; i++) {
+        const char *hi = strchr(digits, (int)hex[i * 2] | 32);
+        const char *lo = strchr(digits, (int)hex[i * 2 + 1] | 32);
+        if (!hi || !lo) return false;
+        out[i] = (uint8_t)(((hi - digits) << 4) | (lo - digits));
+    }
+    return true;
+}
+
+static void assert_hex32_eq(const uint8_t actual[32], const char *expected_hex,
+                            const char *expr, const char *file, int line) {
+    uint8_t expected[32];
+    if (!parse_hex32(expected_hex, expected) || memcmp(actual, expected, 32) != 0) {
+        char actual_hex[65];
+        static const char digits[] = "0123456789abcdef";
+        for (int i = 0; i < 32; i++) {
+            actual_hex[i * 2] = digits[actual[i] >> 4];
+            actual_hex[i * 2 + 1] = digits[actual[i] & 0x0F];
+        }
+        actual_hex[64] = '\0';
+        printf("FAIL\n    %s:%d: %s == %s, expected %s\n",
+               file, line, expr, actual_hex, expected_hex);
+        tests_failed++;
+    }
+}
+
+#define ASSERT_HEX32_EQ(actual, expected_hex) do { \
+    assert_hex32_eq((actual), (expected_hex), #actual, __FILE__, __LINE__); \
+    if (tests_failed) return; \
+} while(0)
+
 /* HULL_DEFS provided by game_sim.c */
 
 /* ---- Commodity Tests ---- */
@@ -189,6 +224,124 @@ TEST(test_station_inventory_amount) {
     station.inventory[COMMODITY_FERRITE_INGOT] = 25.0f;
     ASSERT_EQ_FLOAT(station_inventory_amount(&station, COMMODITY_FERRITE_INGOT), 25.0f, 0.01f);
     ASSERT_EQ_FLOAT(station_inventory_amount(NULL, COMMODITY_FERRITE_INGOT), 0.0f, 0.01f);
+}
+
+/* ---- Manifest Tests ---- */
+
+TEST(test_manifest_push_find_remove_preserves_order) {
+    manifest_t manifest = {0};
+    cargo_unit_t first = {0};
+    cargo_unit_t second = {0};
+    cargo_unit_t removed = {0};
+
+    ASSERT(manifest_init(&manifest, 2));
+    first.kind = (uint8_t)CARGO_KIND_INGOT;
+    first.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    first.pub[31] = 0x11;
+    second.kind = (uint8_t)CARGO_KIND_FRAME;
+    second.commodity = (uint8_t)COMMODITY_FRAME;
+    second.pub[31] = 0x22;
+
+    ASSERT(manifest_push(&manifest, &first));
+    ASSERT(manifest_push(&manifest, &second));
+    ASSERT_EQ_INT(manifest.count, 2);
+    ASSERT_EQ_INT(manifest_find(&manifest, first.pub), 0);
+    ASSERT_EQ_INT(manifest_find(&manifest, second.pub), 1);
+
+    ASSERT(manifest_remove(&manifest, 0, &removed));
+    ASSERT_EQ_INT(manifest.count, 1);
+    ASSERT_EQ_INT(removed.pub[31], 0x11);
+    ASSERT_EQ_INT(manifest.units[0].pub[31], 0x22);
+    ASSERT_EQ_INT(manifest_find(&manifest, first.pub), -1);
+
+    manifest_free(&manifest);
+}
+
+TEST(test_manifest_clone_detaches_storage) {
+    manifest_t src = {0};
+    manifest_t dst = {0};
+    cargo_unit_t unit = {0};
+
+    ASSERT(manifest_init(&src, 1));
+    unit.kind = (uint8_t)CARGO_KIND_LASER;
+    unit.commodity = (uint8_t)COMMODITY_LASER_MODULE;
+    unit.pub[0] = 0xAB;
+    ASSERT(manifest_push(&src, &unit));
+    ASSERT(manifest_clone(&dst, &src));
+
+    ASSERT(dst.units != src.units);
+    dst.units[0].pub[0] = 0xCD;
+    ASSERT_EQ_INT(src.units[0].pub[0], 0xAB);
+    ASSERT_EQ_INT(dst.units[0].pub[0], 0xCD);
+
+    manifest_free(&dst);
+    manifest_free(&src);
+}
+
+TEST(test_hash_merkle_root_sorts_and_duplicates_odd_leaf) {
+    const uint8_t pubs[3][32] = {
+        {
+            0x40, 0x41, 0x42, 0x43, 0x44, 0x45, 0x46, 0x47,
+            0x48, 0x49, 0x4A, 0x4B, 0x4C, 0x4D, 0x4E, 0x4F,
+            0x50, 0x51, 0x52, 0x53, 0x54, 0x55, 0x56, 0x57,
+            0x58, 0x59, 0x5A, 0x5B, 0x5C, 0x5D, 0x5E, 0x5F,
+        },
+        {
+            0x10, 0x11, 0x12, 0x13, 0x14, 0x15, 0x16, 0x17,
+            0x18, 0x19, 0x1A, 0x1B, 0x1C, 0x1D, 0x1E, 0x1F,
+            0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+            0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F,
+        },
+        {
+            0x20, 0x21, 0x22, 0x23, 0x24, 0x25, 0x26, 0x27,
+            0x28, 0x29, 0x2A, 0x2B, 0x2C, 0x2D, 0x2E, 0x2F,
+            0x30, 0x31, 0x32, 0x33, 0x34, 0x35, 0x36, 0x37,
+            0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F,
+        },
+    };
+    uint8_t root[32];
+
+    ASSERT(hash_merkle_root(pubs, 3, root));
+    ASSERT_HEX32_EQ(root, "4337e6c1b1f6b3728eef23890f0f41379ae574d390ebc3211d14d7a451d28ecd");
+}
+
+TEST(test_hash_ingot_matches_known_vector) {
+    uint8_t fragment_pub[32];
+    cargo_unit_t ingot = {0};
+
+    for (int i = 0; i < 32; i++) fragment_pub[i] = (uint8_t)i;
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
+                      fragment_pub, 0, &ingot));
+
+    ASSERT_EQ_INT(ingot.kind, CARGO_KIND_INGOT);
+    ASSERT_EQ_INT(ingot.commodity, COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(ingot.grade, MINING_GRADE_RARE);
+    ASSERT_EQ_INT(ingot.recipe_id, RECIPE_SMELT);
+    ASSERT(memcmp(ingot.parent_merkle, fragment_pub, 32) == 0);
+    ASSERT_HEX32_EQ(ingot.pub, "d869450f3625b4c095dabb2e60a7be66abc67c706a13d362496770890d21d725");
+}
+
+TEST(test_hash_product_matches_known_vector_and_min_grade) {
+    cargo_unit_t inputs[2] = {0};
+    cargo_unit_t frame = {0};
+
+    inputs[0].kind = (uint8_t)CARGO_KIND_INGOT;
+    inputs[0].commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    inputs[0].grade = (uint8_t)MINING_GRADE_RARE;
+    for (int i = 0; i < 32; i++) inputs[0].pub[i] = (uint8_t)(0x20 + i);
+
+    inputs[1].kind = (uint8_t)CARGO_KIND_INGOT;
+    inputs[1].commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    inputs[1].grade = (uint8_t)MINING_GRADE_FINE;
+    for (int i = 0; i < 32; i++) inputs[1].pub[i] = (uint8_t)(0x40 + i);
+
+    ASSERT(hash_product(RECIPE_FRAME_BASIC, inputs, 2, 0, &frame));
+    ASSERT_EQ_INT(frame.kind, CARGO_KIND_FRAME);
+    ASSERT_EQ_INT(frame.commodity, COMMODITY_FRAME);
+    ASSERT_EQ_INT(frame.grade, MINING_GRADE_FINE);
+    ASSERT_EQ_INT(frame.recipe_id, RECIPE_FRAME_BASIC);
+    ASSERT_HEX32_EQ(frame.parent_merkle, "ae02e99bbdd3713ac87427589a48fc45818ef9a7ecd27941142d8f6f61afb7c1");
+    ASSERT_HEX32_EQ(frame.pub, "afd71562654d3d5a973927c68df0b3187fc3651a2296cd4b48b52e74925bf2d2");
 }
 
 /* ---- Math Tests ---- */
@@ -6184,6 +6337,13 @@ int main(int argc, char **argv) {
     RUN(test_can_afford_upgrade_all_conditions);
     RUN(test_can_afford_upgrade_no_credits);
     RUN(test_can_afford_upgrade_no_product);
+
+    printf("\nManifest tests:\n");
+    RUN(test_manifest_push_find_remove_preserves_order);
+    RUN(test_manifest_clone_detaches_storage);
+    RUN(test_hash_merkle_root_sorts_and_duplicates_odd_leaf);
+    RUN(test_hash_ingot_matches_known_vector);
+    RUN(test_hash_product_matches_known_vector_and_min_grade);
 
     printf("\nWorld sim tests:\n");
     RUN(test_world_reset_creates_stations);
