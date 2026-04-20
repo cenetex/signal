@@ -4,6 +4,7 @@
 #include <stdbool.h>
 #include <stdint.h>
 #include "math_util.h"
+#include "mining.h"
 
 /*
  * ⚠️  ENTITY POOL CAPS — read this before bumping any MAX_* constant.  ⚠️
@@ -124,6 +125,51 @@ typedef struct {
 
 #define STATION_NAMED_INGOTS_MAX 64
 #define SHIP_HOLD_INGOTS_MAX     8
+#define SHIP_MANIFEST_DEFAULT_CAP    32
+#define STATION_MANIFEST_DEFAULT_CAP 256
+
+typedef enum {
+    CARGO_KIND_INGOT   = 0,
+    CARGO_KIND_FRAME   = 1,
+    CARGO_KIND_LASER   = 2,
+    CARGO_KIND_TRACTOR = 3,
+    CARGO_KIND_COUNT
+} cargo_kind_t;
+
+typedef struct {
+    uint8_t  kind;              /* cargo_kind_t */
+    uint8_t  commodity;         /* commodity_t */
+    uint8_t  grade;             /* mining_grade_t */
+    uint8_t  _pad;              /* reserved, zero */
+    uint16_t recipe_id;         /* recipe_id_t */
+    uint16_t _pad2;             /* reserved, zero */
+    uint8_t  pub[32];           /* content hash */
+    uint8_t  parent_merkle[32]; /* sorted-input merkle root */
+} cargo_unit_t;
+
+typedef struct {
+    uint16_t count;
+    uint16_t cap;
+    cargo_unit_t *units;
+} manifest_t;
+
+typedef enum {
+    RECIPE_SMELT = 0,
+    RECIPE_FRAME_BASIC,
+    RECIPE_LASER_BASIC,
+    RECIPE_TRACTOR_COIL,
+    RECIPE_LEGACY_MIGRATE,
+    RECIPE_COUNT
+} recipe_id_t;
+
+typedef struct {
+    recipe_id_t   id;
+    const char   *name;
+    cargo_kind_t  output_kind;
+    commodity_t   output_commodity; /* COMMODITY_COUNT = caller supplies */
+    uint8_t       input_count;
+    commodity_t   input_commodities[2];
+} recipe_def_t;
 
 typedef struct {
     vec2 pos;
@@ -154,6 +200,7 @@ typedef struct {
      * in cargo[] as fungible counts; this list holds identified ones. */
     named_ingot_t hold_ingots[SHIP_HOLD_INGOTS_MAX];
     int           hold_ingots_count;
+    manifest_t    manifest; /* cargo-manifest v1 scaffold; empty until dual-write lands */
 } ship_t;
 
 typedef enum {
@@ -282,6 +329,7 @@ typedef struct {
     named_ingot_t named_ingots[STATION_NAMED_INGOTS_MAX];
     int           named_ingots_count;
     bool          named_ingots_dirty;  /* server-only: drives wire push */
+    manifest_t    manifest;            /* cargo-manifest v1 scaffold; empty until dual-write lands */
 } station_t;
 
 /* Station lifecycle helpers, module queries, and ring/geometry helpers

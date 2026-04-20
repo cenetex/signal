@@ -6,6 +6,7 @@
  */
 #include "mongoose.h"
 #include "game_sim.h"
+#include "manifest.h"
 #include "mining.h"  /* mining_render_callsign for chain log copy */
 #include "net_protocol.h"
 
@@ -242,7 +243,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 /* Reattach: copy state from grace slot to new slot */
                 server_player_t *old = &world.players[reattach];
                 server_player_t *sp = &world.players[pid];
-                sp->ship = old->ship;
+                if (!ship_copy(&sp->ship, &old->ship)) break;
                 sp->current_station = old->current_station;
                 sp->nearby_station = old->nearby_station;
                 sp->docked = old->docked;

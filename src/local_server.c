@@ -35,6 +35,7 @@
  */
 #include "local_server.h"
 #include "client.h"
+#include "manifest.h"
 
 void local_server_init(local_server_t *ls, uint32_t seed) {
     memset(ls, 0, sizeof(*ls));
@@ -62,7 +63,8 @@ void local_server_step(local_server_t *ls, int player_slot,
 static void mirror_whole_world(const world_t *src) {
     memcpy(g.world.asteroids, src->asteroids, sizeof(g.world.asteroids));
     memcpy(g.world.npc_ships, src->npc_ships, sizeof(g.world.npc_ships));
-    memcpy(g.world.stations,  src->stations,  sizeof(g.world.stations));
+    for (int i = 0; i < MAX_STATIONS; i++)
+        (void)station_copy(&g.world.stations[i], &src->stations[i]);
     memcpy(g.world.contracts, src->contracts, sizeof(g.world.contracts));
     memcpy(g.world.scaffolds, src->scaffolds, sizeof(g.world.scaffolds));
     g.world.events = src->events;
@@ -71,6 +73,7 @@ static void mirror_whole_world(const world_t *src) {
 
 /* (2a) Local player ship — always-sync fields (no client optimism). */
 static void mirror_player_always(server_player_t *dst, const server_player_t *src) {
+    (void)manifest_clone(&dst->ship.manifest, &src->ship.manifest);
     dst->ship.pos    = src->ship.pos;
     dst->ship.vel    = src->ship.vel;
     dst->ship.angle  = src->ship.angle;

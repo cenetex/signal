@@ -11,6 +11,7 @@
  * trailer — mirrors the pattern used by sim_save.c for world/player saves.
  */
 #include "sim_catalog.h"
+#include "manifest.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -141,7 +142,12 @@ static bool station_catalog_load_one(station_t *st, int index, const char *dir) 
     if (!f) return false;
 
     /* Zero the entire struct so session-tier fields start clean */
+    station_cleanup(st);
     memset(st, 0, sizeof(*st));
+    if (!station_manifest_bootstrap(st)) {
+        fclose(f);
+        return false;
+    }
 
     /* Read and verify header */
     uint32_t magic, ver;
@@ -212,7 +218,9 @@ static bool station_catalog_load_one(station_t *st, int index, const char *dir) 
 
     if (crc != stored_crc) {
         printf("[catalog] CRC mismatch for %s — skipping\n", path);
+        station_cleanup(st);
         memset(st, 0, sizeof(*st));
+        (void)station_manifest_bootstrap(st);
         return false;
     }
 

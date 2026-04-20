@@ -20,6 +20,7 @@
  *     then the next autosave writes the catalog.
  */
 #include "game_sim.h"
+#include "manifest.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -152,6 +153,7 @@ static bool read_station(FILE *f, station_t *s) {
 /* ================================================================== */
 
 static bool write_station_session(FILE *f, const station_t *s) {
+    if (s->manifest.count > 0) return false;
     /* Inventory */
     WRITE_FIELD(f, s->inventory);
     /* Per-module production buffers */
@@ -453,6 +455,12 @@ bool world_load(world_t *w, const char *path) {
             }
         }
     }
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (!station_manifest_bootstrap(&w->stations[i])) {
+            fclose(f);
+            return false;
+        }
+    }
     /* NPC ships */
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!read_npc(f, &w->npc_ships[i])) return false;
@@ -621,6 +629,7 @@ bool world_load(world_t *w, const char *path) {
     w->events.count = 0;
     w->player_only_mode = false;
     for (int i = 0; i < MAX_PLAYERS; i++) {
+        ship_cleanup(&w->players[i].ship);
         memset(&w->players[i], 0, sizeof(w->players[i]));
     }
 
@@ -634,13 +643,13 @@ bool world_load(world_t *w, const char *path) {
 /* Player persistence                                                  */
 /* ================================================================== */
 
-#define PLAYER_MAGIC    0x504C5934u  /* "PLY4" — v26+: ship_t.hold_ingots[] for RATi v2 */
+#define PLAYER_MAGIC    0x504C5934u  /* "PLY4" — explicit ship payload, no runtime manifest pointers */
 #define PLAYER_MAGIC_V3 0x504C5933u  /* "PLY3" — v25: station-local credits (#312) */
 #define PLAYER_MAGIC_V2 0x504C5932u  /* "PLY2" — v22-v24: post #280 enum cleanup */
 #define PLAYER_MAGIC_V1 0x504C5952u  /* "PLYR" — v21 and earlier */
 
-/* PLY3 ship layout — same as current ship_t but WITHOUT hold_ingots.
- * Kept here so we can read PLY3 files and zero-init the new field. */
+/* PLY3 ship layout — pre-hold-ingot ship payload, kept explicit so we
+ * can read older files without depending on the current ship_t layout. */
 typedef struct {
     vec2 pos; vec2 vel; float angle; float hull;
     float cargo[COMMODITY_COUNT];
@@ -663,7 +672,11 @@ typedef struct {
 } player_save_v3_t;
 
 static void migrate_v3_ship(ship_t *dst, const ship_v3_t *src) {
-    /* All fields are identical except dst gains hold_ingots[]. */
+    /* ship_t gained hold_ingots[] after PLY3 and now also carries a
+     * runtime-only manifest that is never loaded from disk here. */
+    ship_cleanup(dst);
+    memset(dst, 0, sizeof(*dst));
+    (void)ship_manifest_bootstrap(dst);
     dst->pos = src->pos;
     dst->vel = src->vel;
     dst->angle = src->angle;
@@ -688,13 +701,84 @@ static void migrate_v3_ship(ship_t *dst, const ship_v3_t *src) {
     dst->hold_ingots_count = 0;
 }
 
+/* PLY4 ship layout — the pre-manifest ship_t payload kept explicit so
+ * adding runtime-only fields to ship_t doesn't change the on-disk bytes. */
+typedef struct {
+    vec2 pos; vec2 vel; float angle; float hull;
+    float cargo[COMMODITY_COUNT];
+    hull_class_t hull_class;
+    int mining_level, hold_level, tractor_level;
+    int16_t towed_fragments[10]; uint8_t towed_count;
+    int16_t towed_scaffold; bool tractor_active;
+    float comm_range;
+    uint32_t unlocked_modules;
+    float stat_ore_mined, stat_credits_earned, stat_credits_spent;
+    int stat_asteroids_fractured;
+    named_ingot_t hold_ingots[SHIP_HOLD_INGOTS_MAX];
+    int hold_ingots_count;
+} ship_v4_t;
+
 typedef struct {
     uint32_t magic;
-    ship_t ship;
+    ship_v4_t ship;
     int last_station;
     vec2 last_pos;
     float last_angle;
 } player_save_data_t;
+
+static void encode_v4_ship(ship_v4_t *dst, const ship_t *src) {
+    if (!dst || !src) return;
+    memset(dst, 0, sizeof(*dst));
+    dst->pos = src->pos;
+    dst->vel = src->vel;
+    dst->angle = src->angle;
+    dst->hull = src->hull;
+    memcpy(dst->cargo, src->cargo, sizeof(dst->cargo));
+    dst->hull_class = src->hull_class;
+    dst->mining_level = src->mining_level;
+    dst->hold_level = src->hold_level;
+    dst->tractor_level = src->tractor_level;
+    memcpy(dst->towed_fragments, src->towed_fragments, sizeof(dst->towed_fragments));
+    dst->towed_count = src->towed_count;
+    dst->towed_scaffold = src->towed_scaffold;
+    dst->tractor_active = src->tractor_active;
+    dst->comm_range = src->comm_range;
+    dst->unlocked_modules = src->unlocked_modules;
+    dst->stat_ore_mined = src->stat_ore_mined;
+    dst->stat_credits_earned = src->stat_credits_earned;
+    dst->stat_credits_spent = src->stat_credits_spent;
+    dst->stat_asteroids_fractured = src->stat_asteroids_fractured;
+    memcpy(dst->hold_ingots, src->hold_ingots, sizeof(dst->hold_ingots));
+    dst->hold_ingots_count = src->hold_ingots_count;
+}
+
+static void migrate_v4_ship(ship_t *dst, const ship_v4_t *src) {
+    if (!dst || !src) return;
+    ship_cleanup(dst);
+    memset(dst, 0, sizeof(*dst));
+    (void)ship_manifest_bootstrap(dst);
+    dst->pos = src->pos;
+    dst->vel = src->vel;
+    dst->angle = src->angle;
+    dst->hull = src->hull;
+    memcpy(dst->cargo, src->cargo, sizeof(dst->cargo));
+    dst->hull_class = src->hull_class;
+    dst->mining_level = src->mining_level;
+    dst->hold_level = src->hold_level;
+    dst->tractor_level = src->tractor_level;
+    memcpy(dst->towed_fragments, src->towed_fragments, sizeof(dst->towed_fragments));
+    dst->towed_count = src->towed_count;
+    dst->towed_scaffold = src->towed_scaffold;
+    dst->tractor_active = src->tractor_active;
+    dst->comm_range = src->comm_range;
+    dst->unlocked_modules = src->unlocked_modules;
+    dst->stat_ore_mined = src->stat_ore_mined;
+    dst->stat_credits_earned = src->stat_credits_earned;
+    dst->stat_credits_spent = src->stat_credits_spent;
+    dst->stat_asteroids_fractured = src->stat_asteroids_fractured;
+    memcpy(dst->hold_ingots, src->hold_ingots, sizeof(dst->hold_ingots));
+    dst->hold_ingots_count = src->hold_ingots_count;
+}
 
 /* Old ship layout with global credits field — for PLY2 migration */
 typedef struct {
@@ -729,8 +813,10 @@ static void session_token_to_hex(const uint8_t token[8], char hex[17]) {
 
 bool player_save(const server_player_t *sp, const char *dir, int slot) {
     char path[256];
+    ship_v4_t ship_disk;
     /* Use session token for filename if available, fall back to slot */
     static const uint8_t zero_token[8] = {0};
+    if (sp->ship.manifest.count > 0) return false;
     if (sp->session_ready && memcmp(sp->session_token, zero_token, 8) != 0) {
         char hex[17];
         session_token_to_hex(sp->session_token, hex);
@@ -740,9 +826,10 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
     }
     FILE *f = fopen(path, "wb");
     if (!f) return false;
+    encode_v4_ship(&ship_disk, &sp->ship);
     player_save_data_t data = {
         .magic = PLAYER_MAGIC,
-        .ship = sp->ship,
+        .ship = ship_disk,
         .last_station = sp->current_station,
         .last_pos = sp->ship.pos,
         .last_angle = sp->ship.angle,
@@ -761,6 +848,9 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
 
 /* Migrate PLY2 (old ship_t with global credits) to current ship_t */
 static void migrate_v2_ship(ship_t *dst, const ship_v2_t *src) {
+    ship_cleanup(dst);
+    memset(dst, 0, sizeof(*dst));
+    (void)ship_manifest_bootstrap(dst);
     dst->pos = src->pos;
     dst->vel = src->vel;
     dst->angle = src->angle;
@@ -797,12 +887,14 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     float migrated_credits = 0.0f;
     bool is_v1 = false;
 
+    ship_cleanup(&sp->ship);
+
     if (magic == PLAYER_MAGIC) {
-        /* Current format (PLY4 — RATi v2 with hold_ingots) */
+        /* Current format (PLY4 — explicit ship payload, runtime manifest excluded) */
         player_save_data_t data;
         if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
         fclose(f);
-        sp->ship = data.ship;
+        migrate_v4_ship(&sp->ship, &data.ship);
         sp->current_station = data.last_station;
         sp->ship.pos = data.last_pos;
         sp->ship.angle = data.last_angle;

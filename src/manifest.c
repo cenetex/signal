@@ -211,6 +211,54 @@ bool manifest_clone(manifest_t *dst, const manifest_t *src) {
     return true;
 }
 
+void ship_cleanup(ship_t *ship) {
+    if (!ship) return;
+    manifest_free(&ship->manifest);
+}
+
+bool ship_manifest_bootstrap(ship_t *ship) {
+    if (!ship) return false;
+    if (ship->manifest.cap == SHIP_MANIFEST_DEFAULT_CAP && ship->manifest.units) return true;
+    manifest_free(&ship->manifest);
+    return manifest_init(&ship->manifest, SHIP_MANIFEST_DEFAULT_CAP);
+}
+
+bool ship_copy(ship_t *dst, const ship_t *src) {
+    manifest_t manifest = {0};
+
+    if (!dst || !src) return false;
+    if (dst == src) return true;
+    if (!manifest_clone(&manifest, &src->manifest)) return false;
+    ship_cleanup(dst);
+    *dst = *src;
+    dst->manifest = manifest;
+    return true;
+}
+
+void station_cleanup(station_t *station) {
+    if (!station) return;
+    manifest_free(&station->manifest);
+}
+
+bool station_manifest_bootstrap(station_t *station) {
+    if (!station) return false;
+    if (station->manifest.cap == STATION_MANIFEST_DEFAULT_CAP && station->manifest.units) return true;
+    manifest_free(&station->manifest);
+    return manifest_init(&station->manifest, STATION_MANIFEST_DEFAULT_CAP);
+}
+
+bool station_copy(station_t *dst, const station_t *src) {
+    manifest_t manifest = {0};
+
+    if (!dst || !src) return false;
+    if (dst == src) return true;
+    if (!manifest_clone(&manifest, &src->manifest)) return false;
+    station_cleanup(dst);
+    *dst = *src;
+    dst->manifest = manifest;
+    return true;
+}
+
 bool manifest_push(manifest_t *manifest, const cargo_unit_t *unit) {
     if (!manifest || !unit || manifest->count >= manifest->cap || !manifest->units) return false;
     manifest->units[manifest->count++] = *unit;

@@ -4,13 +4,42 @@
  */
 #include "sim_production.h"
 #include "sim_construction.h"  /* module_build_material, module_build_cost */
+#include "manifest.h"
 #include "mining.h"            /* grade roll at smelt time */
+#include "sha256.h"
 #include <stdlib.h>            /* abs */
 #include <math.h>              /* lroundf */
+#include <string.h>
 
 /* ------------------------------------------------------------------ */
 /* Smelting helpers                                                    */
 /* ------------------------------------------------------------------ */
+
+static void smelt_fragment_pub_legacy(const asteroid_t *a, uint8_t out_pub[32]) {
+    static const uint8_t domain[8] = {
+        'S', 'I', 'G', 'N', 'A', 'L', 'v', '1'
+    };
+    static const uint8_t frag_tag[4] = { 'F', 'R', 'A', 'G' };
+    uint8_t buf[8 + 4 + 32 + 32 + 4] = {0};
+
+    if (!a || !out_pub) return;
+    memcpy(buf, domain, sizeof(domain));
+    memcpy(&buf[8], frag_tag, sizeof(frag_tag));
+    memcpy(&buf[12], a->fracture_seed, sizeof(a->fracture_seed));
+    sha256_bytes(buf, sizeof(buf), out_pub);
+}
+
+static bool station_manifest_push_ingot(station_t *st, const cargo_unit_t *unit) {
+    if (!st || !unit) return false;
+    if (st->manifest.cap == 0 || st->manifest.units == NULL) {
+        if (!station_manifest_bootstrap(st)) return false;
+    }
+    if (st->manifest.count >= st->manifest.cap &&
+        !manifest_remove(&st->manifest, 0, NULL)) {
+        return false;
+    }
+    return manifest_push(&st->manifest, unit);
+}
 
 bool sim_can_smelt_ore(const station_t *st, commodity_t ore) {
     switch (ore) {
@@ -287,6 +316,7 @@ void step_furnace_smelting(world_t *w, float dt) {
 
         if (a->smelt_progress >= 1.0f && smelt_station >= 0) {
             station_t *st = &w->stations[smelt_station];
+            uint8_t fragment_pub[32];
             /* Check for active ore contract — apply premium if one exists */
             float price = station_buy_price(st, a->commodity);
             for (int k = 0; k < MAX_CONTRACTS; k++) {
@@ -384,10 +414,25 @@ void step_furnace_smelting(world_t *w, float dt) {
 
             /* Smelt: ore -> ingot in station inventory */
             commodity_t ingot = commodity_refined_form(a->commodity);
-            if (ingot != a->commodity)
-                st->inventory[ingot] += a->ore;
-            else
-                st->inventory[a->commodity] += a->ore;
+            commodity_t output = (ingot != a->commodity) ? ingot : a->commodity;
+            float stock_before = st->inventory[output];
+            st->inventory[output] += a->ore;
+
+            /* Dual-write discrete units for the floored stock delta so
+             * manifest counts stay aligned with the legacy float path. */
+            smelt_fragment_pub_legacy(a, fragment_pub);
+            {
+                int units_before = (int)floorf(stock_before + 0.0001f);
+                int units_after = (int)floorf(st->inventory[output] + 0.0001f);
+                int manifest_units = units_after - units_before;
+                for (int idx = 0; idx < manifest_units; idx++) {
+                    cargo_unit_t unit = {0};
+                    if (!hash_ingot(output, grade, fragment_pub, (uint16_t)idx, &unit))
+                        continue;
+                    if (!station_manifest_push_ingot(st, &unit))
+                        break;
+                }
+            }
 
             /* RATi v2: also re-roll the winning candidate's keypair
              * and, if its base58 carries a class-letter prefix,

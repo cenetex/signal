@@ -21,6 +21,7 @@
  * slice of #285 in disguise — file it against #285, not as a refactor.
  */
 #include "game_sim.h"
+#include "manifest.h"
 #include "sim_ai.h"
 #include "sim_autopilot.h"
 #include "sim_nav.h"
@@ -1541,7 +1542,9 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
         }
         if (slot >= 0) {
             station_t *st = &w->stations[slot];
+            station_cleanup(st);
             memset(st, 0, sizeof(*st));
+            (void)station_manifest_bootstrap(st);
             generate_outpost_name(st->name, sizeof(st->name), sc->pos, slot);
             st->pos = sc->pos;
             st->radius = OUTPOST_RADIUS;
@@ -2433,7 +2436,9 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             if (old->planned) {
                 SIM_LOG("[sim] player %d cancelled blueprint at slot %d (was owner %d)\n",
                     sp->id, s, old->planned_owner);
+                station_cleanup(old);
                 memset(old, 0, sizeof(*old));
+                (void)station_manifest_bootstrap(old);
             }
         }
         /* Validate position */
@@ -2455,7 +2460,9 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             if (slot >= 0) {
                 if (slot >= w->station_count) w->station_count = slot + 1;
                 station_t *st = &w->stations[slot];
+                station_cleanup(st);
                 memset(st, 0, sizeof(*st));
+                (void)station_manifest_bootstrap(st);
                 st->id = w->next_station_id++;
                 generate_outpost_name(st->name, sizeof(st->name), pos, slot);
                 st->pos = pos;
@@ -2566,7 +2573,9 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         if (s >= 3 && s < MAX_STATIONS) {
             station_t *st = &w->stations[s];
             if (st->planned) {
+                station_cleanup(st);
                 memset(st, 0, sizeof(*st));
+                (void)station_manifest_bootstrap(st);
                 SIM_LOG("[sim] player %d cancelled planned outpost at slot %d\n", sp->id, s);
             }
         }
@@ -3525,6 +3534,10 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
 /* ================================================================== */
 
 void world_cleanup(world_t *w) {
+    for (int i = 0; i < MAX_PLAYERS; i++)
+        ship_cleanup(&w->players[i].ship);
+    for (int i = 0; i < MAX_STATIONS; i++)
+        station_cleanup(&w->stations[i]);
     free(w->signal_cache.strength);
     w->signal_cache.strength = NULL;
     w->signal_cache.valid = false;
@@ -3535,10 +3548,18 @@ void world_cleanup(world_t *w) {
 void world_reset(world_t *w) {
     uint32_t seed = w->rng;  /* caller may pre-set seed; 0 = default */
     float *sig_buf = w->signal_cache.strength; /* preserve heap allocation */
+    sparse_cell_entry_t *grid_entries = w->asteroid_grid.entries;
+    for (int i = 0; i < MAX_PLAYERS; i++)
+        ship_cleanup(&w->players[i].ship);
+    for (int i = 0; i < MAX_STATIONS; i++)
+        station_cleanup(&w->stations[i]);
+    free(grid_entries);
     memset(w, 0, sizeof(*w));
     w->signal_cache.strength = sig_buf; /* restore — signal_grid_build reuses it */
     w->rng = seed ? seed : 2037u;
     belt_field_init(&w->belt, w->rng, BELT_SCALE);
+    for (int i = 0; i < MAX_STATIONS; i++)
+        (void)station_manifest_bootstrap(&w->stations[i]);
 
     /* --- Stations --- */
     w->next_station_id = 1; /* IDs start at 1; 0 = unassigned */
@@ -3700,7 +3721,9 @@ void world_reset(world_t *w) {
 /* ================================================================== */
 
 void player_init_ship(server_player_t *sp, world_t *w) {
+    ship_cleanup(&sp->ship);
     memset(&sp->ship, 0, sizeof(sp->ship));
+    (void)ship_manifest_bootstrap(&sp->ship);
     sp->ship.hull_class = HULL_CLASS_MINER;
     sp->ship.hull       = HULL_DEFS[HULL_CLASS_MINER].max_hull;
     sp->ship.angle      = PI_F * 0.5f;

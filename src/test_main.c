@@ -278,6 +278,46 @@ TEST(test_manifest_clone_detaches_storage) {
     manifest_free(&src);
 }
 
+TEST(test_ship_copy_clones_manifest_storage) {
+    ship_t src = {0};
+    ship_t dst = {0};
+    cargo_unit_t unit = {0};
+
+    ASSERT(manifest_init(&src.manifest, 1));
+    unit.kind = (uint8_t)CARGO_KIND_INGOT;
+    unit.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    unit.pub[0] = 0x11;
+    ASSERT(manifest_push(&src.manifest, &unit));
+    ASSERT(ship_copy(&dst, &src));
+
+    ASSERT(dst.manifest.units != src.manifest.units);
+    dst.manifest.units[0].pub[0] = 0x22;
+    ASSERT_EQ_INT(src.manifest.units[0].pub[0], 0x11);
+
+    ship_cleanup(&dst);
+    ship_cleanup(&src);
+}
+
+TEST(test_station_copy_clones_manifest_storage) {
+    station_t src = {0};
+    station_t dst = {0};
+    cargo_unit_t unit = {0};
+
+    ASSERT(manifest_init(&src.manifest, 1));
+    unit.kind = (uint8_t)CARGO_KIND_FRAME;
+    unit.commodity = (uint8_t)COMMODITY_FRAME;
+    unit.pub[0] = 0x33;
+    ASSERT(manifest_push(&src.manifest, &unit));
+    ASSERT(station_copy(&dst, &src));
+
+    ASSERT(dst.manifest.units != src.manifest.units);
+    dst.manifest.units[0].pub[0] = 0x44;
+    ASSERT_EQ_INT(src.manifest.units[0].pub[0], 0x33);
+
+    station_cleanup(&dst);
+    station_cleanup(&src);
+}
+
 TEST(test_hash_merkle_root_sorts_and_duplicates_odd_leaf) {
     const uint8_t pubs[3][32] = {
         {
@@ -763,16 +803,42 @@ TEST(test_refinery_deposits_named_ingot) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w->npc_ships[i].active = false;
+    player_init_ship(&w->players[0], w);
+    w->players[0].connected = true;
+    w->players[0].docked = false;
+    w->players[0].session_ready = true;
+    memset(w->players[0].session_token, 0x42, 8);
     /* Force a furnace at station 0 — already exists by default in
      * world_reset, but assert. */
     bool has_furnace = false;
+    int furnace_idx = -1;
+    int silo_idx = -1;
     for (int m = 0; m < w->stations[0].module_count; m++) {
-        if (w->stations[0].modules[m].type == MODULE_FURNACE) has_furnace = true;
+        if (w->stations[0].modules[m].type == MODULE_FURNACE) {
+            has_furnace = true;
+            furnace_idx = m;
+        }
+        if (w->stations[0].modules[m].type == MODULE_ORE_SILO)
+            silo_idx = m;
     }
     ASSERT(has_furnace);
+    ASSERT(silo_idx >= 0);
 
-    /* Spawn an S-tier ferrite fragment near the station's hopper, with
-     * an arbitrary fracture_seed. Hopper pull radius will draw it in. */
+    /* Stop ring motion and place the fragment exactly on the furnace/silo
+     * midpoint so the dedicated smelt path resolves deterministically. */
+    for (int arm = 0; arm < MAX_ARMS; arm++) {
+        w->stations[0].arm_speed[arm] = 0.0f;
+        w->stations[0].arm_rotation[arm] = 0.0f;
+    }
+    vec2 furnace_pos = module_world_pos_ring(&w->stations[0],
+        w->stations[0].modules[furnace_idx].ring, w->stations[0].modules[furnace_idx].slot);
+    vec2 silo_pos = module_world_pos_ring(&w->stations[0],
+        w->stations[0].modules[silo_idx].ring, w->stations[0].modules[silo_idx].slot);
+    vec2 midpoint = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
+
+    /* Spawn an S-tier ferrite fragment on the smelt midpoint, with an
+     * arbitrary fracture_seed. */
     int slot = -1;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!w->asteroids[i].active) { slot = i; break; }
@@ -786,14 +852,22 @@ TEST(test_refinery_deposits_named_ingot) {
     a->ore = 10.0f;
     a->max_ore = 10.0f;
     a->radius = 6.0f;
+    a->fracture_child = true;
     /* Seed values intentionally varied so the roll lands somewhere. */
     for (int i = 0; i < 32; i++) a->fracture_seed[i] = (uint8_t)(i * 17 + 3);
-    a->pos = w->stations[0].pos;  /* dead center for instant pull */
+    a->grade = (uint8_t)MINING_GRADE_RATI;
+    a->pos = midpoint;
     a->vel = v2(0, 0);
+    a->last_fractured_by = 0;
+    a->last_towed_by = 0;
     a->net_dirty = true;
+    w->players[0].ship.pos = v2_add(midpoint, v2(100.0f, 0.0f));
+    w->players[0].ship.vel = v2(0.0f, 0.0f);
 
     /* Run sim until smelt completes (smelt_progress accumulates ~0.5/s). */
     int initial_named = w->stations[0].named_ingots_count;
+    int initial_manifest = w->stations[0].manifest.count;
+    float initial_bulk = w->stations[0].inventory[COMMODITY_FERRITE_INGOT];
     for (int i = 0; i < 600 && w->asteroids[slot].active; i++)
         world_sim_step(w, 1.0f / 120.0f);
     /* Asteroid should be consumed. */
@@ -801,8 +875,22 @@ TEST(test_refinery_deposits_named_ingot) {
     /* Either an anonymous ingot landed in inventory, or a named ingot
      * landed in the stockpile — depending on what the universe rolled. */
     bool got_named = (w->stations[0].named_ingots_count > initial_named);
-    bool got_bulk = (w->stations[0].inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
+    bool got_bulk = (w->stations[0].inventory[COMMODITY_FERRITE_INGOT] > initial_bulk);
     ASSERT(got_named || got_bulk);
+    ASSERT_EQ_INT(w->stations[0].manifest.count - initial_manifest, 10);
+    for (int i = initial_manifest; i < w->stations[0].manifest.count; i++) {
+        cargo_unit_t *unit = &w->stations[0].manifest.units[i];
+        ASSERT_EQ_INT(unit->kind, CARGO_KIND_INGOT);
+        ASSERT_EQ_INT(unit->commodity, COMMODITY_FERRITE_INGOT);
+        ASSERT_EQ_INT(unit->grade, MINING_GRADE_RATI);
+        ASSERT_EQ_INT(unit->recipe_id, RECIPE_SMELT);
+    }
+    ASSERT(memcmp(w->stations[0].manifest.units[initial_manifest].parent_merkle,
+                  w->stations[0].manifest.units[w->stations[0].manifest.count - 1].parent_merkle,
+                  32) == 0);
+    ASSERT(memcmp(w->stations[0].manifest.units[initial_manifest].pub,
+                  w->stations[0].manifest.units[w->stations[0].manifest.count - 1].pub,
+                  32) != 0);
     /* If named, validate prefix_class matches mining_pubkey_class. */
     if (got_named) {
         named_ingot_t *ing = &w->stations[0].named_ingots[w->stations[0].named_ingots_count - 1];
@@ -3283,6 +3371,18 @@ TEST(test_player_save_load_preserves_ship) {
     remove("/tmp/player_99.sav");
 }
 
+TEST(test_world_save_rejects_nonempty_station_manifest) {
+    WORLD_DECL;
+    cargo_unit_t unit = {0};
+    world_reset(&w);
+    unit.kind = (uint8_t)CARGO_KIND_INGOT;
+    unit.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    unit.pub[0] = 0xA5;
+    ASSERT(manifest_push(&w.stations[0].manifest, &unit));
+    ASSERT(!world_save(&w, "/tmp/test_manifest_guard_world.sav"));
+    remove("/tmp/test_manifest_guard_world.sav");
+}
+
 TEST(test_player_load_clamps_negative_credits) {
     /* Credits are now in station ledgers, not ship_t. PLY3 format has no
      * credits field. This test just confirms save/load round-trip works. */
@@ -3297,6 +3397,21 @@ TEST(test_player_load_clamps_negative_credits) {
     ASSERT(player_load(&loaded, &w, "/tmp", 98));
     /* No credits field to clamp — ledger balances are always >= 0 */
     remove("/tmp/player_98.sav");
+}
+
+TEST(test_player_save_rejects_nonempty_ship_manifest) {
+    WORLD_DECL;
+    server_player_t sp = {0};
+    cargo_unit_t unit = {0};
+    world_reset(&w);
+    player_init_ship(&sp, &w);
+    sp.connected = true;
+    unit.kind = (uint8_t)CARGO_KIND_INGOT;
+    unit.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    unit.pub[0] = 0x5A;
+    ASSERT(manifest_push(&sp.ship.manifest, &unit));
+    ASSERT(!player_save(&sp, "/tmp", 92));
+    remove("/tmp/player_92.sav");
 }
 
 TEST(test_player_load_clamps_negative_cargo) {
@@ -6341,6 +6456,8 @@ int main(int argc, char **argv) {
     printf("\nManifest tests:\n");
     RUN(test_manifest_push_find_remove_preserves_order);
     RUN(test_manifest_clone_detaches_storage);
+    RUN(test_ship_copy_clones_manifest_storage);
+    RUN(test_station_copy_clones_manifest_storage);
     RUN(test_hash_merkle_root_sorts_and_duplicates_odd_leaf);
     RUN(test_hash_ingot_matches_known_vector);
     RUN(test_hash_product_matches_known_vector_and_min_grade);
@@ -6502,7 +6619,9 @@ int main(int argc, char **argv) {
     RUN(test_world_save_load_preserves_npcs);
     RUN(test_world_load_missing_file);
     RUN(test_player_save_load_preserves_ship);
+    RUN(test_world_save_rejects_nonempty_station_manifest);
     RUN(test_player_load_clamps_negative_credits);
+    RUN(test_player_save_rejects_nonempty_ship_manifest);
     RUN(test_player_load_clamps_negative_cargo);
     RUN(test_player_load_clamps_hull_hp);
     RUN(test_player_load_clamps_upgrade_levels);

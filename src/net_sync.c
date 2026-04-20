@@ -5,8 +5,26 @@
 #include <stdlib.h>  /* rand, RAND_MAX */
 #include "net_sync.h"
 #include "input.h"   /* set_notice() */
+#include "manifest.h"
 #include "onboarding.h"
 #include "episode.h"
+
+static void server_player_cleanup_local(server_player_t *sp) {
+    if (!sp) return;
+    ship_cleanup(&sp->ship);
+}
+
+static bool server_player_copy_local(server_player_t *dst, const server_player_t *src) {
+    ship_t cloned_ship = {0};
+
+    if (!dst || !src) return false;
+    if (dst == src) return true;
+    if (!ship_copy(&cloned_ship, &src->ship)) return false;
+    server_player_cleanup_local(dst);
+    *dst = *src;
+    dst->ship = cloned_ship;
+    return true;
+}
 
 void on_player_join(uint8_t player_id) {
     if (player_id >= MAX_PLAYERS) return;
@@ -422,19 +440,27 @@ void apply_remote_player_ship(const NetPlayerShipState* state) {
 
 void sync_local_player_slot_from_network(void) {
     uint8_t net_id = net_local_id();
+    server_player_t previous = {0};
+    bool have_previous = false;
     if (net_id == 0xFF || net_id >= MAX_PLAYERS) return;
     if (g.local_player_slot == (int)net_id) {
         LOCAL_PLAYER.connected = true;
         return;
     }
 
-    server_player_t previous = g.world.players[g.local_player_slot];
+    have_previous = server_player_copy_local(&previous, &g.world.players[g.local_player_slot]);
     server_player_t* assigned = &g.world.players[net_id];
+    server_player_cleanup_local(&g.world.players[g.local_player_slot]);
     memset(&g.world.players[g.local_player_slot], 0, sizeof(g.world.players[g.local_player_slot]));
     g.local_player_slot = (int)net_id;
-    if (!assigned->connected && assigned->ship.hull <= 0.0f) {
+    if (have_previous && !assigned->connected && assigned->ship.hull <= 0.0f) {
+        server_player_cleanup_local(assigned);
         *assigned = previous;
+        previous.ship.manifest.units = NULL;
+        previous.ship.manifest.count = 0;
+        previous.ship.manifest.cap = 0;
     }
+    server_player_cleanup_local(&previous);
     LOCAL_PLAYER.id = net_id;
     LOCAL_PLAYER.connected = true;
     LOCAL_PLAYER.conn = NULL;
