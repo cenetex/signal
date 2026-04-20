@@ -1,4 +1,6 @@
-# Sokol Space Miner Notes
+# Signal — Claude Code Context
+
+Live at **[signal.ratimics.com/play](https://signal.ratimics.com/play)**. Multiplayer space-station game in C99 / Sokol. PvP rock-flinging is the hook; the rest of the systems feed that hook.
 
 ## Build
 
@@ -20,40 +22,63 @@ python3 -m http.server 8080 --directory build-web
 
 Open `http://127.0.0.1:8080/space_miner.html`.
 
-## Current Shape
+Tests:
 
-- Single-file C99 prototype in `src/main.c`
-- Fixed-step simulation at `120 Hz`
-- Rendering and HUD are procedural: `sokol_gl` + `sokol_debugtext`
-- Audio is procedural: `sokol_audio`
-- No external assets
+```sh
+cmake -S . -B build-test -DBUILD_TESTS_ONLY=ON
+cmake --build build-test
+./build-test/space_miner_test
+```
+
+## Architecture
+
+- **Client / server split**, not a single file anymore. `src/` is the client (render, HUD, input, net, audio, episodes). `server/` is the authoritative sim (physics, production, AI, save, construction). `shared/` holds the wire protocol, types, module schema, and economy constants used by both.
+- **Singleplayer** runs the server in-process (`src/local_server.c`). Multiplayer uses the same sim over WebSocket (`server/main.c` with `mongoose`). Sim is fixed-step at `120 Hz`.
+- **Rendering** is procedural `sokol_gl` + `sokol_debugtext` for world and HUD. Avatars use `stb_image`; episode cutscenes decode MP4 via `pl_mpeg`; music decodes MP3 via `minimp3`. So: geometry is assetless, but audio + avatars + cutscenes ship as assets under `assets/`.
 
 ## Gameplay Loop
 
-- Launch from a station
-- Fracture asteroids from `XL -> L -> M -> S`
-- Sweep fragments into the hold with the tractor
-- Return ore to the refinery
-- Use specialist stations for upgrades
+1. Launch from a station. Fracture asteroids `XL → L → M → S` with the mining beam.
+2. Tractor-sweep fragments of ferrite, cuprite, and crystal ore into the hold.
+3. Dock and sell ore, or deliver named contract cargo (manifest / `cargo_unit_t` ingots).
+4. Stations internally smelt ore → ingots and fabricate frames / lasers / tractor modules. Press `F` docked to buy the station's primary product.
+5. Enter plan mode (`B` undocked) to reserve a module slot or plant a new outpost. Order a scaffold at a shipyard, then tractor-tow the scaffold into place (`E`).
+6. Throw rocks at other players.
 
 ## Stations
 
-- `Prospect Refinery`: buys ore, repairs hull
-- `Kepler Yard`: repairs hull, upgrades hold capacity
-- `Helios Works`: repairs hull, upgrades laser and tractor
+Stations are rotating ring structures with module slots arranged around each arc. Modules are tier-gated (`shared/module_schema.h`) — a module is unlocked once its prerequisite has been ordered at least once. The three seeded stations are currently specialized along commodity lines:
 
-`Repair` is common. Raw ore only sells at the refinery.
+- **Prospect Refinery** — ferrite specialty. Ore intake + iron furnace + frame press. Starter dock.
+- **Kepler Yard** — frame/shipyard hub. Sells frames, offers ship upgrades, can print scaffolds.
+- **Helios Works** — cuprite + crystal processing, laser and tractor module fabs, its own shipyard.
+- **Outposts** — player-planted; begin as scaffolds, materialize once frames are delivered, then grow via module scaffolds snapped onto ring slots.
 
-## Code Landmarks
+The economy model is under active redesign toward a stricter 3-tier structure (Prospect = T1 smelt, Kepler = T2 fab, Helios = T3 assembly) — see memory and in-flight issues. Don't assume the current module layout is the intended end state.
 
-- `advance_simulation_frame()` / `sim_step()`: fixed-step runtime
-- `draw_hud_panels()` / `draw_hud()` / `draw_station_services()`: HUD and docked UI
-- `step_mining_system()`: mining beam, fracture, pickup flow
-- `step_station_interaction_system()`: docking and station actions
-- `draw_station()`: station world rendering
+## Economy: per-station credits
+
+**There is no global player wallet.** Credits are *per-station ledgers*, keyed by the player's session token. See `station_t.ledger[]` and `currency_name` in `shared/types.h`.
+
+- Each station keeps its own balance for each supplier (e.g. "helios credits", "prospect credits"). Selling ore or completing a contract credits *that station's* ledger.
+- Balances are spendable only at the station that issued them.
+- Prices are dynamic: station buy-price scales 1.0× (empty hopper) down to 0.5× (full) of `base_price`; product sell-price scales 2.0× (empty) down to 1.0× (full stock). See `station_buy_price` / `station_sell_price` and the `test_dynamic_ore_price_*` tests.
+- Players collect pending supplier credits at the station they're standing on — there's no cross-station sweep.
+
+This means haulers and arbitrage are first-class: credits earned at Prospect can't be spent at Helios. Carrying value between stations means carrying *goods*, not currency.
+
+## Signal
+
+Stations emit signal, and signal range matters mechanically. Weak signal throttles mining speed and ship response; players and NPCs get pushed back toward the connected station chain. `H` while undocked in strong signal hails the nearest station and collects pending supplier credits at the station you're nearest to.
+
+## Ships and manifest
+
+Ships carry commodities in their hold. The **manifest layer** (`shared/manifest.h`, `cargo_unit_t`) adds named, traceable ingots — so a specific batch of ferrite ingots smelted at Prospect can be contracted for delivery to Kepler. This is live under the min-flow grade and is the foundation for the T1/T2/T3 chain work.
 
 ## Working Style
 
-- Prefer targeted changes over premature file splits
-- Keep native and wasm builds green after changes
-- If the docked UI changes, verify both fullscreen and smaller browser windows
+- Prefer targeted changes over premature file splits. The codebase already split once; don't split further without need.
+- Keep native and wasm builds green after changes. Run the test binary.
+- If the docked UI changes, verify fullscreen and narrow browser windows both.
+- Don't assume what's in `MEMORY.md` is still true — verify against code before acting on a remembered fact.
+- Be careful with economy/ledger invariants. Credits are per-station; do not silently globalize them, and do not assume a single balance exists on the player.
