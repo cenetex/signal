@@ -192,13 +192,15 @@ uint32_t station_upgrade_service(ship_upgrade_t upgrade) {
 /* ------------------------------------------------------------------ */
 
 void format_ingot_stock_line(const station_t* station, char* text, size_t text_size) {
-    int frame = (int)lroundf(station_inventory_amount(station, COMMODITY_FERRITE_INGOT));
-    int conductor = (int)lroundf(station_inventory_amount(station, COMMODITY_CUPRITE_INGOT));
-    int lens = (int)lroundf(station_inventory_amount(station, COMMODITY_CRYSTAL_INGOT));
+    int fe = (int)lroundf(station_inventory_amount(station, COMMODITY_FERRITE_INGOT));
+    int cu = (int)lroundf(station_inventory_amount(station, COMMODITY_CUPRITE_INGOT));
+    int cr = (int)lroundf(station_inventory_amount(station, COMMODITY_CRYSTAL_INGOT));
+    /* Use full short names so the player can parse the line without
+     * memorising 2-letter ingot codes (FR/CO/LN are non-obvious). */
     snprintf(text, text_size, "%s %d  %s %d  %s %d",
-        commodity_code(COMMODITY_FERRITE_INGOT), frame,
-        commodity_code(COMMODITY_CUPRITE_INGOT), conductor,
-        commodity_code(COMMODITY_CRYSTAL_INGOT), lens);
+        commodity_short_name(COMMODITY_FERRITE_INGOT), fe,
+        commodity_short_name(COMMODITY_CUPRITE_INGOT), cu,
+        commodity_short_name(COMMODITY_CRYSTAL_INGOT), cr);
 }
 
 /* ------------------------------------------------------------------ */
@@ -438,13 +440,19 @@ void draw_station_services(const station_ui_state_t* ui) {
         sdtx_puts(station_role_hub_label(ui->station));
     }
 
-    /* Credits badge + tab hint (right-aligned, measured from string
-     * length so they can't overflow the panel edge). */
+    /* Right-aligned header: player's voucher balance at THIS station,
+     * plus the persistent tab/launch hint. The role name already lives
+     * top-left as the hub_label ("REFINERY // smelter"), so repeating
+     * it top-right added no information — replaced with the balance
+     * which does change per station and is the one number the player
+     * cares about while trading. */
     if (panel_w >= 480.0f) {
         const float cell_w = 8.0f;
         const float right_margin = 20.0f;
-        char header_badge[32] = { 0 };
-        format_station_header_badge(ui, header_badge, sizeof(header_badge));
+        char header_badge[48] = { 0 };
+        int balance = (int)lroundf(player_current_balance());
+        snprintf(header_badge, sizeof(header_badge), "%d %s",
+                 balance, ui_station_currency(ui->station));
         float badge_w = (float)strlen(header_badge) * cell_w;
         sdtx_pos(ui_text_pos(panel_x + panel_w - right_margin - badge_w),
                  ui_text_pos(panel_y + 16.0f));
@@ -914,8 +922,13 @@ void draw_station_services(const station_ui_state_t* ui) {
             }
         }
 
-        /* === COMMODITIES LEDGER === */
-        if (!compact) {
+        /* === COMMODITIES LEDGER ===
+         * Skipped when the SMELTER/HIGH-GRADE/HOLD/BUY sections have
+         * already pushed us past the panel's available vertical space.
+         * Without this guard the ledger rows render *below* the panel's
+         * bottom-bracket frame on refineries carrying named stock. */
+        float commodities_bottom = panel_y + panel_h - 20.0f;
+        if (!compact && my + 20.0f < commodities_bottom) {
             sdtx_color3b(PAL_SHIPYARD_HEADER);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
             sdtx_puts("COMMODITIES");
@@ -924,6 +937,7 @@ void draw_station_services(const station_ui_state_t* ui) {
 
             float mini_w = fminf(90.0f, meter_w * 0.5f);
             for (int c = 0; c < COMMODITY_COUNT; c++) {
+                if (my + 11.0f > commodities_bottom) break;
                 float inv = station_inventory_amount(ui->station, (commodity_t)c);
                 float base = ui->station->base_price[c];
                 if (inv < 0.5f && base < FLOAT_EPSILON) continue;
@@ -1068,20 +1082,27 @@ void draw_station_services(const station_ui_state_t* ui) {
                 sdtx_color3b(PAL_CONTRACT_HINT);
             }
             const char *marker = selected ? " <" : (tracked ? " *" : "");
+            /* Contracts pay in the DESTINATION station's vouchers. Use
+             * that currency label so the player knows which ledger the
+             * payout lands in. */
+            const station_t *dest = (ct->station_index >= 0 && ct->station_index < MAX_STATIONS)
+                ? &g.world.stations[ct->station_index] : NULL;
+            const char *pay_cur = ui_station_currency(dest ? dest : ui->station);
             if (ct->action == CONTRACT_FRACTURE) {
-                sdtx_printf("[%d] FRACTURE %.0f cr%s",
-                    s + 1, cprice, marker);
+                sdtx_printf("[%d] FRACTURE %.0f %s%s",
+                    s + 1, cprice, pay_cur, marker);
             } else if (slot_fulfillable[s]) {
-                sdtx_printf("[%d] DELIVER %dx %s -> %.0f cr%s",
-                    s + 1, slot_held[s], commodity_short_name(ct->commodity), cprice, marker);
+                sdtx_printf("[%d] DELIVER %dx %s -> %.0f %s%s",
+                    s + 1, slot_held[s], commodity_short_name(ct->commodity),
+                    cprice, pay_cur, marker);
             } else {
-                const char *stn = g.world.stations[ct->station_index].name;
+                const char *stn = dest ? dest->name : "???";
                 int max_name = (int)((inner_w - 48.0f) / 8.0f) - 20;
                 if (max_name < 6) max_name = 6;
-                sdtx_printf("[%d] %s -> %.*s: %.0f cr%s",
+                sdtx_printf("[%d] %s -> %.*s: %.0f %s%s",
                     s + 1, commodity_short_name(ct->commodity),
                     max_name, stn,
-                    cprice, marker);
+                    cprice, pay_cur, marker);
             }
         }
         break;
@@ -1241,7 +1262,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         sdtx_printf("CALLSIGN  %s", mc->player_callsign);
         sdtx_color3b(PAL_STATION_HINT);
         sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
-        sdtx_puts("session ore grades — bonus paid at the refinery");
+        sdtx_puts("session ore grades // bonus paid at the refinery");
 
         static const char *const grade_labels[MINING_GRADE_COUNT] = {
             "common", "fine", "rare", "RATi", "commissioned"
@@ -1255,7 +1276,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         if (total_strikes == 0) {
             sdtx_color3b(PAL_STATUS_DISABLED);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-            sdtx_puts("(no ore delivered yet — tow a fragment in)");
+            sdtx_puts("(no ore delivered yet, tow a fragment in)");
             break;
         }
 
@@ -1276,7 +1297,9 @@ void draw_station_services(const station_ui_state_t* ui) {
         ly += 8.0f;
         sdtx_color3b(PAL_TEXT_PRIMARY);
         sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-        sdtx_printf("bonus this session: +%d cr", mc->bonus_cr_total);
+        /* Bonus accrues in refinery vouchers wherever the ore was sold.
+         * Drop the unit to avoid implying a single global currency. */
+        sdtx_printf("bonus this session: +%d", mc->bonus_cr_total);
         break;
     }
 
