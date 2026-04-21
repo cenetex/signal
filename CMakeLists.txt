@@ -107,6 +107,9 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
         # _FORTIFY_SOURCE requires optimization; only set for Release-ish.
         target_compile_definitions(signal_server PRIVATE
             $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
+    else()
+        # Mirror GCC/Clang -Werror so Windows CI fails on regressions.
+        target_compile_options(signal_server PRIVATE /W4 /WX)
     endif()
     # mongoose.c needs POSIX + BSD APIs on Linux (ip_mreq, alloca, etc.)
     if(UNIX AND NOT APPLE)
@@ -128,6 +131,8 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
     if(NOT MSVC)
         target_link_libraries(signal_test PRIVATE m)
         target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
+    else()
+        target_compile_options(signal_test PRIVATE /W4 /WX)
     endif()
 endif()
 
@@ -172,7 +177,8 @@ endif()
 
 if(MSVC)
     target_compile_definitions(signal PRIVATE _CRT_SECURE_NO_WARNINGS)
-    target_compile_options(signal PRIVATE /W4)
+    # /WX mirrors -Werror; keep the client strict on MSVC alongside GCC/Clang.
+    target_compile_options(signal PRIVATE /W4 /WX)
 else()
     # -Wno-strict-prototypes is client-only: sokol_* headers intentionally
     # use K&R-style () prototypes for C++ compat.
