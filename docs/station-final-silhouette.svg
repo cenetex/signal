@@ -1,0 +1,560 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2400 900" width="2400" height="900">
+  <title>Three Stations — Silhouette-First, Signature Forms</title>
+
+  <defs>
+    <radialGradient id="sg" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFE8B0" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#0a0808" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="2400" height="900" fill="#0a0808"/>
+
+  <text x="400" y="30" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="15" opacity="0.7">PROSPECT REFINERY</text>
+  <text x="400" y="48" text-anchor="middle" fill="#556655" font-family="monospace" font-size="9">Signature: oversized furnace stack</text>
+
+  <text x="1200" y="30" text-anchor="middle" fill="#CCAA44" font-family="monospace" font-size="15" opacity="0.7">KEPLER YARD</text>
+  <text x="1200" y="48" text-anchor="middle" fill="#665544" font-family="monospace" font-size="9">Signature: shipyard gantry crane</text>
+
+  <text x="2000" y="30" text-anchor="middle" fill="#6688CC" font-family="monospace" font-size="15" opacity="0.7">HELIOS WORKS</text>
+  <text x="2000" y="48" text-anchor="middle" fill="#445566" font-family="monospace" font-size="9">Signature: heat exchanger crown</text>
+
+  <!-- ============================================================ -->
+  <!-- PROSPECT REFINERY -->
+  <!-- Signature: the furnace is HUGE. It dominates the silhouette. -->
+  <!-- You see this station and think "smelter." -->
+  <!-- ============================================================ -->
+  <g transform="translate(400, 470)">
+    <circle cx="0" cy="0" r="320" fill="url(#sg)"/>
+
+    <!-- Solar array (single, asymmetric — only on one side) -->
+    <g transform="rotate(195)">
+      <rect x="-2" y="-40" width="4" height="70" fill="#14201a" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.6"/>
+      <rect x="-22" y="-100" width="18" height="52" fill="#111e16" stroke="#88CCAA" stroke-opacity="0.16" stroke-width="0.7"/>
+      <rect x="4" y="-100" width="18" height="52" fill="#111e16" stroke="#88CCAA" stroke-opacity="0.16" stroke-width="0.7"/>
+      <line x1="-4" y1="-100" x2="-4" y2="-48" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.3"/>
+      <line x1="4" y1="-100" x2="4" y2="-48" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.3"/>
+      <line x1="-22" y1="-74" x2="22" y2="-74" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.3"/>
+    </g>
+
+    <!-- CORE — hexagonal hub drum, not a dot -->
+    <polygon points="0,-18 16,-9 16,9 0,18 -16,9 -16,-9"
+             fill="#121e18" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1.2"/>
+    <polygon points="0,-10 9,-5 9,5 0,10 -9,5 -9,-5"
+             fill="#182820" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+    <circle cx="0" cy="0" r="3" fill="#88CCAA" opacity="0.45"/>
+
+    <!-- BUS RING 1 — THICK -->
+    <circle cx="0" cy="0" r="105" fill="none" stroke="#182a20" stroke-width="10"/>
+    <circle cx="0" cy="0" r="105" fill="none" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="10"/>
+    <circle cx="0" cy="0" r="110" fill="none" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="1.2"/>
+    <circle cx="0" cy="0" r="100" fill="none" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="1"/>
+    <!-- Pulses -->
+    <g transform="rotate(30)"><circle cx="0" cy="-105" r="3" fill="#88CCAA" opacity="0.3"/></g>
+    <g transform="rotate(170)"><circle cx="0" cy="-105" r="2.5" fill="#B8CC72" opacity="0.25"/></g>
+
+    <!-- SPOKES — thicker, structural -->
+    <line x1="0" y1="-18" x2="0" y2="-95" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="3"/>
+    <line x1="14" y1="9" x2="82" y2="48" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="3"/>
+    <line x1="-14" y1="9" x2="-82" y2="48" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="3"/>
+
+    <!-- SLOT 0: DOCK (0deg) — gap with heavy walls -->
+    <g transform="rotate(0)">
+      <rect x="-24" y="-160" width="12" height="60" fill="#162420" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1"/>
+      <rect x="12" y="-160" width="12" height="60" fill="#162420" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1"/>
+      <!-- Clamps -->
+      <rect x="-12" y="-142" width="7" height="4" fill="#2a3a32"/>
+      <rect x="5" y="-142" width="7" height="4" fill="#2a3a32"/>
+      <rect x="-12" y="-116" width="7" height="4" fill="#2a3a32"/>
+      <rect x="5" y="-116" width="7" height="4" fill="#2a3a32"/>
+      <!-- Guide lights -->
+      <circle cx="-14" cy="-128" r="3" fill="#88CCAA" opacity="0.55"/>
+      <circle cx="14" cy="-128" r="3" fill="#88CCAA" opacity="0.55"/>
+      <!-- Floor -->
+      <rect x="-10" y="-156" width="20" height="54" fill="#080e0a"/>
+      <!-- Approach -->
+      <line x1="-14" y1="-162" x2="-14" y2="-185" stroke="#88CCAA" stroke-opacity="0.1" stroke-dasharray="4,4" stroke-width="0.5"/>
+      <line x1="14" y1="-162" x2="14" y2="-185" stroke="#88CCAA" stroke-opacity="0.1" stroke-dasharray="4,4" stroke-width="0.5"/>
+    </g>
+
+    <!-- SLOT 1: SIGNAL RELAY (120deg) — tall mast -->
+    <g transform="rotate(120)">
+      <rect x="-2.5" y="-115" width="5" height="16" fill="#1a2a22" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+      <rect x="-12" y="-172" width="24" height="58" fill="#162820" stroke="#88CCAA" stroke-opacity="0.28" stroke-width="1"/>
+      <!-- Dish -->
+      <circle cx="0" cy="-148" r="9" fill="#12201a" stroke="#88CCAA" stroke-opacity="0.22" stroke-width="0.5"/>
+      <circle cx="0" cy="-148" r="4" fill="#1a3028"/>
+      <circle cx="0" cy="-148" r="2" fill="#88CCAA" opacity="0.5"/>
+      <!-- Antenna -->
+      <rect x="-2" y="-188" width="4" height="18" fill="#1e3028" stroke="#88CCAA" stroke-opacity="0.22" stroke-width="0.4"/>
+      <circle cx="0" cy="-190" r="3" fill="#88CCAA" opacity="0.4"/>
+      <!-- Arcs -->
+      <path d="M -10,-196 A 13,13 0 0,1 10,-196" fill="none" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+      <path d="M -18,-204 A 22,22 0 0,1 18,-204" fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.4"/>
+    </g>
+
+    <!-- SLOT 2: FURNACE (240deg) — *** SIGNATURE: OVERSIZED *** -->
+    <!-- This furnace is 2x bigger than normal. It IS the station. -->
+    <g transform="rotate(240)">
+      <rect x="-5" y="-115" width="10" height="16" fill="#222a1a" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.6"/>
+
+      <!-- MASSIVE furnace body -->
+      <rect x="-42" y="-215" width="84" height="100" fill="#1a2016" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="1.5"/>
+
+      <!-- Heavy side walls -->
+      <rect x="-44" y="-215" width="8" height="100" fill="#222a1a" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+      <rect x="36" y="-215" width="8" height="100" fill="#222a1a" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+
+      <!-- Firebox — large, visible glow -->
+      <rect x="-26" y="-200" width="52" height="60" fill="#141808" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.6"/>
+      <circle cx="0" cy="-170" r="24" fill="#B8CC72" opacity="0.03"/>
+      <circle cx="0" cy="-170" r="16" fill="#998822" opacity="0.05"/>
+      <circle cx="0" cy="-170" r="10" fill="#CCAA44" opacity="0.08"/>
+      <circle cx="0" cy="-170" r="5" fill="#FFCC66" opacity="0.2"/>
+      <!-- Grate bars (fewer, thicker — readable at distance) -->
+      <line x1="-22" y1="-186" x2="22" y2="-186" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="1"/>
+      <line x1="-22" y1="-170" x2="22" y2="-170" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="1"/>
+      <line x1="-22" y1="-154" x2="22" y2="-154" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="1"/>
+
+      <!-- CHIMNEY STACK cluster — the signature silhouette break -->
+      <!-- Main stack -->
+      <rect x="-10" y="-248" width="20" height="35" fill="#1e2810" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.8"/>
+      <!-- Side stack (shorter) -->
+      <rect x="-28" y="-238" width="14" height="25" fill="#1a2410" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.6"/>
+      <!-- Small stack -->
+      <rect x="18" y="-232" width="10" height="19" fill="#1a2410" stroke="#B8CC72" stroke-opacity="0.18" stroke-width="0.5"/>
+      <!-- Stack caps -->
+      <rect x="-12" y="-250" width="24" height="3" fill="#B8CC72" opacity="0.12"/>
+      <rect x="-30" y="-240" width="18" height="3" fill="#B8CC72" opacity="0.1"/>
+      <rect x="16" y="-234" width="14" height="3" fill="#B8CC72" opacity="0.08"/>
+
+      <!-- Heat shimmer dots above stacks -->
+      <circle cx="0" cy="-258" r="1.5" fill="#FFCC66" opacity="0.12"/>
+      <circle cx="-4" cy="-264" r="1" fill="#FFCC66" opacity="0.08"/>
+      <circle cx="3" cy="-268" r="1" fill="#FFCC66" opacity="0.06"/>
+
+      <!-- HEAT FINS — bold silhouette breakers on sides -->
+      <g stroke="#B8CC72" stroke-opacity="0.15" stroke-width="1.5">
+        <line x1="-44" y1="-200" x2="-54" y2="-200"/>
+        <line x1="-44" y1="-186" x2="-56" y2="-186"/>
+        <line x1="-44" y1="-172" x2="-56" y2="-172"/>
+        <line x1="-44" y1="-158" x2="-54" y2="-158"/>
+        <line x1="44" y1="-200" x2="54" y2="-200"/>
+        <line x1="44" y1="-186" x2="56" y2="-186"/>
+        <line x1="44" y1="-172" x2="56" y2="-172"/>
+        <line x1="44" y1="-158" x2="54" y2="-158"/>
+      </g>
+    </g>
+
+    <!-- RING 2 partial — spoke + silo -->
+    <g transform="rotate(180)">
+      <rect x="-3" y="-115" width="6" height="78" fill="#121a14" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="1"/>
+      <!-- Partial ring arc -->
+    </g>
+    <path d="M -55,190 A 195,195 0 0,0 55,190" fill="none" stroke="#182a20" stroke-width="8"/>
+    <path d="M -55,190 A 195,195 0 0,0 55,190" fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="8"/>
+    <path d="M -55,190 A 195,195 0 0,0 55,190" fill="none" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="1"/>
+
+    <!-- Ore Silo on Ring 2 -->
+    <g transform="rotate(180)">
+      <rect x="-2" y="-202" width="4" height="10" fill="#1e2818" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.3"/>
+      <rect x="-14" y="-250" width="28" height="46" fill="#161e14" stroke="#B8CC72" stroke-opacity="0.22" stroke-width="0.8"/>
+      <rect x="-8" y="-244" width="16" height="34" fill="#0e160c"/>
+      <rect x="-6" y="-228" width="12" height="18" fill="#B8CC72" opacity="0.05"/>
+      <line x1="-14" y1="-228" x2="14" y2="-228" stroke="#B8CC72" stroke-opacity="0.08" stroke-width="0.4"/>
+    </g>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- KEPLER YARD -->
+  <!-- Signature: SHIPYARD GANTRY — huge open crane frame on Ring 2 -->
+  <!-- ============================================================ -->
+  <g transform="translate(1200, 470)">
+    <circle cx="0" cy="0" r="360" fill="url(#sg)"/>
+
+    <!-- Solar arrays (asymmetric — two on same side) -->
+    <g transform="rotate(150)">
+      <rect x="-2" y="-35" width="4" height="60" fill="#1a1e14" stroke="#CCAA44" stroke-opacity="0.08" stroke-width="0.5"/>
+      <rect x="-20" y="-86" width="17" height="44" fill="#141a10" stroke="#CCAA44" stroke-opacity="0.14" stroke-width="0.6"/>
+      <rect x="3" y="-86" width="17" height="44" fill="#141a10" stroke="#CCAA44" stroke-opacity="0.14" stroke-width="0.6"/>
+    </g>
+    <g transform="rotate(185)">
+      <rect x="-2" y="-35" width="4" height="55" fill="#1a1e14" stroke="#CCAA44" stroke-opacity="0.06" stroke-width="0.5"/>
+      <rect x="-14" y="-82" width="28" height="40" fill="#141a10" stroke="#CCAA44" stroke-opacity="0.12" stroke-width="0.5"/>
+    </g>
+
+    <!-- Core — hex drum -->
+    <polygon points="0,-18 16,-9 16,9 0,18 -16,9 -16,-9"
+             fill="#1a1e14" stroke="#CCAA44" stroke-opacity="0.25" stroke-width="1.2"/>
+    <polygon points="0,-10 9,-5 9,5 0,10 -9,5 -9,-5"
+             fill="#222610" stroke="#CCAA44" stroke-opacity="0.12" stroke-width="0.5"/>
+    <circle cx="0" cy="0" r="3" fill="#CCAA44" opacity="0.4"/>
+
+    <!-- BUS RING 1 — thick -->
+    <circle cx="0" cy="0" r="100" fill="none" stroke="#1e2410" stroke-width="10"/>
+    <circle cx="0" cy="0" r="100" fill="none" stroke="#CCAA44" stroke-opacity="0.1" stroke-width="10"/>
+    <circle cx="0" cy="0" r="105" fill="none" stroke="#CCAA44" stroke-opacity="0.18" stroke-width="1"/>
+    <circle cx="0" cy="0" r="95" fill="none" stroke="#CCAA44" stroke-opacity="0.12" stroke-width="0.8"/>
+    <g transform="rotate(55)"><circle cx="0" cy="-100" r="2.5" fill="#CCAA44" opacity="0.25"/></g>
+
+    <!-- Spokes (one thicker than others — asymmetry) -->
+    <line x1="0" y1="-18" x2="0" y2="-90" stroke="#CCAA44" stroke-opacity="0.15" stroke-width="4"/>
+    <line x1="14" y1="9" x2="78" y2="45" stroke="#CCAA44" stroke-opacity="0.12" stroke-width="3"/>
+    <line x1="-14" y1="9" x2="-78" y2="45" stroke="#CCAA44" stroke-opacity="0.12" stroke-width="2.5"/>
+
+    <!-- R1 SLOT 0: DOCK -->
+    <g transform="rotate(0)">
+      <rect x="-22" y="-152" width="12" height="54" fill="#1a2010" stroke="#CCAA44" stroke-opacity="0.28" stroke-width="1"/>
+      <rect x="10" y="-152" width="12" height="54" fill="#1a2010" stroke="#CCAA44" stroke-opacity="0.28" stroke-width="1"/>
+      <rect x="-10" y="-138" width="6" height="4" fill="#2a3420"/>
+      <rect x="4" y="-138" width="6" height="4" fill="#2a3420"/>
+      <rect x="-10" y="-114" width="6" height="4" fill="#2a3420"/>
+      <rect x="4" y="-114" width="6" height="4" fill="#2a3420"/>
+      <circle cx="-12" cy="-126" r="2.5" fill="#CCAA44" opacity="0.5"/>
+      <circle cx="12" cy="-126" r="2.5" fill="#CCAA44" opacity="0.5"/>
+      <rect x="-8" y="-150" width="16" height="50" fill="#080c06"/>
+    </g>
+
+    <!-- R1 SLOT 1: RELAY -->
+    <g transform="rotate(120)">
+      <rect x="-2.5" y="-110" width="5" height="14" fill="#1a2a22" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.4"/>
+      <rect x="-11" y="-160" width="22" height="50" fill="#162820" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.8"/>
+      <circle cx="0" cy="-138" r="8" fill="#12201a" stroke="#88CCAA" stroke-opacity="0.18" stroke-width="0.4"/>
+      <circle cx="0" cy="-138" r="2" fill="#88CCAA" opacity="0.45"/>
+      <rect x="-1.5" y="-174" width="3" height="16" fill="#1e3028" stroke="#88CCAA" stroke-opacity="0.18" stroke-width="0.3"/>
+      <circle cx="0" cy="-176" r="2.5" fill="#88CCAA" opacity="0.35"/>
+      <path d="M -8,-182 A 10,10 0 0,1 8,-182" fill="none" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+    </g>
+
+    <!-- R1 SLOT 2: ORE SILO -->
+    <g transform="rotate(240)">
+      <rect x="-2" y="-110" width="4" height="14" fill="#1e2818" stroke="#CCAA44" stroke-opacity="0.12" stroke-width="0.4"/>
+      <rect x="-14" y="-160" width="28" height="48" fill="#161e14" stroke="#CCAA44" stroke-opacity="0.22" stroke-width="0.8"/>
+      <rect x="-8" y="-154" width="16" height="36" fill="#0e160c"/>
+      <rect x="-6" y="-138" width="12" height="20" fill="#CCAA44" opacity="0.04"/>
+    </g>
+
+    <!-- BUS RING 2 — thick -->
+    <circle cx="0" cy="0" r="195" fill="none" stroke="#1e2410" stroke-width="10"/>
+    <circle cx="0" cy="0" r="195" fill="none" stroke="#CCAA44" stroke-opacity="0.07" stroke-width="10"/>
+    <circle cx="0" cy="0" r="200" fill="none" stroke="#CCAA44" stroke-opacity="0.12" stroke-width="1"/>
+    <circle cx="0" cy="0" r="190" fill="none" stroke="#CCAA44" stroke-opacity="0.08" stroke-width="0.8"/>
+    <g transform="rotate(110)"><circle cx="0" cy="-195" r="2" fill="#CCAA44" opacity="0.2"/></g>
+    <g transform="rotate(280)"><circle cx="0" cy="-195" r="2" fill="#CCAA44" opacity="0.15"/></g>
+
+    <!-- Spokes R1→R2 -->
+    <g transform="rotate(15)"><line x1="0" y1="-112" x2="0" y2="-184" stroke="#CCAA44" stroke-opacity="0.08" stroke-width="2"/></g>
+    <g transform="rotate(105)"><line x1="0" y1="-112" x2="0" y2="-184" stroke="#CCAA44" stroke-opacity="0.08" stroke-width="2"/></g>
+    <g transform="rotate(195)"><line x1="0" y1="-112" x2="0" y2="-184" stroke="#CCAA44" stroke-opacity="0.08" stroke-width="2"/></g>
+    <g transform="rotate(285)"><line x1="0" y1="-112" x2="0" y2="-184" stroke="#CCAA44" stroke-opacity="0.08" stroke-width="2"/></g>
+
+    <!-- R2 SLOT 0: FRAME PRESS -->
+    <g transform="rotate(0)">
+      <rect x="-3" y="-208" width="6" height="12" fill="#1e2410" stroke="#CCAA44" stroke-opacity="0.1" stroke-width="0.4"/>
+      <rect x="-22" y="-260" width="44" height="50" fill="#1a2010" stroke="#CCAA44" stroke-opacity="0.24" stroke-width="1"/>
+      <rect x="-18" y="-254" width="36" height="38" fill="#161c0e"/>
+      <rect x="-20" y="-254" width="5" height="38" fill="#222810" stroke="#CCAA44" stroke-opacity="0.1" stroke-width="0.3"/>
+      <rect x="15" y="-254" width="5" height="38" fill="#222810" stroke="#CCAA44" stroke-opacity="0.1" stroke-width="0.3"/>
+      <line x1="-10" y1="-235" x2="10" y2="-235" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.6"/>
+      <line x1="0" y1="-245" x2="0" y2="-225" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.6"/>
+    </g>
+
+    <!-- R2 SLOT 1: LASER FAB -->
+    <g transform="rotate(60)">
+      <rect x="-3" y="-208" width="6" height="12" fill="#1a2030" stroke="#CCAA44" stroke-opacity="0.08" stroke-width="0.4"/>
+      <rect x="-20" y="-254" width="40" height="44" fill="#141a28" stroke="#6688CC" stroke-opacity="0.22" stroke-width="0.8"/>
+      <circle cx="0" cy="-232" r="12" fill="#101820" stroke="#6688CC" stroke-opacity="0.15" stroke-width="0.4"/>
+      <circle cx="0" cy="-232" r="5" fill="#6688CC" opacity="0.06"/>
+      <circle cx="0" cy="-232" r="2" fill="#6688CC" opacity="0.2"/>
+      <line x1="-12" y1="-232" x2="-5" y2="-232" stroke="#6688CC" stroke-opacity="0.2" stroke-width="0.4"/>
+      <line x1="5" y1="-232" x2="12" y2="-232" stroke="#6688CC" stroke-opacity="0.2" stroke-width="0.4"/>
+      <line x1="0" y1="-244" x2="0" y2="-237" stroke="#6688CC" stroke-opacity="0.2" stroke-width="0.4"/>
+      <line x1="0" y1="-227" x2="0" y2="-220" stroke="#6688CC" stroke-opacity="0.2" stroke-width="0.4"/>
+    </g>
+
+    <!-- R2 SLOT 2: TRACTOR FAB -->
+    <g transform="rotate(120)">
+      <rect x="-3" y="-208" width="6" height="12" fill="#1a1830" stroke="#CCAA44" stroke-opacity="0.08" stroke-width="0.4"/>
+      <rect x="-20" y="-254" width="40" height="44" fill="#181420" stroke="#8866CC" stroke-opacity="0.2" stroke-width="0.8"/>
+      <circle cx="0" cy="-232" r="14" fill="#141020" stroke="#8866CC" stroke-opacity="0.1" stroke-width="0.4"/>
+      <circle cx="0" cy="-232" r="8" fill="#1a1428" stroke="#8866CC" stroke-opacity="0.12" stroke-width="0.3"/>
+      <circle cx="0" cy="-232" r="3" fill="#8866CC" opacity="0.15"/>
+    </g>
+
+    <!-- R2 SLOT 3: SHIPYARD — *** SIGNATURE: HUGE GANTRY *** -->
+    <g transform="rotate(180)">
+      <rect x="-4" y="-208" width="8" height="12" fill="#1e2410" stroke="#CCAA44" stroke-opacity="0.12" stroke-width="0.5"/>
+
+      <!-- MASSIVE gantry frame — the signature form -->
+      <!-- Left pillar -->
+      <rect x="-44" y="-310" width="10" height="100" fill="#1e2410" stroke="#CCAA44" stroke-opacity="0.25" stroke-width="1.2"/>
+      <!-- Right pillar -->
+      <rect x="34" y="-310" width="10" height="100" fill="#1e2410" stroke="#CCAA44" stroke-opacity="0.25" stroke-width="1.2"/>
+      <!-- Top beam -->
+      <rect x="-44" y="-314" width="88" height="8" fill="#222810" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="1"/>
+      <!-- Bottom beam -->
+      <rect x="-44" y="-214" width="88" height="6" fill="#222810" stroke="#CCAA44" stroke-opacity="0.2" stroke-width="0.8"/>
+
+      <!-- Cross bracing (big, readable) -->
+      <line x1="-34" y1="-306" x2="34" y2="-220" stroke="#CCAA44" stroke-opacity="0.1" stroke-width="1"/>
+      <line x1="34" y1="-306" x2="-34" y2="-220" stroke="#CCAA44" stroke-opacity="0.1" stroke-width="1"/>
+
+      <!-- Crane boom extending from top beam -->
+      <rect x="10" y="-340" width="6" height="28" fill="#2a3010" stroke="#CCAA44" stroke-opacity="0.2" stroke-width="0.6"/>
+      <!-- Crane cable -->
+      <line x1="13" y1="-314" x2="0" y2="-260" stroke="#CCAA44" stroke-opacity="0.2" stroke-width="0.6"/>
+      <!-- Hook -->
+      <circle cx="0" cy="-258" r="3" fill="#CCAA44" opacity="0.15"/>
+      <path d="M 0,-255 Q -4,-250 0,-248" fill="none" stroke="#CCAA44" stroke-opacity="0.2" stroke-width="0.6"/>
+
+      <!-- Scaffold under construction (ghost in the bay) -->
+      <rect x="-20" y="-280" width="40" height="40" fill="none" stroke="#CCAA44" stroke-opacity="0.06" stroke-width="0.6" stroke-dasharray="4,4"/>
+
+      <!-- Work lights on pillars -->
+      <circle cx="-38" cy="-280" r="2.5" fill="#CCAA44" opacity="0.25"/>
+      <circle cx="38" cy="-280" r="2.5" fill="#CCAA44" opacity="0.25"/>
+      <circle cx="-38" cy="-240" r="2" fill="#CCAA44" opacity="0.15"/>
+      <circle cx="38" cy="-240" r="2" fill="#CCAA44" opacity="0.15"/>
+    </g>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- HELIOS WORKS -->
+  <!-- Signature: HEAT EXCHANGER CROWN on Ring 3 outer arc -->
+  <!-- Plus distinct copper(blue) and crystal(purple) furnace colors -->
+  <!-- ============================================================ -->
+  <g transform="translate(2000, 470)">
+    <circle cx="0" cy="0" r="420" fill="url(#sg)"/>
+
+    <!-- Solar arrays (three, grouped) -->
+    <g transform="rotate(55)">
+      <rect x="-2" y="-30" width="4" height="55" fill="#141820" stroke="#6688CC" stroke-opacity="0.08" stroke-width="0.5"/>
+      <rect x="-18" y="-78" width="34" height="40" fill="#101620" stroke="#6688CC" stroke-opacity="0.14" stroke-width="0.6"/>
+      <line x1="-1" y1="-78" x2="-1" y2="-38" stroke="#6688CC" stroke-opacity="0.04" stroke-width="0.3"/>
+    </g>
+    <g transform="rotate(80)">
+      <rect x="-2" y="-30" width="4" height="50" fill="#141820" stroke="#6688CC" stroke-opacity="0.06" stroke-width="0.4"/>
+      <rect x="-12" y="-72" width="24" height="34" fill="#101620" stroke="#6688CC" stroke-opacity="0.1" stroke-width="0.5"/>
+    </g>
+    <g transform="rotate(220)">
+      <rect x="-2" y="-30" width="4" height="50" fill="#141820" stroke="#6688CC" stroke-opacity="0.06" stroke-width="0.4"/>
+      <rect x="-14" y="-72" width="28" height="34" fill="#101620" stroke="#6688CC" stroke-opacity="0.1" stroke-width="0.5"/>
+    </g>
+
+    <!-- Core — hex drum -->
+    <polygon points="0,-16 14,-8 14,8 0,16 -14,8 -14,-8"
+             fill="#141a20" stroke="#6688CC" stroke-opacity="0.25" stroke-width="1.2"/>
+    <circle cx="0" cy="0" r="3" fill="#6688CC" opacity="0.4"/>
+
+    <!-- BUS RING 1 -->
+    <circle cx="0" cy="0" r="88" fill="none" stroke="#141a24" stroke-width="9"/>
+    <circle cx="0" cy="0" r="88" fill="none" stroke="#6688CC" stroke-opacity="0.1" stroke-width="9"/>
+    <circle cx="0" cy="0" r="93" fill="none" stroke="#6688CC" stroke-opacity="0.16" stroke-width="1"/>
+    <circle cx="0" cy="0" r="83" fill="none" stroke="#6688CC" stroke-opacity="0.1" stroke-width="0.8"/>
+
+    <!-- Spokes R1 (one thick — asymmetry) -->
+    <line x1="0" y1="-16" x2="0" y2="-78" stroke="#6688CC" stroke-opacity="0.14" stroke-width="3.5"/>
+    <line x1="12" y1="8" x2="68" y2="39" stroke="#6688CC" stroke-opacity="0.1" stroke-width="2.5"/>
+    <line x1="-12" y1="8" x2="-68" y2="39" stroke="#6688CC" stroke-opacity="0.1" stroke-width="2.5"/>
+
+    <!-- R1: Dock, Relay, Furnace(Fe) -->
+    <g transform="rotate(0)">
+      <rect x="-20" y="-136" width="10" height="48" fill="#141a20" stroke="#6688CC" stroke-opacity="0.26" stroke-width="0.8"/>
+      <rect x="10" y="-136" width="10" height="48" fill="#141a20" stroke="#6688CC" stroke-opacity="0.26" stroke-width="0.8"/>
+      <circle cx="-11" cy="-112" r="2.5" fill="#6688CC" opacity="0.5"/>
+      <circle cx="11" cy="-112" r="2.5" fill="#6688CC" opacity="0.5"/>
+      <rect x="-8" y="-134" width="16" height="44" fill="#060a0e"/>
+      <rect x="-8" y="-120" width="5" height="3" fill="#2a3444"/>
+      <rect x="3" y="-120" width="5" height="3" fill="#2a3444"/>
+    </g>
+    <g transform="rotate(120)">
+      <rect x="-2" y="-98" width="4" height="12" fill="#1a2a22" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.3"/>
+      <rect x="-10" y="-144" width="20" height="46" fill="#162820" stroke="#88CCAA" stroke-opacity="0.22" stroke-width="0.8"/>
+      <circle cx="0" cy="-124" r="7" fill="#12201a" stroke="#88CCAA" stroke-opacity="0.16" stroke-width="0.4"/>
+      <circle cx="0" cy="-124" r="2" fill="#88CCAA" opacity="0.4"/>
+      <rect x="-1.5" y="-156" width="3" height="14" fill="#1e3028" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.3"/>
+      <circle cx="0" cy="-158" r="2" fill="#88CCAA" opacity="0.3"/>
+    </g>
+    <g transform="rotate(240)">
+      <rect x="-2.5" y="-98" width="5" height="12" fill="#222a1a" stroke="#B8CC72" stroke-opacity="0.12" stroke-width="0.3"/>
+      <rect x="-18" y="-144" width="36" height="46" fill="#1a2016" stroke="#B8CC72" stroke-opacity="0.24" stroke-width="0.8"/>
+      <rect x="-10" y="-136" width="20" height="24" fill="#141808"/>
+      <circle cx="0" cy="-124" r="8" fill="#B8CC72" opacity="0.03"/>
+      <circle cx="0" cy="-124" r="4" fill="#CCAA44" opacity="0.06"/>
+      <circle cx="0" cy="-124" r="2" fill="#FFCC66" opacity="0.18"/>
+      <g stroke="#B8CC72" stroke-opacity="0.1" stroke-width="0.8">
+        <line x1="-10" y1="-144" x2="-10" y2="-152"/>
+        <line x1="-2" y1="-144" x2="-2" y2="-153"/>
+        <line x1="6" y1="-144" x2="6" y2="-152"/>
+      </g>
+    </g>
+
+    <!-- BUS RING 2 -->
+    <circle cx="0" cy="0" r="168" fill="none" stroke="#141a24" stroke-width="9"/>
+    <circle cx="0" cy="0" r="168" fill="none" stroke="#6688CC" stroke-opacity="0.06" stroke-width="9"/>
+    <circle cx="0" cy="0" r="173" fill="none" stroke="#6688CC" stroke-opacity="0.1" stroke-width="0.8"/>
+    <circle cx="0" cy="0" r="163" fill="none" stroke="#6688CC" stroke-opacity="0.07" stroke-width="0.6"/>
+    <g transform="rotate(85)"><circle cx="0" cy="-168" r="2" fill="#6688CC" opacity="0.18"/></g>
+
+    <!-- Spokes R1→R2 -->
+    <g transform="rotate(36)"><line x1="0" y1="-98" x2="0" y2="-158" stroke="#6688CC" stroke-opacity="0.06" stroke-width="1.5"/></g>
+    <g transform="rotate(108)"><line x1="0" y1="-98" x2="0" y2="-158" stroke="#6688CC" stroke-opacity="0.06" stroke-width="1.5"/></g>
+    <g transform="rotate(180)"><line x1="0" y1="-98" x2="0" y2="-158" stroke="#6688CC" stroke-opacity="0.06" stroke-width="1.5"/></g>
+    <g transform="rotate(252)"><line x1="0" y1="-98" x2="0" y2="-158" stroke="#6688CC" stroke-opacity="0.06" stroke-width="1.5"/></g>
+    <g transform="rotate(324)"><line x1="0" y1="-98" x2="0" y2="-158" stroke="#6688CC" stroke-opacity="0.06" stroke-width="1.5"/></g>
+
+    <!-- R2: Silo(0), Furnace_CU(72), Furnace_CR(144), LaserFab(216), TractorFab(288) -->
+    <g transform="rotate(0)">
+      <rect x="-2" y="-178" width="4" height="8" fill="#1e2818" stroke="#6688CC" stroke-opacity="0.06" stroke-width="0.3"/>
+      <rect x="-10" y="-216" width="20" height="36" fill="#161e14" stroke="#B8CC72" stroke-opacity="0.18" stroke-width="0.6"/>
+      <rect x="-5" y="-210" width="10" height="24" fill="#0e160c"/>
+    </g>
+    <!-- Furnace CU (blue glow) -->
+    <g transform="rotate(72)">
+      <rect x="-2" y="-178" width="4" height="8" fill="#141828" stroke="#6688CC" stroke-opacity="0.06" stroke-width="0.3"/>
+      <rect x="-16" y="-222" width="32" height="42" fill="#141828" stroke="#4466AA" stroke-opacity="0.22" stroke-width="0.8"/>
+      <rect x="-8" y="-214" width="16" height="22" fill="#101420"/>
+      <circle cx="0" cy="-203" r="6" fill="#4466AA" opacity="0.04"/>
+      <circle cx="0" cy="-203" r="3" fill="#6688CC" opacity="0.08"/>
+      <circle cx="0" cy="-203" r="1.5" fill="#88AAEE" opacity="0.2"/>
+      <g stroke="#4466AA" stroke-opacity="0.1" stroke-width="0.6">
+        <line x1="-8" y1="-222" x2="-8" y2="-228"/>
+        <line x1="0" y1="-222" x2="0" y2="-229"/>
+        <line x1="8" y1="-222" x2="8" y2="-228"/>
+      </g>
+    </g>
+    <!-- Furnace CR (purple glow) -->
+    <g transform="rotate(144)">
+      <rect x="-2" y="-178" width="4" height="8" fill="#1a1430" stroke="#6688CC" stroke-opacity="0.06" stroke-width="0.3"/>
+      <rect x="-16" y="-222" width="32" height="42" fill="#1a1430" stroke="#7755BB" stroke-opacity="0.22" stroke-width="0.8"/>
+      <rect x="-8" y="-214" width="16" height="22" fill="#121020"/>
+      <circle cx="0" cy="-203" r="6" fill="#7755BB" opacity="0.04"/>
+      <circle cx="0" cy="-203" r="3" fill="#9977DD" opacity="0.08"/>
+      <circle cx="0" cy="-203" r="1.5" fill="#BB99FF" opacity="0.2"/>
+      <g stroke="#7755BB" stroke-opacity="0.1" stroke-width="0.6">
+        <line x1="-8" y1="-222" x2="-8" y2="-228"/>
+        <line x1="0" y1="-222" x2="0" y2="-229"/>
+        <line x1="8" y1="-222" x2="8" y2="-228"/>
+      </g>
+    </g>
+    <!-- Laser Fab -->
+    <g transform="rotate(216)">
+      <rect x="-2" y="-178" width="4" height="8" fill="#1a2030" stroke="#6688CC" stroke-opacity="0.06" stroke-width="0.3"/>
+      <rect x="-14" y="-218" width="28" height="38" fill="#141a28" stroke="#6688CC" stroke-opacity="0.18" stroke-width="0.6"/>
+      <circle cx="0" cy="-199" r="9" fill="#101820" stroke="#6688CC" stroke-opacity="0.12" stroke-width="0.4"/>
+      <circle cx="0" cy="-199" r="2" fill="#6688CC" opacity="0.15"/>
+    </g>
+    <!-- Tractor Fab -->
+    <g transform="rotate(288)">
+      <rect x="-2" y="-178" width="4" height="8" fill="#1a1830" stroke="#6688CC" stroke-opacity="0.06" stroke-width="0.3"/>
+      <rect x="-14" y="-218" width="28" height="38" fill="#181420" stroke="#8866CC" stroke-opacity="0.18" stroke-width="0.6"/>
+      <circle cx="0" cy="-199" r="10" fill="#141020" stroke="#8866CC" stroke-opacity="0.1" stroke-width="0.3"/>
+      <circle cx="0" cy="-199" r="5" fill="#1a1428"/>
+      <circle cx="0" cy="-199" r="2" fill="#8866CC" opacity="0.12"/>
+    </g>
+
+    <!-- BUS RING 3 -->
+    <circle cx="0" cy="0" r="260" fill="none" stroke="#141a24" stroke-width="8"/>
+    <circle cx="0" cy="0" r="260" fill="none" stroke="#6688CC" stroke-opacity="0.04" stroke-width="8"/>
+    <circle cx="0" cy="0" r="264" fill="none" stroke="#6688CC" stroke-opacity="0.07" stroke-width="0.6"/>
+    <circle cx="0" cy="0" r="256" fill="none" stroke="#6688CC" stroke-opacity="0.05" stroke-width="0.5"/>
+
+    <!-- Spokes R2→R3 -->
+    <g transform="rotate(20)"><line x1="0" y1="-178" x2="0" y2="-250" stroke="#6688CC" stroke-opacity="0.04" stroke-width="1.2"/></g>
+    <g transform="rotate(100)"><line x1="0" y1="-178" x2="0" y2="-250" stroke="#6688CC" stroke-opacity="0.04" stroke-width="1.2"/></g>
+    <g transform="rotate(180)"><line x1="0" y1="-178" x2="0" y2="-250" stroke="#6688CC" stroke-opacity="0.04" stroke-width="1.2"/></g>
+    <g transform="rotate(260)"><line x1="0" y1="-178" x2="0" y2="-250" stroke="#6688CC" stroke-opacity="0.04" stroke-width="1.2"/></g>
+    <g transform="rotate(340)"><line x1="0" y1="-178" x2="0" y2="-250" stroke="#6688CC" stroke-opacity="0.04" stroke-width="1.2"/></g>
+
+    <!-- R3: Silo(0), Silo(40), Furnace_CU(80), Furnace_CR(120), Shipyard(160) -->
+    <g transform="rotate(0)">
+      <rect x="-2" y="-270" width="4" height="8" fill="#1e2818" stroke="#6688CC" stroke-opacity="0.04" stroke-width="0.2"/>
+      <rect x="-8" y="-300" width="16" height="28" fill="#141a10" stroke="#B8CC72" stroke-opacity="0.14" stroke-width="0.5"/>
+      <rect x="-4" y="-296" width="8" height="20" fill="#0c1208"/>
+    </g>
+    <g transform="rotate(40)">
+      <rect x="-2" y="-270" width="4" height="8" fill="#1e2818" stroke="#6688CC" stroke-opacity="0.04" stroke-width="0.2"/>
+      <rect x="-8" y="-300" width="16" height="28" fill="#141a10" stroke="#B8CC72" stroke-opacity="0.14" stroke-width="0.5"/>
+      <rect x="-4" y="-296" width="8" height="20" fill="#0c1208"/>
+    </g>
+    <g transform="rotate(80)">
+      <rect x="-2" y="-270" width="4" height="8" fill="#141828" stroke="#6688CC" stroke-opacity="0.04" stroke-width="0.2"/>
+      <rect x="-12" y="-302" width="24" height="30" fill="#141828" stroke="#4466AA" stroke-opacity="0.14" stroke-width="0.5"/>
+      <circle cx="0" cy="-287" r="4" fill="#4466AA" opacity="0.04"/>
+      <circle cx="0" cy="-287" r="2" fill="#6688CC" opacity="0.06"/>
+      <g stroke="#4466AA" stroke-opacity="0.06" stroke-width="0.5">
+        <line x1="-6" y1="-302" x2="-6" y2="-308"/>
+        <line x1="0" y1="-302" x2="0" y2="-309"/>
+        <line x1="6" y1="-302" x2="6" y2="-308"/>
+      </g>
+    </g>
+    <g transform="rotate(120)">
+      <rect x="-2" y="-270" width="4" height="8" fill="#1a1430" stroke="#6688CC" stroke-opacity="0.04" stroke-width="0.2"/>
+      <rect x="-12" y="-302" width="24" height="30" fill="#1a1430" stroke="#7755BB" stroke-opacity="0.14" stroke-width="0.5"/>
+      <circle cx="0" cy="-287" r="4" fill="#7755BB" opacity="0.04"/>
+      <circle cx="0" cy="-287" r="2" fill="#9977DD" opacity="0.06"/>
+      <g stroke="#7755BB" stroke-opacity="0.06" stroke-width="0.5">
+        <line x1="-6" y1="-302" x2="-6" y2="-308"/>
+        <line x1="0" y1="-302" x2="0" y2="-309"/>
+        <line x1="6" y1="-302" x2="6" y2="-308"/>
+      </g>
+    </g>
+    <g transform="rotate(160)">
+      <rect x="-2" y="-270" width="4" height="8" fill="#1e2410" stroke="#6688CC" stroke-opacity="0.04" stroke-width="0.2"/>
+      <rect x="-14" y="-306" width="28" height="34" fill="#161a10" stroke="#CCAA44" stroke-opacity="0.14" stroke-width="0.5"/>
+      <rect x="-8" y="-300" width="16" height="22" fill="none" stroke="#CCAA44" stroke-opacity="0.08" stroke-width="0.4"/>
+      <line x1="-8" y1="-300" x2="8" y2="-278" stroke="#CCAA44" stroke-opacity="0.05" stroke-width="0.3"/>
+      <line x1="8" y1="-300" x2="-8" y2="-278" stroke="#CCAA44" stroke-opacity="0.05" stroke-width="0.3"/>
+    </g>
+
+    <!-- *** SIGNATURE: HEAT EXCHANGER CROWN *** -->
+    <!-- A discontinuous arc of heavy heat fins on the OUTER edge of Ring 3 -->
+    <!-- This is what you see from across the map — Helios's landmark -->
+
+    <!-- Crown arc segment 1 (around furnace CU on R3) -->
+    <g transform="rotate(80)">
+      <g stroke="#4466AA" stroke-opacity="0.12" stroke-width="1.8">
+        <line x1="-16" y1="-306" x2="-16" y2="-322"/>
+        <line x1="-8" y1="-306" x2="-8" y2="-324"/>
+        <line x1="0" y1="-306" x2="0" y2="-326"/>
+        <line x1="8" y1="-306" x2="8" y2="-324"/>
+        <line x1="16" y1="-306" x2="16" y2="-322"/>
+      </g>
+      <!-- Crown cap connecting fin tips -->
+      <path d="M -18,-322 L -10,-324 L 0,-326 L 10,-324 L 18,-322" fill="none" stroke="#4466AA" stroke-opacity="0.08" stroke-width="0.6"/>
+    </g>
+
+    <!-- Crown arc segment 2 (around furnace CR on R3) -->
+    <g transform="rotate(120)">
+      <g stroke="#7755BB" stroke-opacity="0.12" stroke-width="1.8">
+        <line x1="-16" y1="-306" x2="-16" y2="-322"/>
+        <line x1="-8" y1="-306" x2="-8" y2="-324"/>
+        <line x1="0" y1="-306" x2="0" y2="-326"/>
+        <line x1="8" y1="-306" x2="8" y2="-324"/>
+        <line x1="16" y1="-306" x2="16" y2="-322"/>
+      </g>
+      <path d="M -18,-322 L -10,-324 L 0,-326 L 10,-324 L 18,-322" fill="none" stroke="#7755BB" stroke-opacity="0.08" stroke-width="0.6"/>
+    </g>
+
+    <!-- Crown arc segment 3 (between furnaces — connecting thermal mass) -->
+    <g transform="rotate(100)">
+      <g stroke="#5566AA" stroke-opacity="0.08" stroke-width="1.2">
+        <line x1="-10" y1="-268" x2="-10" y2="-280"/>
+        <line x1="-2" y1="-268" x2="-2" y2="-282"/>
+        <line x1="6" y1="-268" x2="6" y2="-280"/>
+      </g>
+    </g>
+
+    <!-- Crown glow — faint arc connecting the heat segments -->
+    <path d="M -105,-240 A 268,268 0 0,1 130,-228" fill="none" stroke="#5566AA" stroke-opacity="0.04" stroke-width="4"/>
+
+  </g>
+
+  <!-- Bottom annotations -->
+  <text x="400" y="850" text-anchor="middle" fill="#556655" font-family="monospace" font-size="10">chimney cluster = smelter</text>
+  <text x="1200" y="850" text-anchor="middle" fill="#665544" font-family="monospace" font-size="10">gantry crane = construction</text>
+  <text x="2000" y="850" text-anchor="middle" fill="#445566" font-family="monospace" font-size="10">heat crown = heavy industry</text>
+
+  <text x="1200" y="885" text-anchor="middle" fill="#444444" font-family="monospace" font-size="9">Each station identifiable by silhouette alone, even blurred or at distance.</text>
+
+</svg>

@@ -1,0 +1,316 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" width="1200" height="1200">
+  <title>Bus Station B: Minimal Clean Bus</title>
+  <desc>Cleaner take. Single-line bus ring with glow. Modules are distinct silhouettes hanging off the ring. Less industrial clutter, more readable at game zoom. Emphasizes module shape identity over detail.</desc>
+
+  <defs>
+    <radialGradient id="starB" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFE8B0" stop-opacity="0.06"/>
+      <stop offset="40%" stop-color="#886644" stop-opacity="0.02"/>
+      <stop offset="100%" stop-color="#0a0808" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="1200" fill="#0a0808"/>
+  <circle cx="600" cy="600" r="560" fill="url(#starB)"/>
+
+  <text x="600" y="30" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="14" opacity="0.8">BUS STATION B: MINIMAL CLEAN</text>
+  <text x="600" y="50" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Single-line bus with energy glow. Bold module silhouettes. Readable at any zoom. Less is more.</text>
+
+  <g transform="translate(600, 600)">
+
+    <!-- Star -->
+    <circle cx="0" cy="0" r="5" fill="#FFE8B0" opacity="0.2"/>
+
+    <!-- ============================================ -->
+    <!-- SOLAR ARRAYS — clean rectangles on thin struts -->
+    <!-- ============================================ -->
+
+    <g transform="rotate(-15)">
+      <line x1="0" y1="-60" x2="0" y2="-185" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="1"/>
+      <rect x="-24" y="-170" width="48" height="90" fill="#111e16" stroke="#88CCAA" stroke-opacity="0.18" stroke-width="0.7"/>
+      <line x1="0" y1="-170" x2="0" y2="-80" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="-24" y1="-125" x2="24" y2="-125" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+    </g>
+
+    <g transform="rotate(110)">
+      <line x1="0" y1="-60" x2="0" y2="-175" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="1"/>
+      <rect x="-20" y="-162" width="40" height="78" fill="#111e16" stroke="#88CCAA" stroke-opacity="0.16" stroke-width="0.7"/>
+      <line x1="0" y1="-162" x2="0" y2="-84" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.3"/>
+      <line x1="-20" y1="-123" x2="20" y2="-123" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.3"/>
+    </g>
+
+    <g transform="rotate(230)">
+      <line x1="0" y1="-60" x2="0" y2="-180" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="1"/>
+      <rect x="-22" y="-166" width="44" height="82" fill="#111e16" stroke="#88CCAA" stroke-opacity="0.16" stroke-width="0.7"/>
+      <line x1="0" y1="-166" x2="0" y2="-84" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.3"/>
+      <line x1="-22" y1="-125" x2="22" y2="-125" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.3"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- THE BUS — single glowing ring -->
+    <!-- Clean, minimal. The glow suggests energy flowing. -->
+    <!-- ============================================ -->
+
+    <!-- Bus glow (wide, faint) -->
+    <circle cx="0" cy="0" r="220" fill="none" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="12"/>
+    <!-- Bus line (bright, thin) -->
+    <circle cx="0" cy="0" r="220" fill="none" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="2"/>
+    <!-- Inner edge accent -->
+    <circle cx="0" cy="0" r="216" fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.5"/>
+
+    <!-- Energy pulses on the bus (small bright dots traveling the ring) -->
+    <g transform="rotate(20)">
+      <circle cx="0" cy="-220" r="3" fill="#88CCAA" opacity="0.4"/>
+      <circle cx="0" cy="-220" r="6" fill="#88CCAA" opacity="0.08"/>
+    </g>
+    <g transform="rotate(95)">
+      <circle cx="0" cy="-220" r="2.5" fill="#88CCAA" opacity="0.3"/>
+      <circle cx="0" cy="-220" r="5" fill="#88CCAA" opacity="0.06"/>
+    </g>
+    <g transform="rotate(200)">
+      <circle cx="0" cy="-220" r="3" fill="#88CCAA" opacity="0.35"/>
+      <circle cx="0" cy="-220" r="6" fill="#88CCAA" opacity="0.07"/>
+    </g>
+    <g transform="rotate(310)">
+      <circle cx="0" cy="-220" r="2" fill="#CCAA44" opacity="0.3"/>
+      <circle cx="0" cy="-220" r="4.5" fill="#CCAA44" opacity="0.06"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MODULE: SIGNAL RELAY — 0deg -->
+    <!-- Distinctive silhouette: tall mast shape -->
+    <!-- ============================================ -->
+    <g transform="rotate(0)">
+      <!-- Connector stub (bus to module) -->
+      <rect x="-3" y="-232" width="6" height="14" fill="#1a2e24" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+
+      <!-- Module — tall narrow mast profile -->
+      <rect x="-14" y="-310" width="28" height="78" fill="#162820" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1"/>
+      <!-- Dish recess -->
+      <circle cx="0" cy="-275" r="12" fill="#12201a" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <circle cx="0" cy="-275" r="6" fill="#1a3028" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.4"/>
+      <circle cx="0" cy="-275" r="2.5" fill="#88CCAA" opacity="0.6"/>
+      <!-- Antenna tip -->
+      <rect x="-2" y="-318" width="4" height="10" fill="#1e3028" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.4"/>
+      <circle cx="0" cy="-320" r="3" fill="#88CCAA" opacity="0.4"/>
+      <!-- Signal arcs -->
+      <path d="M -10,-326 A 12,12 0 0,1 10,-326" fill="none" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+      <path d="M -18,-334 A 22,22 0 0,1 18,-334" fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.4"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MODULE: ORE HOPPER — 60deg -->
+    <!-- Distinctive silhouette: wide trapezoid mouth -->
+    <!-- ============================================ -->
+    <g transform="rotate(60)">
+      <rect x="-3" y="-232" width="6" height="14" fill="#1e2818" stroke="#B8CC72" stroke-opacity="0.18" stroke-width="0.5"/>
+
+      <!-- Module — wide mouth trapezoid -->
+      <polygon points="-40,-300 40,-300 28,-245 -28,-245"
+               fill="#1a2418" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="1"/>
+      <!-- Hopper mouth opening -->
+      <polygon points="-34,-300 34,-300 24,-270 -24,-270"
+               fill="#0c1208" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+      <!-- Rim highlight -->
+      <line x1="-40" y1="-300" x2="40" y2="-300" stroke="#B8CC72" stroke-opacity="0.5" stroke-width="1.8"/>
+      <!-- Chute -->
+      <rect x="-8" y="-270" width="16" height="24" fill="#0e140c" stroke="#B8CC72" stroke-opacity="0.12" stroke-width="0.4"/>
+      <!-- Tractor nodes -->
+      <circle cx="-30" cy="-298" r="4" fill="#B8CC72" opacity="0.12"/>
+      <circle cx="30" cy="-298" r="4" fill="#B8CC72" opacity="0.12"/>
+      <!-- Port glow -->
+      <rect x="-5" y="-247" width="10" height="4" fill="#B8CC72" opacity="0.2"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MODULE: FURNACE — 120deg -->
+    <!-- Distinctive silhouette: heavy box with heat fins -->
+    <!-- ============================================ -->
+    <g transform="rotate(120)">
+      <rect x="-4" y="-232" width="8" height="14" fill="#222a1a" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+
+      <!-- Module — heavy rectangular block -->
+      <rect x="-36" y="-306" width="72" height="72" fill="#1a2016" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="1.2"/>
+
+      <!-- Firebox (visible through front face) -->
+      <rect x="-18" y="-292" width="36" height="40" fill="#141808" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.5"/>
+      <!-- Fire glow -->
+      <circle cx="0" cy="-272" r="16" fill="#B8CC72" opacity="0.04"/>
+      <circle cx="0" cy="-272" r="10" fill="#998822" opacity="0.07"/>
+      <circle cx="0" cy="-272" r="6" fill="#CCAA44" opacity="0.12"/>
+      <circle cx="0" cy="-272" r="3" fill="#FFCC66" opacity="0.3"/>
+      <!-- Grate bars -->
+      <line x1="-16" y1="-282" x2="16" y2="-282" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.6"/>
+      <line x1="-16" y1="-274" x2="16" y2="-274" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.6"/>
+      <line x1="-16" y1="-266" x2="16" y2="-266" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.6"/>
+      <line x1="-16" y1="-258" x2="16" y2="-258" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.6"/>
+
+      <!-- Heat dissipation fins (outer edge — BOLD silhouette break) -->
+      <g stroke="#B8CC72" stroke-opacity="0.15" stroke-width="1.2">
+        <line x1="-28" y1="-306" x2="-28" y2="-320"/>
+        <line x1="-18" y1="-306" x2="-18" y2="-322"/>
+        <line x1="-8" y1="-306" x2="-8" y2="-324"/>
+        <line x1="2" y1="-306" x2="2" y2="-324"/>
+        <line x1="12" y1="-306" x2="12" y2="-322"/>
+        <line x1="22" y1="-306" x2="22" y2="-320"/>
+      </g>
+      <!-- Fin caps -->
+      <line x1="-30" y1="-320" x2="-16" y2="-322" stroke="#B8CC72" stroke-opacity="0.08" stroke-width="0.5"/>
+      <line x1="-16" y1="-322" x2="4" y2="-324" stroke="#B8CC72" stroke-opacity="0.08" stroke-width="0.5"/>
+      <line x1="4" y1="-324" x2="24" y2="-320" stroke="#B8CC72" stroke-opacity="0.08" stroke-width="0.5"/>
+
+      <!-- Intake/output port indicators -->
+      <rect x="-14" y="-247" width="8" height="4" fill="#B8CC72" opacity="0.15"/>
+      <rect x="6" y="-247" width="8" height="4" fill="#CCAA44" opacity="0.15"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MODULE: CARGO BAY — 180deg -->
+    <!-- Distinctive silhouette: wide flat container stack -->
+    <!-- ============================================ -->
+    <g transform="rotate(180)">
+      <rect x="-3" y="-232" width="6" height="14" fill="#1e2818" stroke="#B8CC72" stroke-opacity="0.18" stroke-width="0.5"/>
+
+      <!-- Module — wide, low profile (storage) -->
+      <rect x="-44" y="-284" width="88" height="50" fill="#161e14" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="1"/>
+
+      <!-- Container grid -->
+      <rect x="-38" y="-278" width="20" height="16" fill="#1a2414" stroke="#B8CC72" stroke-opacity="0.12" stroke-width="0.4"/>
+      <rect x="-14" y="-278" width="20" height="16" fill="#1e2818" stroke="#B8CC72" stroke-opacity="0.1" stroke-width="0.4"/>
+      <rect x="10" y="-278" width="20" height="16" fill="#1a2414" stroke="#B8CC72" stroke-opacity="0.12" stroke-width="0.4"/>
+      <rect x="-38" y="-258" width="28" height="16" fill="#1e2818" stroke="#B8CC72" stroke-opacity="0.1" stroke-width="0.4"/>
+      <rect x="-6" y="-258" width="28" height="16" fill="#1a2414" stroke="#B8CC72" stroke-opacity="0.12" stroke-width="0.4"/>
+      <rect x="26" y="-258" width="12" height="16" fill="#161e14" stroke="#B8CC72" stroke-opacity="0.08" stroke-width="0.4" stroke-dasharray="2,2"/>
+
+      <!-- Fill levels -->
+      <rect x="-36" y="-272" width="16" height="10" fill="#B8CC72" opacity="0.06"/>
+      <rect x="-12" y="-274" width="16" height="12" fill="#B8CC72" opacity="0.04"/>
+      <rect x="12" y="-270" width="16" height="8" fill="#CCAA44" opacity="0.05"/>
+      <rect x="-36" y="-254" width="24" height="12" fill="#B8CC72" opacity="0.03"/>
+
+      <!-- Port -->
+      <rect x="-5" y="-247" width="10" height="4" fill="#CCAA44" opacity="0.12"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MODULE: DOCK — 255deg -->
+    <!-- Gap in bus. Bold structural walls. -->
+    <!-- ============================================ -->
+    <g transform="rotate(255)">
+      <!-- Bus breaks here — no ring segment in this arc -->
+
+      <!-- Left wall (thick, structural) -->
+      <rect x="-28" y="-308" width="16" height="90" fill="#162420" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1.2"/>
+      <!-- Right wall -->
+      <rect x="12" y="-308" width="16" height="90" fill="#162420" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1.2"/>
+
+      <!-- Clamp arms -->
+      <rect x="-12" y="-290" width="8" height="4" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.6"/>
+      <rect x="4" y="-290" width="8" height="4" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.6"/>
+      <rect x="-12" y="-245" width="8" height="4" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.6"/>
+      <rect x="4" y="-245" width="8" height="4" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.6"/>
+
+      <!-- Guide lights -->
+      <circle cx="-13" cy="-270" r="3.5" fill="#88CCAA" opacity="0.55"/>
+      <circle cx="13" cy="-270" r="3.5" fill="#88CCAA" opacity="0.55"/>
+      <circle cx="-13" cy="-255" r="2.5" fill="#88CCAA" opacity="0.35"/>
+      <circle cx="13" cy="-255" r="2.5" fill="#88CCAA" opacity="0.35"/>
+
+      <!-- Approach guides -->
+      <line x1="-13" y1="-310" x2="-13" y2="-345" stroke="#88CCAA" stroke-opacity="0.1" stroke-dasharray="5,5" stroke-width="0.5"/>
+      <line x1="13" y1="-310" x2="13" y2="-345" stroke="#88CCAA" stroke-opacity="0.1" stroke-dasharray="5,5" stroke-width="0.5"/>
+
+      <!-- Wall inner faces (where ship cargo transfers to bus) -->
+      <rect x="-28" y="-228" width="6" height="10" fill="#88CCAA" opacity="0.08"/>
+      <rect x="22" y="-228" width="6" height="10" fill="#88CCAA" opacity="0.08"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MODULE: REPAIR BAY — 315deg -->
+    <!-- Distinctive silhouette: open rectangle with arm -->
+    <!-- ============================================ -->
+    <g transform="rotate(315)">
+      <rect x="-3" y="-232" width="6" height="14" fill="#1a2222" stroke="#88AAAA" stroke-opacity="0.18" stroke-width="0.5"/>
+
+      <!-- Module — open-topped rectangle (work bay) -->
+      <rect x="-30" y="-296" width="60" height="62" fill="#0e1414" stroke="#88AAAA" stroke-opacity="0.25" stroke-width="1"/>
+      <!-- Side walls (thicker, structural) -->
+      <rect x="-30" y="-296" width="6" height="62" fill="#182020" stroke="#88AAAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <rect x="24" y="-296" width="6" height="62" fill="#182020" stroke="#88AAAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <!-- Back wall -->
+      <rect x="-30" y="-296" width="60" height="6" fill="#182020" stroke="#88AAAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <!-- Open front (faces ring — where ships get worked on) -->
+
+      <!-- Articulated arm -->
+      <circle cx="-16" cy="-278" r="6" fill="#141e1e" stroke="#88AAAA" stroke-opacity="0.3" stroke-width="0.7"/>
+      <circle cx="-16" cy="-278" r="2.5" fill="#88AAAA" opacity="0.3"/>
+      <line x1="-16" y1="-278" x2="4" y2="-268" stroke="#88AAAA" stroke-opacity="0.4" stroke-width="2.5"/>
+      <circle cx="4" cy="-268" r="3.5" fill="#141e1e" stroke="#88AAAA" stroke-opacity="0.25" stroke-width="0.5"/>
+      <line x1="4" y1="-268" x2="16" y2="-254" stroke="#88AAAA" stroke-opacity="0.35" stroke-width="2"/>
+      <circle cx="16" cy="-254" r="4" fill="#88AAAA" opacity="0.2"/>
+      <circle cx="16" cy="-254" r="2" fill="#88AAAA" opacity="0.35"/>
+
+      <!-- Reach arc -->
+      <path d="M 6,-278 A 24,24 0 0,1 -16,-254" fill="none" stroke="#88AAAA" stroke-opacity="0.06" stroke-width="0.4" stroke-dasharray="2,3"/>
+
+      <!-- Port -->
+      <rect x="-5" y="-247" width="10" height="4" fill="#88AAAA" opacity="0.1"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 2 — showing one spoke + module -->
+    <!-- Ring 2 bus at r=350 -->
+    <!-- ============================================ -->
+
+    <!-- Spoke (radial bus connection Ring 1 → Ring 2) -->
+    <g transform="rotate(150)">
+      <!-- Spoke track -->
+      <line x1="0" y1="-232" x2="0" y2="-340" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="2"/>
+      <line x1="0" y1="-232" x2="0" y2="-340" stroke="#88CCAA" stroke-opacity="0.04" stroke-width="8"/>
+      <!-- Cross ties on spoke -->
+      <line x1="-4" y1="-260" x2="4" y2="-260" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.5"/>
+      <line x1="-4" y1="-280" x2="4" y2="-280" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.5"/>
+      <line x1="-4" y1="-300" x2="4" y2="-300" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.5"/>
+      <line x1="-4" y1="-320" x2="4" y2="-320" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.5"/>
+      <!-- Energy pulse on spoke -->
+      <circle cx="0" cy="-290" r="2" fill="#CCAA44" opacity="0.25"/>
+    </g>
+
+    <!-- Ring 2 partial arc -->
+    <path d="M -230,-265 A 350,350 0 0,1 -60,-345" fill="none" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="1.5"/>
+    <path d="M -230,-265 A 350,350 0 0,1 -60,-345" fill="none" stroke="#88CCAA" stroke-opacity="0.03" stroke-width="8"/>
+
+    <!-- Ring 2 module: Frame Press -->
+    <g transform="rotate(150)">
+      <rect x="-3" y="-352" width="6" height="14" fill="#1e2410" stroke="#CCAA44" stroke-opacity="0.15" stroke-width="0.5"/>
+
+      <rect x="-28" y="-410" width="56" height="56" fill="#1a2010" stroke="#CCAA44" stroke-opacity="0.22" stroke-width="1"/>
+      <!-- Press plates -->
+      <rect x="-20" y="-402" width="40" height="40" fill="#161c0e" stroke="#CCAA44" stroke-opacity="0.12" stroke-width="0.5"/>
+      <rect x="-12" y="-394" width="24" height="24" fill="#1e2814" stroke="#CCAA44" stroke-opacity="0.15" stroke-width="0.4"/>
+      <!-- Stamp -->
+      <line x1="-8" y1="-382" x2="8" y2="-382" stroke="#CCAA44" stroke-opacity="0.35" stroke-width="0.6"/>
+      <line x1="0" y1="-390" x2="0" y2="-374" stroke="#CCAA44" stroke-opacity="0.35" stroke-width="0.6"/>
+      <!-- Piston columns -->
+      <rect x="-22" y="-402" width="4" height="40" fill="#222810" stroke="#CCAA44" stroke-opacity="0.1" stroke-width="0.3"/>
+      <rect x="18" y="-402" width="4" height="40" fill="#222810" stroke="#CCAA44" stroke-opacity="0.1" stroke-width="0.3"/>
+      <!-- Port -->
+      <rect x="-5" y="-367" width="10" height="4" fill="#CCAA44" opacity="0.1"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 2 scaffold slot -->
+    <!-- ============================================ -->
+    <g transform="rotate(190)">
+      <line x1="0" y1="-232" x2="0" y2="-340" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="1" stroke-dasharray="5,5"/>
+      <rect x="-24" y="-396" width="48" height="48" fill="none"
+            stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.6" stroke-dasharray="5,4"/>
+    </g>
+
+  </g>
+
+  <text x="600" y="1110" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Clean single-line bus with energy glow + traveling pulses. Modules have bold distinct silhouettes:</text>
+  <text x="600" y="1128" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Relay=tall mast, Hopper=wide trapezoid, Furnace=heavy box+fins, Cargo=wide+low, Dock=gap.</text>
+  <text x="600" y="1146" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Connector stubs link modules to bus. Ring 2 connects via spoke tracks. Readable at game zoom.</text>
+  <text x="600" y="1168" text-anchor="middle" fill="#555555" font-family="monospace" font-size="10">This is closer to current aesthetic but with cohesive structure and readable module identity.</text>
+</svg>

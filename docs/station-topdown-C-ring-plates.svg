@@ -1,0 +1,243 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="800" height="800">
+  <title>Top-Down Concept C: Ring Plates</title>
+  <desc>Keeps existing ring/slot layout exactly. Each module is a thick plate with solar surface + visible function underneath. Corridors are wide structural bands. Most conservative upgrade — just makes everything bigger, thicker, more detailed.</desc>
+
+  <defs>
+    <radialGradient id="ambientC" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#FFE8B0" stop-opacity="0.05"/>
+      <stop offset="50%" stop-color="#886644" stop-opacity="0.02"/>
+      <stop offset="100%" stop-color="#0a0808" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="800" height="800" fill="#0a0808"/>
+  <circle cx="400" cy="400" r="420" fill="url(#ambientC)"/>
+
+  <text x="400" y="28" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="13" opacity="0.8">TOP-DOWN C: RING PLATES</text>
+  <text x="400" y="46" text-anchor="middle" fill="#667766" font-family="monospace" font-size="10">Conservative upgrade. Same ring/slot. Modules are thick plates. Everything 2x bigger + detailed.</text>
+
+  <g transform="translate(400, 400)">
+
+    <!-- ============================================ -->
+    <!-- CORRIDOR ARCS (thick structural bands) -->
+    <!-- ============================================ -->
+
+    <!-- Ring 1 corridors (wide, paneled) -->
+    <circle cx="0" cy="0" r="100" fill="none" stroke="#162420" stroke-width="22"/>
+    <circle cx="0" cy="0" r="100" fill="none" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="22"/>
+    <!-- Corridor panel lines -->
+    <circle cx="0" cy="0" r="110" fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.5"/>
+    <circle cx="0" cy="0" r="90" fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.5"/>
+    <!-- Corridor segment dividers -->
+    <g stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.5">
+      <!-- Every 30 degrees -->
+      <line x1="0" y1="-89" x2="0" y2="-111"/>
+      <line x1="45" y1="-77" x2="55" y2="-96"/>
+      <line x1="77" y1="-45" x2="96" y2="-55"/>
+      <line x1="89" y1="0" x2="111" y2="0"/>
+      <line x1="77" y1="45" x2="96" y2="55"/>
+      <line x1="45" y1="77" x2="55" y2="96"/>
+      <line x1="0" y1="89" x2="0" y2="111"/>
+      <line x1="-45" y1="77" x2="-55" y2="96"/>
+      <line x1="-77" y1="45" x2="-96" y2="55"/>
+      <line x1="-89" y1="0" x2="-111" y2="0"/>
+      <line x1="-77" y1="-45" x2="-96" y2="-55"/>
+      <line x1="-45" y1="-77" x2="-55" y2="-96"/>
+    </g>
+
+    <!-- Ring 2 corridors -->
+    <circle cx="0" cy="0" r="185" fill="none" stroke="#121e18" stroke-width="26"/>
+    <circle cx="0" cy="0" r="185" fill="none" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="26"/>
+    <circle cx="0" cy="0" r="198" fill="none" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.5"/>
+    <circle cx="0" cy="0" r="172" fill="none" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.5"/>
+
+    <!-- Ring 3 corridors (outermost) -->
+    <circle cx="0" cy="0" r="275" fill="none" stroke="#0e1a14" stroke-width="28"/>
+    <circle cx="0" cy="0" r="275" fill="none" stroke="#88CCAA" stroke-opacity="0.04" stroke-width="28"/>
+
+    <!-- ============================================ -->
+    <!-- SPOKES (structural, connecting rings) -->
+    <!-- ============================================ -->
+    <g stroke="#88CCAA" stroke-opacity="0.12" stroke-width="4">
+      <line x1="0" y1="-24" x2="0" y2="-89"/>
+      <line x1="21" y1="12" x2="77" y2="45"/>
+      <line x1="-21" y1="12" x2="-77" y2="45"/>
+    </g>
+    <!-- Spoke panel lines -->
+    <g stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.3">
+      <line x1="-3" y1="-24" x2="-3" y2="-89"/>
+      <line x1="3" y1="-24" x2="3" y2="-89"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- CORE HUB -->
+    <!-- ============================================ -->
+    <polygon points="0,-24 21,-12 21,12 0,24 -21,12 -21,-12"
+             fill="#162420" stroke="#88CCAA" stroke-opacity="0.35" stroke-width="1.2"/>
+    <!-- Core solar panel -->
+    <rect x="-12" y="-10" width="24" height="20" fill="#1a2c22" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+    <line x1="0" y1="-10" x2="0" y2="10" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.3"/>
+    <line x1="-12" y1="0" x2="12" y2="0" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.3"/>
+    <circle cx="0" cy="0" r="3" fill="#88CCAA" opacity="0.5"/>
+
+    <!-- ============================================ -->
+    <!-- RING 1: Signal Relay (12 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(0, -100)">
+      <!-- Thick plate -->
+      <rect x="-32" y="-26" width="64" height="52" rx="3" fill="#162820" stroke="#88CCAA" stroke-opacity="0.35" stroke-width="1.2"/>
+      <!-- Solar panel surface -->
+      <rect x="-28" y="-22" width="26" height="44" fill="#1a3026" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <line x1="-15" y1="-22" x2="-15" y2="22" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.3"/>
+      <line x1="-28" y1="-11" x2="-2" y2="-11" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.3"/>
+      <line x1="-28" y1="0" x2="-2" y2="0" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.3"/>
+      <line x1="-28" y1="11" x2="-2" y2="11" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.3"/>
+      <!-- Antenna array (right half of plate) -->
+      <rect x="2" y="-22" width="26" height="44" fill="#14241c"/>
+      <circle cx="15" cy="0" r="8" fill="none" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.5"/>
+      <circle cx="15" cy="0" r="3" fill="#88CCAA" opacity="0.5"/>
+      <!-- Broadcast ripples -->
+      <circle cx="15" cy="0" r="14" fill="none" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.3"/>
+      <circle cx="15" cy="0" r="22" fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.3"/>
+      <!-- Corner bolts -->
+      <circle cx="-28" cy="-22" r="2" fill="#2a4a38" opacity="0.4"/>
+      <circle cx="28" cy="-22" r="2" fill="#2a4a38" opacity="0.4"/>
+      <circle cx="-28" cy="22" r="2" fill="#2a4a38" opacity="0.4"/>
+      <circle cx="28" cy="22" r="2" fill="#2a4a38" opacity="0.4"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 1: Furnace (4 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(87, 50)">
+      <rect x="-30" y="-24" width="60" height="48" rx="3" fill="#1a2418" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="1.2"/>
+      <!-- Solar panel (left 2/3) -->
+      <rect x="-26" y="-20" width="34" height="40" fill="#1e2c1c" stroke="#88CCAA" stroke-opacity="0.18" stroke-width="0.5"/>
+      <line x1="-9" y1="-20" x2="-9" y2="20" stroke="#88CCAA" stroke-opacity="0.07" stroke-width="0.3"/>
+      <line x1="-26" y1="-7" x2="8" y2="-7" stroke="#88CCAA" stroke-opacity="0.07" stroke-width="0.3"/>
+      <line x1="-26" y1="7" x2="8" y2="7" stroke="#88CCAA" stroke-opacity="0.07" stroke-width="0.3"/>
+      <!-- Furnace opening (right 1/3 — look down into fire) -->
+      <rect x="10" y="-16" width="16" height="32" fill="#100e08"/>
+      <!-- Glow from below -->
+      <circle cx="18" cy="0" r="12" fill="#B8CC72" opacity="0.05"/>
+      <circle cx="18" cy="0" r="7" fill="#CCAA44" opacity="0.1"/>
+      <circle cx="18" cy="0" r="3" fill="#FFCC66" opacity="0.25"/>
+      <!-- Grate bars -->
+      <line x1="11" y1="-8" x2="25" y2="-8" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.5"/>
+      <line x1="11" y1="0" x2="25" y2="0" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+      <line x1="11" y1="8" x2="25" y2="8" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.5"/>
+      <!-- Corner bolts -->
+      <circle cx="-26" cy="-20" r="2" fill="#3a4a28" opacity="0.4"/>
+      <circle cx="26" cy="-20" r="2" fill="#3a4a28" opacity="0.4"/>
+      <circle cx="-26" cy="20" r="2" fill="#3a4a28" opacity="0.4"/>
+      <circle cx="26" cy="20" r="2" fill="#3a4a28" opacity="0.4"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 1: Dock (8 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(-87, 50)">
+      <rect x="-30" y="-24" width="60" height="48" rx="3" fill="#142018" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1.2"/>
+      <!-- Solar canopy (top half) -->
+      <rect x="-26" y="-20" width="52" height="20" fill="#1a2c22" stroke="#88CCAA" stroke-opacity="0.18" stroke-width="0.5"/>
+      <line x1="0" y1="-20" x2="0" y2="0" stroke="#88CCAA" stroke-opacity="0.07" stroke-width="0.3"/>
+      <line x1="-26" y1="-10" x2="26" y2="-10" stroke="#88CCAA" stroke-opacity="0.07" stroke-width="0.3"/>
+      <!-- Open bay (bottom half — the hole you dock into) -->
+      <rect x="-20" y="2" width="40" height="20" fill="#060a08"/>
+      <!-- Bay walls -->
+      <rect x="-22" y="2" width="3" height="20" fill="#223028" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.3"/>
+      <rect x="19" y="2" width="3" height="20" fill="#223028" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.3"/>
+      <!-- Guide lights -->
+      <circle cx="-16" cy="8" r="2" fill="#88CCAA" opacity="0.5"/>
+      <circle cx="16" cy="8" r="2" fill="#88CCAA" opacity="0.5"/>
+      <circle cx="-16" cy="16" r="1.5" fill="#88CCAA" opacity="0.35"/>
+      <circle cx="16" cy="16" r="1.5" fill="#88CCAA" opacity="0.35"/>
+      <!-- Clamp rails at bottom -->
+      <rect x="-14" y="20" width="8" height="2" fill="#88CCAA" opacity="0.2"/>
+      <rect x="6" y="20" width="8" height="2" fill="#88CCAA" opacity="0.2"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 2: Ore Buyer (1 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(160, -93)">
+      <rect x="-26" y="-22" width="52" height="44" rx="3" fill="#161e14" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="1"/>
+      <!-- Solar surface -->
+      <rect x="-22" y="-18" width="44" height="18" fill="#1a2a1a" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.4"/>
+      <line x1="0" y1="-18" x2="0" y2="0" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="-22" y1="-9" x2="22" y2="-9" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <!-- Hopper opening -->
+      <rect x="-14" y="2" width="28" height="16" fill="#0a0e08"/>
+      <rect x="-10" y="6" width="20" height="8" fill="#060a06" stroke="#B8CC72" stroke-opacity="0.12" stroke-width="0.3"/>
+      <rect x="-4" y="8" width="8" height="4" fill="#B8CC72" opacity="0.06"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 2: Frame Press (11 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(-160, -93)">
+      <rect x="-26" y="-22" width="52" height="44" rx="3" fill="#1a2010" stroke="#CCAA44" stroke-opacity="0.25" stroke-width="1"/>
+      <!-- Solar surface -->
+      <rect x="-22" y="-18" width="44" height="18" fill="#1e2818" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.4"/>
+      <line x1="0" y1="-18" x2="0" y2="0" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <!-- Press mechanism visible below -->
+      <rect x="-16" y="2" width="32" height="16" fill="#121808"/>
+      <!-- Stamp crosshair -->
+      <line x1="-10" y1="10" x2="10" y2="10" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.5"/>
+      <line x1="0" y1="4" x2="0" y2="16" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.5"/>
+      <!-- Piston circles -->
+      <circle cx="-10" cy="4" r="2.5" fill="#2a2810" stroke="#CCAA44" stroke-opacity="0.2" stroke-width="0.3"/>
+      <circle cx="10" cy="4" r="2.5" fill="#2a2810" stroke="#CCAA44" stroke-opacity="0.2" stroke-width="0.3"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 2: Repair (6 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(0, 185)">
+      <rect x="-24" y="-20" width="48" height="40" rx="3" fill="#141a1a" stroke="#88AAAA" stroke-opacity="0.25" stroke-width="1"/>
+      <!-- Solar surface -->
+      <rect x="-20" y="-16" width="40" height="16" fill="#182222" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.4"/>
+      <line x1="0" y1="-16" x2="0" y2="0" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <!-- Arm bay -->
+      <rect x="-14" y="2" width="28" height="14" fill="#0c1010"/>
+      <circle cx="0" cy="8" r="4" fill="#88AAAA" opacity="0.08"/>
+      <circle cx="0" cy="8" r="2" fill="#88AAAA" opacity="0.15"/>
+      <line x1="2" y1="8" x2="10" y2="4" stroke="#88AAAA" stroke-opacity="0.25" stroke-width="0.5"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 2: Ore Silo (3 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(185, 0)">
+      <rect x="-20" y="-24" width="40" height="48" rx="3" fill="#161e14" stroke="#B8CC72" stroke-opacity="0.22" stroke-width="1"/>
+      <!-- Lid / solar surface (full cover — silo is sealed) -->
+      <rect x="-16" y="-20" width="32" height="40" fill="#1a2a1a" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.4"/>
+      <line x1="0" y1="-20" x2="0" y2="20" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="-16" y1="-7" x2="16" y2="-7" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="-16" y1="7" x2="16" y2="7" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <!-- Fill indicator ring -->
+      <circle cx="0" cy="0" r="8" fill="none" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.5"/>
+      <circle cx="0" cy="0" r="3" fill="#B8CC72" opacity="0.1"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 2: Shipyard (5 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(93, 160)">
+      <rect x="-28" y="-24" width="56" height="48" rx="3" fill="#161a10" stroke="#CCAA44" stroke-opacity="0.22" stroke-width="1"/>
+      <!-- Partial solar cover (open bay for construction) -->
+      <rect x="-24" y="-20" width="20" height="40" fill="#1e2818" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.4"/>
+      <!-- Open scaffold bay -->
+      <rect x="0" y="-16" width="24" height="32" fill="#0a0e08"/>
+      <rect x="2" y="-14" width="20" height="28" fill="none" stroke="#CCAA44" stroke-opacity="0.12" stroke-width="0.5"/>
+      <!-- Cross bracing visible from above -->
+      <line x1="2" y1="-14" x2="22" y2="14" stroke="#CCAA44" stroke-opacity="0.08" stroke-width="0.3"/>
+      <line x1="22" y1="-14" x2="2" y2="14" stroke="#CCAA44" stroke-opacity="0.08" stroke-width="0.3"/>
+    </g>
+
+  </g>
+
+  <text x="400" y="750" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Most conservative: same ring/slot layout. Modules are 2x thick plates with solar tops.</text>
+  <text x="400" y="768" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Corridors are wide paneled bands. Module function peeks through gaps in solar cover.</text>
+  <text x="400" y="786" text-anchor="middle" fill="#555555" font-family="monospace" font-size="10">Easiest to implement. Just scale up + add panel grid + opening detail to draw_module_shape().</text>
+</svg>

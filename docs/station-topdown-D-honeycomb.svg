@@ -1,0 +1,274 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="800" height="800">
+  <title>Top-Down Concept D: Honeycomb</title>
+  <desc>Hexagonal cell grid. Each module occupies one or more hex cells. Solar surface fills empty cells. Station grows by filling cells outward. Organic but geometric. Natural tiling.</desc>
+
+  <defs>
+    <radialGradient id="ambientD" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#FFE8B0" stop-opacity="0.05"/>
+      <stop offset="50%" stop-color="#886644" stop-opacity="0.02"/>
+      <stop offset="100%" stop-color="#0a0808" stop-opacity="0"/>
+    </radialGradient>
+    <!-- Hex cell template (flat-top, r=28) -->
+    <!-- flat-top hex: points at 0,60,120,180,240,300 degrees -->
+  </defs>
+
+  <rect width="800" height="800" fill="#0a0808"/>
+  <circle cx="400" cy="400" r="420" fill="url(#ambientD)"/>
+
+  <text x="400" y="28" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="13" opacity="0.8">TOP-DOWN D: HONEYCOMB</text>
+  <text x="400" y="46" text-anchor="middle" fill="#667766" font-family="monospace" font-size="10">Hex cell grid. Modules fill cells. Solar surface in empty cells. Grows outward organically.</text>
+
+  <g transform="translate(400, 400)">
+
+    <!-- ============================================ -->
+    <!-- HEX GRID — flat-top hexagons, r=32 -->
+    <!-- Hex spacing: dx=48 (r*1.5), dy=55.4 (r*sqrt(3)) -->
+    <!-- Even columns offset by dy/2 -->
+    <!-- ============================================ -->
+
+    <!-- EMPTY SOLAR CELLS (filled with panel pattern) -->
+    <!-- These are the "skin" of the station — solar collectors -->
+
+    <!-- Ring 1 empty cells (6 cells around core) -->
+    <!-- Cell at 0deg (right) — SOLAR -->
+    <g transform="translate(48, 0)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#141e18" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.6"/>
+      <line x1="-16" y1="0" x2="16" y2="0" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="0" y1="-20" x2="0" y2="20" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="-8" y1="-14" x2="-8" y2="14" stroke="#88CCAA" stroke-opacity="0.04" stroke-width="0.3"/>
+      <line x1="8" y1="-14" x2="8" y2="14" stroke="#88CCAA" stroke-opacity="0.04" stroke-width="0.3"/>
+    </g>
+    <!-- Cell at 180deg (left) — SOLAR -->
+    <g transform="translate(-48, 0)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#141e18" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.6"/>
+      <line x1="-16" y1="0" x2="16" y2="0" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="0" y1="-20" x2="0" y2="20" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+    </g>
+
+    <!-- Ring 2 solar cells (filling gaps) -->
+    <g transform="translate(96, 0)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#101a14" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+      <line x1="-16" y1="0" x2="16" y2="0" stroke="#88CCAA" stroke-opacity="0.04" stroke-width="0.3"/>
+      <line x1="0" y1="-18" x2="0" y2="18" stroke="#88CCAA" stroke-opacity="0.04" stroke-width="0.3"/>
+    </g>
+    <g transform="translate(-96, 0)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#101a14" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+      <line x1="-16" y1="0" x2="16" y2="0" stroke="#88CCAA" stroke-opacity="0.04" stroke-width="0.3"/>
+      <line x1="0" y1="-18" x2="0" y2="18" stroke="#88CCAA" stroke-opacity="0.04" stroke-width="0.3"/>
+    </g>
+    <g transform="translate(72, -55)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#101a14" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+      <line x1="-16" y1="0" x2="16" y2="0" stroke="#88CCAA" stroke-opacity="0.04" stroke-width="0.3"/>
+    </g>
+    <g transform="translate(-72, -55)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#101a14" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+      <line x1="-16" y1="0" x2="16" y2="0" stroke="#88CCAA" stroke-opacity="0.04" stroke-width="0.3"/>
+    </g>
+    <g transform="translate(72, 55)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#101a14" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+    </g>
+    <g transform="translate(-72, 55)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#101a14" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+    </g>
+
+    <!-- Outer solar fringe cells -->
+    <g transform="translate(120, 55)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#0c1610" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.4"/>
+    </g>
+    <g transform="translate(-120, 55)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#0c1610" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.4"/>
+    </g>
+    <g transform="translate(120, -55)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#0c1610" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.4"/>
+    </g>
+    <g transform="translate(-120, -55)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#0c1610" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.4"/>
+    </g>
+    <g transform="translate(0, 110)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#0c1610" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.4"/>
+    </g>
+    <g transform="translate(0, -110)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#0c1610" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.4"/>
+    </g>
+    <g transform="translate(48, -110)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#0c1610" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.4"/>
+    </g>
+    <g transform="translate(-48, -110)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#0c1610" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.4"/>
+    </g>
+    <g transform="translate(48, 110)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#0c1610" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.4"/>
+    </g>
+    <g transform="translate(-48, 110)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#0c1610" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.4"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- CORE CELL -->
+    <!-- ============================================ -->
+    <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+             fill="#1a2e24" stroke="#88CCAA" stroke-opacity="0.4" stroke-width="1.2"/>
+    <polygon points="20,0 10,17.3 -10,17.3 -20,0 -10,-17.3 10,-17.3"
+             fill="#1e3428" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+    <circle cx="0" cy="0" r="6" fill="#88CCAA" opacity="0.4"/>
+    <circle cx="0" cy="0" r="10" fill="none" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+
+    <!-- ============================================ -->
+    <!-- MODULE CELLS -->
+    <!-- ============================================ -->
+
+    <!-- SIGNAL RELAY (top, 12 o'clock) -->
+    <g transform="translate(24, -42)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#162820" stroke="#88CCAA" stroke-opacity="0.35" stroke-width="1"/>
+      <!-- Antenna dish (seen from above — concentric rings) -->
+      <circle cx="0" cy="0" r="18" fill="#14221c" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <circle cx="0" cy="0" r="12" fill="#182a22" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.3"/>
+      <circle cx="0" cy="0" r="6" fill="none" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.3"/>
+      <circle cx="0" cy="0" r="3" fill="#88CCAA" opacity="0.5"/>
+      <!-- Cross feed horns -->
+      <line x1="-18" y1="0" x2="18" y2="0" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <line x1="0" y1="-18" x2="0" y2="18" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <!-- Broadcast ripples -->
+      <circle cx="0" cy="0" r="26" fill="none" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.3" stroke-dasharray="3,4"/>
+      <circle cx="0" cy="0" r="36" fill="none" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.3" stroke-dasharray="3,6"/>
+    </g>
+
+    <!-- FURNACE (bottom-right, 4 o'clock) -->
+    <g transform="translate(24, 42)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#1a2418" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="1"/>
+      <!-- Furnace pit (look down into it) -->
+      <polygon points="18,0 9,15.6 -9,15.6 -18,0 -9,-15.6 9,-15.6"
+               fill="#100e08"/>
+      <!-- Fire glow from below -->
+      <circle cx="0" cy="0" r="14" fill="#B8CC72" opacity="0.04"/>
+      <circle cx="0" cy="0" r="8" fill="#CCAA44" opacity="0.08"/>
+      <circle cx="0" cy="0" r="4" fill="#FFCC66" opacity="0.2"/>
+      <!-- Hex grate -->
+      <line x1="-12" y1="-7" x2="12" y2="-7" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+      <line x1="-12" y1="0" x2="12" y2="0" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.5"/>
+      <line x1="-12" y1="7" x2="12" y2="7" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+    </g>
+
+    <!-- DOCK (bottom-left, 8 o'clock) -->
+    <g transform="translate(-24, 42)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#142018" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1"/>
+      <!-- Dock bay (hex-shaped opening) -->
+      <polygon points="18,0 9,15.6 -9,15.6 -18,0 -9,-15.6 9,-15.6"
+               fill="#060a08"/>
+      <!-- Dock walls -->
+      <polygon points="16,0 8,13.9 -8,13.9 -16,0 -8,-13.9 8,-13.9"
+               fill="none" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+      <!-- Guide lights at vertices -->
+      <circle cx="0" cy="-14" r="2" fill="#88CCAA" opacity="0.5"/>
+      <circle cx="12" cy="7" r="2" fill="#88CCAA" opacity="0.4"/>
+      <circle cx="-12" cy="7" r="2" fill="#88CCAA" opacity="0.4"/>
+      <!-- Clamp indicators -->
+      <circle cx="0" cy="14" r="2" fill="#88CCAA" opacity="0.3"/>
+      <circle cx="12" cy="-7" r="1.5" fill="#88CCAA" opacity="0.3"/>
+      <circle cx="-12" cy="-7" r="1.5" fill="#88CCAA" opacity="0.3"/>
+    </g>
+
+    <!-- ORE BUYER (far left) -->
+    <g transform="translate(-24, -42)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#161e14" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.8"/>
+      <!-- Hopper (nested hex depression) -->
+      <polygon points="20,0 10,17.3 -10,17.3 -20,0 -10,-17.3 10,-17.3"
+               fill="#0c1208" stroke="#B8CC72" stroke-opacity="0.12" stroke-width="0.4"/>
+      <polygon points="10,0 5,8.7 -5,8.7 -10,0 -5,-8.7 5,-8.7"
+               fill="#080c06" stroke="#B8CC72" stroke-opacity="0.08" stroke-width="0.3"/>
+      <circle cx="0" cy="0" r="3" fill="#B8CC72" opacity="0.06"/>
+    </g>
+
+    <!-- FRAME PRESS (far right, Ring 2) -->
+    <g transform="translate(144, 0)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#1a2010" stroke="#CCAA44" stroke-opacity="0.22" stroke-width="0.8"/>
+      <!-- Press plates (hex within hex) -->
+      <polygon points="22,0 11,19 -11,19 -22,0 -11,-19 11,-19"
+               fill="#161c0e" stroke="#CCAA44" stroke-opacity="0.12" stroke-width="0.4"/>
+      <!-- Stamp -->
+      <line x1="-8" y1="0" x2="8" y2="0" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.5"/>
+      <line x1="0" y1="-8" x2="0" y2="8" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.5"/>
+      <!-- Corner pistons -->
+      <circle cx="-10" cy="-6" r="3" fill="#2a2810" stroke="#CCAA44" stroke-opacity="0.15" stroke-width="0.3"/>
+      <circle cx="10" cy="-6" r="3" fill="#2a2810" stroke="#CCAA44" stroke-opacity="0.15" stroke-width="0.3"/>
+      <circle cx="0" cy="10" r="3" fill="#2a2810" stroke="#CCAA44" stroke-opacity="0.15" stroke-width="0.3"/>
+    </g>
+
+    <!-- REPAIR BAY (bottom, Ring 2) -->
+    <g transform="translate(0, 165)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#141a1a" stroke="#88AAAA" stroke-opacity="0.22" stroke-width="0.8"/>
+      <!-- Repair bay floor -->
+      <polygon points="20,0 10,17.3 -10,17.3 -20,0 -10,-17.3 10,-17.3"
+               fill="#0c1212"/>
+      <!-- Robotic arm pivot -->
+      <circle cx="0" cy="0" r="5" fill="#88AAAA" opacity="0.1"/>
+      <circle cx="0" cy="0" r="2" fill="#88AAAA" opacity="0.2"/>
+      <line x1="2" y1="0" x2="12" y2="-8" stroke="#88AAAA" stroke-opacity="0.25" stroke-width="0.8"/>
+      <circle cx="12" cy="-8" r="2" fill="#88AAAA" opacity="0.15"/>
+    </g>
+
+    <!-- SHIPYARD (bottom-right, Ring 2) — double hex -->
+    <g transform="translate(96, 110)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="#161a10" stroke="#CCAA44" stroke-opacity="0.2" stroke-width="0.8"/>
+      <!-- Scaffold frame -->
+      <polygon points="22,0 11,19 -11,19 -22,0 -11,-19 11,-19"
+               fill="none" stroke="#CCAA44" stroke-opacity="0.12" stroke-width="0.5"/>
+      <!-- X bracing -->
+      <line x1="-14" y1="-14" x2="14" y2="14" stroke="#CCAA44" stroke-opacity="0.08" stroke-width="0.3"/>
+      <line x1="14" y1="-14" x2="-14" y2="14" stroke="#CCAA44" stroke-opacity="0.08" stroke-width="0.3"/>
+      <!-- Crane point -->
+      <circle cx="6" cy="-8" r="3" fill="#CCAA44" opacity="0.1"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- GROWTH BUDS (empty hex outlines — available slots) -->
+    <!-- ============================================ -->
+    <g transform="translate(-144, 0)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="none" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.5" stroke-dasharray="4,4"/>
+    </g>
+    <g transform="translate(-96, 110)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="none" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.5" stroke-dasharray="4,4"/>
+    </g>
+    <g transform="translate(144, 110)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="none" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.5" stroke-dasharray="4,4"/>
+    </g>
+    <g transform="translate(-96, -110)">
+      <polygon points="32,0 16,27.7 -16,27.7 -32,0 -16,-27.7 16,-27.7"
+               fill="none" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.5" stroke-dasharray="4,4"/>
+    </g>
+
+  </g>
+
+  <text x="400" y="735" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Hex grid tiles naturally. Empty cells = solar panels. Module cells have openings to see inside.</text>
+  <text x="400" y="753" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Growth buds (dashed hexes) show where station can expand. Organic but precise.</text>
+  <text x="400" y="771" text-anchor="middle" fill="#555555" font-family="monospace" font-size="10">Would replace ring/slot with hex grid. Most natural tiling — fills without gaps.</text>
+  <text x="400" y="789" text-anchor="middle" fill="#555555" font-family="monospace" font-size="10">Solar cells fill every unused hex = station IS a solar collector with modules embedded in it.</text>
+</svg>

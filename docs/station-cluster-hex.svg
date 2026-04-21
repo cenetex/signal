@@ -1,0 +1,405 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2400 1100" width="2400" height="1100">
+  <title>Cluster Stations — Hex Modules, Correct Spacing</title>
+
+  <!-- Hex geometry: radius=48, flat edges top/bottom.
+       Neighbor offsets (pointy-sides):
+         Upper-right: (+72, -41.6)    Upper-left: (-72, -41.6)
+         Lower-right: (+72, +41.6)    Lower-left: (-72, +41.6)
+         Up:          (  0, -83.2)    Down:        (  0, +83.2)
+  -->
+
+  <rect width="2400" height="1100" fill="#0c0808"/>
+  <circle cx="500" cy="400" r="500" fill="#140c08" opacity="0.3"/>
+  <circle cx="1900" cy="600" r="600" fill="#120a06" opacity="0.2"/>
+
+  <text x="370" y="32" text-anchor="middle" fill="#4a7848" font-family="monospace" font-size="13">PROSPECT REFINERY</text>
+  <text x="1150" y="32" text-anchor="middle" fill="#7a6830" font-family="monospace" font-size="13">KEPLER YARD</text>
+  <text x="1950" y="32" text-anchor="middle" fill="#4a5878" font-family="monospace" font-size="13">HELIOS WORKS</text>
+
+  <!-- Hex shape macro: r=48, pointy sides -->
+  <!-- points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6" -->
+
+  <!-- ASTEROIDS for context -->
+  <polygon points="590,360 616,344 636,360 642,386 630,408 606,414 586,402 580,378"
+           fill="#6a4a52" stroke="#9a7882" stroke-width="1.5" stroke-linejoin="round"/>
+  <polygon points="650,430 668,420 680,434 676,452 662,458 648,448"
+           fill="#724e56" stroke="#a27e86" stroke-width="1.2" stroke-linejoin="round"/>
+  <polygon points="578,440 590,432 600,442 596,454 584,458"
+           fill="#664850" stroke="#967880" stroke-width="0.8" stroke-linejoin="round"/>
+  <circle cx="588" cy="448" r="3" fill="#aa7888" opacity="0.5"/>
+
+  <polygon points="1420,440 1446,424 1466,440 1470,466 1458,488 1436,494 1416,482 1410,458"
+           fill="#6e5248" stroke="#9e8278" stroke-width="1.4" stroke-linejoin="round"/>
+  <polygon points="1380,500 1394,492 1404,504 1398,518 1384,520"
+           fill="#6a5048" stroke="#9a8078" stroke-width="0.9" stroke-linejoin="round"/>
+
+  <polygon points="2260,340 2284,326 2304,342 2308,368 2294,390 2272,396 2252,384 2248,360"
+           fill="#644e5a" stroke="#947e8a" stroke-width="1.4" stroke-linejoin="round"/>
+  <polygon points="2220,410 2234,400 2246,414 2240,430 2226,434"
+           fill="#6a5260" stroke="#9a8290" stroke-width="1" stroke-linejoin="round"/>
+
+  <!-- ============================================================ -->
+  <!--  PROSPECT REFINERY — 4 hexes                                  -->
+  <!--  Core(0,0) Dock(72,-41.6) Furnace(0,83.2) Silo(72,41.6)     -->
+  <!-- ============================================================ -->
+  <g transform="translate(370, 500)">
+
+    <!-- CORE — signal relay integrated -->
+    <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+             fill="#243828" stroke="#4a7848" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="0" cy="0" r="14" fill="#2e4834" stroke="#5a8858" stroke-width="1"/>
+    <circle cx="0" cy="0" r="6" fill="#3a5a42"/>
+    <circle cx="0" cy="0" r="2.5" fill="#88CCAA" opacity="0.8"/>
+    <circle cx="0" cy="0" r="22" fill="none" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.8"/>
+    <circle cx="0" cy="0" r="32" fill="none" stroke="#88CCAA" stroke-opacity="0.07" stroke-width="0.5"/>
+
+    <!-- DOCK (upper-right: +72, -41.6) -->
+    <g transform="translate(72, -41.6)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#243828" stroke="#4a7848" stroke-width="2" stroke-linejoin="round"/>
+      <!-- Cut notch into right face for dock opening -->
+      <polygon points="48,0 24,41.6 24,16 38,8 38,-8 24,-16 24,-41.6"
+               fill="#0c0808" stroke="none"/>
+      <line x1="24" y1="-41.6" x2="24" y2="-16" stroke="#4a7848" stroke-width="1.5"/>
+      <line x1="24" y1="-16" x2="38" y2="-8" stroke="#5a8858" stroke-width="1.5"/>
+      <line x1="38" y1="-8" x2="38" y2="8" stroke="#5a8858" stroke-width="1.5"/>
+      <line x1="38" y1="8" x2="24" y2="16" stroke="#5a8858" stroke-width="1.5"/>
+      <line x1="24" y1="16" x2="24" y2="41.6" stroke="#4a7848" stroke-width="1.5"/>
+      <circle cx="28" cy="-10" r="3" fill="#88CCAA" opacity="0.7"/>
+      <circle cx="28" cy="10" r="3" fill="#88CCAA" opacity="0.7"/>
+      <rect x="30" y="-5" width="5" height="3" fill="#3a5a42" opacity="0.6"/>
+      <rect x="30" y="2" width="5" height="3" fill="#3a5a42" opacity="0.6"/>
+    </g>
+
+    <!-- FURNACE (down: 0, +83.2) -->
+    <g transform="translate(0, 83.2)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#2a3420" stroke="#4a7848" stroke-width="2" stroke-linejoin="round"/>
+      <polygon points="24,0 12,20.8 -12,20.8 -24,0 -12,-20.8 12,-20.8"
+               fill="#1e2810"/>
+      <circle cx="0" cy="0" r="16" fill="#3a3010" opacity="0.5"/>
+      <circle cx="0" cy="0" r="10" fill="#5a4818" opacity="0.5"/>
+      <circle cx="0" cy="0" r="5" fill="#887830" opacity="0.7"/>
+      <circle cx="0" cy="0" r="2.5" fill="#CCAA44" opacity="0.9"/>
+      <!-- Chimney stubs on exposed bottom face -->
+      <rect x="-8" y="38" width="7" height="16" fill="#2a3820" stroke="#4a7848" stroke-width="0.8"/>
+      <rect x="2" y="38" width="7" height="20" fill="#2a3820" stroke="#4a7848" stroke-width="0.8"/>
+      <!-- Heat fin stubs -->
+      <rect x="-52" y="-6" width="6" height="6" fill="#2a3820" stroke="#4a7848" stroke-width="0.6"/>
+      <rect x="-52" y="6" width="6" height="6" fill="#2a3820" stroke="#4a7848" stroke-width="0.6"/>
+    </g>
+
+    <!-- ORE SILO (lower-right: +72, +41.6) -->
+    <g transform="translate(72, 41.6)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#243828" stroke="#4a7848" stroke-width="2" stroke-linejoin="round"/>
+      <polygon points="28,0 14,24.2 -14,24.2 -28,0 -14,-24.2 14,-24.2"
+               fill="#1a2e20" stroke="#3a5840" stroke-width="0.6"/>
+      <polygon points="18,0 9,15.6 -9,15.6 -18,0 -9,-10 9,-10"
+               fill="#3a5840" opacity="0.15"/>
+    </g>
+
+    <!-- SOLAR PANEL extending upward from core -->
+    <rect x="-2" y="-42" width="4" height="16" fill="#1e3424" stroke="#3a5840" stroke-width="0.4"/>
+    <polygon points="-18,-56 18,-56 20,-44 -20,-44"
+             fill="#1e3428" stroke="#3a6840" stroke-width="0.8"/>
+    <line x1="0" y1="-56" x2="0" y2="-44" stroke="#2e4832" stroke-width="0.4"/>
+
+    <!-- GROWTH BUDS -->
+    <g transform="translate(-72, -41.6)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="none" stroke="#4a7848" stroke-width="0.8" stroke-dasharray="6,6" stroke-opacity="0.2"/>
+    </g>
+    <g transform="translate(-72, 41.6)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="none" stroke="#4a7848" stroke-width="0.8" stroke-dasharray="6,6" stroke-opacity="0.15"/>
+    </g>
+    <g transform="translate(0, -83.2)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="none" stroke="#4a7848" stroke-width="0.8" stroke-dasharray="6,6" stroke-opacity="0.15"/>
+    </g>
+  </g>
+
+  <!-- ============================================================ -->
+  <!--  KEPLER YARD — 8 hexes                                        -->
+  <!-- ============================================================ -->
+  <g transform="translate(1150, 520)">
+
+    <!-- CORE -->
+    <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+             fill="#2e2818" stroke="#5a5030" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="0" cy="0" r="10" fill="#3a3420" stroke="#5a5030" stroke-width="0.8"/>
+    <circle cx="0" cy="0" r="3" fill="#CCAA44" opacity="0.6"/>
+
+    <!-- DOCK (upper-right: 72, -41.6) -->
+    <g transform="translate(72, -41.6)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#2e2818" stroke="#5a5030" stroke-width="2" stroke-linejoin="round"/>
+      <polygon points="48,0 24,41.6 24,16 38,8 38,-8 24,-16 24,-41.6"
+               fill="#0c0808"/>
+      <line x1="24" y1="-41.6" x2="24" y2="-16" stroke="#5a5030" stroke-width="1.5"/>
+      <line x1="24" y1="-16" x2="38" y2="-8" stroke="#6a6438" stroke-width="1.5"/>
+      <line x1="38" y1="-8" x2="38" y2="8" stroke="#6a6438" stroke-width="1.5"/>
+      <line x1="38" y1="8" x2="24" y2="16" stroke="#6a6438" stroke-width="1.5"/>
+      <line x1="24" y1="16" x2="24" y2="41.6" stroke="#5a5030" stroke-width="1.5"/>
+      <circle cx="28" cy="-10" r="3" fill="#CCAA44" opacity="0.6"/>
+      <circle cx="28" cy="10" r="3" fill="#CCAA44" opacity="0.6"/>
+    </g>
+
+    <!-- RELAY (up: 0, -83.2) -->
+    <g transform="translate(0, -83.2)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#243828" stroke="#4a6848" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="0" cy="0" r="12" fill="#2e4834" stroke="#5a7a58" stroke-width="0.8"/>
+      <circle cx="0" cy="0" r="5" fill="#3a5a42"/>
+      <circle cx="0" cy="0" r="2" fill="#88CCAA" opacity="0.7"/>
+      <circle cx="0" cy="0" r="20" fill="none" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.6"/>
+    </g>
+
+    <!-- ORE SILO (upper-left: -72, -41.6) -->
+    <g transform="translate(-72, -41.6)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#2e2818" stroke="#5a5030" stroke-width="2" stroke-linejoin="round"/>
+      <polygon points="28,0 14,24.2 -14,24.2 -28,0 -14,-24.2 14,-24.2"
+               fill="#242010" stroke="#4a4428" stroke-width="0.5"/>
+      <polygon points="18,0 9,15.6 -9,15.6 -18,0 -9,-8 9,-8"
+               fill="#4a4428" opacity="0.12"/>
+    </g>
+
+    <!-- FRAME PRESS (lower-left: -72, +41.6) -->
+    <g transform="translate(-72, 41.6)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#2e2818" stroke="#5a5030" stroke-width="2" stroke-linejoin="round"/>
+      <rect x="-20" y="-22" width="6" height="44" fill="#3a3420" stroke="#5a5030" stroke-width="0.5"/>
+      <rect x="14" y="-22" width="6" height="44" fill="#3a3420" stroke="#5a5030" stroke-width="0.5"/>
+      <line x1="-8" y1="0" x2="8" y2="0" stroke="#CCAA44" stroke-opacity="0.5" stroke-width="1"/>
+      <line x1="0" y1="-8" x2="0" y2="8" stroke="#CCAA44" stroke-opacity="0.5" stroke-width="1"/>
+    </g>
+
+    <!-- LASER FAB (down: 0, +83.2) -->
+    <g transform="translate(0, 83.2)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#1e2438" stroke="#3a4868" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="0" cy="0" r="16" fill="#1a2030" stroke="#4a5878" stroke-width="0.7"/>
+      <circle cx="0" cy="0" r="6" fill="#6688CC" opacity="0.12"/>
+      <circle cx="0" cy="0" r="2.5" fill="#6688CC" opacity="0.4"/>
+      <line x1="-16" y1="0" x2="-6" y2="0" stroke="#6688CC" stroke-opacity="0.25" stroke-width="0.5"/>
+      <line x1="6" y1="0" x2="16" y2="0" stroke="#6688CC" stroke-opacity="0.25" stroke-width="0.5"/>
+    </g>
+
+    <!-- TRACTOR FAB (lower-right: +72, +41.6) -->
+    <g transform="translate(72, 41.6)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#221838" stroke="#3a2858" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="0" cy="0" r="16" fill="#181030" stroke="#302858" stroke-width="0.6"/>
+      <circle cx="0" cy="0" r="9" fill="#201830"/>
+      <circle cx="0" cy="0" r="3" fill="#8866CC" opacity="0.3"/>
+    </g>
+
+    <!-- SHIPYARD (far left: -144, 0) — adjacent to silo and press -->
+    <g transform="translate(-144, 0)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#2e2818" stroke="#5a5030" stroke-width="2" stroke-linejoin="round"/>
+      <polygon points="30,0 15,26 -15,26 -30,0 -15,-26 15,-26"
+               fill="none" stroke="#5a5030" stroke-width="1" stroke-opacity="0.4"/>
+      <line x1="-18" y1="-18" x2="18" y2="18" stroke="#4a4428" stroke-width="1" opacity="0.4"/>
+      <line x1="18" y1="-18" x2="-18" y2="18" stroke="#4a4428" stroke-width="1" opacity="0.4"/>
+      <circle cx="-20" cy="0" r="2.5" fill="#CCAA44" opacity="0.3"/>
+      <circle cx="20" cy="0" r="2.5" fill="#CCAA44" opacity="0.3"/>
+    </g>
+
+    <!-- GROWTH BUDS -->
+    <g transform="translate(72, -124.8)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="none" stroke="#5a5030" stroke-width="0.8" stroke-dasharray="6,6" stroke-opacity="0.15"/>
+    </g>
+    <g transform="translate(144, 0)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="none" stroke="#5a5030" stroke-width="0.8" stroke-dasharray="6,6" stroke-opacity="0.12"/>
+    </g>
+
+    <!-- Solar panel off relay -->
+    <g transform="translate(0, -83.2)">
+      <rect x="-2" y="-42" width="4" height="14" fill="#242010" stroke="#3a3820" stroke-width="0.3"/>
+      <polygon points="-16,-54 16,-54 18,-44 -18,-44"
+               fill="#1e2e20" stroke="#3a5838" stroke-width="0.6"/>
+    </g>
+  </g>
+
+  <!-- ============================================================ -->
+  <!--  HELIOS WORKS — 15 hexes                                      -->
+  <!-- ============================================================ -->
+  <g transform="translate(1950, 530)">
+
+    <!-- CORE -->
+    <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+             fill="#1e2438" stroke="#3a4868" stroke-width="2" stroke-linejoin="round"/>
+    <circle cx="0" cy="0" r="10" fill="#243048" stroke="#4a5878" stroke-width="0.8"/>
+    <circle cx="0" cy="0" r="3" fill="#6688CC" opacity="0.5"/>
+
+    <!-- DOCK (upper-right: 72, -41.6) -->
+    <g transform="translate(72, -41.6)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#1e2438" stroke="#3a4868" stroke-width="2" stroke-linejoin="round"/>
+      <polygon points="48,0 24,41.6 24,16 38,8 38,-8 24,-16 24,-41.6"
+               fill="#0c0808"/>
+      <line x1="24" y1="-41.6" x2="24" y2="-16" stroke="#3a4868" stroke-width="1.5"/>
+      <line x1="24" y1="-16" x2="38" y2="-8" stroke="#4a5878" stroke-width="1.5"/>
+      <line x1="38" y1="-8" x2="38" y2="8" stroke="#4a5878" stroke-width="1.5"/>
+      <line x1="38" y1="8" x2="24" y2="16" stroke="#4a5878" stroke-width="1.5"/>
+      <line x1="24" y1="16" x2="24" y2="41.6" stroke="#3a4868" stroke-width="1.5"/>
+      <circle cx="28" cy="-10" r="3" fill="#6688CC" opacity="0.6"/>
+      <circle cx="28" cy="10" r="3" fill="#6688CC" opacity="0.6"/>
+    </g>
+
+    <!-- RELAY (up: 0, -83.2) -->
+    <g transform="translate(0, -83.2)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#1e2e28" stroke="#3a5848" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="0" cy="0" r="12" fill="#243828" stroke="#5a7a58" stroke-width="0.8"/>
+      <circle cx="0" cy="0" r="2" fill="#88CCAA" opacity="0.7"/>
+      <circle cx="0" cy="0" r="20" fill="none" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+    </g>
+
+    <!-- FURNACE Fe (upper-left: -72, -41.6) -->
+    <g transform="translate(-72, -41.6)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#222818" stroke="#4a5030" stroke-width="1.8" stroke-linejoin="round"/>
+      <circle cx="0" cy="0" r="14" fill="#2a2810" opacity="0.6"/>
+      <circle cx="0" cy="0" r="8" fill="#4a4018" opacity="0.5"/>
+      <circle cx="0" cy="0" r="4" fill="#887830" opacity="0.6"/>
+      <circle cx="0" cy="0" r="2" fill="#CCAA44" opacity="0.8"/>
+    </g>
+
+    <!-- ORE SILO 1 (lower-left: -72, +41.6) -->
+    <g transform="translate(-72, 41.6)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#1e2438" stroke="#3a4868" stroke-width="2" stroke-linejoin="round"/>
+      <polygon points="28,0 14,24.2 -14,24.2 -28,0 -14,-24.2 14,-24.2"
+               fill="#182034" stroke="#2e3858" stroke-width="0.5"/>
+    </g>
+
+    <!-- FURNACE CU (down: 0, +83.2) — BLUE glow -->
+    <g transform="translate(0, 83.2)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#182040" stroke="#2a4068" stroke-width="2" stroke-linejoin="round"/>
+      <circle cx="0" cy="0" r="14" fill="#1a2848" opacity="0.6"/>
+      <circle cx="0" cy="0" r="8" fill="#2a3868" opacity="0.5"/>
+      <circle cx="0" cy="0" r="4" fill="#4466AA" opacity="0.5"/>
+      <circle cx="0" cy="0" r="2" fill="#6688CC" opacity="0.7"/>
+    </g>
+
+    <!-- FURNACE CR (lower-right: +72, +41.6) — PURPLE glow -->
+    <g transform="translate(72, 41.6)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#241840" stroke="#3a2868" stroke-width="2" stroke-linejoin="round"/>
+      <circle cx="0" cy="0" r="14" fill="#281848" opacity="0.6"/>
+      <circle cx="0" cy="0" r="8" fill="#382868" opacity="0.5"/>
+      <circle cx="0" cy="0" r="4" fill="#7755BB" opacity="0.5"/>
+      <circle cx="0" cy="0" r="2" fill="#9977DD" opacity="0.7"/>
+    </g>
+
+    <!-- OUTER MODULES -->
+
+    <!-- LASER FAB (144, 0) — adj to Dock and Furnace CR -->
+    <g transform="translate(144, 0)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#1a2038" stroke="#2e3858" stroke-width="1.6" stroke-linejoin="round"/>
+      <circle cx="0" cy="0" r="14" fill="#141a30" stroke="#3a4868" stroke-width="0.5"/>
+      <circle cx="0" cy="0" r="2.5" fill="#6688CC" opacity="0.35"/>
+    </g>
+
+    <!-- TRACTOR FAB (144, -83.2) — adj to Dock -->
+    <g transform="translate(144, -83.2)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#201838" stroke="#342858" stroke-width="1.6" stroke-linejoin="round"/>
+      <circle cx="0" cy="0" r="14" fill="#181030" stroke="#302858" stroke-width="0.5"/>
+      <circle cx="0" cy="0" r="7" fill="#201830"/>
+      <circle cx="0" cy="0" r="2.5" fill="#8866CC" opacity="0.3"/>
+    </g>
+
+    <!-- ORE SILO 2 (-144, 0) — adj to Silo 1 and Furnace Fe -->
+    <g transform="translate(-144, 0)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#1e2438" stroke="#3a4868" stroke-width="1.6" stroke-linejoin="round"/>
+      <polygon points="28,0 14,24.2 -14,24.2 -28,0 -14,-24.2 14,-24.2"
+               fill="#182034"/>
+    </g>
+
+    <!-- ORE SILO 3 (-72, -124.8) — adj to Furnace Fe and Relay -->
+    <g transform="translate(-72, -124.8)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#1e2438" stroke="#3a4868" stroke-width="1.6" stroke-linejoin="round"/>
+      <polygon points="28,0 14,24.2 -14,24.2 -28,0 -14,-24.2 14,-24.2"
+               fill="#182034"/>
+    </g>
+
+    <!-- FRAME PRESS (-144, -83.2) — adj to Furnace Fe -->
+    <g transform="translate(-144, -83.2)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#2a2418" stroke="#4a4030" stroke-width="1.6" stroke-linejoin="round"/>
+      <rect x="-18" y="-20" width="5" height="40" fill="#3a3420" stroke="#4a4428" stroke-width="0.4"/>
+      <rect x="13" y="-20" width="5" height="40" fill="#3a3420" stroke="#4a4428" stroke-width="0.4"/>
+      <line x1="-6" y1="0" x2="6" y2="0" stroke="#CCAA44" stroke-opacity="0.4" stroke-width="0.8"/>
+      <line x1="0" y1="-6" x2="0" y2="6" stroke="#CCAA44" stroke-opacity="0.4" stroke-width="0.8"/>
+    </g>
+
+    <!-- FURNACE CU 2 (-72, 124.8) — adj to Furnace CU and Silo 1 -->
+    <g transform="translate(-72, 124.8)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#182040" stroke="#2a4068" stroke-width="1.6" stroke-linejoin="round"/>
+      <circle cx="0" cy="0" r="10" fill="#1a2848" opacity="0.5"/>
+      <circle cx="0" cy="0" r="5" fill="#2a3868" opacity="0.4"/>
+      <circle cx="0" cy="0" r="2" fill="#4466AA" opacity="0.6"/>
+    </g>
+
+    <!-- FURNACE CR 2 (72, 124.8) — adj to Furnace CR and Furnace CU -->
+    <g transform="translate(72, 124.8)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#241840" stroke="#3a2868" stroke-width="1.6" stroke-linejoin="round"/>
+      <circle cx="0" cy="0" r="10" fill="#281848" opacity="0.5"/>
+      <circle cx="0" cy="0" r="5" fill="#382868" opacity="0.4"/>
+      <circle cx="0" cy="0" r="2" fill="#7755BB" opacity="0.5"/>
+    </g>
+
+    <!-- SHIPYARD (0, 166.4) — adj to Furnace CU -->
+    <g transform="translate(0, 166.4)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="#1e2030" stroke="#3a3858" stroke-width="1.8" stroke-linejoin="round"/>
+      <polygon points="30,0 15,26 -15,26 -30,0 -15,-26 15,-26"
+               fill="none" stroke="#3a3858" stroke-width="0.8" stroke-opacity="0.4"/>
+      <line x1="-16" y1="-16" x2="16" y2="16" stroke="#3a3858" stroke-width="0.8" opacity="0.3"/>
+      <line x1="16" y1="-16" x2="-16" y2="16" stroke="#3a3858" stroke-width="0.8" opacity="0.3"/>
+      <circle cx="-18" cy="0" r="2.5" fill="#6688CC" opacity="0.25"/>
+      <circle cx="18" cy="0" r="2.5" fill="#6688CC" opacity="0.25"/>
+    </g>
+
+    <!-- GROWTH BUDS -->
+    <g transform="translate(216, -41.6)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="none" stroke="#3a4868" stroke-width="0.8" stroke-dasharray="6,6" stroke-opacity="0.12"/>
+    </g>
+    <g transform="translate(-144, 83.2)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="none" stroke="#3a4868" stroke-width="0.8" stroke-dasharray="6,6" stroke-opacity="0.1"/>
+    </g>
+    <g transform="translate(0, -166.4)">
+      <polygon points="48,0 24,41.6 -24,41.6 -48,0 -24,-41.6 24,-41.6"
+               fill="none" stroke="#3a4868" stroke-width="0.8" stroke-dasharray="6,6" stroke-opacity="0.1"/>
+    </g>
+
+    <!-- Solar panels -->
+    <g transform="translate(0, -83.2)">
+      <rect x="-2" y="-42" width="4" height="12" fill="#1a2434" stroke="#2e3858" stroke-width="0.3"/>
+      <polygon points="-14,-52 14,-52 16,-44 -16,-44"
+               fill="#182838" stroke="#2a4858" stroke-width="0.6"/>
+    </g>
+    <g transform="translate(-144, -83.2)">
+      <rect x="-2" y="-42" width="4" height="12" fill="#1a2434" stroke="#2e3858" stroke-width="0.3"/>
+      <polygon points="-12,-50 12,-50 14,-44 -14,-44"
+               fill="#182838" stroke="#2a4858" stroke-width="0.5"/>
+    </g>
+  </g>
+
+  <text x="1200" y="1070" text-anchor="middle" fill="#333333" font-family="monospace" font-size="10">Hex modules snap edge-to-edge. No rings. Station grows by accreting chunks. Same visual weight as asteroids.</text>
+</svg>

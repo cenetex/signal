@@ -1,0 +1,342 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1800 1000" width="1800" height="1000">
+  <title>6 Module Shapes — Faction Color + Accent</title>
+
+  <rect width="1800" height="1000" fill="#0c0808"/>
+
+  <!-- Title -->
+  <text x="900" y="36" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="14">6 MODULE SHAPES — faction hull + functional accent</text>
+
+  <!-- Column headers -->
+  <text x="180" y="80" text-anchor="middle" fill="#888" font-family="monospace" font-size="11">DOCK</text>
+  <text x="180" y="96" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">U-shape (+ repair)</text>
+
+  <text x="500" y="80" text-anchor="middle" fill="#888" font-family="monospace" font-size="11">INTAKE</text>
+  <text x="500" y="96" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">triangle (hopper+silo)</text>
+
+  <text x="820" y="80" text-anchor="middle" fill="#888" font-family="monospace" font-size="11">FURNACE</text>
+  <text x="820" y="96" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">circle (ore accent)</text>
+
+  <text x="1140" y="80" text-anchor="middle" fill="#888" font-family="monospace" font-size="11">FABRICATOR</text>
+  <text x="1140" y="96" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">pentagon (product accent)</text>
+
+  <text x="1460" y="80" text-anchor="middle" fill="#888" font-family="monospace" font-size="11">RELAY</text>
+  <text x="1460" y="96" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">diamond (beacon)</text>
+
+  <text x="1680" y="80" text-anchor="middle" fill="#888" font-family="monospace" font-size="11">SHIPYARD</text>
+  <text x="1680" y="96" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">open frame</text>
+
+  <!-- Row labels -->
+  <text x="40" y="220" text-anchor="middle" fill="#4a7848" font-family="monospace" font-size="10" transform="rotate(-90, 40, 220)">PROSPECT (green)</text>
+  <text x="40" y="460" text-anchor="middle" fill="#7a6830" font-family="monospace" font-size="10" transform="rotate(-90, 40, 460)">KEPLER (gold)</text>
+  <text x="40" y="700" text-anchor="middle" fill="#4a5878" font-family="monospace" font-size="10" transform="rotate(-90, 40, 700)">HELIOS (blue)</text>
+  <text x="40" y="920" text-anchor="middle" fill="#784848" font-family="monospace" font-size="10" transform="rotate(-90, 40, 920)">ORE RAIDER (red)</text>
+
+  <!-- ============================================================ -->
+  <!-- ROW 1: PROSPECT FACTION (green hull)                          -->
+  <!-- fr=0.30, fg=0.80, fb=0.35 → hull #4DCC5A dim → #243828      -->
+  <!-- ============================================================ -->
+  <g transform="translate(0, 130)">
+
+    <!-- DOCK — U-shape, green hull -->
+    <g transform="translate(180, 90)">
+      <!-- U-shape fill -->
+      <polygon points="-34,28 -34,-28 -18,-28 -18,16 18,16 18,-28 34,-28 34,28"
+               fill="#243828" stroke="#4a7848" stroke-width="2.5"/>
+      <!-- Guide lights -->
+      <circle cx="-12" cy="-8" r="4" fill="#88CCAA" opacity="0.7"/>
+      <circle cx="12" cy="-8" r="4" fill="#88CCAA" opacity="0.7"/>
+      <!-- Repair indicator — small wrench mark -->
+      <line x1="-6" y1="22" x2="6" y2="12" stroke="#5a8858" stroke-width="1.5" opacity="0.5"/>
+      <circle cx="-7" cy="23" r="3" fill="none" stroke="#5a8858" stroke-width="0.8" opacity="0.4"/>
+    </g>
+
+    <!-- INTAKE — triangle, green hull, ferrite accent -->
+    <g transform="translate(500, 90)">
+      <polygon points="-38,-24 38,-24 0,34"
+               fill="#243828" stroke="#4a7848" stroke-width="2.5"/>
+      <!-- Rim highlight (mouth) -->
+      <line x1="-38" y1="-24" x2="38" y2="-24" stroke="#6a9868" stroke-width="3"/>
+      <!-- Ore accent — ferrite green glow in center -->
+      <circle cx="0" cy="2" r="8" fill="#4DCC5A" opacity="0.15"/>
+      <circle cx="0" cy="2" r="4" fill="#4DCC5A" opacity="0.3"/>
+    </g>
+
+    <!-- FURNACE — circle, green hull, ferrite accent glow -->
+    <g transform="translate(820, 90)">
+      <circle cx="0" cy="0" r="34" fill="#243828" stroke="#4a7848" stroke-width="2.5"/>
+      <!-- Ore accent glow — ferrite (warm green-gold) -->
+      <circle cx="0" cy="0" r="22" fill="#2a2808" opacity="0.6"/>
+      <circle cx="0" cy="0" r="14" fill="#4a3810" opacity="0.5"/>
+      <circle cx="0" cy="0" r="8" fill="#887830" opacity="0.6"/>
+      <circle cx="0" cy="0" r="3.5" fill="#CCAA44" opacity="0.9"/>
+    </g>
+
+    <!-- FABRICATOR — pentagon, green hull, frame product accent -->
+    <g transform="translate(1140, 90)">
+      <!-- Regular pentagon -->
+      <polygon points="0,-36 34.2,-11.1 21.1,29.1 -21.1,29.1 -34.2,-11.1"
+               fill="#243828" stroke="#4a7848" stroke-width="2.5"/>
+      <!-- Product accent — frame/ingot gold -->
+      <polygon points="0,-16 15.2,-4.9 9.4,12.9 -9.4,12.9 -15.2,-4.9"
+               fill="#2a2410" stroke="#5a5030" stroke-width="0.8"/>
+      <circle cx="0" cy="2" r="4" fill="#CCAA44" opacity="0.3"/>
+    </g>
+
+    <!-- RELAY — diamond, green hull, beacon -->
+    <g transform="translate(1460, 90)">
+      <polygon points="0,-38 32,0 0,38 -32,0"
+               fill="#243828" stroke="#4a7848" stroke-width="2.5"/>
+      <!-- Beacon center -->
+      <circle cx="0" cy="0" r="8" fill="#2e4834" stroke="#5a8858" stroke-width="1"/>
+      <circle cx="0" cy="0" r="3" fill="#88CCAA" opacity="0.8"/>
+      <!-- Signal ripples -->
+      <polygon points="0,-20 16.8,0 0,20 -16.8,0"
+               fill="none" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.6"/>
+      <polygon points="0,-28 23.5,0 0,28 -23.5,0"
+               fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.5"/>
+    </g>
+
+    <!-- SHIPYARD — open square frame, green hull -->
+    <g transform="translate(1680, 90)">
+      <!-- Outer frame -->
+      <polygon points="-32,-32 32,-32 32,32 -32,32"
+               fill="none" stroke="#4a7848" stroke-width="3"/>
+      <!-- Corner blocks (filled) -->
+      <rect x="-32" y="-32" width="12" height="12" fill="#243828" stroke="#4a7848" stroke-width="1"/>
+      <rect x="20" y="-32" width="12" height="12" fill="#243828" stroke="#4a7848" stroke-width="1"/>
+      <rect x="-32" y="20" width="12" height="12" fill="#243828" stroke="#4a7848" stroke-width="1"/>
+      <rect x="20" y="20" width="12" height="12" fill="#243828" stroke="#4a7848" stroke-width="1"/>
+      <!-- Cross brace -->
+      <line x1="-20" y1="-20" x2="20" y2="20" stroke="#4a7848" stroke-width="1" opacity="0.4"/>
+      <line x1="20" y1="-20" x2="-20" y2="20" stroke="#4a7848" stroke-width="1" opacity="0.4"/>
+      <!-- Work lights -->
+      <circle cx="-26" cy="0" r="2.5" fill="#CCAA44" opacity="0.3"/>
+      <circle cx="26" cy="0" r="2.5" fill="#CCAA44" opacity="0.3"/>
+    </g>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- ROW 2: KEPLER FACTION (gold hull)                             -->
+  <!-- ============================================================ -->
+  <g transform="translate(0, 370)">
+
+    <!-- DOCK -->
+    <g transform="translate(180, 90)">
+      <polygon points="-34,28 -34,-28 -18,-28 -18,16 18,16 18,-28 34,-28 34,28"
+               fill="#2e2818" stroke="#5a5030" stroke-width="2.5"/>
+      <circle cx="-12" cy="-8" r="4" fill="#CCAA44" opacity="0.6"/>
+      <circle cx="12" cy="-8" r="4" fill="#CCAA44" opacity="0.6"/>
+      <line x1="-6" y1="22" x2="6" y2="12" stroke="#6a6438" stroke-width="1.5" opacity="0.5"/>
+      <circle cx="-7" cy="23" r="3" fill="none" stroke="#6a6438" stroke-width="0.8" opacity="0.4"/>
+    </g>
+
+    <!-- INTAKE — with ingot accent (gold takes refined goods) -->
+    <g transform="translate(500, 90)">
+      <polygon points="-38,-24 38,-24 0,34"
+               fill="#2e2818" stroke="#5a5030" stroke-width="2.5"/>
+      <line x1="-38" y1="-24" x2="38" y2="-24" stroke="#7a7048" stroke-width="3"/>
+      <circle cx="0" cy="2" r="8" fill="#CCAA44" opacity="0.12"/>
+      <circle cx="0" cy="2" r="4" fill="#CCAA44" opacity="0.25"/>
+    </g>
+
+    <!-- FURNACE — circle, gold hull, ferrite accent (Kepler smelts Fe) -->
+    <g transform="translate(820, 90)">
+      <circle cx="0" cy="0" r="34" fill="#2e2818" stroke="#5a5030" stroke-width="2.5"/>
+      <circle cx="0" cy="0" r="22" fill="#2a2808" opacity="0.6"/>
+      <circle cx="0" cy="0" r="14" fill="#4a3810" opacity="0.5"/>
+      <circle cx="0" cy="0" r="8" fill="#887830" opacity="0.6"/>
+      <circle cx="0" cy="0" r="3.5" fill="#CCAA44" opacity="0.9"/>
+    </g>
+
+    <!-- FABRICATOR — pentagon, gold hull, frame accent -->
+    <g transform="translate(1140, 90)">
+      <polygon points="0,-36 34.2,-11.1 21.1,29.1 -21.1,29.1 -34.2,-11.1"
+               fill="#2e2818" stroke="#5a5030" stroke-width="2.5"/>
+      <polygon points="0,-16 15.2,-4.9 9.4,12.9 -9.4,12.9 -15.2,-4.9"
+               fill="#2a2410" stroke="#5a5030" stroke-width="0.8"/>
+      <circle cx="0" cy="2" r="4" fill="#CCAA44" opacity="0.4"/>
+    </g>
+
+    <!-- RELAY -->
+    <g transform="translate(1460, 90)">
+      <polygon points="0,-38 32,0 0,38 -32,0"
+               fill="#2e2818" stroke="#5a5030" stroke-width="2.5"/>
+      <circle cx="0" cy="0" r="8" fill="#3a3420" stroke="#5a5030" stroke-width="1"/>
+      <circle cx="0" cy="0" r="3" fill="#CCAA44" opacity="0.6"/>
+      <polygon points="0,-20 16.8,0 0,20 -16.8,0"
+               fill="none" stroke="#CCAA44" stroke-opacity="0.12" stroke-width="0.6"/>
+    </g>
+
+    <!-- SHIPYARD -->
+    <g transform="translate(1680, 90)">
+      <polygon points="-32,-32 32,-32 32,32 -32,32"
+               fill="none" stroke="#5a5030" stroke-width="3"/>
+      <rect x="-32" y="-32" width="12" height="12" fill="#2e2818" stroke="#5a5030" stroke-width="1"/>
+      <rect x="20" y="-32" width="12" height="12" fill="#2e2818" stroke="#5a5030" stroke-width="1"/>
+      <rect x="-32" y="20" width="12" height="12" fill="#2e2818" stroke="#5a5030" stroke-width="1"/>
+      <rect x="20" y="20" width="12" height="12" fill="#2e2818" stroke="#5a5030" stroke-width="1"/>
+      <line x1="-20" y1="-20" x2="20" y2="20" stroke="#5a5030" stroke-width="1" opacity="0.4"/>
+      <line x1="20" y1="-20" x2="-20" y2="20" stroke="#5a5030" stroke-width="1" opacity="0.4"/>
+      <circle cx="-26" cy="0" r="2.5" fill="#CCAA44" opacity="0.3"/>
+      <circle cx="26" cy="0" r="2.5" fill="#CCAA44" opacity="0.3"/>
+    </g>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- ROW 3: HELIOS FACTION (blue hull)                             -->
+  <!-- Shows copper and crystal furnace accents                      -->
+  <!-- ============================================================ -->
+  <g transform="translate(0, 610)">
+
+    <!-- DOCK -->
+    <g transform="translate(180, 90)">
+      <polygon points="-34,28 -34,-28 -18,-28 -18,16 18,16 18,-28 34,-28 34,28"
+               fill="#1e2438" stroke="#3a4868" stroke-width="2.5"/>
+      <circle cx="-12" cy="-8" r="4" fill="#6688CC" opacity="0.6"/>
+      <circle cx="12" cy="-8" r="4" fill="#6688CC" opacity="0.6"/>
+      <line x1="-6" y1="22" x2="6" y2="12" stroke="#4a5878" stroke-width="1.5" opacity="0.5"/>
+      <circle cx="-7" cy="23" r="3" fill="none" stroke="#4a5878" stroke-width="0.8" opacity="0.4"/>
+    </g>
+
+    <!-- INTAKE -->
+    <g transform="translate(500, 90)">
+      <polygon points="-38,-24 38,-24 0,34"
+               fill="#1e2438" stroke="#3a4868" stroke-width="2.5"/>
+      <line x1="-38" y1="-24" x2="38" y2="-24" stroke="#4a6898" stroke-width="3"/>
+      <circle cx="0" cy="2" r="8" fill="#6688CC" opacity="0.1"/>
+      <circle cx="0" cy="2" r="4" fill="#6688CC" opacity="0.2"/>
+    </g>
+
+    <!-- FURNACE — COPPER accent (blue glow) -->
+    <g transform="translate(720, 90)">
+      <circle cx="0" cy="0" r="34" fill="#1e2438" stroke="#3a4868" stroke-width="2.5"/>
+      <!-- Copper ore accent — blue -->
+      <circle cx="0" cy="0" r="22" fill="#0e1830" opacity="0.6"/>
+      <circle cx="0" cy="0" r="14" fill="#1a2848" opacity="0.6"/>
+      <circle cx="0" cy="0" r="8" fill="#2a4878" opacity="0.6"/>
+      <circle cx="0" cy="0" r="3.5" fill="#4466AA" opacity="0.9"/>
+      <text x="0" y="50" text-anchor="middle" fill="#4466AA" font-family="monospace" font-size="8" opacity="0.5">copper</text>
+    </g>
+
+    <!-- FURNACE — CRYSTAL accent (purple glow) -->
+    <g transform="translate(920, 90)">
+      <circle cx="0" cy="0" r="34" fill="#1e2438" stroke="#3a4868" stroke-width="2.5"/>
+      <!-- Crystal ore accent — purple -->
+      <circle cx="0" cy="0" r="22" fill="#140e30" opacity="0.6"/>
+      <circle cx="0" cy="0" r="14" fill="#281848" opacity="0.6"/>
+      <circle cx="0" cy="0" r="8" fill="#482878" opacity="0.6"/>
+      <circle cx="0" cy="0" r="3.5" fill="#7755BB" opacity="0.9"/>
+      <text x="0" y="50" text-anchor="middle" fill="#7755BB" font-family="monospace" font-size="8" opacity="0.5">crystal</text>
+    </g>
+
+    <!-- FABRICATOR — laser accent -->
+    <g transform="translate(1060, 90)">
+      <polygon points="0,-36 34.2,-11.1 21.1,29.1 -21.1,29.1 -34.2,-11.1"
+               fill="#1e2438" stroke="#3a4868" stroke-width="2.5"/>
+      <polygon points="0,-16 15.2,-4.9 9.4,12.9 -9.4,12.9 -15.2,-4.9"
+               fill="#141a30" stroke="#3a4868" stroke-width="0.8"/>
+      <!-- Laser product accent -->
+      <circle cx="0" cy="2" r="4" fill="#6688CC" opacity="0.4"/>
+      <text x="0" y="50" text-anchor="middle" fill="#6688CC" font-family="monospace" font-size="8" opacity="0.5">laser</text>
+    </g>
+
+    <!-- FABRICATOR — tractor accent -->
+    <g transform="translate(1220, 90)">
+      <polygon points="0,-36 34.2,-11.1 21.1,29.1 -21.1,29.1 -34.2,-11.1"
+               fill="#1e2438" stroke="#3a4868" stroke-width="2.5"/>
+      <polygon points="0,-16 15.2,-4.9 9.4,12.9 -9.4,12.9 -15.2,-4.9"
+               fill="#1a1430" stroke="#3a2858" stroke-width="0.8"/>
+      <!-- Tractor product accent -->
+      <circle cx="0" cy="2" r="4" fill="#8866CC" opacity="0.35"/>
+      <text x="0" y="50" text-anchor="middle" fill="#8866CC" font-family="monospace" font-size="8" opacity="0.5">tractor</text>
+    </g>
+
+    <!-- RELAY -->
+    <g transform="translate(1460, 90)">
+      <polygon points="0,-38 32,0 0,38 -32,0"
+               fill="#1e2438" stroke="#3a4868" stroke-width="2.5"/>
+      <circle cx="0" cy="0" r="8" fill="#243048" stroke="#3a4868" stroke-width="1"/>
+      <circle cx="0" cy="0" r="3" fill="#6688CC" opacity="0.6"/>
+      <polygon points="0,-20 16.8,0 0,20 -16.8,0"
+               fill="none" stroke="#6688CC" stroke-opacity="0.12" stroke-width="0.6"/>
+    </g>
+
+    <!-- SHIPYARD -->
+    <g transform="translate(1680, 90)">
+      <polygon points="-32,-32 32,-32 32,32 -32,32"
+               fill="none" stroke="#3a4868" stroke-width="3"/>
+      <rect x="-32" y="-32" width="12" height="12" fill="#1e2438" stroke="#3a4868" stroke-width="1"/>
+      <rect x="20" y="-32" width="12" height="12" fill="#1e2438" stroke="#3a4868" stroke-width="1"/>
+      <rect x="-32" y="20" width="12" height="12" fill="#1e2438" stroke="#3a4868" stroke-width="1"/>
+      <rect x="20" y="20" width="12" height="12" fill="#1e2438" stroke="#3a4868" stroke-width="1"/>
+      <line x1="-20" y1="-20" x2="20" y2="20" stroke="#3a4868" stroke-width="1" opacity="0.4"/>
+      <line x1="20" y1="-20" x2="-20" y2="20" stroke="#3a4868" stroke-width="1" opacity="0.4"/>
+      <circle cx="-26" cy="0" r="2.5" fill="#6688CC" opacity="0.25"/>
+      <circle cx="26" cy="0" r="2.5" fill="#6688CC" opacity="0.25"/>
+    </g>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- ROW 4: ORE RAIDER FACTION (red hull) — future enemy           -->
+  <!-- Same shapes, totally different faction color = instant read   -->
+  <!-- ============================================================ -->
+  <g transform="translate(0, 830)">
+
+    <!-- DOCK -->
+    <g transform="translate(180, 90)">
+      <polygon points="-34,28 -34,-28 -18,-28 -18,16 18,16 18,-28 34,-28 34,28"
+               fill="#2e1818" stroke="#5a3030" stroke-width="2.5"/>
+      <circle cx="-12" cy="-8" r="4" fill="#CC6644" opacity="0.6"/>
+      <circle cx="12" cy="-8" r="4" fill="#CC6644" opacity="0.6"/>
+    </g>
+
+    <!-- INTAKE -->
+    <g transform="translate(500, 90)">
+      <polygon points="-38,-24 38,-24 0,34"
+               fill="#2e1818" stroke="#5a3030" stroke-width="2.5"/>
+      <line x1="-38" y1="-24" x2="38" y2="-24" stroke="#7a4840" stroke-width="3"/>
+      <circle cx="0" cy="2" r="4" fill="#CC6644" opacity="0.25"/>
+    </g>
+
+    <!-- FURNACE — same circle, red hull, ferrite accent -->
+    <g transform="translate(820, 90)">
+      <circle cx="0" cy="0" r="34" fill="#2e1818" stroke="#5a3030" stroke-width="2.5"/>
+      <circle cx="0" cy="0" r="22" fill="#2a0808" opacity="0.6"/>
+      <circle cx="0" cy="0" r="14" fill="#4a1810" opacity="0.5"/>
+      <circle cx="0" cy="0" r="8" fill="#883020" opacity="0.6"/>
+      <circle cx="0" cy="0" r="3.5" fill="#CC6644" opacity="0.9"/>
+    </g>
+
+    <!-- FABRICATOR -->
+    <g transform="translate(1140, 90)">
+      <polygon points="0,-36 34.2,-11.1 21.1,29.1 -21.1,29.1 -34.2,-11.1"
+               fill="#2e1818" stroke="#5a3030" stroke-width="2.5"/>
+      <polygon points="0,-16 15.2,-4.9 9.4,12.9 -9.4,12.9 -15.2,-4.9"
+               fill="#2a1410" stroke="#4a2828" stroke-width="0.8"/>
+      <circle cx="0" cy="2" r="4" fill="#CC6644" opacity="0.3"/>
+    </g>
+
+    <!-- RELAY -->
+    <g transform="translate(1460, 90)">
+      <polygon points="0,-38 32,0 0,38 -32,0"
+               fill="#2e1818" stroke="#5a3030" stroke-width="2.5"/>
+      <circle cx="0" cy="0" r="8" fill="#3a2020" stroke="#5a3030" stroke-width="1"/>
+      <circle cx="0" cy="0" r="3" fill="#CC6644" opacity="0.6"/>
+    </g>
+
+    <!-- SHIPYARD -->
+    <g transform="translate(1680, 90)">
+      <polygon points="-32,-32 32,-32 32,32 -32,32"
+               fill="none" stroke="#5a3030" stroke-width="3"/>
+      <rect x="-32" y="-32" width="12" height="12" fill="#2e1818" stroke="#5a3030" stroke-width="1"/>
+      <rect x="20" y="-32" width="12" height="12" fill="#2e1818" stroke="#5a3030" stroke-width="1"/>
+      <rect x="-32" y="20" width="12" height="12" fill="#2e1818" stroke="#5a3030" stroke-width="1"/>
+      <rect x="20" y="20" width="12" height="12" fill="#2e1818" stroke="#5a3030" stroke-width="1"/>
+      <line x1="-20" y1="-20" x2="20" y2="20" stroke="#5a3030" stroke-width="1" opacity="0.4"/>
+      <line x1="20" y1="-20" x2="-20" y2="20" stroke="#5a3030" stroke-width="1" opacity="0.4"/>
+      <circle cx="-26" cy="0" r="2.5" fill="#CC6644" opacity="0.25"/>
+      <circle cx="26" cy="0" r="2.5" fill="#CC6644" opacity="0.25"/>
+    </g>
+  </g>
+
+</svg>

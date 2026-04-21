@@ -1,0 +1,434 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2400 1000" width="2400" height="1000">
+  <title>Stations That Belong — Same Rendering as Asteroids</title>
+
+  <!-- Background matching game -->
+  <rect width="2400" height="1000" fill="#0c0808"/>
+
+  <!-- Warm ambient gradient like the game has -->
+  <circle cx="600" cy="300" r="500" fill="#140c08" opacity="0.4"/>
+  <circle cx="1800" cy="600" r="600" fill="#120a06" opacity="0.3"/>
+
+  <text x="400" y="32" text-anchor="middle" fill="#4a7848" font-family="monospace" font-size="13">PROSPECT REFINERY</text>
+  <text x="1200" y="32" text-anchor="middle" fill="#7a6830" font-family="monospace" font-size="13">KEPLER YARD</text>
+  <text x="2000" y="32" text-anchor="middle" fill="#4a5878" font-family="monospace" font-size="13">HELIOS WORKS</text>
+
+  <!-- ============================================================ -->
+  <!--  ASTEROID REFERENCE SHAPES  (scattered around for context)   -->
+  <!--  These are drawn EXACTLY like the game draws them:            -->
+  <!--  solid fan-fill, bumpy outline, full opacity, commodity tint  -->
+  <!-- ============================================================ -->
+
+  <!-- Asteroid cluster near Prospect -->
+  <!-- XL asteroid (ferrite - pinkish) -->
+  <polygon points="620,340 648,322 670,340 680,370 668,398 640,410 612,400 600,372 604,348"
+           fill="#6a4a52" stroke="#9a7882" stroke-width="1.5" stroke-linejoin="round"/>
+  <!-- L asteroid -->
+  <polygon points="680,420 700,412 714,428 710,448 694,456 678,446 674,430"
+           fill="#724e56" stroke="#a27e86" stroke-width="1.2" stroke-linejoin="round"/>
+  <!-- M asteroid -->
+  <polygon points="630,440 644,432 656,440 654,456 640,462 628,454"
+           fill="#6e4c54" stroke="#9e7c84" stroke-width="1" stroke-linejoin="round"/>
+  <!-- S asteroids -->
+  <polygon points="596,430 606,424 614,432 610,442 600,444"
+           fill="#664850" stroke="#967880" stroke-width="0.8" stroke-linejoin="round"/>
+  <circle cx="607" cy="436" r="3" fill="#aa7888" opacity="0.5"/>
+  <polygon points="660,468 668,462 674,470 670,478 662,476"
+           fill="#684a52" stroke="#987a82" stroke-width="0.8" stroke-linejoin="round"/>
+
+  <!-- Asteroid cluster near Kepler -->
+  <polygon points="1050,520 1078,504 1098,518 1104,546 1094,572 1068,582 1044,572 1036,546"
+           fill="#6e5248" stroke="#9e8278" stroke-width="1.4" stroke-linejoin="round"/>
+  <polygon points="1108,490 1124,482 1136,496 1132,514 1118,520 1106,510"
+           fill="#725650" stroke="#a28680" stroke-width="1.1" stroke-linejoin="round"/>
+  <polygon points="1020,560 1032,554 1040,564 1036,576 1024,578"
+           fill="#6a5048" stroke="#9a8078" stroke-width="0.9" stroke-linejoin="round"/>
+
+  <!-- Asteroid cluster near Helios -->
+  <polygon points="2180,320 2204,306 2226,320 2232,348 2218,372 2194,378 2172,366 2168,342"
+           fill="#644e5a" stroke="#947e8a" stroke-width="1.4" stroke-linejoin="round"/>
+  <polygon points="2140,380 2156,372 2168,386 2162,402 2148,406 2138,396"
+           fill="#6a5260" stroke="#9a8290" stroke-width="1.1" stroke-linejoin="round"/>
+
+  <!-- ============================================================ -->
+  <!--  PROSPECT REFINERY                                            -->
+  <!--  Ring + modules as ONE SOLID MASS.                            -->
+  <!--  Drawn like an asteroid: filled polygon, bright rim.          -->
+  <!-- ============================================================ -->
+  <g transform="translate(400, 490)">
+
+    <!-- THE STATION AS ONE SHAPE -->
+    <!-- Ring body: thick filled annulus, 12-sided outer, dock gap at top -->
+    <!-- Modules extend from the ring as integral parts of the shape -->
+
+    <!-- Ring fill (solid, opaque — like an asteroid body) -->
+    <!-- Outer perimeter including module bulges, clockwise from right dock wall -->
+    <path d="
+      M 18,-112
+      L 56,-98  96,-58
+      L 108,-14
+      L 108,14
+      L 96,58   56,98
+      L 0,114
+      L -56,98
+
+      L -80,70
+      L -95,72  -110,98  -140,110  -140,80  -124,54  -110,56
+      L -98,60
+
+      L -96,-58  -56,-98
+      L -18,-112
+
+      L -18,-86  -44,-76  -74,-44  -84,0  -74,44  -44,76
+      L 0,86  44,76  74,44  84,0  74,-44  44,-76
+      L 18,-86 Z
+    " fill="#243828" fill-rule="evenodd" stroke="#4a7848" stroke-width="1.8" stroke-linejoin="round"/>
+
+    <!-- Furnace module (lower-left, extending outward) — integral to hull -->
+    <!-- Already part of the main path above, but let me draw the furnace body
+         as a separate overlapping element for the chimney stacks -->
+    <g transform="rotate(240)">
+      <!-- Furnace main block -->
+      <polygon points="-36,-165 36,-165 38,-108 -38,-108"
+               fill="#243828" stroke="#4a7848" stroke-width="1.5" stroke-linejoin="round"/>
+      <!-- Chimney stacks — the signature silhouette -->
+      <polygon points="-8,-195 8,-195 10,-165 -10,-165"
+               fill="#2a4030" stroke="#4a7848" stroke-width="1.2" stroke-linejoin="round"/>
+      <polygon points="-26,-185 -14,-185 -12,-165 -28,-165"
+               fill="#283e2e" stroke="#4a7848" stroke-width="1" stroke-linejoin="round"/>
+      <polygon points="14,-178 24,-178 26,-165 12,-165"
+               fill="#283e2e" stroke="#4a7848" stroke-width="0.8" stroke-linejoin="round"/>
+      <!-- Fire glow — one solid bright dot, visible at any zoom -->
+      <circle cx="0" cy="-138" r="12" fill="#3a3010" opacity="0.7"/>
+      <circle cx="0" cy="-138" r="7" fill="#5a4818" opacity="0.6"/>
+      <circle cx="0" cy="-138" r="3" fill="#aa8830" opacity="0.8"/>
+      <!-- Heat fins — thick solid stubs -->
+      <rect x="-42" y="-154" width="6" height="12" rx="1" fill="#2a4030" stroke="#4a7848" stroke-width="0.7"/>
+      <rect x="-42" y="-136" width="6" height="12" rx="1" fill="#2a4030" stroke="#4a7848" stroke-width="0.7"/>
+      <rect x="36" y="-154" width="6" height="12" rx="1" fill="#2a4030" stroke="#4a7848" stroke-width="0.7"/>
+      <rect x="36" y="-136" width="6" height="12" rx="1" fill="#2a4030" stroke="#4a7848" stroke-width="0.7"/>
+    </g>
+
+    <!-- Signal relay (lower-right, extending outward) -->
+    <g transform="rotate(120)">
+      <polygon points="-14,-170 14,-170 16,-108 -16,-108"
+               fill="#243828" stroke="#4a7848" stroke-width="1.4" stroke-linejoin="round"/>
+      <!-- Dish — solid filled circle -->
+      <circle cx="0" cy="-142" r="10" fill="#2e4834" stroke="#5a8858" stroke-width="1"/>
+      <circle cx="0" cy="-142" r="4" fill="#3a5a42" stroke="#6a9868" stroke-width="0.6"/>
+      <circle cx="0" cy="-142" r="2" fill="#88CCAA" opacity="0.8"/>
+      <!-- Beacon tip -->
+      <circle cx="0" cy="-172" r="3.5" fill="#88CCAA" opacity="0.6"/>
+      <!-- Signal arcs (just two, bold) -->
+      <path d="M -8,-178 A 10,10 0 0,1 8,-178" fill="none" stroke="#88CCAA" stroke-opacity="0.35" stroke-width="1"/>
+      <path d="M -15,-185 A 18,18 0 0,1 15,-185" fill="none" stroke="#88CCAA" stroke-opacity="0.18" stroke-width="0.8"/>
+    </g>
+
+    <!-- Dock gap — the negative space at top -->
+    <!-- Already defined by the hull path. Add wall detail + lights. -->
+    <rect x="-20" y="-114" width="6" height="30" fill="#2e4834" stroke="#5a8858" stroke-width="0.8"/>
+    <rect x="14" y="-114" width="6" height="30" fill="#2e4834" stroke="#5a8858" stroke-width="0.8"/>
+    <circle cx="-14" cy="-98" r="3" fill="#88CCAA" opacity="0.7"/>
+    <circle cx="14" cy="-98" r="3" fill="#88CCAA" opacity="0.7"/>
+
+    <!-- Spoke struts — solid filled triangles -->
+    <polygon points="-4,-84 4,-84 3,-16 -3,-16" fill="#1e3424" stroke="#3a5840" stroke-width="0.6"/>
+    <polygon points="72,42 76,46 12,8 8,3" fill="#1e3424" stroke="#3a5840" stroke-width="0.6"/>
+    <polygon points="-72,42 -76,46 -12,8 -8,3" fill="#1e3424" stroke="#3a5840" stroke-width="0.6"/>
+
+    <!-- Core — solid hex, bright center dot -->
+    <polygon points="0,-16 14,-8 14,8 0,16 -14,8 -14,-8"
+             fill="#2a4832" stroke="#4a7848" stroke-width="1.2"/>
+    <circle cx="0" cy="0" r="3" fill="#88CCAA" opacity="0.6"/>
+
+    <!-- Ring 2 spoke + silo -->
+    <polygon points="-4,-88 4,-88 6,-180 -6,-180" fill="#1e3424" stroke="#3a5840" stroke-width="0.8"/>
+    <!-- Partial ring 2 arc as a filled band -->
+    <path d="M -40,-190 A 195,195 0 0,0 40,-190 L 32,-178 A 183,183 0 0,1 -32,-178 Z"
+          fill="#1e3224" stroke="#3a5840" stroke-width="0.8"/>
+    <!-- Silo -->
+    <polygon points="-14,-230 14,-230 16,-190 -16,-190"
+             fill="#243828" stroke="#4a7848" stroke-width="1" stroke-linejoin="round"/>
+    <polygon points="-12,-236 12,-236 14,-230 -14,-230"
+             fill="#2e4834" stroke="#4a7848" stroke-width="0.6"/>
+    <rect x="-8" y="-224" width="16" height="22" fill="#3a5840" opacity="0.15"/>
+
+    <!-- Solar panel — solid plate, slightly different color -->
+    <g transform="rotate(200)">
+      <rect x="-2" y="-35" width="4" height="40" fill="#1e3424" stroke="#3a5840" stroke-width="0.5"/>
+      <polygon points="-18,-72 18,-72 20,-38 -20,-38"
+               fill="#1e3428" stroke="#3a6840" stroke-width="0.8"/>
+      <line x1="0" y1="-72" x2="0" y2="-38" stroke="#2e4832" stroke-width="0.5"/>
+    </g>
+  </g>
+
+  <!-- ============================================================ -->
+  <!--  KEPLER YARD                                                  -->
+  <!-- ============================================================ -->
+  <g transform="translate(1200, 490)">
+
+    <!-- Ring 1 hull — solid filled, amber tint -->
+    <polygon points="18,-110 56,-96 96,-56 108,0 96,56 56,96 0,110 -56,96 -96,56 -108,0 -96,-56 -56,-96 -18,-110
+                     -18,-82 -44,-74 -74,-42 -82,0 -74,42 -44,74 0,82 44,74 74,42 82,0 74,-42 44,-74 18,-82"
+             fill="#2e2818" fill-rule="evenodd" stroke="#5a5030" stroke-width="1.8" stroke-linejoin="round"/>
+
+    <!-- Dock gap walls + lights -->
+    <rect x="-20" y="-112" width="6" height="32" fill="#3a3420" stroke="#5a5030" stroke-width="0.8"/>
+    <rect x="14" y="-112" width="6" height="32" fill="#3a3420" stroke="#5a5030" stroke-width="0.8"/>
+    <circle cx="-14" cy="-96" r="3" fill="#CCAA44" opacity="0.6"/>
+    <circle cx="14" cy="-96" r="3" fill="#CCAA44" opacity="0.6"/>
+
+    <!-- Relay (120deg) -->
+    <g transform="rotate(120)">
+      <polygon points="-12,-160 12,-160 14,-106 -14,-106"
+               fill="#2e2818" stroke="#5a5030" stroke-width="1.2" stroke-linejoin="round"/>
+      <circle cx="0" cy="-136" r="8" fill="#243828" stroke="#5a7a58" stroke-width="0.8"/>
+      <circle cx="0" cy="-136" r="2" fill="#88CCAA" opacity="0.6"/>
+      <circle cx="0" cy="-162" r="3" fill="#88CCAA" opacity="0.4"/>
+    </g>
+
+    <!-- Ore Silo (240deg) -->
+    <g transform="rotate(240)">
+      <polygon points="-16,-158 16,-158 18,-106 -18,-106"
+               fill="#2e2818" stroke="#5a5030" stroke-width="1.2" stroke-linejoin="round"/>
+      <rect x="-10" y="-150" width="20" height="30" fill="#3a3420" opacity="0.2"/>
+    </g>
+
+    <!-- Spokes -->
+    <polygon points="-4,-82 4,-82 3,-14 -3,-14" fill="#282212" stroke="#4a4428" stroke-width="0.5"/>
+    <polygon points="72,40 76,44 12,8 8,2" fill="#282212" stroke="#4a4428" stroke-width="0.5"/>
+    <polygon points="-72,40 -76,44 -12,8 -8,2" fill="#282212" stroke="#4a4428" stroke-width="0.5"/>
+
+    <!-- Core -->
+    <polygon points="0,-16 14,-8 14,8 0,16 -14,8 -14,-8"
+             fill="#342e18" stroke="#5a5030" stroke-width="1.2"/>
+    <circle cx="0" cy="0" r="3" fill="#CCAA44" opacity="0.5"/>
+
+    <!-- Ring 2 hull — solid filled -->
+    <polygon points="0,-200 52,-192 98,-170 136,-134 164,-88 180,-38 184,0 180,38 164,88 136,134 98,170 52,192
+                     0,200 -52,192 -98,170 -136,134 -164,88 -180,38 -184,0 -180,-38 -164,-88 -136,-134 -98,-170 -52,-192
+                     0,-200
+                     0,-172 -44,-166 -84,-146 -118,-116 -142,-76 -156,-32 -158,0 -156,32 -142,76 -118,116 -84,146 -44,166
+                     0,172 44,166 84,146 118,116 142,76 156,32 158,0 156,-32 142,-76 118,-116 84,-146 44,-166 0,-172"
+             fill="#282212" fill-rule="evenodd" stroke="#4a4428" stroke-width="1.4" stroke-linejoin="round"/>
+
+    <!-- Spokes R1→R2 -->
+    <g transform="rotate(0)"><polygon points="-3,-112 3,-112 4,-174 -4,-174" fill="#242010" stroke="#3a3820" stroke-width="0.5"/></g>
+    <g transform="rotate(90)"><polygon points="-3,-112 3,-112 4,-174 -4,-174" fill="#242010" stroke="#3a3820" stroke-width="0.5"/></g>
+    <g transform="rotate(180)"><polygon points="-3,-112 3,-112 4,-174 -4,-174" fill="#242010" stroke="#3a3820" stroke-width="0.5"/></g>
+    <g transform="rotate(270)"><polygon points="-3,-112 3,-112 4,-174 -4,-174" fill="#242010" stroke="#3a3820" stroke-width="0.5"/></g>
+
+    <!-- Frame Press (0deg on R2) -->
+    <g transform="rotate(0)">
+      <polygon points="-24,-244 24,-244 26,-200 -26,-200"
+               fill="#2e2818" stroke="#5a5030" stroke-width="1.2" stroke-linejoin="round"/>
+      <rect x="-20" y="-238" width="5" height="32" fill="#3a3420" stroke="#4a4428" stroke-width="0.4"/>
+      <rect x="15" y="-238" width="5" height="32" fill="#3a3420" stroke="#4a4428" stroke-width="0.4"/>
+      <line x1="-8" y1="-222" x2="8" y2="-222" stroke="#CCAA44" stroke-opacity="0.5" stroke-width="0.8"/>
+      <line x1="0" y1="-230" x2="0" y2="-214" stroke="#CCAA44" stroke-opacity="0.5" stroke-width="0.8"/>
+    </g>
+
+    <!-- Laser Fab (90deg) -->
+    <g transform="rotate(90)">
+      <polygon points="-20,-240 20,-240 22,-200 -22,-200"
+               fill="#1e2438" stroke="#3a4868" stroke-width="1" stroke-linejoin="round"/>
+      <circle cx="0" cy="-220" r="10" fill="#1a2030" stroke="#4a5878" stroke-width="0.7"/>
+      <circle cx="0" cy="-220" r="3" fill="#6688CC" opacity="0.35"/>
+    </g>
+
+    <!-- Tractor Fab (180deg) -->
+    <g transform="rotate(180)">
+      <polygon points="-20,-240 20,-240 22,-200 -22,-200"
+               fill="#281e38" stroke="#4a3868" stroke-width="1" stroke-linejoin="round"/>
+      <circle cx="0" cy="-220" r="10" fill="#201830" stroke="#3a3060" stroke-width="0.7"/>
+      <circle cx="0" cy="-220" r="3" fill="#8866CC" opacity="0.3"/>
+    </g>
+
+    <!-- SHIPYARD (270deg) — the GANTRY, Kepler's signature -->
+    <g transform="rotate(270)">
+      <!-- Pillars — solid heavy blocks -->
+      <polygon points="-38,-290 -28,-294 -26,-200 -40,-200"
+               fill="#342e18" stroke="#5a5030" stroke-width="1.4" stroke-linejoin="round"/>
+      <polygon points="26,-294 38,-290 40,-200 26,-200"
+               fill="#342e18" stroke="#5a5030" stroke-width="1.4" stroke-linejoin="round"/>
+      <!-- Top beam — thick solid bar -->
+      <polygon points="-40,-298 40,-298 42,-286 -42,-286"
+               fill="#3a3420" stroke="#6a6438" stroke-width="1.2" stroke-linejoin="round"/>
+      <!-- Bottom plate -->
+      <rect x="-40" y="-208" width="80" height="8" fill="#302a18" stroke="#5a5030" stroke-width="0.8"/>
+      <!-- Cross brace -->
+      <line x1="-28" y1="-286" x2="28" y2="-208" stroke="#4a4428" stroke-width="1.5" opacity="0.5"/>
+      <line x1="28" y1="-286" x2="-28" y2="-208" stroke="#4a4428" stroke-width="1.5" opacity="0.5"/>
+      <!-- Crane boom -->
+      <polygon points="8,-318 16,-318 18,-298 6,-298" fill="#3a3420" stroke="#5a5030" stroke-width="0.7"/>
+      <!-- Cable + hook -->
+      <line x1="12" y1="-298" x2="0" y2="-250" stroke="#5a5030" stroke-width="0.8"/>
+      <circle cx="0" cy="-248" r="3.5" fill="#5a5030" opacity="0.4"/>
+      <!-- Work lights -->
+      <circle cx="-32" cy="-260" r="3" fill="#CCAA44" opacity="0.3"/>
+      <circle cx="32" cy="-260" r="3" fill="#CCAA44" opacity="0.3"/>
+    </g>
+
+    <!-- Solar panel -->
+    <g transform="rotate(155)">
+      <rect x="-2" y="-30" width="4" height="38" fill="#282212" stroke="#3a3820" stroke-width="0.4"/>
+      <polygon points="-16,-64 16,-64 18,-34 -18,-34"
+               fill="#1e2e20" stroke="#3a5838" stroke-width="0.7"/>
+    </g>
+  </g>
+
+  <!-- ============================================================ -->
+  <!--  HELIOS WORKS — Three rings, the big one                      -->
+  <!-- ============================================================ -->
+  <g transform="translate(2000, 490)">
+
+    <!-- Ring 1 hull -->
+    <polygon points="16,-102 52,-90 88,-52 100,0 88,52 52,90 0,102 -52,90 -88,52 -100,0 -88,-52 -52,-90 -16,-102
+                     -16,-76 -40,-68 -68,-38 -76,0 -68,38 -40,68 0,76 40,68 68,38 76,0 68,-38 40,-68 16,-76"
+             fill="#1e2438" fill-rule="evenodd" stroke="#3a4868" stroke-width="1.6" stroke-linejoin="round"/>
+
+    <!-- Dock + lights -->
+    <rect x="-18" y="-104" width="5" height="30" fill="#283248" stroke="#3a4868" stroke-width="0.7"/>
+    <rect x="13" y="-104" width="5" height="30" fill="#283248" stroke="#3a4868" stroke-width="0.7"/>
+    <circle cx="-12" cy="-88" r="2.5" fill="#6688CC" opacity="0.6"/>
+    <circle cx="12" cy="-88" r="2.5" fill="#6688CC" opacity="0.6"/>
+
+    <!-- Relay (120deg) -->
+    <g transform="rotate(120)">
+      <polygon points="-10,-144 10,-144 12,-98 -12,-98"
+               fill="#1e2438" stroke="#3a4868" stroke-width="1" stroke-linejoin="round"/>
+      <circle cx="0" cy="-126" r="7" fill="#243828" stroke="#5a7a58" stroke-width="0.6"/>
+      <circle cx="0" cy="-126" r="2" fill="#88CCAA" opacity="0.5"/>
+      <circle cx="0" cy="-146" r="2.5" fill="#88CCAA" opacity="0.4"/>
+    </g>
+
+    <!-- Furnace Fe (240deg) -->
+    <g transform="rotate(240)">
+      <polygon points="-20,-148 20,-148 22,-98 -22,-98"
+               fill="#1e2438" stroke="#3a4868" stroke-width="1" stroke-linejoin="round"/>
+      <circle cx="0" cy="-124" r="6" fill="#2a2810" opacity="0.6"/>
+      <circle cx="0" cy="-124" r="3" fill="#5a4818" opacity="0.5"/>
+      <circle cx="0" cy="-124" r="1.5" fill="#aa8830" opacity="0.7"/>
+      <rect x="-16" y="-148" width="4" height="8" fill="#243040" stroke="#3a4868" stroke-width="0.4"/>
+      <rect x="12" y="-148" width="4" height="8" fill="#243040" stroke="#3a4868" stroke-width="0.4"/>
+    </g>
+
+    <!-- Spokes + core -->
+    <polygon points="-3,-76 3,-76 3,-14 -3,-14" fill="#1a2034" stroke="#2e3858" stroke-width="0.4"/>
+    <polygon points="66,36 70,40 10,6 7,2" fill="#1a2034" stroke="#2e3858" stroke-width="0.4"/>
+    <polygon points="-66,36 -70,40 -10,6 -7,2" fill="#1a2034" stroke="#2e3858" stroke-width="0.4"/>
+    <polygon points="0,-14 12,-7 12,7 0,14 -12,7 -12,-7"
+             fill="#243048" stroke="#3a4868" stroke-width="1"/>
+    <circle cx="0" cy="0" r="2.5" fill="#6688CC" opacity="0.5"/>
+
+    <!-- Ring 2 hull -->
+    <polygon points="0,-170 44,-164 82,-146 114,-116 138,-78 150,-32 154,0 150,32 138,78 114,116 82,146 44,164
+                     0,170 -44,164 -82,146 -114,116 -138,78 -150,32 -154,0 -150,-32 -138,-78 -114,-116 -82,-146 -44,-164
+                     0,-170
+                     0,-146 -38,-140 -70,-126 -98,-100 -120,-68 -130,-28 -132,0 -130,28 -120,68 -98,100 -70,126 -38,140
+                     0,146 38,140 70,126 98,100 120,68 130,28 132,0 130,-28 120,-68 98,-100 70,-126 38,-140 0,-146"
+             fill="#1a2034" fill-rule="evenodd" stroke="#2e3858" stroke-width="1.2" stroke-linejoin="round"/>
+
+    <!-- Spokes R1→R2 -->
+    <g transform="rotate(36)"><polygon points="-2.5,-100 2.5,-100 3,-148 -3,-148" fill="#182030" stroke="#2e3858" stroke-width="0.3"/></g>
+    <g transform="rotate(108)"><polygon points="-2.5,-100 2.5,-100 3,-148 -3,-148" fill="#182030" stroke="#2e3858" stroke-width="0.3"/></g>
+    <g transform="rotate(180)"><polygon points="-2.5,-100 2.5,-100 3,-148 -3,-148" fill="#182030" stroke="#2e3858" stroke-width="0.3"/></g>
+    <g transform="rotate(252)"><polygon points="-2.5,-100 2.5,-100 3,-148 -3,-148" fill="#182030" stroke="#2e3858" stroke-width="0.3"/></g>
+    <g transform="rotate(324)"><polygon points="-2.5,-100 2.5,-100 3,-148 -3,-148" fill="#182030" stroke="#2e3858" stroke-width="0.3"/></g>
+
+    <!-- R2 modules -->
+    <!-- Ore Silo (0deg) -->
+    <g transform="rotate(0)">
+      <polygon points="-10,-196 10,-196 12,-170 -12,-170"
+               fill="#1e2434" stroke="#3a5040" stroke-width="0.8"/>
+    </g>
+    <!-- Furnace CU (72deg) — blue glow -->
+    <g transform="rotate(72)">
+      <polygon points="-16,-202 16,-202 18,-170 -18,-170"
+               fill="#182040" stroke="#2a4068" stroke-width="1"/>
+      <circle cx="0" cy="-186" r="5" fill="#1a2848" opacity="0.6"/>
+      <circle cx="0" cy="-186" r="2" fill="#4466AA" opacity="0.6"/>
+      <rect x="-12" y="-202" width="4" height="6" fill="#1e2848" stroke="#2a4068" stroke-width="0.4"/>
+      <rect x="8" y="-202" width="4" height="6" fill="#1e2848" stroke="#2a4068" stroke-width="0.4"/>
+    </g>
+    <!-- Furnace CR (144deg) — purple glow -->
+    <g transform="rotate(144)">
+      <polygon points="-16,-202 16,-202 18,-170 -18,-170"
+               fill="#241840" stroke="#3a2868" stroke-width="1"/>
+      <circle cx="0" cy="-186" r="5" fill="#281848" opacity="0.6"/>
+      <circle cx="0" cy="-186" r="2" fill="#7755BB" opacity="0.6"/>
+      <rect x="-12" y="-202" width="4" height="6" fill="#281848" stroke="#3a2868" stroke-width="0.4"/>
+      <rect x="8" y="-202" width="4" height="6" fill="#281848" stroke="#3a2868" stroke-width="0.4"/>
+    </g>
+    <!-- Laser Fab (216deg) -->
+    <g transform="rotate(216)">
+      <polygon points="-14,-198 14,-198 16,-170 -16,-170"
+               fill="#1a2038" stroke="#2e3858" stroke-width="0.8"/>
+      <circle cx="0" cy="-184" r="6" fill="#141a30" stroke="#3a4868" stroke-width="0.4"/>
+      <circle cx="0" cy="-184" r="2" fill="#6688CC" opacity="0.3"/>
+    </g>
+    <!-- Tractor Fab (288deg) -->
+    <g transform="rotate(288)">
+      <polygon points="-14,-198 14,-198 16,-170 -16,-170"
+               fill="#221838" stroke="#3a2858" stroke-width="0.8"/>
+      <circle cx="0" cy="-184" r="6" fill="#1a1230" stroke="#3a2858" stroke-width="0.4"/>
+      <circle cx="0" cy="-184" r="2" fill="#8866CC" opacity="0.25"/>
+    </g>
+
+    <!-- Ring 3 hull -->
+    <polygon points="0,-248 64,-240 122,-220 170,-186 206,-140 228,-84 236,0 228,84 206,140 170,186 122,220 64,240
+                     0,248 -64,240 -122,220 -170,186 -206,140 -228,84 -236,0 -228,-84 -206,-140 -170,-186 -122,-220 -64,-240
+                     0,-248
+                     0,-226 -58,-218 -110,-200 -154,-170 -188,-128 -208,-76 -214,0 -208,76 -188,128 -154,170 -110,200 -58,218
+                     0,226 58,218 110,200 154,170 188,128 208,76 214,0 208,-76 188,-128 154,-170 110,-200 58,-218 0,-226"
+             fill="#161e30" fill-rule="evenodd" stroke="#242e48" stroke-width="1" stroke-linejoin="round"/>
+
+    <!-- Spokes R2→R3 -->
+    <g transform="rotate(20)"><polygon points="-2,-170 2,-170 3,-228 -3,-228" fill="#141c2c" stroke="#242e48" stroke-width="0.3"/></g>
+    <g transform="rotate(100)"><polygon points="-2,-170 2,-170 3,-228 -3,-228" fill="#141c2c" stroke="#242e48" stroke-width="0.3"/></g>
+    <g transform="rotate(180)"><polygon points="-2,-170 2,-170 3,-228 -3,-228" fill="#141c2c" stroke="#242e48" stroke-width="0.3"/></g>
+    <g transform="rotate(260)"><polygon points="-2,-170 2,-170 3,-228 -3,-228" fill="#141c2c" stroke="#242e48" stroke-width="0.3"/></g>
+
+    <!-- R3 modules -->
+    <!-- Silos (0, 40deg) -->
+    <g transform="rotate(0)"><polygon points="-8,-272 8,-272 10,-250 -10,-250" fill="#1a2430" stroke="#2e4040" stroke-width="0.6"/></g>
+    <g transform="rotate(40)"><polygon points="-8,-272 8,-272 10,-250 -10,-250" fill="#1a2430" stroke="#2e4040" stroke-width="0.6"/></g>
+    <!-- Furnace CU (80deg) with crown fins -->
+    <g transform="rotate(80)">
+      <polygon points="-12,-278 12,-278 14,-250 -14,-250" fill="#182040" stroke="#2a4068" stroke-width="0.7"/>
+      <circle cx="0" cy="-264" r="3" fill="#2a3868" opacity="0.4"/>
+      <circle cx="0" cy="-264" r="1.5" fill="#4466AA" opacity="0.5"/>
+      <!-- Crown fins — Helios signature -->
+      <rect x="-10" y="-294" width="4" height="18" fill="#1a2848" stroke="#2a4068" stroke-width="0.5"/>
+      <rect x="-3" y="-298" width="4" height="22" fill="#1a2848" stroke="#2a4068" stroke-width="0.5"/>
+      <rect x="4" y="-296" width="4" height="20" fill="#1a2848" stroke="#2a4068" stroke-width="0.5"/>
+    </g>
+    <!-- Furnace CR (120deg) with crown fins -->
+    <g transform="rotate(120)">
+      <polygon points="-12,-278 12,-278 14,-250 -14,-250" fill="#241840" stroke="#3a2868" stroke-width="0.7"/>
+      <circle cx="0" cy="-264" r="3" fill="#382868" opacity="0.4"/>
+      <circle cx="0" cy="-264" r="1.5" fill="#7755BB" opacity="0.5"/>
+      <!-- Crown fins -->
+      <rect x="-10" y="-294" width="4" height="18" fill="#281848" stroke="#3a2868" stroke-width="0.5"/>
+      <rect x="-3" y="-298" width="4" height="22" fill="#281848" stroke="#3a2868" stroke-width="0.5"/>
+      <rect x="4" y="-296" width="4" height="20" fill="#281848" stroke="#3a2868" stroke-width="0.5"/>
+    </g>
+    <!-- Shipyard (160deg) -->
+    <g transform="rotate(160)">
+      <polygon points="-14,-280 14,-280 16,-250 -16,-250" fill="#1e1c28" stroke="#383448" stroke-width="0.6"/>
+      <rect x="-8" y="-274" width="16" height="18" fill="none" stroke="#383448" stroke-width="0.4" opacity="0.5"/>
+    </g>
+
+    <!-- Solar panels -->
+    <g transform="rotate(55)">
+      <rect x="-1.5" y="-28" width="3" height="30" fill="#1a2034" stroke="#2e3858" stroke-width="0.3"/>
+      <polygon points="-14,-56 14,-56 16,-30 -16,-30" fill="#182838" stroke="#2a4858" stroke-width="0.6"/>
+    </g>
+    <g transform="rotate(220)">
+      <rect x="-1.5" y="-28" width="3" height="26" fill="#1a2034" stroke="#2e3858" stroke-width="0.3"/>
+      <polygon points="-12,-50 12,-50 14,-30 -14,-30" fill="#182838" stroke="#2a4858" stroke-width="0.5"/>
+    </g>
+  </g>
+
+  <!-- Scale reference text -->
+  <text x="1200" y="970" text-anchor="middle" fill="#333333" font-family="monospace" font-size="10">Solid filled polygons, same rendering as asteroids. Bright rim outlines. Minimal internal detail. They belong here.</text>
+</svg>

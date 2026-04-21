@@ -1,0 +1,186 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="800" height="800">
+  <title>Top-Down Concept A: Solar Tile</title>
+  <desc>Looking down from the star. Solar panels are the dominant surface — large tiled rectangles covering each module. Module function peeks through gaps between panels. Rings are flat orbital tracks.</desc>
+
+  <defs>
+    <radialGradient id="ambientA" cx="50%" cy="50%" r="55%">
+      <stop offset="0%" stop-color="#FFE8B0" stop-opacity="0.06"/>
+      <stop offset="50%" stop-color="#886644" stop-opacity="0.03"/>
+      <stop offset="100%" stop-color="#0a0808" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="800" height="800" fill="#0a0808"/>
+  <circle cx="400" cy="400" r="420" fill="url(#ambientA)"/>
+
+  <text x="400" y="28" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="13" opacity="0.8">TOP-DOWN A: SOLAR TILE</text>
+  <text x="400" y="46" text-anchor="middle" fill="#667766" font-family="monospace" font-size="10">Star is the camera. Panels face you. Module guts visible in gaps between tiles.</text>
+
+  <g transform="translate(400, 400)">
+
+    <!-- Ring orbit guides -->
+    <circle cx="0" cy="0" r="100" fill="none" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.5"/>
+    <circle cx="0" cy="0" r="175" fill="none" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.5"/>
+    <circle cx="0" cy="0" r="260" fill="none" stroke="#88CCAA" stroke-opacity="0.04" stroke-width="0.5"/>
+
+    <!-- Corridor arcs (wider, more visible) -->
+    <path d="M 0,-100 A 100,100 0 0,1 87,50" fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="14"/>
+    <path d="M 87,50 A 100,100 0 0,1 -87,50" fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="14"/>
+    <path d="M -87,50 A 100,100 0 0,1 0,-100" fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="14"/>
+
+    <!-- Spokes -->
+    <line x1="0" y1="0" x2="0" y2="-85" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="2.5"/>
+    <line x1="0" y1="0" x2="74" y2="42" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="2.5"/>
+    <line x1="0" y1="0" x2="-74" y2="42" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="2.5"/>
+
+    <!-- ============================================ -->
+    <!-- CORE HUB (top-down: hexagonal platform) -->
+    <!-- ============================================ -->
+    <polygon points="0,-24 21,-12 21,12 0,24 -21,12 -21,-12"
+             fill="#162420" stroke="#88CCAA" stroke-opacity="0.35" stroke-width="1.2"/>
+    <!-- Core solar panel (small, central) -->
+    <rect x="-10" y="-8" width="20" height="16" fill="#1e3028" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.5"/>
+    <line x1="0" y1="-8" x2="0" y2="8" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.3"/>
+    <line x1="-10" y1="0" x2="10" y2="0" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.3"/>
+    <!-- Center beacon -->
+    <circle cx="0" cy="0" r="3" fill="#88CCAA" opacity="0.5"/>
+
+    <!-- ============================================ -->
+    <!-- RING 1: Signal Relay (top, 12 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(0, -100)">
+      <!-- Solar panel surface (what you mostly see from above) -->
+      <rect x="-28" y="-22" width="56" height="44" fill="#1a2820" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1"/>
+      <!-- Panel grid -->
+      <line x1="-28" y1="-11" x2="28" y2="-11" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.4"/>
+      <line x1="-28" y1="0" x2="28" y2="0" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.4"/>
+      <line x1="-28" y1="11" x2="28" y2="11" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.4"/>
+      <line x1="-14" y1="-22" x2="-14" y2="22" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.4"/>
+      <line x1="0" y1="-22" x2="0" y2="22" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.4"/>
+      <line x1="14" y1="-22" x2="14" y2="22" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.4"/>
+      <!-- Gap revealing antenna base underneath -->
+      <rect x="-4" y="-4" width="8" height="8" fill="#0a1210"/>
+      <circle cx="0" cy="0" r="3" fill="#88CCAA" opacity="0.6"/>
+      <!-- Signal relay beacon visible through gap -->
+      <circle cx="0" cy="0" r="6" fill="none" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+      <!-- Signal ripples (broadcast pattern seen from above) -->
+      <circle cx="0" cy="0" r="32" fill="none" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+      <circle cx="0" cy="0" r="42" fill="none" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.5"/>
+      <circle cx="0" cy="0" r="52" fill="none" stroke="#88CCAA" stroke-opacity="0.03" stroke-width="0.5"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 1: Furnace (5 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(87, 50)">
+      <!-- Solar panels (two wings flanking the furnace opening) -->
+      <rect x="-30" y="-20" width="24" height="40" fill="#1e2a1a" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.8"/>
+      <line x1="-18" y1="-20" x2="-18" y2="20" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.3"/>
+      <line x1="-30" y1="-7" x2="-6" y2="-7" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.3"/>
+      <line x1="-30" y1="7" x2="-6" y2="7" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.3"/>
+
+      <rect x="6" y="-20" width="24" height="40" fill="#1e2a1a" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.8"/>
+      <line x1="18" y1="-20" x2="18" y2="20" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.3"/>
+      <line x1="6" y1="-7" x2="30" y2="-7" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.3"/>
+      <line x1="6" y1="7" x2="30" y2="7" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.3"/>
+
+      <!-- Furnace visible in the gap between panels -->
+      <rect x="-6" y="-14" width="12" height="28" fill="#12180e"/>
+      <!-- Furnace glow from below (looking down into the fire) -->
+      <circle cx="0" cy="0" r="10" fill="#B8CC72" opacity="0.05"/>
+      <circle cx="0" cy="0" r="6" fill="#CCAA44" opacity="0.1"/>
+      <circle cx="0" cy="0" r="3" fill="#FFCC66" opacity="0.25"/>
+      <!-- Grate bars across the opening -->
+      <line x1="-5" y1="-6" x2="5" y2="-6" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="0.5"/>
+      <line x1="-5" y1="0" x2="5" y2="0" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.5"/>
+      <line x1="-5" y1="6" x2="5" y2="6" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="0.5"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 1: Dock (7 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(-87, 50)">
+      <!-- Solar canopy over dock -->
+      <rect x="-26" y="-24" width="52" height="18" fill="#1a2820" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.8"/>
+      <line x1="0" y1="-24" x2="0" y2="-6" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.3"/>
+      <line x1="-13" y1="-24" x2="-13" y2="-6" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.3"/>
+      <line x1="13" y1="-24" x2="13" y2="-6" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.3"/>
+      <line x1="-26" y1="-15" x2="26" y2="-15" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.3"/>
+
+      <!-- Open dock bay (gap — you look down into the berth) -->
+      <rect x="-20" y="-6" width="40" height="30" fill="#080a08"/>
+      <!-- Dock walls visible from above -->
+      <rect x="-22" y="-6" width="3" height="30" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <rect x="19" y="-6" width="3" height="30" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <!-- Guide lights on walls -->
+      <circle cx="-18" cy="6" r="2" fill="#88CCAA" opacity="0.5"/>
+      <circle cx="18" cy="6" r="2" fill="#88CCAA" opacity="0.5"/>
+      <circle cx="-18" cy="16" r="2" fill="#88CCAA" opacity="0.4"/>
+      <circle cx="18" cy="16" r="2" fill="#88CCAA" opacity="0.4"/>
+      <!-- Clamp rails -->
+      <line x1="-16" y1="22" x2="-8" y2="22" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1"/>
+      <line x1="8" y1="22" x2="16" y2="22" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 2: Ore Buyer (1 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(152, -88)">
+      <!-- Solar panel surface -->
+      <rect x="-24" y="-18" width="48" height="36" fill="#1e2a1a" stroke="#88CCAA" stroke-opacity="0.22" stroke-width="0.8"/>
+      <line x1="0" y1="-18" x2="0" y2="18" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.3"/>
+      <line x1="-24" y1="0" x2="24" y2="0" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.3"/>
+      <!-- Hopper opening visible through panel gap -->
+      <circle cx="0" cy="0" r="8" fill="#0a0a06"/>
+      <circle cx="0" cy="0" r="8" fill="none" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.5"/>
+      <!-- Funnel depth lines -->
+      <circle cx="0" cy="0" r="5" fill="none" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.3"/>
+      <circle cx="0" cy="0" r="2" fill="#B8CC72" opacity="0.1"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 2: Frame Press (11 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(-152, -88)">
+      <rect x="-26" y="-20" width="52" height="40" fill="#1e2418" stroke="#88CCAA" stroke-opacity="0.22" stroke-width="0.8"/>
+      <line x1="0" y1="-20" x2="0" y2="20" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.3"/>
+      <line x1="-26" y1="0" x2="26" y2="0" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.3"/>
+      <!-- Press stamp visible through gap -->
+      <rect x="-8" y="-8" width="16" height="16" fill="#12180e"/>
+      <line x1="-6" y1="0" x2="6" y2="0" stroke="#CCAA44" stroke-opacity="0.4" stroke-width="0.5"/>
+      <line x1="0" y1="-6" x2="0" y2="6" stroke="#CCAA44" stroke-opacity="0.4" stroke-width="0.5"/>
+      <!-- Ram pistons (circles — top-down cross-section) -->
+      <circle cx="-6" cy="-6" r="2" fill="#3a3420" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.3"/>
+      <circle cx="6" cy="-6" r="2" fill="#3a3420" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.3"/>
+      <circle cx="-6" cy="6" r="2" fill="#3a3420" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.3"/>
+      <circle cx="6" cy="6" r="2" fill="#3a3420" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.3"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 2: Repair Bay (6 o'clock) -->
+    <!-- ============================================ -->
+    <g transform="translate(0, 175)">
+      <rect x="-22" y="-18" width="44" height="36" fill="#1a2222" stroke="#88CCAA" stroke-opacity="0.22" stroke-width="0.8"/>
+      <line x1="0" y1="-18" x2="0" y2="18" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.3"/>
+      <line x1="-22" y1="0" x2="22" y2="0" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="0.3"/>
+      <!-- Repair bay opening -->
+      <rect x="-10" y="-10" width="20" height="20" fill="#0e1414"/>
+      <!-- Mechanical arm (top-down: articulated joints) -->
+      <circle cx="0" cy="0" r="4" fill="#88AAAA" opacity="0.15"/>
+      <line x1="0" y1="0" x2="6" y2="-6" stroke="#88AAAA" stroke-opacity="0.4" stroke-width="1"/>
+      <circle cx="6" cy="-6" r="2" fill="#88AAAA" opacity="0.2"/>
+      <line x1="6" y1="-6" x2="8" y2="2" stroke="#88AAAA" stroke-opacity="0.3" stroke-width="0.8"/>
+      <circle cx="8" cy="2" r="1.5" fill="#88AAAA" opacity="0.3"/>
+    </g>
+
+    <!-- Ring 2 corridor arcs -->
+    <path d="M 152,-88 A 175,175 0 0,1 0,175" fill="none" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="18"/>
+    <path d="M 0,175 A 175,175 0 0,1 -152,-88" fill="none" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="18"/>
+    <path d="M -152,-88 A 175,175 0 0,1 152,-88" fill="none" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="18"/>
+
+  </g>
+
+  <text x="400" y="750" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Solar panels ARE the top surface. Module function visible through gaps/openings.</text>
+  <text x="400" y="768" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Signal relay broadcasts ripples. Furnace glows through grate. Dock is an open bay.</text>
+  <text x="400" y="786" text-anchor="middle" fill="#555555" font-family="monospace" font-size="10">Minimal ring/slot change. Panels are a visual layer per module.</text>
+</svg>

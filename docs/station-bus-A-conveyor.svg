@@ -1,0 +1,394 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 1200" width="1200" height="1200">
+  <title>Bus Station A: Visible Conveyor Ring</title>
+  <desc>Ring is a visible double-rail conveyor track. Modules bolt to the outside. Solar extends inward. Material packets visible on the track. Clean industrial.</desc>
+
+  <defs>
+    <radialGradient id="starA" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#FFE8B0" stop-opacity="0.06"/>
+      <stop offset="40%" stop-color="#886644" stop-opacity="0.02"/>
+      <stop offset="100%" stop-color="#0a0808" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="1200" height="1200" fill="#0a0808"/>
+  <circle cx="600" cy="600" r="560" fill="url(#starA)"/>
+
+  <text x="600" y="30" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="14" opacity="0.8">BUS STATION A: CONVEYOR RING</text>
+  <text x="600" y="50" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Double-rail track bus. Modules bolt to outside. Solar extends inward. Material packets on track.</text>
+
+  <g transform="translate(600, 600)">
+
+    <!-- Star center -->
+    <circle cx="0" cy="0" r="6" fill="#FFE8B0" opacity="0.2"/>
+    <circle cx="0" cy="0" r="2" fill="#FFE8B0" opacity="0.4"/>
+
+    <!-- ============================================ -->
+    <!-- SOLAR ARRAYS — inward from ring toward star -->
+    <!-- ============================================ -->
+
+    <!-- Solar array 1 (from ~350deg) -->
+    <g transform="rotate(-10)">
+      <!-- Mounting strut -->
+      <rect x="-2" y="-180" width="4" height="120" fill="#14201a" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <!-- Panel pair -->
+      <rect x="-30" y="-160" width="26" height="80" fill="#142018" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.7"/>
+      <rect x="4" y="-160" width="26" height="80" fill="#142018" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.7"/>
+      <!-- Grid lines -->
+      <line x1="-17" y1="-160" x2="-17" y2="-80" stroke="#88CCAA" stroke-opacity="0.07" stroke-width="0.3"/>
+      <line x1="17" y1="-160" x2="17" y2="-80" stroke="#88CCAA" stroke-opacity="0.07" stroke-width="0.3"/>
+      <line x1="-30" y1="-133" x2="-4" y2="-133" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="-30" y1="-107" x2="-4" y2="-107" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="4" y1="-133" x2="30" y2="-133" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="4" y1="-107" x2="30" y2="-107" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+    </g>
+
+    <!-- Solar array 2 (from ~130deg) -->
+    <g transform="rotate(130)">
+      <rect x="-2" y="-170" width="4" height="110" fill="#14201a" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <rect x="-24" y="-155" width="20" height="70" fill="#142018" stroke="#88CCAA" stroke-opacity="0.18" stroke-width="0.7"/>
+      <rect x="4" y="-155" width="20" height="70" fill="#142018" stroke="#88CCAA" stroke-opacity="0.18" stroke-width="0.7"/>
+      <line x1="-14" y1="-155" x2="-14" y2="-85" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="14" y1="-155" x2="14" y2="-85" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="-24" y1="-120" x2="-4" y2="-120" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.3"/>
+      <line x1="4" y1="-120" x2="24" y2="-120" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.3"/>
+    </g>
+
+    <!-- Solar array 3 (from ~250deg) -->
+    <g transform="rotate(250)">
+      <rect x="-2" y="-175" width="4" height="115" fill="#14201a" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <rect x="-28" y="-158" width="24" height="74" fill="#142018" stroke="#88CCAA" stroke-opacity="0.18" stroke-width="0.7"/>
+      <rect x="4" y="-158" width="24" height="74" fill="#142018" stroke="#88CCAA" stroke-opacity="0.18" stroke-width="0.7"/>
+      <line x1="-16" y1="-158" x2="-16" y2="-84" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="16" y1="-158" x2="16" y2="-84" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <line x1="-28" y1="-121" x2="-4" y2="-121" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.3"/>
+      <line x1="4" y1="-121" x2="28" y2="-121" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.3"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- THE BUS — RING 1 CONVEYOR TRACK -->
+    <!-- Double rail with cross-ties. Materials ride on it. -->
+    <!-- Radius ~220. Track width ~20. -->
+    <!-- ============================================ -->
+
+    <!-- Outer rail -->
+    <circle cx="0" cy="0" r="230" fill="none" stroke="#243830" stroke-width="3"/>
+    <circle cx="0" cy="0" r="230" fill="none" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="1.5"/>
+    <!-- Inner rail -->
+    <circle cx="0" cy="0" r="210" fill="none" stroke="#243830" stroke-width="3"/>
+    <circle cx="0" cy="0" r="210" fill="none" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="1.5"/>
+    <!-- Track bed (fill between rails) -->
+    <circle cx="0" cy="0" r="220" fill="none" stroke="#121e18" stroke-width="16"/>
+
+    <!-- Cross-ties (every ~15 degrees) -->
+    <g stroke="#88CCAA" stroke-opacity="0.1" stroke-width="1.5">
+      <line x1="0" y1="-210" x2="0" y2="-230"/>
+      <line x1="54" y1="-203" x2="59" y2="-222"/>
+      <line x1="105" y1="-182" x2="115" y2="-199"/>
+      <line x1="149" y1="-149" x2="163" y2="-163"/>
+      <line x1="182" y1="-105" x2="199" y2="-115"/>
+      <line x1="203" y1="-54" x2="222" y2="-59"/>
+      <line x1="210" y1="0" x2="230" y2="0"/>
+      <line x1="203" y1="54" x2="222" y2="59"/>
+      <line x1="182" y1="105" x2="199" y2="115"/>
+      <line x1="149" y1="149" x2="163" y2="163"/>
+      <line x1="105" y1="182" x2="115" y2="199"/>
+      <line x1="54" y1="203" x2="59" y2="222"/>
+      <line x1="0" y1="210" x2="0" y2="230"/>
+      <line x1="-54" y1="203" x2="-59" y2="222"/>
+      <line x1="-105" y1="182" x2="-115" y2="199"/>
+      <line x1="-149" y1="149" x2="-163" y2="163"/>
+      <line x1="-182" y1="105" x2="-199" y2="115"/>
+      <line x1="-203" y1="54" x2="-222" y2="59"/>
+      <line x1="-210" y1="0" x2="-230" y2="0"/>
+      <line x1="-203" y1="-54" x2="-222" y2="-59"/>
+      <line x1="-182" y1="-105" x2="-199" y2="-115"/>
+      <line x1="-149" y1="-149" x2="-163" y2="-163"/>
+      <line x1="-105" y1="-182" x2="-115" y2="-199"/>
+      <line x1="-54" y1="-203" x2="-59" y2="-222"/>
+    </g>
+
+    <!-- Flow direction arrow (subtle, shows clockwise) -->
+    <g transform="rotate(30)">
+      <polygon points="0,-224 6,-218 -6,-218" fill="#88CCAA" opacity="0.12"/>
+    </g>
+    <g transform="rotate(150)">
+      <polygon points="0,-224 6,-218 -6,-218" fill="#88CCAA" opacity="0.1"/>
+    </g>
+    <g transform="rotate(270)">
+      <polygon points="0,-224 6,-218 -6,-218" fill="#88CCAA" opacity="0.1"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MATERIAL PACKETS ON THE TRACK -->
+    <!-- Small colored blocks riding the conveyor -->
+    <!-- ============================================ -->
+
+    <!-- Ore packet (greenish, moving from hopper toward furnace) -->
+    <g transform="rotate(55)">
+      <rect x="-4" y="-224" width="8" height="8" rx="1" fill="#B8CC72" opacity="0.35" stroke="#B8CC72" stroke-opacity="0.5" stroke-width="0.5"/>
+    </g>
+    <!-- Another ore packet -->
+    <g transform="rotate(70)">
+      <rect x="-4" y="-224" width="8" height="8" rx="1" fill="#B8CC72" opacity="0.25" stroke="#B8CC72" stroke-opacity="0.4" stroke-width="0.5"/>
+    </g>
+    <!-- Ingot packet (gold, moving from furnace toward cargo) -->
+    <g transform="rotate(165)">
+      <rect x="-4" y="-224" width="8" height="8" rx="1" fill="#CCAA44" opacity="0.3" stroke="#CCAA44" stroke-opacity="0.45" stroke-width="0.5"/>
+    </g>
+    <!-- Frame packet (moving from press) -->
+    <g transform="rotate(235)">
+      <rect x="-4" y="-224" width="8" height="8" rx="1" fill="#CCAA44" opacity="0.2" stroke="#CCAA44" stroke-opacity="0.35" stroke-width="0.5"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MODULE: SIGNAL RELAY — 0deg (top) -->
+    <!-- Bolted to outer edge of ring -->
+    <!-- ============================================ -->
+    <g transform="rotate(0)">
+      <!-- Mounting bracket (connects module to outer rail) -->
+      <rect x="-6" y="-240" width="12" height="12" fill="#1e3028" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.6"/>
+      <!-- Bracket bolts -->
+      <circle cx="-4" cy="-234" r="1.5" fill="#88CCAA" opacity="0.2"/>
+      <circle cx="4" cy="-234" r="1.5" fill="#88CCAA" opacity="0.2"/>
+
+      <!-- Module body -->
+      <rect x="-32" y="-300" width="64" height="58" fill="#162820" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1.2"/>
+      <!-- Inner wall (faces ring) -->
+      <rect x="-30" y="-244" width="60" height="4" fill="#1e3830" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.4"/>
+      <!-- Port indicator (connection to bus — power only, no materials) -->
+      <rect x="-4" y="-244" width="8" height="4" fill="#88CCAA" opacity="0.15"/>
+
+      <!-- Emitter dish -->
+      <circle cx="0" cy="-272" r="22" fill="#12201a" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.7"/>
+      <circle cx="0" cy="-272" r="14" fill="#162820" stroke="#88CCAA" stroke-opacity="0.18" stroke-width="0.5"/>
+      <circle cx="0" cy="-272" r="7" fill="#1a3028" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.4"/>
+      <circle cx="0" cy="-272" r="3" fill="#88CCAA" opacity="0.6"/>
+      <!-- Cross feeds -->
+      <line x1="-22" y1="-272" x2="-7" y2="-272" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.4"/>
+      <line x1="7" y1="-272" x2="22" y2="-272" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.4"/>
+      <line x1="0" y1="-294" x2="0" y2="-279" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.4"/>
+      <line x1="0" y1="-265" x2="0" y2="-250" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.4"/>
+
+      <!-- Broadcast arcs (outward from station) -->
+      <path d="M -18,-305 A 22,22 0 0,1 18,-305" fill="none" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.6"/>
+      <path d="M -28,-314 A 34,34 0 0,1 28,-314" fill="none" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+      <path d="M -40,-325 A 48,48 0 0,1 40,-325" fill="none" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.4"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MODULE: ORE HOPPER — 45deg -->
+    <!-- Wide mouth faces outward. Chute feeds onto ring. -->
+    <!-- ============================================ -->
+    <g transform="rotate(45)">
+      <!-- Mounting bracket -->
+      <rect x="-8" y="-240" width="16" height="12" fill="#222c1e" stroke="#B8CC72" stroke-opacity="0.22" stroke-width="0.6"/>
+      <circle cx="-5" cy="-234" r="1.5" fill="#B8CC72" opacity="0.15"/>
+      <circle cx="5" cy="-234" r="1.5" fill="#B8CC72" opacity="0.15"/>
+
+      <!-- Module body -->
+      <rect x="-34" y="-302" width="68" height="60" fill="#1a2418" stroke="#B8CC72" stroke-opacity="0.28" stroke-width="1.2"/>
+      <!-- Inner wall with PORT (material output onto ring) -->
+      <rect x="-32" y="-244" width="64" height="5" fill="#222e1c" stroke="#B8CC72" stroke-opacity="0.18" stroke-width="0.4"/>
+      <!-- Port (wider — this is where ore goes onto the bus) -->
+      <rect x="-8" y="-246" width="16" height="8" fill="#B8CC72" opacity="0.12" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="0.5"/>
+      <text x="0" y="-241" text-anchor="middle" fill="#B8CC72" font-family="monospace" font-size="5" opacity="0.3">OUT</text>
+
+      <!-- Hopper mouth (wide, facing outward into the belt) -->
+      <polygon points="-32,-302 32,-302 20,-275 -20,-275"
+               fill="#0c1208" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.7"/>
+      <!-- Rim -->
+      <line x1="-34" y1="-302" x2="34" y2="-302" stroke="#B8CC72" stroke-opacity="0.45" stroke-width="1.5"/>
+      <!-- Funnel walls -->
+      <line x1="-32" y1="-302" x2="-20" y2="-275" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="0.6"/>
+      <line x1="32" y1="-302" x2="20" y2="-275" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="0.6"/>
+
+      <!-- Internal chute (from mouth to port) -->
+      <rect x="-10" y="-275" width="20" height="28" fill="#0e140c" stroke="#B8CC72" stroke-opacity="0.12" stroke-width="0.4"/>
+      <!-- Flow arrows in chute -->
+      <line x1="0" y1="-270" x2="0" y2="-252" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.5"/>
+      <line x1="-3" y1="-256" x2="0" y2="-250" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.4"/>
+      <line x1="3" y1="-256" x2="0" y2="-250" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.4"/>
+
+      <!-- Tractor emitter nodes (pull ore in from belt) -->
+      <circle cx="-26" cy="-298" r="3" fill="#B8CC72" opacity="0.15" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.4"/>
+      <circle cx="26" cy="-298" r="3" fill="#B8CC72" opacity="0.15" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.4"/>
+      <!-- Tractor beam lines -->
+      <line x1="-26" y1="-302" x2="-30" y2="-318" stroke="#B8CC72" stroke-opacity="0.08" stroke-dasharray="3,3" stroke-width="0.4"/>
+      <line x1="26" y1="-302" x2="30" y2="-318" stroke="#B8CC72" stroke-opacity="0.08" stroke-dasharray="3,3" stroke-width="0.4"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MODULE: FURNACE — 105deg -->
+    <!-- Heavy. Pulls ore off bus, smelts, puts ingots back. -->
+    <!-- ============================================ -->
+    <g transform="rotate(105)">
+      <!-- Heavy mounting bracket (double-bolted) -->
+      <rect x="-10" y="-240" width="20" height="14" fill="#262e1c" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.7"/>
+      <circle cx="-6" cy="-234" r="1.5" fill="#B8CC72" opacity="0.15"/>
+      <circle cx="6" cy="-234" r="1.5" fill="#B8CC72" opacity="0.15"/>
+      <circle cx="-6" cy="-228" r="1.5" fill="#B8CC72" opacity="0.15"/>
+      <circle cx="6" cy="-228" r="1.5" fill="#B8CC72" opacity="0.15"/>
+
+      <!-- Module body (wider — heavy industry) -->
+      <rect x="-38" y="-310" width="76" height="68" fill="#1a2016" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="1.4"/>
+      <!-- Inner wall -->
+      <rect x="-36" y="-244" width="72" height="5" fill="#242e1c" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.4"/>
+      <!-- INTAKE port (pulls ore off bus) -->
+      <rect x="-22" y="-246" width="14" height="8" fill="#B8CC72" opacity="0.1" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.5"/>
+      <text x="-15" y="-241" text-anchor="middle" fill="#B8CC72" font-family="monospace" font-size="4" opacity="0.3">IN</text>
+      <!-- OUTPUT port (puts ingots on bus) -->
+      <rect x="8" y="-246" width="14" height="8" fill="#CCAA44" opacity="0.1" stroke="#CCAA44" stroke-opacity="0.25" stroke-width="0.5"/>
+      <text x="15" y="-241" text-anchor="middle" fill="#CCAA44" font-family="monospace" font-size="4" opacity="0.3">OUT</text>
+
+      <!-- Ore intake chamber -->
+      <rect x="-30" y="-290" width="22" height="38" fill="#121808" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.4"/>
+      <text x="-19" y="-268" text-anchor="middle" fill="#B8CC72" font-family="monospace" font-size="6" opacity="0.15">ORE</text>
+      <!-- Flow arrow: intake → firebox -->
+      <line x1="-8" y1="-272" x2="-2" y2="-272" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+      <line x1="-4" y1="-274" x2="-1" y2="-272" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.3"/>
+      <line x1="-4" y1="-270" x2="-1" y2="-272" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.3"/>
+
+      <!-- FIREBOX (center) -->
+      <rect x="-6" y="-296" width="28" height="42" fill="#161808" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.6"/>
+      <!-- Fire glow -->
+      <circle cx="8" cy="-275" r="16" fill="#B8CC72" opacity="0.04"/>
+      <circle cx="8" cy="-275" r="10" fill="#998822" opacity="0.06"/>
+      <circle cx="8" cy="-275" r="6" fill="#CCAA44" opacity="0.1"/>
+      <circle cx="8" cy="-275" r="3" fill="#FFCC66" opacity="0.25"/>
+      <!-- Grate bars -->
+      <line x1="-4" y1="-286" x2="20" y2="-286" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+      <line x1="-4" y1="-278" x2="20" y2="-278" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.5"/>
+      <line x1="-4" y1="-270" x2="20" y2="-270" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+      <line x1="-4" y1="-262" x2="20" y2="-262" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+
+      <!-- Ingot output chamber -->
+      <rect x="24" y="-290" width="10" height="38" fill="#1a2010" stroke="#CCAA44" stroke-opacity="0.15" stroke-width="0.4"/>
+
+      <!-- Heat exchanger fins (outer edge — radiating heat into space) -->
+      <g stroke="#B8CC72" stroke-opacity="0.1" stroke-width="0.8">
+        <line x1="-30" y1="-308" x2="-30" y2="-316"/>
+        <line x1="-22" y1="-308" x2="-22" y2="-316"/>
+        <line x1="-14" y1="-308" x2="-14" y2="-318"/>
+        <line x1="-6" y1="-308" x2="-6" y2="-318"/>
+        <line x1="2" y1="-308" x2="2" y2="-318"/>
+        <line x1="10" y1="-308" x2="10" y2="-318"/>
+        <line x1="18" y1="-308" x2="18" y2="-316"/>
+        <line x1="26" y1="-308" x2="26" y2="-316"/>
+      </g>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MODULE: CARGO BAY — 180deg -->
+    <!-- Stores products pulled off the bus. -->
+    <!-- ============================================ -->
+    <g transform="rotate(180)">
+      <!-- Mounting bracket -->
+      <rect x="-8" y="-240" width="16" height="12" fill="#1e2818" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.6"/>
+      <circle cx="-5" cy="-234" r="1.5" fill="#B8CC72" opacity="0.12"/>
+      <circle cx="5" cy="-234" r="1.5" fill="#B8CC72" opacity="0.12"/>
+
+      <!-- Module body -->
+      <rect x="-34" y="-298" width="68" height="56" fill="#161e14" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="1.2"/>
+      <!-- Inner wall -->
+      <rect x="-32" y="-244" width="64" height="5" fill="#1e2818" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.4"/>
+      <!-- INTAKE port -->
+      <rect x="-6" y="-246" width="12" height="8" fill="#CCAA44" opacity="0.08" stroke="#CCAA44" stroke-opacity="0.2" stroke-width="0.5"/>
+      <text x="0" y="-241" text-anchor="middle" fill="#CCAA44" font-family="monospace" font-size="4" opacity="0.25">IN</text>
+
+      <!-- Storage containers -->
+      <rect x="-26" y="-290" width="16" height="14" fill="#1a2414" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.5"/>
+      <rect x="-6" y="-290" width="16" height="14" fill="#1e2818" stroke="#B8CC72" stroke-opacity="0.12" stroke-width="0.5"/>
+      <rect x="14" y="-290" width="16" height="14" fill="#1a2414" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.5"/>
+      <rect x="-26" y="-272" width="24" height="14" fill="#1e2818" stroke="#B8CC72" stroke-opacity="0.12" stroke-width="0.5"/>
+      <rect x="2" y="-272" width="24" height="14" fill="#1a2414" stroke="#B8CC72" stroke-opacity="0.15" stroke-width="0.5"/>
+      <!-- Fill level indicators -->
+      <rect x="-24" y="-284" width="12" height="8" fill="#B8CC72" opacity="0.06"/>
+      <rect x="-4" y="-286" width="12" height="10" fill="#B8CC72" opacity="0.04"/>
+      <rect x="16" y="-282" width="12" height="6" fill="#B8CC72" opacity="0.05"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MODULE: DOCK — 255deg -->
+    <!-- GAP in the ring. Ship enters from outside. -->
+    <!-- ============================================ -->
+    <g transform="rotate(255)">
+      <!-- The track BREAKS here — gap in both rails -->
+      <!-- Left dock wall -->
+      <rect x="-30" y="-305" width="14" height="72" fill="#162420" stroke="#88CCAA" stroke-opacity="0.28" stroke-width="1"/>
+      <!-- Right dock wall -->
+      <rect x="16" y="-305" width="14" height="72" fill="#162420" stroke="#88CCAA" stroke-opacity="0.28" stroke-width="1"/>
+
+      <!-- Clamp arms (extending inward from walls) -->
+      <rect x="-16" y="-295" width="10" height="5" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+      <rect x="6" y="-295" width="10" height="5" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+      <rect x="-16" y="-255" width="10" height="5" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+      <rect x="6" y="-255" width="10" height="5" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+
+      <!-- Guide lights -->
+      <circle cx="-17" cy="-280" r="3" fill="#88CCAA" opacity="0.5"/>
+      <circle cx="17" cy="-280" r="3" fill="#88CCAA" opacity="0.5"/>
+      <circle cx="-17" cy="-265" r="2.5" fill="#88CCAA" opacity="0.35"/>
+      <circle cx="17" cy="-265" r="2.5" fill="#88CCAA" opacity="0.35"/>
+
+      <!-- Dock floor -->
+      <rect x="-14" y="-300" width="28" height="66" fill="#0a1210" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.3"/>
+      <!-- Center line -->
+      <line x1="0" y1="-300" x2="0" y2="-234" stroke="#88CCAA" stroke-opacity="0.08" stroke-dasharray="4,4" stroke-width="0.4"/>
+
+      <!-- Approach guides extending outward -->
+      <line x1="-17" y1="-305" x2="-17" y2="-335" stroke="#88CCAA" stroke-opacity="0.1" stroke-dasharray="4,4" stroke-width="0.4"/>
+      <line x1="17" y1="-305" x2="17" y2="-335" stroke="#88CCAA" stroke-opacity="0.1" stroke-dasharray="4,4" stroke-width="0.4"/>
+
+      <!-- Bus connection (materials transfer from docked ship to ring) -->
+      <rect x="-32" y="-244" width="6" height="10" fill="#88CCAA" opacity="0.08" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.4"/>
+      <rect x="26" y="-244" width="6" height="10" fill="#88CCAA" opacity="0.08" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.4"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MODULE: REPAIR BAY — 315deg -->
+    <!-- ============================================ -->
+    <g transform="rotate(315)">
+      <!-- Mounting bracket -->
+      <rect x="-6" y="-240" width="12" height="12" fill="#1a2222" stroke="#88AAAA" stroke-opacity="0.2" stroke-width="0.6"/>
+      <circle cx="-4" cy="-234" r="1.5" fill="#88AAAA" opacity="0.15"/>
+      <circle cx="4" cy="-234" r="1.5" fill="#88AAAA" opacity="0.15"/>
+
+      <!-- Module body -->
+      <rect x="-30" y="-296" width="60" height="54" fill="#141a1a" stroke="#88AAAA" stroke-opacity="0.25" stroke-width="1.2"/>
+      <!-- Inner wall + port -->
+      <rect x="-28" y="-244" width="56" height="5" fill="#1a2424" stroke="#88AAAA" stroke-opacity="0.15" stroke-width="0.4"/>
+      <rect x="-4" y="-246" width="8" height="8" fill="#88AAAA" opacity="0.08" stroke="#88AAAA" stroke-opacity="0.18" stroke-width="0.4"/>
+
+      <!-- Open work bay -->
+      <rect x="-22" y="-288" width="44" height="36" fill="#0c1212" stroke="#88AAAA" stroke-opacity="0.1" stroke-width="0.4"/>
+      <!-- Arm base -->
+      <circle cx="-12" cy="-275" r="5" fill="#141e1e" stroke="#88AAAA" stroke-opacity="0.25" stroke-width="0.6"/>
+      <circle cx="-12" cy="-275" r="2" fill="#88AAAA" opacity="0.25"/>
+      <!-- Arm segments -->
+      <line x1="-12" y1="-275" x2="4" y2="-268" stroke="#88AAAA" stroke-opacity="0.35" stroke-width="2"/>
+      <circle cx="4" cy="-268" r="3" fill="#141e1e" stroke="#88AAAA" stroke-opacity="0.2" stroke-width="0.4"/>
+      <line x1="4" y1="-268" x2="14" y2="-258" stroke="#88AAAA" stroke-opacity="0.3" stroke-width="1.5"/>
+      <circle cx="14" cy="-258" r="3.5" fill="#88AAAA" opacity="0.2"/>
+      <!-- Reach arc -->
+      <circle cx="-12" cy="-275" r="26" fill="none" stroke="#88AAAA" stroke-opacity="0.05" stroke-width="0.4" stroke-dasharray="2,4"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- SCAFFOLD (planned module) — 150deg -->
+    <!-- Dashed outline where next module will be built -->
+    <!-- ============================================ -->
+    <g transform="rotate(150)">
+      <rect x="-28" y="-295" width="56" height="52" fill="none"
+            stroke="#CCAA44" stroke-opacity="0.12" stroke-width="0.8" stroke-dasharray="6,4"/>
+      <!-- Ghost bracket -->
+      <rect x="-6" y="-240" width="12" height="10" fill="none"
+            stroke="#CCAA44" stroke-opacity="0.08" stroke-width="0.5" stroke-dasharray="3,3"/>
+    </g>
+
+  </g>
+
+  <text x="600" y="1110" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Ring is a double-rail conveyor. Material packets (colored blocks) ride the track.</text>
+  <text x="600" y="1128" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Modules bolt to outside via bracket + port. Each port labeled IN/OUT. Dock is a track gap.</text>
+  <text x="600" y="1146" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Solar arrays extend inward on struts. Heat fins radiate outward. Flow is clockwise.</text>
+  <text x="600" y="1168" text-anchor="middle" fill="#555555" font-family="monospace" font-size="10">Scaffolds show planned expansion. Track breaks at dock for ship entry.</text>
+</svg>

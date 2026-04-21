@@ -1,0 +1,438 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 2200 880" width="2200" height="880">
+  <title>Module Redesign — Three Styles</title>
+
+  <rect width="2200" height="880" fill="#0c0808"/>
+
+  <!-- Column labels -->
+  <text x="110" y="50" text-anchor="middle" fill="#666" font-family="monospace" font-size="10">STYLE</text>
+  <text x="300" y="50" text-anchor="middle" fill="#888" font-family="monospace" font-size="9">DOCK</text>
+  <text x="490" y="50" text-anchor="middle" fill="#888" font-family="monospace" font-size="9">HOPPER</text>
+  <text x="680" y="50" text-anchor="middle" fill="#888" font-family="monospace" font-size="9">FURNACE</text>
+  <text x="870" y="50" text-anchor="middle" fill="#888" font-family="monospace" font-size="9">FRAME PRESS</text>
+  <text x="1060" y="50" text-anchor="middle" fill="#888" font-family="monospace" font-size="9">LASER FAB</text>
+  <text x="1250" y="50" text-anchor="middle" fill="#888" font-family="monospace" font-size="9">TRACTOR FAB</text>
+  <text x="1440" y="50" text-anchor="middle" fill="#888" font-family="monospace" font-size="9">RELAY</text>
+  <text x="1630" y="50" text-anchor="middle" fill="#888" font-family="monospace" font-size="9">REPAIR</text>
+  <text x="1820" y="50" text-anchor="middle" fill="#888" font-family="monospace" font-size="9">SILO</text>
+  <text x="2010" y="50" text-anchor="middle" fill="#888" font-family="monospace" font-size="9">SHIPYARD</text>
+
+  <!-- ============================================================ -->
+  <!-- STYLE A: SOLID MASS                                           -->
+  <!-- Heavy filled shapes. Identity from silhouette only.           -->
+  <!-- Like small asteroids that were shaped into machines.          -->
+  <!-- ============================================================ -->
+  <text x="110" y="170" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="12">A: SOLID</text>
+  <text x="110" y="186" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="12">MASS</text>
+  <text x="110" y="210" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">filled shapes</text>
+  <text x="110" y="222" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">silhouette ID</text>
+  <text x="110" y="234" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">max readability</text>
+
+  <g transform="translate(0, 100)">
+    <!-- A: DOCK — solid walls with gap -->
+    <g transform="translate(300, 100)">
+      <!-- Two solid blocks with gap -->
+      <polygon points="-30,-36 -10,-36 -10,36 -30,36" fill="#243828" stroke="#4a7848" stroke-width="1.8"/>
+      <polygon points="10,-36 30,-36 30,36 10,36" fill="#243828" stroke="#4a7848" stroke-width="1.8"/>
+      <!-- Clamp teeth -->
+      <rect x="-10" y="-18" width="6" height="8" fill="#3a5842"/>
+      <rect x="4" y="-18" width="6" height="8" fill="#3a5842"/>
+      <rect x="-10" y="10" width="6" height="8" fill="#3a5842"/>
+      <rect x="4" y="10" width="6" height="8" fill="#3a5842"/>
+      <!-- Guide lights -->
+      <circle cx="-6" cy="-2" r="3.5" fill="#88CCAA" opacity="0.8"/>
+      <circle cx="6" cy="-2" r="3.5" fill="#88CCAA" opacity="0.8"/>
+    </g>
+
+    <!-- A: HOPPER — solid trapezoid -->
+    <g transform="translate(490, 100)">
+      <polygon points="-36,-28 36,-28 22,32 -22,32"
+               fill="#2a3420" stroke="#5a7838" stroke-width="1.8"/>
+      <!-- Intake void -->
+      <polygon points="-24,-24 24,-24 14,20 -14,20"
+               fill="#101408"/>
+      <!-- Rim highlight -->
+      <line x1="-36" y1="-28" x2="36" y2="-28" stroke="#7a9858" stroke-width="2.5"/>
+    </g>
+
+    <!-- A: FURNACE — solid block with glow -->
+    <g transform="translate(680, 100)">
+      <polygon points="-32,-30 32,-30 34,28 -34,28"
+               fill="#2a3420" stroke="#5a7838" stroke-width="1.8"/>
+      <!-- Chimney -->
+      <polygon points="-10,-48 10,-48 12,-30 -12,-30"
+               fill="#263218" stroke="#4a6838" stroke-width="1.2"/>
+      <!-- Fire glow -->
+      <circle cx="0" cy="2" r="16" fill="#3a3010" opacity="0.6"/>
+      <circle cx="0" cy="2" r="9" fill="#5a4818" opacity="0.6"/>
+      <circle cx="0" cy="2" r="4" fill="#CCAA44" opacity="0.8"/>
+    </g>
+
+    <!-- A: FRAME PRESS — wide squat solid block with ram -->
+    <g transform="translate(870, 100)">
+      <polygon points="-38,-26 38,-26 40,26 -40,26"
+               fill="#2e2818" stroke="#5a5030" stroke-width="1.8"/>
+      <!-- Ram columns -->
+      <rect x="-34" y="-22" width="8" height="44" fill="#3a3420" stroke="#5a5030" stroke-width="0.6"/>
+      <rect x="26" y="-22" width="8" height="44" fill="#3a3420" stroke="#5a5030" stroke-width="0.6"/>
+      <!-- Stamp mark -->
+      <line x1="-14" y1="0" x2="14" y2="0" stroke="#CCAA44" stroke-opacity="0.6" stroke-width="1.2"/>
+      <line x1="0" y1="-10" x2="0" y2="10" stroke="#CCAA44" stroke-opacity="0.6" stroke-width="1.2"/>
+    </g>
+
+    <!-- A: LASER FAB — solid octagon with lens -->
+    <g transform="translate(1060, 100)">
+      <polygon points="14,-34 34,-14 34,14 14,34 -14,34 -34,14 -34,-14 -14,-34"
+               fill="#1e2438" stroke="#3a4868" stroke-width="1.8"/>
+      <!-- Lens -->
+      <circle cx="0" cy="0" r="14" fill="#14202e" stroke="#4a6888" stroke-width="1"/>
+      <circle cx="0" cy="0" r="6" fill="#1a3040"/>
+      <circle cx="0" cy="0" r="2.5" fill="#6688CC" opacity="0.7"/>
+    </g>
+
+    <!-- A: TRACTOR FAB — solid circle with rings -->
+    <g transform="translate(1250, 100)">
+      <circle cx="0" cy="0" r="34" fill="#221838" stroke="#3a2858" stroke-width="1.8"/>
+      <circle cx="0" cy="0" r="22" fill="#1e1430" stroke="#4a3868" stroke-width="0.8"/>
+      <circle cx="0" cy="0" r="12" fill="#241a38" stroke="#5a4878" stroke-width="0.6"/>
+      <circle cx="0" cy="0" r="4" fill="#8866CC" opacity="0.5"/>
+    </g>
+
+    <!-- A: RELAY — solid mast block -->
+    <g transform="translate(1440, 100)">
+      <polygon points="-14,-46 14,-46 16,34 -16,34"
+               fill="#1e2e28" stroke="#3a5848" stroke-width="1.8"/>
+      <!-- Dish -->
+      <circle cx="0" cy="6" r="12" fill="#2e4834" stroke="#5a7a58" stroke-width="1"/>
+      <circle cx="0" cy="6" r="3" fill="#88CCAA" opacity="0.7"/>
+      <!-- Beacon -->
+      <circle cx="0" cy="-46" r="5" fill="#88CCAA" opacity="0.6"/>
+    </g>
+
+    <!-- A: REPAIR — solid block with open bay -->
+    <g transform="translate(1630, 100)">
+      <polygon points="-32,-32 32,-32 32,32 -32,32"
+               fill="#1e2828" stroke="#3a5858" stroke-width="1.8"/>
+      <!-- Open bay recess -->
+      <rect x="-20" y="-22" width="40" height="34" fill="#0e1414"/>
+      <!-- Arm pivot -->
+      <circle cx="-10" cy="-8" r="5" fill="#2a3838" stroke="#4a6868" stroke-width="0.8"/>
+      <circle cx="-10" cy="-8" r="2" fill="#88AAAA" opacity="0.5"/>
+      <!-- Arm -->
+      <line x1="-10" y1="-8" x2="8" y2="2" stroke="#5a8888" stroke-width="2.5"/>
+      <circle cx="8" cy="2" r="3.5" fill="#4a7878" opacity="0.5"/>
+    </g>
+
+    <!-- A: SILO — solid tall rectangle -->
+    <g transform="translate(1820, 100)">
+      <polygon points="-20,-40 20,-40 22,32 -22,32"
+               fill="#243028" stroke="#4a5848" stroke-width="1.8"/>
+      <!-- Dome cap -->
+      <polygon points="-18,-40 18,-40 0,-52" fill="#2e3a30" stroke="#4a5848" stroke-width="1"/>
+      <!-- Band -->
+      <line x1="-22" y1="-10" x2="22" y2="-10" stroke="#4a5848" stroke-width="0.8" opacity="0.5"/>
+      <line x1="-22" y1="10" x2="22" y2="10" stroke="#4a5848" stroke-width="0.8" opacity="0.5"/>
+      <!-- Fill level -->
+      <rect x="-16" y="0" width="32" height="26" fill="#3a5840" opacity="0.12"/>
+    </g>
+
+    <!-- A: SHIPYARD — solid frame with open bay -->
+    <g transform="translate(2010, 100)">
+      <!-- Pillars -->
+      <rect x="-36" y="-36" width="10" height="72" fill="#2e2818" stroke="#5a5030" stroke-width="1.5"/>
+      <rect x="26" y="-36" width="10" height="72" fill="#2e2818" stroke="#5a5030" stroke-width="1.5"/>
+      <!-- Top beam -->
+      <rect x="-36" y="-40" width="72" height="8" fill="#342e18" stroke="#5a5030" stroke-width="1.2"/>
+      <!-- Bottom beam -->
+      <rect x="-36" y="32" width="72" height="6" fill="#2a2410" stroke="#5a5030" stroke-width="0.8"/>
+      <!-- Cross bracing -->
+      <line x1="-26" y1="-32" x2="26" y2="30" stroke="#4a4428" stroke-width="1.2" opacity="0.5"/>
+      <line x1="26" y1="-32" x2="-26" y2="30" stroke="#4a4428" stroke-width="1.2" opacity="0.5"/>
+      <!-- Work lights -->
+      <circle cx="-28" cy="0" r="3" fill="#CCAA44" opacity="0.35"/>
+      <circle cx="28" cy="0" r="3" fill="#CCAA44" opacity="0.35"/>
+    </g>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- STYLE B: REFINED GLYPH                                        -->
+  <!-- Current approach polished. More detail, better proportions.   -->
+  <!-- Thicker lines. Functional detail visible up close.            -->
+  <!-- ============================================================ -->
+  <text x="110" y="440" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="12">B: REFINED</text>
+  <text x="110" y="456" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="12">GLYPH</text>
+  <text x="110" y="480" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">polished current</text>
+  <text x="110" y="492" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">more detail</text>
+  <text x="110" y="504" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">thicker lines</text>
+
+  <g transform="translate(0, 370)">
+    <!-- B: DOCK -->
+    <g transform="translate(300, 100)">
+      <rect x="-32" y="14" width="64" height="10" fill="#1e2818" stroke="#3a5838" stroke-width="1"/>
+      <rect x="-32" y="-24" width="10" height="48" fill="#263220" stroke="#4a6848" stroke-width="1.2"/>
+      <rect x="22" y="-24" width="10" height="48" fill="#263220" stroke="#4a6848" stroke-width="1.2"/>
+      <!-- Clamp jaws -->
+      <rect x="-22" y="-24" width="8" height="6" fill="#3a5842" stroke="#5a7858" stroke-width="0.6"/>
+      <rect x="14" y="-24" width="8" height="6" fill="#3a5842" stroke="#5a7858" stroke-width="0.6"/>
+      <rect x="-22" y="4" width="8" height="6" fill="#3a5842" stroke="#5a7858" stroke-width="0.6"/>
+      <rect x="14" y="4" width="8" height="6" fill="#3a5842" stroke="#5a7858" stroke-width="0.6"/>
+      <!-- Guide lights with glow -->
+      <circle cx="-16" cy="-8" r="2.5" fill="#88CCAA" opacity="0.3"/>
+      <circle cx="-16" cy="-8" r="4" fill="none" stroke="#88CCAA" stroke-width="0.5" opacity="0.3"/>
+      <circle cx="16" cy="-8" r="2.5" fill="#88CCAA" opacity="0.3"/>
+      <circle cx="16" cy="-8" r="4" fill="none" stroke="#88CCAA" stroke-width="0.5" opacity="0.3"/>
+      <!-- Dock floor markings -->
+      <line x1="-12" y1="-4" x2="12" y2="-4" stroke="#3a5838" stroke-width="0.6" opacity="0.4"/>
+    </g>
+
+    <!-- B: HOPPER -->
+    <g transform="translate(490, 100)">
+      <!-- Funnel walls -->
+      <polygon points="-34,-26 -14,18 -14,-26" fill="#222c18" stroke="#4a6838" stroke-width="1"/>
+      <polygon points="34,-26 14,-26 14,18" fill="#222c18" stroke="#4a6838" stroke-width="1"/>
+      <!-- Interior void -->
+      <rect x="-14" y="-26" width="28" height="40" fill="#0a0e06"/>
+      <!-- Chute -->
+      <rect x="-10" y="14" width="20" height="16" fill="#1e2814" stroke="#3a5828" stroke-width="0.8"/>
+      <!-- Rim -->
+      <rect x="-36" y="-28" width="72" height="4" fill="#3a5828" stroke="#5a7848" stroke-width="1"/>
+      <!-- Funnel edge lines -->
+      <line x1="-34" y1="-26" x2="-14" y2="18" stroke="#5a7848" stroke-width="1.2"/>
+      <line x1="34" y1="-26" x2="14" y2="18" stroke="#5a7848" stroke-width="1.2"/>
+      <!-- Flow arrow -->
+      <line x1="0" y1="-16" x2="0" y2="6" stroke="#5a7848" stroke-width="0.8" opacity="0.4"/>
+      <polygon points="-3,4 3,4 0,10" fill="#5a7848" opacity="0.3"/>
+    </g>
+
+    <!-- B: FURNACE -->
+    <g transform="translate(680, 100)">
+      <rect x="-30" y="-22" width="60" height="46" fill="#1e2814" stroke="#4a6838" stroke-width="1.2"/>
+      <!-- Chimney -->
+      <rect x="-10" y="-36" width="20" height="16" fill="#222e18" stroke="#3a5828" stroke-width="1"/>
+      <rect x="-12" y="-38" width="24" height="3" fill="#3a5828"/>
+      <!-- Inner glow circles -->
+      <circle cx="0" cy="2" r="16" fill="#3a3010" opacity="0.3"/>
+      <circle cx="0" cy="2" r="10" fill="#5a4818" opacity="0.3"/>
+      <circle cx="0" cy="2" r="5" fill="#887830" opacity="0.5"/>
+      <circle cx="0" cy="2" r="2" fill="#CCAA44" opacity="0.8"/>
+      <!-- Grate bars -->
+      <line x1="-20" y1="14" x2="20" y2="14" stroke="#4a6838" stroke-width="1" opacity="0.5"/>
+      <line x1="-20" y1="18" x2="20" y2="18" stroke="#4a6838" stroke-width="1" opacity="0.5"/>
+      <!-- Heavy outline -->
+      <rect x="-30" y="-22" width="60" height="46" fill="none" stroke="#5a7848" stroke-width="1.5"/>
+    </g>
+
+    <!-- B: FRAME PRESS -->
+    <g transform="translate(870, 100)">
+      <!-- Press bed -->
+      <rect x="-36" y="4" width="72" height="20" fill="#222010" stroke="#4a4428" stroke-width="1"/>
+      <!-- Press head -->
+      <rect x="-36" y="-24" width="72" height="20" fill="#262210" stroke="#4a4428" stroke-width="1"/>
+      <!-- Ram pistons -->
+      <rect x="-34" y="-24" width="8" height="48" fill="#302c14" stroke="#5a5430" stroke-width="0.6"/>
+      <rect x="26" y="-24" width="8" height="48" fill="#302c14" stroke="#5a5430" stroke-width="0.6"/>
+      <!-- Stamp crosshair -->
+      <line x1="-16" y1="-2" x2="16" y2="-2" stroke="#CCAA44" stroke-opacity="0.5" stroke-width="0.8"/>
+      <line x1="0" y1="-10" x2="0" y2="6" stroke="#CCAA44" stroke-opacity="0.5" stroke-width="0.8"/>
+      <!-- Score marks -->
+      <line x1="-10" y1="-5" x2="-10" y2="1" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.5"/>
+      <line x1="10" y1="-5" x2="10" y2="1" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.5"/>
+    </g>
+
+    <!-- B: LASER FAB -->
+    <g transform="translate(1060, 100)">
+      <!-- Octagon body -->
+      <polygon points="12,-30 30,-12 30,12 12,30 -12,30 -30,12 -30,-12 -12,-30"
+               fill="#1a2030" stroke="#3a4868" stroke-width="1.2"/>
+      <!-- Lens -->
+      <circle cx="0" cy="0" r="8" fill="#142030" stroke="#4a6888" stroke-width="0.8"/>
+      <circle cx="0" cy="0" r="3" fill="#6688CC" opacity="0.4"/>
+      <!-- Precision crosshairs -->
+      <line x1="-24" y1="0" x2="-10" y2="0" stroke="#6688CC" stroke-opacity="0.4" stroke-width="0.6"/>
+      <line x1="10" y1="0" x2="24" y2="0" stroke="#6688CC" stroke-opacity="0.4" stroke-width="0.6"/>
+      <line x1="0" y1="-24" x2="0" y2="-10" stroke="#6688CC" stroke-opacity="0.4" stroke-width="0.6"/>
+      <line x1="0" y1="10" x2="0" y2="24" stroke="#6688CC" stroke-opacity="0.4" stroke-width="0.6"/>
+      <!-- Octagon outline -->
+      <polygon points="12,-30 30,-12 30,12 12,30 -12,30 -30,12 -30,-12 -12,-30"
+               fill="none" stroke="#5a7898" stroke-width="0.8"/>
+    </g>
+
+    <!-- B: TRACTOR FAB -->
+    <g transform="translate(1250, 100)">
+      <circle cx="0" cy="0" r="30" fill="#1a1428" stroke="#3a2858" stroke-width="1.2"/>
+      <circle cx="0" cy="0" r="20" fill="#1e1830" stroke="#4a3868" stroke-width="0.8"/>
+      <circle cx="0" cy="0" r="10" fill="#241e38" stroke="#5a4878" stroke-width="0.6"/>
+      <circle cx="0" cy="0" r="3" fill="#8866CC" opacity="0.5"/>
+      <!-- Field spokes -->
+      <g stroke="#5a4878" stroke-opacity="0.4" stroke-width="0.6">
+        <line x1="0" y1="-12" x2="0" y2="-28"/>
+        <line x1="0" y1="12" x2="0" y2="28"/>
+        <line x1="-12" y1="0" x2="-28" y2="0"/>
+        <line x1="12" y1="0" x2="28" y2="0"/>
+      </g>
+    </g>
+
+    <!-- B: RELAY -->
+    <g transform="translate(1440, 100)">
+      <!-- Mast -->
+      <rect x="-4" y="-34" width="8" height="58" fill="#1e2e28" stroke="#3a5848" stroke-width="1"/>
+      <!-- Cross-arms -->
+      <rect x="-20" y="2" width="40" height="4" fill="#2a3a2e" stroke="#3a5848" stroke-width="0.6"/>
+      <rect x="-14" y="-12" width="28" height="3" fill="#2a3a2e" stroke="#3a5848" stroke-width="0.5"/>
+      <!-- Beacon -->
+      <circle cx="0" cy="-36" r="5" fill="#88CCAA" opacity="0.6"/>
+      <circle cx="0" cy="-36" r="8" fill="none" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <!-- Signal arcs -->
+      <path d="M -10,-44 A 12,12 0 0,1 10,-44" fill="none" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.6"/>
+      <path d="M -16,-50 A 20,20 0 0,1 16,-50" fill="none" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+    </g>
+
+    <!-- B: REPAIR -->
+    <g transform="translate(1630, 100)">
+      <rect x="-30" y="-30" width="60" height="60" fill="#1a2424" stroke="#3a5858" stroke-width="1.2"/>
+      <!-- Wrench shaft -->
+      <line x1="-12" y1="-12" x2="12" y2="12" stroke="#4a7878" stroke-width="2.5"/>
+      <!-- Wrench jaw -->
+      <polygon points="10,14 18,10 22,18 14,22" fill="#3a5858" stroke="#5a8888" stroke-width="0.6"/>
+      <line x1="14" y1="10" x2="22" y2="14" stroke="#5a8888" stroke-width="1"/>
+      <!-- Wrench ring -->
+      <circle cx="-14" cy="-14" r="8" fill="#1a2828" stroke="#4a7878" stroke-width="0.8"/>
+      <!-- Corner bolts -->
+      <circle cx="-24" cy="-24" r="2" fill="#3a5858" opacity="0.5"/>
+      <circle cx="24" cy="-24" r="2" fill="#3a5858" opacity="0.5"/>
+      <circle cx="-24" cy="24" r="2" fill="#3a5858" opacity="0.5"/>
+      <circle cx="24" cy="24" r="2" fill="#3a5858" opacity="0.5"/>
+    </g>
+
+    <!-- B: SILO -->
+    <g transform="translate(1820, 100)">
+      <rect x="-18" y="-22" width="36" height="50" fill="#1e2820" stroke="#3a5848" stroke-width="1.2"/>
+      <!-- Dome -->
+      <polygon points="-18,-22 18,-22 0,-36" fill="#243228" stroke="#3a5848" stroke-width="0.8"/>
+      <!-- Base flange -->
+      <rect x="-22" y="24" width="44" height="4" fill="#2a3a2e" stroke="#3a5848" stroke-width="0.6"/>
+      <!-- Band lines -->
+      <line x1="-18" y1="-6" x2="18" y2="-6" stroke="#3a5848" stroke-width="0.6" opacity="0.5"/>
+      <line x1="-18" y1="6" x2="18" y2="6" stroke="#3a5848" stroke-width="0.6" opacity="0.5"/>
+      <line x1="-18" y1="16" x2="18" y2="16" stroke="#3a5848" stroke-width="0.6" opacity="0.5"/>
+      <!-- Fill level -->
+      <rect x="-14" y="2" width="28" height="20" fill="#3a5840" opacity="0.1"/>
+    </g>
+
+    <!-- B: SHIPYARD -->
+    <g transform="translate(2010, 100)">
+      <rect x="-34" y="-32" width="8" height="64" fill="#222010" stroke="#4a4428" stroke-width="1"/>
+      <rect x="26" y="-32" width="8" height="64" fill="#222010" stroke="#4a4428" stroke-width="1"/>
+      <rect x="-34" y="-36" width="68" height="6" fill="#2a2810" stroke="#5a5430" stroke-width="1"/>
+      <rect x="-34" y="28" width="68" height="5" fill="#222010" stroke="#4a4428" stroke-width="0.6"/>
+      <!-- Crane arm -->
+      <polygon points="10,-36 16,-36 22,-48 16,-48" fill="#2a2810" stroke="#4a4428" stroke-width="0.6"/>
+      <!-- Cable + hook -->
+      <line x1="19" y1="-48" x2="8" y2="-20" stroke="#5a5430" stroke-width="0.8"/>
+      <line x1="8" y1="-20" x2="8" y2="-6" stroke="#5a5430" stroke-width="0.6"/>
+      <path d="M 8,-6 Q 4,-2 8,0" fill="none" stroke="#5a5430" stroke-width="0.6"/>
+      <!-- Cross brace -->
+      <line x1="-26" y1="-30" x2="26" y2="26" stroke="#3a3820" stroke-width="0.8" opacity="0.5"/>
+      <line x1="26" y1="-30" x2="-26" y2="26" stroke="#3a3820" stroke-width="0.8" opacity="0.5"/>
+    </g>
+  </g>
+
+  <!-- ============================================================ -->
+  <!-- STYLE C: BOLD EMBLEM                                          -->
+  <!-- Big simple geometric symbols. Maximum contrast.               -->
+  <!-- Like circuit component symbols or industrial signage.         -->
+  <!-- ============================================================ -->
+  <text x="110" y="710" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="12">C: BOLD</text>
+  <text x="110" y="726" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="12">EMBLEM</text>
+  <text x="110" y="750" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">simple geometry</text>
+  <text x="110" y="762" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">max contrast</text>
+  <text x="110" y="774" text-anchor="middle" fill="#556" font-family="monospace" font-size="8">icon-like</text>
+
+  <g transform="translate(0, 640)">
+    <!-- C: DOCK — bold U shape -->
+    <g transform="translate(300, 100)">
+      <polygon points="-34,28 -34,-28 -18,-28 -18,16 18,16 18,-28 34,-28 34,28"
+               fill="#243828" stroke="#6a9868" stroke-width="2.5"/>
+      <circle cx="-12" cy="-8" r="4" fill="#88CCAA" opacity="0.7"/>
+      <circle cx="12" cy="-8" r="4" fill="#88CCAA" opacity="0.7"/>
+    </g>
+
+    <!-- C: HOPPER — bold V shape -->
+    <g transform="translate(490, 100)">
+      <polygon points="-38,-24 38,-24 12,30 -12,30"
+               fill="#2a3420" stroke="#6a9848" stroke-width="2.5"/>
+      <line x1="-38" y1="-24" x2="38" y2="-24" stroke="#8aba68" stroke-width="3"/>
+      <circle cx="0" cy="8" r="4" fill="#0a0e06" stroke="#5a7838" stroke-width="1"/>
+    </g>
+
+    <!-- C: FURNACE — bold square with fire circle -->
+    <g transform="translate(680, 100)">
+      <rect x="-32" y="-28" width="64" height="56" fill="#2a3420" stroke="#6a9848" stroke-width="2.5"/>
+      <circle cx="0" cy="0" r="18" fill="#2a2808"/>
+      <circle cx="0" cy="0" r="12" fill="#4a3810" opacity="0.7"/>
+      <circle cx="0" cy="0" r="6" fill="#887830" opacity="0.8"/>
+      <circle cx="0" cy="0" r="3" fill="#CCAA44" opacity="0.9"/>
+    </g>
+
+    <!-- C: FRAME PRESS — bold H shape -->
+    <g transform="translate(870, 100)">
+      <polygon points="-36,-28 -20,-28 -20,-6 20,-6 20,-28 36,-28 36,28 20,28 20,6 -20,6 -20,28 -36,28"
+               fill="#2e2818" stroke="#6a6438" stroke-width="2.5"/>
+      <line x1="-10" y1="0" x2="10" y2="0" stroke="#CCAA44" stroke-opacity="0.7" stroke-width="1.5"/>
+      <line x1="0" y1="-10" x2="0" y2="10" stroke="#CCAA44" stroke-opacity="0.7" stroke-width="1.5"/>
+    </g>
+
+    <!-- C: LASER FAB — bold diamond with dot -->
+    <g transform="translate(1060, 100)">
+      <polygon points="0,-36 36,0 0,36 -36,0"
+               fill="#1e2438" stroke="#4a6898" stroke-width="2.5"/>
+      <circle cx="0" cy="0" r="10" fill="#14202e" stroke="#5a78a8" stroke-width="1.5"/>
+      <circle cx="0" cy="0" r="4" fill="#6688CC" opacity="0.6"/>
+    </g>
+
+    <!-- C: TRACTOR FAB — bold bullseye -->
+    <g transform="translate(1250, 100)">
+      <circle cx="0" cy="0" r="34" fill="#221838" stroke="#5a4888" stroke-width="2.5"/>
+      <circle cx="0" cy="0" r="20" fill="#1e1430" stroke="#5a4888" stroke-width="1.5"/>
+      <circle cx="0" cy="0" r="8" fill="#8866CC" opacity="0.3"/>
+      <circle cx="0" cy="0" r="3" fill="#8866CC" opacity="0.7"/>
+    </g>
+
+    <!-- C: RELAY — bold T/antenna shape -->
+    <g transform="translate(1440, 100)">
+      <polygon points="-6,30 -6,-20 -24,-20 -24,-30 24,-30 24,-20 6,-20 6,30"
+               fill="#1e2e28" stroke="#4a8858" stroke-width="2.5"/>
+      <circle cx="0" cy="-36" r="6" fill="#88CCAA" opacity="0.7"/>
+      <circle cx="0" cy="-36" r="10" fill="none" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="1"/>
+    </g>
+
+    <!-- C: REPAIR — bold wrench cross -->
+    <g transform="translate(1630, 100)">
+      <rect x="-34" y="-34" width="68" height="68" fill="#1e2828" stroke="#4a7878" stroke-width="2.5"/>
+      <!-- Big bold wrench -->
+      <line x1="-16" y1="-16" x2="16" y2="16" stroke="#6a9898" stroke-width="4"/>
+      <circle cx="-18" cy="-18" r="8" fill="none" stroke="#6a9898" stroke-width="2"/>
+      <polygon points="14,18 22,14 26,22 18,26" fill="#4a7878"/>
+    </g>
+
+    <!-- C: SILO — bold tall pill shape -->
+    <g transform="translate(1820, 100)">
+      <rect x="-20" y="-20" width="40" height="48" rx="4" fill="#1e2820" stroke="#4a7848" stroke-width="2.5"/>
+      <!-- Rounded top -->
+      <path d="M -20,-20 A 20,16 0 0,1 20,-20" fill="#243228" stroke="#4a7848" stroke-width="2"/>
+      <!-- Band -->
+      <line x1="-20" y1="4" x2="20" y2="4" stroke="#4a7848" stroke-width="1.2"/>
+      <!-- Fill dot -->
+      <circle cx="0" cy="14" r="6" fill="#3a5840" opacity="0.2"/>
+    </g>
+
+    <!-- C: SHIPYARD — bold bracket frame -->
+    <g transform="translate(2010, 100)">
+      <polygon points="-36,-36 36,-36 36,-24 -24,-24 -24,24 36,24 36,36 -36,36"
+               fill="#2e2818" stroke="#6a6438" stroke-width="2.5"/>
+      <polygon points="36,36 -36,36 -36,24 24,24 24,-24 -36,-24 -36,-36 36,-36"
+               fill="none" stroke="#6a6438" stroke-width="1" stroke-dasharray="4,4" opacity="0.3"/>
+      <circle cx="0" cy="0" r="4" fill="#CCAA44" opacity="0.3"/>
+    </g>
+  </g>
+
+</svg>

@@ -1,0 +1,188 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="800" height="800">
+  <title>Station Concept A: Solar Cathedral</title>
+  <desc>Solar panels face inward (up/sunward). Modules have heavy silhouettes with solar arrays breaking the ring outline. Industrial guts face outward (down/darkward).</desc>
+
+  <defs>
+    <radialGradient id="starGlow" cx="50%" cy="0%" r="80%">
+      <stop offset="0%" stop-color="#FFE4A0" stop-opacity="0.15"/>
+      <stop offset="100%" stop-color="#1a0a00" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="coreGlow" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#88CCAA" stop-opacity="0.3"/>
+      <stop offset="60%" stop-color="#88CCAA" stop-opacity="0.05"/>
+      <stop offset="100%" stop-color="#88CCAA" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <!-- Background -->
+  <rect width="800" height="800" fill="#0a0808"/>
+  <rect width="800" height="400" fill="url(#starGlow)"/>
+
+  <!-- Title -->
+  <text x="400" y="30" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="14" opacity="0.8">CONCEPT A: SOLAR CATHEDRAL</text>
+  <text x="400" y="50" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Solar arrays face star (up). Heavy structural spokes. Modules break ring silhouette.</text>
+
+  <!-- Star direction indicator -->
+  <text x="400" y="80" text-anchor="middle" fill="#FFE4A0" font-family="monospace" font-size="10" opacity="0.5">^ STARWARD (solar side)</text>
+  <line x1="400" y1="85" x2="400" y2="110" stroke="#FFE4A0" stroke-opacity="0.2" stroke-dasharray="3,3"/>
+
+  <!-- Core glow -->
+  <circle cx="400" cy="420" r="80" fill="url(#coreGlow)"/>
+
+  <!-- Ring guides (faint) -->
+  <circle cx="400" cy="420" r="120" fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="1"/>
+  <circle cx="400" cy="420" r="200" fill="none" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="1"/>
+  <circle cx="400" cy="420" r="290" fill="none" stroke="#88CCAA" stroke-opacity="0.04" stroke-width="1"/>
+
+  <!-- CORE HUB - hexagonal plate, not just a circle -->
+  <polygon points="400,390 426,405 426,435 400,450 374,435 374,405"
+           fill="#1a2a22" stroke="#88CCAA" stroke-opacity="0.4" stroke-width="1.5"/>
+  <polygon points="400,400 413,408 413,432 400,440 387,432 387,408"
+           fill="#223322" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="1"/>
+  <!-- Core center dot -->
+  <circle cx="400" cy="420" r="4" fill="#88CCAA" opacity="0.6"/>
+
+  <!-- STRUCTURAL SPOKES - heavy, visible -->
+  <!-- Spoke to Ring 1 top (sunward) -->
+  <line x1="400" y1="400" x2="400" y2="300" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="3"/>
+  <line x1="398" y1="400" x2="398" y2="300" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="1"/>
+  <line x1="402" y1="400" x2="402" y2="300" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="1"/>
+
+  <!-- Spoke to Ring 1 bottom-left -->
+  <line x1="388" y1="440" x2="296" y2="480" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="3"/>
+
+  <!-- Spoke to Ring 1 bottom-right -->
+  <line x1="412" y1="440" x2="504" y2="480" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="3"/>
+
+  <!-- ============================================ -->
+  <!-- RING 1 MODULES (r=120) -->
+  <!-- ============================================ -->
+
+  <!-- MODULE: Signal Relay (top, sunward) -->
+  <g transform="translate(400, 300)">
+    <!-- Antenna mast extending sunward -->
+    <rect x="-3" y="-60" width="6" height="55" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.4" stroke-width="1"/>
+    <!-- Cross-arms -->
+    <rect x="-20" y="-30" width="40" height="4" fill="#3a4a42" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+    <rect x="-14" y="-45" width="28" height="3" fill="#3a4a42" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+    <!-- Beacon at tip -->
+    <circle cx="0" cy="-62" r="5" fill="#88CCAA" opacity="0.7"/>
+    <circle cx="0" cy="-62" r="8" fill="none" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+    <!-- Signal arcs radiating sunward -->
+    <path d="M -15,-72 A 18,18 0 0,1 15,-72" fill="none" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="1"/>
+    <path d="M -25,-80 A 28,28 0 0,1 25,-80" fill="none" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="1"/>
+    <!-- Module body -->
+    <rect x="-18" y="-8" width="36" height="28" fill="#1a2a22" stroke="#88CCAA" stroke-opacity="0.35" stroke-width="1"/>
+    <circle cx="0" cy="6" r="6" fill="#223a28" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+  </g>
+
+  <!-- MODULE: Furnace (bottom-left, darkward) -->
+  <g transform="translate(296, 480)">
+    <!-- Main body -->
+    <rect x="-22" y="-20" width="44" height="40" fill="#2a2218" stroke="#B8CC72" stroke-opacity="0.35" stroke-width="1"/>
+    <!-- Chimney pointing darkward (down) -->
+    <rect x="-8" y="20" width="16" height="22" fill="#2a2218" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="0.5"/>
+    <rect x="-10" y="40" width="20" height="4" fill="#3a3220" stroke="#B8CC72" stroke-opacity="0.4" stroke-width="0.5"/>
+    <!-- Inner glow -->
+    <circle cx="0" cy="0" r="12" fill="#B8CC72" opacity="0.08"/>
+    <circle cx="0" cy="0" r="7" fill="#CCAA44" opacity="0.15"/>
+    <circle cx="0" cy="0" r="3" fill="#FFCC66" opacity="0.3"/>
+    <!-- Grate bars -->
+    <line x1="-14" y1="10" x2="14" y2="10" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="1"/>
+    <line x1="-14" y1="14" x2="14" y2="14" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="1"/>
+    <!-- Solar panel facing sunward (up-right toward star) -->
+    <g transform="rotate(-30)">
+      <rect x="-28" y="-48" width="12" height="24" fill="#2a3830" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+      <line x1="-22" y1="-48" x2="-22" y2="-24" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <line x1="-28" y1="-36" x2="-16" y2="-36" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <rect x="16" y="-48" width="12" height="24" fill="#2a3830" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+      <line x1="22" y1="-48" x2="22" y2="-24" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <line x1="16" y1="-36" x2="28" y2="-36" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+    </g>
+  </g>
+
+  <!-- MODULE: Dock (bottom-right) -->
+  <g transform="translate(504, 480)">
+    <!-- Docking bay - U shape opening darkward -->
+    <rect x="-24" y="-22" width="48" height="8" fill="#1a2a22" stroke="#88CCAA" stroke-opacity="0.35" stroke-width="1"/>
+    <rect x="-24" y="-22" width="8" height="44" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+    <rect x="16" y="-22" width="8" height="44" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+    <!-- Guide lights -->
+    <circle cx="-16" cy="8" r="3" fill="#88CCAA" opacity="0.5"/>
+    <circle cx="16" cy="8" r="3" fill="#88CCAA" opacity="0.5"/>
+    <!-- Clamp tips -->
+    <rect x="-16" y="18" width="8" height="6" fill="#4a5a52" stroke="#88CCAA" stroke-opacity="0.4" stroke-width="0.5"/>
+    <rect x="8" y="18" width="8" height="6" fill="#4a5a52" stroke="#88CCAA" stroke-opacity="0.4" stroke-width="0.5"/>
+    <!-- Solar panel facing sunward -->
+    <rect x="-20" y="-46" width="40" height="18" fill="#2a3830" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+    <line x1="-10" y1="-46" x2="-10" y2="-28" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+    <line x1="0" y1="-46" x2="0" y2="-28" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+    <line x1="10" y1="-46" x2="10" y2="-28" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+    <line x1="-20" y1="-37" x2="20" y2="-37" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+  </g>
+
+  <!-- ============================================ -->
+  <!-- RING 2 MODULES (r=200, 6 slots) - show 4 -->
+  <!-- ============================================ -->
+
+  <!-- Corridor arcs between Ring 1 modules -->
+  <path d="M 296,480 A 120,120 0 0,1 400,300" fill="none" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="12"/>
+  <path d="M 400,300 A 120,120 0 0,1 504,480" fill="none" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="12"/>
+
+  <!-- Ring 2: Ore Buyer (top-left) -->
+  <g transform="translate(280, 260)">
+    <polygon points="0,-26 -30,-4 -20,20 20,20 30,-4" fill="#1a2a18" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="1"/>
+    <rect x="-12" y="-4" width="24" height="20" fill="#0a0a08" opacity="0.6"/>
+    <line x1="-28" y1="-2" x2="-12" y2="14" stroke="#B8CC72" stroke-opacity="0.4" stroke-width="1"/>
+    <line x1="28" y1="-2" x2="12" y2="14" stroke="#B8CC72" stroke-opacity="0.4" stroke-width="1"/>
+    <!-- Small solar fin -->
+    <rect x="-6" y="-44" width="12" height="16" fill="#2a3830" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.5"/>
+    <line x1="0" y1="-44" x2="0" y2="-28" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+  </g>
+
+  <!-- Ring 2: Frame Press (top-right) -->
+  <g transform="translate(520, 260)">
+    <rect x="-28" y="-20" width="56" height="40" fill="#2a2410" stroke="#CCAA44" stroke-opacity="0.35" stroke-width="1"/>
+    <rect x="-26" y="-18" width="8" height="36" fill="#3a3420" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.5"/>
+    <rect x="18" y="-18" width="8" height="36" fill="#3a3420" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.5"/>
+    <line x1="-12" y1="0" x2="12" y2="0" stroke="#CCAA44" stroke-opacity="0.5" stroke-width="1"/>
+    <line x1="0" y1="-8" x2="0" y2="8" stroke="#CCAA44" stroke-opacity="0.5" stroke-width="1"/>
+    <!-- Solar panel sunward -->
+    <rect x="-22" y="-40" width="44" height="16" fill="#2a3830" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.5"/>
+    <line x1="-11" y1="-40" x2="-11" y2="-24" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+    <line x1="0" y1="-40" x2="0" y2="-24" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+    <line x1="11" y1="-40" x2="11" y2="-24" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+  </g>
+
+  <!-- Ring 2: Repair Bay (bottom) -->
+  <g transform="translate(340, 620)">
+    <rect x="-24" y="-22" width="48" height="44" fill="#1a2222" stroke="#88AAAA" stroke-opacity="0.3" stroke-width="1"/>
+    <!-- Wrench icon -->
+    <line x1="-10" y1="-10" x2="10" y2="10" stroke="#88AAAA" stroke-opacity="0.5" stroke-width="2"/>
+    <circle cx="-12" cy="-12" r="6" fill="none" stroke="#88AAAA" stroke-opacity="0.4" stroke-width="1"/>
+    <line x1="8" y1="12" x2="14" y2="6" stroke="#88AAAA" stroke-opacity="0.5" stroke-width="2"/>
+  </g>
+
+  <!-- Ring 2: Ore Silo (bottom-right) -->
+  <g transform="translate(480, 600)">
+    <rect x="-14" y="-24" width="28" height="48" fill="#1a2218" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="1"/>
+    <polygon points="-14,-24 14,-24 0,-36" fill="#222a1a" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="0.5"/>
+    <line x1="-14" y1="-8" x2="14" y2="-8" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+    <line x1="-14" y1="4" x2="14" y2="4" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+    <line x1="-14" y1="16" x2="14" y2="16" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+    <!-- Fill level -->
+    <rect x="-12" y="4" width="24" height="18" fill="#B8CC72" opacity="0.08"/>
+  </g>
+
+  <!-- Corridor arcs Ring 2 -->
+  <path d="M 280,260 A 200,200 0 0,0 340,620" fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="16"/>
+  <path d="M 520,260 A 200,200 0 0,1 480,600" fill="none" stroke="#88CCAA" stroke-opacity="0.08" stroke-width="16"/>
+
+  <!-- ============================================ -->
+  <!-- DESIGN NOTES -->
+  <!-- ============================================ -->
+  <text x="400" y="730" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">KEY IDEAS: Solar panels on sunward face of every module. Signal relay is tallest</text>
+  <text x="400" y="745" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">structure (antenna). Furnace exhaust faces darkward. Corridors have real width.</text>
+  <text x="400" y="760" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Heavy structural spokes. Hexagonal core hub. Modules 2x current size.</text>
+  <text x="400" y="780" text-anchor="middle" fill="#555555" font-family="monospace" font-size="10">DARKWARD (belt edge) v</text>
+</svg>

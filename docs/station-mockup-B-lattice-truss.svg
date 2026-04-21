@@ -1,0 +1,162 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="800" height="800">
+  <title>Station Concept B: Lattice Truss</title>
+  <desc>ISS-inspired linear truss spine with modules branching off. Solar arrays extend sunward as large flat panels. Station reads as an elongated structure, not concentric rings.</desc>
+
+  <defs>
+    <radialGradient id="starGlowB" cx="50%" cy="0%" r="80%">
+      <stop offset="0%" stop-color="#FFE4A0" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#1a0a00" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="800" height="800" fill="#0a0808"/>
+  <rect width="800" height="400" fill="url(#starGlowB)"/>
+
+  <text x="400" y="30" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="14" opacity="0.8">CONCEPT B: LATTICE TRUSS</text>
+  <text x="400" y="50" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">ISS-style spine. Modules branch off truss. Solar arrays are dominant visual feature.</text>
+  <text x="400" y="80" text-anchor="middle" fill="#FFE4A0" font-family="monospace" font-size="10" opacity="0.5">^ STARWARD</text>
+
+  <!-- ============================================ -->
+  <!-- MAIN TRUSS SPINE (horizontal) -->
+  <!-- ============================================ -->
+  <g transform="translate(400, 400)">
+    <!-- Central truss backbone -->
+    <rect x="-200" y="-4" width="400" height="8" fill="#1a2a22" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1"/>
+    <!-- Truss cross-bracing -->
+    <g stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5">
+      <line x1="-190" y1="-4" x2="-170" y2="4"/>
+      <line x1="-170" y1="-4" x2="-150" y2="4"/>
+      <line x1="-150" y1="-4" x2="-130" y2="4"/>
+      <line x1="-130" y1="-4" x2="-110" y2="4"/>
+      <line x1="-110" y1="-4" x2="-90" y2="4"/>
+      <line x1="-90" y1="-4" x2="-70" y2="4"/>
+      <line x1="-70" y1="-4" x2="-50" y2="4"/>
+      <line x1="-50" y1="-4" x2="-30" y2="4"/>
+      <line x1="-30" y1="-4" x2="-10" y2="4"/>
+      <line x1="-10" y1="-4" x2="10" y2="4"/>
+      <line x1="10" y1="-4" x2="30" y2="4"/>
+      <line x1="30" y1="-4" x2="50" y2="4"/>
+      <line x1="50" y1="-4" x2="70" y2="4"/>
+      <line x1="70" y1="-4" x2="90" y2="4"/>
+      <line x1="90" y1="-4" x2="110" y2="4"/>
+      <line x1="110" y1="-4" x2="130" y2="4"/>
+      <line x1="130" y1="-4" x2="150" y2="4"/>
+      <line x1="150" y1="-4" x2="170" y2="4"/>
+      <line x1="170" y1="-4" x2="190" y2="4"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- SOLAR ARRAYS (sunward, dominant feature) -->
+    <!-- ============================================ -->
+
+    <!-- Left solar array pair -->
+    <g transform="translate(-140, 0)">
+      <!-- Strut to panels -->
+      <line x1="0" y1="-4" x2="0" y2="-90" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="2"/>
+      <!-- Left panel -->
+      <rect x="-50" y="-90" width="46" height="70" fill="#1a2820" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1"/>
+      <!-- Panel grid lines -->
+      <line x1="-50" y1="-67" x2="-4" y2="-67" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <line x1="-50" y1="-44" x2="-4" y2="-44" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <line x1="-27" y1="-90" x2="-27" y2="-20" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <!-- Right panel -->
+      <rect x="4" y="-90" width="46" height="70" fill="#1a2820" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1"/>
+      <line x1="4" y1="-67" x2="50" y2="-67" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <line x1="4" y1="-44" x2="50" y2="-44" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <line x1="27" y1="-90" x2="27" y2="-20" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <!-- Subtle panel glow (catching starlight) -->
+      <rect x="-50" y="-90" width="100" height="70" fill="#88CCAA" opacity="0.03"/>
+    </g>
+
+    <!-- Right solar array pair -->
+    <g transform="translate(140, 0)">
+      <line x1="0" y1="-4" x2="0" y2="-90" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="2"/>
+      <rect x="-50" y="-90" width="46" height="70" fill="#1a2820" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1"/>
+      <line x1="-50" y1="-67" x2="-4" y2="-67" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <line x1="-50" y1="-44" x2="-4" y2="-44" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <line x1="-27" y1="-90" x2="-27" y2="-20" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <rect x="4" y="-90" width="46" height="70" fill="#1a2820" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1"/>
+      <line x1="4" y1="-67" x2="50" y2="-67" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <line x1="4" y1="-44" x2="50" y2="-44" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <line x1="27" y1="-90" x2="27" y2="-20" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+      <rect x="-50" y="-90" width="100" height="70" fill="#88CCAA" opacity="0.03"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- MODULES (hanging darkward off truss) -->
+    <!-- ============================================ -->
+
+    <!-- Furnace module (left of center) -->
+    <g transform="translate(-60, 0)">
+      <line x1="0" y1="4" x2="0" y2="30" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="1.5"/>
+      <rect x="-24" y="30" width="48" height="40" fill="#1a2218" stroke="#B8CC72" stroke-opacity="0.35" stroke-width="1"/>
+      <!-- Chimney darkward -->
+      <rect x="-8" y="70" width="16" height="18" fill="#222a18" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.5"/>
+      <!-- Inner glow -->
+      <circle cx="0" cy="48" r="10" fill="#B8CC72" opacity="0.08"/>
+      <circle cx="0" cy="48" r="5" fill="#CCAA44" opacity="0.15"/>
+      <circle cx="0" cy="48" r="2" fill="#FFCC66" opacity="0.3"/>
+      <!-- Grates -->
+      <line x1="-16" y1="58" x2="16" y2="58" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="0.5"/>
+      <line x1="-16" y1="62" x2="16" y2="62" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="0.5"/>
+    </g>
+
+    <!-- Dock module (center) -->
+    <g transform="translate(0, 0)">
+      <line x1="0" y1="4" x2="0" y2="25" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="1.5"/>
+      <!-- U-shaped dock opening darkward -->
+      <rect x="-28" y="25" width="56" height="10" fill="#1a2a22" stroke="#88CCAA" stroke-opacity="0.35" stroke-width="1"/>
+      <rect x="-28" y="25" width="8" height="50" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.5"/>
+      <rect x="20" y="25" width="8" height="50" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.5"/>
+      <!-- Guide lights -->
+      <circle cx="-18" cy="55" r="3" fill="#88CCAA" opacity="0.5"/>
+      <circle cx="18" cy="55" r="3" fill="#88CCAA" opacity="0.5"/>
+      <!-- Approach guide lines -->
+      <line x1="-18" y1="75" x2="-18" y2="95" stroke="#88CCAA" stroke-opacity="0.15" stroke-dasharray="3,3" stroke-width="0.5"/>
+      <line x1="18" y1="75" x2="18" y2="95" stroke="#88CCAA" stroke-opacity="0.15" stroke-dasharray="3,3" stroke-width="0.5"/>
+    </g>
+
+    <!-- Ore Buyer (right of center) -->
+    <g transform="translate(60, 0)">
+      <line x1="0" y1="4" x2="0" y2="25" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="1.5"/>
+      <!-- Hopper facing darkward -->
+      <polygon points="-30,25 30,25 16,55 -16,55" fill="#1a2218" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="1"/>
+      <rect x="-10" y="55" width="20" height="16" fill="#0a0a08" opacity="0.5" stroke="#B8CC72" stroke-opacity="0.2" stroke-width="0.5"/>
+      <!-- Hopper rim -->
+      <rect x="-32" y="23" width="64" height="4" fill="#3a3a20" stroke="#B8CC72" stroke-opacity="0.4" stroke-width="0.5"/>
+    </g>
+
+    <!-- Signal Relay (far left, tallest structure) -->
+    <g transform="translate(-180, 0)">
+      <!-- Tall mast sunward -->
+      <line x1="0" y1="0" x2="0" y2="-120" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="2"/>
+      <line x1="-12" y1="-50" x2="12" y2="-50" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="1"/>
+      <line x1="-8" y1="-80" x2="8" y2="-80" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="1"/>
+      <!-- Beacon -->
+      <circle cx="0" cy="-122" r="5" fill="#88CCAA" opacity="0.6"/>
+      <circle cx="0" cy="-122" r="9" fill="none" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <!-- Signal arcs -->
+      <path d="M -12,-132 A 15,15 0 0,1 12,-132" fill="none" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <path d="M -20,-138 A 24,24 0 0,1 20,-138" fill="none" stroke="#88CCAA" stroke-opacity="0.12" stroke-width="0.5"/>
+    </g>
+
+    <!-- Repair Bay (far right) -->
+    <g transform="translate(180, 0)">
+      <line x1="0" y1="4" x2="0" y2="25" stroke="#88AAAA" stroke-opacity="0.2" stroke-width="1.5"/>
+      <rect x="-22" y="25" width="44" height="40" fill="#1a2222" stroke="#88AAAA" stroke-opacity="0.3" stroke-width="1"/>
+      <!-- Wrench -->
+      <line x1="-8" y1="35" x2="8" y2="55" stroke="#88AAAA" stroke-opacity="0.4" stroke-width="1.5"/>
+      <circle cx="-10" cy="33" r="5" fill="none" stroke="#88AAAA" stroke-opacity="0.3" stroke-width="0.5"/>
+    </g>
+
+  </g>
+
+  <!-- ============================================ -->
+  <!-- DESIGN NOTES -->
+  <!-- ============================================ -->
+  <text x="400" y="700" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">KEY IDEAS: Linear truss spine replaces concentric rings. Solar arrays are the</text>
+  <text x="400" y="715" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">dominant visual feature. Modules hang darkward. Signal relay is the tallest mast.</text>
+  <text x="400" y="730" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Reads like a real orbital structure, not a diagram. Grows by extending the truss.</text>
+  <text x="400" y="750" text-anchor="middle" fill="#555555" font-family="monospace" font-size="10">NOTE: Would require rethinking ring/slot layout to linear spine + branch model</text>
+  <text x="400" y="770" text-anchor="middle" fill="#555555" font-family="monospace" font-size="10">DARKWARD v</text>
+</svg>

@@ -1,0 +1,196 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 800 800" width="800" height="800">
+  <title>Station Concept C: Solar Crown</title>
+  <desc>Keeps ring layout but adds a sunward solar crown - a continuous arc of panels on the star-facing hemisphere. Modules have more detail and break the silhouette darkward. The solar crown IS the station's identity.</desc>
+
+  <defs>
+    <radialGradient id="starGlowC" cx="50%" cy="0%" r="80%">
+      <stop offset="0%" stop-color="#FFE4A0" stop-opacity="0.12"/>
+      <stop offset="100%" stop-color="#1a0a00" stop-opacity="0"/>
+    </radialGradient>
+    <radialGradient id="coreGlowC" cx="50%" cy="50%" r="50%">
+      <stop offset="0%" stop-color="#88CCAA" stop-opacity="0.25"/>
+      <stop offset="60%" stop-color="#88CCAA" stop-opacity="0.04"/>
+      <stop offset="100%" stop-color="#88CCAA" stop-opacity="0"/>
+    </radialGradient>
+  </defs>
+
+  <rect width="800" height="800" fill="#0a0808"/>
+  <rect width="800" height="400" fill="url(#starGlowC)"/>
+
+  <text x="400" y="30" text-anchor="middle" fill="#88CCAA" font-family="monospace" font-size="14" opacity="0.8">CONCEPT C: SOLAR CROWN</text>
+  <text x="400" y="50" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">Continuous solar arc on sunward hemisphere. Ring layout preserved. Crown = station identity.</text>
+  <text x="400" y="80" text-anchor="middle" fill="#FFE4A0" font-family="monospace" font-size="10" opacity="0.5">^ STARWARD</text>
+
+  <!-- Station center -->
+  <g transform="translate(400, 420)">
+
+    <!-- Core glow -->
+    <circle cx="0" cy="0" r="60" fill="url(#coreGlowC)"/>
+
+    <!-- ============================================ -->
+    <!-- SOLAR CROWN - continuous arc of panels on sunward hemisphere -->
+    <!-- This is THE defining visual feature -->
+    <!-- ============================================ -->
+
+    <!-- Outer crown (Ring 3 radius + extension) -->
+    <g opacity="0.85">
+      <!-- Crown structural arc -->
+      <path d="M -260,-110 A 280,280 0 0,1 260,-110" fill="none" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="2"/>
+      <path d="M -248,-80 A 260,260 0 0,1 248,-80" fill="none" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="1"/>
+
+      <!-- Individual solar panel segments along the crown -->
+      <!-- Panel 1 (far left) -->
+      <g transform="translate(-230, -100) rotate(65)">
+        <rect x="-18" y="-12" width="36" height="24" fill="#1a2820" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.8"/>
+        <line x1="0" y1="-12" x2="0" y2="12" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+        <line x1="-18" y1="0" x2="18" y2="0" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+      </g>
+      <!-- Panel 2 -->
+      <g transform="translate(-185, -165) rotate(48)">
+        <rect x="-20" y="-14" width="40" height="28" fill="#1a2820" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.8"/>
+        <line x1="0" y1="-14" x2="0" y2="14" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+        <line x1="-20" y1="0" x2="20" y2="0" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+        <line x1="-10" y1="-14" x2="-10" y2="14" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+        <line x1="10" y1="-14" x2="10" y2="14" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+      </g>
+      <!-- Panel 3 -->
+      <g transform="translate(-110, -225) rotate(28)">
+        <rect x="-22" y="-14" width="44" height="28" fill="#1a2820" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.8"/>
+        <line x1="0" y1="-14" x2="0" y2="14" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+        <line x1="-11" y1="-14" x2="-11" y2="14" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+        <line x1="11" y1="-14" x2="11" y2="14" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+        <line x1="-22" y1="0" x2="22" y2="0" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+      </g>
+      <!-- Panel 4 (center, largest) -->
+      <g transform="translate(0, -255) rotate(0)">
+        <rect x="-30" y="-16" width="60" height="32" fill="#1a2820" stroke="#88CCAA" stroke-opacity="0.35" stroke-width="1"/>
+        <line x1="0" y1="-16" x2="0" y2="16" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+        <line x1="-15" y1="-16" x2="-15" y2="16" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+        <line x1="15" y1="-16" x2="15" y2="16" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+        <line x1="-30" y1="0" x2="30" y2="0" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+        <line x1="-30" y1="-8" x2="30" y2="-8" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+        <line x1="-30" y1="8" x2="30" y2="8" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+        <!-- Subtle starlight catch -->
+        <rect x="-30" y="-16" width="60" height="32" fill="#88CCAA" opacity="0.03"/>
+      </g>
+      <!-- Panel 5 -->
+      <g transform="translate(110, -225) rotate(-28)">
+        <rect x="-22" y="-14" width="44" height="28" fill="#1a2820" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.8"/>
+        <line x1="0" y1="-14" x2="0" y2="14" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+        <line x1="-11" y1="-14" x2="-11" y2="14" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+        <line x1="11" y1="-14" x2="11" y2="14" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="0.5"/>
+        <line x1="-22" y1="0" x2="22" y2="0" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+      </g>
+      <!-- Panel 6 -->
+      <g transform="translate(185, -165) rotate(-48)">
+        <rect x="-20" y="-14" width="40" height="28" fill="#1a2820" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.8"/>
+        <line x1="0" y1="-14" x2="0" y2="14" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+        <line x1="-20" y1="0" x2="20" y2="0" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+      </g>
+      <!-- Panel 7 (far right) -->
+      <g transform="translate(230, -100) rotate(-65)">
+        <rect x="-18" y="-12" width="36" height="24" fill="#1a2820" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="0.8"/>
+        <line x1="0" y1="-12" x2="0" y2="12" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+        <line x1="-18" y1="0" x2="18" y2="0" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="0.5"/>
+      </g>
+
+      <!-- Crown support struts connecting to Ring 2 -->
+      <line x1="-185" y1="-165" x2="-140" y2="-110" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="1"/>
+      <line x1="-110" y1="-225" x2="-80" y2="-155" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="1"/>
+      <line x1="0" y1="-255" x2="0" y2="-175" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="1"/>
+      <line x1="110" y1="-225" x2="80" y2="-155" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="1"/>
+      <line x1="185" y1="-165" x2="140" y2="-110" stroke="#88CCAA" stroke-opacity="0.15" stroke-width="1"/>
+    </g>
+
+    <!-- Ring guides -->
+    <circle cx="0" cy="0" r="90" fill="none" stroke="#88CCAA" stroke-opacity="0.06" stroke-width="0.5"/>
+    <circle cx="0" cy="0" r="155" fill="none" stroke="#88CCAA" stroke-opacity="0.05" stroke-width="0.5"/>
+
+    <!-- ============================================ -->
+    <!-- CORE - hexagonal hub -->
+    <!-- ============================================ -->
+    <polygon points="0,-22 19,-11 19,11 0,22 -19,11 -19,-11"
+             fill="#1a2a22" stroke="#88CCAA" stroke-opacity="0.35" stroke-width="1"/>
+    <circle cx="0" cy="0" r="5" fill="#88CCAA" opacity="0.4"/>
+
+    <!-- Spokes to Ring 1 -->
+    <line x1="0" y1="-22" x2="0" y2="-75" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="2"/>
+    <line x1="-19" y1="11" x2="-65" y2="55" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="2"/>
+    <line x1="19" y1="11" x2="65" y2="55" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="2"/>
+
+    <!-- ============================================ -->
+    <!-- RING 1 MODULES -->
+    <!-- ============================================ -->
+
+    <!-- Signal Relay (top, sunward — tallest element) -->
+    <g transform="translate(0, -90)">
+      <rect x="-16" y="-16" width="32" height="32" fill="#1a2a22" stroke="#88CCAA" stroke-opacity="0.35" stroke-width="1"/>
+      <!-- Antenna mast extends into crown space -->
+      <line x1="0" y1="-16" x2="0" y2="-70" stroke="#88CCAA" stroke-opacity="0.3" stroke-width="1.5"/>
+      <line x1="-10" y1="-35" x2="10" y2="-35" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <line x1="-7" y1="-55" x2="7" y2="-55" stroke="#88CCAA" stroke-opacity="0.2" stroke-width="0.5"/>
+      <circle cx="0" cy="-72" r="4" fill="#88CCAA" opacity="0.6"/>
+    </g>
+
+    <!-- Furnace (bottom-left) -->
+    <g transform="translate(-78, 60)">
+      <rect x="-20" y="-16" width="40" height="36" fill="#1a2218" stroke="#B8CC72" stroke-opacity="0.35" stroke-width="1"/>
+      <circle cx="0" cy="2" r="8" fill="#B8CC72" opacity="0.08"/>
+      <circle cx="0" cy="2" r="4" fill="#CCAA44" opacity="0.15"/>
+      <!-- Chimney darkward -->
+      <rect x="-6" y="20" width="12" height="16" fill="#222a18" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.5"/>
+      <line x1="-14" y1="10" x2="14" y2="10" stroke="#B8CC72" stroke-opacity="0.25" stroke-width="0.5"/>
+    </g>
+
+    <!-- Dock (bottom-right) -->
+    <g transform="translate(78, 60)">
+      <rect x="-22" y="-14" width="44" height="8" fill="#1a2a22" stroke="#88CCAA" stroke-opacity="0.35" stroke-width="1"/>
+      <rect x="-22" y="-14" width="7" height="36" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.5"/>
+      <rect x="15" y="-14" width="7" height="36" fill="#2a3a32" stroke="#88CCAA" stroke-opacity="0.25" stroke-width="0.5"/>
+      <circle cx="-12" cy="6" r="2.5" fill="#88CCAA" opacity="0.5"/>
+      <circle cx="12" cy="6" r="2.5" fill="#88CCAA" opacity="0.5"/>
+    </g>
+
+    <!-- ============================================ -->
+    <!-- RING 2 MODULES (showing 3 on darkward hemisphere) -->
+    <!-- ============================================ -->
+
+    <!-- Corridor arcs -->
+    <path d="M -78,60 A 90,90 0 0,1 0,-90" fill="none" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="10"/>
+    <path d="M 0,-90 A 90,90 0 0,1 78,60" fill="none" stroke="#88CCAA" stroke-opacity="0.1" stroke-width="10"/>
+
+    <!-- Ring 2 corridors -->
+    <path d="M -155,35 A 155,155 0 0,0 -100,115" fill="none" stroke="#88CCAA" stroke-opacity="0.07" stroke-width="14"/>
+    <path d="M 100,115 A 155,155 0 0,0 155,35" fill="none" stroke="#88CCAA" stroke-opacity="0.07" stroke-width="14"/>
+
+    <!-- Ore Buyer (Ring 2, left) -->
+    <g transform="translate(-155, 35)">
+      <polygon points="0,-24 -26,-2 -18,20 18,20 26,-2" fill="#1a2218" stroke="#B8CC72" stroke-opacity="0.3" stroke-width="0.8"/>
+      <rect x="-10" y="-2" width="20" height="18" fill="#0a0a08" opacity="0.5"/>
+    </g>
+
+    <!-- Frame Press (Ring 2, right) -->
+    <g transform="translate(155, 35)">
+      <rect x="-24" y="-18" width="48" height="36" fill="#2a2410" stroke="#CCAA44" stroke-opacity="0.3" stroke-width="0.8"/>
+      <rect x="-22" y="-16" width="6" height="32" fill="#3a3420"/>
+      <rect x="16" y="-16" width="6" height="32" fill="#3a3420"/>
+      <line x1="-10" y1="0" x2="10" y2="0" stroke="#CCAA44" stroke-opacity="0.4" stroke-width="0.5"/>
+      <line x1="0" y1="-6" x2="0" y2="6" stroke="#CCAA44" stroke-opacity="0.4" stroke-width="0.5"/>
+    </g>
+
+    <!-- Repair Bay (Ring 2, bottom center, most darkward) -->
+    <g transform="translate(0, 170)">
+      <rect x="-22" y="-20" width="44" height="40" fill="#1a2222" stroke="#88AAAA" stroke-opacity="0.3" stroke-width="0.8"/>
+      <line x1="-8" y1="-8" x2="8" y2="8" stroke="#88AAAA" stroke-opacity="0.4" stroke-width="1.5"/>
+      <circle cx="-10" cy="-10" r="5" fill="none" stroke="#88AAAA" stroke-opacity="0.3" stroke-width="0.5"/>
+      <!-- This is the most exposed module — furthest from the star -->
+    </g>
+
+  </g>
+
+  <text x="400" y="700" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">KEY IDEAS: Solar crown is a continuous arc on the sunward hemisphere. It IS the</text>
+  <text x="400" y="715" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">station's identity — you see the crown before you see the modules. Ring layout</text>
+  <text x="400" y="730" text-anchor="middle" fill="#667766" font-family="monospace" font-size="11">preserved. Crown grows as station grows. Industrial modules cluster darkward.</text>
+  <text x="400" y="750" text-anchor="middle" fill="#555555" font-family="monospace" font-size="10">COMPATIBLE with current ring/slot system. Crown is a visual layer, not a new module type.</text>
+  <text x="400" y="770" text-anchor="middle" fill="#555555" font-family="monospace" font-size="10">DARKWARD v</text>
+</svg>
