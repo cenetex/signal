@@ -200,7 +200,7 @@ typedef struct {
      * in cargo[] as fungible counts; this list holds identified ones. */
     named_ingot_t hold_ingots[SHIP_HOLD_INGOTS_MAX];
     int           hold_ingots_count;
-    manifest_t    manifest; /* cargo-manifest v1 scaffold; empty until dual-write lands */
+    manifest_t    manifest; /* ship cargo manifest; stays empty until transfer migration lands */
 } ship_t;
 
 typedef enum {
@@ -329,7 +329,7 @@ typedef struct {
     named_ingot_t named_ingots[STATION_NAMED_INGOTS_MAX];
     int           named_ingots_count;
     bool          named_ingots_dirty;  /* server-only: drives wire push */
-    manifest_t    manifest;            /* cargo-manifest v1 scaffold; empty until dual-write lands */
+    manifest_t    manifest;            /* station cargo manifest; smelt/fab dual-write feeds it */
 } station_t;
 
 /* Station lifecycle helpers, module queries, and ring/geometry helpers
@@ -400,16 +400,22 @@ typedef struct {
     float spin;
     float seed;
     float age;
+    /* TODO: retire the int8 player-id pair below once every consumer
+     * (wire sync, smelt-time credit split) reads from *_token instead.
+     * The token form survives disconnect/reconnect; the int8 form is
+     * wire-legacy and goes stale if a player reconnects into a new slot. */
     int8_t last_towed_by;      /* player ID who last towed this, -1 = none */
     int8_t last_fractured_by;  /* player ID who fractured the parent, -1 = none */
     float smelt_progress;      /* 0.0-1.0: how far through smelting (in furnace beam) */
     bool net_dirty;   /* needs network sync (spawn, fracture, HP change, death) */
-    /* RATi mining: fracture_seed is set once when the fragment is born
-     * and stays constant; grade is rolled fresh every time last_towed_by
-     * changes, keyed on (fracture_seed, new tower's session identity).
-     * Published on the chain at smelt time. */
+    /* Fragment provenance: fracture_seed is fixed at birth. fragment_pub
+     * and grade stay zero/common until the fracture claim window resolves,
+     * then become immutable inputs to smelt + downstream crafting. */
+    uint8_t last_towed_token[8];      /* session token of last towing player, zero = none */
+    uint8_t last_fractured_token[8];  /* session token of fracturer, zero = none */
     uint8_t fracture_seed[32];
-    uint8_t grade;             /* mining_grade_t, 0 = common */
+    uint8_t fragment_pub[32];
+    uint8_t grade;             /* mining_grade_t, cached resolved grade */
 } asteroid_t;
 
 typedef enum {

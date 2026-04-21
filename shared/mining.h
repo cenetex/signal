@@ -219,6 +219,40 @@ static inline void mining_keypair_derive(const uint8_t fracture_seed[MINING_FRAC
     sha256_bytes(pub_in,  sizeof(pub_in),  out->pub);
 }
 
+/* Canonical fragment identity once a fracture claim resolves:
+ *   sha256("SIGNALv1" || "FRAG" || fracture_seed || winner_player_pub || nonce_le)
+ *
+ * Terminology note: `winner_player_pub` is a 32-byte opaque identifier
+ * (sha256 of the session_token), NOT a secp256k1 / ed25519 public key.
+ * It cannot be used for signature verification — it just deterministically
+ * names the session that won the claim race. Real keypair support
+ * (signed transfers, signed claims) would layer on top; this field is
+ * the proof-of-race, not a proof-of-key. */
+static inline void mining_fragment_pub_compute(
+    const uint8_t fracture_seed[MINING_FRACTURE_SEED_BYTES],
+    const uint8_t winner_player_pub[MINING_PUBKEY_BYTES],
+    uint32_t burst_nonce,
+    uint8_t out_pub[MINING_PUBKEY_BYTES]) {
+    uint8_t buf[8 + 4 + MINING_FRACTURE_SEED_BYTES + MINING_PUBKEY_BYTES + 4];
+    size_t o = 0;
+    static const uint8_t domain[8] = { 'S','I','G','N','A','L','v','1' };
+    memcpy(&buf[o], domain, sizeof(domain));
+    o += sizeof(domain);
+    buf[o++] = 'F';
+    buf[o++] = 'R';
+    buf[o++] = 'A';
+    buf[o++] = 'G';
+    memcpy(&buf[o], fracture_seed, MINING_FRACTURE_SEED_BYTES);
+    o += MINING_FRACTURE_SEED_BYTES;
+    memcpy(&buf[o], winner_player_pub, MINING_PUBKEY_BYTES);
+    o += MINING_PUBKEY_BYTES;
+    buf[o++] = (uint8_t)(burst_nonce);
+    buf[o++] = (uint8_t)(burst_nonce >> 8);
+    buf[o++] = (uint8_t)(burst_nonce >> 16);
+    buf[o++] = (uint8_t)(burst_nonce >> 24);
+    sha256_bytes(buf, o, out_pub);
+}
+
 /* Convenience: derive a standalone player keypair from a random seed
  * (used once at first launch, not from fracture state). */
 static inline void mining_keypair_from_random_seed(const uint8_t seed[32],

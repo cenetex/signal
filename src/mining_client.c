@@ -34,10 +34,61 @@ void mining_client_record_strike(mining_grade_t grade, int bonus_cr) {
     }
 }
 
+bool mining_client_search_fracture(uint32_t fracture_id, const uint8_t seed[32],
+                                   uint32_t deadline_ms, uint16_t burst_cap,
+                                   mining_client_claim_t *out_claim) {
+    mining_grade_t best_grade = MINING_GRADE_COMMON;
+    uint32_t best_nonce = 0;
+
+    (void)deadline_ms; /* Server enforces the deadline; client races to beat it. */
+    if (!out_claim || !seed || !g_mining.player_ready || burst_cap == 0) return false;
+    for (uint32_t n = 0; n < burst_cap; n++) {
+        mining_keypair_t kp;
+        char callsign[8];
+        mining_grade_t grade;
+
+        mining_keypair_derive(seed, g_mining.player_key, n, &kp);
+        mining_callsign_from_pubkey(kp.pub, callsign);
+        grade = mining_classify_base58(callsign);
+        if (grade > best_grade) {
+            best_grade = grade;
+            best_nonce = n;
+        }
+    }
+
+    out_claim->fracture_id = fracture_id;
+    out_claim->burst_nonce = best_nonce;
+    out_claim->claimed_grade = best_grade;
+    /* Track the active fracture so resolve can clear the HUD state on arrival.
+     * The 0.6s timer is a cosmetic cap; if the server answer beats it,
+     * mining_client_resolve_fracture clears both. */
+    g_mining.fracture_search_id = fracture_id;
+    if (g_mining.fracture_search_timer < 0.6f)
+        g_mining.fracture_search_timer = 0.6f;
+    return true;
+}
+
+void mining_client_resolve_fracture(uint32_t fracture_id, mining_grade_t grade) {
+    (void)grade;
+    /* Clear MINING... // CLAIM WINDOW the instant the server's resolve
+     * arrives — without this, the badge could linger past a sub-second
+     * resolution and leave the player thinking a claim is still open.
+     * Only clear if this is the fracture we were racing; stale resolves
+     * (e.g. from a different nearby fragment) are ignored. */
+    if (g_mining.fracture_search_id && g_mining.fracture_search_id == fracture_id) {
+        g_mining.fracture_search_id = 0;
+        g_mining.fracture_search_timer = 0.0f;
+    }
+}
+
 void mining_client_tick(float dt) {
     if (g_mining.recent_strike_timer > 0.0f) {
         g_mining.recent_strike_timer -= dt;
         if (g_mining.recent_strike_timer < 0.0f) g_mining.recent_strike_timer = 0.0f;
+    }
+    if (g_mining.fracture_search_timer > 0.0f) {
+        g_mining.fracture_search_timer -= dt;
+        if (g_mining.fracture_search_timer < 0.0f) g_mining.fracture_search_timer = 0.0f;
     }
 }
 

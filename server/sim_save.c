@@ -18,6 +18,11 @@
  *   - Scaffolds removed — transient in-flight construction.
  *   - v23 saves migrated by reading full station/asteroid/scaffold data,
  *     then the next autosave writes the catalog.
+ * v27: active fracture children return as a counted sidecar section.
+ *   - Only already-fractured children persist; terrain asteroids remain
+ *     derived from the belt seed.
+ *   - Open fracture claim windows and resolved fragment provenance survive
+ *     crashes/restarts.
  */
 #include "game_sim.h"
 #include "manifest.h"
@@ -53,7 +58,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 26  /* RATi v2: per-station named ingot stockpile */
+#define SAVE_VERSION 28  /* fracture-child claimant identity sidecar */
 #define MIN_SAVE_VERSION 20  /* migrate v20 by mapping old module_buffer → input */
 
 /* Set by world_load() before read_station() so per-station readers know
@@ -273,6 +278,139 @@ static bool read_asteroid(FILE *f, asteroid_t *a) {
     return true;
 }
 
+/* ---- fracture-child sidecar I/O (v27+) ---- */
+static bool write_fracture_child(FILE *f, uint16_t slot,
+                                 const asteroid_t *a,
+                                 const fracture_claim_state_t *state) {
+    uint8_t claim_flags = 0;
+    WRITE_FIELD(f, slot);
+    WRITE_FIELD(f, a->tier);
+    WRITE_FIELD(f, a->pos);
+    WRITE_FIELD(f, a->vel);
+    WRITE_FIELD(f, a->radius);
+    WRITE_FIELD(f, a->hp);
+    WRITE_FIELD(f, a->max_hp);
+    WRITE_FIELD(f, a->ore);
+    WRITE_FIELD(f, a->max_ore);
+    WRITE_FIELD(f, a->commodity);
+    WRITE_FIELD(f, a->rotation);
+    WRITE_FIELD(f, a->spin);
+    WRITE_FIELD(f, a->seed);
+    WRITE_FIELD(f, a->age);
+    WRITE_FIELD(f, a->last_towed_by);
+    WRITE_FIELD(f, a->last_fractured_by);
+    WRITE_FIELD(f, a->smelt_progress);
+    WRITE_FIELD(f, a->last_towed_token);
+    WRITE_FIELD(f, a->last_fractured_token);
+    WRITE_FIELD(f, a->fracture_seed);
+    WRITE_FIELD(f, a->fragment_pub);
+    WRITE_FIELD(f, a->grade);
+    if (state) {
+        if (state->active) claim_flags |= 1u;
+        if (state->resolved) claim_flags |= 2u;
+    }
+    WRITE_FIELD(f, claim_flags);
+    if (state) {
+        WRITE_FIELD(f, state->fracture_id);
+        WRITE_FIELD(f, state->deadline_ms);
+        WRITE_FIELD(f, state->burst_cap);
+        WRITE_FIELD(f, state->best_nonce);
+        WRITE_FIELD(f, state->best_grade);
+        WRITE_FIELD(f, state->best_player_pub);
+        WRITE_FIELD(f, state->seen_claimant_count);
+        WRITE_FIELD(f, state->_pad1);
+        WRITE_FIELD(f, state->seen_claimant_tokens);
+    } else {
+        uint32_t zero32 = 0;
+        uint16_t zero16 = 0;
+        uint8_t zero8 = 0;
+        uint8_t zero_pad[3] = {0};
+        uint8_t zero_pub[32] = {0};
+        uint8_t zero_tokens[MAX_PLAYERS][8] = {{0}};
+        WRITE_FIELD(f, zero32);
+        WRITE_FIELD(f, zero32);
+        WRITE_FIELD(f, zero16);
+        WRITE_FIELD(f, zero32);
+        WRITE_FIELD(f, zero8);
+        WRITE_FIELD(f, zero_pub);
+        WRITE_FIELD(f, zero8);
+        WRITE_FIELD(f, zero_pad);
+        WRITE_FIELD(f, zero_tokens);
+    }
+    return true;
+}
+
+static bool read_fracture_child(FILE *f, world_t *w) {
+    uint16_t slot;
+    uint8_t claim_flags = 0;
+    asteroid_t *a;
+    fracture_claim_state_t *state;
+
+    READ_FIELD(f, slot);
+    if (slot >= MAX_ASTEROIDS) return false;
+    a = &w->asteroids[slot];
+    state = &w->fracture_claims[slot];
+    memset(a, 0, sizeof(*a));
+    memset(state, 0, sizeof(*state));
+    a->active = true;
+    a->fracture_child = true;
+    a->net_dirty = true;
+    READ_FIELD(f, a->tier);
+    READ_FIELD(f, a->pos);
+    READ_FIELD(f, a->vel);
+    READ_FIELD(f, a->radius);
+    READ_FIELD(f, a->hp);
+    READ_FIELD(f, a->max_hp);
+    READ_FIELD(f, a->ore);
+    READ_FIELD(f, a->max_ore);
+    READ_FIELD(f, a->commodity);
+    READ_FIELD(f, a->rotation);
+    READ_FIELD(f, a->spin);
+    READ_FIELD(f, a->seed);
+    READ_FIELD(f, a->age);
+    READ_FIELD(f, a->last_towed_by);
+    READ_FIELD(f, a->last_fractured_by);
+    READ_FIELD(f, a->smelt_progress);
+    READ_FIELD(f, a->last_towed_token);
+    READ_FIELD(f, a->last_fractured_token);
+    READ_FIELD(f, a->fracture_seed);
+    READ_FIELD(f, a->fragment_pub);
+    READ_FIELD(f, a->grade);
+    READ_FIELD(f, claim_flags);
+    READ_FIELD(f, state->fracture_id);
+    READ_FIELD(f, state->deadline_ms);
+    READ_FIELD(f, state->burst_cap);
+    READ_FIELD(f, state->best_nonce);
+    if (g_loaded_save_version >= 28) {
+        READ_FIELD(f, state->best_grade);
+        READ_FIELD(f, state->best_player_pub);
+        READ_FIELD(f, state->seen_claimant_count);
+        READ_FIELD(f, state->_pad1);
+        if (state->seen_claimant_count > MAX_PLAYERS) return false;
+        READ_FIELD(f, state->seen_claimant_tokens);
+    } else {
+        uint32_t legacy_seen_players_mask;
+        int8_t legacy_best_player_id;
+        READ_FIELD(f, legacy_seen_players_mask);
+        READ_FIELD(f, state->best_grade);
+        READ_FIELD(f, legacy_best_player_id);
+        READ_FIELD(f, state->best_player_pub);
+        (void)legacy_seen_players_mask;
+        (void)legacy_best_player_id;
+        state->seen_claimant_count = 0;
+        memset(state->_pad1, 0, sizeof(state->_pad1));
+        memset(state->seen_claimant_tokens, 0, sizeof(state->seen_claimant_tokens));
+    }
+    state->active = (claim_flags & 1u) != 0;
+    state->resolved = (claim_flags & 2u) != 0;
+    state->challenge_dirty = state->active;
+    state->resolved_dirty = false;
+    w->asteroid_origin[slot].chunk_x = 0;
+    w->asteroid_origin[slot].chunk_y = 0;
+    w->asteroid_origin[slot].from_chunk = false;
+    return true;
+}
+
 /* ---- npc_ship field-by-field I/O ---- */
 static bool write_npc(FILE *f, const npc_ship_t *n) {
     WRITE_FIELD(f, n->active);
@@ -363,12 +501,32 @@ bool world_save(const world_t *w, const char *path) {
     { int32_t sc = (int32_t)w->station_count;
       WRITE_FIELD(f, sc); }
     WRITE_FIELD(f, w->next_station_id);
+    WRITE_FIELD(f, w->next_fracture_id);
 
     /* Stations — session-tier only (identity lives in station catalog) */
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (!write_station_session(f, &w->stations[i])) { fclose(f); remove(tmp_path); return false; }
     }
-    /* Asteroids: removed in v24 — derived state, regenerated from belt seed */
+    /* Active fracture children (v27+): counted sidecar section.
+     * Terrain asteroids still remain derived from the belt seed. */
+    {
+        uint32_t fracture_child_count = 0;
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            if (w->asteroids[i].active && w->asteroids[i].fracture_child)
+                fracture_child_count++;
+        }
+        WRITE_FIELD(f, fracture_child_count);
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            if (!w->asteroids[i].active || !w->asteroids[i].fracture_child) continue;
+            if (!write_fracture_child(f, (uint16_t)i, &w->asteroids[i],
+                                      &w->fracture_claims[i])) {
+                fclose(f);
+                remove(tmp_path);
+                return false;
+            }
+        }
+    }
+    /* Asteroids: terrain remains derived from belt seed */
     /* Scaffolds: removed in v24 — transient in-flight construction */
     /* NPC ships */
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
@@ -426,7 +584,11 @@ bool world_load(world_t *w, const char *path) {
         READ_FIELD(f, sc);
         w->station_count = (int)sc;
         READ_FIELD(f, w->next_station_id);
+        if (version >= 27) READ_FIELD(f, w->next_fracture_id);
+        else w->next_fracture_id = 0;
         save_station_slots = MAX_STATIONS; /* v25 writes all 64 slots */
+    } else {
+        w->next_fracture_id = 0;
     }
 
     if (version >= 24) {
@@ -441,7 +603,24 @@ bool world_load(world_t *w, const char *path) {
                 if (station_exists(&w->stations[i]) && i >= w->station_count)
                     w->station_count = i + 1;
         }
-        /* No asteroids or scaffolds in v24+ */
+        memset(w->asteroids, 0, sizeof(w->asteroids));
+        memset(w->fracture_claims, 0, sizeof(w->fracture_claims));
+        memset(w->asteroid_origin, 0, sizeof(w->asteroid_origin));
+        if (version >= 27) {
+            uint32_t fracture_child_count = 0;
+            READ_FIELD(f, fracture_child_count);
+            if (fracture_child_count > MAX_ASTEROIDS) {
+                fclose(f);
+                return false;
+            }
+            for (uint32_t i = 0; i < fracture_child_count; i++) {
+                if (!read_fracture_child(f, w)) {
+                    fclose(f);
+                    return false;
+                }
+            }
+        }
+        /* No terrain asteroids or scaffolds in v24+ */
     } else {
         /* v20-v23: full station data (identity will be written to catalog on next save) */
         for (int i = 0; i < MAX_STATIONS; i++) {
@@ -609,10 +788,14 @@ bool world_load(world_t *w, const char *path) {
         }
     }
 
-    /* v24: asteroids and scaffolds no longer saved — ensure arrays are
+    /* v24-v26: asteroids and scaffolds no longer saved — ensure arrays are
      * clean whether we read-and-discarded legacy data or skipped them.
-     * Asteroids regenerate via belt spawn timer; scaffolds start empty. */
-    memset(w->asteroids, 0, sizeof(w->asteroids));
+     * v27 brings back already-fractured children only. */
+    if (version < 27) {
+        memset(w->asteroids, 0, sizeof(w->asteroids));
+        memset(w->fracture_claims, 0, sizeof(w->fracture_claims));
+        memset(w->asteroid_origin, 0, sizeof(w->asteroid_origin));
+    }
     memset(w->scaffolds, 0, sizeof(w->scaffolds));
 
     if (version < 24) {

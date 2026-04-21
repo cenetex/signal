@@ -3,6 +3,7 @@
  * Extracted from game_sim.c.
  */
 #include "sim_production.h"
+#include "sim_asteroid.h"      /* fracture_claim_state_reset */
 #include "sim_construction.h"  /* module_build_material, module_build_cost */
 #include "manifest.h"
 #include "mining.h"            /* grade roll at smelt time */
@@ -15,18 +16,31 @@
 /* Smelting helpers                                                    */
 /* ------------------------------------------------------------------ */
 
-static void smelt_fragment_pub_legacy(const asteroid_t *a, uint8_t out_pub[32]) {
-    static const uint8_t domain[8] = {
-        'S', 'I', 'G', 'N', 'A', 'L', 'v', '1'
-    };
-    static const uint8_t frag_tag[4] = { 'F', 'R', 'A', 'G' };
-    uint8_t buf[8 + 4 + 32 + 32 + 4] = {0};
+static bool fragment_pub_is_zero(const asteroid_t *a) {
+    static const uint8_t zero[32] = {0};
+    return !a || memcmp(a->fragment_pub, zero, sizeof(zero)) == 0;
+}
 
-    if (!a || !out_pub) return;
-    memcpy(buf, domain, sizeof(domain));
-    memcpy(&buf[8], frag_tag, sizeof(frag_tag));
-    memcpy(&buf[12], a->fracture_seed, sizeof(a->fracture_seed));
-    sha256_bytes(buf, sizeof(buf), out_pub);
+static void smelt_fragment_pub_compat(asteroid_t *a) {
+    uint8_t zero_pub[32] = {0};
+    if (!a || !fragment_pub_is_zero(a)) return;
+    mining_fragment_pub_compute(a->fracture_seed, zero_pub, 0, a->fragment_pub);
+}
+
+/* fracture_claim_state_clear was a local duplicate of
+ * fracture_claim_state_reset — now sourced from sim_asteroid.h so
+ * the single source of truth covers both the birth and smelt-done paths. */
+
+static int connected_player_by_token(const world_t *w, const uint8_t token[8]) {
+    static const uint8_t zero_token[8] = {0};
+    if (!w || !token || memcmp(token, zero_token, sizeof(zero_token)) == 0)
+        return -1;
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        if (!w->players[i].connected || !w->players[i].session_ready) continue;
+        if (memcmp(w->players[i].session_token, token, 8) == 0)
+            return i;
+    }
+    return -1;
 }
 
 static bool station_manifest_push_ingot(station_t *st, const cargo_unit_t *unit) {
@@ -353,54 +367,6 @@ void sim_step_station_production(world_t *w, float dt) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Grade roll at fracture (universe-determined, public)                */
-/* ------------------------------------------------------------------ */
-
-/* Roll the capped burst against the fragment's fracture_seed using a
- * fixed "universe key" (no per-player input). Grade is a property of
- * the rock itself: every observer sees the same value, the rock's dot
- * color reveals it instantly, theft is for a known prize. Budget is
- * MINING_CANDIDATES_PER_TON × ore_tons. */
-static const uint8_t MINING_UNIVERSE_KEY[32] = {
-    'R','A','T','i',  '/','o','r','e',  '/','u','n','i', 'v','e','r','s',
-    'e','/','v','1',  0,0,0,0,           0,0,0,0,         0,0,0,0
-};
-
-mining_grade_t sim_roll_fragment_grade(const asteroid_t *a) {
-    mining_keypair_t winner;
-    return sim_roll_fragment_winner(a, &winner);
-}
-
-/* RATi v2: also surface the keypair of the highest-grade candidate so
- * the refinery can stamp it onto a named ingot. The roll is identical
- * to sim_roll_fragment_grade — same seed, same universe key, same loop —
- * we just remember which nonce won. Deterministic; any client could
- * recompute this from the rock's fracture_seed. */
-mining_grade_t sim_roll_fragment_winner(const asteroid_t *a, mining_keypair_t *out_winner) {
-    mining_grade_t best = MINING_GRADE_COMMON;
-    mining_keypair_t best_kp;
-    memset(&best_kp, 0, sizeof(best_kp));
-    /* Seed the winner with the very first roll so we always return
-     * SOMETHING valid even when every candidate is COMMON. */
-    bool have_winner = false;
-    for (int i = 0; i < MINING_BURST_PER_FRAGMENT; i++) {
-        mining_keypair_t kp;
-        mining_keypair_derive(a->fracture_seed, MINING_UNIVERSE_KEY, (uint32_t)i, &kp);
-        char callsign[8];
-        mining_callsign_from_pubkey(kp.pub, callsign);
-        mining_grade_t g = mining_classify_base58(callsign);
-        /* Prefer higher grade; break ties to first-seen (lower nonce). */
-        if (!have_winner || g > best) {
-            best = g;
-            best_kp = kp;
-            have_winner = true;
-        }
-    }
-    if (out_winner) *out_winner = best_kp;
-    return best;
-}
-
-/* ------------------------------------------------------------------ */
 /* Furnace smelting (fragment hopper pull + smelt)                     */
 /* ------------------------------------------------------------------ */
 
@@ -493,8 +459,14 @@ void step_furnace_smelting(world_t *w, float dt) {
 
         if (a->smelt_progress >= 1.0f && smelt_station >= 0) {
             station_t *st = &w->stations[smelt_station];
-            uint8_t fragment_pub[32];
+            fracture_claim_state_t *claim_state = &w->fracture_claims[i];
+            cargo_unit_t named_unit = {0};
+            bool have_named_unit = false;
+            int prefix = MINING_CLASS_ANONYMOUS;
             /* Check for active ore contract — apply premium if one exists */
+            if (claim_state->active && !claim_state->resolved) continue;
+            if (fragment_pub_is_zero(a))
+                smelt_fragment_pub_compat(a);
             float price = station_buy_price(st, a->commodity);
             for (int k = 0; k < MAX_CONTRACTS; k++) {
                 if (w->contracts[k].active
@@ -512,16 +484,19 @@ void step_furnace_smelting(world_t *w, float dt) {
              * When neither maps to a connected player (e.g. NPC miners), no
              * credits are issued — NPCs are station infrastructure, not profit
              * centers. The value they produce is ingots in station inventory. */
-            int tower = (a->last_towed_by >= 0 && a->last_towed_by < MAX_PLAYERS
-                         && w->players[a->last_towed_by].connected)
-                        ? a->last_towed_by : -1;
-            int fracturer = (a->last_fractured_by >= 0 && a->last_fractured_by < MAX_PLAYERS
-                             && w->players[a->last_fractured_by].connected)
-                            ? a->last_fractured_by : -1;
+            int tower = connected_player_by_token(w, a->last_towed_token);
+            int fracturer = connected_player_by_token(w, a->last_fractured_token);
+            if (tower < 0 &&
+                a->last_towed_by >= 0 && a->last_towed_by < MAX_PLAYERS &&
+                w->players[a->last_towed_by].connected)
+                tower = a->last_towed_by;
+            if (fracturer < 0 &&
+                a->last_fractured_by >= 0 && a->last_fractured_by < MAX_PLAYERS &&
+                w->players[a->last_fractured_by].connected)
+                fracturer = a->last_fractured_by;
 
-            /* Grade was stamped on the asteroid the moment the current
-             * tower grabbed it (sim_roll_fragment_grade). Smelt just
-             * publishes that grade — no fresh dice. */
+            /* Grade is committed when the fracture claim resolves.
+             * Smelt only publishes that cached value — no fresh dice. */
             mining_grade_t grade = (mining_grade_t)a->grade;
             float bonus_mult = mining_payout_multiplier(grade);
             float graded_value = ore_value * bonus_mult;
@@ -596,30 +571,34 @@ void step_furnace_smelting(world_t *w, float dt) {
             st->inventory[output] += a->ore;
 
             /* Dual-write discrete units for the floored stock delta so
-             * manifest counts stay aligned with the legacy float path. */
-            smelt_fragment_pub_legacy(a, fragment_pub);
+             * manifest counts stay aligned with the legacy float path.
+             * Compute the leading-unit hash only when we actually cross
+             * an integer boundary — skips a sha256 per tick on partial
+             * smelts. */
             {
                 int units_before = (int)floorf(stock_before + 0.0001f);
                 int units_after = (int)floorf(st->inventory[output] + 0.0001f);
                 int manifest_units = units_after - units_before;
+                if (manifest_units > 0) {
+                    have_named_unit = hash_ingot(output, grade, a->fragment_pub,
+                                                 0, &named_unit);
+                    if (have_named_unit)
+                        prefix = mining_pubkey_class(named_unit.pub);
+                }
                 for (int idx = 0; idx < manifest_units; idx++) {
                     cargo_unit_t unit = {0};
-                    if (!hash_ingot(output, grade, fragment_pub, (uint16_t)idx, &unit))
+                    if (!hash_ingot(output, grade, a->fragment_pub, (uint16_t)idx, &unit))
                         continue;
                     if (!station_manifest_push_ingot(st, &unit))
                         break;
                 }
             }
 
-            /* RATi v2: also re-roll the winning candidate's keypair
-             * and, if its base58 carries a class-letter prefix,
-             * deposit a named ingot into the station's stockpile. The
-             * player still gets paid the bulk credits above; this is
-             * an additional output unique per-fragment. */
-            mining_keypair_t winner;
-            sim_roll_fragment_winner(a, &winner);
-            int prefix = mining_pubkey_class(winner.pub);
-            if (prefix != MINING_CLASS_ANONYMOUS) {
+            /* RATi v2 compatibility: mirror the first hashed ingot into
+             * the legacy named-ingot stockpile when it carries a class
+             * prefix. This keeps the transition path aligned with the
+             * manifest unit identity instead of inventing a second pub. */
+            if (have_named_unit && prefix != MINING_CLASS_ANONYMOUS) {
                 /* If the stockpile is full, LRU-evict the entry with
                  * the smallest mined_block (oldest first). The evicted
                  * pubkey is voided to the chain so it can never be
@@ -646,13 +625,13 @@ void step_furnace_smelting(world_t *w, float dt) {
 
                 named_ingot_t *ing = &st->named_ingots[st->named_ingots_count++];
                 memset(ing, 0, sizeof(*ing));
-                memcpy(ing->pubkey, winner.pub, 32);
+                memcpy(ing->pubkey, named_unit.pub, 32);
                 ing->prefix_class   = (uint8_t)prefix;
                 ing->metal          = (uint8_t)ingot;
                 ing->origin_station = (uint8_t)smelt_station;
 
                 char cs[12];
-                mining_render_callsign(winner.pub, cs);
+                mining_render_callsign(named_unit.pub, cs);
                 char text[96];
                 snprintf(text, sizeof(text), "smelted %s", cs);
                 ing->mined_block = signal_channel_post(w, smelt_station, text, "");
@@ -660,6 +639,7 @@ void step_furnace_smelting(world_t *w, float dt) {
             }
 
             clear_asteroid(a);
+            fracture_claim_state_reset(claim_state);
         }
     }
 }

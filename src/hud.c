@@ -952,6 +952,9 @@ void draw_hud(void) {
         } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 3) {
             sdtx_color3b(PAL_SCAN_ACTIVE);
             sdtx_printf("SCAN PILOT // ID %d", LOCAL_PLAYER.scan_target_index);
+        } else if (mining_client_get()->fracture_search_timer > 0.0f) {
+            sdtx_color3b(PAL_ACTIVE);
+            sdtx_puts("MINING... // CLAIM WINDOW");
         } else if (LOCAL_PLAYER.ship.towed_count > 0) {
             sdtx_color3b(PAL_ACTIVE);
             if (LOCAL_PLAYER.ship.tractor_active) {
@@ -1093,6 +1096,9 @@ void draw_hud(void) {
         int other_hull = (int)lroundf(other->ship.hull);
         sdtx_color3b(PAL_SCAN_ACTIVE);
         sdtx_printf("Scan pilot %d // hull %d", LOCAL_PLAYER.scan_target_index, other_hull);
+    } else if (mining_client_get()->fracture_search_timer > 0.0f) {
+        sdtx_color3b(PAL_ACTIVE);
+        sdtx_puts("Mining... // claim window");
     } else if (LOCAL_PLAYER.nearby_fragments > 0) {
         sdtx_color3b(PAL_ACTIVE);
         if (LOCAL_PLAYER.tractor_fragments > 0) {
@@ -1384,4 +1390,3 @@ void draw_hud(void) {
 
     draw_station_services(&ui);
 }
-

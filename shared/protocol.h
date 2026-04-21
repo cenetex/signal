@@ -52,6 +52,9 @@ enum {
     NET_MSG_HOLD_INGOTS     = 0x29, /* server -> client: local player's hold ingots (RATi v2) */
     NET_MSG_BUY_INGOT       = 0x2A, /* client -> server: [type:1][pubkey:32] purchase from current docked station */
     NET_MSG_DELIVER_INGOT   = 0x2B, /* client -> server: [type:1][hold_index:1] deposit to current docked station */
+    NET_MSG_FRACTURE_CHALLENGE = 0x2C, /* server -> nearby clients: [type:1][fracture_id:u32][seed:32][deadline_ms:u32][burst_cap:u16] */
+    NET_MSG_FRACTURE_CLAIM     = 0x2D, /* client -> server: [type:1][fracture_id:u32][burst_nonce:u32][claimed_grade:u8] */
+    NET_MSG_FRACTURE_RESOLVED  = 0x2E, /* server -> nearby clients: [type:1][fracture_id:u32][fragment_pub:32][winner_pub:32][grade:u8] */
 };
 
 /* Per-class buy price at any station's stockpile. RATi/commissioned
@@ -80,6 +83,12 @@ enum {
  *   [type:1][count:1] + count × NAMED_INGOT_RECORD_SIZE */
 #define STATION_INGOTS_HEADER 3
 #define HOLD_INGOTS_HEADER    2
+
+/* Client-hashed fracture window */
+#define FRACTURE_CHALLENGE_BURST_CAP 50
+#define FRACTURE_CHALLENGE_SIZE      (1 + 4 + 32 + 4 + 2)
+#define FRACTURE_CLAIM_SIZE          (1 + 4 + 4 + 1)
+#define FRACTURE_RESOLVED_SIZE       (1 + 4 + 32 + 32 + 1)
 
 /* Signal channel wire record:
  *   [id:u64][ts_ms:u32][sender:i8][text_len:u8][text:200][entry_hash:32] = 246 bytes

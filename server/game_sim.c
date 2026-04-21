@@ -1295,12 +1295,15 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             sp->tractor_fragments++;
             /* Instant grab: tractor pulse snaps fragments to tow chain.
              * No drift phase — if it's in range and there's room, grab it.
-             * Grade was rolled at fracture and is already on the rock; we
-             * just stamp ownership for the smelt-time payout split. */
+             * The fracture claim window owns rarity; tow ownership only
+             * matters for the later smelt-time payout split. */
             if (sp->ship.towed_count < max_tow) {
                 sp->ship.towed_fragments[sp->ship.towed_count] = (int16_t)i;
                 sp->ship.towed_count++;
                 a->last_towed_by = (int8_t)sp->id;
+                if (sp->session_ready)
+                    memcpy(a->last_towed_token, sp->session_token,
+                           sizeof(a->last_towed_token));
                 sp->ship.stat_ore_mined += a->ore;
                 emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
                                             .pickup = {.ore = a->ore, .fragments = 1}});
@@ -3473,6 +3476,7 @@ void world_sim_step(world_t *w, float dt) {
         resolve_asteroid_collisions(w);
         resolve_asteroid_station_collisions(w);
     }
+    step_fracture_claims(w);
     step_furnace_smelting(w, dt);
     sim_step_refinery_production(w, dt);
     sim_step_station_production(w, dt);

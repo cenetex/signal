@@ -117,6 +117,50 @@ typedef struct {
     bool  valid;                /* false = needs rebuild */
 } signal_grid_t;
 
+typedef struct {
+    bool     active;            /* fracture claim window is open */
+    bool     resolved;          /* fragment_pub + grade committed */
+    bool     challenge_dirty;   /* transport still needs to broadcast challenge */
+    bool     resolved_dirty;    /* transport still needs to broadcast resolution */
+    uint32_t fracture_id;       /* monotonic runtime id */
+    uint32_t deadline_ms;       /* world clock deadline */
+    uint16_t burst_cap;         /* client search cap for this fracture */
+    uint16_t _pad0;
+    uint32_t best_nonce;        /* winning nonce */
+    uint8_t  best_grade;        /* mining_grade_t */
+    uint8_t  best_player_pub[32];
+    uint8_t  seen_claimant_count; /* durable one-claim-per-identity */
+    uint8_t  _pad1[3];
+    uint8_t  seen_claimant_tokens[MAX_PLAYERS][8];
+    /* Rebroadcast throttling (server-only, not persisted). Zero = never
+     * broadcast. step_fracture_claims re-arms challenge_dirty whenever
+     * now - challenge_last_ms >= FRACTURE_CHALLENGE_REBROADCAST_MS so
+     * late joiners in the claim window still receive the challenge. */
+    uint32_t challenge_last_ms;
+} fracture_claim_state_t;
+
+/* Resolution broadcast queue. fracture_commit_resolution pushes into
+ * here so NET_MSG_FRACTURE_RESOLVED reaches clients even if the
+ * asteroid is smelted and cleared in the same tick as the resolve —
+ * the original resolved_dirty flag lives on the claim state and was
+ * wiped by that clear, dropping the message. Queue entries outlive
+ * the asteroid and are flushed on later broadcast ticks. */
+#define MAX_PENDING_RESOLVES 32
+#define FRACTURE_RESOLVE_RETRY_COUNT 3          /* broadcasts before giving up */
+#define FRACTURE_RESOLVE_RETRY_PERIOD_MS 100    /* spacing between retries */
+#define FRACTURE_CHALLENGE_REBROADCAST_MS 100   /* rebroadcast cadence while active */
+
+typedef struct {
+    bool     active;
+    uint8_t  tx_count;
+    uint8_t  grade;
+    uint8_t  _pad;
+    uint32_t fracture_id;
+    uint32_t last_tx_ms;
+    uint8_t  fragment_pub[32];
+    uint8_t  winner_pub[32];
+} pending_resolve_t;
+
 /* ------------------------------------------------------------------ */
 /* Server-specific types                                              */
 /* ------------------------------------------------------------------ */
@@ -226,6 +270,9 @@ typedef struct {
     int station_count;              /* highest active slot + 1 (3 at reset, grows with outposts) */
     uint32_t next_station_id;      /* monotonic counter for stable station IDs */
     asteroid_t asteroids[MAX_ASTEROIDS];
+    fracture_claim_state_t fracture_claims[MAX_ASTEROIDS];
+    /* Server-only, not persisted — broadcast retry queue for resolutions. */
+    pending_resolve_t pending_resolves[MAX_PENDING_RESOLVES];
     /* Chunk origin tracking — server-only, not serialized */
     struct {
         int32_t chunk_x, chunk_y;
@@ -241,6 +288,7 @@ typedef struct {
     sim_events_t events;
     contract_t contracts[MAX_CONTRACTS];
     bool player_only_mode;
+    uint32_t next_fracture_id;
     belt_field_t belt;
     spatial_grid_t asteroid_grid;
     signal_grid_t signal_cache;

@@ -9,6 +9,7 @@
 #include "manifest.h"
 #include "mining.h"  /* mining_render_callsign for chain log copy */
 #include "net_protocol.h"
+#include "sim_asteroid.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -86,6 +87,99 @@ static void broadcast_except(int exclude, const void *data, size_t len) {
         if (i == exclude) continue;
         if (world.players[i].connected && world.players[i].session_ready && world.players[i].conn)
             ws_send(world.players[i].conn, data, len);
+    }
+}
+
+static float fracture_signal_radius(vec2 pos) {
+    float radius = 0.0f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &world.stations[s];
+        if (!station_provides_signal(st)) continue;
+        if (v2_dist_sq(pos, st->pos) <= st->signal_range * st->signal_range &&
+            st->signal_range > radius)
+            radius = st->signal_range;
+    }
+    return radius;
+}
+
+static bool fracture_player_in_range(int player_id, int asteroid_idx) {
+    float radius;
+    if (player_id < 0 || player_id >= MAX_PLAYERS ||
+        asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS)
+        return false;
+    if (!world.players[player_id].connected ||
+        !world.players[player_id].session_ready ||
+        !world.players[player_id].conn ||
+        !world.asteroids[asteroid_idx].active)
+        return false;
+    radius = fracture_signal_radius(world.asteroids[asteroid_idx].pos);
+    if (radius <= 0.0f) return false;
+    return v2_dist_sq(world.players[player_id].ship.pos, world.asteroids[asteroid_idx].pos) <= radius * radius;
+}
+
+static void broadcast_fracture_updates(void) {
+    uint32_t now_ms = (uint32_t)(world.time * 1000.0f);
+
+    /* Challenges: re-broadcast to each in-range player while the window
+     * is open (challenge_dirty is re-armed in step_fracture_claims).
+     * Clients dedupe by fracture_id so duplicate challenges are cheap. */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        fracture_claim_state_t *state = &world.fracture_claims[i];
+        if (state->challenge_dirty && state->fracture_id && world.asteroids[i].active) {
+            uint8_t buf[FRACTURE_CHALLENGE_SIZE];
+            buf[0] = NET_MSG_FRACTURE_CHALLENGE;
+            write_u32_le(&buf[1], state->fracture_id);
+            memcpy(&buf[5], world.asteroids[i].fracture_seed, 32);
+            write_u32_le(&buf[37], state->deadline_ms);
+            write_u16_le(&buf[41], state->burst_cap);
+            for (int p = 0; p < MAX_PLAYERS; p++) {
+                if (!fracture_player_in_range(p, i)) continue;
+                ws_send(world.players[p].conn, buf, sizeof(buf));
+            }
+            state->challenge_dirty = false;
+        }
+        /* The legacy per-state resolved_dirty path is preserved for the
+         * common "asteroid still alive at resolve time" case — cheap
+         * and range-filtered. The pending_resolves queue below covers
+         * the gnarly case (resolve + smelt in same tick). */
+        if (state->resolved_dirty && state->fracture_id && world.asteroids[i].active) {
+            uint8_t buf[FRACTURE_RESOLVED_SIZE];
+            buf[0] = NET_MSG_FRACTURE_RESOLVED;
+            write_u32_le(&buf[1], state->fracture_id);
+            memcpy(&buf[5], world.asteroids[i].fragment_pub, 32);
+            memcpy(&buf[37], state->best_player_pub, 32);
+            buf[69] = state->best_grade;
+            for (int p = 0; p < MAX_PLAYERS; p++) {
+                if (!fracture_player_in_range(p, i)) continue;
+                ws_send(world.players[p].conn, buf, sizeof(buf));
+            }
+            state->resolved_dirty = false;
+        }
+    }
+
+    /* Pending resolves: fracture_commit_resolution pushes here so
+     * deliveries survive asteroid clear. Broadcast to every connected
+     * player rather than range-filtering — the asteroid may be gone
+     * so we can't compute range, and clients that never got the
+     * matching challenge drop the resolve in mining_client_resolve_fracture. */
+    for (int p = 0; p < MAX_PENDING_RESOLVES; p++) {
+        pending_resolve_t *pr = &world.pending_resolves[p];
+        if (!pr->active) continue;
+        if (pr->tx_count > 0 && now_ms < pr->last_tx_ms + FRACTURE_RESOLVE_RETRY_PERIOD_MS)
+            continue;
+        uint8_t buf[FRACTURE_RESOLVED_SIZE];
+        buf[0] = NET_MSG_FRACTURE_RESOLVED;
+        write_u32_le(&buf[1], pr->fracture_id);
+        memcpy(&buf[5], pr->fragment_pub, 32);
+        memcpy(&buf[37], pr->winner_pub, 32);
+        buf[69] = pr->grade;
+        for (int pi = 0; pi < MAX_PLAYERS; pi++) {
+            if (!world.players[pi].connected || !world.players[pi].conn) continue;
+            ws_send(world.players[pi].conn, buf, sizeof(buf));
+        }
+        pr->tx_count++;
+        pr->last_tx_ms = now_ms;
+        if (pr->tx_count >= FRACTURE_RESOLVE_RETRY_COUNT) pr->active = false;
     }
 }
 
@@ -217,6 +311,14 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             char msg[96];
             snprintf(msg, sizeof(msg), "%s delivered %s", world.players[pid].callsign, cs);
             signal_channel_post(&world, sidx, msg, "");
+        }
+        break;
+    case NET_MSG_FRACTURE_CLAIM:
+        if (len >= FRACTURE_CLAIM_SIZE) {
+            uint32_t fracture_id = read_u32_le(&data[1]);
+            uint32_t burst_nonce = read_u32_le(&data[5]);
+            uint8_t claimed_grade = data[9];
+            (void)submit_fracture_claim(&world, pid, fracture_id, burst_nonce, claimed_grade);
         }
         break;
     case NET_MSG_SESSION:
@@ -1198,6 +1300,7 @@ int main(void) {
                     int elen = serialize_events(ebuf, &world.events);
                     if (elen > 2) broadcast(ebuf, (size_t)elen);
                 }
+                broadcast_fracture_updates();
                 sim_accum -= SIM_DT;
                 steps++;
             }

@@ -48,6 +48,10 @@ static uint32_t read_u32_le(const uint8_t* buf) {
          | ((uint32_t)buf[3] << 24);
 }
 
+static uint16_t read_u16_le(const uint8_t* buf) {
+    return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
+}
+
 static float read_f32_le(const uint8_t* buf) {
     union { float f; uint32_t u; } conv;
     conv.u = (uint32_t)buf[0]
@@ -59,6 +63,22 @@ static float read_f32_le(const uint8_t* buf) {
 
 /* Forward declaration — implemented per platform below. */
 static void ws_send_binary(const uint8_t* data, int len);
+
+static void send_fracture_claim(uint32_t fracture_id, uint32_t burst_nonce,
+                                mining_grade_t claimed_grade) {
+    uint8_t buf[FRACTURE_CLAIM_SIZE];
+    buf[0] = NET_MSG_FRACTURE_CLAIM;
+    buf[1] = (uint8_t)(fracture_id);
+    buf[2] = (uint8_t)(fracture_id >> 8);
+    buf[3] = (uint8_t)(fracture_id >> 16);
+    buf[4] = (uint8_t)(fracture_id >> 24);
+    buf[5] = (uint8_t)(burst_nonce);
+    buf[6] = (uint8_t)(burst_nonce >> 8);
+    buf[7] = (uint8_t)(burst_nonce >> 16);
+    buf[8] = (uint8_t)(burst_nonce >> 24);
+    buf[9] = (uint8_t)claimed_grade;
+    ws_send_binary(buf, sizeof(buf));
+}
 
 #ifdef __EMSCRIPTEN__
 static uint8_t hex_nibble(char c) {
@@ -667,6 +687,33 @@ static void handle_message(const uint8_t* data, int len) {
         if (len >= 5 && net_state.callbacks.on_world_time) {
             float server_time = read_f32_le(&data[1]);
             net_state.callbacks.on_world_time(server_time);
+        }
+        break;
+
+    case NET_MSG_FRACTURE_CHALLENGE:
+        if (len >= FRACTURE_CHALLENGE_SIZE) {
+            mining_client_claim_t claim = {0};
+            uint32_t fracture_id = read_u32_le(&data[1]);
+            uint32_t deadline_ms = read_u32_le(&data[37]);
+            uint16_t burst_cap = read_u16_le(&data[41]);
+            /* Server rebroadcasts challenges every 100ms while the
+             * window is open so late joiners can race. Skip the work
+             * if we already searched this fracture_id — the sha256
+             * burst would be redundant and would re-send our claim. */
+            const mining_client_t *mc = mining_client_get();
+            if (mc->fracture_search_id == fracture_id) break;
+            if (mining_client_search_fracture(fracture_id, &data[5], deadline_ms,
+                                              burst_cap, &claim)) {
+                send_fracture_claim(claim.fracture_id, claim.burst_nonce,
+                                    claim.claimed_grade);
+            }
+        }
+        break;
+
+    case NET_MSG_FRACTURE_RESOLVED:
+        if (len >= FRACTURE_RESOLVED_SIZE) {
+            mining_client_resolve_fracture(read_u32_le(&data[1]),
+                                           (mining_grade_t)data[69]);
         }
         break;
 

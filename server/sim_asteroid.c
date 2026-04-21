@@ -3,10 +3,10 @@
  * maintenance, and per-frame dynamics.  Extracted from game_sim.c.
  */
 #include "sim_asteroid.h"
-#include "sim_production.h"  /* sim_roll_fragment_grade */
 #include "chunk.h"
 #include "rng.h"
 #include "mining.h"  /* fracture_seed_compute */
+#include "protocol.h"
 
 /* ------------------------------------------------------------------ */
 /* RNG wrappers — use underlying randf() with &w->rng                  */
@@ -44,12 +44,188 @@ static int pick_active_station(world_t *w) {
     return active[w_rand_int(w, 0, count - 1)];
 }
 
+/* fracture_claim_state_reset lives in sim_asteroid.h as a shared
+ * static inline so sim_production.c (smelt completion) agrees on the
+ * exact reset semantics. */
+
+static bool fracture_claim_pub_is_zero(const uint8_t pub[32]) {
+    static const uint8_t zero_pub[32] = {0};
+    return !pub || memcmp(pub, zero_pub, sizeof(zero_pub)) == 0;
+}
+
+static bool fracture_claim_token_is_zero(const uint8_t token[8]) {
+    static const uint8_t zero_token[8] = {0};
+    return !token || memcmp(token, zero_token, sizeof(zero_token)) == 0;
+}
+
+static bool fracture_claim_has_best(const fracture_claim_state_t *state) {
+    return state && !fracture_claim_pub_is_zero(state->best_player_pub);
+}
+
+static bool fracture_claim_seen_token(const fracture_claim_state_t *state,
+                                      const uint8_t token[8]) {
+    if (!state || fracture_claim_token_is_zero(token)) return false;
+    for (uint8_t i = 0; i < state->seen_claimant_count && i < MAX_PLAYERS; i++) {
+        if (memcmp(state->seen_claimant_tokens[i], token, 8) == 0)
+            return true;
+    }
+    return false;
+}
+
+static void fracture_claim_mark_seen_token(fracture_claim_state_t *state,
+                                           const uint8_t token[8]) {
+    if (!state || fracture_claim_token_is_zero(token)) return;
+    if (fracture_claim_seen_token(state, token)) return;
+    if (state->seen_claimant_count >= MAX_PLAYERS) return;
+    memcpy(state->seen_claimant_tokens[state->seen_claimant_count], token, 8);
+    state->seen_claimant_count++;
+}
+
+static fracture_claim_state_t *fracture_claim_state_for(world_t *w, int idx) {
+    if (!w || idx < 0 || idx >= MAX_ASTEROIDS) return NULL;
+    return &w->fracture_claims[idx];
+}
+
+static void clear_asteroid_slot(world_t *w, int idx) {
+    fracture_claim_state_t *state = fracture_claim_state_for(w, idx);
+    if (!w || idx < 0 || idx >= MAX_ASTEROIDS) return;
+    clear_asteroid(&w->asteroids[idx]);
+    fracture_claim_state_reset(state);
+}
+
+static float fracture_signal_radius(const world_t *w, vec2 pos) {
+    float radius = 0.0f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_provides_signal(st)) continue;
+        if (v2_dist_sq(pos, st->pos) <= st->signal_range * st->signal_range &&
+            st->signal_range > radius)
+            radius = st->signal_range;
+    }
+    return radius;
+}
+
+static bool player_can_claim_fracture(const world_t *w, int player_id, int asteroid_idx) {
+    const server_player_t *sp;
+    float radius;
+    if (!w || player_id < 0 || player_id >= MAX_PLAYERS ||
+        asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS)
+        return false;
+    sp = &w->players[player_id];
+    if (!sp->connected || !sp->session_ready) return false;
+    if (!w->asteroids[asteroid_idx].active) return false;
+    radius = fracture_signal_radius(w, w->asteroids[asteroid_idx].pos);
+    if (radius <= 0.0f) return false;
+    return v2_dist_sq(sp->ship.pos, w->asteroids[asteroid_idx].pos) <= radius * radius;
+}
+
+static int fracture_find_by_id(const world_t *w, uint32_t fracture_id) {
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const fracture_claim_state_t *state = &w->fracture_claims[i];
+        if (!state->fracture_id) continue;
+        if (state->fracture_id == fracture_id) return i;
+    }
+    return -1;
+}
+
+static void fracture_begin_claim_window(world_t *w, int asteroid_idx) {
+    fracture_claim_state_t *state;
+    asteroid_t *a;
+    if (!w || asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS) return;
+    state = &w->fracture_claims[asteroid_idx];
+    a = &w->asteroids[asteroid_idx];
+    fracture_claim_state_reset(state);
+    if (++w->next_fracture_id == 0) ++w->next_fracture_id;
+    state->active = true;
+    state->challenge_dirty = true;
+    state->fracture_id = w->next_fracture_id;
+    state->deadline_ms = (uint32_t)(w->time * 1000.0f) + 500u;
+    state->burst_cap = FRACTURE_CHALLENGE_BURST_CAP;
+    a->grade = MINING_GRADE_COMMON;
+    memset(a->fragment_pub, 0, sizeof(a->fragment_pub));
+    a->net_dirty = true;
+}
+
+static void fracture_commit_resolution(world_t *w, int asteroid_idx,
+                                       const uint8_t winner_pub[32],
+                                       uint32_t best_nonce,
+                                       mining_grade_t best_grade) {
+    fracture_claim_state_t *state;
+    asteroid_t *a;
+    if (!w || asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS) return;
+    state = &w->fracture_claims[asteroid_idx];
+    a = &w->asteroids[asteroid_idx];
+    state->active = false;
+    state->resolved = true;
+    state->resolved_dirty = true;
+    state->best_nonce = best_nonce;
+    state->best_grade = (uint8_t)best_grade;
+    if (winner_pub) memcpy(state->best_player_pub, winner_pub, 32);
+    else memset(state->best_player_pub, 0, sizeof(state->best_player_pub));
+    mining_fragment_pub_compute(a->fracture_seed, state->best_player_pub,
+                                best_nonce, a->fragment_pub);
+    a->grade = (uint8_t)best_grade;
+    a->net_dirty = true;
+
+    /* Push onto the resolve broadcast queue. The claim state's
+     * resolved_dirty flag can get wiped by step_furnace_smelting in
+     * the same tick if the rock was already in the furnace beam when
+     * it resolved — the queue entry outlives that clear so transport
+     * can still deliver NET_MSG_FRACTURE_RESOLVED to everyone. */
+    for (int p = 0; p < MAX_PENDING_RESOLVES; p++) {
+        pending_resolve_t *pr = &w->pending_resolves[p];
+        if (pr->active) continue;
+        memset(pr, 0, sizeof(*pr));
+        pr->active = true;
+        pr->fracture_id = state->fracture_id;
+        pr->grade = state->best_grade;
+        memcpy(pr->fragment_pub, a->fragment_pub, 32);
+        memcpy(pr->winner_pub, state->best_player_pub, 32);
+        break;
+    }
+}
+
+static void fracture_resolve_fallback(world_t *w, int asteroid_idx) {
+    fracture_claim_state_t *state;
+    asteroid_t *a;
+    uint8_t zero_pub[32] = {0};
+    mining_grade_t best = MINING_GRADE_COMMON;
+    uint32_t best_nonce = 0;
+    bool have_best = false;
+    uint16_t fallback_cap;
+
+    if (!w || asteroid_idx < 0 || asteroid_idx >= MAX_ASTEROIDS) return;
+    a = &w->asteroids[asteroid_idx];
+    state = &w->fracture_claims[asteroid_idx];
+    /* Match the challenge's burst_cap so unclaimed fractures can
+     * reach the same grade ceiling a claimant would have. Previously
+     * this iterated MINING_BURST_PER_FRAGMENT (20) while clients
+     * searched FRACTURE_CHALLENGE_BURST_CAP (50) — silent asymmetry
+     * that quietly capped "nobody-in-range" rocks at a lower quality. */
+    fallback_cap = state->burst_cap ? state->burst_cap : FRACTURE_CHALLENGE_BURST_CAP;
+    for (uint32_t i = 0; i < fallback_cap; i++) {
+        mining_keypair_t kp;
+        char callsign[8];
+        mining_grade_t grade;
+        mining_keypair_derive(a->fracture_seed, zero_pub, i, &kp);
+        mining_callsign_from_pubkey(kp.pub, callsign);
+        grade = mining_classify_base58(callsign);
+        if (!have_best || grade > best) {
+            best = grade;
+            best_nonce = i;
+            have_best = true;
+        }
+    }
+    fracture_commit_resolution(w, asteroid_idx, zero_pub, best_nonce, best);
+}
+
 /* ------------------------------------------------------------------ */
 /* Asteroid configuration                                              */
 /* ------------------------------------------------------------------ */
 
 static void sim_configure_asteroid(world_t *w, asteroid_t *a, asteroid_tier_t tier, commodity_t commodity) {
     float sl = asteroid_spin_limit(tier);
+    fracture_claim_state_reset(fracture_claim_state_for(w, (int)(a - w->asteroids)));
     a->active    = true;
     a->tier      = tier;
     a->commodity = commodity;
@@ -155,7 +331,7 @@ int seed_asteroid_clump(world_t *w, int first_slot) {
             tier = (w_randf(w) < 0.3f) ? ASTEROID_TIER_L : ASTEROID_TIER_M;
         }
 
-        clear_asteroid(a);
+        clear_asteroid_slot(w, first_slot + placed);
         sim_configure_asteroid(w, a, tier, ore);
         a->fracture_child = false;
 
@@ -183,7 +359,7 @@ void seed_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier
     float density = 0.0f;
     vec2 pos = find_belt_clump_center(w, &density);
     commodity_t ore = belt_ore_at(&w->belt, pos.x, pos.y);
-    clear_asteroid(a);
+    clear_asteroid_slot(w, (int)(a - w->asteroids));
     sim_configure_asteroid(w, a, tier, ore);
     a->fracture_child = false;
     a->pos = pos;
@@ -198,7 +374,7 @@ void seed_random_field_asteroid(world_t *w, asteroid_t *a) {
  * and spawn_field_asteroid removed — chunk materialization replaces it */
 
 static void spawn_child_asteroid(world_t *w, asteroid_t *a, asteroid_tier_t tier, commodity_t commodity, vec2 pos, vec2 vel) {
-    clear_asteroid(a);
+    clear_asteroid_slot(w, (int)(a - w->asteroids));
     sim_configure_asteroid(w, a, tier, commodity);
     a->fracture_child = true;
     a->pos = pos;
@@ -248,7 +424,17 @@ void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_b
         child->vel = cvel;
         child->last_fractured_by = fractured_by;
         child->last_towed_by = -1;
-        child->grade = 0;
+        memset(child->last_towed_token, 0, sizeof(child->last_towed_token));
+        memset(child->last_fractured_token, 0, sizeof(child->last_fractured_token));
+        child->grade = MINING_GRADE_COMMON;
+        memset(child->fragment_pub, 0, sizeof(child->fragment_pub));
+        if (fractured_by >= 0 && fractured_by < MAX_PLAYERS &&
+            w->players[fractured_by].connected &&
+            w->players[fractured_by].session_ready) {
+            memcpy(child->last_fractured_token,
+                   w->players[fractured_by].session_token,
+                   sizeof(child->last_fractured_token));
+        }
 
         /* Stamp the fracture_seed on each child. Deterministic from
          * the child's birth state — every observer reproduces it. */
@@ -264,13 +450,8 @@ void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_b
         mi.fractured_by        = (uint8_t)fractured_by;
         mining_fracture_seed_compute(&mi, child->fracture_seed);
 
-        /* Universe-rolled grade is public from birth. Only S-tier
-         * children carry payable ore; others stay grade 0 and don't
-         * roll (saves CPU on the cascade). */
         if (child->tier == ASTEROID_TIER_S && child->ore > 0.0f) {
-            child->grade = (uint8_t)sim_roll_fragment_grade(child);
-        } else {
-            child->grade = 0;
+            fracture_begin_claim_window(w, child_slots[i]);
         }
     }
 
@@ -278,6 +459,84 @@ void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_b
     SIM_LOG("[sim] asteroid %d fractured into %d children\n", idx, child_count);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_FRACTURE, .player_id = fractured_by,
                                   .fracture = { .tier = parent.tier, .asteroid_id = idx }});
+}
+
+bool submit_fracture_claim(world_t *w, int player_id, uint32_t fracture_id,
+                           uint32_t burst_nonce, uint8_t claimed_grade) {
+    fracture_claim_state_t *state;
+    asteroid_t *a;
+    const uint8_t *session_token;
+    uint8_t player_pub[32];
+    mining_keypair_t kp;
+    char callsign[8];
+    mining_grade_t actual_grade;
+    uint32_t now_ms;
+    int asteroid_idx;
+
+    asteroid_idx = fracture_find_by_id(w, fracture_id);
+    if (asteroid_idx < 0) return false;
+    state = &w->fracture_claims[asteroid_idx];
+    a = &w->asteroids[asteroid_idx];
+    if (!a->active || !state->active || state->resolved) return false;
+    /* Explicit deadline enforcement — don't rely on step_fracture_claims
+     * having run this tick. Without this, a claim arriving between the
+     * deadline passing and the next step runs could still count, which
+     * is race-dependent behaviour. */
+    now_ms = (uint32_t)(w->time * 1000.0f);
+    if (now_ms >= state->deadline_ms) return false;
+    if (player_id < 0 || player_id >= MAX_PLAYERS) return false;
+    if (burst_nonce >= state->burst_cap) return false;
+    if (!player_can_claim_fracture(w, player_id, asteroid_idx)) return false;
+    session_token = w->players[player_id].session_token;
+    /* Session-token dedup already covers "same player claims twice" —
+     * a redundant winner-pub memcmp used to live below; dropped since
+     * pub = sha256(token) is injective so the token check is exact. */
+    if (fracture_claim_seen_token(state, session_token)) return false;
+
+    sha256_bytes(session_token, 8, player_pub);
+    mining_keypair_derive(a->fracture_seed, player_pub, burst_nonce, &kp);
+    mining_callsign_from_pubkey(kp.pub, callsign);
+    actual_grade = mining_classify_base58(callsign);
+    if (actual_grade < (mining_grade_t)claimed_grade) return false;
+
+    if (!fracture_claim_has_best(state) ||
+        actual_grade > (mining_grade_t)state->best_grade) {
+        state->best_grade = (uint8_t)actual_grade;
+        state->best_nonce = burst_nonce;
+        memcpy(state->best_player_pub, player_pub, sizeof(state->best_player_pub));
+    }
+    fracture_claim_mark_seen_token(state, session_token);
+    return true;
+}
+
+void step_fracture_claims(world_t *w) {
+    uint32_t now_ms = (uint32_t)(w->time * 1000.0f);
+
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        fracture_claim_state_t *state = &w->fracture_claims[i];
+        if (!state->active) continue;
+        if (!w->asteroids[i].active) {
+            fracture_claim_state_reset(state);
+            continue;
+        }
+        /* Rebroadcast active challenges at FRACTURE_CHALLENGE_REBROADCAST_MS
+         * cadence so players who enter signal range mid-window (or had
+         * the first packet dropped) still get a chance to race. The
+         * initial broadcast is driven by challenge_dirty being set in
+         * fracture_begin_claim_window; subsequent re-arms happen here. */
+        if (!state->resolved &&
+            now_ms >= state->challenge_last_ms + FRACTURE_CHALLENGE_REBROADCAST_MS) {
+            state->challenge_dirty = true;
+            state->challenge_last_ms = now_ms;
+        }
+        if (now_ms < state->deadline_ms) continue;
+        if (fracture_claim_has_best(state))
+            fracture_commit_resolution(w, i, state->best_player_pub,
+                                       state->best_nonce,
+                                       (mining_grade_t)state->best_grade);
+        else
+            fracture_resolve_fallback(w, i);
+    }
 }
 
 /* ------------------------------------------------------------------ */
@@ -317,21 +576,21 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
 
         /* Despawn asteroids that leave station-supported space. */
         if (!point_within_signal_margin(w, a->pos, a->radius + 260.0f)) {
-            clear_asteroid(a);
+            clear_asteroid_slot(w, i);
             continue;
         }
 
         /* Cleanup old fracture children far from ALL players */
-        if (a->fracture_child && a->age >= FRACTURE_CHILD_CLEANUP_AGE) {
-            bool near_player = false;
-            for (int p = 0; p < MAX_PLAYERS; p++) {
-                if (!w->players[p].connected) continue;
+            if (a->fracture_child && a->age >= FRACTURE_CHILD_CLEANUP_AGE) {
+                bool near_player = false;
+                for (int p = 0; p < MAX_PLAYERS; p++) {
+                    if (!w->players[p].connected) continue;
                 if (v2_dist_sq(a->pos, w->players[p].ship.pos) <= cleanup_d_sq) {
                     near_player = true;
                     break;
+                    }
                 }
-            }
-            if (!near_player) clear_asteroid(a);
+            if (!near_player) clear_asteroid_slot(w, i);
         }
 
         /* Station vortex: asteroids near stations get caught in orbit.
@@ -399,6 +658,7 @@ void materialize_asteroid(world_t *w, int slot, const chunk_asteroid_t *ca,
                            int32_t cx, int32_t cy) {
     asteroid_t *a = &w->asteroids[slot];
     memset(a, 0, sizeof(*a));
+    fracture_claim_state_reset(&w->fracture_claims[slot]);
     a->active = true;
     a->tier = ca->tier;
     a->commodity = ca->commodity;
@@ -512,7 +772,7 @@ void maintain_asteroid_field(world_t *w, float dt) {
         if (!needed) {
             /* Also check signal coverage — keep if still in signal */
             if (!point_within_signal_margin(w, w->asteroids[i].pos, 260.0f))
-                clear_asteroid(&w->asteroids[i]);
+                clear_asteroid_slot(w, i);
         }
     }
 }

@@ -2,9 +2,9 @@
  * mining_client.h -- Client-side RATi session state.
  *
  * "RATi IS the ore." There is no separate keypair inventory — the
- * grade roll is authoritative on the server at tractor time, keyed
- * to (fragment.fracture_seed, player.session_token). The client just
- * displays what it sees on the wire.
+ * client searches a public fracture challenge locally and submits the
+ * best nonce it found, while the server re-derives the same result and
+ * arbitrates timing. The client also keeps a few HUD-facing timers.
  *
  * Player identity = sha256(session_token). The 7-char callsign is
  * the first 7 chars of base58 of that hash. Server and client agree
@@ -20,6 +20,12 @@
 #include "mining.h"     /* shared/mining.h — grade enum, payout_multiplier */
 
 typedef struct {
+    uint32_t fracture_id;
+    uint32_t burst_nonce;
+    mining_grade_t claimed_grade;
+} mining_client_claim_t;
+
+typedef struct {
     bool     player_ready;
     uint8_t  player_key[32];          /* sha256(session_token) */
     char     player_callsign[8];
@@ -33,6 +39,13 @@ typedef struct {
     float          recent_strike_timer;
     mining_grade_t recent_strike_grade;
     int            recent_strike_bonus;
+    /* Active fracture claim window HUD state.
+     *   fracture_search_timer — cosmetic badge decay (fades MINING... HUD)
+     *   fracture_search_id    — which fracture we're racing; 0 when idle.
+     * Cleared early by mining_client_resolve_fracture when the server
+     * answer beats the timer. */
+    float          fracture_search_timer;
+    uint32_t       fracture_search_id;
 } mining_client_t;
 
 /* Reset to empty state. Called once at startup. */
@@ -45,6 +58,15 @@ void mining_client_set_session_token(const uint8_t token[8]);
 
 /* Record a strike reported by SIM_EVENT_SELL. */
 void mining_client_record_strike(mining_grade_t grade, int bonus_cr);
+
+/* Search a fracture challenge locally. Returns false if the client is
+ * not ready to claim yet. */
+bool mining_client_search_fracture(uint32_t fracture_id, const uint8_t seed[32],
+                                   uint32_t deadline_ms, uint16_t burst_cap,
+                                   mining_client_claim_t *out_claim);
+
+/* Mark a fracture as resolved so the transient HUD state can clear. */
+void mining_client_resolve_fracture(uint32_t fracture_id, mining_grade_t grade);
 
 /* Per-frame timers (fades the recent-strike HUD badge). */
 void mining_client_tick(float dt);

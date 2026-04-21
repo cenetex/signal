@@ -36,6 +36,10 @@
 #include "local_server.h"
 #include "client.h"
 #include "manifest.h"
+#include "mining_client.h"
+#include "sim_asteroid.h"
+
+static void local_server_process_fracture_updates(local_server_t *ls, int player_slot);
 
 void local_server_init(local_server_t *ls, uint32_t seed) {
     memset(ls, 0, sizeof(*ls));
@@ -57,6 +61,44 @@ void local_server_step(local_server_t *ls, int player_slot,
     if (player_slot < 0 || player_slot >= MAX_PLAYERS) return;
     ls->world.players[player_slot].input = *input;
     world_sim_step(&ls->world, dt);
+    local_server_process_fracture_updates(ls, player_slot);
+}
+
+static void local_server_process_fracture_updates(local_server_t *ls, int player_slot) {
+    if (!ls || player_slot < 0 || player_slot >= MAX_PLAYERS) return;
+    /* Per-asteroid legacy path handles the common "asteroid still
+     * alive at resolve time" case. */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        fracture_claim_state_t *state = &ls->world.fracture_claims[i];
+        if (state->challenge_dirty && state->fracture_id) {
+            mining_client_claim_t claim = {0};
+            if (mining_client_search_fracture(state->fracture_id,
+                                              ls->world.asteroids[i].fracture_seed,
+                                              state->deadline_ms, state->burst_cap,
+                                              &claim)) {
+                (void)submit_fracture_claim(&ls->world, player_slot, claim.fracture_id,
+                                            claim.burst_nonce,
+                                            (uint8_t)claim.claimed_grade);
+            }
+            state->challenge_dirty = false;
+        }
+        if (state->resolved_dirty && state->fracture_id) {
+            mining_client_resolve_fracture(state->fracture_id,
+                                           (mining_grade_t)state->best_grade);
+            state->resolved_dirty = false;
+        }
+    }
+    /* Pending resolves queue: fracture_commit_resolution pushes here
+     * so "resolve + smelt clear in same tick" still delivers the resolve
+     * message to the local client. Drain one pass per step. */
+    for (int p = 0; p < MAX_PENDING_RESOLVES; p++) {
+        pending_resolve_t *pr = &ls->world.pending_resolves[p];
+        if (!pr->active) continue;
+        mining_client_resolve_fracture(pr->fracture_id,
+                                       (mining_grade_t)pr->grade);
+        pr->tx_count++;
+        if (pr->tx_count >= FRACTURE_RESOLVE_RETRY_COUNT) pr->active = false;
+    }
 }
 
 /* (1) Whole-world arrays. Add new world_t arrays here as one line. */
