@@ -7,6 +7,22 @@ test-results/
 playwright-report/
 package-lock.json
 
+# Runtime state written by the server/local-server at play time.
+#   chain/     — signal-channel append-only chain log (smelted X-foo, etc.)
+#   stations/  — persistent station catalog (#285 streaming pool)
+#   saves/     — per-player save files
+# All regenerate on next run; none of them are seed data.
+chain/
+stations/
+saves/
+
+# Jekyll build output. Note: 5 stale files under _site/ are still
+# tracked from an earlier commit (space_miner.* pre-rename). The
+# .gitignore below only blocks *new* artifacts from polluting the
+# tree — run `git rm --cached _site/...` separately to retire the
+# stale tracked ones.
+_site/
+
 # Media assets (too large for git — use Git LFS or external hosting)
 assets/anime/*.mp4
 assets/anime/*.mpg
