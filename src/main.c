@@ -869,8 +869,15 @@ static void init(void) {
 /* on_player_join ... sync_local_player_slot_from_network: see net_sync.h/c */
 
 static void render_world(void) {
-    float half_w = sapp_widthf() * 0.5f;
-    float half_h = sapp_heightf() * 0.5f;
+    /* Guard against Safari's NaN-on-audio-resume frame (the same one
+     * ui_window_width handles). Unguarded NaN here propagates through
+     * set_camera_bounds into cam_right - cam_left, then into
+     * draw_callsigns/draw_npc_chatter's sdtx_canvas call, which
+     * asserts !isnan(w). See hud.h ui_safe_positive comment. */
+    float win_w = ui_safe_positive(sapp_widthf(), 1280.0f);
+    float win_h = ui_safe_positive(sapp_heightf(), 720.0f);
+    float half_w = win_w * 0.5f;
+    float half_h = win_h * 0.5f;
     /* Camera modes:
      *   1. Death cinematic — anchor to wreckage, mild damping
      *   2. Station encounter — lock the station to one side of the screen

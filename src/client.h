@@ -284,6 +284,15 @@ bool ui_is_compact(void);
 float ui_text_zoom(void);
 float ui_text_pos(float pixel_value);
 
+/* Safari has been seen to return NaN briefly from sapp_widthf /
+ * sapp_heightf / sapp_dpi_scale on the frame the audio context resumes
+ * (the gesture that also fires LAUNCH). NaN propagates into canvas /
+ * camera math and trips a sokol hard assert (!isnan in sdtx_canvas).
+ * Clamp each sokol reading at the source. */
+static inline float ui_safe_positive(float v, float fallback) {
+    return (isfinite(v) && v > 0.0f) ? v : fallback;
+}
+
 /* UI drawing primitives */
 void draw_ui_scanlines(float x, float y, float width, float height, float spacing, float alpha);
 void draw_ui_corner_brackets(float x, float y, float width, float height, float r, float g0, float b, float alpha);

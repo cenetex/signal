@@ -58,15 +58,8 @@ static const float UI_SCALE_COMPACT = 1.60f;
 static const float UI_SCALE_DEFAULT = 1.42f;
 static const float UI_SCALE_WIDE    = 1.28f;
 
-/* Safari has been seen to return NaN briefly from sapp_widthf /
- * sapp_dpi_scale on the frame the audio context resumes (the gesture
- * that also fires LAUNCH). NaN here propagates into ui_scale, then
- * into sdtx_canvas, which fails a hard assert. Clamp each sokol
- * reading to something sane — the ortho/text layout is wrong for one
- * frame but the app keeps running. */
-static inline float ui_safe_positive(float v, float fallback) {
-    return (isfinite(v) && v > 0.0f) ? v : fallback;
-}
+/* ui_safe_positive is shared via client.h so render_world (and any
+ * other direct sapp_* consumer) can guard against the same NaN frame. */
 
 float ui_window_width(void) {
     float px  = ui_safe_positive(sapp_widthf(), 1280.0f);
@@ -1207,7 +1200,8 @@ void draw_hud(void) {
         }
         /* Alpha banner: repeating ticker across the top */
         {
-            float bw = sapp_widthf() / fmaxf(1.0f, sapp_dpi_scale());
+            float bw = ui_safe_positive(sapp_widthf(), 1280.0f)
+                     / fmaxf(1.0f, ui_safe_positive(sapp_dpi_scale(), 1.0f));
             int cols = (int)(bw / 8.0f); /* sdtx char width ~8px */
             char banner[512];
             char segment[64];
