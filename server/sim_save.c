@@ -851,7 +851,8 @@ bool world_load(world_t *w, const char *path) {
 /* Player persistence                                                  */
 /* ================================================================== */
 
-#define PLAYER_MAGIC    0x504C5934u  /* "PLY4" — explicit ship payload, no runtime manifest pointers */
+#define PLAYER_MAGIC    0x504C5935u  /* "PLY5" — #339 A.2: adds ship.manifest tail */
+#define PLAYER_MAGIC_V4 0x504C5934u  /* "PLY4" — explicit ship payload, no runtime manifest pointers */
 #define PLAYER_MAGIC_V3 0x504C5933u  /* "PLY3" — v25: station-local credits (#312) */
 #define PLAYER_MAGIC_V2 0x504C5932u  /* "PLY2" — v22-v24: post #280 enum cleanup */
 #define PLAYER_MAGIC_V1 0x504C5952u  /* "PLYR" — v21 and earlier */
@@ -1022,9 +1023,11 @@ static void session_token_to_hex(const uint8_t token[8], char hex[17]) {
 bool player_save(const server_player_t *sp, const char *dir, int slot) {
     char path[256];
     ship_v4_t ship_disk;
-    /* Use session token for filename if available, fall back to slot */
+    /* Use session token for filename if available, fall back to slot.
+     * #339 slice A.2: PLY5 format lifts the empty-manifest guard and
+     * appends a manifest tail (count + packed cargo_unit_t entries)
+     * between the fixed ship blob and the CRC trailer. */
     static const uint8_t zero_token[8] = {0};
-    if (sp->ship.manifest.count > 0) return false;
     if (sp->session_ready && memcmp(sp->session_token, zero_token, 8) != 0) {
         char hex[17];
         session_token_to_hex(sp->session_token, hex);
@@ -1043,9 +1046,20 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
         .last_angle = sp->ship.angle,
     };
     bool ok = fwrite(&data, sizeof(data), 1, f) == 1;
+    uint32_t crc = ok ? crc32_update(0, &data, sizeof(data)) : 0;
+    /* Manifest tail (PLY5). Count + entries; CRC accumulates both. */
+    if (ok) {
+        uint16_t manifest_count = sp->ship.manifest.count;
+        ok = fwrite(&manifest_count, sizeof(manifest_count), 1, f) == 1;
+        if (ok) crc = crc32_update(crc, &manifest_count, sizeof(manifest_count));
+        for (uint16_t u = 0; ok && u < manifest_count; u++) {
+            const cargo_unit_t *cu = &sp->ship.manifest.units[u];
+            ok = fwrite(cu, sizeof(*cu), 1, f) == 1;
+            if (ok) crc = crc32_update(crc, cu, sizeof(*cu));
+        }
+    }
     if (ok) {
         uint32_t crc_magic = 0x43524332u; /* "CRC2" */
-        uint32_t crc = crc32_update(0, &data, sizeof(data));
         ok = fwrite(&crc_magic, sizeof(crc_magic), 1, f) == 1 &&
              fwrite(&crc, sizeof(crc), 1, f) == 1;
     }
@@ -1098,7 +1112,35 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     ship_cleanup(&sp->ship);
 
     if (magic == PLAYER_MAGIC) {
-        /* Current format (PLY4 — explicit ship payload, runtime manifest excluded) */
+        /* Current format (PLY5 — ship blob + manifest tail). */
+        player_save_data_t data;
+        if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
+        migrate_v4_ship(&sp->ship, &data.ship);
+        sp->current_station = data.last_station;
+        sp->ship.pos = data.last_pos;
+        sp->ship.angle = data.last_angle;
+        /* Read manifest tail. Bootstrap was called by migrate_v4_ship. */
+        uint16_t manifest_count = 0;
+        if (fread(&manifest_count, sizeof(manifest_count), 1, f) != 1) {
+            fclose(f); return false;
+        }
+        if (manifest_count > 0) {
+            if (!manifest_reserve(&sp->ship.manifest, manifest_count)) {
+                fclose(f); return false;
+            }
+            for (uint16_t u = 0; u < manifest_count; u++) {
+                cargo_unit_t cu;
+                if (fread(&cu, sizeof(cu), 1, f) != 1) {
+                    fclose(f); return false;
+                }
+                sp->ship.manifest.units[u] = cu;
+            }
+            sp->ship.manifest.count = manifest_count;
+        }
+        fclose(f);
+    } else if (magic == PLAYER_MAGIC_V4) {
+        /* PLY4 → PLY5: read ship blob; manifest stays empty (was never
+         * persisted in PLY4, lived only at runtime). */
         player_save_data_t data;
         if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
         fclose(f);

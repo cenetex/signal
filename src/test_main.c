@@ -4234,18 +4234,33 @@ TEST(test_player_load_clamps_negative_credits) {
     remove("/tmp/player_98.sav");
 }
 
-TEST(test_player_save_rejects_nonempty_ship_manifest) {
+TEST(test_player_save_round_trips_ship_manifest) {
+    /* Pre-#339/A.2 the ship manifest was guarded empty on save (PLY4
+     * format had no tail). Slice A.2 moved to PLY5 which appends the
+     * manifest after the fixed ship blob. Verify round trip preserves
+     * kind, commodity, grade, and pub of each entry. */
     WORLD_DECL;
     SERVER_PLAYER_DECL(sp);
+    SERVER_PLAYER_DECL(loaded);
     cargo_unit_t unit = {0};
     world_reset(&w);
     player_init_ship(&sp, &w);
     sp.connected = true;
     unit.kind = (uint8_t)CARGO_KIND_INGOT;
-    unit.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    unit.commodity = (uint8_t)COMMODITY_CUPRITE_INGOT;
+    unit.grade = (uint8_t)MINING_GRADE_FINE;
     unit.pub[0] = 0x5A;
+    unit.pub[7] = 0xA5;
     ASSERT(manifest_push(&sp.ship.manifest, &unit));
-    ASSERT(!player_save(&sp, "/tmp", 92));
+    ASSERT(sp.ship.manifest.count == 1);
+    ASSERT(player_save(&sp, "/tmp", 92));
+    ASSERT(player_load(&loaded, &w, "/tmp", 92));
+    ASSERT_EQ_INT(loaded.ship.manifest.count, 1);
+    ASSERT(loaded.ship.manifest.units != NULL);
+    ASSERT_EQ_INT(loaded.ship.manifest.units[0].kind, CARGO_KIND_INGOT);
+    ASSERT_EQ_INT(loaded.ship.manifest.units[0].commodity, COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(loaded.ship.manifest.units[0].grade, MINING_GRADE_FINE);
+    ASSERT(memcmp(loaded.ship.manifest.units[0].pub, unit.pub, 32) == 0);
     remove("/tmp/player_92.sav");
 }
 
@@ -7482,7 +7497,7 @@ int main(int argc, char **argv) {
     RUN(test_player_save_load_preserves_ship);
     RUN(test_world_save_round_trips_station_manifest);
     RUN(test_player_load_clamps_negative_credits);
-    RUN(test_player_save_rejects_nonempty_ship_manifest);
+    RUN(test_player_save_round_trips_ship_manifest);
     RUN(test_player_load_clamps_negative_cargo);
     RUN(test_player_load_clamps_hull_hp);
     RUN(test_player_load_clamps_upgrade_levels);
