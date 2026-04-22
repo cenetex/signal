@@ -348,6 +348,87 @@ TEST(test_station_copy_clones_manifest_storage) {
     station_cleanup(&src);
 }
 
+TEST(test_hash_legacy_migrate_unit_deterministic) {
+    /* Same inputs -> byte-identical cargo_unit_t. Independent origins
+     * or indices must produce different pubs. Validates the Slice D
+     * migration helper's stability across save/load cycles. */
+    uint8_t origin_a[8] = { 'S','T','A','T','0','0','0','0' };
+    uint8_t origin_b[8] = { 'S','T','A','T','0','0','0','1' };
+    cargo_unit_t u1 = {0}, u2 = {0}, u3 = {0}, u4 = {0};
+
+    ASSERT(hash_legacy_migrate_unit(origin_a, COMMODITY_FERRITE_INGOT, 0, &u1));
+    ASSERT(hash_legacy_migrate_unit(origin_a, COMMODITY_FERRITE_INGOT, 0, &u2));
+    ASSERT(memcmp(&u1, &u2, sizeof(u1)) == 0);
+
+    ASSERT(hash_legacy_migrate_unit(origin_b, COMMODITY_FERRITE_INGOT, 0, &u3));
+    ASSERT(memcmp(u1.pub, u3.pub, 32) != 0); /* different origin -> different pub */
+
+    ASSERT(hash_legacy_migrate_unit(origin_a, COMMODITY_FERRITE_INGOT, 1, &u4));
+    ASSERT(memcmp(u1.pub, u4.pub, 32) != 0); /* different index -> different pub */
+
+    /* Shape checks: kind matches commodity, grade is common, recipe is
+     * LEGACY_MIGRATE, parent_merkle is all-zero. */
+    ASSERT_EQ_INT(u1.kind, CARGO_KIND_INGOT);
+    ASSERT_EQ_INT(u1.commodity, COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(u1.grade, MINING_GRADE_COMMON);
+    ASSERT_EQ_INT(u1.recipe_id, RECIPE_LEGACY_MIGRATE);
+    uint8_t zero[32] = {0};
+    ASSERT(memcmp(u1.parent_merkle, zero, 32) == 0);
+}
+
+TEST(test_hash_legacy_migrate_unit_rejects_raw_ore) {
+    uint8_t origin[8] = { 0 };
+    cargo_unit_t unit = {0};
+    /* Raw ore is not a cargo_unit — the helper must refuse. */
+    ASSERT(!hash_legacy_migrate_unit(origin, COMMODITY_FERRITE_ORE, 0, &unit));
+    ASSERT(!hash_legacy_migrate_unit(origin, COMMODITY_CUPRITE_ORE, 0, &unit));
+    ASSERT(!hash_legacy_migrate_unit(origin, COMMODITY_CRYSTAL_ORE, 0, &unit));
+}
+
+TEST(test_manifest_migrate_legacy_inventory_synthesizes_entries) {
+    /* Slice D: populate a manifest from a float inventory, skipping
+     * raw ore and emitting one unit per integer count of finished
+     * goods. Fractional remainders stay in float (caller's
+     * responsibility). */
+    manifest_t m = {0};
+    float inventory[COMMODITY_COUNT] = {0};
+    uint8_t origin[8] = { 'O','R','I','G','0','0','0','1' };
+
+    ASSERT(manifest_init(&m, 16));
+    inventory[COMMODITY_FERRITE_ORE]   = 12.0f; /* raw ore — must be skipped */
+    inventory[COMMODITY_FERRITE_INGOT] = 3.7f;  /* expect 3 units synthesized */
+    inventory[COMMODITY_CUPRITE_INGOT] = 0.4f;  /* expect 0 units (< 1) */
+    inventory[COMMODITY_FRAME]         = 2.0f;  /* expect 2 units */
+    inventory[COMMODITY_LASER_MODULE]  = 1.0f;  /* expect 1 unit */
+
+    ASSERT(manifest_migrate_legacy_inventory(&m, inventory, COMMODITY_COUNT, origin));
+    ASSERT_EQ_INT(m.count, 3 + 0 + 2 + 1);
+
+    /* All synthesized units must be LEGACY_MIGRATE + grade common. */
+    int fe_ingot = 0, frame = 0, laser = 0, cu_ingot = 0, ore = 0;
+    for (uint16_t i = 0; i < m.count; i++) {
+        ASSERT_EQ_INT(m.units[i].recipe_id, RECIPE_LEGACY_MIGRATE);
+        ASSERT_EQ_INT(m.units[i].grade, MINING_GRADE_COMMON);
+        switch (m.units[i].commodity) {
+        case COMMODITY_FERRITE_INGOT: fe_ingot++; break;
+        case COMMODITY_CUPRITE_INGOT: cu_ingot++; break;
+        case COMMODITY_FRAME: frame++; break;
+        case COMMODITY_LASER_MODULE: laser++; break;
+        case COMMODITY_FERRITE_ORE:
+        case COMMODITY_CUPRITE_ORE:
+        case COMMODITY_CRYSTAL_ORE: ore++; break;
+        default: break;
+        }
+    }
+    ASSERT_EQ_INT(fe_ingot, 3);
+    ASSERT_EQ_INT(cu_ingot, 0);
+    ASSERT_EQ_INT(frame, 2);
+    ASSERT_EQ_INT(laser, 1);
+    ASSERT_EQ_INT(ore, 0); /* raw ore was correctly skipped */
+
+    manifest_free(&m);
+}
+
 TEST(test_hash_merkle_root_sorts_and_duplicates_odd_leaf) {
     const uint8_t pubs[3][32] = {
         {
@@ -7317,6 +7398,9 @@ int main(int argc, char **argv) {
     printf("\nManifest tests:\n");
     RUN(test_manifest_push_find_remove_preserves_order);
     RUN(test_manifest_clone_detaches_storage);
+    RUN(test_hash_legacy_migrate_unit_deterministic);
+    RUN(test_hash_legacy_migrate_unit_rejects_raw_ore);
+    RUN(test_manifest_migrate_legacy_inventory_synthesizes_entries);
     RUN(test_ship_copy_clones_manifest_storage);
     RUN(test_station_copy_clones_manifest_storage);
     RUN(test_hash_merkle_root_sorts_and_duplicates_odd_leaf);

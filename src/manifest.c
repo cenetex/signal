@@ -373,3 +373,78 @@ bool hash_product(recipe_id_t recipe_id, const cargo_unit_t *inputs,
     hash_recipe_pub(recipe_id, merkle_root, output_index, out_unit->pub);
     return true;
 }
+
+bool cargo_kind_for_commodity(commodity_t commodity, cargo_kind_t *out_kind) {
+    if (!out_kind) return false;
+    if (commodity_is_ingot(commodity))     { *out_kind = CARGO_KIND_INGOT;   return true; }
+    if (commodity == COMMODITY_FRAME)          { *out_kind = CARGO_KIND_FRAME;   return true; }
+    if (commodity == COMMODITY_LASER_MODULE)   { *out_kind = CARGO_KIND_LASER;   return true; }
+    if (commodity == COMMODITY_TRACTOR_MODULE) { *out_kind = CARGO_KIND_TRACTOR; return true; }
+    return false;
+}
+
+bool hash_legacy_migrate_unit(const uint8_t origin[8], commodity_t commodity,
+                              uint16_t output_index, cargo_unit_t *out_unit) {
+    cargo_kind_t kind;
+    uint8_t buf[8 + 8 + 8 + 1 + 2]; /* domain + tag + origin + commodity + index */
+    size_t o = 0;
+    static const uint8_t domain[8]  = { 'S','I','G','N','A','L','v','1' };
+    static const uint8_t tag[8]     = { 'L','E','G','A','C','Y','v','1' };
+
+    if (!origin || !out_unit) return false;
+    if (!cargo_kind_for_commodity(commodity, &kind)) return false;
+
+    memcpy(&buf[o], domain, sizeof(domain)); o += sizeof(domain);
+    memcpy(&buf[o], tag,    sizeof(tag));    o += sizeof(tag);
+    memcpy(&buf[o], origin, 8);              o += 8;
+    buf[o++] = (uint8_t)commodity;
+    buf[o++] = (uint8_t)(output_index);
+    buf[o++] = (uint8_t)(output_index >> 8);
+
+    memset(out_unit, 0, sizeof(*out_unit));
+    out_unit->kind      = (uint8_t)kind;
+    out_unit->commodity = (uint8_t)commodity;
+    out_unit->grade     = (uint8_t)MINING_GRADE_COMMON;
+    out_unit->recipe_id = (uint16_t)RECIPE_LEGACY_MIGRATE;
+    /* parent_merkle stays zero — legacy units have no provable parents. */
+    sha256_bytes(buf, o, out_unit->pub);
+    return true;
+}
+
+bool manifest_migrate_legacy_inventory(manifest_t *manifest,
+                                       const float *inventory,
+                                       size_t inventory_count,
+                                       const uint8_t origin[8]) {
+    if (!manifest || !inventory || !origin) return false;
+    if (inventory_count == 0 || inventory_count > 255) return false; /* bound the byte cast */
+
+    /* Count how many synthetic units we'll push so we can reserve. */
+    uint32_t total = 0;
+    for (size_t c = 0; c < inventory_count; c++) {
+        cargo_kind_t kind;
+        if (!cargo_kind_for_commodity((commodity_t)c, &kind)) continue;
+        if (inventory[c] < 1.0f) continue;
+        total += (uint32_t)inventory[c];
+    }
+    if (total == 0) return true;
+    if (total > 0xFFFF) total = 0xFFFF; /* manifest.count is uint16 */
+
+    uint16_t needed = (uint16_t)(manifest->count + total);
+    if (needed < manifest->count) needed = 0xFFFF; /* overflow guard */
+    if (!manifest_reserve(manifest, needed)) return false;
+
+    for (size_t c = 0; c < inventory_count; c++) {
+        cargo_kind_t kind;
+        if (!cargo_kind_for_commodity((commodity_t)c, &kind)) continue;
+        int units = (int)inventory[c];
+        for (int i = 0; i < units; i++) {
+            if (manifest->count >= manifest->cap) break;
+            cargo_unit_t unit = {0};
+            if (!hash_legacy_migrate_unit(origin, (commodity_t)c,
+                                          (uint16_t)i, &unit))
+                continue;
+            if (!manifest_push(manifest, &unit)) return false;
+        }
+    }
+    return true;
+}

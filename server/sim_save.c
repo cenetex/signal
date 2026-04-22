@@ -266,19 +266,28 @@ static bool read_station_session(FILE *f, station_t *s) {
         for (int i = 0; i < STATION_NAMED_INGOTS_MAX; i++)
             READ_FIELD(f, s->named_ingots[i]);
     }
-    /* Manifest (v29+). Pre-v29 saves leave the manifest empty (matching
-     * the pre-slice-A behaviour of bootstrap-at-load-time, save-empty).
-     * For v29+, allocate via bootstrap + reserve, then read entries. */
+    /* Manifest (v29+). For v29+, allocate via bootstrap + reserve, then
+     * read entries. Pre-v29 saves get Slice D migration: their float
+     * inventory becomes synthetic RECIPE_LEGACY_MIGRATE units so the
+     * manifest layer sees a consistent state from tick 0. */
+    if (!station_manifest_bootstrap(s)) return false;
     if (g_loaded_save_version >= 29) {
         uint16_t manifest_count = 0;
         READ_FIELD(f, manifest_count);
-        if (!station_manifest_bootstrap(s)) return false;
         if (manifest_count > 0) {
             if (!manifest_reserve(&s->manifest, manifest_count)) return false;
             for (uint16_t u = 0; u < manifest_count; u++)
                 READ_FIELD(f, s->manifest.units[u]);
             s->manifest.count = manifest_count;
         }
+    } else {
+        /* Slice D: synthesize manifest entries from float inventory for
+         * pre-v29 saves. Origin salt = first 8 chars of station.name so
+         * the same save reloads to the same pubs deterministically. */
+        uint8_t origin[8] = {0};
+        memcpy(origin, s->name, sizeof(origin));
+        (void)manifest_migrate_legacy_inventory(&s->manifest, s->inventory,
+                                                COMMODITY_COUNT, origin);
     }
     return true;
 }
@@ -1108,6 +1117,7 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
 
     float migrated_credits = 0.0f;
     bool is_v1 = false;
+    bool manifest_already_loaded = false;
 
     ship_cleanup(&sp->ship);
 
@@ -1137,6 +1147,7 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
             }
             sp->ship.manifest.count = manifest_count;
         }
+        manifest_already_loaded = true;
         fclose(f);
     } else if (magic == PLAYER_MAGIC_V4) {
         /* PLY4 → PLY5: read ship blob; manifest stays empty (was never
@@ -1205,6 +1216,19 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
     /* Clamp cargo (no negative, no NaN, no exceeding capacity) */
     for (int i = 0; i < COMMODITY_COUNT; i++) {
         if (!(sp->ship.cargo[i] >= 0.0f)) sp->ship.cargo[i] = 0.0f;
+    }
+    /* Slice D: pre-PLY5 saves had no ship manifest. Synthesize
+     * RECIPE_LEGACY_MIGRATE units from the float-held finished goods
+     * in ship.cargo[] so the manifest layer sees a consistent state.
+     * Origin salt = session_token so the same save reloads to stable
+     * pubs; falls back to a zero origin when the token isn't set yet
+     * (early-session load). */
+    if (!manifest_already_loaded) {
+        uint8_t origin[8] = {0};
+        if (sp->session_ready) memcpy(origin, sp->session_token, 8);
+        (void)manifest_migrate_legacy_inventory(&sp->ship.manifest,
+                                                sp->ship.cargo,
+                                                COMMODITY_COUNT, origin);
     }
     /* Dock the player at their last station for safety */
     sp->docked = true;
