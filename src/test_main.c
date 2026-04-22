@@ -908,9 +908,9 @@ TEST(test_smelt_credit_ignores_claim_winner_identity) {
     sha256_bytes(w->players[bystander].session_token, 8, a->fragment_pub);
     /* Worker did both fracture and tow. */
     memcpy(a->last_towed_token, w->players[worker].session_token, 8);
-    a->last_towed_by = worker;
+    a->last_towed_by = (int8_t)worker;
     memcpy(a->last_fractured_token, w->players[worker].session_token, 8);
-    a->last_fractured_by = worker;
+    a->last_fractured_by = (int8_t)worker;
 
     initial_bystander = ledger_balance(&w->stations[0],
                                        w->players[bystander].session_token);
