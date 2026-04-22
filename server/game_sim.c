@@ -750,16 +750,24 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     commodity_t filter = sp->input.service_sell_only;
     bool selective = (filter < COMMODITY_COUNT);
 
-    /* Deliver any cargo matching active supply contracts at this station */
+    /* Deliver any cargo matching active supply contracts at this station.
+     *
+     * Raw ore contracts (c < COMMODITY_RAW_ORE_COUNT) are intentionally
+     * skipped: since physical ore towing replaced cargo vacuum (#259),
+     * players no longer carry raw ore in ship.cargo[] — fragments ride
+     * in ship.towed_fragments[] and are consumed by furnaces at dock.
+     * Ore-contract fulfillment is driven by smelter-throughput bumping
+     * station.inventory[ORE], not by this delivery path. Leaving the
+     * ore branch in would be a silent no-op. */
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         contract_t *ct = &w->contracts[k];
         if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
         if (ct->station_index != sp->current_station) continue;
         commodity_t c = ct->commodity;
+        if (c < COMMODITY_RAW_ORE_COUNT) continue; /* see comment above */
         if (selective && filter != c) continue;
         if (sp->ship.cargo[c] < 0.01f) continue;
-        float capacity = (c < COMMODITY_RAW_ORE_COUNT)
-            ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
+        float capacity = MAX_PRODUCT_STOCK;
         float space = fmaxf(0.0f, capacity - st->inventory[c]);
         if (space < 0.01f) continue;
         float deliver = fminf(fminf(sp->ship.cargo[c], ct->quantity_needed), space);

@@ -3888,24 +3888,29 @@ TEST(test_contract_closes_when_deficit_filled) {
 
 TEST(test_sell_price_uses_contract_price) {
     /* When a contract exists, selling at that station should pay the
-     * escalated contract price, not the base buy_price */
+     * escalated contract price, not the base buy_price.
+     *
+     * Uses COMMODITY_FERRITE_INGOT because raw-ore cargo delivery is a
+     * dead path post-#259 (physical ore towing; fragments ride in
+     * ship.towed_fragments[], not ship.cargo[]). Ingot delivery is the
+     * live path this contract-price logic actually serves. */
     WORLD_DECL;
     world_reset(&w);
-    /* Create a contract with aged price */
+    /* Create a contract with aged price — station 0 needs an ingot. */
     w.contracts[0] = (contract_t){
         .active = true, .station_index = 0,
-        .commodity = COMMODITY_FERRITE_ORE,
+        .commodity = COMMODITY_FERRITE_INGOT,
         .quantity_needed = 50.0f,
         .base_price = 10.0f, .age = 300.0f, /* 5 min -> 1.2x */
     };
-    /* Set up player docked at station 0 with ore */
+    /* Set up player docked at station 0 with a deliverable ingot. */
     w.players[0].session_ready = true;
     memset(w.players[0].session_token, 0x01, 8);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     w.players[0].docked = true;
     w.players[0].current_station = 0;
-    w.players[0].ship.cargo[COMMODITY_FERRITE_ORE] = 10.0f;
+    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 10.0f;
     /* Zero out ledger balance for precise payout check */
     float init_bal = ledger_balance(&w.stations[0], w.players[0].session_token);
     float expected_price = 10.0f * 1.2f; /* contract_price at age 300 */
