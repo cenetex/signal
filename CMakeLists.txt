@@ -109,7 +109,14 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
             $<$<NOT:$<CONFIG:Debug>>:_FORTIFY_SOURCE=2>)
     else()
         # Mirror GCC/Clang -Werror so Windows CI fails on regressions.
-        target_compile_options(signal_server PRIVATE /W4 /WX)
+        # Selective /wd* mirror the -Wno-* we accept on GCC/Clang:
+        #   4127 = constant conditional (common in ASSERT/while(true))
+        #   4459 = local hides global (we use r,g,b as color params)
+        #   4996 = deprecated POSIX names (setbuf/sscanf — _CRT_SECURE_NO_WARNINGS is set)
+        #   5287 = mixed unnamed-enum types in comparisons (design constants)
+        target_compile_options(signal_server PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_server PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
     # mongoose.c needs POSIX + BSD APIs on Linux (ip_mreq, alloca, etc.)
     if(UNIX AND NOT APPLE)
@@ -132,7 +139,9 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         target_link_libraries(signal_test PRIVATE m)
         target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
     else()
-        target_compile_options(signal_test PRIVATE /W4 /WX)
+        target_compile_options(signal_test PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_test PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
 endif()
 
@@ -178,7 +187,19 @@ endif()
 if(MSVC)
     target_compile_definitions(signal PRIVATE _CRT_SECURE_NO_WARNINGS)
     # /WX mirrors -Werror; keep the client strict on MSVC alongside GCC/Clang.
-    target_compile_options(signal PRIVATE /W4 /WX)
+    # See signal_server block for the /wd* rationale.
+    target_compile_options(signal PRIVATE
+        /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+    # Vendor single-file libraries drop warnings we don't own: pl_mpeg has
+    # many size_t→int conversions, minimp3 and mongoose a few. Compile the
+    # TUs that host them with /W0 so those lines don't fail /WX, while every
+    # other client source file still builds under the full /W4 strictness.
+    set_source_files_properties(
+        src/episode.c       # includes pl_mpeg.h
+        src/music.c         # includes minimp3.h
+        server/mongoose.c   # vendor single-file WebSocket server
+        PROPERTIES COMPILE_OPTIONS "/W0"
+    )
 else()
     # -Wno-strict-prototypes is client-only: sokol_* headers intentionally
     # use K&R-style () prototypes for C++ compat.

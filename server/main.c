@@ -882,9 +882,9 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             int sync_len = serialize_asteroids_full(sync_buf, world.asteroids);
             ws_send(c, sync_buf, (size_t)sync_len);
             /* Initialize per-player sent tracking */
-            server_player_t *sp = &world.players[pid];
+            server_player_t *new_sp = &world.players[pid];
             for (int ai = 0; ai < MAX_ASTEROIDS; ai++)
-                sp->asteroid_sent[ai] = world.asteroids[ai].active;
+                new_sp->asteroid_sent[ai] = world.asteroids[ai].active;
         }
 
         /* Signal channel snapshot (#316): newcomer gets the full ring

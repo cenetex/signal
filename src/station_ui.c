@@ -499,7 +499,7 @@ void draw_station_services(const station_ui_state_t* ui) {
 
     case STATION_TAB_STATUS: {
         float ly = cy;
-        bool compact = ui_is_compact();
+        /* `compact` is already in outer scope; no need to re-declare. */
         float meter_w = fminf(200.0f, inner_w - 120.0f);
         float stat_col = cx + fminf(120.0f, (inner_w - 36.0f) * 0.55f);
         float rule_right = fminf(cx + meter_w + 80.0f, panel_x + panel_w - 18.0f);
@@ -693,7 +693,7 @@ void draw_station_services(const station_ui_state_t* ui) {
         float meter_w = fminf(200.0f, inner_w - 120.0f);
         float rule_right_m = fminf(cx + meter_w + 80.0f, panel_x + panel_w - 18.0f);
         float right_col = cx + meter_w + 16.0f;
-        bool compact = ui_is_compact();
+        /* `compact` is already declared in outer scope (draw_station_services). */
 
         /* === SMELTER STATUS (furnace stations only) === */
         if ((int)station_primary_buy(ui->station) < 0 &&

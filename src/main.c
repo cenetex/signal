@@ -397,15 +397,15 @@ void process_sim_events(const sim_events_t *events) {
                     /* 8 shards radiating outward from the wreck. Each shard
                      * starts at the ship origin with a randomized velocity
                      * and spin. Components: [dx, dy, vx, vy, ang, spin]. */
-                    for (int i = 0; i < 8; i++) {
-                        float ang = ((float)i / 8.0f) * 2.0f * PI_F + (float)(i * 13 % 7) * 0.15f;
-                        float speed = 30.0f + (float)((i * 7 + 3) % 5) * 12.0f;
-                        g.death_cinematic.fragments[i][0] = 0.0f;
-                        g.death_cinematic.fragments[i][1] = 0.0f;
-                        g.death_cinematic.fragments[i][2] = cosf(ang) * speed + ev->death.vel_x * 0.6f;
-                        g.death_cinematic.fragments[i][3] = sinf(ang) * speed + ev->death.vel_y * 0.6f;
-                        g.death_cinematic.fragments[i][4] = ang;
-                        g.death_cinematic.fragments[i][5] = ((float)((i * 19 + 7) % 11) - 5.0f) * 0.6f;
+                    for (int s = 0; s < 8; s++) {
+                        float ang = ((float)s / 8.0f) * 2.0f * PI_F + (float)(s * 13 % 7) * 0.15f;
+                        float speed = 30.0f + (float)((s * 7 + 3) % 5) * 12.0f;
+                        g.death_cinematic.fragments[s][0] = 0.0f;
+                        g.death_cinematic.fragments[s][1] = 0.0f;
+                        g.death_cinematic.fragments[s][2] = cosf(ang) * speed + ev->death.vel_x * 0.6f;
+                        g.death_cinematic.fragments[s][3] = sinf(ang) * speed + ev->death.vel_y * 0.6f;
+                        g.death_cinematic.fragments[s][4] = ang;
+                        g.death_cinematic.fragments[s][5] = ((float)((s * 19 + 7) % 11) - 5.0f) * 0.6f;
                     }
                     /* Legacy timer kept for the auto-fade fallback path
                      * but cinematic logic ignores it. */

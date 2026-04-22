@@ -40,7 +40,9 @@ static uint32_t crc32_update(uint32_t crc, const void *buf, size_t len) {
     for (size_t i = 0; i < len; i++) {
         crc ^= p[i];
         for (int j = 0; j < 8; j++)
-            crc = (crc >> 1) ^ (0xEDB88320u & -(crc & 1u));
+            /* MSVC C4146: unary minus on unsigned — use (0u - x) form
+             * to spell out the two's-complement intent explicitly. */
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
     }
     return ~crc;
 }
