@@ -766,7 +766,7 @@ void draw_station_services(const station_ui_state_t* ui) {
             }
             sdtx_pos(ui_text_pos(cx + 3.0f), ui_text_pos(my));
             sdtx_color3b(PAL_STATION_HINT);
-            sdtx_puts("[B] buy first lot");
+            sdtx_puts("[G] buy first lot");
             my += compact ? 12.0f : 16.0f;
         }
 

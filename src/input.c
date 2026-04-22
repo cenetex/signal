@@ -1,5 +1,51 @@
 /*
  * input.c -- Input handling for the Signal Space Miner client.
+ *
+ * =====================================================================
+ * Action-key reference. Several keys are overloaded by context; the
+ * precedence order below is load-bearing — keep it in sync with the
+ * handlers or the controls become inscrutable. Contexts evaluated in
+ * the order listed; first match wins for that key.
+ * =====================================================================
+ *
+ *   [E]   1. CONTRACTS tab active + at least one contract selectable →
+ *            deliver selected / deliver all (see station_ui decides
+ *            e_handled_by_contracts_tab).
+ *         2. Towing a scaffold undocked → place at nearest slot.
+ *         3. Plan mode active → lock outpost (ghost sub-mode) or
+ *            place / clear module (real sub-mode).
+ *         4. Docked with no contract focus → launch.
+ *
+ *   [B]   1. Docked → (no action; plan mode needs undocked).
+ *         2. Plan mode active → exit plan mode.
+ *         3. Otherwise → enter plan mode.
+ *         (Note: named-ingot buy lives on [G], NOT [B], precisely to
+ *         avoid teaching the player that [B] means 'buy'.)
+ *
+ *   [G]   Docked → buy first named ingot from HIGH-GRADE STOCK.
+ *   [N]   Docked → deliver first named ingot from YOUR HOLD.
+ *   [F]   Docked → buy primary product (float commodity).
+ *
+ *   [1]   STATUS/MARKET → sell cargo  |  CONTRACTS → select contract 1
+ *         SHIPYARD → order scaffold 1.
+ *   [2]   STATUS → repair  |  CONTRACTS/SHIPYARD → select/order 2.
+ *   [3-5] STATUS → upgrade laser/hold/tractor  |  sel/order 3-5.
+ *   [6-9] SHIPYARD → order scaffold 6-9 (no STATUS/MARKET meaning).
+ *
+ *   [X]   Undocked → self-destruct (hold 1s; single-press no longer
+ *         triggers).
+ *   [H]   Undocked → hail ping + collect pending credits.
+ *   [O]   Any → toggle mining autopilot (signal-gated).
+ *   [R]   Plan mode → cycle module type. Outside plan mode → held-tow
+ *         (tractor R).
+ *   [M]   Undocked → mining laser.
+ *   [P] [ ] ]   Music controls (any context).
+ *   [Shift]     Undocked → boost.
+ *   [Esc]       Plan mode → exit  |  Episode popup → dismiss.
+ *   [Tab]       Docked → cycle station panel.
+ *
+ * If adding a new overloaded key, update this table FIRST so the
+ * precedence is visible before the code diverges.
  */
 #include <stdarg.h>
 #include "input.h"
@@ -164,7 +210,22 @@ input_intent_t sample_input_intent(void) {
     intent.boost = (is_key_down(SAPP_KEYCODE_LEFT_SHIFT) || is_key_down(SAPP_KEYCODE_RIGHT_SHIFT))
                    && !LOCAL_PLAYER.docked;
     if (intent.boost) onboarding_mark_boosted();
-    intent.reset = is_key_pressed(SAPP_KEYCODE_X) && !LOCAL_PLAYER.docked;
+    /* Self-destruct is destructive, so single-press was too easy a
+     * fat-finger. Require X to be held for 1 second continuously while
+     * undocked; release resets. A brief glance at the self-destruct HUD
+     * badge (driven by self_destruct_hold_time in world_draw) gives the
+     * player a visible confirm window before the reset fires. */
+    intent.reset = false;
+    if (is_key_down(SAPP_KEYCODE_X) && !LOCAL_PLAYER.docked) {
+        if (g.input.self_destruct_hold_time == 0.0f)
+            g.input.self_destruct_hold_time = g.world.time;
+        if (g.world.time - g.input.self_destruct_hold_time >= 1.0f) {
+            intent.reset = true;
+            g.input.self_destruct_hold_time = 0.0f;
+        }
+    } else {
+        g.input.self_destruct_hold_time = 0.0f;
+    }
     /* Safety: clear placement reticle if no longer towing or now docked */
     if (g.placement_reticle_active &&
         (LOCAL_PLAYER.docked || LOCAL_PLAYER.ship.towed_scaffold < 0)) {
@@ -379,12 +440,13 @@ input_intent_t sample_input_intent(void) {
         intent.upgrade_hold = is_key_pressed(SAPP_KEYCODE_4);
         intent.upgrade_tractor = is_key_pressed(SAPP_KEYCODE_5);
     }
-    /* RATi v2: B key buys the first named ingot in the station's
-     * stockpile (player can repeatedly press to walk down the list).
-     * N key delivers the first hold ingot into the docked station's
-     * stockpile. Slice 3 — single-action keys keep the UX simple
-     * before per-row pickers land. */
-    if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_B)) {
+    /* Named-ingot buy is on [G] ("get high-grade lot") rather than
+     * [B] because [B] is already plan-mode-enter/exit globally; having
+     * the MARKET panel advertise [B] in docked context teaches the
+     * wrong association. N delivers the first hold ingot into the
+     * docked station's stockpile. Slice 3 — single-action keys keep
+     * the UX simple before per-row pickers land. */
+    if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_G)) {
         const station_t *st = current_station_ptr();
         if (st && st->named_ingots_count > 0) {
             ship_t *ship = &LOCAL_PLAYER.ship;
