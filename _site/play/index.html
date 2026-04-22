@@ -4,6 +4,7 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>Signal — Play</title>
+    <meta name="description" content="Play the Signal browser alpha. Mine ore, dock at stations, build outposts, and expand signal coverage across the belt.">
     <style>
       @import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans+Condensed:wght@400;500;600&display=swap");
 
@@ -14,8 +15,8 @@
         --line: rgba(245, 239, 223, 0.14);
         --ink: #f5efdf;
         --muted: #cfc3ad;
+        --faint: #8e846f;
         --signal: #80ffd5;
-        --ore: #f1b566;
       }
 
       * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -33,6 +34,15 @@
       body {
         color: var(--ink);
         font-family: "IBM Plex Sans Condensed", "Arial Narrow", sans-serif;
+      }
+
+      a, button, canvas {
+        -webkit-tap-highlight-color: transparent;
+      }
+
+      kbd {
+        font: inherit;
+        color: var(--ink);
       }
 
       #loading {
@@ -60,6 +70,57 @@
         display: block;
         width: 100%;
         height: 100%;
+        outline: none;
+      }
+
+      .topbar {
+        position: fixed;
+        top: 14px;
+        left: 14px;
+        right: 14px;
+        z-index: 15;
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+        gap: 12px;
+        pointer-events: none;
+      }
+
+      .home-link,
+      .help-link {
+        pointer-events: auto;
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 40px;
+        padding: 0 14px;
+        border: 1px solid var(--line);
+        border-radius: 999px;
+        background: rgba(10, 10, 9, 0.7);
+        backdrop-filter: blur(10px);
+        color: var(--ink);
+        text-decoration: none;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .help-link {
+        cursor: pointer;
+      }
+
+      .hint {
+        pointer-events: none;
+        color: var(--faint);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 10px;
+        line-height: 1.5;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        text-align: right;
+        max-width: 260px;
+        text-shadow: 0 1px 0 rgba(0, 0, 0, 0.3);
       }
 
       .controls {
@@ -68,63 +129,307 @@
         right: 14px;
         z-index: 10;
         display: flex;
-        gap: 6px;
+        gap: 8px;
       }
+
       .ctrl-btn {
-        width: 32px; height: 32px;
+        width: 40px;
+        height: 40px;
         border: 1px solid var(--line);
-        border-radius: 8px;
-        background: rgba(10,10,9,0.7);
-        backdrop-filter: blur(8px);
+        border-radius: 10px;
+        background: rgba(10, 10, 9, 0.72);
+        backdrop-filter: blur(10px);
         color: var(--muted);
         cursor: pointer;
-        display: flex; align-items: center; justify-content: center;
+        display: flex;
+        align-items: center;
+        justify-content: center;
         transition: background 0.15s, color 0.15s, border-color 0.15s;
         padding: 0;
       }
-      .ctrl-btn:hover { background: rgba(245,239,223,0.08); color: var(--ink); border-color: rgba(245,239,223,0.25); }
-      .ctrl-btn.off { color: rgba(255,100,100,0.6); }
-      .ctrl-btn.off:hover { color: rgba(255,100,100,0.9); }
+
+      .ctrl-btn.off {
+        color: rgba(255, 100, 100, 0.72);
+      }
+
       .track-name {
         position: fixed;
-        bottom: 50px;
+        bottom: 64px;
         right: 14px;
         z-index: 10;
         font-family: "IBM Plex Mono", monospace;
         font-size: 10px;
-        color: rgba(207,195,173,0.4);
+        color: rgba(207, 195, 173, 0.52);
         letter-spacing: 0.06em;
         text-align: right;
         pointer-events: none;
         transition: opacity 0.5s;
+        max-width: 220px;
       }
 
+      .intro {
+        position: fixed;
+        inset: 0;
+        z-index: 16;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        padding: 24px;
+        background: rgba(5, 7, 8, 0.72);
+        backdrop-filter: blur(10px);
+      }
+
+      .intro[hidden] {
+        display: none;
+      }
+
+      .intro-panel {
+        width: min(680px, 100%);
+        border: 1px solid var(--line);
+        border-radius: 22px;
+        background: linear-gradient(180deg, rgba(10, 10, 9, 0.94), rgba(12, 14, 13, 0.92));
+        box-shadow: 0 18px 60px rgba(0, 0, 0, 0.35);
+        padding: 24px;
+      }
+
+      .intro-kicker {
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.18em;
+        text-transform: uppercase;
+        color: var(--signal);
+        margin-bottom: 12px;
+      }
+
+      .intro-title {
+        font-size: clamp(34px, 7vw, 58px);
+        line-height: 0.92;
+        letter-spacing: 0.04em;
+        text-transform: uppercase;
+        margin-bottom: 12px;
+      }
+
+      .intro-copy {
+        color: var(--muted);
+        font-size: 20px;
+        line-height: 1.25;
+        max-width: 12em;
+        margin-bottom: 18px;
+      }
+
+      .intro-grid {
+        display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px;
+        margin-bottom: 18px;
+      }
+
+      .intro-card {
+        padding: 12px 14px;
+        border: 1px solid rgba(245, 239, 223, 0.08);
+        border-radius: 14px;
+        background: rgba(245, 239, 223, 0.03);
+      }
+
+      .intro-card strong {
+        display: block;
+        margin-bottom: 4px;
+        color: var(--signal);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        letter-spacing: 0.12em;
+        text-transform: uppercase;
+      }
+
+      .intro-card span {
+        color: var(--ink);
+        font-size: 16px;
+        line-height: 1.3;
+      }
+
+      .intro-note {
+        color: var(--faint);
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 11px;
+        line-height: 1.6;
+        margin-bottom: 18px;
+      }
+
+      .intro-actions {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+      }
+
+      .intro-primary,
+      .intro-secondary {
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        min-height: 46px;
+        padding: 0 20px;
+        border-radius: 999px;
+        text-decoration: none;
+        font-family: "IBM Plex Mono", monospace;
+        font-size: 12px;
+        letter-spacing: 0.14em;
+        text-transform: uppercase;
+        border: 1px solid var(--line);
+        cursor: pointer;
+      }
+
+      .intro-primary {
+        color: #0f1311;
+        background: linear-gradient(135deg, var(--signal), #a6ffd8 70%);
+        border-color: rgba(128, 255, 213, 0.9);
+      }
+
+      .intro-primary:hover {
+        background: linear-gradient(135deg, #92ffdc, #b7ffe2 70%);
+      }
+
+      .intro-secondary {
+        color: var(--ink);
+        background: rgba(245, 239, 223, 0.04);
+      }
+
+      .home-link:hover,
+      .help-link:hover,
+      .ctrl-btn:hover,
+      .intro-primary:hover,
+      .intro-secondary:hover {
+        border-color: rgba(245, 239, 223, 0.28);
+        background-color: rgba(245, 239, 223, 0.08);
+      }
+
+      .home-link:focus-visible,
+      .help-link:focus-visible,
+      .ctrl-btn:focus-visible,
+      .intro-primary:focus-visible,
+      .intro-secondary:focus-visible,
+      canvas:focus-visible {
+        outline: 2px solid var(--signal);
+        outline-offset: 3px;
+      }
+
+      @media (max-width: 760px) {
+        .topbar {
+          top: 10px;
+          left: 10px;
+          right: 10px;
+        }
+
+        .home-link,
+        .help-link {
+          min-height: 36px;
+          padding: 0 12px;
+          font-size: 10px;
+        }
+
+        .hint {
+          display: none;
+        }
+
+        .controls {
+          bottom: 10px;
+          right: 10px;
+        }
+
+        .ctrl-btn {
+          width: 36px;
+          height: 36px;
+        }
+
+        .track-name {
+          bottom: 56px;
+          right: 10px;
+          max-width: 180px;
+        }
+
+        .intro {
+          align-items: flex-end;
+          padding: 12px;
+        }
+
+        .intro-panel {
+          padding: 18px;
+        }
+
+        .intro-copy {
+          font-size: 18px;
+          max-width: none;
+        }
+
+        .intro-grid {
+          grid-template-columns: 1fr;
+        }
+      }
     </style>
   </head>
   <body>
     <div id="loading">Linking signal chain...</div>
 
+    <div class="topbar">
+      <a class="home-link" href="/">Signal</a>
+      <div class="hint">Browser alpha<br>Press <span aria-hidden="true">?</span> anytime for controls</div>
+      <button class="help-link" id="help-toggle" type="button" aria-haspopup="dialog" aria-controls="intro" aria-expanded="true">Help</button>
+    </div>
 
-    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
+    <div class="intro" id="intro" role="dialog" aria-modal="true" aria-labelledby="intro-title">
+      <div class="intro-panel">
+        <p class="intro-kicker">Signal Browser Alpha</p>
+        <h1 class="intro-title" id="intro-title">You are running the belt.</h1>
+        <p class="intro-copy">Break asteroids, dock at stations, sell ore, and build relay outposts that keep the network alive at the edge of coverage.</p>
+        <div class="intro-grid">
+          <div class="intro-card">
+            <strong>Move</strong>
+            <span>WASD or arrows to fly. Mouse aims your ship.</span>
+          </div>
+          <div class="intro-card">
+            <strong>Primary Loop</strong>
+            <span>Mine ore, dock, trade up, then build farther into the belt.</span>
+          </div>
+          <div class="intro-card">
+            <strong>Useful Keys</strong>
+            <span><kbd>E</kbd> interact or launch. <kbd>Tab</kbd> switches station tabs. <kbd>Esc</kbd> backs out.</span>
+          </div>
+          <div class="intro-card">
+            <strong>Session Advice</strong>
+            <span>Best on desktop with keyboard and mouse. Tab reaches page controls without trapping you in the game.</span>
+          </div>
+        </div>
+        <p class="intro-note">The alpha is already persistent. Your stations, outposts, and supply plans carry forward between sessions.</p>
+        <div class="intro-actions">
+          <button class="intro-primary" id="launch" type="button" autofocus>Enter The Belt</button>
+          <a class="intro-secondary" href="/">Back To Site</a>
+        </div>
+      </div>
+    </div>
 
-    <div id="track-name" class="track-name"></div>
-    <div class="controls">
-      <button class="ctrl-btn" id="btn-prev" title="Previous track">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
+    <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="0" aria-label="Signal alpha game canvas"></canvas>
+    <div id="track-name" class="track-name" aria-live="polite"></div>
+
+    <div class="controls" aria-label="Audio controls">
+      <button class="ctrl-btn" id="btn-prev" type="button" aria-label="Previous soundtrack track" title="Previous track">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 6h2v12H6zm3.5 6l8.5 6V6z"/></svg>
       </button>
-      <button class="ctrl-btn" id="btn-music" title="Mute music (M)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" id="ico-music"><path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z"/></svg>
+      <button class="ctrl-btn" id="btn-music" type="button" aria-label="Mute or unmute music" aria-pressed="false" title="Mute music (M)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" id="ico-music" aria-hidden="true"><path d="M12 3v10.55A4 4 0 1014 17V7h4V3h-6z"/></svg>
       </button>
-      <button class="ctrl-btn" id="btn-next" title="Next track">
-        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
+      <button class="ctrl-btn" id="btn-next" type="button" aria-label="Next soundtrack track" title="Next track">
+        <svg width="12" height="12" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 18l8.5-6L6 6v12zM16 6v12h2V6h-2z"/></svg>
       </button>
-      <button class="ctrl-btn" id="btn-sfx" title="Mute SFX (N)">
-        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" id="ico-sfx"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 8.5v7a4.49 4.49 0 002.5-3.5zM14 3.23v2.06a7 7 0 010 13.42v2.06A9 9 0 0014 3.23z"/></svg>
+      <button class="ctrl-btn" id="btn-sfx" type="button" aria-label="Mute or unmute sound effects" aria-pressed="false" title="Mute SFX (N)">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" id="ico-sfx" aria-hidden="true"><path d="M3 9v6h4l5 5V4L7 9H3zm13.5 3A4.5 4.5 0 0014 8.5v7a4.49 4.49 0 002.5-3.5zM14 3.23v2.06a7 7 0 010 13.42v2.06A9 9 0 0014 3.23z"/></svg>
       </button>
     </div>
 
     <script>
       var canvas = document.getElementById('canvas');
+      var intro = document.getElementById('intro');
+      var launchButton = document.getElementById('launch');
+      var helpToggle = document.getElementById('help-toggle');
+      var introOpen = true;
 
       var Module = {
         canvas: canvas,
@@ -135,17 +440,92 @@
       canvas.addEventListener('pointerdown', function() {
         canvas.focus();
       });
+      canvas.addEventListener('keydown', function(e) {
+        if (e.key === 'Tab') {
+          e.preventDefault();
+          if (e.shiftKey) {
+            helpToggle.focus();
+          } else {
+            document.getElementById('btn-prev').focus();
+          }
+        }
+      });
+
+      function openIntro() {
+        launchButton.disabled = false;
+        intro.hidden = false;
+        introOpen = true;
+        helpToggle.setAttribute('aria-expanded', 'true');
+        launchButton.focus();
+      }
+
+      function closeIntro() {
+        launchButton.disabled = true;
+        intro.hidden = true;
+        introOpen = false;
+        helpToggle.setAttribute('aria-expanded', 'false');
+        launchButton.blur();
+        window.setTimeout(function() {
+          canvas.focus();
+        }, 0);
+      }
+
+      launchButton.addEventListener('click', closeIntro);
+      launchButton.addEventListener('keydown', function(e) {
+        if (e.key === 'Enter' || e.key === ' ') {
+          e.preventDefault();
+          closeIntro();
+        }
+      });
+
+      helpToggle.addEventListener('click', function() {
+        if (introOpen) {
+          closeIntro();
+        } else {
+          openIntro();
+        }
+      });
+
+      intro.addEventListener('click', function(e) {
+        if (e.target === intro) {
+          closeIntro();
+        }
+      });
+
+      window.addEventListener('keydown', function(e) {
+        if (e.key === '?' || (e.key === '/' && e.shiftKey)) {
+          e.preventDefault();
+          if (introOpen) {
+            closeIntro();
+          } else {
+            openIntro();
+          }
+          return;
+        }
+
+        if (introOpen) {
+          if (e.key === 'Escape') {
+            e.preventDefault();
+            closeIntro();
+          }
+          return;
+        }
+
+        if (document.activeElement === canvas || e.target === document.body) {
+          if (['Tab', 'F1', 'F2', 'F3', 'F4', 'F5', 'F6', 'F7', 'F8', 'F9', 'F10', 'F11', 'F12'].indexOf(e.key) === -1) {
+            e.preventDefault();
+          }
+        }
+      });
 
       var script = document.createElement('script');
-      script.src = './space_miner.js';
+      script.src = './signal.js';
       script.onload = function() {
         document.getElementById('loading').classList.add('done');
-        canvas.focus();
         initMusic();
       };
       document.body.appendChild(script);
 
-      /* ---- Music Player ---- */
       var MUSIC_CDN = 'https://signal-ratimics-assets.s3.amazonaws.com/music';
       var MUSIC_TRACKS = [
         'belt_drifters.mp3', 'echoes.mp3', 'clock_thunder.mp3',
@@ -170,7 +550,9 @@
       function shuffleArray(arr) {
         for (var i = arr.length - 1; i > 0; i--) {
           var j = Math.floor(Math.random() * (i + 1));
-          var tmp = arr[i]; arr[i] = arr[j]; arr[j] = tmp;
+          var tmp = arr[i];
+          arr[i] = arr[j];
+          arr[j] = tmp;
         }
       }
 
@@ -180,7 +562,6 @@
         musicAudio.volume = 0;
         musicAudio.addEventListener('ended', function() { playNextTrack(); });
 
-        /* Browser autoplay requires user gesture — start on first click/key */
         var startOnce = function() {
           if (!musicStarted) {
             musicStarted = true;
@@ -189,10 +570,9 @@
           document.removeEventListener('pointerdown', startOnce);
           document.removeEventListener('keydown', startOnce);
         };
+
         document.addEventListener('pointerdown', startOnce);
         document.addEventListener('keydown', startOnce);
-
-        /* Poll signal strength and adjust volume */
         setInterval(updateMusicVolume, 200);
       }
 
@@ -212,7 +592,7 @@
 
       function showTrackName() {
         var el = document.getElementById('track-name');
-        var name = MUSIC_TRACKS[musicIdx].replace('.mp3','').replace(/_/g,' ');
+        var name = MUSIC_TRACKS[musicIdx].replace('.mp3', '').replace(/_/g, ' ');
         el.textContent = name;
         el.style.opacity = '1';
         clearTimeout(trackNameTimer);
@@ -222,13 +602,16 @@
       function toggleMusic() {
         musicMuted = !musicMuted;
         document.getElementById('btn-music').classList.toggle('off', musicMuted);
-        if (musicMuted && musicAudio) musicAudio.volume = 0;
+        document.getElementById('btn-music').setAttribute('aria-pressed', String(musicMuted));
+        if (musicMuted && musicAudio) {
+          musicAudio.volume = 0;
+        }
       }
 
       function toggleSfx() {
         sfxMuted = !sfxMuted;
         document.getElementById('btn-sfx').classList.toggle('off', sfxMuted);
-        /* Insert a gain node between sokol's ScriptProcessor and destination */
+        document.getElementById('btn-sfx').setAttribute('aria-pressed', String(sfxMuted));
         try {
           var ctx = Module._saudio_context;
           var node = Module._saudio_node;
@@ -241,15 +624,21 @@
             }
             window._sfxGain.gain.value = sfxMuted ? 0 : 1;
           }
-        } catch(e) {}
+        } catch (err) {}
       }
 
       function updateMusicVolume() {
-        if (!musicAudio || !musicStarted || musicMuted) return;
-        var sig = 0;
-        try { sig = Module._get_signal_strength(); } catch(e) { return; }
+        if (!musicAudio || !musicStarted || musicMuted) {
+          return;
+        }
 
-        /* Music: silent below 0.20, fades in to full at 0.80 */
+        var sig = 0;
+        try {
+          sig = Module._get_signal_strength();
+        } catch (err) {
+          return;
+        }
+
         var vol = 0;
         if (sig > 0.20) {
           vol = Math.min(1.0, (sig - 0.20) / 0.60);
@@ -257,16 +646,39 @@
         musicAudio.volume = vol * musicVolume;
       }
 
-      /* Button handlers */
-      document.getElementById('btn-music').addEventListener('click', function(e) { e.stopPropagation(); toggleMusic(); });
-      document.getElementById('btn-sfx').addEventListener('click', function(e) { e.stopPropagation(); toggleSfx(); });
-      document.getElementById('btn-next').addEventListener('click', function(e) { e.stopPropagation(); if(musicStarted) playNextTrack(); });
-      document.getElementById('btn-prev').addEventListener('click', function(e) { e.stopPropagation(); if(musicStarted) playPrevTrack(); });
+      document.getElementById('btn-music').addEventListener('click', function(e) {
+        e.stopPropagation();
+        toggleMusic();
+      });
+      document.getElementById('btn-sfx').addEventListener('click', function(e) {
+        e.stopPropagation();
+        toggleSfx();
+      });
+      document.getElementById('btn-next').addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (musicStarted) {
+          playNextTrack();
+        }
+      });
+      document.getElementById('btn-prev').addEventListener('click', function(e) {
+        e.stopPropagation();
+        if (musicStarted) {
+          playPrevTrack();
+        }
+      });
 
-      /* Keyboard shortcuts — M for music, N for SFX */
       document.addEventListener('keydown', function(e) {
-        if (e.key === 'm' || e.key === 'M') { toggleMusic(); e.preventDefault(); }
-        if (e.key === 'n' || e.key === 'N') { toggleSfx(); e.preventDefault(); }
+        if (introOpen) {
+          return;
+        }
+        if (e.key === 'm' || e.key === 'M') {
+          toggleMusic();
+          e.preventDefault();
+        }
+        if (e.key === 'n' || e.key === 'N') {
+          toggleSfx();
+          e.preventDefault();
+        }
       });
     </script>
   </body>

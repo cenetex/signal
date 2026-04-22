@@ -136,6 +136,7 @@ jobs:
           cp build-web/signal.js "_site/play/v/$GIT_HASH/signal.js"
           cp build-web/signal.wasm "_site/play/v/$GIT_HASH/signal.wasm"
           cp docs/*.svg _site/docs/ 2>/dev/null || true
+          cp docs/*.png _site/docs/ 2>/dev/null || true
           sed -i 's|<head>|<head><script>window.SIGNAL_SERVER="wss://signal-ws.ratimics.com/ws";</script>|' _site/play/index.html
 
       - name: Upload client artifact
