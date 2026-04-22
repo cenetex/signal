@@ -1084,8 +1084,10 @@ void draw_station_services(const station_ui_state_t* ui) {
             const char *marker = selected ? " <" : (tracked ? " *" : "");
             /* Contracts pay in the DESTINATION station's vouchers. Use
              * that currency label so the player knows which ledger the
-             * payout lands in. */
-            const station_t *dest = (ct->station_index >= 0 && ct->station_index < MAX_STATIONS)
+             * payout lands in. (station_index is uint8_t so the >=0
+             * half of the bound check is always true — dropped to
+             * silence gcc -Werror=type-limits.) */
+            const station_t *dest = (ct->station_index < MAX_STATIONS)
                 ? &g.world.stations[ct->station_index] : NULL;
             const char *pay_cur = ui_station_currency(dest ? dest : ui->station);
             if (ct->action == CONTRACT_FRACTURE) {
