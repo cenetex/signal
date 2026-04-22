@@ -60,7 +60,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 28  /* fracture-child claimant identity sidecar */
+#define SAVE_VERSION 29  /* #339 slice A: real manifest serialization */
 #define MIN_SAVE_VERSION 20  /* migrate v20 by mapping old module_buffer → input */
 
 /* Set by world_load() before read_station() so per-station readers know
@@ -160,7 +160,6 @@ static bool read_station(FILE *f, station_t *s) {
 /* ================================================================== */
 
 static bool write_station_session(FILE *f, const station_t *s) {
-    if (s->manifest.count > 0) return false;
     /* Inventory */
     WRITE_FIELD(f, s->inventory);
     /* Per-module production buffers */
@@ -200,6 +199,16 @@ static bool write_station_session(FILE *f, const station_t *s) {
     WRITE_FIELD(f, s->named_ingots_count);
     for (int i = 0; i < STATION_NAMED_INGOTS_MAX; i++)
         WRITE_FIELD(f, s->named_ingots[i]);
+    /* Manifest (v29+, #339 slice A). Previously guarded to require
+     * empty — now serialized as count + packed cargo_unit_t entries.
+     * cap is NOT persisted; on load the manifest bootstraps at the
+     * default capacity and grows as needed. */
+    {
+        uint16_t manifest_count = s->manifest.count;
+        WRITE_FIELD(f, manifest_count);
+        for (uint16_t u = 0; u < manifest_count; u++)
+            WRITE_FIELD(f, s->manifest.units[u]);
+    }
     return true;
 }
 
@@ -256,6 +265,20 @@ static bool read_station_session(FILE *f, station_t *s) {
             s->named_ingots_count = STATION_NAMED_INGOTS_MAX;
         for (int i = 0; i < STATION_NAMED_INGOTS_MAX; i++)
             READ_FIELD(f, s->named_ingots[i]);
+    }
+    /* Manifest (v29+). Pre-v29 saves leave the manifest empty (matching
+     * the pre-slice-A behaviour of bootstrap-at-load-time, save-empty).
+     * For v29+, allocate via bootstrap + reserve, then read entries. */
+    if (g_loaded_save_version >= 29) {
+        uint16_t manifest_count = 0;
+        READ_FIELD(f, manifest_count);
+        if (!station_manifest_bootstrap(s)) return false;
+        if (manifest_count > 0) {
+            if (!manifest_reserve(&s->manifest, manifest_count)) return false;
+            for (uint16_t u = 0; u < manifest_count; u++)
+                READ_FIELD(f, s->manifest.units[u]);
+            s->manifest.count = manifest_count;
+        }
     }
     return true;
 }

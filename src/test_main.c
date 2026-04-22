@@ -4190,16 +4190,32 @@ TEST(test_player_save_load_preserves_ship) {
     remove("/tmp/player_99.sav");
 }
 
-TEST(test_world_save_rejects_nonempty_station_manifest) {
+TEST(test_world_save_round_trips_station_manifest) {
+    /* Previously, non-empty station manifests caused world_save to fail —
+     * the pre-#339 guard rejected them because manifest wasn't persisted.
+     * Slice A of #339 lifted that guard and added real serialization;
+     * this test asserts the round trip now works. */
     WORLD_DECL;
+    WORLD_DECL_NAME(loaded);
     cargo_unit_t unit = {0};
     world_reset(&w);
+    world_reset(&loaded);
     unit.kind = (uint8_t)CARGO_KIND_INGOT;
     unit.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    unit.grade = (uint8_t)MINING_GRADE_RARE;
     unit.pub[0] = 0xA5;
+    unit.pub[31] = 0x5A;
     ASSERT(manifest_push(&w.stations[0].manifest, &unit));
-    ASSERT(!world_save(&w, "/tmp/test_manifest_guard_world.sav"));
-    remove("/tmp/test_manifest_guard_world.sav");
+    ASSERT_EQ_INT(w.stations[0].manifest.count, 1);
+    ASSERT(world_save(&w, "/tmp/test_manifest_roundtrip.sav"));
+    ASSERT(world_load(&loaded, "/tmp/test_manifest_roundtrip.sav"));
+    ASSERT_EQ_INT(loaded.stations[0].manifest.count, 1);
+    ASSERT(loaded.stations[0].manifest.units != NULL);
+    ASSERT_EQ_INT(loaded.stations[0].manifest.units[0].kind, CARGO_KIND_INGOT);
+    ASSERT_EQ_INT(loaded.stations[0].manifest.units[0].commodity, COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(loaded.stations[0].manifest.units[0].grade, MINING_GRADE_RARE);
+    ASSERT(memcmp(loaded.stations[0].manifest.units[0].pub, unit.pub, 32) == 0);
+    remove("/tmp/test_manifest_roundtrip.sav");
 }
 
 TEST(test_player_load_clamps_negative_credits) {
@@ -4399,7 +4415,9 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  *   3. Update this constant to the new size
  */
 /* v23: station credit pool added (#312) — +4 bytes per station (8×4=32). */
-#define EXPECTED_SAVE_SIZE 268628 /* v28: empty save size unchanged from v27 */
+/* v29: +2 bytes per station (uint16 manifest count) = +128 bytes for all
+ * MAX_STATIONS=64 slots. Empty stations carry only the count; no units. */
+#define EXPECTED_SAVE_SIZE 268756 /* v29: #339 slice A manifest count header */
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -4436,7 +4454,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 28);
+    ASSERT_EQ_INT((int)version, 29);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -7462,7 +7480,7 @@ int main(int argc, char **argv) {
     RUN(test_world_load_preserves_fracture_claim_dedupe_identity);
     RUN(test_world_load_missing_file);
     RUN(test_player_save_load_preserves_ship);
-    RUN(test_world_save_rejects_nonempty_station_manifest);
+    RUN(test_world_save_round_trips_station_manifest);
     RUN(test_player_load_clamps_negative_credits);
     RUN(test_player_save_rejects_nonempty_ship_manifest);
     RUN(test_player_load_clamps_negative_cargo);
