@@ -663,45 +663,17 @@ void draw_hud_panels(void) {
         }
 
         float inner_x = panel_x + 18.0f;
-        float inner_y = panel_y + 18.0f;
         float inner_w = panel_w - 36.0f;
 
-        /* Header rule below station name */
-        draw_ui_rule(inner_x, panel_x + panel_w - 18.0f, inner_y + 26.0f, 0.14f, 0.26f, 0.38f, 0.70f);
+        /* Divider rule below the persistent header band (drawn by
+         * station_ui.c at panel_y + ~52). The rule visually separates
+         * the always-visible header (name/role/ledger/hull/cargo/ticker)
+         * from the per-view content body below. */
+        draw_ui_rule(inner_x, panel_x + panel_w - 18.0f, panel_y + 56.0f,
+            0.14f, 0.26f, 0.38f, 0.70f);
 
-        /* Tab bar */
-        float tab_y = inner_y + 32.0f;
-        float tab_h = compact ? 16.0f : 20.0f;
-        /* Must mirror the visible-tab list + tab_w cap in
-         * station_ui.c's draw_station_services exactly, or the
-         * active-tab highlight rect ends up under the wrong label. */
-        station_tab_t visible_tabs[STATION_TAB_COUNT];
-        int tab_count = 0;
-        visible_tabs[tab_count++] = STATION_TAB_STATUS;
-        visible_tabs[tab_count++] = STATION_TAB_MARKET;
-        visible_tabs[tab_count++] = STATION_TAB_CONTRACTS;
-        const station_t *cur_st = current_station_ptr();
-        if (cur_st && station_has_module(cur_st, MODULE_SHIPYARD)) {
-            visible_tabs[tab_count++] = STATION_TAB_SHIPYARD;
-        }
-        visible_tabs[tab_count++] = STATION_TAB_NETWORK;
-        visible_tabs[tab_count++] = STATION_TAB_GRADES;
-        float tab_w = fminf(inner_w / (float)tab_count, 96.0f);
-
-        for (int t = 0; t < tab_count; t++) {
-            float tx = inner_x + (float)t * tab_w;
-            bool active = (g.station_tab == visible_tabs[t]);
-            float accent_a = active ? 0.92f : 0.20f;
-            if (active) {
-                draw_rect_centered(v2(tx + tab_w * 0.5f, tab_y + tab_h * 0.5f),
-                    tab_w * 0.5f, tab_h * 0.5f, 0.06f, 0.12f, 0.18f, 0.95f);
-            }
-            draw_ui_rule(tx + 4.0f, tx + tab_w - 4.0f, tab_y + tab_h - 2.0f,
-                0.30f, 0.85f, 1.0f, accent_a);
-        }
-
-        /* Tab content area */
-        float content_y = tab_y + tab_h + 8.0f;
+        /* View content area — no tab bar; the verb-list IS the surface. */
+        float content_y = panel_y + 60.0f;
         float strip_h = compact ? 32.0f : 38.0f;
         float content_h = panel_y + panel_h - 18.0f - content_y - strip_h;
         draw_ui_panel(inner_x, content_y, inner_w, content_h, 0.03f);
@@ -1159,7 +1131,7 @@ void draw_hud(void) {
     /* --- [E] context prompt — only when docked (hint panel doesn't show E) --- */
     if (!g.death_cinematic.active && LOCAL_PLAYER.docked) {
         const char *e_action;
-        if (g.station_tab == STATION_TAB_CONTRACTS && g.selected_contract >= 0)
+        if (g.station_view == STATION_VIEW_JOBS && g.selected_contract >= 0)
             e_action = "[E] deliver";
         else
             e_action = "[E] launch";

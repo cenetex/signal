@@ -30,18 +30,21 @@
 #include "sokol_debugtext.h"
 
 /* ------------------------------------------------------------------ */
-/* Station tab enum                                                   */
+/* Station docked view enum                                           */
 /* ------------------------------------------------------------------ */
+/* The docked UI is a verb-list action surface, not a tab system.
+ * VERBS is the default screen players see on dock — every visible row
+ * is an action with a real cost/payoff and a single-letter hotkey.
+ * JOBS and BUILD are sub-screens entered with [J] / [B] and exited
+ * with [Esc]. There is no STATUS / MARKET / NETWORK / GRADES tab —
+ * persistent ship+ledger info lives in the always-visible header band,
+ * and the deleted tabs were full of unactionable display data. */
 
 typedef enum {
-    STATION_TAB_STATUS = 0,
-    STATION_TAB_MARKET,
-    STATION_TAB_CONTRACTS,
-    STATION_TAB_SHIPYARD,
-    STATION_TAB_NETWORK,
-    STATION_TAB_GRADES,
-    STATION_TAB_COUNT
-} station_tab_t;
+    STATION_VIEW_VERBS = 0,  /* default verb-list */
+    STATION_VIEW_JOBS,       /* contract picker */
+    STATION_VIEW_BUILD,      /* module-order picker */
+} station_view_t;
 
 /* ------------------------------------------------------------------ */
 /* Station UI state (computed per frame when docked)                   */
@@ -110,7 +113,7 @@ typedef struct {
     uint8_t pending_net_action;
     float action_predict_timer;
     float net_input_timer;
-    station_tab_t station_tab;
+    station_view_t station_view;
     bool was_docked;
     bool was_autopilot;
     float dock_settle_timer;  /* delay before showing station panel after dock */
@@ -347,13 +350,9 @@ const station_t* navigation_station_ptr(void);
 bool station_has_service(uint32_t service);
 uint32_t station_upgrade_service(ship_upgrade_t upgrade);
 
-/* Formatting helpers (implemented in station_ui.c) */
-void format_ingot_stock_line(const station_t* station, char* text, size_t text_size);
-void format_station_header_badge(const station_ui_state_t* ui, char* text, size_t text_size);
-void format_station_market_summary(const station_ui_state_t* ui, bool compact, char* text, size_t text_size);
-void format_station_market_detail(const station_ui_state_t* ui, bool compact, char* text, size_t text_size);
-int build_station_service_lines(const station_ui_state_t* ui, station_service_line_t lines[3]);
-void draw_station_service_text_line(float x, float y, const station_service_line_t* line, bool compact);
+/* (Old MARKET / STATUS formatter helpers retired in the docked-UI
+ * redesign — the verb-list view computes its rows inline from station
+ * + ship state and doesn't need separate format helpers.) */
 
 /* ------------------------------------------------------------------ */
 /* Plan helpers — module types the local player has currently planned */

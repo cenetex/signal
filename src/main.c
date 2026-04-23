@@ -629,11 +629,10 @@ static void sim_step(float dt) {
 
     input_intent_t intent = sample_input_intent();
 
-    /* Tab switching while docked */
+    /* Reset the docked view to the verb-list on each fresh dock. */
     if (LOCAL_PLAYER.docked && !g.was_docked) {
-        /* Just docked — reset to overview (or construction for scaffolds) */
         const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
-        g.station_tab = STATION_TAB_STATUS;
+        g.station_view = STATION_VIEW_VERBS;
         g.selected_contract = -1; /* fresh dock — no carryover selection */
         /* Clear blueprint pip if we docked at the blueprint station */
         if (g.nav_pip_is_blueprint) {
@@ -642,30 +641,17 @@ static void sim_step(float dt) {
                 g.nav_pip_is_blueprint = false;
                 g.nav_pip_pos = st->pos;
             }
-            /* Otherwise keep the blueprint pip active */
         } else {
             g.nav_pip_active = true;
             g.nav_pip_pos = st->pos;
         }
     }
-    if (LOCAL_PLAYER.docked && g.dock_settle_timer <= 0.0f &&
-        (is_key_pressed(SAPP_KEYCODE_TAB) || is_key_pressed(SAPP_KEYCODE_Q))) {
-        station_tab_t vtabs[STATION_TAB_COUNT];
-        int vtab_count = 0;
-        vtabs[vtab_count++] = STATION_TAB_STATUS;
-        vtabs[vtab_count++] = STATION_TAB_MARKET;
-        vtabs[vtab_count++] = STATION_TAB_CONTRACTS;
-        const station_t *cst = current_station_ptr();
-        if (cst && station_has_module(cst, MODULE_SHIPYARD)) {
-            vtabs[vtab_count++] = STATION_TAB_SHIPYARD;
-        }
-        vtabs[vtab_count++] = STATION_TAB_NETWORK;
-        vtabs[vtab_count++] = STATION_TAB_GRADES;
-        int cur = 0;
-        for (int i = 0; i < vtab_count; i++) { if (vtabs[i] == g.station_tab) { cur = i; break; } }
-        int dir = is_key_pressed(SAPP_KEYCODE_TAB) ? 1 : (vtab_count - 1);
-        g.station_tab = vtabs[(cur + dir) % vtab_count];
-        g.selected_contract = -1; /* tab change clears stale selection */
+    /* [Esc] returns to the verb list from any sub-view. */
+    if (LOCAL_PLAYER.docked && g.dock_settle_timer <= 0.0f
+        && g.station_view != STATION_VIEW_VERBS
+        && is_key_pressed(SAPP_KEYCODE_ESCAPE)) {
+        g.station_view = STATION_VIEW_VERBS;
+        g.selected_contract = -1;
     }
 
     submit_input(&intent, dt);

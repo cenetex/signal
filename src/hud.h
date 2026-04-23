@@ -40,6 +40,4 @@ void station_role_color(const station_t* station, float* r, float* g0, float* b)
 
 void build_station_ui_state(station_ui_state_t* ui);
 
-void format_ingot_stock_line(const station_t* station, char* text, size_t text_size);
-
 #endif

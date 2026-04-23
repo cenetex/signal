@@ -56,14 +56,6 @@
 #include "signal_model.h"
 #include "mining.h"
 
-/* Local helper — station's currency_name with fallback. station_ui.c
- * has its own private copy; we duplicate here to avoid leaking a
- * private string through a header just for one keybind. */
-static const char *input_station_currency(const station_t *st) {
-    if (!st) return "cr";
-    return (st->currency_name[0]) ? st->currency_name : "cr";
-}
-
 void clear_input_state(void) {
     memset(g.input.key_down, 0, sizeof(g.input.key_down));
     memset(g.input.key_pressed, 0, sizeof(g.input.key_pressed));
@@ -280,11 +272,11 @@ input_intent_t sample_input_intent(void) {
         }
     }
     /* E key: activate targeted module, or dock/launch if no target.
-     * Special case: while docked on the CONTRACTS tab, [E] is the
-     * "deliver" key (handled in the per-tab block below), not launch. */
-    bool e_handled_by_contracts_tab =
-        LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONTRACTS;
-    if (is_key_pressed(SAPP_KEYCODE_E) && !e_handled_by_contracts_tab) {
+     * Special case: while docked on the JOBS sub-screen, [E] is the
+     * "deliver" key (handled in the per-view block below), not launch. */
+    bool e_handled_by_jobs_view =
+        LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_JOBS;
+    if (is_key_pressed(SAPP_KEYCODE_E) && !e_handled_by_jobs_view) {
         if (LOCAL_PLAYER.docked) {
             /* Launch */
             intent.interact = true;
@@ -314,9 +306,9 @@ input_intent_t sample_input_intent(void) {
     }
 
     /* Number keys: context-dependent */
-    if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_SHIPYARD) {
+    if (LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_BUILD) {
         const station_t *st = current_station_ptr();
-        /* Shipyard tab: 1-9 order a scaffold.
+        /* BUILD sub-screen: 1-9 order a scaffold.
          * Surface every unlocked module type this yard can fabricate.
          * (Plans are still useful for slot reservation in plan mode, but
          * are no longer required to *order* a kit — the chicken-and-egg
@@ -341,18 +333,19 @@ input_intent_t sample_input_intent(void) {
             }
             shown++;
         }
-    } else if (LOCAL_PLAYER.docked && g.station_tab == STATION_TAB_CONTRACTS) {
-        /* Contracts tab keys:
+    } else if (LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_JOBS) {
+        /* JOBS sub-screen keys:
          *   [1/2/3] select a contract slot for selective delivery
          *   [E]     deliver — selective if a slot is selected, else all
+         *   [Esc]   back to verb list (handled in main.c)
          *
          * The display in station_ui.c sorts deliverable contracts first
          * so [1] usually picks "the contract you can fulfill right now".
          * Selecting via [1/2/3] also tracks that contract for the HUD.
          *
          * The selection persists until [E] consumes it or the player
-         * switches tabs. Player walks away with their iridium intact
-         * by selecting the ferrite contract before pressing E. */
+         * leaves the sub-screen. Player walks away with their iridium
+         * intact by selecting the ferrite contract before pressing E. */
         const station_t *here_st = current_station_ptr();
         int here_idx = LOCAL_PLAYER.current_station;
 
@@ -429,100 +422,29 @@ input_intent_t sample_input_intent(void) {
                 set_notice("Delivering all matching cargo...");
             }
         }
-    } else if (LOCAL_PLAYER.docked) {
-        /* Default: service keys (docked only) */
-        intent.service_sell = is_key_pressed(SAPP_KEYCODE_1);
-        if (intent.service_sell) {
+    } else if (LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_VERBS) {
+        /* Verb-list keys (docked, default view).
+         * Each verb is a single semantic letter and only fires here so
+         * sub-screens can rebind 1-9 without conflict.
+         *   [S] SELL all matching cargo
+         *   [R] REPAIR
+         *   [M] upgrade mining laser
+         *   [H] upgrade hold capacity
+         *   [T] upgrade tractor
+         *   [J] open JOBS sub-screen
+         * [F] BUY and [B] BUILD have docked branches further down. */
+        if (is_key_pressed(SAPP_KEYCODE_S)) {
+            intent.service_sell = true;
+            intent.service_sell_only = COMMODITY_COUNT;
             set_notice("Delivering...");
         }
-        intent.service_repair = is_key_pressed(SAPP_KEYCODE_2);
-        intent.upgrade_mining = is_key_pressed(SAPP_KEYCODE_3);
-        intent.upgrade_hold = is_key_pressed(SAPP_KEYCODE_4);
-        intent.upgrade_tractor = is_key_pressed(SAPP_KEYCODE_5);
-    }
-    /* Named-ingot buy is on [G] ("get high-grade lot") rather than
-     * [B] because [B] is already plan-mode-enter/exit globally; having
-     * the MARKET panel advertise [B] in docked context teaches the
-     * wrong association. N delivers the first hold ingot into the
-     * docked station's stockpile. Slice 3 — single-action keys keep
-     * the UX simple before per-row pickers land. */
-    if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_G)) {
-        const station_t *st = current_station_ptr();
-        if (st && st->named_ingots_count > 0) {
-            ship_t *ship = &LOCAL_PLAYER.ship;
-            if (ship->hold_ingots_count >= 8) {
-                set_notice("Hold full — can't carry more lots.");
-            } else {
-                const named_ingot_t *ing = &st->named_ingots[0];
-                int price;
-                switch (ing->prefix_class) {
-                case INGOT_PREFIX_RATI:         price = INGOT_PRICE_RATI; break;
-                case INGOT_PREFIX_COMMISSIONED: price = INGOT_PRICE_COMMISSIONED; break;
-                default:                        price = INGOT_PRICE_M; break;
-                }
-                if (player_current_balance() < (float)price) {
-                    set_notice("Need %d %s.", price, input_station_currency(st));
-                } else {
-                    char cs[12]; mining_render_callsign(ing->pubkey, cs);
-                    if (g.multiplayer_enabled) {
-                        net_send_buy_ingot(ing->pubkey);
-                    } else {
-                        /* Singleplayer mirror: shift first ingot from
-                         * station stockpile into hold, drop balance
-                         * from the local ledger directly. */
-                        station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
-                        ship->hold_ingots[ship->hold_ingots_count++] = mst->named_ingots[0];
-                        for (int i = 0; i < mst->named_ingots_count - 1; i++)
-                            mst->named_ingots[i] = mst->named_ingots[i + 1];
-                        mst->named_ingots_count--;
-                        memset(&mst->named_ingots[mst->named_ingots_count], 0, sizeof(named_ingot_t));
-                        const uint8_t *tk = g.world.players[g.local_player_slot].session_token;
-                        for (int li = 0; li < mst->ledger_count; li++) {
-                            if (memcmp(mst->ledger[li].player_token, tk, 8) == 0) {
-                                mst->ledger[li].balance -= (float)price;
-                                if (mst->ledger[li].balance < 0.0f) mst->ledger[li].balance = 0.0f;
-                                mst->credit_pool += (float)price;
-                                break;
-                            }
-                        }
-                    }
-                    set_notice("Bought %s for %d %s.", cs, price, input_station_currency(st));
-                }
-            }
-        } else if (st) {
-            set_notice("No high-grade lots in stock.");
-        }
-    }
-    if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_N)) {
-        const station_t *st = current_station_ptr();
-        ship_t *ship = &LOCAL_PLAYER.ship;
-        if (st && ship->hold_ingots_count > 0) {
-            const named_ingot_t *ing = &ship->hold_ingots[0];
-            char cs[12]; mining_render_callsign(ing->pubkey, cs);
-            if (g.multiplayer_enabled) {
-                net_send_deliver_ingot(0);
-            } else {
-                /* Singleplayer mirror: shift first hold ingot into
-                 * the local station stockpile and pay the credit. */
-                station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
-                if (mst->named_ingots_count < STATION_NAMED_INGOTS_MAX) {
-                    mst->named_ingots[mst->named_ingots_count++] = ship->hold_ingots[0];
-                }
-                for (int i = 0; i < ship->hold_ingots_count - 1; i++)
-                    ship->hold_ingots[i] = ship->hold_ingots[i + 1];
-                ship->hold_ingots_count--;
-                memset(&ship->hold_ingots[ship->hold_ingots_count], 0, sizeof(named_ingot_t));
-                const uint8_t *tk = g.world.players[g.local_player_slot].session_token;
-                for (int li = 0; li < mst->ledger_count; li++) {
-                    if (memcmp(mst->ledger[li].player_token, tk, 8) == 0) {
-                        mst->ledger[li].balance += (float)INGOT_DELIVERY_CREDIT;
-                        break;
-                    }
-                }
-            }
-            set_notice("Delivered %s. +%d %s.", cs, INGOT_DELIVERY_CREDIT, input_station_currency(st));
-        } else if (st) {
-            set_notice("No lots in your hold.");
+        intent.service_repair = is_key_pressed(SAPP_KEYCODE_R);
+        intent.upgrade_mining = is_key_pressed(SAPP_KEYCODE_M);
+        intent.upgrade_hold   = is_key_pressed(SAPP_KEYCODE_H);
+        intent.upgrade_tractor= is_key_pressed(SAPP_KEYCODE_T);
+        if (is_key_pressed(SAPP_KEYCODE_J)) {
+            g.station_view = STATION_VIEW_JOBS;
+            g.selected_contract = -1;
         }
     }
 
@@ -762,7 +684,7 @@ input_intent_t sample_input_intent(void) {
         if (LOCAL_PLAYER.docked) {
             const station_t *st = current_station_ptr();
             if (st && station_has_module(st, MODULE_SHIPYARD)) {
-                g.station_tab = STATION_TAB_SHIPYARD;
+                g.station_view = STATION_VIEW_BUILD;
             } else {
                 set_notice("No shipyard here.");
             }
