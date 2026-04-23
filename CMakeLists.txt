@@ -131,6 +131,19 @@ endif()
 if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
     add_executable(signal_test
         src/test_main.c
+        src/tests/test_harness.c
+        src/tests/test_commodity.c
+        src/tests/test_math.c
+        src/tests/test_ship.c
+        src/tests/test_manifest.c
+        src/tests/test_economy.c
+        src/tests/test_world_sim.c
+        src/tests/test_protocol.c
+        src/tests/test_bug_regression.c
+        src/tests/test_save.c
+        src/tests/test_construction.c
+        src/tests/test_navigation.c
+        src/tests/test_econ_sim.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
     )
