@@ -8,6 +8,9 @@ int g_shard_total = 1;
 int g_shard_index = 0;
 int g_test_seq    = 0;
 
+int g_quiet = 0;
+int g_warnings = 0;
+
 bool parse_hex32(const char *hex, uint8_t out[32]) {
     static const char digits[] = "0123456789abcdef";
     if (!hex || strlen(hex) != 64) return false;

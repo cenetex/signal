@@ -1315,7 +1315,7 @@ TEST(test_bug90_station_bounce_no_extra_energy) {
 }
 
 void register_bug_regression_batch1_tests(void) {
-    printf("\nBug regression tests:\n");
+    TEST_SECTION("\nBug regression tests:\n");
     RUN(test_bug2_angle_lerp_wraparound);
     RUN(test_bug3_event_buffer_too_small);
     RUN(test_bug4_pending_action_lost);
@@ -1326,7 +1326,7 @@ void register_bug_regression_batch1_tests(void) {
 }
 
 void register_bug_regression_batch2_tests(void) {
-    printf("\nBug regression tests (batch 2):\n");
+    TEST_SECTION("\nBug regression tests (batch 2):\n");
     RUN(test_bug12_repair_cost_checks_service);
     RUN(test_bug13_buy_price_correct_size);
     RUN(test_bug14_player_ship_syncs_all_cargo);
@@ -1339,7 +1339,7 @@ void register_bug_regression_batch2_tests(void) {
 }
 
 void register_bug_regression_batch3_tests(void) {
-    printf("\nBug regression tests (batch 3):\n");
+    TEST_SECTION("\nBug regression tests (batch 3):\n");
     RUN(test_bug21_commodity_bits_fragile);
     RUN(test_bug22_hauler_stuck_at_empty_station);
     RUN(test_bug23_npc_cargo_stuck_when_hopper_full);
@@ -1353,7 +1353,7 @@ void register_bug_regression_batch3_tests(void) {
 }
 
 void register_bug_regression_batch4_tests(void) {
-    printf("\nMovement & physics bugs (batch 4):\n");
+    TEST_SECTION("\nMovement & physics bugs (batch 4):\n");
     RUN(test_bug31_no_server_reconciliation);
     RUN(test_bug32_collision_adds_energy);
     RUN(test_bug33_npc_no_world_boundary);
@@ -1367,7 +1367,7 @@ void register_bug_regression_batch4_tests(void) {
 }
 
 void register_bug_regression_batch5_tests(void) {
-    printf("\nBug regression batch 5 (bugs 41-50):\n");
+    TEST_SECTION("\nBug regression batch 5 (bugs 41-50):\n");
     RUN(test_bug41_gravity_asymmetric);
     RUN(test_bug42_station_gravity_ignores_mass);
     RUN(test_bug43_fracture_children_inside_station);
@@ -1381,7 +1381,7 @@ void register_bug_regression_batch5_tests(void) {
 }
 
 void register_bug_regression_batch7_tests(void) {
-    printf("\nBug regression batch 7 (bugs 61-70):\n");
+    TEST_SECTION("\nBug regression batch 7 (bugs 61-70):\n");
     RUN(test_bug61_interp_prev_zero_on_connect);
     RUN(test_bug62_sell_event_no_payout);
     RUN(test_bug63_npc_asteroid_collision);
@@ -1395,7 +1395,7 @@ void register_bug_regression_batch7_tests(void) {
 }
 
 void register_bug_regression_batch6_tests(void) {
-    printf("\nBug regression batch 6 (bugs 51-60):\n");
+    TEST_SECTION("\nBug regression batch 6 (bugs 51-60):\n");
     RUN(test_bug51_npc_cargo_zeroed_on_dock);
     RUN(test_bug52_server_repair_cost_no_service_check);
     RUN(test_bug53_npc_cargo_commodity_bounds);
@@ -1409,7 +1409,7 @@ void register_bug_regression_batch6_tests(void) {
 }
 
 void register_bug_regression_b88_90_tests(void) {
-    printf("\nBug regression (bugs 88-90):\n");
+    TEST_SECTION("\nBug regression (bugs 88-90):\n");
     RUN(test_bug88_interference_seed_no_world_time);
     RUN(test_bug89_gravity_symmetric);
     RUN(test_bug90_station_bounce_no_extra_energy);

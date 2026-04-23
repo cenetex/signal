@@ -393,7 +393,7 @@ TEST(test_parse_input_action_accumulates) {
 }
 
 void register_protocol_main_tests(void) {
-    printf("\nProtocol roundtrip tests:\n");
+    TEST_SECTION("\nProtocol roundtrip tests:\n");
     RUN(test_roundtrip_player_state);
     RUN(test_roundtrip_batched_player_states);
     RUN(test_roundtrip_asteroids);

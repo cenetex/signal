@@ -96,7 +96,7 @@ TEST(test_product_name) {
 }
 
 void register_ship_tests(void) {
-    printf("\nShip tests:\n");
+    TEST_SECTION("\nShip tests:\n");
     RUN(test_ship_hull_def_miner);
     RUN(test_ship_hull_def_hauler);
     RUN(test_ship_max_hull);

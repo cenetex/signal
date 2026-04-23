@@ -49,7 +49,9 @@ int main(int argc, char **argv) {
     setbuf(stdout, NULL); /* unbuffered so crash location is visible */
 
     /* --shard=K/N splits the suite across N workers; worker K runs
-     * every Nth test starting at index K. Unset = run everything. */
+     * every Nth test starting at index K. Unset = run everything.
+     * --quiet suppresses banners + per-test "ok" lines + [WARN] noise;
+     * a single FAIL line still prints with full file:line context. */
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--shard=", 8) == 0) {
             int k = 0, n = 1;
@@ -58,6 +60,8 @@ int main(int argc, char **argv) {
                 g_shard_total = n;
                 printf("[shard %d/%d] ", k, n);
             }
+        } else if (strcmp(argv[i], "--quiet") == 0) {
+            g_quiet = 1;
         }
     }
 
@@ -103,6 +107,8 @@ int main(int argc, char **argv) {
     register_econ_sim_bug312_tests();
     register_econ_sim_invariant_tests();
 
-    printf("\n%d tests run, %d passed, %d failed\n", tests_run, tests_passed, tests_failed);
+    printf("\n%d tests run, %d passed, %d failed", tests_run, tests_passed, tests_failed);
+    if (g_warnings > 0) printf(", %d warnings", g_warnings);
+    printf("\n");
     return tests_failed > 0 ? 1 : 0;
 }

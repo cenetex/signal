@@ -757,7 +757,7 @@ TEST(test_smelt_credit_ignores_claim_winner_identity) {
     ASSERT(worker_delta > 0.0f);
 }
 void register_manifest_tests(void) {
-    printf("\nManifest tests:\n");
+    TEST_SECTION("\nManifest tests:\n");
     RUN(test_manifest_push_find_remove_preserves_order);
     RUN(test_manifest_clone_detaches_storage);
     RUN(test_hash_legacy_migrate_unit_deterministic);

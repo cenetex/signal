@@ -18,12 +18,18 @@ build-server:
 	cmake --build build --target signal_server
 
 # --- Tests ---
+# Always rebuild signal_test from current source before running, so a stale
+# binary cannot hide regressions. Default to --quiet (banners + per-test
+# "ok" lines suppressed; failures + summary still print). Override with
+# `make test TEST_VERBOSE=1` to get the full per-test stream.
+TEST_QUIET := $(if $(TEST_VERBOSE),,--quiet)
+
 build-test:
 	cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
 	cmake --build build --target signal_test
 
 test: build-test
-	./build/signal_test
+	./build/signal_test $(TEST_QUIET)
 
 # --- Local dev (server on :9091, web on :8082) ---
 dev: build-server build-web

@@ -40,6 +40,13 @@ extern int g_shard_total;
 extern int g_shard_index;
 extern int g_test_seq;
 
+/* Quiet mode: suppress per-test "ok" lines, section banners, and inline
+ * [WARN] noise. ASSERT failures still print full file:line context, and
+ * the post-test summary always prints. Set with --quiet on the cmdline.
+ * Default Makefile `make test` enables it; override with TEST_VERBOSE=1. */
+extern int g_quiet;
+extern int g_warnings;
+
 /* Auto-cleanup for world_t — frees the heap-allocated signal cache grid.
  * Uses __attribute__((cleanup)) on GCC/Clang; on MSVC, leaks are
  * acceptable in tests (no cleanup on early ASSERT return). */
@@ -73,12 +80,34 @@ static inline void server_player_auto_cleanup(server_player_t *sp) { ship_cleanu
     if ((_seq % g_shard_total) != g_shard_index) break; \
     int _failed_before = tests_failed; \
     tests_run++; \
-    printf("  %s ... ", #name); \
+    if (!g_quiet) printf("  %s ... ", #name); \
     name(); \
     if (tests_failed == _failed_before) { \
         tests_passed++; \
-        printf("ok\n"); \
+        if (!g_quiet) printf("ok\n"); \
+    } else if (g_quiet) { \
+        printf("  ^^^ %s\n", #name); \
     } \
+} while(0)
+
+/* Section banner — suppressed in quiet mode. Use this from
+ * register_<subsystem>_tests() functions instead of a raw printf. */
+#define TEST_SECTION(banner) do { \
+    if (!g_quiet) printf(banner); \
+} while(0)
+
+/* Soft warning: timing-sensitive observation that shouldn't fail the
+ * test but is worth noting. Counted globally and surfaced in the
+ * summary; inline message suppressed in quiet mode. Two flavors so we
+ * stay portable across compilers without relying on GNU
+ * ##__VA_ARGS__ comma elision. */
+#define TEST_WARN(msg) do { \
+    g_warnings++; \
+    if (!g_quiet) printf("      [WARN] %s\n", (msg)); \
+} while(0)
+#define TEST_WARNF(fmt, ...) do { \
+    g_warnings++; \
+    if (!g_quiet) printf("      [WARN] " fmt "\n", __VA_ARGS__); \
 } while(0)
 
 #define ASSERT(cond) do { \

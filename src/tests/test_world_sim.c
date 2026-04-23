@@ -981,7 +981,7 @@ TEST(test_chunk_respects_belt_density) {
 }
 
 void register_world_sim_basic_tests(void) {
-    printf("\nWorld sim tests:\n");
+    TEST_SECTION("\nWorld sim tests:\n");
     RUN(test_world_reset_creates_stations);
     RUN(test_world_reset_spawns_asteroids);
     RUN(test_world_reset_spawns_npcs);
@@ -1002,7 +1002,7 @@ void register_world_sim_basic_tests(void) {
 }
 
 void register_world_sim_scenarios_tests(void) {
-    printf("\nSim integration scenarios:\n");
+    TEST_SECTION("\nSim integration scenarios:\n");
     RUN(test_scenario_full_mining_cycle);
     RUN(test_scenario_two_players_mining);
     RUN(test_scenario_npc_economy_30_seconds);
@@ -1012,7 +1012,7 @@ void register_world_sim_scenarios_tests(void) {
 }
 
 void register_world_sim_signal_tests(void) {
-    printf("\nSignal range (#82):\n");
+    TEST_SECTION("\nSignal range (#82):\n");
     RUN(test_signal_strength_at_station);
     RUN(test_signal_strength_falls_off);
     RUN(test_signal_zero_outside_range);
@@ -1025,13 +1025,13 @@ void register_world_sim_signal_tests(void) {
 }
 
 void register_world_sim_belt_tests(void) {
-    printf("\nBelt generation:\n");
+    TEST_SECTION("\nBelt generation:\n");
     RUN(test_belt_density_varies);
     RUN(test_belt_ore_distribution);
 }
 
 void register_world_sim_chunk_tests(void) {
-    printf("\nChunk terrain generation:\n");
+    TEST_SECTION("\nChunk terrain generation:\n");
     RUN(test_chunk_determinism);
     RUN(test_chunk_different_coords_differ);
     RUN(test_chunk_respects_belt_density);

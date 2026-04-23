@@ -1226,7 +1226,7 @@ TEST(test_module_flow_does_not_overflow_capacity) {
 }
 
 void register_construction_outposts_tests(void) {
-    printf("\nStation construction (#83):\n");
+    TEST_SECTION("\nStation construction (#83):\n");
     RUN(test_outpost_requires_signal_range);
     RUN(test_outpost_extends_signal_range);
     RUN(test_disconnected_station_goes_dark);
@@ -1236,14 +1236,14 @@ void register_construction_outposts_tests(void) {
 }
 
 void register_construction_modules_tests(void) {
-    printf("\nModule construction:\n");
+    TEST_SECTION("\nModule construction:\n");
     RUN(test_module_build_material_types);
     RUN(test_module_construction_and_delivery);
     RUN(test_module_activation_spawns_npc);
 }
 
 void register_construction_collision238_tests(void) {
-    printf("\nCollision accuracy (#238):\n");
+    TEST_SECTION("\nCollision accuracy (#238):\n");
     RUN(test_238_station_core_blocks_player);
     RUN(test_238_module_circle_blocks_player);
     RUN(test_238_corridor_blocks_radial_approach);
@@ -1254,12 +1254,12 @@ void register_construction_collision238_tests(void) {
 }
 
 void register_construction_station_geom_tests(void) {
-    printf("\nStation geometry emitter:\n");
+    TEST_SECTION("\nStation geometry emitter:\n");
     RUN(test_station_geom_emitter_prospect);
 }
 
 void register_construction_scaffold_tests(void) {
-    printf("\nScaffold entity (#277):\n");
+    TEST_SECTION("\nScaffold entity (#277):\n");
     RUN(test_scaffold_spawn);
     RUN(test_scaffold_physics_loose);
     RUN(test_scaffold_towed_scaffold_init);
@@ -1276,7 +1276,7 @@ void register_construction_scaffold_tests(void) {
 }
 
 void register_construction_placed_scaffold_tests(void) {
-    printf("\nPlaced-scaffold supply (#277):\n");
+    TEST_SECTION("\nPlaced-scaffold supply (#277):\n");
     RUN(test_placed_scaffold_supply_phase);
     RUN(test_placed_scaffold_player_delivery);
     RUN(test_construction_contract_closes_on_activation);
@@ -1285,7 +1285,7 @@ void register_construction_placed_scaffold_tests(void) {
 }
 
 void register_construction_module_schema_tests(void) {
-    printf("\nModule schema (#280):\n");
+    TEST_SECTION("\nModule schema (#280):\n");
     RUN(test_module_schema_basic_kinds);
     RUN(test_module_schema_producer_io);
     RUN(test_module_schema_valid_rings);

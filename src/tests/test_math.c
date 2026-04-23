@@ -53,7 +53,7 @@ TEST(test_ingot_idx) {
 }
 
 void register_math_tests(void) {
-    printf("\nMath tests:\n");
+    TEST_SECTION("\nMath tests:\n");
     RUN(test_v2_add);
     RUN(test_v2_len);
     RUN(test_v2_norm);
@@ -62,6 +62,6 @@ void register_math_tests(void) {
     RUN(test_clampf);
     RUN(test_lerpf);
 
-    printf("\nType tests:\n");
+    TEST_SECTION("\nType tests:\n");
     RUN(test_ingot_idx);
 }

@@ -9,7 +9,7 @@ Native desktop:
 ```sh
 cmake -S . -B build
 cmake --build build
-./build/space_miner
+./build/signal
 ```
 
 Web / Emscripten:
@@ -20,14 +20,23 @@ cmake --build build-web
 python3 -m http.server 8080 --directory build-web
 ```
 
-Open `http://127.0.0.1:8080/space_miner.html`.
+Open `http://127.0.0.1:8080/signal.html`.
 
-Tests:
+Tests (preferred — always rebuilds before running, quiet output, fails loudly):
+
+```sh
+make test                   # quiet: failures + summary only
+make test TEST_VERBOSE=1    # full per-test stream
+```
+
+Or directly:
 
 ```sh
 cmake -S . -B build-test -DBUILD_TESTS_ONLY=ON
 cmake --build build-test
-./build-test/space_miner_test
+./build-test/signal_test            # verbose
+./build-test/signal_test --quiet    # quiet (default for `make test`)
+./build-test/signal_test --shard=0/4   # one of 4 parallel shards
 ```
 
 ## Architecture

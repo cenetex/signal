@@ -74,7 +74,7 @@ TEST(test_station_inventory_amount) {
 }
 
 void register_commodity_tests(void) {
-    printf("Commodity tests:\n");
+    TEST_SECTION("Commodity tests:\n");
     RUN(test_refined_form_mapping);
     RUN(test_refined_form_ingots_return_self);
     RUN(test_commodity_name);

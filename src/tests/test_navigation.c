@@ -227,7 +227,7 @@ TEST(test_autopilot_completes_mining_cycle) {
      * autopilot is fixed — the suite previously hid real regressions
      * here. */
     if (w->players[0].ship.stat_credits_earned <= earned_before)
-        printf("      [WARN] no credits earned in 90s (autopilot flake, track separately)\n");
+        TEST_WARN("no credits earned in 90s (autopilot flake, track separately)");
     /* w auto-freed by WORLD_HEAP cleanup */
 }
 
@@ -308,7 +308,7 @@ TEST(test_autopilot_multiple_players) {
         if (w->players[p].ship.stat_credits_earned > earned_start[p]) earned++;
     }
     if (earned < 2)
-        printf("      [WARN] only %d/3 autopilot players earned credits in 180s (autopilot flake)\n", earned);
+        TEST_WARNF("only %d/3 autopilot players earned credits in 180s (autopilot flake)", earned);
 
     /* All should still be alive (hull > 0 or docked). */
     for (int p = 0; p < 3; p++) {
@@ -362,7 +362,7 @@ TEST(test_autopilot_follows_path_waypoints) {
         for (int j = 0; j < wp_count; j++) {
             float min_dist = sqrtf(closest[j]);
             if (min_dist > 150.0f)
-                printf("      [WARN] waypoint %d: closest approach %.0fu (expected <150u, autopilot flake)\n", j, min_dist);
+                TEST_WARNF("waypoint %d: closest approach %.0fu (expected <150u, autopilot flake)", j, min_dist);
         }
     }
     /* w auto-freed by WORLD_HEAP cleanup */
@@ -420,14 +420,14 @@ TEST(test_autopilot_path_matches_preview) {
 }
 
 void register_navigation_autopilot_mining_tests(void) {
-    printf("\nAutopilot mining:\n");
+    TEST_SECTION("\nAutopilot mining:\n");
     RUN(test_autopilot_prefers_nearest_mineable_asteroid);
     RUN(test_autopilot_prefers_clear_mineable_asteroid_over_blocked_one);
     RUN(test_autopilot_ignores_fragments_targets_rocks);
 }
 
 void register_navigation_nav_tests(void) {
-    printf("\nNavigation (sim_nav):\n");
+    TEST_SECTION("\nNavigation (sim_nav):\n");
     RUN(test_nav_approach_speed_basic);
     RUN(test_nav_speed_control_deadband);
     RUN(test_nav_forward_clearance_empty);
@@ -440,7 +440,7 @@ void register_navigation_nav_tests(void) {
 }
 
 void register_navigation_autopilot_stress_tests(void) {
-    printf("\nAutopilot stress tests:\n");
+    TEST_SECTION("\nAutopilot stress tests:\n");
     RUN(test_autopilot_completes_mining_cycle);
     RUN(test_autopilot_does_not_orbit_fragment);
     RUN(test_autopilot_does_not_leave_signal);

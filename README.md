@@ -81,7 +81,7 @@ Native desktop:
 ```sh
 cmake -S . -B build
 cmake --build build
-./build/space_miner
+./build/signal
 ```
 
 Browser / WebAssembly with Emscripten:
@@ -92,18 +92,31 @@ cmake --build build-web
 python3 -m http.server 8080 --directory build-web
 ```
 
-That produces `build-web/space_miner.html` plus the `.js` and `.wasm` files.
+That produces `build-web/signal.html` plus the `.js` and `.wasm` files.
 
-Open `http://127.0.0.1:8080/space_miner.html` and sanity-check browser input by
+Open `http://127.0.0.1:8080/signal.html` and sanity-check browser input by
 holding `W` or `Space`, alt-tabbing away, then returning. The ship should stop
 taking active input when focus is lost.
 
 ## Test
 
+The `make test` target rebuilds `signal_test` from current source before
+running, so a stale binary cannot mask regressions. Default output is
+quiet — only section banners, failures, and a final summary print:
+
+```sh
+make test                   # quiet: failures + summary only
+make test TEST_VERBOSE=1    # full per-test "ok" stream
+```
+
+Or invoke the binary directly:
+
 ```sh
 cmake -S . -B build-test -DBUILD_TESTS_ONLY=ON
 cmake --build build-test
-./build-test/space_miner_test
+./build-test/signal_test            # verbose
+./build-test/signal_test --quiet    # quiet (matches `make test`)
+./build-test/signal_test --shard=0/4   # one of 4 parallel shards
 ```
 
 ## Notes

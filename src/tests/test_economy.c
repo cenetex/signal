@@ -491,7 +491,7 @@ TEST(test_furnace_without_adjacent_hopper_smelts) {
 }
 
 void register_economy_basic_tests(void) {
-    printf("\nEconomy tests:\n");
+    TEST_SECTION("\nEconomy tests:\n");
     RUN(test_refinery_production_smelts_ore);
     RUN(test_refinery_production_empty_buffer_noop);
     RUN(test_refinery_skips_non_refinery);
@@ -505,7 +505,7 @@ void register_economy_basic_tests(void) {
 }
 
 void register_economy_contracts_tests(void) {
-    printf("\nContract tests:\n");
+    TEST_SECTION("\nContract tests:\n");
     RUN(test_contract_generated_from_hopper_deficit);
     RUN(test_contract_price_escalates_with_age);
     RUN(test_contract_closes_when_deficit_filled);
@@ -514,7 +514,7 @@ void register_economy_contracts_tests(void) {
 }
 
 void register_economy_furnace_tests(void) {
-    printf("\nRefinery tiers:\n");
+    TEST_SECTION("\nRefinery tiers:\n");
     RUN(test_furnace_only_smelts_ferrite);
     RUN(test_furnace_cu_smelts_cuprite);
     RUN(test_furnace_cr_smelts_crystal);
@@ -522,32 +522,32 @@ void register_economy_furnace_tests(void) {
 }
 
 void register_economy_contract3_tests(void) {
-    printf("\nContract system (3-action):\n");
+    TEST_SECTION("\nContract system (3-action):\n");
     RUN(test_one_contract_per_station);
     RUN(test_destroy_contract_completes_when_asteroid_gone);
     RUN(test_supply_contract_uses_correct_material);
 }
 
 void register_economy_pricing_tests(void) {
-    printf("\nDynamic pricing:\n");
+    TEST_SECTION("\nDynamic pricing:\n");
     RUN(test_dynamic_ore_price_deficit);
     RUN(test_product_price_tracks_ore);
 }
 
 void register_economy_mixed_cargo_tests(void) {
-    printf("\nMixed cargo sell/deliver:\n");
+    TEST_SECTION("\nMixed cargo sell/deliver:\n");
     RUN(test_deliver_ingots_to_contract);
     RUN(test_mixed_cargo_sell_and_deliver);
     RUN(test_no_delivery_without_matching_contract);
 }
 
 void register_economy_service259_tests(void) {
-    printf("\nStation service semantics (#259):\n");
+    TEST_SECTION("\nStation service semantics (#259):\n");
     RUN(test_259_passive_repair_at_any_station);
 }
 
 void register_economy_refinery_smelt_tests(void) {
-    printf("\nRefinery smelt test:\n");
+    TEST_SECTION("\nRefinery smelt test:\n");
     RUN(test_refinery_smelts_ore_in_inventory);
     RUN(test_furnace_without_adjacent_hopper_smelts);
 }

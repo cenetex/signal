@@ -355,20 +355,20 @@ TEST(test_econ_invariant_player_session_conservation) {
 }
 
 void register_econ_sim_sim_tests(void) {
-    printf("\nEconomy simulations:\n");
+    TEST_SECTION("\nEconomy simulations:\n");
     RUN(test_econ_sim_npc_only_5min);
     RUN(test_econ_sim_credit_circulation);
 }
 
 void register_econ_sim_bug312_tests(void) {
-    printf("\n#312 4-bug-fix regressions:\n");
+    TEST_SECTION("\n#312 4-bug-fix regressions:\n");
     RUN(test_bug312_1_docked_buy_honors_spend_failure);
     RUN(test_bug312_2_ledger_balance_matches_by_token);
     RUN(test_bug312_3_init_ship_does_not_seed_with_zero_token);
 }
 
 void register_econ_sim_invariant_tests(void) {
-    printf("\nEconomy invariant (conservation):\n");
+    TEST_SECTION("\nEconomy invariant (conservation):\n");
     RUN(test_econ_invariant_npc_only_conservation);
     RUN(test_econ_invariant_player_session_conservation);
 }

@@ -427,27 +427,16 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
     ASSERT(w != NULL);
     world_reset(w);
     w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 20.0f;
-    for (int i = 0; i < (int)(10.0f / SIM_DT); i++) {
-        world_sim_step(w, SIM_DT);
-        if (i % 100 == 0) fprintf(stderr, "[smelted] step %d\n", i);
-    }
+    for (int i = 0; i < (int)(10.0f / SIM_DT); i++) world_sim_step(w, SIM_DT);
     float ingots_before = w->stations[0].inventory[COMMODITY_FERRITE_INGOT];
-    fprintf(stderr, "[smelted] ingots=%.2f, saving...\n", ingots_before);
     ASSERT(ingots_before > 0.0f);
     ASSERT(world_save(w, "/tmp/test_ingots.sav"));
-    fprintf(stderr, "[smelted] saved, allocating loaded...\n");
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(loaded != NULL);
-    fprintf(stderr, "[smelted] loading...\n");
     ASSERT(world_load(loaded, "/tmp/test_ingots.sav"));
-    fprintf(stderr, "[smelted] loaded, checking...\n");
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_INGOT], ingots_before, 0.01f);
-    fprintf(stderr, "[smelted] check passed, cleanup...\n");
     remove("/tmp/test_ingots.sav");
-    /* loaded auto-freed by WORLD_HEAP cleanup */
-    fprintf(stderr, "[smelted] freed loaded\n");
-    /* w auto-freed by WORLD_HEAP cleanup */
-    fprintf(stderr, "[smelted] done\n");
+    /* loaded + w auto-freed by WORLD_HEAP cleanup */
 }
 
 /*
@@ -595,7 +584,7 @@ TEST(test_save_future_version_rejected) {
 }
 
 void register_save_persistence_tests(void) {
-    printf("\nPersistence tests:\n");
+    TEST_SECTION("\nPersistence tests:\n");
     RUN(test_player_save_load_roundtrip);
     RUN(test_world_save_load_preserves_stations);
     RUN(test_world_save_load_preserves_npcs);
@@ -617,7 +606,7 @@ void register_save_persistence_tests(void) {
 }
 
 void register_save_format_tests(void) {
-    printf("\nSave format stability:\n");
+    TEST_SECTION("\nSave format stability:\n");
     RUN(test_save_file_size_stable);
     RUN(test_save_header_golden_bytes);
     RUN(test_save_load_preserves_player_outpost);
