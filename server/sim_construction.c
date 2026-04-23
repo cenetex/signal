@@ -117,39 +117,38 @@ void begin_module_construction(world_t *w, station_t *st, int station_idx, modul
 /* Module activation timer                                             */
 /* ------------------------------------------------------------------ */
 
-static const float MODULE_BUILD_TIME = 10.0f;  /* seconds after full delivery */
+/* MODULE_BUILD_TIME_SEC lives in shared/module_schema.h so UI / tests
+ * see the same constant without having to import a server header. */
 
 void step_module_activation(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         /* Route station inventory to scaffold modules (NPC deliveries) */
         for (int i = 0; i < st->module_count; i++) {
-            if (!st->modules[i].scaffold) continue;
-            if (st->modules[i].build_progress >= 1.0f) continue;
-            commodity_t mat = module_build_material(st->modules[i].type);
+            station_module_t *m = &st->modules[i];
+            if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
+            commodity_t mat = module_build_material(m->type);
             if (st->inventory[mat] < 0.01f) continue;
-            float cost = module_build_cost(st->modules[i].type);
-            float needed = cost - st->modules[i].build_progress * cost;
+            float cost = module_build_cost(m->type);
+            float needed = cost * (1.0f - module_supply_fraction(m));
             if (needed < 0.01f) continue;
             float deliver = fminf(st->inventory[mat], needed);
             st->inventory[mat] -= deliver;
-            st->modules[i].build_progress += deliver / cost;
-            if (st->modules[i].build_progress > 1.0f)
-                st->modules[i].build_progress = 1.0f;
+            m->build_progress += deliver / cost;
+            if (m->build_progress > 1.0f) m->build_progress = 1.0f;
         }
         /* Activate fully-supplied scaffold modules after build timer.
          * Modules do NOT tick while their station is itself still under
          * construction — the station has to be born first. */
         if (st->scaffold) continue;
         for (int i = 0; i < st->module_count; i++) {
-            if (!st->modules[i].scaffold) continue;
-            if (st->modules[i].build_progress < 1.0f) continue; /* not fully supplied */
-            /* Count down build time using build_progress > 1.0 as timer.
-             * 1.0 = just finished delivery, 2.0 = construction complete. */
-            st->modules[i].build_progress += dt / MODULE_BUILD_TIME;
-            if (st->modules[i].build_progress >= 2.0f) {
-                st->modules[i].scaffold = false;
-                st->modules[i].build_progress = 1.0f;
+            station_module_t *m = &st->modules[i];
+            if (module_build_state(m) != MODULE_BUILD_BUILDING) continue;
+            /* Internal: build_progress in [1.0, 2.0] is the timer phase. */
+            m->build_progress += dt / MODULE_BUILD_TIME_SEC;
+            if (m->build_progress >= 2.0f) {
+                m->scaffold = false;
+                m->build_progress = 1.0f;
                 rebuild_station_services(st);
                 rebuild_signal_chain(w);
                 if (st->modules[i].type == MODULE_FURNACE || st->modules[i].type == MODULE_FURNACE_CU || st->modules[i].type == MODULE_FURNACE_CR)
@@ -170,8 +169,8 @@ void step_module_activation(world_t *w, float dt) {
                     bool still_needed = false;
                     for (int j = 0; j < st->module_count; j++) {
                         if (j == i) continue;
-                        if (!st->modules[j].scaffold) continue;
-                        if (st->modules[j].build_progress >= 1.0f) continue;
+                        if (module_build_state(&st->modules[j])
+                            != MODULE_BUILD_AWAITING_SUPPLY) continue;
                         if (module_build_material(st->modules[j].type) == mat) {
                             still_needed = true; break;
                         }

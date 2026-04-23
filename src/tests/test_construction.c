@@ -703,7 +703,7 @@ TEST(test_scaffold_full_pipeline) {
     station_module_t *m = &w.stations[outpost].modules[before_count];
     ASSERT_EQ_INT(m->type, MODULE_FURNACE);
     ASSERT(m->scaffold);
-    ASSERT(m->build_progress < 1.0f); /* in supply phase, not pre-paid */
+    ASSERT(!module_is_fully_supplied(m)); /* in supply phase, not pre-paid */
 
     /* Step 2: Deliver build material to advance supply phase.
      * Furnaces need frames — deposit into station inventory,
@@ -712,7 +712,7 @@ TEST(test_scaffold_full_pipeline) {
     float cost = module_build_cost_lookup(MODULE_FURNACE);
     w.stations[outpost].inventory[mat] = cost;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
-    ASSERT(m->build_progress >= 1.0f); /* fully supplied, timer may have started */
+    ASSERT(module_is_fully_supplied(m)); /* fully supplied, timer may have started */
 
     /* Step 3: Run construction timer (10s = 1200 ticks at 120Hz) */
     for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
@@ -891,7 +891,7 @@ TEST(test_placed_scaffold_supply_phase) {
     /* Deliver the rest */
     w.stations[outpost].inventory[mat] = cost * 0.5f;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
-    ASSERT(m->build_progress >= 1.0f); /* fully supplied, timer may have started */
+    ASSERT(module_is_fully_supplied(m)); /* fully supplied, timer may have started */
 
     /* Build timer: 10s = 1200 ticks */
     for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
@@ -949,7 +949,7 @@ TEST(test_construction_contract_closes_on_activation) {
     float cost = module_build_cost_lookup(MODULE_FURNACE);
     w.stations[outpost].inventory[mat] = cost;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
-    ASSERT(m->build_progress >= 1.0f); /* fully supplied */
+    ASSERT(module_is_fully_supplied(m)); /* fully supplied */
     /* Run build timer */
     for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
     ASSERT(!m->scaffold); /* activated */
@@ -1037,7 +1037,47 @@ TEST(test_construction_contract_checks_scaffold_not_threshold) {
     /* Now deliver the rest */
     w.stations[outpost].inventory[mat] = cost;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
-    ASSERT(m->build_progress >= 1.0f); /* fully supplied */
+    ASSERT(module_is_fully_supplied(m)); /* fully supplied */
+}
+
+/* #307: module build state helpers — verify the lifecycle predicates
+ * agree with the underlying float convention without leaking it. */
+TEST(test_module_build_state_lifecycle) {
+    station_module_t m = {0};
+    /* Active scaffold, no supply yet. */
+    m.scaffold = true;
+    m.build_progress = 0.0f;
+    ASSERT_EQ_INT(module_build_state(&m), MODULE_BUILD_AWAITING_SUPPLY);
+    ASSERT(!module_is_complete(&m));
+    ASSERT(!module_is_fully_supplied(&m));
+    ASSERT_EQ_FLOAT(module_supply_fraction(&m), 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(module_build_timer_fraction(&m), 0.0f, 0.001f);
+
+    /* Half supplied. */
+    m.build_progress = 0.5f;
+    ASSERT_EQ_INT(module_build_state(&m), MODULE_BUILD_AWAITING_SUPPLY);
+    ASSERT_EQ_FLOAT(module_supply_fraction(&m), 0.5f, 0.001f);
+
+    /* Just hit full supply — moves to BUILDING. */
+    m.build_progress = 1.0f;
+    ASSERT_EQ_INT(module_build_state(&m), MODULE_BUILD_BUILDING);
+    ASSERT(module_is_fully_supplied(&m));
+    ASSERT(!module_is_complete(&m));
+    ASSERT_EQ_FLOAT(module_supply_fraction(&m), 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(module_build_timer_fraction(&m), 0.0f, 0.001f);
+
+    /* Mid-build. */
+    m.build_progress = 1.5f;
+    ASSERT_EQ_INT(module_build_state(&m), MODULE_BUILD_BUILDING);
+    ASSERT_EQ_FLOAT(module_build_timer_fraction(&m), 0.5f, 0.001f);
+
+    /* Activated — scaffold cleared, build_progress reset to 1.0. */
+    m.scaffold = false;
+    m.build_progress = 1.0f;
+    ASSERT_EQ_INT(module_build_state(&m), MODULE_BUILD_COMPLETE);
+    ASSERT(module_is_complete(&m));
+    ASSERT(module_is_fully_supplied(&m));
+    ASSERT_EQ_FLOAT(module_build_timer_fraction(&m), 1.0f, 0.001f);
 }
 
 TEST(test_module_schema_basic_kinds) {
@@ -1286,6 +1326,7 @@ void register_construction_placed_scaffold_tests(void) {
 
 void register_construction_module_schema_tests(void) {
     TEST_SECTION("\nModule schema (#280):\n");
+    RUN(test_module_build_state_lifecycle);
     RUN(test_module_schema_basic_kinds);
     RUN(test_module_schema_producer_io);
     RUN(test_module_schema_valid_rings);

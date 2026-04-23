@@ -812,17 +812,18 @@ void step_module_flow(world_t *w, float dt) {
 void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *ship) {
     (void)w; (void)station_idx;
     for (int i = 0; i < st->module_count; i++) {
-        if (!st->modules[i].scaffold) continue;
-        commodity_t mat = module_build_material(st->modules[i].type);
-        float cost = module_build_cost(st->modules[i].type);
-        float needed = cost - st->modules[i].build_progress * cost;
+        station_module_t *m = &st->modules[i];
+        if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
+        commodity_t mat = module_build_material(m->type);
+        float cost = module_build_cost(m->type);
+        float needed = cost * (1.0f - module_supply_fraction(m));
         if (needed < 0.01f) continue;
 
         /* Pull from docked ship cargo */
         if (ship->cargo[mat] > 0.01f) {
             float deliver = fminf(ship->cargo[mat], needed);
             ship->cargo[mat] -= deliver;
-            st->modules[i].build_progress += deliver / cost;
+            m->build_progress += deliver / cost;
             needed -= deliver;
         }
 
@@ -830,10 +831,9 @@ void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *sh
         if (needed > 0.01f && st->inventory[mat] > 0.01f) {
             float deliver = fminf(st->inventory[mat], needed);
             st->inventory[mat] -= deliver;
-            st->modules[i].build_progress += deliver / cost;
+            m->build_progress += deliver / cost;
         }
 
-        if (st->modules[i].build_progress > 1.0f)
-            st->modules[i].build_progress = 1.0f;
+        if (m->build_progress > 1.0f) m->build_progress = 1.0f;
     }
 }

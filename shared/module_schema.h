@@ -308,4 +308,62 @@ static inline int scaffold_order_fee(module_type_t type) {
     return module_schema(type)->order_fee;
 }
 
+/* ----- Module build lifecycle (#307) -----
+ *
+ * `station_module_t.build_progress` is a single float that overloads two
+ * domains, gated by `scaffold`:
+ *
+ *   scaffold=true,  0.0 <= build_progress < 1.0  : awaiting supply
+ *   scaffold=true,  1.0 <= build_progress < 2.0  : supplied, build timer running
+ *   scaffold=false, build_progress == 1.0        : complete
+ *
+ * Direct comparisons against 1.0 / 2.0 are deprecated; readers should use
+ * the helpers below so the convention stays internal to the construction
+ * stepper. The on-disk and on-wire representation remains a single float
+ * for now — splitting into separate fields will ride along with the
+ * unified `ship_t` save bump (#294) so we don't migrate twice.
+ */
+typedef enum {
+    MODULE_BUILD_AWAITING_SUPPLY = 0,
+    MODULE_BUILD_BUILDING,
+    MODULE_BUILD_COMPLETE,
+} module_build_state_t;
+
+/* Wall-clock seconds between full supply and module activation. */
+#define MODULE_BUILD_TIME_SEC 10.0f
+
+static inline module_build_state_t module_build_state(const station_module_t *m) {
+    if (!m->scaffold) return MODULE_BUILD_COMPLETE;
+    if (m->build_progress < 1.0f) return MODULE_BUILD_AWAITING_SUPPLY;
+    return MODULE_BUILD_BUILDING;
+}
+
+static inline bool module_is_complete(const station_module_t *m) {
+    return !m->scaffold;
+}
+
+static inline bool module_is_fully_supplied(const station_module_t *m) {
+    return !m->scaffold || m->build_progress >= 1.0f;
+}
+
+/* 0.0 .. 1.0 — fraction of build material delivered.
+ * Reads as 1.0 once supply phase ends (regardless of build-timer phase). */
+static inline float module_supply_fraction(const station_module_t *m) {
+    if (!m->scaffold) return 1.0f;
+    float p = m->build_progress;
+    if (p > 1.0f) p = 1.0f;
+    if (p < 0.0f) p = 0.0f;
+    return p;
+}
+
+/* 0.0 .. 1.0 — fraction of build timer elapsed since full supply.
+ * Reads as 0.0 in AWAITING_SUPPLY, 1.0 in COMPLETE. */
+static inline float module_build_timer_fraction(const station_module_t *m) {
+    if (!m->scaffold) return 1.0f;
+    float t = m->build_progress - 1.0f;
+    if (t < 0.0f) return 0.0f;
+    if (t > 1.0f) return 1.0f;
+    return t;
+}
+
 #endif /* MODULE_SCHEMA_H */

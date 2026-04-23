@@ -779,7 +779,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
             /* Don't close if scaffold modules still need this material */
             bool scaffold_still_needs = false;
             for (int m2 = 0; m2 < st->module_count; m2++) {
-                if (st->modules[m2].scaffold && st->modules[m2].build_progress < 1.0f
+                if (module_build_state(&st->modules[m2]) == MODULE_BUILD_AWAITING_SUPPLY
                     && module_build_material(st->modules[m2].type) == c) {
                     scaffold_still_needs = true; break;
                 }
@@ -2661,8 +2661,7 @@ static void step_contracts(world_t *w, float dt) {
              * on the generic inventory threshold. */
             bool scaffold_needs = false;
             for (int m = 0; m < st->module_count; m++) {
-                if (!st->modules[m].scaffold) continue;
-                if (st->modules[m].build_progress >= 1.0f) continue;
+                if (module_build_state(&st->modules[m]) != MODULE_BUILD_AWAITING_SUPPLY) continue;
                 if (module_build_material(st->modules[m].type) != c) continue;
                 scaffold_needs = true;
                 break;
@@ -2676,7 +2675,7 @@ static void step_contracts(world_t *w, float dt) {
                 for (int m = 0; m < st->module_count; m++) {
                     if (!st->modules[m].scaffold) continue;
                     if (module_build_material(st->modules[m].type) != c) continue;
-                    if (st->modules[m].build_progress < 1.0f) { all_supplied = false; break; }
+                    if (!module_is_fully_supplied(&st->modules[m])) { all_supplied = false; break; }
                 }
                 if (st->scaffold && c == COMMODITY_FRAME && st->scaffold_progress < 1.0f)
                     all_supplied = false;
@@ -2748,7 +2747,7 @@ static void step_contracts(world_t *w, float dt) {
             for (int m = 0; m < st->module_count; m++) {
                 if (!st->modules[m].scaffold) continue;
                 float cost = module_build_cost(st->modules[m].type);
-                float remaining = cost * (1.0f - st->modules[m].build_progress);
+                float remaining = cost * (1.0f - module_supply_fraction(&st->modules[m]));
                 if (remaining > 0.5f) {
                     need = (contract_t){
                         .active = true, .action = CONTRACT_TRACTOR,
