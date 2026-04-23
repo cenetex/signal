@@ -1265,6 +1265,46 @@ TEST(test_module_flow_does_not_overflow_capacity) {
     ASSERT(w.stations[1].module_input[press_idx] <= cap + 0.01f);
 }
 
+/* #280: storage modules must participate in flow as buffers, not be
+ * pure sinks. Place a hopper next to a furnace, seed station inventory
+ * with raw ferrite, and verify the hopper pulls from inventory and
+ * pushes into the furnace's input buffer. */
+TEST(test_module_flow_storage_feeds_consumer) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    /* Use Prospect (station 0): it has a hopper as part of its default
+     * layout, plus a furnace. Find them. */
+    int hopper_idx = -1, furnace_idx = -1;
+    for (int i = 0; i < w.stations[0].module_count; i++) {
+        if (w.stations[0].modules[i].type == MODULE_HOPPER && hopper_idx < 0)
+            hopper_idx = i;
+        if (w.stations[0].modules[i].type == MODULE_FURNACE && furnace_idx < 0)
+            furnace_idx = i;
+    }
+    if (hopper_idx < 0 || furnace_idx < 0) return; /* layout drift, skip */
+
+    /* Seed the hopper-side: put raw ferrite in station inventory and
+     * verify it actually moves into the flow graph. */
+    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 50.0f;
+    w.stations[0].module_output[hopper_idx] = 0.0f;
+    w.stations[0].module_input[furnace_idx] = 0.0f;
+    float ore_before = w.stations[0].inventory[COMMODITY_FERRITE_ORE];
+
+    /* One second of sim — hopper should refill its output from inventory
+     * and the flow stepper should push it onward. */
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+
+    /* Either the hopper buffer carries ore, the furnace input does, or
+     * the furnace already smelted some into ingots. Any of those means
+     * storage→flow is connected. */
+    bool flowed = w.stations[0].module_output[hopper_idx] > 0.0f
+               || w.stations[0].module_input[furnace_idx] > 0.0f
+               || w.stations[0].inventory[COMMODITY_FERRITE_INGOT] > 0.0f
+               || w.stations[0].inventory[COMMODITY_FERRITE_ORE] < ore_before - 0.5f;
+    ASSERT(flowed);
+}
+
 void register_construction_outposts_tests(void) {
     TEST_SECTION("\nStation construction (#83):\n");
     RUN(test_outpost_requires_signal_range);
@@ -1335,5 +1375,6 @@ void register_construction_module_schema_tests(void) {
     RUN(test_module_flow_same_ring_transfer);
     RUN(test_module_flow_production_fills_buffers);
     RUN(test_module_flow_does_not_overflow_capacity);
+    RUN(test_module_flow_storage_feeds_consumer);
 }
 

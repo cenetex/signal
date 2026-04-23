@@ -11,6 +11,21 @@
  *
  * Header-only — included by types.h. Inline functions for lookups so
  * client and server share without a separate .c file.
+ *
+ * Variant question (#280): commodity-specialized producers (furnaces
+ * MODULE_FURNACE / _CU / _CR, fabs MODULE_FRAME_PRESS / _LASER_FAB /
+ * _TRACTOR_FAB) are encoded as separate enum values rather than
+ * collapsed into a single `MODULE_FURNACE` carrying a `commodity_t
+ * variant` field. **The current model is final.** Reasons:
+ *   - Each variant has independent build cost, prerequisite chain, and
+ *     order-menu UX, all of which read cleanly from a single schema row.
+ *   - Variants need to address each other (frame press requires iron
+ *     furnace as prerequisite); the enum is the natural foreign key.
+ *   - On-disk and on-wire representations already serialize the enum;
+ *     collapsing would force a save/wire bump for no behavioral win.
+ * If a future module gets more than ~4 variants we can revisit, but
+ * for the current 6 commodity-specialized producers, the enum scales
+ * fine. Don't add `variant_count` writers for these types.
  */
 #ifndef MODULE_SCHEMA_H
 #define MODULE_SCHEMA_H
