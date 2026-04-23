@@ -565,73 +565,15 @@ TEST(test_save_backward_compat_version_accepted) {
 }
 
 TEST(test_save_v21_module_remap) {
-    /* NOTE: This test patches a v23 save to look like v21, but the v23
+    /* SKIPPED: This test patches a v23 save to look like v21, but the v23
      * format has credit_pool fields woven into each station record that
      * v21 doesn't have. The loader can't distinguish real v21 from
      * patched v23, so the file is unreadable. Skipping until a proper
-     * v21 binary fixture is created. (#312) */
-    return;
-    /* Craft a save with raw module type integers in the v21 enum space,
-     * patch the version header down to 21, and verify world_load remaps
-     * surviving modules and drops dead ones.
+     * v21 binary fixture is created. (#312)
      *
-     * v21 type → v22 outcome
-     *   0  DOCK           → MODULE_DOCK         (kept)
-     *   5  INGOT_SELLER   → dropped
-     *   6  REPAIR_BAY     → MODULE_REPAIR_BAY   (kept)
-     *  11  CONTRACT_BOARD → dropped
-     *  12  ORE_SILO       → MODULE_ORE_SILO     (kept)
-     *  15  SHIPYARD       → MODULE_SHIPYARD     (kept)
-     */
-    WORLD_HEAP w = calloc(1, sizeof(world_t));
-    world_reset(w);
-    /* Hand-build station[3]: 6 modules, 4 will survive. */
-    memset(&w->stations[3], 0, sizeof(w->stations[3]));
-    snprintf(w->stations[3].name, sizeof(w->stations[3].name), "%s", "TestRig");
-    w->stations[3].pos = v2(5000.0f, 5000.0f);
-    w->stations[3].radius = 36.0f;
-    w->stations[3].signal_range = 3000.0f;
-    static const int kV21Types[6] = { 0, 5, 6, 11, 12, 15 };
-    w->stations[3].module_count = 6;
-    for (int i = 0; i < 6; i++) {
-        w->stations[3].modules[i].type = (module_type_t)kV21Types[i];
-        w->stations[3].modules[i].ring = 1;
-        w->stations[3].modules[i].slot = (uint8_t)i;
-        w->stations[3].modules[i].scaffold = false;
-        w->stations[3].modules[i].build_progress = 1.0f;
-        w->stations[3].module_input[i] = (float)(i + 1);
-        w->stations[3].module_output[i] = (float)(i + 100);
-    }
-    ASSERT(world_save(w, "/tmp/test_v21_remap.sav"));
-    /* Patch version field (offset 4) down to 21 to force the v22 migration.
-     * Also strip the CRC32 trailer since the patched version invalidates it;
-     * the loader treats saves without a trailer as legacy. */
-    FILE *f = fopen("/tmp/test_v21_remap.sav", "r+b");
-    ASSERT(f != NULL);
-    fseek(f, 4, SEEK_SET);
-    uint32_t v21 = 21;
-    fwrite(&v21, sizeof(v21), 1, f);
-    /* Truncate the 8-byte CRC trailer */
-    fseek(f, 0, SEEK_END);
-    long patched_size = ftell(f) - 8;
-    fclose(f);
-    ASSERT_EQ_INT(truncate("/tmp/test_v21_remap.sav", patched_size), 0);
-    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    ASSERT(world_load(loaded, "/tmp/test_v21_remap.sav"));
-    /* 4 of 6 survive: indices 0, 2, 4, 5 in the original list. */
-    ASSERT_EQ_INT(loaded->stations[3].module_count, 4);
-    ASSERT_EQ_INT((int)loaded->stations[3].modules[0].type, (int)MODULE_DOCK);
-    ASSERT_EQ_INT((int)loaded->stations[3].modules[1].type, (int)MODULE_REPAIR_BAY);
-    ASSERT_EQ_INT((int)loaded->stations[3].modules[2].type, (int)MODULE_ORE_SILO);
-    ASSERT_EQ_INT((int)loaded->stations[3].modules[3].type, (int)MODULE_SHIPYARD);
-    /* Per-module input/output buffers should follow the same compaction. */
-    ASSERT_EQ_FLOAT(loaded->stations[3].module_input[0], 1.0f, 0.001f);  /* was idx 0 */
-    ASSERT_EQ_FLOAT(loaded->stations[3].module_input[1], 3.0f, 0.001f);  /* was idx 2 */
-    ASSERT_EQ_FLOAT(loaded->stations[3].module_input[2], 5.0f, 0.001f);  /* was idx 4 */
-    ASSERT_EQ_FLOAT(loaded->stations[3].module_input[3], 6.0f, 0.001f);  /* was idx 5 */
-    /* loaded auto-freed by WORLD_HEAP cleanup */
-    /* w auto-freed by WORLD_HEAP cleanup */
-    remove("/tmp/test_v21_remap.sav");
+     * The original disabled body remapped module types 0/5/6/11/12/15 from
+     * the v21 enum space to v22 outcomes (DOCK/dropped/REPAIR_BAY/dropped/
+     * ORE_SILO/SHIPYARD). See git blame on this test for the full body. */
 }
 
 TEST(test_save_future_version_rejected) {
