@@ -643,7 +643,11 @@ void draw_hud_panels(void) {
     float bottom_x = 0.0f, bottom_y = 0.0f, bottom_w = 0.0f, bottom_h = 0.0f;
     get_flight_hud_rects(&top_x, &top_y, &top_w, &top_h, &bottom_x, &bottom_y, &bottom_w, &bottom_h);
 
-    draw_ui_panel(top_x, top_y, top_w, top_h, 0.03f);
+    /* Top flight HUD panel — suppressed while docked so the station terminal
+     * is the only status surface in view. */
+    if (!(LOCAL_PLAYER.docked && g.dock_settle_timer <= 0.0f)) {
+        draw_ui_panel(top_x, top_y, top_w, top_h, 0.03f);
+    }
 
     if (LOCAL_PLAYER.docked && g.dock_settle_timer <= 0.0f) {
         float panel_x = 0.0f;
@@ -663,37 +667,77 @@ void draw_hud_panels(void) {
         }
 
         float inner_x = panel_x + 18.0f;
-        float inner_w = panel_w - 36.0f;
 
         /* Divider rule below the persistent header band (drawn by
-         * station_ui.c at panel_y + ~52). The rule visually separates
+         * station_ui.c at panel_y + 26/42/58). The rule visually separates
          * the always-visible header (name/role/ledger/hull/cargo/ticker)
          * from the per-view content body below. */
-        draw_ui_rule(inner_x, panel_x + panel_w - 18.0f, panel_y + 56.0f,
+        draw_ui_rule(inner_x, panel_x + panel_w - 18.0f, panel_y + 72.0f,
             0.14f, 0.26f, 0.38f, 0.70f);
 
-        /* View content area — no tab bar; the verb-list IS the surface. */
-        float content_y = panel_y + 60.0f;
-        float strip_h = compact ? 32.0f : 38.0f;
-        float content_h = panel_y + panel_h - 18.0f - content_y - strip_h;
-        draw_ui_panel(inner_x, content_y, inner_w, content_h, 0.03f);
+        /* Content body draws directly on the outer panel — no nested frame. */
 
-        /* Ship status strip -- always visible below the content area */
+        /* Ship status strip -- persistent labeled ship state.
+         * Layout: "HULL" label, hull meter, "HULL N/N", gap, "CARGO" label,
+         * cargo meter, "CARGO N/N", then "LSR N HLD N TRC N" on the right.
+         * Pip rows replaced by inline text chips to match the terminal voice. */
         {
             float strip_y = panel_y + panel_h - (compact ? 32.0f : 38.0f);
-            float meter_x = inner_x + 4.0f;
+            float label_y = strip_y + 6.0f;     /* text baseline inside strip */
+            float meter_y = strip_y + 10.0f;    /* meter top */
+            float meter_h = 8.0f;
             float meter_w = compact ? 80.0f : 100.0f;
-            float pip_x = meter_x + meter_w * 2.0f + 36.0f;
-            /* Hull + cargo meters side by side */
-            draw_ui_meter(meter_x, strip_y + 4.0f, meter_w, 10.0f,
-                LOCAL_PLAYER.ship.hull / ship_max_hull(&LOCAL_PLAYER.ship), 0.96f, 0.54f, 0.28f);
-            draw_ui_meter(meter_x + meter_w + 8.0f, strip_y + 4.0f, meter_w, 10.0f,
-                ship_total_cargo(&LOCAL_PLAYER.ship) / fmaxf(1.0f, ship_cargo_capacity(&LOCAL_PLAYER.ship)), 0.26f, 0.90f, 0.72f);
-            /* Upgrade pips inline */
+            const float cell_w = 8.0f;
+
+            const ship_t *ship = &LOCAL_PLAYER.ship;
+            int hull_n = (int)lroundf(ship->hull);
+            int hull_m = (int)lroundf(ship_max_hull(ship));
+            int carg_n = (int)lroundf(ship_total_cargo(ship));
+            int carg_m = (int)lroundf(ship_cargo_capacity(ship));
+
+            float x = inner_x + 6.0f;
+
+            /* HULL label */
+            sdtx_color3b(PAL_TEXT_FADED);
+            sdtx_pos(ui_text_pos(x), ui_text_pos(label_y));
+            sdtx_puts("HULL");
+            x += 5.0f * cell_w;
+            /* Hull meter */
+            draw_ui_meter(x, meter_y, meter_w, meter_h,
+                ship->hull / ship_max_hull(ship), 0.96f, 0.54f, 0.28f);
+            x += meter_w + 6.0f;
+            /* Hull numeric */
+            char hull_buf[20];
+            snprintf(hull_buf, sizeof(hull_buf), "%d/%d", hull_n, hull_m);
+            sdtx_color3b(PAL_TEXT_SECONDARY);
+            sdtx_pos(ui_text_pos(x), ui_text_pos(label_y));
+            sdtx_puts(hull_buf);
+            x += ((float)strlen(hull_buf) + 2.0f) * cell_w;
+
+            /* CARGO label */
+            sdtx_color3b(PAL_TEXT_FADED);
+            sdtx_pos(ui_text_pos(x), ui_text_pos(label_y));
+            sdtx_puts("CARGO");
+            x += 6.0f * cell_w;
+            draw_ui_meter(x, meter_y, meter_w, meter_h,
+                (float)carg_n / fmaxf(1.0f, (float)carg_m), 0.26f, 0.90f, 0.72f);
+            x += meter_w + 6.0f;
+            char carg_buf[20];
+            snprintf(carg_buf, sizeof(carg_buf), "%d/%d", carg_n, carg_m);
+            sdtx_color3b(PAL_TEXT_SECONDARY);
+            sdtx_pos(ui_text_pos(x), ui_text_pos(label_y));
+            sdtx_puts(carg_buf);
+
+            /* Upgrade chips — right-aligned inside the panel. */
             if (!compact) {
-                draw_upgrade_pips(pip_x, strip_y + 2.0f, LOCAL_PLAYER.ship.mining_level, 0.34f, 0.88f, 1.0f);
-                draw_upgrade_pips(pip_x, strip_y + 14.0f, LOCAL_PLAYER.ship.tractor_level, 0.42f, 1.0f, 0.86f);
-                draw_upgrade_pips(pip_x, strip_y + 26.0f, LOCAL_PLAYER.ship.hold_level, 0.50f, 0.82f, 1.0f);
+                char chips[32];
+                snprintf(chips, sizeof(chips), "LSR %d  HLD %d  TRC %d",
+                         ship->mining_level, ship->hold_level, ship->tractor_level);
+                float chips_w = (float)strlen(chips) * cell_w;
+                sdtx_color3b(PAL_NAV_BLUE);
+                sdtx_pos(ui_text_pos(panel_x + panel_w - 22.0f - chips_w),
+                         ui_text_pos(label_y));
+                sdtx_puts(chips);
             }
         }
     }
@@ -1128,18 +1172,13 @@ void draw_hud(void) {
         sdtx_puts(full_msg);
     }
 
-    /* --- [E] context prompt — only when docked (hint panel doesn't show E) --- */
+    /* --- [E] context prompt — only when docked. [E] is always LAUNCH. --- */
     if (!g.death_cinematic.active && LOCAL_PLAYER.docked) {
-        const char *e_action;
-        if (g.station_view == STATION_VIEW_JOBS && g.selected_contract >= 0)
-            e_action = "[E] deliver";
-        else
-            e_action = "[E] launch";
         float ex = ui_text_pos(message_x + 16.0f);
         float ey = ui_text_pos(message_y + message_h + 6.0f);
         sdtx_pos(ex, ey);
         sdtx_color3b(PAL_TEXT_GREY);
-        sdtx_puts(e_action);
+        sdtx_puts("[E] launch");
     }
 
     /* --- Multiplayer HUD indicator + version --- */

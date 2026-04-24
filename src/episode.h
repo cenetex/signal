@@ -32,6 +32,16 @@ typedef struct {
     int video_height;
     bool texture_valid;
 
+    /* Latest decoded RGBA frame waiting to be uploaded. plm_decode() can emit
+     * multiple video frames in a single tick (catch-up after a stall), and
+     * sim_step can run several times per render frame, but sokol forbids more
+     * than one sg_update_image per image per frame. Decode stashes the most
+     * recent frame here; episode_upload_frame uploads it once per render
+     * frame, between the sim loop and render_frame. */
+    uint8_t *pending_rgba;
+    int pending_w;
+    int pending_h;
+
     /* Trigger tracking */
     uint8_t stations_visited;  /* bitmask of original stations docked at (0-2) */
 
@@ -48,6 +58,7 @@ void episode_save(episode_state_t *ep);
 void episode_trigger(episode_state_t *ep, int index);
 void episode_skip(episode_state_t *ep);
 void episode_update(episode_state_t *ep, float dt);
+void episode_upload_frame(episode_state_t *ep);
 void episode_render(episode_state_t *ep, float screen_w, float screen_h);
 void episode_shutdown(episode_state_t *ep);
 bool episode_is_active(episode_state_t *ep);

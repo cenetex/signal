@@ -8,13 +8,12 @@
  * the order listed; first match wins for that key.
  * =====================================================================
  *
- *   [E]   1. CONTRACTS tab active + at least one contract selectable →
- *            deliver selected / deliver all (see station_ui decides
- *            e_handled_by_contracts_tab).
+ *   [E]   1. Docked → LAUNCH. Always. No overloads.
  *         2. Towing a scaffold undocked → place at nearest slot.
  *         3. Plan mode active → lock outpost (ghost sub-mode) or
  *            place / clear module (real sub-mode).
- *         4. Docked with no contract focus → launch.
+ *         4. Undocked with targeted module → dock (if DOCK) or toggle
+ *            inspect pane.
  *
  *   [B]   1. Docked → (no action; plan mode needs undocked).
  *         2. Plan mode active → exit plan mode.
@@ -42,7 +41,9 @@
  *   [P] [ ] ]   Music controls (any context).
  *   [Shift]     Undocked → boost.
  *   [Esc]       Plan mode → exit  |  Episode popup → dismiss.
- *   [Tab]       Docked → cycle station panel.
+ *               (NOT bound in docked UI — use [Tab] to switch views.)
+ *   [Tab]       Docked → cycle station tabs (VERBS / JOBS / BUILD).
+ *               Shift+Tab reverses. BUILD skipped at docks with no shipyard.
  *
  * If adding a new overloaded key, update this table FIRST so the
  * precedence is visible before the code diverges.
@@ -271,12 +272,10 @@ input_intent_t sample_input_intent(void) {
             }
         }
     }
-    /* E key: activate targeted module, or dock/launch if no target.
-     * Special case: while docked on the JOBS sub-screen, [E] is the
-     * "deliver" key (handled in the per-view block below), not launch. */
-    bool e_handled_by_jobs_view =
-        LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_JOBS;
-    if (is_key_pressed(SAPP_KEYCODE_E) && !e_handled_by_jobs_view) {
+    /* E key: docked → LAUNCH (always). Undocked → activate targeted module
+     * (dock a DOCK module, or toggle the inspect pane for others), or dock
+     * when near a station with no target selected. */
+    if (is_key_pressed(SAPP_KEYCODE_E)) {
         if (LOCAL_PLAYER.docked) {
             /* Launch */
             intent.interact = true;
@@ -305,10 +304,21 @@ input_intent_t sample_input_intent(void) {
         }
     }
 
-    /* Number keys: context-dependent */
-    if (LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_BUILD) {
+    /* [Tab] cycle docked tabs (DOCK ↔ CONTRACTS). Shift+Tab reverses. */
+    if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_TAB)) {
+        bool shift = is_key_down(SAPP_KEYCODE_LEFT_SHIFT) ||
+                     is_key_down(SAPP_KEYCODE_RIGHT_SHIFT);
+        int n = (int)STATION_VIEW_COUNT;
+        g.station_view = (station_view_t)(((int)g.station_view +
+                                           (shift ? n - 1 : 1)) % n);
+        g.selected_contract = -1;
+    }
+
+    /* Number keys: context-dependent.
+     * YARD at a shipyard → [1-9] order a scaffold kit. */
+    if (LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_YARD) {
         const station_t *st = current_station_ptr();
-        /* BUILD sub-screen: 1-9 order a scaffold.
+        /* Yard: 1-9 order a scaffold.
          * Surface every unlocked module type this yard can fabricate.
          * (Plans are still useful for slot reservation in plan mode, but
          * are no longer required to *order* a kit — the chicken-and-egg
@@ -333,19 +343,18 @@ input_intent_t sample_input_intent(void) {
             }
             shown++;
         }
-    } else if (LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_JOBS) {
-        /* JOBS sub-screen keys:
+    } else if (LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_WORK) {
+        /* JOBS tab keys:
          *   [1/2/3] select a contract slot for selective delivery
-         *   [E]     deliver — selective if a slot is selected, else all
-         *   [Esc]   back to verb list (handled in main.c)
+         *   [S]     deliver — selective if a slot is selected, else all
+         *   [Tab]   next tab (global docked binding)
          *
          * The display in station_ui.c sorts deliverable contracts first
          * so [1] usually picks "the contract you can fulfill right now".
          * Selecting via [1/2/3] also tracks that contract for the HUD.
          *
-         * The selection persists until [E] consumes it or the player
-         * leaves the sub-screen. Player walks away with their iridium
-         * intact by selecting the ferrite contract before pressing E. */
+         * S is shared with VERBS (same semantic) so the player doesn't
+         * learn a new deliver key per tab. [E] is LAUNCH, period. */
         const station_t *here_st = current_station_ptr();
         int here_idx = LOCAL_PLAYER.current_station;
 
@@ -395,13 +404,13 @@ input_intent_t sample_input_intent(void) {
             g.selected_contract = slot_contract[k];
             g.tracked_contract = slot_contract[k];
             const contract_t *ct = &g.world.contracts[slot_contract[k]];
-            set_notice("Selected: %s. [E] deliver.",
+            set_notice("Selected: %s. [S] deliver.",
                        commodity_short_name(ct->commodity));
             break;
         }
 
-        /* [E] deliver. Selective if a slot is selected, else everything. */
-        if (is_key_pressed(SAPP_KEYCODE_E)) {
+        /* [S] deliver. Selective if a slot is selected, else everything. */
+        if (is_key_pressed(SAPP_KEYCODE_S)) {
             if (g.selected_contract >= 0 && g.selected_contract < MAX_CONTRACTS) {
                 const contract_t *ct = &g.world.contracts[g.selected_contract];
                 if (ct->active) {
@@ -422,34 +431,30 @@ input_intent_t sample_input_intent(void) {
                 set_notice("Delivering all matching cargo...");
             }
         }
-    } else if (LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_VERBS) {
-        /* Verb-list keys (docked, default view).
-         * Each verb is a single semantic letter and only fires here so
-         * sub-screens can rebind 1-9 without conflict.
-         *   [S] SELL all matching cargo
+    } else if (LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_DOCK) {
+        /* DOCK tab keys (ship bay: repair + refit).
          *   [R] REPAIR
          *   [M] upgrade mining laser
          *   [H] upgrade hold capacity
-         *   [T] upgrade tractor
-         *   [J] open JOBS sub-screen
-         * [F] BUY and [B] BUILD have docked branches further down. */
-        if (is_key_pressed(SAPP_KEYCODE_S)) {
-            intent.service_sell = true;
-            intent.service_sell_only = COMMODITY_COUNT;
-            set_notice("Delivering...");
-        }
+         *   [T] upgrade tractor */
         intent.service_repair = is_key_pressed(SAPP_KEYCODE_R);
         intent.upgrade_mining = is_key_pressed(SAPP_KEYCODE_M);
         intent.upgrade_hold   = is_key_pressed(SAPP_KEYCODE_H);
         intent.upgrade_tractor= is_key_pressed(SAPP_KEYCODE_T);
-        if (is_key_pressed(SAPP_KEYCODE_J)) {
-            g.station_view = STATION_VIEW_JOBS;
-            g.selected_contract = -1;
+    } else if (LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_TRADE) {
+        /* TRADE tab keys:
+         *   [F] BUY primary product (see the dedicated handler below)
+         *   [S] SELL all matching cargo this station accepts */
+        if (is_key_pressed(SAPP_KEYCODE_S)) {
+            intent.service_sell = true;
+            intent.service_sell_only = COMMODITY_COUNT;
+            set_notice("Selling...");
         }
     }
 
-    /* Buy product from station (F key while docked) */
-    if (LOCAL_PLAYER.docked && is_key_pressed(SAPP_KEYCODE_F)) {
+    /* Buy product from station ([F] on TRADE tab) */
+    if (LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_TRADE
+        && is_key_pressed(SAPP_KEYCODE_F)) {
         const station_t *st = current_station_ptr();
         if (st) {
             commodity_t sell = station_primary_sell(st);
@@ -680,15 +685,8 @@ input_intent_t sample_input_intent(void) {
                 }
             }
         }
-    } else if (is_key_pressed(SAPP_KEYCODE_B)) {
-        if (LOCAL_PLAYER.docked) {
-            const station_t *st = current_station_ptr();
-            if (st && station_has_module(st, MODULE_SHIPYARD)) {
-                g.station_view = STATION_VIEW_BUILD;
-            } else {
-                set_notice("No shipyard here.");
-            }
-        } else {
+    } else if (is_key_pressed(SAPP_KEYCODE_B) && !LOCAL_PLAYER.docked) {
+        {
             /* Undocked, not towing.
              * Near an existing outpost or planned station → enter plan
              * mode targeting it. Otherwise → enter ghost preview mode

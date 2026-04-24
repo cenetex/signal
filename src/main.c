@@ -629,10 +629,10 @@ static void sim_step(float dt) {
 
     input_intent_t intent = sample_input_intent();
 
-    /* Reset the docked view to the verb-list on each fresh dock. */
+    /* Reset the docked view to DOCK on each fresh dock. */
     if (LOCAL_PLAYER.docked && !g.was_docked) {
         const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
-        g.station_view = STATION_VIEW_VERBS;
+        g.station_view = STATION_VIEW_DOCK;
         g.selected_contract = -1; /* fresh dock — no carryover selection */
         /* Clear blueprint pip if we docked at the blueprint station */
         if (g.nav_pip_is_blueprint) {
@@ -646,14 +646,6 @@ static void sim_step(float dt) {
             g.nav_pip_pos = st->pos;
         }
     }
-    /* [Esc] returns to the verb list from any sub-view. */
-    if (LOCAL_PLAYER.docked && g.dock_settle_timer <= 0.0f
-        && g.station_view != STATION_VIEW_VERBS
-        && is_key_pressed(SAPP_KEYCODE_ESCAPE)) {
-        g.station_view = STATION_VIEW_VERBS;
-        g.selected_contract = -1;
-    }
-
     submit_input(&intent, dt);
 
     /* Version mismatch: reload once to get matching client.
@@ -1456,6 +1448,11 @@ static void frame(void) {
 
     advance_simulation_frame(frame_dt);
     audio_generate_stream(&g.audio);
+
+    /* Upload the latest decoded episode frame once per render frame. Decoding
+     * happens inside sim_step (possibly multiple steps per frame); uploading
+     * here ensures at most one sg_update_image per image per frame. */
+    episode_upload_frame(&g.episode);
 
     render_frame();
 }

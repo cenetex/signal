@@ -112,11 +112,13 @@ static void on_video_frame(plm_t *plm, plm_frame_t *frame, void *user) {
         }
     }
 
-    sg_update_image((sg_image){ ep->texture_id }, &(sg_image_data){
-        .mip_levels[0] = { .ptr = rgba, .size = (size_t)rgba_size },
-    });
+    /* Stash rgba as the pending upload. If a previous frame was decoded in
+     * this same tick but not yet uploaded, drop it — we only want the latest. */
+    free(ep->pending_rgba);
+    ep->pending_rgba = rgba;
+    ep->pending_w = w;
+    ep->pending_h = h;
 
-    free(rgba);
     free(rgb);
 }
 
@@ -275,6 +277,10 @@ void episode_skip(episode_state_t *ep) {
         sg_destroy_image((sg_image){ ep->texture_id });
         ep->texture_valid = false;
     }
+    free(ep->pending_rgba);
+    ep->pending_rgba = NULL;
+    ep->pending_w = 0;
+    ep->pending_h = 0;
     ep->active = false;
     ep->current = -1;
     ep->pending = -1;
@@ -289,10 +295,25 @@ void episode_update(episode_state_t *ep, float dt) {
 
     ep->fade_timer += dt;
 
-    plm_t *plm = (plm_t *)ep->plm;
-    plm_decode(plm, (double)dt);
+    plm_decode((plm_t *)ep->plm, (double)dt);
+}
 
-    if (plm_has_ended(plm)) {
+void episode_upload_frame(episode_state_t *ep) {
+    if (!ep->active || !ep->plm) return;
+
+    if (ep->pending_rgba && ep->texture_valid &&
+        ep->pending_w == ep->video_width && ep->pending_h == ep->video_height) {
+        int rgba_size = ep->pending_w * ep->pending_h * 4;
+        sg_update_image((sg_image){ ep->texture_id }, &(sg_image_data){
+            .mip_levels[0] = { .ptr = ep->pending_rgba, .size = (size_t)rgba_size },
+        });
+    }
+    free(ep->pending_rgba);
+    ep->pending_rgba = NULL;
+    ep->pending_w = 0;
+    ep->pending_h = 0;
+
+    if (plm_has_ended((plm_t *)ep->plm)) {
         episode_skip(ep);
     }
 }
@@ -476,6 +497,8 @@ void episode_shutdown(episode_state_t *ep) {
         sg_destroy_sampler((sg_sampler){ ep->sampler_id });
         ep->sampler_id = 0;
     }
+    free(ep->pending_rgba);
+    ep->pending_rgba = NULL;
 }
 
 bool episode_is_active(episode_state_t *ep) {

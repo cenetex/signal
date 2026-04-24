@@ -41,9 +41,11 @@
  * and the deleted tabs were full of unactionable display data. */
 
 typedef enum {
-    STATION_VIEW_VERBS = 0,  /* default verb-list */
-    STATION_VIEW_JOBS,       /* contract picker */
-    STATION_VIEW_BUILD,      /* module-order picker */
+    STATION_VIEW_DOCK = 0,       /* ship bay: repair / refit / current ship state */
+    STATION_VIEW_TRADE,          /* market: buy / sell cargo */
+    STATION_VIEW_WORK,           /* dispatch: jobs / contracts */
+    STATION_VIEW_YARD,           /* fabrication: kits + construction queue */
+    STATION_VIEW_COUNT,
 } station_view_t;
 
 /* ------------------------------------------------------------------ */
@@ -269,9 +271,9 @@ extern game_t g;
 #define HUD_MESSAGE_PANEL_COMPACT_WIDTH 236.0f
 #define HUD_MESSAGE_PANEL_COMPACT_HEIGHT 56.0f
 #define STATION_PANEL_WIDTH 560.0f
-#define STATION_PANEL_HEIGHT 400.0f
+#define STATION_PANEL_HEIGHT 470.0f
 #define STATION_PANEL_COMPACT_WIDTH 520.0f
-#define STATION_PANEL_COMPACT_HEIGHT 290.0f
+#define STATION_PANEL_COMPACT_HEIGHT 360.0f
 #define HUD_CELL_SIZE 8.0f
 #define HUD_CELL HUD_CELL_SIZE
 

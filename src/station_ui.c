@@ -366,45 +366,50 @@ static void draw_header_band(const station_ui_state_t *ui,
 {
     (void)compact;
     const station_t *st = ui->station;
-    const ship_t *ship = &LOCAL_PLAYER.ship;
     float left_x = panel_x + 20.0f;
     float right_margin = 20.0f;
     const float cell_w = 8.0f;
 
-    /* Line 1: station name (left)  ·  ledger here, signal (right) */
+    /* Header lines sit below the outer panel's top chrome (corner brackets
+     * and title rule at y+14). Keep line 1 >= panel_y + 22 to avoid clipping.
+     * Layout (per redesign):
+     *   Line 1: station name (left)   ·   [E] LAUNCH (right)
+     *   Line 2: station role (left)   ·   ledger N cur · sig X.XX (right)
+     *   Line 3: ticker (full width)
+     * Ship hull/cargo/modules live in the footer + the DOCK tab. */
+    const float HEADER_L1 = 26.0f;
+    const float HEADER_L2 = 42.0f;
+    const float HEADER_L3 = 58.0f;
+
+    /* Line 1: station name (left)  ·  [E] LAUNCH (right) */
     sdtx_color3b(PAL_TEXT_PRIMARY);
-    sdtx_pos(ui_text_pos(left_x), ui_text_pos(panel_y + 12.0f));
+    sdtx_pos(ui_text_pos(left_x), ui_text_pos(panel_y + HEADER_L1));
     sdtx_puts(st->name);
 
     if (panel_w >= 360.0f) {
-        char right1[64];
-        int balance = (int)lroundf(player_current_balance());
-        float sig = signal_strength_at(&g.world, st->pos);
-        snprintf(right1, sizeof(right1), "ledger %d %s   sig %.2f",
-                 balance, ui_station_currency(st), sig);
-        float right1_w = (float)strlen(right1) * cell_w;
-        sdtx_pos(ui_text_pos(panel_x + panel_w - right_margin - right1_w),
-                 ui_text_pos(panel_y + 12.0f));
-        sdtx_color3b(PAL_TEXT_SECONDARY);
-        sdtx_puts(right1);
+        const char *launch = "[E] LAUNCH";
+        float lw = (float)strlen(launch) * cell_w;
+        sdtx_pos(ui_text_pos(panel_x + panel_w - right_margin - lw),
+                 ui_text_pos(panel_y + HEADER_L1));
+        sdtx_color3b(PAL_STATION_HINT);
+        sdtx_puts(launch);
     }
 
-    /* Line 2: role (left)  ·  hull + cargo (right) */
+    /* Line 2: role (left)  ·  ledger + signal (right) */
     sdtx_color3b(PAL_HOLD_CYAN);
-    sdtx_pos(ui_text_pos(left_x), ui_text_pos(panel_y + 26.0f));
+    sdtx_pos(ui_text_pos(left_x), ui_text_pos(panel_y + HEADER_L2));
     sdtx_puts(station_role_hub_label(st));
 
     if (panel_w >= 360.0f) {
         char right2[64];
-        snprintf(right2, sizeof(right2), "hull %d/%d  cargo %d/%d   [E] LAUNCH",
-                 (int)lroundf(ship->hull),
-                 (int)lroundf(ship_max_hull(ship)),
-                 (int)lroundf(ship_total_cargo(ship)),
-                 (int)lroundf(ship_cargo_capacity(ship)));
+        int balance = (int)lroundf(player_current_balance());
+        float sig = signal_strength_at(&g.world, st->pos);
+        snprintf(right2, sizeof(right2), "ledger %d %s  ·  sig %.2f",
+                 balance, ui_station_currency(st), sig);
         float right2_w = (float)strlen(right2) * cell_w;
         sdtx_pos(ui_text_pos(panel_x + panel_w - right_margin - right2_w),
-                 ui_text_pos(panel_y + 26.0f));
-        sdtx_color3b(PAL_STATION_HINT);
+                 ui_text_pos(panel_y + HEADER_L2));
+        sdtx_color3b(PAL_TEXT_SECONDARY);
         sdtx_puts(right2);
     }
 
@@ -424,7 +429,7 @@ static void draw_header_band(const station_ui_state_t *ui,
             char line[200];
             snprintf(line, sizeof(line), "[%s] %s", sender, m->text);
             sdtx_color3b(PAL_TEXT_FADED);
-            sdtx_pos(ui_text_pos(left_x), ui_text_pos(panel_y + 42.0f));
+            sdtx_pos(ui_text_pos(left_x), ui_text_pos(panel_y + HEADER_L3));
             sdtx_puts(line);
         }
     }
@@ -434,6 +439,208 @@ static void draw_header_band(const station_ui_state_t *ui,
 /* VERBS view — the new default action surface                         */
 /* ------------------------------------------------------------------ */
 
+/* Small section header: label on the left, faded rule filling the row
+ * to the inner right edge. Returns the y-advance consumed. */
+static float draw_section_header(float cx, float my, float inner_right,
+                                 const char *label, const uint8_t label_rgb[3])
+{
+    const float cell_w = 8.0f;
+    sdtx_color3b(label_rgb[0], label_rgb[1], label_rgb[2]);
+    sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+    sdtx_puts(label);
+    float label_w = (float)strlen(label) * cell_w;
+    /* Faded dash rule after the label. */
+    sdtx_color3b(PAL_TEXT_FADED);
+    int chars_avail = (int)((inner_right - (cx + label_w + 8.0f)) / cell_w);
+    if (chars_avail > 0) {
+        char rule[128];
+        int n = (chars_avail < (int)sizeof(rule) - 1)
+              ? chars_avail : (int)sizeof(rule) - 1;
+        for (int i = 0; i < n; i++) rule[i] = '-';
+        rule[n] = '\0';
+        sdtx_pos(ui_text_pos(cx + label_w + 8.0f), ui_text_pos(my));
+        sdtx_puts(rule);
+    }
+    return 14.0f;
+}
+
+/* Forward decl — yard view lives below (own tab). */
+static void draw_yard_view(const station_ui_state_t *ui,
+                           float cx, float cy, float inner_w, bool compact);
+
+/* ------------------------------------------------------------------ */
+/* Row grammar — every tab uses this shape:                            */
+/*   left (hotkey + verb/label)    middle optional    right status     */
+/* Monospace cell width is 8 px.                                       */
+/* ------------------------------------------------------------------ */
+
+/* Two-column row: left-aligned label at cx, right-aligned status at
+ * inner_right. Either side may be NULL to skip it. */
+static void draw_row_lr(float cx, float my, float inner_right,
+                        const uint8_t left_rgb[3], const char *left_txt,
+                        const uint8_t right_rgb[3], const char *right_txt)
+{
+    const float cell_w = 8.0f;
+    if (left_txt && left_txt[0]) {
+        sdtx_color3b(left_rgb[0], left_rgb[1], left_rgb[2]);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+        sdtx_puts(left_txt);
+    }
+    if (right_txt && right_txt[0]) {
+        float rw = (float)strlen(right_txt) * cell_w;
+        sdtx_color3b(right_rgb[0], right_rgb[1], right_rgb[2]);
+        sdtx_pos(ui_text_pos(inner_right - rw), ui_text_pos(my));
+        sdtx_puts(right_txt);
+    }
+}
+
+/* Cell-grid row: writes each field at a fixed column offset (in chars)
+ * measured from cx. NULL field = skip. */
+typedef struct { int col; const char *text; const uint8_t *rgb; } cell_t;
+static void draw_row_cells(float cx, float my, const cell_t *cells, int n)
+{
+    const float cell_w = 8.0f;
+    for (int i = 0; i < n; i++) {
+        if (!cells[i].text || !cells[i].text[0]) continue;
+        sdtx_color3b(cells[i].rgb[0], cells[i].rgb[1], cells[i].rgb[2]);
+        sdtx_pos(ui_text_pos(cx + (float)cells[i].col * cell_w), ui_text_pos(my));
+        sdtx_puts(cells[i].text);
+    }
+}
+
+/* Section-header color families, shared by DOCK and TRADE views. */
+static const uint8_t HDR_TRADE[3]   = { PAL_CONTRACT_AFFORD };
+static const uint8_t HDR_SERVICE[3] = { PAL_ORE_AMBER };
+static const uint8_t HDR_FIT[3]     = { PAL_NAV_BLUE };
+static const uint8_t HDR_YARD[3]    = { PAL_HOLD_CYAN };
+
+/* TRADE view — market table, one row per offer.
+ * Column grid (monospace cells, 8px each):
+ *   key(4) side(6) item(18) grade(7) qty/stock(12)  total(right-aligned)
+ * Grade column is reserved for future ore-grade variants; shows "std" today. */
+static void draw_trade_view(const station_ui_state_t *ui,
+                            float cx, float cy, float inner_w,
+                            bool compact)
+{
+    const station_t *st = ui->station;
+    const ship_t *ship = &LOCAL_PLAYER.ship;
+    float row_h = compact ? 13.0f : 15.0f;
+    float inner_right = cx + inner_w - 36.0f;
+    float my = cy;
+
+    const uint8_t COL_HDR[3]   = { PAL_TEXT_FADED };
+    const uint8_t COL_BUY[3]   = { PAL_CONTRACT_AFFORD };
+    const uint8_t COL_SELL[3]  = { PAL_CONTRACT_READY };
+    const uint8_t COL_DIM[3]   = { PAL_AFFORD_INACTIVE };
+    const uint8_t COL_FADED[3] = { PAL_TEXT_FADED };
+    const uint8_t COL_TEXT[3]  = { PAL_TEXT_SECONDARY };
+
+    my += draw_section_header(cx, my, inner_right, "MARKET", HDR_TRADE);
+
+    /* Column header row. */
+    {
+        cell_t hdr[] = {
+            {  0, "key",  COL_HDR },
+            {  4, "side", COL_HDR },
+            { 10, "item", COL_HDR },
+            { 28, "grade", COL_HDR },
+            { 35, "qty/stock", COL_HDR },
+        };
+        draw_row_cells(cx, my, hdr, 5);
+        draw_row_lr(cx, my, inner_right, NULL, NULL, COL_HDR, "total");
+        my += row_h;
+    }
+
+    commodity_t sell_c = station_primary_sell(st);
+    commodity_t buy_c  = station_primary_buy(st);
+
+    bool any_row = false;
+
+    /* BUY row — station sells sell_c to the player. */
+    if ((int)sell_c >= 0) {
+        float price_f = station_sell_price(st, sell_c);
+        int   price   = (int)lroundf(price_f);
+        float availf  = station_inventory_amount(st, sell_c);
+        int   avail   = (int)lroundf(availf);
+        float space   = ship_cargo_capacity(ship) - ship_total_cargo(ship);
+        float credits = player_current_balance();
+        int   afford  = (price_f > FLOAT_EPSILON) ? (int)floorf(credits / price_f) : 0;
+        int   can     = (int)fminf(fminf(availf, space), (float)afford);
+        bool  actionable = (can > 0);
+
+        const uint8_t *row_rgb = actionable ? COL_BUY : COL_DIM;
+        const uint8_t *info_rgb = actionable ? COL_TEXT : COL_FADED;
+        char qty_buf[24], total_buf[32];
+        if (actionable) {
+            snprintf(qty_buf, sizeof(qty_buf), "%d / %d", can, avail);
+            snprintf(total_buf, sizeof(total_buf), "-%d %s",
+                     can * price, ui_station_currency(st));
+        } else if (availf < 0.5f) {
+            snprintf(qty_buf, sizeof(qty_buf), "out of stock");
+            total_buf[0] = '\0';
+        } else if (space < 0.5f) {
+            snprintf(qty_buf, sizeof(qty_buf), "hold full");
+            total_buf[0] = '\0';
+        } else {
+            snprintf(qty_buf, sizeof(qty_buf), "0 / %d", avail);
+            snprintf(total_buf, sizeof(total_buf), "need %d %s",
+                     price, ui_station_currency(st));
+        }
+
+        cell_t row[] = {
+            {  0, "[F]",                        row_rgb },
+            {  4, "buy",                        row_rgb },
+            { 10, commodity_short_name(sell_c), info_rgb },
+            { 28, "std",                        COL_FADED },
+            { 35, qty_buf,                      info_rgb },
+        };
+        draw_row_cells(cx, my, row, 5);
+        if (total_buf[0]) draw_row_lr(cx, my, inner_right, NULL, NULL, info_rgb, total_buf);
+        my += row_h;
+        any_row = true;
+    }
+
+    /* SELL row — station buys buy_c from the player's hold. */
+    if ((int)buy_c >= 0) {
+        int held = (int)lroundf(ship_cargo_amount(ship, buy_c));
+        int price = (int)lroundf(station_buy_price(st, buy_c));
+        bool actionable = (held > 0);
+        const uint8_t *row_rgb = actionable ? COL_SELL : COL_DIM;
+        const uint8_t *info_rgb = actionable ? COL_TEXT : COL_FADED;
+        char qty_buf[24], total_buf[32];
+        if (actionable) {
+            snprintf(qty_buf, sizeof(qty_buf), "%d held", held);
+            snprintf(total_buf, sizeof(total_buf), "+%d %s",
+                     held * price, ui_station_currency(st));
+        } else {
+            snprintf(qty_buf, sizeof(qty_buf), "none held");
+            snprintf(total_buf, sizeof(total_buf), "+%d %s ea.", price, ui_station_currency(st));
+        }
+
+        cell_t row[] = {
+            {  0, "[S]",                       row_rgb },
+            {  4, "sell",                      row_rgb },
+            { 10, commodity_short_name(buy_c), info_rgb },
+            { 28, "std",                       COL_FADED },
+            { 35, qty_buf,                     info_rgb },
+        };
+        draw_row_cells(cx, my, row, 5);
+        draw_row_lr(cx, my, inner_right, NULL, NULL, info_rgb, total_buf);
+        my += row_h;
+        any_row = true;
+    }
+
+    if (!any_row) {
+        draw_row_lr(cx, my, inner_right, COL_FADED,
+                    "Nothing on offer and nothing to deliver.", NULL, NULL);
+    }
+}
+
+/* DOCK — ship bay. Two sections, both always shown:
+ *   SHIP BAY — class, hull, cargo, module levels (pure state, no verbs)
+ *   SERVICES — repair + per-upgrade refit rows with right-aligned status
+ *
+ * Row grammar: hotkey+label on the left, status/cost on the right. */
 static void draw_verbs_view(const station_ui_state_t *ui,
                             float cx, float cy, float inner_w,
                             bool compact)
@@ -441,161 +648,118 @@ static void draw_verbs_view(const station_ui_state_t *ui,
     const station_t *st = ui->station;
     const ship_t *ship = &LOCAL_PLAYER.ship;
     float row_h = compact ? 13.0f : 15.0f;
-    float right_x = cx + fminf(inner_w - 36.0f, 360.0f);
+    float inner_right = cx + inner_w - 36.0f;
     float my = cy;
 
+    const uint8_t COL_TEXT[3]  = { PAL_TEXT_SECONDARY };
+    const uint8_t COL_AMBER[3] = { PAL_ORE_AMBER };
+    const uint8_t COL_NAV[3]   = { PAL_NAV_BLUE };
+    const uint8_t COL_DIM[3]   = { PAL_AFFORD_INACTIVE };
+    const uint8_t COL_FADED[3] = { PAL_TEXT_FADED };
+
     if (st->scaffold) {
-        /* Special case: docked at a station that's still being built.
-         * The "verb" here is delivering frames to advance construction. */
+        /* Special case: docked at a station still being built. The "verb"
+         * here is delivering frames to advance construction. */
         int pct = (int)lroundf(st->scaffold_progress * 100.0f);
         int held = (int)lroundf(ship_cargo_amount(ship, COMMODITY_FRAME));
-        sdtx_color3b(PAL_ORE_AMBER);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-        sdtx_printf("SCAFFOLD %d%%", pct);
+        char left_buf[48], right_buf[32];
+        snprintf(left_buf, sizeof(left_buf), "SCAFFOLD %d%%", pct);
+        draw_row_lr(cx, my, inner_right, COL_AMBER, left_buf, COL_FADED, NULL);
         my += row_h * 1.5f;
-        sdtx_color3b(held > 0 ? 130 : 145, held > 0 ? 255 : 160, held > 0 ? 235 : 188);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-        if (held > 0)
-            sdtx_printf("[S] DELIVER %d frames -> +construction", held);
-        else
-            sdtx_puts("Bring frames here to finish this outpost.");
+        if (held > 0) {
+            snprintf(left_buf, sizeof(left_buf), "[S] deliver frames");
+            snprintf(right_buf, sizeof(right_buf), "x%d -> +construction", held);
+            draw_row_lr(cx, my, inner_right, COL_AMBER, left_buf, COL_TEXT, right_buf);
+        } else {
+            draw_row_lr(cx, my, inner_right, COL_DIM,
+                        "Bring frames here to finish this outpost.", COL_TEXT, NULL);
+        }
         return;
     }
 
-    /* === BUY (F) — the headline verb at any producer station === */
+    /* -------- SHIP BAY (always visible) -------- */
+    my += draw_section_header(cx, my, inner_right, "SHIP BAY", HDR_FIT);
     {
-        commodity_t sell = station_primary_sell(st);
-        if ((int)sell >= 0) {
-            float price_f = station_sell_price(st, sell);
-            int   price   = (int)lroundf(price_f);
-            float avail   = station_inventory_amount(st, sell);
-            float space   = ship_cargo_capacity(ship) - ship_total_cargo(ship);
-            float credits = player_current_balance();
-            int   afford  = (price_f > FLOAT_EPSILON) ? (int)floorf(credits / price_f) : 0;
-            int   can     = (int)fminf(fminf(avail, space), (float)afford);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-            if (can > 0) {
-                sdtx_color3b(PAL_CONTRACT_AFFORD);
-                sdtx_printf("[F] BUY  %d %s   -%d %s",
-                            can, commodity_short_name(sell),
-                            can * price, ui_station_currency(st));
-                sdtx_color3b(PAL_TEXT_FADED);
-                sdtx_pos(ui_text_pos(right_x), ui_text_pos(my));
-                sdtx_printf("(%d in stock @ %d %s)",
-                            (int)lroundf(avail), price, ui_station_currency(st));
-                my += row_h;
-            } else if (avail > 0.5f) {
-                /* Stock exists but you can't take any — explain why */
-                sdtx_color3b(PAL_COND_DISABLE_AFFORD);
-                if (space < 0.5f)
-                    sdtx_printf("[F] BUY  hold full");
-                else
-                    sdtx_printf("[F] BUY  need %d %s",
-                                price, ui_station_currency(st));
-                my += row_h;
-            }
-            /* If avail == 0 we render nothing (no aspirational rows) */
-        }
-    }
+        const hull_def_t *def = ship_hull_def(ship);
+        const char *class_name = def && def->name ? def->name : "-";
+        char right_buf[48];
 
-    /* === SELL (S) — only when player has something this station accepts === */
+        draw_row_lr(cx, my, inner_right, COL_TEXT, "class", COL_TEXT, class_name);
+        my += row_h;
+
+        snprintf(right_buf, sizeof(right_buf), "%d / %d",
+                 (int)lroundf(ship->hull), (int)lroundf(ship_max_hull(ship)));
+        draw_row_lr(cx, my, inner_right, COL_TEXT, "hull", COL_TEXT, right_buf);
+        my += row_h;
+
+        snprintf(right_buf, sizeof(right_buf), "%d / %d",
+                 (int)lroundf(ship_total_cargo(ship)),
+                 (int)lroundf(ship_cargo_capacity(ship)));
+        draw_row_lr(cx, my, inner_right, COL_TEXT, "cargo", COL_TEXT, right_buf);
+        my += row_h;
+
+        snprintf(right_buf, sizeof(right_buf), "LSR %d  HLD %d  TRC %d",
+                 ship->mining_level, ship->hold_level, ship->tractor_level);
+        draw_row_lr(cx, my, inner_right, COL_TEXT, "modules", COL_TEXT, right_buf);
+        my += row_h;
+    }
+    my += 6.0f;
+
+    /* -------- SERVICES (always visible; rows always show their status) -------- */
+    my += draw_section_header(cx, my, inner_right, "SERVICES", HDR_SERVICE);
+
+    /* [R] repair hull */
     {
-        commodity_t buy = station_primary_buy(st);
-        if ((int)buy >= 0) {
-            int held = (int)lroundf(ship_cargo_amount(ship, buy));
-            if (held > 0) {
-                int price = (int)lroundf(station_buy_price(st, buy));
-                sdtx_color3b(PAL_CONTRACT_READY);
-                sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-                sdtx_printf("[S] SELL %d %s   +%d %s",
-                            held, commodity_short_name(buy),
-                            held * price, ui_station_currency(st));
-                my += row_h;
-            }
+        const uint8_t *left_rgb = COL_AMBER;
+        char right_buf[48];
+        if (ui->hull_now >= ui->hull_max) {
+            left_rgb = COL_DIM;
+            snprintf(right_buf, sizeof(right_buf), "hull full");
+        } else if (ui->can_repair) {
+            snprintf(right_buf, sizeof(right_buf), "-%d %s",
+                     ui->repair_cost, ui_station_currency(st));
+        } else if (ui->repair_cost > 0) {
+            left_rgb = COL_DIM;
+            snprintf(right_buf, sizeof(right_buf), "need %d %s",
+                     ui->repair_cost, ui_station_currency(st));
+        } else {
+            left_rgb = COL_DIM;
+            snprintf(right_buf, sizeof(right_buf), "unavailable here");
         }
-    }
-
-    /* === REPAIR (R) === */
-    if (ui->repair_cost > 0 && ui->can_repair) {
-        sdtx_color3b(PAL_ORE_AMBER);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-        sdtx_printf("[R] REPAIR  -%d %s   (hull %d -> %d)",
-                    ui->repair_cost, ui_station_currency(st),
-                    ui->hull_now, ui->hull_max);
+        draw_row_lr(cx, my, inner_right, left_rgb, "[R] repair hull",
+                    (left_rgb == COL_AMBER) ? COL_TEXT : COL_FADED, right_buf);
         my += row_h;
     }
 
-    /* === UPGRADES — one row per upgrade only when actionable here === */
-    {
-        bool m_avail = station_has_module(st, MODULE_LASER_FAB)
-                    && !ship_upgrade_maxed(ship, SHIP_UPGRADE_MINING);
-        bool h_avail = station_has_module(st, MODULE_FRAME_PRESS)
-                    && !ship_upgrade_maxed(ship, SHIP_UPGRADE_HOLD);
-        bool t_avail = station_has_module(st, MODULE_TRACTOR_FAB)
-                    && !ship_upgrade_maxed(ship, SHIP_UPGRADE_TRACTOR);
-        if (m_avail) {
-            sdtx_color3b(ui->can_upgrade_mining ? PAL_TEXT_SECONDARY : PAL_AFFORD_INACTIVE);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-            sdtx_printf("[M] LASER   +dps   -%d %s",
-                        ui->mining_cost, ui_station_currency(st));
-            my += row_h;
+    /* [M] tune laser, [H] expand hold, [T] tune tractor — same grammar. */
+    struct { const char *left; module_type_t gate; int cost; bool can;
+             bool maxed; } refit[3] = {
+        { "[M] tune laser",   MODULE_LASER_FAB,   ui->mining_cost,  ui->can_upgrade_mining,
+          ship_upgrade_maxed(ship, SHIP_UPGRADE_MINING) },
+        { "[H] expand hold",  MODULE_FRAME_PRESS, ui->hold_cost,    ui->can_upgrade_hold,
+          ship_upgrade_maxed(ship, SHIP_UPGRADE_HOLD) },
+        { "[T] tune tractor", MODULE_TRACTOR_FAB, ui->tractor_cost, ui->can_upgrade_tractor,
+          ship_upgrade_maxed(ship, SHIP_UPGRADE_TRACTOR) },
+    };
+    for (int i = 0; i < 3; i++) {
+        const uint8_t *left_rgb = COL_NAV;
+        char right_buf[48];
+        if (refit[i].maxed) {
+            left_rgb = COL_DIM;
+            snprintf(right_buf, sizeof(right_buf), "maxed");
+        } else if (!station_has_module(st, refit[i].gate)) {
+            left_rgb = COL_DIM;
+            snprintf(right_buf, sizeof(right_buf), "unavailable here");
+        } else if (refit[i].can) {
+            snprintf(right_buf, sizeof(right_buf), "-%d %s",
+                     refit[i].cost, ui_station_currency(st));
+        } else {
+            left_rgb = COL_DIM;
+            snprintf(right_buf, sizeof(right_buf), "need %d %s",
+                     refit[i].cost, ui_station_currency(st));
         }
-        if (h_avail) {
-            sdtx_color3b(ui->can_upgrade_hold ? PAL_TEXT_SECONDARY : PAL_AFFORD_INACTIVE);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-            sdtx_printf("[H] HOLD    +cap   -%d %s",
-                        ui->hold_cost, ui_station_currency(st));
-            my += row_h;
-        }
-        if (t_avail) {
-            sdtx_color3b(ui->can_upgrade_tractor ? PAL_TEXT_SECONDARY : PAL_AFFORD_INACTIVE);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-            sdtx_printf("[T] TRACTOR +rng   -%d %s",
-                        ui->tractor_cost, ui_station_currency(st));
-            my += row_h;
-        }
-    }
-
-    my += row_h * 0.5f;
-
-    /* === Sub-screens — only when there's something inside === */
-    {
-        int jobs_here = 0, jobs_nearby = 0;
-        int here_idx = LOCAL_PLAYER.current_station;
-        for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
-            const contract_t *ct = &g.world.contracts[ci];
-            if (!ct->active) continue;
-            if (ct->station_index >= MAX_STATIONS) continue;
-            if (here_idx >= 0 && ct->station_index == here_idx
-                && ct->action == CONTRACT_TRACTOR
-                && ship->cargo[ct->commodity] >= 0.5f) jobs_here++;
-            else jobs_nearby++;
-        }
-        if (jobs_here + jobs_nearby > 0) {
-            sdtx_color3b(jobs_here > 0 ? PAL_CONTRACT_READY : PAL_CONTRACT_HINT);
-            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-            if (jobs_here > 0)
-                sdtx_printf("[J] JOBS   %d here, %d nearby",
-                            jobs_here, jobs_nearby);
-            else
-                sdtx_printf("[J] JOBS   %d nearby", jobs_nearby);
-            my += row_h;
-        }
-    }
-
-    if (station_has_module(st, MODULE_SHIPYARD)) {
-        int buildable = 0;
-        uint32_t mask = ship->unlocked_modules;
-        for (int i = 0; i < MODULE_COUNT; i++) {
-            if (module_kind((module_type_t)i) == MODULE_KIND_NONE) continue;
-            if (!station_has_module(st, (module_type_t)i)) continue;
-            if (!module_unlocked_for_player(mask, (module_type_t)i)) continue;
-            buildable++;
-        }
-        sdtx_color3b(buildable > 0 ? PAL_HOLD_CYAN : PAL_AFFORD_INACTIVE);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-        sdtx_printf("[B] BUILD  %d module%s",
-                    buildable, buildable == 1 ? "" : "s");
+        draw_row_lr(cx, my, inner_right, left_rgb, refit[i].left,
+                    (left_rgb == COL_NAV) ? COL_TEXT : COL_FADED, right_buf);
         my += row_h;
     }
 }
@@ -604,28 +768,50 @@ static void draw_verbs_view(const station_ui_state_t *ui,
 /* JOBS sub-screen — preserved CONTRACTS picker, trimmed              */
 /* ------------------------------------------------------------------ */
 
+/* WORK view — dispatch board table.
+ * Columns (monospace cells, 8px each):
+ *   key(4) job(10) cargo(19) state(10)  payout(right-aligned)
+ * Rows are sorted: fulfillable here first, then nearest remaining. */
 static void draw_jobs_view(const station_ui_state_t *ui,
                            float cx, float cy, float inner_w, bool compact)
 {
     (void)compact;
-    sdtx_color3b(PAL_HOLD_CYAN);
-    sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-    sdtx_puts("JOBS  [Esc] back");
-    sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
-    sdtx_color3b(PAL_STATION_HINT);
-    if (g.selected_contract >= 0)
-        sdtx_puts("[E] deliver selected   [1-3] reselect");
-    else
-        sdtx_puts("[E] deliver all matching   [1-3] select one");
+    (void)inner_w;
+    float row_h = compact ? 13.0f : 15.0f;
+    float inner_right = cx + inner_w - 36.0f;
+    float my = cy;
 
-    /* Build slot listing (same logic as the old CONTRACTS tab). */
+    const uint8_t COL_HDR[3]      = { PAL_TEXT_FADED };
+    const uint8_t COL_READY[3]    = { PAL_CONTRACT_READY };
+    const uint8_t COL_STATUS[3]   = { PAL_CONTRACT_STATUS };
+    const uint8_t COL_SELECTED[3] = { PAL_CONTRACT_PENDING };
+    const uint8_t COL_DIM[3]      = { PAL_CONTRACT_HINT };
+    const uint8_t COL_TEXT[3]     = { PAL_TEXT_SECONDARY };
+    const uint8_t COL_FADED[3]    = { PAL_TEXT_FADED };
+
+    my += draw_section_header(cx, my, inner_right, "JOBS", HDR_TRADE);
+
+    /* Column header row. */
+    {
+        cell_t hdr[] = {
+            {  0, "key",   COL_HDR },
+            {  4, "job",   COL_HDR },
+            { 14, "cargo", COL_HDR },
+            { 33, "state", COL_HDR },
+        };
+        draw_row_cells(cx, my, hdr, 4);
+        draw_row_lr(cx, my, inner_right, NULL, NULL, COL_HDR, "payout");
+        my += row_h;
+    }
+
+    /* Build slot listing (same logic as before: fulfillable here first,
+     * then nearest by distance). */
     int slots[3] = {-1, -1, -1};
     int slot_count = 0;
     bool slot_fulfillable[3] = {false, false, false};
     int slot_held[3] = {0, 0, 0};
     int here_idx = LOCAL_PLAYER.current_station;
 
-    /* Pass 1: contracts here AND we have the cargo. */
     for (int ci = 0; ci < MAX_CONTRACTS && slot_count < 3; ci++) {
         contract_t *ct = &g.world.contracts[ci];
         if (!ct->active) continue;
@@ -638,7 +824,6 @@ static void draw_jobs_view(const station_ui_state_t *ui,
         slot_held[slot_count] = (int)lroundf(held);
         slot_count++;
     }
-    /* Pass 2: nearest other contracts (only fill if pass 1 left gaps). */
     if (slot_count < 3) {
         int nearest[3] = {-1, -1, -1};
         float nearest_d[3] = {1e18f, 1e18f, 1e18f};
@@ -677,72 +862,108 @@ static void draw_jobs_view(const station_ui_state_t *ui,
     }
 
     if (slot_count == 0) {
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 32.0f));
-        sdtx_color3b(PAL_INSPECT_STATION);
-        sdtx_puts("No active contracts.");
+        draw_row_lr(cx, my, inner_right, COL_DIM, "No active contracts.", NULL, NULL);
         return;
     }
 
     for (int s = 0; s < slot_count; s++) {
         contract_t *ct = &g.world.contracts[slots[s]];
         float cprice = ct->base_price * (1.0f + fminf(ct->age / 300.0f, 1.0f) * 0.2f);
-        float line_y = cy + 32.0f + (float)s * 20.0f;
         bool tracked = (g.tracked_contract == slots[s]);
         bool selected = (g.selected_contract == slots[s]);
-        float pip_r = 0.5f, pip_g = 0.5f, pip_b = 0.5f;
-        if (ct->action == CONTRACT_FRACTURE) {
-            pip_r = 0.95f; pip_g = 0.30f; pip_b = 0.20f;
-        } else {
-            if      (ct->commodity == COMMODITY_FERRITE_ORE) { pip_r = 0.85f; pip_g = 0.50f; pip_b = 0.35f; }
-            else if (ct->commodity == COMMODITY_CUPRITE_ORE) { pip_r = 0.40f; pip_g = 0.55f; pip_b = 0.90f; }
-            else if (ct->commodity == COMMODITY_CRYSTAL_ORE) { pip_r = 0.40f; pip_g = 0.85f; pip_b = 0.50f; }
-            else                                              { pip_r = 0.60f; pip_g = 0.75f; pip_b = 0.90f; }
+
+        const uint8_t *row_rgb;
+        if (selected)               row_rgb = COL_SELECTED;
+        else if (slot_fulfillable[s]) row_rgb = COL_READY;
+        else if (tracked)            row_rgb = COL_STATUS;
+        else                         row_rgb = COL_DIM;
+
+        /* Selected row accent bar (left edge). */
+        if (selected) {
+            sgl_begin_quads();
+            sgl_c4f(row_rgb[0] / 255.0f, row_rgb[1] / 255.0f, row_rgb[2] / 255.0f, 0.95f);
+            sgl_v2f(cx - 10.0f, my - 2.0f);
+            sgl_v2f(cx - 7.0f,  my - 2.0f);
+            sgl_v2f(cx - 7.0f,  my + 14.0f);
+            sgl_v2f(cx - 10.0f, my + 14.0f);
+            sgl_end();
         }
-        draw_rect_centered(v2(cx + 3.0f, line_y + 5.0f), 3.0f, 3.0f, pip_r, pip_g, pip_b, 0.9f);
-        sdtx_pos(ui_text_pos(cx + 12.0f), ui_text_pos(line_y));
-        if (selected)               sdtx_color3b(PAL_CONTRACT_PENDING);
-        else if (slot_fulfillable[s]) sdtx_color3b(PAL_CONTRACT_READY);
-        else if (tracked)            sdtx_color3b(PAL_CONTRACT_STATUS);
-        else                         sdtx_color3b(PAL_CONTRACT_HINT);
-        const char *marker = selected ? " <" : (tracked ? " *" : "");
+
+        char key_buf[8], cargo_buf[32], state_buf[16], pay_buf[32];
+        snprintf(key_buf, sizeof(key_buf), "[%d]%s",
+                 s + 1, tracked && !selected ? "*" : "");
+
+        const char *job_txt = (ct->action == CONTRACT_FRACTURE) ? "fracture" : "deliver";
+
+        if (ct->action == CONTRACT_FRACTURE) {
+            snprintf(cargo_buf, sizeof(cargo_buf), "asteroid field");
+        } else {
+            int qty = slot_fulfillable[s] ? slot_held[s]
+                                          : (int)lroundf(ct->quantity_needed);
+            snprintf(cargo_buf, sizeof(cargo_buf), "%s x%d",
+                     commodity_short_name(ct->commodity), qty);
+        }
+
+        if (ct->action == CONTRACT_FRACTURE) {
+            snprintf(state_buf, sizeof(state_buf), "nearby");
+        } else if (slot_fulfillable[s]) {
+            snprintf(state_buf, sizeof(state_buf), "ready");
+        } else {
+            snprintf(state_buf, sizeof(state_buf), "missing");
+        }
+
         const station_t *dest = (ct->station_index < MAX_STATIONS)
             ? &g.world.stations[ct->station_index] : NULL;
         const char *pay_cur = ui_station_currency(dest ? dest : ui->station);
-        if (ct->action == CONTRACT_FRACTURE) {
-            sdtx_printf("[%d] FRACTURE %.0f %s%s",
-                s + 1, cprice, pay_cur, marker);
-        } else if (slot_fulfillable[s]) {
-            sdtx_printf("[%d] DELIVER %dx %s -> %.0f %s%s",
-                s + 1, slot_held[s], commodity_short_name(ct->commodity),
-                cprice, pay_cur, marker);
-        } else {
-            const char *stn = dest ? dest->name : "???";
-            int max_name = (int)((inner_w - 48.0f) / 8.0f) - 20;
-            if (max_name < 6) max_name = 6;
-            sdtx_printf("[%d] %s -> %.*s: %.0f %s%s",
-                s + 1, commodity_short_name(ct->commodity),
-                max_name, stn,
-                cprice, pay_cur, marker);
-        }
+        snprintf(pay_buf, sizeof(pay_buf), "+%d %s", (int)lroundf(cprice), pay_cur);
+
+        const uint8_t *info_rgb = (row_rgb == COL_DIM) ? COL_FADED : COL_TEXT;
+        cell_t row[] = {
+            {  0, key_buf,   row_rgb },
+            {  4, job_txt,   row_rgb },
+            { 14, cargo_buf, info_rgb },
+            { 33, state_buf, row_rgb },
+        };
+        draw_row_cells(cx, my, row, 4);
+        draw_row_lr(cx, my, inner_right, NULL, NULL, row_rgb, pay_buf);
+        my += row_h;
     }
 }
 
 /* ------------------------------------------------------------------ */
-/* BUILD sub-screen — preserved SHIPYARD picker, trimmed              */
+/* YARD view — fabrication tab: KITS catalog + construction QUEUE       */
 /* ------------------------------------------------------------------ */
 
-static void draw_build_view(const station_ui_state_t *ui,
-                            float cx, float cy, bool compact)
+static void draw_yard_view(const station_ui_state_t *ui,
+                           float cx, float cy, float inner_w, bool compact)
 {
     (void)compact;
-    sdtx_color3b(PAL_ORE_AMBER);
-    sdtx_pos(ui_text_pos(cx), ui_text_pos(cy));
-    sdtx_puts("BUILD  [Esc] back");
-    sdtx_pos(ui_text_pos(cx), ui_text_pos(cy + 14.0f));
+    const station_t *st = ui->station;
+    float inner_right = cx + inner_w - 36.0f;
+    float my = cy;
+
+    if (!station_has_module(st, MODULE_SHIPYARD)) {
+        float row_h = compact ? 13.0f : 15.0f;
+        sdtx_color3b(PAL_SHIPYARD_HINT);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+        sdtx_puts("No shipyard installed at this station.");
+        my += row_h;
+        sdtx_color3b(PAL_TEXT_FADED);
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+        sdtx_puts("Visit or build a station with a shipyard module to");
+        my += row_h;
+        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+        sdtx_puts("fabricate kits.");
+        return;
+    }
+
+    /* -------- KITS -------- */
+    my += draw_section_header(cx, my, inner_right, "KITS", HDR_YARD);
     sdtx_color3b(PAL_STATION_HINT);
+    sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
     sdtx_puts("[1-9] order a scaffold kit");
 
-    float ly = cy + 34.0f;
+    float ly = my + 16.0f;
     int credits = (int)lroundf(player_current_balance());
     int shown = 0;
     int locked = 0;
@@ -781,13 +1002,10 @@ static void draw_build_view(const station_ui_state_t *ui,
         ly += 14.0f;
     }
 
-    /* Pending orders (unchanged) */
+    /* -------- QUEUE — pending construction orders -------- */
     if (ui->station->pending_scaffold_count > 0) {
-        ly += 8.0f;
-        sdtx_color3b(PAL_ORE_AMBER);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-        sdtx_printf("PENDING ORDERS (%d/4)", ui->station->pending_scaffold_count);
-        ly += 14.0f;
+        ly += 10.0f;
+        ly += draw_section_header(cx, ly, inner_right, "QUEUE", HDR_YARD);
         const scaffold_t *nascent = NULL;
         for (int i = 0; i < MAX_SCAFFOLDS; i++) {
             if (g.world.scaffolds[i].active &&
@@ -819,7 +1037,7 @@ static void draw_build_view(const station_ui_state_t *ui,
                 sdtx_color3b(PAL_SUPPLY_DIM);
                 sdtx_printf("  %d. %s  queued", p + 1, module_type_name(t));
             }
-            ly += 12.0f;
+            ly += 14.0f;
         }
     }
 }
@@ -832,35 +1050,96 @@ void draw_station_services(const station_ui_state_t* ui) {
     if (!LOCAL_PLAYER.docked) return;
     if (!ui->station) return;
 
-    /* Auto-leave BUILD if station has no shipyard (e.g. moved between docks) */
-    if (g.station_view == STATION_VIEW_BUILD &&
-        !station_has_module(ui->station, MODULE_SHIPYARD)) {
-        g.station_view = STATION_VIEW_VERBS;
-    }
-
     float panel_x = 0.0f, panel_y = 0.0f, panel_w = 0.0f, panel_h = 0.0f;
     get_station_panel_rect(&panel_x, &panel_y, &panel_w, &panel_h);
     bool compact = ui_is_compact();
 
     draw_header_band(ui, panel_x, panel_y, panel_w, compact);
 
-    /* View content begins below the 3-line header. */
+    /* View content begins below the 3-line header (last line at panel_y+58)
+     * and the divider rule at panel_y+72. */
     float inner_x = panel_x + 18.0f;
     float inner_w = panel_w - 36.0f;
-    float content_top = panel_y + 60.0f;
+    float content_top = panel_y + 78.0f;
     float cx = inner_x + 18.0f;
-    float cy = content_top + 12.0f;
+
+    /* Station-role tint — used sparingly: active tab latch + section rules
+     * elsewhere. Not washed across the whole panel. */
+    float rr = 1, rg = 1, rb = 1;
+    station_role_color(ui->station, &rr, &rg, &rb);
+
+    /* Tab strip, LEFT-aligned on the first content line.
+     *   DOCK  — ship bay (repair / refit / current ship state)
+     *   TRADE — market (buy / sell cargo)
+     *   WORK  — contracts (jobs / routing)
+     *   YARD  — fabrication (kits + construction queue)
+     * Active tab: station-role tint + a short underline latch. Inactive:
+     * muted. The nav legend sits flush against the panel right edge. */
+    {
+        const char *labels[STATION_VIEW_COUNT] = { "DOCK", "TRADE", "WORK", "YARD" };
+        const float cell_w = 8.0f;
+        float ty = content_top + 2.0f;
+        float tx = cx;
+        /* Record active tab geometry so we can draw the latch after the
+         * text pass (so the quad doesn't clobber glyphs). */
+        float active_x0 = 0.0f, active_x1 = 0.0f;
+        bool active_seen = false;
+        for (int i = 0; i < (int)STATION_VIEW_COUNT; i++) {
+            bool active = ((int)g.station_view == i);
+            char cell[20];
+            snprintf(cell, sizeof(cell), active ? "[%s]" : " %s ", labels[i]);
+            float w = (float)strlen(cell) * cell_w;
+            if (active) {
+                sdtx_color3b((uint8_t)(rr * 255.0f),
+                             (uint8_t)(rg * 255.0f),
+                             (uint8_t)(rb * 255.0f));
+                active_x0 = tx;
+                active_x1 = tx + w;
+                active_seen = true;
+            } else {
+                sdtx_color3b(PAL_TEXT_MUTED);
+            }
+            sdtx_pos(ui_text_pos(tx), ui_text_pos(ty));
+            sdtx_puts(cell);
+            tx += w + 10.0f;
+        }
+        const char *hint = "[TAB] cycle";
+        float hint_w = (float)strlen(hint) * cell_w;
+        sdtx_color3b(PAL_TEXT_FADED);
+        sdtx_pos(ui_text_pos(panel_x + panel_w - 20.0f - hint_w),
+                 ui_text_pos(ty));
+        sdtx_puts(hint);
+
+        /* Latch underline beneath active tab — diegetic "channel selected"
+         * affordance in the station-role tint. */
+        if (active_seen) {
+            float uy = ty + 14.0f;
+            sgl_begin_quads();
+            sgl_c4f(rr, rg, rb, 0.9f);
+            sgl_v2f(active_x0, uy);
+            sgl_v2f(active_x1, uy);
+            sgl_v2f(active_x1, uy + 2.0f);
+            sgl_v2f(active_x0, uy + 2.0f);
+            sgl_end();
+        }
+    }
+    float cy = content_top + 34.0f;
 
     switch (g.station_view) {
-    case STATION_VIEW_VERBS:
+    case STATION_VIEW_DOCK:
         draw_verbs_view(ui, cx, cy, inner_w, compact);
         break;
-    case STATION_VIEW_JOBS:
+    case STATION_VIEW_TRADE:
+        draw_trade_view(ui, cx, cy, inner_w, compact);
+        break;
+    case STATION_VIEW_WORK:
         draw_jobs_view(ui, cx, cy, inner_w, compact);
         break;
-    case STATION_VIEW_BUILD:
-        draw_build_view(ui, cx, cy, compact);
+    case STATION_VIEW_YARD:
+        draw_yard_view(ui, cx, cy, inner_w, compact);
         break;
+    case STATION_VIEW_COUNT:
+        break; /* unreachable — enum terminator */
     }
 
     (void)panel_h;
