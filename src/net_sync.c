@@ -314,6 +314,9 @@ void apply_remote_hail_response(uint8_t station, float credits, int contract_ind
     g.hail_credits = credits;
     g.hail_station_index = station;
     g.hail_timer = 6.0f;
+    /* Also route the hail through the bottom-right hint bar so the message
+     * is visible in peripheral vision alongside the center-screen overlay. */
+    set_notice("%s: %s", g.hail_station, g.hail_message);
     /* Auto-track the contract the station just issued, so the yellow
      * ring + compass pip appear without any tab navigation. */
     if (contract_index >= 0 && contract_index < MAX_CONTRACTS)

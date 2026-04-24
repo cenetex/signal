@@ -1385,6 +1385,52 @@ void draw_hud(void) {
         }
     }
 
+    /* Station hail sigil — mini profile pic in the lower-left that fades in
+     * with hail_timer, acts as "caller ID" for the message now showing in
+     * the bottom-right hint bar. Sits above the nearest-station line so the
+     * two labels don't overlap. Uses the same avatar texture as the
+     * center-screen hail overlay — a unique image per station. */
+    if (g.hail_timer > 0.0f && g.hail_station_index >= 0
+        && g.hail_station_index < MAX_STATIONS) {
+        const avatar_cache_t *av = avatar_get(g.hail_station_index);
+        if (av && av->texture_valid) {
+            float alpha = fminf(g.hail_timer / 0.5f, 1.0f);
+            float sig_size = 48.0f;
+            float sx0 = 16.0f;
+            float sy0 = screen_h - sig_size - 32.0f; /* above the nav line */
+            /* Screen-space ortho — the rest of draw_hud already runs under
+             * this projection but the texture pipeline can have stale state
+             * from the world pass; reset explicitly, same as the center
+             * hail overlay does. */
+            sgl_defaults();
+            sgl_matrix_mode_projection();
+            sgl_load_identity();
+            sgl_ortho(0, screen_w, screen_h, 0, -1, 1);
+            sgl_matrix_mode_modelview();
+            sgl_load_identity();
+            sgl_enable_texture();
+            sgl_texture((sg_view){ av->view_id }, (sg_sampler){ av->sampler_id });
+            sgl_begin_quads();
+            sgl_c4f(alpha, alpha, alpha, alpha);
+            sgl_v2f_t2f(sx0,            sy0,            0.0f, 0.0f);
+            sgl_v2f_t2f(sx0 + sig_size, sy0,            1.0f, 0.0f);
+            sgl_v2f_t2f(sx0 + sig_size, sy0 + sig_size, 1.0f, 1.0f);
+            sgl_v2f_t2f(sx0,            sy0 + sig_size, 0.0f, 1.0f);
+            sgl_end();
+            sgl_disable_texture();
+            /* Gold border frame — "transmission active" reads like a radio
+             * indicator light around the sigil. */
+            float border_a = 0.70f * alpha;
+            sgl_begin_lines();
+            sgl_c4f(0.78f, 0.63f, 0.19f, border_a);
+            sgl_v2f(sx0,            sy0);            sgl_v2f(sx0 + sig_size, sy0);
+            sgl_v2f(sx0 + sig_size, sy0);            sgl_v2f(sx0 + sig_size, sy0 + sig_size);
+            sgl_v2f(sx0 + sig_size, sy0 + sig_size); sgl_v2f(sx0,            sy0 + sig_size);
+            sgl_v2f(sx0,            sy0 + sig_size); sgl_v2f(sx0,            sy0);
+            sgl_end();
+        }
+    }
+
     /* Station hail overlay — portrait panel + radio-style message */
     if (g.hail_timer > 0.0f && g.hail_station[0]) {
         float alpha = fminf(g.hail_timer / 0.5f, 1.0f);

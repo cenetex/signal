@@ -498,6 +498,11 @@ void process_sim_events(const sim_events_t *events) {
                             audio_play_sale(&g.audio);
                         if (g.world.stations[hs].station_slug[0])
                             avatar_fetch(hs, g.world.stations[hs].station_slug);
+                        /* Also surface the hail through the bottom-right hint
+                         * bar, prefixed with the station name, so the message
+                         * is visible in peripheral vision without relying on
+                         * the center-screen portrait overlay. */
+                        set_notice("%s: %s", g.hail_station, g.hail_message);
                         onboarding_mark_hailed();
                     }
                 }
