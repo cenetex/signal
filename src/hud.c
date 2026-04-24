@@ -296,47 +296,45 @@ void get_hud_message_panel_rect(float* x, float* y, float* width, float* height)
 /* Message line splitting / building                                   */
 /* ------------------------------------------------------------------ */
 
-static void split_hud_message_lines(const char* text, int max_cols, char* line0, size_t line0_size, char* line1, size_t line1_size) {
-    if (!text || (text[0] == '\0')) {
-        line0[0] = '\0';
-        line1[0] = '\0';
-        return;
-    }
+/* Word-wrap `text` into up to `max_lines` output slots of size
+ * `line_cap` each. Each line is at most `max_cols` characters; line
+ * breaks are preferred at spaces. If the text doesn't fit in the
+ * available slots, the last slot is truncated with "...". Slots past
+ * what the text needs are left as empty strings. */
+static void wrap_hud_message_lines(const char *text, int max_cols,
+                                   char (*lines)[96], int line_cap,
+                                   int max_lines) {
+    for (int i = 0; i < max_lines; i++) lines[i][0] = '\0';
+    if (!text || !text[0] || max_lines <= 0) return;
+    if (max_cols < 8) max_cols = 8;
 
-    if (max_cols < 8) {
-        max_cols = 8;
-    }
-
-    size_t len = strlen(text);
-    if ((int)len <= max_cols) {
-        snprintf(line0, line0_size, "%.*s", (int)(line0_size - 1), text);
-        line1[0] = '\0';
-        return;
-    }
-
-    int split = max_cols;
-    while ((split > (max_cols / 2)) && (text[split] != ' ')) {
-        split--;
-    }
-    if (split <= (max_cols / 2)) {
-        split = max_cols;
-    }
-
-    snprintf(line0, line0_size, "%.*s", split, text);
-
-    const char* rest = text + split;
-    while (*rest == ' ') {
-        rest++;
-    }
-
-    if ((int)strlen(rest) <= max_cols) {
-        snprintf(line1, line1_size, "%.*s", (int)(line1_size - 1), rest);
-    } else if (max_cols > 3) {
-        snprintf(line1, line1_size, "%.*s...", max_cols - 3, rest);
-    } else {
-        snprintf(line1, line1_size, "%.*s", (int)(line1_size - 1), rest);
+    int li = 0;
+    const char *cursor = text;
+    while (*cursor && li < max_lines) {
+        size_t remaining = strlen(cursor);
+        if ((int)remaining <= max_cols) {
+            snprintf(lines[li], line_cap, "%.*s",
+                     (int)(line_cap - 1), cursor);
+            li++;
+            break;
+        }
+        int split = max_cols;
+        while (split > (max_cols / 2) && cursor[split] != ' ') split--;
+        if (split <= max_cols / 2) split = max_cols; /* no space → hard cut */
+        /* Last slot and still more text after the split — append "..." */
+        if (li == max_lines - 1) {
+            int tail = split - 3 < 0 ? 0 : split - 3;
+            snprintf(lines[li], line_cap, "%.*s...", tail, cursor);
+            li++;
+            break;
+        }
+        snprintf(lines[li], line_cap, "%.*s", split, cursor);
+        li++;
+        cursor += split;
+        while (*cursor == ' ') cursor++;
     }
 }
+
 
 static bool build_hud_message(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
     /* ================================================================
@@ -840,9 +838,11 @@ void draw_hud(void) {
     float top_row_2 = ui_text_pos(top_y + (compact ? 32.0f : 44.0f));
     float top_row_3 = ui_text_pos(top_y + (compact ? 40.0f : 58.0f));
     char message_label[32] = { 0 };
-    char message_text[160] = { 0 };
-    char message_line0[96] = { 0 };
-    char message_line1[96] = { 0 };
+    char message_text[320] = { 0 };
+    /* Up to 4 wrapped lines for the subtitle. Long station hails land
+     * here; empty slots are skipped on render. */
+    enum { HUD_MSG_LINES = 4, HUD_MSG_LINE_CAP = 96 };
+    char message_lines[HUD_MSG_LINES][HUD_MSG_LINE_CAP] = {{0}};
     uint8_t message_r = 164;
     uint8_t message_g = 177;
     uint8_t message_b = 205;
@@ -888,7 +888,11 @@ void draw_hud(void) {
         get_hud_message_panel_rect(&message_x, &message_y, &message_w, &message_h);
         build_hud_message(message_label, sizeof(message_label), message_text, sizeof(message_text), &message_r, &message_g, &message_b);
         message_cols = (int)((message_w - 28.0f) / (HUD_CELL * ui_text_zoom()));
-        split_hud_message_lines(message_text, message_cols, message_line0, sizeof(message_line0), message_line1, sizeof(message_line1));
+        /* Wrap into up to HUD_MSG_LINES word-wrapped lines. Long station
+         * hails ("Station: MOTD  (balance N cur)") fit fully now; the
+         * old 2-line splitter dropped everything past line 1. */
+        wrap_hud_message_lines(message_text, message_cols, message_lines,
+                               HUD_MSG_LINE_CAP, HUD_MSG_LINES);
     }
 
     float sig_quality = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
@@ -1018,19 +1022,34 @@ void draw_hud(void) {
         }
 
         if (hud_should_draw_message_panel()) {
-            /* Subtitle: one clean line, centered at bottom */
+            /* Subtitle: up to HUD_MSG_LINES wrapped lines, stacked bottom-up. */
             float cell = HUD_CELL * ui_text_zoom();
-            char full_msg[256];
-            if (message_label[0] != '\0')
-                snprintf(full_msg, sizeof(full_msg), "%s: %s", message_label, message_line0);
-            else
-                snprintf(full_msg, sizeof(full_msg), "%s", message_line0);
-            float msg_w = (float)strlen(full_msg) * cell;
-            float msg_x = (screen_w * 0.5f - msg_w * 0.5f) / cell;
-            float msg_y = (screen_h - 32.0f) / cell;
-            sdtx_pos(msg_x, msg_y);
-            sdtx_color3b(message_r, message_g, message_b);
-            sdtx_puts(full_msg);
+            int first_line_with_content = -1;
+            int last_line_with_content = -1;
+            for (int li = 0; li < HUD_MSG_LINES; li++) {
+                if (message_lines[li][0] != '\0') {
+                    if (first_line_with_content < 0) first_line_with_content = li;
+                    last_line_with_content = li;
+                }
+            }
+            int count = (last_line_with_content >= first_line_with_content)
+                        ? (last_line_with_content - first_line_with_content + 1) : 0;
+            for (int vi = 0; vi < count; vi++) {
+                int li = first_line_with_content + vi;
+                char full_msg[256];
+                if (vi == 0 && message_label[0] != '\0')
+                    snprintf(full_msg, sizeof(full_msg), "%s: %s",
+                             message_label, message_lines[li]);
+                else
+                    snprintf(full_msg, sizeof(full_msg), "%s", message_lines[li]);
+                float msg_w = (float)strlen(full_msg) * cell;
+                float msg_x = (screen_w * 0.5f - msg_w * 0.5f) / cell;
+                /* Stack upward so the newest line sits at the panel bottom. */
+                float msg_y = (screen_h - 32.0f - (float)(count - 1 - vi) * cell * 1.25f) / cell;
+                sdtx_pos(msg_x, msg_y);
+                sdtx_color3b(message_r, message_g, message_b);
+                sdtx_puts(full_msg);
+            }
         }
 
         draw_station_services(&ui);
@@ -1232,14 +1251,6 @@ void draw_hud(void) {
         sdtx_puts(" ]");
     } else if (hud_should_draw_message_panel()) {
         float cell = 8.0f;
-        /* First line — includes label when present. */
-        char line0_buf[256];
-        if (message_label[0] != '\0')
-            snprintf(line0_buf, sizeof(line0_buf), "%s: %s", message_label, message_line0);
-        else
-            snprintf(line0_buf, sizeof(line0_buf), "%s", message_line0);
-        float msg_y = screen_h * 0.82f;
-
         bool is_hull_warn = (message_r == 255 && message_g == 60);
         uint8_t r8 = message_r, g8 = message_g, b8 = message_b;
         if (is_hull_warn) {
@@ -1248,24 +1259,27 @@ void draw_hud(void) {
             g8 = (uint8_t)(40 + 20 * pulse);
             b8 = (uint8_t)(40 + 10 * pulse);
         }
-
-        /* Render line 0 centered. */
-        float msg_w = (float)strlen(line0_buf) * cell;
-        float msg_x = screen_w * 0.5f - msg_w * 0.5f;
-        sdtx_pos(msg_x / cell, msg_y / cell);
-        sdtx_color3b(r8, g8, b8);
-        sdtx_puts(line0_buf);
-
-        /* Render line 1 below if the splitter produced one (e.g. long
-         * station hails land with "Station: MOTD (balance N cur)" which
-         * wraps across two rows). */
-        if (message_line1[0] != '\0') {
-            float w2 = (float)strlen(message_line1) * cell;
-            float x2 = screen_w * 0.5f - w2 * 0.5f;
-            float y2 = msg_y + cell * 1.25f;
-            sdtx_pos(x2 / cell, y2 / cell);
+        /* Count non-empty wrapped lines. Subtitle anchors line 0 at 0.82
+         * of screen height; extra lines go BELOW (to avoid collision with
+         * docked UI above). Long station hails arrive as 2-4 lines. */
+        int count = 0;
+        for (int li = 0; li < HUD_MSG_LINES; li++) {
+            if (message_lines[li][0] != '\0') count = li + 1;
+        }
+        float msg_y = screen_h * 0.82f;
+        for (int li = 0; li < count; li++) {
+            char line_buf[256];
+            if (li == 0 && message_label[0] != '\0')
+                snprintf(line_buf, sizeof(line_buf), "%s: %s",
+                         message_label, message_lines[li]);
+            else
+                snprintf(line_buf, sizeof(line_buf), "%s", message_lines[li]);
+            float w = (float)strlen(line_buf) * cell;
+            float x = screen_w * 0.5f - w * 0.5f;
+            float y = msg_y + (float)li * cell * 1.25f;
+            sdtx_pos(x / cell, y / cell);
             sdtx_color3b(r8, g8, b8);
-            sdtx_puts(message_line1);
+            sdtx_puts(line_buf);
         }
     }
 

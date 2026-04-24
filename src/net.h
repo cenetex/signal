@@ -238,7 +238,12 @@ void net_send_session(const uint8_t token[8]);
  * flags: bitmask of NET_INPUT_* values.
  * action: station interaction (0=none, 1=dock, 2=launch, etc.)
  * mining_target: client's hover_asteroid index (255=none) */
-void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target);
+/* `buy_grade` is the 5th byte of the input msg — only meaningful when
+ * `action` is in the NET_ACTION_BUY_PRODUCT range. Pass MINING_GRADE_COUNT
+ * (5) to mean "any grade, FIFO"; the server parser defaults to that when
+ * the byte is missing (older clients). */
+void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target,
+                    uint8_t buy_grade);
 
 /* RATi v2: purchase a specific named ingot from the docked station's
  * stockpile. Server will validate ledger balance + hold space. */

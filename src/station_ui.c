@@ -589,26 +589,25 @@ static bool ship_manifest_has_commodity(const ship_t *ship, commodity_t c) {
     return false;
 }
 
-/* TRADE view — market.
- *
- * Wide layout (single-row table):
- *   key(4) side(6) item(18) grade(7) qty/stock(12)  total(right-aligned)
- * Compact layout (two-line rows):
- *   [F] buy  FE Ingot  common
- *       stock 8                              -41 prospect vouchers
- * The column-header row is dropped in compact since two-line rows are
- * self-describing.
- *
- * Grade split: BUY rows read the station manifest grouped by grade
- * (one row per non-zero {commodity, grade}). When the manifest has no
- * units for this commodity (legacy saves, or multiplayer where the
- * per-station manifest summary isn't wired over the net yet), falls
- * back to the legacy float `inventory[]` as a single COMMON row.
- *
- * SELL rows stay single-row for now — ship.cargo[] is still a grade-less
- * float. Grouping the player's hold by grade needs the ship-manifest
- * transfer path, which is the next slice after server-side manifest-unit
- * buy/sell and a multiplayer net summary. */
+/* TRADE view — market. Unified list of rows; BUY rows (what the station
+ * sells) first, then SELL rows (what the station buys). Hotkeys [1]..[5]
+ * select a row on the current page. [F] pages forward; pages wrap at
+ * the last page so the UI never runs out. At-station trades show the
+ * generic "$" symbol — contract payouts in WORK still name the issuing
+ * station's currency because that's where the money actually lives. */
+typedef struct {
+    uint8_t     kind;       /* 0 = BUY (station sells), 1 = SELL (station buys) */
+    commodity_t commodity;
+    mining_grade_t grade;
+    int         stock;      /* units available on the active side */
+    int         unit_price; /* per-unit, already grade-multiplied */
+    bool        actionable; /* player can do this transaction right now */
+    bool        is_float_fallback; /* no manifest entry, legacy float */
+} trade_row_t;
+
+#define TRADE_ROWS_PER_PAGE 5
+#define TRADE_MAX_ROWS      20
+
 static void draw_trade_view(const station_ui_state_t *ui,
                             float cx, float cy, float inner_w,
                             bool compact)
@@ -618,8 +617,6 @@ static void draw_trade_view(const station_ui_state_t *ui,
     float row_h = compact ? 13.0f : 15.0f;
     float inner_right = cx + inner_w - 36.0f;
     float my = cy;
-
-    const uint8_t COL_HDR[3]   = { PAL_TEXT_FADED };
     const uint8_t COL_BUY[3]   = { PAL_CONTRACT_AFFORD };
     const uint8_t COL_SELL[3]  = { PAL_CONTRACT_READY };
     const uint8_t COL_DIM[3]   = { PAL_AFFORD_INACTIVE };
@@ -628,284 +625,162 @@ static void draw_trade_view(const station_ui_state_t *ui,
 
     my += draw_section_header(cx, my, inner_right, "MARKET", HDR_TRADE);
 
-    /* Header row is only useful when everything fits on one line. */
-    if (!compact) {
-        cell_t hdr[] = {
-            {  0, "key",  COL_HDR },
-            {  4, "side", COL_HDR },
-            { 10, "item", COL_HDR },
-            { 28, "grade", COL_HDR },
-            { 35, "qty/stock", COL_HDR },
-        };
-        draw_row_cells(cx, my, hdr, 5);
-        draw_row_lr(cx, my, inner_right, NULL, NULL, COL_HDR, "total");
+    /* Build the unified row list. BUY rows first (station's offering),
+     * SELL rows after (what the station buys from the hold). */
+    trade_row_t rows[TRADE_MAX_ROWS];
+    int row_count = 0;
+
+    commodity_t sell_c_list[1] = { station_primary_sell(st) };
+    commodity_t buy_c_list[1]  = { station_primary_buy(st) };
+    float space   = ship_cargo_capacity(ship) - ship_total_cargo(ship);
+    float credits = player_current_balance();
+
+    /* BUY rows — one per non-zero (commodity, grade) on the station. */
+    for (int ci = 0; ci < 1 && row_count < TRADE_MAX_ROWS; ci++) {
+        commodity_t c = sell_c_list[ci];
+        if ((int)c < 0) continue;
+        float price_base = station_sell_price(st, c);
+        if (price_base <= FLOAT_EPSILON) continue;
+
+        bool had_manifest = station_manifest_has_commodity(st, c);
+        if (had_manifest) {
+            for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < TRADE_MAX_ROWS; gi++) {
+                int stock = station_manifest_count_cg(st, c, (mining_grade_t)gi);
+                if (stock <= 0) continue;
+                int price = (int)lroundf(price_base
+                        * mining_payout_multiplier((mining_grade_t)gi));
+                bool can = (space >= 0.5f) && (credits >= (float)price);
+                rows[row_count++] = (trade_row_t){
+                    .kind = 0, .commodity = c, .grade = (mining_grade_t)gi,
+                    .stock = stock, .unit_price = price,
+                    .actionable = can, .is_float_fallback = false,
+                };
+            }
+        } else {
+            /* Legacy float fallback — single COMMON row. */
+            int stock = (int)lroundf(station_inventory_amount(st, c));
+            if (stock > 0) {
+                int price = (int)lroundf(price_base);
+                bool can = (space >= 0.5f) && (credits >= (float)price);
+                rows[row_count++] = (trade_row_t){
+                    .kind = 0, .commodity = c, .grade = MINING_GRADE_COMMON,
+                    .stock = stock, .unit_price = price,
+                    .actionable = can, .is_float_fallback = true,
+                };
+            }
+        }
+    }
+
+    /* SELL rows — one per grade the ship holds of buy_c. */
+    for (int ci = 0; ci < 1 && row_count < TRADE_MAX_ROWS; ci++) {
+        commodity_t c = buy_c_list[ci];
+        if ((int)c < 0) continue;
+        float price_base = station_buy_price(st, c);
+
+        bool had_manifest = ship_manifest_has_commodity(ship, c);
+        if (had_manifest) {
+            for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < TRADE_MAX_ROWS; gi++) {
+                int held = ship_manifest_count_cg(ship, c, (mining_grade_t)gi);
+                if (held <= 0) continue;
+                int price = (int)lroundf(price_base
+                        * mining_payout_multiplier((mining_grade_t)gi));
+                rows[row_count++] = (trade_row_t){
+                    .kind = 1, .commodity = c, .grade = (mining_grade_t)gi,
+                    .stock = held, .unit_price = price,
+                    .actionable = (held > 0), .is_float_fallback = false,
+                };
+            }
+        } else {
+            int held = (int)lroundf(ship_cargo_amount(ship, c));
+            if (held > 0) {
+                int price = (int)lroundf(price_base);
+                rows[row_count++] = (trade_row_t){
+                    .kind = 1, .commodity = c, .grade = MINING_GRADE_COMMON,
+                    .stock = held, .unit_price = price,
+                    .actionable = true, .is_float_fallback = true,
+                };
+            }
+        }
+    }
+
+    /* Pagination — wrap the current page so [F] at the last page
+     * returns to page 0 cleanly. TRADE_ROWS_PER_PAGE is small so page
+     * counts stay single-digit. */
+    int total_pages = (row_count + TRADE_ROWS_PER_PAGE - 1) / TRADE_ROWS_PER_PAGE;
+    if (total_pages < 1) total_pages = 1;
+    int page = (int)g.trade_page;
+    if (page >= total_pages) { page = 0; g.trade_page = 0; }
+    int first = page * TRADE_ROWS_PER_PAGE;
+    int last  = first + TRADE_ROWS_PER_PAGE;
+    if (last > row_count) last = row_count;
+
+    /* Page indicator (only when there's actually more than one page). */
+    if (total_pages > 1) {
+        char pg[32];
+        snprintf(pg, sizeof(pg), "page %d/%d   [F] next",
+                 page + 1, total_pages);
+        const uint8_t COL_ACTIVE[3] = { 130, 210, 255 };
+        draw_row_lr(cx, my, inner_right, COL_ACTIVE, "MARKET", COL_FADED, pg);
         my += row_h;
     }
 
-    /* Single grade tint computed once; matches MINING_GRADE_COMMON today,
-     * wire in per-row grade later. */
-    uint8_t gr, gg, gb;
-    mining_grade_rgb(MINING_GRADE_COMMON, &gr, &gg, &gb);
-    uint8_t grade_rgb[3] = { gr, gg, gb };
-
-    commodity_t sell_c = station_primary_sell(st);
-    commodity_t buy_c  = station_primary_buy(st);
-
-    bool any_row = false;
-
-    /* BUY rows — station sells sell_c to the player. When the manifest
-     * has entries for this commodity, render one row per non-zero grade
-     * (rare / RATi / commissioned get their own rows with the canonical
-     * grade color). When the manifest has no entries (legacy float-only
-     * inventory, or multiplayer before the net summary lands), fall back
-     * to a single COMMON row derived from the legacy float stock.
-     *
-     * Note: the [F] buy action still operates on the legacy float path
-     * (see server/game_sim.c). Until the server-side manifest-unit
-     * transfer slice lands, pressing [F] will always draw from whatever
-     * unit floor(inventory) happens to hit first. Showing per-grade
-     * stock here lets players see what exists on the hopper — the buy
-     * itself matching the selected grade is the next slice. */
-    if ((int)sell_c >= 0) {
-        float price_f = station_sell_price(st, sell_c);
-        int   price   = (int)lroundf(price_f);
-        float space   = ship_cargo_capacity(ship) - ship_total_cargo(ship);
-        float credits = player_current_balance();
-        int   afford  = (price_f > FLOAT_EPSILON) ? (int)floorf(credits / price_f) : 0;
-
-        bool rendered_any_grade = false;
-        if (station_manifest_has_commodity(st, sell_c)) {
-            for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
-                int stock = station_manifest_count_cg(st, sell_c, (mining_grade_t)gi);
-                if (stock <= 0) continue;
-                int can = (int)fminf(fminf((float)stock, space), (float)afford);
-                bool actionable = (can > 0);
-
-                uint8_t ggr, ggg, ggb;
-                mining_grade_rgb((mining_grade_t)gi, &ggr, &ggg, &ggb);
-                uint8_t gr_rgb[3] = { ggr, ggg, ggb };
-
-                const uint8_t *row_rgb = actionable ? COL_BUY : COL_DIM;
-                const uint8_t *info_rgb = actionable ? COL_TEXT : COL_FADED;
-                char qty_buf[24], total_buf[32];
-                if (actionable) {
-                    snprintf(qty_buf, sizeof(qty_buf),
-                             compact ? "stock %d" : "%d / %d",
-                             compact ? stock : can, stock);
-                    /* Multiplier-adjusted price: a rare ingot is worth
-                     * more than a common one at the same station. */
-                    int p2 = (int)lroundf(price_f * mining_payout_multiplier((mining_grade_t)gi));
-                    snprintf(total_buf, sizeof(total_buf), "-%d %s",
-                             can * p2, ui_station_currency(st));
-                } else if (space < 0.5f) {
-                    snprintf(qty_buf, sizeof(qty_buf), "hold full");
-                    total_buf[0] = '\0';
-                } else {
-                    snprintf(qty_buf, sizeof(qty_buf),
-                             compact ? "stock %d" : "0 / %d", stock);
-                    int p2 = (int)lroundf(price_f * mining_payout_multiplier((mining_grade_t)gi));
-                    snprintf(total_buf, sizeof(total_buf),
-                             "need %d %s", p2, ui_station_currency(st));
-                }
-
-                if (compact) {
-                    cell_t top[] = {
-                        {  0, "[F]",                        row_rgb },
-                        {  4, "buy",                        row_rgb },
-                        { 10, commodity_short_name(sell_c), info_rgb },
-                        { 26, mining_grade_label((mining_grade_t)gi), gr_rgb },
-                    };
-                    draw_row_cells(cx, my, top, 4);
-                    my += row_h;
-                    draw_row_lr(cx + 32.0f, my, inner_right,
-                                info_rgb, qty_buf,
-                                info_rgb, total_buf[0] ? total_buf : NULL);
-                    my += row_h;
-                } else {
-                    cell_t row[] = {
-                        {  0, "[F]",                        row_rgb },
-                        {  4, "buy",                        row_rgb },
-                        { 10, commodity_short_name(sell_c), info_rgb },
-                        { 28, mining_grade_label((mining_grade_t)gi), gr_rgb },
-                        { 35, qty_buf,                      info_rgb },
-                    };
-                    draw_row_cells(cx, my, row, 5);
-                    if (total_buf[0])
-                        draw_row_lr(cx, my, inner_right, NULL, NULL, info_rgb, total_buf);
-                    my += row_h;
-                }
-                rendered_any_grade = true;
-            }
-        }
-
-        if (!rendered_any_grade) {
-            /* Legacy fallback: no manifest entries. Show the float total
-             * as a single COMMON row. */
-            float availf = station_inventory_amount(st, sell_c);
-            int   avail  = (int)lroundf(availf);
-            int   can    = (int)fminf(fminf(availf, space), (float)afford);
-            bool  actionable = (can > 0);
-            const uint8_t *row_rgb = actionable ? COL_BUY : COL_DIM;
-            const uint8_t *info_rgb = actionable ? COL_TEXT : COL_FADED;
-            char qty_buf[24], total_buf[32];
-            if (actionable) {
-                snprintf(qty_buf, sizeof(qty_buf),
-                         compact ? "stock %d" : "%d / %d",
-                         compact ? avail : can, avail);
-                snprintf(total_buf, sizeof(total_buf), "-%d %s",
-                         can * price, ui_station_currency(st));
-            } else if (availf < 0.5f) {
-                snprintf(qty_buf, sizeof(qty_buf), "out of stock");
-                total_buf[0] = '\0';
-            } else if (space < 0.5f) {
-                snprintf(qty_buf, sizeof(qty_buf), "hold full");
-                total_buf[0] = '\0';
-            } else {
-                snprintf(qty_buf, sizeof(qty_buf),
-                         compact ? "stock %d" : "0 / %d", avail);
-                snprintf(total_buf, sizeof(total_buf),
-                         "need %d %s", price, ui_station_currency(st));
-            }
-            if (!(availf < 0.5f && !actionable)) {
-                if (compact) {
-                    cell_t top[] = {
-                        {  0, "[F]",                        row_rgb },
-                        {  4, "buy",                        row_rgb },
-                        { 10, commodity_short_name(sell_c), info_rgb },
-                        { 26, mining_grade_label(MINING_GRADE_COMMON), grade_rgb },
-                    };
-                    draw_row_cells(cx, my, top, 4);
-                    my += row_h;
-                    draw_row_lr(cx + 32.0f, my, inner_right,
-                                info_rgb, qty_buf,
-                                info_rgb, total_buf[0] ? total_buf : NULL);
-                    my += row_h;
-                } else {
-                    cell_t row[] = {
-                        {  0, "[F]",                        row_rgb },
-                        {  4, "buy",                        row_rgb },
-                        { 10, commodity_short_name(sell_c), info_rgb },
-                        { 28, mining_grade_label(MINING_GRADE_COMMON), grade_rgb },
-                        { 35, qty_buf,                      info_rgb },
-                    };
-                    draw_row_cells(cx, my, row, 5);
-                    if (total_buf[0])
-                        draw_row_lr(cx, my, inner_right, NULL, NULL, info_rgb, total_buf);
-                    my += row_h;
-                }
-                rendered_any_grade = true;
-            }
-        }
-        if (rendered_any_grade) any_row = true;
-    }
-
-    /* SELL rows — station buys buy_c from the player's hold.
-     * Phase 3: if the ship.manifest carries units for this commodity,
-     * render one row per grade held. Otherwise fall back to the legacy
-     * single row using the ship.cargo[] float so pre-manifest ingots
-     * still sell. The [S] action itself still operates on the float via
-     * the server's dual-write path (sim side is manifest-first, UI
-     * reflects the same grouping). */
-    if ((int)buy_c >= 0) {
-        float base_price = station_buy_price(st, buy_c);
-        bool rendered = false;
-
-        if (ship_manifest_has_commodity(ship, buy_c)) {
-            for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
-                int held = ship_manifest_count_cg(ship, buy_c, (mining_grade_t)gi);
-                if (held <= 0) continue;
-                int price = (int)lroundf(
-                    base_price * mining_payout_multiplier((mining_grade_t)gi));
-                bool actionable = (held > 0);
-                const uint8_t *row_rgb = actionable ? COL_SELL : COL_DIM;
-                const uint8_t *info_rgb = actionable ? COL_TEXT : COL_FADED;
-
-                uint8_t ggr, ggg, ggb;
-                mining_grade_rgb((mining_grade_t)gi, &ggr, &ggg, &ggb);
-                uint8_t gr_rgb[3] = { ggr, ggg, ggb };
-
-                char qty_buf[24], total_buf[32];
-                snprintf(qty_buf, sizeof(qty_buf), "%d held", held);
-                snprintf(total_buf, sizeof(total_buf), "+%d %s",
-                         held * price, ui_station_currency(st));
-
-                if (compact) {
-                    cell_t top[] = {
-                        {  0, "[S]",                       row_rgb },
-                        {  4, "sell",                      row_rgb },
-                        { 10, commodity_short_name(buy_c), info_rgb },
-                        { 26, mining_grade_label((mining_grade_t)gi), gr_rgb },
-                    };
-                    draw_row_cells(cx, my, top, 4);
-                    my += row_h;
-                    draw_row_lr(cx + 32.0f, my, inner_right,
-                                info_rgb, qty_buf, info_rgb, total_buf);
-                    my += row_h;
-                } else {
-                    cell_t row[] = {
-                        {  0, "[S]",                       row_rgb },
-                        {  4, "sell",                      row_rgb },
-                        { 10, commodity_short_name(buy_c), info_rgb },
-                        { 28, mining_grade_label((mining_grade_t)gi), gr_rgb },
-                        { 35, qty_buf,                     info_rgb },
-                    };
-                    draw_row_cells(cx, my, row, 5);
-                    draw_row_lr(cx, my, inner_right, NULL, NULL, info_rgb, total_buf);
-                    my += row_h;
-                }
-                rendered = true;
-            }
-        }
-
-        if (!rendered) {
-            /* Legacy fallback: grade-less float. Show a single COMMON row. */
-            int held = (int)lroundf(ship_cargo_amount(ship, buy_c));
-            int price = (int)lroundf(base_price);
-            bool actionable = (held > 0);
-            const uint8_t *row_rgb = actionable ? COL_SELL : COL_DIM;
-            const uint8_t *info_rgb = actionable ? COL_TEXT : COL_FADED;
-            char qty_buf[24], total_buf[32];
-            if (actionable) {
-                snprintf(qty_buf, sizeof(qty_buf), "%d held", held);
-                snprintf(total_buf, sizeof(total_buf), "+%d %s",
-                         held * price, ui_station_currency(st));
-            } else {
-                snprintf(qty_buf, sizeof(qty_buf), "none held");
-                snprintf(total_buf, sizeof(total_buf),
-                         "+%d %s ea.", price, ui_station_currency(st));
-            }
-            if (compact) {
-                cell_t top[] = {
-                    {  0, "[S]",                       row_rgb },
-                    {  4, "sell",                      row_rgb },
-                    { 10, commodity_short_name(buy_c), info_rgb },
-                    { 26, mining_grade_label(MINING_GRADE_COMMON), grade_rgb },
-                };
-                draw_row_cells(cx, my, top, 4);
-                my += row_h;
-                draw_row_lr(cx + 32.0f, my, inner_right,
-                            info_rgb, qty_buf, info_rgb, total_buf);
-                my += row_h;
-            } else {
-                cell_t row[] = {
-                    {  0, "[S]",                       row_rgb },
-                    {  4, "sell",                      row_rgb },
-                    { 10, commodity_short_name(buy_c), info_rgb },
-                    { 28, mining_grade_label(MINING_GRADE_COMMON), grade_rgb },
-                    { 35, qty_buf,                     info_rgb },
-                };
-                draw_row_cells(cx, my, row, 5);
-                draw_row_lr(cx, my, inner_right, NULL, NULL, info_rgb, total_buf);
-                my += row_h;
-            }
-        }
-        any_row = true;
-    }
-
-    if (!any_row) {
+    if (row_count == 0) {
         draw_row_lr(cx, my, inner_right, COL_FADED,
                     "Nothing on offer and nothing to deliver.", NULL, NULL);
+        return;
     }
+
+    for (int ri = first; ri < last; ri++) {
+        const trade_row_t *r = &rows[ri];
+        int slot = ri - first;  /* 0..TRADE_ROWS_PER_PAGE-1 */
+        char key_buf[8];
+        snprintf(key_buf, sizeof(key_buf), "[%d]", slot + 1);
+
+        const uint8_t *row_rgb  = (r->kind == 0)
+            ? (r->actionable ? COL_BUY : COL_DIM)
+            : (r->actionable ? COL_SELL : COL_DIM);
+        const uint8_t *info_rgb = r->actionable ? COL_TEXT : COL_FADED;
+
+        uint8_t ggr, ggg, ggb;
+        mining_grade_rgb(r->grade, &ggr, &ggg, &ggb);
+        uint8_t gr_rgb[3] = { ggr, ggg, ggb };
+
+        const char *verb = (r->kind == 0) ? "buy" : "sell";
+        char qty_buf[24], total_buf[32];
+        if (r->kind == 0) {
+            snprintf(qty_buf, sizeof(qty_buf), "stock %d", r->stock);
+            snprintf(total_buf, sizeof(total_buf), "-$%d", r->unit_price);
+        } else {
+            snprintf(qty_buf, sizeof(qty_buf), "%d held", r->stock);
+            snprintf(total_buf, sizeof(total_buf), "+$%d", r->unit_price);
+        }
+
+        if (compact) {
+            cell_t top[] = {
+                {  0, key_buf,                        row_rgb },
+                {  4, verb,                           row_rgb },
+                { 10, commodity_short_name(r->commodity), info_rgb },
+                { 26, mining_grade_label(r->grade),   gr_rgb },
+            };
+            draw_row_cells(cx, my, top, 4);
+            my += row_h;
+            draw_row_lr(cx + 32.0f, my, inner_right,
+                        info_rgb, qty_buf, info_rgb, total_buf);
+            my += row_h;
+        } else {
+            cell_t row[] = {
+                {  0, key_buf,                        row_rgb },
+                {  4, verb,                           row_rgb },
+                { 10, commodity_short_name(r->commodity), info_rgb },
+                { 28, mining_grade_label(r->grade),   gr_rgb },
+                { 35, qty_buf,                        info_rgb },
+            };
+            draw_row_cells(cx, my, row, 5);
+            draw_row_lr(cx, my, inner_right, NULL, NULL, info_rgb, total_buf);
+            my += row_h;
+        }
+    }
+    return;
 }
 
 /* DOCK — ship bay. Two sections, both always shown:

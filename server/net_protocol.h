@@ -647,12 +647,18 @@ static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts)
 /* ------------------------------------------------------------------ */
 
 /*
- * INPUT message (4 bytes):
- * [type:1][flags:1][action:1][mining_target:1]
+ * INPUT message (4 or 5 bytes):
+ * [type:1][flags:1][action:1][mining_target:1][buy_grade:1 (optional)]
+ * Older clients send 4 bytes — buy_grade is treated as MINING_GRADE_COUNT
+ * ("any grade, FIFO"). Only meaningful when action is in the
+ * NET_ACTION_BUY_PRODUCT range.
  */
 static inline void parse_input(const uint8_t *data, int len, input_intent_t *intent) {
     if (len < 4) return;
     intent->mining_target_hint = -1;
+    /* Default buy_grade each message; the BUY branch below overrides if
+     * the 5th byte is a valid grade index. */
+    intent->buy_grade = MINING_GRADE_COUNT;
     uint8_t flags = data[1];
 
     /* Overwrite continuous inputs every message. */
@@ -721,6 +727,13 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
             if (action >= NET_ACTION_BUY_PRODUCT && action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT) {
                 intent->buy_product = true;
                 intent->buy_commodity = (commodity_t)(action - NET_ACTION_BUY_PRODUCT);
+                if (len >= 5) {
+                    uint8_t g = data[4];
+                    /* Valid grades are 0..MINING_GRADE_COUNT-1; pass the
+                     * sentinel MINING_GRADE_COUNT through so "any" reads
+                     * cleanly in manifest_transfer_by_commodity_ex. */
+                    if (g <= MINING_GRADE_COUNT) intent->buy_grade = (mining_grade_t)g;
+                }
             }
             /* NET_ACTION_BUY_SCAFFOLD_TYPED + module_type (50..50+MODULE_COUNT) */
             else if (action >= NET_ACTION_BUY_SCAFFOLD_TYPED && action < NET_ACTION_BUY_SCAFFOLD_TYPED + MODULE_COUNT) {

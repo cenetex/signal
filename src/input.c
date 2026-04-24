@@ -457,43 +457,153 @@ input_intent_t sample_input_intent(void) {
         }
     }
 
-    /* Buy product from station ([F] on TRADE tab) */
-    if (LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_TRADE
-        && is_key_pressed(SAPP_KEYCODE_F)) {
+    /* TRADE picker: unified list of BUY rows (station sells) followed by
+     * SELL rows (station buys). [F] advances the current page (wraps at
+     * the last). Digit keys [1]..[5] pick the Nth row on the current
+     * page and fire the matching intent. See draw_trade_view in
+     * station_ui.c for the row layout. */
+    if (LOCAL_PLAYER.docked && g.station_view == STATION_VIEW_TRADE) {
         const station_t *st = current_station_ptr();
-        if (st) {
-            commodity_t sell = station_primary_sell(st);
-            if ((int)sell >= 0 && st->inventory[sell] > 0.5f && st->base_price[sell] > FLOAT_EPSILON) {
-                float space = ship_cargo_capacity(&LOCAL_PLAYER.ship) - ship_total_cargo(&LOCAL_PLAYER.ship);
-                float price = station_sell_price(st, sell);
+        if (is_key_pressed(SAPP_KEYCODE_F)) {
+            g.trade_page++;  /* render wraps back to 0 when > available pages */
+        }
+
+        int digit_pick = -1;
+        for (int i = 0; i < 5 && digit_pick < 0; i++) {
+            if (is_key_pressed(SAPP_KEYCODE_1 + i)) digit_pick = i;
+        }
+
+        if (digit_pick >= 0 && st) {
+            /* Walk the same row construction as draw_trade_view: BUY rows
+             * first (station sells sell_c, one per non-zero grade; legacy
+             * float → one COMMON row), then SELL rows (ship holds buy_c,
+             * one per non-zero grade; legacy float → one COMMON row).
+             * Skip (page * 5) rows, pick the digit_pick-th on this page. */
+            const ship_t *ship = &LOCAL_PLAYER.ship;
+            commodity_t sell_c = station_primary_sell(st);
+            commodity_t buy_c  = station_primary_buy(st);
+            int global_idx = 0;
+            int target = (int)g.trade_page * 5 + digit_pick;
+
+            /* Row type resolution. */
+            int row_kind = -1;        /* 0 = BUY, 1 = SELL */
+            commodity_t row_c = 0;
+            mining_grade_t row_g = MINING_GRADE_COMMON;
+
+            /* BUY rows. */
+            if ((int)sell_c >= 0 && st->base_price[sell_c] > FLOAT_EPSILON) {
+                int station_idx = (int)(st - g.world.stations);
+                bool any_manifest = false;
+                if (station_idx >= 0 && station_idx < MAX_STATIONS) {
+                    for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
+                        if (g.station_manifest_summary[station_idx][sell_c][gi] > 0) {
+                            any_manifest = true; break;
+                        }
+                }
+                if (any_manifest) {
+                    for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
+                        int stock = (int)g.station_manifest_summary[station_idx][sell_c][gi];
+                        if (stock <= 0) continue;
+                        if (global_idx == target) {
+                            row_kind = 0; row_c = sell_c; row_g = (mining_grade_t)gi;
+                            goto row_resolved;
+                        }
+                        global_idx++;
+                    }
+                } else if (st->inventory[sell_c] > 0.5f) {
+                    if (global_idx == target) {
+                        row_kind = 0; row_c = sell_c; row_g = MINING_GRADE_COMMON;
+                        goto row_resolved;
+                    }
+                    global_idx++;
+                }
+            }
+            /* SELL rows. */
+            if ((int)buy_c >= 0) {
+                if (ship->manifest.units && ship->manifest.count > 0) {
+                    /* Any manifest holds of this commodity? */
+                    bool any = false;
+                    for (uint16_t u = 0; u < ship->manifest.count; u++)
+                        if (ship->manifest.units[u].commodity == (uint8_t)buy_c) { any = true; break; }
+                    if (any) {
+                        for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
+                            int cnt = 0;
+                            for (uint16_t u = 0; u < ship->manifest.count; u++) {
+                                const cargo_unit_t *cu = &ship->manifest.units[u];
+                                if (cu->commodity == (uint8_t)buy_c && cu->grade == (uint8_t)gi) cnt++;
+                            }
+                            if (cnt <= 0) continue;
+                            if (global_idx == target) {
+                                row_kind = 1; row_c = buy_c; row_g = (mining_grade_t)gi;
+                                goto row_resolved;
+                            }
+                            global_idx++;
+                        }
+                    }
+                }
+                /* Legacy float fallback. */
+                if (ship_cargo_amount(ship, buy_c) > 0.5f) {
+                    /* Only show the legacy row when no manifest rows existed
+                     * for this commodity on the ship — avoid duplicating. */
+                    bool already_shown_by_manifest = false;
+                    if (ship->manifest.units) {
+                        for (uint16_t u = 0; u < ship->manifest.count; u++)
+                            if (ship->manifest.units[u].commodity == (uint8_t)buy_c) {
+                                already_shown_by_manifest = true; break;
+                            }
+                    }
+                    if (!already_shown_by_manifest) {
+                        if (global_idx == target) {
+                            row_kind = 1; row_c = buy_c; row_g = MINING_GRADE_COMMON;
+                            goto row_resolved;
+                        }
+                        global_idx++;
+                    }
+                }
+            }
+
+            /* Past the end — wrap the page pointer so [F] feels natural. */
+            g.trade_page = 0;
+
+        row_resolved:
+            if (row_kind == 0) {
+                /* BUY action */
+                float price = station_sell_price(st, row_c) * mining_payout_multiplier(row_g);
+                float space = ship_cargo_capacity(ship) - ship_total_cargo(ship);
                 if (space < 0.5f) {
                     set_notice("Hold full.");
                 } else if (player_current_balance() < price) {
-                    set_notice("Need %d cr.", (int)lroundf(price));
+                    set_notice("Need $%d.", (int)lroundf(price));
                 } else {
-                    float bal = player_current_balance();
-                    float avail = st->inventory[sell];
-                    float afford = floorf(bal / price);
-                    int amount = (int)fminf(fminf(avail, space), afford);
                     intent.buy_product = true;
-                    intent.buy_commodity = sell;
-                    LOCAL_PLAYER.ship.cargo[sell] += (float)amount;
-                    /* Optimistic deduct from local ledger (singleplayer mirrors full world) */
+                    intent.buy_commodity = row_c;
+                    intent.buy_grade = row_g;
+                    LOCAL_PLAYER.ship.cargo[row_c] += 1.0f;
                     if (!g.multiplayer_enabled) {
                         station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
                         for (int li = 0; li < mst->ledger_count; li++)
-                            if (mst->ledger[li].balance >= (float)amount * price) {
-                                mst->ledger[li].balance -= (float)amount * price;
+                            if (mst->ledger[li].balance >= price) {
+                                mst->ledger[li].balance -= price;
                                 break;
                             }
                     }
-                    set_notice("Bought %d %s  -%d cr", amount, commodity_short_name(sell), (int)(amount * price));
+                    set_notice("-$%d  %s %s",
+                               (int)lroundf(price),
+                               mining_grade_label(row_g),
+                               commodity_short_name(row_c));
                 }
-            } else {
-                set_notice("Nothing to buy here.");
+            } else if (row_kind == 1) {
+                /* SELL action — still routes through the existing per-commodity
+                 * sell path. Grade-precise server-side sell is a follow-up. */
+                intent.service_sell = true;
+                intent.service_sell_only = row_c;
+                set_notice("Selling %s %s...",
+                           mining_grade_label(row_g),
+                           commodity_short_name(row_c));
             }
         }
     }
+
     /* B / R / E: placement (tow mode) and planning (plan mode).
      * Tow mode: position auto-picks slot, E commits, no reticle.
      * Plan mode: position auto-picks slot, R cycles type, E reserves slot.
@@ -860,8 +970,10 @@ void submit_input(const input_intent_t *intent, float dt) {
             g.pending_net_action = 8;
         else if (intent->buy_scaffold_kit && (uint8_t)intent->scaffold_kit_module < MODULE_COUNT)
             g.pending_net_action = NET_ACTION_BUY_SCAFFOLD_TYPED + (uint8_t)intent->scaffold_kit_module;
-        else if (intent->buy_product && (uint8_t)intent->buy_commodity < COMMODITY_COUNT)
+        else if (intent->buy_product && (uint8_t)intent->buy_commodity < COMMODITY_COUNT) {
             g.pending_net_action = NET_ACTION_BUY_PRODUCT + (uint8_t)intent->buy_commodity;
+            g.pending_net_buy_grade = (uint8_t)intent->buy_grade;
+        }
         else if (intent->hail)
             g.pending_net_action = NET_ACTION_HAIL;
         else if (intent->release_tow)

@@ -133,6 +133,7 @@ static void reset_world(void) {
     g.thrusting = false;
     g.notice[0] = '\0';
     g.notice_timer = 0.0f;
+    g.pending_net_buy_grade = MINING_GRADE_COUNT; /* sentinel = any */
     audio_clear_voices(&g.audio);
     clear_collection_feedback();
 
@@ -1531,10 +1532,12 @@ static void frame(void) {
                     flags |= NET_INPUT_FIRE;
                 if (g.input.key_down[SAPP_KEYCODE_SPACE] && !g.plan_mode_active)
                     flags |= NET_INPUT_TRACTOR;
+                uint8_t buy_grade_byte = g.pending_net_buy_grade;
                 g.pending_net_action = 0;
+                g.pending_net_buy_grade = MINING_GRADE_COUNT;
                 uint8_t mining_target = (LOCAL_PLAYER.hover_asteroid >= 0 && LOCAL_PLAYER.hover_asteroid < 255)
                     ? (uint8_t)LOCAL_PLAYER.hover_asteroid : 255;
-                net_send_input(flags, action, mining_target);
+                net_send_input(flags, action, mining_target, buy_grade_byte);
             }
         }
     }

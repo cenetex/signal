@@ -97,7 +97,10 @@ typedef struct {
     star_t stars[MAX_STARS];
     bool thrusting;
     bool server_thrusting;  /* server-authoritative thrust (for autopilot flames) */
-    char notice[128];
+    /* Transient notice for the bottom-center subtitle. Station hails
+     * can be long ("Station name: ...MOTD... (balance N cur)"), so the
+     * buffer is generous. The HUD wraps it into multiple lines. */
+    char notice[320];
     float notice_timer;
     float collection_feedback_ore;
     int collection_feedback_fragments;
@@ -145,9 +148,16 @@ typedef struct {
     bool multiplayer_enabled;
     float net_send_timer;
     uint8_t pending_net_action;
+    /* Rides alongside pending_net_action: which grade did the player
+     * pick for a BUY_PRODUCT action? Default = MINING_GRADE_COUNT ("any"
+     * → server does FIFO). Set by the grade-picker in TRADE. */
+    uint8_t pending_net_buy_grade;
     float action_predict_timer;
     float net_input_timer;
     station_view_t station_view;
+    /* TRADE tab pagination: [F] cycles through pages of 5 rows each.
+     * Page 0 is rows 0..4, page 1 is 5..9, etc. Wraps when > 9 rows. */
+    uint8_t trade_page;
     bool was_docked;
     bool was_autopilot;
     float dock_settle_timer;  /* delay before showing station panel after dock */

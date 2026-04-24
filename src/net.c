@@ -906,13 +906,15 @@ void net_send_session(const uint8_t token[8]) {
     ws_send_binary(buf, 9);
 }
 
-void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target) {
-    uint8_t buf[4];
+void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target,
+                    uint8_t buy_grade) {
+    uint8_t buf[5];
     buf[0] = NET_MSG_INPUT;
     buf[1] = flags;
     buf[2] = action;
     buf[3] = mining_target;
-    ws_send_binary(buf, 4);
+    buf[4] = buy_grade;
+    ws_send_binary(buf, 5);
 }
 
 void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {
@@ -1044,13 +1046,15 @@ void net_send_session(const uint8_t token[8]) {
     ws_send_binary(buf, 9);
 }
 
-void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target) {
-    uint8_t buf[4];
+void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target,
+                    uint8_t buy_grade) {
+    uint8_t buf[5];
     buf[0] = NET_MSG_INPUT;
     buf[1] = flags;
     buf[2] = action;
     buf[3] = mining_target;
-    ws_send_binary(buf, 4);
+    buf[4] = buy_grade;
+    ws_send_binary(buf, 5);
 }
 
 void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {
