@@ -1,0 +1,24 @@
+# Run both server and static-client in one container, ports bound to host.
+#
+#   docker-compose up --build        # first time / after code changes
+#   docker-compose up -d              # detached
+#   docker-compose down               # stop
+#
+# Browser: http://localhost:8080/signal.html?server=ws://localhost:9091/ws
+# (Or set window.SIGNAL_SERVER in play.html for a fixed default.)
+services:
+  signal:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: signal:local
+    container_name: signal
+    ports:
+      - "8080:8080"   # static HTTP — serves build-web/ (browser client)
+      - "9091:9091"   # signal_server websocket + health endpoint
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=9091
+      # - SIGNAL_API_TOKEN=devtoken  # set to enable the REST API surface
+    restart: unless-stopped

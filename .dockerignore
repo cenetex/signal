@@ -1,0 +1,28 @@
+# Don't ship local build trees into the Docker build context.
+build/
+build-web/
+build-test/
+build-*/
+
+# Local runtime state — the container uses a volume bind-mount instead.
+data/
+world.sav
+world.sav.bak
+chain/
+chain.bak/
+saves/
+sessions/
+logs/
+
+# Dev tooling / editor state. .git is INCLUDED so the Dockerfile can stamp
+# GIT_HASH on the binaries; if you need a hermetic build without git, drop
+# the COPY . and use a tarball + -DGIT_HASH=... explicitly.
+.gitignore
+.vscode
+.idea
+*.swp
+*.swo
+.DS_Store
+
+# Third-party archives we don't need at build time.
+*.dSYM/
