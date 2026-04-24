@@ -965,11 +965,32 @@ static void draw_jobs_view(const station_ui_state_t *ui,
         if (!ct->active) continue;
         if (ct->action != CONTRACT_TRACTOR) continue;
         if (here_idx < 0 || ct->station_index != here_idx) continue;
-        float held = LOCAL_PLAYER.ship.cargo[ct->commodity];
-        if (held < 0.5f) continue;
+
+        /* Raw ore isn't in ship.cargo[] — it rides in towed_fragments.
+         * Sum the ore amount across towed fragments that match the
+         * commodity so ore contracts can show "ready" when the player
+         * actually has the material, not just "missing" forever. */
+        int held_int = 0;
+        if (ct->commodity < COMMODITY_RAW_ORE_COUNT) {
+            float held_ore = 0.0f;
+            const ship_t *ship = &LOCAL_PLAYER.ship;
+            for (int t = 0; t < ship->towed_count; t++) {
+                int fi = ship->towed_fragments[t];
+                if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
+                const asteroid_t *a = &g.world.asteroids[fi];
+                if (!a->active || a->tier != ASTEROID_TIER_S) continue;
+                if (a->commodity != ct->commodity) continue;
+                held_ore += a->ore;
+            }
+            held_int = (int)lroundf(held_ore);
+        } else {
+            float held = LOCAL_PLAYER.ship.cargo[ct->commodity];
+            held_int = (int)lroundf(held);
+        }
+        if (held_int <= 0) continue;
         slots[slot_count] = ci;
         slot_fulfillable[slot_count] = true;
-        slot_held[slot_count] = (int)lroundf(held);
+        slot_held[slot_count] = held_int;
         slot_count++;
     }
     if (slot_count < 3) {
@@ -1056,8 +1077,13 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             snprintf(state_buf, sizeof(state_buf), "nearby");
         } else if (slot_fulfillable[s]) {
             snprintf(state_buf, sizeof(state_buf), "ready");
+        } else if (ct->commodity < COMMODITY_RAW_ORE_COUNT) {
+            /* Raw ore: player has to mine it. More actionable than
+             * "missing" since it tells them the next verb. */
+            snprintf(state_buf, sizeof(state_buf), "mine");
         } else {
-            snprintf(state_buf, sizeof(state_buf), "missing");
+            /* Ingot / frame / fabricated good: player buys or hauls. */
+            snprintf(state_buf, sizeof(state_buf), "bring");
         }
 
         const station_t *dest = (ct->station_index < MAX_STATIONS)
