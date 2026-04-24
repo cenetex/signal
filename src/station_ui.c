@@ -1188,7 +1188,16 @@ static void draw_jobs_view(const station_ui_state_t *ui,
         const station_t *dest = (ct->station_index < MAX_STATIONS)
             ? &g.world.stations[ct->station_index] : NULL;
         const char *pay_cur = ui_station_currency(dest ? dest : ui->station);
-        snprintf(pay_buf, sizeof(pay_buf), "+%d %s", (int)lroundf(cprice), pay_cur);
+        /* Defensive clamp: if the server ever sends a nonsense base_price
+         * (NaN/inf/garbage) the naive lroundf cast saturates to INT_MAX
+         * and the row displays +2147483647. Show "???" instead so the
+         * bug is visible and not mistaken for a real payout. */
+        if (!isfinite(cprice) || cprice < 0.0f || cprice > 1.0e7f) {
+            snprintf(pay_buf, sizeof(pay_buf), "+??? %s", pay_cur);
+        } else {
+            snprintf(pay_buf, sizeof(pay_buf), "+%d %s",
+                     (int)lroundf(cprice), pay_cur);
+        }
 
         const uint8_t *info_rgb = (row_rgb == COL_DIM) ? COL_FADED : COL_TEXT;
         if (compact) {

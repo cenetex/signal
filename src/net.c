@@ -740,12 +740,12 @@ static void handle_message(const uint8_t* data, int len) {
     case NET_MSG_CONTRACTS:
         if (len >= 2 && net_state.callbacks.on_contracts) {
             uint8_t count = data[1];
-            if (len >= 2 + count * 25) {
+            if (len >= 2 + count * 27) {
                 contract_t contracts[MAX_CONTRACTS];
                 memset(contracts, 0, sizeof(contracts));
                 int n = count < MAX_CONTRACTS ? count : MAX_CONTRACTS;
                 for (int i = 0; i < n; i++) {
-                    const uint8_t *p = &data[2 + i * 25];
+                    const uint8_t *p = &data[2 + i * 27];
                     contracts[i].active = true;
                     contracts[i].action = (p[0] <= CONTRACT_FRACTURE) ? (contract_action_t)p[0] : CONTRACT_TRACTOR;
                     contracts[i].station_index = (p[1] < MAX_STATIONS) ? p[1] : 0;

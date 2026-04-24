@@ -612,7 +612,13 @@ static inline int serialize_player_ship_bal(uint8_t *buf, uint8_t id, const serv
  * [type:1][count:1] + count * [action:1][station:1][commodity:1][quantity:f32][base_price:f32][age:f32][target_x:f32][target_y:f32][target_index:i32]
  * = 2 + count * 25 bytes
  */
-#define CONTRACT_RECORD_SIZE 25
+/* 1 action + 1 station + 1 commodity + 4 quantity_needed + 4 base_price
+ * + 4 age + 4 target.x + 4 target.y + 4 target_index = 27 bytes.
+ * Previously 25 (off-by-2) which meant each successive record stomped
+ * the last 2 bytes of the previous record's target_index, and the next
+ * record's base_price decoded garbage — producing +INT_MAX payouts on
+ * WORK rows when two construction contracts were active. */
+#define CONTRACT_RECORD_SIZE 27
 
 static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts) {
     int count = 0;
