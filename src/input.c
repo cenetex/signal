@@ -159,6 +159,11 @@ static int collect_reticle_targets(vec2 pos, reticle_target_t *out, int max) {
 
 input_intent_t sample_input_intent(void) {
     input_intent_t intent = { 0 };
+    /* Default buy_grade to "any" (sentinel = MINING_GRADE_COUNT) so
+     * manifest-first transfers don't accidentally prefer COMMON just
+     * because the zero-init lands there. UI wires a real grade when a
+     * grade-picker is added. */
+    intent.buy_grade = MINING_GRADE_COUNT;
     intent.place_target_station = -1;
     intent.place_target_ring = -1;
     intent.place_target_slot = -1;

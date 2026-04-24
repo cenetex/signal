@@ -909,6 +909,18 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             ws_send(c, buf, (size_t)len);
         }
 
+        /* Phase 2 station manifest summary — same rationale, different
+         * payload: grade-grouped counts for the TRADE BUY rows. Sent for
+         * every station (empty manifest is legal — body will be just the
+         * 4-byte header with entry_count=0). */
+        for (int sidx = 0; sidx < MAX_STATIONS; sidx++) {
+            if (!station_exists(&world.stations[sidx])) continue;
+            uint8_t mbuf[STATION_MANIFEST_HEADER +
+                         COMMODITY_COUNT * MINING_GRADE_COUNT * STATION_MANIFEST_ENTRY];
+            int mlen = serialize_station_manifest(mbuf, sidx, &world.stations[sidx]);
+            ws_send(c, mbuf, (size_t)mlen);
+        }
+
         /* Send server version hash. */
         {
 #ifdef GIT_HASH
@@ -1376,6 +1388,20 @@ int main(void) {
                 for (int p = 0; p < MAX_PLAYERS; p++) {
                     if (!world.players[p].connected || !world.players[p].conn) continue;
                     ws_send(world.players[p].conn, buf, (size_t)len);
+                }
+                /* Phase 2: same dirty flag is a good proxy for "manifest
+                 * changed" — smelt sets it when it mints a new unit, and
+                 * buy/sell flip it via named_ingots rotation. Broadcast
+                 * the per-(commodity, grade) summary so clients can
+                 * render TRADE rows correctly in multiplayer. */
+                {
+                    uint8_t mbuf[STATION_MANIFEST_HEADER +
+                                 COMMODITY_COUNT * MINING_GRADE_COUNT * STATION_MANIFEST_ENTRY];
+                    int mlen = serialize_station_manifest(mbuf, s, &world.stations[s]);
+                    for (int p = 0; p < MAX_PLAYERS; p++) {
+                        if (!world.players[p].connected || !world.players[p].conn) continue;
+                        ws_send(world.players[p].conn, mbuf, (size_t)mlen);
+                    }
                 }
                 world.stations[s].named_ingots_dirty = false;
             }

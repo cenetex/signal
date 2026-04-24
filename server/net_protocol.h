@@ -279,6 +279,44 @@ static inline int serialize_station_ingots(uint8_t *buf, int station_idx,
     return STATION_INGOTS_HEADER + n * NAMED_INGOT_RECORD_SIZE;
 }
 
+/* Per-station manifest summary (Phase 2). Runs through every unit in
+ * station.manifest, builds a per-(commodity, grade) count table, and
+ * serializes only the non-zero slots.
+ * Wire layout is defined in shared/protocol.h (STATION_MANIFEST_HEADER /
+ * STATION_MANIFEST_ENTRY) so the client can decode. Sent per-station on
+ * manifest change (cheapest) or on dock. */
+static inline int serialize_station_manifest(uint8_t *buf, int station_idx,
+                                             const station_t *st) {
+    /* Build the (commodity × grade) count table from the manifest. */
+    uint16_t table[COMMODITY_COUNT][MINING_GRADE_COUNT];
+    memset(table, 0, sizeof(table));
+    if (st->manifest.units) {
+        for (uint16_t i = 0; i < st->manifest.count; i++) {
+            const cargo_unit_t *u = &st->manifest.units[i];
+            if (u->commodity >= COMMODITY_COUNT) continue;
+            if (u->grade >= MINING_GRADE_COUNT) continue;
+            if (table[u->commodity][u->grade] < 0xFFFF)
+                table[u->commodity][u->grade]++;
+        }
+    }
+    buf[0] = NET_MSG_STATION_MANIFEST;
+    buf[1] = (uint8_t)station_idx;
+    int n = 0;
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        for (int g = 0; g < MINING_GRADE_COUNT; g++) {
+            uint16_t count = table[c][g];
+            if (count == 0) continue;
+            uint8_t *p = &buf[STATION_MANIFEST_HEADER + n * STATION_MANIFEST_ENTRY];
+            p[0] = (uint8_t)c;
+            p[1] = (uint8_t)g;
+            write_u16_le(&p[2], count);
+            n++;
+        }
+    }
+    write_u16_le(&buf[2], (uint16_t)n);
+    return STATION_MANIFEST_HEADER + n * STATION_MANIFEST_ENTRY;
+}
+
 /* Local player's hold-ingot snapshot. Sent on contents change. */
 static inline int serialize_hold_ingots(uint8_t *buf, const ship_t *ship) {
     int n = ship->hold_ingots_count;

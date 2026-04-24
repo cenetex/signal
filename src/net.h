@@ -181,6 +181,17 @@ typedef void (*net_on_station_ingots_fn)(uint8_t station_id,
 /* RATi v2 — local player's hold ingots snapshot. */
 typedef void (*net_on_hold_ingots_fn)(const named_ingot_t *ingots, int count);
 
+/* Phase 2 — per-station manifest summary. Each entry = one
+ * {commodity, grade, count} triple with count > 0. */
+typedef struct {
+    uint8_t  commodity;
+    uint8_t  grade;
+    uint16_t count;
+} NetStationManifestEntry;
+typedef void (*net_on_station_manifest_fn)(uint8_t station_id,
+                                           const NetStationManifestEntry *entries,
+                                           int count);
+
 typedef void (*net_on_players_begin_fn)(void);
 
 typedef struct {
@@ -205,6 +216,7 @@ typedef struct {
     net_on_signal_channel_fn on_signal_channel;
     net_on_station_ingots_fn on_station_ingots;
     net_on_hold_ingots_fn    on_hold_ingots;
+    net_on_station_manifest_fn on_station_manifest;
 } NetCallbacks;
 
 /* Initialize networking and connect to the relay server.

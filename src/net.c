@@ -605,6 +605,25 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_STATION_MANIFEST:
+        if (len >= STATION_MANIFEST_HEADER && net_state.callbacks.on_station_manifest) {
+            uint8_t station_id = data[1];
+            int count = (int)(data[2] | ((uint16_t)data[3] << 8));
+            int expected = STATION_MANIFEST_HEADER + count * STATION_MANIFEST_ENTRY;
+            if (len < expected) break;
+            if (count > COMMODITY_COUNT * MINING_GRADE_COUNT)
+                count = COMMODITY_COUNT * MINING_GRADE_COUNT;
+            static NetStationManifestEntry scratch[COMMODITY_COUNT * MINING_GRADE_COUNT];
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[STATION_MANIFEST_HEADER + i * STATION_MANIFEST_ENTRY];
+                scratch[i].commodity = p[0];
+                scratch[i].grade     = p[1];
+                scratch[i].count     = (uint16_t)(p[2] | ((uint16_t)p[3] << 8));
+            }
+            net_state.callbacks.on_station_manifest(station_id, scratch, count);
+        }
+        break;
+
     case NET_MSG_HOLD_INGOTS:
         if (len >= HOLD_INGOTS_HEADER && net_state.callbacks.on_hold_ingots) {
             int count = data[1];

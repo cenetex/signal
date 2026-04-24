@@ -922,6 +922,7 @@ static void init(void) {
             cbs.on_events = apply_remote_events;
             cbs.on_signal_channel = apply_remote_signal_channel;
             cbs.on_station_ingots = apply_remote_station_ingots;
+            cbs.on_station_manifest = apply_remote_station_manifest;
             cbs.on_hold_ingots = apply_remote_hold_ingots;
             g.multiplayer_enabled = net_init(server_url, &cbs);
             if (g.multiplayer_enabled) {

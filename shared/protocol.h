@@ -55,6 +55,15 @@ enum {
     NET_MSG_FRACTURE_CHALLENGE = 0x2C, /* server -> nearby clients: [type:1][fracture_id:u32][seed:32][deadline_ms:u32][burst_cap:u16] */
     NET_MSG_FRACTURE_CLAIM     = 0x2D, /* client -> server: [type:1][fracture_id:u32][burst_nonce:u32][claimed_grade:u8] */
     NET_MSG_FRACTURE_RESOLVED  = 0x2E, /* server -> nearby clients: [type:1][fracture_id:u32][fragment_pub:32][winner_pub:32][grade:u8] */
+    NET_MSG_STATION_MANIFEST   = 0x2F, /* server -> client: per-station manifest summary grouped by (commodity, grade) — see STATION_MANIFEST_* below. */
+};
+
+/* NET_MSG_STATION_MANIFEST wire layout:
+ *   [type:1][station_idx:1][entry_count:u16]
+ *     entry_count × [commodity:1][grade:1][count:u16]   (little-endian) */
+enum {
+    STATION_MANIFEST_HEADER = 4,
+    STATION_MANIFEST_ENTRY  = 4,
 };
 
 /* Per-class buy price at any station's stockpile. RATi/commissioned

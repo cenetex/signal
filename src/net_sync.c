@@ -157,6 +157,25 @@ void apply_remote_station_ingots(uint8_t station_id,
     st->named_ingots_count = count;
 }
 
+/* Phase 2 wire: server → client station manifest summary. Fully
+ * replaces the (commodity, grade) count matrix for this station so a
+ * missing entry reads as zero. */
+void apply_remote_station_manifest(uint8_t station_id,
+                                   const NetStationManifestEntry *entries,
+                                   int count) {
+    if (station_id >= MAX_STATIONS) return;
+    if (count < 0) count = 0;
+    memset(&g.station_manifest_summary[station_id][0][0], 0,
+           sizeof(g.station_manifest_summary[station_id]));
+    for (int i = 0; i < count; i++) {
+        uint8_t c = entries[i].commodity;
+        uint8_t gr = entries[i].grade;
+        if (c >= COMMODITY_COUNT) continue;
+        if (gr >= MINING_GRADE_COUNT) continue;
+        g.station_manifest_summary[station_id][c][gr] = entries[i].count;
+    }
+}
+
 void apply_remote_hold_ingots(const named_ingot_t *ingots, int count) {
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
     if (count < 0) count = 0;

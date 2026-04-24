@@ -209,6 +209,11 @@ typedef struct {
     module_type_t scaffold_kit_module; /* what module type the kit builds */
     bool buy_product;
     commodity_t buy_commodity;
+    /* Optional grade hint for manifest-first buys. MINING_GRADE_COUNT =
+     * "any grade available, FIFO"; a specific grade means "only transfer
+     * a unit of this grade — if none exist, the float path still runs
+     * as a legacy common row". */
+    mining_grade_t buy_grade;
     int mining_target_hint;  /* client's hover_asteroid, -1 = none */
     bool hail;               /* collect pending credits from nearby station */
     bool tractor_hold;       /* R held — tractor active this frame */

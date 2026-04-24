@@ -768,47 +768,73 @@ static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, i
 
 /* ledger_credit_supply declared in game_sim.h */
 
-/* Transfer `n` manifest units of `commodity` from `src` to `dst` (FIFO,
- * any grade). Returns the number actually transferred. Used so float-
- * denominated deliveries keep the ship.manifest / station.manifest
- * ledgers aligned: every integer unit moved by the float path also
- * moves its cargo_unit_t (with its pub + grade + parent_merkle) to the
- * receiving side. Units whose grade isn't preserved in ship.manifest
- * yet (today's ship hold is still legacy-float) are passed through
- * station-to-station correctly; ship-side grading lands when ship.cargo
- * becomes manifest-first.
+/* Transfer `n` manifest units of `commodity` from `src` to `dst`.
+ *
+ * `preferred_grade`: if MINING_GRADE_COUNT (sentinel) → FIFO across any
+ * grade. Otherwise the helper first picks units of exactly that grade;
+ * once those are exhausted (or if there were none to begin with) it
+ * falls through to any-grade FIFO so the float-path delivery doesn't
+ * silently lose provenance.
+ *
+ * Returns the number actually transferred. The cargo_unit_t (pub +
+ * grade + parent_merkle) moves to the receiving side — callers dual-
+ * write the float inventory; the manifest is the provenance record.
  *
  * Conservation invariant (see tests): at any point,
  *   count_in_any_manifest(pub) == 1
- * i.e. the same pub must never appear in two manifests simultaneously.
  * manifest_remove + manifest_push with the same `unit` value satisfies
- * this because we push a copy of the removed value, not allocate a new
- * one.
- *
- * Phase 1 dual-write note: callers still update the float inventory
- * AND call this helper so the existing economy math (prices, hopper
- * caps, conservation tests) keeps working. Float deprecation is a
- * separate later pass. */
-static int manifest_transfer_by_commodity(manifest_t *src, manifest_t *dst,
-                                          commodity_t commodity, int n) {
+ * this because we push a copy of the removed value, not allocate. */
+static int manifest_transfer_by_commodity_ex(manifest_t *src, manifest_t *dst,
+                                             commodity_t commodity,
+                                             mining_grade_t preferred_grade,
+                                             int n) {
     if (!src || !dst || n <= 0) return 0;
     int moved = 0;
+    bool allow_any_grade = (preferred_grade >= MINING_GRADE_COUNT);
     while (moved < n) {
         int idx = -1;
-        for (uint16_t i = 0; i < src->count; i++) {
-            if (src->units[i].commodity == (uint8_t)commodity) { idx = (int)i; break; }
+        if (!allow_any_grade) {
+            idx = manifest_find_first_cg(src, commodity, preferred_grade);
+        }
+        if (idx < 0) {
+            /* Exhausted preferred grade (or none requested) — fall back
+             * to the first matching commodity, any grade. */
+            for (uint16_t i = 0; i < src->count; i++) {
+                if (src->units[i].commodity == (uint8_t)commodity) { idx = (int)i; break; }
+            }
         }
         if (idx < 0) break;
         cargo_unit_t unit;
         if (!manifest_remove(src, (uint16_t)idx, &unit)) break;
         if (!manifest_push(dst, &unit)) {
-            /* dst full — put it back to keep the invariant. */
+            /* dst full — put it back so the invariant holds. */
             (void)manifest_push(src, &unit);
             break;
         }
         moved++;
     }
     return moved;
+}
+
+/* Backwards-compatible wrapper — any-grade transfer (what Phase 1 used). */
+static int manifest_transfer_by_commodity(manifest_t *src, manifest_t *dst,
+                                          commodity_t commodity, int n) {
+    return manifest_transfer_by_commodity_ex(src, dst, commodity,
+                                              MINING_GRADE_COUNT, n);
+}
+
+/* Flip station.named_ingots_dirty when a given manifest transfer affected
+ * a station manifest. `named_ingots_dirty` doubles as the manifest-summary
+ * dirty flag for Phase 2 broadcasts; setting it here means every
+ * transaction that moves provenance also pokes the MP summary. */
+static void manifest_mark_station_dirty(world_t *w, manifest_t *touched) {
+    if (!w || !touched) return;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (&w->stations[s].manifest == touched) {
+            w->stations[s].named_ingots_dirty = true;
+            return;
+        }
+    }
 }
 
 static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
@@ -855,9 +881,11 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
          * Fractional deliveries still ride the float dual-write. */
         {
             int whole = (int)floorf(deliver + 0.0001f);
-            if (whole > 0)
-                (void)manifest_transfer_by_commodity(&sp->ship.manifest,
-                                                     &st->manifest, c, whole);
+            if (whole > 0) {
+                int moved = manifest_transfer_by_commodity(&sp->ship.manifest,
+                                                           &st->manifest, c, whole);
+                if (moved > 0) manifest_mark_station_dirty(w, &st->manifest);
+            }
         }
         ct->quantity_needed -= deliver;
         if (ct->quantity_needed <= 0.01f) {
@@ -896,9 +924,11 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
                 st->inventory[buy] += accepted;
                 /* Manifest dual-write — see the contract branch above. */
                 int whole = (int)floorf(accepted + 0.0001f);
-                if (whole > 0)
-                    (void)manifest_transfer_by_commodity(&sp->ship.manifest,
-                                                         &st->manifest, buy, whole);
+                if (whole > 0) {
+                    int moved = manifest_transfer_by_commodity(&sp->ship.manifest,
+                                                               &st->manifest, buy, whole);
+                    if (moved > 0) manifest_mark_station_dirty(w, &st->manifest);
+                }
             }
         }
     }
@@ -2469,15 +2499,21 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                         if (ledger_spend(nearby_st, sp->session_token, cost, &sp->ship)) {
                             sp->ship.cargo[c] += amount;
                             nearby_st->inventory[c] -= amount;
-                            /* Phase 1 manifest-first: if the station has a
-                             * matching manifest unit, transfer it to the
-                             * ship so the ingot's provenance (pub, grade,
-                             * parent_merkle) moves with the purchase. */
+                            /* Phase 1/2.5 manifest-first: if the station
+                             * has a matching manifest unit, transfer it
+                             * to the ship so the ingot's provenance (pub,
+                             * grade, parent_merkle) moves with the purchase.
+                             * Honors the client's buy_grade hint (set when
+                             * the player selects a specific-grade row in
+                             * TRADE) — falls back to any-grade FIFO if no
+                             * preferred-grade unit is available. */
                             int whole = (int)floorf(amount + 0.0001f);
-                            if (whole > 0)
-                                (void)manifest_transfer_by_commodity(
+                            if (whole > 0) {
+                                int moved = manifest_transfer_by_commodity_ex(
                                     &nearby_st->manifest, &sp->ship.manifest,
-                                    c, whole);
+                                    c, sp->input.buy_grade, whole);
+                                if (moved > 0) manifest_mark_station_dirty(w, &nearby_st->manifest);
+                            }
                             emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
                         }
                     }

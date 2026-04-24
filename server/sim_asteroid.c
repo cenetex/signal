@@ -235,7 +235,16 @@ static void sim_configure_asteroid(world_t *w, asteroid_t *a, asteroid_tier_t ti
     a->max_ore   = 0.0f;
     a->ore       = 0.0f;
     if (tier == ASTEROID_TIER_S) {
-        a->max_ore = w_rand_range(w, 8.0f, 14.0f);
+        /* S-tier fragments carry integer ore so every smelt mints exactly
+         * floor(a->ore) manifest units against this fragment's pub —
+         * closes the H2 partial-boundary provenance loss the earlier bug
+         * audit flagged. Keeps the 8-14 range as integers 8..14. */
+        int min_ore = 8;
+        int max_ore = 14;
+        int n = min_ore + (int)floorf(w_randf(w) * (float)(max_ore - min_ore + 1));
+        if (n < min_ore) n = min_ore;
+        if (n > max_ore) n = max_ore;
+        a->max_ore = (float)n;
         a->ore     = a->max_ore;
     }
     a->rotation = w_rand_range(w, 0.0f, TWO_PI_F);

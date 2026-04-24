@@ -54,9 +54,14 @@ static bool station_manifest_push_ingot(station_t *st, const cargo_unit_t *unit)
      * instead of the ingot silently vanishing. */
     if (st->manifest.count >= st->manifest.cap) {
         if (!manifest_remove(&st->manifest, 0, NULL)) return false;
-        st->named_ingots_dirty = true;
     }
-    return manifest_push(&st->manifest, unit);
+    /* Phase 2: flag dirty on every successful push so the manifest-
+     * summary broadcast runs after smelts too (not just rotations). */
+    if (manifest_push(&st->manifest, unit)) {
+        st->named_ingots_dirty = true;
+        return true;
+    }
+    return false;
 }
 
 static bool station_manifest_push_finished(station_t *st, const cargo_unit_t *unit) {
