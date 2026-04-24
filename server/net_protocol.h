@@ -830,6 +830,7 @@ static inline int serialize_events(uint8_t *buf, const sim_events_t *events) {
             p[3] = (uint8_t)ev->sell.grade;
             write_u32_le(&p[4], (uint32_t)ev->sell.base_cr);
             write_u32_le(&p[8], (uint32_t)ev->sell.bonus_cr);
+            p[12] = ev->sell.by_contract;
             break;
         default:
             /* MINING_TICK, DOCK, LAUNCH, REPAIR, SIGNAL_LOST,

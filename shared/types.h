@@ -600,8 +600,12 @@ typedef struct {
         struct { float amount; } damage;
         /* SIM_EVENT_SELL: populated when a fragment is smelted. grade
          * is mining_grade_t; base_cr is ore * station_buy_price;
-         * bonus_cr is the extra credits the multiplier added on top. */
-        struct { int station; uint8_t grade; int base_cr; int bonus_cr; } sell;
+         * bonus_cr is the extra credits the multiplier added on top.
+         * by_contract = true when an active CONTRACT_TRACTOR at this
+         * station raised the price — client uses this to color the
+         * floating "+$N" popup yellow instead of grade-tinted. */
+        struct { int station; uint8_t grade; int base_cr; int bonus_cr;
+                 uint8_t by_contract; } sell;
         struct { int slot; } outpost_placed;
         struct { int station; float credits; int contract_index; } hail_response;
         struct { int slot; } outpost_activated;

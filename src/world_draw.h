@@ -63,4 +63,9 @@ void draw_remote_players(void);
 void draw_callsigns(void);
 void draw_npc_chatter(void);
 
+/* --- Sell FX: floating "+$N" popups on SIM_EVENT_SELL --- */
+void spawn_sell_fx(const vec2 *origin, int amount, mining_grade_t grade, bool by_contract);
+void update_sell_fx(float dt);
+void draw_sell_fx(void);
+
 #endif /* WORLD_DRAW_H */

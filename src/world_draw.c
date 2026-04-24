@@ -1746,6 +1746,94 @@ void draw_npc_chatter(void) {
 }
 
 /* ================================================================== */
+/* Sell FX — floating "+$N" popups on SIM_EVENT_SELL                  */
+/* ================================================================== */
+
+/* Grade colors for the popup text. Contract-priced sales override this
+ * with yellow/gold inside spawn_sell_fx. */
+static void sell_fx_grade_rgb(mining_grade_t grade, uint8_t *r, uint8_t *g, uint8_t *b) {
+    switch (grade) {
+    case MINING_GRADE_COMMON:       *r = 200; *g = 220; *b = 230; break;  /* cool white */
+    case MINING_GRADE_FINE:         *r = 140; *g = 220; *b = 255; break;  /* light cyan */
+    case MINING_GRADE_RARE:         *r = 190; *g = 130; *b = 255; break;  /* violet */
+    case MINING_GRADE_RATI:         *r = 255; *g = 200; *b = 90;  break;  /* warm gold */
+    case MINING_GRADE_COMMISSIONED: *r = 255; *g = 240; *b = 130; break;  /* bright gold */
+    default:                         *r = 200; *g = 220; *b = 230; break;
+    }
+}
+
+void spawn_sell_fx(const vec2 *origin, int amount, mining_grade_t grade, bool by_contract) {
+    if (amount <= 0 || !origin) return;
+    /* Pick the oldest available slot. */
+    int slot = -1;
+    float oldest_age = -1.0f;
+    for (int i = 0; i < (int)(sizeof(g.sell_fx) / sizeof(g.sell_fx[0])); i++) {
+        if (g.sell_fx[i].life <= 0.0f) { slot = i; break; }
+        if (g.sell_fx[i].age > oldest_age) { oldest_age = g.sell_fx[i].age; slot = i; }
+    }
+    if (slot < 0) return;
+
+    /* Small horizontal jitter so stacked popups don't exactly overlap. */
+    static uint32_t seed = 0xC0FFEEu;
+    seed = seed * 1664525u + 1013904223u;
+    float jitter_x = ((int)((seed >> 8) & 0x1F) - 16) * 2.0f;
+    seed = seed * 1664525u + 1013904223u;
+    float jitter_y = ((int)((seed >> 8) & 0x1F) - 16) * 1.5f;
+
+    g.sell_fx[slot].pos = v2(origin->x + jitter_x, origin->y - 40.0f + jitter_y);
+    g.sell_fx[slot].age = 0.0f;
+    g.sell_fx[slot].life = 1.5f;
+    if (by_contract) {
+        /* Gold/yellow regardless of grade — reads as "contract payout". */
+        g.sell_fx[slot].r = 255;
+        g.sell_fx[slot].g = 210;
+        g.sell_fx[slot].b = 60;
+    } else {
+        sell_fx_grade_rgb(grade, &g.sell_fx[slot].r, &g.sell_fx[slot].g, &g.sell_fx[slot].b);
+    }
+    snprintf(g.sell_fx[slot].text, sizeof(g.sell_fx[slot].text), "+$%d", amount);
+}
+
+void update_sell_fx(float dt) {
+    for (int i = 0; i < (int)(sizeof(g.sell_fx) / sizeof(g.sell_fx[0])); i++) {
+        if (g.sell_fx[i].life <= 0.0f) continue;
+        g.sell_fx[i].age += dt;
+        if (g.sell_fx[i].age >= g.sell_fx[i].life) {
+            g.sell_fx[i].life = 0.0f;
+        }
+    }
+}
+
+void draw_sell_fx(void) {
+    /* World-space canvas identical to draw_callsigns — sdtx_pos takes
+     * world coords directly (divided by the 8px cell). */
+    float view_w = cam_right() - cam_left();
+    float view_h = cam_bottom() - cam_top();
+    const float cell = 8.0f;
+    sdtx_canvas(view_w, view_h);
+    sdtx_origin(cam_left() / cell, cam_top() / cell);
+
+    for (int i = 0; i < (int)(sizeof(g.sell_fx) / sizeof(g.sell_fx[0])); i++) {
+        if (g.sell_fx[i].life <= 0.0f) continue;
+        float t = g.sell_fx[i].age / g.sell_fx[i].life;  /* 0..1 */
+        if (t > 1.0f) continue;
+        /* Rise ~28 px over lifetime; fade out in the last third. */
+        float rise_y = -28.0f * t;
+        float alpha = (t < 0.67f) ? 1.0f : (1.0f - (t - 0.67f) / 0.33f);
+        if (alpha < 0.0f) alpha = 0.0f;
+        uint8_t a8 = (uint8_t)(alpha * 255.0f);
+        float x = g.sell_fx[i].pos.x;
+        float y = g.sell_fx[i].pos.y + rise_y;
+        if (!on_screen(x, y, 32.0f)) continue;
+
+        int len = (int)strlen(g.sell_fx[i].text);
+        sdtx_color4b(g.sell_fx[i].r, g.sell_fx[i].g, g.sell_fx[i].b, a8);
+        sdtx_pos((x - len * cell * 0.5f) / cell, y / cell);
+        sdtx_puts(g.sell_fx[i].text);
+    }
+}
+
+/* ================================================================== */
 /* Scaffold world objects                                             */
 /* ================================================================== */
 

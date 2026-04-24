@@ -570,10 +570,11 @@ static void handle_message(const uint8_t* data, int len) {
                     ev->scaffold_ready.station = (int)p[2];
                     ev->scaffold_ready.module_type = (int)p[3]; break;
                 case SIM_EVENT_SELL:
-                    ev->sell.station  = (int)p[2];
-                    ev->sell.grade    = p[3];
-                    ev->sell.base_cr  = (int)read_u32_le(&p[4]);
-                    ev->sell.bonus_cr = (int)read_u32_le(&p[8]);
+                    ev->sell.station     = (int)p[2];
+                    ev->sell.grade       = p[3];
+                    ev->sell.base_cr     = (int)read_u32_le(&p[4]);
+                    ev->sell.bonus_cr    = (int)read_u32_le(&p[8]);
+                    ev->sell.by_contract = p[12];
                     break;
                 default: break;
                 }

@@ -404,7 +404,7 @@ static void draw_header_band(const station_ui_state_t *ui,
         char right2[64];
         int balance = (int)lroundf(player_current_balance());
         float sig = signal_strength_at(&g.world, st->pos);
-        snprintf(right2, sizeof(right2), "ledger %d %s  ·  sig %.2f",
+        snprintf(right2, sizeof(right2), "ledger %d %s   sig %.2f",
                  balance, ui_station_currency(st), sig);
         float right2_w = (float)strlen(right2) * cell_w;
         sdtx_pos(ui_text_pos(panel_x + panel_w - right_margin - right2_w),

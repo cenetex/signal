@@ -102,6 +102,27 @@ typedef struct {
     float collection_feedback_ore;
     int collection_feedback_fragments;
     float collection_feedback_timer;
+    /* Floating "+$N" popups spawned on SIM_EVENT_SELL. World-space text
+     * that rises and fades over ~1.5s. Yellow for contract-priced sales,
+     * grade-tinted otherwise. */
+    struct {
+        vec2 pos;
+        float age;          /* seconds since spawn */
+        float life;         /* seconds to live (0 = unused) */
+        uint8_t r, g, b;
+        char text[16];
+    } sell_fx[16];
+    /* Batched sell summary for the bottom-right hint bar — every payout
+     * flashes "[ +$N common xA fine xB ... ]" even when the station is
+     * off-camera. Events within settle_timer (~0.6s) accumulate into one
+     * batch; when idle for that long the batch flushes via set_notice. */
+    struct {
+        bool active;
+        float settle_timer;
+        int total_cr;
+        int grade_counts[MINING_GRADE_COUNT];
+        bool any_by_contract;
+    } sell_batch;
     runtime_state_t runtime;
     audio_state_t audio;
     sg_pass_action pass_action;

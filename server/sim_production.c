@@ -468,13 +468,14 @@ void step_furnace_smelting(world_t *w, float dt) {
             if (fragment_pub_is_zero(a))
                 smelt_fragment_pub_compat(a);
             float price = station_buy_price(st, a->commodity);
+            bool by_contract = false;
             for (int k = 0; k < MAX_CONTRACTS; k++) {
                 if (w->contracts[k].active
                     && w->contracts[k].action == CONTRACT_TRACTOR
                     && w->contracts[k].station_index == smelt_station
                     && w->contracts[k].commodity == a->commodity) {
                     float cp = contract_price(&w->contracts[k]);
-                    if (cp > price) price = cp;
+                    if (cp > price) { price = cp; by_contract = true; }
                     break;
                 }
             }
@@ -522,13 +523,15 @@ void step_furnace_smelting(world_t *w, float dt) {
             }
 
             if (ore_value > 0.0f) {
+                uint8_t bc = by_contract ? 1 : 0;
                 if (tower >= 0) {
                     if (w->players[tower].session_ready)
                         ledger_credit_supply(st, w->players[tower].session_token, graded_value);
                     emit_event(w, (sim_event_t){
                         .type = SIM_EVENT_SELL, .player_id = tower,
                         .sell = { .station = smelt_station, .grade = (uint8_t)grade,
-                                  .base_cr = base_cr, .bonus_cr = bonus_cr }});
+                                  .base_cr = base_cr, .bonus_cr = bonus_cr,
+                                  .by_contract = bc }});
                     if (fracturer >= 0 && fracturer != tower) {
                         float finders = graded_value * 0.25f;
                         if (w->players[fracturer].session_ready)
@@ -537,7 +540,8 @@ void step_furnace_smelting(world_t *w, float dt) {
                             .type = SIM_EVENT_SELL, .player_id = fracturer,
                             .sell = { .station = smelt_station, .grade = (uint8_t)grade,
                                       .base_cr = (int)lroundf(finders / bonus_mult),
-                                      .bonus_cr = (int)lroundf(finders - finders / bonus_mult) }});
+                                      .bonus_cr = (int)lroundf(finders - finders / bonus_mult),
+                                      .by_contract = bc }});
                     }
                 } else if (fracturer >= 0) {
                     float half = graded_value * 0.5f;
@@ -547,7 +551,8 @@ void step_furnace_smelting(world_t *w, float dt) {
                         .type = SIM_EVENT_SELL, .player_id = fracturer,
                         .sell = { .station = smelt_station, .grade = (uint8_t)grade,
                                   .base_cr = (int)lroundf(half / bonus_mult),
-                                  .bonus_cr = (int)lroundf(half - half / bonus_mult) }});
+                                  .bonus_cr = (int)lroundf(half - half / bonus_mult),
+                                  .by_contract = bc }});
                 }
             }
 

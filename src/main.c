@@ -172,6 +172,34 @@ static void reset_step_feedback(void) {
 
 /* sample_input_intent: see input.h/c */
 
+static void flush_sell_batch(void) {
+    if (!g.sell_batch.active) return;
+    /* Compose "[ +$N  common xA  fine xB  ... ]" — skip zero-count grades.
+     * Prefix with "contract" marker when at least one event in the batch
+     * was contract-priced so the user sees why the payout was yellow. */
+    char line[160];
+    int off = 0;
+    off += snprintf(line + off, sizeof(line) - off, "[ +$%d", g.sell_batch.total_cr);
+    if (g.sell_batch.any_by_contract) {
+        off += snprintf(line + off, sizeof(line) - off, " contract");
+    }
+    for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
+        int n = g.sell_batch.grade_counts[gi];
+        if (n <= 0) continue;
+        off += snprintf(line + off, sizeof(line) - off, "  %s x%d",
+                        mining_grade_label((mining_grade_t)gi), n);
+        if (off >= (int)sizeof(line) - 8) break;
+    }
+    snprintf(line + off, sizeof(line) - off, " ]");
+    set_notice("%s", line);
+
+    g.sell_batch.active = false;
+    g.sell_batch.settle_timer = 0.0f;
+    g.sell_batch.total_cr = 0;
+    g.sell_batch.any_by_contract = false;
+    for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) g.sell_batch.grade_counts[gi] = 0;
+}
+
 static void step_notice_timer(float dt) {
     if (g.notice_timer > 0.0f) {
         g.notice_timer = fmaxf(0.0f, g.notice_timer - dt);
@@ -182,6 +210,11 @@ static void step_notice_timer(float dt) {
         if (g.collection_feedback_timer <= 0.0f) {
             clear_collection_feedback();
         }
+    }
+
+    if (g.sell_batch.active) {
+        g.sell_batch.settle_timer = fmaxf(0.0f, g.sell_batch.settle_timer - dt);
+        if (g.sell_batch.settle_timer <= 0.0f) flush_sell_batch();
     }
 }
 
@@ -327,6 +360,26 @@ void process_sim_events(const sim_events_t *events) {
                     episode_trigger(&g.episode, 2); /* Ep 2: Furnace — first smelt */
                     mining_client_record_strike((mining_grade_t)ev->sell.grade,
                                                 ev->sell.bonus_cr);
+                    int total = ev->sell.base_cr + ev->sell.bonus_cr;
+                    if (total > 0
+                        && ev->sell.station >= 0
+                        && ev->sell.station < MAX_STATIONS
+                        && station_exists(&g.world.stations[ev->sell.station])) {
+                        spawn_sell_fx(&g.world.stations[ev->sell.station].pos,
+                                      total,
+                                      (mining_grade_t)ev->sell.grade,
+                                      ev->sell.by_contract != 0);
+                        /* Accumulate into the hint-bar batch so haulers get
+                         * a summary even when the station is off-camera. */
+                        int grade_idx = (int)ev->sell.grade;
+                        if (grade_idx >= 0 && grade_idx < MINING_GRADE_COUNT) {
+                            g.sell_batch.grade_counts[grade_idx]++;
+                        }
+                        g.sell_batch.total_cr += total;
+                        if (ev->sell.by_contract) g.sell_batch.any_by_contract = true;
+                        g.sell_batch.active = true;
+                        g.sell_batch.settle_timer = 0.6f;
+                    }
                 }
                 break;
             case SIM_EVENT_REPAIR:
@@ -749,6 +802,7 @@ static void sim_step(float dt) {
         music_prev_track(&g.music);
 
     step_notice_timer(dt);
+    update_sell_fx(dt);
     if (g.action_predict_timer > 0.0f)
         g.action_predict_timer = fmaxf(0.0f, g.action_predict_timer - dt);
     if (g.dock_settle_timer > 0.0f)
@@ -1200,6 +1254,7 @@ static void render_world(void) {
     draw_remote_players(); /* Multiplayer: remote player ships */
     draw_callsigns();      /* Readable sdtx labels above local + remote ships */
     draw_npc_chatter();    /* Short radio one-liners near NPC sprites (#291) */
+    draw_sell_fx();        /* +$N payout popups floating above stations */
     draw_autopilot_path(); /* Dotted line showing A* path ahead */
     draw_compass_ring();   /* Navigation compass around player ship */
 
