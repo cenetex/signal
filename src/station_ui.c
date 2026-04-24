@@ -945,17 +945,17 @@ static void draw_jobs_view(const station_ui_state_t *ui,
 
     my += draw_section_header(cx, my, inner_right, "JOBS", HDR_TRADE);
 
-    /* Column header row. */
-    /* Header row only fits on a wide panel; compact uses two-line rows. */
+    /* Column header: job verb is now the state (fracture / tractor /
+     * deliver), payout left-aligned at col 33 so it reads together with
+     * the cargo instead of fighting it at the panel edge. */
     if (!compact) {
         cell_t hdr[] = {
-            {  0, "key",   COL_HDR },
-            {  4, "job",   COL_HDR },
-            { 14, "cargo", COL_HDR },
-            { 33, "state", COL_HDR },
+            {  0, "key",    COL_HDR },
+            {  4, "job",    COL_HDR },
+            { 14, "cargo",  COL_HDR },
+            { 33, "payout", COL_HDR },
         };
         draw_row_cells(cx, my, hdr, 4);
-        draw_row_lr(cx, my, inner_right, NULL, NULL, COL_HDR, "payout");
         my += row_h;
     }
 
@@ -1065,11 +1065,39 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             sgl_end();
         }
 
-        char key_buf[8], cargo_buf[32], state_buf[16], pay_buf[32];
+        char key_buf[8], cargo_buf[32], pay_buf[32];
         snprintf(key_buf, sizeof(key_buf), "[%d]%s",
                  s + 1, tracked && !selected ? "*" : "");
 
-        const char *job_txt = (ct->action == CONTRACT_FRACTURE) ? "fracture" : "deliver";
+        /* Job column doubles as the state verb — the action the player
+         * needs to take next. FRACTURE contracts always read "fracture".
+         * TRACTOR contracts pivot based on hold + world:
+         *   - held enough                          → "deliver"
+         *   - ingot/frame (never a raw ore tow)    → "deliver"
+         *   - an S-tier fragment of this commodity
+         *     exists in the world                  → "tractor"
+         *   - no fragments yet                     → "fracture" */
+        const char *job_txt;
+        if (ct->action == CONTRACT_FRACTURE) {
+            job_txt = "fracture";
+        } else if (slot_fulfillable[s]) {
+            job_txt = "deliver";
+        } else if (ct->commodity >= COMMODITY_RAW_ORE_COUNT) {
+            /* Ingots / frames / fab goods — always the delivery verb. */
+            job_txt = "deliver";
+        } else {
+            /* Raw ore, not yet held: tractor if a matching S-tier
+             * fragment exists anywhere, else fracture. */
+            bool any_frag = false;
+            for (int i = 0; i < MAX_ASTEROIDS; i++) {
+                const asteroid_t *a = &g.world.asteroids[i];
+                if (!a->active) continue;
+                if (a->tier != ASTEROID_TIER_S) continue;
+                if (a->commodity != ct->commodity) continue;
+                any_frag = true; break;
+            }
+            job_txt = any_frag ? "tractor" : "fracture";
+        }
 
         if (ct->action == CONTRACT_FRACTURE) {
             snprintf(cargo_buf, sizeof(cargo_buf), "asteroid field");
@@ -1078,19 +1106,6 @@ static void draw_jobs_view(const station_ui_state_t *ui,
                                           : (int)lroundf(ct->quantity_needed);
             snprintf(cargo_buf, sizeof(cargo_buf), "%s x%d",
                      commodity_short_name(ct->commodity), qty);
-        }
-
-        if (ct->action == CONTRACT_FRACTURE) {
-            snprintf(state_buf, sizeof(state_buf), "nearby");
-        } else if (slot_fulfillable[s]) {
-            snprintf(state_buf, sizeof(state_buf), "ready");
-        } else if (ct->commodity < COMMODITY_RAW_ORE_COUNT) {
-            /* Raw ore: player has to mine it. More actionable than
-             * "missing" since it tells them the next verb. */
-            snprintf(state_buf, sizeof(state_buf), "mine");
-        } else {
-            /* Ingot / frame / fabricated good: player buys or hauls. */
-            snprintf(state_buf, sizeof(state_buf), "bring");
         }
 
         const station_t *dest = (ct->station_index < MAX_STATIONS)
@@ -1103,10 +1118,6 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             ? dest->currency_name
             : (ui->station && ui->station->currency_name[0]
                ? ui->station->currency_name : "cr");
-        /* Defensive clamp: if the server ever sends a nonsense base_price
-         * (NaN/inf/garbage) the naive lroundf cast saturates to INT_MAX
-         * and the row displays +2147483647. Show "???" instead so the
-         * bug is visible and not mistaken for a real payout. */
         if (!isfinite(cprice) || cprice < 0.0f || cprice > 1.0e7f) {
             snprintf(pay_buf, sizeof(pay_buf), "+??? %s", pay_cur);
         } else {
@@ -1116,7 +1127,7 @@ static void draw_jobs_view(const station_ui_state_t *ui,
 
         const uint8_t *info_rgb = (row_rgb == COL_DIM) ? COL_FADED : COL_TEXT;
         if (compact) {
-            /* Line 1: key / job / cargo */
+            /* Two lines: key/job/cargo on top, indented payout below. */
             cell_t top[] = {
                 {  0, key_buf,   row_rgb },
                 {  4, job_txt,   row_rgb },
@@ -1124,19 +1135,22 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             };
             draw_row_cells(cx, my, top, 3);
             my += row_h;
-            /* Line 2: indented state on left, payout right-aligned */
-            draw_row_lr(cx + 32.0f, my, inner_right,
-                        row_rgb, state_buf, row_rgb, pay_buf);
+            cell_t bot[] = {
+                { 14, pay_buf, row_rgb },
+            };
+            draw_row_cells(cx, my, bot, 1);
             my += row_h;
         } else {
+            /* Single-row table: payout left-aligned at col 33 where the
+             * old "state" column used to sit — reads as part of the row
+             * flow instead of floating at the panel edge. */
             cell_t row[] = {
                 {  0, key_buf,   row_rgb },
                 {  4, job_txt,   row_rgb },
                 { 14, cargo_buf, info_rgb },
-                { 33, state_buf, row_rgb },
+                { 33, pay_buf,   row_rgb },
             };
             draw_row_cells(cx, my, row, 4);
-            draw_row_lr(cx, my, inner_right, NULL, NULL, row_rgb, pay_buf);
             my += row_h;
         }
     }
