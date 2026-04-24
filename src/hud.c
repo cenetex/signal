@@ -455,7 +455,6 @@ static struct {
     uint32_t view_id[HULL_FOG_LEVELS];
     uint32_t sampler_id;
     uint32_t blend_pip_id;    /* sgl pipeline with alpha blending enabled */
-    uint32_t additive_pip_id; /* sgl pipeline with additive blending (SRC_ALPHA, ONE) */
 } hull_fog;
 
 static float fog_smoothstep(float edge0, float edge1, float x) {
@@ -492,22 +491,6 @@ void hull_fog_init(void) {
         },
     });
     hull_fog.blend_pip_id = blend_pip.id;
-
-    /* Additive pipeline for "light through blood" — ship's own laser /
-     * engine colors bloom through the red fog without overwriting it. */
-    sgl_pipeline additive_pip = sgl_make_pipeline(&(sg_pipeline_desc){
-        .colors[0] = {
-            .write_mask = SG_COLORMASK_RGBA,
-            .blend = {
-                .enabled = true,
-                .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
-                .dst_factor_rgb = SG_BLENDFACTOR_ONE,
-                .src_factor_alpha = SG_BLENDFACTOR_ONE,
-                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
-            },
-        },
-    });
-    hull_fog.additive_pip_id = additive_pip.id;
 
     /* Generate one radial vignette per damage tier. The "clear hole" in
      * the middle gets smaller and the surrounding fog gets darker as
@@ -645,119 +628,6 @@ static void draw_hull_warning_overlay(void) {
     }
 
     sgl_disable_texture();
-
-    /* ------------------------------------------------------------------
-     * Light through the blood — ship-local emitters bloom through the fog.
-     * The red vignette is the "blood" veil; its signature cold-space feel
-     * gets warmer and more alive when the laser fires or the engine lights
-     * up. Radial glows are additive-blended on top of the vignette so the
-     * base color stays intact — the laser color simply adds into it, same
-     * way a lamp tints fog in real life.
-     * Scales with damage (no fog ⇒ no bloom) and skipped entirely while
-     * docked so the dock's blue repair tint doesn't get overwritten.
-     * ------------------------------------------------------------------ */
-    if (damage > 0.10f && !LOCAL_PLAYER.docked) {
-        float view_w = cam_right() - cam_left();
-        float view_h = cam_bottom() - cam_top();
-        if (view_w > 1.0f && view_h > 1.0f) {
-            float sx = (LOCAL_PLAYER.ship.pos.x - cam_left()) / view_w * screen_w;
-            float sy = (LOCAL_PLAYER.ship.pos.y - cam_top())  / view_h * screen_h;
-            float fwd_x = cosf(LOCAL_PLAYER.ship.angle);
-            float fwd_y = sinf(LOCAL_PLAYER.ship.angle);
-
-            sgl_load_pipeline((sgl_pipeline){ hull_fog.additive_pip_id });
-
-            /* Forward glow — laser. Matches draw_beam's color branches. */
-            if (LOCAL_PLAYER.beam_active) {
-                float br, bg, bb;
-                if (LOCAL_PLAYER.scan_active) {
-                    br = 0.30f; bg = 0.70f; bb = 1.00f;
-                } else if (LOCAL_PLAYER.beam_hit && LOCAL_PLAYER.beam_ineffective) {
-                    br = 1.00f; bg = 0.20f; bb = 0.15f;
-                } else if (LOCAL_PLAYER.beam_hit) {
-                    br = 0.45f; bg = 1.00f; bb = 0.92f;
-                } else {
-                    br = 0.90f; bg = 0.75f; bb = 0.30f;
-                }
-                float gx = sx + fwd_x * 40.0f;
-                float gy = sy + fwd_y * 40.0f;
-                float rad = 260.0f;
-                float a_center = 0.35f * damage;
-                const int N = 24;
-                sgl_begin_triangles();
-                for (int i = 0; i < N; i++) {
-                    float a0 = (float)i / (float)N * 6.2831853f;
-                    float a1 = (float)(i + 1) / (float)N * 6.2831853f;
-                    sgl_c4f(br, bg, bb, a_center);
-                    sgl_v2f(gx, gy);
-                    sgl_c4f(br, bg, bb, 0.0f);
-                    sgl_v2f(gx + cosf(a0) * rad, gy + sinf(a0) * rad);
-                    sgl_c4f(br, bg, bb, 0.0f);
-                    sgl_v2f(gx + cosf(a1) * rad, gy + sinf(a1) * rad);
-                }
-                sgl_end();
-            }
-
-            /* Tractor glow — omnidirectional mint from the ship whenever the
-             * tractor field is engaged or a fragment is leashed. Mirrors
-             * draw_ship_tractor_field's PAL_F_SIGNAL_MINT base color. */
-            if (LOCAL_PLAYER.ship.tractor_active || LOCAL_PLAYER.ship.towed_count > 0) {
-                float tr_r = 0.44f, tr_g = 1.00f, tr_b = 0.84f;
-                float rad = 200.0f;
-                float a_center = 0.22f * damage;
-                const int N = 24;
-                sgl_begin_triangles();
-                for (int i = 0; i < N; i++) {
-                    float a0 = (float)i / (float)N * 6.2831853f;
-                    float a1 = (float)(i + 1) / (float)N * 6.2831853f;
-                    sgl_c4f(tr_r, tr_g, tr_b, a_center);
-                    sgl_v2f(sx, sy);
-                    sgl_c4f(tr_r, tr_g, tr_b, 0.0f);
-                    sgl_v2f(sx + cosf(a0) * rad, sy + sinf(a0) * rad);
-                    sgl_c4f(tr_r, tr_g, tr_b, 0.0f);
-                    sgl_v2f(sx + cosf(a1) * rad, sy + sinf(a1) * rad);
-                }
-                sgl_end();
-            }
-
-            /* Aft glow — engine flame. Mirrors draw_ship's flame color logic. */
-            if (g.thrusting) {
-                bool boost_on = g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT]
-                             || g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT];
-                float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
-                float fr, fg_, fb;
-                if (boost_on) {
-                    fr = 0.35f; fg_ = 0.80f; fb = 1.00f;
-                } else if (sig < SIGNAL_BAND_FRONTIER) {
-                    fr = 1.00f; fg_ = 0.28f; fb = 0.18f;
-                } else if (sig < SIGNAL_BAND_FRINGE) {
-                    fr = 1.00f; fg_ = 0.55f; fb = 0.20f;
-                } else {
-                    fr = 1.00f; fg_ = 0.74f; fb = 0.24f;
-                }
-                /* Flicker sync with the flame so the bloom pulses in step. */
-                float flicker = 0.85f + 0.15f * sinf(g.world.time * 42.0f);
-                float gx = sx - fwd_x * 36.0f;
-                float gy = sy - fwd_y * 36.0f;
-                float rad = 220.0f;
-                float a_center = 0.32f * damage * flicker;
-                const int N = 24;
-                sgl_begin_triangles();
-                for (int i = 0; i < N; i++) {
-                    float a0 = (float)i / (float)N * 6.2831853f;
-                    float a1 = (float)(i + 1) / (float)N * 6.2831853f;
-                    sgl_c4f(fr, fg_, fb, a_center);
-                    sgl_v2f(gx, gy);
-                    sgl_c4f(fr, fg_, fb, 0.0f);
-                    sgl_v2f(gx + cosf(a0) * rad, gy + sinf(a0) * rad);
-                    sgl_c4f(fr, fg_, fb, 0.0f);
-                    sgl_v2f(gx + cosf(a1) * rad, gy + sinf(a1) * rad);
-                }
-                sgl_end();
-            }
-        }
-    }
-
     sgl_pop_pipeline();
 }
 
@@ -1279,28 +1149,124 @@ void draw_hud(void) {
         }
     }
 
-    /* Subtitle: one clean line, centered at bottom-center */
-    if (hud_should_draw_message_panel()) {
+    /* Subtitle: one clean line, centered at bottom-center.
+     *
+     * Sell-batch summary takes priority when it has content — the line is
+     * rendered as colored segments (total in white/gold, each grade label
+     * in its canonical color) so the player can see at a glance which
+     * grades just paid out. See shared/mining.h:mining_grade_rgb for the
+     * palette. Falls through to the regular message otherwise. */
+    bool sell_batch_has_content = false;
+    if (g.sell_batch.active || g.sell_batch.display_timer > 0.0f) {
+        for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
+            if (g.sell_batch.grade_counts[gi] > 0) { sell_batch_has_content = true; break; }
+        }
+    }
+
+    if (sell_batch_has_content) {
+        const float cell = 8.0f;
+        /* Pre-measure the composed line so we can center it. Same layout as
+         * the text form flush_sell_batch used to emit:
+         *   "[ +$N  [contract]  common xA  fine xB  ... ]" */
+        char head[32], tail[160];
+        int head_len = snprintf(head, sizeof(head), "[ +$%d", g.sell_batch.total_cr);
+        int tail_off = 0;
+        if (g.sell_batch.any_by_contract)
+            tail_off += snprintf(tail + tail_off, sizeof(tail) - tail_off, "  contract");
+        for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
+            int n = g.sell_batch.grade_counts[gi];
+            if (n <= 0) continue;
+            tail_off += snprintf(tail + tail_off, sizeof(tail) - tail_off,
+                                 "  %s x%d", mining_grade_label((mining_grade_t)gi), n);
+            if (tail_off >= (int)sizeof(tail) - 8) break;
+        }
+        int total_cols = head_len + tail_off + 2; /* " ]" */
+        float msg_w = (float)total_cols * cell;
+        float msg_x0 = screen_w * 0.5f - msg_w * 0.5f;
+        float msg_y = screen_h * 0.82f;
+
+        /* Fade during the display tail (last 1s of display_timer). */
+        float alpha = 1.0f;
+        if (!g.sell_batch.active && g.sell_batch.display_timer < 1.0f)
+            alpha = g.sell_batch.display_timer;
+        if (alpha < 0.0f) alpha = 0.0f;
+
+        uint8_t total_r = g.sell_batch.any_by_contract ? 255 : 200;
+        uint8_t total_g = g.sell_batch.any_by_contract ? 210 : 220;
+        uint8_t total_b = g.sell_batch.any_by_contract ?  60 : 230;
+        float cur_x = msg_x0;
+
+        /* "[ +$N" */
+        sdtx_pos(cur_x / cell, msg_y / cell);
+        sdtx_color4b(total_r, total_g, total_b, (uint8_t)(alpha * 255.0f));
+        sdtx_puts(head);
+        cur_x += (float)head_len * cell;
+
+        /* "  contract" marker (fixed yellow if present) */
+        if (g.sell_batch.any_by_contract) {
+            const char *tag = "  contract";
+            sdtx_pos(cur_x / cell, msg_y / cell);
+            sdtx_color4b(255, 210, 60, (uint8_t)(alpha * 255.0f));
+            sdtx_puts(tag);
+            cur_x += (float)strlen(tag) * cell;
+        }
+
+        /* Per-grade segments, each colored by mining_grade_rgb. */
+        for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
+            int n = g.sell_batch.grade_counts[gi];
+            if (n <= 0) continue;
+            char seg[32];
+            int seg_len = snprintf(seg, sizeof(seg), "  %s x%d",
+                                   mining_grade_label((mining_grade_t)gi), n);
+            uint8_t gr, gg_, gb;
+            mining_grade_rgb((mining_grade_t)gi, &gr, &gg_, &gb);
+            sdtx_pos(cur_x / cell, msg_y / cell);
+            sdtx_color4b(gr, gg_, gb, (uint8_t)(alpha * 255.0f));
+            sdtx_puts(seg);
+            cur_x += (float)seg_len * cell;
+        }
+
+        /* " ]" closer */
+        sdtx_pos(cur_x / cell, msg_y / cell);
+        sdtx_color4b(total_r, total_g, total_b, (uint8_t)(alpha * 255.0f));
+        sdtx_puts(" ]");
+    } else if (hud_should_draw_message_panel()) {
         float cell = 8.0f;
-        char full_msg[256];
+        /* First line — includes label when present. */
+        char line0_buf[256];
         if (message_label[0] != '\0')
-            snprintf(full_msg, sizeof(full_msg), "%s: %s", message_label, message_line0);
+            snprintf(line0_buf, sizeof(line0_buf), "%s: %s", message_label, message_line0);
         else
-            snprintf(full_msg, sizeof(full_msg), "%s", message_line0);
-        float msg_w = (float)strlen(full_msg) * cell;
-        float msg_x_c = (screen_w * 0.5f - msg_w * 0.5f) / cell;
-        float msg_y_c = (screen_h * 0.82f) / cell;
+            snprintf(line0_buf, sizeof(line0_buf), "%s", message_line0);
+        float msg_y = screen_h * 0.82f;
 
         bool is_hull_warn = (message_r == 255 && message_g == 60);
+        uint8_t r8 = message_r, g8 = message_g, b8 = message_b;
         if (is_hull_warn) {
             float pulse = 0.5f + 0.5f * sinf((float)sapp_frame_count() * 0.06f);
-            sdtx_pos(msg_x_c, msg_y_c);
-            sdtx_color3b((uint8_t)(message_r * pulse), (uint8_t)(40 + 20 * pulse), (uint8_t)(40 + 10 * pulse));
-        } else {
-            sdtx_pos(msg_x_c, msg_y_c);
-            sdtx_color3b(message_r, message_g, message_b);
+            r8 = (uint8_t)(message_r * pulse);
+            g8 = (uint8_t)(40 + 20 * pulse);
+            b8 = (uint8_t)(40 + 10 * pulse);
         }
-        sdtx_puts(full_msg);
+
+        /* Render line 0 centered. */
+        float msg_w = (float)strlen(line0_buf) * cell;
+        float msg_x = screen_w * 0.5f - msg_w * 0.5f;
+        sdtx_pos(msg_x / cell, msg_y / cell);
+        sdtx_color3b(r8, g8, b8);
+        sdtx_puts(line0_buf);
+
+        /* Render line 1 below if the splitter produced one (e.g. long
+         * station hails land with "Station: MOTD (balance N cur)" which
+         * wraps across two rows). */
+        if (message_line1[0] != '\0') {
+            float w2 = (float)strlen(message_line1) * cell;
+            float x2 = screen_w * 0.5f - w2 * 0.5f;
+            float y2 = msg_y + cell * 1.25f;
+            sdtx_pos(x2 / cell, y2 / cell);
+            sdtx_color3b(r8, g8, b8);
+            sdtx_puts(message_line1);
+        }
     }
 
     /* --- [E] context prompt — only when docked. [E] is always LAUNCH. --- */
@@ -1431,83 +1397,11 @@ void draw_hud(void) {
         }
     }
 
-    /* Station hail overlay — portrait panel + radio-style message */
-    if (g.hail_timer > 0.0f && g.hail_station[0]) {
-        float alpha = fminf(g.hail_timer / 0.5f, 1.0f);
-        float cell = 8.0f;
-        float portrait_size = 64.0f;
-        float pad = 12.0f;
-        float hx = screen_w * 0.5f - 120.0f;
-        hx = fmaxf(portrait_size + pad + 8.0f, hx);
-        float hy = screen_h * 0.30f;
-
-        /* Portrait (if loaded) */
-        const avatar_cache_t *av = avatar_get(g.hail_station_index);
-        if (av && av->texture_valid) {
-            float ax = hx - portrait_size - pad;
-            float ay = hy - 4.0f;
-            /* Set screen-space projection for textured quad */
-            sgl_defaults();
-            sgl_matrix_mode_projection();
-            sgl_load_identity();
-            sgl_ortho(0, screen_w, screen_h, 0, -1, 1);
-            sgl_matrix_mode_modelview();
-            sgl_load_identity();
-            sgl_enable_texture();
-            sgl_texture((sg_view){ av->view_id }, (sg_sampler){ av->sampler_id });
-            sgl_begin_quads();
-            sgl_c4f(alpha, alpha, alpha, alpha);
-            sgl_v2f_t2f(ax, ay, 0.0f, 0.0f);
-            sgl_v2f_t2f(ax + portrait_size, ay, 1.0f, 0.0f);
-            sgl_v2f_t2f(ax + portrait_size, ay + portrait_size, 1.0f, 1.0f);
-            sgl_v2f_t2f(ax, ay + portrait_size, 0.0f, 1.0f);
-            sgl_end();
-            sgl_disable_texture();
-            /* Scanline overlay */
-            sgl_begin_quads();
-            for (float sy = ay; sy < ay + portrait_size; sy += 3.0f) {
-                sgl_c4f(0.0f, 0.0f, 0.0f, 0.15f * alpha);
-                sgl_v2f(ax, sy);
-                sgl_v2f(ax + portrait_size, sy);
-                sgl_v2f(ax + portrait_size, sy + 1.0f);
-                sgl_v2f(ax, sy + 1.0f);
-            }
-            sgl_end();
-            /* Border */
-            sgl_begin_lines();
-            sgl_c4f(0.5f, 0.6f, 0.8f, 0.4f * alpha);
-            sgl_v2f(ax, ay); sgl_v2f(ax + portrait_size, ay);
-            sgl_v2f(ax + portrait_size, ay); sgl_v2f(ax + portrait_size, ay + portrait_size);
-            sgl_v2f(ax + portrait_size, ay + portrait_size); sgl_v2f(ax, ay + portrait_size);
-            sgl_v2f(ax, ay + portrait_size); sgl_v2f(ax, ay);
-            sgl_end();
-        }
-
-        /* Text */
-        sdtx_pos(hx / cell, hy / cell);
-        sdtx_color3b((uint8_t)(130*alpha), (uint8_t)(200*alpha), (uint8_t)(255*alpha)); /* hail station */
-        sdtx_printf("// %s //", g.hail_station);
-
-        if (g.hail_message[0]) {
-            sdtx_pos(hx / cell, (hy + 14.0f) / cell);
-            sdtx_color3b((uint8_t)(180*alpha), (uint8_t)(190*alpha), (uint8_t)(210*alpha)); /* hail message */
-            sdtx_puts(g.hail_message);
-        }
-
-        /* Per-station currency label — AI-editable. Falls back to "credits".
-         * hail_response.credits is the player's current balance at this
-         * station (not a delta), so we render a single "balance: N unit"
-         * line rather than duplicating it as "+N" plus "balance: N". */
-        if (g.hail_station_index >= 0 && g.hail_station_index < MAX_STATIONS) {
-            const char *unit = "credits";
-            const char *cn = g.world.stations[g.hail_station_index].currency_name;
-            if (cn[0]) unit = cn;
-            float bal = client_station_balance(g.hail_station_index);
-            sdtx_pos(hx / cell, (hy + 32.0f) / cell);
-            sdtx_color3b((uint8_t)(200*alpha), (uint8_t)(210*alpha), (uint8_t)(160*alpha));
-            sdtx_printf("station balance: %d %s", (int)lroundf(bal), unit);
-        }
-    }
+    /* Station hail — no center-screen overlay. The message is in the
+     * bottom-right hint bar (via set_notice at the hail event sites) and
+     * the station's unique sigil is drawn at lower-left in the draw_hud
+     * flow above, with the gold border acting as "transmission active".
+     * The old middle-of-screen portrait was obscuring gameplay. */
 
     /* Module inspect pane */
     if (g.inspect_station >= 0 && g.inspect_station < MAX_STATIONS &&

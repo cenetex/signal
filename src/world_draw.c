@@ -44,18 +44,16 @@ int lod_segments(int base_segments, float radius) {
     return base_segments;
 }
 
-/* RATi grade → tint. Common is a neutral ore tone; higher grades
- * shift warmer and brighter. Visible in two places: the rock's glow
- * core (the in-world dot — every observer sees it from any range)
- * and the tow-line tether (only on rocks the player has grabbed). */
+/* Float-RGB wrapper of the canonical mining_grade_rgb palette (defined
+ * alongside the grade enum in shared/mining.h) for sokol_gl callers —
+ * rock dots, tow tethers, anything that feeds sgl_c4f. UI code should
+ * call mining_grade_rgb directly instead of going through world_draw. */
 void grade_tint(uint8_t grade, float *r, float *g, float *b) {
-    switch (grade) {
-    case 1:  *r = 0.55f; *g = 0.95f; *b = 0.70f; break; /* fine — pale mint */
-    case 2:  *r = 1.00f; *g = 0.78f; *b = 0.32f; break; /* rare — warm amber */
-    case 3:  *r = 1.00f; *g = 0.86f; *b = 0.20f; break; /* RATi — gold */
-    case 4:  *r = 0.85f; *g = 0.45f; *b = 1.00f; break; /* commissioned — violet */
-    default: *r = 0.25f; *g = 0.85f; *b = 0.80f; break; /* common — teal */
-    }
+    uint8_t rr, gg, bb;
+    mining_grade_rgb((mining_grade_t)grade, &rr, &gg, &bb);
+    *r = (float)rr / 255.0f;
+    *g = (float)gg / 255.0f;
+    *b = (float)bb / 255.0f;
 }
 
 float asteroid_profile(const asteroid_t* asteroid, float angle) {
@@ -102,14 +100,49 @@ void draw_signal_borders(void) {
     const int SEGS = 180;
     const float STEP = TWO_PI_F / (float)SEGS;
 
+    /* Overlap boost for the drawn contour. Matches the server's signal
+     * strength rule (server/game_sim.c:signal_strength_raw): at points
+     * where N stations' ranges overlap, effective_strength = best * N
+     * (capped at 3). Threshold contour extends accordingly:
+     *     r_threshold = R * (1 - threshold/boost)
+     *
+     * Per-station boost is `1 + (other stations whose signal circles
+     * intersect this one's range)`, capped at 3 — same max the sim uses.
+     * This is a coarser approximation than per-angle boost but matches the
+     * common case (starter triangle where all three stations mutually
+     * overlap) and doesn't require solving a piecewise contour equation. */
+    int station_overlap[MAX_STATIONS];
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_overlap[s] = 1;
+        if (!station_provides_signal(&g.world.stations[s])) continue;
+        float r_s = g.world.stations[s].signal_range;
+        for (int o = 0; o < MAX_STATIONS; o++) {
+            if (o == s) continue;
+            if (!station_provides_signal(&g.world.stations[o])) continue;
+            float r_o = g.world.stations[o].signal_range;
+            float dx = g.world.stations[s].pos.x - g.world.stations[o].pos.x;
+            float dy = g.world.stations[s].pos.y - g.world.stations[o].pos.y;
+            float reach = r_s + r_o;
+            if (dx * dx + dy * dy < reach * reach) station_overlap[s]++;
+        }
+        if (station_overlap[s] > 3) station_overlap[s] = 3;
+    }
+
     for (int band = 0; band < 3; band++) {
         float thr = bands[band].threshold;
         float hw = bands[band].width;
 
         float radii[MAX_STATIONS];
-        for (int s = 0; s < MAX_STATIONS; s++)
-            radii[s] = station_provides_signal(&g.world.stations[s])
-                ? g.world.stations[s].signal_range * (1.0f - thr) : 0.0f;
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            if (!station_provides_signal(&g.world.stations[s])) {
+                radii[s] = 0.0f;
+                continue;
+            }
+            float boost = (float)station_overlap[s];
+            float effective_thr = thr / boost;    /* boost reduces the per-station needed strength */
+            if (effective_thr > 1.0f) effective_thr = 1.0f;
+            radii[s] = g.world.stations[s].signal_range * (1.0f - effective_thr);
+        }
 
         for (int s = 0; s < MAX_STATIONS; s++) {
             if (radii[s] <= 0.0f) continue;
@@ -1749,17 +1782,10 @@ void draw_npc_chatter(void) {
 /* Sell FX — floating "+$N" popups on SIM_EVENT_SELL                  */
 /* ================================================================== */
 
-/* Grade colors for the popup text. Contract-priced sales override this
- * with yellow/gold inside spawn_sell_fx. */
+/* Popup text color — uses the canonical palette from shared/mining.h.
+ * Contract-priced sales override with fixed yellow inside spawn_sell_fx. */
 static void sell_fx_grade_rgb(mining_grade_t grade, uint8_t *r, uint8_t *g, uint8_t *b) {
-    switch (grade) {
-    case MINING_GRADE_COMMON:       *r = 200; *g = 220; *b = 230; break;  /* cool white */
-    case MINING_GRADE_FINE:         *r = 140; *g = 220; *b = 255; break;  /* light cyan */
-    case MINING_GRADE_RARE:         *r = 190; *g = 130; *b = 255; break;  /* violet */
-    case MINING_GRADE_RATI:         *r = 255; *g = 200; *b = 90;  break;  /* warm gold */
-    case MINING_GRADE_COMMISSIONED: *r = 255; *g = 240; *b = 130; break;  /* bright gold */
-    default:                         *r = 200; *g = 220; *b = 230; break;
-    }
+    mining_grade_rgb(grade, r, g, b);
 }
 
 void spawn_sell_fx(const vec2 *origin, int amount, mining_grade_t grade, bool by_contract) {

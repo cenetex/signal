@@ -314,9 +314,15 @@ void apply_remote_hail_response(uint8_t station, float credits, int contract_ind
     g.hail_credits = credits;
     g.hail_station_index = station;
     g.hail_timer = 6.0f;
-    /* Also route the hail through the bottom-right hint bar so the message
-     * is visible in peripheral vision alongside the center-screen overlay. */
-    set_notice("%s: %s", g.hail_station, g.hail_message);
+    /* Route the hail through the bottom-right hint bar. Includes the
+     * station balance so all the info the old center-screen overlay
+     * carried lands there. `credits` is authoritative from the server. */
+    {
+        const char *unit = g.world.stations[station].currency_name;
+        if (!unit[0]) unit = "credits";
+        set_notice("%s: %s  (balance %d %s)",
+            g.hail_station, g.hail_message, (int)lroundf(credits), unit);
+    }
     /* Auto-track the contract the station just issued, so the yellow
      * ring + compass pip appear without any tab navigation. */
     if (contract_index >= 0 && contract_index < MAX_CONTRACTS)

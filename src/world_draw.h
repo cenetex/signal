@@ -22,7 +22,9 @@ float cam_bottom(void);
 /* --- Asteroid helpers --- */
 float asteroid_profile(const asteroid_t* asteroid, float angle);
 
-/* RATi grade → rgb. Used by the in-world rock dot and the tow tether. */
+/* Float-RGB grade tint for sokol_gl callers. Delegates to the canonical
+ * mining_grade_rgb in shared/mining.h. UI code should call that directly
+ * instead of routing grade colors through world_draw. */
 void grade_tint(uint8_t grade, float *r, float *g, float *b);
 
 /* --- World object drawing --- */

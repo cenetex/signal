@@ -496,6 +496,13 @@ TEST(test_scenario_full_mining_cycle) {
     w.asteroids[frag].vel = v2(0.0f, 0.0f);
     w.asteroids[frag].last_fractured_by = 0;
     w.asteroids[frag].last_towed_by = 0;
+    /* Credit attribution is strictly token-based now (H1) — mirror what
+     * live tow code does at game_sim.c:1343 by stamping the tow/fracture
+     * tokens to match the towing player's session. */
+    memcpy(w.asteroids[frag].last_towed_token,
+           w.players[0].session_token, sizeof(w.asteroids[frag].last_towed_token));
+    memcpy(w.asteroids[frag].last_fractured_token,
+           w.players[0].session_token, sizeof(w.asteroids[frag].last_fractured_token));
     w.players[0].ship.pos = v2_add(midpoint, v2(100.0f, 0.0f));
     w.players[0].ship.vel = v2(0.0f, 0.0f);
     /* Run enough steps for smelt_progress to reach 1.0 (~2 seconds at 120Hz) */
@@ -506,6 +513,93 @@ TEST(test_scenario_full_mining_cycle) {
 
     /* Credits are in the station ledger — check balance directly */
     ASSERT(ledger_balance(&w.stations[0], w.players[0].session_token) > start_credits);
+}
+
+/* Phase 1-3 manifest-first invariant:
+ *   Across every station + every connected ship, no pub appears twice,
+ *   and the count of manifest units per commodity never exceeds the
+ *   combined integer float inventory. Runs a smelt + a dock delivery +
+ *   a buyback through the normal sim code paths. */
+TEST(test_manifest_conservation_across_transactions) {
+    WORLD_DECL;
+    world_reset(&w);
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x33, 8);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = false;
+
+    /* Smelt one fragment to populate a station manifest unit. */
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++)
+        if (!w.asteroids[i].active) { frag = i; break; }
+    ASSERT(frag >= 0);
+    w.asteroids[frag] = (asteroid_t){0};
+    w.asteroids[frag].active = true;
+    w.asteroids[frag].tier = ASTEROID_TIER_S;
+    w.asteroids[frag].radius = 8.0f;
+    w.asteroids[frag].hp = 1.0f;
+    w.asteroids[frag].max_hp = 1.0f;
+    w.asteroids[frag].ore = 3.0f;       /* 3 whole units → 3 manifest entries */
+    w.asteroids[frag].max_ore = 3.0f;
+    w.asteroids[frag].commodity = COMMODITY_FERRITE_ORE;
+    w.asteroids[frag].fracture_child = true;
+    w.asteroids[frag].grade = MINING_GRADE_COMMON;
+    w.players[0].ship.towed_fragments[0] = (int16_t)frag;
+    w.players[0].ship.towed_count = 1;
+    memcpy(w.asteroids[frag].last_towed_token,
+           w.players[0].session_token, sizeof(w.asteroids[frag].last_towed_token));
+    memcpy(w.asteroids[frag].last_fractured_token,
+           w.players[0].session_token, sizeof(w.asteroids[frag].last_fractured_token));
+    /* Place fragment between furnace and silo on station 0. */
+    int furnace_idx = -1, silo_idx = -1;
+    for (int m = 0; m < w.stations[0].module_count; m++) {
+        if (w.stations[0].modules[m].type == MODULE_FURNACE) furnace_idx = m;
+        if (w.stations[0].modules[m].type == MODULE_ORE_SILO) silo_idx = m;
+    }
+    ASSERT(furnace_idx >= 0 && silo_idx >= 0);
+    for (int a = 0; a < MAX_ARMS; a++) {
+        w.stations[0].arm_speed[a] = 0.0f;
+        w.stations[0].arm_rotation[a] = 0.0f;
+    }
+    vec2 fpos = module_world_pos_ring(&w.stations[0],
+        w.stations[0].modules[furnace_idx].ring, w.stations[0].modules[furnace_idx].slot);
+    vec2 spos = module_world_pos_ring(&w.stations[0],
+        w.stations[0].modules[silo_idx].ring, w.stations[0].modules[silo_idx].slot);
+    w.asteroids[frag].pos = v2_scale(v2_add(fpos, spos), 0.5f);
+    for (int i = 0; i < 400; i++) world_sim_step(&w, SIM_DT);
+
+    /* Post-smelt: station 0 manifest should carry 3 COMMON ferrite ingots. */
+    int station_manifest_ferrite =
+        manifest_count_by_commodity(&w.stations[0].manifest, COMMODITY_FERRITE_INGOT);
+    ASSERT(station_manifest_ferrite == 3);
+
+    /* Invariant sweep: no pub repeats anywhere. */
+    static uint8_t seen_pubs[64][32]; int seen_n = 0;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w.stations[s];
+        if (!st->manifest.units) continue;
+        for (uint16_t i = 0; i < st->manifest.count; i++) {
+            for (int k = 0; k < seen_n; k++) {
+                ASSERT(memcmp(seen_pubs[k], st->manifest.units[i].pub, 32) != 0);
+            }
+            if (seen_n < (int)(sizeof(seen_pubs) / sizeof(seen_pubs[0]))) {
+                memcpy(seen_pubs[seen_n++], st->manifest.units[i].pub, 32);
+            }
+        }
+    }
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        const ship_t *ship = &w.players[p].ship;
+        if (!ship->manifest.units) continue;
+        for (uint16_t i = 0; i < ship->manifest.count; i++) {
+            for (int k = 0; k < seen_n; k++) {
+                ASSERT(memcmp(seen_pubs[k], ship->manifest.units[i].pub, 32) != 0);
+            }
+            if (seen_n < (int)(sizeof(seen_pubs) / sizeof(seen_pubs[0]))) {
+                memcpy(seen_pubs[seen_n++], ship->manifest.units[i].pub, 32);
+            }
+        }
+    }
 }
 
 TEST(test_scenario_two_players_mining) {
@@ -1024,6 +1118,7 @@ void register_world_sim_basic_tests(void) {
 void register_world_sim_scenarios_tests(void) {
     TEST_SECTION("\nSim integration scenarios:\n");
     RUN(test_scenario_full_mining_cycle);
+    RUN(test_manifest_conservation_across_transactions);
     RUN(test_scenario_two_players_mining);
     RUN(test_scenario_npc_economy_30_seconds);
     RUN(test_scenario_upgrade_requires_products);

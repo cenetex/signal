@@ -85,6 +85,24 @@ static inline const char *mining_grade_label(mining_grade_t g) {
     }
 }
 
+/* Canonical grade palette — single source of truth for every UI surface
+ * that shows a grade (world rock dot, tow tether, sell popup, hint-bar
+ * batch, station market/contracts, manifest). Progression reads rarer
+ * → warmer: white → cyan → violet → gold → bright gold. Kept with the
+ * grade definition + label + multiplier so UI code doesn't need to pull
+ * in world-rendering headers just to tint grade text. */
+static inline void mining_grade_rgb(mining_grade_t grade,
+                                    uint8_t *r, uint8_t *g, uint8_t *b) {
+    switch (grade) {
+    case MINING_GRADE_FINE:         *r = 140; *g = 220; *b = 255; break; /* light cyan */
+    case MINING_GRADE_RARE:         *r = 190; *g = 130; *b = 255; break; /* violet */
+    case MINING_GRADE_RATI:         *r = 255; *g = 200; *b =  90; break; /* warm gold */
+    case MINING_GRADE_COMMISSIONED: *r = 255; *g = 240; *b = 130; break; /* bright gold */
+    case MINING_GRADE_COMMON:
+    default:                        *r = 200; *g = 220; *b = 230; break; /* cool white */
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* Grade classification                                                */
 /* ------------------------------------------------------------------ */

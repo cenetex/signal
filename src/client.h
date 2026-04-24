@@ -112,13 +112,24 @@ typedef struct {
         uint8_t r, g, b;
         char text[16];
     } sell_fx[16];
+    /* Per-station manifest summary — [commodity][grade] unit counts.
+     * Unified read path for the TRADE UI whether we're in singleplayer
+     * (populated every frame from g.world.stations[s].manifest) or
+     * multiplayer (populated from the server's manifest-summary broadcast
+     * — see Phase 2 wire TODO in server/main.c / src/net.c). Kept off
+     * station_t because station_t is the authoritative save/wire format
+     * and this is derived. */
+    uint16_t station_manifest_summary[MAX_STATIONS][COMMODITY_COUNT][MINING_GRADE_COUNT];
+
     /* Batched sell summary for the bottom-right hint bar — every payout
      * flashes "[ +$N common xA fine xB ... ]" even when the station is
      * off-camera. Events within settle_timer (~0.6s) accumulate into one
-     * batch; when idle for that long the batch flushes via set_notice. */
+     * batch; once idle, display_timer holds the result on-screen (~3s)
+     * so the HUD can render it with per-grade colors. */
     struct {
-        bool active;
-        float settle_timer;
+        bool active;          /* accumulating new events */
+        float settle_timer;   /* time left before the batch "flushes" to display */
+        float display_timer;  /* time left showing the flushed summary in the HUD */
         int total_cr;
         int grade_counts[MINING_GRADE_COUNT];
         bool any_by_contract;

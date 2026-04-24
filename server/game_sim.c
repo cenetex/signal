@@ -768,9 +768,55 @@ static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, i
 
 /* ledger_credit_supply declared in game_sim.h */
 
+/* Transfer `n` manifest units of `commodity` from `src` to `dst` (FIFO,
+ * any grade). Returns the number actually transferred. Used so float-
+ * denominated deliveries keep the ship.manifest / station.manifest
+ * ledgers aligned: every integer unit moved by the float path also
+ * moves its cargo_unit_t (with its pub + grade + parent_merkle) to the
+ * receiving side. Units whose grade isn't preserved in ship.manifest
+ * yet (today's ship hold is still legacy-float) are passed through
+ * station-to-station correctly; ship-side grading lands when ship.cargo
+ * becomes manifest-first.
+ *
+ * Conservation invariant (see tests): at any point,
+ *   count_in_any_manifest(pub) == 1
+ * i.e. the same pub must never appear in two manifests simultaneously.
+ * manifest_remove + manifest_push with the same `unit` value satisfies
+ * this because we push a copy of the removed value, not allocate a new
+ * one.
+ *
+ * Phase 1 dual-write note: callers still update the float inventory
+ * AND call this helper so the existing economy math (prices, hopper
+ * caps, conservation tests) keeps working. Float deprecation is a
+ * separate later pass. */
+static int manifest_transfer_by_commodity(manifest_t *src, manifest_t *dst,
+                                          commodity_t commodity, int n) {
+    if (!src || !dst || n <= 0) return 0;
+    int moved = 0;
+    while (moved < n) {
+        int idx = -1;
+        for (uint16_t i = 0; i < src->count; i++) {
+            if (src->units[i].commodity == (uint8_t)commodity) { idx = (int)i; break; }
+        }
+        if (idx < 0) break;
+        cargo_unit_t unit;
+        if (!manifest_remove(src, (uint16_t)idx, &unit)) break;
+        if (!manifest_push(dst, &unit)) {
+            /* dst full — put it back to keep the invariant. */
+            (void)manifest_push(src, &unit);
+            break;
+        }
+        moved++;
+    }
+    return moved;
+}
+
 static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
     float payout = 0.0f;
+    /* M7: track whether any of the accepted deliveries landed against an
+     * active contract so the client's sell FX can tint yellow. */
+    bool sold_against_contract = false;
     /* Optional one-shot filter: if the client requested selective
      * delivery via NET_ACTION_DELIVER_COMMODITY, only commodities
      * matching `filter` are delivered. COMMODITY_COUNT (the default)
@@ -801,8 +847,18 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         if (space < 0.01f) continue;
         float deliver = fminf(fminf(sp->ship.cargo[c], ct->quantity_needed), space);
         payout += deliver * contract_price(ct);
+        if (deliver > 0.01f) sold_against_contract = true;
         sp->ship.cargo[c] -= deliver;
         st->inventory[c] += deliver;
+        /* Phase 1 manifest-first: move whole-unit deliveries across the
+         * ship/station manifests so provenance survives the transaction.
+         * Fractional deliveries still ride the float dual-write. */
+        {
+            int whole = (int)floorf(deliver + 0.0001f);
+            if (whole > 0)
+                (void)manifest_transfer_by_commodity(&sp->ship.manifest,
+                                                     &st->manifest, c, whole);
+        }
         ct->quantity_needed -= deliver;
         if (ct->quantity_needed <= 0.01f) {
             /* Don't close if scaffold modules still need this material */
@@ -838,6 +894,11 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
                 payout += accepted * price;
                 sp->ship.cargo[buy] -= accepted;
                 st->inventory[buy] += accepted;
+                /* Manifest dual-write — see the contract branch above. */
+                int whole = (int)floorf(accepted + 0.0001f);
+                if (whole > 0)
+                    (void)manifest_transfer_by_commodity(&sp->ship.manifest,
+                                                         &st->manifest, buy, whole);
             }
         }
     }
@@ -850,7 +911,18 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
             ledger_earn(st, sp->session_token, payout);
             sp->ship.stat_credits_earned += payout;
             SIM_LOG("[sim] player %d sold cargo for %.0f cr at %s\n", sp->id, payout, st->name);
-            emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
+            /* M7: populate the sell event with station + amount so the
+             * client's +$N popup and hint-bar batch actually animate dock
+             * deliveries (previously the event carried zero payload). Grade
+             * stays MINING_GRADE_COMMON — ingot deliveries don't have a
+             * per-unit grade at this call site. */
+            emit_event(w, (sim_event_t){
+                .type = SIM_EVENT_SELL, .player_id = sp->id,
+                .sell = { .station = sp->current_station,
+                          .grade = (uint8_t)MINING_GRADE_COMMON,
+                          .base_cr = (int)lroundf(payout),
+                          .bonus_cr = 0,
+                          .by_contract = sold_against_contract ? 1u : 0u }});
         }
     }
     /* Clear the one-shot filter so the next plain SELL_CARGO press
@@ -2397,6 +2469,15 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                         if (ledger_spend(nearby_st, sp->session_token, cost, &sp->ship)) {
                             sp->ship.cargo[c] += amount;
                             nearby_st->inventory[c] -= amount;
+                            /* Phase 1 manifest-first: if the station has a
+                             * matching manifest unit, transfer it to the
+                             * ship so the ingot's provenance (pub, grade,
+                             * parent_merkle) moves with the purchase. */
+                            int whole = (int)floorf(amount + 0.0001f);
+                            if (whole > 0)
+                                (void)manifest_transfer_by_commodity(
+                                    &nearby_st->manifest, &sp->ship.manifest,
+                                    c, whole);
                             emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
                         }
                     }

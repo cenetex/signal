@@ -172,32 +172,36 @@ static void reset_step_feedback(void) {
 
 /* sample_input_intent: see input.h/c */
 
+/* Phase 2 foundation: rebuild g.station_manifest_summary from local
+ * station manifests. Called once per frame in singleplayer (where the
+ * client has direct read access to g.world.stations[s].manifest). In
+ * multiplayer the server owns the manifest; the summary is populated
+ * by the net sync path instead (see NET_MSG_STATION_MANIFEST TODO). */
+static void refresh_station_manifest_summaries(void) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        /* Zero the row — a station with no manifest units should read zero. */
+        memset(&g.station_manifest_summary[s][0][0], 0,
+               sizeof(g.station_manifest_summary[s]));
+        const station_t *st = &g.world.stations[s];
+        if (!st->manifest.units || st->manifest.count == 0) continue;
+        for (uint16_t i = 0; i < st->manifest.count; i++) {
+            const cargo_unit_t *u = &st->manifest.units[i];
+            if (u->commodity >= COMMODITY_COUNT) continue;
+            if (u->grade >= MINING_GRADE_COUNT) continue;
+            g.station_manifest_summary[s][u->commodity][u->grade]++;
+        }
+    }
+}
+
 static void flush_sell_batch(void) {
     if (!g.sell_batch.active) return;
-    /* Compose "[ +$N  common xA  fine xB  ... ]" — skip zero-count grades.
-     * Prefix with "contract" marker when at least one event in the batch
-     * was contract-priced so the user sees why the payout was yellow. */
-    char line[160];
-    int off = 0;
-    off += snprintf(line + off, sizeof(line) - off, "[ +$%d", g.sell_batch.total_cr);
-    if (g.sell_batch.any_by_contract) {
-        off += snprintf(line + off, sizeof(line) - off, " contract");
-    }
-    for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
-        int n = g.sell_batch.grade_counts[gi];
-        if (n <= 0) continue;
-        off += snprintf(line + off, sizeof(line) - off, "  %s x%d",
-                        mining_grade_label((mining_grade_t)gi), n);
-        if (off >= (int)sizeof(line) - 8) break;
-    }
-    snprintf(line + off, sizeof(line) - off, " ]");
-    set_notice("%s", line);
-
+    /* Stop accumulating; hand off to the HUD render for ~3s so it can
+     * draw the totals with per-grade colors in the hint-bar row. The
+     * batch payload (total_cr, grade_counts, any_by_contract) is
+     * preserved so the renderer has everything it needs. */
     g.sell_batch.active = false;
     g.sell_batch.settle_timer = 0.0f;
-    g.sell_batch.total_cr = 0;
-    g.sell_batch.any_by_contract = false;
-    for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) g.sell_batch.grade_counts[gi] = 0;
+    g.sell_batch.display_timer = 3.0f;
 }
 
 static void step_notice_timer(float dt) {
@@ -215,6 +219,16 @@ static void step_notice_timer(float dt) {
     if (g.sell_batch.active) {
         g.sell_batch.settle_timer = fmaxf(0.0f, g.sell_batch.settle_timer - dt);
         if (g.sell_batch.settle_timer <= 0.0f) flush_sell_batch();
+    }
+    if (g.sell_batch.display_timer > 0.0f) {
+        g.sell_batch.display_timer = fmaxf(0.0f, g.sell_batch.display_timer - dt);
+        if (g.sell_batch.display_timer <= 0.0f) {
+            /* Lifetime elapsed — drop the summary. */
+            g.sell_batch.total_cr = 0;
+            g.sell_batch.any_by_contract = false;
+            for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
+                g.sell_batch.grade_counts[gi] = 0;
+        }
     }
 }
 
@@ -370,7 +384,18 @@ void process_sim_events(const sim_events_t *events) {
                                       (mining_grade_t)ev->sell.grade,
                                       ev->sell.by_contract != 0);
                         /* Accumulate into the hint-bar batch so haulers get
-                         * a summary even when the station is off-camera. */
+                         * a summary even when the station is off-camera. If
+                         * a previous summary is still on-screen (display
+                         * timer > 0) and we're not already accumulating, the
+                         * incoming event starts a fresh run — zero the leftover
+                         * counts first so the new batch isn't contaminated. */
+                        if (!g.sell_batch.active && g.sell_batch.display_timer > 0.0f) {
+                            for (int gi2 = 0; gi2 < MINING_GRADE_COUNT; gi2++)
+                                g.sell_batch.grade_counts[gi2] = 0;
+                            g.sell_batch.total_cr = 0;
+                            g.sell_batch.any_by_contract = false;
+                            g.sell_batch.display_timer = 0.0f;
+                        }
                         int grade_idx = (int)ev->sell.grade;
                         if (grade_idx >= 0 && grade_idx < MINING_GRADE_COUNT) {
                             g.sell_batch.grade_counts[grade_idx]++;
@@ -498,11 +523,18 @@ void process_sim_events(const sim_events_t *events) {
                             audio_play_sale(&g.audio);
                         if (g.world.stations[hs].station_slug[0])
                             avatar_fetch(hs, g.world.stations[hs].station_slug);
-                        /* Also surface the hail through the bottom-right hint
-                         * bar, prefixed with the station name, so the message
-                         * is visible in peripheral vision without relying on
-                         * the center-screen portrait overlay. */
-                        set_notice("%s: %s", g.hail_station, g.hail_message);
+                        /* Surface the hail through the bottom-right hint bar.
+                         * Includes the station balance so all the info the
+                         * old center-screen overlay carried lands there.
+                         * hail_response.credits is authoritative — computed
+                         * server-side when the hail was issued. */
+                        {
+                            const char *unit = g.world.stations[hs].currency_name;
+                            if (!unit[0]) unit = "credits";
+                            set_notice("%s: %s  (balance %d %s)",
+                                g.hail_station, g.hail_message,
+                                (int)lroundf(ev->hail_response.credits), unit);
+                        }
                         onboarding_mark_hailed();
                     }
                 }
@@ -1507,6 +1539,11 @@ static void frame(void) {
     }
 
     advance_simulation_frame(frame_dt);
+
+    /* Phase 2: keep the client-side manifest summary fresh. In SP this
+     * reads the local manifest; in MP it's a no-op relative to the net
+     * path which fills the summary directly (see TODO in src/net.c). */
+    if (!g.multiplayer_enabled) refresh_station_manifest_summaries();
     audio_generate_stream(&g.audio);
 
     /* Upload the latest decoded episode frame once per render frame. Decoding

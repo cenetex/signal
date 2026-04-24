@@ -286,6 +286,27 @@ int manifest_find(const manifest_t *manifest, const uint8_t pub[32]) {
     return -1;
 }
 
+int manifest_find_first_cg(const manifest_t *manifest,
+                           commodity_t commodity,
+                           mining_grade_t grade)
+{
+    if (!manifest || !manifest->units) return -1;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        const cargo_unit_t *u = &manifest->units[i];
+        if (u->commodity == (uint8_t)commodity && u->grade == (uint8_t)grade)
+            return (int)i;
+    }
+    return -1;
+}
+
+int manifest_count_by_commodity(const manifest_t *manifest, commodity_t commodity) {
+    if (!manifest || !manifest->units) return 0;
+    int n = 0;
+    for (uint16_t i = 0; i < manifest->count; i++)
+        if (manifest->units[i].commodity == (uint8_t)commodity) n++;
+    return n;
+}
+
 bool hash_merkle_root(const uint8_t pubs[][32], size_t count, uint8_t out_root[32]) {
     uint8_t *level = NULL;
     uint8_t *next = NULL;

@@ -48,9 +48,13 @@ static bool station_manifest_push_ingot(station_t *st, const cargo_unit_t *unit)
     if (st->manifest.cap == 0 || st->manifest.units == NULL) {
         if (!station_manifest_bootstrap(st)) return false;
     }
-    if (st->manifest.count >= st->manifest.cap &&
-        !manifest_remove(&st->manifest, 0, NULL)) {
-        return false;
+    /* FIFO-evict the oldest unit when the manifest is full. M4: flag the
+     * station as manifest-dirty so the world broadcaster picks up the
+     * rotation and clients can surface a "stockpile rotated" notice
+     * instead of the ingot silently vanishing. */
+    if (st->manifest.count >= st->manifest.cap) {
+        if (!manifest_remove(&st->manifest, 0, NULL)) return false;
+        st->named_ingots_dirty = true;
     }
     return manifest_push(&st->manifest, unit);
 }
@@ -457,44 +461,67 @@ void step_furnace_smelting(world_t *w, float dt) {
         /* Hold fragment in place while smelting — dampen velocity */
         a->vel = v2_scale(a->vel, 1.0f / (1.0f + 10.0f * dt));
 
+        /* L8: clamp accumulated progress at 1.0 so a fragment waiting on
+         * a fracture-claim resolution doesn't grow smelt_progress unbounded. */
+        if (a->smelt_progress > 1.0f) a->smelt_progress = 1.0f;
+
         if (a->smelt_progress >= 1.0f && smelt_station >= 0) {
             station_t *st = &w->stations[smelt_station];
             fracture_claim_state_t *claim_state = &w->fracture_claims[i];
             cargo_unit_t named_unit = {0};
             bool have_named_unit = false;
             int prefix = MINING_CLASS_ANONYMOUS;
-            /* Check for active ore contract — apply premium if one exists */
-            if (claim_state->active && !claim_state->resolved) continue;
+            /* L11: fill legacy fragment_pub up-front so the compat shim is
+             * visible at the top of the block regardless of code flow. */
             if (fragment_pub_is_zero(a))
                 smelt_fragment_pub_compat(a);
+            /* Wait out active, unresolved fracture claims before paying out. */
+            if (claim_state->active && !claim_state->resolved) continue;
+
+            /* M5: refuse smelt when the station's output bin is already full.
+             * Fragment stays in the beam (smelt_progress capped at 1.0) and
+             * will fire next tick once space frees up — creates visible back-
+             * pressure instead of silently over-capping the inventory float. */
+            commodity_t ingot_peek = commodity_refined_form(a->commodity);
+            commodity_t output_peek = (ingot_peek != a->commodity) ? ingot_peek : a->commodity;
+            float space_peek = MAX_PRODUCT_STOCK - st->inventory[output_peek];
+            if (space_peek < a->ore - 0.01f) continue;
+
+            /* M3: scan all matching contracts (was break-on-first). Pick the
+             * contract whose price is highest above the station buy price. */
             float price = station_buy_price(st, a->commodity);
             bool by_contract = false;
             for (int k = 0; k < MAX_CONTRACTS; k++) {
-                if (w->contracts[k].active
-                    && w->contracts[k].action == CONTRACT_TRACTOR
-                    && w->contracts[k].station_index == smelt_station
-                    && w->contracts[k].commodity == a->commodity) {
-                    float cp = contract_price(&w->contracts[k]);
-                    if (cp > price) { price = cp; by_contract = true; }
-                    break;
-                }
+                if (!w->contracts[k].active) continue;
+                if (w->contracts[k].action != CONTRACT_TRACTOR) continue;
+                if (w->contracts[k].station_index != smelt_station) continue;
+                if (w->contracts[k].commodity != a->commodity) continue;
+                float cp = contract_price(&w->contracts[k]);
+                if (cp > price) { price = cp; by_contract = true; }
             }
             float ore_value = a->ore * price;
 
             /* Credit fracturer and tower.
-             * When neither maps to a connected player (e.g. NPC miners), no
-             * credits are issued — NPCs are station infrastructure, not profit
-             * centers. The value they produce is ingots in station inventory. */
+             *
+             * Credit attribution is strictly token-based: we look up each
+             * role's session_token against currently-connected sessions.
+             * The legacy `last_towed_by` / `last_fractured_by` slot
+             * fallback was REMOVED — it could pay the wrong player when a
+             * slot gets reused on disconnect/rejoin. Do not restore it
+             * without a token-match guard.
+             *
+             * Known gap: fragments in saves from before the token fields
+             * existed, or fragments towed/fractured before the player's
+             * session was `session_ready` (zero token at tow time), will
+             * now smelt with no credit recipient. The ore still lands in
+             * the station inventory as infrastructure value; the ingot
+             * manifest still records the hash. If that's not acceptable
+             * for in-the-wild saves, add a one-time migration that
+             * stamps a synthetic-but-valid owner token on pre-token
+             * fragments at save-load time — do NOT re-enable the slot
+             * fallback. */
             int tower = connected_player_by_token(w, a->last_towed_token);
             int fracturer = connected_player_by_token(w, a->last_fractured_token);
-            if (tower < 0 &&
-                a->last_towed_by >= 0 && a->last_towed_by < MAX_PLAYERS &&
-                w->players[a->last_towed_by].connected)
-                tower = a->last_towed_by;
-            if (fracturer < 0 &&
-                a->last_fractured_by >= 0 && a->last_fractured_by < MAX_PLAYERS &&
-                w->players[a->last_fractured_by].connected)
-                fracturer = a->last_fractured_by;
 
             /* Grade is committed when the fracture claim resolves.
              * Smelt only publishes that cached value — no fresh dice. */

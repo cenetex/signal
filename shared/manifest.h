@@ -22,6 +22,18 @@ bool manifest_push(manifest_t *manifest, const cargo_unit_t *unit);
 bool manifest_remove(manifest_t *manifest, uint16_t index, cargo_unit_t *out_unit);
 int manifest_find(const manifest_t *manifest, const uint8_t pub[32]);
 
+/* Return the index of the first unit in `manifest` matching the given
+ * commodity+grade, or -1 if none. Used by transaction paths to pick a
+ * unit to transfer (FIFO — oldest first). O(manifest.count). */
+int manifest_find_first_cg(const manifest_t *manifest,
+                           commodity_t commodity,
+                           mining_grade_t grade);
+
+/* Count units in `manifest` matching the given commodity. Used by the
+ * station-summary builder + sanity tests. O(manifest.count). */
+int manifest_count_by_commodity(const manifest_t *manifest,
+                                commodity_t commodity);
+
 void ship_cleanup(ship_t *ship);
 bool ship_manifest_bootstrap(ship_t *ship);
 bool ship_copy(ship_t *dst, const ship_t *src);
