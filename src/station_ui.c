@@ -745,14 +745,21 @@ static void draw_trade_view(const station_ui_state_t *ui,
         mining_grade_rgb(r->grade, &ggr, &ggg, &ggb);
         uint8_t gr_rgb[3] = { ggr, ggg, ggb };
 
+        /* Commodity tint for the signed amount — ferrite amber, cuprite
+         * green, crystal violet, etc. Lets the eye scan the column by
+         * what's changing hands rather than by buy-vs-sell state. */
+        uint8_t cr_r, cr_g, cr_b;
+        commodity_color_u8(r->commodity, &cr_r, &cr_g, &cr_b);
+        uint8_t total_rgb[3] = { cr_r, cr_g, cr_b };
+
         const char *verb = (r->kind == 0) ? "buy" : "sell";
         char qty_buf[24], total_buf[32];
         if (r->kind == 0) {
             snprintf(qty_buf, sizeof(qty_buf), "stock %d", r->stock);
-            snprintf(total_buf, sizeof(total_buf), "-$%d", r->unit_price);
+            snprintf(total_buf, sizeof(total_buf), "-%d cr", r->unit_price);
         } else {
             snprintf(qty_buf, sizeof(qty_buf), "%d held", r->stock);
-            snprintf(total_buf, sizeof(total_buf), "+$%d", r->unit_price);
+            snprintf(total_buf, sizeof(total_buf), "+%d cr", r->unit_price);
         }
 
         if (compact) {
@@ -765,7 +772,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
             draw_row_cells(cx, my, top, 4);
             my += row_h;
             draw_row_lr(cx + 32.0f, my, inner_right,
-                        info_rgb, qty_buf, info_rgb, total_buf);
+                        info_rgb, qty_buf, total_rgb, total_buf);
             my += row_h;
         } else {
             cell_t row[] = {
@@ -776,7 +783,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
                 { 35, qty_buf,                        info_rgb },
             };
             draw_row_cells(cx, my, row, 5);
-            draw_row_lr(cx, my, inner_right, NULL, NULL, info_rgb, total_buf);
+            draw_row_lr(cx, my, inner_right, NULL, NULL, total_rgb, total_buf);
             my += row_h;
         }
     }

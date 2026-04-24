@@ -82,6 +82,33 @@ const char* commodity_code(commodity_t commodity) {
     }
 }
 
+void commodity_color_u8(commodity_t commodity, uint8_t *r, uint8_t *g, uint8_t *b) {
+    /* Warm-to-cool ladder for the three ores (matches the color dot on
+     * the asteroid and the tow tether so the TRADE row reads the same).
+     * Fabricated goods get their own signature so the market scans
+     * quickly: frame = slate, laser = nav-blue, tractor = mint. */
+    switch (commodity) {
+    case COMMODITY_FERRITE_ORE:
+    case COMMODITY_FERRITE_INGOT:
+        *r = 217; *g = 127; *b =  90; return;  /* warm ferrite amber */
+    case COMMODITY_CUPRITE_ORE:
+    case COMMODITY_CUPRITE_INGOT:
+        *r = 110; *g = 210; *b = 140; return;  /* cuprite oxide green */
+    case COMMODITY_CRYSTAL_ORE:
+    case COMMODITY_CRYSTAL_INGOT:
+        *r = 180; *g = 140; *b = 255; return;  /* crystal violet */
+    case COMMODITY_FRAME:
+        *r = 190; *g = 200; *b = 220; return;  /* cool slate */
+    case COMMODITY_LASER_MODULE:
+        *r = 140; *g = 180; *b = 255; return;  /* nav blue */
+    case COMMODITY_TRACTOR_MODULE:
+        *r = 120; *g = 235; *b = 200; return;  /* mint */
+    case COMMODITY_COUNT:
+    default:
+        *r = 200; *g = 220; *b = 230; return;  /* fallback cool white */
+    }
+}
+
 const char* commodity_short_name(commodity_t commodity) {
     switch (commodity) {
         case COMMODITY_FERRITE_ORE:

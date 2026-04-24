@@ -9,6 +9,12 @@ const char* commodity_name(commodity_t commodity);
 const char* commodity_code(commodity_t commodity);
 const char* commodity_short_name(commodity_t commodity);
 
+/* Commodity tint for UI amounts/chips (TRADE deltas, HUD hints, etc).
+ * Ores get a warm-to-cool ladder (ferrite amber → cuprite green →
+ * crystal violet); fabricated goods use their own distinctive tones.
+ * Kept here next to commodity_short_name so UIs have one stop. */
+void commodity_color_u8(commodity_t commodity, uint8_t *r, uint8_t *g, uint8_t *b);
+
 float ship_total_cargo(const ship_t* ship);
 float ship_cargo_amount(const ship_t* ship, commodity_t commodity);
 

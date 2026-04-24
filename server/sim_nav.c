@@ -3,6 +3,7 @@
  * Extracted from game_sim.c (#272 slice).
  */
 #include "sim_nav.h"
+#include <math.h>     /* isfinite — see nav_line_clear defensive guard */
 #include <stdlib.h>
 
 
@@ -119,8 +120,19 @@ void nav_force_replan(nav_path_t *path) {
  * asteroid radius + clearance margin) and only test asteroids in those
  * cells. */
 static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
+    /* Defensive: reject non-finite endpoints. A single corrupt station
+     * pos (NaN from a partially-overwritten save) used to blow
+     * spatial_grid_cell into a multi-billion-cell sweep and hang the
+     * server forever at startup (symptom: spins 100% CPU, never reaches
+     * mg_http_listen). Treating a bad call as "no line" is safe: the
+     * caller just gets a failed-to-validate edge, and the nav graph
+     * misses that connection instead of taking down the whole server. */
+    if (!isfinite(a.x) || !isfinite(a.y) || !isfinite(b.x) || !isfinite(b.y))
+        return false;
+
     vec2 delta = v2_sub(b, a);
     float seg_len = v2_len(delta);
+    if (!isfinite(seg_len)) return false;
     if (seg_len < 1.0f) return true;
     vec2 fwd = v2_scale(delta, 1.0f / seg_len);
 
@@ -138,6 +150,17 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
         int cx0, cy0, cx1, cy1;
         spatial_grid_cell(g, v2(min_x, min_y), &cx0, &cy0);
         spatial_grid_cell(g, v2(max_x, max_y), &cx1, &cy1);
+        /* Cap the cell sweep to a sane window. WORLD_RADIUS is 50000u
+         * and SPATIAL_CELL_SIZE 800u → ~125 cells max per axis for any
+         * legitimate edge. 256 × 256 cells is a hard ceiling that
+         * catches any remaining garbage without constraining real game
+         * geometry. */
+        const int NAV_CELL_BOUND = 256;
+        if (cx0 < -NAV_CELL_BOUND) cx0 = -NAV_CELL_BOUND;
+        if (cy0 < -NAV_CELL_BOUND) cy0 = -NAV_CELL_BOUND;
+        if (cx1 >  NAV_CELL_BOUND) cx1 =  NAV_CELL_BOUND;
+        if (cy1 >  NAV_CELL_BOUND) cy1 =  NAV_CELL_BOUND;
+        if (cx1 < cx0 || cy1 < cy0) return true;  /* empty window → no asteroids to block */
         /* Deduplicate: track which asteroid indices we've already tested.
          * Use a small bitset — MAX_ASTEROIDS is typically <= 512. */
         uint64_t checked[MAX_ASTEROIDS / 64 + 1];
@@ -277,6 +300,10 @@ void station_build_nav(const world_t *w, int station_idx) {
     nav->valid = false;
 
     if (!station_collides(st)) return;
+    /* Defensive: a NaN/inf station position propagates through the whole
+     * nav graph and locks the server up for any later pathing. Skip the
+     * rebuild and keep `valid = false` so A* falls back to direct-line. */
+    if (!isfinite(st->pos.x) || !isfinite(st->pos.y)) return;
 
     /* --- Add center node (FIXED) --- */
     if (nav->node_count < SNAV_MAX_NODES) {
