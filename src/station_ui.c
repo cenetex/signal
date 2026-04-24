@@ -1062,7 +1062,14 @@ static void draw_jobs_view(const station_ui_state_t *ui,
 
         const station_t *dest = (ct->station_index < MAX_STATIONS)
             ? &g.world.stations[ct->station_index] : NULL;
-        const char *pay_cur = ui_station_currency(dest ? dest : ui->station);
+        /* Currency fallback chain: destination station's currency (that's
+         * where the payout actually lands), then the current station's
+         * (outpost destinations have empty currency_name today), then
+         * "cr" if both are empty. */
+        const char *pay_cur = (dest && dest->currency_name[0])
+            ? dest->currency_name
+            : (ui->station && ui->station->currency_name[0]
+               ? ui->station->currency_name : "cr");
         /* Defensive clamp: if the server ever sends a nonsense base_price
          * (NaN/inf/garbage) the naive lroundf cast saturates to INT_MAX
          * and the row displays +2147483647. Show "???" instead so the

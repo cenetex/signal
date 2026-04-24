@@ -1570,13 +1570,84 @@ void draw_compass_ring(void) {
         if (found) COMPASS_PIP(best_pos, 0.9f, 0.25f, 0.2f);
     }
 
-    /* Tracked contract pip (yellow) */
+    /* Tracked contract pip (yellow). For a TRACTOR contract targeting a
+     * raw ore, the pip lead-points the player along the delivery arc:
+     *   - if the hold already carries a fragment of that commodity, aim
+     *     at the destination station (go dock / dump into the furnace);
+     *   - otherwise aim at the nearest S-tier fragment of that commodity
+     *     in signal coverage;
+     *   - if no S-tier fragment is present, aim at the smallest
+     *     fracturable rock of that commodity so the player can crack it.
+     * For FRACTURE contracts or non-ore commodities, the old
+     * destination-pos / target_pos behavior is kept. */
     if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
         contract_t *ct = &g.world.contracts[g.tracked_contract];
         if (ct->active) {
             vec2 target = (ct->action == CONTRACT_TRACTOR)
                 ? g.world.stations[ct->station_index].pos : ct->target_pos;
-            COMPASS_PIP(target, 1.0f, 0.87f, 0.20f);
+            bool pip_found = true;
+
+            if (ct->action == CONTRACT_TRACTOR
+                && ct->commodity < COMMODITY_RAW_ORE_COUNT) {
+                /* Does the ship already tow a fragment of this commodity? */
+                bool carrying = false;
+                const ship_t *ship = &LOCAL_PLAYER.ship;
+                for (int t = 0; t < ship->towed_count && !carrying; t++) {
+                    int fi = ship->towed_fragments[t];
+                    if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
+                    const asteroid_t *a = &g.world.asteroids[fi];
+                    if (a->active && a->tier == ASTEROID_TIER_S
+                        && a->commodity == ct->commodity)
+                        carrying = true;
+                }
+                if (!carrying) {
+                    /* Prefer a free S-tier fragment of the commodity. */
+                    float best_d = 1e18f;
+                    vec2 best_pos = ship->pos;
+                    bool found_frag = false;
+                    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+                        const asteroid_t *a = &g.world.asteroids[i];
+                        if (!a->active) continue;
+                        if (a->tier != ASTEROID_TIER_S) continue;
+                        if (a->commodity != ct->commodity) continue;
+                        /* Skip already-towed fragments. */
+                        if (a->last_towed_by >= 0) continue;
+                        float d = v2_dist_sq(a->pos, ship->pos);
+                        if (d < best_d) {
+                            best_d = d; best_pos = a->pos; found_frag = true;
+                        }
+                    }
+                    if (found_frag) {
+                        target = best_pos;
+                    } else {
+                        /* Fall back to the smallest fracturable rock
+                         * (lowest tier above S) of the commodity. Smaller
+                         * tier = fewer fragments needed to trigger it. */
+                        asteroid_tier_t best_tier = ASTEROID_TIER_XXL;
+                        best_d = 1e18f;
+                        bool found_rock = false;
+                        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+                            const asteroid_t *a = &g.world.asteroids[i];
+                            if (!a->active) continue;
+                            if (a->tier == ASTEROID_TIER_S) continue;
+                            if (a->commodity != ct->commodity) continue;
+                            if ((int)a->tier > (int)best_tier) continue;
+                            float d = v2_dist_sq(a->pos, ship->pos);
+                            if ((int)a->tier < (int)best_tier
+                                || d < best_d) {
+                                best_tier = a->tier;
+                                best_d = d;
+                                best_pos = a->pos;
+                                found_rock = true;
+                            }
+                        }
+                        if (found_rock) target = best_pos;
+                        else            pip_found = false;
+                    }
+                }
+            }
+
+            if (pip_found) COMPASS_PIP(target, 1.0f, 0.87f, 0.20f);
         }
     }
 

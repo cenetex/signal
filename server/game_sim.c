@@ -32,6 +32,7 @@
 #include "signal_model.h"
 #include "rng.h"
 #include "sha256.h"   /* signal_chain_hash_block */
+#include <math.h>      /* isfinite for contract base_price sanity clamp */
 #include <stdlib.h>
 #include <stdio.h>
 #include <sys/stat.h>
@@ -2797,6 +2798,19 @@ static void step_contracts(world_t *w, float dt) {
     /* Age existing contracts and check fulfillment */
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         if (!w->contracts[i].active) continue;
+        /* Defensive sanity sweep. Clamps any contract whose base_price
+         * went non-finite or absurd (seen in WORK rows as "+??? cr" /
+         * INT_MAX payouts). Also guards quantity_needed so a bad spawn
+         * can't produce an x2147483648 cargo display. */
+        float bp = w->contracts[i].base_price;
+        if (!isfinite(bp) || bp < 0.0f || bp > 10000.0f) {
+            SIM_LOG("[sim] contract %d had bad base_price %.1f -> clamped to 1\n", i, bp);
+            w->contracts[i].base_price = 1.0f;
+        }
+        float qn = w->contracts[i].quantity_needed;
+        if (!isfinite(qn) || qn < 0.0f || qn > 10000.0f) {
+            w->contracts[i].quantity_needed = 1.0f;
+        }
         w->contracts[i].age += dt;
 
         switch (w->contracts[i].action) {
