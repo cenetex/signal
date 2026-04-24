@@ -740,22 +740,23 @@ static void handle_message(const uint8_t* data, int len) {
     case NET_MSG_CONTRACTS:
         if (len >= 2 && net_state.callbacks.on_contracts) {
             uint8_t count = data[1];
-            if (len >= 2 + count * 27) {
+            if (len >= 2 + count * 28) {
                 contract_t contracts[MAX_CONTRACTS];
                 memset(contracts, 0, sizeof(contracts));
                 int n = count < MAX_CONTRACTS ? count : MAX_CONTRACTS;
                 for (int i = 0; i < n; i++) {
-                    const uint8_t *p = &data[2 + i * 27];
+                    const uint8_t *p = &data[2 + i * 28];
                     contracts[i].active = true;
                     contracts[i].action = (p[0] <= CONTRACT_FRACTURE) ? (contract_action_t)p[0] : CONTRACT_TRACTOR;
                     contracts[i].station_index = (p[1] < MAX_STATIONS) ? p[1] : 0;
                     contracts[i].commodity = (p[2] < COMMODITY_COUNT) ? (commodity_t)p[2] : COMMODITY_FERRITE_ORE;
-                    contracts[i].quantity_needed = read_f32_le(&p[3]);
-                    contracts[i].base_price = read_f32_le(&p[7]);
-                    contracts[i].age = read_f32_le(&p[11]);
-                    contracts[i].target_pos.x = read_f32_le(&p[15]);
-                    contracts[i].target_pos.y = read_f32_le(&p[19]);
-                    contracts[i].target_index = (int)(int32_t)read_u32_le(&p[23]);
+                    contracts[i].required_grade = (p[3] < MINING_GRADE_COUNT) ? p[3] : (uint8_t)MINING_GRADE_COMMON;
+                    contracts[i].quantity_needed = read_f32_le(&p[4]);
+                    contracts[i].base_price = read_f32_le(&p[8]);
+                    contracts[i].age = read_f32_le(&p[12]);
+                    contracts[i].target_pos.x = read_f32_le(&p[16]);
+                    contracts[i].target_pos.y = read_f32_le(&p[20]);
+                    contracts[i].target_index = (int)(int32_t)read_u32_le(&p[24]);
                     contracts[i].claimed_by = -1;
                 }
                 net_state.callbacks.on_contracts(contracts, n);

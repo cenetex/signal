@@ -612,13 +612,12 @@ static inline int serialize_player_ship_bal(uint8_t *buf, uint8_t id, const serv
  * [type:1][count:1] + count * [action:1][station:1][commodity:1][quantity:f32][base_price:f32][age:f32][target_x:f32][target_y:f32][target_index:i32]
  * = 2 + count * 25 bytes
  */
-/* 1 action + 1 station + 1 commodity + 4 quantity_needed + 4 base_price
- * + 4 age + 4 target.x + 4 target.y + 4 target_index = 27 bytes.
- * Previously 25 (off-by-2) which meant each successive record stomped
- * the last 2 bytes of the previous record's target_index, and the next
- * record's base_price decoded garbage — producing +INT_MAX payouts on
- * WORK rows when two construction contracts were active. */
-#define CONTRACT_RECORD_SIZE 27
+/* Wire layout per contract record (28 bytes total):
+ *   action(1) + station(1) + commodity(1) + required_grade(1)
+ *   + quantity_needed(f32) + base_price(f32) + age(f32)
+ *   + target.x(f32) + target.y(f32) + target_index(u32)
+ * Bumped from 27 when required_grade was added. */
+#define CONTRACT_RECORD_SIZE 28
 
 static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts) {
     int count = 0;
@@ -628,12 +627,13 @@ static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts)
         p[0] = (uint8_t)contracts[i].action;
         p[1] = contracts[i].station_index;
         p[2] = (uint8_t)contracts[i].commodity;
-        write_f32_le(&p[3], contracts[i].quantity_needed);
-        write_f32_le(&p[7], contracts[i].base_price);
-        write_f32_le(&p[11], contracts[i].age);
-        write_f32_le(&p[15], contracts[i].target_pos.x);
-        write_f32_le(&p[19], contracts[i].target_pos.y);
-        write_u32_le(&p[23], (uint32_t)contracts[i].target_index);
+        p[3] = contracts[i].required_grade;
+        write_f32_le(&p[4],  contracts[i].quantity_needed);
+        write_f32_le(&p[8],  contracts[i].base_price);
+        write_f32_le(&p[12], contracts[i].age);
+        write_f32_le(&p[16], contracts[i].target_pos.x);
+        write_f32_le(&p[20], contracts[i].target_pos.y);
+        write_u32_le(&p[24], (uint32_t)contracts[i].target_index);
         /* Note: claimed_by not sent — server-only field */
         count++;
     }

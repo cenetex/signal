@@ -1104,8 +1104,14 @@ static void draw_jobs_view(const station_ui_state_t *ui,
         } else {
             int qty = slot_fulfillable[s] ? slot_held[s]
                                           : (int)lroundf(ct->quantity_needed);
-            snprintf(cargo_buf, sizeof(cargo_buf), "%s x%d",
-                     commodity_short_name(ct->commodity), qty);
+            /* Include the required grade inline so the job row reads
+             * "Ferrite rare x12" — the whole cell gets tinted to the
+             * grade color below, so the player sees at a glance which
+             * grade will satisfy this contract. */
+            snprintf(cargo_buf, sizeof(cargo_buf), "%s %s x%d",
+                     commodity_short_name(ct->commodity),
+                     mining_grade_label((mining_grade_t)ct->required_grade),
+                     qty);
         }
 
         const station_t *dest = (ct->station_index < MAX_STATIONS)
@@ -1126,12 +1132,18 @@ static void draw_jobs_view(const station_ui_state_t *ui,
         }
 
         const uint8_t *info_rgb = (row_rgb == COL_DIM) ? COL_FADED : COL_TEXT;
+        /* Grade tint for the cargo cell (fracture contracts keep the
+         * neutral info color since they're not commodity-scoped). */
+        uint8_t ggr, ggg, ggb;
+        mining_grade_rgb((mining_grade_t)ct->required_grade, &ggr, &ggg, &ggb);
+        uint8_t grade_rgb[3] = { ggr, ggg, ggb };
+        const uint8_t *cargo_rgb = (ct->action == CONTRACT_FRACTURE)
+            ? info_rgb : grade_rgb;
         if (compact) {
-            /* Two lines: key/job/cargo on top, indented payout below. */
             cell_t top[] = {
                 {  0, key_buf,   row_rgb },
                 {  4, job_txt,   row_rgb },
-                { 14, cargo_buf, info_rgb },
+                { 14, cargo_buf, cargo_rgb },
             };
             draw_row_cells(cx, my, top, 3);
             my += row_h;
@@ -1141,13 +1153,10 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             draw_row_cells(cx, my, bot, 1);
             my += row_h;
         } else {
-            /* Single-row table: payout left-aligned at col 33 where the
-             * old "state" column used to sit — reads as part of the row
-             * flow instead of floating at the panel edge. */
             cell_t row[] = {
                 {  0, key_buf,   row_rgb },
                 {  4, job_txt,   row_rgb },
-                { 14, cargo_buf, info_rgb },
+                { 14, cargo_buf, cargo_rgb },
                 { 33, pay_buf,   row_rgb },
             };
             draw_row_cells(cx, my, row, 4);

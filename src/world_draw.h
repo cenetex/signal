@@ -60,6 +60,9 @@ void draw_signal_borders(void);
 /* --- Compass ring --- */
 void draw_compass_ring(void);
 
+/* --- In-world yellow ring at the tracked contract's next objective --- */
+void draw_tracked_contract_highlight(void);
+
 /* --- Multiplayer rendering --- */
 void draw_remote_players(void);
 void draw_callsigns(void);

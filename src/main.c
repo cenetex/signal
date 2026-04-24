@@ -1295,6 +1295,7 @@ static void render_world(void) {
     draw_npc_chatter();    /* Short radio one-liners near NPC sprites (#291) */
     draw_sell_fx();        /* +$N payout popups floating above stations */
     draw_autopilot_path(); /* Dotted line showing A* path ahead */
+    draw_tracked_contract_highlight();  /* Pulsing ring on the current contract's next objective */
     draw_compass_ring();   /* Navigation compass around player ship */
 
     /* Ring trusses and modules render ON TOP of ships */

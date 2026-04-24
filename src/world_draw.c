@@ -1511,6 +1511,96 @@ void draw_towed_tethers(void) {
 }
 
 /* --- Compass ring: navigation pips around the player ship --- */
+/* Resolve the world-space target the player should go to next for the
+ * currently tracked contract. Returns true + fills *out_pos / *out_radius
+ * when a target exists, false when no contract is tracked or nothing
+ * usable was found. For a TRACTOR contract on raw ore this walks the
+ * same arc the compass pip uses: carrying → station; else nearest
+ * free S-tier fragment; else smallest fracturable rock. */
+static bool resolve_tracked_contract_target(vec2 *out_pos, float *out_radius) {
+    if (g.tracked_contract < 0 || g.tracked_contract >= MAX_CONTRACTS) return false;
+    contract_t *ct = &g.world.contracts[g.tracked_contract];
+    if (!ct->active) return false;
+
+    vec2 target = (ct->action == CONTRACT_TRACTOR && ct->station_index < MAX_STATIONS)
+        ? g.world.stations[ct->station_index].pos : ct->target_pos;
+    float radius = 200.0f;  /* default ring for station / fracture field */
+
+    if (ct->action == CONTRACT_TRACTOR && ct->commodity < COMMODITY_RAW_ORE_COUNT) {
+        const ship_t *ship = &LOCAL_PLAYER.ship;
+        bool carrying = false;
+        for (int t = 0; t < ship->towed_count && !carrying; t++) {
+            int fi = ship->towed_fragments[t];
+            if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
+            const asteroid_t *a = &g.world.asteroids[fi];
+            if (a->active && a->tier == ASTEROID_TIER_S && a->commodity == ct->commodity)
+                carrying = true;
+        }
+        if (!carrying) {
+            float best_d = 1e18f;
+            int best_i = -1;
+            for (int i = 0; i < MAX_ASTEROIDS; i++) {
+                const asteroid_t *a = &g.world.asteroids[i];
+                if (!a->active) continue;
+                if (a->tier != ASTEROID_TIER_S) continue;
+                if (a->commodity != ct->commodity) continue;
+                if (a->last_towed_by >= 0) continue;
+                float d = v2_dist_sq(a->pos, ship->pos);
+                if (d < best_d) { best_d = d; best_i = i; }
+            }
+            if (best_i >= 0) {
+                target = g.world.asteroids[best_i].pos;
+                radius = g.world.asteroids[best_i].radius + 24.0f;
+            } else {
+                asteroid_tier_t best_tier = ASTEROID_TIER_XXL;
+                best_d = 1e18f;
+                best_i = -1;
+                for (int i = 0; i < MAX_ASTEROIDS; i++) {
+                    const asteroid_t *a = &g.world.asteroids[i];
+                    if (!a->active) continue;
+                    if (a->tier == ASTEROID_TIER_S) continue;
+                    if (a->commodity != ct->commodity) continue;
+                    if ((int)a->tier > (int)best_tier) continue;
+                    float d = v2_dist_sq(a->pos, ship->pos);
+                    if ((int)a->tier < (int)best_tier || d < best_d) {
+                        best_tier = a->tier; best_d = d; best_i = i;
+                    }
+                }
+                if (best_i >= 0) {
+                    target = g.world.asteroids[best_i].pos;
+                    radius = g.world.asteroids[best_i].radius + 32.0f;
+                } else {
+                    return false;  /* no fragment, no rock */
+                }
+            }
+        } else if (ct->station_index < MAX_STATIONS) {
+            /* Carrying the fragment — aim at the furnace (station pos). */
+            radius = g.world.stations[ct->station_index].radius + 260.0f;
+        }
+    } else if (ct->action == CONTRACT_FRACTURE) {
+        radius = 180.0f;
+    }
+
+    *out_pos = target;
+    *out_radius = radius;
+    return true;
+}
+
+/* In-world yellow pulsing ring at the tracked contract's current next
+ * objective. Sits in the same world-space pass as the rocks and ships
+ * so the highlight is attached to the object, not a HUD overlay. */
+void draw_tracked_contract_highlight(void) {
+    vec2 target; float radius;
+    if (!resolve_tracked_contract_target(&target, &radius)) return;
+    if (!on_screen(target.x, target.y, radius + 40.0f)) return;
+    float t = g.world.time;
+    float pulse = 0.5f + 0.5f * sinf(t * 2.4f);
+    float r = radius * (1.0f + 0.06f * pulse);
+    /* Double-ring: bright outer, softer inner. */
+    draw_circle_outline(target, r,         40, 1.0f, 0.87f, 0.20f, 0.75f + 0.20f * pulse);
+    draw_circle_outline(target, r + 6.0f,  40, 1.0f, 0.87f, 0.20f, 0.25f);
+}
+
 void draw_compass_ring(void) {
     if (LOCAL_PLAYER.docked) return;
     vec2 ship = LOCAL_PLAYER.ship.pos;

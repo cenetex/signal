@@ -638,6 +638,11 @@ typedef struct {
     contract_action_t action;
     uint8_t station_index;  /* destination (SUPPLY) or issuer (DESTROY/SCAN) */
     commodity_t commodity;  /* what to supply (SUPPLY only) */
+    /* Minimum grade accepted for fulfillment. MINING_GRADE_COMMON = any.
+     * Rare/RATi/commissioned contracts demand matching or better quality
+     * and pay correspondingly (via contract_price × multiplier). Older
+     * saves default to COMMON on load because the field is zero-init. */
+    uint8_t required_grade;
     float quantity_needed;  /* amount (SUPPLY) or radius (SCAN) */
     float base_price;
     float age;
