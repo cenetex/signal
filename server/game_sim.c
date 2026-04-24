@@ -896,16 +896,18 @@ static void step_ship_thrust(ship_t *s, float dt, float thrust_input, vec2 forwa
     }
 }
 
-/* Boost hull drain: 0.1 HP/s baseline, +1.4 HP/s per unit of |turn_input|.
- * Straight-line cruise costs ~1 HP every 10 seconds; yanking the stick at
- * full turn costs ~1.5 HP/s. Silent drain (no DAMAGE event) — emitting
- * one per tick would spam screen-shake and damage audio. If the drain
- * empties the hull, route through emergency_recover_ship so the usual
+/* Boost hull drain: 0.02 HP/s baseline (near-free cruise), +1.4 HP/s per
+ * unit of |turn_input|. Straight-line boost is barely noticeable (~1 HP
+ * per 50s) so haulers with cargo aren't silently bled out. The turn
+ * coefficient is preserved — combat maneuvering (yank + boost) still
+ * costs ~1.5 HP/s. Silent drain (no DAMAGE event) — emitting one per
+ * tick would spam screen-shake and damage audio. If the drain empties
+ * the hull, route through emergency_recover_ship so the usual
  * death/respawn UX fires. */
 static void step_ship_boost_drain(world_t *w, server_player_t *sp, float dt, bool boost, float turn_input) {
     if (!boost || sp->ship.hull <= 0.0f) return;
     float turn_abs = turn_input < 0.0f ? -turn_input : turn_input;
-    float drain = (0.1f + 1.4f * turn_abs) * dt;
+    float drain = (0.02f + 1.4f * turn_abs) * dt;
     sp->ship.hull = fmaxf(0.0f, sp->ship.hull - drain);
     if (sp->ship.hull <= 0.01f) emergency_recover_ship(w, sp);
 }
