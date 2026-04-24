@@ -246,9 +246,10 @@ void rebuild_signal_chain(world_t *w) {
     signal_grid_build(w);
 }
 
-/* Raw signal computation — scans all stations. Used to build the cache
- * and as fallback for positions outside the cached grid. */
-static float signal_strength_raw(const world_t *w, vec2 pos) {
+/* Unboosted signal — pure best-of per-station strength. Used for game
+ * rules (outpost placement, planning) that don't want the overlap boost
+ * to shrink the "fringe" where new stations can go. */
+static float signal_strength_unboosted(const world_t *w, vec2 pos) {
     float best = 0.0f;
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (!station_provides_signal(&w->stations[s])) continue;
@@ -257,6 +258,31 @@ static float signal_strength_raw(const world_t *w, vec2 pos) {
         if (strength > best) best = strength;
     }
     return best;
+}
+
+/* Raw signal computation — scans all stations. Used to build the cache
+ * and as fallback for positions outside the cached grid.
+ *
+ * Overlap boost: when multiple connected stations cover the same position
+ * their signal reinforces each other. The effective strength is the best
+ * per-station strength multiplied by min(overlap_count, 3) and clamped to
+ * 1.0. So two overlapping stations give a 2× boost (extending the reliable
+ * band further out of each circle), three-or-more overlapping stations
+ * cap at 3×, and additional stations past that don't stack further. A
+ * station alone (count = 1) is unchanged. */
+static float signal_strength_raw(const world_t *w, vec2 pos) {
+    float best = 0.0f;
+    int overlap_count = 0;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!station_provides_signal(&w->stations[s])) continue;
+        float dist = sqrtf(v2_dist_sq(pos, w->stations[s].pos));
+        float strength = fmaxf(0.0f, 1.0f - (dist / w->stations[s].signal_range));
+        if (strength > 0.0f) overlap_count++;
+        if (strength > best) best = strength;
+    }
+    if (overlap_count <= 1) return best;
+    int boost = overlap_count < 3 ? overlap_count : 3;
+    return fminf(1.0f, best * (float)boost);
 }
 
 /* Build/rebuild the signal cache grid. Called after topology changes
@@ -323,8 +349,11 @@ float signal_strength_at(const world_t *w, vec2 pos) {
 /* ================================================================== */
 
 bool can_place_outpost(const world_t *w, vec2 pos) {
-    /* Must be within signal range of an existing station */
-    float sig = signal_strength_at(w, pos);
+    /* Unboosted signal is the planning reference. The overlap boost
+     * applies to player-facing signal quality; for placement it would
+     * otherwise inflate the "settled ring" and shrink the fringe below
+     * what this rule is trying to preserve. */
+    float sig = signal_strength_unboosted(w, pos);
     if (sig <= 0.0f) return false;
     /* Must NOT be deep inside an existing station's coverage — forces
      * new outposts to the fringe so the network extends instead of
@@ -2466,7 +2495,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 too_close = true; break;
             }
         }
-        float plan_sig = signal_strength_at(w, pos);
+        /* Planning uses the unboosted signal — same reason as can_place_outpost. */
+        float plan_sig = signal_strength_unboosted(w, pos);
         /* Reject: too close, no signal, or deep in an existing station's
          * core coverage (>= OPERATIONAL band). */
         if (!too_close && plan_sig > 0.0f && plan_sig < OUTPOST_MAX_SIGNAL) {

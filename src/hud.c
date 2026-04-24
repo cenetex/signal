@@ -454,7 +454,8 @@ static struct {
     uint32_t image_id[HULL_FOG_LEVELS];
     uint32_t view_id[HULL_FOG_LEVELS];
     uint32_t sampler_id;
-    uint32_t blend_pip_id; /* sgl pipeline with alpha blending enabled */
+    uint32_t blend_pip_id;    /* sgl pipeline with alpha blending enabled */
+    uint32_t additive_pip_id; /* sgl pipeline with additive blending (SRC_ALPHA, ONE) */
 } hull_fog;
 
 static float fog_smoothstep(float edge0, float edge1, float x) {
@@ -491,6 +492,22 @@ void hull_fog_init(void) {
         },
     });
     hull_fog.blend_pip_id = blend_pip.id;
+
+    /* Additive pipeline for "light through blood" — ship's own laser /
+     * engine colors bloom through the red fog without overwriting it. */
+    sgl_pipeline additive_pip = sgl_make_pipeline(&(sg_pipeline_desc){
+        .colors[0] = {
+            .write_mask = SG_COLORMASK_RGBA,
+            .blend = {
+                .enabled = true,
+                .src_factor_rgb = SG_BLENDFACTOR_SRC_ALPHA,
+                .dst_factor_rgb = SG_BLENDFACTOR_ONE,
+                .src_factor_alpha = SG_BLENDFACTOR_ONE,
+                .dst_factor_alpha = SG_BLENDFACTOR_ONE,
+            },
+        },
+    });
+    hull_fog.additive_pip_id = additive_pip.id;
 
     /* Generate one radial vignette per damage tier. The "clear hole" in
      * the middle gets smaller and the surrounding fog gets darker as
@@ -584,10 +601,11 @@ static void draw_hull_warning_overlay(void) {
               + 0.15f * sinf(t * 1.07f + 2.7f);
     float pulse = 0.92f + 0.08f * wob + 0.04f * damage;
 
-    /* Dark blood red tint. Brightens slightly with damage. */
-    float r = 0.20f + 0.25f * damage;
-    float g = 0.005f + 0.01f * damage;
-    float b = 0.01f + 0.02f * damage;
+    /* Dark blood red tint. Brightens slightly with damage.
+     * Locals prefixed with tint_ to avoid shadowing the global `g` game_t. */
+    float tint_r = 0.20f + 0.25f * damage;
+    float tint_g = 0.005f + 0.01f * damage;
+    float tint_b = 0.01f + 0.02f * damage;
 
     /* Push our alpha-blending pipeline so the texture's alpha actually
      * affects the framebuffer. The default sokol_gl pipeline disables
@@ -603,7 +621,7 @@ static void draw_hull_warning_overlay(void) {
             (sg_view){ hull_fog.view_id[t0] },
             (sg_sampler){ hull_fog.sampler_id });
         sgl_begin_quads();
-        sgl_c4f(r, g, b, a);
+        sgl_c4f(tint_r, tint_g, tint_b, a);
         sgl_v2f_t2f(0.0f,     0.0f,     0.0f, 0.0f);
         sgl_v2f_t2f(screen_w, 0.0f,     1.0f, 0.0f);
         sgl_v2f_t2f(screen_w, screen_h, 1.0f, 1.0f);
@@ -618,7 +636,7 @@ static void draw_hull_warning_overlay(void) {
             (sg_view){ hull_fog.view_id[t1] },
             (sg_sampler){ hull_fog.sampler_id });
         sgl_begin_quads();
-        sgl_c4f(r, g, b, a);
+        sgl_c4f(tint_r, tint_g, tint_b, a);
         sgl_v2f_t2f(0.0f,     0.0f,     0.0f, 0.0f);
         sgl_v2f_t2f(screen_w, 0.0f,     1.0f, 0.0f);
         sgl_v2f_t2f(screen_w, screen_h, 1.0f, 1.0f);
@@ -627,6 +645,119 @@ static void draw_hull_warning_overlay(void) {
     }
 
     sgl_disable_texture();
+
+    /* ------------------------------------------------------------------
+     * Light through the blood — ship-local emitters bloom through the fog.
+     * The red vignette is the "blood" veil; its signature cold-space feel
+     * gets warmer and more alive when the laser fires or the engine lights
+     * up. Radial glows are additive-blended on top of the vignette so the
+     * base color stays intact — the laser color simply adds into it, same
+     * way a lamp tints fog in real life.
+     * Scales with damage (no fog ⇒ no bloom) and skipped entirely while
+     * docked so the dock's blue repair tint doesn't get overwritten.
+     * ------------------------------------------------------------------ */
+    if (damage > 0.10f && !LOCAL_PLAYER.docked) {
+        float view_w = cam_right() - cam_left();
+        float view_h = cam_bottom() - cam_top();
+        if (view_w > 1.0f && view_h > 1.0f) {
+            float sx = (LOCAL_PLAYER.ship.pos.x - cam_left()) / view_w * screen_w;
+            float sy = (LOCAL_PLAYER.ship.pos.y - cam_top())  / view_h * screen_h;
+            float fwd_x = cosf(LOCAL_PLAYER.ship.angle);
+            float fwd_y = sinf(LOCAL_PLAYER.ship.angle);
+
+            sgl_load_pipeline((sgl_pipeline){ hull_fog.additive_pip_id });
+
+            /* Forward glow — laser. Matches draw_beam's color branches. */
+            if (LOCAL_PLAYER.beam_active) {
+                float br, bg, bb;
+                if (LOCAL_PLAYER.scan_active) {
+                    br = 0.30f; bg = 0.70f; bb = 1.00f;
+                } else if (LOCAL_PLAYER.beam_hit && LOCAL_PLAYER.beam_ineffective) {
+                    br = 1.00f; bg = 0.20f; bb = 0.15f;
+                } else if (LOCAL_PLAYER.beam_hit) {
+                    br = 0.45f; bg = 1.00f; bb = 0.92f;
+                } else {
+                    br = 0.90f; bg = 0.75f; bb = 0.30f;
+                }
+                float gx = sx + fwd_x * 40.0f;
+                float gy = sy + fwd_y * 40.0f;
+                float rad = 260.0f;
+                float a_center = 0.35f * damage;
+                const int N = 24;
+                sgl_begin_triangles();
+                for (int i = 0; i < N; i++) {
+                    float a0 = (float)i / (float)N * 6.2831853f;
+                    float a1 = (float)(i + 1) / (float)N * 6.2831853f;
+                    sgl_c4f(br, bg, bb, a_center);
+                    sgl_v2f(gx, gy);
+                    sgl_c4f(br, bg, bb, 0.0f);
+                    sgl_v2f(gx + cosf(a0) * rad, gy + sinf(a0) * rad);
+                    sgl_c4f(br, bg, bb, 0.0f);
+                    sgl_v2f(gx + cosf(a1) * rad, gy + sinf(a1) * rad);
+                }
+                sgl_end();
+            }
+
+            /* Tractor glow — omnidirectional mint from the ship whenever the
+             * tractor field is engaged or a fragment is leashed. Mirrors
+             * draw_ship_tractor_field's PAL_F_SIGNAL_MINT base color. */
+            if (LOCAL_PLAYER.ship.tractor_active || LOCAL_PLAYER.ship.towed_count > 0) {
+                float tr_r = 0.44f, tr_g = 1.00f, tr_b = 0.84f;
+                float rad = 200.0f;
+                float a_center = 0.22f * damage;
+                const int N = 24;
+                sgl_begin_triangles();
+                for (int i = 0; i < N; i++) {
+                    float a0 = (float)i / (float)N * 6.2831853f;
+                    float a1 = (float)(i + 1) / (float)N * 6.2831853f;
+                    sgl_c4f(tr_r, tr_g, tr_b, a_center);
+                    sgl_v2f(sx, sy);
+                    sgl_c4f(tr_r, tr_g, tr_b, 0.0f);
+                    sgl_v2f(sx + cosf(a0) * rad, sy + sinf(a0) * rad);
+                    sgl_c4f(tr_r, tr_g, tr_b, 0.0f);
+                    sgl_v2f(sx + cosf(a1) * rad, sy + sinf(a1) * rad);
+                }
+                sgl_end();
+            }
+
+            /* Aft glow — engine flame. Mirrors draw_ship's flame color logic. */
+            if (g.thrusting) {
+                bool boost_on = g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT]
+                             || g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT];
+                float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+                float fr, fg_, fb;
+                if (boost_on) {
+                    fr = 0.35f; fg_ = 0.80f; fb = 1.00f;
+                } else if (sig < SIGNAL_BAND_FRONTIER) {
+                    fr = 1.00f; fg_ = 0.28f; fb = 0.18f;
+                } else if (sig < SIGNAL_BAND_FRINGE) {
+                    fr = 1.00f; fg_ = 0.55f; fb = 0.20f;
+                } else {
+                    fr = 1.00f; fg_ = 0.74f; fb = 0.24f;
+                }
+                /* Flicker sync with the flame so the bloom pulses in step. */
+                float flicker = 0.85f + 0.15f * sinf(g.world.time * 42.0f);
+                float gx = sx - fwd_x * 36.0f;
+                float gy = sy - fwd_y * 36.0f;
+                float rad = 220.0f;
+                float a_center = 0.32f * damage * flicker;
+                const int N = 24;
+                sgl_begin_triangles();
+                for (int i = 0; i < N; i++) {
+                    float a0 = (float)i / (float)N * 6.2831853f;
+                    float a1 = (float)(i + 1) / (float)N * 6.2831853f;
+                    sgl_c4f(fr, fg_, fb, a_center);
+                    sgl_v2f(gx, gy);
+                    sgl_c4f(fr, fg_, fb, 0.0f);
+                    sgl_v2f(gx + cosf(a0) * rad, gy + sinf(a0) * rad);
+                    sgl_c4f(fr, fg_, fb, 0.0f);
+                    sgl_v2f(gx + cosf(a1) * rad, gy + sinf(a1) * rad);
+                }
+                sgl_end();
+            }
+        }
+    }
+
     sgl_pop_pipeline();
 }
 

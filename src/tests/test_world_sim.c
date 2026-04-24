@@ -739,12 +739,32 @@ TEST(test_signal_strength_at_station) {
 }
 
 TEST(test_signal_strength_falls_off) {
-    /* Signal should decrease linearly from 1.0 at station to 0.0 at range edge */
+    /* Signal should decrease linearly from 1.0 at station to 0.0 at range edge.
+     * Sample south of Prospect Refinery where Kepler/Helios don't reach, so
+     * the overlap boost (multi-station reinforcement) isn't in play. */
     WORLD_DECL;
     world_reset(&w);
-    /* Station 0 at (0, -2400), signal_range = 18000. Point 9000u to the right. */
-    float half = signal_strength_at(&w, v2_add(w.stations[0].pos, v2(9000.0f, 0.0f)));
+    /* Station 0 at (0, -2400), signal_range = 18000. Point 12000u south —
+     * (0, -14400) — is comfortably outside Kepler (-3200, 2300) and
+     * Helios (3200, 2300) 15000-unit ranges, so only Prospect covers it
+     * (and the bilinear cache cells around it are also single-station,
+     * so the overlap boost doesn't leak in via interpolation). */
+    float half = signal_strength_at(&w, v2_add(w.stations[0].pos, v2(0.0f, -12000.0f)));
     ASSERT(half > 0.3f && half < 0.7f);
+}
+
+TEST(test_signal_overlap_boosts_strength) {
+    /* Overlap mechanic: two connected stations covering the same point
+     * give 2x the best single-station strength; three-or-more overlap
+     * caps at 3x. The starter triangle overlaps all three signals at the
+     * center, so the boost saturates there. */
+    WORLD_DECL;
+    world_reset(&w);
+    /* Centroid of the three starter stations — covered by all three. */
+    vec2 centroid = v2((w.stations[0].pos.x + w.stations[1].pos.x + w.stations[2].pos.x) / 3.0f,
+                       (w.stations[0].pos.y + w.stations[1].pos.y + w.stations[2].pos.y) / 3.0f);
+    float boosted = signal_strength_at(&w, centroid);
+    ASSERT_EQ_FLOAT(boosted, 1.0f, 0.01f);
 }
 
 TEST(test_signal_zero_outside_range) {
@@ -1015,6 +1035,7 @@ void register_world_sim_signal_tests(void) {
     TEST_SECTION("\nSignal range (#82):\n");
     RUN(test_signal_strength_at_station);
     RUN(test_signal_strength_falls_off);
+    RUN(test_signal_overlap_boosts_strength);
     RUN(test_signal_zero_outside_range);
     RUN(test_signal_max_of_stations);
     RUN(test_ship_thrust_scales_with_signal);

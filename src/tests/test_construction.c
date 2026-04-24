@@ -28,9 +28,12 @@ TEST(test_outpost_extends_signal_range) {
 
     int slot = test_place_outpost_via_tow(&w, &w.players[0], outpost_pos);
     ASSERT(slot >= 3);
-    /* Scaffold doesn't provide signal — only the parent refinery covers this point */
+    /* Scaffold doesn't provide signal — only the parent refinery + a sliver
+     * of Helios cover this far-east fringe point. The overlap boost applies
+     * (2 stations), so the effective strength can reach ~0.2-0.3 even though
+     * each individual contribution is near the edge. */
     ASSERT(signal_strength_at(&w, outpost_pos) > 0.0f);
-    ASSERT(signal_strength_at(&w, outpost_pos) < 0.2f);
+    ASSERT(signal_strength_at(&w, outpost_pos) < 0.3f);
     /* Complete construction to activate signal */
     w.stations[slot].scaffold = false;
     w.stations[slot].scaffold_progress = 1.0f;
