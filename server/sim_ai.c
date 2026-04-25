@@ -537,10 +537,23 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     }
                 }
                 step_module_delivery(w, dest, npc->dest_station, &hauler_ship, COMMODITY_COUNT);
-                /* Put remaining back */
+                /* Put remaining back. The float was drained into
+                 * module_input by step_module_delivery; we have to drain
+                 * the matching manifest entries too or the BUY picker
+                 * (manifest-only) will keep advertising stock that the
+                 * server-side float check (game_sim.c try_buy_product)
+                 * sees as 0 and silently rejects. */
                 for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
                     float consumed = dest->inventory[c] - hauler_ship.cargo[c];
-                    if (consumed > 0.01f) dest->inventory[c] -= consumed;
+                    if (consumed > 0.01f) {
+                        dest->inventory[c] -= consumed;
+                        int whole = (int)floorf(consumed + 0.0001f);
+                        if (whole > 0) {
+                            manifest_consume_by_commodity(&dest->manifest,
+                                                          (commodity_t)c, whole);
+                            dest->named_ingots_dirty = true;
+                        }
+                    }
                 }
             }
             npc->state = NPC_STATE_RETURN_TO_STATION;

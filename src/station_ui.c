@@ -702,6 +702,53 @@ static void draw_trade_view(const station_ui_state_t *ui,
 
     my += draw_section_header(cx, my, inner_right, "MARKET", HDR_TRADE);
 
+    /* Supply strip — six commodity slots showing this station's stock.
+     * Each cell is colored by the commodity when the station has the
+     * matching producing module; gray when it doesn't. The number is
+     * floored stock. Lets the player scan a station's tier role at a
+     * glance ("Helios is making lasers + tractors but no frames"). */
+    {
+        struct { commodity_t c; module_type_t producer; const char *code; } slots[6] = {
+            { COMMODITY_FERRITE_INGOT,  MODULE_FURNACE,      "FE" },
+            { COMMODITY_CUPRITE_INGOT,  MODULE_FURNACE_CU,   "CU" },
+            { COMMODITY_CRYSTAL_INGOT,  MODULE_FURNACE_CR,   "CR" },
+            { COMMODITY_FRAME,          MODULE_FRAME_PRESS,  "FM" },
+            { COMMODITY_LASER_MODULE,   MODULE_LASER_FAB,    "LM" },
+            { COMMODITY_TRACTOR_MODULE, MODULE_TRACTOR_FAB,  "TM" },
+        };
+        const float cell_w = 8.0f;
+        const float slot_w = cell_w * 7.0f; /* "FEx99 " = 6 chars + sep */
+        for (int i = 0; i < 6; i++) {
+            float sx = cx + (float)i * slot_w;
+            int stock = (int)floorf(st->inventory[slots[i].c] + 0.0001f);
+            bool has_module = station_has_module(st, slots[i].producer);
+            uint8_t r, g, b;
+            if (!has_module) {
+                /* No producing module: dark gray label, em-dash for stock. */
+                r = 90; g = 90; b = 90;
+            } else if (stock <= 0) {
+                /* Module present but bone dry: faded commodity color. */
+                commodity_color_u8(slots[i].c, &r, &g, &b);
+                r = (uint8_t)(r / 3); g = (uint8_t)(g / 3); b = (uint8_t)(b / 3);
+            } else {
+                /* In stock: full commodity color. */
+                commodity_color_u8(slots[i].c, &r, &g, &b);
+            }
+            sdtx_color3b(r, g, b);
+            sdtx_pos(ui_text_pos(sx), ui_text_pos(my));
+            char cell[8];
+            if (!has_module) {
+                snprintf(cell, sizeof(cell), "%s --", slots[i].code);
+            } else if (stock > 99) {
+                snprintf(cell, sizeof(cell), "%s99+", slots[i].code);
+            } else {
+                snprintf(cell, sizeof(cell), "%s %2d", slots[i].code, stock);
+            }
+            sdtx_puts(cell);
+        }
+        my += row_h;
+    }
+
     /* Build the unified row list. BUY rows first (station's offering),
      * SELL rows after (what the station buys from the hold). */
     trade_row_t rows[TRADE_MAX_ROWS];
