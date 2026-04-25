@@ -35,11 +35,15 @@ RUN apt-get update && apt-get install -y --no-install-recommends cmake git build
     && rm -rf /var/lib/apt/lists/*
 COPY . /src
 RUN GIT_HASH=$(git -C /src rev-parse --short HEAD 2>/dev/null || echo local) \
-    && cmake -S /src -B /src/build -DGIT_HASH=$GIT_HASH \
+    && cmake -S /src -B /src/build -DBUILD_SERVER_ONLY=ON -DGIT_HASH=$GIT_HASH \
     && cmake --build /src/build --target signal_server --parallel
 
 # ----- stage 3: runtime -----------------------------------------------------
-FROM python:3.12-slim AS runtime
+# Pin to linux/amd64 so the native signal_server binary (built in the
+# emscripten/emsdk amd64 image) executes natively on amd64 hosts and via
+# qemu on arm64 hosts. Without this pin, arm64 Macs pull an arm64 python
+# base and the amd64 binary fails with "ld-linux-x86-64.so.2 not found".
+FROM --platform=linux/amd64 python:3.12-slim AS runtime
 WORKDIR /app
 
 # Only what the server binary needs at runtime (libc, libm are in slim).

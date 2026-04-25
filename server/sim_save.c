@@ -60,7 +60,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 29  /* #339 slice A: real manifest serialization */
+#define SAVE_VERSION 30  /* contract.required_grade persisted */
 #define MIN_SAVE_VERSION 20  /* migrate v20 by mapping old module_buffer → input */
 
 /* Set by world_load() before read_station() so per-station readers know
@@ -492,6 +492,7 @@ static bool write_contract(FILE *f, const contract_t *c) {
     WRITE_FIELD(f, c->action);
     WRITE_FIELD(f, c->station_index);
     WRITE_FIELD(f, c->commodity);
+    WRITE_FIELD(f, c->required_grade);
     WRITE_FIELD(f, c->quantity_needed);
     WRITE_FIELD(f, c->base_price);
     WRITE_FIELD(f, c->age);
@@ -506,6 +507,12 @@ static bool read_contract(FILE *f, contract_t *c) {
     READ_FIELD(f, c->action);
     READ_FIELD(f, c->station_index);
     READ_FIELD(f, c->commodity);
+    /* v30+ persists required_grade. Older saves default to COMMON. */
+    if (g_loaded_save_version >= 30) {
+        READ_FIELD(f, c->required_grade);
+    } else {
+        c->required_grade = (uint8_t)MINING_GRADE_COMMON;
+    }
     READ_FIELD(f, c->quantity_needed);
     READ_FIELD(f, c->base_price);
     READ_FIELD(f, c->age);

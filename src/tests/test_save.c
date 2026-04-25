@@ -451,7 +451,8 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
 /* v23: station credit pool added (#312) — +4 bytes per station (8×4=32). */
 /* v29: +2 bytes per station (uint16 manifest count) = +128 bytes for all
  * MAX_STATIONS=64 slots. Empty stations carry only the count; no units. */
-#define EXPECTED_SAVE_SIZE 268756 /* v29: #339 slice A manifest count header */
+/* v30: +1 byte per contract (required_grade) = +24 for MAX_CONTRACTS=24. */
+#define EXPECTED_SAVE_SIZE 268780 /* v30: contract.required_grade persisted */
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -488,7 +489,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 29);
+    ASSERT_EQ_INT((int)version, 30);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

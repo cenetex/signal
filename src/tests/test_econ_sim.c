@@ -127,8 +127,11 @@ TEST(test_econ_sim_credit_circulation) {
         + w.stations[1].credit_pool
         + w.stations[2].credit_pool;
     /* Total = all station pools + all player ledger balances.
-     * initial_pool_0 already reflects the 50cr seed deduction (player_init_ship ran). */
-    float initial_seed = 50.0f; /* from player_init_ship → ledger_earn at station 0 */
+     * initial_pool_0 already reflects the spawn fee being added to the
+     * pool by player_seed_credits — so the player's starting balance
+     * is the negative of that fee, and conservation is the sum of
+     * pools + the negative seed. */
+    float initial_seed = -(float)station_spawn_fee(&w.stations[0]);
     float initial_total = initial_seed + initial_pool_0 + initial_pool_1 + w.stations[2].credit_pool;
     printf("    total system credits: %.0f (started at %.0f)\n",
         total_credits, initial_total);
@@ -233,22 +236,24 @@ TEST(test_bug312_3_init_ship_does_not_seed_with_zero_token) {
     ASSERT_EQ_INT(w.stations[0].ledger_count, ledger_before);
     ASSERT_EQ_FLOAT(w.stations[0].credit_pool, pool_before, 0.001f);
 
-    /* Now set the real token and seed — credits should land on the
-     * real token, and no zero-token entry should exist. */
+    /* Now set the real token and seed — the spawn-fee debit should
+     * land on the real token, push it into debt, and no zero-token
+     * entry should exist. */
     uint8_t token[8] = {0x42,1,2,3,4,5,6,7};
     memcpy(w.players[0].session_token, token, 8);
     w.players[0].session_ready = true;
+    int fee = station_spawn_fee(&w.stations[0]);
     player_seed_credits(&w.players[0], &w);
 
-    ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0], token), 50.0f, 0.001f);
+    ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0], token), -(float)fee, 0.001f);
     uint8_t zero[8] = {0};
     ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0], zero), 0.0f, 0.001f);
-    ASSERT_EQ_FLOAT(w.stations[0].credit_pool, pool_before - 50.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.stations[0].credit_pool, pool_before + (float)fee, 0.001f);
 
-    /* Double-seed is idempotent (guard against credit leak on reconnect). */
+    /* Re-seed is idempotent (guard against double-charge on reconnect). */
     player_seed_credits(&w.players[0], &w);
-    ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0], token), 50.0f, 0.001f);
-    ASSERT_EQ_FLOAT(w.stations[0].credit_pool, pool_before - 50.0f, 0.001f);
+    ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0], token), -(float)fee, 0.001f);
+    ASSERT_EQ_FLOAT(w.stations[0].credit_pool, pool_before + (float)fee, 0.001f);
 }
 
 TEST(test_econ_invariant_npc_only_conservation) {
@@ -354,10 +359,101 @@ TEST(test_econ_invariant_player_session_conservation) {
     #undef ASSERT_CONSERVED
 }
 
+/* Locks the contract that grade-aware sell pays a real bonus for high-
+ * grade ingots AND that the units the pricing walk priced are the
+ * units the manifest transfer actually moves. Compares two identical
+ * runs that differ only in one ingot's grade — the bonus is the
+ * delta, immune to dynamic-price scaling. */
+static float run_sell_with_grades(int g0, int g1, int g2,
+                                  int *out_common, int *out_rare,
+                                  float *out_ship_inventory_remaining) {
+    world_t *w = (world_t *)calloc(1, sizeof(world_t));
+    if (!w) return -1.0f;
+    world_reset(w);
+    /* Drain auto-spawned contracts so the fab-fallback branch handles
+     * the sell (deterministic price = station_buy_price, not contract). */
+    for (int k = 0; k < MAX_CONTRACTS; k++) w->contracts[k].active = false;
+    int kepler = -1;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (w->stations[i].id == 0) continue;
+        if (station_consumes(&w->stations[i], COMMODITY_FERRITE_INGOT)) { kepler = i; break; }
+    }
+    if (kepler < 0) { free(w); return -1.0f; }
+    station_t *st = &w->stations[kepler];
+    st->inventory[COMMODITY_FERRITE_INGOT] = 0.0f;
+
+    uint8_t token[8] = {7,7,7,7,7,7,7,7};
+    memcpy(w->players[0].session_token, token, 8);
+    w->players[0].session_ready = true;
+    player_init_ship(&w->players[0], w);
+    w->players[0].connected = true;
+    w->players[0].docked = true;
+    w->players[0].current_station = kepler;
+    w->players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 3.0f;
+    ship_manifest_bootstrap(&w->players[0].ship);
+    cargo_unit_t u; memset(&u, 0, sizeof(u));
+    u.commodity = COMMODITY_FERRITE_INGOT; u.kind = CARGO_KIND_INGOT;
+    u.grade = (uint8_t)g0; u.pub[0] = 1; manifest_push(&w->players[0].ship.manifest, &u);
+    u.grade = (uint8_t)g1; u.pub[0] = 2; manifest_push(&w->players[0].ship.manifest, &u);
+    u.grade = (uint8_t)g2; u.pub[0] = 3; manifest_push(&w->players[0].ship.manifest, &u);
+
+    float bal_before = ledger_balance(st, token);
+    w->players[0].input.service_sell = true;
+    world_sim_step(w, SIM_DT);
+    w->players[0].input.service_sell = false;
+    float earned = ledger_balance(st, token) - bal_before;
+
+    int common = 0, rare = 0;
+    for (uint16_t i = 0; i < st->manifest.count; i++) {
+        if (st->manifest.units[i].commodity != COMMODITY_FERRITE_INGOT) continue;
+        if (st->manifest.units[i].grade == MINING_GRADE_COMMON) common++;
+        if (st->manifest.units[i].grade == MINING_GRADE_RARE)   rare++;
+    }
+    if (out_common) *out_common = common;
+    if (out_rare)   *out_rare   = rare;
+    if (out_ship_inventory_remaining)
+        *out_ship_inventory_remaining = w->players[0].ship.cargo[COMMODITY_FERRITE_INGOT];
+    free(w);
+    return earned;
+}
+
+TEST(test_grade_aware_sell_pays_per_unit_grade) {
+    int common_a = 0, rare_a = 0, common_b = 0, rare_b = 0;
+    float remain_a = 0, remain_b = 0;
+
+    /* Run A: 3 commons. Run B: 2 commons + 1 rare in the middle. */
+    float earned_all_common = run_sell_with_grades(
+        MINING_GRADE_COMMON, MINING_GRADE_COMMON, MINING_GRADE_COMMON,
+        &common_a, &rare_a, &remain_a);
+    float earned_with_rare = run_sell_with_grades(
+        MINING_GRADE_COMMON, MINING_GRADE_RARE, MINING_GRADE_COMMON,
+        &common_b, &rare_b, &remain_b);
+
+    /* Both runs delivered all 3 units to station manifest with grades
+     * preserved. Proves the transfer walked the same units the pricing
+     * walk priced — if it had reordered, station_rare would land in
+     * the wrong slot or stay 0. */
+    ASSERT_EQ_FLOAT(remain_a, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(remain_b, 0.0f, 0.001f);
+    ASSERT_EQ_INT(common_a, 3);
+    ASSERT_EQ_INT(rare_a,   0);
+    ASSERT_EQ_INT(common_b, 2);
+    ASSERT_EQ_INT(rare_b,   1);
+
+    /* Run B = run A + (rare_mult - 1.0) * base on the rare unit. With
+     * rare_mult = 2.0, the bonus equals one common's pay — earned_b
+     * must be ~4/3 of earned_a (within 5% to absorb price-curve noise
+     * from the extra inventory unit on the second run). */
+    ASSERT(earned_with_rare > earned_all_common + 0.5f);
+    float ratio = earned_with_rare / earned_all_common;
+    ASSERT(ratio > 1.25f && ratio < 1.45f);
+}
+
 void register_econ_sim_sim_tests(void) {
     TEST_SECTION("\nEconomy simulations:\n");
     RUN(test_econ_sim_npc_only_5min);
     RUN(test_econ_sim_credit_circulation);
+    RUN(test_grade_aware_sell_pays_per_unit_grade);
 }
 
 void register_econ_sim_bug312_tests(void) {

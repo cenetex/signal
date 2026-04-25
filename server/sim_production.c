@@ -483,14 +483,12 @@ void step_furnace_smelting(world_t *w, float dt) {
             /* Wait out active, unresolved fracture claims before paying out. */
             if (claim_state->active && !claim_state->resolved) continue;
 
-            /* M5: refuse smelt when the station's output bin is already full.
-             * Fragment stays in the beam (smelt_progress capped at 1.0) and
-             * will fire next tick once space frees up — creates visible back-
-             * pressure instead of silently over-capping the inventory float. */
-            commodity_t ingot_peek = commodity_refined_form(a->commodity);
-            commodity_t output_peek = (ingot_peek != a->commodity) ? ingot_peek : a->commodity;
-            float space_peek = MAX_PRODUCT_STOCK - st->inventory[output_peek];
-            if (space_peek < a->ore - 0.01f) continue;
+            /* M5 backpressure removed: it stuck fragments on the beam
+             * forever when the station's output bin filled up (e.g.
+             * Prospect with no local ferrite consumer). UX bias is to
+             * clear the player's tractor — let the smelt run and clamp
+             * the inventory below; overshoot is lost to atmospheric
+             * exhaust but the player keeps the payout. */
 
             /* M3: scan all matching contracts (was break-on-first). Pick the
              * contract whose price is highest above the station buy price. */
@@ -601,11 +599,16 @@ void step_furnace_smelting(world_t *w, float dt) {
                 }
             }
 
-            /* Smelt: ore -> ingot in station inventory */
+            /* Smelt: ore -> ingot in station inventory. Clamp at the
+             * stockpile cap — overshoot is lost (and the manifest dual-
+             * write below sees a smaller delta). The player still gets
+             * paid for the full ore value via the ledger above. */
             commodity_t ingot = commodity_refined_form(a->commodity);
             commodity_t output = (ingot != a->commodity) ? ingot : a->commodity;
             float stock_before = st->inventory[output];
             st->inventory[output] += a->ore;
+            if (st->inventory[output] > MAX_PRODUCT_STOCK)
+                st->inventory[output] = MAX_PRODUCT_STOCK;
 
             /* Dual-write discrete units for the floored stock delta so
              * manifest counts stay aligned with the legacy float path.

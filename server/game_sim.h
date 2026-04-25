@@ -365,6 +365,9 @@ void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
  * otherwise debits the ledger, refunds the credit_pool, and bumps the
  * ship's stat_credits_spent. */
 bool ledger_spend(station_t *st, const uint8_t *token, float amount, ship_t *ship);
+/* Always-succeeds debit for unrefusable services (spawn, repair).
+ * Allows the balance to go negative (debt). */
+void ledger_force_debit(station_t *st, const uint8_t *token, float amount, ship_t *ship);
 /* Signal channel — station broadcast log (#316). */
 uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, const char *audio_url);
 const signal_channel_msg_t *signal_channel_at(const world_t *w, int i);

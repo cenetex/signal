@@ -46,8 +46,23 @@ void activate_outpost(world_t *w, int station_idx) {
     st->scaffold = false;
     st->scaffold_progress = 1.0f;
     st->signal_range = OUTPOST_SIGNAL_RANGE;
-    /* First module: signal relay on ring 1, orbiting the placement point */
-    add_module_at(st, MODULE_SIGNAL_RELAY, 1, 0);
+    /* The signal relay module was placed when the player towed the
+     * relay-core seed here in place_towed_scaffold. Activation just
+     * promotes it (and the dock + any other founding scaffolds) from
+     * pending → built. Fallback: if no relay is present (legacy save
+     * or NPC-built outpost), add one so the station still works. */
+    bool have_relay = false;
+    for (int m = 0; m < st->module_count; m++) {
+        if (st->modules[m].type == MODULE_SIGNAL_RELAY) {
+            st->modules[m].scaffold = false;
+            st->modules[m].build_progress = 1.0f;
+            have_relay = true;
+        } else if (st->modules[m].type == MODULE_DOCK) {
+            st->modules[m].scaffold = false;
+            st->modules[m].build_progress = 1.0f;
+        }
+    }
+    if (!have_relay) add_module_at(st, MODULE_SIGNAL_RELAY, 1, 0);
     st->arm_count = 1;
     st->arm_speed[0] = STATION_RING_SPEED;
     rebuild_station_services(st);

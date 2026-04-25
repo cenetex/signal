@@ -56,6 +56,34 @@ static inline bool station_has_module(const station_t *st, module_type_t type) {
     return false;
 }
 
+/* How many rings of the station are populated with active modules?
+ * Returns 1..STATION_NUM_RINGS. Empty stations report 1 (the inner
+ * dock ring is always assumed to exist). Used to scale the docking
+ * spawn fee — bigger stations charge more. */
+static inline int station_max_ring(const station_t *st) {
+    int max = 1;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].scaffold) continue;
+        int r = (int)st->modules[i].ring;
+        if (r > max && r <= STATION_NUM_RINGS) max = r;
+    }
+    return max;
+}
+
+/* Spawn / re-dock fee charged when a player first establishes a
+ * ledger entry at this station. Scales with ring count: tier-1
+ * outposts are cheap, full 3-ring hubs are premium. The fee is
+ * debited even if the player has no balance, putting them into
+ * debt — earn it back by working. */
+static inline int station_spawn_fee(const station_t *st) {
+    switch (station_max_ring(st)) {
+        case 1:  return 50;
+        case 2:  return 100;
+        case 3:  return 300;
+        default: return 50;
+    }
+}
+
 /* Returns true if the station consumes this commodity as production input. */
 static inline bool station_consumes(const station_t *st, commodity_t c) {
     switch (c) {

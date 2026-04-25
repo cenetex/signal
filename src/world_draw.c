@@ -1574,11 +1574,50 @@ static bool resolve_tracked_contract_target(vec2 *out_pos, float *out_radius) {
                 }
             }
         } else if (ct->station_index < MAX_STATIONS) {
-            /* Carrying the fragment — aim at the furnace (station pos). */
-            radius = g.world.stations[ct->station_index].radius + 260.0f;
+            /* Carrying the fragment — aim at the matching furnace module's
+             * actual world position, not the station center. The furnace
+             * is what eats the ore; the player needs to fly that ring. */
+            const station_t *st = &g.world.stations[ct->station_index];
+            module_type_t want = (ct->commodity == COMMODITY_FERRITE_ORE) ? MODULE_FURNACE
+                              : (ct->commodity == COMMODITY_CUPRITE_ORE) ? MODULE_FURNACE_CU
+                              : (ct->commodity == COMMODITY_CRYSTAL_ORE) ? MODULE_FURNACE_CR
+                              : (module_type_t)-1;
+            bool found_mod = false;
+            for (int m = 0; m < st->module_count; m++) {
+                if (st->modules[m].scaffold) continue;
+                if (st->modules[m].type != want) continue;
+                target = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
+                radius = 22.0f;  /* tight ring around the furnace body */
+                found_mod = true;
+                break;
+            }
+            if (!found_mod) {
+                /* Fallback: ring the station body itself. */
+                target = st->pos;
+                radius = st->radius + 20.0f;
+            }
         }
     } else if (ct->action == CONTRACT_FRACTURE) {
-        radius = 180.0f;
+        /* Ring the nearest non-S rock of the contract's commodity rather
+         * than ct->target_pos (often a stale station coord). Distance
+         * only — any crackable rock will do. */
+        const ship_t *ship = &LOCAL_PLAYER.ship;
+        float best_d = 1e18f;
+        int best_i = -1;
+        for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            const asteroid_t *a = &g.world.asteroids[i];
+            if (!a->active) continue;
+            if (a->tier == ASTEROID_TIER_S) continue;  /* already cracked */
+            if (a->commodity != ct->commodity) continue;
+            float d = v2_dist_sq(a->pos, ship->pos);
+            if (d < best_d) { best_d = d; best_i = i; }
+        }
+        if (best_i >= 0) {
+            target = g.world.asteroids[best_i].pos;
+            radius = g.world.asteroids[best_i].radius + 32.0f;
+        } else {
+            return false;  /* nothing to fracture */
+        }
     }
 
     *out_pos = target;
@@ -1596,9 +1635,7 @@ void draw_tracked_contract_highlight(void) {
     float t = g.world.time;
     float pulse = 0.5f + 0.5f * sinf(t * 2.4f);
     float r = radius * (1.0f + 0.06f * pulse);
-    /* Double-ring: bright outer, softer inner. */
-    draw_circle_outline(target, r,         40, 1.0f, 0.87f, 0.20f, 0.75f + 0.20f * pulse);
-    draw_circle_outline(target, r + 6.0f,  40, 1.0f, 0.87f, 0.20f, 0.25f);
+    draw_circle_outline(target, r, 40, 1.0f, 0.87f, 0.20f, 0.75f + 0.20f * pulse);
 }
 
 void draw_compass_ring(void) {

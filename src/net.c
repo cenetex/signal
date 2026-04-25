@@ -605,6 +605,22 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_HIGHSCORES:
+        if (len >= HIGHSCORE_HEADER && net_state.callbacks.on_highscores) {
+            int count = data[1];
+            int expected = HIGHSCORE_HEADER + count * HIGHSCORE_ENTRY_SIZE;
+            if (len < expected) break;
+            if (count > HIGHSCORE_TOP_N) count = HIGHSCORE_TOP_N;
+            static NetHighscoreEntry scratch[HIGHSCORE_TOP_N];
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[HIGHSCORE_HEADER + i * HIGHSCORE_ENTRY_SIZE];
+                memcpy(scratch[i].callsign, p, 8);
+                scratch[i].credits_earned = read_f32_le(&p[8]);
+            }
+            net_state.callbacks.on_highscores(scratch, count);
+        }
+        break;
+
     case NET_MSG_STATION_MANIFEST:
         if (len >= STATION_MANIFEST_HEADER && net_state.callbacks.on_station_manifest) {
             uint8_t station_id = data[1];

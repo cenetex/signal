@@ -28,6 +28,9 @@ python3 -m http.server 8080 --directory /app/build-web &
 HTTP_PID=$!
 
 # Exit as soon as either child dies so docker restarts correctly.
-wait -n "$SERVER_PID" "$HTTP_PID"
+# python:slim ships dash as /bin/sh, which lacks `wait -n`; poll instead.
+while kill -0 "$SERVER_PID" 2>/dev/null && kill -0 "$HTTP_PID" 2>/dev/null; do
+    sleep 1
+done
 cleanup
 wait

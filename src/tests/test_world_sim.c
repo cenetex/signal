@@ -667,10 +667,15 @@ TEST(test_scenario_two_players_mining) {
     ASSERT(w.asteroids[ast0].hp < hp0_before);
     ASSERT(w.asteroids[ast1].hp < hp1_before);
 
-    /* No state bleed: player 0's cargo didn't affect player 1 */
-    /* Verify credits are independent (both start at 50 from player_init_ship in station 0 ledger) */
-    ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0], w.players[0].session_token), 50.0f, 0.01f);
-    ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0], w.players[1].session_token), 50.0f, 0.01f);
+    /* No state bleed: player 0's cargo didn't affect player 1.
+     * Both spawned with the same spawn-fee debit at station 0, so
+     * their balances should be the same negative number regardless of
+     * what either of them mined. */
+    float p0 = ledger_balance(&w.stations[0], w.players[0].session_token);
+    float p1 = ledger_balance(&w.stations[0], w.players[1].session_token);
+    int fee = station_spawn_fee(&w.stations[0]);
+    ASSERT_EQ_FLOAT(p0, -(float)fee, 0.01f);
+    ASSERT_EQ_FLOAT(p1, -(float)fee, 0.01f);
 }
 
 TEST(test_scenario_npc_economy_30_seconds) {

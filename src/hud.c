@@ -805,7 +805,44 @@ void draw_hud(void) {
         sdtx_pos(left, row);
         sdtx_color4b(PAL_DEATH_SPENT, a8);
         sdtx_printf("Credits spent: %8.0f", g.death_credits_spent);
-        row += 4.0f;
+        row += 3.0f;
+
+        /* Global highscores — top runs broadcast by the server. The
+         * player's just-submitted run is highlighted in the death-earned
+         * color so they can spot where they landed. Always render the
+         * header so the player knows the leaderboard exists even when
+         * empty (first run on a fresh server) or before the server's
+         * post-death broadcast has arrived. */
+        {
+            const char *lb = "-- TOP RUNS --";
+            float lb_w = (float)strlen(lb) * cell;
+            sdtx_pos((cx - lb_w * 0.5f) / cell, row);
+            sdtx_color4b(PAL_NOTICE, a8);
+            sdtx_puts(lb);
+            row += 1.6f;
+            if (g.highscore_count > 0) {
+                int show = (g.highscore_count > 8) ? 8 : g.highscore_count;
+                for (int i = 0; i < show; i++) {
+                    char cs[9];
+                    memcpy(cs, g.highscores[i].callsign, 8);
+                    cs[8] = '\0';
+                    for (int k = 7; k >= 0 && (cs[k] == ' ' || cs[k] == '\0'); k--) cs[k] = '\0';
+                    bool is_me = (g.death_credits_earned > 0.5f
+                                  && fabsf(g.highscores[i].credits_earned - g.death_credits_earned) < 0.5f);
+                    if (is_me) sdtx_color4b(PAL_DEATH_EARNED, a8);
+                    else       sdtx_color4b(PAL_TEXT_FADED,  a8);
+                    sdtx_pos(left, row);
+                    sdtx_printf("%2d. %-8s %8.0f", i + 1, cs, g.highscores[i].credits_earned);
+                    row += 1.4f;
+                }
+            } else {
+                sdtx_color4b(PAL_TEXT_FADED, a8);
+                sdtx_pos(left, row);
+                sdtx_puts("  (no records yet)");
+                row += 1.4f;
+            }
+            row += 1.0f;
+        }
 
         /* Prompt — RED, hard FLASH on/off */
         float flash = (sinf(g.world.time * 7.0f) > 0.0f) ? 1.0f : 0.25f;
@@ -997,7 +1034,7 @@ void draw_hud(void) {
             }
         } else if (cargo_units >= cargo_capacity) {
             sdtx_color3b(PAL_ORE_AMBER);
-            sdtx_puts("HOLD FULL // RETURN");
+            sdtx_puts("Hold full. Dock to sell.");
         } else {
             /* Check for pending credits from ledger (singleplayer) */
             float pending = 0.0f;
@@ -1014,10 +1051,10 @@ void draw_hud(void) {
             }
             if (pending > 0.5f) {
                 sdtx_color3b(PAL_ORE_AMBER);
-                sdtx_printf("H HAIL // %d CR", (int)lroundf(pending));
+                sdtx_printf("[H] collect %d", (int)lroundf(pending));
             } else {
                 sdtx_color3b(PAL_TEXT_MUTED);
-                sdtx_puts("FIELD CLEAR // SCAN");
+                sdtx_puts("Nothing in range. Scan for rocks.");
             }
         }
 
@@ -1092,7 +1129,7 @@ void draw_hud(void) {
         sdtx_printf("%s // docked // E launch", current_station->name);
     } else if (LOCAL_PLAYER.in_dock_range) {
         sdtx_color3b(PAL_SIGNAL_MINT);
-        sdtx_puts("Dock ring hot // E to dock");
+        sdtx_puts("In dock range. [E] to dock.");
     } else {
         sdtx_color3b(PAL_NAV_BLUE);
         sdtx_printf("%s %d u // %d deg %s",
@@ -1144,7 +1181,7 @@ void draw_hud(void) {
         }
     } else if (cargo_units >= cargo_capacity) {
         sdtx_color3b(PAL_ORE_AMBER);
-        sdtx_puts("Hold full // return run");
+        sdtx_puts("Hold full. Dock to sell.");
     } else {
         /* Check for pending credits from ledger (singleplayer) */
         float pending_n = 0.0f;

@@ -63,7 +63,8 @@ TEST(test_bug9_repair_cost_consistent) {
     memset(&st, 0, sizeof(st));
     st.services = STATION_SERVICE_REPAIR;
     float cost = station_repair_cost(&ship, &st);
-    ASSERT_EQ_FLOAT(cost, 40.0f, 0.01f);
+    /* (max 100 - hull 80) * 5.0 cr/HP = 100 cr (#299 raised the rate). */
+    ASSERT_EQ_FLOAT(cost, 100.0f, 0.01f);
 }
 
 TEST(test_bug10_damage_event_has_amount) {

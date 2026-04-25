@@ -362,45 +362,18 @@ input_intent_t sample_input_intent(void) {
          * learn a new deliver key per tab. [E] is LAUNCH, period. */
         const station_t *here_st = current_station_ptr();
         int here_idx = LOCAL_PLAYER.current_station;
+        vec2 here_pos = here_st ? here_st->pos : v2(0.0f, 0.0f);
 
-        /* Re-derive the same slot ordering as station_ui.c so the
-         * keypress maps to the visible row. */
+        /* Slot listing comes from build_work_slots() — the same helper
+         * draw_jobs_view uses, so [1]/[2]/[3] always selects the row
+         * the player sees. */
         int slot_contract[3] = {-1, -1, -1};
-        int slot_count = 0;
-        for (int ci = 0; ci < MAX_CONTRACTS && slot_count < 3; ci++) {
-            const contract_t *ct = &g.world.contracts[ci];
-            if (!ct->active || ct->action != CONTRACT_TRACTOR) continue;
-            if (here_idx < 0 || ct->station_index != here_idx) continue;
-            if (LOCAL_PLAYER.ship.cargo[ct->commodity] < 0.5f) continue;
-            slot_contract[slot_count++] = ci;
-        }
-        if (slot_count < 3 && here_st) {
-            int nearest[3] = {-1, -1, -1};
-            float nearest_d[3] = {1e18f, 1e18f, 1e18f};
-            vec2 here = here_st->pos;
-            for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
-                const contract_t *ct = &g.world.contracts[ci];
-                if (!ct->active || ct->station_index >= MAX_STATIONS) continue;
-                if (!station_exists(&g.world.stations[ct->station_index])) continue;
-                bool already = false;
-                for (int s = 0; s < slot_count; s++)
-                    if (slot_contract[s] == ci) { already = true; break; }
-                if (already) continue;
-                vec2 target = (ct->action == CONTRACT_TRACTOR) ? g.world.stations[ct->station_index].pos : ct->target_pos;
-                float d = v2_dist_sq(here, target);
-                for (int s = 0; s < 3; s++) {
-                    if (d < nearest_d[s]) {
-                        for (int j = 2; j > s; j--) { nearest[j] = nearest[j-1]; nearest_d[j] = nearest_d[j-1]; }
-                        nearest[s] = ci;
-                        nearest_d[s] = d;
-                        break;
-                    }
-                }
-            }
-            for (int s = 0; s < 3 && slot_count < 3; s++) {
-                if (nearest[s] >= 0) slot_contract[slot_count++] = nearest[s];
-            }
-        }
+        bool slot_full[3] = {false, false, false};
+        int slot_held_in[3] = {0, 0, 0};
+        (void)build_work_slots(here_idx, here_pos,
+                               slot_contract, slot_full, slot_held_in);
+        (void)slot_full;
+        (void)slot_held_in;
 
         /* [1/2/3] select a contract slot. */
         for (int k = 0; k < 3; k++) {

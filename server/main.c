@@ -6,6 +6,7 @@
  */
 #include "mongoose.h"
 #include "game_sim.h"
+#include "highscore.h"
 #include "manifest.h"
 #include "mining.h"  /* mining_render_callsign for chain log copy */
 #include "net_protocol.h"
@@ -32,6 +33,29 @@ static char api_headers[256];
 static bool station_identity_dirty[MAX_STATIONS];
 static bool station_econ_dirty = true;   /* station inventories changed */
 static bool contracts_dirty = true;       /* contract list changed */
+static highscore_table_t highscores;
+static bool highscores_dirty = true;      /* broadcast + persist pending */
+
+/* Defined further down; forward-declared so the highscore helpers can
+ * use the same send wrapper as every other broadcast in this file
+ * (consistent with future send-queue / rate-limiting changes). */
+static void ws_send(struct mg_connection *c, const void *data, size_t len);
+
+static void broadcast_highscores(void) {
+    uint8_t buf[HIGHSCORE_HEADER + HIGHSCORE_TOP_N * HIGHSCORE_ENTRY_SIZE];
+    int len = highscore_serialize(buf, &highscores);
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        if (!world.players[p].connected || !world.players[p].conn) continue;
+        ws_send(world.players[p].conn, buf, (size_t)len);
+    }
+}
+
+static void send_highscores_to(struct mg_connection *c) {
+    if (!c) return;
+    uint8_t buf[HIGHSCORE_HEADER + HIGHSCORE_TOP_N * HIGHSCORE_ENTRY_SIZE];
+    int len = highscore_serialize(buf, &highscores);
+    ws_send(c, buf, (size_t)len);
+}
 
 #define STATION_IDENTITY_FALLBACK_MS 2000
 static uint64_t last_station_identity = 0;
@@ -45,6 +69,7 @@ static uint64_t last_station_identity = 0;
 #define SAVE_PATH "world.sav"
 #define PLAYER_SAVE_DIR "saves"
 #define STATION_CATALOG_DIR "stations"
+#define HIGHSCORE_PATH "highscores.dat"
 #define AUTOSAVE_MS 30000   /* autosave every 30 seconds */
 
 /* ------------------------------------------------------------------ */
@@ -887,6 +912,10 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                 new_sp->asteroid_sent[ai] = world.asteroids[ai].active;
         }
 
+        /* Global highscores: newcomer gets the current leaderboard so the
+         * death cinematic can render it before they've played a run. */
+        send_highscores_to(c);
+
         /* Signal channel snapshot (#316): newcomer gets the full ring
          * buffer so the Network tab has content immediately. */
         if (world.signal_channel.count > 0) {
@@ -1105,6 +1134,12 @@ static void broadcast_ship_states(void) {
 /* ------------------------------------------------------------------ */
 
 int main(void) {
+    /* Line-buffer stdout and unbuffer stderr so `docker compose logs`
+     * sees server output in real time. Without this, fully-buffered
+     * stdout holds [server] printf lines until a 4KB page fills,
+     * which in practice means we never see startup/death logs. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
     signal(SIGINT, signal_handler);
     signal(SIGTERM, signal_handler);
 
@@ -1172,6 +1207,29 @@ int main(void) {
             world.stations[i].id = world.next_station_id++;
     }
 
+    /* The station catalog format doesn't persist currency_name (yet) and
+     * the catalog loader memsets the whole struct, so the defaults set
+     * by world_reset() get wiped. Re-stamp the names for the three
+     * starter stations whenever they come back empty so WORK rows show
+     * "+N prospect vouchers" / "kepler bonds" / "helios credits"
+     * instead of the bare "cr" fallback. */
+    {
+        const char *defaults[3] = {
+            "prospect vouchers",
+            "kepler bonds",
+            "helios credits",
+        };
+        for (int i = 0; i < 3 && i < MAX_STATIONS; i++) {
+            if (!station_exists(&world.stations[i])) continue;
+            if (world.stations[i].currency_name[0] == '\0') {
+                snprintf(world.stations[i].currency_name,
+                         sizeof(world.stations[i].currency_name),
+                         "%s", defaults[i]);
+                station_identity_dirty[i] = true;
+            }
+        }
+    }
+
     rebuild_signal_chain(&world);
     station_rebuild_all_nav(&world);
     for (int i = 0; i < MAX_STATIONS; i++) station_identity_dirty[i] = true;
@@ -1180,6 +1238,11 @@ int main(void) {
      * server restart and the chain links continue from where we left
      * off (no fork at the genesis block). */
     signal_chain_load(&world);
+
+    highscore_load(&highscores, HIGHSCORE_PATH);
+    if (highscores.count > 0)
+        printf("[server] loaded %d highscore(s) from %s\n",
+               highscores.count, HIGHSCORE_PATH);
 
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
@@ -1247,6 +1310,18 @@ int main(void) {
                     }
                     if (ev->type == SIM_EVENT_DEATH) {
                         int pid = ev->player_id;
+                        /* Submit the run to the global leaderboard. Runs that
+                         * don't qualify for top-N return false and no-op. */
+                        if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected) {
+                            const char *cs = world.players[pid].callsign;
+                            bool qualified = highscore_submit(
+                                &highscores, cs, ev->death.credits_earned);
+                            printf("[server] death pid=%d cs=%s earned=%.0f cr → %s (top=%d)\n",
+                                   pid, cs[0] ? cs : "?", ev->death.credits_earned,
+                                   qualified ? "qualified" : "skipped",
+                                   highscores.count);
+                            if (qualified) highscores_dirty = true;
+                        }
                         if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected && world.players[pid].conn) {
                             /* Death packet now carries position + stats so
                              * the client cinematic anchors at the wreckage
@@ -1410,6 +1485,11 @@ int main(void) {
         if (now - last_ship >= SHIP_TICK_MS) {
             broadcast_ship_states();
             last_ship = now;
+        }
+        if (highscores_dirty) {
+            broadcast_highscores();
+            (void)highscore_save(&highscores, HIGHSCORE_PATH);
+            highscores_dirty = false;
         }
         if (now - last_save >= AUTOSAVE_MS) {
             station_catalog_save_all(world.stations, MAX_STATIONS, STATION_CATALOG_DIR);

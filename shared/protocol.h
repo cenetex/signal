@@ -56,6 +56,15 @@ enum {
     NET_MSG_FRACTURE_CLAIM     = 0x2D, /* client -> server: [type:1][fracture_id:u32][burst_nonce:u32][claimed_grade:u8] */
     NET_MSG_FRACTURE_RESOLVED  = 0x2E, /* server -> nearby clients: [type:1][fracture_id:u32][fragment_pub:32][winner_pub:32][grade:u8] */
     NET_MSG_STATION_MANIFEST   = 0x2F, /* server -> client: per-station manifest summary grouped by (commodity, grade) — see STATION_MANIFEST_* below. */
+    NET_MSG_HIGHSCORES         = 0x30, /* server -> client: top-N leaderboard. [type:1][count:1] + count × [callsign:8][credits_earned:f32] */
+};
+
+/* Top-N global leaderboard persisted server-side, broadcast on join and
+ * after every death. */
+enum {
+    HIGHSCORE_TOP_N      = 10,
+    HIGHSCORE_ENTRY_SIZE = 12,   /* 8-byte callsign + f32 credits_earned */
+    HIGHSCORE_HEADER     = 2,    /* type + count */
 };
 
 /* NET_MSG_STATION_MANIFEST wire layout:

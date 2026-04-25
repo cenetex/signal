@@ -91,6 +91,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
     add_executable(signal_server
         server/main.c
         server/mongoose.c
+        server/highscore.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
     )

@@ -176,6 +176,18 @@ void apply_remote_station_manifest(uint8_t station_id,
     }
 }
 
+void apply_remote_highscores(const NetHighscoreEntry *entries, int count) {
+    if (count < 0) count = 0;
+    int cap = (int)(sizeof(g.highscores) / sizeof(g.highscores[0]));
+    if (count > cap) count = cap;
+    memset(g.highscores, 0, sizeof(g.highscores));
+    for (int i = 0; i < count; i++) {
+        memcpy(g.highscores[i].callsign, entries[i].callsign, 8);
+        g.highscores[i].credits_earned = entries[i].credits_earned;
+    }
+    g.highscore_count = count;
+}
+
 void apply_remote_hold_ingots(const named_ingot_t *ingots, int count) {
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
     if (count < 0) count = 0;

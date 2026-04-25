@@ -206,6 +206,95 @@ void format_ingot_stock_line(const station_t* station, char* text, size_t text_s
 }
 
 /* ------------------------------------------------------------------ */
+/* WORK-tab contract slot builder                                      */
+/* ------------------------------------------------------------------ */
+
+int build_work_slots(int here_idx, vec2 here_pos,
+                     int out_contracts[3],
+                     bool out_fulfillable[3],
+                     int out_held[3])
+{
+    for (int i = 0; i < 3; i++) {
+        out_contracts[i]   = -1;
+        out_fulfillable[i] = false;
+        out_held[i]        = 0;
+    }
+    int count = 0;
+
+    /* Pass 1: TRACTOR contracts at this station the player can fulfill
+     * right now. Raw ore lives in towed S-tier fragments rather than
+     * ship.cargo[]; finished goods live on ship.cargo[]. */
+    for (int ci = 0; ci < MAX_CONTRACTS && count < 3; ci++) {
+        const contract_t *ct = &g.world.contracts[ci];
+        if (!ct->active) continue;
+        if (ct->action != CONTRACT_TRACTOR) continue;
+        if (here_idx < 0 || ct->station_index != here_idx) continue;
+        int held_int = 0;
+        if (ct->commodity < COMMODITY_RAW_ORE_COUNT) {
+            float held_ore = 0.0f;
+            const ship_t *ship = &LOCAL_PLAYER.ship;
+            for (int t = 0; t < ship->towed_count; t++) {
+                int fi = ship->towed_fragments[t];
+                if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
+                const asteroid_t *a = &g.world.asteroids[fi];
+                if (!a->active || a->tier != ASTEROID_TIER_S) continue;
+                if (a->commodity != ct->commodity) continue;
+                held_ore += a->ore;
+            }
+            held_int = (int)lroundf(held_ore);
+        } else {
+            held_int = (int)lroundf(LOCAL_PLAYER.ship.cargo[ct->commodity]);
+        }
+        if (held_int <= 0) continue;
+        out_contracts[count]   = ci;
+        out_fulfillable[count] = true;
+        out_held[count]        = held_int;
+        count++;
+    }
+
+    /* Pass 2: fill any remaining slots with the nearest active
+     * contracts (any station) by squared distance from `here_pos`,
+     * skipping anything already in pass 1. */
+    if (count < 3) {
+        int nearest[3] = {-1, -1, -1};
+        float nearest_d[3] = {1e18f, 1e18f, 1e18f};
+        for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
+            const contract_t *ct = &g.world.contracts[ci];
+            if (!ct->active) continue;
+            if (ct->station_index >= MAX_STATIONS) continue;
+            if (!station_exists(&g.world.stations[ct->station_index])) continue;
+            bool already = false;
+            for (int s = 0; s < count; s++)
+                if (out_contracts[s] == ci) { already = true; break; }
+            if (already) continue;
+            vec2 target = (ct->action == CONTRACT_TRACTOR)
+                ? g.world.stations[ct->station_index].pos : ct->target_pos;
+            float d = v2_dist_sq(here_pos, target);
+            for (int s = 0; s < 3; s++) {
+                if (d < nearest_d[s]) {
+                    for (int j = 2; j > s; j--) {
+                        nearest[j] = nearest[j-1];
+                        nearest_d[j] = nearest_d[j-1];
+                    }
+                    nearest[s] = ci;
+                    nearest_d[s] = d;
+                    break;
+                }
+            }
+        }
+        for (int s = 0; s < 3 && count < 3; s++) {
+            if (nearest[s] < 0) continue;
+            out_contracts[count]   = nearest[s];
+            out_fulfillable[count] = false;
+            out_held[count]        = 0;
+            count++;
+        }
+    }
+
+    return count;
+}
+
+/* ------------------------------------------------------------------ */
 /* Station UI state builder                                            */
 /* ------------------------------------------------------------------ */
 
@@ -617,8 +706,8 @@ static void draw_trade_view(const station_ui_state_t *ui,
     float row_h = compact ? 13.0f : 15.0f;
     float inner_right = cx + inner_w - 36.0f;
     float my = cy;
-    const uint8_t COL_BUY[3]   = { PAL_CONTRACT_AFFORD };
-    const uint8_t COL_SELL[3]  = { PAL_CONTRACT_READY };
+    const uint8_t COL_GAIN[3]  = { 130, 230, 150 };  /* + sell: green */
+    const uint8_t COL_COST[3]  = { 230, 110, 110 };  /* - buy:  red   */
     const uint8_t COL_DIM[3]   = { PAL_AFFORD_INACTIVE };
     const uint8_t COL_FADED[3] = { PAL_TEXT_FADED };
     const uint8_t COL_TEXT[3]  = { PAL_TEXT_SECONDARY };
@@ -736,21 +825,17 @@ static void draw_trade_view(const station_ui_state_t *ui,
         char key_buf[8];
         snprintf(key_buf, sizeof(key_buf), "[%d]", slot + 1);
 
-        const uint8_t *row_rgb  = (r->kind == 0)
-            ? (r->actionable ? COL_BUY : COL_DIM)
-            : (r->actionable ? COL_SELL : COL_DIM);
         const uint8_t *info_rgb = r->actionable ? COL_TEXT : COL_FADED;
 
         uint8_t ggr, ggg, ggb;
         mining_grade_rgb(r->grade, &ggr, &ggg, &ggb);
         uint8_t gr_rgb[3] = { ggr, ggg, ggb };
 
-        /* Commodity tint for the signed amount — ferrite amber, cuprite
-         * green, crystal violet, etc. Lets the eye scan the column by
-         * what's changing hands rather than by buy-vs-sell state. */
-        uint8_t cr_r, cr_g, cr_b;
-        commodity_color_u8(r->commodity, &cr_r, &cr_g, &cr_b);
-        uint8_t total_rgb[3] = { cr_r, cr_g, cr_b };
+        /* Sign-based row color: SELL (+ gain) reads green, BUY (- cost)
+         * reads red. Hotkey, verb, and signed amount all share it so the
+         * direction of cash flow is unambiguous at a glance. */
+        const uint8_t *total_rgb = (r->kind == 0) ? COL_COST : COL_GAIN;
+        const uint8_t *row_rgb   = r->actionable ? total_rgb : COL_DIM;
 
         const char *verb = (r->kind == 0) ? "buy" : "sell";
         char qty_buf[24], total_buf[32];
@@ -959,83 +1044,15 @@ static void draw_jobs_view(const station_ui_state_t *ui,
         my += row_h;
     }
 
-    /* Build slot listing (same logic as before: fulfillable here first,
-     * then nearest by distance). */
+    /* Build slot listing via the shared helper so the rows the player
+     * sees here are exactly the rows [1]/[2]/[3] selects from in
+     * input.c — no duplication, no drift. */
     int slots[3] = {-1, -1, -1};
-    int slot_count = 0;
     bool slot_fulfillable[3] = {false, false, false};
     int slot_held[3] = {0, 0, 0};
     int here_idx = LOCAL_PLAYER.current_station;
-
-    for (int ci = 0; ci < MAX_CONTRACTS && slot_count < 3; ci++) {
-        contract_t *ct = &g.world.contracts[ci];
-        if (!ct->active) continue;
-        if (ct->action != CONTRACT_TRACTOR) continue;
-        if (here_idx < 0 || ct->station_index != here_idx) continue;
-
-        /* Raw ore isn't in ship.cargo[] — it rides in towed_fragments.
-         * Sum the ore amount across towed fragments that match the
-         * commodity so ore contracts can show "ready" when the player
-         * actually has the material, not just "missing" forever. */
-        int held_int = 0;
-        if (ct->commodity < COMMODITY_RAW_ORE_COUNT) {
-            float held_ore = 0.0f;
-            const ship_t *ship = &LOCAL_PLAYER.ship;
-            for (int t = 0; t < ship->towed_count; t++) {
-                int fi = ship->towed_fragments[t];
-                if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
-                const asteroid_t *a = &g.world.asteroids[fi];
-                if (!a->active || a->tier != ASTEROID_TIER_S) continue;
-                if (a->commodity != ct->commodity) continue;
-                held_ore += a->ore;
-            }
-            held_int = (int)lroundf(held_ore);
-        } else {
-            float held = LOCAL_PLAYER.ship.cargo[ct->commodity];
-            held_int = (int)lroundf(held);
-        }
-        if (held_int <= 0) continue;
-        slots[slot_count] = ci;
-        slot_fulfillable[slot_count] = true;
-        slot_held[slot_count] = held_int;
-        slot_count++;
-    }
-    if (slot_count < 3) {
-        int nearest[3] = {-1, -1, -1};
-        float nearest_d[3] = {1e18f, 1e18f, 1e18f};
-        vec2 here = ui->station->pos;
-        for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
-            contract_t *ct = &g.world.contracts[ci];
-            if (!ct->active) continue;
-            if (ct->station_index >= MAX_STATIONS) continue;
-            if (!station_exists(&g.world.stations[ct->station_index])) continue;
-            bool already = false;
-            for (int s = 0; s < slot_count; s++)
-                if (slots[s] == ci) { already = true; break; }
-            if (already) continue;
-            vec2 target = (ct->action == CONTRACT_TRACTOR)
-                ? g.world.stations[ct->station_index].pos : ct->target_pos;
-            float d = v2_dist_sq(here, target);
-            for (int s = 0; s < 3; s++) {
-                if (d < nearest_d[s]) {
-                    for (int j = 2; j > s; j--) {
-                        nearest[j] = nearest[j-1];
-                        nearest_d[j] = nearest_d[j-1];
-                    }
-                    nearest[s] = ci;
-                    nearest_d[s] = d;
-                    break;
-                }
-            }
-        }
-        for (int s = 0; s < 3 && slot_count < 3; s++) {
-            if (nearest[s] < 0) continue;
-            slots[slot_count] = nearest[s];
-            slot_fulfillable[slot_count] = false;
-            slot_held[slot_count] = 0;
-            slot_count++;
-        }
-    }
+    int slot_count = build_work_slots(here_idx, ui->station->pos,
+                                      slots, slot_fulfillable, slot_held);
 
     if (slot_count == 0) {
         draw_row_lr(cx, my, inner_right, COL_DIM, "No active contracts.", NULL, NULL);

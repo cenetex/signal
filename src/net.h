@@ -192,6 +192,13 @@ typedef void (*net_on_station_manifest_fn)(uint8_t station_id,
                                            const NetStationManifestEntry *entries,
                                            int count);
 
+/* Global leaderboard — top-N death runs by credits earned. */
+typedef struct {
+    char  callsign[8];    /* not NUL-terminated if 8 chars */
+    float credits_earned;
+} NetHighscoreEntry;
+typedef void (*net_on_highscores_fn)(const NetHighscoreEntry *entries, int count);
+
 typedef void (*net_on_players_begin_fn)(void);
 
 typedef struct {
@@ -217,6 +224,7 @@ typedef struct {
     net_on_station_ingots_fn on_station_ingots;
     net_on_hold_ingots_fn    on_hold_ingots;
     net_on_station_manifest_fn on_station_manifest;
+    net_on_highscores_fn       on_highscores;
 } NetCallbacks;
 
 /* Initialize networking and connect to the relay server.

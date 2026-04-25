@@ -77,6 +77,21 @@ bool ledger_spend(station_t *st, const uint8_t *token, float amount, ship_t *shi
     return true;
 }
 
+/* Force a debit through even when the balance can't cover it. The
+ * shortfall pushes the ledger into negative — the player owes the
+ * station. Use for unrefusable services (spawn fee, mandatory repair)
+ * where rejecting the spend would leave the ship in a worse state.
+ * Conservation still holds: the station's credit_pool gains exactly
+ * what the player loses. */
+void ledger_force_debit(station_t *st, const uint8_t *token, float amount, ship_t *ship) {
+    if (amount <= 0.0f) return;
+    int idx = ledger_find_or_create(st, token);
+    if (idx < 0) return;
+    st->ledger[idx].balance -= amount;
+    if (ship) ship->stat_credits_spent += amount;
+    st->credit_pool += amount;
+}
+
 void emit_event(world_t *w, sim_event_t ev) {
     if (w->events.count < SIM_MAX_EVENTS) {
         w->events.events[w->events.count++] = ev;
@@ -873,16 +888,27 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         float space = fmaxf(0.0f, capacity - st->inventory[c]);
         if (space < 0.01f) continue;
         float deliver = fminf(fminf(sp->ship.cargo[c], ct->quantity_needed), space);
-        payout += deliver * contract_price(ct);
+        float price_per = contract_price(ct);
+        payout += deliver * price_per;
         if (deliver > 0.01f) sold_against_contract = true;
         sp->ship.cargo[c] -= deliver;
         st->inventory[c] += deliver;
         /* Phase 1 manifest-first: move whole-unit deliveries across the
          * ship/station manifests so provenance survives the transaction.
-         * Fractional deliveries still ride the float dual-write. */
+         * Fractional deliveries still ride the float dual-write. Grade
+         * bonus is added per-unit BEFORE the transfer (FIFO order so the
+         * units we price are the units that move). */
         {
             int whole = (int)floorf(deliver + 0.0001f);
             if (whole > 0) {
+                int counted = 0;
+                for (uint16_t u = 0; u < sp->ship.manifest.count && counted < whole; u++) {
+                    const cargo_unit_t *cu = &sp->ship.manifest.units[u];
+                    if (cu->commodity != c) continue;
+                    float mult = mining_payout_multiplier((mining_grade_t)cu->grade);
+                    payout += (mult - 1.0f) * price_per;  /* base already in deliver*price_per */
+                    counted++;
+                }
                 int moved = manifest_transfer_by_commodity(&sp->ship.manifest,
                                                            &st->manifest, c, whole);
                 if (moved > 0) manifest_mark_station_dirty(w, &st->manifest);
@@ -923,9 +949,17 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
                 payout += accepted * price;
                 sp->ship.cargo[buy] -= accepted;
                 st->inventory[buy] += accepted;
-                /* Manifest dual-write — see the contract branch above. */
+                /* Manifest dual-write + per-unit grade bonus — see contract branch. */
                 int whole = (int)floorf(accepted + 0.0001f);
                 if (whole > 0) {
+                    int counted = 0;
+                    for (uint16_t u = 0; u < sp->ship.manifest.count && counted < whole; u++) {
+                        const cargo_unit_t *cu = &sp->ship.manifest.units[u];
+                        if (cu->commodity != buy) continue;
+                        float mult = mining_payout_multiplier((mining_grade_t)cu->grade);
+                        payout += (mult - 1.0f) * price;
+                        counted++;
+                    }
                     int moved = manifest_transfer_by_commodity(&sp->ship.manifest,
                                                                &st->manifest, buy, whole);
                     if (moved > 0) manifest_mark_station_dirty(w, &st->manifest);
@@ -966,9 +1000,12 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
     if (!station_has_service(st, STATION_SERVICE_REPAIR)) return;
     float cost = sim_station_repair_cost(&sp->ship);
     if (cost <= 0.0f) return;
-    if (!ledger_spend(st, sp->session_token, cost, &sp->ship)) return;
+    /* Repair is unrefusable — a docked ship with damaged hull always
+     * heals. The cost runs the ledger into debt rather than refusing
+     * the service; players earn it back through work. */
+    ledger_force_debit(st, sp->session_token, cost, &sp->ship);
     sp->ship.hull = ship_max_hull(&sp->ship);
-    SIM_LOG("[sim] player %d repaired for %.0f cr\n", sp->id, cost);
+    SIM_LOG("[sim] player %d repaired for %.0f cr (now in debt if negative)\n", sp->id, cost);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_REPAIR, .player_id = sp->id});
 }
 
@@ -1598,8 +1635,12 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
         }
     }
 
-    /* Materialize a nearby planned station if scaffold is close to it. */
-    {
+    /* Materialize a nearby planned station if scaffold is close to it.
+     * Only a SIGNAL RELAY scaffold can found (or materialize) a
+     * station — the relay IS the station's core, not just another
+     * module. Other module types must be towed to an already-active
+     * outpost and snapped into a ring slot. */
+    if (sc->module_type == MODULE_SIGNAL_RELAY) {
         const float MATERIALIZE_RANGE = 600.0f;
         const float MATERIALIZE_RANGE_SQ = MATERIALIZE_RANGE * MATERIALIZE_RANGE;
         for (int s = 3; s < MAX_STATIONS; s++) {
@@ -1614,7 +1655,8 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             st->dock_radius = OUTPOST_DOCK_RADIUS;
             st->signal_range = OUTPOST_SIGNAL_RANGE;
             add_module_at(st, MODULE_DOCK, 0, 0xFF);
-            add_module_at(st, MODULE_SIGNAL_RELAY, 0, 0xFF);
+            /* The towed relay becomes the station's core relay below;
+             * don't auto-add an extra one here. */
             rebuild_station_services(st);
             /* Generate supply contract for activation frames */
             for (int k = 0; k < MAX_CONTRACTS; k++) {
@@ -1683,8 +1725,14 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
         }
     }
 
-    /* Not near an outpost — found a new station if in signal range */
-    if (signal_strength_at(w, sc->pos) > 0.0f && can_place_outpost(w, sc->pos)) {
+    /* Not near an outpost — found a new station if the towed kit is a
+     * SIGNAL RELAY (only relays can found stations, per the founding
+     * ritual: tow the seed, not every brick) and we're in signal
+     * range. Other module types fall through and keep towing — they
+     * need an existing outpost to snap to. */
+    if (sc->module_type == MODULE_SIGNAL_RELAY
+        && signal_strength_at(w, sc->pos) > 0.0f
+        && can_place_outpost(w, sc->pos)) {
         int slot = -1;
         for (int s = 3; s < MAX_STATIONS; s++) {
             if (!station_exists(&w->stations[s])) { slot = s; break; }
@@ -1699,13 +1747,13 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             st->radius = OUTPOST_RADIUS;
             st->dock_radius = OUTPOST_DOCK_RADIUS;
             st->signal_range = OUTPOST_SIGNAL_RANGE;
-            /* Outpost is born under construction — needs frames delivered to
-             * activate. The scaffold you towed becomes the first module
-             * (pre-paid), but it can't go live until the station does. */
+            /* Outpost is born under construction — needs frames delivered
+             * to activate. The towed relay seed becomes the station's
+             * core relay (added below); the dock comes pre-stamped. */
             st->scaffold = true;
             st->scaffold_progress = 0.0f;
             add_module_at(st, MODULE_DOCK, 0, 0xFF);
-            add_module_at(st, MODULE_SIGNAL_RELAY, 0, 0xFF);
+            /* Relay added by the founding-tow path below. */
             rebuild_station_services(st);
             /* Generate supply contract for the outpost activation frames */
             for (int k = 0; k < MAX_CONTRACTS; k++) {
@@ -1740,7 +1788,19 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             return;
         }
     }
-    /* Can't place here — do nothing, keep towing */
+    /* Can't place here — do nothing, keep towing.
+     *
+     * Common reasons:
+     *   - Towed kit isn't a signal relay (only relays can found new
+     *     outposts; other modules need an existing station ring slot).
+     *   - Position is outside signal coverage or fails can_place_outpost.
+     *
+     * Surface a notice so the player knows why the [E] press fizzled
+     * instead of silently continuing the tow. */
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_ORDER_REJECTED,
+        .player_id = sp->id,
+    });
 }
 
 static void step_scaffold_tow(world_t *w, server_player_t *sp, float dt) {
@@ -2260,9 +2320,32 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         commodity_t c = intent->buy_commodity;
         if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT
             && station_produces(docked_st, c)) {
+            /* Exact-grade buys must refuse if the station has nothing
+             * matching — otherwise the ship lands a common ingot at
+             * the fine/rare price and the row the player tapped lied
+             * to them. Only enforced for non-common grades (1+);
+             * COMMON falls through so products like FRAMES that live
+             * on the float inventory without a manifest entry can
+             * still be purchased. The sentinel MINING_GRADE_COUNT
+             * path stays any-grade FIFO. */
+            if (intent->buy_grade < MINING_GRADE_COUNT
+                && intent->buy_grade > MINING_GRADE_COMMON) {
+                if (manifest_find_first_cg(&docked_st->manifest, c,
+                                           (mining_grade_t)intent->buy_grade) < 0) {
+                    return;
+                }
+            }
             float available = docked_st->inventory[c];
             float space = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
-            float price_per = station_sell_price(docked_st, c);
+            float price_base = station_sell_price(docked_st, c);
+            /* Grade-aware pricing: if the client picked a specific-grade row
+             * in TRADE the row's displayed price was base * grade_multiplier,
+             * so charge the same here. Sentinel MINING_GRADE_COUNT keeps the
+             * legacy any-grade path at 1.0x. */
+            float grade_mult = (intent->buy_grade < MINING_GRADE_COUNT)
+                ? mining_payout_multiplier((mining_grade_t)intent->buy_grade)
+                : 1.0f;
+            float price_per = price_base * grade_mult;
             /* Buy as much as you can afford and carry */
             float bal = ledger_balance(docked_st, sp->session_token);
             float afford = (price_per > 0.01f) ? floorf(bal / price_per) : 0.0f;
@@ -2271,6 +2354,17 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             if (amount > 0.01f && ledger_spend(docked_st, sp->session_token, total_cost, &sp->ship)) {
                 sp->ship.cargo[c] += amount;
                 docked_st->inventory[c] -= amount;
+                /* Manifest-first: transfer matching cargo_unit_t entries
+                 * (preferred grade first, FIFO fallback) so provenance and
+                 * grade follow the purchase into the ship's hold. Mirrors
+                 * the nearby-station hail-buy path. */
+                int whole = (int)floorf(amount + 0.0001f);
+                if (whole > 0) {
+                    int moved = manifest_transfer_by_commodity_ex(
+                        &docked_st->manifest, &sp->ship.manifest,
+                        c, intent->buy_grade, whole);
+                    if (moved > 0) manifest_mark_station_dirty(w, &docked_st->manifest);
+                }
                 SIM_LOG("[sim] player %d bought %.0f of commodity %d for %.0f cr\n",
                         sp->id, amount, c, total_cost);
             }
@@ -2490,8 +2584,25 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             if (sp->input.buy_product) {
                 commodity_t c = sp->input.buy_commodity;
                 if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) {
-                    float available = nearby_st->inventory[c];
-                    float price_per = station_sell_price(nearby_st, c);
+                    /* Exact-grade hail-buys must refuse if the station
+                     * has nothing matching — same rule as the docked
+                     * path; only enforced for non-common grades so
+                     * products without a manifest entry still buy. */
+                    bool grade_ok = true;
+                    if (sp->input.buy_grade < MINING_GRADE_COUNT
+                        && sp->input.buy_grade > MINING_GRADE_COMMON) {
+                        if (manifest_find_first_cg(&nearby_st->manifest, c,
+                                                   (mining_grade_t)sp->input.buy_grade) < 0) {
+                            sp->input.buy_product = false;
+                            grade_ok = false;
+                        }
+                    }
+                    float available = grade_ok ? nearby_st->inventory[c] : 0.0f;
+                    float base = station_sell_price(nearby_st, c);
+                    float gmult = (sp->input.buy_grade < MINING_GRADE_COUNT)
+                        ? mining_payout_multiplier((mining_grade_t)sp->input.buy_grade)
+                        : 1.0f;
+                    float price_per = base * gmult;
                     float nbal = ledger_balance(nearby_st, sp->session_token);
                     float afford = (price_per > FLOAT_EPSILON) ? floorf(nbal / price_per) : 0.0f;
                     float amount = fminf(fminf(available, 1.0f), afford); /* buy 1 at a time */
@@ -3928,13 +4039,26 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     anchor_ship_in_station(sp, w);
 }
 
-/* Grant starting credits at the docked station. Call AFTER session_token is set. */
+/* Charge the spawn / docking fee at the player's current station.
+ * Replaces the legacy "+50 starter grant" — ships now begin in the
+ * red and have to earn their way out. Fee scales with station ring
+ * count: 50 cr at a 1-ring outpost, 100 at a 2-ring station, 300 at
+ * a full 3-ring hub. Skips if a ledger entry already exists for this
+ * token (e.g. save reload, reconnect, post-death respawn) so a
+ * player isn't charged twice for the same berth. */
 void player_seed_credits(server_player_t *sp, world_t *w) {
     int st = sp->current_station;
     if (st < 0 || st >= MAX_STATIONS) st = 0;
-    /* Already has balance at this station? Skip (e.g., loaded from save). */
-    if (ledger_balance(&w->stations[st], sp->session_token) > 0.01f) return;
-    float seed = fminf(50.0f, w->stations[st].credit_pool);
-    w->stations[st].credit_pool -= seed;
-    ledger_earn(&w->stations[st], sp->session_token, seed);
+    /* Already established a ledger here? Skip — debt and earnings
+     * carry across reconnects and respawns. We probe by entry
+     * existence (any nonzero balance, positive or negative) since
+     * fresh entries always start at exactly 0. */
+    for (int i = 0; i < w->stations[st].ledger_count; i++) {
+        if (memcmp(w->stations[st].ledger[i].player_token,
+                   sp->session_token, 8) == 0) {
+            return;
+        }
+    }
+    int fee = station_spawn_fee(&w->stations[st]);
+    ledger_force_debit(&w->stations[st], sp->session_token, (float)fee, &sp->ship);
 }

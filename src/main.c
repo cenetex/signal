@@ -924,6 +924,7 @@ static void init(void) {
             cbs.on_signal_channel = apply_remote_signal_channel;
             cbs.on_station_ingots = apply_remote_station_ingots;
             cbs.on_station_manifest = apply_remote_station_manifest;
+            cbs.on_highscores = apply_remote_highscores;
             cbs.on_hold_ingots = apply_remote_hold_ingots;
             g.multiplayer_enabled = net_init(server_url, &cbs);
             if (g.multiplayer_enabled) {
@@ -1352,7 +1353,7 @@ static void render_world(void) {
                 int stock = (int)lroundf(tst->inventory[sell_c]);
                 int price = (int)lroundf(station_sell_price(tst, sell_c));
                 if (stock > 0)
-                    sdtx_printf("FIRE to buy  %d@%dcr  [%d]", stock, price, stock);
+                    sdtx_printf("[Fire] buy 1 @ %dcr  (stock %d)", price, stock);
                 else
                     sdtx_puts("Out of stock");
             } else switch (tm->type) {
@@ -1360,7 +1361,7 @@ static void render_world(void) {
                     sdtx_puts("Dock to repair hull");
                     break;
                 case MODULE_DOCK:
-                    sdtx_puts("FIRE to dock");
+                    sdtx_puts("[Fire] dock");
                     break;
                 case MODULE_SIGNAL_RELAY:
                     sdtx_printf("Signal range %.0f", tst->signal_range);
@@ -1371,24 +1372,10 @@ static void render_world(void) {
         }
     }
 
-    /* Tracked contract target outline (yellow) */
-    if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
-        contract_t *ct = &g.world.contracts[g.tracked_contract];
-        if (ct->active) {
-            float pulse = 0.5f + 0.3f * sinf(g.world.time * 3.0f);
-            if (ct->action == CONTRACT_FRACTURE && ct->target_index >= 0 && ct->target_index < MAX_ASTEROIDS
-                && g.world.asteroids[ct->target_index].active) {
-                /* Outline the target asteroid */
-                asteroid_t *a = &g.world.asteroids[ct->target_index];
-                draw_circle_outline(a->pos, a->radius + 16.0f, 24, 1.0f, 0.87f, 0.20f, pulse);
-            } else if (ct->action == CONTRACT_TRACTOR && ct->station_index < MAX_STATIONS) {
-                /* Outline the target station */
-                station_t *st = &g.world.stations[ct->station_index];
-                if (station_exists(st))
-                    draw_circle_outline(st->pos, st->dock_radius + 20.0f, 32, 1.0f, 0.87f, 0.20f, pulse);
-            }
-        }
-    }
+    /* Tracked contract highlight is owned by draw_tracked_contract_highlight()
+     * (called earlier in the world pass). The legacy duplicate that lived
+     * here drew a giant dock-radius ring around stations on TRACTOR contracts
+     * and a stale target_index ring for FRACTURE — both wrong. Single source. */
 
     /* Hail ping — draw last so the ring sits on top of stations and
      * modules, hard to miss. */

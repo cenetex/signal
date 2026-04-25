@@ -183,6 +183,13 @@ typedef struct {
     float death_credits_earned;
     float death_credits_spent;
     int death_asteroids_fractured;
+    /* Global leaderboard from server (top-N by credits earned at death).
+     * Populated on join + after every death in MP. SP leaves it empty. */
+    struct {
+        char  callsign[8];
+        float credits_earned;
+    } highscores[10 /* HIGHSCORE_TOP_N */];
+    int highscore_count;
     /* Smoothed fog intensity (0..1). Tracks 1 - (hull/max_hull) but
      * eases in/out so the vignette rolls smoothly instead of snapping. */
     float fog_intensity;
@@ -375,6 +382,24 @@ void hull_fog_init(void);
 
 void build_station_ui_state(station_ui_state_t* ui);
 void draw_station_services(const station_ui_state_t* ui);
+
+/* WORK-tab contract slot ordering. Single source of truth shared
+ * between draw_jobs_view (renders the rows) and the input layer
+ * (handles [1]/[2]/[3] selection) so the keypress always maps to the
+ * row the player sees. Up to 3 slots filled in this order:
+ *   1. Active TRACTOR contracts at this station the player can
+ *      currently fulfill (carries the commodity in cargo or towed
+ *      raw-ore fragments). Marked fulfillable=true.
+ *   2. Nearest active contracts (any station) by squared distance
+ *      from `here`, used to fill remaining slots. fulfillable=false.
+ *
+ * Returns the number of slots filled (0..3). out_held holds the
+ * integer-rounded carry quantity for the fulfillable slots and 0 for
+ * the nearest-fill slots. Pass `here_idx = -1` if not docked. */
+int build_work_slots(int here_idx, vec2 here_pos,
+                     int out_contracts[3],
+                     bool out_fulfillable[3],
+                     int out_held[3]);
 
 /* Station label/color helpers */
 const char* station_role_hub_label(const station_t* station);
