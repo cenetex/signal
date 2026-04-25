@@ -57,6 +57,10 @@ typedef enum {
     COMMODITY_FRAME,
     COMMODITY_LASER_MODULE,
     COMMODITY_TRACTOR_MODULE,
+    COMMODITY_REPAIR_KIT,        /* 1 kit = 1 HP at a dock; produced by docks
+                                   * from 1 FRAME + 1 LASER_MODULE → 100 kits.
+                                   * The end-of-chain demand sink that closes
+                                   * the ferrite + cuprite production loops. */
     COMMODITY_COUNT,
 } commodity_t;
 
@@ -129,10 +133,11 @@ typedef struct {
 #define STATION_MANIFEST_DEFAULT_CAP 256
 
 typedef enum {
-    CARGO_KIND_INGOT   = 0,
-    CARGO_KIND_FRAME   = 1,
-    CARGO_KIND_LASER   = 2,
-    CARGO_KIND_TRACTOR = 3,
+    CARGO_KIND_INGOT      = 0,
+    CARGO_KIND_FRAME      = 1,
+    CARGO_KIND_LASER      = 2,
+    CARGO_KIND_TRACTOR    = 3,
+    CARGO_KIND_REPAIR_KIT = 4,
     CARGO_KIND_COUNT
 } cargo_kind_t;
 
@@ -158,9 +163,16 @@ typedef enum {
     RECIPE_FRAME_BASIC,
     RECIPE_LASER_BASIC,
     RECIPE_TRACTOR_COIL,
+    RECIPE_REPAIR_KIT_FAB,    /* 1 frame + 1 laser → 100 repair kits, at any dock */
     RECIPE_LEGACY_MIGRATE,
     RECIPE_COUNT
 } recipe_id_t;
+
+/* RECIPE_INPUT_MAX bumped from 2 → 3 so the dock repair-kit recipe
+ * (frame + laser + tractor → 100 kits) can fit. All recipes still
+ * declare their actual input_count; the array slot is just sized
+ * to the largest recipe in the table. */
+#define RECIPE_INPUT_MAX 3
 
 typedef struct {
     recipe_id_t   id;
@@ -168,7 +180,7 @@ typedef struct {
     cargo_kind_t  output_kind;
     commodity_t   output_commodity; /* COMMODITY_COUNT = caller supplies */
     uint8_t       input_count;
-    commodity_t   input_commodities[2];
+    commodity_t   input_commodities[RECIPE_INPUT_MAX];
 } recipe_def_t;
 
 typedef struct {
@@ -243,6 +255,7 @@ static inline const char *commodity_short_label(commodity_t c) {
         case COMMODITY_FERRITE_INGOT: return "fe ingots";
         case COMMODITY_CUPRITE_INGOT: return "cu ingots";
         case COMMODITY_CRYSTAL_INGOT: return "cr ingots";
+        case COMMODITY_REPAIR_KIT:    return "repair kits";
         default:                      return "units";
     }
 }
@@ -330,6 +343,11 @@ typedef struct {
     int           named_ingots_count;
     bool          named_ingots_dirty;  /* server-only: drives wire push */
     manifest_t    manifest;            /* station cargo manifest; smelt/fab dual-write feeds it */
+    /* Dock repair-kit fab cadence: server-only countdown. When it
+     * reaches zero and the station has 1 frame + 1 laser + 1 tractor
+     * in inventory, consume them, mint REPAIR_KIT_PER_BATCH kits, and
+     * reset the timer to REPAIR_KIT_FAB_PERIOD. */
+    float         repair_kit_fab_timer;
 } station_t;
 
 /* Station lifecycle helpers, module queries, and ring/geometry helpers

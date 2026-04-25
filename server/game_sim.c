@@ -501,6 +501,9 @@ static bool station_has_service(const station_t *station, uint32_t service) {
     return station && ((station->services & service) != 0);
 }
 
+/* Repair pricing now lives inline in try_repair_ship — kept around in
+ * case future callers need a quote. */
+__attribute__((unused))
 static float sim_station_repair_cost(const ship_t *s) {
     float missing = fmaxf(0.0f, ship_max_hull(s) - s->hull);
     return ceilf(missing * STATION_REPAIR_COST_PER_HULL);
@@ -1003,14 +1006,35 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
 static void try_repair_ship(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
     if (!station_has_service(st, STATION_SERVICE_REPAIR)) return;
-    float cost = sim_station_repair_cost(&sp->ship);
-    if (cost <= 0.0f) return;
-    /* Repair is unrefusable — a docked ship with damaged hull always
-     * heals. The cost runs the ledger into debt rather than refusing
-     * the service; players earn it back through work. */
+    float max_hull = ship_max_hull(&sp->ship);
+    float missing = fmaxf(0.0f, max_hull - sp->ship.hull);
+    if (missing <= 0.0f) return;
+
+    /* Each repair-kit restores 1 HP. If the station has no kits the
+     * dock can't repair — the demand for kits is what closes the
+     * production loop. Partial repair is allowed: heal as many HP as
+     * kits are on hand. */
+    int kits_avail = (int)floorf(st->inventory[COMMODITY_REPAIR_KIT] + 0.0001f);
+    int hp_needed  = (int)ceilf(missing);
+    int hp_apply   = kits_avail < hp_needed ? kits_avail : hp_needed;
+    if (hp_apply <= 0) return;
+
+    /* Drain kits from float + manifest in lockstep. */
+    st->inventory[COMMODITY_REPAIR_KIT] -= (float)hp_apply;
+    if (st->inventory[COMMODITY_REPAIR_KIT] < 0.0f)
+        st->inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+    manifest_consume_by_commodity(&st->manifest, COMMODITY_REPAIR_KIT, hp_apply);
+    st->named_ingots_dirty = true;
+
+    /* Credit cost still applies — kits are the physical input, credits
+     * are the labor. Cost scales with HP actually applied so a partial
+     * repair charges only for the partial heal. */
+    float cost = ceilf((float)hp_apply * STATION_REPAIR_COST_PER_HULL);
     ledger_force_debit(st, sp->session_token, cost, &sp->ship);
-    sp->ship.hull = ship_max_hull(&sp->ship);
-    SIM_LOG("[sim] player %d repaired for %.0f cr (now in debt if negative)\n", sp->id, cost);
+
+    sp->ship.hull = fminf(max_hull, sp->ship.hull + (float)hp_apply);
+    SIM_LOG("[sim] player %d repaired %d HP (%d kits, %.0f cr)\n",
+            sp->id, hp_apply, hp_apply, cost);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_REPAIR, .player_id = sp->id});
 }
 
@@ -3796,6 +3820,7 @@ void world_sim_step(world_t *w, float dt) {
     step_furnace_smelting(w, dt);
     sim_step_refinery_production(w, dt);
     sim_step_station_production(w, dt);
+    step_dock_repair_kit_fab(w, dt);
     step_module_flow(w, dt);
     step_module_activation(w, dt);
     step_scaffolds(w, dt);
@@ -3913,6 +3938,7 @@ void world_reset(world_t *w) {
     w->stations[0].base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
     w->stations[0].base_price[COMMODITY_CUPRITE_INGOT] = 32.0f;
     w->stations[0].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
+    w->stations[0].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
     w->stations[0].signal_range = 18000.0f;
     /* Ring 1: dock + relay + furnace (furnace beams to Ring 2 ore silo) */
     add_module_at(&w->stations[0], MODULE_DOCK, 1, 0);
@@ -3944,6 +3970,7 @@ void world_reset(world_t *w) {
     w->stations[1].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
     w->stations[1].base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
     w->stations[1].base_price[COMMODITY_FRAME] = 20.0f;
+    w->stations[1].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
     /* Ring 1: dock + relay + ore silo */
     add_module_at(&w->stations[1], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 1, 1);
@@ -3980,6 +4007,7 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
     w->stations[2].base_price[COMMODITY_LASER_MODULE] = 28.0f;
     w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
+    w->stations[2].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
     /* Ring 1: dock + relay + ferrite furnace */
     add_module_at(&w->stations[2], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);

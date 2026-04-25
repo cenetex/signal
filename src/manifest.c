@@ -44,6 +44,21 @@ static const recipe_def_t RECIPE_TABLE[RECIPE_COUNT] = {
         .input_count = 2,
         .input_commodities = { COMMODITY_CUPRITE_INGOT, COMMODITY_CUPRITE_INGOT },
     },
+    [RECIPE_REPAIR_KIT_FAB] = {
+        .id = RECIPE_REPAIR_KIT_FAB,
+        .name = "kit/dock-fab",
+        .output_kind = CARGO_KIND_REPAIR_KIT,
+        .output_commodity = COMMODITY_REPAIR_KIT,
+        /* 1 frame + 1 laser + 1 tractor → 100 kits. The triple input
+         * spreads kit demand across all three Helios/Kepler outputs,
+         * so building outposts AND repairing both pull on every
+         * production line. Output multiplier (×100) lives in the
+         * dock production loop, not the recipe — recipes describe
+         * unit-level identity, not bulk yield. */
+        .input_count = 3,
+        .input_commodities = { COMMODITY_FRAME, COMMODITY_LASER_MODULE,
+                               COMMODITY_TRACTOR_MODULE },
+    },
     [RECIPE_LEGACY_MIGRATE] = {
         .id = RECIPE_LEGACY_MIGRATE,
         .name = "legacy/migrate",
@@ -74,6 +89,8 @@ static bool cargo_kind_matches_commodity(cargo_kind_t kind, commodity_t commodit
         return commodity == COMMODITY_LASER_MODULE;
     case CARGO_KIND_TRACTOR:
         return commodity == COMMODITY_TRACTOR_MODULE;
+    case CARGO_KIND_REPAIR_KIT:
+        return commodity == COMMODITY_REPAIR_KIT;
     default:
         return false;
     }
@@ -410,10 +427,11 @@ bool hash_product(recipe_id_t recipe_id, const cargo_unit_t *inputs,
 
 bool cargo_kind_for_commodity(commodity_t commodity, cargo_kind_t *out_kind) {
     if (!out_kind) return false;
-    if (commodity_is_ingot(commodity))     { *out_kind = CARGO_KIND_INGOT;   return true; }
-    if (commodity == COMMODITY_FRAME)          { *out_kind = CARGO_KIND_FRAME;   return true; }
-    if (commodity == COMMODITY_LASER_MODULE)   { *out_kind = CARGO_KIND_LASER;   return true; }
-    if (commodity == COMMODITY_TRACTOR_MODULE) { *out_kind = CARGO_KIND_TRACTOR; return true; }
+    if (commodity_is_ingot(commodity))         { *out_kind = CARGO_KIND_INGOT;      return true; }
+    if (commodity == COMMODITY_FRAME)          { *out_kind = CARGO_KIND_FRAME;      return true; }
+    if (commodity == COMMODITY_LASER_MODULE)   { *out_kind = CARGO_KIND_LASER;      return true; }
+    if (commodity == COMMODITY_TRACTOR_MODULE) { *out_kind = CARGO_KIND_TRACTOR;    return true; }
+    if (commodity == COMMODITY_REPAIR_KIT)     { *out_kind = CARGO_KIND_REPAIR_KIT; return true; }
     return false;
 }
 

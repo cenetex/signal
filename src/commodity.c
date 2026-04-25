@@ -50,6 +50,8 @@ const char* commodity_name(commodity_t commodity) {
             return "Laser Modules";
         case COMMODITY_TRACTOR_MODULE:
             return "Tractor Modules";
+        case COMMODITY_REPAIR_KIT:
+            return "Repair Kits";
         case COMMODITY_COUNT:
         default:
             return "Cargo";
@@ -76,6 +78,8 @@ const char* commodity_code(commodity_t commodity) {
             return "LM";
         case COMMODITY_TRACTOR_MODULE:
             return "TM";
+        case COMMODITY_REPAIR_KIT:
+            return "RK";
         case COMMODITY_COUNT:
         default:
             return "--";
@@ -103,6 +107,8 @@ void commodity_color_u8(commodity_t commodity, uint8_t *r, uint8_t *g, uint8_t *
         *r = 140; *g = 180; *b = 255; return;  /* nav blue */
     case COMMODITY_TRACTOR_MODULE:
         *r = 120; *g = 235; *b = 200; return;  /* mint */
+    case COMMODITY_REPAIR_KIT:
+        *r = 240; *g =  90; *b =  90; return;  /* med-cross red — repair signal */
     case COMMODITY_COUNT:
     default:
         *r = 200; *g = 220; *b = 230; return;  /* fallback cool white */
@@ -129,6 +135,8 @@ const char* commodity_short_name(commodity_t commodity) {
             return "Laser Mod";
         case COMMODITY_TRACTOR_MODULE:
             return "Tractor Mod";
+        case COMMODITY_REPAIR_KIT:
+            return "Repair Kit";
         case COMMODITY_COUNT:
         default:
             return "Unknown";

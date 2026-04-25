@@ -60,7 +60,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 30  /* contract.required_grade persisted */
+#define SAVE_VERSION 31  /* COMMODITY_REPAIR_KIT added; inventory/base_price arrays widen by 1 */
 #define MIN_SAVE_VERSION 20  /* migrate v20 by mapping old module_buffer → input */
 
 /* Set by world_load() before read_station() so per-station readers know

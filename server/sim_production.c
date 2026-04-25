@@ -917,3 +917,77 @@ void step_module_delivery(world_t *w, station_t *st, int station_idx,
         if (m->build_progress > 1.0f) m->build_progress = 1.0f;
     }
 }
+
+/* ------------------------------------------------------------------ */
+/* Dock repair-kit fabrication                                         */
+/* ------------------------------------------------------------------ */
+/* Every station with a MODULE_DOCK runs an assembly bench that turns
+ * 1 frame + 1 laser + 1 tractor module into REPAIR_KIT_PER_BATCH (100)
+ * repair kits, on a slow cadence (REPAIR_KIT_FAB_PERIOD seconds per
+ * batch). One kit restores 1 HP at the dock's repair service.
+ *
+ * Inputs come from the same station's inventory + manifest (so the
+ * three Helios/Kepler outputs flow naturally to docks via NPC haulers
+ * or player delivery, and from there into kits the ships consume).
+ * The triple-input recipe is the load-bearing demand sink that closes
+ * the production loop — every smelter, every fab has a downstream
+ * consumer, instead of saturating at the cap. */
+void step_dock_repair_kit_fab(world_t *w, float dt) {
+    if (!w) return;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_exists(st)) continue;
+        if (!station_has_module(st, MODULE_DOCK)) continue;
+        if (st->inventory[COMMODITY_REPAIR_KIT] >= REPAIR_KIT_STOCK_CAP) continue;
+
+        st->repair_kit_fab_timer += dt;
+        if (st->repair_kit_fab_timer < REPAIR_KIT_FAB_PERIOD) continue;
+
+        /* All three inputs required. If any are missing, hold the timer
+         * at the period (don't keep accumulating) so the next batch
+         * fires the moment supply arrives. */
+        if (st->inventory[COMMODITY_FRAME] < 1.0f ||
+            st->inventory[COMMODITY_LASER_MODULE] < 1.0f ||
+            st->inventory[COMMODITY_TRACTOR_MODULE] < 1.0f) {
+            st->repair_kit_fab_timer = REPAIR_KIT_FAB_PERIOD;
+            continue;
+        }
+
+        /* Consume one of each from the float + manifest, in lockstep
+         * with the manifest-truth invariant. */
+        st->inventory[COMMODITY_FRAME]          -= 1.0f;
+        st->inventory[COMMODITY_LASER_MODULE]   -= 1.0f;
+        st->inventory[COMMODITY_TRACTOR_MODULE] -= 1.0f;
+        manifest_consume_by_commodity(&st->manifest, COMMODITY_FRAME, 1);
+        manifest_consume_by_commodity(&st->manifest, COMMODITY_LASER_MODULE, 1);
+        manifest_consume_by_commodity(&st->manifest, COMMODITY_TRACTOR_MODULE, 1);
+
+        /* Mint kits — clamp at the cap. Each minted unit gets a
+         * legacy-migrate manifest entry so the TRADE picker can see
+         * them and the per-station origin stays traceable. */
+        float room = REPAIR_KIT_STOCK_CAP - st->inventory[COMMODITY_REPAIR_KIT];
+        float minted = fminf(REPAIR_KIT_PER_BATCH, room);
+        st->inventory[COMMODITY_REPAIR_KIT] += minted;
+        int int_minted = (int)floorf(minted + 0.0001f);
+        if (int_minted > 0) {
+            uint8_t origin[8] = { 'D','O','C','K','F','A','B','0' };
+            origin[7] = (uint8_t)('0' + (s % 10));
+            for (int k = 0; k < int_minted; k++) {
+                if (st->manifest.cap == 0 && !station_manifest_bootstrap(st)) break;
+                if (st->manifest.count >= st->manifest.cap) break;
+                cargo_unit_t unit = {0};
+                if (!hash_legacy_migrate_unit(origin, COMMODITY_REPAIR_KIT,
+                                              (uint16_t)k, &unit))
+                    continue;
+                /* Stamp the recipe so future inspectors can see this is a
+                 * dock-fab kit rather than a save-migration leftover. */
+                unit.recipe_id = (uint16_t)RECIPE_REPAIR_KIT_FAB;
+                if (!manifest_push(&st->manifest, &unit)) break;
+            }
+            st->named_ingots_dirty = true;
+        }
+        st->repair_kit_fab_timer = 0.0f;
+        SIM_LOG("[dock-fab] station %d minted %d kits (1 frame + 1 laser + 1 tractor consumed)\n",
+                s, int_minted);
+    }
+}
