@@ -340,7 +340,23 @@ void rebuild_signal_chain(world_t *w);
 bool can_place_outpost(const world_t *w, vec2 pos);
 void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type);
 void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int ring, int slot);
-void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *ship);
+/* Deliver build material from `ship` (player or NPC) into modules at
+ * this station awaiting supply. `filter` restricts which commodity may
+ * be consumed; pass COMMODITY_COUNT to allow any. The filter prevents
+ * "deliver ingots only" from also draining frames into a half-built
+ * module behind the player's back. */
+void step_module_delivery(world_t *w, station_t *st, int station_idx,
+                          ship_t *ship, commodity_t filter);
+
+/* Backfill every active station's manifest from its seeded float
+ * inventory (RECIPE_LEGACY_MIGRATE units, deterministic per-station
+ * origin). Idempotent: skips zero-inventory commodities and only adds
+ * units the manifest doesn't already represent. world_reset leaves
+ * manifests pristine so tests stay clean; this is the seed path that
+ * both the dedicated server (after world_load fails) and the singleplayer
+ * embedded server (after world_reset) call so the manifest-only TRADE
+ * picker surfaces the seed stock. */
+void world_seed_station_manifests(world_t *w);
 int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner);
 bool world_save(const world_t *w, const char *path);
 bool world_load(world_t *w, const char *path);

@@ -45,6 +45,11 @@ void local_server_init(local_server_t *ls, uint32_t seed) {
     memset(ls, 0, sizeof(*ls));
     ls->world.rng = seed ? seed : 2037u;
     world_reset(&ls->world);
+    /* Mirror the dedicated-server load path: turn the seeded float
+     * inventory into manifest units so the manifest-only TRADE picker
+     * has rows to surface. Without this, a fresh singleplayer start
+     * shows empty markets at every station. */
+    world_seed_station_manifests(&ls->world);
     ls->world.players[0].connected = true;
     ls->world.players[0].id = 0;
     ls->world.players[0].session_ready = true;

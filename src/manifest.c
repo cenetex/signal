@@ -307,6 +307,19 @@ int manifest_count_by_commodity(const manifest_t *manifest, commodity_t commodit
     return n;
 }
 
+int manifest_consume_by_commodity(manifest_t *manifest, commodity_t commodity, int n) {
+    if (!manifest || !manifest->units || n <= 0) return 0;
+    int removed = 0;
+    /* Walk backwards so manifest_remove (which compacts via tail-swap)
+     * doesn't shift later indices we still need to scan. */
+    for (int16_t i = (int16_t)manifest->count - 1; i >= 0 && removed < n; i--) {
+        if (manifest->units[i].commodity == (uint8_t)commodity) {
+            if (manifest_remove(manifest, (uint16_t)i, NULL)) removed++;
+        }
+    }
+    return removed;
+}
+
 bool hash_merkle_root(const uint8_t pubs[][32], size_t count, uint8_t out_root[32]) {
     uint8_t *level = NULL;
     uint8_t *next = NULL;

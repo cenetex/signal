@@ -536,7 +536,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                             activate_outpost(w, npc->dest_station);
                     }
                 }
-                step_module_delivery(w, dest, npc->dest_station, &hauler_ship);
+                step_module_delivery(w, dest, npc->dest_station, &hauler_ship, COMMODITY_COUNT);
                 /* Put remaining back */
                 for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
                     float consumed = dest->inventory[c] - hauler_ship.cargo[c];

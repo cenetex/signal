@@ -402,6 +402,11 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     float accepted = fminf(deliver, needed);
     sp->ship.cargo[COMMODITY_FRAME] -= accepted;
     st->scaffold_progress += accepted / SCAFFOLD_MATERIAL_NEEDED;
+    /* Consume the matching manifest units so the named identity can't
+     * be sold or transferred again from the same hold. */
+    int whole = (int)floorf(accepted + 0.0001f);
+    if (whole > 0)
+        manifest_consume_by_commodity(&sp->ship.manifest, COMMODITY_FRAME, whole);
     SIM_LOG("[sim] player %d delivered %.1f frames to scaffold %d (progress %.0f%%)\n",
             sp->id, accepted, sp->current_station, st->scaffold_progress * 100.0f);
     if (st->scaffold_progress >= 1.0f) {
@@ -2306,9 +2311,15 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     if (!sp->docked) return;
     station_t *docked_st = &w->stations[sp->current_station];
     if (intent->service_sell) {
-        /* Deliver to scaffolds/modules first, then sell remaining */
-        step_scaffold_delivery(w, sp);
-        step_module_delivery(w, docked_st, sp->current_station, &sp->ship);
+        /* Deliver to scaffolds/modules first, then sell remaining.
+         * Honor service_sell_only as a filter: when the player picks a
+         * specific commodity row, scaffold/module delivery should not
+         * eat unrelated build materials (e.g. selecting "deliver
+         * ingots" must not silently pour frames into a scaffold). */
+        commodity_t filter = intent->service_sell_only;
+        bool deliver_frames = (filter == COMMODITY_COUNT) || (filter == COMMODITY_FRAME);
+        if (deliver_frames) step_scaffold_delivery(w, sp);
+        step_module_delivery(w, docked_st, sp->current_station, &sp->ship, filter);
         try_sell_station_cargo(w, sp);
     }
     else if (intent->service_repair) try_repair_ship(w, sp);
@@ -2353,10 +2364,17 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                 ? mining_payout_multiplier((mining_grade_t)intent->buy_grade)
                 : 1.0f;
             float price_per = price_base * grade_mult;
-            /* Buy as much as you can afford and carry */
+            /* One unit per intent. The TRADE picker advertises a row
+             * as "buy 1 frame for $X" — the old "buy as much as you
+             * can afford" behavior could drain a station's stock and
+             * the player's wallet from a single keypress, charging the
+             * row's grade-multiplied price across the whole quantity
+             * even though manifest_transfer falls back to other grades
+             * once the named ones run out. Bulk-buy can come back as
+             * an explicit `buy_quantity` intent if/when needed. */
             float bal = ledger_balance(docked_st, sp->session_token);
             float afford = (price_per > 0.01f) ? floorf(bal / price_per) : 0.0f;
-            float amount = fminf(fminf(available, space), afford);
+            float amount = fminf(fminf(fminf(available, space), afford), 1.0f);
             float total_cost = amount * price_per;
             SIM_LOG("[buy] avail=%.2f space=%.2f price/u=%.2f bal=%.2f afford=%.0f amount=%.2f\n",
                     available, space, price_per, bal, afford, amount);
@@ -3851,6 +3869,19 @@ void world_cleanup(world_t *w) {
     w->signal_cache.valid = false;
     free(w->asteroid_grid.entries);
     w->asteroid_grid.entries = NULL;
+}
+
+void world_seed_station_manifests(world_t *w) {
+    if (!w) return;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (!station_exists(&w->stations[i])) continue;
+        uint8_t origin[8] = { 'S','E','E','D','0','0','0','0' };
+        origin[7] = (uint8_t)('0' + (i % 10));
+        manifest_migrate_legacy_inventory(&w->stations[i].manifest,
+                                          w->stations[i].inventory,
+                                          COMMODITY_COUNT, origin);
+        w->stations[i].named_ingots_dirty = true;
+    }
 }
 
 void world_reset(world_t *w) {

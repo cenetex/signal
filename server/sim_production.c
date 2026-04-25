@@ -875,29 +875,43 @@ void step_module_flow(world_t *w, float dt) {
  * immediately from cargo but build progress advances at a fixed rate --
  * delivery fills the module's internal hopper (tracked via build_progress
  * vs the total cost), construction ticks over time in step_module_activation. */
-void step_module_delivery(world_t *w, station_t *st, int station_idx, ship_t *ship) {
+void step_module_delivery(world_t *w, station_t *st, int station_idx,
+                          ship_t *ship, commodity_t filter) {
     (void)w; (void)station_idx;
     for (int i = 0; i < st->module_count; i++) {
         station_module_t *m = &st->modules[i];
         if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
         commodity_t mat = module_build_material(m->type);
+        /* Selective-delivery filter: when the player picks "deliver
+         * <commodity>" the construction path must not eat anything
+         * else. COMMODITY_COUNT means "no filter, deliver anything". */
+        if (filter != COMMODITY_COUNT && filter != mat) continue;
         float cost = module_build_cost(m->type);
         float needed = cost * (1.0f - module_supply_fraction(m));
         if (needed < 0.01f) continue;
 
-        /* Pull from docked ship cargo */
+        /* Pull from docked ship cargo (consume the manifest unit so the
+         * named identity can't be sold or transferred again). */
         if (ship->cargo[mat] > 0.01f) {
             float deliver = fminf(ship->cargo[mat], needed);
             ship->cargo[mat] -= deliver;
             m->build_progress += deliver / cost;
+            int whole = (int)floorf(deliver + 0.0001f);
+            if (whole > 0)
+                manifest_consume_by_commodity(&ship->manifest, mat, whole);
             needed -= deliver;
         }
 
-        /* Also pull from station inventory (NPC deliveries land here) */
+        /* Also pull from station inventory (NPC deliveries land here).
+         * Match the consume on the station manifest too — same drift
+         * class as the ship side. */
         if (needed > 0.01f && st->inventory[mat] > 0.01f) {
             float deliver = fminf(st->inventory[mat], needed);
             st->inventory[mat] -= deliver;
             m->build_progress += deliver / cost;
+            int whole = (int)floorf(deliver + 0.0001f);
+            if (whole > 0)
+                manifest_consume_by_commodity(&st->manifest, mat, whole);
         }
 
         if (m->build_progress > 1.0f) m->build_progress = 1.0f;

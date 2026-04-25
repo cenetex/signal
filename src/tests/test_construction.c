@@ -168,7 +168,7 @@ TEST(test_module_construction_and_delivery) {
     /* Deliver the required crystal ingots (goes into station inventory) */
     ship_t ship = {0};
     ship.cargo[COMMODITY_CRYSTAL_INGOT] = 200.0f;
-    step_module_delivery(&w, st, 0, &ship);
+    step_module_delivery(&w, st, 0, &ship, COMMODITY_COUNT);
     ASSERT(ship.cargo[COMMODITY_CRYSTAL_INGOT] < 200.0f);  /* consumed from ship */
     ASSERT_EQ_FLOAT(st->modules[mc_before].build_progress, 1.0f, 0.01f); /* fully supplied */
     ASSERT(st->modules[mc_before].scaffold);  /* still building — not instant */
@@ -176,6 +176,101 @@ TEST(test_module_construction_and_delivery) {
     for (int i = 0; i < (int)(15.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
     ASSERT(!st->modules[mc_before].scaffold);  /* activated after build time */
+}
+
+/* Regression: a frame delivered into a scaffold via service_sell must
+ * also have its matching cargo_unit_t removed from the ship manifest.
+ * Without the consume, the named frame stays in the ship's manifest
+ * and could be sold or transferred again. */
+TEST(test_construction_consumes_manifest_units) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *st = &w.stations[0];
+    st->scaffold = true;
+    st->scaffold_progress = 0.0f;
+
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    memset(sp->session_token, 0xCC, sizeof(sp->session_token));
+    sp->docked = true;
+    sp->current_station = 0;
+    ASSERT(manifest_init(&sp->ship.manifest, 16));
+    sp->ship.cargo[COMMODITY_FRAME] = 5.0f;
+    cargo_unit_t u = {0};
+    u.kind = CARGO_KIND_FRAME;
+    u.commodity = COMMODITY_FRAME;
+    for (int i = 0; i < 5; i++) {
+        u.pub[0] = (uint8_t)(i + 1);
+        ASSERT(manifest_push(&sp->ship.manifest, &u));
+    }
+    ASSERT_EQ_INT(manifest_count_by_commodity(&sp->ship.manifest, COMMODITY_FRAME), 5);
+
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_COUNT;
+    world_sim_step(&w, SIM_DT);
+
+    int frames_left = manifest_count_by_commodity(&sp->ship.manifest, COMMODITY_FRAME);
+    int cargo_left = (int)floorf(sp->ship.cargo[COMMODITY_FRAME] + 0.0001f);
+    ASSERT_EQ_INT(cargo_left, frames_left);
+    /* Some frames consumed by the scaffold (it needs them). */
+    ASSERT(frames_left < 5);
+}
+
+/* Regression: a single buy_product intent must purchase exactly one
+ * unit, not as-many-as-the-player-can-afford. The TRADE picker
+ * advertises rows as "buy 1 frame for $X"; bulk-buy from one keypress
+ * was charging the row's grade-multiplied price across the whole drain. */
+TEST(test_docked_buy_one_unit_per_intent) {
+    WORLD_DECL;
+    world_reset(&w);
+    world_seed_station_manifests(&w);
+    station_t *st = &w.stations[1]; /* Kepler — produces frames */
+    st->inventory[COMMODITY_FRAME] = 50.0f;
+
+    server_player_t *sp = &w.players[0];
+    sp->connected = true;
+    sp->session_ready = true;
+    sp->id = 0;
+    sp->docked = true;
+    sp->current_station = 1;
+    memset(sp->session_token, 0xAA, sizeof(sp->session_token));
+    ASSERT(manifest_init(&sp->ship.manifest, 16));
+    ledger_credit_supply(st, sp->session_token, 5000.0f);
+    float bal_before = ledger_balance(st, sp->session_token);
+    float cargo_before = sp->ship.cargo[COMMODITY_FRAME];
+
+    sp->input.buy_product = true;
+    sp->input.buy_commodity = COMMODITY_FRAME;
+    sp->input.buy_grade = MINING_GRADE_COMMON;
+    world_sim_step(&w, SIM_DT);
+
+    float cargo_delta = sp->ship.cargo[COMMODITY_FRAME] - cargo_before;
+    float bal_delta = bal_before - ledger_balance(st, sp->session_token);
+    ASSERT_EQ_FLOAT(cargo_delta, 1.0f, 0.01f);
+    ASSERT(bal_delta < 100.0f);
+}
+
+/* Regression: world_seed_station_manifests populates each active
+ * station's manifest from its float inventory so the manifest-only
+ * TRADE picker has rows to surface. The singleplayer init path must
+ * call this for parity with the dedicated server. */
+TEST(test_world_seed_station_manifests_matches_float) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < 3; i++) {
+        ASSERT_EQ_INT(w.stations[i].manifest.count, 0);
+    }
+    world_seed_station_manifests(&w);
+    for (int s = 0; s < 3; s++) {
+        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+            int expected = (int)floorf(w.stations[s].inventory[c] + 0.0001f);
+            int got = manifest_count_by_commodity(&w.stations[s].manifest,
+                                                  (commodity_t)c);
+            ASSERT_EQ_INT(got, expected);
+        }
+    }
 }
 
 TEST(test_module_activation_spawns_npc) {
@@ -189,7 +284,7 @@ TEST(test_module_activation_spawns_npc) {
     /* Deliver materials to station inventory */
     ship_t ship = {0};
     ship.cargo[COMMODITY_FRAME] = 200.0f;
-    step_module_delivery(&w, st, 1, &ship);
+    step_module_delivery(&w, st, 1, &ship, COMMODITY_COUNT);
     /* Run sim long enough for construction to complete (~60 frames / 4 per sec = 15s) */
     for (int i = 0; i < (int)(20.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
@@ -1322,6 +1417,9 @@ void register_construction_modules_tests(void) {
     TEST_SECTION("\nModule construction:\n");
     RUN(test_module_build_material_types);
     RUN(test_module_construction_and_delivery);
+    RUN(test_construction_consumes_manifest_units);
+    RUN(test_docked_buy_one_unit_per_intent);
+    RUN(test_world_seed_station_manifests_matches_float);
     RUN(test_module_activation_spawns_npc);
 }
 

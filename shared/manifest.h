@@ -34,6 +34,14 @@ int manifest_find_first_cg(const manifest_t *manifest,
 int manifest_count_by_commodity(const manifest_t *manifest,
                                 commodity_t commodity);
 
+/* Remove up to `n` units of `commodity` from `manifest` (no destination
+ * — the units are destroyed). Used by construction delivery, where the
+ * cargo unit's identity is consumed into a built module rather than
+ * transferred to another holder. Walks backwards so removing doesn't
+ * disturb earlier indices. Returns the number actually removed. */
+int manifest_consume_by_commodity(manifest_t *manifest,
+                                  commodity_t commodity, int n);
+
 void ship_cleanup(ship_t *ship);
 bool ship_manifest_bootstrap(ship_t *ship);
 bool ship_copy(ship_t *dst, const ship_t *src);
