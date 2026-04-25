@@ -954,8 +954,12 @@ void draw_hud(void) {
         sdtx_pos(top_text_x, top_row_0);
         sdtx_color3b(PAL_TEXT_PRIMARY);
         {
-            const char *mc = mining_client_get()->player_callsign;
-            const char *cs = (mc && mc[0] != '\0' && mc[0] != '_') ? mc : net_local_callsign();
+            /* Use the SESSION callsign (sent over the wire and echoed
+             * back in highscores + remote ship labels) — NOT the local
+             * mining-keypair callsign, which is cryptographic-only and
+             * doesn't match what other players or the death-screen
+             * leaderboard see. */
+            const char *cs = net_local_callsign();
             const char *tag = (cs && cs[0] != '\0') ? cs : (LOCAL_PLAYER.docked ? "RUN" : "SHIP");
             if (LOCAL_PLAYER.docked)
                 sdtx_printf("%s // %d %s", tag, credits, player_current_currency());
@@ -1096,8 +1100,9 @@ void draw_hud(void) {
     sdtx_pos(top_text_x, top_row_0);
     sdtx_color3b(PAL_TEXT_PRIMARY);
     {
-        const char *mc = mining_client_get()->player_callsign;
-        const char *cs = (mc && mc[0] != '\0' && mc[0] != '_') ? mc : net_local_callsign();
+        /* SESSION callsign — see compact_top above for why we ignore
+         * mining_client_get()->player_callsign here. */
+        const char *cs = net_local_callsign();
         const char *fallback = LOCAL_PLAYER.docked ? "RUN STATUS" : "SHIP STATUS";
         if (cs && cs[0] != '\0')
             sdtx_printf("%s // %s", cs, LOCAL_PLAYER.docked ? "DOCKED" : "FLIGHT");
@@ -1305,7 +1310,11 @@ void draw_hud(void) {
         }
         float msg_y = screen_h * 0.82f;
         for (int li = 0; li < count; li++) {
-            char line_buf[256];
+            /* 512 (was 256): GCC -Werror=format-truncation traces the
+             * message_label (32) + ": " + a wrapped line (HUD_MSG_LINE_CAP)
+             * and decides 256 might overflow. Bumping silences the warning
+             * without forcing an explicit length check. */
+            char line_buf[512];
             if (li == 0 && message_label[0] != '\0')
                 snprintf(line_buf, sizeof(line_buf), "%s: %s",
                          message_label, message_lines[li]);

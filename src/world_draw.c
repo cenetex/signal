@@ -1716,11 +1716,14 @@ void draw_compass_ring(void) {
 
             if (ct->action == CONTRACT_TRACTOR
                 && ct->commodity < COMMODITY_RAW_ORE_COUNT) {
-                /* Does the ship already tow a fragment of this commodity? */
+                /* Does the ship already tow a fragment of this commodity?
+                 * Local pointer named pship — outer scope already has
+                 * vec2 ship for the compass center, so MSVC -Wshadow
+                 * (=Werror under /WX) bites if we reuse the name. */
                 bool carrying = false;
-                const ship_t *ship = &LOCAL_PLAYER.ship;
-                for (int t = 0; t < ship->towed_count && !carrying; t++) {
-                    int fi = ship->towed_fragments[t];
+                const ship_t *pship = &LOCAL_PLAYER.ship;
+                for (int t = 0; t < pship->towed_count && !carrying; t++) {
+                    int fi = pship->towed_fragments[t];
                     if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
                     const asteroid_t *a = &g.world.asteroids[fi];
                     if (a->active && a->tier == ASTEROID_TIER_S
@@ -1730,7 +1733,7 @@ void draw_compass_ring(void) {
                 if (!carrying) {
                     /* Prefer a free S-tier fragment of the commodity. */
                     float best_d = 1e18f;
-                    vec2 best_pos = ship->pos;
+                    vec2 best_pos = pship->pos;
                     bool found_frag = false;
                     for (int i = 0; i < MAX_ASTEROIDS; i++) {
                         const asteroid_t *a = &g.world.asteroids[i];
@@ -1739,7 +1742,7 @@ void draw_compass_ring(void) {
                         if (a->commodity != ct->commodity) continue;
                         /* Skip already-towed fragments. */
                         if (a->last_towed_by >= 0) continue;
-                        float d = v2_dist_sq(a->pos, ship->pos);
+                        float d = v2_dist_sq(a->pos, pship->pos);
                         if (d < best_d) {
                             best_d = d; best_pos = a->pos; found_frag = true;
                         }
@@ -1759,7 +1762,7 @@ void draw_compass_ring(void) {
                             if (a->tier == ASTEROID_TIER_S) continue;
                             if (a->commodity != ct->commodity) continue;
                             if ((int)a->tier > (int)best_tier) continue;
-                            float d = v2_dist_sq(a->pos, ship->pos);
+                            float d = v2_dist_sq(a->pos, pship->pos);
                             if ((int)a->tier < (int)best_tier
                                 || d < best_d) {
                                 best_tier = a->tier;

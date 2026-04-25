@@ -367,7 +367,12 @@ TEST(test_econ_invariant_player_session_conservation) {
 static float run_sell_with_grades(int g0, int g1, int g2,
                                   int *out_common, int *out_rare,
                                   float *out_ship_inventory_remaining) {
-    world_t *w = (world_t *)calloc(1, sizeof(world_t));
+    /* WORLD_HEAP attaches __attribute__((cleanup)) so the world is
+     * world_cleanup()'d + freed on every return path — including the
+     * early returns below. Previously a raw calloc leaked the per-
+     * player manifests on every test invocation, which only blew up
+     * loudly under AddressSanitizer. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
     if (!w) return -1.0f;
     world_reset(w);
     /* Drain auto-spawned contracts so the fab-fallback branch handles
@@ -378,7 +383,7 @@ static float run_sell_with_grades(int g0, int g1, int g2,
         if (w->stations[i].id == 0) continue;
         if (station_consumes(&w->stations[i], COMMODITY_FERRITE_INGOT)) { kepler = i; break; }
     }
-    if (kepler < 0) { free(w); return -1.0f; }
+    if (kepler < 0) return -1.0f; /* WORLD_HEAP cleanup frees w. */
     station_t *st = &w->stations[kepler];
     st->inventory[COMMODITY_FERRITE_INGOT] = 0.0f;
 
@@ -413,8 +418,8 @@ static float run_sell_with_grades(int g0, int g1, int g2,
     if (out_rare)   *out_rare   = rare;
     if (out_ship_inventory_remaining)
         *out_ship_inventory_remaining = w->players[0].ship.cargo[COMMODITY_FERRITE_INGOT];
-    free(w);
     return earned;
+    /* WORLD_HEAP cleanup attribute frees w on scope exit. */
 }
 
 TEST(test_grade_aware_sell_pays_per_unit_grade) {

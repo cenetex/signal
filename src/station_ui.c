@@ -1079,7 +1079,7 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             sgl_end();
         }
 
-        char key_buf[8], cargo_buf[32], pay_buf[32];
+        char key_buf[8], cargo_buf[32], pay_buf[64]; /* 64 = room for "+%d %s" with 31-char currency name */
         snprintf(key_buf, sizeof(key_buf), "[%d]%s",
                  s + 1, tracked && !selected ? "*" : "");
 
@@ -1230,7 +1230,8 @@ static void draw_yard_view(const station_ui_state_t *ui,
         const char *mat_name = commodity_short_label(mat_type);
         bool can_afford = credits >= fee;
         sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
-        sdtx_color3b(can_afford ? PAL_TEXT_SECONDARY : PAL_CANNOT_AFFORD);
+        if (can_afford) sdtx_color3b(PAL_TEXT_SECONDARY);
+        else            sdtx_color3b(PAL_CANNOT_AFFORD);
         sdtx_printf("[%d] %-14s %d %s + %d %s",
             shown + 1, module_type_name(kit),
             fee, ui_station_currency(ui->station),

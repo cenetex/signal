@@ -79,14 +79,31 @@
         printErr: function(text) { console.error(text); }
       };
 
+      /* Default SIGNAL_SERVER to the local docker websocket when this
+       * page is served from localhost / 127.0.0.1 / a private LAN IP.
+       * Without this, opening http://localhost:8080/signal.html stays in
+       * singleplayer and the docker signal_server on :9091 is unused —
+       * which means no global highscores, no other players, no chain.
+       * Production CDN sets window.SIGNAL_SERVER explicitly before this
+       * script runs, so this default never fires there. */
+      if (!window.SIGNAL_SERVER) {
+        var h = window.location.hostname;
+        var isLocal = (h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0'
+                    || /^192\.168\./.test(h) || /^10\./.test(h)
+                    || /^172\.(1[6-9]|2[0-9]|3[01])\./.test(h));
+        if (isLocal) window.SIGNAL_SERVER = 'ws://' + h + ':9091/ws';
+      }
+
       canvas.addEventListener('pointerdown', function() {
         canvas.focus();
       });
 
-      /* Prevent browser from stealing game keys (Tab, F, E, etc.) */
+      /* Prevent browser from stealing game keys. Tab is a docked-UI key
+       * now (tab strip cycling) so we must preventDefault on it too;
+       * otherwise focus escapes the canvas on the first Tab press. */
       window.addEventListener('keydown', function(e) {
         if (document.activeElement === canvas || e.target === document.body) {
-          if (['Tab','F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'].indexOf(e.key) === -1) {
+          if (['F1','F2','F3','F4','F5','F6','F7','F8','F9','F10','F11','F12'].indexOf(e.key) === -1) {
             e.preventDefault();
           }
         }

@@ -3123,8 +3123,11 @@ static void step_contracts(world_t *w, float dt) {
 static const float SCAFFOLD_RADIUS = 32.0f;
 static const float SCAFFOLD_DRAG = 0.98f;  /* gentle drag when loose */
 
-/* What commodity does a producer module output? */
-static module_type_t producer_module_for_commodity(commodity_t c) {
+/* What commodity does a producer module output? Exposed (rather than
+ * static) so tests can pin the mapping directly — driving it through
+ * shipyard_intake_rate would need a full sim build-up for a 5-case
+ * lookup. */
+module_type_t producer_module_for_commodity(commodity_t c) {
     switch (c) {
         case COMMODITY_FRAME:         return MODULE_FRAME_PRESS;
         case COMMODITY_FERRITE_INGOT: return MODULE_FURNACE;

@@ -376,6 +376,10 @@ const signal_channel_msg_t *signal_channel_at(const world_t *w, int i);
  * buffer at server boot. Idempotent — safe to call once after world
  * init. Reads chain dir entries written by signal_channel_post. */
 void signal_chain_load(world_t *w);
+/* Maps a producer commodity to the module type that fabricates it.
+ * Returns MODULE_COUNT for raw ore / unknown inputs. Test-exposed; the
+ * sim only calls it from shipyard_intake_rate. */
+module_type_t producer_module_for_commodity(commodity_t c);
 void player_seed_credits(server_player_t *sp, world_t *w);
 void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_by);
 void activate_outpost(world_t *w, int station_idx);

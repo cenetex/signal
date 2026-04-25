@@ -11,14 +11,21 @@ package-lock.json
 .cache/
 compile_commands.json
 
-# Runtime state written by the server/local-server at play time.
-#   chain/     — signal-channel append-only chain log (smelted X-foo, etc.)
+# Runtime state written by the server at play time. The container's
+# entrypoint cd's into ./data first, so all of these land under data/
+# in normal use. The bare top-level entries cover ad-hoc bare-process
+# runs and protect the working tree from regenerated chaff.
+#   data/      — docker compose volume root (server cwd inside container)
+#   chain/     — signal-channel append-only chain log
 #   stations/  — persistent station catalog (#285 streaming pool)
 #   saves/     — per-player save files
+#   highscores.dat — leaderboard
 # All regenerate on next run; none of them are seed data.
+data/
 chain/
 stations/
 saves/
+highscores.dat
 
 # Jekyll build output. Note: 5 stale files under _site/ are still
 # tracked from an earlier commit (space_miner.* pre-rename). The

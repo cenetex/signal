@@ -13,8 +13,17 @@ TEST(test_refined_form_ingots_return_self) {
 }
 
 TEST(test_commodity_name) {
+    /* Hit every branch — the labeler is touched by HUD code only, so
+     * tests are the only way it exercises each case in coverage. */
     ASSERT_STR_EQ(commodity_name(COMMODITY_FERRITE_ORE), "Ferrite Ore");
+    ASSERT_STR_EQ(commodity_name(COMMODITY_CUPRITE_ORE), "Cuprite Ore");
+    ASSERT_STR_EQ(commodity_name(COMMODITY_CRYSTAL_ORE), "Crystal Ore");
     ASSERT_STR_EQ(commodity_name(COMMODITY_FERRITE_INGOT), "Ferrite Ingots");
+    ASSERT_STR_EQ(commodity_name(COMMODITY_CUPRITE_INGOT), "Cuprite Ingots");
+    ASSERT_STR_EQ(commodity_name(COMMODITY_CRYSTAL_INGOT), "Crystal Ingots");
+    ASSERT_STR_EQ(commodity_name(COMMODITY_FRAME), "Frames");
+    ASSERT_STR_EQ(commodity_name(COMMODITY_LASER_MODULE), "Laser Modules");
+    ASSERT_STR_EQ(commodity_name(COMMODITY_TRACTOR_MODULE), "Tractor Modules");
     ASSERT_STR_EQ(commodity_name(COMMODITY_COUNT), "Cargo");
 }
 
@@ -29,7 +38,63 @@ TEST(test_commodity_code) {
 
 TEST(test_commodity_short_name) {
     ASSERT_STR_EQ(commodity_short_name(COMMODITY_FERRITE_ORE), "Ferrite");
+    ASSERT_STR_EQ(commodity_short_name(COMMODITY_CUPRITE_ORE), "Cuprite");
+    ASSERT_STR_EQ(commodity_short_name(COMMODITY_CRYSTAL_ORE), "Crystal");
     ASSERT_STR_EQ(commodity_short_name(COMMODITY_FERRITE_INGOT), "FE Ingot");
+    ASSERT_STR_EQ(commodity_short_name(COMMODITY_CUPRITE_INGOT), "CU Ingot");
+    ASSERT_STR_EQ(commodity_short_name(COMMODITY_CRYSTAL_INGOT), "CR Ingot");
+    ASSERT_STR_EQ(commodity_short_name(COMMODITY_FRAME), "Frame");
+    ASSERT_STR_EQ(commodity_short_name(COMMODITY_LASER_MODULE), "Laser Mod");
+    ASSERT_STR_EQ(commodity_short_name(COMMODITY_TRACTOR_MODULE), "Tractor Mod");
+    ASSERT_STR_EQ(commodity_short_name(COMMODITY_COUNT), "Unknown");
+}
+
+TEST(test_commodity_ore_form) {
+    /* Ingots and fab products map back to their source ore. Already-ore
+     * commodities and the COUNT sentinel pass through unchanged. */
+    ASSERT_EQ_INT(commodity_ore_form(COMMODITY_FERRITE_INGOT), COMMODITY_FERRITE_ORE);
+    ASSERT_EQ_INT(commodity_ore_form(COMMODITY_CUPRITE_INGOT), COMMODITY_CUPRITE_ORE);
+    ASSERT_EQ_INT(commodity_ore_form(COMMODITY_CRYSTAL_INGOT), COMMODITY_CRYSTAL_ORE);
+    ASSERT_EQ_INT(commodity_ore_form(COMMODITY_FRAME), COMMODITY_FERRITE_ORE);
+    ASSERT_EQ_INT(commodity_ore_form(COMMODITY_LASER_MODULE), COMMODITY_CUPRITE_ORE);
+    ASSERT_EQ_INT(commodity_ore_form(COMMODITY_TRACTOR_MODULE), COMMODITY_CRYSTAL_ORE);
+    ASSERT_EQ_INT(commodity_ore_form(COMMODITY_FERRITE_ORE), COMMODITY_FERRITE_ORE);
+    ASSERT_EQ_INT(commodity_ore_form(COMMODITY_CUPRITE_ORE), COMMODITY_CUPRITE_ORE);
+    ASSERT_EQ_INT(commodity_ore_form(COMMODITY_CRYSTAL_ORE), COMMODITY_CRYSTAL_ORE);
+    ASSERT_EQ_INT(commodity_ore_form(COMMODITY_COUNT), COMMODITY_COUNT);
+}
+
+TEST(test_commodity_code_full) {
+    ASSERT_STR_EQ(commodity_code(COMMODITY_FRAME), "FM");
+    ASSERT_STR_EQ(commodity_code(COMMODITY_LASER_MODULE), "LM");
+    ASSERT_STR_EQ(commodity_code(COMMODITY_TRACTOR_MODULE), "TM");
+    ASSERT_STR_EQ(commodity_code(COMMODITY_COUNT), "--");
+}
+
+TEST(test_commodity_color_u8_all_branches) {
+    /* The HUD color ladder — exercising every branch keeps the renderer
+     * fallback honest so a new commodity can't silently inherit white. */
+    uint8_t r, g, b;
+    commodity_color_u8(COMMODITY_FERRITE_ORE, &r, &g, &b);
+    ASSERT_EQ_INT(r, 217); ASSERT_EQ_INT(g, 127); ASSERT_EQ_INT(b, 90);
+    commodity_color_u8(COMMODITY_CUPRITE_ORE, &r, &g, &b);
+    ASSERT_EQ_INT(r, 110); ASSERT_EQ_INT(g, 210); ASSERT_EQ_INT(b, 140);
+    commodity_color_u8(COMMODITY_CRYSTAL_ORE, &r, &g, &b);
+    ASSERT_EQ_INT(r, 180); ASSERT_EQ_INT(g, 140); ASSERT_EQ_INT(b, 255);
+    commodity_color_u8(COMMODITY_FERRITE_INGOT, &r, &g, &b);
+    ASSERT_EQ_INT(r, 217);
+    commodity_color_u8(COMMODITY_CUPRITE_INGOT, &r, &g, &b);
+    ASSERT_EQ_INT(r, 110);
+    commodity_color_u8(COMMODITY_CRYSTAL_INGOT, &r, &g, &b);
+    ASSERT_EQ_INT(r, 180);
+    commodity_color_u8(COMMODITY_FRAME, &r, &g, &b);
+    ASSERT_EQ_INT(r, 190);
+    commodity_color_u8(COMMODITY_LASER_MODULE, &r, &g, &b);
+    ASSERT_EQ_INT(r, 140);
+    commodity_color_u8(COMMODITY_TRACTOR_MODULE, &r, &g, &b);
+    ASSERT_EQ_INT(r, 120);
+    commodity_color_u8(COMMODITY_COUNT, &r, &g, &b);
+    ASSERT_EQ_INT(r, 200); ASSERT_EQ_INT(g, 220); ASSERT_EQ_INT(b, 230);
 }
 
 TEST(test_ship_total_cargo) {
@@ -80,6 +145,9 @@ void register_commodity_tests(void) {
     RUN(test_commodity_name);
     RUN(test_commodity_code);
     RUN(test_commodity_short_name);
+    RUN(test_commodity_ore_form);
+    RUN(test_commodity_code_full);
+    RUN(test_commodity_color_u8_all_branches);
     RUN(test_ship_total_cargo);
     RUN(test_ship_cargo_amount);
     RUN(test_station_buy_price);
