@@ -28,30 +28,38 @@ RUN GIT_HASH=$(git -C /src rev-parse --short HEAD 2>/dev/null || echo local) \
     && emcmake cmake -S /src -B /src/build-web -DGIT_HASH=$GIT_HASH \
     && cmake --build /src/build-web --parallel
 
-# ----- stage 2: native server build ----------------------------------------
-FROM emscripten/emsdk:3.1.64 AS native-build
-WORKDIR /src
-RUN apt-get update && apt-get install -y --no-install-recommends cmake git build-essential \
+# ----- stage 2: runtime (native server build happens here) -----------------
+# Build the native server in the runtime image's own arch so it runs
+# natively on both amd64 and arm64 hosts. Pinning the runtime to amd64
+# made the binary segfault under qemu on M-series Macs (signal 11 in
+# the contract/production loop) — much worse than the original "wrong
+# loader" symptom that the pin was working around. Solution: rebuild
+# signal_server inside the runtime stage so it matches the host arch.
+FROM python:3.12-slim AS runtime
+WORKDIR /app
+
+# Build toolchain + runtime deps. Building signal_server here (instead of
+# in a cross-arch stage) means the binary always matches the host arch.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates tini cmake build-essential git \
     && rm -rf /var/lib/apt/lists/*
+
+# Compile signal_server in this stage so it's native arch.
 COPY . /src
 RUN GIT_HASH=$(git -C /src rev-parse --short HEAD 2>/dev/null || echo local) \
     && cmake -S /src -B /src/build -DBUILD_SERVER_ONLY=ON -DGIT_HASH=$GIT_HASH \
-    && cmake --build /src/build --target signal_server --parallel
+    && cmake --build /src/build --target signal_server --parallel \
+    && cp /src/build/signal_server /app/signal_server \
+    && rm -rf /src
 
-# ----- stage 3: runtime -----------------------------------------------------
-# Pin to linux/amd64 so the native signal_server binary (built in the
-# emscripten/emsdk amd64 image) executes natively on amd64 hosts and via
-# qemu on arm64 hosts. Without this pin, arm64 Macs pull an arm64 python
-# base and the amd64 binary fails with "ld-linux-x86-64.so.2 not found".
-FROM --platform=linux/amd64 python:3.12-slim AS runtime
-WORKDIR /app
-
-# Only what the server binary needs at runtime (libc, libm are in slim).
-RUN apt-get update && apt-get install -y --no-install-recommends ca-certificates tini \
-    && rm -rf /var/lib/apt/lists/*
-
-COPY --from=native-build /src/build/signal_server /app/signal_server
-COPY --from=wasm-build   /src/build-web            /app/build-web
+COPY --from=wasm-build /src/build-web /app/build-web
+# Ship the play/shell wrappers alongside the emscripten bundle. These set
+# window.SIGNAL_SERVER = ws://<host>:9091/ws when served from a local
+# host, so the wasm client connects to the in-container server instead
+# of falling into singleplayer ("offline"). Without these, opening
+# /signal.html directly bypasses the WS autoconfig.
+COPY --from=wasm-build /src/web/play.html  /app/build-web/play.html
+COPY --from=wasm-build /src/web/shell.html /app/build-web/shell.html
 
 # Persistence dirs (world.sav, chain/, saves/, stations/). Bind a host dir
 # to /app/data via `docker run -v $(pwd)/data:/app/data` to make them

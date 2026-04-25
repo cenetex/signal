@@ -3132,13 +3132,45 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
 
-        /* Priority 3.5: dock kit-fab inputs. Every dock needs frames +
-         * lasers + tractor modules to mint repair kits. If any input is
-         * low (and the station can't make it itself), surface a contract
-         * so haulers actually move finished goods between stations
-         * instead of letting Kepler/Helios saturate. Kit fab is the
-         * load-bearing demand sink — without these contracts a dock that
-         * can't self-produce its inputs will just sit idle. */
+        /* Priority 4: ingot buffer deficit (production slot). Runs
+         * BEFORE the dock kit-fab fallback because a station's own
+         * production chain (e.g. Kepler smelting ferrite ingots into
+         * frames) is upstream of, and feeds, the kit-fab demand. If
+         * Kepler stops asking for ferrite ingots its frame press dries
+         * up, and then Helios's kit fab dries up too. */
+        if (!need.active && !has_production_contract) {
+            struct { commodity_t ingot; bool needed; } checks[] = {
+                { COMMODITY_FERRITE_INGOT, station_has_module(st, MODULE_FRAME_PRESS) },
+                { COMMODITY_CUPRITE_INGOT,
+                  station_has_module(st, MODULE_LASER_FAB) ||
+                  station_has_module(st, MODULE_TRACTOR_FAB) },
+                { COMMODITY_CRYSTAL_INGOT, station_has_module(st, MODULE_LASER_FAB) },
+            };
+            float worst_deficit = 0.0f;
+            int worst_idx = -1;
+            for (int j = 0; j < 3; j++) {
+                if (!checks[j].needed) continue;
+                float deficit = MAX_PRODUCT_STOCK * 0.5f - st->inventory[checks[j].ingot];
+                if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
+            }
+            if (worst_idx >= 0) {
+                need = (contract_t){
+                    .active = true, .action = CONTRACT_TRACTOR,
+                    .station_index = (uint8_t)s,
+                    .commodity = checks[worst_idx].ingot,
+                    .quantity_needed = worst_deficit,
+                    .base_price = st->base_price[checks[worst_idx].ingot] * 1.15f * pool_factor,
+                    .target_index = -1, .claimed_by = -1,
+                };
+            }
+        }
+
+        /* Priority 5: dock kit-fab inputs. Last-resort: every dock needs
+         * frames + lasers + tractor modules to mint repair kits, but the
+         * upstream production contracts (above) come first so they don't
+         * starve. Only fires when the station's own ingot/scaffold
+         * pipeline is satisfied, ensuring kit fab gets fed without
+         * cannibalising the chain that produces its inputs. */
         if (!need.active && !has_production_contract && station_has_module(st, MODULE_DOCK)) {
             const struct { commodity_t c; module_type_t producer; } kit_inputs[] = {
                 { COMMODITY_FRAME,          MODULE_FRAME_PRESS  },
@@ -3163,34 +3195,6 @@ static void step_contracts(world_t *w, float dt) {
                     .base_price = st->base_price[mat] > 0.0f
                                   ? st->base_price[mat] * 1.25f * pool_factor
                                   : 28.0f * pool_factor,
-                    .target_index = -1, .claimed_by = -1,
-                };
-            }
-        }
-
-        /* Priority 4: ingot buffer deficit (production slot) */
-        if (!need.active && !has_production_contract) {
-            struct { commodity_t ingot; bool needed; } checks[] = {
-                { COMMODITY_FERRITE_INGOT, station_has_module(st, MODULE_FRAME_PRESS) },
-                { COMMODITY_CUPRITE_INGOT,
-                  station_has_module(st, MODULE_LASER_FAB) ||
-                  station_has_module(st, MODULE_TRACTOR_FAB) },
-                { COMMODITY_CRYSTAL_INGOT, station_has_module(st, MODULE_LASER_FAB) },
-            };
-            float worst_deficit = 0.0f;
-            int worst_idx = -1;
-            for (int j = 0; j < 3; j++) {
-                if (!checks[j].needed) continue;
-                float deficit = MAX_PRODUCT_STOCK * 0.5f - st->inventory[checks[j].ingot];
-                if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
-            }
-            if (worst_idx >= 0) {
-                need = (contract_t){
-                    .active = true, .action = CONTRACT_TRACTOR,
-                    .station_index = (uint8_t)s,
-                    .commodity = checks[worst_idx].ingot,
-                    .quantity_needed = worst_deficit,
-                    .base_price = st->base_price[checks[worst_idx].ingot] * 1.15f * pool_factor,
                     .target_index = -1, .claimed_by = -1,
                 };
             }
@@ -3991,8 +3995,8 @@ void world_reset(world_t *w) {
     w->stations[0].ring_offset[0] = 0.0f;
     w->stations[0].ring_offset[1] = 1.05f;  /* ~60° offset — unique silhouette */
     rebuild_station_services(&w->stations[0]);
-    /* Seed inventory and credit pool */
-    w->stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
+    /* No inventory handout — the chain has to be earned. Stations only
+     * start with a credit pool to pay miners + haulers. */
     w->stations[0].credit_pool = 10000.0f;
     snprintf(w->stations[0].station_slug, sizeof(w->stations[0].station_slug), "prospect");
     snprintf(w->stations[0].currency_name, sizeof(w->stations[0].currency_name), "prospect vouchers");
@@ -4028,9 +4032,6 @@ void world_reset(world_t *w) {
     w->stations[1].ring_offset[0] = 0.0f;
     w->stations[1].ring_offset[1] = 2.40f;  /* ~137° offset */
     rebuild_station_services(&w->stations[1]);
-    /* Seed inventory and credit pool */
-    w->stations[1].inventory[COMMODITY_FERRITE_INGOT] = 15.0f;
-    w->stations[1].inventory[COMMODITY_FRAME] = 12.0f;
     w->stations[1].credit_pool = 10000.0f;
     snprintf(w->stations[1].station_slug, sizeof(w->stations[1].station_slug), "kepler");
     snprintf(w->stations[1].currency_name, sizeof(w->stations[1].currency_name), "kepler bonds");
@@ -4081,11 +4082,6 @@ void world_reset(world_t *w) {
     w->stations[2].ring_offset[1] = 0.52f;  /* ~30° offset */
     w->stations[2].ring_offset[2] = 1.83f;  /* ~105° offset */
     rebuild_station_services(&w->stations[2]);
-    /* Seed inventory and credit pool */
-    w->stations[2].inventory[COMMODITY_CUPRITE_INGOT] = 15.0f;
-    w->stations[2].inventory[COMMODITY_CRYSTAL_INGOT] = 15.0f;
-    w->stations[2].inventory[COMMODITY_LASER_MODULE] = 10.0f;
-    w->stations[2].inventory[COMMODITY_TRACTOR_MODULE] = 10.0f;
     w->stations[2].credit_pool = 10000.0f;
     snprintf(w->stations[2].station_slug, sizeof(w->stations[2].station_slug), "helios");
     snprintf(w->stations[2].currency_name, sizeof(w->stations[2].currency_name), "helios credits");

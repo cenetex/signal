@@ -11,10 +11,7 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      platforms:
-        - linux/amd64
     image: signal:local
-    platform: linux/amd64
     container_name: signal
     ports:
       - "8080:8080"   # static HTTP — serves build-web/ (browser client)
