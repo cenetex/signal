@@ -109,7 +109,20 @@
         }
       });
 
-      function loadGame(src) {
+      function loadGame(src, version) {
+        /* Cache-bust both signal.js and the wasm fetch by routing
+         * through Module.locateFile. Without this, browsers happily
+         * keep the previous build's bundle and the HUD shows
+         * "syncing..." forever (client_hash != server_hash). */
+        if (version) {
+          var bust = (src.indexOf('?') >= 0 ? '&' : '?') + 'v=' + encodeURIComponent(version);
+          src = src + bust;
+          var prevLocate = Module.locateFile;
+          Module.locateFile = function(path, prefix) {
+            var base = prevLocate ? prevLocate(path, prefix) : ((prefix || '') + path);
+            return base + (base.indexOf('?') >= 0 ? '&' : '?') + 'v=' + encodeURIComponent(version);
+          };
+        }
         var s = document.createElement('script');
         s.src = src;
         s.onload = function() {
@@ -145,8 +158,8 @@
             if (!v || v === 'dev') { loadGame('./signal.js'); return; }
             var pinned = '/play/v/' + encodeURIComponent(v) + '/signal.js';
             fetch(pinned, { method: 'HEAD' })
-              .then(function(r) { loadGame(r.ok ? pinned : './signal.js'); })
-              .catch(function() { loadGame('./signal.js'); });
+              .then(function(r) { loadGame(r.ok ? pinned : './signal.js', v); })
+              .catch(function() { loadGame('./signal.js', v); });
           })
           .catch(function() {
             if (timedOut) return;
