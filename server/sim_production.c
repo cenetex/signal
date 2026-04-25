@@ -254,7 +254,15 @@ void sim_step_refinery_production(world_t *w, float dt) {
             if (room <= 0.01f) continue;
             float consume = fminf(fminf(st->inventory[ore], rate * dt), room);
             st->inventory[ore] -= consume;
-            st->inventory[ingot] += consume;
+            /* Manifest-as-truth: mint ingot manifest entries at integer
+             * crossings (legacy-migrate origin so future inspectors can
+             * tell this came from the refinery hopper path, not the
+             * fragment-tow path). The float cache is bumped in lockstep
+             * inside the helper so the supply strip and BUY check stay
+             * aligned with manifest count. */
+            uint8_t origin[8] = { 'R','E','F','N','0','0','0','0' };
+            origin[7] = (uint8_t)('0' + (s % 10));
+            station_finished_accumulate(st, ingot, consume, origin);
             /* Mirror to module output buffer for the flow graph (#280).
              * Capped at the schema's per-module buffer capacity. */
             float cap = module_buffer_capacity(mt);
@@ -359,15 +367,31 @@ void sim_step_station_production(world_t *w, float dt) {
                 /* Dual-write whole finished goods only when the legacy
                  * float path actually crosses an integer boundary and
                  * we can prove provenance from manifest-tracked ingots.
-                 * Older seeded stock and pre-transfer deliveries still
-                 * live only in floats until the consumer/migration slices. */
+                 *
+                 * If craft fails (no input manifest entry to consume), the
+                 * float increment must be reverted by the shortfall
+                 * amount. Otherwise we leave orphan integer-unit float
+                 * with no manifest backing — exactly the drift class
+                 * the manifest-as-truth refactor is closing out. */
                 {
                     int units_before = (int)floorf(stock_before + 0.0001f);
                     int units_after = (int)floorf(st->inventory[output_com] + 0.0001f);
                     int manifest_units = units_after - units_before;
+                    int crafted = 0;
                     for (int idx = 0; idx < manifest_units; idx++) {
                         if (!station_manifest_craft_product(st, recipe.recipe_id))
                             break;
+                        crafted++;
+                    }
+                    int shortfall = manifest_units - crafted;
+                    if (shortfall > 0) {
+                        /* Revert the orphan integer crossings. The
+                         * fractional residue under stock_before stays
+                         * because crafted == 0 case still has a
+                         * sub-1.0 accumulator, which is fine. */
+                        st->inventory[output_com] -= (float)shortfall;
+                        if (st->inventory[output_com] < (float)units_before)
+                            st->inventory[output_com] = (float)units_before;
                     }
                 }
             }

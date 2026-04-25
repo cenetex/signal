@@ -409,7 +409,11 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             } else {
                 /* Fallback: original round-trip behavior (leave reserve for players) */
                 station_t *dest = &w->stations[npc->dest_station];
-                commodity_t wants[3];
+                /* Sized for: FRAME_PRESS (FE) + LASER_FAB (CU+CR) +
+                 * TRACTOR_FAB (CU). Original code had wants[3] which
+                 * stack-overflowed when a station had FRAME_PRESS +
+                 * LASER_FAB + TRACTOR_FAB (Kepler post-#367). */
+                commodity_t wants[4];
                 int want_count = 0;
                 commodity_t best_ingot = COMMODITY_COUNT;
                 float best_need = -1.0f;

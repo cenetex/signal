@@ -901,8 +901,12 @@ void submit_input(const input_intent_t *intent, float dt) {
             g.pending_net_action = 6;
         else if (intent->upgrade_tractor)
             g.pending_net_action = 7;
-        else if (intent->place_outpost)
+        else if (intent->place_outpost) {
             g.pending_net_action = 8;
+            g.pending_net_place_station = intent->place_target_station;
+            g.pending_net_place_ring    = intent->place_target_ring;
+            g.pending_net_place_slot    = intent->place_target_slot;
+        }
         else if (intent->buy_scaffold_kit && (uint8_t)intent->scaffold_kit_module < MODULE_COUNT)
             g.pending_net_action = NET_ACTION_BUY_SCAFFOLD_TYPED + (uint8_t)intent->scaffold_kit_module;
         else if (intent->buy_product && (uint8_t)intent->buy_commodity < COMMODITY_COUNT) {

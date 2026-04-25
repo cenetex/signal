@@ -641,8 +641,26 @@ typedef struct {
             float angle;            /* hull orientation at moment of death */
         } death;
         struct { int station; int module_type; } scaffold_ready;
+        /* SIM_EVENT_ORDER_REJECTED: reason code lets the client surface
+         * a useful notice ("out of signal range", "no slot here", etc.)
+         * instead of a generic "rejected." Numbers here are stable
+         * across builds — keep additions append-only. */
+        struct { uint8_t reason; } order_rejected;
     };
 } sim_event_t;
+
+/* Reason codes for SIM_EVENT_ORDER_REJECTED. Stable wire values. */
+enum {
+    ORDER_REJECT_GENERIC = 0,
+    ORDER_REJECT_SCAFFOLD_PLACEMENT_NO_SIGNAL = 1, /* outside signal coverage */
+    ORDER_REJECT_SCAFFOLD_PLACEMENT_TOO_CLOSE = 2, /* inside another station's bubble or overlap */
+    ORDER_REJECT_SCAFFOLD_PLACEMENT_NEEDS_RELAY = 3, /* tried to place a non-relay scaffold without a nearby outpost */
+    ORDER_REJECT_SCAFFOLD_PLACEMENT_NO_SLOT = 4,    /* station-slot table full */
+    ORDER_REJECT_SHIPYARD_NOT_SOLD = 5,             /* this shipyard doesn't sell that scaffold type */
+    ORDER_REJECT_SHIPYARD_QUEUE_FULL = 6,           /* pending queue full */
+    ORDER_REJECT_SHIPYARD_LOCKED = 7,               /* tech tree gate */
+    ORDER_REJECT_SHIPYARD_NO_FUNDS = 8,             /* ledger spend failed */
+};
 
 typedef struct {
     sim_event_t events[SIM_MAX_EVENTS];

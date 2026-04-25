@@ -134,6 +134,9 @@ static void reset_world(void) {
     g.notice[0] = '\0';
     g.notice_timer = 0.0f;
     g.pending_net_buy_grade = MINING_GRADE_COUNT; /* sentinel = any */
+    g.pending_net_place_station = -1;
+    g.pending_net_place_ring    = -1;
+    g.pending_net_place_slot    = -1;
     audio_clear_voices(&g.audio);
     clear_collection_feedback();
 
@@ -573,6 +576,32 @@ void process_sim_events(const sim_events_t *events) {
             case SIM_EVENT_STATION_CONNECTED:
                 if (!g.episode.watched[8] && ev->station_connected.connected_count >= 5)
                     episode_trigger(&g.episode, 8); /* Ep 8: Every AI Dreams */
+                break;
+            case SIM_EVENT_ORDER_REJECTED:
+                /* Surface a precise reason instead of silently fizzling
+                 * the [E] press / shipyard buy. Reason codes are defined
+                 * in shared/types.h next to sim_event_t. */
+                switch (ev->order_rejected.reason) {
+                case ORDER_REJECT_SCAFFOLD_PLACEMENT_NO_SIGNAL:
+                    set_notice("No signal here — tow the scaffold back into station coverage."); break;
+                case ORDER_REJECT_SCAFFOLD_PLACEMENT_TOO_CLOSE:
+                    set_notice("Too close to an existing station — drop further out toward the fringe."); break;
+                case ORDER_REJECT_SCAFFOLD_PLACEMENT_NEEDS_RELAY:
+                    set_notice("Only signal-relay scaffolds can found new outposts. Tow this one to an existing station."); break;
+                case ORDER_REJECT_SCAFFOLD_PLACEMENT_NO_SLOT:
+                    set_notice("No outpost slots available — every station catalog entry is taken."); break;
+                case ORDER_REJECT_SHIPYARD_NOT_SOLD:
+                    set_notice("This shipyard doesn't sell that scaffold."); break;
+                case ORDER_REJECT_SHIPYARD_QUEUE_FULL:
+                    set_notice("Shipyard queue full — wait for the next batch to ship."); break;
+                case ORDER_REJECT_SHIPYARD_LOCKED:
+                    set_notice("Tech tree locked — order the prerequisite module first."); break;
+                case ORDER_REJECT_SHIPYARD_NO_FUNDS:
+                    set_notice("Not enough credits at this station for the order fee."); break;
+                default:
+                    set_notice("Order rejected.");
+                    break;
+                }
                 break;
             default:
                 break;
@@ -1522,11 +1551,18 @@ static void frame(void) {
                 if (g.input.key_down[SAPP_KEYCODE_SPACE] && !g.plan_mode_active)
                     flags |= NET_INPUT_TRACTOR;
                 uint8_t buy_grade_byte = g.pending_net_buy_grade;
+                int8_t place_station = g.pending_net_place_station;
+                int8_t place_ring    = g.pending_net_place_ring;
+                int8_t place_slot    = g.pending_net_place_slot;
                 g.pending_net_action = 0;
                 g.pending_net_buy_grade = MINING_GRADE_COUNT;
+                g.pending_net_place_station = -1;
+                g.pending_net_place_ring    = -1;
+                g.pending_net_place_slot    = -1;
                 uint8_t mining_target = (LOCAL_PLAYER.hover_asteroid >= 0 && LOCAL_PLAYER.hover_asteroid < 255)
                     ? (uint8_t)LOCAL_PLAYER.hover_asteroid : 255;
-                net_send_input(flags, action, mining_target, buy_grade_byte);
+                net_send_input(flags, action, mining_target, buy_grade_byte,
+                               place_station, place_ring, place_slot);
             }
         }
     }

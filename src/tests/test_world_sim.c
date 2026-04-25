@@ -356,7 +356,13 @@ TEST(test_station_production_dual_writes_laser_manifest) {
     ASSERT_EQ_INT(st->manifest.units[0].recipe_id, RECIPE_LASER_BASIC);
 }
 
-TEST(test_station_production_without_manifest_inputs_keeps_float_path) {
+/* Manifest-as-truth invariant: production refuses to mint orphan
+ * frames. With no FE_INGOT manifest entry to consume, station_manifest_
+ * craft_product fails and the float increment is reverted. This is the
+ * inverse of the old legacy-path test (which asserted that the float
+ * path kept producing without manifest); that behavior is the bug class
+ * the manifest-as-truth refactor closes. */
+TEST(test_station_production_without_manifest_inputs_refuses_to_mint) {
     WORLD_DECL;
     world_reset(&w);
     station_t *st = &w.stations[1];
@@ -378,7 +384,9 @@ TEST(test_station_production_without_manifest_inputs_keeps_float_path) {
     st->module_input[press_idx] = 2.0f;
     sim_step_station_production(&w, 1.0f);
 
-    ASSERT_EQ_FLOAT(st->inventory[COMMODITY_FRAME], 1.0f, 0.001f);
+    /* Float reverted by E1 fix: no manifest input → no manifest output
+     * → no orphan float either. */
+    ASSERT_EQ_FLOAT(st->inventory[COMMODITY_FRAME], 0.0f, 0.001f);
     ASSERT_EQ_INT(st->manifest.count, 0);
 }
 
@@ -762,8 +770,11 @@ TEST(test_scenario_upgrade_requires_products) {
     w.players[0].input.upgrade_mining = false;
     ASSERT_EQ_INT(w.players[0].ship.mining_level, level_before);
 
-    /* Set inventory to 20 */
-    w.stations[2].inventory[COMMODITY_LASER_MODULE] = 20.0f;
+    /* Mint manifest + float in lockstep. The manifest reconcile pass at
+     * end of tick now snaps inventory[c] DOWN to manifest_count for
+     * finished goods, so a bare float assignment would get trimmed to
+     * zero before the upgrade path runs. Use the helper for correctness. */
+    station_finished_mint(&w.stations[2], COMMODITY_LASER_MODULE, 20, NULL);
 
     /* Try upgrade_mining -- should succeed */
     w.players[0].input.upgrade_mining = true;
@@ -1114,7 +1125,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_refinery_deposits_named_ingot);
     RUN(test_station_production_dual_writes_frame_manifest);
     RUN(test_station_production_dual_writes_laser_manifest);
-    RUN(test_station_production_without_manifest_inputs_keeps_float_path);
+    RUN(test_station_production_without_manifest_inputs_refuses_to_mint);
     RUN(test_world_sim_step_events_emitted);
     RUN(test_world_sim_step_npc_miners_work);
     RUN(test_world_network_writes_persist);

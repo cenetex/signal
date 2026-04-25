@@ -1817,18 +1817,29 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             return;
         }
     }
-    /* Can't place here — do nothing, keep towing.
-     *
-     * Common reasons:
-     *   - Towed kit isn't a signal relay (only relays can found new
-     *     outposts; other modules need an existing station ring slot).
-     *   - Position is outside signal coverage or fails can_place_outpost.
-     *
-     * Surface a notice so the player knows why the [E] press fizzled
-     * instead of silently continuing the tow. */
+    /* Can't place here — do nothing, keep towing. Stamp a reason code
+     * so the client can surface a useful notice ("out of signal range",
+     * "needs a relay", etc.) instead of a silent fizzle. */
+    uint8_t reject_reason;
+    if (sc->module_type != MODULE_SIGNAL_RELAY) {
+        reject_reason = ORDER_REJECT_SCAFFOLD_PLACEMENT_NEEDS_RELAY;
+    } else if (signal_strength_unboosted(w, sc->pos) <= 0.0f) {
+        reject_reason = ORDER_REJECT_SCAFFOLD_PLACEMENT_NO_SIGNAL;
+    } else {
+        /* In signal but can_place_outpost said no — most likely too
+         * close to / overlapping an existing station, or no free slot. */
+        bool free_slot = false;
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            if (!station_exists(&w->stations[s])) { free_slot = true; break; }
+        }
+        reject_reason = free_slot
+            ? ORDER_REJECT_SCAFFOLD_PLACEMENT_TOO_CLOSE
+            : ORDER_REJECT_SCAFFOLD_PLACEMENT_NO_SLOT;
+    }
     emit_event(w, (sim_event_t){
         .type = SIM_EVENT_ORDER_REJECTED,
         .player_id = sp->id,
+        .order_rejected = { .reason = reject_reason },
     });
 }
 
@@ -2268,16 +2279,20 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         module_type_t kit_type = intent->scaffold_kit_module;
         station_t *st = &w->stations[sp->current_station];
         if (!station_sells_scaffold(st, kit_type)) {
-            emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
+            emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id,
+                .order_rejected = { .reason = ORDER_REJECT_SHIPYARD_NOT_SOLD }});
         } else if (st->pending_scaffold_count >= 4) {
-            emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
+            emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id,
+                .order_rejected = { .reason = ORDER_REJECT_SHIPYARD_QUEUE_FULL }});
         } else if (!module_unlocked_for_player(sp->ship.unlocked_modules, kit_type)) {
             /* Tech tree gate: prereq not yet unlocked */
-            emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
+            emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id,
+                .order_rejected = { .reason = ORDER_REJECT_SHIPYARD_LOCKED }});
         } else {
             float fee = (float)scaffold_order_fee(kit_type);
             if (!ledger_spend(st, sp->session_token, fee, &sp->ship)) {
-                emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id});
+                emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id,
+                    .order_rejected = { .reason = ORDER_REJECT_SHIPYARD_NO_FUNDS }});
             } else {
                 /* Tech tree: ordering this type unlocks any module that
                  * lists it as prerequisite. */
@@ -3886,27 +3901,36 @@ void world_sim_step(world_t *w, float dt) {
     step_dock_repair_kit_fab(w, dt);
     step_module_flow(w, dt);
 
-    /* Manifest-as-truth reconciliation: ensure floor(inventory[c]) is
-     * AT LEAST manifest_count(c) for every finished commodity. This
-     * kills the orphan-manifest drift (manifest entries with no float
-     * backing) which was making the BUY check reject rows the picker
-     * advertised. We deliberately don't snap float DOWN to manifest:
-     * legacy float-only inventory (tests that set inventory[c] without
-     * minting manifest, or pre-manifest production paths) still works
-     * for SELL / production / upgrade, while the BUY path explicitly
-     * reads manifest_count and won't sell phantom stock. */
+    /* Manifest-as-truth reconciliation: snap floor(inventory[c]) ==
+     * manifest_count(c) for every finished commodity at every station.
+     * Now bidirectional — production paths mint manifest in lockstep
+     * with float increments, NPC unload + delivery + buy/sell all drain
+     * both, so the only remaining sources of drift are legacy float-only
+     * test fixtures (which the SELL/upgrade path can still consume). For
+     * the LIVE simulation, manifest is the source of truth.
+     *
+     * The fractional residue under inventory[c] is preserved (production
+     * accumulator state mid-cycle). Any drift over the integer-unit
+     * boundary surfaces as a [drift] log line so future regressions are
+     * caught immediately. */
+    /* One-directional: only snap UP when manifest exceeds float (the
+     * orphan-manifest case that was making BUY rows reject silently).
+     * Don't snap DOWN — production/construction/upgrade tests still
+     * depend on legacy float-only fixtures that have no manifest, and
+     * snapping them to 0 breaks every chain that consumes from float
+     * without first minting matching manifest. The two-directional
+     * path is gated on cleaning those up site-by-site (#339 slice C). */
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
         for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
             int mc = manifest_count_by_commodity(&st->manifest, (commodity_t)c);
             if (mc <= 0) continue;
-            float frac = st->inventory[c] - floorf(st->inventory[c]);
+            int fc = (int)floorf(st->inventory[c] + 0.0001f);
+            if (mc <= fc) continue;
+            float frac = st->inventory[c] - (float)fc;
             if (frac < 0.0f) frac = 0.0f;
-            float target = (float)mc + frac;
-            if (st->inventory[c] + 0.01f < target) {
-                st->inventory[c] = target;
-            }
+            st->inventory[c] = (float)mc + frac;
         }
     }
     step_module_activation(w, dt);

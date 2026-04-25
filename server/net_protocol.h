@@ -737,6 +737,23 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
             break;
         case NET_ACTION_PLACE_OUTPOST:
             intent->place_outpost = true;
+            /* Reticle target tuple rides at bytes 5..7 when the client
+             * picked a specific (station, ring, slot). 0xFF means "no
+             * target — let the server auto-snap" (the relay-founding
+             * path). Older clients only send 5 bytes, in which case we
+             * fall back to the auto-snap default. */
+            if (len >= 8) {
+                int8_t s = (int8_t)data[5];
+                int8_t r = (int8_t)data[6];
+                int8_t l = (int8_t)data[7];
+                intent->place_target_station = s;
+                intent->place_target_ring    = r;
+                intent->place_target_slot    = l;
+            } else {
+                intent->place_target_station = -1;
+                intent->place_target_ring    = -1;
+                intent->place_target_slot    = -1;
+            }
             break;
         case NET_ACTION_BUY_SCAFFOLD:
             intent->buy_scaffold_kit = true;

@@ -152,6 +152,15 @@ typedef struct {
      * pick for a BUY_PRODUCT action? Default = MINING_GRADE_COUNT ("any"
      * → server does FIFO). Set by the grade-picker in TRADE. */
     uint8_t pending_net_buy_grade;
+    /* Rides alongside pending_net_action when the action is
+     * NET_ACTION_PLACE_OUTPOST: which (station, ring, slot) did the
+     * client's reticle pick? -1 means "let the server auto-snap" (the
+     * old auto-place path for SIGNAL_RELAY founding moments). Without
+     * these, MP would snap to default 0/0/0 and the slot-taken check
+     * would silently fail. */
+    int8_t  pending_net_place_station;
+    int8_t  pending_net_place_ring;
+    int8_t  pending_net_place_slot;
     float action_predict_timer;
     float net_input_timer;
     station_view_t station_view;

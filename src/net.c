@@ -942,14 +942,19 @@ void net_send_session(const uint8_t token[8]) {
 }
 
 void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target,
-                    uint8_t buy_grade) {
-    uint8_t buf[5];
+                    uint8_t buy_grade, int8_t place_station,
+                    int8_t place_ring, int8_t place_slot) {
+    uint8_t buf[8];
     buf[0] = NET_MSG_INPUT;
     buf[1] = flags;
     buf[2] = action;
     buf[3] = mining_target;
     buf[4] = buy_grade;
-    ws_send_binary(buf, 5);
+    /* int8 -> uint8 round-trip preserves sentinel -1 (=> 0xFF). */
+    buf[5] = (uint8_t)place_station;
+    buf[6] = (uint8_t)place_ring;
+    buf[7] = (uint8_t)place_slot;
+    ws_send_binary(buf, 8);
 }
 
 void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {
@@ -1082,14 +1087,19 @@ void net_send_session(const uint8_t token[8]) {
 }
 
 void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target,
-                    uint8_t buy_grade) {
-    uint8_t buf[5];
+                    uint8_t buy_grade, int8_t place_station,
+                    int8_t place_ring, int8_t place_slot) {
+    uint8_t buf[8];
     buf[0] = NET_MSG_INPUT;
     buf[1] = flags;
     buf[2] = action;
     buf[3] = mining_target;
     buf[4] = buy_grade;
-    ws_send_binary(buf, 5);
+    /* int8 -> uint8 round-trip preserves sentinel -1 (=> 0xFF). */
+    buf[5] = (uint8_t)place_station;
+    buf[6] = (uint8_t)place_ring;
+    buf[7] = (uint8_t)place_slot;
+    ws_send_binary(buf, 8);
 }
 
 void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {

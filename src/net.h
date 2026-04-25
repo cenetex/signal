@@ -258,8 +258,15 @@ void net_send_session(const uint8_t token[8]);
  * `action` is in the NET_ACTION_BUY_PRODUCT range. Pass MINING_GRADE_COUNT
  * (5) to mean "any grade, FIFO"; the server parser defaults to that when
  * the byte is missing (older clients). */
+/* place_station/ring/slot ride along when action is
+ * NET_ACTION_PLACE_OUTPOST. Pass -1 for "let the server auto-snap"
+ * (the relay-founding path). For module scaffolds the client picks
+ * a (station, ring, slot) via the placement reticle and the server
+ * snaps to that explicit slot. Older clients only sent 5 bytes; the
+ * server treats missing bytes as -1. */
 void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target,
-                    uint8_t buy_grade);
+                    uint8_t buy_grade, int8_t place_station,
+                    int8_t place_ring, int8_t place_slot);
 
 /* RATi v2: purchase a specific named ingot from the docked station's
  * stockpile. Server will validate ledger balance + hold space. */
