@@ -3132,6 +3132,42 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
 
+        /* Priority 3.5: dock kit-fab inputs. Every dock needs frames +
+         * lasers + tractor modules to mint repair kits. If any input is
+         * low (and the station can't make it itself), surface a contract
+         * so haulers actually move finished goods between stations
+         * instead of letting Kepler/Helios saturate. Kit fab is the
+         * load-bearing demand sink — without these contracts a dock that
+         * can't self-produce its inputs will just sit idle. */
+        if (!need.active && !has_production_contract && station_has_module(st, MODULE_DOCK)) {
+            const struct { commodity_t c; module_type_t producer; } kit_inputs[] = {
+                { COMMODITY_FRAME,          MODULE_FRAME_PRESS  },
+                { COMMODITY_LASER_MODULE,   MODULE_LASER_FAB    },
+                { COMMODITY_TRACTOR_MODULE, MODULE_TRACTOR_FAB  },
+            };
+            float worst_deficit = 0.0f;
+            int   worst_idx = -1;
+            const float kit_input_target = 12.0f; /* keep ~3 batches' worth on hand */
+            for (int j = 0; j < 3; j++) {
+                if (station_has_module(st, kit_inputs[j].producer)) continue;
+                float deficit = kit_input_target - st->inventory[kit_inputs[j].c];
+                if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
+            }
+            if (worst_idx >= 0) {
+                commodity_t mat = kit_inputs[worst_idx].c;
+                need = (contract_t){
+                    .active = true, .action = CONTRACT_TRACTOR,
+                    .station_index = (uint8_t)s,
+                    .commodity = mat,
+                    .quantity_needed = worst_deficit,
+                    .base_price = st->base_price[mat] > 0.0f
+                                  ? st->base_price[mat] * 1.25f * pool_factor
+                                  : 28.0f * pool_factor,
+                    .target_index = -1, .claimed_by = -1,
+                };
+            }
+        }
+
         /* Priority 4: ingot buffer deficit (production slot) */
         if (!need.active && !has_production_contract) {
             struct { commodity_t ingot; bool needed; } checks[] = {
@@ -3939,6 +3975,10 @@ void world_reset(world_t *w) {
     w->stations[0].base_price[COMMODITY_CUPRITE_INGOT] = 32.0f;
     w->stations[0].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
     w->stations[0].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
+    /* Prospect doesn't make these but its dock buys them in for kit fab. */
+    w->stations[0].base_price[COMMODITY_FRAME]          = 22.0f;
+    w->stations[0].base_price[COMMODITY_LASER_MODULE]   = 30.0f;
+    w->stations[0].base_price[COMMODITY_TRACTOR_MODULE] = 38.0f;
     w->stations[0].signal_range = 18000.0f;
     /* Ring 1: dock + relay + furnace (furnace beams to Ring 2 ore silo) */
     add_module_at(&w->stations[0], MODULE_DOCK, 1, 0);
@@ -3971,6 +4011,9 @@ void world_reset(world_t *w) {
     w->stations[1].base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
     w->stations[1].base_price[COMMODITY_FRAME] = 20.0f;
     w->stations[1].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
+    /* Kepler imports laser/tractor modules for its dock kit fab. */
+    w->stations[1].base_price[COMMODITY_LASER_MODULE]   = 30.0f;
+    w->stations[1].base_price[COMMODITY_TRACTOR_MODULE] = 38.0f;
     /* Ring 1: dock + relay + ore silo */
     add_module_at(&w->stations[1], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 1, 1);
@@ -4008,10 +4051,18 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_LASER_MODULE] = 28.0f;
     w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
     w->stations[2].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
-    /* Ring 1: dock + relay + ferrite furnace */
+    /* Helios imports frames for its dock kit fab. */
+    w->stations[2].base_price[COMMODITY_FRAME]          = 22.0f;
+    /* No ferrite ingots produced or imported here — Helios has no
+     * frame press; ferrite ingots travel Prospect → Kepler. */
+    w->stations[2].base_price[COMMODITY_FERRITE_INGOT]  = 0.0f;
+    /* Ring 1: dock + relay + ore silo. No ferrite furnace — ferrite
+     * smelting is Prospect's specialty and Helios depends on hauled-in
+     * frames for its kit fab. Keeping FURNACE off the manifest here
+     * preserves the 3-tier chain (Prospect T1, Kepler T2, Helios T3). */
     add_module_at(&w->stations[2], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
-    add_module_at(&w->stations[2], MODULE_FURNACE, 1, 2);
+    add_module_at(&w->stations[2], MODULE_ORE_SILO, 1, 2);
     /* Ring 2: ore silo + copper/crystal furnaces + services */
     add_module_at(&w->stations[2], MODULE_ORE_SILO, 2, 0);
     add_module_at(&w->stations[2], MODULE_FURNACE_CU, 2, 1);

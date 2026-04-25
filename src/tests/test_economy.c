@@ -269,12 +269,14 @@ TEST(test_one_contract_per_station) {
         w.stations[0].inventory[i] = 0.0f;
     /* Run a few ticks to generate contracts */
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
-    /* Count contracts for station 0 */
+    /* Count contracts for station 0. Up to two are allowed per station:
+     * one ore contract (raw mining) + one production contract
+     * (scaffold/ingot/kit-fab input). */
     int count = 0;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (w.contracts[k].active && w.contracts[k].station_index == 0) count++;
     }
-    ASSERT_EQ_INT(count, 1);  /* one contract per station */
+    ASSERT(count >= 1 && count <= 2);
 }
 
 TEST(test_destroy_contract_completes_when_asteroid_gone) {
