@@ -8,8 +8,47 @@
 #include "sim_nav.h"
 #include "sim_flight.h"
 #include "signal_model.h"
+#include "manifest.h"
 #include <math.h>
 #include <string.h>
+
+/* Remove up to `n` cargo units of `c` from a station's manifest.
+ * Returns the number actually removed. Walks backward so removing
+ * doesn't disturb earlier indices. Used by NPC haulers so the
+ * manifest stays in lockstep with the inventory float; otherwise the
+ * trade picker (manifest-only) shows phantom rows for stock the
+ * hauler already carried away. */
+static int station_manifest_drain_commodity(station_t *st, commodity_t c, int n) {
+    if (!st || !st->manifest.units || n <= 0) return 0;
+    int removed = 0;
+    for (int16_t i = (int16_t)st->manifest.count - 1; i >= 0 && removed < n; i--) {
+        if (st->manifest.units[i].commodity == (uint8_t)c) {
+            if (manifest_remove(&st->manifest, (uint16_t)i, NULL)) removed++;
+        }
+    }
+    return removed;
+}
+
+/* Inverse: push `n` synthetic legacy-migrate units of `c` into a
+ * station's manifest. Used at NPC unload until haulers get their own
+ * manifest_t. The origin is per-hauler so the units are traceable to
+ * "delivered by NPC slot K". */
+static int station_manifest_seed_from_npc(station_t *st, commodity_t c, int n,
+                                          int npc_slot) {
+    if (!st || n <= 0) return 0;
+    if (st->manifest.cap == 0 && !station_manifest_bootstrap(st)) return 0;
+    uint8_t origin[8] = { 'N','P','C','D','0','0','0','0' };
+    origin[7] = (uint8_t)('0' + (npc_slot % 10));
+    int pushed = 0;
+    for (int i = 0; i < n; i++) {
+        if (st->manifest.count >= st->manifest.cap) break;
+        cargo_unit_t unit = {0};
+        if (!hash_legacy_migrate_unit(origin, c, (uint16_t)i, &unit)) continue;
+        if (!manifest_push(&st->manifest, &unit)) break;
+        pushed++;
+    }
+    return pushed;
+}
 
 /* ================================================================== */
 /* NPC ships                                                          */
@@ -361,6 +400,11 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 if (take > 0.5f) {
                     npc->cargo[ingot] += take;
                     home->inventory[ingot] -= take;
+                    int whole = (int)floorf(take + 0.0001f);
+                    if (whole > 0) {
+                        if (station_manifest_drain_commodity(home, ingot, whole) > 0)
+                            home->named_ingots_dirty = true;
+                    }
                 }
             } else {
                 /* Fallback: original round-trip behavior (leave reserve for players) */
@@ -403,6 +447,11 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     if (take > 0.5f) {
                         npc->cargo[best_ingot] += take;
                         home->inventory[best_ingot] -= take;
+                        int whole = (int)floorf(take + 0.0001f);
+                        if (whole > 0) {
+                            if (station_manifest_drain_commodity(home, best_ingot, whole) > 0)
+                                home->named_ingots_dirty = true;
+                        }
                     }
                 }
             }
@@ -453,9 +502,22 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
         if (npc->state_timer <= 0.0f) {
             station_t *dest = &w->stations[npc->dest_station];
             for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
+                if (npc->cargo[i] <= 0.0f) continue;
+                float before = dest->inventory[i];
                 dest->inventory[i] += npc->cargo[i];
                 if (dest->inventory[i] > MAX_PRODUCT_STOCK)
                     dest->inventory[i] = MAX_PRODUCT_STOCK;
+                /* Mirror the float bump into the manifest so the trade
+                 * picker (manifest-only) sees the new stock. Use the
+                 * post-clamp delta so overflow doesn't create phantom
+                 * manifest entries. */
+                int int_delta = (int)floorf(dest->inventory[i] + 0.0001f)
+                              - (int)floorf(before + 0.0001f);
+                if (int_delta > 0) {
+                    if (station_manifest_seed_from_npc(dest, (commodity_t)i,
+                                                       int_delta, n) > 0)
+                        dest->named_ingots_dirty = true;
+                }
                 npc->cargo[i] = 0.0f;
             }
             /* Hauler also delivers ingots to scaffold station and modules */

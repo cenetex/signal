@@ -712,22 +712,20 @@ static void draw_trade_view(const station_ui_state_t *ui,
     float space   = ship_cargo_capacity(ship) - ship_total_cargo(ship);
     float credits = player_current_balance();
 
-    /* BUY rows — manifest-first per (commodity, grade), then an
-     * "unknown origin" row covering inventory float that exceeds the
-     * manifest total (legacy-seeded stock or pre-manifest deliveries
-     * with no provenance). is_float_fallback marks the unknown row so
-     * the renderer shows "unknown" instead of a grade label. */
+    /* BUY rows — one per (commodity, grade) with > 0 manifest units.
+     * The manifest is now authoritative on both sides: smelt refuses
+     * to engage when the station hopper is full, so manifest count ==
+     * inventory float for every commodity in active circulation. The
+     * "unknown origin" path is gone. */
     for (int ci = 0; ci < 1 && row_count < TRADE_MAX_ROWS; ci++) {
         commodity_t c = sell_c_list[ci];
         if ((int)c < 0) continue;
         float price_base = station_sell_price(st, c);
         if (price_base <= FLOAT_EPSILON) continue;
 
-        int manifest_total = 0;
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < TRADE_MAX_ROWS; gi++) {
             int stock = station_manifest_count_cg(st, c, (mining_grade_t)gi);
             if (stock <= 0) continue;
-            manifest_total += stock;
             int price = (int)lroundf(price_base
                     * mining_payout_multiplier((mining_grade_t)gi));
             bool can = (space >= 0.5f) && (credits >= (float)price);
@@ -737,48 +735,23 @@ static void draw_trade_view(const station_ui_state_t *ui,
                 .actionable = can, .is_float_fallback = false,
             };
         }
-        int inv_total = (int)lroundf(station_inventory_amount(st, c));
-        int unknown = inv_total - manifest_total;
-        if (unknown > 0 && row_count < TRADE_MAX_ROWS) {
-            int price = (int)lroundf(price_base);
-            bool can = (space >= 0.5f) && (credits >= (float)price);
-            rows[row_count++] = (trade_row_t){
-                .kind = 0, .commodity = c, .grade = MINING_GRADE_COMMON,
-                .stock = unknown, .unit_price = price,
-                .actionable = can, .is_float_fallback = true,
-            };
-        }
     }
 
-    /* SELL rows — same manifest-first + unknown-row pattern on the
-     * ship side, so legacy stock the player picked up before manifest
-     * tracking is explicitly visible (and sells at base price). */
+    /* SELL rows — same manifest-only pattern on the ship side. */
     for (int ci = 0; ci < 1 && row_count < TRADE_MAX_ROWS; ci++) {
         commodity_t c = buy_c_list[ci];
         if ((int)c < 0) continue;
         float price_base = station_buy_price(st, c);
 
-        int manifest_total = 0;
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < TRADE_MAX_ROWS; gi++) {
             int held = ship_manifest_count_cg(ship, c, (mining_grade_t)gi);
             if (held <= 0) continue;
-            manifest_total += held;
             int price = (int)lroundf(price_base
                     * mining_payout_multiplier((mining_grade_t)gi));
             rows[row_count++] = (trade_row_t){
                 .kind = 1, .commodity = c, .grade = (mining_grade_t)gi,
                 .stock = held, .unit_price = price,
                 .actionable = (held > 0), .is_float_fallback = false,
-            };
-        }
-        int hold_total = (int)lroundf(ship_cargo_amount(ship, c));
-        int unknown = hold_total - manifest_total;
-        if (unknown > 0 && row_count < TRADE_MAX_ROWS) {
-            int price = (int)lroundf(price_base);
-            rows[row_count++] = (trade_row_t){
-                .kind = 1, .commodity = c, .grade = MINING_GRADE_COMMON,
-                .stock = unknown, .unit_price = price,
-                .actionable = true, .is_float_fallback = true,
             };
         }
     }
@@ -818,15 +791,14 @@ static void draw_trade_view(const station_ui_state_t *ui,
 
         const uint8_t *info_rgb = r->actionable ? COL_TEXT : COL_FADED;
 
-        /* Grade label / tint. Unknown-origin rows (legacy float stock
-         * with no manifest entry) render "unknown" in faded text
-         * instead of a grade name so the player sees the provenance gap. */
+        /* Grade label / tint. Unknown-origin rows are no longer
+         * generated — manifest is authoritative — so this just maps
+         * grade → tinted name. */
         uint8_t ggr, ggg, ggb;
         mining_grade_rgb(r->grade, &ggr, &ggg, &ggb);
         uint8_t gr_rgb[3] = { ggr, ggg, ggb };
-        const char *grade_label = r->is_float_fallback
-            ? "unknown" : mining_grade_label(r->grade);
-        const uint8_t *grade_rgb_ptr = r->is_float_fallback ? COL_FADED : gr_rgb;
+        const char *grade_label = mining_grade_label(r->grade);
+        const uint8_t *grade_rgb_ptr = gr_rgb;
 
         /* Sign-based row color: SELL (+ gain) reads green, BUY (- cost)
          * reads red. Hotkey, verb, and signed amount all share it so the

@@ -463,19 +463,17 @@ input_intent_t sample_input_intent(void) {
             commodity_t row_c = 0;
             mining_grade_t row_g = MINING_GRADE_COMMON;
 
-            /* BUY rows — mirror draw_trade_view: every (commodity,
-             * grade) with > 0 manifest units, then an "unknown origin"
-             * row for inventory float that exceeds the manifest total.
-             * Unknown rows set row_g = MINING_GRADE_COUNT (sentinel)
-             * so the server uses any-grade FIFO and base price. */
+            /* BUY rows — one per (commodity, grade) with > 0 manifest
+             * units. The manifest is now authoritative: the furnace beam
+             * refuses to engage a fragment when the station's hopper is
+             * full, so manifest count == inventory float. There is no
+             * "unknown origin" path. */
             if ((int)sell_c >= 0 && st->base_price[sell_c] > FLOAT_EPSILON) {
                 int station_idx = (int)(st - g.world.stations);
-                int manifest_total = 0;
                 if (station_idx >= 0 && station_idx < MAX_STATIONS) {
                     for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
                         int stock = (int)g.station_manifest_summary[station_idx][sell_c][gi];
                         if (stock <= 0) continue;
-                        manifest_total += stock;
                         if (global_idx == target) {
                             row_kind = 0; row_c = sell_c; row_g = (mining_grade_t)gi;
                             goto row_resolved;
@@ -483,39 +481,18 @@ input_intent_t sample_input_intent(void) {
                         global_idx++;
                     }
                 }
-                int unknown = (int)lroundf(st->inventory[sell_c]) - manifest_total;
-                if (unknown > 0) {
-                    if (global_idx == target) {
-                        row_kind = 0; row_c = sell_c; row_g = MINING_GRADE_COUNT;
-                        goto row_resolved;
-                    }
-                    global_idx++;
-                }
             }
-            /* SELL rows — manifest groupings on the ship, then an
-             * unknown row when ship.cargo[c] > manifest count. */
-            if ((int)buy_c >= 0) {
-                int manifest_total = 0;
-                if (ship->manifest.units) {
-                    for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
-                        int cnt = 0;
-                        for (uint16_t u = 0; u < ship->manifest.count; u++) {
-                            const cargo_unit_t *cu = &ship->manifest.units[u];
-                            if (cu->commodity == (uint8_t)buy_c && cu->grade == (uint8_t)gi) cnt++;
-                        }
-                        if (cnt <= 0) continue;
-                        manifest_total += cnt;
-                        if (global_idx == target) {
-                            row_kind = 1; row_c = buy_c; row_g = (mining_grade_t)gi;
-                            goto row_resolved;
-                        }
-                        global_idx++;
+            /* SELL rows — same manifest-only pattern on the ship side. */
+            if ((int)buy_c >= 0 && ship->manifest.units) {
+                for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
+                    int cnt = 0;
+                    for (uint16_t u = 0; u < ship->manifest.count; u++) {
+                        const cargo_unit_t *cu = &ship->manifest.units[u];
+                        if (cu->commodity == (uint8_t)buy_c && cu->grade == (uint8_t)gi) cnt++;
                     }
-                }
-                int unknown = (int)lroundf(ship_cargo_amount(ship, buy_c)) - manifest_total;
-                if (unknown > 0) {
+                    if (cnt <= 0) continue;
                     if (global_idx == target) {
-                        row_kind = 1; row_c = buy_c; row_g = MINING_GRADE_COUNT;
+                        row_kind = 1; row_c = buy_c; row_g = (mining_grade_t)gi;
                         goto row_resolved;
                     }
                     global_idx++;
@@ -547,10 +524,8 @@ input_intent_t sample_input_intent(void) {
                                 break;
                             }
                     }
-                    const char *gl = (row_g >= MINING_GRADE_COUNT)
-                        ? "unknown" : mining_grade_label(row_g);
                     set_notice("-$%d  %s %s",
-                               (int)lroundf(price), gl,
+                               (int)lroundf(price), mining_grade_label(row_g),
                                commodity_short_name(row_c));
                 }
             } else if (row_kind == 1) {
@@ -558,10 +533,8 @@ input_intent_t sample_input_intent(void) {
                  * sell path. Grade-precise server-side sell is a follow-up. */
                 intent.service_sell = true;
                 intent.service_sell_only = row_c;
-                const char *gl = (row_g >= MINING_GRADE_COUNT)
-                    ? "unknown" : mining_grade_label(row_g);
-                set_notice("Selling %s %s...", gl,
-                           commodity_short_name(row_c));
+                set_notice("Selling %s %s...",
+                           mining_grade_label(row_g), commodity_short_name(row_c));
             }
         }
     }

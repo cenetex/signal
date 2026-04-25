@@ -2318,6 +2318,11 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
     /* Buy ingots from station inventory */
     if (intent->buy_product && !w->player_only_mode) {
         commodity_t c = intent->buy_commodity;
+        SIM_LOG("[buy] player %d req c=%d grade=%d at station %d (produces=%d)\n",
+                sp->id, (int)c, (int)intent->buy_grade,
+                sp->current_station,
+                (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) ?
+                    station_produces(docked_st, c) : -1);
         if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT
             && station_produces(docked_st, c)) {
             /* Exact-grade buys must refuse if the station has nothing
@@ -2332,6 +2337,8 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                 && intent->buy_grade > MINING_GRADE_COMMON) {
                 if (manifest_find_first_cg(&docked_st->manifest, c,
                                            (mining_grade_t)intent->buy_grade) < 0) {
+                    SIM_LOG("[buy] REJECT: no manifest unit at c=%d grade=%d\n",
+                            (int)c, (int)intent->buy_grade);
                     return;
                 }
             }
@@ -2351,23 +2358,30 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             float afford = (price_per > 0.01f) ? floorf(bal / price_per) : 0.0f;
             float amount = fminf(fminf(available, space), afford);
             float total_cost = amount * price_per;
+            SIM_LOG("[buy] avail=%.2f space=%.2f price/u=%.2f bal=%.2f afford=%.0f amount=%.2f\n",
+                    available, space, price_per, bal, afford, amount);
             if (amount > 0.01f && ledger_spend(docked_st, sp->session_token, total_cost, &sp->ship)) {
                 sp->ship.cargo[c] += amount;
                 docked_st->inventory[c] -= amount;
-                /* Manifest-first: transfer matching cargo_unit_t entries
-                 * (preferred grade first, FIFO fallback) so provenance and
-                 * grade follow the purchase into the ship's hold. Mirrors
-                 * the nearby-station hail-buy path. */
                 int whole = (int)floorf(amount + 0.0001f);
+                int moved = 0;
                 if (whole > 0) {
-                    int moved = manifest_transfer_by_commodity_ex(
+                    moved = manifest_transfer_by_commodity_ex(
                         &docked_st->manifest, &sp->ship.manifest,
                         c, intent->buy_grade, whole);
                     if (moved > 0) manifest_mark_station_dirty(w, &docked_st->manifest);
                 }
-                SIM_LOG("[sim] player %d bought %.0f of commodity %d for %.0f cr\n",
-                        sp->id, amount, c, total_cost);
+                SIM_LOG("[buy] OK player %d bought %.0f of c=%d for %.0f cr (manifest moved=%d)\n",
+                        sp->id, amount, c, total_cost, moved);
+            } else if (amount > 0.01f) {
+                SIM_LOG("[buy] REJECT: ledger_spend failed (bal=%.2f cost=%.2f)\n",
+                        bal, total_cost);
+            } else {
+                SIM_LOG("[buy] REJECT: amount=%.2f too small (avail=%.2f space=%.2f afford=%.0f)\n",
+                        amount, available, space, afford);
             }
+        } else {
+            SIM_LOG("[buy] REJECT: c=%d out of range or station doesn't produce\n", (int)c);
         }
     }
 }

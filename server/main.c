@@ -1198,6 +1198,20 @@ int main(void) {
                     world.stations[i].credit_pool = 10000.0f;
             }
         }
+        /* Backfill manifest entries for the seeded float inventory.
+         * world_reset leaves manifests pristine (tests rely on this);
+         * the server-only load path adds the synthetic legacy units so
+         * the TRADE picker — which now reads from manifest only — has
+         * something to surface for fresh stations. */
+        for (int i = 0; i < MAX_STATIONS; i++) {
+            if (!station_exists(&world.stations[i])) continue;
+            uint8_t origin[8] = { 'S','E','E','D','0','0','0','0' };
+            origin[7] = (uint8_t)('0' + (i % 10));
+            manifest_migrate_legacy_inventory(&world.stations[i].manifest,
+                                              world.stations[i].inventory,
+                                              COMMODITY_COUNT, origin);
+            world.stations[i].named_ingots_dirty = true;
+        }
     }
 
     /* Assign stable IDs to any stations loaded from v1 catalogs (id == 0) */
