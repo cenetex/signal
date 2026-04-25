@@ -2377,7 +2377,29 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                     return;
                 }
             }
-            float available = docked_st->inventory[c];
+            /* Common-grade buys for INGOTS must also find an exact-grade
+             * manifest entry. Otherwise manifest_transfer_by_commodity_ex
+             * would fall back to a higher grade and the player walks away
+             * with a fine/rare ingot at the 1× COMMON price. Fabs (frames,
+             * lasers, tractors, kits) only ever carry COMMON, so the check
+             * is redundant for them — keep them on the legacy fallback. */
+            if (intent->buy_grade == MINING_GRADE_COMMON
+                && (c == COMMODITY_FERRITE_INGOT
+                    || c == COMMODITY_CUPRITE_INGOT
+                    || c == COMMODITY_CRYSTAL_INGOT)) {
+                if (manifest_find_first_cg(&docked_st->manifest, c,
+                                           MINING_GRADE_COMMON) < 0) {
+                    SIM_LOG("[buy] REJECT: no COMMON-grade manifest unit at c=%d\n", (int)c);
+                    return;
+                }
+            }
+            /* Manifest is authoritative for finished goods. Reading the
+             * float here previously rejected buys that the picker had
+             * advertised — every drift bug surfaced as "row shown,
+             * server says avail=0". */
+            float available = (c >= COMMODITY_RAW_ORE_COUNT)
+                ? (float)manifest_count_by_commodity(&docked_st->manifest, c)
+                : docked_st->inventory[c];
             float space = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
             float price_base = station_sell_price(docked_st, c);
             /* Grade-aware pricing: if the client picked a specific-grade row
@@ -2405,6 +2427,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             if (amount > 0.01f && ledger_spend(docked_st, sp->session_token, total_cost, &sp->ship)) {
                 sp->ship.cargo[c] += amount;
                 docked_st->inventory[c] -= amount;
+                if (docked_st->inventory[c] < 0.0f) docked_st->inventory[c] = 0.0f;
                 int whole = (int)floorf(amount + 0.0001f);
                 int moved = 0;
                 if (whole > 0) {
@@ -3862,6 +3885,30 @@ void world_sim_step(world_t *w, float dt) {
     sim_step_station_production(w, dt);
     step_dock_repair_kit_fab(w, dt);
     step_module_flow(w, dt);
+
+    /* Manifest-as-truth reconciliation: ensure floor(inventory[c]) is
+     * AT LEAST manifest_count(c) for every finished commodity. This
+     * kills the orphan-manifest drift (manifest entries with no float
+     * backing) which was making the BUY check reject rows the picker
+     * advertised. We deliberately don't snap float DOWN to manifest:
+     * legacy float-only inventory (tests that set inventory[c] without
+     * minting manifest, or pre-manifest production paths) still works
+     * for SELL / production / upgrade, while the BUY path explicitly
+     * reads manifest_count and won't sell phantom stock. */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_exists(st)) continue;
+        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+            int mc = manifest_count_by_commodity(&st->manifest, (commodity_t)c);
+            if (mc <= 0) continue;
+            float frac = st->inventory[c] - floorf(st->inventory[c]);
+            if (frac < 0.0f) frac = 0.0f;
+            float target = (float)mc + frac;
+            if (st->inventory[c] + 0.01f < target) {
+                st->inventory[c] = target;
+            }
+        }
+    }
     step_module_activation(w, dt);
     step_scaffolds(w, dt);
     step_contracts(w, dt);

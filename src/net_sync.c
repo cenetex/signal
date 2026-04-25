@@ -188,6 +188,44 @@ void apply_remote_highscores(const NetHighscoreEntry *entries, int count) {
     g.highscore_count = count;
 }
 
+/* Replace the local player's ship.manifest with synthesized
+ * legacy-migrate units that match the server-authoritative count
+ * summary. Provenance pubkeys are dropped (only counts matter for the
+ * SELL trade UI); the server still owns the real manifest. Without
+ * this, multiplayer SELL rows reflected only locally-predicted state
+ * and went stale the moment the server transferred a unit. */
+void apply_remote_player_manifest(const NetStationManifestEntry *entries,
+                                  int count) {
+    if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
+    ship_t *ship = &g.world.players[g.local_player_slot].ship;
+    /* Skip overwriting while a local action is being predicted to
+     * avoid flicker between predicted state and a slightly older
+     * server snapshot. */
+    if (g.action_predict_timer > 0.0f) return;
+    if (!ship->manifest.units && !ship_manifest_bootstrap(ship)) return;
+    manifest_clear(&ship->manifest);
+    if (count <= 0) return;
+    uint8_t origin[8] = { 'S','R','V','M','I','R','R','0' };
+    uint16_t out_idx = 0;
+    for (int i = 0; i < count; i++) {
+        uint8_t c = entries[i].commodity;
+        uint8_t gr = entries[i].grade;
+        uint16_t n = entries[i].count;
+        if (c >= COMMODITY_COUNT) continue;
+        if (gr >= MINING_GRADE_COUNT) continue;
+        cargo_kind_t kind;
+        if (!cargo_kind_for_commodity((commodity_t)c, &kind)) continue;
+        for (uint16_t k = 0; k < n; k++) {
+            if (ship->manifest.count >= ship->manifest.cap) break;
+            cargo_unit_t unit = {0};
+            if (!hash_legacy_migrate_unit(origin, (commodity_t)c, out_idx++, &unit))
+                continue;
+            unit.grade = gr;
+            if (!manifest_push(&ship->manifest, &unit)) break;
+        }
+    }
+}
+
 void apply_remote_hold_ingots(const named_ingot_t *ingots, int count) {
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
     if (count < 0) count = 0;

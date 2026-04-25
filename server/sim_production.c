@@ -904,14 +904,19 @@ void step_module_delivery(world_t *w, station_t *st, int station_idx,
 
         /* Also pull from station inventory (NPC deliveries land here).
          * Match the consume on the station manifest too — same drift
-         * class as the ship side. */
+         * class as the ship side. Mark the manifest dirty so the
+         * multiplayer broadcaster forwards the new station summary;
+         * otherwise clients keep showing materials that construction
+         * already consumed until some unrelated event triggers a sync. */
         if (needed > 0.01f && st->inventory[mat] > 0.01f) {
             float deliver = fminf(st->inventory[mat], needed);
             st->inventory[mat] -= deliver;
             m->build_progress += deliver / cost;
             int whole = (int)floorf(deliver + 0.0001f);
-            if (whole > 0)
-                manifest_consume_by_commodity(&st->manifest, mat, whole);
+            if (whole > 0) {
+                int drained = manifest_consume_by_commodity(&st->manifest, mat, whole);
+                if (drained > 0) st->named_ingots_dirty = true;
+            }
         }
 
         if (m->build_progress > 1.0f) m->build_progress = 1.0f;

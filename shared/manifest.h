@@ -82,4 +82,38 @@ bool manifest_migrate_legacy_inventory(manifest_t *manifest,
                                        size_t inventory_count,
                                        const uint8_t origin[8]);
 
+/* ---------------------------------------------------------------- */
+/* Manifest-as-truth helpers (PR: kill the float<->manifest drift)   */
+/* ---------------------------------------------------------------- */
+/* For finished-good commodities (c >= COMMODITY_RAW_ORE_COUNT) the
+ * manifest is the authoritative store. The float `station_t::inventory[c]`
+ * is a derived count whose floor() must always equal
+ * manifest_count_by_commodity(c). These helpers preserve that
+ * invariant by mutating both the manifest and the float in lockstep.
+ *
+ * Raw-ore commodities (c < COMMODITY_RAW_ORE_COUNT) are NOT covered —
+ * raw ore lives only in the float (hopper amounts) and never gains a
+ * manifest entry. Calling these on a raw ore commodity returns 0 and
+ * does nothing. */
+
+/* Mint `n` whole units of finished `c` into the station. Pushes `n`
+ * legacy-migrate manifest entries (origin = 8-byte provenance prefix,
+ * may be NULL for a generic "STATION " stamp), then bumps the float
+ * cache so floor(inventory[c]) == manifest_count. Returns the number
+ * actually minted (may be < n if manifest cap is hit). */
+int station_finished_mint(station_t *st, commodity_t c, int n,
+                          const uint8_t origin[8]);
+
+/* Drain up to `n` units of finished `c` from the manifest (FIFO) and
+ * decrement the float cache by the same number. Returns units drained. */
+int station_finished_drain(station_t *st, commodity_t c, int n);
+
+/* Production accumulator for finished `c`. Adds `amount` (may be
+ * fractional) to the float; for any integer crossings, mints that
+ * many manifest units (using origin) so the invariant
+ * floor(inventory[c]) == manifest_count holds at the end of the call.
+ * Returns the integer count minted this call. */
+int station_finished_accumulate(station_t *st, commodity_t c, float amount,
+                                const uint8_t origin[8]);
+
 #endif /* SHARED_MANIFEST_H */

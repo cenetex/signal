@@ -500,3 +500,83 @@ bool manifest_migrate_legacy_inventory(manifest_t *manifest,
     }
     return true;
 }
+
+/* ---------------------------------------------------------------- */
+/* Manifest-as-truth helpers — keep float[] in sync with manifest    */
+/* ---------------------------------------------------------------- */
+
+/* Default 8-byte origin tag when caller passes NULL. */
+static const uint8_t kStationDefaultOrigin[8] = { 'S','T','A','T','I','O','N',' ' };
+
+int station_finished_mint(station_t *st, commodity_t c, int n,
+                          const uint8_t origin[8]) {
+    if (!st || n <= 0) return 0;
+    if ((int)c < (int)COMMODITY_RAW_ORE_COUNT) return 0;
+    if ((int)c >= (int)COMMODITY_COUNT) return 0;
+    cargo_kind_t kind;
+    if (!cargo_kind_for_commodity(c, &kind)) return 0;
+    if (st->manifest.cap == 0 && !station_manifest_bootstrap(st)) return 0;
+
+    const uint8_t *use_origin = origin ? origin : kStationDefaultOrigin;
+    int minted = 0;
+    /* output_index is just provenance disambiguation per call — start at
+     * the current manifest count so identical calls hash to distinct
+     * units. */
+    uint16_t base_idx = st->manifest.count;
+    for (int i = 0; i < n; i++) {
+        if (st->manifest.count >= st->manifest.cap) break;
+        cargo_unit_t unit = {0};
+        if (!hash_legacy_migrate_unit(use_origin, c,
+                                      (uint16_t)(base_idx + i), &unit)) continue;
+        if (!manifest_push(&st->manifest, &unit)) break;
+        minted++;
+    }
+    if (minted > 0) {
+        /* Sync float to the new manifest count, preserving any fractional
+         * residue (production accumulator) below 1.0. */
+        float frac = st->inventory[c] - floorf(st->inventory[c]);
+        st->inventory[c] = (float)manifest_count_by_commodity(&st->manifest, c) + frac;
+        st->named_ingots_dirty = true;
+    }
+    return minted;
+}
+
+int station_finished_drain(station_t *st, commodity_t c, int n) {
+    if (!st || n <= 0) return 0;
+    if ((int)c < (int)COMMODITY_RAW_ORE_COUNT) return 0;
+    if ((int)c >= (int)COMMODITY_COUNT) return 0;
+    int drained = manifest_consume_by_commodity(&st->manifest, c, n);
+    if (drained > 0) {
+        float frac = st->inventory[c] - floorf(st->inventory[c]);
+        st->inventory[c] = (float)manifest_count_by_commodity(&st->manifest, c) + frac;
+        if (st->inventory[c] < 0.0f) st->inventory[c] = 0.0f;
+        st->named_ingots_dirty = true;
+    }
+    return drained;
+}
+
+int station_finished_accumulate(station_t *st, commodity_t c, float amount,
+                                const uint8_t origin[8]) {
+    if (!st || amount <= 0.0f) return 0;
+    if ((int)c < (int)COMMODITY_RAW_ORE_COUNT) return 0;
+    if ((int)c >= (int)COMMODITY_COUNT) return 0;
+
+    /* Compute how many integer crossings this addition triggers. The
+     * float currently holds: (manifest count) + (fractional residue).
+     * After adding `amount`, the new int count is floor(old + amount). */
+    float before = st->inventory[c];
+    float after  = before + amount;
+    int int_before = (int)floorf(before + 0.0001f);
+    int int_after  = (int)floorf(after + 0.0001f);
+    int delta = int_after - int_before;
+
+    /* Update float first so any partial residue is preserved even if
+     * minting partially fails (manifest cap). */
+    st->inventory[c] = after;
+
+    if (delta <= 0) return 0;
+    int minted = station_finished_mint(st, c, delta, origin);
+    /* mint sets inventory[c] = manifest_count + frac; that already
+     * captures any cap-induced shortfall. */
+    return minted;
+}

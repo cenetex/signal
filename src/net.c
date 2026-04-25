@@ -621,6 +621,24 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_PLAYER_MANIFEST:
+        if (len >= PLAYER_MANIFEST_HEADER && net_state.callbacks.on_player_manifest) {
+            int count = (int)(data[1] | ((uint16_t)data[2] << 8));
+            int expected = PLAYER_MANIFEST_HEADER + count * PLAYER_MANIFEST_ENTRY;
+            if (len < expected) break;
+            if (count > COMMODITY_COUNT * MINING_GRADE_COUNT)
+                count = COMMODITY_COUNT * MINING_GRADE_COUNT;
+            static NetStationManifestEntry pmscratch[COMMODITY_COUNT * MINING_GRADE_COUNT];
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[PLAYER_MANIFEST_HEADER + i * PLAYER_MANIFEST_ENTRY];
+                pmscratch[i].commodity = p[0];
+                pmscratch[i].grade     = p[1];
+                pmscratch[i].count     = (uint16_t)(p[2] | ((uint16_t)p[3] << 8));
+            }
+            net_state.callbacks.on_player_manifest(pmscratch, count);
+        }
+        break;
+
     case NET_MSG_STATION_MANIFEST:
         if (len >= STATION_MANIFEST_HEADER && net_state.callbacks.on_station_manifest) {
             uint8_t station_id = data[1];

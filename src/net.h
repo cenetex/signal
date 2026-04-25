@@ -192,6 +192,13 @@ typedef void (*net_on_station_manifest_fn)(uint8_t station_id,
                                            const NetStationManifestEntry *entries,
                                            int count);
 
+/* Player manifest summary — same shape as the station summary, scoped
+ * to the local pilot (no station_idx). Server-authoritative state
+ * mirrored down each tick so the trade UI's SELL rows reflect actual
+ * server-side ship.manifest contents in multiplayer. */
+typedef void (*net_on_player_manifest_fn)(const NetStationManifestEntry *entries,
+                                          int count);
+
 /* Global leaderboard — top-N death runs by credits earned. */
 typedef struct {
     char  callsign[8];    /* not NUL-terminated if 8 chars */
@@ -224,6 +231,7 @@ typedef struct {
     net_on_station_ingots_fn on_station_ingots;
     net_on_hold_ingots_fn    on_hold_ingots;
     net_on_station_manifest_fn on_station_manifest;
+    net_on_player_manifest_fn  on_player_manifest;
     net_on_highscores_fn       on_highscores;
 } NetCallbacks;
 

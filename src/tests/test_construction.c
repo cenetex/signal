@@ -227,7 +227,10 @@ TEST(test_docked_buy_one_unit_per_intent) {
     world_reset(&w);
     world_seed_station_manifests(&w);
     station_t *st = &w.stations[1]; /* Kepler — produces frames */
-    st->inventory[COMMODITY_FRAME] = 50.0f;
+    /* Mint manifest entries (and float in lockstep) — manifest is the
+     * truth for finished-good BUY availability, so seeding only the
+     * float would leave the BUY check reading 0. */
+    station_finished_mint(st, COMMODITY_FRAME, 50, NULL);
 
     server_player_t *sp = &w.players[0];
     sp->connected = true;

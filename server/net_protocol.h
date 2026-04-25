@@ -317,6 +317,41 @@ static inline int serialize_station_manifest(uint8_t *buf, int station_idx,
     return STATION_MANIFEST_HEADER + n * STATION_MANIFEST_ENTRY;
 }
 
+/* Local player's manifest summary. Same (commodity × grade) count
+ * shape as the station summary, with no station_idx (the recipient is
+ * the implicit local player). Sent each tick alongside PLAYER_SHIP so
+ * the trade UI's SELL rows reflect server-authoritative manifest state
+ * (buy/sell/transfer mutations on the server side reach the client
+ * without being lost). */
+static inline int serialize_player_manifest(uint8_t *buf, const ship_t *ship) {
+    uint16_t table[COMMODITY_COUNT][MINING_GRADE_COUNT];
+    memset(table, 0, sizeof(table));
+    if (ship && ship->manifest.units) {
+        for (uint16_t i = 0; i < ship->manifest.count; i++) {
+            const cargo_unit_t *u = &ship->manifest.units[i];
+            if (u->commodity >= COMMODITY_COUNT) continue;
+            if (u->grade >= MINING_GRADE_COUNT) continue;
+            if (table[u->commodity][u->grade] < 0xFFFF)
+                table[u->commodity][u->grade]++;
+        }
+    }
+    buf[0] = NET_MSG_PLAYER_MANIFEST;
+    int n = 0;
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        for (int g = 0; g < MINING_GRADE_COUNT; g++) {
+            uint16_t count = table[c][g];
+            if (count == 0) continue;
+            uint8_t *p = &buf[PLAYER_MANIFEST_HEADER + n * PLAYER_MANIFEST_ENTRY];
+            p[0] = (uint8_t)c;
+            p[1] = (uint8_t)g;
+            write_u16_le(&p[2], count);
+            n++;
+        }
+    }
+    write_u16_le(&buf[1], (uint16_t)n);
+    return PLAYER_MANIFEST_HEADER + n * PLAYER_MANIFEST_ENTRY;
+}
+
 /* Local player's hold-ingot snapshot. Sent on contents change. */
 static inline int serialize_hold_ingots(uint8_t *buf, const ship_t *ship) {
     int n = ship->hold_ingots_count;

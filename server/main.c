@@ -1112,6 +1112,17 @@ static void broadcast_ship_states(void) {
         uint8_t hbuf[HOLD_INGOTS_HEADER + SHIP_HOLD_INGOTS_MAX * NAMED_INGOT_RECORD_SIZE];
         int hlen = serialize_hold_ingots(hbuf, &world.players[i].ship);
         ws_send(world.players[i].conn, hbuf, (size_t)hlen);
+
+        /* Player manifest summary — keeps the trade UI's SELL rows in
+         * sync with server-authoritative manifest mutations (buy/sell/
+         * smelt move units across the player's manifest server-side, but
+         * PLAYER_SHIP only carries the float cargo). Worst case is
+         * COMMODITY_COUNT * MINING_GRADE_COUNT entries; we cap header
+         * + entries with a generous bound. */
+        uint8_t pmbuf[PLAYER_MANIFEST_HEADER
+                      + COMMODITY_COUNT * MINING_GRADE_COUNT * PLAYER_MANIFEST_ENTRY];
+        int pmlen = serialize_player_manifest(pmbuf, &world.players[i].ship);
+        ws_send(world.players[i].conn, pmbuf, (size_t)pmlen);
     }
 
     if (station_econ_dirty) {

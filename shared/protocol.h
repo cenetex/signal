@@ -57,6 +57,7 @@ enum {
     NET_MSG_FRACTURE_RESOLVED  = 0x2E, /* server -> nearby clients: [type:1][fracture_id:u32][fragment_pub:32][winner_pub:32][grade:u8] */
     NET_MSG_STATION_MANIFEST   = 0x2F, /* server -> client: per-station manifest summary grouped by (commodity, grade) — see STATION_MANIFEST_* below. */
     NET_MSG_HIGHSCORES         = 0x30, /* server -> client: top-N leaderboard. [type:1][count:1] + count × [callsign:8][credits_earned:f32] */
+    NET_MSG_PLAYER_MANIFEST    = 0x31, /* server -> client: local player's ship manifest summary, same shape as STATION_MANIFEST minus station idx — see PLAYER_MANIFEST_* below. */
 };
 
 /* Top-N global leaderboard persisted server-side, broadcast on join and
@@ -73,6 +74,18 @@ enum {
 enum {
     STATION_MANIFEST_HEADER = 4,
     STATION_MANIFEST_ENTRY  = 4,
+};
+
+/* NET_MSG_PLAYER_MANIFEST wire layout (player is implicit — local pilot):
+ *   [type:1][entry_count:u16]
+ *     entry_count × [commodity:1][grade:1][count:u16]   (little-endian)
+ * Lets the local client build SELL rows from a manifest count even when
+ * the authoritative manifest mutations happened server-side (buy/sell/
+ * smelt). Provenance (cargo_unit_t pubkeys) is intentionally dropped —
+ * the picker only needs counts; the server keeps the real manifest. */
+enum {
+    PLAYER_MANIFEST_HEADER = 3,
+    PLAYER_MANIFEST_ENTRY  = 4,
 };
 
 /* Per-class buy price at any station's stockpile. RATi/commissioned

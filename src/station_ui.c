@@ -6,6 +6,7 @@
 #include "render.h"
 #include "palette.h"
 #include "mining_client.h"
+#include "manifest.h"
 /* Grade palette lives in shared/mining.h (pulled in via client.h →
  * types.h → mining.h) alongside the grade enum + label + multiplier. */
 
@@ -720,7 +721,9 @@ static void draw_trade_view(const station_ui_state_t *ui,
         const float slot_w = cell_w * 7.0f; /* "FEx99 " = 6 chars + sep */
         for (int i = 0; i < 6; i++) {
             float sx = cx + (float)i * slot_w;
-            int stock = (int)floorf(st->inventory[slots[i].c] + 0.0001f);
+            /* Manifest is the truth for finished goods (matches the BUY
+             * picker so the strip and the rows can never disagree). */
+            int stock = manifest_count_by_commodity(&st->manifest, slots[i].c);
             bool has_module = station_has_module(st, slots[i].producer);
             uint8_t r, g, b;
             if (!has_module) {
