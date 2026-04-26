@@ -506,11 +506,174 @@ TEST(test_grade_aware_sell_pays_per_unit_grade) {
     ASSERT(ratio > 1.25f && ratio < 1.45f);
 }
 
+/* ================================================================== */
+/* Kit-economy e2e: run the sim long enough for the kit chain to       */
+/* visibly converge, NPC damage to drive demand, contracts to cycle.   */
+/* ================================================================== */
+
+TEST(test_e2e_kit_chain_converges) {
+    /* Pre-seed Kepler with the three fab inputs so kit fab can fire
+     * without first bootstrapping the entire upstream chain (smelting,
+     * pressing, etc — not what this test is about). 5 sim-minutes is
+     * 10 fab cycles at REPAIR_KIT_FAB_PERIOD = 30s; should produce
+     * many full batches if the gate works. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    /* Find the shipyard station. */
+    int shipyard = -1;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (station_has_module(&w->stations[s], MODULE_SHIPYARD)) {
+            shipyard = s; break;
+        }
+    }
+    ASSERT(shipyard >= 0);
+    /* Big buffer of inputs so fab never starves. */
+    w->stations[shipyard].inventory[COMMODITY_FRAME]          = 50.0f;
+    w->stations[shipyard].inventory[COMMODITY_LASER_MODULE]   = 50.0f;
+    w->stations[shipyard].inventory[COMMODITY_TRACTOR_MODULE] = 50.0f;
+    w->stations[shipyard].inventory[COMMODITY_REPAIR_KIT]     = 0.0f;
+    w->stations[shipyard].repair_kit_fab_timer = 0.0f;
+
+    int ticks = (int)(300.0f / SIM_DT);
+    for (int i = 0; i < ticks; i++) world_sim_step(w, SIM_DT);
+
+    float kits_now = w->stations[shipyard].inventory[COMMODITY_REPAIR_KIT];
+    printf("    shipyard %d kits after 300s: %.0f (expect > 0)\n",
+           shipyard, kits_now);
+    ASSERT(kits_now > 0.0f);
+
+    /* Inputs should also be visibly drawn down — at least one batch
+     * consumed of each input commodity (fewer than seed, > 0 means
+     * something was minted but not all 50). */
+    ASSERT(w->stations[shipyard].inventory[COMMODITY_FRAME]        < 50.0f);
+    ASSERT(w->stations[shipyard].inventory[COMMODITY_LASER_MODULE] < 50.0f);
+    ASSERT(w->stations[shipyard].inventory[COMMODITY_TRACTOR_MODULE] < 50.0f);
+}
+
+TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
+    /* A damaged hauler returning home to a kit-stocked dock should heal
+     * AND drain station kit inventory. Verifies PR #375 end-to-end:
+     * NPC hull damage exists, hauler dock transition fires the repair,
+     * kits actually flow out of station inventory.
+     *
+     * Setup the hauler in RETURN_TO_STATION near home so a single sim
+     * step triggers the dock-arrival branch and the kit drain. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    int shipyard = -1;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (station_has_module(&w->stations[s], MODULE_SHIPYARD)) {
+            shipyard = s; break;
+        }
+    }
+    ASSERT(shipyard >= 0);
+    /* Stock the dock with kits so the auto-repair has something to drain. */
+    w->stations[shipyard].inventory[COMMODITY_REPAIR_KIT] = 100.0f;
+
+    /* Pick the first hauler that's currently homed at the shipyard,
+     * wound it, and drop it just outside the dock approach radius. */
+    npc_ship_t *hauler = NULL;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active) continue;
+        if (w->npc_ships[n].role != NPC_ROLE_HAULER) continue;
+        w->npc_ships[n].home_station = shipyard;
+        hauler = &w->npc_ships[n];
+        break;
+    }
+    ASSERT(hauler != NULL);
+    float max_h = npc_max_hull(hauler);
+    hauler->hull  = max_h - 20.0f; /* 20 HP damage */
+    hauler->state = NPC_STATE_RETURN_TO_STATION;
+    /* Drop the hauler well inside the home station's dock approach
+     * radius so the next sim_step's RETURN_TO_STATION branch trips
+     * the dock-arrival condition (dist < dock_radius * 0.7). */
+    hauler->pos = w->stations[shipyard].pos;
+    hauler->vel = v2(0.0f, 0.0f);
+
+    float kits_before = w->stations[shipyard].inventory[COMMODITY_REPAIR_KIT];
+    /* A handful of ticks — first one should land it at the berth and
+     * fire the repair branch; subsequent ticks just sit at DOCKED. */
+    for (int i = 0; i < 5; i++) world_sim_step(w, SIM_DT);
+
+    float kits_after = w->stations[shipyard].inventory[COMMODITY_REPAIR_KIT];
+    printf("    hauler hull: %.1f -> %.1f (max %.1f), station kits %.0f -> %.0f\n",
+           max_h - 20.0f, hauler->hull, max_h, kits_before, kits_after);
+    /* Healed — could be partial if repaired tick fell short, but should be
+     * visibly higher than the starting wound. */
+    ASSERT(hauler->hull > max_h - 20.0f);
+    /* Station drained kits to do the repair. */
+    ASSERT(kits_after < kits_before);
+}
+
+TEST(test_e2e_kit_import_contract_lifecycle) {
+    /* Kit-import contract at Prospect (no shipyard) should:
+     *   (a) appear when kit inventory drops below 25% of cap,
+     *   (b) close when inventory rises above the close threshold. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    int prospect = -1;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (station_has_module(&w->stations[s], MODULE_DOCK) &&
+            !station_has_module(&w->stations[s], MODULE_SHIPYARD)) {
+            prospect = s; break;
+        }
+    }
+    ASSERT(prospect >= 0);
+
+    /* Phase 1: drain kits and run until a kit import contract is issued. */
+    w->stations[prospect].inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+    bool found_open = false;
+    for (int i = 0; i < (int)(120.0f / SIM_DT); i++) {
+        world_sim_step(w, SIM_DT);
+        for (int k = 0; k < MAX_CONTRACTS; k++) {
+            const contract_t *c = &w->contracts[k];
+            if (c->active && c->action == CONTRACT_TRACTOR
+                && c->station_index == prospect
+                && c->commodity == COMMODITY_REPAIR_KIT) {
+                found_open = true; break;
+            }
+        }
+        if (found_open) break;
+    }
+    ASSERT(found_open);
+
+    /* Phase 2: refill enough to satisfy BOTH close and issue checks.
+     * Close fires above 0.8 * MAX_PRODUCT_STOCK (96), but P6 re-issues
+     * below 0.25 * REPAIR_KIT_STOCK_CAP (250) — the gap between them
+     * is unstable (closes and re-issues every tick). Filling above the
+     * higher bound is the only stable closed state. The fact that
+     * those two thresholds don't agree is a real bug worth a separate
+     * PR; this test pins current behaviour for now. */
+    w->stations[prospect].inventory[COMMODITY_REPAIR_KIT] = REPAIR_KIT_STOCK_CAP * 0.5f;
+    bool found_after_fill = true;
+    for (int i = 0; i < (int)(60.0f / SIM_DT); i++) {
+        world_sim_step(w, SIM_DT);
+        found_after_fill = false;
+        for (int k = 0; k < MAX_CONTRACTS; k++) {
+            const contract_t *c = &w->contracts[k];
+            if (c->active && c->action == CONTRACT_TRACTOR
+                && c->station_index == prospect
+                && c->commodity == COMMODITY_REPAIR_KIT) {
+                found_after_fill = true; break;
+            }
+        }
+        if (!found_after_fill) break;
+    }
+    ASSERT(!found_after_fill);
+}
+
 void register_econ_sim_sim_tests(void) {
     TEST_SECTION("\nEconomy simulations:\n");
     RUN(test_econ_sim_npc_only_5min);
     RUN(test_econ_sim_credit_circulation);
     RUN(test_grade_aware_sell_pays_per_unit_grade);
+    RUN(test_e2e_kit_chain_converges);
+    RUN(test_e2e_npc_dock_auto_repair_drains_kits);
+    RUN(test_e2e_kit_import_contract_lifecycle);
 }
 
 void register_econ_sim_bug312_tests(void) {
