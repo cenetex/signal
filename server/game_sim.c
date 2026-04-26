@@ -3193,13 +3193,13 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
 
-        /* Priority 5: dock kit-fab inputs. Last-resort: every dock needs
+        /* Priority 5: shipyard kit-fab inputs. Every shipyard needs
          * frames + lasers + tractor modules to mint repair kits, but the
          * upstream production contracts (above) come first so they don't
          * starve. Only fires when the station's own ingot/scaffold
          * pipeline is satisfied, ensuring kit fab gets fed without
          * cannibalising the chain that produces its inputs. */
-        if (!need.active && !has_production_contract && station_has_module(st, MODULE_DOCK)) {
+        if (!need.active && !has_production_contract && station_has_module(st, MODULE_SHIPYARD)) {
             const struct { commodity_t c; module_type_t producer; } kit_inputs[] = {
                 { COMMODITY_FRAME,          MODULE_FRAME_PRESS  },
                 { COMMODITY_LASER_MODULE,   MODULE_LASER_FAB    },
@@ -3223,6 +3223,32 @@ static void step_contracts(world_t *w, float dt) {
                     .base_price = st->base_price[mat] > 0.0f
                                   ? st->base_price[mat] * 1.25f * pool_factor
                                   : 28.0f * pool_factor,
+                    .target_index = -1, .claimed_by = -1,
+                };
+            }
+        }
+
+        /* Priority 6: kit imports at consumer-only stations. A station
+         * with a dock but no shipyard (Prospect, future outposts) can't
+         * mint kits — it needs them hauled in. Issue a TRACTOR contract
+         * for REPAIR_KIT when the station's kit inventory falls below
+         * 25% of cap. Players and NPC haulers can fulfill via the same
+         * delivery loop that handles ingot/frame deliveries. */
+        if (!need.active && !has_production_contract
+            && station_has_module(st, MODULE_DOCK)
+            && !station_has_module(st, MODULE_SHIPYARD)) {
+            const float kit_import_threshold = REPAIR_KIT_STOCK_CAP * 0.25f;
+            if (st->inventory[COMMODITY_REPAIR_KIT] < kit_import_threshold) {
+                float deficit = REPAIR_KIT_STOCK_CAP - st->inventory[COMMODITY_REPAIR_KIT];
+                float seed = st->base_price[COMMODITY_REPAIR_KIT] > 0.0f
+                             ? st->base_price[COMMODITY_REPAIR_KIT]
+                             : 6.0f;
+                need = (contract_t){
+                    .active = true, .action = CONTRACT_TRACTOR,
+                    .station_index = (uint8_t)s,
+                    .commodity = COMMODITY_REPAIR_KIT,
+                    .quantity_needed = deficit,
+                    .base_price = seed * 1.5f * pool_factor,
                     .target_index = -1, .claimed_by = -1,
                 };
             }

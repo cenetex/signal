@@ -408,6 +408,78 @@ TEST(test_refinery_smelts_ore_in_inventory) {
     ASSERT(ingots > 0.0f);
 }
 
+TEST(test_kit_fab_requires_shipyard) {
+    /* After the shipyard-fab redesign, only stations with MODULE_SHIPYARD
+     * mint repair kits. A station with only a dock + the three input
+     * commodities should never produce kits. */
+    WORLD_DECL;
+    world_reset(&w);
+    /* Prospect (station 0) has a dock but no shipyard. Kepler (station 1)
+     * has both. Pre-fill both with kit-fab inputs. */
+    ASSERT(station_has_module(&w.stations[0], MODULE_DOCK));
+    ASSERT(!station_has_module(&w.stations[0], MODULE_SHIPYARD));
+    ASSERT(station_has_module(&w.stations[1], MODULE_SHIPYARD));
+    for (int s = 0; s < 2; s++) {
+        w.stations[s].inventory[COMMODITY_FRAME]          = 5.0f;
+        w.stations[s].inventory[COMMODITY_LASER_MODULE]   = 5.0f;
+        w.stations[s].inventory[COMMODITY_TRACTOR_MODULE] = 5.0f;
+        w.stations[s].inventory[COMMODITY_REPAIR_KIT]     = 0.0f;
+        w.stations[s].repair_kit_fab_timer = 0.0f;
+    }
+    /* Run long enough for at least one fab cycle (REPAIR_KIT_FAB_PERIOD = 30s). */
+    for (int i = 0; i < (int)(35.0f / SIM_DT); i++)
+        world_sim_step(&w, SIM_DT);
+    /* Shipyard station produces kits; dock-only station does not. */
+    ASSERT(w.stations[1].inventory[COMMODITY_REPAIR_KIT] > 0.0f);
+    ASSERT_EQ_FLOAT(w.stations[0].inventory[COMMODITY_REPAIR_KIT], 0.0f, 0.01f);
+}
+
+TEST(test_kit_import_contract_at_consumer_station) {
+    /* A station with a dock but no shipyard should issue a TRACTOR
+     * contract for REPAIR_KIT when its kit inventory drops below the
+     * import threshold. Players or NPC haulers fulfill via the same
+     * delivery loop that handles ingots. */
+    WORLD_DECL;
+    world_reset(&w);
+    ASSERT(station_has_module(&w.stations[0], MODULE_DOCK));
+    ASSERT(!station_has_module(&w.stations[0], MODULE_SHIPYARD));
+    /* Drain Prospect's kit inventory to force the deficit. */
+    w.stations[0].inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+    /* Run a few seconds for the contract step to fire. */
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    bool found = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *c = &w.contracts[k];
+        if (c->active && c->action == CONTRACT_TRACTOR
+            && c->station_index == 0
+            && c->commodity == COMMODITY_REPAIR_KIT) {
+            found = true;
+            ASSERT(c->base_price > 0.0f);
+            ASSERT(c->quantity_needed > 0.0f);
+            break;
+        }
+    }
+    ASSERT(found);
+}
+
+TEST(test_kit_import_contract_skips_shipyard_stations) {
+    /* A shipyard station mints its own kits; the import contract should
+     * not fire there even with kit inventory at zero. */
+    WORLD_DECL;
+    world_reset(&w);
+    ASSERT(station_has_module(&w.stations[1], MODULE_SHIPYARD));
+    w.stations[1].inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+    for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *c = &w.contracts[k];
+        if (c->active && c->action == CONTRACT_TRACTOR
+            && c->station_index == 1
+            && c->commodity == COMMODITY_REPAIR_KIT) {
+            ASSERT(false); /* shouldn't reach here */
+        }
+    }
+}
+
 TEST(test_furnace_without_adjacent_hopper_smelts) {
     /* Furnaces smelt from station inventory regardless of adjacency. */
     WORLD_DECL;
@@ -445,6 +517,9 @@ void register_economy_contracts_tests(void) {
     RUN(test_contract_closes_when_deficit_filled);
     RUN(test_sell_price_uses_contract_price);
     RUN(test_hauler_fills_highest_value_contract);
+    RUN(test_kit_fab_requires_shipyard);
+    RUN(test_kit_import_contract_at_consumer_station);
+    RUN(test_kit_import_contract_skips_shipyard_stations);
 }
 
 void register_economy_contract3_tests(void) {

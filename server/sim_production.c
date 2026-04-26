@@ -954,25 +954,24 @@ void step_module_delivery(world_t *w, station_t *st, int station_idx,
 }
 
 /* ------------------------------------------------------------------ */
-/* Dock repair-kit fabrication                                         */
+/* Shipyard repair-kit fabrication                                     */
 /* ------------------------------------------------------------------ */
-/* Every station with a MODULE_DOCK runs an assembly bench that turns
- * 1 frame + 1 laser + 1 tractor module into REPAIR_KIT_PER_BATCH (100)
- * repair kits, on a slow cadence (REPAIR_KIT_FAB_PERIOD seconds per
- * batch). One kit restores 1 HP at the dock's repair service.
+/* Every station with a MODULE_SHIPYARD runs an assembly bench that
+ * turns 1 frame + 1 laser + 1 tractor module into REPAIR_KIT_PER_BATCH
+ * (100) repair kits, on a slow cadence (REPAIR_KIT_FAB_PERIOD seconds
+ * per batch). Kits are commodities — bought as cargo at the shipyard,
+ * carried, and consumed at any dock during repair.
  *
- * Inputs come from the same station's inventory + manifest (so the
- * three Helios/Kepler outputs flow naturally to docks via NPC haulers
- * or player delivery, and from there into kits the ships consume).
- * The triple-input recipe is the load-bearing demand sink that closes
- * the production loop — every smelter, every fab has a downstream
- * consumer, instead of saturating at the cap. */
+ * Stations with a dock but no shipyard (e.g. Prospect) don't make
+ * kits; they import them via the kit-deficit TRACTOR contract issued
+ * by step_contracts. The triple-input recipe remains the load-bearing
+ * demand sink that closes the production loop. */
 void step_dock_repair_kit_fab(world_t *w, float dt) {
     if (!w) return;
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
-        if (!station_has_module(st, MODULE_DOCK)) continue;
+        if (!station_has_module(st, MODULE_SHIPYARD)) continue;
         if (st->inventory[COMMODITY_REPAIR_KIT] >= REPAIR_KIT_STOCK_CAP) continue;
 
         st->repair_kit_fab_timer += dt;
@@ -1022,7 +1021,7 @@ void step_dock_repair_kit_fab(world_t *w, float dt) {
             st->named_ingots_dirty = true;
         }
         st->repair_kit_fab_timer = 0.0f;
-        SIM_LOG("[dock-fab] station %d minted %d kits (1 frame + 1 laser + 1 tractor consumed)\n",
+        SIM_LOG("[shipyard-fab] station %d minted %d kits (1 frame + 1 laser + 1 tractor consumed)\n",
                 s, int_minted);
     }
 }
