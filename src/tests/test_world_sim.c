@@ -690,8 +690,12 @@ TEST(test_scenario_npc_economy_30_seconds) {
     WORLD_DECL;
     world_reset(&w);
 
-    /* Run for 3600 ticks (30 seconds at 120Hz) with no players */
-    for (int i = 0; i < 3600; i++)
+    /* Run 60 sim seconds. Originally 30s, but the NPC mining → tow →
+     * smelt pipeline only just barely finishes one cycle by t=30s on
+     * macOS, and Linux CI's slightly different float rounding pushes
+     * the first delivery past the cutoff. 60s gives ~2× margin while
+     * keeping the test fast. */
+    for (int i = 0; i < 7200; i++)
         world_sim_step(&w, SIM_DT);
 
     /* Verify: at least one asteroid was mined (some HP < max_hp or deactivated) */
