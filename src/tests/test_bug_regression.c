@@ -53,8 +53,10 @@ TEST(test_bug7_player_slot_mismatch) {
 }
 
 TEST(test_bug9_repair_cost_consistent) {
-    /* This one should PASS — verifying the economy.c version works.
-     * The real bug is a name collision with game_sim.c's static version. */
+    /* Quote scales with the per-HP cost at this station: kit retail
+     * (station_sell_price) + labor fee (zero at shipyard, otherwise
+     * LABOR_FEE_PER_HP). With kits at 6 cr/unit and no shipyard, a
+     * 20 HP repair quotes 20 * (6 + 1) = 140 cr. */
     ship_t ship;
     memset(&ship, 0, sizeof(ship));
     ship.hull_class = HULL_CLASS_MINER;
@@ -62,9 +64,10 @@ TEST(test_bug9_repair_cost_consistent) {
     station_t st;
     memset(&st, 0, sizeof(st));
     st.services = STATION_SERVICE_REPAIR;
+    st.base_price[COMMODITY_REPAIR_KIT] = 6.0f;
+    st.inventory[COMMODITY_REPAIR_KIT]  = MAX_PRODUCT_STOCK; /* full → 1× base */
     float cost = station_repair_cost(&ship, &st);
-    /* (max 100 - hull 80) * 5.0 cr/HP = 100 cr (#299 raised the rate). */
-    ASSERT_EQ_FLOAT(cost, 100.0f, 0.01f);
+    ASSERT_EQ_FLOAT(cost, 20.0f * (6.0f + LABOR_FEE_PER_HP), 0.01f);
 }
 
 TEST(test_bug10_damage_event_has_amount) {

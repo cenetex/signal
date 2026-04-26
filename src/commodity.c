@@ -143,10 +143,15 @@ const char* commodity_short_name(commodity_t commodity) {
     }
 }
 
+float commodity_volume(commodity_t commodity) {
+    if (commodity == COMMODITY_REPAIR_KIT) return REPAIR_KIT_CARGO_DENSITY;
+    return 1.0f;
+}
+
 float ship_total_cargo(const ship_t* ship) {
     float total = 0.0f;
     for (int i = 0; i < COMMODITY_COUNT; i++) {
-        total += ship->cargo[i];
+        total += ship->cargo[i] * commodity_volume((commodity_t)i);
     }
     return total;
 }

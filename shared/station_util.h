@@ -96,6 +96,12 @@ static inline bool station_consumes(const station_t *st, commodity_t c) {
                    station_has_module(st, MODULE_TRACTOR_FAB);
         case COMMODITY_CRYSTAL_INGOT:
             return station_has_module(st, MODULE_LASER_FAB);
+        /* Consumer-only docks (no shipyard) buy kits hauled in from
+         * shipyards — that's how Prospect's repair stockpile gets fed.
+         * Shipyards make their own and never buy them back. */
+        case COMMODITY_REPAIR_KIT:
+            return station_has_module(st, MODULE_DOCK)
+                   && !station_has_module(st, MODULE_SHIPYARD);
         default: return false;
     }
 }
@@ -109,7 +115,7 @@ static inline bool station_produces(const station_t *st, commodity_t c) {
         case COMMODITY_FRAME:         return station_has_module(st, MODULE_FRAME_PRESS);
         case COMMODITY_LASER_MODULE:  return station_has_module(st, MODULE_LASER_FAB);
         case COMMODITY_TRACTOR_MODULE:return station_has_module(st, MODULE_TRACTOR_FAB);
-        case COMMODITY_REPAIR_KIT:    return station_has_module(st, MODULE_DOCK);
+        case COMMODITY_REPAIR_KIT:    return station_has_module(st, MODULE_SHIPYARD);
         default: return false;
     }
 }

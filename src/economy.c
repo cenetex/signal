@@ -97,7 +97,14 @@ float station_repair_cost(const ship_t* ship, const station_t* station) {
     if (!(station->services & STATION_SERVICE_REPAIR)) return 0.0f;
     float damage = ship_max_hull(ship) - ship->hull;
     if (damage <= 0.0f) return 0.0f;
-    return damage * STATION_REPAIR_COST_PER_HULL;
+
+    /* Quote: assume station-sourced kits (worst case for the player —
+     * the actual repair will be cheaper if they brought their own).
+     * Labor fee is zero at shipyards, LABOR_FEE_PER_HP elsewhere. */
+    float kit_price = station_sell_price(station, COMMODITY_REPAIR_KIT);
+    bool is_shipyard = station_has_module(station, MODULE_SHIPYARD);
+    float labor = is_shipyard ? 0.0f : LABOR_FEE_PER_HP;
+    return damage * (kit_price + labor);
 }
 
 bool can_afford_upgrade(const station_t* station, const ship_t* ship, ship_upgrade_t upgrade, uint32_t service, int credit_cost, float balance) {

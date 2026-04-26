@@ -480,6 +480,138 @@ TEST(test_kit_import_contract_skips_shipyard_stations) {
     }
 }
 
+TEST(test_repair_drains_ship_cargo_first) {
+    /* Player docked at a station with a repair service. Ship carries
+     * 50 kits in cargo, station has 100 kits in inventory. A 30 HP
+     * repair drains 30 kits from ship cargo, leaves station inventory
+     * untouched, and charges only the labor fee (no station retail
+     * since no kits sourced from station). */
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x01, 8);
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+
+    /* Force the repair service (default Prospect lacks REPAIR_BAY). */
+    w.stations[0].services |= STATION_SERVICE_REPAIR;
+    w.stations[0].inventory[COMMODITY_REPAIR_KIT] = 100.0f;
+    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 50.0f;
+    float max_hull = ship_max_hull(&w.players[0].ship);
+    w.players[0].ship.hull = max_hull - 30.0f; /* 30 HP missing */
+
+    float bal_before = ledger_balance(&w.stations[0],
+                                      w.players[0].session_token);
+    w.players[0].input.service_repair = true;
+    world_sim_step(&w, SIM_DT);
+
+    /* Hull restored, ship cargo drained, station inventory untouched. */
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull, 0.5f);
+    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_REPAIR_KIT], 20.0f, 0.5f);
+    ASSERT_EQ_FLOAT(w.stations[0].inventory[COMMODITY_REPAIR_KIT], 100.0f, 0.5f);
+
+    /* Charge: only labor (no station retail). 30 HP * 1 cr/HP. */
+    float bal_after = ledger_balance(&w.stations[0],
+                                     w.players[0].session_token);
+    float charged = bal_before - bal_after;
+    ASSERT_EQ_FLOAT(charged, 30.0f * LABOR_FEE_PER_HP, 0.5f);
+}
+
+TEST(test_repair_falls_back_to_station_inventory) {
+    /* Player has no kits in cargo; station inventory covers it. Repair
+     * charges retail (station_sell_price) + labor since not a shipyard. */
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x01, 8);
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+
+    w.stations[0].services |= STATION_SERVICE_REPAIR;
+    w.stations[0].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
+    w.stations[0].inventory[COMMODITY_REPAIR_KIT]  = MAX_PRODUCT_STOCK; /* full → 1× */
+    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT]  = 0.0f;
+    float max_hull = ship_max_hull(&w.players[0].ship);
+    w.players[0].ship.hull = max_hull - 10.0f;
+
+    float bal_before = ledger_balance(&w.stations[0],
+                                      w.players[0].session_token);
+    w.players[0].input.service_repair = true;
+    world_sim_step(&w, SIM_DT);
+
+    /* 10 HP from station: 10 kits drained, charge = 10 * (6 + 1) = 70 cr. */
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull, 0.5f);
+    ASSERT_EQ_FLOAT(w.stations[0].inventory[COMMODITY_REPAIR_KIT],
+                    MAX_PRODUCT_STOCK - 10.0f, 0.5f);
+    float charged = bal_before - ledger_balance(&w.stations[0],
+                                                w.players[0].session_token);
+    ASSERT_EQ_FLOAT(charged, 10.0f * (6.0f + LABOR_FEE_PER_HP), 1.0f);
+}
+
+TEST(test_repair_at_shipyard_no_labor_fee) {
+    /* At a shipyard the labor fee is zero — you already paid retail
+     * when you bought the kits there. */
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x02, 8);
+    w.players[0].docked = true;
+    w.players[0].current_station = 1; /* Kepler has shipyard */
+    ASSERT(station_has_module(&w.stations[1], MODULE_SHIPYARD));
+
+    w.stations[1].services |= STATION_SERVICE_REPAIR;
+    w.stations[1].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
+    w.stations[1].inventory[COMMODITY_REPAIR_KIT]  = MAX_PRODUCT_STOCK;
+    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT]  = 0.0f;
+    float max_hull = ship_max_hull(&w.players[0].ship);
+    w.players[0].ship.hull = max_hull - 10.0f;
+
+    float bal_before = ledger_balance(&w.stations[1],
+                                      w.players[0].session_token);
+    w.players[0].input.service_repair = true;
+    world_sim_step(&w, SIM_DT);
+
+    /* 10 HP from station: charge = 10 * (6 + 0) = 60 cr (no labor). */
+    float charged = bal_before - ledger_balance(&w.stations[1],
+                                                w.players[0].session_token);
+    ASSERT_EQ_FLOAT(charged, 10.0f * 6.0f, 1.0f);
+}
+
+TEST(test_repair_partial_when_kits_short) {
+    /* Both ship cargo and station inventory empty: repair does nothing
+     * (no partial heal because no kits to consume). */
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x03, 8);
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+
+    w.stations[0].services |= STATION_SERVICE_REPAIR;
+    w.stations[0].inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 0.0f;
+    float max_hull = ship_max_hull(&w.players[0].ship);
+    /* Damage by 20, then forcibly clear the docked passive heal so we
+     * can measure precisely. Approach: run only one tick where dock
+     * passive adds 8*dt = 8/120 ≈ 0.067 HP; tolerance covers it. */
+    w.players[0].ship.hull = max_hull - 20.0f;
+
+    w.players[0].input.service_repair = true;
+    world_sim_step(&w, SIM_DT);
+
+    /* Hull should be roughly unchanged (only the passive 8 HP/sec
+     * applies for one tick = 0.067 HP). */
+    ASSERT(w.players[0].ship.hull < max_hull - 19.0f);
+}
+
 TEST(test_furnace_without_adjacent_hopper_smelts) {
     /* Furnaces smelt from station inventory regardless of adjacency. */
     WORLD_DECL;
@@ -499,6 +631,24 @@ TEST(test_furnace_without_adjacent_hopper_smelts) {
     ASSERT(w.stations[0].inventory[COMMODITY_FERRITE_INGOT] > initial_ingots);
 }
 
+TEST(test_commodity_volume_kit_dense) {
+    /* Kits take REPAIR_KIT_CARGO_DENSITY units of cargo each; everything
+     * else is 1.0. */
+    ASSERT_EQ_FLOAT(commodity_volume(COMMODITY_REPAIR_KIT),
+                    REPAIR_KIT_CARGO_DENSITY, 0.001f);
+    ASSERT_EQ_FLOAT(commodity_volume(COMMODITY_FRAME), 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(commodity_volume(COMMODITY_FERRITE_INGOT), 1.0f, 0.001f);
+}
+
+TEST(test_ship_total_cargo_kit_density) {
+    /* 100 kits + 5 frames = 100 * 0.1 + 5 * 1.0 = 15 cargo units. */
+    ship_t ship = {0};
+    ship.cargo[COMMODITY_REPAIR_KIT] = 100.0f;
+    ship.cargo[COMMODITY_FRAME] = 5.0f;
+    ASSERT_EQ_FLOAT(ship_total_cargo(&ship),
+                    100.0f * REPAIR_KIT_CARGO_DENSITY + 5.0f, 0.001f);
+}
+
 void register_economy_basic_tests(void) {
     TEST_SECTION("\nEconomy tests:\n");
     RUN(test_station_production_yard_makes_frames);
@@ -508,6 +658,8 @@ void register_economy_basic_tests(void) {
     RUN(test_can_afford_upgrade_all_conditions);
     RUN(test_can_afford_upgrade_no_credits);
     RUN(test_can_afford_upgrade_no_product);
+    RUN(test_commodity_volume_kit_dense);
+    RUN(test_ship_total_cargo_kit_density);
 }
 
 void register_economy_contracts_tests(void) {
@@ -520,6 +672,10 @@ void register_economy_contracts_tests(void) {
     RUN(test_kit_fab_requires_shipyard);
     RUN(test_kit_import_contract_at_consumer_station);
     RUN(test_kit_import_contract_skips_shipyard_stations);
+    RUN(test_repair_drains_ship_cargo_first);
+    RUN(test_repair_falls_back_to_station_inventory);
+    RUN(test_repair_at_shipyard_no_labor_fee);
+    RUN(test_repair_partial_when_kits_short);
 }
 
 void register_economy_contract3_tests(void) {

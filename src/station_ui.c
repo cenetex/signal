@@ -763,7 +763,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
     trade_row_t rows[TRADE_MAX_ROWS];
     int row_count = 0;
 
-    float space   = ship_cargo_capacity(ship) - ship_total_cargo(ship);
+    float free_volume = ship_cargo_capacity(ship) - ship_total_cargo(ship);
     float credits = player_current_balance();
 
     /* BUY rows — one per (commodity, grade) where the station has
@@ -782,7 +782,8 @@ static void draw_trade_view(const station_ui_state_t *ui,
             if (stock <= 0) continue;
             int price = (int)lroundf(price_base
                     * mining_payout_multiplier((mining_grade_t)gi));
-            bool can = (space >= 0.5f) && (credits >= (float)price);
+            float vol = commodity_volume((commodity_t)c);
+            bool can = (free_volume + FLOAT_EPSILON >= vol) && (credits >= (float)price);
             rows[row_count++] = (trade_row_t){
                 .kind = 0, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
                 .stock = stock, .unit_price = price,

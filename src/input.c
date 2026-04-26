@@ -512,8 +512,9 @@ input_intent_t sample_input_intent(void) {
             if (row_kind == 0) {
                 /* BUY action */
                 float price = station_sell_price(st, row_c) * mining_payout_multiplier(row_g);
-                float space = ship_cargo_capacity(ship) - ship_total_cargo(ship);
-                if (space < 0.5f) {
+                float free_volume = ship_cargo_capacity(ship) - ship_total_cargo(ship);
+                float vol = commodity_volume(row_c);
+                if (free_volume + FLOAT_EPSILON < vol) {
                     set_notice("Hold full.");
                 } else if (player_current_balance() < price) {
                     set_notice("Need $%d.", (int)lroundf(price));

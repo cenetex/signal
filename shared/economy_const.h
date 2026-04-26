@@ -25,16 +25,27 @@ static const float STATION_REPAIR_COST_PER_HULL = 5.0f;
 static const float MAX_PRODUCT_STOCK = 120.0f;
 static const float HAULER_RESERVE = 24.0f;  /* keep 20% stock for player purchases */
 
-/* --- Dock repair-kit fab --- */
-/* A station with MODULE_DOCK consumes 1 frame + 1 laser + 1 tractor and
- * produces REPAIR_KIT_PER_BATCH kits every REPAIR_KIT_FAB_PERIOD seconds.
- * Slow cadence is intentional — each batch heavily pulls on three
- * production chains; faster would saturate Kepler/Helios output and
- * starve outpost construction of its inputs. The cap is large because
- * kits get consumed 1-per-HP, not 1-per-ship-visit. */
+/* --- Shipyard repair-kit fab --- */
+/* A station with MODULE_SHIPYARD consumes 1 frame + 1 laser + 1 tractor
+ * and produces REPAIR_KIT_PER_BATCH kits every REPAIR_KIT_FAB_PERIOD
+ * seconds. Slow cadence is intentional — each batch heavily pulls on
+ * three production chains; faster would saturate Kepler/Helios output
+ * and starve outpost construction of its inputs. The cap is large
+ * because kits get consumed 1-per-HP, not 1-per-ship-visit. */
 static const float REPAIR_KIT_FAB_PERIOD  = 30.0f;
 static const float REPAIR_KIT_PER_BATCH   = 100.0f;
 static const float REPAIR_KIT_STOCK_CAP   = 1000.0f;
+
+/* Kits are dense cargo: 10 kits per cargo unit. A 100-HP repair (= 100
+ * kits) costs 10 cargo slots, which fits in any starter ship's hold.
+ * commodity_volume() returns this for REPAIR_KIT, 1.0 for everything
+ * else. */
+static const float REPAIR_KIT_CARGO_DENSITY = 0.1f;
+
+/* Per-HP labor fee charged at non-shipyard docks (where the kits were
+ * fabricated elsewhere). Shipyards charge 0 labor — you already paid
+ * full station retail when you bought the kits there. */
+static const float LABOR_FEE_PER_HP = 1.0f;
 
 /* --- Outpost construction --- */
 static const float SCAFFOLD_MATERIAL_NEEDED = 60.0f;   /* total frames needed */

@@ -1029,31 +1029,53 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
     float missing = fmaxf(0.0f, max_hull - sp->ship.hull);
     if (missing <= 0.0f) return;
 
-    /* Each repair-kit restores 1 HP. If the station has no kits the
-     * dock can't repair — the demand for kits is what closes the
-     * production loop. Partial repair is allowed: heal as many HP as
-     * kits are on hand. */
-    int kits_avail = (int)floorf(st->inventory[COMMODITY_REPAIR_KIT] + 0.0001f);
-    int hp_needed  = (int)ceilf(missing);
-    int hp_apply   = kits_avail < hp_needed ? kits_avail : hp_needed;
+    /* 1 kit = 1 HP. Source priority: ship cargo first (kits the player
+     * brought along — already paid for), then station inventory at
+     * station retail. Shipyards charge no labor (you paid station
+     * retail already if buying here); any other dock charges
+     * LABOR_FEE_PER_HP for the install. Partial repair is allowed if
+     * neither source has enough kits. */
+    int kits_in_cargo  = (int)floorf(sp->ship.cargo[COMMODITY_REPAIR_KIT] + 0.0001f);
+    int kits_at_station = (int)floorf(st->inventory[COMMODITY_REPAIR_KIT] + 0.0001f);
+    int hp_needed       = (int)ceilf(missing);
+    int hp_apply        = hp_needed;
+    if (hp_apply > kits_in_cargo + kits_at_station)
+        hp_apply = kits_in_cargo + kits_at_station;
     if (hp_apply <= 0) return;
 
-    /* Drain kits from float + manifest in lockstep. */
-    st->inventory[COMMODITY_REPAIR_KIT] -= (float)hp_apply;
-    if (st->inventory[COMMODITY_REPAIR_KIT] < 0.0f)
-        st->inventory[COMMODITY_REPAIR_KIT] = 0.0f;
-    manifest_consume_by_commodity(&st->manifest, COMMODITY_REPAIR_KIT, hp_apply);
-    st->named_ingots_dirty = true;
+    int from_cargo   = (hp_apply < kits_in_cargo) ? hp_apply : kits_in_cargo;
+    int from_station = hp_apply - from_cargo;
 
-    /* Credit cost still applies — kits are the physical input, credits
-     * are the labor. Cost scales with HP actually applied so a partial
-     * repair charges only for the partial heal. */
-    float cost = ceilf((float)hp_apply * STATION_REPAIR_COST_PER_HULL);
-    ledger_force_debit(st, sp->session_token, cost, &sp->ship);
+    /* Drain ship cargo + ship manifest. */
+    if (from_cargo > 0) {
+        sp->ship.cargo[COMMODITY_REPAIR_KIT] -= (float)from_cargo;
+        if (sp->ship.cargo[COMMODITY_REPAIR_KIT] < 0.0f)
+            sp->ship.cargo[COMMODITY_REPAIR_KIT] = 0.0f;
+        manifest_consume_by_commodity(&sp->ship.manifest,
+                                      COMMODITY_REPAIR_KIT, from_cargo);
+    }
+
+    /* Drain station inventory + station manifest for the fallback. */
+    if (from_station > 0) {
+        st->inventory[COMMODITY_REPAIR_KIT] -= (float)from_station;
+        if (st->inventory[COMMODITY_REPAIR_KIT] < 0.0f)
+            st->inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+        manifest_consume_by_commodity(&st->manifest,
+                                      COMMODITY_REPAIR_KIT, from_station);
+        st->named_ingots_dirty = true;
+    }
+
+    /* Cost = station retail on station-sourced kits + labor at non-shipyard. */
+    float station_kit_cost = (float)from_station
+                           * station_sell_price(st, COMMODITY_REPAIR_KIT);
+    bool is_shipyard = station_has_module(st, MODULE_SHIPYARD);
+    float labor_cost = is_shipyard ? 0.0f : (float)hp_apply * LABOR_FEE_PER_HP;
+    float cost = ceilf(station_kit_cost + labor_cost);
+    if (cost > 0.0f) ledger_force_debit(st, sp->session_token, cost, &sp->ship);
 
     sp->ship.hull = fminf(max_hull, sp->ship.hull + (float)hp_apply);
-    SIM_LOG("[sim] player %d repaired %d HP (%d kits, %.0f cr)\n",
-            sp->id, hp_apply, hp_apply, cost);
+    SIM_LOG("[sim] player %d repaired %d HP (%d cargo + %d station kits, %.0f cr)\n",
+            sp->id, hp_apply, from_cargo, from_station, cost);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_REPAIR, .player_id = sp->id});
 }
 
@@ -2405,7 +2427,9 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             float available = (c >= COMMODITY_RAW_ORE_COUNT)
                 ? (float)manifest_count_by_commodity(&docked_st->manifest, c)
                 : docked_st->inventory[c];
-            float space = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
+            float free_volume = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
+            float vol = commodity_volume(c);
+            float space = (vol > FLOAT_EPSILON) ? (free_volume / vol) : free_volume;
             float price_base = station_sell_price(docked_st, c);
             /* Grade-aware pricing: if the client picked a specific-grade row
              * in TRADE the row's displayed price was base * grade_multiplier,
