@@ -64,6 +64,12 @@ typedef struct {
     bool can_upgrade_mining;
     bool can_upgrade_hold;
     bool can_upgrade_tractor;
+    /* Repair-kit availability for the [R] row. ship_kits + station_kits
+     * are floor counts (whole HP that can be applied); kits_short_by is
+     * how many HP the local supply can't cover for a full repair. */
+    int ship_kits;
+    int station_kits;
+    int kits_short_by;
 } station_ui_state_t;
 
 typedef struct {

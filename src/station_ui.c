@@ -314,6 +314,18 @@ void build_station_ui_state(station_ui_state_t* ui) {
     ui->hold_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_HOLD);
     ui->tractor_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_TRACTOR);
     ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (repair > 0.0f) && (player_current_balance() + FLOAT_EPSILON >= repair);
+
+    /* Kit availability for the [R] row — drives "X kits ship / Y kits
+     * station" hint and the partial-repair warning. */
+    ui->ship_kits    = (int)floorf(LOCAL_PLAYER.ship.cargo[COMMODITY_REPAIR_KIT]
+                                   + 0.0001f);
+    ui->station_kits = (ui->station)
+        ? (int)floorf(ui->station->inventory[COMMODITY_REPAIR_KIT] + 0.0001f)
+        : 0;
+    int hp_needed = ui->hull_max - ui->hull_now;
+    if (hp_needed < 0) hp_needed = 0;
+    int kits_avail = ui->ship_kits + ui->station_kits;
+    ui->kits_short_by = (hp_needed > kits_avail) ? (hp_needed - kits_avail) : 0;
     float bal = player_current_balance();
     ui->can_upgrade_mining = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, ui->mining_cost, bal);
     ui->can_upgrade_hold = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, ui->hold_cost, bal);
@@ -971,16 +983,23 @@ static void draw_verbs_view(const station_ui_state_t *ui,
     /* -------- SERVICES (always visible; rows always show their status) -------- */
     my += draw_section_header(cx, my, inner_right, "SERVICES", HDR_SERVICE);
 
-    /* [R] repair hull */
+    /* [R] repair hull — shows kit availability ("X ship / Y dock") and
+     * flags partial repair when neither source has enough kits. */
     {
         const uint8_t *left_rgb = COL_AMBER;
-        char right_buf[48];
+        char right_buf[64];
         if (ui->hull_now >= ui->hull_max) {
             left_rgb = COL_DIM;
             snprintf(right_buf, sizeof(right_buf), "hull full");
-        } else if (ui->can_repair) {
-            snprintf(right_buf, sizeof(right_buf), "-%d %s",
-                     ui->repair_cost, ui_station_currency(st));
+        } else if (ui->can_repair && ui->kits_short_by == 0) {
+            snprintf(right_buf, sizeof(right_buf), "-%d %s  %d/%d kits",
+                     ui->repair_cost, ui_station_currency(st),
+                     ui->ship_kits, ui->station_kits);
+        } else if (ui->can_repair && ui->kits_short_by > 0) {
+            /* Partial heal — money is fine, kits are short. */
+            snprintf(right_buf, sizeof(right_buf), "-%d %s  short %d kits",
+                     ui->repair_cost, ui_station_currency(st),
+                     ui->kits_short_by);
         } else if (ui->repair_cost > 0) {
             left_rgb = COL_DIM;
             snprintf(right_buf, sizeof(right_buf), "need %d %s",
