@@ -1363,11 +1363,9 @@ static void update_docking_state(world_t *w, server_player_t *sp, float dt) {
         sp->ship.pos = dock_berth_pos(&w->stations[sp->current_station], sp->dock_berth);
         sp->ship.angle = dock_berth_angle(&w->stations[sp->current_station], sp->dock_berth);
         sp->ship.vel = v2(0.0f, 0.0f);
-        /* Passive hull repair while docked */
-        float max_hull = ship_max_hull(&sp->ship);
-        if (sp->ship.hull < max_hull) {
-            sp->ship.hull = fminf(max_hull, sp->ship.hull + 8.0f * dt);
-        }
+        /* No passive heal: all repair goes through kits via try_repair_ship.
+         * Press R to spend kits + credits, or carry kits in cargo and let
+         * the autopilot trigger the repair on dock. */
         return;
     }
 

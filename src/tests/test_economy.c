@@ -377,21 +377,21 @@ TEST(test_no_delivery_without_matching_contract) {
     ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_TRACTOR_MODULE], 20.0f, 0.01f);
 }
 
-TEST(test_259_passive_repair_at_any_station) {
-    /* Passive repair (8 hp/s) runs at ANY station while docked,
-     * regardless of STATION_SERVICE_REPAIR flag. */
+TEST(test_no_passive_heal_without_kits) {
+    /* Passive heal was removed: docking alone never repairs. With both
+     * ship cargo and station inventory empty, damaged hull stays
+     * damaged — repair requires kits. */
     WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
-    w.players[0].ship.hull = 50.0f; /* damaged */
-    /* Dock at station 0 (no REPAIR_BAY module) */
+    w.players[0].ship.hull = 50.0f;
     w.players[0].docked = true;
     w.players[0].current_station = 0;
-    ASSERT(!(w.stations[0].services & STATION_SERVICE_REPAIR));
-    /* Run a few ticks — hull should increase from passive repair */
+    w.stations[0].inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 0.0f;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
-    ASSERT(w.players[0].ship.hull > 50.0f);
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull, 50.0f, 0.01f);
 }
 
 TEST(test_refinery_smelts_ore_in_inventory) {
@@ -597,21 +597,16 @@ TEST(test_repair_partial_when_kits_short) {
     w.players[0].docked = true;
     w.players[0].current_station = 0;
 
-    w.stations[0].services |= STATION_SERVICE_REPAIR;
     w.stations[0].inventory[COMMODITY_REPAIR_KIT] = 0.0f;
     w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 0.0f;
     float max_hull = ship_max_hull(&w.players[0].ship);
-    /* Damage by 20, then forcibly clear the docked passive heal so we
-     * can measure precisely. Approach: run only one tick where dock
-     * passive adds 8*dt = 8/120 ≈ 0.067 HP; tolerance covers it. */
     w.players[0].ship.hull = max_hull - 20.0f;
 
     w.players[0].input.service_repair = true;
     world_sim_step(&w, SIM_DT);
 
-    /* Hull should be roughly unchanged (only the passive 8 HP/sec
-     * applies for one tick = 0.067 HP). */
-    ASSERT(w.players[0].ship.hull < max_hull - 19.0f);
+    /* No kits anywhere = no heal at all (passive heal removed). */
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull - 20.0f, 0.01f);
 }
 
 TEST(test_furnace_without_adjacent_hopper_smelts) {
@@ -702,7 +697,7 @@ void register_economy_mixed_cargo_tests(void) {
 
 void register_economy_service259_tests(void) {
     TEST_SECTION("\nStation service semantics (#259):\n");
-    RUN(test_259_passive_repair_at_any_station);
+    RUN(test_no_passive_heal_without_kits);
 }
 
 void register_economy_refinery_smelt_tests(void) {

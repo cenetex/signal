@@ -1024,17 +1024,14 @@ TEST(test_bug52_server_repair_cost_no_service_check) {
     ledger_earn(&w.stations[0], w.players[0].session_token, 1000.0f);
     float bal_before = ledger_balance(&w.stations[0],
                                       w.players[0].session_token);
-    /* Damage past passive-repair recovery so we can read intent precisely. */
     w.players[0].ship.hull = 50.0f;
     w.players[0].input.service_repair = true;
     world_sim_step(&w, SIM_DT);
-    /* Passive heal still applies (~0.067 HP per tick at 8 HP/sec * SIM_DT)
-     * but the kit-based heal must not have fired — no charge to the ledger. */
+    /* No kits = no heal, no charge. Passive heal was removed. */
     float bal_after = ledger_balance(&w.stations[0],
                                      w.players[0].session_token);
     ASSERT_EQ_FLOAT(bal_after, bal_before, 0.01f);
-    /* Hull may rise by < 1 HP from passive heal — that's expected. */
-    ASSERT(w.players[0].ship.hull < 51.0f);
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull, 50.0f, 0.01f);
 }
 
 TEST(test_bug53_npc_cargo_commodity_bounds) {

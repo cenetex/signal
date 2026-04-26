@@ -486,26 +486,29 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
             sp->autopilot_state = AUTOPILOT_STEP_RETURN_TO_REFINERY;
             break;
         }
-        /* Phase 1 (first ~0.6s): trigger sell + repair, then hold while
-         * the docked passive heal brings hull back up. The 0.6s gives
-         * the sim a few sub-steps to process the sell action and the
-         * repair action before we start checking hull. */
-        if (sp->autopilot_timer < 0.6f) {
-            sp->input.service_sell = true;
-            sp->input.service_sell_only = COMMODITY_COUNT;
-            /* If a repair bay exists at this station, also pay for an
-             * instant repair. Falls back to passive heal if not. */
-            sp->input.service_repair = true;
+        /* Repeatedly trigger sell + repair while docked. service_repair
+         * is harmless when hull is already full; with kit-based repair
+         * it consumes one kit per HP every tick the action fires. */
+        sp->input.service_sell = true;
+        sp->input.service_sell_only = COMMODITY_COUNT;
+        sp->input.service_repair = true;
+        if (sp->autopilot_timer < 0.6f) break;
+
+        /* Wait until either hull is full OR no kits are available
+         * anywhere (cargo + this station's inventory). The latter
+         * prevents an infinite wait when the supply chain hasn't
+         * delivered kits to this dock and the player isn't carrying
+         * any — better to launch with damage than to idle forever. */
+        const station_t *st = &w->stations[sp->current_station];
+        float ship_kits = sp->ship.cargo[COMMODITY_REPAIR_KIT];
+        float station_kits = st->inventory[COMMODITY_REPAIR_KIT];
+        bool any_kits = (ship_kits + station_kits) > 0.5f;
+        if (!autopilot_hull_full(&sp->ship) && any_kits) {
+            /* Stay docked; repair will keep ticking from cargo first
+             * then station inventory. */
             break;
         }
-        /* Phase 2: wait until hull is full before launching. The dock
-         * passive heal is 8 hp/sec — even from 0%, that's <15s for the
-         * miner hull (100 max). The autopilot just sits in dock. */
-        if (!autopilot_hull_full(&sp->ship)) {
-            /* Stay docked, no action needed. Loop again next tick. */
-            break;
-        }
-        /* Hull repaired AND cargo sold — launch back into the field. */
+        /* Hull repaired (or unrepairable) AND cargo sold — launch. */
         sp->input.interact = true;
         sp->autopilot_state = AUTOPILOT_STEP_LAUNCH;
         sp->autopilot_timer = 0.0f;
