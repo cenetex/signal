@@ -22,6 +22,7 @@
  */
 #include "game_sim.h"
 #include "manifest.h"
+#include "ship.h"
 #include "sim_ai.h"
 #include "sim_autopilot.h"
 #include "sim_nav.h"
@@ -2043,7 +2044,7 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
         if (!npc->active) continue;
         vec2 to_npc = v2_sub(npc->pos, muzzle);
         float proj = v2_dot(to_npc, forward);
-        float npc_r = HULL_DEFS[npc->hull_class].render_scale * 16.0f;
+        float npc_r = npc_hull_def(npc)->render_scale * 16.0f;
         if (proj > 0.0f && proj < best_dist) {
             vec2 closest = v2_add(muzzle, v2_scale(forward, proj));
             float perp = v2_len(v2_sub(closest, npc->pos));
@@ -2063,7 +2064,7 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
         if (!other->connected || other->id == sp->id) continue;
         vec2 to_p = v2_sub(other->ship.pos, muzzle);
         float proj = v2_dot(to_p, forward);
-        float pr = HULL_DEFS[other->ship.hull_class].ship_radius;
+        float pr = ship_hull_def(&other->ship)->ship_radius;
         if (proj > 0.0f && proj < best_dist) {
             vec2 closest = v2_add(muzzle, v2_scale(forward, proj));
             float perp = v2_len(v2_sub(closest, other->ship.pos));
@@ -4256,7 +4257,7 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     memset(&sp->ship, 0, sizeof(sp->ship));
     (void)ship_manifest_bootstrap(&sp->ship);
     sp->ship.hull_class = HULL_CLASS_MINER;
-    sp->ship.hull       = HULL_DEFS[HULL_CLASS_MINER].max_hull;
+    sp->ship.hull       = hull_max_for_class(HULL_CLASS_MINER);
     sp->ship.angle      = PI_F * 0.5f;
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
     sp->ship.towed_scaffold = -1;

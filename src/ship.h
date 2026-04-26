@@ -3,6 +3,12 @@
 
 #include "types.h"
 
+/* Hull-class lookups. The class accessor is the source of truth; the
+ * ship/npc-typed wrappers are kept so existing callsites compile and
+ * intent stays readable at the use site. Slice 1 of ship/NPC unify. */
+const hull_def_t* hull_def_for_class(hull_class_t hc);
+float             hull_max_for_class(hull_class_t hc);
+
 const hull_def_t* ship_hull_def(const ship_t* ship);
 const hull_def_t* npc_hull_def(const npc_ship_t* npc);
 

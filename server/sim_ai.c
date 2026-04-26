@@ -79,7 +79,7 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     npc->role = role;
     npc->hull_class = hc;
     npc->state = NPC_STATE_DOCKED;
-    npc->pos = v2_add(st->pos, v2(30.0f * (float)(slot % 3 - 1), -(st->radius + HULL_DEFS[hc].ship_radius + 50.0f)));
+    npc->pos = v2_add(st->pos, v2(30.0f * (float)(slot % 3 - 1), -(st->radius + hull_def_for_class(hc)->ship_radius + 50.0f)));
     npc->angle = PI_F * 0.5f;
     npc->target_asteroid = -1;
     npc->towed_fragment = -1;

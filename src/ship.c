@@ -1,11 +1,19 @@
 #include "ship.h"
 
+const hull_def_t* hull_def_for_class(hull_class_t hc) {
+    return &HULL_DEFS[hc];
+}
+
+float hull_max_for_class(hull_class_t hc) {
+    return HULL_DEFS[hc].max_hull;
+}
+
 const hull_def_t* ship_hull_def(const ship_t* ship) {
-    return &HULL_DEFS[ship->hull_class];
+    return hull_def_for_class(ship->hull_class);
 }
 
 const hull_def_t* npc_hull_def(const npc_ship_t* npc) {
-    return &HULL_DEFS[npc->hull_class];
+    return hull_def_for_class(npc->hull_class);
 }
 
 vec2 ship_forward(float angle) {
@@ -18,11 +26,11 @@ vec2 ship_muzzle(vec2 pos, float angle, const ship_t* ship) {
 }
 
 float ship_max_hull(const ship_t* ship) {
-    return ship_hull_def(ship)->max_hull;
+    return hull_max_for_class(ship->hull_class);
 }
 
 float npc_max_hull(const npc_ship_t* npc) {
-    return npc_hull_def(npc)->max_hull;
+    return hull_max_for_class(npc->hull_class);
 }
 
 float ship_cargo_capacity(const ship_t* ship) {
