@@ -55,6 +55,16 @@ static const float FRACTURE_CHILD_CLEANUP_DISTANCE = 4000.0f;
 static const float STATION_DOCK_APPROACH_OFFSET = 34.0f;
 static const float SHIP_COLLISION_DAMAGE_THRESHOLD = 115.0f;
 static const float SHIP_COLLISION_DAMAGE_SCALE = 0.12f;
+
+/* Soft impact -> hull damage. Returns 0 below the (possibly scaled)
+ * threshold; otherwise (impact - threshold) * SCALE. Player and NPC
+ * collision sites both call this so the formula stays in one place.
+ * threshold_mult lets ship-vs-ship ramming cut the bar (0.7×) to make
+ * deliberate ramming actually hurt. */
+static inline float collision_damage_for(float impact, float threshold_mult) {
+    float t = SHIP_COLLISION_DAMAGE_THRESHOLD * threshold_mult;
+    return (impact > t) ? (impact - t) * SHIP_COLLISION_DAMAGE_SCALE : 0.0f;
+}
 static const float NPC_DOCK_TIME = 3.0f;
 static const float HAULER_DOCK_TIME = 4.0f;
 static const float HAULER_LOAD_TIME = 2.0f;

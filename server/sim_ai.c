@@ -336,12 +336,11 @@ static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
         if (vel_toward < 0.0f) {
             float impact = -vel_toward;
             npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.0f));
-            /* Hull damage scaled the same way as players (game_sim.c
-             * apply_ship_damage uses SHIP_COLLISION_DAMAGE_THRESHOLD /
-             * _SCALE). NPCs feeding the kit-demand sink is the load-
-             * bearing reason we have a kit economy at all. */
-            if (impact > SHIP_COLLISION_DAMAGE_THRESHOLD) {
-                float dmg = (impact - SHIP_COLLISION_DAMAGE_THRESHOLD) * SHIP_COLLISION_DAMAGE_SCALE;
+            /* Same formula as players (collision_damage_for in game_sim.h).
+             * NPCs feeding the kit-demand sink is the load-bearing reason
+             * the kit economy exists at all. */
+            float dmg = collision_damage_for(impact, 1.0f);
+            if (dmg > 0.0f) {
                 npc->hull -= dmg;
                 if (npc->hull < 0.0f) npc->hull = 0.0f;
             }

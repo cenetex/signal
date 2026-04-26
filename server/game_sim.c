@@ -669,8 +669,8 @@ static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, fl
     float vel_toward = v2_dot(sp->ship.vel, normal);
     if (vel_toward < 0.0f) {
         float impact = -vel_toward;
-        if (!sp->docked && impact > SHIP_COLLISION_DAMAGE_THRESHOLD)
-            apply_ship_damage(w, sp, (impact - SHIP_COLLISION_DAMAGE_THRESHOLD) * SHIP_COLLISION_DAMAGE_SCALE);
+        float dmg = sp->docked ? 0.0f : collision_damage_for(impact, 1.0f);
+        if (dmg > 0.0f) apply_ship_damage(w, sp, dmg);
         /* Clamp inward velocity component to zero — slide along the surface
          * tangent on the next tick instead of bouncing back through it. */
         sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(normal, vel_toward));
@@ -724,8 +724,8 @@ static void resolve_ship_annular_sector(world_t *w, server_player_t *sp,
     float vel_toward = v2_dot(sp->ship.vel, push_normal);
     if (vel_toward < 0.0f) {
         float impact = -vel_toward;
-        if (!sp->docked && impact > SHIP_COLLISION_DAMAGE_THRESHOLD)
-            apply_ship_damage(w, sp, (impact - SHIP_COLLISION_DAMAGE_THRESHOLD) * SHIP_COLLISION_DAMAGE_SCALE);
+        float dmg = sp->docked ? 0.0f : collision_damage_for(impact, 1.0f);
+        if (dmg > 0.0f) apply_ship_damage(w, sp, dmg);
         sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(push_normal, vel_toward * 1.0f));
     }
 }
@@ -4006,9 +4006,11 @@ void world_sim_step(world_t *w, float dt) {
                 vec2 impulse = v2_scale(normal, rel_vel * 0.6f);
                 w->players[i].ship.vel = v2_sub(w->players[i].ship.vel, impulse);
                 w->players[j].ship.vel = v2_add(w->players[j].ship.vel, impulse);
-                /* Ramming damage — both ships take damage based on impact speed */
-                if (impact > SHIP_COLLISION_DAMAGE_THRESHOLD * 0.7f) {
-                    float dmg = (impact - SHIP_COLLISION_DAMAGE_THRESHOLD * 0.7f) * SHIP_COLLISION_DAMAGE_SCALE;
+                /* Ramming damage — both ships take damage based on impact speed.
+                 * Threshold mult 0.7× makes deliberate rams sting at speeds
+                 * that wouldn't bruise a static collision. */
+                float dmg = collision_damage_for(impact, 0.7f);
+                if (dmg > 0.0f) {
                     apply_ship_damage(w, &w->players[i], dmg);
                     apply_ship_damage(w, &w->players[j], dmg);
                 }
