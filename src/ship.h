@@ -10,6 +10,7 @@ vec2 ship_forward(float angle);
 vec2 ship_muzzle(vec2 pos, float angle, const ship_t* ship);
 
 float ship_max_hull(const ship_t* ship);
+float npc_max_hull(const npc_ship_t* npc);
 float ship_cargo_capacity(const ship_t* ship);
 float ship_mining_rate(const ship_t* ship);
 float ship_tractor_range(const ship_t* ship);

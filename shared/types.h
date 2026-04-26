@@ -475,6 +475,12 @@ typedef struct {
     float tint_r, tint_g, tint_b;  /* accumulated ore color (starts white) */
     int towed_fragment;             /* asteroid index being towed, -1 = none */
     int towed_scaffold;             /* scaffold index being towed (NPC_ROLE_TOW), -1 = none */
+    /* Hull HP. Decrements on collision (asteroid / station / ship). When
+     * the NPC docks at home, the dock auto-repairs by consuming repair
+     * kits from station inventory (1 kit per HP). If hull <= 0 the
+     * NPC despawns; sim_ai's spawn loop replaces it on the next tick.
+     * Added in save v32 — earlier saves default to npc_max_hull on load. */
+    float hull;
 } npc_ship_t;
 
 typedef struct {

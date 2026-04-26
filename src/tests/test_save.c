@@ -452,7 +452,7 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
 /* v29: +2 bytes per station (uint16 manifest count) = +128 bytes for all
  * MAX_STATIONS=64 slots. Empty stations carry only the count; no units. */
 /* v30: +1 byte per contract (required_grade) = +24 for MAX_CONTRACTS=24. */
-#define EXPECTED_SAVE_SIZE 269100 /* v31: COMMODITY_REPAIR_KIT added (widens inventory/base_price arrays by 1 + repair_kit_fab_timer per station) */
+#define EXPECTED_SAVE_SIZE 269164 /* v32: npc_ship_t.hull added (4B × 16 NPC slots = 64B over v31) */
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -489,7 +489,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 31);
+    ASSERT_EQ_INT((int)version, 32);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

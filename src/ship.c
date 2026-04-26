@@ -21,6 +21,10 @@ float ship_max_hull(const ship_t* ship) {
     return ship_hull_def(ship)->max_hull;
 }
 
+float npc_max_hull(const npc_ship_t* npc) {
+    return npc_hull_def(npc)->max_hull;
+}
+
 float ship_cargo_capacity(const ship_t* ship) {
     return ship_hull_def(ship)->cargo_capacity + ((float)ship->hold_level * SHIP_HOLD_UPGRADE_STEP);
 }

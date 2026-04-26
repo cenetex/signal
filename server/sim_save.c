@@ -26,6 +26,7 @@
  */
 #include "game_sim.h"
 #include "manifest.h"
+#include "ship.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -60,13 +61,11 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 31  /* COMMODITY_REPAIR_KIT added; inventory/base_price arrays widen by 1 */
-/* v31 widened inventory[] / base_price[] by one slot (REPAIR_KIT). The
- * read paths use raw READ_FIELD on those arrays, so loading any save
- * older than v31 misaligns the rest of the station record and corrupts
- * the world silently — leading to a delayed crash on the first player
- * join. Bump the floor so older saves are rejected with a clear log
- * line and the server falls back to a fresh world instead. */
+#define SAVE_VERSION 32  /* npc_ship_t.hull added (kit-economy NPC damage) */
+/* v31 widened inventory[] / base_price[] by one slot (REPAIR_KIT). v32
+ * appends npc_ship_t.hull (a single float, version-gated read so v31
+ * saves still load with default hull). MIN stays at 31 so we don't
+ * wipe v31 worlds on this bump. */
 #define MIN_SAVE_VERSION 31
 
 /* Set by world_load() before read_station() so per-station readers know
@@ -469,6 +468,7 @@ static bool write_npc(FILE *f, const npc_ship_t *n) {
     WRITE_FIELD(f, n->tint_r);
     WRITE_FIELD(f, n->tint_g);
     WRITE_FIELD(f, n->tint_b);
+    WRITE_FIELD(f, n->hull); /* v32+ */
     return true;
 }
 
@@ -489,6 +489,11 @@ static bool read_npc(FILE *f, npc_ship_t *n) {
     READ_FIELD(f, n->tint_r);
     READ_FIELD(f, n->tint_g);
     READ_FIELD(f, n->tint_b);
+    if (g_loaded_save_version >= 32) {
+        READ_FIELD(f, n->hull);
+    } else {
+        n->hull = npc_max_hull(n);
+    }
     return true;
 }
 

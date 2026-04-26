@@ -9,6 +9,8 @@
 #include "sim_flight.h"
 #include "signal_model.h"
 #include "manifest.h"
+#include "ship.h"
+#include "game_sim.h" /* SHIP_COLLISION_DAMAGE_THRESHOLD/_SCALE */
 #include <math.h>
 #include <string.h>
 
@@ -85,6 +87,7 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     npc->home_station = station_idx;
     npc->dest_station = station_idx;
     npc->state_timer = (role == NPC_ROLE_MINER) ? NPC_DOCK_TIME : HAULER_DOCK_TIME;
+    npc->hull = npc_max_hull(npc);
     npc->tint_r = 1.0f; npc->tint_g = 1.0f; npc->tint_b = 1.0f;
     /* Tow drones get a distinct yellow-amber tint */
     if (role == NPC_ROLE_TOW) {
@@ -330,8 +333,19 @@ static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
         vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
         npc->pos = v2_add(a->pos, v2_scale(normal, minimum));
         float vel_toward = v2_dot(npc->vel, normal);
-        if (vel_toward < 0.0f)
+        if (vel_toward < 0.0f) {
+            float impact = -vel_toward;
             npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.0f));
+            /* Hull damage scaled the same way as players (game_sim.c
+             * apply_ship_damage uses SHIP_COLLISION_DAMAGE_THRESHOLD /
+             * _SCALE). NPCs feeding the kit-demand sink is the load-
+             * bearing reason we have a kit economy at all. */
+            if (impact > SHIP_COLLISION_DAMAGE_THRESHOLD) {
+                float dmg = (impact - SHIP_COLLISION_DAMAGE_THRESHOLD) * SHIP_COLLISION_DAMAGE_SCALE;
+                npc->hull -= dmg;
+                if (npc->hull < 0.0f) npc->hull = 0.0f;
+            }
+        }
     }
 }
 
@@ -575,6 +589,29 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             npc->pos = v2_add(home->pos, v2(50.0f * (float)(n % 2 == 0 ? -1 : 1), -(home->radius + hull->ship_radius + 70.0f)));
             npc->state = NPC_STATE_DOCKED;
             npc->state_timer = HAULER_DOCK_TIME;
+            /* Dock auto-repair: consume kits to restore the hauler's
+             * hull. Closes the kit demand loop in single-player —
+             * without this, only the human pilot's repairs ever
+             * consumed kits and production hit cap immediately. If the
+             * home dock is dry on kits we leave the hauler damaged;
+             * next dock cycle tries again. */
+            float max_h = npc_max_hull(npc);
+            if (npc->hull < max_h - 0.5f
+                && station_has_module(home, MODULE_DOCK)) {
+                int kits = (int)floorf(home->inventory[COMMODITY_REPAIR_KIT] + 0.0001f);
+                int missing = (int)ceilf(max_h - npc->hull);
+                int apply = kits < missing ? kits : missing;
+                if (apply > 0) {
+                    home->inventory[COMMODITY_REPAIR_KIT] -= (float)apply;
+                    if (home->inventory[COMMODITY_REPAIR_KIT] < 0.0f)
+                        home->inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+                    if (manifest_consume_by_commodity(&home->manifest,
+                                                     COMMODITY_REPAIR_KIT, apply) > 0)
+                        home->named_ingots_dirty = true;
+                    npc->hull += (float)apply;
+                    if (npc->hull > max_h) npc->hull = max_h;
+                }
+            }
         }
         break;
     }
@@ -791,6 +828,15 @@ void step_npc_ships(world_t *w, float dt) {
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         npc_ship_t *npc = &w->npc_ships[n];
         if (!npc->active) continue;
+        /* Despawn-on-destroy: the spawn loop replaces dead slots on
+         * the next tick. Cargo is lost (the chain takes a hit when a
+         * loaded hauler dies — that's the cost of letting them get
+         * smashed by asteroids). */
+        if (npc->hull <= 0.0f) {
+            SIM_LOG("[npc] %d (role=%d) destroyed — hull 0\n", n, (int)npc->role);
+            npc->active = false;
+            continue;
+        }
         npc->thrusting = false;
         npc_validate_stations(w, npc);
 
