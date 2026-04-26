@@ -678,7 +678,13 @@ void step_furnace_smelting(world_t *w, float dt) {
                         break;
                     pushed++;
                 }
-                (void)pushed;
+                /* Mark dirty so the MP broadcast loop forwards the new
+                 * STATION_MANIFEST. Without this, smelts that didn't
+                 * mint a RATi-class named_unit (the common case) never
+                 * triggered a broadcast — clients kept reading stale
+                 * counts and the supply strip / TRADE picker never
+                 * reflected the new ingot stock. */
+                if (pushed > 0) st->named_ingots_dirty = true;
                 SIM_LOG("[smelt] station %d %s grade=%d ore=%.2f units=%d pushed=%d\n",
                         smelt_station, commodity_short_name(output),
                         (int)grade, a->ore, manifest_units, pushed);

@@ -721,9 +721,15 @@ static void draw_trade_view(const station_ui_state_t *ui,
         const float slot_w = cell_w * 7.0f; /* "FEx99 " = 6 chars + sep */
         for (int i = 0; i < 6; i++) {
             float sx = cx + (float)i * slot_w;
-            /* Manifest is the truth for finished goods (matches the BUY
-             * picker so the strip and the rows can never disagree). */
-            int stock = manifest_count_by_commodity(&st->manifest, slots[i].c);
+            /* Manifest is the truth for finished goods. Use the
+             * client-side summary so SP and MP both work — st->manifest
+             * itself is the SERVER's local copy in SP but is empty for
+             * remote stations in MP (the wire only carries summaries,
+             * not full units). The picker rows go through the same
+             * summary helper, so strip + rows can never disagree. */
+            int stock = 0;
+            for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
+                stock += station_manifest_count_cg(st, slots[i].c, (mining_grade_t)gi);
             bool has_module = station_has_module(st, slots[i].producer);
             uint8_t r, g, b;
             if (!has_module) {
@@ -757,49 +763,47 @@ static void draw_trade_view(const station_ui_state_t *ui,
     trade_row_t rows[TRADE_MAX_ROWS];
     int row_count = 0;
 
-    commodity_t sell_c_list[1] = { station_primary_sell(st) };
-    commodity_t buy_c_list[1]  = { station_primary_buy(st) };
     float space   = ship_cargo_capacity(ship) - ship_total_cargo(ship);
     float credits = player_current_balance();
 
-    /* BUY rows — one per (commodity, grade) with > 0 manifest units.
-     * The manifest is now authoritative on both sides: smelt refuses
-     * to engage when the station hopper is full, so manifest count ==
-     * inventory float for every commodity in active circulation. The
-     * "unknown origin" path is gone. */
-    for (int ci = 0; ci < 1 && row_count < TRADE_MAX_ROWS; ci++) {
-        commodity_t c = sell_c_list[ci];
-        if ((int)c < 0) continue;
-        float price_base = station_sell_price(st, c);
+    /* BUY rows — one per (commodity, grade) where the station has
+     * stock AND has the producing module for that commodity. Walks
+     * every finished commodity (not just the dominant one) so a
+     * multi-furnace station like Helios surfaces all of its outputs
+     * at once: previously the picker only showed the highest-priority
+     * module's output, so ferrite ingots smelted at Helios were
+     * invisible to the player. Manifest is authoritative. */
+    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT && row_count < TRADE_MAX_ROWS; c++) {
+        if (!station_produces(st, (commodity_t)c)) continue;
+        float price_base = station_sell_price(st, (commodity_t)c);
         if (price_base <= FLOAT_EPSILON) continue;
-
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < TRADE_MAX_ROWS; gi++) {
-            int stock = station_manifest_count_cg(st, c, (mining_grade_t)gi);
+            int stock = station_manifest_count_cg(st, (commodity_t)c, (mining_grade_t)gi);
             if (stock <= 0) continue;
             int price = (int)lroundf(price_base
                     * mining_payout_multiplier((mining_grade_t)gi));
             bool can = (space >= 0.5f) && (credits >= (float)price);
             rows[row_count++] = (trade_row_t){
-                .kind = 0, .commodity = c, .grade = (mining_grade_t)gi,
+                .kind = 0, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
                 .stock = stock, .unit_price = price,
                 .actionable = can, .is_float_fallback = false,
             };
         }
     }
 
-    /* SELL rows — same manifest-only pattern on the ship side. */
-    for (int ci = 0; ci < 1 && row_count < TRADE_MAX_ROWS; ci++) {
-        commodity_t c = buy_c_list[ci];
-        if ((int)c < 0) continue;
-        float price_base = station_buy_price(st, c);
-
+    /* SELL rows — every commodity the station consumes that the player
+     * is carrying. Same widening as the BUY side. */
+    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT && row_count < TRADE_MAX_ROWS; c++) {
+        if (!station_consumes(st, (commodity_t)c)) continue;
+        float price_base = station_buy_price(st, (commodity_t)c);
+        if (price_base <= FLOAT_EPSILON) continue;
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < TRADE_MAX_ROWS; gi++) {
-            int held = ship_manifest_count_cg(ship, c, (mining_grade_t)gi);
+            int held = ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi);
             if (held <= 0) continue;
             int price = (int)lroundf(price_base
                     * mining_payout_multiplier((mining_grade_t)gi));
             rows[row_count++] = (trade_row_t){
-                .kind = 1, .commodity = c, .grade = (mining_grade_t)gi,
+                .kind = 1, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
                 .stock = held, .unit_price = price,
                 .actionable = (held > 0), .is_float_fallback = false,
             };
