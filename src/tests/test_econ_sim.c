@@ -189,6 +189,58 @@ TEST(test_bug312_1_docked_buy_honors_spend_failure) {
     ASSERT_EQ_FLOAT(st->credit_pool, pool_before, 0.001f);
 }
 
+TEST(test_buy_finished_good_requires_manifest_unit) {
+    /* Manifest authority for finished-good BUY (#340 slice A): if the
+     * station's float inventory says a frame is available but no
+     * manifest unit backs it, the buy must reject and not charge.
+     * Pre-fix the player's ship.cargo[FRAME] would rise and the
+     * ledger would deduct, leaving a phantom unbacked unit. */
+    WORLD_DECL;
+    world_reset(&w);
+    int kepler = -1;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (w.stations[i].id != 0 && station_produces(&w.stations[i], COMMODITY_FRAME)) {
+            kepler = i; break;
+        }
+    }
+    ASSERT(kepler >= 0);
+    station_t *st = &w.stations[kepler];
+
+    /* Float says 10 frames, manifest is empty — the drift the fix guards. */
+    st->inventory[COMMODITY_FRAME] = 10.0f;
+    /* Force-clear any frame manifest units the world reset seeded. */
+    for (int i = (int)st->manifest.count - 1; i >= 0; i--) {
+        if (st->manifest.units[i].commodity == (uint8_t)COMMODITY_FRAME) {
+            cargo_unit_t tmp;
+            (void)manifest_remove(&st->manifest, (uint16_t)i, &tmp);
+        }
+    }
+    ASSERT_EQ_INT(manifest_count_by_commodity(&st->manifest, COMMODITY_FRAME), 0);
+
+    uint8_t token[8] = {7,7,7,7,7,7,7,7};
+    memcpy(w.players[0].session_token, token, 8);
+    w.players[0].session_ready = true;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = true;
+    w.players[0].current_station = kepler;
+    /* Fund the player so afford isn't the gate. */
+    ledger_earn(st, token, 100000.0f);
+
+    float bal_before = ledger_balance(st, token);
+    float cargo_before = w.players[0].ship.cargo[COMMODITY_FRAME];
+
+    w.players[0].input.buy_product = true;
+    w.players[0].input.buy_commodity = COMMODITY_FRAME;
+    w.players[0].input.buy_grade = MINING_GRADE_COUNT;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.buy_product = false;
+
+    /* The buy must have rejected: no cargo, no charge. */
+    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_FRAME], cargo_before, 0.001f);
+    ASSERT_EQ_FLOAT(ledger_balance(st, token), bal_before, 0.001f);
+}
+
 TEST(test_bug312_2_ledger_balance_matches_by_token) {
     station_t st = {0};
     uint8_t alice[8] = {0xAA,0,0,0,0,0,0,0};
@@ -464,6 +516,7 @@ void register_econ_sim_sim_tests(void) {
 void register_econ_sim_bug312_tests(void) {
     TEST_SECTION("\n#312 4-bug-fix regressions:\n");
     RUN(test_bug312_1_docked_buy_honors_spend_failure);
+    RUN(test_buy_finished_good_requires_manifest_unit);
     RUN(test_bug312_2_ledger_balance_matches_by_token);
     RUN(test_bug312_3_init_ship_does_not_seed_with_zero_token);
 }

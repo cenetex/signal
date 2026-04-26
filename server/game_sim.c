@@ -2454,21 +2454,50 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             float total_cost = amount * price_per;
             SIM_LOG("[buy] avail=%.2f space=%.2f price/u=%.2f bal=%.2f afford=%.0f amount=%.2f\n",
                     available, space, price_per, bal, afford, amount);
-            if (amount > 0.01f && ledger_spend(docked_st, sp->session_token, total_cost, &sp->ship)) {
-                sp->ship.cargo[c] += amount;
-                docked_st->inventory[c] -= amount;
+            /* Finished goods: manifest is authoritative. Move the unit
+             * first, then charge for what actually moved. Prevents the
+             * silent-drift bug where float said "got 1 frame" but the
+             * manifest had nothing to give and the player paid anyway. */
+            bool finished = (c >= COMMODITY_RAW_ORE_COUNT);
+            int whole = (int)floorf(amount + 0.0001f);
+            int moved = 0;
+            float charge_amount = amount;
+            float charge_cost = total_cost;
+            if (finished) {
+                if (whole <= 0) {
+                    SIM_LOG("[buy] REJECT: finished good but whole=%d (amount=%.2f)\n",
+                            whole, amount);
+                    return;
+                }
+                moved = manifest_transfer_by_commodity_ex(
+                    &docked_st->manifest, &sp->ship.manifest,
+                    c, intent->buy_grade, whole);
+                if (moved <= 0) {
+                    SIM_LOG("[buy] REJECT: manifest had no transferable unit for c=%d\n", (int)c);
+                    return;
+                }
+                charge_amount = (float)moved;
+                charge_cost = charge_amount * price_per;
+            }
+            if (charge_amount > 0.01f && ledger_spend(docked_st, sp->session_token, charge_cost, &sp->ship)) {
+                sp->ship.cargo[c] += charge_amount;
+                docked_st->inventory[c] -= charge_amount;
                 if (docked_st->inventory[c] < 0.0f) docked_st->inventory[c] = 0.0f;
-                int whole = (int)floorf(amount + 0.0001f);
-                int moved = 0;
-                if (whole > 0) {
+                if (!finished && whole > 0) {
                     moved = manifest_transfer_by_commodity_ex(
                         &docked_st->manifest, &sp->ship.manifest,
                         c, intent->buy_grade, whole);
-                    if (moved > 0) manifest_mark_station_dirty(w, &docked_st->manifest);
                 }
+                if (moved > 0) manifest_mark_station_dirty(w, &docked_st->manifest);
                 SIM_LOG("[buy] OK player %d bought %.0f of c=%d for %.0f cr (manifest moved=%d)\n",
-                        sp->id, amount, c, total_cost, moved);
-            } else if (amount > 0.01f) {
+                        sp->id, charge_amount, c, charge_cost, moved);
+            } else if (charge_amount > 0.01f) {
+                if (finished && moved > 0) {
+                    /* Roll back the manifest move — payment failed. */
+                    (void)manifest_transfer_by_commodity_ex(
+                        &sp->ship.manifest, &docked_st->manifest,
+                        c, intent->buy_grade, moved);
+                }
                 SIM_LOG("[buy] REJECT: ledger_spend failed (bal=%.2f cost=%.2f)\n",
                         bal, total_cost);
             } else {
