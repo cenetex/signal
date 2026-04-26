@@ -453,49 +453,55 @@ input_intent_t sample_input_intent(void) {
              * one per non-zero grade; legacy float → one COMMON row).
              * Skip (page * 5) rows, pick the digit_pick-th on this page. */
             const ship_t *ship = &LOCAL_PLAYER.ship;
-            commodity_t sell_c = station_primary_sell(st);
-            commodity_t buy_c  = station_primary_buy(st);
             int global_idx = 0;
             int target = (int)g.trade_page * 5 + digit_pick;
 
-            /* Row type resolution. */
+            /* Row type resolution. Walks every produced/consumed
+             * commodity in the same order as the picker (station_ui.c).
+             * Previously this only iterated station_primary_sell()'s
+             * dominant-module output, so multi-furnace stations like
+             * Helios (FE + CU + CR) silently misrouted hotkey presses
+             * for non-dominant commodities. */
             int row_kind = -1;        /* 0 = BUY, 1 = SELL */
             commodity_t row_c = 0;
             mining_grade_t row_g = MINING_GRADE_COMMON;
 
-            /* BUY rows — one per (commodity, grade) with > 0 manifest
-             * units. The manifest is now authoritative: the furnace beam
-             * refuses to engage a fragment when the station's hopper is
-             * full, so manifest count == inventory float. There is no
-             * "unknown origin" path. */
-            if ((int)sell_c >= 0 && st->base_price[sell_c] > FLOAT_EPSILON) {
-                int station_idx = (int)(st - g.world.stations);
-                if (station_idx >= 0 && station_idx < MAX_STATIONS) {
+            /* BUY rows — one per (commodity, grade) with > 0 stock at a
+             * station that produces that commodity. */
+            int station_idx = (int)(st - g.world.stations);
+            if (station_idx >= 0 && station_idx < MAX_STATIONS) {
+                for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+                    if (!station_produces(st, (commodity_t)c)) continue;
+                    if (st->base_price[c] <= FLOAT_EPSILON) continue;
                     for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
-                        int stock = (int)g.station_manifest_summary[station_idx][sell_c][gi];
+                        int stock = (int)g.station_manifest_summary[station_idx][c][gi];
                         if (stock <= 0) continue;
                         if (global_idx == target) {
-                            row_kind = 0; row_c = sell_c; row_g = (mining_grade_t)gi;
+                            row_kind = 0; row_c = (commodity_t)c; row_g = (mining_grade_t)gi;
                             goto row_resolved;
                         }
                         global_idx++;
                     }
                 }
             }
-            /* SELL rows — same manifest-only pattern on the ship side. */
-            if ((int)buy_c >= 0 && ship->manifest.units) {
-                for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
-                    int cnt = 0;
-                    for (uint16_t u = 0; u < ship->manifest.count; u++) {
-                        const cargo_unit_t *cu = &ship->manifest.units[u];
-                        if (cu->commodity == (uint8_t)buy_c && cu->grade == (uint8_t)gi) cnt++;
+            /* SELL rows — every commodity the station consumes that the
+             * player carries. */
+            if (ship->manifest.units) {
+                for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+                    if (!station_consumes(st, (commodity_t)c)) continue;
+                    for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
+                        int cnt = 0;
+                        for (uint16_t u = 0; u < ship->manifest.count; u++) {
+                            const cargo_unit_t *cu = &ship->manifest.units[u];
+                            if (cu->commodity == (uint8_t)c && cu->grade == (uint8_t)gi) cnt++;
+                        }
+                        if (cnt <= 0) continue;
+                        if (global_idx == target) {
+                            row_kind = 1; row_c = (commodity_t)c; row_g = (mining_grade_t)gi;
+                            goto row_resolved;
+                        }
+                        global_idx++;
                     }
-                    if (cnt <= 0) continue;
-                    if (global_idx == target) {
-                        row_kind = 1; row_c = buy_c; row_g = (mining_grade_t)gi;
-                        goto row_resolved;
-                    }
-                    global_idx++;
                 }
             }
 
