@@ -598,6 +598,8 @@ void process_sim_events(const sim_events_t *events) {
                     set_notice("Tech tree locked — order the prerequisite module first."); break;
                 case ORDER_REJECT_SHIPYARD_NO_FUNDS:
                     set_notice("Not enough credits at this station for the order fee."); break;
+                case ORDER_REJECT_SELL_NOT_ACCEPTED:
+                    set_notice("This station has no consumer for that commodity — try another dock."); break;
                 default:
                     set_notice("Order rejected.");
                     break;

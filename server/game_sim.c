@@ -874,6 +874,12 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
      * "deliver all" behavior triggered by NET_ACTION_SELL_CARGO. */
     commodity_t filter = sp->input.service_sell_only;
     bool selective = (filter < COMMODITY_COUNT);
+    /* Snapshot the player's cargo of the filtered commodity (if any) so
+     * we can tell at the bottom whether the station refused everything
+     * the player tried to sell — vs the player just having empty hold.
+     * Only the selective-filter path needs this notice; the bulk
+     * SELL_CARGO already drops what fits and ignores the rest. */
+    float pre_cargo = (selective ? sp->ship.cargo[filter] : 0.0f);
 
     /* Deliver any cargo matching active supply contracts at this station.
      *
@@ -997,6 +1003,19 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
                           .bonus_cr = 0,
                           .by_contract = sold_against_contract ? 1u : 0u }});
         }
+    }
+    /* If the player picked a specific commodity to deliver but the
+     * station refused it (no consumer module here, no active contract,
+     * no fab fallback), surface a notice so they know they wasted the
+     * trip. Without this, the cargo just stays in hold and the player
+     * thinks the dock didn't register their press. */
+    if (selective && payout < 0.01f && pre_cargo > 0.01f
+        && sp->ship.cargo[filter] > pre_cargo - 0.01f) {
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_ORDER_REJECTED,
+            .player_id = sp->id,
+            .order_rejected = { .reason = ORDER_REJECT_SELL_NOT_ACCEPTED },
+        });
     }
     /* Clear the one-shot filter so the next plain SELL_CARGO press
      * resumes the default "deliver all" behavior. */
