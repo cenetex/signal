@@ -3,16 +3,6 @@
 #include "economy.h"
 #include "manifest.h"
 
-/* Check if station can smelt a specific ore type */
-static bool can_smelt_ore(const station_t* station, commodity_t ore) {
-    switch (ore) {
-        case COMMODITY_FERRITE_ORE: return station_has_module(station, MODULE_FURNACE);
-        case COMMODITY_CUPRITE_ORE: return station_has_module(station, MODULE_FURNACE_CU);
-        case COMMODITY_CRYSTAL_ORE: return station_has_module(station, MODULE_FURNACE_CR);
-        default: return false;
-    }
-}
-
 typedef struct {
     commodity_t primary_input;
     float primary_units_per_output;
@@ -60,34 +50,6 @@ static bool producer_recipe_for_module(module_type_t mt, producer_recipe_t *out_
 
     return out_recipe->primary_units_per_output > 0.0f &&
            out_recipe->output == module_schema_output(mt);
-}
-
-void step_refinery_production(station_t* stations, int count, float dt) {
-    for (int s = 0; s < count; s++) {
-        station_t* station = &stations[s];
-        /* Need at least one furnace type */
-        if (!station_has_module(station, MODULE_FURNACE)
-            && !station_has_module(station, MODULE_FURNACE_CU)
-            && !station_has_module(station, MODULE_FURNACE_CR)) continue;
-
-        int active = 0;
-        for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
-            if (station->inventory[i] > FLOAT_EPSILON && can_smelt_ore(station, (commodity_t)i)) active++;
-        }
-        if (active == 0) continue;
-        if (active > REFINERY_MAX_FURNACES) active = REFINERY_MAX_FURNACES;
-
-        float rate = REFINERY_BASE_SMELT_RATE / (float)active;
-
-        for (int i = COMMODITY_FERRITE_ORE; i < COMMODITY_RAW_ORE_COUNT; i++) {
-            commodity_t ore = (commodity_t)i;
-            if (!can_smelt_ore(station, ore)) continue;
-            if (station->inventory[ore] <= FLOAT_EPSILON) continue;
-            float consume = fminf(station->inventory[ore], rate * dt);
-            station->inventory[ore] -= consume;
-            station->inventory[commodity_refined_form(ore)] += consume;
-        }
-    }
 }
 
 void step_station_production(station_t* stations, int count, float dt) {

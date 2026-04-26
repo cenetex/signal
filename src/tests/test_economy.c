@@ -1,29 +1,5 @@
 #include "tests/test_harness.h"
 
-TEST(test_refinery_production_smelts_ore) {
-    station_t station = {0};
-    station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FURNACE };
-    station.inventory[COMMODITY_FERRITE_ORE] = 10.0f;
-    step_refinery_production(&station, 1, 1.0f);
-    ASSERT(station.inventory[COMMODITY_FERRITE_ORE] < 10.0f);
-    ASSERT(station.inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
-}
-
-TEST(test_refinery_production_empty_buffer_noop) {
-    station_t station = {0};
-    station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FURNACE };
-    step_refinery_production(&station, 1, 1.0f);
-    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
-}
-
-TEST(test_refinery_skips_non_refinery) {
-    station_t station = {0};
-    station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
-    station.inventory[COMMODITY_FERRITE_ORE] = 10.0f;
-    step_refinery_production(&station, 1, 1.0f);
-    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_FERRITE_ORE], 10.0f, 0.001f);
-}
-
 TEST(test_station_production_yard_makes_frames) {
     station_t station = {0};
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
@@ -218,47 +194,6 @@ TEST(test_hauler_fills_highest_value_contract) {
     world_sim_step(&w, SIM_DT);
     /* Hauler should target station 2 (higher value contract) */
     ASSERT(hauler->dest_station == 2);
-}
-
-TEST(test_furnace_only_smelts_ferrite) {
-    station_t st = {0};
-    st.modules[st.module_count++] = (station_module_t){ .type = MODULE_FURNACE };
-    st.inventory[COMMODITY_FERRITE_ORE] = 50.0f;
-    st.inventory[COMMODITY_CUPRITE_ORE] = 50.0f;
-    st.inventory[COMMODITY_CRYSTAL_ORE] = 50.0f;
-    step_refinery_production(&st, 1, 1.0f);
-    ASSERT(st.inventory[COMMODITY_FERRITE_ORE] < 50.0f);  /* smelted */
-    ASSERT_EQ_FLOAT(st.inventory[COMMODITY_CUPRITE_ORE], 50.0f, 0.01f);  /* untouched */
-    ASSERT_EQ_FLOAT(st.inventory[COMMODITY_CRYSTAL_ORE], 50.0f, 0.01f);  /* untouched */
-    ASSERT(st.inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
-}
-
-TEST(test_furnace_cu_smelts_cuprite) {
-    station_t st = {0};
-    st.modules[st.module_count++] = (station_module_t){ .type = MODULE_FURNACE_CU };
-    st.inventory[COMMODITY_FERRITE_ORE] = 50.0f;
-    st.inventory[COMMODITY_CUPRITE_ORE] = 50.0f;
-    step_refinery_production(&st, 1, 1.0f);
-    ASSERT_EQ_FLOAT(st.inventory[COMMODITY_FERRITE_ORE], 50.0f, 0.01f);  /* no FE furnace */
-    ASSERT(st.inventory[COMMODITY_CUPRITE_ORE] < 50.0f);
-    ASSERT(st.inventory[COMMODITY_CUPRITE_INGOT] > 0.0f);
-}
-
-TEST(test_furnace_cr_smelts_crystal) {
-    station_t st = {0};
-    st.modules[st.module_count++] = (station_module_t){ .type = MODULE_FURNACE_CR };
-    st.inventory[COMMODITY_CRYSTAL_ORE] = 50.0f;
-    step_refinery_production(&st, 1, 1.0f);
-    ASSERT(st.inventory[COMMODITY_CRYSTAL_ORE] < 50.0f);
-    ASSERT(st.inventory[COMMODITY_CRYSTAL_INGOT] > 0.0f);
-}
-
-TEST(test_no_furnace_no_smelting) {
-    station_t st = {0};
-    st.modules[st.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
-    st.inventory[COMMODITY_FERRITE_ORE] = 50.0f;
-    step_refinery_production(&st, 1, 1.0f);
-    ASSERT_EQ_FLOAT(st.inventory[COMMODITY_FERRITE_ORE], 50.0f, 0.01f);
 }
 
 TEST(test_one_contract_per_station) {
@@ -494,9 +429,6 @@ TEST(test_furnace_without_adjacent_hopper_smelts) {
 
 void register_economy_basic_tests(void) {
     TEST_SECTION("\nEconomy tests:\n");
-    RUN(test_refinery_production_smelts_ore);
-    RUN(test_refinery_production_empty_buffer_noop);
-    RUN(test_refinery_skips_non_refinery);
     RUN(test_station_production_yard_makes_frames);
     RUN(test_station_production_beamworks_makes_modules);
     RUN(test_station_repair_cost_no_damage);
@@ -513,14 +445,6 @@ void register_economy_contracts_tests(void) {
     RUN(test_contract_closes_when_deficit_filled);
     RUN(test_sell_price_uses_contract_price);
     RUN(test_hauler_fills_highest_value_contract);
-}
-
-void register_economy_furnace_tests(void) {
-    TEST_SECTION("\nRefinery tiers:\n");
-    RUN(test_furnace_only_smelts_ferrite);
-    RUN(test_furnace_cu_smelts_cuprite);
-    RUN(test_furnace_cr_smelts_crystal);
-    RUN(test_no_furnace_no_smelting);
 }
 
 void register_economy_contract3_tests(void) {

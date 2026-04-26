@@ -236,8 +236,6 @@ static void step_notice_timer(float dt) {
     }
 }
 
-/* step_refinery_production, step_station_production: see economy.h/c */
-
 /* No sync_globals_to_world — world_t is the source of truth in single player. */
 
 /* sync_world_to_globals removed — everything reads from g.world directly */

@@ -164,20 +164,6 @@ TEST(test_bug16_npc_target_bounds_checked) {
     ASSERT(w.npc_ships[0].target_asteroid < MAX_ASTEROIDS || w.npc_ships[0].target_asteroid == -1);
 }
 
-TEST(test_bug17_no_duplicate_refinery) {
-    /* economy.c exports step_refinery_production for tests and client use.
-     * game_sim.c has its own static copy for the server.  Both must produce
-     * consistent results — verify economy.c's version works correctly. */
-    station_t stations[MAX_STATIONS];
-    memset(stations, 0, sizeof(stations));
-    stations[0].modules[stations[0].module_count++] = (station_module_t){ .type = MODULE_FURNACE };
-    stations[0].inventory[COMMODITY_FERRITE_ORE] = 10.0f;
-    step_refinery_production(stations, MAX_STATIONS, 1.0f);
-    /* Ore should be consumed and inventory produced. */
-    ASSERT(stations[0].inventory[COMMODITY_FERRITE_ORE] < 10.0f);
-    ASSERT(stations[0].inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
-}
-
 TEST(test_bug18_emergency_recover_nearest_station) {
     WORLD_DECL;
     world_reset(&w);
@@ -1333,7 +1319,6 @@ void register_bug_regression_batch2_tests(void) {
     RUN(test_bug14_player_ship_syncs_all_cargo);
     RUN(test_bug15_state_size_symmetric);
     RUN(test_bug16_npc_target_bounds_checked);
-    RUN(test_bug17_no_duplicate_refinery);
     RUN(test_bug18_emergency_recover_nearest_station);
     RUN(test_bug19_feedback_in_world);
     RUN(test_bug20_player_ship_checks_id);

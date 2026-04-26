@@ -24,7 +24,6 @@ void register_bug_regression_b88_90_tests(void);
 void register_economy_contracts_tests(void);
 void register_save_persistence_tests(void);
 void register_save_format_tests(void);
-void register_economy_furnace_tests(void);
 void register_construction_modules_tests(void);
 void register_economy_contract3_tests(void);
 void register_economy_pricing_tests(void);
@@ -89,7 +88,6 @@ int main(int argc, char **argv) {
     register_economy_contracts_tests();
     register_save_persistence_tests();
     register_save_format_tests();
-    register_economy_furnace_tests();
     register_construction_modules_tests();
     register_economy_contract3_tests();
     register_economy_pricing_tests();

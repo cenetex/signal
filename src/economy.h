@@ -5,7 +5,6 @@
 #include "commodity.h"
 #include "ship.h"
 
-void step_refinery_production(station_t* stations, int count, float dt);
 void step_station_production(station_t* stations, int count, float dt);
 
 float station_repair_cost(const ship_t* ship, const station_t* station);

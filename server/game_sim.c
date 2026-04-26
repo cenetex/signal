@@ -2189,59 +2189,30 @@ static int hail_find_or_issue_contract(world_t *w, server_player_t *sp, int issu
     }
     if (slot < 0) return -1;
 
-    bool has_payload = (sp->ship.towed_count > 0);
-    if (!has_payload) {
-        for (int k = 0; k < COMMODITY_COUNT; k++) {
-            if (sp->ship.cargo[k] > 0.1f) { has_payload = true; break; }
-        }
-    }
-
     contract_t *c = &w->contracts[slot];
     memset(c, 0, sizeof(*c));
 
-    if (has_payload) {
-        /* TRACTOR: deliver raw ore to the nearest station with a furnace. */
-        int dest = -1;
-        float best_d = 1e18f;
-        for (int s = 0; s < MAX_STATIONS; s++) {
-            station_t *st = &w->stations[s];
-            if (!station_is_active(st)) continue;
-            if (!station_has_module(st, MODULE_FURNACE) &&
-                !station_has_module(st, MODULE_FURNACE_CU) &&
-                !station_has_module(st, MODULE_FURNACE_CR)) continue;
-            float d = v2_dist_sq(sp->ship.pos, st->pos);
-            if (d < best_d) { best_d = d; dest = s; }
-        }
-        if (dest < 0) return -1;
-        c->active = true;
-        c->action = CONTRACT_TRACTOR;
-        c->station_index = (uint8_t)dest;
-        c->commodity = COMMODITY_FERRITE_ORE;
-        c->quantity_needed = 10.0f;
-        c->base_price = w->stations[dest].base_price[COMMODITY_FERRITE_ORE] * 1.2f;
-        c->target_index = -1;
-        c->claimed_by = (int8_t)sp->id;
-    } else {
-        /* FRACTURE: nearest mineable rock in signal coverage. */
-        int best_a = -1;
-        float best_d = 1e18f;
-        for (int a = 0; a < MAX_ASTEROIDS; a++) {
-            asteroid_t *ast = &w->asteroids[a];
-            if (!ast->active) continue;
-            if (ast->tier == ASTEROID_TIER_S) continue;
-            if (signal_strength_at(w, ast->pos) <= 0.0f) continue;
-            float d = v2_dist_sq(sp->ship.pos, ast->pos);
-            if (d < best_d) { best_d = d; best_a = a; }
-        }
-        if (best_a < 0) return -1;
-        c->active = true;
-        c->action = CONTRACT_FRACTURE;
-        c->station_index = (uint8_t)((issuer_station >= 0) ? issuer_station : 0);
-        c->target_pos = w->asteroids[best_a].pos;
-        c->target_index = best_a;
-        c->base_price = 25.0f;
-        c->claimed_by = (int8_t)sp->id;
+    /* FRACTURE: nearest mineable rock in signal coverage. Raw-ore TRACTOR
+     * contracts were removed because players can't carry ore — fragments
+     * ride in ship.towed_fragments[] and smelt directly on the beam. */
+    int best_a = -1;
+    float best_d = 1e18f;
+    for (int a = 0; a < MAX_ASTEROIDS; a++) {
+        asteroid_t *ast = &w->asteroids[a];
+        if (!ast->active) continue;
+        if (ast->tier == ASTEROID_TIER_S) continue;
+        if (signal_strength_at(w, ast->pos) <= 0.0f) continue;
+        float d = v2_dist_sq(sp->ship.pos, ast->pos);
+        if (d < best_d) { best_d = d; best_a = a; }
     }
+    if (best_a < 0) return -1;
+    c->active = true;
+    c->action = CONTRACT_FRACTURE;
+    c->station_index = (uint8_t)((issuer_station >= 0) ? issuer_station : 0);
+    c->target_pos = w->asteroids[best_a].pos;
+    c->target_index = best_a;
+    c->base_price = 25.0f;
+    c->claimed_by = (int8_t)sp->id;
     return slot;
 }
 
@@ -4062,6 +4033,10 @@ void world_reset(world_t *w) {
     w->stations[0].pos         = v2(0.0f, -2400.0f);
     w->stations[0].radius      = 40.0f;
     w->stations[0].dock_radius = 240.0f;
+    /* Ore base prices are the smelt-payout floor when no TRACTOR contract
+     * is active (sim_production.c smelt-payout reads station_buy_price for
+     * the commodity). Never sold/bought as cargo — players don't carry
+     * raw ore. */
     w->stations[0].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
     w->stations[0].base_price[COMMODITY_CUPRITE_ORE] = 14.0f;
     w->stations[0].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
@@ -4099,6 +4074,7 @@ void world_reset(world_t *w) {
     w->stations[1].radius      = 36.0f;
     w->stations[1].dock_radius = 240.0f;
     w->stations[1].signal_range = 15000.0f;
+    /* Smelt-payout floor (see Prospect comment above). */
     w->stations[1].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
     w->stations[1].base_price[COMMODITY_CUPRITE_ORE] = 14.0f;
     w->stations[1].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
@@ -4134,6 +4110,7 @@ void world_reset(world_t *w) {
     w->stations[2].radius      = 36.0f;
     w->stations[2].dock_radius = 240.0f;
     w->stations[2].signal_range = 15000.0f;
+    /* Smelt-payout floor (see Prospect comment above). */
     w->stations[2].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
     w->stations[2].base_price[COMMODITY_CUPRITE_ORE] = 14.0f;
     w->stations[2].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
