@@ -313,7 +313,9 @@ void build_station_ui_state(station_ui_state_t* ui) {
     ui->mining_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_MINING);
     ui->hold_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_HOLD);
     ui->tractor_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_TRACTOR);
-    ui->can_repair = station_has_service(STATION_SERVICE_REPAIR) && (repair > 0.0f) && (player_current_balance() + FLOAT_EPSILON >= repair);
+    /* Any dock installs kits — gate is whether there are kits available
+     * (computed below) and whether the quoted cost is affordable. */
+    ui->can_repair = (repair > 0.0f) && (player_current_balance() + FLOAT_EPSILON >= repair);
 
     /* Kit availability for the [R] row — drives "X kits ship / Y kits
      * station" hint and the partial-repair warning. */

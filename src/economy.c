@@ -94,7 +94,7 @@ void step_station_production(station_t* stations, int count, float dt) {
 
 float station_repair_cost(const ship_t* ship, const station_t* station) {
     if (!station) return 0.0f;
-    if (!(station->services & STATION_SERVICE_REPAIR)) return 0.0f;
+    if (!station_has_module(station, MODULE_DOCK)) return 0.0f;
     float damage = ship_max_hull(ship) - ship->hull;
     if (damage <= 0.0f) return 0.0f;
 

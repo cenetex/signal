@@ -56,14 +56,15 @@ TEST(test_bug9_repair_cost_consistent) {
     /* Quote scales with the per-HP cost at this station: kit retail
      * (station_sell_price) + labor fee (zero at shipyard, otherwise
      * LABOR_FEE_PER_HP). With kits at 6 cr/unit and no shipyard, a
-     * 20 HP repair quotes 20 * (6 + 1) = 140 cr. */
+     * 20 HP repair quotes 20 * (6 + 1) = 140 cr. Any dock can install
+     * kits — fixture needs MODULE_DOCK. */
     ship_t ship;
     memset(&ship, 0, sizeof(ship));
     ship.hull_class = HULL_CLASS_MINER;
     ship.hull = 80.0f;
     station_t st;
     memset(&st, 0, sizeof(st));
-    st.services = STATION_SERVICE_REPAIR;
+    st.modules[st.module_count++] = (station_module_t){ .type = MODULE_DOCK };
     st.base_price[COMMODITY_REPAIR_KIT] = 6.0f;
     st.inventory[COMMODITY_REPAIR_KIT]  = MAX_PRODUCT_STOCK; /* full → 1× base */
     float cost = station_repair_cost(&ship, &st);
@@ -99,16 +100,17 @@ TEST(test_bug10_damage_event_has_amount) {
 }
 
 TEST(test_bug12_repair_cost_checks_service) {
+    /* Repair is gated on having a dock (any dock installs kits) and on
+     * actual hull damage. A station without a dock module — outpost
+     * scaffold, asteroid platform — quotes 0 even with damage. */
     ship_t ship;
     memset(&ship, 0, sizeof(ship));
     ship.hull_class = HULL_CLASS_MINER;
     ship.hull = 50.0f;
-    station_t no_repair;
-    memset(&no_repair, 0, sizeof(no_repair));
-    no_repair.services = 0;  /* NO repair service */
-    float cost = station_repair_cost(&ship, &no_repair);
-    /* After fix: should return 0.0 because station can't repair.
-     * FAILS now because the function ignores station->services. */
+    station_t no_dock;
+    memset(&no_dock, 0, sizeof(no_dock));
+    /* No MODULE_DOCK placed → no dock service → no repair quote. */
+    float cost = station_repair_cost(&ship, &no_dock);
     ASSERT_EQ_FLOAT(cost, 0.0f, 0.01f);
 }
 
@@ -1004,33 +1006,35 @@ TEST(test_bug51_npc_cargo_zeroed_on_dock) {
 }
 
 TEST(test_bug52_server_repair_cost_no_service_check) {
-    /* game_sim.c has its own static station_repair_cost(const ship_t*)
-     * that doesn't take a station param and doesn't check services.
-     * economy.c's version checks services. The server uses the wrong one. */
+    /* Repair is now gated on having kits (cargo or station), not on a
+     * service flag. With zero kits anywhere, pressing R must not heal
+     * and must not charge the player. */
     WORLD_DECL;
     world_reset(&w);
     w.players[0].session_ready = true;
     memset(w.players[0].session_token, 0x01, 8);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
     w.players[0].ship.hull = 50.0f;
-    /* Give credits at station 0 (player starts docked there) */
+    /* Drain any seeded kits to be sure both sources are empty. */
+    w.stations[0].inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 0.0f;
     ledger_earn(&w.stations[0], w.players[0].session_token, 1000.0f);
-    /* Dock at station 1 (Yard) which has REPAIR service */
-    w.players[0].input.interact = true;
-    world_sim_step(&w, SIM_DT);
-    w.players[0].input.interact = false;
-    /* Now remove REPAIR service from the station */
-    w.stations[w.players[0].current_station].services &= ~STATION_SERVICE_REPAIR;
-    /* Try to repair — should fail because no REPAIR service */
+    float bal_before = ledger_balance(&w.stations[0],
+                                      w.players[0].session_token);
+    /* Damage past passive-repair recovery so we can read intent precisely. */
+    w.players[0].ship.hull = 50.0f;
     w.players[0].input.service_repair = true;
-    float hull_before = w.players[0].ship.hull;
     world_sim_step(&w, SIM_DT);
-    /* After fix: hull should be unchanged (repair rejected).
-     * This actually passes because try_repair_ship checks service via
-     * station_has_service. But the cost function used for HUD display
-     * doesn't. The HUD would show a cost even at a non-repair station. */
-    ASSERT_EQ_FLOAT(w.players[0].ship.hull, hull_before, 0.01f);
+    /* Passive heal still applies (~0.067 HP per tick at 8 HP/sec * SIM_DT)
+     * but the kit-based heal must not have fired — no charge to the ledger. */
+    float bal_after = ledger_balance(&w.stations[0],
+                                     w.players[0].session_token);
+    ASSERT_EQ_FLOAT(bal_after, bal_before, 0.01f);
+    /* Hull may rise by < 1 HP from passive heal — that's expected. */
+    ASSERT(w.players[0].ship.hull < 51.0f);
 }
 
 TEST(test_bug53_npc_cargo_commodity_bounds) {

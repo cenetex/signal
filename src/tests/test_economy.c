@@ -35,7 +35,9 @@ TEST(test_station_repair_cost_with_damage) {
     ship.hull_class = HULL_CLASS_MINER;
     ship.hull = 50.0f;
     station_t station = {0};
-    station.services = STATION_SERVICE_REPAIR;
+    /* Any dock can install kits — repair quote needs MODULE_DOCK. */
+    station.modules[station.module_count++] =
+        (station_module_t){ .type = MODULE_DOCK };
     float cost = station_repair_cost(&ship, &station);
     ASSERT(cost > 0.0f);
 }

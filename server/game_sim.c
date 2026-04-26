@@ -1024,7 +1024,9 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
 
 static void try_repair_ship(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
-    if (!station_has_service(st, STATION_SERVICE_REPAIR)) return;
+    /* Any dock can install kits — the kits themselves are the gate.
+     * No kits in cargo or station inventory = hp_apply==0 below and
+     * we early-return without charging anything. */
     float max_hull = ship_max_hull(&sp->ship);
     float missing = fmaxf(0.0f, max_hull - sp->ship.hull);
     if (missing <= 0.0f) return;
