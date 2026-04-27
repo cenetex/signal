@@ -319,6 +319,13 @@ typedef struct {
     float time;
     float field_spawn_timer;
     float gravity_accumulator;  /* runs gravity at reduced rate */
+    /* Replenish dead haulers / miners. Decremented in step_npc_ships;
+     * when it hits zero, replenish_npc_roster spawns AT MOST one NPC
+     * (the most-understaffed station/role pair) and resets the timer.
+     * Drip-feed is intentional: a full chain wipe takes time to
+     * recover so PvP harassment has weight, but the chain isn't a
+     * permanent loss. */
+    float npc_respawn_timer;
     sim_events_t events;
     contract_t contracts[MAX_CONTRACTS];
     bool player_only_mode;

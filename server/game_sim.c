@@ -4500,14 +4500,27 @@ void world_reset(world_t *w) {
         }
     }
 
-    /* --- NPC ships: 2 miners at refinery, 2 haulers for logistics,
-     *     1 tow drone at each shipyard for autonomous scaffold delivery --- */
+    /* --- NPC ships: seed haulers at every station so the inter-station
+     * trade chain has a carrier on every hop. Without a Kepler-homed
+     * hauler, frames pile up at Kepler with nobody to deliver them to
+     * Helios; without a Helios-homed hauler, repair kits can't reach
+     * Prospect's dock. The contract dispatcher in step_hauler picks
+     * the best fillable contract from the home station's inventory,
+     * so spawning the right home is the only seeding step needed.
+     *
+     * Miners also spread: Helios's CU/CR furnaces need their own
+     * feed (Prospect-homed miners only deliver to Prospect's hopper).
+     *
+     * Tow drones stay at the two shipyards (Kepler, Helios). --- */
+    spawn_npc(w, 0, NPC_ROLE_MINER);    /* Prospect: ferrite hopper feed */
     spawn_npc(w, 0, NPC_ROLE_MINER);
-    spawn_npc(w, 0, NPC_ROLE_MINER);
+    spawn_npc(w, 2, NPC_ROLE_MINER);    /* Helios: CU/CR hopper feed */
+    spawn_npc(w, 0, NPC_ROLE_HAULER);   /* Prospect -> Kepler ferrite ingots */
     spawn_npc(w, 0, NPC_ROLE_HAULER);
-    spawn_npc(w, 0, NPC_ROLE_HAULER);
-    spawn_npc(w, 1, NPC_ROLE_TOW); /* Kepler shipyard */
-    spawn_npc(w, 2, NPC_ROLE_TOW); /* Helios shipyard */
+    spawn_npc(w, 1, NPC_ROLE_HAULER);   /* Kepler -> Helios frames */
+    spawn_npc(w, 2, NPC_ROLE_HAULER);   /* Helios -> Prospect repair kits */
+    spawn_npc(w, 1, NPC_ROLE_TOW);      /* Kepler shipyard */
+    spawn_npc(w, 2, NPC_ROLE_TOW);      /* Helios shipyard */
 
     /* Precompute station nav meshes now that geometry is finalized. */
     station_rebuild_all_nav(w);

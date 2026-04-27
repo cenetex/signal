@@ -19,6 +19,11 @@ TEST(test_world_reset_spawns_asteroids) {
 }
 
 TEST(test_world_reset_spawns_npcs) {
+    /* Starter NPC roster covers the inter-station chain:
+     *   Prospect: 2 miners (ferrite), 2 haulers (ferrite -> Kepler)
+     *   Helios:   1 miner  (CU/CR),   1 hauler  (kits / modules out)
+     *   Kepler:                       1 hauler  (frames -> Helios)
+     * Plus a tow drone at each shipyard (Kepler, Helios). */
     WORLD_DECL;
     world_reset(&w);
     int miners = 0, haulers = 0;
@@ -27,8 +32,56 @@ TEST(test_world_reset_spawns_npcs) {
         if (w.npc_ships[i].role == NPC_ROLE_MINER) miners++;
         if (w.npc_ships[i].role == NPC_ROLE_HAULER) haulers++;
     }
-    ASSERT_EQ_INT(miners, 2);
-    ASSERT_EQ_INT(haulers, 2);
+    ASSERT_EQ_INT(miners, 3);
+    ASSERT_EQ_INT(haulers, 4);
+}
+
+TEST(test_dead_hauler_auto_respawns) {
+    /* Confirm replenish_npc_roster fires from step_npc_ships: kill a
+     * Kepler-homed hauler, run sim past the respawn cooldown, expect
+     * a replacement to appear at the same home with full hull.
+     * Without this loop, hostile players could permanently sabotage
+     * a station's chain by repeatedly sniping its drones. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    /* Find the Kepler-homed hauler. */
+    int target_slot = -1;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active) continue;
+        if (w->npc_ships[n].role != NPC_ROLE_HAULER) continue;
+        if (w->npc_ships[n].home_station != 1) continue;
+        target_slot = n;
+        break;
+    }
+    ASSERT(target_slot >= 0);
+    /* Force-kill via the public damage helper. ship.hull is the
+     * authoritative side post-#294 slice 9-11 so we hit ship.hull
+     * directly to skip the npc-side mirror lag. */
+    ship_t *s = world_npc_ship_for(w, target_slot);
+    ASSERT(s != NULL);
+    s->hull = 0.0f;
+    /* One sim step lets the despawn check at top of step_npc_ships
+     * notice and free the slot. */
+    world_sim_step(w, SIM_DT);
+    int kepler_haulers = 0;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active) continue;
+        if (w->npc_ships[n].role != NPC_ROLE_HAULER) continue;
+        if (w->npc_ships[n].home_station == 1) kepler_haulers++;
+    }
+    ASSERT_EQ_INT(kepler_haulers, 0);
+
+    /* Run past the 15 s respawn cooldown. SIM_DT = 1/120 s so 1900
+     * ticks ≈ 15.83 s — comfortable margin. */
+    for (int i = 0; i < 1900; i++) world_sim_step(w, SIM_DT);
+
+    int kepler_haulers_after = 0;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active) continue;
+        if (w->npc_ships[n].role != NPC_ROLE_HAULER) continue;
+        if (w->npc_ships[n].home_station == 1) kepler_haulers_after++;
+    }
+    ASSERT_EQ_INT(kepler_haulers_after, 1);
 }
 
 TEST(test_player_init_ship_docked) {
@@ -1125,6 +1178,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_creates_stations);
     RUN(test_world_reset_spawns_asteroids);
     RUN(test_world_reset_spawns_npcs);
+    RUN(test_dead_hauler_auto_respawns);
     RUN(test_player_init_ship_docked);
     RUN(test_world_sim_step_advances_time);
     RUN(test_world_sim_step_moves_ship_with_thrust);
