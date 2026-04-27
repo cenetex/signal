@@ -159,6 +159,43 @@ static void character_free_for_npc(world_t *w, int npc_slot) {
     w->characters[idx].active = false;
 }
 
+/* Resolve an NPC slot to its paired ship, or NULL if no character is
+ * paired or ship_idx is out of range. */
+static ship_t *npc_ship_for(world_t *w, int npc_slot) {
+    int idx = character_for_npc_slot(w, npc_slot);
+    if (idx < 0) return NULL;
+    int s = w->characters[idx].ship_idx;
+    if (s < 0 || s >= MAX_SHIPS) return NULL;
+    return &w->ships[s];
+}
+
+/* Reverse mirror: push ship.hull back into npc.hull at the end of an
+ * NPC's tick. Lets damage written through the ship layer (the player
+ * path's substrate) flow into the npc's despawn check next tick. */
+static void mirror_ship_to_npc(world_t *w, int npc_slot) {
+    const ship_t *s = npc_ship_for(w, npc_slot);
+    if (!s) return;
+    npc_ship_t *npc = &w->npc_ships[npc_slot];
+    npc->hull = s->hull;
+}
+
+/* Apply damage to an NPC by mutating its ship_t.hull. The reverse
+ * mirror at end-of-tick pushes the result into npc->hull so the
+ * existing despawn check fires when hull <= 0. */
+static void apply_npc_ship_damage(world_t *w, int npc_slot, float dmg) {
+    if (dmg <= 0.0f) return;
+    ship_t *s = npc_ship_for(w, npc_slot);
+    if (!s) {
+        /* Fallback: paired ship missing; mutate the npc directly so
+         * we don't silently swallow damage. */
+        w->npc_ships[npc_slot].hull -= dmg;
+        if (w->npc_ships[npc_slot].hull < 0.0f) w->npc_ships[npc_slot].hull = 0.0f;
+        return;
+    }
+    s->hull -= dmg;
+    if (s->hull < 0.0f) s->hull = 0.0f;
+}
+
 /* Mirror brain state from an NPC into its paired character_t (#294
  * Slice 7) AND physics state into its paired ship_t (#294 Slice 8).
  * Called at the top of each NPC's tick so future readers can trust the
@@ -509,10 +546,8 @@ static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
              * NPCs feeding the kit-demand sink is the load-bearing reason
              * the kit economy exists at all. */
             float dmg = collision_damage_for(impact, 1.0f);
-            if (dmg > 0.0f) {
-                npc->hull -= dmg;
-                if (npc->hull < 0.0f) npc->hull = 0.0f;
-            }
+            int npc_slot = (int)(npc - w->npc_ships);
+            apply_npc_ship_damage(w, npc_slot, dmg);
         }
     }
 }
@@ -764,10 +799,12 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
              * home dock is dry on kits we leave the hauler damaged;
              * next dock cycle tries again. */
             float max_h = npc_max_hull(npc);
-            if (npc->hull < max_h - 0.5f
+            ship_t *ship = npc_ship_for(w, n);
+            float cur_hull = ship ? ship->hull : npc->hull;
+            if (cur_hull < max_h - 0.5f
                 && station_has_module(home, MODULE_DOCK)) {
                 int kits = (int)floorf(home->inventory[COMMODITY_REPAIR_KIT] + 0.0001f);
-                int missing = (int)ceilf(max_h - npc->hull);
+                int missing = (int)ceilf(max_h - cur_hull);
                 int apply = kits < missing ? kits : missing;
                 if (apply > 0) {
                     home->inventory[COMMODITY_REPAIR_KIT] -= (float)apply;
@@ -776,8 +813,15 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     if (manifest_consume_by_commodity(&home->manifest,
                                                      COMMODITY_REPAIR_KIT, apply) > 0)
                         home->named_ingots_dirty = true;
-                    npc->hull += (float)apply;
-                    if (npc->hull > max_h) npc->hull = max_h;
+                    /* Write through ship layer; reverse-mirror at end of
+                     * the NPC tick pushes the value back to npc->hull. */
+                    if (ship) {
+                        ship->hull += (float)apply;
+                        if (ship->hull > max_h) ship->hull = max_h;
+                    } else {
+                        npc->hull += (float)apply;
+                        if (npc->hull > max_h) npc->hull = max_h;
+                    }
                 }
             }
         }
@@ -1016,6 +1060,7 @@ void step_npc_ships(world_t *w, float dt) {
                 npc_resolve_station_collisions(w, npc);
                 npc_resolve_asteroid_collisions(w, npc);
             }
+            mirror_ship_to_npc(w, n);
             continue;
         }
         if (npc->role == NPC_ROLE_TOW) {
@@ -1024,6 +1069,7 @@ void step_npc_ships(world_t *w, float dt) {
                 npc_resolve_station_collisions(w, npc);
                 npc_resolve_asteroid_collisions(w, npc);
             }
+            mirror_ship_to_npc(w, n);
             continue;
         }
 
@@ -1209,6 +1255,10 @@ void step_npc_ships(world_t *w, float dt) {
             npc_resolve_station_collisions(w, npc);
             npc_resolve_asteroid_collisions(w, npc);
         }
+        /* Reverse-mirror ship -> npc after damage was applied through
+         * the ship layer (#294 Slice 9). Keeps npc->hull authoritative
+         * for the despawn check at the top of the next tick. */
+        mirror_ship_to_npc(w, n);
 
         /* Blend tint toward dominant cargo color.
          * Ore colors: ferrite=(0.55, 0.25, 0.18), cuprite=(0.22, 0.30, 0.50), crystal=(0.25, 0.48, 0.30) */
