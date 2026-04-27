@@ -2229,37 +2229,19 @@ void draw_damage_fx(void) {
     }
 }
 
-/* Red border vignette pulsed when the local player takes damage. Inner
- * 60 % of the screen stays clear; only the outer ring tints, so the
- * HUD readouts in the corners aren't washed out. */
+/* Damage flash deliberately a no-op for now. Earlier attempts (solid
+ * red border, then a per-vertex-alpha vignette) both looked bad: the
+ * codebase's sokol_gl pipeline doesn't reliably interpolate per-
+ * vertex color, and any flat-alpha fill at a noticeable opacity reads
+ * as a hard square. The "-N" popup, the existing screen shake, and
+ * the damage SFX already telegraph the hit clearly without an
+ * additional full-screen overlay. Keep the symbol so the call site
+ * doesn't need surgery, and the timer in g.damage_flash_timer keeps
+ * decaying — left in place for a future re-enable once we have a
+ * working shader path for radial fades. */
 void draw_damage_flash(float screen_w, float screen_h) {
-    if (g.damage_flash_timer <= 0.0f) return;
-    /* Linear fade — timer was set to 0.4s on damage. Square the alpha
-     * so the early frames hit hard then ease out. */
-    float t = g.damage_flash_timer / 0.4f;
-    if (t > 1.0f) t = 1.0f;
-    float alpha = t * t * 0.55f;
-
-    /* Border ring: four trapezoids around an inset rect. */
-    float ix = screen_w * 0.20f;
-    float iy = screen_h * 0.20f;
-    float ix2 = screen_w - ix;
-    float iy2 = screen_h - iy;
-    sgl_begin_quads();
-    sgl_c4f(0.95f, 0.18f, 0.18f, alpha);
-    /* top */
-    sgl_v2f(0.0f, 0.0f);     sgl_v2f(screen_w, 0.0f);
-    sgl_v2f(ix2,  iy);       sgl_v2f(ix,   iy);
-    /* bottom */
-    sgl_v2f(ix,   iy2);      sgl_v2f(ix2,  iy2);
-    sgl_v2f(screen_w, screen_h); sgl_v2f(0.0f, screen_h);
-    /* left */
-    sgl_v2f(0.0f, 0.0f);     sgl_v2f(ix,   iy);
-    sgl_v2f(ix,   iy2);      sgl_v2f(0.0f, screen_h);
-    /* right */
-    sgl_v2f(ix2,  iy);       sgl_v2f(screen_w, 0.0f);
-    sgl_v2f(screen_w, screen_h); sgl_v2f(ix2,  iy2);
-    sgl_end();
+    (void)screen_w;
+    (void)screen_h;
 }
 
 /* ================================================================== */
