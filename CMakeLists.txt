@@ -12,6 +12,10 @@ option(BUILD_TESTS_ONLY  "Only build the test executable"       OFF)
 option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
 
 # --- GIT_HASH baked into binaries for /health and client mismatch checks ---
+# Captured at configure time. To refresh after a commit/pull without
+# nuking the cache, re-run `cmake -S . -B <build_dir> -DGIT_HASH=$(git
+# rev-parse --short HEAD)`. Otherwise the value sticks across rebuilds
+# and the browser-visible /health version drifts behind HEAD.
 if(NOT DEFINED GIT_HASH)
     execute_process(COMMAND git rev-parse --short HEAD
         WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
@@ -54,6 +58,9 @@ set(SIGNAL_SIM_HELPERS
     src/economy.c
     src/asteroid.c
     src/rng.c
+    shared/belt.c
+    shared/module_schema.c
+    shared/station_util.c
 )
 
 # Client-only: rendering, input, HUD, audio, network plumbing. Not
@@ -258,6 +265,14 @@ if(EMSCRIPTEN)
         "SHELL:-sEXPORTED_RUNTIME_METHODS=['ccall','cwrap']"
         "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
         "SHELL:-lwebsocket.js"
+    )
+    # Copy play.html into the build-web output dir so it's reachable
+    # from the SimpleHTTP server (and so docker bind-mounts of build-web
+    # serve it without needing the image's COPY layer).
+    add_custom_command(TARGET signal POST_BUILD
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/web/play.html
+            ${CMAKE_CURRENT_BINARY_DIR}/play.html
     )
 elseif(APPLE)
     target_link_libraries(signal PRIVATE

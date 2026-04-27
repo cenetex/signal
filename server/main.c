@@ -513,8 +513,11 @@ static void handle_station_state(struct mg_connection *c, int sid) {
     static const char *cnames[] = {
         "ferrite_ore","cuprite_ore","crystal_ore",
         "ferrite_ingot","cuprite_ingot","crystal_ingot",
-        "frame","laser_module","tractor_module"
+        "frame","laser_module","tractor_module",
+        "repair_kit",
     };
+    _Static_assert(sizeof(cnames)/sizeof(cnames[0]) == COMMODITY_COUNT,
+                   "cnames must stay in sync with commodity_t");
     for (int i = 0; i < COMMODITY_COUNT; i++) {
         if (i > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
         BUF_APPEND(pos, buf, BUFSZ,

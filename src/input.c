@@ -415,7 +415,19 @@ input_intent_t sample_input_intent(void) {
          *   [M] upgrade mining laser
          *   [H] upgrade hold capacity
          *   [T] upgrade tractor */
-        intent.service_repair = is_key_pressed(SAPP_KEYCODE_R);
+        if (is_key_pressed(SAPP_KEYCODE_R)) {
+            const station_t *st = current_station_ptr();
+            int kits_avail =
+                (int)floorf(LOCAL_PLAYER.ship.cargo[COMMODITY_REPAIR_KIT] + 0.0001f) +
+                (st ? (int)floorf(st->inventory[COMMODITY_REPAIR_KIT] + 0.0001f) : 0);
+            float max_hull = ship_max_hull(&LOCAL_PLAYER.ship);
+            bool needs_repair = LOCAL_PLAYER.ship.hull < max_hull;
+            if (needs_repair && kits_avail <= 0) {
+                set_notice("No repair kits available.");
+            } else {
+                intent.service_repair = true;
+            }
+        }
         intent.upgrade_mining = is_key_pressed(SAPP_KEYCODE_M);
         intent.upgrade_hold   = is_key_pressed(SAPP_KEYCODE_H);
         intent.upgrade_tractor= is_key_pressed(SAPP_KEYCODE_T);
@@ -514,6 +526,10 @@ input_intent_t sample_input_intent(void) {
                 float price = station_sell_price(st, row_c) * mining_payout_multiplier(row_g);
                 float free_volume = ship_cargo_capacity(ship) - ship_total_cargo(ship);
                 float vol = commodity_volume(row_c);
+                /* Match server: dense goods buy multi-per-press so a
+                 * single keystroke fills one cargo unit. */
+                int per_press = (vol > FLOAT_EPSILON) ? (int)lroundf(1.0f / vol) : 1;
+                if (per_press < 1) per_press = 1;
                 if (free_volume + FLOAT_EPSILON < vol) {
                     set_notice("Hold full.");
                 } else if (player_current_balance() < price) {
@@ -522,18 +538,20 @@ input_intent_t sample_input_intent(void) {
                     intent.buy_product = true;
                     intent.buy_commodity = row_c;
                     intent.buy_grade = row_g;
-                    LOCAL_PLAYER.ship.cargo[row_c] += 1.0f;
+                    LOCAL_PLAYER.ship.cargo[row_c] += (float)per_press;
                     if (!g.multiplayer_enabled) {
                         station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
+                        float total = price * (float)per_press;
                         for (int li = 0; li < mst->ledger_count; li++)
-                            if (mst->ledger[li].balance >= price) {
-                                mst->ledger[li].balance -= price;
+                            if (mst->ledger[li].balance >= total) {
+                                mst->ledger[li].balance -= total;
                                 break;
                             }
                     }
-                    set_notice("-$%d  %s %s",
-                               (int)lroundf(price), mining_grade_label(row_g),
-                               commodity_short_name(row_c));
+                    set_notice("-$%d  %s %s x%d",
+                               (int)lroundf(price * (float)per_press),
+                               mining_grade_label(row_g),
+                               commodity_short_name(row_c), per_press);
                 }
             } else if (row_kind == 1) {
                 /* SELL action — routes through the existing per-commodity

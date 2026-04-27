@@ -57,9 +57,13 @@ typedef struct {
     int hull_now;
     int hull_max;
     int repair_cost;
-    int mining_cost;
-    int hold_cost;
-    int tractor_cost;
+    /* Per-upgrade module accounting. Real cost is the modules
+     * themselves; credit_cost is what the dock charges to fill the
+     * gap from its inventory. units_in_cargo + units_at_station
+     * must be >= units_needed for the upgrade to fire. */
+    int mining_units_needed, mining_units_in_cargo, mining_units_at_station, mining_credit_cost;
+    int hold_units_needed,   hold_units_in_cargo,   hold_units_at_station,   hold_credit_cost;
+    int tractor_units_needed,tractor_units_in_cargo,tractor_units_at_station,tractor_credit_cost;
     bool can_repair;
     bool can_upgrade_mining;
     bool can_upgrade_hold;

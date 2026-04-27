@@ -426,6 +426,16 @@ void step_furnace_smelting(world_t *w, float dt) {
                                || (st->modules[m].type == MODULE_FURNACE_CR);
                 if (!is_furnace) continue;
 
+                /* Furnaces only smelt their own ore type. Without this
+                 * gate, Prospect's ferrite furnace would pull cuprite
+                 * and crystal fragments into its beam (and produce
+                 * inventory drift in either direction depending on
+                 * commodity_refined_form behavior). The fragment stays
+                 * free so the player can route it to the matching
+                 * smelter. */
+                commodity_t furnace_ore = furnace_ore_type(st->modules[m].type);
+                if ((int)furnace_ore < 0 || a->commodity != furnace_ore) continue;
+
                 /* Output cap: refuse to engage the beam if the station's
                  * ingot stockpile is already full. Without this, smelts
                  * silently overflow (the inventory float clamps at
@@ -435,12 +445,9 @@ void step_furnace_smelting(world_t *w, float dt) {
                  * player gets visible feedback that this station can't
                  * accept it (no tractor pull, no smelt) and can route
                  * to a station with room. */
-                commodity_t furnace_ore = furnace_ore_type(st->modules[m].type);
-                if ((int)furnace_ore >= 0 && a->commodity == furnace_ore) {
-                    commodity_t furnace_ingot = commodity_refined_form(furnace_ore);
-                    if (st->inventory[furnace_ingot] + a->ore > MAX_PRODUCT_STOCK)
-                        continue;  /* hopper full — skip this furnace */
-                }
+                commodity_t furnace_ingot = commodity_refined_form(furnace_ore);
+                if (st->inventory[furnace_ingot] + a->ore > MAX_PRODUCT_STOCK)
+                    continue;  /* hopper full — skip this furnace */
 
                 int ring = st->modules[m].ring;
                 vec2 furnace_pos = module_world_pos_ring(st, ring, st->modules[m].slot);

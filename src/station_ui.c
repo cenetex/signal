@@ -310,9 +310,35 @@ void build_station_ui_state(station_ui_state_t* ui) {
     ui->hull_max = (int)lroundf(ship_max_hull(&LOCAL_PLAYER.ship));
     float repair = station_repair_cost(&LOCAL_PLAYER.ship, current_station_ptr());
     ui->repair_cost = (int)lroundf(repair);
-    ui->mining_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_MINING);
-    ui->hold_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_HOLD);
-    ui->tractor_cost = ship_upgrade_cost(&LOCAL_PLAYER.ship,SHIP_UPGRADE_TRACTOR);
+
+    /* Compute per-upgrade module accounting (cargo first, dock fallback). */
+    struct { ship_upgrade_t up; int *needed, *cargo, *atstation, *credit; } slots[3] = {
+        { SHIP_UPGRADE_MINING,
+          &ui->mining_units_needed,  &ui->mining_units_in_cargo,
+          &ui->mining_units_at_station, &ui->mining_credit_cost },
+        { SHIP_UPGRADE_HOLD,
+          &ui->hold_units_needed,    &ui->hold_units_in_cargo,
+          &ui->hold_units_at_station,   &ui->hold_credit_cost },
+        { SHIP_UPGRADE_TRACTOR,
+          &ui->tractor_units_needed, &ui->tractor_units_in_cargo,
+          &ui->tractor_units_at_station,&ui->tractor_credit_cost },
+    };
+    for (int i = 0; i < 3; i++) {
+        commodity_t c = (commodity_t)(COMMODITY_FRAME +
+                        upgrade_required_product(slots[i].up));
+        int need = (int)ceilf(upgrade_product_cost(&LOCAL_PLAYER.ship, slots[i].up));
+        int in_cargo  = (int)floorf(LOCAL_PLAYER.ship.cargo[c] + 0.0001f);
+        int at_station = ui->station
+            ? (int)floorf(ui->station->inventory[c] + 0.0001f) : 0;
+        int from_station = need - (need < in_cargo ? need : in_cargo);
+        if (from_station < 0) from_station = 0;
+        float credit = ui->station
+            ? (float)from_station * station_sell_price(ui->station, c) : 0.0f;
+        *slots[i].needed    = need;
+        *slots[i].cargo     = in_cargo;
+        *slots[i].atstation = at_station;
+        *slots[i].credit    = (int)lroundf(credit);
+    }
     /* Any dock installs kits — gate is whether there are kits available
      * (computed below) and whether the quoted cost is affordable. */
     ui->can_repair = (repair > 0.0f) && (player_current_balance() + FLOAT_EPSILON >= repair);
@@ -329,9 +355,9 @@ void build_station_ui_state(station_ui_state_t* ui) {
     int kits_avail = ui->ship_kits + ui->station_kits;
     ui->kits_short_by = (hp_needed > kits_avail) ? (hp_needed - kits_avail) : 0;
     float bal = player_current_balance();
-    ui->can_upgrade_mining = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_MINING, STATION_SERVICE_UPGRADE_LASER, ui->mining_cost, bal);
-    ui->can_upgrade_hold = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, ui->hold_cost, bal);
-    ui->can_upgrade_tractor = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_TRACTOR, STATION_SERVICE_UPGRADE_TRACTOR, ui->tractor_cost, bal);
+    ui->can_upgrade_mining = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_MINING, bal);
+    ui->can_upgrade_hold = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD, bal);
+    ui->can_upgrade_tractor = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_TRACTOR, bal);
 }
 
 /* ------------------------------------------------------------------ */
@@ -715,13 +741,22 @@ static void draw_trade_view(const station_ui_state_t *ui,
     const uint8_t COL_FADED[3] = { PAL_TEXT_FADED };
     const uint8_t COL_TEXT[3]  = { PAL_TEXT_SECONDARY };
 
-    my += draw_section_header(cx, my, inner_right, "MARKET", HDR_TRADE);
+    my += draw_section_header(cx, my, inner_right, "TRADE", HDR_TRADE);
 
-    /* Supply strip — six commodity slots showing this station's stock.
-     * Each cell is colored by the commodity when the station has the
-     * matching producing module; gray when it doesn't. The number is
-     * floored stock. Lets the player scan a station's tier role at a
-     * glance ("Helios is making lasers + tractors but no frames"). */
+    /* Supply strip — six commodity slots showing this station's chain
+     * STATUS, not raw counts. The picker rows below carry the actual
+     * stock + price; this row is a flow badge.
+     *
+     * Three nested stripes per cell — empty/=/==/=== — each higher
+     * level implies the lower:
+     *   ===  on the shelf  (manifest > 0 && sell_price > 0)
+     *   ==-  in flow       (inventory or any module buffer carrying c)
+     *   =--  in the system (station has the producing module)
+     *   ---  not produced here
+     *
+     * Color = commodity hue, brightness rises with the level so a
+     * station at a glance reads as "alive ferrite line" vs "starved
+     * laser line". */
     {
         struct { commodity_t c; module_type_t producer; const char *code; } slots[6] = {
             { COMMODITY_FERRITE_INGOT,  MODULE_FURNACE,      "FE" },
@@ -732,41 +767,74 @@ static void draw_trade_view(const station_ui_state_t *ui,
             { COMMODITY_TRACTOR_MODULE, MODULE_TRACTOR_FAB,  "TM" },
         };
         const float cell_w = 8.0f;
-        const float slot_w = cell_w * 7.0f; /* "FEx99 " = 6 chars + sep */
+        const float slot_w = cell_w * 7.0f;
         for (int i = 0; i < 6; i++) {
             float sx = cx + (float)i * slot_w;
-            /* Manifest is the truth for finished goods. Use the
-             * client-side summary so SP and MP both work — st->manifest
-             * itself is the SERVER's local copy in SP but is empty for
-             * remote stations in MP (the wire only carries summaries,
-             * not full units). The picker rows go through the same
-             * summary helper, so strip + rows can never disagree. */
-            int stock = 0;
+            commodity_t c = slots[i].c;
+
+            /* Level 1: producer module present? */
+            bool in_system = station_produces(st, c);
+
+            /* Level 2: any concrete supply at this station — float
+             * inventory OR module buffers carrying this commodity.
+             * Module buffers are tagged by the recipe of the host
+             * module: input buffer carries the recipe's input;
+             * output buffer carries the recipe's output. STORAGE
+             * modules don't have a fixed commodity, so we count any
+             * non-empty storage output as "in flow" for any
+             * commodity the station produces (best the data lets us
+             * do without per-tick commodity tags). */
+            bool in_flow = (st->inventory[c] > 0.01f);
+            if (!in_flow) {
+                for (int m = 0; m < st->module_count; m++) {
+                    module_type_t mt = st->modules[m].type;
+                    if (st->modules[m].scaffold) continue;
+                    if (module_schema_input(mt) == c && st->module_input[m] > 0.01f) {
+                        in_flow = true; break;
+                    }
+                    if (module_schema_output(mt) == c && st->module_output[m] > 0.01f) {
+                        in_flow = true; break;
+                    }
+                }
+            }
+
+            /* Level 3: stock the player can buy now (same condition
+             * the BUY rows in the picker use). */
+            int manifest_stock = 0;
             for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
-                stock += station_manifest_count_cg(st, slots[i].c, (mining_grade_t)gi);
-            bool has_module = station_has_module(st, slots[i].producer);
+                manifest_stock += station_manifest_count_cg(st, c, (mining_grade_t)gi);
+            bool sellable = in_system && (manifest_stock > 0)
+                          && (station_sell_price(st, c) > FLOAT_EPSILON);
+
+            int level = 0;
+            if (in_system) level = 1;
+            if (in_system && in_flow) level = 2;
+            if (sellable) level = 3;
+
             uint8_t r, g, b;
-            if (!has_module) {
-                /* No producing module: dark gray label, em-dash for stock. */
+            if (level == 0) {
                 r = 90; g = 90; b = 90;
-            } else if (stock <= 0) {
-                /* Module present but bone dry: faded commodity color. */
-                commodity_color_u8(slots[i].c, &r, &g, &b);
-                r = (uint8_t)(r / 3); g = (uint8_t)(g / 3); b = (uint8_t)(b / 3);
             } else {
-                /* In stock: full commodity color. */
-                commodity_color_u8(slots[i].c, &r, &g, &b);
+                commodity_color_u8(c, &r, &g, &b);
+                /* Three brightness tiers: 1/3 / 2/3 / full. */
+                int num = level;
+                r = (uint8_t)((int)r * num / 3);
+                g = (uint8_t)((int)g * num / 3);
+                b = (uint8_t)((int)b * num / 3);
             }
             sdtx_color3b(r, g, b);
             sdtx_pos(ui_text_pos(sx), ui_text_pos(my));
+
+            /* Density glyph per level — one character that grows in
+             * weight as the chain ascends from idle to sellable.
+             * Level 3 uses oric font byte 0xA0 (full block, verified
+             * 8×0xFF in vendor/sokol/sokol_debugtext.h). */
+            const char *glyph =
+                (level == 3) ? "\xA0" :
+                (level == 2) ? "=" :
+                (level == 1) ? "-" : " ";
             char cell[8];
-            if (!has_module) {
-                snprintf(cell, sizeof(cell), "%s --", slots[i].code);
-            } else if (stock > 99) {
-                snprintf(cell, sizeof(cell), "%s99+", slots[i].code);
-            } else {
-                snprintf(cell, sizeof(cell), "%s %2d", slots[i].code, stock);
-            }
+            snprintf(cell, sizeof(cell), "%s %s", slots[i].code, glyph);
             sdtx_puts(cell);
         }
         my += row_h;
@@ -842,7 +910,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
         snprintf(pg, sizeof(pg), "page %d/%d   [F] next",
                  page + 1, total_pages);
         const uint8_t COL_ACTIVE[3] = { 130, 210, 255 };
-        draw_row_lr(cx, my, inner_right, COL_ACTIVE, "MARKET", COL_FADED, pg);
+        draw_row_lr(cx, my, inner_right, COL_ACTIVE, "TRADE", COL_FADED, pg);
         my += row_h;
     }
 
@@ -985,27 +1053,34 @@ static void draw_verbs_view(const station_ui_state_t *ui,
     /* -------- SERVICES (always visible; rows always show their status) -------- */
     my += draw_section_header(cx, my, inner_right, "SERVICES", HDR_SERVICE);
 
-    /* [R] repair hull — shows kit availability ("X ship / Y dock") and
-     * flags partial repair when neither source has enough kits. */
+    /* [R] repair hull — same grammar as the upgrade rows:
+     *   kits [ have / need ]  -N cr
+     * "have" = ship cargo + dock inventory; "need" = HP missing (1
+     * kit per HP). Append the credit cost when actionable. */
     {
         const uint8_t *left_rgb = COL_AMBER;
         char right_buf[64];
+        int kits_avail = ui->ship_kits + ui->station_kits;
+        int kits_needed = ui->hull_max - ui->hull_now;
+        if (kits_needed < 0) kits_needed = 0;
         if (ui->hull_now >= ui->hull_max) {
             left_rgb = COL_DIM;
-            snprintf(right_buf, sizeof(right_buf), "hull full");
-        } else if (ui->can_repair && ui->kits_short_by == 0) {
-            snprintf(right_buf, sizeof(right_buf), "-%d %s  %d/%d kits",
-                     ui->repair_cost, ui_station_currency(st),
-                     ui->ship_kits, ui->station_kits);
-        } else if (ui->can_repair && ui->kits_short_by > 0) {
-            /* Partial heal — money is fine, kits are short. */
-            snprintf(right_buf, sizeof(right_buf), "-%d %s  short %d kits",
-                     ui->repair_cost, ui_station_currency(st),
-                     ui->kits_short_by);
-        } else if (ui->repair_cost > 0) {
+            snprintf(right_buf, sizeof(right_buf), "kits [ %d / 0 ]",
+                     kits_avail);
+        } else if (kits_avail <= 0) {
             left_rgb = COL_DIM;
-            snprintf(right_buf, sizeof(right_buf), "need %d %s",
-                     ui->repair_cost, ui_station_currency(st));
+            snprintf(right_buf, sizeof(right_buf), "no kits available");
+        } else if (ui->can_repair && ui->repair_cost > 0) {
+            snprintf(right_buf, sizeof(right_buf), "kits [ %d / %d ]  -%d cr",
+                     kits_avail, kits_needed, ui->repair_cost);
+        } else if (ui->can_repair) {
+            snprintf(right_buf, sizeof(right_buf), "kits [ %d / %d ]",
+                     kits_avail, kits_needed);
+        } else if (ui->repair_cost > 0) {
+            /* Affordability blocks; module supply is fine. */
+            left_rgb = COL_DIM;
+            snprintf(right_buf, sizeof(right_buf), "kits [ %d / %d ]  need %d cr",
+                     kits_avail, kits_needed, ui->repair_cost);
         } else {
             left_rgb = COL_DIM;
             snprintf(right_buf, sizeof(right_buf), "unavailable here");
@@ -1015,32 +1090,57 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         my += row_h;
     }
 
-    /* [M] tune laser, [H] expand hold, [T] tune tractor — same grammar. */
-    struct { const char *left; module_type_t gate; int cost; bool can;
-             bool maxed; } refit[3] = {
-        { "[M] tune laser",   MODULE_LASER_FAB,   ui->mining_cost,  ui->can_upgrade_mining,
+    /* [M] tune laser, [H] expand hold, [T] tune tractor — same grammar.
+     * Real cost is the modules themselves (frames / lasers / tractors
+     * pulled from cargo). If cargo is short, the dock fills the gap
+     * from its own inventory at retail. Any dock can install — module
+     * supply is the only gate. */
+    struct { const char *left; const char *unit_singular; const char *unit_plural;
+             int needed, in_cargo, at_station, credit; bool can; bool maxed; } refit[3] = {
+        { "[M] tune laser",   "laser module",   "laser modules",
+          ui->mining_units_needed, ui->mining_units_in_cargo,
+          ui->mining_units_at_station, ui->mining_credit_cost,
+          ui->can_upgrade_mining,
           ship_upgrade_maxed(ship, SHIP_UPGRADE_MINING) },
-        { "[H] expand hold",  MODULE_FRAME_PRESS, ui->hold_cost,    ui->can_upgrade_hold,
+        { "[H] expand hold",  "frame", "frames",
+          ui->hold_units_needed, ui->hold_units_in_cargo,
+          ui->hold_units_at_station, ui->hold_credit_cost,
+          ui->can_upgrade_hold,
           ship_upgrade_maxed(ship, SHIP_UPGRADE_HOLD) },
-        { "[T] tune tractor", MODULE_TRACTOR_FAB, ui->tractor_cost, ui->can_upgrade_tractor,
+        { "[T] tune tractor", "tractor module", "tractor modules",
+          ui->tractor_units_needed, ui->tractor_units_in_cargo,
+          ui->tractor_units_at_station, ui->tractor_credit_cost,
+          ui->can_upgrade_tractor,
           ship_upgrade_maxed(ship, SHIP_UPGRADE_TRACTOR) },
     };
     for (int i = 0; i < 3; i++) {
         const uint8_t *left_rgb = COL_NAV;
-        char right_buf[48];
+        char right_buf[80];
+        int avail  = refit[i].in_cargo + refit[i].at_station;
+        int needed = refit[i].needed;
+        const char *plural = refit[i].unit_plural;
         if (refit[i].maxed) {
             left_rgb = COL_DIM;
             snprintf(right_buf, sizeof(right_buf), "maxed");
-        } else if (!station_has_module(st, refit[i].gate)) {
+        } else if (avail <= 0) {
+            /* Mirrors the [R] repair-hull row: nothing in cargo or at
+             * the dock, no way to install. */
             left_rgb = COL_DIM;
-            snprintf(right_buf, sizeof(right_buf), "unavailable here");
-        } else if (refit[i].can) {
-            snprintf(right_buf, sizeof(right_buf), "-%d %s",
-                     refit[i].cost, ui_station_currency(st));
+            snprintf(right_buf, sizeof(right_buf), "no %s available", plural);
         } else {
-            left_rgb = COL_DIM;
-            snprintf(right_buf, sizeof(right_buf), "need %d %s",
-                     refit[i].cost, ui_station_currency(st));
+            if (!refit[i].can) left_rgb = COL_DIM;
+            /* Always: "<plural> [ have / need ]". If the row is
+             * actionable AND the dock is filling some of the gap from
+             * its inventory, append the credit cost the player will pay
+             * at retail. */
+            if (refit[i].can && refit[i].credit > 0) {
+                snprintf(right_buf, sizeof(right_buf), "%s [ %d / %d ]  -%d cr",
+                         plural, avail, needed,
+                         refit[i].credit);
+            } else {
+                snprintf(right_buf, sizeof(right_buf), "%s [ %d / %d ]",
+                         plural, avail, needed);
+            }
         }
         draw_row_lr(cx, my, inner_right, left_rgb, refit[i].left,
                     (left_rgb == COL_NAV) ? COL_TEXT : COL_FADED, right_buf);
@@ -1166,14 +1266,11 @@ static void draw_jobs_view(const station_ui_state_t *ui,
         } else {
             int qty = slot_fulfillable[s] ? slot_held[s]
                                           : (int)lroundf(ct->quantity_needed);
-            /* Include the required grade inline so the job row reads
-             * "Ferrite rare x12" — the whole cell gets tinted to the
-             * grade color below, so the player sees at a glance which
-             * grade will satisfy this contract. */
-            snprintf(cargo_buf, sizeof(cargo_buf), "%s %s x%d",
-                     commodity_short_name(ct->commodity),
-                     mining_grade_label((mining_grade_t)ct->required_grade),
-                     qty);
+            /* Drop the grade word — color encodes rarity for the whole
+             * row (see the grade-tint override below). Keeps the cargo
+             * cell short so payout doesn't collide with it. */
+            snprintf(cargo_buf, sizeof(cargo_buf), "%s x%d",
+                     commodity_short_name(ct->commodity), qty);
         }
 
         const station_t *dest = (ct->station_index < MAX_STATIONS)
@@ -1194,13 +1291,23 @@ static void draw_jobs_view(const station_ui_state_t *ui,
         }
 
         const uint8_t *info_rgb = (row_rgb == COL_DIM) ? COL_FADED : COL_TEXT;
-        /* Grade tint for the cargo cell (fracture contracts keep the
-         * neutral info color since they're not commodity-scoped). */
+        /* Grade tint for the entire row when the contract is for a
+         * rare grade. Common grade keeps the neutral row color so the
+         * board doesn't constantly look "lit up". Selected/tracked
+         * states already override row_rgb above, so those states win
+         * over the grade tint (color is the action signal first,
+         * rarity second). */
         uint8_t ggr, ggg, ggb;
         mining_grade_rgb((mining_grade_t)ct->required_grade, &ggr, &ggg, &ggb);
         uint8_t grade_rgb[3] = { ggr, ggg, ggb };
+        bool rare_grade = ct->action != CONTRACT_FRACTURE
+                       && ct->required_grade > (uint8_t)MINING_GRADE_COMMON;
+        if (rare_grade && !selected && !tracked) {
+            row_rgb = grade_rgb;
+        }
         const uint8_t *cargo_rgb = (ct->action == CONTRACT_FRACTURE)
-            ? info_rgb : grade_rgb;
+            ? info_rgb
+            : (rare_grade ? grade_rgb : info_rgb);
         if (compact) {
             cell_t top[] = {
                 {  0, key_buf,   row_rgb },

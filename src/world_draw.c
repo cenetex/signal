@@ -57,11 +57,115 @@ void grade_tint(uint8_t grade, float *r, float *g, float *b) {
 }
 
 float asteroid_profile(const asteroid_t* asteroid, float angle) {
-    float bump1 = sinf(angle * 3.0f + asteroid->seed);
-    float bump2 = sinf(angle * 7.0f + asteroid->seed * 1.71f);
-    float bump3 = cosf(angle * 5.0f + asteroid->seed * 0.63f);
-    float profile = 1.0f + (bump1 * 0.08f) + (bump2 * 0.06f) + (bump3 * 0.04f);
+    /* Polar-profile silhouettes for ferrite (lumpy round) and cuprite
+     * (six-sided hex crystal). Crystal-ore asteroids do NOT use this
+     * path — see draw_crystal_asteroid_*; they're built from explicit
+     * rotated rectangles because real straight crystal edges can't
+     * survive a per-angle radius sample. */
+    float profile;
+    switch (asteroid->commodity) {
+    case COMMODITY_CUPRITE_ORE: {
+        /* Hex crystal — six dominant lobes, light high-freq texture. */
+        float hex     = sinf(6.0f * angle + asteroid->seed);
+        float texture = sinf(angle * 11.0f + asteroid->seed * 1.31f) * 0.025f;
+        profile = 1.0f + hex * 0.12f + texture;
+        break;
+    }
+    case COMMODITY_FERRITE_ORE:
+    default: {
+        /* Lumpy round — original profile, retained for ferrite + any
+         * non-ore (debris, fragments without a commodity tag). */
+        float bump1 = sinf(angle * 3.0f + asteroid->seed);
+        float bump2 = sinf(angle * 7.0f + asteroid->seed * 1.71f);
+        float bump3 = cosf(angle * 5.0f + asteroid->seed * 0.63f);
+        profile = 1.0f + (bump1 * 0.08f) + (bump2 * 0.06f) + (bump3 * 0.04f);
+        break;
+    }
+    }
     return asteroid->radius * profile;
+}
+
+/* ------------------------------------------------------------------ */
+/* Crystal asteroids — built from explicit rectangles                  */
+/* ------------------------------------------------------------------ */
+
+int crystal_spike_count(const asteroid_t *a) {
+    /* Larger rocks read as 5-spike druzes, smaller fragments as 3.
+     * S-tier fragments use 3 too — a single bar would look pasted-on
+     * next to its 3-spike parents. */
+    switch (a->tier) {
+    case ASTEROID_TIER_XXL:
+    case ASTEROID_TIER_XL:
+    case ASTEROID_TIER_L:
+        return 5;
+    case ASTEROID_TIER_M:
+    case ASTEROID_TIER_S:
+    default:
+        return 3;
+    }
+}
+
+/* Build the four world-space corners of one crystal spike (a rotated
+ * rectangle anchored at the asteroid center, extending outward by
+ * `length` along `dir`, `width` thick). Out-corners are CCW from the
+ * inner-left so the caller can fan-triangulate as (0,1,2)+(0,2,3). */
+static void crystal_spike_corners(const asteroid_t *a, int i, int n,
+                                   float out_x[4], float out_y[4])
+{
+    /* Spread spikes around the full circle but perturb each one by a
+     * seed-derived offset so they're never perfectly symmetric. */
+    float spacing = TWO_PI_F / (float)n;
+    float dir = a->rotation + (float)i * spacing
+              + a->seed * 0.5f
+              + sinf(a->seed * 1.7f + (float)i * 2.13f) * 0.18f;
+
+    /* Per-spike length + width jitter — keeps individual spikes
+     * looking like distinct broken pieces of one larger crystal.
+     * Width is set wide enough that adjacent spikes overlap near
+     * the asteroid core, so the silhouette reads as a tightly
+     * packed cluster (no big furrows between bars) instead of a
+     * thin starburst. */
+    float length = a->radius * (1.00f + 0.15f * sinf(a->seed + (float)i * 1.71f));
+    float width  = a->radius * (0.42f + 0.10f * cosf(a->seed * 1.3f + (float)i * 1.31f));
+
+    float c = cosf(dir), s = sinf(dir);
+    /* Local frame: x along the spike axis (0..length), y perpendicular
+     * (-width..+width). Order: inner-left, tip-left, tip-right,
+     * inner-right. CCW. */
+    float lx[4] = { 0.0f,    length, length,  0.0f   };
+    float ly[4] = { -width,  -width, +width,  +width };
+    for (int k = 0; k < 4; k++) {
+        out_x[k] = a->pos.x + lx[k] * c - ly[k] * s;
+        out_y[k] = a->pos.y + lx[k] * s + ly[k] * c;
+    }
+}
+
+void draw_crystal_asteroid_fill(const asteroid_t *a) {
+    int n = crystal_spike_count(a);
+    for (int i = 0; i < n; i++) {
+        float wx[4], wy[4];
+        crystal_spike_corners(a, i, n, wx, wy);
+        /* Two CCW triangles cover the rectangle. Caller has already
+         * pushed the body color and opened sgl_begin_triangles. */
+        sgl_v2f(wx[0], wy[0]); sgl_v2f(wx[1], wy[1]); sgl_v2f(wx[2], wy[2]);
+        sgl_v2f(wx[0], wy[0]); sgl_v2f(wx[2], wy[2]); sgl_v2f(wx[3], wy[3]);
+    }
+}
+
+void draw_crystal_asteroid_outline(const asteroid_t *a, float r, float g, float b, float alpha) {
+    int n = crystal_spike_count(a);
+    sgl_c4f(r, g, b, alpha);
+    sgl_begin_lines();
+    for (int i = 0; i < n; i++) {
+        float wx[4], wy[4];
+        crystal_spike_corners(a, i, n, wx, wy);
+        for (int k = 0; k < 4; k++) {
+            int next = (k + 1) % 4;
+            sgl_v2f(wx[k],    wy[k]);
+            sgl_v2f(wx[next], wy[next]);
+        }
+    }
+    sgl_end();
 }
 
 void draw_background(vec2 camera) {

@@ -1061,11 +1061,17 @@ TEST(test_belt_ore_distribution) {
         else if (ore == COMMODITY_CUPRITE_ORE) cu++;
         else if (ore == COMMODITY_CRYSTAL_ORE) cr++;
     }
-    /* Ferrite should dominate, cuprite rare, crystal moderate */
-    ASSERT(fe > 500);   /* majority ferrite */
-    ASSERT(cu < 200);   /* cuprite is rare */
-    ASSERT(cr > 20);    /* crystal exists */
-    ASSERT(cr < fe);    /* less than ferrite */
+    /* Target mix ~60/16/24 (Fe/Cu/Cr). Cuprite >0 is load-bearing:
+     * laser modules + tractor coils + repair kits all need cuprite
+     * ingots. The bounds are loose to absorb tuning drift; tighten
+     * them in a follow-up if a real regression slips past. */
+    printf("    belt mix: fe=%d cu=%d cr=%d (target ~60/16/24)\n", fe, cu, cr);
+    ASSERT(fe > 500);     /* ferrite still dominant */
+    ASSERT(cu > 50);      /* cuprite reliably present */
+    ASSERT(cu < 250);     /* but still the rarest of three */
+    ASSERT(cr > 100);     /* crystal at least mid-share */
+    ASSERT(cr < fe);      /* less than ferrite */
+    ASSERT(cu < cr);      /* cuprite rarer than crystal */
 }
 
 TEST(test_chunk_determinism) {

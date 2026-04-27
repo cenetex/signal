@@ -107,10 +107,22 @@ float station_repair_cost(const ship_t* ship, const station_t* station) {
     return damage * (kit_price + labor);
 }
 
-bool can_afford_upgrade(const station_t* station, const ship_t* ship, ship_upgrade_t upgrade, uint32_t service, int credit_cost, float balance) {
-    if (!station || !(station->services & service)) return false;
+bool can_afford_upgrade(const station_t* station, const ship_t* ship, ship_upgrade_t upgrade, float balance) {
+    /* Any dock can install upgrades; the FAB-module gate is gone.
+     * Modules (cargo or dock inventory) are the limiter, mirroring
+     * the repair-kit "any dock" model from #373. */
+    if (!station) return false;
     if (ship_upgrade_maxed(ship, upgrade)) return false;
-    if (balance + FLOAT_EPSILON < (float)credit_cost) return false;
-    if (station->inventory[COMMODITY_FRAME + upgrade_required_product(upgrade)] + FLOAT_EPSILON < upgrade_product_cost(ship, upgrade)) return false;
+    /* Cargo first, dock fallback at retail. Mirror the server logic so
+     * the UI's "can afford?" matches what try_apply_ship_upgrade will
+     * actually accept. */
+    commodity_t comm = (commodity_t)(COMMODITY_FRAME + upgrade_required_product(upgrade));
+    int units_needed = (int)ceilf(upgrade_product_cost(ship, upgrade));
+    int in_cargo  = (int)floorf(ship->cargo[comm] + 0.0001f);
+    int at_station = (int)floorf(station->inventory[comm] + 0.0001f);
+    if (in_cargo + at_station < units_needed) return false;
+    int from_station = units_needed - (units_needed < in_cargo ? units_needed : in_cargo);
+    float credit_cost = (float)from_station * station_sell_price(station, comm);
+    if (balance + FLOAT_EPSILON < credit_cost) return false;
     return true;
 }

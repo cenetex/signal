@@ -1199,6 +1199,14 @@ static void render_world(void) {
             body_b = body_b + (0.2f - body_b) * sp * 0.3f;
         }
 
+        sgl_c4f(body_r, body_g, body_b, 1.0f);
+        if (a->commodity == COMMODITY_CRYSTAL_ORE) {
+            /* Crystals are constructed from explicit rectangles — no
+             * polar profile, no segment smoothing. */
+            draw_crystal_asteroid_fill(a);
+            continue;
+        }
+
         int base_segs = 18;
         switch (a->tier) {
             case ASTEROID_TIER_XXL: base_segs = 28; break;
@@ -1210,7 +1218,6 @@ static void render_world(void) {
         }
         int segments = lod_segments(base_segs, a->radius);
 
-        sgl_c4f(body_r, body_g, body_b, 1.0f);
         float step = TWO_PI_F / (float)segments;
         float a0 = a->rotation;
         float r0 = asteroid_profile(a, a0);
@@ -1242,30 +1249,33 @@ static void render_world(void) {
         float body_r, body_g, body_b;
         asteroid_body_color(a->tier, a->commodity, progress_ratio, &body_r, &body_g, &body_b);
 
-        int base_segs = 18;
-        switch (a->tier) {
-            case ASTEROID_TIER_XXL: base_segs = 28; break;
-            case ASTEROID_TIER_XL:  base_segs = 22; break;
-            case ASTEROID_TIER_L:   base_segs = 18; break;
-            case ASTEROID_TIER_M:   base_segs = 15; break;
-            case ASTEROID_TIER_S:   base_segs = 12; break;
-            default: break;
-        }
-        int segments = lod_segments(base_segs, a->radius);
-
         float rim_r = is_target ? (ineffective ? 1.0f : 0.45f) : (body_r * 0.85f);
         float rim_g = is_target ? (ineffective ? 0.15f : 0.94f) : (body_g * 0.95f);
         float rim_b = is_target ? (ineffective ? 0.1f : 1.0f) : fminf(1.0f, body_b * 1.2f);
         float rim_a = is_target ? 1.0f : 0.8f;
 
-        sgl_c4f(rim_r, rim_g, rim_b, rim_a);
-        sgl_begin_line_strip();
-        for (int j = 0; j <= segments; j++) {
-            float angle = a->rotation + ((float)j / (float)segments) * TWO_PI_F;
-            float radius = asteroid_profile(a, angle);
-            sgl_v2f(a->pos.x + cosf(angle) * radius, a->pos.y + sinf(angle) * radius);
+        if (a->commodity == COMMODITY_CRYSTAL_ORE) {
+            draw_crystal_asteroid_outline(a, rim_r, rim_g, rim_b, rim_a);
+        } else {
+            int base_segs = 18;
+            switch (a->tier) {
+                case ASTEROID_TIER_XXL: base_segs = 28; break;
+                case ASTEROID_TIER_XL:  base_segs = 22; break;
+                case ASTEROID_TIER_L:   base_segs = 18; break;
+                case ASTEROID_TIER_M:   base_segs = 15; break;
+                case ASTEROID_TIER_S:   base_segs = 12; break;
+                default: break;
+            }
+            int segments = lod_segments(base_segs, a->radius);
+            sgl_c4f(rim_r, rim_g, rim_b, rim_a);
+            sgl_begin_line_strip();
+            for (int j = 0; j <= segments; j++) {
+                float angle = a->rotation + ((float)j / (float)segments) * TWO_PI_F;
+                float radius = asteroid_profile(a, angle);
+                sgl_v2f(a->pos.x + cosf(angle) * radius, a->pos.y + sinf(angle) * radius);
+            }
+            sgl_end();
         }
-        sgl_end();
 
         /* Glow core (the "dot"). Common fragments keep the original
          * muted commodity tint — the belt should look mostly the

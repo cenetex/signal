@@ -475,16 +475,16 @@ static void generate_outpost_name(char *out, size_t out_size, vec2 pos, int slot
 /* ================================================================== */
 
 static void clear_ship_cargo(ship_t *s) {
+    /* Wipe both the float side and the manifest. Without the manifest
+     * reset, an emergency-recover would leave phantom cargo_unit_t
+     * entries on the ship — the TRADE picker reads the manifest and
+     * would still surface "SELL Iron ingot" rows even though cargo[]
+     * was zero, so [3]/[4] would resolve to a row that produced
+     * nothing on the server. */
     memset(s->cargo, 0, sizeof(s->cargo));
-}
-
-static uint32_t station_upgrade_service(ship_upgrade_t upgrade) {
-    switch (upgrade) {
-    case SHIP_UPGRADE_MINING:  return STATION_SERVICE_UPGRADE_LASER;
-    case SHIP_UPGRADE_HOLD:    return STATION_SERVICE_UPGRADE_HOLD;
-    case SHIP_UPGRADE_TRACTOR: return STATION_SERVICE_UPGRADE_TRACTOR;
-    default: return 0;
-    }
+    s->manifest.count = 0;
+    if (s->manifest.units && s->manifest.cap > 0)
+        memset(s->manifest.units, 0, s->manifest.cap * sizeof(cargo_unit_t));
 }
 
 /* ================================================================== */
@@ -498,17 +498,10 @@ static vec2 dock_berth_pos(const station_t *st, int berth);
 static float dock_berth_angle(const station_t *st, int berth);
 static int find_best_berth(const world_t *w, const station_t *st, int station_idx, vec2 ship_pos);
 
-static bool station_has_service(const station_t *station, uint32_t service) {
-    return station && ((station->services & service) != 0);
-}
-
-/* Repair pricing now lives inline in try_repair_ship — kept around in
- * case future callers need a quote. */
-__attribute__((unused))
-static float sim_station_repair_cost(const ship_t *s) {
-    float missing = fmaxf(0.0f, ship_max_hull(s) - s->hull);
-    return ceilf(missing * STATION_REPAIR_COST_PER_HULL);
-}
+/* Repair pricing lives inline in try_repair_ship now. The standalone
+ * helper used to be kept around speculatively but it's dead in every
+ * TU and MSVC chokes on __attribute__((unused)) — drop it. Bring it
+ * back as a real function the moment a caller materializes. */
 
 /* Asteroid lifecycle, dynamics, fracture → sim_asteroid.c
  * sim_can_smelt_ore, sim_step_refinery_production, sim_step_station_production,
@@ -1084,16 +1077,43 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
 
 static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade_t upgrade) {
     station_t *st = &w->stations[sp->current_station];
-    uint32_t req_svc = station_upgrade_service(upgrade);
-    if (!station_has_service(st, req_svc)) return;
+    /* Any dock installs the upgrade — the modules themselves are the
+     * gate. No more FAB-module service requirement; the recipe input
+     * (frame/laser/tractor) has to come from cargo or the dock's
+     * inventory and that's what limits the action. Mirrors the
+     * repair-kit "any dock" model from #373. */
     if (ship_upgrade_maxed(&sp->ship, upgrade)) return;
 
+    /* Real cost = the modules themselves (frames / lasers / tractors).
+     * Cargo first; if short, dock fills the gap from station inventory
+     * at retail price. No flat credit upgrade fee anymore — the credit
+     * cost is purely the per-unit retail on dock-sourced units. Mirrors
+     * try_repair_ship's cargo-first / dock-fallback pattern. */
     product_t required = upgrade_required_product(upgrade);
-    float pcost = upgrade_product_cost(&sp->ship, upgrade);
-    if (st->inventory[COMMODITY_FRAME + required] < pcost - 0.01f) return;
-    int cost = ship_upgrade_cost(&sp->ship, upgrade);
-    if (!ledger_spend(st, sp->session_token, (float)cost, &sp->ship)) return;
-    st->inventory[COMMODITY_FRAME + required] -= pcost;
+    commodity_t comm = (commodity_t)(COMMODITY_FRAME + required);
+    int units_needed = (int)ceilf(upgrade_product_cost(&sp->ship, upgrade));
+    int in_cargo  = (int)floorf(sp->ship.cargo[comm] + 0.0001f);
+    int at_station = (int)floorf(st->inventory[comm] + 0.0001f);
+    if (in_cargo + at_station < units_needed) return;
+
+    int from_cargo   = (units_needed < in_cargo) ? units_needed : in_cargo;
+    int from_station = units_needed - from_cargo;
+
+    float credit_cost = (float)from_station * station_sell_price(st, comm);
+    if (credit_cost > 0.0f && !ledger_spend(st, sp->session_token, credit_cost, &sp->ship))
+        return;
+
+    if (from_cargo > 0) {
+        sp->ship.cargo[comm] -= (float)from_cargo;
+        if (sp->ship.cargo[comm] < 0.0f) sp->ship.cargo[comm] = 0.0f;
+        manifest_consume_by_commodity(&sp->ship.manifest, comm, from_cargo);
+    }
+    if (from_station > 0) {
+        st->inventory[comm] -= (float)from_station;
+        if (st->inventory[comm] < 0.0f) st->inventory[comm] = 0.0f;
+        manifest_consume_by_commodity(&st->manifest, comm, from_station);
+        st->named_ingots_dirty = true;
+    }
 
     switch (upgrade) {
     case SHIP_UPGRADE_MINING:  sp->ship.mining_level++;  break;
@@ -1101,8 +1121,9 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
     case SHIP_UPGRADE_TRACTOR: sp->ship.tractor_level++; break;
     default: break;
     }
-    SIM_LOG("[sim] player %d upgraded %d to level %d\n", sp->id, (int)upgrade,
-           ship_upgrade_level(&sp->ship, upgrade));
+    SIM_LOG("[sim] player %d upgraded %d to level %d (%d cargo + %d dock kits, %.0f cr)\n",
+           sp->id, (int)upgrade, ship_upgrade_level(&sp->ship, upgrade),
+           from_cargo, from_station, credit_cost);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_UPGRADE, .player_id = sp->id, .upgrade.upgrade = upgrade});
 }
 
@@ -2450,7 +2471,14 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
              * an explicit `buy_quantity` intent if/when needed. */
             float bal = ledger_balance(docked_st, sp->session_token);
             float afford = (price_per > 0.01f) ? floorf(bal / price_per) : 0.0f;
-            float amount = fminf(fminf(fminf(available, space), afford), 1.0f);
+            /* Per-press unit cap scales by commodity density: standard
+             * goods (vol = 1.0) buy 1 per press; dense goods like
+             * repair kits (vol = 0.1) buy 10 per press so a single
+             * keystroke fills one cargo unit's worth. */
+            int per_press_cap = (vol > FLOAT_EPSILON)
+                ? (int)lroundf(1.0f / vol) : 1;
+            if (per_press_cap < 1) per_press_cap = 1;
+            float amount = fminf(fminf(fminf(available, space), afford), (float)per_press_cap);
             float total_cost = amount * price_per;
             SIM_LOG("[buy] avail=%.2f space=%.2f price/u=%.2f bal=%.2f afford=%.0f amount=%.2f\n",
                     available, space, price_per, bal, afford, amount);
@@ -3128,17 +3156,31 @@ static void step_contracts(world_t *w, float dt) {
         station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
 
-        /* Check which contract types this station already has */
+        /* Check which contract types this station already has. The
+         * kit-input slot tracks shipyard imports of frame / laser /
+         * tractor commodities separately from the ingot / scaffold
+         * production slot, so a shipyard that's already importing
+         * ingots for its own fabs can ALSO be importing frames for
+         * its kit fab. Without this split, Helios (which always has
+         * some CU/CR ingot deficit) would never get a chance to ask
+         * for frames — kit fab silently starved. */
         bool has_ore_contract = false;
         bool has_production_contract = false;
+        bool has_kit_input_contract = false;
         for (int k = 0; k < MAX_CONTRACTS; k++) {
             if (!w->contracts[k].active || w->contracts[k].station_index != s) continue;
-            if (w->contracts[k].commodity < COMMODITY_RAW_ORE_COUNT)
+            commodity_t cc = w->contracts[k].commodity;
+            if (cc < COMMODITY_RAW_ORE_COUNT) {
                 has_ore_contract = true;
-            else
+            } else if (cc == COMMODITY_FRAME ||
+                       cc == COMMODITY_LASER_MODULE ||
+                       cc == COMMODITY_TRACTOR_MODULE) {
+                has_kit_input_contract = true;
+            } else {
                 has_production_contract = true;
+            }
         }
-        if (has_ore_contract && has_production_contract) continue;
+        if (has_ore_contract && has_production_contract && has_kit_input_contract) continue;
 
         /* Skip contract generation if station is nearly broke */
         if (st->credit_pool < 100.0f) continue;
@@ -3232,6 +3274,12 @@ static void step_contracts(world_t *w, float dt) {
             int worst_idx = -1;
             for (int j = 0; j < 3; j++) {
                 if (!checks[j].needed) continue;
+                /* Don't import what we make ourselves. Helios has both
+                 * FURNACE_CU and LASER_FAB, so the local furnace feeds
+                 * the local fab — posting an import contract for the
+                 * same ingot duplicates supply and shows up to players
+                 * as "asking for what's already on the shelf". */
+                if (station_produces(st, checks[j].ingot)) continue;
                 float deficit = MAX_PRODUCT_STOCK * 0.5f - st->inventory[checks[j].ingot];
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
             }
@@ -3247,13 +3295,14 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
 
-        /* Priority 5: shipyard kit-fab inputs. Every shipyard needs
-         * frames + lasers + tractor modules to mint repair kits, but the
-         * upstream production contracts (above) come first so they don't
-         * starve. Only fires when the station's own ingot/scaffold
-         * pipeline is satisfied, ensuring kit fab gets fed without
-         * cannibalising the chain that produces its inputs. */
-        if (!need.active && !has_production_contract && station_has_module(st, MODULE_SHIPYARD)) {
+        /* Priority 5: shipyard kit-fab inputs. Lives in its own slot
+         * so an ongoing ingot/scaffold contract doesn't starve it.
+         * Helios always has some CU/CR ingot deficit; without this
+         * split, the frame contract for kit-fab never gets posted. */
+        contract_t kit_need = {0};
+        kit_need.target_index = -1;
+        kit_need.claimed_by = -1;
+        if (!has_kit_input_contract && station_has_module(st, MODULE_SHIPYARD)) {
             const struct { commodity_t c; module_type_t producer; } kit_inputs[] = {
                 { COMMODITY_FRAME,          MODULE_FRAME_PRESS  },
                 { COMMODITY_LASER_MODULE,   MODULE_LASER_FAB    },
@@ -3269,7 +3318,7 @@ static void step_contracts(world_t *w, float dt) {
             }
             if (worst_idx >= 0) {
                 commodity_t mat = kit_inputs[worst_idx].c;
-                need = (contract_t){
+                kit_need = (contract_t){
                     .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
                     .commodity = mat,
@@ -3308,11 +3357,17 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
 
-        /* Post the contract if we found a need */
-        if (need.active) {
+        /* Post any contract we found a need for. `need` and `kit_need`
+         * occupy separate slots, so a shipyard can simultaneously be
+         * importing ingots for its fabs AND frames for its kit fab. */
+        contract_t *to_post[2] = { NULL, NULL };
+        int post_count = 0;
+        if (need.active)     to_post[post_count++] = &need;
+        if (kit_need.active) to_post[post_count++] = &kit_need;
+        for (int p = 0; p < post_count; p++) {
             for (int k = 0; k < MAX_CONTRACTS; k++) {
                 if (!w->contracts[k].active) {
-                    w->contracts[k] = need;
+                    w->contracts[k] = *to_post[p];
                     break;
                 }
             }

@@ -277,7 +277,19 @@ bool station_copy(station_t *dst, const station_t *src) {
 }
 
 bool manifest_push(manifest_t *manifest, const cargo_unit_t *unit) {
-    if (!manifest || !unit || manifest->count >= manifest->cap || !manifest->units) return false;
+    if (!manifest || !unit) return false;
+    /* Grow on demand. Without this, a ship that's accumulated 32 manifest
+     * entries (the default ship cap) would silently reject every BUY of a
+     * finished good — the picker would advertise stock, the player would
+     * press F, and the transfer would fail because dst was full while
+     * the float side suggested cargo room. Doubling keeps the realloc
+     * cost amortized O(1). */
+    if (manifest->count >= manifest->cap) {
+        uint16_t new_cap = manifest->cap > 0 ? (uint16_t)(manifest->cap * 2u) : 32;
+        if (new_cap <= manifest->cap) return false; /* uint16 overflow */
+        if (!manifest_reserve(manifest, new_cap)) return false;
+    }
+    if (!manifest->units) return false;
     manifest->units[manifest->count++] = *unit;
     return true;
 }

@@ -42,34 +42,51 @@ TEST(test_station_repair_cost_with_damage) {
     ASSERT(cost > 0.0f);
 }
 
-TEST(test_can_afford_upgrade_all_conditions) {
+TEST(test_can_afford_upgrade_dock_fallback) {
+    /* Empty cargo, but station stocks the modules and player has
+     * credits — dock fills the gap from inventory at retail. */
     ship_t ship = {0};
     ship.hull_class = HULL_CLASS_MINER;
     station_t station = {0};
     station.services = STATION_SERVICE_UPGRADE_HOLD;
     station.inventory[COMMODITY_FRAME] = 100.0f;
-    int cost = ship_upgrade_cost(&ship, SHIP_UPGRADE_HOLD);
-    ASSERT(can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost, 10000.0f));
+    station.base_price[COMMODITY_FRAME] = 22.0f;
+    ASSERT(can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD,10000.0f));
 }
 
-TEST(test_can_afford_upgrade_no_credits) {
+TEST(test_can_afford_upgrade_no_credits_for_dock_fallback) {
+    /* Empty cargo, station has modules, balance zero — fallback
+     * needs credits, so this must be rejected. */
     ship_t ship = {0};
     ship.hull_class = HULL_CLASS_MINER;
     station_t station = {0};
     station.services = STATION_SERVICE_UPGRADE_HOLD;
     station.inventory[COMMODITY_FRAME] = 100.0f;
-    int cost = ship_upgrade_cost(&ship, SHIP_UPGRADE_HOLD);
-    ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost, 0.0f));
+    station.base_price[COMMODITY_FRAME] = 22.0f;
+    ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD,0.0f));
 }
 
-TEST(test_can_afford_upgrade_no_product) {
+TEST(test_can_afford_upgrade_no_product_anywhere) {
+    /* Empty cargo, empty station inventory — no modules to install. */
     ship_t ship = {0};
     ship.hull_class = HULL_CLASS_MINER;
     station_t station = {0};
     station.services = STATION_SERVICE_UPGRADE_HOLD;
     station.inventory[COMMODITY_FRAME] = 0.0f;
-    int cost = ship_upgrade_cost(&ship, SHIP_UPGRADE_HOLD);
-    ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, STATION_SERVICE_UPGRADE_HOLD, cost, 10000.0f));
+    ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD,10000.0f));
+}
+
+TEST(test_can_afford_upgrade_cargo_only_no_credits_needed) {
+    /* Ship cargo covers the full module cost — credit balance is
+     * irrelevant since the dock has nothing to sell. */
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    station_t station = {0};
+    station.services = STATION_SERVICE_UPGRADE_HOLD;
+    /* Empty dock inventory; ship carries enough frames itself. */
+    int need = (int)ceilf(upgrade_product_cost(&ship, SHIP_UPGRADE_HOLD));
+    ship.cargo[COMMODITY_FRAME] = (float)need;
+    ASSERT(can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD,0.0f));
 }
 
 TEST(test_contract_generated_from_hopper_deficit) {
@@ -359,19 +376,20 @@ TEST(test_mixed_cargo_sell_and_deliver) {
 }
 
 TEST(test_no_delivery_without_matching_contract) {
-    /* Cargo with no matching contract or production sink should not be delivered */
+    /* Cargo with no matching contract AND no consuming module on the
+     * station should stay in the hold. Use Prospect (no shipyard,
+     * no fab) so a tractor-module load has nowhere to land. */
     WORLD_DECL;
     world_reset(&w);
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
-    /* Player carries a finished module — stations don't buy this via
-     * fallback input delivery. */
     w.players[0].ship.cargo[COMMODITY_TRACTOR_MODULE] = 20.0f;
-    /* Clear all contracts */
     for (int k = 0; k < MAX_CONTRACTS; k++) w.contracts[k].active = false;
-    /* Dock at yard and try to sell */
+    /* Prospect Refinery (station 0): DOCK + SIGNAL_RELAY + FURNACE +
+     * ORE_SILO. No SHIPYARD, no TRACTOR_FAB → station_consumes returns
+     * false for tractor modules, so the SELL fallback should skip. */
     w.players[0].docked = true;
-    w.players[0].current_station = 1;
+    w.players[0].current_station = 0;
     w.players[0].input.service_sell = true;
     world_sim_step(&w, SIM_DT);
     ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_TRACTOR_MODULE], 20.0f, 0.01f);
@@ -652,9 +670,10 @@ void register_economy_basic_tests(void) {
     RUN(test_station_production_beamworks_makes_modules);
     RUN(test_station_repair_cost_no_damage);
     RUN(test_station_repair_cost_with_damage);
-    RUN(test_can_afford_upgrade_all_conditions);
-    RUN(test_can_afford_upgrade_no_credits);
-    RUN(test_can_afford_upgrade_no_product);
+    RUN(test_can_afford_upgrade_dock_fallback);
+    RUN(test_can_afford_upgrade_no_credits_for_dock_fallback);
+    RUN(test_can_afford_upgrade_no_product_anywhere);
+    RUN(test_can_afford_upgrade_cargo_only_no_credits_needed);
     RUN(test_commodity_volume_kit_dense);
     RUN(test_ship_total_cargo_kit_density);
 }
