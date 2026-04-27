@@ -164,6 +164,24 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
  * now uses A* paths via npc_steer_with_path. compute_path_avoidance
  * is retained for potential future use by manual-play collision hints.) */
 
+/* Apply a normalized flight_cmd_t (turn/thrust each in -1..1) to an NPC.
+ * Rate-limits turn by turn_speed; gates thrust to forward acceleration only.
+ * Caller owns physics integration (npc_apply_physics) and any thrust<0
+ * handling (e.g. hover-specific brake-away-from-target). */
+static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd,
+                                  float accel, float turn_speed, float dt) {
+    float max_turn = turn_speed * dt;
+    float turn_angle = cmd.turn * turn_speed * dt;
+    if (turn_angle > max_turn) turn_angle = max_turn;
+    if (turn_angle < -max_turn) turn_angle = -max_turn;
+    npc->angle = wrap_angle(npc->angle + turn_angle);
+
+    float thrust_gate = (cmd.thrust > 0.0f) ? cmd.thrust : 0.0f;
+    vec2 fwd = v2_from_angle(npc->angle);
+    npc->vel = v2_add(npc->vel, v2_scale(fwd, accel * thrust_gate * dt));
+    npc->thrusting = thrust_gate > 0.0f;
+}
+
 /* A*-guided NPC steering via the shared flight controller.
  * Creates a temporary ship_t so flight_steer_to can read pos/vel/angle/hull_class.
  * Phase 2 will give NPCs a real ship_t; this is intentionally transitional. */
@@ -179,19 +197,7 @@ static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
     nav_path_t *path = nav_npc_path(npc_idx);
     flight_cmd_t cmd = flight_steer_to(w, &tmp_ship, path, final_target,
                                         0.0f, 200.0f, dt);
-
-    /* Apply turn (rate-limited by turn_speed). */
-    float turn_angle = cmd.turn * turn_speed * dt;
-    float max_turn = turn_speed * dt;
-    if (turn_angle > max_turn) turn_angle = max_turn;
-    if (turn_angle < -max_turn) turn_angle = -max_turn;
-    npc->angle = wrap_angle(npc->angle + turn_angle);
-
-    /* Apply thrust as acceleration. */
-    float thrust_gate = (cmd.thrust > 0.0f) ? cmd.thrust : 0.0f;
-    vec2 fwd = v2_from_angle(npc->angle);
-    npc->vel = v2_add(npc->vel, v2_scale(fwd, accel * thrust_gate * dt));
-    npc->thrusting = thrust_gate > 0.0f;
+    npc_apply_flight_cmd(npc, cmd, accel, turn_speed, dt);
 }
 
 static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world_t *w) {
@@ -917,22 +923,18 @@ void step_npc_ships(world_t *w, float dt) {
                 tmp_ship.angle = npc->angle;
                 tmp_ship.hull_class = npc->hull_class;
                 flight_cmd_t cmd = flight_hover_near(w, &tmp_ship, a->pos, standoff);
-                /* Apply turn (rate-limited by turn_speed). */
-                float turn_angle = cmd.turn * hull->turn_speed * dt;
-                float max_turn = hull->turn_speed * dt;
-                if (turn_angle > max_turn) turn_angle = max_turn;
-                if (turn_angle < -max_turn) turn_angle = -max_turn;
-                npc->angle = wrap_angle(npc->angle + turn_angle);
-                /* Apply thrust as acceleration. */
-                float thrust_gate = (cmd.thrust > 0.0f) ? cmd.thrust : 0.0f;
                 if (cmd.thrust < 0.0f) {
-                    /* Braking: push away from current velocity */
+                    /* Hover-specific brake: push away from the asteroid we're
+                     * hugging instead of reversing along velocity. Strip the
+                     * negative thrust before the shared apply so the helper
+                     * skips the forward-thrust branch. */
                     vec2 away = v2_norm(v2_sub(npc->pos, a->pos));
                     npc->vel = v2_add(npc->vel, v2_scale(away, hull->accel * 0.5f * dt));
-                } else if (thrust_gate > 0.0f) {
-                    vec2 fwd = v2_from_angle(npc->angle);
-                    npc->vel = v2_add(npc->vel, v2_scale(fwd, hull->accel * thrust_gate * dt));
+                    cmd.thrust = 0.0f;
                 }
+                npc_apply_flight_cmd(npc, cmd, hull->accel, hull->turn_speed, dt);
+                /* Hover never lights the engine flame — keep prior visual. */
+                npc->thrusting = false;
             }
             npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (4.0f * dt)));
             npc_apply_physics(npc, hull->drag, dt, w);
