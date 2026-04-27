@@ -86,4 +86,15 @@ void spawn_sell_fx(const vec2 *origin, int amount, mining_grade_t grade, bool by
 void update_sell_fx(float dt);
 void draw_sell_fx(void);
 
+/* --- Damage FX: floating "-N" popups + red vignette on SIM_EVENT_DAMAGE
+ * for the local player. Mirrors sell_fx but tighter lifetime and a
+ * single hot color. spawn_damage_fx is a no-op when amount <= 0. */
+void spawn_damage_fx(const vec2 *origin, int amount);
+void update_damage_fx(float dt);
+void draw_damage_fx(void);
+/* Red border vignette pulsed on the receiver's HUD for ~0.4s after a
+ * damage event. Driven by g.damage_flash_timer, decremented in
+ * update_damage_fx. */
+void draw_damage_flash(float screen_w, float screen_h);
+
 #endif /* WORLD_DRAW_H */

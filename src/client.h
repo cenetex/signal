@@ -141,6 +141,19 @@ typedef struct {
         uint8_t r, g, b;
         char text[16];
     } sell_fx[16];
+    /* Floating "-N" damage popups spawned on SIM_EVENT_DAMAGE. World-space
+     * red text that rises and fades over ~1.0s. Smaller pool than sell_fx
+     * because hits are less frequent than sales but burst-y during
+     * combat. */
+    struct {
+        vec2 pos;
+        float age;
+        float life;
+        char text[8];
+    } damage_fx[8];
+    /* Hit vignette: red border pulse on the local player's HUD when they
+     * take damage. Set on SIM_EVENT_DAMAGE, decays each frame. */
+    float damage_flash_timer;
     /* Per-station manifest summary — [commodity][grade] unit counts.
      * Unified read path for the TRADE UI whether we're in singleplayer
      * (populated every frame from g.world.stations[s].manifest) or

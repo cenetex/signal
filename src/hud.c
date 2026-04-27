@@ -479,6 +479,10 @@ static void hud_draw_shared_panels(float screen_w, float screen_h, float sig_qua
     hud_draw_hail_sigil(screen_w, screen_h);
     hud_draw_module_inspect_pane(screen_w);
     hud_draw_signal_lost_warning(screen_w, screen_h, sig_quality);
+    /* Hit feedback vignette — drawn last so it sits above the HUD
+     * readouts, but the inset rectangle in the middle leaves the
+     * action row + flight readouts unobscured. */
+    draw_damage_flash(screen_w, screen_h);
 }
 
 /* Pending credits across all stations — sum of every ledger entry the

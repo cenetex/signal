@@ -424,6 +424,11 @@ static void sim_on_damage(const sim_event_t *ev) {
     float kick = sqrtf(ev->damage.amount) * 4.0f;
     if (kick > 40.0f) kick = 40.0f;
     if (kick > g.screen_shake) g.screen_shake = kick;
+    /* Hit feedback: floating "-N" popup near the receiver's ship + red
+     * vignette pulse on the HUD. Both decay independently of the audio. */
+    int amount = (int)lroundf(ev->damage.amount);
+    if (amount > 0) spawn_damage_fx(&LOCAL_PLAYER.ship.pos, amount);
+    g.damage_flash_timer = 0.4f;
 }
 
 static void sim_on_contract_complete(const sim_event_t *ev) {
@@ -893,6 +898,7 @@ static void sim_step(float dt) {
 
     step_notice_timer(dt);
     update_sell_fx(dt);
+    update_damage_fx(dt);
     if (g.action_predict_timer > 0.0f)
         g.action_predict_timer = fmaxf(0.0f, g.action_predict_timer - dt);
     if (g.dock_settle_timer > 0.0f)
@@ -1358,6 +1364,7 @@ static void render_world(void) {
     draw_callsigns();      /* Readable sdtx labels above local + remote ships */
     draw_npc_chatter();    /* Short radio one-liners near NPC sprites (#291) */
     draw_sell_fx();        /* +$N payout popups floating above stations */
+    draw_damage_fx();      /* -N hit popups floating above the receiver's ship */
     draw_autopilot_path(); /* Dotted line showing A* path ahead */
     draw_tracked_contract_highlight();  /* Pulsing ring on the current contract's next objective */
     draw_compass_ring();   /* Navigation compass around player ship */

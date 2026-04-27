@@ -2165,6 +2165,104 @@ void draw_sell_fx(void) {
 }
 
 /* ================================================================== */
+/* Damage FX — floating "-N" + red vignette on SIM_EVENT_DAMAGE       */
+/* ================================================================== */
+
+void spawn_damage_fx(const vec2 *origin, int amount) {
+    if (amount <= 0 || !origin) return;
+    int slot = -1;
+    float oldest_age = -1.0f;
+    int pool = (int)(sizeof(g.damage_fx) / sizeof(g.damage_fx[0]));
+    for (int i = 0; i < pool; i++) {
+        if (g.damage_fx[i].life <= 0.0f) { slot = i; break; }
+        if (g.damage_fx[i].age > oldest_age) { oldest_age = g.damage_fx[i].age; slot = i; }
+    }
+    if (slot < 0) return;
+    /* Small jitter so back-to-back hits don't render on top of each other. */
+    static uint32_t seed = 0x600DBADu;
+    seed = seed * 1664525u + 1013904223u;
+    float jitter_x = ((int)((seed >> 8) & 0x1F) - 16) * 1.5f;
+    seed = seed * 1664525u + 1013904223u;
+    float jitter_y = ((int)((seed >> 8) & 0x1F) - 16) * 1.0f;
+    g.damage_fx[slot].pos = v2(origin->x + jitter_x, origin->y + 24.0f + jitter_y);
+    g.damage_fx[slot].age = 0.0f;
+    g.damage_fx[slot].life = 1.0f;
+    snprintf(g.damage_fx[slot].text, sizeof(g.damage_fx[slot].text), "-%d", amount);
+}
+
+void update_damage_fx(float dt) {
+    int pool = (int)(sizeof(g.damage_fx) / sizeof(g.damage_fx[0]));
+    for (int i = 0; i < pool; i++) {
+        if (g.damage_fx[i].life <= 0.0f) continue;
+        g.damage_fx[i].age += dt;
+        if (g.damage_fx[i].age >= g.damage_fx[i].life) g.damage_fx[i].life = 0.0f;
+    }
+    if (g.damage_flash_timer > 0.0f) {
+        g.damage_flash_timer -= dt;
+        if (g.damage_flash_timer < 0.0f) g.damage_flash_timer = 0.0f;
+    }
+}
+
+void draw_damage_fx(void) {
+    float view_w = cam_right() - cam_left();
+    float view_h = cam_bottom() - cam_top();
+    const float cell = 8.0f;
+    sdtx_canvas(view_w, view_h);
+    sdtx_origin(cam_left() / cell, cam_top() / cell);
+    int pool = (int)(sizeof(g.damage_fx) / sizeof(g.damage_fx[0]));
+    for (int i = 0; i < pool; i++) {
+        if (g.damage_fx[i].life <= 0.0f) continue;
+        float t = g.damage_fx[i].age / g.damage_fx[i].life;
+        if (t > 1.0f) continue;
+        /* Rise ~22 px and fade in the last quarter. */
+        float rise_y = -22.0f * t;
+        float alpha = (t < 0.75f) ? 1.0f : (1.0f - (t - 0.75f) / 0.25f);
+        if (alpha < 0.0f) alpha = 0.0f;
+        uint8_t a8 = (uint8_t)(alpha * 255.0f);
+        float x = g.damage_fx[i].pos.x;
+        float y = g.damage_fx[i].pos.y + rise_y;
+        if (!on_screen(x, y, 32.0f)) continue;
+        int len = (int)strlen(g.damage_fx[i].text);
+        sdtx_color4b(255, 70, 70, a8);
+        sdtx_pos((x - len * cell * 0.5f) / cell, y / cell);
+        sdtx_puts(g.damage_fx[i].text);
+    }
+}
+
+/* Red border vignette pulsed when the local player takes damage. Inner
+ * 60 % of the screen stays clear; only the outer ring tints, so the
+ * HUD readouts in the corners aren't washed out. */
+void draw_damage_flash(float screen_w, float screen_h) {
+    if (g.damage_flash_timer <= 0.0f) return;
+    /* Linear fade — timer was set to 0.4s on damage. Square the alpha
+     * so the early frames hit hard then ease out. */
+    float t = g.damage_flash_timer / 0.4f;
+    if (t > 1.0f) t = 1.0f;
+    float alpha = t * t * 0.55f;
+
+    /* Border ring: four trapezoids around an inset rect. */
+    float ix = screen_w * 0.20f;
+    float iy = screen_h * 0.20f;
+    float ix2 = screen_w - ix;
+    float iy2 = screen_h - iy;
+    sgl_begin_quads();
+    sgl_c4f(0.95f, 0.18f, 0.18f, alpha);
+    /* top */
+    sgl_v2f(0.0f, 0.0f);     sgl_v2f(screen_w, 0.0f);
+    sgl_v2f(ix2,  iy);       sgl_v2f(ix,   iy);
+    /* bottom */
+    sgl_v2f(ix,   iy2);      sgl_v2f(ix2,  iy2);
+    sgl_v2f(screen_w, screen_h); sgl_v2f(0.0f, screen_h);
+    /* left */
+    sgl_v2f(0.0f, 0.0f);     sgl_v2f(ix,   iy);
+    sgl_v2f(ix,   iy2);      sgl_v2f(0.0f, screen_h);
+    /* right */
+    sgl_v2f(ix2,  iy);       sgl_v2f(screen_w, 0.0f);
+    sgl_v2f(screen_w, screen_h); sgl_v2f(ix2,  iy2);
+    sgl_end();
+}
+
+/* ================================================================== */
 /* Scaffold world objects                                             */
 /* ================================================================== */
 
