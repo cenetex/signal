@@ -56,6 +56,82 @@ static int station_manifest_seed_from_npc(station_t *st, commodity_t c, int n,
 /* NPC ships                                                          */
 /* ================================================================== */
 
+/* #294 Slice 6: paired character_t lifecycle.
+ *
+ * Each active NPC gets a paired character_t entry; future slices flip
+ * the source-of-truth for brain state and damage routing onto it.
+ * `ship_idx` carries the NPC slot during the transition — once the
+ * unified ships[] pool lands, it'll point there instead.
+ *
+ * Nothing reads the character pool yet. These writes are intentionally
+ * "dead" so the lifecycle is observable in saves/wire without flipping
+ * any readers in the same slice. */
+static character_kind_t character_kind_from_role(npc_role_t role) {
+    switch (role) {
+    case NPC_ROLE_MINER:  return CHARACTER_KIND_NPC_MINER;
+    case NPC_ROLE_HAULER: return CHARACTER_KIND_NPC_HAULER;
+    case NPC_ROLE_TOW:    return CHARACTER_KIND_NPC_TOW;
+    default:              return CHARACTER_KIND_NONE;
+    }
+}
+
+static int character_alloc_for_npc(world_t *w, int npc_slot, const npc_ship_t *npc) {
+    int cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
+    for (int i = 0; i < cap; i++) {
+        if (w->characters[i].active) continue;
+        character_t *c = &w->characters[i];
+        memset(c, 0, sizeof(*c));
+        c->active = true;
+        c->kind = character_kind_from_role(npc->role);
+        c->ship_idx = npc_slot;
+        c->state = npc->state;
+        c->target_asteroid = npc->target_asteroid;
+        c->home_station = npc->home_station;
+        c->dest_station = npc->dest_station;
+        c->state_timer = npc->state_timer;
+        c->towed_fragment = npc->towed_fragment;
+        c->towed_scaffold = npc->towed_scaffold;
+        return i;
+    }
+    return -1;
+}
+
+/* Find the paired character for an NPC slot, or -1. */
+static int character_for_npc_slot(const world_t *w, int npc_slot) {
+    int cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
+    for (int i = 0; i < cap; i++) {
+        const character_t *c = &w->characters[i];
+        if (!c->active) continue;
+        if (c->ship_idx != npc_slot) continue;
+        if (c->kind != CHARACTER_KIND_NPC_MINER &&
+            c->kind != CHARACTER_KIND_NPC_HAULER &&
+            c->kind != CHARACTER_KIND_NPC_TOW) continue;
+        return i;
+    }
+    return -1;
+}
+
+static void character_free_for_npc(world_t *w, int npc_slot) {
+    int idx = character_for_npc_slot(w, npc_slot);
+    if (idx >= 0) w->characters[idx].active = false;
+}
+
+void rebuild_characters_from_npcs(world_t *w) {
+    int cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
+    for (int i = 0; i < cap; i++) {
+        if (w->characters[i].kind == CHARACTER_KIND_NPC_MINER ||
+            w->characters[i].kind == CHARACTER_KIND_NPC_HAULER ||
+            w->characters[i].kind == CHARACTER_KIND_NPC_TOW) {
+            w->characters[i].active = false;
+        }
+    }
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        const npc_ship_t *npc = &w->npc_ships[n];
+        if (!npc->active) continue;
+        (void)character_alloc_for_npc(w, n, npc);
+    }
+}
+
 /* Spawn an NPC at a station. Returns slot index or -1 if full. */
 int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     int slot = -1;
@@ -93,6 +169,10 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     if (role == NPC_ROLE_TOW) {
         npc->tint_r = 1.0f; npc->tint_g = 0.85f; npc->tint_b = 0.30f;
     }
+    /* Pair a character_t with the NPC. Lifecycle-only — nothing reads
+     * it yet (#294 Slice 6). If the pool is somehow exhausted we still
+     * spawn the NPC; this is best-effort during the transition. */
+    (void)character_alloc_for_npc(w, slot, npc);
     emit_event(w, (sim_event_t){
         .type = SIM_EVENT_NPC_SPAWNED,
         .npc_spawned = { .slot = slot, .role = role, .home_station = station_idx },
@@ -848,6 +928,7 @@ void step_npc_ships(world_t *w, float dt) {
         if (npc->hull <= 0.0f) {
             SIM_LOG("[npc] %d (role=%d) destroyed — hull 0\n", n, (int)npc->role);
             npc->active = false;
+            character_free_for_npc(w, n);
             continue;
         }
         npc->thrusting = false;

@@ -27,6 +27,7 @@
 #include "game_sim.h"
 #include "manifest.h"
 #include "ship.h"
+#include "sim_ai.h"
 #include <stdio.h>
 #include <string.h>
 
@@ -871,6 +872,7 @@ bool world_load(world_t *w, const char *path) {
     fclose(f);
     belt_field_init(&w->belt, w->rng, BELT_SCALE);
     rebuild_signal_chain(w);
+    rebuild_characters_from_npcs(w);
     return true;
 }
 
