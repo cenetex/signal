@@ -483,6 +483,47 @@ typedef struct {
     float hull;
 } npc_ship_t;
 
+/* ------------------------------------------------------------------ */
+/* character_t — controller layer (#294 Slice 1: types only)            */
+/* ------------------------------------------------------------------ */
+/*
+ * A character_t is the AI brain or human pilot binding sitting on top
+ * of a ship_t. The unification target (#294) is:
+ *
+ *   ship_t       — physics + cargo + manifest + upgrades + hull HP
+ *   character_t  — kind, brain state, target, home/dest station,
+ *                  state timer; indexes a ship by id
+ *   world_t      — ships[]      unified pool (players + NPCs)
+ *                  characters[] controller pool
+ *
+ * Slice 1 introduces the type and an empty `characters[]` pool on
+ * world_t so later slices can populate them without a flag-day rename.
+ * Nothing reads or writes the pool yet — npc_ship_t and
+ * server_player_t still own physics + brain state today.
+ */
+typedef enum {
+    CHARACTER_KIND_NONE = 0,
+    CHARACTER_KIND_PLAYER,
+    CHARACTER_KIND_NPC_MINER,
+    CHARACTER_KIND_NPC_HAULER,
+    CHARACTER_KIND_NPC_TOW,
+} character_kind_t;
+
+typedef struct {
+    bool active;
+    character_kind_t kind;
+    int ship_idx;             /* index into world.ships[]; -1 = unbound */
+    /* Brain state — meaningful for NPC kinds. Players carry these in
+     * server_player_t for now; converging is a later slice. */
+    npc_state_t state;
+    int target_asteroid;      /* -1 = none */
+    int home_station;
+    int dest_station;
+    float state_timer;
+    int towed_fragment;       /* -1 = none */
+    int towed_scaffold;       /* -1 = none */
+} character_t;
+
 typedef struct {
     vec2 pos;
     float depth;

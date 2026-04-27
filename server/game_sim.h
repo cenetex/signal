@@ -294,6 +294,10 @@ typedef struct {
         bool from_chunk;   /* true = terrain, false = fracture child */
     } asteroid_origin[MAX_ASTEROIDS];
     npc_ship_t npc_ships[MAX_NPC_SHIPS];
+    /* #294 Slice 1: empty controller pool. Nothing populates this yet —
+     * MINER migration (Slice 3a) will be the first writer. Sized to the
+     * NPC + player union so later slices don't need a flag-day resize. */
+    character_t characters[MAX_PLAYERS + MAX_NPC_SHIPS];
     scaffold_t scaffolds[MAX_SCAFFOLDS];
     server_player_t players[MAX_PLAYERS];
     uint32_t rng;
