@@ -906,7 +906,14 @@ static inline int serialize_events(uint8_t *buf, const sim_events_t *events) {
             p[2] = (uint8_t)ev->upgrade.upgrade;
             break;
         case SIM_EVENT_DAMAGE:
-            write_f32_le(&p[2], ev->damage.amount);
+            write_f32_le(&p[2],  ev->damage.amount);
+            write_f32_le(&p[6],  ev->damage.source_x);
+            write_f32_le(&p[10], ev->damage.source_y);
+            break;
+        case SIM_EVENT_NPC_KILL:
+            p[2] = ev->npc_kill.cause;
+            p[3] = ev->npc_kill.npc_role;
+            memcpy(&p[4], ev->npc_kill.killer_token, 8);
             break;
         case SIM_EVENT_OUTPOST_PLACED:
             p[2] = (uint8_t)ev->outpost_placed.slot;

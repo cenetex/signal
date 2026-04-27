@@ -549,7 +549,13 @@ static void handle_message(const uint8_t* data, int len) {
                 case SIM_EVENT_UPGRADE:
                     ev->upgrade.upgrade = (ship_upgrade_t)p[2]; break;
                 case SIM_EVENT_DAMAGE:
-                    ev->damage.amount = read_f32_le(&p[2]); break;
+                    ev->damage.amount   = read_f32_le(&p[2]);
+                    ev->damage.source_x = read_f32_le(&p[6]);
+                    ev->damage.source_y = read_f32_le(&p[10]); break;
+                case SIM_EVENT_NPC_KILL:
+                    ev->npc_kill.cause    = p[2];
+                    ev->npc_kill.npc_role = p[3];
+                    memcpy(ev->npc_kill.killer_token, &p[4], 8); break;
                 case SIM_EVENT_OUTPOST_PLACED:
                     ev->outpost_placed.slot = (int)p[2]; break;
                 case SIM_EVENT_OUTPOST_ACTIVATED:

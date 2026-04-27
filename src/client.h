@@ -154,6 +154,18 @@ typedef struct {
     /* Hit vignette: red border pulse on the local player's HUD when they
      * take damage. Set on SIM_EVENT_DAMAGE, decays each frame. */
     float damage_flash_timer;
+    /* Directional hit indicator. dir_x/dir_y is a unit vector in WORLD
+     * space pointing from the ship toward the source of the most
+     * recent damage event. Renderer projects it onto the screen edge.
+     * timer counts down from ~1.5 s. (0,0) = no source / unknown. */
+    float damage_dir_x;
+    float damage_dir_y;
+    float damage_dir_timer;
+    /* PvP kill-feed: short text shown at top-center for ~3 s when
+     * SIM_EVENT_NPC_KILL fires (eventually also when a remote player
+     * dies). Text + remaining lifetime; 0 = empty. */
+    char  kill_feed_text[64];
+    float kill_feed_timer;
     /* Per-station manifest summary — [commodity][grade] unit counts.
      * Unified read path for the TRADE UI whether we're in singleplayer
      * (populated every frame from g.world.stations[s].manifest) or

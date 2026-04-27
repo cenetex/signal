@@ -682,7 +682,12 @@ typedef struct {
         struct { asteroid_tier_t tier; int asteroid_id; } fracture;
         struct { float ore; int fragments; } pickup;
         struct { ship_upgrade_t upgrade; } upgrade;
-        struct { float amount; } damage;
+        /* SIM_EVENT_DAMAGE: source_x/source_y let the client pick a
+         * world-space direction for the directional hit indicator
+         * (chevron at the screen edge pointing toward the threat).
+         * Both zero = unknown source (legacy callers, environmental
+         * hits) — client renders a center-screen pulse instead. */
+        struct { float amount; float source_x; float source_y; } damage;
         /* SIM_EVENT_SELL: populated when a fragment is smelted. grade
          * is mining_grade_t; base_cr is ore * station_buy_price;
          * bonus_cr is the extra credits the multiplier added on top.

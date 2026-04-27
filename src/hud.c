@@ -473,12 +473,87 @@ static void hud_draw_signal_lost_warning(float screen_w, float screen_h, float s
 
 /* Render the post-classify shared panels common to compact + wide.
  * Called once per frame after each layout's top-status section. */
+/* Directional hit indicator — solid red triangle on the screen edge
+ * pointing in the world-space direction the most recent damage came
+ * from. The vector g.damage_dir_{x,y} is unit; we project onto the
+ * smaller of the screen-edge intercepts so the chevron always sits
+ * just inside the visible boundary. Fades out over the timer's
+ * lifetime. */
+static void hud_draw_hit_indicator(float screen_w, float screen_h) {
+    if (g.damage_dir_timer <= 0.0f) return;
+    /* Squared decay so the spike is visible immediately and the tail
+     * eases out. */
+    float t = g.damage_dir_timer / 1.5f;
+    if (t > 1.0f) t = 1.0f;
+    float alpha = t * t;
+
+    /* Pick a margin from the screen edge proportional to the smaller
+     * dimension so it tracks compact / wide layouts. */
+    float margin = fminf(screen_w, screen_h) * 0.06f;
+    /* Half the available rect — the indicator orbits the screen
+     * center on this radius, scaled to land just inside the edge in
+     * the dominant axis. */
+    float cx = screen_w * 0.5f;
+    float cy = screen_h * 0.5f;
+    float ax = screen_w * 0.5f - margin;
+    float ay = screen_h * 0.5f - margin;
+    /* Clamp the world-space dir to the screen rectangle: scale the
+     * vector so |dx|/ax or |dy|/ay equals 1, whichever hits first. */
+    float dx = g.damage_dir_x;
+    float dy = g.damage_dir_y;
+    float k_x = (fabsf(dx) > 0.001f) ? (ax / fabsf(dx)) : 1e9f;
+    float k_y = (fabsf(dy) > 0.001f) ? (ay / fabsf(dy)) : 1e9f;
+    float k = fminf(k_x, k_y);
+    float px = cx + dx * k;
+    float py = cy + dy * k;
+
+    /* Triangle pointing along (dx, dy). Side perpendicular = (-dy, dx). */
+    float size = margin * 0.9f;
+    float tip_x = px + dx * size * 0.5f;
+    float tip_y = py + dy * size * 0.5f;
+    float bx = px - dx * size * 0.5f;
+    float by = py - dy * size * 0.5f;
+    float perp_x = -dy * size * 0.45f;
+    float perp_y =  dx * size * 0.45f;
+
+    sgl_begin_triangles();
+    sgl_c4f(0.95f, 0.20f, 0.20f, alpha);
+    sgl_v2f(tip_x,           tip_y);
+    sgl_v2f(bx + perp_x,     by + perp_y);
+    sgl_v2f(bx - perp_x,     by - perp_y);
+    sgl_end();
+}
+
+/* PvP kill-feed — single line at top-center, fades on the timer.
+ * Server-emitted SIM_EVENT_NPC_KILL drives the text; eventually
+ * remote-player kills will share the same surface. */
+static void hud_draw_kill_feed(float screen_w, float screen_h) {
+    if (g.kill_feed_timer <= 0.0f) return;
+    if (g.kill_feed_text[0] == '\0') return;
+    float cell = 8.0f;
+    /* Fade-in for the first 0.2 s, fade-out for the last 0.5 s. */
+    float a = 1.0f;
+    if (g.kill_feed_timer > 2.8f) a = (3.0f - g.kill_feed_timer) / 0.2f;
+    else if (g.kill_feed_timer < 0.5f) a = g.kill_feed_timer / 0.5f;
+    if (a < 0.0f) a = 0.0f;
+    if (a > 1.0f) a = 1.0f;
+    uint8_t a8 = (uint8_t)(a * 255.0f);
+    sdtx_canvas(screen_w, screen_h);
+    sdtx_origin(0.0f, 0.0f);
+    sdtx_color4b(255, 220, 100, a8);  /* warm gold reads as scoreboard */
+    sdtx_centered_text(screen_w * 0.5f, (screen_h * 0.08f) / cell, cell,
+                       g.kill_feed_text);
+    (void)screen_h;
+}
+
 static void hud_draw_shared_panels(float screen_w, float screen_h, float sig_quality, bool compact) {
     hud_draw_alpha_banner_and_mp_indicator(screen_w, compact);
     hud_draw_nav_label(screen_w, screen_h);
     hud_draw_hail_sigil(screen_w, screen_h);
     hud_draw_module_inspect_pane(screen_w);
     hud_draw_signal_lost_warning(screen_w, screen_h, sig_quality);
+    hud_draw_hit_indicator(screen_w, screen_h);
+    hud_draw_kill_feed(screen_w, screen_h);
     /* Hit feedback vignette — drawn last so it sits above the HUD
      * readouts, but the inset rectangle in the middle leaves the
      * action row + flight readouts unobscured. */

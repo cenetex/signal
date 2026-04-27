@@ -655,7 +655,8 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
  * fires with the correct killer/cause even if the lethal blow lands
  * several ticks after the ramp-down begins. */
 static void apply_ship_damage_attributed(world_t *w, server_player_t *sp, float damage,
-                                          const uint8_t killer_token[8], uint8_t cause) {
+                                          const uint8_t killer_token[8], uint8_t cause,
+                                          vec2 source) {
     if (damage <= 0.0f) return;
     sp->ship.hull = fmaxf(0.0f, sp->ship.hull - damage);
     /* Record attribution if this hit is non-environmental, OR if no
@@ -670,12 +671,18 @@ static void apply_ship_damage_attributed(world_t *w, server_player_t *sp, float 
     } else if (sp->last_damage_cause == DEATH_CAUSE_UNKNOWN) {
         sp->last_damage_cause = cause;
     }
-    emit_event(w, (sim_event_t){.type = SIM_EVENT_DAMAGE, .player_id = sp->id, .damage.amount = damage});
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_DAMAGE, .player_id = sp->id,
+        .damage = { .amount = damage, .source_x = source.x, .source_y = source.y },
+    });
     if (sp->ship.hull <= 0.01f) emergency_recover_ship(w, sp);
 }
 
 static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
-    apply_ship_damage_attributed(w, sp, damage, NULL, DEATH_CAUSE_ASTEROID);
+    /* Environmental, unsourced — caller doesn't know where the hit
+     * came from. Client treats source = (0,0) as "unknown" and skips
+     * the directional indicator. */
+    apply_ship_damage_attributed(w, sp, damage, NULL, DEATH_CAUSE_ASTEROID, v2(0.0f, 0.0f));
 }
 
 /* ================================================================== */
@@ -704,7 +711,9 @@ static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, fl
         float impact = -vel_toward;
         float dmg = sp->docked ? 0.0f : collision_damage_for(impact, 1.0f);
         if (dmg > 0.0f) {
-            apply_ship_damage_attributed(w, sp, dmg, NULL, DEATH_CAUSE_STATION);
+            /* Source = the offending station-module circle. Player's
+             * directional indicator points at the wall they hit. */
+            apply_ship_damage_attributed(w, sp, dmg, NULL, DEATH_CAUSE_STATION, center);
         }
         /* Clamp inward velocity component to zero — slide along the surface
          * tangent on the next tick instead of bouncing back through it. */
@@ -762,8 +771,10 @@ static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, ast
             float dmg = sp->docked ? 0.0f : collision_damage_for(impact, size_mult);
             if (dmg > 0.0f) {
                 uint8_t cause = attributed ? DEATH_CAUSE_THROWN_ROCK : DEATH_CAUSE_ASTEROID;
+                /* Source = rock position so the indicator points at
+                 * the actual incoming projectile, not the thrower. */
                 apply_ship_damage_attributed(w, sp, dmg,
-                    attributed ? a->last_towed_token : NULL, cause);
+                    attributed ? a->last_towed_token : NULL, cause, a->pos);
             }
         }
 
@@ -4255,10 +4266,14 @@ void world_sim_step(world_t *w, float dt) {
                  * that wouldn't bruise a static collision. */
                 float dmg = collision_damage_for(impact, 0.7f);
                 if (dmg > 0.0f) {
+                    /* Each player's directional indicator points at
+                     * the OTHER ship — the rammer they collided with. */
                     apply_ship_damage_attributed(w, &w->players[i], dmg,
-                        w->players[j].session_token, DEATH_CAUSE_RAM);
+                        w->players[j].session_token, DEATH_CAUSE_RAM,
+                        w->players[j].ship.pos);
                     apply_ship_damage_attributed(w, &w->players[j], dmg,
-                        w->players[i].session_token, DEATH_CAUSE_RAM);
+                        w->players[i].session_token, DEATH_CAUSE_RAM,
+                        w->players[i].ship.pos);
                 }
             }
         }

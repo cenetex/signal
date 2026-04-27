@@ -429,6 +429,45 @@ static void sim_on_damage(const sim_event_t *ev) {
     int amount = (int)lroundf(ev->damage.amount);
     if (amount > 0) spawn_damage_fx(&LOCAL_PLAYER.ship.pos, amount);
     g.damage_flash_timer = 0.4f;
+    /* Directional indicator — chevron at the screen edge pointing at
+     * the threat. Source = (0,0) means "unknown" (legacy / environmental);
+     * skip the indicator for those so it doesn't flicker at world origin. */
+    if (ev->damage.source_x != 0.0f || ev->damage.source_y != 0.0f) {
+        float dx = ev->damage.source_x - LOCAL_PLAYER.ship.pos.x;
+        float dy = ev->damage.source_y - LOCAL_PLAYER.ship.pos.y;
+        float d = sqrtf(dx * dx + dy * dy);
+        if (d > 1.0f) {
+            g.damage_dir_x = dx / d;
+            g.damage_dir_y = dy / d;
+            g.damage_dir_timer = 1.5f;
+        }
+    }
+}
+
+static void sim_on_npc_kill(const sim_event_t *ev) {
+    /* Kill-feed line. Prefer the local player's perspective: if I'm
+     * the killer, prepend "You killed"; otherwise show the killer's
+     * callsign if we know it (multiplayer player kills NPC). For now
+     * we don't have a token-to-callsign cache, so the bare role +
+     * cause cover the singleplayer case where the local player is
+     * always the killer. */
+    const char *role = (ev->npc_kill.npc_role == NPC_ROLE_MINER) ? "Miner"
+                     : (ev->npc_kill.npc_role == NPC_ROLE_HAULER) ? "Hauler"
+                     : "Tow drone";
+    const char *weapon = (ev->npc_kill.cause == DEATH_CAUSE_THROWN_ROCK) ? "thrown rock"
+                       : (ev->npc_kill.cause == DEATH_CAUSE_RAM) ? "ramming"
+                       : "collision";
+    bool you_killed = !g.multiplayer_enabled ||
+        (memcmp(ev->npc_kill.killer_token,
+                g.world.players[g.local_player_slot].session_token, 8) == 0);
+    if (you_killed) {
+        snprintf(g.kill_feed_text, sizeof(g.kill_feed_text),
+                 "You killed %s with %s", role, weapon);
+    } else {
+        snprintf(g.kill_feed_text, sizeof(g.kill_feed_text),
+                 "%s killed by %s", role, weapon);
+    }
+    g.kill_feed_timer = 3.0f;
 }
 
 static void sim_on_contract_complete(const sim_event_t *ev) {
@@ -624,8 +663,7 @@ static const sim_event_handler_fn k_sim_event_handlers[SIM_EVENT_COUNT] = {
     [SIM_EVENT_SIGNAL_LOST]        = sim_on_signal_lost,
     [SIM_EVENT_STATION_CONNECTED]  = sim_on_station_connected,
     [SIM_EVENT_ORDER_REJECTED]     = sim_on_order_rejected,
-    /* SIM_EVENT_NPC_KILL: no client handler yet (kill-feed is server-
-     * routed broadcast text; no per-event hook needed here). */
+    [SIM_EVENT_NPC_KILL]           = sim_on_npc_kill,
 };
 
 void process_sim_events(const sim_events_t *events) {
@@ -899,6 +937,17 @@ static void sim_step(float dt) {
     step_notice_timer(dt);
     update_sell_fx(dt);
     update_damage_fx(dt);
+    if (g.damage_dir_timer > 0.0f) {
+        g.damage_dir_timer -= dt;
+        if (g.damage_dir_timer < 0.0f) g.damage_dir_timer = 0.0f;
+    }
+    if (g.kill_feed_timer > 0.0f) {
+        g.kill_feed_timer -= dt;
+        if (g.kill_feed_timer < 0.0f) {
+            g.kill_feed_timer = 0.0f;
+            g.kill_feed_text[0] = '\0';
+        }
+    }
     if (g.action_predict_timer > 0.0f)
         g.action_predict_timer = fmaxf(0.0f, g.action_predict_timer - dt);
     if (g.dock_settle_timer > 0.0f)
