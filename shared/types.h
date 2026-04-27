@@ -659,7 +659,20 @@ typedef enum {
     SIM_EVENT_DEATH,
     SIM_EVENT_SCAFFOLD_READY,
     SIM_EVENT_ORDER_REJECTED,
+    SIM_EVENT_NPC_KILL,
 } sim_event_type_t;
+
+/* What killed a ship. Stable wire values — keep additions append-only.
+ * Used both for player death cinematic copy ("killed by KRX-472 — thrown
+ * rock") and for the NPC kill-feed when a player kills an NPC. */
+typedef enum {
+    DEATH_CAUSE_UNKNOWN     = 0,  /* env / unknown */
+    DEATH_CAUSE_RAM         = 1,  /* player-vs-player ramming */
+    DEATH_CAUSE_THROWN_ROCK = 2,  /* asteroid attributed via last_towed_token */
+    DEATH_CAUSE_ASTEROID    = 3,  /* unattributed asteroid collision */
+    DEATH_CAUSE_STATION     = 4,  /* corridor / module crush */
+    DEATH_CAUSE_SELF        = 5,  /* X-key reset / self-destruct */
+} death_cause_t;
 
 typedef struct {
     sim_event_type_t type;
@@ -692,7 +705,20 @@ typedef struct {
             float pos_x, pos_y;     /* where the ship died (pre-respawn) */
             float vel_x, vel_y;     /* velocity at moment of death */
             float angle;            /* hull orientation at moment of death */
+            uint8_t killer_token[8]; /* zero = no attributed killer */
+            uint8_t cause;          /* death_cause_t */
         } death;
+        /* SIM_EVENT_NPC_KILL: a player killed an NPC by collision. The
+         * NPC slot is going to despawn next tick; clients should surface
+         * a kill-feed line. killer_token attributes via the asteroid's
+         * last_towed_token (i.e. the player who threw the rock that hit
+         * the NPC, or the player whose ship rammed it). */
+        struct {
+            uint8_t killer_token[8];
+            uint8_t cause;          /* death_cause_t */
+            uint8_t npc_role;       /* npc_role_t — for kill-feed copy */
+            uint8_t _pad;
+        } npc_kill;
         struct { int station; int module_type; } scaffold_ready;
         /* SIM_EVENT_ORDER_REJECTED: reason code lets the client surface
          * a useful notice ("out of signal range", "no slot here", etc.)

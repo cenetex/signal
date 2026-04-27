@@ -602,7 +602,7 @@ static void launch_ship(world_t *w, server_player_t *sp) {
 }
 
 static void emergency_recover_ship(world_t *w, server_player_t *sp) {
-    emit_event(w, (sim_event_t){
+    sim_event_t death_ev = {
         .type = SIM_EVENT_DEATH, .player_id = sp->id,
         .death = {
             .ore_mined = sp->ship.stat_ore_mined,
@@ -614,8 +614,14 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
             .vel_x = sp->ship.vel.x,
             .vel_y = sp->ship.vel.y,
             .angle = sp->ship.angle,
+            .cause = sp->last_damage_cause,
         }
-    });
+    };
+    memcpy(death_ev.death.killer_token, sp->last_damage_killer_token, 8);
+    emit_event(w, death_ev);
+    /* Reset attribution for next life. */
+    memset(sp->last_damage_killer_token, 0, 8);
+    sp->last_damage_cause = DEATH_CAUSE_UNKNOWN;
     clear_ship_cargo(&sp->ship);
     /* Release towed fragments */
     sp->ship.towed_count = 0;
@@ -642,11 +648,34 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     SIM_LOG("[sim] player %d emergency recovered at station 0\n", sp->id);
 }
 
-static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
+/* Apply hull damage with optional kill attribution. killer_token=NULL or
+ * a zero-byte token means unattributed (environmental). cause is one of
+ * death_cause_t — defaults to DEATH_CAUSE_UNKNOWN if zeroes. The
+ * attribution is stored on the player so the eventual SIM_EVENT_DEATH
+ * fires with the correct killer/cause even if the lethal blow lands
+ * several ticks after the ramp-down begins. */
+static void apply_ship_damage_attributed(world_t *w, server_player_t *sp, float damage,
+                                          const uint8_t killer_token[8], uint8_t cause) {
     if (damage <= 0.0f) return;
     sp->ship.hull = fmaxf(0.0f, sp->ship.hull - damage);
+    /* Record attribution if this hit is non-environmental, OR if no
+     * prior attribution exists (so the FIRST cause sticks). Don't
+     * overwrite an already-attributed killer. */
+    bool has_attribution = (killer_token != NULL) &&
+        (killer_token[0] | killer_token[1] | killer_token[2] | killer_token[3] |
+         killer_token[4] | killer_token[5] | killer_token[6] | killer_token[7]) != 0;
+    if (has_attribution) {
+        memcpy(sp->last_damage_killer_token, killer_token, 8);
+        sp->last_damage_cause = cause;
+    } else if (sp->last_damage_cause == DEATH_CAUSE_UNKNOWN) {
+        sp->last_damage_cause = cause;
+    }
     emit_event(w, (sim_event_t){.type = SIM_EVENT_DAMAGE, .player_id = sp->id, .damage.amount = damage});
     if (sp->ship.hull <= 0.01f) emergency_recover_ship(w, sp);
+}
+
+static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
+    apply_ship_damage_attributed(w, sp, damage, NULL, DEATH_CAUSE_ASTEROID);
 }
 
 /* ================================================================== */
@@ -674,10 +703,78 @@ static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, fl
     if (vel_toward < 0.0f) {
         float impact = -vel_toward;
         float dmg = sp->docked ? 0.0f : collision_damage_for(impact, 1.0f);
-        if (dmg > 0.0f) apply_ship_damage(w, sp, dmg);
+        if (dmg > 0.0f) {
+            apply_ship_damage_attributed(w, sp, dmg, NULL, DEATH_CAUSE_STATION);
+        }
         /* Clamp inward velocity component to zero — slide along the surface
          * tangent on the next tick instead of bouncing back through it. */
         sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(normal, vel_toward));
+    }
+    ship_collision_count++;
+}
+
+/* Asteroid-vs-ship collision with relative velocity, kill attribution,
+ * and size-scaled damage.
+ *
+ *   1. Damage uses |rel_vel . normal| (not just ship.vel) so a stationary
+ *      ship hit by a fast rock takes the right impact.
+ *   2. last_towed_token attributes the kill to the player who threw the
+ *      rock; self-damage is suppressed so your own thrown rocks don't
+ *      kill you on the rebound.
+ *   3. Damage scales with rock radius. An XL rock hits ~2.5× harder
+ *      than an S-tier fragment. Free signal that bigger rocks matter. */
+static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, asteroid_t *a) {
+    float minimum = a->radius + ship_hull_def(&sp->ship)->ship_radius;
+    vec2 delta = v2_sub(sp->ship.pos, a->pos);
+    float d_sq = v2_len_sq(delta);
+    if (d_sq >= minimum * minimum) return;
+    float d = sqrtf(d_sq);
+    vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
+    sp->ship.pos = v2_add(a->pos, v2_scale(normal, minimum + COLLISION_SKIN));
+
+    /* Relative closing velocity along the contact normal. Positive = the
+     * ship is moving away from the rock (or rock fleeing the ship);
+     * negative = closing. The magnitude is what hurts. */
+    vec2 rel_vel = v2_sub(sp->ship.vel, a->vel);
+    float vel_toward = v2_dot(rel_vel, normal);
+    if (vel_toward < 0.0f) {
+        /* Self-damage skip: your own thrown rock can't hurt you. The
+         * collision still resolves geometrically (push-out + velocity
+         * clamp) so the rock doesn't tunnel through your hull, but no
+         * hull damage and no kill credit. */
+        bool self = false;
+        bool attributed =
+            (a->last_towed_token[0] | a->last_towed_token[1] | a->last_towed_token[2] |
+             a->last_towed_token[3] | a->last_towed_token[4] | a->last_towed_token[5] |
+             a->last_towed_token[6] | a->last_towed_token[7]) != 0;
+        if (attributed && memcmp(a->last_towed_token, sp->session_token, 8) == 0) {
+            self = true;
+        }
+
+        if (!self) {
+            float impact = -vel_toward;
+            /* Size scaling: small fragments tickle, XL/XXL gut-punch.
+             * Tuned so an S-tier (radius ~10) is 0.5×, M-tier (~30) is
+             * 1.0×, XL (~60) is ~2.0×, XXL (~80) is the 2.5× cap. */
+            float size_mult = a->radius / 30.0f;
+            if (size_mult < 0.5f) size_mult = 0.5f;
+            if (size_mult > 2.5f) size_mult = 2.5f;
+            float dmg = sp->docked ? 0.0f : collision_damage_for(impact, size_mult);
+            if (dmg > 0.0f) {
+                uint8_t cause = attributed ? DEATH_CAUSE_THROWN_ROCK : DEATH_CAUSE_ASTEROID;
+                apply_ship_damage_attributed(w, sp, dmg,
+                    attributed ? a->last_towed_token : NULL, cause);
+            }
+        }
+
+        /* Geometric resolution: cancel inward component of rel_vel by
+         * splitting the change between ship and rock. Mass-equal split
+         * is the cheapest stable model — gives reasonable bouncing
+         * without a real mass field. */
+        vec2 impulse = v2_scale(normal, vel_toward * 0.5f);
+        sp->ship.vel = v2_sub(sp->ship.vel, impulse);
+        a->vel       = v2_add(a->vel, impulse);
+        a->net_dirty = true;
     }
     ship_collision_count++;
 }
@@ -1272,7 +1369,7 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
             /* Only collide if moving fast enough (hurled or whiplashed) */
             if (v2_len_sq(w->asteroids[i].vel) < 40.0f * 40.0f) continue;
         }
-        resolve_ship_circle(w, sp, w->asteroids[i].pos, w->asteroids[i].radius);
+        resolve_ship_asteroid_collision(w, sp, &w->asteroids[i]);
     }
     /* Crush: pinched between 3+ bodies simultaneously (2 adjacent modules
      * on the same ring is normal, only crush when truly trapped) */
@@ -1651,7 +1748,7 @@ static void step_leashed_fragments(world_t *w, server_player_t *sp, float dt) {
 /* HOPPER_PULL_RANGE, HOPPER_PULL_ACCEL → game_sim.h */
 #define FURNACE_SMELT_RANGE 250.0f  /* fragment counts as "held" by furnace within this range */
 
-static void release_towed_fragments(server_player_t *sp);
+static void release_towed_fragments(world_t *w, server_player_t *sp);
 
 /* Clean up dead refs AND auto-detach ALL towed fragments when ship is near a hopper. */
 static void step_towed_cleanup(world_t *w, server_player_t *sp) {
@@ -1669,8 +1766,36 @@ static void step_towed_cleanup(world_t *w, server_player_t *sp) {
      * directly, crediting the towing player. */
 }
 
-/* Release all towed fragments (manual dump). */
-static void release_towed_fragments(server_player_t *sp) {
+/* Release all towed fragments. The release is also the throw — every
+ * release imparts ship velocity + a forward fling impulse so dropped
+ * rocks have meaningful momentum. last_towed_token stays set on the
+ * fragment, so if the rock hits another ship the killer attribution
+ * resolves to the player who threw it.
+ *
+ * Forward direction is the ship's facing at release, not the rock's
+ * tow position relative to the ship. The skill is positioning + facing
+ * before the release tap.
+ *
+ * fling_speed scales with hull accel — heavier ships throw harder, in
+ * the same shape as scaffold_tow_speed_cap. Floored at the small-ship
+ * minimum so even a starter can put a meaningful impulse on a rock. */
+#define ROCK_THROW_BASE_SPEED 60.0f
+#define ROCK_THROW_ACCEL_K     0.15f
+static void release_towed_fragments(world_t *w, server_player_t *sp) {
+    vec2 forward = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
+    const hull_def_t *hull = ship_hull_def(&sp->ship);
+    float fling = ROCK_THROW_BASE_SPEED + hull->accel * ROCK_THROW_ACCEL_K;
+    for (int t = 0; t < sp->ship.towed_count; t++) {
+        int idx = sp->ship.towed_fragments[t];
+        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
+        if (!w->asteroids[idx].active) continue;
+        asteroid_t *a = &w->asteroids[idx];
+        a->vel = v2_add(sp->ship.vel, v2_scale(forward, fling));
+        a->net_dirty = true;
+        /* last_towed_by / last_towed_token already set when the
+         * tractor pulled the fragment in — leave them so kill credit
+         * resolves on impact. */
+    }
     sp->ship.towed_count = 0;
     memset(sp->ship.towed_fragments, -1, sizeof(sp->ship.towed_fragments));
 }
@@ -2817,7 +2942,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 /* Hold R = tractor active; tap R = release fragments + scaffold */
                 sp->ship.tractor_active = sp->input.tractor_hold;
                 if (sp->input.release_tow) {
-                    release_towed_fragments(sp);
+                    release_towed_fragments(w, sp);
                     release_towed_scaffold(w, sp);
                 }
                 step_towed_cleanup(w, sp);
@@ -4106,8 +4231,10 @@ void world_sim_step(world_t *w, float dt) {
                  * that wouldn't bruise a static collision. */
                 float dmg = collision_damage_for(impact, 0.7f);
                 if (dmg > 0.0f) {
-                    apply_ship_damage(w, &w->players[i], dmg);
-                    apply_ship_damage(w, &w->players[j], dmg);
+                    apply_ship_damage_attributed(w, &w->players[i], dmg,
+                        w->players[j].session_token, DEATH_CAUSE_RAM);
+                    apply_ship_damage_attributed(w, &w->players[j], dmg,
+                        w->players[i].session_token, DEATH_CAUSE_RAM);
                 }
             }
         }

@@ -23,6 +23,13 @@ void rebuild_characters_from_npcs(world_t *w);
  * `dmg <= 0` is a no-op. */
 void apply_npc_ship_damage(world_t *w, int npc_slot, float dmg);
 
+/* Damage an NPC with kill attribution. If the hit drops hull to <= 0
+ * AND killer_token is non-zero, emits SIM_EVENT_NPC_KILL with the
+ * supplied cause. killer_token=NULL or all-zero attributes nothing
+ * (no kill-feed line). */
+void apply_npc_ship_damage_attributed(world_t *w, int npc_slot, float dmg,
+                                       const uint8_t killer_token[8], uint8_t cause);
+
 /* Resolve an NPC slot to its paired ship_t (#294 Slice 8). Returns
  * NULL if the slot is out of range, the NPC isn't active, or no
  * character is currently paired. Const-overload via the same

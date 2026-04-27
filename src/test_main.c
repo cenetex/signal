@@ -46,6 +46,7 @@ void register_econ_sim_invariant_tests(void);
 void register_asteroid_tests(void);
 void register_signal_chain_tests(void);
 void register_label_tests(void);
+void register_pvp_rocks_tests(void);
 
 int main(int argc, char **argv) {
     setbuf(stdout, NULL); /* unbuffered so crash location is visible */
@@ -110,6 +111,7 @@ int main(int argc, char **argv) {
     register_asteroid_tests();
     register_signal_chain_tests();
     register_label_tests();
+    register_pvp_rocks_tests();
 
     printf("\n%d tests run, %d passed, %d failed", tests_run, tests_passed, tests_failed);
     if (g_warnings > 0) printf(", %d warnings", g_warnings);

@@ -281,6 +281,12 @@ typedef struct {
     float autopilot_stuck_timer;/* seconds since meaningful movement */
     /* Per-player relevance: tracks which asteroids this player has received */
     bool asteroid_sent[MAX_ASTEROIDS];
+    /* Last damage attribution. Set by apply_ship_damage_attributed and
+     * read by emergency_recover_ship when populating SIM_EVENT_DEATH so
+     * the death cinematic can name a killer. Cleared when the player
+     * docks (a dock = "you survived"). zero token = unattributed. */
+    uint8_t last_damage_killer_token[8];
+    uint8_t last_damage_cause; /* death_cause_t */
 } server_player_t;
 
 typedef struct {

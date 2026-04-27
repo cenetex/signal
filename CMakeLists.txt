@@ -155,6 +155,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         src/tests/test_asteroid.c
         src/tests/test_chain.c
         src/tests/test_labels.c
+        src/tests/test_pvp_rocks.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
     )

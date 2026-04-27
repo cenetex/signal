@@ -213,31 +213,58 @@ static void mirror_ship_to_npc(world_t *w, int npc_slot) {
     s->angle = npc->angle;
 }
 
-/* Apply damage to an NPC by mutating its ship_t.hull. The reverse
+/* Apply damage to an NPC with optional kill attribution. The reverse
  * mirror at end-of-tick pushes the result into npc->hull so the
- * existing despawn check fires when hull <= 0.
+ * existing despawn check fires when hull <= 0. If the hit drops hull
+ * to <= 0 AND killer_token is non-zero, emits SIM_EVENT_NPC_KILL.
  *
  * Public: external code (rock-throw collision, PvP, etc.) reaches NPC
  * damage through this helper so the unified ship_t.hull stays the
  * single source of truth. Validates inputs — out-of-range or inactive
- * slots are no-ops; this is a defensive boundary, not a programmer
- * assertion. */
-void apply_npc_ship_damage(world_t *w, int npc_slot, float dmg) {
+ * slots are no-ops. */
+void apply_npc_ship_damage_attributed(world_t *w, int npc_slot, float dmg,
+                                       const uint8_t killer_token[8], uint8_t cause) {
     if (!w) return;
     if (dmg <= 0.0f) return;
     if (npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return;
     npc_ship_t *npc = &w->npc_ships[npc_slot];
     if (!npc->active) return;
     ship_t *s = npc_ship_for(w, npc_slot);
+    float prev_hull;
     if (!s) {
-        /* Fallback: paired ship missing (transitional, e.g. mid-spawn).
-         * Mutate the npc directly so we don't silently swallow damage. */
+        prev_hull = npc->hull;
         npc->hull -= dmg;
         if (npc->hull < 0.0f) npc->hull = 0.0f;
-        return;
+    } else {
+        prev_hull = s->hull;
+        s->hull -= dmg;
+        if (s->hull < 0.0f) s->hull = 0.0f;
     }
-    s->hull -= dmg;
-    if (s->hull < 0.0f) s->hull = 0.0f;
+    /* Kill-feed: emit only on the lethal blow, only if attributed. */
+    if (prev_hull > 0.0f) {
+        float new_hull = s ? s->hull : npc->hull;
+        if (new_hull <= 0.0f && killer_token) {
+            bool nonzero = (killer_token[0] | killer_token[1] | killer_token[2] |
+                            killer_token[3] | killer_token[4] | killer_token[5] |
+                            killer_token[6] | killer_token[7]) != 0;
+            if (nonzero) {
+                sim_event_t kill_ev = {
+                    .type = SIM_EVENT_NPC_KILL,
+                    .npc_kill = {
+                        .cause = cause,
+                        .npc_role = (uint8_t)npc->role,
+                    },
+                };
+                memcpy(kill_ev.npc_kill.killer_token, killer_token, 8);
+                emit_event(w, kill_ev);
+            }
+        }
+    }
+}
+
+/* Unattributed damage — environmental hits that don't credit a kill. */
+void apply_npc_ship_damage(world_t *w, int npc_slot, float dmg) {
+    apply_npc_ship_damage_attributed(w, npc_slot, dmg, NULL, DEATH_CAUSE_ASTEROID);
 }
 
 /* Mirror brain state from an NPC into its paired character_t (#294
@@ -597,16 +624,39 @@ static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
         float d = sqrtf(d_sq);
         vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
         npc->pos = v2_add(a->pos, v2_scale(normal, minimum));
-        float vel_toward = v2_dot(npc->vel, normal);
+        /* Relative velocity so a stationary NPC hit by a fast rock takes
+         * the right impact (matches resolve_ship_asteroid_collision). */
+        vec2 rel_vel = v2_sub(npc->vel, a->vel);
+        float vel_toward = v2_dot(rel_vel, normal);
         if (vel_toward < 0.0f) {
             float impact = -vel_toward;
             npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.0f));
             /* Same formula as players (collision_damage_for in game_sim.h).
              * NPCs feeding the kit-demand sink is the load-bearing reason
              * the kit economy exists at all. */
-            float dmg = collision_damage_for(impact, 1.0f);
+            /* Size-scaled damage (matches resolve_ship_asteroid_collision):
+             * S-tier 0.5×, M-tier 1.0×, XL ~2.0×, XXL 2.5× cap. NPCs use
+             * relative velocity vs. asteroid? They have no own velocity
+             * relative to a stationary rock — but a thrown rock can hit
+             * a stationary NPC, so use rel_vel via vel_toward already. */
+            float size_mult = a->radius / 30.0f;
+            if (size_mult < 0.5f) size_mult = 0.5f;
+            if (size_mult > 2.5f) size_mult = 2.5f;
+            float dmg = collision_damage_for(impact, size_mult);
             int npc_slot = (int)(npc - w->npc_ships);
-            apply_npc_ship_damage(w, npc_slot, dmg);
+            /* If the rock has a thrown-by token, attribute the kill so
+             * the kill-feed surfaces "KRX-472 killed Hauler-7 with a
+             * thrown rock". Otherwise unattributed environmental. */
+            bool attributed =
+                (a->last_towed_token[0] | a->last_towed_token[1] | a->last_towed_token[2] |
+                 a->last_towed_token[3] | a->last_towed_token[4] | a->last_towed_token[5] |
+                 a->last_towed_token[6] | a->last_towed_token[7]) != 0;
+            if (attributed) {
+                apply_npc_ship_damage_attributed(w, npc_slot, dmg,
+                    a->last_towed_token, DEATH_CAUSE_THROWN_ROCK);
+            } else {
+                apply_npc_ship_damage(w, npc_slot, dmg);
+            }
         }
     }
 }
