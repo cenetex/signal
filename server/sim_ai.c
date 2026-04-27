@@ -173,17 +173,44 @@ static ship_t *npc_ship_for(world_t *w, int npc_slot) {
     return &w->ships[s];
 }
 
-/* Reverse mirror: push ship.hull back into npc.hull at the end of an
- * NPC's tick. Lets damage written through the ship layer (the player
- * path's substrate) flow into the npc's despawn check next tick.
- * Physics fields stay npc-authoritative for now — dispatch writes
- * pos/vel/angle on the npc side and the top-of-tick mirror keeps the
- * ship in sync; flipping dispatch onto ship_t is a later slice. */
+/* Public wrapper: rejects NULL world and out-of-range / inactive
+ * slots. Used by tests and external readers that want to inspect or
+ * mutate an NPC's paired ship_t. */
+ship_t *world_npc_ship_for(world_t *w, int npc_slot) {
+    if (!w) return NULL;
+    if (npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return NULL;
+    if (!w->npc_ships[npc_slot].active) return NULL;
+    return npc_ship_for(w, npc_slot);
+}
+
+/* End-of-tick paired-pool sync. Each field flows in the direction of
+ * its current authority:
+ *
+ *   - hull is ship-authoritative since Slice 9/11 (apply_npc_ship_damage,
+ *     hauler dock auto-repair both write ship.hull). Push ship -> npc
+ *     so the npc-side despawn check reads a fresh value next tick.
+ *   - pos / vel / angle / thrusting are still npc-authoritative — the
+ *     dispatch writes them on the npc side. Push npc -> ship so the
+ *     ship is a faithful end-of-tick snapshot. Required for the
+ *     parity invariant (test_npc_ship_physics_in_sync_each_tick) and
+ *     for any external reader that takes ship_t as the canonical
+ *     view. Slice 13 flips these to ship-authoritative; this function
+ *     becomes ship -> npc only at that point.
+ *
+ * Caveat for the npc-authoritative direction: external code that
+ * mutates ship.pos/vel/angle *between* two ticks will have its
+ * change overwritten here at the next end-of-tick. That's the bug
+ * Slice 13 fixes. Until then, external physics writes don't survive
+ * this transitional sync — only damage does (via the ship-authoritative
+ * hull path). */
 static void mirror_ship_to_npc(world_t *w, int npc_slot) {
-    const ship_t *s = npc_ship_for(w, npc_slot);
+    ship_t *s = npc_ship_for(w, npc_slot);
     if (!s) return;
     npc_ship_t *npc = &w->npc_ships[npc_slot];
     npc->hull = s->hull;
+    s->pos = npc->pos;
+    s->vel = npc->vel;
+    s->angle = npc->angle;
 }
 
 /* Apply damage to an NPC by mutating its ship_t.hull. The reverse

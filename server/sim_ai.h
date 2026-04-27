@@ -23,4 +23,11 @@ void rebuild_characters_from_npcs(world_t *w);
  * `dmg <= 0` is a no-op. */
 void apply_npc_ship_damage(world_t *w, int npc_slot, float dmg);
 
+/* Resolve an NPC slot to its paired ship_t (#294 Slice 8). Returns
+ * NULL if the slot is out of range, the NPC isn't active, or no
+ * character is currently paired. Const-overload via the same
+ * underlying lookup is unnecessary today; tests and external readers
+ * can take the non-const pointer. */
+ship_t *world_npc_ship_for(world_t *w, int npc_slot);
+
 #endif /* SIM_AI_H */

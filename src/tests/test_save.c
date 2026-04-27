@@ -50,6 +50,35 @@ TEST(test_world_save_load_preserves_npcs) {
     remove("/tmp/test_npcs.sav");
 }
 
+TEST(test_npc_ship_physics_in_sync_each_tick) {
+    /* Tripwire for the Slice 13 physics flip and any future mirror
+     * direction change: at the end of every sim step, every active
+     * NPC's paired ship_t must agree with its npc_ship_t on hull,
+     * hull_class, pos, vel, and angle. A missed write site lasts at
+     * most one tick before the reverse mirror washes it out, so
+     * behavioral tests don't catch it — this one does, immediately.
+     * Runs for 10 sim seconds (1200 ticks @ 120 Hz) to cover spawn,
+     * mine, dock, hauler-in-transit, and at least one despawn cycle. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int t = 0; t < 1200; t++) {
+        world_sim_step(w, SIM_DT);
+        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+            const npc_ship_t *npc = &w->npc_ships[n];
+            if (!npc->active) continue;
+            const ship_t *s = world_npc_ship_for(w, n);
+            ASSERT(s != NULL);
+            ASSERT_EQ_FLOAT(s->hull, npc->hull, 0.001f);
+            ASSERT(s->hull_class == npc->hull_class);
+            ASSERT_EQ_FLOAT(s->pos.x, npc->pos.x, 0.001f);
+            ASSERT_EQ_FLOAT(s->pos.y, npc->pos.y, 0.001f);
+            ASSERT_EQ_FLOAT(s->vel.x, npc->vel.x, 0.001f);
+            ASSERT_EQ_FLOAT(s->vel.y, npc->vel.y, 0.001f);
+            ASSERT_EQ_FLOAT(s->angle, npc->angle, 0.001f);
+        }
+    }
+}
+
 TEST(test_world_load_rebuilds_character_pool) {
     /* world_load only restores npc_ships[]; the paired character_t /
      * ships[] pools are server-side transient and have to be rebuilt
@@ -642,6 +671,7 @@ void register_save_persistence_tests(void) {
     RUN(test_player_save_load_roundtrip);
     RUN(test_world_save_load_preserves_stations);
     RUN(test_world_save_load_preserves_npcs);
+    RUN(test_npc_ship_physics_in_sync_each_tick);
     RUN(test_world_load_rebuilds_character_pool);
     RUN(test_world_save_load_preserves_fracture_children);
     RUN(test_world_load_preserves_fracture_claim_dedupe_identity);
