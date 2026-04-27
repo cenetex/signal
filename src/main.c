@@ -67,7 +67,6 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 /* format_ingot_stock_line: see station_ui.c */
 /* station_at ... navigation_station_ptr: see station_ui.c */
 /* station_role_name, station_role_short_name: see station_ui.c */
-/* station_has_service, station_upgrade_service: see station_ui.c */
 /* build_station_ui_state, format_station_* helpers: see station_ui.c */
 /* station_role_hub_label, station_role_market_title, station_role_fit_title: see station_ui.c */
 /* station_role_color: see station_ui.c */

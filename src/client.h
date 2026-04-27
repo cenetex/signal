@@ -435,8 +435,6 @@ const station_t* nearby_station_ptr(void);
 int nearest_station_index(vec2 pos);
 int nearest_signal_station(vec2 pos);
 const station_t* navigation_station_ptr(void);
-bool station_has_service(uint32_t service);
-uint32_t station_upgrade_service(ship_upgrade_t upgrade);
 
 /* (Old MARKET / STATUS formatter helpers retired in the docked-UI
  * redesign — the verb-list view computes its rows inline from station

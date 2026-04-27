@@ -168,29 +168,6 @@ void station_role_color(const station_t* station, float* r, float* g0, float* b)
 }
 
 /* ------------------------------------------------------------------ */
-/* Station service / upgrade helpers                                   */
-/* ------------------------------------------------------------------ */
-
-bool station_has_service(uint32_t service) {
-    const station_t* station = current_station_ptr();
-    return (station != NULL) && ((station->services & service) != 0);
-}
-
-uint32_t station_upgrade_service(ship_upgrade_t upgrade) {
-    switch (upgrade) {
-        case SHIP_UPGRADE_MINING:
-            return STATION_SERVICE_UPGRADE_LASER;
-        case SHIP_UPGRADE_HOLD:
-            return STATION_SERVICE_UPGRADE_HOLD;
-        case SHIP_UPGRADE_TRACTOR:
-            return STATION_SERVICE_UPGRADE_TRACTOR;
-        case SHIP_UPGRADE_COUNT:
-        default:
-            return 0;
-    }
-}
-
-/* ------------------------------------------------------------------ */
 /* Formatting helpers                                                  */
 /* ------------------------------------------------------------------ */
 
