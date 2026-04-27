@@ -419,75 +419,15 @@ static void sample_trade_sell_all(input_intent_t *intent) {
     set_notice("Selling...");
 }
 
-/* TRADE picker row resolution + apply.
- *
- * The picker is a single page-flipping list of BUY rows (station sells)
- * followed by SELL rows (station buys). [F] advances the page (wraps
- * past the last). Digit keys [1]..[5] pick the Nth row on the current
- * page and fire the matching intent. Row construction must match
- * draw_trade_view in station_ui.c — divergence silently misroutes
- * keys for non-dominant commodities. */
-typedef struct {
-    int kind;            /* 0 = BUY, 1 = SELL, -1 = no row */
-    commodity_t commodity;
-    mining_grade_t grade;
-} trade_row_t;
-
-/* Walk station BUY rows (one per commodity/grade with stock>0). */
-static bool trade_resolve_buy_row(const station_t *st, int station_idx,
-                                   int target, int *global_idx,
-                                   trade_row_t *out) {
-    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-        if (!station_produces(st, (commodity_t)c)) continue;
-        if (st->base_price[c] <= FLOAT_EPSILON) continue;
-        for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
-            int stock = (int)g.station_manifest_summary[station_idx][c][gi];
-            if (stock <= 0) continue;
-            if (*global_idx == target) {
-                out->kind = 0;
-                out->commodity = (commodity_t)c;
-                out->grade = (mining_grade_t)gi;
-                return true;
-            }
-            (*global_idx)++;
-        }
-    }
-    return false;
-}
-
-/* Walk SELL rows (one per commodity/grade the player carries that the
- * station consumes). */
-static bool trade_resolve_sell_row(const ship_t *ship, const station_t *st,
-                                    int target, int *global_idx,
-                                    trade_row_t *out) {
-    if (!ship->manifest.units) return false;
-    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-        if (!station_consumes(st, (commodity_t)c)) continue;
-        for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) {
-            int cnt = 0;
-            for (uint16_t u = 0; u < ship->manifest.count; u++) {
-                const cargo_unit_t *cu = &ship->manifest.units[u];
-                if (cu->commodity == (uint8_t)c && cu->grade == (uint8_t)gi) cnt++;
-            }
-            if (cnt <= 0) continue;
-            if (*global_idx == target) {
-                out->kind = 1;
-                out->commodity = (commodity_t)c;
-                out->grade = (mining_grade_t)gi;
-                return true;
-            }
-            (*global_idx)++;
-        }
-    }
-    return false;
-}
-
+/* TRADE picker — page through the unified row list and dispatch on the
+ * digit pick. Row construction lives in station_ui.c:build_trade_rows
+ * so the renderer and the input handler share a single source of
+ * truth. Mismatched [1] hotkeys aren't possible by construction. */
 static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
-                                 const ship_t *ship, trade_row_t row) {
-    float price = station_sell_price(st, row.commodity) *
-                  mining_payout_multiplier(row.grade);
+                                 const ship_t *ship, const trade_row_t *row) {
+    float price = (float)row->unit_price;
     float free_volume = ship_cargo_capacity(ship) - ship_total_cargo(ship);
-    float vol = commodity_volume(row.commodity);
+    float vol = commodity_volume(row->commodity);
     /* Match server: dense goods buy multi-per-press so a single keystroke
      * fills one cargo unit. */
     int per_press = (vol > FLOAT_EPSILON) ? (int)lroundf(1.0f / vol) : 1;
@@ -496,9 +436,9 @@ static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
     if (player_current_balance() < price) { set_notice("Need $%d.", (int)lroundf(price)); return; }
 
     intent->buy_product = true;
-    intent->buy_commodity = row.commodity;
-    intent->buy_grade = row.grade;
-    LOCAL_PLAYER.ship.cargo[row.commodity] += (float)per_press;
+    intent->buy_commodity = row->commodity;
+    intent->buy_grade = row->grade;
+    LOCAL_PLAYER.ship.cargo[row->commodity] += (float)per_press;
     if (!g.multiplayer_enabled) {
         station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
         float total = price * (float)per_press;
@@ -511,8 +451,9 @@ static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
     }
     set_notice("-$%d  %s %s x%d",
                (int)lroundf(price * (float)per_press),
-               mining_grade_label(row.grade),
-               commodity_short_name(row.commodity), per_press);
+               mining_grade_label(row->grade),
+               commodity_short_name(row->commodity), per_press);
+    (void)st;
 }
 
 static void sample_trade_picker(input_intent_t *intent) {
@@ -525,27 +466,24 @@ static void sample_trade_picker(input_intent_t *intent) {
     if (digit_pick < 0 || !st) return;
 
     const ship_t *ship = &LOCAL_PLAYER.ship;
-    int global_idx = 0;
-    int target = (int)g.trade_page * 5 + digit_pick;
-    int station_idx = (int)(st - g.world.stations);
-    trade_row_t row = { .kind = -1 };
+    trade_row_t rows[TRADE_MAX_ROWS];
+    int row_count = build_trade_rows(st, ship, rows, TRADE_MAX_ROWS);
+    int target = (int)g.trade_page * TRADE_ROWS_PER_PAGE + digit_pick;
 
-    if (station_idx >= 0 && station_idx < MAX_STATIONS)
-        trade_resolve_buy_row(st, station_idx, target, &global_idx, &row);
-    if (row.kind < 0)
-        trade_resolve_sell_row(ship, st, target, &global_idx, &row);
-
-    if (row.kind == 0) {
-        trade_apply_buy_row(intent, st, ship, row);
-    } else if (row.kind == 1) {
-        intent->service_sell = true;
-        intent->service_sell_only = row.commodity;
-        set_notice("Selling %s %s...",
-                   mining_grade_label(row.grade),
-                   commodity_short_name(row.commodity));
-    } else {
+    if (target >= row_count) {
         /* Past the end — wrap the page pointer so [F] feels natural. */
         g.trade_page = 0;
+        return;
+    }
+    const trade_row_t *row = &rows[target];
+    if (row->kind == 0) {
+        trade_apply_buy_row(intent, st, ship, row);
+    } else if (row->kind == 1) {
+        intent->service_sell = true;
+        intent->service_sell_only = row->commodity;
+        set_notice("Selling %s %s...",
+                   mining_grade_label(row->grade),
+                   commodity_short_name(row->commodity));
     }
 }
 

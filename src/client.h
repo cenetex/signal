@@ -76,6 +76,33 @@ typedef struct {
     int kits_short_by;
 } station_ui_state_t;
 
+/* TRADE picker row — single source of truth shared by the picker
+ * renderer (station_ui.c) and the input handler (input.c). Both walk
+ * the SAME row list so a [1] keypress can never hit a different row
+ * than the one drawn on screen. See build_trade_rows() below. */
+typedef struct {
+    uint8_t        kind;       /* 0 = BUY (station sells), 1 = SELL (station buys) */
+    commodity_t    commodity;
+    mining_grade_t grade;
+    int            stock;      /* units available on the active side */
+    int            unit_price; /* per-unit, already grade-multiplied */
+    bool           actionable; /* player can do this transaction right now */
+    bool           is_float_fallback; /* legacy float row (no manifest unit) */
+} trade_row_t;
+
+/* Pagination constants — input.c walks `g.trade_page * TRADE_ROWS_PER_PAGE`
+ * to find the first row on the current page; the renderer wraps when
+ * total_pages * TRADE_ROWS_PER_PAGE >= row_count. */
+#define TRADE_ROWS_PER_PAGE 5
+#define TRADE_MAX_ROWS      20
+
+/* Build the unified row list for `st` against the player's `ship`.
+ * Output is zero-or-more rows in `out[0..count-1]`, capped at `max`
+ * (caller passes a TRADE_MAX_ROWS-sized buffer). Returns the count.
+ * BUY rows come first, then SELL rows — matches the picker layout. */
+int build_trade_rows(const station_t *st, const ship_t *ship,
+                     trade_row_t out[], int max);
+
 /* ------------------------------------------------------------------ */
 /* Client game state                                                  */
 /* ------------------------------------------------------------------ */

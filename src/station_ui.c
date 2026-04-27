@@ -347,6 +347,28 @@ static const char *ui_station_currency(const station_t *st) {
     return (st->currency_name[0]) ? st->currency_name : "cr";
 }
 
+/* Compact form of the currency name — first word, lowercased and
+ * trimmed to <= 4 chars. Used by the header band when the full label
+ * ("prospect vouchers", 17 chars) won't fit. Falls back to "cr".
+ * Caller-owned buffer must be >= 5 bytes. */
+static void ui_station_currency_short(const station_t *st, char *out, size_t cap) {
+    if (cap == 0) return;
+    if (!st || !st->currency_name[0]) {
+        snprintf(out, cap, "cr");
+        return;
+    }
+    /* Take the first whitespace-delimited word. "prospect vouchers" -> "prospect" */
+    size_t i = 0, j = 0;
+    while (st->currency_name[i] != '\0' && st->currency_name[i] != ' ' &&
+           j < cap - 1 && j < 4) {
+        char c = st->currency_name[i];
+        out[j++] = (c >= 'A' && c <= 'Z') ? (char)(c - 'A' + 'a') : c;
+        i++;
+    }
+    out[j] = '\0';
+    if (j == 0) snprintf(out, cap, "cr");
+}
+
 
 
 /* ====================================================================
@@ -417,29 +439,33 @@ static void draw_header_band(const station_ui_state_t *ui,
     sdtx_puts(role_label);
 
     if (panel_w >= 360.0f) {
-        char right2[64];
         int balance = (int)lroundf(player_current_balance());
         float sig = signal_strength_at(&g.world, st->pos);
-        snprintf(right2, sizeof(right2), "ledger %d %s   sig %.2f",
-                 balance, ui_station_currency(st), sig);
-        float right2_w = (float)strlen(right2) * cell_w;
         float gap = 16.0f;
-        bool fits = (left_x + role_w + gap + right2_w)
-                  <= (panel_x + panel_w - right_margin);
-        /* If the full string wouldn't fit, try just "ledger N cur" (drop
-         * sig); if that still doesn't fit, drop the whole right side. */
-        if (!fits) {
-            snprintf(right2, sizeof(right2), "ledger %d %s",
-                     balance, ui_station_currency(st));
-            right2_w = (float)strlen(right2) * cell_w;
-            fits = (left_x + role_w + gap + right2_w)
-                 <= (panel_x + panel_w - right_margin);
-        }
-        if (fits) {
-            sdtx_pos(ui_text_pos(panel_x + panel_w - right_margin - right2_w),
+        float right_limit = panel_x + panel_w - right_margin;
+        float left_used = left_x + role_w + gap;
+
+        /* Try four progressively shorter forms, each guaranteed to
+         * convey at least the balance. Pick the longest that fits. */
+        char short_cur[8];
+        ui_station_currency_short(st, short_cur, sizeof(short_cur));
+        const char *full_cur = ui_station_currency(st);
+        const char *forms[4];
+        char buf0[64], buf1[64], buf2[64], buf3[32];
+        snprintf(buf0, sizeof(buf0), "ledger %d %s   sig %.2f",  balance, full_cur,  sig);
+        snprintf(buf1, sizeof(buf1), "ledger %d %s",             balance, full_cur);
+        snprintf(buf2, sizeof(buf2), "%d %s   sig %.2f",         balance, short_cur, sig);
+        snprintf(buf3, sizeof(buf3), "%d %s",                    balance, short_cur);
+        forms[0] = buf0; forms[1] = buf1; forms[2] = buf2; forms[3] = buf3;
+
+        for (int i = 0; i < 4; i++) {
+            float w = (float)strlen(forms[i]) * cell_w;
+            if (left_used + w > right_limit) continue;
+            sdtx_pos(ui_text_pos(right_limit - w),
                      ui_text_pos(panel_y + HEADER_L2));
             sdtx_color3b(PAL_TEXT_SECONDARY);
-            sdtx_puts(right2);
+            sdtx_puts(forms[i]);
+            break;
         }
     }
 
@@ -590,19 +616,61 @@ static int ship_manifest_count_cg(const ship_t *ship,
  * select a row on the current page. [F] pages forward; pages wrap at
  * the last page so the UI never runs out. At-station trades show the
  * generic "$" symbol — contract payouts in WORK still name the issuing
- * station's currency because that's where the money actually lives. */
-typedef struct {
-    uint8_t     kind;       /* 0 = BUY (station sells), 1 = SELL (station buys) */
-    commodity_t commodity;
-    mining_grade_t grade;
-    int         stock;      /* units available on the active side */
-    int         unit_price; /* per-unit, already grade-multiplied */
-    bool        actionable; /* player can do this transaction right now */
-    bool        is_float_fallback; /* no manifest entry, legacy float */
-} trade_row_t;
+ * station's currency because that's where the money actually lives.
+ *
+ * trade_row_t and the pagination constants live in client.h so input.c
+ * can index into the same row list — see build_trade_rows below. */
 
-#define TRADE_ROWS_PER_PAGE 5
-#define TRADE_MAX_ROWS      20
+int build_trade_rows(const station_t *st, const ship_t *ship,
+                     trade_row_t out[], int max) {
+    if (!st || !ship || !out || max <= 0) return 0;
+    int row_count = 0;
+    float free_volume = ship_cargo_capacity(ship) - ship_total_cargo(ship);
+    float credits = player_current_balance();
+
+    /* BUY rows — one per (commodity, grade) where the station has
+     * stock AND has the producing module for that commodity. Walks
+     * every finished commodity (not just the dominant one) so a
+     * multi-furnace station like Helios surfaces all of its outputs. */
+    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT && row_count < max; c++) {
+        if (!station_produces(st, (commodity_t)c)) continue;
+        float price_base = station_sell_price(st, (commodity_t)c);
+        if (price_base <= FLOAT_EPSILON) continue;
+        for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
+            int stock = station_manifest_count_cg(st, (commodity_t)c, (mining_grade_t)gi);
+            if (stock <= 0) continue;
+            int price = (int)lroundf(price_base
+                    * mining_payout_multiplier((mining_grade_t)gi));
+            float vol = commodity_volume((commodity_t)c);
+            bool can = (free_volume + FLOAT_EPSILON >= vol) && (credits >= (float)price);
+            out[row_count++] = (trade_row_t){
+                .kind = 0, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
+                .stock = stock, .unit_price = price,
+                .actionable = can, .is_float_fallback = false,
+            };
+        }
+    }
+
+    /* SELL rows — every commodity the station consumes that the player
+     * is carrying. */
+    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT && row_count < max; c++) {
+        if (!station_consumes(st, (commodity_t)c)) continue;
+        float price_base = station_buy_price(st, (commodity_t)c);
+        if (price_base <= FLOAT_EPSILON) continue;
+        for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
+            int held = ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi);
+            if (held <= 0) continue;
+            int price = (int)lroundf(price_base
+                    * mining_payout_multiplier((mining_grade_t)gi));
+            out[row_count++] = (trade_row_t){
+                .kind = 1, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
+                .stock = held, .unit_price = price,
+                .actionable = (held > 0), .is_float_fallback = false,
+            };
+        }
+    }
+    return row_count;
+}
 
 static void draw_trade_view(const station_ui_state_t *ui,
                             float cx, float cy, float inner_w,
@@ -718,58 +786,10 @@ static void draw_trade_view(const station_ui_state_t *ui,
         my += row_h;
     }
 
-    /* Build the unified row list. BUY rows first (station's offering),
-     * SELL rows after (what the station buys from the hold). */
+    /* Single source of truth for the row list (shared with input.c so
+     * a [1] keypress always hits the same row drawn here). */
     trade_row_t rows[TRADE_MAX_ROWS];
-    int row_count = 0;
-
-    float free_volume = ship_cargo_capacity(ship) - ship_total_cargo(ship);
-    float credits = player_current_balance();
-
-    /* BUY rows — one per (commodity, grade) where the station has
-     * stock AND has the producing module for that commodity. Walks
-     * every finished commodity (not just the dominant one) so a
-     * multi-furnace station like Helios surfaces all of its outputs
-     * at once: previously the picker only showed the highest-priority
-     * module's output, so ferrite ingots smelted at Helios were
-     * invisible to the player. Manifest is authoritative. */
-    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT && row_count < TRADE_MAX_ROWS; c++) {
-        if (!station_produces(st, (commodity_t)c)) continue;
-        float price_base = station_sell_price(st, (commodity_t)c);
-        if (price_base <= FLOAT_EPSILON) continue;
-        for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < TRADE_MAX_ROWS; gi++) {
-            int stock = station_manifest_count_cg(st, (commodity_t)c, (mining_grade_t)gi);
-            if (stock <= 0) continue;
-            int price = (int)lroundf(price_base
-                    * mining_payout_multiplier((mining_grade_t)gi));
-            float vol = commodity_volume((commodity_t)c);
-            bool can = (free_volume + FLOAT_EPSILON >= vol) && (credits >= (float)price);
-            rows[row_count++] = (trade_row_t){
-                .kind = 0, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
-                .stock = stock, .unit_price = price,
-                .actionable = can, .is_float_fallback = false,
-            };
-        }
-    }
-
-    /* SELL rows — every commodity the station consumes that the player
-     * is carrying. Same widening as the BUY side. */
-    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT && row_count < TRADE_MAX_ROWS; c++) {
-        if (!station_consumes(st, (commodity_t)c)) continue;
-        float price_base = station_buy_price(st, (commodity_t)c);
-        if (price_base <= FLOAT_EPSILON) continue;
-        for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < TRADE_MAX_ROWS; gi++) {
-            int held = ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi);
-            if (held <= 0) continue;
-            int price = (int)lroundf(price_base
-                    * mining_payout_multiplier((mining_grade_t)gi));
-            rows[row_count++] = (trade_row_t){
-                .kind = 1, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
-                .stock = held, .unit_price = price,
-                .actionable = (held > 0), .is_float_fallback = false,
-            };
-        }
-    }
+    int row_count = build_trade_rows(st, ship, rows, TRADE_MAX_ROWS);
 
     /* Pagination — wrap the current page so [F] at the last page
      * returns to page 0 cleanly. TRADE_ROWS_PER_PAGE is small so page
