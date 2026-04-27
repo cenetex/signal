@@ -75,7 +75,41 @@ static character_kind_t character_kind_from_role(npc_role_t role) {
     }
 }
 
+/* Find a free ships[] slot — one not pointed to by any active character.
+ * Returns -1 if the pool is full. */
+static int ship_pool_alloc_slot(const world_t *w) {
+    int cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
+    for (int s = 0; s < MAX_SHIPS; s++) {
+        bool taken = false;
+        for (int i = 0; i < cap; i++) {
+            if (w->characters[i].active && w->characters[i].ship_idx == s) {
+                taken = true;
+                break;
+            }
+        }
+        if (!taken) return s;
+    }
+    return -1;
+}
+
+/* Initialize a ships[] slot from an NPC's snapshot. Frees any prior
+ * manifest the slot was holding so this is safe for a slot that was
+ * previously occupied (e.g. after rebuild_characters_from_npcs). */
+static void ship_pool_init_from_npc(ship_t *ship, const npc_ship_t *npc) {
+    ship_cleanup(ship);
+    memset(ship, 0, sizeof(*ship));
+    (void)ship_manifest_bootstrap(ship);
+    ship->pos = npc->pos;
+    ship->vel = npc->vel;
+    ship->angle = npc->angle;
+    ship->hull_class = npc->hull_class;
+    ship->hull = npc->hull;
+}
+
 static int character_alloc_for_npc(world_t *w, int npc_slot, const npc_ship_t *npc) {
+    (void)npc_slot; /* ship_idx now points to the unified ships[] pool, not npc_slot. */
+    int ship_slot = ship_pool_alloc_slot(w);
+    if (ship_slot < 0) return -1;
     int cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
     for (int i = 0; i < cap; i++) {
         if (w->characters[i].active) continue;
@@ -83,7 +117,7 @@ static int character_alloc_for_npc(world_t *w, int npc_slot, const npc_ship_t *n
         memset(c, 0, sizeof(*c));
         c->active = true;
         c->kind = character_kind_from_role(npc->role);
-        c->ship_idx = npc_slot;
+        c->ship_idx = ship_slot;
         c->state = npc->state;
         c->target_asteroid = npc->target_asteroid;
         c->home_station = npc->home_station;
@@ -91,8 +125,11 @@ static int character_alloc_for_npc(world_t *w, int npc_slot, const npc_ship_t *n
         c->state_timer = npc->state_timer;
         c->towed_fragment = npc->towed_fragment;
         c->towed_scaffold = npc->towed_scaffold;
+        ship_pool_init_from_npc(&w->ships[ship_slot], npc);
         return i;
     }
+    /* No free character slot; release the ship slot we reserved. */
+    ship_cleanup(&w->ships[ship_slot]);
     return -1;
 }
 
@@ -113,12 +150,19 @@ static int character_for_npc_slot(const world_t *w, int npc_slot) {
 
 static void character_free_for_npc(world_t *w, int npc_slot) {
     int idx = character_for_npc_slot(w, npc_slot);
-    if (idx >= 0) w->characters[idx].active = false;
+    if (idx < 0) return;
+    int ship_slot = w->characters[idx].ship_idx;
+    if (ship_slot >= 0 && ship_slot < MAX_SHIPS) {
+        ship_cleanup(&w->ships[ship_slot]);
+        memset(&w->ships[ship_slot], 0, sizeof(w->ships[ship_slot]));
+    }
+    w->characters[idx].active = false;
 }
 
 /* Mirror brain state from an NPC into its paired character_t (#294
- * Slice 7). Called at the top of each NPC's tick so future readers can
- * trust the controller layer; the npc-side fields remain the source of
+ * Slice 7) AND physics state into its paired ship_t (#294 Slice 8).
+ * Called at the top of each NPC's tick so future readers can trust the
+ * controller + ship layer; the npc-side fields remain the source of
  * truth that the dispatch switch writes back to. */
 static void mirror_npc_to_character(world_t *w, int npc_slot) {
     int idx = character_for_npc_slot(w, npc_slot);
@@ -132,6 +176,14 @@ static void mirror_npc_to_character(world_t *w, int npc_slot) {
     c->state_timer = npc->state_timer;
     c->towed_fragment = npc->towed_fragment;
     c->towed_scaffold = npc->towed_scaffold;
+    if (c->ship_idx >= 0 && c->ship_idx < MAX_SHIPS) {
+        ship_t *s = &w->ships[c->ship_idx];
+        s->pos = npc->pos;
+        s->vel = npc->vel;
+        s->angle = npc->angle;
+        s->hull = npc->hull;
+        s->hull_class = npc->hull_class;
+    }
 }
 
 void rebuild_characters_from_npcs(world_t *w) {
@@ -209,30 +261,31 @@ static bool npc_target_valid(const world_t *w, const npc_ship_t *npc) {
 }
 
 /* Asteroid-already-taken check, reading from the controller layer
- * (#294 Slice 7): scan characters[] for any other MINER targeting
+ * (#294 Slice 7+8): scan characters[] for any other MINER targeting
  * `target_idx`. The mirror at top of tick keeps character.target_asteroid
- * in sync with npc.target_asteroid. `self_npc_slot` is excluded so the
+ * in sync with npc.target_asteroid. `self_char_idx` is excluded so the
  * caller doesn't see itself as a competitor. */
-static bool miner_target_taken(const world_t *w, int target_idx, int self_npc_slot) {
+static bool miner_target_taken(const world_t *w, int target_idx, int self_char_idx) {
     int cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
     for (int i = 0; i < cap; i++) {
+        if (i == self_char_idx) continue;
         const character_t *c = &w->characters[i];
         if (!c->active || c->kind != CHARACTER_KIND_NPC_MINER) continue;
-        if (c->ship_idx == self_npc_slot) continue;
         if (c->target_asteroid == target_idx) return true;
     }
     return false;
 }
 
 static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
-    int self_slot = (int)(npc - w->npc_ships);
+    int self_npc_slot = (int)(npc - w->npc_ships);
+    int self_char = character_for_npc_slot(w, self_npc_slot);
 
     /* Priority: DESTROY contract targets first */
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (!w->contracts[k].active || w->contracts[k].action != CONTRACT_FRACTURE) continue;
         int idx = w->contracts[k].target_index;
         if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
-        if (!miner_target_taken(w, idx, self_slot)) return idx;
+        if (!miner_target_taken(w, idx, self_char)) return idx;
     }
 
     /* Normal: find nearest mineable asteroid */
@@ -242,7 +295,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier == ASTEROID_TIER_S) continue;
         if (signal_npc_confidence(signal_strength_at(w, a->pos)) < 0.1f) continue;
-        if (miner_target_taken(w, i, self_slot)) continue;
+        if (miner_target_taken(w, i, self_char)) continue;
         float d = v2_dist_sq(npc->pos, a->pos);
         if (d < best_d) { best_d = d; best = i; }
     }

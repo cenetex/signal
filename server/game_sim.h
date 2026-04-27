@@ -25,6 +25,9 @@
 
 enum {
     MAX_PLAYERS = 32,
+    /* #294 Slice 8: unified NPC ship_t pool. Sized for NPCs only today;
+     * widening to include players is a later slice. */
+    MAX_SHIPS = MAX_NPC_SHIPS,
 };
 
 static const float WORLD_RADIUS = 50000.0f;  /* safety net; gameplay bounded by station signal_range */
@@ -294,8 +297,14 @@ typedef struct {
         bool from_chunk;   /* true = terrain, false = fracture child */
     } asteroid_origin[MAX_ASTEROIDS];
     npc_ship_t npc_ships[MAX_NPC_SHIPS];
-    /* #294 Slice 1: empty controller pool. Nothing populates this yet —
-     * MINER migration (Slice 3a) will be the first writer. Sized to the
+    /* #294 Slice 8: unified ship_t pool. Each active NPC owns a slot
+     * here; the paired character_t.ship_idx points to it. Players still
+     * carry an inline ship_t in server_player_t — converging is a later
+     * slice. Manifest lifecycle: bootstrap on alloc, ship_cleanup on
+     * free and on world_cleanup/world_reset. */
+    ship_t ships[MAX_SHIPS];
+    /* Controller pool. Each entry pairs an active NPC (today) or a
+     * player (later) to a ship slot via ship_idx. Sized to the
      * NPC + player union so later slices don't need a flag-day resize. */
     character_t characters[MAX_PLAYERS + MAX_NPC_SHIPS];
     scaffold_t scaffolds[MAX_SCAFFOLDS];

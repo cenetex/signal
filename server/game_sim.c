@@ -4125,6 +4125,8 @@ void world_sim_step_player_only(world_t *w, int player_idx, float dt) {
 void world_cleanup(world_t *w) {
     for (int i = 0; i < MAX_PLAYERS; i++)
         ship_cleanup(&w->players[i].ship);
+    for (int i = 0; i < MAX_SHIPS; i++)
+        ship_cleanup(&w->ships[i]);
     for (int i = 0; i < MAX_STATIONS; i++)
         station_cleanup(&w->stations[i]);
     free(w->signal_cache.strength);
@@ -4153,6 +4155,8 @@ void world_reset(world_t *w) {
     sparse_cell_entry_t *grid_entries = w->asteroid_grid.entries;
     for (int i = 0; i < MAX_PLAYERS; i++)
         ship_cleanup(&w->players[i].ship);
+    for (int i = 0; i < MAX_SHIPS; i++)
+        ship_cleanup(&w->ships[i]);
     for (int i = 0; i < MAX_STATIONS; i++)
         station_cleanup(&w->stations[i]);
     free(grid_entries);
