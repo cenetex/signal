@@ -164,6 +164,20 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
  * now uses A* paths via npc_steer_with_path. compute_path_avoidance
  * is retained for potential future use by manual-play collision hints.) */
 
+/* Build a transient ship_t view of an NPC so the shared flight_*
+ * controllers (which read pos/vel/angle/hull_class off ship_t) can be
+ * called against an npc_ship_t. Strictly read-only on the caller side:
+ * mutations land on the npc via npc_apply_flight_cmd, not on the view.
+ * Goes away in the slice that embeds ship_t inside npc_ship_t. */
+static ship_t ship_view_from_npc(const npc_ship_t *npc) {
+    ship_t v = {0};
+    v.pos = npc->pos;
+    v.vel = npc->vel;
+    v.angle = npc->angle;
+    v.hull_class = npc->hull_class;
+    return v;
+}
+
 /* Apply a normalized flight_cmd_t (turn/thrust each in -1..1) to an NPC.
  * Rate-limits turn by turn_speed; gates thrust to forward acceleration only.
  * Caller owns physics integration (npc_apply_physics) and any thrust<0
@@ -187,15 +201,9 @@ static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd,
  * Phase 2 will give NPCs a real ship_t; this is intentionally transitional. */
 static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
                                 vec2 final_target, float accel, float turn_speed, float dt) {
-    /* Build a temporary ship_t for the flight controller. */
-    ship_t tmp_ship = {0};
-    tmp_ship.pos = npc->pos;
-    tmp_ship.vel = npc->vel;
-    tmp_ship.angle = npc->angle;
-    tmp_ship.hull_class = npc->hull_class;
-
+    ship_t view = ship_view_from_npc(npc);
     nav_path_t *path = nav_npc_path(npc_idx);
-    flight_cmd_t cmd = flight_steer_to(w, &tmp_ship, path, final_target,
+    flight_cmd_t cmd = flight_steer_to(w, &view, path, final_target,
                                         0.0f, 200.0f, dt);
     npc_apply_flight_cmd(npc, cmd, accel, turn_speed, dt);
 }
@@ -917,12 +925,8 @@ void step_npc_ships(world_t *w, float dt) {
 
             /* Hover near the rock via flight controller. */
             {
-                ship_t tmp_ship = {0};
-                tmp_ship.pos = npc->pos;
-                tmp_ship.vel = npc->vel;
-                tmp_ship.angle = npc->angle;
-                tmp_ship.hull_class = npc->hull_class;
-                flight_cmd_t cmd = flight_hover_near(w, &tmp_ship, a->pos, standoff);
+                ship_t view = ship_view_from_npc(npc);
+                flight_cmd_t cmd = flight_hover_near(w, &view, a->pos, standoff);
                 if (cmd.thrust < 0.0f) {
                     /* Hover-specific brake: push away from the asteroid we're
                      * hugging instead of reversing along velocity. Strip the
