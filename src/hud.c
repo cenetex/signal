@@ -43,6 +43,19 @@ float player_current_balance(void) {
 /* Forward decl — defined below near the other client_* helpers. */
 static float client_pending_balance(void);
 
+/* Center `text` horizontally around screen-pixel x = `center_x` and
+ * place its baseline at row index `row_idx` (already in canvas-cell
+ * units). Cell is the sdtx character width (8 px today). Picks up
+ * the current sdtx_color. Used by full-screen overlays that center
+ * text and were doing the (cx - w*0.5)/cell math by hand at every
+ * call. */
+static void sdtx_centered_text(float center_x, float row_idx, float cell, const char *text) {
+    if (!text) return;
+    float w = (float)strlen(text) * cell;
+    sdtx_pos((center_x - w * 0.5f) / cell, row_idx);
+    sdtx_puts(text);
+}
+
 /* ------------------------------------------------------------------ */
 /* Action row classification — single priority chain shared by the     */
 /* compact and wide HUDs. hud_classify_action() inspects player +      */
@@ -450,16 +463,12 @@ static void hud_draw_signal_lost_warning(float screen_w, float screen_h, float s
     if (blink <= 0.0f) return;
 
     float cell = 8.0f;
-    const char *warn = "[ SIGNAL LOST ]";
-    float tw = (float)strlen(warn) * cell;
-    float wx = (screen_w * 0.5f - tw * 0.5f) / cell;
-    float wy = (screen_h * 0.40f) / cell;
     sdtx_canvas(screen_w, screen_h);
     sdtx_origin(0.0f, 0.0f);
     uint8_t ba = (uint8_t)(blink * 200.0f);
     sdtx_color4b(255, 70, 50, ba);
-    sdtx_pos(wx, wy);
-    sdtx_puts(warn);
+    sdtx_centered_text(screen_w * 0.5f, (screen_h * 0.40f) / cell, cell,
+                       "[ SIGNAL LOST ]");
 }
 
 /* Render the post-classify shared panels common to compact + wide.
@@ -1231,11 +1240,8 @@ static bool draw_death_overlay(float screen_w, float screen_h) {
     uint8_t a8 = (uint8_t)(alpha * 255.0f);
 
     /* Title. */
-    const char *title = "SHIP DESTROYED";
-    float title_w = (float)strlen(title) * cell;
-    sdtx_pos((cx - title_w * 0.5f) / cell, (cy - 60.0f) / cell);
     sdtx_color4b(PAL_DEATH_TITLE, a8);
-    sdtx_puts(title);
+    sdtx_centered_text(cx, (cy - 60.0f) / cell, cell, "SHIP DESTROYED");
 
     /* Stats. */
     float row = (cy - 16.0f) / cell;
@@ -1264,11 +1270,8 @@ static bool draw_death_overlay(float screen_w, float screen_h) {
      * empty (first run on a fresh server) or before the server's
      * post-death broadcast has arrived. */
     {
-        const char *lb = "-- TOP RUNS --";
-        float lb_w = (float)strlen(lb) * cell;
-        sdtx_pos((cx - lb_w * 0.5f) / cell, row);
         sdtx_color4b(PAL_NOTICE, a8);
-        sdtx_puts(lb);
+        sdtx_centered_text(cx, row, cell, "-- TOP RUNS --");
         row += 1.6f;
             if (g.highscore_count > 0) {
                 int show = (g.highscore_count > 8) ? 8 : g.highscore_count;
@@ -1298,10 +1301,7 @@ static bool draw_death_overlay(float screen_w, float screen_h) {
     float flash = (sinf(g.world.time * 7.0f) > 0.0f) ? 1.0f : 0.25f;
     uint8_t pa = (uint8_t)(flash * (float)a8);
     sdtx_color4b(PAL_DEATH_PROMPT, pa);
-    const char *prompt = "[ E ] launch";
-    float prompt_w = (float)strlen(prompt) * cell;
-    sdtx_pos((cx - prompt_w * 0.5f) / cell, row);
-    sdtx_puts(prompt);
+    sdtx_centered_text(cx, row, cell, "[ E ] launch");
 
     return true;
 }
