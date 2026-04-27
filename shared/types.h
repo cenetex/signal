@@ -660,6 +660,7 @@ typedef enum {
     SIM_EVENT_SCAFFOLD_READY,
     SIM_EVENT_ORDER_REJECTED,
     SIM_EVENT_NPC_KILL,
+    SIM_EVENT_COUNT,        /* sentinel — keep last; sized for dispatch tables */
 } sim_event_type_t;
 
 /* What killed a ship. Stable wire values — keep additions append-only.

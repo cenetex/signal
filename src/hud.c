@@ -748,78 +748,76 @@ void draw_hud_panels(void) {
 /* draw_hud -- the main HUD text layer                                 */
 /* ------------------------------------------------------------------ */
 
-void draw_hud(void) {
-    float screen_w = ui_screen_width();
-    float screen_h = ui_screen_height();
+/* Death-screen overlay — full-screen scrim + stats + leaderboard +
+ * "[E] launch" prompt. Returns true if the overlay drew (caller skips
+ * the regular flight HUD), false otherwise. */
+static bool draw_death_overlay(float screen_w, float screen_h) {
+    if (!g.death_cinematic.active && g.death_cinematic.menu_alpha <= 0.001f)
+        return false;
 
-    /* --- Death screen overlay (driven by the death cinematic) --- */
-    if (g.death_cinematic.active || g.death_cinematic.menu_alpha > 0.001f) {
-        float menu_alpha = g.death_cinematic.menu_alpha;
-        if (menu_alpha < 0.0f) menu_alpha = 0.0f;
-        if (menu_alpha > 1.0f) menu_alpha = 1.0f;
-        float scrim = 0.55f * menu_alpha;
+    float menu_alpha = g.death_cinematic.menu_alpha;
+    if (menu_alpha < 0.0f) menu_alpha = 0.0f;
+    if (menu_alpha > 1.0f) menu_alpha = 1.0f;
+    float scrim = 0.55f * menu_alpha;
 
-        /* Dark scrim under the menu */
-        sgl_begin_quads();
-        sgl_c4f(0.0f, 0.0f, 0.0f, scrim);
-        sgl_v2f(0.0f, 0.0f);
-        sgl_v2f(screen_w, 0.0f);
-        sgl_v2f(screen_w, screen_h);
-        sgl_v2f(0.0f, screen_h);
-        sgl_end();
-        float alpha = menu_alpha;
+    /* Dark scrim under the menu. */
+    sgl_begin_quads();
+    sgl_c4f(0.0f, 0.0f, 0.0f, scrim);
+    sgl_v2f(0.0f, 0.0f);
+    sgl_v2f(screen_w, 0.0f);
+    sgl_v2f(screen_w, screen_h);
+    sgl_v2f(0.0f, screen_h);
+    sgl_end();
+    float alpha = menu_alpha;
 
-        /* Use 1:1 canvas so text fills the screen */
-        sdtx_canvas(screen_w, screen_h);
-        sdtx_origin(0.0f, 0.0f);
-        float cx = screen_w * 0.5f;
-        float cy = screen_h * 0.5f;
-        float cell = 8.0f;
-        uint8_t a8 = (uint8_t)(alpha * 255.0f);
+    /* 1:1 canvas so text fills the screen. */
+    sdtx_canvas(screen_w, screen_h);
+    sdtx_origin(0.0f, 0.0f);
+    float cx = screen_w * 0.5f;
+    float cy = screen_h * 0.5f;
+    float cell = 8.0f;
+    uint8_t a8 = (uint8_t)(alpha * 255.0f);
 
-        /* Title */
-        const char *title = "SHIP DESTROYED";
-        float title_w = (float)strlen(title) * cell;
-        sdtx_pos((cx - title_w * 0.5f) / cell, (cy - 60.0f) / cell);
-        sdtx_color4b(PAL_DEATH_TITLE, a8);
-        sdtx_puts(title);
+    /* Title. */
+    const char *title = "SHIP DESTROYED";
+    float title_w = (float)strlen(title) * cell;
+    sdtx_pos((cx - title_w * 0.5f) / cell, (cy - 60.0f) / cell);
+    sdtx_color4b(PAL_DEATH_TITLE, a8);
+    sdtx_puts(title);
 
-        /* Stats */
-        float row = (cy - 16.0f) / cell;
-        float left = fmaxf(1.0f, (cx - 110.0f) / cell);
+    /* Stats. */
+    float row = (cy - 16.0f) / cell;
+    float left = fmaxf(1.0f, (cx - 110.0f) / cell);
+    sdtx_color4b(PAL_NOTICE, a8);
+
+    sdtx_pos(left, row);
+    sdtx_printf("Ore smelted:   %8.0f", g.death_ore_mined);
+    row += 2.5f;
+    sdtx_pos(left, row);
+    sdtx_printf("Rocks broken:  %8d", g.death_asteroids_fractured);
+    row += 2.5f;
+    sdtx_pos(left, row);
+    sdtx_color4b(PAL_DEATH_EARNED, a8);
+    sdtx_printf("Credits earned:%8.0f", g.death_credits_earned);
+    row += 2.5f;
+    sdtx_pos(left, row);
+    sdtx_color4b(PAL_DEATH_SPENT, a8);
+    sdtx_printf("Credits spent: %8.0f", g.death_credits_spent);
+    row += 3.0f;
+
+    /* Global highscores — top runs broadcast by the server. The
+     * player's just-submitted run is highlighted in the death-earned
+     * color so they can spot where they landed. Always render the
+     * header so the player knows the leaderboard exists even when
+     * empty (first run on a fresh server) or before the server's
+     * post-death broadcast has arrived. */
+    {
+        const char *lb = "-- TOP RUNS --";
+        float lb_w = (float)strlen(lb) * cell;
+        sdtx_pos((cx - lb_w * 0.5f) / cell, row);
         sdtx_color4b(PAL_NOTICE, a8);
-
-        sdtx_pos(left, row);
-        sdtx_printf("Ore smelted:   %8.0f", g.death_ore_mined);
-        row += 2.5f;
-
-        sdtx_pos(left, row);
-        sdtx_printf("Rocks broken:  %8d", g.death_asteroids_fractured);
-        row += 2.5f;
-
-        sdtx_pos(left, row);
-        sdtx_color4b(PAL_DEATH_EARNED, a8);
-        sdtx_printf("Credits earned:%8.0f", g.death_credits_earned);
-        row += 2.5f;
-
-        sdtx_pos(left, row);
-        sdtx_color4b(PAL_DEATH_SPENT, a8);
-        sdtx_printf("Credits spent: %8.0f", g.death_credits_spent);
-        row += 3.0f;
-
-        /* Global highscores — top runs broadcast by the server. The
-         * player's just-submitted run is highlighted in the death-earned
-         * color so they can spot where they landed. Always render the
-         * header so the player knows the leaderboard exists even when
-         * empty (first run on a fresh server) or before the server's
-         * post-death broadcast has arrived. */
-        {
-            const char *lb = "-- TOP RUNS --";
-            float lb_w = (float)strlen(lb) * cell;
-            sdtx_pos((cx - lb_w * 0.5f) / cell, row);
-            sdtx_color4b(PAL_NOTICE, a8);
-            sdtx_puts(lb);
-            row += 1.6f;
+        sdtx_puts(lb);
+        row += 1.6f;
             if (g.highscore_count > 0) {
                 int show = (g.highscore_count > 8) ? 8 : g.highscore_count;
                 for (int i = 0; i < show; i++) {
@@ -844,17 +842,25 @@ void draw_hud(void) {
             row += 1.0f;
         }
 
-        /* Prompt — RED, hard FLASH on/off */
-        float flash = (sinf(g.world.time * 7.0f) > 0.0f) ? 1.0f : 0.25f;
-        uint8_t pa = (uint8_t)(flash * (float)a8);
-        sdtx_color4b(PAL_DEATH_PROMPT, pa);
-        const char *prompt = "[ E ] launch";
-        float prompt_w = (float)strlen(prompt) * cell;
-        sdtx_pos((cx - prompt_w * 0.5f) / cell, row);
-        sdtx_puts(prompt);
+    /* Prompt — RED, hard FLASH on/off */
+    float flash = (sinf(g.world.time * 7.0f) > 0.0f) ? 1.0f : 0.25f;
+    uint8_t pa = (uint8_t)(flash * (float)a8);
+    sdtx_color4b(PAL_DEATH_PROMPT, pa);
+    const char *prompt = "[ E ] launch";
+    float prompt_w = (float)strlen(prompt) * cell;
+    sdtx_pos((cx - prompt_w * 0.5f) / cell, row);
+    sdtx_puts(prompt);
 
-        return; /* skip normal HUD */
-    }
+    return true;
+}
+
+void draw_hud(void) {
+    float screen_w = ui_screen_width();
+    float screen_h = ui_screen_height();
+
+    /* Death-screen overlay short-circuits the rest of the HUD. */
+    if (draw_death_overlay(screen_w, screen_h)) return;
+
     bool compact = ui_is_compact();
     float top_x = 0.0f;
     float top_y = 0.0f;

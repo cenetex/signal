@@ -329,282 +329,306 @@ const char *contextual_hail_message(int station_index) {
     return NULL;
 }
 
+/* ================================================================== */
+/* sim_event handlers — one per event type, dispatched via the table   */
+/* below. process_sim_events drops to a thin loop: bounds-check the    */
+/* event type, look up a handler, call it. Adding a new event = add    */
+/* enum value (in shared/types.h, before SIM_EVENT_COUNT), write a     */
+/* sim_on_<event> handler, fill its slot in k_sim_event_handlers.      */
+/* ================================================================== */
+typedef void (*sim_event_handler_fn)(const sim_event_t *ev);
+
+static bool ev_is_local(const sim_event_t *ev) {
+    return ev->player_id == g.local_player_slot;
+}
+
+static void sim_on_fracture(const sim_event_t *ev) {
+    audio_play_fracture(&g.audio, ev->fracture.tier);
+    if (ev_is_local(ev)) onboarding_mark_fractured();
+}
+
+static void sim_on_mining_tick(const sim_event_t *ev) {
+    if (!ev_is_local(ev)) return;
+    audio_play_mining_tick(&g.audio);
+    onboarding_mark_fractured(); /* "mine" milestone = fired laser */
+}
+
+static void sim_on_dock(const sim_event_t *ev) {
+    if (!ev_is_local(ev)) return;
+    audio_play_dock(&g.audio);
+    g.screen_shake = fmaxf(g.screen_shake, 3.0f); /* dock clunk */
+    g.dock_settle_timer = 1.0f; /* show ship settling before panel */
+    int ds = LOCAL_PLAYER.current_station;
+    if (ds < 3) {
+        g.episode.stations_visited |= (1 << ds);
+        if (g.episode.stations_visited == 7) /* all 3 */
+            episode_trigger(&g.episode, 1); /* Ep 1: Kepler's Law */
+    }
+}
+
+static void sim_on_launch(const sim_event_t *ev) {
+    if (!ev_is_local(ev)) return;
+    audio_play_launch(&g.audio);
+    g.screen_shake = fmaxf(g.screen_shake, 5.0f); /* launch kick */
+    episode_trigger(&g.episode, 0); /* Ep 0: First Light */
+    if (!g.music.playing && !g.music.loading) music_next_track(&g.music);
+}
+
+/* Roll the per-frame sale-fx + hint-bar batch state for one SELL event. */
+static void sell_batch_accumulate(const sim_event_t *ev, int total) {
+    if (ev->sell.station < 0 || ev->sell.station >= MAX_STATIONS) return;
+    if (!station_exists(&g.world.stations[ev->sell.station])) return;
+    spawn_sell_fx(&g.world.stations[ev->sell.station].pos, total,
+                  (mining_grade_t)ev->sell.grade, ev->sell.by_contract != 0);
+    /* If a previous summary is still on-screen (display timer > 0) and
+     * we're not already accumulating, this event starts a fresh run —
+     * zero the leftover counts first so the new batch isn't contaminated. */
+    if (!g.sell_batch.active && g.sell_batch.display_timer > 0.0f) {
+        for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) g.sell_batch.grade_counts[gi] = 0;
+        g.sell_batch.total_cr = 0;
+        g.sell_batch.any_by_contract = false;
+        g.sell_batch.display_timer = 0.0f;
+    }
+    int grade_idx = (int)ev->sell.grade;
+    if (grade_idx >= 0 && grade_idx < MINING_GRADE_COUNT)
+        g.sell_batch.grade_counts[grade_idx]++;
+    g.sell_batch.total_cr += total;
+    if (ev->sell.by_contract) g.sell_batch.any_by_contract = true;
+    g.sell_batch.active = true;
+    g.sell_batch.settle_timer = 0.6f;
+}
+
+static void sim_on_sell(const sim_event_t *ev) {
+    if (!ev_is_local(ev)) return;
+    audio_play_sale(&g.audio);
+    episode_trigger(&g.episode, 2); /* Ep 2: Furnace — first smelt */
+    mining_client_record_strike((mining_grade_t)ev->sell.grade, ev->sell.bonus_cr);
+    int total = ev->sell.base_cr + ev->sell.bonus_cr;
+    if (total > 0) sell_batch_accumulate(ev, total);
+}
+
+static void sim_on_repair(const sim_event_t *ev) {
+    if (ev_is_local(ev)) audio_play_repair(&g.audio);
+}
+
+static void sim_on_upgrade(const sim_event_t *ev) {
+    if (ev_is_local(ev)) audio_play_upgrade(&g.audio, ev->upgrade.upgrade);
+}
+
+static void sim_on_damage(const sim_event_t *ev) {
+    if (!ev_is_local(ev)) return;
+    audio_play_damage(&g.audio, ev->damage.amount);
+    /* Screen shake scales with damage. Tunables chosen so a minor scrape
+     * (~2 hp) wiggles a few pixels and a full ramming hit (~30 hp)
+     * noticeably jolts. */
+    float kick = sqrtf(ev->damage.amount) * 4.0f;
+    if (kick > 40.0f) kick = 40.0f;
+    if (kick > g.screen_shake) g.screen_shake = kick;
+}
+
+static void sim_on_contract_complete(const sim_event_t *ev) {
+    if (ev->contract_complete.action == CONTRACT_TRACTOR) {
+        set_notice("Tractor contract fulfilled.");
+        episode_trigger(&g.episode, 6); /* Ep 6: Hauler */
+    } else if (ev->contract_complete.action == CONTRACT_FRACTURE) {
+        set_notice("Fracture contract complete.");
+    }
+}
+
+static void sim_on_scaffold_ready(const sim_event_t *ev) {
+    int sidx = ev->scaffold_ready.station;
+    int mtype = ev->scaffold_ready.module_type;
+    if (sidx < 0 || sidx >= MAX_STATIONS) return;
+    set_notice("%s scaffold ready at %s.",
+               module_type_name((module_type_t)mtype),
+               g.world.stations[sidx].name);
+}
+
+static void sim_on_outpost_placed(const sim_event_t *ev) {
+    /* Transition from ghost preview to real plan mode: the server just
+     * created the planned station at the position where the player
+     * locked it. */
+    if (!ev_is_local(ev)) return;
+    g.plan_target_station = ev->outpost_placed.slot;
+    g.placement_target_station = ev->outpost_placed.slot;
+}
+
+/* Spawn the 8 shards + cinematic state for a death event. */
+static void death_cinematic_spawn(const sim_event_t *ev) {
+    g.death_cinematic.active = true;
+    g.death_cinematic.phase = 0;
+    g.death_cinematic.pos = v2(ev->death.pos_x, ev->death.pos_y);
+    g.death_cinematic.vel = v2(ev->death.vel_x, ev->death.vel_y);
+    g.death_cinematic.angle = ev->death.angle;
+    g.death_cinematic.spin = (((float)rand() / (float)RAND_MAX) - 0.5f) * 3.0f;
+    g.death_cinematic.age = 0.0f;
+    g.death_cinematic.menu_alpha = 0.0f;
+    for (int s = 0; s < 8; s++) {
+        float ang = ((float)s / 8.0f) * 2.0f * PI_F + (float)(s * 13 % 7) * 0.15f;
+        float speed = 30.0f + (float)((s * 7 + 3) % 5) * 12.0f;
+        g.death_cinematic.fragments[s][0] = 0.0f;
+        g.death_cinematic.fragments[s][1] = 0.0f;
+        g.death_cinematic.fragments[s][2] = cosf(ang) * speed + ev->death.vel_x * 0.6f;
+        g.death_cinematic.fragments[s][3] = sinf(ang) * speed + ev->death.vel_y * 0.6f;
+        g.death_cinematic.fragments[s][4] = ang;
+        g.death_cinematic.fragments[s][5] = ((float)((s * 19 + 7) % 11) - 5.0f) * 0.6f;
+    }
+}
+
+static void sim_on_death(const sim_event_t *ev) {
+    if (!ev_is_local(ev)) return;
+    g.death_ore_mined = ev->death.ore_mined;
+    g.death_credits_earned = ev->death.credits_earned;
+    g.death_credits_spent = ev->death.credits_spent;
+    g.death_asteroids_fractured = ev->death.asteroids_fractured;
+    /* Snapshot the wreckage at the death position. The server has
+     * already respawned the ship at a station, so we use the position
+     * from the death event payload (captured before the move). */
+    death_cinematic_spawn(ev);
+    /* Legacy timer kept for the auto-fade fallback path. */
+    g.death_screen_timer = 0.0f;
+    g.death_screen_max = 0.0f;
+    /* Force-stop any playing episode, reset state, then trigger death
+     * episode so it plays during the cinematic. */
+    if (episode_is_active(&g.episode)) episode_skip(&g.episode);
+    memset(g.episode.watched, 0, sizeof(g.episode.watched));
+    g.episode.stations_visited = 0;
+    episode_trigger(&g.episode, 9); /* Ep 9: Death */
+    episode_save(&g.episode);
+    music_enter_death(&g.music);
+}
+
+/* Pick the hail message: contextual > avatar MOTD > station hardcoded. */
+static const char *hail_choose_message(int station_idx) {
+    const char *ctx = contextual_hail_message(station_idx);
+    if (ctx) return ctx;
+    const avatar_cache_t *av = avatar_get(station_idx);
+    if (av && av->motd_fetched && av->motd[0]) return av->motd;
+    return g.world.stations[station_idx].hail_message;
+}
+
+static void sim_on_hail_response(const sim_event_t *ev) {
+    if (!ev_is_local(ev)) return;
+    int hs = ev->hail_response.station;
+    if (hs < 0 || hs >= MAX_STATIONS) return;
+
+    snprintf(g.hail_station, sizeof(g.hail_station), "%s",
+             g.world.stations[hs].name);
+    snprintf(g.hail_message, sizeof(g.hail_message), "%s",
+             hail_choose_message(hs));
+    g.hail_credits = ev->hail_response.credits;
+    g.hail_station_index = hs;
+    g.hail_timer = 6.0f;
+    if (g.hail_credits > 0.5f) audio_play_sale(&g.audio);
+    if (g.world.stations[hs].station_slug[0])
+        avatar_fetch(hs, g.world.stations[hs].station_slug);
+    /* Surface the hail through the bottom-right hint bar. Includes
+     * the station balance so all the info the old center-screen
+     * overlay carried lands there. */
+    const char *unit = g.world.stations[hs].currency_name;
+    if (!unit[0]) unit = "credits";
+    set_notice("%s: %s  (balance %d %s)",
+               g.hail_station, g.hail_message,
+               (int)lroundf(ev->hail_response.credits), unit);
+    onboarding_mark_hailed();
+}
+
+static void sim_on_module_activated(const sim_event_t *ev) {
+    int si = ev->module_activated.station;
+    int mi = ev->module_activated.module_idx;
+    station_t *act_st = &g.world.stations[si];
+    vec2 mpos = module_world_pos_ring(act_st, act_st->modules[mi].ring,
+                                       act_st->modules[mi].slot);
+    g.commission_timer = 1.5f;
+    g.commission_pos = mpos;
+    module_color_fn((module_type_t)ev->module_activated.module_type,
+                    &g.commission_cr, &g.commission_cg, &g.commission_cb);
+    audio_play_commission(&g.audio);
+    set_notice("%s online.",
+               module_type_name((module_type_t)ev->module_activated.module_type));
+}
+
+static void sim_on_outpost_activated(const sim_event_t *ev) {
+    (void)ev;
+    if (!g.episode.watched[4]) episode_trigger(&g.episode, 4); /* Ep 4: Naming */
+    audio_play_commission(&g.audio);
+}
+
+static void sim_on_npc_spawned(const sim_event_t *ev) {
+    /* Ep 5: Drones — first miner at a player outpost */
+    if (!g.episode.watched[5] &&
+        ev->npc_spawned.role == NPC_ROLE_MINER &&
+        ev->npc_spawned.home_station >= 3)
+        episode_trigger(&g.episode, 5);
+}
+
+static void sim_on_signal_lost(const sim_event_t *ev) {
+    if (ev_is_local(ev) && !g.episode.watched[7])
+        episode_trigger(&g.episode, 7); /* Ep 7: Dark Sector */
+}
+
+static void sim_on_station_connected(const sim_event_t *ev) {
+    if (!g.episode.watched[8] && ev->station_connected.connected_count >= 5)
+        episode_trigger(&g.episode, 8); /* Ep 8: Every AI Dreams */
+}
+
+/* Map order-rejection reason codes to user-visible notices. Reason
+ * codes are defined in shared/types.h next to sim_event_t. */
+static const char *order_reject_message(uint8_t reason) {
+    switch (reason) {
+    case ORDER_REJECT_SCAFFOLD_PLACEMENT_NO_SIGNAL:
+        return "No signal here — tow the scaffold back into station coverage.";
+    case ORDER_REJECT_SCAFFOLD_PLACEMENT_TOO_CLOSE:
+        return "Too close to an existing station — drop further out toward the fringe.";
+    case ORDER_REJECT_SCAFFOLD_PLACEMENT_NEEDS_RELAY:
+        return "Only signal-relay scaffolds can found new outposts. Tow this one to an existing station.";
+    case ORDER_REJECT_SCAFFOLD_PLACEMENT_NO_SLOT:
+        return "No outpost slots available — every station catalog entry is taken.";
+    case ORDER_REJECT_SHIPYARD_NOT_SOLD:    return "This shipyard doesn't sell that scaffold.";
+    case ORDER_REJECT_SHIPYARD_QUEUE_FULL:  return "Shipyard queue full — wait for the next batch to ship.";
+    case ORDER_REJECT_SHIPYARD_LOCKED:      return "Tech tree locked — order the prerequisite module first.";
+    case ORDER_REJECT_SHIPYARD_NO_FUNDS:    return "Not enough credits at this station for the order fee.";
+    case ORDER_REJECT_SELL_NOT_ACCEPTED:    return "This station has no consumer for that commodity — try another dock.";
+    default:                                return "Order rejected.";
+    }
+}
+
+static void sim_on_order_rejected(const sim_event_t *ev) {
+    set_notice("%s", order_reject_message(ev->order_rejected.reason));
+}
+
+/* Dispatch table — designated initializers tie each handler to its
+ * enum slot, so reordering enum values doesn't silently misroute. */
+static const sim_event_handler_fn k_sim_event_handlers[SIM_EVENT_COUNT] = {
+    [SIM_EVENT_FRACTURE]           = sim_on_fracture,
+    [SIM_EVENT_MINING_TICK]        = sim_on_mining_tick,
+    [SIM_EVENT_DOCK]               = sim_on_dock,
+    [SIM_EVENT_LAUNCH]             = sim_on_launch,
+    [SIM_EVENT_SELL]               = sim_on_sell,
+    [SIM_EVENT_REPAIR]             = sim_on_repair,
+    [SIM_EVENT_UPGRADE]            = sim_on_upgrade,
+    [SIM_EVENT_DAMAGE]             = sim_on_damage,
+    [SIM_EVENT_CONTRACT_COMPLETE]  = sim_on_contract_complete,
+    [SIM_EVENT_SCAFFOLD_READY]     = sim_on_scaffold_ready,
+    [SIM_EVENT_OUTPOST_PLACED]     = sim_on_outpost_placed,
+    [SIM_EVENT_DEATH]              = sim_on_death,
+    [SIM_EVENT_HAIL_RESPONSE]      = sim_on_hail_response,
+    [SIM_EVENT_MODULE_ACTIVATED]   = sim_on_module_activated,
+    [SIM_EVENT_OUTPOST_ACTIVATED]  = sim_on_outpost_activated,
+    [SIM_EVENT_NPC_SPAWNED]        = sim_on_npc_spawned,
+    [SIM_EVENT_SIGNAL_LOST]        = sim_on_signal_lost,
+    [SIM_EVENT_STATION_CONNECTED]  = sim_on_station_connected,
+    [SIM_EVENT_ORDER_REJECTED]     = sim_on_order_rejected,
+    /* SIM_EVENT_NPC_KILL: no client handler yet (kill-feed is server-
+     * routed broadcast text; no per-event hook needed here). */
+};
+
 void process_sim_events(const sim_events_t *events) {
     for (int i = 0; i < events->count; i++) {
-        const sim_event_t* ev = &events->events[i];
-        switch (ev->type) {
-            case SIM_EVENT_FRACTURE:
-                audio_play_fracture(&g.audio, ev->fracture.tier);
-                if (ev->player_id == g.local_player_slot)
-                    onboarding_mark_fractured();
-                break;
-            case SIM_EVENT_MINING_TICK:
-                if (ev->player_id == g.local_player_slot) {
-                    audio_play_mining_tick(&g.audio);
-                    onboarding_mark_fractured();  /* "mine" milestone = fired laser */
-                }
-                break;
-            case SIM_EVENT_DOCK:
-                if (ev->player_id == g.local_player_slot) {
-                    audio_play_dock(&g.audio);
-                    g.screen_shake = fmaxf(g.screen_shake, 3.0f); /* dock clunk */
-                    g.dock_settle_timer = 1.0f; /* show ship settling before panel */
-                    /* Track visited original stations for Ep 1 */
-                    int ds = LOCAL_PLAYER.current_station;
-                    if (ds < 3) {
-                        g.episode.stations_visited |= (1 << ds);
-                        if (g.episode.stations_visited == 7) /* all 3 */
-                            episode_trigger(&g.episode, 1); /* Ep 1: Kepler's Law */
-                    }
-                }
-                break;
-            case SIM_EVENT_LAUNCH:
-                if (ev->player_id == g.local_player_slot) {
-                    audio_play_launch(&g.audio);
-                    g.screen_shake = fmaxf(g.screen_shake, 5.0f); /* launch kick */
-                    episode_trigger(&g.episode, 0); /* Ep 0: First Light */
-                    /* Start music on first launch — shuffled */
-                    if (!g.music.playing && !g.music.loading) {
-                        music_next_track(&g.music);
-                    }
-                }
-                break;
-            case SIM_EVENT_SELL:
-                if (ev->player_id == g.local_player_slot) {
-                    audio_play_sale(&g.audio);
-                    episode_trigger(&g.episode, 2); /* Ep 2: Furnace — first smelt */
-                    mining_client_record_strike((mining_grade_t)ev->sell.grade,
-                                                ev->sell.bonus_cr);
-                    int total = ev->sell.base_cr + ev->sell.bonus_cr;
-                    if (total > 0
-                        && ev->sell.station >= 0
-                        && ev->sell.station < MAX_STATIONS
-                        && station_exists(&g.world.stations[ev->sell.station])) {
-                        spawn_sell_fx(&g.world.stations[ev->sell.station].pos,
-                                      total,
-                                      (mining_grade_t)ev->sell.grade,
-                                      ev->sell.by_contract != 0);
-                        /* Accumulate into the hint-bar batch so haulers get
-                         * a summary even when the station is off-camera. If
-                         * a previous summary is still on-screen (display
-                         * timer > 0) and we're not already accumulating, the
-                         * incoming event starts a fresh run — zero the leftover
-                         * counts first so the new batch isn't contaminated. */
-                        if (!g.sell_batch.active && g.sell_batch.display_timer > 0.0f) {
-                            for (int gi2 = 0; gi2 < MINING_GRADE_COUNT; gi2++)
-                                g.sell_batch.grade_counts[gi2] = 0;
-                            g.sell_batch.total_cr = 0;
-                            g.sell_batch.any_by_contract = false;
-                            g.sell_batch.display_timer = 0.0f;
-                        }
-                        int grade_idx = (int)ev->sell.grade;
-                        if (grade_idx >= 0 && grade_idx < MINING_GRADE_COUNT) {
-                            g.sell_batch.grade_counts[grade_idx]++;
-                        }
-                        g.sell_batch.total_cr += total;
-                        if (ev->sell.by_contract) g.sell_batch.any_by_contract = true;
-                        g.sell_batch.active = true;
-                        g.sell_batch.settle_timer = 0.6f;
-                    }
-                }
-                break;
-            case SIM_EVENT_REPAIR:
-                if (ev->player_id == g.local_player_slot) audio_play_repair(&g.audio);
-                break;
-            case SIM_EVENT_UPGRADE:
-                if (ev->player_id == g.local_player_slot) {
-                    audio_play_upgrade(&g.audio, ev->upgrade.upgrade);
-                }
-                break;
-            case SIM_EVENT_DAMAGE:
-                if (ev->player_id == g.local_player_slot) {
-                    audio_play_damage(&g.audio, ev->damage.amount);
-                    /* Screen shake scales with damage. Tunables chosen so a
-                     * minor scrape (~2 hp) wiggles a few pixels and a
-                     * full ramming hit (~30 hp) noticeably jolts. */
-                    float kick = sqrtf(ev->damage.amount) * 4.0f;
-                    if (kick > 40.0f) kick = 40.0f;
-                    if (kick > g.screen_shake) g.screen_shake = kick;
-                }
-                break;
-            case SIM_EVENT_CONTRACT_COMPLETE:
-                if (ev->contract_complete.action == CONTRACT_TRACTOR) {
-                    set_notice("Tractor contract fulfilled.");
-                    episode_trigger(&g.episode, 6); /* Ep 6: Hauler */
-                } else if (ev->contract_complete.action == CONTRACT_FRACTURE) {
-                    set_notice("Fracture contract complete.");
-                }
-                break;
-            case SIM_EVENT_SCAFFOLD_READY: {
-                int sidx = ev->scaffold_ready.station;
-                int mtype = ev->scaffold_ready.module_type;
-                if (sidx >= 0 && sidx < MAX_STATIONS) {
-                    set_notice("%s scaffold ready at %s.",
-                        module_type_name((module_type_t)mtype),
-                        g.world.stations[sidx].name);
-                }
-                break;
-            }
-            case SIM_EVENT_OUTPOST_PLACED: {
-                /* Transition from ghost preview to real plan mode:
-                 * the server just created the planned station at the
-                 * position where the player locked it. */
-                if (ev->player_id == g.local_player_slot) {
-                    g.plan_target_station = ev->outpost_placed.slot;
-                    g.placement_target_station = ev->outpost_placed.slot;
-                }
-                break;
-            }
-            case SIM_EVENT_DEATH:
-                if (ev->player_id == g.local_player_slot) {
-                    g.death_ore_mined = ev->death.ore_mined;
-                    g.death_credits_earned = ev->death.credits_earned;
-                    g.death_credits_spent = ev->death.credits_spent;
-                    g.death_asteroids_fractured = ev->death.asteroids_fractured;
-                    /* Snapshot the wreckage at the death position. The
-                     * server has already respawned the ship at a station,
-                     * so we use the position from the death event payload
-                     * (captured before the server moved the hull). */
-                    g.death_cinematic.active = true;
-                    g.death_cinematic.phase = 0;
-                    g.death_cinematic.pos = v2(ev->death.pos_x, ev->death.pos_y);
-                    g.death_cinematic.vel = v2(ev->death.vel_x, ev->death.vel_y);
-                    g.death_cinematic.angle = ev->death.angle;
-                    g.death_cinematic.spin = (((float)rand() / (float)RAND_MAX) - 0.5f) * 3.0f;
-                    g.death_cinematic.age = 0.0f;
-                    g.death_cinematic.menu_alpha = 0.0f;
-                    /* 8 shards radiating outward from the wreck. Each shard
-                     * starts at the ship origin with a randomized velocity
-                     * and spin. Components: [dx, dy, vx, vy, ang, spin]. */
-                    for (int s = 0; s < 8; s++) {
-                        float ang = ((float)s / 8.0f) * 2.0f * PI_F + (float)(s * 13 % 7) * 0.15f;
-                        float speed = 30.0f + (float)((s * 7 + 3) % 5) * 12.0f;
-                        g.death_cinematic.fragments[s][0] = 0.0f;
-                        g.death_cinematic.fragments[s][1] = 0.0f;
-                        g.death_cinematic.fragments[s][2] = cosf(ang) * speed + ev->death.vel_x * 0.6f;
-                        g.death_cinematic.fragments[s][3] = sinf(ang) * speed + ev->death.vel_y * 0.6f;
-                        g.death_cinematic.fragments[s][4] = ang;
-                        g.death_cinematic.fragments[s][5] = ((float)((s * 19 + 7) % 11) - 5.0f) * 0.6f;
-                    }
-                    /* Legacy timer kept for the auto-fade fallback path
-                     * but cinematic logic ignores it. */
-                    g.death_screen_timer = 0.0f;
-                    g.death_screen_max = 0.0f;
-                    /* Force-stop any playing episode, reset state, then
-                     * trigger death episode so it plays during the cinematic. */
-                    if (episode_is_active(&g.episode))
-                        episode_skip(&g.episode);
-                    memset(g.episode.watched, 0, sizeof(g.episode.watched));
-                    g.episode.stations_visited = 0;
-                    episode_trigger(&g.episode, 9); /* Ep 9: Death */
-                    episode_save(&g.episode);
-                    music_enter_death(&g.music);
-                }
-                break;
-            case SIM_EVENT_HAIL_RESPONSE:
-                if (ev->player_id == g.local_player_slot) {
-                    int hs = ev->hail_response.station;
-                    if (hs >= 0 && hs < MAX_STATIONS) {
-                        snprintf(g.hail_station, sizeof(g.hail_station), "%s", g.world.stations[hs].name);
-                        /* Priority: contextual response > CDN MOTD > hardcoded */
-                        const char *ctx = contextual_hail_message(hs);
-                        if (ctx)
-                            snprintf(g.hail_message, sizeof(g.hail_message), "%s", ctx);
-                        else {
-                            const avatar_cache_t *av = avatar_get(hs);
-                            if (av && av->motd_fetched && av->motd[0])
-                                snprintf(g.hail_message, sizeof(g.hail_message), "%s", av->motd);
-                            else
-                                snprintf(g.hail_message, sizeof(g.hail_message), "%s", g.world.stations[hs].hail_message);
-                        }
-                        g.hail_credits = ev->hail_response.credits;
-                        g.hail_station_index = hs;
-                        g.hail_timer = 6.0f;
-                        if (g.hail_credits > 0.5f)
-                            audio_play_sale(&g.audio);
-                        if (g.world.stations[hs].station_slug[0])
-                            avatar_fetch(hs, g.world.stations[hs].station_slug);
-                        /* Surface the hail through the bottom-right hint bar.
-                         * Includes the station balance so all the info the
-                         * old center-screen overlay carried lands there.
-                         * hail_response.credits is authoritative — computed
-                         * server-side when the hail was issued. */
-                        {
-                            const char *unit = g.world.stations[hs].currency_name;
-                            if (!unit[0]) unit = "credits";
-                            set_notice("%s: %s  (balance %d %s)",
-                                g.hail_station, g.hail_message,
-                                (int)lroundf(ev->hail_response.credits), unit);
-                        }
-                        onboarding_mark_hailed();
-                    }
-                }
-                break;
-            case SIM_EVENT_MODULE_ACTIVATED: {
-                int si = ev->module_activated.station;
-                int mi = ev->module_activated.module_idx;
-                station_t *act_st = &g.world.stations[si];
-                vec2 mpos = module_world_pos_ring(act_st,
-                    act_st->modules[mi].ring, act_st->modules[mi].slot);
-                g.commission_timer = 1.5f;
-                g.commission_pos = mpos;
-                module_color_fn((module_type_t)ev->module_activated.module_type,
-                    &g.commission_cr, &g.commission_cg, &g.commission_cb);
-                audio_play_commission(&g.audio);
-                set_notice("%s online.", module_type_name((module_type_t)ev->module_activated.module_type));
-                break;
-            }
-            case SIM_EVENT_OUTPOST_ACTIVATED:
-                if (!g.episode.watched[4])
-                    episode_trigger(&g.episode, 4); /* Ep 4: Naming */
-                audio_play_commission(&g.audio);
-                break;
-            case SIM_EVENT_NPC_SPAWNED:
-                /* Ep 5: Drones — first miner at a player outpost */
-                if (!g.episode.watched[5] &&
-                    ev->npc_spawned.role == NPC_ROLE_MINER &&
-                    ev->npc_spawned.home_station >= 3)
-                    episode_trigger(&g.episode, 5);
-                break;
-            case SIM_EVENT_SIGNAL_LOST:
-                if (ev->player_id == g.local_player_slot && !g.episode.watched[7])
-                    episode_trigger(&g.episode, 7); /* Ep 7: Dark Sector */
-                break;
-            case SIM_EVENT_STATION_CONNECTED:
-                if (!g.episode.watched[8] && ev->station_connected.connected_count >= 5)
-                    episode_trigger(&g.episode, 8); /* Ep 8: Every AI Dreams */
-                break;
-            case SIM_EVENT_ORDER_REJECTED:
-                /* Surface a precise reason instead of silently fizzling
-                 * the [E] press / shipyard buy. Reason codes are defined
-                 * in shared/types.h next to sim_event_t. */
-                switch (ev->order_rejected.reason) {
-                case ORDER_REJECT_SCAFFOLD_PLACEMENT_NO_SIGNAL:
-                    set_notice("No signal here — tow the scaffold back into station coverage."); break;
-                case ORDER_REJECT_SCAFFOLD_PLACEMENT_TOO_CLOSE:
-                    set_notice("Too close to an existing station — drop further out toward the fringe."); break;
-                case ORDER_REJECT_SCAFFOLD_PLACEMENT_NEEDS_RELAY:
-                    set_notice("Only signal-relay scaffolds can found new outposts. Tow this one to an existing station."); break;
-                case ORDER_REJECT_SCAFFOLD_PLACEMENT_NO_SLOT:
-                    set_notice("No outpost slots available — every station catalog entry is taken."); break;
-                case ORDER_REJECT_SHIPYARD_NOT_SOLD:
-                    set_notice("This shipyard doesn't sell that scaffold."); break;
-                case ORDER_REJECT_SHIPYARD_QUEUE_FULL:
-                    set_notice("Shipyard queue full — wait for the next batch to ship."); break;
-                case ORDER_REJECT_SHIPYARD_LOCKED:
-                    set_notice("Tech tree locked — order the prerequisite module first."); break;
-                case ORDER_REJECT_SHIPYARD_NO_FUNDS:
-                    set_notice("Not enough credits at this station for the order fee."); break;
-                case ORDER_REJECT_SELL_NOT_ACCEPTED:
-                    set_notice("This station has no consumer for that commodity — try another dock."); break;
-                default:
-                    set_notice("Order rejected.");
-                    break;
-                }
-                break;
-            default:
-                break;
-        }
+        const sim_event_t *ev = &events->events[i];
+        if ((unsigned)ev->type >= SIM_EVENT_COUNT) continue;
+        sim_event_handler_fn h = k_sim_event_handlers[ev->type];
+        if (h) h(ev);
     }
 }
 

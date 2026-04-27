@@ -1143,30 +1143,170 @@ static void broadcast_ship_states(void) {
     }
 }
 
-/* ------------------------------------------------------------------ */
-/* Main                                                               */
-/* ------------------------------------------------------------------ */
+/* ================================================================== */
+/* sim_event handlers — per-event broadcast logic invoked inside the   */
+/* main sim loop. Each takes the live event by const pointer.          */
+/* ================================================================== */
 
-int main(void) {
-    /* Line-buffer stdout and unbuffer stderr so `docker compose logs`
-     * sees server output in real time. Without this, fully-buffered
-     * stdout holds [server] printf lines until a 4KB page fills,
-     * which in practice means we never see startup/death logs. */
-    setvbuf(stdout, NULL, _IOLBF, 0);
-    setvbuf(stderr, NULL, _IONBF, 0);
-    signal(SIGINT, signal_handler);
-    signal(SIGTERM, signal_handler);
+static void srv_on_outpost_placed(const sim_event_t *ev) {
+    int slot = ev->outpost_placed.slot;
+    uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
+    int id_len = serialize_station_identity(id_buf, slot, &world.stations[slot]);
+    broadcast(id_buf, (size_t)id_len);
+    station_identity_dirty[slot] = true;
+    station_econ_dirty = true;
+    contracts_dirty = true;
+}
 
+/* SELL / REPAIR / UPGRADE / DOCK / LAUNCH all need the player's ship +
+ * current-station record pushed immediately so cargo / credits / hull /
+ * dock status don't sit stale for the SHIP_TICK_MS window. */
+static void srv_on_player_state_change(const sim_event_t *ev) {
+    int pid = ev->player_id;
+    if (pid < 0 || pid >= MAX_PLAYERS) return;
+    server_player_t *sp = &world.players[pid];
+    if (!sp->connected || !sp->conn) {
+        station_econ_dirty = true;
+        contracts_dirty = true;
+        return;
+    }
+    uint8_t buf[PLAYER_SHIP_SIZE + 4];
+    int len = send_player_ship(buf, (uint8_t)pid, sp);
+    ws_send(sp->conn, buf, (size_t)len);
+
+    int st_idx = sp->current_station;
+    if (st_idx >= 0 && st_idx < MAX_STATIONS) {
+        uint8_t sbuf[2 + STATION_RECORD_SIZE];
+        sbuf[0] = NET_MSG_WORLD_STATIONS;
+        sbuf[1] = 1;
+        uint8_t *p = &sbuf[2];
+        p[0] = (uint8_t)st_idx;
+        for (int c = 0; c < COMMODITY_COUNT; c++)
+            write_f32_le(&p[1 + c * 4], world.stations[st_idx].inventory[c]);
+        ws_send(sp->conn, sbuf, (size_t)(2 + STATION_RECORD_SIZE));
+    }
+    station_econ_dirty = true;
+    contracts_dirty = true;
+}
+
+/* SIM_EVENT_DEATH: highscore submission + per-player death packet
+ * (carries pos/vel/stats so the client cinematic anchors at the
+ * wreckage before the server respawn moves the ship) + fresh ship
+ * state so the post-respawn hull/dock is visible immediately. */
+static void srv_on_death(const sim_event_t *ev) {
+    int pid = ev->player_id;
+    if (pid < 0 || pid >= MAX_PLAYERS) return;
+    server_player_t *sp = &world.players[pid];
+    if (!sp->connected) return;
+
+    const char *cs = sp->callsign;
+    bool qualified = highscore_submit(&highscores, cs, ev->death.credits_earned);
+    printf("[server] death pid=%d cs=%s earned=%.0f cr -> %s (top=%d)\n",
+           pid, cs[0] ? cs : "?", ev->death.credits_earned,
+           qualified ? "qualified" : "skipped", highscores.count);
+    if (qualified) highscores_dirty = true;
+
+    if (!sp->conn) return;
+
+    /* Death packet: [type:1][pid:1][px:f32][py:f32][vx:f32][vy:f32]
+     * [ang:f32][ore:f32][earned:f32][spent:f32][asteroids:f32] = 38 bytes */
+    uint8_t msg[38];
+    msg[0] = NET_MSG_DEATH;
+    msg[1] = (uint8_t)pid;
+    write_f32_le(&msg[2],  ev->death.pos_x);
+    write_f32_le(&msg[6],  ev->death.pos_y);
+    write_f32_le(&msg[10], ev->death.vel_x);
+    write_f32_le(&msg[14], ev->death.vel_y);
+    write_f32_le(&msg[18], ev->death.angle);
+    write_f32_le(&msg[22], ev->death.ore_mined);
+    write_f32_le(&msg[26], ev->death.credits_earned);
+    write_f32_le(&msg[30], ev->death.credits_spent);
+    write_f32_le(&msg[34], (float)ev->death.asteroids_fractured);
+    ws_send(sp->conn, msg, sizeof(msg));
+
+    uint8_t buf[PLAYER_SHIP_SIZE + 4];
+    int len = send_player_ship(buf, (uint8_t)pid, sp);
+    ws_send(sp->conn, buf, (size_t)len);
+}
+
+static void srv_on_contract_complete(const sim_event_t *ev) {
+    (void)ev;
+    station_econ_dirty = true;
+    contracts_dirty = true;
+}
+
+static void srv_on_hail_response(const sim_event_t *ev) {
+    int pid = ev->player_id;
+    if (pid < 0 || pid >= MAX_PLAYERS) return;
+    server_player_t *sp = &world.players[pid];
+    if (!sp->connected || !sp->conn) return;
+
+    uint8_t msg[7];
+    msg[0] = NET_MSG_HAIL_RESPONSE;
+    msg[1] = (uint8_t)ev->hail_response.station;
+    write_f32_le(&msg[2], ev->hail_response.credits);
+    int ci = ev->hail_response.contract_index;
+    msg[6] = (ci >= 0 && ci < MAX_CONTRACTS) ? (uint8_t)ci : 0xFF;
+    ws_send(sp->conn, msg, sizeof(msg));
+
+    contracts_dirty = true;
+    /* Push fresh ship state so the credit bump is visible immediately. */
+    uint8_t buf[PLAYER_SHIP_SIZE + 4];
+    int len = send_player_ship(buf, (uint8_t)pid, sp);
+    ws_send(sp->conn, buf, (size_t)len);
+}
+
+/* OUTPOST_PLACED / OUTPOST_ACTIVATED / MODULE_ACTIVATED / SCAFFOLD_READY
+ * all need station identity refreshed so the client sees updated
+ * module / pending lists. */
+static void srv_mark_all_stations_identity_dirty(void) {
+    for (int s = 0; s < MAX_STATIONS; s++) station_identity_dirty[s] = true;
+}
+
+/* Fan a single sim event out to its per-type broadcaster(s). Multiple
+ * "if" branches on event type (rather than a switch) so events that
+ * fall into more than one bucket — OUTPOST_PLACED touches both
+ * srv_on_outpost_placed AND the structure-event identity refresh —
+ * all run. */
+static void srv_dispatch_sim_event(const sim_event_t *ev) {
+    if (ev->type == SIM_EVENT_OUTPOST_PLACED) srv_on_outpost_placed(ev);
+    if (ev->type == SIM_EVENT_SELL ||
+        ev->type == SIM_EVENT_REPAIR ||
+        ev->type == SIM_EVENT_UPGRADE ||
+        ev->type == SIM_EVENT_DOCK ||
+        ev->type == SIM_EVENT_LAUNCH) {
+        srv_on_player_state_change(ev);
+    }
+    if (ev->type == SIM_EVENT_DEATH)              srv_on_death(ev);
+    if (ev->type == SIM_EVENT_CONTRACT_COMPLETE)  srv_on_contract_complete(ev);
+    if (ev->type == SIM_EVENT_HAIL_RESPONSE)      srv_on_hail_response(ev);
+    if (ev->type == SIM_EVENT_OUTPOST_PLACED ||
+        ev->type == SIM_EVENT_OUTPOST_ACTIVATED ||
+        ev->type == SIM_EVENT_MODULE_ACTIVATED ||
+        ev->type == SIM_EVENT_SCAFFOLD_READY) {
+        srv_mark_all_stations_identity_dirty();
+    }
+}
+
+/* ================================================================== */
+/* Bootstrap helpers — pulled out of main() for clarity.               */
+/* ================================================================== */
+
+/* Read PORT, SIGNAL_API_TOKEN, SIGNAL_ALLOWED_ORIGIN, SIGNAL_REQUIRE_API_TOKEN
+ * env vars and stamp the listen URL + CORS headers. Returns false (and
+ * caller should exit nonzero) if SIGNAL_REQUIRE_API_TOKEN is set without
+ * a token. listen_url is sized by the caller. */
+static bool read_env_config(char *listen_url, size_t listen_url_size) {
     const char *port = getenv("PORT");
     if (!port) port = "8080";
     api_token = getenv("SIGNAL_API_TOKEN");
-    if (api_token && api_token[0] != '\0')
+    if (api_token && api_token[0] != '\0') {
         printf("[server] Station API enabled (token set)\n");
-    else {
+    } else {
         fprintf(stderr, "[WARN] SIGNAL_API_TOKEN is unset -- REST API will reject all requests\n");
         if (getenv("SIGNAL_REQUIRE_API_TOKEN")) {
             fprintf(stderr, "[FATAL] SIGNAL_REQUIRE_API_TOKEN set but no token provided\n");
-            return 1;
+            return false;
         }
     }
     allowed_origin = getenv("SIGNAL_ALLOWED_ORIGIN");
@@ -1177,10 +1317,11 @@ int main(void) {
         "X-Content-Type-Options: nosniff\r\n"
         "Cache-Control: no-store\r\n", allowed_origin);
     printf("[server] CORS origin: %s\n", allowed_origin);
-    char listen_url[64];
-    snprintf(listen_url, sizeof(listen_url), "http://0.0.0.0:%s", port);
+    snprintf(listen_url, listen_url_size, "http://0.0.0.0:%s", port);
+    return true;
+}
 
-    /* Ensure persistence directories exist. */
+static void ensure_persistence_dirs(void) {
 #ifdef _WIN32
     _mkdir(PLAYER_SAVE_DIR);
     _mkdir(STATION_CATALOG_DIR);
@@ -1188,12 +1329,14 @@ int main(void) {
     mkdir(PLAYER_SAVE_DIR, 0755);
     mkdir(STATION_CATALOG_DIR, 0755);
 #endif
+}
 
-    /* Initialise world — layered persistence (#314):
-     * 1. world_reset() seeds starter stations + belt field
-     * 2. Catalog overwrites identity for any persisted stations
-     * 3. Session snapshot overlays economy state (inventories, NPCs, contracts)
-     * 4. Rebuild derived structures */
+/* Layered persistence (#314):
+ *   1. world_reset() seeds starter stations + belt field
+ *   2. Catalog overwrites identity for any persisted stations
+ *   3. Session snapshot overlays economy state
+ *   4. Rebuild derived structures (signal chain, station nav, hash chain) */
+static void load_world_state(void) {
     world_reset(&world);
 
     int catalog_count = station_catalog_load_all(world.stations, MAX_STATIONS,
@@ -1204,8 +1347,7 @@ int main(void) {
     if (world_load(&world, SAVE_PATH)) {
         printf("[server] loaded session from %s\n", SAVE_PATH);
     } else {
-        printf("[server] no session save — fresh economy\n");
-        /* If catalog exists but session doesn't, seed economy for active stations */
+        printf("[server] no session save -- fresh economy\n");
         if (catalog_count > 0) {
             for (int i = 0; i < MAX_STATIONS; i++) {
                 if (station_exists(&world.stations[i]) && world.stations[i].credit_pool == 0.0f)
@@ -1215,33 +1357,27 @@ int main(void) {
         world_seed_station_manifests(&world);
     }
 
-    /* Assign stable IDs to any stations loaded from v1 catalogs (id == 0) */
+    /* Assign stable IDs to any stations loaded from v1 catalogs (id == 0). */
     if (world.next_station_id == 0) world.next_station_id = 1;
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (station_exists(&world.stations[i]) && world.stations[i].id == 0)
             world.stations[i].id = world.next_station_id++;
     }
 
-    /* The station catalog format doesn't persist currency_name (yet) and
-     * the catalog loader memsets the whole struct, so the defaults set
-     * by world_reset() get wiped. Re-stamp the names for the three
-     * starter stations whenever they come back empty so WORK rows show
-     * "+N prospect vouchers" / "kepler bonds" / "helios credits"
-     * instead of the bare "cr" fallback. */
-    {
-        const char *defaults[3] = {
-            "prospect vouchers",
-            "kepler bonds",
-            "helios credits",
-        };
-        for (int i = 0; i < 3 && i < MAX_STATIONS; i++) {
-            if (!station_exists(&world.stations[i])) continue;
-            if (world.stations[i].currency_name[0] == '\0') {
-                snprintf(world.stations[i].currency_name,
-                         sizeof(world.stations[i].currency_name),
-                         "%s", defaults[i]);
-                station_identity_dirty[i] = true;
-            }
+    /* The station catalog format doesn't persist currency_name (yet)
+     * and the catalog loader memsets the whole struct, so the defaults
+     * set by world_reset() get wiped. Re-stamp the names for the three
+     * starter stations whenever they come back empty. */
+    static const char *defaults[3] = {
+        "prospect vouchers", "kepler bonds", "helios credits",
+    };
+    for (int i = 0; i < 3 && i < MAX_STATIONS; i++) {
+        if (!station_exists(&world.stations[i])) continue;
+        if (world.stations[i].currency_name[0] == '\0') {
+            snprintf(world.stations[i].currency_name,
+                     sizeof(world.stations[i].currency_name),
+                     "%s", defaults[i]);
+            station_identity_dirty[i] = true;
         }
     }
 
@@ -1258,6 +1394,122 @@ int main(void) {
     if (highscores.count > 0)
         printf("[server] loaded %d highscore(s) from %s\n",
                highscores.count, HIGHSCORE_PATH);
+}
+
+/* Run as many fixed-step sim ticks as `sim_accum` covers, up to
+ * MAX_SIM_STEPS, broadcasting per-event side effects after each tick.
+ * Caller passes the running accumulator + the elapsed-since-last-call
+ * seconds. Returns when steps run out or the accumulator is empty. */
+static void run_sim_ticks(float *sim_accum, float elapsed) {
+    *sim_accum += elapsed;
+    int steps = 0;
+    while (*sim_accum >= SIM_DT && steps < MAX_SIM_STEPS) {
+        world_sim_step(&world, SIM_DT);
+        for (int e = 0; e < world.events.count; e++)
+            srv_dispatch_sim_event(&world.events.events[e]);
+        if (world.events.count > 0) {
+            uint8_t ebuf[2 + SIM_MAX_EVENTS * NET_EVENT_RECORD_SIZE];
+            int elen = serialize_events(ebuf, &world.events);
+            if (elen > 2) broadcast(ebuf, (size_t)elen);
+        }
+        broadcast_fracture_updates();
+        *sim_accum -= SIM_DT;
+        steps++;
+    }
+    if (*sim_accum > SIM_DT) *sim_accum = 0.0f; /* prevent spiral */
+}
+
+/* Tick down per-player grace timers and session-auth timeouts. */
+static void tick_session_timers(void) {
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        server_player_t *sp = &world.players[i];
+        if (sp->connected && sp->grace_period) {
+            sp->grace_timer -= (float)SIM_TICK_MS / 1000.0f;
+            if (sp->grace_timer <= 0.0f) {
+                sp->connected = false;
+                sp->grace_period = false;
+                uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
+                broadcast(leave_msg, 2);
+                printf("[server] player %d grace expired, fully disconnected\n", i);
+            }
+        }
+        /* Kick clients that never sent SESSION within the auth window. */
+        if (sp->connected && !sp->session_ready && !sp->grace_period) {
+            sp->grace_timer -= (float)SIM_TICK_MS / 1000.0f;
+            if (sp->grace_timer <= 0.0f) {
+                printf("[server] player %d: session timeout, disconnecting\n", i);
+                mg_ws_send(sp->conn, NULL, 0, WEBSOCKET_OP_CLOSE);
+                sp->connected = false;
+                sp->conn = NULL;
+                uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
+                broadcast(leave_msg, 2);
+            }
+        }
+    }
+}
+
+/* WORLD_TICK_MS broadcast: dirty station identities + named-ingot
+ * stockpiles + manifest summaries. */
+static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_identity_p) {
+    if (now - *last_station_identity_p >= STATION_IDENTITY_FALLBACK_MS) {
+        for (int s = 0; s < MAX_STATIONS; s++) station_identity_dirty[s] = true;
+        *last_station_identity_p = now;
+    }
+    /* Re-broadcast dirty station identities only to players in signal range. */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!station_identity_dirty[s]) continue;
+        if (!station_exists(&world.stations[s])) continue;
+        uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
+        int id_len = serialize_station_identity(id_buf, s, &world.stations[s]);
+        float sr_sq = world.stations[s].signal_range * world.stations[s].signal_range;
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            if (!world.players[p].connected || !world.players[p].conn) continue;
+            if (v2_dist_sq(world.players[p].ship.pos, world.stations[s].pos) <= sr_sq)
+                ws_send(world.players[p].conn, id_buf, (size_t)id_len);
+        }
+        station_identity_dirty[s] = false;
+    }
+    /* RATi v2: named-ingot stockpile + per-(commodity, grade) manifest
+     * summary. Smaller payload than identity (~3KB worst case) so we
+     * send to everyone regardless of signal range — MARKET is global. */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!world.stations[s].named_ingots_dirty) continue;
+        if (!station_exists(&world.stations[s])) continue;
+        uint8_t buf[STATION_INGOTS_HEADER + STATION_NAMED_INGOTS_MAX * NAMED_INGOT_RECORD_SIZE];
+        int len = serialize_station_ingots(buf, s, &world.stations[s]);
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            if (!world.players[p].connected || !world.players[p].conn) continue;
+            ws_send(world.players[p].conn, buf, (size_t)len);
+        }
+        uint8_t mbuf[STATION_MANIFEST_HEADER +
+                     COMMODITY_COUNT * MINING_GRADE_COUNT * STATION_MANIFEST_ENTRY];
+        int mlen = serialize_station_manifest(mbuf, s, &world.stations[s]);
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            if (!world.players[p].connected || !world.players[p].conn) continue;
+            ws_send(world.players[p].conn, mbuf, (size_t)mlen);
+        }
+        world.stations[s].named_ingots_dirty = false;
+    }
+}
+
+/* ------------------------------------------------------------------ */
+/* Main                                                               */
+/* ------------------------------------------------------------------ */
+
+int main(void) {
+    /* Line-buffer stdout and unbuffer stderr so `docker compose logs`
+     * sees server output in real time. Without this, fully-buffered
+     * stdout holds [server] printf lines until a 4KB page fills. */
+    setvbuf(stdout, NULL, _IOLBF, 0);
+    setvbuf(stderr, NULL, _IONBF, 0);
+    signal(SIGINT, signal_handler);
+    signal(SIGTERM, signal_handler);
+
+    char listen_url[64];
+    if (!read_env_config(listen_url, sizeof(listen_url))) return 1;
+
+    ensure_persistence_dirs();
+    load_world_state();
 
     struct mg_mgr mgr;
     mg_mgr_init(&mgr);
@@ -1267,7 +1519,7 @@ int main(void) {
 #else
     printf("[server] SIGNAL alpha on %s\n", listen_url);
 #endif
-    printf("[server] ALPHA BUILD — world may reset without notice\n");
+    printf("[server] ALPHA BUILD -- world may reset without notice\n");
 
     uint64_t last_sim = 0, last_state = 0, last_world = 0, last_ship = 0, last_save = 0;
     uint64_t last_econ_dirty = 0;
@@ -1280,221 +1532,22 @@ int main(void) {
         if (now - last_sim >= SIM_TICK_MS) {
             float elapsed = (float)(now - last_sim) / 1000.0f;
             last_sim = now;
-            sim_accum += elapsed;
-            int steps = 0;
-            while (sim_accum >= SIM_DT && steps < MAX_SIM_STEPS) {
-                world_sim_step(&world, SIM_DT);
-                /* Immediate broadcasts triggered by sim events. */
-                for (int e = 0; e < world.events.count; e++) {
-                    sim_event_t *ev = &world.events.events[e];
-                    if (ev->type == SIM_EVENT_OUTPOST_PLACED) {
-                        int slot = ev->outpost_placed.slot;
-                        uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
-                        int id_len = serialize_station_identity(id_buf, slot, &world.stations[slot]);
-                        broadcast(id_buf, (size_t)id_len);
-                        station_identity_dirty[slot] = true;
-                        station_econ_dirty = true;
-                        contracts_dirty = true;
-                    }
-                    /* Send immediate ship + station state after actions that
-                     * change cargo, credits, hull, or dock status — eliminates
-                     * the 250ms stale window from SHIP_TICK_MS cadence. */
-                    if (ev->type == SIM_EVENT_SELL || ev->type == SIM_EVENT_REPAIR ||
-                        ev->type == SIM_EVENT_UPGRADE || ev->type == SIM_EVENT_DOCK ||
-                        ev->type == SIM_EVENT_LAUNCH) {
-                        int pid = ev->player_id;
-                        if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected && world.players[pid].conn) {
-                            uint8_t buf[PLAYER_SHIP_SIZE + 4];
-                            int len = send_player_ship(buf, (uint8_t)pid, &world.players[pid]);
-                            ws_send(world.players[pid].conn, buf, (size_t)len);
-                            /* Send only the station the player is at, not all stations */
-                            int st_idx = world.players[pid].current_station;
-                            if (st_idx >= 0 && st_idx < MAX_STATIONS) {
-                                uint8_t sbuf[2 + STATION_RECORD_SIZE];
-                                sbuf[0] = NET_MSG_WORLD_STATIONS;
-                                sbuf[1] = 1;
-                                uint8_t *p = &sbuf[2];
-                                p[0] = (uint8_t)st_idx;
-                                for (int c = 0; c < COMMODITY_COUNT; c++)
-                                    write_f32_le(&p[1 + c * 4], world.stations[st_idx].inventory[c]);
-                                ws_send(world.players[pid].conn, sbuf, (size_t)(2 + STATION_RECORD_SIZE));
-                            }
-                        }
-                        station_econ_dirty = true;
-                        contracts_dirty = true;
-                    }
-                    if (ev->type == SIM_EVENT_DEATH) {
-                        int pid = ev->player_id;
-                        /* Submit the run to the global leaderboard. Runs that
-                         * don't qualify for top-N return false and no-op. */
-                        if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected) {
-                            const char *cs = world.players[pid].callsign;
-                            bool qualified = highscore_submit(
-                                &highscores, cs, ev->death.credits_earned);
-                            printf("[server] death pid=%d cs=%s earned=%.0f cr → %s (top=%d)\n",
-                                   pid, cs[0] ? cs : "?", ev->death.credits_earned,
-                                   qualified ? "qualified" : "skipped",
-                                   highscores.count);
-                            if (qualified) highscores_dirty = true;
-                        }
-                        if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected && world.players[pid].conn) {
-                            /* Death packet now carries position + stats so
-                             * the client cinematic anchors at the wreckage
-                             * before the server-side respawn moves the
-                             * ship. Layout:
-                             * [type:1][pid:1][px:f32][py:f32][vx:f32][vy:f32]
-                             * [ang:f32][ore:f32][earned:f32][spent:f32]
-                             * [asteroids:f32] = 38 bytes */
-                            uint8_t msg[38];
-                            msg[0] = NET_MSG_DEATH;
-                            msg[1] = (uint8_t)pid;
-                            write_f32_le(&msg[2],  ev->death.pos_x);
-                            write_f32_le(&msg[6],  ev->death.pos_y);
-                            write_f32_le(&msg[10], ev->death.vel_x);
-                            write_f32_le(&msg[14], ev->death.vel_y);
-                            write_f32_le(&msg[18], ev->death.angle);
-                            write_f32_le(&msg[22], ev->death.ore_mined);
-                            write_f32_le(&msg[26], ev->death.credits_earned);
-                            write_f32_le(&msg[30], ev->death.credits_spent);
-                            write_f32_le(&msg[34], (float)ev->death.asteroids_fractured);
-                            ws_send(world.players[pid].conn, msg, sizeof(msg));
-                            /* Also send updated ship state (hull restored, docked) */
-                            uint8_t buf[PLAYER_SHIP_SIZE + 4];
-                            int len = send_player_ship(buf, (uint8_t)pid, &world.players[pid]);
-                            ws_send(world.players[pid].conn, buf, (size_t)len);
-                        }
-                    }
-                    if (ev->type == SIM_EVENT_CONTRACT_COMPLETE) {
-                        station_econ_dirty = true;
-                        contracts_dirty = true;
-                    }
-                    if (ev->type == SIM_EVENT_HAIL_RESPONSE) {
-                        int pid = ev->player_id;
-                        if (pid >= 0 && pid < MAX_PLAYERS && world.players[pid].connected && world.players[pid].conn) {
-                            uint8_t msg[7];
-                            msg[0] = NET_MSG_HAIL_RESPONSE;
-                            msg[1] = (uint8_t)ev->hail_response.station;
-                            write_f32_le(&msg[2], ev->hail_response.credits);
-                            int ci = ev->hail_response.contract_index;
-                            msg[6] = (ci >= 0 && ci < MAX_CONTRACTS) ? (uint8_t)ci : 0xFF;
-                            ws_send(world.players[pid].conn, msg, sizeof(msg));
-                            /* Contracts table changed — push fresh list. */
-                            contracts_dirty = true;
-                            /* Push fresh ship state so the credit bump is visible immediately */
-                            uint8_t buf[PLAYER_SHIP_SIZE + 4];
-                            int len = send_player_ship(buf, (uint8_t)pid, &world.players[pid]);
-                            ws_send(world.players[pid].conn, buf, (size_t)len);
-                        }
-                    }
-                    if (ev->type == SIM_EVENT_OUTPOST_PLACED ||
-                        ev->type == SIM_EVENT_OUTPOST_ACTIVATED ||
-                        ev->type == SIM_EVENT_MODULE_ACTIVATED ||
-                        ev->type == SIM_EVENT_SCAFFOLD_READY) {
-                        /* Any structure event needs the station identity refreshed
-                         * so the client sees the updated module/pending list. */
-                        for (int s = 0; s < MAX_STATIONS; s++)
-                            station_identity_dirty[s] = true;
-                    }
-                }
-                /* Broadcast all events to clients for audio + UI */
-                if (world.events.count > 0) {
-                    uint8_t ebuf[2 + SIM_MAX_EVENTS * NET_EVENT_RECORD_SIZE];
-                    int elen = serialize_events(ebuf, &world.events);
-                    if (elen > 2) broadcast(ebuf, (size_t)elen);
-                }
-                broadcast_fracture_updates();
-                sim_accum -= SIM_DT;
-                steps++;
-            }
-            if (sim_accum > SIM_DT) sim_accum = 0.0f; /* prevent spiral */
-            /* Mark econ dirty every ~1s as fallback for production changes */
+            run_sim_ticks(&sim_accum, elapsed);
+            /* Mark econ dirty every ~1s as fallback for production changes. */
             if (now - last_econ_dirty >= 1000) {
                 station_econ_dirty = true;
                 contracts_dirty = true;
                 last_econ_dirty = now;
             }
         }
-        /* Tick down reconnect grace timers and session auth timeouts */
-        for (int i = 0; i < MAX_PLAYERS; i++) {
-            server_player_t *sp = &world.players[i];
-            if (sp->connected && sp->grace_period) {
-                sp->grace_timer -= (float)SIM_TICK_MS / 1000.0f;
-                if (sp->grace_timer <= 0.0f) {
-                    sp->connected = false;
-                    sp->grace_period = false;
-                    uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
-                    broadcast(leave_msg, 2);
-                    printf("[server] player %d grace expired, fully disconnected\n", i);
-                }
-            }
-            /* Kick clients that never sent SESSION within the auth window */
-            if (sp->connected && !sp->session_ready && !sp->grace_period) {
-                sp->grace_timer -= (float)SIM_TICK_MS / 1000.0f;
-                if (sp->grace_timer <= 0.0f) {
-                    printf("[server] player %d: session timeout, disconnecting\n", i);
-                    mg_ws_send(sp->conn, NULL, 0, WEBSOCKET_OP_CLOSE);
-                    sp->connected = false;
-                    sp->conn = NULL;
-                    uint8_t leave_msg[] = { NET_MSG_LEAVE, (uint8_t)i };
-                    broadcast(leave_msg, 2);
-                }
-            }
-        }
+        tick_session_timers();
         if (now - last_state >= STATE_TICK_MS) {
             broadcast_player_states();
             last_state = now;
         }
         if (now - last_world >= WORLD_TICK_MS) {
             broadcast_world();
-            /* Periodic fallback re-sync for scaffold progress */
-            if (now - last_station_identity >= STATION_IDENTITY_FALLBACK_MS) {
-                for (int s = 0; s < MAX_STATIONS; s++) station_identity_dirty[s] = true;
-                last_station_identity = now;
-            }
-            /* Re-broadcast dirty station identities only to players in signal range */
-            for (int s = 0; s < MAX_STATIONS; s++) {
-                if (!station_identity_dirty[s]) continue;
-                if (!station_exists(&world.stations[s])) continue;
-                uint8_t id_buf[STATION_IDENTITY_SIZE + 4];
-                int id_len = serialize_station_identity(id_buf, s, &world.stations[s]);
-                float sr_sq = world.stations[s].signal_range * world.stations[s].signal_range;
-                for (int p = 0; p < MAX_PLAYERS; p++) {
-                    if (!world.players[p].connected || !world.players[p].conn) continue;
-                    if (v2_dist_sq(world.players[p].ship.pos, world.stations[s].pos) <= sr_sq)
-                        ws_send(world.players[p].conn, id_buf, (size_t)id_len);
-                }
-                station_identity_dirty[s] = false;
-            }
-
-            /* RATi v2: re-broadcast dirty named-ingot stockpiles to all
-             * connected players. Smaller payload than identity (~3KB
-             * worst case for a full stockpile) so we send to everyone
-             * regardless of signal range — the MARKET tab is global. */
-            for (int s = 0; s < MAX_STATIONS; s++) {
-                if (!world.stations[s].named_ingots_dirty) continue;
-                if (!station_exists(&world.stations[s])) continue;
-                uint8_t buf[STATION_INGOTS_HEADER + STATION_NAMED_INGOTS_MAX * NAMED_INGOT_RECORD_SIZE];
-                int len = serialize_station_ingots(buf, s, &world.stations[s]);
-                for (int p = 0; p < MAX_PLAYERS; p++) {
-                    if (!world.players[p].connected || !world.players[p].conn) continue;
-                    ws_send(world.players[p].conn, buf, (size_t)len);
-                }
-                /* Phase 2: same dirty flag is a good proxy for "manifest
-                 * changed" — smelt sets it when it mints a new unit, and
-                 * buy/sell flip it via named_ingots rotation. Broadcast
-                 * the per-(commodity, grade) summary so clients can
-                 * render TRADE rows correctly in multiplayer. */
-                {
-                    uint8_t mbuf[STATION_MANIFEST_HEADER +
-                                 COMMODITY_COUNT * MINING_GRADE_COUNT * STATION_MANIFEST_ENTRY];
-                    int mlen = serialize_station_manifest(mbuf, s, &world.stations[s]);
-                    for (int p = 0; p < MAX_PLAYERS; p++) {
-                        if (!world.players[p].connected || !world.players[p].conn) continue;
-                        ws_send(world.players[p].conn, mbuf, (size_t)mlen);
-                    }
-                }
-                world.stations[s].named_ingots_dirty = false;
-            }
+            broadcast_dirty_station_data(now, &last_station_identity);
             last_world = now;
         }
         if (now - last_ship >= SHIP_TICK_MS) {
