@@ -1602,6 +1602,53 @@ static bool is_already_towed(const ship_t *ship, int asteroid_idx) {
     return false;
 }
 
+/* ---- Unified rubber-band physics ----
+ *
+ * One model for all towed rocks regardless of whether the player is
+ * holding the tractor. Hooke's law:
+ *
+ *   stretch = max(0, |ship - rock| - REST_LEN)
+ *   F_spring = K * stretch * dir_rock_to_ship    (pulls rock toward ship)
+ *   F_damp   = D * dot(rel_vel, dir) * dir       (kills oscillation)
+ *
+ * The active-tractor flag (sp->ship.tractor_active) only enables the
+ * GRAB step (auto-attach a new fragment). Once attached, the band
+ * physics runs every tick. No artificial "two-zone" force, no hard
+ * brake — rocks naturally trail at REST_LEN while the ship cruises,
+ * and stretch when the ship accelerates away.
+ *
+ * Constants tuned so:
+ *   - 100 u stretch ≈ a noticeable tug (~3 HP/s of ship drag at full load)
+ *   - 200 u stretch ≈ near-elastic-limit, hauling feels heavy
+ *   - tractor_range * 1.5 ≈ snap-out (band breaks). */
+#define BAND_REST_LEN     80.0f
+#define BAND_SPRING_K      6.0f   /* per unit of stretch */
+#define BAND_DAMPING       2.0f   /* relative-vel along band */
+#define BAND_SHIP_MASS     8.0f   /* ship is heavier than a rock; reaction force scaled by 1/MASS */
+static void apply_band_force(server_player_t *sp, asteroid_t *a, float dt) {
+    vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
+    float dist = v2_len(to_ship);
+    if (dist < 0.001f) return;
+    vec2 dir = v2_scale(to_ship, 1.0f / dist);
+
+    /* Spring: pull rock toward ship past the rest length. Push rock
+     * AWAY when below rest (no slamming into hull on rapid approach). */
+    float stretch = dist - BAND_REST_LEN;
+    float spring_mag = BAND_SPRING_K * stretch;     /* signed: + = pull, - = push */
+
+    /* Damping: oppose component of relative velocity along the band. */
+    vec2 rel_vel = v2_sub(sp->ship.vel, a->vel);
+    float vel_along = v2_dot(rel_vel, dir);
+    float damp_mag = BAND_DAMPING * vel_along;
+
+    float total = spring_mag + damp_mag;
+    vec2 force = v2_scale(dir, total);
+
+    /* Apply to rock (full force) + reaction on ship (1/MASS). */
+    a->vel       = v2_add(a->vel, v2_scale(force, dt));
+    sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(force, dt / BAND_SHIP_MASS));
+}
+
 static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) {
     float nearby_sq = FRAGMENT_NEARBY_RANGE * FRAGMENT_NEARBY_RANGE;
     float tr = ship_tractor_range(&sp->ship);
@@ -1609,11 +1656,12 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
     sp->nearby_fragments = 0;
     sp->tractor_fragments = 0;
 
-    /* Update towed fragments: spring physics to trail behind ship */
+    /* Update towed fragments via the unified band physics. Same code
+     * runs whether the tractor is held or released — release just
+     * stops auto-grabbing new rocks. */
     for (int t = 0; t < sp->ship.towed_count; t++) {
         int idx = sp->ship.towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) {
-            /* Remove invalid towed fragment */
             sp->ship.towed_count--;
             sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
             sp->ship.towed_fragments[sp->ship.towed_count] = -1;
@@ -1621,41 +1669,11 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             continue;
         }
         asteroid_t *a = &w->asteroids[idx];
-        /* Tractor drag: pull toward ship, maintaining safe distance.
-         * No velocity blending — fragments trail naturally via spring
-         * forces and heavy damping. Feels heavy and tactile. */
-        float tractor_r = ship_tractor_range(&sp->ship);
-        float safe_dist = 40.0f + a->radius + ship_hull_def(&sp->ship)->ship_radius;
-        vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
-        float dist_to_ship = v2_len(to_ship);
-
-        /* Two-zone pull: gentle within range, strong when lagging */
-        if (dist_to_ship > tractor_r * 0.7f) {
-            vec2 pull = v2_scale(to_ship, 4.0f);
-            a->vel = v2_add(a->vel, v2_scale(pull, dt));
-        } else if (dist_to_ship > safe_dist) {
-            vec2 pull = v2_scale(to_ship, 1.5f);
-            a->vel = v2_add(a->vel, v2_scale(pull, dt));
-        }
-
-        /* Push away if too close (don't slam into ship) */
-        if (dist_to_ship < safe_dist && dist_to_ship > 0.1f) {
-            vec2 push = v2_scale(to_ship, -(safe_dist - dist_to_ship) * 8.0f);
-            a->vel = v2_add(a->vel, v2_scale(push, dt));
-        }
-
-        /* Heavy drag — fragments bleed speed, trail behind naturally */
-        a->vel = v2_scale(a->vel, 1.0f / (1.0f + 2.0f * dt));
-
-        /* Never faster than the ship + some slack */
-        float ship_spd = v2_len(sp->ship.vel);
-        float frag_spd = v2_len(a->vel);
-        float max_frag_spd = ship_spd + 60.0f;
-        if (frag_spd > max_frag_spd && frag_spd > 0.1f)
-            a->vel = v2_scale(a->vel, max_frag_spd / frag_spd);
+        apply_band_force(sp, a, dt);
         sp->tractor_fragments++;
 
-        /* Fragment-ship collision: keep fragment from overlapping ship */
+        /* Hard separation: fragment never overlaps ship (band can't
+         * push hard enough to overshoot at high stretch otherwise). */
         float ship_r = ship_hull_def(&sp->ship)->ship_radius;
         float min_d = a->radius + ship_r + 4.0f;
         vec2 frag_to_ship = v2_sub(sp->ship.pos, a->pos);
@@ -1666,7 +1684,9 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
             a->pos = v2_add(a->pos, push);
         }
 
-        /* Fragment-fragment collision: towed fragments push apart */
+        /* Fragment-fragment separation: towed rocks push apart so they
+         * settle into a constellation around the ship instead of
+         * stacking. */
         for (int u = t + 1; u < sp->ship.towed_count; u++) {
             int uidx = sp->ship.towed_fragments[u];
             if (uidx < 0 || uidx >= MAX_ASTEROIDS || !w->asteroids[uidx].active) continue;
@@ -1718,71 +1738,36 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
     }
 }
 
-/* ---- Leashed fragment physics ---- */
-
-/* When fragments are towed but tractor is OFF (LEASHED state):
- * elastic band physics with slack zone, quadratic ramp, and snap. */
-/* Slingshot leash: tractor released, fragments still tethered.
- *
- * The mental model is a rubber band. While the tractor was active the
- * rocks tracked the ship; once released, they stop almost dead in the
- * water (heavy drag) and the player flies free. The gap between ship
- * and rocks IS the tether stretch — visible in world space as the
- * distance grows. release_towed_fragments reads that distance per
- * rock and fires the fling proportional to it: tap-to-fire while the
- * tether is short = weak fling; tap from far across the screen with
- * the band fully stretched = punchy slingshot.
- *
- * No pull-toward-ship force here — that would defeat the slingshot.
- * Rocks just brake hard and wait for either (a) the tap-to-fire that
- * cashes the stretch in as kinetic energy or (b) the snap-out beyond
- * 150 % tractor range that drops them. Light reciprocal drag on the
- * ship gives the player a haptic sense that the band is attached. */
-#define LEASH_FRAGMENT_DRAG 4.5f   /* rocks brake to ~stationary in <1s */
-#define LEASH_SHIP_DRAG_K   0.18f  /* ship drag scales with stretch */
+/* Leashed fragments: tractor not held, rocks still tethered. The band
+ * physics is identical to active-tow — Hooke spring + damping, run by
+ * apply_band_force in step_fragment_collection. The only thing this
+ * pass does separately is the snap-out check (rocks beyond 1.5×
+ * tractor_range fall off) and clearing the dead-fragment slots,
+ * because the active path lives inside step_fragment_collection
+ * which we don't run when tractor is off. */
 static void step_leashed_fragments(world_t *w, server_player_t *sp, float dt) {
     float tractor_r = ship_tractor_range(&sp->ship);
-    int max_tow = 2 + sp->ship.tractor_level * 2;
-
+    /* Walk backward so removal-by-swap doesn't skip elements. */
     for (int t = sp->ship.towed_count - 1; t >= 0; t--) {
         int idx = sp->ship.towed_fragments[t];
-        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
+        if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) {
+            sp->ship.towed_count--;
+            sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
+            sp->ship.towed_fragments[sp->ship.towed_count] = -1;
+            continue;
+        }
         asteroid_t *a = &w->asteroids[idx];
         vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
         float dist = v2_len(to_ship);
 
-        /* Snap: beam breaks at 150 % tractor range — band's elastic
-         * limit. Rocks beyond that point fall off the leash entirely. */
+        /* Elastic limit: band snaps past 1.5 × tractor_range. */
         if (dist > tractor_r * 1.5f) {
             sp->ship.towed_count--;
             sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
             sp->ship.towed_fragments[sp->ship.towed_count] = -1;
             continue;
         }
-
-        /* Tether stretch = distance into the elastic band, normalized
-         * to [0, 1] over the full tractor range. Used only for the
-         * ship-side drag; the rock side has uniform brake. */
-        float stretch = clampf(dist / tractor_r, 0.0f, 1.0f);
-
-        /* Reciprocal drag on the ship — proportional to stretch and
-         * to how many rocks are loaded. A fully-loaded, fully-stretched
-         * tether feels heavy; an empty wisp barely tugs. */
-        float ship_drag = LEASH_SHIP_DRAG_K * stretch *
-                          ((float)sp->ship.towed_count / (float)max_tow);
-        sp->ship.vel = v2_scale(sp->ship.vel, 1.0f - ship_drag * dt);
-        (void)to_ship;
-    }
-
-    /* Heavy fragment drag — rocks stop almost dead in the water within
-     * ~0.5 s of release. That's what makes the band stretch as the
-     * ship continues to move, and what lets a tap-to-fire later take
-     * full credit for the stored energy. */
-    for (int t = 0; t < sp->ship.towed_count; t++) {
-        int idx = sp->ship.towed_fragments[t];
-        if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
-        w->asteroids[idx].vel = v2_scale(w->asteroids[idx].vel,
-                                          1.0f / (1.0f + LEASH_FRAGMENT_DRAG * dt));
+        apply_band_force(sp, a, dt);
     }
 }
 
@@ -1810,38 +1795,54 @@ static void step_towed_cleanup(world_t *w, server_player_t *sp) {
      * directly, crediting the towing player. */
 }
 
-/* Slingshot release. Tap-to-fire on towed fragments — fling magnitude
- * is the rubber-band stretch cashed in as kinetic energy.
+/* Slingshot release. Fire the towed rocks along the BAND AXIS using
+ * the stored elastic energy of the stretched spring.
  *
- * Per-rock fling speed:
- *   ship.vel  +  forward * (BASE + hull->accel * K  +  stretch * STRETCH_K)
+ * Slingshot mental model:
+ *   - The band points from rock -> ship. Releasing it accelerates the
+ *     rock in that direction (toward the ship and past it).
+ *   - Stored elastic PE = 0.5 * k * stretch² converts to KE
+ *     (assuming unit rock mass): v_added = stretch * sqrt(K).
+ *   - Plus a small floor (BASE_SPEED) so a tap with no stretch still
+ *     throws something — tap-to-yeet, not tap-to-drop.
+ *   - Plus the ship's velocity (you're moving with the rock when you
+ *     release).
  *
- * stretch = current distance from ship to rock (the band length
- * accumulated by step_leashed_fragments while the player was flying).
- * BASE + hull->accel*K is the floor — even a tap with the rocks still
- * tight to the ship throws something. STRETCH_K is calibrated so a
- * full-tractor-range pull gives a punchy ~250 m/s bonus.
- *
- * forward direction is the ship's facing at release, not the rock's
- * angle relative to the ship. Skill is in positioning the rocks
- * behind you + facing the target before the tap.
+ * Direction comes from band geometry, NOT ship.angle. Aim by
+ * positioning yourself so the rock you want to throw is OPPOSITE the
+ * target direction. That's the slingshot. The ship-facing angle was
+ * cheesy because it broke the spatial intuition: you'd stretch east
+ * and the rock would yet shoot wherever your nose was pointing.
  *
  * last_towed_token stays set so kill credit resolves on impact. */
-#define ROCK_THROW_BASE_SPEED  60.0f
-#define ROCK_THROW_ACCEL_K      0.15f
-#define ROCK_THROW_STRETCH_K    0.55f  /* per world unit of stretch */
+#define ROCK_THROW_BASE_SPEED  40.0f
 static void release_towed_fragments(world_t *w, server_player_t *sp) {
-    vec2 forward = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
-    const hull_def_t *hull = ship_hull_def(&sp->ship);
-    float base = ROCK_THROW_BASE_SPEED + hull->accel * ROCK_THROW_ACCEL_K;
     for (int t = 0; t < sp->ship.towed_count; t++) {
         int idx = sp->ship.towed_fragments[t];
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         if (!w->asteroids[idx].active) continue;
         asteroid_t *a = &w->asteroids[idx];
-        float stretch = v2_len(v2_sub(sp->ship.pos, a->pos));
-        float fling = base + stretch * ROCK_THROW_STRETCH_K;
-        a->vel = v2_add(sp->ship.vel, v2_scale(forward, fling));
+        vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
+        float dist = v2_len(to_ship);
+        if (dist < 0.01f) {
+            /* Degenerate: rock is on top of the ship. Fire forward as
+             * a fallback — no band axis to read. */
+            vec2 fwd = v2(cosf(sp->ship.angle), sinf(sp->ship.angle));
+            a->vel = v2_add(sp->ship.vel, v2_scale(fwd, ROCK_THROW_BASE_SPEED));
+            a->net_dirty = true;
+            continue;
+        }
+        vec2 dir = v2_scale(to_ship, 1.0f / dist);
+        /* Stretch beyond rest length — only the elastic portion counts
+         * as stored energy. A rock at slack-distance gets just BASE. */
+        float stretch = dist - BAND_REST_LEN;
+        if (stretch < 0.0f) stretch = 0.0f;
+        /* v = sqrt(K) * stretch  is the elastic-energy fling. With
+         * BAND_SPRING_K = 6 and stretch = 200 (deep stretch), this is
+         * ~490 m/s — punchy. Half-stretch (100) is ~245 m/s. */
+        float elastic = sqrtf(BAND_SPRING_K) * stretch;
+        float fling = ROCK_THROW_BASE_SPEED + elastic;
+        a->vel = v2_add(sp->ship.vel, v2_scale(dir, fling));
         a->net_dirty = true;
         /* last_towed_by / last_towed_token already set when the
          * tractor pulled the fragment in — leave them so kill credit

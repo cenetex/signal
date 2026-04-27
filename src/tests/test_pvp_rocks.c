@@ -94,14 +94,21 @@ static void setup_two_players(world_t *w) {
 /* Tests ------------------------------------------------------------ */
 
 TEST(test_release_imparts_throw_velocity) {
-    /* Tow a fragment, point ship +X, release while moving +X at 30u/s.
-     * Released fragment should fly forward faster than the ship. */
+    /* Slingshot release fires the rock along the BAND AXIS (from
+     * rock toward ship, then beyond). Set up the ship moving +X with
+     * a rock 100 u behind it (-X) — the band pulls the rock toward
+     * the ship, which is +X, so on release the rock fires +X past
+     * the ship's current velocity. 100 u of stretch beyond
+     * BAND_REST_LEN (80) gives ~20 u of elastic stretch -> ~50 m/s
+     * elastic + 40 m/s base = ~90 m/s along +X, on top of ship's
+     * +30 m/s velocity. Comfortably > ship.vel + 30. */
     WORLD_DECL;
     setup_two_players(&w);
     server_player_t *sp = &w.players[0];
+    sp->ship.pos   = v2(0.0f, 0.0f);
     sp->ship.angle = 0.0f;            /* +X facing */
     sp->ship.vel   = v2(30.0f, 0.0f);
-    int aidx = spawn_towed_fragment(&w, sp, v2(20.0f, 0.0f), 12.0f);
+    int aidx = spawn_towed_fragment(&w, sp, v2(-100.0f, 0.0f), 12.0f);
     ASSERT(aidx >= 0);
 
     /* Trigger release via the input intent path. Run one sim tick so
@@ -112,7 +119,8 @@ TEST(test_release_imparts_throw_velocity) {
     asteroid_t *a = &w.asteroids[aidx];
     /* Towed array was cleared. */
     ASSERT_EQ_INT(sp->ship.towed_count, 0);
-    /* Velocity points +X and is meaningfully faster than ship. */
+    /* Rock fires along band axis (+X toward and past the ship), at
+     * meaningfully more than ship's own velocity. */
     ASSERT(a->vel.x > sp->ship.vel.x + 30.0f);
     /* last_towed_token preserved on release. */
     ASSERT(memcmp(a->last_towed_token, sp->session_token, 8) == 0);
