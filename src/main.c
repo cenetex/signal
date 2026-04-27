@@ -70,7 +70,6 @@ static void mix_external_audio(float *buffer, int frames, int channels, void *us
 /* build_station_ui_state, format_station_* helpers: see station_ui.c */
 /* station_role_hub_label, station_role_market_title, station_role_fit_title: see station_ui.c */
 /* station_role_color: see station_ui.c */
-/* build_station_service_lines, draw_station_service_text_line: see station_ui.c */
 /* can_afford_upgrade: see economy.h/c */
 
 /* station_dock_anchor, ship_cargo_space: see game_sim.c */

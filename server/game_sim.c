@@ -167,6 +167,15 @@ static void spatial_grid_ensure(spatial_grid_t *g) {
     g->capacity = SPATIAL_HASH_INITIAL_CAP;
     g->mask = g->capacity - 1;
     g->entries = (sparse_cell_entry_t *)calloc(g->capacity, sizeof(sparse_cell_entry_t));
+    if (!g->entries) {
+        /* OOM — leave the grid empty; callers (get_or_create, lookup,
+         * insert) check for NULL entries. The asteroid grid will
+         * silently degrade to "no spatial accel" rather than crash. */
+        g->capacity = 0;
+        g->mask = 0;
+        g->occupied = 0;
+        return;
+    }
     for (uint32_t i = 0; i < g->capacity; i++)
         g->entries[i].key_x = INT32_MIN; /* empty sentinel */
     g->occupied = 0;
@@ -183,6 +192,7 @@ static void spatial_grid_clear(spatial_grid_t *g) {
 
 static spatial_cell_t *spatial_grid_get_or_create(spatial_grid_t *g, int cx, int cy) {
     spatial_grid_ensure(g);
+    if (!g->entries) return NULL; /* OOM — degrade gracefully */
     uint32_t h = (uint32_t)((cx * 73856093) ^ (cy * 19349663));
     for (uint32_t i = h & g->mask; ; i = (i + 1) & g->mask) {
         sparse_cell_entry_t *e = &g->entries[i];
@@ -201,6 +211,7 @@ static void spatial_grid_insert(spatial_grid_t *g, int idx, vec2 pos) {
     int cx, cy;
     spatial_grid_cell(g, pos, &cx, &cy);
     spatial_cell_t *cell = spatial_grid_get_or_create(g, cx, cy);
+    if (!cell) return; /* OOM — see spatial_grid_ensure */
     if (cell->count < SPATIAL_MAX_PER_CELL) {
         cell->indices[cell->count++] = (int16_t)idx;
     }

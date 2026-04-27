@@ -76,17 +76,6 @@ typedef struct {
     int kits_short_by;
 } station_ui_state_t;
 
-typedef struct {
-    const char* action;
-    /* Sized to fit "%d %s" with int up to 11 chars, space, and a full
-     * 32-char currency_name + null. Linux gcc -Werror=format-truncation
-     * proves this from the snprintf sites in build_station_service_lines. */
-    char state[48];
-    uint8_t r;
-    uint8_t g0;
-    uint8_t b;
-} station_service_line_t;
-
 /* ------------------------------------------------------------------ */
 /* Client game state                                                  */
 /* ------------------------------------------------------------------ */
