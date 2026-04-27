@@ -385,8 +385,27 @@ void rebuild_characters_from_npcs(world_t *w) {
         }
     }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
-        const npc_ship_t *npc = &w->npc_ships[n];
+        npc_ship_t *npc = &w->npc_ships[n];
         if (!npc->active) continue;
+        /* v32 -> v33 migration: regenerate session_token for any
+         * active NPC loaded without one. Same byte layout as
+         * spawn_npc so the token shape is consistent. */
+        bool has_token = (npc->session_token[0] | npc->session_token[1] |
+                          npc->session_token[2] | npc->session_token[3] |
+                          npc->session_token[4] | npc->session_token[5] |
+                          npc->session_token[6] | npc->session_token[7]) != 0;
+        if (!has_token) {
+            if (w->next_npc_token == 0) w->next_npc_token = 1;
+            uint16_t tok = w->next_npc_token++;
+            npc->session_token[0] = 'N';
+            npc->session_token[1] = 'P';
+            npc->session_token[2] = 'C';
+            npc->session_token[3] = (uint8_t)npc->home_station;
+            npc->session_token[4] = (uint8_t)npc->role;
+            npc->session_token[5] = (uint8_t)n;
+            npc->session_token[6] = (uint8_t)(tok & 0xFF);
+            npc->session_token[7] = (uint8_t)((tok >> 8) & 0xFF);
+        }
         (void)character_alloc_for_npc(w, n, npc);
     }
 }
@@ -428,6 +447,30 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     if (role == NPC_ROLE_TOW) {
         npc->tint_r = 1.0f; npc->tint_g = 0.85f; npc->tint_b = 0.30f;
     }
+    /* Per-NPC economic identity. Bytes:
+     *   [0..2] 'NPC' magic (distinguishes from player session_tokens
+     *          which are 8 random bytes from the session handshake)
+     *   [3]    station_idx
+     *   [4]    role
+     *   [5]    slot
+     *   [6..7] world counter (little-endian) — increments each spawn
+     *          so respawns of the same role at the same slot get a
+     *          fresh ledger identity. The dead token's ledger entry
+     *          stays attributed until the 16-slot LRU evicts it. */
+    if (w->next_npc_token == 0) w->next_npc_token = 1;
+    uint16_t tok = w->next_npc_token++;
+    npc->session_token[0] = 'N';
+    npc->session_token[1] = 'P';
+    npc->session_token[2] = 'C';
+    npc->session_token[3] = (uint8_t)station_idx;
+    npc->session_token[4] = (uint8_t)role;
+    npc->session_token[5] = (uint8_t)slot;
+    npc->session_token[6] = (uint8_t)(tok & 0xFF);
+    npc->session_token[7] = (uint8_t)((tok >> 8) & 0xFF);
+    /* No starter balance — fresh NPCs run on credit and pay it back
+     * as they complete deliveries. ledger_force_debit at the dock
+     * lets the balance go negative; the chain self-balances over
+     * time as the hauler ferries goods. */
     /* Pair a character_t with the NPC. Lifecycle-only — nothing reads
      * it yet (#294 Slice 6). If the pool is somehow exhausted we still
      * spawn the NPC; this is best-effort during the transition. */
@@ -780,13 +823,21 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) carried += npc->cargo[c];
             float space = hull->ingot_capacity - carried;
 
-            /* Contract-driven routing: find highest-value fillable contract */
+            /* Contract-driven routing: find highest-value fillable
+             * external contract. SKIP contracts whose station_index
+             * is our own home — a self-delivery is zero-distance,
+             * scores dist=1 = max possible price/dist, and would
+             * always win the race. The bug it caused: Prospect
+             * issues a P6 kit-import contract for itself; Prospect
+             * haulers loaded local stock and "delivered" it back to
+             * Prospect, never carrying ferrite ingots out to Kepler. */
             int best_contract = -1;
             float best_score = 0.0f;
             for (int k = 0; k < MAX_CONTRACTS; k++) {
                 if (!w->contracts[k].active) continue;
                 if (w->contracts[k].action != CONTRACT_TRACTOR) continue;
                 if (w->contracts[k].station_index >= MAX_STATIONS) continue;
+                if (w->contracts[k].station_index == npc->home_station) continue;
                 commodity_t c = w->contracts[k].commodity;
                 if (c < COMMODITY_RAW_ORE_COUNT) continue; /* haulers carry ingots only */
                 if (home->inventory[c] < 0.5f) continue; /* no stock to fill */
@@ -914,8 +965,9 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             station_t *dest = &w->stations[npc->dest_station];
             for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
                 if (npc->cargo[i] <= 0.0f) continue;
+                float delivered = npc->cargo[i];
                 float before = dest->inventory[i];
-                dest->inventory[i] += npc->cargo[i];
+                dest->inventory[i] += delivered;
                 if (dest->inventory[i] > MAX_PRODUCT_STOCK)
                     dest->inventory[i] = MAX_PRODUCT_STOCK;
                 /* Mirror the float bump into the manifest so the trade
@@ -928,6 +980,27 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     if (station_manifest_seed_from_npc(dest, (commodity_t)i,
                                                        int_delta, n) > 0)
                         dest->named_ingots_dirty = true;
+                }
+                /* Pay the NPC for fulfilling a contract. Walk active
+                 * TRACTOR contracts at this destination for the same
+                 * commodity, prefer the highest contract_price. The
+                 * full base_price (already pool-factor adjusted at
+                 * issue time) goes into the NPC's ledger entry at the
+                 * destination station — the hauler is now a real
+                 * economic actor whose accumulated credits pay for
+                 * its own dock-side repair-kit consumption. */
+                float best_price = 0.0f;
+                for (int k = 0; k < MAX_CONTRACTS; k++) {
+                    const contract_t *ct = &w->contracts[k];
+                    if (!ct->active) continue;
+                    if (ct->action != CONTRACT_TRACTOR) continue;
+                    if (ct->station_index != npc->dest_station) continue;
+                    if (ct->commodity != (commodity_t)i) continue;
+                    if (ct->base_price > best_price) best_price = ct->base_price;
+                }
+                if (best_price > 0.0f && delivered > 0.01f) {
+                    ledger_earn_from_pool(dest, npc->session_token,
+                                           best_price * delivered);
                 }
                 npc->cargo[i] = 0.0f;
             }
@@ -982,12 +1055,20 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             npc->pos = v2_add(home->pos, v2(50.0f * (float)(n % 2 == 0 ? -1 : 1), -(home->radius + hull->ship_radius + 70.0f)));
             npc->state = NPC_STATE_DOCKED;
             npc->state_timer = HAULER_DOCK_TIME;
-            /* Dock auto-repair: consume kits to restore the hauler's
-             * hull. Closes the kit demand loop in single-player —
-             * without this, only the human pilot's repairs ever
-             * consumed kits and production hit cap immediately. If the
-             * home dock is dry on kits we leave the hauler damaged;
-             * next dock cycle tries again. */
+            /* Dock auto-repair: NPC owes the home station for the
+             * kits it consumes. Closed loop:
+             *   1. NPC delivers a contract -> dest station credits its
+             *      ledger from credit_pool (ledger_earn_from_pool).
+             *   2. NPC docks at home with hull damage -> home applies
+             *      kits up to (kits in stock, hull missing) and
+             *      force-debits the NPC's ledger for the cost.
+             *
+             * Force-debit so a damaged hauler ALWAYS gets repaired
+             * even if its balance is empty — the debt persists and
+             * gets paid back as the hauler completes future contracts.
+             * Otherwise a single bad scrape could permanently strand
+             * a fresh drone with no income path. The home dock still
+             * needs kits in stock; if not, no repair this cycle. */
             float max_h = npc_max_hull(npc);
             ship_t *ship = npc_ship_for(w, n);
             float cur_hull = ship ? ship->hull : npc->hull;
@@ -997,14 +1078,22 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 int missing = (int)ceilf(max_h - cur_hull);
                 int apply = kits < missing ? kits : missing;
                 if (apply > 0) {
+                    float kit_price = home->base_price[COMMODITY_REPAIR_KIT];
+                    if (kit_price < 0.01f) kit_price = 6.0f;
+                    float cost = (float)apply * kit_price;
+                    /* Force-debit -> balance can go negative, station
+                     * still gets credited. Hauler pays it back over
+                     * subsequent deliveries. */
+                    ledger_force_debit(home, npc->session_token, cost, ship);
                     home->inventory[COMMODITY_REPAIR_KIT] -= (float)apply;
                     if (home->inventory[COMMODITY_REPAIR_KIT] < 0.0f)
                         home->inventory[COMMODITY_REPAIR_KIT] = 0.0f;
                     if (manifest_consume_by_commodity(&home->manifest,
                                                      COMMODITY_REPAIR_KIT, apply) > 0)
                         home->named_ingots_dirty = true;
-                    /* Write through ship layer; reverse-mirror at end of
-                     * the NPC tick pushes the value back to npc->hull. */
+                    /* Write through ship layer; reverse-mirror at
+                     * end of the NPC tick pushes the value back to
+                     * npc->hull. */
                     if (ship) {
                         ship->hull += (float)apply;
                         if (ship->hull > max_h) ship->hull = max_h;
@@ -1377,6 +1466,14 @@ void step_npc_ships(world_t *w, float dt) {
                 if (best_frag >= 0) {
                     npc->towed_fragment = best_frag;
                     npc->state = NPC_STATE_RETURN_TO_STATION;
+                    /* Stamp the NPC's token onto the towed fragment so
+                     * the eventual smelt-payout (ledger_credit_supply
+                     * keyed off last_towed_token) credits the NPC's
+                     * ledger at the home station. Same hook the player
+                     * pickup uses — symmetrical economic identity. */
+                    asteroid_t *a = &w->asteroids[best_frag];
+                    memcpy(a->last_towed_token, npc->session_token,
+                           sizeof(a->last_towed_token));
                 }
             }
             break;

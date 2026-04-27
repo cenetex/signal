@@ -326,6 +326,11 @@ typedef struct {
      * recover so PvP harassment has weight, but the chain isn't a
      * permanent loss. */
     float npc_respawn_timer;
+    /* Monotonic counter for npc_ship_t.session_token. Incremented in
+     * spawn_npc; the low/high bytes get stamped into the token so each
+     * spawn (including respawns of the same role at the same station)
+     * gets a fresh ledger identity. */
+    uint16_t next_npc_token;
     sim_events_t events;
     contract_t contracts[MAX_CONTRACTS];
     bool player_only_mode;
@@ -420,6 +425,10 @@ bool ledger_spend(station_t *st, const uint8_t *token, float amount, ship_t *shi
 /* Always-succeeds debit for unrefusable services (spawn, repair).
  * Allows the balance to go negative (debt). */
 void ledger_force_debit(station_t *st, const uint8_t *token, float amount, ship_t *ship);
+/* Full-price transfer from credit_pool to a ledger entry. Used by
+ * NPC haulers (and any future caller) to pay the contract value at
+ * delivery time, with no smelt cut applied. */
+void ledger_earn_from_pool(station_t *st, const uint8_t *token, float amount);
 /* Signal channel — station broadcast log (#316). */
 uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, const char *audio_url);
 const signal_channel_msg_t *signal_channel_at(const world_t *w, int i);

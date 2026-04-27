@@ -62,7 +62,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 32  /* npc_ship_t.hull added (kit-economy NPC damage) */
+#define SAVE_VERSION 33  /* npc_ship_t.session_token added (per-NPC ledger accounts) */
 /* v31 widened inventory[] / base_price[] by one slot (REPAIR_KIT). v32
  * appends npc_ship_t.hull (a single float, version-gated read so v31
  * saves still load with default hull). MIN stays at 31 so we don't
@@ -470,6 +470,7 @@ static bool write_npc(FILE *f, const npc_ship_t *n) {
     WRITE_FIELD(f, n->tint_g);
     WRITE_FIELD(f, n->tint_b);
     WRITE_FIELD(f, n->hull); /* v32+ */
+    WRITE_FIELD(f, n->session_token); /* v33+ */
     return true;
 }
 
@@ -494,6 +495,16 @@ static bool read_npc(FILE *f, npc_ship_t *n) {
         READ_FIELD(f, n->hull);
     } else {
         n->hull = npc_max_hull(n);
+    }
+    if (g_loaded_save_version >= 33) {
+        READ_FIELD(f, n->session_token);
+    } else {
+        /* v32 saves predate per-NPC accounts. Zero out so the post-
+         * load pass in rebuild_characters_from_npcs can reissue a
+         * fresh token via the world-side counter. The NPC starts
+         * with no ledger entries; previous deliveries (which never
+         * had a token to credit anyway) are not retroactive. */
+        memset(n->session_token, 0, sizeof(n->session_token));
     }
     return true;
 }

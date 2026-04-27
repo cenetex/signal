@@ -93,6 +93,22 @@ void ledger_force_debit(station_t *st, const uint8_t *token, float amount, ship_
     st->credit_pool += amount;
 }
 
+/* Full-price transfer from the station's credit_pool to a ledger
+ * entry — used for inter-station contract deliveries (no smelt cut,
+ * unlike ledger_credit_supply). Capped by the pool so a broke
+ * destination pays what it can and the rest is forfeit. Caller is
+ * responsible for the contract bookkeeping (closure, manifest). */
+void ledger_earn_from_pool(station_t *st, const uint8_t *token, float amount) {
+    if (amount <= 0.0f) return;
+    int idx = ledger_find_or_create(st, token);
+    if (idx < 0) return;
+    if (amount > st->credit_pool) amount = st->credit_pool;
+    if (amount < 0.01f) return;
+    st->ledger[idx].balance += amount;
+    st->ledger[idx].lifetime_supply += amount;
+    st->credit_pool -= amount;
+}
+
 void emit_event(world_t *w, sim_event_t ev) {
     if (w->events.count < SIM_MAX_EVENTS) {
         w->events.events[w->events.count++] = ev;

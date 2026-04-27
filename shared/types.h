@@ -481,6 +481,14 @@ typedef struct {
      * NPC despawns; sim_ai's spawn loop replaces it on the next tick.
      * Added in save v32 — earlier saves default to npc_max_hull on load. */
     float hull;
+    /* Per-NPC economic identity. Stamped onto towed asteroid fragments
+     * (a->last_towed_token) so the smelt-payout credits the NPC's
+     * ledger entry at the home station, and used by haulers to receive
+     * contract payment at the delivery station. Added in save v33 —
+     * v32 saves regenerate tokens at load via the next_npc_token
+     * counter (the dead ledger entries belonging to the old token
+     * just sit until the 16-slot LRU evicts them). */
+    uint8_t session_token[8];
 } npc_ship_t;
 
 /* ------------------------------------------------------------------ */
