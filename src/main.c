@@ -174,11 +174,12 @@ static void reset_step_feedback(void) {
 
 /* sample_input_intent: see input.h/c */
 
-/* Phase 2 foundation: rebuild g.station_manifest_summary from local
- * station manifests. Called once per frame in singleplayer (where the
- * client has direct read access to g.world.stations[s].manifest). In
- * multiplayer the server owns the manifest; the summary is populated
- * by the net sync path instead (see NET_MSG_STATION_MANIFEST TODO). */
+/* Rebuild g.station_manifest_summary from local station manifests.
+ * Called once per frame in singleplayer (where the client has direct
+ * read access to g.world.stations[s].manifest). In multiplayer the
+ * server owns the manifest and pushes NET_MSG_STATION_MANIFEST; the
+ * summary is populated via apply_remote_station_manifest in
+ * net_sync.c. */
 static void refresh_station_manifest_summaries(void) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         /* Zero the row — a station with no manifest units should read zero. */

@@ -50,6 +50,59 @@ TEST(test_world_save_load_preserves_npcs) {
     remove("/tmp/test_npcs.sav");
 }
 
+TEST(test_world_load_rebuilds_character_pool) {
+    /* world_load only restores npc_ships[]; the paired character_t /
+     * ships[] pools are server-side transient and have to be rebuilt
+     * via rebuild_characters_from_npcs at the end of load. Verify
+     * (a) every active NPC has a paired character with the right kind
+     * and ship_idx, (b) apply_npc_ship_damage hits the rebuilt ship
+     * (not a phantom one), (c) the paired ship sees the damage on the
+     * very next sim step's reverse-mirror back to npc.hull. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < 600; i++) world_sim_step(w, SIM_DT);
+    ASSERT(world_save(w, "/tmp/test_char_pool.sav"));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(world_load(loaded, "/tmp/test_char_pool.sav"));
+
+    /* (a) paired-pool integrity */
+    int active_npcs = 0;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!loaded->npc_ships[n].active) continue;
+        active_npcs++;
+        int char_cap = (int)(sizeof(loaded->characters) /
+                             sizeof(loaded->characters[0]));
+        int found_char = -1;
+        for (int c = 0; c < char_cap; c++) {
+            if (!loaded->characters[c].active) continue;
+            if (loaded->characters[c].npc_slot == n) { found_char = c; break; }
+        }
+        ASSERT(found_char >= 0);
+        const character_t *c = &loaded->characters[found_char];
+        ASSERT(c->kind == CHARACTER_KIND_NPC_MINER ||
+               c->kind == CHARACTER_KIND_NPC_HAULER ||
+               c->kind == CHARACTER_KIND_NPC_TOW);
+        ASSERT(c->ship_idx >= 0 && c->ship_idx < MAX_SHIPS);
+    }
+    ASSERT(active_npcs > 0);
+
+    /* (b)+(c) damage flows through rebuilt ship slot */
+    int target = -1;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (loaded->npc_ships[n].active) { target = n; break; }
+    }
+    ASSERT(target >= 0);
+    float pre = loaded->npc_ships[target].hull;
+    ASSERT(pre > 5.0f);
+    apply_npc_ship_damage(loaded, target, 5.0f);
+    /* npc.hull only updates after the next sim step's reverse mirror;
+     * one tick is enough. */
+    world_sim_step(loaded, SIM_DT);
+    ASSERT(loaded->npc_ships[target].hull < pre);
+
+    remove("/tmp/test_char_pool.sav");
+}
+
 TEST(test_world_save_load_preserves_fracture_children) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
@@ -589,6 +642,7 @@ void register_save_persistence_tests(void) {
     RUN(test_player_save_load_roundtrip);
     RUN(test_world_save_load_preserves_stations);
     RUN(test_world_save_load_preserves_npcs);
+    RUN(test_world_load_rebuilds_character_pool);
     RUN(test_world_save_load_preserves_fracture_children);
     RUN(test_world_load_preserves_fracture_claim_dedupe_identity);
     RUN(test_world_load_missing_file);
