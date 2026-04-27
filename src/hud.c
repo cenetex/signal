@@ -40,6 +40,212 @@ float player_current_balance(void) {
     return client_station_balance(st);
 }
 
+/* ------------------------------------------------------------------ */
+/* Shared post-classify panels — render in BOTH compact and wide so a  */
+/* small window doesn't silently lose signal-lost warnings, MP status, */
+/* hail sigil, etc. Each is a one-shot draw guarded by its own state. */
+/* ------------------------------------------------------------------ */
+
+static void hud_draw_alpha_banner_and_mp_indicator(float screen_w, bool compact) {
+    /* Version / connection status — top right */
+    float info_x = ui_text_pos(fmaxf(8.0f, screen_w - (compact ? 100.0f : 140.0f)));
+    float info_y = ui_text_pos(8.0f);
+    sdtx_pos(info_x, info_y);
+#ifdef GIT_HASH
+    const char *client_hash = GIT_HASH;
+#else
+    const char *client_hash = "dev";
+#endif
+    if (g.multiplayer_enabled && net_is_connected()) {
+        const char *srv = net_server_hash();
+        bool match = srv[0] != '\0' && strcmp(client_hash, srv) == 0;
+        if (match)              { sdtx_color3b(PAL_SYNC_OK);          sdtx_printf("v%s", client_hash); }
+        else if (srv[0] == '\0'){ sdtx_color3b(PAL_SYNC_CONNECTING);  sdtx_puts("connecting..."); }
+        else                    { sdtx_color3b(PAL_SYNC_RESYNCING);   sdtx_puts("syncing..."); }
+    } else if (g.multiplayer_enabled) {
+        sdtx_color3b(PAL_SYNC_OFFLINE);
+        sdtx_puts("offline [P] reconnect");
+    } else {
+        sdtx_color3b(PAL_TEXT_GREY);
+        sdtx_printf("v%s", client_hash);
+    }
+    /* Alpha banner: repeating ticker across the top. */
+    float bw = ui_safe_positive(sapp_widthf(), 1280.0f) /
+               fmaxf(1.0f, ui_safe_positive(sapp_dpi_scale(), 1.0f));
+    int cols = (int)(bw / 8.0f);
+    char banner[512];
+    char segment[64];
+    snprintf(segment, sizeof(segment), "ALPHA // v%s // frequent server resets // ", client_hash);
+    int seg_len = (int)strlen(segment);
+    int pos = 0;
+    while (pos < cols && pos < (int)sizeof(banner) - 1) {
+        int left = (int)sizeof(banner) - 1 - pos;
+        int copy = seg_len < left ? seg_len : left;
+        memcpy(&banner[pos], segment, copy);
+        pos += copy;
+    }
+    banner[pos < (int)sizeof(banner) ? pos : (int)sizeof(banner) - 1] = '\0';
+    sdtx_pos(0.0f, 0.0f);
+    sdtx_color3b(PAL_ALPHA_BANNER);
+    sdtx_puts(banner);
+}
+
+/* Nearest station name in the bottom-left when undocked, plus the
+ * housekeeping that expires a tracked contract once the server retired
+ * it. The contract cleanup runs every frame regardless of layout. */
+static void hud_draw_nav_label(float screen_w, float screen_h) {
+    if (LOCAL_PLAYER.docked) return;
+    const station_t *nav_st = navigation_station_ptr();
+    if (nav_st && nav_st->name[0] != '\0') {
+        sdtx_pos(ui_text_pos(16.0f), ui_text_pos(screen_h - 20.0f));
+        sdtx_color3b(PAL_TEXT_FADED);
+        int name_cols = (int)((screen_w - 24.0f) / 8.0f);
+        sdtx_printf("%.*s", name_cols, nav_st->name);
+    }
+    if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
+        if (!g.world.contracts[g.tracked_contract].active)
+            g.tracked_contract = -1;
+    }
+}
+
+/* Station hail sigil — mini profile pic in the lower-left that fades
+ * in with hail_timer. "Caller ID" for the hint-bar message above. */
+static void hud_draw_hail_sigil(float screen_w, float screen_h) {
+    if (g.hail_timer <= 0.0f) return;
+    if (g.hail_station_index < 0 || g.hail_station_index >= MAX_STATIONS) return;
+    const avatar_cache_t *av = avatar_get(g.hail_station_index);
+    if (!av || !av->texture_valid) return;
+
+    float alpha = fminf(g.hail_timer / 0.5f, 1.0f);
+    float sig_size = 48.0f;
+    float sx0 = 16.0f;
+    float sy0 = screen_h - sig_size - 32.0f;
+    /* Reset projection — texture pipeline can have stale state from
+     * the world pass; same as the center hail overlay does. */
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0, screen_w, screen_h, 0, -1, 1);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+    sgl_enable_texture();
+    sgl_texture((sg_view){ av->view_id }, (sg_sampler){ av->sampler_id });
+    sgl_begin_quads();
+    sgl_c4f(alpha, alpha, alpha, alpha);
+    sgl_v2f_t2f(sx0,            sy0,            0.0f, 0.0f);
+    sgl_v2f_t2f(sx0 + sig_size, sy0,            1.0f, 0.0f);
+    sgl_v2f_t2f(sx0 + sig_size, sy0 + sig_size, 1.0f, 1.0f);
+    sgl_v2f_t2f(sx0,            sy0 + sig_size, 0.0f, 1.0f);
+    sgl_end();
+    sgl_disable_texture();
+    /* Gold border frame — "transmission active" radio indicator. */
+    float border_a = 0.70f * alpha;
+    sgl_begin_lines();
+    sgl_c4f(0.78f, 0.63f, 0.19f, border_a);
+    sgl_v2f(sx0,            sy0);            sgl_v2f(sx0 + sig_size, sy0);
+    sgl_v2f(sx0 + sig_size, sy0);            sgl_v2f(sx0 + sig_size, sy0 + sig_size);
+    sgl_v2f(sx0 + sig_size, sy0 + sig_size); sgl_v2f(sx0,            sy0 + sig_size);
+    sgl_v2f(sx0,            sy0 + sig_size); sgl_v2f(sx0,            sy0);
+    sgl_end();
+}
+
+static void hud_draw_module_inspect_pane(float screen_w) {
+    if (g.inspect_station < 0 || g.inspect_station >= MAX_STATIONS) return;
+    if (g.inspect_module < 0) return;
+    if (LOCAL_PLAYER.docked) return;
+    const station_t *ist = &g.world.stations[g.inspect_station];
+    if (!station_exists(ist) || g.inspect_module >= ist->module_count) {
+        g.inspect_station = -1;
+        return;
+    }
+    const station_module_t *im = &ist->modules[g.inspect_module];
+    float px = fmaxf(16.0f, screen_w - 260.0f);
+    float py = 60.0f;
+    float cell = 8.0f;
+
+    sdtx_pos(px / cell, py / cell);
+    sdtx_color3b(PAL_ORE_AMBER);
+    sdtx_printf("[ %s ]", module_type_name(im->type));
+
+    sdtx_pos(px / cell, (py + 14.0f) / cell);
+    sdtx_color3b(PAL_INSPECT_STATION);
+    sdtx_printf("Station: %s", ist->name);
+
+    sdtx_pos(px / cell, (py + 28.0f) / cell);
+    sdtx_color3b(PAL_INSPECT_LOCATION);
+    sdtx_printf("Ring %d  Slot %d", im->ring, im->slot);
+
+    if (im->scaffold) {
+        sdtx_pos(px / cell, (py + 42.0f) / cell);
+        if (im->build_progress < 1.0f) {
+            int pct = (int)lroundf(im->build_progress * 100.0f);
+            sdtx_color3b(PAL_BUILD_SUPPLYING);
+            sdtx_printf("SUPPLYING: %d%%", pct);
+        } else {
+            int pct = (int)lroundf((im->build_progress - 1.0f) * 100.0f);
+            sdtx_color3b(PAL_BUILD_BUILDING);
+            sdtx_printf("BUILDING: %d%%", pct);
+        }
+    } else {
+        sdtx_pos(px / cell, (py + 42.0f) / cell);
+        sdtx_color3b(PAL_ACTIVE);
+        sdtx_puts("ONLINE");
+    }
+    sdtx_pos(px / cell, (py + 60.0f) / cell);
+    sdtx_color3b(PAL_TEXT_GREY);
+    sdtx_puts("[E] close");
+}
+
+static void hud_draw_signal_lost_warning(float screen_w, float screen_h, float sig_quality) {
+    if (LOCAL_PLAYER.docked) return;
+    if (sig_quality >= 0.01f) return;
+    if (g.death_screen_timer > 0.0f || g.death_cinematic.active) return;
+    float blink = sinf(g.world.time * 3.0f);
+    if (blink <= 0.0f) return;
+
+    float cell = 8.0f;
+    const char *warn = "[ SIGNAL LOST ]";
+    float tw = (float)strlen(warn) * cell;
+    float wx = (screen_w * 0.5f - tw * 0.5f) / cell;
+    float wy = (screen_h * 0.40f) / cell;
+    sdtx_canvas(screen_w, screen_h);
+    sdtx_origin(0.0f, 0.0f);
+    uint8_t ba = (uint8_t)(blink * 200.0f);
+    sdtx_color4b(255, 70, 50, ba);
+    sdtx_pos(wx, wy);
+    sdtx_puts(warn);
+}
+
+/* Render the post-classify shared panels common to compact + wide.
+ * Called once per frame after each layout's top-status section. */
+static void hud_draw_shared_panels(float screen_w, float screen_h, float sig_quality, bool compact) {
+    hud_draw_alpha_banner_and_mp_indicator(screen_w, compact);
+    hud_draw_nav_label(screen_w, screen_h);
+    hud_draw_hail_sigil(screen_w, screen_h);
+    hud_draw_module_inspect_pane(screen_w);
+    hud_draw_signal_lost_warning(screen_w, screen_h, sig_quality);
+}
+
+/* Pending credits across all stations — sum of every ledger entry the
+ * local player owns. Singleplayer only: in MP, the server doesn't push
+ * a per-station ledger and the wide/compact action rows treat this as
+ * 0. Cheap O(stations × ledger) walk; reused per-frame by both HUD
+ * variants instead of duplicating the loop. */
+static float client_pending_balance(void) {
+    if (!g.local_server.active) return 0.0f;
+    float pending = 0.0f;
+    for (int si = 0; si < MAX_STATIONS; si++) {
+        const station_t *st = &g.world.stations[si];
+        for (int li = 0; li < st->ledger_count; li++) {
+            if (memcmp(st->ledger[li].player_token,
+                       LOCAL_PLAYER.session_token, 8) == 0) {
+                pending += st->ledger[li].balance;
+            }
+        }
+    }
+    return pending;
+}
+
 /* Currency label at the player's current (docked or nearby) station.
  * Falls back to "cr" when the station hasn't set a currency_name. */
 static const char *player_current_currency(void) {
@@ -1046,19 +1252,10 @@ void draw_hud(void) {
             sdtx_color3b(PAL_ORE_AMBER);
             sdtx_puts("Hold full. Dock to sell.");
         } else {
-            /* Check for pending credits from ledger (singleplayer) */
-            float pending = 0.0f;
-            if (g.local_server.active && sig_quality >= 0.90f) {
-                for (int si = 0; si < MAX_STATIONS; si++) {
-                    const station_t *st = &g.world.stations[si];
-                    for (int li = 0; li < st->ledger_count; li++) {
-                        if (memcmp(st->ledger[li].player_token,
-                                   LOCAL_PLAYER.session_token, 8) == 0) {
-                            pending += st->ledger[li].balance;
-                        }
-                    }
-                }
-            }
+            /* Pending ledger credits (singleplayer only; client_pending_balance
+             * returns 0 in MP). Only surface when in usable signal so we
+             * don't tease "collect" while H couldn't do anything. */
+            float pending = (sig_quality >= 0.90f) ? client_pending_balance() : 0.0f;
             if (pending > 0.5f) {
                 sdtx_color3b(PAL_ORE_AMBER);
                 sdtx_printf("[H] collect %d", (int)lroundf(pending));
@@ -1100,6 +1297,11 @@ void draw_hud(void) {
         }
 
         draw_station_services(&ui);
+        /* Shared post-classify panels also fire in compact mode so a
+         * narrow window doesn't lose signal-lost warnings, MP status,
+         * the hail sigil, etc. (Previously the compact early-return
+         * hid them entirely.) */
+        hud_draw_shared_panels(screen_w, screen_h, sig_quality, true);
         return;
     }
 
@@ -1194,19 +1396,7 @@ void draw_hud(void) {
         sdtx_color3b(PAL_ORE_AMBER);
         sdtx_puts("Hold full. Dock to sell.");
     } else {
-        /* Check for pending credits from ledger (singleplayer) */
-        float pending_n = 0.0f;
-        if (g.local_server.active && sig_quality >= 0.90f) {
-            for (int si = 0; si < MAX_STATIONS; si++) {
-                const station_t *st = &g.world.stations[si];
-                for (int li = 0; li < st->ledger_count; li++) {
-                    if (memcmp(st->ledger[li].player_token,
-                               LOCAL_PLAYER.session_token, 8) == 0) {
-                        pending_n += st->ledger[li].balance;
-                    }
-                }
-            }
-        }
+        float pending_n = (sig_quality >= 0.90f) ? client_pending_balance() : 0.0f;
         if (pending_n > 0.5f) {
             sdtx_color3b(PAL_ORE_AMBER);
             sdtx_printf("H to hail // collect %d cr", (int)lroundf(pending_n));
@@ -1344,197 +1534,11 @@ void draw_hud(void) {
         sdtx_puts("[E] launch");
     }
 
-    /* --- Multiplayer HUD indicator + version --- */
-    /* Version / connection status — top right */
-    {
-        float info_x = ui_text_pos(fmaxf(8.0f, screen_w - (compact ? 100.0f : 140.0f)));
-        float info_y = ui_text_pos(8.0f);
-        sdtx_pos(info_x, info_y);
-#ifdef GIT_HASH
-        const char* client_hash = GIT_HASH;
-#else
-        const char* client_hash = "dev";
-#endif
-        if (g.multiplayer_enabled && net_is_connected()) {
-            const char* srv = net_server_hash();
-            bool match = srv[0] != '\0' && strcmp(client_hash, srv) == 0;
-            if (match) {
-                /* Synced: show version */
-                sdtx_color3b(PAL_SYNC_OK);
-                sdtx_printf("v%s", client_hash);
-            } else if (srv[0] == '\0') {
-                /* Connecting */
-                sdtx_color3b(PAL_SYNC_CONNECTING);
-                sdtx_puts("connecting...");
-            } else {
-                /* Version mismatch — reloading (shown briefly before redirect) */
-                sdtx_color3b(PAL_SYNC_RESYNCING);
-                sdtx_puts("syncing...");
-            }
-        } else if (g.multiplayer_enabled) {
-            sdtx_color3b(PAL_SYNC_OFFLINE);
-            sdtx_puts("offline [P] reconnect");
-        } else {
-            sdtx_color3b(PAL_TEXT_GREY); /* offline version display */
-            sdtx_printf("v%s", client_hash);
-        }
-        /* Alpha banner: repeating ticker across the top */
-        {
-            float bw = ui_safe_positive(sapp_widthf(), 1280.0f)
-                     / fmaxf(1.0f, ui_safe_positive(sapp_dpi_scale(), 1.0f));
-            int cols = (int)(bw / 8.0f); /* sdtx char width ~8px */
-            char banner[512];
-            char segment[64];
-            snprintf(segment, sizeof(segment), "ALPHA // v%s // frequent server resets // ", client_hash);
-            int seg_len = (int)strlen(segment);
-            int pos = 0;
-            while (pos < cols && pos < (int)sizeof(banner) - 1) {
-                int left = (int)sizeof(banner) - 1 - pos;
-                int copy = seg_len < left ? seg_len : left;
-                memcpy(&banner[pos], segment, copy);
-                pos += copy;
-            }
-            banner[pos < (int)sizeof(banner) ? pos : (int)sizeof(banner) - 1] = '\0';
-            sdtx_pos(0.0f, 0.0f);
-            sdtx_color3b(PAL_ALPHA_BANNER);
-            sdtx_puts(banner);
-        }
-    }
-
-    /* Nearest station name — bottom left */
-    if (!LOCAL_PLAYER.docked) {
-        const station_t* nav_st = navigation_station_ptr();
-        if (nav_st && nav_st->name[0] != '\0') {
-            sdtx_pos(ui_text_pos(16.0f), ui_text_pos(screen_h - 20.0f));
-            sdtx_color3b(PAL_TEXT_FADED);
-            int name_cols = (int)((screen_w - 24.0f) / 8.0f);
-            sdtx_printf("%.*s", name_cols, nav_st->name);
-        }
-        /* Expire tracked contract */
-        if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
-            if (!g.world.contracts[g.tracked_contract].active)
-                g.tracked_contract = -1;
-        }
-    }
-
-    /* Station hail sigil — mini profile pic in the lower-left that fades in
-     * with hail_timer, acts as "caller ID" for the message now showing in
-     * the bottom-right hint bar. Sits above the nearest-station line so the
-     * two labels don't overlap. Uses the same avatar texture as the
-     * center-screen hail overlay — a unique image per station. */
-    if (g.hail_timer > 0.0f && g.hail_station_index >= 0
-        && g.hail_station_index < MAX_STATIONS) {
-        const avatar_cache_t *av = avatar_get(g.hail_station_index);
-        if (av && av->texture_valid) {
-            float alpha = fminf(g.hail_timer / 0.5f, 1.0f);
-            float sig_size = 48.0f;
-            float sx0 = 16.0f;
-            float sy0 = screen_h - sig_size - 32.0f; /* above the nav line */
-            /* Screen-space ortho — the rest of draw_hud already runs under
-             * this projection but the texture pipeline can have stale state
-             * from the world pass; reset explicitly, same as the center
-             * hail overlay does. */
-            sgl_defaults();
-            sgl_matrix_mode_projection();
-            sgl_load_identity();
-            sgl_ortho(0, screen_w, screen_h, 0, -1, 1);
-            sgl_matrix_mode_modelview();
-            sgl_load_identity();
-            sgl_enable_texture();
-            sgl_texture((sg_view){ av->view_id }, (sg_sampler){ av->sampler_id });
-            sgl_begin_quads();
-            sgl_c4f(alpha, alpha, alpha, alpha);
-            sgl_v2f_t2f(sx0,            sy0,            0.0f, 0.0f);
-            sgl_v2f_t2f(sx0 + sig_size, sy0,            1.0f, 0.0f);
-            sgl_v2f_t2f(sx0 + sig_size, sy0 + sig_size, 1.0f, 1.0f);
-            sgl_v2f_t2f(sx0,            sy0 + sig_size, 0.0f, 1.0f);
-            sgl_end();
-            sgl_disable_texture();
-            /* Gold border frame — "transmission active" reads like a radio
-             * indicator light around the sigil. */
-            float border_a = 0.70f * alpha;
-            sgl_begin_lines();
-            sgl_c4f(0.78f, 0.63f, 0.19f, border_a);
-            sgl_v2f(sx0,            sy0);            sgl_v2f(sx0 + sig_size, sy0);
-            sgl_v2f(sx0 + sig_size, sy0);            sgl_v2f(sx0 + sig_size, sy0 + sig_size);
-            sgl_v2f(sx0 + sig_size, sy0 + sig_size); sgl_v2f(sx0,            sy0 + sig_size);
-            sgl_v2f(sx0,            sy0 + sig_size); sgl_v2f(sx0,            sy0);
-            sgl_end();
-        }
-    }
-
-    /* Station hail — no center-screen overlay. The message is in the
-     * bottom-right hint bar (via set_notice at the hail event sites) and
-     * the station's unique sigil is drawn at lower-left in the draw_hud
-     * flow above, with the gold border acting as "transmission active".
-     * The old middle-of-screen portrait was obscuring gameplay. */
-
-    /* Module inspect pane */
-    if (g.inspect_station >= 0 && g.inspect_station < MAX_STATIONS &&
-        g.inspect_module >= 0 && !LOCAL_PLAYER.docked) {
-        const station_t *ist = &g.world.stations[g.inspect_station];
-        if (station_exists(ist) && g.inspect_module < ist->module_count) {
-            const station_module_t *im = &ist->modules[g.inspect_module];
-            float px = fmaxf(16.0f, screen_w - 260.0f);
-            float py = 60.0f;
-            float cell = 8.0f;
-
-            sdtx_pos(px / cell, py / cell);
-            sdtx_color3b(PAL_ORE_AMBER);
-            sdtx_printf("[ %s ]", module_type_name(im->type));
-
-            sdtx_pos(px / cell, (py + 14.0f) / cell);
-            sdtx_color3b(PAL_INSPECT_STATION);
-            sdtx_printf("Station: %s", ist->name);
-
-            sdtx_pos(px / cell, (py + 28.0f) / cell);
-            sdtx_color3b(PAL_INSPECT_LOCATION);
-            sdtx_printf("Ring %d  Slot %d", im->ring, im->slot);
-
-            if (im->scaffold) {
-                sdtx_pos(px / cell, (py + 42.0f) / cell);
-                if (im->build_progress < 1.0f) {
-                    int pct = (int)lroundf(im->build_progress * 100.0f);
-                    sdtx_color3b(PAL_BUILD_SUPPLYING); /* orange — awaiting material */
-                    sdtx_printf("SUPPLYING: %d%%", pct);
-                } else {
-                    int pct = (int)lroundf((im->build_progress - 1.0f) * 100.0f);
-                    sdtx_color3b(PAL_BUILD_BUILDING); /* amber — build timer */
-                    sdtx_printf("BUILDING: %d%%", pct);
-                }
-            } else {
-                sdtx_pos(px / cell, (py + 42.0f) / cell);
-                sdtx_color3b(PAL_ACTIVE);
-                sdtx_puts("ONLINE");
-            }
-
-            /* Close hint */
-            sdtx_pos(px / cell, (py + 60.0f) / cell);
-            sdtx_color3b(PAL_TEXT_GREY);
-            sdtx_puts("[E] close");
-        } else {
-            g.inspect_station = -1;
-        }
-    }
-
-    /* --- SIGNAL LOST warning — center screen, blinking --- */
-    if (sig_quality < 0.01f && !LOCAL_PLAYER.docked && g.death_screen_timer <= 0.0f
-        && !g.death_cinematic.active) {
-        float blink = sinf(g.world.time * 3.0f); /* ~0.5Hz blink */
-        if (blink > 0.0f) {
-            float cell = 8.0f;
-            const char *warn = "[ SIGNAL LOST ]";
-            float tw = (float)strlen(warn) * cell;
-            float wx = (screen_w * 0.5f - tw * 0.5f) / cell;
-            float wy = (screen_h * 0.40f) / cell;
-            sdtx_canvas(screen_w, screen_h);
-            sdtx_origin(0.0f, 0.0f);
-            uint8_t ba = (uint8_t)(blink * 200.0f);
-            sdtx_color4b(255, 70, 50, ba);
-            sdtx_pos(wx, wy);
-            sdtx_puts(warn);
-        }
-    }
+    /* Shared post-classify panels: MP indicator + alpha banner, nav
+     * label, hail sigil, module inspect pane, signal-lost warning.
+     * Same call also fires from the compact path so a narrow window
+     * doesn't silently lose any of these. */
+    hud_draw_shared_panels(screen_w, screen_h, sig_quality, compact);
 
     draw_station_services(&ui);
 }
