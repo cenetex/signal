@@ -116,6 +116,24 @@ static void character_free_for_npc(world_t *w, int npc_slot) {
     if (idx >= 0) w->characters[idx].active = false;
 }
 
+/* Mirror brain state from an NPC into its paired character_t (#294
+ * Slice 7). Called at the top of each NPC's tick so future readers can
+ * trust the controller layer; the npc-side fields remain the source of
+ * truth that the dispatch switch writes back to. */
+static void mirror_npc_to_character(world_t *w, int npc_slot) {
+    int idx = character_for_npc_slot(w, npc_slot);
+    if (idx < 0) return;
+    const npc_ship_t *npc = &w->npc_ships[npc_slot];
+    character_t *c = &w->characters[idx];
+    c->state = npc->state;
+    c->target_asteroid = npc->target_asteroid;
+    c->home_station = npc->home_station;
+    c->dest_station = npc->dest_station;
+    c->state_timer = npc->state_timer;
+    c->towed_fragment = npc->towed_fragment;
+    c->towed_scaffold = npc->towed_scaffold;
+}
+
 void rebuild_characters_from_npcs(world_t *w) {
     int cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
     for (int i = 0; i < cap; i++) {
@@ -190,20 +208,31 @@ static bool npc_target_valid(const world_t *w, const npc_ship_t *npc) {
     return a->active && a->tier != ASTEROID_TIER_S;
 }
 
+/* Asteroid-already-taken check, reading from the controller layer
+ * (#294 Slice 7): scan characters[] for any other MINER targeting
+ * `target_idx`. The mirror at top of tick keeps character.target_asteroid
+ * in sync with npc.target_asteroid. `self_npc_slot` is excluded so the
+ * caller doesn't see itself as a competitor. */
+static bool miner_target_taken(const world_t *w, int target_idx, int self_npc_slot) {
+    int cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
+    for (int i = 0; i < cap; i++) {
+        const character_t *c = &w->characters[i];
+        if (!c->active || c->kind != CHARACTER_KIND_NPC_MINER) continue;
+        if (c->ship_idx == self_npc_slot) continue;
+        if (c->target_asteroid == target_idx) return true;
+    }
+    return false;
+}
+
 static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
+    int self_slot = (int)(npc - w->npc_ships);
+
     /* Priority: DESTROY contract targets first */
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (!w->contracts[k].active || w->contracts[k].action != CONTRACT_FRACTURE) continue;
         int idx = w->contracts[k].target_index;
         if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
-        /* Check not already taken by another miner */
-        bool taken = false;
-        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
-            if (&w->npc_ships[n] == npc) continue;
-            if (w->npc_ships[n].active && w->npc_ships[n].role == NPC_ROLE_MINER &&
-                w->npc_ships[n].target_asteroid == idx) { taken = true; break; }
-        }
-        if (!taken) return idx;
+        if (!miner_target_taken(w, idx, self_slot)) return idx;
     }
 
     /* Normal: find nearest mineable asteroid */
@@ -213,14 +242,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier == ASTEROID_TIER_S) continue;
         if (signal_npc_confidence(signal_strength_at(w, a->pos)) < 0.1f) continue;
-        /* Skip asteroids already targeted by another miner */
-        bool taken = false;
-        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
-            if (&w->npc_ships[n] == npc) continue;
-            if (w->npc_ships[n].active && w->npc_ships[n].role == NPC_ROLE_MINER &&
-                w->npc_ships[n].target_asteroid == i) { taken = true; break; }
-        }
-        if (taken) continue;
+        if (miner_target_taken(w, i, self_slot)) continue;
         float d = v2_dist_sq(npc->pos, a->pos);
         if (d < best_d) { best_d = d; best = i; }
     }
@@ -932,6 +954,7 @@ void step_npc_ships(world_t *w, float dt) {
             continue;
         }
         npc->thrusting = false;
+        mirror_npc_to_character(w, n);
         npc_validate_stations(w, npc);
 
         if (npc->role == NPC_ROLE_HAULER) {
@@ -1122,6 +1145,11 @@ void step_npc_ships(world_t *w, float dt) {
         }
         default: break;
         }
+
+        /* Re-mirror after the dispatch wrote npc->target_asteroid /
+         * state / etc., so the next miner processed in the same tick
+         * sees fresh target contention via characters[]. */
+        mirror_npc_to_character(w, n);
 
         /* NPC collision with stations and asteroids */
         if (npc->state != NPC_STATE_DOCKED) {
