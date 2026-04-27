@@ -16,4 +16,11 @@ const hull_def_t *npc_hull_def(const npc_ship_t *npc);
  * pool stays in sync with NPC lifecycle (#294 Slice 6). */
 void rebuild_characters_from_npcs(world_t *w);
 
+/* Damage an NPC through its paired ship_t (#294 Slice 9 + 10). The
+ * reverse mirror at end of the NPC's tick pushes the result into
+ * npc->hull so the existing despawn check still fires. Safe to call
+ * even if the NPC has no paired ship (falls back to npc->hull).
+ * `dmg <= 0` is a no-op. */
+void apply_npc_ship_damage(world_t *w, int npc_slot, float dmg);
+
 #endif /* SIM_AI_H */

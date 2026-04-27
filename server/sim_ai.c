@@ -171,7 +171,10 @@ static ship_t *npc_ship_for(world_t *w, int npc_slot) {
 
 /* Reverse mirror: push ship.hull back into npc.hull at the end of an
  * NPC's tick. Lets damage written through the ship layer (the player
- * path's substrate) flow into the npc's despawn check next tick. */
+ * path's substrate) flow into the npc's despawn check next tick.
+ * Physics fields stay npc-authoritative for now — dispatch writes
+ * pos/vel/angle on the npc side and the top-of-tick mirror keeps the
+ * ship in sync; flipping dispatch onto ship_t is a later slice. */
 static void mirror_ship_to_npc(world_t *w, int npc_slot) {
     const ship_t *s = npc_ship_for(w, npc_slot);
     if (!s) return;
@@ -181,8 +184,12 @@ static void mirror_ship_to_npc(world_t *w, int npc_slot) {
 
 /* Apply damage to an NPC by mutating its ship_t.hull. The reverse
  * mirror at end-of-tick pushes the result into npc->hull so the
- * existing despawn check fires when hull <= 0. */
-static void apply_npc_ship_damage(world_t *w, int npc_slot, float dmg) {
+ * existing despawn check fires when hull <= 0.
+ *
+ * Public: external code (rock-throw collision, PvP, etc.) reaches NPC
+ * damage through this helper so the unified ship_t.hull stays the
+ * single source of truth. */
+void apply_npc_ship_damage(world_t *w, int npc_slot, float dmg) {
     if (dmg <= 0.0f) return;
     ship_t *s = npc_ship_for(w, npc_slot);
     if (!s) {
