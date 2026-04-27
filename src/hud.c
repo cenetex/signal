@@ -40,6 +40,252 @@ float player_current_balance(void) {
     return client_station_balance(st);
 }
 
+/* Forward decl — defined below near the other client_* helpers. */
+static float client_pending_balance(void);
+
+/* ------------------------------------------------------------------ */
+/* Action row classification — single priority chain shared by the     */
+/* compact and wide HUDs. hud_classify_action() inspects player +      */
+/* world state once and returns a tagged payload; the two renderers    */
+/* (hud_render_action_compact / _wide) format it. This eliminates the  */
+/* duplicate state machine and fixes the divergence that left towing  */
+/* invisible in the wide HUD's action row.                             */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    HUD_ACTION_DOCKED = 0,
+    HUD_ACTION_TARGET_ASTEROID,
+    HUD_ACTION_SCAN_MODULE,        /* str_a = station name, str_b = module name (or NULL = core hub) */
+    HUD_ACTION_SCAN_NPC,           /* str_a = "miner"/"hauler", int_a = total cargo */
+    HUD_ACTION_SCAN_PILOT,         /* int_a = pilot id, int_b = hull */
+    HUD_ACTION_MINING,             /* claim window after fracture */
+    HUD_ACTION_TOWING,             /* int_a = towed_count, int_b = tractor_active (1/0) */
+    HUD_ACTION_TRACTOR_LOCK,       /* int_a = tractor_fragments, int_b = nearby_fragments */
+    HUD_ACTION_TRACTOR_REACHING,   /* tractor active, no frag yet — int_b = nearby_fragments */
+    HUD_ACTION_FRAGMENTS_NEARBY,   /* tractor inactive, frags in range — int_b = nearby_fragments */
+    HUD_ACTION_HOLD_FULL,
+    HUD_ACTION_PENDING_COLLECT,    /* int_a = total pending credits */
+    HUD_ACTION_IDLE,
+} hud_action_kind_t;
+
+typedef struct {
+    hud_action_kind_t kind;
+    int int_a, int_b;
+    const char *str_a, *str_b;
+    /* Asteroid target: separate fields so renderers can format their
+     * own short/long flavor of the same data. */
+    int tier;            /* asteroid_tier_t */
+    int commodity;       /* commodity_t */
+} hud_action_t;
+
+static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, float sig_quality) {
+    hud_action_t out = { HUD_ACTION_IDLE, 0, 0, NULL, NULL, 0, 0 };
+    if (LOCAL_PLAYER.docked) { out.kind = HUD_ACTION_DOCKED; return out; }
+    /* Target asteroid (laser-pointed). */
+    if (LOCAL_PLAYER.hover_asteroid >= 0 &&
+        g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
+        const asteroid_t *a = &g.world.asteroids[LOCAL_PLAYER.hover_asteroid];
+        out.kind = HUD_ACTION_TARGET_ASTEROID;
+        out.int_a = (int)lroundf(a->hp);
+        out.tier = (int)a->tier;
+        out.commodity = (int)a->commodity;
+        return out;
+    }
+    /* Scan results take precedence over towing/fragments — the player
+     * actively pointed the beam at a thing they want info about. */
+    if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 1) {
+        const station_t *st = &g.world.stations[LOCAL_PLAYER.scan_target_index];
+        out.kind = HUD_ACTION_SCAN_MODULE;
+        out.str_a = st->name;
+        if (LOCAL_PLAYER.scan_module_index >= 0)
+            out.str_b = module_type_name(st->modules[LOCAL_PLAYER.scan_module_index].type);
+        return out;
+    }
+    if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 2) {
+        const npc_ship_t *npc = &g.world.npc_ships[LOCAL_PLAYER.scan_target_index];
+        out.kind = HUD_ACTION_SCAN_NPC;
+        out.str_a = (npc->role == NPC_ROLE_MINER) ? "miner" : "hauler";
+        int total = 0;
+        for (int ci = 0; ci < COMMODITY_COUNT; ci++) total += (int)lroundf(npc->cargo[ci]);
+        out.int_a = total;
+        return out;
+    }
+    if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 3) {
+        out.kind = HUD_ACTION_SCAN_PILOT;
+        out.int_a = LOCAL_PLAYER.scan_target_index;
+        out.int_b = (int)lroundf(g.world.players[LOCAL_PLAYER.scan_target_index].ship.hull);
+        return out;
+    }
+    if (mining_client_get()->fracture_search_timer > 0.0f) {
+        out.kind = HUD_ACTION_MINING;
+        return out;
+    }
+    if (LOCAL_PLAYER.ship.towed_count > 0) {
+        out.kind = HUD_ACTION_TOWING;
+        out.int_a = LOCAL_PLAYER.ship.towed_count;
+        out.int_b = LOCAL_PLAYER.ship.tractor_active ? 1 : 0;
+        return out;
+    }
+    if (LOCAL_PLAYER.nearby_fragments > 0) {
+        if (LOCAL_PLAYER.ship.tractor_active && LOCAL_PLAYER.tractor_fragments > 0) {
+            out.kind = HUD_ACTION_TRACTOR_LOCK;
+            out.int_a = LOCAL_PLAYER.tractor_fragments;
+            out.int_b = LOCAL_PLAYER.nearby_fragments;
+            return out;
+        }
+        if (LOCAL_PLAYER.ship.tractor_active) {
+            out.kind = HUD_ACTION_TRACTOR_REACHING;
+            out.int_b = LOCAL_PLAYER.nearby_fragments;
+            return out;
+        }
+        out.kind = HUD_ACTION_FRAGMENTS_NEARBY;
+        out.int_b = LOCAL_PLAYER.nearby_fragments;
+        return out;
+    }
+    if (cargo_units >= cargo_capacity) {
+        out.kind = HUD_ACTION_HOLD_FULL;
+        return out;
+    }
+    /* Pending ledger credits — only surface when in usable signal so we
+     * don't tease "collect" while H couldn't do anything. */
+    float pending = (sig_quality >= 0.90f) ? client_pending_balance() : 0.0f;
+    if (pending > 0.5f) {
+        out.kind = HUD_ACTION_PENDING_COLLECT;
+        out.int_a = (int)lroundf(pending);
+        return out;
+    }
+    return out;
+}
+
+/* Compact renderer — short-form ALL CAPS at the bottom of the top panel. */
+static void hud_render_action_compact(const hud_action_t *a, const char *dock_role) {
+    switch (a->kind) {
+    case HUD_ACTION_DOCKED:
+        sdtx_color3b(PAL_ACTIVE);
+        sdtx_printf("%s CONSOLE", dock_role);
+        return;
+    case HUD_ACTION_TARGET_ASTEROID:
+        sdtx_color3b(PAL_ACTIVE);
+        sdtx_printf("TGT %s // %s // %d HP",
+                    asteroid_tier_name((asteroid_tier_t)a->tier),
+                    commodity_code((commodity_t)a->commodity),
+                    a->int_a);
+        return;
+    case HUD_ACTION_SCAN_MODULE:
+        sdtx_color3b(PAL_SCAN_ACTIVE);
+        if (a->str_b) sdtx_printf("SCAN %s // %s", a->str_a, a->str_b);
+        else          sdtx_printf("SCAN %s // CORE", a->str_a);
+        return;
+    case HUD_ACTION_SCAN_NPC:
+        sdtx_color3b(PAL_SCAN_ACTIVE);
+        sdtx_printf("SCAN NPC // %s",
+                    (a->str_a && a->str_a[0] == 'm') ? "MINER" : "HAULER");
+        return;
+    case HUD_ACTION_SCAN_PILOT:
+        sdtx_color3b(PAL_SCAN_ACTIVE);
+        sdtx_printf("SCAN PILOT // ID %d", a->int_a);
+        return;
+    case HUD_ACTION_MINING:
+        sdtx_color3b(PAL_ACTIVE);
+        sdtx_puts("MINING... // CLAIM WINDOW");
+        return;
+    case HUD_ACTION_TOWING:
+        sdtx_color3b(PAL_ACTIVE);
+        if (a->int_b) sdtx_printf("TOWING %d // TRACTOR", a->int_a);
+        else          sdtx_printf("TOWING %d // tap [Space] release", a->int_a);
+        return;
+    case HUD_ACTION_TRACTOR_LOCK:
+        sdtx_color3b(PAL_ACTIVE);
+        sdtx_printf("TRACTOR // %d FRAG", a->int_a);
+        return;
+    case HUD_ACTION_TRACTOR_REACHING:
+        sdtx_color3b(PAL_ACTIVE);
+        sdtx_printf("hold [Space] TRACTOR // %d", a->int_b);
+        return;
+    case HUD_ACTION_FRAGMENTS_NEARBY:
+        sdtx_color3b(PAL_TRACTOR_OFF);
+        sdtx_printf("hold [Space] TRACTOR // %d nearby", a->int_b);
+        return;
+    case HUD_ACTION_HOLD_FULL:
+        sdtx_color3b(PAL_ORE_AMBER);
+        sdtx_puts("Hold full. Dock to sell.");
+        return;
+    case HUD_ACTION_PENDING_COLLECT:
+        sdtx_color3b(PAL_ORE_AMBER);
+        sdtx_printf("[H] collect %d", a->int_a);
+        return;
+    case HUD_ACTION_IDLE:
+    default:
+        sdtx_color3b(PAL_TEXT_MUTED);
+        sdtx_puts("Nothing in range. Scan for rocks.");
+        return;
+    }
+}
+
+/* Wide renderer — full English at the bottom of the top panel. */
+static void hud_render_action_wide(const hud_action_t *a, const station_t *current_station) {
+    switch (a->kind) {
+    case HUD_ACTION_DOCKED:
+        sdtx_color3b(PAL_ACTIVE);
+        sdtx_printf("%s console", station_role_name(current_station));
+        return;
+    case HUD_ACTION_TARGET_ASTEROID:
+        sdtx_color3b(PAL_ACTIVE);
+        sdtx_printf("Target %s // %s // %d hp",
+                    asteroid_tier_kind((asteroid_tier_t)a->tier),
+                    commodity_short_name((commodity_t)a->commodity),
+                    a->int_a);
+        return;
+    case HUD_ACTION_SCAN_MODULE:
+        sdtx_color3b(PAL_SCAN_ACTIVE);
+        if (a->str_b) sdtx_printf("Scan %s // %s", a->str_a, a->str_b);
+        else          sdtx_printf("Scan %s // core hub", a->str_a);
+        return;
+    case HUD_ACTION_SCAN_NPC:
+        sdtx_color3b(PAL_SCAN_ACTIVE);
+        sdtx_printf("Scan NPC %s // cargo %d", a->str_a, a->int_a);
+        return;
+    case HUD_ACTION_SCAN_PILOT:
+        sdtx_color3b(PAL_SCAN_ACTIVE);
+        sdtx_printf("Scan pilot %d // hull %d", a->int_a, a->int_b);
+        return;
+    case HUD_ACTION_MINING:
+        sdtx_color3b(PAL_ACTIVE);
+        sdtx_puts("Mining... // claim window");
+        return;
+    case HUD_ACTION_TOWING:
+        sdtx_color3b(PAL_ACTIVE);
+        if (a->int_b) sdtx_printf("Towing %d // tractor on", a->int_a);
+        else          sdtx_printf("Towing %d // tap [Space] to release", a->int_a);
+        return;
+    case HUD_ACTION_TRACTOR_LOCK:
+        sdtx_color3b(PAL_ACTIVE);
+        sdtx_printf("Tractor lock // %d frag%s", a->int_a, a->int_a == 1 ? "" : "s");
+        return;
+    case HUD_ACTION_TRACTOR_REACHING:
+        sdtx_color3b(PAL_ACTIVE);
+        sdtx_printf("Tractor reaching // %d nearby", a->int_b);
+        return;
+    case HUD_ACTION_FRAGMENTS_NEARBY:
+        sdtx_color3b(PAL_TRACTOR_OFF);
+        sdtx_printf("Hold [Space] tractor // %d nearby", a->int_b);
+        return;
+    case HUD_ACTION_HOLD_FULL:
+        sdtx_color3b(PAL_ORE_AMBER);
+        sdtx_puts("Hold full. Dock to sell.");
+        return;
+    case HUD_ACTION_PENDING_COLLECT:
+        sdtx_color3b(PAL_ORE_AMBER);
+        sdtx_printf("H to hail // collect %d cr", a->int_a);
+        return;
+    case HUD_ACTION_IDLE:
+    default:
+        sdtx_color3b(PAL_TEXT_MUTED);
+        sdtx_puts("No target // line up a rock");
+        return;
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* Shared post-classify panels — render in BOTH compact and wide so a  */
 /* small window doesn't silently lose signal-lost warnings, MP status, */
@@ -1202,67 +1448,9 @@ void draw_hud(void) {
         }
 
         sdtx_pos(top_text_x, top_row_3);
-        if (LOCAL_PLAYER.docked) {
-            sdtx_color3b(PAL_ACTIVE);
-            sdtx_printf("%s CONSOLE", dock_role);
-        } else if ((LOCAL_PLAYER.hover_asteroid >= 0) && g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
-            const asteroid_t* asteroid = &g.world.asteroids[LOCAL_PLAYER.hover_asteroid];
-            int integrity_left = (int)lroundf(asteroid->hp);
-            sdtx_color3b(PAL_ACTIVE);
-            sdtx_printf("TGT %s // %s // %d HP", asteroid_tier_name(asteroid->tier), commodity_code(asteroid->commodity), integrity_left);
-        } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 1) {
-            const station_t *st = &g.world.stations[LOCAL_PLAYER.scan_target_index];
-            sdtx_color3b(PAL_SCAN_ACTIVE);
-            if (LOCAL_PLAYER.scan_module_index >= 0) {
-                const station_module_t *m = &st->modules[LOCAL_PLAYER.scan_module_index];
-                sdtx_printf("SCAN %s // %s", st->name, module_type_name(m->type));
-            } else {
-                sdtx_printf("SCAN %s // CORE", st->name);
-            }
-        } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 2) {
-            const npc_ship_t *npc = &g.world.npc_ships[LOCAL_PLAYER.scan_target_index];
-            sdtx_color3b(PAL_SCAN_ACTIVE);
-            sdtx_printf("SCAN NPC // %s", npc->role == NPC_ROLE_MINER ? "MINER" : "HAULER");
-        } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 3) {
-            sdtx_color3b(PAL_SCAN_ACTIVE);
-            sdtx_printf("SCAN PILOT // ID %d", LOCAL_PLAYER.scan_target_index);
-        } else if (mining_client_get()->fracture_search_timer > 0.0f) {
-            sdtx_color3b(PAL_ACTIVE);
-            sdtx_puts("MINING... // CLAIM WINDOW");
-        } else if (LOCAL_PLAYER.ship.towed_count > 0) {
-            sdtx_color3b(PAL_ACTIVE);
-            if (LOCAL_PLAYER.ship.tractor_active) {
-                sdtx_printf("TOWING %d // TRACTOR", LOCAL_PLAYER.ship.towed_count);
-            } else {
-                sdtx_printf("TOWING %d // tap [Space] release", LOCAL_PLAYER.ship.towed_count);
-            }
-        } else if (LOCAL_PLAYER.nearby_fragments > 0) {
-            if (LOCAL_PLAYER.ship.tractor_active) {
-                sdtx_color3b(PAL_ACTIVE);
-                if (LOCAL_PLAYER.tractor_fragments > 0) {
-                    sdtx_printf("TRACTOR // %d FRAG", LOCAL_PLAYER.tractor_fragments);
-                } else {
-                    sdtx_printf("hold [Space] TRACTOR // %d", LOCAL_PLAYER.nearby_fragments);
-                }
-            } else {
-                sdtx_color3b(PAL_TRACTOR_OFF);
-                sdtx_printf("hold [Space] TRACTOR // %d nearby", LOCAL_PLAYER.nearby_fragments);
-            }
-        } else if (cargo_units >= cargo_capacity) {
-            sdtx_color3b(PAL_ORE_AMBER);
-            sdtx_puts("Hold full. Dock to sell.");
-        } else {
-            /* Pending ledger credits (singleplayer only; client_pending_balance
-             * returns 0 in MP). Only surface when in usable signal so we
-             * don't tease "collect" while H couldn't do anything. */
-            float pending = (sig_quality >= 0.90f) ? client_pending_balance() : 0.0f;
-            if (pending > 0.5f) {
-                sdtx_color3b(PAL_ORE_AMBER);
-                sdtx_printf("[H] collect %d", (int)lroundf(pending));
-            } else {
-                sdtx_color3b(PAL_TEXT_MUTED);
-                sdtx_puts("Nothing in range. Scan for rocks.");
-            }
+        {
+            hud_action_t act = hud_classify_action(cargo_units, cargo_capacity, sig_quality);
+            hud_render_action_compact(&act, dock_role);
         }
 
         if (hud_should_draw_message_panel()) {
@@ -1353,57 +1541,9 @@ void draw_hud(void) {
     }
 
     sdtx_pos(top_text_x, top_row_3);
-    if (LOCAL_PLAYER.docked) {
-        sdtx_color3b(PAL_ACTIVE);
-        sdtx_printf("%s console", station_role_name(current_station));
-    } else if ((LOCAL_PLAYER.hover_asteroid >= 0) && g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
-        const asteroid_t* asteroid = &g.world.asteroids[LOCAL_PLAYER.hover_asteroid];
-        int integrity_left = (int)lroundf(asteroid->hp);
-        sdtx_color3b(PAL_ACTIVE);
-        sdtx_printf("Target %s // %s // %d hp", asteroid_tier_kind(asteroid->tier), commodity_short_name(asteroid->commodity), integrity_left);
-    } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 1) {
-        const station_t *st = &g.world.stations[LOCAL_PLAYER.scan_target_index];
-        sdtx_color3b(PAL_SCAN_ACTIVE);
-        if (LOCAL_PLAYER.scan_module_index >= 0) {
-            const station_module_t *m = &st->modules[LOCAL_PLAYER.scan_module_index];
-            sdtx_printf("Scan %s // %s", st->name, module_type_name(m->type));
-        } else {
-            sdtx_printf("Scan %s // core hub", st->name);
-        }
-    } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 2) {
-        const npc_ship_t *npc = &g.world.npc_ships[LOCAL_PLAYER.scan_target_index];
-        int npc_cargo = 0;
-        for (int ci = 0; ci < COMMODITY_COUNT; ci++)
-            npc_cargo += (int)lroundf(npc->cargo[ci]);
-        sdtx_color3b(PAL_SCAN_ACTIVE);
-        sdtx_printf("Scan NPC %s // cargo %d", npc->role == NPC_ROLE_MINER ? "miner" : "hauler", npc_cargo);
-    } else if (LOCAL_PLAYER.scan_active && LOCAL_PLAYER.scan_target_type == 3) {
-        const server_player_t *other = &g.world.players[LOCAL_PLAYER.scan_target_index];
-        int other_hull = (int)lroundf(other->ship.hull);
-        sdtx_color3b(PAL_SCAN_ACTIVE);
-        sdtx_printf("Scan pilot %d // hull %d", LOCAL_PLAYER.scan_target_index, other_hull);
-    } else if (mining_client_get()->fracture_search_timer > 0.0f) {
-        sdtx_color3b(PAL_ACTIVE);
-        sdtx_puts("Mining... // claim window");
-    } else if (LOCAL_PLAYER.nearby_fragments > 0) {
-        sdtx_color3b(PAL_ACTIVE);
-        if (LOCAL_PLAYER.tractor_fragments > 0) {
-            sdtx_printf("Tractor lock // %d frag%s", LOCAL_PLAYER.tractor_fragments, LOCAL_PLAYER.tractor_fragments == 1 ? "" : "s");
-        } else {
-            sdtx_printf("Nearby fragments // %d", LOCAL_PLAYER.nearby_fragments);
-        }
-    } else if (cargo_units >= cargo_capacity) {
-        sdtx_color3b(PAL_ORE_AMBER);
-        sdtx_puts("Hold full. Dock to sell.");
-    } else {
-        float pending_n = (sig_quality >= 0.90f) ? client_pending_balance() : 0.0f;
-        if (pending_n > 0.5f) {
-            sdtx_color3b(PAL_ORE_AMBER);
-            sdtx_printf("H to hail // collect %d cr", (int)lroundf(pending_n));
-        } else {
-            sdtx_color3b(PAL_TEXT_MUTED);
-            sdtx_puts("No target // line up a rock");
-        }
+    {
+        hud_action_t act = hud_classify_action(cargo_units, cargo_capacity, sig_quality);
+        hud_render_action_wide(&act, current_station);
     }
 
     /* Subtitle: one clean line, centered at bottom-center.
