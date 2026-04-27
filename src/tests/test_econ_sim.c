@@ -575,16 +575,22 @@ TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
     /* Pick the first hauler that's currently homed at the shipyard,
      * wound it, and drop it just outside the dock approach radius. */
     npc_ship_t *hauler = NULL;
+    int hauler_slot = -1;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
         if (w->npc_ships[n].role != NPC_ROLE_HAULER) continue;
         w->npc_ships[n].home_station = shipyard;
         hauler = &w->npc_ships[n];
+        hauler_slot = n;
         break;
     }
     ASSERT(hauler != NULL);
     float max_h = npc_max_hull(hauler);
-    hauler->hull  = max_h - 20.0f; /* 20 HP damage */
+    /* Damage through the public ship-layer helper so ship.hull stays
+     * authoritative (#294 Slice 11). Writing hauler->hull directly
+     * would leave ship.hull at max_h and the auto-repair would see
+     * nothing to fix. */
+    apply_npc_ship_damage(w, hauler_slot, 20.0f);
     hauler->state = NPC_STATE_RETURN_TO_STATION;
     /* Drop the hauler well inside the home station's dock approach
      * radius so the next sim_step's RETURN_TO_STATION branch trips

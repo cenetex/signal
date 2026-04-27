@@ -225,8 +225,13 @@ static void mirror_npc_to_character(world_t *w, int npc_slot) {
         s->pos = npc->pos;
         s->vel = npc->vel;
         s->angle = npc->angle;
-        s->hull = npc->hull;
         s->hull_class = npc->hull_class;
+        /* Don't mirror hull npc->ship here: ship.hull is authoritative
+         * (Slice 9 + 10). External callers — apply_npc_ship_damage and
+         * future rock/PvP impact paths — may have mutated ship.hull
+         * between this NPC's last tick and now; mirroring npc.hull
+         * over it would lose that damage/repair. The end-of-tick
+         * reverse mirror (mirror_ship_to_npc) keeps npc.hull in sync. */
     }
 }
 
