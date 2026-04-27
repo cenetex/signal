@@ -513,6 +513,12 @@ typedef struct {
     bool active;
     character_kind_t kind;
     int ship_idx;             /* index into world.ships[]; -1 = unbound */
+    /* For NPC kinds: index into world.npc_ships[]. For PLAYER: index
+     * into world.players[]. -1 = unbound. Distinct from ship_idx —
+     * those address different pools. Used by character_for_npc_slot
+     * et al. so the lookup is unambiguous regardless of how the
+     * ships[] free-slot allocator handed out indices. */
+    int npc_slot;
     /* Brain state — meaningful for NPC kinds. Players carry these in
      * server_player_t for now; converging is a later slice. */
     npc_state_t state;

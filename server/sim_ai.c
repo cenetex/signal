@@ -107,7 +107,6 @@ static void ship_pool_init_from_npc(ship_t *ship, const npc_ship_t *npc) {
 }
 
 static int character_alloc_for_npc(world_t *w, int npc_slot, const npc_ship_t *npc) {
-    (void)npc_slot; /* ship_idx now points to the unified ships[] pool, not npc_slot. */
     int ship_slot = ship_pool_alloc_slot(w);
     if (ship_slot < 0) return -1;
     int cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
@@ -118,6 +117,7 @@ static int character_alloc_for_npc(world_t *w, int npc_slot, const npc_ship_t *n
         c->active = true;
         c->kind = character_kind_from_role(npc->role);
         c->ship_idx = ship_slot;
+        c->npc_slot = npc_slot;
         c->state = npc->state;
         c->target_asteroid = npc->target_asteroid;
         c->home_station = npc->home_station;
@@ -130,16 +130,20 @@ static int character_alloc_for_npc(world_t *w, int npc_slot, const npc_ship_t *n
     }
     /* No free character slot; release the ship slot we reserved. */
     ship_cleanup(&w->ships[ship_slot]);
+    memset(&w->ships[ship_slot], 0, sizeof(w->ships[ship_slot]));
     return -1;
 }
 
-/* Find the paired character for an NPC slot, or -1. */
+/* Find the paired character for an NPC slot, or -1. Matches on the
+ * explicit npc_slot field — distinct from ship_idx which addresses a
+ * different pool. */
 static int character_for_npc_slot(const world_t *w, int npc_slot) {
+    if (npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return -1;
     int cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
     for (int i = 0; i < cap; i++) {
         const character_t *c = &w->characters[i];
         if (!c->active) continue;
-        if (c->ship_idx != npc_slot) continue;
+        if (c->npc_slot != npc_slot) continue;
         if (c->kind != CHARACTER_KIND_NPC_MINER &&
             c->kind != CHARACTER_KIND_NPC_HAULER &&
             c->kind != CHARACTER_KIND_NPC_TOW) continue;
@@ -188,15 +192,21 @@ static void mirror_ship_to_npc(world_t *w, int npc_slot) {
  *
  * Public: external code (rock-throw collision, PvP, etc.) reaches NPC
  * damage through this helper so the unified ship_t.hull stays the
- * single source of truth. */
+ * single source of truth. Validates inputs — out-of-range or inactive
+ * slots are no-ops; this is a defensive boundary, not a programmer
+ * assertion. */
 void apply_npc_ship_damage(world_t *w, int npc_slot, float dmg) {
+    if (!w) return;
     if (dmg <= 0.0f) return;
+    if (npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return;
+    npc_ship_t *npc = &w->npc_ships[npc_slot];
+    if (!npc->active) return;
     ship_t *s = npc_ship_for(w, npc_slot);
     if (!s) {
-        /* Fallback: paired ship missing; mutate the npc directly so
-         * we don't silently swallow damage. */
-        w->npc_ships[npc_slot].hull -= dmg;
-        if (w->npc_ships[npc_slot].hull < 0.0f) w->npc_ships[npc_slot].hull = 0.0f;
+        /* Fallback: paired ship missing (transitional, e.g. mid-spawn).
+         * Mutate the npc directly so we don't silently swallow damage. */
+        npc->hull -= dmg;
+        if (npc->hull < 0.0f) npc->hull = 0.0f;
         return;
     }
     s->hull -= dmg;
@@ -236,6 +246,16 @@ static void mirror_npc_to_character(world_t *w, int npc_slot) {
 }
 
 void rebuild_characters_from_npcs(world_t *w) {
+    /* Free heap-allocated manifests on all ships[] slots before we
+     * deactivate the characters that pinned them. Without this, slots
+     * that aren't reclaimed by the next pass (e.g. once MAX_SHIPS >
+     * MAX_NPC_SHIPS or when fewer NPCs are active than before) leak
+     * their manifest_t.units allocation. ship_pool_init_from_npc on
+     * re-alloc would also clean — but only for slots actually picked. */
+    for (int s = 0; s < MAX_SHIPS; s++) {
+        ship_cleanup(&w->ships[s]);
+        memset(&w->ships[s], 0, sizeof(w->ships[s]));
+    }
     int cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
     for (int i = 0; i < cap; i++) {
         if (w->characters[i].kind == CHARACTER_KIND_NPC_MINER ||
@@ -1055,8 +1075,13 @@ void step_npc_ships(world_t *w, float dt) {
         /* Despawn-on-destroy: the spawn loop replaces dead slots on
          * the next tick. Cargo is lost (the chain takes a hit when a
          * loaded hauler dies — that's the cost of letting them get
-         * smashed by asteroids). */
-        if (npc->hull <= 0.0f) {
+         * smashed by asteroids). Read ship.hull (authoritative since
+         * Slice 9-11) so external damage delivered between ticks via
+         * apply_npc_ship_damage despawns immediately rather than
+         * limping one extra tick. */
+        const ship_t *paired_ship = npc_ship_for(w, n);
+        float live_hull = paired_ship ? paired_ship->hull : npc->hull;
+        if (live_hull <= 0.0f) {
             SIM_LOG("[npc] %d (role=%d) destroyed — hull 0\n", n, (int)npc->role);
             npc->active = false;
             character_free_for_npc(w, n);
