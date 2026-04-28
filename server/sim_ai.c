@@ -521,11 +521,17 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     int self_npc_slot = (int)(npc - w->npc_ships);
     int self_char = character_for_npc_slot(w, self_npc_slot);
 
-    /* Priority: DESTROY contract targets first */
+    /* Priority: DESTROY contract targets first — but only if reasonably
+     * nearby. Without the distance cap, a Helios miner would pick up a
+     * FRACTURE distress posted near Prospect and drift halfway across
+     * the map "lasering" a rock it can't reach. 2500u is roughly the
+     * radius at which a miner would notice trouble in its own sector. */
+    const float MAX_DISTRESS_DIST_SQ = 2500.0f * 2500.0f;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (!w->contracts[k].active || w->contracts[k].action != CONTRACT_FRACTURE) continue;
         int idx = w->contracts[k].target_index;
         if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
+        if (v2_dist_sq(npc->pos, w->asteroids[idx].pos) > MAX_DISTRESS_DIST_SQ) continue;
         if (!miner_target_taken(w, idx, self_char)) return idx;
     }
 
@@ -1436,6 +1442,7 @@ void step_npc_ships(world_t *w, float dt) {
             if (npc->towed_fragment < 0 && npc_target_valid(w, npc)) {
                 vec2 cur_pos = w->asteroids[npc->target_asteroid].pos;
                 float cur_d2 = v2_dist_sq(npc->pos, cur_pos);
+                const float MAX_DISTRESS_PREEMPT_SQ = 2500.0f * 2500.0f;
                 for (int k = 0; k < MAX_CONTRACTS; k++) {
                     if (!w->contracts[k].active) continue;
                     if (w->contracts[k].action != CONTRACT_FRACTURE) continue;
@@ -1443,6 +1450,7 @@ void step_npc_ships(world_t *w, float dt) {
                     if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
                     if (idx == npc->target_asteroid) break;
                     float new_d2 = v2_dist_sq(npc->pos, w->asteroids[idx].pos);
+                    if (new_d2 > MAX_DISTRESS_PREEMPT_SQ) continue;
                     if (new_d2 < cur_d2 * 0.25f) { npc->target_asteroid = idx; break; }
                 }
             }
