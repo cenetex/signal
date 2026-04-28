@@ -38,3 +38,8 @@ _site/
 assets/anime/*.mp4
 assets/anime/*.mpg
 assets/music/*.mp3
+
+# voicebox runtime assets — fetched at configure time, not committed
+assets/voice/voicebox
+assets/voice/voicebox.exe
+assets/voice/kokoro/
