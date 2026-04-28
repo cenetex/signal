@@ -9,6 +9,9 @@
 #include "station_voice.h"
 #include "world_draw.h"
 #include "signal_model.h"  /* SIGNAL_BAND_OPERATIONAL threshold */
+#ifdef SIGNAL_VOICE
+#include "voice.h"
+#endif
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -52,11 +55,39 @@ static void complete_step(bool *step) {
     onboarding_save();
 }
 
-void onboarding_mark_moved(void)     { complete_step(&g.onboarding.moved); }
-void onboarding_mark_fractured(void) { complete_step(&g.onboarding.fractured); }
-void onboarding_mark_tractored(void) { complete_step(&g.onboarding.tractored); }
-void onboarding_mark_hailed(void)    { complete_step(&g.onboarding.hailed); }
-void onboarding_mark_boosted(void)   { complete_step(&g.onboarding.boosted); }
+static void emit_onboarding_voice(int milestone) {
+#ifdef SIGNAL_VOICE
+    int home_station = nearest_signal_station(LOCAL_PLAYER.ship.pos);
+    if (home_station >= 0 && home_station < 3 && milestone >= 0 && milestone < VOICE_ONBOARD_COUNT) {
+        const char *station_persona[] = {"prospect", "kepler", "helios"};
+        const char *line = STATION_ONBOARD[home_station][milestone];
+        if (line) voice_event(station_persona[home_station], line);
+    }
+#else
+    (void)milestone;
+#endif
+}
+
+void onboarding_mark_moved(void) {
+    if (!g.onboarding.moved) emit_onboarding_voice(VOICE_ONBOARD_LAUNCH);
+    complete_step(&g.onboarding.moved);
+}
+void onboarding_mark_fractured(void) {
+    if (!g.onboarding.fractured) emit_onboarding_voice(VOICE_ONBOARD_MINE);
+    complete_step(&g.onboarding.fractured);
+}
+void onboarding_mark_tractored(void) {
+    if (!g.onboarding.tractored) emit_onboarding_voice(VOICE_ONBOARD_COLLECT);
+    complete_step(&g.onboarding.tractored);
+}
+void onboarding_mark_hailed(void) {
+    if (!g.onboarding.hailed) emit_onboarding_voice(VOICE_ONBOARD_SELL);
+    complete_step(&g.onboarding.hailed);
+}
+void onboarding_mark_boosted(void) {
+    if (!g.onboarding.boosted) emit_onboarding_voice(VOICE_ONBOARD_UPGRADE);
+    complete_step(&g.onboarding.boosted);
+}
 
 /* ------------------------------------------------------------------ */
 /* Checklist hint                                                      */
