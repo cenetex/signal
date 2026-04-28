@@ -198,10 +198,12 @@ void apply_remote_player_manifest(const NetStationManifestEntry *entries,
                                   int count) {
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
     ship_t *ship = &g.world.players[g.local_player_slot].ship;
-    /* Skip overwriting while a local action is being predicted to
-     * avoid flicker between predicted state and a slightly older
-     * server snapshot. */
-    if (g.action_predict_timer > 0.0f) return;
+    /* Always apply -- WORLD_STATE overwrites cargo[] every tick, so
+     * gating manifest on action_predict_timer leaves cargo and
+     * manifest in inconsistent states (cargo refreshed, manifest
+     * frozen at pre-action). The trade UI then shows phantom rows
+     * (manifest > cargo). The brief predict/snapshot flicker is the
+     * lesser evil compared to ghost SELL rows the player can't act on. */
     if (!ship->manifest.units && !ship_manifest_bootstrap(ship)) return;
     manifest_clear(&ship->manifest);
     if (count <= 0) return;

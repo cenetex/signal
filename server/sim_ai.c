@@ -1112,6 +1112,23 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     }
                 }
             }
+            /* Wear-and-tear maintenance: each home-dock visit consumes
+             * one repair kit regardless of damage. This is the baseline
+             * demand that keeps kits flowing through the economy --
+             * without it, Prospect's kit shelf never drains (haulers
+             * rarely take real damage), kit-import contracts never
+             * trip, and the inter-station chain stalls. Force-debit so
+             * the hauler is on the hook for upkeep just like a repair. */
+            if (station_has_module(home, MODULE_DOCK)
+                && home->inventory[COMMODITY_REPAIR_KIT] >= 1.0f) {
+                float kit_price = home->base_price[COMMODITY_REPAIR_KIT];
+                if (kit_price < 0.01f) kit_price = 6.0f;
+                ledger_force_debit(home, npc->session_token, kit_price, ship);
+                home->inventory[COMMODITY_REPAIR_KIT] -= 1.0f;
+                if (manifest_consume_by_commodity(&home->manifest,
+                                                  COMMODITY_REPAIR_KIT, 1) > 0)
+                    home->named_ingots_dirty = true;
+            }
         }
         break;
     }
