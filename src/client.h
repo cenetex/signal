@@ -453,6 +453,13 @@ float player_current_balance(void);
  * Must be called once after sg_setup. */
 void hull_fog_init(void);
 
+/* Damage vignette back wave — render before world geometry so ships and
+ * stations sit on top of the fog. Ramps 0..1 over damage 0..0.5 (HP 100→50)
+ * and holds at 1 thereafter. The closing-in front wave is drawn from the
+ * HUD pass and kicks in once damage crosses 0.5. Caller sets up screen
+ * ortho before calling. */
+void draw_hull_fog_back(void);
+
 /* ------------------------------------------------------------------ */
 /* Station UI functions (implemented in station_ui.c)                 */
 /* ------------------------------------------------------------------ */

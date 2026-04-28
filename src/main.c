@@ -1562,6 +1562,22 @@ static void render_ui(void) {
 
 static void render_frame(void) {
     interpolate_world_for_render();
+
+    /* Damage vignette back wave — sgl-queued before world geometry so
+     * world content draws on top. Front wave is queued later by the HUD
+     * pass. Set screen-space ortho explicitly; render_world will overwrite
+     * with its world-space matrices. */
+    {
+        float screen_w = ui_screen_width();
+        float screen_h = ui_screen_height();
+        sgl_matrix_mode_projection();
+        sgl_load_identity();
+        sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
+        sgl_matrix_mode_modelview();
+        sgl_load_identity();
+        draw_hull_fog_back();
+    }
+
     render_world();
     render_ui();
 

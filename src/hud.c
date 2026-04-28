@@ -1044,28 +1044,30 @@ void hull_fog_init(void) {
     hull_fog.initialized = true;
 }
 
-/* Hull-integrity overlay: dark blood-red fog vignette that closes in as
- * hull drops. Crossfades between four pre-baked radial textures so each
- * threshold gets its own clear-hole radius. */
-static void draw_hull_warning_overlay(void) {
-    /* Drawn whenever the smoothed fog intensity is non-zero. While docked
-     * the tint shifts to blue and the intensity recedes naturally as the
-     * dock repairs the hull. */
-    if (!hull_fog.initialized) return;
+/* Shared lava-lamp pulse — slow multi-frequency drift, no spikes. */
+static float fog_pulse(void) {
+    float t = g.world.time;
+    float wob = 0.55f * sinf(t * 0.43f)
+              + 0.30f * sinf(t * 0.71f + 1.3f)
+              + 0.15f * sinf(t * 1.07f + 2.7f);
+    return 0.92f + 0.08f * wob;
+}
 
-    /* Use the smoothed fog accumulator (advanced in advance_simulation_frame). */
-    float damage = g.fog_intensity;
-    if (damage < 0.0f) damage = 0.0f;
-    if (damage > 1.0f) damage = 1.0f;
-    if (damage <= 0.01f) return; /* spotless hull, no fog at all */
+/* Emit the textured fog quads for one wave at the given intensity. Picks
+ * the tier-pair around `intensity` and crossfades them so the aperture
+ * tightens smoothly. Caller is responsible for setting up screen-space
+ * ortho before calling. */
+static void draw_fog_quads(float intensity, float pulse) {
+    if (!hull_fog.initialized) return;
+    if (intensity <= 0.01f) return;
+    if (intensity > 1.0f) intensity = 1.0f;
 
     float screen_w = ui_screen_width();
     float screen_h = ui_screen_height();
-    float t = g.world.time;
 
     /* Continuous tier value in [0, HULL_FOG_LEVELS - 1]. Lerp the texture
      * pair around it so transitions are smooth across the whole range. */
-    float tier = damage * (float)(HULL_FOG_LEVELS - 1);
+    float tier = intensity * (float)(HULL_FOG_LEVELS - 1);
     int t0 = (int)floorf(tier);
     if (t0 < 0) t0 = 0;
     if (t0 > HULL_FOG_LEVELS - 1) t0 = HULL_FOG_LEVELS - 1;
@@ -1075,18 +1077,11 @@ static void draw_hull_warning_overlay(void) {
     if (blend < 0.0f) blend = 0.0f;
     if (blend > 1.0f) blend = 1.0f;
 
-    /* Lava-lamp wobble — slow, gentle, multi-frequency drift. No spikes,
-     * no strobing. Bites slightly harder as damage rises. */
-    float wob = 0.55f * sinf(t * 0.43f)
-              + 0.30f * sinf(t * 0.71f + 1.3f)
-              + 0.15f * sinf(t * 1.07f + 2.7f);
-    float pulse = 0.92f + 0.08f * wob + 0.04f * damage;
-
-    /* Dark blood red tint. Brightens slightly with damage.
+    /* Dark blood red tint. Brightens slightly with intensity.
      * Locals prefixed with tint_ to avoid shadowing the global `g` game_t. */
-    float tint_r = 0.20f + 0.25f * damage;
-    float tint_g = 0.005f + 0.01f * damage;
-    float tint_b = 0.01f + 0.02f * damage;
+    float tint_r = 0.20f + 0.25f * intensity;
+    float tint_g = 0.005f + 0.01f * intensity;
+    float tint_b = 0.01f + 0.02f * intensity;
 
     /* Push our alpha-blending pipeline so the texture's alpha actually
      * affects the framebuffer. The default sokol_gl pipeline disables
@@ -1127,6 +1122,32 @@ static void draw_hull_warning_overlay(void) {
 
     sgl_disable_texture();
     sgl_pop_pipeline();
+}
+
+/* Back wave — drawn before the world. Ramps 0..1 over damage 0..0.5
+ * (HP 100→50), then holds at 1. Caller (render_frame) sets up screen
+ * ortho. Renders the dark void deepening behind ships/stations without
+ * eating their contrast. */
+void draw_hull_fog_back(void) {
+    if (!hull_fog.initialized) return;
+    float damage = g.fog_intensity;
+    if (damage <= 0.01f) return;
+    float intensity = damage * 2.0f;
+    if (intensity > 1.0f) intensity = 1.0f;
+    float pulse = fog_pulse() + 0.04f * intensity;
+    draw_fog_quads(intensity, pulse);
+}
+
+/* Front wave — drawn over the world (HUD pass). Closing-in aperture that
+ * only kicks in below 50% HP, ramping 0..1 over damage 0.5..1.0. */
+static void draw_hull_warning_overlay(void) {
+    if (!hull_fog.initialized) return;
+    float damage = g.fog_intensity;
+    float intensity = (damage - 0.5f) * 2.0f;
+    if (intensity <= 0.01f) return;
+    if (intensity > 1.0f) intensity = 1.0f;
+    float pulse = fog_pulse() + 0.04f * intensity;
+    draw_fog_quads(intensity, pulse);
 }
 
 void draw_hud_panels(void) {
