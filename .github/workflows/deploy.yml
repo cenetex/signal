@@ -12,7 +12,10 @@ permissions:
   id-token: write
 
 concurrency:
-  group: deploy
+  # Per-ref so PR runs don't cancel each other. Multiple PRs were colliding
+  # on a shared "deploy" group, killing tests mid-flight. The deploy job
+  # further down still only fires on main, so deploys remain serialized.
+  group: deploy-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
