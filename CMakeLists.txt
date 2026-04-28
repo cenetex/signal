@@ -94,6 +94,12 @@ set(SIGNAL_CLIENT_SOURCES
 if(SIGNAL_VOICE)
     if(EMSCRIPTEN)
         list(APPEND SIGNAL_CLIENT_SOURCES src/voice_web.c)
+        # EM_ASM requires gnu extensions ($-in-identifier, statement-exprs).
+        # Override the project-wide -std=c11 + -Wno-dollar-in-identifier
+        # for this one file. -Wno-unused-parameter because the EM_ASM
+        # macro hides parameter use from the C parser.
+        set_source_files_properties(src/voice_web.c PROPERTIES
+            COMPILE_FLAGS "-std=gnu11 -Wno-dollar-in-identifier-extension -Wno-unused-parameter -Wno-variadic-macro-arguments-omitted")
     else()
         list(APPEND SIGNAL_CLIENT_SOURCES src/voice.c)
     endif()
@@ -295,6 +301,10 @@ if(EMSCRIPTEN)
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_CURRENT_SOURCE_DIR}/web/voicebox.js
             ${CMAKE_CURRENT_BINARY_DIR}/voicebox.js
+        # voicebox.js is an ES module that imports from ./voice/{auth,stt,tts,personas}.js
+        COMMAND ${CMAKE_COMMAND} -E copy_directory
+            ${CMAKE_CURRENT_SOURCE_DIR}/web/voice
+            ${CMAKE_CURRENT_BINARY_DIR}/voice
     )
 elseif(APPLE)
     target_link_libraries(signal PRIVATE

@@ -122,21 +122,36 @@ TEST(test_contract_price_escalates_with_age) {
 }
 
 TEST(test_contract_closes_when_deficit_filled) {
-    /* When ore_buffer rises to 80% threshold, contract should close */
+    /* Tractor-contract close hysteresis: opens on deficit (<90%), must NOT
+     * close until inventory crosses 95% — otherwise a station sitting in
+     * [80%, 95%] opens-and-closes a contract every tick, spamming
+     * SIM_EVENT_CONTRACT_COMPLETE. See fix for issue #461. */
     WORLD_DECL;
     world_reset(&w);
     w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 10.0f;
-    world_sim_step(&w, SIM_DT); /* generates contract */
-    /* Now fill the hopper above 80% threshold */
+    world_sim_step(&w, SIM_DT); /* generates contract (deficit > threshold) */
+
+    /* 85% should NOT close the contract anymore — it's between open (90%) and close (95%) */
     w.stations[0].inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.85f;
-    world_sim_step(&w, SIM_DT); /* should close the contract */
-    bool found = false;
+    world_sim_step(&w, SIM_DT);
+    bool still_active = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (w.contracts[k].active && w.contracts[k].station_index == 0 && w.contracts[k].commodity == COMMODITY_FERRITE_ORE) {
-            found = true; break;
+            still_active = true; break;
         }
     }
-    ASSERT(!found);
+    ASSERT(still_active);
+
+    /* Above the 95% close threshold, contract closes */
+    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.96f;
+    world_sim_step(&w, SIM_DT);
+    bool still_active2 = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active && w.contracts[k].station_index == 0 && w.contracts[k].commodity == COMMODITY_FERRITE_ORE) {
+            still_active2 = true; break;
+        }
+    }
+    ASSERT(!still_active2);
 }
 
 TEST(test_sell_price_uses_contract_price) {

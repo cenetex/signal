@@ -37,16 +37,45 @@ function log(...args) { console.log("[voicebox]", ...args); }
 async function ensureTTS() {
     if (state.ttsReady) return;
     log("loading Kokoro v1.0 (~325 MB; cached after first load)…");
-    await TTS.init({ voice: PERSONAS[DEFAULT_PERSONA].voice, device: "wasm" });
-    state.ttsReady = true;
+    try {
+        await TTS.init({ voice: PERSONAS[DEFAULT_PERSONA].voice, device: "wasm" });
+        state.ttsReady = true;
+    } catch (err) {
+        log("Kokoro WASM init failed — falling back to browser speechSynthesis:", err.message);
+        state.ttsBackend = "browser";
+    }
+}
+
+/* per-persona pitch/rate hints for the speechSynthesis fallback so
+   different stations don't all sound identical when Kokoro isn't available. */
+const FALLBACK_VOICE_HINT = {
+    nav7:     { rate: 1.05, pitch: 0.9  },
+    prospect: { rate: 0.95, pitch: 1.05 },
+    kepler:   { rate: 1.0,  pitch: 1.0  },
+    helios:   { rate: 1.05, pitch: 0.95 },
+};
+
+function speakFallback(personaName, text) {
+    if (!('speechSynthesis' in window)) return;
+    const u = new SpeechSynthesisUtterance(text);
+    const hint = FALLBACK_VOICE_HINT[personaName] || FALLBACK_VOICE_HINT.nav7;
+    u.rate = hint.rate; u.pitch = hint.pitch;
+    speechSynthesis.speak(u);
 }
 
 function speakWithPersona(personaName, text) {
     if (!text || !text.trim()) return;
     const persona = PERSONAS[personaName] || PERSONAS[DEFAULT_PERSONA];
+    // Lazy-init Kokoro on first speak; fall back to speechSynthesis on failure.
+    if (state.ttsBackend === "browser") { speakFallback(personaName, text); return; }
     if (!state.ttsReady) {
-        ensureTTS().then(() => TTS.speak(text, persona))
-                   .catch(err => log("TTS load failed:", err.message));
+        ensureTTS().then(() => {
+            if (state.ttsBackend === "browser") speakFallback(personaName, text);
+            else                                TTS.speak(text, persona);
+        }).catch(err => {
+            log("TTS load failed:", err.message);
+            speakFallback(personaName, text);
+        });
         return;
     }
     TTS.speak(text, persona);
@@ -241,3 +270,8 @@ window.voicebox = {
     isTTSReady()  { return state.ttsReady; },
     isSTTReady()  { return state.sttReady; },
 };
+
+/* Auto-init on module load. The native build calls window.voicebox.init()
+   from src/voice_web.c via EM_JS, but in WASM builds without SIGNAL_VOICE=ON
+   that hook never fires — so we do it ourselves here. Idempotent. */
+window.voicebox.init();

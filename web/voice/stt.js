@@ -11,11 +11,17 @@
 //   stt.holdToTalk(true); // begin recording into the active buffer
 //   stt.holdToTalk(false);// stop recording, transcribe, fire onTranscript
 
-import { pipeline, env } from "https://cdn.jsdelivr.net/npm/@xenova/transformers@2.17.2";
-
-// transformers.js downloads from HF Hub by default; cache aggressively
-env.allowLocalModels = false;
-env.useBrowserCache = true;
+// transformers.js is lazy-imported inside init() so a CDN parse failure in
+// an older browser doesn't crash voicebox at module-evaluation time.
+let _transformers = null;
+async function loadTransformers() {
+    if (_transformers) return _transformers;
+    const m = await import("https://esm.sh/@xenova/transformers@2.17.2");
+    m.env.allowLocalModels = false;
+    m.env.useBrowserCache  = true;
+    _transformers = m;
+    return m;
+}
 
 const TARGET_SR = 16000; // whisper expects 16k mono float32
 
@@ -35,7 +41,8 @@ class _STT {
 
   async init({ model = "Xenova/whisper-tiny.en" } = {}) {
     this._status("loading whisper model…");
-    this.transcriber = await pipeline("automatic-speech-recognition", model);
+    const t = await loadTransformers();
+    this.transcriber = await t.pipeline("automatic-speech-recognition", model);
     this._status("whisper ready");
   }
 

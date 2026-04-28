@@ -53,3 +53,9 @@ void voice_quit(void) {
         }
     );
 }
+
+/* PCM ingest is native-only — voice audio in the browser is mixed by the JS
+   side directly into Web Audio. These stubs satisfy audio.c's references. */
+bool voice_pcm_init(void)        { return false; }
+void voice_pcm_read(void)        {}
+int  voice_pcm_queue_depth(void) { return 0; }

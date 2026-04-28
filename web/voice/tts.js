@@ -10,7 +10,18 @@
 // Voices: af_alloy, af_bella, af_nicole, am_adam, am_eric, am_fenrir, am_michael,
 //         bm_lewis, bf_emma, etc. Same catalog as the native voicebox Kokoro v1.0.
 
-import { KokoroTTS } from "https://cdn.jsdelivr.net/npm/kokoro-js@latest/+esm";
+// kokoro-js is lazy-imported inside init() so an unsupported-browser parse
+// error in the bundle doesn't crash voicebox at module-evaluation time. The
+// caller falls back to browser speechSynthesis if init() throws.
+let KokoroTTS = null;
+async function loadKokoro() {
+    if (KokoroTTS) return KokoroTTS;
+    // esm.sh inlines deps so the browser doesn't try to fetch jsdelivr-relative
+    // `/npm/...` paths off the current origin.
+    const m = await import("https://esm.sh/kokoro-js@latest");
+    KokoroTTS = m.KokoroTTS;
+    return KokoroTTS;
+}
 
 const MODEL = "onnx-community/Kokoro-82M-v1.0-ONNX";
 
@@ -36,7 +47,8 @@ class _TTS {
     this.voice = voice;
     this._status(`loading kokoro (${device})…`);
     const t0 = performance.now();
-    this.kokoro = await KokoroTTS.from_pretrained(MODEL, {
+    const Kokoro = await loadKokoro();
+    this.kokoro = await Kokoro.from_pretrained(MODEL, {
       dtype: "q8",
       device,
     });

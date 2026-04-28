@@ -3343,9 +3343,16 @@ static void step_contracts(world_t *w, float dt) {
                     emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_TRACTOR});
                 }
             } else {
-                /* Non-construction: close on generic inventory threshold */
+                /* Non-construction: close once inventory is above the OPEN
+                 * threshold (90%, see Priority 4 below). Previously this was
+                 * 80% — but the open threshold was lifted to 90% in #445
+                 * without lifting close, so any station sitting in [80%, 90%]
+                 * opened a contract and immediately fulfilled it on the same
+                 * tick, producing the "tractor contract fulfilled" spam.
+                 * Hysteresis: open at <90%, close at >=95% so a station has to
+                 * actually receive cargo before the contract resolves. */
                 float current = st->inventory[c];
-                float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.8f : MAX_PRODUCT_STOCK * 0.8f;
+                float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.95f : MAX_PRODUCT_STOCK * 0.95f;
                 if (current >= threshold) {
                     w->contracts[i].active = false;
                     emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_TRACTOR});
