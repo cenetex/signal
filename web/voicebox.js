@@ -1,179 +1,243 @@
 /*
- * voicebox.js -- WASM browser voice integration
- * Provides a JavaScript bridge for Signal's voice system.
- * Handles STT (Whisper), TTS (Kokoro), and LLM elaboration (OpenRouter).
+ * voicebox.js — WASM browser voice integration for Signal.
+ *
+ * Delegates to ES-module helpers in web/voice/:
+ *   auth.js      OAuth-PKCE flow against openrouter.ai
+ *   stt.js       Whisper-tiny.en via transformers.js (AudioWorklet mic capture)
+ *   tts.js       Kokoro v1.0 via kokoro-js (per-persona voice + speed)
+ *   personas.js  static catalog of voice/system-prompt config
+ *
+ * The C side (src/voice_web.c, EM_JS) calls window.voicebox.{init,event,ask,
+ * setState,setMicEnabled,quit}. Those are exposed below.
+ *
+ * Voice never leaves the device — STT + TTS are local WASM. Only the
+ * transcribed text + a [SHIP TELEMETRY] blob round-trip to OpenRouter for
+ * ASK elaborations, paid for by the player's own key.
  */
 
-window.voicebox = (function() {
-  const state = {
-    initialized: false,
+import { getStoredKey, clearStoredKey, startLogin, maybeCompleteLogin }
+    from "./voice/auth.js";
+import { STT } from "./voice/stt.js";
+import { TTS } from "./voice/tts.js";
+import { PERSONAS, DEFAULT_PERSONA } from "./voice/personas.js";
+
+const state = {
+    apiKey:     null,
+    sttReady:   false,
+    ttsReady:   false,
     micEnabled: false,
-    openRouterKey: null,
-    selectedModel: 'openrouter/auto', // Default or user-selected model
-    personas: {},
-    shipState: {},
-  };
+    selectedModel: "openai/gpt-oss-20b:free",
+    shipState:  "",
+};
 
-  async function init() {
-    console.log('[voicebox] Initializing...');
-    state.initialized = true;
-    // Load persisted OpenRouter key if available
-    const savedKey = localStorage.getItem('voicebox_openrouter_key');
-    if (savedKey) {
-      state.openRouterKey = savedKey;
-      console.log('[voicebox] Loaded persisted OpenRouter key');
-    }
-    // Load persisted model selection
-    const savedModel = localStorage.getItem('voicebox_selected_model');
-    if (savedModel) {
-      state.selectedModel = savedModel;
-      console.log(`[voicebox] Loaded persisted model: ${savedModel}`);
-    }
-  }
+function log(...args) { console.log("[voicebox]", ...args); }
 
-  function event(persona, line) {
-    console.log(`[voicebox] event: ${persona} says "${line}"`);
-    // Line will be spoken via TTS (Kokoro)
-    if (state.micEnabled && state.openRouterKey) {
-      // Process elaboration if needed, then play TTS
-      playTTS(persona, line);
-    } else {
-      playTTS(persona, line);
-    }
-  }
+// ---------- TTS pipeline ----------
 
-  function setState(fields) {
-    console.log(`[voicebox] setState: ${fields}`);
-    // Parse semicolon-separated fields: key1=value1;key2=value2
-    const pairs = fields.split(';');
-    pairs.forEach(pair => {
-      const [key, value] = pair.split('=');
-      if (key && value) {
-        state.shipState[key.trim()] = value.trim();
-      }
-    });
-  }
+async function ensureTTS() {
+    if (state.ttsReady) return;
+    log("loading Kokoro v1.0 (~325 MB; cached after first load)…");
+    await TTS.init({ voice: PERSONAS[DEFAULT_PERSONA].voice, device: "wasm" });
+    state.ttsReady = true;
+}
 
-  async function ask(persona, directive) {
-    console.log(`[voicebox] ask: ${persona} elaborates on "${directive}"`);
-    if (!state.openRouterKey) {
-      console.log('[voicebox] No OpenRouter key available; skipping elaboration');
-      return;
+function speakWithPersona(personaName, text) {
+    if (!text || !text.trim()) return;
+    const persona = PERSONAS[personaName] || PERSONAS[DEFAULT_PERSONA];
+    if (!state.ttsReady) {
+        ensureTTS().then(() => TTS.speak(text, persona))
+                   .catch(err => log("TTS load failed:", err.message));
+        return;
     }
-    // Query LLM for elaboration
+    TTS.speak(text, persona);
+}
+
+// ---------- LLM (OpenRouter) ----------
+
+async function askLLM(personaName, directive) {
+    if (!state.apiKey) {
+        log("ASK skipped — not connected to OpenRouter");
+        return;
+    }
+    const persona = PERSONAS[personaName] || PERSONAS[DEFAULT_PERSONA];
+    const messages = [
+        { role: "system", content: persona.system },
+        { role: "user",   content:
+            `[SHIP TELEMETRY] ${state.shipState}\n` +
+            `[STAGE DIRECTION — speak in your own voice. Paraphrase in 1 short ` +
+            `sentence; do not quote this directive verbatim.] ${directive}` },
+    ];
+
+    let r;
     try {
-      const contextStr = Object.entries(state.shipState)
-        .map(([k, v]) => `${k}: ${v}`)
-        .join(', ');
-      const prompt = `As ${persona}, briefly elaborate on: ${directive}. Context: ${contextStr}`;
-      const response = await queryLLM(prompt);
-      if (response) {
-        playTTS(persona, response);
-      }
-    } catch (err) {
-      console.error(`[voicebox] LLM elaboration failed: ${err}`);
+        r = await fetch("https://openrouter.ai/api/v1/chat/completions", {
+            method: "POST",
+            headers: {
+                "Content-Type":  "application/json",
+                "Authorization": `Bearer ${state.apiKey}`,
+                "HTTP-Referer":  location.origin,
+                "X-Title":       "signal-web-voice",
+            },
+            body: JSON.stringify({
+                model: state.selectedModel,
+                stream: true,
+                messages,
+            }),
+        });
+    } catch (err) { log("ASK fetch error:", err.message); return; }
+    if (!r.ok) { log(`ASK HTTP ${r.status}`); return; }
+
+    // Stream SSE; emit each complete sentence to TTS as it arrives.
+    const reader   = r.body.getReader();
+    const dec      = new TextDecoder();
+    let leftover   = "";
+    let sentBuf    = "";
+    let inThink    = false;
+
+    function drainSentences(force = false) {
+        while (true) {
+            // skip <think>…</think> qwen reasoning blocks
+            if (!inThink && sentBuf.includes("<think>") &&
+                            !sentBuf.includes("</think>")) {
+                sentBuf = sentBuf.split("<think>")[0];
+                inThink = true;
+            }
+            if (inThink) {
+                const close = sentBuf.indexOf("</think>");
+                if (close < 0) return;
+                sentBuf = sentBuf.slice(close + "</think>".length);
+                inThink = false;
+            }
+            const m = sentBuf.match(force ? /^.+/s : /^.*?[.!?\n]/s);
+            if (!m) return;
+            const candidate = m[0];
+            const remainder = sentBuf.slice(candidate.length);
+            const letters = (candidate.match(/[a-zA-Z]/g) || []).length;
+            if (!force && letters < 4) return;
+            const sentence = candidate.trim();
+            if (sentence) speakWithPersona(personaName, sentence);
+            sentBuf = remainder;
+            if (!force) continue;
+            return;
+        }
     }
-  }
 
-  async function queryLLM(prompt) {
-    // Call OpenRouter API with user's key
-    try {
-      const response = await fetch('https://openrouter.io/api/v1/chat/completions', {
-        method: 'POST',
-        headers: {
-          'Authorization': `Bearer ${state.openRouterKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          model: state.selectedModel,
-          messages: [{
-            role: 'user',
-            content: prompt,
-          }],
-          max_tokens: 50,
-        }),
-      });
-      if (!response.ok) {
-        const err = await response.text();
-        throw new Error(`OpenRouter request failed: ${err}`);
-      }
-      const data = await response.json();
-      return data.choices?.[0]?.message?.content || null;
-    } catch (err) {
-      console.error(`[voicebox] LLM query error: ${err}`);
-      return null;
+    while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        leftover += dec.decode(value, { stream: true });
+        let idx;
+        while ((idx = leftover.indexOf("\n\n")) >= 0) {
+            const event = leftover.slice(0, idx);
+            leftover    = leftover.slice(idx + 2);
+            for (const line of event.split("\n")) {
+                if (!line.startsWith("data: ")) continue;
+                const payload = line.slice(6);
+                if (payload === "[DONE]") continue;
+                try {
+                    const j = JSON.parse(payload);
+                    const delta = j.choices?.[0]?.delta?.content ?? "";
+                    if (delta) { sentBuf += delta; drainSentences(false); }
+                } catch { /* keepalives */ }
+            }
+        }
     }
-  }
+    drainSentences(true);
+}
 
-  function playTTS(persona, text) {
-    console.log(`[voicebox] playTTS: "${text}"`);
-    // Placeholder: in a real implementation, use Kokoro WASM
-    // For now, use browser's Web Speech API as fallback
-    if ('speechSynthesis' in window) {
-      const utterance = new SpeechSynthesisUtterance(text);
-      utterance.rate = 0.9;
-      speechSynthesis.speak(utterance);
-    }
-  }
+// ---------- STT pipeline (push-to-talk) ----------
 
-  function setMicEnabled(enabled) {
-    console.log(`[voicebox] setMicEnabled: ${enabled}`);
-    state.micEnabled = enabled;
-    // In a real implementation, initialize STT capture here
-  }
+STT.onTranscript = (text) => {
+    if (!text || !state.apiKey) return;
+    log("captain said:", text);
+    // Pilot speech routes through nav7 as a free-form ASK with state.
+    askLLM(DEFAULT_PERSONA,
+        `The captain just said: "${text}". Respond as NAV-7 directly to them.`);
+};
 
-  function quit() {
-    console.log('[voicebox] Quitting...');
-    state.initialized = false;
-  }
+async function ensureSTT() {
+    if (state.sttReady) return;
+    log("loading Whisper tiny.en (~75 MB; cached after first load)…");
+    await STT.init();
+    await STT.startCapture();
+    state.sttReady = true;
+}
 
-  async function getAvailableModels() {
-    // Fetch available models from OpenRouter
-    // Free models are sufficient for the game
-    if (!state.openRouterKey) {
-      console.log('[voicebox] No OpenRouter key; returning default model');
-      return [{ id: 'openrouter/auto', name: 'Auto (Free)' }];
-    }
-    try {
-      const response = await fetch('https://openrouter.io/api/v1/models', {
-        headers: { 'Authorization': `Bearer ${state.openRouterKey}` }
-      });
-      if (!response.ok) throw new Error(`Failed to fetch models: ${response.status}`);
-      const data = await response.json();
-      return (data.data || []).map(m => ({
-        id: m.id,
-        name: `${m.name || m.id}${m.pricing?.prompt ? ' (paid)' : ' (free)'}`
-      }));
-    } catch (err) {
-      console.error(`[voicebox] Failed to fetch available models: ${err}`);
-      return [{ id: 'openrouter/auto', name: 'Auto (Free)' }];
-    }
-  }
+// ---------- public API surface called from voice_web.c ----------
 
-  function setModel(modelId) {
-    if (!modelId) return;
-    state.selectedModel = modelId;
-    localStorage.setItem('voicebox_selected_model', modelId);
-    console.log(`[voicebox] Model set to ${modelId}`);
-  }
+window.voicebox = {
+    /* called from voice_init() at signal startup */
+    init() {
+        log("init");
+        // Try to complete an in-flight OAuth callback first; otherwise restore
+        // a cached key. Mic + TTS load lazily on first use.
+        maybeCompleteLogin().then(newKey => {
+            if (newKey) { state.apiKey = newKey; log("OAuth complete"); return; }
+            const cached = getStoredKey();
+            if (cached) { state.apiKey = cached; log("using cached OpenRouter key"); }
+            else        { log("no OpenRouter key — ASK disabled until /voice/connect is run"); }
+        }).catch(err => log("auth error:", err.message));
 
-  // Public API
-  return {
-    init,
-    event,
-    setState,
-    ask,
-    setMicEnabled,
-    quit,
-    setOpenRouterKey: function(key) {
-      state.openRouterKey = key;
-      localStorage.setItem('voicebox_openrouter_key', key);
-      console.log('[voicebox] OpenRouter key set');
+        // Pre-warm Kokoro in the background once auth is ready, so the first
+        // station hail doesn't wait on a 30-second model download.
+        setTimeout(() => {
+            if (state.apiKey || true) ensureTTS().catch(() => {});
+        }, 500);
     },
-    setModel,
-    getAvailableModels,
-    getState: function() {
-      return { ...state };
+
+    /* deterministic chatter — speak verbatim */
+    event(persona, line) {
+        log(`event ${persona}: ${line}`);
+        speakWithPersona(persona, line);
     },
-  };
-})();
+
+    /* LLM-mediated, state-aware paraphrase */
+    ask(persona, directive) {
+        log(`ask ${persona}: ${directive}`);
+        askLLM(persona, directive).catch(err => log("ASK error:", err.message));
+    },
+
+    /* C side calls this when ship state changes (≤1 Hz) */
+    setState(fields) {
+        state.shipState = fields;
+    },
+
+    /* push-to-talk gate */
+    async setMicEnabled(enabled) {
+        if (enabled === state.micEnabled) return;
+        state.micEnabled = enabled;
+        if (enabled) {
+            try { await ensureSTT(); STT.holdToTalk(true); }
+            catch (err) { log("mic error:", err.message); state.micEnabled = false; }
+        } else if (state.sttReady) {
+            STT.holdToTalk(false);
+        }
+    },
+
+    /* shutdown */
+    quit() {
+        log("quit");
+        if (state.ttsReady) TTS.cancel();
+    },
+
+    // --- player-facing UX (called from a settings UI in the host page) ---
+
+    /* kicks off the OAuth-PKCE redirect to openrouter.ai */
+    connect: startLogin,
+
+    /* clears cached key + signs out */
+    disconnect() {
+        clearStoredKey();
+        state.apiKey = null;
+        log("disconnected");
+    },
+
+    /* model picker */
+    setModel(modelId) { if (modelId) state.selectedModel = modelId; },
+    getModel() { return state.selectedModel; },
+
+    /* introspection */
+    isConnected() { return !!state.apiKey; },
+    isTTSReady()  { return state.ttsReady; },
+    isSTTReady()  { return state.sttReady; },
+};
