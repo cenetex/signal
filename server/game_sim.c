@@ -1075,14 +1075,18 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     /* Fallback: fab stations accept any ingot they consume, even without
      * an active contract. This lets multi-input recipes source their
      * secondary ingredient through the normal station sell path. */
+    bool tried_but_full = false;
+    bool had_sellable_cargo = false;
     for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
         commodity_t buy = (commodity_t)i;
         if (!station_consumes(st, buy)) continue;
         if (sp->ship.cargo[buy] <= 0.01f) continue;
         if (selective && filter != buy) continue;
+        had_sellable_cargo = true;
         {
             float capacity = MAX_PRODUCT_STOCK;
             float space = fmaxf(0.0f, capacity - st->inventory[buy]);
+            if (space <= 0.01f) tried_but_full = true;
             if (space > 0.01f) {
                 float accepted = fminf(sp->ship.cargo[buy], space);
                 float price = station_buy_price(st, buy);
@@ -1131,18 +1135,26 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
                           .by_contract = sold_against_contract ? 1u : 0u }});
         }
     }
-    /* If the player picked a specific commodity to deliver but the
-     * station refused it (no consumer module here, no active contract,
-     * no fab fallback), surface a notice so they know they wasted the
-     * trip. Without this, the cargo just stays in hold and the player
-     * thinks the dock didn't register their press. */
-    if (selective && payout < 0.01f && pre_cargo > 0.01f
-        && sp->ship.cargo[filter] > pre_cargo - 0.01f) {
-        emit_event(w, (sim_event_t){
-            .type = SIM_EVENT_ORDER_REJECTED,
-            .player_id = sp->id,
-            .order_rejected = { .reason = ORDER_REJECT_SELL_NOT_ACCEPTED },
-        });
+    /* Surface a notice when the press did nothing — distinguish "no
+     * consumer here" from "consumer present but glutted". Fires for
+     * both selective and bulk sell so the player isn't left wondering
+     * why the dock ate their input silently. */
+    if (payout < 0.01f) {
+        if (tried_but_full) {
+            emit_event(w, (sim_event_t){
+                .type = SIM_EVENT_ORDER_REJECTED,
+                .player_id = sp->id,
+                .order_rejected = { .reason = ORDER_REJECT_SELL_INVENTORY_FULL },
+            });
+        } else if (selective && pre_cargo > 0.01f
+                   && sp->ship.cargo[filter] > pre_cargo - 0.01f) {
+            emit_event(w, (sim_event_t){
+                .type = SIM_EVENT_ORDER_REJECTED,
+                .player_id = sp->id,
+                .order_rejected = { .reason = ORDER_REJECT_SELL_NOT_ACCEPTED },
+            });
+        }
+        (void)had_sellable_cargo;
     }
     /* Clear the one-shot filter so the next plain SELL_CARGO press
      * resumes the default "deliver all" behavior. */

@@ -755,6 +755,7 @@ enum {
     ORDER_REJECT_SHIPYARD_NO_FUNDS = 8,             /* ledger spend failed */
     ORDER_REJECT_SELL_NOT_ACCEPTED = 9,             /* this station has no consumer for the picked commodity */
     ORDER_REJECT_SELL_STATION_BROKE = 10,           /* station ran out of credit pool mid-sale */
+    ORDER_REJECT_SELL_INVENTORY_FULL = 11,          /* consumer here but its hopper is full */
 };
 
 typedef struct {
