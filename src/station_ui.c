@@ -650,11 +650,16 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             uint8_t blk = TRADE_BLOCK_NONE;
             if (!has_volume) blk = TRADE_BLOCK_HOLD_FULL;
             else if (!has_funds) blk = TRADE_BLOCK_NO_FUNDS;
+            /* Per-grade stock is what the row offers; that's already
+             * `stock` from the manifest count above. The total cap is
+             * shared with other grades of this commodity, so the
+             * passive line below also references the per-commodity
+             * inventory. */
             out[row_count++] = (trade_row_t){
                 .kind = 0, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
                 .stock = stock, .unit_price = price,
                 .actionable = (blk == TRADE_BLOCK_NONE), .is_float_fallback = false,
-                .station_stock = station_inv, .station_capacity = capacity,
+                .station_stock = stock, .station_capacity = capacity,
                 .held = 0, .block_reason = blk,
             };
         }
@@ -679,8 +684,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         if (!station_consumes(st, (commodity_t)c)) continue;
         float price_base = station_buy_price(st, (commodity_t)c);
         if (price_base <= FLOAT_EPSILON) continue;
-        int station_inv = (int)lroundf(st->inventory[c]);
-        bool station_full = station_inv >= capacity;
+        int station_total_inv = (int)lroundf(st->inventory[c]);
+        bool station_full = station_total_inv >= capacity;
         /* Cargo float is authoritative for what's onboard. The manifest
          * can drift past it (wire desync), so cap held counts by cargo
          * before deciding what rows to surface. */
@@ -703,11 +708,17 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                     * mining_payout_multiplier((mining_grade_t)gi));
             uint8_t blk = TRADE_BLOCK_NONE;
             if (station_full) blk = TRADE_BLOCK_STATION_FULL;
+            /* Per-grade station count — manifest entries of (c, gi) at
+             * the station — so the row reflects what's actually on the
+             * shelf at this grade, not the commodity total (which would
+             * read identically across all grade rows of the same item). */
+            int station_grade_count =
+                station_manifest_count_cg(st, (commodity_t)c, (mining_grade_t)gi);
             out[row_count++] = (trade_row_t){
                 .kind = 1, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
                 .stock = held, .unit_price = price,
                 .actionable = (blk == TRADE_BLOCK_NONE), .is_float_fallback = false,
-                .station_stock = station_inv, .station_capacity = capacity,
+                .station_stock = station_grade_count, .station_capacity = capacity,
                 .held = held, .block_reason = blk,
             };
         }
@@ -720,7 +731,7 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                 .kind = 1, .commodity = (commodity_t)c, .grade = MINING_GRADE_COMMON,
                 .stock = cargo_units, .unit_price = price,
                 .actionable = (blk == TRADE_BLOCK_NONE), .is_float_fallback = true,
-                .station_stock = station_inv, .station_capacity = capacity,
+                .station_stock = station_total_inv, .station_capacity = capacity,
                 .held = cargo_units, .block_reason = blk,
             };
         }

@@ -3499,7 +3499,12 @@ static void step_contracts(world_t *w, float dt) {
                  * same ingot duplicates supply and shows up to players
                  * as "asking for what's already on the shelf". */
                 if (station_produces(st, checks[j].ingot)) continue;
-                float deficit = MAX_PRODUCT_STOCK * 0.5f - st->inventory[checks[j].ingot];
+                /* Lifted threshold from 50% to 90%: at 50%, the chain
+                 * stalled in steady-state because Prospect's FE shelf
+                 * filled past cap before Kepler dropped low enough to
+                 * trigger a contract. 90% keeps haulers moving while
+                 * still gating contracts on actual demand. */
+                float deficit = MAX_PRODUCT_STOCK * 0.9f - st->inventory[checks[j].ingot];
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
             }
             if (worst_idx >= 0) {
