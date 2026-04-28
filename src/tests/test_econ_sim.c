@@ -597,6 +597,15 @@ TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
      * the dock-arrival condition (dist < dock_radius * 0.7). */
     hauler->pos = w->stations[shipyard].pos;
     hauler->vel = v2(0.0f, 0.0f);
+    /* Slice 13: physics is ship-authoritative going into the tick — write
+     * the paired ship_t too so the pre-mirror doesn't overwrite the npc
+     * fields with a stale ship snapshot. */
+    {
+        ship_t *hauler_ship = world_npc_ship_for(w, hauler_slot);
+        ASSERT(hauler_ship != NULL);
+        hauler_ship->pos = w->stations[shipyard].pos;
+        hauler_ship->vel = v2(0.0f, 0.0f);
+    }
 
     float kits_before = w->stations[shipyard].inventory[COMMODITY_REPAIR_KIT];
     /* A handful of ticks — first one should land it at the berth and

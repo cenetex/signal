@@ -294,9 +294,15 @@ TEST(test_thrown_rock_kills_npc_emits_event) {
      * nor any belt physics drifts them out of the contact window. The
      * test only cares about kill attribution, not nav stability. */
     vec2 npc_pin = npc->pos;
+    ship_t *npc_ship = world_npc_ship_for(&w, npc_idx);
+    ASSERT(npc_ship != NULL);
+    npc_ship->pos = npc_pin;
+    npc_ship->vel = v2(0.0f, 0.0f);
     for (int t = 0; t < 120 && !kill; t++) {
         npc->vel = v2(0.0f, 0.0f);
         npc->pos = npc_pin;
+        npc_ship->vel = v2(0.0f, 0.0f);
+        npc_ship->pos = npc_pin;
         world_sim_step(&w, 1.0f / 120.0f);
         kill = find_npc_kill_event(&w);
     }

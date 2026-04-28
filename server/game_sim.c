@@ -1648,6 +1648,7 @@ static bool is_already_towed(const ship_t *ship, int asteroid_idx) {
 #define BAND_REST_LEN     80.0f
 #define BAND_SPRING_K      6.0f   /* per unit of stretch */
 #define BAND_DAMPING       2.0f   /* relative-vel along band */
+#define BAND_TANGENT_DRAG  3.0f   /* opposes orbital drift so rocks trail behind, not orbit */
 #define BAND_SHIP_MASS     8.0f   /* ship is heavier than a rock; reaction force scaled by 1/MASS */
 static void apply_band_force(server_player_t *sp, asteroid_t *a, float dt) {
     vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
@@ -1660,13 +1661,22 @@ static void apply_band_force(server_player_t *sp, asteroid_t *a, float dt) {
     float stretch = dist - BAND_REST_LEN;
     float spring_mag = BAND_SPRING_K * stretch;     /* signed: + = pull, - = push */
 
-    /* Damping: oppose component of relative velocity along the band. */
+    /* Damping along the band axis: oppose along-band relative velocity. */
     vec2 rel_vel = v2_sub(sp->ship.vel, a->vel);
     float vel_along = v2_dot(rel_vel, dir);
     float damp_mag = BAND_DAMPING * vel_along;
 
-    float total = spring_mag + damp_mag;
-    vec2 force = v2_scale(dir, total);
+    /* Axial force = spring + axial damping. */
+    vec2 force_axial = v2_scale(dir, spring_mag + damp_mag);
+
+    /* Tangential drag: kill the rock's perpendicular drift relative to
+     * the ship. Without this the band only restores radial distance —
+     * any sideways relative velocity persists and the rock ends up
+     * orbiting rather than trailing behind. */
+    vec2 vel_tangent = v2_sub(rel_vel, v2_scale(dir, vel_along));
+    vec2 force_tangent = v2_scale(vel_tangent, BAND_TANGENT_DRAG);
+
+    vec2 force = v2_add(force_axial, force_tangent);
 
     /* Apply to rock (full force) + reaction on ship (1/MASS). */
     a->vel       = v2_add(a->vel, v2_scale(force, dt));

@@ -905,6 +905,14 @@ TEST(test_tow_drone_delivers_to_planned_outpost) {
     w.npc_ships[drone_idx].state = NPC_STATE_DOCKED;
     w.npc_ships[drone_idx].state_timer = 0.0f;
     w.npc_ships[drone_idx].pos = w.stations[1].pos;
+    /* Slice 13: also seed the paired ship_t so the pre-mirror at the
+     * top of step_npc_ships doesn't drag the drone back to its
+     * spawn position next tick. */
+    {
+        ship_t *drone_ship = world_npc_ship_for(&w, drone_idx);
+        ASSERT(drone_ship != NULL);
+        drone_ship->pos = w.stations[1].pos;
+    }
 
     /* Run up to 30s — wait for drone to grab the scaffold */
     npc_ship_t *drone = &w.npc_ships[drone_idx];

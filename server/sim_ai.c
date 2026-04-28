@@ -184,26 +184,20 @@ ship_t *world_npc_ship_for(world_t *w, int npc_slot) {
     return npc_ship_for(w, npc_slot);
 }
 
-/* End-of-tick paired-pool sync. Each field flows in the direction of
- * its current authority:
+/* End-of-tick paired-pool sync — npc -> ship for physics fields plus
+ * ship -> npc for hull. Slice 13's pre-mirror (mirror_ship_pos_to_npc,
+ * called at the top of each NPC step) is what makes external ship.pos
+ * /vel/angle writes between ticks survive; after that pull, this
+ * end-of-tick mirror just round-trips them back to the ship.
  *
  *   - hull is ship-authoritative since Slice 9/11 (apply_npc_ship_damage,
  *     hauler dock auto-repair both write ship.hull). Push ship -> npc
  *     so the npc-side despawn check reads a fresh value next tick.
- *   - pos / vel / angle / thrusting are still npc-authoritative — the
- *     dispatch writes them on the npc side. Push npc -> ship so the
- *     ship is a faithful end-of-tick snapshot. Required for the
- *     parity invariant (test_npc_ship_physics_in_sync_each_tick) and
- *     for any external reader that takes ship_t as the canonical
- *     view. Slice 13 flips these to ship-authoritative; this function
- *     becomes ship -> npc only at that point.
- *
- * Caveat for the npc-authoritative direction: external code that
- * mutates ship.pos/vel/angle *between* two ticks will have its
- * change overwritten here at the next end-of-tick. That's the bug
- * Slice 13 fixes. Until then, external physics writes don't survive
- * this transitional sync — only damage does (via the ship-authoritative
- * hull path). */
+ *   - pos / vel / angle / thrusting still get integrated on npc fields
+ *     by the existing dispatch; npc -> ship at end of tick keeps the
+ *     ship faithful for external readers and parity tests. Slice 14
+ *     will collapse this into a single direction once npc_ship_t loses
+ *     its physics fields. */
 static void mirror_ship_to_npc(world_t *w, int npc_slot) {
     ship_t *s = npc_ship_for(w, npc_slot);
     if (!s) return;
@@ -212,6 +206,21 @@ static void mirror_ship_to_npc(world_t *w, int npc_slot) {
     s->pos = npc->pos;
     s->vel = npc->vel;
     s->angle = npc->angle;
+}
+
+/* Slice 13: pre-mirror at the top of each NPC step. Pulls any external
+ * ship.pos/vel/angle writes (PvP rock impulse, future autopilot, etc.)
+ * into the npc fields BEFORE physics integrates this tick. Without
+ * this, the post-mirror at end-of-tick would clobber the external
+ * write with the integrated-from-stale-npc value — that was the bug
+ * the parity tripwire (Slice 13a) was set up to surface. */
+static void mirror_ship_pos_to_npc(world_t *w, int npc_slot) {
+    ship_t *s = npc_ship_for(w, npc_slot);
+    if (!s) return;
+    npc_ship_t *npc = &w->npc_ships[npc_slot];
+    npc->pos = s->pos;
+    npc->vel = s->vel;
+    npc->angle = s->angle;
 }
 
 /* Apply damage to an NPC with optional kill attribution. The reverse
@@ -1349,6 +1358,9 @@ void step_npc_ships(world_t *w, float dt) {
             continue;
         }
         npc->thrusting = false;
+        /* Slice 13: pull external ship.pos/vel/angle writes into the
+         * npc fields before physics integration this tick. */
+        mirror_ship_pos_to_npc(w, n);
         mirror_npc_to_character(w, n);
         npc_validate_stations(w, npc);
 
