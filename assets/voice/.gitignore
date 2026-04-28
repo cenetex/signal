@@ -1,0 +1,9 @@
+# Downloaded models and binaries
+voicebox
+voicebox.exe
+kokoro/
+whisper/
+
+# Fetch markers
+kokoro/.fetched
+whisper/.fetched

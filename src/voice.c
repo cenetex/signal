@@ -43,6 +43,7 @@ void voice_init(void) {
         "--persona-add", "kepler", "assets/voice/kepler.persona",
         "--persona-add", "helios", "assets/voice/helios.persona",
         "assets/voice/kokoro",
+        "assets/voice/whisper",
         NULL
     };
 
@@ -91,6 +92,7 @@ void voice_init(void) {
             (char *)"--persona-add", (char *)"kepler", (char *)"assets/voice/kepler.persona",
             (char *)"--persona-add", (char *)"helios", (char *)"assets/voice/helios.persona",
             (char *)"assets/voice/kokoro",
+            (char *)"assets/voice/whisper",
             NULL
         };
 
@@ -125,6 +127,20 @@ void voice_event(const char *persona, const char *line) {
 #else
     /* POSIX: write() returns -1 on error; ignore EAGAIN for busy pipes */
     ssize_t written = write(g_voice.stdin_fd, buf, (size_t)len);
+    (void)written;
+#endif
+}
+
+void voice_mic_enable(bool enabled) {
+    if (g_voice.stdin_fd == -1) return;
+
+    const char *cmd = enabled ? "MIC 1\n" : "MIC 0\n";
+    int len = 6;
+
+#ifdef _WIN32
+    _write(g_voice.stdin_fd, cmd, len);
+#else
+    ssize_t written = write(g_voice.stdin_fd, cmd, (size_t)len);
     (void)written;
 #endif
 }
