@@ -940,13 +940,16 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                         stock += fmaxf(0.0f, w->stations[s].inventory[c] - HAULER_RESERVE);
                     if (stock > best_stock) { best_stock = stock; best_src = s; }
                 }
-                if (best_src >= 0 && best_stock > 0.5f) {
-                    /* Relocate: fly to the surplus station, dock, and load next cycle */
-                    npc->home_station = best_src;
-                    npc->state = NPC_STATE_RETURN_TO_STATION;
-                } else {
-                    npc->state_timer = HAULER_DOCK_TIME;  /* nothing anywhere, wait */
-                }
+                /* Stay docked at home and wait for stock or a contract.
+                 * Prior to this, the fallback permanently mutated
+                 * home_station to wherever had surplus, which caused
+                 * every hauler in the world to converge on the
+                 * highest-stock station (Helios) and the inter-station
+                 * chain to permanently stall. Haulers belong to their
+                 * spawn station; the auto-respawn loop replaces dead
+                 * slots if a station's roster ever drops to zero. */
+                (void)best_src; (void)best_stock;
+                npc->state_timer = HAULER_DOCK_TIME;
             } else {
                 npc->state = NPC_STATE_TRAVEL_TO_DEST;
             }

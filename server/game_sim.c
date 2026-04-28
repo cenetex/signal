@@ -645,6 +645,12 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     sp->ship.stat_credits_earned = 0.0f;
     sp->ship.stat_credits_spent = 0.0f;
     sp->ship.stat_asteroids_fractured = 0;
+    /* Reset upgrades on death -- ship comes back stock. The modules
+     * (laser/hold/tractor) the player accumulated are part of the
+     * progression loop they need to re-earn through trade. */
+    sp->ship.mining_level  = 0;
+    sp->ship.hold_level    = 0;
+    sp->ship.tractor_level = 0;
     /* Respawn at nearest station — teleport to its dock */
     int best = 0;
     float best_d = 1e18f;
