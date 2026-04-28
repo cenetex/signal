@@ -330,6 +330,8 @@ typedef struct {
     float hail_ping_timer;       /* seconds since last ping, 0 = inactive */
     vec2  hail_ping_origin;      /* world-space origin (ship pos at press) */
     float hail_ping_range;       /* ship comm_range at press time */
+    /* Voice state emission throttle (≤1 Hz) */
+    float voice_state_emit_time;  /* last time STATE line was sent to voicebox */
     /* --- Camera --- */
     vec2 camera_pos;         /* smoothed camera position */
     bool camera_initialized;

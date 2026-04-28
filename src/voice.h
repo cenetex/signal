@@ -15,6 +15,19 @@ void voice_init(void);
  * Best-effort; silently drops if pipe is full. */
 void voice_event(const char *persona, const char *line);
 
+/* Send ship state to voicebox for context-aware elaboration.
+ * Sends a STATE line that voicebox can reference in elaborations.
+ * fields: semicolon-separated key=value pairs, e.g. "callsign=alice;sector=1;credits=1500"
+ * Best-effort; silently drops if pipe is full. */
+void voice_state(const char *fields);
+
+/* Request LLM elaboration on a station hail.
+ * Sends an ASK line that voicebox processes with its LLM.
+ * persona: station persona name (e.g. "prospect", "kepler", "helios")
+ * directive: what to elaborate on, e.g. "haul_value_update" or "rare_ore_found"
+ * Best-effort; silently drops if pipe is full. */
+void voice_ask(const char *persona, const char *directive);
+
 /* Shut down the voicebox subprocess gracefully. Called at shutdown. */
 void voice_quit(void);
 

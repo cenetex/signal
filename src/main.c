@@ -582,8 +582,14 @@ static void sim_on_hail_response(const sim_event_t *ev) {
 
 #ifdef SIGNAL_VOICE
     const char *station_persona[] = {"prospect", "kepler", "helios"};
-    if (hs >= 0 && hs < 3 && g.hail_message[0])
+    if (hs >= 0 && hs < 3 && g.hail_message[0]) {
         voice_event(station_persona[hs], g.hail_message);
+        /* Emit elaboration trigger with context */
+        const ship_t *ship = &LOCAL_PLAYER.ship;
+        const char *directive = "status_update";
+        if (ship->towed_count > 0) directive = "cargo_hold_full";
+        voice_ask(station_persona[hs], directive);
+    }
 #endif
 }
 
@@ -703,6 +709,34 @@ static void episode_per_frame(void) {
 
     /* Ep 4, 5, 7, 8 are now event-driven (see process_events) */
 }
+
+/* Emit ship state to voicebox for context-aware elaboration (≤1 Hz throttle) */
+#ifdef SIGNAL_VOICE
+static void voice_emit_state_throttled(float dt) {
+    g.voice_state_emit_time -= dt;
+    if (g.voice_state_emit_time > 0.0f) return;
+
+    g.voice_state_emit_time = 1.0f; /* throttle to 1 Hz */
+
+    /* Build STATE line with ship telemetry */
+    char state_buf[256];
+    const ship_t *ship = &LOCAL_PLAYER.ship;
+    const station_t *nearby = (LOCAL_PLAYER.nearby_station >= 0 && LOCAL_PLAYER.nearby_station < MAX_STATIONS)
+                              ? &g.world.stations[LOCAL_PLAYER.nearby_station] : NULL;
+
+    snprintf(state_buf, sizeof(state_buf),
+             "callsign=%s;sector=%d;hold=%.0f/%.0f;credits=%.0f;towing=%d%s",
+             LOCAL_PLAYER.callsign,
+             (int)(g.world.time / 60.0f) % 9,
+             ship_total_cargo(ship),
+             ship_cargo_capacity(ship),
+             player_current_balance(),
+             ship->towed_count,
+             nearby ? "" : "");
+
+    voice_state(state_buf);
+}
+#endif
 
 static void sim_step(float dt) {
     reset_step_feedback();
@@ -1694,6 +1728,11 @@ static void frame(void) {
      * reads the local manifest; in MP it's a no-op relative to the net
      * path which fills the summary directly (see TODO in src/net.c). */
     if (!g.multiplayer_enabled) refresh_station_manifest_summaries();
+
+#ifdef SIGNAL_VOICE
+    voice_emit_state_throttled(frame_dt);
+#endif
+
     audio_generate_stream(&g.audio);
 
     /* Upload the latest decoded episode frame once per render frame. Decoding
