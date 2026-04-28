@@ -30,6 +30,9 @@ if(NOT GIT_HASH)
     set(GIT_HASH "dev")
 endif()
 
+# --- Fetch voice assets (Kokoro models, voicebox binary) if SIGNAL_VOICE=ON ---
+include(cmake/voice_assets.cmake)
+
 # ------------------------------------------------------------------
 # Canonical source lists — every target picks from these. Adding a
 # new server .c file only needs editing here.

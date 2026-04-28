@@ -1,28 +1,38 @@
 # Voice Assets
 
-This directory contains the voicebox subprocess and persona files for the SIGNAL_VOICE feature.
+This directory contains the voicebox subprocess binary and persona files for the SIGNAL_VOICE feature.
 
-## Files needed:
+## How the build populates these assets
 
-1. `voicebox` - The vendored voicebox binary (platform-specific)
-   - `voicebox` (macOS/Linux)
-   - `voicebox.exe` (Windows)
+When building with `cmake -DSIGNAL_VOICE=ON`:
 
-2. `*.persona` - Persona definition files (copy from cenetex/voicebox/personas/):
-   - `nav7.persona`
-   - `prospect.persona`
-   - `kepler.persona`
-   - `helios.persona`
+1. **Kokoro TTS models** (`kokoro/`) are automatically downloaded from k2-fsa/sherpa-onnx releases
+   - ~333 MB tarball, extracted on first build
+   - Cached to avoid re-downloading on rebuilds
 
-3. `kokoro/` - Kokoro TTS model directory (~700 MB)
-   - `kokoro-multi-lang-v1_0` and related model files
+2. **Persona files** (`.persona` text files) are version-controlled in this repo:
+   - `nav7.persona` — NAV-7 station AI
+   - `prospect.persona` — Prospect Refinery
+   - `kepler.persona` — Kepler Yard
+   - `helios.persona` — Helios Works
 
-These are vendored from the cenetex/voicebox repository. To populate:
-- Copy the voicebox binary for your platform
-- Copy persona files from `~/develop/voicebox/personas/` or `cenetex/voicebox` repo
-- Copy the Kokoro model directory from `~/develop/voicebox/models/kokoro/`
+3. **Voicebox binary** (`voicebox` or `voicebox.exe`) must be obtained separately:
+   - If not already present, the build will warn you and provide instructions
+   - To build from source:
+     ```sh
+     git clone https://github.com/cenetex/voicebox.git
+     cd voicebox && make
+     cp voicebox /path/to/signal/assets/voice/voicebox
+     ```
 
-The Signal client will run voicebox with these flags:
+## Files in this directory
+
+- `.gitignore` entries keep the voicebox binary and Kokoro models out of git (they're downloaded/built per-platform)
+- Only the `.persona` text files are version-controlled
+
+## Runtime
+
+The Signal client will launch voicebox as a subprocess with these arguments:
 ```
 voicebox --ship \
   --persona-add nav7 assets/voice/nav7.persona \
