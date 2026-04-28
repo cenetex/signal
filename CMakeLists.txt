@@ -11,6 +11,9 @@ set(CMAKE_C_EXTENSIONS OFF)
 option(BUILD_TESTS_ONLY  "Only build the test executable"       OFF)
 option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
 
+# Feature flags
+option(SIGNAL_VOICE "Spawn local voicebox subprocess for TTS chatter" OFF)
+
 # --- GIT_HASH baked into binaries for /health and client mismatch checks ---
 # Captured at configure time. To refresh after a commit/pull without
 # nuking the cache, re-run `cmake -S . -B <build_dir> -DGIT_HASH=$(git
@@ -84,6 +87,10 @@ set(SIGNAL_CLIENT_SOURCES
     src/avatar.c
     src/mining_client.c
 )
+
+if(SIGNAL_VOICE)
+    list(APPEND SIGNAL_CLIENT_SOURCES src/voice.c)
+endif()
 
 set(SIGNAL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -203,6 +210,10 @@ target_include_directories(signal SYSTEM PRIVATE
 )
 target_include_directories(signal PRIVATE ${SIGNAL_INCLUDE_DIRS})
 target_compile_definitions(signal PRIVATE GIT_HASH="${GIT_HASH}")
+
+if(SIGNAL_VOICE)
+    target_compile_definitions(signal PRIVATE SIGNAL_VOICE)
+endif()
 
 # mongoose on Linux needs _GNU_SOURCE (same reason as signal_server).
 if(UNIX AND NOT APPLE AND NOT EMSCRIPTEN)

@@ -17,6 +17,10 @@
 #include "avatar.h"
 #include "mining_client.h"
 
+#ifdef SIGNAL_VOICE
+#include "voice.h"
+#endif
+
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
 #endif
@@ -575,6 +579,12 @@ static void sim_on_hail_response(const sim_event_t *ev) {
                g.hail_station, g.hail_message,
                (int)lroundf(ev->hail_response.credits), unit);
     onboarding_mark_hailed();
+
+#ifdef SIGNAL_VOICE
+    const char *station_persona[] = {"prospect", "kepler", "helios"};
+    if (hs >= 0 && hs < 3 && g.hail_message[0])
+        voice_event(station_persona[hs], g.hail_message);
+#endif
 }
 
 static void sim_on_module_activated(const sim_event_t *ev) {
@@ -987,6 +997,10 @@ static void init(void) {
     music_init(&g.music);
     avatar_init();
     hull_fog_init();
+
+#ifdef SIGNAL_VOICE
+    voice_init();
+#endif
 
     g.pass_action.colors[0].load_action = SG_LOADACTION_CLEAR;
     g.pass_action.colors[0].clear_value = (sg_color){ 0.018f, 0.024f, 0.045f, 1.0f };
@@ -1691,6 +1705,9 @@ static void frame(void) {
 }
 
 static void cleanup(void) {
+#ifdef SIGNAL_VOICE
+    voice_quit();
+#endif
     avatar_shutdown();
     episode_shutdown(&g.episode);
     music_shutdown(&g.music);
