@@ -95,15 +95,12 @@ void ledger_force_debit(station_t *st, const uint8_t *token, float amount, ship_
 
 /* Full-price transfer from the station's credit_pool to a ledger
  * entry — used for inter-station contract deliveries (no smelt cut,
- * unlike ledger_credit_supply). Capped by the pool so a broke
- * destination pays what it can and the rest is forfeit. Caller is
- * responsible for the contract bookkeeping (closure, manifest). */
+ * unlike ledger_credit_supply). Pool may go negative; conservation
+ * still holds. Caller is responsible for contract bookkeeping. */
 void ledger_earn_from_pool(station_t *st, const uint8_t *token, float amount) {
     if (amount <= 0.0f) return;
     int idx = ledger_find_or_create(st, token);
     if (idx < 0) return;
-    if (amount > st->credit_pool) amount = st->credit_pool;
-    if (amount < 0.01f) return;
     st->ledger[idx].balance += amount;
     st->ledger[idx].lifetime_supply += amount;
     st->credit_pool -= amount;
@@ -1009,12 +1006,6 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
      * Only the selective-filter path needs this notice; the bulk
      * SELL_CARGO already drops what fits and ignores the rest. */
     float pre_cargo = (selective ? sp->ship.cargo[filter] : 0.0f);
-    /* Cap each accept by what the station can still pay for, so a broke
-     * station can't silently consume cargo it can't afford. Grade bonuses
-     * are excluded from the budget check (they're a topup, not the price)
-     * and are still subject to the final credit_pool cap. */
-    float budget = st->credit_pool;
-    bool out_of_credit = false;
 
     /* Deliver any cargo matching active supply contracts at this station.
      *
@@ -1038,12 +1029,6 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         if (space < 0.01f) continue;
         float deliver = fminf(fminf(sp->ship.cargo[c], ct->quantity_needed), space);
         float price_per = contract_price(ct);
-        if (price_per > 0.0f && deliver * price_per > budget) {
-            deliver = budget / price_per;
-            out_of_credit = true;
-        }
-        if (deliver < 0.01f) { if (price_per > 0.0f) out_of_credit = true; continue; }
-        budget -= deliver * price_per;
         payout += deliver * price_per;
         if (deliver > 0.01f) sold_against_contract = true;
         sp->ship.cargo[c] -= deliver;
@@ -1101,12 +1086,6 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
             if (space > 0.01f) {
                 float accepted = fminf(sp->ship.cargo[buy], space);
                 float price = station_buy_price(st, buy);
-                if (price > 0.0f && accepted * price > budget) {
-                    accepted = budget / price;
-                    out_of_credit = true;
-                }
-                if (accepted < 0.01f) { if (price > 0.0f) out_of_credit = true; continue; }
-                budget -= accepted * price;
                 payout += accepted * price;
                 sp->ship.cargo[buy] -= accepted;
                 st->inventory[buy] += accepted;
@@ -1130,10 +1109,11 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     }
 
     if (payout > 0.01f) {
-        /* Pay from station credit pool — cap at what station can afford */
-        if (payout > st->credit_pool) payout = st->credit_pool;
-        if (payout > 0.01f) {
-            st->credit_pool -= payout;
+        /* Stations carry the debt — pool may go negative; conservation
+         * still holds because the credit minted on the player ledger
+         * is matched by the deficit on the station pool. */
+        st->credit_pool -= payout;
+        {
             ledger_earn(st, sp->session_token, payout);
             sp->ship.stat_credits_earned += payout;
             SIM_LOG("[sim] player %d sold cargo for %.0f cr at %s\n", sp->id, payout, st->name);
@@ -1162,12 +1142,6 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
             .type = SIM_EVENT_ORDER_REJECTED,
             .player_id = sp->id,
             .order_rejected = { .reason = ORDER_REJECT_SELL_NOT_ACCEPTED },
-        });
-    } else if (out_of_credit) {
-        emit_event(w, (sim_event_t){
-            .type = SIM_EVENT_ORDER_REJECTED,
-            .player_id = sp->id,
-            .order_rejected = { .reason = ORDER_REJECT_SELL_STATION_BROKE },
         });
     }
     /* Clear the one-shot filter so the next plain SELL_CARGO press
@@ -2423,19 +2397,24 @@ static int ledger_find_or_create(station_t *st, const uint8_t *token) {
 }
 
 /* Credit a player's ledger when they supply ore to a station.
- * Pays from the station's credit pool — no credits created. */
-void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) {
+ * Pays from the station's credit pool — pool may go negative (the
+ * station carries the debt). Total system credits are still conserved.
+ * Returns the actual amount credited so callers can emit accurate +N
+ * events. */
+float ledger_credit_supply_amount(station_t *st, const uint8_t *token, float ore_value) {
     int idx = ledger_find_or_create(st, token);
-    if (idx < 0) return;
+    if (idx < 0) return 0.0f;
     /* Station keeps 35% cut for smelting — supplier gets 65% */
     float supplier_share = ore_value * 0.65f;
-    /* Cap payout at what the station can afford */
-    if (supplier_share > st->credit_pool)
-        supplier_share = st->credit_pool;
-    if (supplier_share < 0.01f) return;
+    if (supplier_share < 0.01f) return 0.0f;
     st->credit_pool -= supplier_share;
     st->ledger[idx].balance += supplier_share;
     st->ledger[idx].lifetime_supply += ore_value;
+    return supplier_share;
+}
+
+void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) {
+    (void)ledger_credit_supply_amount(st, token, ore_value);
 }
 
 /* Hail: report station-local balance (informational — no withdrawal). */

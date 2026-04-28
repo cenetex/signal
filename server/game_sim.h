@@ -368,6 +368,7 @@ void player_init_ship(server_player_t *sp, world_t *w);
 float signal_strength_at(const world_t *w, vec2 pos);
 void spatial_grid_build(world_t *w);
 void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
+float ledger_credit_supply_amount(station_t *st, const uint8_t *token, float ore_value);
 
 /* Nav API — canonical declarations in sim_nav.h.
  * Repeated here because sim_nav.h includes game_sim.h (circular).
@@ -418,6 +419,10 @@ void emit_event(world_t *w, sim_event_t ev);
 float ledger_balance(const station_t *st, const uint8_t *token);
 void ledger_earn(station_t *st, const uint8_t *token, float amount);
 void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
+/* Like ledger_credit_supply but returns the actual amount credited
+ * (post 35% smelt cut, post credit_pool cap). Use when emitting +N
+ * popup events so they reflect what the player actually got. */
+float ledger_credit_supply_amount(station_t *st, const uint8_t *token, float ore_value);
 /* Returns false if the player can't afford `amount` at this station;
  * otherwise debits the ledger, refunds the credit_pool, and bumps the
  * ship's stat_credits_spent. */
