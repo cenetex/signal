@@ -4331,6 +4331,48 @@ void world_sim_step(world_t *w, float dt) {
             }
         }
     }
+
+    /* Player-NPC collision: same shape as player-player. Players push
+     * NPCs around at full force (mass-symmetric), and ramming a hauler
+     * costs both sides hull. NPC physics writes land on npc_ship_t for
+     * now; the end-of-tick mirror in step_npc_ships pushes them onto
+     * the paired ship_t. */
+    for (int i = 0; i < MAX_PLAYERS; i++) {
+        server_player_t *sp = &w->players[i];
+        if (!sp->connected || sp->docked) continue;
+        float pr = ship_hull_def(&sp->ship)->ship_radius;
+        for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+            npc_ship_t *npc = &w->npc_ships[n];
+            if (!npc->active) continue;
+            if (npc->state == NPC_STATE_DOCKED) continue;
+            const hull_def_t *npcdef = npc_hull_def(npc);
+            float nr = npcdef->ship_radius;
+            float minimum = pr + nr;
+            vec2 delta = v2_sub(sp->ship.pos, npc->pos);
+            float d_sq = v2_len_sq(delta);
+            if (d_sq >= minimum * minimum) continue;
+            float d = sqrtf(d_sq);
+            vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
+            float overlap = minimum - d;
+            sp->ship.pos = v2_add(sp->ship.pos, v2_scale(normal, overlap * 0.5f));
+            npc->pos     = v2_sub(npc->pos,    v2_scale(normal, overlap * 0.5f));
+            float rel_vel = v2_dot(v2_sub(sp->ship.vel, npc->vel), normal);
+            if (rel_vel < 0.0f) {
+                float impact = -rel_vel;
+                vec2 impulse = v2_scale(normal, rel_vel * 0.6f);
+                sp->ship.vel = v2_sub(sp->ship.vel, impulse);
+                npc->vel     = v2_add(npc->vel,    impulse);
+                float dmg = collision_damage_for(impact, 0.7f);
+                if (dmg > 0.0f) {
+                    apply_ship_damage_attributed(w, sp, dmg,
+                        npc->session_token, DEATH_CAUSE_RAM,
+                        npc->pos);
+                    apply_npc_ship_damage_attributed(w, n, dmg,
+                        sp->session_token, DEATH_CAUSE_RAM);
+                }
+            }
+        }
+    }
 }
 
 /* ================================================================== */
