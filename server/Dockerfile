@@ -16,6 +16,7 @@ WORKDIR /app
 # for the client, so we skip it (BUILD_SERVER_ONLY short-circuits the
 # client block before it's referenced).
 COPY CMakeLists.txt ./
+COPY cmake/ ./cmake/
 COPY shared/ ./shared/
 COPY src/ ./src/
 COPY server/ ./server/
