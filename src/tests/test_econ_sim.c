@@ -23,6 +23,53 @@ TEST(test_econ_sim_npc_only_5min) {
                 w->stations[2].inventory[COMMODITY_CUPRITE_INGOT],
                 w->stations[2].inventory[COMMODITY_CRYSTAL_INGOT],
                 w->stations[1].inventory[COMMODITY_FRAME]);
+            /* Diagnostic: contracts open per station, by commodity */
+            int active = 0, claimed = 0;
+            for (int k = 0; k < MAX_CONTRACTS; k++) {
+                if (!w->contracts[k].active) continue;
+                active++;
+                if (w->contracts[k].claimed_by >= 0) claimed++;
+            }
+            int npc_idle = 0, npc_busy = 0, npc_docked = 0;
+            for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+                if (!w->npc_ships[n].active) continue;
+                npc_state_t s = w->npc_ships[n].state;
+                if (s == NPC_STATE_IDLE) npc_idle++;
+                else if (s == NPC_STATE_DOCKED) npc_docked++;
+                else npc_busy++;
+            }
+            printf("        contracts: active=%d claimed=%d  npc: idle=%d docked=%d travelling=%d\n",
+                active, claimed, npc_idle, npc_docked, npc_busy);
+            /* Per-station ore inventory (raw input to smelters) */
+            printf("        ore: prospect[FE=%.1f]  helios[CU=%.1f CR=%.1f]\n",
+                w->stations[0].inventory[COMMODITY_FERRITE_ORE],
+                w->stations[2].inventory[COMMODITY_CUPRITE_ORE],
+                w->stations[2].inventory[COMMODITY_CRYSTAL_ORE]);
+            /* Per-NPC: home, role, state, current cargo */
+            for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+                if (!w->npc_ships[n].active) continue;
+                float total_cargo = 0.0f;
+                for (int c = 0; c < COMMODITY_COUNT; c++) total_cargo += w->npc_ships[n].cargo[c];
+                const char *role = w->npc_ships[n].role == NPC_ROLE_MINER ? "miner"
+                                  : w->npc_ships[n].role == NPC_ROLE_HAULER ? "hauler"
+                                  : w->npc_ships[n].role == NPC_ROLE_TOW ? "tow" : "?";
+                printf("        npc[%d] %s home=%d state=%d cargo=%.1f\n",
+                    n, role, w->npc_ships[n].home_station,
+                    (int)w->npc_ships[n].state, total_cargo);
+            }
+            /* Helios CU sourcing: count CU asteroids in signal coverage
+             * around station 2 within mining range. If zero, the issue
+             * is belt seeding, not pathfinding. */
+            int cu_in_range = 0;
+            const station_t *helios = &w->stations[2];
+            for (int a = 0; a < MAX_ASTEROIDS; a++) {
+                if (!w->asteroids[a].active) continue;
+                if (w->asteroids[a].commodity != COMMODITY_CUPRITE_ORE) continue;
+                if (signal_strength_at(w, w->asteroids[a].pos) <= 0.0f) continue;
+                float d = v2_len(v2_sub(w->asteroids[a].pos, helios->pos));
+                if (d < 3000.0f) cu_in_range++;
+            }
+            printf("        helios CU asteroids in signal+3kU: %d\n", cu_in_range);
         }
     }
     printf("    t=300s: pools [%.0f, %.0f, %.0f]\n",

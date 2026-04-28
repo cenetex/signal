@@ -23,7 +23,12 @@ static const float STATION_REPAIR_COST_PER_HULL = 5.0f;
 /* Refined-product stockpile cap: needs to be wide enough that a full hold
  * of ingots can be converted without stalling at the cap. */
 static const float MAX_PRODUCT_STOCK = 120.0f;
-static const float HAULER_RESERVE = 24.0f;  /* keep 20% stock for player purchases */
+/* Reserve a small floor for player purchases without choking the
+ * inter-station chain. Was 24 (20% of MAX_PRODUCT_STOCK) — too high:
+ * in NPC-only steady-state, stations smelt ~24 ingots over 5 minutes,
+ * which never crosses the 24-floor, so no hauler ever picks up cargo.
+ * 6 ingots is enough for one player to top off a hold; surplus flows. */
+static const float HAULER_RESERVE = 6.0f;
 
 /* --- Shipyard repair-kit fab --- */
 /* A station with MODULE_SHIPYARD consumes 1 frame + 1 laser + 1 tractor

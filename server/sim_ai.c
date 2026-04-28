@@ -1426,6 +1426,26 @@ void step_npc_ships(world_t *w, float dt) {
                 if (target >= 0) npc->target_asteroid = target;
                 else { npc->target_asteroid = -1; npc->state = NPC_STATE_RETURN_TO_STATION; break; }
             }
+            /* Pre-empt for FRACTURE distress: a stuck hauler may have
+             * posted a distress contract since we left dock. Switch
+             * only if the distress target is SIGNIFICANTLY closer than
+             * our current target (≥50% nearer) — keeps the response
+             * fast for genuine shortcut detours but prevents thrashing
+             * mid-approach when the current target is close enough that
+             * any FRACTURE rock looks "closer" each tick. */
+            if (npc->towed_fragment < 0 && npc_target_valid(w, npc)) {
+                vec2 cur_pos = w->asteroids[npc->target_asteroid].pos;
+                float cur_d2 = v2_dist_sq(npc->pos, cur_pos);
+                for (int k = 0; k < MAX_CONTRACTS; k++) {
+                    if (!w->contracts[k].active) continue;
+                    if (w->contracts[k].action != CONTRACT_FRACTURE) continue;
+                    int idx = w->contracts[k].target_index;
+                    if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
+                    if (idx == npc->target_asteroid) break;
+                    float new_d2 = v2_dist_sq(npc->pos, w->asteroids[idx].pos);
+                    if (new_d2 < cur_d2 * 0.25f) { npc->target_asteroid = idx; break; }
+                }
+            }
             asteroid_t *a = &w->asteroids[npc->target_asteroid];
             npc_steer_with_path(w, n, npc, a->pos, hull->accel, hull->turn_speed, dt);
             npc_apply_physics(npc, hull->drag, dt, w);
