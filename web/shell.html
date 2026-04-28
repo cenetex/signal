@@ -3,6 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta http-equiv="Permissions-Policy" content="cross-origin-isolated=(self)">
     <title>Signal</title>
     <style>
       :root {
@@ -90,6 +91,7 @@
         <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
       </div>
     </div>
+    <script src="voicebox.js"></script>
     <script>
       var Module = {
         canvas: document.getElementById("canvas"),

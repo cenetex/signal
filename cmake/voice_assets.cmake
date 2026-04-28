@@ -1,7 +1,13 @@
 # Fetch and extract voice assets (voicebox binary and Kokoro models)
 # Only runs if SIGNAL_VOICE is ON
+# For Emscripten builds, assets are loaded from JavaScript; native fetching is skipped.
 
 if(NOT SIGNAL_VOICE)
+    return()
+endif()
+
+if(EMSCRIPTEN)
+    message(STATUS "[SIGNAL_VOICE] Emscripten build: assets will be loaded from JavaScript")
     return()
 endif()
 

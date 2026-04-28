@@ -69,6 +69,7 @@ jobs:
             --suppress='*:src/pl_mpeg.h' \
             --suppress='*:src/minimp3.h' \
             --suppress='*:src/stb_image.h' \
+            --suppress='unknownMacro:src/voice_web.c' \
             -I shared/ -I src/ -I server/ \
             src/*.c server/game_sim.c server/sim_nav.c server/sim_autopilot.c server/sim_ai.c server/sim_save.c 2>&1
 

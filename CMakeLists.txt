@@ -92,7 +92,11 @@ set(SIGNAL_CLIENT_SOURCES
 )
 
 if(SIGNAL_VOICE)
-    list(APPEND SIGNAL_CLIENT_SOURCES src/voice.c)
+    if(EMSCRIPTEN)
+        list(APPEND SIGNAL_CLIENT_SOURCES src/voice_web.c)
+    else()
+        list(APPEND SIGNAL_CLIENT_SOURCES src/voice.c)
+    endif()
 endif()
 
 set(SIGNAL_INCLUDE_DIRS
@@ -281,13 +285,16 @@ if(EMSCRIPTEN)
         "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
         "SHELL:-lwebsocket.js"
     )
-    # Copy play.html into the build-web output dir so it's reachable
-    # from the SimpleHTTP server (and so docker bind-mounts of build-web
-    # serve it without needing the image's COPY layer).
+    # Copy play.html and voicebox.js into the build-web output dir so they're
+    # reachable from the SimpleHTTP server (and so docker bind-mounts of build-web
+    # serve them without needing the image's COPY layer).
     add_custom_command(TARGET signal POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_CURRENT_SOURCE_DIR}/web/play.html
             ${CMAKE_CURRENT_BINARY_DIR}/play.html
+        COMMAND ${CMAKE_COMMAND} -E copy_if_different
+            ${CMAKE_CURRENT_SOURCE_DIR}/web/voicebox.js
+            ${CMAKE_CURRENT_BINARY_DIR}/voicebox.js
     )
 elseif(APPLE)
     target_link_libraries(signal PRIVATE
