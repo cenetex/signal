@@ -1118,7 +1118,40 @@ void draw_ship(void) {
         sgl_end();
     }
 
-    sgl_c4f(0.86f, 0.93f, 1.0f, 1.0f);
+    /* Ship body tint: white when empty, blends toward the manifest's
+     * grade-weighted color as cargo fills. Same palette the dock cargo
+     * bar uses, so the ship's hull reads as a continuation of the
+     * inventory bar. */
+    float tr = 0.86f, tg = 0.93f, tb = 1.0f;
+    {
+        const ship_t *s = &LOCAL_PLAYER.ship;
+        float cap   = ship_cargo_capacity(s);
+        float total = ship_total_cargo(s);
+        if (cap > 0.0f && total > 0.001f && s->manifest.units) {
+            float fill = total / cap;
+            if (fill > 1.0f) fill = 1.0f;
+            float wr = 0.0f, wg = 0.0f, wb = 0.0f;
+            int n = 0;
+            for (uint16_t i = 0; i < s->manifest.count; i++) {
+                const cargo_unit_t *u = &s->manifest.units[i];
+                uint8_t cr, cg, cb;
+                mining_grade_rgb((mining_grade_t)u->grade, &cr, &cg, &cb);
+                wr += cr / 255.0f;
+                wg += cg / 255.0f;
+                wb += cb / 255.0f;
+                n++;
+            }
+            if (n > 0) {
+                wr /= (float)n;
+                wg /= (float)n;
+                wb /= (float)n;
+                tr = lerpf(tr, wr, fill);
+                tg = lerpf(tg, wg, fill);
+                tb = lerpf(tb, wb, fill);
+            }
+        }
+    }
+    sgl_c4f(tr, tg, tb, 1.0f);
     sgl_begin_triangles();
     sgl_v2f(22.0f, 0.0f);
     sgl_v2f(-14.0f, 12.0f);
