@@ -472,11 +472,13 @@ static void json_escape_append(char *buf, int *pos, int bufsz, const char *s) {
     *pos = p;
 }
 
-/* Safe snprintf append: clamp pos so it never exceeds bufsz */
+/* Safe snprintf append: clamp pos to bufsz before snprintf to avoid undefined behavior */
 #define BUF_APPEND(pos, buf, bufsz, ...) do { \
-    int _n = snprintf((buf) + (pos), (size_t)((bufsz) - (pos)), __VA_ARGS__); \
-    if (_n > 0) (pos) += _n; \
-    if ((pos) > (bufsz)) (pos) = (bufsz); \
+    if ((pos) < (bufsz)) { \
+        int _n = snprintf((buf) + (pos), (size_t)((bufsz) - (pos)), __VA_ARGS__); \
+        if (_n > 0) (pos) += _n; \
+        if ((pos) > (bufsz)) (pos) = (bufsz); \
+    } \
 } while (0)
 
 /* Cap visible_asteroids in the agent-facing JSON. Populated stations

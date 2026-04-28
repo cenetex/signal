@@ -166,7 +166,7 @@ typedef struct {
         vec2 pos;
         float age;
         float life;
-        char text[8];
+        char text[16];   /* "-2147483648" worst case + null + slack */
     } damage_fx[8];
     /* Hit vignette: red border pulse on the local player's HUD when they
      * take damage. Set on SIM_EVENT_DAMAGE, decays each frame. */

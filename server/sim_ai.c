@@ -1483,9 +1483,9 @@ void step_npc_ships(world_t *w, float dt) {
                      * keyed off last_towed_token) credits the NPC's
                      * ledger at the home station. Same hook the player
                      * pickup uses — symmetrical economic identity. */
-                    asteroid_t *a = &w->asteroids[best_frag];
-                    memcpy(a->last_towed_token, npc->session_token,
-                           sizeof(a->last_towed_token));
+                    asteroid_t *frag = &w->asteroids[best_frag];
+                    memcpy(frag->last_towed_token, npc->session_token,
+                           sizeof(frag->last_towed_token));
                 }
             }
             break;

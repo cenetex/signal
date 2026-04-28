@@ -681,10 +681,23 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         if (price_base <= FLOAT_EPSILON) continue;
         int station_inv = (int)lroundf(st->inventory[c]);
         bool station_full = station_inv >= capacity;
+        /* Cargo float is authoritative for what's onboard. The manifest
+         * can drift past it (wire desync), so cap held counts by cargo
+         * before deciding what rows to surface. */
+        int cargo_units = (int)floorf(ship_cargo_amount(ship, (commodity_t)c) + 0.0001f);
+        if (cargo_units <= 0) continue;
+        int manifest_total_for_c = 0;
+        for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
+            manifest_total_for_c += ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi);
         bool emitted_any = false;
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
-            int held = ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi);
+            int manifest_g = ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi);
+            if (manifest_g <= 0) continue;
+            int held = (manifest_total_for_c > 0)
+                ? (int)((float)manifest_g * (float)cargo_units / (float)manifest_total_for_c + 0.5f)
+                : cargo_units;
             if (held <= 0) continue;
+            if (held > cargo_units) held = cargo_units;
             emitted_any = true;
             int price = (int)lroundf(price_base
                     * mining_payout_multiplier((mining_grade_t)gi));
@@ -698,10 +711,19 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                 .held = held, .block_reason = blk,
             };
         }
-        /* Player has none of this commodity. Skip in both directions --
-         * BUY rows already show what's on offer, SELL rows are only
-         * useful when the player carries cargo to deliver. */
-        (void)emitted_any;
+        /* Cargo says we have units but manifest empty -- fall back to a
+         * common-grade row so the player can still sell. */
+        if (!emitted_any && row_count < max) {
+            int price = (int)lroundf(price_base);
+            uint8_t blk = station_full ? TRADE_BLOCK_STATION_FULL : TRADE_BLOCK_NONE;
+            out[row_count++] = (trade_row_t){
+                .kind = 1, .commodity = (commodity_t)c, .grade = MINING_GRADE_COMMON,
+                .stock = cargo_units, .unit_price = price,
+                .actionable = (blk == TRADE_BLOCK_NONE), .is_float_fallback = true,
+                .station_stock = station_inv, .station_capacity = capacity,
+                .held = cargo_units, .block_reason = blk,
+            };
+        }
     }
     return row_count;
 }
@@ -997,19 +1019,18 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                  (int)lroundf(ship_total_cargo(ship)),
                  (int)lroundf(ship_cargo_capacity(ship)));
         draw_row_lr(cx, my, inner_right, COL_TEXT, "cargo", COL_TEXT, right_buf);
-        my += row_h;
-
-        /* Grade-tinted cargo fill bar — segments are sized by manifest
-         * volume, colored per grade. Common-grade swallows any cargo[]
-         * float not represented by a manifest unit (e.g. fractional
-         * leftovers). */
+        /* Grade-tinted cargo fill bar -- sits inside the cargo row, just
+         * below the text baseline so it visually belongs to that row.
+         * Segments are sized by manifest unit volume and colored per
+         * grade; common-grade swallows any cargo[] float not represented
+         * by a manifest unit (e.g. fractional leftovers). */
         {
             float cap_v = ship_cargo_capacity(ship);
             if (cap_v > 0.0f) {
                 float bar_x  = cx + 8.0f;
                 float bar_w  = inner_right - bar_x - 8.0f;
-                float bar_h  = 4.0f;
-                float bar_y  = my - 4.0f;
+                float bar_h  = 3.0f;
+                float bar_y  = my + row_h - bar_h - 2.0f;
 
                 /* Background */
                 sgl_begin_quads();
@@ -1053,9 +1074,9 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                     x += seg_w;
                 }
                 sgl_end();
-                my += bar_h + 4.0f;
             }
         }
+        my += row_h;
 
         snprintf(right_buf, sizeof(right_buf), "LSR %d  HLD %d  TRC %d",
                  ship->mining_level, ship->hold_level, ship->tractor_level);
