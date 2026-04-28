@@ -1646,9 +1646,9 @@ static bool is_already_towed(const ship_t *ship, int asteroid_idx) {
  *   - 200 u stretch ≈ near-elastic-limit, hauling feels heavy
  *   - tractor_range * 1.5 ≈ snap-out (band breaks). */
 #define BAND_REST_LEN     80.0f
-#define BAND_SPRING_K      6.0f   /* per unit of stretch */
-#define BAND_DAMPING       2.0f   /* relative-vel along band */
-#define BAND_TANGENT_DRAG  3.0f   /* opposes orbital drift so rocks trail behind, not orbit */
+#define BAND_SPRING_K      4.0f   /* per unit of stretch (looser = more elastic lag) */
+#define BAND_DAMPING       0.6f   /* light along-band damping — let it bounce */
+#define BAND_TANGENT_DRAG  0.4f   /* just enough to bleed orbit, not lock parallel motion */
 #define BAND_SHIP_MASS     8.0f   /* ship is heavier than a rock; reaction force scaled by 1/MASS */
 static void apply_band_force(server_player_t *sp, asteroid_t *a, float dt) {
     vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
