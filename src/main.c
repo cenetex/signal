@@ -621,20 +621,20 @@ static void sim_on_station_connected(const sim_event_t *ev) {
 static const char *order_reject_message(uint8_t reason) {
     switch (reason) {
     case ORDER_REJECT_SCAFFOLD_PLACEMENT_NO_SIGNAL:
-        return "No signal here — tow the scaffold back into station coverage.";
+        return "No signal here -- tow the scaffold back into station coverage.";
     case ORDER_REJECT_SCAFFOLD_PLACEMENT_TOO_CLOSE:
-        return "Too close to an existing station — drop further out toward the fringe.";
+        return "Too close to an existing station -- drop further out toward the fringe.";
     case ORDER_REJECT_SCAFFOLD_PLACEMENT_NEEDS_RELAY:
         return "Only signal-relay scaffolds can found new outposts. Tow this one to an existing station.";
     case ORDER_REJECT_SCAFFOLD_PLACEMENT_NO_SLOT:
-        return "No outpost slots available — every station catalog entry is taken.";
+        return "No outpost slots available -- every station catalog entry is taken.";
     case ORDER_REJECT_SHIPYARD_NOT_SOLD:    return "This shipyard doesn't sell that scaffold.";
-    case ORDER_REJECT_SHIPYARD_QUEUE_FULL:  return "Shipyard queue full — wait for the next batch to ship.";
-    case ORDER_REJECT_SHIPYARD_LOCKED:      return "Tech tree locked — order the prerequisite module first.";
+    case ORDER_REJECT_SHIPYARD_QUEUE_FULL:  return "Shipyard queue full -- wait for the next batch to ship.";
+    case ORDER_REJECT_SHIPYARD_LOCKED:      return "Tech tree locked -- order the prerequisite module first.";
     case ORDER_REJECT_SHIPYARD_NO_FUNDS:    return "Not enough credits at this station for the order fee.";
-    case ORDER_REJECT_SELL_NOT_ACCEPTED:    return "This station has no consumer for that commodity — try another dock.";
-    case ORDER_REJECT_SELL_STATION_BROKE:   return "This station ran out of credit — sale partial or refused. Try again later.";
-    case ORDER_REJECT_SELL_INVENTORY_FULL:  return "This station's hopper is full — wait for it to consume stock, or try another dock.";
+    case ORDER_REJECT_SELL_NOT_ACCEPTED:    return "This station has no consumer for that commodity -- try another dock.";
+    case ORDER_REJECT_SELL_STATION_BROKE:   return "This station ran out of credit -- sale partial or refused. Try again later.";
+    case ORDER_REJECT_SELL_INVENTORY_FULL:  return "This station's hopper is full -- wait for it to consume stock, or try another dock.";
     default:                                return "Order rejected.";
     }
 }
@@ -900,7 +900,7 @@ static void sim_step(float dt) {
     if (g.was_autopilot && !LOCAL_PLAYER.autopilot_mode) {
         float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
         if (sig < SIGNAL_BAND_OPERATIONAL)
-            set_notice("Autopilot disengaged — weak signal.");
+            set_notice("Autopilot disengaged -- weak signal.");
     }
     g.was_autopilot = LOCAL_PLAYER.autopilot_mode;
 

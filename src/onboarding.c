@@ -89,7 +89,7 @@ bool onboarding_hint(char *label, size_t label_size,
     if (g.onboarding.moved && !g.onboarding.boosted) {
         float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
         if (sig > 0.0f && sig < SIGNAL_BAND_OPERATIONAL) {
-            snprintf(message, message_size, "Signal degraded — hold SHIFT to boost through");
+            snprintf(message, message_size, "Signal degraded -- hold SHIFT to boost through");
             return true;
         }
     }

@@ -948,9 +948,12 @@ static inline int serialize_events(uint8_t *buf, const sim_events_t *events) {
             write_u32_le(&p[8], (uint32_t)ev->sell.bonus_cr);
             p[12] = ev->sell.by_contract;
             break;
+        case SIM_EVENT_ORDER_REJECTED:
+            p[2] = ev->order_rejected.reason;
+            break;
         default:
-            /* MINING_TICK, DOCK, LAUNCH, REPAIR, SIGNAL_LOST,
-             * ORDER_REJECTED: type + player_id is sufficient */
+            /* MINING_TICK, DOCK, LAUNCH, REPAIR, SIGNAL_LOST:
+             * type + player_id is sufficient */
             break;
         }
         count++;

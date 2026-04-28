@@ -368,7 +368,7 @@ void apply_remote_hail_response(uint8_t station, float credits, int contract_ind
     /* credits == -1 sentinel: ping reached this station's chirp range
      * (2× comm_range) but not its comms range. Show just a bearing. */
     if (credits < 0.0f) {
-        set_notice("Too far — nearest: %s", g.world.stations[station].name);
+        set_notice("Too far -- nearest: %s", g.world.stations[station].name);
         return;
     }
     /* Use the same hail overlay as singleplayer — station name + contextual

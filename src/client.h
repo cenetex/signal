@@ -88,7 +88,24 @@ typedef struct {
     int            unit_price; /* per-unit, already grade-multiplied */
     bool           actionable; /* player can do this transaction right now */
     bool           is_float_fallback; /* legacy float row (no manifest unit) */
+    int            station_stock;   /* this commodity's inventory at station */
+    int            station_capacity;/* MAX_PRODUCT_STOCK */
+    int            held;            /* player's cargo of this (commodity,grade) */
+    uint8_t        block_reason;    /* see TRADE_BLOCK_* below; 0 if actionable */
 } trade_row_t;
+
+/* Why an otherwise-valid row is non-actionable. Drives the status text
+ * shown in place of the +/- price when actionable=false. */
+enum {
+    TRADE_BLOCK_NONE          = 0,
+    TRADE_BLOCK_STATION_FULL  = 1, /* sell: station's hopper at capacity */
+    TRADE_BLOCK_STATION_EMPTY = 2, /* buy:  station has none on the shelf */
+    TRADE_BLOCK_NO_BUYER      = 3, /* sell: this station doesn't consume it */
+    TRADE_BLOCK_NO_SELLER     = 4, /* buy:  this station doesn't produce it */
+    TRADE_BLOCK_HOLD_FULL     = 5, /* buy:  ship cargo would overflow */
+    TRADE_BLOCK_NO_FUNDS      = 6, /* buy:  ledger short for unit price */
+    TRADE_BLOCK_NO_CARGO      = 7, /* sell: player carries none of this */
+};
 
 /* Pagination constants — input.c walks `g.trade_page * TRADE_ROWS_PER_PAGE`
  * to find the first row on the current page; the renderer wraps when

@@ -468,11 +468,25 @@ static void sample_trade_picker(input_intent_t *intent) {
     const ship_t *ship = &LOCAL_PLAYER.ship;
     trade_row_t rows[TRADE_MAX_ROWS];
     int row_count = build_trade_rows(st, ship, rows, TRADE_MAX_ROWS);
-    int target = (int)g.trade_page * TRADE_ROWS_PER_PAGE + digit_pick;
+    int page_first = (int)g.trade_page * TRADE_ROWS_PER_PAGE;
+    int page_last  = page_first + TRADE_ROWS_PER_PAGE;
+    if (page_last > row_count) page_last = row_count;
 
-    if (target >= row_count) {
-        /* Past the end — wrap the page pointer so [F] feels natural. */
-        g.trade_page = 0;
+    /* Hotkey assignment matches the renderer: walk the visible page in
+     * order and only count actionable rows. [1] is the first actionable
+     * row on the page, [2] the second, etc. Passive rows stay un-keyed. */
+    int target = -1;
+    int actionable_seen = 0;
+    for (int ri = page_first; ri < page_last; ri++) {
+        if (!rows[ri].actionable) continue;
+        if (actionable_seen == digit_pick) { target = ri; break; }
+        actionable_seen++;
+    }
+
+    if (target < 0) {
+        /* Either past the end or the page has fewer than digit_pick+1
+         * actionable rows. Wrap so [F] still feels natural. */
+        if (page_first >= row_count) g.trade_page = 0;
         return;
     }
     const trade_row_t *row = &rows[target];

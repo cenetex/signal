@@ -582,6 +582,9 @@ static void handle_message(const uint8_t* data, int len) {
                     ev->sell.bonus_cr    = (int)read_u32_le(&p[8]);
                     ev->sell.by_contract = p[12];
                     break;
+                case SIM_EVENT_ORDER_REJECTED:
+                    ev->order_rejected.reason = p[2];
+                    break;
                 default: break;
                 }
             }
