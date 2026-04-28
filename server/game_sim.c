@@ -1009,6 +1009,12 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
      * Only the selective-filter path needs this notice; the bulk
      * SELL_CARGO already drops what fits and ignores the rest. */
     float pre_cargo = (selective ? sp->ship.cargo[filter] : 0.0f);
+    /* Cap each accept by what the station can still pay for, so a broke
+     * station can't silently consume cargo it can't afford. Grade bonuses
+     * are excluded from the budget check (they're a topup, not the price)
+     * and are still subject to the final credit_pool cap. */
+    float budget = st->credit_pool;
+    bool out_of_credit = false;
 
     /* Deliver any cargo matching active supply contracts at this station.
      *
@@ -1032,6 +1038,12 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         if (space < 0.01f) continue;
         float deliver = fminf(fminf(sp->ship.cargo[c], ct->quantity_needed), space);
         float price_per = contract_price(ct);
+        if (price_per > 0.0f && deliver * price_per > budget) {
+            deliver = budget / price_per;
+            out_of_credit = true;
+        }
+        if (deliver < 0.01f) { if (price_per > 0.0f) out_of_credit = true; continue; }
+        budget -= deliver * price_per;
         payout += deliver * price_per;
         if (deliver > 0.01f) sold_against_contract = true;
         sp->ship.cargo[c] -= deliver;
@@ -1089,6 +1101,12 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
             if (space > 0.01f) {
                 float accepted = fminf(sp->ship.cargo[buy], space);
                 float price = station_buy_price(st, buy);
+                if (price > 0.0f && accepted * price > budget) {
+                    accepted = budget / price;
+                    out_of_credit = true;
+                }
+                if (accepted < 0.01f) { if (price > 0.0f) out_of_credit = true; continue; }
+                budget -= accepted * price;
                 payout += accepted * price;
                 sp->ship.cargo[buy] -= accepted;
                 st->inventory[buy] += accepted;
@@ -1144,6 +1162,12 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
             .type = SIM_EVENT_ORDER_REJECTED,
             .player_id = sp->id,
             .order_rejected = { .reason = ORDER_REJECT_SELL_NOT_ACCEPTED },
+        });
+    } else if (out_of_credit) {
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_ORDER_REJECTED,
+            .player_id = sp->id,
+            .order_rejected = { .reason = ORDER_REJECT_SELL_STATION_BROKE },
         });
     }
     /* Clear the one-shot filter so the next plain SELL_CARGO press

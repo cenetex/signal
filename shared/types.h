@@ -754,6 +754,7 @@ enum {
     ORDER_REJECT_SHIPYARD_LOCKED = 7,               /* tech tree gate */
     ORDER_REJECT_SHIPYARD_NO_FUNDS = 8,             /* ledger spend failed */
     ORDER_REJECT_SELL_NOT_ACCEPTED = 9,             /* this station has no consumer for the picked commodity */
+    ORDER_REJECT_SELL_STATION_BROKE = 10,           /* station ran out of credit pool mid-sale */
 };
 
 typedef struct {

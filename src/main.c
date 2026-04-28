@@ -633,6 +633,7 @@ static const char *order_reject_message(uint8_t reason) {
     case ORDER_REJECT_SHIPYARD_LOCKED:      return "Tech tree locked — order the prerequisite module first.";
     case ORDER_REJECT_SHIPYARD_NO_FUNDS:    return "Not enough credits at this station for the order fee.";
     case ORDER_REJECT_SELL_NOT_ACCEPTED:    return "This station has no consumer for that commodity — try another dock.";
+    case ORDER_REJECT_SELL_STATION_BROKE:   return "This station ran out of credit — sale partial or refused. Try again later.";
     default:                                return "Order rejected.";
     }
 }
