@@ -433,30 +433,15 @@ static void sim_on_sell(const sim_event_t *ev) {
 
 static void sim_on_repair(const sim_event_t *ev) {
     if (ev_is_local(ev)) audio_play_repair(&g.audio);
-#ifdef SIGNAL_VOICE
-    if (ev_is_local(ev)) {
-        int station = ev->repair.station;
-        if (station >= 0 && station < 3) {
-            const char *station_persona[] = {"prospect", "kepler", "helios"};
-            voice_event(station_persona[station], "Hull repair confirmed.");
-        }
-    }
-#endif
+    /* TODO: SIGNAL_VOICE — sim_event_t has no `repair` member; need
+       a station id added to the repair event before this can fire.
+       Tracked as follow-up to Voice D. */
 }
 
 static void sim_on_upgrade(const sim_event_t *ev) {
     if (ev_is_local(ev)) audio_play_upgrade(&g.audio, ev->upgrade.upgrade);
-#ifdef SIGNAL_VOICE
-    if (ev_is_local(ev)) {
-        int station = ev->upgrade.station;
-        if (station >= 0 && station < 3) {
-            const char *station_persona[] = {"prospect", "kepler", "helios"};
-            char msg[80];
-            snprintf(msg, sizeof(msg), "Hull upgrade applied.");
-            voice_event(station_persona[station], msg);
-        }
-    }
-#endif
+    /* TODO: SIGNAL_VOICE — sim_event_t.upgrade has only `upgrade`, no
+       station id; needs the upgrade event extended before voice can fire. */
 }
 
 static void sim_on_damage(const sim_event_t *ev) {
@@ -535,13 +520,8 @@ static void sim_on_contract_complete(const sim_event_t *ev) {
     } else if (ev->contract_complete.action == CONTRACT_FRACTURE) {
         set_notice("Fracture contract complete.");
     }
-#ifdef SIGNAL_VOICE
-    int station = ev->contract_complete.dest_station;
-    if (station >= 0 && station < 3) {
-        const char *station_persona[] = {"prospect", "kepler", "helios"};
-        voice_event(station_persona[station], "Contract delivery confirmed.");
-    }
-#endif
+    /* TODO: SIGNAL_VOICE — sim_event_t.contract_complete has only
+       `action`, no destination-station id; needs the event extended. */
 }
 
 static void sim_on_scaffold_ready(const sim_event_t *ev) {
@@ -687,18 +667,13 @@ static void sim_on_module_activated(const sim_event_t *ev) {
 }
 
 static void sim_on_outpost_activated(const sim_event_t *ev) {
-#ifndef SIGNAL_VOICE
     (void)ev;
-#endif
     if (!g.episode.watched[4]) episode_trigger(&g.episode, 4); /* Ep 4: Naming */
     audio_play_commission(&g.audio);
-#ifdef SIGNAL_VOICE
-    int si = ev->outpost_activated.station;
-    if (si >= 0 && si < 3) {
-        const char *station_persona[] = {"prospect", "kepler", "helios"};
-        voice_event(station_persona[si], "Outpost now operational.");
-    }
-#endif
+    /* TODO: SIGNAL_VOICE — sim_event_t.outpost_activated has only
+       `slot`, not a station id mapped to a persona. Outposts (slot>=3)
+       have no persona configured today; needs persona registration
+       per outpost. */
 }
 
 static void sim_on_npc_spawned(const sim_event_t *ev) {

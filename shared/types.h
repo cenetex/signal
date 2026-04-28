@@ -35,6 +35,7 @@ enum {
     MAX_SCAFFOLDS = 16,  /* uint8 index — see banner above (#285 to lift) */
     AUDIO_VOICE_COUNT = 24,
     AUDIO_MIX_FRAMES = 512,
+    AUDIO_VOICE_RING_FRAMES = 11025, /* ~250ms at 44.1kHz: PCM ring buffer for voice input */
 };
 
 enum {
@@ -572,6 +573,14 @@ typedef struct {
  * Should ADD samples (not overwrite). frames = sample frames, channels = 1 or 2. */
 typedef void (*audio_mix_callback_t)(float *buffer, int frames, int channels, void *user);
 
+/* Voice PCM input ring buffer: captures PCM from voicebox subprocess */
+typedef struct {
+    float samples[AUDIO_VOICE_RING_FRAMES * 2]; /* stereo (2-channel) ring buffer */
+    int write_pos;  /* write head: where mic input writes next */
+    int read_pos;   /* read head: where mixer reads next */
+    int sample_rate; /* 24kHz from voicebox; mixer resamples to output rate */
+} audio_voice_pcm_t;
+
 typedef struct {
     bool valid;
     uint32_t rng;
@@ -583,6 +592,10 @@ typedef struct {
     /* External audio sources mixed after SFX voices */
     audio_mix_callback_t mix_callback;
     void *mix_callback_user;
+    /* Voice PCM from voicebox subprocess */
+    audio_voice_pcm_t voice_pcm;
+    float music_duck_target; /* 0.0 = full duck, 1.0 = no duck; smoothly interpolated */
+    float music_duck_current;
 } audio_state_t;
 
 /* Station geometry constants

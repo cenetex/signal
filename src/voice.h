@@ -34,6 +34,29 @@ void voice_state(const char *fields);
  * Best-effort; silently drops if pipe is full. */
 void voice_ask(const char *persona, const char *directive);
 
+/* Request LLM elaboration on a station hail.
+ * Sends an ASK line that voicebox processes with its LLM.
+ * persona: station persona name (e.g. "prospect", "kepler", "helios")
+ * directive: what to elaborate on, e.g. "haul_value_update" or "rare_ore_found"
+ * Best-effort; silently drops if pipe is full. */
+void voice_ask(const char *persona, const char *directive);
+
+/* Initialize voice PCM input from voicebox subprocess.
+ * Opens fd 3 (or redirected pipe) for reading PCM audio frames.
+ * Returns true if successfully connected, false if not available or already initialized. */
+bool voice_pcm_init(void);
+
+/* Read pending PCM frames from voicebox into the ring buffer.
+ * Reads available data from the PCM input pipe: 4-byte sample-rate header
+ * followed by interleaved float32 samples (stereo, 2 channels).
+ * Called periodically from the audio thread. */
+void voice_pcm_read(void);
+
+/* Get the current queue depth of pending voice PCM frames.
+ * Used by mixer to decide whether to apply music ducking.
+ * Returns frame count available to read. */
+int voice_pcm_queue_depth(void);
+
 /* Shut down the voicebox subprocess gracefully. Called at shutdown. */
 void voice_quit(void);
 

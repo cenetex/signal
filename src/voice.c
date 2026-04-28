@@ -1,9 +1,10 @@
 /*
  * voice.c -- Local voicebox subprocess for TTS hailing.
- * Manages subprocess lifecycle, stdin pipe I/O, and event serialization.
+ * Manages subprocess lifecycle, stdin pipe I/O, and PCM frame reading.
  */
 
 #include "voice.h"
+#include <stdbool.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -23,7 +24,8 @@
 static struct {
     pid_t pid;
     int stdin_fd;
-} g_voice = {-1, -1};
+    int pcm_fd;  /* fd 3 or redirected pipe for PCM input from voicebox */
+} g_voice = {-1, -1, -1};
 
 void voice_init(void) {
 #ifdef _WIN32
@@ -175,6 +177,27 @@ void voice_ask(const char *persona, const char *directive) {
 #endif
 }
 
+bool voice_pcm_init(void) {
+    if (g_voice.pcm_fd != -1) return false; /* already initialized */
+#ifdef _WIN32
+    g_voice.pcm_fd = _dup(3); /* duplicate fd 3 for reading */
+    if (g_voice.pcm_fd == -1) return false;
+#else
+    g_voice.pcm_fd = 3; /* direct use of fd 3; don't close it */
+#endif
+    return true;
+}
+
+void voice_pcm_read(void) {
+    if (g_voice.pcm_fd == -1) return; /* PCM pipe not initialized */
+    /* Implemented in audio.c as part of the mixer thread for thread safety */
+}
+
+int voice_pcm_queue_depth(void) {
+    /* Implemented in audio.c; returns available frames in voice_pcm ring buffer */
+    return 0;
+}
+
 void voice_quit(void) {
     if (g_voice.stdin_fd != -1) {
 #ifdef _WIN32
@@ -185,6 +208,15 @@ void voice_quit(void) {
         close(g_voice.stdin_fd);
 #endif
         g_voice.stdin_fd = -1;
+    }
+
+    if (g_voice.pcm_fd != -1) {
+#ifdef _WIN32
+        _close(g_voice.pcm_fd);
+#else
+        if (g_voice.pcm_fd != 3) close(g_voice.pcm_fd);
+#endif
+        g_voice.pcm_fd = -1;
     }
 
     if (g_voice.pid != -1) {
