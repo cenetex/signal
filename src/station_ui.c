@@ -745,7 +745,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
 {
     const station_t *st = ui->station;
     const ship_t *ship = &LOCAL_PLAYER.ship;
-    float row_h = compact ? 13.0f : 15.0f;
+    float row_h = compact ? 15.0f : 16.0f;
     float inner_right = cx + inner_w - 36.0f;
     float my = cy;
     const uint8_t COL_GAIN[3]  = { 130, 230, 150 };  /* + sell: green */
@@ -954,6 +954,8 @@ static void draw_trade_view(const station_ui_state_t *ui,
             draw_row_lr(cx + 32.0f, my, inner_right,
                         info_rgb, status_buf, row_rgb, total_buf);
             my += row_h;
+            /* Inter-row gap so two-line rows don't blur together. */
+            my += 4.0f;
         } else {
             cell_t row[] = {
                 {  0, key_buf,                            row_rgb },
@@ -981,7 +983,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
 {
     const station_t *st = ui->station;
     const ship_t *ship = &LOCAL_PLAYER.ship;
-    float row_h = compact ? 13.0f : 15.0f;
+    float row_h = compact ? 15.0f : 16.0f;
     float inner_right = cx + inner_w - 36.0f;
     float my = cy;
 
@@ -1207,7 +1209,7 @@ static void draw_jobs_view(const station_ui_state_t *ui,
 {
     (void)compact;
     (void)inner_w;
-    float row_h = compact ? 13.0f : 15.0f;
+    float row_h = compact ? 15.0f : 16.0f;
     float inner_right = cx + inner_w - 36.0f;
     float my = cy;
 
@@ -1367,6 +1369,10 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             };
             draw_row_cells(cx, my, bot, 1);
             my += row_h;
+            /* Group separator between multi-line rows. Without it the
+             * pay line of row N hugs the key line of row N+1 visually
+             * because they share the same row_h spacing. */
+            my += 4.0f;
         } else {
             cell_t row[] = {
                 {  0, key_buf,   row_rgb },
@@ -1393,7 +1399,7 @@ static void draw_yard_view(const station_ui_state_t *ui,
     float my = cy;
 
     if (!station_has_module(st, MODULE_SHIPYARD)) {
-        float row_h = compact ? 13.0f : 15.0f;
+        float row_h = compact ? 15.0f : 16.0f;
         sdtx_color3b(PAL_SHIPYARD_HINT);
         sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
         sdtx_puts("No shipyard installed at this station.");
@@ -1433,10 +1439,18 @@ static void draw_yard_view(const station_ui_state_t *ui,
         sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
         if (can_afford) sdtx_color3b(PAL_TEXT_SECONDARY);
         else            sdtx_color3b(PAL_CANNOT_AFFORD);
-        sdtx_printf("[%d] %-14s %d %s + %d %s",
-            shown + 1, module_type_name(kit),
-            fee, ui_station_currency(ui->station),
-            mat, mat_name);
+        if (compact) {
+            /* Narrow form: skip the currency name (it's in the header
+             * already) and use the short material label so the row
+             * fits inside inner_right at 1200px. */
+            sdtx_printf("[%d] %-14s %d cr + %d %s",
+                shown + 1, module_type_name(kit), fee, mat, mat_name);
+        } else {
+            sdtx_printf("[%d] %-14s %d %s + %d %s",
+                shown + 1, module_type_name(kit),
+                fee, ui_station_currency(ui->station),
+                mat, mat_name);
+        }
         shown++;
         ly += 14.0f;
     }
