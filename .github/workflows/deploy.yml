@@ -20,17 +20,25 @@ concurrency:
 
 jobs:
   # Fast gate: build once, run tests with -Werror.
+  # On failure, cancels the whole run so siblings (native matrix,
+  # static analysis, CRAP, docker push) don't keep burning minutes.
   test-basic:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Build and run tests
         run: |
           cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
             -DCMAKE_C_FLAGS="-Werror"
-          cmake --build build-test
+          cmake --build build-test --parallel
           ulimit -s 16384
           ./build-test/signal_test
+      - name: Cancel sibling jobs on failure
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh run cancel ${{ github.run_id }} --repo ${{ github.repository }} || true
 
   # ASan: post-deploy verification on main only. Same logic as
   # test-valgrind — runs ~7-10 min and was the longest pole on PR
@@ -41,6 +49,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy
     if: github.ref == 'refs/heads/main'
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v4
       - name: Build and run tests with AddressSanitizer
@@ -55,6 +64,7 @@ jobs:
   # Static analysis: parallel with tests.
   test-static:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Install analysis tools
@@ -98,6 +108,7 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy
     if: github.ref == 'refs/heads/main'
+    timeout-minutes: 45
     steps:
       - uses: actions/checkout@v4
       - name: Install valgrind
@@ -123,6 +134,7 @@ jobs:
   # coverage is structurally 0 and CRAP collapses to complexity).
   test-crap:
     runs-on: ubuntu-latest
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -224,6 +236,7 @@ jobs:
   build-client:
     runs-on: ubuntu-latest
     if: github.ref == 'refs/heads/main'
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
 
@@ -266,10 +279,14 @@ jobs:
           name: client-site
           path: _site/
 
-  # Server Docker build — parallel with tests.
+  # Server Docker build — gated on test-basic so we don't push a
+  # broken image to ECR (real cost: ECR storage + ECS rollover risk).
+  # Multi-arch QEMU build is the longest pole at ~5 min on its own.
   build-server:
     runs-on: ubuntu-latest
+    needs: test-basic
     if: github.ref == 'refs/heads/main'
+    timeout-minutes: 20
     outputs:
       image_tag: ${{ steps.vars.outputs.short_sha }}
     steps:
@@ -310,6 +327,7 @@ jobs:
   deploy:
     runs-on: ubuntu-latest
     needs: [test-basic, test-crap, build-client, build-server]
+    timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4
 
@@ -448,10 +466,13 @@ jobs:
         if: steps.smoke.outcome == 'failure'
         run: exit 1
 
-  # Native builds: only after basic tests pass.
+  # Native builds: only after basic tests pass. fail-fast cancels
+  # the whole matrix the moment any platform breaks.
   native:
     needs: test-basic
+    timeout-minutes: 25
     strategy:
+      fail-fast: true
       matrix:
         include:
           - os: ubuntu-latest
