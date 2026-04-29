@@ -679,8 +679,60 @@ TEST(test_ship_total_cargo_kit_density) {
                     100.0f * REPAIR_KIT_CARGO_DENSITY + 5.0f, 0.001f);
 }
 
+/* Per-row sell mirrors per-row buy: one click sells one (commodity, grade)
+ * unit, the rest of the hold stays put. Pre-fix, [S] sold every grade of
+ * the row's commodity in one shot. */
+TEST(test_per_row_sell_drains_one_unit_only) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0xAA, 8);
+
+    /* Dock at Helios — its laser/tractor fabs accept frame ingot input. */
+    int helios = -1;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (!station_is_active(&w->stations[s])) continue;
+        if (station_consumes(&w->stations[s], COMMODITY_FRAME)) { helios = s; break; }
+    }
+    ASSERT(helios >= 0);
+    sp->docked = true;
+    sp->current_station = (uint8_t)helios;
+    sp->ship.pos = w->stations[helios].pos;
+
+    /* Stuff three frame ingots into the hold + manifest, then ask the
+     * server to sell exactly one. */
+    sp->ship.cargo[COMMODITY_FRAME] = 3.0f;
+    cargo_unit_t u = {0};
+    u.commodity = COMMODITY_FRAME;
+    u.grade = (uint8_t)MINING_GRADE_COMMON;
+    for (int i = 0; i < 3; i++) {
+        sp->ship.manifest.units[sp->ship.manifest.count++] = u;
+    }
+
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FRAME;
+    sp->input.service_sell_grade = MINING_GRADE_COMMON;
+    sp->input.service_sell_one = true;
+    world_sim_step(w, SIM_DT);
+
+    ASSERT_EQ_FLOAT(sp->ship.cargo[COMMODITY_FRAME], 2.0f, 0.001f);
+    ASSERT_EQ_INT(sp->ship.manifest.count, 2);
+    /* Issuing sell-all next pulls the rest in one go (regression: the
+     * sell-one branch must not stick after consuming). */
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FRAME;
+    sp->input.service_sell_one = false;
+    sp->input.service_sell_grade = MINING_GRADE_COUNT;
+    world_sim_step(w, SIM_DT);
+    ASSERT_EQ_FLOAT(sp->ship.cargo[COMMODITY_FRAME], 0.0f, 0.001f);
+}
+
 void register_economy_basic_tests(void) {
     TEST_SECTION("\nEconomy tests:\n");
+    RUN(test_per_row_sell_drains_one_unit_only);
     RUN(test_station_production_yard_makes_frames);
     RUN(test_station_production_beamworks_makes_modules);
     RUN(test_station_repair_cost_no_damage);

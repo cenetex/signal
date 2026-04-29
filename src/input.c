@@ -494,9 +494,42 @@ static void sample_trade_picker(input_intent_t *intent) {
     if (row->kind == 0) {
         trade_apply_buy_row(intent, st, ship, row);
     } else if (row->kind == 1) {
+        /* Per-row sell — mirror of the buy click. One press = one unit
+         * of (commodity, grade). The bulk [S] hotkey still drains the
+         * hold, but clicking a specific row only nibbles the matching
+         * cargo_unit so the rest stays on board. */
+        if (LOCAL_PLAYER.ship.cargo[row->commodity] < 0.999f) {
+            set_notice("Out of %s.", commodity_short_name(row->commodity));
+            return;
+        }
         intent->service_sell = true;
         intent->service_sell_only = row->commodity;
-        set_notice("Selling %s %s...",
+        intent->service_sell_grade = row->grade;
+        intent->service_sell_one = true;
+        float price = (float)row->unit_price;
+        float bonus_mult = mining_payout_multiplier(row->grade);
+        float payout = price * bonus_mult;
+        LOCAL_PLAYER.ship.cargo[row->commodity] -= 1.0f;
+        if (LOCAL_PLAYER.ship.cargo[row->commodity] < 0.0f)
+            LOCAL_PLAYER.ship.cargo[row->commodity] = 0.0f;
+        if (!g.multiplayer_enabled) {
+            station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
+            int idx = -1;
+            for (int li = 0; li < mst->ledger_count; li++) {
+                if (memcmp(mst->ledger[li].player_token,
+                           LOCAL_PLAYER.session_token, 8) == 0) { idx = li; break; }
+            }
+            if (idx < 0 && mst->ledger_count < 16) {
+                idx = mst->ledger_count++;
+                memcpy(mst->ledger[idx].player_token,
+                       LOCAL_PLAYER.session_token, 8);
+                mst->ledger[idx].balance = 0.0f;
+                mst->ledger[idx].lifetime_supply = 0.0f;
+            }
+            if (idx >= 0) mst->ledger[idx].balance += payout;
+        }
+        set_notice("+$%d  %s %s",
+                   (int)lroundf(payout),
                    mining_grade_label(row->grade),
                    commodity_short_name(row->commodity));
     }
@@ -809,6 +842,8 @@ input_intent_t sample_input_intent(void) {
     intent.plan_slot = -1;
     intent.cancel_planned_station = -1;
     intent.service_sell_only = COMMODITY_COUNT; /* default: deliver all */
+    intent.service_sell_grade = MINING_GRADE_COUNT; /* default: any grade */
+    intent.service_sell_one = false;
 
     sample_movement(&intent);
     sample_tractor(&intent);
@@ -913,8 +948,15 @@ void submit_input(const input_intent_t *intent, float dt) {
                 LOCAL_PLAYER.docked = false;
                 LOCAL_PLAYER.in_dock_range = false;
             }
-        } else if (intent->service_sell && intent->service_sell_only < COMMODITY_COUNT)
+        } else if (intent->service_sell && intent->service_sell_only < COMMODITY_COUNT) {
             g.pending_net_action = NET_ACTION_DELIVER_COMMODITY + (uint8_t)intent->service_sell_only;
+            /* Per-row sell rides the same 5th-byte slot as buy_grade.
+             * Server treats `grade < MINING_GRADE_COUNT` as the
+             * single-unit signal; bulk-sell branches keep the sentinel
+             * so the existing behavior is unchanged. */
+            if (intent->service_sell_one && intent->service_sell_grade < MINING_GRADE_COUNT)
+                g.pending_net_buy_grade = (uint8_t)intent->service_sell_grade;
+        }
         else if (intent->service_sell)
             g.pending_net_action = 3;
         else if (intent->service_repair)

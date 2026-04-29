@@ -793,12 +793,27 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
                 intent->scaffold_kit_module = (module_type_t)(action - NET_ACTION_BUY_SCAFFOLD_TYPED);
             }
             /* NET_ACTION_DELIVER_COMMODITY + commodity (70..70+COMMODITY_COUNT)
-             * — selective fulfillment from the contracts tab. Sets
-             * service_sell with a one-shot filter so try_sell_station_cargo
-             * only consumes the chosen commodity. */
+             * — selective fulfillment. Two callers share this action:
+             *   (a) Yard contracts tab [S] → sells everything matching
+             *       the contract's commodity. 4-byte message: 5th byte
+             *       defaults to MINING_GRADE_COUNT below ⇒ bulk.
+             *   (b) Trade tab per-row sell click → sells one unit of a
+             *       specific (commodity, grade). 5-byte message with
+             *       the 5th byte holding a grade index < GRADE_COUNT.
+             * The grade slot doubles as the sell-one switch: a real
+             * grade ⇒ single-unit sell, MINING_GRADE_COUNT ⇒ bulk. */
             else if (action >= NET_ACTION_DELIVER_COMMODITY && action < NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT) {
                 intent->service_sell = true;
                 intent->service_sell_only = (commodity_t)(action - NET_ACTION_DELIVER_COMMODITY);
+                intent->service_sell_grade = MINING_GRADE_COUNT;
+                intent->service_sell_one = false;
+                if (len >= 5) {
+                    uint8_t g = data[4];
+                    if (g < MINING_GRADE_COUNT) {
+                        intent->service_sell_grade = (mining_grade_t)g;
+                        intent->service_sell_one = true;
+                    }
+                }
             }
             break;
         }

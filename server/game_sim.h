@@ -190,6 +190,15 @@ typedef struct {
      * delivery to that one commodity, so the player can keep e.g. their
      * crystal cargo while still delivering ferrite. */
     commodity_t service_sell_only;
+    /* Per-row sell mirror of the buy path. When `service_sell_one` is
+     * true the server sells exactly one (commodity, grade) unit per
+     * input message — matching the [1]/[2]/… buy hotkeys. Bulk paths
+     * (sell-all hotkey [S], contract delivery from the yard tab) leave
+     * `service_sell_one` false and continue draining everything that
+     * fits. `service_sell_grade` selects which manifest unit is
+     * dequeued; MINING_GRADE_COUNT means "any grade, FIFO". */
+    mining_grade_t service_sell_grade;
+    bool service_sell_one;
     bool service_repair;
     bool upgrade_mining;
     bool upgrade_hold;

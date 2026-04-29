@@ -994,8 +994,107 @@ static void manifest_mark_station_dirty(world_t *w, manifest_t *touched) {
     }
 }
 
+/* Sell exactly one (commodity, grade) unit — the trade-tab per-row
+ * counterpart to `trade_apply_buy_row`. Pulls one cargo_unit_t from the
+ * ship manifest matching `grade` (or the FIFO-first matching commodity
+ * when `grade == MINING_GRADE_COUNT`), credits the player at this
+ * station's buy price + the unit's grade bonus, transfers the manifest
+ * entry to the station, and decrements the float cargo by one.
+ *
+ * Returns true when a unit actually sold, so the caller can skip the
+ * bulk path and not also drain the rest of the cargo. */
+static bool try_sell_one_unit(world_t *w, server_player_t *sp,
+                              commodity_t commodity, mining_grade_t grade) {
+    if (commodity >= COMMODITY_COUNT) return false;
+    /* Raw ore lives in towed fragments now (#259), not in ship.cargo,
+     * so it can't be sold by the per-row path. */
+    if (commodity < COMMODITY_RAW_ORE_COUNT) return false;
+    station_t *st = &w->stations[sp->current_station];
+    if (!station_consumes(st, commodity)) return false;
+    if (sp->ship.cargo[commodity] < 0.999f) return false; /* < 1 unit */
+    float capacity = MAX_PRODUCT_STOCK;
+    float space = fmaxf(0.0f, capacity - st->inventory[commodity]);
+    if (space < 0.999f) {
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_ORDER_REJECTED,
+            .player_id = sp->id,
+            .order_rejected = { .reason = ORDER_REJECT_SELL_INVENTORY_FULL },
+        });
+        return false;
+    }
+
+    /* Find the unit in the ship manifest. Specific-grade mode walks
+     * forward to the first match; "any" mode just takes the FIFO-first
+     * matching commodity (mirrors manifest_transfer_by_commodity_ex). */
+    int unit_idx = -1;
+    for (uint16_t u = 0; u < sp->ship.manifest.count; u++) {
+        const cargo_unit_t *cu = &sp->ship.manifest.units[u];
+        if (cu->commodity != commodity) continue;
+        if (grade < MINING_GRADE_COUNT && (mining_grade_t)cu->grade != grade) continue;
+        unit_idx = (int)u;
+        break;
+    }
+    /* Without a manifest unit we'd be selling provenance-less float
+     * cargo, which the player UI shouldn't have offered. Fall through
+     * to refusal (and keep the cargo) so we don't silently mint a
+     * common-grade payout that breaks the chain. */
+    if (unit_idx < 0) return false;
+
+    mining_grade_t actual_grade = (mining_grade_t)sp->ship.manifest.units[unit_idx].grade;
+    float price = station_buy_price(st, commodity);
+    float mult = mining_payout_multiplier(actual_grade);
+    float graded_price = price * mult;
+    int base_cr = (int)lroundf(price);
+    int bonus_cr = (int)lroundf(graded_price - price);
+
+    /* Move the unit + 1.0 float across. The transfer helper finds the
+     * same FIFO unit we did so the index match is fine; we only used
+     * `unit_idx` to confirm presence. */
+    int moved = manifest_transfer_by_commodity_ex(&sp->ship.manifest,
+                                                   &st->manifest,
+                                                   commodity,
+                                                   grade < MINING_GRADE_COUNT ? grade : MINING_GRADE_COUNT,
+                                                   1);
+    if (moved <= 0) return false;
+    sp->ship.cargo[commodity] -= 1.0f;
+    if (sp->ship.cargo[commodity] < 0.0f) sp->ship.cargo[commodity] = 0.0f;
+    st->inventory[commodity] += 1.0f;
+    if (st->inventory[commodity] > MAX_PRODUCT_STOCK)
+        st->inventory[commodity] = MAX_PRODUCT_STOCK;
+    manifest_mark_station_dirty(w, &st->manifest);
+
+    st->credit_pool -= graded_price;
+    ledger_earn(st, sp->session_token, graded_price);
+    sp->ship.stat_credits_earned += graded_price;
+    SIM_LOG("[sim] player %d sold 1× %s (grade %d) for %.0f cr at %s\n",
+            sp->id, commodity_short_name(commodity), (int)actual_grade,
+            graded_price, st->name);
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_SELL, .player_id = sp->id,
+        .sell = { .station = sp->current_station,
+                  .grade = (uint8_t)actual_grade,
+                  .base_cr = base_cr,
+                  .bonus_cr = bonus_cr,
+                  .by_contract = 0 }});
+    return true;
+}
+
 static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     station_t *st = &w->stations[sp->current_station];
+
+    /* Per-row sell: trade-tab click on a single grade row drops exactly
+     * one unit — same cadence as the buy hotkeys. Bypasses the bulk
+     * path below so the rest of the hold stays put. */
+    if (sp->input.service_sell_one) {
+        commodity_t commodity = sp->input.service_sell_only;
+        mining_grade_t grade  = sp->input.service_sell_grade;
+        try_sell_one_unit(w, sp, commodity, grade);
+        sp->input.service_sell_only = COMMODITY_COUNT;
+        sp->input.service_sell_grade = MINING_GRADE_COUNT;
+        sp->input.service_sell_one = false;
+        return;
+    }
+
     float payout = 0.0f;
     /* M7: track whether any of the accepted deliveries landed against an
      * active contract so the client's sell FX can tint yellow. */
@@ -1166,6 +1265,8 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     /* Clear the one-shot filter so the next plain SELL_CARGO press
      * resumes the default "deliver all" behavior. */
     sp->input.service_sell_only = COMMODITY_COUNT;
+    sp->input.service_sell_grade = MINING_GRADE_COUNT;
+    sp->input.service_sell_one = false;
 }
 
 static void try_repair_ship(world_t *w, server_player_t *sp) {
@@ -4687,6 +4788,8 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     /* Default to "deliver everything matching" — selective delivery
      * is opt-in via NET_ACTION_DELIVER_COMMODITY. */
     sp->input.service_sell_only = COMMODITY_COUNT;
+    sp->input.service_sell_grade = MINING_GRADE_COUNT;
+    sp->input.service_sell_one = false;
     sp->autopilot_mode = 0;
     sp->autopilot_state = 0;
     sp->autopilot_target = -1;
