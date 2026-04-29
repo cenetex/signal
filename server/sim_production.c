@@ -602,8 +602,10 @@ void step_furnace_smelting(world_t *w, float dt) {
             if (ore_value > 0.0f) {
                 uint8_t bc = by_contract ? 1 : 0;
                 if (tower >= 0) {
+                    float credited = 0.0f;
                     if (w->players[tower].session_ready)
-                        ledger_credit_supply(st, w->players[tower].session_token, graded_value);
+                        credited = ledger_credit_supply_amount(st, w->players[tower].session_token, graded_value);
+                    w->players[tower].ship.stat_credits_earned += credited;
                     emit_event(w, (sim_event_t){
                         .type = SIM_EVENT_SELL, .player_id = tower,
                         .sell = { .station = smelt_station, .grade = (uint8_t)grade,
@@ -611,8 +613,10 @@ void step_furnace_smelting(world_t *w, float dt) {
                                   .by_contract = bc }});
                     if (fracturer >= 0 && fracturer != tower) {
                         float finders = graded_value * 0.25f;
+                        float fcredited = 0.0f;
                         if (w->players[fracturer].session_ready)
-                            ledger_credit_supply(st, w->players[fracturer].session_token, finders);
+                            fcredited = ledger_credit_supply_amount(st, w->players[fracturer].session_token, finders);
+                        w->players[fracturer].ship.stat_credits_earned += fcredited;
                         emit_event(w, (sim_event_t){
                             .type = SIM_EVENT_SELL, .player_id = fracturer,
                             .sell = { .station = smelt_station, .grade = (uint8_t)grade,
@@ -622,8 +626,10 @@ void step_furnace_smelting(world_t *w, float dt) {
                     }
                 } else if (fracturer >= 0) {
                     float half = graded_value * 0.5f;
+                    float credited = 0.0f;
                     if (w->players[fracturer].session_ready)
-                        ledger_credit_supply(st, w->players[fracturer].session_token, half);
+                        credited = ledger_credit_supply_amount(st, w->players[fracturer].session_token, half);
+                    w->players[fracturer].ship.stat_credits_earned += credited;
                     emit_event(w, (sim_event_t){
                         .type = SIM_EVENT_SELL, .player_id = fracturer,
                         .sell = { .station = smelt_station, .grade = (uint8_t)grade,

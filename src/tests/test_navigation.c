@@ -221,13 +221,11 @@ TEST(test_autopilot_completes_mining_cycle) {
 
     run_autopilot_ticks(w, &w->players[0], 90.0f);
 
-    /* Should have earned credits in 90s of autopilot. Currently flaky
-     * (known autopilot hover/overshoot bug, separate from this slice),
-     * so logged as [WARN] rather than asserted. Promote to ASSERT once
-     * autopilot is fixed — the suite previously hid real regressions
-     * here. */
-    if (w->players[0].ship.stat_credits_earned <= earned_before)
-        TEST_WARN("no credits earned in 90s (autopilot flake, track separately)");
+    /* A full mining cycle (find → mine → return → smelt) should pay out
+     * within 90 sim-seconds. Asserted; promoted from [WARN] once #345
+     * landed (autopilot was parking at station center where the silo
+     * couldn't reach the towed fragments). */
+    ASSERT(w->players[0].ship.stat_credits_earned > earned_before);
     /* w auto-freed by WORLD_HEAP cleanup */
 }
 
@@ -296,19 +294,16 @@ TEST(test_autopilot_multiple_players) {
         earned_start[p] = w->players[p].ship.stat_credits_earned;
     }
 
-    for (int i = 0; i < 90 * 120; i++) {
+    for (int i = 0; i < 180 * 120; i++) {
         world_sim_step(w, 1.0f / 120.0f);
     }
 
-    /* At least 2 of 3 should have earned credits in 180s. Same flaky
-     * autopilot bug as test_autopilot_completes_mining_cycle — logged
-     * rather than asserted until the root cause lands. */
+    /* At least 2 of 3 should have earned credits in 180s. */
     int earned = 0;
     for (int p = 0; p < 3; p++) {
         if (w->players[p].ship.stat_credits_earned > earned_start[p]) earned++;
     }
-    if (earned < 2)
-        TEST_WARNF("only %d/3 autopilot players earned credits in 180s (autopilot flake)", earned);
+    ASSERT(earned >= 2);
 
     /* All should still be alive (hull > 0 or docked). */
     for (int p = 0; p < 3; p++) {
@@ -356,13 +351,14 @@ TEST(test_autopilot_follows_path_waypoints) {
             }
         }
 
-        /* Ship should have passed within 150u of each waypoint
-         * (80u is the advancement threshold, 150u gives margin).
-         * Logged rather than asserted — autopilot flake as above. */
-        for (int j = 0; j < wp_count; j++) {
+        /* Ship should have passed within 150u of each intermediate
+         * waypoint (80u is the advancement threshold, 150u gives margin).
+         * The final waypoint IS the mining target — the ship parks at
+         * the asteroid's mining standoff (radius + 120u) and never
+         * approaches within 150u, so exclude it from the check. */
+        for (int j = 0; j < wp_count - 1; j++) {
             float min_dist = sqrtf(closest[j]);
-            if (min_dist > 150.0f)
-                TEST_WARNF("waypoint %d: closest approach %.0fu (expected <150u, autopilot flake)", j, min_dist);
+            ASSERT(min_dist <= 150.0f);
         }
     }
     /* w auto-freed by WORLD_HEAP cleanup */
