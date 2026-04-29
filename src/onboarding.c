@@ -9,10 +9,6 @@
 #include "station_voice.h"
 #include "world_draw.h"
 #include "signal_model.h"  /* SIGNAL_BAND_OPERATIONAL threshold */
-#ifdef SIGNAL_VOICE
-/* voice_event removed with the voice subsystem; onboarding milestones
- * still surface as HUD/HINT text via the rest of the onboarding flow. */
-#endif
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif

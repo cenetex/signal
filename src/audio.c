@@ -11,10 +11,6 @@
 #include <unistd.h>
 #endif
 
-#ifdef SIGNAL_VOICE
-#include "voice.h"
-#endif
-
 static uint32_t audio_rng_next(audio_state_t* a) {
     a->rng = (a->rng * 1664525u) + 1013904223u;
     return a->rng;
@@ -79,7 +75,6 @@ void audio_init(audio_state_t* a) {
     a->rng = 0xA11D0F5Du;
     a->music_duck_current = 1.0f;
     a->music_duck_target = 1.0f;
-    a->voice_pcm.sample_rate = 24000; /* kokoro default */
     saudio_setup(&(saudio_desc){
         .sample_rate = 44100,
         .num_channels = 2,
@@ -92,95 +87,12 @@ void audio_init(audio_state_t* a) {
         a->channels = saudio_channels();
         a->sample_rate = saudio_sample_rate();
     }
-#ifdef SIGNAL_VOICE
-    voice_pcm_init();
-#endif
 }
 
 void audio_step(audio_state_t* a, float dt) {
     if (a->mining_tick_cooldown > 0.0f) {
         a->mining_tick_cooldown = fmaxf(0.0f, a->mining_tick_cooldown - dt);
     }
-}
-
-/* Ring buffer utilities for voice PCM. Always defined — the ring is
-   always zero-init, so on OFF builds these return 0 and no I/O happens. */
-static int audio_voice_ring_available(audio_state_t* a) {
-    audio_voice_pcm_t* v = &a->voice_pcm;
-    if (v->write_pos >= v->read_pos) {
-        return v->write_pos - v->read_pos;
-    } else {
-        return AUDIO_VOICE_RING_FRAMES - v->read_pos + v->write_pos;
-    }
-}
-
-#ifdef SIGNAL_VOICE
-static int audio_voice_ring_space(audio_state_t* a) {
-    return AUDIO_VOICE_RING_FRAMES - audio_voice_ring_available(a) - 1;
-}
-#endif
-
-/* Resample a single voice PCM frame from voice_rate to output_rate.
- * Uses linear interpolation. */
-static float audio_resample_voice(audio_state_t* a, float* resample_phase) {
-    audio_voice_pcm_t* v = &a->voice_pcm;
-    if (audio_voice_ring_available(a) == 0) return 0.0f;
-
-    float ratio = (float)v->sample_rate / (float)a->sample_rate;
-
-    int src_idx = (int)(*resample_phase);
-    float frac = *resample_phase - (float)src_idx;
-    *resample_phase += ratio;
-
-    int read_idx = (v->read_pos + src_idx * 2) % (AUDIO_VOICE_RING_FRAMES * 2);
-    int read_idx_next = (read_idx + 2) % (AUDIO_VOICE_RING_FRAMES * 2);
-
-    float s0 = v->samples[read_idx];
-    float s1 = v->samples[read_idx_next];
-
-    return lerpf(s0, s1, frac);
-}
-
-/* Read pending PCM frames from voicebox pipe. Non-blocking, drops data if no space. */
-static void audio_voice_pcm_pull(audio_state_t* a) {
-#ifndef SIGNAL_VOICE
-    (void)a;
-#else
-    audio_voice_pcm_t* v = &a->voice_pcm;
-    int space = audio_voice_ring_space(a);
-    if (space < 1024) return; /* not enough buffered space */
-
-    /* Try to read PCM header + frames from voicebox fd 3 */
-    uint8_t header[4];
-    ssize_t nread = read(3, header, sizeof(header));
-    if (nread != 4) return;
-
-    uint32_t sr = (uint32_t)header[0] | ((uint32_t)header[1] << 8) |
-                  ((uint32_t)header[2] << 16) | ((uint32_t)header[3] << 24);
-    if (sr > 0 && sr < 96000) {
-        v->sample_rate = (int)sr;
-    }
-
-    /* Read interleaved float32 stereo samples */
-    float samples[512 * 2]; /* up to 512 frames */
-    int frames_to_read = (space / 2 - 4) / 2; /* leave headroom */
-    if (frames_to_read > 512) frames_to_read = 512;
-    if (frames_to_read <= 0) return;
-
-    nread = read(3, samples, frames_to_read * 2 * sizeof(float));
-    if (nread <= 0) return;
-
-    int frames_read = (int)(nread / (2 * sizeof(float)));
-    for (int i = 0; i < frames_read * 2; i++) {
-        int write_idx = (v->write_pos * 2 + i) % (AUDIO_VOICE_RING_FRAMES * 2);
-        v->samples[write_idx] = samples[i];
-    }
-    v->write_pos = (v->write_pos + frames_read) % AUDIO_VOICE_RING_FRAMES;
-
-    /* Update music duck target based on queue depth */
-    int queue = audio_voice_ring_available(a);
-    a->music_duck_target = (queue > 1000) ? 0.25f : 1.0f; /* ~6dB = 0.25x power */
-#endif
 }
 
 void audio_generate_stream(audio_state_t* a) {
@@ -194,10 +106,7 @@ void audio_generate_stream(audio_state_t* a) {
     a->sample_rate = sample_rate;
     const float sample_dt = 1.0f / (float)sample_rate;
 
-    audio_voice_pcm_pull(a);
-
     int frames_requested = saudio_expect();
-    float voice_resample_phase = 0.0f;
     while (frames_requested > 0) {
         int frames_to_mix = frames_requested > AUDIO_MIX_FRAMES ? AUDIO_MIX_FRAMES : frames_requested;
         memset(a->mix_buffer, 0, sizeof(float) * (size_t)(frames_to_mix * channels));
@@ -253,20 +162,6 @@ void audio_generate_stream(audio_state_t* a) {
             /* Apply music ducking: scale music channel by duck_current */
             for (int fi = 0; fi < frames_to_mix * channels; fi++) {
                 a->mix_buffer[fi] *= a->music_duck_current;
-            }
-        }
-
-        /* Mix in voice PCM (with resampling from 24kHz to output rate) */
-        if (audio_voice_ring_available(a) > 0) {
-            for (int fi = 0; fi < frames_to_mix; fi++) {
-                float voice_sample = audio_resample_voice(a, &voice_resample_phase);
-                if (channels == 1) {
-                    a->mix_buffer[fi] += voice_sample * 0.5f; /* scale down to avoid clipping */
-                } else {
-                    int base = fi * channels;
-                    a->mix_buffer[base + 0] += voice_sample * 0.5f;
-                    a->mix_buffer[base + 1] += voice_sample * 0.5f;
-                }
             }
         }
 

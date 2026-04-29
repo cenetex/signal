@@ -17,9 +17,6 @@
 #include "avatar.h"
 #include "mining_client.h"
 
-#ifdef SIGNAL_VOICE
-#include "voice.h"
-#endif
 
 #ifdef __EMSCRIPTEN__
 #include <emscripten/emscripten.h>
@@ -370,10 +367,6 @@ static void sim_on_dock(const sim_event_t *ev) {
         g.episode.stations_visited |= (1 << ds);
         if (g.episode.stations_visited == 7) /* all 3 */
             episode_trigger(&g.episode, 1); /* Ep 1: Kepler's Law */
-#ifdef SIGNAL_VOICE
-        const char *station_persona[] = {"prospect", "kepler", "helios"};
-        voice_event(station_persona[ds], "Docking clamps engaged.");
-#endif
     }
 }
 
@@ -383,13 +376,6 @@ static void sim_on_launch(const sim_event_t *ev) {
     g.screen_shake = fmaxf(g.screen_shake, 5.0f); /* launch kick */
     episode_trigger(&g.episode, 0); /* Ep 0: First Light */
     if (!g.music.playing && !g.music.loading) music_next_track(&g.music);
-#ifdef SIGNAL_VOICE
-    int ds = LOCAL_PLAYER.current_station;
-    if (ds >= 0 && ds < 3) {
-        const char *station_persona[] = {"prospect", "kepler", "helios"};
-        voice_event(station_persona[ds], "Departure clearance granted.");
-    }
-#endif
 }
 
 /* Roll the per-frame sale-fx + hint-bar batch state for one SELL event. */
@@ -423,28 +409,14 @@ static void sim_on_sell(const sim_event_t *ev) {
     mining_client_record_strike((mining_grade_t)ev->sell.grade, ev->sell.bonus_cr);
     int total = ev->sell.base_cr + ev->sell.bonus_cr;
     if (total > 0) sell_batch_accumulate(ev, total);
-#ifdef SIGNAL_VOICE
-    int station = ev->sell.station;
-    if (station >= 0 && station < 3) {
-        const char *station_persona[] = {"prospect", "kepler", "helios"};
-        char msg[64];
-        snprintf(msg, sizeof(msg), "Credits received: +%d.", total);
-        voice_event(station_persona[station], msg);
-    }
-#endif
 }
 
 static void sim_on_repair(const sim_event_t *ev) {
     if (ev_is_local(ev)) audio_play_repair(&g.audio);
-    /* TODO: SIGNAL_VOICE — sim_event_t has no `repair` member; need
-       a station id added to the repair event before this can fire.
-       Tracked as follow-up to Voice D. */
 }
 
 static void sim_on_upgrade(const sim_event_t *ev) {
     if (ev_is_local(ev)) audio_play_upgrade(&g.audio, ev->upgrade.upgrade);
-    /* TODO: SIGNAL_VOICE — sim_event_t.upgrade has only `upgrade`, no
-       station id; needs the upgrade event extended before voice can fire. */
 }
 
 static void sim_on_damage(const sim_event_t *ev) {
@@ -474,13 +446,6 @@ static void sim_on_damage(const sim_event_t *ev) {
             g.damage_dir_timer = 1.5f;
         }
     }
-#ifdef SIGNAL_VOICE
-    if (amount > 0) {
-        char msg[64];
-        snprintf(msg, sizeof(msg), "Hull breach detected. Damage: -%d.", amount);
-        voice_event("nav7", msg);
-    }
-#endif
 }
 
 static void sim_on_npc_kill(const sim_event_t *ev) {
@@ -507,13 +472,6 @@ static void sim_on_npc_kill(const sim_event_t *ev) {
                  "%s killed by %s", role, weapon);
     }
     g.kill_feed_timer = 3.0f;
-#ifdef SIGNAL_VOICE
-    if (you_killed) {
-        char msg[96];
-        snprintf(msg, sizeof(msg), "Hostile %s eliminated.", role);
-        voice_event("nav7", msg);
-    }
-#endif
 }
 
 static void sim_on_contract_complete(const sim_event_t *ev) {
@@ -523,8 +481,6 @@ static void sim_on_contract_complete(const sim_event_t *ev) {
     } else if (ev->contract_complete.action == CONTRACT_FRACTURE) {
         set_notice("Fracture contract complete.");
     }
-    /* TODO: SIGNAL_VOICE — sim_event_t.contract_complete has only
-       `action`, no destination-station id; needs the event extended. */
 }
 
 static void sim_on_scaffold_ready(const sim_event_t *ev) {
@@ -534,9 +490,6 @@ static void sim_on_scaffold_ready(const sim_event_t *ev) {
     set_notice("%s scaffold ready at %s.",
                module_type_name((module_type_t)mtype),
                g.world.stations[sidx].name);
-#ifdef SIGNAL_VOICE
-    voice_event("kepler", "Scaffold assembly complete. Ready for deployment.");
-#endif
 }
 
 static void sim_on_outpost_placed(const sim_event_t *ev) {
@@ -546,9 +499,6 @@ static void sim_on_outpost_placed(const sim_event_t *ev) {
     if (!ev_is_local(ev)) return;
     g.plan_target_station = ev->outpost_placed.slot;
     g.placement_target_station = ev->outpost_placed.slot;
-#ifdef SIGNAL_VOICE
-    voice_event("nav7", "Outpost foundation established.");
-#endif
 }
 
 /* Spawn the 8 shards + cinematic state for a death event. */
@@ -594,9 +544,6 @@ static void sim_on_death(const sim_event_t *ev) {
     episode_trigger(&g.episode, 9); /* Ep 9: Death */
     episode_save(&g.episode);
     music_enter_death(&g.music);
-#ifdef SIGNAL_VOICE
-    voice_event("nav7", "Signal lost. Wreckage detected. Initiating respawn protocol.");
-#endif
 }
 
 /* Pick the hail message: contextual > avatar MOTD > station hardcoded. */
@@ -633,17 +580,6 @@ static void sim_on_hail_response(const sim_event_t *ev) {
                (int)lroundf(ev->hail_response.credits), unit);
     onboarding_mark_hailed();
 
-#ifdef SIGNAL_VOICE
-    const char *station_persona[] = {"prospect", "kepler", "helios"};
-    if (hs >= 0 && hs < 3 && g.hail_message[0]) {
-        voice_event(station_persona[hs], g.hail_message);
-        /* Emit elaboration trigger with context */
-        const ship_t *ship = &LOCAL_PLAYER.ship;
-        const char *directive = "status_update";
-        if (ship->towed_count > 0) directive = "cargo_hold_full";
-        voice_ask(station_persona[hs], directive);
-    }
-#endif
 }
 
 static void sim_on_module_activated(const sim_event_t *ev) {
@@ -659,24 +595,12 @@ static void sim_on_module_activated(const sim_event_t *ev) {
     audio_play_commission(&g.audio);
     const char *module_name = module_type_name((module_type_t)ev->module_activated.module_type);
     set_notice("%s online.", module_name);
-#ifdef SIGNAL_VOICE
-    if (si >= 0 && si < 3) {
-        const char *station_persona[] = {"prospect", "kepler", "helios"};
-        char msg[96];
-        snprintf(msg, sizeof(msg), "%s commissioned and online.", module_name);
-        voice_event(station_persona[si], msg);
-    }
-#endif
 }
 
 static void sim_on_outpost_activated(const sim_event_t *ev) {
     (void)ev;
     if (!g.episode.watched[4]) episode_trigger(&g.episode, 4); /* Ep 4: Naming */
     audio_play_commission(&g.audio);
-    /* TODO: SIGNAL_VOICE — sim_event_t.outpost_activated has only
-       `slot`, not a station id mapped to a persona. Outposts (slot>=3)
-       have no persona configured today; needs persona registration
-       per outpost. */
 }
 
 static void sim_on_npc_spawned(const sim_event_t *ev) {
@@ -776,32 +700,6 @@ static void episode_per_frame(void) {
 }
 
 /* Emit ship state to voicebox for context-aware elaboration (≤1 Hz throttle) */
-#ifdef SIGNAL_VOICE
-static void voice_emit_state_throttled(float dt) {
-    g.voice_state_emit_time -= dt;
-    if (g.voice_state_emit_time > 0.0f) return;
-
-    g.voice_state_emit_time = 1.0f; /* throttle to 1 Hz */
-
-    /* Build STATE line with ship telemetry */
-    char state_buf[256];
-    const ship_t *ship = &LOCAL_PLAYER.ship;
-    const station_t *nearby = (LOCAL_PLAYER.nearby_station >= 0 && LOCAL_PLAYER.nearby_station < MAX_STATIONS)
-                              ? &g.world.stations[LOCAL_PLAYER.nearby_station] : NULL;
-
-    snprintf(state_buf, sizeof(state_buf),
-             "callsign=%s;sector=%d;hold=%.0f/%.0f;credits=%.0f;towing=%d%s",
-             LOCAL_PLAYER.callsign,
-             (int)(g.world.time / 60.0f) % 9,
-             ship_total_cargo(ship),
-             ship_cargo_capacity(ship),
-             player_current_balance(),
-             ship->towed_count,
-             nearby ? "" : "");
-
-    voice_state(state_buf);
-}
-#endif
 
 static void sim_step(float dt) {
     reset_step_feedback();
@@ -1097,9 +995,6 @@ static void init(void) {
     avatar_init();
     hull_fog_init();
 
-#ifdef SIGNAL_VOICE
-    voice_init();
-#endif
 
     g.pass_action.colors[0].load_action = SG_LOADACTION_CLEAR;
     g.pass_action.colors[0].clear_value = (sg_color){ 0.018f, 0.024f, 0.045f, 1.0f };
@@ -1800,9 +1695,6 @@ static void frame(void) {
      * path which fills the summary directly (see TODO in src/net.c). */
     if (!g.multiplayer_enabled) refresh_station_manifest_summaries();
 
-#ifdef SIGNAL_VOICE
-    voice_emit_state_throttled(frame_dt);
-#endif
 
     audio_generate_stream(&g.audio);
 
@@ -1815,9 +1707,6 @@ static void frame(void) {
 }
 
 static void cleanup(void) {
-#ifdef SIGNAL_VOICE
-    voice_quit();
-#endif
     avatar_shutdown();
     episode_shutdown(&g.episode);
     music_shutdown(&g.music);
