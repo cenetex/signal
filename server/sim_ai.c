@@ -8,6 +8,7 @@
 #include "sim_nav.h"
 #include "sim_flight.h"
 #include "sim_production.h" /* sim_can_smelt_ore for miner asteroid filter */
+#include "sim_mining.h"
 #include "signal_model.h"
 #include "manifest.h"
 #include "ship.h"
@@ -1478,6 +1479,17 @@ void step_npc_ships(world_t *w, float dt) {
             float standoff = a->radius + 60.0f;
             float approach_r = standoff + 20.0f;
 
+            /* If we got shoved past mining range entirely (NPC↔NPC
+             * collision, fracture knockback, gravity), drop back to
+             * TRAVEL so the renderer doesn't keep drawing a beam to a
+             * target we can't actually fire at. The MINING state is
+             * for ships in firing position, not for "approaching from
+             * across the map". */
+            if (dist_sq > MINING_RANGE * MINING_RANGE) {
+                npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+                break;
+            }
+
             if (dist_sq > approach_r * approach_r) {
                 npc_steer_toward(npc, a->pos, hull->accel, hull->turn_speed, dt);
                 npc_apply_physics(npc, hull->drag, dt, w);
@@ -1504,14 +1516,31 @@ void step_npc_ships(world_t *w, float dt) {
             npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (4.0f * dt)));
             npc_apply_physics(npc, hull->drag, dt, w);
 
-            float mined = hull->mining_rate * dt;
-            mined = fminf(mined, a->hp);
-            a->hp -= mined;
-            a->net_dirty = true;
+            /* Strict range+cone gate before firing — same metric the player
+             * uses. Without this, NPCs that get shoved (NPC↔NPC collision,
+             * gravity, fracture knockback) used to keep the MINING state
+             * and beam-render across the map. If we lost the firing line,
+             * fall back to TRAVEL so steering pulls us back into range. */
+            ship_t view = ship_view_from_npc(npc);
+            vec2 forward = v2_from_angle(npc->angle);
+            vec2 muzzle = ship_muzzle(npc->pos, npc->angle, &view);
+            int mining_level = (int)hull->mining_rate >= 1 ? 99 : 0; /* NPCs ignore tier */
+            float sig_eff = signal_mining_efficiency(signal_strength_at(w, npc->pos));
+            mining_beam_t mb = sim_mining_beam_step(w, muzzle, forward,
+                npc->target_asteroid, mining_level,
+                hull->mining_rate, sig_eff, /*fracturer*/ -1, dt);
 
-            if (a->hp <= 0.01f) {
-                vec2 outward = v2_norm(v2_sub(a->pos, npc->pos));
-                fracture_asteroid(w, npc->target_asteroid, outward, -1);
+            if (!mb.fired && !mb.fractured) {
+                /* Out of range / cone — let TRAVEL re-acquire instead of
+                 * sitting here lit up. Player path naturally re-acquires
+                 * via cone search; NPC path uses target_asteroid + state. */
+                if (dist_sq > MINING_RANGE * MINING_RANGE) {
+                    npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+                }
+                break;
+            }
+
+            if (mb.fractured) {
                 npc->target_asteroid = -1;
 
                 /* Grab the nearest S-tier fragment to tow home */

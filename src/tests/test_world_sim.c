@@ -1173,6 +1173,45 @@ TEST(test_chunk_respects_belt_density) {
     ASSERT(total > 0); /* at least some asteroids near the belt */
 }
 
+/* #294 slice 2 regression: an NPC in MINING state that is shoved past
+ * MINING_RANGE used to keep firing its beam across the map (no exit
+ * condition + center-distance entry test). After the unification, the
+ * shared sim_mining_beam_step refuses fire at long range, and the NPC
+ * MINING state drops back to TRAVEL when out of MINING_RANGE. */
+TEST(test_npc_mining_drops_state_when_far_from_target) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w->npc_ships[i].active = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+
+    npc_ship_t *npc = &w->npc_ships[0];
+    npc->active = true;
+    npc->role = NPC_ROLE_MINER;
+    npc->state = NPC_STATE_MINING;
+    npc->home_station = 0;
+    npc->target_asteroid = 0;
+    npc->hull_class = HULL_CLASS_MINER;
+    npc->hull = 100.0f;
+    npc->pos = v2(0.0f, 0.0f);
+    npc->vel = v2(0.0f, 0.0f);
+    npc->angle = 0.0f;
+
+    asteroid_t *a = &w->asteroids[0];
+    a->active = true;
+    a->tier = ASTEROID_TIER_M;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->radius = 30.0f;
+    a->hp = 40.0f;
+    a->max_hp = 40.0f;
+    a->pos = v2(800.0f, 0.0f); /* well outside MINING_RANGE (170u) */
+
+    float hp_before = a->hp;
+    for (int i = 0; i < 60; i++) world_sim_step(w, 1.0f / 120.0f);
+
+    ASSERT_EQ_FLOAT(a->hp, hp_before, 0.001f);
+    ASSERT(npc->state != NPC_STATE_MINING);
+}
+
 void register_world_sim_basic_tests(void) {
     TEST_SECTION("\nWorld sim tests:\n");
     RUN(test_world_reset_creates_stations);
@@ -1192,6 +1231,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_station_production_without_manifest_inputs_refuses_to_mint);
     RUN(test_world_sim_step_events_emitted);
     RUN(test_world_sim_step_npc_miners_work);
+    RUN(test_npc_mining_drops_state_when_far_from_target);
     RUN(test_world_network_writes_persist);
 }
 

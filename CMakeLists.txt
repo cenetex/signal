@@ -53,6 +53,7 @@ set(SIGNAL_SIM_SOURCES
     server/sim_physics.c
     server/sim_production.c
     server/sim_construction.c
+    server/sim_mining.c
 )
 
 # Shared libraries used by both sim and client render — pure C, no

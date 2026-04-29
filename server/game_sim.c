@@ -30,6 +30,7 @@
 #include "sim_physics.h"
 #include "sim_production.h"
 #include "sim_construction.h"
+#include "sim_mining.h"
 #include "signal_model.h"
 #include "rng.h"
 #include "sha256.h"   /* signal_chain_hash_block */
@@ -2348,28 +2349,21 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
             }
             return;
         }
-        vec2 to_a = v2_sub(a->pos, muzzle);
-        vec2 normal = v2_norm(to_a);
-        sp->beam_end = v2_sub(a->pos, v2_scale(normal, a->radius * 0.85f));
-        sp->beam_hit = true;
-        /* Check if laser is powerful enough for this tier */
-        asteroid_tier_t max_tier = max_mineable_tier(sp->ship.mining_level);
-        if (a->tier < max_tier) {
-            /* Beam hits but does no damage — too tough */
-            sp->beam_ineffective = true;
-        } else {
+        /* Shared mining-beam kernel: range/cone/tier/signal/damage all
+         * applied identically here as in NPC fire. Player owns
+         * hover_asteroid acquisition (cone search + manual hint), the
+         * helper owns "given that target, what does one tick do?" */
+        mining_beam_t mb = sim_mining_beam_step(w, muzzle, forward,
+            sp->hover_asteroid, sp->ship.mining_level,
+            ship_mining_rate(&sp->ship), signal_mining_efficiency(cached_signal),
+            (int8_t)sp->id, dt);
+        sp->beam_end = mb.beam_end;
+        sp->beam_hit = mb.hit;
+        sp->beam_ineffective = mb.ineffective;
+        if (mb.fired)
             emit_event(w, (sim_event_t){.type = SIM_EVENT_MINING_TICK, .player_id = sp->id});
-            if (!w->player_only_mode) {
-                float mined = ship_mining_rate(&sp->ship) * dt * signal_mining_efficiency(cached_signal);
-                mined = fminf(mined, a->hp);
-                a->hp -= mined;
-                a->net_dirty = true;
-                if (a->hp <= 0.01f) {
-                    fracture_asteroid(w, sp->hover_asteroid, normal, (int8_t)sp->id);
-                    sp->ship.stat_asteroids_fractured++;
-                }
-            }
-        }
+        if (mb.fractured)
+            sp->ship.stat_asteroids_fractured++;
     } else {
         /* No asteroid target — check for scan targets */
         if (find_scan_target(w, sp, muzzle, forward)) {
