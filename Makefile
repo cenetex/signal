@@ -1,21 +1,25 @@
-.PHONY: all build build-web build-server build-test test crap dev dev-logs dev-clean stop deploy clean
+.PHONY: all build build-web build-server build-test test test-fast crap dev dev-logs dev-clean stop deploy clean
 
 all: build build-web build-server
 
+# Use Ninja if installed — significantly faster parallel builds and
+# better dependency tracking than Make. Falls back to Make otherwise.
+GENERATOR := $(shell command -v ninja >/dev/null 2>&1 && echo "-G Ninja")
+
 # --- Native desktop client ---
 build:
-	cmake -S . -B build
-	cmake --build build --target signal
+	cmake $(GENERATOR) -S . -B build
+	cmake --build build --target signal --parallel
 
 # --- Emscripten web client ---
 build-web:
-	emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$$(git rev-parse --short HEAD)
-	cmake --build build-web
+	emcmake cmake $(GENERATOR) -S . -B build-web -DCMAKE_BUILD_TYPE=Release -DGIT_HASH=$$(git rev-parse --short HEAD)
+	cmake --build build-web --parallel
 
 # --- Headless game server ---
 build-server:
-	cmake -S . -B build
-	cmake --build build --target signal_server
+	cmake $(GENERATOR) -S . -B build
+	cmake --build build --target signal_server --parallel
 
 # --- Tests ---
 # Always rebuild signal_test from current source before running, so a stale
@@ -25,11 +29,52 @@ build-server:
 TEST_QUIET := $(if $(TEST_VERBOSE),,--quiet)
 
 build-test:
-	cmake -S . -B build -DCMAKE_BUILD_TYPE=Debug
-	cmake --build build --target signal_test
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=Debug
+	cmake --build build --target signal_test --parallel
 
+# Default `test` is serial — the suite has shared `/tmp/test_*.sav`
+# paths and order-coupled global catalog state, so naive sharding races.
+# See `make test-fast` for the opt-in parallel runner.
 test: build-test
 	./build/signal_test $(TEST_QUIET)
+
+# Parallel sharded runner (opt-in). The harness supports --shard=K/N
+# already; we just fan out across cores. Caveat: ~5 tests in
+# test_save / test_construction / test_manifest are order-coupled
+# through global catalog state and may flake when sharded. Use this for
+# fast iteration on areas you know are independent (math, commodity,
+# economy, navigation) — fall back to `make test` before pushing.
+NCORES := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
+TEST_SHARDS ?= $(shell echo $$(( $(NCORES) < 8 ? $(NCORES) : 8 )))
+
+test-fast: build-test
+	@echo "[test-fast] $(TEST_SHARDS) shards in parallel — heads-up: order-coupled tests may flake; use 'make test' before pushing."
+	@rm -f /tmp/signal-test-shard.*.log /tmp/signal-test-shard.*.exit
+	@for i in $$(seq 0 $$(($(TEST_SHARDS) - 1))); do \
+		( ./build/signal_test --shard=$$i/$(TEST_SHARDS) $(TEST_QUIET) \
+			> /tmp/signal-test-shard.$$i.log 2>&1; \
+		  echo $$? > /tmp/signal-test-shard.$$i.exit ) & \
+	done; \
+	wait; \
+	fail=0; total_run=0; total_passed=0; total_failed=0; \
+	for i in $$(seq 0 $$(($(TEST_SHARDS) - 1))); do \
+		ec=$$(cat /tmp/signal-test-shard.$$i.exit); \
+		if [ "$$ec" != "0" ]; then \
+			echo ""; echo "=== shard $$i failed (exit $$ec) ==="; \
+			cat /tmp/signal-test-shard.$$i.log; \
+			fail=1; \
+		fi; \
+		line=$$(grep -E "^[0-9]+ tests run" /tmp/signal-test-shard.$$i.log | tail -1); \
+		r=$$(echo $$line | awk '{print $$1}'); \
+		p=$$(echo $$line | awk '{print $$4}'); \
+		f=$$(echo $$line | awk '{print $$6}'); \
+		total_run=$$(( total_run + $${r:-0} )); \
+		total_passed=$$(( total_passed + $${p:-0} )); \
+		total_failed=$$(( total_failed + $${f:-0} )); \
+	done; \
+	echo ""; \
+	echo "$$total_run tests run, $$total_passed passed, $$total_failed failed (across $(TEST_SHARDS) shards)"; \
+	exit $$fail
 
 # --- CRAP (Change Risk Anti-Patterns): complexity * (1 - coverage) ---
 # Rebuilds signal_test with --coverage, runs it, then joins gcovr line
@@ -91,3 +136,4 @@ deploy:
 
 clean:
 	rm -rf build build-web build-test build-coverage coverage.json crap.json
+	rm -f /tmp/signal-test-shard.*.log /tmp/signal-test-shard.*.exit

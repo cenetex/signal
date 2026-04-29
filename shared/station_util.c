@@ -54,6 +54,30 @@ int station_spawn_fee(const station_t *st) {
     }
 }
 
+int station_furnace_count(const station_t *st) {
+    int n = 0;
+    if (!st) return 0;
+    for (int m = 0; m < st->module_count; m++) {
+        if (st->modules[m].type != MODULE_FURNACE) continue;
+        if (st->modules[m].scaffold) continue;
+        n++;
+    }
+    return n;
+}
+
+bool station_can_smelt(const station_t *st, commodity_t ore) {
+    if (!st) return false;
+    if (!station_has_module(st, MODULE_HOPPER)) return false;
+    int n = station_furnace_count(st);
+    if (n <= 0) return false;
+    switch (ore) {
+        case COMMODITY_FERRITE_ORE: return n == 1 || n == 2;
+        case COMMODITY_CUPRITE_ORE: return n >= 2;
+        case COMMODITY_CRYSTAL_ORE: return n >= 3;
+        default: return false;
+    }
+}
+
 bool station_consumes(const station_t *st, commodity_t c) {
     /* Shipyards consume frame + laser + tractor as kit-fab inputs.
      * Without this branch, a player who fills a frame contract at
@@ -62,9 +86,9 @@ bool station_consumes(const station_t *st, commodity_t c) {
      * though the kit fab will happily eat any extras. */
     bool is_shipyard = station_has_module(st, MODULE_SHIPYARD);
     switch (c) {
-        case COMMODITY_FERRITE_ORE:   return station_has_module(st, MODULE_FURNACE);
-        case COMMODITY_CUPRITE_ORE:   return station_has_module(st, MODULE_FURNACE_CU);
-        case COMMODITY_CRYSTAL_ORE:   return station_has_module(st, MODULE_FURNACE_CR);
+        case COMMODITY_FERRITE_ORE:   return station_can_smelt(st, COMMODITY_FERRITE_ORE);
+        case COMMODITY_CUPRITE_ORE:   return station_can_smelt(st, COMMODITY_CUPRITE_ORE);
+        case COMMODITY_CRYSTAL_ORE:   return station_can_smelt(st, COMMODITY_CRYSTAL_ORE);
         case COMMODITY_FERRITE_INGOT: return station_has_module(st, MODULE_FRAME_PRESS);
         case COMMODITY_CUPRITE_INGOT:
             return station_has_module(st, MODULE_LASER_FAB) ||
@@ -82,9 +106,9 @@ bool station_consumes(const station_t *st, commodity_t c) {
 
 bool station_produces(const station_t *st, commodity_t c) {
     switch (c) {
-        case COMMODITY_FERRITE_INGOT: return station_has_module(st, MODULE_FURNACE);
-        case COMMODITY_CUPRITE_INGOT: return station_has_module(st, MODULE_FURNACE_CU);
-        case COMMODITY_CRYSTAL_INGOT: return station_has_module(st, MODULE_FURNACE_CR);
+        case COMMODITY_FERRITE_INGOT: return station_can_smelt(st, COMMODITY_FERRITE_ORE);
+        case COMMODITY_CUPRITE_INGOT: return station_can_smelt(st, COMMODITY_CUPRITE_ORE);
+        case COMMODITY_CRYSTAL_INGOT: return station_can_smelt(st, COMMODITY_CRYSTAL_ORE);
         case COMMODITY_FRAME:         return station_has_module(st, MODULE_FRAME_PRESS);
         case COMMODITY_LASER_MODULE:  return station_has_module(st, MODULE_LASER_FAB);
         case COMMODITY_TRACTOR_MODULE:return station_has_module(st, MODULE_TRACTOR_FAB);
@@ -109,7 +133,7 @@ void rebuild_station_services(station_t *st) {
 
 module_type_t station_dominant_module(const station_t *st) {
     static const module_type_t priority[] = {
-        MODULE_FURNACE_CU, MODULE_FURNACE_CR, MODULE_FURNACE,
+        MODULE_FURNACE,
         MODULE_FRAME_PRESS, MODULE_LASER_FAB,
         MODULE_TRACTOR_FAB, MODULE_SIGNAL_RELAY, MODULE_HOPPER,
     };
@@ -134,10 +158,17 @@ commodity_t station_primary_buy(const station_t *st) {
 
 commodity_t station_primary_sell(const station_t *st) {
     module_type_t dom = station_dominant_module(st);
+    /* For dominant=FURNACE we infer the smelt output from the count
+     * tier: 3+ means crystal is the headline product, 2 means cuprite,
+     * 1 means ferrite. Stations whose dominant module isn't a furnace
+     * keep the existing fab-based primary sell. */
+    if (dom == MODULE_FURNACE) {
+        int n = station_furnace_count(st);
+        if (n >= 3) return COMMODITY_CRYSTAL_INGOT;
+        if (n == 2) return COMMODITY_CUPRITE_INGOT;
+        if (n == 1) return COMMODITY_FERRITE_INGOT;
+    }
     switch (dom) {
-        case MODULE_FURNACE:     return COMMODITY_FERRITE_INGOT;
-        case MODULE_FURNACE_CU:  return COMMODITY_CUPRITE_INGOT;
-        case MODULE_FURNACE_CR:  return COMMODITY_CRYSTAL_INGOT;
         case MODULE_FRAME_PRESS: return COMMODITY_FRAME;
         case MODULE_LASER_FAB:   return COMMODITY_LASER_MODULE;
         case MODULE_TRACTOR_FAB: return COMMODITY_TRACTOR_MODULE;

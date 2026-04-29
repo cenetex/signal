@@ -198,23 +198,12 @@ static bool producer_recipe_for_module(module_type_t mt, producer_recipe_t *out_
            out_recipe->output == module_schema_output(mt);
 }
 
+/* The count-tier rules live in shared/station_util.c
+ * (`station_can_smelt`, `station_furnace_count`) so the client-side
+ * dock UI can use the same predicate. The sim wrapper here just adds
+ * the existing public symbol so the rest of game_sim.c keeps working. */
 bool sim_can_smelt_ore(const station_t *st, commodity_t ore) {
-    switch (ore) {
-        case COMMODITY_FERRITE_ORE: return station_has_module(st, MODULE_FURNACE);
-        case COMMODITY_CUPRITE_ORE: return station_has_module(st, MODULE_FURNACE_CU);
-        case COMMODITY_CRYSTAL_ORE: return station_has_module(st, MODULE_FURNACE_CR);
-        default: return false;
-    }
-}
-
-/* What ore type a furnace module smelts. Returns -1 for non-furnaces. */
-static commodity_t furnace_ore_type(module_type_t mt) {
-    switch (mt) {
-        case MODULE_FURNACE:    return COMMODITY_FERRITE_ORE;
-        case MODULE_FURNACE_CU: return COMMODITY_CUPRITE_ORE;
-        case MODULE_FURNACE_CR: return COMMODITY_CRYSTAL_ORE;
-        default: return (commodity_t)-1;
-    }
+    return station_can_smelt(st, ore);
 }
 
 
@@ -228,27 +217,46 @@ void sim_step_refinery_production(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
 
-        /* Count active furnaces with ore to smelt */
-        int active = 0;
-        for (int m = 0; m < st->module_count; m++) {
-            module_type_t mt = st->modules[m].type;
-            if (mt != MODULE_FURNACE && mt != MODULE_FURNACE_CU && mt != MODULE_FURNACE_CR) continue;
-            if (st->modules[m].scaffold) continue;
-            commodity_t ore = furnace_ore_type(mt);
-            if (ore < 0 || st->inventory[ore] <= 0.01f) continue;
-            active++;
+        /* Count-tier smelt: each station declares which ores its furnace
+         * stack can process via sim_can_smelt_ore. Build the per-tick
+         * task list once, then divide the throughput across active
+         * (furnace × ore) pairs so a 3-furnace stack doesn't outrun a
+         * 1-furnace one on the same ore stockpile. */
+        commodity_t smeltable[3] = { COMMODITY_FERRITE_ORE,
+                                     COMMODITY_CUPRITE_ORE,
+                                     COMMODITY_CRYSTAL_ORE };
+        int n_furnaces = station_furnace_count(st);
+        if (n_furnaces == 0) continue;
+        if (n_furnaces > REFINERY_MAX_FURNACES) n_furnaces = REFINERY_MAX_FURNACES;
+        int active_ores = 0;
+        for (int oi = 0; oi < 3; oi++) {
+            commodity_t ore = smeltable[oi];
+            if (!sim_can_smelt_ore(st, ore)) continue;
+            if (st->inventory[ore] <= 0.01f) continue;
+            active_ores++;
         }
-        if (active == 0) continue;
-        if (active > REFINERY_MAX_FURNACES) active = REFINERY_MAX_FURNACES;
-        float rate = REFINERY_BASE_SMELT_RATE / (float)active;
+        if (active_ores == 0) continue;
+        /* Total throughput = base × furnace_count, split evenly across
+         * the ore types currently smelting. */
+        float total_rate = REFINERY_BASE_SMELT_RATE * (float)n_furnaces;
+        float rate = total_rate / (float)active_ores;
 
-        /* Smelt per furnace */
-        for (int m = 0; m < st->module_count; m++) {
-            module_type_t mt = st->modules[m].type;
-            if (mt != MODULE_FURNACE && mt != MODULE_FURNACE_CU && mt != MODULE_FURNACE_CR) continue;
+        /* Round-robin furnace slot indices so each ore stream lands on a
+         * distinct furnace's output buffer when more than one is
+         * present — the flow graph downstream still sees per-module
+         * production deltas. */
+        int furnace_slots[REFINERY_MAX_FURNACES];
+        int n_slots = 0;
+        for (int m = 0; m < st->module_count && n_slots < REFINERY_MAX_FURNACES; m++) {
+            if (st->modules[m].type != MODULE_FURNACE) continue;
             if (st->modules[m].scaffold) continue;
-            commodity_t ore = furnace_ore_type(mt);
-            if (ore < 0 || st->inventory[ore] <= 0.01f) continue;
+            furnace_slots[n_slots++] = m;
+        }
+        int next_furnace = 0;
+        for (int oi = 0; oi < 3; oi++) {
+            commodity_t ore = smeltable[oi];
+            if (!sim_can_smelt_ore(st, ore)) continue;
+            if (st->inventory[ore] <= 0.01f) continue;
             commodity_t ingot = commodity_refined_form(ore);
             float room = MAX_PRODUCT_STOCK - st->inventory[ingot];
             if (room <= 0.01f) continue;
@@ -264,12 +272,15 @@ void sim_step_refinery_production(world_t *w, float dt) {
             origin[7] = (uint8_t)('0' + (s % 10));
             station_finished_accumulate(st, ingot, consume, origin);
             /* Mirror to module output buffer for the flow graph (#280).
-             * Capped at the schema's per-module buffer capacity. */
-            float cap = module_buffer_capacity(mt);
-            if (cap > 0.0f) {
-                float overflow = (st->module_output[m] + consume) - cap;
+             * Round-robin across the furnace slots so each smelt ore
+             * has a distinct anchor. */
+            int slot_idx = furnace_slots[next_furnace % (n_slots > 0 ? n_slots : 1)];
+            next_furnace++;
+            float cap = module_buffer_capacity(MODULE_FURNACE);
+            if (cap > 0.0f && n_slots > 0) {
+                float overflow = (st->module_output[slot_idx] + consume) - cap;
                 float to_buffer = (overflow > 0.0f) ? consume - overflow : consume;
-                if (to_buffer > 0.0f) st->module_output[m] += to_buffer;
+                if (to_buffer > 0.0f) st->module_output[slot_idx] += to_buffer;
             }
         }
     }
@@ -294,7 +305,7 @@ void sim_step_station_production(world_t *w, float dt) {
             const module_schema_t *schema = module_schema(mt);
             if (schema->kind != MODULE_KIND_PRODUCER) continue;
             /* Furnaces handled separately in sim_step_refinery_production */
-            if (mt == MODULE_FURNACE || mt == MODULE_FURNACE_CU || mt == MODULE_FURNACE_CR) continue;
+            if (mt == MODULE_FURNACE) continue;
             if (!producer_recipe_for_module(mt, &recipe)) continue;
 
             commodity_t input_com = recipe.primary_input;
@@ -418,23 +429,18 @@ void step_furnace_smelting(world_t *w, float dt) {
             station_t *st = &w->stations[s];
             if (st->scaffold) continue;
 
-            /* Find furnace+target pairs: furnace on one ring, nearest module on next ring */
+            /* Station-level capability gate: a furnace only fires if
+             * the station's count tier covers this commodity. Stops the
+             * "Helios with no ferrite capability still pulling ferrite
+             * fragments" failure mode under the new rules. */
+            if (!sim_can_smelt_ore(st, a->commodity)) continue;
+
+            /* Find furnace+target pairs: any furnace on the station can
+             * anchor the beam, paired with the nearest module on an
+             * adjacent ring. */
             for (int m = 0; m < st->module_count && !smelted; m++) {
                 if (st->modules[m].scaffold) continue;
-                bool is_furnace = (st->modules[m].type == MODULE_FURNACE)
-                               || (st->modules[m].type == MODULE_FURNACE_CU)
-                               || (st->modules[m].type == MODULE_FURNACE_CR);
-                if (!is_furnace) continue;
-
-                /* Furnaces only smelt their own ore type. Without this
-                 * gate, Prospect's ferrite furnace would pull cuprite
-                 * and crystal fragments into its beam (and produce
-                 * inventory drift in either direction depending on
-                 * commodity_refined_form behavior). The fragment stays
-                 * free so the player can route it to the matching
-                 * smelter. */
-                commodity_t furnace_ore = furnace_ore_type(st->modules[m].type);
-                if ((int)furnace_ore < 0 || a->commodity != furnace_ore) continue;
+                if (st->modules[m].type != MODULE_FURNACE) continue;
 
                 /* Output cap: refuse to engage the beam if the station's
                  * ingot stockpile is already full. Without this, smelts
@@ -445,7 +451,7 @@ void step_furnace_smelting(world_t *w, float dt) {
                  * player gets visible feedback that this station can't
                  * accept it (no tractor pull, no smelt) and can route
                  * to a station with room. */
-                commodity_t furnace_ingot = commodity_refined_form(furnace_ore);
+                commodity_t furnace_ingot = commodity_refined_form(a->commodity);
                 if (st->inventory[furnace_ingot] + a->ore > MAX_PRODUCT_STOCK)
                     continue;  /* hopper full — skip this furnace */
 

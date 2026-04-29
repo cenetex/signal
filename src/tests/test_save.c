@@ -494,10 +494,14 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     ASSERT_EQ_INT((int)restored.slot, (int)orig.slot);
     ASSERT_EQ_INT((int)restored.scaffold, (int)orig.scaffold);
     ASSERT_EQ_FLOAT(restored.build_progress, orig.build_progress, 0.001f);
-    /* modules[3] = ore_silo on ring 2 */
+    /* modules[3] = hopper on ring 2 (added by the count-tier furnace
+     * rework). modules[4] = the original ore_silo on ring 2. */
     station_module_t mod3 = loaded->stations[0].modules[3];
-    ASSERT(mod3.type == MODULE_ORE_SILO);
+    ASSERT(mod3.type == MODULE_HOPPER);
     ASSERT_EQ_INT((int)mod3.ring, 2);
+    station_module_t mod4 = loaded->stations[0].modules[4];
+    ASSERT(mod4.type == MODULE_ORE_SILO);
+    ASSERT_EQ_INT((int)mod4.ring, 2);
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
     remove("/tmp/test_modules.sav");
@@ -571,7 +575,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 33);
+    ASSERT_EQ_INT((int)version, 34);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

@@ -14,18 +14,6 @@
 /* Player autopilot — server-side AI driving the player's own ship    */
 /* ================================================================== */
 
-/* Map a ferrite/cuprite/crystal ore commodity to the matching furnace
- * module type. Returns MODULE_COUNT when the commodity is not a smeltable
- * ore (e.g. nothing towed yet). */
-static module_type_t furnace_for_ore(commodity_t ore) {
-    switch (ore) {
-        case COMMODITY_FERRITE_ORE: return MODULE_FURNACE;
-        case COMMODITY_CUPRITE_ORE: return MODULE_FURNACE_CU;
-        case COMMODITY_CRYSTAL_ORE: return MODULE_FURNACE_CR;
-        default: return MODULE_COUNT;
-    }
-}
-
 /* What ore commodity is the player carrying right now? Picks the first
  * towed fragment's commodity. Returns COMMODITY_COUNT when nothing is
  * towed. */
@@ -40,17 +28,15 @@ static commodity_t autopilot_towed_commodity(const world_t *w, const server_play
     return COMMODITY_COUNT;
 }
 
-/* True if the station has the furnace required to smelt `ore`. When `ore`
- * is COMMODITY_COUNT (nothing towed), accept any furnace — we just need a
- * place to land. */
-static bool station_can_smelt_ore(const station_t *st, commodity_t ore) {
-    module_type_t want = furnace_for_ore(ore);
-    if (want == MODULE_COUNT) {
-        return station_has_module(st, MODULE_FURNACE) ||
-               station_has_module(st, MODULE_FURNACE_CU) ||
-               station_has_module(st, MODULE_FURNACE_CR);
+/* True if the station can smelt `ore` under the count-tier rules. When
+ * `ore` is COMMODITY_COUNT (nothing towed), accept any station with at
+ * least one furnace + a hopper — we just need somewhere to land. */
+static bool station_can_smelt_ore_for_autopilot(const station_t *st, commodity_t ore) {
+    if (ore == COMMODITY_COUNT) {
+        return station_has_module(st, MODULE_HOPPER) &&
+               station_has_module(st, MODULE_FURNACE);
     }
-    return station_has_module(st, want);
+    return station_can_smelt(st, ore);
 }
 
 /* Compute the smelt-beam drop point for `ore` at `st`: the midpoint of a
@@ -59,16 +45,16 @@ static bool station_can_smelt_ore(const station_t *st, commodity_t ore) {
  * fragments will actually be pulled in. Falls back to the station center
  * when no furnace+silo pair exists. */
 static vec2 station_smelt_drop_point(const station_t *st, commodity_t ore) {
-    module_type_t want = furnace_for_ore(ore);
+    /* All furnaces are equivalent for parking purposes; the count tier
+     * still has to permit smelting of `ore` for the beam to fire, but
+     * any furnace anchors the geometry. */
+    (void)ore;
     vec2 best_mid = st->pos;
     float best_silo_d = 1e18f;
     bool found = false;
     for (int m = 0; m < st->module_count; m++) {
         if (st->modules[m].scaffold) continue;
-        module_type_t mt = st->modules[m].type;
-        bool is_furn = (mt == MODULE_FURNACE) || (mt == MODULE_FURNACE_CU) || (mt == MODULE_FURNACE_CR);
-        if (!is_furn) continue;
-        if (want != MODULE_COUNT && mt != want) continue;
+        if (st->modules[m].type != MODULE_FURNACE) continue;
         int ring = st->modules[m].ring;
         vec2 furnace_pos = module_world_pos_ring(st, ring, st->modules[m].slot);
         int adj_rings[2] = { ring + 1, ring - 1 };
@@ -103,7 +89,7 @@ static int autopilot_find_refinery(const world_t *w, const server_player_t *sp) 
         const station_t *st = &w->stations[s];
         if (!station_is_active(st)) continue;
         if (!station_has_module(st, MODULE_DOCK)) continue;
-        if (!station_can_smelt_ore(st, ore)) continue;
+        if (!station_can_smelt_ore_for_autopilot(st, ore)) continue;
         float d = v2_dist_sq(sp->ship.pos, st->pos);
         if (d < best_d) { best_d = d; best = s; }
     }
@@ -115,7 +101,7 @@ static int autopilot_find_refinery(const world_t *w, const server_player_t *sp) 
             const station_t *st = &w->stations[s];
             if (!station_is_active(st)) continue;
             if (!station_has_module(st, MODULE_DOCK)) continue;
-            if (!station_can_smelt_ore(st, COMMODITY_COUNT)) continue;
+            if (!station_can_smelt_ore_for_autopilot(st, COMMODITY_COUNT)) continue;
             float d = v2_dist_sq(sp->ship.pos, st->pos);
             if (d < best_d) { best_d = d; best = s; }
         }

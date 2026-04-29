@@ -230,9 +230,13 @@ typedef enum {
 typedef enum {
     MODULE_DOCK,
     MODULE_HOPPER,            /* ore intake + beam anchor for furnaces */
-    MODULE_FURNACE,           /* smelts ferrite ore */
-    MODULE_FURNACE_CU,        /* smelts cuprite ore */
-    MODULE_FURNACE_CR,        /* smelts crystal ore */
+    /* Single-type furnace: which ores it can smelt is determined by the
+     * station's furnace count, not the module subtype. 1 furnace ⇒
+     * ferrite only; 2 ⇒ cuprite (ferrite blocked); 3 ⇒ cuprite + crystal
+     * (ferrite still blocked). The MODULE_FURNACE_CU and MODULE_FURNACE_CR
+     * subtypes were collapsed away in the count-tier rework — save
+     * migration in sim_save.c remaps both back to MODULE_FURNACE. */
+    MODULE_FURNACE,
     MODULE_REPAIR_BAY,
     MODULE_SIGNAL_RELAY,
     MODULE_FRAME_PRESS,

@@ -613,7 +613,7 @@ static bool plan_mode_handle_exit(input_intent_t *intent, bool ghost_mode) {
 static void plan_mode_handle_cycle_type(input_intent_t *intent) {
     if (!is_key_pressed(SAPP_KEYCODE_R)) return;
     static const module_type_t plannable[] = {
-        MODULE_FURNACE, MODULE_FURNACE_CU, MODULE_FURNACE_CR,
+        MODULE_FURNACE,
         MODULE_FRAME_PRESS, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
         MODULE_ORE_SILO, MODULE_CARGO_BAY,
         MODULE_REPAIR_BAY, MODULE_SIGNAL_RELAY, MODULE_DOCK,

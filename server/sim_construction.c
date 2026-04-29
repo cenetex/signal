@@ -86,9 +86,31 @@ void activate_outpost(world_t *w, int station_idx) {
     SIM_LOG("[sim] outpost %d activated (signal_range=%.0f)\n", station_idx, OUTPOST_SIGNAL_RANGE);
 }
 
+/* Per-ring furnace cap: at most one furnace per ring. The count-tier
+ * smelt rules want furnaces spread across rings (1/ring → ferrite,
+ * 2 rings → cuprite, 3 rings → crystal), so stacking two on the same
+ * ring is both useless for tier progression and visually crowded.
+ * Counts BUILDING + AWAITING_SUPPLY scaffolds too — placing a second
+ * furnace in the same ring while the first is still under construction
+ * would slip past a count-only check. */
+static bool ring_already_has_furnace(const station_t *st, int ring) {
+    if (!st) return false;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].ring != ring) continue;
+        if (st->modules[i].type != MODULE_FURNACE) continue;
+        return true;
+    }
+    return false;
+}
+
 /* Add a scaffold module to a station and generate a supply contract */
 void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int arm, int chain_pos) {
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
+    if (type == MODULE_FURNACE && ring_already_has_furnace(st, arm)) {
+        SIM_LOG("[sim] refused FURNACE on station %d ring %d — already has one\n",
+                station_idx, arm);
+        return;
+    }
 
     station_module_t *m = &st->modules[st->module_count++];
     m->type = type;
@@ -166,7 +188,7 @@ void step_module_activation(world_t *w, float dt) {
                 m->build_progress = 1.0f;
                 rebuild_station_services(st);
                 rebuild_signal_chain(w);
-                if (st->modules[i].type == MODULE_FURNACE || st->modules[i].type == MODULE_FURNACE_CU || st->modules[i].type == MODULE_FURNACE_CR)
+                if (st->modules[i].type == MODULE_FURNACE)
                     spawn_npc(w, s, NPC_ROLE_MINER);
                 if (st->modules[i].type == MODULE_FRAME_PRESS || st->modules[i].type == MODULE_LASER_FAB || st->modules[i].type == MODULE_TRACTOR_FAB)
                     spawn_npc(w, s, NPC_ROLE_HAULER);

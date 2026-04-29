@@ -761,15 +761,24 @@ TEST(test_scenario_npc_economy_30_seconds) {
     }
     ASSERT(any_mined);
 
-    /* Verify: refinery has processed some ore (inventory > 0 for at least one ingot) */
+    /* Verify: at least one station has either an ingot in stock or
+     * raw ore mid-smelt. Originally checked station[0] only, but the
+     * count-tier rework gave Helios all three furnaces; on machines
+     * where Prospect's 1-furnace pipeline runs slower than Helios's
+     * 3-furnace one, station[0] can stay quiet for the first minute
+     * even though the economy is clearly working. Looking at every
+     * station catches both ends. */
     bool any_ingot = false;
-    for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
-        if (w.stations[0].inventory[i] > 0.0f) { any_ingot = true; break; }
+    for (int s = 0; s < MAX_STATIONS && !any_ingot; s++) {
+        for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
+            if (w.stations[s].inventory[i] > 0.0f) { any_ingot = true; break; }
+        }
     }
-    /* Also check if ore_buffer was consumed (smelting happened) */
     bool ore_consumed = false;
-    for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
-        if (w.stations[0].inventory[i] > 0.0f) { ore_consumed = true; break; }
+    for (int s = 0; s < MAX_STATIONS && !ore_consumed; s++) {
+        for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
+            if (w.stations[s].inventory[i] > 0.0f) { ore_consumed = true; break; }
+        }
     }
     ASSERT(any_ingot || ore_consumed);
 

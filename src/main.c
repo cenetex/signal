@@ -298,11 +298,14 @@ static bool check_hail_condition(hail_cond_t cond) {
         return ship->mining_level == 0 && ship->hold_level == 0
             && ship->tractor_level == 0;
     case HAIL_COND_NO_SPECIALTY_FURNACE:
+        /* True when at least one outpost station hasn't yet built up to
+         * the cuprite-capable furnace tier (≥2 furnaces). The legacy
+         * specialised CU/CR furnace types collapsed into MODULE_FURNACE
+         * at the count-tier rework — a "specialty" stack is now defined
+         * as 2+ furnaces. */
         for (int s = 3; s < MAX_STATIONS; s++) {
             if (!station_is_active(&g.world.stations[s])) continue;
-            if (!station_has_module(&g.world.stations[s], MODULE_FURNACE_CU)
-                && !station_has_module(&g.world.stations[s], MODULE_FURNACE_CR))
-                return true;
+            if (station_furnace_count(&g.world.stations[s]) < 2) return true;
         }
         return false;
     case HAIL_COND_ONE_OUTPOST: {
@@ -1572,9 +1575,15 @@ static void render_world(void) {
             /* Module-specific info + action hint */
             commodity_t sell_c = -1;
             switch (tm->type) {
-                case MODULE_FURNACE:     sell_c = COMMODITY_FERRITE_INGOT; break;
-                case MODULE_FURNACE_CU:  sell_c = COMMODITY_CUPRITE_INGOT; break;
-                case MODULE_FURNACE_CR:  sell_c = COMMODITY_CRYSTAL_INGOT; break;
+                case MODULE_FURNACE: {
+                    /* Headline ingot follows the count tier: 3+ → crystal,
+                     * 2 → cuprite, 1 → ferrite. */
+                    int n = station_furnace_count(&g.world.stations[LOCAL_PLAYER.current_station]);
+                    if (n >= 3)      sell_c = COMMODITY_CRYSTAL_INGOT;
+                    else if (n == 2) sell_c = COMMODITY_CUPRITE_INGOT;
+                    else             sell_c = COMMODITY_FERRITE_INGOT;
+                    break;
+                }
                 case MODULE_FRAME_PRESS: sell_c = COMMODITY_FRAME; break;
                 case MODULE_LASER_FAB:   sell_c = COMMODITY_LASER_MODULE; break;
                 case MODULE_TRACTOR_FAB: sell_c = COMMODITY_TRACTOR_MODULE; break;

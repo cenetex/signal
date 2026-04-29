@@ -29,6 +29,18 @@ bool          station_consumes(const station_t *st, commodity_t c);
 bool          station_produces(const station_t *st, commodity_t c);
 void          rebuild_station_services(station_t *st);
 
+/* Count active (non-scaffold) MODULE_FURNACE modules. The count drives
+ * the smelt-tier rules below. */
+int           station_furnace_count(const station_t *st);
+
+/* Count-tier smelt capability, shared between sim + client (the client
+ * uses it to label dock UI rows and station persona text):
+ *   1 furnace  → ferrite only
+ *   2 furnaces → ferrite + cuprite
+ *   3+ furnaces → cuprite + crystal (ferrite blocked)
+ * Always requires ≥1 hopper. */
+bool          station_can_smelt(const station_t *st, commodity_t ore);
+
 /* Display / trade derivations from the dominant module. */
 module_type_t station_dominant_module(const station_t *st);
 commodity_t   station_primary_buy(const station_t *st);

@@ -3555,9 +3555,7 @@ static void step_contracts(world_t *w, float dt) {
         /* Priority 3: ore hopper with biggest deficit (ore slot).
          * Ore contracts are inventory-driven — fulfilled by fragment smelting, not cargo
          * delivery. quantity_needed is unused; contract closes when inventory > 80%. */
-        if (!need.active && !has_ore_contract && (station_has_module(st, MODULE_FURNACE)
-            || station_has_module(st, MODULE_FURNACE_CU)
-            || station_has_module(st, MODULE_FURNACE_CR))) {
+        if (!need.active && !has_ore_contract && station_has_module(st, MODULE_FURNACE)) {
             float worst_deficit = 0.0f;
             int worst_ore = -1;
             for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
@@ -3715,9 +3713,11 @@ static const float SCAFFOLD_DRAG = 0.98f;  /* gentle drag when loose */
 module_type_t producer_module_for_commodity(commodity_t c) {
     switch (c) {
         case COMMODITY_FRAME:         return MODULE_FRAME_PRESS;
-        case COMMODITY_FERRITE_INGOT: return MODULE_FURNACE;
-        case COMMODITY_CUPRITE_INGOT: return MODULE_FURNACE_CU;
-        case COMMODITY_CRYSTAL_INGOT: return MODULE_FURNACE_CR;
+        /* All ingot tiers come from MODULE_FURNACE; the count tier on
+         * the station gates which ones can mint. */
+        case COMMODITY_FERRITE_INGOT:
+        case COMMODITY_CUPRITE_INGOT:
+        case COMMODITY_CRYSTAL_INGOT: return MODULE_FURNACE;
         default:                      return MODULE_COUNT;
     }
 }
@@ -4602,11 +4602,15 @@ void world_reset(world_t *w) {
     w->stations[0].base_price[COMMODITY_LASER_MODULE]   = 30.0f;
     w->stations[0].base_price[COMMODITY_TRACTOR_MODULE] = 38.0f;
     w->stations[0].signal_range = 18000.0f;
-    /* Ring 1: dock + relay + furnace (furnace beams to Ring 2 ore silo) */
+    /* Ring 1: dock + relay + furnace (3 slots — STATION_RING_SLOTS[1]=3).
+     * Hopper sits on ring 2 because ring 1 is full; the count-tier
+     * smelt rules require a hopper anywhere on the station, not
+     * specifically adjacent to the furnace. */
     add_module_at(&w->stations[0], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 1);
     add_module_at(&w->stations[0], MODULE_FURNACE, 1, 2);
-    /* Ring 2: ore silo (incomplete ring — gaps are natural) */
+    /* Ring 2: hopper (smelt unlock) + ore silo. */
+    add_module_at(&w->stations[0], MODULE_HOPPER, 2, 2);
     add_module_at(&w->stations[0], MODULE_ORE_SILO, 2, 3);
     w->stations[0].arm_count = 2;
     w->stations[0].arm_speed[0] = STATION_RING_SPEED;
@@ -4674,28 +4678,30 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
     /* Helios imports frames for its dock kit fab. */
     w->stations[2].base_price[COMMODITY_FRAME]          = 22.0f;
-    /* No ferrite ingots produced or imported here — Helios has no
-     * frame press; ferrite ingots travel Prospect → Kepler. */
+    /* No ferrite ingots produced or imported here — Helios runs at the
+     * 3-furnace tier, which the new count rules deliberately gate
+     * against ferrite. The ferrite-ingot pipeline stays Prospect's. */
     w->stations[2].base_price[COMMODITY_FERRITE_INGOT]  = 0.0f;
-    /* Ring 1: dock + relay + ore silo. No ferrite furnace — ferrite
-     * smelting is Prospect's specialty and Helios depends on hauled-in
-     * frames for its kit fab. Keeping FURNACE off the manifest here
-     * preserves the 3-tier chain (Prospect T1, Kepler T2, Helios T3). */
+    /* Three furnaces — one per ring (per-ring cap is hard-coded into
+     * the construction validator). At count=3 the smelt rules unlock
+     * cuprite + crystal and explicitly block ferrite, so Helios reads
+     * as the high-tier specialist station. Hopper sits on ring 2
+     * (ring 1 only has 3 slots and is already full with dock/relay
+     * /furnace). */
     add_module_at(&w->stations[2], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
-    add_module_at(&w->stations[2], MODULE_ORE_SILO, 1, 2);
-    /* Ring 2: ore silo + copper/crystal furnaces + services */
-    add_module_at(&w->stations[2], MODULE_ORE_SILO, 2, 0);
-    add_module_at(&w->stations[2], MODULE_FURNACE_CU, 2, 1);
-    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 2, 2);
-    add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 3);
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 4);
-    /* Ring 3: silos + advanced smelting overflow + services */
-    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 0);
-    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 1);
-    add_module_at(&w->stations[2], MODULE_FURNACE_CU, 3, 2);
-    add_module_at(&w->stations[2], MODULE_FURNACE_CR, 3, 3);
-    add_module_at(&w->stations[2], MODULE_SHIPYARD, 3, 4);
+    add_module_at(&w->stations[2], MODULE_FURNACE, 1, 2);
+    /* Ring 2: hopper + furnace + fabs + storage */
+    add_module_at(&w->stations[2], MODULE_HOPPER, 2, 0);
+    add_module_at(&w->stations[2], MODULE_FURNACE, 2, 1);
+    add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 2);
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 3);
+    add_module_at(&w->stations[2], MODULE_ORE_SILO, 2, 4);
+    /* Ring 3: furnace + shipyard + overflow silos */
+    add_module_at(&w->stations[2], MODULE_FURNACE, 3, 0);
+    add_module_at(&w->stations[2], MODULE_SHIPYARD, 3, 1);
+    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 2);
+    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 3);
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[0] = STATION_RING_SPEED;
     w->stations[2].ring_offset[0] = 0.0f;

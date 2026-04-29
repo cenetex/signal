@@ -63,10 +63,6 @@ TEST(test_station_dominant_module_priority) {
     ASSERT_EQ_INT(station_dominant_module(&st), MODULE_TRACTOR_FAB);
     seed_single_module_station(&st, MODULE_FURNACE);
     ASSERT_EQ_INT(station_dominant_module(&st), MODULE_FURNACE);
-    seed_single_module_station(&st, MODULE_FURNACE_CU);
-    ASSERT_EQ_INT(station_dominant_module(&st), MODULE_FURNACE_CU);
-    seed_single_module_station(&st, MODULE_FURNACE_CR);
-    ASSERT_EQ_INT(station_dominant_module(&st), MODULE_FURNACE_CR);
     seed_single_module_station(&st, MODULE_SIGNAL_RELAY);
     ASSERT_EQ_INT(station_dominant_module(&st), MODULE_SIGNAL_RELAY);
     seed_single_module_station(&st, MODULE_HOPPER);
@@ -76,9 +72,9 @@ TEST(test_station_dominant_module_priority) {
     memset(&st, 0, sizeof st);
     st.modules[0].type = MODULE_HOPPER;
     st.modules[1].type = MODULE_TRACTOR_FAB;
-    st.modules[2].type = MODULE_FURNACE_CR;
+    st.modules[2].type = MODULE_FURNACE;
     st.module_count = 3;
-    ASSERT_EQ_INT(station_dominant_module(&st), MODULE_FURNACE_CR);
+    ASSERT_EQ_INT(station_dominant_module(&st), MODULE_FURNACE);
 
     /* Priority: FRAME_PRESS beats LASER_FAB beats TRACTOR_FAB beats SIGNAL_RELAY. */
     memset(&st, 0, sizeof st);
@@ -108,11 +104,21 @@ TEST(test_station_primary_buy_per_dominant_module) {
 
 TEST(test_station_primary_sell_per_dominant_module) {
     station_t st = {0};
+    /* 1 furnace ⇒ ferrite headline. */
     seed_single_module_station(&st, MODULE_FURNACE);
     ASSERT_EQ_INT(station_primary_sell(&st), COMMODITY_FERRITE_INGOT);
-    seed_single_module_station(&st, MODULE_FURNACE_CU);
+    /* 2 furnaces ⇒ cuprite headline. */
+    memset(&st, 0, sizeof st);
+    st.modules[0].type = MODULE_FURNACE;
+    st.modules[1].type = MODULE_FURNACE;
+    st.module_count = 2;
     ASSERT_EQ_INT(station_primary_sell(&st), COMMODITY_CUPRITE_INGOT);
-    seed_single_module_station(&st, MODULE_FURNACE_CR);
+    /* 3 furnaces ⇒ crystal headline. */
+    memset(&st, 0, sizeof st);
+    st.modules[0].type = MODULE_FURNACE;
+    st.modules[1].type = MODULE_FURNACE;
+    st.modules[2].type = MODULE_FURNACE;
+    st.module_count = 3;
     ASSERT_EQ_INT(station_primary_sell(&st), COMMODITY_CRYSTAL_INGOT);
     seed_single_module_station(&st, MODULE_FRAME_PRESS);
     ASSERT_EQ_INT(station_primary_sell(&st), COMMODITY_FRAME);
@@ -128,11 +134,14 @@ TEST(test_station_primary_sell_per_dominant_module) {
 
 TEST(test_producer_module_for_commodity) {
     /* Pure switch — pin every branch so refactors of module priority
-     * can't silently swap which furnace makes which ingot. */
+     * can't silently swap which module makes a given commodity. All
+     * three ingot tiers map to MODULE_FURNACE under the count-tier
+     * rules (the runtime sim_can_smelt rules pick which ingot a given
+     * stack actually mints). */
     ASSERT_EQ_INT(producer_module_for_commodity(COMMODITY_FRAME),         MODULE_FRAME_PRESS);
     ASSERT_EQ_INT(producer_module_for_commodity(COMMODITY_FERRITE_INGOT), MODULE_FURNACE);
-    ASSERT_EQ_INT(producer_module_for_commodity(COMMODITY_CUPRITE_INGOT), MODULE_FURNACE_CU);
-    ASSERT_EQ_INT(producer_module_for_commodity(COMMODITY_CRYSTAL_INGOT), MODULE_FURNACE_CR);
+    ASSERT_EQ_INT(producer_module_for_commodity(COMMODITY_CUPRITE_INGOT), MODULE_FURNACE);
+    ASSERT_EQ_INT(producer_module_for_commodity(COMMODITY_CRYSTAL_INGOT), MODULE_FURNACE);
     /* Default branch — raw ore inputs and module commodities have no
      * direct producer module; shipyard_intake_rate falls back to a
      * trickle when this returns MODULE_COUNT. */

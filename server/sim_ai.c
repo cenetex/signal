@@ -1574,7 +1574,7 @@ void step_npc_ships(world_t *w, float dt) {
             vec2 delivery_target = home->pos;
             for (int fm = 0; fm < home->module_count; fm++) {
                 module_type_t fmt = home->modules[fm].type;
-                if (fmt != MODULE_FURNACE && fmt != MODULE_FURNACE_CU && fmt != MODULE_FURNACE_CR) continue;
+                if (fmt != MODULE_FURNACE) continue;
                 if (home->modules[fm].scaffold) continue;
                 delivery_target = module_world_pos_ring(home, home->modules[fm].ring, home->modules[fm].slot);
                 break;

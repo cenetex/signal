@@ -62,7 +62,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 33  /* npc_ship_t.session_token added (per-NPC ledger accounts) */
+#define SAVE_VERSION 34  /* MODULE_FURNACE_CU/_CR collapsed into MODULE_FURNACE */
 /* v31 widened inventory[] / base_price[] by one slot (REPAIR_KIT). v32
  * appends npc_ship_t.hull (a single float, version-gated read so v31
  * saves still load with default hull). MIN stays at 31 so we don't
@@ -849,6 +849,62 @@ bool world_load(world_t *w, const char *path) {
                 continue;
             }
             w->scaffolds[i].module_type = (module_type_t)new_t;
+        }
+    }
+
+    /* v34: MODULE_FURNACE_CU/_CR were collapsed into a single
+     * MODULE_FURNACE — the count of furnaces on a station now decides
+     * what it can smelt. Old saves stored module type bytes from the
+     * pre-collapse enum where:
+     *   0 DOCK, 1 HOPPER, 2 FURNACE, 3 FURNACE_CU, 4 FURNACE_CR,
+     *   5 REPAIR_BAY, 6 SIGNAL_RELAY, 7 FRAME_PRESS, 8 LASER_FAB,
+     *   9 TRACTOR_FAB, 10 ORE_SILO, 11 SHIPYARD, 12 CARGO_BAY.
+     * Map old 3 and 4 to FURNACE (new 2), shift 5..12 down by two. The
+     * per-ring 1-furnace cap is enforced going forward; old saves that
+     * carry two furnace subtypes on the same ring will keep both — the
+     * runtime never tries to *add* extras and `station_furnace_count`
+     * just reads what's there. (Helios's seeded layout is the only
+     * known case, and the fresh seed below already drops it to 1/ring.) */
+    if (version < 34) {
+        static const int FURNACE_REMAP[13] = {
+            0,  /* old 0  DOCK         -> DOCK         (new 0) */
+            1,  /* old 1  HOPPER       -> HOPPER       (new 1) */
+            2,  /* old 2  FURNACE      -> FURNACE      (new 2) */
+            2,  /* old 3  FURNACE_CU   -> FURNACE      (new 2) */
+            2,  /* old 4  FURNACE_CR   -> FURNACE      (new 2) */
+            3,  /* old 5  REPAIR_BAY   -> REPAIR_BAY   (new 3) */
+            4,  /* old 6  SIGNAL_RELAY -> SIGNAL_RELAY (new 4) */
+            5,  /* old 7  FRAME_PRESS  -> FRAME_PRESS  (new 5) */
+            6,  /* old 8  LASER_FAB    -> LASER_FAB    (new 6) */
+            7,  /* old 9  TRACTOR_FAB  -> TRACTOR_FAB  (new 7) */
+            8,  /* old 10 ORE_SILO     -> ORE_SILO     (new 8) */
+            9,  /* old 11 SHIPYARD     -> SHIPYARD     (new 9) */
+            10, /* old 12 CARGO_BAY    -> CARGO_BAY    (new 10) */
+        };
+        for (int i = 0; i < MAX_STATIONS; i++) {
+            station_t *st = &w->stations[i];
+            for (int m = 0; m < st->module_count; m++) {
+                int old_t = (int)st->modules[m].type;
+                if (old_t >= 0 && old_t < 13)
+                    st->modules[m].type = (module_type_t)FURNACE_REMAP[old_t];
+            }
+            for (int p = 0; p < st->pending_scaffold_count; p++) {
+                int old_t = (int)st->pending_scaffolds[p].type;
+                if (old_t >= 0 && old_t < 13)
+                    st->pending_scaffolds[p].type = (module_type_t)FURNACE_REMAP[old_t];
+            }
+            for (int p = 0; p < st->placement_plan_count; p++) {
+                int old_t = (int)st->placement_plans[p].type;
+                if (old_t >= 0 && old_t < 13)
+                    st->placement_plans[p].type = (module_type_t)FURNACE_REMAP[old_t];
+            }
+            rebuild_station_services(st);
+        }
+        for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+            if (!w->scaffolds[i].active) continue;
+            int old_t = (int)w->scaffolds[i].module_type;
+            if (old_t >= 0 && old_t < 13)
+                w->scaffolds[i].module_type = (module_type_t)FURNACE_REMAP[old_t];
         }
     }
 

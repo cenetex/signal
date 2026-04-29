@@ -301,8 +301,6 @@ static void module_color(module_type_t type, float *r, float *g, float *b) {
     case MODULE_FRAME_PRESS:  PAL_UNPACK3(PAL_MODULE_FRAME_PRESS,  *r, *g, *b); return;
     case MODULE_LASER_FAB:    PAL_UNPACK3(PAL_MODULE_LASER_FAB,    *r, *g, *b); return;
     case MODULE_TRACTOR_FAB:  PAL_UNPACK3(PAL_MODULE_TRACTOR_FAB,  *r, *g, *b); return;
-    case MODULE_FURNACE_CU:   PAL_UNPACK3(PAL_MODULE_FURNACE_CU,   *r, *g, *b); return;
-    case MODULE_FURNACE_CR:   PAL_UNPACK3(PAL_MODULE_FURNACE_CR,   *r, *g, *b); return;
     case MODULE_SIGNAL_RELAY: PAL_UNPACK3(PAL_MODULE_SIGNAL_RELAY,  *r, *g, *b); return;
     case MODULE_REPAIR_BAY:   PAL_UNPACK3(PAL_MODULE_REPAIR_BAY,    *r, *g, *b); return;
     case MODULE_SHIPYARD:     PAL_UNPACK3(PAL_MODULE_SHIPYARD,      *r, *g, *b); return;
@@ -439,10 +437,8 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
         break;
     }
 
-    /* ---- FURNACE (all ore types): Circle ---- */
-    case MODULE_FURNACE:
-    case MODULE_FURNACE_CU:
-    case MODULE_FURNACE_CR: {
+    /* ---- FURNACE: Circle ---- */
+    case MODULE_FURNACE: {
         /* Filled circle hull */
         fill_circle_local(0, 0, 28, 20, mr*0.30f, mg*0.30f, mb*0.30f, alpha);
         /* Ore-type accent glow — warm layered halo */
@@ -850,7 +846,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             draw_module_at(positions[i], angle, m->type, m->scaffold, m->build_progress, station->pos);
 
             /* Furnace: glow + red laser beam to target module when smelting */
-            if (!m->scaffold && (m->type == MODULE_FURNACE || m->type == MODULE_FURNACE_CU || m->type == MODULE_FURNACE_CR)) {
+            if (!m->scaffold && m->type == MODULE_FURNACE) {
                 float fr, fg, fb;
                 module_color(m->type, &fr, &fg, &fb);
                 float pulse = 0.3f + 0.15f * sinf(g.world.time * 3.0f + (float)m->slot);
@@ -935,8 +931,8 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                         if (station->modules[mi2].scaffold) continue;
                         module_type_t st = station->modules[mi2].type;
                         /* Suppliers: furnaces, silos, or other producers */
-                        bool is_supplier = (st == MODULE_FURNACE || st == MODULE_FURNACE_CU ||
-                                           st == MODULE_FURNACE_CR || st == MODULE_ORE_SILO ||
+                        bool is_supplier = (st == MODULE_FURNACE ||
+                                           st == MODULE_ORE_SILO ||
                                            st == MODULE_CARGO_BAY);
                         if (!is_supplier) continue;
                         vec2 sp = module_world_pos_ring(station, station->modules[mi2].ring,
@@ -1354,8 +1350,7 @@ void draw_hopper_tractors(void) {
         for (int m = 0; m < st->module_count; m++) {
             if (st->modules[m].scaffold) continue;
             module_type_t mt = st->modules[m].type;
-            if (mt != MODULE_FURNACE && mt != MODULE_FURNACE_CU && mt != MODULE_FURNACE_CR
-                && mt != MODULE_ORE_SILO) continue;
+            if (mt != MODULE_FURNACE && mt != MODULE_ORE_SILO) continue;
             vec2 mp = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
             if (!on_screen(mp.x, mp.y, pull_range + 50.0f)) continue;
 
@@ -1715,10 +1710,14 @@ static bool resolve_tracked_contract_target(vec2 *out_pos, float *out_radius) {
              * actual world position, not the station center. The furnace
              * is what eats the ore; the player needs to fly that ring. */
             const station_t *st = &g.world.stations[ct->station_index];
-            module_type_t want = (ct->commodity == COMMODITY_FERRITE_ORE) ? MODULE_FURNACE
-                              : (ct->commodity == COMMODITY_CUPRITE_ORE) ? MODULE_FURNACE_CU
-                              : (ct->commodity == COMMODITY_CRYSTAL_ORE) ? MODULE_FURNACE_CR
-                              : (module_type_t)-1;
+            /* Any furnace anchors the smelt beam now — the count tier
+             * determines which ore it'll accept, but the visual ring
+             * just needs to land on a furnace module. */
+            module_type_t want = (ct->commodity == COMMODITY_FERRITE_ORE
+                               || ct->commodity == COMMODITY_CUPRITE_ORE
+                               || ct->commodity == COMMODITY_CRYSTAL_ORE)
+                                ? MODULE_FURNACE
+                                : (module_type_t)-1;
             bool found_mod = false;
             for (int m = 0; m < st->module_count; m++) {
                 if (st->modules[m].scaffold) continue;
@@ -2387,9 +2386,11 @@ void draw_scaffold_tether(void) {
 static module_type_t producer_for_commodity_client(commodity_t c) {
     switch (c) {
         case COMMODITY_FRAME:         return MODULE_FRAME_PRESS;
-        case COMMODITY_FERRITE_INGOT: return MODULE_FURNACE;
-        case COMMODITY_CUPRITE_INGOT: return MODULE_FURNACE_CU;
-        case COMMODITY_CRYSTAL_INGOT: return MODULE_FURNACE_CR;
+        /* All three ingots come from the same physical module type now;
+         * the count tier on the station decides which ones it can mint. */
+        case COMMODITY_FERRITE_INGOT:
+        case COMMODITY_CUPRITE_INGOT:
+        case COMMODITY_CRYSTAL_INGOT: return MODULE_FURNACE;
         default:                      return MODULE_COUNT;
     }
 }

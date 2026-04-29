@@ -642,22 +642,28 @@ TEST(test_repair_partial_when_kits_short) {
     ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull - 20.0f, 0.01f);
 }
 
-TEST(test_furnace_without_adjacent_hopper_smelts) {
-    /* Furnaces smelt from station inventory regardless of adjacency. */
+TEST(test_furnace_without_hopper_does_not_smelt) {
+    /* Under the count-tier rules, a furnace requires at least one
+     * hopper on the station before it'll fire. Inverse of the prior
+     * test (which asserted a furnace alone would smelt) — that's the
+     * exact behavior we removed in the rework. */
     WORLD_DECL;
     world_reset(&w);
-    /* Remove all modules from station 0 and place furnace alone */
     w.stations[0].module_count = 0;
     rebuild_station_services(&w.stations[0]);
     w.stations[0].modules[0] = (station_module_t){ .type = MODULE_FURNACE, .ring = 2, .slot = 0, .scaffold = false, .build_progress = 1.0f };
     w.stations[0].module_count = 1;
-    /* Furnace is isolated — no hopper — but should still smelt */
     w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 100.0f;
     float initial_ingots = w.stations[0].inventory[COMMODITY_FERRITE_INGOT];
-    /* Run sim for 5 seconds */
     for (int i = 0; i < (int)(5.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
-    /* Smelting should have occurred — furnaces smelt directly from inventory */
+    ASSERT_EQ_FLOAT(w.stations[0].inventory[COMMODITY_FERRITE_INGOT],
+                    initial_ingots, 0.001f);
+    /* Add a hopper and let it run again — now it should smelt. */
+    w.stations[0].modules[1] = (station_module_t){ .type = MODULE_HOPPER, .ring = 1, .slot = 0, .scaffold = false, .build_progress = 1.0f };
+    w.stations[0].module_count = 2;
+    for (int i = 0; i < (int)(5.0f / SIM_DT); i++)
+        world_sim_step(&w, SIM_DT);
     ASSERT(w.stations[0].inventory[COMMODITY_FERRITE_INGOT] > initial_ingots);
 }
 
@@ -786,9 +792,59 @@ void register_economy_service259_tests(void) {
     RUN(test_no_passive_heal_without_kits);
 }
 
+/* Count-tier smelt rules pinned: the matrix below is the contract the
+ * gameplay design rests on. Any future tweak to station_can_smelt
+ * has to update this test and the design notes together. */
+TEST(test_count_tier_smelt_rules) {
+    station_t st = {0};
+    /* 0 furnaces: nothing smelts even with a hopper. */
+    st.modules[0].type = MODULE_HOPPER;
+    st.module_count = 1;
+    ASSERT(!station_can_smelt(&st, COMMODITY_FERRITE_ORE));
+    ASSERT(!station_can_smelt(&st, COMMODITY_CUPRITE_ORE));
+    ASSERT(!station_can_smelt(&st, COMMODITY_CRYSTAL_ORE));
+
+    /* 1 furnace + hopper: ferrite only. */
+    st.modules[1].type = MODULE_FURNACE;
+    st.module_count = 2;
+    ASSERT(station_can_smelt(&st, COMMODITY_FERRITE_ORE));
+    ASSERT(!station_can_smelt(&st, COMMODITY_CUPRITE_ORE));
+    ASSERT(!station_can_smelt(&st, COMMODITY_CRYSTAL_ORE));
+
+    /* 2 furnaces + hopper: ferrite + cuprite. */
+    st.modules[2].type = MODULE_FURNACE;
+    st.module_count = 3;
+    ASSERT(station_can_smelt(&st, COMMODITY_FERRITE_ORE));
+    ASSERT(station_can_smelt(&st, COMMODITY_CUPRITE_ORE));
+    ASSERT(!station_can_smelt(&st, COMMODITY_CRYSTAL_ORE));
+
+    /* 3 furnaces + hopper: cuprite + crystal (ferrite explicitly off). */
+    st.modules[3].type = MODULE_FURNACE;
+    st.module_count = 4;
+    ASSERT(!station_can_smelt(&st, COMMODITY_FERRITE_ORE));
+    ASSERT(station_can_smelt(&st, COMMODITY_CUPRITE_ORE));
+    ASSERT(station_can_smelt(&st, COMMODITY_CRYSTAL_ORE));
+
+    /* 1 furnace, no hopper: nothing smelts (hopper required). */
+    memset(&st, 0, sizeof st);
+    st.modules[0].type = MODULE_FURNACE;
+    st.module_count = 1;
+    ASSERT(!station_can_smelt(&st, COMMODITY_FERRITE_ORE));
+
+    /* Scaffold furnaces don't count. */
+    memset(&st, 0, sizeof st);
+    st.modules[0].type = MODULE_HOPPER;
+    st.modules[1].type = MODULE_FURNACE;
+    st.modules[1].scaffold = true;
+    st.module_count = 2;
+    ASSERT_EQ_INT(station_furnace_count(&st), 0);
+    ASSERT(!station_can_smelt(&st, COMMODITY_FERRITE_ORE));
+}
+
 void register_economy_refinery_smelt_tests(void) {
     TEST_SECTION("\nRefinery smelt test:\n");
     RUN(test_refinery_smelts_ore_in_inventory);
-    RUN(test_furnace_without_adjacent_hopper_smelts);
+    RUN(test_furnace_without_hopper_does_not_smelt);
+    RUN(test_count_tier_smelt_rules);
 }
 

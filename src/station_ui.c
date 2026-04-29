@@ -157,8 +157,6 @@ void station_role_color(const station_t* station, float* r, float* g0, float* b)
     module_type_t dom = station_dominant_module(station);
     switch (dom) {
         case MODULE_FURNACE:     PAL_UNPACK3(PAL_MODULE_FURNACE,     *r, *g0, *b); break;
-        case MODULE_FURNACE_CU:  PAL_UNPACK3(PAL_MODULE_FURNACE_CU,  *r, *g0, *b); break;
-        case MODULE_FURNACE_CR:  PAL_UNPACK3(PAL_MODULE_FURNACE_CR,  *r, *g0, *b); break;
         case MODULE_FRAME_PRESS: PAL_UNPACK3(PAL_MODULE_FRAME_PRESS, *r, *g0, *b); break;
         case MODULE_LASER_FAB:   PAL_UNPACK3(PAL_MODULE_LASER_FAB,   *r, *g0, *b); break;
         case MODULE_TRACTOR_FAB: PAL_UNPACK3(PAL_MODULE_TRACTOR_FAB, *r, *g0, *b); break;
@@ -772,9 +770,11 @@ static void draw_trade_view(const station_ui_state_t *ui,
      * laser line". */
     {
         struct { commodity_t c; module_type_t producer; const char *code; } slots[6] = {
+            /* All three ingots produced by the same MODULE_FURNACE; the
+             * count tier on the station decides which ones can mint. */
             { COMMODITY_FERRITE_INGOT,  MODULE_FURNACE,      "FE" },
-            { COMMODITY_CUPRITE_INGOT,  MODULE_FURNACE_CU,   "CU" },
-            { COMMODITY_CRYSTAL_INGOT,  MODULE_FURNACE_CR,   "CR" },
+            { COMMODITY_CUPRITE_INGOT,  MODULE_FURNACE,      "CU" },
+            { COMMODITY_CRYSTAL_INGOT,  MODULE_FURNACE,      "CR" },
             { COMMODITY_FRAME,          MODULE_FRAME_PRESS,  "FM" },
             { COMMODITY_LASER_MODULE,   MODULE_LASER_FAB,    "LM" },
             { COMMODITY_TRACTOR_MODULE, MODULE_TRACTOR_FAB,  "TM" },

@@ -39,8 +39,13 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .prerequisite = MODULE_SIGNAL_RELAY, /* tier 1 */
     },
     [MODULE_FURNACE] = {
-        .name = "Iron Furnace",
+        .name = "Furnace",
         .kind = MODULE_KIND_PRODUCER,
+        /* The schema input/output reflects this module's *primary* role
+         * in the count-tier system: a single furnace smelts ferrite, so
+         * that's what the producer-recipe path references. The dynamic
+         * tier rules in sim_can_smelt_ore (1=Fe, 2=Fe+Cu, 3=Cu+Cr) live
+         * in sim_production.c and run regardless of this static label. */
         .input = COMMODITY_FERRITE_ORE,
         .output = COMMODITY_FERRITE_INGOT,
         .rate = 1.0f, .buffer_capacity = 12.0f,
@@ -50,32 +55,6 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
         .prerequisite = MODULE_HOPPER, /* tier 2 — needs hopper */
-    },
-    [MODULE_FURNACE_CU] = {
-        .name = "Copper Furnace",
-        .kind = MODULE_KIND_PRODUCER,
-        .input = COMMODITY_CUPRITE_ORE,
-        .output = COMMODITY_CUPRITE_INGOT,
-        .rate = 0.8f, .buffer_capacity = 12.0f,
-        .build_material = 120.0f, .build_commodity = COMMODITY_FRAME,
-        .order_fee = 100,
-        .services = 0,
-        .valid_rings = MODULE_RINGS_OUTER,
-        .variant_count = 0,
-        .prerequisite = MODULE_FRAME_PRESS, /* tier 4 — needs frames */
-    },
-    [MODULE_FURNACE_CR] = {
-        .name = "Crystal Furnace",
-        .kind = MODULE_KIND_PRODUCER,
-        .input = COMMODITY_CRYSTAL_ORE,
-        .output = COMMODITY_CRYSTAL_INGOT,
-        .rate = 0.6f, .buffer_capacity = 12.0f,
-        .build_material = 160.0f, .build_commodity = COMMODITY_FRAME,
-        .order_fee = 125,
-        .services = 0,
-        .valid_rings = MODULE_RINGS_OUTER,
-        .variant_count = 0,
-        .prerequisite = MODULE_FRAME_PRESS, /* tier 4 */
     },
     [MODULE_REPAIR_BAY] = {
         .name = "Repair Bay",
@@ -125,7 +104,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = STATION_SERVICE_UPGRADE_LASER,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
-        .prerequisite = MODULE_FURNACE_CU, /* tier 5 — needs cu ingots */
+        .prerequisite = MODULE_FURNACE, /* tier 5 — needs cu ingots from a 2+ furnace stack */
     },
     [MODULE_TRACTOR_FAB] = {
         .name = "Tractor Fab",
@@ -138,7 +117,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .services = STATION_SERVICE_UPGRADE_TRACTOR,
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
-        .prerequisite = MODULE_FURNACE_CR, /* tier 5 — needs cr ingots */
+        .prerequisite = MODULE_FURNACE, /* tier 5 — needs cr ingots from a 3+ furnace stack */
     },
     [MODULE_ORE_SILO] = {
         .name = "Ore Silo",

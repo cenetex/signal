@@ -516,12 +516,14 @@ TEST(test_station_geom_emitter_prospect) {
     /* Core: Prospect has radius 40 */
     ASSERT(geom.has_core == true);
 
-    /* Circles: dock (half-size) + relay + furnace (ring 1) + ore_silo (ring 2) = 4 */
-    ASSERT(geom.circle_count == 4);
+    /* Circles: dock (half-size) + relay + furnace (ring 1) + hopper +
+     * ore_silo (ring 2) = 5. The hopper was added on ring 2 by the
+     * count-tier furnace rework. */
+    ASSERT(geom.circle_count == 5);
 
-    /* Corridors: relay→furnace (ring 1, slots 1→2) + wrap furnace→dock (ring 1 full, 3 slots)
-     * = 2. Ring 2 has only 1 module so no corridors there. */
-    ASSERT(geom.corridor_count == 2);
+    /* Corridors: ring 1 unchanged (3 modules wrap = 2). Ring 2 now has
+     * 2 modules (hopper at slot 2 + ore_silo at slot 3) so add 1 there. */
+    ASSERT(geom.corridor_count == 3);
 
     /* Docks: 1 dock on ring 1 */
     ASSERT(geom.dock_count == 1);
@@ -1204,10 +1206,11 @@ TEST(test_module_schema_basic_kinds) {
 
 TEST(test_module_schema_producer_io) {
     /* Producers expose their primary input and output commodity. */
+    /* Furnace exposes its primary (ferrite) recipe in the schema; the
+     * cuprite/crystal tiers live in the runtime sim_can_smelt rules,
+     * not the static schema. */
     ASSERT_EQ_INT(module_schema_input(MODULE_FURNACE), COMMODITY_FERRITE_ORE);
     ASSERT_EQ_INT(module_schema_output(MODULE_FURNACE), COMMODITY_FERRITE_INGOT);
-    ASSERT_EQ_INT(module_schema_input(MODULE_FURNACE_CU), COMMODITY_CUPRITE_ORE);
-    ASSERT_EQ_INT(module_schema_output(MODULE_FURNACE_CU), COMMODITY_CUPRITE_INGOT);
     ASSERT_EQ_INT(module_schema_input(MODULE_FRAME_PRESS), COMMODITY_FERRITE_INGOT);
     ASSERT_EQ_INT(module_schema_output(MODULE_FRAME_PRESS), COMMODITY_FRAME);
     ASSERT_EQ_INT(module_schema_input(MODULE_LASER_FAB), COMMODITY_CUPRITE_INGOT);
