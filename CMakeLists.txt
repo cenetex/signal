@@ -11,9 +11,6 @@ set(CMAKE_C_EXTENSIONS OFF)
 option(BUILD_TESTS_ONLY  "Only build the test executable"       OFF)
 option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
 
-# Feature flags
-option(SIGNAL_VOICE "Spawn local voicebox subprocess for TTS chatter" OFF)
-
 # --- GIT_HASH baked into binaries for /health and client mismatch checks ---
 # Captured at configure time. To refresh after a commit/pull without
 # nuking the cache, re-run `cmake -S . -B <build_dir> -DGIT_HASH=$(git
@@ -29,9 +26,6 @@ endif()
 if(NOT GIT_HASH)
     set(GIT_HASH "dev")
 endif()
-
-# --- Fetch voice assets (Kokoro models, voicebox binary) if SIGNAL_VOICE=ON ---
-include(cmake/voice_assets.cmake)
 
 # ------------------------------------------------------------------
 # Canonical source lists — every target picks from these. Adding a
@@ -91,20 +85,6 @@ set(SIGNAL_CLIENT_SOURCES
     src/avatar.c
     src/mining_client.c
 )
-
-if(SIGNAL_VOICE)
-    if(EMSCRIPTEN)
-        list(APPEND SIGNAL_CLIENT_SOURCES src/voice_web.c)
-        # EM_ASM requires gnu extensions ($-in-identifier, statement-exprs).
-        # Override the project-wide -std=c11 + -Wno-dollar-in-identifier
-        # for this one file. -Wno-unused-parameter because the EM_ASM
-        # macro hides parameter use from the C parser.
-        set_source_files_properties(src/voice_web.c PROPERTIES
-            COMPILE_FLAGS "-std=gnu11 -Wno-dollar-in-identifier-extension -Wno-unused-parameter -Wno-variadic-macro-arguments-omitted")
-    else()
-        list(APPEND SIGNAL_CLIENT_SOURCES src/voice.c)
-    endif()
-endif()
 
 set(SIGNAL_INCLUDE_DIRS
     "${CMAKE_CURRENT_SOURCE_DIR}/src"
@@ -292,20 +272,13 @@ if(EMSCRIPTEN)
         "SHELL:--shell-file ${CMAKE_CURRENT_SOURCE_DIR}/web/shell.html"
         "SHELL:-lwebsocket.js"
     )
-    # Copy play.html and voicebox.js into the build-web output dir so they're
-    # reachable from the SimpleHTTP server (and so docker bind-mounts of build-web
-    # serve them without needing the image's COPY layer).
+    # Copy play.html into the build-web output dir so it's reachable from
+    # the SimpleHTTP server (and so docker bind-mounts of build-web serve
+    # it without needing the image's COPY layer).
     add_custom_command(TARGET signal POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             ${CMAKE_CURRENT_SOURCE_DIR}/web/play.html
             ${CMAKE_CURRENT_BINARY_DIR}/play.html
-        COMMAND ${CMAKE_COMMAND} -E copy_if_different
-            ${CMAKE_CURRENT_SOURCE_DIR}/web/voicebox.js
-            ${CMAKE_CURRENT_BINARY_DIR}/voicebox.js
-        # voicebox.js is an ES module that imports from ./voice/{auth,stt,tts,personas}.js
-        COMMAND ${CMAKE_COMMAND} -E copy_directory
-            ${CMAKE_CURRENT_SOURCE_DIR}/web/voice
-            ${CMAKE_CURRENT_BINARY_DIR}/voice
     )
 elseif(APPLE)
     target_link_libraries(signal PRIVATE

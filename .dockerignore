@@ -26,12 +26,3 @@ logs/
 
 # Third-party archives we don't need at build time.
 *.dSYM/
-
-# Voice assets — Kokoro/Whisper model dirs (~400 MB) and the voicebox
-# binary (platform-specific) don't belong in the server image. The server
-# never speaks; voice is client-side. Persona files DO ship since they're
-# tiny and useful for any host that runs the native client locally.
-assets/voice/kokoro/
-assets/voice/whisper/
-assets/voice/voicebox
-assets/voice/voicebox.exe

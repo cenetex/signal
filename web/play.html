@@ -62,33 +62,6 @@
         width: 100%;
         height: 100%;
       }
-
-      /* Voice connect chip — small floating button top-right.
-         Click → OpenRouter PKCE OAuth → Kokoro warms in background → first
-         station hail plays in NAV-7's voice. Falls back to speechSynthesis
-         if Kokoro WASM fails to load in this browser. */
-      #voice-chip {
-        position: fixed;
-        top: 10px;
-        right: 12px;
-        z-index: 30;
-        font: 11px/1.2 "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
-        letter-spacing: 0.04em;
-        padding: 5px 10px;
-        border-radius: 99px;
-        border: 1px solid rgba(245, 239, 223, 0.25);
-        background: rgba(10, 10, 9, 0.78);
-        color: var(--ink);
-        cursor: pointer;
-        backdrop-filter: blur(6px);
-        transition: opacity .25s, background .15s;
-      }
-      #voice-chip:hover { background: rgba(40, 36, 28, 0.92); }
-      #voice-chip.ok    { border-color: rgba(128, 255, 213, 0.55); color: var(--signal); }
-      #voice-chip.warn  { border-color: rgba(241, 181, 102, 0.55); color: var(--ore); }
-      #voice-chip.err   { border-color: rgba(255, 110, 110, 0.55); color: #ffaaaa; }
-      #voice-chip.fade  { opacity: 0.4; }
-      #voice-chip.fade:hover { opacity: 1; }
     </style>
   </head>
   <body>
@@ -97,36 +70,6 @@
 
     <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
 
-    <button id="voice-chip" type="button" title="Connect OpenRouter to enable AI voice">connect voice</button>
-
-    <script type="module" src="voicebox.js"></script>
-    <script>
-      // Voice chip: click to OAuth, polls window.voicebox state to update label.
-      (function () {
-        var chip = document.getElementById('voice-chip');
-        if (!chip) return;
-        function set(t, c) { chip.textContent = t; chip.className = c || ''; }
-        function tick() {
-          var vb = window.voicebox;
-          if (!vb || !vb.isConnected)            { set('connect voice'); return; }
-          if (!vb.isConnected())                 { set('connect voice'); return; }
-          if (vb.isTTSReady && vb.isTTSReady())  { set('voice ✓', 'ok fade'); return; }
-          set('loading kokoro…', 'warn');
-        }
-        chip.onclick = function () {
-          var vb = window.voicebox;
-          if (!vb) { set('voicebox not loaded', 'err'); return; }
-          if (vb.isConnected && vb.isConnected()) {
-            if (confirm('Disconnect OpenRouter and clear cached key?')) { vb.disconnect(); tick(); }
-          } else {
-            set('redirecting…', 'warn');
-            try { vb.connect(); } catch (e) { set('error', 'err'); console.error(e); }
-          }
-        };
-        setInterval(tick, 1000);
-        tick();
-      })();
-    </script>
     <script>
       var canvas = document.getElementById('canvas');
 

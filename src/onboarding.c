@@ -10,7 +10,8 @@
 #include "world_draw.h"
 #include "signal_model.h"  /* SIGNAL_BAND_OPERATIONAL threshold */
 #ifdef SIGNAL_VOICE
-#include "voice.h"
+/* voice_event removed with the voice subsystem; onboarding milestones
+ * still surface as HUD/HINT text via the rest of the onboarding flow. */
 #endif
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -56,16 +57,11 @@ static void complete_step(bool *step) {
 }
 
 static void emit_onboarding_voice(int milestone) {
-#ifdef SIGNAL_VOICE
-    int home_station = nearest_signal_station(LOCAL_PLAYER.ship.pos);
-    if (home_station >= 0 && home_station < 3 && milestone >= 0 && milestone < VOICE_ONBOARD_COUNT) {
-        const char *station_persona[] = {"prospect", "kepler", "helios"};
-        const char *line = STATION_ONBOARD[home_station][milestone];
-        if (line) voice_event(station_persona[home_station], line);
-    }
-#else
+    /* No-op since the voice subsystem was removed. Kept as a stub so the
+     * onboarding flow's call sites still compile and reads as a marker
+     * for "this is where a station hail used to fire" — handy if the
+     * line content is ever reused for HUD subtitles. */
     (void)milestone;
-#endif
 }
 
 void onboarding_mark_moved(void) {

@@ -57,7 +57,6 @@
 #include "onboarding.h"
 #include "signal_model.h"
 #include "mining.h"
-#include "voice.h"
 
 void clear_input_state(void) {
     memset(g.input.key_down, 0, sizeof(g.input.key_down));
@@ -794,26 +793,7 @@ static void sample_autopilot(input_intent_t *intent) {
     intent->toggle_autopilot = true;
 }
 
-/* V: hold-to-talk pilot mic (undocked + strong signal). Sends speech to
- * NAV-7 via voicebox's STT pipeline. Gated by signal strength and docked
- * state. No capture during episode cutscenes. */
-static void sample_voice_mic(void) {
-#ifdef SIGNAL_VOICE
-    bool docked = LOCAL_PLAYER.docked;
-    bool in_episode = episode_is_active(&g.episode);
-
-    if (docked || in_episode) return; /* mic disabled while docked or in cutscenes */
-
-    float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
-    bool mic_should_be_on = (sig >= SIGNAL_BAND_OPERATIONAL) && is_key_down(SAPP_KEYCODE_V);
-
-    static bool mic_was_on = false;
-    if (mic_should_be_on != mic_was_on) {
-        voice_mic_enable(mic_should_be_on);
-        mic_was_on = mic_should_be_on;
-    }
-#endif
-}
+/* sample_voice_mic removed with the voice subsystem. */
 
 input_intent_t sample_input_intent(void) {
     input_intent_t intent = { 0 };
@@ -847,7 +827,6 @@ input_intent_t sample_input_intent(void) {
     sample_music();
     sample_hail(&intent);
     sample_autopilot(&intent);
-    sample_voice_mic();
     return intent;
 }
 

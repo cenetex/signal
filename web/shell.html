@@ -77,30 +77,6 @@
         }
       }
 
-      /* Voice connect button — small floating chip in the top-right.
-       * Hidden once voicebox is connected and Kokoro is warm. */
-      #voice-chip {
-        position: fixed;
-        top: 10px;
-        right: 12px;
-        z-index: 10;
-        font: 11px/1.2 ui-monospace, SFMono-Regular, Menlo, monospace;
-        letter-spacing: 0.04em;
-        padding: 5px 10px;
-        border-radius: 99px;
-        border: 1px solid rgba(150, 198, 255, 0.35);
-        background: rgba(15, 25, 40, 0.78);
-        color: rgba(220, 233, 255, 0.92);
-        cursor: pointer;
-        backdrop-filter: blur(6px);
-        transition: opacity .25s, background .15s;
-      }
-      #voice-chip:hover { background: rgba(35, 55, 80, 0.88); }
-      #voice-chip.ok    { border-color: rgba(124, 245, 152, 0.45); color: rgba(170, 240, 180, 0.92); }
-      #voice-chip.warn  { border-color: rgba(250, 166, 92, 0.45);  color: rgba(255, 200, 130, 0.92); }
-      #voice-chip.err   { border-color: rgba(255, 110, 110, 0.45); color: rgba(255, 170, 170, 0.92); }
-      #voice-chip.fade  { opacity: 0.35; }
-      #voice-chip.fade:hover { opacity: 1; }
     </style>
   </head>
   <body>
@@ -116,55 +92,6 @@
         <canvas id="canvas" oncontextmenu="event.preventDefault()" tabindex="-1"></canvas>
       </div>
     </div>
-    <button id="voice-chip" type="button" title="Connect OpenRouter to enable AI voice">connect voice</button>
-    <script type="module" src="voicebox.js"></script>
-    <script>
-      // Voice chip: drives the OAuth + status display. Polls window.voicebox
-      // (loaded above) and updates label as state transitions: idle → connecting
-      // → connected → voice-warm. Click to start OAuth or to disconnect.
-      (function () {
-        var chip = document.getElementById('voice-chip');
-        if (!chip) return;
-        function set(text, cls) {
-          chip.textContent = text;
-          chip.className = cls || '';
-        }
-        function tick() {
-          var vb = window.voicebox;
-          if (!vb || !vb.isConnected) {
-            set('connect voice');
-            return;
-          }
-          if (vb.isConnected()) {
-            if (vb.isTTSReady && vb.isTTSReady()) {
-              set('voice ✓', 'ok fade');
-            } else {
-              set('loading kokoro…', 'warn');
-            }
-          } else {
-            set('connect voice');
-          }
-        }
-        chip.addEventListener('click', function () {
-          var vb = window.voicebox;
-          if (!vb) return;
-          if (vb.isConnected && vb.isConnected()) {
-            if (confirm('Disconnect OpenRouter and clear cached key?')) {
-              vb.disconnect();
-              tick();
-            }
-          } else {
-            set('redirecting…', 'warn');
-            try { vb.connect(); }
-            catch (e) { set('error', 'err'); console.error(e); }
-          }
-        });
-        // Poll periodically to reflect lazy state changes (TTS warmup,
-        // OAuth-callback completion).
-        setInterval(tick, 1000);
-        tick();
-      })();
-    </script>
     <script>
       var Module = {
         canvas: document.getElementById("canvas"),
