@@ -76,6 +76,8 @@ The economy model is under active redesign toward a stricter 3-tier structure (P
 
 This means haulers and arbitrage are first-class: credits earned at Prospect can't be spent at Helios. Carrying value between stations means carrying *goods*, not currency.
 
+**Stations are sovereign currency issuers.** A station's `credit_pool` can go arbitrarily negative — it represents the running count of currency in circulation, not a bounded resource. There is no money-supply cap, no policy floor, no risk of "the station runs out of money." Cross-station value transfer happens exclusively through goods (the hauler IS the FX desk; the miner is the only source of new value). On-chain wrapping (#480) will eventually allow cross-currency settlement; until then, currency is strictly per-station.
+
 ## Signal
 
 Stations emit signal, and signal range matters mechanically. Weak signal throttles mining speed and ship response; players and NPCs get pushed back toward the connected station chain. `H` while undocked in strong signal hails the nearest station and collects pending supplier credits at the station you're nearest to.

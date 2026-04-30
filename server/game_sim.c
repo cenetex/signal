@@ -3523,8 +3523,10 @@ static void step_contracts(world_t *w, float dt) {
         }
         if (has_ore_contract && has_production_contract && has_kit_input_contract) continue;
 
-        /* Skip contract generation if station is nearly broke */
-        if (st->credit_pool < 100.0f) continue;
+        /* Sovereign station can run negative; pool is informational, so
+         * contract generation is no longer gated on solvency. The
+         * pool_factor below still scales offer pricing — that's a
+         * deliberate (and untouched) pricing dynamic, not a refusal. */
 
         /* Pool factor: rich stations offer better prices.
          * 0.2x at 1000 cr, 1.0x at 5000 cr, 1.5x at 10000+ cr */

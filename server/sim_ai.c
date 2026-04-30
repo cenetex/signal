@@ -345,9 +345,9 @@ static void count_npc_roster(const world_t *w,
 
 /* Spawn at most ONE NPC to fill the largest gap between actual and
  * target roster. Drip-feed (caller gates with npc_respawn_timer) so a
- * full wipe recovers gradually. Gated on station credit_pool > 100 so
- * a broke station can't endlessly mint replacement drones — same bar
- * as the contract dispatcher uses. Returns true if a spawn fired. */
+ * full wipe recovers gradually. Sovereign station can run negative; pool
+ * is informational, so spawning is no longer gated on solvency.
+ * Returns true if a spawn fired. */
 static bool replenish_npc_roster(world_t *w) {
     int miners[MAX_STATIONS], haulers[MAX_STATIONS];
     count_npc_roster(w, miners, haulers);
@@ -360,7 +360,7 @@ static bool replenish_npc_roster(world_t *w) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         int target_m = 0, target_h = 0;
         station_target_npc_counts(s, &w->stations[s], &target_m, &target_h);
-        if (w->stations[s].credit_pool < 100.0f) continue;
+        /* Sovereign station can run negative; pool is informational. */
         int short_m = target_m - miners[s];
         int short_h = target_h - haulers[s];
         if (short_m > best_shortfall) {
