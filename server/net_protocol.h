@@ -474,7 +474,9 @@ static inline int serialize_stations(uint8_t *buf, const station_t *stations) {
         p[0] = (uint8_t)i;
         for (int c = 0; c < COMMODITY_COUNT; c++)
             write_f32_le(&p[1 + c * 4], st->_inventory_cache[c]);
-        write_f32_le(&p[1 + COMMODITY_COUNT * 4], st->credit_pool);
+        /* Derived from -Σ(ledger.balance); the field was removed but
+         * the wire shape is preserved so old clients still parse. */
+        write_f32_le(&p[1 + COMMODITY_COUNT * 4], station_credit_pool(st));
         count++;
     }
     buf[0] = NET_MSG_WORLD_STATIONS;

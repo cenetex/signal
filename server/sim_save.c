@@ -78,14 +78,15 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 42  /* Layer D of #479 — per-ship cargo_receipt_t chains
-                          * persisted alongside the ship manifest tail in
-                          * each player save (PLY7). v41 saves migrate
-                          * forward with empty receipt chains; the loading
-                          * station treats existing cargo as origin-attested
-                          * and signs a fresh receipt on the next
-                          * transaction. world.sav format itself is
-                          * unchanged at v42 (layout matches v41).
+#define SAVE_VERSION 43  /* credit_pool field eliminated — pool is now derived
+                          * from -Σ(ledger.balance) via station_credit_pool().
+                          * world.sav drops 4 bytes per existing station in
+                          * write_station_session; v42 saves still load (the
+                          * stored value is read into a discard then ignored —
+                          * the value is recomputable from the loaded ledger).
+                          * v42 (Layer D #479): per-ship cargo_receipt_t
+                          * chains persisted alongside the ship manifest
+                          * tail in each player save (PLY7).
                           * v41 (Layer C): per-station chain log state
                           * (chain_last_hash 32B + chain_event_count 8B). */
 /* v40: Layer B of #479 — per-station Ed25519 pubkey + outpost
@@ -204,13 +205,12 @@ static bool read_station(FILE *f, station_t *s) {
     READ_FIELD(f, s->planned);
     { uint8_t raw; memcpy(&raw, &s->planned, 1); s->planned = (raw != 0); }
     READ_FIELD(f, s->planned_owner);
-    /* v23: station credit pool */
-    if (g_loaded_save_version >= 23) {
-        READ_FIELD(f, s->credit_pool);
-    } else {
-        /* Pre-v23 saves don't have this field. Stations are sovereign
-         * currency issuers; pool starts at 0 and floats with issuance. */
-        s->credit_pool = 0.0f;
+    /* credit_pool field was stored in v23..v42 but is derived now (#refactor).
+     * Read and discard for older saves; v43+ doesn't include it on disk. */
+    if (g_loaded_save_version >= 23 && g_loaded_save_version <= 42) {
+        float discard;
+        READ_FIELD(f, discard);
+        (void)discard;
     }
     return true;
 }
@@ -231,8 +231,7 @@ static bool write_station_session(FILE *f, const station_t *s) {
         WRITE_FIELD(f, s->module_input[m]);
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
         WRITE_FIELD(f, s->module_output[m]);
-    /* Station credit pool */
-    WRITE_FIELD(f, s->credit_pool);
+    /* (credit_pool field removed in v43 — derived from ledger now.) */
     /* Economy ledger */
     WRITE_FIELD(f, s->ledger_count);
     for (int i = 0; i < 16; i++) {
@@ -301,8 +300,14 @@ static bool read_station_session(FILE *f, station_t *s) {
         READ_FIELD(f, s->module_input[m]);
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
         READ_FIELD(f, s->module_output[m]);
-    /* Station credit pool */
-    READ_FIELD(f, s->credit_pool);
+    /* credit_pool was stored v23..v42; dropped in v43 (derived field).
+     * For older saves, read and discard; the value is recoverable from
+     * the ledger entries below. */
+    if (g_loaded_save_version >= 23 && g_loaded_save_version <= 42) {
+        float discard;
+        READ_FIELD(f, discard);
+        (void)discard;
+    }
     /* Economy ledger */
     READ_FIELD(f, s->ledger_count);
     if (s->ledger_count < 0) s->ledger_count = 0;

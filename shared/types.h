@@ -352,9 +352,9 @@ typedef struct {
      * manufacture). Service modules leave both at 0. */
     float module_input[MAX_MODULES_PER_STATION];
     float module_output[MAX_MODULES_PER_STATION];
-    /* Station credit pool: fixed money supply, no inflation.
-     * Smelting pays from pool, player spending refills it. */
-    float credit_pool;
+    /* (credit_pool field removed — derived from -Σ(ledger.balance) via
+     *  station_credit_pool() in server/game_sim.h. Conservation is
+     *  structural now; there is no separate stored aggregate.) */
     /* Station cargo manifest — single source of identity for stocked
      * units (named ingots + fabricated goods). Refinery pushes a unit
      * per smelt; shipyards consume units to mint hulls bound to the

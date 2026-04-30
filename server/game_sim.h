@@ -644,15 +644,18 @@ vec2 station_approach_target(const station_t *st, vec2 from);
 void emit_event(world_t *w, sim_event_t ev);
 /* Station-local ledger economy */
 float ledger_balance(const station_t *st, const uint8_t *token);
+/* Net currency a station has issued, derived from the ledger as
+ * -Σ(balance) over all entries. Replaces the old stored credit_pool
+ * field; conservation is now structural. */
+float station_credit_pool(const station_t *st);
 void ledger_earn(station_t *st, const uint8_t *token, float amount);
 void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);
 /* Like ledger_credit_supply but returns the actual amount credited
- * (post 35% smelt cut, post credit_pool cap). Use when emitting +N
- * popup events so they reflect what the player actually got. */
+ * (post 35% smelt cut). Use when emitting +N popup events so they
+ * reflect what the player actually got. */
 float ledger_credit_supply_amount(station_t *st, const uint8_t *token, float ore_value);
 /* Returns false if the player can't afford `amount` at this station;
- * otherwise debits the ledger, refunds the credit_pool, and bumps the
- * ship's stat_credits_spent. */
+ * otherwise debits the ledger and bumps the ship's stat_credits_spent. */
 bool ledger_spend(station_t *st, const uint8_t *token, float amount, ship_t *ship);
 /* Always-succeeds debit for unrefusable services (spawn, repair).
  * Allows the balance to go negative (debt). */

@@ -188,7 +188,7 @@ double econ_total_credits(const world_t *w) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (st->id == 0) continue;
-        total += (double)st->credit_pool;
+        total += (double)station_credit_pool(st);
         for (int i = 0; i < st->ledger_count; i++)
             total += (double)st->ledger[i].balance;
     }

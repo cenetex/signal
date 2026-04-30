@@ -26,7 +26,7 @@ TEST(test_sovereign_pool_can_go_negative) {
     world_reset(w);
 
     station_t *st = &w->stations[0];
-    float start_pool = st->credit_pool;
+    float start_pool = station_credit_pool(st);
     /* Pay out far more than the starting pool so we cross zero. */
     uint8_t token[8] = {0xAA,1,2,3,4,5,6,7};
     /* Each ledger_credit_supply pays 65% of ore_value to the player and
@@ -35,7 +35,7 @@ TEST(test_sovereign_pool_can_go_negative) {
     float ore_value = (start_pool + 10000.0f) / 0.65f;
     float credited = ledger_credit_supply_amount(st, token, ore_value);
     ASSERT(credited > 0.0f);
-    ASSERT(st->credit_pool < 0.0f);
+    ASSERT(station_credit_pool(st) < 0.0f);
     /* And the player's ledger entry got the full supplier share — not
      * clamped because the pool would have gone negative. */
     ASSERT_EQ_FLOAT(ledger_balance(st, token), credited, 0.01f);
@@ -45,7 +45,7 @@ TEST(test_sovereign_pool_can_go_negative) {
     for (int i = 0; i < 240; i++) world_sim_step(w, SIM_DT);
     /* Pool should still be a finite number (could have moved further
      * negative as NPCs delivered more ore). */
-    ASSERT(isfinite(st->credit_pool));
+    ASSERT(isfinite(station_credit_pool(st)));
 }
 
 /* Test 2: a station with deeply negative pool still pays a miner.
@@ -58,8 +58,13 @@ TEST(test_sovereign_negative_pool_still_pays_miner) {
     world_reset(w);
 
     station_t *st = &w->stations[0];
-    st->credit_pool = -5000.0f;
-    float pool_before = st->credit_pool;
+    /* Drive the pool to ~ -5000 by minting that much in a sentinel
+     * ledger entry. Pool is now derived from -Σ(balance), so the
+     * straightforward way to "set" it is to credit a victim balance. */
+    uint8_t seed_token[8] = {0xCC,0,0,0,0,0,0,0};
+    ledger_earn(st, seed_token, 5000.0f);
+    float pool_before = station_credit_pool(st);
+    ASSERT_EQ_FLOAT(pool_before, -5000.0f, 0.5f);
 
     uint8_t token[8] = {0xBB,1,2,3,4,5,6,7};
     float supplier_share = ledger_credit_supply_amount(st, token, 100.0f);
@@ -68,8 +73,8 @@ TEST(test_sovereign_negative_pool_still_pays_miner) {
     ASSERT_EQ_FLOAT(supplier_share, 65.0f, 0.5f);
     ASSERT_EQ_FLOAT(ledger_balance(st, token), supplier_share, 0.01f);
     /* Pool moved by exactly the supplier share — not clamped at any floor. */
-    ASSERT_EQ_FLOAT(st->credit_pool, pool_before - supplier_share, 0.5f);
-    ASSERT(st->credit_pool < pool_before);
+    ASSERT_EQ_FLOAT(station_credit_pool(st), pool_before - supplier_share, 0.5f);
+    ASSERT(station_credit_pool(st) < pool_before);
 }
 
 /* Test 3: players still cannot go negative on a BUY.
@@ -149,14 +154,17 @@ TEST(test_sovereign_no_spurious_warnings_on_normal_run) {
 
 /* Test 5: save/load round-trips a negative pool exactly.
  *
- * Pre-fix, no path could produce a negative pool, so the save format
- * was effectively only validated against non-negative floats. Pin that
- * the float field round-trips precisely for negative values too. */
+ * Pool is now derived from -Σ(ledger.balance), so we can't write a
+ * float directly. Mint a known balance into a sentinel ledger entry,
+ * verify the implied pool, save, load, verify the ledger entry is
+ * preserved and the pool re-derives to the same value. */
 TEST(test_sovereign_save_load_preserves_negative_pool) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
-    w->stations[0].credit_pool = -1234.5f;
+    uint8_t token[8] = {0xDD,1,2,3,4,5,6,7};
+    ledger_earn(&w->stations[0], token, 1234.5f);
+    ASSERT_EQ_FLOAT(station_credit_pool(&w->stations[0]), -1234.5f, 0.001f);
 
     ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, TMP("sov_cat")));
     ASSERT(world_save(w, TMP("sov_neg.sav")));
@@ -166,7 +174,8 @@ TEST(test_sovereign_save_load_preserves_negative_pool) {
     station_catalog_load_all(loaded->stations, MAX_STATIONS, TMP("sov_cat"));
     ASSERT(world_load(loaded, TMP("sov_neg.sav")));
 
-    ASSERT_EQ_FLOAT(loaded->stations[0].credit_pool, -1234.5f, 0.001f);
+    ASSERT_EQ_FLOAT(ledger_balance(&loaded->stations[0], token), 1234.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station_credit_pool(&loaded->stations[0]), -1234.5f, 0.001f);
 
     remove(TMP("sov_neg.sav"));
 }

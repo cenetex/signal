@@ -138,11 +138,14 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
 }
 
 void apply_remote_stations(uint8_t index, const float* inventory, float credit_pool) {
+    /* credit_pool is now derived server-side from -Σ(ledger.balance);
+     * still arrives over the wire for protocol stability but no client
+     * code reads it, so we discard it here. */
+    (void)credit_pool;
     if (index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[index];
     for (int i = 0; i < COMMODITY_COUNT; i++)
         st->_inventory_cache[i] = inventory[i];
-    st->credit_pool = credit_pool;
 }
 
 /* Phase 2 wire: server → client station manifest summary. Fully

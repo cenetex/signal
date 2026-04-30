@@ -65,6 +65,20 @@ float ledger_balance(const station_t *st, const uint8_t *token) {
     return 0.0f;
 }
 
+/* Net currency this station has issued, derived from the ledger
+ * (single source of truth). Equal to -Σ(balance) over all entries.
+ * A positive value means the station has more in player accounts
+ * than has been redeemed — i.e. it's in net debt to its players.
+ *
+ * Was previously a stored `station_t::credit_pool` field with its
+ * own +=/-= mutations paired with ledger writes. The field is gone;
+ * conservation is structural now. */
+float station_credit_pool(const station_t *st) {
+    float total = 0.0f;
+    for (int i = 0; i < st->ledger_count; i++) total += st->ledger[i].balance;
+    return -total;
+}
+
 void ledger_earn(station_t *st, const uint8_t *token, float amount) {
     int idx = ledger_find_or_create(st, token);
     if (idx < 0) return;
@@ -79,36 +93,32 @@ bool ledger_spend(station_t *st, const uint8_t *token, float amount, ship_t *shi
     st->ledger[idx].balance -= amount;
     if (st->ledger[idx].balance < 0.0f) st->ledger[idx].balance = 0.0f;
     ship->stat_credits_spent += amount;
-    st->credit_pool += amount;
     return true;
 }
 
 /* Force a debit through even when the balance can't cover it. The
  * shortfall pushes the ledger into negative — the player owes the
  * station. Use for unrefusable services (spawn fee, mandatory repair)
- * where rejecting the spend would leave the ship in a worse state.
- * Conservation still holds: the station's credit_pool gains exactly
- * what the player loses. */
+ * where rejecting the spend would leave the ship in a worse state. */
 void ledger_force_debit(station_t *st, const uint8_t *token, float amount, ship_t *ship) {
     if (amount <= 0.0f) return;
     int idx = ledger_find_or_create(st, token);
     if (idx < 0) return;
     st->ledger[idx].balance -= amount;
     if (ship) ship->stat_credits_spent += amount;
-    st->credit_pool += amount;
 }
 
-/* Full-price transfer from the station's credit_pool to a ledger
- * entry — used for inter-station contract deliveries (no smelt cut,
- * unlike ledger_credit_supply). Pool may go negative; conservation
- * still holds. Caller is responsible for contract bookkeeping. */
+/* Full-price transfer from station to player ledger — used for
+ * inter-station contract deliveries (no smelt cut, unlike
+ * ledger_credit_supply). The credit appears on the player's ledger;
+ * the station's derived pool decreases by the same amount. Caller is
+ * responsible for contract bookkeeping. */
 void ledger_earn_from_pool(station_t *st, const uint8_t *token, float amount) {
     if (amount <= 0.0f) return;
     int idx = ledger_find_or_create(st, token);
     if (idx < 0) return;
     st->ledger[idx].balance += amount;
     st->ledger[idx].lifetime_supply += amount;
-    st->credit_pool -= amount;
 }
 
 void emit_event(world_t *w, sim_event_t ev) {
@@ -1068,7 +1078,9 @@ static bool try_sell_one_unit(world_t *w, server_player_t *sp,
         st->_inventory_cache[commodity] = MAX_PRODUCT_STOCK;
     manifest_mark_station_dirty(w, &st->manifest);
 
-    st->credit_pool -= graded_price;
+    /* Pool decrement is implicit via ledger_earn; pool is now derived
+     * from -Σ(balance), so the credit on the player's ledger naturally
+     * shows up as a deeper net-issuance for the station. */
     ledger_earn(st, sp->session_token, graded_price);
     sp->ship.stat_credits_earned += graded_price;
     SIM_LOG("[sim] player %d sold 1× %s (grade %d) for %.0f cr at %s\n",
@@ -1224,10 +1236,9 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     }
 
     if (payout > 0.01f) {
-        /* Stations carry the debt — pool may go negative; conservation
-         * still holds because the credit minted on the player ledger
-         * is matched by the deficit on the station pool. */
-        st->credit_pool -= payout;
+        /* Stations carry the debt — pool is derived from -Σ(balance),
+         * so crediting the player's ledger naturally pushes the station's
+         * net issuance more negative. Conservation is structural. */
         {
             ledger_earn(st, sp->session_token, payout);
             sp->ship.stat_credits_earned += payout;
@@ -2491,9 +2502,10 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
 
 /* Find or create a ledger entry for a player at a station.
  * When the 16-slot table is full, evict the entry with the smallest
- * lifetime_supply (the least-active contributor). Their remaining
- * balance is returned to the station's credit_pool so the money
- * supply stays conserved. */
+ * lifetime_supply (the least-active contributor). Their balance is
+ * dropped on eviction; since pool is derived from -Σ(balance),
+ * removing an entry naturally absorbs its balance back into the
+ * station's net issuance. */
 static int ledger_find_or_create(station_t *st, const uint8_t *token) {
     for (int i = 0; i < st->ledger_count; i++) {
         if (memcmp(st->ledger[i].player_token, token, 8) == 0) return i;
@@ -2511,7 +2523,6 @@ static int ledger_find_or_create(station_t *st, const uint8_t *token) {
                 evict = i;
             }
         }
-        st->credit_pool += st->ledger[evict].balance;
         idx = evict;
     }
     memcpy(st->ledger[idx].player_token, token, 8);
@@ -2531,7 +2542,8 @@ float ledger_credit_supply_amount(station_t *st, const uint8_t *token, float ore
     /* Station keeps 35% cut for smelting — supplier gets 65% */
     float supplier_share = ore_value * 0.65f;
     if (supplier_share < 0.01f) return 0.0f;
-    st->credit_pool -= supplier_share;
+    /* Pool is derived from -Σ(balance); crediting the supplier here
+     * automatically pushes the station's net issuance more negative. */
     st->ledger[idx].balance += supplier_share;
     st->ledger[idx].lifetime_supply += ore_value;
     return supplier_share;
@@ -3530,7 +3542,7 @@ static void step_contracts(world_t *w, float dt) {
 
         /* Pool factor: rich stations offer better prices.
          * 0.2x at 1000 cr, 1.0x at 5000 cr, 1.5x at 10000+ cr */
-        float pool_factor = st->credit_pool / 5000.0f;
+        float pool_factor = station_credit_pool(st) / 5000.0f;
         if (pool_factor < 0.2f) pool_factor = 0.2f;
         if (pool_factor > 1.5f) pool_factor = 1.5f;
 
@@ -4667,12 +4679,10 @@ void world_reset(world_t *w) {
     w->stations[0].ring_offset[0] = 0.0f;
     w->stations[0].ring_offset[1] = 1.05f;  /* ~60° offset — unique silhouette */
     rebuild_station_services(&w->stations[0]);
-    /* Stations are sovereign currency issuers; pool starts at 0 and
-     * tracks net issuance from genesis. Conservation invariant:
-     * credit_pool + Σ(player_balances_at_this_station) is constant
-     * per station. Pool can go arbitrarily negative as issuance
-     * outpaces redemption — that's the model, not a bug. */
-    w->stations[0].credit_pool = 0.0f;
+    /* Stations are sovereign currency issuers. Net issuance is derived
+     * from -Σ(ledger.balance) via station_credit_pool(); conservation
+     * is structural. No initial pool seed — issuance starts at 0 and
+     * floats freely as miners get paid and players spend back. */
     snprintf(w->stations[0].station_slug, sizeof(w->stations[0].station_slug), "prospect");
     snprintf(w->stations[0].currency_name, sizeof(w->stations[0].currency_name), "prospect vouchers");
     snprintf(w->stations[0].hail_message, sizeof(w->stations[0].hail_message),
@@ -4708,8 +4718,6 @@ void world_reset(world_t *w) {
     w->stations[1].ring_offset[0] = 0.0f;
     w->stations[1].ring_offset[1] = 2.40f;  /* ~137° offset */
     rebuild_station_services(&w->stations[1]);
-    /* Sovereign issuer — see Prospect comment above. */
-    w->stations[1].credit_pool = 0.0f;
     snprintf(w->stations[1].station_slug, sizeof(w->stations[1].station_slug), "kepler");
     snprintf(w->stations[1].currency_name, sizeof(w->stations[1].currency_name), "kepler bonds");
     snprintf(w->stations[1].hail_message, sizeof(w->stations[1].hail_message),
@@ -4762,8 +4770,6 @@ void world_reset(world_t *w) {
     w->stations[2].ring_offset[1] = 0.52f;  /* ~30° offset */
     w->stations[2].ring_offset[2] = 1.83f;  /* ~105° offset */
     rebuild_station_services(&w->stations[2]);
-    /* Sovereign issuer — see Prospect comment above. */
-    w->stations[2].credit_pool = 0.0f;
     snprintf(w->stations[2].station_slug, sizeof(w->stations[2].station_slug), "helios");
     snprintf(w->stations[2].currency_name, sizeof(w->stations[2].currency_name), "helios credits");
     snprintf(w->stations[2].hail_message, sizeof(w->stations[2].hail_message),

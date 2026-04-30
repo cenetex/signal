@@ -564,7 +564,8 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  * (chain_last_hash 32B + chain_event_count 8B) = +40B per station ×
  * MAX_STATIONS=64 = +2560 bytes. The chain event records themselves
  * live in side files under chain/<pubkey>.log, NOT in world.sav. */
-#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40) /* v41 */
+/* v43: credit_pool field dropped (-4 bytes × 64 stations = -256). */
+#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40 - 64 * 4)
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -601,7 +602,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 42);
+    ASSERT_EQ_INT((int)version, 43);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

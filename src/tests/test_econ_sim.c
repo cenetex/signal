@@ -6,9 +6,9 @@ TEST(test_econ_sim_npc_only_5min) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
-    float pool0 = w->stations[0].credit_pool;
-    float pool1 = w->stations[1].credit_pool;
-    float pool2 = w->stations[2].credit_pool;
+    float pool0 = station_credit_pool(&w->stations[0]);
+    float pool1 = station_credit_pool(&w->stations[1]);
+    float pool2 = station_credit_pool(&w->stations[2]);
     printf("    t=0: pools [%.0f, %.0f, %.0f]\n", pool0, pool1, pool2);
 
     int ticks = (int)(300.0f / SIM_DT); /* 5 minutes */
@@ -18,7 +18,7 @@ TEST(test_econ_sim_npc_only_5min) {
             float t = (float)i * SIM_DT;
             printf("    t=%.0fs: pools [%.0f, %.0f, %.0f]  ingots [FE=%.0f CU=%.0f CR=%.0f]  frames=%.0f\n",
                 t,
-                w->stations[0].credit_pool, w->stations[1].credit_pool, w->stations[2].credit_pool,
+                station_credit_pool(&w->stations[0]), station_credit_pool(&w->stations[1]), station_credit_pool(&w->stations[2]),
                 w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
                 w->stations[2]._inventory_cache[COMMODITY_CUPRITE_INGOT],
                 w->stations[2]._inventory_cache[COMMODITY_CRYSTAL_INGOT],
@@ -73,14 +73,14 @@ TEST(test_econ_sim_npc_only_5min) {
         }
     }
     printf("    t=300s: pools [%.0f, %.0f, %.0f]\n",
-        w->stations[0].credit_pool, w->stations[1].credit_pool, w->stations[2].credit_pool);
+        station_credit_pool(&w->stations[0]), station_credit_pool(&w->stations[1]), station_credit_pool(&w->stations[2]));
     printf("    total credits: %.0f (started at %.0f)\n",
-        w->stations[0].credit_pool + w->stations[1].credit_pool + w->stations[2].credit_pool,
+        station_credit_pool(&w->stations[0]) + station_credit_pool(&w->stations[1]) + station_credit_pool(&w->stations[2]),
         pool0 + pool1 + pool2);
 
     /* Invariant: total credits in station pools should not increase
      * (NPC smelting pays from pool, no player spending to refill) */
-    float total_now = w->stations[0].credit_pool + w->stations[1].credit_pool + w->stations[2].credit_pool;
+    float total_now = station_credit_pool(&w->stations[0]) + station_credit_pool(&w->stations[1]) + station_credit_pool(&w->stations[2]);
     ASSERT(total_now <= pool0 + pool1 + pool2 + 0.01f);
     /* w auto-freed by WORLD_HEAP cleanup */
 }
@@ -98,8 +98,8 @@ TEST(test_econ_sim_credit_circulation) {
     player_seed_credits(&w.players[0], &w);
     w.players[0].connected = true;
 
-    float initial_pool_0 = w.stations[0].credit_pool;
-    float initial_pool_1 = w.stations[1].credit_pool;
+    float initial_pool_0 = station_credit_pool(&w.stations[0]);
+    float initial_pool_1 = station_credit_pool(&w.stations[1]);
 
     float bal0 = ledger_balance(&w.stations[0], token);
     printf("    initial: bal@prospect=%.0f  prospect=%.0f  kepler=%.0f\n",
@@ -109,7 +109,7 @@ TEST(test_econ_sim_credit_circulation) {
     ledger_credit_supply(&w.stations[0], token, 100.0f); /* 100 cr ore value */
 
     printf("    after smelt: prospect pool=%.0f (paid out from pool)\n",
-        w.stations[0].credit_pool);
+        station_credit_pool(&w.stations[0]));
 
     /* Hail at Prospect — informational only, no withdrawal */
     w.players[0].ship.pos = w.stations[0].pos;
@@ -120,7 +120,7 @@ TEST(test_econ_sim_credit_circulation) {
 
     bal0 = ledger_balance(&w.stations[0], token);
     printf("    after hail: bal@prospect=%.0f  prospect pool=%.0f\n",
-        bal0, w.stations[0].credit_pool);
+        bal0, station_credit_pool(&w.stations[0]));
 
     /* Dock at Prospect and buy ferrite ingots (spends from station 0 ledger) */
     w.players[0].docked = true;
@@ -133,7 +133,7 @@ TEST(test_econ_sim_credit_circulation) {
 
     bal0 = ledger_balance(&w.stations[0], token);
     printf("    after buy at prospect: bal@prospect=%.0f  prospect pool=%.0f  cargo FE=%0.f\n",
-        bal0, w.stations[0].credit_pool,
+        bal0, station_credit_pool(&w.stations[0]),
         w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT]);
 
     /* Deliver ingots to Kepler via contract */
@@ -153,7 +153,7 @@ TEST(test_econ_sim_credit_circulation) {
 
     float bal1 = ledger_balance(&w.stations[1], token);
     printf("    after deliver to kepler: bal@kepler=%.0f  kepler pool=%.0f\n",
-        bal1, w.stations[1].credit_pool);
+        bal1, station_credit_pool(&w.stations[1]));
 
     /* Buy frames from Kepler (spends from station 1 ledger) */
     w.stations[1]._inventory_cache[COMMODITY_FRAME] = 20.0f;
@@ -165,21 +165,21 @@ TEST(test_econ_sim_credit_circulation) {
     bal0 = ledger_balance(&w.stations[0], token);
     bal1 = ledger_balance(&w.stations[1], token);
     printf("    after buy frames: bal@kepler=%.0f  kepler pool=%.0f  cargo frames=%.0f\n",
-        bal1, w.stations[1].credit_pool,
+        bal1, station_credit_pool(&w.stations[1]),
         w.players[0].ship.cargo[COMMODITY_FRAME]);
 
     /* Total system credits = all station pools + all player ledger balances */
     float total_credits = bal0 + bal1
-        + w.stations[0].credit_pool
-        + w.stations[1].credit_pool
-        + w.stations[2].credit_pool;
+        + station_credit_pool(&w.stations[0])
+        + station_credit_pool(&w.stations[1])
+        + station_credit_pool(&w.stations[2]);
     /* Total = all station pools + all player ledger balances.
      * initial_pool_0 already reflects the spawn fee being added to the
      * pool by player_seed_credits — so the player's starting balance
      * is the negative of that fee, and conservation is the sum of
      * pools + the negative seed. */
     float initial_seed = -(float)station_spawn_fee(&w.stations[0]);
-    float initial_total = initial_seed + initial_pool_0 + initial_pool_1 + w.stations[2].credit_pool;
+    float initial_total = initial_seed + initial_pool_0 + initial_pool_1 + station_credit_pool(&w.stations[2]);
     printf("    total system credits: %.0f (started at %.0f)\n",
         total_credits, initial_total);
 
@@ -218,7 +218,7 @@ TEST(test_bug312_1_docked_buy_honors_spend_failure) {
     w.players[0].docked = true;
     w.players[0].current_station = kepler;
     st->_inventory_cache[COMMODITY_FRAME] = 10.0f;
-    float pool_before = st->credit_pool;
+    float pool_before = station_credit_pool(st);
     float cargo_before = w.players[0].ship.cargo[COMMODITY_FRAME];
 
     w.players[0].input.buy_product = true;
@@ -233,7 +233,7 @@ TEST(test_bug312_1_docked_buy_honors_spend_failure) {
      * because ledger_spend still returns false — the whole point is
      * "cargo moved without payment"). */
     ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_FRAME], cargo_before, 0.001f);
-    ASSERT_EQ_FLOAT(st->credit_pool, pool_before, 0.001f);
+    ASSERT_EQ_FLOAT(station_credit_pool(st), pool_before, 0.001f);
 }
 
 TEST(test_buy_finished_good_requires_manifest_unit) {
@@ -322,7 +322,7 @@ TEST(test_bug312_2_ledger_balance_matches_by_token) {
 TEST(test_bug312_3_init_ship_does_not_seed_with_zero_token) {
     WORLD_DECL;
     world_reset(&w);
-    float pool_before = w.stations[0].credit_pool;
+    float pool_before = station_credit_pool(&w.stations[0]);
     int ledger_before = w.stations[0].ledger_count;
 
     /* Intentionally leave session_token zeroed — simulates the race
@@ -333,7 +333,7 @@ TEST(test_bug312_3_init_ship_does_not_seed_with_zero_token) {
 
     /* Post-fix: no ledger entry, no pool withdrawal. */
     ASSERT_EQ_INT(w.stations[0].ledger_count, ledger_before);
-    ASSERT_EQ_FLOAT(w.stations[0].credit_pool, pool_before, 0.001f);
+    ASSERT_EQ_FLOAT(station_credit_pool(&w.stations[0]), pool_before, 0.001f);
 
     /* Now set the real token and seed — the spawn-fee debit should
      * land on the real token, push it into debt, and no zero-token
@@ -347,12 +347,12 @@ TEST(test_bug312_3_init_ship_does_not_seed_with_zero_token) {
     ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0], token), -(float)fee, 0.001f);
     uint8_t zero[8] = {0};
     ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0], zero), 0.0f, 0.001f);
-    ASSERT_EQ_FLOAT(w.stations[0].credit_pool, pool_before + (float)fee, 0.001f);
+    ASSERT_EQ_FLOAT(station_credit_pool(&w.stations[0]), pool_before + (float)fee, 0.001f);
 
     /* Re-seed is idempotent (guard against double-charge on reconnect). */
     player_seed_credits(&w.players[0], &w);
     ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0], token), -(float)fee, 0.001f);
-    ASSERT_EQ_FLOAT(w.stations[0].credit_pool, pool_before + (float)fee, 0.001f);
+    ASSERT_EQ_FLOAT(station_credit_pool(&w.stations[0]), pool_before + (float)fee, 0.001f);
 }
 
 TEST(test_econ_invariant_npc_only_conservation) {
