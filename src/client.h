@@ -22,6 +22,7 @@
 #include "net.h"
 #include "episode.h"
 #include "music.h"
+#include "identity.h"
 
 /* Sokol headers (declarations only -- SOKOL_IMPL is in main.c) */
 #include "sokol_app.h"
@@ -212,6 +213,15 @@ typedef struct {
     world_t world;
     local_server_t local_server;
     int local_player_slot;
+    /* --- Local identity (Layer A.1 of #479) --- */
+    /* Persistent Ed25519 keypair owned by the player. Loaded from disk
+     * (or generated on first run) before WebSocket connect; surfaced
+     * faintly in the HUD so the player can see their own pubkey prefix.
+     * The wire protocol is unchanged for now — session_token still drives
+     * identity over the network. Later layers wire the pubkey into the
+     * HELLO frame, sign inputs, and migrate save files. */
+    player_identity_t identity;
+    char identity_pub_b58[48];   /* base58 of pubkey, null-terminated */
     /* --- Multiplayer --- */
     bool multiplayer_enabled;
     float net_send_timer;

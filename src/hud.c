@@ -327,6 +327,17 @@ static void hud_draw_alpha_banner_and_mp_indicator(float screen_w, bool compact)
         sdtx_color3b(PAL_TEXT_GREY);
         sdtx_printf("v%s", client_hash);
     }
+    /* Pubkey prefix — faint, just under the version. Layer A.1 of #479:
+     * each player owns a persistent Ed25519 keypair; this is the first
+     * 8 chars of its base58 form so the player can see/share their own
+     * identity. The wire protocol still uses session_token; later layers
+     * promote this to a real on-connect identifier. */
+    if (g.identity_pub_b58[0] != '\0') {
+        sdtx_pos(info_x, ui_text_pos(20.0f));
+        sdtx_color3b(PAL_TEXT_FADED);
+        sdtx_printf("id %.8s", g.identity_pub_b58);
+    }
+
     /* Alpha banner: repeating ticker across the top. */
     float bw = ui_safe_positive(sapp_widthf(), 1280.0f) /
                fmaxf(1.0f, ui_safe_positive(sapp_dpi_scale(), 1.0f));

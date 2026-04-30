@@ -16,6 +16,7 @@
 #include "station_voice.h"
 #include "avatar.h"
 #include "mining_client.h"
+#include "base58.h"
 
 
 #ifdef __EMSCRIPTEN__
@@ -999,6 +1000,17 @@ static void init(void) {
 
     init_starfield();
     reset_world();
+
+    /* Load (or first-run-generate) the persistent Ed25519 player identity.
+     * Layer A.1 of #479 — purely client-side for now: no network or save
+     * coupling, just persistence + HUD display. */
+    if (identity_load_or_generate(&g.identity)) {
+        base58_encode(g.identity.pubkey,
+                      SIGNAL_CRYPTO_PUBKEY_BYTES,
+                      g.identity_pub_b58,
+                      sizeof(g.identity_pub_b58));
+    }
+
     onboarding_load();
     mining_client_init();
     /* Bind to whatever session token the local server seeded — the

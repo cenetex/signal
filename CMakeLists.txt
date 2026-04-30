@@ -6,6 +6,38 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+# Crypto backend selector for shared/signal_crypto.h. Currently only
+# tweetnacl is supported; the option is forward-looking — if a future
+# slice swaps to libsodium for Argon2 or batch-verify, only the impl
+# .c file changes (the public interface in shared/signal_crypto.h is
+# stable). See vendor/tweetnacl/signal_crypto_tweetnacl.c.
+set(SIGNAL_CRYPTO_BACKEND "tweetnacl" CACHE STRING
+    "Crypto backend (tweetnacl|libsodium). Only tweetnacl is implemented.")
+if(NOT SIGNAL_CRYPTO_BACKEND STREQUAL "tweetnacl")
+    message(FATAL_ERROR
+        "SIGNAL_CRYPTO_BACKEND=${SIGNAL_CRYPTO_BACKEND} not implemented; "
+        "use 'tweetnacl'.")
+endif()
+
+set(SIGNAL_CRYPTO_SOURCES
+    vendor/tweetnacl/tweetnacl.c
+    vendor/tweetnacl/randombytes.c
+    vendor/tweetnacl/signal_crypto_tweetnacl.c
+)
+set(SIGNAL_CRYPTO_INCLUDE_DIR
+    "${CMAKE_CURRENT_SOURCE_DIR}/vendor/tweetnacl"
+)
+# Vendored TweetNaCl is public-domain and not written with -Wpedantic
+# in mind (uses unsigned long for u32, etc.). Compile with /W0 (MSVC)
+# or -w (GCC/Clang) so it doesn't trip our -Werror at the project level.
+if(MSVC)
+    set_source_files_properties(${SIGNAL_CRYPTO_SOURCES}
+        PROPERTIES COMPILE_OPTIONS "/W0")
+else()
+    set_source_files_properties(${SIGNAL_CRYPTO_SOURCES}
+        PROPERTIES COMPILE_OPTIONS "-w")
+endif()
+
 # Always emit compile_commands.json so clangd / editor LSPs can resolve
 # include paths without per-developer config. The Makefile's `build`
 # target symlinks this into the repo root after configure.
@@ -89,6 +121,7 @@ set(SIGNAL_CLIENT_SOURCES
     src/music.c
     src/avatar.c
     src/mining_client.c
+    src/identity.c
 )
 
 set(SIGNAL_INCLUDE_DIRS
@@ -107,8 +140,11 @@ if(NOT EMSCRIPTEN AND NOT BUILD_TESTS_ONLY)
         server/highscore.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_CRYPTO_SOURCES}
     )
-    target_include_directories(signal_server PRIVATE ${SIGNAL_INCLUDE_DIRS})
+    target_include_directories(signal_server PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
     target_compile_definitions(signal_server PRIVATE
         GIT_HASH="${GIT_HASH}"
         MG_ENABLE_LOG=0    # silence mongoose's internal [INFO]/[ERROR] spam
@@ -162,10 +198,16 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         src/tests/test_chain.c
         src/tests/test_labels.c
         src/tests/test_pvp_rocks.c
+        src/tests/test_crypto.c
+        src/tests/test_identity.c
+        src/identity.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
+        ${SIGNAL_CRYPTO_SOURCES}
     )
-    target_include_directories(signal_test PRIVATE ${SIGNAL_INCLUDE_DIRS})
+    target_include_directories(signal_test PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
     if(NOT MSVC)
         target_link_libraries(signal_test PRIVATE m)
         target_compile_options(signal_test PRIVATE -Wall -Wextra -Wpedantic -Werror)
@@ -190,6 +232,7 @@ set(GAME_SOURCES
     ${SIGNAL_CLIENT_SOURCES}
     ${SIGNAL_SIM_SOURCES}
     ${SIGNAL_SIM_HELPERS}
+    ${SIGNAL_CRYPTO_SOURCES}
 )
 
 # Native builds link mongoose for WebSocket client networking.
@@ -207,7 +250,7 @@ target_include_directories(signal SYSTEM PRIVATE
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor/sokol"
     "${CMAKE_CURRENT_SOURCE_DIR}/vendor"
 )
-target_include_directories(signal PRIVATE ${SIGNAL_INCLUDE_DIRS})
+target_include_directories(signal PRIVATE ${SIGNAL_INCLUDE_DIRS} ${SIGNAL_CRYPTO_INCLUDE_DIR})
 target_compile_definitions(signal PRIVATE GIT_HASH="${GIT_HASH}")
 
 if(SIGNAL_VOICE)
