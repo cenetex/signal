@@ -583,6 +583,14 @@ static bool read_npc(FILE *f, npc_ship_t *n) {
          * had a token to credit anyway) are not retroactive. */
         memset(n->session_token, 0, sizeof(n->session_token));
     }
+    /* Validate after the full record is read so the file pointer is
+     * always past this NPC's bytes. An active slot with garbage role
+     * used to crashloop the server on first sim step (despawn check
+     * fired with an invalid role through character_free_for_npc).
+     * Drop the slot quietly; the spawn loop will refill it. */
+    if (n->active && ((int)n->role < 0 || (int)n->role > (int)NPC_ROLE_TOW)) {
+        memset(n, 0, sizeof(*n));
+    }
     return true;
 }
 

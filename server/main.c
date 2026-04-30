@@ -666,7 +666,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
          * "player_<slot>" form (anonymous slot fallback). Accept either:
          * try the literal name first, then with the historical prefix. */
         char basename[80];
-        if (hex_len + 1 > sizeof(basename)) goto claim_done;
+        if ((size_t)hex_len + 1 > sizeof(basename)) goto claim_done;
         memcpy(basename, hex, hex_len);
         basename[hex_len] = '\0';
 
