@@ -328,18 +328,10 @@ static void hud_draw_alpha_banner_and_mp_indicator(float screen_w, bool compact)
         sdtx_color3b(PAL_TEXT_GREY);
         sdtx_printf("v%s", client_hash);
     }
-    /* Player callsign — derived from the Ed25519 pubkey via
-     * mining_alphanumeric_callsign(). Same pubkey → same callsign
-     * forever, across machines / reconnects / server restarts. This is
-     * also the wire-callsign (sent to server in session-init), so what
-     * shows here is what other players see on the chain log. */
-    if (g.identity.pubkey[0] != 0 || g.identity.pubkey[1] != 0) {
-        char callsign[8];
-        mining_alphanumeric_callsign(g.identity.pubkey, callsign);
-        sdtx_pos(info_x, ui_text_pos(20.0f));
-        sdtx_color3b(PAL_TEXT_FADED);
-        sdtx_printf("id %s", callsign);
-    }
+    /* Player callsign is rendered at top_row_0 below (see the "Use
+     * the SESSION callsign" block) — derived from the pubkey via
+     * mining_alphanumeric_callsign() once #513 lands. Don't double up
+     * with a separate identity line here. */
 
     /* Alpha banner: repeating ticker across the top. */
     float bw = ui_safe_positive(sapp_widthf(), 1280.0f) /
