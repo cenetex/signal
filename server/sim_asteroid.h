@@ -25,9 +25,12 @@ static inline void fracture_claim_state_reset(fracture_claim_state_t *state) {
     memset(state, 0, sizeof(*state));
 }
 
-/* Chunk materialization — places a chunk_asteroid_t into a world slot */
+/* Chunk materialization — places a chunk_asteroid_t into a world slot.
+ * `seed_slot` is the rock's index in its source chunk's roster; combines
+ * with (cx, cy, belt_seed) to derive the rock's permanent rock_pub
+ * identity (#285). */
 void materialize_asteroid(world_t *w, int slot, const chunk_asteroid_t *ca,
-                           int32_t cx, int32_t cy);
+                           int32_t cx, int32_t cy, uint16_t seed_slot);
 
 /* Field seeding (legacy — used by some tests) */
 int  seed_asteroid_clump(world_t *w, int first_slot);

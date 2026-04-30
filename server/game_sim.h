@@ -319,6 +319,121 @@ typedef struct {
         int32_t chunk_x, chunk_y;
         bool from_chunk;   /* true = terrain, false = fracture child */
     } asteroid_origin[MAX_ASTEROIDS];
+    /* Permanent floating-terrain ledger (#285 slice 1): rocks are
+     * unique destructible entities, not respawning props. Each
+     * terrain rock is born at first-contact materialization with a
+     * stable rock_pub derived from (belt_seed, cx, cy, slot);
+     * fracturing it retires its pub forever by writing here.
+     * Subsequent visits to the same chunk skip slots whose pub is in
+     * the destroyed set — mined regions stay mined.
+     *
+     * Identity-keyed (full 32-byte pub), not coordinate-keyed: keeps
+     * records stable under future cosmic events that reassign chunk
+     * coordinates (sector gates, megastructure passage), and lets a
+     * chain-walk verifier confirm "this hull's frame's ferrite came
+     * from a destroyed rock" without re-deriving from coords.
+     *
+     * Scope of slice 1 — known limits, all addressed in later slices:
+     *
+     *   - **Server-authoritative.** This ledger lives on the server
+     *     and is never replicated to clients. Clients re-derive
+     *     expected rock_pubs from belt_seed + chunk coords and trust
+     *     the server's "no rock at slot K" answer. Federation /
+     *     decentralized verification (#479 follow-up) will need a
+     *     Bloom filter projection at minimum; that's its own work.
+     *
+     *   - **Per-server, not universal.** Operator A and Operator B
+     *     running with the same belt_seed materialize the same
+     *     rock_pubs (good — provenance lineage matches across
+     *     federation), but mining at A doesn't retire the pub at B
+     *     until federation-aware reconciliation lands. This struct
+     *     is each operator's local view of the destroyed set.
+     *
+     *   - **Linear scan, 256-entry cap.** Acceptable at this size
+     *     (a long session mines ~hundreds of rocks). Slice 2 lifts
+     *     both. The architectural target is a four-tier model where
+     *     the destroyed set has a different representation at each
+     *     tier, optimized for that tier's access pattern:
+     *
+     *     ┌──────────┬──────────────────────────────┬───────────┬───────────────┐
+     *     │ Tier     │ Structure                    │ Size      │ Use           │
+     *     ├──────────┼──────────────────────────────┼───────────┼───────────────┤
+     *     │ 1 mem    │ Binary Fuse filter           │ 9 b/elt   │ per-tick      │
+     *     │          │   (or sorted-array+bsearch   │ (or 32B/  │ membership    │
+     *     │          │    if cardinality stays low) │  elt raw) │ lookup        │
+     *     │ 2 disk   │ signed append-only chain log │ ~80 B/    │ canonical     │
+     *     │          │   (#479-C, hash-chained)     │ event     │ source-of-    │
+     *     │          │                              │           │ truth         │
+     *     │ 3 anchor │ Merkle Mountain Range root   │ 32 B      │ on-chain      │
+     *     │          │                              │           │ commitment    │
+     *     │ 4 proof  │ MMR inclusion proof          │ ~600 B    │ contract      │
+     *     │          │   (log₂(n) hashes + key)     │           │ calldata      │
+     *     └──────────┴──────────────────────────────┴───────────┴───────────────┘
+     *
+     *     Each tier is a *projection* of the same underlying
+     *     destroyed set; the chain log (Tier 2) is canonical and the
+     *     others are derived from it. Two operators with the same
+     *     log produce bit-identical Fuse filters AND bit-identical
+     *     MMR roots — deterministic by construction, no spec
+     *     coordination required.
+     *
+     *     **Why Binary Fuse for Tier 1, not Bloom**: deterministic
+     *     construction. `binary_fuse8_populate_seed(keys, n, &f,
+     *     epoch_number)` produces bit-identical output for the same
+     *     key set on every machine, so the on-chain commitment can
+     *     be the filter's hash and any verifier can recompute it.
+     *     Bloom can only match this with a standardized hash family
+     *     + bit-vector size + insertion order ritual. Bonus: ~3
+     *     memory accesses per query vs. ~8 for Bloom at matched FP
+     *     (≈0.39% at ~9 bits/element for Fuse). Construction needs
+     *     ≥ ~32 distinct keys; tiny epochs roll forward.
+     *
+     *     **Why Merkle Mountain Range for Tier 3, not the Fuse
+     *     hash**: a Solana bounty contract that wants to verify
+     *     "rock X was destroyed before epoch N" can't accept the
+     *     full filter as calldata (~150KB at 100k destructions);
+     *     it needs a tiny inclusion proof. MMR gives O(log n)
+     *     proofs (~17 hashes × 32B ≈ 600B for 100k entries) verified
+     *     in microseconds. Append-only matches the access pattern
+     *     exactly — destructions never get rewritten. SMT/IMT are
+     *     better only if non-membership proofs are required, which
+     *     bounty contracts don't need (they care about destroyed
+     *     rocks, not surviving ones).
+     *
+     *     **Slice 2** swaps the inline 256-entry array for an in-
+     *     memory sorted log of `(rock_pub[32], destroyed_at_ms[8])`
+     *     entries plus a per-station append-only `data/destroyed_
+     *     rocks.log` (Tier 2). Hot-path lookup uses bsearch on the
+     *     sorted log until cardinality justifies the Fuse build.
+     *
+     *     **Slice 3** introduces the epoch-boundary writer: at
+     *     each close, build the Fuse filter (Tier 1 snapshot) and
+     *     the MMR root (Tier 3) from the live log, sign the root +
+     *     epoch number, post to signal_anchor. Live log resets
+     *     between epoch closes; closed-epoch artifacts (filter +
+     *     MMR root) become immutable. Bounty contracts (Tier 4)
+     *     consume `(rock_pub, mmr_proof, anchor_epoch)` tuples.
+     *
+     *   - **Cap-overflow policy is "log + drop tombstone".** If we
+     *     ever hit 256 destroyed rocks in one session before the
+     *     side-file lands, the rock is still removed from the
+     *     active pool (the player-facing outcome stays "destroyed
+     *     forever"), but the tombstone isn't recorded — so a future
+     *     materialize of the same chunk could re-spawn that slot.
+     *     Verifiers also lose the tombstone for chain-walk. This is
+     *     a known gap, fixed structurally by the side-file.
+     *
+     *   - **Cohabitation with fragment_pub on asteroid_t.** Terrain
+     *     rocks have rock_pub set + fragment_pub zero; fracture
+     *     children have the opposite. A later slice will fold
+     *     these into one `pub[32]` field discriminated by
+     *     `asteroid_origin.from_chunk`, so identity-handling code
+     *     can read `&a->pub` regardless of provenance type. */
+    struct destroyed_rock_s {
+        uint8_t rock_pub[32];
+        uint8_t active;
+    } destroyed_rocks[256];
+    uint16_t destroyed_rock_count;
     npc_ship_t npc_ships[MAX_NPC_SHIPS];
     /* #294 Slice 8: unified ship_t pool. Each active NPC owns a slot
      * here; the paired character_t.ship_idx points to it. Players still
@@ -333,6 +448,11 @@ typedef struct {
     scaffold_t scaffolds[MAX_SCAFFOLDS];
     server_player_t players[MAX_PLAYERS];
     uint32_t rng;
+    /* belt_seed: the rng value at world_reset time — the deterministic
+     * seed for the entire belt's structure. rng evolves during sim
+     * (NPC spawns, fracture children, etc.) but the belt + every
+     * rock_pub derived from it are anchored to this fixed value. */
+    uint32_t belt_seed;
     float time;
     float field_spawn_timer;
     float gravity_accumulator;  /* runs gravity at reduced rate */

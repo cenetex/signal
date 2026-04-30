@@ -62,7 +62,9 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 36  /* Layer A.2 of #479 — pubkey registry tail */
+#define SAVE_VERSION 37  /* +belt_seed + destroyed_rocks ledger (#285 slice 1).
+                          * v36 added the Layer-A.2 pubkey registry tail (#479);
+                          * this bump appends the rock-permanence section after it. */
 /* v31 widened inventory[] / base_price[] by one slot (REPAIR_KIT). v32
  * appends npc_ship_t.hull (a single float, version-gated read so v31
  * saves still load with default hull). MIN stays at 31 so we don't
@@ -651,6 +653,20 @@ bool world_save(const world_t *w, const char *path) {
     }
     /* Asteroids: terrain remains derived from belt seed */
     /* Scaffolds: removed in v24 — transient in-flight construction */
+    /* v36: belt_seed (anchor for rock_pub derivation) + destroyed
+     * rocks ledger. Sparse — only `active` entries are written. */
+    WRITE_FIELD(f, w->belt_seed);
+    {
+        uint16_t count = w->destroyed_rock_count;
+        WRITE_FIELD(f, count);
+        int n = (int)(sizeof(w->destroyed_rocks) / sizeof(w->destroyed_rocks[0]));
+        for (int i = 0; i < n; i++) {
+            if (!w->destroyed_rocks[i].active) continue;
+            if (fwrite(w->destroyed_rocks[i].rock_pub, 32, 1, f) != 1) {
+                fclose(f); remove(tmp_path); return false;
+            }
+        }
+    }
     /* NPC ships */
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!write_npc(f, &w->npc_ships[i])) { fclose(f); remove(tmp_path); return false; }
@@ -782,6 +798,25 @@ bool world_load(world_t *w, const char *path) {
             fclose(f);
             return false;
         }
+    }
+    /* v37: belt_seed + destroyed_rocks ledger (#285 slice 1). Older saves
+     * have neither — leave belt_seed at the world_reset default and the
+     * ledger zero-initialized so every chunk reads as untouched. */
+    memset(w->destroyed_rocks, 0, sizeof(w->destroyed_rocks));
+    w->destroyed_rock_count = 0;
+    if (version >= 37) {
+        READ_FIELD(f, w->belt_seed);
+        uint16_t count = 0;
+        READ_FIELD(f, count);
+        int cap = (int)(sizeof(w->destroyed_rocks) / sizeof(w->destroyed_rocks[0]));
+        if (count > cap) { fclose(f); return false; }
+        for (uint16_t i = 0; i < count; i++) {
+            if (fread(w->destroyed_rocks[i].rock_pub, 32, 1, f) != 1) {
+                fclose(f); return false;
+            }
+            w->destroyed_rocks[i].active = 1;
+        }
+        w->destroyed_rock_count = count;
     }
     /* NPC ships */
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {

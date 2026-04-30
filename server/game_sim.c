@@ -4579,6 +4579,7 @@ void world_reset(world_t *w) {
     memset(w, 0, sizeof(*w));
     w->signal_cache.strength = sig_buf; /* restore — signal_grid_build reuses it */
     w->rng = seed ? seed : 2037u;
+    w->belt_seed = w->rng;  /* anchor for rock_pub derivation (#285) */
     /* Wipe process-level nav scratch so a freshly-reset world doesn't
      * inherit stale path/nav-mesh state from a previously-run world.
      * Matters for test isolation when many world_t instances are reset
@@ -4742,7 +4743,7 @@ void world_reset(world_t *w) {
                     int count = chunk_generate(&w->belt, w->rng, cx, cy,
                                                 rocks, CHUNK_MAX_ASTEROIDS);
                     for (int ri = 0; ri < count && slot < budget; ri++) {
-                        materialize_asteroid(w, slot, &rocks[ri], cx, cy);
+                        materialize_asteroid(w, slot, &rocks[ri], cx, cy, (uint16_t)ri);
                         slot++;
                     }
                 }

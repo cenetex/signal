@@ -439,6 +439,16 @@ typedef struct {
     uint8_t fracture_seed[32];
     uint8_t fragment_pub[32];
     uint8_t grade;             /* mining_grade_t, cached resolved grade */
+    /* rock_pub: stable identity for terrain (seed-origin) asteroids,
+     * computed at first-contact materialization as
+     *   SHA256("rock-v1" || belt_seed || cx || cy || slot).
+     * Zero on fracture children — they're identified by fragment_pub
+     * once their claim resolves. rock_pub is what the destroyed-records
+     * ledger keys on, and it's an explicit input to fracture_seed at
+     * birth so every downstream hash (fragment_pub, cargo_unit.pub,
+     * frame.pub, hull.pub) traces back to a unique (chunk, slot)
+     * coordinate in the belt. */
+    uint8_t rock_pub[32];
 } asteroid_t;
 
 typedef enum {

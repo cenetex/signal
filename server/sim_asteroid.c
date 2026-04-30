@@ -7,6 +7,7 @@
 #include "rng.h"
 #include "mining.h"  /* fracture_seed_compute */
 #include "protocol.h"
+#include "sha256.h"  /* rock_pub derivation (#285 slice 1) */
 
 /* ------------------------------------------------------------------ */
 /* RNG wrappers — use underlying randf() with &w->rng                  */
@@ -15,6 +16,13 @@
 static float w_randf(world_t *w)                          { return randf(&w->rng); }
 static float w_rand_range(world_t *w, float lo, float hi) { return rand_range(&w->rng, lo, hi); }
 static int   w_rand_int(world_t *w, int lo, int hi)       { return rand_int(&w->rng, lo, hi); }
+
+/* Permanent floating terrain (#285 slice 1) — forward decls; bodies
+ * live with the chunk-materialize block below. */
+static bool rock_pub_is_destroyed(const world_t *w, const uint8_t pub[32]);
+static void mark_rock_destroyed(world_t *w, const uint8_t pub[32]);
+static void compute_rock_pub(uint32_t belt_seed, int32_t cx, int32_t cy,
+                              uint16_t slot, uint8_t out[32]);
 
 /* ------------------------------------------------------------------ */
 /* Signal helpers (local to this file)                                  */
@@ -408,6 +416,14 @@ static int desired_child_count(world_t *w, asteroid_tier_t tier) {
 
 void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_by) {
     asteroid_t parent = w->asteroids[idx];
+    /* Permanent floating terrain (#285 slice 1): retire the parent's
+     * rock_pub forever. Children inherit fracture_seed but get fresh
+     * fragment_pubs once their claim resolves; the parent's pub is a
+     * tombstone in the destroyed-records ledger so re-visits to the
+     * same chunk skip this slot's seed roster entry. No-op for non-
+     * seed parents (fracture children re-fracturing) — their rock_pub
+     * is zero, so mark_rock_destroyed early-returns. */
+    mark_rock_destroyed(w, parent.rock_pub);
     asteroid_tier_t child_tier = asteroid_next_tier(parent.tier);
     int desired = desired_child_count(w, parent.tier);
     int child_slots[16] = { idx, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };
@@ -642,6 +658,70 @@ void sim_step_asteroid_dynamics(world_t *w, float dt) {
  * before the player reaches the edge. */
 #define MATERIALIZE_RADIUS 3500.0f
 
+/* ------------------------------------------------------------------ */
+/* Permanent floating terrain (#285 slice 1)                          */
+/* ------------------------------------------------------------------ */
+
+/* rock_pub = SHA256("rock-v1" || belt_seed || cx || cy || slot).
+ * Deterministic from belt seed + chunk coordinates + per-chunk slot
+ * index, so two clients independently arrive at the same identity
+ * without any shared mutable state. */
+static void compute_rock_pub(uint32_t belt_seed, int32_t cx, int32_t cy,
+                              uint16_t slot, uint8_t out[32]) {
+    uint8_t buf[7 + 4 + 4 + 4 + 2];
+    size_t o = 0;
+    memcpy(buf + o, "rock-v1", 7); o += 7;
+    buf[o++] = (uint8_t)(belt_seed       & 0xFF);
+    buf[o++] = (uint8_t)((belt_seed >> 8)  & 0xFF);
+    buf[o++] = (uint8_t)((belt_seed >> 16) & 0xFF);
+    buf[o++] = (uint8_t)((belt_seed >> 24) & 0xFF);
+    uint32_t ucx = (uint32_t)cx;
+    uint32_t ucy = (uint32_t)cy;
+    buf[o++] = (uint8_t)(ucx       & 0xFF);
+    buf[o++] = (uint8_t)((ucx >> 8)  & 0xFF);
+    buf[o++] = (uint8_t)((ucx >> 16) & 0xFF);
+    buf[o++] = (uint8_t)((ucx >> 24) & 0xFF);
+    buf[o++] = (uint8_t)(ucy       & 0xFF);
+    buf[o++] = (uint8_t)((ucy >> 8)  & 0xFF);
+    buf[o++] = (uint8_t)((ucy >> 16) & 0xFF);
+    buf[o++] = (uint8_t)((ucy >> 24) & 0xFF);
+    buf[o++] = (uint8_t)(slot       & 0xFF);
+    buf[o++] = (uint8_t)((slot >> 8)  & 0xFF);
+    sha256_bytes(buf, o, out);
+}
+
+/* Linear scan — destroyed_rocks is small (256 entries, mostly empty
+ * within a session). When the cap binds we'll move to a hash set. */
+static bool rock_pub_is_destroyed(const world_t *w, const uint8_t pub[32]) {
+    int n = (int)(sizeof(w->destroyed_rocks) / sizeof(w->destroyed_rocks[0]));
+    for (int i = 0; i < n; i++) {
+        if (!w->destroyed_rocks[i].active) continue;
+        if (memcmp(w->destroyed_rocks[i].rock_pub, pub, 32) == 0) return true;
+    }
+    return false;
+}
+
+/* Idempotent: if pub is already in the set, no-op. When the table
+ * fills up the new entry is dropped (and a SIM_LOG warning fires);
+ * the rock is still gone from the active pool, so the player-facing
+ * outcome stays "destroyed forever" even though the verifier loses
+ * its tombstone. The 256 cap is a session-level budget — when this
+ * starts to bind we move to a sparse on-disk store. */
+static void mark_rock_destroyed(world_t *w, const uint8_t pub[32]) {
+    static const uint8_t zero[32] = {0};
+    if (memcmp(pub, zero, 32) == 0) return;  /* unstamped (fracture child) */
+    if (rock_pub_is_destroyed(w, pub)) return;
+    int n = (int)(sizeof(w->destroyed_rocks) / sizeof(w->destroyed_rocks[0]));
+    for (int i = 0; i < n; i++) {
+        if (w->destroyed_rocks[i].active) continue;
+        memcpy(w->destroyed_rocks[i].rock_pub, pub, 32);
+        w->destroyed_rocks[i].active = 1;
+        w->destroyed_rock_count++;
+        return;
+    }
+    SIM_LOG("[sim] destroyed_rocks ledger full (256) — tombstone dropped\n");
+}
+
 /* Check if a chunk center is within signal coverage of any station. */
 static bool chunk_in_signal(const world_t *w, int32_t cx, int32_t cy) {
     float wx = ((float)cx + 0.5f) * CHUNK_SIZE;
@@ -662,9 +742,15 @@ static int find_free_slot(const world_t *w) {
     return -1;
 }
 
-/* Materialize a chunk_asteroid_t into a world asteroid slot. */
+/* Materialize a chunk_asteroid_t into a world asteroid slot.
+ *
+ * `seed_slot` is the rock's index within its source chunk's roster;
+ * combined with (cx, cy, belt_seed) it derives the rock's permanent
+ * identity (rock_pub). Caller iterates the chunk's seed roster and
+ * passes r=0..N-1; the resulting rock_pub survives drift, save/load,
+ * and any future migration that reshuffles pool slots. */
 void materialize_asteroid(world_t *w, int slot, const chunk_asteroid_t *ca,
-                           int32_t cx, int32_t cy) {
+                           int32_t cx, int32_t cy, uint16_t seed_slot) {
     asteroid_t *a = &w->asteroids[slot];
     memset(a, 0, sizeof(*a));
     fracture_claim_state_reset(&w->fracture_claims[slot]);
@@ -684,6 +770,7 @@ void materialize_asteroid(world_t *w, int slot, const chunk_asteroid_t *ca,
     a->last_towed_by = -1;
     a->last_fractured_by = -1;
     a->net_dirty = true;
+    compute_rock_pub(w->belt_seed, cx, cy, seed_slot, a->rock_pub);
     w->asteroid_origin[slot].chunk_x = cx;
     w->asteroid_origin[slot].chunk_y = cy;
     w->asteroid_origin[slot].from_chunk = true;
@@ -748,14 +835,22 @@ void maintain_asteroid_field(world_t *w, float dt) {
                 /* Skip if outside signal coverage */
                 if (!chunk_in_signal(w, cx, cy)) continue;
 
-                /* Generate and place */
+                /* Generate and place. Each rock gets its permanent
+                 * identity from (belt_seed, cx, cy, r); slots whose
+                 * rock_pub is in the destroyed-records ledger were
+                 * mined to gravel in some past visit and don't come
+                 * back — that's the "permanent floating terrain"
+                 * invariant from #285. */
                 chunk_asteroid_t rocks[CHUNK_MAX_ASTEROIDS];
                 int count = chunk_generate(&w->belt, w->rng, cx, cy,
                                             rocks, CHUNK_MAX_ASTEROIDS);
                 for (int r = 0; r < count; r++) {
+                    uint8_t pub[32];
+                    compute_rock_pub(w->belt_seed, cx, cy, (uint16_t)r, pub);
+                    if (rock_pub_is_destroyed(w, pub)) continue;
                     int slot = find_free_slot(w);
                     if (slot < 0) goto pool_full;
-                    materialize_asteroid(w, slot, &rocks[r], cx, cy);
+                    materialize_asteroid(w, slot, &rocks[r], cx, cy, (uint16_t)r);
                 }
             }
         }

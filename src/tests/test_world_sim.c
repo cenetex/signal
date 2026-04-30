@@ -1285,10 +1285,136 @@ void register_world_sim_belt_tests(void) {
     RUN(test_belt_ore_distribution);
 }
 
+/* #285 slice 1: count rocks materialized for a chunk after planting a
+ * player at the chunk center and forcing a maintenance sweep. */
+static int count_rocks_in_chunk(world_t *w, int32_t cx, int32_t cy) {
+    int n = 0;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) continue;
+        if (!w->asteroid_origin[i].from_chunk) continue;
+        if (w->asteroid_origin[i].chunk_x == cx &&
+            w->asteroid_origin[i].chunk_y == cy)
+            n++;
+    }
+    return n;
+}
+
+/* Permanent terrain: every materialized terrain rock carries a non-
+ * zero rock_pub stamped from (belt_seed, cx, cy, slot). */
+TEST(test_rock_pub_assigned_at_first_contact) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    w->players[0].connected = true;
+    player_init_ship(&w->players[0], w);
+    int32_t cx = 4, cy = -2;
+    w->players[0].ship.pos = v2(((float)cx + 0.5f) * CHUNK_SIZE,
+                                 ((float)cy + 0.5f) * CHUNK_SIZE);
+    w->field_spawn_timer = 1e6f;
+    maintain_asteroid_field(w, 0.016f);
+    int found_with_pub = 0;
+    static const uint8_t zero[32] = {0};
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) continue;
+        if (!w->asteroid_origin[i].from_chunk) continue;
+        if (memcmp(w->asteroids[i].rock_pub, zero, 32) != 0) found_with_pub++;
+    }
+    /* At least one terrain rock should be in this chunk and stamped. */
+    ASSERT(found_with_pub > 0);
+}
+
+/* Mining a rock retires its rock_pub forever; revisits skip that slot. */
+TEST(test_destroyed_rock_does_not_respawn) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    w->players[0].connected = true;
+    player_init_ship(&w->players[0], w);
+    int32_t cx = 7, cy = 11;
+    w->players[0].ship.pos = v2(((float)cx + 0.5f) * CHUNK_SIZE,
+                                 ((float)cy + 0.5f) * CHUNK_SIZE);
+    w->field_spawn_timer = 1e6f;
+    maintain_asteroid_field(w, 0.016f);
+    int initial = count_rocks_in_chunk(w, cx, cy);
+    if (initial == 0) {
+        /* Belt density may have left this chunk empty; pick another. */
+        cx = 9; cy = -3;
+        w->players[0].ship.pos = v2(((float)cx + 0.5f) * CHUNK_SIZE,
+                                     ((float)cy + 0.5f) * CHUNK_SIZE);
+        w->field_spawn_timer = 1e6f;
+        maintain_asteroid_field(w, 0.016f);
+        initial = count_rocks_in_chunk(w, cx, cy);
+    }
+    ASSERT(initial > 0);
+    /* Pick a terrain rock from the chunk and fracture it directly. */
+    int target = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) continue;
+        if (!w->asteroid_origin[i].from_chunk) continue;
+        if (w->asteroid_origin[i].chunk_x != cx ||
+            w->asteroid_origin[i].chunk_y != cy) continue;
+        target = i;
+        break;
+    }
+    ASSERT(target >= 0);
+    fracture_asteroid(w, target, v2(1.0f, 0.0f), -1);
+    ASSERT_EQ_INT(w->destroyed_rock_count, 1);
+    /* Push the chunk far out of viewport, sweep to despawn, then come
+     * back and re-materialize. The destroyed rock must not return. */
+    w->players[0].ship.pos = v2(50000.0f, 50000.0f);
+    w->field_spawn_timer = 1e6f;
+    maintain_asteroid_field(w, 0.016f);
+    /* Clear any non-disturbed leftovers — also wipes fracture children
+     * which would otherwise occupy slots. */
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        memset(&w->asteroids[i], 0, sizeof(w->asteroids[i]));
+        memset(&w->asteroid_origin[i], 0, sizeof(w->asteroid_origin[i]));
+    }
+    w->players[0].ship.pos = v2(((float)cx + 0.5f) * CHUNK_SIZE,
+                                 ((float)cy + 0.5f) * CHUNK_SIZE);
+    w->field_spawn_timer = 1e6f;
+    maintain_asteroid_field(w, 0.016f);
+    int after = count_rocks_in_chunk(w, cx, cy);
+    /* Strictly fewer rocks than the first visit. */
+    ASSERT(after < initial);
+}
+
+/* Save/load round-trips the destroyed ledger and belt_seed. */
+TEST(test_save_preserves_destroyed_rocks_ledger) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    /* Fabricate a couple of destroyed pubs directly so the test isn't
+     * dependent on belt density at any specific (cx, cy). */
+    memset(w->destroyed_rocks[0].rock_pub, 0xAB, 32);
+    w->destroyed_rocks[0].active = 1;
+    memset(w->destroyed_rocks[1].rock_pub, 0xCD, 32);
+    w->destroyed_rocks[1].active = 1;
+    w->destroyed_rock_count = 2;
+    uint32_t expected_seed = w->belt_seed;
+    ASSERT(world_save(w, TMP("test_rockpub.sav")));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(world_load(loaded, TMP("test_rockpub.sav")));
+    ASSERT_EQ_INT(loaded->destroyed_rock_count, 2);
+    ASSERT_EQ_INT(loaded->belt_seed, expected_seed);
+    uint8_t want_ab[32]; memset(want_ab, 0xAB, 32);
+    uint8_t want_cd[32]; memset(want_cd, 0xCD, 32);
+    int seen_ab = 0, seen_cd = 0;
+    int n = (int)(sizeof(loaded->destroyed_rocks) / sizeof(loaded->destroyed_rocks[0]));
+    for (int i = 0; i < n; i++) {
+        if (!loaded->destroyed_rocks[i].active) continue;
+        if (memcmp(loaded->destroyed_rocks[i].rock_pub, want_ab, 32) == 0) seen_ab++;
+        if (memcmp(loaded->destroyed_rocks[i].rock_pub, want_cd, 32) == 0) seen_cd++;
+    }
+    ASSERT_EQ_INT(seen_ab, 1);
+    ASSERT_EQ_INT(seen_cd, 1);
+    remove(TMP("test_rockpub.sav"));
+}
+
 void register_world_sim_chunk_tests(void) {
     TEST_SECTION("\nChunk terrain generation:\n");
     RUN(test_chunk_determinism);
     RUN(test_chunk_different_coords_differ);
     RUN(test_chunk_respects_belt_density);
+    RUN(test_rock_pub_assigned_at_first_contact);
+    RUN(test_destroyed_rock_does_not_respawn);
+    RUN(test_save_preserves_destroyed_rocks_ledger);
 }
 
