@@ -4,6 +4,7 @@
 #include <stddef.h>
 
 #include "types.h"
+#include "cargo_receipt.h"  /* ship_receipts_t — accessor return type */
 
 _Static_assert(sizeof(cargo_unit_t) == 80, "cargo_unit_t must stay 80 bytes");
 _Static_assert(offsetof(cargo_unit_t, mined_block) == 8,
@@ -47,6 +48,14 @@ int manifest_consume_by_commodity(manifest_t *manifest,
 void ship_cleanup(ship_t *ship);
 bool ship_manifest_bootstrap(ship_t *ship);
 bool ship_copy(ship_t *dst, const ship_t *src);
+
+/* Layer D of #479 — typed accessors for the parallel receipt store
+ * stashed in ship_t.receipts_opaque. The ship_receipts_t type itself
+ * lives in shared/cargo_receipt.h; these accessors return pointers
+ * the caller must NOT free (lifetime tracks the ship). Returns NULL
+ * if ship_manifest_bootstrap hasn't been called yet. */
+ship_receipts_t *ship_get_receipts(ship_t *ship);
+const ship_receipts_t *ship_get_receipts_const(const ship_t *ship);
 void station_cleanup(station_t *station);
 bool station_manifest_bootstrap(station_t *station);
 bool station_copy(station_t *dst, const station_t *src);

@@ -13,6 +13,7 @@
 #include "signal_crypto.h"
 #include "sim_asteroid.h"
 #include "chain_log.h"  /* signed event emission (#479 C) */
+#include "cargo_receipt_issue.h"  /* portable cargo receipts (#479 D) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -318,31 +319,49 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             st->manifest_dirty = true;
             /* Layer C of #479: emit EVT_TRANSFER + EVT_TRADE. The two
              * are linked by transfer_event_id so a verifier can stitch
-             * them back into a single atomic move. */
+             * them back into a single atomic move.
+             * Layer D of #479: also issue a portable cargo_receipt_t the
+             * player carries with the cargo. The origin receipt's
+             * prev_receipt_hash is the station's chain_last_hash AFTER
+             * the EVT_TRANSFER emit — verifiable in isolation by
+             * walking the station's chain log to that exact event. */
             {
-                struct __attribute__((packed)) {
-                    uint8_t from_pubkey[32];
-                    uint8_t to_pubkey[32];
-                    uint8_t cargo_pub[32];
-                    uint8_t kind;
-                    uint8_t _pad[7];
-                } xfer = {0};
-                memcpy(xfer.from_pubkey, st->station_pubkey, 32);
-                memcpy(xfer.to_pubkey, world.players[pid].pubkey, 32);
-                memcpy(xfer.cargo_pub, copy.pub, 32);
-                xfer.kind = (uint8_t)CARGO_KIND_INGOT;
-                uint64_t xfer_id = chain_log_emit(&world, st, CHAIN_EVT_TRANSFER,
-                                                  &xfer, (uint16_t)sizeof(xfer));
-                struct __attribute__((packed)) {
-                    uint64_t transfer_event_id;
-                    int64_t  ledger_delta_signed;
-                    uint8_t  ledger_pubkey[32];
-                } trade = {0};
-                trade.transfer_event_id = xfer_id;
-                trade.ledger_delta_signed = -(int64_t)price;
-                memcpy(trade.ledger_pubkey, world.players[pid].pubkey, 32);
-                (void)chain_log_emit(&world, st, CHAIN_EVT_TRADE,
-                                     &trade, (uint16_t)sizeof(trade));
+                cargo_receipt_t receipt;
+                uint64_t xfer_id = cargo_receipt_emit_transfer(
+                    &world, st,
+                    st->station_pubkey,
+                    world.players[pid].pubkey,
+                    copy.pub,
+                    (uint8_t)CARGO_KIND_INGOT,
+                    st->chain_last_hash, /* anchor: post-emit hash */
+                    &receipt);
+                if (xfer_id != 0) {
+                    /* Attach receipt to the just-pushed manifest entry.
+                     * manifest_push appended at index manifest.count - 1. */
+                    ship_receipts_t *rcpts = ship_get_receipts(ship);
+                    if (rcpts) {
+                        (void)ship_receipts_push_chain(rcpts, &receipt, 1);
+                        /* Keep parity: receipts.count must mirror manifest.count. */
+                    }
+                    /* Fire NET_MSG_CARGO_RECEIPT_BUNDLE to the client. */
+                    uint8_t buf[3 + CARGO_RECEIPT_SIZE];
+                    buf[0] = NET_MSG_CARGO_RECEIPT_BUNDLE;
+                    buf[1] = 1;
+                    buf[2] = 0;
+                    cargo_receipt_pack(&receipt, &buf[3]);
+                    ws_send(c, buf, sizeof(buf));
+
+                    struct __attribute__((packed)) {
+                        uint64_t transfer_event_id;
+                        int64_t  ledger_delta_signed;
+                        uint8_t  ledger_pubkey[32];
+                    } trade = {0};
+                    trade.transfer_event_id = xfer_id;
+                    trade.ledger_delta_signed = -(int64_t)price;
+                    memcpy(trade.ledger_pubkey, world.players[pid].pubkey, 32);
+                    (void)chain_log_emit(&world, st, CHAIN_EVT_TRADE,
+                                         &trade, (uint16_t)sizeof(trade));
+                }
             }
             char cs[12]; mining_render_callsign(copy.pub, cs);
             char msg[96];
@@ -372,6 +391,31 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             }
             if (hidx < 0) break;
             cargo_unit_t copy = ship->manifest.units[hidx];
+            /* Layer D of #479: validate any attached receipt chain
+             * before accepting. If the chain fails verification, refuse
+             * the deliver — federation invariant: a station only takes
+             * cargo whose lineage is signed all the way back. If no
+             * receipt chain is attached (legacy / pre-D save / cargo
+             * smelted on-station with no transfer history), accept
+             * unconditionally — the station treats the loading-state
+             * cargo as origin-attested and signs a fresh receipt. */
+            ship_receipts_t *rcpts = ship_get_receipts(ship);
+            if (rcpts && hidx < (int)rcpts->count) {
+                const cargo_receipt_chain_t *attached = &rcpts->chains[hidx];
+                if (attached->len > 0) {
+                    cargo_receipt_result_t vr = cargo_receipt_chain_verify(
+                        attached->links, attached->len, copy.pub);
+                    if (vr != CARGO_RECEIPT_OK) {
+                        printf("[server] receipt_chain_invalid: deliver from player %d, reason=%d\n",
+                               pid, (int)vr);
+                        break; /* refuse the deliver */
+                    }
+                    if (attached->len >= CARGO_RECEIPT_CHAIN_MAX_LEN) {
+                        printf("[server] receipt_chain_cap_exceeded: deliver from player %d\n", pid);
+                        break;
+                    }
+                }
+            }
             /* FIFO-evict the oldest manifest entry on full station, mirroring
              * the smelt rotation path. The evicted unit's pubkey is voided
              * so it can never be re-deposited. */
@@ -386,37 +430,66 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 }
             }
             if (!manifest_push(&st->manifest, &copy)) break;
+            /* Capture last receipt hash (for the new station-issued
+             * receipt's prev_receipt_hash) BEFORE removing. */
+            uint8_t prev_hash[32] = {0};
+            bool have_prev = false;
+            if (rcpts && hidx < (int)rcpts->count) {
+                const cargo_receipt_chain_t *attached = &rcpts->chains[hidx];
+                if (attached->len > 0) {
+                    cargo_receipt_hash(&attached->links[attached->len - 1], prev_hash);
+                    have_prev = true;
+                }
+            }
             (void)manifest_remove(&ship->manifest, (uint16_t)hidx, NULL);
+            if (rcpts && hidx < (int)rcpts->count) {
+                (void)ship_receipts_remove(rcpts, (uint16_t)hidx, NULL);
+            }
             /* Pay delivery credit through the ledger so supply stays balanced. */
             ledger_credit_supply(st, world.players[pid].session_token, (float)INGOT_DELIVERY_CREDIT);
             st->manifest_dirty = true;
             /* Layer C of #479: emit EVT_TRANSFER (player -> station) +
              * EVT_TRADE (delivery credit accrual on the station's
-             * ledger). */
+             * ledger).
+             * Layer D of #479: also issue station's own receipt. The
+             * receipt's prev_receipt_hash is the SHA-256 of the player's
+             * presented chain head if there was one — this hop closes
+             * the chain at the destination station. If no prior chain,
+             * anchor to the station's own chain_last_hash post-emit. */
             {
-                struct __attribute__((packed)) {
-                    uint8_t from_pubkey[32];
-                    uint8_t to_pubkey[32];
-                    uint8_t cargo_pub[32];
-                    uint8_t kind;
-                    uint8_t _pad[7];
-                } xfer = {0};
-                memcpy(xfer.from_pubkey, world.players[pid].pubkey, 32);
-                memcpy(xfer.to_pubkey, st->station_pubkey, 32);
-                memcpy(xfer.cargo_pub, copy.pub, 32);
-                xfer.kind = (uint8_t)CARGO_KIND_INGOT;
-                uint64_t xfer_id = chain_log_emit(&world, st, CHAIN_EVT_TRANSFER,
-                                                  &xfer, (uint16_t)sizeof(xfer));
-                struct __attribute__((packed)) {
-                    uint64_t transfer_event_id;
-                    int64_t  ledger_delta_signed;
-                    uint8_t  ledger_pubkey[32];
-                } trade = {0};
-                trade.transfer_event_id = xfer_id;
-                trade.ledger_delta_signed = (int64_t)INGOT_DELIVERY_CREDIT;
-                memcpy(trade.ledger_pubkey, world.players[pid].pubkey, 32);
-                (void)chain_log_emit(&world, st, CHAIN_EVT_TRADE,
-                                     &trade, (uint16_t)sizeof(trade));
+                cargo_receipt_t receipt;
+                uint64_t xfer_id = cargo_receipt_emit_transfer(
+                    &world, st,
+                    world.players[pid].pubkey,
+                    st->station_pubkey,
+                    copy.pub,
+                    (uint8_t)CARGO_KIND_INGOT,
+                    have_prev ? prev_hash : st->chain_last_hash,
+                    &receipt);
+                if (xfer_id != 0) {
+                    /* Send the destination's reissued receipt back to
+                     * the player. The cargo is now in the station; the
+                     * receipt is what the player would carry if the
+                     * cargo ever flowed back to them. For now it's a
+                     * confirmation token. */
+                    uint8_t buf[3 + CARGO_RECEIPT_SIZE];
+                    buf[0] = NET_MSG_CARGO_RECEIPT_BUNDLE;
+                    buf[1] = 1;
+                    buf[2] = 0;
+                    cargo_receipt_pack(&receipt, &buf[3]);
+                    ws_send(c, buf, sizeof(buf));
+
+                    struct __attribute__((packed)) {
+                        uint64_t transfer_event_id;
+                        int64_t  ledger_delta_signed;
+                        uint8_t  ledger_pubkey[32];
+                    } trade = {0};
+                    trade.transfer_event_id = xfer_id;
+                    trade.ledger_delta_signed = (int64_t)INGOT_DELIVERY_CREDIT;
+                    memcpy(trade.ledger_pubkey, world.players[pid].pubkey, 32);
+                    (void)chain_log_emit(&world, st, CHAIN_EVT_TRADE,
+                                         &trade, (uint16_t)sizeof(trade));
+                }
             }
             char cs[12]; mining_render_callsign(copy.pub, cs);
             char msg[96];

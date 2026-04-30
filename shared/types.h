@@ -208,6 +208,20 @@ typedef struct {
      * hold_ingots[] / named_ingot_t dual store was collapsed in the
      * "unify ingot identity" PR. */
     manifest_t    manifest;
+    /* Layer D of #479 — portable cargo receipts.
+     *
+     * Parallel to `manifest`: receipts.chains[i] is the per-cargo-unit
+     * receipt chain attached to manifest.units[i]. Mutated in lockstep
+     * with the manifest by every BUY / SELL / DELIVER / TRANSFER path —
+     * receipts.count must equal manifest.count after every consistent
+     * op. Bootstrapped alongside the manifest (see ship_manifest_bootstrap).
+     *
+     * Stored as a void pointer to keep types.h independent of
+     * cargo_receipt.h (avoids a header cycle); shared/cargo_receipt.h
+     * defines the ship_receipts_t shape and shared/manifest.c casts
+     * through it. The on-disk save format (v42+) round-trips through
+     * the cargo_receipt_t wire layout. */
+    void          *receipts_opaque; /* ship_receipts_t* — see cargo_receipt.h */
 } ship_t;
 
 typedef enum {

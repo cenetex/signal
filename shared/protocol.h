@@ -98,6 +98,39 @@ enum {
                                             * 8 ASCII bytes of the legacy save's hex token name —
                                             * enough to identify it for a claim, not full disclosure
                                             * of the original session token. */
+    NET_MSG_CARGO_RECEIPT_BUNDLE   = 0x36, /* server -> client. Layer D of #479.
+                                            *
+                                            * Sent immediately after a BUY_INGOT or
+                                            * BUY_PRODUCT response that resulted in a
+                                            * cargo transfer to the player. The client
+                                            * appends each receipt to ship.receipts so
+                                            * subsequent sells/deliveries can present
+                                            * the chain to destination stations.
+                                            *
+                                            *   [type:1=0x36][count:u16]
+                                            *     count × cargo_receipt_t (232 bytes each)
+                                            *
+                                            * `count` is the number of fresh
+                                            * receipts; each receipt corresponds 1:1
+                                            * with a cargo unit added to the ship
+                                            * manifest in this transaction. */
+    NET_MSG_PRESENT_RECEIPT_CHAIN  = 0x37, /* client -> server. Layer D of #479.
+                                            *
+                                            *   [type:1=0x37][cargo_pub:32][chain_len:u16]
+                                            *     chain_len × cargo_receipt_t
+                                            *
+                                            * Sent alongside a SIGNED_ACTION_SELL_CARGO
+                                            * or SIGNED_ACTION_DELIVER for the cargo
+                                            * being sold. The destination station
+                                            * walks the chain, verifies each
+                                            * receipt's signature against its
+                                            * authoring_station pubkey, verifies
+                                            * prev_receipt_hash linkage, and refuses
+                                            * the transfer on any failure. On
+                                            * success the destination signs and
+                                            * issues its OWN receipt back to the
+                                            * player (next BUY_BACK / DELIVER cycle
+                                            * grows the chain by one). */
     NET_MSG_CLAIM_LEGACY_SAVE      = 0x35, /* client -> server. Layer A.4 of #479.
                                             *
                                             *   [type:1=0x35][token_hex_len:1][token_hex:N]

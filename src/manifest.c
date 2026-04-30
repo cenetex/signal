@@ -1,4 +1,5 @@
 #include "manifest.h"
+#include "cargo_receipt.h"  /* Layer D of #479 — ship receipt store */
 
 #include <assert.h>
 #include <math.h>
@@ -246,27 +247,87 @@ bool manifest_clone(manifest_t *dst, const manifest_t *src) {
     return true;
 }
 
+/* Layer D of #479 — receipt store helpers. Kept inline here so
+ * ship_cleanup/_bootstrap/_copy maintain the manifest+receipt parity
+ * invariant in lockstep. */
+static ship_receipts_t *ship_receipts_alloc(void) {
+    ship_receipts_t *r = (ship_receipts_t *)calloc(1, sizeof(*r));
+    if (!r) return NULL;
+    if (!ship_receipts_init(r, SHIP_MANIFEST_DEFAULT_CAP)) {
+        free(r);
+        return NULL;
+    }
+    return r;
+}
+
+static void ship_receipts_destroy(ship_receipts_t *r) {
+    if (!r) return;
+    ship_receipts_free(r);
+    free(r);
+}
+
+ship_receipts_t *ship_get_receipts(ship_t *ship) {
+    if (!ship) return NULL;
+    return (ship_receipts_t *)ship->receipts_opaque;
+}
+
+const ship_receipts_t *ship_get_receipts_const(const ship_t *ship) {
+    if (!ship) return NULL;
+    return (const ship_receipts_t *)ship->receipts_opaque;
+}
+
 void ship_cleanup(ship_t *ship) {
     if (!ship) return;
     manifest_free(&ship->manifest);
+    if (ship->receipts_opaque) {
+        ship_receipts_destroy((ship_receipts_t *)ship->receipts_opaque);
+        ship->receipts_opaque = NULL;
+    }
 }
 
 bool ship_manifest_bootstrap(ship_t *ship) {
     if (!ship) return false;
-    if (ship->manifest.cap == SHIP_MANIFEST_DEFAULT_CAP && ship->manifest.units) return true;
-    manifest_free(&ship->manifest);
-    return manifest_init(&ship->manifest, SHIP_MANIFEST_DEFAULT_CAP);
+    bool manifest_ok = (ship->manifest.cap == SHIP_MANIFEST_DEFAULT_CAP &&
+                        ship->manifest.units);
+    if (!manifest_ok) {
+        manifest_free(&ship->manifest);
+        if (!manifest_init(&ship->manifest, SHIP_MANIFEST_DEFAULT_CAP))
+            return false;
+    }
+    /* Bootstrap the parallel receipt store. Idempotent. */
+    if (!ship->receipts_opaque) {
+        ship->receipts_opaque = ship_receipts_alloc();
+        if (!ship->receipts_opaque) return false;
+    }
+    return true;
 }
 
 bool ship_copy(ship_t *dst, const ship_t *src) {
     manifest_t manifest = {0};
+    ship_receipts_t *receipts_dup = NULL;
 
     if (!dst || !src) return false;
     if (dst == src) return true;
     if (!manifest_clone(&manifest, &src->manifest)) return false;
+    /* Clone receipts if the source has any. Failure to clone is fatal
+     * for the copy because we must keep manifest+receipt parity. */
+    if (src->receipts_opaque) {
+        receipts_dup = (ship_receipts_t *)calloc(1, sizeof(*receipts_dup));
+        if (!receipts_dup) {
+            manifest_free(&manifest);
+            return false;
+        }
+        if (!ship_receipts_clone(receipts_dup,
+                                 (const ship_receipts_t *)src->receipts_opaque)) {
+            free(receipts_dup);
+            manifest_free(&manifest);
+            return false;
+        }
+    }
     ship_cleanup(dst);
     *dst = *src;
     dst->manifest = manifest;
+    dst->receipts_opaque = receipts_dup;
     return true;
 }
 

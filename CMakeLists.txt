@@ -87,6 +87,7 @@ set(SIGNAL_SIM_SOURCES
     server/station_authority.c
     server/chain_log.c
     server/chain_log_verify.c
+    server/cargo_receipt_issue.c
     server/sim_asteroid.c
     server/sim_physics.c
     server/sim_production.c
@@ -107,6 +108,7 @@ set(SIGNAL_SIM_HELPERS
     shared/belt.c
     shared/module_schema.c
     shared/station_util.c
+    shared/cargo_receipt.c
 )
 
 # Client-only: rendering, input, HUD, audio, network plumbing. Not
@@ -215,6 +217,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         src/tests/test_station_authority.c
         src/tests/test_chain_log.c
         src/tests/test_signal_verify.c
+        src/tests/test_cross_station_settlement.c
         src/identity.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}

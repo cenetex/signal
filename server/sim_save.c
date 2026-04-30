@@ -78,13 +78,16 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 41  /* Layer C of #479 — per-station chain log state
-                          * (chain_last_hash 32B + chain_event_count 8B)
-                          * appended to the session block. The actual
-                          * event records live in side files under
-                          * chain/<base58(pubkey)>.log and are NOT part
-                          * of world.sav. v40 saves migrate forward as
-                          * empty chains (see chain_log.h). */
+#define SAVE_VERSION 42  /* Layer D of #479 — per-ship cargo_receipt_t chains
+                          * persisted alongside the ship manifest tail in
+                          * each player save (PLY7). v41 saves migrate
+                          * forward with empty receipt chains; the loading
+                          * station treats existing cargo as origin-attested
+                          * and signs a fresh receipt on the next
+                          * transaction. world.sav format itself is
+                          * unchanged at v42 (layout matches v41).
+                          * v41 (Layer C): per-station chain log state
+                          * (chain_last_hash 32B + chain_event_count 8B). */
 /* v40: Layer B of #479 — per-station Ed25519 pubkey + outpost
  * provenance tail in the session block. The matching private key is
  * rederivable from the world seed (or saved provenance, for outposts)
@@ -1233,7 +1236,8 @@ bool world_load(world_t *w, const char *path) {
 /* Player persistence                                                  */
 /* ================================================================== */
 
-#define PLAYER_MAGIC    0x504C5936u  /* "PLY6" — #479 A.3: appends last_signed_nonce */
+#define PLAYER_MAGIC    0x504C5937u  /* "PLY7" — #479 D: appends per-ship receipt chains */
+#define PLAYER_MAGIC_V6 0x504C5936u  /* "PLY6" — #479 A.3: appends last_signed_nonce */
 #define PLAYER_MAGIC_V5 0x504C5935u  /* "PLY5" — #339 A.2: adds ship.manifest tail */
 #define PLAYER_MAGIC_V4 0x504C5934u  /* "PLY4" — explicit ship payload, no runtime manifest pointers */
 #define PLAYER_MAGIC_V3 0x504C5933u  /* "PLY3" — v25: station-local credits (#312) */
@@ -1622,6 +1626,31 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
         ok = fwrite(&nonce, sizeof(nonce), 1, f) == 1;
         if (ok) crc = crc32_update(crc, &nonce, sizeof(nonce));
     }
+    /* PLY7 tail (#479 D): per-cargo receipt chains, one per manifest
+     * unit, in manifest order. Each chain on disk is
+     *   [len:u8] + len × cargo_receipt_t.
+     * Empty chains (len=0) are valid — they signify "cargo never had
+     * a receipt attached" (e.g. legacy migration) so the next transfer
+     * mints a fresh origin-attested receipt. */
+    if (ok) {
+        const ship_receipts_t *rcpts = ship_get_receipts_const(&sp->ship);
+        uint16_t mc = sp->ship.manifest.count;
+        for (uint16_t u = 0; ok && u < mc; u++) {
+            uint8_t len = 0;
+            if (rcpts && u < rcpts->count) {
+                len = rcpts->chains[u].len;
+                if (len > CARGO_RECEIPT_CHAIN_MAX_LEN)
+                    len = CARGO_RECEIPT_CHAIN_MAX_LEN;
+            }
+            ok = fwrite(&len, sizeof(len), 1, f) == 1;
+            if (ok) crc = crc32_update(crc, &len, sizeof(len));
+            for (uint8_t k = 0; ok && k < len; k++) {
+                const cargo_receipt_t *r = &rcpts->chains[u].links[k];
+                ok = fwrite(r, sizeof(*r), 1, f) == 1;
+                if (ok) crc = crc32_update(crc, r, sizeof(*r));
+            }
+        }
+    }
     if (ok) {
         uint32_t crc_magic = 0x43524332u; /* "CRC2" */
         ok = fwrite(&crc_magic, sizeof(crc_magic), 1, f) == 1 &&
@@ -1674,8 +1703,9 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
 
     ship_cleanup(&sp->ship);
 
-    if (magic == PLAYER_MAGIC || magic == PLAYER_MAGIC_V5) {
-        /* PLY5 (manifest tail) and PLY6 (manifest + last_signed_nonce). */
+    if (magic == PLAYER_MAGIC || magic == PLAYER_MAGIC_V6 || magic == PLAYER_MAGIC_V5) {
+        /* PLY5 (manifest tail), PLY6 (manifest + last_signed_nonce),
+         * PLY7 (manifest + last_signed_nonce + receipt chains). */
         player_save_data_t data;
         if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
         migrate_v4_ship(&sp->ship, &data.ship);
@@ -1700,16 +1730,67 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
             }
             sp->ship.manifest.count = manifest_count;
         }
-        /* PLY6 last_signed_nonce. PLY5 saves end here; the nonce stays
+        /* PLY6+ last_signed_nonce. PLY5 saves end here; the nonce stays
          * at zero, which lets the first signed action after the migration
          * use any non-zero nonce. */
         sp->last_signed_nonce = 0;
-        if (magic == PLAYER_MAGIC) {
+        if (magic == PLAYER_MAGIC || magic == PLAYER_MAGIC_V6) {
             uint64_t nonce = 0;
             if (fread(&nonce, sizeof(nonce), 1, f) != 1) {
                 fclose(f); return false;
             }
             sp->last_signed_nonce = nonce;
+        }
+        /* PLY7 (#479 D): per-ship cargo_receipt_t chains. The store
+         * mirrors ship.manifest, so we expect exactly manifest_count
+         * chains. Each chain is [len:u8] + len × CARGO_RECEIPT_SIZE.
+         * v6 saves stop short here — the receipt store stays empty;
+         * the next BUY/DELIVER for that cargo will sign a fresh
+         * origin-attested receipt (one-time migration cost). */
+        if (magic == PLAYER_MAGIC) {
+            ship_receipts_t *rcpts = ship_get_receipts(&sp->ship);
+            if (!rcpts) { fclose(f); return false; }
+            ship_receipts_clear(rcpts);
+            if (manifest_count > 0) {
+                if (!ship_receipts_reserve(rcpts, manifest_count)) {
+                    fclose(f); return false;
+                }
+                for (uint16_t u = 0; u < manifest_count; u++) {
+                    uint8_t link_count = 0;
+                    if (fread(&link_count, sizeof(link_count), 1, f) != 1) {
+                        fclose(f); return false;
+                    }
+                    if (link_count > CARGO_RECEIPT_CHAIN_MAX_LEN) {
+                        fclose(f); return false; /* corrupt */
+                    }
+                    cargo_receipt_t links[CARGO_RECEIPT_CHAIN_MAX_LEN];
+                    for (uint8_t k = 0; k < link_count; k++) {
+                        if (fread(&links[k], sizeof(cargo_receipt_t), 1, f) != 1) {
+                            fclose(f); return false;
+                        }
+                    }
+                    if (link_count > 0) {
+                        if (!ship_receipts_push_chain(rcpts, links, link_count)) {
+                            fclose(f); return false;
+                        }
+                    } else {
+                        /* Empty chain — push a zero placeholder so the
+                         * count stays parity with manifest. We push len=1
+                         * is wrong; instead, special-case: append an empty
+                         * slot directly. ship_receipts_push_chain rejects
+                         * len==0, so we manually grow count. */
+                        if (rcpts->count >= rcpts->cap) {
+                            if (!ship_receipts_reserve(rcpts,
+                                    (uint16_t)(rcpts->cap > 0 ? rcpts->cap * 2 : 32))) {
+                                fclose(f); return false;
+                            }
+                        }
+                        memset(&rcpts->chains[rcpts->count], 0,
+                               sizeof(rcpts->chains[rcpts->count]));
+                        rcpts->count++;
+                    }
+                }
+            }
         }
         manifest_already_loaded = true;
         fclose(f);
