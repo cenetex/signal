@@ -248,6 +248,30 @@ void net_send_session(const uint8_t token[8]);
  * fires the registration message. Pass NULL to clear. */
 void net_set_identity_pubkey(const uint8_t pubkey[32]);
 
+/* Layer A.3 of #479 — install the player's Ed25519 secret key so the
+ * client can sign state-changing actions before sending them on the
+ * NET_MSG_SIGNED_ACTION channel. Pass NULL to clear (e.g. ephemeral
+ * fallback identity, where signing is unavailable).
+ *
+ * The secret never leaves the client; the server only ever sees
+ * signatures + pubkey. */
+void net_set_identity_secret(const uint8_t secret[64]);
+
+/* Send a signed state-changing action.
+ *
+ * Returns true if the message was queued onto the wire; false if the
+ * client lacks an installed secret (fall back to the unsigned channel)
+ * or the payload exceeds SIGNED_ACTION_MAX_PAYLOAD.
+ *
+ * Nonce is chosen internally — monotonic across the process lifetime.
+ * The first signed action after process start uses the wall clock time
+ * in microseconds; later actions strictly exceed every prior one. */
+bool net_send_signed_action(uint8_t action_type,
+                            const uint8_t *payload, uint16_t payload_len);
+
+/* Returns true if a secret is installed and signed actions can be sent. */
+bool net_has_identity_secret(void);
+
 /* Send the local player's input state to the server.
  * flags: bitmask of NET_INPUT_* values.
  * action: station interaction (0=none, 1=dock, 2=launch, etc.)

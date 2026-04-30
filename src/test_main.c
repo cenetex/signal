@@ -50,6 +50,7 @@ void register_pvp_rocks_tests(void);
 void register_crypto_tests(void);
 void register_identity_tests(void);
 void register_registry_tests(void);
+void register_signed_action_tests(void);
 
 int main(int argc, char **argv) {
     setbuf(stdout, NULL); /* unbuffered so crash location is visible */
@@ -118,6 +119,7 @@ int main(int argc, char **argv) {
     register_crypto_tests();
     register_identity_tests();
     register_registry_tests();
+    register_signed_action_tests();
 
     printf("\n%d tests run, %d passed, %d failed", tests_run, tests_passed, tests_failed);
     if (g_warnings > 0) printf(", %d warnings", g_warnings);

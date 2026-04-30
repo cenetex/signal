@@ -6,6 +6,7 @@
  */
 #include "net.h"
 #include "mining_client.h"
+#include "signal_crypto.h"
 
 #include <string.h>
 #include <stdio.h>
@@ -34,6 +35,17 @@ static struct {
      * net_init runs the WebSocket handshake. */
     uint8_t identity_pubkey[32];
     bool identity_pubkey_ready;
+    /* Layer A.3 of #479 — Ed25519 secret for signing state-changing
+     * actions. Owned by the client (game_t::identity); installed via
+     * net_set_identity_secret. Never sent on the wire. */
+    uint8_t identity_secret[64];
+    bool identity_secret_ready;
+    /* Monotonic per-process nonce high-water mark for signed actions.
+     * Seeded on first use to current wall-clock microseconds so a
+     * client-side restart still produces nonces that strictly exceed
+     * the server's persisted last_signed_nonce in practice (server
+     * also rejects strict-replay, so monotonicity is what matters). */
+    uint64_t signed_action_nonce;
 } net_state;
 
 /* ---------- Protocol helpers (shared between WASM and native) ------------ */
@@ -209,6 +221,69 @@ void net_set_identity_pubkey(const uint8_t pubkey[32]) {
     }
     memcpy(net_state.identity_pubkey, pubkey, 32);
     net_state.identity_pubkey_ready = true;
+}
+
+void net_set_identity_secret(const uint8_t secret[64]) {
+    if (!secret) {
+        memset(net_state.identity_secret, 0, sizeof(net_state.identity_secret));
+        net_state.identity_secret_ready = false;
+        return;
+    }
+    memcpy(net_state.identity_secret, secret, 64);
+    net_state.identity_secret_ready = true;
+}
+
+bool net_has_identity_secret(void) {
+    return net_state.identity_secret_ready;
+}
+
+/* Allocate a strictly-increasing nonce. Seeded on first call to the
+ * current wall-clock in microseconds so a process restart still beats
+ * any nonce we used last run (the server's persisted last_signed_nonce
+ * also gates this, but the client cooperating means fewer rejects). */
+static uint64_t next_signed_action_nonce(void) {
+    uint64_t now_us;
+#ifdef __EMSCRIPTEN__
+    /* Date.now() has ms resolution; multiply to keep us in the same
+     * units as native. */
+    now_us = (uint64_t)emscripten_get_now() * 1000ULL;
+#else
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    now_us = (uint64_t)ts.tv_sec * 1000000ULL + (uint64_t)(ts.tv_nsec / 1000);
+#endif
+    if (now_us <= net_state.signed_action_nonce)
+        net_state.signed_action_nonce += 1;
+    else
+        net_state.signed_action_nonce = now_us;
+    return net_state.signed_action_nonce;
+}
+
+bool net_send_signed_action(uint8_t action_type,
+                            const uint8_t *payload, uint16_t payload_len) {
+    if (!net_state.identity_secret_ready) return false;
+    if (payload_len > SIGNED_ACTION_MAX_PAYLOAD) return false;
+
+    /* On-stack scratch is fine: max-sized message is 12 + 256 + 64 = 332. */
+    uint8_t buf[SIGNED_ACTION_HEADER_SIZE + SIGNED_ACTION_MAX_PAYLOAD +
+                SIGNED_ACTION_SIG_SIZE];
+    uint64_t nonce = next_signed_action_nonce();
+    buf[0] = NET_MSG_SIGNED_ACTION;
+    for (int i = 0; i < 8; i++) buf[1 + i] = (uint8_t)(nonce >> (i * 8));
+    buf[9]  = action_type;
+    buf[10] = (uint8_t)(payload_len & 0xFF);
+    buf[11] = (uint8_t)(payload_len >> 8);
+    if (payload && payload_len) memcpy(&buf[12], payload, payload_len);
+    /* Sign (nonce || action_type || payload_len || payload) =
+     * exactly bytes [1..12+payload_len). The leading message-type byte
+     * and trailing signature are NOT part of the signed envelope. */
+    signal_crypto_sign(&buf[12 + payload_len],
+                       &buf[1], (size_t)(11 + (int)payload_len),
+                       net_state.identity_secret);
+    int total = SIGNED_ACTION_HEADER_SIZE + (int)payload_len +
+                (int)SIGNED_ACTION_SIG_SIZE;
+    ws_send_binary(buf, total);
+    return true;
 }
 
 static void send_session_token(void) {

@@ -34,6 +34,8 @@
 #include "signal_model.h"
 #include "rng.h"
 #include "sha256.h"   /* signal_chain_hash_block */
+#include "signal_crypto.h" /* Ed25519 verify for signed actions (#479 A.3) */
+#include "protocol.h"      /* NET_MSG_SIGNED_ACTION + signed_action_type_t */
 #include <math.h>      /* isfinite for contract base_price sanity clamp */
 #include <stdlib.h>
 #include <stdio.h>
@@ -4826,6 +4828,79 @@ bool registry_register_pubkey(world_t *w, const uint8_t pubkey[32],
         return true;
     }
     return false; /* registry full */
+}
+
+/* ================================================================== */
+/* Layer A.3 of #479 — signed-action verification                     */
+/* ================================================================== */
+
+static uint64_t read_u64_le_buf(const uint8_t *p) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++) v |= (uint64_t)p[i] << (i * 8);
+    return v;
+}
+
+static uint16_t read_u16_le_buf(const uint8_t *p) {
+    return (uint16_t)p[0] | ((uint16_t)p[1] << 8);
+}
+
+signed_action_result_t signed_action_verify(const world_t *w, int player_idx,
+                                            const uint8_t *data, int len,
+                                            uint8_t *out_action_type,
+                                            uint64_t *out_nonce,
+                                            const uint8_t **out_payload,
+                                            uint16_t *out_payload_len) {
+    if (!w || !data) return SIGNED_ACTION_REJECT_MALFORMED;
+    if (player_idx < 0 || player_idx >= MAX_PLAYERS)
+        return SIGNED_ACTION_REJECT_MALFORMED;
+    /* Must include the type byte plus the 11-byte fixed header tail
+     * (nonce + action_type + payload_len) plus a signature. */
+    if (len < 1 + 11 + (int)SIGNED_ACTION_SIG_SIZE)
+        return SIGNED_ACTION_REJECT_MALFORMED;
+    if (data[0] != NET_MSG_SIGNED_ACTION)
+        return SIGNED_ACTION_REJECT_MALFORMED;
+
+    const server_player_t *sp = &w->players[player_idx];
+    if (!sp->pubkey_set || pubkey_is_zero(sp->pubkey))
+        return SIGNED_ACTION_REJECT_NO_PUBKEY;
+
+    /* Layout: [type:1][nonce:8][action_type:1][payload_len:2][payload][sig:64] */
+    uint64_t nonce       = read_u64_le_buf(&data[1]);
+    uint8_t  action_type = data[9];
+    uint16_t payload_len = read_u16_le_buf(&data[10]);
+    if (payload_len > SIGNED_ACTION_MAX_PAYLOAD)
+        return SIGNED_ACTION_REJECT_MALFORMED;
+    int expected = 1 + 11 + (int)payload_len + (int)SIGNED_ACTION_SIG_SIZE;
+    if (len != expected)
+        return SIGNED_ACTION_REJECT_MALFORMED;
+    if (action_type == 0 || action_type >= SIGNED_ACTION_COUNT)
+        return SIGNED_ACTION_REJECT_UNKNOWN_TYPE;
+
+    /* Reconstruct the signed message: nonce(8) || action_type(1) ||
+     * payload_len(2) || payload. The signature covers exactly these
+     * bytes; the leading message-type byte and trailing signature are
+     * NOT signed. */
+    const uint8_t *payload = &data[12];
+    const uint8_t *sig     = &data[12 + payload_len];
+
+    /* The signed prefix is contiguous in `data` (bytes [1..12+payload_len)),
+     * so we don't need to memcpy into a scratch buffer. */
+    if (!signal_crypto_verify(sig, &data[1], (size_t)(11 + payload_len),
+                              sp->pubkey)) {
+        return SIGNED_ACTION_REJECT_BAD_SIG;
+    }
+
+    /* Replay protection: nonce must be strictly greater than the
+     * persisted high-water mark. last_signed_nonce==0 means "no
+     * action accepted yet" — any non-zero nonce is fine. */
+    if (nonce == 0 || nonce <= sp->last_signed_nonce)
+        return SIGNED_ACTION_REJECT_REPLAY;
+
+    if (out_action_type) *out_action_type = action_type;
+    if (out_nonce)       *out_nonce       = nonce;
+    if (out_payload)     *out_payload     = payload;
+    if (out_payload_len) *out_payload_len = payload_len;
+    return SIGNED_ACTION_OK;
 }
 
 /* ================================================================== */

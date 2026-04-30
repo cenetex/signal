@@ -1056,6 +1056,10 @@ static void init(void) {
              * BEFORE net_init so the first WebSocket on_open already
              * has it ready to send via NET_MSG_REGISTER_PUBKEY. */
             net_set_identity_pubkey(g.identity.pubkey);
+            /* Layer A.3 of #479 — install the secret so the client can
+             * sign state-changing actions on the NET_MSG_SIGNED_ACTION
+             * channel. The secret never leaves the process. */
+            net_set_identity_secret(g.identity.secret);
             g.multiplayer_enabled = net_init(server_url, &cbs);
             if (g.multiplayer_enabled) {
                 /* Deactivate the local server — the remote server is authoritative.
@@ -1694,6 +1698,29 @@ static void frame(void) {
                 g.pending_net_place_slot    = -1;
                 uint8_t mining_target = (LOCAL_PLAYER.hover_asteroid >= 0 && LOCAL_PLAYER.hover_asteroid < 255)
                     ? (uint8_t)LOCAL_PLAYER.hover_asteroid : 255;
+                /* Layer A.3 of #479 — migrate state-changing actions
+                 * onto the signed channel when an identity secret is
+                 * available. Transient input (movement, mining-beam-on)
+                 * stays on the unsigned NET_MSG_INPUT channel: signing
+                 * every 60Hz frame would saturate the server. We send
+                 * the signed action FIRST, then clear `action` so the
+                 * unsigned send below carries only transient bits.
+                 *
+                 * Pre-A.3 clients (no identity secret) keep using the
+                 * unsigned action path; the server still accepts both
+                 * for the deprecation window. */
+                if (action >= NET_ACTION_BUY_PRODUCT &&
+                    action < NET_ACTION_BUY_PRODUCT + COMMODITY_COUNT &&
+                    net_has_identity_secret()) {
+                    uint8_t payload[2] = {
+                        (uint8_t)(action - NET_ACTION_BUY_PRODUCT),
+                        buy_grade_byte
+                    };
+                    if (net_send_signed_action(SIGNED_ACTION_BUY_PRODUCT,
+                                               payload, sizeof(payload))) {
+                        action = NET_ACTION_NONE;
+                    }
+                }
                 net_send_input(flags, action, mining_target, buy_grade_byte,
                                place_station, place_ring, place_slot);
             }

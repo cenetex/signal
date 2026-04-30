@@ -62,9 +62,11 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 38  /* destroyed_rocks now sorted + per-entry destroyed_at_ms
-                          * timestamp (#285 slice 2). v37 ledger entries had no
-                          * timestamp; the v37→v38 reader loads them with ms=0. */
+#define SAVE_VERSION 39  /* Layer A.3 of #479 — per-player last_signed_nonce in
+                          * player save (PLY6). v38 added destroyed_rocks
+                          * sorted + per-entry destroyed_at_ms timestamp
+                          * (#285 slice 2); v37→v38 reader loads legacy
+                          * ledger entries with ms=0. */
 /* v31 widened inventory[] / base_price[] by one slot (REPAIR_KIT). v32
  * appends npc_ship_t.hull (a single float, version-gated read so v31
  * saves still load with default hull). MIN stays at 31 so we don't
@@ -1091,7 +1093,8 @@ bool world_load(world_t *w, const char *path) {
 /* Player persistence                                                  */
 /* ================================================================== */
 
-#define PLAYER_MAGIC    0x504C5935u  /* "PLY5" — #339 A.2: adds ship.manifest tail */
+#define PLAYER_MAGIC    0x504C5936u  /* "PLY6" — #479 A.3: appends last_signed_nonce */
+#define PLAYER_MAGIC_V5 0x504C5935u  /* "PLY5" — #339 A.2: adds ship.manifest tail */
 #define PLAYER_MAGIC_V4 0x504C5934u  /* "PLY4" — explicit ship payload, no runtime manifest pointers */
 #define PLAYER_MAGIC_V3 0x504C5933u  /* "PLY3" — v25: station-local credits (#312) */
 #define PLAYER_MAGIC_V2 0x504C5932u  /* "PLY2" — v22-v24: post #280 enum cleanup */
@@ -1321,6 +1324,14 @@ bool player_save(const server_player_t *sp, const char *dir, int slot) {
             if (ok) crc = crc32_update(crc, cu, sizeof(*cu));
         }
     }
+    /* PLY6 tail: last_signed_nonce (#479 A.3). Persisted so a server
+     * restart can't replay-accept a signed action whose nonce was
+     * already consumed. CRC accumulates these 8 bytes too. */
+    if (ok) {
+        uint64_t nonce = sp->last_signed_nonce;
+        ok = fwrite(&nonce, sizeof(nonce), 1, f) == 1;
+        if (ok) crc = crc32_update(crc, &nonce, sizeof(nonce));
+    }
     if (ok) {
         uint32_t crc_magic = 0x43524332u; /* "CRC2" */
         ok = fwrite(&crc_magic, sizeof(crc_magic), 1, f) == 1 &&
@@ -1373,8 +1384,8 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
 
     ship_cleanup(&sp->ship);
 
-    if (magic == PLAYER_MAGIC) {
-        /* Current format (PLY5 — ship blob + manifest tail). */
+    if (magic == PLAYER_MAGIC || magic == PLAYER_MAGIC_V5) {
+        /* PLY5 (manifest tail) and PLY6 (manifest + last_signed_nonce). */
         player_save_data_t data;
         if (fread(&data, sizeof(data), 1, f) != 1) { fclose(f); return false; }
         migrate_v4_ship(&sp->ship, &data.ship);
@@ -1398,6 +1409,17 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
                 sp->ship.manifest.units[u] = cu;
             }
             sp->ship.manifest.count = manifest_count;
+        }
+        /* PLY6 last_signed_nonce. PLY5 saves end here; the nonce stays
+         * at zero, which lets the first signed action after the migration
+         * use any non-zero nonce. */
+        sp->last_signed_nonce = 0;
+        if (magic == PLAYER_MAGIC) {
+            uint64_t nonce = 0;
+            if (fread(&nonce, sizeof(nonce), 1, f) != 1) {
+                fclose(f); return false;
+            }
+            sp->last_signed_nonce = nonce;
         }
         manifest_already_loaded = true;
         fclose(f);

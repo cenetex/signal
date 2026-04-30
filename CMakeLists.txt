@@ -201,6 +201,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         src/tests/test_crypto.c
         src/tests/test_identity.c
         src/tests/test_registry.c
+        src/tests/test_signed_action.c
         src/identity.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}

@@ -29,6 +29,19 @@ static const char *allowed_origin = NULL;
 /* Shared HTTP response headers for API endpoints */
 static char api_headers[256];
 
+/* Layer A.3 of #479 — operational counters surfaced via /health.
+ *   unsigned_action_count: state-changing actions accepted on the legacy
+ *     unsigned NET_MSG_INPUT channel from a connection that *has* a
+ *     registered pubkey. A non-zero value means at least one client is
+ *     still on the pre-A.3 unsigned codepath; once it stays at zero
+ *     across a deployment we can flip the unsigned action path off.
+ *   signed_action_count: signed actions verified + dispatched.
+ *   signed_action_reject_count: signed actions dropped (any reason).
+ */
+static uint64_t signed_action_count = 0;
+static uint64_t signed_action_reject_count = 0;
+static uint64_t unsigned_action_count = 0;
+
 /* Dirty flags: only re-broadcast station identity when something changed */
 static bool station_identity_dirty[MAX_STATIONS];
 static bool station_econ_dirty = true;   /* station inventories changed */
@@ -250,6 +263,15 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 int s = world.players[pid].current_station;
                 if (s >= 0 && s < MAX_STATIONS) station_identity_dirty[s] = true;
             }
+            /* Layer A.3 of #479 — track state-changing actions that
+             * arrived on the unsigned channel from a client that has
+             * a registered pubkey. Once this counter stays at zero
+             * across a deployment, the unsigned action path can be
+             * removed entirely. NET_ACTION_NONE (=0) is a transient-
+             * input-only frame and isn't counted. */
+            if (action != NET_ACTION_NONE && world.players[pid].pubkey_set) {
+                unsigned_action_count++;
+            }
         }
         break;
     case NET_MSG_PLAN:
@@ -352,6 +374,146 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             (void)submit_fracture_claim(&world, pid, fracture_id, burst_nonce, claimed_grade);
         }
         break;
+    case NET_MSG_SIGNED_ACTION: {
+        /* Layer A.3 of #479 — Ed25519-signed state-changing action. */
+        uint8_t action_type = 0;
+        uint64_t nonce = 0;
+        const uint8_t *payload = NULL;
+        uint16_t payload_len = 0;
+        signed_action_result_t res = signed_action_verify(
+            &world, pid, data, len,
+            &action_type, &nonce, &payload, &payload_len);
+        if (res != SIGNED_ACTION_OK) {
+            signed_action_reject_count++;
+            const char *reason = "unknown";
+            switch (res) {
+            case SIGNED_ACTION_REJECT_NO_PUBKEY:    reason = "no-pubkey"; break;
+            case SIGNED_ACTION_REJECT_MALFORMED:    reason = "malformed"; break;
+            case SIGNED_ACTION_REJECT_BAD_SIG:      reason = "bad-sig";   break;
+            case SIGNED_ACTION_REJECT_REPLAY:       reason = "replay";    break;
+            case SIGNED_ACTION_REJECT_UNKNOWN_TYPE: reason = "unk-type";  break;
+            default: break;
+            }
+            const uint8_t *pk = world.players[pid].pubkey;
+            printf("[server] signed-action rejected (%s) from player %d pk=%02x%02x%02x%02x...\n",
+                   reason, pid, pk[0], pk[1], pk[2], pk[3]);
+            break;
+        }
+        /* Verified — commit the nonce high-water mark BEFORE dispatch
+         * so a faulting handler can't clear the replay protection. */
+        world.players[pid].last_signed_nonce = nonce;
+        signed_action_count++;
+        server_player_t *sp = &world.players[pid];
+        switch ((signed_action_type_t)action_type) {
+        case SIGNED_ACTION_BUY_PRODUCT:
+            /* Payload: [commodity:1][grade:1] — same fields the unsigned
+             * NET_MSG_INPUT.action path produces. We just stuff them into
+             * the same intent slot the sim already consumes. */
+            if (payload_len >= 2) {
+                uint8_t commodity = payload[0];
+                uint8_t grade     = payload[1];
+                if (commodity < COMMODITY_COUNT) {
+                    sp->input.buy_product = true;
+                    sp->input.buy_commodity = (commodity_t)commodity;
+                    if (grade <= MINING_GRADE_COUNT)
+                        sp->input.buy_grade = (mining_grade_t)grade;
+                    else
+                        sp->input.buy_grade = MINING_GRADE_COUNT;
+                }
+            }
+            break;
+        case SIGNED_ACTION_BUY_INGOT:
+            /* Payload: [pubkey:32]. Reuses the existing NET_MSG_BUY_INGOT
+             * handler logic by re-entering it with a synthesized buffer.
+             * Cheap and avoids duplicating the manifest transfer code. */
+            if (payload_len >= 32 && sp->docked) {
+                int sidx = sp->current_station;
+                if (sidx >= 0 && sidx < MAX_STATIONS) {
+                    station_t *st = &world.stations[sidx];
+                    ship_t *ship = &sp->ship;
+                    int slot = manifest_find(&st->manifest, payload);
+                    if (slot >= 0) {
+                        cargo_unit_t *src = &st->manifest.units[slot];
+                        if ((cargo_kind_t)src->kind == CARGO_KIND_INGOT) {
+                            int price;
+                            switch ((ingot_prefix_t)src->prefix_class) {
+                            case INGOT_PREFIX_RATI:         price = INGOT_PRICE_RATI; break;
+                            case INGOT_PREFIX_COMMISSIONED: price = INGOT_PRICE_COMMISSIONED; break;
+                            case INGOT_PREFIX_ANONYMOUS:    price = 0; break;
+                            default:                        price = INGOT_PRICE_M; break;
+                            }
+                            if (price > 0 &&
+                                ledger_spend(st, sp->session_token, (float)price, ship)) {
+                                cargo_unit_t copy = *src;
+                                if ((ship->manifest.units || ship_manifest_bootstrap(ship)) &&
+                                    manifest_push(&ship->manifest, &copy)) {
+                                    (void)manifest_remove(&st->manifest, (uint16_t)slot, NULL);
+                                    st->manifest_dirty = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            break;
+        case SIGNED_ACTION_SELL_CARGO:
+            /* Payload: [commodity:1][grade:1]. commodity==COMMODITY_COUNT
+             * means "sell all" (legacy bulk path). */
+            if (payload_len >= 2) {
+                uint8_t commodity = payload[0];
+                uint8_t grade     = payload[1];
+                sp->input.service_sell = true;
+                sp->input.service_sell_only =
+                    (commodity < COMMODITY_COUNT)
+                    ? (commodity_t)commodity : COMMODITY_COUNT;
+                if (grade < MINING_GRADE_COUNT) {
+                    sp->input.service_sell_grade = (mining_grade_t)grade;
+                    sp->input.service_sell_one = true;
+                } else {
+                    sp->input.service_sell_grade = MINING_GRADE_COUNT;
+                    sp->input.service_sell_one = false;
+                }
+            }
+            break;
+        case SIGNED_ACTION_PLACE_OUTPOST:
+            if (payload_len >= 3) {
+                sp->input.place_outpost = true;
+                sp->input.place_target_station = (int8_t)payload[0];
+                sp->input.place_target_ring    = (int8_t)payload[1];
+                sp->input.place_target_slot    = (int8_t)payload[2];
+            }
+            break;
+        case SIGNED_ACTION_FRACTURE_CLAIM:
+            if (payload_len >= 9) {
+                uint32_t fracture_id = (uint32_t)payload[0]
+                                     | ((uint32_t)payload[1] << 8)
+                                     | ((uint32_t)payload[2] << 16)
+                                     | ((uint32_t)payload[3] << 24);
+                uint32_t burst_nonce = (uint32_t)payload[4]
+                                     | ((uint32_t)payload[5] << 8)
+                                     | ((uint32_t)payload[6] << 16)
+                                     | ((uint32_t)payload[7] << 24);
+                uint8_t claimed_grade = payload[8];
+                (void)submit_fracture_claim(&world, pid, fracture_id,
+                                            burst_nonce, claimed_grade);
+            }
+            break;
+        case SIGNED_ACTION_DELIVER:
+        case SIGNED_ACTION_CLAIM_CONTRACT:
+        case SIGNED_ACTION_CANCEL_CONTRACT:
+            /* Wire path defined; dispatcher reuses existing intent slots
+             * once the corresponding client paths are migrated. Until
+             * the client sends these, the signed channel is happy to
+             * verify them but the sim still consumes them via the
+             * unsigned NET_MSG_INPUT path. */
+            break;
+        case SIGNED_ACTION_COUNT:
+        default:
+            /* unreachable — verify rejected unknown types */
+            break;
+        }
+        break;
+    }
     case NET_MSG_REGISTER_PUBKEY:
         /* Layer A.2 of #479: client asserts its persisted Ed25519 pubkey.
          * TODO(#479-A.3): unauthenticated registration — A.3 will require
@@ -938,10 +1100,24 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                 if (world.players[i].connected) count++;
 #ifdef GIT_HASH
             mg_http_reply(c, 200, api_headers,
-                          "{\"status\":\"ok\",\"players\":%d,\"version\":\"%s\"}", count, GIT_HASH);
+                          "{\"status\":\"ok\",\"players\":%d,\"version\":\"%s\","
+                          "\"signed_action_count\":%llu,"
+                          "\"signed_action_reject_count\":%llu,"
+                          "\"unsigned_action_count\":%llu}",
+                          count, GIT_HASH,
+                          (unsigned long long)signed_action_count,
+                          (unsigned long long)signed_action_reject_count,
+                          (unsigned long long)unsigned_action_count);
 #else
             mg_http_reply(c, 200, api_headers,
-                          "{\"status\":\"ok\",\"players\":%d,\"version\":\"dev\"}", count);
+                          "{\"status\":\"ok\",\"players\":%d,\"version\":\"dev\","
+                          "\"signed_action_count\":%llu,"
+                          "\"signed_action_reject_count\":%llu,"
+                          "\"unsigned_action_count\":%llu}",
+                          count,
+                          (unsigned long long)signed_action_count,
+                          (unsigned long long)signed_action_reject_count,
+                          (unsigned long long)unsigned_action_count);
 #endif
         } else {
             mg_http_reply(c, 404, "", "Not found");

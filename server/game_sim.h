@@ -304,6 +304,12 @@ typedef struct {
      * still the 8-byte session_token; pubkey is additive state. */
     uint8_t pubkey[32];
     bool    pubkey_set;
+    /* Layer A.3 of #479 — monotonic per-player nonce for NET_MSG_SIGNED_ACTION.
+     * Persisted in the player save (PLY6+). Any signed action whose nonce is
+     * <= this value is rejected as a replay; on accept, this becomes the
+     * new high-water mark. Zero on a fresh slot — the first action may use
+     * any non-zero nonce. */
+    uint64_t last_signed_nonce;
 } server_player_t;
 
 typedef struct {
@@ -533,6 +539,36 @@ int registry_lookup_by_pubkey(const world_t *w, const uint8_t pubkey[32]);
  * server_player_t side. */
 bool registry_register_pubkey(world_t *w, const uint8_t pubkey[32],
                               const uint8_t session_token[8]);
+
+/* Layer A.3 of #479 — signed-action verification.
+ *
+ * Reasons a signed action can be rejected. SIGNED_ACTION_OK means the
+ * caller may proceed to dispatch the action and update last_signed_nonce.
+ * Anything else: silently drop on the wire path; tests inspect the code
+ * to assert the rejection reason. */
+typedef enum {
+    SIGNED_ACTION_OK = 0,
+    SIGNED_ACTION_REJECT_NO_PUBKEY,         /* connection has not registered a pubkey */
+    SIGNED_ACTION_REJECT_MALFORMED,         /* short message / bad payload_len */
+    SIGNED_ACTION_REJECT_BAD_SIG,           /* Ed25519 verify failed */
+    SIGNED_ACTION_REJECT_REPLAY,            /* nonce <= last_signed_nonce */
+    SIGNED_ACTION_REJECT_UNKNOWN_TYPE       /* action_type out of range */
+} signed_action_result_t;
+
+/* Pure verification: parses (data,len), looks up the pubkey for `player_idx`,
+ * verifies the Ed25519 signature, and checks the nonce against the player's
+ * last_signed_nonce. On SIGNED_ACTION_OK, fills *out_action_type, *out_nonce,
+ * and *out_payload (= pointer into `data`) so the caller can dispatch. Does
+ * NOT mutate the world; updating last_signed_nonce is the dispatcher's job
+ * after the action lands successfully.
+ *
+ * Used by both server/main.c (live wire path) and the test harness. */
+signed_action_result_t signed_action_verify(const world_t *w, int player_idx,
+                                            const uint8_t *data, int len,
+                                            uint8_t *out_action_type,
+                                            uint64_t *out_nonce,
+                                            const uint8_t **out_payload,
+                                            uint16_t *out_payload_len);
 float signal_strength_at(const world_t *w, vec2 pos);
 void spatial_grid_build(world_t *w);
 void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);

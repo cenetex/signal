@@ -61,11 +61,59 @@ enum {
     NET_MSG_REGISTER_PUBKEY    = 0x32, /* client -> server: [type:1][pubkey:32]. Layer A.2 of #479 — sent once per
                                         * connection BEFORE NET_MSG_SESSION so the server can bind the pubkey to
                                         * the session_token for this connection. NOTE: this is identity assertion,
-                                        * not proof of possession; A.3 will require signed inputs to authenticate. */
+                                        * not proof of possession; A.3 requires signed inputs to authenticate. */
+    NET_MSG_SIGNED_ACTION      = 0x33, /* Layer A.3 of #479 — Ed25519-signed state-changing action.
+                                        *
+                                        * Wire layout (little-endian):
+                                        *   [type:1=0x33]
+                                        *   [nonce:8]                 u64, monotonic per player
+                                        *   [action_type:1]           signed_action_type_t
+                                        *   [payload_len:2]
+                                        *   [payload:payload_len]     action-specific bytes
+                                        *   [signature:64]            Ed25519 over
+                                        *                             (nonce || action_type ||
+                                        *                              payload_len || payload)
+                                        *
+                                        * The pubkey is implicit: the server resolves it via the
+                                        * connection's session_token using the registry from A.2. Only
+                                        * connections that have completed REGISTER_PUBKEY can submit
+                                        * signed actions; everything else is silently dropped.
+                                        *
+                                        * Transient ship inputs (movement, mining beam) stay on the
+                                        * unsigned NET_MSG_INPUT channel — signing every 60Hz frame
+                                        * would torch the server (see PR description). Only events
+                                        * that mutate persistent state need signatures.
+                                        */
 };
 
 /* NET_MSG_REGISTER_PUBKEY wire size: 1 + 32 = 33 bytes. */
 #define REGISTER_PUBKEY_MSG_SIZE 33
+
+/* ------------------------------------------------------------------ */
+/* Signed-action types (#479 Layer A.3)                                */
+/* ------------------------------------------------------------------ */
+
+typedef enum {
+    SIGNED_ACTION_BUY_PRODUCT     = 1, /* payload: [commodity:1][grade:1] */
+    SIGNED_ACTION_BUY_INGOT       = 2, /* payload: [pubkey:32]            */
+    SIGNED_ACTION_SELL_CARGO      = 3, /* payload: [commodity:1][grade:1]
+                                        *   commodity=COMMODITY_COUNT, grade=MINING_GRADE_COUNT
+                                        *   means "sell all" (legacy bulk). */
+    SIGNED_ACTION_DELIVER         = 4, /* payload: [hold_index:1] (matches NET_MSG_DELIVER_INGOT) */
+    SIGNED_ACTION_PLACE_OUTPOST   = 5, /* payload: [station:1][ring:1][slot:1] */
+    SIGNED_ACTION_FRACTURE_CLAIM  = 6, /* payload: [fracture_id:4][burst_nonce:4][grade:1] */
+    SIGNED_ACTION_CLAIM_CONTRACT  = 7, /* payload: [contract_id:1] */
+    SIGNED_ACTION_CANCEL_CONTRACT = 8, /* payload: [contract_id:1] */
+    SIGNED_ACTION_COUNT
+} signed_action_type_t;
+
+/* Header size on the wire, excluding payload + signature:
+ *   type(1) + nonce(8) + action_type(1) + payload_len(2) = 12 bytes
+ * Signature is appended after the payload, 64 bytes. */
+#define SIGNED_ACTION_HEADER_SIZE 12
+#define SIGNED_ACTION_SIG_SIZE    64
+/* Cap payload at 256 bytes; today's largest is 32 (BUY_INGOT pubkey). */
+#define SIGNED_ACTION_MAX_PAYLOAD 256
 
 /* Top-N global leaderboard persisted server-side, broadcast on join and
  * after every death. */
