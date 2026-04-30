@@ -349,7 +349,10 @@ TEST(test_smelt_manifest_uses_resolved_fragment_pub) {
     world_reset(w);
     for (int m = 0; m < w->stations[0].module_count; m++) {
         if (w->stations[0].modules[m].type == MODULE_FURNACE) furnace_idx = m;
-        if (w->stations[0].modules[m].type == MODULE_ORE_SILO) silo_idx = m;
+        /* Smelt midpoint is furnace<->any adjacent-ring module. Prospect's
+         * silo was dropped; the hopper on ring 2 plays the same role for
+         * this test (anchors the smelt midpoint). */
+        if (w->stations[0].modules[m].type == MODULE_HOPPER) silo_idx = m;
     }
     ASSERT(furnace_idx >= 0);
     ASSERT(silo_idx >= 0);

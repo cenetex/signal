@@ -495,13 +495,12 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     ASSERT_EQ_INT((int)restored.scaffold, (int)orig.scaffold);
     ASSERT_EQ_FLOAT(restored.build_progress, orig.build_progress, 0.001f);
     /* modules[3] = hopper on ring 2 (added by the count-tier furnace
-     * rework). modules[4] = the original ore_silo on ring 2. */
+     * rework). The previous modules[4] = ORE_SILO was dropped — the
+     * hopper alone serves Prospect's ore-intake/buyer role. */
     station_module_t mod3 = loaded->stations[0].modules[3];
     ASSERT(mod3.type == MODULE_HOPPER);
     ASSERT_EQ_INT((int)mod3.ring, 2);
-    station_module_t mod4 = loaded->stations[0].modules[4];
-    ASSERT(mod4.type == MODULE_ORE_SILO);
-    ASSERT_EQ_INT((int)mod4.ring, 2);
+    ASSERT_EQ_INT((int)loaded->stations[0].module_count, 4);
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
     remove(TMP("test_modules.sav"));

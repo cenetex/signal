@@ -11,6 +11,7 @@
 #include "station_voice.h"
 #include "signal_model.h"
 #include "palette.h"
+#include "station_palette.h"
 #include <stdlib.h>
 
 /* --- Frustum culling: skip objects entirely off-screen --- */
@@ -561,10 +562,17 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
     }
 }
 
-static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaffold, float progress, vec2 station_center) {
+static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaffold, float progress, vec2 station_center,
+                           const station_t *station, int ring) {
     float mr, mg, mb;
     module_color(type, &mr, &mg, &mb);
     (void)station_center;
+    /* Furnaces tint per-ring based on station context (count + ring).
+     * The sim only knows MODULE_FURNACE; the renderer picks ferrite /
+     * cuprite / crystal / chunks-feeder. See station_palette.h. */
+    if (type == MODULE_FURNACE && station != NULL) {
+        station_palette_furnace_color(station, ring, &mr, &mg, &mb);
+    }
 
     sgl_push_matrix();
     sgl_translate(pos.x, pos.y, 0.0f);
@@ -843,7 +851,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         for (int i = 0; i < mod_count; i++) {
             const station_module_t *m = &station->modules[mod_idx[i]];
             float angle = module_angle_ring(station, ring, m->slot);
-            draw_module_at(positions[i], angle, m->type, m->scaffold, m->build_progress, station->pos);
+            draw_module_at(positions[i], angle, m->type, m->scaffold, m->build_progress, station->pos, station, ring);
 
             /* Furnace: glow + red laser beam to target module when smelting */
             if (!m->scaffold && m->type == MODULE_FURNACE) {

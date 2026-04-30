@@ -150,6 +150,15 @@
 #define PAL_MODULE_FURNACE   0.30f, 0.80f, 0.35f
 #define PAL_MODULE_HOPPER 0.40f, 0.72f, 0.30f
 
+/* Per-ring furnace render variants. The simulation uses a single
+ * MODULE_FURNACE; the renderer picks one of these tints based on the
+ * station's furnace count and the furnace's ring (see
+ * station_palette_furnace_color in station_palette.h). */
+#define PAL_FURNACE_FERRITE 0.85f, 0.30f, 0.20f
+#define PAL_FURNACE_CUPRITE 0.25f, 0.50f, 0.90f
+#define PAL_FURNACE_CRYSTAL 0.30f, 0.80f, 0.35f
+#define PAL_FURNACE_CHUNKS  0.85f, 0.85f, 0.90f
+
 /* Kepler modules */
 #define PAL_MODULE_FRAME_PRESS 0.90f, 0.75f, 0.20f
 #define PAL_MODULE_SHIPYARD  0.85f, 0.70f, 0.20f

@@ -516,14 +516,14 @@ TEST(test_station_geom_emitter_prospect) {
     /* Core: Prospect has radius 40 */
     ASSERT(geom.has_core == true);
 
-    /* Circles: dock (half-size) + relay + furnace (ring 1) + hopper +
-     * ore_silo (ring 2) = 5. The hopper was added on ring 2 by the
-     * count-tier furnace rework. */
-    ASSERT(geom.circle_count == 5);
+    /* Circles: dock (half-size) + relay + furnace (ring 1) + hopper
+     * (ring 2) = 4. The redundant ore_silo on ring 2 was dropped —
+     * the hopper alone is the ore-buyer / smelt-unlock at Prospect. */
+    ASSERT(geom.circle_count == 4);
 
-    /* Corridors: ring 1 unchanged (3 modules wrap = 2). Ring 2 now has
-     * 2 modules (hopper at slot 2 + ore_silo at slot 3) so add 1 there. */
-    ASSERT(geom.corridor_count == 3);
+    /* Corridors: ring 1 = 3 modules wrap into 2. Ring 2 now has only
+     * 1 module (hopper) so no corridor on ring 2. Total 2. */
+    ASSERT(geom.corridor_count == 2);
 
     /* Docks: 1 dock on ring 1 */
     ASSERT(geom.dock_count == 1);

@@ -220,6 +220,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         src/tests/test_cross_station_settlement.c
         src/tests/test_sovereign_ledger.c
         src/tests/test_prefix_class_pricing.c
+        src/tests/test_furnace_color.c
         src/identity.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}

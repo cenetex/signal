@@ -235,7 +235,9 @@ TEST(test_refinery_deposits_named_ingot) {
             has_furnace = true;
             furnace_idx = m;
         }
-        if (w->stations[0].modules[m].type == MODULE_ORE_SILO)
+        /* Prospect's ORE_SILO was dropped; HOPPER on ring 2 anchors the
+         * smelt midpoint just as well (any adjacent-ring module works). */
+        if (w->stations[0].modules[m].type == MODULE_HOPPER)
             silo_idx = m;
     }
     ASSERT(has_furnace);
@@ -541,7 +543,9 @@ TEST(test_scenario_full_mining_cycle) {
     for (int m = 0; m < w.stations[0].module_count; m++) {
         if (w.stations[0].modules[m].type == MODULE_FURNACE && !w.stations[0].modules[m].scaffold)
             furnace_idx = m;
-        if (w.stations[0].modules[m].type == MODULE_ORE_SILO && !w.stations[0].modules[m].scaffold)
+        /* Prospect's ORE_SILO was dropped; HOPPER on ring 2 plays the
+         * adjacent-ring "silo" role for the smelt midpoint test. */
+        if (w.stations[0].modules[m].type == MODULE_HOPPER && !w.stations[0].modules[m].scaffold)
             silo_idx = m;
     }
     ASSERT(furnace_idx >= 0);
@@ -626,7 +630,9 @@ TEST(test_manifest_conservation_across_transactions) {
     int furnace_idx = -1, silo_idx = -1;
     for (int m = 0; m < w.stations[0].module_count; m++) {
         if (w.stations[0].modules[m].type == MODULE_FURNACE) furnace_idx = m;
-        if (w.stations[0].modules[m].type == MODULE_ORE_SILO) silo_idx = m;
+        /* Prospect's ORE_SILO was dropped; HOPPER on ring 2 anchors the
+         * adjacent-ring smelt midpoint. */
+        if (w.stations[0].modules[m].type == MODULE_HOPPER) silo_idx = m;
     }
     ASSERT(furnace_idx >= 0 && silo_idx >= 0);
     for (int a = 0; a < MAX_ARMS; a++) {
