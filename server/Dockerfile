@@ -22,6 +22,7 @@ COPY shared/ ./shared/
 COPY src/ ./src/
 COPY server/ ./server/
 COPY vendor/tweetnacl/ ./vendor/tweetnacl/
+COPY vendor/cenetex/ ./vendor/cenetex/
 
 # Flags preserved from the old hand-rolled gcc invocation:
 #   -static                          (fully static musl binary)
