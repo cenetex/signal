@@ -84,7 +84,8 @@ TEST(test_signal_verify_byte_tamper) {
     w->stations[0].chain_event_count = 0;
     memset(w->stations[0].chain_last_hash, 0, 32);
 
-    uint8_t pl[8] = "tamper--";
+    uint8_t pl[8];
+    memcpy(pl, "tamper--", 8);
     for (int i = 0; i < 5; i++)
         ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_LEDGER, pl, sizeof(pl)) == (uint64_t)(i+1));
 
@@ -122,7 +123,8 @@ TEST(test_signal_verify_signature_corruption) {
     w->stations[0].chain_event_count = 0;
     memset(w->stations[0].chain_last_hash, 0, 32);
 
-    uint8_t pl[8] = "sig-test";
+    uint8_t pl[8];
+    memcpy(pl, "sig-test", 8);
     ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_LEDGER, pl, sizeof(pl)) == 1);
 
     /* Header layout: signature occupies the last 64 bytes of the
@@ -161,7 +163,8 @@ TEST(test_signal_verify_mid_log_splice) {
     w->stations[0].chain_event_count = 0;
     memset(w->stations[0].chain_last_hash, 0, 32);
 
-    uint8_t pl[8] = "splice--";
+    uint8_t pl[8];
+    memcpy(pl, "splice--", 8);
     for (int i = 0; i < 5; i++)
         ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_LEDGER, pl, sizeof(pl)) == (uint64_t)(i+1));
 
@@ -240,13 +243,7 @@ TEST(test_signal_verify_multi_station_independent) {
     /* Same cargo_pub appears on both station 0 (sender TRANSFER) and
      * station 2 (receiver TRANSFER) — what cross-station provenance
      * looks like in real traffic. */
-    struct __attribute__((packed)) {
-        uint8_t from_pubkey[32];
-        uint8_t to_pubkey[32];
-        uint8_t cargo_pub[32];
-        uint8_t kind;
-        uint8_t _pad[7];
-    } xfer = {0};
+    chain_payload_transfer_t xfer = {0};
     for (int b = 0; b < 32; b++) xfer.cargo_pub[b] = (uint8_t)(0x80 + b);
     memcpy(xfer.from_pubkey, w->stations[0].station_pubkey, 32);
     memcpy(xfer.to_pubkey, w->stations[2].station_pubkey, 32);

@@ -1,6 +1,8 @@
 #include "tests/test_harness.h"
 
-#ifndef _WIN32
+#ifdef _WIN32
+#include <process.h>  /* _getpid */
+#else
 #include <sys/stat.h>
 #include <sys/types.h>
 #include <errno.h>

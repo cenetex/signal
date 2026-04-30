@@ -557,11 +557,8 @@ jobs:
             name: linux
           - os: macos-latest
             name: macos
-          # windows-latest temporarily removed — chain-log payloads use
-          # `struct __attribute__((packed))` which MSVC rejects.
-          # Tracked in #517: lift those into named typed structs with a
-          # single portable PACKED macro. Restore this matrix entry
-          # once #517 lands so Windows builds again.
+          - os: windows-latest
+            name: windows
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4

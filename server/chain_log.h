@@ -30,6 +30,7 @@
 #ifndef SERVER_CHAIN_LOG_H
 #define SERVER_CHAIN_LOG_H
 
+#include <assert.h>
 #include <stdbool.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -42,6 +43,21 @@
 extern "C" {
 #endif
 
+/* Portable struct-packing primitives. MSVC rejects the GCC/Clang
+ * `__attribute__((packed))` spelling; both compilers do accept the
+ * `#pragma pack(push, 1)` / `pop` form. Use SIGNAL_PACK_PUSH /
+ * SIGNAL_PACK_POP around the typedef, and tag the struct with
+ * SIGNAL_PACKED for the GCC/Clang side. */
+#if defined(_MSC_VER)
+#  define SIGNAL_PACK_PUSH __pragma(pack(push, 1))
+#  define SIGNAL_PACK_POP  __pragma(pack(pop))
+#  define SIGNAL_PACKED
+#else
+#  define SIGNAL_PACK_PUSH
+#  define SIGNAL_PACK_POP
+#  define SIGNAL_PACKED __attribute__((packed))
+#endif
+
 typedef enum {
     CHAIN_EVT_NONE         = 0,
     CHAIN_EVT_SMELT        = 1,  /* fragment -> ingot at this station */
@@ -52,6 +68,67 @@ typedef enum {
     CHAIN_EVT_ROCK_DESTROY = 6,  /* asteroid fractured to terminal state */
     CHAIN_EVT_TYPE_COUNT
 } chain_event_type_t;
+
+/* On-disk payload schemas — one per event type. Field order, sizes, and
+ * padding are wire-stable and verified by static_assert below. The
+ * existing inline anonymous structs at the emit sites used the same
+ * layout; these typedefs are the single source of truth so the byte
+ * format can't drift across the seven historical callsites. */
+
+SIGNAL_PACK_PUSH
+typedef struct {
+    uint8_t  fragment_pub[32];
+    uint8_t  ingot_pub[32];
+    uint8_t  prefix_class;
+    uint8_t  _pad[7];
+    uint64_t mined_block;
+} SIGNAL_PACKED chain_payload_smelt_t;
+SIGNAL_PACK_POP
+
+SIGNAL_PACK_PUSH
+typedef struct {
+    uint16_t recipe_id;
+    uint8_t  input_count;
+    uint8_t  _pad[5];
+    uint8_t  output_pub[32];
+    uint8_t  input_pubs[2][32];
+} SIGNAL_PACKED chain_payload_craft_t;
+SIGNAL_PACK_POP
+
+SIGNAL_PACK_PUSH
+typedef struct {
+    uint8_t from_pubkey[32];
+    uint8_t to_pubkey[32];
+    uint8_t cargo_pub[32];
+    uint8_t kind;
+    uint8_t _pad[7];
+} SIGNAL_PACKED chain_payload_transfer_t;
+SIGNAL_PACK_POP
+
+SIGNAL_PACK_PUSH
+typedef struct {
+    uint64_t transfer_event_id;
+    int64_t  ledger_delta_signed;
+    uint8_t  ledger_pubkey[32];
+} SIGNAL_PACKED chain_payload_trade_t;
+SIGNAL_PACK_POP
+
+SIGNAL_PACK_PUSH
+typedef struct {
+    uint8_t rock_pub[32];
+    uint8_t fracturing_player_pub[32];
+    uint8_t station_pubkey[32];
+} SIGNAL_PACKED chain_payload_rock_destroy_t;
+SIGNAL_PACK_POP
+
+/* Wire-format guards: any field-list change that shifts these sizes
+ * forks the chain log byte format and must be paired with a
+ * versioning story (or accepted as a hard break). */
+_Static_assert(sizeof(chain_payload_smelt_t)        == 80,  "smelt payload size");
+_Static_assert(sizeof(chain_payload_craft_t)        == 104, "craft payload size");
+_Static_assert(sizeof(chain_payload_transfer_t)     == 104, "transfer payload size");
+_Static_assert(sizeof(chain_payload_trade_t)        == 48,  "trade payload size");
+_Static_assert(sizeof(chain_payload_rock_destroy_t) == 96,  "rock_destroy payload size");
 
 /* Fixed-size event header — exactly 184 bytes on disk. The serialized
  * form matches this struct's natural C99 layout (verified by static

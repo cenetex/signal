@@ -151,13 +151,7 @@ static bool station_manifest_craft_product(world_t *w, station_t *st,
      * mutation succeeds. Payload binds the recipe id, output pubkey,
      * and input pubkeys (up to 2) to the station's signature. */
     {
-        struct __attribute__((packed)) {
-            uint16_t recipe_id;
-            uint8_t  input_count;
-            uint8_t  _pad[5];
-            uint8_t  output_pub[32];
-            uint8_t  input_pubs[2][32];
-        } payload = {0};
+        chain_payload_craft_t payload = {0};
         payload.recipe_id = (uint16_t)recipe_id;
         payload.input_count = (uint8_t)recipe->input_count;
         memcpy(payload.output_pub, product.pub, 32);
@@ -313,13 +307,7 @@ void sim_step_refinery_production(world_t *w, float dt) {
              * can distinguish. */
             for (uint16_t u = pre_mft_count; u < st->manifest.count; u++) {
                 const cargo_unit_t *unit = &st->manifest.units[u];
-                struct __attribute__((packed)) {
-                    uint8_t  fragment_pub[32];
-                    uint8_t  ingot_pub[32];
-                    uint8_t  prefix_class;
-                    uint8_t  _pad[7];
-                    uint64_t mined_block;
-                } payload = {0};
+                chain_payload_smelt_t payload = {0};
                 memcpy(payload.ingot_pub, unit->pub, 32);
                 payload.prefix_class = unit->prefix_class;
                 payload.mined_block = unit->mined_block;

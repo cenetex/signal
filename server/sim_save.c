@@ -1567,7 +1567,7 @@ int player_save_list_legacy(const char *dir,
                             int cap) {
     int count = 0;
 #ifdef _WIN32
-    (void)dir; (void)prefixes; (void)names; (void)cap;
+    (void)dir; (void)prefixes; (void)names; (void)cap; (void)count;
     return 0;
 #else
     char path[512];

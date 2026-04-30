@@ -27,6 +27,11 @@
 #ifdef _WIN32
 #include <direct.h>
 #define rmdir _rmdir
+/* MSVC's <sys/stat.h> doesn't define S_ISREG. The mode-bit value matches
+ * POSIX semantics; the macro shape is the standard fallback. */
+#ifndef S_ISREG
+#define S_ISREG(m) (((m) & _S_IFMT) == _S_IFREG)
+#endif
 #else
 #include <unistd.h>
 #endif

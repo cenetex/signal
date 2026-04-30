@@ -46,16 +46,10 @@ uint64_t cargo_receipt_emit_transfer(world_t *w, station_t *s,
                                      const uint8_t prev_receipt_hash[32],
                                      cargo_receipt_t *out_receipt) {
     if (!s || !out_receipt) return 0;
-    /* Wire-stable EVT_TRANSFER payload — same shape as the existing
-     * inlined struct in main.c, kept identical so the chain log byte
-     * format doesn't fork. */
-    struct __attribute__((packed)) {
-        uint8_t from_pubkey[32];
-        uint8_t to_pubkey[32];
-        uint8_t cargo_pub[32];
-        uint8_t kind;
-        uint8_t _pad[7];
-    } xfer = {0};
+    /* Wire-stable EVT_TRANSFER payload — typedef'd in chain_log.h so
+     * the on-disk byte format has a single source of truth across
+     * every emit site. */
+    chain_payload_transfer_t xfer = {0};
     if (from_pubkey)   memcpy(xfer.from_pubkey, from_pubkey, 32);
     if (to_pubkey)     memcpy(xfer.to_pubkey,   to_pubkey,   32);
     if (cargo_pub)     memcpy(xfer.cargo_pub,   cargo_pub,   32);

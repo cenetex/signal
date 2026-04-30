@@ -451,11 +451,7 @@ void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_b
                     w->players[fractured_by].connected) {
                     memcpy(player_pub, w->players[fractured_by].pubkey, 32);
                 }
-                struct __attribute__((packed)) {
-                    uint8_t rock_pub[32];
-                    uint8_t fracturing_player_pub[32];
-                    uint8_t station_pubkey[32];
-                } payload = {0};
+                chain_payload_rock_destroy_t payload = {0};
                 memcpy(payload.rock_pub, parent.rock_pub, 32);
                 memcpy(payload.fracturing_player_pub, player_pub, 32);
                 memcpy(payload.station_pubkey,

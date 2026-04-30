@@ -16,6 +16,11 @@
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
+#ifdef _WIN32
+/* GetSystemTimePreciseAsFileTime — sub-microsecond wall clock on Win8+. */
+#define WIN32_LEAN_AND_MEAN
+#include <windows.h>
+#endif
 
 /* ---------- Shared state ------------------------------------------------- */
 
@@ -227,6 +232,14 @@ static uint64_t next_signed_action_nonce(void) {
     /* Date.now() has ms resolution; multiply to keep us in the same
      * units as native. */
     now_us = (uint64_t)emscripten_get_now() * 1000ULL;
+#elif defined(_WIN32)
+    /* MSVC has no clock_gettime/CLOCK_REALTIME. GetSystemTimePreciseAsFileTime
+     * returns 100-ns ticks since 1601-01-01 UTC; subtract the 1601→1970
+     * delta and divide to microseconds since the Unix epoch. */
+    FILETIME ft;
+    GetSystemTimePreciseAsFileTime(&ft);
+    uint64_t ticks_100ns = ((uint64_t)ft.dwHighDateTime << 32) | ft.dwLowDateTime;
+    now_us = (ticks_100ns - 116444736000000000ULL) / 10ULL;
 #else
     struct timespec ts;
     clock_gettime(CLOCK_REALTIME, &ts);
