@@ -208,9 +208,9 @@ static bool read_station(FILE *f, station_t *s) {
     if (g_loaded_save_version >= 23) {
         READ_FIELD(f, s->credit_pool);
     } else {
-        /* Pre-v23 saves don't have this field — seed starter stations
-         * (indices 0-2) with a pool, others start at zero. */
-        s->credit_pool = (s->signal_range > 0.0f) ? 10000.0f : 0.0f;
+        /* Pre-v23 saves don't have this field. Stations are sovereign
+         * currency issuers; pool starts at 0 and floats with issuance. */
+        s->credit_pool = 0.0f;
     }
     return true;
 }

@@ -1850,12 +1850,8 @@ static void load_world_state(void) {
         printf("[server] loaded session from %s\n", SAVE_PATH);
     } else {
         printf("[server] no session save -- fresh economy\n");
-        if (catalog_count > 0) {
-            for (int i = 0; i < MAX_STATIONS; i++) {
-                if (station_exists(&world.stations[i]) && world.stations[i].credit_pool == 0.0f)
-                    world.stations[i].credit_pool = 10000.0f;
-            }
-        }
+        /* Stations are sovereign currency issuers; no seed pool. The
+         * pool just tracks net issuance from genesis. */
         world_seed_station_manifests(&world);
     }
 

@@ -4667,9 +4667,12 @@ void world_reset(world_t *w) {
     w->stations[0].ring_offset[0] = 0.0f;
     w->stations[0].ring_offset[1] = 1.05f;  /* ~60° offset — unique silhouette */
     rebuild_station_services(&w->stations[0]);
-    /* No inventory handout — the chain has to be earned. Stations only
-     * start with a credit pool to pay miners + haulers. */
-    w->stations[0].credit_pool = 10000.0f;
+    /* Stations are sovereign currency issuers; pool starts at 0 and
+     * tracks net issuance from genesis. Conservation invariant:
+     * credit_pool + Σ(player_balances_at_this_station) is constant
+     * per station. Pool can go arbitrarily negative as issuance
+     * outpaces redemption — that's the model, not a bug. */
+    w->stations[0].credit_pool = 0.0f;
     snprintf(w->stations[0].station_slug, sizeof(w->stations[0].station_slug), "prospect");
     snprintf(w->stations[0].currency_name, sizeof(w->stations[0].currency_name), "prospect vouchers");
     snprintf(w->stations[0].hail_message, sizeof(w->stations[0].hail_message),
@@ -4705,7 +4708,8 @@ void world_reset(world_t *w) {
     w->stations[1].ring_offset[0] = 0.0f;
     w->stations[1].ring_offset[1] = 2.40f;  /* ~137° offset */
     rebuild_station_services(&w->stations[1]);
-    w->stations[1].credit_pool = 10000.0f;
+    /* Sovereign issuer — see Prospect comment above. */
+    w->stations[1].credit_pool = 0.0f;
     snprintf(w->stations[1].station_slug, sizeof(w->stations[1].station_slug), "kepler");
     snprintf(w->stations[1].currency_name, sizeof(w->stations[1].currency_name), "kepler bonds");
     snprintf(w->stations[1].hail_message, sizeof(w->stations[1].hail_message),
@@ -4758,7 +4762,8 @@ void world_reset(world_t *w) {
     w->stations[2].ring_offset[1] = 0.52f;  /* ~30° offset */
     w->stations[2].ring_offset[2] = 1.83f;  /* ~105° offset */
     rebuild_station_services(&w->stations[2]);
-    w->stations[2].credit_pool = 10000.0f;
+    /* Sovereign issuer — see Prospect comment above. */
+    w->stations[2].credit_pool = 0.0f;
     snprintf(w->stations[2].station_slug, sizeof(w->stations[2].station_slug), "helios");
     snprintf(w->stations[2].currency_name, sizeof(w->stations[2].currency_name), "helios credits");
     snprintf(w->stations[2].hail_message, sizeof(w->stations[2].hail_message),

@@ -131,29 +131,19 @@ TEST(test_sovereign_player_cannot_overspend_on_buy) {
  * really a smoke check that the sim's own logging doesn't somehow
  * funnel through TEST_WARN. With no in-code path emitting "pool low"
  * warnings, this should always hold.) */
-TEST(test_sovereign_no_spurious_warnings_on_positive_pool) {
+TEST(test_sovereign_no_spurious_warnings_on_normal_run) {
+    /* After the credit_pool seed was removed, all stations begin at 0
+     * and trend negative as miners get paid. The original test asserted
+     * "pool stayed positive AND no warning fired"; under the sovereign-
+     * issuer model, pool floats freely in either direction and the
+     * warning-free claim should hold regardless of sign. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
     int warnings_before = g_warnings;
-    /* Run for 30 sim-seconds. With no players, pools may drift down as
-     * NPCs deliver ore — we explicitly assert pool stays above zero
-     * over the run, so we're checking the "pool stayed positive AND no
-     * warning fired" regime. */
     for (int i = 0; i < (int)(30.0f / SIM_DT); i++) {
         world_sim_step(w, SIM_DT);
     }
-    /* Sanity: at least one station's pool stayed above its starting
-     * threshold. (We don't pin a specific number — just assert the run
-     * was in the "positive pool" regime, which is the precondition for
-     * the warning-free claim.) */
-    bool any_positive = false;
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        if (w->stations[s].id != 0 && w->stations[s].credit_pool > 0.0f) {
-            any_positive = true; break;
-        }
-    }
-    ASSERT(any_positive);
     ASSERT_EQ_INT(g_warnings, warnings_before);
 }
 
@@ -186,6 +176,6 @@ void register_sovereign_ledger_tests(void) {
     RUN(test_sovereign_pool_can_go_negative);
     RUN(test_sovereign_negative_pool_still_pays_miner);
     RUN(test_sovereign_player_cannot_overspend_on_buy);
-    RUN(test_sovereign_no_spurious_warnings_on_positive_pool);
+    RUN(test_sovereign_no_spurious_warnings_on_normal_run);
     RUN(test_sovereign_save_load_preserves_negative_pool);
 }
