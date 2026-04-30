@@ -109,6 +109,43 @@ bool chain_log_verify(const station_t *s,
                       uint64_t *out_event_count,
                       uint8_t out_last_hash[32]);
 
+/* Lifted post-mortem verifier (#479 Layer E).
+ *
+ * Reasons to add this alongside the live-sim chain_log_verify():
+ *  - The standalone signal_verify CLI has no world_t. It needs to
+ *    walk a log given just a path on disk + the station pubkey.
+ *  - Operators / federated peers / on-chain anchor verifiers want a
+ *    structured *report* (counts, per-type, first-failure) — not a
+ *    bare bool.
+ *
+ * Behaviorally identical to chain_log_verify for the signature +
+ * linkage + payload-hash + monotonic-event_id + authority-pubkey
+ * checks. Operates on an open FILE* so tests can verify in-memory or
+ * partial logs without going through the chain dir. The caller owns
+ * the FILE* and is responsible for fclose. The file pointer is read
+ * from its current offset to EOF.
+ *
+ * Returns true iff the log is fully valid AND all events parsed
+ * cleanly. On failure, out_report->first_fail_reason describes the
+ * first violating event (and first_fail_event_id is 1-based, or 0 if
+ * the failure preceded the first valid event). */
+typedef struct {
+    uint64_t total_events;
+    uint64_t valid_events;
+    uint64_t bad_signatures;
+    uint64_t bad_linkage;        /* prev_hash mismatch */
+    uint64_t bad_payload_hash;   /* payload bytes don't match header */
+    uint64_t bad_authority;      /* authority field != expected pubkey */
+    uint64_t monotonic_violations;
+    uint64_t event_type_counts[CHAIN_EVT_TYPE_COUNT];
+    uint64_t first_fail_event_id;
+    char     first_fail_reason[128];
+} chain_log_verify_report_t;
+
+bool chain_log_verify_with_pubkey(FILE *log,
+                                  const uint8_t station_pubkey[32],
+                                  chain_log_verify_report_t *out_report);
+
 /* Compute the SHA-256 of a chain_event_header_t (all 184 bytes,
  * including the signature — this is the full record hash that gets
  * fed into the *next* event's prev_hash). */

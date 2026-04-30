@@ -85,6 +85,36 @@ jobs:
           ulimit -s 16384
           ./build-ubsan/signal_test --quiet
 
+  # signal_verify watchdog regression (#479 Layer E). Builds the
+  # standalone tool and runs it against the committed chain-log
+  # fixture; both exit code and JSON output must match the golden
+  # baseline. The fixture is deterministic and tiny (<10 KB), so this
+  # step is fast and stable. Sim changes that legitimately alter
+  # event semantics must regenerate the fixture (see
+  # tests/fixtures/README.md) — intentional friction.
+  verify-chain-logs:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build signal_verify
+        run: |
+          cmake -S . -B build-verify -DCMAKE_BUILD_TYPE=Debug \
+            -DBUILD_TESTS_ONLY=ON -DBUILD_TOOLS=ON
+          cmake --build build-verify --target signal_verify --parallel
+      - name: Verify fixture exit code
+        run: |
+          ./build-verify/signal_verify \
+            tests/fixtures/3F5qRPtKg8GhGNnbd3qCj6nVJxWsGxq7pvH84okYLAqf.log
+      - name: Compare JSON to golden
+        run: |
+          ./build-verify/signal_verify --report=json \
+            tests/fixtures/3F5qRPtKg8GhGNnbd3qCj6nVJxWsGxq7pvH84okYLAqf.log \
+            > /tmp/actual.json
+          diff -u \
+            tests/fixtures/3F5qRPtKg8GhGNnbd3qCj6nVJxWsGxq7pvH84okYLAqf.golden.json \
+            /tmp/actual.json
+
   # Static analysis: parallel with tests.
   test-static:
     runs-on: ubuntu-latest

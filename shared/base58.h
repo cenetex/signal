@@ -60,4 +60,54 @@ static inline size_t base58_encode(const uint8_t *in, size_t len,
     return o;
 }
 
+/* Decode a null-terminated base58 string into `out` (capacity out_cap).
+ * Returns the number of bytes written, or 0 on invalid input or
+ * insufficient buffer. The standalone signal_verify CLI uses this to
+ * parse --station-pubkey=<base58> arguments and to recover a pubkey
+ * from a log filename. */
+static inline size_t base58_decode(const char *in, uint8_t *out, size_t out_cap) {
+    if (!in || !out || out_cap == 0) return 0;
+    size_t in_len = 0;
+    while (in[in_len]) in_len++;
+    /* Leading '1' chars in the input map to leading zero bytes. */
+    size_t leading_ones = 0;
+    while (leading_ones < in_len && in[leading_ones] == '1') leading_ones++;
+
+    /* Rough upper bound for the byte stream length: in_len * log(58) /
+     * log(256) ≈ in_len * 733/1000 + 1. */
+    size_t bytes_cap = in_len * 733 / 1000 + 1;
+    uint8_t bytes[80];
+    if (bytes_cap > sizeof(bytes)) bytes_cap = sizeof(bytes);
+    memset(bytes, 0, bytes_cap);
+    size_t bytes_len = 0;
+
+    for (size_t i = leading_ones; i < in_len; i++) {
+        char c = in[i];
+        const char *p = NULL;
+        for (size_t k = 0; BASE58_ALPHABET[k]; k++) {
+            if (BASE58_ALPHABET[k] == c) { p = &BASE58_ALPHABET[k]; break; }
+        }
+        if (!p) return 0;
+        uint32_t carry = (uint32_t)(p - BASE58_ALPHABET);
+        for (size_t j = 0; j < bytes_cap; j++) {
+            if (j >= bytes_len && carry == 0) break;
+            carry += (uint32_t)bytes[bytes_cap - 1 - j] * 58u;
+            bytes[bytes_cap - 1 - j] = (uint8_t)(carry & 0xFFu);
+            carry >>= 8;
+            if (bytes_cap - 1 - j == bytes_cap - 1 - bytes_len) bytes_len++;
+        }
+    }
+
+    /* Skip leading zero bytes from the high end of the digit stream. */
+    size_t bi = bytes_cap - bytes_len;
+    while (bi < bytes_cap && bytes[bi] == 0) bi++;
+
+    size_t total = leading_ones + (bytes_cap - bi);
+    if (total > out_cap) return 0;
+    size_t o = 0;
+    for (size_t i = 0; i < leading_ones; i++) out[o++] = 0;
+    for (size_t i = bi; i < bytes_cap; i++) out[o++] = bytes[i];
+    return o;
+}
+
 #endif /* SHARED_BASE58_H */

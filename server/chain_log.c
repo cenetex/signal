@@ -237,6 +237,11 @@ uint64_t chain_log_emit(world_t *w, station_t *s, chain_event_type_t type,
 /* Verify                                                              */
 /* ------------------------------------------------------------------ */
 
+/* The core post-mortem verifier (chain_log_verify_with_pubkey) is
+ * defined in server/chain_log_verify.c so the standalone signal_verify
+ * tool can link it without pulling in the world_t / SIM_LOG / station
+ * authority dependencies that chain_log_emit needs. */
+
 bool chain_log_verify(const station_t *s,
                       uint64_t *out_event_count,
                       uint8_t out_last_hash[32]) {
@@ -256,72 +261,30 @@ bool chain_log_verify(const station_t *s,
         return true;
     }
 
-    uint64_t count = 0;
-    uint8_t prev_hash[32] = {0};
-    uint8_t expected_id = 1; /* event_id starts at 1 */
-    (void)expected_id;
-    uint64_t expected_event_id = 1;
-    bool ok = true;
+    chain_log_verify_report_t report;
+    bool ok = chain_log_verify_with_pubkey(f, s->station_pubkey, &report);
 
-    for (;;) {
-        uint8_t hdr_bytes[CHAIN_EVENT_HEADER_SIZE];
-        size_t got = fread(hdr_bytes, 1, CHAIN_EVENT_HEADER_SIZE, f);
-        if (got == 0 && feof(f)) break;
-        if (got != CHAIN_EVENT_HEADER_SIZE) { ok = false; break; }
-        chain_event_header_t hdr;
-        if (!chain_event_header_unpack(hdr_bytes, &hdr)) { ok = false; break; }
-
-        uint16_t payload_len = 0;
-        if (fread(&payload_len, sizeof(payload_len), 1, f) != 1) {
-            ok = false; break;
+    /* Recompute last_hash by re-reading just the last valid header,
+     * preserving the original out_last_hash semantics (caller may
+     * compare against in-memory chain_last_hash). */
+    if (ok && report.valid_events > 0 && out_last_hash) {
+        rewind(f);
+        uint8_t prev_hash[32] = {0};
+        for (uint64_t i = 0; i < report.valid_events; i++) {
+            uint8_t hdr_bytes[CHAIN_EVENT_HEADER_SIZE];
+            if (fread(hdr_bytes, 1, CHAIN_EVENT_HEADER_SIZE, f) != CHAIN_EVENT_HEADER_SIZE) break;
+            chain_event_header_t hdr;
+            if (!chain_event_header_unpack(hdr_bytes, &hdr)) break;
+            uint16_t plen = 0;
+            if (fread(&plen, sizeof(plen), 1, f) != 1) break;
+            if (plen > 0) fseek(f, plen, SEEK_CUR);
+            chain_event_header_hash(&hdr, prev_hash);
         }
-        uint8_t payload_buf[4096];
-        if (payload_len > sizeof(payload_buf)) {
-            /* Defensive: reject implausibly large payloads. */
-            ok = false; break;
-        }
-        if (payload_len > 0 &&
-            fread(payload_buf, payload_len, 1, f) != 1) {
-            ok = false; break;
-        }
-
-        /* 1) Authority must match the station we're verifying. */
-        if (memcmp(hdr.authority, s->station_pubkey, 32) != 0) {
-            ok = false; break;
-        }
-        /* 2) prev_hash must chain. */
-        if (memcmp(hdr.prev_hash, prev_hash, 32) != 0) {
-            ok = false; break;
-        }
-        /* 3) event_id must be monotonic from 1. */
-        if (hdr.event_id != expected_event_id) {
-            ok = false; break;
-        }
-        /* 4) payload_hash must match the stored payload bytes. */
-        uint8_t computed_payload_hash[32];
-        sha256_bytes(payload_len > 0 ? payload_buf : (const void *)"",
-                     payload_len, computed_payload_hash);
-        if (memcmp(computed_payload_hash, hdr.payload_hash, 32) != 0) {
-            ok = false; break;
-        }
-        /* 5) Signature must verify against authority pubkey over the
-         *    unsigned header span. */
-        uint8_t unsigned_blob[CHAIN_UNSIGNED_HEADER_SIZE];
-        chain_event_unsigned_pack(&hdr, unsigned_blob);
-        if (!signal_crypto_verify(hdr.signature, unsigned_blob,
-                                  CHAIN_UNSIGNED_HEADER_SIZE,
-                                  hdr.authority)) {
-            ok = false; break;
-        }
-
-        chain_event_header_hash(&hdr, prev_hash);
-        count++;
-        expected_event_id++;
+        memcpy(out_last_hash, prev_hash, 32);
     }
 
     fclose(f);
-    if (out_event_count) *out_event_count = count;
-    if (out_last_hash) memcpy(out_last_hash, prev_hash, 32);
+    if (out_event_count) *out_event_count = report.valid_events;
     return ok;
 }
 

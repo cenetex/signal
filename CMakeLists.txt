@@ -47,6 +47,10 @@ set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 # set, every target (server, test, client) is built.
 option(BUILD_TESTS_ONLY  "Only build the test executable"       OFF)
 option(BUILD_SERVER_ONLY "Only build the headless game server"  OFF)
+# Layer E of #479: standalone CLI tool for verifying station chain
+# logs post-mortem. Default ON so dev builds get it; the
+# server-only Docker image flips it off.
+option(BUILD_TOOLS       "Build standalone CLI tools (signal_verify)" ON)
 
 # --- GIT_HASH baked into binaries for /health and client mismatch checks ---
 # Captured at configure time. To refresh after a commit/pull without
@@ -82,6 +86,7 @@ set(SIGNAL_SIM_SOURCES
     server/sim_catalog.c
     server/station_authority.c
     server/chain_log.c
+    server/chain_log_verify.c
     server/sim_asteroid.c
     server/sim_physics.c
     server/sim_production.c
@@ -209,6 +214,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         src/tests/test_anchor.c
         src/tests/test_station_authority.c
         src/tests/test_chain_log.c
+        src/tests/test_signal_verify.c
         src/identity.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
@@ -224,6 +230,30 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         target_compile_options(signal_test PRIVATE
             /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
         target_compile_definitions(signal_test PRIVATE _CRT_SECURE_NO_WARNINGS)
+    endif()
+endif()
+
+# ------------------------------------------------------------------
+# signal_verify — standalone post-mortem chain-log watchdog
+# (Layer E of #479). Pure C, no sim / world_t / sokol deps. Can run
+# on archived logs, by anyone, without a live server.
+# ------------------------------------------------------------------
+if(BUILD_TOOLS AND NOT EMSCRIPTEN)
+    add_executable(signal_verify
+        tools/signal_verify.c
+        server/chain_log_verify.c
+        ${SIGNAL_CRYPTO_SOURCES}
+    )
+    target_include_directories(signal_verify PRIVATE
+        ${SIGNAL_INCLUDE_DIRS}
+        ${SIGNAL_CRYPTO_INCLUDE_DIR})
+    if(NOT MSVC)
+        target_compile_options(signal_verify PRIVATE
+            -Wall -Wextra -Wpedantic -Werror)
+    else()
+        target_compile_options(signal_verify PRIVATE
+            /W4 /WX /wd4127 /wd4459 /wd4996 /wd5287)
+        target_compile_definitions(signal_verify PRIVATE _CRT_SECURE_NO_WARNINGS)
     endif()
 endif()
 
