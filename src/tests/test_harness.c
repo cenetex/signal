@@ -1,5 +1,11 @@
 #include "tests/test_harness.h"
 
+#ifndef _WIN32
+#include <sys/stat.h>
+#include <sys/types.h>
+#include <errno.h>
+#endif
+
 int tests_run = 0;
 int tests_passed = 0;
 int tests_failed = 0;
@@ -138,6 +144,41 @@ int run_autopilot_ticks(world_t *w, server_player_t *sp, float seconds) {
         world_sim_step(w, 1.0f / 120.0f);
     }
     return sp->autopilot_state;
+}
+
+/* Per-process scratch dir for filesystem-touching tests. The first call
+ * computes "/tmp/signal-test-<pid>" and mkdir's it; subsequent calls
+ * just format `<dir>/<name>` into one of TMP_RING buffers. The ring lets
+ * a single statement that calls TMP() multiple times (e.g. save+load
+ * pairs in arguments) get distinct buffers. */
+#define TMP_RING 8
+#define TMP_BUFLEN 128
+const char *test_tmp_path(const char *name) {
+    static char dir[64];
+    static int dir_ready = 0;
+    static char buffers[TMP_RING][TMP_BUFLEN];
+    static int next = 0;
+
+    if (!dir_ready) {
+#ifdef _WIN32
+        /* On Windows tests don't run the filesystem suites, but keep
+         * the helper safe — fall back to "tmp_<pid>". */
+        snprintf(dir, sizeof(dir), "tmp_%lu", (unsigned long)_getpid());
+#else
+        snprintf(dir, sizeof(dir), "/tmp/signal-test-%ld", (long)getpid());
+        if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
+            /* Fall back to plain /tmp on weird CI; tests will still
+             * collide there, but at least they won't crash. */
+            snprintf(dir, sizeof(dir), "/tmp");
+        }
+#endif
+        dir_ready = 1;
+    }
+
+    char *buf = buffers[next];
+    next = (next + 1) % TMP_RING;
+    snprintf(buf, TMP_BUFLEN, "%s/%s", dir, name);
+    return buf;
 }
 
 double econ_total_credits(const world_t *w) {

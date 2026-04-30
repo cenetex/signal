@@ -26,7 +26,10 @@ static void write_msg_file(const char *path, const signal_channel_msg_t *msgs, i
  * so the caller can restore it. Caller frees the result. */
 static char *enter_scratch_dir(const char *label) {
     char *prev = getcwd(NULL, 0);
-    char tmpl[] = "/tmp/signal_chain_test_XXXXXX";
+    /* mkdtemp mutates its argument in place, so copy TMP()'s shared
+     * buffer into a local mutable array before calling it. */
+    char tmpl[128];
+    snprintf(tmpl, sizeof(tmpl), "%s", TMP("signal_chain_test_XXXXXX"));
     char *dir = mkdtemp(tmpl);
     if (!dir) { tests_failed++; printf("FAIL: mkdtemp for %s\n", label); free(prev); return NULL; }
     if (chdir(dir) != 0) { tests_failed++; printf("FAIL: chdir %s\n", dir); free(prev); return NULL; }

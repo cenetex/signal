@@ -5,18 +5,18 @@ TEST(test_player_save_load_roundtrip) {
     world_reset(w);
     player_init_ship(&w->players[0], w);
     w->players[0].connected = true;
-    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, "/tmp/test_cat"));
-    ASSERT(world_save(w, "/tmp/test_player.sav"));
+    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, TMP("test_cat")));
+    ASSERT(world_save(w, TMP("test_player.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    station_catalog_load_all(loaded->stations, MAX_STATIONS, "/tmp/test_cat");
-    ASSERT(world_load(loaded, "/tmp/test_player.sav"));
+    station_catalog_load_all(loaded->stations, MAX_STATIONS, TMP("test_cat"));
+    ASSERT(world_load(loaded, TMP("test_player.sav")));
     /* Players are cleared on load (they reconnect) */
     ASSERT(!loaded->players[0].connected);
     /* But world state (stations, etc.) survives */
     ASSERT_EQ_FLOAT(loaded->stations[0].signal_range, w->stations[0].signal_range, 0.01f);
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
-    remove("/tmp/test_player.sav");
+    remove(TMP("test_player.sav"));
 }
 
 TEST(test_world_save_load_preserves_stations) {
@@ -24,30 +24,30 @@ TEST(test_world_save_load_preserves_stations) {
     world_reset(w);
     w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 42.0f;
     w->stations[0].inventory[COMMODITY_FRAME] = 15.0f;
-    ASSERT(world_save(w, "/tmp/test_world.sav"));
+    ASSERT(world_save(w, TMP("test_world.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    ASSERT(world_load(loaded, "/tmp/test_world.sav"));
+    ASSERT(world_load(loaded, TMP("test_world.sav")));
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_ORE], 42.0f, 0.01f);
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FRAME], 15.0f, 0.01f);
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
-    remove("/tmp/test_world.sav");
+    remove(TMP("test_world.sav"));
 }
 
 TEST(test_world_save_load_preserves_npcs) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     for (int i = 0; i < 600; i++) world_sim_step(w, SIM_DT);
-    ASSERT(world_save(w, "/tmp/test_npcs.sav"));
+    ASSERT(world_save(w, TMP("test_npcs.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    ASSERT(world_load(loaded, "/tmp/test_npcs.sav"));
+    ASSERT(world_load(loaded, TMP("test_npcs.sav")));
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         ASSERT_EQ_FLOAT(loaded->npc_ships[i].pos.x, w->npc_ships[i].pos.x, 0.01f);
         ASSERT_EQ_FLOAT(loaded->npc_ships[i].pos.y, w->npc_ships[i].pos.y, 0.01f);
     }
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
-    remove("/tmp/test_npcs.sav");
+    remove(TMP("test_npcs.sav"));
 }
 
 TEST(test_npc_ship_physics_in_sync_each_tick) {
@@ -90,9 +90,9 @@ TEST(test_world_load_rebuilds_character_pool) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     for (int i = 0; i < 600; i++) world_sim_step(w, SIM_DT);
-    ASSERT(world_save(w, "/tmp/test_char_pool.sav"));
+    ASSERT(world_save(w, TMP("test_char_pool.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    ASSERT(world_load(loaded, "/tmp/test_char_pool.sav"));
+    ASSERT(world_load(loaded, TMP("test_char_pool.sav")));
 
     /* (a) paired-pool integrity */
     int active_npcs = 0;
@@ -129,7 +129,7 @@ TEST(test_world_load_rebuilds_character_pool) {
     world_sim_step(loaded, SIM_DT);
     ASSERT(loaded->npc_ships[target].hull < pre);
 
-    remove("/tmp/test_char_pool.sav");
+    remove(TMP("test_char_pool.sav"));
 }
 
 TEST(test_world_save_load_preserves_fracture_children) {
@@ -185,8 +185,8 @@ TEST(test_world_save_load_preserves_fracture_children) {
     memcpy(state->seen_claimant_tokens[1], "CLAIM002", 8);
     w->next_fracture_id = 555;
 
-    ASSERT(world_save(w, "/tmp/test_fracture_children.sav"));
-    ASSERT(world_load(loaded, "/tmp/test_fracture_children.sav"));
+    ASSERT(world_save(w, TMP("test_fracture_children.sav")));
+    ASSERT(world_load(loaded, TMP("test_fracture_children.sav")));
 
     ASSERT_EQ_INT(loaded->next_fracture_id, 555);
     ASSERT(loaded->asteroids[17].active);
@@ -215,7 +215,7 @@ TEST(test_world_save_load_preserves_fracture_children) {
     ASSERT(memcmp(loaded->fracture_claims[17].seen_claimant_tokens[1],
                   state->seen_claimant_tokens[1], 8) == 0);
 
-    remove("/tmp/test_fracture_children.sav");
+    remove(TMP("test_fracture_children.sav"));
 }
 
 TEST(test_world_load_preserves_fracture_claim_dedupe_identity) {
@@ -261,8 +261,8 @@ TEST(test_world_load_preserves_fracture_claim_dedupe_identity) {
     ASSERT(submit_fracture_claim(w, 0, state->fracture_id, best_nonce,
                                  (uint8_t)best_grade));
 
-    ASSERT(world_save(w, "/tmp/test_fracture_claim_dedupe.sav"));
-    ASSERT(world_load(loaded, "/tmp/test_fracture_claim_dedupe.sav"));
+    ASSERT(world_save(w, TMP("test_fracture_claim_dedupe.sav")));
+    ASSERT(world_load(loaded, TMP("test_fracture_claim_dedupe.sav")));
 
     loaded->players[1].connected = true;
     loaded->players[1].session_ready = true;
@@ -270,12 +270,12 @@ TEST(test_world_load_preserves_fracture_claim_dedupe_identity) {
     loaded->players[1].ship.pos = loaded->stations[0].pos;
     ASSERT(!submit_fracture_claim(loaded, 1, 818, best_nonce, (uint8_t)best_grade));
 
-    remove("/tmp/test_fracture_claim_dedupe.sav");
+    remove(TMP("test_fracture_claim_dedupe.sav"));
 }
 
 TEST(test_world_load_missing_file) {
     WORLD_DECL;
-    ASSERT(!world_load(&w, "/tmp/nonexistent_save_file.sav"));
+    ASSERT(!world_load(&w, TMP("nonexistent_save_file.sav")));
 }
 
 TEST(test_player_save_load_preserves_ship) {
@@ -303,7 +303,7 @@ TEST(test_player_save_load_preserves_ship) {
     ASSERT_EQ_INT(loaded.ship.tractor_level, 3);
     ASSERT_EQ_INT(loaded.current_station, 1);
     ASSERT(loaded.docked);
-    remove("/tmp/player_99.sav");
+    remove(TMP("player_99.sav"));
 }
 
 TEST(test_world_save_round_trips_station_manifest) {
@@ -323,15 +323,15 @@ TEST(test_world_save_round_trips_station_manifest) {
     unit.pub[31] = 0x5A;
     ASSERT(manifest_push(&w.stations[0].manifest, &unit));
     ASSERT_EQ_INT(w.stations[0].manifest.count, 1);
-    ASSERT(world_save(&w, "/tmp/test_manifest_roundtrip.sav"));
-    ASSERT(world_load(&loaded, "/tmp/test_manifest_roundtrip.sav"));
+    ASSERT(world_save(&w, TMP("test_manifest_roundtrip.sav")));
+    ASSERT(world_load(&loaded, TMP("test_manifest_roundtrip.sav")));
     ASSERT_EQ_INT(loaded.stations[0].manifest.count, 1);
     ASSERT(loaded.stations[0].manifest.units != NULL);
     ASSERT_EQ_INT(loaded.stations[0].manifest.units[0].kind, CARGO_KIND_INGOT);
     ASSERT_EQ_INT(loaded.stations[0].manifest.units[0].commodity, COMMODITY_FERRITE_INGOT);
     ASSERT_EQ_INT(loaded.stations[0].manifest.units[0].grade, MINING_GRADE_RARE);
     ASSERT(memcmp(loaded.stations[0].manifest.units[0].pub, unit.pub, 32) == 0);
-    remove("/tmp/test_manifest_roundtrip.sav");
+    remove(TMP("test_manifest_roundtrip.sav"));
 }
 
 TEST(test_player_load_clamps_negative_credits) {
@@ -347,7 +347,7 @@ TEST(test_player_load_clamps_negative_credits) {
     SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, "/tmp", 98));
     /* No credits field to clamp — ledger balances are always >= 0 */
-    remove("/tmp/player_98.sav");
+    remove(TMP("player_98.sav"));
 }
 
 TEST(test_player_save_round_trips_ship_manifest) {
@@ -377,7 +377,7 @@ TEST(test_player_save_round_trips_ship_manifest) {
     ASSERT_EQ_INT(loaded.ship.manifest.units[0].commodity, COMMODITY_CUPRITE_INGOT);
     ASSERT_EQ_INT(loaded.ship.manifest.units[0].grade, MINING_GRADE_FINE);
     ASSERT(memcmp(loaded.ship.manifest.units[0].pub, unit.pub, 32) == 0);
-    remove("/tmp/player_92.sav");
+    remove(TMP("player_92.sav"));
 }
 
 TEST(test_player_load_clamps_negative_cargo) {
@@ -392,7 +392,7 @@ TEST(test_player_load_clamps_negative_cargo) {
     SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, "/tmp", 97));
     ASSERT(loaded.ship.cargo[COMMODITY_FERRITE_ORE] >= 0.0f);
-    remove("/tmp/player_97.sav");
+    remove(TMP("player_97.sav"));
 }
 
 TEST(test_player_load_clamps_hull_hp) {
@@ -407,7 +407,7 @@ TEST(test_player_load_clamps_hull_hp) {
     SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, "/tmp", 96));
     ASSERT(loaded.ship.hull <= ship_max_hull(&loaded.ship));
-    remove("/tmp/player_96.sav");
+    remove(TMP("player_96.sav"));
 }
 
 TEST(test_player_load_clamps_upgrade_levels) {
@@ -424,7 +424,7 @@ TEST(test_player_load_clamps_upgrade_levels) {
     ASSERT(player_load(&loaded, &w, "/tmp", 95));
     ASSERT(loaded.ship.mining_level >= 0 && loaded.ship.mining_level <= SHIP_UPGRADE_MAX_LEVEL);
     ASSERT(loaded.ship.hold_level >= 0 && loaded.ship.hold_level <= SHIP_UPGRADE_MAX_LEVEL);
-    remove("/tmp/player_95.sav");
+    remove(TMP("player_95.sav"));
 }
 
 TEST(test_player_load_invalid_station_falls_back) {
@@ -439,12 +439,12 @@ TEST(test_player_load_invalid_station_falls_back) {
     SERVER_PLAYER_DECL(loaded);
     ASSERT(player_load(&loaded, &w, "/tmp", 94));
     ASSERT(loaded.current_station >= 0 && loaded.current_station < MAX_STATIONS);
-    remove("/tmp/player_94.sav");
+    remove(TMP("player_94.sav"));
 }
 
 TEST(test_player_load_bad_magic_fails) {
     /* Write garbage with wrong magic */
-    FILE *f = fopen("/tmp/player_93.sav", "wb");
+    FILE *f = fopen(TMP("player_93.sav"), "wb");
     ASSERT(f != NULL);
     uint32_t bad_magic = 0xDEADBEEF;
     fwrite(&bad_magic, sizeof(bad_magic), 1, f);
@@ -454,25 +454,25 @@ TEST(test_player_load_bad_magic_fails) {
     world_reset(&w);
     SERVER_PLAYER_DECL(loaded);
     ASSERT(!player_load(&loaded, &w, "/tmp", 93));
-    remove("/tmp/player_93.sav");
+    remove(TMP("player_93.sav"));
 }
 
 TEST(test_world_load_rejects_stale_version) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
-    ASSERT(world_save(w, "/tmp/test_stale.sav"));
+    ASSERT(world_save(w, TMP("test_stale.sav")));
     /* Overwrite version (bytes 4-7) with old version 11 */
-    FILE *f = fopen("/tmp/test_stale.sav", "r+b");
+    FILE *f = fopen(TMP("test_stale.sav"), "r+b");
     ASSERT(f != NULL);
     fseek(f, 4, SEEK_SET);
     uint32_t old_version = 11;
     fwrite(&old_version, sizeof(old_version), 1, f);
     fclose(f);
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    ASSERT(!world_load(loaded, "/tmp/test_stale.sav"));
+    ASSERT(!world_load(loaded, TMP("test_stale.sav")));
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
-    remove("/tmp/test_stale.sav");
+    remove(TMP("test_stale.sav"));
 }
 
 TEST(test_world_save_load_preserves_module_ring_slot) {
@@ -483,11 +483,11 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     station_module_t orig = w->stations[0].modules[2]; /* furnace at ring 1 slot 2 */
     ASSERT(orig.type == MODULE_FURNACE);
     ASSERT(orig.ring == 1);
-    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, "/tmp/test_modcat"));
-    ASSERT(world_save(w, "/tmp/test_modules.sav"));
+    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, TMP("test_modcat")));
+    ASSERT(world_save(w, TMP("test_modules.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    station_catalog_load_all(loaded->stations, MAX_STATIONS, "/tmp/test_modcat");
-    ASSERT(world_load(loaded, "/tmp/test_modules.sav"));
+    station_catalog_load_all(loaded->stations, MAX_STATIONS, TMP("test_modcat"));
+    ASSERT(world_load(loaded, TMP("test_modules.sav")));
     station_module_t restored = loaded->stations[0].modules[2];
     ASSERT_EQ_INT((int)restored.type, (int)orig.type);
     ASSERT_EQ_INT((int)restored.ring, (int)orig.ring);
@@ -504,7 +504,7 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     ASSERT_EQ_INT((int)mod4.ring, 2);
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
-    remove("/tmp/test_modules.sav");
+    remove(TMP("test_modules.sav"));
 }
 
 TEST(test_world_save_load_preserves_smelted_ingots) {
@@ -516,12 +516,12 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
     for (int i = 0; i < (int)(10.0f / SIM_DT); i++) world_sim_step(w, SIM_DT);
     float ingots_before = w->stations[0].inventory[COMMODITY_FERRITE_INGOT];
     ASSERT(ingots_before > 0.0f);
-    ASSERT(world_save(w, "/tmp/test_ingots.sav"));
+    ASSERT(world_save(w, TMP("test_ingots.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(loaded != NULL);
-    ASSERT(world_load(loaded, "/tmp/test_ingots.sav"));
+    ASSERT(world_load(loaded, TMP("test_ingots.sav")));
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_INGOT], ingots_before, 0.01f);
-    remove("/tmp/test_ingots.sav");
+    remove(TMP("test_ingots.sav"));
     /* loaded + w auto-freed by WORLD_HEAP cleanup */
 }
 
@@ -549,9 +549,9 @@ TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
-    ASSERT(world_save(w, "/tmp/test_size.sav"));
+    ASSERT(world_save(w, TMP("test_size.sav")));
     /* w auto-freed by WORLD_HEAP cleanup */
-    FILE *f = fopen("/tmp/test_size.sav", "rb");
+    FILE *f = fopen(TMP("test_size.sav"), "rb");
     ASSERT(f != NULL);
     fseek(f, 0, SEEK_END);
     long size = ftell(f);
@@ -559,7 +559,7 @@ TEST(test_save_file_size_stable) {
     /* If this fails you changed the binary save format.
      * Bump SAVE_VERSION, add a migration, and update EXPECTED_SAVE_SIZE. */
     ASSERT_EQ_INT((int)size, EXPECTED_SAVE_SIZE);
-    remove("/tmp/test_size.sav");
+    remove(TMP("test_size.sav"));
 }
 
 TEST(test_save_header_golden_bytes) {
@@ -568,8 +568,8 @@ TEST(test_save_header_golden_bytes) {
     world_reset(&w);
     w.time = 0.0f;
     w.field_spawn_timer = 0.0f;
-    ASSERT(world_save(&w, "/tmp/test_header.sav"));
-    FILE *f = fopen("/tmp/test_header.sav", "rb");
+    ASSERT(world_save(&w, TMP("test_header.sav")));
+    FILE *f = fopen(TMP("test_header.sav"), "rb");
     ASSERT(f != NULL);
     uint32_t magic, version, rng;
     float time_val, spawn_timer;
@@ -584,7 +584,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
-    remove("/tmp/test_header.sav");
+    remove(TMP("test_header.sav"));
 }
 
 TEST(test_save_load_preserves_player_outpost) {
@@ -607,11 +607,11 @@ TEST(test_save_load_preserves_player_outpost) {
     char name_buf[32];
     memcpy(name_buf, w->stations[slot].name, 32);
     /* Save and reload (world + catalog) */
-    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, "/tmp/test_outcat"));
-    ASSERT(world_save(w, "/tmp/test_outpost.sav"));
+    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, TMP("test_outcat")));
+    ASSERT(world_save(w, TMP("test_outpost.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    station_catalog_load_all(loaded->stations, MAX_STATIONS, "/tmp/test_outcat");
-    ASSERT(world_load(loaded, "/tmp/test_outpost.sav"));
+    station_catalog_load_all(loaded->stations, MAX_STATIONS, TMP("test_outcat"));
+    ASSERT(world_load(loaded, TMP("test_outpost.sav")));
     /* Outpost must survive */
     ASSERT(station_exists(&loaded->stations[slot]));
     ASSERT(loaded->stations[slot].scaffold);
@@ -625,7 +625,7 @@ TEST(test_save_load_preserves_player_outpost) {
     ASSERT(loaded->stations[slot].signal_range > 0.0f);
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
-    remove("/tmp/test_outpost.sav");
+    remove(TMP("test_outpost.sav"));
 }
 
 TEST(test_save_backward_compat_version_accepted) {
@@ -634,15 +634,15 @@ TEST(test_save_backward_compat_version_accepted) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 77.0f;
-    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, "/tmp/test_compatcat"));
-    ASSERT(world_save(w, "/tmp/test_compat.sav"));
+    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, TMP("test_compatcat")));
+    ASSERT(world_save(w, TMP("test_compat.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    station_catalog_load_all(loaded->stations, MAX_STATIONS, "/tmp/test_compatcat");
-    ASSERT(world_load(loaded, "/tmp/test_compat.sav"));
+    station_catalog_load_all(loaded->stations, MAX_STATIONS, TMP("test_compatcat"));
+    ASSERT(world_load(loaded, TMP("test_compat.sav")));
     ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_ORE], 77.0f, 0.01f);
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
-    remove("/tmp/test_compat.sav");
+    remove(TMP("test_compat.sav"));
 }
 
 TEST(test_save_v21_module_remap) {
@@ -661,18 +661,18 @@ TEST(test_save_future_version_rejected) {
     /* A save with version > SAVE_VERSION must be rejected (can't load future formats) */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
-    ASSERT(world_save(w, "/tmp/test_future.sav"));
-    FILE *f = fopen("/tmp/test_future.sav", "r+b");
+    ASSERT(world_save(w, TMP("test_future.sav")));
+    FILE *f = fopen(TMP("test_future.sav"), "r+b");
     ASSERT(f != NULL);
     fseek(f, 4, SEEK_SET);
     uint32_t future = 9999;
     fwrite(&future, sizeof(future), 1, f);
     fclose(f);
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    ASSERT(!world_load(loaded, "/tmp/test_future.sav"));
+    ASSERT(!world_load(loaded, TMP("test_future.sav")));
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
-    remove("/tmp/test_future.sav");
+    remove(TMP("test_future.sav"));
 }
 
 void register_save_persistence_tests(void) {

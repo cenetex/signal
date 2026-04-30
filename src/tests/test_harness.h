@@ -165,3 +165,18 @@ world_t *setup_collision_world_heap(void);
 int test_setup_placed_scaffold(world_t *w, int *out_mod_idx);
 int run_autopilot_ticks(world_t *w, server_player_t *sp, float seconds);
 double econ_total_credits(const world_t *w);
+
+/* Per-process scratch path helper for tests that touch the filesystem.
+ * Returns a pointer into a small ring of static buffers, so multiple
+ * TMP() calls in the same expression don't clobber each other (e.g.
+ * `world_save(w, TMP("a")); world_load(w2, TMP("a"));` is fine).
+ *
+ * The first call mkdir's `/tmp/signal-test-<pid>/` so each shard /
+ * worker process has its own isolated scratch dir. Sharded test runs
+ * therefore cannot race on the same `/tmp/test_*.sav` file.
+ *
+ * Note: callers that need a *mutable* buffer (e.g. mkdtemp) should
+ * `strcpy` the result into a local `char[]` first — TMP()'s storage is
+ * shared and may be reused on later calls. */
+const char *test_tmp_path(const char *name);
+#define TMP(name) test_tmp_path(name)

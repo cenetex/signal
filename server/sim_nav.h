@@ -95,4 +95,10 @@ void station_build_nav(const world_t *w, int station_idx);
 /* Rebuild nav meshes for all stations. */
 void station_rebuild_all_nav(const world_t *w);
 
+/* Reset all process-level nav caches (per-station nav meshes + per-NPC
+ * + per-player path scratch). Called by world_reset so tests / repeated
+ * world reinit don't see stale path data carried over from the previous
+ * world. */
+void nav_caches_reset(void);
+
 #endif /* SIM_NAV_H */

@@ -90,6 +90,20 @@ static vec2 snav_node_world_pos(const station_t *st, const snav_node_t *n) {
 static nav_path_t s_npc_paths[MAX_NPC_SHIPS];
 static nav_path_t s_player_paths[MAX_PLAYERS];
 
+/* Wipe all process-level nav caches. Without this, a fresh world_t
+ * with no nav state will silently inherit s_station_nav / s_npc_paths
+ * / s_player_paths from whatever world ran before — which is fine for
+ * a long-lived server but corrupts test isolation when many world_t
+ * instances are reset back-to-back in the same process. */
+void nav_caches_reset(void) {
+    memset(s_station_nav, 0, sizeof(s_station_nav));
+    memset(s_npc_paths,   0, sizeof(s_npc_paths));
+    memset(s_player_paths, 0, sizeof(s_player_paths));
+    /* Force replan on first use after reset. */
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) s_npc_paths[i].age = 999.0f;
+    for (int i = 0; i < MAX_PLAYERS; i++)   s_player_paths[i].age = 999.0f;
+}
+
 nav_path_t *nav_npc_path(int npc_idx) {
     if (npc_idx < 0 || npc_idx >= MAX_NPC_SHIPS) {
         /* Out-of-bounds: return slot 0 with a forced replan so it

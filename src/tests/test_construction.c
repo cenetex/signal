@@ -956,12 +956,12 @@ TEST(test_save_preserves_pending_scaffolds) {
     w->scaffolds[sidx].built_at_station = 1;
     w->scaffolds[sidx].build_amount = 17.0f;
 
-    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, "/tmp/test_pendcat"));
-    ASSERT(world_save(w, "/tmp/test_pending.sav"));
+    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, TMP("test_pendcat")));
+    ASSERT(world_save(w, TMP("test_pending.sav")));
 
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
-    station_catalog_load_all(loaded->stations, MAX_STATIONS, "/tmp/test_pendcat");
-    ASSERT(world_load(loaded, "/tmp/test_pending.sav"));
+    station_catalog_load_all(loaded->stations, MAX_STATIONS, TMP("test_pendcat"));
+    ASSERT(world_load(loaded, TMP("test_pending.sav")));
 
     /* Verify pending order survived (session-tier data) */
     ASSERT_EQ_INT(loaded->stations[1].pending_scaffold_count, 1);
@@ -976,7 +976,7 @@ TEST(test_save_preserves_pending_scaffolds) {
 
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
-    remove("/tmp/test_pending.sav");
+    remove(TMP("test_pending.sav"));
 }
 
 TEST(test_placed_scaffold_supply_phase) {

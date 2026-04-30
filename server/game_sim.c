@@ -4578,6 +4578,11 @@ void world_reset(world_t *w) {
     memset(w, 0, sizeof(*w));
     w->signal_cache.strength = sig_buf; /* restore — signal_grid_build reuses it */
     w->rng = seed ? seed : 2037u;
+    /* Wipe process-level nav scratch so a freshly-reset world doesn't
+     * inherit stale path/nav-mesh state from a previously-run world.
+     * Matters for test isolation when many world_t instances are reset
+     * back-to-back in the same process. */
+    nav_caches_reset();
     belt_field_init(&w->belt, w->rng, BELT_SCALE);
     for (int i = 0; i < MAX_STATIONS; i++)
         (void)station_manifest_bootstrap(&w->stations[i]);
