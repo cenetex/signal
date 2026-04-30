@@ -1962,7 +1962,18 @@ void draw_remote_players(void) {
     };
     for (int i = 0; i < NET_MAX_PLAYERS; i++) {
         if (!players[i].active) continue;
+        /* Skip the local player — belt-and-suspenders: index match OR
+         * slot match OR colocated with the actual ship pos. The last
+         * guard catches the window between connect and JOIN arrival
+         * where neither id is populated yet and we'd otherwise draw
+         * a red/orange ghost ship on top of the local one. */
         if (i == (int)net_local_id()) continue;
+        if (i == g.local_player_slot) continue;
+        {
+            float dx = players[i].x - LOCAL_PLAYER.ship.pos.x;
+            float dy = players[i].y - LOCAL_PLAYER.ship.pos.y;
+            if (dx * dx + dy * dy < 4.0f) continue; /* within 2u = us */
+        }
         if (!on_screen(players[i].x, players[i].y, 50.0f)) continue;
         int ci = i % 6;
         float cr = colors[ci][0], cg = colors[ci][1], cb = colors[ci][2];
