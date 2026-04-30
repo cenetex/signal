@@ -88,46 +88,6 @@ static STATION_VOICE_UNUSED const char *STATION_ONBOARD[3][VOICE_ONBOARD_COUNT] 
 };
 
 /* ------------------------------------------------------------------ */
-/* Docked context tips -indexed [station][tip_cycle]                 */
-/* ------------------------------------------------------------------ */
-
-enum {
-    DOCK_TIP_SELL,
-    DOCK_TIP_MARKET,
-    DOCK_TIP_SHIPYARD,
-    DOCK_TIP_LAUNCH,
-    DOCK_TIP_DEFAULT,
-    DOCK_TIP_COUNT,
-};
-
-static STATION_VOICE_UNUSED const char *STATION_DOCK_TIPS[3][DOCK_TIP_COUNT] = {
-    /* Prospect */
-    {
-        /* SELL    */ "Smelter's running. Tow fragments to the furnace.",
-        /* MARKET  */ "Want ingots? Check the market. Not cheap.",
-        /* SHIPYARD*/ "No shipyard here. Try Kepler.",
-        /* LAUNCH  */ "Belt's waiting. Launch when ready.",
-        /* DEFAULT */ "Switch tabs to see what's available.",
-    },
-    /* Kepler */
-    {
-        /* SELL    */ "Deliver ingots here. Check the contracts tab.",
-        /* MARKET  */ "Frames and ingots. Browse the market.",
-        /* SHIPYARD*/ "Shipyard's open. Order a kit from there.",
-        /* LAUNCH  */ "Mind the scaffold arm on the way out.",
-        /* DEFAULT */ "Switch tabs to see what's available.",
-    },
-    /* Helios */
-    {
-        /* SELL    */ "Copper and crystal smelting. Tow fragments here.",
-        /* MARKET  */ "We've got specialty alloys. Check the market.",
-        /* SHIPYARD*/ "No shipyard. Kepler handles kits.",
-        /* LAUNCH  */ "More out there than rocks.",
-        /* DEFAULT */ "Switch tabs to see what's available.",
-    },
-};
-
-/* ------------------------------------------------------------------ */
 /* NPC radio chatter -short one-liners near sprites                  */
 /* ------------------------------------------------------------------ */
 

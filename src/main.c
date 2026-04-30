@@ -241,7 +241,7 @@ static void step_notice_timer(float dt) {
 /* sync_world_to_globals removed — everything reads from g.world directly */
 
 /* ------------------------------------------------------------------ */
-/* Contextual hail: pick station-voiced message based on player state */
+/* Contextual hail: pick a station-authored message based on player state */
 /* ------------------------------------------------------------------ */
 
 static bool check_hail_condition(hail_cond_t cond) {
@@ -698,8 +698,6 @@ static void episode_per_frame(void) {
 
     /* Ep 4, 5, 7, 8 are now event-driven (see process_events) */
 }
-
-/* Emit ship state to voicebox for context-aware elaboration (≤1 Hz throttle) */
 
 static void sim_step(float dt) {
     reset_step_feedback();
