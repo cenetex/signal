@@ -1331,7 +1331,7 @@ void register_bug_regression_batch2_tests(void) {
 void register_bug_regression_batch3_tests(void) {
     TEST_SECTION("\nBug regression tests (batch 3):\n");
     RUN(test_bug21_commodity_bits_fragile);
-    RUN(test_bug22_hauler_stuck_at_empty_station);
+    RUN_SOAK(test_bug22_hauler_stuck_at_empty_station);
     RUN(test_bug23_npc_cargo_stuck_when_hopper_full);
     RUN(test_bug24_ingot_buffer_no_cap);
     RUN(test_bug25_rng_deterministic_every_reset);

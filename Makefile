@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test test test-fast crap dev dev-logs dev-clean stop deploy clean
+.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all crap dev dev-logs dev-clean stop deploy clean
 
 all: build build-web build-server
 
@@ -38,26 +38,17 @@ build-test:
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_test --parallel
 
-# Default `test` is serial — the suite has shared `/tmp/test_*.sav`
-# paths and order-coupled global catalog state, so naive sharding races.
-# See `make test-fast` for the opt-in parallel runner.
-test: build-test
-	./build/signal_test $(TEST_QUIET)
-
-# Parallel sharded runner (opt-in). The harness supports --shard=K/N
-# already; we just fan out across cores. Caveat: ~5 tests in
-# test_save / test_construction / test_manifest are order-coupled
-# through global catalog state and may flake when sharded. Use this for
-# fast iteration on areas you know are independent (math, commodity,
-# economy, navigation) — fall back to `make test` before pushing.
+# Number of shards for the parallel test runner. Defaults to min(8, ncores).
 NCORES := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 TEST_SHARDS ?= $(shell echo $$(( $(NCORES) < 8 ? $(NCORES) : 8 )))
 
-test-fast: build-test
-	@echo "[test-fast] $(TEST_SHARDS) shards in parallel — heads-up: order-coupled tests may flake; use 'make test' before pushing."
+# Reusable parallel-shard runner. Caller passes RUN_FLAGS for the test
+# binary (e.g. --no-soak / --soak-only); the runner handles sharding,
+# wait, and aggregate reporting.
+define RUN_PARALLEL_TESTS
 	@rm -f /tmp/signal-test-shard.*.log /tmp/signal-test-shard.*.exit
 	@for i in $$(seq 0 $$(($(TEST_SHARDS) - 1))); do \
-		( ./build/signal_test --shard=$$i/$(TEST_SHARDS) $(TEST_QUIET) \
+		( ./build/signal_test --shard=$$i/$(TEST_SHARDS) $(1) $(TEST_QUIET) \
 			> /tmp/signal-test-shard.$$i.log 2>&1; \
 		  echo $$? > /tmp/signal-test-shard.$$i.exit ) & \
 	done; \
@@ -81,6 +72,31 @@ test-fast: build-test
 	echo ""; \
 	echo "$$total_run tests run, $$total_passed passed, $$total_failed failed (across $(TEST_SHARDS) shards)"; \
 	exit $$fail
+endef
+
+# `make test` runs the fast tests sharded across cores. Same coverage
+# as the old serial path minus RUN_SOAK, ~4× faster wall-clock (~3-5s
+# vs ~60s on a 14-core box). Soak tests (autopilot scenarios, e2e
+# contract lifecycle, multi-thousand-tick conservation) are skipped
+# here and live in `make test-soak`.
+#
+# Other targets:
+#   make test-soak    Only RUN_SOAK tests, sharded. ~10-15s.
+#   make test-all     Both fast + soak, sharded. The full suite.
+#   make test-serial  Single-process, in-order, fast tests only —
+#                     for debugging a shard-related flake.
+#   make test-fast    Alias for `make test` (backward compat).
+test test-fast: build-test
+	$(call RUN_PARALLEL_TESTS,--no-soak)
+
+test-soak: build-test
+	$(call RUN_PARALLEL_TESTS,--soak-only)
+
+test-all: build-test
+	$(call RUN_PARALLEL_TESTS,--soak)
+
+test-serial: build-test
+	./build/signal_test --no-soak $(TEST_QUIET)
 
 # --- CRAP (Change Risk Anti-Patterns): complexity * (1 - coverage) ---
 # Rebuilds signal_test with --coverage, runs it, then joins gcovr line

@@ -18,6 +18,8 @@ int g_quiet = 0;
 int g_warnings = 0;
 
 const char *g_filter = NULL;
+int g_soak_enabled = 0;
+int g_only_soak    = 0;
 
 bool parse_hex32(const char *hex, uint8_t out[32]) {
     static const char digits[] = "0123456789abcdef";

@@ -451,10 +451,10 @@ void register_navigation_nav_tests(void) {
 
 void register_navigation_autopilot_stress_tests(void) {
     TEST_SECTION("\nAutopilot stress tests:\n");
-    RUN(test_autopilot_completes_mining_cycle);
+    RUN_SOAK(test_autopilot_completes_mining_cycle);
     RUN(test_autopilot_does_not_orbit_fragment);
-    RUN(test_autopilot_does_not_leave_signal);
-    RUN(test_autopilot_multiple_players);
+    RUN_SOAK(test_autopilot_does_not_leave_signal);
+    RUN_SOAK(test_autopilot_multiple_players);
     RUN(test_autopilot_follows_path_waypoints);
     RUN(test_autopilot_path_matches_preview);
 }

@@ -83,6 +83,14 @@ int main(int argc, char **argv) {
         } else if (strncmp(argv[i], "--filter=", 9) == 0) {
             g_filter = argv[i] + 9;
             if (g_filter[0] == '\0') g_filter = NULL;
+        } else if (strcmp(argv[i], "--soak") == 0) {
+            g_soak_enabled = 1;
+        } else if (strcmp(argv[i], "--soak-only") == 0) {
+            g_soak_enabled = 1;
+            g_only_soak    = 1;
+        } else if (strcmp(argv[i], "--no-soak") == 0) {
+            g_soak_enabled = 0;
+            g_only_soak    = 0;
         }
     }
 

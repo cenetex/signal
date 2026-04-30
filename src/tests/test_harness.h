@@ -56,6 +56,20 @@ extern int g_warnings;
  * slice of matching tests, not the Nth slice of the full suite. */
 extern const char *g_filter;
 
+/* Soak gate. Tests that run multi-second sim scenarios (multi-player
+ * autopilot, e2e contract lifecycle, multi-thousand-tick conservation
+ * runs) account for ~75% of the suite's wall-clock and are tagged with
+ * RUN_SOAK instead of RUN. They're skipped by default so the pre-push
+ * loop stays fast; CI runs them in a dedicated job.
+ *
+ *   make test         g_soak_enabled=0, g_only_soak=0  fast tests only
+ *   make test-soak    g_soak_enabled=1, g_only_soak=1  soak tests only
+ *   make test-all     g_soak_enabled=1, g_only_soak=0  everything
+ *
+ * CLI flags: --no-soak (default), --soak (run both), --soak-only. */
+extern int g_soak_enabled;
+extern int g_only_soak;
+
 /* Auto-cleanup for world_t — frees the heap-allocated signal cache grid.
  * Uses __attribute__((cleanup)) on GCC/Clang; on MSVC, leaks are
  * acceptable in tests (no cleanup on early ASSERT return). */
@@ -85,6 +99,28 @@ static inline void server_player_auto_cleanup(server_player_t *sp) { ship_cleanu
  * and printed "ok" even after an ASSERT had already failed and bumped
  * tests_failed, causing the summary line to lie. (#261) */
 #define RUN(name) do { \
+    if (g_only_soak) break; \
+    if (g_filter && !strstr(#name, g_filter)) break; \
+    int _seq = g_test_seq++; \
+    if ((_seq % g_shard_total) != g_shard_index) break; \
+    int _failed_before = tests_failed; \
+    tests_run++; \
+    if (!g_quiet) printf("  %s ... ", #name); \
+    name(); \
+    if (tests_failed == _failed_before) { \
+        tests_passed++; \
+        if (!g_quiet) printf("ok\n"); \
+    } else if (g_quiet) { \
+        printf("  ^^^ %s\n", #name); \
+    } \
+} while(0)
+
+/* RUN_SOAK — same as RUN but only fires when --soak / --soak-only is
+ * set. Use for tests that run multi-second sim scenarios (autopilot
+ * stress, e2e contract lifecycle, conservation over thousands of
+ * ticks). Default `make test` skips these. */
+#define RUN_SOAK(name) do { \
+    if (!g_soak_enabled) break; \
     if (g_filter && !strstr(#name, g_filter)) break; \
     int _seq = g_test_seq++; \
     if ((_seq % g_shard_total) != g_shard_index) break; \
