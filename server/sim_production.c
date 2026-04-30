@@ -598,6 +598,46 @@ void step_furnace_smelting(world_t *w, float dt) {
             }
             float ore_value = a->ore * price;
 
+            /* Prefix-class price multipliers (#prefix-pricing): project
+             * the to-be-minted ingot units and lift ore_value by the
+             * mean prefix multiplier across them. Anonymous-class units
+             * (the bulk of mining output) have multiplier 1.0×, so the
+             * historical balance is unchanged in expectation; the rare
+             * M/RATi-class fragment lifts the whole payout.
+             *
+             * The minted-unit pubkeys are deterministic in
+             * (output, grade, fragment_pub, idx) — see hash_ingot — so
+             * projecting here picks the same prefixes the manifest push
+             * below will mint. We project against the OUTPUT ingot
+             * commodity, not the raw ore, because the lineage substrate
+             * tags ingots, not ore.
+             *
+             * Skipped on contract payouts — by_contract paths pay the
+             * flat per-unit contract_price by design (see #496 / spec
+             * out-of-scope: filtered contracts come in a follow-up PR). */
+            if (!by_contract) {
+                commodity_t proj_ingot = commodity_refined_form(a->commodity);
+                if (proj_ingot != a->commodity) {
+                    int proj_units = (int)floorf(a->ore + 0.0001f);
+                    if (proj_units > 0) {
+                        float sum_mult = 0.0f;
+                        int counted = 0;
+                        for (int idx = 0; idx < proj_units; idx++) {
+                            cargo_unit_t proj_u = {0};
+                            if (!hash_ingot(proj_ingot, (mining_grade_t)a->grade,
+                                            a->fragment_pub,
+                                            (uint16_t)idx, &proj_u))
+                                continue;
+                            sum_mult += prefix_class_price_multiplier(
+                                            (int)proj_u.prefix_class);
+                            counted++;
+                        }
+                        if (counted > 0)
+                            ore_value *= (sum_mult / (float)counted);
+                    }
+                }
+            }
+
             /* Credit fracturer and tower.
              *
              * Credit attribution is strictly token-based: we look up each

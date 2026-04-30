@@ -7,6 +7,47 @@
 #ifndef ECONOMY_CONST_H
 #define ECONOMY_CONST_H
 
+/* This header is included by shared/types.h *after* the ingot_prefix_t
+ * enum is declared, so PREFIX_CLASS_PRICE_MULTIPLIER below can refer
+ * to INGOT_PREFIX_* symbols. Don't include this file directly without
+ * including types.h first. */
+
+/* Prefix-class price multipliers — the lineage substrate's economic
+ * dial. station_buy_price_unit() and station_sell_price_unit()
+ * multiply through this table when the cargo unit being priced has a
+ * non-anonymous prefix_class. Anonymous (the default for non-traceable
+ * goods) stays at 1.0× so existing economy assumptions hold for the
+ * bulk of trade.
+ *
+ * Values chosen so single-letter classes are noticeably premium but
+ * not universe-warping; RATi is a once-in-a-thousand-rocks event-
+ * pricing tier where finding one is news; commissioned is the RATi
+ * Foundation reserve tier (effectively unreachable through normal
+ * mining and serves as a top-end ceiling).
+ *
+ * Indexed by ingot_prefix_t. If you add a new class, add a multiplier
+ * here too — the table is sized to INGOT_PREFIX_COUNT and indices are
+ * range-checked at the callsite. */
+static const float PREFIX_CLASS_PRICE_MULTIPLIER[INGOT_PREFIX_COUNT] = {
+    [INGOT_PREFIX_ANONYMOUS]     = 1.0f,
+    [INGOT_PREFIX_M]             = 2.0f,
+    [INGOT_PREFIX_H]             = 2.0f,
+    [INGOT_PREFIX_T]             = 2.0f,
+    [INGOT_PREFIX_S]             = 2.0f,
+    [INGOT_PREFIX_F]             = 2.0f,
+    [INGOT_PREFIX_K]             = 2.5f,   /* slightly rarer letter */
+    [INGOT_PREFIX_RATI]          = 50.0f,  /* once-in-a-blue-moon tier */
+    [INGOT_PREFIX_COMMISSIONED]  = 100.0f, /* RATi Foundation reserved */
+};
+
+/* Helper: bounds-checked multiplier lookup. Returns 1.0× for any
+ * class outside the valid range so a malformed cargo_unit_t can't
+ * make a negative array index escape. */
+static inline float prefix_class_price_multiplier(int cls) {
+    if (cls < 0 || cls >= INGOT_PREFIX_COUNT) return 1.0f;
+    return PREFIX_CLASS_PRICE_MULTIPLIER[cls];
+}
+
 /* --- Refinery / station production --- */
 static const float REFINERY_HOPPER_CAPACITY = 500.0f;
 static const float REFINERY_BASE_SMELT_RATE = 2.0f;

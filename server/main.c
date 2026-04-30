@@ -14,6 +14,8 @@
 #include "sim_asteroid.h"
 #include "chain_log.h"  /* signed event emission (#479 C) */
 #include "cargo_receipt_issue.h"  /* portable cargo receipts (#479 D) */
+#include "commodity.h"  /* station_*_price_unit (#prefix-pricing) */
+#include <math.h>       /* lroundf */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -302,13 +304,13 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             if (slot < 0) break;
             cargo_unit_t *src = &st->manifest.units[slot];
             if ((cargo_kind_t)src->kind != CARGO_KIND_INGOT) break;
-            int price;
-            switch ((ingot_prefix_t)src->prefix_class) {
-            case INGOT_PREFIX_RATI:         price = INGOT_PRICE_RATI; break;
-            case INGOT_PREFIX_COMMISSIONED: price = INGOT_PRICE_COMMISSIONED; break;
-            case INGOT_PREFIX_ANONYMOUS:    price = 0; break;
-            default:                        price = INGOT_PRICE_M; break;
-            }
+            /* Prefix-class price multipliers (#prefix-pricing): the
+             * specific unit's sale price scales by both the dynamic
+             * stock curve and the unit's prefix_class. Anonymous
+             * ingots aren't purchasable through this path — they're
+             * bulk material and have no named-collectible premium. */
+            if ((ingot_prefix_t)src->prefix_class == INGOT_PREFIX_ANONYMOUS) break;
+            int price = (int)lroundf(station_sell_price_unit(st, src));
             if (price <= 0) break;
             /* Use ledger_spend so the credit pool stays conserved. */
             if (!ledger_spend(st, world.players[pid].session_token, (float)price, ship)) break;
@@ -445,8 +447,16 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             if (rcpts && hidx < (int)rcpts->count) {
                 (void)ship_receipts_remove(rcpts, (uint16_t)hidx, NULL);
             }
-            /* Pay delivery credit through the ledger so supply stays balanced. */
-            ledger_credit_supply(st, world.players[pid].session_token, (float)INGOT_DELIVERY_CREDIT);
+            /* Pay delivery credit through the ledger so supply stays
+             * balanced. Prefix-class price multipliers (#501): a specific
+             * delivered unit pays station_buy_price_unit, so M-class
+             * ingots pay 2× and RATi pays 50×. INGOT_DELIVERY_CREDIT is
+             * kept as the floor for low-base-price edge cases. */
+            float delivery_f = station_buy_price_unit(st, &copy);
+            float floor_f = (float)INGOT_DELIVERY_CREDIT;
+            if (delivery_f < floor_f) delivery_f = floor_f;
+            int delivery_int = (int)lroundf(delivery_f);
+            ledger_credit_supply(st, world.players[pid].session_token, (float)delivery_int);
             st->manifest_dirty = true;
             /* Layer C of #479: emit EVT_TRANSFER (player -> station) +
              * EVT_TRADE (delivery credit accrual on the station's
@@ -479,13 +489,15 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                     cargo_receipt_pack(&receipt, &buf[3]);
                     ws_send(c, buf, sizeof(buf));
 
+                    /* Trade event records the actual prefix-scaled
+                     * delivery amount (#501), not a flat constant. */
                     struct __attribute__((packed)) {
                         uint64_t transfer_event_id;
                         int64_t  ledger_delta_signed;
                         uint8_t  ledger_pubkey[32];
                     } trade = {0};
                     trade.transfer_event_id = xfer_id;
-                    trade.ledger_delta_signed = (int64_t)INGOT_DELIVERY_CREDIT;
+                    trade.ledger_delta_signed = (int64_t)delivery_int;
                     memcpy(trade.ledger_pubkey, world.players[pid].pubkey, 32);
                     (void)chain_log_emit(&world, st, CHAIN_EVT_TRADE,
                                          &trade, (uint16_t)sizeof(trade));
@@ -565,14 +577,11 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                     int slot = manifest_find(&st->manifest, payload);
                     if (slot >= 0) {
                         cargo_unit_t *src = &st->manifest.units[slot];
-                        if ((cargo_kind_t)src->kind == CARGO_KIND_INGOT) {
-                            int price;
-                            switch ((ingot_prefix_t)src->prefix_class) {
-                            case INGOT_PREFIX_RATI:         price = INGOT_PRICE_RATI; break;
-                            case INGOT_PREFIX_COMMISSIONED: price = INGOT_PRICE_COMMISSIONED; break;
-                            case INGOT_PREFIX_ANONYMOUS:    price = 0; break;
-                            default:                        price = INGOT_PRICE_M; break;
-                            }
+                        if ((cargo_kind_t)src->kind == CARGO_KIND_INGOT &&
+                            (ingot_prefix_t)src->prefix_class != INGOT_PREFIX_ANONYMOUS) {
+                            /* Prefix-class price multipliers (#prefix-pricing):
+                             * mirror the unsigned BUY_INGOT path above. */
+                            int price = (int)lroundf(station_sell_price_unit(st, src));
                             if (price > 0 &&
                                 ledger_spend(st, sp->session_token, (float)price, ship)) {
                                 cargo_unit_t copy = *src;

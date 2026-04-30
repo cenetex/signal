@@ -93,6 +93,10 @@ typedef struct {
     int            station_capacity;/* MAX_PRODUCT_STOCK */
     int            held;            /* player's cargo of this (commodity,grade) */
     uint8_t        block_reason;    /* see TRADE_BLOCK_* below; 0 if actionable */
+    uint8_t        prefix_class;    /* ingot_prefix_t for the row's representative
+                                      * unit; INGOT_PREFIX_ANONYMOUS = bulk row. Drives
+                                      * the M-/RATi-prefix indicator in the dock UI
+                                      * (#prefix-pricing). */
 } trade_row_t;
 
 /* Why an otherwise-valid row is non-actionable. Drives the status text

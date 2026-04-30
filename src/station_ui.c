@@ -624,6 +624,30 @@ static int ship_manifest_count_cg(const ship_t *ship,
     return n;
 }
 
+/* Highest prefix-class observed on the ship for a given (commodity,
+ * grade) bucket. Used by build_trade_rows to scale SELL prices and
+ * surface the M-/RATi- indicator on dock rows where the player is
+ * carrying named ingots. Returns INGOT_PREFIX_ANONYMOUS if no named
+ * units are present (the row is bulk material). */
+static int ship_manifest_top_prefix_cg(const ship_t *ship,
+                                       commodity_t commodity,
+                                       mining_grade_t grade)
+{
+    if (!ship || !ship->manifest.units) return (int)INGOT_PREFIX_ANONYMOUS;
+    int top = (int)INGOT_PREFIX_ANONYMOUS;
+    float top_mult = 1.0f;
+    for (uint16_t i = 0; i < ship->manifest.count; i++) {
+        const cargo_unit_t *u = &ship->manifest.units[i];
+        if (u->commodity != (uint8_t)commodity || u->grade != (uint8_t)grade) continue;
+        float m = prefix_class_price_multiplier((int)u->prefix_class);
+        if (m > top_mult) {
+            top_mult = m;
+            top = (int)u->prefix_class;
+        }
+    }
+    return top;
+}
+
 /* TRADE view — market. Unified list of rows; BUY rows (what the station
  * sells) first, then SELL rows (what the station buys). Hotkeys [1]..[5]
  * select a row on the current page. [F] pages forward; pages wrap at
@@ -717,8 +741,22 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             if (held <= 0) continue;
             if (held > cargo_units) held = cargo_units;
             emitted_any = true;
+            /* Prefix-class price multipliers (#prefix-pricing): if the
+             * player is carrying any non-anonymous-prefix unit in this
+             * (commodity, grade) bucket, surface the row at the higher
+             * prefix-scaled price. The matching unit will be the one
+             * the SELL hotkey transacts; bulk units in the same bucket
+             * still sell at the row's (higher) advertised rate, which
+             * is consistent with manifest_top_prefix_cg picking the
+             * MAX. The class also drives a row-side M-/RATi- indicator
+             * so the player sees why a price is suddenly higher. */
+            int top_cls = ship_manifest_top_prefix_cg(ship,
+                                                      (commodity_t)c,
+                                                      (mining_grade_t)gi);
+            float prefix_mult = prefix_class_price_multiplier(top_cls);
             int price = (int)lroundf(price_base
-                    * mining_payout_multiplier((mining_grade_t)gi));
+                    * mining_payout_multiplier((mining_grade_t)gi)
+                    * prefix_mult);
             uint8_t blk = TRADE_BLOCK_NONE;
             if (station_full) blk = TRADE_BLOCK_STATION_FULL;
             /* Per-grade station count — manifest entries of (c, gi) at
@@ -733,6 +771,7 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                 .actionable = (blk == TRADE_BLOCK_NONE), .is_float_fallback = false,
                 .station_stock = station_grade_count, .station_capacity = capacity,
                 .held = held, .block_reason = blk,
+                .prefix_class = (uint8_t)top_cls,
             };
         }
         /* Cargo says we have units but manifest empty -- fall back to a
@@ -957,11 +996,36 @@ static void draw_trade_view(const station_ui_state_t *ui,
             snprintf(total_buf, sizeof(total_buf), "%s", why);
         }
 
+        /* Prefix-class indicator (#prefix-pricing): drop "M-", "RATi-",
+         * etc. before the commodity name so the row's premium price is
+         * legible to the player. Anonymous-prefix rows render with no
+         * indicator and behave like the legacy bulk path. */
+        char commodity_label[32];
+        const char *cname = commodity_short_name(r->commodity);
+        const char *cls_prefix = NULL;
+        switch ((ingot_prefix_t)r->prefix_class) {
+        case INGOT_PREFIX_M:            cls_prefix = "M-"; break;
+        case INGOT_PREFIX_H:            cls_prefix = "H-"; break;
+        case INGOT_PREFIX_T:            cls_prefix = "T-"; break;
+        case INGOT_PREFIX_S:            cls_prefix = "S-"; break;
+        case INGOT_PREFIX_F:            cls_prefix = "F-"; break;
+        case INGOT_PREFIX_K:            cls_prefix = "K-"; break;
+        case INGOT_PREFIX_RATI:         cls_prefix = "RATi-"; break;
+        case INGOT_PREFIX_COMMISSIONED: cls_prefix = "RATi*-"; break;
+        case INGOT_PREFIX_ANONYMOUS:
+        default:                        cls_prefix = NULL; break;
+        }
+        if (cls_prefix) {
+            snprintf(commodity_label, sizeof(commodity_label), "%s%s", cls_prefix, cname);
+        } else {
+            snprintf(commodity_label, sizeof(commodity_label), "%s", cname);
+        }
+
         if (compact) {
             cell_t top[] = {
                 {  0, key_buf,                            row_rgb },
                 {  4, verb,                               row_rgb },
-                { 10, commodity_short_name(r->commodity), info_rgb },
+                { 10, commodity_label,                    info_rgb },
                 { 26, grade_label,                        grade_rgb_ptr },
             };
             draw_row_cells(cx, my, top, 4);
@@ -975,7 +1039,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
             cell_t row[] = {
                 {  0, key_buf,                            row_rgb },
                 {  4, verb,                               row_rgb },
-                { 10, commodity_short_name(r->commodity), info_rgb },
+                { 10, commodity_label,                    info_rgb },
                 { 28, grade_label,                        grade_rgb_ptr },
                 { 35, status_buf,                         info_rgb },
             };

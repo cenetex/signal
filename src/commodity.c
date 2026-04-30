@@ -194,3 +194,22 @@ float station_sell_price(const station_t* station, commodity_t commodity) {
 float station_inventory_amount(const station_t* station, commodity_t commodity) {
     return station != NULL ? station->_inventory_cache[commodity] : 0.0f;
 }
+
+/* Unit-aware variants: same dynamic stock curve as above, scaled by
+ * the unit's prefix_class. See PREFIX_CLASS_PRICE_MULTIPLIER in
+ * shared/economy_const.h for the table and rationale.
+ *
+ * Implementation pattern: chain through the commodity-only function
+ * so the stock-fill curve and base_price logic stay the single source
+ * of truth. The only thing layered on top is the prefix multiplier. */
+float station_buy_price_unit(const station_t* station, const cargo_unit_t* unit) {
+    if (!station || !unit) return 0.0f;
+    float base = station_buy_price(station, (commodity_t)unit->commodity);
+    return base * prefix_class_price_multiplier((int)unit->prefix_class);
+}
+
+float station_sell_price_unit(const station_t* station, const cargo_unit_t* unit) {
+    if (!station || !unit) return 0.0f;
+    float base = station_sell_price(station, (commodity_t)unit->commodity);
+    return base * prefix_class_price_multiplier((int)unit->prefix_class);
+}

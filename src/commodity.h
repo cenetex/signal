@@ -29,4 +29,19 @@ float station_buy_price(const station_t* station, commodity_t commodity);
 float station_sell_price(const station_t* station, commodity_t commodity);
 float station_inventory_amount(const station_t* station, commodity_t commodity);
 
+/* Unit-aware pricing — multiplies the commodity-level price by the
+ * cargo unit's prefix_class multiplier (PREFIX_CLASS_PRICE_MULTIPLIER
+ * in shared/economy_const.h). Anonymous-class units price identically
+ * to the commodity-only path, so callers that don't know about prefix
+ * classes degrade gracefully.
+ *
+ * Use these where a SPECIFIC cargo_unit_t is changing hands — the
+ * smelt-payout pathway (server/sim_production.c), BUY_INGOT /
+ * DELIVER_INGOT manifest transfers (server/main.c), and per-unit
+ * dock UI rows (src/station_ui.c). The original commodity-only
+ * functions remain for aggregate display rows where no specific unit
+ * is selected yet. */
+float station_buy_price_unit(const station_t* station, const cargo_unit_t* unit);
+float station_sell_price_unit(const station_t* station, const cargo_unit_t* unit);
+
 #endif

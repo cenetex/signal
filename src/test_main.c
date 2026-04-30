@@ -58,6 +58,7 @@ void register_chain_log_tests(void);
 void register_signal_verify_tests(void);
 void register_cross_station_settlement_tests(void);
 void register_sovereign_ledger_tests(void);
+void register_prefix_class_pricing_tests(void);
 
 int main(int argc, char **argv) {
     setbuf(stdout, NULL); /* unbuffered so crash location is visible */
@@ -140,6 +141,7 @@ int main(int argc, char **argv) {
     register_signal_verify_tests();
     register_cross_station_settlement_tests();
     register_sovereign_ledger_tests();
+    register_prefix_class_pricing_tests();
 
     printf("\n%d tests run, %d passed, %d failed", tests_run, tests_passed, tests_failed);
     if (g_warnings > 0) printf(", %d warnings", g_warnings);
