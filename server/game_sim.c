@@ -3434,23 +3434,26 @@ static void step_contracts(world_t *w, float dt) {
                 if (st->scaffold && c == COMMODITY_FRAME && st->scaffold_progress < 1.0f)
                     all_supplied = false;
                 if (all_supplied) {
+                    bool was_claimed = (w->contracts[i].claimed_by >= 0);
                     w->contracts[i].active = false;
-                    emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_TRACTOR});
+                    if (was_claimed)
+                        emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_TRACTOR});
                 }
             } else {
                 /* Non-construction: close once inventory is above the OPEN
-                 * threshold (90%, see Priority 4 below). Previously this was
-                 * 80% — but the open threshold was lifted to 90% in #445
-                 * without lifting close, so any station sitting in [80%, 90%]
-                 * opened a contract and immediately fulfilled it on the same
-                 * tick, producing the "tractor contract fulfilled" spam.
-                 * Hysteresis: open at <90%, close at >=95% so a station has to
-                 * actually receive cargo before the contract resolves. */
+                 * threshold. Hysteresis (open <90%, close >=95%) keeps a
+                 * single station from oscillating, but production-chain
+                 * stations consume ingots fast enough to re-cross 90%
+                 * within seconds — so we only fire CONTRACT_COMPLETE when
+                 * a player/NPC actually claimed and delivered. Otherwise
+                 * the contract just retires silently. */
                 float current = st->inventory[c];
                 float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.95f : MAX_PRODUCT_STOCK * 0.95f;
                 if (current >= threshold) {
+                    bool was_claimed = (w->contracts[i].claimed_by >= 0);
                     w->contracts[i].active = false;
-                    emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_TRACTOR});
+                    if (was_claimed)
+                        emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_TRACTOR});
                 }
             }
             break;
