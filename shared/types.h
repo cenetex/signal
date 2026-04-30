@@ -113,22 +113,6 @@ typedef enum {
     INGOT_PREFIX_COUNT
 } ingot_prefix_t;
 
-/* A named ingot is a uniquely-identified unit of refined ore. The
- * pubkey IS the future hull's name; the prefix decides which hull
- * class can be minted from it. Provenance fields let any client trace
- * the ingot's history through the chain log. */
-typedef struct {
-    uint8_t  pubkey[32];      /* identity, set at smelt */
-    uint8_t  prefix_class;    /* ingot_prefix_t */
-    uint8_t  metal;           /* commodity_t — FERRITE/CUPRITE/CRYSTAL_INGOT */
-    uint8_t  _pad[2];
-    uint64_t mined_block;     /* chain block id at mint */
-    uint8_t  origin_station;  /* refinery that smelted it */
-    uint8_t  _pad2[7];
-} named_ingot_t;
-
-#define STATION_NAMED_INGOTS_MAX 64
-#define SHIP_HOLD_INGOTS_MAX     8
 #define SHIP_MANIFEST_DEFAULT_CAP    32
 #define STATION_MANIFEST_DEFAULT_CAP 256
 
@@ -141,16 +125,27 @@ typedef enum {
     CARGO_KIND_COUNT
 } cargo_kind_t;
 
+/* Unified cargo identity. Carries the named-ingot fields (prefix_class,
+ * mined_block, origin_station) so a single store covers raw ingots,
+ * fabricated frames/lasers/tractors, and repair kits. The legacy
+ * named_ingot_t / station.named_ingots[] / ship.hold_ingots[] dual store
+ * was collapsed into the manifest; cargo_unit_t.pub is now the single
+ * identity for both ingots and finished goods.
+ *
+ * For non-ingot kinds prefix_class is INGOT_PREFIX_ANONYMOUS, mined_block
+ * is 0, and origin_station is the station that crafted the unit. */
 typedef struct {
     uint8_t  kind;              /* cargo_kind_t */
     uint8_t  commodity;         /* commodity_t */
     uint8_t  grade;             /* mining_grade_t */
-    uint8_t  _pad;              /* reserved, zero */
+    uint8_t  prefix_class;      /* ingot_prefix_t (anonymous for non-ingot kinds) */
     uint16_t recipe_id;         /* recipe_id_t */
-    uint16_t _pad2;             /* reserved, zero */
+    uint8_t  origin_station;    /* refinery/fabricator that produced it */
+    uint8_t  _pad;              /* reserved, zero */
+    uint64_t mined_block;       /* chain block id at mint (0 for non-ingot) */
     uint8_t  pub[32];           /* content hash */
     uint8_t  parent_merkle[32]; /* sorted-input merkle root */
-} cargo_unit_t;
+} cargo_unit_t;                 /* 80 bytes */
 
 typedef struct {
     uint16_t count;
@@ -207,12 +202,11 @@ typedef struct {
     float stat_credits_earned;
     float stat_credits_spent;
     int stat_asteroids_fractured;
-    /* Named ingots in the player's hold — carried between stations
-     * for sale or hull construction. Bulk anonymous ingots still ride
-     * in cargo[] as fungible counts; this list holds identified ones. */
-    named_ingot_t hold_ingots[SHIP_HOLD_INGOTS_MAX];
-    int           hold_ingots_count;
-    manifest_t    manifest; /* ship cargo manifest; stays empty until transfer migration lands */
+    /* Ship cargo manifest — single source of identity for held units.
+     * Named ingots and bulk finished goods both live here; the legacy
+     * hold_ingots[] / named_ingot_t dual store was collapsed in the
+     * "unify ingot identity" PR. */
+    manifest_t    manifest;
 } ship_t;
 
 typedef enum {
@@ -339,14 +333,14 @@ typedef struct {
     /* Station credit pool: fixed money supply, no inflation.
      * Smelting pays from pool, player spending refills it. */
     float credit_pool;
-    /* Named ingot stockpile (RATi v2). Refinery deposits here on smelt
-     * when the winning pubkey carries a class prefix. Players buy from
-     * this list at the MARKET tab; shipyards consume entries to mint
-     * hulls bound to the ingot's pubkey identity. LRU evict on full. */
-    named_ingot_t named_ingots[STATION_NAMED_INGOTS_MAX];
-    int           named_ingots_count;
-    bool          named_ingots_dirty;  /* server-only: drives wire push */
-    manifest_t    manifest;            /* station cargo manifest; smelt/fab dual-write feeds it */
+    /* Station cargo manifest — single source of identity for stocked
+     * units (named ingots + fabricated goods). Refinery pushes a unit
+     * per smelt; shipyards consume units to mint hulls bound to the
+     * pub identity. The legacy named_ingots[] dual store was collapsed
+     * in the "unify ingot identity" PR. `manifest_dirty` drives the
+     * wire-push (server-only). */
+    manifest_t    manifest;
+    bool          manifest_dirty;
     /* Dock repair-kit fab cadence: server-only countdown. When it
      * reaches zero and the station has 1 frame + 1 laser + 1 tractor
      * in inventory, consume them, mint REPAIR_KIT_PER_BATCH kits, and

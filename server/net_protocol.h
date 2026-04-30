@@ -248,34 +248,42 @@ static inline int serialize_asteroids_full(uint8_t *buf, const asteroid_t *aster
     return ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE;
 }
 
-/* RATi v2 — write a single named ingot record into the buffer.
- * Layout matches the on-wire NAMED_INGOT_RECORD_SIZE definition. */
-static inline void write_named_ingot(uint8_t *p, const named_ingot_t *m) {
+/* RATi v2 — write a single named-ingot wire record from a cargo_unit_t.
+ * Layout matches the on-wire NAMED_INGOT_RECORD_SIZE definition.
+ * The wire shape is unchanged after the named_ingot_t -> cargo_unit_t
+ * unification — we just project the cargo_unit's named-ingot fields
+ * onto the same byte layout. */
+static inline void write_named_ingot_unit(uint8_t *p, const cargo_unit_t *u) {
     memset(p, 0, NAMED_INGOT_RECORD_SIZE);
-    memcpy(&p[0], m->pubkey, 32);
-    p[32] = m->prefix_class;
-    p[33] = m->metal;
+    memcpy(&p[0], u->pub, 32);
+    p[32] = u->prefix_class;
+    p[33] = u->commodity;
     /* p[34..35] pad */
-    for (int k = 0; k < 8; k++) p[36 + k] = (uint8_t)(m->mined_block >> (8 * k));
-    p[44] = m->origin_station;
+    for (int k = 0; k < 8; k++) p[36 + k] = (uint8_t)(u->mined_block >> (8 * k));
+    p[44] = u->origin_station;
     /* p[45..51] pad */
 }
 
-/* Per-station named-ingot stockpile snapshot. Sent on dock + on
- * stockpile change. */
+/* Per-station named-ingot snapshot. Walks the station manifest and
+ * surfaces every CARGO_KIND_INGOT unit whose prefix is non-anonymous
+ * (the rest are bulk fungibles already covered by the manifest summary).
+ * Cap at 255 (wire count is u8). */
 static inline int serialize_station_ingots(uint8_t *buf, int station_idx,
                                            const station_t *st) {
-    int n = st->named_ingots_count;
-    if (n < 0) n = 0;
-    if (n > STATION_NAMED_INGOTS_MAX) n = STATION_NAMED_INGOTS_MAX;
-    if (n > 255) n = 255; /* count fits in u8 */
+    int n = 0;
     buf[0] = NET_MSG_STATION_INGOTS;
     buf[1] = (uint8_t)station_idx;
-    buf[2] = (uint8_t)n;
-    for (int i = 0; i < n; i++) {
-        uint8_t *p = &buf[STATION_INGOTS_HEADER + i * NAMED_INGOT_RECORD_SIZE];
-        write_named_ingot(p, &st->named_ingots[i]);
+    if (st->manifest.units) {
+        for (uint16_t i = 0; i < st->manifest.count && n < 255; i++) {
+            const cargo_unit_t *u = &st->manifest.units[i];
+            if ((cargo_kind_t)u->kind != CARGO_KIND_INGOT) continue;
+            if ((ingot_prefix_t)u->prefix_class == INGOT_PREFIX_ANONYMOUS) continue;
+            uint8_t *p = &buf[STATION_INGOTS_HEADER + n * NAMED_INGOT_RECORD_SIZE];
+            write_named_ingot_unit(p, u);
+            n++;
+        }
     }
+    buf[2] = (uint8_t)n;
     return STATION_INGOTS_HEADER + n * NAMED_INGOT_RECORD_SIZE;
 }
 
@@ -352,17 +360,23 @@ static inline int serialize_player_manifest(uint8_t *buf, const ship_t *ship) {
     return PLAYER_MANIFEST_HEADER + n * PLAYER_MANIFEST_ENTRY;
 }
 
-/* Local player's hold-ingot snapshot. Sent on contents change. */
+/* Local player's hold-ingot snapshot, derived from the ship manifest.
+ * Walks ship.manifest for non-anonymous CARGO_KIND_INGOT units. Cap at
+ * 255 (wire count is u8). */
 static inline int serialize_hold_ingots(uint8_t *buf, const ship_t *ship) {
-    int n = ship->hold_ingots_count;
-    if (n < 0) n = 0;
-    if (n > SHIP_HOLD_INGOTS_MAX) n = SHIP_HOLD_INGOTS_MAX;
+    int n = 0;
     buf[0] = NET_MSG_HOLD_INGOTS;
-    buf[1] = (uint8_t)n;
-    for (int i = 0; i < n; i++) {
-        uint8_t *p = &buf[HOLD_INGOTS_HEADER + i * NAMED_INGOT_RECORD_SIZE];
-        write_named_ingot(p, &ship->hold_ingots[i]);
+    if (ship && ship->manifest.units) {
+        for (uint16_t i = 0; i < ship->manifest.count && n < 255; i++) {
+            const cargo_unit_t *u = &ship->manifest.units[i];
+            if ((cargo_kind_t)u->kind != CARGO_KIND_INGOT) continue;
+            if ((ingot_prefix_t)u->prefix_class == INGOT_PREFIX_ANONYMOUS) continue;
+            uint8_t *p = &buf[HOLD_INGOTS_HEADER + n * NAMED_INGOT_RECORD_SIZE];
+            write_named_ingot_unit(p, u);
+            n++;
+        }
     }
+    buf[1] = (uint8_t)n;
     return HOLD_INGOTS_HEADER + n * NAMED_INGOT_RECORD_SIZE;
 }
 

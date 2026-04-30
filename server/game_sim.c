@@ -980,15 +980,15 @@ static int manifest_transfer_by_commodity(manifest_t *src, manifest_t *dst,
                                               MINING_GRADE_COUNT, n);
 }
 
-/* Flip station.named_ingots_dirty when a given manifest transfer affected
- * a station manifest. `named_ingots_dirty` doubles as the manifest-summary
+/* Flip station.manifest_dirty when a given manifest transfer affected
+ * a station manifest. `manifest_dirty` doubles as the manifest-summary
  * dirty flag for Phase 2 broadcasts; setting it here means every
  * transaction that moves provenance also pokes the MP summary. */
 static void manifest_mark_station_dirty(world_t *w, manifest_t *touched) {
     if (!w || !touched) return;
     for (int s = 0; s < MAX_STATIONS; s++) {
         if (&w->stations[s].manifest == touched) {
-            w->stations[s].named_ingots_dirty = true;
+            w->stations[s].manifest_dirty = true;
             return;
         }
     }
@@ -1311,7 +1311,7 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
             st->inventory[COMMODITY_REPAIR_KIT] = 0.0f;
         manifest_consume_by_commodity(&st->manifest,
                                       COMMODITY_REPAIR_KIT, from_station);
-        st->named_ingots_dirty = true;
+        st->manifest_dirty = true;
     }
 
     /* Cost = station retail on station-sourced kits + labor at non-shipyard. */
@@ -1365,7 +1365,7 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
         st->inventory[comm] -= (float)from_station;
         if (st->inventory[comm] < 0.0f) st->inventory[comm] = 0.0f;
         manifest_consume_by_commodity(&st->manifest, comm, from_station);
-        st->named_ingots_dirty = true;
+        st->manifest_dirty = true;
     }
 
     switch (upgrade) {
@@ -4557,7 +4557,7 @@ void world_seed_station_manifests(world_t *w) {
         manifest_migrate_legacy_inventory(&w->stations[i].manifest,
                                           w->stations[i].inventory,
                                           COMMODITY_COUNT, origin);
-        w->stations[i].named_ingots_dirty = true;
+        w->stations[i].manifest_dirty = true;
     }
 }
 

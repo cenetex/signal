@@ -104,8 +104,9 @@ enum {
 #define INGOT_DELIVERY_CREDIT     100
 
 /* Named ingot wire record: [pubkey:32][prefix:1][metal:1][_pad:2][mined_block:8][origin:1][_pad2:7] = 52 bytes
- * Mirrors named_ingot_t exactly so the server can write the struct
- * directly. Class authorization is in the leading char(s) of base58(pubkey). */
+ * The wire shape predates the named_ingot_t -> cargo_unit_t unification;
+ * the server now projects the same fields off cargo_unit_t. Class
+ * authorization is in the leading char(s) of base58(pubkey). */
 #define NAMED_INGOT_RECORD_SIZE 52
 
 /* NET_MSG_STATION_INGOTS layout:

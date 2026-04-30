@@ -175,12 +175,6 @@ typedef struct {
 
 typedef void (*net_on_signal_channel_fn)(const NetSignalChannelMsg *msgs, int count);
 
-/* RATi v2 — per-station named ingot stockpile snapshot. */
-typedef void (*net_on_station_ingots_fn)(uint8_t station_id,
-                                         const named_ingot_t *ingots, int count);
-/* RATi v2 — local player's hold ingots snapshot. */
-typedef void (*net_on_hold_ingots_fn)(const named_ingot_t *ingots, int count);
-
 /* Phase 2 — per-station manifest summary. Each entry = one
  * {commodity, grade, count} triple with count > 0. */
 typedef struct {
@@ -228,8 +222,6 @@ typedef struct {
     void (*on_world_time)(float server_time);
     void (*on_events)(const sim_event_t *events, int count);
     net_on_signal_channel_fn on_signal_channel;
-    net_on_station_ingots_fn on_station_ingots;
-    net_on_hold_ingots_fn    on_hold_ingots;
     net_on_station_manifest_fn on_station_manifest;
     net_on_player_manifest_fn  on_player_manifest;
     net_on_highscores_fn       on_highscores;

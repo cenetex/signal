@@ -409,8 +409,14 @@ bool hash_ingot(commodity_t commodity, mining_grade_t grade,
     out_unit->commodity = (uint8_t)commodity;
     out_unit->grade = (uint8_t)grade;
     out_unit->recipe_id = (uint16_t)RECIPE_SMELT;
+    /* origin_station / mined_block default to 0; smelt-side caller fills
+     * them in from the refinery context. */
     memcpy(out_unit->parent_merkle, fragment_pub, HASH_BYTES);
     hash_recipe_pub(RECIPE_SMELT, fragment_pub, output_index, out_unit->pub);
+    /* prefix_class is derived from the leading char of base58(pub) — set
+     * it once here so callers don't have to recompute. ingot_prefix_t
+     * mirrors mining_pubkey_class() one-to-one. */
+    out_unit->prefix_class = (uint8_t)mining_pubkey_class(out_unit->pub);
     return true;
 }
 
@@ -548,7 +554,7 @@ int station_finished_mint(station_t *st, commodity_t c, int n,
          * residue (production accumulator) below 1.0. */
         float frac = st->inventory[c] - floorf(st->inventory[c]);
         st->inventory[c] = (float)manifest_count_by_commodity(&st->manifest, c) + frac;
-        st->named_ingots_dirty = true;
+        st->manifest_dirty = true;
     }
     return minted;
 }
@@ -562,7 +568,7 @@ int station_finished_drain(station_t *st, commodity_t c, int n) {
         float frac = st->inventory[c] - floorf(st->inventory[c]);
         st->inventory[c] = (float)manifest_count_by_commodity(&st->manifest, c) + frac;
         if (st->inventory[c] < 0.0f) st->inventory[c] = 0.0f;
-        st->named_ingots_dirty = true;
+        st->manifest_dirty = true;
     }
     return drained;
 }

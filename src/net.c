@@ -593,24 +593,17 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_STATION_INGOTS:
-        if (len >= STATION_INGOTS_HEADER && net_state.callbacks.on_station_ingots) {
-            uint8_t station_id = data[1];
+        /* Wire payload kept for backward compatibility — a server still
+         * sends per-station named-ingot snapshots derived from the
+         * unified manifest. The client no longer maintains a separate
+         * named-ingot store (single-source-of-truth refactor); the
+         * STATION_MANIFEST summary feeds the trade UI counts and the
+         * full provenance lives in the singleplayer mirror's manifest.
+         * We just length-validate and drop the bytes here. */
+        if (len >= STATION_INGOTS_HEADER) {
             int count = data[2];
             int expected = STATION_INGOTS_HEADER + count * NAMED_INGOT_RECORD_SIZE;
-            if (len < expected) break;
-            if (count > STATION_NAMED_INGOTS_MAX) count = STATION_NAMED_INGOTS_MAX;
-            static named_ingot_t scratch[STATION_NAMED_INGOTS_MAX];
-            for (int i = 0; i < count; i++) {
-                const uint8_t *p = &data[STATION_INGOTS_HEADER + i * NAMED_INGOT_RECORD_SIZE];
-                memcpy(scratch[i].pubkey, &p[0], 32);
-                scratch[i].prefix_class = p[32];
-                scratch[i].metal        = p[33];
-                uint64_t mb = 0;
-                for (int k = 0; k < 8; k++) mb |= ((uint64_t)p[36 + k]) << (8 * k);
-                scratch[i].mined_block = mb;
-                scratch[i].origin_station = p[44];
-            }
-            net_state.callbacks.on_station_ingots(station_id, scratch, count);
+            (void)expected;
         }
         break;
 
@@ -668,23 +661,15 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_HOLD_INGOTS:
-        if (len >= HOLD_INGOTS_HEADER && net_state.callbacks.on_hold_ingots) {
+        /* Wire payload kept for backward compatibility (see
+         * NET_MSG_STATION_INGOTS above for the rationale). The named-
+         * ingot identity now lives in the ship manifest, populated by
+         * PLAYER_MANIFEST + the singleplayer mirror; the dedicated
+         * hold-ingot wire snapshot is informational only. */
+        if (len >= HOLD_INGOTS_HEADER) {
             int count = data[1];
             int expected = HOLD_INGOTS_HEADER + count * NAMED_INGOT_RECORD_SIZE;
-            if (len < expected) break;
-            if (count > SHIP_HOLD_INGOTS_MAX) count = SHIP_HOLD_INGOTS_MAX;
-            static named_ingot_t scratch[SHIP_HOLD_INGOTS_MAX];
-            for (int i = 0; i < count; i++) {
-                const uint8_t *p = &data[HOLD_INGOTS_HEADER + i * NAMED_INGOT_RECORD_SIZE];
-                memcpy(scratch[i].pubkey, &p[0], 32);
-                scratch[i].prefix_class = p[32];
-                scratch[i].metal        = p[33];
-                uint64_t mb = 0;
-                for (int k = 0; k < 8; k++) mb |= ((uint64_t)p[36 + k]) << (8 * k);
-                scratch[i].mined_block = mb;
-                scratch[i].origin_station = p[44];
-            }
-            net_state.callbacks.on_hold_ingots(scratch, count);
+            (void)expected;
         }
         break;
 

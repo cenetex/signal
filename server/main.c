@@ -263,76 +263,82 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         break;
     case NET_MSG_BUY_INGOT:
         /* RATi v2: purchase a specific named ingot from the docked
-         * station's stockpile. Payload: [type:1][pubkey:32]. */
+         * station's manifest. Payload: [type:1][pubkey:32]. The unit
+         * is transferred from station.manifest to ship.manifest with
+         * its full provenance (prefix_class, origin_station,
+         * mined_block, parent_merkle) preserved. */
         if (len >= 33 && world.players[pid].docked) {
             int sidx = world.players[pid].current_station;
             if (sidx < 0 || sidx >= MAX_STATIONS) break;
             station_t *st = &world.stations[sidx];
             ship_t *ship = &world.players[pid].ship;
             const uint8_t *pk = &data[1];
-            int slot = -1;
-            for (int i = 0; i < st->named_ingots_count; i++) {
-                if (memcmp(st->named_ingots[i].pubkey, pk, 32) == 0) { slot = i; break; }
-            }
+            int slot = manifest_find(&st->manifest, pk);
             if (slot < 0) break;
-            named_ingot_t *src = &st->named_ingots[slot];
+            cargo_unit_t *src = &st->manifest.units[slot];
+            if ((cargo_kind_t)src->kind != CARGO_KIND_INGOT) break;
             int price;
-            switch (src->prefix_class) {
+            switch ((ingot_prefix_t)src->prefix_class) {
             case INGOT_PREFIX_RATI:         price = INGOT_PRICE_RATI; break;
             case INGOT_PREFIX_COMMISSIONED: price = INGOT_PRICE_COMMISSIONED; break;
             case INGOT_PREFIX_ANONYMOUS:    price = 0; break;
             default:                        price = INGOT_PRICE_M; break;
             }
             if (price <= 0) break;
-            if (ship->hold_ingots_count >= SHIP_HOLD_INGOTS_MAX) break;
             /* Use ledger_spend so the credit pool stays conserved. */
             if (!ledger_spend(st, world.players[pid].session_token, (float)price, ship)) break;
-            /* Move ingot: append to hold, compact stockpile. */
-            ship->hold_ingots[ship->hold_ingots_count++] = *src;
-            *src = st->named_ingots[--st->named_ingots_count];
-            memset(&st->named_ingots[st->named_ingots_count], 0, sizeof(named_ingot_t));
-            st->named_ingots_dirty = true;
-            char cs[12]; mining_render_callsign(ship->hold_ingots[ship->hold_ingots_count - 1].pubkey, cs);
+            cargo_unit_t copy = *src;
+            if (!ship->manifest.units && !ship_manifest_bootstrap(ship)) break;
+            if (!manifest_push(&ship->manifest, &copy)) break;
+            (void)manifest_remove(&st->manifest, (uint16_t)slot, NULL);
+            st->manifest_dirty = true;
+            char cs[12]; mining_render_callsign(copy.pub, cs);
             char msg[96];
             snprintf(msg, sizeof(msg), "%s purchased %s for %d", world.players[pid].callsign, cs, price);
             signal_channel_post(&world, sidx, msg, "");
         }
         break;
     case NET_MSG_DELIVER_INGOT:
-        /* RATi v2: deposit a specific hold-ingot into the docked
-         * station's stockpile. Payload: [type:1][hold_index:1]. */
+        /* RATi v2: deposit a specific hold ingot into the docked
+         * station's manifest. Payload: [type:1][hold_index:1]. The
+         * index is into ship.manifest filtered by named ingots
+         * (kind == INGOT && prefix != ANONYMOUS). */
         if (len >= 2 && world.players[pid].docked) {
             int sidx = world.players[pid].current_station;
             if (sidx < 0 || sidx >= MAX_STATIONS) break;
             station_t *st = &world.stations[sidx];
             ship_t *ship = &world.players[pid].ship;
-            int hidx = data[1];
-            if (hidx < 0 || hidx >= ship->hold_ingots_count) break;
-            /* LRU evict on full stockpile, same path as smelt. */
-            if (st->named_ingots_count >= STATION_NAMED_INGOTS_MAX) {
-                int worst = 0;
-                uint64_t oldest = st->named_ingots[0].mined_block;
-                for (int k = 1; k < STATION_NAMED_INGOTS_MAX; k++) {
-                    if (st->named_ingots[k].mined_block < oldest) {
-                        oldest = st->named_ingots[k].mined_block;
-                        worst = k;
-                    }
-                }
-                char ev_cs[12]; mining_render_callsign(st->named_ingots[worst].pubkey, ev_cs);
-                char ev_msg[96];
-                snprintf(ev_msg, sizeof(ev_msg), "stockpile full — voided %s", ev_cs);
-                signal_channel_post(&world, sidx, ev_msg, "");
-                st->named_ingots[worst] = st->named_ingots[STATION_NAMED_INGOTS_MAX - 1];
-                st->named_ingots_count = STATION_NAMED_INGOTS_MAX - 1;
+            int target = data[1];
+            int hidx = -1;
+            int seen = 0;
+            for (uint16_t u = 0; u < ship->manifest.count; u++) {
+                const cargo_unit_t *cu = &ship->manifest.units[u];
+                if ((cargo_kind_t)cu->kind != CARGO_KIND_INGOT) continue;
+                if ((ingot_prefix_t)cu->prefix_class == INGOT_PREFIX_ANONYMOUS) continue;
+                if (seen == target) { hidx = (int)u; break; }
+                seen++;
             }
-            st->named_ingots[st->named_ingots_count++] = ship->hold_ingots[hidx];
-            ship->hold_ingots[hidx] = ship->hold_ingots[--ship->hold_ingots_count];
-            memset(&ship->hold_ingots[ship->hold_ingots_count], 0, sizeof(named_ingot_t));
+            if (hidx < 0) break;
+            cargo_unit_t copy = ship->manifest.units[hidx];
+            /* FIFO-evict the oldest manifest entry on full station, mirroring
+             * the smelt rotation path. The evicted unit's pubkey is voided
+             * so it can never be re-deposited. */
+            if (st->manifest.count >= st->manifest.cap) {
+                cargo_unit_t evicted = {0};
+                if (manifest_remove(&st->manifest, 0, &evicted) &&
+                    (ingot_prefix_t)evicted.prefix_class != INGOT_PREFIX_ANONYMOUS) {
+                    char ev_cs[12]; mining_render_callsign(evicted.pub, ev_cs);
+                    char ev_msg[96];
+                    snprintf(ev_msg, sizeof(ev_msg), "stockpile full — voided %s", ev_cs);
+                    signal_channel_post(&world, sidx, ev_msg, "");
+                }
+            }
+            if (!manifest_push(&st->manifest, &copy)) break;
+            (void)manifest_remove(&ship->manifest, (uint16_t)hidx, NULL);
             /* Pay delivery credit through the ledger so supply stays balanced. */
             ledger_credit_supply(st, world.players[pid].session_token, (float)INGOT_DELIVERY_CREDIT);
-            st->named_ingots_dirty = true;
-            const named_ingot_t *deposited = &st->named_ingots[st->named_ingots_count - 1];
-            char cs[12]; mining_render_callsign(deposited->pubkey, cs);
+            st->manifest_dirty = true;
+            char cs[12]; mining_render_callsign(copy.pub, cs);
             char msg[96];
             snprintf(msg, sizeof(msg), "%s delivered %s", world.players[pid].callsign, cs);
             signal_channel_post(&world, sidx, msg, "");
@@ -933,13 +939,15 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             }
         }
 
-        /* RATi v2: per-station named-ingot stockpile snapshot. New
-         * client sees what's currently on offer at every station so
-         * the MARKET stockpile UI is populated immediately. */
+        /* RATi v2: per-station named-ingot snapshot, derived from the
+         * unified manifest. New client sees what's currently on offer
+         * at every station so the MARKET stockpile UI is populated
+         * immediately. Wire shape unchanged. */
         for (int sidx = 0; sidx < MAX_STATIONS; sidx++) {
-            if (world.stations[sidx].named_ingots_count <= 0) continue;
-            uint8_t buf[STATION_INGOTS_HEADER + STATION_NAMED_INGOTS_MAX * NAMED_INGOT_RECORD_SIZE];
+            if (!station_exists(&world.stations[sidx])) continue;
+            uint8_t buf[STATION_INGOTS_HEADER + 255 * NAMED_INGOT_RECORD_SIZE];
             int len = serialize_station_ingots(buf, sidx, &world.stations[sidx]);
+            if (len <= STATION_INGOTS_HEADER) continue;
             ws_send(c, buf, (size_t)len);
         }
 
@@ -1112,9 +1120,10 @@ static void broadcast_ship_states(void) {
         /* Full ship state sent only to the owning player. */
         ws_send(world.players[i].conn, buf, (size_t)len);
 
-        /* RATi v2: also push hold-ingot snapshot. Cheap (max 8 × 52B
-         * = 416B + header). Ride along with the per-player ship tick. */
-        uint8_t hbuf[HOLD_INGOTS_HEADER + SHIP_HOLD_INGOTS_MAX * NAMED_INGOT_RECORD_SIZE];
+        /* RATi v2: also push hold-ingot snapshot, derived from the
+         * ship manifest. Wire shape unchanged. Sized for the wire cap
+         * (u8 count) so an unusually full hold can't truncate. */
+        uint8_t hbuf[HOLD_INGOTS_HEADER + 255 * NAMED_INGOT_RECORD_SIZE];
         int hlen = serialize_hold_ingots(hbuf, &world.players[i].ship);
         ws_send(world.players[i].conn, hbuf, (size_t)hlen);
 
@@ -1471,13 +1480,14 @@ static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_id
         }
         station_identity_dirty[s] = false;
     }
-    /* RATi v2: named-ingot stockpile + per-(commodity, grade) manifest
-     * summary. Smaller payload than identity (~3KB worst case) so we
-     * send to everyone regardless of signal range — MARKET is global. */
+    /* RATi v2: per-station named-ingot snapshot (derived from the
+     * unified manifest) + per-(commodity, grade) manifest summary.
+     * Smaller payload than identity (~3KB worst case) so we send to
+     * everyone regardless of signal range — MARKET is global. */
     for (int s = 0; s < MAX_STATIONS; s++) {
-        if (!world.stations[s].named_ingots_dirty) continue;
+        if (!world.stations[s].manifest_dirty) continue;
         if (!station_exists(&world.stations[s])) continue;
-        uint8_t buf[STATION_INGOTS_HEADER + STATION_NAMED_INGOTS_MAX * NAMED_INGOT_RECORD_SIZE];
+        uint8_t buf[STATION_INGOTS_HEADER + 255 * NAMED_INGOT_RECORD_SIZE];
         int len = serialize_station_ingots(buf, s, &world.stations[s]);
         for (int p = 0; p < MAX_PLAYERS; p++) {
             if (!world.players[p].connected || !world.players[p].conn) continue;
@@ -1490,7 +1500,7 @@ static void broadcast_dirty_station_data(uint64_t now, uint64_t *last_station_id
             if (!world.players[p].connected || !world.players[p].conn) continue;
             ws_send(world.players[p].conn, mbuf, (size_t)mlen);
         }
-        world.stations[s].named_ingots_dirty = false;
+        world.stations[s].manifest_dirty = false;
     }
 }
 

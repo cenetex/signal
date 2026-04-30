@@ -281,25 +281,30 @@ TEST(test_refinery_deposits_named_ingot) {
     w->players[0].ship.vel = v2(0.0f, 0.0f);
 
     /* Run sim until smelt completes (smelt_progress accumulates ~0.5/s). */
-    int initial_named = w->stations[0].named_ingots_count;
     int initial_manifest = w->stations[0].manifest.count;
     float initial_bulk = w->stations[0].inventory[COMMODITY_FERRITE_INGOT];
     for (int i = 0; i < 600 && w->asteroids[slot].active; i++)
         world_sim_step(w, 1.0f / 120.0f);
     /* Asteroid should be consumed. */
     ASSERT(!w->asteroids[slot].active);
-    /* Either an anonymous ingot landed in inventory, or a named ingot
-     * landed in the stockpile — depending on what the universe rolled. */
-    bool got_named = (w->stations[0].named_ingots_count > initial_named);
+    /* Smelt always lands the units in the manifest now (single source
+     * of truth — no separate named-ingot stockpile). The float
+     * inventory bumps in lockstep. */
     bool got_bulk = (w->stations[0].inventory[COMMODITY_FERRITE_INGOT] > initial_bulk);
-    ASSERT(got_named || got_bulk);
+    ASSERT(got_bulk);
     ASSERT_EQ_INT(w->stations[0].manifest.count - initial_manifest, 10);
+    bool any_named = false;
     for (int i = initial_manifest; i < w->stations[0].manifest.count; i++) {
         cargo_unit_t *unit = &w->stations[0].manifest.units[i];
         ASSERT_EQ_INT(unit->kind, CARGO_KIND_INGOT);
         ASSERT_EQ_INT(unit->commodity, COMMODITY_FERRITE_INGOT);
         ASSERT_EQ_INT(unit->grade, MINING_GRADE_RATI);
         ASSERT_EQ_INT(unit->recipe_id, RECIPE_SMELT);
+        /* origin_station is stamped at smelt time. */
+        ASSERT_EQ_INT(unit->origin_station, 0);
+        /* prefix_class always matches mining_pubkey_class(pub). */
+        ASSERT_EQ_INT(unit->prefix_class, mining_pubkey_class(unit->pub));
+        if ((ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS) any_named = true;
     }
     ASSERT(memcmp(w->stations[0].manifest.units[initial_manifest].parent_merkle,
                   w->stations[0].manifest.units[w->stations[0].manifest.count - 1].parent_merkle,
@@ -307,11 +312,16 @@ TEST(test_refinery_deposits_named_ingot) {
     ASSERT(memcmp(w->stations[0].manifest.units[initial_manifest].pub,
                   w->stations[0].manifest.units[w->stations[0].manifest.count - 1].pub,
                   32) != 0);
-    /* If named, validate prefix_class matches mining_pubkey_class. */
-    if (got_named) {
-        named_ingot_t *ing = &w->stations[0].named_ingots[w->stations[0].named_ingots_count - 1];
-        ASSERT_EQ_INT(ing->prefix_class, mining_pubkey_class(ing->pubkey));
-        ASSERT(ing->prefix_class != MINING_CLASS_ANONYMOUS);
+    /* The first non-anonymous unit gets a non-zero mined_block stamped
+     * after the signal_channel post; anonymous units stay at 0. */
+    if (any_named) {
+        for (int i = initial_manifest; i < w->stations[0].manifest.count; i++) {
+            cargo_unit_t *unit = &w->stations[0].manifest.units[i];
+            if ((ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS) {
+                ASSERT(unit->mined_block != 0);
+                break;
+            }
+        }
     }
 }
 

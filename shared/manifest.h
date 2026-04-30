@@ -5,9 +5,11 @@
 
 #include "types.h"
 
-_Static_assert(sizeof(cargo_unit_t) == 72, "cargo_unit_t must stay 72 bytes");
-_Static_assert(offsetof(cargo_unit_t, pub) == 8, "cargo_unit_t pub offset changed");
-_Static_assert(offsetof(cargo_unit_t, parent_merkle) == 40,
+_Static_assert(sizeof(cargo_unit_t) == 80, "cargo_unit_t must stay 80 bytes");
+_Static_assert(offsetof(cargo_unit_t, mined_block) == 8,
+               "cargo_unit_t mined_block offset changed");
+_Static_assert(offsetof(cargo_unit_t, pub) == 16, "cargo_unit_t pub offset changed");
+_Static_assert(offsetof(cargo_unit_t, parent_merkle) == 48,
                "cargo_unit_t parent_merkle offset changed");
 
 const char *cargo_kind_name(cargo_kind_t kind);

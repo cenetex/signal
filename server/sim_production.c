@@ -58,7 +58,7 @@ static bool station_manifest_push_ingot(station_t *st, const cargo_unit_t *unit)
     /* Phase 2: flag dirty on every successful push so the manifest-
      * summary broadcast runs after smelts too (not just rotations). */
     if (manifest_push(&st->manifest, unit)) {
-        st->named_ingots_dirty = true;
+        st->manifest_dirty = true;
         return true;
     }
     return false;
@@ -526,9 +526,6 @@ void step_furnace_smelting(world_t *w, float dt) {
         if (a->smelt_progress >= 1.0f && smelt_station >= 0) {
             station_t *st = &w->stations[smelt_station];
             fracture_claim_state_t *claim_state = &w->fracture_claims[i];
-            cargo_unit_t named_unit = {0};
-            bool have_named_unit = false;
-            int prefix = MINING_CLASS_ANONYMOUS;
             /* L11: fill legacy fragment_pub up-front so the compat shim is
              * visible at the top of the block regardless of code flow. */
             if (fragment_pub_is_zero(a))
@@ -669,11 +666,10 @@ void step_furnace_smelting(world_t *w, float dt) {
             if (st->inventory[output] > MAX_PRODUCT_STOCK)
                 st->inventory[output] = MAX_PRODUCT_STOCK;
 
-            /* Dual-write discrete units for the floored stock delta so
-             * manifest counts stay aligned with the legacy float path.
-             * Compute the leading-unit hash only when we actually cross
-             * an integer boundary — skips a sha256 per tick on partial
-             * smelts. */
+            /* Push one manifest unit per integer of finished ingot
+             * smelted. Each unit carries its own prefix_class derived
+             * from base58(pub); this is the single identity store now —
+             * the legacy named_ingots[] dual store was removed. */
             {
                 /* The furnace beam-engagement check (above) guarantees
                  * stock_before + a->ore <= MAX_PRODUCT_STOCK, so the
@@ -682,75 +678,44 @@ void step_furnace_smelting(world_t *w, float dt) {
                 int units_before = (int)floorf(stock_before + 0.0001f);
                 int units_after = (int)floorf(st->inventory[output] + 0.0001f);
                 int manifest_units = units_after - units_before;
-                if (manifest_units > 0) {
-                    have_named_unit = hash_ingot(output, grade, a->fragment_pub,
-                                                 0, &named_unit);
-                    if (have_named_unit)
-                        prefix = mining_pubkey_class(named_unit.pub);
-                }
                 int pushed = 0;
+                int first_named_idx = -1;
                 for (int idx = 0; idx < manifest_units; idx++) {
                     cargo_unit_t unit = {0};
                     if (!hash_ingot(output, grade, a->fragment_pub, (uint16_t)idx, &unit))
                         continue;
+                    /* Stamp origin so the unit can be traced back to this
+                     * refinery without a side table. mined_block is filled
+                     * after-the-fact for the first non-anonymous unit (so
+                     * the signal_channel post is the chain anchor). */
+                    unit.origin_station = (uint8_t)smelt_station;
                     if (!station_manifest_push_ingot(st, &unit))
                         break;
                     pushed++;
+                    if (first_named_idx < 0 &&
+                        (ingot_prefix_t)unit.prefix_class != INGOT_PREFIX_ANONYMOUS) {
+                        first_named_idx = (int)st->manifest.count - 1;
+                    }
                 }
-                /* Mark dirty so the MP broadcast loop forwards the new
-                 * STATION_MANIFEST. Without this, smelts that didn't
-                 * mint a RATi-class named_unit (the common case) never
-                 * triggered a broadcast — clients kept reading stale
-                 * counts and the supply strip / TRADE picker never
-                 * reflected the new ingot stock. */
-                if (pushed > 0) st->named_ingots_dirty = true;
+                if (pushed > 0) st->manifest_dirty = true;
                 SIM_LOG("[smelt] station %d %s grade=%d ore=%.2f units=%d pushed=%d\n",
                         smelt_station, commodity_short_name(output),
                         (int)grade, a->ore, manifest_units, pushed);
-            }
 
-            /* RATi v2 compatibility: mirror the first hashed ingot into
-             * the legacy named-ingot stockpile when it carries a class
-             * prefix. This keeps the transition path aligned with the
-             * manifest unit identity instead of inventing a second pub. */
-            if (have_named_unit && prefix != MINING_CLASS_ANONYMOUS) {
-                /* If the stockpile is full, LRU-evict the entry with
-                 * the smallest mined_block (oldest first). The evicted
-                 * pubkey is voided to the chain so it can never be
-                 * re-deposited, keeping namespace honest. */
-                if (st->named_ingots_count >= STATION_NAMED_INGOTS_MAX) {
-                    int worst = 0;
-                    uint64_t oldest = st->named_ingots[0].mined_block;
-                    for (int k = 1; k < STATION_NAMED_INGOTS_MAX; k++) {
-                        if (st->named_ingots[k].mined_block < oldest) {
-                            oldest = st->named_ingots[k].mined_block;
-                            worst = k;
-                        }
-                    }
-                    char ev_cs[12];
-                    mining_render_callsign(st->named_ingots[worst].pubkey, ev_cs);
-                    char ev_msg[96];
-                    snprintf(ev_msg, sizeof(ev_msg),
-                             "stockpile full — voided %s", ev_cs);
-                    signal_channel_post(w, smelt_station, ev_msg, "");
-                    /* Compact: move last into evicted slot. */
-                    st->named_ingots[worst] = st->named_ingots[STATION_NAMED_INGOTS_MAX - 1];
-                    st->named_ingots_count = STATION_NAMED_INGOTS_MAX - 1;
+                /* Announce the first named ingot on the station signal
+                 * channel and stamp the resulting block id back onto the
+                 * manifest unit. This replaces the old named_ingot_t
+                 * stockpile mirror — the unit IS the named-ingot record. */
+                if (first_named_idx >= 0 &&
+                    first_named_idx < (int)st->manifest.count) {
+                    cargo_unit_t *u = &st->manifest.units[first_named_idx];
+                    char cs[12];
+                    mining_render_callsign(u->pub, cs);
+                    char text[96];
+                    snprintf(text, sizeof(text), "smelted %s", cs);
+                    u->mined_block = signal_channel_post(w, smelt_station, text, "");
                 }
-
-                named_ingot_t *ing = &st->named_ingots[st->named_ingots_count++];
-                memset(ing, 0, sizeof(*ing));
-                memcpy(ing->pubkey, named_unit.pub, 32);
-                ing->prefix_class   = (uint8_t)prefix;
-                ing->metal          = (uint8_t)ingot;
-                ing->origin_station = (uint8_t)smelt_station;
-
-                char cs[12];
-                mining_render_callsign(named_unit.pub, cs);
-                char text[96];
-                snprintf(text, sizeof(text), "smelted %s", cs);
-                ing->mined_block = signal_channel_post(w, smelt_station, text, "");
-                st->named_ingots_dirty = true;
+                (void)ingot; /* unused now — kept above for the inventory write */
             }
 
             clear_asteroid(a);
@@ -964,7 +929,7 @@ void step_module_delivery(world_t *w, station_t *st, int station_idx,
             int whole = (int)floorf(deliver + 0.0001f);
             if (whole > 0) {
                 int drained = manifest_consume_by_commodity(&st->manifest, mat, whole);
-                if (drained > 0) st->named_ingots_dirty = true;
+                if (drained > 0) st->manifest_dirty = true;
             }
         }
 
@@ -1037,7 +1002,7 @@ void step_dock_repair_kit_fab(world_t *w, float dt) {
                 unit.recipe_id = (uint16_t)RECIPE_REPAIR_KIT_FAB;
                 if (!manifest_push(&st->manifest, &unit)) break;
             }
-            st->named_ingots_dirty = true;
+            st->manifest_dirty = true;
         }
         st->repair_kit_fab_timer = 0.0f;
         SIM_LOG("[shipyard-fab] station %d minted %d kits (1 frame + 1 laser + 1 tractor consumed)\n",

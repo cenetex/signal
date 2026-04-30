@@ -62,12 +62,38 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 34  /* MODULE_FURNACE_CU/_CR collapsed into MODULE_FURNACE */
+#define SAVE_VERSION 35  /* named_ingot_t collapsed into cargo_unit_t */
 /* v31 widened inventory[] / base_price[] by one slot (REPAIR_KIT). v32
  * appends npc_ship_t.hull (a single float, version-gated read so v31
  * saves still load with default hull). MIN stays at 31 so we don't
- * wipe v31 worlds on this bump. */
+ * wipe v31 worlds on this bump.
+ *
+ * v35: dropped station.named_ingots[64] + named_ingots_count + the
+ * named_ingot_t struct. Old saves are migrated by reading the legacy
+ * named-ingot block (52B per slot, fixed layout) and converting each
+ * non-empty entry into a manifest unit. */
 #define MIN_SAVE_VERSION 31
+
+/* Legacy named-ingot block layout — preserved here only so v25..v34
+ * saves can be migrated forward. The original named_ingot_t was
+ * field-by-field WRITE_FIELD'd, so the on-disk record matches the
+ * struct's natural layout with 8-byte alignment for mined_block. That
+ * came out to 56 bytes per record (the 52-byte WIRE record packs
+ * tighter; only the disk used the natural padding). */
+typedef struct {
+    uint8_t  pubkey[32];      /* 0..31 */
+    uint8_t  prefix_class;    /* 32 */
+    uint8_t  metal;           /* 33 */
+    uint8_t  _pad[2];         /* 34..35 */
+    /* compiler inserts 4 bytes here to 8-align mined_block */
+    uint64_t mined_block;     /* 40..47 */
+    uint8_t  origin_station;  /* 48 */
+    uint8_t  _pad2[7];        /* 49..55 */
+} legacy_named_ingot_t;
+_Static_assert(sizeof(legacy_named_ingot_t) == 56,
+               "legacy_named_ingot_t must match the on-disk v34 layout");
+#define LEGACY_STATION_NAMED_INGOTS_MAX 64
+#define LEGACY_SHIP_HOLD_INGOTS_MAX     8
 
 /* Set by world_load() before read_station() so per-station readers know
  * which version they're parsing and can handle field additions. */
@@ -201,10 +227,9 @@ static bool write_station_session(FILE *f, const station_t *s) {
         WRITE_FIELD(f, s->arm_rotation[a]);
         WRITE_FIELD(f, s->arm_speed[a]);
     }
-    /* RATi v2: named ingot stockpile (v26+). */
-    WRITE_FIELD(f, s->named_ingots_count);
-    for (int i = 0; i < STATION_NAMED_INGOTS_MAX; i++)
-        WRITE_FIELD(f, s->named_ingots[i]);
+    /* v35: named-ingot stockpile collapsed into manifest. The
+     * v25..v34 dual-store fields (count + 64 × named_ingot_t) are no
+     * longer written. Migration on load converts old saves forward. */
     /* Manifest (v29+, #339 slice A). Previously guarded to require
      * empty — now serialized as count + packed cargo_unit_t entries.
      * cap is NOT persisted; on load the manifest bootstraps at the
@@ -262,15 +287,49 @@ static bool read_station_session(FILE *f, station_t *s) {
         READ_FIELD(f, s->arm_rotation[a]);
         READ_FIELD(f, s->arm_speed[a]);
     }
-    /* RATi v2: named ingot stockpile (v26+). Older saves leave the
-     * stockpile zero-initialized, which is the empty state. */
-    if (g_loaded_save_version >= 26) {
-        READ_FIELD(f, s->named_ingots_count);
-        if (s->named_ingots_count < 0) s->named_ingots_count = 0;
-        if (s->named_ingots_count > STATION_NAMED_INGOTS_MAX)
-            s->named_ingots_count = STATION_NAMED_INGOTS_MAX;
-        for (int i = 0; i < STATION_NAMED_INGOTS_MAX; i++)
-            READ_FIELD(f, s->named_ingots[i]);
+    /* v26..v34 wrote a named-ingot stockpile block (count + 64
+     * fixed-size records). v35 dropped the dual store; the manifest
+     * is now the single source of truth. We still read the legacy
+     * block off disk so subsequent fields stay byte-aligned, but its
+     * contents are migrated into the manifest only when the file
+     * predates the manifest (v26..v28); for v29..v34 the manifest
+     * already contains the same units (dual-write at smelt time) and
+     * the legacy block is discarded to avoid double-counting. */
+    if (g_loaded_save_version >= 26 && g_loaded_save_version <= 34) {
+        int legacy_count = 0;
+        legacy_named_ingot_t legacy[LEGACY_STATION_NAMED_INGOTS_MAX];
+        READ_FIELD(f, legacy_count);
+        for (int i = 0; i < LEGACY_STATION_NAMED_INGOTS_MAX; i++)
+            READ_FIELD(f, legacy[i]);
+        if (g_loaded_save_version < 29) {
+            /* No manifest in the file; lift the named records into the
+             * manifest as smelt-recipe units so the trade picker sees
+             * them after the world reset. parent_merkle is unknown for
+             * legacy entries — leave it zero. */
+            if (!station_manifest_bootstrap(s)) return false;
+            if (legacy_count < 0) legacy_count = 0;
+            if (legacy_count > LEGACY_STATION_NAMED_INGOTS_MAX)
+                legacy_count = LEGACY_STATION_NAMED_INGOTS_MAX;
+            for (int i = 0; i < legacy_count; i++) {
+                const legacy_named_ingot_t *src = &legacy[i];
+                /* Empty slots in the legacy array were zero-initialized
+                 * (pubkey all zero); skip those. */
+                static const uint8_t zero_pk[32] = {0};
+                if (memcmp(src->pubkey, zero_pk, 32) == 0) continue;
+                if (s->manifest.count >= s->manifest.cap) break;
+                cargo_unit_t u = {0};
+                u.kind = (uint8_t)CARGO_KIND_INGOT;
+                u.commodity = src->metal;
+                u.grade = (uint8_t)MINING_GRADE_COMMON;
+                u.prefix_class = src->prefix_class;
+                u.recipe_id = (uint16_t)RECIPE_SMELT;
+                u.origin_station = src->origin_station;
+                u.mined_block = src->mined_block;
+                memcpy(u.pub, src->pubkey, 32);
+                (void)manifest_push(&s->manifest, &u);
+            }
+        }
+        (void)legacy; /* silence unused warning when nothing is migrated */
     }
     /* Manifest (v29+). For v29+, allocate via bootstrap + reserve, then
      * read entries. Pre-v29 saves get Slice D migration: their float
@@ -977,8 +1036,9 @@ typedef struct {
 } player_save_v3_t;
 
 static void migrate_v3_ship(ship_t *dst, const ship_v3_t *src) {
-    /* ship_t gained hold_ingots[] after PLY3 and now also carries a
-     * runtime-only manifest that is never loaded from disk here. */
+    /* ship_t had hold_ingots[] from PLY3 forward; v35 collapsed that
+     * dual store into the ship manifest. The runtime-only manifest is
+     * not loaded here. */
     ship_cleanup(dst);
     memset(dst, 0, sizeof(*dst));
     (void)ship_manifest_bootstrap(dst);
@@ -1001,13 +1061,13 @@ static void migrate_v3_ship(ship_t *dst, const ship_v3_t *src) {
     dst->stat_credits_earned = src->stat_credits_earned;
     dst->stat_credits_spent = src->stat_credits_spent;
     dst->stat_asteroids_fractured = src->stat_asteroids_fractured;
-    /* New fields — zero-init. */
-    memset(dst->hold_ingots, 0, sizeof(dst->hold_ingots));
-    dst->hold_ingots_count = 0;
 }
 
 /* PLY4 ship layout — the pre-manifest ship_t payload kept explicit so
- * adding runtime-only fields to ship_t doesn't change the on-disk bytes. */
+ * adding runtime-only fields to ship_t doesn't change the on-disk bytes.
+ * v35 dropped hold_ingots from ship_t but the on-disk PLY4/PLY5 ship
+ * blob still embeds the legacy hold-ingot array, so the bytes stay
+ * stable for old saves. */
 typedef struct {
     vec2 pos; vec2 vel; float angle; float hull;
     float cargo[COMMODITY_COUNT];
@@ -1019,7 +1079,7 @@ typedef struct {
     uint32_t unlocked_modules;
     float stat_ore_mined, stat_credits_earned, stat_credits_spent;
     int stat_asteroids_fractured;
-    named_ingot_t hold_ingots[SHIP_HOLD_INGOTS_MAX];
+    legacy_named_ingot_t hold_ingots[LEGACY_SHIP_HOLD_INGOTS_MAX];
     int hold_ingots_count;
 } ship_v4_t;
 
@@ -1053,8 +1113,9 @@ static void encode_v4_ship(ship_v4_t *dst, const ship_t *src) {
     dst->stat_credits_earned = src->stat_credits_earned;
     dst->stat_credits_spent = src->stat_credits_spent;
     dst->stat_asteroids_fractured = src->stat_asteroids_fractured;
-    memcpy(dst->hold_ingots, src->hold_ingots, sizeof(dst->hold_ingots));
-    dst->hold_ingots_count = src->hold_ingots_count;
+    /* Legacy hold-ingot array stays zero on save: the ship manifest
+     * is the single source of truth post-v35. The bytes still occupy
+     * the on-disk slot so PLY4/PLY5 readers stay byte-aligned. */
 }
 
 static void migrate_v4_ship(ship_t *dst, const ship_v4_t *src) {
@@ -1081,8 +1142,29 @@ static void migrate_v4_ship(ship_t *dst, const ship_v4_t *src) {
     dst->stat_credits_earned = src->stat_credits_earned;
     dst->stat_credits_spent = src->stat_credits_spent;
     dst->stat_asteroids_fractured = src->stat_asteroids_fractured;
-    memcpy(dst->hold_ingots, src->hold_ingots, sizeof(dst->hold_ingots));
-    dst->hold_ingots_count = src->hold_ingots_count;
+    /* v35 migration: lift legacy hold-ingot rows into the ship manifest
+     * as smelt-recipe units so the player keeps custody. Empty slots
+     * (zero pubkey) skip. PLY5 saves wrote zeros here under the new
+     * encode_v4_ship; this only matters for older PLY3/PLY4 saves
+     * captured before the unification. */
+    int n = src->hold_ingots_count;
+    if (n < 0) n = 0;
+    if (n > LEGACY_SHIP_HOLD_INGOTS_MAX) n = LEGACY_SHIP_HOLD_INGOTS_MAX;
+    static const uint8_t zero_pk[32] = {0};
+    for (int i = 0; i < n; i++) {
+        const legacy_named_ingot_t *lg = &src->hold_ingots[i];
+        if (memcmp(lg->pubkey, zero_pk, 32) == 0) continue;
+        cargo_unit_t u = {0};
+        u.kind = (uint8_t)CARGO_KIND_INGOT;
+        u.commodity = lg->metal;
+        u.grade = (uint8_t)MINING_GRADE_COMMON;
+        u.prefix_class = lg->prefix_class;
+        u.recipe_id = (uint16_t)RECIPE_SMELT;
+        u.origin_station = lg->origin_station;
+        u.mined_block = lg->mined_block;
+        memcpy(u.pub, lg->pubkey, 32);
+        (void)manifest_push(&dst->manifest, &u);
+    }
 }
 
 /* Old ship layout with global credits field — for PLY2 migration */
@@ -1189,8 +1271,6 @@ static void migrate_v2_ship(ship_t *dst, const ship_v2_t *src) {
     dst->stat_asteroids_fractured = src->stat_asteroids_fractured;
     /* RATi v2 fields not present in PLY2 — zero-init. */
     dst->comm_range = 0.0f;
-    memset(dst->hold_ingots, 0, sizeof(dst->hold_ingots));
-    dst->hold_ingots_count = 0;
 }
 
 static bool player_load_from_path(server_player_t *sp, world_t *w, const char *path, int slot) {

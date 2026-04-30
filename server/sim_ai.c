@@ -877,7 +877,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     int whole = (int)floorf(take + 0.0001f);
                     if (whole > 0) {
                         if (station_manifest_drain_commodity(home, ingot, whole) > 0)
-                            home->named_ingots_dirty = true;
+                            home->manifest_dirty = true;
                     }
                 }
             } else {
@@ -928,7 +928,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                         int whole = (int)floorf(take + 0.0001f);
                         if (whole > 0) {
                             if (station_manifest_drain_commodity(home, best_ingot, whole) > 0)
-                                home->named_ingots_dirty = true;
+                                home->manifest_dirty = true;
                         }
                     }
                 }
@@ -998,7 +998,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 if (int_delta > 0) {
                     if (station_manifest_seed_from_npc(dest, (commodity_t)i,
                                                        int_delta, n) > 0)
-                        dest->named_ingots_dirty = true;
+                        dest->manifest_dirty = true;
                 }
                 /* Pay the NPC for fulfilling a contract. Walk active
                  * TRACTOR contracts at this destination for the same
@@ -1054,7 +1054,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                         if (whole > 0) {
                             manifest_consume_by_commodity(&dest->manifest,
                                                           (commodity_t)c, whole);
-                            dest->named_ingots_dirty = true;
+                            dest->manifest_dirty = true;
                         }
                     }
                 }
@@ -1109,7 +1109,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                         home->inventory[COMMODITY_REPAIR_KIT] = 0.0f;
                     if (manifest_consume_by_commodity(&home->manifest,
                                                      COMMODITY_REPAIR_KIT, apply) > 0)
-                        home->named_ingots_dirty = true;
+                        home->manifest_dirty = true;
                     /* Write through ship layer; reverse-mirror at
                      * end of the NPC tick pushes the value back to
                      * npc->hull. */
@@ -1137,7 +1137,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 home->inventory[COMMODITY_REPAIR_KIT] -= 1.0f;
                 if (manifest_consume_by_commodity(&home->manifest,
                                                   COMMODITY_REPAIR_KIT, 1) > 0)
-                    home->named_ingots_dirty = true;
+                    home->manifest_dirty = true;
             }
         }
         break;
