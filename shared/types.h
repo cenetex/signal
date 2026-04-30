@@ -382,6 +382,22 @@ typedef struct {
     uint8_t  station_pubkey[32];
     uint8_t  outpost_founder_pubkey[32];
     uint64_t outpost_planted_tick;
+    /* Layer C of #479 — signed event chain log state.
+     *
+     * `chain_last_hash` is the SHA256 of the most recent event header
+     * authored by this station (or all zero if no event has been
+     * emitted yet). The next event's `prev_hash` field is set to this
+     * value, linking the log into a hash chain.
+     *
+     * `chain_event_count` is the monotonic per-station event counter,
+     * stamped into `event_id` and incremented on every emit.
+     *
+     * Both are persisted by the save (v41+) so the chain survives a
+     * server restart. The actual event records live in side files
+     * under `chain/<base58(station_pubkey)>.log` — they are NOT part
+     * of `world.sav`. */
+    uint8_t  chain_last_hash[32];
+    uint64_t chain_event_count;
     uint8_t  station_secret[64];   /* MUST stay last — never serialized */
 } station_t;
 

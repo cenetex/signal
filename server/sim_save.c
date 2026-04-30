@@ -31,6 +31,7 @@
 #include "base58.h"
 #include "protocol.h"
 #include "station_authority.h"
+#include "chain_log.h"
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -77,18 +78,20 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 40  /* Layer B of #479 — per-station Ed25519 pubkey +
-                          * outpost provenance (founder pubkey + planted tick)
-                          * tail in the session block. The matching private
-                          * key is rederivable from the world seed (or saved
-                          * provenance, for outposts) and is deliberately NOT
-                          * written to disk: a save leak does not leak any
-                          * station's signing key.
-                          *
-                          * v39: Layer A.3 — per-player last_signed_nonce in
-                          * the player save (PLY6); world.sav layout itself
-                          * was unchanged. v38 added destroyed_rocks
-                          * destroyed_at_ms timestamps (#285 slice 2). */
+#define SAVE_VERSION 41  /* Layer C of #479 — per-station chain log state
+                          * (chain_last_hash 32B + chain_event_count 8B)
+                          * appended to the session block. The actual
+                          * event records live in side files under
+                          * chain/<base58(pubkey)>.log and are NOT part
+                          * of world.sav. v40 saves migrate forward as
+                          * empty chains (see chain_log.h). */
+/* v40: Layer B of #479 — per-station Ed25519 pubkey + outpost
+ * provenance tail in the session block. The matching private key is
+ * rederivable from the world seed (or saved provenance, for outposts)
+ * and is deliberately NOT written to disk.
+ * v39: Layer A.3 — per-player last_signed_nonce in the player save
+ * (PLY6); world.sav layout itself was unchanged.
+ * v38 added destroyed_rocks destroyed_at_ms timestamps (#285 slice 2). */
 /* v31 widened inventory[] / base_price[] by one slot (REPAIR_KIT). v32
  * appends npc_ship_t.hull (a single float, version-gated read so v31
  * saves still load with default hull). MIN stays at 31 so we don't
@@ -277,6 +280,13 @@ static bool write_station_session(FILE *f, const station_t *s) {
     if (fwrite(s->outpost_founder_pubkey, 32, 1, f) != 1) { fclose(f); return false; }
     WRITE_FIELD(f, s->outpost_planted_tick);
     WRITE_FIELD(f, s->name);
+    /* v41: Layer C of #479 — chain log state. The actual events live in
+     * side files under chain/<base58(pubkey)>.log; only the
+     * continuation pointers (last full-record hash + monotonic event
+     * counter) ride along with the world save so a restart can pick
+     * up the chain without re-reading + re-hashing the entire log. */
+    if (fwrite(s->chain_last_hash, 32, 1, f) != 1) { fclose(f); return false; }
+    WRITE_FIELD(f, s->chain_event_count);
     return true;
 }
 
@@ -414,6 +424,16 @@ static bool read_station_session(FILE *f, station_t *s) {
         memset(s->station_pubkey, 0, sizeof(s->station_pubkey));
         memset(s->outpost_founder_pubkey, 0, sizeof(s->outpost_founder_pubkey));
         s->outpost_planted_tick = 0;
+    }
+    /* v41: Layer C of #479 — chain log state. v40 and earlier saves
+     * don't carry the continuation pointers; treat the chain as fresh
+     * on load (the first emit after migration starts a new chain). */
+    if (g_loaded_save_version >= 41) {
+        if (fread(s->chain_last_hash, 32, 1, f) != 1) return false;
+        READ_FIELD(f, s->chain_event_count);
+    } else {
+        memset(s->chain_last_hash, 0, sizeof(s->chain_last_hash));
+        s->chain_event_count = 0;
     }
     /* station_secret is rederived by the world loader, not persisted. */
     memset(s->station_secret, 0, sizeof(s->station_secret));
@@ -1172,6 +1192,38 @@ bool world_load(world_t *w, const char *path) {
             memcmp(w->stations[i].station_pubkey, zero_pub, 32) != 0) {
             station_authority_rederive_secret(&w->stations[i],
                                               w->belt_seed, i);
+        }
+    }
+    /* Layer C of #479: walk every station's chain log on disk and
+     * verify it against its station_pubkey. A corrupt chain (bad
+     * signature, broken prev_hash linkage, or last_hash mismatch
+     * vs. the saved continuation pointer) is loud — we log a warning
+     * but do NOT silently rebuild the log. Operators must investigate.
+     * An empty log on disk is the post-migration v40 case and is fine. */
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        const station_t *st = &w->stations[i];
+        if (memcmp(st->station_pubkey, zero_pub, 32) == 0) continue;
+        uint64_t walked = 0;
+        uint8_t walked_last[32] = {0};
+        if (!chain_log_verify(st, &walked, walked_last)) {
+            SIM_LOG("[chain] station %d: chain log VERIFICATION FAILED "
+                    "after %llu events — investigate; log untouched\n",
+                    i, (unsigned long long)walked);
+            continue;
+        }
+        /* Cross-check the disk-walked tail against the saved
+         * continuation pointer. A mismatch means the save and the log
+         * file got separated (e.g. someone restored world.sav from a
+         * backup but kept the current chain/ dir). Loud + non-fatal. */
+        if (walked != st->chain_event_count ||
+            (walked > 0 &&
+             memcmp(walked_last, st->chain_last_hash, 32) != 0)) {
+            SIM_LOG("[chain] station %d: chain continuation mismatch "
+                    "(disk: %llu events, save: %llu) — events appended "
+                    "after this point will form a fork from the saved "
+                    "head\n",
+                    i, (unsigned long long)walked,
+                    (unsigned long long)st->chain_event_count);
         }
     }
     return true;

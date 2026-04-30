@@ -12,6 +12,7 @@
 #include "net_protocol.h"
 #include "signal_crypto.h"
 #include "sim_asteroid.h"
+#include "chain_log.h"  /* signed event emission (#479 C) */
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -315,6 +316,34 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             if (!manifest_push(&ship->manifest, &copy)) break;
             (void)manifest_remove(&st->manifest, (uint16_t)slot, NULL);
             st->manifest_dirty = true;
+            /* Layer C of #479: emit EVT_TRANSFER + EVT_TRADE. The two
+             * are linked by transfer_event_id so a verifier can stitch
+             * them back into a single atomic move. */
+            {
+                struct __attribute__((packed)) {
+                    uint8_t from_pubkey[32];
+                    uint8_t to_pubkey[32];
+                    uint8_t cargo_pub[32];
+                    uint8_t kind;
+                    uint8_t _pad[7];
+                } xfer = {0};
+                memcpy(xfer.from_pubkey, st->station_pubkey, 32);
+                memcpy(xfer.to_pubkey, world.players[pid].pubkey, 32);
+                memcpy(xfer.cargo_pub, copy.pub, 32);
+                xfer.kind = (uint8_t)CARGO_KIND_INGOT;
+                uint64_t xfer_id = chain_log_emit(&world, st, CHAIN_EVT_TRANSFER,
+                                                  &xfer, (uint16_t)sizeof(xfer));
+                struct __attribute__((packed)) {
+                    uint64_t transfer_event_id;
+                    int64_t  ledger_delta_signed;
+                    uint8_t  ledger_pubkey[32];
+                } trade = {0};
+                trade.transfer_event_id = xfer_id;
+                trade.ledger_delta_signed = -(int64_t)price;
+                memcpy(trade.ledger_pubkey, world.players[pid].pubkey, 32);
+                (void)chain_log_emit(&world, st, CHAIN_EVT_TRADE,
+                                     &trade, (uint16_t)sizeof(trade));
+            }
             char cs[12]; mining_render_callsign(copy.pub, cs);
             char msg[96];
             snprintf(msg, sizeof(msg), "%s purchased %s for %d", world.players[pid].callsign, cs, price);
@@ -361,6 +390,34 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             /* Pay delivery credit through the ledger so supply stays balanced. */
             ledger_credit_supply(st, world.players[pid].session_token, (float)INGOT_DELIVERY_CREDIT);
             st->manifest_dirty = true;
+            /* Layer C of #479: emit EVT_TRANSFER (player -> station) +
+             * EVT_TRADE (delivery credit accrual on the station's
+             * ledger). */
+            {
+                struct __attribute__((packed)) {
+                    uint8_t from_pubkey[32];
+                    uint8_t to_pubkey[32];
+                    uint8_t cargo_pub[32];
+                    uint8_t kind;
+                    uint8_t _pad[7];
+                } xfer = {0};
+                memcpy(xfer.from_pubkey, world.players[pid].pubkey, 32);
+                memcpy(xfer.to_pubkey, st->station_pubkey, 32);
+                memcpy(xfer.cargo_pub, copy.pub, 32);
+                xfer.kind = (uint8_t)CARGO_KIND_INGOT;
+                uint64_t xfer_id = chain_log_emit(&world, st, CHAIN_EVT_TRANSFER,
+                                                  &xfer, (uint16_t)sizeof(xfer));
+                struct __attribute__((packed)) {
+                    uint64_t transfer_event_id;
+                    int64_t  ledger_delta_signed;
+                    uint8_t  ledger_pubkey[32];
+                } trade = {0};
+                trade.transfer_event_id = xfer_id;
+                trade.ledger_delta_signed = (int64_t)INGOT_DELIVERY_CREDIT;
+                memcpy(trade.ledger_pubkey, world.players[pid].pubkey, 32);
+                (void)chain_log_emit(&world, st, CHAIN_EVT_TRADE,
+                                     &trade, (uint16_t)sizeof(trade));
+            }
             char cs[12]; mining_render_callsign(copy.pub, cs);
             char msg[96];
             snprintf(msg, sizeof(msg), "%s delivered %s", world.players[pid].callsign, cs);

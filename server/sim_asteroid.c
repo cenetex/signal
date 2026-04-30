@@ -8,6 +8,7 @@
 #include "mining.h"  /* fracture_seed_compute */
 #include "protocol.h"
 #include "sha256.h"  /* rock_pub derivation (#285 slice 1) */
+#include "chain_log.h" /* signed event emission (#479 C) */
 
 /* ------------------------------------------------------------------ */
 /* RNG wrappers — use underlying randf() with &w->rng                  */
@@ -424,6 +425,50 @@ void fracture_asteroid(world_t *w, int idx, vec2 outward_dir, int8_t fractured_b
      * seed parents (fracture children re-fracturing) — their rock_pub
      * is zero, so mark_rock_destroyed early-returns. */
     mark_rock_destroyed(w, parent.rock_pub);
+    /* Layer C of #479: emit a signed EVT_ROCK_DESTROY by the witnessing
+     * station (the closest one whose signal range covers the parent
+     * rock's position). If no station witnessed, skip — this is rare
+     * (out-of-signal fracture) but defensively allowed. */
+    {
+        static const uint8_t zero_pub[32] = {0};
+        if (memcmp(parent.rock_pub, zero_pub, 32) != 0) {
+            int witness = -1;
+            float best_d2 = 0.0f;
+            for (int s = 0; s < MAX_STATIONS; s++) {
+                const station_t *st = &w->stations[s];
+                if (!station_provides_signal(st)) continue;
+                float sr = st->signal_range;
+                float d2 = v2_dist_sq(parent.pos, st->pos);
+                if (d2 <= sr * sr && (witness < 0 || d2 < best_d2)) {
+                    witness = s; best_d2 = d2;
+                }
+            }
+            if (witness >= 0) {
+                /* fractured_by is a player slot index (or -1). Look up
+                 * their pubkey if we have one; otherwise leave zero. */
+                uint8_t player_pub[32] = {0};
+                if (fractured_by >= 0 && fractured_by < MAX_PLAYERS &&
+                    w->players[fractured_by].connected) {
+                    memcpy(player_pub, w->players[fractured_by].pubkey, 32);
+                }
+                struct __attribute__((packed)) {
+                    uint8_t rock_pub[32];
+                    uint8_t fracturing_player_pub[32];
+                    uint8_t station_pubkey[32];
+                } payload = {0};
+                memcpy(payload.rock_pub, parent.rock_pub, 32);
+                memcpy(payload.fracturing_player_pub, player_pub, 32);
+                memcpy(payload.station_pubkey,
+                       w->stations[witness].station_pubkey, 32);
+                (void)chain_log_emit(w, &w->stations[witness],
+                                     CHAIN_EVT_ROCK_DESTROY,
+                                     &payload, (uint16_t)sizeof(payload));
+            } else {
+                SIM_LOG("[chain] rock destroyed out of signal range — "
+                        "no witness, no event emitted\n");
+            }
+        }
+    }
     asteroid_tier_t child_tier = asteroid_next_tier(parent.tier);
     int desired = desired_child_count(w, parent.tier);
     int child_slots[16] = { idx, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1, -1 };

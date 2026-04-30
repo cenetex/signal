@@ -8,6 +8,7 @@
 #include "manifest.h"
 #include "mining.h"            /* grade roll at smelt time */
 #include "sha256.h"
+#include "chain_log.h"         /* signed event emission (#479 C) */
 #include <stdlib.h>            /* abs */
 #include <math.h>              /* lroundf */
 #include <string.h>
@@ -131,7 +132,8 @@ static bool station_manifest_consume_selected_inputs(station_t *st,
     return manifest_remove(&st->manifest, indices[0], NULL);
 }
 
-static bool station_manifest_craft_product(station_t *st, recipe_id_t recipe_id) {
+static bool station_manifest_craft_product(world_t *w, station_t *st,
+                                           recipe_id_t recipe_id) {
     const recipe_def_t *recipe = recipe_get(recipe_id);
     uint16_t indices[2] = {0, 0};
     cargo_unit_t inputs[2] = {{0}};
@@ -144,7 +146,27 @@ static bool station_manifest_craft_product(station_t *st, recipe_id_t recipe_id)
     if (!station_manifest_select_recipe_inputs(st, recipe, indices, inputs)) return false;
     if (!hash_product(recipe_id, inputs, recipe->input_count, 0, &product)) return false;
     if (!station_manifest_consume_selected_inputs(st, indices, recipe->input_count)) return false;
-    return station_manifest_push_finished(st, &product);
+    if (!station_manifest_push_finished(st, &product)) return false;
+    /* Layer C of #479 — emit a signed EVT_CRAFT after the manifest
+     * mutation succeeds. Payload binds the recipe id, output pubkey,
+     * and input pubkeys (up to 2) to the station's signature. */
+    {
+        struct __attribute__((packed)) {
+            uint16_t recipe_id;
+            uint8_t  input_count;
+            uint8_t  _pad[5];
+            uint8_t  output_pub[32];
+            uint8_t  input_pubs[2][32];
+        } payload = {0};
+        payload.recipe_id = (uint16_t)recipe_id;
+        payload.input_count = (uint8_t)recipe->input_count;
+        memcpy(payload.output_pub, product.pub, 32);
+        for (size_t i = 0; i < recipe->input_count && i < 2; i++)
+            memcpy(payload.input_pubs[i], inputs[i].pub, 32);
+        (void)chain_log_emit(w, st, CHAIN_EVT_CRAFT,
+                             &payload, (uint16_t)sizeof(payload));
+    }
+    return true;
 }
 
 typedef struct {
@@ -270,7 +292,29 @@ void sim_step_refinery_production(world_t *w, float dt) {
              * aligned with manifest count. */
             uint8_t origin[8] = { 'R','E','F','N','0','0','0','0' };
             origin[7] = (uint8_t)('0' + (s % 10));
+            uint16_t pre_mft_count = st->manifest.count;
             station_finished_accumulate(st, ingot, consume, origin);
+            /* Layer C of #479: one EVT_SMELT per ingot minted. The
+             * payload binds (fragment_pub, ingot_pub, prefix_class,
+             * mined_block) to the station's signature. We don't know
+             * the source fragment_pub for hopper-path smelts (#280
+             * fragment-tow path is separate); use zero so verifiers
+             * can distinguish. */
+            for (uint16_t u = pre_mft_count; u < st->manifest.count; u++) {
+                const cargo_unit_t *unit = &st->manifest.units[u];
+                struct __attribute__((packed)) {
+                    uint8_t  fragment_pub[32];
+                    uint8_t  ingot_pub[32];
+                    uint8_t  prefix_class;
+                    uint8_t  _pad[7];
+                    uint64_t mined_block;
+                } payload = {0};
+                memcpy(payload.ingot_pub, unit->pub, 32);
+                payload.prefix_class = unit->prefix_class;
+                payload.mined_block = unit->mined_block;
+                (void)chain_log_emit(w, st, CHAIN_EVT_SMELT,
+                                     &payload, (uint16_t)sizeof(payload));
+            }
             /* Mirror to module output buffer for the flow graph (#280).
              * Round-robin across the furnace slots so each smelt ore
              * has a distinct anchor. */
@@ -390,7 +434,7 @@ void sim_step_station_production(world_t *w, float dt) {
                     int manifest_units = units_after - units_before;
                     int crafted = 0;
                     for (int idx = 0; idx < manifest_units; idx++) {
-                        if (!station_manifest_craft_product(st, recipe.recipe_id))
+                        if (!station_manifest_craft_product(w, st, recipe.recipe_id))
                             break;
                         crafted++;
                     }

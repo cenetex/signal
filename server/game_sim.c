@@ -36,6 +36,7 @@
 #include "sha256.h"   /* signal_chain_hash_block */
 #include "signal_crypto.h" /* Ed25519 verify for signed actions (#479 A.3) */
 #include "station_authority.h" /* per-station Ed25519 identity (#479 B) */
+#include "chain_log.h"         /* per-station signed event log (#479 C) */
 #include "protocol.h"      /* NET_MSG_SIGNED_ACTION + signed_action_type_t */
 #include <math.h>      /* isfinite for contract base_price sanity clamp */
 #include <stdlib.h>
@@ -4612,6 +4613,19 @@ void world_reset(world_t *w) {
     for (int s = 0; s < 3; s++)
         station_authority_init_seeded(&w->stations[s], w->belt_seed,
                                        (uint32_t)s);
+
+    /* --- Chain log reset (Layer C of #479) ---
+     * world_reset() blows away in-memory state. Match it on disk: the
+     * seeded stations' chain log files (if any from a previous run)
+     * must go too, otherwise the next emit's prev_hash (which we just
+     * zeroed above via memset(w, 0, ...)) won't chain to the on-disk
+     * tail and the verifier will reject. */
+    for (int s = 0; s < 3; s++) {
+        memset(w->stations[s].chain_last_hash, 0,
+               sizeof(w->stations[s].chain_last_hash));
+        w->stations[s].chain_event_count = 0;
+        chain_log_reset(&w->stations[s]);
+    }
 
     /* --- Stations --- */
     w->next_station_id = 1; /* IDs start at 1; 0 = unassigned */
