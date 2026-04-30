@@ -28,6 +28,12 @@ static struct {
     char callsign[8];
     bool callsign_ready;
     char server_url[256];
+    /* Layer A.2 of #479 — Ed25519 pubkey advertised in REGISTER_PUBKEY
+     * on every connect/reconnect. Owned by the client at large
+     * (game_t::identity); set via net_set_identity_pubkey before
+     * net_init runs the WebSocket handshake. */
+    uint8_t identity_pubkey[32];
+    bool identity_pubkey_ready;
 } net_state;
 
 /* ---------- Protocol helpers (shared between WASM and native) ------------ */
@@ -178,6 +184,31 @@ static void ensure_callsign(void) {
 #endif
     net_state.callsign_ready = true;
     printf("[net] callsign: %s\n", net_state.callsign);
+}
+
+/* Layer A.2 of #479 — send the persistent Ed25519 pubkey to the server
+ * immediately on connect, BEFORE the SESSION handshake, so the server
+ * can bind (pubkey ↔ session_token) for this connection. Identity at
+ * the wire level is still the 8-byte session_token; A.3 will require
+ * signed inputs. */
+static void send_register_pubkey(void) {
+    if (!net_state.identity_pubkey_ready) return;
+    uint8_t buf[REGISTER_PUBKEY_MSG_SIZE];
+    buf[0] = NET_MSG_REGISTER_PUBKEY;
+    memcpy(&buf[1], net_state.identity_pubkey, 32);
+    ws_send_binary(buf, REGISTER_PUBKEY_MSG_SIZE);
+    printf("[net] sent pubkey registration (%02x%02x%02x%02x...)\n",
+           net_state.identity_pubkey[0], net_state.identity_pubkey[1],
+           net_state.identity_pubkey[2], net_state.identity_pubkey[3]);
+}
+
+void net_set_identity_pubkey(const uint8_t pubkey[32]) {
+    if (!pubkey) {
+        net_state.identity_pubkey_ready = false;
+        return;
+    }
+    memcpy(net_state.identity_pubkey, pubkey, 32);
+    net_state.identity_pubkey_ready = true;
 }
 
 static void send_session_token(void) {
@@ -816,6 +847,10 @@ static EM_BOOL on_ws_open(int eventType, const EmscriptenWebSocketOpenEvent* eve
     (void)eventType; (void)event; (void)userData;
     net_state.connected = true;
     printf("[net] connected to relay server\n");
+    /* Layer A.2 of #479 — pubkey registration MUST precede the session
+     * handshake so the server can fold the pubkey into reconnect
+     * resolution. */
+    send_register_pubkey();
     /* Send session token immediately so server can match grace slots */
     ensure_session_token();
     ensure_callsign();
@@ -1018,6 +1053,8 @@ static void net_ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         net_state.connected = true;
         ws_conn = c;
         printf("[net] connected to server\n");
+        /* Layer A.2 of #479 — pubkey registration before SESSION. */
+        send_register_pubkey();
         ensure_session_token();
         ensure_callsign();
         send_session_token();

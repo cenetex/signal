@@ -4779,6 +4779,55 @@ void world_reset(world_t *w) {
 }
 
 /* ================================================================== */
+/* Layer A.2 of #479 — pubkey registry                                */
+/* ================================================================== */
+
+static bool pubkey_is_zero(const uint8_t pk[32]) {
+    for (int i = 0; i < 32; i++) if (pk[i]) return false;
+    return true;
+}
+
+int registry_lookup_by_pubkey(const world_t *w, const uint8_t pubkey[32]) {
+    if (!w || !pubkey || pubkey_is_zero(pubkey)) return -1;
+    for (int r = 0; r < MAX_PLAYERS; r++) {
+        if (!w->pubkey_registry[r].in_use) continue;
+        if (memcmp(w->pubkey_registry[r].pubkey, pubkey, 32) != 0) continue;
+        /* Find the player slot owning this session_token. */
+        const uint8_t *tok = w->pubkey_registry[r].session_token;
+        for (int p = 0; p < MAX_PLAYERS; p++) {
+            if (!w->players[p].session_ready) continue;
+            if (memcmp(w->players[p].session_token, tok, 8) == 0) return p;
+        }
+        /* Registry entry exists but no live player slot — return -1
+         * (the binding will be reattached on the next REGISTER_PUBKEY). */
+        return -1;
+    }
+    return -1;
+}
+
+bool registry_register_pubkey(world_t *w, const uint8_t pubkey[32],
+                              const uint8_t session_token[8]) {
+    if (!w || !pubkey || !session_token) return false;
+    if (pubkey_is_zero(pubkey)) return false;
+    /* Already registered? Update token (handles reconnect token rotation). */
+    for (int r = 0; r < MAX_PLAYERS; r++) {
+        if (!w->pubkey_registry[r].in_use) continue;
+        if (memcmp(w->pubkey_registry[r].pubkey, pubkey, 32) != 0) continue;
+        memcpy(w->pubkey_registry[r].session_token, session_token, 8);
+        return true;
+    }
+    /* Fresh: take the first free slot. */
+    for (int r = 0; r < MAX_PLAYERS; r++) {
+        if (w->pubkey_registry[r].in_use) continue;
+        memcpy(w->pubkey_registry[r].pubkey, pubkey, 32);
+        memcpy(w->pubkey_registry[r].session_token, session_token, 8);
+        w->pubkey_registry[r].in_use = true;
+        return true;
+    }
+    return false; /* registry full */
+}
+
+/* ================================================================== */
 /* Public: player_init_ship                                           */
 /* ================================================================== */
 

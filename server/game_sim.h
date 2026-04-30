@@ -297,6 +297,13 @@ typedef struct {
      * docks (a dock = "you survived"). zero token = unattributed. */
     uint8_t last_damage_killer_token[8];
     uint8_t last_damage_cause; /* death_cause_t */
+    /* Layer A.2 of #479 — Ed25519 pubkey advertised by the client in
+     * NET_MSG_REGISTER_PUBKEY. Zero-filled until the client registers.
+     * Persisted with the world save so a returning pubkey can be
+     * recognized across server restarts. Identity at the wire level is
+     * still the 8-byte session_token; pubkey is additive state. */
+    uint8_t pubkey[32];
+    bool    pubkey_set;
 } server_player_t;
 
 typedef struct {
@@ -349,6 +356,15 @@ typedef struct {
     spatial_grid_t asteroid_grid;
     signal_grid_t signal_cache;
     signal_channel_t signal_channel;  /* station broadcast log (#316) */
+    /* Layer A.2 of #479 — pubkey registry. Maps a client's persisted
+     * Ed25519 pubkey to its current session_token so a reconnecting
+     * pubkey can be matched to its existing player record across
+     * session_token rotations. Linear scan, bounded by MAX_PLAYERS. */
+    struct {
+        uint8_t pubkey[32];
+        uint8_t session_token[8];
+        bool    in_use;
+    } pubkey_registry[MAX_PLAYERS];
 } world_t;
 
 /* ------------------------------------------------------------------ */
@@ -375,6 +391,22 @@ void world_cleanup(world_t *w);
 void world_sim_step(world_t *w, float dt);
 void world_sim_step_player_only(world_t *w, int player_idx, float dt);
 void player_init_ship(server_player_t *sp, world_t *w);
+
+/* Layer A.2 of #479 — pubkey registry. */
+/* Look up a player_idx (into world.players[]) by pubkey. Returns -1 if not
+ * registered. The lookup walks pubkey_registry to find the binding, then
+ * locates the player slot owning that session_token. */
+int registry_lookup_by_pubkey(const world_t *w, const uint8_t pubkey[32]);
+/* Register / update a (pubkey, session_token) binding for a connection.
+ * Returns true if a registry entry was newly added or updated; false on
+ * out-of-space (registry full of distinct pubkeys, which equals MAX_PLAYERS).
+ * Idempotent: same (pubkey, token) pair is a no-op.
+ * If the pubkey was previously bound to a different session_token, the
+ * registry entry is rebound to the new token (token rotation across
+ * reconnects). The caller is responsible for any state migration on the
+ * server_player_t side. */
+bool registry_register_pubkey(world_t *w, const uint8_t pubkey[32],
+                              const uint8_t session_token[8]);
 float signal_strength_at(const world_t *w, vec2 pos);
 void spatial_grid_build(world_t *w);
 void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value);

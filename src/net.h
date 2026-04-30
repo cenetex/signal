@@ -242,6 +242,12 @@ void net_shutdown(void);
  * Called automatically on JOIN. */
 void net_send_session(const uint8_t token[8]);
 
+/* Layer A.2 of #479 — install the persistent Ed25519 pubkey to be
+ * advertised to the server in NET_MSG_REGISTER_PUBKEY on every
+ * (re)connect. Call this BEFORE net_init so the very first WS open
+ * fires the registration message. Pass NULL to clear. */
+void net_set_identity_pubkey(const uint8_t pubkey[32]);
+
 /* Send the local player's input state to the server.
  * flags: bitmask of NET_INPUT_* values.
  * action: station interaction (0=none, 1=dock, 2=launch, etc.)

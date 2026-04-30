@@ -1052,6 +1052,10 @@ static void init(void) {
             cbs.on_station_manifest = apply_remote_station_manifest;
             cbs.on_player_manifest = apply_remote_player_manifest;
             cbs.on_highscores = apply_remote_highscores;
+            /* Layer A.2 of #479 — hand the persistent pubkey to net.c
+             * BEFORE net_init so the first WebSocket on_open already
+             * has it ready to send via NET_MSG_REGISTER_PUBKEY. */
+            net_set_identity_pubkey(g.identity.pubkey);
             g.multiplayer_enabled = net_init(server_url, &cbs);
             if (g.multiplayer_enabled) {
                 /* Deactivate the local server — the remote server is authoritative.

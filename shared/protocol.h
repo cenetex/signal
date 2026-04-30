@@ -58,7 +58,14 @@ enum {
     NET_MSG_STATION_MANIFEST   = 0x2F, /* server -> client: per-station manifest summary grouped by (commodity, grade) — see STATION_MANIFEST_* below. */
     NET_MSG_HIGHSCORES         = 0x30, /* server -> client: top-N leaderboard. [type:1][count:1] + count × [callsign:8][credits_earned:f32] */
     NET_MSG_PLAYER_MANIFEST    = 0x31, /* server -> client: local player's ship manifest summary, same shape as STATION_MANIFEST minus station idx — see PLAYER_MANIFEST_* below. */
+    NET_MSG_REGISTER_PUBKEY    = 0x32, /* client -> server: [type:1][pubkey:32]. Layer A.2 of #479 — sent once per
+                                        * connection BEFORE NET_MSG_SESSION so the server can bind the pubkey to
+                                        * the session_token for this connection. NOTE: this is identity assertion,
+                                        * not proof of possession; A.3 will require signed inputs to authenticate. */
 };
+
+/* NET_MSG_REGISTER_PUBKEY wire size: 1 + 32 = 33 bytes. */
+#define REGISTER_PUBKEY_MSG_SIZE 33
 
 /* Top-N global leaderboard persisted server-side, broadcast on join and
  * after every death. */

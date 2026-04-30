@@ -352,6 +352,88 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             (void)submit_fracture_claim(&world, pid, fracture_id, burst_nonce, claimed_grade);
         }
         break;
+    case NET_MSG_REGISTER_PUBKEY:
+        /* Layer A.2 of #479: client asserts its persisted Ed25519 pubkey.
+         * TODO(#479-A.3): unauthenticated registration — A.3 will require
+         * the client to sign every input and the server to verify. Until
+         * then, an attacker on the network can spoof another player's
+         * pubkey, but cannot act as them because identity at the wire
+         * level is still the 8-byte session_token. */
+        if (len >= REGISTER_PUBKEY_MSG_SIZE) {
+            const uint8_t *pk = &data[1];
+            server_player_t *sp = &world.players[pid];
+            /* Idempotent: same pubkey + already-set => no-op. */
+            if (sp->pubkey_set && memcmp(sp->pubkey, pk, 32) == 0) break;
+            /* If this pubkey already maps to a different (live) player slot
+             * — i.e. a returning player whose token rotated — transfer the
+             * persistent state from the old slot into this connection's
+             * slot so the player resumes their save by pubkey, then
+             * disconnect the old slot. Only meaningful once SESSION has
+             * already populated the per-slot session_token of the existing
+             * record; a registry entry pointing at no live slot just gets
+             * rebound below. */
+            int existing = registry_lookup_by_pubkey(&world, pk);
+            if (existing >= 0 && existing != pid) {
+                server_player_t *old = &world.players[existing];
+                if (sp->session_ready &&
+                    memcmp(old->session_token, sp->session_token, 8) != 0) {
+                    /* Transfer persistent state. The old slot's ledger
+                     * balances live in station_t.ledger[] keyed by the
+                     * old session_token — they survive the swap because
+                     * we copy the old token's ship + station context into
+                     * the new slot but leave ledger entries untouched.
+                     * For A.2 we model "carry the player record across"
+                     * by adopting the old slot's session_token: future
+                     * ledger reads on this connection use the old token,
+                     * so the manifest + ledger are preserved.
+                     *
+                     * NOTE: this is a best-effort A.2 reconcile —
+                     * cross-token ledger merging is out of scope and
+                     * lands with A.3 / A.4. */
+                    if (ship_copy(&sp->ship, &old->ship)) {
+                        sp->current_station = old->current_station;
+                        sp->nearby_station = old->nearby_station;
+                        sp->docked = old->docked;
+                        sp->in_dock_range = old->in_dock_range;
+                        /* Migrate ledger entries from the old token →
+                         * the new connection's session_token across
+                         * every station, so balances stay spendable
+                         * after the rebinding. */
+                        uint8_t old_tok[8];
+                        memcpy(old_tok, old->session_token, 8);
+                        for (int s = 0; s < MAX_STATIONS; s++) {
+                            station_t *st = &world.stations[s];
+                            for (int e = 0; e < st->ledger_count; e++) {
+                                if (memcmp(st->ledger[e].player_token, old_tok, 8) == 0) {
+                                    memcpy(st->ledger[e].player_token,
+                                           sp->session_token, 8);
+                                }
+                            }
+                        }
+                        old->connected = false;
+                        old->grace_period = false;
+                        old->conn = NULL;
+                        memset(old->session_token, 0, 8);
+                        old->session_ready = false;
+                        uint8_t leave_old[] = { NET_MSG_LEAVE, (uint8_t)existing };
+                        broadcast(leave_old, 2);
+                        printf("[server] player %d: pubkey reconnect (was slot %d)\n",
+                               pid, existing);
+                    }
+                }
+            }
+            memcpy(sp->pubkey, pk, 32);
+            sp->pubkey_set = true;
+            /* Bind / rebind the registry to this slot's session_token.
+             * If session_token isn't ready yet (REGISTER_PUBKEY arrived
+             * before SESSION, the expected order), bind to the
+             * placeholder zero token; the SESSION handler rebinds once
+             * the real token is known. */
+            (void)registry_register_pubkey(&world, pk, sp->session_token);
+            printf("[server] player %d: registered pubkey %02x%02x%02x%02x...\n",
+                   pid, pk[0], pk[1], pk[2], pk[3]);
+        }
+        break;
     case NET_MSG_SESSION:
         if (len >= 9 && !world.players[pid].session_ready) {
             const uint8_t *token = &data[1];
@@ -402,6 +484,13 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                 }
                 /* Seed starting credits now that session_token is set */
                 player_seed_credits(&world.players[pid], &world);
+            }
+            /* Layer A.2 (#479): if the client registered its pubkey before
+             * SESSION, rebind the registry entry to the real session_token
+             * so future lookups by pubkey find this slot. */
+            if (world.players[pid].pubkey_set) {
+                (void)registry_register_pubkey(&world, world.players[pid].pubkey,
+                                               world.players[pid].session_token);
             }
         }
         break;

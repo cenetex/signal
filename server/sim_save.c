@@ -62,7 +62,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 35  /* named_ingot_t collapsed into cargo_unit_t */
+#define SAVE_VERSION 36  /* Layer A.2 of #479 — pubkey registry tail */
 /* v31 widened inventory[] / base_price[] by one slot (REPAIR_KIT). v32
  * appends npc_ship_t.hull (a single float, version-gated read so v31
  * saves still load with default hull). MIN stays at 31 so we don't
@@ -660,6 +660,26 @@ bool world_save(const world_t *w, const char *path) {
         if (!write_contract(f, &w->contracts[i])) { fclose(f); remove(tmp_path); return false; }
     }
 
+    /* v36: pubkey registry tail (#479 A.2). Variable-length: count + N
+     * entries of (pubkey:32 + session_token:8). Loader for older saves
+     * skips this section and starts with an empty registry — clients
+     * will rebuild it on first REGISTER_PUBKEY of the next session. */
+    {
+        uint32_t reg_count = 0;
+        for (int r = 0; r < MAX_PLAYERS; r++)
+            if (w->pubkey_registry[r].in_use) reg_count++;
+        WRITE_FIELD(f, reg_count);
+        for (int r = 0; r < MAX_PLAYERS; r++) {
+            if (!w->pubkey_registry[r].in_use) continue;
+            if (fwrite(w->pubkey_registry[r].pubkey, 32, 1, f) != 1) {
+                fclose(f); remove(tmp_path); return false;
+            }
+            if (fwrite(w->pubkey_registry[r].session_token, 8, 1, f) != 1) {
+                fclose(f); remove(tmp_path); return false;
+            }
+        }
+    }
+
     fclose(f);
 
     /* Append CRC32 trailer: reopen to read data, compute CRC, then append */
@@ -776,6 +796,30 @@ bool world_load(world_t *w, const char *path) {
     if (version < 24) {
         for (int i = 0; i < MAX_SCAFFOLDS; i++) {
             READ_FIELD(f, w->scaffolds[i]);
+        }
+    }
+
+    /* v36: pubkey registry tail (#479 A.2). v35 and earlier saves end
+     * with the contracts section; the registry stays zero-initialized
+     * and rebuilds itself on first REGISTER_PUBKEY of the next session. */
+    memset(w->pubkey_registry, 0, sizeof(w->pubkey_registry));
+    if (version >= 36) {
+        uint32_t reg_count = 0;
+        READ_FIELD(f, reg_count);
+        if (reg_count > MAX_PLAYERS) {
+            fclose(f);
+            return false;
+        }
+        for (uint32_t r = 0; r < reg_count; r++) {
+            if (fread(w->pubkey_registry[r].pubkey, 32, 1, f) != 1) {
+                fclose(f);
+                return false;
+            }
+            if (fread(w->pubkey_registry[r].session_token, 8, 1, f) != 1) {
+                fclose(f);
+                return false;
+            }
+            w->pubkey_registry[r].in_use = true;
         }
     }
 
