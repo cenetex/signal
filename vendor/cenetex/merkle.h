@@ -61,7 +61,9 @@ size_t        merkle_mmr_leaf_count(const merkle_mmr_t *m);
 /* Total nodes in the underlying array (leaves + internal). */
 size_t        merkle_mmr_node_count(const merkle_mmr_t *m);
 
-/* Compute the current root into out[32]. SPEC.md §5 (right-fold). */
+/* Compute the current root into out[32]. SPEC.md §5 (right-fold).
+ * Writes 32 zero bytes when leaf_count == 0; callers must check
+ * leaf_count separately before treating the root as meaningful. */
 void          merkle_mmr_root(const merkle_mmr_t *m, uint8_t out[32]);
 
 /* Build an inclusion proof for the given 0-based leaf index.
@@ -88,7 +90,13 @@ bool merkle_mmr_verify(merkle_hash_pair_fn hash_pair,
 /* Convert 0-based leaf index to 1-based MMR position. Closed form:
  *   pos = 2*leaf_idx + 1 - popcount(leaf_idx)
  * Derivation: leaf i is preceded by i other leaves and (i - popcount(i))
- * internal nodes, plus its own slot (1-based offset). */
+ * internal nodes, plus its own slot (1-based offset).
+ *
+ * Note: the 2*leaf_idx term overflows uint64_t once leaf_idx >= 2^63,
+ * so this function (and any MMR built with it) is well-defined only
+ * for leaf_idx < 2^63. Practically unreachable but documented here
+ * so callers don't rely on the MERKLE_MMR_MAX_PROOF_LEN comment's
+ * "2^64 leaves" upper bound. */
 size_t merkle_leaf_index_to_pos(uint64_t leaf_idx);
 
 /* Number of peaks for a given leaf count = popcount(leaf_count). */
@@ -215,17 +223,23 @@ size_t merkle_mmr_node_count(const merkle_mmr_t *m) {
     return m ? m->node_count : 0;
 }
 
-/* Grow both parallel arrays. */
+/* Grow both parallel arrays. Commits pointers and capacity only after
+ * both reallocs succeed, so a partial failure leaves the bookkeeping
+ * consistent (capacity always describes the smaller of the two). */
 static bool merkle__reserve(merkle_mmr_t *m, size_t need) {
     if (m->capacity >= need) return true;
     size_t cap = m->capacity ? m->capacity : 32;
     while (cap < need) cap *= 2;
-    void *p = realloc(m->nodes, cap * 32);
-    if (!p) return false;
-    m->nodes = (uint8_t (*)[32])p;
-    void *h = realloc(m->heights, cap);
-    if (!h) return false;
-    m->heights = (uint8_t *)h;
+    void *new_nodes = realloc(m->nodes, cap * 32);
+    if (!new_nodes) return false;
+    /* The nodes buffer may have been moved by realloc; we have to adopt
+     * the new pointer regardless of whether the heights realloc succeeds,
+     * otherwise we'd leak the resized buffer. capacity stays at the old
+     * value until both sides are grown. */
+    m->nodes = (uint8_t (*)[32])new_nodes;
+    void *new_heights = realloc(m->heights, cap);
+    if (!new_heights) return false;
+    m->heights = (uint8_t *)new_heights;
     m->capacity = cap;
     return true;
 }
@@ -234,7 +248,13 @@ static bool merkle__reserve(merkle_mmr_t *m, size_t need) {
 
 size_t merkle_mmr_append(merkle_mmr_t *m, const uint8_t leaf[32]) {
     if (!m || !leaf) return 0;
-    if (!merkle__reserve(m, m->node_count + 1)) return 0;
+    /* Reserve the worst case up front so the carry loop can't fail
+     * partway through and leave the MMR in a torn state (leaf_count
+     * bumped but parent nodes not emitted). After this append, the
+     * carry depth is at most the number of trailing ones in the new
+     * leaf_count, which is bounded by 63 for a 64-bit count, so
+     * reserving node_count + 64 covers any append. */
+    if (!merkle__reserve(m, m->node_count + 64)) return 0;
     size_t leaf_node_idx = m->node_count;       /* 0-based */
     memcpy(m->nodes[leaf_node_idx], leaf, 32);
     m->heights[leaf_node_idx] = 0;
@@ -256,8 +276,7 @@ size_t merkle_mmr_append(merkle_mmr_t *m, const uint8_t leaf[32]) {
         if ((uint64_t)right < span) break;
         size_t left = right - (size_t)span;
         if (m->heights[left] != h) break;
-        /* Emit parent. */
-        if (!merkle__reserve(m, m->node_count + 1)) return 0;
+        /* Capacity was reserved up front; this slot is guaranteed. */
         m->hash_pair(m->nodes[left], m->nodes[right],
                      m->nodes[m->node_count]);
         m->heights[m->node_count] = (uint8_t)(h + 1);

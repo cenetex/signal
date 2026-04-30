@@ -4,7 +4,7 @@ Single-header C Merkle Mountain Range. Drop-in for any project that
 wants append-only commitments with O(log N) inclusion proofs.
 
 - **Upstream**: https://github.com/cenetex/merkle
-- **Pinned commit**: `3e0db9f` (v1.0.0, initial release)
+- **Pinned commit**: `4b821ad` (post-v1.0.0 — torn-write hardening from PR #1, dense round-trip + libFuzzer harness from PR #2)
 - **License**: MIT-0 (see upstream `LICENSE`)
 - **Spec**: upstream `SPEC.md` (canonical-form contract)
 - **Used by**: Signal #285 — destroyed-rock ledger; the closed-epoch
