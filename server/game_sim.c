@@ -4753,18 +4753,25 @@ void world_reset(world_t *w) {
      * as the high-tier specialist station. Hopper sits on ring 2
      * (ring 1 only has 3 slots and is already full with dock/relay
      * /furnace). */
+    /* Ring 1 (3 slots): dock + relay + crystal furnace. The ring-1
+     * furnace is paired with a hopper on ring 2 at slot 5 (≈300°,
+     * roughly opposite the ring-1 furnace at slot 2 ≈240°). */
     add_module_at(&w->stations[2], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
     add_module_at(&w->stations[2], MODULE_FURNACE, 1, 2);
-    /* Ring 2: hopper + furnace + fabs (silo at slot 4 dropped — hopper
-     * absorbs the ore-storage role now that ORE_SILO is gone). */
-    add_module_at(&w->stations[2], MODULE_HOPPER, 2, 0);
-    add_module_at(&w->stations[2], MODULE_FURNACE, 2, 1);
-    add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 2);
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 3);
-    /* Ring 3: furnace + shipyard (overflow silos at slots 2-3 dropped). */
+    /* Ring 2 (6 slots): chunks-feeder furnace at slot 0 paired with
+     * hopper at slot 3 (true 180° opposite). Fabs at 1+2; second
+     * hopper at slot 5 services the ring-1 furnace from across. */
+    add_module_at(&w->stations[2], MODULE_FURNACE, 2, 0);
+    add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 1);
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 2);
+    add_module_at(&w->stations[2], MODULE_HOPPER, 2, 3);
+    add_module_at(&w->stations[2], MODULE_HOPPER, 2, 5);
+    /* Ring 3 (9 slots): cuprite furnace at slot 0 paired with hopper
+     * at slot 4 (≈160°, the closest opposite slot in a 9-slot ring). */
     add_module_at(&w->stations[2], MODULE_FURNACE, 3, 0);
-    add_module_at(&w->stations[2], MODULE_SHIPYARD, 3, 1);
+    add_module_at(&w->stations[2], MODULE_SHIPYARD, 3, 2);
+    add_module_at(&w->stations[2], MODULE_HOPPER, 3, 4);
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[0] = STATION_RING_SPEED;
     w->stations[2].ring_offset[0] = 0.0f;
