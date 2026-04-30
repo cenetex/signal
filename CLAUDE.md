@@ -84,6 +84,24 @@ Stations emit signal, and signal range matters mechanically. Weak signal throttl
 
 Ships carry commodities in their hold. The **manifest layer** (`shared/manifest.h`, `cargo_unit_t`) adds named, traceable ingots — so a specific batch of ferrite ingots smelted at Prospect can be contracted for delivery to Kepler. This is live under the min-flow grade and is the foundation for the T1/T2/T3 chain work.
 
+## Save layout
+
+Per-player saves live under `saves/`:
+
+- `saves/pubkey/<base58(pubkey)>.sav` — once a client has registered
+  its persistent Ed25519 pubkey (Layer A.4 of #479). This is the
+  canonical layout: a returning player is recognized by their
+  cryptographic identity across server restarts and session-token
+  rotation.
+- `saves/legacy/<token_hex>.sav` — fallback for anonymous / pre-A.1
+  clients that haven't registered a pubkey, plus the destination of
+  any pre-A.4 saves migrated at startup. Players claim their legacy
+  save by signing `"claim-legacy-save-v1" || <token_hex>` with their
+  identity secret; the server verifies and renames the legacy file
+  into `saves/pubkey/`. First-claim-wins — see #479-A.4.
+
+`world.sav` is unchanged.
+
 ## Working Style
 
 - Prefer targeted changes over premature file splits. The codebase already split once; don't split further without need.

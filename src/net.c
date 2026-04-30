@@ -286,6 +286,30 @@ bool net_send_signed_action(uint8_t action_type,
     return true;
 }
 
+bool net_send_claim_legacy_save(const char *token_basename) {
+    if (!token_basename || !net_state.identity_secret_ready) return false;
+    size_t hex_len = strlen(token_basename);
+    if (hex_len == 0 || hex_len > 64) return false;
+    /* Sign domain || token_hex with the persistent identity. */
+    const char *domain = CLAIM_LEGACY_SAVE_DOMAIN;
+    size_t dlen = strlen(domain);
+    uint8_t msg[64 + 64];
+    if (dlen + hex_len > sizeof(msg)) return false;
+    memcpy(msg, domain, dlen);
+    memcpy(msg + dlen, token_basename, hex_len);
+    uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES];
+    signal_crypto_sign(sig, msg, dlen + hex_len, net_state.identity_secret);
+
+    uint8_t buf[2 + 64 + SIGNAL_CRYPTO_SIG_BYTES];
+    buf[0] = NET_MSG_CLAIM_LEGACY_SAVE;
+    buf[1] = (uint8_t)hex_len;
+    memcpy(&buf[2], token_basename, hex_len);
+    memcpy(&buf[2 + hex_len], sig, SIGNAL_CRYPTO_SIG_BYTES);
+    ws_send_binary(buf, (int)(2 + hex_len + SIGNAL_CRYPTO_SIG_BYTES));
+    printf("[net] sent legacy-save claim for %s\n", token_basename);
+    return true;
+}
+
 static void send_session_token(void) {
     uint8_t buf[16]; /* type(1) + token(8) + callsign(7) */
     buf[0] = NET_MSG_SESSION;
@@ -895,6 +919,31 @@ static void handle_message(const uint8_t* data, int len) {
                 }
                 net_state.callbacks.on_contracts(contracts, n);
             }
+        }
+        break;
+
+    case NET_MSG_LEGACY_SAVES_AVAILABLE:
+        /* Layer A.4 of #479 — server reports legacy saves the player
+         * could claim. For now we just log; a docked-UI integration is
+         * a follow-up issue. Operators can trigger
+         * net_send_claim_legacy_save() manually for a stranded player. */
+        if (len >= LEGACY_SAVES_HEADER) {
+            int count = data[1];
+            int max = (len - LEGACY_SAVES_HEADER) / LEGACY_SAVES_PREFIX_LEN;
+            if (count > max) count = max;
+            if (count > LEGACY_SAVES_MAX_LIST) count = LEGACY_SAVES_MAX_LIST;
+            printf("[net] %d legacy save(s) available — import via "
+                   "net_send_claim_legacy_save():\n", count);
+            for (int i = 0; i < count; i++) {
+                char prefix[LEGACY_SAVES_PREFIX_LEN + 1];
+                memcpy(prefix,
+                       &data[LEGACY_SAVES_HEADER + i * LEGACY_SAVES_PREFIX_LEN],
+                       LEGACY_SAVES_PREFIX_LEN);
+                prefix[LEGACY_SAVES_PREFIX_LEN] = '\0';
+                printf("[net]   [%d] %s...\n", i, prefix);
+            }
+            /* TODO(#479-A.5): surface this in the docked HUD as a one-tap
+             * import prompt. Today the operator drives the claim. */
         }
         break;
 

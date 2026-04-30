@@ -10,6 +10,7 @@
 #include "manifest.h"
 #include "mining.h"  /* mining_render_callsign for chain log copy */
 #include "net_protocol.h"
+#include "signal_crypto.h"
 #include "sim_asteroid.h"
 
 #include <stdio.h>
@@ -594,8 +595,99 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             (void)registry_register_pubkey(&world, pk, sp->session_token);
             printf("[server] player %d: registered pubkey %02x%02x%02x%02x...\n",
                    pid, pk[0], pk[1], pk[2], pk[3]);
+
+            /* Layer A.4 of #479: try to restore the player's record from
+             * a pubkey-keyed save. If none exists, advertise legacy saves
+             * (if any) so the client can present a claim UI. */
+            if (player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, pk)) {
+                printf("[server] player %d: restored save by pubkey\n", pid);
+            } else {
+                char prefixes[LEGACY_SAVES_MAX_LIST][LEGACY_SAVES_PREFIX_LEN + 1];
+                char names[LEGACY_SAVES_MAX_LIST][64];
+                int n = player_save_list_legacy(PLAYER_SAVE_DIR, prefixes, names,
+                                                LEGACY_SAVES_MAX_LIST);
+                if (n > 0) {
+                    uint8_t buf[LEGACY_SAVES_HEADER +
+                                LEGACY_SAVES_MAX_LIST * LEGACY_SAVES_PREFIX_LEN];
+                    buf[0] = NET_MSG_LEGACY_SAVES_AVAILABLE;
+                    buf[1] = (uint8_t)n;
+                    for (int i = 0; i < n; i++) {
+                        memcpy(&buf[LEGACY_SAVES_HEADER + i * LEGACY_SAVES_PREFIX_LEN],
+                               prefixes[i], LEGACY_SAVES_PREFIX_LEN);
+                    }
+                    ws_send(c, buf,
+                            (size_t)(LEGACY_SAVES_HEADER + n * LEGACY_SAVES_PREFIX_LEN));
+                    printf("[server] player %d: advertised %d legacy save(s)\n",
+                           pid, n);
+                }
+            }
         }
         break;
+    case NET_MSG_CLAIM_LEGACY_SAVE: {
+        /* Layer A.4 of #479. Client supplies (token_hex, signature). We
+         * verify sig against the registered pubkey, then rename the
+         * legacy save to the pubkey-keyed path and load it. */
+        if (len < 2) break;
+        server_player_t *sp = &world.players[pid];
+        if (!sp->pubkey_set) break;
+        uint8_t hex_len = data[1];
+        if (hex_len == 0 || hex_len > 64) break;
+        if (len < (int)(2 + hex_len + SIGNED_ACTION_SIG_SIZE)) break;
+        const uint8_t *hex = &data[2];
+        const uint8_t *sig = &data[2 + hex_len];
+
+        /* Reject any non-hex byte to keep the basename safe for filesystem. */
+        for (int i = 0; i < hex_len; i++) {
+            uint8_t ch = hex[i];
+            bool digit = (ch >= '0' && ch <= '9');
+            bool lower = (ch >= 'a' && ch <= 'f');
+            bool upper = (ch >= 'A' && ch <= 'F');
+            if (!digit && !lower && !upper) {
+                printf("[server] player %d: claim rejected (bad hex)\n", pid);
+                goto claim_done;
+            }
+        }
+
+        /* Reconstruct the signed message: domain || token_hex. */
+        const char *domain = CLAIM_LEGACY_SAVE_DOMAIN;
+        size_t dlen = strlen(domain);
+        uint8_t msg[64 + 64];
+        if (dlen + hex_len > sizeof(msg)) goto claim_done;
+        memcpy(msg, domain, dlen);
+        memcpy(msg + dlen, hex, hex_len);
+        if (!signal_crypto_verify(sig, msg, dlen + hex_len, sp->pubkey)) {
+            printf("[server] player %d: claim signature invalid\n", pid);
+            goto claim_done;
+        }
+
+        /* The wire format carries the full token base name *without*
+         * the "player_" prefix or the .sav suffix; legacy saves on disk
+         * use either the "player_<hex>" form (token-keyed) or
+         * "player_<slot>" form (anonymous slot fallback). Accept either:
+         * try the literal name first, then with the historical prefix. */
+        char basename[80];
+        if (hex_len + 1 > sizeof(basename)) goto claim_done;
+        memcpy(basename, hex, hex_len);
+        basename[hex_len] = '\0';
+
+        bool ok = player_save_rename_legacy_to_pubkey(PLAYER_SAVE_DIR,
+                                                       basename, sp->pubkey);
+        if (!ok) {
+            char prefixed[96];
+            snprintf(prefixed, sizeof(prefixed), "player_%s", basename);
+            ok = player_save_rename_legacy_to_pubkey(PLAYER_SAVE_DIR,
+                                                     prefixed, sp->pubkey);
+        }
+        if (!ok) {
+            printf("[server] player %d: claim rename failed (race / missing)\n", pid);
+            goto claim_done;
+        }
+        if (player_load_by_pubkey(sp, &world, PLAYER_SAVE_DIR, sp->pubkey)) {
+            printf("[server] player %d: claimed legacy save\n", pid);
+        }
+    claim_done:
+        break;
+    }
     case NET_MSG_SESSION:
         if (len >= 9 && !world.players[pid].session_ready) {
             const uint8_t *token = &data[1];
@@ -1605,6 +1697,10 @@ static void ensure_persistence_dirs(void) {
     mkdir(PLAYER_SAVE_DIR, 0755);
     mkdir(STATION_CATALOG_DIR, 0755);
 #endif
+    /* Layer A.4 of #479: ensure pubkey/ + legacy/ subdirs exist and any
+     * existing top-level *.sav files (v39 and earlier layout) get moved
+     * into legacy/ so the new path layout takes effect. Idempotent. */
+    player_save_migrate_legacy_layout(PLAYER_SAVE_DIR);
 }
 
 /* Layered persistence (#314):

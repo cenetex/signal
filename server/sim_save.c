@@ -28,8 +28,22 @@
 #include "manifest.h"
 #include "ship.h"
 #include "sim_ai.h"
+#include "base58.h"
+#include "protocol.h"
 #include <stdio.h>
 #include <string.h>
+#include <errno.h>
+#include <sys/stat.h>
+#include <sys/types.h>
+#ifdef _WIN32
+#include <direct.h>
+#include <io.h>
+#define mkdir_700(p) _mkdir(p)
+#else
+#include <unistd.h>
+#include <dirent.h>
+#define mkdir_700(p) mkdir((p), 0700)
+#endif
 
 /* ================================================================== */
 /* World persistence                                                   */
@@ -1286,21 +1300,171 @@ static void session_token_to_hex(const uint8_t token[8], char hex[17]) {
     hex[16] = '\0';
 }
 
-bool player_save(const server_player_t *sp, const char *dir, int slot) {
+/* Layer A.4 of #479 — per-player save layout.
+ *
+ *   <dir>/pubkey/<base58(pubkey)>.sav   if pubkey_set
+ *   <dir>/legacy/<token_hex>.sav        otherwise (anonymous / pre-A.1 client)
+ *
+ * Subdirectories are created on demand with 0700. The "pubkey" tier is
+ * the persistent identity story; "legacy" exists so an A.0/A.1 client
+ * (no registered pubkey) doesn't lose its save, and so existing v39
+ * saves survive the migration to be claimed-by-signature later. */
+#define LEGACY_SUBDIR "legacy"
+#define PUBKEY_SUBDIR "pubkey"
+
+static void ensure_save_subdirs(const char *dir) {
     char path[256];
-    ship_v4_t ship_disk;
-    /* Use session token for filename if available, fall back to slot.
-     * #339 slice A.2: PLY5 format lifts the empty-manifest guard and
-     * appends a manifest tail (count + packed cargo_unit_t entries)
-     * between the fixed ship blob and the CRC trailer. */
+    snprintf(path, sizeof(path), "%s/%s", dir, PUBKEY_SUBDIR);
+    (void)mkdir_700(path);
+    snprintf(path, sizeof(path), "%s/%s", dir, LEGACY_SUBDIR);
+    (void)mkdir_700(path);
+}
+
+static bool pubkey_is_zero32(const uint8_t pk[32]) {
+    for (int i = 0; i < 32; i++) if (pk[i]) return false;
+    return true;
+}
+
+/* Compute the on-disk save path for this player. Returns true if a path
+ * was produced; false only if the player has neither a pubkey nor a
+ * session_token (a wholly fresh slot — nothing to persist yet). */
+bool player_save_path(char *out, size_t outlen, const char *dir,
+                      const server_player_t *sp, int slot) {
     static const uint8_t zero_token[8] = {0};
+    if (sp->pubkey_set && !pubkey_is_zero32(sp->pubkey)) {
+        char b58[64];
+        if (base58_encode(sp->pubkey, 32, b58, sizeof(b58)) == 0) return false;
+        snprintf(out, outlen, "%s/%s/%s.sav", dir, PUBKEY_SUBDIR, b58);
+        return true;
+    }
     if (sp->session_ready && memcmp(sp->session_token, zero_token, 8) != 0) {
         char hex[17];
         session_token_to_hex(sp->session_token, hex);
-        snprintf(path, sizeof(path), "%s/player_%s.sav", dir, hex);
-    } else {
-        snprintf(path, sizeof(path), "%s/player_%d.sav", dir, slot);
+        snprintf(out, outlen, "%s/%s/player_%s.sav", dir, LEGACY_SUBDIR, hex);
+        return true;
     }
+    /* Fully anonymous fresh slot — fall back to the slot-numbered path,
+     * also under legacy/, so non-token disconnects don't pollute the
+     * top-level directory. */
+    snprintf(out, outlen, "%s/%s/player_%d.sav", dir, LEGACY_SUBDIR, slot);
+    return true;
+}
+
+/* One-shot startup migration: any top-level .sav files left behind from
+ * the v39-and-earlier layout get moved into <dir>/legacy/ so the new
+ * layout takes effect. Idempotent: missing source dir or missing files
+ * are no-ops. Files already in legacy/ or pubkey/ are untouched. */
+void player_save_migrate_legacy_layout(const char *dir) {
+    ensure_save_subdirs(dir);
+#ifdef _WIN32
+    /* Win32 dir scan is OS-specific; we don't ship the dedicated server
+     * on Windows. Document the limitation and skip — operators on Win32
+     * with v39 saves will need to move them into legacy/ by hand. */
+    (void)dir;
+#else
+    DIR *d = opendir(dir);
+    if (!d) return;
+    struct dirent *de;
+    while ((de = readdir(d)) != NULL) {
+        const char *name = de->d_name;
+        if (name[0] == '.') continue;
+        size_t len = strlen(name);
+        if (len < 5) continue;
+        if (strcmp(name + len - 4, ".sav") != 0) continue;
+        char src[512], dst[512];
+        snprintf(src, sizeof(src), "%s/%s", dir, name);
+        snprintf(dst, sizeof(dst), "%s/" LEGACY_SUBDIR "/%s", dir, name);
+        struct stat sst;
+        if (stat(src, &sst) != 0) continue;
+        if (!S_ISREG(sst.st_mode)) continue;
+        if (rename(src, dst) == 0) {
+            SIM_LOG("[sim] migrated legacy save %s -> %s\n", src, dst);
+        } else if (errno != ENOENT) {
+            /* If destination already exists, leave the source — operator
+             * can resolve. */
+        }
+    }
+    closedir(d);
+#endif
+}
+
+/* Enumerate up to `cap` legacy saves. Each entry's prefix
+ * (LEGACY_SAVES_PREFIX_LEN chars) and the full base name (without .sav
+ * suffix) are written into the parallel arrays. Returns the count. */
+int player_save_list_legacy(const char *dir,
+                            char prefixes[][LEGACY_SAVES_PREFIX_LEN + 1],
+                            char names[][64],
+                            int cap) {
+    int count = 0;
+#ifdef _WIN32
+    (void)dir; (void)prefixes; (void)names; (void)cap;
+    return 0;
+#else
+    char path[512];
+    snprintf(path, sizeof(path), "%s/" LEGACY_SUBDIR, dir);
+    DIR *d = opendir(path);
+    if (!d) return 0;
+    struct dirent *de;
+    while (count < cap && (de = readdir(d)) != NULL) {
+        const char *name = de->d_name;
+        if (name[0] == '.') continue;
+        size_t len = strlen(name);
+        if (len < 5) continue;
+        if (strcmp(name + len - 4, ".sav") != 0) continue;
+        size_t base_len = len - 4;
+        if (base_len >= 64) base_len = 63;
+        memcpy(names[count], name, base_len);
+        names[count][base_len] = '\0';
+        size_t pre = base_len < LEGACY_SAVES_PREFIX_LEN ?
+                     base_len : (size_t)LEGACY_SAVES_PREFIX_LEN;
+        memcpy(prefixes[count], names[count], pre);
+        prefixes[count][pre] = '\0';
+        count++;
+    }
+    closedir(d);
+    return count;
+#endif
+}
+
+/* Attempt to rename saves/legacy/<basename>.sav into
+ * saves/pubkey/<base58(pubkey)>.sav. Returns true on success, false on
+ * any failure (missing source, target exists, rename error, etc.).
+ * The caller is responsible for verifying the claim signature first. */
+bool player_save_rename_legacy_to_pubkey(const char *dir,
+                                         const char *basename,
+                                         const uint8_t pubkey[32]) {
+    if (!basename || !basename[0]) return false;
+    if (pubkey_is_zero32(pubkey)) return false;
+    /* Reject path traversal in the basename. */
+    for (const char *p = basename; *p; p++) {
+        if (*p == '/' || *p == '\\') return false;
+        if (*p == '.' && p[1] == '.') return false;
+    }
+    char b58[64];
+    if (base58_encode(pubkey, 32, b58, sizeof(b58)) == 0) return false;
+    char src[512], dst[512];
+    snprintf(src, sizeof(src), "%s/" LEGACY_SUBDIR "/%s.sav", dir, basename);
+    snprintf(dst, sizeof(dst), "%s/" PUBKEY_SUBDIR "/%s.sav", dir, b58);
+    ensure_save_subdirs(dir);
+    /* Refuse to clobber an existing pubkey save — first-claim-wins, and
+     * the player on this pubkey already has a record. */
+    struct stat dst_st;
+    if (stat(dst, &dst_st) == 0) return false;
+    if (rename(src, dst) != 0) return false;
+    SIM_LOG("[sim] claimed legacy save %s -> %s\n", src, dst);
+    return true;
+}
+
+bool player_save(const server_player_t *sp, const char *dir, int slot) {
+    char path[256];
+    ship_v4_t ship_disk;
+    /* #339 slice A.2: PLY5 format lifts the empty-manifest guard and
+     * appends a manifest tail (count + packed cargo_unit_t entries)
+     * between the fixed ship blob and the CRC trailer.
+     * #479 A.4: filename keyed by pubkey when registered, else by
+     * legacy session_token under saves/legacy/. */
+    ensure_save_subdirs(dir);
+    if (!player_save_path(path, sizeof(path), dir, sp, slot)) return false;
     FILE *f = fopen(path, "wb");
     if (!f) return false;
     encode_v4_ship(&ship_disk, &sp->ship);
@@ -1530,7 +1694,22 @@ bool player_load_by_token(server_player_t *sp, world_t *w, const char *dir,
                           const uint8_t token[8]) {
     char hex[17];
     session_token_to_hex(token, hex);
+    /* #479 A.4: legacy saves moved into <dir>/legacy/. Try the new
+     * location first, then the historical top-level path so any save
+     * that escaped the startup migration still loads. */
     char path[256];
+    snprintf(path, sizeof(path), "%s/" LEGACY_SUBDIR "/player_%s.sav", dir, hex);
+    if (player_load_from_path(sp, w, path, (int)sp->id)) return true;
     snprintf(path, sizeof(path), "%s/player_%s.sav", dir, hex);
+    return player_load_from_path(sp, w, path, (int)sp->id);
+}
+
+bool player_load_by_pubkey(server_player_t *sp, world_t *w, const char *dir,
+                           const uint8_t pubkey[32]) {
+    if (pubkey_is_zero32(pubkey)) return false;
+    char b58[64];
+    if (base58_encode(pubkey, 32, b58, sizeof(b58)) == 0) return false;
+    char path[256];
+    snprintf(path, sizeof(path), "%s/" PUBKEY_SUBDIR "/%s.sav", dir, b58);
     return player_load_from_path(sp, w, path, (int)sp->id);
 }

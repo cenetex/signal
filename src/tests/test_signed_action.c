@@ -265,7 +265,9 @@ TEST(test_signed_action_save_load_persists_nonce) {
     memcpy(sp2->pubkey, pk, 32);
     sp2->pubkey_set = true;
     ASSERT(registry_register_pubkey(w2, pk, sp2->session_token));
-    ASSERT(player_load_by_token(sp2, w2, dir, sp2->session_token));
+    /* Layer A.4 of #479: when a pubkey is registered, the save is keyed
+     * by pubkey, not by session_token. */
+    ASSERT(player_load_by_pubkey(sp2, w2, dir, pk));
     ASSERT(sp2->last_signed_nonce == 777);
 
     /* A signed action with the same nonce we already accepted is a replay. */

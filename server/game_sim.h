@@ -613,6 +613,29 @@ bool player_save(const server_player_t *sp, const char *dir, int slot);
 bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot);
 bool player_load_by_token(server_player_t *sp, world_t *w, const char *dir,
                           const uint8_t token[8]);
+/* Layer A.4 of #479 — load a player save keyed by pubkey. Returns true
+ * on hit. Searches <dir>/pubkey/<base58(pubkey)>.sav. */
+bool player_load_by_pubkey(server_player_t *sp, world_t *w, const char *dir,
+                           const uint8_t pubkey[32]);
+/* Compute the on-disk save path for this player. See sim_save.c. */
+bool player_save_path(char *out, size_t outlen, const char *dir,
+                      const server_player_t *sp, int slot);
+/* Migrate top-level *.sav files into <dir>/legacy/. Idempotent; safe to
+ * call on every server start. Layer A.4 of #479. */
+void player_save_migrate_legacy_layout(const char *dir);
+/* Enumerate up to `cap` legacy saves under <dir>/legacy/. Each entry's
+ * 8-char prefix and full base name (no .sav suffix) are written into
+ * the parallel arrays. Returns the count. */
+int player_save_list_legacy(const char *dir,
+                            char prefixes[][9],
+                            char names[][64],
+                            int cap);
+/* Rename <dir>/legacy/<basename>.sav -> <dir>/pubkey/<base58(pubkey)>.sav.
+ * Refuses to clobber an existing pubkey save. Caller must verify any
+ * authentication first. Returns true on success. */
+bool player_save_rename_legacy_to_pubkey(const char *dir,
+                                         const char *basename,
+                                         const uint8_t pubkey[32]);
 
 /* Cross-module sim helpers — defined in game_sim.c, used by sim_*.c. */
 void anchor_ship_in_station(server_player_t *sp, world_t *w);

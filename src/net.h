@@ -272,6 +272,18 @@ bool net_send_signed_action(uint8_t action_type,
 /* Returns true if a secret is installed and signed actions can be sent. */
 bool net_has_identity_secret(void);
 
+/* Layer A.4 of #479 — claim a legacy (token-keyed) save by signing the
+ * domain-separated token name with the persistent identity. Returns true
+ * if the message was queued. `token_basename` is the legacy save's base
+ * name without the .sav suffix (as advertised in NET_MSG_LEGACY_SAVES_
+ * AVAILABLE). The server verifies the signature, then renames the
+ * legacy save to the pubkey-keyed path and loads it.
+ *
+ * UI integration is intentionally minimal for now — operators can
+ * trigger this manually for stranded players; a docked-UI flow is a
+ * follow-up issue. */
+bool net_send_claim_legacy_save(const char *token_basename);
+
 /* Send the local player's input state to the server.
  * flags: bitmask of NET_INPUT_* values.
  * action: station interaction (0=none, 1=dock, 2=launch, etc.)

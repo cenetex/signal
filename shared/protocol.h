@@ -84,7 +84,50 @@ enum {
                                         * would torch the server (see PR description). Only events
                                         * that mutate persistent state need signatures.
                                         */
+    NET_MSG_LEGACY_SAVES_AVAILABLE = 0x34, /* server -> client. Layer A.4 of #479.
+                                            *
+                                            * Sent in response to NET_MSG_REGISTER_PUBKEY when no
+                                            * pubkey-keyed save exists for this pubkey but at least
+                                            * one legacy (token-keyed) save is present on disk. The
+                                            * client UI can prompt the player to import a legacy save.
+                                            *
+                                            *   [type:1=0x34][count:1][prefix:8][prefix:8]...
+                                            *
+                                            * `count` is the number of legacy saves listed (capped
+                                            * at LEGACY_SAVES_MAX_LIST). Each `prefix` is the first
+                                            * 8 ASCII bytes of the legacy save's hex token name —
+                                            * enough to identify it for a claim, not full disclosure
+                                            * of the original session token. */
+    NET_MSG_CLAIM_LEGACY_SAVE      = 0x35, /* client -> server. Layer A.4 of #479.
+                                            *
+                                            *   [type:1=0x35][token_hex_len:1][token_hex:N]
+                                            *   [signature:64]
+                                            *
+                                            * Server verifies the Ed25519 signature over
+                                            *   "claim-legacy-save-v1" || token_hex
+                                            * against the connection's registered pubkey, then
+                                            * renames saves/legacy/<token_hex>.sav ->
+                                            * saves/pubkey/<pubkey_b58>.sav and loads the player
+                                            * state. First-claim-wins; second client to race the
+                                            * same legacy save sees ENOENT and gets dropped.
+                                            *
+                                            * Threat-model note: signature ties the claim to a
+                                            * specific pubkey-private-key holder so a future
+                                            * federation chain log can audit who claimed what.
+                                            * It does NOT prove the claimant was the original
+                                            * owner of the legacy session token — that data
+                                            * predates Layer A.3's signed actions.
+                                            * TODO(#479-A.5): make claims auditable on the chain log. */
 };
+
+/* Layer A.4 of #479 — legacy-save migration constants. */
+#define LEGACY_SAVES_MAX_LIST     16   /* hard cap on legacy saves enumerated to a client */
+#define LEGACY_SAVES_PREFIX_LEN   8    /* first 8 hex chars of the legacy token name */
+#define LEGACY_SAVES_HEADER       2    /* type + count */
+/* The signed message used for NET_MSG_CLAIM_LEGACY_SAVE is the literal
+ * string CLAIM_LEGACY_SAVE_DOMAIN concatenated with the full hex token. */
+#define CLAIM_LEGACY_SAVE_DOMAIN  "claim-legacy-save-v1"
+#define CLAIM_LEGACY_SAVE_TOKEN_HEX_LEN 16 /* lowercase hex of the 8-byte token */
 
 /* NET_MSG_REGISTER_PUBKEY wire size: 1 + 32 = 33 bytes. */
 #define REGISTER_PUBKEY_MSG_SIZE 33
