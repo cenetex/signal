@@ -118,22 +118,22 @@ TEST(test_station_buy_price) {
     /* Empty hopper = 1× base (station pays full price to attract sellers) */
     ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 10.0f, 0.01f);
     /* Full hopper = 0.5× base (overstocked, pays less) */
-    station.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    station._inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
     ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 5.0f, 0.01f);
     /* Half full: 1 - 0.5*0.5 = 0.75× base */
-    station.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
+    station._inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
     ASSERT_EQ_FLOAT(station_buy_price(&station, COMMODITY_FERRITE_ORE), 7.5f, 0.01f);
     ASSERT_EQ_FLOAT(station_buy_price(NULL, COMMODITY_FERRITE_ORE), 0.0f, 0.01f);
     /* Sell price: empty = 2× base, full = 1× base */
-    station.inventory[COMMODITY_FERRITE_ORE] = 0.0f;
+    station._inventory_cache[COMMODITY_FERRITE_ORE] = 0.0f;
     ASSERT_EQ_FLOAT(station_sell_price(&station, COMMODITY_FERRITE_ORE), 20.0f, 0.01f);
-    station.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    station._inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
     ASSERT_EQ_FLOAT(station_sell_price(&station, COMMODITY_FERRITE_ORE), 10.0f, 0.01f);
 }
 
 TEST(test_station_inventory_amount) {
     station_t station = {0};
-    station.inventory[COMMODITY_FERRITE_INGOT] = 25.0f;
+    station._inventory_cache[COMMODITY_FERRITE_INGOT] = 25.0f;
     ASSERT_EQ_FLOAT(station_inventory_amount(&station, COMMODITY_FERRITE_INGOT), 25.0f, 0.01f);
     ASSERT_EQ_FLOAT(station_inventory_amount(NULL, COMMODITY_FERRITE_INGOT), 0.0f, 0.01f);
 }

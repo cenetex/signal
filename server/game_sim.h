@@ -109,7 +109,8 @@ static inline void spatial_grid_cell(const spatial_grid_t *g, vec2 pos, int *cx,
 /* Look up a cell by coordinates. Returns NULL if empty. */
 static inline const spatial_cell_t *spatial_grid_lookup(const spatial_grid_t *g, int cx, int cy) {
     if (!g->entries) return NULL;
-    uint32_t h = (uint32_t)((cx * 73856093) ^ (cy * 19349663));
+    /* Mul in unsigned space — signed * 73856093 overflows for |cx| > 29 (UB). */
+    uint32_t h = ((uint32_t)cx * 73856093u) ^ ((uint32_t)cy * 19349663u);
     for (uint32_t i = h & g->mask; ; i = (i + 1) & g->mask) {
         const sparse_cell_entry_t *e = &g->entries[i];
         if (e->key_x == INT32_MIN) return NULL;      /* empty slot */

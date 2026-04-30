@@ -856,7 +856,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 if (w->contracts[k].station_index == npc->home_station) continue;
                 commodity_t c = w->contracts[k].commodity;
                 if (c < COMMODITY_RAW_ORE_COUNT) continue; /* haulers carry ingots only */
-                if (home->inventory[c] < 0.5f) continue; /* no stock to fill */
+                if (home->_inventory_cache[c] < 0.5f) continue; /* no stock to fill */
                 float dist = fmaxf(1.0f, v2_len(v2_sub(w->stations[w->contracts[k].station_index].pos, home->pos)));
                 float score = contract_price(&w->contracts[k]) / dist;
                 if (score > best_score) {
@@ -869,11 +869,11 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 /* Load the commodity for this contract (leave reserve for players) */
                 commodity_t ingot = w->contracts[best_contract].commodity;
                 npc->dest_station = w->contracts[best_contract].station_index;
-                float avail = fmaxf(0.0f, home->inventory[ingot] - HAULER_RESERVE);
+                float avail = fmaxf(0.0f, home->_inventory_cache[ingot] - HAULER_RESERVE);
                 float take = fminf(avail, space);
                 if (take > 0.5f) {
                     npc->cargo[ingot] += take;
-                    home->inventory[ingot] -= take;
+                    home->_inventory_cache[ingot] -= take;
                     int whole = (int)floorf(take + 0.0001f);
                     if (whole > 0) {
                         if (station_manifest_drain_commodity(home, ingot, whole) > 0)
@@ -903,7 +903,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
 
                 for (int wi = 0; wi < want_count; wi++) {
                     commodity_t ingot = wants[wi];
-                    float avail = fmaxf(0.0f, home->inventory[ingot] - HAULER_RESERVE);
+                    float avail = fmaxf(0.0f, home->_inventory_cache[ingot] - HAULER_RESERVE);
                     float need;
                     bool seen = false;
 
@@ -912,7 +912,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     }
                     if (seen || avail <= 0.5f) continue;
 
-                    need = fmaxf(0.0f, MAX_PRODUCT_STOCK * 0.5f - dest->inventory[ingot]);
+                    need = fmaxf(0.0f, MAX_PRODUCT_STOCK * 0.5f - dest->_inventory_cache[ingot]);
                     if (need > best_need) {
                         best_need = need;
                         best_ingot = ingot;
@@ -920,11 +920,11 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 }
 
                 if (best_ingot < COMMODITY_COUNT) {
-                    float avail = fmaxf(0.0f, home->inventory[best_ingot] - HAULER_RESERVE);
+                    float avail = fmaxf(0.0f, home->_inventory_cache[best_ingot] - HAULER_RESERVE);
                     float take = fminf(avail, space);
                     if (take > 0.5f) {
                         npc->cargo[best_ingot] += take;
-                        home->inventory[best_ingot] -= take;
+                        home->_inventory_cache[best_ingot] -= take;
                         int whole = (int)floorf(take + 0.0001f);
                         if (whole > 0) {
                             if (station_manifest_drain_commodity(home, best_ingot, whole) > 0)
@@ -944,7 +944,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     if (!station_is_active(&w->stations[s])) continue;
                     float stock = 0.0f;
                     for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
-                        stock += fmaxf(0.0f, w->stations[s].inventory[c] - HAULER_RESERVE);
+                        stock += fmaxf(0.0f, w->stations[s]._inventory_cache[c] - HAULER_RESERVE);
                     if (stock > best_stock) { best_stock = stock; best_src = s; }
                 }
                 /* Stay docked at home and wait for stock or a contract.
@@ -985,15 +985,15 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
                 if (npc->cargo[i] <= 0.0f) continue;
                 float delivered = npc->cargo[i];
-                float before = dest->inventory[i];
-                dest->inventory[i] += delivered;
-                if (dest->inventory[i] > MAX_PRODUCT_STOCK)
-                    dest->inventory[i] = MAX_PRODUCT_STOCK;
+                float before = dest->_inventory_cache[i];
+                dest->_inventory_cache[i] += delivered;
+                if (dest->_inventory_cache[i] > MAX_PRODUCT_STOCK)
+                    dest->_inventory_cache[i] = MAX_PRODUCT_STOCK;
                 /* Mirror the float bump into the manifest so the trade
                  * picker (manifest-only) sees the new stock. Use the
                  * post-clamp delta so overflow doesn't create phantom
                  * manifest entries. */
-                int int_delta = (int)floorf(dest->inventory[i] + 0.0001f)
+                int int_delta = (int)floorf(dest->_inventory_cache[i] + 0.0001f)
                               - (int)floorf(before + 0.0001f);
                 if (int_delta > 0) {
                     if (station_manifest_seed_from_npc(dest, (commodity_t)i,
@@ -1028,7 +1028,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 /* Feed from station inventory into scaffolds */
                 ship_t hauler_ship = {0};
                 for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
-                    hauler_ship.cargo[c] = dest->inventory[c];
+                    hauler_ship.cargo[c] = dest->_inventory_cache[c];
                 if (dest->scaffold) {
                     float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - dest->scaffold_progress);
                     float deliver = fminf(hauler_ship.cargo[COMMODITY_FRAME], needed);
@@ -1047,9 +1047,9 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                  * server-side float check (game_sim.c try_buy_product)
                  * sees as 0 and silently rejects. */
                 for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-                    float consumed = dest->inventory[c] - hauler_ship.cargo[c];
+                    float consumed = dest->_inventory_cache[c] - hauler_ship.cargo[c];
                     if (consumed > 0.01f) {
-                        dest->inventory[c] -= consumed;
+                        dest->_inventory_cache[c] -= consumed;
                         int whole = (int)floorf(consumed + 0.0001f);
                         if (whole > 0) {
                             manifest_consume_by_commodity(&dest->manifest,
@@ -1093,7 +1093,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             float cur_hull = ship ? ship->hull : npc->hull;
             if (cur_hull < max_h - 0.5f
                 && station_has_module(home, MODULE_DOCK)) {
-                int kits = (int)floorf(home->inventory[COMMODITY_REPAIR_KIT] + 0.0001f);
+                int kits = (int)floorf(home->_inventory_cache[COMMODITY_REPAIR_KIT] + 0.0001f);
                 int missing = (int)ceilf(max_h - cur_hull);
                 int apply = kits < missing ? kits : missing;
                 if (apply > 0) {
@@ -1104,9 +1104,9 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                      * still gets credited. Hauler pays it back over
                      * subsequent deliveries. */
                     ledger_force_debit(home, npc->session_token, cost, ship);
-                    home->inventory[COMMODITY_REPAIR_KIT] -= (float)apply;
-                    if (home->inventory[COMMODITY_REPAIR_KIT] < 0.0f)
-                        home->inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+                    home->_inventory_cache[COMMODITY_REPAIR_KIT] -= (float)apply;
+                    if (home->_inventory_cache[COMMODITY_REPAIR_KIT] < 0.0f)
+                        home->_inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
                     if (manifest_consume_by_commodity(&home->manifest,
                                                      COMMODITY_REPAIR_KIT, apply) > 0)
                         home->manifest_dirty = true;
@@ -1130,11 +1130,11 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
              * trip, and the inter-station chain stalls. Force-debit so
              * the hauler is on the hook for upkeep just like a repair. */
             if (station_has_module(home, MODULE_DOCK)
-                && home->inventory[COMMODITY_REPAIR_KIT] >= 1.0f) {
+                && home->_inventory_cache[COMMODITY_REPAIR_KIT] >= 1.0f) {
                 float kit_price = home->base_price[COMMODITY_REPAIR_KIT];
                 if (kit_price < 0.01f) kit_price = 6.0f;
                 ledger_force_debit(home, npc->session_token, kit_price, ship);
-                home->inventory[COMMODITY_REPAIR_KIT] -= 1.0f;
+                home->_inventory_cache[COMMODITY_REPAIR_KIT] -= 1.0f;
                 if (manifest_consume_by_commodity(&home->manifest,
                                                   COMMODITY_REPAIR_KIT, 1) > 0)
                     home->manifest_dirty = true;

@@ -22,13 +22,13 @@ TEST(test_player_save_load_roundtrip) {
 TEST(test_world_save_load_preserves_stations) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
-    w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 42.0f;
-    w->stations[0].inventory[COMMODITY_FRAME] = 15.0f;
+    w->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 42.0f;
+    w->stations[0]._inventory_cache[COMMODITY_FRAME] = 15.0f;
     ASSERT(world_save(w, TMP("test_world.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, TMP("test_world.sav")));
-    ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_ORE], 42.0f, 0.01f);
-    ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FRAME], 15.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE], 42.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded->stations[0]._inventory_cache[COMMODITY_FRAME], 15.0f, 0.01f);
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
     remove(TMP("test_world.sav"));
@@ -512,15 +512,15 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
-    w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 20.0f;
+    w->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 20.0f;
     for (int i = 0; i < (int)(10.0f / SIM_DT); i++) world_sim_step(w, SIM_DT);
-    float ingots_before = w->stations[0].inventory[COMMODITY_FERRITE_INGOT];
+    float ingots_before = w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT];
     ASSERT(ingots_before > 0.0f);
     ASSERT(world_save(w, TMP("test_ingots.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(loaded != NULL);
     ASSERT(world_load(loaded, TMP("test_ingots.sav")));
-    ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_INGOT], ingots_before, 0.01f);
+    ASSERT_EQ_FLOAT(loaded->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT], ingots_before, 0.01f);
     remove(TMP("test_ingots.sav"));
     /* loaded + w auto-freed by WORLD_HEAP cleanup */
 }
@@ -600,7 +600,7 @@ TEST(test_save_load_preserves_player_outpost) {
     ASSERT(station_exists(&w->stations[slot]));
     ASSERT(w->stations[slot].scaffold);
     /* Deliver some frames to advance progress */
-    w->stations[slot].inventory[COMMODITY_FRAME] = 30.0f;
+    w->stations[slot]._inventory_cache[COMMODITY_FRAME] = 30.0f;
     for (int i = 0; i < 600; i++) world_sim_step(w, SIM_DT);
     float progress = w->stations[slot].scaffold_progress;
     int mod_count = w->stations[slot].module_count;
@@ -633,13 +633,13 @@ TEST(test_save_backward_compat_version_accepted) {
      * Station identity comes from catalog, session data from world save. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
-    w->stations[0].inventory[COMMODITY_FERRITE_ORE] = 77.0f;
+    w->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 77.0f;
     ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, TMP("test_compatcat")));
     ASSERT(world_save(w, TMP("test_compat.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     station_catalog_load_all(loaded->stations, MAX_STATIONS, TMP("test_compatcat"));
     ASSERT(world_load(loaded, TMP("test_compat.sav")));
-    ASSERT_EQ_FLOAT(loaded->stations[0].inventory[COMMODITY_FERRITE_ORE], 77.0f, 0.01f);
+    ASSERT_EQ_FLOAT(loaded->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE], 77.0f, 0.01f);
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
     remove(TMP("test_compat.sav"));

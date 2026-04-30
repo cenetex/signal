@@ -221,11 +221,11 @@ TEST(test_roundtrip_stations) {
 
     /* Mark station 0 as active so it gets serialized */
     stations[0].signal_range = 2200.0f;
-    stations[0].inventory[0] = 45.5f;
-    stations[0].inventory[1] = 12.3f;
-    stations[0].inventory[2] = 78.9f;
-    stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
-    stations[0].inventory[COMMODITY_FRAME] = 15.5f;
+    stations[0]._inventory_cache[0] = 45.5f;
+    stations[0]._inventory_cache[1] = 12.3f;
+    stations[0]._inventory_cache[2] = 78.9f;
+    stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = 20.0f;
+    stations[0]._inventory_cache[COMMODITY_FRAME] = 15.5f;
 
     uint8_t buf[2 + MAX_STATIONS * STATION_RECORD_SIZE];
     int len = serialize_stations(buf, stations);

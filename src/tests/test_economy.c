@@ -3,23 +3,23 @@
 TEST(test_station_production_yard_makes_frames) {
     station_t station = {0};
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
-    station.inventory[COMMODITY_FERRITE_INGOT] = 5.0f;
+    station._inventory_cache[COMMODITY_FERRITE_INGOT] = 5.0f;
     step_station_production(&station, 1, 1.0f);
-    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_FERRITE_INGOT], 3.0f, 0.001f);
-    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_FRAME], 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_FERRITE_INGOT], 3.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_FRAME], 1.0f, 0.001f);
 }
 
 TEST(test_station_production_beamworks_makes_modules) {
     station_t station = {0};
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_LASER_FAB };
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_TRACTOR_FAB };
-    station.inventory[COMMODITY_CUPRITE_INGOT] = 5.0f;
-    station.inventory[COMMODITY_CRYSTAL_INGOT] = 5.0f;
+    station._inventory_cache[COMMODITY_CUPRITE_INGOT] = 5.0f;
+    station._inventory_cache[COMMODITY_CRYSTAL_INGOT] = 5.0f;
     step_station_production(&station, 1, 1.0f);
-    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_CUPRITE_INGOT], 3.5f, 0.001f);
-    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_CRYSTAL_INGOT], 4.5f, 0.001f);
-    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_LASER_MODULE], 0.5f, 0.001f);
-    ASSERT_EQ_FLOAT(station.inventory[COMMODITY_TRACTOR_MODULE], 0.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_CUPRITE_INGOT], 3.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_CRYSTAL_INGOT], 4.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_LASER_MODULE], 0.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_TRACTOR_MODULE], 0.5f, 0.001f);
 }
 
 TEST(test_station_repair_cost_no_damage) {
@@ -49,7 +49,7 @@ TEST(test_can_afford_upgrade_dock_fallback) {
     ship.hull_class = HULL_CLASS_MINER;
     station_t station = {0};
     station.services = STATION_SERVICE_UPGRADE_HOLD;
-    station.inventory[COMMODITY_FRAME] = 100.0f;
+    station._inventory_cache[COMMODITY_FRAME] = 100.0f;
     station.base_price[COMMODITY_FRAME] = 22.0f;
     ASSERT(can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD,10000.0f));
 }
@@ -61,7 +61,7 @@ TEST(test_can_afford_upgrade_no_credits_for_dock_fallback) {
     ship.hull_class = HULL_CLASS_MINER;
     station_t station = {0};
     station.services = STATION_SERVICE_UPGRADE_HOLD;
-    station.inventory[COMMODITY_FRAME] = 100.0f;
+    station._inventory_cache[COMMODITY_FRAME] = 100.0f;
     station.base_price[COMMODITY_FRAME] = 22.0f;
     ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD,0.0f));
 }
@@ -72,7 +72,7 @@ TEST(test_can_afford_upgrade_no_product_anywhere) {
     ship.hull_class = HULL_CLASS_MINER;
     station_t station = {0};
     station.services = STATION_SERVICE_UPGRADE_HOLD;
-    station.inventory[COMMODITY_FRAME] = 0.0f;
+    station._inventory_cache[COMMODITY_FRAME] = 0.0f;
     ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD,10000.0f));
 }
 
@@ -94,9 +94,9 @@ TEST(test_contract_generated_from_hopper_deficit) {
     WORLD_DECL;
     world_reset(&w);
     /* Make ferrite the biggest deficit by filling the others */
-    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 10.0f;
-    w.stations[0].inventory[COMMODITY_CUPRITE_ORE] = REFINERY_HOPPER_CAPACITY;
-    w.stations[0].inventory[COMMODITY_CRYSTAL_ORE] = REFINERY_HOPPER_CAPACITY;
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 10.0f;
+    w.stations[0]._inventory_cache[COMMODITY_CUPRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    w.stations[0]._inventory_cache[COMMODITY_CRYSTAL_ORE] = REFINERY_HOPPER_CAPACITY;
     world_sim_step(&w, SIM_DT);
     /* Find contract for station 0, ferrite ore */
     contract_t *found = NULL;
@@ -128,11 +128,11 @@ TEST(test_contract_closes_when_deficit_filled) {
      * SIM_EVENT_CONTRACT_COMPLETE. See fix for issue #461. */
     WORLD_DECL;
     world_reset(&w);
-    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 10.0f;
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 10.0f;
     world_sim_step(&w, SIM_DT); /* generates contract (deficit > threshold) */
 
     /* 85% should NOT close the contract anymore — it's between open (90%) and close (95%) */
-    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.85f;
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.85f;
     world_sim_step(&w, SIM_DT);
     bool still_active = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
@@ -143,7 +143,7 @@ TEST(test_contract_closes_when_deficit_filled) {
     ASSERT(still_active);
 
     /* Above the 95% close threshold, contract closes */
-    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.96f;
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.96f;
     world_sim_step(&w, SIM_DT);
     bool still_active2 = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
@@ -210,8 +210,8 @@ TEST(test_hauler_fills_highest_value_contract) {
         .base_price = 50.0f, .age = 0.0f,
     };
     /* Give home station (0) inventory of both */
-    w.stations[0].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
-    w.stations[0].inventory[COMMODITY_CUPRITE_INGOT] = 20.0f;
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = 20.0f;
+    w.stations[0]._inventory_cache[COMMODITY_CUPRITE_INGOT] = 20.0f;
     /* Find the first hauler */
     npc_ship_t *hauler = NULL;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
@@ -235,7 +235,7 @@ TEST(test_one_contract_per_station) {
     world_reset(&w);
     /* Empty all hoppers to create demand */
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
-        w.stations[0].inventory[i] = 0.0f;
+        w.stations[0]._inventory_cache[i] = 0.0f;
     /* Run a few ticks to generate contracts */
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     /* Count contracts for station 0. Up to two are allowed per station:
@@ -306,16 +306,16 @@ TEST(test_dynamic_ore_price_deficit) {
     station_t st = {0};
     st.base_price[COMMODITY_FERRITE_ORE] = 10.0f;
     /* Buy price: empty=1× base, full=0.5× base */
-    st.inventory[COMMODITY_FERRITE_ORE] = 0.0f;
+    st._inventory_cache[COMMODITY_FERRITE_ORE] = 0.0f;
     ASSERT_EQ_FLOAT(station_buy_price(&st, COMMODITY_FERRITE_ORE), 10.0f, 0.1f);
-    st.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    st._inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
     ASSERT_EQ_FLOAT(station_buy_price(&st, COMMODITY_FERRITE_ORE), 5.0f, 0.1f);
-    st.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
+    st._inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY * 0.5f;
     ASSERT_EQ_FLOAT(station_buy_price(&st, COMMODITY_FERRITE_ORE), 7.5f, 0.1f);
     /* Sell price: empty=2× base, full=1× base */
-    st.inventory[COMMODITY_FERRITE_ORE] = 0.0f;
+    st._inventory_cache[COMMODITY_FERRITE_ORE] = 0.0f;
     ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FERRITE_ORE), 20.0f, 0.1f);
-    st.inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    st._inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
     ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FERRITE_ORE), 10.0f, 0.1f);
 }
 
@@ -324,9 +324,9 @@ TEST(test_product_price_tracks_ore) {
     st.base_price[COMMODITY_FRAME] = 20.0f;
     /* Sell price: empty=2× base, full=1× base */
     ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FRAME), 40.0f, 0.1f);
-    st.inventory[COMMODITY_FRAME] = MAX_PRODUCT_STOCK;
+    st._inventory_cache[COMMODITY_FRAME] = MAX_PRODUCT_STOCK;
     ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FRAME), 20.0f, 0.1f);
-    st.inventory[COMMODITY_FRAME] = MAX_PRODUCT_STOCK * 0.5f;
+    st._inventory_cache[COMMODITY_FRAME] = MAX_PRODUCT_STOCK * 0.5f;
     ASSERT_EQ_FLOAT(station_sell_price(&st, COMMODITY_FRAME), 25.0f, 0.1f);
 }
 
@@ -421,7 +421,7 @@ TEST(test_no_passive_heal_without_kits) {
     w.players[0].ship.hull = 50.0f;
     w.players[0].docked = true;
     w.players[0].current_station = 0;
-    w.stations[0].inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
     w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 0.0f;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT_EQ_FLOAT(w.players[0].ship.hull, 50.0f, 0.01f);
@@ -435,11 +435,11 @@ TEST(test_refinery_smelts_ore_in_inventory) {
     /* Verify Prospect has a furnace */
     ASSERT(station_has_module(&w.stations[0], MODULE_FURNACE));
     /* Put ore directly in station inventory (as if delivered by fragments) */
-    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 10.0f;
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 10.0f;
     /* Run sim for 10 seconds — should smelt ore into ingots */
     for (int i = 0; i < (int)(10.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
-    float ingots = w.stations[0].inventory[COMMODITY_FERRITE_INGOT];
+    float ingots = w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT];
     ASSERT(ingots > 0.0f);
 }
 
@@ -455,18 +455,18 @@ TEST(test_kit_fab_requires_shipyard) {
     ASSERT(!station_has_module(&w.stations[0], MODULE_SHIPYARD));
     ASSERT(station_has_module(&w.stations[1], MODULE_SHIPYARD));
     for (int s = 0; s < 2; s++) {
-        w.stations[s].inventory[COMMODITY_FRAME]          = 5.0f;
-        w.stations[s].inventory[COMMODITY_LASER_MODULE]   = 5.0f;
-        w.stations[s].inventory[COMMODITY_TRACTOR_MODULE] = 5.0f;
-        w.stations[s].inventory[COMMODITY_REPAIR_KIT]     = 0.0f;
+        w.stations[s]._inventory_cache[COMMODITY_FRAME]          = 5.0f;
+        w.stations[s]._inventory_cache[COMMODITY_LASER_MODULE]   = 5.0f;
+        w.stations[s]._inventory_cache[COMMODITY_TRACTOR_MODULE] = 5.0f;
+        w.stations[s]._inventory_cache[COMMODITY_REPAIR_KIT]     = 0.0f;
         w.stations[s].repair_kit_fab_timer = 0.0f;
     }
     /* Run long enough for at least one fab cycle (REPAIR_KIT_FAB_PERIOD = 30s). */
     for (int i = 0; i < (int)(35.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
     /* Shipyard station produces kits; dock-only station does not. */
-    ASSERT(w.stations[1].inventory[COMMODITY_REPAIR_KIT] > 0.0f);
-    ASSERT_EQ_FLOAT(w.stations[0].inventory[COMMODITY_REPAIR_KIT], 0.0f, 0.01f);
+    ASSERT(w.stations[1]._inventory_cache[COMMODITY_REPAIR_KIT] > 0.0f);
+    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT], 0.0f, 0.01f);
 }
 
 TEST(test_kit_import_contract_at_consumer_station) {
@@ -479,7 +479,7 @@ TEST(test_kit_import_contract_at_consumer_station) {
     ASSERT(station_has_module(&w.stations[0], MODULE_DOCK));
     ASSERT(!station_has_module(&w.stations[0], MODULE_SHIPYARD));
     /* Drain Prospect's kit inventory to force the deficit. */
-    w.stations[0].inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
     /* Run a few seconds for the contract step to fire. */
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     bool found = false;
@@ -503,7 +503,7 @@ TEST(test_kit_import_contract_skips_shipyard_stations) {
     WORLD_DECL;
     world_reset(&w);
     ASSERT(station_has_module(&w.stations[1], MODULE_SHIPYARD));
-    w.stations[1].inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+    w.stations[1]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         contract_t *c = &w.contracts[k];
@@ -532,7 +532,7 @@ TEST(test_repair_drains_ship_cargo_first) {
 
     /* Force the repair service (default Prospect lacks REPAIR_BAY). */
     w.stations[0].services |= STATION_SERVICE_REPAIR;
-    w.stations[0].inventory[COMMODITY_REPAIR_KIT] = 100.0f;
+    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT] = 100.0f;
     w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 50.0f;
     float max_hull = ship_max_hull(&w.players[0].ship);
     w.players[0].ship.hull = max_hull - 30.0f; /* 30 HP missing */
@@ -545,7 +545,7 @@ TEST(test_repair_drains_ship_cargo_first) {
     /* Hull restored, ship cargo drained, station inventory untouched. */
     ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull, 0.5f);
     ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_REPAIR_KIT], 20.0f, 0.5f);
-    ASSERT_EQ_FLOAT(w.stations[0].inventory[COMMODITY_REPAIR_KIT], 100.0f, 0.5f);
+    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT], 100.0f, 0.5f);
 
     /* Charge: only labor (no station retail). 30 HP * 1 cr/HP. */
     float bal_after = ledger_balance(&w.stations[0],
@@ -568,7 +568,7 @@ TEST(test_repair_falls_back_to_station_inventory) {
 
     w.stations[0].services |= STATION_SERVICE_REPAIR;
     w.stations[0].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
-    w.stations[0].inventory[COMMODITY_REPAIR_KIT]  = MAX_PRODUCT_STOCK; /* full → 1× */
+    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT]  = MAX_PRODUCT_STOCK; /* full → 1× */
     w.players[0].ship.cargo[COMMODITY_REPAIR_KIT]  = 0.0f;
     float max_hull = ship_max_hull(&w.players[0].ship);
     w.players[0].ship.hull = max_hull - 10.0f;
@@ -580,7 +580,7 @@ TEST(test_repair_falls_back_to_station_inventory) {
 
     /* 10 HP from station: 10 kits drained, charge = 10 * (6 + 1) = 70 cr. */
     ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull, 0.5f);
-    ASSERT_EQ_FLOAT(w.stations[0].inventory[COMMODITY_REPAIR_KIT],
+    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT],
                     MAX_PRODUCT_STOCK - 10.0f, 0.5f);
     float charged = bal_before - ledger_balance(&w.stations[0],
                                                 w.players[0].session_token);
@@ -602,7 +602,7 @@ TEST(test_repair_at_shipyard_no_labor_fee) {
 
     w.stations[1].services |= STATION_SERVICE_REPAIR;
     w.stations[1].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
-    w.stations[1].inventory[COMMODITY_REPAIR_KIT]  = MAX_PRODUCT_STOCK;
+    w.stations[1]._inventory_cache[COMMODITY_REPAIR_KIT]  = MAX_PRODUCT_STOCK;
     w.players[0].ship.cargo[COMMODITY_REPAIR_KIT]  = 0.0f;
     float max_hull = ship_max_hull(&w.players[0].ship);
     w.players[0].ship.hull = max_hull - 10.0f;
@@ -630,7 +630,7 @@ TEST(test_repair_partial_when_kits_short) {
     w.players[0].docked = true;
     w.players[0].current_station = 0;
 
-    w.stations[0].inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
     w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 0.0f;
     float max_hull = ship_max_hull(&w.players[0].ship);
     w.players[0].ship.hull = max_hull - 20.0f;
@@ -653,18 +653,18 @@ TEST(test_furnace_without_hopper_does_not_smelt) {
     rebuild_station_services(&w.stations[0]);
     w.stations[0].modules[0] = (station_module_t){ .type = MODULE_FURNACE, .ring = 2, .slot = 0, .scaffold = false, .build_progress = 1.0f };
     w.stations[0].module_count = 1;
-    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 100.0f;
-    float initial_ingots = w.stations[0].inventory[COMMODITY_FERRITE_INGOT];
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 100.0f;
+    float initial_ingots = w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT];
     for (int i = 0; i < (int)(5.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
-    ASSERT_EQ_FLOAT(w.stations[0].inventory[COMMODITY_FERRITE_INGOT],
+    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
                     initial_ingots, 0.001f);
     /* Add a hopper and let it run again — now it should smelt. */
     w.stations[0].modules[1] = (station_module_t){ .type = MODULE_HOPPER, .ring = 1, .slot = 0, .scaffold = false, .build_progress = 1.0f };
     w.stations[0].module_count = 2;
     for (int i = 0; i < (int)(5.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
-    ASSERT(w.stations[0].inventory[COMMODITY_FERRITE_INGOT] > initial_ingots);
+    ASSERT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] > initial_ingots);
 }
 
 TEST(test_commodity_volume_kit_dense) {

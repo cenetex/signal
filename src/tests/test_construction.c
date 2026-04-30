@@ -268,7 +268,7 @@ TEST(test_world_seed_station_manifests_matches_float) {
     world_seed_station_manifests(&w);
     for (int s = 0; s < 3; s++) {
         for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-            int expected = (int)floorf(w.stations[s].inventory[c] + 0.0001f);
+            int expected = (int)floorf(w.stations[s]._inventory_cache[c] + 0.0001f);
             int got = manifest_count_by_commodity(&w.stations[s].manifest,
                                                   (commodity_t)c);
             ASSERT_EQ_INT(got, expected);
@@ -813,7 +813,7 @@ TEST(test_scaffold_full_pipeline) {
      * step_module_activation will route it to the scaffold. */
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
     float cost = module_build_cost_lookup(MODULE_FURNACE);
-    w.stations[outpost].inventory[mat] = cost;
+    w.stations[outpost]._inventory_cache[mat] = cost;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(module_is_fully_supplied(m)); /* fully supplied, timer may have started */
 
@@ -994,13 +994,13 @@ TEST(test_placed_scaffold_supply_phase) {
     /* Deliver half the material */
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
     float cost = module_build_cost_lookup(MODULE_FURNACE);
-    w.stations[outpost].inventory[mat] = cost * 0.5f;
+    w.stations[outpost]._inventory_cache[mat] = cost * 0.5f;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(m->build_progress > 0.4f && m->build_progress < 0.6f);
     ASSERT(m->scaffold); /* still building */
 
     /* Deliver the rest */
-    w.stations[outpost].inventory[mat] = cost * 0.5f;
+    w.stations[outpost]._inventory_cache[mat] = cost * 0.5f;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(module_is_fully_supplied(m)); /* fully supplied, timer may have started */
 
@@ -1058,7 +1058,7 @@ TEST(test_construction_contract_closes_on_activation) {
 
     /* Supply and activate */
     float cost = module_build_cost_lookup(MODULE_FURNACE);
-    w.stations[outpost].inventory[mat] = cost;
+    w.stations[outpost]._inventory_cache[mat] = cost;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(module_is_fully_supplied(m)); /* fully supplied */
     /* Run build timer */
@@ -1089,7 +1089,7 @@ TEST(test_stale_contract_does_not_block_next_need) {
     /* Supply, build, activate */
     commodity_t mat = module_build_material_lookup(MODULE_FURNACE);
     float cost = module_build_cost_lookup(MODULE_FURNACE);
-    w.stations[outpost].inventory[mat] = cost;
+    w.stations[outpost]._inventory_cache[mat] = cost;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     for (int i = 0; i < 2400; i++) world_sim_step(&w, SIM_DT);
     ASSERT(!m->scaffold);
@@ -1127,7 +1127,7 @@ TEST(test_construction_contract_checks_scaffold_not_threshold) {
     /* Deliver a partial amount (not enough to fully supply).
      * But make the station inventory exceed the 80% generic threshold
      * by adding a different commodity that fills the buffer. */
-    w.stations[outpost].inventory[mat] = cost * 0.3f; /* partial supply */
+    w.stations[outpost]._inventory_cache[mat] = cost * 0.3f; /* partial supply */
     world_sim_step(&w, SIM_DT);
 
     /* After one tick, step_module_activation routed the partial amount
@@ -1146,7 +1146,7 @@ TEST(test_construction_contract_checks_scaffold_not_threshold) {
     ASSERT(contract_alive);
 
     /* Now deliver the rest */
-    w.stations[outpost].inventory[mat] = cost;
+    w.stations[outpost]._inventory_cache[mat] = cost;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     ASSERT(module_is_fully_supplied(m)); /* fully supplied */
 }
@@ -1316,7 +1316,7 @@ TEST(test_module_flow_same_ring_transfer) {
     ASSERT(w.stations[1].module_output[furnace_idx] < 10.0f);
     ASSERT(w.stations[1].module_input[press_idx] > 0.0f ||
            w.stations[1].module_output[press_idx] > 0.0f ||
-           w.stations[1].inventory[COMMODITY_FRAME] > 0.0f);
+           w.stations[1]._inventory_cache[COMMODITY_FRAME] > 0.0f);
 }
 
 TEST(test_module_flow_production_fills_buffers) {
@@ -1326,8 +1326,8 @@ TEST(test_module_flow_production_fills_buffers) {
     WORLD_DECL;
     world_reset(&w);
     /* Seed Kepler with frame-press input */
-    w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 50.0f;
-    float frames_before = w.stations[1].inventory[COMMODITY_FRAME];
+    w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 50.0f;
+    float frames_before = w.stations[1]._inventory_cache[COMMODITY_FRAME];
     /* Find frame press */
     int press_idx = -1;
     for (int i = 0; i < w.stations[1].module_count; i++) {
@@ -1342,10 +1342,10 @@ TEST(test_module_flow_production_fills_buffers) {
 
     /* Production should have pulled ferrite into the chain, and either
      * buffered or stocked some downstream result. */
-    ASSERT(w.stations[1].inventory[COMMODITY_FERRITE_INGOT] < 50.0f);
+    ASSERT(w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] < 50.0f);
     ASSERT(w.stations[1].module_input[press_idx] > 0.0f ||
            w.stations[1].module_output[press_idx] > 0.0f ||
-           w.stations[1].inventory[COMMODITY_FRAME] > frames_before);
+           w.stations[1]._inventory_cache[COMMODITY_FRAME] > frames_before);
 }
 
 TEST(test_module_flow_does_not_overflow_capacity) {
@@ -1398,10 +1398,10 @@ TEST(test_module_flow_storage_feeds_consumer) {
 
     /* Seed the hopper-side: put raw ferrite in station inventory and
      * verify it actually moves into the flow graph. */
-    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 50.0f;
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 50.0f;
     w.stations[0].module_output[hopper_idx] = 0.0f;
     w.stations[0].module_input[furnace_idx] = 0.0f;
-    float ore_before = w.stations[0].inventory[COMMODITY_FERRITE_ORE];
+    float ore_before = w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE];
 
     /* One second of sim — hopper should refill its output from inventory
      * and the flow stepper should push it onward. */
@@ -1412,8 +1412,8 @@ TEST(test_module_flow_storage_feeds_consumer) {
      * storage→flow is connected. */
     bool flowed = w.stations[0].module_output[hopper_idx] > 0.0f
                || w.stations[0].module_input[furnace_idx] > 0.0f
-               || w.stations[0].inventory[COMMODITY_FERRITE_INGOT] > 0.0f
-               || w.stations[0].inventory[COMMODITY_FERRITE_ORE] < ore_before - 0.5f;
+               || w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] > 0.0f
+               || w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] < ore_before - 0.5f;
     ASSERT(flowed);
 }
 

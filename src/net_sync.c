@@ -141,7 +141,7 @@ void apply_remote_stations(uint8_t index, const float* inventory, float credit_p
     if (index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[index];
     for (int i = 0; i < COMMODITY_COUNT; i++)
-        st->inventory[i] = inventory[i];
+        st->_inventory_cache[i] = inventory[i];
     st->credit_pool = credit_pool;
 }
 

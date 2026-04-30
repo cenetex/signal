@@ -207,7 +207,8 @@ static void spatial_grid_clear(spatial_grid_t *g) {
 static spatial_cell_t *spatial_grid_get_or_create(spatial_grid_t *g, int cx, int cy) {
     spatial_grid_ensure(g);
     if (!g->entries) return NULL; /* OOM — degrade gracefully */
-    uint32_t h = (uint32_t)((cx * 73856093) ^ (cy * 19349663));
+    /* Mul in unsigned space — signed * 73856093 overflows for |cx| > 29 (UB). */
+    uint32_t h = ((uint32_t)cx * 73856093u) ^ ((uint32_t)cy * 19349663u);
     for (uint32_t i = h & g->mask; ; i = (i + 1) & g->mask) {
         sparse_cell_entry_t *e = &g->entries[i];
         if (e->key_x == INT32_MIN) {
@@ -1013,7 +1014,7 @@ static bool try_sell_one_unit(world_t *w, server_player_t *sp,
     if (!station_consumes(st, commodity)) return false;
     if (sp->ship.cargo[commodity] < 0.999f) return false; /* < 1 unit */
     float capacity = MAX_PRODUCT_STOCK;
-    float space = fmaxf(0.0f, capacity - st->inventory[commodity]);
+    float space = fmaxf(0.0f, capacity - st->_inventory_cache[commodity]);
     if (space < 0.999f) {
         emit_event(w, (sim_event_t){
             .type = SIM_EVENT_ORDER_REJECTED,
@@ -1058,9 +1059,9 @@ static bool try_sell_one_unit(world_t *w, server_player_t *sp,
     if (moved <= 0) return false;
     sp->ship.cargo[commodity] -= 1.0f;
     if (sp->ship.cargo[commodity] < 0.0f) sp->ship.cargo[commodity] = 0.0f;
-    st->inventory[commodity] += 1.0f;
-    if (st->inventory[commodity] > MAX_PRODUCT_STOCK)
-        st->inventory[commodity] = MAX_PRODUCT_STOCK;
+    st->_inventory_cache[commodity] += 1.0f;
+    if (st->_inventory_cache[commodity] > MAX_PRODUCT_STOCK)
+        st->_inventory_cache[commodity] = MAX_PRODUCT_STOCK;
     manifest_mark_station_dirty(w, &st->manifest);
 
     st->credit_pool -= graded_price;
@@ -1120,7 +1121,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
      * players no longer carry raw ore in ship.cargo[] — fragments ride
      * in ship.towed_fragments[] and are consumed by furnaces at dock.
      * Ore-contract fulfillment is driven by smelter-throughput bumping
-     * station.inventory[ORE], not by this delivery path. Leaving the
+     * station._inventory_cache[ORE], not by this delivery path. Leaving the
      * ore branch in would be a silent no-op. */
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         contract_t *ct = &w->contracts[k];
@@ -1131,14 +1132,14 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         if (selective && filter != c) continue;
         if (sp->ship.cargo[c] < 0.01f) continue;
         float capacity = MAX_PRODUCT_STOCK;
-        float space = fmaxf(0.0f, capacity - st->inventory[c]);
+        float space = fmaxf(0.0f, capacity - st->_inventory_cache[c]);
         if (space < 0.01f) continue;
         float deliver = fminf(fminf(sp->ship.cargo[c], ct->quantity_needed), space);
         float price_per = contract_price(ct);
         payout += deliver * price_per;
         if (deliver > 0.01f) sold_against_contract = true;
         sp->ship.cargo[c] -= deliver;
-        st->inventory[c] += deliver;
+        st->_inventory_cache[c] += deliver;
         /* Phase 1 manifest-first: move whole-unit deliveries across the
          * ship/station manifests so provenance survives the transaction.
          * Fractional deliveries still ride the float dual-write. Grade
@@ -1191,14 +1192,14 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         had_sellable_cargo = true;
         {
             float capacity = MAX_PRODUCT_STOCK;
-            float space = fmaxf(0.0f, capacity - st->inventory[buy]);
+            float space = fmaxf(0.0f, capacity - st->_inventory_cache[buy]);
             if (space <= 0.01f) tried_but_full = true;
             if (space > 0.01f) {
                 float accepted = fminf(sp->ship.cargo[buy], space);
                 float price = station_buy_price(st, buy);
                 payout += accepted * price;
                 sp->ship.cargo[buy] -= accepted;
-                st->inventory[buy] += accepted;
+                st->_inventory_cache[buy] += accepted;
                 /* Manifest dual-write + per-unit grade bonus — see contract branch. */
                 int whole = (int)floorf(accepted + 0.0001f);
                 if (whole > 0) {
@@ -1285,7 +1286,7 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
      * LABOR_FEE_PER_HP for the install. Partial repair is allowed if
      * neither source has enough kits. */
     int kits_in_cargo  = (int)floorf(sp->ship.cargo[COMMODITY_REPAIR_KIT] + 0.0001f);
-    int kits_at_station = (int)floorf(st->inventory[COMMODITY_REPAIR_KIT] + 0.0001f);
+    int kits_at_station = (int)floorf(st->_inventory_cache[COMMODITY_REPAIR_KIT] + 0.0001f);
     int hp_needed       = (int)ceilf(missing);
     int hp_apply        = hp_needed;
     if (hp_apply > kits_in_cargo + kits_at_station)
@@ -1306,9 +1307,9 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
 
     /* Drain station inventory + station manifest for the fallback. */
     if (from_station > 0) {
-        st->inventory[COMMODITY_REPAIR_KIT] -= (float)from_station;
-        if (st->inventory[COMMODITY_REPAIR_KIT] < 0.0f)
-            st->inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+        st->_inventory_cache[COMMODITY_REPAIR_KIT] -= (float)from_station;
+        if (st->_inventory_cache[COMMODITY_REPAIR_KIT] < 0.0f)
+            st->_inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
         manifest_consume_by_commodity(&st->manifest,
                                       COMMODITY_REPAIR_KIT, from_station);
         st->manifest_dirty = true;
@@ -1346,7 +1347,7 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
     commodity_t comm = (commodity_t)(COMMODITY_FRAME + required);
     int units_needed = (int)ceilf(upgrade_product_cost(&sp->ship, upgrade));
     int in_cargo  = (int)floorf(sp->ship.cargo[comm] + 0.0001f);
-    int at_station = (int)floorf(st->inventory[comm] + 0.0001f);
+    int at_station = (int)floorf(st->_inventory_cache[comm] + 0.0001f);
     if (in_cargo + at_station < units_needed) return;
 
     int from_cargo   = (units_needed < in_cargo) ? units_needed : in_cargo;
@@ -1362,8 +1363,8 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
         manifest_consume_by_commodity(&sp->ship.manifest, comm, from_cargo);
     }
     if (from_station > 0) {
-        st->inventory[comm] -= (float)from_station;
-        if (st->inventory[comm] < 0.0f) st->inventory[comm] = 0.0f;
+        st->_inventory_cache[comm] -= (float)from_station;
+        if (st->_inventory_cache[comm] < 0.0f) st->_inventory_cache[comm] = 0.0f;
         manifest_consume_by_commodity(&st->manifest, comm, from_station);
         st->manifest_dirty = true;
     }
@@ -2762,7 +2763,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
              * server says avail=0". */
             float available = (c >= COMMODITY_RAW_ORE_COUNT)
                 ? (float)manifest_count_by_commodity(&docked_st->manifest, c)
-                : docked_st->inventory[c];
+                : docked_st->_inventory_cache[c];
             float free_volume = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
             float vol = commodity_volume(c);
             float space = (vol > FLOAT_EPSILON) ? (free_volume / vol) : free_volume;
@@ -2823,8 +2824,8 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             }
             if (charge_amount > 0.01f && ledger_spend(docked_st, sp->session_token, charge_cost, &sp->ship)) {
                 sp->ship.cargo[c] += charge_amount;
-                docked_st->inventory[c] -= charge_amount;
-                if (docked_st->inventory[c] < 0.0f) docked_st->inventory[c] = 0.0f;
+                docked_st->_inventory_cache[c] -= charge_amount;
+                if (docked_st->_inventory_cache[c] < 0.0f) docked_st->_inventory_cache[c] = 0.0f;
                 if (!finished && whole > 0) {
                     moved = manifest_transfer_by_commodity_ex(
                         &docked_st->manifest, &sp->ship.manifest,
@@ -3077,7 +3078,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                             grade_ok = false;
                         }
                     }
-                    float available = grade_ok ? nearby_st->inventory[c] : 0.0f;
+                    float available = grade_ok ? nearby_st->_inventory_cache[c] : 0.0f;
                     float base = station_sell_price(nearby_st, c);
                     float gmult = (sp->input.buy_grade < MINING_GRADE_COUNT)
                         ? mining_payout_multiplier((mining_grade_t)sp->input.buy_grade)
@@ -3090,7 +3091,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                         float cost = amount * price_per;
                         if (ledger_spend(nearby_st, sp->session_token, cost, &sp->ship)) {
                             sp->ship.cargo[c] += amount;
-                            nearby_st->inventory[c] -= amount;
+                            nearby_st->_inventory_cache[c] -= amount;
                             /* Phase 1/2.5 manifest-first: if the station
                              * has a matching manifest unit, transfer it
                              * to the ship so the ingot's provenance (pub,
@@ -3447,7 +3448,7 @@ static void step_contracts(world_t *w, float dt) {
                  * within seconds — so we only fire CONTRACT_COMPLETE when
                  * a player/NPC actually claimed and delivered. Otherwise
                  * the contract just retires silently. */
-                float current = st->inventory[c];
+                float current = st->_inventory_cache[c];
                 float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.95f : MAX_PRODUCT_STOCK * 0.95f;
                 if (current >= threshold) {
                     bool was_claimed = (w->contracts[i].claimed_by >= 0);
@@ -3563,7 +3564,7 @@ static void step_contracts(world_t *w, float dt) {
             int worst_ore = -1;
             for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
                 if (!sim_can_smelt_ore(st, (commodity_t)c)) continue;
-                float deficit = REFINERY_HOPPER_CAPACITY * 0.5f - st->inventory[c];
+                float deficit = REFINERY_HOPPER_CAPACITY * 0.5f - st->_inventory_cache[c];
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_ore = c; }
             }
             if (worst_ore >= 0) {
@@ -3607,7 +3608,7 @@ static void step_contracts(world_t *w, float dt) {
                  * filled past cap before Kepler dropped low enough to
                  * trigger a contract. 90% keeps haulers moving while
                  * still gating contracts on actual demand. */
-                float deficit = MAX_PRODUCT_STOCK * 0.9f - st->inventory[checks[j].ingot];
+                float deficit = MAX_PRODUCT_STOCK * 0.9f - st->_inventory_cache[checks[j].ingot];
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
             }
             if (worst_idx >= 0) {
@@ -3640,7 +3641,7 @@ static void step_contracts(world_t *w, float dt) {
             const float kit_input_target = 12.0f; /* keep ~3 batches' worth on hand */
             for (int j = 0; j < 3; j++) {
                 if (station_has_module(st, kit_inputs[j].producer)) continue;
-                float deficit = kit_input_target - st->inventory[kit_inputs[j].c];
+                float deficit = kit_input_target - st->_inventory_cache[kit_inputs[j].c];
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
             }
             if (worst_idx >= 0) {
@@ -3668,8 +3669,8 @@ static void step_contracts(world_t *w, float dt) {
             && station_has_module(st, MODULE_DOCK)
             && !station_has_module(st, MODULE_SHIPYARD)) {
             const float kit_import_threshold = REPAIR_KIT_STOCK_CAP * 0.25f;
-            if (st->inventory[COMMODITY_REPAIR_KIT] < kit_import_threshold) {
-                float deficit = REPAIR_KIT_STOCK_CAP - st->inventory[COMMODITY_REPAIR_KIT];
+            if (st->_inventory_cache[COMMODITY_REPAIR_KIT] < kit_import_threshold) {
+                float deficit = REPAIR_KIT_STOCK_CAP - st->_inventory_cache[COMMODITY_REPAIR_KIT];
                 float seed = st->base_price[COMMODITY_REPAIR_KIT] > 0.0f
                              ? st->base_price[COMMODITY_REPAIR_KIT]
                              : 6.0f;
@@ -3833,11 +3834,11 @@ static void step_shipyard_manufacture(world_t *w, float dt) {
         if (nascent->build_amount < needed) {
             float rate = shipyard_intake_rate(st, yard_idx, mat);
             float pull = rate * dt;
-            if (pull > st->inventory[mat]) pull = st->inventory[mat];
+            if (pull > st->_inventory_cache[mat]) pull = st->_inventory_cache[mat];
             float room = needed - nascent->build_amount;
             if (pull > room) pull = room;
             if (pull > 0.0f) {
-                st->inventory[mat] -= pull;
+                st->_inventory_cache[mat] -= pull;
                 nascent->build_amount += pull;
             }
         }
@@ -4380,11 +4381,11 @@ void world_sim_step(world_t *w, float dt) {
         for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
             int mc = manifest_count_by_commodity(&st->manifest, (commodity_t)c);
             if (mc <= 0) continue;
-            int fc = (int)floorf(st->inventory[c] + 0.0001f);
+            int fc = (int)floorf(st->_inventory_cache[c] + 0.0001f);
             if (mc <= fc) continue;
-            float frac = st->inventory[c] - (float)fc;
+            float frac = st->_inventory_cache[c] - (float)fc;
             if (frac < 0.0f) frac = 0.0f;
-            st->inventory[c] = (float)mc + frac;
+            st->_inventory_cache[c] = (float)mc + frac;
         }
     }
     step_module_activation(w, dt);
@@ -4558,7 +4559,7 @@ void world_seed_station_manifests(world_t *w) {
         uint8_t origin[8] = { 'S','E','E','D','0','0','0','0' };
         origin[7] = (uint8_t)('0' + (i % 10));
         manifest_migrate_legacy_inventory(&w->stations[i].manifest,
-                                          w->stations[i].inventory,
+                                          w->stations[i]._inventory_cache,
                                           COMMODITY_COUNT, origin);
         w->stations[i].manifest_dirty = true;
     }

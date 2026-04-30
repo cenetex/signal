@@ -165,12 +165,12 @@ void step_module_activation(world_t *w, float dt) {
             station_module_t *m = &st->modules[i];
             if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
             commodity_t mat = module_build_material(m->type);
-            if (st->inventory[mat] < 0.01f) continue;
+            if (st->_inventory_cache[mat] < 0.01f) continue;
             float cost = module_build_cost(m->type);
             float needed = cost * (1.0f - module_supply_fraction(m));
             if (needed < 0.01f) continue;
-            float deliver = fminf(st->inventory[mat], needed);
-            st->inventory[mat] -= deliver;
+            float deliver = fminf(st->_inventory_cache[mat], needed);
+            st->_inventory_cache[mat] -= deliver;
             m->build_progress += deliver / cost;
             if (m->build_progress > 1.0f) m->build_progress = 1.0f;
         }

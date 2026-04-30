@@ -304,7 +304,7 @@ void build_station_ui_state(station_ui_state_t* ui) {
         int need = (int)ceilf(upgrade_product_cost(&LOCAL_PLAYER.ship, slots[i].up));
         int in_cargo  = (int)floorf(LOCAL_PLAYER.ship.cargo[c] + 0.0001f);
         int at_station = ui->station
-            ? (int)floorf(ui->station->inventory[c] + 0.0001f) : 0;
+            ? (int)floorf(ui->station->_inventory_cache[c] + 0.0001f) : 0;
         int from_station = need - (need < in_cargo ? need : in_cargo);
         if (from_station < 0) from_station = 0;
         float credit = ui->station
@@ -323,7 +323,7 @@ void build_station_ui_state(station_ui_state_t* ui) {
     ui->ship_kits    = (int)floorf(LOCAL_PLAYER.ship.cargo[COMMODITY_REPAIR_KIT]
                                    + 0.0001f);
     ui->station_kits = (ui->station)
-        ? (int)floorf(ui->station->inventory[COMMODITY_REPAIR_KIT] + 0.0001f)
+        ? (int)floorf(ui->station->_inventory_cache[COMMODITY_REPAIR_KIT] + 0.0001f)
         : 0;
     int hp_needed = ui->hull_max - ui->hull_now;
     if (hp_needed < 0) hp_needed = 0;
@@ -634,7 +634,7 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         if (!station_produces(st, (commodity_t)c)) continue;
         float price_base = station_sell_price(st, (commodity_t)c);
         if (price_base <= FLOAT_EPSILON) continue;
-        int station_inv = (int)lroundf(st->inventory[c]);
+        int station_inv = (int)lroundf(st->_inventory_cache[c]);
         bool emitted_any_grade = false;
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
             int stock = station_manifest_count_cg(st, (commodity_t)c, (mining_grade_t)gi);
@@ -682,7 +682,7 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         if (!station_consumes(st, (commodity_t)c)) continue;
         float price_base = station_buy_price(st, (commodity_t)c);
         if (price_base <= FLOAT_EPSILON) continue;
-        int station_total_inv = (int)lroundf(st->inventory[c]);
+        int station_total_inv = (int)lroundf(st->_inventory_cache[c]);
         bool station_full = station_total_inv >= capacity;
         /* Cargo float is authoritative for what's onboard. The manifest
          * can drift past it (wire desync), so cap held counts by cargo
@@ -797,7 +797,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
              * non-empty storage output as "in flow" for any
              * commodity the station produces (best the data lets us
              * do without per-tick commodity tags). */
-            bool in_flow = (st->inventory[c] > 0.01f);
+            bool in_flow = (st->_inventory_cache[c] > 0.01f);
             if (!in_flow) {
                 for (int m = 0; m < st->module_count; m++) {
                     module_type_t mt = st->modules[m].type;
@@ -1485,7 +1485,7 @@ static void draw_yard_view(const station_ui_state_t *ui,
             commodity_t mat_type = module_build_material_lookup(t);
             float need = module_build_cost_lookup(t);
             float have = (p == 0 && nascent) ? nascent->build_amount : 0.0f;
-            float station_have = ui->station->inventory[mat_type];
+            float station_have = ui->station->_inventory_cache[mat_type];
             int got = (int)lroundf(have);
             int total = (int)lroundf(need);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));

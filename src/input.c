@@ -400,7 +400,7 @@ static void sample_dock_keys(input_intent_t *intent) {
         const station_t *st = current_station_ptr();
         int kits_avail =
             (int)floorf(LOCAL_PLAYER.ship.cargo[COMMODITY_REPAIR_KIT] + 0.0001f) +
-            (st ? (int)floorf(st->inventory[COMMODITY_REPAIR_KIT] + 0.0001f) : 0);
+            (st ? (int)floorf(st->_inventory_cache[COMMODITY_REPAIR_KIT] + 0.0001f) : 0);
         float max_hull = ship_max_hull(&LOCAL_PLAYER.ship);
         bool needs_repair = LOCAL_PLAYER.ship.hull < max_hull;
         if (needs_repair && kits_avail <= 0) set_notice("No repair kits available.");

@@ -529,7 +529,7 @@ static void handle_station_state(struct mg_connection *c, int sid) {
     for (int i = 0; i < COMMODITY_COUNT; i++) {
         if (i > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
         BUF_APPEND(pos, buf, BUFSZ,
-            "\"%s\":%.1f", cnames[i], st->inventory[i]);
+            "\"%s\":%.1f", cnames[i], st->_inventory_cache[i]);
     }
     BUF_APPEND(pos, buf, BUFSZ, "},\"modules\":[");
     for (int m = 0; m < st->module_count; m++) {
@@ -1193,7 +1193,7 @@ static void srv_on_player_state_change(const sim_event_t *ev) {
         uint8_t *p = &sbuf[2];
         p[0] = (uint8_t)st_idx;
         for (int c = 0; c < COMMODITY_COUNT; c++)
-            write_f32_le(&p[1 + c * 4], world.stations[st_idx].inventory[c]);
+            write_f32_le(&p[1 + c * 4], world.stations[st_idx]._inventory_cache[c]);
         ws_send(sp->conn, sbuf, (size_t)(2 + STATION_RECORD_SIZE));
     }
     station_econ_dirty = true;

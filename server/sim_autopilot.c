@@ -579,7 +579,7 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * any — better to launch with damage than to idle forever. */
         const station_t *st = &w->stations[sp->current_station];
         float ship_kits = sp->ship.cargo[COMMODITY_REPAIR_KIT];
-        float station_kits = st->inventory[COMMODITY_REPAIR_KIT];
+        float station_kits = st->_inventory_cache[COMMODITY_REPAIR_KIT];
         bool any_kits = (ship_kits + station_kits) > 0.5f;
         if (!autopilot_hull_full(&sp->ship) && any_kits) {
             /* Stay docked; repair will keep ticking from cargo first

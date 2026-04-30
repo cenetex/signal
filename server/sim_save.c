@@ -119,7 +119,7 @@ static bool read_station(FILE *f, station_t *s) {
     { uint8_t raw; memcpy(&raw, &s->scaffold, 1); s->scaffold = (raw != 0); }
     READ_FIELD(f, s->scaffold_progress);
     READ_FIELD(f, s->base_price);
-    READ_FIELD(f, s->inventory);
+    READ_FIELD(f, s->_inventory_cache);
     READ_FIELD(f, s->services);
     /* Modules */
     READ_FIELD(f, s->module_count);
@@ -193,7 +193,7 @@ static bool read_station(FILE *f, station_t *s) {
 
 static bool write_station_session(FILE *f, const station_t *s) {
     /* Inventory */
-    WRITE_FIELD(f, s->inventory);
+    WRITE_FIELD(f, s->_inventory_cache);
     /* Per-module production buffers */
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
         WRITE_FIELD(f, s->module_input[m]);
@@ -245,7 +245,7 @@ static bool write_station_session(FILE *f, const station_t *s) {
 
 static bool read_station_session(FILE *f, station_t *s) {
     /* Inventory */
-    READ_FIELD(f, s->inventory);
+    READ_FIELD(f, s->_inventory_cache);
     /* Per-module production buffers */
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++)
         READ_FIELD(f, s->module_input[m]);
@@ -351,7 +351,7 @@ static bool read_station_session(FILE *f, station_t *s) {
          * the same save reloads to the same pubs deterministically. */
         uint8_t origin[8] = {0};
         memcpy(origin, s->name, sizeof(origin));
-        (void)manifest_migrate_legacy_inventory(&s->manifest, s->inventory,
+        (void)manifest_migrate_legacy_inventory(&s->manifest, s->_inventory_cache,
                                                 COMMODITY_COUNT, origin);
     }
     return true;

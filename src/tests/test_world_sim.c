@@ -172,11 +172,11 @@ TEST(test_world_sim_step_docking) {
 TEST(test_world_sim_step_refinery_produces_ingots) {
     WORLD_DECL;
     world_reset(&w);
-    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = 50.0f;
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 50.0f;
     for (int i = 0; i < 600; i++)
         world_sim_step(&w, 1.0f / 120.0f);
-    ASSERT(w.stations[0].inventory[COMMODITY_FERRITE_INGOT] > 0.0f);
-    ASSERT(w.stations[0].inventory[COMMODITY_FERRITE_ORE] < 50.0f);
+    ASSERT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] > 0.0f);
+    ASSERT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] < 50.0f);
 }
 
 TEST(test_mining_class_prefix_round_trip) {
@@ -282,7 +282,7 @@ TEST(test_refinery_deposits_named_ingot) {
 
     /* Run sim until smelt completes (smelt_progress accumulates ~0.5/s). */
     int initial_manifest = w->stations[0].manifest.count;
-    float initial_bulk = w->stations[0].inventory[COMMODITY_FERRITE_INGOT];
+    float initial_bulk = w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT];
     for (int i = 0; i < 600 && w->asteroids[slot].active; i++)
         world_sim_step(w, 1.0f / 120.0f);
     /* Asteroid should be consumed. */
@@ -290,7 +290,7 @@ TEST(test_refinery_deposits_named_ingot) {
     /* Smelt always lands the units in the manifest now (single source
      * of truth — no separate named-ingot stockpile). The float
      * inventory bumps in lockstep. */
-    bool got_bulk = (w->stations[0].inventory[COMMODITY_FERRITE_INGOT] > initial_bulk);
+    bool got_bulk = (w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] > initial_bulk);
     ASSERT(got_bulk);
     ASSERT_EQ_INT(w->stations[0].manifest.count - initial_manifest, 10);
     bool any_named = false;
@@ -346,7 +346,7 @@ TEST(test_station_production_dual_writes_frame_manifest) {
     ASSERT(press_idx >= 0);
 
     manifest_clear(&st->manifest);
-    memset(st->inventory, 0, sizeof(st->inventory));
+    memset(st->_inventory_cache, 0, sizeof(st->_inventory_cache));
     memset(st->module_input, 0, sizeof(st->module_input));
     memset(st->module_output, 0, sizeof(st->module_output));
 
@@ -359,7 +359,7 @@ TEST(test_station_production_dual_writes_frame_manifest) {
     st->module_input[press_idx] = 2.0f;
     sim_step_station_production(&w, 1.0f);
 
-    ASSERT_EQ_FLOAT(st->inventory[COMMODITY_FRAME], 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_FRAME], 1.0f, 0.001f);
     ASSERT_EQ_INT(st->manifest.count, 1);
     ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[0].pub), -1);
     ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[1].pub), -1);
@@ -392,7 +392,7 @@ TEST(test_station_production_dual_writes_laser_manifest) {
     ASSERT(laser_idx >= 0);
 
     manifest_clear(&st->manifest);
-    memset(st->inventory, 0, sizeof(st->inventory));
+    memset(st->_inventory_cache, 0, sizeof(st->_inventory_cache));
     memset(st->module_input, 0, sizeof(st->module_input));
     memset(st->module_output, 0, sizeof(st->module_output));
 
@@ -403,11 +403,11 @@ TEST(test_station_production_dual_writes_laser_manifest) {
     ASSERT(manifest_push(&st->manifest, &inputs[1]));
 
     st->module_input[laser_idx] = 1.0f;
-    st->inventory[COMMODITY_CRYSTAL_INGOT] = 1.0f;
+    st->_inventory_cache[COMMODITY_CRYSTAL_INGOT] = 1.0f;
     sim_step_station_production(&w, 2.0f);
 
-    ASSERT_EQ_FLOAT(st->inventory[COMMODITY_LASER_MODULE], 1.0f, 0.001f);
-    ASSERT_EQ_FLOAT(st->inventory[COMMODITY_CRYSTAL_INGOT], 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_LASER_MODULE], 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_CRYSTAL_INGOT], 0.0f, 0.001f);
     ASSERT_EQ_INT(st->manifest.count, 1);
     ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[0].pub), -1);
     ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[1].pub), -1);
@@ -440,7 +440,7 @@ TEST(test_station_production_without_manifest_inputs_refuses_to_mint) {
     ASSERT(press_idx >= 0);
 
     manifest_clear(&st->manifest);
-    memset(st->inventory, 0, sizeof(st->inventory));
+    memset(st->_inventory_cache, 0, sizeof(st->_inventory_cache));
     memset(st->module_input, 0, sizeof(st->module_input));
     memset(st->module_output, 0, sizeof(st->module_output));
 
@@ -449,7 +449,7 @@ TEST(test_station_production_without_manifest_inputs_refuses_to_mint) {
 
     /* Float reverted by E1 fix: no manifest input → no manifest output
      * → no orphan float either. */
-    ASSERT_EQ_FLOAT(st->inventory[COMMODITY_FRAME], 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_FRAME], 0.0f, 0.001f);
     ASSERT_EQ_INT(st->manifest.count, 0);
 }
 
@@ -550,7 +550,7 @@ TEST(test_scenario_full_mining_cycle) {
 
     /* Clear station ore inventory */
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
-        w.stations[0].inventory[i] = 0.0f;
+        w.stations[0]._inventory_cache[i] = 0.0f;
 
     /* Stop rotation, place fragment at midpoint between furnace and silo */
     for (int a = 0; a < MAX_ARMS; a++) {
@@ -781,13 +781,13 @@ TEST(test_scenario_npc_economy_30_seconds) {
     bool any_ingot = false;
     for (int s = 0; s < MAX_STATIONS && !any_ingot; s++) {
         for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
-            if (w.stations[s].inventory[i] > 0.0f) { any_ingot = true; break; }
+            if (w.stations[s]._inventory_cache[i] > 0.0f) { any_ingot = true; break; }
         }
     }
     bool ore_consumed = false;
     for (int s = 0; s < MAX_STATIONS && !ore_consumed; s++) {
         for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++) {
-            if (w.stations[s].inventory[i] > 0.0f) { ore_consumed = true; break; }
+            if (w.stations[s]._inventory_cache[i] > 0.0f) { ore_consumed = true; break; }
         }
     }
     ASSERT(any_ingot || ore_consumed);
@@ -795,11 +795,11 @@ TEST(test_scenario_npc_economy_30_seconds) {
     /* Verify: no negative values anywhere */
     for (int s = 0; s < MAX_STATIONS; s++) {
         for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
-            ASSERT(w.stations[s].inventory[i] >= 0.0f);
+            ASSERT(w.stations[s]._inventory_cache[i] >= 0.0f);
         for (int i = 0; i < COMMODITY_COUNT; i++)
-            ASSERT(w.stations[s].inventory[i] >= 0.0f);
+            ASSERT(w.stations[s]._inventory_cache[i] >= 0.0f);
         for (int i = 0; i < PRODUCT_COUNT; i++)
-            ASSERT(w.stations[s].inventory[COMMODITY_FRAME + i] >= 0.0f);
+            ASSERT(w.stations[s]._inventory_cache[COMMODITY_FRAME + i] >= 0.0f);
     }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w.npc_ships[n].active) continue;
@@ -838,7 +838,7 @@ TEST(test_scenario_upgrade_requires_products) {
     int level_before = w.players[0].ship.mining_level;
 
     /* Set inventory for PRODUCT_LASER_MODULE to 0 */
-    w.stations[2].inventory[COMMODITY_LASER_MODULE] = 0.0f;
+    w.stations[2]._inventory_cache[COMMODITY_LASER_MODULE] = 0.0f;
 
     /* Try upgrade_mining -- should fail (no product stock) */
     w.players[0].input.upgrade_mining = true;
@@ -902,17 +902,17 @@ TEST(test_scenario_product_cap_pauses_production) {
     world_reset(&w);
 
     /* Set station 1 (Kepler Yard) inventory[COMMODITY_FRAME] to MAX_PRODUCT_STOCK */
-    w.stations[1].inventory[COMMODITY_FRAME] = MAX_PRODUCT_STOCK;
+    w.stations[1]._inventory_cache[COMMODITY_FRAME] = MAX_PRODUCT_STOCK;
 
     /* Set ingot_buffer with some frame ingots */
-    w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 20.0f;
+    w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 20.0f;
 
     /* Run 120 ticks */
     for (int i = 0; i < 120; i++)
         world_sim_step(&w, SIM_DT);
 
     /* Verify inventory didn't exceed MAX_PRODUCT_STOCK */
-    ASSERT(w.stations[1].inventory[COMMODITY_FRAME] <= MAX_PRODUCT_STOCK + 0.01f);
+    ASSERT(w.stations[1]._inventory_cache[COMMODITY_FRAME] <= MAX_PRODUCT_STOCK + 0.01f);
 }
 
 TEST(test_signal_strength_at_station) {

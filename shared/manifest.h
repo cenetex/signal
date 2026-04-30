@@ -88,10 +88,10 @@ bool manifest_migrate_legacy_inventory(manifest_t *manifest,
 /* Manifest-as-truth helpers (PR: kill the float<->manifest drift)   */
 /* ---------------------------------------------------------------- */
 /* For finished-good commodities (c >= COMMODITY_RAW_ORE_COUNT) the
- * manifest is the authoritative store. The float `station_t::inventory[c]`
- * is a derived count whose floor() must always equal
- * manifest_count_by_commodity(c). These helpers preserve that
- * invariant by mutating both the manifest and the float in lockstep.
+ * manifest is the authoritative store. The float
+ * `station_t::_inventory_cache[c]` is a derived count whose floor() must
+ * always equal manifest_count_by_commodity(c). These helpers preserve
+ * that invariant by mutating both the manifest and the float in lockstep.
  *
  * Raw-ore commodities (c < COMMODITY_RAW_ORE_COUNT) are NOT covered —
  * raw ore lives only in the float (hopper amounts) and never gains a

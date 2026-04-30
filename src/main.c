@@ -1481,7 +1481,7 @@ static void render_world(void) {
                 default: break;
             }
             if ((int)sell_c >= 0) {
-                int stock = (int)lroundf(tst->inventory[sell_c]);
+                int stock = (int)lroundf(tst->_inventory_cache[sell_c]);
                 int price = (int)lroundf(station_sell_price(tst, sell_c));
                 if (stock > 0)
                     sdtx_printf("[Fire] buy 1 @ %dcr  (stock %d)", price, stock);

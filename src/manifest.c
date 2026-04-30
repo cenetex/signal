@@ -1,7 +1,24 @@
 #include "manifest.h"
 
+#include <assert.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
+
+/* In debug builds, every finished-good accessor exit must leave
+ * floor(inventory[c]) == manifest_count_by_commodity(c). The +0.0001
+ * tolerance matches station_finished_accumulate's rounding. Raw-ore
+ * commodities (< COMMODITY_RAW_ORE_COUNT) are stored only in the float
+ * and have no manifest representation, so we skip them. */
+static void assert_finished_invariant(const station_t *st, commodity_t c) {
+    (void)st; (void)c;
+#ifndef NDEBUG
+    if ((int)c < (int)COMMODITY_RAW_ORE_COUNT) return;
+    if ((int)c >= (int)COMMODITY_COUNT) return;
+    assert((int)floorf(st->_inventory_cache[c] + 0.0001f) ==
+           manifest_count_by_commodity(&st->manifest, c));
+#endif
+}
 
 enum {
     HASH_BYTES = 32,
@@ -211,6 +228,7 @@ bool manifest_reserve(manifest_t *manifest, uint16_t cap) {
     manifest->units = resized;
     memset(&manifest->units[old_cap], 0, (cap - old_cap) * sizeof(cargo_unit_t));
     manifest->cap = cap;
+    assert(manifest->count <= manifest->cap);
     return true;
 }
 
@@ -291,6 +309,7 @@ bool manifest_push(manifest_t *manifest, const cargo_unit_t *unit) {
     }
     if (!manifest->units) return false;
     manifest->units[manifest->count++] = *unit;
+    assert(manifest->count <= manifest->cap);
     return true;
 }
 
@@ -551,11 +570,21 @@ int station_finished_mint(station_t *st, commodity_t c, int n,
     }
     if (minted > 0) {
         /* Sync float to the new manifest count, preserving any fractional
-         * residue (production accumulator) below 1.0. */
-        float frac = st->inventory[c] - floorf(st->inventory[c]);
-        st->inventory[c] = (float)manifest_count_by_commodity(&st->manifest, c) + frac;
+         * residue (production accumulator) below 1.0. Use the same +0.0001
+         * epsilon as station_finished_accumulate's int_before/int_after
+         * snap — without it, when accumulate rounds 0.9999...→1 to trigger
+         * this mint, frac would be computed as ~0.9999 (not ~0), and the
+         * float would jump to manifest_count + 0.9999, breaking the
+         * invariant by one whole unit. */
+        float v = st->_inventory_cache[c];
+        float floor_v = floorf(v + 0.0001f);
+        float frac = v - floor_v;
+        if (frac < 0.0f) frac = 0.0f;     /* clamp tiny negative residue */
+        if (frac >= 1.0f) frac = 0.0f;    /* belt-and-suspenders */
+        st->_inventory_cache[c] = (float)manifest_count_by_commodity(&st->manifest, c) + frac;
         st->manifest_dirty = true;
     }
+    assert_finished_invariant(st, c);
     return minted;
 }
 
@@ -565,11 +594,12 @@ int station_finished_drain(station_t *st, commodity_t c, int n) {
     if ((int)c >= (int)COMMODITY_COUNT) return 0;
     int drained = manifest_consume_by_commodity(&st->manifest, c, n);
     if (drained > 0) {
-        float frac = st->inventory[c] - floorf(st->inventory[c]);
-        st->inventory[c] = (float)manifest_count_by_commodity(&st->manifest, c) + frac;
-        if (st->inventory[c] < 0.0f) st->inventory[c] = 0.0f;
+        float frac = st->_inventory_cache[c] - floorf(st->_inventory_cache[c]);
+        st->_inventory_cache[c] = (float)manifest_count_by_commodity(&st->manifest, c) + frac;
+        if (st->_inventory_cache[c] < 0.0f) st->_inventory_cache[c] = 0.0f;
         st->manifest_dirty = true;
     }
+    assert_finished_invariant(st, c);
     return drained;
 }
 
@@ -582,7 +612,7 @@ int station_finished_accumulate(station_t *st, commodity_t c, float amount,
     /* Compute how many integer crossings this addition triggers. The
      * float currently holds: (manifest count) + (fractional residue).
      * After adding `amount`, the new int count is floor(old + amount). */
-    float before = st->inventory[c];
+    float before = st->_inventory_cache[c];
     float after  = before + amount;
     int int_before = (int)floorf(before + 0.0001f);
     int int_after  = (int)floorf(after + 0.0001f);
@@ -590,11 +620,15 @@ int station_finished_accumulate(station_t *st, commodity_t c, float amount,
 
     /* Update float first so any partial residue is preserved even if
      * minting partially fails (manifest cap). */
-    st->inventory[c] = after;
+    st->_inventory_cache[c] = after;
 
-    if (delta <= 0) return 0;
+    if (delta <= 0) {
+        assert_finished_invariant(st, c);
+        return 0;
+    }
     int minted = station_finished_mint(st, c, delta, origin);
     /* mint sets inventory[c] = manifest_count + frac; that already
      * captures any cap-induced shortfall. */
+    assert_finished_invariant(st, c);
     return minted;
 }

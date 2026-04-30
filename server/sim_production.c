@@ -232,7 +232,7 @@ void sim_step_refinery_production(world_t *w, float dt) {
         for (int oi = 0; oi < 3; oi++) {
             commodity_t ore = smeltable[oi];
             if (!sim_can_smelt_ore(st, ore)) continue;
-            if (st->inventory[ore] <= 0.01f) continue;
+            if (st->_inventory_cache[ore] <= 0.01f) continue;
             active_ores++;
         }
         if (active_ores == 0) continue;
@@ -256,12 +256,12 @@ void sim_step_refinery_production(world_t *w, float dt) {
         for (int oi = 0; oi < 3; oi++) {
             commodity_t ore = smeltable[oi];
             if (!sim_can_smelt_ore(st, ore)) continue;
-            if (st->inventory[ore] <= 0.01f) continue;
+            if (st->_inventory_cache[ore] <= 0.01f) continue;
             commodity_t ingot = commodity_refined_form(ore);
-            float room = MAX_PRODUCT_STOCK - st->inventory[ingot];
+            float room = MAX_PRODUCT_STOCK - st->_inventory_cache[ingot];
             if (room <= 0.01f) continue;
-            float consume = fminf(fminf(st->inventory[ore], rate * dt), room);
-            st->inventory[ore] -= consume;
+            float consume = fminf(fminf(st->_inventory_cache[ore], rate * dt), room);
+            st->_inventory_cache[ore] -= consume;
             /* Manifest-as-truth: mint ingot manifest entries at integer
              * crossings (legacy-migrate origin so future inspectors can
              * tell this came from the refinery hopper path, not the
@@ -312,10 +312,10 @@ void sim_step_station_production(world_t *w, float dt) {
             commodity_t output_com = recipe.output;
             float stock_before;
             if (input_com >= COMMODITY_COUNT || output_com >= COMMODITY_COUNT) continue;
-            if (st->inventory[output_com] >= MAX_PRODUCT_STOCK) continue;
+            if (st->_inventory_cache[output_com] >= MAX_PRODUCT_STOCK) continue;
 
-            stock_before = st->inventory[output_com];
-            float room = MAX_PRODUCT_STOCK - st->inventory[output_com];
+            stock_before = st->_inventory_cache[output_com];
+            float room = MAX_PRODUCT_STOCK - st->_inventory_cache[output_com];
             float rate = schema->rate > 0.0f ? schema->rate : STATION_PRODUCTION_RATE;
 
             /* Primary: consume from module input buffer (filled by flow graph).
@@ -327,15 +327,15 @@ void sim_step_station_production(world_t *w, float dt) {
                                     st->module_input[m] / recipe.primary_units_per_output);
                 if (recipe.secondary_input < COMMODITY_COUNT) {
                     from_buffer = fminf(from_buffer,
-                                        st->inventory[recipe.secondary_input] /
+                                        st->_inventory_cache[recipe.secondary_input] /
                                         recipe.secondary_units_per_output);
                 }
                 if (from_buffer > 0.0f) {
                     st->module_input[m] -= from_buffer * recipe.primary_units_per_output;
                     if (recipe.secondary_input < COMMODITY_COUNT)
-                        st->inventory[recipe.secondary_input] -=
+                        st->_inventory_cache[recipe.secondary_input] -=
                             from_buffer * recipe.secondary_units_per_output;
-                    st->inventory[output_com] += from_buffer;
+                    st->_inventory_cache[output_com] += from_buffer;
                     room -= from_buffer;
                     produced += from_buffer;
                 }
@@ -344,22 +344,22 @@ void sim_step_station_production(world_t *w, float dt) {
             /* Fallback: slow trickle from station inventory (0.2x rate).
              * Only kicks in when the flow graph delivered nothing this tick.
              * Prevents total stall for poorly-placed fabs. */
-            if (produced < 0.001f && room > 0.01f && st->inventory[input_com] > 0.01f) {
+            if (produced < 0.001f && room > 0.01f && st->_inventory_cache[input_com] > 0.01f) {
                 float fallback_rate = rate * 0.2f;
                 float from_inv = fminf(fallback_rate * dt, room);
                 from_inv = fminf(from_inv,
-                                 st->inventory[input_com] / recipe.primary_units_per_output);
+                                 st->_inventory_cache[input_com] / recipe.primary_units_per_output);
                 if (recipe.secondary_input < COMMODITY_COUNT) {
                     from_inv = fminf(from_inv,
-                                     st->inventory[recipe.secondary_input] /
+                                     st->_inventory_cache[recipe.secondary_input] /
                                      recipe.secondary_units_per_output);
                 }
                 if (from_inv > 0.0f) {
-                    st->inventory[input_com] -= from_inv * recipe.primary_units_per_output;
+                    st->_inventory_cache[input_com] -= from_inv * recipe.primary_units_per_output;
                     if (recipe.secondary_input < COMMODITY_COUNT)
-                        st->inventory[recipe.secondary_input] -=
+                        st->_inventory_cache[recipe.secondary_input] -=
                             from_inv * recipe.secondary_units_per_output;
-                    st->inventory[output_com] += from_inv;
+                    st->_inventory_cache[output_com] += from_inv;
                     produced += from_inv;
                 }
             }
@@ -386,7 +386,7 @@ void sim_step_station_production(world_t *w, float dt) {
                  * the manifest-as-truth refactor is closing out. */
                 {
                     int units_before = (int)floorf(stock_before + 0.0001f);
-                    int units_after = (int)floorf(st->inventory[output_com] + 0.0001f);
+                    int units_after = (int)floorf(st->_inventory_cache[output_com] + 0.0001f);
                     int manifest_units = units_after - units_before;
                     int crafted = 0;
                     for (int idx = 0; idx < manifest_units; idx++) {
@@ -400,9 +400,9 @@ void sim_step_station_production(world_t *w, float dt) {
                          * fractional residue under stock_before stays
                          * because crafted == 0 case still has a
                          * sub-1.0 accumulator, which is fine. */
-                        st->inventory[output_com] -= (float)shortfall;
-                        if (st->inventory[output_com] < (float)units_before)
-                            st->inventory[output_com] = (float)units_before;
+                        st->_inventory_cache[output_com] -= (float)shortfall;
+                        if (st->_inventory_cache[output_com] < (float)units_before)
+                            st->_inventory_cache[output_com] = (float)units_before;
                     }
                 }
             }
@@ -452,7 +452,7 @@ void step_furnace_smelting(world_t *w, float dt) {
                  * accept it (no tractor pull, no smelt) and can route
                  * to a station with room. */
                 commodity_t furnace_ingot = commodity_refined_form(a->commodity);
-                if (st->inventory[furnace_ingot] + a->ore > MAX_PRODUCT_STOCK)
+                if (st->_inventory_cache[furnace_ingot] + a->ore > MAX_PRODUCT_STOCK)
                     continue;  /* hopper full — skip this furnace */
 
                 int ring = st->modules[m].ring;
@@ -661,10 +661,10 @@ void step_furnace_smelting(world_t *w, float dt) {
              * paid for the full ore value via the ledger above. */
             commodity_t ingot = commodity_refined_form(a->commodity);
             commodity_t output = (ingot != a->commodity) ? ingot : a->commodity;
-            float stock_before = st->inventory[output];
-            st->inventory[output] += a->ore;
-            if (st->inventory[output] > MAX_PRODUCT_STOCK)
-                st->inventory[output] = MAX_PRODUCT_STOCK;
+            float stock_before = st->_inventory_cache[output];
+            st->_inventory_cache[output] += a->ore;
+            if (st->_inventory_cache[output] > MAX_PRODUCT_STOCK)
+                st->_inventory_cache[output] = MAX_PRODUCT_STOCK;
 
             /* Push one manifest unit per integer of finished ingot
              * smelted. Each unit carries its own prefix_class derived
@@ -676,7 +676,7 @@ void step_furnace_smelting(world_t *w, float dt) {
                  * post-clamp delta = pre-clamp delta. No more silent
                  * overflow → no more "unknown origin" rows. */
                 int units_before = (int)floorf(stock_before + 0.0001f);
-                int units_after = (int)floorf(st->inventory[output] + 0.0001f);
+                int units_after = (int)floorf(st->_inventory_cache[output] + 0.0001f);
                 int manifest_units = units_after - units_before;
                 int pushed = 0;
                 int first_named_idx = -1;
@@ -815,7 +815,7 @@ void step_module_flow(world_t *w, float dt) {
                     };
                     for (int fi = 0; fi < 6; fi++) {
                         commodity_t com = feedable[fi];
-                        if (st->inventory[com] <= 0.1f) continue;
+                        if (st->_inventory_cache[com] <= 0.1f) continue;
                         /* Check if any module on this station actually wants this */
                         bool wanted = false;
                         for (int c = 0; c < st->module_count; c++) {
@@ -828,7 +828,7 @@ void step_module_flow(world_t *w, float dt) {
                             }
                         }
                         if (!wanted) continue;
-                        float pull = fminf(st->inventory[com], (cap - st->module_output[p]) * 0.5f);
+                        float pull = fminf(st->_inventory_cache[com], (cap - st->module_output[p]) * 0.5f);
                         if (pull > 0.01f) {
                             st->module_output[p] += pull;
                             output = com; /* remember what we're carrying */
@@ -868,13 +868,13 @@ void step_module_flow(world_t *w, float dt) {
                        - st->module_input[best_consumer];
             float pull = best_rate * dt;
             if (pull > st->module_output[p]) pull = st->module_output[p];
-            if (producer_kind == MODULE_KIND_STORAGE && pull > st->inventory[output])
-                pull = st->inventory[output];
+            if (producer_kind == MODULE_KIND_STORAGE && pull > st->_inventory_cache[output])
+                pull = st->_inventory_cache[output];
             if (pull > room) pull = room;
             if (pull > 0.0f) {
                 st->module_output[p] -= pull;
                 if (producer_kind == MODULE_KIND_STORAGE)
-                    st->inventory[output] -= pull;
+                    st->_inventory_cache[output] -= pull;
                 st->module_input[best_consumer] += pull;
             }
         }
@@ -922,9 +922,9 @@ void step_module_delivery(world_t *w, station_t *st, int station_idx,
          * multiplayer broadcaster forwards the new station summary;
          * otherwise clients keep showing materials that construction
          * already consumed until some unrelated event triggers a sync. */
-        if (needed > 0.01f && st->inventory[mat] > 0.01f) {
-            float deliver = fminf(st->inventory[mat], needed);
-            st->inventory[mat] -= deliver;
+        if (needed > 0.01f && st->_inventory_cache[mat] > 0.01f) {
+            float deliver = fminf(st->_inventory_cache[mat], needed);
+            st->_inventory_cache[mat] -= deliver;
             m->build_progress += deliver / cost;
             int whole = (int)floorf(deliver + 0.0001f);
             if (whole > 0) {
@@ -956,7 +956,7 @@ void step_dock_repair_kit_fab(world_t *w, float dt) {
         station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
         if (!station_has_module(st, MODULE_SHIPYARD)) continue;
-        if (st->inventory[COMMODITY_REPAIR_KIT] >= REPAIR_KIT_STOCK_CAP) continue;
+        if (st->_inventory_cache[COMMODITY_REPAIR_KIT] >= REPAIR_KIT_STOCK_CAP) continue;
 
         st->repair_kit_fab_timer += dt;
         if (st->repair_kit_fab_timer < REPAIR_KIT_FAB_PERIOD) continue;
@@ -964,18 +964,18 @@ void step_dock_repair_kit_fab(world_t *w, float dt) {
         /* All three inputs required. If any are missing, hold the timer
          * at the period (don't keep accumulating) so the next batch
          * fires the moment supply arrives. */
-        if (st->inventory[COMMODITY_FRAME] < 1.0f ||
-            st->inventory[COMMODITY_LASER_MODULE] < 1.0f ||
-            st->inventory[COMMODITY_TRACTOR_MODULE] < 1.0f) {
+        if (st->_inventory_cache[COMMODITY_FRAME] < 1.0f ||
+            st->_inventory_cache[COMMODITY_LASER_MODULE] < 1.0f ||
+            st->_inventory_cache[COMMODITY_TRACTOR_MODULE] < 1.0f) {
             st->repair_kit_fab_timer = REPAIR_KIT_FAB_PERIOD;
             continue;
         }
 
         /* Consume one of each from the float + manifest, in lockstep
          * with the manifest-truth invariant. */
-        st->inventory[COMMODITY_FRAME]          -= 1.0f;
-        st->inventory[COMMODITY_LASER_MODULE]   -= 1.0f;
-        st->inventory[COMMODITY_TRACTOR_MODULE] -= 1.0f;
+        st->_inventory_cache[COMMODITY_FRAME]          -= 1.0f;
+        st->_inventory_cache[COMMODITY_LASER_MODULE]   -= 1.0f;
+        st->_inventory_cache[COMMODITY_TRACTOR_MODULE] -= 1.0f;
         manifest_consume_by_commodity(&st->manifest, COMMODITY_FRAME, 1);
         manifest_consume_by_commodity(&st->manifest, COMMODITY_LASER_MODULE, 1);
         manifest_consume_by_commodity(&st->manifest, COMMODITY_TRACTOR_MODULE, 1);
@@ -983,9 +983,9 @@ void step_dock_repair_kit_fab(world_t *w, float dt) {
         /* Mint kits — clamp at the cap. Each minted unit gets a
          * legacy-migrate manifest entry so the TRADE picker can see
          * them and the per-station origin stays traceable. */
-        float room = REPAIR_KIT_STOCK_CAP - st->inventory[COMMODITY_REPAIR_KIT];
+        float room = REPAIR_KIT_STOCK_CAP - st->_inventory_cache[COMMODITY_REPAIR_KIT];
         float minted = fminf(REPAIR_KIT_PER_BATCH, room);
-        st->inventory[COMMODITY_REPAIR_KIT] += minted;
+        st->_inventory_cache[COMMODITY_REPAIR_KIT] += minted;
         int int_minted = (int)floorf(minted + 0.0001f);
         if (int_minted > 0) {
             uint8_t origin[8] = { 'D','O','C','K','F','A','B','0' };

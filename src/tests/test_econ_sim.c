@@ -19,10 +19,10 @@ TEST(test_econ_sim_npc_only_5min) {
             printf("    t=%.0fs: pools [%.0f, %.0f, %.0f]  ingots [FE=%.0f CU=%.0f CR=%.0f]  frames=%.0f\n",
                 t,
                 w->stations[0].credit_pool, w->stations[1].credit_pool, w->stations[2].credit_pool,
-                w->stations[0].inventory[COMMODITY_FERRITE_INGOT],
-                w->stations[2].inventory[COMMODITY_CUPRITE_INGOT],
-                w->stations[2].inventory[COMMODITY_CRYSTAL_INGOT],
-                w->stations[1].inventory[COMMODITY_FRAME]);
+                w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
+                w->stations[2]._inventory_cache[COMMODITY_CUPRITE_INGOT],
+                w->stations[2]._inventory_cache[COMMODITY_CRYSTAL_INGOT],
+                w->stations[1]._inventory_cache[COMMODITY_FRAME]);
             /* Diagnostic: contracts open per station, by commodity */
             int active = 0, claimed = 0;
             for (int k = 0; k < MAX_CONTRACTS; k++) {
@@ -42,9 +42,9 @@ TEST(test_econ_sim_npc_only_5min) {
                 active, claimed, npc_idle, npc_docked, npc_busy);
             /* Per-station ore inventory (raw input to smelters) */
             printf("        ore: prospect[FE=%.1f]  helios[CU=%.1f CR=%.1f]\n",
-                w->stations[0].inventory[COMMODITY_FERRITE_ORE],
-                w->stations[2].inventory[COMMODITY_CUPRITE_ORE],
-                w->stations[2].inventory[COMMODITY_CRYSTAL_ORE]);
+                w->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE],
+                w->stations[2]._inventory_cache[COMMODITY_CUPRITE_ORE],
+                w->stations[2]._inventory_cache[COMMODITY_CRYSTAL_ORE]);
             /* Per-NPC: home, role, state, current cargo */
             for (int n = 0; n < MAX_NPC_SHIPS; n++) {
                 if (!w->npc_ships[n].active) continue;
@@ -125,7 +125,7 @@ TEST(test_econ_sim_credit_circulation) {
     /* Dock at Prospect and buy ferrite ingots (spends from station 0 ledger) */
     w.players[0].docked = true;
     w.players[0].current_station = 0;
-    w.stations[0].inventory[COMMODITY_FERRITE_INGOT] = 50.0f;
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = 50.0f;
     w.players[0].input.buy_product = true;
     w.players[0].input.buy_commodity = COMMODITY_FERRITE_INGOT;
     world_sim_step(&w, SIM_DT);
@@ -156,7 +156,7 @@ TEST(test_econ_sim_credit_circulation) {
         bal1, w.stations[1].credit_pool);
 
     /* Buy frames from Kepler (spends from station 1 ledger) */
-    w.stations[1].inventory[COMMODITY_FRAME] = 20.0f;
+    w.stations[1]._inventory_cache[COMMODITY_FRAME] = 20.0f;
     w.players[0].input.buy_product = true;
     w.players[0].input.buy_commodity = COMMODITY_FRAME;
     world_sim_step(&w, SIM_DT);
@@ -217,7 +217,7 @@ TEST(test_bug312_1_docked_buy_honors_spend_failure) {
     w.players[0].connected = true;
     w.players[0].docked = true;
     w.players[0].current_station = kepler;
-    st->inventory[COMMODITY_FRAME] = 10.0f;
+    st->_inventory_cache[COMMODITY_FRAME] = 10.0f;
     float pool_before = st->credit_pool;
     float cargo_before = w.players[0].ship.cargo[COMMODITY_FRAME];
 
@@ -254,7 +254,7 @@ TEST(test_buy_finished_good_requires_manifest_unit) {
     station_t *st = &w.stations[kepler];
 
     /* Float says 10 frames, manifest is empty — the drift the fix guards. */
-    st->inventory[COMMODITY_FRAME] = 10.0f;
+    st->_inventory_cache[COMMODITY_FRAME] = 10.0f;
     /* Force-clear any frame manifest units the world reset seeded. */
     for (int i = (int)st->manifest.count - 1; i >= 0; i--) {
         if (st->manifest.units[i].commodity == (uint8_t)COMMODITY_FRAME) {
@@ -429,7 +429,7 @@ TEST(test_econ_invariant_player_session_conservation) {
     ASSERT_CONSERVED("after contract sell");
 
     /* Step 3: buy-product path — buy frames from Kepler */
-    w.stations[1].inventory[COMMODITY_FRAME] = 20.0f;
+    w.stations[1]._inventory_cache[COMMODITY_FRAME] = 20.0f;
     w.players[0].input.buy_product = true;
     w.players[0].input.buy_commodity = COMMODITY_FRAME;
     world_sim_step(&w, SIM_DT);
@@ -484,7 +484,7 @@ static float run_sell_with_grades(int g0, int g1, int g2,
     }
     if (kepler < 0) return -1.0f; /* WORLD_HEAP cleanup frees w. */
     station_t *st = &w->stations[kepler];
-    st->inventory[COMMODITY_FERRITE_INGOT] = 0.0f;
+    st->_inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
 
     uint8_t token[8] = {7,7,7,7,7,7,7,7};
     memcpy(w->players[0].session_token, token, 8);
@@ -576,16 +576,16 @@ TEST(test_e2e_kit_chain_converges) {
     }
     ASSERT(shipyard >= 0);
     /* Big buffer of inputs so fab never starves. */
-    w->stations[shipyard].inventory[COMMODITY_FRAME]          = 50.0f;
-    w->stations[shipyard].inventory[COMMODITY_LASER_MODULE]   = 50.0f;
-    w->stations[shipyard].inventory[COMMODITY_TRACTOR_MODULE] = 50.0f;
-    w->stations[shipyard].inventory[COMMODITY_REPAIR_KIT]     = 0.0f;
+    w->stations[shipyard]._inventory_cache[COMMODITY_FRAME]          = 50.0f;
+    w->stations[shipyard]._inventory_cache[COMMODITY_LASER_MODULE]   = 50.0f;
+    w->stations[shipyard]._inventory_cache[COMMODITY_TRACTOR_MODULE] = 50.0f;
+    w->stations[shipyard]._inventory_cache[COMMODITY_REPAIR_KIT]     = 0.0f;
     w->stations[shipyard].repair_kit_fab_timer = 0.0f;
 
     int ticks = (int)(300.0f / SIM_DT);
     for (int i = 0; i < ticks; i++) world_sim_step(w, SIM_DT);
 
-    float kits_now = w->stations[shipyard].inventory[COMMODITY_REPAIR_KIT];
+    float kits_now = w->stations[shipyard]._inventory_cache[COMMODITY_REPAIR_KIT];
     printf("    shipyard %d kits after 300s: %.0f (expect > 0)\n",
            shipyard, kits_now);
     ASSERT(kits_now > 0.0f);
@@ -593,9 +593,9 @@ TEST(test_e2e_kit_chain_converges) {
     /* Inputs should also be visibly drawn down — at least one batch
      * consumed of each input commodity (fewer than seed, > 0 means
      * something was minted but not all 50). */
-    ASSERT(w->stations[shipyard].inventory[COMMODITY_FRAME]        < 50.0f);
-    ASSERT(w->stations[shipyard].inventory[COMMODITY_LASER_MODULE] < 50.0f);
-    ASSERT(w->stations[shipyard].inventory[COMMODITY_TRACTOR_MODULE] < 50.0f);
+    ASSERT(w->stations[shipyard]._inventory_cache[COMMODITY_FRAME]        < 50.0f);
+    ASSERT(w->stations[shipyard]._inventory_cache[COMMODITY_LASER_MODULE] < 50.0f);
+    ASSERT(w->stations[shipyard]._inventory_cache[COMMODITY_TRACTOR_MODULE] < 50.0f);
 }
 
 TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
@@ -617,7 +617,7 @@ TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
     }
     ASSERT(shipyard >= 0);
     /* Stock the dock with kits so the auto-repair has something to drain. */
-    w->stations[shipyard].inventory[COMMODITY_REPAIR_KIT] = 100.0f;
+    w->stations[shipyard]._inventory_cache[COMMODITY_REPAIR_KIT] = 100.0f;
 
     /* Pick the first hauler that's currently homed at the shipyard,
      * wound it, and drop it just outside the dock approach radius. */
@@ -654,12 +654,12 @@ TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
         hauler_ship->vel = v2(0.0f, 0.0f);
     }
 
-    float kits_before = w->stations[shipyard].inventory[COMMODITY_REPAIR_KIT];
+    float kits_before = w->stations[shipyard]._inventory_cache[COMMODITY_REPAIR_KIT];
     /* A handful of ticks — first one should land it at the berth and
      * fire the repair branch; subsequent ticks just sit at DOCKED. */
     for (int i = 0; i < 5; i++) world_sim_step(w, SIM_DT);
 
-    float kits_after = w->stations[shipyard].inventory[COMMODITY_REPAIR_KIT];
+    float kits_after = w->stations[shipyard]._inventory_cache[COMMODITY_REPAIR_KIT];
     printf("    hauler hull: %.1f -> %.1f (max %.1f), station kits %.0f -> %.0f\n",
            max_h - 20.0f, hauler->hull, max_h, kits_before, kits_after);
     /* Healed — could be partial if repaired tick fell short, but should be
@@ -687,7 +687,7 @@ TEST(test_e2e_kit_import_contract_lifecycle) {
     ASSERT(prospect >= 0);
 
     /* Phase 1: drain kits and run until a kit import contract is issued. */
-    w->stations[prospect].inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+    w->stations[prospect]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
     bool found_open = false;
     for (int i = 0; i < (int)(120.0f / SIM_DT); i++) {
         world_sim_step(w, SIM_DT);
@@ -710,7 +710,7 @@ TEST(test_e2e_kit_import_contract_lifecycle) {
      * higher bound is the only stable closed state. The fact that
      * those two thresholds don't agree is a real bug worth a separate
      * PR; this test pins current behaviour for now. */
-    w->stations[prospect].inventory[COMMODITY_REPAIR_KIT] = REPAIR_KIT_STOCK_CAP * 0.5f;
+    w->stations[prospect]._inventory_cache[COMMODITY_REPAIR_KIT] = REPAIR_KIT_STOCK_CAP * 0.5f;
     bool found_after_fill = true;
     for (int i = 0; i < (int)(60.0f / SIM_DT); i++) {
         world_sim_step(w, SIM_DT);

@@ -66,7 +66,7 @@ TEST(test_bug9_repair_cost_consistent) {
     memset(&st, 0, sizeof(st));
     st.modules[st.module_count++] = (station_module_t){ .type = MODULE_DOCK };
     st.base_price[COMMODITY_REPAIR_KIT] = 6.0f;
-    st.inventory[COMMODITY_REPAIR_KIT]  = MAX_PRODUCT_STOCK; /* full → 1× base */
+    st._inventory_cache[COMMODITY_REPAIR_KIT]  = MAX_PRODUCT_STOCK; /* full → 1× base */
     float cost = station_repair_cost(&ship, &st);
     ASSERT_EQ_FLOAT(cost, 20.0f * (6.0f + LABOR_FEE_PER_HP), 0.01f);
 }
@@ -228,11 +228,11 @@ TEST(test_bug22_hauler_stuck_at_empty_station) {
     world_reset(&w);
     /* Empty the refinery inventory so haulers can't load from home */
     for (int i = 0; i < COMMODITY_COUNT; i++)
-        w.stations[0].inventory[i] = 0.0f;
+        w.stations[0]._inventory_cache[i] = 0.0f;
     /* Put enough ingots at station 1 to exceed the hauler reserve, so
      * relocation can actually result in a load. */
-    w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 40.0f;
-    float initial_stock = w.stations[1].inventory[COMMODITY_FERRITE_INGOT];
+    w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 40.0f;
+    float initial_stock = w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT];
     /* Run 60 seconds — haulers should relocate, load from station 1, and deliver */
     for (int i = 0; i < 7200; i++)
         world_sim_step(&w, SIM_DT);
@@ -244,7 +244,7 @@ TEST(test_bug22_hauler_stuck_at_empty_station) {
             hauler_relocated = true;
         }
     }
-    ASSERT(hauler_relocated || w.stations[1].inventory[COMMODITY_FERRITE_INGOT] < initial_stock);
+    ASSERT(hauler_relocated || w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] < initial_stock);
 }
 
 TEST(test_bug23_npc_cargo_stuck_when_hopper_full) {
@@ -252,7 +252,7 @@ TEST(test_bug23_npc_cargo_stuck_when_hopper_full) {
     world_reset(&w);
     /* Fill all hoppers to capacity */
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
-        w.stations[0].inventory[i] = REFINERY_HOPPER_CAPACITY;
+        w.stations[0]._inventory_cache[i] = REFINERY_HOPPER_CAPACITY;
     /* Give miner some cargo and send it home */
     w.npc_ships[0].cargo[0] = 30.0f;
     w.npc_ships[0].state = NPC_STATE_RETURN_TO_STATION;
@@ -277,14 +277,14 @@ TEST(test_bug24_ingot_buffer_no_cap) {
     WORLD_DECL;
     world_reset(&w);
     /* Pre-fill dest ingot buffer near capacity */
-    w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 40.0f;
+    w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 40.0f;
     /* Hauler arrives with 40 more ingots — should be capped */
     w.npc_ships[3].cargo[COMMODITY_FERRITE_INGOT] = 40.0f;
     w.npc_ships[3].state = NPC_STATE_UNLOADING;
     w.npc_ships[3].state_timer = 0.01f;
     w.npc_ships[3].dest_station = 1;
     world_sim_step(&w, SIM_DT);
-    ASSERT(w.stations[1].inventory[COMMODITY_FERRITE_INGOT] <= 50.0f);
+    ASSERT(w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] <= 50.0f);
 }
 
 TEST(test_bug25_rng_deterministic_every_reset) {
@@ -305,7 +305,7 @@ TEST(test_bug26_hauler_unload_no_cap) {
     WORLD_DECL;
     world_reset(&w);
     /* Pre-fill dest ingot buffer */
-    w.stations[1].inventory[COMMODITY_FERRITE_INGOT] = 100.0f;
+    w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 100.0f;
     /* Hauler arrives with 40 more */
     w.npc_ships[3].cargo[COMMODITY_FERRITE_INGOT] = 40.0f;
     w.npc_ships[3].state = NPC_STATE_UNLOADING;
@@ -314,7 +314,7 @@ TEST(test_bug26_hauler_unload_no_cap) {
     world_sim_step(&w, SIM_DT);
     /* After fix: ingot_buffer should not exceed a cap.
      * FAILS because unloading has no cap — buffer becomes 140. */
-    ASSERT(w.stations[1].inventory[COMMODITY_FERRITE_INGOT] <= 100.0f);
+    ASSERT(w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] <= 100.0f);
 }
 
 TEST(test_bug27_cargo_negative_after_sell) {
@@ -992,7 +992,7 @@ TEST(test_bug51_npc_cargo_zeroed_on_dock) {
     WORLD_DECL;
     world_reset(&w);
     /* Fill hopper so only 5 units can be deposited */
-    w.stations[0].inventory[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY - 5.0f;
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY - 5.0f;
     /* Give NPC 30 ferrite and send it home */
     w.npc_ships[0].cargo[COMMODITY_FERRITE_ORE] = 30.0f;
     w.npc_ships[0].state = NPC_STATE_RETURN_TO_STATION;
@@ -1019,7 +1019,7 @@ TEST(test_bug52_server_repair_cost_no_service_check) {
     w.players[0].current_station = 0;
     w.players[0].ship.hull = 50.0f;
     /* Drain any seeded kits to be sure both sources are empty. */
-    w.stations[0].inventory[COMMODITY_REPAIR_KIT] = 0.0f;
+    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
     w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 0.0f;
     ledger_earn(&w.stations[0], w.players[0].session_token, 1000.0f);
     float bal_before = ledger_balance(&w.stations[0],
@@ -1083,7 +1083,7 @@ TEST(test_bug55_npc_deposits_at_non_refinery) {
      * Yard doesn't smelt. The ore sits forever. */
     /* After fix: NPC should only deposit ore at REFINERY stations,
      * or seek the nearest refinery to sell. */
-    ASSERT_EQ_FLOAT(w.stations[1].inventory[COMMODITY_FERRITE_ORE], 0.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w.stations[1]._inventory_cache[COMMODITY_FERRITE_ORE], 0.0f, 0.01f);
 }
 
 TEST(test_bug56_asteroid_drag_constant) {

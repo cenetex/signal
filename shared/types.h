@@ -285,7 +285,14 @@ typedef struct {
     int8_t planned_owner;    /* player id who created the plan, -1 = system */
     float scaffold_progress; /* 0.0 to 1.0 */
     float base_price[COMMODITY_COUNT];
-    float inventory[COMMODITY_COUNT]; /* unified storage for all commodities */
+    /* Unified storage for all commodities. Treat as the float cache of
+     * the manifest for finished goods (c >= COMMODITY_RAW_ORE_COUNT) —
+     * direct writes to those slots silently break the manifest invariant.
+     * Use station_finished_{mint,drain,accumulate} (see shared/manifest.h)
+     * instead. Raw ore slots (c < COMMODITY_RAW_ORE_COUNT) live only here
+     * and may be read/written directly. The leading underscore signals
+     * "private — go through the accessors". */
+    float _inventory_cache[COMMODITY_COUNT];
     uint32_t services;
     /* Module system */
     station_module_t modules[MAX_MODULES_PER_STATION];

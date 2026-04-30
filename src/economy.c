@@ -66,28 +66,28 @@ void step_station_production(station_t* stations, int count, float dt) {
             if (!producer_recipe_for_module(mt, &recipe)) continue;
 
             schema = module_schema(mt);
-            room = MAX_PRODUCT_STOCK - station->inventory[recipe.output];
+            room = MAX_PRODUCT_STOCK - station->_inventory_cache[recipe.output];
             if (room <= FLOAT_EPSILON) continue;
 
             rate = schema->rate > 0.0f ? schema->rate : STATION_PRODUCTION_RATE;
             produce = fminf(rate * dt, room);
             produce = fminf(produce,
-                            station->inventory[recipe.primary_input] /
+                            station->_inventory_cache[recipe.primary_input] /
                             recipe.primary_units_per_output);
             if (recipe.secondary_input < COMMODITY_COUNT) {
                 produce = fminf(produce,
-                                station->inventory[recipe.secondary_input] /
+                                station->_inventory_cache[recipe.secondary_input] /
                                 recipe.secondary_units_per_output);
             }
             if (produce <= FLOAT_EPSILON) continue;
 
-            station->inventory[recipe.primary_input] -=
+            station->_inventory_cache[recipe.primary_input] -=
                 produce * recipe.primary_units_per_output;
             if (recipe.secondary_input < COMMODITY_COUNT) {
-                station->inventory[recipe.secondary_input] -=
+                station->_inventory_cache[recipe.secondary_input] -=
                     produce * recipe.secondary_units_per_output;
             }
-            station->inventory[recipe.output] += produce;
+            station->_inventory_cache[recipe.output] += produce;
         }
     }
 }
@@ -119,7 +119,7 @@ bool can_afford_upgrade(const station_t* station, const ship_t* ship, ship_upgra
     commodity_t comm = (commodity_t)(COMMODITY_FRAME + upgrade_required_product(upgrade));
     int units_needed = (int)ceilf(upgrade_product_cost(ship, upgrade));
     int in_cargo  = (int)floorf(ship->cargo[comm] + 0.0001f);
-    int at_station = (int)floorf(station->inventory[comm] + 0.0001f);
+    int at_station = (int)floorf(station->_inventory_cache[comm] + 0.0001f);
     if (in_cargo + at_station < units_needed) return false;
     int from_station = units_needed - (units_needed < in_cargo ? units_needed : in_cargo);
     float credit_cost = (float)from_station * station_sell_price(station, comm);

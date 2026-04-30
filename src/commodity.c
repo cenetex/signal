@@ -169,7 +169,7 @@ float station_buy_price(const station_t* station, commodity_t commodity) {
     if (base < FLOAT_EPSILON) return 0.0f;
     float capacity = (commodity < COMMODITY_RAW_ORE_COUNT)
         ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
-    float fill = station->inventory[commodity] / capacity;
+    float fill = station->_inventory_cache[commodity] / capacity;
     if (fill > 1.0f) fill = 1.0f;
     /* Buy cheaper when overstocked: 1.0× at empty, 0.5× at full */
     return base * (1.0f - fill * 0.5f);
@@ -184,7 +184,7 @@ float station_sell_price(const station_t* station, commodity_t commodity) {
     if (base < FLOAT_EPSILON) return 0.0f;
     float capacity = (commodity < COMMODITY_RAW_ORE_COUNT)
         ? REFINERY_HOPPER_CAPACITY : MAX_PRODUCT_STOCK;
-    float fill = station->inventory[commodity] / capacity;
+    float fill = station->_inventory_cache[commodity] / capacity;
     if (fill > 1.0f) fill = 1.0f;
     float deficit = 1.0f - fill;
     /* Sell expensive when scarce: 1× at full, 2× at empty */
@@ -192,5 +192,5 @@ float station_sell_price(const station_t* station, commodity_t commodity) {
 }
 
 float station_inventory_amount(const station_t* station, commodity_t commodity) {
-    return station != NULL ? station->inventory[commodity] : 0.0f;
+    return station != NULL ? station->_inventory_cache[commodity] : 0.0f;
 }
