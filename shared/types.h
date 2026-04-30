@@ -273,12 +273,24 @@ static inline const char *commodity_short_label(commodity_t c) {
     }
 }
 
+/* Sentinel value for station_module_t::last_smelt_commodity meaning
+ * "this furnace hasn't smelted anything yet." Renders as the static
+ * white chunks-feeder color in middle-ring furnaces. */
+#define LAST_SMELT_NONE 0xFFu
+
 typedef struct {
-    module_type_t type;
-    uint8_t ring;           /* which ring tier (0xFF=core, 1=inner, 2=mid, 3=outer) */
-    uint8_t slot;           /* position within ring (0..STATION_RING_SLOTS[ring]-1) */
-    bool scaffold;          /* under construction */
-    float build_progress;   /* 0.0 to 1.0 */
+    module_type_t type;     /* 4 bytes — int enum */
+    uint8_t ring;           /* 1: which ring tier (0xFF=core, 1=inner, 2=mid, 3=outer) */
+    uint8_t slot;           /* 1: position within ring (0..STATION_RING_SLOTS[ring]-1) */
+    bool    scaffold;       /* 1: under construction */
+    /* Most recent smelt-input commodity processed by this module, or
+     * LAST_SMELT_NONE if it's never smelted. Drives the middle-ring
+     * furnace glow (see station_palette.h::station_palette_furnace_color):
+     * cuprite-input → blue, crystal-input → green, otherwise white.
+     * Stored in the natural alignment pad before build_progress so the
+     * struct stays 12 bytes — no save-format bump. */
+    uint8_t last_smelt_commodity; /* 1 byte (was implicit pad) */
+    float   build_progress; /* 0.0 to 1.0 */
 } station_module_t;
 
 enum {

@@ -39,6 +39,7 @@ void add_module_at(station_t *st, module_type_t type, uint8_t arm, uint8_t chain
     m->slot = chain_pos;
     m->scaffold = false;
     m->build_progress = 1.0f;
+    m->last_smelt_commodity = LAST_SMELT_NONE;
 }
 
 void activate_outpost(world_t *w, int station_idx) {

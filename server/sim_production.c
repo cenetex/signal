@@ -294,6 +294,17 @@ void sim_step_refinery_production(world_t *w, float dt) {
             origin[7] = (uint8_t)('0' + (s % 10));
             uint16_t pre_mft_count = st->manifest.count;
             station_finished_accumulate(st, ingot, consume, origin);
+            /* Tag the producing furnace with this ore for the dynamic
+             * middle-ring glow render (cuprite → blue, crystal →
+             * green, ferrite → uses inner-ring red anyway). For
+             * multi-furnace stations the smelt logic round-robins
+             * across furnace_slots[]; mark the round-robin slot.
+             * Single-furnace stations: tag the lone furnace. */
+            if (n_slots > 0 && consume > 0.001f) {
+                int chosen = furnace_slots[next_furnace % n_slots];
+                st->modules[chosen].last_smelt_commodity = (uint8_t)ore;
+                next_furnace++;
+            }
             /* Layer C of #479: one EVT_SMELT per ingot minted. The
              * payload binds (fragment_pub, ingot_pub, prefix_class,
              * mined_block) to the station's signature. We don't know

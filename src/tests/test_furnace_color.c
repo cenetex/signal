@@ -35,6 +35,7 @@ static void make_station(station_t *st,
         st->modules[i].slot = (uint8_t)i;
         st->modules[i].scaffold = false;
         st->modules[i].build_progress = 1.0f;
+        st->modules[i].last_smelt_commodity = LAST_SMELT_NONE;
     }
 }
 
@@ -198,6 +199,48 @@ TEST(test_prospect_modules_after_silo_cleanup) {
     ASSERT_EQ_INT(has_silo, 0); /* dropped — hopper plays the intake role */
 }
 
+/* (6) Middle-ring dynamic glow: the helper reads
+ *     last_smelt_commodity on the matching middle-ring furnace and
+ *     renders blue (cuprite) / green (crystal) / white (other or
+ *     LAST_SMELT_NONE). */
+TEST(test_furnace_color_middle_ring_glows_by_last_smelt) {
+    station_t *st = calloc(1, sizeof(*st));
+    ASSERT(st != NULL);
+    module_type_t types[] = { MODULE_FURNACE, MODULE_FURNACE, MODULE_FURNACE };
+    uint8_t       rings[] = { 1, 2, 3 };
+    make_station(st, types, rings, 3);
+
+    /* Default (LAST_SMELT_NONE on all three): middle ring is white. */
+    float r = 0, g = 0, b = 0;
+    station_palette_furnace_color(st, 2, &r, &g, &b);
+    EXPECT_RGB(r, g, b, 0.85f, 0.85f, 0.90f);
+
+    /* Tag middle as cuprite-recent → middle glows blue. */
+    st->modules[1].last_smelt_commodity = (uint8_t)COMMODITY_CUPRITE_ORE;
+    station_palette_furnace_color(st, 2, &r, &g, &b);
+    EXPECT_RGB(r, g, b, 0.25f, 0.50f, 0.90f);
+
+    /* Tag middle as crystal-recent → middle glows green. */
+    st->modules[1].last_smelt_commodity = (uint8_t)COMMODITY_CRYSTAL_ORE;
+    station_palette_furnace_color(st, 2, &r, &g, &b);
+    EXPECT_RGB(r, g, b, 0.30f, 0.80f, 0.35f);
+
+    /* Ferrite or any other ore → falls back to white (no special
+     * inner-ring meaning at the middle). */
+    st->modules[1].last_smelt_commodity = (uint8_t)COMMODITY_FERRITE_ORE;
+    station_palette_furnace_color(st, 2, &r, &g, &b);
+    EXPECT_RGB(r, g, b, 0.85f, 0.85f, 0.90f);
+
+    /* Outer + inner are unaffected by middle's last_smelt setting. */
+    st->modules[1].last_smelt_commodity = (uint8_t)COMMODITY_CUPRITE_ORE;
+    station_palette_furnace_color(st, 1, &r, &g, &b);
+    EXPECT_RGB(r, g, b, 0.30f, 0.80f, 0.35f); /* inner stays crystal green */
+    station_palette_furnace_color(st, 3, &r, &g, &b);
+    EXPECT_RGB(r, g, b, 0.25f, 0.50f, 0.90f); /* outer stays cuprite blue */
+
+    free(st);
+}
+
 void register_furnace_color_tests(void) {
     TEST_SECTION("\nFurnace per-ring color render variants:\n");
     RUN(test_furnace_color_prospect_is_ferrite_red);
@@ -205,4 +248,5 @@ void register_furnace_color_tests(void) {
     RUN(test_furnace_color_outpost_growth_reshuffles);
     RUN(test_furnace_color_non_furnace_modules_unaffected);
     RUN(test_prospect_modules_after_silo_cleanup);
+    RUN(test_furnace_color_middle_ring_glows_by_last_smelt);
 }

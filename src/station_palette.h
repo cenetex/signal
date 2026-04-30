@@ -50,16 +50,36 @@ static inline void station_palette_furnace_color(const station_t *st,
         else                     PAL_UNPACK3(PAL_FURNACE_CUPRITE, *r, *g, *b);
         return;
     }
-    /* 3+ furnaces: inner=crystal, outer=cuprite, middle=chunks. */
+    /* 3+ furnaces: inner=crystal, outer=cuprite, middle=chunks. The
+     * middle ring's color is dynamic: glows blue when the most recent
+     * smelt at this furnace was cuprite, green when crystal, white
+     * otherwise (fresh furnace or recent ferrite smelt). Reads
+     * station_module_t::last_smelt_commodity (set in
+     * sim_production.c::sim_step_refinery_production). */
     if (my_ring == min_ring) {
         PAL_UNPACK3(PAL_FURNACE_CRYSTAL, *r, *g, *b);
     } else if (my_ring == max_ring) {
         PAL_UNPACK3(PAL_FURNACE_CUPRITE, *r, *g, *b);
     } else {
-        /* TODO(#chunks-feeder): sim behavior — middle-ring furnace
-         * tractors fragments inward to feed outer smelters. Today this
-         * is render-only; the simulation treats it as a normal furnace. */
-        PAL_UNPACK3(PAL_FURNACE_CHUNKS, *r, *g, *b);
+        const station_module_t *mod = NULL;
+        for (int i = 0; i < st->module_count; i++) {
+            if (st->modules[i].type == MODULE_FURNACE &&
+                (int)st->modules[i].ring == my_ring) {
+                mod = &st->modules[i];
+                break;
+            }
+        }
+        uint8_t last = mod ? mod->last_smelt_commodity : LAST_SMELT_NONE;
+        if (last == COMMODITY_CUPRITE_ORE) {
+            PAL_UNPACK3(PAL_FURNACE_CUPRITE, *r, *g, *b);
+        } else if (last == COMMODITY_CRYSTAL_ORE) {
+            PAL_UNPACK3(PAL_FURNACE_CRYSTAL, *r, *g, *b);
+        } else {
+            /* TODO(#chunks-feeder): sim behavior — middle-ring furnace
+             * tractors fragments inward to feed outer smelters. Today
+             * the simulation treats it as a normal furnace. */
+            PAL_UNPACK3(PAL_FURNACE_CHUNKS, *r, *g, *b);
+        }
     }
 }
 
