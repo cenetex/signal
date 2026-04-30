@@ -6,6 +6,7 @@
  */
 #include "net.h"
 #include "mining_client.h"
+#include "mining.h"  /* mining_alphanumeric_callsign — pubkey-derived */
 #include "signal_crypto.h"
 
 #include <string.h>
@@ -157,43 +158,17 @@ const uint8_t* net_local_session_token(void) {
 
 static void ensure_callsign(void) {
     if (net_state.callsign_ready) return;
-    /* 6 alphanumeric chars with a dash at a random position (1-5).
-     * Mix of uppercase letters (no I,O) and digits. e.g. SK-2a9 */
-#ifdef __EMSCRIPTEN__
-    const char *cs = emscripten_run_script_string(
-        "(function(){"
-        "var k='signal_callsign',s=localStorage.getItem(k);"
-        "if(s&&s.length===7)return s;"
-        "var A='ABCDEFGHJKLMNPQRSTUVWXYZ0123456789';"
-        "var chars=[];for(var i=0;i<6;i++)chars.push(A[Math.floor(Math.random()*34)]);"
-        "var d=1+Math.floor(Math.random()*5);"
-        "chars.splice(d,0,'-');"
-        "var c=chars.join('');"
-        "localStorage.setItem(k,c);return c;"
-        "})()"
-    );
-    if (cs && strlen(cs) == 7) {
-        memcpy(net_state.callsign, cs, 7);
-        net_state.callsign[7] = '\0';
+    /* Callsign is now derived from the player's Ed25519 pubkey via
+     * mining_alphanumeric_callsign(). Same pubkey → same callsign on
+     * every machine forever, no localStorage cache needed. The legacy
+     * random/localStorage path is gone. */
+    if (!net_state.identity_pubkey_ready) {
+        /* Pubkey not yet provided — defer; main.c installs it before
+         * net_init via net_set_identity_pubkey(). Leave callsign as-is
+         * (zeroed); ensure_callsign() will be called again. */
+        return;
     }
-#else
-    /* Native: generate random callsign */
-    static const char alnum[] = "ABCDEFGHJKLMNPQRSTUVWXYZ0123456789";
-    uint32_t seed = (uint32_t)time(NULL) ^ (uint32_t)(uintptr_t)&net_state;
-    char chars[6];
-    for (int i = 0; i < 6; i++) {
-        seed = seed * 1103515245u + 12345u;
-        chars[i] = alnum[(seed >> 16) % 34];
-    }
-    seed = seed * 1103515245u + 12345u;
-    int dash = 1 + (int)((seed >> 16) % 5); /* dash at position 1-5 */
-    int ci = 0;
-    for (int i = 0; i < 7; i++) {
-        if (i == dash) net_state.callsign[i] = '-';
-        else net_state.callsign[i] = chars[ci++];
-    }
-    net_state.callsign[7] = '\0';
-#endif
+    mining_alphanumeric_callsign(net_state.identity_pubkey, net_state.callsign);
     net_state.callsign_ready = true;
     printf("[net] callsign: %s\n", net_state.callsign);
 }
@@ -221,6 +196,11 @@ void net_set_identity_pubkey(const uint8_t pubkey[32]) {
     }
     memcpy(net_state.identity_pubkey, pubkey, 32);
     net_state.identity_pubkey_ready = true;
+    /* Now that we have a pubkey, the callsign can be derived. If
+     * ensure_callsign() ran earlier and bailed because the pubkey
+     * wasn't set yet, the callsign[] is still zeroed — clear the
+     * ready flag so the next ensure_callsign() call does the work. */
+    net_state.callsign_ready = false;
 }
 
 void net_set_identity_secret(const uint8_t secret[64]) {

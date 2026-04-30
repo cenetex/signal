@@ -365,4 +365,42 @@ static inline void mining_render_callsign(const uint8_t pub[MINING_PUBKEY_BYTES]
     }
 }
 
+/* Render a pubkey as an alphanumeric callsign in `XXX-XXX` style for
+ * player display. Deterministic; same pubkey always produces the same
+ * callsign across machines / restarts.
+ *
+ * Format: 6 chars from the alphanumeric alphabet (no I, O, l, 0 to keep
+ * it visually unambiguous — 32 chars total), with a dash inserted at a
+ * deterministic position 1..5. Output is always exactly 7 chars + null.
+ *
+ * Class-prefix is intentionally NOT preserved here: that signal already
+ * lives in mining_render_callsign() (RATi-/M-/H-/etc. for cargo lineage).
+ * Player-display callsigns are pure alphanumeric noise — easy to type,
+ * easy to read, no character-set surprises. Collisions in 32^6 ≈ 1.07B
+ * are vanishingly rare for a single-server universe.
+ *
+ * Caller buffer must be at least 8 bytes. */
+static inline void mining_alphanumeric_callsign(const uint8_t pub[MINING_PUBKEY_BYTES],
+                                                char out[8]) {
+    /* 32-char alphabet — A-Z minus I/O, plus digits 2-9 (no 0/1).
+     * Power of two so byte→index is just a mask. Declared without
+     * room for the trailing null so the array stays exactly 32. */
+    static const char ALNUM[32] = {
+        'A','B','C','D','E','F','G','H','J','K','L','M','N','P','Q','R',
+        'S','T','U','V','W','X','Y','Z','2','3','4','5','6','7','8','9'
+    };
+    char body[6];
+    for (int i = 0; i < 6; i++)
+        body[i] = ALNUM[pub[i] & 0x1F];
+    /* Dash position 1..5, derived from a different pub byte so it
+     * doesn't correlate with the first body char. */
+    int dash = 1 + (pub[6] % 5);
+    int ci = 0;
+    for (int i = 0; i < 7; i++) {
+        if (i == dash) out[i] = '-';
+        else           out[i] = body[ci++];
+    }
+    out[7] = '\0';
+}
+
 #endif /* SHARED_MINING_H */

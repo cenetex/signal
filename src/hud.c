@@ -10,6 +10,7 @@
 #include "world_draw.h"
 #include "avatar.h"
 #include "mining_client.h"
+#include "mining.h"  /* mining_alphanumeric_callsign — pubkey-derived */
 #include "signal_model.h"
 #include "palette.h"
 
@@ -327,15 +328,17 @@ static void hud_draw_alpha_banner_and_mp_indicator(float screen_w, bool compact)
         sdtx_color3b(PAL_TEXT_GREY);
         sdtx_printf("v%s", client_hash);
     }
-    /* Pubkey prefix — faint, just under the version. Layer A.1 of #479:
-     * each player owns a persistent Ed25519 keypair; this is the first
-     * 8 chars of its base58 form so the player can see/share their own
-     * identity. The wire protocol still uses session_token; later layers
-     * promote this to a real on-connect identifier. */
-    if (g.identity_pub_b58[0] != '\0') {
+    /* Player callsign — derived from the Ed25519 pubkey via
+     * mining_alphanumeric_callsign(). Same pubkey → same callsign
+     * forever, across machines / reconnects / server restarts. This is
+     * also the wire-callsign (sent to server in session-init), so what
+     * shows here is what other players see on the chain log. */
+    if (g.identity.pubkey[0] != 0 || g.identity.pubkey[1] != 0) {
+        char callsign[8];
+        mining_alphanumeric_callsign(g.identity.pubkey, callsign);
         sdtx_pos(info_x, ui_text_pos(20.0f));
         sdtx_color3b(PAL_TEXT_FADED);
-        sdtx_printf("id %.8s", g.identity_pub_b58);
+        sdtx_printf("id %s", callsign);
     }
 
     /* Alpha banner: repeating ticker across the top. */
