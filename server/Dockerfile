@@ -14,11 +14,14 @@ WORKDIR /app
 
 # Only the files the server target actually needs — vendor/sokol is
 # for the client, so we skip it (BUILD_SERVER_ONLY short-circuits the
-# client block before it's referenced).
+# client block before it's referenced). vendor/tweetnacl is required
+# since #497 (chain log Ed25519 signing) — signal_server links
+# ${SIGNAL_CRYPTO_SOURCES}.
 COPY CMakeLists.txt ./
 COPY shared/ ./shared/
 COPY src/ ./src/
 COPY server/ ./server/
+COPY vendor/tweetnacl/ ./vendor/tweetnacl/
 
 # Flags preserved from the old hand-rolled gcc invocation:
 #   -static                          (fully static musl binary)
@@ -33,6 +36,7 @@ RUN cmake -S . -B build \
       -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
       -DCMAKE_EXE_LINKER_FLAGS="-static" \
       -DBUILD_SERVER_ONLY=ON \
+      -DBUILD_TOOLS=OFF \
       -DGIT_HASH=${GIT_HASH} \
     && cmake --build build --target signal_server --parallel
 
