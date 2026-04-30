@@ -181,14 +181,13 @@ TEST(test_prospect_modules_after_silo_cleanup) {
     ASSERT(w != NULL);
     world_reset(w);
     ASSERT_EQ_INT((int)w->stations[0].module_count, 4);
-    int has_dock = 0, has_relay = 0, has_furnace = 0, has_hopper = 0, has_silo = 0;
+    int has_dock = 0, has_relay = 0, has_furnace = 0, has_hopper = 0;
     for (int i = 0; i < w->stations[0].module_count; i++) {
         switch (w->stations[0].modules[i].type) {
         case MODULE_DOCK:         has_dock++; break;
         case MODULE_SIGNAL_RELAY: has_relay++; break;
         case MODULE_FURNACE:      has_furnace++; break;
         case MODULE_HOPPER:       has_hopper++; break;
-        case MODULE_ORE_SILO:     has_silo++; break;
         default: break;
         }
     }
@@ -196,7 +195,8 @@ TEST(test_prospect_modules_after_silo_cleanup) {
     ASSERT_EQ_INT(has_relay, 1);
     ASSERT_EQ_INT(has_furnace, 1);
     ASSERT_EQ_INT(has_hopper, 1);
-    ASSERT_EQ_INT(has_silo, 0); /* dropped — hopper plays the intake role */
+    /* MODULE_ORE_SILO and MODULE_CARGO_BAY were dropped entirely;
+     * hopper now serves as the unified ore-intake-and-storage. */
 }
 
 /* (6) Middle-ring dynamic glow: the helper reads

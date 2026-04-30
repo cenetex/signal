@@ -297,8 +297,7 @@ void draw_signal_borders(void) {
 static void module_color(module_type_t type, float *r, float *g, float *b) {
     switch (type) {
     case MODULE_FURNACE:      PAL_UNPACK3(PAL_MODULE_FURNACE,      *r, *g, *b); return;
-    case MODULE_HOPPER:    PAL_UNPACK3(PAL_MODULE_HOPPER,    *r, *g, *b); return;
-    case MODULE_ORE_SILO:     PAL_UNPACK3(PAL_MODULE_ORE_SILO,     *r, *g, *b); return;
+    case MODULE_HOPPER:       PAL_UNPACK3(PAL_MODULE_HOPPER,       *r, *g, *b); return;
     case MODULE_FRAME_PRESS:  PAL_UNPACK3(PAL_MODULE_FRAME_PRESS,  *r, *g, *b); return;
     case MODULE_LASER_FAB:    PAL_UNPACK3(PAL_MODULE_LASER_FAB,    *r, *g, *b); return;
     case MODULE_TRACTOR_FAB:  PAL_UNPACK3(PAL_MODULE_TRACTOR_FAB,  *r, *g, *b); return;
@@ -413,10 +412,8 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
         break;
     }
 
-    /* ---- INTAKE (hopper+silo): Triangle ---- */
-    case MODULE_HOPPER:
-    case MODULE_ORE_SILO:
-    case MODULE_CARGO_BAY: {
+    /* ---- INTAKE (hopper): Triangle ---- */
+    case MODULE_HOPPER: {
         /* Triangle pointing outward (-Y) = funnel mouth */
         sgl_c4f(mr*0.30f, mg*0.30f, mb*0.30f, alpha);
         sgl_begin_triangles();
@@ -944,10 +941,11 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                         if (mi2 == mod_idx[i]) continue;
                         if (station->modules[mi2].scaffold) continue;
                         module_type_t st = station->modules[mi2].type;
-                        /* Suppliers: furnaces, silos, or other producers */
+                        /* Suppliers: furnaces or hoppers (the latter
+                         * absorbed the legacy ORE_SILO/CARGO_BAY storage
+                         * roles). */
                         bool is_supplier = (st == MODULE_FURNACE ||
-                                           st == MODULE_ORE_SILO ||
-                                           st == MODULE_CARGO_BAY);
+                                           st == MODULE_HOPPER);
                         if (!is_supplier) continue;
                         vec2 sp = module_world_pos_ring(station, station->modules[mi2].ring,
                                                        station->modules[mi2].slot);
@@ -1364,7 +1362,7 @@ void draw_hopper_tractors(void) {
         for (int m = 0; m < st->module_count; m++) {
             if (st->modules[m].scaffold) continue;
             module_type_t mt = st->modules[m].type;
-            if (mt != MODULE_FURNACE && mt != MODULE_ORE_SILO) continue;
+            if (mt != MODULE_FURNACE && mt != MODULE_HOPPER) continue;
             vec2 mp = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
             if (!on_screen(mp.x, mp.y, pull_range + 50.0f)) continue;
 

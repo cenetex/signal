@@ -236,24 +236,29 @@ typedef enum {
 /* ------------------------------------------------------------------ */
 
 typedef enum {
-    MODULE_DOCK,
-    MODULE_HOPPER,            /* ore intake + beam anchor for furnaces */
+    MODULE_DOCK = 0,
+    MODULE_HOPPER = 1,        /* ore intake + storage + smelt-unlock for furnaces.
+                               * Absorbs the legacy ORE_SILO and CARGO_BAY storage
+                               * roles — those subtypes were dropped in the
+                               * silo cleanup. Save migration in sim_save.c
+                               * remaps both back to MODULE_HOPPER. */
     /* Single-type furnace: which ores it can smelt is determined by the
      * station's furnace count, not the module subtype. 1 furnace ⇒
      * ferrite only; 2 ⇒ cuprite (ferrite blocked); 3 ⇒ cuprite + crystal
      * (ferrite still blocked). The MODULE_FURNACE_CU and MODULE_FURNACE_CR
      * subtypes were collapsed away in the count-tier rework — save
      * migration in sim_save.c remaps both back to MODULE_FURNACE. */
-    MODULE_FURNACE,
-    MODULE_REPAIR_BAY,
-    MODULE_SIGNAL_RELAY,
-    MODULE_FRAME_PRESS,
-    MODULE_LASER_FAB,
-    MODULE_TRACTOR_FAB,
-    MODULE_ORE_SILO,
-    MODULE_SHIPYARD,
-    MODULE_CARGO_BAY,         /* generic large storage */
-    MODULE_COUNT
+    MODULE_FURNACE = 2,
+    MODULE_REPAIR_BAY = 3,
+    MODULE_SIGNAL_RELAY = 4,
+    MODULE_FRAME_PRESS = 5,
+    MODULE_LASER_FAB = 6,
+    MODULE_TRACTOR_FAB = 7,
+    /* enum values 8 (was ORE_SILO) and 10 (was CARGO_BAY) are gone;
+     * see SAVE_VERSION 44 migration. SHIPYARD pinned to its old value
+     * to keep the migration table simple. */
+    MODULE_SHIPYARD = 9,
+    MODULE_COUNT = 10
 } module_type_t;
 
 /* module_type_name moved to module_schema.h — reads from schema. */

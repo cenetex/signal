@@ -119,19 +119,6 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .variant_count = 0,
         .prerequisite = MODULE_FURNACE, /* tier 5 — needs cr ingots from a 3+ furnace stack */
     },
-    [MODULE_ORE_SILO] = {
-        .name = "Ore Silo",
-        .kind = MODULE_KIND_STORAGE,
-        .input = COMMODITY_FERRITE_ORE, /* primary; accepts all ore */
-        .output = COMMODITY_COUNT,
-        .rate = 0.0f, .buffer_capacity = 60.0f, /* big buffer */
-        .build_material = 30.0f, .build_commodity = COMMODITY_FRAME,
-        .order_fee = 25,
-        .services = 0,
-        .valid_rings = MODULE_RINGS_OUTER,
-        .variant_count = 0,
-        .prerequisite = MODULE_FURNACE, /* tier 3 — overflow storage */
-    },
     [MODULE_SHIPYARD] = {
         .name = "Shipyard",
         .kind = MODULE_KIND_SHIPYARD,
@@ -144,19 +131,6 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
         .prerequisite = MODULE_FRAME_PRESS, /* tier 4 — needs frames */
-    },
-    [MODULE_CARGO_BAY] = {
-        .name = "Cargo Bay",
-        .kind = MODULE_KIND_STORAGE,
-        .input = COMMODITY_FERRITE_INGOT, /* generic — accepts any commodity in flow graph */
-        .output = COMMODITY_COUNT,
-        .rate = 0.0f, .buffer_capacity = 120.0f, /* large storage */
-        .build_material = 60.0f, .build_commodity = COMMODITY_FRAME,
-        .order_fee = 60,
-        .services = 0,
-        .valid_rings = MODULE_RINGS_OUTER,
-        .variant_count = 0,
-        .prerequisite = MODULE_FURNACE, /* tier 3 — needs production to store */
     },
 };
 

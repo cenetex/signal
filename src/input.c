@@ -615,7 +615,9 @@ static void plan_mode_handle_cycle_type(input_intent_t *intent) {
     static const module_type_t plannable[] = {
         MODULE_FURNACE,
         MODULE_FRAME_PRESS, MODULE_LASER_FAB, MODULE_TRACTOR_FAB,
-        MODULE_ORE_SILO, MODULE_CARGO_BAY,
+        /* MODULE_ORE_SILO + MODULE_CARGO_BAY were dropped — HOPPER
+         * absorbs the storage role. */
+        MODULE_HOPPER,
         MODULE_REPAIR_BAY, MODULE_SIGNAL_RELAY, MODULE_DOCK,
         MODULE_SHIPYARD,
     };

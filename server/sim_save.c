@@ -78,7 +78,12 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 43  /* credit_pool field eliminated — pool is now derived
+#define SAVE_VERSION 44  /* MODULE_ORE_SILO (= 8) and MODULE_CARGO_BAY (= 10)
+                          * dropped; both remapped to MODULE_HOPPER (= 1)
+                          * on load. The hopper now serves as the unified
+                          * ore-intake-and-storage module. v43 saves load
+                          * with the remap applied automatically.
+                          * v43: credit_pool field eliminated — pool is now derived
                           * from -Σ(ledger.balance) via station_credit_pool().
                           * world.sav drops 4 bytes per existing station in
                           * write_station_session; v42 saves still load (the
@@ -1146,6 +1151,36 @@ bool world_load(world_t *w, const char *path) {
             int old_t = (int)w->scaffolds[i].module_type;
             if (old_t >= 0 && old_t < 13)
                 w->scaffolds[i].module_type = (module_type_t)FURNACE_REMAP[old_t];
+        }
+    }
+
+    /* v44 silo cleanup: MODULE_ORE_SILO (was 8) and MODULE_CARGO_BAY
+     * (was 10) were dropped; HOPPER absorbs both storage roles. The
+     * other enum positions stayed put (DOCK=0, HOPPER=1, FURNACE=2,
+     * REPAIR_BAY=3, SIGNAL_RELAY=4, FRAME_PRESS=5, LASER_FAB=6,
+     * TRACTOR_FAB=7, SHIPYARD=9), so the only operation needed is
+     * remapping any module/scaffold/plan that used 8 or 10 → 1. */
+    if (version < 44) {
+        for (int i = 0; i < MAX_STATIONS; i++) {
+            station_t *st = &w->stations[i];
+            for (int m = 0; m < st->module_count; m++) {
+                int t = (int)st->modules[m].type;
+                if (t == 8 || t == 10) st->modules[m].type = MODULE_HOPPER;
+            }
+            for (int p = 0; p < st->pending_scaffold_count; p++) {
+                int t = (int)st->pending_scaffolds[p].type;
+                if (t == 8 || t == 10) st->pending_scaffolds[p].type = MODULE_HOPPER;
+            }
+            for (int p = 0; p < st->placement_plan_count; p++) {
+                int t = (int)st->placement_plans[p].type;
+                if (t == 8 || t == 10) st->placement_plans[p].type = MODULE_HOPPER;
+            }
+            rebuild_station_services(st);
+        }
+        for (int i = 0; i < MAX_SCAFFOLDS; i++) {
+            if (!w->scaffolds[i].active) continue;
+            int t = (int)w->scaffolds[i].module_type;
+            if (t == 8 || t == 10) w->scaffolds[i].module_type = MODULE_HOPPER;
         }
     }
 

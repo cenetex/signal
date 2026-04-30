@@ -4706,10 +4706,11 @@ void world_reset(world_t *w) {
     /* Kepler imports laser/tractor modules for its dock kit fab. */
     w->stations[1].base_price[COMMODITY_LASER_MODULE]   = 30.0f;
     w->stations[1].base_price[COMMODITY_TRACTOR_MODULE] = 38.0f;
-    /* Ring 1: dock + relay + ore silo */
+    /* Ring 1: dock + relay (slot 2 left empty — Kepler doesn't smelt
+     * so the storage that lived here was redundant; ORE_SILO was
+     * dropped along with MODULE_CARGO_BAY in the silo cleanup). */
     add_module_at(&w->stations[1], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 1, 1);
-    add_module_at(&w->stations[1], MODULE_ORE_SILO, 1, 2);
     /* Ring 2 (industrial): fabrication + services */
     add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 2, 0);
     add_module_at(&w->stations[1], MODULE_LASER_FAB, 2, 1);
@@ -4755,17 +4756,15 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_DOCK, 1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
     add_module_at(&w->stations[2], MODULE_FURNACE, 1, 2);
-    /* Ring 2: hopper + furnace + fabs + storage */
+    /* Ring 2: hopper + furnace + fabs (silo at slot 4 dropped — hopper
+     * absorbs the ore-storage role now that ORE_SILO is gone). */
     add_module_at(&w->stations[2], MODULE_HOPPER, 2, 0);
     add_module_at(&w->stations[2], MODULE_FURNACE, 2, 1);
     add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 2);
     add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 3);
-    add_module_at(&w->stations[2], MODULE_ORE_SILO, 2, 4);
-    /* Ring 3: furnace + shipyard + overflow silos */
+    /* Ring 3: furnace + shipyard (overflow silos at slots 2-3 dropped). */
     add_module_at(&w->stations[2], MODULE_FURNACE, 3, 0);
     add_module_at(&w->stations[2], MODULE_SHIPYARD, 3, 1);
-    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 2);
-    add_module_at(&w->stations[2], MODULE_ORE_SILO, 3, 3);
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[0] = STATION_RING_SPEED;
     w->stations[2].ring_offset[0] = 0.0f;

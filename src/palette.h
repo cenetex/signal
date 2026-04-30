@@ -164,7 +164,6 @@
 #define PAL_MODULE_SHIPYARD  0.85f, 0.70f, 0.20f
 
 /* Shared neutral modules */
-#define PAL_MODULE_ORE_SILO  0.45f, 0.48f, 0.50f
 #define PAL_MODULE_LASER_FAB 0.55f, 0.45f, 0.50f
 #define PAL_MODULE_TRACTOR_FAB 0.45f, 0.50f, 0.48f
 #define PAL_MODULE_SIGNAL_RELAY 0.35f, 0.55f, 0.50f
