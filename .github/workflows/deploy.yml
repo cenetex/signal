@@ -30,7 +30,7 @@ jobs:
       - name: Build and run tests
         run: |
           cmake -S . -B build-test -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
-            -DCMAKE_C_FLAGS="-Werror"
+            -DCMAKE_C_FLAGS="-Werror" -DCMAKE_C_FLAGS_DEBUG="-O2 -g"
           cmake --build build-test --parallel
           ulimit -s 16384
           ./build-test/signal_test

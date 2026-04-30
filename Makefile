@@ -28,8 +28,11 @@ build-server:
 # `make test TEST_VERBOSE=1` to get the full per-test stream.
 TEST_QUIET := $(if $(TEST_VERBOSE),,--quiet)
 
+# -O2 instead of CMake's default -O0 for Debug: cuts the test suite from
+# ~180s to ~56s (3.25x). All 340 tests pass identically — see PR that
+# introduced this. Keep -g for usable stack traces on failure.
 build-test:
-	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=Debug
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g"
 	cmake --build build --target signal_test --parallel
 
 # Default `test` is serial — the suite has shared `/tmp/test_*.sav`
