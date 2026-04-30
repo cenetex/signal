@@ -85,6 +85,7 @@ set(SIGNAL_SIM_SOURCES
     server/sim_production.c
     server/sim_construction.c
     server/sim_mining.c
+    server/sim_anchor.c
 )
 
 # Shared libraries used by both sim and client render — pure C, no
@@ -203,6 +204,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         src/tests/test_registry.c
         src/tests/test_signed_action.c
         src/tests/test_save_keyed_by_pubkey.c
+        src/tests/test_anchor.c
         src/identity.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}

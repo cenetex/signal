@@ -5,6 +5,14 @@
  * The pubkey is recoverable as the trailing 32 bytes; we don't write
  * a separate header so a corrupt file is detectable purely by length.
  */
+
+/* glibc on Linux only declares fchmod / mkdir-with-mode under one of
+ * these feature-test macros; without them, -Werror=implicit-function-
+ * declaration kills the build (CI failure mode that macOS libc hides
+ * because Apple libc declares fchmod by default). */
+#define _DEFAULT_SOURCE
+#define _POSIX_C_SOURCE 200809L
+
 #include "identity.h"
 
 #include <stdio.h>

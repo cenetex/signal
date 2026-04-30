@@ -96,7 +96,8 @@ static uint8_t read_first_byte(const char *path) {
     FILE *f = fopen(path, "rb");
     if (!f) return 0;
     uint8_t b = 0;
-    (void)fread(&b, 1, 1, f);
+    /* glibc + -Werror=unused-result rejects (void)fread; check explicitly. */
+    if (fread(&b, 1, 1, f) != 1) b = 0;
     fclose(f);
     return b;
 }

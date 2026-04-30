@@ -29,6 +29,7 @@ void register_economy_contract3_tests(void);
 void register_economy_pricing_tests(void);
 void register_world_sim_belt_tests(void);
 void register_world_sim_chunk_tests(void);
+void register_anchor_tests(void);
 void register_economy_mixed_cargo_tests(void);
 void register_economy_service259_tests(void);
 void register_economy_refinery_smelt_tests(void);
@@ -105,6 +106,7 @@ int main(int argc, char **argv) {
     register_economy_pricing_tests();
     register_world_sim_belt_tests();
     register_world_sim_chunk_tests();
+    register_anchor_tests();
     register_economy_mixed_cargo_tests();
     register_economy_service259_tests();
     register_economy_refinery_smelt_tests();
