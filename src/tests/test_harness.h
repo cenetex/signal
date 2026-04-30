@@ -48,6 +48,14 @@ extern int g_test_seq;
 extern int g_quiet;
 extern int g_warnings;
 
+/* Substring filter: when non-NULL, only tests whose name (the literal
+ * stringified token passed to RUN) contains this substring run. Set
+ * with --filter=<pat> on the command line. Composes with --shard: the
+ * filter check happens BEFORE the shard mod check, so filtered tests
+ * don't burn shard slots and `--filter=foo --shard=K/N` runs the Nth
+ * slice of matching tests, not the Nth slice of the full suite. */
+extern const char *g_filter;
+
 /* Auto-cleanup for world_t — frees the heap-allocated signal cache grid.
  * Uses __attribute__((cleanup)) on GCC/Clang; on MSVC, leaks are
  * acceptable in tests (no cleanup on early ASSERT return). */
@@ -77,6 +85,7 @@ static inline void server_player_auto_cleanup(server_player_t *sp) { ship_cleanu
  * and printed "ok" even after an ASSERT had already failed and bumped
  * tests_failed, causing the summary line to lie. (#261) */
 #define RUN(name) do { \
+    if (g_filter && !strstr(#name, g_filter)) break; \
     int _seq = g_test_seq++; \
     if ((_seq % g_shard_total) != g_shard_index) break; \
     int _failed_before = tests_failed; \

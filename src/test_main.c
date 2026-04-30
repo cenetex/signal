@@ -58,7 +58,10 @@ int main(int argc, char **argv) {
     /* --shard=K/N splits the suite across N workers; worker K runs
      * every Nth test starting at index K. Unset = run everything.
      * --quiet suppresses banners + per-test "ok" lines + [WARN] noise;
-     * a single FAIL line still prints with full file:line context. */
+     * a single FAIL line still prints with full file:line context.
+     * --filter=<substr> runs only tests whose name contains <substr>;
+     * composes with --shard (filter happens first, so filtered tests
+     * don't burn shard slots). */
     for (int i = 1; i < argc; i++) {
         if (strncmp(argv[i], "--shard=", 8) == 0) {
             int k = 0, n = 1;
@@ -69,6 +72,9 @@ int main(int argc, char **argv) {
             }
         } else if (strcmp(argv[i], "--quiet") == 0) {
             g_quiet = 1;
+        } else if (strncmp(argv[i], "--filter=", 9) == 0) {
+            g_filter = argv[i] + 9;
+            if (g_filter[0] == '\0') g_filter = NULL;
         }
     }
 
