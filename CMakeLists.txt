@@ -80,6 +80,7 @@ set(SIGNAL_SIM_SOURCES
     server/sim_nav.c
     server/sim_save.c
     server/sim_catalog.c
+    server/station_authority.c
     server/sim_asteroid.c
     server/sim_physics.c
     server/sim_production.c
@@ -205,6 +206,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         src/tests/test_signed_action.c
         src/tests/test_save_keyed_by_pubkey.c
         src/tests/test_anchor.c
+        src/tests/test_station_authority.c
         src/identity.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}

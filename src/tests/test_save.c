@@ -554,7 +554,13 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  * v39: Layer A.3 of #479 added last_signed_nonce to the per-player
  * save (PLY6); world.sav format is unchanged so the size constant
  * stays the same. */
-#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2) /* v39 */
+/* v40: Layer B of #479 — per-station Ed25519 pubkey (32B) + outpost
+ * provenance (founder_pubkey 32B + planted_tick 8B) + station name
+ * (32B, also written here so outpost rederivation stays self-
+ * contained when the catalog isn't loaded alongside) = +104B per
+ * station × MAX_STATIONS=64 = +6656 bytes. station_secret is
+ * deliberately NOT persisted. */
+#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104) /* v40 */
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -591,7 +597,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 39);
+    ASSERT_EQ_INT((int)version, 40);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

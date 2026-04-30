@@ -35,6 +35,7 @@
 #include "rng.h"
 #include "sha256.h"   /* signal_chain_hash_block */
 #include "signal_crypto.h" /* Ed25519 verify for signed actions (#479 A.3) */
+#include "station_authority.h" /* per-station Ed25519 identity (#479 B) */
 #include "protocol.h"      /* NET_MSG_SIGNED_ACTION + signed_action_type_t */
 #include <math.h>      /* isfinite for contract base_price sanity clamp */
 #include <stdlib.h>
@@ -2158,6 +2159,12 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
             st->radius = OUTPOST_RADIUS;
             st->dock_radius = OUTPOST_DOCK_RADIUS;
             st->signal_range = OUTPOST_SIGNAL_RANGE;
+            /* Layer B of #479: derive the outpost's Ed25519 identity
+             * from the founder's pubkey + station name + planted tick.
+             * Must run after the name is set (the name is part of the
+             * derivation) and stays stable for the station's lifetime. */
+            station_authority_init_outpost(st, sp->pubkey,
+                                           (uint64_t)(w->time * 128.0f));
             /* Outpost is born under construction — needs frames delivered
              * to activate. The towed relay seed becomes the station's
              * core relay (added below); the dock comes pre-stamped. */
@@ -3227,6 +3234,12 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 st->pos = pos;
                 st->planned = true;
                 st->planned_owner = (int8_t)sp->id;
+                /* Layer B of #479: stamp the outpost's keypair at
+                 * planning time. The founder's identity is locked in
+                 * here — even if a different player later supplies the
+                 * frames, the station's pubkey traces to the planner. */
+                station_authority_init_outpost(st, sp->pubkey,
+                                               (uint64_t)(w->time * 128.0f));
                 st->radius = 0.0f;
                 st->dock_radius = 0.0f;
                 st->signal_range = 0.0f;
@@ -4590,6 +4603,15 @@ void world_reset(world_t *w) {
     belt_field_init(&w->belt, w->rng, BELT_SCALE);
     for (int i = 0; i < MAX_STATIONS; i++)
         (void)station_manifest_bootstrap(&w->stations[i]);
+
+    /* --- Seeded-station identity (Layer B of #479) ---
+     * Derive deterministic Ed25519 keypairs for the three seeded
+     * stations from the world seed *before* any other identity logic
+     * runs, so subsequent code (catalog save, signal_chain bootstrap,
+     * etc.) sees stations with stable pubkeys. */
+    for (int s = 0; s < 3; s++)
+        station_authority_init_seeded(&w->stations[s], w->belt_seed,
+                                       (uint32_t)s);
 
     /* --- Stations --- */
     w->next_station_id = 1; /* IDs start at 1; 0 = unassigned */

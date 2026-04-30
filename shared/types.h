@@ -2,6 +2,7 @@
 #define TYPES_H
 
 #include <stdbool.h>
+#include <stddef.h>   /* offsetof — Layer B of #479 station_secret guard */
 #include <stdint.h>
 #include "math_util.h"
 #include "mining.h"
@@ -353,7 +354,48 @@ typedef struct {
      * in inventory, consume them, mint REPAIR_KIT_PER_BATCH kits, and
      * reset the timer to REPAIR_KIT_FAB_PERIOD. */
     float         repair_kit_fab_timer;
+    /* Layer B of #479 — per-station Ed25519 identity.
+     *
+     * `station_pubkey` is the station's public identity, derived
+     * deterministically from the world seed (seeded stations 0/1/2)
+     * or from (founder_pubkey || station_name || planted_tick) for
+     * player-planted outposts (indices 3+). Public; baked into the
+     * world snapshot sent to clients on connect. Persisted by the
+     * world save.
+     *
+     * `outpost_planted_tick` records the world.time *128 (tick) at
+     * which the outpost was planted, used to re-derive its keypair
+     * on save/load without persisting the secret. Zero for seeded
+     * stations and unfounded slots.
+     *
+     * `station_secret` is the operator-only Ed25519 private material
+     * (seed||pub per the NaCl convention). It is NEVER serialized
+     * over the wire and NEVER written to disk — both seeded and
+     * outpost stations rederive it from the world seed (or saved
+     * founder + name + tick) at load time. A save leak therefore
+     * does not leak the private key.
+     *
+     * If you add fields between `outpost_planted_tick` and
+     * `station_secret`, keep the secret LAST in the struct and
+     * update the wire-format omit logic in serialize_station_identity
+     * + write_station_session accordingly. */
+    uint8_t  station_pubkey[32];
+    uint8_t  outpost_founder_pubkey[32];
+    uint64_t outpost_planted_tick;
+    uint8_t  station_secret[64];   /* MUST stay last — never serialized */
 } station_t;
+
+/* Layer B of #479: the wire-format and on-disk serializers for station_t
+ * deliberately omit station_secret. Keeping it the LAST field of the
+ * struct lets a careful "everything up to station_secret" memcpy stay
+ * safe by construction; if you add new fields to station_t, put them
+ * BEFORE station_secret and audit serialize_station_identity +
+ * write_station_session for new omissions. The static_assert below
+ * makes a sneaky reorder loud at compile time. */
+_Static_assert(offsetof(station_t, station_secret) >
+               offsetof(station_t, station_pubkey),
+               "station_secret must be located after station_pubkey "
+               "in station_t (Layer B of #479) — keep it the last field");
 
 /* Station lifecycle helpers, module queries, and ring/geometry helpers
  * moved to shared/station_util.h (#273), included at the bottom of this

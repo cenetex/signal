@@ -20,6 +20,14 @@ void signal_crypto_keypair(uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
     crypto_sign_keypair(pub, secret);
 }
 
+void signal_crypto_keypair_from_seed(const uint8_t seed[SIGNAL_CRYPTO_PUBKEY_BYTES],
+                                     uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
+                                     uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES]) {
+    /* Deterministic — replays the same key derivation as
+     * crypto_sign_keypair but skips the random seed step. */
+    crypto_sign_keypair_from_seed(pub, secret, seed);
+}
+
 void signal_crypto_sign(uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES],
                         const uint8_t *msg, size_t len,
                         const uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES]) {

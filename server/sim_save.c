@@ -30,6 +30,7 @@
 #include "sim_ai.h"
 #include "base58.h"
 #include "protocol.h"
+#include "station_authority.h"
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
@@ -76,11 +77,18 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 39  /* Layer A.3 of #479 — per-player last_signed_nonce in
-                          * player save (PLY6). v38 added destroyed_rocks
-                          * sorted + per-entry destroyed_at_ms timestamp
-                          * (#285 slice 2); v37→v38 reader loads legacy
-                          * ledger entries with ms=0. */
+#define SAVE_VERSION 40  /* Layer B of #479 — per-station Ed25519 pubkey +
+                          * outpost provenance (founder pubkey + planted tick)
+                          * tail in the session block. The matching private
+                          * key is rederivable from the world seed (or saved
+                          * provenance, for outposts) and is deliberately NOT
+                          * written to disk: a save leak does not leak any
+                          * station's signing key.
+                          *
+                          * v39: Layer A.3 — per-player last_signed_nonce in
+                          * the player save (PLY6); world.sav layout itself
+                          * was unchanged. v38 added destroyed_rocks
+                          * destroyed_at_ms timestamps (#285 slice 2). */
 /* v31 widened inventory[] / base_price[] by one slot (REPAIR_KIT). v32
  * appends npc_ship_t.hull (a single float, version-gated read so v31
  * saves still load with default hull). MIN stays at 31 so we don't
@@ -258,6 +266,17 @@ static bool write_station_session(FILE *f, const station_t *s) {
         for (uint16_t u = 0; u < manifest_count; u++)
             WRITE_FIELD(f, s->manifest.units[u]);
     }
+    /* v40: per-station Ed25519 pubkey (#479 B) + outpost provenance
+     * (founder pubkey + name + planted tick) so the matching private
+     * key is rederivable on load without ever being persisted. The
+     * 64-byte station_secret is deliberately omitted. The name is
+     * written here (in addition to the catalog) so outpost identity
+     * stays self-contained in world.sav — saves loaded without the
+     * matching catalog still rederive a working keypair. */
+    if (fwrite(s->station_pubkey, 32, 1, f) != 1) { fclose(f); return false; }
+    if (fwrite(s->outpost_founder_pubkey, 32, 1, f) != 1) { fclose(f); return false; }
+    WRITE_FIELD(f, s->outpost_planted_tick);
+    WRITE_FIELD(f, s->name);
     return true;
 }
 
@@ -372,6 +391,32 @@ static bool read_station_session(FILE *f, station_t *s) {
         (void)manifest_migrate_legacy_inventory(&s->manifest, s->_inventory_cache,
                                                 COMMODITY_COUNT, origin);
     }
+    /* v40: per-station Ed25519 pubkey + outpost provenance (#479 B).
+     * v39 and earlier saves don't carry these fields — leave them
+     * zeroed and let the world loader rederive both pubkey and secret
+     * from world seed (seeded stations) or zero-founder fallback
+     * (outposts; v39-era outposts accept a slight provenance gap). */
+    if (g_loaded_save_version >= 40) {
+        if (fread(s->station_pubkey, 32, 1, f) != 1) return false;
+        if (fread(s->outpost_founder_pubkey, 32, 1, f) != 1) return false;
+        READ_FIELD(f, s->outpost_planted_tick);
+        /* v40 stamps the station name into the session save too, so
+         * outpost rederivation has the name input even when the
+         * catalog isn't loaded alongside the world save. The catalog
+         * remains the canonical source for seeded stations — but
+         * writing the name here is harmless and a load without the
+         * catalog still gets a usable name + working keypair. */
+        char saved_name[sizeof(s->name)];
+        READ_FIELD(f, saved_name);
+        if (s->name[0] == '\0')
+            memcpy(s->name, saved_name, sizeof(s->name));
+    } else {
+        memset(s->station_pubkey, 0, sizeof(s->station_pubkey));
+        memset(s->outpost_founder_pubkey, 0, sizeof(s->outpost_founder_pubkey));
+        s->outpost_planted_tick = 0;
+    }
+    /* station_secret is rederived by the world loader, not persisted. */
+    memset(s->station_secret, 0, sizeof(s->station_secret));
     return true;
 }
 
@@ -1108,6 +1153,27 @@ bool world_load(world_t *w, const char *path) {
     belt_field_init(&w->belt, w->rng, BELT_SCALE);
     rebuild_signal_chain(w);
     rebuild_characters_from_npcs(w);
+    /* Layer B of #479: rederive every station's private key from its
+     * persisted pubkey + provenance. The secret was never written to
+     * disk — this is what makes a save leak NOT a key leak. v39 and
+     * earlier saves additionally rederive the pubkey itself (seeded
+     * indices 0/1/2 from world seed; outposts from a zero-founder
+     * placeholder, accepted v39 provenance gap).
+     *
+     * We rederive seeded slots 0/1/2 unconditionally — they always
+     * exist in any reachable world state — and also any outpost slot
+     * whose pubkey is non-zero (i.e. the slot was occupied at save
+     * time). station_exists() depends on geometry fields that may
+     * legitimately be zeroed in catalog-less test scenarios, so it's
+     * not the right gate here. */
+    static const uint8_t zero_pub[32] = {0};
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (i < 3 ||
+            memcmp(w->stations[i].station_pubkey, zero_pub, 32) != 0) {
+            station_authority_rederive_secret(&w->stations[i],
+                                              w->belt_seed, i);
+        }
+    }
     return true;
 }
 

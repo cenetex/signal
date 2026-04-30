@@ -30,6 +30,21 @@ extern "C" {
 void signal_crypto_keypair(uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
                            uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES]);
 
+/* Deterministic Ed25519 keypair derivation from a 32-byte seed.
+ *
+ * The seed plays the role of the random bytes used by signal_crypto_keypair;
+ * the same seed always produces the same (pub, secret) pair. This is the
+ * primitive Layer B of #479 uses to derive station identities from the
+ * world seed (so every server with the same world seed agrees on which
+ * pubkey speaks for "Prospect Refinery") and outpost identities from
+ * (founder_pubkey || station_name || planted_tick).
+ *
+ * secret[64] is laid out as (seed[32] || pub[32]) per the NaCl convention
+ * — same shape as signal_crypto_keypair's output. */
+void signal_crypto_keypair_from_seed(const uint8_t seed[SIGNAL_CRYPTO_PUBKEY_BYTES],
+                                     uint8_t pub[SIGNAL_CRYPTO_PUBKEY_BYTES],
+                                     uint8_t secret[SIGNAL_CRYPTO_SECRET_BYTES]);
+
 /* Detached Ed25519 signature over msg[0..len). sig[64] is the result. */
 void signal_crypto_sign(uint8_t sig[SIGNAL_CRYPTO_SIG_BYTES],
                         const uint8_t *msg, size_t len,

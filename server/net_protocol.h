@@ -572,6 +572,12 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
         memcpy(&buf[moff], st->currency_name, n);
     }
     moff += STATION_IDENTITY_CURRENCY_NAME_LEN;
+    /* Layer B of #479: per-station Ed25519 pubkey. The matching
+     * station_secret is operator-only and is NEVER written to the
+     * wire — see the station_t comment for why this field is kept
+     * last and the secret stays out of every serializer. */
+    memcpy(&buf[moff], st->station_pubkey, STATION_IDENTITY_PUBKEY_LEN);
+    moff += STATION_IDENTITY_PUBKEY_LEN;
     return STATION_IDENTITY_SIZE;
 }
 

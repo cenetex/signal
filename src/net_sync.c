@@ -262,6 +262,9 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
         st->pending_scaffolds[p].owner = si->pending_scaffolds[p].owner;
     }
     snprintf(st->currency_name, sizeof(st->currency_name), "%s", si->currency_name);
+    /* Mirror the station's Ed25519 pubkey for client-side verification of
+     * future signed events (#479 B). The secret stays server-side. */
+    memcpy(st->station_pubkey, si->station_pubkey, sizeof(st->station_pubkey));
 }
 
 void apply_remote_scaffolds(const NetScaffoldState* received, int count) {

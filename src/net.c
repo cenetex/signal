@@ -618,6 +618,10 @@ static void handle_message(const uint8_t* data, int len) {
             /* Currency name trailer — 32 bytes, null-padded. */
             memcpy(si.currency_name, &data[moff], STATION_IDENTITY_CURRENCY_NAME_LEN - 1);
             si.currency_name[STATION_IDENTITY_CURRENCY_NAME_LEN - 1] = '\0';
+            moff += STATION_IDENTITY_CURRENCY_NAME_LEN;
+            /* Station Ed25519 pubkey (#479 B). The server only sends the
+             * pubkey; private material stays operator-side. */
+            memcpy(si.station_pubkey, &data[moff], STATION_IDENTITY_PUBKEY_LEN);
             net_state.callbacks.on_station_identity(&si);
         }
         break;

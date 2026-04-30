@@ -7,6 +7,7 @@
 #include "palette.h"
 #include "mining_client.h"
 #include "manifest.h"
+#include "station_authority.h"
 /* Grade palette lives in shared/mining.h (pulled in via client.h →
  * types.h → mining.h) alongside the grade enum + label + multiplier. */
 
@@ -411,10 +412,24 @@ static void draw_header_band(const station_ui_state_t *ui,
     const float HEADER_L2 = 42.0f;
     const float HEADER_L3 = 58.0f;
 
-    /* Line 1: station name (left)  ·  [E] LAUNCH (right) */
+    /* Line 1: station name (+ Ed25519 pubkey prefix) (left)  ·
+     *         [E] LAUNCH (right).
+     * The pubkey suffix lets the player visually confirm they're
+     * docked at a legitimately-keyed station, not a spoof with the
+     * same name (#479 B). */
     sdtx_color3b(PAL_TEXT_PRIMARY);
     sdtx_pos(ui_text_pos(left_x), ui_text_pos(panel_y + HEADER_L1));
-    sdtx_puts(st->name);
+    {
+        char name_with_pub[80];
+        char pub_prefix[16];
+        station_pubkey_b58_prefix(st, pub_prefix);
+        if (pub_prefix[0])
+            snprintf(name_with_pub, sizeof(name_with_pub), "%s (%s...)",
+                     st->name, pub_prefix);
+        else
+            snprintf(name_with_pub, sizeof(name_with_pub), "%s", st->name);
+        sdtx_puts(name_with_pub);
+    }
 
     if (panel_w >= 360.0f) {
         const char *launch = "[E] LAUNCH";

@@ -140,6 +140,8 @@ typedef struct {
         int8_t owner;
     } pending_scaffolds[STATION_PENDING_SCAFFOLD_RECORD_COUNT];
     char currency_name[32];   /* station-local scrip label, empty = "credits" */
+    uint8_t station_pubkey[32]; /* Ed25519 identity (#479 B). Matching secret
+                                 * stays server-side and is never wired here. */
 } NetStationIdentity;
 
 /* Packed scaffold state — server pushes the active scaffold pool.

@@ -345,12 +345,14 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 #define STATION_PENDING_SCAFFOLD_RECORD_SIZE 2  /* type:1 + owner:1 */
 #define STATION_PENDING_SCAFFOLD_RECORD_COUNT 4
 #define STATION_IDENTITY_CURRENCY_NAME_LEN 32  /* trailer: per-station scrip label */
+#define STATION_IDENTITY_PUBKEY_LEN 32         /* Ed25519 station identity (#479 B) */
 #define STATION_IDENTITY_SIZE (59 + COMMODITY_COUNT * 4 + 4 \
     + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE \
     + 1 + MAX_ARMS * 4 + MAX_ARMS * 4 \
     + 1 + STATION_PLAN_RECORD_COUNT * STATION_PLAN_RECORD_SIZE \
     + 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT * STATION_PENDING_SCAFFOLD_RECORD_SIZE \
-    + STATION_IDENTITY_CURRENCY_NAME_LEN)
+    + STATION_IDENTITY_CURRENCY_NAME_LEN \
+    + STATION_IDENTITY_PUBKEY_LEN)
 
 /* Scaffold record: [id:1][state+owner_sign:1][module_type:1][owner:1]
  *                  [pos:2xf32][vel:2xf32][radius:f32][build_amount:f32] = 28 bytes */
