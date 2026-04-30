@@ -62,9 +62,9 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 37  /* +belt_seed + destroyed_rocks ledger (#285 slice 1).
-                          * v36 added the Layer-A.2 pubkey registry tail (#479);
-                          * this bump appends the rock-permanence section after it. */
+#define SAVE_VERSION 38  /* destroyed_rocks now sorted + per-entry destroyed_at_ms
+                          * timestamp (#285 slice 2). v37 ledger entries had no
+                          * timestamp; the v37→v38 reader loads them with ms=0. */
 /* v31 widened inventory[] / base_price[] by one slot (REPAIR_KIT). v32
  * appends npc_ship_t.hull (a single float, version-gated read so v31
  * saves still load with default hull). MIN stays at 31 so we don't
@@ -653,18 +653,19 @@ bool world_save(const world_t *w, const char *path) {
     }
     /* Asteroids: terrain remains derived from belt seed */
     /* Scaffolds: removed in v24 — transient in-flight construction */
-    /* v36: belt_seed (anchor for rock_pub derivation) + destroyed
-     * rocks ledger. Sparse — only `active` entries are written. */
+    /* v37: belt_seed (anchor for rock_pub derivation). v38: each
+     * destroyed_rocks entry now carries a destroyed_at_ms timestamp;
+     * the array is kept sorted ascending by rock_pub, so writing in
+     * index order preserves order on read. Sparse: count + N tuples. */
     WRITE_FIELD(f, w->belt_seed);
     {
         uint16_t count = w->destroyed_rock_count;
         WRITE_FIELD(f, count);
-        int n = (int)(sizeof(w->destroyed_rocks) / sizeof(w->destroyed_rocks[0]));
-        for (int i = 0; i < n; i++) {
-            if (!w->destroyed_rocks[i].active) continue;
+        for (uint16_t i = 0; i < count; i++) {
             if (fwrite(w->destroyed_rocks[i].rock_pub, 32, 1, f) != 1) {
                 fclose(f); remove(tmp_path); return false;
             }
+            WRITE_FIELD(f, w->destroyed_rocks[i].destroyed_at_ms);
         }
     }
     /* NPC ships */
@@ -799,9 +800,10 @@ bool world_load(world_t *w, const char *path) {
             return false;
         }
     }
-    /* v37: belt_seed + destroyed_rocks ledger (#285 slice 1). Older saves
-     * have neither — leave belt_seed at the world_reset default and the
-     * ledger zero-initialized so every chunk reads as untouched. */
+    /* v37+: belt_seed + destroyed_rocks ledger (#285 slice 1). v38
+     * adds the destroyed_at_ms timestamp per entry; v37 entries load
+     * with timestamp=0 so the ledger still works for membership but
+     * loses the "destroyed before epoch N" bound on those records. */
     memset(w->destroyed_rocks, 0, sizeof(w->destroyed_rocks));
     w->destroyed_rock_count = 0;
     if (version >= 37) {
@@ -814,7 +816,11 @@ bool world_load(world_t *w, const char *path) {
             if (fread(w->destroyed_rocks[i].rock_pub, 32, 1, f) != 1) {
                 fclose(f); return false;
             }
-            w->destroyed_rocks[i].active = 1;
+            if (version >= 38) {
+                READ_FIELD(f, w->destroyed_rocks[i].destroyed_at_ms);
+            } else {
+                w->destroyed_rocks[i].destroyed_at_ms = 0;
+            }
         }
         w->destroyed_rock_count = count;
     }

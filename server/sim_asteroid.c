@@ -690,36 +690,65 @@ static void compute_rock_pub(uint32_t belt_seed, int32_t cx, int32_t cy,
     sha256_bytes(buf, o, out);
 }
 
-/* Linear scan — destroyed_rocks is small (256 entries, mostly empty
- * within a session). When the cap binds we'll move to a hash set. */
-static bool rock_pub_is_destroyed(const world_t *w, const uint8_t pub[32]) {
-    int n = (int)(sizeof(w->destroyed_rocks) / sizeof(w->destroyed_rocks[0]));
-    for (int i = 0; i < n; i++) {
-        if (!w->destroyed_rocks[i].active) continue;
-        if (memcmp(w->destroyed_rocks[i].rock_pub, pub, 32) == 0) return true;
+/* destroyed_rocks is kept sorted ascending by rock_pub (lexicographic
+ * byte order) so membership is bsearch in O(log n) — three to nine
+ * memcmp(32B) on a 256-entry table. Slice 2 of #285 lays the right
+ * shape; slice 3 hangs Binary Fuse off the same key set for O(1)
+ * filter probes when cardinality climbs. */
+
+/* Branchless return: index of the first entry whose rock_pub >= pub,
+ * matching the C++ lower_bound contract. The caller checks whether
+ * that entry's pub equals the search key to decide membership. */
+static int destroyed_rocks_lower_bound(const world_t *w, const uint8_t pub[32]) {
+    int lo = 0;
+    int hi = (int)w->destroyed_rock_count;
+    while (lo < hi) {
+        int mid = lo + ((hi - lo) >> 1);
+        if (memcmp(w->destroyed_rocks[mid].rock_pub, pub, 32) < 0) lo = mid + 1;
+        else hi = mid;
     }
-    return false;
+    return lo;
 }
 
-/* Idempotent: if pub is already in the set, no-op. When the table
- * fills up the new entry is dropped (and a SIM_LOG warning fires);
- * the rock is still gone from the active pool, so the player-facing
- * outcome stays "destroyed forever" even though the verifier loses
- * its tombstone. The 256 cap is a session-level budget — when this
- * starts to bind we move to a sparse on-disk store. */
+static bool rock_pub_is_destroyed(const world_t *w, const uint8_t pub[32]) {
+    int idx = destroyed_rocks_lower_bound(w, pub);
+    if (idx >= (int)w->destroyed_rock_count) return false;
+    return memcmp(w->destroyed_rocks[idx].rock_pub, pub, 32) == 0;
+}
+
+/* Idempotent insert at the lower-bound index; shifts the tail forward
+ * with memmove. Records the world-clock millisecond of the fracture
+ * so closed-epoch snapshots can bound "destroyed before epoch N"
+ * proofs.
+ *
+ * Cap-overflow policy: at 256 entries the rock is still removed from
+ * the active pool (the player-facing outcome stays "destroyed
+ * forever"), but the tombstone is dropped — the verifier loses a
+ * row of provenance. This gap closes when slice 3 swaps to the
+ * append-only side-file. The cap is loud (SIM_LOG) so we'll know if
+ * it ever binds in practice. */
 static void mark_rock_destroyed(world_t *w, const uint8_t pub[32]) {
     static const uint8_t zero[32] = {0};
     if (memcmp(pub, zero, 32) == 0) return;  /* unstamped (fracture child) */
-    if (rock_pub_is_destroyed(w, pub)) return;
-    int n = (int)(sizeof(w->destroyed_rocks) / sizeof(w->destroyed_rocks[0]));
-    for (int i = 0; i < n; i++) {
-        if (w->destroyed_rocks[i].active) continue;
-        memcpy(w->destroyed_rocks[i].rock_pub, pub, 32);
-        w->destroyed_rocks[i].active = 1;
-        w->destroyed_rock_count++;
+    int idx = destroyed_rocks_lower_bound(w, pub);
+    if (idx < (int)w->destroyed_rock_count &&
+        memcmp(w->destroyed_rocks[idx].rock_pub, pub, 32) == 0) {
+        return; /* already retired, idempotent */
+    }
+    int cap = (int)(sizeof(w->destroyed_rocks) / sizeof(w->destroyed_rocks[0]));
+    if ((int)w->destroyed_rock_count >= cap) {
+        SIM_LOG("[sim] destroyed_rocks ledger full (%d) — tombstone dropped\n", cap);
         return;
     }
-    SIM_LOG("[sim] destroyed_rocks ledger full (256) — tombstone dropped\n");
+    int tail = (int)w->destroyed_rock_count - idx;
+    if (tail > 0) {
+        memmove(&w->destroyed_rocks[idx + 1],
+                &w->destroyed_rocks[idx],
+                (size_t)tail * sizeof(w->destroyed_rocks[0]));
+    }
+    memcpy(w->destroyed_rocks[idx].rock_pub, pub, 32);
+    w->destroyed_rocks[idx].destroyed_at_ms = (uint64_t)(w->time * 1000.0f);
+    w->destroyed_rock_count++;
 }
 
 /* Check if a chunk center is within signal coverage of any station. */

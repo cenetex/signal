@@ -429,9 +429,15 @@ typedef struct {
      *     these into one `pub[32]` field discriminated by
      *     `asteroid_origin.from_chunk`, so identity-handling code
      *     can read `&a->pub` regardless of provenance type. */
+    /* Slice 2 representation: sorted by rock_pub for O(log n) bsearch
+     * lookup. `destroyed_at_ms` is the world-clock timestamp of the
+     * fracture (rounded to milliseconds), recorded so that closed-
+     * epoch snapshots in slice 3 can bound "destroyed before epoch N"
+     * proofs. Sorted on insert via memmove — at the 256-entry cap a
+     * worst-case shift is ~10KB, negligible on a fracture. */
     struct destroyed_rock_s {
-        uint8_t rock_pub[32];
-        uint8_t active;
+        uint8_t  rock_pub[32];
+        uint64_t destroyed_at_ms;
     } destroyed_rocks[256];
     uint16_t destroyed_rock_count;
     npc_ship_t npc_ships[MAX_NPC_SHIPS];

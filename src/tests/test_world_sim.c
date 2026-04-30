@@ -1377,16 +1377,18 @@ TEST(test_destroyed_rock_does_not_respawn) {
     ASSERT(after < initial);
 }
 
-/* Save/load round-trips the destroyed ledger and belt_seed. */
+/* Save/load round-trips the destroyed ledger, belt_seed, and per-entry
+ * timestamps; ledger stays sorted across the round-trip. */
 TEST(test_save_preserves_destroyed_rocks_ledger) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
-    /* Fabricate a couple of destroyed pubs directly so the test isn't
-     * dependent on belt density at any specific (cx, cy). */
+    /* Fabricate two destroyed pubs in sorted order (CD > AB by byte
+     * compare) with distinct timestamps so the round-trip can verify
+     * both fields. */
     memset(w->destroyed_rocks[0].rock_pub, 0xAB, 32);
-    w->destroyed_rocks[0].active = 1;
+    w->destroyed_rocks[0].destroyed_at_ms = 1234;
     memset(w->destroyed_rocks[1].rock_pub, 0xCD, 32);
-    w->destroyed_rocks[1].active = 1;
+    w->destroyed_rocks[1].destroyed_at_ms = 5678;
     w->destroyed_rock_count = 2;
     uint32_t expected_seed = w->belt_seed;
     ASSERT(world_save(w, TMP("test_rockpub.sav")));
@@ -1396,16 +1398,43 @@ TEST(test_save_preserves_destroyed_rocks_ledger) {
     ASSERT_EQ_INT(loaded->belt_seed, expected_seed);
     uint8_t want_ab[32]; memset(want_ab, 0xAB, 32);
     uint8_t want_cd[32]; memset(want_cd, 0xCD, 32);
-    int seen_ab = 0, seen_cd = 0;
-    int n = (int)(sizeof(loaded->destroyed_rocks) / sizeof(loaded->destroyed_rocks[0]));
-    for (int i = 0; i < n; i++) {
-        if (!loaded->destroyed_rocks[i].active) continue;
-        if (memcmp(loaded->destroyed_rocks[i].rock_pub, want_ab, 32) == 0) seen_ab++;
-        if (memcmp(loaded->destroyed_rocks[i].rock_pub, want_cd, 32) == 0) seen_cd++;
-    }
-    ASSERT_EQ_INT(seen_ab, 1);
-    ASSERT_EQ_INT(seen_cd, 1);
+    /* Sorted order survives. */
+    ASSERT(memcmp(loaded->destroyed_rocks[0].rock_pub, want_ab, 32) == 0);
+    ASSERT(memcmp(loaded->destroyed_rocks[1].rock_pub, want_cd, 32) == 0);
+    ASSERT_EQ_INT((int)loaded->destroyed_rocks[0].destroyed_at_ms, 1234);
+    ASSERT_EQ_INT((int)loaded->destroyed_rocks[1].destroyed_at_ms, 5678);
     remove(TMP("test_rockpub.sav"));
+}
+
+/* Slice 2 invariant: destroyed_rocks stays sorted ascending by rock_pub
+ * across out-of-order inserts. Without this, bsearch breaks. */
+TEST(test_destroyed_rocks_stays_sorted_after_inserts) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    int32_t cx = 5, cy = 9;
+    w->players[0].connected = true;
+    player_init_ship(&w->players[0], w);
+    w->players[0].ship.pos = v2(((float)cx + 0.5f) * CHUNK_SIZE,
+                                 ((float)cy + 0.5f) * CHUNK_SIZE);
+    w->field_spawn_timer = 1e6f;
+    maintain_asteroid_field(w, 0.016f);
+    /* Fracture a handful of terrain rocks; their rock_pubs are
+     * pseudo-random (SHA-256-derived from coords), so insertion
+     * order is essentially shuffled. */
+    int fractured = 0;
+    for (int i = 0; i < MAX_ASTEROIDS && fractured < 5; i++) {
+        if (!w->asteroids[i].active) continue;
+        if (!w->asteroid_origin[i].from_chunk) continue;
+        fracture_asteroid(w, i, v2(1.0f, 0.0f), -1);
+        fractured++;
+    }
+    if (fractured >= 2) {
+        for (uint16_t k = 1; k < w->destroyed_rock_count; k++) {
+            int cmp = memcmp(w->destroyed_rocks[k - 1].rock_pub,
+                             w->destroyed_rocks[k].rock_pub, 32);
+            ASSERT(cmp < 0);  /* strictly ascending */
+        }
+    }
 }
 
 void register_world_sim_chunk_tests(void) {
@@ -1416,5 +1445,6 @@ void register_world_sim_chunk_tests(void) {
     RUN(test_rock_pub_assigned_at_first_contact);
     RUN(test_destroyed_rock_does_not_respawn);
     RUN(test_save_preserves_destroyed_rocks_ledger);
+    RUN(test_destroyed_rocks_stays_sorted_after_inserts);
 }
 

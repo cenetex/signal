@@ -549,7 +549,9 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  * v37: +4B belt_seed + 2B destroyed_rocks count prefix (#285 slice 1).
  * Fresh world has no destroyed rocks, so only the 6-byte header
  * lands on disk. */
-#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2) /* v37 */
+/* v38 unchanged from v37 on disk for a fresh world (no destroyed rocks
+ * means no per-entry tail bytes, just the 4B belt_seed + 2B count). */
+#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2) /* v38 */
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -586,7 +588,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 37);
+    ASSERT_EQ_INT((int)version, 38);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
