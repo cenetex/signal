@@ -530,6 +530,8 @@ static void sim_on_death(const sim_event_t *ev) {
     g.death_credits_earned = ev->death.credits_earned;
     g.death_credits_spent = ev->death.credits_spent;
     g.death_asteroids_fractured = ev->death.asteroids_fractured;
+    g.death_respawn_station = ev->death.respawn_station;
+    g.death_respawn_fee = ev->death.respawn_fee;
     /* Snapshot the wreckage at the death position. The server has
      * already respawned the ship at a station, so we use the position
      * from the death event payload (captured before the move). */

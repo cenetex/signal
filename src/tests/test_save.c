@@ -291,10 +291,10 @@ TEST(test_player_save_load_preserves_ship) {
     sp.ship.hold_level = 1;
     sp.ship.tractor_level = 3;
     sp.current_station = 1;
-    ASSERT(player_save(&sp, "/tmp", 99));
+    ASSERT(player_save(&sp, test_tmp_dir(), 99));
 
     SERVER_PLAYER_DECL(loaded);
-    ASSERT(player_load(&loaded, &w, "/tmp", 99));
+    ASSERT(player_load(&loaded, &w, test_tmp_dir(), 99));
     ASSERT_EQ_FLOAT(loaded.ship.hull, 42.0f, 0.01f);
     ASSERT_EQ_FLOAT(loaded.ship.cargo[COMMODITY_FERRITE_ORE], 10.0f, 0.01f);
     ASSERT_EQ_FLOAT(loaded.ship.cargo[COMMODITY_CUPRITE_ORE], 5.0f, 0.01f);
@@ -342,10 +342,10 @@ TEST(test_player_load_clamps_negative_credits) {
     SERVER_PLAYER_DECL(sp);
     player_init_ship(&sp, &w);
     sp.connected = true;
-    ASSERT(player_save(&sp, "/tmp", 98));
+    ASSERT(player_save(&sp, test_tmp_dir(), 98));
 
     SERVER_PLAYER_DECL(loaded);
-    ASSERT(player_load(&loaded, &w, "/tmp", 98));
+    ASSERT(player_load(&loaded, &w, test_tmp_dir(), 98));
     /* No credits field to clamp — ledger balances are always >= 0 */
     remove(TMP("player_98.sav"));
 }
@@ -369,8 +369,8 @@ TEST(test_player_save_round_trips_ship_manifest) {
     unit.pub[7] = 0xA5;
     ASSERT(manifest_push(&sp.ship.manifest, &unit));
     ASSERT(sp.ship.manifest.count == 1);
-    ASSERT(player_save(&sp, "/tmp", 92));
-    ASSERT(player_load(&loaded, &w, "/tmp", 92));
+    ASSERT(player_save(&sp, test_tmp_dir(), 92));
+    ASSERT(player_load(&loaded, &w, test_tmp_dir(), 92));
     ASSERT_EQ_INT(loaded.ship.manifest.count, 1);
     ASSERT(loaded.ship.manifest.units != NULL);
     ASSERT_EQ_INT(loaded.ship.manifest.units[0].kind, CARGO_KIND_INGOT);
@@ -387,10 +387,10 @@ TEST(test_player_load_clamps_negative_cargo) {
     player_init_ship(&sp, &w);
     sp.connected = true;
     sp.ship.cargo[COMMODITY_FERRITE_ORE] = -50.0f;
-    ASSERT(player_save(&sp, "/tmp", 97));
+    ASSERT(player_save(&sp, test_tmp_dir(), 97));
 
     SERVER_PLAYER_DECL(loaded);
-    ASSERT(player_load(&loaded, &w, "/tmp", 97));
+    ASSERT(player_load(&loaded, &w, test_tmp_dir(), 97));
     ASSERT(loaded.ship.cargo[COMMODITY_FERRITE_ORE] >= 0.0f);
     remove(TMP("player_97.sav"));
 }
@@ -402,10 +402,10 @@ TEST(test_player_load_clamps_hull_hp) {
     player_init_ship(&sp, &w);
     sp.connected = true;
     sp.ship.hull = 99999.0f;  /* way above max */
-    ASSERT(player_save(&sp, "/tmp", 96));
+    ASSERT(player_save(&sp, test_tmp_dir(), 96));
 
     SERVER_PLAYER_DECL(loaded);
-    ASSERT(player_load(&loaded, &w, "/tmp", 96));
+    ASSERT(player_load(&loaded, &w, test_tmp_dir(), 96));
     ASSERT(loaded.ship.hull <= ship_max_hull(&loaded.ship));
     remove(TMP("player_96.sav"));
 }
@@ -418,10 +418,10 @@ TEST(test_player_load_clamps_upgrade_levels) {
     sp.connected = true;
     sp.ship.mining_level = 100;
     sp.ship.hold_level = -5;
-    ASSERT(player_save(&sp, "/tmp", 95));
+    ASSERT(player_save(&sp, test_tmp_dir(), 95));
 
     SERVER_PLAYER_DECL(loaded);
-    ASSERT(player_load(&loaded, &w, "/tmp", 95));
+    ASSERT(player_load(&loaded, &w, test_tmp_dir(), 95));
     ASSERT(loaded.ship.mining_level >= 0 && loaded.ship.mining_level <= SHIP_UPGRADE_MAX_LEVEL);
     ASSERT(loaded.ship.hold_level >= 0 && loaded.ship.hold_level <= SHIP_UPGRADE_MAX_LEVEL);
     remove(TMP("player_95.sav"));
@@ -434,10 +434,10 @@ TEST(test_player_load_invalid_station_falls_back) {
     player_init_ship(&sp, &w);
     sp.connected = true;
     sp.current_station = 99;  /* out of range */
-    ASSERT(player_save(&sp, "/tmp", 94));
+    ASSERT(player_save(&sp, test_tmp_dir(), 94));
 
     SERVER_PLAYER_DECL(loaded);
-    ASSERT(player_load(&loaded, &w, "/tmp", 94));
+    ASSERT(player_load(&loaded, &w, test_tmp_dir(), 94));
     ASSERT(loaded.current_station >= 0 && loaded.current_station < MAX_STATIONS);
     remove(TMP("player_94.sav"));
 }
@@ -453,7 +453,7 @@ TEST(test_player_load_bad_magic_fails) {
     WORLD_DECL;
     world_reset(&w);
     SERVER_PLAYER_DECL(loaded);
-    ASSERT(!player_load(&loaded, &w, "/tmp", 93));
+    ASSERT(!player_load(&loaded, &w, test_tmp_dir(), 93));
     remove(TMP("player_93.sav"));
 }
 

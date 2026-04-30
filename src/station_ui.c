@@ -791,6 +791,40 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
     return row_count;
 }
 
+/* Page resolver shared by renderer + input. Pages are computed by chunking
+ * the BUY block and the SELL block independently so SELL always starts on
+ * a fresh page — keeps the two halves visually distinct and prevents
+ * "selling on the buy page" misclicks. */
+void trade_page_range(const trade_row_t *rows, int row_count,
+                      int page, int *out_first, int *out_last,
+                      int *out_total) {
+    int sell_start = row_count;
+    for (int i = 0; i < row_count; i++) {
+        if (rows[i].kind == 1) { sell_start = i; break; }
+    }
+    int buy_pages  = (sell_start + TRADE_ROWS_PER_PAGE - 1) / TRADE_ROWS_PER_PAGE;
+    int sell_count = row_count - sell_start;
+    int sell_pages = (sell_count + TRADE_ROWS_PER_PAGE - 1) / TRADE_ROWS_PER_PAGE;
+    int total = buy_pages + sell_pages;
+    if (total < 1) total = 1;
+    if (page < 0 || page >= total) page = 0;
+
+    int first, last;
+    if (page < buy_pages) {
+        first = page * TRADE_ROWS_PER_PAGE;
+        last  = first + TRADE_ROWS_PER_PAGE;
+        if (last > sell_start) last = sell_start;
+    } else {
+        int sp = page - buy_pages;
+        first = sell_start + sp * TRADE_ROWS_PER_PAGE;
+        last  = first + TRADE_ROWS_PER_PAGE;
+        if (last > row_count) last = row_count;
+    }
+    if (out_first) *out_first = first;
+    if (out_last)  *out_last  = last;
+    if (out_total) *out_total = total;
+}
+
 static void draw_trade_view(const station_ui_state_t *ui,
                             float cx, float cy, float inner_w,
                             bool compact)
@@ -912,16 +946,13 @@ static void draw_trade_view(const station_ui_state_t *ui,
     trade_row_t rows[TRADE_MAX_ROWS];
     int row_count = build_trade_rows(st, ship, rows, TRADE_MAX_ROWS);
 
-    /* Pagination — wrap the current page so [F] at the last page
-     * returns to page 0 cleanly. TRADE_ROWS_PER_PAGE is small so page
-     * counts stay single-digit. */
-    int total_pages = (row_count + TRADE_ROWS_PER_PAGE - 1) / TRADE_ROWS_PER_PAGE;
-    if (total_pages < 1) total_pages = 1;
+    /* Pagination — BUY and SELL are paginated independently so SELL
+     * always starts on a fresh page (see trade_page_range). [F] still
+     * walks one page at a time; wraps at the last page. */
+    int total_pages = 1, first = 0, last = 0;
     int page = (int)g.trade_page;
+    trade_page_range(rows, row_count, page, &first, &last, &total_pages);
     if (page >= total_pages) { page = 0; g.trade_page = 0; }
-    int first = page * TRADE_ROWS_PER_PAGE;
-    int last  = first + TRADE_ROWS_PER_PAGE;
-    if (last > row_count) last = row_count;
 
     /* Page indicator (only when there's actually more than one page). */
     if (total_pages > 1) {
@@ -939,17 +970,15 @@ static void draw_trade_view(const station_ui_state_t *ui,
         return;
     }
 
-    /* Hotkey numbering walks the page in order but skips passive rows
-     * so [1]..[5] always address something the player can actually do. */
-    int next_hotkey = 1;
+    /* Hotkey numbering is by row position on the page, NOT by actionable
+     * filter — a row keeps its number when it transitions blocked, so the
+     * layout under the player's fingers doesn't shift mid-trade. Blocked
+     * rows render their number dimmed; pressing it is a no-op. */
     for (int ri = first; ri < last; ri++) {
         const trade_row_t *r = &rows[ri];
+        int slot = (ri - first) + 1;
         char key_buf[8];
-        if (r->actionable) {
-            snprintf(key_buf, sizeof(key_buf), "[%d]", next_hotkey++);
-        } else {
-            snprintf(key_buf, sizeof(key_buf), "   ");
-        }
+        snprintf(key_buf, sizeof(key_buf), "[%d]", slot);
 
         const uint8_t *info_rgb = r->actionable ? COL_TEXT : COL_FADED;
 
@@ -1189,19 +1218,22 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         int kits_needed = ui->hull_max - ui->hull_now;
         if (kits_needed < 0) kits_needed = 0;
         char right_buf[32];
-        if (ui->can_repair && ui->repair_cost > 0) {
-            snprintf(right_buf, sizeof(right_buf), "%d cr", ui->repair_cost);
-            draw_row_lr(cx, my, inner_right, COL_AMBER, "[R] repair hull",
-                        COL_TEXT, right_buf);
-        } else if (ui->hull_now >= ui->hull_max) {
+        if (ui->hull_now >= ui->hull_max) {
             draw_row_lr(cx, my, inner_right, COL_DIM, "hull",
                         COL_FADED, "full");
         } else if (kits_avail <= 0) {
+            /* Kits gate the repair regardless of credits — surface the
+             * shortfall before the credit cost so the [R] row matches
+             * what the action handler will say if pressed. */
             int n = kits_needed > 0 ? kits_needed : 1;
-            snprintf(right_buf, sizeof(right_buf), "%d kit%s needed",
+            snprintf(right_buf, sizeof(right_buf), "%d repair kit%s needed",
                      n, n == 1 ? "" : "s");
-            draw_row_lr(cx, my, inner_right, COL_DIM, "repair",
+            draw_row_lr(cx, my, inner_right, COL_DIM, "repair hull",
                         COL_FADED, right_buf);
+        } else if (ui->can_repair && ui->repair_cost > 0) {
+            snprintf(right_buf, sizeof(right_buf), "%d cr", ui->repair_cost);
+            draw_row_lr(cx, my, inner_right, COL_AMBER, "[R] repair hull",
+                        COL_TEXT, right_buf);
         } else if (ui->repair_cost > 0) {
             snprintf(right_buf, sizeof(right_buf), "%d cr needed", ui->repair_cost);
             draw_row_lr(cx, my, inner_right, COL_DIM, "repair",

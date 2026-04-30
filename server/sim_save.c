@@ -1933,6 +1933,11 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
 
 bool player_load(server_player_t *sp, world_t *w, const char *dir, int slot) {
     char path[256];
+    /* #491 moved slot-based saves into <dir>/legacy/. Try the new
+     * location first; fall back to the historical top-level path so
+     * any pre-A.4 save written before the migration still loads. */
+    snprintf(path, sizeof(path), "%s/" LEGACY_SUBDIR "/player_%d.sav", dir, slot);
+    if (player_load_from_path(sp, w, path, slot)) return true;
     snprintf(path, sizeof(path), "%s/player_%d.sav", dir, slot);
     return player_load_from_path(sp, w, path, slot);
 }

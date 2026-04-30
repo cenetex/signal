@@ -220,7 +220,8 @@ typedef struct {
     void (*on_death)(uint8_t player_id, float pos_x, float pos_y,
                      float vel_x, float vel_y, float angle,
                      float ore_mined, float credits_earned, float credits_spent,
-                     int asteroids_fractured);
+                     int asteroids_fractured,
+                     uint8_t respawn_station, float respawn_fee);
     void (*on_world_time)(float server_time);
     void (*on_events)(const sim_event_t *events, int count);
     net_on_signal_channel_fn on_signal_channel;

@@ -593,12 +593,15 @@ const NetPlayerState* net_get_interpolated_players(void) {
 void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
                      float vel_x, float vel_y, float angle,
                      float ore_mined, float credits_earned, float credits_spent,
-                     int asteroids_fractured) {
+                     int asteroids_fractured,
+                     uint8_t respawn_station, float respawn_fee) {
     if ((int)player_id != g.local_player_slot) return;
     g.death_ore_mined = ore_mined;
     g.death_credits_earned = credits_earned;
     g.death_credits_spent = credits_spent;
     g.death_asteroids_fractured = asteroids_fractured;
+    g.death_respawn_station = respawn_station;
+    g.death_respawn_fee = respawn_fee;
     /* Fire the cinematic at the death position. */
     g.death_cinematic.active = true;
     g.death_cinematic.phase = 0;

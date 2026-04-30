@@ -16,16 +16,21 @@
 #                        run the server; both bound to the host via the
 #                        entrypoint script. Ports 8080 (HTTP) and 9091 (WS).
 
+# GIT_HASH ARG — passed in by docker-compose build args (computed by the
+# host's git). Falls back to "local" when no arg is provided.
+# Reading it via `git -C /src` inside the container hits caching weirdness
+# on bind-mounted .git dirs on macOS/podman, so we accept it as a build
+# arg instead.
+ARG GIT_HASH=local
+
 # ----- stage 1: wasm build --------------------------------------------------
 FROM emscripten/emsdk:3.1.64 AS wasm-build
+ARG GIT_HASH
 WORKDIR /src
-RUN apt-get update && apt-get install -y --no-install-recommends cmake git \
+RUN apt-get update && apt-get install -y --no-install-recommends cmake \
     && rm -rf /var/lib/apt/lists/*
 COPY . /src
-# GIT_HASH stamp — baked into both binaries. Falls back to "local" when the
-# context isn't a git repo (e.g. a tarball build).
-RUN GIT_HASH=$(git -C /src rev-parse --short HEAD 2>/dev/null || echo local) \
-    && emcmake cmake -S /src -B /src/build-web -DGIT_HASH=$GIT_HASH \
+RUN emcmake cmake -S /src -B /src/build-web -DGIT_HASH=${GIT_HASH:-local} \
     && cmake --build /src/build-web --parallel
 
 # ----- stage 2: runtime (native server build happens here) -----------------
@@ -36,18 +41,20 @@ RUN GIT_HASH=$(git -C /src rev-parse --short HEAD 2>/dev/null || echo local) \
 # loader" symptom that the pin was working around. Solution: rebuild
 # signal_server inside the runtime stage so it matches the host arch.
 FROM python:3.12-slim AS runtime
+ARG GIT_HASH
 WORKDIR /app
 
 # Build toolchain + runtime deps. Building signal_server here (instead of
 # in a cross-arch stage) means the binary always matches the host arch.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        ca-certificates tini cmake build-essential git \
+        ca-certificates tini cmake build-essential \
     && rm -rf /var/lib/apt/lists/*
 
-# Compile signal_server in this stage so it's native arch.
+# Compile signal_server in this stage so it's native arch. GIT_HASH comes
+# from the build-arg (host's git), not from `git -C /src` — bind-mounted
+# .git on macOS/podman caches inconsistently.
 COPY . /src
-RUN GIT_HASH=$(git -C /src rev-parse --short HEAD 2>/dev/null || echo local) \
-    && cmake -S /src -B /src/build -DBUILD_SERVER_ONLY=ON -DGIT_HASH=$GIT_HASH \
+RUN cmake -S /src -B /src/build -DBUILD_SERVER_ONLY=ON -DGIT_HASH=${GIT_HASH:-local} \
     && cmake --build /src/build --target signal_server --parallel \
     && cp /src/build/signal_server /app/signal_server \
     && rm -rf /src

@@ -125,6 +125,15 @@ enum {
 int build_trade_rows(const station_t *st, const ship_t *ship,
                      trade_row_t out[], int max);
 
+/* Resolve `page` to a [first, last) row range, treating the BUY→SELL
+ * boundary as a hard page break so SELL never shares a page with BUY.
+ * Wraps `page` to `total_pages - 1` if out of range. Returns total_pages
+ * via *out_total. Both the picker renderer and input dispatch call this
+ * so the visible layout and the [1]..[5] mapping stay locked together. */
+void trade_page_range(const trade_row_t *rows, int row_count,
+                      int page, int *out_first, int *out_last,
+                      int *out_total);
+
 /* ------------------------------------------------------------------ */
 /* Client game state                                                  */
 /* ------------------------------------------------------------------ */
@@ -274,6 +283,8 @@ typedef struct {
     float death_credits_earned;
     float death_credits_spent;
     int death_asteroids_fractured;
+    uint8_t death_respawn_station;
+    float   death_respawn_fee;
     /* Global leaderboard from server (top-N by credits earned at death).
      * Populated on join + after every death in MP. SP leaves it empty. */
     struct {

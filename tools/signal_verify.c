@@ -222,7 +222,7 @@ static bool pub_set_contains(const uint8_t (*set)[32], size_t count, const uint8
 
 static void pub_set_add(uint8_t (*set)[32], size_t *count, const uint8_t pub[32]) {
     if (*count >= MAX_TRACKED_PUBS) return;
-    if (pub_set_contains(set, *count, pub)) return;
+    if (pub_set_contains((const uint8_t (*)[32])set, *count, pub)) return;
     memcpy(set[*count], pub, 32);
     (*count)++;
 }
@@ -278,7 +278,7 @@ static bool apply_invariants(const char *path,
                 const uint8_t *ingot = payload + 32;
                 if (!pub_is_zero(frag)) {
                     if (invariants & INV_SMELT_INPUT_CONSUMED) {
-                        if (pub_set_contains(st->consumed_fragments,
+                        if (pub_set_contains((const uint8_t (*)[32])st->consumed_fragments,
                                              st->consumed_fragment_count, frag)) {
                             st->inv_smelt_violations++;
                             if (ok && fail_cap > 0) {
@@ -305,7 +305,7 @@ static bool apply_invariants(const char *path,
             if (plen >= 96) {
                 const uint8_t *cargo = payload + 64;
                 if (invariants & INV_TRANSFER_BALANCED) {
-                    if (!pub_set_contains(st->cargo_outputs, st->cargo_output_count, cargo)) {
+                    if (!pub_set_contains((const uint8_t (*)[32])st->cargo_outputs, st->cargo_output_count, cargo)) {
                         st->inv_transfer_violations++;
                         if (ok && fail_cap > 0) {
                             snprintf(fail_reason, fail_cap,
@@ -315,7 +315,7 @@ static bool apply_invariants(const char *path,
                     }
                 }
                 if (invariants & INV_NO_ORPHAN_EVENTS) {
-                    if (!pub_set_contains(st->cargo_outputs, st->cargo_output_count, cargo)) {
+                    if (!pub_set_contains((const uint8_t (*)[32])st->cargo_outputs, st->cargo_output_count, cargo)) {
                         st->inv_orphan_violations++;
                     }
                 }

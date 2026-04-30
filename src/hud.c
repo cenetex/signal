@@ -1362,11 +1362,27 @@ static bool draw_death_overlay(float screen_w, float screen_h) {
             row += 1.0f;
         }
 
-    /* Prompt — RED, hard FLASH on/off */
+    /* Prompt — RED, hard FLASH on/off. Includes the spawn fee that was
+     * just debited at the respawn station so the player sees the cost
+     * of dying ("respawn -300 Helios credits"). */
     float flash = (sinf(g.world.time * 7.0f) > 0.0f) ? 1.0f : 0.25f;
     uint8_t pa = (uint8_t)(flash * (float)a8);
     sdtx_color4b(PAL_DEATH_PROMPT, pa);
-    sdtx_centered_text(cx, row, cell, "[ E ] launch");
+    char prompt[80];
+    if (g.death_respawn_fee > 0.5f &&
+        g.death_respawn_station < MAX_STATIONS &&
+        g.world.stations[g.death_respawn_station].name[0]) {
+        const char *cur =
+            g.world.stations[g.death_respawn_station].currency_name[0]
+            ? g.world.stations[g.death_respawn_station].currency_name
+            : "credits";
+        snprintf(prompt, sizeof(prompt),
+                 "[ E ] launch  -%.0f %s",
+                 g.death_respawn_fee, cur);
+    } else {
+        snprintf(prompt, sizeof(prompt), "[ E ] launch");
+    }
+    sdtx_centered_text(cx, row, cell, prompt);
 
     return true;
 }

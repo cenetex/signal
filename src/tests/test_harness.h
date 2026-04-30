@@ -225,3 +225,9 @@ double econ_total_credits(const world_t *w);
  * shared and may be reused on later calls. */
 const char *test_tmp_path(const char *name);
 #define TMP(name) test_tmp_path(name)
+
+/* Per-process scratch directory itself, with no trailing slash. Use this
+ * when an API takes a directory argument separately from a filename
+ * (e.g. player_save(&sp, dir, slot) writes "<dir>/player_<slot>.sav").
+ * Returns the same string each call; do not free. */
+const char *test_tmp_dir(void);

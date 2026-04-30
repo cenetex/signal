@@ -157,31 +157,39 @@ int run_autopilot_ticks(world_t *w, server_player_t *sp, float seconds) {
  * pairs in arguments) get distinct buffers. */
 #define TMP_RING 8
 #define TMP_BUFLEN 128
+static char g_tmp_dir[64];
+static int  g_tmp_dir_ready = 0;
+
+static void ensure_tmp_dir(void) {
+    if (g_tmp_dir_ready) return;
+#ifdef _WIN32
+    /* On Windows tests don't run the filesystem suites, but keep
+     * the helper safe — fall back to "tmp_<pid>". */
+    snprintf(g_tmp_dir, sizeof(g_tmp_dir), "tmp_%lu", (unsigned long)_getpid());
+#else
+    snprintf(g_tmp_dir, sizeof(g_tmp_dir), "/tmp/signal-test-%ld", (long)getpid());
+    if (mkdir(g_tmp_dir, 0700) != 0 && errno != EEXIST) {
+        /* Fall back to plain /tmp on weird CI; tests will still
+         * collide there, but at least they won't crash. */
+        snprintf(g_tmp_dir, sizeof(g_tmp_dir), "/tmp");
+    }
+#endif
+    g_tmp_dir_ready = 1;
+}
+
+const char *test_tmp_dir(void) {
+    ensure_tmp_dir();
+    return g_tmp_dir;
+}
+
 const char *test_tmp_path(const char *name) {
-    static char dir[64];
-    static int dir_ready = 0;
     static char buffers[TMP_RING][TMP_BUFLEN];
     static int next = 0;
 
-    if (!dir_ready) {
-#ifdef _WIN32
-        /* On Windows tests don't run the filesystem suites, but keep
-         * the helper safe — fall back to "tmp_<pid>". */
-        snprintf(dir, sizeof(dir), "tmp_%lu", (unsigned long)_getpid());
-#else
-        snprintf(dir, sizeof(dir), "/tmp/signal-test-%ld", (long)getpid());
-        if (mkdir(dir, 0700) != 0 && errno != EEXIST) {
-            /* Fall back to plain /tmp on weird CI; tests will still
-             * collide there, but at least they won't crash. */
-            snprintf(dir, sizeof(dir), "/tmp");
-        }
-#endif
-        dir_ready = 1;
-    }
-
+    ensure_tmp_dir();
     char *buf = buffers[next];
     next = (next + 1) % TMP_RING;
-    snprintf(buf, TMP_BUFLEN, "%s/%s", dir, name);
+    snprintf(buf, TMP_BUFLEN, "%s/%s", g_tmp_dir, name);
     return buf;
 }
 

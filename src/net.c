@@ -826,7 +826,23 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_DEATH:
-        if (len >= 38 && net_state.callbacks.on_death) {
+        if (len >= 43 && net_state.callbacks.on_death) {
+            uint8_t pid = data[1];
+            float px = read_f32_le(&data[2]);
+            float py = read_f32_le(&data[6]);
+            float vx = read_f32_le(&data[10]);
+            float vy = read_f32_le(&data[14]);
+            float ang = read_f32_le(&data[18]);
+            float ore = read_f32_le(&data[22]);
+            float earned = read_f32_le(&data[26]);
+            float spent = read_f32_le(&data[30]);
+            int asteroids = (int)read_f32_le(&data[34]);
+            uint8_t rs = data[38];
+            float fee = read_f32_le(&data[39]);
+            net_state.callbacks.on_death(pid, px, py, vx, vy, ang,
+                                         ore, earned, spent, asteroids, rs, fee);
+        } else if (len >= 38 && net_state.callbacks.on_death) {
+            /* Legacy 38-byte packet — no respawn-station/fee yet. */
             uint8_t pid = data[1];
             float px = read_f32_le(&data[2]);
             float py = read_f32_le(&data[6]);
@@ -838,10 +854,10 @@ static void handle_message(const uint8_t* data, int len) {
             float spent = read_f32_le(&data[30]);
             int asteroids = (int)read_f32_le(&data[34]);
             net_state.callbacks.on_death(pid, px, py, vx, vy, ang,
-                                         ore, earned, spent, asteroids);
+                                         ore, earned, spent, asteroids, 0, 0.0f);
         } else if (len >= 2 && net_state.callbacks.on_death) {
-            /* Legacy short packet — fall back to position-less death. */
-            net_state.callbacks.on_death(data[1], 0, 0, 0, 0, 0, 0, 0, 0, 0);
+            /* Very-legacy short packet — position-less. */
+            net_state.callbacks.on_death(data[1], 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0.0f);
         }
         break;
 
@@ -991,9 +1007,26 @@ static EM_BOOL on_ws_close(int eventType, const EmscriptenWebSocketCloseEvent* e
 }
 
 bool net_init(const char* url, const NetCallbacks* callbacks) {
+    /* Preserve identity fields across the reset — main.c installs the
+     * pubkey + secret BEFORE net_init so the first wire SESSION packet
+     * carries the pubkey-derived alphanumeric callsign. A blanket memset
+     * would zero them and the on-connect handshake would send an empty
+     * callsign (server stores ""; HUD shows "SHIP"; highscores blank). */
+    uint8_t saved_pubkey[32];
+    uint8_t saved_secret[64];
+    bool    saved_pub_ready    = net_state.identity_pubkey_ready;
+    bool    saved_secret_ready = net_state.identity_secret_ready;
+    memcpy(saved_pubkey, net_state.identity_pubkey, sizeof(saved_pubkey));
+    memcpy(saved_secret, net_state.identity_secret, sizeof(saved_secret));
+
     memset(&net_state, 0, sizeof(net_state));
     net_state.local_id = 0xFF;
     if (callbacks) net_state.callbacks = *callbacks;
+
+    memcpy(net_state.identity_pubkey, saved_pubkey, sizeof(saved_pubkey));
+    memcpy(net_state.identity_secret, saved_secret, sizeof(saved_secret));
+    net_state.identity_pubkey_ready = saved_pub_ready;
+    net_state.identity_secret_ready = saved_secret_ready;
 
     if (!url || url[0] == '\0') {
         printf("[net] no server URL provided, multiplayer disabled\n");
@@ -1182,9 +1215,26 @@ static void net_ev_handler(struct mg_connection *c, int ev, void *ev_data) {
 }
 
 bool net_init(const char* url, const NetCallbacks* callbacks) {
+    /* Preserve identity fields across the reset — main.c installs the
+     * pubkey + secret BEFORE net_init so the first wire SESSION packet
+     * carries the pubkey-derived alphanumeric callsign. A blanket memset
+     * would zero them and the on-connect handshake would send an empty
+     * callsign (server stores ""; HUD shows "SHIP"; highscores blank). */
+    uint8_t saved_pubkey[32];
+    uint8_t saved_secret[64];
+    bool    saved_pub_ready    = net_state.identity_pubkey_ready;
+    bool    saved_secret_ready = net_state.identity_secret_ready;
+    memcpy(saved_pubkey, net_state.identity_pubkey, sizeof(saved_pubkey));
+    memcpy(saved_secret, net_state.identity_secret, sizeof(saved_secret));
+
     memset(&net_state, 0, sizeof(net_state));
     net_state.local_id = 0xFF;
     if (callbacks) net_state.callbacks = *callbacks;
+
+    memcpy(net_state.identity_pubkey, saved_pubkey, sizeof(saved_pubkey));
+    memcpy(net_state.identity_secret, saved_secret, sizeof(saved_secret));
+    net_state.identity_pubkey_ready = saved_pub_ready;
+    net_state.identity_secret_ready = saved_secret_ready;
 
     if (!url || url[0] == '\0') {
         printf("[net] no server URL provided, multiplayer disabled\n");

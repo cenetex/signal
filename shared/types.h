@@ -827,6 +827,8 @@ typedef struct {
             float angle;            /* hull orientation at moment of death */
             uint8_t killer_token[8]; /* zero = no attributed killer */
             uint8_t cause;          /* death_cause_t */
+            uint8_t respawn_station; /* index of station the player respawned at */
+            float respawn_fee;      /* spawn fee debited at respawn_station */
         } death;
         /* SIM_EVENT_NPC_KILL: a player killed an NPC by collision. The
          * NPC slot is going to despawn next tick; clients should surface

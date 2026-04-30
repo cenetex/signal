@@ -631,6 +631,24 @@ static void launch_ship(world_t *w, server_player_t *sp) {
 }
 
 static void emergency_recover_ship(world_t *w, server_player_t *sp) {
+    /* Pick respawn station first so the death event can name it for the
+     * client overlay ("respawn -300 Helios credits"). */
+    int best = 0;
+    float best_d = 1e18f;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (!station_exists(&w->stations[i])) continue;
+        float d = v2_dist_sq(sp->ship.pos, w->stations[i].pos);
+        if (d < best_d) { best_d = d; best = i; }
+    }
+    /* Charge the spawn fee against THAT station's ledger. Force-debit so
+     * a bankrupt player still gets a ship — the negative balance becomes
+     * the next-run mining target, which is the whole point of the debt
+     * loop. Unlike player_seed_credits, this fires on EVERY respawn so
+     * the cost of dying is visible and recurring. */
+    int fee = station_spawn_fee(&w->stations[best]);
+    ledger_force_debit(&w->stations[best], sp->session_token,
+                       (float)fee, &sp->ship);
+
     sim_event_t death_ev = {
         .type = SIM_EVENT_DEATH, .player_id = sp->id,
         .death = {
@@ -644,6 +662,8 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
             .vel_y = sp->ship.vel.y,
             .angle = sp->ship.angle,
             .cause = sp->last_damage_cause,
+            .respawn_station = (uint8_t)best,
+            .respawn_fee = (float)fee,
         }
     };
     memcpy(death_ev.death.killer_token, sp->last_damage_killer_token, 8);
@@ -667,20 +687,13 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
     sp->ship.mining_level  = 0;
     sp->ship.hold_level    = 0;
     sp->ship.tractor_level = 0;
-    /* Respawn at nearest station — teleport to its dock */
-    int best = 0;
-    float best_d = 1e18f;
-    for (int i = 0; i < MAX_STATIONS; i++) {
-        if (!station_exists(&w->stations[i])) continue;
-        float d = v2_dist_sq(sp->ship.pos, w->stations[i].pos);
-        if (d < best_d) { best_d = d; best = i; }
-    }
     sp->current_station = best;
     sp->nearby_station = best;
     sp->dock_berth = 0;
     sp->ship.pos = dock_berth_pos(&w->stations[best], 0);
     dock_ship(w, sp);
-    SIM_LOG("[sim] player %d emergency recovered at station 0\n", sp->id);
+    SIM_LOG("[sim] player %d emergency recovered at station %d (fee %d)\n",
+            sp->id, best, fee);
 }
 
 /* Apply hull damage with optional kill attribution. killer_token=NULL or
@@ -1526,10 +1539,14 @@ static void resolve_world_collisions(world_t *w, server_player_t *sp) {
     }
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         if (!w->asteroids[i].active) continue;
-        if (asteroid_is_collectible(&w->asteroids[i])) {
-            /* Only collide if moving fast enough (hurled or whiplashed) */
-            if (v2_len_sq(w->asteroids[i].vel) < 40.0f * 40.0f) continue;
-        }
+        /* Run the full resolver for every active asteroid — fragments
+         * (whether free-drifting, tractored by another player, or
+         * whiplashed loose) all collide and damage. The resolver gates
+         * damage on closing relative velocity + threshold, so a parked
+         * fragment drifting alongside a ship still resolves to zero
+         * damage; a tractored fragment dragged INTO a third ship hits
+         * normally. The owner's own tow doesn't self-damage thanks to
+         * the session-token check in resolve_ship_asteroid_collision. */
         resolve_ship_asteroid_collision(w, sp, &w->asteroids[i]);
     }
     /* Crush: pinched between 3+ bodies simultaneously (2 adjacent modules

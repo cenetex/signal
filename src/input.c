@@ -403,8 +403,12 @@ static void sample_dock_keys(input_intent_t *intent) {
             (st ? (int)floorf(st->_inventory_cache[COMMODITY_REPAIR_KIT] + 0.0001f) : 0);
         float max_hull = ship_max_hull(&LOCAL_PLAYER.ship);
         bool needs_repair = LOCAL_PLAYER.ship.hull < max_hull;
-        if (needs_repair && kits_avail <= 0) set_notice("No repair kits available.");
-        else intent->service_repair = true;
+        if (needs_repair && kits_avail <= 0) {
+            int hp_needed = (int)ceilf(max_hull - LOCAL_PLAYER.ship.hull);
+            if (hp_needed < 1) hp_needed = 1;
+            set_notice("%d repair kit%s needed.",
+                       hp_needed, hp_needed == 1 ? "" : "s");
+        } else intent->service_repair = true;
     }
     intent->upgrade_mining  = is_key_pressed(SAPP_KEYCODE_M);
     intent->upgrade_hold    = is_key_pressed(SAPP_KEYCODE_H);
@@ -469,27 +473,16 @@ static void sample_trade_picker(input_intent_t *intent) {
     const ship_t *ship = &LOCAL_PLAYER.ship;
     trade_row_t rows[TRADE_MAX_ROWS];
     int row_count = build_trade_rows(st, ship, rows, TRADE_MAX_ROWS);
-    int page_first = (int)g.trade_page * TRADE_ROWS_PER_PAGE;
-    int page_last  = page_first + TRADE_ROWS_PER_PAGE;
-    if (page_last > row_count) page_last = row_count;
+    int page_first = 0, page_last = 0, total_pages = 1;
+    trade_page_range(rows, row_count, (int)g.trade_page,
+                     &page_first, &page_last, &total_pages);
+    if ((int)g.trade_page >= total_pages) g.trade_page = 0;
 
-    /* Hotkey assignment matches the renderer: walk the visible page in
-     * order and only count actionable rows. [1] is the first actionable
-     * row on the page, [2] the second, etc. Passive rows stay un-keyed. */
-    int target = -1;
-    int actionable_seen = 0;
-    for (int ri = page_first; ri < page_last; ri++) {
-        if (!rows[ri].actionable) continue;
-        if (actionable_seen == digit_pick) { target = ri; break; }
-        actionable_seen++;
-    }
-
-    if (target < 0) {
-        /* Either past the end or the page has fewer than digit_pick+1
-         * actionable rows. Wrap so [F] still feels natural. */
-        if (page_first >= row_count) g.trade_page = 0;
-        return;
-    }
+    /* Hotkey = row position on page (digit_pick is 0-based). The renderer
+     * uses the same mapping; a blocked row holds its slot but we no-op
+     * here so numbers stay locked for the player's muscle memory. */
+    int target = page_first + digit_pick;
+    if (target < 0 || target >= page_last || !rows[target].actionable) return;
     const trade_row_t *row = &rows[target];
     if (row->kind == 0) {
         trade_apply_buy_row(intent, st, ship, row);

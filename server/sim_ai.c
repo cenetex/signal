@@ -756,7 +756,11 @@ static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
     const hull_def_t *hull = npc_hull_def(npc);
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         asteroid_t *a = &w->asteroids[i];
-        if (!a->active || asteroid_is_collectible(a)) continue;
+        if (!a->active) continue;
+        /* Fragments (collectible-tier) collide too — a thrown or
+         * tractored ore chunk should hit an NPC the same way it hits a
+         * player. The vel_toward + collision_damage_for threshold keep
+         * gentle drifts at zero damage. */
         float minimum = a->radius + hull->ship_radius;
         vec2 delta = v2_sub(npc->pos, a->pos);
         float d_sq = v2_len_sq(delta);

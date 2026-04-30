@@ -1716,8 +1716,9 @@ static void srv_on_death(const sim_event_t *ev) {
     if (!sp->conn) return;
 
     /* Death packet: [type:1][pid:1][px:f32][py:f32][vx:f32][vy:f32]
-     * [ang:f32][ore:f32][earned:f32][spent:f32][asteroids:f32] = 38 bytes */
-    uint8_t msg[38];
+     * [ang:f32][ore:f32][earned:f32][spent:f32][asteroids:f32]
+     * [respawn_station:u8][respawn_fee:f32] = 43 bytes */
+    uint8_t msg[43];
     msg[0] = NET_MSG_DEATH;
     msg[1] = (uint8_t)pid;
     write_f32_le(&msg[2],  ev->death.pos_x);
@@ -1729,6 +1730,8 @@ static void srv_on_death(const sim_event_t *ev) {
     write_f32_le(&msg[26], ev->death.credits_earned);
     write_f32_le(&msg[30], ev->death.credits_spent);
     write_f32_le(&msg[34], (float)ev->death.asteroids_fractured);
+    msg[38] = ev->death.respawn_station;
+    write_f32_le(&msg[39], ev->death.respawn_fee);
     ws_send(sp->conn, msg, sizeof(msg));
 
     uint8_t buf[PLAYER_SHIP_SIZE + 4];

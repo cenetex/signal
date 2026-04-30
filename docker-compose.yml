@@ -11,6 +11,11 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      args:
+        # Pass host's short HEAD into the image so the wasm + server both
+        # bake in the matching version stamp. Falls back to "local" when
+        # the env var isn't set (e.g. plain `docker compose build`).
+        GIT_HASH: ${GIT_HASH:-local}
     image: signal:local
     container_name: signal
     ports:

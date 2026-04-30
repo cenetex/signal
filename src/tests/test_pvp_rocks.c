@@ -311,6 +311,42 @@ TEST(test_thrown_rock_kills_npc_emits_event) {
     ASSERT(memcmp(kill->npc_kill.killer_token, thrower->session_token, 8) == 0);
 }
 
+/* Small collectible-tier fragments must damage ships too — the previous
+ * "ignore collectible asteroids below 40 u/s" gate let parked tow-balls
+ * pass straight through hulls. Now the resolver runs for every active
+ * asteroid; the closing-velocity + threshold filter handles drifts. */
+TEST(test_collectible_fragment_damages_ship) {
+    WORLD_DECL;
+    setup_two_players(&w);
+    server_player_t *thrower = &w.players[0];
+    server_player_t *target  = &w.players[1];
+
+    int aidx = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) { aidx = i; break; }
+    }
+    ASSERT(aidx >= 0);
+    asteroid_t *a = &w.asteroids[aidx];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->fracture_child = true;
+    a->tier = ASTEROID_TIER_S;        /* small / collectible */
+    a->radius = 8.0f;
+    a->hp = 1.0f; a->max_hp = 1.0f; a->ore = 1.0f; a->max_ore = 1.0f;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    /* Confirm precondition: this fragment IS a collectible (the case
+     * the old gate skipped). */
+    ASSERT(asteroid_is_collectible(a));
+    a->pos = v2(target->ship.pos.x - 40.0f, target->ship.pos.y);
+    a->vel = v2(400.0f, 0.0f);
+    memcpy(a->last_towed_token, thrower->session_token, 8);
+    a->last_towed_by = (int8_t)thrower->id;
+
+    float hull_before = target->ship.hull;
+    for (int t = 0; t < 60; t++) world_sim_step(&w, 1.0f / 120.0f);
+    ASSERT(target->ship.hull < hull_before);
+}
+
 void register_pvp_rocks_tests(void) {
     TEST_SECTION("\n=== PvP rock-throwing ===\n");
     RUN(test_release_imparts_throw_velocity);
@@ -319,4 +355,5 @@ void register_pvp_rocks_tests(void) {
     RUN(test_kill_attribution_via_last_towed_token);
     RUN(test_ramming_attributes_kill);
     RUN(test_thrown_rock_kills_npc_emits_event);
+    RUN(test_collectible_fragment_damages_ship);
 }
