@@ -2059,18 +2059,37 @@ void draw_remote_players(void) {
 /* Callsigns — readable sdtx labels above all visible ships           */
 /* ================================================================== */
 
+/* Convert a world position to a sdtx canvas cell coordinate, accounting
+ * for the world Y-up vs canvas Y-down mismatch.
+ *
+ * sgl_ortho is set with (l, r, b=cam_top, t=cam_bottom) and cam_top <
+ * cam_bottom, so bigger world Y maps to NDC +1 (top of screen). But
+ * sokol_debugtext's vertex shader maps canvas y=0 → NDC +1 and canvas
+ * y=1 → NDC -1, so canvas Y is screen-down. To anchor text at a world
+ * point we have to flip Y at the call site: canvas_y = cam_bottom -
+ * world_y. X needs no flip — both sgl and sdtx have x=cam_left at NDC
+ * -1 (left edge).
+ *
+ * After this conversion, "above the ship on screen" means LARGER
+ * canvas_y subtracted from world_y, which numerically reads as
+ * `cam_bottom() - (world_y + screen_above_offset)` — i.e. the offset
+ * is added to world_y like Y-up math even though we're computing a
+ * Y-down canvas coord. The two flips cancel. */
+static void sdtx_world_pos(float world_x, float world_y, float cell) {
+    sdtx_pos((world_x - cam_left()) / cell,
+             (cam_bottom() - world_y) / cell);
+}
+
 void draw_callsigns(void) {
-    /* Set sdtx canvas to match the sgl world projection exactly.
-     * sgl_ortho uses [cam_left..cam_right, cam_top..cam_bottom].
-     * sdtx_canvas(w, h) maps [0..w, 0..h] with 8px character cells.
-     * By using the world view dimensions as canvas size and offsetting
-     * the origin to cam_left/cam_top, sdtx_pos takes world coordinates
-     * directly — no manual mapping needed. */
+    /* World-aligned sdtx: canvas dimensions match the sgl world view, so
+     * 1 canvas pixel = 1 world unit. Origin stays at (0,0); the
+     * sdtx_world_pos helper above does the world→canvas conversion
+     * (including the Y flip needed because sdtx canvas is Y-down). */
     float view_w = cam_right() - cam_left();
     float view_h = cam_bottom() - cam_top();
     const float cell = 8.0f;
     sdtx_canvas(view_w, view_h);
-    sdtx_origin(cam_left() / cell, cam_top() / cell);
+    sdtx_origin(0, 0);
 
     /* Remote player callsigns */
     if (g.multiplayer_enabled) {
@@ -2083,21 +2102,20 @@ void draw_callsigns(void) {
             if (!on_screen(players[i].x, players[i].y, 60.0f)) continue;
             sdtx_color3b(PAL_WORLD_STATION_CYAN);
             int len = (int)strlen(players[i].callsign);
-            /* Position in world coords — canvas is set to world view */
-            sdtx_pos((players[i].x - len * cell * 0.5f) / cell,
-                     (players[i].y - 36.0f) / cell);
+            /* Center horizontally on the ship, sit just above the hull. */
+            sdtx_world_pos(players[i].x - len * cell * 0.5f,
+                           players[i].y + 36.0f, cell);
             sdtx_puts(players[i].callsign);
         }
     }
 }
 
 void draw_npc_chatter(void) {
-    /* Same world-space canvas as draw_callsigns */
     float view_w = cam_right() - cam_left();
     float view_h = cam_bottom() - cam_top();
     const float cell = 8.0f;
     sdtx_canvas(view_w, view_h);
-    sdtx_origin(cam_left() / cell, cam_top() / cell);
+    sdtx_origin(0, 0);
 
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *npc = &g.world.npc_ships[i];
@@ -2120,8 +2138,10 @@ void draw_npc_chatter(void) {
 
         int len = (int)strlen(line);
         sdtx_color3b(PAL_RADIO_GREEN); /* faded radio green */
-        sdtx_pos((npc->pos.x - len * cell * 0.5f) / cell,
-                 (npc->pos.y + 24.0f) / cell);
+        /* Sit chatter just below the NPC sprite. World Y-up: smaller
+         * world_y is below on screen. */
+        sdtx_world_pos(npc->pos.x - len * cell * 0.5f,
+                       npc->pos.y - 24.0f, cell);
         sdtx_puts(line);
     }
 }
@@ -2154,7 +2174,8 @@ void spawn_sell_fx(const vec2 *origin, int amount, mining_grade_t grade, bool by
     seed = seed * 1664525u + 1013904223u;
     float jitter_y = ((int)((seed >> 8) & 0x1F) - 16) * 1.5f;
 
-    g.sell_fx[slot].pos = v2(origin->x + jitter_x, origin->y - 40.0f + jitter_y);
+    /* Spawn just above the station (world Y-up: +40 = up on screen). */
+    g.sell_fx[slot].pos = v2(origin->x + jitter_x, origin->y + 40.0f + jitter_y);
     g.sell_fx[slot].age = 0.0f;
     g.sell_fx[slot].life = 1.5f;
     if (by_contract) {
@@ -2179,20 +2200,21 @@ void update_sell_fx(float dt) {
 }
 
 void draw_sell_fx(void) {
-    /* World-space canvas identical to draw_callsigns — sdtx_pos takes
-     * world coords directly (divided by the 8px cell). */
+    /* World-aligned sdtx: see sdtx_world_pos (above draw_callsigns)
+     * for the world→canvas conversion. */
     float view_w = cam_right() - cam_left();
     float view_h = cam_bottom() - cam_top();
     const float cell = 8.0f;
     sdtx_canvas(view_w, view_h);
-    sdtx_origin(cam_left() / cell, cam_top() / cell);
+    sdtx_origin(0, 0);
 
     for (int i = 0; i < (int)(sizeof(g.sell_fx) / sizeof(g.sell_fx[0])); i++) {
         if (g.sell_fx[i].life <= 0.0f) continue;
         float t = g.sell_fx[i].age / g.sell_fx[i].life;  /* 0..1 */
         if (t > 1.0f) continue;
-        /* Rise ~28 px over lifetime; fade out in the last third. */
-        float rise_y = -28.0f * t;
+        /* Rise +28 world units over lifetime (Y-up = up on screen). Fade
+         * out in the last third. */
+        float rise_y = 28.0f * t;
         float alpha = (t < 0.67f) ? 1.0f : (1.0f - (t - 0.67f) / 0.33f);
         if (alpha < 0.0f) alpha = 0.0f;
         uint8_t a8 = (uint8_t)(alpha * 255.0f);
@@ -2202,7 +2224,7 @@ void draw_sell_fx(void) {
 
         int len = (int)strlen(g.sell_fx[i].text);
         sdtx_color4b(g.sell_fx[i].r, g.sell_fx[i].g, g.sell_fx[i].b, a8);
-        sdtx_pos((x - len * cell * 0.5f) / cell, y / cell);
+        sdtx_world_pos(x - len * cell * 0.5f, y, cell);
         sdtx_puts(g.sell_fx[i].text);
     }
 }
