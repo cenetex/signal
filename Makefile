@@ -9,6 +9,7 @@ GENERATOR := $(shell command -v ninja >/dev/null 2>&1 && echo "-G Ninja")
 # --- Native desktop client ---
 build:
 	cmake $(GENERATOR) -S . -B build
+	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal --parallel
 
 # --- Emscripten web client ---
@@ -19,6 +20,7 @@ build-web:
 # --- Headless game server ---
 build-server:
 	cmake $(GENERATOR) -S . -B build
+	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_server --parallel
 
 # --- Tests ---
@@ -33,6 +35,7 @@ TEST_QUIET := $(if $(TEST_VERBOSE),,--quiet)
 # introduced this. Keep -g for usable stack traces on failure.
 build-test:
 	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g"
+	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_test --parallel
 
 # Default `test` is serial — the suite has shared `/tmp/test_*.sav`

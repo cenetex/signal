@@ -6,6 +6,11 @@ set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
+# Always emit compile_commands.json so clangd / editor LSPs can resolve
+# include paths without per-developer config. The Makefile's `build`
+# target symlinks this into the repo root after configure.
+set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
+
 # Build-mode toggles. Exactly one of these may be ON at a time; with none
 # set, every target (server, test, client) is built.
 option(BUILD_TESTS_ONLY  "Only build the test executable"       OFF)
