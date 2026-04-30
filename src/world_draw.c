@@ -855,8 +855,14 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
 
             /* Furnace: glow + red laser beam to target module when smelting */
             if (!m->scaffold && m->type == MODULE_FURNACE) {
+                /* Glow inherits the per-ring furnace tint (red ferrite,
+                 * blue cuprite, green crystal, white chunks-feeder, plus
+                 * the dynamic blue/green for last-smelted-ore on the
+                 * middle ring). Without this, the glow stays the static
+                 * PAL_MODULE_FURNACE green and dominates the per-ring
+                 * body color. */
                 float fr, fg, fb;
-                module_color(m->type, &fr, &fg, &fb);
+                station_palette_furnace_color(station, ring, &fr, &fg, &fb);
                 float pulse = 0.3f + 0.15f * sinf(g.world.time * 3.0f + (float)m->slot);
 
                 /* Always: warm glow at furnace */
