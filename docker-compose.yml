@@ -36,6 +36,10 @@ services:
       # lock-step with the actual repo HEAD, which is what the HUD's
       # syncing check depends on.
       - ./build-server-bin:/app/srv-local
+      # Bind-mount the entrypoint too so dev edits to it take effect
+      # without an image rebuild. (Image-baked copy stays correct for
+      # production deploys via server/Dockerfile.)
+      - ./docker/entrypoint.sh:/app/entrypoint.sh:ro
     environment:
       - PORT=9091
       # - SIGNAL_API_TOKEN=devtoken  # set to enable the REST API surface
