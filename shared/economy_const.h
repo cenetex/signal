@@ -53,8 +53,10 @@ static const float REFINERY_HOPPER_CAPACITY = 500.0f;
 static const float REFINERY_BASE_SMELT_RATE = 2.0f;
 /* enum, not `static const int`, so MSVC accepts it as a constant
  * expression for sim_production.c's `int furnace_slots[REFINERY_MAX_FURNACES]`.
- * `static const int` is not a C99 constant expression — GCC/Clang
- * accept it via VLA fallback, MSVC rejects it. */
+ * `static const int` is not a constant expression in any C standard —
+ * GCC/Clang accept it as an array bound via VLA fallback (C11 makes
+ * VLAs optional but they keep the extension on by default), MSVC has
+ * no VLA support and rejects it. */
 enum { REFINERY_MAX_FURNACES = 3 };
 /* Production: ~1 unit/sec → conversions are visible inside 5-10s of docked
  * dwell time. Slower felt like nothing was happening. */

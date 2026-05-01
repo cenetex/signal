@@ -131,7 +131,7 @@ _Static_assert(sizeof(chain_payload_trade_t)        == 48,  "trade payload size"
 _Static_assert(sizeof(chain_payload_rock_destroy_t) == 96,  "rock_destroy payload size");
 
 /* Fixed-size event header — exactly 184 bytes on disk. The serialized
- * form matches this struct's natural C99 layout (verified by static
+ * form matches this struct's natural C11 layout (verified by static
  * assertion in chain_log.c). */
 typedef struct {
     uint64_t epoch;            /* sim tick when authored */

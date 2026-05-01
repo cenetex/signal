@@ -4,7 +4,7 @@ A space station game where you fight by smashing one another with rocks.
 
 **Play now:** [signal.ratimics.com/play](https://signal.ratimics.com/play)
 
-Signal is a multiplayer space mining game built in C99 with Sokol — no external
+Signal is a multiplayer space mining game built in C11 with Sokol — no external
 assets, no engine, just procedural geometry and physics. You launch from
 stations, fracture asteroids, haul ore, and expand the network by building
 outposts at the edge of signal range. Every AI dreams of being a space station.

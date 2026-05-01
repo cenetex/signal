@@ -54,7 +54,7 @@ extern "C" {
  *
  * Layout is exactly 208 bytes; the unsigned region (everything except
  * the trailing 64-byte signature) is the 144-byte span fed into
- * Ed25519. We pack the field order so the natural C99 layout matches
+ * Ed25519. We pack the field order so the natural C11 layout matches
  * the on-wire byte order on every platform we ship to (32-byte
  * blocks first, then two u64 fields, then the prev-hash, then the
  * signature). A compile-time _Static_assert in cargo_receipt.c catches

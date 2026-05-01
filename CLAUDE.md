@@ -1,6 +1,6 @@
 # Signal — Claude Code Context
 
-Live at **[signal.ratimics.com/play](https://signal.ratimics.com/play)**. Multiplayer space-station game in C99 / Sokol. PvP rock-flinging is the hook; the rest of the systems feed that hook.
+Live at **[signal.ratimics.com/play](https://signal.ratimics.com/play)**. Multiplayer space-station game in C11 / Sokol. PvP rock-flinging is the hook; the rest of the systems feed that hook.
 
 ## Build
 
