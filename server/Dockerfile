@@ -12,17 +12,16 @@ RUN apk add --no-cache gcc musl-dev make cmake
 ARG GIT_HASH=dev
 WORKDIR /app
 
-# Only the files the server target actually needs — vendor/sokol is
-# for the client, so we skip it (BUILD_SERVER_ONLY short-circuits the
-# client block before it's referenced). vendor/tweetnacl is required
-# since #497 (chain log Ed25519 signing) — signal_server links
-# ${SIGNAL_CRYPTO_SOURCES}.
+# Only the files the server target actually needs. We COPY all vendor/ here
+# and rely on .dockerignore to exclude client-only deps (vendor/sokol,
+# vendor/minimp3, etc). This prevents silent drift when a server source adds
+# a new #include "vendor/..." without updating the COPY list (see #518, #520).
+# A CI check validates that all server/shared #includes match the ignore list.
 COPY CMakeLists.txt ./
 COPY shared/ ./shared/
 COPY src/ ./src/
 COPY server/ ./server/
-COPY vendor/tweetnacl/ ./vendor/tweetnacl/
-COPY vendor/cenetex/ ./vendor/cenetex/
+COPY vendor/ ./vendor/
 
 # Flags preserved from the old hand-rolled gcc invocation:
 #   -static                          (fully static musl binary)
