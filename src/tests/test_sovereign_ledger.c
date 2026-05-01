@@ -109,7 +109,7 @@ TEST(test_sovereign_player_cannot_overspend_on_buy) {
      * fee debt either, otherwise the test isn't clean. */
     int idx = -1;
     for (int i = 0; i < st->ledger_count; i++) {
-        if (memcmp(st->ledger[i].player_token, token, 8) == 0) { idx = i; break; }
+        if (memcmp(st->ledger[i].player_pubkey, token, 8) == 0) { idx = i; break; }
     }
     if (idx >= 0) st->ledger[idx].balance = 0.0f;
     ASSERT_EQ_FLOAT(ledger_balance(st, token), 0.0f, 0.001f);

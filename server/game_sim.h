@@ -664,6 +664,23 @@ void ledger_force_debit(station_t *st, const uint8_t *token, float amount, ship_
  * NPC haulers (and any future caller) to pay the contract value at
  * delivery time, with no smelt cut applied. */
 void ledger_earn_from_pool(station_t *st, const uint8_t *token, float amount);
+
+/* ---- PubKey-based ledger API (#257 #479) ---- */
+/* New ledger functions keyed by player pubkey (32B) instead of session
+ * token (8B). Relationships survive session-token rotation. */
+int ledger_find_or_create_by_pubkey(station_t *st, const uint8_t pubkey[32]);
+float ledger_balance_by_pubkey(const station_t *st, const uint8_t pubkey[32]);
+void ledger_earn_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount);
+bool ledger_spend_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount, ship_t *ship);
+void ledger_force_debit_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount, ship_t *ship);
+void ledger_credit_supply_by_pubkey(station_t *st, const uint8_t pubkey[32], float ore_value);
+/* Same as ledger_credit_supply_by_pubkey but returns the supplier-share
+ * actually credited (after the 35% station cut). Use this when callers
+ * need to emit accurate +N UI events. */
+float ledger_credit_supply_amount_by_pubkey(station_t *st, const uint8_t pubkey[32], float ore_value);
+void ledger_record_ore_sold(station_t *st, const uint8_t pubkey[32], uint32_t ore_units, uint8_t commodity);
+void ledger_record_dock(station_t *st, const uint8_t pubkey[32], uint64_t tick);
+
 /* Signal channel — station broadcast log (#316). */
 uint64_t signal_channel_post(world_t *w, int sender_station, const char *text, const char *audio_url);
 const signal_channel_msg_t *signal_channel_at(const world_t *w, int i);

@@ -454,7 +454,11 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             float floor_f = (float)INGOT_DELIVERY_CREDIT;
             if (delivery_f < floor_f) delivery_f = floor_f;
             int delivery_int = (int)lroundf(delivery_f);
-            ledger_credit_supply(st, world.players[pid].session_token, (float)delivery_int);
+            if (world.players[pid].pubkey_set) {
+                ledger_credit_supply_by_pubkey(st, world.players[pid].pubkey, (float)delivery_int);
+            } else {
+                ledger_credit_supply(st, world.players[pid].session_token, (float)delivery_int);
+            }
             st->manifest_dirty = true;
             /* Layer C of #479: emit EVT_TRANSFER (player -> station) +
              * EVT_TRADE (delivery credit accrual on the station's
@@ -700,8 +704,8 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                         for (int s = 0; s < MAX_STATIONS; s++) {
                             station_t *st = &world.stations[s];
                             for (int e = 0; e < st->ledger_count; e++) {
-                                if (memcmp(st->ledger[e].player_token, old_tok, 8) == 0) {
-                                    memcpy(st->ledger[e].player_token,
+                                if (memcmp(st->ledger[e].player_pubkey, old_tok, 8) == 0) {
+                                    memcpy(st->ledger[e].player_pubkey,
                                            sp->session_token, 8);
                                 }
                             }
@@ -1127,6 +1131,55 @@ static void handle_station_state(struct mg_connection *c, int sid) {
         BUF_APPEND(pos, buf, BUFSZ,
             "{\"index\":%d,\"action\":%d,\"commodity\":%d,\"quantity\":%.0f,\"base_price\":%.1f,\"age\":%.0f}",
             i, ct->action, ct->commodity, ct->quantity_needed, ct->base_price, ct->age);
+    }
+
+    /* Top N most-recent dockers (relationships, #257) — bounded for prompt context.
+     * Sort by last_dock_tick DESC to surface recent visitors first. */
+    BUF_APPEND(pos, buf, BUFSZ, "],\"relationships\":[");
+    enum { MAX_RELATIONSHIPS_IN_API = 8 };
+    /* Find indices with non-zero last_dock_tick, sort by tick descending */
+    int rel_indices[16];
+    int rel_count = 0;
+    for (int i = 0; i < st->ledger_count; i++) {
+        if (st->ledger[i].last_dock_tick > 0) {
+            rel_indices[rel_count++] = i;
+        }
+    }
+    /* Simple sort — bubble sort for small N */
+    for (int i = 0; i < rel_count - 1; i++) {
+        for (int j = 0; j < rel_count - 1 - i; j++) {
+            if (st->ledger[rel_indices[j]].last_dock_tick < st->ledger[rel_indices[j+1]].last_dock_tick) {
+                int tmp = rel_indices[j];
+                rel_indices[j] = rel_indices[j+1];
+                rel_indices[j+1] = tmp;
+            }
+        }
+    }
+    first = true;
+    int rel_output = 0;
+    for (int i = 0; i < rel_count && rel_output < MAX_RELATIONSHIPS_IN_API; i++) {
+        int idx = rel_indices[i];
+        if (!first) BUF_APPEND(pos, buf, BUFSZ, ",");
+        first = false;
+        BUF_APPEND(pos, buf, BUFSZ,
+            "{\"pubkey\":\"");
+        /* Encode pubkey as hex for JSON */
+        for (int j = 0; j < 32; j++)
+            BUF_APPEND(pos, buf, BUFSZ, "%02x", st->ledger[idx].player_pubkey[j]);
+        BUF_APPEND(pos, buf, BUFSZ,
+            "\",\"first_dock_tick\":%llu,\"last_dock_tick\":%llu,"
+            "\"total_docks\":%u,\"lifetime_ore_units\":%u,"
+            "\"lifetime_credits_in\":%u,\"lifetime_credits_out\":%u,"
+            "\"top_commodity\":%u}",
+            (unsigned long long)st->ledger[idx].first_dock_tick,
+            (unsigned long long)st->ledger[idx].last_dock_tick,
+            st->ledger[idx].total_docks,
+            st->ledger[idx].lifetime_ore_units,
+            st->ledger[idx].lifetime_credits_in,
+            st->ledger[idx].lifetime_credits_out,
+            st->ledger[idx].top_commodity);
+        rel_output++;
+        if (pos > BUFSZ - STATION_API_TAIL_MARGIN) break;
     }
 
     /* Hail message */

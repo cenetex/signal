@@ -78,7 +78,14 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 45  /* cargo_unit_t._pad repurposed as quantity (u8).
+#define SAVE_VERSION 46  /* Station-player relationship data (#257).
+                          * Ledger entries keyed by player_pubkey[32] instead
+                          * of player_token[8]. Adds first_dock_tick,
+                          * last_dock_tick, total_docks, lifetime_ore_units,
+                          * lifetime_credits_in/out, and top_commodity per
+                          * relationship. v45 saves: migrate session_token →
+                          * pubkey where available (zero pubkey→zero ledger).
+                          * v45: cargo_unit_t._pad repurposed as quantity (u8).
                           * v44 saves wrote zero into _pad on every unit;
                           * loaders rewrite quantity == 0 → 1 so existing
                           * named units stay individually addressable.
@@ -249,9 +256,17 @@ static bool write_station_session(FILE *f, const station_t *s) {
     /* Economy ledger */
     WRITE_FIELD(f, s->ledger_count);
     for (int i = 0; i < 16; i++) {
-        WRITE_FIELD(f, s->ledger[i].player_token);
+        WRITE_FIELD(f, s->ledger[i].player_pubkey);
         WRITE_FIELD(f, s->ledger[i].balance);
         WRITE_FIELD(f, s->ledger[i].lifetime_supply);
+        WRITE_FIELD(f, s->ledger[i].first_dock_tick);
+        WRITE_FIELD(f, s->ledger[i].last_dock_tick);
+        WRITE_FIELD(f, s->ledger[i].total_docks);
+        WRITE_FIELD(f, s->ledger[i].lifetime_ore_units);
+        WRITE_FIELD(f, s->ledger[i].lifetime_credits_in);
+        WRITE_FIELD(f, s->ledger[i].lifetime_credits_out);
+        WRITE_FIELD(f, s->ledger[i].top_commodity);
+        WRITE_FIELD(f, s->ledger[i]._pad);
     }
     /* Shipyard queue */
     WRITE_FIELD(f, s->pending_scaffold_count);
@@ -327,9 +342,37 @@ static bool read_station_session(FILE *f, station_t *s) {
     if (s->ledger_count < 0) s->ledger_count = 0;
     if (s->ledger_count > 16) s->ledger_count = 16;
     for (int i = 0; i < 16; i++) {
-        READ_FIELD(f, s->ledger[i].player_token);
-        READ_FIELD(f, s->ledger[i].balance);
-        READ_FIELD(f, s->ledger[i].lifetime_supply);
+        if (g_loaded_save_version >= 46) {
+            /* v46+: ledger keyed by player_pubkey with relationship data */
+            READ_FIELD(f, s->ledger[i].player_pubkey);
+            READ_FIELD(f, s->ledger[i].balance);
+            READ_FIELD(f, s->ledger[i].lifetime_supply);
+            READ_FIELD(f, s->ledger[i].first_dock_tick);
+            READ_FIELD(f, s->ledger[i].last_dock_tick);
+            READ_FIELD(f, s->ledger[i].total_docks);
+            READ_FIELD(f, s->ledger[i].lifetime_ore_units);
+            READ_FIELD(f, s->ledger[i].lifetime_credits_in);
+            READ_FIELD(f, s->ledger[i].lifetime_credits_out);
+            READ_FIELD(f, s->ledger[i].top_commodity);
+            READ_FIELD(f, s->ledger[i]._pad);
+        } else {
+            /* v45 migration: session_token → pubkey (stay zero), initialize
+             * relationship fields. The ledger still lives across versions, so
+             * we don't lose balance/lifetime_supply. */
+            uint8_t player_token[8];
+            READ_FIELD(f, player_token);
+            memset(s->ledger[i].player_pubkey, 0, 32);
+            READ_FIELD(f, s->ledger[i].balance);
+            READ_FIELD(f, s->ledger[i].lifetime_supply);
+            s->ledger[i].first_dock_tick = 0;
+            s->ledger[i].last_dock_tick = 0;
+            s->ledger[i].total_docks = 0;
+            s->ledger[i].lifetime_ore_units = 0;
+            s->ledger[i].lifetime_credits_in = 0;
+            s->ledger[i].lifetime_credits_out = 0;
+            s->ledger[i].top_commodity = 0;
+            memset(s->ledger[i]._pad, 0, 3);
+        }
     }
     /* Shipyard queue */
     READ_FIELD(f, s->pending_scaffold_count);

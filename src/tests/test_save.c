@@ -564,7 +564,14 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  * MAX_STATIONS=64 = +2560 bytes. The chain event records themselves
  * live in side files under chain/<pubkey>.log, NOT in world.sav. */
 /* v43: credit_pool field dropped (-4 bytes × 64 stations = -256). */
-#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40 - 64 * 4)
+/* v46: ledger entry expanded for #257 station-player relationship.
+ * Per-entry was 16B (8B player_token + 4B balance + 4B lifetime_supply);
+ * now 76B = 32B player_pubkey + 4B balance + 4B lifetime_supply +
+ * 8B first_dock_tick + 8B last_dock_tick + 4B total_docks +
+ * 4B lifetime_ore_units + 4B lifetime_credits_in + 4B lifetime_credits_out +
+ * 1B top_commodity + 3B _pad. Diff: +60B per entry × 16 entries × 64
+ * stations = +61440 bytes. */
+#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40 - 64 * 4 + 64 * 16 * 60)
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -601,7 +608,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 45);
+    ASSERT_EQ_INT((int)version, 46);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

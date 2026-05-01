@@ -28,7 +28,7 @@ static float client_station_balance(int station_idx) {
     const station_t *st = &g.world.stations[station_idx];
     const uint8_t *token = g.world.players[g.local_player_slot].session_token;
     for (int i = 0; i < st->ledger_count; i++) {
-        if (memcmp(st->ledger[i].player_token, token, 8) == 0)
+        if (memcmp(st->ledger[i].player_pubkey, token, 8) == 0)
             return st->ledger[i].balance;
     }
     return 0.0f;
@@ -536,7 +536,7 @@ static float client_pending_balance(void) {
     for (int si = 0; si < MAX_STATIONS; si++) {
         const station_t *st = &g.world.stations[si];
         for (int li = 0; li < st->ledger_count; li++) {
-            if (memcmp(st->ledger[li].player_token,
+            if (memcmp(st->ledger[li].player_pubkey,
                        LOCAL_PLAYER.session_token, 8) == 0) {
                 pending += st->ledger[li].balance;
             }

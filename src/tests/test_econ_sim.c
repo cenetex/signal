@@ -311,8 +311,12 @@ TEST(test_bug312_2_ledger_balance_matches_by_token) {
     /* Manually drain alice via earn of negative? ledger_earn doesn't
      * clamp, so instead verify the "first positive" fallback is dead:
      * set Alice's balance to zero directly. */
+    /* The token-based ledger API now stores entries under a "pseudo
+     * pubkey" (8B token in the first 8 bytes, 24B zero tail) — see
+     * token_to_pseudo_pubkey in game_sim.c. Match that layout when
+     * scanning by hand. */
     for (int i = 0; i < st.ledger_count; i++)
-        if (memcmp(st.ledger[i].player_token, alice, 8) == 0)
+        if (memcmp(st.ledger[i].player_pubkey, alice, 8) == 0)
             st.ledger[i].balance = 0.0f;
     ASSERT_EQ_FLOAT(ledger_balance(&st, alice), 0.0f,   0.001f);
     ASSERT_EQ_FLOAT(ledger_balance(&st, bob),   250.0f, 0.001f);

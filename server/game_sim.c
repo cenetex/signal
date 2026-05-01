@@ -55,14 +55,30 @@
  * Players earn by smelting/delivering at a station and spend at that station.
  * Cross-station wealth transfer requires physically hauling goods. */
 
-/* Find or create a ledger entry — forward decl (defined with other ledger code below) */
-static int ledger_find_or_create(station_t *st, const uint8_t *token);
+/* Forward decl — definition below. The declaration in game_sim.h
+ * makes this externally visible; the forward decl here is just so
+ * the early helper code in this file can call it. */
+
+/* Token-based ledger compatibility shim.
+ *
+ * #257 / #479-A.1 keys ledger entries by Ed25519 pubkey (32B). Pre-A.1
+ * callers and pre-A.4 saves used 8B session tokens; some legacy paths
+ * (NPC players, dev-mode anonymous play) still don't have a registered
+ * pubkey at the call site. Rather than duplicate every helper, the
+ * token-based functions construct a "pseudo-pubkey" by placing the
+ * 8B token in the first 8 bytes of a 32B buffer and zero-filling the
+ * rest. Real Layer-A.1 pubkeys are full Ed25519 public keys with
+ * statistically zero chance of having 24 trailing zero bytes, so
+ * pseudo-pubkeys and real pubkeys never collide. */
+static void token_to_pseudo_pubkey(const uint8_t *token, uint8_t pseudo[32]) {
+    memset(pseudo, 0, 32);
+    if (token) memcpy(pseudo, token, 8);
+}
 
 float ledger_balance(const station_t *st, const uint8_t *token) {
-    for (int i = 0; i < st->ledger_count; i++)
-        if (memcmp(st->ledger[i].player_token, token, 8) == 0)
-            return st->ledger[i].balance;
-    return 0.0f;
+    uint8_t pseudo[32];
+    token_to_pseudo_pubkey(token, pseudo);
+    return ledger_balance_by_pubkey(st, pseudo);
 }
 
 /* Net currency this station has issued, derived from the ledger
@@ -80,20 +96,15 @@ float station_credit_pool(const station_t *st) {
 }
 
 void ledger_earn(station_t *st, const uint8_t *token, float amount) {
-    int idx = ledger_find_or_create(st, token);
-    if (idx < 0) return;
-    st->ledger[idx].balance += amount;
+    uint8_t pseudo[32];
+    token_to_pseudo_pubkey(token, pseudo);
+    ledger_earn_by_pubkey(st, pseudo, amount);
 }
 
 bool ledger_spend(station_t *st, const uint8_t *token, float amount, ship_t *ship) {
-    if (amount <= 0.0f) return true;
-    int idx = ledger_find_or_create(st, token);
-    if (idx < 0) return false;
-    if (st->ledger[idx].balance + 0.01f < amount) return false;
-    st->ledger[idx].balance -= amount;
-    if (st->ledger[idx].balance < 0.0f) st->ledger[idx].balance = 0.0f;
-    ship->stat_credits_spent += amount;
-    return true;
+    uint8_t pseudo[32];
+    token_to_pseudo_pubkey(token, pseudo);
+    return ledger_spend_by_pubkey(st, pseudo, amount, ship);
 }
 
 /* Force a debit through even when the balance can't cover it. The
@@ -101,11 +112,9 @@ bool ledger_spend(station_t *st, const uint8_t *token, float amount, ship_t *shi
  * station. Use for unrefusable services (spawn fee, mandatory repair)
  * where rejecting the spend would leave the ship in a worse state. */
 void ledger_force_debit(station_t *st, const uint8_t *token, float amount, ship_t *ship) {
-    if (amount <= 0.0f) return;
-    int idx = ledger_find_or_create(st, token);
-    if (idx < 0) return;
-    st->ledger[idx].balance -= amount;
-    if (ship) ship->stat_credits_spent += amount;
+    uint8_t pseudo[32];
+    token_to_pseudo_pubkey(token, pseudo);
+    ledger_force_debit_by_pubkey(st, pseudo, amount, ship);
 }
 
 /* Full-price transfer from station to player ledger — used for
@@ -114,11 +123,95 @@ void ledger_force_debit(station_t *st, const uint8_t *token, float amount, ship_
  * the station's derived pool decreases by the same amount. Caller is
  * responsible for contract bookkeeping. */
 void ledger_earn_from_pool(station_t *st, const uint8_t *token, float amount) {
+    /* Same shape as ledger_earn — full credit, no station cut. */
+    ledger_earn(st, token, amount);
+}
+
+/* ---- PubKey-based ledger API (#257 #479) ---- */
+/* New ledger functions that use player pubkey (32B) instead of session
+ * token (8B). Relationships survive token rotation. */
+
+float ledger_balance_by_pubkey(const station_t *st, const uint8_t pubkey[32]) {
+    if (!pubkey) return 0.0f;
+    for (int i = 0; i < st->ledger_count; i++)
+        if (memcmp(st->ledger[i].player_pubkey, pubkey, 32) == 0)
+            return st->ledger[i].balance;
+    return 0.0f;
+}
+
+void ledger_earn_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount) {
     if (amount <= 0.0f) return;
-    int idx = ledger_find_or_create(st, token);
+    int idx = ledger_find_or_create_by_pubkey(st, pubkey);
     if (idx < 0) return;
     st->ledger[idx].balance += amount;
-    st->ledger[idx].lifetime_supply += amount;
+    st->ledger[idx].lifetime_credits_in += (uint32_t)amount;
+}
+
+bool ledger_spend_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount, ship_t *ship) {
+    if (amount <= 0.0f) return true;
+    int idx = ledger_find_or_create_by_pubkey(st, pubkey);
+    if (idx < 0) return false;
+    if (st->ledger[idx].balance + 0.01f < amount) return false;
+    st->ledger[idx].balance -= amount;
+    if (st->ledger[idx].balance < 0.0f) st->ledger[idx].balance = 0.0f;
+    if (ship) ship->stat_credits_spent += amount;
+    st->ledger[idx].lifetime_credits_out += (uint32_t)amount;
+    return true;
+}
+
+void ledger_force_debit_by_pubkey(station_t *st, const uint8_t pubkey[32], float amount, ship_t *ship) {
+    if (amount <= 0.0f) return;
+    int idx = ledger_find_or_create_by_pubkey(st, pubkey);
+    if (idx < 0) return;
+    st->ledger[idx].balance -= amount;
+    if (ship) ship->stat_credits_spent += amount;
+    st->ledger[idx].lifetime_credits_out += (uint32_t)amount;
+}
+
+/* Smelt-payout credit. Station keeps a 35% cut, supplier gets 65%.
+ * Returns the actual amount credited so callers can emit accurate +N
+ * UI events. Pre-Layer-A.1 anonymous players (zero pubkey) are not
+ * credited; the supplier-cut amount stays on the station's pool. */
+float ledger_credit_supply_amount_by_pubkey(station_t *st, const uint8_t pubkey[32], float ore_value) {
+    if (ore_value <= 0.0f) return 0.0f;
+    int idx = ledger_find_or_create_by_pubkey(st, pubkey);
+    if (idx < 0) return 0.0f;
+    /* Station keeps 35% cut for smelting — supplier gets 65% */
+    float supplier_share = ore_value * 0.65f;
+    if (supplier_share < 0.01f) return 0.0f;
+    /* Pool is derived from -Σ(balance); crediting the supplier here
+     * automatically pushes the station's net issuance more negative. */
+    st->ledger[idx].balance += supplier_share;
+    st->ledger[idx].lifetime_supply += ore_value;
+    st->ledger[idx].lifetime_credits_in += (uint32_t)supplier_share;
+    return supplier_share;
+}
+
+void ledger_credit_supply_by_pubkey(station_t *st, const uint8_t pubkey[32], float ore_value) {
+    (void)ledger_credit_supply_amount_by_pubkey(st, pubkey, ore_value);
+}
+
+void ledger_record_ore_sold(station_t *st, const uint8_t pubkey[32], uint32_t ore_units, uint8_t commodity) {
+    if (!pubkey) return;
+    int idx = ledger_find_or_create_by_pubkey(st, pubkey);
+    if (idx < 0) return;
+    st->ledger[idx].lifetime_ore_units += ore_units;
+    /* Track the top commodity sold to this station */
+    st->ledger[idx].top_commodity = commodity;
+}
+
+void ledger_record_dock(station_t *st, const uint8_t pubkey[32], uint64_t tick) {
+    if (!pubkey) return;
+    int idx = ledger_find_or_create_by_pubkey(st, pubkey);
+    if (idx < 0) return;
+    /* Use total_docks==0 as the first-dock sentinel rather than
+     * first_dock_tick==0: tick 0 is a valid initial-world-state
+     * dock time, not a "no dock yet" marker. */
+    if (st->ledger[idx].total_docks == 0) {
+        st->ledger[idx].first_dock_tick = tick;
+    }
+    st->ledger[idx].last_dock_tick = tick;
+    st->ledger[idx].total_docks++;
 }
 
 void emit_event(world_t *w, sim_event_t ev) {
@@ -606,6 +699,12 @@ static void dock_ship(world_t *w, server_player_t *sp) {
     /* Keep ship at its current position (already in dock range) — just stop it */
     sp->ship.vel = v2(0.0f, 0.0f);
     SIM_LOG("[sim] player %d docked at station %d\n", sp->id, sp->current_station);
+    /* Track dock event for relationship data (#257). w->time is a
+     * float — explicitly cast to the uint64_t tick parameter. */
+    if (sp->current_station >= 0 && sp->pubkey_set) {
+        ledger_record_dock(&w->stations[sp->current_station], sp->pubkey,
+                            (uint64_t)w->time);
+    }
     emit_event(w, (sim_event_t){.type = SIM_EVENT_DOCK, .player_id = sp->id});
 }
 
@@ -1094,7 +1193,12 @@ static bool try_sell_one_unit(world_t *w, server_player_t *sp,
     /* Pool decrement is implicit via ledger_earn; pool is now derived
      * from -Σ(balance), so the credit on the player's ledger naturally
      * shows up as a deeper net-issuance for the station. */
-    ledger_earn(st, sp->session_token, graded_price);
+    if (sp->pubkey_set) {
+        ledger_earn_by_pubkey(st, sp->pubkey, graded_price);
+        ledger_record_ore_sold(st, sp->pubkey, 1, commodity);
+    } else {
+        ledger_earn(st, sp->session_token, graded_price);
+    }
     sp->ship.stat_credits_earned += graded_price;
     SIM_LOG("[sim] player %d sold 1× %s (grade %d) for %.0f cr at %s\n",
             sp->id, commodity_short_name(commodity), (int)actual_grade,
@@ -1253,7 +1357,11 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
          * so crediting the player's ledger naturally pushes the station's
          * net issuance more negative. Conservation is structural. */
         {
-            ledger_earn(st, sp->session_token, payout);
+            if (sp->pubkey_set) {
+                ledger_credit_supply_by_pubkey(st, sp->pubkey, payout);
+            } else {
+                ledger_earn(st, sp->session_token, payout);
+            }
             sp->ship.stat_credits_earned += payout;
             SIM_LOG("[sim] player %d sold cargo for %.0f cr at %s\n", sp->id, payout, st->name);
             /* M7: populate the sell event with station + amount so the
@@ -1349,7 +1457,13 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
     bool is_shipyard = station_has_module(st, MODULE_SHIPYARD);
     float labor_cost = is_shipyard ? 0.0f : (float)hp_apply * LABOR_FEE_PER_HP;
     float cost = ceilf(station_kit_cost + labor_cost);
-    if (cost > 0.0f) ledger_force_debit(st, sp->session_token, cost, &sp->ship);
+    if (cost > 0.0f) {
+        if (sp->pubkey_set) {
+            ledger_force_debit_by_pubkey(st, sp->pubkey, cost, &sp->ship);
+        } else {
+            ledger_force_debit(st, sp->session_token, cost, &sp->ship);
+        }
+    }
 
     sp->ship.hull = fminf(max_hull, sp->ship.hull + (float)hp_apply);
     SIM_LOG("[sim] player %d repaired %d HP (%d cargo + %d station kits, %.0f cr)\n",
@@ -1382,8 +1496,12 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
     int from_station = units_needed - from_cargo;
 
     float credit_cost = (float)from_station * station_sell_price(st, comm);
-    if (credit_cost > 0.0f && !ledger_spend(st, sp->session_token, credit_cost, &sp->ship))
-        return;
+    if (credit_cost > 0.0f) {
+        bool can_afford = sp->pubkey_set ?
+            ledger_spend_by_pubkey(st, sp->pubkey, credit_cost, &sp->ship) :
+            ledger_spend(st, sp->session_token, credit_cost, &sp->ship);
+        if (!can_afford) return;
+    }
 
     if (from_cargo > 0) {
         sp->ship.cargo[comm] -= (float)from_cargo;
@@ -2523,9 +2641,23 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
  * dropped on eviction; since pool is derived from -Σ(balance),
  * removing an entry naturally absorbs its balance back into the
  * station's net issuance. */
-static int ledger_find_or_create(station_t *st, const uint8_t *token) {
+/* Find or create a ledger entry keyed by player pubkey (#257 #479).
+ * Ledger entries are now keyed by Ed25519 pubkey (32B) instead of
+ * session token (8B), so relationships survive token rotation. */
+int ledger_find_or_create_by_pubkey(station_t *st, const uint8_t pubkey[32]) {
+    if (!pubkey) return -1;
+    /* Check if all zeros — anonymous player without registered identity */
+    bool is_zero = true;
+    for (int j = 0; j < 32; j++) {
+        if (pubkey[j] != 0) {
+            is_zero = false;
+            break;
+        }
+    }
+    if (is_zero) return -1;
+
     for (int i = 0; i < st->ledger_count; i++) {
-        if (memcmp(st->ledger[i].player_token, token, 8) == 0) return i;
+        if (memcmp(st->ledger[i].player_pubkey, pubkey, 32) == 0) return i;
     }
     int idx;
     if (st->ledger_count < 16) {
@@ -2542,9 +2674,17 @@ static int ledger_find_or_create(station_t *st, const uint8_t *token) {
         }
         idx = evict;
     }
-    memcpy(st->ledger[idx].player_token, token, 8);
+    memcpy(st->ledger[idx].player_pubkey, pubkey, 32);
     st->ledger[idx].balance = 0.0f;
     st->ledger[idx].lifetime_supply = 0.0f;
+    st->ledger[idx].first_dock_tick = 0;
+    st->ledger[idx].last_dock_tick = 0;
+    st->ledger[idx].total_docks = 0;
+    st->ledger[idx].lifetime_ore_units = 0;
+    st->ledger[idx].lifetime_credits_in = 0;
+    st->ledger[idx].lifetime_credits_out = 0;
+    st->ledger[idx].top_commodity = 0;
+    memset(st->ledger[idx]._pad, 0, 3);
     return idx;
 }
 
@@ -2552,18 +2692,12 @@ static int ledger_find_or_create(station_t *st, const uint8_t *token) {
  * Pays from the station's credit pool — pool may go negative (the
  * station carries the debt). Total system credits are still conserved.
  * Returns the actual amount credited so callers can emit accurate +N
- * events. */
+ * events. Token form runs through the pseudo-pubkey shim so legacy
+ * callers stay working. */
 float ledger_credit_supply_amount(station_t *st, const uint8_t *token, float ore_value) {
-    int idx = ledger_find_or_create(st, token);
-    if (idx < 0) return 0.0f;
-    /* Station keeps 35% cut for smelting — supplier gets 65% */
-    float supplier_share = ore_value * 0.65f;
-    if (supplier_share < 0.01f) return 0.0f;
-    /* Pool is derived from -Σ(balance); crediting the supplier here
-     * automatically pushes the station's net issuance more negative. */
-    st->ledger[idx].balance += supplier_share;
-    st->ledger[idx].lifetime_supply += ore_value;
-    return supplier_share;
+    uint8_t pseudo[32];
+    token_to_pseudo_pubkey(token, pseudo);
+    return ledger_credit_supply_amount_by_pubkey(st, pseudo, ore_value);
 }
 
 void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) {
@@ -2678,7 +2812,10 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                 .order_rejected = { .reason = ORDER_REJECT_SHIPYARD_LOCKED }});
         } else {
             float fee = (float)scaffold_order_fee(kit_type);
-            if (!ledger_spend(st, sp->session_token, fee, &sp->ship)) {
+            bool can_afford = sp->pubkey_set ?
+                ledger_spend_by_pubkey(st, sp->pubkey, fee, &sp->ship) :
+                ledger_spend(st, sp->session_token, fee, &sp->ship);
+            if (!can_afford) {
                 emit_event(w, (sim_event_t){.type = SIM_EVENT_ORDER_REJECTED, .player_id = sp->id,
                     .order_rejected = { .reason = ORDER_REJECT_SHIPYARD_NO_FUNDS }});
             } else {
@@ -5024,9 +5161,15 @@ void player_seed_credits(server_player_t *sp, world_t *w) {
     /* Already established a ledger here? Skip — debt and earnings
      * carry across reconnects and respawns. We probe by entry
      * existence (any nonzero balance, positive or negative) since
-     * fresh entries always start at exactly 0. */
+     * fresh entries always start at exactly 0.
+     *
+     * Token-based path (via pseudo-pubkey shim) so pre-Layer-A.1
+     * anonymous players still get a stable ledger row keyed on their
+     * 8B session token. Layer-A.1 players additionally have a real
+     * 32B pubkey on sp->pubkey; once they register, ledger entries
+     * migrate via the v45→v46 save path (sim_save.c). */
     for (int i = 0; i < w->stations[st].ledger_count; i++) {
-        if (memcmp(w->stations[st].ledger[i].player_token,
+        if (memcmp(w->stations[st].ledger[i].player_pubkey,
                    sp->session_token, 8) == 0) {
             return;
         }

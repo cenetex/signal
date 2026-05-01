@@ -509,12 +509,12 @@ static void sample_trade_picker(input_intent_t *intent) {
             station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
             int idx = -1;
             for (int li = 0; li < mst->ledger_count; li++) {
-                if (memcmp(mst->ledger[li].player_token,
+                if (memcmp(mst->ledger[li].player_pubkey,
                            LOCAL_PLAYER.session_token, 8) == 0) { idx = li; break; }
             }
             if (idx < 0 && mst->ledger_count < 16) {
                 idx = mst->ledger_count++;
-                memcpy(mst->ledger[idx].player_token,
+                memcpy(mst->ledger[idx].player_pubkey,
                        LOCAL_PLAYER.session_token, 8);
                 mst->ledger[idx].balance = 0.0f;
                 mst->ledger[idx].lifetime_supply = 0.0f;

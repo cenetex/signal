@@ -91,7 +91,7 @@ TEST(test_registry_reconnect_with_new_token) {
     setup_registered_player(w, 0, pk, tok1);
     w->players[0].ship.stat_credits_earned = 4242.0f;
     station_t *st = &w->stations[0];
-    memcpy(st->ledger[st->ledger_count].player_token, tok1, 8);
+    memcpy(st->ledger[st->ledger_count].player_pubkey, tok1, 8);
     st->ledger[st->ledger_count].balance = 1234.0f;
     st->ledger[st->ledger_count].lifetime_supply = 0.0f;
     st->ledger_count++;
@@ -110,8 +110,8 @@ TEST(test_registry_reconnect_with_new_token) {
     new_slot->ship.stat_credits_earned = w->players[0].ship.stat_credits_earned;
     /* Migrate ledger entries from T1 → T2. */
     for (int e = 0; e < st->ledger_count; e++) {
-        if (memcmp(st->ledger[e].player_token, tok1, 8) == 0)
-            memcpy(st->ledger[e].player_token, tok2, 8);
+        if (memcmp(st->ledger[e].player_pubkey, tok1, 8) == 0)
+            memcpy(st->ledger[e].player_pubkey, tok2, 8);
     }
     /* Tear down old slot, as the handler does. */
     w->players[0].connected = false;
@@ -140,7 +140,7 @@ TEST(test_registry_reconnect_with_new_token) {
     /* Ledger entry migrated: balance is spendable under the new token. */
     bool found_balance = false;
     for (int e = 0; e < st->ledger_count; e++) {
-        if (memcmp(st->ledger[e].player_token, tok2, 8) == 0 &&
+        if (memcmp(st->ledger[e].player_pubkey, tok2, 8) == 0 &&
             st->ledger[e].balance > 1000.0f) {
             found_balance = true; break;
         }

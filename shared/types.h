@@ -353,11 +353,23 @@ typedef struct {
     char station_slug[32];            /* URL slug for CDN assets (e.g. "prospect") */
     char currency_name[32];           /* station-local currency label, e.g. "helios credits".
                                        * Empty string → HUD falls back to "credits". */
-    /* Economy ledger: per-player supply tracking for passive income */
+    /* Economy ledger: per-player supply tracking for passive income.
+     * Keyed by player_pubkey (Layer A.1/A.2 of #479); legacy session_token
+     * entries are migrated to pubkey on load (see sim_save.c v45+ migration). */
     struct {
-        uint8_t player_token[8];      /* session token of the supplier */
+        uint8_t player_pubkey[32];    /* Ed25519 pubkey of the supplier */
         float balance;                /* spendable station-local credits */
         float lifetime_supply;        /* total ore contributed */
+        /* Station-player relationship data (#257) — tracks dock history,
+         * trade volume, and absence for AI personality generation. */
+        uint64_t first_dock_tick;     /* sim tick of first dock at this station; 0 = never */
+        uint64_t last_dock_tick;      /* sim tick of most recent dock; 0 = never */
+        uint32_t total_docks;
+        uint32_t lifetime_ore_units;  /* sum of ore sold here, all commodities */
+        uint32_t lifetime_credits_in; /* total credits issued by this station to bearer */
+        uint32_t lifetime_credits_out;/* total credits redeemed against this station's ledger */
+        uint8_t top_commodity;        /* most-frequent ore commodity index, for prompt flavor */
+        uint8_t _pad[3];
     } ledger[16];
     int ledger_count;
     /* Shipyard: pending scaffold orders awaiting materials */
