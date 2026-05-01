@@ -778,7 +778,7 @@ static void sample_placement(input_intent_t *intent) {
     sample_b_enter_plan();
 }
 
-/* [ ] keys cycle music tracks. */
+/* [ ] keys cycle music tracks; / toggles pause. */
 static void sample_music(void) {
     if (is_key_pressed(SAPP_KEYCODE_LEFT_BRACKET)) {
         music_prev_track(&g.music);
@@ -789,6 +789,15 @@ static void sample_music(void) {
         music_next_track(&g.music);
         const music_track_info_t *info = music_get_info(g.music.current_track);
         if (info) set_notice("%s", info->title);
+    }
+    if (is_key_pressed(SAPP_KEYCODE_SLASH)) {
+        if (g.music.paused) {
+            music_resume(&g.music);
+            set_notice("MUSIC RESUMED");
+        } else {
+            music_pause(&g.music);
+            set_notice("MUSIC PAUSED");
+        }
     }
 }
 

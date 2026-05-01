@@ -71,8 +71,8 @@ operators are planned, but they are not implemented in this repository today.
 - Scaffold placement: tow a scaffold with the tractor and press `E` to place
   it on a ring slot or found/materialize an outpost.
 - Utility: `H` hail the nearest station in strong signal, `O` toggle mining
-  autopilot, `[` and `]` switch music tracks, `X` self-destruct/reset in
-  singleplayer, `Esc` quits.
+  autopilot, `[` and `]` switch music tracks, `/` toggle music pause, `X`
+  self-destruct/reset in singleplayer, `Esc` quits.
 
 ## Build
 
