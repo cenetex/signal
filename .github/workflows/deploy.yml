@@ -186,34 +186,35 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy
     if: github.ref == 'refs/heads/main'
-    # 60 min: under valgrind, the chain-log + crypto path runs through
-    # every test (sign/verify on every smelt/transfer/trade event).
-    # The 45-min budget overran twice on main even after #525 dropped
-    # `--track-origins=yes`. Sharding is the next step if this also
-    # tightens — see the `--shard=K/N` flag on signal_test for the
-    # hook. For now, bump the budget; valgrind minutes are cheap.
+    # Sharded across 4 workers via signal_test's --shard=K/N flag.
+    # Single-job valgrind kept timing out at 45m and 60m after the
+    # chain-log/crypto path (#497, #500, #519) made every test exercise
+    # Ed25519 sign/verify. Each shard runs ~25% of tests, so 60m gives
+    # comfortable headroom while preserving full leak-check coverage.
     timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
     steps:
       - uses: actions/checkout@v4
       - name: Install valgrind
         run: sudo apt-get update && sudo apt-get install -y valgrind
 
-      - name: Valgrind memcheck
+      - name: Valgrind memcheck (shard ${{ matrix.shard }}/4)
         run: |
           cmake -S . -B build-valgrind -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON
           cmake --build build-valgrind
           ulimit -s 16384
-          # `--track-origins=yes` adds ~30% overhead; the suite outgrew the
-          # 45-min job budget after the chain-log/crypto expansion in #497
-          # / #500 / #519. Drop it — leaks are still detected by
-          # `--leak-check=full`. `--quiet` on signal_test cuts stdout so
-          # valgrind's interleaved logs don't dominate runtime via I/O.
+          # `--track-origins=yes` dropped per #525 — leaks still detected
+          # by `--leak-check=full`. `--quiet` cuts stdout so valgrind's
+          # interleaved logs don't dominate runtime via I/O.
           valgrind --error-exitcode=1 \
             --leak-check=full \
             --show-leak-kinds=definite \
             --errors-for-leak-kinds=definite \
             --main-stacksize=16777216 \
-            ./build-valgrind/signal_test --quiet 2>&1 | tail -30
+            ./build-valgrind/signal_test --quiet --shard=${{ matrix.shard }}/4 2>&1 | tail -30
 
   # CRAP score (complexity * uncovered). Tested-code report GATES the
   # deploy at threshold 25 — the codebase already passes this, so the
