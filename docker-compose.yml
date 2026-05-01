@@ -26,10 +26,16 @@ services:
       # Bind-mount the local wasm bundle so `cmake --build build-web` is
       # picked up by the running container without a `docker compose
       # --build` (which recreates the container and occasionally
-      # corrupts podman's storage layer on macOS). For server-side
-      # changes still rebuild the image; for client-side, just rebuild
-      # the wasm and hard-refresh.
+      # corrupts podman's storage layer on macOS).
       - ./build-web:/app/build-web
+      # Bind-mount a host-built signal_server binary. When present
+      # (built by `scripts/local-build-server.sh`), the entrypoint
+      # launches this one instead of the image-baked binary at
+      # /app/signal_server. Makes server-side iteration as fast as
+      # the wasm side (5-15s incremental) and keeps GIT_HASH in
+      # lock-step with the actual repo HEAD, which is what the HUD's
+      # syncing check depends on.
+      - ./build-server-bin:/app/srv-local
     environment:
       - PORT=9091
       # - SIGNAL_API_TOKEN=devtoken  # set to enable the REST API surface

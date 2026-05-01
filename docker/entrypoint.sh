@@ -18,8 +18,18 @@ cleanup() {
 }
 trap cleanup INT TERM
 
+# Pick the server binary. Prefer the bind-mounted host-built one when
+# present (`scripts/local-build-server.sh` produced it); otherwise fall
+# back to the image-baked binary. This lets local dev iterate on the
+# server in seconds without rebuilding the Docker image.
+SERVER_BIN=/app/signal_server
+if [ -x "/app/srv-local/signal_server" ]; then
+    SERVER_BIN=/app/srv-local/signal_server
+    echo "[entrypoint] using bind-mounted server: $SERVER_BIN" >&2
+fi
+
 # Websocket + sim on :9091.
-PORT=${PORT:-9091} /app/signal_server &
+PORT=${PORT:-9091} "$SERVER_BIN" &
 SERVER_PID=$!
 
 # Static HTTP for the browser bundle on :8080. python's http.server is

@@ -36,9 +36,11 @@ assets/voice/whisper/
 assets/voice/voicebox
 assets/voice/voicebox.exe
 
-# Client-only vendor deps excluded from the server Docker image.
-# The server Dockerfile uses a single COPY vendor/ . via #521 to prevent
-# drift on new server #includes. These client-only dirs are excluded here.
-vendor/sokol/
-vendor/minimp3/
-vendor/fastfilter/
+# NOTE: client-only vendor deps (vendor/sokol, vendor/minimp3,
+# vendor/fastfilter) are NOT excluded here.
+#
+# The top-level Dockerfile's wasm-build stage compiles the full client
+# and needs them; .dockerignore is global so excluding them broke that
+# build (#521 over-corrected). The server image is unaffected because
+# server/Dockerfile's runtime stage only copies the compiled binary —
+# headers in the builder stage are discarded.
