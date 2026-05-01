@@ -30,12 +30,19 @@ set(SIGNAL_CRYPTO_INCLUDE_DIR
 # Vendored TweetNaCl is public-domain and not written with -Wpedantic
 # in mind (uses unsigned long for u32, etc.). Compile with /W0 (MSVC)
 # or -w (GCC/Clang) so it doesn't trip our -Werror at the project level.
+#
+# UBSan flags also need to be loosened: tweetnacl.c does signed left
+# shifts that are UB by the letter of C99 but are deliberate in
+# reference crypto (matching what NaCl, libsodium, Bitcoin all ship).
+# Disable shift + signed-overflow sanitizers for these files only —
+# the project's own code remains under full UBSan scrutiny.
+# `-fno-sanitize=...` is silently accepted in non-sanitized builds.
 if(MSVC)
     set_source_files_properties(${SIGNAL_CRYPTO_SOURCES}
         PROPERTIES COMPILE_OPTIONS "/W0")
 else()
     set_source_files_properties(${SIGNAL_CRYPTO_SOURCES}
-        PROPERTIES COMPILE_OPTIONS "-w")
+        PROPERTIES COMPILE_OPTIONS "-w;-fno-sanitize=shift;-fno-sanitize=signed-integer-overflow")
 endif()
 
 # Always emit compile_commands.json so clangd / editor LSPs can resolve
