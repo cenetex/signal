@@ -489,6 +489,7 @@ bool hash_ingot(commodity_t commodity, mining_grade_t grade,
     out_unit->commodity = (uint8_t)commodity;
     out_unit->grade = (uint8_t)grade;
     out_unit->recipe_id = (uint16_t)RECIPE_SMELT;
+    out_unit->quantity = 1;  /* finished goods always pool-of-one */
     /* origin_station / mined_block default to 0; smelt-side caller fills
      * them in from the refinery context. */
     memcpy(out_unit->parent_merkle, fragment_pub, HASH_BYTES);
@@ -518,6 +519,7 @@ bool hash_product(recipe_id_t recipe_id, const cargo_unit_t *inputs,
     out_unit->commodity = (uint8_t)recipe->output_commodity;
     out_unit->grade = (uint8_t)min_input_grade(inputs, input_count);
     out_unit->recipe_id = (uint16_t)recipe_id;
+    out_unit->quantity = 1;  /* finished goods always pool-of-one */
     memcpy(out_unit->parent_merkle, merkle_root, HASH_BYTES);
     hash_recipe_pub(recipe_id, merkle_root, output_index, out_unit->pub);
     return true;
@@ -556,6 +558,7 @@ bool hash_legacy_migrate_unit(const uint8_t origin[8], commodity_t commodity,
     out_unit->commodity = (uint8_t)commodity;
     out_unit->grade     = (uint8_t)MINING_GRADE_COMMON;
     out_unit->recipe_id = (uint16_t)RECIPE_LEGACY_MIGRATE;
+    out_unit->quantity  = 1;  /* finished goods always pool-of-one */
     /* parent_merkle stays zero — legacy units have no provable parents. */
     sha256_bytes(buf, o, out_unit->pub);
     return true;
@@ -597,6 +600,14 @@ bool manifest_migrate_legacy_inventory(manifest_t *manifest,
         }
     }
     return true;
+}
+
+void manifest_migrate_quantity(manifest_t *manifest) {
+    if (!manifest || !manifest->units) return;
+    for (uint16_t u = 0; u < manifest->count; u++) {
+        if (manifest->units[u].quantity == 0)
+            manifest->units[u].quantity = 1;
+    }
 }
 
 /* ---------------------------------------------------------------- */

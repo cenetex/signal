@@ -93,6 +93,13 @@ bool manifest_migrate_legacy_inventory(manifest_t *manifest,
                                        size_t inventory_count,
                                        const uint8_t origin[8]);
 
+/* Slice 0 of crate unification: pre-v45 saves wrote zero into the
+ * cargo_unit_t._pad byte that's now repurposed as `quantity`. Walk
+ * `manifest` and rewrite quantity == 0 → 1 so legacy-loaded units stay
+ * individually addressable. Idempotent — safe to call on a manifest
+ * that's already been migrated or written by a v45+ producer. */
+void manifest_migrate_quantity(manifest_t *manifest);
+
 /* ---------------------------------------------------------------- */
 /* Manifest-as-truth helpers (PR: kill the float<->manifest drift)   */
 /* ---------------------------------------------------------------- */

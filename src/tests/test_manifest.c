@@ -171,6 +171,75 @@ TEST(test_manifest_migrate_legacy_inventory_synthesizes_entries) {
     manifest_free(&m);
 }
 
+TEST(test_hash_helpers_set_quantity_one) {
+    /* Slice 0 of crate unification: every cargo_unit_t produced by the
+     * three central hash helpers must have quantity = 1 by default —
+     * finished goods are pool-of-one. Raw ore (quantity > 1) lands in a
+     * later slice via dedicated paths. */
+    uint8_t fragment_pub[32] = { 0 };
+    uint8_t origin[8] = { 'T','E','S','T','Q','T','Y','1' };
+    cargo_unit_t ingot = {0}, frame = {0}, legacy = {0};
+
+    fragment_pub[0] = 0xAB;
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_COMMON,
+                      fragment_pub, 0, &ingot));
+    ASSERT_EQ_INT(ingot.quantity, 1);
+
+    cargo_unit_t inputs[2];
+    inputs[0] = ingot;
+    inputs[1] = ingot;  /* RECIPE_FRAME_BASIC: 2× ferrite ingot */
+    ASSERT(hash_product(RECIPE_FRAME_BASIC, inputs, 2, 0, &frame));
+    ASSERT_EQ_INT(frame.quantity, 1);
+
+    ASSERT(hash_legacy_migrate_unit(origin, COMMODITY_FRAME, 0, &legacy));
+    ASSERT_EQ_INT(legacy.quantity, 1);
+}
+
+TEST(test_manifest_migrate_quantity_rewrites_zero_to_one) {
+    /* Pre-v45 saves wrote zero into the byte that's now `quantity`.
+     * Loaders run manifest_migrate_quantity to rewrite 0 → 1. The pass
+     * is idempotent — entries with quantity already > 0 are untouched. */
+    manifest_t m = {0};
+    cargo_unit_t legacy_zero = {0};
+    cargo_unit_t modern_one = {0};
+    cargo_unit_t bulk_seven = {0};
+
+    ASSERT(manifest_init(&m, 4));
+
+    legacy_zero.kind = CARGO_KIND_INGOT;
+    legacy_zero.commodity = COMMODITY_FERRITE_INGOT;
+    legacy_zero.pub[0] = 0x01;
+    legacy_zero.quantity = 0;            /* simulates a v44 load */
+
+    modern_one.kind = CARGO_KIND_FRAME;
+    modern_one.commodity = COMMODITY_FRAME;
+    modern_one.pub[0] = 0x02;
+    modern_one.quantity = 1;             /* untouched by migration */
+
+    bulk_seven.kind = CARGO_KIND_ORE;
+    bulk_seven.commodity = COMMODITY_FERRITE_ORE;
+    bulk_seven.pub[0] = 0x03;
+    bulk_seven.quantity = 7;             /* untouched by migration */
+
+    ASSERT(manifest_push(&m, &legacy_zero));
+    ASSERT(manifest_push(&m, &modern_one));
+    ASSERT(manifest_push(&m, &bulk_seven));
+
+    manifest_migrate_quantity(&m);
+
+    ASSERT_EQ_INT(m.units[0].quantity, 1);  /* zero was rewritten */
+    ASSERT_EQ_INT(m.units[1].quantity, 1);  /* untouched */
+    ASSERT_EQ_INT(m.units[2].quantity, 7);  /* untouched */
+
+    /* Idempotent — second pass must be a no-op. */
+    manifest_migrate_quantity(&m);
+    ASSERT_EQ_INT(m.units[0].quantity, 1);
+    ASSERT_EQ_INT(m.units[1].quantity, 1);
+    ASSERT_EQ_INT(m.units[2].quantity, 7);
+
+    manifest_free(&m);
+}
+
 TEST(test_hash_merkle_root_sorts_and_duplicates_odd_leaf) {
     const uint8_t pubs[3][32] = {
         {
@@ -776,6 +845,8 @@ void register_manifest_tests(void) {
     RUN(test_hash_legacy_migrate_unit_deterministic);
     RUN(test_hash_legacy_migrate_unit_rejects_raw_ore);
     RUN(test_manifest_migrate_legacy_inventory_synthesizes_entries);
+    RUN(test_hash_helpers_set_quantity_one);
+    RUN(test_manifest_migrate_quantity_rewrites_zero_to_one);
     RUN(test_ship_copy_clones_manifest_storage);
     RUN(test_station_copy_clones_manifest_storage);
     RUN(test_hash_merkle_root_sorts_and_duplicates_odd_leaf);

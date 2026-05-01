@@ -123,6 +123,11 @@ typedef enum {
     CARGO_KIND_LASER      = 2,
     CARGO_KIND_TRACTOR    = 3,
     CARGO_KIND_REPAIR_KIT = 4,
+    /* Raw mined fragment, pooled by quantity. Allocated by the kind
+     * but no production path uses it yet — that lands in the next
+     * slice (per-ore migration). Reserving the enum value here keeps
+     * the wire and save formats stable through the slice. */
+    CARGO_KIND_ORE        = 5,
     CARGO_KIND_COUNT
 } cargo_kind_t;
 
@@ -134,7 +139,14 @@ typedef enum {
  * identity for both ingots and finished goods.
  *
  * For non-ingot kinds prefix_class is INGOT_PREFIX_ANONYMOUS, mined_block
- * is 0, and origin_station is the station that crafted the unit. */
+ * is 0, and origin_station is the station that crafted the unit.
+ *
+ * `quantity` is the count of items in this crate. Finished goods (ingots,
+ * frames, lasers, tractors, kits) always have quantity == 1: each unit is
+ * individually addressable and tracked through the chain log. CARGO_KIND_ORE
+ * (raw mined fragments) supports quantity > 1 so an ore crate pools many
+ * fragments under one provenance signature without exploding the manifest.
+ * Cap is u8 (255) — beyond that the caller pushes a new crate. */
 typedef struct {
     uint8_t  kind;              /* cargo_kind_t */
     uint8_t  commodity;         /* commodity_t */
@@ -142,7 +154,10 @@ typedef struct {
     uint8_t  prefix_class;      /* ingot_prefix_t (anonymous for non-ingot kinds) */
     uint16_t recipe_id;         /* recipe_id_t */
     uint8_t  origin_station;    /* refinery/fabricator that produced it */
-    uint8_t  _pad;              /* reserved, zero */
+    uint8_t  quantity;          /* items in this crate. 1 for finished goods,
+                                 * 1..255 for ore. Was _pad pre-v45; legacy
+                                 * saves with quantity == 0 migrate to 1 on
+                                 * load. */
     uint64_t mined_block;       /* chain block id at mint (0 for non-ingot) */
     uint8_t  pub[32];           /* content hash */
     uint8_t  parent_merkle[32]; /* sorted-input merkle root */

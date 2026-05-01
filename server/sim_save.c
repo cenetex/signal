@@ -78,7 +78,16 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 44  /* MODULE_ORE_SILO (= 8) and MODULE_CARGO_BAY (= 10)
+#define SAVE_VERSION 45  /* cargo_unit_t._pad repurposed as quantity (u8).
+                          * v44 saves wrote zero into _pad on every unit;
+                          * loaders rewrite quantity == 0 → 1 so existing
+                          * named units stay individually addressable.
+                          * Foundation for the upcoming raw-ore-as-crate
+                          * migration; no production path emits ore-kind
+                          * units yet. The cargo_unit_t binary size is
+                          * unchanged (still 80 bytes), so PLY7 / chain-log
+                          * payloads stay byte-compatible.
+                          * v44: MODULE_ORE_SILO (= 8) and MODULE_CARGO_BAY (= 10)
                           * dropped; both remapped to MODULE_HOPPER (= 1)
                           * on load. The hopper now serves as the unified
                           * ore-intake-and-storage module. v43 saves load
@@ -384,6 +393,7 @@ static bool read_station_session(FILE *f, station_t *s) {
                 u.prefix_class = src->prefix_class;
                 u.recipe_id = (uint16_t)RECIPE_SMELT;
                 u.origin_station = src->origin_station;
+                u.quantity = 1;
                 u.mined_block = src->mined_block;
                 memcpy(u.pub, src->pubkey, 32);
                 (void)manifest_push(&s->manifest, &u);
@@ -404,6 +414,10 @@ static bool read_station_session(FILE *f, station_t *s) {
             for (uint16_t u = 0; u < manifest_count; u++)
                 READ_FIELD(f, s->manifest.units[u]);
             s->manifest.count = manifest_count;
+            /* v45 repurposed cargo_unit_t._pad as quantity. v44 and earlier
+             * wrote zero there; rewrite to 1 so units stay addressable. */
+            if (g_loaded_save_version < 45)
+                manifest_migrate_quantity(&s->manifest);
         }
     } else {
         /* Slice D: synthesize manifest entries from float inventory for
@@ -1433,6 +1447,7 @@ static void migrate_v4_ship(ship_t *dst, const ship_v4_t *src) {
         u.prefix_class = lg->prefix_class;
         u.recipe_id = (uint16_t)RECIPE_SMELT;
         u.origin_station = lg->origin_station;
+        u.quantity = 1;
         u.mined_block = lg->mined_block;
         memcpy(u.pub, lg->pubkey, 32);
         (void)manifest_push(&dst->manifest, &u);
@@ -1769,6 +1784,10 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
                 sp->ship.manifest.units[u] = cu;
             }
             sp->ship.manifest.count = manifest_count;
+            /* Cargo_unit_t byte 7 was _pad in pre-v45 saves and is now
+             * `quantity`. Idempotent rewrite: 0 → 1 leaves v45+ saves
+             * untouched and migrates the legacy zero to a valid count. */
+            manifest_migrate_quantity(&sp->ship.manifest);
         }
         /* PLY6+ last_signed_nonce. PLY5 saves end here; the nonce stays
          * at zero, which lets the first signed action after the migration
