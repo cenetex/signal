@@ -1571,10 +1571,13 @@ static void render_ui(void) {
                 uint8_t a = (uint8_t)(music_alpha * 255.0f);
                 /* Right-align: measure total width */
                 char label[128];
+                /* `[/]` is the pause/resume hotkey (see sample_music in
+                 * input.c). Old label trailed a literal " M" — vestige
+                 * from when M was the pause key, now removed. */
                 if (g.music.paused)
-                    snprintf(label, sizeof(label), "PAUSED %s  [/] M", track->title);
+                    snprintf(label, sizeof(label), "PAUSED %s  [/]", track->title);
                 else
-                    snprintf(label, sizeof(label), "%s  [/] M", track->title);
+                    snprintf(label, sizeof(label), "%s  [/]", track->title);
                 float tw = (float)strlen(label) * cell;
                 sdtx_pos((screen_w - tw - 12.0f) / cell, row);
                 if (g.music.paused) {
@@ -1584,7 +1587,7 @@ static void render_ui(void) {
                 sdtx_color4b(100, 90, 65, a);
                 sdtx_puts(track->title);
                 sdtx_color4b(60, 55, 45, a);
-                sdtx_puts("  [/] M");
+                sdtx_puts("  [/]");
             }
         }
     }
