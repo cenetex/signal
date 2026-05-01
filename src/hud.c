@@ -1511,10 +1511,10 @@ void draw_hud(void) {
         sdtx_printf("H %d/%d  C %d/%d  ", hull_units, hull_capacity, cargo_units, cargo_capacity);
         sdtx_color3b(sig_r, sig_g, sig_b);
         sdtx_printf("%s %d%%", sig_band, sig_pct);
-        /* Mining-efficiency `M%` indicator removed from the compact bar —
-         * the signal-band label + percent already convey degradation, and
-         * the M was consistently misread as a mute / music marker. The
-         * wide bar still shows MINE/CTRL since it has the room. */
+        if (sig_quality < SIGNAL_BAND_OPERATIONAL) {
+            int mine_pct = (int)lroundf(signal_mining_efficiency(sig_quality) * 100.0f);
+            sdtx_printf(" M%d%%", mine_pct);
+        }
 
         sdtx_pos(top_text_x, top_row_2);
         if (LOCAL_PLAYER.docked) {
