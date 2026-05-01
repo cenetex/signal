@@ -15,6 +15,7 @@
 #include "chain_log.h"  /* signed event emission (#479 C) */
 #include "cargo_receipt_issue.h"  /* portable cargo receipts (#479 D) */
 #include "commodity.h"  /* station_*_price_unit (#prefix-pricing) */
+#include "sha256.h"
 #include <math.h>       /* lroundf */
 
 #include <stdio.h>
@@ -30,6 +31,7 @@
 static world_t world;
 static bool running = true;
 static const char *allowed_origin = NULL;
+static const char *internal_token = NULL;
 
 /* Shared HTTP response headers for API endpoints */
 static char api_headers[256];
@@ -902,6 +904,47 @@ static bool api_auth_ok(struct mg_http_message *hm) {
         && strlen(api_token) == auth->len - 7;
 }
 
+static bool internal_auth_ok(struct mg_http_message *hm) {
+    if (!internal_token || internal_token[0] == '\0') return false;
+    struct mg_str *auth = mg_http_get_header(hm, "X-Internal-Token");
+    if (!auth) return false;
+    return strncmp(auth->buf, internal_token, auth->len) == 0
+        && strlen(internal_token) == auth->len;
+}
+
+/* Validate that a byte sequence is valid UTF-8. */
+static bool is_valid_utf8(const uint8_t *data, size_t len) {
+    size_t i = 0;
+    while (i < len) {
+        uint8_t c = data[i];
+        if (c < 0x80) {
+            /* ASCII */
+            i++;
+        } else if ((c & 0xE0) == 0xC0) {
+            /* 2-byte sequence */
+            if (i + 1 >= len) return false;
+            if ((data[i + 1] & 0xC0) != 0x80) return false;
+            i += 2;
+        } else if ((c & 0xF0) == 0xE0) {
+            /* 3-byte sequence */
+            if (i + 2 >= len) return false;
+            if ((data[i + 1] & 0xC0) != 0x80) return false;
+            if ((data[i + 2] & 0xC0) != 0x80) return false;
+            i += 3;
+        } else if ((c & 0xF8) == 0xF0) {
+            /* 4-byte sequence */
+            if (i + 3 >= len) return false;
+            if ((data[i + 1] & 0xC0) != 0x80) return false;
+            if ((data[i + 2] & 0xC0) != 0x80) return false;
+            if ((data[i + 3] & 0xC0) != 0x80) return false;
+            i += 4;
+        } else {
+            return false;
+        }
+    }
+    return true;
+}
+
 static int parse_station_id(struct mg_http_message *hm) {
     /* Extract station index from /api/station/<id>/... */
     /* URI looks like /api/station/0/state or /api/station/2/command */
@@ -1342,6 +1385,91 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                           (unsigned long long)signed_action_reject_count,
                           (unsigned long long)unsigned_action_count);
 #endif
+        } else if (mg_match(hm->uri, mg_str("/internal/v1/operator-post"), NULL)) {
+            if (!internal_auth_ok(hm)) {
+                mg_http_reply(c, 401, api_headers, "{\"error\":\"unauthorized\"}");
+            } else {
+                /* Parse JSON payload: { station_index, kind, tier, ref_id, text } */
+                double station_idx_val = 0;
+                mg_json_get_num(hm->body, "$.station_index", &station_idx_val);
+                int station_idx = (int)station_idx_val;
+
+                double kind_val = 0;
+                mg_json_get_num(hm->body, "$.kind", &kind_val);
+                uint8_t kind = (uint8_t)kind_val;
+
+                double tier_val = 0;
+                mg_json_get_num(hm->body, "$.tier", &tier_val);
+                uint8_t tier = (uint8_t)tier_val;
+
+                double ref_id_val = 0;
+                mg_json_get_num(hm->body, "$.ref_id", &ref_id_val);
+                uint16_t ref_id = (uint16_t)ref_id_val;
+
+                char *text = mg_json_get_str(hm->body, "$.text");
+
+                /* Validate inputs */
+                if (station_idx < 0 || station_idx >= MAX_STATIONS) {
+                    mg_http_reply(c, 400, api_headers,
+                                  "{\"error\":\"invalid station_index\"}");
+                } else if (!station_exists(&world.stations[station_idx])) {
+                    mg_http_reply(c, 404, api_headers,
+                                  "{\"error\":\"station not found\"}");
+                } else if (!text || text[0] == '\0') {
+                    mg_http_reply(c, 400, api_headers,
+                                  "{\"error\":\"text missing\"}");
+                } else {
+                    size_t text_len = strlen(text);
+                    if (text_len > 256) {
+                        mg_http_reply(c, 400, api_headers,
+                                      "{\"error\":\"text too long\",\"code\":\"text_too_long\"}");
+                    } else if (!is_valid_utf8((const uint8_t *)text, text_len)) {
+                        mg_http_reply(c, 400, api_headers,
+                                      "{\"error\":\"invalid utf-8\"}");
+                    } else {
+                        /* Build the payload: fixed prefix + text */
+                        size_t payload_len = 38 + text_len;
+                        uint8_t *payload = (uint8_t *)malloc(payload_len);
+                        if (!payload) {
+                            mg_http_reply(c, 500, api_headers,
+                                          "{\"error\":\"out of memory\"}");
+                        } else {
+                            /* Pack the fixed-prefix part */
+                            payload[0] = kind;
+                            payload[1] = tier;
+                            payload[2] = (uint8_t)(ref_id & 0xFF);
+                            payload[3] = (uint8_t)((ref_id >> 8) & 0xFF);
+                            /* Compute SHA-256 of text */
+                            sha256_bytes((const uint8_t *)text, text_len, &payload[4]);
+                            /* text_len field (uint16_t little-endian) */
+                            payload[36] = (uint8_t)(text_len & 0xFF);
+                            payload[37] = (uint8_t)((text_len >> 8) & 0xFF);
+                            /* Copy text bytes */
+                            if (text_len > 0) {
+                                memcpy(&payload[38], text, text_len);
+                            }
+
+                            /* Emit the signed event */
+                            uint64_t event_id = chain_log_emit(&world,
+                                                               &world.stations[station_idx],
+                                                               CHAIN_EVT_OPERATOR_POST,
+                                                               payload, (uint16_t)payload_len);
+                            free(payload);
+
+                            if (event_id > 0) {
+                                mg_http_reply(c, 200, api_headers,
+                                              "{\"ok\":true,\"event_id\":%llu,\"prev_hash\":\"%lX\"}",
+                                              (unsigned long long)event_id,
+                                              (unsigned long)(world.stations[station_idx].chain_last_hash[0]));
+                            } else {
+                                mg_http_reply(c, 500, api_headers,
+                                              "{\"error\":\"failed to emit event\"}");
+                            }
+                        }
+                    }
+                    if (text) free(text);
+                }
+            }
         } else {
             mg_http_reply(c, 404, "", "Not found");
         }
@@ -1810,6 +1938,12 @@ static bool read_env_config(char *listen_url, size_t listen_url_size) {
             fprintf(stderr, "[FATAL] SIGNAL_REQUIRE_API_TOKEN set but no token provided\n");
             return false;
         }
+    }
+    internal_token = getenv("SIGNAL_INTERNAL_SHARED_KEY");
+    if (internal_token && internal_token[0] != '\0') {
+        printf("[server] Internal operator-post endpoint enabled (token set)\n");
+    } else {
+        fprintf(stderr, "[WARN] SIGNAL_INTERNAL_SHARED_KEY is unset -- /internal/v1/operator-post will reject all requests\n");
     }
     allowed_origin = getenv("SIGNAL_ALLOWED_ORIGIN");
     if (!allowed_origin) allowed_origin = "*";

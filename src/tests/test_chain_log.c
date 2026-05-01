@@ -12,6 +12,7 @@
 #include "station_authority.h"
 #include "sim_asteroid.h"
 #include "game_sim.h"
+#include "sha256.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -304,6 +305,210 @@ TEST(test_chain_log_rock_destroy_emits_event) {
     chain_test_teardown();
 }
 
+TEST(test_chain_log_operator_post_emit) {
+    chain_test_setup("operator_post_emit");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9100u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    /* Build operator post payload manually */
+    const char *text = "Welcome to Prospect Refinery";
+    size_t text_len = strlen(text);
+    size_t payload_len = 38 + text_len;
+    uint8_t *payload = calloc(1, payload_len);
+    ASSERT(payload != NULL);
+
+    payload[0] = 0;  /* kind=HAIL_MOTD */
+    payload[1] = 0;  /* tier=0 */
+    payload[2] = 1;  /* ref_id=1 (little-endian) */
+    payload[3] = 0;
+    sha256_bytes((const uint8_t *)text, text_len, &payload[4]);
+    payload[36] = (uint8_t)(text_len & 0xFF);
+    payload[37] = (uint8_t)((text_len >> 8) & 0xFF);
+    memcpy(&payload[38], text, text_len);
+
+    uint64_t id = chain_log_emit(w, &w->stations[0], CHAIN_EVT_OPERATOR_POST,
+                                  payload, (uint16_t)payload_len);
+    ASSERT(id == 1);
+    ASSERT_EQ_INT((int)w->stations[0].chain_event_count, 1);
+
+    uint64_t walked = 0;
+    uint8_t last_hash[32];
+    bool ok = chain_log_verify(&w->stations[0], &walked, last_hash);
+    ASSERT(ok);
+    ASSERT_EQ_INT((int)walked, 1);
+    ASSERT(memcmp(last_hash, w->stations[0].chain_last_hash, 32) == 0);
+
+    free(payload);
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_operator_post_all_kinds) {
+    chain_test_setup("operator_post_kinds");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9101u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    const char *texts[] = {
+        "Hail message",
+        "Contract flavor",
+        "Rarity tier"
+    };
+
+    for (int kind = 0; kind < 3; kind++) {
+        const char *text = texts[kind];
+        size_t text_len = strlen(text);
+        size_t payload_len = 38 + text_len;
+        uint8_t *payload = calloc(1, payload_len);
+        ASSERT(payload != NULL);
+
+        payload[0] = (uint8_t)kind;
+        payload[1] = (kind == 2) ? 1 : 0;  /* tier for RARITY_TIER */
+        payload[2] = (uint8_t)(10 + kind);
+        payload[3] = 0;
+        sha256_bytes((const uint8_t *)text, text_len, &payload[4]);
+        payload[36] = (uint8_t)(text_len & 0xFF);
+        payload[37] = (uint8_t)((text_len >> 8) & 0xFF);
+        memcpy(&payload[38], text, text_len);
+
+        uint64_t id = chain_log_emit(w, &w->stations[0], CHAIN_EVT_OPERATOR_POST,
+                                      payload, (uint16_t)payload_len);
+        ASSERT(id == (uint64_t)(kind + 1));
+
+        free(payload);
+    }
+
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(&w->stations[0], &walked, NULL));
+    ASSERT_EQ_INT((int)walked, 3);
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_operator_post_replay_determinism) {
+    chain_test_setup("operator_post_replay");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9102u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    const char *text = "Replay test";
+    size_t text_len = strlen(text);
+    size_t payload_len = 38 + text_len;
+    uint8_t *payload = calloc(1, payload_len);
+    ASSERT(payload != NULL);
+
+    payload[0] = 0;
+    payload[1] = 0;
+    payload[2] = 5;
+    payload[3] = 0;
+    sha256_bytes((const uint8_t *)text, text_len, &payload[4]);
+    payload[36] = (uint8_t)(text_len & 0xFF);
+    payload[37] = (uint8_t)((text_len >> 8) & 0xFF);
+    memcpy(&payload[38], text, text_len);
+
+    uint64_t id = chain_log_emit(w, &w->stations[0], CHAIN_EVT_OPERATOR_POST,
+                                  payload, (uint16_t)payload_len);
+    ASSERT(id == 1);
+
+    uint64_t saved_count = w->stations[0].chain_event_count;
+    uint8_t saved_last_hash[32];
+    memcpy(saved_last_hash, w->stations[0].chain_last_hash, 32);
+
+    free(payload);
+
+    /* Round-trip the world via save/load — this is the actual replay
+     * condition (server restart). We deliberately do NOT call
+     * world_reset on a fresh world: that resets seeded stations'
+     * chain logs (see chain_log_reset in world_reset, game_sim.c) and
+     * would wipe the on-disk log we just wrote. world_save/load
+     * preserves chain_event_count and chain_last_hash; the on-disk
+     * .log file is untouched. */
+    ASSERT(world_save(w, TMP("clog_op_replay.sav")));
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    ASSERT(world_load(loaded, TMP("clog_op_replay.sav")));
+
+    ASSERT_EQ_INT((int)loaded->stations[0].chain_event_count, (int)saved_count);
+    ASSERT(memcmp(loaded->stations[0].chain_last_hash, saved_last_hash, 32) == 0);
+
+    /* Walk the on-disk log via the loaded station — should still see
+     * the one operator-post event. */
+    uint64_t walked = 0;
+    uint8_t loaded_last_hash[32];
+    ASSERT(chain_log_verify(&loaded->stations[0], &walked, loaded_last_hash));
+    ASSERT_EQ_INT((int)walked, 1);
+    ASSERT(memcmp(loaded_last_hash, saved_last_hash, 32) == 0);
+
+    remove(TMP("clog_op_replay.sav"));
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_operator_post_text_tamper) {
+    chain_test_setup("operator_post_tamper");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9104u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    const char *text = "Do not tamper";
+    size_t text_len = strlen(text);
+    size_t payload_len = 38 + text_len;
+    uint8_t *payload = calloc(1, payload_len);
+    ASSERT(payload != NULL);
+
+    payload[0] = 0;
+    payload[1] = 0;
+    payload[2] = 99;
+    payload[3] = 0;
+    sha256_bytes((const uint8_t *)text, text_len, &payload[4]);
+    payload[36] = (uint8_t)(text_len & 0xFF);
+    payload[37] = (uint8_t)((text_len >> 8) & 0xFF);
+    memcpy(&payload[38], text, text_len);
+
+    uint64_t id = chain_log_emit(w, &w->stations[0], CHAIN_EVT_OPERATOR_POST,
+                                  payload, (uint16_t)payload_len);
+    ASSERT(id == 1);
+    free(payload);
+
+    /* Tamper with the text on disk */
+    char path[256];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey, path, sizeof(path)));
+    FILE *f = fopen(path, "r+b");
+    ASSERT(f != NULL);
+    /* Flip a byte in the text part. Entry layout: 184 (header) + 2
+     * (payload_len) + payload_len; payload starts at file offset
+     * 184 + 2; the variable-length text begins 38 bytes into the payload. */
+    fseek(f, 184 + 2 + 38 + 2, SEEK_SET);
+    uint8_t b;
+    ASSERT(fread(&b, 1, 1, f) == 1);
+    fseek(f, -1, SEEK_CUR);
+    b ^= 0xFF;
+    ASSERT(fwrite(&b, 1, 1, f) == 1);
+    fclose(f);
+
+    /* Verification should fail because the payload_hash won't match */
+    uint64_t walked = 0;
+    bool ok = chain_log_verify(&w->stations[0], &walked, NULL);
+    ASSERT(!ok);
+    ASSERT(walked < 1);
+
+    chain_test_teardown();
+}
+
 void register_chain_log_tests(void);
 void register_chain_log_tests(void) {
     TEST_SECTION("\n--- Chain Log (#479 C) ---\n");
@@ -315,4 +520,8 @@ void register_chain_log_tests(void) {
     RUN(test_chain_log_cross_station_independent);
     RUN(test_chain_log_smelt_emits_event);
     RUN(test_chain_log_rock_destroy_emits_event);
+    RUN(test_chain_log_operator_post_emit);
+    RUN(test_chain_log_operator_post_all_kinds);
+    RUN(test_chain_log_operator_post_replay_determinism);
+    RUN(test_chain_log_operator_post_text_tamper);
 }

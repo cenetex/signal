@@ -60,6 +60,7 @@ typedef struct {
     bool          since_set;
     bool          until_set;
     bool          multi_station;
+    bool          dump_text; /* print operator_post text to stdout */
     const char   *registry_path;
     const char   *station_pubkey_b58; /* explicit override */
 } cli_opts_t;
@@ -78,6 +79,7 @@ static void print_usage(FILE *out) {
         "  --strict                    Treat warnings as errors\n"
         "  --since=<epoch>             Only events at or after sim tick\n"
         "  --until=<epoch>             Only events up to sim tick\n"
+        "  --dump-text                 Print decoded text from OPERATOR_POST events\n"
         "  --multi-station             Walk all logs together; check\n"
         "                              cross-station invariants\n"
         "  --registry=<file>           Optional pubkey -> name mapping\n"
@@ -227,6 +229,53 @@ static void pub_set_add(uint8_t (*set)[32], size_t *count, const uint8_t pub[32]
     (*count)++;
 }
 
+/* Dump operator_post text entries from the log if --dump-text was specified. */
+static void dump_operator_post_text(const char *path,
+                                    uint64_t since, bool since_set,
+                                    uint64_t until, bool until_set) {
+    FILE *f = fopen(path, "rb");
+    if (!f) return;
+
+    for (;;) {
+        uint8_t hdr_bytes[CHAIN_EVENT_HEADER_SIZE];
+        size_t got = fread(hdr_bytes, 1, CHAIN_EVENT_HEADER_SIZE, f);
+        if (got != CHAIN_EVENT_HEADER_SIZE) break;
+        uint16_t plen = 0;
+        if (fread(&plen, sizeof(plen), 1, f) != 1) break;
+        uint8_t payload[4096];
+        if (plen > sizeof(payload)) {
+            fclose(f);
+            return;
+        }
+        if (plen > 0 && fread(payload, plen, 1, f) != 1) break;
+
+        /* Extract epoch from header (first 8 bytes) */
+        uint64_t epoch = 0;
+        for (int i = 0; i < 8; i++) epoch |= (uint64_t)hdr_bytes[i] << (i * 8);
+        /* Extract type at offset 16 */
+        uint8_t type = hdr_bytes[16];
+
+        if (since_set && epoch < since) continue;
+        if (until_set && epoch > until) continue;
+
+        if (type == CHAIN_EVT_OPERATOR_POST && plen >= 38) {
+            uint8_t kind = payload[0];
+            uint8_t tier = payload[1];
+            uint16_t ref_id = payload[2] | ((uint16_t)payload[3] << 8);
+            uint16_t text_len = payload[36] | ((uint16_t)payload[37] << 8);
+
+            if (text_len > 0 && 38 + text_len <= (uint16_t)plen) {
+                const uint8_t *text_ptr = &payload[38];
+                printf("[OPERATOR_POST] kind=%u tier=%u ref_id=%u: ",
+                       (unsigned)kind, (unsigned)tier, (unsigned)ref_id);
+                fwrite(text_ptr, 1, text_len, stdout);
+                printf("\n");
+            }
+        }
+    }
+    fclose(f);
+}
+
 /* Walk the log a second time and apply optional invariants. The
  * baked-in checks (signatures, linkage, monotonic) have already been
  * validated; this pass is just for the semantic predicates. */
@@ -347,6 +396,7 @@ static const char *type_name(unsigned t) {
     case CHAIN_EVT_TRADE:        return "TRADE";
     case CHAIN_EVT_LEDGER:       return "LEDGER";
     case CHAIN_EVT_ROCK_DESTROY: return "ROCK_DESTROY";
+    case CHAIN_EVT_OPERATOR_POST: return "OPERATOR_POST";
     default:                     return "UNKNOWN";
     }
 }
@@ -468,6 +518,11 @@ static int verify_one(const char *path, const cli_opts_t *opts) {
                                    inv_fail, sizeof(inv_fail));
     if (!inv_ok && opts->strict) ok = false;
 
+    if (opts->dump_text) {
+        dump_operator_post_text(path, opts->since, opts->since_set,
+                                opts->until, opts->until_set);
+    }
+
     const char *name = registry_name(pubkey);
     if (opts->fmt == REPORT_JSON)
         print_json(path, b58, name, &report, &inv, ok);
@@ -511,6 +566,8 @@ int main(int argc, char **argv) {
             opts.until_set = true;
         } else if (strcmp(a, "--strict") == 0) {
             opts.strict = true;
+        } else if (strcmp(a, "--dump-text") == 0) {
+            opts.dump_text = true;
         } else if (strcmp(a, "--multi-station") == 0) {
             opts.multi_station = true;
         } else if (strncmp(a, "--registry=", 11) == 0) {

@@ -15,6 +15,7 @@
 #include "chain_log.h"
 #include "station_authority.h"
 #include "game_sim.h"
+#include "sha256.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -310,6 +311,50 @@ TEST(test_signal_verify_committed_fixture) {
     ASSERT_EQ_INT((int)r.event_type_counts[CHAIN_EVT_ROCK_DESTROY], 8);
 }
 
+TEST(test_signal_verify_operator_post_all_kinds) {
+    /* Verify that OPERATOR_POST events with all three kind values can be
+     * emitted and verified end-to-end. */
+    sv_setup("operator_post_kinds");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 50100u;
+    world_reset(w);
+    sv_wipe(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    const char *texts[] = { "Hail message", "Contract flavor", "Rarity tier" };
+    for (int kind = 0; kind < 3; kind++) {
+        const char *text = texts[kind];
+        size_t text_len = strlen(text);
+        size_t payload_len = 38 + text_len;
+        uint8_t *payload = (uint8_t *)calloc(1, payload_len);
+        ASSERT(payload != NULL);
+        payload[0] = (uint8_t)kind;
+        payload[1] = (kind == 2) ? 2 : 0;  /* tier for RARITY_TIER = rare */
+        payload[2] = (uint8_t)(10 + kind);
+        payload[3] = 0;
+        sha256_bytes((const uint8_t *)text, text_len, &payload[4]);
+        payload[36] = (uint8_t)(text_len & 0xFF);
+        payload[37] = (uint8_t)((text_len >> 8) & 0xFF);
+        memcpy(&payload[38], text, text_len);
+        ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_OPERATOR_POST,
+                              payload, (uint16_t)payload_len) == (uint64_t)(kind + 1));
+        free(payload);
+    }
+
+    FILE *f = sv_open_log(&w->stations[0]);
+    ASSERT(f != NULL);
+    chain_log_verify_report_t r;
+    bool ok = chain_log_verify_with_pubkey(f, w->stations[0].station_pubkey, &r);
+    fclose(f);
+    ASSERT(ok);
+    ASSERT_EQ_INT((int)r.total_events, 3);
+    ASSERT_EQ_INT((int)r.valid_events, 3);
+    ASSERT_EQ_INT((int)r.event_type_counts[CHAIN_EVT_OPERATOR_POST], 3);
+    sv_teardown();
+}
+
 void register_signal_verify_tests(void);
 void register_signal_verify_tests(void) {
     TEST_SECTION("\n--- Signal Verify (#479 E) ---\n");
@@ -319,5 +364,6 @@ void register_signal_verify_tests(void) {
     RUN(test_signal_verify_mid_log_splice);
     RUN(test_signal_verify_wrong_pubkey_rejected);
     RUN(test_signal_verify_multi_station_independent);
+    RUN(test_signal_verify_operator_post_all_kinds);
     RUN(test_signal_verify_committed_fixture);
 }
