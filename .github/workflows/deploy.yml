@@ -186,7 +186,13 @@ jobs:
     runs-on: ubuntu-latest
     needs: deploy
     if: github.ref == 'refs/heads/main'
-    timeout-minutes: 45
+    # 60 min: under valgrind, the chain-log + crypto path runs through
+    # every test (sign/verify on every smelt/transfer/trade event).
+    # The 45-min budget overran twice on main even after #525 dropped
+    # `--track-origins=yes`. Sharding is the next step if this also
+    # tightens — see the `--shard=K/N` flag on signal_test for the
+    # hook. For now, bump the budget; valgrind minutes are cheap.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@v4
       - name: Install valgrind
