@@ -4937,6 +4937,30 @@ void world_reset(world_t *w) {
     snprintf(w->stations[2].hail_message, sizeof(w->stations[2].hail_message),
              "Helios Works. Advanced smelting. Copper and crystal refined here.");
     w->station_count = 3; /* 3 starter stations */
+
+    /* Emit initial CHAIN_EVT_OPERATOR_POST events for each starter station's hail message.
+     * These create signed records proving which station authored the motd at startup.
+     * The aws-swarm operator later generates `stations/{slug}/motd.json` which will be
+     * signed in updates to this chain. */
+    for (int s = 0; s < 3; s++) {
+        station_t *st = &w->stations[s];
+        int motd_len = (int)strlen(st->hail_message);
+        chain_payload_operator_post_t setup_motd = {
+            .kind = 0,          /* HAIL_MOTD */
+            .tier = 0,          /* unused for motd */
+            .ref_id = 0,        /* motd (not tied to a specific contract/event) */
+            .text_len = (uint16_t)motd_len,
+        };
+        sha256_bytes((const uint8_t *)st->hail_message, motd_len, setup_motd.text_sha256);
+        /* Build payload: fixed-prefix (38 bytes) + text */
+        uint8_t payload[38 + 256];
+        memcpy(payload, &setup_motd, 38);
+        if (motd_len > 0) {
+            memcpy(payload + 38, st->hail_message, motd_len);
+        }
+        (void)chain_log_emit(w, st, CHAIN_EVT_OPERATOR_POST, payload, (uint16_t)(38 + motd_len));
+    }
+
     rebuild_signal_chain(w);
 
     /* --- Initial asteroid field: materialize terrain chunks near stations --- */

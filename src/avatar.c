@@ -152,10 +152,10 @@ void avatar_fetch(int station_index, const char *station_slug) {
 
 #ifdef __EMSCRIPTEN__
     emscripten_async_wget_data(url, entry, on_fetch_success, on_fetch_error);
-    /* Also fetch MOTD text */
+    /* Also fetch MOTD JSON */
     if (!entry->motd_fetched) {
         char motd_url[256];
-        snprintf(motd_url, sizeof(motd_url), "%s/stations/%s/motd.txt", ASSET_CDN, station_slug);
+        snprintf(motd_url, sizeof(motd_url), "%s/stations/%s/motd.json", ASSET_CDN, station_slug);
         emscripten_async_wget_data(motd_url, entry, on_motd_success, on_motd_error);
     }
 #else
@@ -185,6 +185,22 @@ void avatar_fetch(int station_index, const char *station_slug) {
         char letter = station_slug[0] & ~0x20; /* uppercase */
         (void)letter; /* placeholder — just colored square */
         upload_texture(entry, placeholder, 64, 64);
+    }
+
+    /* Also try to load MOTD JSON locally */
+    if (!entry->motd_fetched) {
+        char motd_path[256];
+        snprintf(motd_path, sizeof(motd_path), "assets/stations/%s/motd.json", station_slug);
+        int motd_size = 0;
+        unsigned char *motd_data = load_file_bytes(motd_path, &motd_size);
+        if (motd_data && motd_size > 0) {
+            int len = motd_size < 255 ? motd_size : 255;
+            memcpy(entry->motd, motd_data, (size_t)len);
+            entry->motd[len] = '\0';
+            entry->motd_fetched = true;
+            printf("[avatar] MOTD loaded for '%s': %.40s...\n", entry->slug, entry->motd);
+            free(motd_data);
+        }
     }
 #endif
 }

@@ -1297,13 +1297,14 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
         } else if (mg_match(hm->uri, mg_str("/api/station/*/state"), NULL)) {
             if (!api_rate_check()) {
                 mg_http_reply(c, 429, api_headers, "{\"error\":\"rate limit exceeded\"}");
-            } else
-            if (!api_auth_ok(hm)) {
-                mg_http_reply(c, 401, api_headers, "{\"error\":\"unauthorized\"}");
             } else {
                 int sid = parse_station_id(hm);
                 if (sid < 0) {
                     mg_http_reply(c, 404, api_headers, "{\"error\":\"station not found\"}");
+                } else if (sid >= 3 && !api_auth_ok(hm)) {
+                    /* Seeded stations (0-2) are read-only without auth;
+                     * player-built outposts (3+) require auth. */
+                    mg_http_reply(c, 401, api_headers, "{\"error\":\"unauthorized\"}");
                 } else {
                     handle_station_state(c, sid);
                 }

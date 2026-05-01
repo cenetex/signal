@@ -801,6 +801,7 @@ typedef enum {
     SIM_EVENT_SCAFFOLD_READY,
     SIM_EVENT_ORDER_REJECTED,
     SIM_EVENT_NPC_KILL,
+    SIM_EVENT_OPERATOR_POST,  /* Station operator (persona) authored message: e.g., motd */
     SIM_EVENT_COUNT,        /* sentinel — keep last; sized for dispatch tables */
 } sim_event_type_t;
 
@@ -874,6 +875,9 @@ typedef struct {
          * instead of a generic "rejected." Numbers here are stable
          * across builds — keep additions append-only. */
         struct { uint8_t reason; } order_rejected;
+        /* SIM_EVENT_OPERATOR_POST: station operator authored content (e.g. motd).
+         * text field carries the posted text content. */
+        struct { int station; char text[256]; } operator_post;
     };
 } sim_event_t;
 
