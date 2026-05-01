@@ -1,0 +1,97 @@
+#!/bin/bash
+# Post-commit hook: rebuild docker server + wasm client to match HEAD,
+# THEN run tests in the background.
+#
+# Order matters. Deployment is the path that has to be fast and stable
+# — the user wants to refresh the browser and see new code seconds
+# after committing. Tests are valuable but slow; if they ran first
+# (or interleaved), every commit would either delay the deploy or
+# steal CPU from the build. So the hook runs:
+#
+#   Phase 1 (fast, ~5-10s):  wasm rebuild → server rebuild → restart
+#   Phase 2 (slow, ~30-60s): signal_test --quiet, results to log
+#
+# Both phases are backgrounded + disowned so `git commit` returns
+# immediately. Phase 2 never blocks phase 1 — they run sequentially
+# in the same async pipeline so there's no CPU contention with the
+# build, but a failed build doesn't keep tests from running, and a
+# failed test doesn't restart the container.
+#
+# Logic is inlined here (rather than via `make local-sync`) so a
+# Makefile edit can't silently break the auto-sync flow.
+
+ROOT=$(git rev-parse --show-toplevel)
+cd "$ROOT" || exit 0
+
+LOG=/tmp/signal-local-sync.log
+echo "post-commit: rebuilding wasm + docker (log: $LOG)"
+
+(
+    {
+        date
+        cd "$ROOT"
+        GIT_HASH=$(git rev-parse --short HEAD)
+        echo "[local-sync] target hash: $GIT_HASH"
+
+        # Wasm rebuild — no daemon dependency, always proceeds.
+        if command -v emcmake >/dev/null 2>&1; then
+            emcmake cmake -S . -B build-web -DCMAKE_BUILD_TYPE=Release \
+                -DGIT_HASH="$GIT_HASH" \
+              && cmake --build build-web --parallel \
+              && echo "[local-sync] wasm rebuilt at $GIT_HASH" \
+              || echo "[local-sync] wasm rebuild FAILED"
+        else
+            echo "[local-sync] emcmake not on PATH, skipping wasm"
+        fi
+
+        # Server rebuild via the fast incremental builder image.
+        # Drops the binary into ./build-server-bin/, which docker-compose
+        # bind-mounts as /app/srv-local; the entrypoint prefers it over
+        # the image-baked /app/signal_server. Avoids the slow
+        # `docker compose --build` rebuild path on every commit.
+        if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
+            "$ROOT/scripts/local-build-server.sh" "$GIT_HASH" \
+              && {
+                  # Restart the container so the new binary is picked up
+                  # (entrypoint reads /app/srv-local/signal_server at
+                  # spawn time, not as a hot reload).
+                  if docker compose ps --status running --services 2>/dev/null | grep -q '^signal$'; then
+                      docker compose restart signal >/dev/null 2>&1 \
+                        && echo "[local-sync] server rebuilt + container restarted at $GIT_HASH"
+                  else
+                      GIT_HASH="$GIT_HASH" docker compose up -d signal \
+                        && echo "[local-sync] server rebuilt + container started at $GIT_HASH"
+                  fi
+              } || echo "[local-sync] server rebuild FAILED"
+        else
+            echo "[local-sync] docker not running; skipping server rebuild"
+        fi
+
+        # ---- Phase 2: run tests after deploy is live ----
+        # Browser already has the new code. Now exercise the suite as
+        # an after-the-fact validator — failures are surfaced in the
+        # log, not blocking the deploy. The test build dir is separate
+        # from the local-build-server.sh tree so this doesn't trash
+        # cmake's incremental cache for the runtime container.
+        TEST_LOG=/tmp/signal-local-test.log
+        echo "[local-sync] starting test run (phase 2 — log: $TEST_LOG)"
+        {
+            date
+            echo "[local-test] target hash: $GIT_HASH"
+            if cmake -S . -B build-test -DBUILD_TESTS_ONLY=ON \
+                     -DGIT_HASH="$GIT_HASH" >/dev/null 2>&1 \
+               && cmake --build build-test --parallel >/dev/null 2>&1; then
+                ./build-test/signal_test --quiet
+                rc=$?
+                if [ "$rc" = "0" ]; then
+                    echo "[local-test] PASSED at $GIT_HASH"
+                else
+                    echo "[local-test] FAILED at $GIT_HASH (exit $rc)"
+                fi
+            else
+                echo "[local-test] BUILD FAILED at $GIT_HASH"
+            fi
+        } >"$TEST_LOG" 2>&1
+    } >"$LOG" 2>&1
+) &
+disown

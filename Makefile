@@ -1,6 +1,19 @@
-.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all crap dev dev-logs dev-clean stop deploy clean
+.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all crap dev dev-logs dev-clean stop deploy clean install-hooks
 
 all: build build-web build-server
+
+# install-hooks — symlink the tracked git hooks under scripts/git-hooks/
+# into .git/hooks/ so commits trigger the fast localhost auto-deploy.
+# Symlinks (vs copies) so future edits to scripts/git-hooks/ take effect
+# without re-running this target.
+install-hooks:
+	@root=$$(git rev-parse --show-toplevel); \
+	for f in $$root/scripts/git-hooks/*; do \
+		name=$$(basename $$f); \
+		target=$$root/.git/hooks/$$name; \
+		ln -sf ../../scripts/git-hooks/$$name $$target; \
+		echo "  hook: $$name → scripts/git-hooks/$$name"; \
+	done
 
 # Use Ninja if installed — significantly faster parallel builds and
 # better dependency tracking than Make. Falls back to Make otherwise.
