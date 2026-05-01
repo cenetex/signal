@@ -197,13 +197,17 @@ jobs:
           cmake -S . -B build-valgrind -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON
           cmake --build build-valgrind
           ulimit -s 16384
+          # `--track-origins=yes` adds ~30% overhead; the suite outgrew the
+          # 45-min job budget after the chain-log/crypto expansion in #497
+          # / #500 / #519. Drop it — leaks are still detected by
+          # `--leak-check=full`. `--quiet` on signal_test cuts stdout so
+          # valgrind's interleaved logs don't dominate runtime via I/O.
           valgrind --error-exitcode=1 \
             --leak-check=full \
             --show-leak-kinds=definite \
             --errors-for-leak-kinds=definite \
-            --track-origins=yes \
             --main-stacksize=16777216 \
-            ./build-valgrind/signal_test 2>&1 | tail -30
+            ./build-valgrind/signal_test --quiet 2>&1 | tail -30
 
   # CRAP score (complexity * uncovered). Tested-code report GATES the
   # deploy at threshold 25 — the codebase already passes this, so the
