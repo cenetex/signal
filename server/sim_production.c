@@ -227,8 +227,27 @@ bool sim_can_smelt_ore(const station_t *st, commodity_t ore) {
 /* Refinery production                                                 */
 /* ------------------------------------------------------------------ */
 
-/* Per-furnace smelting: any furnace smelts ore from station inventory into ingots.
- * Rate split across active furnaces to avoid instant consumption. */
+/* Per-furnace smelting from the station's bulk-ore float
+ * (`_inventory_cache[ORE]`).
+ *
+ * SUSPECTED DEAD CODE post-#259. Players no longer carry raw ore in
+ * `ship.cargo[]` (fragments ride in `ship.towed_fragments[]` instead),
+ * NPCs don't deposit raw ore either (they use `npc_ship_t.towed_fragment`
+ * and deliver via the fragment-tow path in `step_furnace_smelting`),
+ * and no other code path appears to populate `_inventory_cache[ORE]`.
+ * The early-skip at the float-zero check (line ~250) means this
+ * function does nothing in normal multiplayer play.
+ *
+ * It is still wired into the per-tick world step (`game_sim.c`) and
+ * still emits EVT_SMELT events with `fragment_pub = 0` (broken lineage)
+ * if ore somehow lands in the float — which is why we keep it for now
+ * rather than ripping it out: removing it would also need to migrate
+ * `last_smelt_commodity` (set at line ~299, drives the dynamic furnace
+ * glow render) onto the fragment-tow path AND retire the
+ * `_inventory_cache[ORE]`-populating tests. That's a follow-up PR.
+ *
+ * See docs/cargo-architecture.md for the larger architectural picture.
+ */
 void sim_step_refinery_production(world_t *w, float dt) {
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
@@ -807,6 +826,33 @@ void step_furnace_smelting(world_t *w, float dt) {
                     u->mined_block = signal_channel_post(w, smelt_station, text, "");
                 }
                 (void)ingot; /* unused now — kept above for the inventory write */
+
+                /* Layer C of #479: emit EVT_SMELT for each newly-minted
+                 * ingot. fragment_pub is populated from the consumed
+                 * asteroid record so the chain log captures real
+                 * provenance — every downstream verifier can walk back
+                 * to the source rock.
+                 *
+                 * The hopper-float smelt path
+                 * (sim_step_refinery_production) also emits EVT_SMELT,
+                 * but with fragment_pub = 0 because there's no source
+                 * fragment on that path. That path is suspected dead
+                 * post-#259 (nothing populates _inventory_cache[ORE]
+                 * any more); see docs/cargo-architecture.md and the
+                 * docstring on sim_step_refinery_production. */
+                if (pushed > 0) {
+                    uint16_t first_new = (uint16_t)((int)st->manifest.count - pushed);
+                    for (uint16_t u = first_new; u < st->manifest.count; u++) {
+                        const cargo_unit_t *unit = &st->manifest.units[u];
+                        chain_payload_smelt_t payload = {0};
+                        memcpy(payload.fragment_pub, a->fragment_pub, 32);
+                        memcpy(payload.ingot_pub, unit->pub, 32);
+                        payload.prefix_class = unit->prefix_class;
+                        payload.mined_block = unit->mined_block;
+                        (void)chain_log_emit(w, st, CHAIN_EVT_SMELT,
+                                             &payload, (uint16_t)sizeof(payload));
+                    }
+                }
             }
 
             clear_asteroid(a);

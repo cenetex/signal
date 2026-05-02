@@ -262,6 +262,107 @@ TEST(test_chain_log_smelt_emits_event) {
     chain_test_teardown();
 }
 
+TEST(test_chain_log_smelt_emits_event_fragment_path) {
+    /* The richer smelt path: spawn a physical fragment between a
+     * furnace and an adjacent module, run the sim until the beam
+     * smelts it, then verify the chain log gained an EVT_SMELT whose
+     * fragment_pub matches the consumed asteroid's record. This is
+     * what the (suspected-dead) hopper-float path could never do —
+     * fragment-attributed lineage on the smelt event itself. */
+    chain_test_setup("smelt_fragment");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9100u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w->npc_ships[i].active = false;
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    /* Find Prospect's furnace + an adjacent-ring module to anchor
+     * the smelt midpoint. */
+    int furnace_idx = -1, silo_idx = -1;
+    for (int m = 0; m < w->stations[0].module_count; m++) {
+        if (w->stations[0].modules[m].type == MODULE_FURNACE) furnace_idx = m;
+        if (w->stations[0].modules[m].type == MODULE_HOPPER) silo_idx = m;
+    }
+    ASSERT(furnace_idx >= 0 && silo_idx >= 0);
+
+    vec2 furnace_pos = module_world_pos_ring(&w->stations[0],
+        w->stations[0].modules[furnace_idx].ring,
+        w->stations[0].modules[furnace_idx].slot);
+    vec2 silo_pos = module_world_pos_ring(&w->stations[0],
+        w->stations[0].modules[silo_idx].ring,
+        w->stations[0].modules[silo_idx].slot);
+    vec2 midpoint = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
+
+    /* Place a fragment exactly on the midpoint. fracture_seed varies
+     * so fragment_pub derivation produces a non-trivial value. */
+    int slot = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) { slot = i; break; }
+    }
+    ASSERT(slot >= 0);
+    asteroid_t *a = &w->asteroids[slot];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->ore = 3.0f;
+    a->max_ore = 3.0f;
+    a->radius = 6.0f;
+    a->fracture_child = true;
+    for (int b = 0; b < 32; b++) a->fracture_seed[b] = (uint8_t)(b * 13 + 7);
+    a->grade = (uint8_t)MINING_GRADE_COMMON;
+    a->pos = midpoint;
+    a->vel = v2(0, 0);
+
+    /* Run sim until the fragment smelts (smelt_progress accumulates
+     * at ~0.5/s; cap at a generous 10 s of sim time). */
+    for (int i = 0; i < 1200 && w->asteroids[slot].active; i++)
+        world_sim_step(w, 1.0f / 120.0f);
+    ASSERT(!w->asteroids[slot].active);
+
+    /* Chain log must have gained EVT_SMELT events. */
+    ASSERT(w->stations[0].chain_event_count >= 1);
+
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(&w->stations[0], &walked, NULL));
+    ASSERT(walked == w->stations[0].chain_event_count);
+
+    /* Walk the on-disk log and confirm at least one EVT_SMELT carries
+     * a non-zero fragment_pub — that's the gap the fragment-tow path
+     * just closed. The hopper-float path emits with fragment_pub = 0,
+     * so any non-zero is positive proof the fragment-tow path fired. */
+    char path[256];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey,
+                              path, sizeof(path)));
+    FILE *fp = fopen(path, "rb");
+    ASSERT(fp != NULL);
+    bool saw_fragment_attributed = false;
+    while (!feof(fp)) {
+        chain_event_header_t hdr;
+        if (fread(&hdr, sizeof(hdr), 1, fp) != 1) break;
+        uint16_t plen = 0;
+        if (fread(&plen, sizeof(plen), 1, fp) != 1) break;
+        if (hdr.type == CHAIN_EVT_SMELT && plen == sizeof(chain_payload_smelt_t)) {
+            chain_payload_smelt_t pl;
+            if (fread(&pl, sizeof(pl), 1, fp) != 1) break;
+            uint8_t zero[32] = {0};
+            if (memcmp(pl.fragment_pub, zero, 32) != 0) {
+                saw_fragment_attributed = true;
+                break;
+            }
+        } else {
+            fseek(fp, plen, SEEK_CUR);
+        }
+    }
+    fclose(fp);
+    ASSERT(saw_fragment_attributed);
+
+    chain_test_teardown();
+}
+
 TEST(test_chain_log_rock_destroy_emits_event) {
     chain_test_setup("rockdestroy");
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -519,6 +620,7 @@ void register_chain_log_tests(void) {
     RUN(test_chain_log_save_load_continuity);
     RUN(test_chain_log_cross_station_independent);
     RUN(test_chain_log_smelt_emits_event);
+    RUN(test_chain_log_smelt_emits_event_fragment_path);
     RUN(test_chain_log_rock_destroy_emits_event);
     RUN(test_chain_log_operator_post_emit);
     RUN(test_chain_log_operator_post_all_kinds);
