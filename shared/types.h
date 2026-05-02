@@ -629,6 +629,19 @@ typedef struct {
      * `npc->ship.*`. Save format unchanged: writers still serialize
      * the duplicates, and load reseeds `npc->ship` from them. */
     ship_t ship;
+    /* (b) of #294 — per-NPC turn/thrust intent, symmetric with the
+     * `sp->input.turn` / `sp->input.thrust` that the player ship-step
+     * consumes. The AI brain writes here each tick (via
+     * npc_set_intent); the apply path reads from here instead of
+     * threading flight_cmd_t through every helper. The full
+     * input_intent_t can't live here directly — it's a server-only
+     * struct in game_sim.h, and shared/types.h has to compile against
+     * the client too — so only the physics-relevant fields are mirrored.
+     * Mining / interact / hail intents stay as discrete state on the
+     * AI brain (target_asteroid, state) until NPC roles get fully
+     * migrated through the same input shape players use. */
+    float intent_turn;
+    float intent_thrust;
     vec2 pos;
     vec2 vel;
     float angle;
