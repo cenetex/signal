@@ -860,15 +860,23 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             ring_cr[r], ring_cg[r], ring_cb[r], base_alpha * 0.7f);
     }
 
-    /* Cross-ring spokes (B): one straight tractor-beam line per
-     * producer → paired hopper. Render-only — no collision impact. */
+    /* Cross-ring spokes — tractor beams from each producer to its
+     * paired hopper. Alpha fades with the producer's activity pulse:
+     * full bright when the beam is actively pulling material, gone
+     * within RING_PULSE_LINGER_SEC of idleness. Render-only — no
+     * collision impact. */
     sgl_begin_lines();
     for (int si = 0; si < geom.spoke_count; si++) {
+        float pulse = geom.spokes[si].pulse;
+        if (pulse <= 0.01f) continue;
         int ra = geom.spokes[si].ring_a;
-        float er = ring_cr[ra] * 0.55f;
-        float eg = ring_cg[ra] * 0.55f;
-        float eb = ring_cb[ra] * 0.55f;
-        sgl_c4f(er, eg, eb, base_alpha * 0.55f);
+        /* Bright spokes scale to the producer color at high alpha;
+         * weak ones fade out cleanly. */
+        float intensity = 0.55f + 0.45f * pulse;
+        float er = ring_cr[ra] * intensity;
+        float eg = ring_cg[ra] * intensity;
+        float eb = ring_cb[ra] * intensity;
+        sgl_c4f(er, eg, eb, base_alpha * 0.55f * pulse);
         sgl_v2f(geom.spokes[si].a.x, geom.spokes[si].a.y);
         sgl_v2f(geom.spokes[si].b.x, geom.spokes[si].b.y);
     }

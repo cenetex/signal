@@ -297,6 +297,9 @@ void sim_step_refinery_production(world_t *w, float dt) {
             if (n_slots > 0 && consume > 0.001f) {
                 int chosen = furnace_slots[next_furnace % n_slots];
                 st->modules[chosen].last_smelt_commodity = (uint8_t)ore;
+                /* Tractor beam fires while the furnace is consuming
+                 * ore — the pulse drives geom + dynamics. */
+                st->module_active_pulse[chosen] = 1.0f;
                 next_furnace++;
             }
             /* Layer C of #479: one EVT_SMELT per ingot minted. The
@@ -407,6 +410,11 @@ void sim_step_station_production(world_t *w, float dt) {
                 }
             }
 
+            /* Tractor beam fires while the fab is actually consuming
+             * input and emitting output. */
+            if (produced > 0.0f) {
+                st->module_active_pulse[m] = 1.0f;
+            }
             /* Mirror produced amount to output buffer for downstream flow */
             if (produced > 0.0f) {
                 float cap = module_buffer_capacity(mt);

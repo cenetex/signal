@@ -59,12 +59,17 @@ typedef struct {
 
 /* Cross-ring spoke: a tractor beam connecting a producer to its
  * paired intake (HOPPER) on an adjacent ring. Purely a render hint —
- * spokes do NOT contribute to collision (ships fly through them). */
+ * spokes do NOT contribute to collision (ships fly through them).
+ * `pulse` ∈ [0, 1] tracks the producer's activity: 1 when the beam
+ * is actively pulling material this tick, decays to 0 over the
+ * production sim's RING_PULSE_LINGER_SEC. Renderer fades alpha by
+ * pulse so an idle producer's beam visibly winks out. */
 typedef struct {
-    vec2 a;       /* producer module world position */
-    vec2 b;       /* paired intake module world position */
-    int  ring_a;  /* producer ring */
-    int  ring_b;  /* intake ring (adjacent to ring_a) */
+    vec2  a;       /* producer module world position */
+    vec2  b;       /* paired intake module world position */
+    int   ring_a;  /* producer ring */
+    int   ring_b;  /* intake ring (adjacent to ring_a) */
+    float pulse;   /* 0 = idle (hidden), 1 = full tractor beam */
 } geom_spoke_t;
 
 typedef struct {
@@ -234,6 +239,7 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
             sp->b = module_world_pos_ring(st, cand[c].ring, cand[c].slot);
             sp->ring_a = prod->ring;
             sp->ring_b = cand[c].ring;
+            sp->pulse  = st->module_active_pulse[m];
             break; /* one spoke per producer — first satisfied neighbor */
         }
     }

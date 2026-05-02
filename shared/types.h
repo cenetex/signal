@@ -345,6 +345,16 @@ typedef struct {
     station_module_t modules[MAX_MODULES_PER_STATION];
     int module_count;
     /* Ring rotation — all rings share one speed, each has a fixed angular offset */
+    /* Per-module activity pulse — set to 1.0 each tick a producer
+     * actually consumes input + emits output, decays linearly toward
+     * 0 over RING_PULSE_LINGER_SEC. The geom emitter reads this to
+     * mark spokes as active (visible tractor beam) and the ring
+     * dynamics scales spring stiffness by it: when a hopper drains
+     * dry and the producer idles, the spoke "turns off" and the
+     * passive ring re-equilibriums. Transient runtime state — not
+     * persisted in saves. */
+    float module_active_pulse[MAX_MODULES_PER_STATION];
+
     int arm_count;                    /* number of active rings with rotation */
     float arm_rotation[MAX_ARMS];     /* per-ring rotation angle (radians) */
     float arm_speed[MAX_ARMS];        /* DRIVER ring nominal angular velocity

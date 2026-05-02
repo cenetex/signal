@@ -4517,6 +4517,10 @@ const signal_channel_msg_t *signal_channel_at(const world_t *w, int i) {
 #define RING_SPOKE_K     2.5f   /* spring constant per spoke (torque/rad) */
 #define RING_DRAG_MU     0.6f   /* angular drag coefficient (torque per rad/s) */
 #define RING_INERTIA_I   1.0f   /* moment of inertia per ring */
+/* How long after a producer's last activity its tractor beam keeps
+ * pulling (and rendering) at full strength. Pulse decays linearly
+ * to 0 over this many seconds. */
+#define RING_PULSE_LINGER_SEC 1.5f
 
 /* Pick the ring this station drives kinematically. Default ring 2;
  * fall back to ring 1 (small outposts that haven't grown to ring 2
@@ -4534,6 +4538,19 @@ static int station_driver_ring_idx(const station_t *st) {
 }
 
 void step_station_ring_dynamics(world_t *w, float dt) {
+    /* Decay all module activity pulses linearly. Production code
+     * sets the pulse to 1.0 each tick a producer actually consumes
+     * input; here we age every module's pulse, so when production
+     * stalls (hopper empty, output full) the spoke goes slack. */
+    float decay = dt / RING_PULSE_LINGER_SEC;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        for (int m = 0; m < st->module_count; m++) {
+            float p = st->module_active_pulse[m] - decay;
+            st->module_active_pulse[m] = (p < 0.0f) ? 0.0f : p;
+        }
+    }
+
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
@@ -4556,6 +4573,13 @@ void step_station_ring_dynamics(world_t *w, float dt) {
                 const station_module_t *prod = &st->modules[m];
                 if (prod->scaffold) continue;
                 if (!module_requires_pair(prod->type)) continue;
+
+                /* Spring strength scales with the producer's activity
+                 * pulse — an idle producer's beam goes slack, the
+                 * passive ring loses that anchor and re-equilibriums
+                 * under whatever beams remain hot. */
+                float pulse = st->module_active_pulse[m];
+                if (pulse <= 0.0f) continue;
 
                 station_slot_pair_t cand[2];
                 int n = station_pair_neighbors((int)prod->ring, (int)prod->slot, cand);
@@ -4591,7 +4615,7 @@ void step_station_ring_dynamics(world_t *w, float dt) {
                 float dr = (ra == ring) ? (wb - wa) : (wa - wb);
                 while (dr > PI_F)  dr -= TWO_PI_F;
                 while (dr < -PI_F) dr += TWO_PI_F;
-                net_torque += RING_SPOKE_K * sinf(dr);
+                net_torque += pulse * RING_SPOKE_K * sinf(dr);
             }
 
             /* Drag opposes absolute angular velocity. The phase lag at
