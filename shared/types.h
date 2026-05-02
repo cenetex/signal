@@ -327,6 +327,12 @@ typedef struct {
     uint32_t id;             /* stable ID, survives array slot changes (0 = unassigned) */
     char name[32];
     vec2 pos;
+    /* Soft repulsion velocity from other stations. Each tick the
+     * jostle stepper sums pairwise pushes when stations crowd into
+     * each other's personal space and integrates this onto pos.
+     * High drag → settles within seconds, no persistent oscillation.
+     * Transient state — not persisted in saves. */
+    vec2 jostle_vel;
     float radius;
     float dock_radius;
     float signal_range;

@@ -590,6 +590,13 @@ void rebuild_signal_chain(world_t *w);
  * silhouette is therefore an emergent property of its spoke graph —
  * adding/removing a producer or hopper visibly retorques the rings. */
 void step_station_ring_dynamics(world_t *w, float dt);
+
+/* Pairwise station jostling — when two stations crowd into each
+ * other's "personal space" (dock_radius × STATION_PERSONAL_SPACE_FACTOR),
+ * a soft repulsion nudges them apart. High drag settles them
+ * within a couple seconds, no permanent oscillation. Slow enough
+ * to feel like "stations finding their place" rather than physics. */
+void step_station_jostle(world_t *w, float dt);
 bool can_place_outpost(const world_t *w, vec2 pos);
 void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type);
 void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int ring, int slot);

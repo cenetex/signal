@@ -4537,6 +4537,65 @@ static int station_driver_ring_idx(const station_t *st) {
     return -1;
 }
 
+/* Station jostle constants. Personal space = (a.dock_radius +
+ * b.dock_radius) × FACTOR; below that, a spring force scaled by
+ * overlap depth pushes them apart. Drag is high so transients die
+ * out within ~1-2 seconds. K stays small so motion reads as "very
+ * slowly settling" — well below STATION_RING_SPEED. */
+#define STATION_PERSONAL_SPACE_FACTOR 1.5f
+#define STATION_JOSTLE_K              4.0f   /* spring stiffness per unit overlap */
+#define STATION_JOSTLE_DRAG           1.5f   /* per-second velocity decay */
+#define STATION_JOSTLE_MAX_SPEED      8.0f   /* cap so things don't go ballistic */
+
+void step_station_jostle(world_t *w, float dt) {
+    /* Two passes:
+     *   1. Sum pairwise repulsion impulses into each station's
+     *      jostle_vel.
+     *   2. Integrate jostle_vel onto pos with drag. */
+    for (int a = 0; a < MAX_STATIONS; a++) {
+        station_t *sa = &w->stations[a];
+        if (!station_is_active(sa)) continue;
+        if (sa->dock_radius <= 0.0f) continue;
+        for (int b = a + 1; b < MAX_STATIONS; b++) {
+            station_t *sb = &w->stations[b];
+            if (!station_is_active(sb)) continue;
+            if (sb->dock_radius <= 0.0f) continue;
+            vec2 delta = v2_sub(sa->pos, sb->pos);
+            float dist_sq = v2_len_sq(delta);
+            float personal = (sa->dock_radius + sb->dock_radius) * STATION_PERSONAL_SPACE_FACTOR;
+            if (dist_sq >= personal * personal) continue;
+            float dist = sqrtf(dist_sq);
+            float overlap = personal - dist;
+            if (dist < 0.001f) {
+                /* Coincident — pick an arbitrary direction so the
+                 * pair doesn't sit at distance 0 forever. */
+                delta = v2(1.0f, 0.0f);
+                dist = 1.0f;
+            }
+            vec2 dir = v2_scale(delta, 1.0f / dist);
+            float impulse = STATION_JOSTLE_K * overlap * dt;
+            sa->jostle_vel = v2_add(sa->jostle_vel, v2_scale(dir, +impulse));
+            sb->jostle_vel = v2_add(sb->jostle_vel, v2_scale(dir, -impulse));
+        }
+    }
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+        /* Drag */
+        float decay = 1.0f - STATION_JOSTLE_DRAG * dt;
+        if (decay < 0.0f) decay = 0.0f;
+        st->jostle_vel = v2_scale(st->jostle_vel, decay);
+        /* Cap absolute speed */
+        float speed_sq = v2_len_sq(st->jostle_vel);
+        if (speed_sq > STATION_JOSTLE_MAX_SPEED * STATION_JOSTLE_MAX_SPEED) {
+            float speed = sqrtf(speed_sq);
+            st->jostle_vel = v2_scale(st->jostle_vel, STATION_JOSTLE_MAX_SPEED / speed);
+        }
+        /* Integrate onto pos */
+        st->pos = v2_add(st->pos, v2_scale(st->jostle_vel, dt));
+    }
+}
+
 void step_station_ring_dynamics(world_t *w, float dt) {
     /* Decay all module activity pulses linearly. Production code
      * sets the pulse to 1.0 each tick a producer actually consumes
@@ -4626,6 +4685,7 @@ void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
     w->time += dt;
     step_station_ring_dynamics(w, dt);
+    step_station_jostle(w, dt);
     sim_step_asteroid_dynamics(w, dt);
     maintain_asteroid_field(w, dt);
     /* Gravity + asteroid collisions at 30Hz (not 120Hz) — O(N²) is expensive */

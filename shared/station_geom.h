@@ -227,11 +227,17 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
     }
 
     /* Spokes — one per (producer × input commodity) pair. For each
-     * required input commodity the producer needs, find the hopper
-     * tagged with that commodity and draw a tractor beam to it.
-     * SHIPYARD emits 3 spokes (frame/laser/tractor); LASER_FAB 2;
-     * single-input producers 1 each. FURNACE-style "any of these"
-     * producers emit one spoke per matching ore hopper that exists. */
+     * required input commodity, find the hopper tagged with that
+     * commodity and draw a tractor beam to it.
+     *
+     * Beam gating: a beam only fires if the producer and hopper are
+     * on the SAME or ADJACENT rings (|Δring| ≤ 1). A beam from
+     * ring 1 to ring 3 would cross ring 2's modules and look like
+     * it's clipping through the station — visually wrong. We still
+     * emit the spoke (so the data is there for downstream logic
+     * that wants to know "this producer is paired with this hopper"
+     * conceptually) but pulse is forced to zero so the renderer +
+     * dynamics treat it as inactive. */
     for (int m = 0; m < st->module_count; m++) {
         const station_module_t *prod = &st->modules[m];
         if (prod->scaffold) continue;
@@ -243,13 +249,20 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
             if (hop < 0) continue;
             if (out->spoke_count >= STATION_GEOM_MAX_SPOKES) break;
             const station_module_t *hm = &st->modules[hop];
+            int dring = (int)prod->ring - (int)hm->ring;
+            if (dring < 0) dring = -dring;
             geom_spoke_t *sp = &out->spokes[out->spoke_count++];
             sp->a = module_world_pos_ring(st, prod->ring, prod->slot);
             sp->b = module_world_pos_ring(st, hm->ring, hm->slot);
             sp->ring_a = prod->ring;
             sp->ring_b = hm->ring;
             sp->commodity = (uint8_t)c;
-            sp->pulse  = st->module_active_pulse[m];
+            /* Force pulse to zero when the beam would have to cross
+             * an intermediate ring — the corresponding hopper is too
+             * far for a clean tractor beam. The producer must wait
+             * for haulers to deliver via the station's pooled
+             * inventory instead. */
+            sp->pulse = (dring <= 1) ? st->module_active_pulse[m] : 0.0f;
         }
     }
 }
