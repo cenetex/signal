@@ -662,18 +662,29 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float dt) {
  * now uses A* paths via npc_steer_with_path. compute_path_avoidance
  * is retained for potential future use by manual-play collision hints.) */
 
-/* Build a transient ship_t view of an NPC so the shared flight_*
- * controllers (which read pos/vel/angle/hull_class off ship_t) can be
- * called against an npc_ship_t. Strictly read-only on the caller side:
- * mutations land on the npc via npc_apply_flight_cmd, not on the view.
- * Goes away in the slice that embeds ship_t inside npc_ship_t. */
-static ship_t ship_view_from_npc(const npc_ship_t *npc) {
-    ship_t v = {0};
-    v.pos = npc->pos;
-    v.vel = npc->vel;
-    v.angle = npc->angle;
-    v.hull_class = npc->hull_class;
-    return v;
+/* (a) of #294 — load the npc duplicate physics fields into the
+ * embedded ship_t before any sim_ship call, and write them back after.
+ * The transient `ship_view_from_npc` is gone: helpers now mutate
+ * `&npc->ship` directly. The duplicates stay live as a facade for the
+ * AI dispatch and the save serializer until slice 5+ migrates every
+ * reader to `npc->ship.*`. Read-only ship_t* views (e.g. for
+ * flight_steer_to / flight_hover_near) also point at npc->ship after
+ * the seed.
+ *
+ * Seed is idempotent and cheap (a 5-field copy), so callers can
+ * sprinkle them defensively without worrying about stale state from a
+ * previous helper that updated only the duplicates. */
+static void npc_ship_seed(npc_ship_t *npc) {
+    npc->ship.pos = npc->pos;
+    npc->ship.vel = npc->vel;
+    npc->ship.angle = npc->angle;
+    npc->ship.hull_class = npc->hull_class;
+}
+
+static void npc_ship_sync(npc_ship_t *npc) {
+    npc->pos = npc->ship.pos;
+    npc->vel = npc->ship.vel;
+    npc->angle = npc->ship.angle;
 }
 
 /* Apply a normalized flight_cmd_t (turn/thrust each in -1..1) to an NPC,
@@ -687,15 +698,14 @@ static ship_t ship_view_from_npc(const npc_ship_t *npc) {
  * 0.6f), scale cmd.thrust before calling — thrust ∈ [-1,1] so this is
  * equivalent to the old accel multiplier. */
 static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
-    ship_t view = ship_view_from_npc(npc);
-    step_ship_rotation(&view, dt, cmd.turn);
+    npc_ship_seed(npc);
+    step_ship_rotation(&npc->ship, dt, cmd.turn);
 
     float thrust_in = (cmd.thrust > 0.0f) ? cmd.thrust : 0.0f;
-    vec2 fwd = ship_forward(view.angle);
-    step_ship_thrust(&view, dt, thrust_in, fwd, /*boost=*/false, 0.0f);
+    vec2 fwd = ship_forward(npc->ship.angle);
+    step_ship_thrust(&npc->ship, dt, thrust_in, fwd, /*boost=*/false, 0.0f);
 
-    npc->angle = view.angle;
-    npc->vel = view.vel;
+    npc_ship_sync(npc);
     npc->thrusting = thrust_in > 0.0f;
 }
 
@@ -708,9 +718,9 @@ static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
  * for tow paths (was hull->accel * scale before). */
 static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
                                 vec2 final_target, float thrust_scale, float dt) {
-    ship_t view = ship_view_from_npc(npc);
+    npc_ship_seed(npc);
     nav_path_t *path = nav_npc_path(npc_idx);
-    flight_cmd_t cmd = flight_steer_to(w, &view, path, final_target,
+    flight_cmd_t cmd = flight_steer_to(w, &npc->ship, path, final_target,
                                         0.0f, 200.0f, dt);
     cmd.thrust *= thrust_scale;
     npc_apply_flight_cmd(npc, cmd, dt);
@@ -725,39 +735,33 @@ static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
  * (mining target selection, willingness to leave the dock); only the
  * physics-side pushback was duplicated. */
 static void npc_apply_physics(npc_ship_t *npc, float dt, const world_t *w) {
-    ship_t view = ship_view_from_npc(npc);
-    float sig = signal_strength_at(w, view.pos);
-    step_ship_motion(&view, dt, w, sig);
-    npc->pos = view.pos;
-    npc->vel = view.vel;
+    npc_ship_seed(npc);
+    float sig = signal_strength_at(w, npc->ship.pos);
+    step_ship_motion(&npc->ship, dt, w, sig);
+    npc_ship_sync(npc);
 }
 
 
-/* NPC circle pushback: route through the shared sim_ship primitive
- * via ship_view + writeback. NPCs take no damage from station
- * geometry today; if that changes, the impact return is available. */
+/* NPC circle pushback: routed through the shared sim_ship primitive
+ * on the embedded ship_t. NPCs take no damage from station geometry
+ * today; if that changes, the impact return is available. */
 static void resolve_npc_circle(npc_ship_t *npc, vec2 center, float radius) {
-    ship_t view = ship_view_from_npc(npc);
-    float impact = resolve_ship_circle_pushback(&view, center, radius);
+    npc_ship_seed(npc);
+    float impact = resolve_ship_circle_pushback(&npc->ship, center, radius);
     if (impact <= 0.0f) return;
-    npc->pos = view.pos;
-    npc->vel = view.vel;
+    npc_ship_sync(npc);
 }
 
-/* NPC corridor collision: route through the shared sim_ship
- * primitive via a stack ship_t view, then write back. Slice 3 will
- * eliminate the view+writeback by moving NPC pos/vel ownership onto
- * a real ship_t in world.ships[]; for now this is a clean adapter
- * over the same physics. Returns true on push so the caller can
- * force a nav replan. */
+/* NPC corridor collision: routed through the shared sim_ship
+ * primitive on the embedded ship_t. Returns true on push so the
+ * caller can force a nav replan. */
 static bool resolve_npc_annular_sector(npc_ship_t *npc, vec2 center,
                                         float ring_r, float angle_a, float arc_delta) {
-    ship_t view = ship_view_from_npc(npc);
-    float impact = resolve_ship_annular_pushback(&view, center, ring_r,
+    npc_ship_seed(npc);
+    float impact = resolve_ship_annular_pushback(&npc->ship, center, ring_r,
                                                   angle_a, arc_delta);
     if (impact <= 0.0f) return false;
-    npc->pos = view.pos;
-    npc->vel = view.vel;
+    npc_ship_sync(npc);
     return true;
 }
 
@@ -835,10 +839,9 @@ static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
          * writeback so the geometric push-out lands even when the
          * contact is separating (impact=0, no damage but ship was
          * still moved out of overlap). */
-        ship_t view = ship_view_from_npc(npc);
-        float impact = resolve_ship_asteroid_pushback(&view, a);
-        npc->pos = view.pos;
-        npc->vel = view.vel;
+        npc_ship_seed(npc);
+        float impact = resolve_ship_asteroid_pushback(&npc->ship, a);
+        npc_ship_sync(npc);
         if (impact <= 0.0f) continue;
 
         float size_mult = a->radius / 30.0f;
@@ -1649,8 +1652,8 @@ void step_npc_ships(world_t *w, float dt) {
              * from the target, not reverse along velocity), and the 4.0
              * extra damping is what holds the standoff distance. */
             {
-                ship_t view = ship_view_from_npc(npc);
-                flight_cmd_t cmd = flight_hover_near(w, &view, a->pos, standoff);
+                npc_ship_seed(npc);
+                flight_cmd_t cmd = flight_hover_near(w, &npc->ship, a->pos, standoff);
                 if (cmd.thrust < 0.0f) {
                     vec2 away = v2_norm(v2_sub(npc->pos, a->pos));
                     npc->vel = v2_add(npc->vel, v2_scale(away, hull->accel * 0.5f * dt));
@@ -1668,9 +1671,9 @@ void step_npc_ships(world_t *w, float dt) {
              * gravity, fracture knockback) used to keep the MINING state
              * and beam-render across the map. If we lost the firing line,
              * fall back to TRAVEL so steering pulls us back into range. */
-            ship_t view = ship_view_from_npc(npc);
+            npc_ship_seed(npc);
             vec2 forward = v2_from_angle(npc->angle);
-            vec2 muzzle = ship_muzzle(npc->pos, npc->angle, &view);
+            vec2 muzzle = ship_muzzle(npc->pos, npc->angle, &npc->ship);
             int mining_level = (int)hull->mining_rate >= 1 ? 99 : 0; /* NPCs ignore tier */
             float sig_eff = signal_mining_efficiency(signal_strength_at(w, npc->pos));
             mining_beam_t mb = sim_mining_beam_step(w, muzzle, forward,

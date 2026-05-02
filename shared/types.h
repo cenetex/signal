@@ -621,6 +621,14 @@ typedef struct {
     npc_role_t role;
     hull_class_t hull_class;
     npc_state_t state;
+    /* (a) of #294 — embedded physics body. Sim_ship primitives mutate
+     * this directly so NPCs and players run through the same code with
+     * the same shape. The duplicate physics fields below (pos, vel,
+     * angle, hull) are kept as a sync'd facade for the AI dispatch and
+     * serializer; slice 5+ removes them once every reader migrates to
+     * `npc->ship.*`. Save format unchanged: writers still serialize
+     * the duplicates, and load reseeds `npc->ship` from them. */
+    ship_t ship;
     vec2 pos;
     vec2 vel;
     float angle;
