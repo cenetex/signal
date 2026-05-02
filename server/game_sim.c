@@ -4914,28 +4914,29 @@ void world_reset(world_t *w) {
      * 3-furnace tier, which the new count rules deliberately gate
      * against ferrite. The ferrite-ingot pipeline stays Prospect's. */
     w->stations[2].base_price[COMMODITY_FERRITE_INGOT]  = 0.0f;
-    /* Ring 1: dock + relay + ferrite furnace. */
+    /* Producers spread across all three rings — fabs no longer all
+     * on ring 3, hoppers no longer all on ring 2. Each producer's
+     * cross-ring pair lands on a hopper that exists specifically to
+     * feed it. */
+    /* Ring 1: dock + relay + ferrite furnace (240°). */
     add_module_at(&w->stations[2], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
     add_module_at(&w->stations[2], MODULE_FURNACE,      1, 2); /* 240° ↔ ring 2 slot 4 */
-    /* Ring 2: one HOPPER per cross-ring producer.
-     *   slot 0 feeds ring-3 FURNACE@0     (0°)
-     *   slot 2 feeds ring-3 LASER_FAB@3   (120°)
-     *   slot 3 feeds ring-3 TRACTOR_FAB@5 (200°)
-     *   slot 4 feeds BOTH ring-1 FURNACE@2 and ring-3 FURNACE@6 (both 240°) */
-    add_module_at(&w->stations[2], MODULE_HOPPER,       2, 0);
-    add_module_at(&w->stations[2], MODULE_HOPPER,       2, 2);
-    add_module_at(&w->stations[2], MODULE_HOPPER,       2, 3);
-    add_module_at(&w->stations[2], MODULE_HOPPER,       2, 4);
-    /* Ring 3: 2 furnaces + 2 fabs. With the ring-1 furnace, Helios
-     * runs at 3 furnaces total → tier-3 smelt rules unlock cuprite +
-     * crystal. Furnaces span min_ring=1, max_ring=3 so the per-ring
-     * tint logic (inner=crystal, outer=cuprite) reads correctly. No
-     * shipyard — that's Kepler's role. */
-    add_module_at(&w->stations[2], MODULE_FURNACE,      3, 0); /* 0°   ↔ ring 2 slot 0 */
-    add_module_at(&w->stations[2], MODULE_LASER_FAB,    3, 3); /* 120° ↔ ring 2 slot 2 */
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  3, 5); /* 200° ↔ ring 2 slot 3 */
-    add_module_at(&w->stations[2], MODULE_FURNACE,      3, 6); /* 240° ↔ ring 2 slot 4 */
+    /* Ring 2: fabs LIVE here, paired with hoppers on ring 3. The
+     * three intervening hoppers feed cross-ring producers on rings
+     * 1 and 3 respectively. */
+    add_module_at(&w->stations[2], MODULE_LASER_FAB,    2, 0); /* 0°   ↔ ring 3 slot 0   */
+    add_module_at(&w->stations[2], MODULE_HOPPER,       2, 1); /* feeds ring-3 FURNACE@1 */
+    add_module_at(&w->stations[2], MODULE_HOPPER,       2, 3); /* feeds ring-3 FURNACE@4 */
+    add_module_at(&w->stations[2], MODULE_HOPPER,       2, 4); /* feeds ring-1 FURNACE@2 */
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  2, 5); /* 300° ↔ ring 3 slot 7   */
+    /* Ring 3: two more furnaces (rings 1+3+3 = 3 total → tier-3
+     * smelt rules unlock cuprite + crystal). Each pairs with the
+     * ring-2 hopper at the closest cross-ring angle. */
+    add_module_at(&w->stations[2], MODULE_HOPPER,       3, 0); /* feeds ring-2 LASER_FAB     */
+    add_module_at(&w->stations[2], MODULE_FURNACE,      3, 1); /* 40°  ↔ ring 2 slot 1       */
+    add_module_at(&w->stations[2], MODULE_FURNACE,      3, 4); /* 160° ↔ ring 2 slot 3       */
+    add_module_at(&w->stations[2], MODULE_HOPPER,       3, 7); /* feeds ring-2 TRACTOR_FAB   */
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[0] = STATION_RING_SPEED;
     w->stations[2].ring_offset[0] = 0.0f;

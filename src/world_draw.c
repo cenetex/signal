@@ -779,7 +779,50 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             for (int i = 0; i < station->module_count; i++) {
                 if (station->modules[i].ring != r) continue;
                 if (station->modules[i].type == MODULE_DOCK) continue;
-                module_color(station->modules[i].type, &colors[count][0], &colors[count][1], &colors[count][2]);
+                /* Furnaces use the dynamic per-ring tint (ferrite red /
+                 * cuprite blue / crystal green / chunks white) — same
+                 * source the furnace glow + body uses, so the corridor
+                 * matches the furnace it borders. Without this every
+                 * furnace contributed static PAL_MODULE_FURNACE green
+                 * and every ring with a furnace turned green. */
+                if (station->modules[i].type == MODULE_FURNACE) {
+                    station_palette_furnace_color(station, r,
+                        &colors[count][0], &colors[count][1], &colors[count][2]);
+                } else if (station->modules[i].type == MODULE_HOPPER) {
+                    /* Hoppers borrow their paired producer's color so
+                     * the corridor + spoke read as one structural unit.
+                     * Walk producers; the first one whose cross-ring
+                     * pair lands on this hopper wins. */
+                    bool inherited = false;
+                    int my_slot = (int)station->modules[i].slot;
+                    for (int j = 0; j < station->module_count && !inherited; j++) {
+                        const station_module_t *prod = &station->modules[j];
+                        if (prod->scaffold) continue;
+                        if (!module_requires_pair(prod->type)) continue;
+                        if (module_pair_intake(prod->type) != MODULE_HOPPER) continue;
+                        station_slot_pair_t cand[2];
+                        int nn = station_pair_neighbors((int)prod->ring, (int)prod->slot, cand);
+                        for (int c = 0; c < nn; c++) {
+                            if (cand[c].ring != r || cand[c].slot != my_slot) continue;
+                            if (prod->type == MODULE_FURNACE) {
+                                station_palette_furnace_color(station, (int)prod->ring,
+                                    &colors[count][0], &colors[count][1], &colors[count][2]);
+                            } else {
+                                module_color(prod->type,
+                                    &colors[count][0], &colors[count][1], &colors[count][2]);
+                            }
+                            inherited = true;
+                            break;
+                        }
+                    }
+                    if (!inherited) {
+                        module_color(MODULE_HOPPER,
+                            &colors[count][0], &colors[count][1], &colors[count][2]);
+                    }
+                } else {
+                    module_color(station->modules[i].type,
+                        &colors[count][0], &colors[count][1], &colors[count][2]);
+                }
                 float cmax = fmaxf(colors[count][0], fmaxf(colors[count][1], colors[count][2]));
                 float cmin = fminf(colors[count][0], fminf(colors[count][1], colors[count][2]));
                 sats[count] = (cmax > 0.001f) ? (cmax - cmin) / cmax : 0.0f;
