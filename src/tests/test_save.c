@@ -478,9 +478,11 @@ TEST(test_world_load_rejects_stale_version) {
 TEST(test_world_save_load_preserves_module_ring_slot) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
-    /* Pair-rule layout: Prospect ring 1 = DOCK + RELAY + FURNACE,
-     * ring 2 = full 6-hopper ring. 9 modules total. */
-    ASSERT_EQ_INT((int)w->stations[0].module_count, 9);
+    /* Cross-ring pair layout: Prospect's furnace lives on ring 1 slot
+     * 2, paired with the lone ring-2 hopper at slot 4 (240° on both
+     * rings). 4 modules total — one hopper per producer, no
+     * decorative ring. */
+    ASSERT_EQ_INT((int)w->stations[0].module_count, 4);
     station_module_t orig = w->stations[0].modules[2]; /* furnace at ring 1 slot 2 */
     ASSERT(orig.type == MODULE_FURNACE);
     ASSERT_EQ_INT((int)orig.ring, 1);
@@ -496,13 +498,12 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     ASSERT_EQ_INT((int)restored.slot, (int)orig.slot);
     ASSERT_EQ_INT((int)restored.scaffold, (int)orig.scaffold);
     ASSERT_EQ_FLOAT(restored.build_progress, orig.build_progress, 0.001f);
-    /* modules[3..8] are the six ring-2 hoppers in slot order. The
-     * furnace's cross-ring pair lands at slot 4 (240° → ring 2 slot 4). */
-    station_module_t paired = loaded->stations[0].modules[3 + 4];
+    /* modules[3] = the paired hopper at ring 2 slot 4. */
+    station_module_t paired = loaded->stations[0].modules[3];
     ASSERT(paired.type == MODULE_HOPPER);
     ASSERT_EQ_INT((int)paired.ring, 2);
     ASSERT_EQ_INT((int)paired.slot, 4);
-    ASSERT_EQ_INT((int)loaded->stations[0].module_count, 9);
+    ASSERT_EQ_INT((int)loaded->stations[0].module_count, 4);
     remove(TMP("test_modules.sav"));
 }
 

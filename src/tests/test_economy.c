@@ -277,10 +277,11 @@ TEST(test_destroy_contract_completes_when_asteroid_gone) {
 TEST(test_supply_contract_uses_correct_material) {
     WORLD_DECL;
     world_reset(&w);
-    /* Build a laser fab on Kepler ring 3 slot 1 — Kepler's full
-     * ring-2 hopper feeder satisfies the cross-ring pair from any
-     * free ring-3 slot. */
-    begin_module_construction_at(&w, &w.stations[1], 1, MODULE_LASER_FAB, 3, 1);
+    /* Plant a hopper on ring 3 slot 6 (240°), then order LASER_FAB at
+     * ring 2 slot 4 (240°). The new minimal Kepler has only the
+     * producer-paired hoppers it needs, so we add one explicitly. */
+    add_module_at(&w.stations[1], MODULE_HOPPER, 3, 6);
+    begin_module_construction_at(&w, &w.stations[1], 1, MODULE_LASER_FAB, 2, 4);
     /* The generated contract should be for cuprite ingots */
     bool found = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {

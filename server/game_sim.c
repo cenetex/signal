@@ -4803,15 +4803,11 @@ void world_reset(world_t *w) {
      * slot. A producer on ring N beams across the ring gap to its
      * paired hopper — the visual signature of every station.
      *
-     * Visual model (post-pair-rule reseed):
-     *   - Ring 2 is the "feeder ring" — fully packed with HOPPERs on
-     *     every slot. This guarantees corridors form a full circle
-     *     (station_geom emits a corridor only between adjacent slot
-     *     indices, so any gap breaks the visual ring).
-     *   - Producers live on ring 1 or ring 3, never ring 2. That
-     *     keeps producer-vs-producer "across the same ring" framings
-     *     out of the silhouette: every producer's visual partner is
-     *     on the next ring inward, not adjacent on its own ring.
+     * Layout principle: one HOPPER per producer, placed at the
+     * cross-ring slot whose canonical angle is closest to the
+     * producer's. Hoppers are NOT decorative — every hopper exists
+     * because some producer paired with it. Producers live on rings
+     * 1 or 3; ring 2 hosts the hoppers that feed them.
      *   - Slot angles (zero rotation):
      *       ring 1 (3): 0°, 120°, 240°
      *       ring 2 (6): 0°, 60°, 120°, 180°, 240°, 300°
@@ -4843,16 +4839,10 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[0], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 1);
     add_module_at(&w->stations[0], MODULE_FURNACE,      1, 2);
-    /* Ring 2: full hopper ring — 6 hoppers, every slot filled, so the
-     * corridor renderer draws a continuous circle. The slot-4 hopper
-     * (240°) is the canonical cross-ring pair for the ring-1 furnace.
-     * Smelt-tier rule: 1 furnace → ferrite-only specialty. */
-    add_module_at(&w->stations[0], MODULE_HOPPER,       2, 0);
-    add_module_at(&w->stations[0], MODULE_HOPPER,       2, 1);
-    add_module_at(&w->stations[0], MODULE_HOPPER,       2, 2);
-    add_module_at(&w->stations[0], MODULE_HOPPER,       2, 3);
+    /* Ring 2: one HOPPER, paired across the gap with the ring-1
+     * furnace at slot 2 (240° → ring 2 slot 4, 240°). One hopper per
+     * producer — no ornamental hopper rings. */
     add_module_at(&w->stations[0], MODULE_HOPPER,       2, 4);
-    add_module_at(&w->stations[0], MODULE_HOPPER,       2, 5);
     w->stations[0].arm_count = 2;
     w->stations[0].arm_speed[0] = STATION_RING_SPEED;
     w->stations[0].ring_offset[0] = 0.0f;
@@ -4883,27 +4873,16 @@ void world_reset(world_t *w) {
     /* Kepler imports laser/tractor modules for its dock kit fab. */
     w->stations[1].base_price[COMMODITY_LASER_MODULE]   = 30.0f;
     w->stations[1].base_price[COMMODITY_TRACTOR_MODULE] = 38.0f;
-    /* Ring 1: spine — dock + relay + repair bay. */
+    /* Ring 1: dock + relay only. Ring-1 slot 2 stays empty. */
     add_module_at(&w->stations[1], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 1, 1);
-    add_module_at(&w->stations[1], MODULE_REPAIR_BAY,   1, 2);
-    /* Ring 2: full hopper ring (6 slots filled). Every ring-3
-     * producer's cross-ring pair lands somewhere on this ring, so
-     * "any hopper on ring 2" satisfies the pair rule. The visual is
-     * a continuous corridor circle. */
-    add_module_at(&w->stations[1], MODULE_HOPPER,       2, 0);
-    add_module_at(&w->stations[1], MODULE_HOPPER,       2, 1);
-    add_module_at(&w->stations[1], MODULE_HOPPER,       2, 2);
-    add_module_at(&w->stations[1], MODULE_HOPPER,       2, 3);
-    add_module_at(&w->stations[1], MODULE_HOPPER,       2, 4);
-    add_module_at(&w->stations[1], MODULE_HOPPER,       2, 5);
-    /* Ring 3: 4 producers evenly spaced (every 2 slots → 0°, 80°,
-     * 160°, 240°). Empty slots between them are intentional — pairs
-     * align cleanly with the ring-2 hopper at the closest angle. */
-    add_module_at(&w->stations[1], MODULE_FRAME_PRESS,  3, 0); /* 0°   ↔ ring 2 slot 0 */
-    add_module_at(&w->stations[1], MODULE_LASER_FAB,    3, 2); /* 80°  ↔ ring 2 slot 1 */
-    add_module_at(&w->stations[1], MODULE_TRACTOR_FAB,  3, 4); /* 160° ↔ ring 2 slot 3 */
-    add_module_at(&w->stations[1], MODULE_SHIPYARD,     3, 6); /* 240° ↔ ring 2 slot 4 */
+    /* Ring 2: one fab + one shipyard. Each pairs cross-ring with a
+     * single hopper on ring 3. */
+    add_module_at(&w->stations[1], MODULE_FRAME_PRESS,  2, 0); /* 0°   ↔ ring 3 slot 0 */
+    add_module_at(&w->stations[1], MODULE_SHIPYARD,     2, 2); /* 120° ↔ ring 3 slot 3 */
+    /* Ring 3: paired hoppers — one per ring-2 producer. */
+    add_module_at(&w->stations[1], MODULE_HOPPER,       3, 0); /* feeds FRAME_PRESS    */
+    add_module_at(&w->stations[1], MODULE_HOPPER,       3, 3); /* feeds SHIPYARD       */
     w->stations[1].arm_count = 3;
     w->stations[1].arm_speed[0] = STATION_RING_SPEED;
     w->stations[1].ring_offset[0] = 0.0f;
@@ -4936,31 +4915,28 @@ void world_reset(world_t *w) {
      * 3-furnace tier, which the new count rules deliberately gate
      * against ferrite. The ferrite-ingot pipeline stays Prospect's. */
     w->stations[2].base_price[COMMODITY_FERRITE_INGOT]  = 0.0f;
-    /* Ring 1: dock + relay + crystal furnace. The ring-1 furnace
-     * pairs across the gap with a ring-2 hopper at slot 4 (240°). */
+    /* Ring 1: dock + relay + ferrite furnace. */
     add_module_at(&w->stations[2], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
     add_module_at(&w->stations[2], MODULE_FURNACE,      1, 2); /* 240° ↔ ring 2 slot 4 */
-    /* Ring 2: full hopper ring (6 slots filled). Continuous corridor.
-     * Slot 4 also feeds the ring-1 furnace; slots 0..5 each feed a
-     * ring-3 producer above. */
+    /* Ring 2: one HOPPER per cross-ring producer.
+     *   slot 0 feeds ring-3 FURNACE@0     (0°)
+     *   slot 2 feeds ring-3 LASER_FAB@3   (120°)
+     *   slot 3 feeds ring-3 TRACTOR_FAB@5 (200°)
+     *   slot 4 feeds BOTH ring-1 FURNACE@2 and ring-3 FURNACE@6 (both 240°) */
     add_module_at(&w->stations[2], MODULE_HOPPER,       2, 0);
-    add_module_at(&w->stations[2], MODULE_HOPPER,       2, 1);
     add_module_at(&w->stations[2], MODULE_HOPPER,       2, 2);
     add_module_at(&w->stations[2], MODULE_HOPPER,       2, 3);
     add_module_at(&w->stations[2], MODULE_HOPPER,       2, 4);
-    add_module_at(&w->stations[2], MODULE_HOPPER,       2, 5);
-    /* Ring 3: 5 producers spanning the upper half of the ring. With
-     * the ring-1 furnace plus two ring-3 furnaces (slots 0, 7),
-     * Helios runs at 3 furnaces total → tier-3 smelt rules unlock
-     * cuprite + crystal. Furnaces span min_ring=1, max_ring=3 so
-     * the per-ring tint logic (inner=crystal, outer=cuprite) reads
-     * correctly. */
+    /* Ring 3: 2 furnaces + 2 fabs. With the ring-1 furnace, Helios
+     * runs at 3 furnaces total → tier-3 smelt rules unlock cuprite +
+     * crystal. Furnaces span min_ring=1, max_ring=3 so the per-ring
+     * tint logic (inner=crystal, outer=cuprite) reads correctly. No
+     * shipyard — that's Kepler's role. */
     add_module_at(&w->stations[2], MODULE_FURNACE,      3, 0); /* 0°   ↔ ring 2 slot 0 */
-    add_module_at(&w->stations[2], MODULE_LASER_FAB,    3, 2); /* 80°  ↔ ring 2 slot 1 */
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  3, 4); /* 160° ↔ ring 2 slot 3 */
-    add_module_at(&w->stations[2], MODULE_SHIPYARD,     3, 6); /* 240° ↔ ring 2 slot 4 */
-    add_module_at(&w->stations[2], MODULE_FURNACE,      3, 7); /* 280° ↔ ring 2 slot 5 */
+    add_module_at(&w->stations[2], MODULE_LASER_FAB,    3, 3); /* 120° ↔ ring 2 slot 2 */
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  3, 5); /* 200° ↔ ring 2 slot 3 */
+    add_module_at(&w->stations[2], MODULE_FURNACE,      3, 6); /* 240° ↔ ring 2 slot 4 */
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[0] = STATION_RING_SPEED;
     w->stations[2].ring_offset[0] = 0.0f;
@@ -5042,13 +5018,12 @@ void world_reset(world_t *w) {
     spawn_npc(w, 0, NPC_ROLE_HAULER);
     spawn_npc(w, 1, NPC_ROLE_HAULER);   /* Kepler -> Helios frames */
     spawn_npc(w, 2, NPC_ROLE_HAULER);   /* Helios -> Prospect repair kits */
-    spawn_npc(w, 1, NPC_ROLE_TOW);      /* Kepler shipyard */
-    spawn_npc(w, 2, NPC_ROLE_TOW);      /* Helios shipyard */
+    spawn_npc(w, 1, NPC_ROLE_TOW);      /* Kepler shipyard (only shipyard) */
 
     /* Precompute station nav meshes now that geometry is finalized. */
     station_rebuild_all_nav(w);
 
-    SIM_LOG("[sim] world reset complete (%d asteroids, 6 NPCs)\n", FIELD_ASTEROID_TARGET);
+    SIM_LOG("[sim] world reset complete (%d asteroids, 7 NPCs)\n", FIELD_ASTEROID_TARGET);
 }
 
 /* ================================================================== */

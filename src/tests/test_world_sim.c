@@ -391,7 +391,9 @@ TEST(test_station_production_dual_writes_frame_manifest) {
 TEST(test_station_production_dual_writes_laser_manifest) {
     WORLD_DECL;
     world_reset(&w);
-    station_t *st = &w.stations[1];
+    /* LASER_FAB lives on Helios (st[2]) under the minimal layout —
+     * Kepler is shipyard + frame press only. */
+    station_t *st = &w.stations[2];
     cargo_unit_t inputs[2] = {{0}};
     cargo_unit_t expected = {0};
     int laser_idx = -1;

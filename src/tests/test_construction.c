@@ -142,13 +142,16 @@ TEST(test_outpost_min_distance) {
 }
 
 TEST(test_module_build_material_types) {
-    /* Verify each module requires the correct ingot type. Kepler's
-     * ring 2 is a full hopper ring — order a new LASER_FAB at any free
-     * ring-3 slot and the cross-ring pair is automatically satisfied. */
+    /* Verify each module requires the correct ingot type. The new
+     * minimal Kepler has only the producers it strictly needs, so
+     * plant a hopper at ring 3 slot 6 (240°) first, then queue
+     * LASER_FAB at ring 2 slot 4 — its cross-ring pair lands on the
+     * new hopper. */
     WORLD_DECL;
     world_reset(&w);
     station_t *st = &w.stations[1];
-    begin_module_construction_at(&w, st, 1, MODULE_LASER_FAB, 3, 1);
+    add_module_at(st, MODULE_HOPPER, 3, 6);
+    begin_module_construction_at(&w, st, 1, MODULE_LASER_FAB, 2, 4);
     bool found_cu = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (w.contracts[k].active && w.contracts[k].commodity == COMMODITY_CUPRITE_INGOT) {
@@ -161,11 +164,12 @@ TEST(test_module_build_material_types) {
 TEST(test_module_construction_and_delivery) {
     WORLD_DECL;
     world_reset(&w);
-    station_t *st = &w.stations[1]; /* Kepler — full ring-2 hopper feeder */
+    station_t *st = &w.stations[1]; /* Kepler */
     int mc_before = st->module_count;
-    int producer_idx = mc_before;
-    begin_module_construction_at(&w, st, 1, MODULE_TRACTOR_FAB, 3, 1);
-    ASSERT_EQ_INT(st->module_count, mc_before + 1);
+    add_module_at(st, MODULE_HOPPER, 3, 6);
+    int producer_idx = mc_before + 1;
+    begin_module_construction_at(&w, st, 1, MODULE_TRACTOR_FAB, 2, 4);
+    ASSERT_EQ_INT(st->module_count, mc_before + 2);
     ASSERT(st->modules[producer_idx].scaffold);
     ASSERT_EQ_INT((int)st->modules[producer_idx].type, (int)MODULE_TRACTOR_FAB);
     /* Deliver the required crystal ingots (goes into station inventory) */
@@ -284,11 +288,13 @@ TEST(test_module_activation_spawns_npc) {
     world_reset(&w);
     int npc_before = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_before++;
-    /* Build a furnace on Kepler (station 1). Kepler's full ring-2
-     * hopper feeder satisfies the cross-ring pair from any free
-     * ring-3 slot. Furnace activation spawns a miner NPC. */
+    /* Build a furnace on Kepler (station 1). Plant a hopper on ring 3
+     * slot 6 (240°) so a furnace at ring 2 slot 4 (240°) — its
+     * cross-ring pair — has its required intake. Furnace activation
+     * spawns a miner NPC. */
     station_t *st = &w.stations[1];
-    begin_module_construction_at(&w, st, 1, MODULE_FURNACE, 3, 1);
+    add_module_at(st, MODULE_HOPPER, 3, 6);
+    begin_module_construction_at(&w, st, 1, MODULE_FURNACE, 2, 4);
     /* Deliver materials to station inventory */
     ship_t ship = {0};
     ship.cargo[COMMODITY_FRAME] = 200.0f;
@@ -509,9 +515,9 @@ TEST(test_238_invisible_wall_repro) {
 
 TEST(test_station_geom_emitter_prospect) {
     /* Verify the geometry emitter produces correct shapes for Prospect.
-     * Pair-rule layout:
+     * Cross-ring pair layout:
      *   Ring 1: DOCK(0) + SIGNAL_RELAY(1) + FURNACE(2)
-     *   Ring 2: full 6-hopper feeder ring
+     *   Ring 2: HOPPER(4)  — paired with the ring-1 furnace
      */
     WORLD_HEAP w = setup_collision_world_heap();
     w->rng = 2037u;
@@ -523,17 +529,13 @@ TEST(test_station_geom_emitter_prospect) {
     /* Core: Prospect has radius 40 */
     ASSERT(geom.has_core == true);
 
-    /* Circles: dock (half-size) + relay + furnace (ring 1) + 6 hoppers
-     * (ring 2) = 9. */
-    ASSERT_EQ_INT(geom.circle_count, 9);
+    /* Circles: dock (half-size) + relay + furnace (ring 1) + hopper
+     * (ring 2) = 4. */
+    ASSERT_EQ_INT(geom.circle_count, 4);
 
-    /* Corridors:
-     *   Ring 1: 3 modules; relay→furnace adjacent + wrap furnace→dock
-     *           emits 2.
-     *   Ring 2: 6 modules at slots 0..5 fully packed; 5 adjacent +
-     *           1 wrap = 6.
-     *   Total = 8. */
-    ASSERT_EQ_INT(geom.corridor_count, 8);
+    /* Corridors: ring 1 = 3 modules wrap into 2. Ring 2 has only
+     * one module so no corridor on ring 2. Total 2. */
+    ASSERT_EQ_INT(geom.corridor_count, 2);
 
     /* Docks: 1 dock on ring 1 */
     ASSERT_EQ_INT(geom.dock_count, 1);
