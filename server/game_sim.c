@@ -4795,7 +4795,22 @@ void world_reset(world_t *w) {
         chain_log_reset(&w->stations[s]);
     }
 
-    /* --- Stations --- */
+    /* --- Stations ---
+     *
+     * Layout follows the cross-ring pair construction rule (see
+     * shared/station_util.h::station_pair_neighbors):
+     *   - Producers (FURNACE / FRAME_PRESS / LASER_FAB / TRACTOR_FAB /
+     *     SHIPYARD) require a HOPPER on an adjacent ring at the
+     *     closest-canonical-angle slot. A producer on ring N at slot S
+     *     beams its tractor to a hopper on ring N±1 across the ring
+     *     gap — the visual signature of every station.
+     *   - Slot angles (zero rotation):
+     *       ring 1 (3): 0°, 120°, 240°
+     *       ring 2 (6): 0°, 60°, 120°, 180°, 240°, 300°
+     *       ring 3 (9): 0°, 40°, 80°, 120°, 160°, 200°, 240°, 280°, 320°
+     *     Producer slots that align exactly across ring boundaries:
+     *       (1,0)↔(2,0)↔(3,0)   (1,1)↔(2,2)↔(3,3)   (1,2)↔(2,4)↔(3,6).
+     */
     w->next_station_id = 1; /* IDs start at 1; 0 = unassigned */
     w->stations[0].id = w->next_station_id++;
     snprintf(w->stations[0].name, sizeof(w->stations[0].name), "%s", "Prospect Refinery");
@@ -4818,18 +4833,14 @@ void world_reset(world_t *w) {
     w->stations[0].base_price[COMMODITY_LASER_MODULE]   = 30.0f;
     w->stations[0].base_price[COMMODITY_TRACTOR_MODULE] = 38.0f;
     w->stations[0].signal_range = 18000.0f;
-    /* Ring 1: dock + relay + furnace (3 slots — STATION_RING_SLOTS[1]=3).
-     * Hopper sits on ring 2 because ring 1 is full; the count-tier
-     * smelt rules require a hopper anywhere on the station, not
-     * specifically adjacent to the furnace. */
-    add_module_at(&w->stations[0], MODULE_DOCK, 1, 0);
+    /* Ring 1: dock + relay + furnace. Furnace at slot 2 (240°) pairs
+     * across the ring gap with the ring-2 hopper at slot 4 (240°). */
+    add_module_at(&w->stations[0], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 1);
-    add_module_at(&w->stations[0], MODULE_FURNACE, 1, 2);
-    /* Ring 2: hopper (smelt unlock + ore intake/buyer). The generic
-     * ORE_SILO was redundant on Prospect's tier-1 layout; the hopper
-     * already serves the "ore intake" role and is mechanically required
-     * to unlock smelting. Helios/Kepler keep their silos as overflow. */
-    add_module_at(&w->stations[0], MODULE_HOPPER, 2, 2);
+    add_module_at(&w->stations[0], MODULE_FURNACE,      1, 2);
+    /* Ring 2: hopper at slot 4 (240°), paired with the ring-1 furnace.
+     * Smelt-tier rule: 1 furnace → ferrite-only specialty. */
+    add_module_at(&w->stations[0], MODULE_HOPPER,       2, 4);
     w->stations[0].arm_count = 2;
     w->stations[0].arm_speed[0] = STATION_RING_SPEED;
     w->stations[0].ring_offset[0] = 0.0f;
@@ -4860,20 +4871,28 @@ void world_reset(world_t *w) {
     /* Kepler imports laser/tractor modules for its dock kit fab. */
     w->stations[1].base_price[COMMODITY_LASER_MODULE]   = 30.0f;
     w->stations[1].base_price[COMMODITY_TRACTOR_MODULE] = 38.0f;
-    /* Ring 1: dock + relay (slot 2 left empty — Kepler doesn't smelt
-     * so the storage that lived here was redundant; ORE_SILO was
-     * dropped along with MODULE_CARGO_BAY in the silo cleanup). */
-    add_module_at(&w->stations[1], MODULE_DOCK, 1, 0);
+    /* Ring 1: dock + relay + repair bay. */
+    add_module_at(&w->stations[1], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 1, 1);
-    /* Ring 2 (industrial): fabrication + services */
-    add_module_at(&w->stations[1], MODULE_FRAME_PRESS, 2, 0);
-    add_module_at(&w->stations[1], MODULE_LASER_FAB, 2, 1);
-    add_module_at(&w->stations[1], MODULE_TRACTOR_FAB, 2, 2);
-    add_module_at(&w->stations[1], MODULE_SHIPYARD, 2, 3);
-    w->stations[1].arm_count = 2;
+    add_module_at(&w->stations[1], MODULE_REPAIR_BAY,   1, 2);
+    /* Ring 2: producers at canonical-aligned slots (0°, 120°, 240°)
+     * plus a shipyard at slot 1 (60°). Hoppers live on ring 3 across
+     * the ring gap. */
+    add_module_at(&w->stations[1], MODULE_FRAME_PRESS,  2, 0); /* 0°   ↔ ring 3 slot 0   */
+    add_module_at(&w->stations[1], MODULE_SHIPYARD,     2, 1); /* 60°  ↔ ring 3 slot 1   */
+    add_module_at(&w->stations[1], MODULE_LASER_FAB,    2, 2); /* 120° ↔ ring 3 slot 3   */
+    add_module_at(&w->stations[1], MODULE_TRACTOR_FAB,  2, 4); /* 240° ↔ ring 3 slot 6   */
+    /* Ring 3: paired hoppers — one per ring-2 producer. The
+     * cross-ring beam from each producer terminates at the slot below. */
+    add_module_at(&w->stations[1], MODULE_HOPPER,       3, 0); /* pair for FRAME_PRESS  */
+    add_module_at(&w->stations[1], MODULE_HOPPER,       3, 1); /* pair for SHIPYARD     */
+    add_module_at(&w->stations[1], MODULE_HOPPER,       3, 3); /* pair for LASER_FAB    */
+    add_module_at(&w->stations[1], MODULE_HOPPER,       3, 6); /* pair for TRACTOR_FAB  */
+    w->stations[1].arm_count = 3;
     w->stations[1].arm_speed[0] = STATION_RING_SPEED;
     w->stations[1].ring_offset[0] = 0.0f;
     w->stations[1].ring_offset[1] = 2.40f;  /* ~137° offset */
+    w->stations[1].ring_offset[2] = 1.05f;  /* ~60° offset */
     rebuild_station_services(&w->stations[1]);
     snprintf(w->stations[1].station_slug, sizeof(w->stations[1].station_slug), "kepler");
     snprintf(w->stations[1].currency_name, sizeof(w->stations[1].currency_name), "kepler bonds");
@@ -4901,31 +4920,29 @@ void world_reset(world_t *w) {
      * 3-furnace tier, which the new count rules deliberately gate
      * against ferrite. The ferrite-ingot pipeline stays Prospect's. */
     w->stations[2].base_price[COMMODITY_FERRITE_INGOT]  = 0.0f;
-    /* Three furnaces — one per ring (per-ring cap is hard-coded into
-     * the construction validator). At count=3 the smelt rules unlock
-     * cuprite + crystal and explicitly block ferrite, so Helios reads
-     * as the high-tier specialist station. Hopper sits on ring 2
-     * (ring 1 only has 3 slots and is already full with dock/relay
-     * /furnace). */
-    /* Ring 1 (3 slots): dock + relay + crystal furnace. The ring-1
-     * furnace is paired with a hopper on ring 2 at slot 5 (≈300°,
-     * roughly opposite the ring-1 furnace at slot 2 ≈240°). */
-    add_module_at(&w->stations[2], MODULE_DOCK, 1, 0);
+    /* Ring 1: dock + relay + furnace at slot 2 (240°). The ring-1
+     * furnace pairs with a ring-2 hopper at slot 4 (240°, exact). */
+    add_module_at(&w->stations[2], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
-    add_module_at(&w->stations[2], MODULE_FURNACE, 1, 2);
-    /* Ring 2 (6 slots): chunks-feeder furnace at slot 0 paired with
-     * hopper at slot 3 (true 180° opposite). Fabs at 1+2; second
-     * hopper at slot 5 services the ring-1 furnace from across. */
-    add_module_at(&w->stations[2], MODULE_FURNACE, 2, 0);
-    add_module_at(&w->stations[2], MODULE_LASER_FAB, 2, 1);
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB, 2, 2);
-    add_module_at(&w->stations[2], MODULE_HOPPER, 2, 3);
-    add_module_at(&w->stations[2], MODULE_HOPPER, 2, 5);
-    /* Ring 3 (9 slots): cuprite furnace at slot 0 paired with hopper
-     * at slot 4 (≈160°, the closest opposite slot in a 9-slot ring). */
-    add_module_at(&w->stations[2], MODULE_FURNACE, 3, 0);
-    add_module_at(&w->stations[2], MODULE_SHIPYARD, 3, 2);
-    add_module_at(&w->stations[2], MODULE_HOPPER, 3, 4);
+    add_module_at(&w->stations[2], MODULE_FURNACE,      1, 2); /* 240° ↔ ring 2 slot 4 */
+    /* Ring 2: producers fan out across the ring, paired with ring-3
+     * hoppers (and one inward-facing hopper for the ring-1 furnace). */
+    add_module_at(&w->stations[2], MODULE_FURNACE,      2, 0); /* 0°   ↔ ring 3 slot 0   */
+    add_module_at(&w->stations[2], MODULE_LASER_FAB,    2, 2); /* 120° ↔ ring 3 slot 3   */
+    add_module_at(&w->stations[2], MODULE_SHIPYARD,     2, 3); /* 180° ↔ ring 3 slot 4   */
+    add_module_at(&w->stations[2], MODULE_HOPPER,       2, 4); /* feeds ring-1 furnace  */
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  2, 5); /* 300° ↔ ring 3 slot 7   */
+    /* Ring 3: paired hoppers for each ring-2 producer, plus a third
+     * furnace at slot 6 (240°, paired across to the ring-2 hopper at
+     * slot 4 that already feeds ring-1's furnace — one hopper feeds
+     * two cross-ring producers when their angles align). Three
+     * furnaces total (one per ring) → tier-3 smelt rules unlock
+     * cuprite + crystal. */
+    add_module_at(&w->stations[2], MODULE_HOPPER,       3, 0); /* pair for ring-2 FURNACE       */
+    add_module_at(&w->stations[2], MODULE_HOPPER,       3, 3); /* pair for ring-2 LASER_FAB     */
+    add_module_at(&w->stations[2], MODULE_HOPPER,       3, 4); /* pair for ring-2 SHIPYARD      */
+    add_module_at(&w->stations[2], MODULE_FURNACE,      3, 6); /* 240° ↔ ring 2 slot 4 (HOPPER) */
+    add_module_at(&w->stations[2], MODULE_HOPPER,       3, 7); /* pair for ring-2 TRACTOR_FAB   */
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[0] = STATION_RING_SPEED;
     w->stations[2].ring_offset[0] = 0.0f;

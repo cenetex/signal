@@ -142,12 +142,15 @@ TEST(test_outpost_min_distance) {
 }
 
 TEST(test_module_build_material_types) {
-    /* Verify each module requires the correct ingot type */
+    /* Verify each module requires the correct ingot type. Use Kepler
+     * (st[1]) which has free pair geometry: drop a HOPPER on ring 3
+     * slot 4 (160°), then order LASER_FAB at ring 2 slot 3 (180°) —
+     * the closest cross-ring pair lands exactly on the new hopper. */
     WORLD_DECL;
     world_reset(&w);
-    station_t *st = &w.stations[0];
-    /* Laser fab should generate a cuprite ingot contract */
-    begin_module_construction(&w, st, 0, MODULE_LASER_FAB);
+    station_t *st = &w.stations[1];
+    add_module_at(st, MODULE_HOPPER, 3, 4);
+    begin_module_construction_at(&w, st, 1, MODULE_LASER_FAB, 2, 3);
     bool found_cu = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (w.contracts[k].active && w.contracts[k].commodity == COMMODITY_CUPRITE_INGOT) {
@@ -160,22 +163,27 @@ TEST(test_module_build_material_types) {
 TEST(test_module_construction_and_delivery) {
     WORLD_DECL;
     world_reset(&w);
-    station_t *st = &w.stations[0];
+    station_t *st = &w.stations[1]; /* Kepler — see pair-rule note above */
     int mc_before = st->module_count;
-    begin_module_construction(&w, st, 0, MODULE_TRACTOR_FAB);
-    ASSERT_EQ_INT(st->module_count, mc_before + 1);
-    ASSERT(st->modules[mc_before].scaffold);
+    add_module_at(st, MODULE_HOPPER, 3, 4);
+    int hopper_idx = mc_before;
+    int producer_idx = mc_before + 1;
+    begin_module_construction_at(&w, st, 1, MODULE_TRACTOR_FAB, 2, 3);
+    ASSERT_EQ_INT(st->module_count, mc_before + 2);
+    ASSERT(st->modules[producer_idx].scaffold);
+    ASSERT_EQ_INT((int)st->modules[producer_idx].type, (int)MODULE_TRACTOR_FAB);
     /* Deliver the required crystal ingots (goes into station inventory) */
     ship_t ship = {0};
     ship.cargo[COMMODITY_CRYSTAL_INGOT] = 200.0f;
-    step_module_delivery(&w, st, 0, &ship, COMMODITY_COUNT);
+    step_module_delivery(&w, st, 1, &ship, COMMODITY_COUNT);
     ASSERT(ship.cargo[COMMODITY_CRYSTAL_INGOT] < 200.0f);  /* consumed from ship */
-    ASSERT_EQ_FLOAT(st->modules[mc_before].build_progress, 1.0f, 0.01f); /* fully supplied */
-    ASSERT(st->modules[mc_before].scaffold);  /* still building — not instant */
+    ASSERT_EQ_FLOAT(st->modules[producer_idx].build_progress, 1.0f, 0.01f); /* fully supplied */
+    ASSERT(st->modules[producer_idx].scaffold);  /* still building — not instant */
     /* Run sim for 15 seconds (MODULE_BUILD_TIME = 10s + margin) */
     for (int i = 0; i < (int)(15.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
-    ASSERT(!st->modules[mc_before].scaffold);  /* activated after build time */
+    ASSERT(!st->modules[producer_idx].scaffold);  /* activated after build time */
+    ASSERT_EQ_INT((int)st->modules[hopper_idx].type, (int)MODULE_HOPPER);
 }
 
 /* Regression: a frame delivered into a scaffold via service_sell must
@@ -281,9 +289,13 @@ TEST(test_module_activation_spawns_npc) {
     world_reset(&w);
     int npc_before = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_before++;
-    /* Build a furnace on station 1 (Kepler Yard) */
+    /* Build a furnace on Kepler (station 1). Drop a HOPPER on ring 3
+     * slot 4 (160°) so a furnace at ring 2 slot 3 (180°) — the closest
+     * cross-ring pair — has its intake. Furnace activation spawns a
+     * miner NPC. */
     station_t *st = &w.stations[1];
-    begin_module_construction(&w, st, 1, MODULE_FURNACE);
+    add_module_at(st, MODULE_HOPPER, 3, 4);
+    begin_module_construction_at(&w, st, 1, MODULE_FURNACE, 2, 3);
     /* Deliver materials to station inventory */
     ship_t ship = {0};
     ship.cargo[COMMODITY_FRAME] = 200.0f;
@@ -503,9 +515,11 @@ TEST(test_238_invisible_wall_repro) {
 }
 
 TEST(test_station_geom_emitter_prospect) {
-    /* Verify the geometry emitter produces correct shapes for Prospect (station 0).
-     * Prospect ring 1: dock(slot 0), relay(slot 1), furnace(slot 2)
-     * Prospect ring 2: ore_silo(slot 3) */
+    /* Verify the geometry emitter produces correct shapes for Prospect.
+     * Cross-ring pair layout:
+     *   Ring 1: DOCK(0) + SIGNAL_RELAY(1) + FURNACE(2)
+     *   Ring 2: HOPPER(4)  — pairs cross-ring with the ring-1 furnace
+     */
     WORLD_HEAP w = setup_collision_world_heap();
     w->rng = 2037u;
     world_reset(w);
@@ -517,16 +531,15 @@ TEST(test_station_geom_emitter_prospect) {
     ASSERT(geom.has_core == true);
 
     /* Circles: dock (half-size) + relay + furnace (ring 1) + hopper
-     * (ring 2) = 4. The redundant ore_silo on ring 2 was dropped —
-     * the hopper alone is the ore-buyer / smelt-unlock at Prospect. */
-    ASSERT(geom.circle_count == 4);
+     * (ring 2) = 4. */
+    ASSERT_EQ_INT(geom.circle_count, 4);
 
-    /* Corridors: ring 1 = 3 modules wrap into 2. Ring 2 now has only
-     * 1 module (hopper) so no corridor on ring 2. Total 2. */
-    ASSERT(geom.corridor_count == 2);
+    /* Corridors: ring 1 = 3 modules wrap into 2. Ring 2 has only one
+     * module so no corridor on ring 2. Total 2. */
+    ASSERT_EQ_INT(geom.corridor_count, 2);
 
     /* Docks: 1 dock on ring 1 */
-    ASSERT(geom.dock_count == 1);
+    ASSERT_EQ_INT(geom.dock_count, 1);
 }
 
 TEST(test_scaffold_spawn) {
@@ -1477,6 +1490,91 @@ void register_construction_placed_scaffold_tests(void) {
     RUN(test_construction_contract_checks_scaffold_not_threshold);
 }
 
+TEST(test_pair_neighbors_geometry) {
+    /* Cross-ring pair geometry — slot angles map across adjacent rings.
+     * Producer on ring N at slot S → closest-angle slot on ring N±1.
+     * Tie-break: lower slot index wins. */
+    station_slot_pair_t out[2];
+
+    /* Ring 1 has only ring 2 as a neighbor. */
+    int n = station_pair_neighbors(1, 0, out);
+    ASSERT_EQ_INT(n, 1);
+    ASSERT_EQ_INT(out[0].ring, 2);
+    ASSERT_EQ_INT(out[0].slot, 0);  /* 0° → ring-2 slot 0 (0°) */
+
+    n = station_pair_neighbors(1, 2, out);
+    ASSERT_EQ_INT(n, 1);
+    ASSERT_EQ_INT(out[0].ring, 2);
+    ASSERT_EQ_INT(out[0].slot, 4);  /* 240° → ring-2 slot 4 (240°) */
+
+    /* Ring 3 has only ring 2 as a neighbor. */
+    n = station_pair_neighbors(3, 6, out);
+    ASSERT_EQ_INT(n, 1);
+    ASSERT_EQ_INT(out[0].ring, 2);
+    ASSERT_EQ_INT(out[0].slot, 4);  /* 240° → ring-2 slot 4 (240°) */
+
+    /* Ring 2 has both ring 1 and ring 3 as neighbors. Outer first. */
+    n = station_pair_neighbors(2, 0, out);
+    ASSERT_EQ_INT(n, 2);
+    ASSERT_EQ_INT(out[0].ring, 3);
+    ASSERT_EQ_INT(out[0].slot, 0);
+    ASSERT_EQ_INT(out[1].ring, 1);
+    ASSERT_EQ_INT(out[1].slot, 0);
+
+    /* Tie-break: ring-2 slot 1 (60°) is equidistant from ring-1 slot 0
+     * (0°, 60° off) and slot 1 (120°, 60° off) — strict-less-than picks
+     * the lower index, slot 0. Ring-3 slot 1 (40°, 20° off) and slot 2
+     * (80°, 20° off) tie — picks slot 1. */
+    n = station_pair_neighbors(2, 1, out);
+    ASSERT_EQ_INT(n, 2);
+    ASSERT_EQ_INT(out[0].ring, 3);
+    ASSERT_EQ_INT(out[0].slot, 1);
+    ASSERT_EQ_INT(out[1].ring, 1);
+    ASSERT_EQ_INT(out[1].slot, 0);
+}
+
+TEST(test_pair_satisfied_cross_ring) {
+    /* Producer-pair validation: a producer is satisfied when any of
+     * its cross-ring neighbor slots holds the required intake. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    station_t *st = &w->stations[1]; /* Kepler — has ring 3 with free slots */
+
+    /* Ring 2 slot 3 (180°) closest pair on ring 3 is slot 4 (160°,
+     * 20° off, lower index than slot 5). Without HOPPER@3:4 the slot
+     * is not paired. */
+    ASSERT(!station_pair_satisfied(st, 2, 3, MODULE_LASER_FAB));
+
+    /* Add the hopper, validation flips to true. */
+    add_module_at(st, MODULE_HOPPER, 3, 4);
+    ASSERT(station_pair_satisfied(st, 2, 3, MODULE_LASER_FAB));
+
+    /* Modules without a pair-intake requirement are always satisfied. */
+    ASSERT(station_pair_satisfied(st, 2, 3, MODULE_DOCK));
+    ASSERT(station_pair_satisfied(st, 1, 0, MODULE_SIGNAL_RELAY));
+}
+
+TEST(test_seed_stations_pair_complete) {
+    /* Every producer on every starter station must have its cross-ring
+     * pair-intake already satisfied at boot. This is the construction
+     * regression catch — drift in either game_sim seeding or the pair
+     * helper trips this. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    for (int s = 0; s < 3; s++) {
+        const station_t *st = &w->stations[s];
+        for (int m = 0; m < st->module_count; m++) {
+            const station_module_t *mod = &st->modules[m];
+            if (mod->scaffold) continue;
+            if (!module_requires_pair(mod->type)) continue;
+            ASSERT(station_pair_satisfied(st, mod->ring, mod->slot, mod->type));
+        }
+    }
+}
+
 void register_construction_module_schema_tests(void) {
     TEST_SECTION("\nModule schema (#280):\n");
     RUN(test_module_build_state_lifecycle);
@@ -1489,5 +1587,8 @@ void register_construction_module_schema_tests(void) {
     RUN(test_module_flow_production_fills_buffers);
     RUN(test_module_flow_does_not_overflow_capacity);
     RUN(test_module_flow_storage_feeds_consumer);
+    RUN(test_pair_neighbors_geometry);
+    RUN(test_pair_satisfied_cross_ring);
+    RUN(test_seed_stations_pair_complete);
 }
 

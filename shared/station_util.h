@@ -55,4 +55,44 @@ bool          station_has_ring(const station_t *st, int ring);
 bool          ring_has_dock(const station_t *st, int ring);
 int           station_ring_free_slot(const station_t *st, int ring, int port_count);
 
+/* ----- Slot pairing: "across-the-ring-gap on an adjacent ring" -----
+ *
+ * Producers (FURNACE / FRAME_PRESS / LASER_FAB / TRACTOR_FAB /
+ * SHIPYARD) require a HOPPER directly across the ring gap on an
+ * adjacent ring. Geometry: for a producer on ring N at slot S (canonical
+ * angle θ = TWO_PI * S / SLOTS[N]), the paired hopper sits on ring N+1
+ * (or N-1) at the slot whose canonical angle is closest to θ. The
+ * cross-ring beam this implies is the visual signature of every
+ * station — see CLAUDE.md ("cross-ring tractor beams are the
+ * signature").
+ *
+ * station_pair_neighbors fills `out` with up to two candidates — one
+ * per adjacent ring — sorted ring+1 first, then ring-1. The validator
+ * accepts the producer if EITHER candidate slot already holds the
+ * required intake. */
+typedef struct {
+    int ring;   /* adjacent ring (N-1 or N+1) */
+    int slot;   /* closest-angle slot on that ring */
+} station_slot_pair_t;
+
+/* Returns the count of pair candidates written to `out` (0..2). */
+int           station_pair_neighbors(int ring, int slot,
+                                     station_slot_pair_t out[2]);
+
+/* Look up the module installed at a given (ring, slot). Returns
+ * MODULE_COUNT when the slot is empty, holds a scaffold-only module,
+ * or args are out of range. */
+module_type_t station_module_at(const station_t *st, int ring, int slot);
+
+/* True when `type` has no pairing requirement, or its pair-intake
+ * module is already installed (built, not scaffold) at one of the
+ * cross-ring pair slots from station_pair_neighbors. */
+bool          station_pair_satisfied(const station_t *st, int ring, int slot,
+                                     module_type_t type);
+
+/* True when removing the module at (ring, slot) would orphan a paired
+ * producer — i.e. some adjacent-ring producer still depends on this
+ * slot as its required intake. */
+bool          station_pair_removal_orphans(const station_t *st, int ring, int slot);
+
 #endif

@@ -231,3 +231,94 @@ int station_ring_free_slot(const station_t *st, int ring, int port_count) {
     }
     return -1;
 }
+
+/* ------------------------------------------------------------------ */
+/* Slot pairing — cross-ring                                           */
+/* ------------------------------------------------------------------ */
+
+/* Closest-slot search on a target ring for a given canonical angle.
+ * Ring rotations don't enter here: pairing is defined statically on
+ * canonical (zero-rotation) slot angles so the rule is verifiable at
+ * construction time, not at runtime ring-spin time. */
+static int closest_slot_on_ring(int ring, float angle) {
+    int slots = STATION_RING_SLOTS[ring];
+    int best = 0;
+    float best_d = 1e9f;
+    for (int j = 0; j < slots; j++) {
+        float aj = TWO_PI_F * (float)j / (float)slots;
+        float d = fabsf(aj - angle);
+        if (d > (float)M_PI) d = TWO_PI_F - d;
+        if (d < best_d) { best_d = d; best = j; }
+    }
+    return best;
+}
+
+int station_pair_neighbors(int ring, int slot, station_slot_pair_t out[2]) {
+    if (ring < 1 || ring > STATION_NUM_RINGS) return 0;
+    int slots = STATION_RING_SLOTS[ring];
+    if (slot < 0 || slot >= slots) return 0;
+    float angle = TWO_PI_F * (float)slot / (float)slots;
+    int n = 0;
+    /* Outer first (ring+1), then inner (ring-1). The smelt path
+     * already prefers same-ordering for cross-ring beams, so this
+     * keeps validator and renderer in agreement when a producer's
+     * intake exists on both flanks. */
+    int adj[] = { ring + 1, ring - 1 };
+    for (int ri = 0; ri < 2; ri++) {
+        int a = adj[ri];
+        if (a < 1 || a > STATION_NUM_RINGS) continue;
+        out[n].ring = a;
+        out[n].slot = closest_slot_on_ring(a, angle);
+        n++;
+    }
+    return n;
+}
+
+module_type_t station_module_at(const station_t *st, int ring, int slot) {
+    if (!st || ring < 1 || ring > STATION_NUM_RINGS) return MODULE_COUNT;
+    if (slot < 0 || slot >= STATION_RING_SLOTS[ring]) return MODULE_COUNT;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].ring != ring) continue;
+        if (st->modules[i].slot != slot) continue;
+        if (st->modules[i].scaffold) return MODULE_COUNT; /* not yet a real intake */
+        return st->modules[i].type;
+    }
+    return MODULE_COUNT;
+}
+
+bool station_pair_satisfied(const station_t *st, int ring, int slot,
+                            module_type_t type) {
+    module_type_t need = module_pair_intake(type);
+    if (need == MODULE_COUNT) return true;
+    station_slot_pair_t cand[2];
+    int n = station_pair_neighbors(ring, slot, cand);
+    for (int i = 0; i < n; i++) {
+        if (station_module_at(st, cand[i].ring, cand[i].slot) == need) return true;
+    }
+    return false;
+}
+
+bool station_pair_removal_orphans(const station_t *st, int ring, int slot) {
+    module_type_t self = station_module_at(st, ring, slot);
+    if (self == MODULE_COUNT) return false;
+    /* Walk every module on the adjacent rings; if any is a producer
+     * whose own pair-intake search would land on (ring, slot) and
+     * whose required intake is `self`, removal would orphan it. */
+    int adj[] = { ring + 1, ring - 1 };
+    for (int ri = 0; ri < 2; ri++) {
+        int a = adj[ri];
+        if (a < 1 || a > STATION_NUM_RINGS) continue;
+        for (int i = 0; i < st->module_count; i++) {
+            if (st->modules[i].ring != a) continue;
+            if (st->modules[i].scaffold) continue;
+            module_type_t need = module_pair_intake(st->modules[i].type);
+            if (need == MODULE_COUNT || need != self) continue;
+            station_slot_pair_t cand[2];
+            int n = station_pair_neighbors(a, st->modules[i].slot, cand);
+            for (int c = 0; c < n; c++) {
+                if (cand[c].ring == ring && cand[c].slot == slot) return true;
+            }
+        }
+    }
+    return false;
+}

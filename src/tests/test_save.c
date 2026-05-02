@@ -479,10 +479,13 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     ASSERT(w->stations[0].module_count >= 4);
-    /* Verify furnace on ring 1 and silo on ring 2 survive save/load */
+    /* Cross-ring pair layout: Prospect's furnace lives on ring 1 slot
+     * 2, paired with the ring-2 hopper at slot 4 (240° on both rings).
+     * The save round-trip must preserve both. */
     station_module_t orig = w->stations[0].modules[2]; /* furnace at ring 1 slot 2 */
     ASSERT(orig.type == MODULE_FURNACE);
-    ASSERT(orig.ring == 1);
+    ASSERT_EQ_INT((int)orig.ring, 1);
+    ASSERT_EQ_INT((int)orig.slot, 2);
     ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS, TMP("test_modcat")));
     ASSERT(world_save(w, TMP("test_modules.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
@@ -494,15 +497,13 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     ASSERT_EQ_INT((int)restored.slot, (int)orig.slot);
     ASSERT_EQ_INT((int)restored.scaffold, (int)orig.scaffold);
     ASSERT_EQ_FLOAT(restored.build_progress, orig.build_progress, 0.001f);
-    /* modules[3] = hopper on ring 2 (added by the count-tier furnace
-     * rework). The previous modules[4] = ORE_SILO was dropped — the
-     * hopper alone serves Prospect's ore-intake/buyer role. */
+    /* modules[3] = the paired hopper at ring 2 slot 4 (the cross-ring
+     * partner of the ring-1 furnace). */
     station_module_t mod3 = loaded->stations[0].modules[3];
     ASSERT(mod3.type == MODULE_HOPPER);
     ASSERT_EQ_INT((int)mod3.ring, 2);
+    ASSERT_EQ_INT((int)mod3.slot, 4);
     ASSERT_EQ_INT((int)loaded->stations[0].module_count, 4);
-    /* loaded auto-freed by WORLD_HEAP cleanup */
-    /* w auto-freed by WORLD_HEAP cleanup */
     remove(TMP("test_modules.sav"));
 }
 
@@ -570,7 +571,10 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  * 8B first_dock_tick + 8B last_dock_tick + 4B total_docks +
  * 4B lifetime_ore_units + 4B lifetime_credits_in + 4B lifetime_credits_out +
  * 1B top_commodity + 3B _pad. Diff: +60B per entry × 16 entries × 64
- * stations = +61440 bytes. */
+ * stations = +61440 bytes.
+ * v47: cross-ring pair-rule reseed adds modules to Kepler (+5) and
+ * Helios (+2). Module placements live in the catalog file, not
+ * world.sav, so EXPECTED_SAVE_SIZE doesn't shift. */
 #define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40 - 64 * 4 + 64 * 16 * 60)
 
 TEST(test_save_file_size_stable) {
@@ -608,7 +612,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 46);
+    ASSERT_EQ_INT((int)version, 47);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

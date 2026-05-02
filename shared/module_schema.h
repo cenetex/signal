@@ -60,6 +60,12 @@ typedef struct {
     uint8_t        variant_count;   /* >0 if module has variants */
     int            prerequisite;    /* module type that must be built first
                                      * (MODULE_COUNT = no prerequisite, root) */
+    int            pair_intake;     /* required intake module at the paired
+                                     * slot on the same ring (canonical 180°
+                                     * opposite). MODULE_COUNT = no pairing
+                                     * required. Producers feed from this
+                                     * slot; placement is rejected unless
+                                     * the paired slot already holds it. */
 } module_schema_t;
 
 /* The schema table — defined in module_schema.c. */
@@ -78,6 +84,13 @@ commodity_t            module_schema_output(module_type_t type);
 float                  module_production_rate(module_type_t type);
 float                  module_buffer_capacity(module_type_t type);
 bool                   module_valid_on_ring(module_type_t type, int ring);
+
+/* Pair-intake helpers (#XYZ — pair-based station construction).
+ * Producers (and shipyard) require a specific intake module sitting at
+ * the paired slot on the same ring. See station_util's
+ * station_pair_slot for the slot-pairing geometry. */
+module_type_t          module_pair_intake(module_type_t type);
+bool                   module_requires_pair(module_type_t type);
 
 /* Tech-tree gate: a module is unlocked when its prerequisite has been
  * built at least once. Roots (prerequisite = MODULE_COUNT) are always

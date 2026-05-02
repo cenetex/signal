@@ -24,6 +24,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .valid_rings = MODULE_RINGS_ANY,
         .variant_count = 0,
         .prerequisite = MODULE_SIGNAL_RELAY, /* tier 1 */
+        .pair_intake = MODULE_COUNT,
     },
     [MODULE_HOPPER] = {
         .name = "Hopper", /* ore intake + beam anchor for furnaces */
@@ -37,6 +38,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
         .prerequisite = MODULE_SIGNAL_RELAY, /* tier 1 */
+        .pair_intake = MODULE_COUNT,
     },
     [MODULE_FURNACE] = {
         .name = "Furnace",
@@ -52,9 +54,14 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .build_material = 60.0f, .build_commodity = COMMODITY_FRAME,
         .order_fee = 50, /* 200/4 */
         .services = 0,
-        .valid_rings = MODULE_RINGS_OUTER,
+        .valid_rings = MODULE_RINGS_OUTER, /* cross-ring pair rule
+                                            * lets furnaces sit on
+                                            * any outer ring as long
+                                            * as an adjacent ring has
+                                            * the paired hopper. */
         .variant_count = 0,
         .prerequisite = MODULE_HOPPER, /* tier 2 — needs hopper */
+        .pair_intake = MODULE_HOPPER,
     },
     [MODULE_REPAIR_BAY] = {
         .name = "Repair Bay",
@@ -67,6 +74,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .valid_rings = MODULE_RINGS_OUTER,
         .variant_count = 0,
         .prerequisite = MODULE_DOCK, /* tier 2 — needs ships docking first */
+        .pair_intake = MODULE_COUNT,
     },
     [MODULE_SIGNAL_RELAY] = {
         .name = "Signal Relay",
@@ -79,6 +87,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .valid_rings = MODULE_RINGS_ANY,
         .variant_count = 0,
         .prerequisite = MODULE_COUNT, /* root — always available */
+        .pair_intake = MODULE_COUNT,
     },
     [MODULE_FRAME_PRESS] = {
         .name = "Frame Press",
@@ -92,6 +101,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
         .prerequisite = MODULE_FURNACE, /* tier 3 — needs ingots */
+        .pair_intake = MODULE_HOPPER,
     },
     [MODULE_LASER_FAB] = {
         .name = "Laser Fab",
@@ -105,6 +115,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
         .prerequisite = MODULE_FURNACE, /* tier 5 — needs cu ingots from a 2+ furnace stack */
+        .pair_intake = MODULE_HOPPER,
     },
     [MODULE_TRACTOR_FAB] = {
         .name = "Tractor Fab",
@@ -118,6 +129,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
         .prerequisite = MODULE_FURNACE, /* tier 5 — needs cr ingots from a 3+ furnace stack */
+        .pair_intake = MODULE_HOPPER,
     },
     [MODULE_SHIPYARD] = {
         .name = "Shipyard",
@@ -131,6 +143,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
         .valid_rings = MODULE_RINGS_INDUSTRIAL,
         .variant_count = 0,
         .prerequisite = MODULE_FRAME_PRESS, /* tier 4 — needs frames */
+        .pair_intake = MODULE_HOPPER,
     },
 };
 
@@ -159,6 +172,16 @@ float       module_buffer_capacity(module_type_t type) { return module_schema(ty
 bool module_valid_on_ring(module_type_t type, int ring) {
     if (ring < 0 || ring > 3) return false;
     return (module_schema(type)->valid_rings & (1u << ring)) != 0;
+}
+
+module_type_t module_pair_intake(module_type_t type) {
+    int v = module_schema(type)->pair_intake;
+    if (v < 0 || v >= MODULE_COUNT) return MODULE_COUNT;
+    return (module_type_t)v;
+}
+
+bool module_requires_pair(module_type_t type) {
+    return module_pair_intake(type) != MODULE_COUNT;
 }
 
 bool module_unlocked_for_player(uint32_t unlocked_mask, module_type_t type) {

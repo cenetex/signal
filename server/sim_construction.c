@@ -87,31 +87,40 @@ void activate_outpost(world_t *w, int station_idx) {
     SIM_LOG("[sim] outpost %d activated (signal_range=%.0f)\n", station_idx, OUTPOST_SIGNAL_RANGE);
 }
 
-/* Per-ring furnace cap: at most one furnace per ring. The count-tier
- * smelt rules want furnaces spread across rings (1/ring → ferrite,
- * 2 rings → cuprite, 3 rings → crystal), so stacking two on the same
- * ring is both useless for tier progression and visually crowded.
- * Counts BUILDING + AWAITING_SUPPLY scaffolds too — placing a second
- * furnace in the same ring while the first is still under construction
- * would slip past a count-only check. */
-static bool ring_already_has_furnace(const station_t *st, int ring) {
-    if (!st) return false;
-    for (int i = 0; i < st->module_count; i++) {
-        if (st->modules[i].ring != ring) continue;
-        if (st->modules[i].type != MODULE_FURNACE) continue;
-        return true;
+/* Pair-based placement validator (#XYZ).
+ *
+ * A producer (FURNACE / FRAME_PRESS / LASER_FAB / TRACTOR_FAB / SHIPYARD)
+ * is rejected unless its pair-intake module — typically a HOPPER — is
+ * already installed at the canonical opposite slot on the same ring.
+ *
+ * Producers are also banned on ring 1 (3 slots, no canonical pair),
+ * which the schema's `valid_rings` already enforces but we recheck
+ * here to keep the failure path local and loggable.
+ *
+ * Returns true and emits no log if the placement is valid. */
+static bool construction_check_placement(const station_t *st,
+                                         module_type_t type,
+                                         int ring, int slot,
+                                         int station_idx) {
+    (void)station_idx;
+    if (!module_valid_on_ring(type, ring)) {
+        SIM_LOG("[sim] refused %s on station %d ring %d — invalid ring for type\n",
+                module_type_name(type), station_idx, ring);
+        return false;
     }
-    return false;
+    if (module_requires_pair(type) && !station_pair_satisfied(st, ring, slot, type)) {
+        SIM_LOG("[sim] refused %s on station %d ring %d slot %d — no %s on adjacent-ring pair slot\n",
+                module_type_name(type), station_idx, ring, slot,
+                module_type_name(module_pair_intake(type)));
+        return false;
+    }
+    return true;
 }
 
 /* Add a scaffold module to a station and generate a supply contract */
 void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int arm, int chain_pos) {
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
-    if (type == MODULE_FURNACE && ring_already_has_furnace(st, arm)) {
-        SIM_LOG("[sim] refused FURNACE on station %d ring %d — already has one\n",
-                station_idx, arm);
-        return;
-    }
+    if (!construction_check_placement(st, type, arm, chain_pos, station_idx)) return;
 
     station_module_t *m = &st->modules[st->module_count++];
     m->type = type;
@@ -140,14 +149,49 @@ void begin_module_construction_at(world_t *w, station_t *st, int station_idx, mo
             type, station_idx, arm, chain_pos);
 }
 
+/* Auto-picker: walk rings high-to-low and find the first free slot whose
+ * canonical pair holds the type's required intake (if any). For
+ * non-pairing modules the search collapses to "first free slot on the
+ * topmost active ring," matching the pre-pair behavior. */
+static bool find_paired_free_slot(const station_t *st, module_type_t type,
+                                  int *out_ring, int *out_slot) {
+    bool needs_pair = module_requires_pair(type);
+    for (int r = STATION_NUM_RINGS; r >= 1; r--) {
+        if (!station_has_ring(st, r)) continue;
+        if (!module_valid_on_ring(type, r)) continue;
+        int slots = STATION_RING_SLOTS[r];
+        for (int s = 0; s < slots; s++) {
+            /* Slot must be free. */
+            bool taken = false;
+            for (int i = 0; i < st->module_count; i++) {
+                if (st->modules[i].ring == r && st->modules[i].slot == s) {
+                    taken = true; break;
+                }
+            }
+            if (taken) continue;
+            if (needs_pair && !station_pair_satisfied(st, r, s, type)) continue;
+            *out_ring = r;
+            *out_slot = s;
+            return true;
+        }
+    }
+    return false;
+}
+
 void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type) {
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
-    int target_ring = 1;
-    for (int r = STATION_NUM_RINGS; r >= 1; r--) {
-        if (station_has_ring(st, r)) { target_ring = r; break; }
+    int target_ring = 1, target_slot = -1;
+    if (!find_paired_free_slot(st, type, &target_ring, &target_slot)) {
+        /* No valid free slot — fall through to begin_module_construction_at
+         * with the topmost ring and a free slot, which will log + refuse
+         * if pairing is unsatisfied. Keeps the failure path observable
+         * rather than silently no-op'ing. */
+        for (int r = STATION_NUM_RINGS; r >= 1; r--) {
+            if (station_has_ring(st, r)) { target_ring = r; break; }
+        }
+        target_slot = station_ring_free_slot(st, target_ring, STATION_RING_SLOTS[target_ring]);
+        if (target_slot < 0) target_slot = 0xFF;
     }
-    int target_slot = station_ring_free_slot(st, target_ring, STATION_RING_SLOTS[target_ring]);
-    if (target_slot < 0) target_slot = 0xFF; /* ring module or full */
     begin_module_construction_at(w, st, station_idx, type, target_ring, target_slot);
 }
 

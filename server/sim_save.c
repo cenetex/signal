@@ -78,7 +78,19 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 46  /* Station-player relationship data (#257).
+#define SAVE_VERSION 47  /* Pair-based station construction.
+                          * Ring 1 is now spine-only (DOCK + RELAY +
+                          * REPAIR_BAY); producers (FURNACE / FRAME_PRESS
+                          * / LASER_FAB / TRACTOR_FAB / SHIPYARD) are
+                          * banned on ring 1 and require a paired
+                          * intake module (HOPPER) at the canonical
+                          * 180°-opposite slot on the same ring.
+                          * Prospect/Kepler/Helios re-seeded under the
+                          * new rule. Save layout itself is unchanged
+                          * vs v46 — but the seeded module set is not,
+                          * so MIN_SAVE_VERSION moves to 47 to wipe
+                          * pre-rule worlds rather than try to migrate
+                          * them in place. v46 (#257):
                           * Ledger entries keyed by player_pubkey[32] instead
                           * of player_token[8]. Adds first_dock_tick,
                           * last_dock_tick, total_docks, lifetime_ore_units,
@@ -94,6 +106,7 @@ static uint32_t crc32_file(FILE *f) {
                           * units yet. The cargo_unit_t binary size is
                           * unchanged (still 80 bytes), so PLY7 / chain-log
                           * payloads stay byte-compatible.
+                          * v46 (#257): Station-player relationship data.
                           * v44: MODULE_ORE_SILO (= 8) and MODULE_CARGO_BAY (= 10)
                           * dropped; both remapped to MODULE_HOPPER (= 1)
                           * on load. The hopper now serves as the unified
@@ -126,7 +139,14 @@ static uint32_t crc32_file(FILE *f) {
  * named_ingot_t struct. Old saves are migrated by reading the legacy
  * named-ingot block (52B per slot, fixed layout) and converting each
  * non-empty entry into a manifest unit. */
-#define MIN_SAVE_VERSION 31
+/* Bumped from 31 to 47: pair-based construction reseeds the starter
+ * stations with a different module set than every previous version.
+ * Old world.sav files would replay the old layout (ring-1 furnaces,
+ * unpaired producers) and the construction validator would lock those
+ * worlds in an inconsistent state. Cleaner to refuse pre-v47 saves
+ * outright and re-bootstrap; per-player saves under saves/pubkey/ are
+ * unaffected because they live in their own files. */
+#define MIN_SAVE_VERSION 47
 
 /* Legacy named-ingot block layout — preserved here only so v25..v34
  * saves can be migrated forward. The original named_ingot_t was

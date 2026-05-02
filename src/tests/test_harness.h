@@ -23,6 +23,7 @@
 #include "sim_autopilot.h"
 #include "sim_flight.h"
 #include "sim_ai.h"
+#include "sim_construction.h"
 #include "chunk.h"
 #include "net_protocol.h"
 #include "mining.h"

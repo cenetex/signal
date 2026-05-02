@@ -174,8 +174,9 @@ TEST(test_furnace_color_non_furnace_modules_unaffected) {
     EXPECT_RGB(r, g, b, 0.85f, 0.30f, 0.20f);
 }
 
-/* (5) Prospect module count + types after the silo cleanup: 4 modules,
- *     no ORE_SILO, hopper still present (smelt unlock). */
+/* (5) Prospect module set: ring 1 = DOCK + RELAY + FURNACE; ring 2 =
+ *     paired HOPPER at slot 4 (240°, cross-ring opposite the
+ *     furnace at ring-1 slot 2). 4 modules, no ORE_SILO. */
 TEST(test_prospect_modules_after_silo_cleanup) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -195,8 +196,6 @@ TEST(test_prospect_modules_after_silo_cleanup) {
     ASSERT_EQ_INT(has_relay, 1);
     ASSERT_EQ_INT(has_furnace, 1);
     ASSERT_EQ_INT(has_hopper, 1);
-    /* MODULE_ORE_SILO and MODULE_CARGO_BAY were dropped entirely;
-     * hopper now serves as the unified ore-intake-and-storage. */
 }
 
 /* (6) Middle-ring dynamic glow: the helper reads

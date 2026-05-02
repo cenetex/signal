@@ -277,13 +277,18 @@ TEST(test_destroy_contract_completes_when_asteroid_gone) {
 TEST(test_supply_contract_uses_correct_material) {
     WORLD_DECL;
     world_reset(&w);
-    /* Build a laser fab scaffold on station 0 */
-    begin_module_construction(&w, &w.stations[0], 0, MODULE_LASER_FAB);
+    /* Build a laser fab scaffold on Kepler (st[1]) — Prospect's slots
+     * are tightly packed and don't offer a free producer pair. Drop a
+     * HOPPER on ring 3 slot 4 (160°) and order LASER_FAB at ring 2
+     * slot 3 (180°), whose canonical cross-ring pair lands on the new
+     * hopper. */
+    add_module_at(&w.stations[1], MODULE_HOPPER, 3, 4);
+    begin_module_construction_at(&w, &w.stations[1], 1, MODULE_LASER_FAB, 2, 3);
     /* The generated contract should be for cuprite ingots */
     bool found = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         if (w.contracts[k].active && w.contracts[k].action == CONTRACT_TRACTOR
-            && w.contracts[k].station_index == 0
+            && w.contracts[k].station_index == 1
             && w.contracts[k].commodity == COMMODITY_CUPRITE_INGOT) {
             found = true; break;
         }
@@ -294,7 +299,7 @@ TEST(test_supply_contract_uses_correct_material) {
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     found = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
-        if (w.contracts[k].active && w.contracts[k].station_index == 0
+        if (w.contracts[k].active && w.contracts[k].station_index == 1
             && w.contracts[k].commodity == COMMODITY_CUPRITE_INGOT) {
             found = true; break;
         }
