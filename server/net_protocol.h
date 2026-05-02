@@ -530,6 +530,10 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
         write_f32_le(&buf[moff], st->ring_offset[a]);
         moff += 4;
     }
+    for (int a = 0; a < MAX_ARMS; a++) {
+        write_f32_le(&buf[moff], st->arm_rotation[a]);
+        moff += 4;
+    }
     /* Placement plans (faction-shared blueprint slots) */
     int plan_n = st->placement_plan_count;
     if (plan_n > STATION_PLAN_RECORD_COUNT) plan_n = STATION_PLAN_RECORD_COUNT;

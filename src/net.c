@@ -586,6 +586,9 @@ static void handle_message(const uint8_t* data, int len) {
             for (int a = 0; a < MAX_ARMS; a++)
                 si.ring_offset[a] = read_f32_le(&data[moff + a * 4]);
             moff += MAX_ARMS * 4;
+            for (int a = 0; a < MAX_ARMS; a++)
+                si.arm_rotation[a] = read_f32_le(&data[moff + a * 4]);
+            moff += MAX_ARMS * 4;
             /* Placement plans */
             si.plan_count = data[moff];
             if (si.plan_count > STATION_PLAN_RECORD_COUNT) si.plan_count = STATION_PLAN_RECORD_COUNT;

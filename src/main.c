@@ -707,13 +707,12 @@ static void sim_step(float dt) {
     audio_step(&g.audio, dt);
 
     /* Advance world time locally in multiplayer (server doesn't send it).
-     * Run the same spoke + drag dynamics as the server. As long as
-     * client and server start from matching arm_rotation/arm_omega
-     * (snapshotted via station_authority sync) and tick at matching
-     * dt, the rings stay coherent. */
+     * Ring rotations are authoritative server-side and arrive with
+     * each station-identity broadcast; client doesn't run dynamics
+     * locally. The 30Hz broadcast cadence ≈ 33ms staleness, well
+     * below visible at STATION_RING_SPEED. */
     if (g.multiplayer_enabled) {
         g.world.time += dt;
-        step_station_ring_dynamics(&g.world, dt);
     }
 
     /* Commission flash countdown */

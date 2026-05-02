@@ -1562,6 +1562,22 @@ TEST(test_pair_satisfied_cross_ring) {
     ASSERT(station_pair_satisfied(st, 1, 0, MODULE_SIGNAL_RELAY));
 }
 
+TEST(test_helios_ring2_rotates_under_dynamics) {
+    /* Driver ring (ring 2 on Helios) must rotate under
+     * step_station_ring_dynamics. After 2 sim seconds at
+     * STATION_RING_SPEED = 0.04 rad/s, expect ~0.08 rad of rotation. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    station_t *st = &w->stations[2];
+    ASSERT(st->arm_speed[1] > 0.0f);
+    float r0 = st->arm_rotation[1];
+    for (int i = 0; i < 240; i++) world_sim_step(w, 1.0f / 120.0f);
+    float r1 = st->arm_rotation[1];
+    /* Expect the driver to have advanced ~speed * 2.0s = 0.08 rad. */
+    ASSERT(r1 - r0 > 0.05f);
+}
+
 TEST(test_seed_stations_pair_complete) {
     /* Every producer on every starter station must have its cross-ring
      * pair-intake already satisfied at boot. This is the construction
@@ -1596,5 +1612,6 @@ void register_construction_module_schema_tests(void) {
     RUN(test_pair_neighbors_geometry);
     RUN(test_pair_satisfied_cross_ring);
     RUN(test_seed_stations_pair_complete);
+    RUN(test_helios_ring2_rotates_under_dynamics);
 }
 
