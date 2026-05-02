@@ -88,6 +88,75 @@ static void decode_and_upload(avatar_cache_t *entry, void *data, int size) {
     stbi_image_free(pixels);
 }
 
+/* Parse multi-tier MOTD JSON from S3:
+ *   {"messages":{"common":"...","uncommon":"...","rare":"...","ultra_rare":"..."},
+ *    "bands":{"common":[0.8,1.0],...},"generated_at":123456,"seed":42}
+ * Returns 1 on success, 0 on parse failure.
+ *
+ * Defined outside the __EMSCRIPTEN__ branch so both web and native callers
+ * resolve it (the native local-MOTD-load path uses it too). */
+static int parse_motd_json(avatar_cache_t *entry, const char *json, int json_size) {
+    (void)json_size;
+    memset(entry->tiers, 0, sizeof(entry->tiers));
+
+    const char *tier_names[] = { "common", "uncommon", "rare", "ultra_rare" };
+    const char *messages_start = strstr(json, "\"messages\":");
+    if (!messages_start) return 0;
+
+    for (int i = 0; i < 4; i++) {
+        char search_buf[64];
+        snprintf(search_buf, sizeof(search_buf), "\"%s\":\"", tier_names[i]);
+        const char *msg_start = strstr(messages_start, search_buf);
+        if (!msg_start) return 0;
+        msg_start += strlen(search_buf);
+
+        const char *msg_end = strchr(msg_start, '"');
+        if (!msg_end) return 0;
+
+        int msg_len = (int)(msg_end - msg_start);
+        if (msg_len > 255) msg_len = 255;
+        memcpy(entry->tiers[i].text, msg_start, (size_t)msg_len);
+        entry->tiers[i].text[msg_len] = '\0';
+    }
+
+    /* Parse bands: [min, max] for each tier */
+    const char *bands_start = strstr(json, "\"bands\":");
+    if (bands_start) {
+        for (int i = 0; i < 4; i++) {
+            char search_buf[64];
+            snprintf(search_buf, sizeof(search_buf), "\"%s\":[", tier_names[i]);
+            const char *band_start = strstr(bands_start, search_buf);
+            if (band_start) {
+                band_start += strlen(search_buf);
+                if (sscanf(band_start, "%f,%f]", &entry->tiers[i].band_min,
+                          &entry->tiers[i].band_max) != 2) {
+                    const float defaults[][2] = {{0.8f,1.0f}, {0.5f,0.8f}, {0.2f,0.5f}, {0.0f,0.2f}};
+                    entry->tiers[i].band_min = defaults[i][0];
+                    entry->tiers[i].band_max = defaults[i][1];
+                }
+            } else {
+                const float defaults[][2] = {{0.8f,1.0f}, {0.5f,0.8f}, {0.2f,0.5f}, {0.0f,0.2f}};
+                entry->tiers[i].band_min = defaults[i][0];
+                entry->tiers[i].band_max = defaults[i][1];
+            }
+        }
+    } else {
+        const float defaults[][2] = {{0.8f,1.0f}, {0.5f,0.8f}, {0.2f,0.5f}, {0.0f,0.2f}};
+        for (int i = 0; i < 4; i++) {
+            entry->tiers[i].band_min = defaults[i][0];
+            entry->tiers[i].band_max = defaults[i][1];
+        }
+    }
+
+    /* Parse metadata */
+    const char *ts_start = strstr(json, "\"generated_at\":");
+    if (ts_start) sscanf(ts_start + strlen("\"generated_at\":"), "%u", &entry->generated_at);
+    const char *seed_start = strstr(json, "\"seed\":");
+    if (seed_start) sscanf(seed_start + strlen("\"seed\":"), "%u", &entry->seed);
+
+    return 1;
+}
+
 #ifdef __EMSCRIPTEN__
 
 static void on_fetch_success(void *user, void *data, int size) {
@@ -101,13 +170,25 @@ static void on_fetch_error(void *user) {
     entry->state = AVATAR_STATE_FAILED;
 }
 
+
 static void on_motd_success(void *user, void *data, int size) {
     avatar_cache_t *entry = (avatar_cache_t *)user;
-    int len = size < 255 ? size : 255;
-    memcpy(entry->motd, data, (size_t)len);
-    entry->motd[len] = '\0';
-    entry->motd_fetched = true;
-    printf("[avatar] MOTD loaded for '%s': %.40s...\n", entry->slug, entry->motd);
+    char *json = (char *)malloc((size_t)(size + 1));
+    if (!json) {
+        fprintf(stderr, "[avatar] malloc failed for MOTD JSON\n");
+        return;
+    }
+    memcpy(json, data, (size_t)size);
+    json[size] = '\0';
+
+    if (parse_motd_json(entry, json, size)) {
+        entry->motd_fetched = true;
+        printf("[avatar] MOTD tiers loaded for '%s': common=%.30s...\n",
+               entry->slug, entry->tiers[0].text);
+    } else {
+        fprintf(stderr, "[avatar] MOTD JSON parse failed for '%s'\n", entry->slug);
+    }
+    free(json);
 }
 
 static void on_motd_error(void *user) {
@@ -194,11 +275,16 @@ void avatar_fetch(int station_index, const char *station_slug) {
         int motd_size = 0;
         unsigned char *motd_data = load_file_bytes(motd_path, &motd_size);
         if (motd_data && motd_size > 0) {
-            int len = motd_size < 255 ? motd_size : 255;
-            memcpy(entry->motd, motd_data, (size_t)len);
-            entry->motd[len] = '\0';
-            entry->motd_fetched = true;
-            printf("[avatar] MOTD loaded for '%s': %.40s...\n", entry->slug, entry->motd);
+            char *json = (char *)malloc((size_t)(motd_size + 1));
+            if (json) {
+                memcpy(json, motd_data, (size_t)motd_size);
+                json[motd_size] = '\0';
+                if (parse_motd_json(entry, json, motd_size)) {
+                    entry->motd_fetched = true;
+                    printf("[avatar] MOTD tiers loaded for '%s' from file\n", entry->slug);
+                }
+                free(json);
+            }
             free(motd_data);
         }
     }
@@ -209,3 +295,7 @@ const avatar_cache_t *avatar_get(int station_index) {
     if (station_index < 0 || station_index >= MAX_STATIONS) return NULL;
     return &cache[station_index];
 }
+
+/* avatar_motd_tier_for_signal and avatar_motd_tier_label are defined
+ * inline in avatar.h so the test target can use them without linking
+ * sokol-dependent avatar.c. */

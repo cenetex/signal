@@ -549,12 +549,23 @@ static void sim_on_death(const sim_event_t *ev) {
     music_enter_death(&g.music);
 }
 
-/* Pick the hail message: contextual > avatar MOTD > station hardcoded. */
-static const char *hail_choose_message(int station_idx) {
+/* Pick the hail message: contextual > avatar MOTD (with tier label) > station hardcoded.
+ * Caller should reserve space for tier label + message. */
+static const char *hail_choose_message(int station_idx, int *out_tier) {
+    if (out_tier) *out_tier = -1;
+
     const char *ctx = contextual_hail_message(station_idx);
     if (ctx) return ctx;
+
     const avatar_cache_t *av = avatar_get(station_idx);
-    if (av && av->motd_fetched && av->motd[0]) return av->motd;
+    if (av && av->motd_fetched) {
+        float signal = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        int tier_idx = avatar_motd_tier_for_signal(av, signal);
+        if (tier_idx >= 0 && av->tiers[tier_idx].text[0]) {
+            if (out_tier) *out_tier = tier_idx;
+            return av->tiers[tier_idx].text;
+        }
+    }
     return g.world.stations[station_idx].hail_message;
 }
 
@@ -565,8 +576,15 @@ static void sim_on_hail_response(const sim_event_t *ev) {
 
     snprintf(g.hail_station, sizeof(g.hail_station), "%s",
              g.world.stations[hs].name);
-    snprintf(g.hail_message, sizeof(g.hail_message), "%s",
-             hail_choose_message(hs));
+    int tier = -1;
+    const char *msg = hail_choose_message(hs, &tier);
+    if (tier >= 0) {
+        const char *tier_label = avatar_motd_tier_label(tier);
+        snprintf(g.hail_message, sizeof(g.hail_message), "[%s] %s",
+                 tier_label, msg);
+    } else {
+        snprintf(g.hail_message, sizeof(g.hail_message), "%s", msg);
+    }
     g.hail_credits = ev->hail_response.credits;
     g.hail_station_index = hs;
     g.hail_timer = 6.0f;

@@ -1018,8 +1018,15 @@ static void json_escape_append(char *buf, int *pos, int bufsz, const char *s) {
  * always fit and the JSON closes cleanly. */
 #define STATION_API_TAIL_MARGIN   2048
 
-static void handle_station_state(struct mg_connection *c, int sid) {
+static void handle_station_state(struct mg_connection *c, int sid, struct mg_http_message *hm) {
     const station_t *st = &world.stations[sid];
+
+    /* Parse query params */
+    int include_activity = 0;
+    char tmp[32];
+    if (hm && mg_http_get_var(&hm->query, "include", tmp, sizeof(tmp)) > 0) {
+        include_activity = strcmp(tmp, "activity_history") == 0;
+    }
     /* Heap-allocated so we aren't bound by the event-loop thread's
      * stack (alpine musl main stack is ~80KB by default). */
     enum { BUFSZ = 131072 };
@@ -1182,8 +1189,58 @@ static void handle_station_state(struct mg_connection *c, int sid) {
         if (pos > BUFSZ - STATION_API_TAIL_MARGIN) break;
     }
 
+    /* Close the "relationships" array opened above. The original
+     * single-call form ("],\"hail\":...") got split across the optional
+     * activity_history block; the close now fires unconditionally so the
+     * JSON stays well-formed regardless of include_activity. */
+    BUF_APPEND(pos, buf, BUFSZ, "]");
+
+    /* Activity history (24-hour window, if requested) */
+    if (include_activity) {
+        double window_start = world.time - 86400.0;
+        double ore_sum = 0.0;
+        int recent_docks = 0;
+
+        for (int i = 0; i < st->ledger_count; i++) {
+            if (st->ledger[i].last_dock_tick > window_start) {
+                ore_sum += st->ledger[i].lifetime_ore_units;
+                recent_docks++;
+            }
+        }
+
+        /* Top haulers: up to 3 players by lifetime ore contributed */
+        int top_indices[3] = {-1, -1, -1};
+        for (int i = 0; i < st->ledger_count; i++) {
+            for (int j = 0; j < 3; j++) {
+                if (top_indices[j] < 0 ||
+                    st->ledger[i].lifetime_ore_units > st->ledger[top_indices[j]].lifetime_ore_units) {
+                    /* Shift down */
+                    for (int k = 2; k > j; k--) top_indices[k] = top_indices[k-1];
+                    top_indices[j] = i;
+                    break;
+                }
+            }
+        }
+
+        BUF_APPEND(pos, buf, BUFSZ, ",\"activity_history\":{\"ore_processed_24h\":%.0f,"
+            "\"ships_docked_24h\":%d,\"top_haulers\":[",
+            ore_sum, recent_docks);
+
+        for (int j = 0; j < 3; j++) {
+            if (top_indices[j] < 0) break;
+            if (j > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
+            BUF_APPEND(pos, buf, BUFSZ, "\"");
+            for (int k = 0; k < 32; k++) {
+                BUF_APPEND(pos, buf, BUFSZ, "%02x", st->ledger[top_indices[j]].player_pubkey[k]);
+            }
+            BUF_APPEND(pos, buf, BUFSZ, "\"");
+        }
+
+        BUF_APPEND(pos, buf, BUFSZ, "]}");
+    }
+
     /* Hail message */
-    BUF_APPEND(pos, buf, BUFSZ, "],\"hail\":\"");
+    BUF_APPEND(pos, buf, BUFSZ, ",\"hail\":\"");
     json_escape_append(buf, &pos, BUFSZ, st->hail_message);
     BUF_APPEND(pos, buf, BUFSZ, "\"}");
 
@@ -1306,7 +1363,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                      * player-built outposts (3+) require auth. */
                     mg_http_reply(c, 401, api_headers, "{\"error\":\"unauthorized\"}");
                 } else {
-                    handle_station_state(c, sid);
+                    handle_station_state(c, sid, hm);
                 }
             }
         } else if (mg_match(hm->uri, mg_str("/api/station/*/command"), NULL)) {

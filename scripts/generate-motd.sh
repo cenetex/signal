@@ -1,5 +1,6 @@
 #!/bin/bash
 # Generate station MOTDs via aws-swarm avatar API and upload to S3.
+# Produces multi-tier MOTD JSON with rarity bands.
 # Run periodically (cron) or manually to refresh station messages.
 
 set -euo pipefail
@@ -7,76 +8,121 @@ set -euo pipefail
 API_BASE="https://staging-swarm.rati.chat/api/v1"
 API_KEY="${SWARM_API_KEY:-sk-rati--hO4iZYH3jj4DhjiWfEJPeAjrdDdhJCR13LuJzPjRuQ}"
 S3_BUCKET="signal-ratimics-assets"
-PROMPT="A miner just hailed your station on the radio. Respond in character with a short greeting and message of the day. No markdown. No thinking or reasoning. Under 40 words. Only the radio message."
 
-for SLUG in signal-prospect signal-kepler signal-helios; do
-  SHORT="${SLUG#signal-}"
-  echo "Generating MOTD for $SHORT..."
+# Tier-specific prompts
+PROMPTS=(
+  "A miner just hailed your station. Respond as station operator with a brief, friendly greeting and current status. No markdown. Under 40 words. Only the message."
+  "You're talking to a miner over weak radio signal. Share a brief station anecdote or tip. No markdown. Under 40 words."
+  "In the signal fringe, you receive a garbled transmission. Share something mysterious about your station's history or purpose. Cryptic but intriguing. No markdown. Under 40 words."
+  "In deep space far from station signal, whisper something secret or dangerous-sounding. Fragmented transmission. No markdown. Under 40 words."
+)
 
-  RESPONSE=$(curl -s -X POST "$API_BASE/chat/completions" \
-    -H "Authorization: Bearer $API_KEY" \
-    -H "Content-Type: application/json" \
-    -d "{
-      \"model\": \"avatar:$SLUG\",
-      \"messages\": [{\"role\": \"user\", \"content\": \"$PROMPT\"}],
-      \"max_tokens\": 100,
-      \"temperature\": 0.9,
-      \"include_audio\": true
-    }" 2>/dev/null)
+generate_tier_text() {
+    local slug="$1"
+    local prompt="$2"
 
-  MOTD=$(echo "$RESPONSE" | python3 -c "
-import sys, json, re
+    RESPONSE=$(curl -s -X POST "$API_BASE/chat/completions" \
+      -H "Authorization: Bearer $API_KEY" \
+      -H "Content-Type: application/json" \
+      -d "{
+        \"model\": \"avatar:$slug\",
+        \"messages\": [{\"role\": \"user\", \"content\": \"$prompt\"}],
+        \"max_tokens\": 100,
+        \"temperature\": 0.85,
+        \"include_audio\": false
+      }" 2>/dev/null)
+
+    echo "$RESPONSE" | python3 -c "
+import sys, json
 try:
     r = json.load(sys.stdin)
     text = r['choices'][0]['message']['content'].strip()
-    # Strip thinking/reasoning leaks (lines that describe what the AI is doing)
     lines = text.split('\n')
     clean = []
     for line in lines:
         line = line.strip()
         if not line: continue
-        # Skip meta lines
         if any(skip in line.lower() for skip in ['the user', 'i should', 'i am ', 'i need to', 'let me', 'my persona', 'stay in character', 'thinking']):
             continue
         clean.append(line)
     text = ' '.join(clean)
-    # Clean up markdown
     for ch in ['**', '*', '#', '>', '---']:
         text = text.replace(ch, '')
     text = ' '.join(text.split())
     if text:
         print(text[:255])
     else:
-        print('Station online. Welcome, pilot.')
+        print('Station online.')
 except:
-    print('Station online. Welcome, pilot.')
-" 2>/dev/null)
+    print('Station online.')
+" 2>/dev/null
+}
 
-  echo "  MOTD: $MOTD"
-  echo -n "$MOTD" > "/tmp/${SHORT}_motd.txt"
-  aws s3 cp "/tmp/${SHORT}_motd.txt" "s3://$S3_BUCKET/stations/$SHORT/motd.txt" \
-    --content-type "text/plain" --quiet
+for SLUG in signal-prospect signal-kepler signal-helios; do
+  SHORT="${SLUG#signal-}"
+  echo "Generating multi-tier MOTD for $SHORT..."
 
-  # Extract audio URL if present
-  AUDIO_URL=$(echo "$RESPONSE" | python3 -c "
-import sys, json
-try:
-    r = json.load(sys.stdin)
-    audio = r['choices'][0]['message'].get('audio', {})
-    print(audio.get('url', ''))
-except:
-    print('')
-" 2>/dev/null)
+  TIMESTAMP=$(date +%s)
+  SEED=$(($(echo "$SHORT" | cksum | cut -d' ' -f1) % 65536))
 
-  if [ -n "$AUDIO_URL" ]; then
-    echo "  Voice: $AUDIO_URL"
-    curl -s "$AUDIO_URL" -o "/tmp/${SHORT}_hail.wav" 2>/dev/null
-    if [ -s "/tmp/${SHORT}_hail.wav" ]; then
-      aws s3 cp "/tmp/${SHORT}_hail.wav" "s3://$S3_BUCKET/stations/$SHORT/hail.wav" \
-        --content-type "audio/wav" --quiet
-      echo "  Voice uploaded to S3"
-    fi
-  fi
+  # Generate 4 tier messages
+  TIERS=("common" "uncommon" "rare" "ultra_rare")
+  declare -a MESSAGES
+
+  for i in 0 1 2 3; do
+    echo "  Generating ${TIERS[$i]}..."
+    TEXT=$(generate_tier_text "$SLUG" "${PROMPTS[$i]}")
+    MESSAGES[$i]="$TEXT"
+    echo "    ${TIERS[$i]}: $TEXT"
+  done
+
+  # Build multi-tier JSON with proper escaping
+  python3 << PYSCRIPT
+import json
+data = {
+    "generated_at": $TIMESTAMP,
+    "seed": $SEED,
+    "messages": {
+        "common": """${MESSAGES[0]}""",
+        "uncommon": """${MESSAGES[1]}""",
+        "rare": """${MESSAGES[2]}""",
+        "ultra_rare": """${MESSAGES[3]}"""
+    },
+    "bands": {
+        "common": [0.80, 1.00],
+        "uncommon": [0.50, 0.80],
+        "rare": [0.20, 0.50],
+        "ultra_rare": [0.00, 0.20]
+    }
+}
+print(json.dumps(data, ensure_ascii=False))
+PYSCRIPT
+
+  # Save and upload to S3
+  python3 << PYSCRIPT > "/tmp/${SHORT}_motd.json"
+import json
+data = {
+    "generated_at": $TIMESTAMP,
+    "seed": $SEED,
+    "messages": {
+        "common": """${MESSAGES[0]}""",
+        "uncommon": """${MESSAGES[1]}""",
+        "rare": """${MESSAGES[2]}""",
+        "ultra_rare": """${MESSAGES[3]}"""
+    },
+    "bands": {
+        "common": [0.80, 1.00],
+        "uncommon": [0.50, 0.80],
+        "rare": [0.20, 0.50],
+        "ultra_rare": [0.00, 0.20]
+    }
+}
+print(json.dumps(data, ensure_ascii=False))
+PYSCRIPT
+
+  echo "  Uploading motd.json to S3..."
+  aws s3 cp "/tmp/${SHORT}_motd.json" "s3://$S3_BUCKET/stations/$SHORT/motd.json" \
+    --content-type "application/json" --quiet
   echo "  Done"
 done
 

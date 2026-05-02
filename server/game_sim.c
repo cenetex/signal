@@ -4784,6 +4784,50 @@ void world_seed_station_manifests(world_t *w) {
     }
 }
 
+/* Build and emit one CHAIN_EVT_OPERATOR_POST event of the given kind +
+ * tier, with `text` as the payload body. The chain payload is a
+ * fixed-prefix 38-byte header followed by the UTF-8 text bytes (no
+ * NUL terminator). Caller passes `text_len` separately so empty texts
+ * (or text already bounded) work. */
+static void emit_operator_post(world_t *w, station_t *st,
+                               uint8_t kind, uint8_t tier,
+                               const char *text, int text_len) {
+    if (text_len < 0) text_len = 0;
+    if (text_len > 256) text_len = 256;
+    chain_payload_operator_post_t hdr = {
+        .kind = kind,
+        .tier = tier,
+        .ref_id = 0,
+        .text_len = (uint16_t)text_len,
+    };
+    sha256_bytes((const uint8_t *)text, (size_t)text_len, hdr.text_sha256);
+    uint8_t payload[38 + 256];
+    memcpy(payload, &hdr, 38);
+    memcpy(payload + 38, text, (size_t)text_len);
+    (void)chain_log_emit(w, st, CHAIN_EVT_OPERATOR_POST,
+                         payload, (uint16_t)(38 + text_len));
+}
+
+/* Seed a station's chain log with the initial hail-message
+ * OPERATOR_POST plus four placeholder rarity-tier events. Tier text is
+ * just the band name today; the live tier copy gets fetched from S3
+ * via avatar_fetch on the client. The seed events anchor the chain
+ * structure so per-tier content can be updated under the same kind
+ * later. */
+static void seed_station_motd_chain_events(world_t *w, station_t *st) {
+    static const char *tier_names[4] = {
+        "common", "uncommon", "rare", "ultra_rare"
+    };
+    emit_operator_post(w, st, 0 /* HAIL_MOTD */, 0,
+                       st->hail_message, (int)strlen(st->hail_message));
+    for (int tier_idx = 0; tier_idx < 4; tier_idx++) {
+        emit_operator_post(w, st, 2 /* RARITY_TIER */,
+                           (uint8_t)tier_idx,
+                           tier_names[tier_idx],
+                           (int)strlen(tier_names[tier_idx]));
+    }
+}
+
 void world_reset(world_t *w) {
     uint32_t seed = w->rng;  /* caller may pre-set seed; 0 = default */
     float *sig_buf = w->signal_cache.strength; /* preserve heap allocation */
@@ -4983,28 +5027,11 @@ void world_reset(world_t *w) {
              "Helios Works. Advanced smelting. Copper and crystal refined here.");
     w->station_count = 3; /* 3 starter stations */
 
-    /* Emit initial CHAIN_EVT_OPERATOR_POST events for each starter station's hail message.
-     * These create signed records proving which station authored the motd at startup.
-     * The aws-swarm operator later generates `stations/{slug}/motd.json` which will be
-     * signed in updates to this chain. */
-    for (int s = 0; s < 3; s++) {
-        station_t *st = &w->stations[s];
-        int motd_len = (int)strlen(st->hail_message);
-        chain_payload_operator_post_t setup_motd = {
-            .kind = 0,          /* HAIL_MOTD */
-            .tier = 0,          /* unused for motd */
-            .ref_id = 0,        /* motd (not tied to a specific contract/event) */
-            .text_len = (uint16_t)motd_len,
-        };
-        sha256_bytes((const uint8_t *)st->hail_message, motd_len, setup_motd.text_sha256);
-        /* Build payload: fixed-prefix (38 bytes) + text */
-        uint8_t payload[38 + 256];
-        memcpy(payload, &setup_motd, 38);
-        if (motd_len > 0) {
-            memcpy(payload + 38, st->hail_message, motd_len);
-        }
-        (void)chain_log_emit(w, st, CHAIN_EVT_OPERATOR_POST, payload, (uint16_t)(38 + motd_len));
-    }
+    /* Seed each starter station's chain log with its initial hail
+     * message + four placeholder rarity-tier events. See
+     * seed_station_motd_chain_events for the per-event shape. */
+    for (int s = 0; s < 3; s++)
+        seed_station_motd_chain_events(w, &w->stations[s]);
 
     rebuild_signal_chain(w);
 
