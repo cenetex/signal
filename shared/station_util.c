@@ -247,7 +247,7 @@ static int closest_slot_on_ring(int ring, float angle) {
     for (int j = 0; j < slots; j++) {
         float aj = TWO_PI_F * (float)j / (float)slots;
         float d = fabsf(aj - angle);
-        if (d > (float)M_PI) d = TWO_PI_F - d;
+        if (d > PI_F) d = TWO_PI_F - d;
         if (d < best_d) { best_d = d; best = j; }
     }
     return best;
