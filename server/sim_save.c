@@ -78,7 +78,11 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 47  /* Pair-based station construction.
+#define SAVE_VERSION 48  /* Spoke + drag ring dynamics: ring 2 is the
+                          * driver, rings 1 and 3 are passive. Adds
+                          * arm_omega[MAX_ARMS] per station for the
+                          * passive-ring angular velocity state. v47
+                          * pair-based station construction:
                           * Ring 1 is now spine-only (DOCK + RELAY +
                           * REPAIR_BAY); producers (FURNACE / FRAME_PRESS
                           * / LASER_FAB / TRACTOR_FAB / SHIPYARD) are
@@ -139,14 +143,11 @@ static uint32_t crc32_file(FILE *f) {
  * named_ingot_t struct. Old saves are migrated by reading the legacy
  * named-ingot block (52B per slot, fixed layout) and converting each
  * non-empty entry into a manifest unit. */
-/* Bumped from 31 to 47: pair-based construction reseeds the starter
- * stations with a different module set than every previous version.
- * Old world.sav files would replay the old layout (ring-1 furnaces,
- * unpaired producers) and the construction validator would lock those
- * worlds in an inconsistent state. Cleaner to refuse pre-v47 saves
- * outright and re-bootstrap; per-player saves under saves/pubkey/ are
- * unaffected because they live in their own files. */
-#define MIN_SAVE_VERSION 47
+/* Bumped to 48: ring dynamics adds arm_omega[MAX_ARMS] per station
+ * to write_station_session. Older saves miss those bytes; cleaner to
+ * refuse them than thread a migration through. Per-player saves
+ * under saves/pubkey/ live in their own files and are unaffected. */
+#define MIN_SAVE_VERSION 48
 
 /* Legacy named-ingot block layout — preserved here only so v25..v34
  * saves can be migrated forward. The original named_ingot_t was
@@ -302,10 +303,14 @@ static bool write_station_session(FILE *f, const station_t *s) {
     /* Planning state */
     WRITE_FIELD(f, s->planned);
     WRITE_FIELD(f, s->planned_owner);
-    /* Live rotation angles and speeds */
+    /* Live rotation angles and speeds. arm_omega is the passive-ring
+     * angular velocity state for the spoke + drag dynamics (v48+);
+     * driver rings ignore it, but persisting it keeps loaded saves
+     * from briefly transient-spinning back up. */
     for (int a = 0; a < MAX_ARMS; a++) {
         WRITE_FIELD(f, s->arm_rotation[a]);
         WRITE_FIELD(f, s->arm_speed[a]);
+        WRITE_FIELD(f, s->arm_omega[a]);
     }
     /* v35: named-ingot stockpile collapsed into manifest. The
      * v25..v34 dual-store fields (count + 64 × named_ingot_t) are no
@@ -414,10 +419,11 @@ static bool read_station_session(FILE *f, station_t *s) {
     READ_FIELD(f, s->planned);
     { uint8_t raw; memcpy(&raw, &s->planned, 1); s->planned = (raw != 0); }
     READ_FIELD(f, s->planned_owner);
-    /* Live rotation angles and speeds */
+    /* Live rotation angles and speeds (v48+ also persists arm_omega). */
     for (int a = 0; a < MAX_ARMS; a++) {
         READ_FIELD(f, s->arm_rotation[a]);
         READ_FIELD(f, s->arm_speed[a]);
+        READ_FIELD(f, s->arm_omega[a]);
     }
     /* v26..v34 wrote a named-ingot stockpile block (count + 64
      * fixed-size records). v35 dropped the dual store; the manifest

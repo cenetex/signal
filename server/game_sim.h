@@ -583,6 +583,13 @@ int nav_compute_path(const world_t *w, vec2 start, vec2 goal, float clearance,
 bool nav_segment_clear(const world_t *w, vec2 start, vec2 goal, float clearance);
 void station_rebuild_all_nav(const world_t *w);
 void rebuild_signal_chain(world_t *w);
+
+/* Ring rotation dynamics: ring 2 is driven at arm_speed[1]; rings 1
+ * and 3 are passive, pulled by the cross-ring spokes (each spoke is
+ * an angular spring) and slowed by viscous drag. The station's
+ * silhouette is therefore an emergent property of its spoke graph —
+ * adding/removing a producer or hopper visibly retorques the rings. */
+void step_station_ring_dynamics(world_t *w, float dt);
 bool can_place_outpost(const world_t *w, vec2 pos);
 void begin_module_construction(world_t *w, station_t *st, int station_idx, module_type_t type);
 void begin_module_construction_at(world_t *w, station_t *st, int station_idx, module_type_t type, int ring, int slot);

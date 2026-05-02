@@ -4508,19 +4508,112 @@ const signal_channel_msg_t *signal_channel_at(const world_t *w, int i) {
     return &ch->msgs[slot];
 }
 
+/* Spoke spring + drag dynamics constants. Tuned so the steady-state
+ * phase lag at STATION_RING_SPEED is a visible 15-25° per spoke
+ * group — enough to read as "the ring is being dragged" but well
+ * shy of 90° where the spring would flip. Per-spoke stiffness sums
+ * linearly: a station with many spokes between two rings tracks
+ * tightly, a station with one is loose. */
+#define RING_SPOKE_K     2.5f   /* spring constant per spoke (torque/rad) */
+#define RING_DRAG_MU     0.6f   /* angular drag coefficient (torque per rad/s) */
+#define RING_INERTIA_I   1.0f   /* moment of inertia per ring */
+
+/* Pick the ring this station drives kinematically. Default ring 2;
+ * fall back to ring 1 (small outposts that haven't grown to ring 2
+ * yet) and finally ring 3 (degenerate but defensive). */
+static int station_driver_ring_idx(const station_t *st) {
+    int has_ring[STATION_NUM_RINGS + 1] = {0};
+    for (int m = 0; m < st->module_count; m++) {
+        int r = (int)st->modules[m].ring;
+        if (r >= 1 && r <= STATION_NUM_RINGS) has_ring[r] = 1;
+    }
+    if (has_ring[2]) return 1;
+    if (has_ring[1]) return 0;
+    if (has_ring[3]) return 2;
+    return -1;
+}
+
+void step_station_ring_dynamics(world_t *w, float dt) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &w->stations[s];
+        if (!station_exists(st)) continue;
+
+        int driver_idx = station_driver_ring_idx(st);
+        if (driver_idx < 0) continue;
+        int driver_ring = driver_idx + 1;
+        float driver_speed = st->arm_speed[driver_idx];
+
+        /* Driver: kinematic update from arm_speed. */
+        st->arm_rotation[driver_idx] += driver_speed * dt;
+        st->arm_omega[driver_idx] = driver_speed;
+
+        for (int idx = 0; idx < STATION_NUM_RINGS && idx < MAX_ARMS; idx++) {
+            if (idx == driver_idx) continue;
+            int ring = idx + 1;
+
+            float net_torque = 0.0f;
+            for (int m = 0; m < st->module_count; m++) {
+                const station_module_t *prod = &st->modules[m];
+                if (prod->scaffold) continue;
+                if (!module_requires_pair(prod->type)) continue;
+
+                station_slot_pair_t cand[2];
+                int n = station_pair_neighbors((int)prod->ring, (int)prod->slot, cand);
+                module_type_t need = module_pair_intake(prod->type);
+                int hop_ring = -1, hop_slot = -1;
+                for (int c = 0; c < n; c++) {
+                    if (station_module_at(st, cand[c].ring, cand[c].slot) == need) {
+                        hop_ring = cand[c].ring;
+                        hop_slot = cand[c].slot;
+                        break;
+                    }
+                }
+                if (hop_ring < 0) continue;
+
+                int ra = (int)prod->ring, rb = hop_ring;
+                /* Only spokes that span this passive ring AND the
+                 * driver contribute torque to this ring's dynamics. */
+                if (!((ra == ring && rb == driver_ring) ||
+                      (rb == ring && ra == driver_ring))) continue;
+
+                int sa = (int)prod->slot, sb = hop_slot;
+                int slots_a = STATION_RING_SLOTS[ra];
+                int slots_b = STATION_RING_SLOTS[rb];
+                float alpha_a = TWO_PI_F * (float)sa / (float)slots_a;
+                float alpha_b = TWO_PI_F * (float)sb / (float)slots_b;
+                float wa = st->arm_rotation[ra-1] + alpha_a;
+                float wb = st->arm_rotation[rb-1] + alpha_b;
+
+                /* Misalignment: the spoke wants both endpoints to lie
+                 * on the same radial line. Sign convention: positive
+                 * dr means the passive ring is BEHIND the driver and
+                 * needs forward torque. */
+                float dr = (ra == ring) ? (wb - wa) : (wa - wb);
+                while (dr > PI_F)  dr -= TWO_PI_F;
+                while (dr < -PI_F) dr += TWO_PI_F;
+                net_torque += RING_SPOKE_K * sinf(dr);
+            }
+
+            /* Drag opposes absolute angular velocity. The phase lag at
+             * steady state is arcsin(mu*omega / (k*N_spokes)). */
+            net_torque -= RING_DRAG_MU * st->arm_omega[idx];
+
+            st->arm_omega[idx] += (net_torque / RING_INERTIA_I) * dt;
+            st->arm_rotation[idx] += st->arm_omega[idx] * dt;
+
+            while (st->arm_rotation[idx] >  TWO_PI_F) st->arm_rotation[idx] -= TWO_PI_F;
+            while (st->arm_rotation[idx] < -TWO_PI_F) st->arm_rotation[idx] += TWO_PI_F;
+        }
+
+        while (st->arm_rotation[driver_idx] >  TWO_PI_F) st->arm_rotation[driver_idx] -= TWO_PI_F;
+        while (st->arm_rotation[driver_idx] < -TWO_PI_F) st->arm_rotation[driver_idx] += TWO_PI_F;
+    }
+}
+
 void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
     w->time += dt;
-    /* Derive ring rotation from world time — deterministic, no drift between
-     * client and server since both share the same world.time. */
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        if (!station_exists(&w->stations[s])) continue;
-        float base = w->stations[s].arm_speed[0] * w->time;
-        base = base - floorf(base / TWO_PI_F) * TWO_PI_F;
-        for (int r = 0; r < STATION_NUM_RINGS && r < MAX_ARMS; r++) {
-            w->stations[s].arm_rotation[r] = base;
-        }
-    }
+    step_station_ring_dynamics(w, dt);
     sim_step_asteroid_dynamics(w, dt);
     maintain_asteroid_field(w, dt);
     /* Gravity + asteroid collisions at 30Hz (not 120Hz) — O(N²) is expensive */
@@ -4843,9 +4936,12 @@ void world_reset(world_t *w) {
      * producer — no ornamental hopper rings. */
     add_module_at(&w->stations[0], MODULE_HOPPER,       2, 4);
     w->stations[0].arm_count = 2;
-    w->stations[0].arm_speed[0] = STATION_RING_SPEED;
-    w->stations[0].ring_offset[0] = 0.0f;
-    w->stations[0].ring_offset[1] = 1.05f;  /* ~60° offset — unique silhouette */
+    /* Ring 2 (idx 1) is the driver — ring 2 spins, ring 1 is dragged
+     * along by the cross-ring spoke spring. Prospect has only one
+     * spoke (FURNACE@1:2 ↔ HOPPER@2:4) so coupling is loose; ring 1's
+     * steady-state phase lag is large. ring_offset stays at 0; the
+     * spoke dynamics determine relative phase. */
+    w->stations[0].arm_speed[1] = STATION_RING_SPEED;
     rebuild_station_services(&w->stations[0]);
     /* Stations are sovereign currency issuers. Net issuance is derived
      * from -Σ(ledger.balance) via station_credit_pool(); conservation
@@ -4883,10 +4979,7 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[1], MODULE_HOPPER,       3, 0); /* feeds FRAME_PRESS    */
     add_module_at(&w->stations[1], MODULE_HOPPER,       3, 3); /* feeds SHIPYARD       */
     w->stations[1].arm_count = 3;
-    w->stations[1].arm_speed[0] = STATION_RING_SPEED;
-    w->stations[1].ring_offset[0] = 0.0f;
-    w->stations[1].ring_offset[1] = 2.40f;  /* ~137° offset */
-    w->stations[1].ring_offset[2] = 1.05f;  /* ~60° offset */
+    w->stations[1].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drives */
     rebuild_station_services(&w->stations[1]);
     snprintf(w->stations[1].station_slug, sizeof(w->stations[1].station_slug), "kepler");
     snprintf(w->stations[1].currency_name, sizeof(w->stations[1].currency_name), "kepler bonds");
@@ -4938,10 +5031,7 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_FURNACE,      3, 4); /* 160° ↔ ring 2 slot 3       */
     add_module_at(&w->stations[2], MODULE_HOPPER,       3, 7); /* feeds ring-2 TRACTOR_FAB   */
     w->stations[2].arm_count = 3;
-    w->stations[2].arm_speed[0] = STATION_RING_SPEED;
-    w->stations[2].ring_offset[0] = 0.0f;
-    w->stations[2].ring_offset[1] = 0.52f;  /* ~30° offset */
-    w->stations[2].ring_offset[2] = 1.83f;  /* ~105° offset */
+    w->stations[2].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drives */
     rebuild_station_services(&w->stations[2]);
     snprintf(w->stations[2].station_slug, sizeof(w->stations[2].station_slug), "helios");
     snprintf(w->stations[2].currency_name, sizeof(w->stations[2].currency_name), "helios credits");

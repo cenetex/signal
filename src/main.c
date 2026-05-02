@@ -707,18 +707,13 @@ static void sim_step(float dt) {
     audio_step(&g.audio, dt);
 
     /* Advance world time locally in multiplayer (server doesn't send it).
-     * Derive ring rotation from world time — deterministic from speed * time. */
+     * Run the same spoke + drag dynamics as the server. As long as
+     * client and server start from matching arm_rotation/arm_omega
+     * (snapshotted via station_authority sync) and tick at matching
+     * dt, the rings stay coherent. */
     if (g.multiplayer_enabled) {
         g.world.time += dt;
-        for (int s = 0; s < MAX_STATIONS; s++) {
-            station_t *st = &g.world.stations[s];
-            if (!station_exists(st)) continue;
-            float base = st->arm_speed[0] * g.world.time;
-            base = base - floorf(base / TWO_PI_F) * TWO_PI_F;
-            for (int r = 0; r < STATION_NUM_RINGS && r < MAX_ARMS; r++) {
-                st->arm_rotation[r] = base;
-            }
-        }
+        step_station_ring_dynamics(&g.world, dt);
     }
 
     /* Commission flash countdown */

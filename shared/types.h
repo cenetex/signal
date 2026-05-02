@@ -347,8 +347,15 @@ typedef struct {
     /* Ring rotation — all rings share one speed, each has a fixed angular offset */
     int arm_count;                    /* number of active rings with rotation */
     float arm_rotation[MAX_ARMS];     /* per-ring rotation angle (radians) */
-    float arm_speed[MAX_ARMS];        /* per-ring rotation speed (rad/s) — only [0] used */
-    float ring_offset[MAX_ARMS];      /* fixed angular offset per ring (radians) */
+    float arm_speed[MAX_ARMS];        /* DRIVER ring nominal angular velocity
+                                       * (rad/s). Passive rings ignore this; their
+                                       * speed is driven by spoke spring + drag in
+                                       * step_station_ring_dynamics. */
+    float arm_omega[MAX_ARMS];        /* passive ring angular velocity state — only
+                                       * touched by step_station_ring_dynamics. */
+    float ring_offset[MAX_ARMS];      /* fixed angular offset per ring (radians) —
+                                       * legacy; new stations leave at 0 and let
+                                       * spoke dynamics determine relative phase. */
     char hail_message[256];           /* AI-authored station message of the day */
     char station_slug[32];            /* URL slug for CDN assets (e.g. "prospect") */
     char currency_name[32];           /* station-local currency label, e.g. "helios credits".

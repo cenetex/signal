@@ -574,8 +574,10 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  * stations = +61440 bytes.
  * v47: cross-ring pair-rule reseed adds modules to Kepler (+5) and
  * Helios (+2). Module placements live in the catalog file, not
- * world.sav, so EXPECTED_SAVE_SIZE doesn't shift. */
-#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40 - 64 * 4 + 64 * 16 * 60)
+ * world.sav, so EXPECTED_SAVE_SIZE doesn't shift.
+ * v48: spoke + drag ring dynamics adds arm_omega[MAX_ARMS] = 4
+ * floats × MAX_STATIONS=64 = +1024 bytes. */
+#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40 - 64 * 4 + 64 * 16 * 60 + 64 * 4 * 4)
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -612,7 +614,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 47);
+    ASSERT_EQ_INT((int)version, 48);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
