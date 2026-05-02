@@ -689,7 +689,14 @@ float nav_forward_clearance(const world_t *w, vec2 pos, vec2 vel,
                 if (checked[word] & (1ULL << bit)) continue;
                 checked[word] |= (1ULL << bit);
                 const asteroid_t *a = &w->asteroids[idx];
-                if (!a->active || a->tier == ASTEROID_TIER_S) continue;
+                /* Runtime steering MUST see S-tier fragments — they
+                 * collide and damage just like bigger rocks
+                 * (sim_ai.c::npc_resolve_asteroid_collisions). The
+                 * graph-builder version (nav_line_clear) skips them
+                 * because they're short-lived and would constantly
+                 * invalidate paths, but the moment-by-moment "what's
+                 * in front of me" check needs every active rock. */
+                if (!a->active) continue;
                 vec2 to_a = v2_sub(a->pos, pos);
                 float fd = v2_dot(to_a, fwd);
                 if (fd < -a->radius || fd > lookahead) continue;

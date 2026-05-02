@@ -738,44 +738,53 @@ static void resolve_npc_circle(npc_ship_t *npc, vec2 center, float radius) {
 
 /* Push NPC out of a corridor annular sector (with angular margin).
  * arc_delta is the canonical forward span from the geom emitter — no
- * shortest-arc normalization. */
-static void resolve_npc_annular_sector(npc_ship_t *npc, vec2 center,
+ * shortest-arc normalization. Returns true if a push fired (caller
+ * uses this to force a path replan, otherwise the NPC's path keeps
+ * pointing into the wall and it just bashes again next frame). */
+#define NPC_COLLISION_SKIN 1.5f
+static bool resolve_npc_annular_sector(npc_ship_t *npc, vec2 center,
                                         float ring_r, float angle_a, float arc_delta) {
     const hull_def_t *hull = npc_hull_def(npc);
     float ship_r = hull->ship_radius;
     vec2 delta = v2_sub(npc->pos, center);
     float dist = sqrtf(v2_len_sq(delta));
-    if (dist < 1.0f) return;
+    if (dist < 1.0f) return false;
 
     float r_inner = ring_r - STATION_CORRIDOR_HW - ship_r;
     float r_outer = ring_r + STATION_CORRIDOR_HW + ship_r;
-    if (dist <= r_inner || dist >= r_outer) return;
+    if (dist <= r_inner || dist >= r_outer) return false;
 
     /* Angular test with margin (matches player collision) */
     float npc_angle = atan2f(delta.y, delta.x);
     float angular_margin = (dist > 1.0f) ? asinf(fminf(ship_r / dist, 1.0f)) : 0.0f;
     float expanded_start = angle_a - angular_margin;
     float expanded_da = arc_delta + 2.0f * angular_margin;
-    if (angle_in_arc(npc_angle, expanded_start, expanded_da) < 0.0f) return;
+    if (angle_in_arc(npc_angle, expanded_start, expanded_da) < 0.0f) return false;
 
-    /* Push radially to nearest edge */
+    /* Push radially to nearest edge, plus COLLISION_SKIN so the next
+     * frame's tangential slide doesn't immediately re-trigger this
+     * same corridor (the player version of this function has the
+     * same skin — without it, NPCs visibly oscillate against the
+     * wall every tick). */
     vec2 radial = v2_scale(delta, 1.0f / dist);
     float d_inner = dist - (ring_r - STATION_CORRIDOR_HW);
     float d_outer = (ring_r + STATION_CORRIDOR_HW) - dist;
     if (d_inner < d_outer) {
-        npc->pos = v2_add(center, v2_scale(radial, r_inner));
+        npc->pos = v2_add(center, v2_scale(radial, r_inner - NPC_COLLISION_SKIN));
         float vt = v2_dot(npc->vel, radial);
         if (vt > 0.0f) npc->vel = v2_sub(npc->vel, v2_scale(radial, vt * 1.0f));
     } else {
-        npc->pos = v2_add(center, v2_scale(radial, r_outer));
+        npc->pos = v2_add(center, v2_scale(radial, r_outer + NPC_COLLISION_SKIN));
         float vt = v2_dot(npc->vel, radial);
         if (vt < 0.0f) npc->vel = v2_sub(npc->vel, v2_scale(radial, vt * 1.0f));
     }
+    return true;
 }
 
 static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
     const hull_def_t *hull = npc_hull_def(npc);
     float ship_r = hull->ship_radius;
+    bool any_push = false;
     for (int i = 0; i < MAX_STATIONS; i++) {
         station_t *st = &w->stations[i];
         if (!station_collides(st)) continue;
@@ -813,9 +822,22 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
             }
 
             if (!near_module) {
-                resolve_npc_annular_sector(npc, geom.center,
-                    ring_r, geom.corridors[ci].angle_a, geom.corridors[ci].arc_delta);
+                if (resolve_npc_annular_sector(npc, geom.center,
+                        ring_r, geom.corridors[ci].angle_a, geom.corridors[ci].arc_delta)) {
+                    any_push = true;
+                }
             }
+        }
+    }
+    /* Any corridor push means our cached A* path is leading us into
+     * walls — force a replan so the next tick's flight_steer_to picks
+     * a fresh route around the obstacle. Without this the NPC parks
+     * against the wall, since path-following keeps pointing at the
+     * same target and the forward-clearance brake bottoms out. */
+    if (any_push) {
+        int slot = (int)(npc - w->npc_ships);
+        if (slot >= 0 && slot < MAX_NPC_SHIPS) {
+            nav_force_replan(nav_npc_path(slot));
         }
     }
 }
