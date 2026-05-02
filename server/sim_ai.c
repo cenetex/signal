@@ -636,18 +636,18 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
 }
 
 /* Forward decl — definition below; npc_steer_toward routes through it. */
-static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd,
-                                  float accel, float turn_speed, float dt);
+static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt);
 
 /* Direct face-and-thrust steering used by the MINING-approach state.
- * #294 Slice 3a: now produces a normalized flight_cmd_t and routes
- * through npc_apply_flight_cmd so all NPC physics goes through the
- * same sim_ship primitives as the path-following steer. */
-static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float turn_speed, float dt) {
+ * Produces a normalized flight_cmd_t and routes through
+ * npc_apply_flight_cmd so all NPC physics goes through the same
+ * sim_ship primitives as the path-following steer. */
+static void npc_steer_toward(npc_ship_t *npc, vec2 target, float dt) {
+    const hull_def_t *hull = npc_hull_def(npc);
     vec2 delta = v2_sub(target, npc->pos);
     float desired = atan2f(delta.y, delta.x);
     float diff = wrap_angle(desired - npc->angle);
-    float max_turn = turn_speed * dt;
+    float max_turn = hull->turn_speed * dt;
     flight_cmd_t cmd = {0.0f, 1.0f};
     if (max_turn > 0.0f) {
         float t = diff / max_turn;
@@ -655,7 +655,7 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float tu
         else if (t < -1.0f) t = -1.0f;
         cmd.turn = t;
     }
-    npc_apply_flight_cmd(npc, cmd, accel, turn_speed, dt);
+    npc_apply_flight_cmd(npc, cmd, dt);
 }
 
 /* (Reactive avoidance steering removed — all NPC/autopilot navigation
@@ -677,26 +677,20 @@ static ship_t ship_view_from_npc(const npc_ship_t *npc) {
 }
 
 /* Apply a normalized flight_cmd_t (turn/thrust each in -1..1) to an NPC,
- * routed through the shared sim_ship primitives (#294 Slice 3a). Caller
- * still owns physics integration (npc_apply_physics) and any thrust<0
- * handling (e.g. hover-specific brake-away-from-target).
+ * routed through the shared sim_ship primitives. Caller still owns
+ * physics integration (npc_apply_physics) and any thrust<0 handling
+ * (e.g. hover-specific brake-away-from-target).
  *
- * Forward-thrust-only gate is preserved: NPCs don't have a brake
- * controller, so flight_steer_to's negative-thrust "panic stop" clamps
- * to 0. step_ship_thrust always uses hull->accel; the explicit `accel`
- * parameter is honored by scaling thrust_input (so callers like the
- * hauler-tow path that pass `hull->accel * 0.6f` get the same throttle
- * as before). turn_speed is read from the hull def via step_ship_rotation. */
-static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd,
-                                  float accel, float turn_speed, float dt) {
-    (void)turn_speed;  /* hull-driven via step_ship_rotation */
-
+ * Forward-thrust-only gate: NPCs don't have a brake controller, so
+ * flight_steer_to's negative-thrust "panic stop" clamps to 0. To
+ * throttle the engine (hauler-tow paths used to pass hull->accel *
+ * 0.6f), scale cmd.thrust before calling — thrust ∈ [-1,1] so this is
+ * equivalent to the old accel multiplier. */
+static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
     ship_t view = ship_view_from_npc(npc);
     step_ship_rotation(&view, dt, cmd.turn);
 
     float thrust_in = (cmd.thrust > 0.0f) ? cmd.thrust : 0.0f;
-    const hull_def_t *hull = ship_hull_def(&view);
-    if (hull->accel > 0.0001f) thrust_in *= accel / hull->accel;
     vec2 fwd = ship_forward(view.angle);
     step_ship_thrust(&view, dt, thrust_in, fwd, /*boost=*/false, 0.0f);
 
@@ -705,28 +699,30 @@ static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd,
     npc->thrusting = thrust_in > 0.0f;
 }
 
-/* A*-guided NPC steering via the shared flight controller.
- * Creates a temporary ship_t so flight_steer_to can read pos/vel/angle/hull_class.
- * Phase 2 will give NPCs a real ship_t; this is intentionally transitional. */
+/* A*-guided NPC steering via the shared flight controller. Creates a
+ * temporary ship_t so flight_steer_to can read pos/vel/angle/hull_class
+ * — slice 4 will fold ship_t into npc_ship_t and drop the view.
+ *
+ * `thrust_scale` ∈ (0,1] throttles forward thrust without changing the
+ * controller's turn output; pass 1.0 for full engine, smaller values
+ * for tow paths (was hull->accel * scale before). */
 static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
-                                vec2 final_target, float accel, float turn_speed, float dt) {
+                                vec2 final_target, float thrust_scale, float dt) {
     ship_t view = ship_view_from_npc(npc);
     nav_path_t *path = nav_npc_path(npc_idx);
     flight_cmd_t cmd = flight_steer_to(w, &view, path, final_target,
                                         0.0f, 200.0f, dt);
-    npc_apply_flight_cmd(npc, cmd, accel, turn_speed, dt);
+    cmd.thrust *= thrust_scale;
+    npc_apply_flight_cmd(npc, cmd, dt);
 }
 
-/* Drag + position integration + NPC signal-pushback. #294 Slice 3a:
- * routes through step_ship_motion via the ship_view+writeback adapter
- * (drag is hull-driven). NPCs pass cached_signal=1.0 to suppress the
- * strong frontier yank that step_ship_motion does for players — NPCs
- * use the gentler confidence-graduated push below, which kicks in
- * earlier (below SIGNAL_BAND_OPERATIONAL) so they stay near coverage.
- * The `drag` parameter is preserved for API symmetry but ignored. */
-static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world_t *w) {
-    (void)drag;  /* hull-driven via step_ship_motion */
-
+/* Drag + position integration + NPC signal-pushback, routed through
+ * step_ship_motion via the ship_view+writeback adapter (drag is
+ * hull-driven). NPCs pass cached_signal=1.0 to suppress the strong
+ * frontier yank that step_ship_motion does for players — NPCs use the
+ * gentler confidence-graduated push below, which kicks in earlier
+ * (below SIGNAL_BAND_OPERATIONAL) so they stay near coverage. */
+static void npc_apply_physics(npc_ship_t *npc, float dt, const world_t *w) {
     ship_t view = ship_view_from_npc(npc);
     step_ship_motion(&view, dt, w, /*cached_signal=*/1.0f);
 
@@ -1109,8 +1105,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_TRAVEL_TO_DEST: {
         station_t *dest = &w->stations[npc->dest_station];
         vec2 approach = station_approach_target(dest, npc->pos);
-        npc_steer_with_path(w, n, npc, approach, hull->accel, hull->turn_speed, dt);
-        npc_apply_physics(npc, hull->drag, dt, w);
+        npc_steer_with_path(w, n, npc, approach, /*thrust_scale=*/1.0f, dt);
+        npc_apply_physics(npc, dt, w);
         float dock_r = dest->dock_radius * 0.7f;
         if (v2_dist_sq(npc->pos, dest->pos) < dock_r * dock_r) {
             npc->vel = v2(0.0f, 0.0f);
@@ -1209,8 +1205,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_RETURN_TO_STATION: {
         station_t *home = &w->stations[npc->home_station];
         vec2 approach_home = station_approach_target(home, npc->pos);
-        npc_steer_with_path(w, n, npc, approach_home, hull->accel, hull->turn_speed, dt);
-        npc_apply_physics(npc, hull->drag, dt, w);
+        npc_steer_with_path(w, n, npc, approach_home, /*thrust_scale=*/1.0f, dt);
+        npc_apply_physics(npc, dt, w);
         float dock_r = home->dock_radius * 0.7f;
         if (v2_dist_sq(npc->pos, home->pos) < dock_r * dock_r) {
             npc->vel = v2(0.0f, 0.0f);
@@ -1371,8 +1367,6 @@ static int find_loose_scaffold_for_tow(const world_t *w, const npc_ship_t *npc) 
  *   RETURN_TO_STATION → fly back to home shipyard
  */
 static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
-    const hull_def_t *hull = npc_hull_def(npc);
-
     /* If we lost our towed scaffold mid-flight (destroyed, snapped early,
      * picked up by a player), drop back to idle. */
     if (npc->towed_scaffold >= 0) {
@@ -1414,8 +1408,8 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
             npc->state_timer = HAULER_DOCK_TIME;
             break;
         }
-        npc_steer_with_path(w, n, npc, sc->pos, hull->accel, hull->turn_speed, dt);
-        npc_apply_physics(npc, hull->drag, dt, w);
+        npc_steer_with_path(w, n, npc, sc->pos, /*thrust_scale=*/1.0f, dt);
+        npc_apply_physics(npc, dt, w);
         if (v2_dist_sq(npc->pos, sc->pos) < 80.0f * 80.0f) {
             /* Grab — claim the scaffold and switch to tow mode.
              * Use towed_by = -2 - drone_index so positive values keep
@@ -1460,11 +1454,11 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
         sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
 
         vec2 approach = station_approach_target(dest, npc->pos);
-        npc_steer_with_path(w, n, npc, approach, hull->accel * 0.6f, hull->turn_speed, dt);
+        npc_steer_with_path(w, n, npc, approach, /*thrust_scale=*/0.6f, dt);
         /* Speed cap while towing — heavy load */
         float spd = v2_len(npc->vel);
         if (spd > 60.0f) npc->vel = v2_scale(npc->vel, 60.0f / spd);
-        npc_apply_physics(npc, hull->drag, dt, w);
+        npc_apply_physics(npc, dt, w);
         if (v2_dist_sq(npc->pos, dest->pos) < 600.0f * 600.0f) {
             /* Release — let the existing snap-to-slot logic in step_scaffolds
              * pick up the loose scaffold near the outpost ring. */
@@ -1478,8 +1472,8 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_RETURN_TO_STATION: {
         station_t *home = &w->stations[npc->home_station];
         vec2 approach = station_approach_target(home, npc->pos);
-        npc_steer_with_path(w, n, npc, approach, hull->accel, hull->turn_speed, dt);
-        npc_apply_physics(npc, hull->drag, dt, w);
+        npc_steer_with_path(w, n, npc, approach, /*thrust_scale=*/1.0f, dt);
+        npc_apply_physics(npc, dt, w);
         if (v2_dist_sq(npc->pos, home->pos) < (home->dock_radius * 0.7f) * (home->dock_radius * 0.7f)) {
             npc->vel = v2(0.0f, 0.0f);
             npc->state = NPC_STATE_DOCKED;
@@ -1627,8 +1621,8 @@ void step_npc_ships(world_t *w, float dt) {
                 }
             }
             asteroid_t *a = &w->asteroids[npc->target_asteroid];
-            npc_steer_with_path(w, n, npc, a->pos, hull->accel, hull->turn_speed, dt);
-            npc_apply_physics(npc, hull->drag, dt, w);
+            npc_steer_with_path(w, n, npc, a->pos, /*thrust_scale=*/1.0f, dt);
+            npc_apply_physics(npc, dt, w);
             if (v2_dist_sq(npc->pos, a->pos) < MINING_RANGE * MINING_RANGE)
                 npc->state = NPC_STATE_MINING;
             break;
@@ -1668,30 +1662,33 @@ void step_npc_ships(world_t *w, float dt) {
             }
 
             if (dist_sq > approach_r * approach_r) {
-                npc_steer_toward(npc, a->pos, hull->accel, hull->turn_speed, dt);
-                npc_apply_physics(npc, hull->drag, dt, w);
+                npc_steer_toward(npc, a->pos, dt);
+                npc_apply_physics(npc, dt, w);
                 break;
             }
 
-            /* Hover near the rock via flight controller. */
+            /* Hover near the rock via flight controller. The away-push
+             * and extra damping below are role-specific overlays that
+             * sit on top of shared sim_ship physics — same pattern as
+             * player tow drag in game_sim.c. They're intentional, not a
+             * leftover from the unification: hover wants different
+             * brake semantics than flight_steer_to (push radially away
+             * from the target, not reverse along velocity), and the 4.0
+             * extra damping is what holds the standoff distance. */
             {
                 ship_t view = ship_view_from_npc(npc);
                 flight_cmd_t cmd = flight_hover_near(w, &view, a->pos, standoff);
                 if (cmd.thrust < 0.0f) {
-                    /* Hover-specific brake: push away from the asteroid we're
-                     * hugging instead of reversing along velocity. Strip the
-                     * negative thrust before the shared apply so the helper
-                     * skips the forward-thrust branch. */
                     vec2 away = v2_norm(v2_sub(npc->pos, a->pos));
                     npc->vel = v2_add(npc->vel, v2_scale(away, hull->accel * 0.5f * dt));
                     cmd.thrust = 0.0f;
                 }
-                npc_apply_flight_cmd(npc, cmd, hull->accel, hull->turn_speed, dt);
+                npc_apply_flight_cmd(npc, cmd, dt);
                 /* Hover never lights the engine flame — keep prior visual. */
                 npc->thrusting = false;
             }
             npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (4.0f * dt)));
-            npc_apply_physics(npc, hull->drag, dt, w);
+            npc_apply_physics(npc, dt, w);
 
             /* Strict range+cone gate before firing — same metric the player
              * uses. Without this, NPCs that get shoved (NPC↔NPC collision,
@@ -1758,10 +1755,9 @@ void step_npc_ships(world_t *w, float dt) {
             }
 
             /* Slow down when towing so the fragment can keep up */
-            float tow_accel = hull->accel;
-            if (npc->towed_fragment >= 0) tow_accel *= 0.5f;
-            npc_steer_with_path(w, n, npc, delivery_target, tow_accel, hull->turn_speed, dt);
-            npc_apply_physics(npc, hull->drag, dt, w);
+            float tow_thrust_scale = (npc->towed_fragment >= 0) ? 0.5f : 1.0f;
+            npc_steer_with_path(w, n, npc, delivery_target, tow_thrust_scale, dt);
+            npc_apply_physics(npc, dt, w);
 
             /* Speed cap when towing */
             if (npc->towed_fragment >= 0) {
@@ -1805,7 +1801,7 @@ void step_npc_ships(world_t *w, float dt) {
             break;
         }
         case NPC_STATE_IDLE: {
-            npc_apply_physics(npc, hull->drag, dt, w);
+            npc_apply_physics(npc, dt, w);
             npc->state_timer -= dt;
             if (npc->state_timer <= 0.0f) {
                 /* IDLE → fragment first, fracture second. */
