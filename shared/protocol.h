@@ -381,15 +381,16 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 #define STATION_IDENTITY_PUBKEY_LEN 32         /* Ed25519 station identity (#479 B) */
 #define STATION_IDENTITY_SIZE (59 + COMMODITY_COUNT * 4 + 4 \
     + 1 + MAX_MODULES_PER_STATION * STATION_MODULE_RECORD_SIZE \
-    + 1 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4 \
+    + 1 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4 \
     + 1 + STATION_PLAN_RECORD_COUNT * STATION_PLAN_RECORD_SIZE \
     + 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT * STATION_PENDING_SCAFFOLD_RECORD_SIZE \
     + STATION_IDENTITY_CURRENCY_NAME_LEN \
     + STATION_IDENTITY_PUBKEY_LEN)
-/* The middle three "MAX_ARMS * 4" terms above are arm_speed[],
- * ring_offset[], and arm_rotation[]. arm_rotation must travel with
- * each broadcast or the client and server visibly desync once ring
- * dynamics start integrating per-tick. */
+/* The four "MAX_ARMS * 4" terms above are arm_speed[], ring_offset[],
+ * arm_rotation[], and arm_omega[]. arm_omega is needed alongside
+ * arm_rotation so the client can interpolate ring rotation forward
+ * between 30 Hz snapshots — without it the broadcast cadence shows
+ * as visibly chunky motion at 60 fps. */
 
 /* Scaffold record: [id:1][state+owner_sign:1][module_type:1][owner:1]
  *                  [pos:2xf32][vel:2xf32][radius:f32][build_amount:f32] = 28 bytes */

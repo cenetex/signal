@@ -128,6 +128,7 @@ typedef struct {
     float arm_speed[MAX_ARMS];
     float ring_offset[MAX_ARMS];
     float arm_rotation[MAX_ARMS];
+    float arm_omega[MAX_ARMS];
     int plan_count;
     struct {
         module_type_t type;

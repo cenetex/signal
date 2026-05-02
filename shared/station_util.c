@@ -298,27 +298,3 @@ bool station_pair_satisfied(const station_t *st, int ring, int slot,
     return false;
 }
 
-bool station_pair_removal_orphans(const station_t *st, int ring, int slot) {
-    module_type_t self = station_module_at(st, ring, slot);
-    if (self == MODULE_COUNT) return false;
-    /* Walk every module on the adjacent rings; if any is a producer
-     * whose own pair-intake search would land on (ring, slot) and
-     * whose required intake is `self`, removal would orphan it. */
-    int adj[] = { ring + 1, ring - 1 };
-    for (int ri = 0; ri < 2; ri++) {
-        int a = adj[ri];
-        if (a < 1 || a > STATION_NUM_RINGS) continue;
-        for (int i = 0; i < st->module_count; i++) {
-            if (st->modules[i].ring != a) continue;
-            if (st->modules[i].scaffold) continue;
-            module_type_t need = module_pair_intake(st->modules[i].type);
-            if (need == MODULE_COUNT || need != self) continue;
-            station_slot_pair_t cand[2];
-            int n = station_pair_neighbors(a, st->modules[i].slot, cand);
-            for (int c = 0; c < n; c++) {
-                if (cand[c].ring == ring && cand[c].slot == slot) return true;
-            }
-        }
-    }
-    return false;
-}

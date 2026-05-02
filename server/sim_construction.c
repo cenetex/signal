@@ -33,13 +33,19 @@ bool station_sells_scaffold(const station_t *st, module_type_t type) {
 
 void add_module_at(station_t *st, module_type_t type, uint8_t arm, uint8_t chain_pos) {
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
-    station_module_t *m = &st->modules[st->module_count++];
+    int idx = st->module_count++;
+    station_module_t *m = &st->modules[idx];
     m->type = type;
     m->ring = arm;
     m->slot = chain_pos;
     m->scaffold = false;
     m->build_progress = 1.0f;
     m->last_smelt_commodity = LAST_SMELT_NONE;
+    /* Reset the activity pulse for this slot. station_t lives across
+     * world_resets in some flows (heap-allocated test worlds), so
+     * stale pulse from a previously-occupying module would leak into
+     * the new one's spoke and bias dynamics on first tick. */
+    st->module_active_pulse[idx] = 0.0f;
 }
 
 void activate_outpost(world_t *w, int station_idx) {
@@ -127,12 +133,14 @@ void begin_module_construction_at(world_t *w, station_t *st, int station_idx, mo
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
     if (!construction_check_placement(st, type, arm, chain_pos, station_idx)) return;
 
-    station_module_t *m = &st->modules[st->module_count++];
+    int idx = st->module_count++;
+    station_module_t *m = &st->modules[idx];
     m->type = type;
     m->ring = (uint8_t)arm;
     m->slot = (uint8_t)chain_pos;
     m->scaffold = true;
     m->build_progress = 0.0f;
+    st->module_active_pulse[idx] = 0.0f;
 
     /* Generate a supply contract for the required material */
     float cost = module_build_cost(type);

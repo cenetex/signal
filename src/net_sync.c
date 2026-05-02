@@ -249,6 +249,7 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
         st->arm_speed[a] = si->arm_speed[a];
         st->ring_offset[a] = si->ring_offset[a];
         st->arm_rotation[a] = si->arm_rotation[a];
+        st->arm_omega[a] = si->arm_omega[a];
     }
     /* Placement plans (faction-shared blueprint slots) */
     st->placement_plan_count = si->plan_count;

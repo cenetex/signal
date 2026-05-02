@@ -708,11 +708,21 @@ static void sim_step(float dt) {
 
     /* Advance world time locally in multiplayer (server doesn't send it).
      * Ring rotations are authoritative server-side and arrive with
-     * each station-identity broadcast; client doesn't run dynamics
-     * locally. The 30Hz broadcast cadence ≈ 33ms staleness, well
-     * below visible at STATION_RING_SPEED. */
+     * each station-identity broadcast at ~30Hz. To avoid 33ms-step
+     * chunkiness at 60fps render, interpolate forward from the last
+     * received snapshot using its arm_omega: each frame extends
+     * arm_rotation by omega*dt, and the next snapshot snaps it back
+     * to the authoritative value. The correction per snapshot is
+     * tiny (omega * 33ms) so the snap is invisible. */
     if (g.multiplayer_enabled) {
         g.world.time += dt;
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            station_t *st = &g.world.stations[s];
+            if (!station_exists(st)) continue;
+            for (int a = 0; a < MAX_ARMS; a++) {
+                st->arm_rotation[a] += st->arm_omega[a] * dt;
+            }
+        }
     }
 
     /* Commission flash countdown */

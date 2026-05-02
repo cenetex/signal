@@ -1067,6 +1067,15 @@ void step_dock_repair_kit_fab(world_t *w, float dt) {
         st->_inventory_cache[COMMODITY_FRAME]          -= 1.0f;
         st->_inventory_cache[COMMODITY_LASER_MODULE]   -= 1.0f;
         st->_inventory_cache[COMMODITY_TRACTOR_MODULE] -= 1.0f;
+        /* Light the SHIPYARD's tractor beam. The kit-fab path doesn't
+         * go through the producer-recipe pipeline that already pulses
+         * other producers, so set it here. */
+        for (int m = 0; m < st->module_count; m++) {
+            if (st->modules[m].type == MODULE_SHIPYARD &&
+                !st->modules[m].scaffold) {
+                st->module_active_pulse[m] = 1.0f;
+            }
+        }
         manifest_consume_by_commodity(&st->manifest, COMMODITY_FRAME, 1);
         manifest_consume_by_commodity(&st->manifest, COMMODITY_LASER_MODULE, 1);
         manifest_consume_by_commodity(&st->manifest, COMMODITY_TRACTOR_MODULE, 1);

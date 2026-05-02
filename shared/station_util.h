@@ -90,9 +90,4 @@ module_type_t station_module_at(const station_t *st, int ring, int slot);
 bool          station_pair_satisfied(const station_t *st, int ring, int slot,
                                      module_type_t type);
 
-/* True when removing the module at (ring, slot) would orphan a paired
- * producer — i.e. some adjacent-ring producer still depends on this
- * slot as its required intake. */
-bool          station_pair_removal_orphans(const station_t *st, int ring, int slot);
-
 #endif
