@@ -179,72 +179,9 @@ typedef struct {
 /* Server-specific types                                              */
 /* ------------------------------------------------------------------ */
 
-typedef struct {
-    float turn;
-    float thrust;
-    bool mine;
-    bool interact;
-    bool service_sell;
-    /* Selective delivery filter for service_sell. COMMODITY_COUNT means
-     * "deliver everything that fits a contract or the primary buy slot"
-     * (the default). Setting this to a specific commodity restricts the
-     * delivery to that one commodity, so the player can keep e.g. their
-     * crystal cargo while still delivering ferrite. */
-    commodity_t service_sell_only;
-    /* Per-row sell mirror of the buy path. When `service_sell_one` is
-     * true the server sells exactly one (commodity, grade) unit per
-     * input message — matching the [1]/[2]/… buy hotkeys. Bulk paths
-     * (sell-all hotkey [S], contract delivery from the yard tab) leave
-     * `service_sell_one` false and continue draining everything that
-     * fits. `service_sell_grade` selects which manifest unit is
-     * dequeued; MINING_GRADE_COUNT means "any grade, FIFO". */
-    mining_grade_t service_sell_grade;
-    bool service_sell_one;
-    bool service_repair;
-    bool upgrade_mining;
-    bool upgrade_hold;
-    bool upgrade_tractor;
-    bool place_outpost;
-    /* Optional explicit target for tow placement. If place_target_station >= 0,
-     * the server places the towed scaffold at that ring/slot; otherwise it
-     * auto-snaps to the closest valid slot or founds a new outpost. */
-    int8_t place_target_station;
-    int8_t place_target_ring;
-    int8_t place_target_slot;
-    /* Planning mode: add a placement plan to a station. */
-    bool add_plan;
-    int8_t plan_station;
-    int8_t plan_ring;
-    int8_t plan_slot;
-    module_type_t plan_type;
-    /* Create a new planned outpost (server-side ghost). */
-    bool create_planned_outpost;
-    vec2 planned_outpost_pos;
-    /* Cancel a planned outpost (only the owner can). */
-    bool cancel_planned_outpost;
-    int8_t cancel_planned_station;
-    /* Cancel a single placement plan on a station slot. */
-    bool cancel_plan_slot;
-    int8_t cancel_plan_st;
-    int8_t cancel_plan_ring;
-    int8_t cancel_plan_sl;
-    bool buy_scaffold_kit;
-    module_type_t scaffold_kit_module; /* what module type the kit builds */
-    bool buy_product;
-    commodity_t buy_commodity;
-    /* Optional grade hint for manifest-first buys. MINING_GRADE_COUNT =
-     * "any grade available, FIFO"; a specific grade means "only transfer
-     * a unit of this grade — if none exist, the float path still runs
-     * as a legacy common row". */
-    mining_grade_t buy_grade;
-    int mining_target_hint;  /* client's hover_asteroid, -1 = none */
-    bool hail;               /* collect pending credits from nearby station */
-    bool tractor_hold;       /* R held — tractor active this frame */
-    bool release_tow;        /* R tapped — drop all towed fragments */
-    bool reset;
-    bool toggle_autopilot;   /* one-shot: flip autopilot_mode on/off */
-    bool boost;              /* Shift held — thrust multiplier + hull drain */
-} input_intent_t;
+/* input_intent_t lives in shared/types.h since slice 2 of #294 — both
+ * server_player_t and npc_ship_t carry one and feed the same
+ * step_player / sim_ship pipeline. */
 
 typedef struct {
     bool connected;

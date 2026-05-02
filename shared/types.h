@@ -616,6 +616,79 @@ typedef enum {
     NPC_STATE_UNLOADING,
 } npc_state_t;
 
+/* Input intent — the per-tick command shape that drives a ship. Both
+ * the player path (sp->input populated by client keyboard sample) and
+ * the NPC path (npc->input populated by the AI brain) feed into the
+ * same step_player / sim_ship pipeline. Most fields are player-only
+ * UI controls; only turn / thrust / boost / mine are wired on the NPC
+ * side today. (Slice 2 of #294.) */
+typedef struct {
+    float turn;
+    float thrust;
+    bool mine;
+    bool interact;
+    bool service_sell;
+    /* Selective delivery filter for service_sell. COMMODITY_COUNT means
+     * "deliver everything that fits a contract or the primary buy slot"
+     * (the default). Setting this to a specific commodity restricts the
+     * delivery to that one commodity, so the player can keep e.g. their
+     * crystal cargo while still delivering ferrite. */
+    commodity_t service_sell_only;
+    /* Per-row sell mirror of the buy path. When `service_sell_one` is
+     * true the server sells exactly one (commodity, grade) unit per
+     * input message — matching the [1]/[2]/… buy hotkeys. Bulk paths
+     * (sell-all hotkey [S], contract delivery from the yard tab) leave
+     * `service_sell_one` false and continue draining everything that
+     * fits. `service_sell_grade` selects which manifest unit is
+     * dequeued; MINING_GRADE_COUNT means "any grade, FIFO". */
+    mining_grade_t service_sell_grade;
+    bool service_sell_one;
+    bool service_repair;
+    bool upgrade_mining;
+    bool upgrade_hold;
+    bool upgrade_tractor;
+    bool place_outpost;
+    /* Optional explicit target for tow placement. If place_target_station >= 0,
+     * the server places the towed scaffold at that ring/slot; otherwise it
+     * auto-snaps to the closest valid slot or founds a new outpost. */
+    int8_t place_target_station;
+    int8_t place_target_ring;
+    int8_t place_target_slot;
+    /* Planning mode: add a placement plan to a station. */
+    bool add_plan;
+    int8_t plan_station;
+    int8_t plan_ring;
+    int8_t plan_slot;
+    module_type_t plan_type;
+    /* Create a new planned outpost (server-side ghost). */
+    bool create_planned_outpost;
+    vec2 planned_outpost_pos;
+    /* Cancel a planned outpost (only the owner can). */
+    bool cancel_planned_outpost;
+    int8_t cancel_planned_station;
+    /* Cancel a single placement plan on a station slot. */
+    bool cancel_plan_slot;
+    int8_t cancel_plan_st;
+    int8_t cancel_plan_ring;
+    int8_t cancel_plan_sl;
+    bool buy_scaffold_kit;
+    module_type_t scaffold_kit_module; /* what module type the kit builds */
+    bool buy_product;
+    commodity_t buy_commodity;
+    /* Optional grade hint for manifest-first buys. MINING_GRADE_COUNT =
+     * "any grade available, FIFO"; a specific grade means "only transfer
+     * a unit of this grade — if none exist, the float path still runs
+     * as a legacy common row". */
+    mining_grade_t buy_grade;
+    int mining_target_hint;  /* client's hover_asteroid, -1 = none */
+    bool hail;               /* collect pending credits from nearby station */
+    bool tractor_hold;       /* R held — tractor active this frame */
+    bool release_tow;        /* R tapped — drop all towed fragments */
+    bool reset;
+    bool toggle_autopilot;   /* one-shot: flip autopilot_mode on/off */
+    bool boost;              /* Shift held — thrust multiplier + hull drain */
+} input_intent_t;
+
 typedef struct {
     bool active;
     npc_role_t role;
@@ -627,13 +700,14 @@ typedef struct {
      * Save format v50+ serializes ship.{pos,vel,angle,hull_class}
      * directly; v49 saves load by remap into the embedded body. */
     ship_t ship;
-    /* Per-NPC turn/thrust intent, symmetric with sp->input.turn /
-     * .thrust on the player path. AI brain writes via npc_set_intent;
-     * the apply path reads from here. Only the physics-relevant fields
-     * are mirrored — full input_intent_t can't live here because
-     * shared/types.h has to compile against the client too. */
-    float intent_turn;
-    float intent_thrust;
+    /* Per-NPC input intent, the same shape sp->input has on the player
+     * side. AI brain writes turn / thrust / boost / mine each tick via
+     * npc_set_intent; the apply path reads from here. The
+     * player-specific UI fields (place_outpost, plan_*, buy_*, etc.)
+     * are unused on NPCs today — they exist on the struct because the
+     * unified shape lets a future autopilot/agent path drive a ship
+     * through the same dispatch as a human player. */
+    input_intent_t input;
     float cargo[COMMODITY_COUNT];
     int target_asteroid;
     int home_station;

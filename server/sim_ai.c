@@ -672,24 +672,23 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float dt) {
  * throttle the engine (hauler-tow paths used to pass hull->accel *
  * 0.6f), scale cmd.thrust before calling — thrust ∈ [-1,1] so this is
  * equivalent to the old accel multiplier. */
-/* Stamp the NPC's intent fields — symmetric with the player path that
- * mutates sp->input.turn / .thrust at the input layer. The apply path
- * (npc_apply_flight_cmd) reads from these instead of taking a
- * flight_cmd_t directly. (b) of #294: NPCs and players now share an
- * "intent → physics" shape, even though the brain that produces NPC
- * intent is still C code rather than keystrokes. */
+/* Stamp the NPC's input intent — symmetric with sp->input on the
+ * player path. The apply path reads from npc->input.{turn,thrust}
+ * instead of taking a flight_cmd_t directly. NPCs and players share
+ * the same input → physics pipeline; what differs is who fills the
+ * struct (AI brain vs. keyboard sample). */
 static void npc_set_intent(npc_ship_t *npc, flight_cmd_t cmd) {
-    npc->intent_turn = cmd.turn;
-    npc->intent_thrust = cmd.thrust;
+    npc->input.turn = cmd.turn;
+    npc->input.thrust = cmd.thrust;
 }
 
 static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
     npc_set_intent(npc, cmd);
-    step_ship_rotation(&npc->ship, dt, npc->intent_turn);
+    step_ship_rotation(&npc->ship, dt, npc->input.turn);
 
     /* NPCs gate to forward thrust only — flight_steer_to's panic-stop
      * (-1) is harmless here, equivalent to "engine idle" on player. */
-    float thrust_in = (npc->intent_thrust > 0.0f) ? npc->intent_thrust : 0.0f;
+    float thrust_in = (npc->input.thrust > 0.0f) ? npc->input.thrust : 0.0f;
     vec2 fwd = ship_forward(npc->ship.angle);
     step_ship_thrust(&npc->ship, dt, thrust_in, fwd, /*boost=*/false, 0.0f);
 
