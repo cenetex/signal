@@ -230,14 +230,20 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
      * required input commodity, find the hopper tagged with that
      * commodity and draw a tractor beam to it.
      *
-     * Beam gating: a beam only fires if the producer and hopper are
-     * on the SAME or ADJACENT rings (|Δring| ≤ 1). A beam from
-     * ring 1 to ring 3 would cross ring 2's modules and look like
-     * it's clipping through the station — visually wrong. We still
-     * emit the spoke (so the data is there for downstream logic
-     * that wants to know "this producer is paired with this hopper"
-     * conceptually) but pulse is forced to zero so the renderer +
-     * dynamics treat it as inactive. */
+     * Furnace↔ore beams represent physical rock-pulling — they need
+     * clear line-of-sight to look right, otherwise the beam visibly
+     * cuts through other modules at off-radial rotation phases. We
+     * still emit the spoke (so the ring dynamics keeps applying
+     * spring torque to pull furnace + hopper into alignment), but
+     * the pulse is gated by a line-segment-vs-module-circle test:
+     * if any other module's collision circle intersects the beam
+     * line, pulse drops to 0 → the renderer hides it and dynamics
+     * stops contributing torque from this spoke. As the ring
+     * dynamics rotates the hopper into alignment, obstruction
+     * clears and the beam relights.
+     *
+     * Other supply lines (ingots, frames, laser/tractor modules)
+     * are abstract digital flow — they can cross rings freely. */
     for (int m = 0; m < st->module_count; m++) {
         const station_module_t *prod = &st->modules[m];
         if (prod->scaffold) continue;
@@ -249,20 +255,44 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
             if (hop < 0) continue;
             if (out->spoke_count >= STATION_GEOM_MAX_SPOKES) break;
             const station_module_t *hm = &st->modules[hop];
-            int dring = (int)prod->ring - (int)hm->ring;
-            if (dring < 0) dring = -dring;
             geom_spoke_t *sp = &out->spokes[out->spoke_count++];
             sp->a = module_world_pos_ring(st, prod->ring, prod->slot);
             sp->b = module_world_pos_ring(st, hm->ring, hm->slot);
             sp->ring_a = prod->ring;
             sp->ring_b = hm->ring;
             sp->commodity = (uint8_t)c;
-            /* Force pulse to zero when the beam would have to cross
-             * an intermediate ring — the corresponding hopper is too
-             * far for a clean tractor beam. The producer must wait
-             * for haulers to deliver via the station's pooled
-             * inventory instead. */
-            sp->pulse = (dring <= 1) ? st->module_active_pulse[m] : 0.0f;
+            sp->pulse = st->module_active_pulse[m];
+
+            /* LoS gate for FURNACE → ore-hopper beams only. */
+            bool furnace_ore = (prod->type == MODULE_FURNACE) &&
+                (c == COMMODITY_FERRITE_ORE || c == COMMODITY_CUPRITE_ORE ||
+                 c == COMMODITY_CRYSTAL_ORE);
+            if (!furnace_ore) continue;
+
+            /* Walk other module circles on this station; if any
+             * intersects the segment ab, kill the pulse. The two
+             * endpoints (producer + hopper) are excluded since the
+             * beam naturally starts/ends inside their circles. */
+            for (int oi = 0; oi < st->module_count; oi++) {
+                if (oi == m || oi == hop) continue;
+                if (st->modules[oi].scaffold) continue;
+                vec2 mp = module_world_pos_ring(st,
+                    st->modules[oi].ring, st->modules[oi].slot);
+                vec2 ab = v2_sub(sp->b, sp->a);
+                float ab_sq = v2_len_sq(ab);
+                if (ab_sq < 0.0001f) continue;
+                vec2 ap = v2_sub(mp, sp->a);
+                float t = v2_dot(ap, ab) / ab_sq;
+                if (t < 0.0f) t = 0.0f;
+                if (t > 1.0f) t = 1.0f;
+                vec2 closest = v2_add(sp->a, v2_scale(ab, t));
+                float d_sq = v2_len_sq(v2_sub(mp, closest));
+                float r = STATION_MODULE_COL_RADIUS;
+                if (d_sq < r * r) {
+                    sp->pulse = 0.0f;
+                    break;
+                }
+            }
         }
     }
 }
