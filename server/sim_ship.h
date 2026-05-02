@@ -71,4 +71,5 @@ float resolve_ship_annular_pushback(ship_t *ship, vec2 center,
  * damage/replan on top. */
 float resolve_ship_circle_pushback(ship_t *ship, vec2 center, float radius);
 
+
 #endif /* SIM_SHIP_H */

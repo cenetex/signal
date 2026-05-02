@@ -689,14 +689,14 @@ float nav_forward_clearance(const world_t *w, vec2 pos, vec2 vel,
                 if (checked[word] & (1ULL << bit)) continue;
                 checked[word] |= (1ULL << bit);
                 const asteroid_t *a = &w->asteroids[idx];
-                /* Runtime steering MUST see S-tier fragments — they
-                 * collide and damage just like bigger rocks
-                 * (sim_ai.c::npc_resolve_asteroid_collisions). The
-                 * graph-builder version (nav_line_clear) skips them
-                 * because they're short-lived and would constantly
-                 * invalidate paths, but the moment-by-moment "what's
-                 * in front of me" check needs every active rock. */
-                if (!a->active) continue;
+                /* Skip S-tier fragments here. They're meant to be
+                 * tractored, not avoided — miners need to approach
+                 * them, and the fragment cloud near a station would
+                 * brake every passing NPC to a halt. Collision still
+                 * fires on contact (sim_ai.c::npc_resolve_asteroid_collisions
+                 * doesn't filter by tier), but pathing pretends the
+                 * fragments aren't there. */
+                if (!a->active || a->tier == ASTEROID_TIER_S) continue;
                 vec2 to_a = v2_sub(a->pos, pos);
                 float fd = v2_dot(to_a, fwd);
                 if (fd < -a->radius || fd > lookahead) continue;

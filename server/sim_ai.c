@@ -834,22 +834,14 @@ static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
         if (vel_toward < 0.0f) {
             float impact = -vel_toward;
             npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.0f));
-            /* Same formula as players (collision_damage_for in game_sim.h).
-             * NPCs feeding the kit-demand sink is the load-bearing reason
-             * the kit economy exists at all. */
-            /* Size-scaled damage (matches resolve_ship_asteroid_collision):
-             * S-tier 0.5×, M-tier 1.0×, XL ~2.0×, XXL 2.5× cap. NPCs use
-             * relative velocity vs. asteroid? They have no own velocity
-             * relative to a stationary rock — but a thrown rock can hit
-             * a stationary NPC, so use rel_vel via vel_toward already. */
+            /* Size-scaled damage matching player formula. NPCs feeding
+             * the kit-demand sink is the load-bearing reason the kit
+             * economy exists at all. */
             float size_mult = a->radius / 30.0f;
             if (size_mult < 0.5f) size_mult = 0.5f;
             if (size_mult > 2.5f) size_mult = 2.5f;
             float dmg = collision_damage_for(impact, size_mult);
             int npc_slot = (int)(npc - w->npc_ships);
-            /* If the rock has a thrown-by token, attribute the kill so
-             * the kill-feed surfaces "KRX-472 killed Hauler-7 with a
-             * thrown rock". Otherwise unattributed environmental. */
             bool attributed =
                 (a->last_towed_token[0] | a->last_towed_token[1] | a->last_towed_token[2] |
                  a->last_towed_token[3] | a->last_towed_token[4] | a->last_towed_token[5] |
