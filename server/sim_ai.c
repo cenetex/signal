@@ -635,17 +635,27 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     return -1;
 }
 
+/* Forward decl — definition below; npc_steer_toward routes through it. */
+static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd,
+                                  float accel, float turn_speed, float dt);
+
+/* Direct face-and-thrust steering used by the MINING-approach state.
+ * #294 Slice 3a: now produces a normalized flight_cmd_t and routes
+ * through npc_apply_flight_cmd so all NPC physics goes through the
+ * same sim_ship primitives as the path-following steer. */
 static void npc_steer_toward(npc_ship_t *npc, vec2 target, float accel, float turn_speed, float dt) {
     vec2 delta = v2_sub(target, npc->pos);
     float desired = atan2f(delta.y, delta.x);
     float diff = wrap_angle(desired - npc->angle);
     float max_turn = turn_speed * dt;
-    if (diff > max_turn) diff = max_turn;
-    else if (diff < -max_turn) diff = -max_turn;
-    npc->angle = wrap_angle(npc->angle + diff);
-    vec2 fwd = v2_from_angle(npc->angle);
-    npc->vel = v2_add(npc->vel, v2_scale(fwd, accel * dt));
-    npc->thrusting = accel > 0.0f;
+    flight_cmd_t cmd = {0.0f, 1.0f};
+    if (max_turn > 0.0f) {
+        float t = diff / max_turn;
+        if (t > 1.0f) t = 1.0f;
+        else if (t < -1.0f) t = -1.0f;
+        cmd.turn = t;
+    }
+    npc_apply_flight_cmd(npc, cmd, accel, turn_speed, dt);
 }
 
 /* (Reactive avoidance steering removed — all NPC/autopilot navigation
@@ -666,22 +676,33 @@ static ship_t ship_view_from_npc(const npc_ship_t *npc) {
     return v;
 }
 
-/* Apply a normalized flight_cmd_t (turn/thrust each in -1..1) to an NPC.
- * Rate-limits turn by turn_speed; gates thrust to forward acceleration only.
- * Caller owns physics integration (npc_apply_physics) and any thrust<0
- * handling (e.g. hover-specific brake-away-from-target). */
+/* Apply a normalized flight_cmd_t (turn/thrust each in -1..1) to an NPC,
+ * routed through the shared sim_ship primitives (#294 Slice 3a). Caller
+ * still owns physics integration (npc_apply_physics) and any thrust<0
+ * handling (e.g. hover-specific brake-away-from-target).
+ *
+ * Forward-thrust-only gate is preserved: NPCs don't have a brake
+ * controller, so flight_steer_to's negative-thrust "panic stop" clamps
+ * to 0. step_ship_thrust always uses hull->accel; the explicit `accel`
+ * parameter is honored by scaling thrust_input (so callers like the
+ * hauler-tow path that pass `hull->accel * 0.6f` get the same throttle
+ * as before). turn_speed is read from the hull def via step_ship_rotation. */
 static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd,
                                   float accel, float turn_speed, float dt) {
-    float max_turn = turn_speed * dt;
-    float turn_angle = cmd.turn * turn_speed * dt;
-    if (turn_angle > max_turn) turn_angle = max_turn;
-    if (turn_angle < -max_turn) turn_angle = -max_turn;
-    npc->angle = wrap_angle(npc->angle + turn_angle);
+    (void)turn_speed;  /* hull-driven via step_ship_rotation */
 
-    float thrust_gate = (cmd.thrust > 0.0f) ? cmd.thrust : 0.0f;
-    vec2 fwd = v2_from_angle(npc->angle);
-    npc->vel = v2_add(npc->vel, v2_scale(fwd, accel * thrust_gate * dt));
-    npc->thrusting = thrust_gate > 0.0f;
+    ship_t view = ship_view_from_npc(npc);
+    step_ship_rotation(&view, dt, cmd.turn);
+
+    float thrust_in = (cmd.thrust > 0.0f) ? cmd.thrust : 0.0f;
+    const hull_def_t *hull = ship_hull_def(&view);
+    if (hull->accel > 0.0001f) thrust_in *= accel / hull->accel;
+    vec2 fwd = ship_forward(view.angle);
+    step_ship_thrust(&view, dt, thrust_in, fwd, /*boost=*/false, 0.0f);
+
+    npc->angle = view.angle;
+    npc->vel = view.vel;
+    npc->thrusting = thrust_in > 0.0f;
 }
 
 /* A*-guided NPC steering via the shared flight controller.
@@ -696,29 +717,43 @@ static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
     npc_apply_flight_cmd(npc, cmd, accel, turn_speed, dt);
 }
 
+/* Drag + position integration + NPC signal-pushback. #294 Slice 3a:
+ * routes through step_ship_motion via the ship_view+writeback adapter
+ * (drag is hull-driven). NPCs pass cached_signal=1.0 to suppress the
+ * strong frontier yank that step_ship_motion does for players — NPCs
+ * use the gentler confidence-graduated push below, which kicks in
+ * earlier (below SIGNAL_BAND_OPERATIONAL) so they stay near coverage.
+ * The `drag` parameter is preserved for API symmetry but ignored. */
 static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world_t *w) {
-    npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (drag * dt)));
-    npc->pos = v2_add(npc->pos, v2_scale(npc->vel, dt));
-    /* Signal-based boundary: NPCs pushed back when confidence is low */
-    float sig = signal_strength_at(w, npc->pos);
+    (void)drag;  /* hull-driven via step_ship_motion */
+
+    ship_t view = ship_view_from_npc(npc);
+    step_ship_motion(&view, dt, w, /*cached_signal=*/1.0f);
+
+    /* NPC-specific signal pushback: ramps in below operational, softer
+     * and earlier than the player frontier yank. */
+    float sig = signal_strength_at(w, view.pos);
     float npc_conf = signal_npc_confidence(sig);
     if (npc_conf < 1.0f) {
         float best_d_sq = 1e18f;
         int best_s = 0;
         for (int i = 0; i < MAX_STATIONS; i++) {
-            float d_sq = v2_dist_sq(npc->pos, w->stations[i].pos);
+            float d_sq = v2_dist_sq(view.pos, w->stations[i].pos);
             if (d_sq < best_d_sq) { best_d_sq = d_sq; best_s = i; }
         }
-        vec2 to_station = v2_sub(w->stations[best_s].pos, npc->pos);
+        vec2 to_station = v2_sub(w->stations[best_s].pos, view.pos);
         float d = sqrtf(v2_len_sq(to_station));
         if (d > 0.001f) {
             float edge = w->stations[best_s].signal_range;
             float overshoot = fmaxf(0.0f, d - edge);
             float push_strength = overshoot * 0.08f + (1.0f - npc_conf) * 0.05f;
             vec2 push = v2_scale(to_station, push_strength / d);
-            npc->vel = v2_add(npc->vel, push);
+            view.vel = v2_add(view.vel, push);
         }
     }
+
+    npc->pos = view.pos;
+    npc->vel = view.vel;
 }
 
 
