@@ -1669,13 +1669,22 @@ static void frame(void) {
             g.local_server.world = g.world;
             g.local_server.active = true;
         }
-        /* P key: reconnect to server */
+        /* P key (offline): hard-reload the page. The HUD prompt is
+         * "offline [P] reconnect" but a graceful net_reconnect()
+         * never quite worked — sokol_app's browser context, sokol-gl
+         * state, and the existing world snapshot all need a clean
+         * boot to come back fully consistent. Just refresh. Native
+         * builds keep the in-process reconnect path. */
         if (!net_is_connected() && g.local_server.active &&
             is_key_pressed(SAPP_KEYCODE_P)) {
+#ifdef __EMSCRIPTEN__
+            emscripten_run_script("window.location.reload()");
+#else
             if (net_reconnect()) {
                 set_notice("Reconnecting...");
                 g.local_server.active = false;
             }
+#endif
         }
         /* Send input at ~30 Hz, or immediately if there's a one-shot action. */
         {
