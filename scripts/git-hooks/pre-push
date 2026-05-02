@@ -1,0 +1,71 @@
+#!/bin/bash
+# Pre-push hook: block pushing when the test pipeline reports failure
+# for the commit being pushed.
+#
+# Pairs with the post-commit hook (`scripts/git-hooks/post-commit`),
+# which runs the test suite asynchronously after every commit and writes
+# the verdict to /tmp/signal-local-test.log. We trust that log when
+# its target hash matches HEAD; otherwise we run the suite
+# synchronously so a verdict always exists before push.
+#
+# Why this design (vs. always running tests in pre-push):
+#   - Fast common case. If you commit then push a few minutes later,
+#     the post-commit hook has already produced the verdict — pre-push
+#     is a 0.05s log read.
+#   - Tight loop preserved. Failing tests don't block local commits;
+#     they only block the push to origin. Lets you stage WIP commits,
+#     then fix-and-amend before sharing.
+#   - No silent skip. If the cached verdict is missing or stale, we
+#     run the suite synchronously rather than waving the push through.
+#
+# Override (dangerous): `git push --no-verify` skips this entirely.
+set -eu
+
+ROOT=$(git rev-parse --show-toplevel)
+HEAD=$(git rev-parse --short HEAD)
+LOG=/tmp/signal-local-test.log
+
+# Wait briefly for the post-commit Phase 2 to land if it's still
+# running for HEAD. Cap at 90s — pre-push shouldn't block the human
+# longer than they'd wait for `make test` themselves.
+deadline=$(( $(date +%s) + 90 ))
+while [ "$(date +%s)" -lt "$deadline" ]; do
+    if grep -qE "(PASSED|FAILED|BUILD FAILED) at $HEAD" "$LOG" 2>/dev/null; then
+        break
+    fi
+    sleep 2
+done
+
+if grep -qE "PASSED at $HEAD" "$LOG" 2>/dev/null; then
+    echo "pre-push: tests pass at $HEAD (cached)"
+    exit 0
+fi
+
+if grep -qE "(FAILED|BUILD FAILED) at $HEAD" "$LOG" 2>/dev/null; then
+    echo "pre-push: BLOCKED — tests failed at $HEAD"
+    echo "  Last 20 log lines from $LOG:"
+    tail -20 "$LOG" | sed 's/^/  | /'
+    echo
+    echo "  Fix and amend, then push again. To override: git push --no-verify"
+    exit 1
+fi
+
+# No verdict for HEAD (post-commit hook didn't run, log missing, or
+# Phase 2 timed out). Run the suite synchronously now so we never push
+# unverified.
+echo "pre-push: no cached verdict for $HEAD — running tests synchronously..."
+cd "$ROOT"
+if ! cmake -S . -B build-test -DBUILD_TESTS_ONLY=ON -DGIT_HASH="$HEAD" >/dev/null 2>&1; then
+    echo "pre-push: BLOCKED — cmake configure failed"
+    exit 1
+fi
+if ! cmake --build build-test --parallel >/dev/null 2>&1; then
+    echo "pre-push: BLOCKED — build failed"
+    exit 1
+fi
+if ! ./build-test/signal_test --quiet; then
+    echo "pre-push: BLOCKED — synchronous test run failed"
+    exit 1
+fi
+echo "pre-push: tests pass at $HEAD (synchronous)"
+exit 0
