@@ -1716,7 +1716,7 @@ static void broadcast_world(void) {
             int count = 0;
             for (int i = 0; i < MAX_NPC_SHIPS; i++) {
                 if (!world.npc_ships[i].active) continue;
-                if (v2_dist_sq(world.npc_ships[i].pos, sp->ship.pos) > ASTEROID_VIEW_RADIUS_SQ)
+                if (v2_dist_sq(world.npc_ships[i].ship.pos, sp->ship.pos) > ASTEROID_VIEW_RADIUS_SQ)
                     continue;
                 const npc_ship_t *n = &world.npc_ships[i];
                 uint8_t *q = &nbuf[2 + count * NPC_RECORD_SIZE];
@@ -1725,11 +1725,11 @@ static void broadcast_world(void) {
                 q[1] |= (((uint8_t)n->role & 0x3) << 1);
                 q[1] |= (((uint8_t)n->state & 0x7) << 3);
                 if (n->thrusting) q[1] |= (1 << 6);
-                write_f32_le(&q[2],  n->pos.x);
-                write_f32_le(&q[6],  n->pos.y);
-                write_f32_le(&q[10], n->vel.x);
-                write_f32_le(&q[14], n->vel.y);
-                write_f32_le(&q[18], n->angle);
+                write_f32_le(&q[2],  n->ship.pos.x);
+                write_f32_le(&q[6],  n->ship.pos.y);
+                write_f32_le(&q[10], n->ship.vel.x);
+                write_f32_le(&q[14], n->ship.vel.y);
+                write_f32_le(&q[18], n->ship.angle);
                 q[22] = (uint8_t)(int8_t)n->target_asteroid;
                 q[23] = (uint8_t)(n->tint_r * 255.0f);
                 q[24] = (uint8_t)(n->tint_g * 255.0f);

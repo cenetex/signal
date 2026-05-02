@@ -78,7 +78,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 49  /* Hoppers tag a single commodity each, the
+#define SAVE_VERSION 50  /* Hoppers tag a single commodity each, the
                           * pair rule becomes "all required input
                           * commodities have a hopper on the station,"
                           * and producers emit one spoke per input
@@ -150,7 +150,10 @@ static uint32_t crc32_file(FILE *f) {
  * shape. Catalog files persist modules so they need re-bootstrap.
  * Per-player saves under saves/pubkey/ live in their own files and
  * are unaffected. */
-#define MIN_SAVE_VERSION 49
+#define MIN_SAVE_VERSION 49 /* v49 → v50 is layout-preserving (npc fields
+                              * moved into embedded ship_t at the same
+                              * byte offsets); read_npc lands them in
+                              * n->ship.* identically for both versions. */
 
 /* Legacy named-ingot block layout — preserved here only so v25..v34
  * saves can be migrated forward. The original named_ingot_t was
@@ -692,15 +695,23 @@ static bool read_fracture_child(FILE *f, world_t *w) {
     return true;
 }
 
-/* ---- npc_ship field-by-field I/O ---- */
+/* ---- npc_ship field-by-field I/O ----
+ *
+ * v50: pos/vel/angle/hull_class moved into the embedded ship_t. The
+ * on-disk record format is unchanged (same field order, same widths) —
+ * the read path just lands the bytes in n->ship.* and the write path
+ * reads them back from there. v49 saves load identically since the
+ * struct layout used to put pos/vel/angle/hull_class right where the
+ * embedded ship_t now lives.
+ */
 static bool write_npc(FILE *f, const npc_ship_t *n) {
     WRITE_FIELD(f, n->active);
     WRITE_FIELD(f, n->role);
-    WRITE_FIELD(f, n->hull_class);
+    WRITE_FIELD(f, n->ship.hull_class);
     WRITE_FIELD(f, n->state);
-    WRITE_FIELD(f, n->pos);
-    WRITE_FIELD(f, n->vel);
-    WRITE_FIELD(f, n->angle);
+    WRITE_FIELD(f, n->ship.pos);
+    WRITE_FIELD(f, n->ship.vel);
+    WRITE_FIELD(f, n->ship.angle);
     WRITE_FIELD(f, n->cargo);
     WRITE_FIELD(f, n->target_asteroid);
     WRITE_FIELD(f, n->home_station);
@@ -718,11 +729,11 @@ static bool write_npc(FILE *f, const npc_ship_t *n) {
 static bool read_npc(FILE *f, npc_ship_t *n) {
     READ_FIELD(f, n->active);
     READ_FIELD(f, n->role);
-    READ_FIELD(f, n->hull_class);
+    READ_FIELD(f, n->ship.hull_class);
     READ_FIELD(f, n->state);
-    READ_FIELD(f, n->pos);
-    READ_FIELD(f, n->vel);
-    READ_FIELD(f, n->angle);
+    READ_FIELD(f, n->ship.pos);
+    READ_FIELD(f, n->ship.vel);
+    READ_FIELD(f, n->ship.angle);
     READ_FIELD(f, n->cargo);
     READ_FIELD(f, n->target_asteroid);
     READ_FIELD(f, n->home_station);

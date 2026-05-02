@@ -22,7 +22,7 @@ int npc_find_mineable_asteroid(const npc_ship_t* npc, const asteroid_t* asteroid
         const asteroid_t* a = &asteroids[i];
         if (!a->active) continue;
         if (a->tier == ASTEROID_TIER_S) continue;
-        float d = v2_dist_sq(npc->pos, a->pos);
+        float d = v2_dist_sq(npc->ship.pos, a->pos);
         if (d < best_dist_sq) {
             best_dist_sq = d;
             best = i;
@@ -32,20 +32,20 @@ int npc_find_mineable_asteroid(const npc_ship_t* npc, const asteroid_t* asteroid
 }
 
 void npc_steer_toward(npc_ship_t* npc, vec2 target, float accel, float turn_speed, float dt) {
-    vec2 delta = v2_sub(target, npc->pos);
+    vec2 delta = v2_sub(target, npc->ship.pos);
     float desired_angle = atan2f(delta.y, delta.x);
-    float diff = wrap_angle(desired_angle - npc->angle);
+    float diff = wrap_angle(desired_angle - npc->ship.angle);
     float max_turn = turn_speed * dt;
     if (diff > max_turn) diff = max_turn;
     else if (diff < -max_turn) diff = -max_turn;
-    npc->angle = wrap_angle(npc->angle + diff);
+    npc->ship.angle = wrap_angle(npc->ship.angle + diff);
 
-    vec2 forward = v2_from_angle(npc->angle);
-    npc->vel = v2_add(npc->vel, v2_scale(forward, accel * dt));
+    vec2 forward = v2_from_angle(npc->ship.angle);
+    npc->ship.vel = v2_add(npc->ship.vel, v2_scale(forward, accel * dt));
     npc->thrusting = true;
 }
 
 void npc_apply_physics(npc_ship_t* npc, float drag, float dt) {
-    npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (drag * dt)));
-    npc->pos = v2_add(npc->pos, v2_scale(npc->vel, dt));
+    npc->ship.vel = v2_scale(npc->ship.vel, 1.0f / (1.0f + (drag * dt)));
+    npc->ship.pos = v2_add(npc->ship.pos, v2_scale(npc->ship.vel, dt));
 }

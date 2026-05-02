@@ -646,8 +646,8 @@ TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
     /* Drop the hauler well inside the home station's dock approach
      * radius so the next sim_step's RETURN_TO_STATION branch trips
      * the dock-arrival condition (dist < dock_radius * 0.7). */
-    hauler->pos = w->stations[shipyard].pos;
-    hauler->vel = v2(0.0f, 0.0f);
+    hauler->ship.pos = w->stations[shipyard].pos;
+    hauler->ship.vel = v2(0.0f, 0.0f);
     /* Slice 13: physics is ship-authoritative going into the tick — write
      * the paired ship_t too so the pre-mirror doesn't overwrite the npc
      * fields with a stale ship snapshot. */

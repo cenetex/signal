@@ -42,8 +42,8 @@ TEST(test_world_save_load_preserves_npcs) {
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(world_load(loaded, TMP("test_npcs.sav")));
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
-        ASSERT_EQ_FLOAT(loaded->npc_ships[i].pos.x, w->npc_ships[i].pos.x, 0.01f);
-        ASSERT_EQ_FLOAT(loaded->npc_ships[i].pos.y, w->npc_ships[i].pos.y, 0.01f);
+        ASSERT_EQ_FLOAT(loaded->npc_ships[i].ship.pos.x, w->npc_ships[i].ship.pos.x, 0.01f);
+        ASSERT_EQ_FLOAT(loaded->npc_ships[i].ship.pos.y, w->npc_ships[i].ship.pos.y, 0.01f);
     }
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
@@ -69,12 +69,12 @@ TEST(test_npc_ship_physics_in_sync_each_tick) {
             const ship_t *s = world_npc_ship_for(w, n);
             ASSERT(s != NULL);
             ASSERT_EQ_FLOAT(s->hull, npc->hull, 0.001f);
-            ASSERT(s->hull_class == npc->hull_class);
-            ASSERT_EQ_FLOAT(s->pos.x, npc->pos.x, 0.001f);
-            ASSERT_EQ_FLOAT(s->pos.y, npc->pos.y, 0.001f);
-            ASSERT_EQ_FLOAT(s->vel.x, npc->vel.x, 0.001f);
-            ASSERT_EQ_FLOAT(s->vel.y, npc->vel.y, 0.001f);
-            ASSERT_EQ_FLOAT(s->angle, npc->angle, 0.001f);
+            ASSERT(s->hull_class == npc->ship.hull_class);
+            ASSERT_EQ_FLOAT(s->pos.x, npc->ship.pos.x, 0.001f);
+            ASSERT_EQ_FLOAT(s->pos.y, npc->ship.pos.y, 0.001f);
+            ASSERT_EQ_FLOAT(s->vel.x, npc->ship.vel.x, 0.001f);
+            ASSERT_EQ_FLOAT(s->vel.y, npc->ship.vel.y, 0.001f);
+            ASSERT_EQ_FLOAT(s->angle, npc->ship.angle, 0.001f);
         }
     }
 }
@@ -614,7 +614,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 49);
+    ASSERT_EQ_INT((int)version, 50);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

@@ -1087,14 +1087,14 @@ TEST(test_npc_miners_avoid_zero_signal_asteroids) {
 
     w.npc_ships[0].active = true;
     w.npc_ships[0].role = NPC_ROLE_MINER;
-    w.npc_ships[0].hull_class = HULL_CLASS_NPC_MINER;
+    w.npc_ships[0].ship.hull_class = HULL_CLASS_NPC_MINER;
     w.npc_ships[0].home_station = 0;
     w.npc_ships[0].state = NPC_STATE_DOCKED;
     w.npc_ships[0].state_timer = 0.0f;
     w.npc_ships[0].target_asteroid = -1;
-    w.npc_ships[0].pos = w.stations[0].pos;
-    w.npc_ships[0].vel = v2(0.0f, 0.0f);
-    w.npc_ships[0].angle = 0.0f;
+    w.npc_ships[0].ship.pos = w.stations[0].pos;
+    w.npc_ships[0].ship.vel = v2(0.0f, 0.0f);
+    w.npc_ships[0].ship.angle = 0.0f;
 
     world_sim_step(&w, SIM_DT);
     ASSERT_EQ_INT(w.npc_ships[0].target_asteroid, 0);
@@ -1263,11 +1263,11 @@ TEST(test_npc_mining_drops_state_when_far_from_target) {
     npc->state = NPC_STATE_MINING;
     npc->home_station = 0;
     npc->target_asteroid = 0;
-    npc->hull_class = HULL_CLASS_MINER;
+    npc->ship.hull_class = HULL_CLASS_MINER;
     npc->hull = 100.0f;
-    npc->pos = v2(0.0f, 0.0f);
-    npc->vel = v2(0.0f, 0.0f);
-    npc->angle = 0.0f;
+    npc->ship.pos = v2(0.0f, 0.0f);
+    npc->ship.vel = v2(0.0f, 0.0f);
+    npc->ship.angle = 0.0f;
 
     asteroid_t *a = &w->asteroids[0];
     a->active = true;

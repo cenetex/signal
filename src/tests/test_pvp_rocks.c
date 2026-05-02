@@ -268,12 +268,12 @@ TEST(test_thrown_rock_kills_npc_emits_event) {
      * hits — start the ship at hull 1.0 so the very first contact is
      * fatal, regardless of how many bounces follow. */
     npc->hull = 1.0f;
-    npc->vel  = v2(0.0f, 0.0f);
+    npc->ship.vel  = v2(0.0f, 0.0f);
     /* Use Prospect's position (station 0) so we're inside signal coverage
      * — the chunk-streaming layer culls asteroids outside materialized
      * (signal-covered) chunks. Slightly offset so the asteroid path
      * doesn't run through station modules. */
-    npc->pos  = v2(w.stations[0].pos.x + 600.0f, w.stations[0].pos.y);
+    npc->ship.pos  = v2(w.stations[0].pos.x + 600.0f, w.stations[0].pos.y);
     npc->state = NPC_STATE_TRAVEL_TO_DEST; /* force collision pass to run */
 
     /* Place a flying rock just behind the NPC, owned by thrower. */
@@ -292,7 +292,7 @@ TEST(test_thrown_rock_kills_npc_emits_event) {
     /* Place rock already overlapping the NPC and moving toward it —
      * one tick is enough to register the hit. */
     const hull_def_t *hull = npc_hull_def(npc);
-    a->pos = v2(npc->pos.x - (hull->ship_radius + a->radius - 5.0f), npc->pos.y);
+    a->pos = v2(npc->ship.pos.x - (hull->ship_radius + a->radius - 5.0f), npc->ship.pos.y);
     a->vel = v2(800.0f, 0.0f);
     memcpy(a->last_towed_token, thrower->session_token, 8);
 
@@ -300,15 +300,15 @@ TEST(test_thrown_rock_kills_npc_emits_event) {
     /* Pin npc.pos and re-pin asteroid each tick so neither hauler nav
      * nor any belt physics drifts them out of the contact window. The
      * test only cares about kill attribution, not nav stability. */
-    vec2 npc_pin = npc->pos;
+    vec2 npc_pin = npc->ship.pos;
     ship_t *npc_ship = world_npc_ship_for(&w, npc_idx);
     ASSERT(npc_ship != NULL);
     npc_ship->pos  = npc_pin;
     npc_ship->vel  = v2(0.0f, 0.0f);
     npc_ship->hull = 1.0f;
     for (int t = 0; t < 120 && !kill; t++) {
-        npc->vel = v2(0.0f, 0.0f);
-        npc->pos = npc_pin;
+        npc->ship.vel = v2(0.0f, 0.0f);
+        npc->ship.pos = npc_pin;
         npc_ship->vel = v2(0.0f, 0.0f);
         npc_ship->pos = npc_pin;
         world_sim_step(&w, 1.0f / 120.0f);

@@ -619,32 +619,21 @@ typedef enum {
 typedef struct {
     bool active;
     npc_role_t role;
-    hull_class_t hull_class;
     npc_state_t state;
-    /* (a) of #294 — embedded physics body. Sim_ship primitives mutate
-     * this directly so NPCs and players run through the same code with
-     * the same shape. The duplicate physics fields below (pos, vel,
-     * angle, hull) are kept as a sync'd facade for the AI dispatch and
-     * serializer; slice 5+ removes them once every reader migrates to
-     * `npc->ship.*`. Save format unchanged: writers still serialize
-     * the duplicates, and load reseeds `npc->ship` from them. */
+    /* Physics body. Sim_ship primitives mutate this directly so NPCs
+     * and players run through the same code with the same shape.
+     * Slice 5 of #294 dropped the npc-side duplicate fields (pos, vel,
+     * angle, hull_class) — every reader migrated to `npc->ship.*`.
+     * Save format v50+ serializes ship.{pos,vel,angle,hull_class}
+     * directly; v49 saves load by remap into the embedded body. */
     ship_t ship;
-    /* (b) of #294 — per-NPC turn/thrust intent, symmetric with the
-     * `sp->input.turn` / `sp->input.thrust` that the player ship-step
-     * consumes. The AI brain writes here each tick (via
-     * npc_set_intent); the apply path reads from here instead of
-     * threading flight_cmd_t through every helper. The full
-     * input_intent_t can't live here directly — it's a server-only
-     * struct in game_sim.h, and shared/types.h has to compile against
-     * the client too — so only the physics-relevant fields are mirrored.
-     * Mining / interact / hail intents stay as discrete state on the
-     * AI brain (target_asteroid, state) until NPC roles get fully
-     * migrated through the same input shape players use. */
+    /* Per-NPC turn/thrust intent, symmetric with sp->input.turn /
+     * .thrust on the player path. AI brain writes via npc_set_intent;
+     * the apply path reads from here. Only the physics-relevant fields
+     * are mirrored — full input_intent_t can't live here because
+     * shared/types.h has to compile against the client too. */
     float intent_turn;
     float intent_thrust;
-    vec2 pos;
-    vec2 vel;
-    float angle;
     float cargo[COMMODITY_COUNT];
     int target_asteroid;
     int home_station;

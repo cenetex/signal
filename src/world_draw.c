@@ -1342,7 +1342,7 @@ void draw_death_wreckage(void) {
 
 void draw_npc_ship(const npc_ship_t* npc) {
     const hull_def_t* hull = npc_hull_def(npc);
-    bool is_hauler = npc->hull_class == HULL_CLASS_HAULER;
+    bool is_hauler = npc->ship.hull_class == HULL_CLASS_HAULER;
     float scale = hull->render_scale;
     /* Use accumulated ore tint — starts white, absorbs cargo colors over time */
     float hull_r = npc->tint_r;
@@ -1352,12 +1352,12 @@ void draw_npc_ship(const npc_ship_t* npc) {
     (void)is_hauler;
 
     sgl_push_matrix();
-    sgl_translate(npc->pos.x, npc->pos.y, 0.0f);
-    sgl_rotate(npc->angle, 0.0f, 0.0f, 1.0f);
+    sgl_translate(npc->ship.pos.x, npc->ship.pos.y, 0.0f);
+    sgl_rotate(npc->ship.angle, 0.0f, 0.0f, 1.0f);
     sgl_scale(scale, scale, 1.0f);
 
     if (npc->thrusting) {
-        float flicker = 8.0f + sinf(g.world.time * 38.0f + npc->pos.x) * 2.5f;
+        float flicker = 8.0f + sinf(g.world.time * 38.0f + npc->ship.pos.x) * 2.5f;
         sgl_c4f(1.0f, 0.6f, 0.15f, 0.9f);
         sgl_begin_triangles();
         sgl_v2f(-12.0f, 0.0f);
@@ -1392,8 +1392,8 @@ void draw_npc_mining_beam(const npc_ship_t* npc) {
     const asteroid_t* asteroid = &g.world.asteroids[npc->target_asteroid];
     if (!asteroid->active) return;
 
-    vec2 forward = v2_from_angle(npc->angle);
-    vec2 muzzle = v2_add(npc->pos, v2_scale(forward, npc_hull_def(npc)->ship_radius + 5.0f));
+    vec2 forward = v2_from_angle(npc->ship.angle);
+    vec2 muzzle = v2_add(npc->ship.pos, v2_scale(forward, npc_hull_def(npc)->ship_radius + 5.0f));
     vec2 to_target = v2_sub(asteroid->pos, muzzle);
     vec2 hit = v2_sub(asteroid->pos, v2_scale(v2_norm(to_target), asteroid->radius * 0.85f));
 
@@ -1404,7 +1404,7 @@ void draw_npc_mining_beam(const npc_ship_t* npc) {
 void draw_npc_ships(void) {
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!g.world.npc_ships[i].active) continue;
-        if (!on_screen(g.world.npc_ships[i].pos.x, g.world.npc_ships[i].pos.y, 50.0f)) continue;
+        if (!on_screen(g.world.npc_ships[i].ship.pos.x, g.world.npc_ships[i].ship.pos.y, 50.0f)) continue;
         draw_npc_ship(&g.world.npc_ships[i]);
         draw_npc_mining_beam(&g.world.npc_ships[i]);
         /* NPC tow tether */
@@ -1413,7 +1413,7 @@ void draw_npc_ships(void) {
             const asteroid_t *ta = &g.world.asteroids[tnpc->towed_fragment];
             if (ta->active) {
                 float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)i * 1.5f);
-                draw_segment(tnpc->pos, ta->pos, 0.7f, 0.5f, 0.2f, tp);
+                draw_segment(tnpc->ship.pos, ta->pos, 0.7f, 0.5f, 0.2f, tp);
             }
         }
     }
@@ -2201,9 +2201,9 @@ void draw_npc_chatter(void) {
         const npc_ship_t *npc = &g.world.npc_ships[i];
         if (!npc->active) continue;
         if (npc->role == NPC_ROLE_TOW) continue; /* tow drones: silent */
-        if (!on_screen(npc->pos.x, npc->pos.y, 50.0f)) continue;
-        float dx = npc->pos.x - LOCAL_PLAYER.ship.pos.x;
-        float dy = npc->pos.y - LOCAL_PLAYER.ship.pos.y;
+        if (!on_screen(npc->ship.pos.x, npc->ship.pos.y, 50.0f)) continue;
+        float dx = npc->ship.pos.x - LOCAL_PLAYER.ship.pos.x;
+        float dy = npc->ship.pos.y - LOCAL_PLAYER.ship.pos.y;
         if (dx * dx + dy * dy > 500.0f * 500.0f) continue; /* too far */
 
         /* Rotate line every 8 seconds, offset by NPC index */
@@ -2220,8 +2220,8 @@ void draw_npc_chatter(void) {
         sdtx_color3b(PAL_RADIO_GREEN); /* faded radio green */
         /* Sit chatter just below the NPC sprite. World Y-up: smaller
          * world_y is below on screen. */
-        sdtx_world_pos(npc->pos.x - len * cell * 0.5f,
-                       npc->pos.y - 24.0f, cell);
+        sdtx_world_pos(npc->ship.pos.x - len * cell * 0.5f,
+                       npc->ship.pos.y - 24.0f, cell);
         sdtx_puts(line);
     }
 }

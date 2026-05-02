@@ -419,11 +419,11 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
         p[1] |= (((uint8_t)n->role & 0x3) << 1);
         p[1] |= (((uint8_t)n->state & 0x7) << 3);
         if (n->thrusting) p[1] |= (1 << 6);
-        write_f32_le(&p[2],  n->pos.x);
-        write_f32_le(&p[6],  n->pos.y);
-        write_f32_le(&p[10], n->vel.x);
-        write_f32_le(&p[14], n->vel.y);
-        write_f32_le(&p[18], n->angle);
+        write_f32_le(&p[2],  n->ship.pos.x);
+        write_f32_le(&p[6],  n->ship.pos.y);
+        write_f32_le(&p[10], n->ship.vel.x);
+        write_f32_le(&p[14], n->ship.vel.y);
+        write_f32_le(&p[18], n->ship.angle);
         p[22] = (uint8_t)(int8_t)n->target_asteroid;
         p[23] = (uint8_t)(n->tint_r * 255.0f);
         p[24] = (uint8_t)(n->tint_g * 255.0f);

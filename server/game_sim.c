@@ -2406,18 +2406,18 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
     for (int ni = 0; ni < MAX_NPC_SHIPS; ni++) {
         const npc_ship_t *npc = &w->npc_ships[ni];
         if (!npc->active) continue;
-        vec2 to_npc = v2_sub(npc->pos, muzzle);
+        vec2 to_npc = v2_sub(npc->ship.pos, muzzle);
         float proj = v2_dot(to_npc, forward);
         float npc_r = npc_hull_def(npc)->render_scale * 16.0f;
         if (proj > 0.0f && proj < best_dist) {
             vec2 closest = v2_add(muzzle, v2_scale(forward, proj));
-            float perp = v2_len(v2_sub(closest, npc->pos));
+            float perp = v2_len(v2_sub(closest, npc->ship.pos));
             if (perp < npc_r) {
                 best_dist = proj;
                 sp->scan_target_type = 2;
                 sp->scan_target_index = ni;
                 sp->scan_module_index = -1;
-                sp->beam_end = v2_sub(npc->pos, v2_scale(v2_norm(to_npc), npc_r * 0.9f));
+                sp->beam_end = v2_sub(npc->ship.pos, v2_scale(v2_norm(to_npc), npc_r * 0.9f));
             }
         }
     }
@@ -4670,20 +4670,20 @@ void world_sim_step(world_t *w, float dt) {
             if (!b->active || b->state == NPC_STATE_DOCKED) continue;
             const hull_def_t *bdef = npc_hull_def(b);
             float minimum = adef->ship_radius + bdef->ship_radius;
-            vec2 delta = v2_sub(a->pos, b->pos);
+            vec2 delta = v2_sub(a->ship.pos, b->ship.pos);
             float d_sq = v2_len_sq(delta);
             if (d_sq >= minimum * minimum) continue;
             float d = sqrtf(d_sq);
             vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
             float overlap = minimum - d;
-            a->pos = v2_add(a->pos, v2_scale(normal, overlap * 0.5f));
-            b->pos = v2_sub(b->pos, v2_scale(normal, overlap * 0.5f));
-            float rel_vel = v2_dot(v2_sub(a->vel, b->vel), normal);
+            a->ship.pos = v2_add(a->ship.pos, v2_scale(normal, overlap * 0.5f));
+            b->ship.pos = v2_sub(b->ship.pos, v2_scale(normal, overlap * 0.5f));
+            float rel_vel = v2_dot(v2_sub(a->ship.vel, b->ship.vel), normal);
             if (rel_vel < 0.0f) {
                 float impact = -rel_vel;
                 vec2 impulse = v2_scale(normal, rel_vel * 0.6f);
-                a->vel = v2_sub(a->vel, impulse);
-                b->vel = v2_add(b->vel, impulse);
+                a->ship.vel = v2_sub(a->ship.vel, impulse);
+                b->ship.vel = v2_add(b->ship.vel, impulse);
                 float dmg = collision_damage_for(impact, 0.7f);
                 if (dmg > 0.0f) {
                     apply_npc_ship_damage_attributed(w, i, dmg,
@@ -4711,25 +4711,25 @@ void world_sim_step(world_t *w, float dt) {
             const hull_def_t *npcdef = npc_hull_def(npc);
             float nr = npcdef->ship_radius;
             float minimum = pr + nr;
-            vec2 delta = v2_sub(sp->ship.pos, npc->pos);
+            vec2 delta = v2_sub(sp->ship.pos, npc->ship.pos);
             float d_sq = v2_len_sq(delta);
             if (d_sq >= minimum * minimum) continue;
             float d = sqrtf(d_sq);
             vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
             float overlap = minimum - d;
             sp->ship.pos = v2_add(sp->ship.pos, v2_scale(normal, overlap * 0.5f));
-            npc->pos     = v2_sub(npc->pos,    v2_scale(normal, overlap * 0.5f));
-            float rel_vel = v2_dot(v2_sub(sp->ship.vel, npc->vel), normal);
+            npc->ship.pos     = v2_sub(npc->ship.pos,    v2_scale(normal, overlap * 0.5f));
+            float rel_vel = v2_dot(v2_sub(sp->ship.vel, npc->ship.vel), normal);
             if (rel_vel < 0.0f) {
                 float impact = -rel_vel;
                 vec2 impulse = v2_scale(normal, rel_vel * 0.6f);
                 sp->ship.vel = v2_sub(sp->ship.vel, impulse);
-                npc->vel     = v2_add(npc->vel,    impulse);
+                npc->ship.vel     = v2_add(npc->ship.vel,    impulse);
                 float dmg = collision_damage_for(impact, 0.7f);
                 if (dmg > 0.0f) {
                     apply_ship_damage_attributed(w, sp, dmg,
                         npc->session_token, DEATH_CAUSE_RAM,
-                        npc->pos);
+                        npc->ship.pos);
                     apply_npc_ship_damage_attributed(w, n, dmg,
                         sp->session_token, DEATH_CAUSE_RAM);
                 }

@@ -102,10 +102,10 @@ static void ship_pool_init_from_npc(ship_t *ship, const npc_ship_t *npc) {
     ship_cleanup(ship);
     memset(ship, 0, sizeof(*ship));
     (void)ship_manifest_bootstrap(ship);
-    ship->pos = npc->pos;
-    ship->vel = npc->vel;
-    ship->angle = npc->angle;
-    ship->hull_class = npc->hull_class;
+    ship->pos = npc->ship.pos;
+    ship->vel = npc->ship.vel;
+    ship->angle = npc->ship.angle;
+    ship->hull_class = npc->ship.hull_class;
     ship->hull = npc->hull;
 }
 
@@ -205,9 +205,9 @@ static void mirror_ship_to_npc(world_t *w, int npc_slot) {
     if (!s) return;
     npc_ship_t *npc = &w->npc_ships[npc_slot];
     npc->hull = s->hull;
-    s->pos = npc->pos;
-    s->vel = npc->vel;
-    s->angle = npc->angle;
+    s->pos = npc->ship.pos;
+    s->vel = npc->ship.vel;
+    s->angle = npc->ship.angle;
 }
 
 /* Slice 13: pre-mirror at the top of each NPC step. Pulls any external
@@ -220,9 +220,9 @@ static void mirror_ship_pos_to_npc(world_t *w, int npc_slot) {
     ship_t *s = npc_ship_for(w, npc_slot);
     if (!s) return;
     npc_ship_t *npc = &w->npc_ships[npc_slot];
-    npc->pos = s->pos;
-    npc->vel = s->vel;
-    npc->angle = s->angle;
+    npc->ship.pos = s->pos;
+    npc->ship.vel = s->vel;
+    npc->ship.angle = s->angle;
 }
 
 /* Apply damage to an NPC with optional kill attribution. The reverse
@@ -298,10 +298,10 @@ static void mirror_npc_to_character(world_t *w, int npc_slot) {
     c->towed_scaffold = npc->towed_scaffold;
     if (c->ship_idx >= 0 && c->ship_idx < MAX_SHIPS) {
         ship_t *s = &w->ships[c->ship_idx];
-        s->pos = npc->pos;
-        s->vel = npc->vel;
-        s->angle = npc->angle;
-        s->hull_class = npc->hull_class;
+        s->pos = npc->ship.pos;
+        s->vel = npc->ship.vel;
+        s->angle = npc->ship.angle;
+        s->hull_class = npc->ship.hull_class;
         /* Don't mirror hull npc->ship here: ship.hull is authoritative
          * (Slice 9 + 10). External callers — apply_npc_ship_damage and
          * future rock/PvP impact paths — may have mutated ship.hull
@@ -442,10 +442,10 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     *nav_npc_path(slot) = (nav_path_t){0};
     npc->active = true;
     npc->role = role;
-    npc->hull_class = hc;
+    npc->ship.hull_class = hc;
     npc->state = NPC_STATE_DOCKED;
-    npc->pos = v2_add(st->pos, v2(30.0f * (float)(slot % 3 - 1), -(st->radius + hull_def_for_class(hc)->ship_radius + 50.0f)));
-    npc->angle = PI_F * 0.5f;
+    npc->ship.pos = v2_add(st->pos, v2(30.0f * (float)(slot % 3 - 1), -(st->radius + hull_def_for_class(hc)->ship_radius + 50.0f)));
+    npc->ship.angle = PI_F * 0.5f;
     npc->target_asteroid = -1;
     npc->towed_fragment = -1;
     npc->towed_scaffold = -1;
@@ -551,7 +551,7 @@ static int npc_find_loose_fragment(const world_t *w, const npc_ship_t *self, flo
             }
         }
         if (taken) continue;
-        float d2 = v2_dist_sq(self->pos, f->pos);
+        float d2 = v2_dist_sq(self->ship.pos, f->pos);
         if (d2 < best_d) { best_d = d2; best = fi; }
     }
     return best;
@@ -602,7 +602,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
         if (!w->contracts[k].active || w->contracts[k].action != CONTRACT_FRACTURE) continue;
         int idx = w->contracts[k].target_index;
         if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
-        if (v2_dist_sq(npc->pos, w->asteroids[idx].pos) > MAX_DISTRESS_DIST_SQ) continue;
+        if (v2_dist_sq(npc->ship.pos, w->asteroids[idx].pos) > MAX_DISTRESS_DIST_SQ) continue;
         if (!miner_target_taken(w, idx, self_char)) return idx;
     }
 
@@ -627,7 +627,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
             if (signal_npc_confidence(signal_strength_at(w, a->pos)) < 0.1f) continue;
             if (miner_target_taken(w, i, self_char)) continue;
             if (pass == 0 && home && !sim_can_smelt_ore(home, a->commodity)) continue;
-            float d = v2_dist_sq(npc->pos, a->pos);
+            float d = v2_dist_sq(npc->ship.pos, a->pos);
             if (d < best_d) { best_d = d; best = i; }
         }
         if (best >= 0) return best;
@@ -644,9 +644,9 @@ static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt);
  * sim_ship primitives as the path-following steer. */
 static void npc_steer_toward(npc_ship_t *npc, vec2 target, float dt) {
     const hull_def_t *hull = npc_hull_def(npc);
-    vec2 delta = v2_sub(target, npc->pos);
+    vec2 delta = v2_sub(target, npc->ship.pos);
     float desired = atan2f(delta.y, delta.x);
-    float diff = wrap_angle(desired - npc->angle);
+    float diff = wrap_angle(desired - npc->ship.angle);
     float max_turn = hull->turn_speed * dt;
     flight_cmd_t cmd = {0.0f, 1.0f};
     if (max_turn > 0.0f) {
@@ -661,31 +661,6 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float dt) {
 /* (Reactive avoidance steering removed — all NPC/autopilot navigation
  * now uses A* paths via npc_steer_with_path. compute_path_avoidance
  * is retained for potential future use by manual-play collision hints.) */
-
-/* (a) of #294 — load the npc duplicate physics fields into the
- * embedded ship_t before any sim_ship call, and write them back after.
- * The transient `ship_view_from_npc` is gone: helpers now mutate
- * `&npc->ship` directly. The duplicates stay live as a facade for the
- * AI dispatch and the save serializer until slice 5+ migrates every
- * reader to `npc->ship.*`. Read-only ship_t* views (e.g. for
- * flight_steer_to / flight_hover_near) also point at npc->ship after
- * the seed.
- *
- * Seed is idempotent and cheap (a 5-field copy), so callers can
- * sprinkle them defensively without worrying about stale state from a
- * previous helper that updated only the duplicates. */
-static void npc_ship_seed(npc_ship_t *npc) {
-    npc->ship.pos = npc->pos;
-    npc->ship.vel = npc->vel;
-    npc->ship.angle = npc->angle;
-    npc->ship.hull_class = npc->hull_class;
-}
-
-static void npc_ship_sync(npc_ship_t *npc) {
-    npc->pos = npc->ship.pos;
-    npc->vel = npc->ship.vel;
-    npc->angle = npc->ship.angle;
-}
 
 /* Apply a normalized flight_cmd_t (turn/thrust each in -1..1) to an NPC,
  * routed through the shared sim_ship primitives. Caller still owns
@@ -710,7 +685,6 @@ static void npc_set_intent(npc_ship_t *npc, flight_cmd_t cmd) {
 
 static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
     npc_set_intent(npc, cmd);
-    npc_ship_seed(npc);
     step_ship_rotation(&npc->ship, dt, npc->intent_turn);
 
     /* NPCs gate to forward thrust only — flight_steer_to's panic-stop
@@ -719,7 +693,6 @@ static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
     vec2 fwd = ship_forward(npc->ship.angle);
     step_ship_thrust(&npc->ship, dt, thrust_in, fwd, /*boost=*/false, 0.0f);
 
-    npc_ship_sync(npc);
     npc->thrusting = thrust_in > 0.0f;
 }
 
@@ -732,7 +705,6 @@ static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
  * for tow paths (was hull->accel * scale before). */
 static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
                                 vec2 final_target, float thrust_scale, float dt) {
-    npc_ship_seed(npc);
     nav_path_t *path = nav_npc_path(npc_idx);
     flight_cmd_t cmd = flight_steer_to(w, &npc->ship, path, final_target,
                                         0.0f, 200.0f, dt);
@@ -749,10 +721,8 @@ static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
  * (mining target selection, willingness to leave the dock); only the
  * physics-side pushback was duplicated. */
 static void npc_apply_physics(npc_ship_t *npc, float dt, const world_t *w) {
-    npc_ship_seed(npc);
     float sig = signal_strength_at(w, npc->ship.pos);
     step_ship_motion(&npc->ship, dt, w, sig);
-    npc_ship_sync(npc);
 }
 
 
@@ -760,10 +730,8 @@ static void npc_apply_physics(npc_ship_t *npc, float dt, const world_t *w) {
  * on the embedded ship_t. NPCs take no damage from station geometry
  * today; if that changes, the impact return is available. */
 static void resolve_npc_circle(npc_ship_t *npc, vec2 center, float radius) {
-    npc_ship_seed(npc);
     float impact = resolve_ship_circle_pushback(&npc->ship, center, radius);
     if (impact <= 0.0f) return;
-    npc_ship_sync(npc);
 }
 
 /* NPC corridor collision: routed through the shared sim_ship
@@ -771,11 +739,9 @@ static void resolve_npc_circle(npc_ship_t *npc, vec2 center, float radius) {
  * caller can force a nav replan. */
 static bool resolve_npc_annular_sector(npc_ship_t *npc, vec2 center,
                                         float ring_r, float angle_a, float arc_delta) {
-    npc_ship_seed(npc);
     float impact = resolve_ship_annular_pushback(&npc->ship, center, ring_r,
                                                   angle_a, arc_delta);
     if (impact <= 0.0f) return false;
-    npc_ship_sync(npc);
     return true;
 }
 
@@ -798,8 +764,8 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
 
         /* Near-module suppression + corridor annular sectors
          * (matches player collision logic) */
-        float npc_dist = sqrtf(v2_dist_sq(npc->pos, st->pos));
-        vec2 npc_delta = v2_sub(npc->pos, st->pos);
+        float npc_dist = sqrtf(v2_dist_sq(npc->ship.pos, st->pos));
+        vec2 npc_delta = v2_sub(npc->ship.pos, st->pos);
         float npc_ang = atan2f(npc_delta.y, npc_delta.x);
 
         for (int ci = 0; ci < geom.corridor_count; ci++) {
@@ -853,9 +819,7 @@ static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
          * writeback so the geometric push-out lands even when the
          * contact is separating (impact=0, no damage but ship was
          * still moved out of overlap). */
-        npc_ship_seed(npc);
         float impact = resolve_ship_asteroid_pushback(&npc->ship, a);
-        npc_ship_sync(npc);
         if (impact <= 0.0f) continue;
 
         float size_mult = a->radius / 30.0f;
@@ -893,7 +857,7 @@ static int nearest_active_dock_station(const world_t *w, vec2 pos) {
 static void npc_validate_stations(world_t *w, npc_ship_t *npc) {
     if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS ||
         !station_is_active(&w->stations[npc->home_station]))
-        npc->home_station = nearest_active_dock_station(w, npc->pos);
+        npc->home_station = nearest_active_dock_station(w, npc->ship.pos);
     if (npc->dest_station < 0 || npc->dest_station >= MAX_STATIONS)
         npc->dest_station = npc->home_station;
     /* Tow drones can deliver to planned stations (blueprints) which are
@@ -908,7 +872,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     switch (npc->state) {
     case NPC_STATE_DOCKED: {
         npc->state_timer -= dt;
-        npc->vel = v2(0.0f, 0.0f);
+        npc->ship.vel = v2(0.0f, 0.0f);
         if (npc->state_timer <= 0.0f) {
             station_t *home = &w->stations[npc->home_station];
             float carried = 0.0f;
@@ -1094,13 +1058,13 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     }
     case NPC_STATE_TRAVEL_TO_DEST: {
         station_t *dest = &w->stations[npc->dest_station];
-        vec2 approach = station_approach_target(dest, npc->pos);
+        vec2 approach = station_approach_target(dest, npc->ship.pos);
         npc_steer_with_path(w, n, npc, approach, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
         float dock_r = dest->dock_radius * 0.7f;
-        if (v2_dist_sq(npc->pos, dest->pos) < dock_r * dock_r) {
-            npc->vel = v2(0.0f, 0.0f);
-            npc->pos = v2_add(dest->pos, v2(30.0f * (float)(n % 2 == 0 ? -1 : 1), -(dest->radius + hull->ship_radius + 50.0f)));
+        if (v2_dist_sq(npc->ship.pos, dest->pos) < dock_r * dock_r) {
+            npc->ship.vel = v2(0.0f, 0.0f);
+            npc->ship.pos = v2_add(dest->pos, v2(30.0f * (float)(n % 2 == 0 ? -1 : 1), -(dest->radius + hull->ship_radius + 50.0f)));
             npc->state = NPC_STATE_UNLOADING;
             npc->state_timer = HAULER_LOAD_TIME;
         }
@@ -1108,7 +1072,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     }
     case NPC_STATE_UNLOADING: {
         npc->state_timer -= dt;
-        npc->vel = v2(0.0f, 0.0f);
+        npc->ship.vel = v2(0.0f, 0.0f);
         if (npc->state_timer <= 0.0f) {
             station_t *dest = &w->stations[npc->dest_station];
             for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
@@ -1194,13 +1158,13 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     }
     case NPC_STATE_RETURN_TO_STATION: {
         station_t *home = &w->stations[npc->home_station];
-        vec2 approach_home = station_approach_target(home, npc->pos);
+        vec2 approach_home = station_approach_target(home, npc->ship.pos);
         npc_steer_with_path(w, n, npc, approach_home, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
         float dock_r = home->dock_radius * 0.7f;
-        if (v2_dist_sq(npc->pos, home->pos) < dock_r * dock_r) {
-            npc->vel = v2(0.0f, 0.0f);
-            npc->pos = v2_add(home->pos, v2(50.0f * (float)(n % 2 == 0 ? -1 : 1), -(home->radius + hull->ship_radius + 70.0f)));
+        if (v2_dist_sq(npc->ship.pos, home->pos) < dock_r * dock_r) {
+            npc->ship.vel = v2(0.0f, 0.0f);
+            npc->ship.pos = v2_add(home->pos, v2(50.0f * (float)(n % 2 == 0 ? -1 : 1), -(home->radius + hull->ship_radius + 70.0f)));
             npc->state = NPC_STATE_DOCKED;
             npc->state_timer = HAULER_DOCK_TIME;
             /* Dock auto-repair: NPC owes the home station for the
@@ -1374,7 +1338,7 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
     switch (npc->state) {
     case NPC_STATE_DOCKED: {
         npc->state_timer -= dt;
-        npc->vel = v2(0.0f, 0.0f);
+        npc->ship.vel = v2(0.0f, 0.0f);
         if (npc->state_timer > 0.0f) break;
         int sc_idx = find_loose_scaffold_for_tow(w, npc);
         if (sc_idx < 0) {
@@ -1400,7 +1364,7 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
         }
         npc_steer_with_path(w, n, npc, sc->pos, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
-        if (v2_dist_sq(npc->pos, sc->pos) < 80.0f * 80.0f) {
+        if (v2_dist_sq(npc->ship.pos, sc->pos) < 80.0f * 80.0f) {
             /* Grab — claim the scaffold and switch to tow mode.
              * Use towed_by = -2 - drone_index so positive values keep
              * meaning "player id" and negative values < -1 mean "drone n". */
@@ -1432,7 +1396,7 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
         scaffold_t *sc = &w->scaffolds[npc->towed_scaffold];
         station_t *dest = &w->stations[npc->dest_station];
         /* Drag the scaffold along behind us with simple spring chase. */
-        vec2 to_drone = v2_sub(npc->pos, sc->pos);
+        vec2 to_drone = v2_sub(npc->ship.pos, sc->pos);
         float td = sqrtf(v2_len_sq(to_drone));
         float tow_dist = 60.0f;
         if (td > tow_dist && td > 0.1f) {
@@ -1443,13 +1407,13 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
         sc->vel = v2_scale(sc->vel, 1.0f / (1.0f + 0.6f * dt));
         sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
 
-        vec2 approach = station_approach_target(dest, npc->pos);
+        vec2 approach = station_approach_target(dest, npc->ship.pos);
         npc_steer_with_path(w, n, npc, approach, /*thrust_scale=*/0.6f, dt);
         /* Speed cap while towing — heavy load */
-        float spd = v2_len(npc->vel);
-        if (spd > 60.0f) npc->vel = v2_scale(npc->vel, 60.0f / spd);
+        float spd = v2_len(npc->ship.vel);
+        if (spd > 60.0f) npc->ship.vel = v2_scale(npc->ship.vel, 60.0f / spd);
         npc_apply_physics(npc, dt, w);
-        if (v2_dist_sq(npc->pos, dest->pos) < 600.0f * 600.0f) {
+        if (v2_dist_sq(npc->ship.pos, dest->pos) < 600.0f * 600.0f) {
             /* Release — let the existing snap-to-slot logic in step_scaffolds
              * pick up the loose scaffold near the outpost ring. */
             sc->towed_by = -1;
@@ -1461,11 +1425,11 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
     }
     case NPC_STATE_RETURN_TO_STATION: {
         station_t *home = &w->stations[npc->home_station];
-        vec2 approach = station_approach_target(home, npc->pos);
+        vec2 approach = station_approach_target(home, npc->ship.pos);
         npc_steer_with_path(w, n, npc, approach, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
-        if (v2_dist_sq(npc->pos, home->pos) < (home->dock_radius * 0.7f) * (home->dock_radius * 0.7f)) {
-            npc->vel = v2(0.0f, 0.0f);
+        if (v2_dist_sq(npc->ship.pos, home->pos) < (home->dock_radius * 0.7f) * (home->dock_radius * 0.7f)) {
+            npc->ship.vel = v2(0.0f, 0.0f);
             npc->state = NPC_STATE_DOCKED;
             npc->state_timer = HAULER_DOCK_TIME;
         }
@@ -1541,7 +1505,7 @@ void step_npc_ships(world_t *w, float dt) {
         switch (npc->state) {
         case NPC_STATE_DOCKED: {
             npc->state_timer -= dt;
-            npc->vel = v2(0.0f, 0.0f);
+            npc->ship.vel = v2(0.0f, 0.0f);
             if (npc->state_timer <= 0.0f) {
                 /* Prefer towing a loose fragment over fracturing fresh
                  * rock — keeps the belt clean and is faster than mining.
@@ -1597,7 +1561,7 @@ void step_npc_ships(world_t *w, float dt) {
              * any FRACTURE rock looks "closer" each tick. */
             if (npc->towed_fragment < 0 && npc_target_valid(w, npc)) {
                 vec2 cur_pos = w->asteroids[npc->target_asteroid].pos;
-                float cur_d2 = v2_dist_sq(npc->pos, cur_pos);
+                float cur_d2 = v2_dist_sq(npc->ship.pos, cur_pos);
                 const float MAX_DISTRESS_PREEMPT_SQ = 2500.0f * 2500.0f;
                 for (int k = 0; k < MAX_CONTRACTS; k++) {
                     if (!w->contracts[k].active) continue;
@@ -1605,7 +1569,7 @@ void step_npc_ships(world_t *w, float dt) {
                     int idx = w->contracts[k].target_index;
                     if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
                     if (idx == npc->target_asteroid) break;
-                    float new_d2 = v2_dist_sq(npc->pos, w->asteroids[idx].pos);
+                    float new_d2 = v2_dist_sq(npc->ship.pos, w->asteroids[idx].pos);
                     if (new_d2 > MAX_DISTRESS_PREEMPT_SQ) continue;
                     if (new_d2 < cur_d2 * 0.25f) { npc->target_asteroid = idx; break; }
                 }
@@ -1613,7 +1577,7 @@ void step_npc_ships(world_t *w, float dt) {
             asteroid_t *a = &w->asteroids[npc->target_asteroid];
             npc_steer_with_path(w, n, npc, a->pos, /*thrust_scale=*/1.0f, dt);
             npc_apply_physics(npc, dt, w);
-            if (v2_dist_sq(npc->pos, a->pos) < MINING_RANGE * MINING_RANGE)
+            if (v2_dist_sq(npc->ship.pos, a->pos) < MINING_RANGE * MINING_RANGE)
                 npc->state = NPC_STATE_MINING;
             break;
         }
@@ -1636,7 +1600,7 @@ void step_npc_ships(world_t *w, float dt) {
                 break;
             }
             asteroid_t *a = &w->asteroids[npc->target_asteroid];
-            float dist_sq = v2_dist_sq(npc->pos, a->pos);
+            float dist_sq = v2_dist_sq(npc->ship.pos, a->pos);
             float standoff = a->radius + 60.0f;
             float approach_r = standoff + 20.0f;
 
@@ -1666,18 +1630,17 @@ void step_npc_ships(world_t *w, float dt) {
              * from the target, not reverse along velocity), and the 4.0
              * extra damping is what holds the standoff distance. */
             {
-                npc_ship_seed(npc);
                 flight_cmd_t cmd = flight_hover_near(w, &npc->ship, a->pos, standoff);
                 if (cmd.thrust < 0.0f) {
-                    vec2 away = v2_norm(v2_sub(npc->pos, a->pos));
-                    npc->vel = v2_add(npc->vel, v2_scale(away, hull->accel * 0.5f * dt));
+                    vec2 away = v2_norm(v2_sub(npc->ship.pos, a->pos));
+                    npc->ship.vel = v2_add(npc->ship.vel, v2_scale(away, hull->accel * 0.5f * dt));
                     cmd.thrust = 0.0f;
                 }
                 npc_apply_flight_cmd(npc, cmd, dt);
                 /* Hover never lights the engine flame — keep prior visual. */
                 npc->thrusting = false;
             }
-            npc->vel = v2_scale(npc->vel, 1.0f / (1.0f + (4.0f * dt)));
+            npc->ship.vel = v2_scale(npc->ship.vel, 1.0f / (1.0f + (4.0f * dt)));
             npc_apply_physics(npc, dt, w);
 
             /* Strict range+cone gate before firing — same metric the player
@@ -1685,11 +1648,10 @@ void step_npc_ships(world_t *w, float dt) {
              * gravity, fracture knockback) used to keep the MINING state
              * and beam-render across the map. If we lost the firing line,
              * fall back to TRAVEL so steering pulls us back into range. */
-            npc_ship_seed(npc);
-            vec2 forward = v2_from_angle(npc->angle);
-            vec2 muzzle = ship_muzzle(npc->pos, npc->angle, &npc->ship);
+            vec2 forward = v2_from_angle(npc->ship.angle);
+            vec2 muzzle = ship_muzzle(npc->ship.pos, npc->ship.angle, &npc->ship);
             int mining_level = (int)hull->mining_rate >= 1 ? 99 : 0; /* NPCs ignore tier */
-            float sig_eff = signal_mining_efficiency(signal_strength_at(w, npc->pos));
+            float sig_eff = signal_mining_efficiency(signal_strength_at(w, npc->ship.pos));
             mining_beam_t mb = sim_mining_beam_step(w, muzzle, forward,
                 npc->target_asteroid, mining_level,
                 hull->mining_rate, sig_eff, /*fracturer*/ -1, dt);
@@ -1713,7 +1675,7 @@ void step_npc_ships(world_t *w, float dt) {
                 for (int fi = 0; fi < MAX_ASTEROIDS; fi++) {
                     asteroid_t *f = &w->asteroids[fi];
                     if (!f->active || f->tier != ASTEROID_TIER_S) continue;
-                    float fd = v2_dist_sq(npc->pos, f->pos);
+                    float fd = v2_dist_sq(npc->ship.pos, f->pos);
                     if (fd < best_frag_d) { best_frag_d = fd; best_frag = fi; }
                 }
                 if (best_frag >= 0) {
@@ -1751,17 +1713,17 @@ void step_npc_ships(world_t *w, float dt) {
 
             /* Speed cap when towing */
             if (npc->towed_fragment >= 0) {
-                float spd = v2_len(npc->vel);
+                float spd = v2_len(npc->ship.vel);
                 float max_tow_speed = 80.0f;
                 if (spd > max_tow_speed)
-                    npc->vel = v2_scale(npc->vel, max_tow_speed / spd);
+                    npc->ship.vel = v2_scale(npc->ship.vel, max_tow_speed / spd);
             }
 
             /* Tow the fragment — drag it along with spring physics */
             if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS) {
                 asteroid_t *tow = &w->asteroids[npc->towed_fragment];
                 if (tow->active) {
-                    vec2 to_npc = v2_sub(npc->pos, tow->pos);
+                    vec2 to_npc = v2_sub(npc->ship.pos, tow->pos);
                     float td = sqrtf(v2_len_sq(to_npc));
                     float safe = 40.0f + tow->radius;
                     if (td > safe && td > 0.1f) {
@@ -1866,14 +1828,14 @@ void generate_npc_distress_contracts(world_t *w) {
         if (npc->role != NPC_ROLE_HAULER) continue;
         if (npc->state != NPC_STATE_TRAVEL_TO_DEST && npc->state != NPC_STATE_RETURN_TO_STATION) continue;
         /* Check if stuck: low speed for a while (state_timer repurposed — skip if fresh) */
-        float speed = v2_len(npc->vel);
+        float speed = v2_len(npc->ship.vel);
         if (speed > 15.0f) continue;
         /* Find nearest blocking asteroid */
         int blocker = -1;
         float best_d = 200.0f * 200.0f; /* within 200u */
         for (int i = 0; i < MAX_ASTEROIDS; i++) {
             if (!w->asteroids[i].active || asteroid_is_collectible(&w->asteroids[i])) continue;
-            float d = v2_dist_sq(npc->pos, w->asteroids[i].pos);
+            float d = v2_dist_sq(npc->ship.pos, w->asteroids[i].pos);
             if (d < best_d) { best_d = d; blocker = i; }
         }
         if (blocker < 0) continue;

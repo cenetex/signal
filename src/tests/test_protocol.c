@@ -188,9 +188,9 @@ TEST(test_roundtrip_npcs) {
     npcs[0].role = NPC_ROLE_MINER;
     npcs[0].state = NPC_STATE_MINING;
     npcs[0].thrusting = true;
-    npcs[0].pos = v2(800.0f, 400.0f);
-    npcs[0].vel = v2(10.0f, -5.0f);
-    npcs[0].angle = 1.57f;
+    npcs[0].ship.pos = v2(800.0f, 400.0f);
+    npcs[0].ship.vel = v2(10.0f, -5.0f);
+    npcs[0].ship.angle = 1.57f;
     npcs[0].target_asteroid = 12;
 
     npcs[0].tint_r = 0.55f;

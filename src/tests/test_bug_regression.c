@@ -160,8 +160,8 @@ TEST(test_bug16_npc_target_bounds_checked) {
     w.npc_ships[0].role = NPC_ROLE_MINER;
     w.npc_ships[0].state = NPC_STATE_TRAVEL_TO_ASTEROID;
     w.npc_ships[0].target_asteroid = MAX_ASTEROIDS;  /* OOB */
-    w.npc_ships[0].hull_class = HULL_CLASS_NPC_MINER;
-    w.npc_ships[0].pos = v2(500.0f, 500.0f);
+    w.npc_ships[0].ship.hull_class = HULL_CLASS_NPC_MINER;
+    w.npc_ships[0].ship.pos = v2(500.0f, 500.0f);
     /* After fix: sim should handle this gracefully (reset target to -1).
      * FAILS now if the NPC tries to access asteroids[48]. */
     world_sim_step(&w, SIM_DT);
@@ -256,7 +256,7 @@ TEST(test_bug23_npc_cargo_stuck_when_hopper_full) {
     /* Give miner some cargo and send it home */
     w.npc_ships[0].cargo[0] = 30.0f;
     w.npc_ships[0].state = NPC_STATE_RETURN_TO_STATION;
-    w.npc_ships[0].pos = w.stations[0].pos;
+    w.npc_ships[0].ship.pos = w.stations[0].pos;
     for (int i = 0; i < 600; i++)
         world_sim_step(&w, SIM_DT);
     /* NPC should have attempted to deposit but hopper was full.
@@ -431,15 +431,15 @@ TEST(test_bug33_npc_no_world_boundary) {
     WORLD_DECL;
     world_reset(&w);
     /* Place NPC outside all station signal ranges with outward velocity */
-    w.npc_ships[0].pos = v2_add(w.stations[0].pos, v2(19000.0f, 0.0f)); /* beyond refinery signal_range 18000 */
-    w.npc_ships[0].vel = v2(200.0f, 0.0f);  /* flying outward */
+    w.npc_ships[0].ship.pos = v2_add(w.stations[0].pos, v2(19000.0f, 0.0f)); /* beyond refinery signal_range 18000 */
+    w.npc_ships[0].ship.vel = v2(200.0f, 0.0f);  /* flying outward */
     w.npc_ships[0].active = true;
     w.npc_ships[0].state = NPC_STATE_IDLE;
     w.npc_ships[0].state_timer = 999.0f;
-    float start_dist = v2_len(v2_sub(w.npc_ships[0].pos, w.stations[0].pos));
+    float start_dist = v2_len(v2_sub(w.npc_ships[0].ship.pos, w.stations[0].pos));
     for (int i = 0; i < 600; i++)
         world_sim_step(&w, SIM_DT);
-    float end_dist = v2_len(v2_sub(w.npc_ships[0].pos, w.stations[0].pos));
+    float end_dist = v2_len(v2_sub(w.npc_ships[0].ship.pos, w.stations[0].pos));
     /* After fix: NPC should be pushed back toward station (closer than start). */
     ASSERT(end_dist < start_dist);
 }
@@ -450,13 +450,13 @@ TEST(test_bug34_npc_no_collision) {
     /* Place NPC on top of a station MODULE (the station center is now
      * empty space — construction yard — so we test against a real module). */
     vec2 mod_pos = module_world_pos_ring(&w.stations[0], 1, 1);
-    w.npc_ships[0].pos = mod_pos;
-    w.npc_ships[0].vel = v2(0.0f, 0.0f);
+    w.npc_ships[0].ship.pos = mod_pos;
+    w.npc_ships[0].ship.vel = v2(0.0f, 0.0f);
     w.npc_ships[0].active = true;
     w.npc_ships[0].state = NPC_STATE_IDLE;
     w.npc_ships[0].state_timer = 999.0f;
     world_sim_step(&w, SIM_DT);
-    float dist = v2_len(v2_sub(w.npc_ships[0].pos, mod_pos));
+    float dist = v2_len(v2_sub(w.npc_ships[0].ship.pos, mod_pos));
     /* NPC should be pushed out of the module collision circle */
     ASSERT(dist > 0.0f);
 }
@@ -844,11 +844,11 @@ TEST(test_bug63_npc_asteroid_collision) {
         }
     }
     ASSERT(target >= 0);
-    w.npc_ships[0].pos = w.asteroids[target].pos;
+    w.npc_ships[0].ship.pos = w.asteroids[target].pos;
     w.npc_ships[0].state = NPC_STATE_IDLE;
     w.npc_ships[0].state_timer = 999.0f;
     world_sim_step(&w, SIM_DT);
-    float dist = v2_len(v2_sub(w.npc_ships[0].pos, w.asteroids[target].pos));
+    float dist = v2_len(v2_sub(w.npc_ships[0].ship.pos, w.asteroids[target].pos));
     /* After fix: NPC should be pushed out of the asteroid.
      * FAILS because there's no NPC-asteroid collision. */
     ASSERT(dist > w.asteroids[target].radius * 0.5f);
@@ -963,14 +963,14 @@ TEST(test_bug69_npc_idle_no_boundary) {
     WORLD_DECL;
     world_reset(&w);
     /* Place NPC at world edge in idle state with outward velocity */
-    w.npc_ships[0].pos = v2(WORLD_RADIUS - 50.0f, 0.0f);
-    w.npc_ships[0].vel = v2(100.0f, 0.0f);
+    w.npc_ships[0].ship.pos = v2(WORLD_RADIUS - 50.0f, 0.0f);
+    w.npc_ships[0].ship.vel = v2(100.0f, 0.0f);
     w.npc_ships[0].state = NPC_STATE_IDLE;
     w.npc_ships[0].state_timer = 999.0f;
     for (int i = 0; i < 600; i++) world_sim_step(&w, SIM_DT);
     /* NPC should be pushed back by world boundary.
      * Bug 33 was fixed for general NPC boundary, but check IDLE specifically. */
-    float dist = v2_len(w.npc_ships[0].pos);
+    float dist = v2_len(w.npc_ships[0].ship.pos);
     ASSERT(dist <= WORLD_RADIUS + 100.0f);
 }
 
@@ -996,7 +996,7 @@ TEST(test_bug51_npc_cargo_zeroed_on_dock) {
     /* Give NPC 30 ferrite and send it home */
     w.npc_ships[0].cargo[COMMODITY_FERRITE_ORE] = 30.0f;
     w.npc_ships[0].state = NPC_STATE_RETURN_TO_STATION;
-    w.npc_ships[0].pos = w.stations[0].pos;
+    w.npc_ships[0].ship.pos = w.stations[0].pos;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     /* After fix: NPC should retain the 25 units it couldn't deposit.
      * FAILS because line 819 sets cargo[i] = 0.0f unconditionally. */
@@ -1077,7 +1077,7 @@ TEST(test_bug55_npc_deposits_at_non_refinery) {
     w.npc_ships[0].home_station = 1;
     w.npc_ships[0].cargo[COMMODITY_FERRITE_ORE] = 20.0f;
     w.npc_ships[0].state = NPC_STATE_RETURN_TO_STATION;
-    w.npc_ships[0].pos = w.stations[1].pos;
+    w.npc_ships[0].ship.pos = w.stations[1].pos;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     /* NPC docked at Yard and deposited ore into Yard's ore_buffer.
      * Yard doesn't smelt. The ore sits forever. */

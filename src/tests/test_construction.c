@@ -919,7 +919,7 @@ TEST(test_tow_drone_delivers_to_planned_outpost) {
     ASSERT(drone_idx >= 0);
     w.npc_ships[drone_idx].state = NPC_STATE_DOCKED;
     w.npc_ships[drone_idx].state_timer = 0.0f;
-    w.npc_ships[drone_idx].pos = w.stations[1].pos;
+    w.npc_ships[drone_idx].ship.pos = w.stations[1].pos;
     /* Slice 13: also seed the paired ship_t so the pre-mirror at the
      * top of step_npc_ships doesn't drag the drone back to its
      * spawn position next tick. */

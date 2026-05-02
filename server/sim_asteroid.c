@@ -882,7 +882,7 @@ void maintain_asteroid_field(world_t *w, float dt) {
     }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         if (!w->npc_ships[n].active) continue;
-        viewports[nv++] = w->npc_ships[n].pos;
+        viewports[nv++] = w->npc_ships[n].ship.pos;
     }
     if (nv == 0) return;
 

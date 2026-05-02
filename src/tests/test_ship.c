@@ -83,7 +83,7 @@ TEST(test_upgrade_product_cost_scales_with_level) {
 
 TEST(test_npc_hull_def) {
     npc_ship_t npc = {0};
-    npc.hull_class = HULL_CLASS_NPC_MINER;
+    npc.ship.hull_class = HULL_CLASS_NPC_MINER;
     const hull_def_t* hull = npc_hull_def(&npc);
     ASSERT_STR_EQ(hull->name, "Mining Drone");
     ASSERT_EQ_FLOAT(hull->cargo_capacity, 16.0f, 0.01f);
