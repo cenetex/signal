@@ -518,6 +518,75 @@ static bool miner_target_taken(const world_t *w, int target_idx, int self_char_i
     return false;
 }
 
+/* Look for a free-floating S-tier fragment within `range_sq` of the
+ * NPC. "Free" means not currently on any player's tractor (their
+ * ship.towed_fragments[] list) and not already claimed by another
+ * miner NPC (their npc_ship_t.towed_fragment).
+ *
+ * Used so miner NPCs prefer cleaning up loose fragments over fracturing
+ * fresh rock. Returns asteroid index, or -1. */
+static int npc_find_loose_fragment(const world_t *w, const npc_ship_t *self, float range_sq) {
+    int best = -1;
+    float best_d = range_sq;
+    int self_slot = (int)(self - w->npc_ships);
+    for (int fi = 0; fi < MAX_ASTEROIDS; fi++) {
+        const asteroid_t *f = &w->asteroids[fi];
+        if (!f->active || f->tier != ASTEROID_TIER_S) continue;
+        bool taken = false;
+        /* Player tow check. */
+        for (int p = 0; p < MAX_PLAYERS && !taken; p++) {
+            if (!w->players[p].connected) continue;
+            const ship_t *ship = &w->players[p].ship;
+            for (int t = 0; t < (int)(sizeof(ship->towed_fragments) / sizeof(ship->towed_fragments[0])); t++) {
+                if (ship->towed_fragments[t] == (int16_t)fi) { taken = true; break; }
+            }
+        }
+        if (taken) continue;
+        /* Other-NPC tow check. */
+        for (int j = 0; j < MAX_NPC_SHIPS; j++) {
+            if (j == self_slot) continue;
+            if (w->npc_ships[j].active && w->npc_ships[j].towed_fragment == fi) {
+                taken = true; break;
+            }
+        }
+        if (taken) continue;
+        float d2 = v2_dist_sq(self->pos, f->pos);
+        if (d2 < best_d) { best_d = d2; best = fi; }
+    }
+    return best;
+}
+
+/* Wrapper: claim a loose fragment for this NPC and stamp the
+ * smelt-payout token. Called at every place the miner is about to
+ * decide on a fracture target — picking up an existing fragment is
+ * always preferable to fracturing more rock. Returns true iff a
+ * fragment was claimed and the caller should transition to
+ * NPC_STATE_RETURN_TO_STATION. */
+static bool npc_try_claim_loose_fragment(world_t *w, npc_ship_t *npc, float range_sq) {
+    int frag = npc_find_loose_fragment(w, npc, range_sq);
+    if (frag < 0) return false;
+    npc->towed_fragment = frag;
+    asteroid_t *f = &w->asteroids[frag];
+    memcpy(f->last_towed_token, npc->session_token, sizeof(f->last_towed_token));
+    return true;
+}
+
+/* True if the miner's home station has any smeltable raw-ore stock
+ * above `frac` of REFINERY_HOPPER_CAPACITY. Used to gate fracturing:
+ * when the hopper is at-or-above 50%, miners stop creating new mass
+ * and only tractor pre-existing fragments — keeps the belt clean
+ * without backing the smelter further. */
+static bool npc_home_ore_above_frac(const world_t *w, const npc_ship_t *npc, float frac) {
+    if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) return false;
+    const station_t *home = &w->stations[npc->home_station];
+    float threshold = REFINERY_HOPPER_CAPACITY * frac;
+    for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
+        if (!sim_can_smelt_ore(home, (commodity_t)c)) continue;
+        if (home->_inventory_cache[c] >= threshold) return true;
+    }
+    return false;
+}
+
 static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     int self_npc_slot = (int)(npc - w->npc_ships);
     int self_char = character_for_npc_slot(w, self_npc_slot);
@@ -920,6 +989,59 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     if (need > best_need) {
                         best_need = need;
                         best_ingot = ingot;
+                    }
+                }
+
+                /* If the previously-bound dest_station doesn't want any
+                 * of home's stock, the original fallback would just sit
+                 * the hauler in the dock. Bug surfaced as "Prospect is
+                 * full of ferrite, haulers are idle" — Prospect's home
+                 * had ingots but the stale dest_station (e.g. Prospect
+                 * itself, or a station with no FRAME_PRESS) had no
+                 * matching `wants[]`, so best_ingot stayed unset and
+                 * total_carried fell to 0. Re-scan every other station
+                 * and pick the best (surplus × need / dist) match. */
+                if (best_ingot >= COMMODITY_COUNT) {
+                    int best_alt_dest = -1;
+                    commodity_t best_alt_ingot = COMMODITY_COUNT;
+                    float best_alt_score = 0.0f;
+                    for (int s = 0; s < MAX_STATIONS; s++) {
+                        if (s == npc->home_station) continue;
+                        if (!station_is_active(&w->stations[s])) continue;
+                        const station_t *alt = &w->stations[s];
+                        commodity_t alt_wants[4];
+                        int alt_want_count = 0;
+                        if (station_has_module(alt, MODULE_FRAME_PRESS))
+                            alt_wants[alt_want_count++] = COMMODITY_FERRITE_INGOT;
+                        if (station_has_module(alt, MODULE_LASER_FAB)) {
+                            alt_wants[alt_want_count++] = COMMODITY_CUPRITE_INGOT;
+                            alt_wants[alt_want_count++] = COMMODITY_CRYSTAL_INGOT;
+                        }
+                        if (station_has_module(alt, MODULE_TRACTOR_FAB))
+                            alt_wants[alt_want_count++] = COMMODITY_CUPRITE_INGOT;
+                        for (int wi = 0; wi < alt_want_count; wi++) {
+                            commodity_t ingot = alt_wants[wi];
+                            bool seen = false;
+                            for (int wj = 0; wj < wi; wj++) {
+                                if (alt_wants[wj] == ingot) { seen = true; break; }
+                            }
+                            if (seen) continue;
+                            float avail = fmaxf(0.0f, home->_inventory_cache[ingot] - HAULER_RESERVE);
+                            if (avail <= 0.5f) continue;
+                            float need = fmaxf(0.0f, MAX_PRODUCT_STOCK * 0.5f - alt->_inventory_cache[ingot]);
+                            if (need <= 0.0f) continue;
+                            float dist = fmaxf(1.0f, v2_len(v2_sub(alt->pos, home->pos)));
+                            float score = (avail * need) / dist;
+                            if (score > best_alt_score) {
+                                best_alt_score = score;
+                                best_alt_dest = s;
+                                best_alt_ingot = ingot;
+                            }
+                        }
+                    }
+                    if (best_alt_dest >= 0) {
+                        npc->dest_station = best_alt_dest;
+                        best_ingot = best_alt_ingot;
                     }
                 }
 
@@ -1420,6 +1542,22 @@ void step_npc_ships(world_t *w, float dt) {
             npc->state_timer -= dt;
             npc->vel = v2(0.0f, 0.0f);
             if (npc->state_timer <= 0.0f) {
+                /* Prefer towing a loose fragment over fracturing fresh
+                 * rock — keeps the belt clean and is faster than mining.
+                 * Generous range: a fresh-undock miner is willing to
+                 * traverse the local sector for low-hanging fruit. */
+                if (npc_try_claim_loose_fragment(w, npc, 4000.0f * 4000.0f)) {
+                    npc->state = NPC_STATE_RETURN_TO_STATION;
+                    break;
+                }
+                /* Home hopper above 50%? Don't add more mass — IDLE and
+                 * wait for fragments to drift through, or for the smelter
+                 * to drain stock back below the threshold. */
+                if (npc_home_ore_above_frac(w, npc, 0.5f)) {
+                    npc->state = NPC_STATE_IDLE;
+                    npc->state_timer = 5.0f;
+                    break;
+                }
                 int target = npc_find_mineable_asteroid(w, npc);
                 if (target >= 0) {
                     npc->target_asteroid = target;
@@ -1433,6 +1571,18 @@ void step_npc_ships(world_t *w, float dt) {
         }
         case NPC_STATE_TRAVEL_TO_ASTEROID: {
             if (!npc_target_valid(w, npc)) {
+                /* Same fragment-first rule when the current target dies
+                 * (someone else fractured it, etc.). */
+                if (npc_try_claim_loose_fragment(w, npc, 4000.0f * 4000.0f)) {
+                    npc->target_asteroid = -1;
+                    npc->state = NPC_STATE_RETURN_TO_STATION;
+                    break;
+                }
+                if (npc_home_ore_above_frac(w, npc, 0.5f)) {
+                    npc->target_asteroid = -1;
+                    npc->state = NPC_STATE_RETURN_TO_STATION;
+                    break;
+                }
                 int target = npc_find_mineable_asteroid(w, npc);
                 if (target >= 0) npc->target_asteroid = target;
                 else { npc->target_asteroid = -1; npc->state = NPC_STATE_RETURN_TO_STATION; break; }
@@ -1470,6 +1620,12 @@ void step_npc_ships(world_t *w, float dt) {
             if (!npc_target_valid(w, npc)) {
                 /* Target gone — look for a fragment to tow, or find new target */
                 if (npc->towed_fragment >= 0) {
+                    npc->state = NPC_STATE_RETURN_TO_STATION;
+                } else if (npc_try_claim_loose_fragment(w, npc, 4000.0f * 4000.0f)) {
+                    npc->state = NPC_STATE_RETURN_TO_STATION;
+                } else if (npc_home_ore_above_frac(w, npc, 0.5f)) {
+                    /* Hopper full and no fragment in range — head home
+                     * and IDLE there until the smelter drains. */
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                 } else {
                     int target = npc_find_mineable_asteroid(w, npc);
@@ -1635,6 +1791,17 @@ void step_npc_ships(world_t *w, float dt) {
             npc_apply_physics(npc, hull->drag, dt, w);
             npc->state_timer -= dt;
             if (npc->state_timer <= 0.0f) {
+                /* IDLE → fragment first, fracture second. */
+                if (npc_try_claim_loose_fragment(w, npc, 4000.0f * 4000.0f)) {
+                    npc->state = NPC_STATE_RETURN_TO_STATION;
+                    break;
+                }
+                /* Hopper full → stay idle until either a fragment drifts
+                 * into range or the smelter drains stock back below 50%. */
+                if (npc_home_ore_above_frac(w, npc, 0.5f)) {
+                    npc->state_timer = 5.0f;
+                    break;
+                }
                 int target = npc_find_mineable_asteroid(w, npc);
                 if (target >= 0) { npc->target_asteroid = target; npc->state = NPC_STATE_TRAVEL_TO_ASTEROID; }
                 else npc->state_timer = 3.0f;
