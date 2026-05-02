@@ -938,55 +938,17 @@ static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, ast
     ship_collision_count++;
 }
 
-/* Annular sector collision: test ship against the corridor band exactly
- * matching the visual arc. No ghost walls — geometry is pixel-exact. */
+/* Player corridor collision: shared annular pushback in sim_ship,
+ * then apply player-only damage on top of the impact magnitude. */
 static void resolve_ship_annular_sector(world_t *w, server_player_t *sp,
                                          vec2 center, float ring_r,
                                          float angle_a, float arc_delta) {
-    float ship_r = ship_hull_def(&sp->ship)->ship_radius;
-    vec2 delta = v2_sub(sp->ship.pos, center);
-    float dist = sqrtf(v2_len_sq(delta));
-    if (dist < 1.0f) return;
-
-    /* Radial test: ship within inflated band? */
-    float r_inner = ring_r - STATION_CORRIDOR_HW - ship_r;
-    float r_outer = ring_r + STATION_CORRIDOR_HW + ship_r;
-    if (dist <= r_inner || dist >= r_outer) return;
-
-    /* Angular test: ship angle within the arc?
-     * Expand the arc by the ship's angular footprint at this radius
-     * so ships near the arc edge don't clip through. arc_delta from
-     * the geom emitter is already canonical-forward (in [0, 2π)) — no
-     * shortest-arc normalization. */
-    float ship_angle = atan2f(delta.y, delta.x);
-    float angular_margin = (dist > 1.0f) ? asinf(fminf(ship_r / dist, 1.0f)) : 0.0f;
-    /* Expand arc by angular margin on both sides */
-    float expanded_start = angle_a - angular_margin;
-    float expanded_da = arc_delta + 2.0f * angular_margin;
-    if (angle_in_arc(ship_angle, expanded_start, expanded_da) < 0.0f) return;
-
-    /* Ship is inside corridor — push radially to nearest edge.
-     * Add COLLISION_SKIN past the edge so the next frame's tangential
-     * slide doesn't immediately re-trigger this same corridor. */
-    vec2 radial = v2_scale(delta, 1.0f / dist);
-    float d_inner = dist - (ring_r - STATION_CORRIDOR_HW);
-    float d_outer = (ring_r + STATION_CORRIDOR_HW) - dist;
-    vec2 push_normal;
-    if (d_inner < d_outer) {
-        sp->ship.pos = v2_add(center, v2_scale(radial, ring_r - STATION_CORRIDOR_HW - ship_r - COLLISION_SKIN));
-        push_normal = v2_scale(radial, -1.0f);
-    } else {
-        sp->ship.pos = v2_add(center, v2_scale(radial, ring_r + STATION_CORRIDOR_HW + ship_r + COLLISION_SKIN));
-        push_normal = radial;
-    }
-
-    float vel_toward = v2_dot(sp->ship.vel, push_normal);
-    if (vel_toward < 0.0f) {
-        float impact = -vel_toward;
-        float dmg = sp->docked ? 0.0f : collision_damage_for(impact, 1.0f);
-        if (dmg > 0.0f) apply_ship_damage(w, sp, dmg);
-        sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(push_normal, vel_toward * 1.0f));
-    }
+    float impact = resolve_ship_annular_pushback(&sp->ship, center, ring_r,
+                                                  angle_a, arc_delta);
+    if (impact <= 0.0f) return;
+    if (sp->docked) return;
+    float dmg = collision_damage_for(impact, 1.0f);
+    if (dmg > 0.0f) apply_ship_damage(w, sp, dmg);
 }
 
 /* ================================================================== */

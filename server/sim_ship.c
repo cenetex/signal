@@ -35,6 +35,51 @@ void step_ship_thrust(ship_t *s, float dt, float thrust_input,
     }
 }
 
+float resolve_ship_annular_pushback(ship_t *ship, vec2 center,
+                                    float ring_r, float angle_a, float arc_delta) {
+    float ship_r = ship_hull_def(ship)->ship_radius;
+    vec2 delta = v2_sub(ship->pos, center);
+    float dist = sqrtf(v2_len_sq(delta));
+    if (dist < 1.0f) return 0.0f;
+
+    /* Radial test: is the ship within the corridor's inflated band? */
+    float r_inner = ring_r - STATION_CORRIDOR_HW - ship_r;
+    float r_outer = ring_r + STATION_CORRIDOR_HW + ship_r;
+    if (dist <= r_inner || dist >= r_outer) return 0.0f;
+
+    /* Angular test with margin so ships near the arc edge don't
+     * clip through. */
+    float ship_angle = atan2f(delta.y, delta.x);
+    float angular_margin = (dist > 1.0f) ? asinf(fminf(ship_r / dist, 1.0f)) : 0.0f;
+    float expanded_start = angle_a - angular_margin;
+    float expanded_da = arc_delta + 2.0f * angular_margin;
+    if (angle_in_arc(ship_angle, expanded_start, expanded_da) < 0.0f) return 0.0f;
+
+    /* Push radially to nearest edge plus SHIP_COLLISION_SKIN so the
+     * next frame's tangential slide doesn't immediately re-trigger
+     * this same corridor. */
+    vec2 radial = v2_scale(delta, 1.0f / dist);
+    vec2 push_normal;
+    float d_inner = dist - (ring_r - STATION_CORRIDOR_HW);
+    float d_outer = (ring_r + STATION_CORRIDOR_HW) - dist;
+    if (d_inner < d_outer) {
+        ship->pos = v2_add(center, v2_scale(radial,
+            ring_r - STATION_CORRIDOR_HW - ship_r - SHIP_COLLISION_SKIN));
+        push_normal = v2_scale(radial, -1.0f);
+    } else {
+        ship->pos = v2_add(center, v2_scale(radial,
+            ring_r + STATION_CORRIDOR_HW + ship_r + SHIP_COLLISION_SKIN));
+        push_normal = radial;
+    }
+
+    /* Zero the inward velocity component. Tangential slip preserved
+     * so the ship can still scrape along the wall. */
+    float vel_toward = v2_dot(ship->vel, push_normal);
+    if (vel_toward >= 0.0f) return 0.0f;
+    ship->vel = v2_sub(ship->vel, v2_scale(push_normal, vel_toward * 1.0f));
+    return -vel_toward;
+}
+
 void step_ship_motion(ship_t *s, float dt, const world_t *w, float cached_signal) {
     s->vel = v2_scale(s->vel, 1.0f / (1.0f + (ship_hull_def(s)->drag * dt)));
     s->pos = v2_add(s->pos, v2_scale(s->vel, dt));

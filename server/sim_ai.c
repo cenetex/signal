@@ -7,6 +7,7 @@
 #include "sim_ai.h"
 #include "sim_nav.h"
 #include "sim_flight.h"
+#include "sim_ship.h"
 #include "sim_production.h" /* sim_can_smelt_ore for miner asteroid filter */
 #include "sim_mining.h"
 #include "signal_model.h"
@@ -736,48 +737,20 @@ static void resolve_npc_circle(npc_ship_t *npc, vec2 center, float radius) {
         npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.0f));
 }
 
-/* Push NPC out of a corridor annular sector (with angular margin).
- * arc_delta is the canonical forward span from the geom emitter — no
- * shortest-arc normalization. Returns true if a push fired (caller
- * uses this to force a path replan, otherwise the NPC's path keeps
- * pointing into the wall and it just bashes again next frame). */
-#define NPC_COLLISION_SKIN 1.5f
+/* NPC corridor collision: route through the shared sim_ship
+ * primitive via a stack ship_t view, then write back. Slice 3 will
+ * eliminate the view+writeback by moving NPC pos/vel ownership onto
+ * a real ship_t in world.ships[]; for now this is a clean adapter
+ * over the same physics. Returns true on push so the caller can
+ * force a nav replan. */
 static bool resolve_npc_annular_sector(npc_ship_t *npc, vec2 center,
                                         float ring_r, float angle_a, float arc_delta) {
-    const hull_def_t *hull = npc_hull_def(npc);
-    float ship_r = hull->ship_radius;
-    vec2 delta = v2_sub(npc->pos, center);
-    float dist = sqrtf(v2_len_sq(delta));
-    if (dist < 1.0f) return false;
-
-    float r_inner = ring_r - STATION_CORRIDOR_HW - ship_r;
-    float r_outer = ring_r + STATION_CORRIDOR_HW + ship_r;
-    if (dist <= r_inner || dist >= r_outer) return false;
-
-    /* Angular test with margin (matches player collision) */
-    float npc_angle = atan2f(delta.y, delta.x);
-    float angular_margin = (dist > 1.0f) ? asinf(fminf(ship_r / dist, 1.0f)) : 0.0f;
-    float expanded_start = angle_a - angular_margin;
-    float expanded_da = arc_delta + 2.0f * angular_margin;
-    if (angle_in_arc(npc_angle, expanded_start, expanded_da) < 0.0f) return false;
-
-    /* Push radially to nearest edge, plus COLLISION_SKIN so the next
-     * frame's tangential slide doesn't immediately re-trigger this
-     * same corridor (the player version of this function has the
-     * same skin — without it, NPCs visibly oscillate against the
-     * wall every tick). */
-    vec2 radial = v2_scale(delta, 1.0f / dist);
-    float d_inner = dist - (ring_r - STATION_CORRIDOR_HW);
-    float d_outer = (ring_r + STATION_CORRIDOR_HW) - dist;
-    if (d_inner < d_outer) {
-        npc->pos = v2_add(center, v2_scale(radial, r_inner - NPC_COLLISION_SKIN));
-        float vt = v2_dot(npc->vel, radial);
-        if (vt > 0.0f) npc->vel = v2_sub(npc->vel, v2_scale(radial, vt * 1.0f));
-    } else {
-        npc->pos = v2_add(center, v2_scale(radial, r_outer + NPC_COLLISION_SKIN));
-        float vt = v2_dot(npc->vel, radial);
-        if (vt < 0.0f) npc->vel = v2_sub(npc->vel, v2_scale(radial, vt * 1.0f));
-    }
+    ship_t view = ship_view_from_npc(npc);
+    float impact = resolve_ship_annular_pushback(&view, center, ring_r,
+                                                  angle_a, arc_delta);
+    if (impact <= 0.0f) return false;
+    npc->pos = view.pos;
+    npc->vel = view.vel;
     return true;
 }
 

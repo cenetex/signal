@@ -47,4 +47,20 @@ float ship_boost_thrust_mult(bool boost, float hold_t);
 void step_ship_motion(ship_t *s, float dt, const world_t *w,
                       float cached_signal);
 
+/* Tiny gap pushed past every collision edge so sub-pixel tangential
+ * drift on the next frame doesn't immediately re-trigger this same
+ * surface. Both player + NPC corridor pushback now share this. */
+#define SHIP_COLLISION_SKIN 1.5f
+
+/* Push a ship out of a station corridor's annular sector if it's
+ * inside one. arc_delta is the canonical forward span from the geom
+ * emitter (no shortest-arc normalization). Mutates `pos` and zeroes
+ * the inward component of `vel`.
+ *
+ * Returns the inward velocity magnitude at impact (≥ 0). 0 means no
+ * contact, > 0 is the speed at which the ship hit the wall — caller
+ * uses it to decide damage / nav-replan / etc. */
+float resolve_ship_annular_pushback(ship_t *ship, vec2 center,
+                                    float ring_r, float angle_a, float arc_delta);
+
 #endif /* SIM_SHIP_H */
