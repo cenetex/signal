@@ -71,5 +71,16 @@ float resolve_ship_annular_pushback(ship_t *ship, vec2 center,
  * damage/replan on top. */
 float resolve_ship_circle_pushback(ship_t *ship, vec2 center, float radius);
 
+/* Resolve ship vs asteroid contact: push-out with skin gap, mass-equal
+ * impulse split that bounces both bodies (the rock loses half of its
+ * inward closing momentum, the ship absorbs the other half). Marks the
+ * asteroid net_dirty when contact happens.
+ *
+ * Returns the inward closing speed at impact (≥ 0). 0 = no contact.
+ * Caller layers role-specific damage / kill attribution / self-suppression
+ * on top. Both the player and NPC asteroid-collision paths route through
+ * this, so the bounce dynamics are uniform. */
+float resolve_ship_asteroid_pushback(ship_t *ship, asteroid_t *a);
+
 
 #endif /* SIM_SHIP_H */

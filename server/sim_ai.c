@@ -716,38 +716,18 @@ static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
     npc_apply_flight_cmd(npc, cmd, dt);
 }
 
-/* Drag + position integration + NPC signal-pushback, routed through
- * step_ship_motion via the ship_view+writeback adapter (drag is
- * hull-driven). NPCs pass cached_signal=1.0 to suppress the strong
- * frontier yank that step_ship_motion does for players — NPCs use the
- * gentler confidence-graduated push below, which kicks in earlier
- * (below SIGNAL_BAND_OPERATIONAL) so they stay near coverage. */
+/* Drag + position integration + signal-frontier pushback, routed
+ * through step_ship_motion via the ship_view+writeback adapter. The
+ * NPC confidence-graduated push that used to live here was retired in
+ * favor of the player frontier yank — NPCs and players now share the
+ * same boundary behavior. NPC willingness to *operate* at low signal
+ * is still gated separately by signal_npc_confidence() in the AI brain
+ * (mining target selection, willingness to leave the dock); only the
+ * physics-side pushback was duplicated. */
 static void npc_apply_physics(npc_ship_t *npc, float dt, const world_t *w) {
     ship_t view = ship_view_from_npc(npc);
-    step_ship_motion(&view, dt, w, /*cached_signal=*/1.0f);
-
-    /* NPC-specific signal pushback: ramps in below operational, softer
-     * and earlier than the player frontier yank. */
     float sig = signal_strength_at(w, view.pos);
-    float npc_conf = signal_npc_confidence(sig);
-    if (npc_conf < 1.0f) {
-        float best_d_sq = 1e18f;
-        int best_s = 0;
-        for (int i = 0; i < MAX_STATIONS; i++) {
-            float d_sq = v2_dist_sq(view.pos, w->stations[i].pos);
-            if (d_sq < best_d_sq) { best_d_sq = d_sq; best_s = i; }
-        }
-        vec2 to_station = v2_sub(w->stations[best_s].pos, view.pos);
-        float d = sqrtf(v2_len_sq(to_station));
-        if (d > 0.001f) {
-            float edge = w->stations[best_s].signal_range;
-            float overshoot = fmaxf(0.0f, d - edge);
-            float push_strength = overshoot * 0.08f + (1.0f - npc_conf) * 0.05f;
-            vec2 push = v2_scale(to_station, push_strength / d);
-            view.vel = v2_add(view.vel, push);
-        }
-    }
-
+    step_ship_motion(&view, dt, w, sig);
     npc->pos = view.pos;
     npc->vel = view.vel;
 }
@@ -843,46 +823,39 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
 }
 
 static void npc_resolve_asteroid_collisions(world_t *w, npc_ship_t *npc) {
-    const hull_def_t *hull = npc_hull_def(npc);
+    int towed = npc->towed_fragment;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (i == towed) continue;  /* tow physics owns this fragment */
         asteroid_t *a = &w->asteroids[i];
         if (!a->active) continue;
         /* Fragments (collectible-tier) collide too — a thrown or
          * tractored ore chunk should hit an NPC the same way it hits a
-         * player. The vel_toward + collision_damage_for threshold keep
-         * gentle drifts at zero damage. */
-        float minimum = a->radius + hull->ship_radius;
-        vec2 delta = v2_sub(npc->pos, a->pos);
-        float d_sq = v2_len_sq(delta);
-        if (d_sq >= minimum * minimum) continue;
-        float d = sqrtf(d_sq);
-        vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
-        npc->pos = v2_add(a->pos, v2_scale(normal, minimum));
-        /* Relative velocity so a stationary NPC hit by a fast rock takes
-         * the right impact (matches resolve_ship_asteroid_collision). */
-        vec2 rel_vel = v2_sub(npc->vel, a->vel);
-        float vel_toward = v2_dot(rel_vel, normal);
-        if (vel_toward < 0.0f) {
-            float impact = -vel_toward;
-            npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.0f));
-            /* Size-scaled damage matching player formula. NPCs feeding
-             * the kit-demand sink is the load-bearing reason the kit
-             * economy exists at all. */
-            float size_mult = a->radius / 30.0f;
-            if (size_mult < 0.5f) size_mult = 0.5f;
-            if (size_mult > 2.5f) size_mult = 2.5f;
-            float dmg = collision_damage_for(impact, size_mult);
-            int npc_slot = (int)(npc - w->npc_ships);
-            bool attributed =
-                (a->last_towed_token[0] | a->last_towed_token[1] | a->last_towed_token[2] |
-                 a->last_towed_token[3] | a->last_towed_token[4] | a->last_towed_token[5] |
-                 a->last_towed_token[6] | a->last_towed_token[7]) != 0;
-            if (attributed) {
-                apply_npc_ship_damage_attributed(w, npc_slot, dmg,
-                    a->last_towed_token, DEATH_CAUSE_THROWN_ROCK);
-            } else {
-                apply_npc_ship_damage(w, npc_slot, dmg);
-            }
+         * player. Geometry + mass-equal bounce live in sim_ship; only
+         * NPC-specific damage routing layers on top. Unconditional
+         * writeback so the geometric push-out lands even when the
+         * contact is separating (impact=0, no damage but ship was
+         * still moved out of overlap). */
+        ship_t view = ship_view_from_npc(npc);
+        float impact = resolve_ship_asteroid_pushback(&view, a);
+        npc->pos = view.pos;
+        npc->vel = view.vel;
+        if (impact <= 0.0f) continue;
+
+        float size_mult = a->radius / 30.0f;
+        if (size_mult < 0.5f) size_mult = 0.5f;
+        if (size_mult > 2.5f) size_mult = 2.5f;
+        float dmg = collision_damage_for(impact, size_mult);
+        if (dmg <= 0.0f) continue;
+        int npc_slot = (int)(npc - w->npc_ships);
+        bool attributed =
+            (a->last_towed_token[0] | a->last_towed_token[1] | a->last_towed_token[2] |
+             a->last_towed_token[3] | a->last_towed_token[4] | a->last_towed_token[5] |
+             a->last_towed_token[6] | a->last_towed_token[7]) != 0;
+        if (attributed) {
+            apply_npc_ship_damage_attributed(w, npc_slot, dmg,
+                a->last_towed_token, DEATH_CAUSE_THROWN_ROCK);
+        } else {
+            apply_npc_ship_damage(w, npc_slot, dmg);
         }
     }
 }

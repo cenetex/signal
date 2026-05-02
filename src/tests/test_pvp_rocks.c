@@ -260,6 +260,13 @@ TEST(test_thrown_rock_kills_npc_emits_event) {
     }
     ASSERT(npc_idx >= 0);
     npc_ship_t *npc = &w.npc_ships[npc_idx];
+    /* Pin BOTH the npc-side hull and the paired ship_t hull. Damage is
+     * routed to the paired ship.hull (slice 9+); the npc.hull is just
+     * a mirror that gets overwritten at end-of-tick. With the slice-3a
+     * mass-equal asteroid bounce, the rock loses momentum each impact,
+     * so a single 800 u/s hit doesn't escalate to multiple lethal
+     * hits — start the ship at hull 1.0 so the very first contact is
+     * fatal, regardless of how many bounces follow. */
     npc->hull = 1.0f;
     npc->vel  = v2(0.0f, 0.0f);
     /* Use Prospect's position (station 0) so we're inside signal coverage
@@ -296,8 +303,9 @@ TEST(test_thrown_rock_kills_npc_emits_event) {
     vec2 npc_pin = npc->pos;
     ship_t *npc_ship = world_npc_ship_for(&w, npc_idx);
     ASSERT(npc_ship != NULL);
-    npc_ship->pos = npc_pin;
-    npc_ship->vel = v2(0.0f, 0.0f);
+    npc_ship->pos  = npc_pin;
+    npc_ship->vel  = v2(0.0f, 0.0f);
+    npc_ship->hull = 1.0f;
     for (int t = 0; t < 120 && !kill; t++) {
         npc->vel = v2(0.0f, 0.0f);
         npc->pos = npc_pin;

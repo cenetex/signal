@@ -95,6 +95,31 @@ float resolve_ship_annular_pushback(ship_t *ship, vec2 center,
     return -vel_toward;
 }
 
+float resolve_ship_asteroid_pushback(ship_t *ship, asteroid_t *a) {
+    float minimum = a->radius + ship_hull_def(ship)->ship_radius;
+    vec2 delta = v2_sub(ship->pos, a->pos);
+    float d_sq = v2_len_sq(delta);
+    if (d_sq >= minimum * minimum) return 0.0f;
+    float d = sqrtf(d_sq);
+    vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
+    ship->pos = v2_add(a->pos, v2_scale(normal, minimum + SHIP_COLLISION_SKIN));
+
+    /* Closing velocity along the contact normal. Negative = rock + ship
+     * coming together; positive = already separating. */
+    vec2 rel_vel = v2_sub(ship->vel, a->vel);
+    float vel_toward = v2_dot(rel_vel, normal);
+    if (vel_toward >= 0.0f) return 0.0f;
+
+    /* Mass-equal split: cheapest stable bounce model. The ship loses
+     * half the inward component of rel_vel; the rock gains the other
+     * half. Net momentum conserved along the normal. */
+    vec2 impulse = v2_scale(normal, vel_toward * 0.5f);
+    ship->vel = v2_sub(ship->vel, impulse);
+    a->vel    = v2_add(a->vel, impulse);
+    a->net_dirty = true;
+    return -vel_toward;
+}
+
 void step_ship_motion(ship_t *s, float dt, const world_t *w, float cached_signal) {
     s->vel = v2_scale(s->vel, 1.0f / (1.0f + (ship_hull_def(s)->drag * dt)));
     s->pos = v2_add(s->pos, v2_scale(s->vel, dt));

@@ -839,12 +839,6 @@ static void apply_ship_damage(world_t *w, server_player_t *sp, float damage) {
 
 static int ship_collision_count; /* per-frame overlap counter for crush detection */
 
-/* Skin width: tiny gap between ship surface and obstacle surface after a
- * push-out. Eliminates per-tick boundary chatter on large radii (titan
- * asteroids, station modules) where small numerical drift would otherwise
- * trigger another collision the next tick. */
-#define COLLISION_SKIN 1.5f
-
 static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, float radius) {
     float impact = resolve_ship_circle_pushback(&sp->ship, center, radius);
     if (impact > 0.0f) ship_collision_count++;
@@ -868,61 +862,36 @@ static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, fl
  *   3. Damage scales with rock radius. An XL rock hits ~2.5× harder
  *      than an S-tier fragment. Free signal that bigger rocks matter. */
 static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, asteroid_t *a) {
-    float minimum = a->radius + ship_hull_def(&sp->ship)->ship_radius;
-    vec2 delta = v2_sub(sp->ship.pos, a->pos);
-    float d_sq = v2_len_sq(delta);
-    if (d_sq >= minimum * minimum) return;
-    float d = sqrtf(d_sq);
-    vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
-    sp->ship.pos = v2_add(a->pos, v2_scale(normal, minimum + COLLISION_SKIN));
-
-    /* Relative closing velocity along the contact normal. Positive = the
-     * ship is moving away from the rock (or rock fleeing the ship);
-     * negative = closing. The magnitude is what hurts. */
-    vec2 rel_vel = v2_sub(sp->ship.vel, a->vel);
-    float vel_toward = v2_dot(rel_vel, normal);
-    if (vel_toward < 0.0f) {
-        /* Self-damage skip: your own thrown rock can't hurt you. The
-         * collision still resolves geometrically (push-out + velocity
-         * clamp) so the rock doesn't tunnel through your hull, but no
-         * hull damage and no kill credit. */
-        bool self = false;
-        bool attributed =
-            (a->last_towed_token[0] | a->last_towed_token[1] | a->last_towed_token[2] |
-             a->last_towed_token[3] | a->last_towed_token[4] | a->last_towed_token[5] |
-             a->last_towed_token[6] | a->last_towed_token[7]) != 0;
-        if (attributed && memcmp(a->last_towed_token, sp->session_token, 8) == 0) {
-            self = true;
-        }
-
-        if (!self) {
-            float impact = -vel_toward;
-            /* Size scaling: small fragments tickle, XL/XXL gut-punch.
-             * Tuned so an S-tier (radius ~10) is 0.5×, M-tier (~30) is
-             * 1.0×, XL (~60) is ~2.0×, XXL (~80) is the 2.5× cap. */
-            float size_mult = a->radius / 30.0f;
-            if (size_mult < 0.5f) size_mult = 0.5f;
-            if (size_mult > 2.5f) size_mult = 2.5f;
-            float dmg = sp->docked ? 0.0f : collision_damage_for(impact, size_mult);
-            if (dmg > 0.0f) {
-                uint8_t cause = attributed ? DEATH_CAUSE_THROWN_ROCK : DEATH_CAUSE_ASTEROID;
-                /* Source = rock position so the indicator points at
-                 * the actual incoming projectile, not the thrower. */
-                apply_ship_damage_attributed(w, sp, dmg,
-                    attributed ? a->last_towed_token : NULL, cause, a->pos);
-            }
-        }
-
-        /* Geometric resolution: cancel inward component of rel_vel by
-         * splitting the change between ship and rock. Mass-equal split
-         * is the cheapest stable model — gives reasonable bouncing
-         * without a real mass field. */
-        vec2 impulse = v2_scale(normal, vel_toward * 0.5f);
-        sp->ship.vel = v2_sub(sp->ship.vel, impulse);
-        a->vel       = v2_add(a->vel, impulse);
-        a->net_dirty = true;
-    }
+    /* Geometric push-out + mass-equal bounce live in sim_ship now;
+     * player-only attribution / self-damage suppression sits on top. */
+    float impact = resolve_ship_asteroid_pushback(&sp->ship, a);
+    if (impact <= 0.0f) return;
     ship_collision_count++;
+
+    /* Self-damage skip: your own thrown rock can't hurt you. The
+     * pushback already resolved geometrically — we just gate the
+     * damage / kill credit. */
+    bool attributed =
+        (a->last_towed_token[0] | a->last_towed_token[1] | a->last_towed_token[2] |
+         a->last_towed_token[3] | a->last_towed_token[4] | a->last_towed_token[5] |
+         a->last_towed_token[6] | a->last_towed_token[7]) != 0;
+    bool self = attributed && memcmp(a->last_towed_token, sp->session_token, 8) == 0;
+    if (self) return;
+
+    /* Size scaling: S-tier (~10) → 0.5×, M (~30) → 1.0×, XL (~60) →
+     * ~2.0×, XXL (~80) → 2.5× cap. Free signal that bigger rocks
+     * matter. */
+    float size_mult = a->radius / 30.0f;
+    if (size_mult < 0.5f) size_mult = 0.5f;
+    if (size_mult > 2.5f) size_mult = 2.5f;
+    float dmg = sp->docked ? 0.0f : collision_damage_for(impact, size_mult);
+    if (dmg > 0.0f) {
+        uint8_t cause = attributed ? DEATH_CAUSE_THROWN_ROCK : DEATH_CAUSE_ASTEROID;
+        /* Source = rock position so the indicator points at the actual
+         * incoming projectile, not the thrower. */
+        apply_ship_damage_attributed(w, sp, dmg,
+            attributed ? a->last_towed_token : NULL, cause, a->pos);
+    }
 }
 
 /* Player corridor collision: shared annular pushback in sim_ship,
