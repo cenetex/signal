@@ -63,4 +63,12 @@ void step_ship_motion(ship_t *s, float dt, const world_t *w,
 float resolve_ship_annular_pushback(ship_t *ship, vec2 center,
                                     float ring_r, float angle_a, float arc_delta);
 
+/* Push a ship out of a circle obstacle (station core, module bodies)
+ * if it's overlapping. Mutates `pos` and zeroes the inward `vel`.
+ *
+ * Returns inward speed at impact (≥ 0). Same contract as
+ * resolve_ship_annular_pushback — caller layers role-specific
+ * damage/replan on top. */
+float resolve_ship_circle_pushback(ship_t *ship, vec2 center, float radius);
+
 #endif /* SIM_SHIP_H */

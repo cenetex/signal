@@ -846,28 +846,15 @@ static int ship_collision_count; /* per-frame overlap counter for crush detectio
 #define COLLISION_SKIN 1.5f
 
 static void resolve_ship_circle(world_t *w, server_player_t *sp, vec2 center, float radius) {
-    float minimum = radius + ship_hull_def(&sp->ship)->ship_radius;
-    vec2 delta = v2_sub(sp->ship.pos, center);
-    float d_sq = v2_len_sq(delta);
-    if (d_sq >= minimum * minimum) return;
-    float d = sqrtf(d_sq);
-    vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
-    /* Push past the surface by the skin width so we're cleanly outside. */
-    sp->ship.pos = v2_add(center, v2_scale(normal, minimum + COLLISION_SKIN));
-    float vel_toward = v2_dot(sp->ship.vel, normal);
-    if (vel_toward < 0.0f) {
-        float impact = -vel_toward;
-        float dmg = sp->docked ? 0.0f : collision_damage_for(impact, 1.0f);
-        if (dmg > 0.0f) {
-            /* Source = the offending station-module circle. Player's
-             * directional indicator points at the wall they hit. */
-            apply_ship_damage_attributed(w, sp, dmg, NULL, DEATH_CAUSE_STATION, center);
-        }
-        /* Clamp inward velocity component to zero — slide along the surface
-         * tangent on the next tick instead of bouncing back through it. */
-        sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(normal, vel_toward));
+    float impact = resolve_ship_circle_pushback(&sp->ship, center, radius);
+    if (impact > 0.0f) ship_collision_count++;
+    if (impact <= 0.0f || sp->docked) return;
+    float dmg = collision_damage_for(impact, 1.0f);
+    if (dmg > 0.0f) {
+        /* Source = the offending station-module circle. Player's
+         * directional indicator points at the wall they hit. */
+        apply_ship_damage_attributed(w, sp, dmg, NULL, DEATH_CAUSE_STATION, center);
     }
-    ship_collision_count++;
 }
 
 /* Asteroid-vs-ship collision with relative velocity, kill attribution,

@@ -35,6 +35,21 @@ void step_ship_thrust(ship_t *s, float dt, float thrust_input,
     }
 }
 
+float resolve_ship_circle_pushback(ship_t *ship, vec2 center, float radius) {
+    float minimum = radius + ship_hull_def(ship)->ship_radius;
+    vec2 delta = v2_sub(ship->pos, center);
+    float d_sq = v2_len_sq(delta);
+    if (d_sq >= minimum * minimum) return 0.0f;
+    float d = sqrtf(d_sq);
+    vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
+    /* Push past the surface by SKIN so we're cleanly outside. */
+    ship->pos = v2_add(center, v2_scale(normal, minimum + SHIP_COLLISION_SKIN));
+    float vel_toward = v2_dot(ship->vel, normal);
+    if (vel_toward >= 0.0f) return 0.0f;
+    ship->vel = v2_sub(ship->vel, v2_scale(normal, vel_toward));
+    return -vel_toward;
+}
+
 float resolve_ship_annular_pushback(ship_t *ship, vec2 center,
                                     float ring_r, float angle_a, float arc_delta) {
     float ship_r = ship_hull_def(ship)->ship_radius;

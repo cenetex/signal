@@ -722,19 +722,15 @@ static void npc_apply_physics(npc_ship_t *npc, float drag, float dt, const world
 }
 
 
-/* Push NPC out of a circle (no damage, unlike player collision). */
+/* NPC circle pushback: route through the shared sim_ship primitive
+ * via ship_view + writeback. NPCs take no damage from station
+ * geometry today; if that changes, the impact return is available. */
 static void resolve_npc_circle(npc_ship_t *npc, vec2 center, float radius) {
-    const hull_def_t *hull = npc_hull_def(npc);
-    float minimum = radius + hull->ship_radius;
-    vec2 delta = v2_sub(npc->pos, center);
-    float d_sq = v2_len_sq(delta);
-    if (d_sq >= minimum * minimum) return;
-    float d = sqrtf(d_sq);
-    vec2 normal = d > 0.00001f ? v2_scale(delta, 1.0f / d) : v2(1.0f, 0.0f);
-    npc->pos = v2_add(center, v2_scale(normal, minimum));
-    float vel_toward = v2_dot(npc->vel, normal);
-    if (vel_toward < 0.0f)
-        npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.0f));
+    ship_t view = ship_view_from_npc(npc);
+    float impact = resolve_ship_circle_pushback(&view, center, radius);
+    if (impact <= 0.0f) return;
+    npc->pos = view.pos;
+    npc->vel = view.vel;
 }
 
 /* NPC corridor collision: route through the shared sim_ship
