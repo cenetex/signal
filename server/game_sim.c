@@ -941,7 +941,7 @@ static void resolve_ship_asteroid_collision(world_t *w, server_player_t *sp, ast
  * matching the visual arc. No ghost walls — geometry is pixel-exact. */
 static void resolve_ship_annular_sector(world_t *w, server_player_t *sp,
                                          vec2 center, float ring_r,
-                                         float angle_a, float angle_b) {
+                                         float angle_a, float arc_delta) {
     float ship_r = ship_hull_def(&sp->ship)->ship_radius;
     vec2 delta = v2_sub(sp->ship.pos, center);
     float dist = sqrtf(v2_len_sq(delta));
@@ -954,15 +954,14 @@ static void resolve_ship_annular_sector(world_t *w, server_player_t *sp,
 
     /* Angular test: ship angle within the arc?
      * Expand the arc by the ship's angular footprint at this radius
-     * so ships near the arc edge don't clip through. */
+     * so ships near the arc edge don't clip through. arc_delta from
+     * the geom emitter is already canonical-forward (in [0, 2π)) — no
+     * shortest-arc normalization. */
     float ship_angle = atan2f(delta.y, delta.x);
     float angular_margin = (dist > 1.0f) ? asinf(fminf(ship_r / dist, 1.0f)) : 0.0f;
-    float da = angle_b - angle_a;
-    while (da > PI_F) da -= TWO_PI_F;
-    while (da < -PI_F) da += TWO_PI_F;
     /* Expand arc by angular margin on both sides */
-    float expanded_start = angle_a - (da > 0 ? angular_margin : -angular_margin);
-    float expanded_da = da + (da > 0 ? 2.0f : -2.0f) * angular_margin;
+    float expanded_start = angle_a - angular_margin;
+    float expanded_da = arc_delta + 2.0f * angular_margin;
     if (angle_in_arc(ship_angle, expanded_start, expanded_da) < 0.0f) return;
 
     /* Ship is inside corridor — push radially to nearest edge.
@@ -1640,7 +1639,7 @@ static void resolve_module_collisions(world_t *w, server_player_t *sp, const sta
 
         if (!near_module) {
             resolve_ship_annular_sector(w, sp, geom.center,
-                ring_r, geom.corridors[ci].angle_a, geom.corridors[ci].angle_b);
+                ring_r, geom.corridors[ci].angle_a, geom.corridors[ci].arc_delta);
         }
     }
 }

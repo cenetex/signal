@@ -276,8 +276,7 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
                     for (int co = 0; co < geom.corridor_count; co++) {
                         if (geom.corridors[co].ring != ring) continue;
                         float a0 = geom.corridors[co].angle_a;
-                        float a1 = geom.corridors[co].angle_b;
-                        float da = wrap_angle(a1 - a0);
+                        float da = geom.corridors[co].arc_delta;
                         if (angle_in_arc(cross_ang, a0, da) >= 0.0f) {
                             in_wall = true; break;
                         }

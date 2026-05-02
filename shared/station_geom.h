@@ -22,7 +22,13 @@
 
 enum {
     STATION_GEOM_MAX_CIRCLES   = MAX_MODULES_PER_STATION,
-    STATION_GEOM_MAX_CORRIDORS = 18,  /* worst case: 3 + 6 + 9 */
+    /* Worst-case corridor count: per ring, (modules - 1) corridors
+     * since rings are intentionally always open. Sum of per-ring
+     * (slots-1) = 2 + 5 + 8 = 15. Round up for headroom. */
+    STATION_GEOM_MAX_CORRIDORS = 18,
+    /* Spokes connect a producer to its cross-ring paired hopper.
+     * Up to one spoke per producer; cap at the module limit. */
+    STATION_GEOM_MAX_SPOKES    = MAX_MODULES_PER_STATION,
     STATION_GEOM_MAX_DOCKS     = 6,
 };
 
@@ -36,11 +42,30 @@ typedef struct {
 } geom_circle_t;
 
 typedef struct {
+    /* angle_a is the LOWER-slot endpoint, angle_b is the HIGHER-slot
+     * endpoint (with ring rotation baked in). arc_delta is the
+     * canonical FORWARD span between them, in radians, always > 0
+     * and always < 2π. Consumers MUST use arc_delta directly rather
+     * than recomputing wrap_angle(angle_b - angle_a) — for sort-
+     * adjacent slots that span more than 180° (e.g. slot 0 → slot 5
+     * on a 6-slot ring with intermediate slots empty), the
+     * shortest-arc normalization picks the wrong direction. */
     float angle_a;
     float angle_b;
+    float arc_delta;
     float ring_radius;
     int   ring;
 } geom_corridor_t;
+
+/* Cross-ring spoke: a tractor beam connecting a producer to its
+ * paired intake (HOPPER) on an adjacent ring. Purely a render hint —
+ * spokes do NOT contribute to collision (ships fly through them). */
+typedef struct {
+    vec2 a;       /* producer module world position */
+    vec2 b;       /* paired intake module world position */
+    int  ring_a;  /* producer ring */
+    int  ring_b;  /* intake ring (adjacent to ring_a) */
+} geom_spoke_t;
 
 typedef struct {
     vec2  pos;
@@ -61,9 +86,17 @@ typedef struct {
     geom_circle_t circles[STATION_GEOM_MAX_CIRCLES];
     int circle_count;
 
-    /* Corridor arcs (dock gaps already resolved) */
+    /* Corridor arcs — same-ring connectors. Rings are always OPEN:
+     * the renderer never closes the wrap-around edge, so visual gap
+     * is always present and the corridor count tops out at
+     * (modules_on_ring - 1) per ring. */
     geom_corridor_t corridors[STATION_GEOM_MAX_CORRIDORS];
     int corridor_count;
+
+    /* Cross-ring spokes — render-only tractor beams between a
+     * producer and its paired hopper. */
+    geom_spoke_t spokes[STATION_GEOM_MAX_SPOKES];
+    int spoke_count;
 
     /* Dock positions (for rendering berths, not collision) */
     geom_dock_t docks[STATION_GEOM_MAX_DOCKS];
@@ -73,12 +106,23 @@ typedef struct {
 /*
  * Build the collision/render geometry for a station.
  * Caller provides a stack-allocated station_geom_t.
- * The emitter enumerates modules per ring, sorts by slot, emits:
- *   - core circle (if station has radius)
- *   - module circles for non-dock modules
- *   - corridor arcs between adjacent modules (dock as first = gap)
- *   - wrap-around corridor if ring is full (skip if last is dock)
- *   - dock positions for rendering
+ *
+ * Emitted (in order):
+ *   - Core collision circle (if station has radius).
+ *   - One module circle per non-dock module; smaller circle for docks.
+ *   - Corridor arcs connecting every sort-adjacent pair of modules
+ *     on the same ring. Rings are ALWAYS OPEN — the wrap-around
+ *     closing edge is never emitted, so the visual gap matches the
+ *     largest empty span between sort-adjacent modules. Each corridor
+ *     carries an explicit `arc_delta` in [0, 2π) that equals the
+ *     forward (slot-increasing) span; consumers must NOT recompute
+ *     it via wrap_angle (that picks the shortest arc, which is
+ *     wrong when modules are sort-adjacent across a wide gap).
+ *   - Cross-ring spokes from each producer to its paired intake
+ *     module (typically HOPPER) on an adjacent ring, when the pair
+ *     is satisfied. Spokes are render-only — they do not contribute
+ *     to collision.
+ *   - Dock world positions for berth rendering.
  */
 static inline void station_build_geom(const station_t *st, station_geom_t *out) {
     memset(out, 0, sizeof(*out));
@@ -149,35 +193,48 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
             }
         }
 
-        /* Corridors: connect adjacent module pairs on the same ring.
-         * Scaffolds get corridors once build_progress > 0 (structure emerging). */
+        /* Corridors: connect every sort-adjacent module pair on the
+         * ring. The slot-difference is encoded directly in arc_delta
+         * so consumers can drive arc rendering / collision without
+         * recomputing it (wrap_angle picks the wrong direction when
+         * sort-adjacent slots span > 180°). Rings stay open — no
+         * wrap-around edge — so the visual gap is always the largest
+         * empty arc on the ring. */
         for (int ci = 0; ci + 1 < count; ci++) {
-            if (st->modules[idx[ci+1]].slot - st->modules[idx[ci]].slot != 1) continue;
-            /* Skip dock as FIRST module — corridor starts from the non-dock side */
-            if (st->modules[idx[ci]].type == MODULE_DOCK) continue;
-            /* Allow scaffolds — corridors emerge as modules build */
-            if (out->corridor_count < STATION_GEOM_MAX_CORRIDORS) {
-                float a = module_angle_ring(st, ring, st->modules[idx[ci]].slot);
-                float b = module_angle_ring(st, ring, st->modules[idx[ci+1]].slot);
-                out->corridors[out->corridor_count].angle_a = a;
-                out->corridors[out->corridor_count].angle_b = b;
-                out->corridors[out->corridor_count].ring_radius = ring_r;
-                out->corridors[out->corridor_count].ring = ring;
-                out->corridor_count++;
-            }
+            uint8_t slot_a = st->modules[idx[ci]].slot;
+            uint8_t slot_b = st->modules[idx[ci+1]].slot;
+            if (out->corridor_count >= STATION_GEOM_MAX_CORRIDORS) break;
+            geom_corridor_t *cor = &out->corridors[out->corridor_count++];
+            cor->angle_a = module_angle_ring(st, ring, slot_a);
+            cor->angle_b = module_angle_ring(st, ring, slot_b);
+            cor->arc_delta = TWO_PI_F * (float)(slot_b - slot_a) / (float)slots;
+            cor->ring_radius = ring_r;
+            cor->ring = ring;
         }
+    }
 
-        /* Wrap-around: last→first if ring is full and last is not dock */
-        if (count == slots && st->modules[idx[count-1]].type != MODULE_DOCK) {
-            if (out->corridor_count < STATION_GEOM_MAX_CORRIDORS) {
-                float a = module_angle_ring(st, ring, st->modules[idx[count-1]].slot);
-                float b = module_angle_ring(st, ring, st->modules[idx[0]].slot);
-                out->corridors[out->corridor_count].angle_a = a;
-                out->corridors[out->corridor_count].angle_b = b;
-                out->corridors[out->corridor_count].ring_radius = ring_r;
-                out->corridors[out->corridor_count].ring = ring;
-                out->corridor_count++;
-            }
+    /* Cross-ring spokes — render-only tractor beams from each
+     * producer to its paired intake module. The pair is satisfied
+     * when station_pair_neighbors returns a slot on an adjacent ring
+     * holding the producer's required pair_intake type. Skip
+     * scaffolded modules on either end — partial structures don't
+     * draw a beam yet. */
+    for (int m = 0; m < st->module_count; m++) {
+        const station_module_t *prod = &st->modules[m];
+        if (prod->scaffold) continue;
+        if (!module_requires_pair(prod->type)) continue;
+        module_type_t need = module_pair_intake(prod->type);
+        station_slot_pair_t cand[2];
+        int n = station_pair_neighbors((int)prod->ring, (int)prod->slot, cand);
+        for (int c = 0; c < n; c++) {
+            if (station_module_at(st, cand[c].ring, cand[c].slot) != need) continue;
+            if (out->spoke_count >= STATION_GEOM_MAX_SPOKES) break;
+            geom_spoke_t *sp = &out->spokes[out->spoke_count++];
+            sp->a = module_world_pos_ring(st, prod->ring, prod->slot);
+            sp->b = module_world_pos_ring(st, cand[c].ring, cand[c].slot);
+            sp->ring_a = prod->ring;
+            sp->ring_b = cand[c].ring;
+            break; /* one spoke per producer — first satisfied neighbor */
         }
     }
 }

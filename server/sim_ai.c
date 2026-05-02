@@ -736,9 +736,11 @@ static void resolve_npc_circle(npc_ship_t *npc, vec2 center, float radius) {
         npc->vel = v2_sub(npc->vel, v2_scale(normal, vel_toward * 1.0f));
 }
 
-/* Push NPC out of a corridor annular sector (with angular margin). */
+/* Push NPC out of a corridor annular sector (with angular margin).
+ * arc_delta is the canonical forward span from the geom emitter — no
+ * shortest-arc normalization. */
 static void resolve_npc_annular_sector(npc_ship_t *npc, vec2 center,
-                                        float ring_r, float angle_a, float angle_b) {
+                                        float ring_r, float angle_a, float arc_delta) {
     const hull_def_t *hull = npc_hull_def(npc);
     float ship_r = hull->ship_radius;
     vec2 delta = v2_sub(npc->pos, center);
@@ -752,11 +754,8 @@ static void resolve_npc_annular_sector(npc_ship_t *npc, vec2 center,
     /* Angular test with margin (matches player collision) */
     float npc_angle = atan2f(delta.y, delta.x);
     float angular_margin = (dist > 1.0f) ? asinf(fminf(ship_r / dist, 1.0f)) : 0.0f;
-    float da = angle_b - angle_a;
-    while (da > PI_F) da -= TWO_PI_F;
-    while (da < -PI_F) da += TWO_PI_F;
-    float expanded_start = angle_a - (da > 0 ? angular_margin : -angular_margin);
-    float expanded_da = da + (da > 0 ? 2.0f : -2.0f) * angular_margin;
+    float expanded_start = angle_a - angular_margin;
+    float expanded_da = arc_delta + 2.0f * angular_margin;
     if (angle_in_arc(npc_angle, expanded_start, expanded_da) < 0.0f) return;
 
     /* Push radially to nearest edge */
@@ -815,7 +814,7 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
 
             if (!near_module) {
                 resolve_npc_annular_sector(npc, geom.center,
-                    ring_r, geom.corridors[ci].angle_a, geom.corridors[ci].angle_b);
+                    ring_r, geom.corridors[ci].angle_a, geom.corridors[ci].arc_delta);
             }
         }
     }

@@ -925,11 +925,14 @@ typedef struct {
 /* Station query/geometry helpers — must come after station_t */
 #include "station_util.h"
 
-/* Unified station collision/render geometry — must come after all station types */
-#include "station_geom.h"
-
-/* Module schema table — must come after all module/commodity types */
+/* Module schema table — must come after all module/commodity types.
+ * Must precede station_geom.h: the geom emitter consults
+ * module_pair_intake to emit cross-ring spokes. */
 #include "module_schema.h"
+
+/* Unified station collision/render geometry — must come after all
+ * station types AND after module_schema.h. */
+#include "station_geom.h"
 
 /* Economy / ship-upgrade tuning constants */
 #include "economy_const.h"

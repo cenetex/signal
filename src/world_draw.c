@@ -698,7 +698,7 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
 /* Draw a curved corridor that arcs along the ring radius between two module positions. */
 #define CORRIDOR_ARC_SEGMENTS 8
 
-static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, float angle_b,
+static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, float arc_delta,
                                float cr, float cg, float cb, float alpha) {
     /* Corridor visual band — slightly wider than STATION_CORRIDOR_HW to account
      * for the angular margin expansion in collision (ship radius ~12-15 units). */
@@ -706,11 +706,9 @@ static void draw_corridor_arc(vec2 center, float ring_radius, float angle_a, flo
     float r_inner = ring_radius - hw;
     float r_outer = ring_radius + hw;
 
-    /* Tessellate the arc */
-    float da = angle_b - angle_a;
-    /* Normalize to shortest arc */
-    while (da > PI_F) da -= TWO_PI_F;
-    while (da < -PI_F) da += TWO_PI_F;
+    /* arc_delta comes from the geom emitter and is already the
+     * canonical forward span — no normalization. */
+    float da = arc_delta;
 
     /* Solid fill — triangle strip as quads */
     sgl_c4f(cr * 0.15f, cg * 0.15f, cb * 0.15f, alpha * 0.6f);
@@ -815,9 +813,23 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
     for (int ci = 0; ci < geom.corridor_count; ci++) {
         int r = geom.corridors[ci].ring;
         draw_corridor_arc(station->pos, geom.corridors[ci].ring_radius,
-            geom.corridors[ci].angle_a, geom.corridors[ci].angle_b,
+            geom.corridors[ci].angle_a, geom.corridors[ci].arc_delta,
             ring_cr[r], ring_cg[r], ring_cb[r], base_alpha * 0.7f);
     }
+
+    /* Cross-ring spokes (B): one straight tractor-beam line per
+     * producer → paired hopper. Render-only — no collision impact. */
+    sgl_begin_lines();
+    for (int si = 0; si < geom.spoke_count; si++) {
+        int ra = geom.spokes[si].ring_a;
+        float er = ring_cr[ra] * 0.55f;
+        float eg = ring_cg[ra] * 0.55f;
+        float eb = ring_cb[ra] * 0.55f;
+        sgl_c4f(er, eg, eb, base_alpha * 0.55f);
+        sgl_v2f(geom.spokes[si].a.x, geom.spokes[si].a.y);
+        sgl_v2f(geom.spokes[si].b.x, geom.spokes[si].b.y);
+    }
+    sgl_end();
 
     /* Per-ring: tethers + modules (each ring rotates independently) */
     for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {

@@ -385,17 +385,20 @@ TEST(test_238_corridor_blocks_radial_approach) {
 }
 
 TEST(test_238_dock_gap_allows_entry) {
-    /* Dock creates gap on one side (corridor skipped where dock is first module).
-     * Station 0 ring 1: dock@0, relay@1, furnace@2.
-     * Gap is between dock@0 and relay@1 — fly through midpoint. */
+    /* Rings are intentionally always open — the wrap-around corridor
+     * is never emitted, so the largest empty arc is the entry gap.
+     * Prospect ring 1: dock@0, relay@1, furnace@2. Corridors are
+     * dock→relay and relay→furnace. The open gap is from furnace@2
+     * (240°) wrapping back to dock@0 (0°/360°), midpoint ~300°. */
     WORLD_HEAP w = setup_collision_world_heap();
-    
+
     vec2 st_pos = w->stations[0].pos;
     float ring_r = 180.0f; /* STATION_RING_RADIUS[1] */
 
-    float dock_ang = module_angle_ring(&w->stations[0], 1, 0);
-    float relay_ang = module_angle_ring(&w->stations[0], 1, 1);
-    float gap_mid = (dock_ang + relay_ang) * 0.5f;
+    float furnace_ang = module_angle_ring(&w->stations[0], 1, 2);
+    /* Forward arc from slot 2 around to slot 0 spans (3-2+0)/3 of
+     * the circle = 1/3 = 120°. Midpoint sits 60° past furnace. */
+    float gap_mid = furnace_ang + (TWO_PI_F / 3.0f) * 0.5f;
     vec2 outside = v2_add(st_pos, v2(cosf(gap_mid) * (ring_r + 80.0f), sinf(gap_mid) * (ring_r + 80.0f)));
     vec2 inside_target = v2_add(st_pos, v2(cosf(gap_mid) * (ring_r - 80.0f), sinf(gap_mid) * (ring_r - 80.0f)));
 
