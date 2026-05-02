@@ -117,11 +117,11 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         n->role = (npc_role_t)((npcs[i].flags >> 1) & 0x3);
         n->state = (npc_state_t)((npcs[i].flags >> 3) & 0x7);
         n->thrusting = (npcs[i].flags & (1 << 6)) != 0;
-        n->pos.x = npcs[i].x;
-        n->pos.y = npcs[i].y;
-        n->vel.x = npcs[i].vx;
-        n->vel.y = npcs[i].vy;
-        n->angle = npcs[i].angle;
+        n->ship.pos.x = npcs[i].x;
+        n->ship.pos.y = npcs[i].y;
+        n->ship.vel.x = npcs[i].vx;
+        n->ship.vel.y = npcs[i].vy;
+        n->ship.angle = npcs[i].angle;
         n->target_asteroid = (int)npcs[i].target_asteroid;
         n->tint_r = (float)npcs[i].tint_r / 255.0f;
         n->tint_g = (float)npcs[i].tint_g / 255.0f;
@@ -567,9 +567,9 @@ void interpolate_world_for_render(void) {
         npc_ship_t *dst = &g.world.npc_ships[i];
         *dst = *curr;
         if (prev->active && curr->active) {
-            dst->pos.x = lerpf(prev->pos.x, curr->pos.x, nt);
-            dst->pos.y = lerpf(prev->pos.y, curr->pos.y, nt);
-            dst->angle = lerp_angle(prev->angle, curr->angle, nt);
+            dst->ship.pos.x = lerpf(prev->ship.pos.x, curr->ship.pos.x, nt);
+            dst->ship.pos.y = lerpf(prev->ship.pos.y, curr->ship.pos.y, nt);
+            dst->ship.angle = lerp_angle(prev->ship.angle, curr->ship.angle, nt);
         }
     }
 }

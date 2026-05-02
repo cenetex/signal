@@ -50,6 +50,14 @@ build-test:
 	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=Debug -DCMAKE_C_FLAGS_DEBUG="-O2 -g"
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_test --parallel
+	# Compile-check the native client too. signal_test doesn't pull in
+	# net_sync.c / world_draw.c / hud.c (client-only), so a struct
+	# rename that breaks the wire-decode side won't fail signal_test
+	# alone. The user has hit this exact gap (npc_ship_t.pos → .ship.pos
+	# silently broke autopilot in deployed wasm). Keep this fast: it's
+	# an incremental build of the same -O2/-g object cache, so unchanged
+	# files don't re-link.
+	cmake --build build --target signal --parallel
 
 # Number of shards for the parallel test runner. Defaults to min(8, ncores).
 NCORES := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
