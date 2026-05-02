@@ -28,7 +28,8 @@ enum {
     STATION_GEOM_MAX_CORRIDORS = 18,
     /* Spokes connect a producer to its cross-ring paired hopper.
      * Up to one spoke per producer; cap at the module limit. */
-    STATION_GEOM_MAX_SPOKES    = MAX_MODULES_PER_STATION,
+    /* Worst case: 16 producers × 3 input commodities = 48. Pad. */
+    STATION_GEOM_MAX_SPOKES    = MAX_MODULES_PER_STATION * 3,
     STATION_GEOM_MAX_DOCKS     = 6,
 };
 
@@ -57,19 +58,26 @@ typedef struct {
     int   ring;
 } geom_corridor_t;
 
-/* Cross-ring spoke: a tractor beam connecting a producer to its
- * paired intake (HOPPER) on an adjacent ring. Purely a render hint —
- * spokes do NOT contribute to collision (ships fly through them).
- * `pulse` ∈ [0, 1] tracks the producer's activity: 1 when the beam
- * is actively pulling material this tick, decays to 0 over the
- * production sim's RING_PULSE_LINGER_SEC. Renderer fades alpha by
- * pulse so an idle producer's beam visibly winks out. */
+/* Spoke: a tractor beam connecting a producer to one of its input
+ * hoppers. One spoke is emitted per (producer × input commodity)
+ * pair, so a SHIPYARD with three input commodities (frame, laser,
+ * tractor) emits three spokes — each to its corresponding hopper.
+ * Spokes are typically cross-ring (the visual signature) but may
+ * run within a ring when producer + hopper share one. Purely a
+ * render hint — spokes do NOT contribute to collision.
+ *
+ * `commodity` is the commodity flowing through this spoke, used to
+ * tint it with the matching ore/ingot/product palette. `pulse` ∈
+ * [0, 1] tracks the producer's activity: 1 when the producer is
+ * actively consuming inputs, decays to 0 over the production sim's
+ * RING_PULSE_LINGER_SEC. Renderer fades alpha by pulse. */
 typedef struct {
-    vec2  a;       /* producer module world position */
-    vec2  b;       /* paired intake module world position */
-    int   ring_a;  /* producer ring */
-    int   ring_b;  /* intake ring (adjacent to ring_a) */
-    float pulse;   /* 0 = idle (hidden), 1 = full tractor beam */
+    vec2    a;         /* producer module world position */
+    vec2    b;         /* paired hopper world position */
+    int     ring_a;    /* producer ring */
+    int     ring_b;    /* hopper ring */
+    uint8_t commodity; /* commodity flowing through (drives spoke tint) */
+    float   pulse;     /* 0 = idle (hidden), 1 = full tractor beam */
 } geom_spoke_t;
 
 typedef struct {
@@ -218,29 +226,30 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
         }
     }
 
-    /* Cross-ring spokes — render-only tractor beams from each
-     * producer to its paired intake module. The pair is satisfied
-     * when station_pair_neighbors returns a slot on an adjacent ring
-     * holding the producer's required pair_intake type. Skip
-     * scaffolded modules on either end — partial structures don't
-     * draw a beam yet. */
+    /* Spokes — one per (producer × input commodity) pair. For each
+     * required input commodity the producer needs, find the hopper
+     * tagged with that commodity and draw a tractor beam to it.
+     * SHIPYARD emits 3 spokes (frame/laser/tractor); LASER_FAB 2;
+     * single-input producers 1 each. FURNACE-style "any of these"
+     * producers emit one spoke per matching ore hopper that exists. */
     for (int m = 0; m < st->module_count; m++) {
         const station_module_t *prod = &st->modules[m];
         if (prod->scaffold) continue;
-        if (!module_requires_pair(prod->type)) continue;
-        module_type_t need = module_pair_intake(prod->type);
-        station_slot_pair_t cand[2];
-        int n = station_pair_neighbors((int)prod->ring, (int)prod->slot, cand);
-        for (int c = 0; c < n; c++) {
-            if (station_module_at(st, cand[c].ring, cand[c].slot) != need) continue;
+        module_inputs_t req = module_required_inputs(prod->type);
+        if (req.count == 0) continue;
+        for (int i = 0; i < req.count; i++) {
+            commodity_t c = req.commodities[i];
+            int hop = station_find_hopper_for(st, c);
+            if (hop < 0) continue;
             if (out->spoke_count >= STATION_GEOM_MAX_SPOKES) break;
+            const station_module_t *hm = &st->modules[hop];
             geom_spoke_t *sp = &out->spokes[out->spoke_count++];
             sp->a = module_world_pos_ring(st, prod->ring, prod->slot);
-            sp->b = module_world_pos_ring(st, cand[c].ring, cand[c].slot);
+            sp->b = module_world_pos_ring(st, hm->ring, hm->slot);
             sp->ring_a = prod->ring;
-            sp->ring_b = cand[c].ring;
+            sp->ring_b = hm->ring;
+            sp->commodity = (uint8_t)c;
             sp->pulse  = st->module_active_pulse[m];
-            break; /* one spoke per producer — first satisfied neighbor */
         }
     }
 }

@@ -92,6 +92,25 @@ bool                   module_valid_on_ring(module_type_t type, int ring);
 module_type_t          module_pair_intake(module_type_t type);
 bool                   module_requires_pair(module_type_t type);
 
+/* Per-producer input commodities. Each producer module type consumes
+ * a fixed list of commodities (drawn from the recipe table). Hoppers
+ * are commodity-tagged buffers; a producer's pair-rule is satisfied
+ * iff a hopper exists on the station for each of its required input
+ * commodities.
+ *
+ * FURNACE is special: it accepts ANY ore (the count-tier rules in
+ * sim_production gate which ones actually smelt). The list returns
+ * all three ore commodities but with `.any_satisfies = true` so the
+ * validator only requires one of them.
+ *
+ * `out` must be sized at least 3. Returns count written. */
+typedef struct {
+    int         count;
+    commodity_t commodities[3];
+    bool        any_satisfies; /* true → FURNACE-style "one of these"; false → ALL required */
+} module_inputs_t;
+module_inputs_t        module_required_inputs(module_type_t type);
+
 /* Tech-tree gate: a module is unlocked when its prerequisite has been
  * built at least once. Roots (prerequisite = MODULE_COUNT) are always
  * available. */

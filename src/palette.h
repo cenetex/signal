@@ -159,6 +159,24 @@
 #define PAL_FURNACE_CRYSTAL 0.30f, 0.80f, 0.35f
 #define PAL_FURNACE_CHUNKS  0.85f, 0.85f, 0.90f
 
+/* Commodity colors — derived from the asteroid/ore palette and used
+ * to tint hoppers (which buffer one commodity each) and the cross-
+ * ring spokes that feed/drain them. The chain refines saturation:
+ *   ORE     ← raw asteroid color
+ *   INGOT   ← ore color, brightened/cleaner
+ *   PRODUCT ← blend of constituent ingots
+ * Renderer picks the right tint via commodity_color() below. */
+#define PAL_COMMODITY_FERRITE_ORE     0.85f, 0.30f, 0.20f  /* rusty red */
+#define PAL_COMMODITY_CUPRITE_ORE     0.25f, 0.50f, 0.90f  /* asteroid blue */
+#define PAL_COMMODITY_CRYSTAL_ORE     0.30f, 0.80f, 0.35f  /* asteroid green */
+#define PAL_COMMODITY_FERRITE_INGOT   0.95f, 0.50f, 0.30f  /* hot iron */
+#define PAL_COMMODITY_CUPRITE_INGOT   0.40f, 0.70f, 1.00f  /* refined copper */
+#define PAL_COMMODITY_CRYSTAL_INGOT   0.50f, 0.95f, 0.50f  /* bright crystal */
+#define PAL_COMMODITY_FRAME           0.95f, 0.78f, 0.25f  /* yellow-gold (ferrite product) */
+#define PAL_COMMODITY_LASER_MODULE    0.45f, 0.75f, 0.95f  /* cuprite+crystal blend, lit */
+#define PAL_COMMODITY_TRACTOR_MODULE  0.50f, 0.55f, 0.85f  /* cuprite-only product */
+#define PAL_COMMODITY_REPAIR_KIT      0.95f, 0.70f, 0.50f  /* warm white-gold, end of chain */
+
 /* Kepler modules */
 #define PAL_MODULE_FRAME_PRESS 0.90f, 0.75f, 0.20f
 #define PAL_MODULE_SHIPYARD  0.85f, 0.70f, 0.20f

@@ -142,15 +142,14 @@ TEST(test_outpost_min_distance) {
 }
 
 TEST(test_module_build_material_types) {
-    /* Verify each module requires the correct ingot type. The new
-     * minimal Kepler has only the producers it strictly needs, so
-     * plant a hopper at ring 3 slot 6 (240°) first, then queue
-     * LASER_FAB at ring 2 slot 4 — its cross-ring pair lands on the
-     * new hopper. */
+    /* Verify each module requires the correct ingot type. LASER_FAB
+     * needs cuprite + crystal ingot hoppers. Plant both, then queue
+     * the laser fab. */
     WORLD_DECL;
     world_reset(&w);
     station_t *st = &w.stations[1];
-    add_module_at(st, MODULE_HOPPER, 3, 6);
+    add_hopper_for(st, 3, 1, COMMODITY_CUPRITE_INGOT);
+    add_hopper_for(st, 3, 7, COMMODITY_CRYSTAL_INGOT);
     begin_module_construction_at(&w, st, 1, MODULE_LASER_FAB, 2, 4);
     bool found_cu = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
@@ -166,7 +165,8 @@ TEST(test_module_construction_and_delivery) {
     world_reset(&w);
     station_t *st = &w.stations[1]; /* Kepler */
     int mc_before = st->module_count;
-    add_module_at(st, MODULE_HOPPER, 3, 6);
+    /* TRACTOR_FAB needs cuprite ingot hopper. */
+    add_hopper_for(st, 3, 1, COMMODITY_CUPRITE_INGOT);
     int producer_idx = mc_before + 1;
     begin_module_construction_at(&w, st, 1, MODULE_TRACTOR_FAB, 2, 4);
     ASSERT_EQ_INT(st->module_count, mc_before + 2);
@@ -288,12 +288,10 @@ TEST(test_module_activation_spawns_npc) {
     world_reset(&w);
     int npc_before = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_before++;
-    /* Build a furnace on Kepler (station 1). Plant a hopper on ring 3
-     * slot 6 (240°) so a furnace at ring 2 slot 4 (240°) — its
-     * cross-ring pair — has its required intake. Furnace activation
-     * spawns a miner NPC. */
+    /* Build a furnace on Kepler. FURNACE accepts any ore — plant a
+     * ferrite ore hopper to satisfy its input. */
     station_t *st = &w.stations[1];
-    add_module_at(st, MODULE_HOPPER, 3, 6);
+    add_hopper_for(st, 3, 1, COMMODITY_FERRITE_ORE);
     begin_module_construction_at(&w, st, 1, MODULE_FURNACE, 2, 4);
     /* Deliver materials to station inventory */
     ship_t ship = {0};
@@ -1536,28 +1534,39 @@ TEST(test_pair_neighbors_geometry) {
 }
 
 TEST(test_pair_satisfied_cross_ring) {
-    /* Producer-pair validation: a producer is satisfied when any of
-     * its cross-ring neighbor slots holds the required intake. Use a
-     * blank station so we can place hoppers explicitly without the
-     * Kepler/Helios full-ring seed satisfying everything trivially. */
+    /* Producer pair-validation under the commodity-tagged hopper
+     * model: a producer is satisfied when ALL its required input
+     * commodities have a tagged hopper somewhere on the station.
+     * For LASER_FAB that means BOTH cuprite ingot AND crystal ingot
+     * hoppers must exist. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
 
     station_t *st = &w->stations[5]; /* unused slot, completely empty */
     memset(st, 0, sizeof(*st));
-    st->signal_range = 1.0f; /* mark "exists" without affecting other tests */
+    st->signal_range = 1.0f;
 
-    /* Producer at ring 2 slot 3 (180°) — closest pair on ring 1 is
-     * slot 1 or 2 (both 60° off, lower picks 1); on ring 3 it's slot
-     * 4 (160°, 20° off). Empty station → no hopper anywhere → fail. */
+    /* Empty station — no hoppers, LASER_FAB cannot be paired. */
     ASSERT(!station_pair_satisfied(st, 2, 3, MODULE_LASER_FAB));
 
-    /* Place a hopper at ring 3 slot 4 — pair candidate ✓. */
-    add_module_at(st, MODULE_HOPPER, 3, 4);
+    /* Add only one of the two — still not satisfied. */
+    add_hopper_for(st, 3, 4, COMMODITY_CUPRITE_INGOT);
+    ASSERT(!station_pair_satisfied(st, 2, 3, MODULE_LASER_FAB));
+
+    /* Add the second commodity — now satisfied. */
+    add_hopper_for(st, 3, 5, COMMODITY_CRYSTAL_INGOT);
     ASSERT(station_pair_satisfied(st, 2, 3, MODULE_LASER_FAB));
 
-    /* Modules without a pair-intake requirement are always satisfied. */
+    /* FURNACE accepts ANY ore — one ferrite-ore hopper is enough. */
+    station_t *st2 = &w->stations[6];
+    memset(st2, 0, sizeof(*st2));
+    st2->signal_range = 1.0f;
+    ASSERT(!station_pair_satisfied(st2, 2, 0, MODULE_FURNACE));
+    add_hopper_for(st2, 3, 0, COMMODITY_FERRITE_ORE);
+    ASSERT(station_pair_satisfied(st2, 2, 0, MODULE_FURNACE));
+
+    /* Non-producer modules are always satisfied. */
     ASSERT(station_pair_satisfied(st, 2, 3, MODULE_DOCK));
     ASSERT(station_pair_satisfied(st, 1, 0, MODULE_SIGNAL_RELAY));
 }

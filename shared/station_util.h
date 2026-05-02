@@ -84,10 +84,16 @@ int           station_pair_neighbors(int ring, int slot,
  * or args are out of range. */
 module_type_t station_module_at(const station_t *st, int ring, int slot);
 
-/* True when `type` has no pairing requirement, or its pair-intake
- * module is already installed (built, not scaffold) at one of the
- * cross-ring pair slots from station_pair_neighbors. */
+/* True when `type` has no pairing requirement, or all its required
+ * input commodities (per module_required_inputs) have a hopper
+ * tagged with that commodity somewhere on the station. With
+ * commodity-tagged hoppers, the station-wide check replaces the
+ * earlier slot-specific cross-ring lookup. */
 bool          station_pair_satisfied(const station_t *st, int ring, int slot,
                                      module_type_t type);
+
+/* Find the index of the hopper module on `st` whose commodity tag
+ * matches `commodity`. Returns -1 if none. */
+int           station_find_hopper_for(const station_t *st, commodity_t commodity);
 
 #endif

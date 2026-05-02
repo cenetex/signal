@@ -312,6 +312,26 @@ void module_color_fn(module_type_t type, float *r, float *g, float *b) {
     module_color(type, r, g, b);
 }
 
+/* Per-commodity color — used to tint hoppers (which buffer one
+ * commodity each) and the cross-ring spokes that flow that
+ * commodity. Derived from the asteroid/ore palette; see palette.h
+ * for the chain ore → ingot → product. */
+void commodity_color(commodity_t c, float *r, float *g, float *b) {
+    switch (c) {
+    case COMMODITY_FERRITE_ORE:    PAL_UNPACK3(PAL_COMMODITY_FERRITE_ORE,    *r, *g, *b); return;
+    case COMMODITY_CUPRITE_ORE:    PAL_UNPACK3(PAL_COMMODITY_CUPRITE_ORE,    *r, *g, *b); return;
+    case COMMODITY_CRYSTAL_ORE:    PAL_UNPACK3(PAL_COMMODITY_CRYSTAL_ORE,    *r, *g, *b); return;
+    case COMMODITY_FERRITE_INGOT:  PAL_UNPACK3(PAL_COMMODITY_FERRITE_INGOT,  *r, *g, *b); return;
+    case COMMODITY_CUPRITE_INGOT:  PAL_UNPACK3(PAL_COMMODITY_CUPRITE_INGOT,  *r, *g, *b); return;
+    case COMMODITY_CRYSTAL_INGOT:  PAL_UNPACK3(PAL_COMMODITY_CRYSTAL_INGOT,  *r, *g, *b); return;
+    case COMMODITY_FRAME:          PAL_UNPACK3(PAL_COMMODITY_FRAME,          *r, *g, *b); return;
+    case COMMODITY_LASER_MODULE:   PAL_UNPACK3(PAL_COMMODITY_LASER_MODULE,   *r, *g, *b); return;
+    case COMMODITY_TRACTOR_MODULE: PAL_UNPACK3(PAL_COMMODITY_TRACTOR_MODULE, *r, *g, *b); return;
+    case COMMODITY_REPAIR_KIT:     PAL_UNPACK3(PAL_COMMODITY_REPAIR_KIT,     *r, *g, *b); return;
+    default:                       PAL_UNPACK3(PAL_MODULE_GENERIC,           *r, *g, *b); return;
+    }
+}
+
 /* ------------------------------------------------------------------ */
 /* Solid module block + corridor to core                              */
 /* ------------------------------------------------------------------ */
@@ -789,36 +809,14 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                     station_palette_furnace_color(station, r,
                         &colors[count][0], &colors[count][1], &colors[count][2]);
                 } else if (station->modules[i].type == MODULE_HOPPER) {
-                    /* Hoppers borrow their paired producer's color so
-                     * the corridor + spoke read as one structural unit.
-                     * Walk producers; the first one whose cross-ring
-                     * pair lands on this hopper wins. */
-                    bool inherited = false;
-                    int my_slot = (int)station->modules[i].slot;
-                    for (int j = 0; j < station->module_count && !inherited; j++) {
-                        const station_module_t *prod = &station->modules[j];
-                        if (prod->scaffold) continue;
-                        if (!module_requires_pair(prod->type)) continue;
-                        if (module_pair_intake(prod->type) != MODULE_HOPPER) continue;
-                        station_slot_pair_t cand[2];
-                        int nn = station_pair_neighbors((int)prod->ring, (int)prod->slot, cand);
-                        for (int c = 0; c < nn; c++) {
-                            if (cand[c].ring != r || cand[c].slot != my_slot) continue;
-                            if (prod->type == MODULE_FURNACE) {
-                                station_palette_furnace_color(station, (int)prod->ring,
-                                    &colors[count][0], &colors[count][1], &colors[count][2]);
-                            } else {
-                                module_color(prod->type,
-                                    &colors[count][0], &colors[count][1], &colors[count][2]);
-                            }
-                            inherited = true;
-                            break;
-                        }
-                    }
-                    if (!inherited) {
-                        module_color(MODULE_HOPPER,
-                            &colors[count][0], &colors[count][1], &colors[count][2]);
-                    }
+                    /* Hopper color = its commodity's color. Each
+                     * hopper buffers exactly one commodity (auto-
+                     * solved at placement); the tint reads the
+                     * commodity directly so the silhouette of a
+                     * station tells you what flows there. */
+                    commodity_t hc = (commodity_t)station->modules[i].commodity;
+                    commodity_color(hc,
+                        &colors[count][0], &colors[count][1], &colors[count][2]);
                 } else {
                     module_color(station->modules[i].type,
                         &colors[count][0], &colors[count][1], &colors[count][2]);
@@ -860,23 +858,22 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
             ring_cr[r], ring_cg[r], ring_cb[r], base_alpha * 0.7f);
     }
 
-    /* Cross-ring spokes — tractor beams from each producer to its
-     * paired hopper. Alpha fades with the producer's activity pulse:
-     * full bright when the beam is actively pulling material, gone
-     * within RING_PULSE_LINGER_SEC of idleness. Render-only — no
-     * collision impact. */
+    /* Spokes — tractor beams from each producer to each of its
+     * input-commodity hoppers. Color = the commodity flowing
+     * through the spoke (rust for ferrite, blue for cuprite,
+     * green for crystal, gold for frame, etc). Alpha fades with
+     * the producer's activity pulse: full bright when actively
+     * consuming, gone within RING_PULSE_LINGER_SEC of idleness.
+     * Render-only — no collision impact. */
     sgl_begin_lines();
     for (int si = 0; si < geom.spoke_count; si++) {
         float pulse = geom.spokes[si].pulse;
         if (pulse <= 0.01f) continue;
-        int ra = geom.spokes[si].ring_a;
-        /* Bright spokes scale to the producer color at high alpha;
-         * weak ones fade out cleanly. */
+        float cr_, cg_, cb_;
+        commodity_color((commodity_t)geom.spokes[si].commodity, &cr_, &cg_, &cb_);
         float intensity = 0.55f + 0.45f * pulse;
-        float er = ring_cr[ra] * intensity;
-        float eg = ring_cg[ra] * intensity;
-        float eb = ring_cb[ra] * intensity;
-        sgl_c4f(er, eg, eb, base_alpha * 0.55f * pulse);
+        sgl_c4f(cr_ * intensity, cg_ * intensity, cb_ * intensity,
+                base_alpha * 0.65f * pulse);
         sgl_v2f(geom.spokes[si].a.x, geom.spokes[si].a.y);
         sgl_v2f(geom.spokes[si].b.x, geom.spokes[si].b.y);
     }

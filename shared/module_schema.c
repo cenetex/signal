@@ -184,6 +184,41 @@ bool module_requires_pair(module_type_t type) {
     return module_pair_intake(type) != MODULE_COUNT;
 }
 
+module_inputs_t module_required_inputs(module_type_t type) {
+    module_inputs_t r = { .count = 0, .any_satisfies = false };
+    switch (type) {
+    case MODULE_FURNACE:
+        r.commodities[0] = COMMODITY_FERRITE_ORE;
+        r.commodities[1] = COMMODITY_CUPRITE_ORE;
+        r.commodities[2] = COMMODITY_CRYSTAL_ORE;
+        r.count = 3;
+        r.any_satisfies = true;
+        break;
+    case MODULE_FRAME_PRESS:
+        r.commodities[0] = COMMODITY_FERRITE_INGOT;
+        r.count = 1;
+        break;
+    case MODULE_LASER_FAB:
+        r.commodities[0] = COMMODITY_CUPRITE_INGOT;
+        r.commodities[1] = COMMODITY_CRYSTAL_INGOT;
+        r.count = 2;
+        break;
+    case MODULE_TRACTOR_FAB:
+        r.commodities[0] = COMMODITY_CUPRITE_INGOT;
+        r.count = 1;
+        break;
+    case MODULE_SHIPYARD:
+        r.commodities[0] = COMMODITY_FRAME;
+        r.commodities[1] = COMMODITY_LASER_MODULE;
+        r.commodities[2] = COMMODITY_TRACTOR_MODULE;
+        r.count = 3;
+        break;
+    default:
+        break;
+    }
+    return r;
+}
+
 bool module_unlocked_for_player(uint32_t unlocked_mask, module_type_t type) {
     int prereq = module_schema(type)->prerequisite;
     if (prereq < 0 || prereq >= MODULE_COUNT) return true;

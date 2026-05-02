@@ -4572,50 +4572,38 @@ void step_station_ring_dynamics(world_t *w, float dt) {
             for (int m = 0; m < st->module_count; m++) {
                 const station_module_t *prod = &st->modules[m];
                 if (prod->scaffold) continue;
-                if (!module_requires_pair(prod->type)) continue;
+                module_inputs_t req = module_required_inputs(prod->type);
+                if (req.count == 0) continue;
 
                 /* Spring strength scales with the producer's activity
-                 * pulse — an idle producer's beam goes slack, the
-                 * passive ring loses that anchor and re-equilibriums
+                 * pulse — an idle producer's beams go slack, the
+                 * passive ring loses those anchors and re-equilibriums
                  * under whatever beams remain hot. */
                 float pulse = st->module_active_pulse[m];
                 if (pulse <= 0.0f) continue;
 
-                station_slot_pair_t cand[2];
-                int n = station_pair_neighbors((int)prod->ring, (int)prod->slot, cand);
-                module_type_t need = module_pair_intake(prod->type);
-                int hop_ring = -1, hop_slot = -1;
-                for (int c = 0; c < n; c++) {
-                    if (station_module_at(st, cand[c].ring, cand[c].slot) == need) {
-                        hop_ring = cand[c].ring;
-                        hop_slot = cand[c].slot;
-                        break;
-                    }
+                /* One spoke per (producer, input commodity). Each
+                 * spoke contributes spring torque when it spans this
+                 * passive ring + the driver. */
+                for (int i = 0; i < req.count; i++) {
+                    int hop = station_find_hopper_for(st, req.commodities[i]);
+                    if (hop < 0) continue;
+                    const station_module_t *hm = &st->modules[hop];
+                    int ra = (int)prod->ring, rb = (int)hm->ring;
+                    if (!((ra == ring && rb == driver_ring) ||
+                          (rb == ring && ra == driver_ring))) continue;
+                    int sa = (int)prod->slot, sb = (int)hm->slot;
+                    int slots_a = STATION_RING_SLOTS[ra];
+                    int slots_b = STATION_RING_SLOTS[rb];
+                    float alpha_a = TWO_PI_F * (float)sa / (float)slots_a;
+                    float alpha_b = TWO_PI_F * (float)sb / (float)slots_b;
+                    float wa = st->arm_rotation[ra-1] + alpha_a;
+                    float wb = st->arm_rotation[rb-1] + alpha_b;
+                    float dr = (ra == ring) ? (wb - wa) : (wa - wb);
+                    while (dr > PI_F)  dr -= TWO_PI_F;
+                    while (dr < -PI_F) dr += TWO_PI_F;
+                    net_torque += pulse * RING_SPOKE_K * sinf(dr);
                 }
-                if (hop_ring < 0) continue;
-
-                int ra = (int)prod->ring, rb = hop_ring;
-                /* Only spokes that span this passive ring AND the
-                 * driver contribute torque to this ring's dynamics. */
-                if (!((ra == ring && rb == driver_ring) ||
-                      (rb == ring && ra == driver_ring))) continue;
-
-                int sa = (int)prod->slot, sb = hop_slot;
-                int slots_a = STATION_RING_SLOTS[ra];
-                int slots_b = STATION_RING_SLOTS[rb];
-                float alpha_a = TWO_PI_F * (float)sa / (float)slots_a;
-                float alpha_b = TWO_PI_F * (float)sb / (float)slots_b;
-                float wa = st->arm_rotation[ra-1] + alpha_a;
-                float wb = st->arm_rotation[rb-1] + alpha_b;
-
-                /* Misalignment: the spoke wants both endpoints to lie
-                 * on the same radial line. Sign convention: positive
-                 * dr means the passive ring is BEHIND the driver and
-                 * needs forward torque. */
-                float dr = (ra == ring) ? (wb - wa) : (wa - wb);
-                while (dr > PI_F)  dr -= TWO_PI_F;
-                while (dr < -PI_F) dr += TWO_PI_F;
-                net_torque += pulse * RING_SPOKE_K * sinf(dr);
             }
 
             /* Drag opposes absolute angular velocity. The phase lag at
@@ -4955,10 +4943,9 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[0], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 1);
     add_module_at(&w->stations[0], MODULE_FURNACE,      1, 2);
-    /* Ring 2: one HOPPER, paired across the gap with the ring-1
-     * furnace at slot 2 (240° → ring 2 slot 4, 240°). One hopper per
-     * producer — no ornamental hopper rings. */
-    add_module_at(&w->stations[0], MODULE_HOPPER,       2, 4);
+    /* Ring 2: one ferrite-ore hopper, the only input the lone
+     * furnace needs. Renders rusty red. */
+    add_hopper_for(&w->stations[0], 2, 4, COMMODITY_FERRITE_ORE);
     w->stations[0].arm_count = 2;
     /* Ring 2 (idx 1) is the driver — ring 2 spins, ring 1 is dragged
      * along by the cross-ring spoke spring. Prospect has only one
@@ -4995,13 +4982,18 @@ void world_reset(world_t *w) {
     /* Ring 1: dock + relay only. Ring-1 slot 2 stays empty. */
     add_module_at(&w->stations[1], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 1, 1);
-    /* Ring 2: one fab + one shipyard. Each pairs cross-ring with a
-     * single hopper on ring 3. */
-    add_module_at(&w->stations[1], MODULE_FRAME_PRESS,  2, 0); /* 0°   ↔ ring 3 slot 0 */
-    add_module_at(&w->stations[1], MODULE_SHIPYARD,     2, 2); /* 120° ↔ ring 3 slot 3 */
-    /* Ring 3: paired hoppers — one per ring-2 producer. */
-    add_module_at(&w->stations[1], MODULE_HOPPER,       3, 0); /* feeds FRAME_PRESS    */
-    add_module_at(&w->stations[1], MODULE_HOPPER,       3, 3); /* feeds SHIPYARD       */
+    /* Ring 2: frame press + shipyard. */
+    add_module_at(&w->stations[1], MODULE_FRAME_PRESS,  2, 0); /* needs FERRITE_INGOT */
+    add_module_at(&w->stations[1], MODULE_SHIPYARD,     2, 2); /* needs FRAME, LASER, TRACTOR */
+    /* Ring 3: 4 commodity-tagged hoppers — one for FRAME_PRESS's
+     * ferrite ingot, three for SHIPYARD's three inputs. SHIPYARD
+     * emits 3 spokes (one per commodity), so a busy Kepler shows
+     * ferrite-orange + frame-gold + laser-cyan + tractor-blue lines
+     * radiating from the shipyard. */
+    add_hopper_for(&w->stations[1], 3, 0, COMMODITY_FERRITE_INGOT);  /* feeds FRAME_PRESS */
+    add_hopper_for(&w->stations[1], 3, 2, COMMODITY_FRAME);          /* feeds SHIPYARD    */
+    add_hopper_for(&w->stations[1], 3, 4, COMMODITY_LASER_MODULE);   /* feeds SHIPYARD    */
+    add_hopper_for(&w->stations[1], 3, 6, COMMODITY_TRACTOR_MODULE); /* feeds SHIPYARD    */
     w->stations[1].arm_count = 3;
     w->stations[1].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drives */
     rebuild_station_services(&w->stations[1]);
@@ -5031,29 +5023,26 @@ void world_reset(world_t *w) {
      * 3-furnace tier, which the new count rules deliberately gate
      * against ferrite. The ferrite-ingot pipeline stays Prospect's. */
     w->stations[2].base_price[COMMODITY_FERRITE_INGOT]  = 0.0f;
-    /* Producers spread across all three rings — fabs no longer all
-     * on ring 3, hoppers no longer all on ring 2. Each producer's
-     * cross-ring pair lands on a hopper that exists specifically to
-     * feed it. */
-    /* Ring 1: dock + relay + ferrite furnace (240°). */
+    /* Producers spread across all three rings; commodity-tagged
+     * hoppers feed them all. */
+    /* Ring 1: dock + relay + furnace. */
     add_module_at(&w->stations[2], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
-    add_module_at(&w->stations[2], MODULE_FURNACE,      1, 2); /* 240° ↔ ring 2 slot 4 */
-    /* Ring 2: fabs LIVE here, paired with hoppers on ring 3. The
-     * three intervening hoppers feed cross-ring producers on rings
-     * 1 and 3 respectively. */
-    add_module_at(&w->stations[2], MODULE_LASER_FAB,    2, 0); /* 0°   ↔ ring 3 slot 0   */
-    add_module_at(&w->stations[2], MODULE_HOPPER,       2, 1); /* feeds ring-3 FURNACE@1 */
-    add_module_at(&w->stations[2], MODULE_HOPPER,       2, 3); /* feeds ring-3 FURNACE@4 */
-    add_module_at(&w->stations[2], MODULE_HOPPER,       2, 4); /* feeds ring-1 FURNACE@2 */
-    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  2, 5); /* 300° ↔ ring 3 slot 7   */
-    /* Ring 3: two more furnaces (rings 1+3+3 = 3 total → tier-3
-     * smelt rules unlock cuprite + crystal). Each pairs with the
-     * ring-2 hopper at the closest cross-ring angle. */
-    add_module_at(&w->stations[2], MODULE_HOPPER,       3, 0); /* feeds ring-2 LASER_FAB     */
-    add_module_at(&w->stations[2], MODULE_FURNACE,      3, 1); /* 40°  ↔ ring 2 slot 1       */
-    add_module_at(&w->stations[2], MODULE_FURNACE,      3, 4); /* 160° ↔ ring 2 slot 3       */
-    add_module_at(&w->stations[2], MODULE_HOPPER,       3, 7); /* feeds ring-2 TRACTOR_FAB   */
+    add_module_at(&w->stations[2], MODULE_FURNACE,      1, 2);
+    /* Ring 2: fabs + paired ingot hoppers. LASER_FAB needs both
+     * cuprite and crystal ingots → 2 spokes from it. TRACTOR_FAB
+     * just cuprite → 1 spoke. */
+    add_module_at(&w->stations[2], MODULE_LASER_FAB,    2, 0);
+    add_hopper_for(&w->stations[2], 2, 1, COMMODITY_CUPRITE_INGOT);
+    add_hopper_for(&w->stations[2], 2, 3, COMMODITY_CRYSTAL_INGOT);
+    add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  2, 5);
+    /* Ring 3: 2 more furnaces + cuprite/crystal ore hoppers feeding
+     * all 3 furnaces' smelt path. With 3 furnaces total Helios is
+     * tier-3 → smelts cuprite + crystal (ferrite gated). */
+    add_hopper_for(&w->stations[2], 3, 0, COMMODITY_CUPRITE_ORE);
+    add_module_at(&w->stations[2], MODULE_FURNACE,      3, 1);
+    add_module_at(&w->stations[2], MODULE_FURNACE,      3, 4);
+    add_hopper_for(&w->stations[2], 3, 6, COMMODITY_CRYSTAL_ORE);
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drives */
     rebuild_station_services(&w->stations[2]);

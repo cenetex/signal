@@ -306,10 +306,14 @@ typedef struct {
     /* Most recent smelt-input commodity processed by this module, or
      * LAST_SMELT_NONE if it's never smelted. Drives the middle-ring
      * furnace glow (see station_palette.h::station_palette_furnace_color):
-     * cuprite-input → blue, crystal-input → green, otherwise white.
-     * Stored in the natural alignment pad before build_progress so the
-     * struct stays 12 bytes — no save-format bump. */
-    uint8_t last_smelt_commodity; /* 1 byte (was implicit pad) */
+     * cuprite-input → blue, crystal-input → green, otherwise white. */
+    uint8_t last_smelt_commodity; /* 1 byte */
+    /* For MODULE_HOPPER: which commodity this hopper holds. Each
+     * hopper buffers exactly one commodity; producers needing that
+     * commodity draw from any matching hopper on the station.
+     * COMMODITY_COUNT (= "unset") for non-hopper modules. */
+    uint8_t commodity;      /* 1 byte */
+    uint8_t _pad[2];        /* explicit pad to 4-byte alignment */
     float   build_progress; /* 0.0 to 1.0 */
 } station_module_t;
 

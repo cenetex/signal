@@ -14,6 +14,10 @@ bool        station_sells_scaffold(const station_t *st, module_type_t type);
 
 /* Construction API — called from world_sim_step and NPC code */
 void add_module_at(station_t *st, module_type_t type, uint8_t arm, uint8_t chain_pos);
+/* Place a hopper with an explicit commodity tag. Bypasses the
+ * auto-solver — used by seed code and tests that need deterministic
+ * hopper layouts. */
+void add_hopper_for(station_t *st, uint8_t arm, uint8_t chain_pos, commodity_t c);
 void step_module_activation(world_t *w, float dt);
 
 /*

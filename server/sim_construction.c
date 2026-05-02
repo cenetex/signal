@@ -31,6 +31,30 @@ bool station_sells_scaffold(const station_t *st, module_type_t type) {
 /* Module placement                                                    */
 /* ------------------------------------------------------------------ */
 
+/* Auto-solver: given a fresh hopper being placed, pick the first
+ * input commodity any local producer needs but doesn't yet have a
+ * matching hopper for. Falls back to FERRITE_ORE so a hopper is
+ * never untagged — even on stations with no producers (a cold
+ * outpost), it just becomes an ore receiver. */
+static commodity_t auto_pick_hopper_commodity(const station_t *st) {
+    for (int m = 0; m < st->module_count; m++) {
+        if (st->modules[m].scaffold) continue;
+        module_inputs_t req = module_required_inputs(st->modules[m].type);
+        for (int i = 0; i < req.count; i++) {
+            commodity_t c = req.commodities[i];
+            /* Skip if a hopper for c already exists. */
+            bool covered = false;
+            for (int n = 0; n < st->module_count; n++) {
+                if (st->modules[n].type != MODULE_HOPPER) continue;
+                if (st->modules[n].scaffold) continue;
+                if ((commodity_t)st->modules[n].commodity == c) { covered = true; break; }
+            }
+            if (!covered) return c;
+        }
+    }
+    return COMMODITY_FERRITE_ORE;
+}
+
 void add_module_at(station_t *st, module_type_t type, uint8_t arm, uint8_t chain_pos) {
     if (st->module_count >= MAX_MODULES_PER_STATION) return;
     int idx = st->module_count++;
@@ -41,11 +65,31 @@ void add_module_at(station_t *st, module_type_t type, uint8_t arm, uint8_t chain
     m->scaffold = false;
     m->build_progress = 1.0f;
     m->last_smelt_commodity = LAST_SMELT_NONE;
+    /* Hoppers are commodity-tagged. The seed/auto-solver path sets
+     * commodity=COMMODITY_COUNT on the call (default zero-init from
+     * memset is COMMODITY_FERRITE_ORE which is unhelpful); we
+     * autopick the first un-covered station input commodity here.
+     * Other module types leave commodity = COMMODITY_COUNT. */
+    if (type == MODULE_HOPPER) {
+        m->commodity = (uint8_t)auto_pick_hopper_commodity(st);
+    } else {
+        m->commodity = (uint8_t)COMMODITY_COUNT;
+    }
+    m->_pad[0] = 0; m->_pad[1] = 0;
     /* Reset the activity pulse for this slot. station_t lives across
      * world_resets in some flows (heap-allocated test worlds), so
      * stale pulse from a previously-occupying module would leak into
      * the new one's spoke and bias dynamics on first tick. */
     st->module_active_pulse[idx] = 0.0f;
+}
+
+/* Override-aware variant for callers that want a specific commodity
+ * (tests, or future explicit-commodity build orders). */
+void add_hopper_for(station_t *st, uint8_t arm, uint8_t chain_pos, commodity_t c) {
+    add_module_at(st, MODULE_HOPPER, arm, chain_pos);
+    if (st->module_count > 0) {
+        st->modules[st->module_count - 1].commodity = (uint8_t)c;
+    }
 }
 
 void activate_outpost(world_t *w, int station_idx) {

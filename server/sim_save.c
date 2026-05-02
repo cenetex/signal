@@ -78,11 +78,14 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 48  /* Spoke + drag ring dynamics: ring 2 is the
-                          * driver, rings 1 and 3 are passive. Adds
-                          * arm_omega[MAX_ARMS] per station for the
-                          * passive-ring angular velocity state. v47
-                          * pair-based station construction:
+#define SAVE_VERSION 49  /* Hoppers tag a single commodity each, the
+                          * pair rule becomes "all required input
+                          * commodities have a hopper on the station,"
+                          * and producers emit one spoke per input
+                          * commodity. station_module_t grows from 12
+                          * to 16 bytes (commodity + pad). Catalog
+                          * version bumped 2 → 3 to write the new
+                          * byte. v48 spoke + drag dynamics:
                           * Ring 1 is now spine-only (DOCK + RELAY +
                           * REPAIR_BAY); producers (FURNACE / FRAME_PRESS
                           * / LASER_FAB / TRACTOR_FAB / SHIPYARD) are
@@ -143,11 +146,11 @@ static uint32_t crc32_file(FILE *f) {
  * named_ingot_t struct. Old saves are migrated by reading the legacy
  * named-ingot block (52B per slot, fixed layout) and converting each
  * non-empty entry into a manifest unit. */
-/* Bumped to 48: ring dynamics adds arm_omega[MAX_ARMS] per station
- * to write_station_session. Older saves miss those bytes; cleaner to
- * refuse them than thread a migration through. Per-player saves
- * under saves/pubkey/ live in their own files and are unaffected. */
-#define MIN_SAVE_VERSION 48
+/* Bumped to 49: per-hopper commodity tag changes station_module_t
+ * shape. Catalog files persist modules so they need re-bootstrap.
+ * Per-player saves under saves/pubkey/ live in their own files and
+ * are unaffected. */
+#define MIN_SAVE_VERSION 49
 
 /* Legacy named-ingot block layout — preserved here only so v25..v34
  * saves can be migrated forward. The original named_ingot_t was

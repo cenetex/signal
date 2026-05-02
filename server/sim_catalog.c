@@ -45,7 +45,7 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define CATALOG_MAGIC   0x53544E43  /* "STNC" */
-#define CATALOG_VERSION 2  /* v2: added station ID field */
+#define CATALOG_VERSION 3  /* v3: per-module commodity tag (hopper specialization) */
 
 /* ---- helper macros (same pattern as sim_save.c) ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
@@ -98,6 +98,7 @@ bool station_catalog_save(const station_t *st, int index, const char *dir) {
         WRITE_FIELD(f, st->modules[m].type);
         WRITE_FIELD(f, st->modules[m].ring);
         WRITE_FIELD(f, st->modules[m].slot);
+        WRITE_FIELD(f, st->modules[m].commodity); /* v3: hopper commodity tag */
     }
 
     /* Ring geometry */
@@ -182,6 +183,11 @@ static bool station_catalog_load_one(station_t *st, int index, const char *dir) 
         READ_FIELD(f, st->modules[m].type);
         READ_FIELD(f, st->modules[m].ring);
         READ_FIELD(f, st->modules[m].slot);
+        if (ver >= 3) {
+            READ_FIELD(f, st->modules[m].commodity);
+        } else {
+            st->modules[m].commodity = (uint8_t)COMMODITY_COUNT;
+        }
         st->modules[m].scaffold = false;
         st->modules[m].build_progress = 1.0f; /* loaded modules are complete */
     }

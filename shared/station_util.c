@@ -288,13 +288,29 @@ module_type_t station_module_at(const station_t *st, int ring, int slot) {
 
 bool station_pair_satisfied(const station_t *st, int ring, int slot,
                             module_type_t type) {
-    module_type_t need = module_pair_intake(type);
-    if (need == MODULE_COUNT) return true;
-    station_slot_pair_t cand[2];
-    int n = station_pair_neighbors(ring, slot, cand);
-    for (int i = 0; i < n; i++) {
-        if (station_module_at(st, cand[i].ring, cand[i].slot) == need) return true;
+    (void)ring; (void)slot;
+    module_inputs_t req = module_required_inputs(type);
+    if (req.count == 0) return true;
+    if (req.any_satisfies) {
+        for (int i = 0; i < req.count; i++) {
+            if (station_find_hopper_for(st, req.commodities[i]) >= 0) return true;
+        }
+        return false;
     }
-    return false;
+    /* All commodities must have a tagged hopper. */
+    for (int i = 0; i < req.count; i++) {
+        if (station_find_hopper_for(st, req.commodities[i]) < 0) return false;
+    }
+    return true;
+}
+
+int station_find_hopper_for(const station_t *st, commodity_t commodity) {
+    if (!st) return -1;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type != MODULE_HOPPER) continue;
+        if (st->modules[i].scaffold) continue;
+        if ((commodity_t)st->modules[i].commodity == commodity) return i;
+    }
+    return -1;
 }
 
