@@ -28,6 +28,7 @@
 #include "sim_nav.h"
 #include "sim_asteroid.h"
 #include "sim_physics.h"
+#include "sim_ship.h"
 #include "sim_production.h"
 #include "sim_construction.h"
 #include "sim_mining.h"
@@ -1530,33 +1531,9 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
 /* Per-player per-step functions                                      */
 /* ================================================================== */
 
-static void step_ship_rotation(ship_t *s, float dt, float turn_input) {
-    s->angle = wrap_angle(s->angle + (turn_input * ship_hull_def(s)->turn_speed * dt));
-}
-
-/* Boost thrust multiplier: 2.0× for the first 1.0s of held-boost,
- * decaying exponentially to 1.6× steady-state. Gives the boost a
- * takeoff "kick" that settles into a cruise burn. hold_t=0 when not
- * boosting. */
-static float boost_thrust_mult(bool boost, float hold_t) {
-    if (!boost) return 1.0f;
-    const float steady = 1.6f;
-    const float peak   = 2.0f;
-    /* exp(-3t) ≈ 1.0 at t=0, 0.05 at t=1.0s — most of the kick in
-     * the first ~500ms, tail blends into the steady burn. */
-    float kick = expf(-3.0f * hold_t);
-    return steady + (peak - steady) * kick;
-}
-
-static void step_ship_thrust(ship_t *s, float dt, float thrust_input, vec2 forward, bool boost, float boost_hold) {
-    const hull_def_t *hull = ship_hull_def(s);
-    float mult = boost_thrust_mult(boost, boost_hold);
-    if (thrust_input > 0.0f) {
-        s->vel = v2_add(s->vel, v2_scale(forward, hull->accel * thrust_input * mult * dt));
-    } else if (thrust_input < 0.0f) {
-        s->vel = v2_add(s->vel, v2_scale(forward, SHIP_BRAKE * thrust_input * dt));
-    }
-}
+/* step_ship_rotation, step_ship_thrust, ship_boost_thrust_mult, and
+ * step_ship_motion now live in server/sim_ship.c (shared between
+ * player + future NPC controllers per #294 Slice 2). */
 
 /* Boost hull drain: 0.02 HP/s baseline (near-free cruise), +1.4 HP/s per
  * unit of |turn_input|. Straight-line boost is barely noticeable (~1 HP
@@ -1574,31 +1551,7 @@ static void step_ship_boost_drain(world_t *w, server_player_t *sp, float dt, boo
     if (sp->ship.hull <= 0.01f) emergency_recover_ship(w, sp);
 }
 
-static void step_ship_motion(ship_t *s, float dt, const world_t *w, float cached_signal) {
-    s->vel = v2_scale(s->vel, 1.0f / (1.0f + (ship_hull_def(s)->drag * dt)));
-    s->pos = v2_add(s->pos, v2_scale(s->vel, dt));
-
-    /* Signal-based boundary: push back when in frontier zone */
-    float sig = cached_signal;
-    float boundary = signal_boundary_push(sig);
-    if (boundary > 0.0f) {
-        float best_d_sq = 1e18f;
-        int best_s = 0;
-        for (int i = 0; i < MAX_STATIONS; i++) {
-            float d_sq = v2_dist_sq(s->pos, w->stations[i].pos);
-            if (d_sq < best_d_sq) { best_d_sq = d_sq; best_s = i; }
-        }
-        vec2 to_station = v2_sub(w->stations[best_s].pos, s->pos);
-        float d = sqrtf(v2_len_sq(to_station));
-        if (d > 0.001f) {
-            /* Strong pull — at zero signal this is the only way back.
-             * Scales with boundary (0 at frontier, 1 at zero signal). */
-            float push_strength = boundary * 2.0f;
-            vec2 push = v2_scale(to_station, push_strength / d);
-            s->vel = v2_add(s->vel, push);
-        }
-    }
-}
+/* step_ship_motion moved to server/sim_ship.c (#294 Slice 2). */
 
 /* Resolve ship vs station using shared geometry emitter. */
 static void resolve_module_collisions(world_t *w, server_player_t *sp, const station_t *st) {

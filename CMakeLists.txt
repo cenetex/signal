@@ -101,6 +101,7 @@ set(SIGNAL_SIM_SOURCES
     server/sim_construction.c
     server/sim_mining.c
     server/sim_anchor.c
+    server/sim_ship.c
 )
 
 # Shared libraries used by both sim and client render — pure C, no
