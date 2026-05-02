@@ -229,28 +229,43 @@ TEST(test_refinery_deposits_named_ingot) {
      * world_reset, but assert. */
     bool has_furnace = false;
     int furnace_idx = -1;
-    int silo_idx = -1;
     for (int m = 0; m < w->stations[0].module_count; m++) {
         if (w->stations[0].modules[m].type == MODULE_FURNACE) {
             has_furnace = true;
             furnace_idx = m;
         }
-        /* Prospect's ORE_SILO was dropped; HOPPER on ring 2 anchors the
-         * smelt midpoint just as well (any adjacent-ring module works). */
-        if (w->stations[0].modules[m].type == MODULE_HOPPER)
-            silo_idx = m;
     }
     ASSERT(has_furnace);
-    ASSERT(silo_idx >= 0);
 
-    /* Stop ring motion and place the fragment exactly on the furnace/silo
-     * midpoint so the dedicated smelt path resolves deterministically. */
+    /* Stop ring motion. Then mirror the smelt code's silo pick — the
+     * closest module on an adjacent ring to the furnace, with current
+     * ring offsets baked in. With Prospect's full hopper ring on
+     * ring 2, several hoppers are within range; whichever is closest
+     * becomes the silo end of the smelt beam. */
     for (int arm = 0; arm < MAX_ARMS; arm++) {
         w->stations[0].arm_speed[arm] = 0.0f;
         w->stations[0].arm_rotation[arm] = 0.0f;
     }
     vec2 furnace_pos = module_world_pos_ring(&w->stations[0],
         w->stations[0].modules[furnace_idx].ring, w->stations[0].modules[furnace_idx].slot);
+    int silo_idx = -1;
+    {
+        int fr = w->stations[0].modules[furnace_idx].ring;
+        float best_d = 1e18f;
+        int adj_rings[] = { fr + 1, fr - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int m2 = 0; m2 < w->stations[0].module_count; m2++) {
+                if (w->stations[0].modules[m2].ring != adj) continue;
+                vec2 mp2 = module_world_pos_ring(&w->stations[0], adj,
+                                                  w->stations[0].modules[m2].slot);
+                float dd = v2_dist_sq(furnace_pos, mp2);
+                if (dd < best_d) { best_d = dd; silo_idx = m2; }
+            }
+        }
+    }
+    ASSERT(silo_idx >= 0);
     vec2 silo_pos = module_world_pos_ring(&w->stations[0],
         w->stations[0].modules[silo_idx].ring, w->stations[0].modules[silo_idx].slot);
     vec2 midpoint = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
@@ -538,31 +553,47 @@ TEST(test_scenario_full_mining_cycle) {
     w.players[0].ship.towed_fragments[0] = (int16_t)frag;
     w.players[0].ship.towed_count = 1;
 
-    /* Find furnace and ore_silo modules on station 0 for dual-reach smelting */
+    /* Find the furnace and the smelt-beam silo. The smelt code picks
+     * the closest module on an adjacent ring (with current offsets
+     * baked in), so mirror that here rather than hard-coding a slot. */
     int furnace_idx = -1, silo_idx = -1;
     for (int m = 0; m < w.stations[0].module_count; m++) {
-        if (w.stations[0].modules[m].type == MODULE_FURNACE && !w.stations[0].modules[m].scaffold)
-            furnace_idx = m;
-        /* Prospect's ORE_SILO was dropped; HOPPER on ring 2 plays the
-         * adjacent-ring "silo" role for the smelt midpoint test. */
-        if (w.stations[0].modules[m].type == MODULE_HOPPER && !w.stations[0].modules[m].scaffold)
-            silo_idx = m;
+        if (w.stations[0].modules[m].type == MODULE_FURNACE && !w.stations[0].modules[m].scaffold) {
+            furnace_idx = m; break;
+        }
     }
     ASSERT(furnace_idx >= 0);
-    ASSERT(silo_idx >= 0);
     float start_credits = ledger_balance(&w.stations[0], w.players[0].session_token);
 
     /* Clear station ore inventory */
     for (int i = 0; i < COMMODITY_RAW_ORE_COUNT; i++)
         w.stations[0]._inventory_cache[i] = 0.0f;
 
-    /* Stop rotation, place fragment at midpoint between furnace and silo */
+    /* Stop rotation, then mirror the smelt code's silo pick (closest
+     * adjacent-ring module to the furnace). */
     for (int a = 0; a < MAX_ARMS; a++) {
         w.stations[0].arm_speed[a] = 0.0f;
         w.stations[0].arm_rotation[a] = 0.0f;
     }
     vec2 furnace_pos = module_world_pos_ring(&w.stations[0],
         w.stations[0].modules[furnace_idx].ring, w.stations[0].modules[furnace_idx].slot);
+    {
+        int fr = w.stations[0].modules[furnace_idx].ring;
+        float best_d = 1e18f;
+        int adj_rings[] = { fr + 1, fr - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int m2 = 0; m2 < w.stations[0].module_count; m2++) {
+                if (w.stations[0].modules[m2].ring != adj) continue;
+                vec2 mp2 = module_world_pos_ring(&w.stations[0], adj,
+                                                  w.stations[0].modules[m2].slot);
+                float dd = v2_dist_sq(furnace_pos, mp2);
+                if (dd < best_d) { best_d = dd; silo_idx = m2; }
+            }
+        }
+    }
+    ASSERT(silo_idx >= 0);
     vec2 silo_pos = module_world_pos_ring(&w.stations[0],
         w.stations[0].modules[silo_idx].ring, w.stations[0].modules[silo_idx].slot);
     vec2 midpoint = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
@@ -626,21 +657,36 @@ TEST(test_manifest_conservation_across_transactions) {
            w.players[0].session_token, sizeof(w.asteroids[frag].last_towed_token));
     memcpy(w.asteroids[frag].last_fractured_token,
            w.players[0].session_token, sizeof(w.asteroids[frag].last_fractured_token));
-    /* Place fragment between furnace and silo on station 0. */
+    /* Place fragment between furnace and silo on station 0. Mirror
+     * the smelt code's silo pick (closest module on adjacent ring). */
     int furnace_idx = -1, silo_idx = -1;
     for (int m = 0; m < w.stations[0].module_count; m++) {
-        if (w.stations[0].modules[m].type == MODULE_FURNACE) furnace_idx = m;
-        /* Prospect's ORE_SILO was dropped; HOPPER on ring 2 anchors the
-         * adjacent-ring smelt midpoint. */
-        if (w.stations[0].modules[m].type == MODULE_HOPPER) silo_idx = m;
+        if (w.stations[0].modules[m].type == MODULE_FURNACE) { furnace_idx = m; break; }
     }
-    ASSERT(furnace_idx >= 0 && silo_idx >= 0);
+    ASSERT(furnace_idx >= 0);
     for (int a = 0; a < MAX_ARMS; a++) {
         w.stations[0].arm_speed[a] = 0.0f;
         w.stations[0].arm_rotation[a] = 0.0f;
     }
     vec2 fpos = module_world_pos_ring(&w.stations[0],
         w.stations[0].modules[furnace_idx].ring, w.stations[0].modules[furnace_idx].slot);
+    {
+        int fr = w.stations[0].modules[furnace_idx].ring;
+        float best_d = 1e18f;
+        int adj_rings[] = { fr + 1, fr - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int m2 = 0; m2 < w.stations[0].module_count; m2++) {
+                if (w.stations[0].modules[m2].ring != adj) continue;
+                vec2 mp2 = module_world_pos_ring(&w.stations[0], adj,
+                                                  w.stations[0].modules[m2].slot);
+                float dd = v2_dist_sq(fpos, mp2);
+                if (dd < best_d) { best_d = dd; silo_idx = m2; }
+            }
+        }
+    }
+    ASSERT(silo_idx >= 0);
     vec2 spos = module_world_pos_ring(&w.stations[0],
         w.stations[0].modules[silo_idx].ring, w.stations[0].modules[silo_idx].slot);
     w.asteroids[frag].pos = v2_scale(v2_add(fpos, spos), 0.5f);

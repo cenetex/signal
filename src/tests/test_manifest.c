@@ -418,21 +418,34 @@ TEST(test_smelt_manifest_uses_resolved_fragment_pub) {
     world_reset(w);
     for (int m = 0; m < w->stations[0].module_count; m++) {
         if (w->stations[0].modules[m].type == MODULE_FURNACE) furnace_idx = m;
-        /* Smelt midpoint is furnace<->any adjacent-ring module. Prospect's
-         * silo was dropped; the hopper on ring 2 plays the same role for
-         * this test (anchors the smelt midpoint). */
-        if (w->stations[0].modules[m].type == MODULE_HOPPER) silo_idx = m;
     }
     ASSERT(furnace_idx >= 0);
-    ASSERT(silo_idx >= 0);
     for (int arm = 0; arm < MAX_ARMS; arm++) {
         w->stations[0].arm_speed[arm] = 0.0f;
         w->stations[0].arm_rotation[arm] = 0.0f;
     }
-    midpoint = v2_scale(v2_add(
-        module_world_pos_ring(&w->stations[0],
-                              w->stations[0].modules[furnace_idx].ring,
-                              w->stations[0].modules[furnace_idx].slot),
+    /* Mirror the smelt code's silo pick — the closest module on an
+     * adjacent ring to the furnace (with rotation offsets baked in). */
+    vec2 furnace_pos = module_world_pos_ring(&w->stations[0],
+        w->stations[0].modules[furnace_idx].ring, w->stations[0].modules[furnace_idx].slot);
+    {
+        int fr = w->stations[0].modules[furnace_idx].ring;
+        float best_d = 1e18f;
+        int adj_rings[] = { fr + 1, fr - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int m2 = 0; m2 < w->stations[0].module_count; m2++) {
+                if (w->stations[0].modules[m2].ring != adj) continue;
+                vec2 mp2 = module_world_pos_ring(&w->stations[0], adj,
+                                                  w->stations[0].modules[m2].slot);
+                float dd = v2_dist_sq(furnace_pos, mp2);
+                if (dd < best_d) { best_d = dd; silo_idx = m2; }
+            }
+        }
+    }
+    ASSERT(silo_idx >= 0);
+    midpoint = v2_scale(v2_add(furnace_pos,
         module_world_pos_ring(&w->stations[0],
                               w->stations[0].modules[silo_idx].ring,
                               w->stations[0].modules[silo_idx].slot)), 0.5f);
