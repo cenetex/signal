@@ -1009,18 +1009,42 @@ void hull_fog_init(void) {
     };
 
     /* Separate buffer per tier so the immutable image uploads each
-     * see distinct data, no aliasing. */
+     * see distinct data, no aliasing.
+     *
+     * The fog edge isn't a clean circle — it's deformed by a stack of
+     * angular cosines so fingers reach inward at irregular intervals.
+     * Multiple frequencies + per-octave phase offsets keep them from
+     * lining up into a clean star. The deformation is enveloped so it
+     * vanishes at the center (clear hole stays clean) and at the
+     * corners (full coverage holds). Result reads as "rivers of blood
+     * pulling in from the edges" rather than a circular vignette,
+     * while the smoothstep falloff keeps everything blurry. */
     static uint8_t pixels[HULL_FOG_LEVELS][HULL_FOG_TEX_SIZE * HULL_FOG_TEX_SIZE * 4];
     for (int level = 0; level < HULL_FOG_LEVELS; level++) {
         uint8_t *pix = pixels[level];
         float r0 = clear_radius[level];
         float r1 = 1.10f; /* fog reaches full alpha just past the corners */
         float pa = peak_alpha[level];
+        /* Tendril depth scales with tier — barely visible at caution,
+         * pronounced fingers at critical. */
+        float tendril_amp = 0.06f + 0.10f * ((float)level / (float)(HULL_FOG_LEVELS - 1));
         for (int y = 0; y < HULL_FOG_TEX_SIZE; y++) {
             for (int x = 0; x < HULL_FOG_TEX_SIZE; x++) {
                 float fx = ((float)x / (float)(HULL_FOG_TEX_SIZE - 1)) * 2.0f - 1.0f;
                 float fy = ((float)y / (float)(HULL_FOG_TEX_SIZE - 1)) * 2.0f - 1.0f;
-                float d = sqrtf(fx * fx + fy * fy);
+                float d_radial = sqrtf(fx * fx + fy * fy);
+                float theta = atan2f(fy, fx);
+                /* Three octaves of cosine + irrational-ish phase offsets
+                 * so the period is long and the pattern looks organic. */
+                float tendril =
+                    0.55f * cosf(theta *  5.0f + 0.0f)
+                  + 0.32f * cosf(theta *  9.0f + 1.7f)
+                  + 0.18f * cosf(theta * 17.0f + 0.4f);
+                /* Envelope: 4 * d * (1-d) peaks at d=0.5, 0 at d=0 and d=1.
+                 * Keeps the clear center round and the corners saturated. */
+                float env = 4.0f * d_radial * (1.0f - d_radial);
+                if (env < 0.0f) env = 0.0f;
+                float d = d_radial - tendril_amp * tendril * env;
                 float a = fog_smoothstep(r0, r1, d) * pa;
                 int p = (y * HULL_FOG_TEX_SIZE + x) * 4;
                 pix[p + 0] = 255;
