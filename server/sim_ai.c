@@ -5,6 +5,7 @@
  * step_npc_ships() dispatcher.
  */
 #include "sim_ai.h"
+#include "tractor.h"
 #include "sim_nav.h"
 #include "sim_flight.h"
 #include "sim_ship.h"
@@ -563,12 +564,28 @@ static int npc_find_loose_fragment(const world_t *w, const npc_ship_t *self, flo
  * always preferable to fracturing more rock. Returns true iff a
  * fragment was claimed and the caller should transition to
  * NPC_STATE_RETURN_TO_STATION. */
+/* NPC tow tokens start with the literal "NPC" prefix (see spawn_npc).
+ * A player's session_token is 8 random bytes — collision probability
+ * with the "NPC\0" prefix is ~1/16M and the worst case is one fragment
+ * smelt going to the wrong ledger; cheaper than a side-table. Used by
+ * the NPC tow paths to AVOID overwriting a player's stamp on a
+ * fragment they already towed (first-player-tower wins). */
+static bool token_is_npc(const uint8_t token[8]) {
+    return token && token[0] == 'N' && token[1] == 'P' && token[2] == 'C';
+}
+
 static bool npc_try_claim_loose_fragment(world_t *w, npc_ship_t *npc, float range_sq) {
     int frag = npc_find_loose_fragment(w, npc, range_sq);
     if (frag < 0) return false;
     npc->towed_fragment = frag;
     asteroid_t *f = &w->asteroids[frag];
-    memcpy(f->last_towed_token, npc->session_token, sizeof(f->last_towed_token));
+    /* Only stamp when the slot is empty or carries another NPC's
+     * token — never overwrite a player tow stamp. */
+    bool stamped = false;
+    for (int b = 0; b < 8 && !stamped; b++) if (f->last_towed_token[b]) stamped = true;
+    if (!stamped || token_is_npc(f->last_towed_token)) {
+        memcpy(f->last_towed_token, npc->session_token, sizeof(f->last_towed_token));
+    }
     return true;
 }
 
@@ -742,6 +759,32 @@ static bool resolve_npc_annular_sector(npc_ship_t *npc, vec2 center,
                                                   angle_a, arc_delta);
     if (impact <= 0.0f) return false;
     return true;
+}
+
+/* If the NPC is still inside its home station's outer-ring envelope
+ * AND the target is outside that envelope, override the steering
+ * target with the dock's exit waypoint (past the outer ring along the
+ * dock's current radial axis). This routes a just-undocked ship along
+ * a known-clear angular corridor before it tries to fly straight at a
+ * far destination, which used to pin it against ring-2 modules.
+ *
+ * Returns the unmodified target if either: (a) the ship is already
+ * past the outer ring, or (b) the target itself is inside the home
+ * envelope (e.g. a tow scaffold sitting just outside the dock — the
+ * NPC should steer to it directly, not detour through an exit waypoint).
+ *
+ * The override is a *target swap* only — physics integration and
+ * collision pushback are unchanged, so the per-tick paired-ship
+ * parity invariant (test_npc_ship_physics_in_sync_each_tick) holds. */
+static vec2 npc_target_clear_of_home_rings(const world_t *w, const npc_ship_t *npc,
+                                           vec2 want_target) {
+    if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) return want_target;
+    const station_t *home = &w->stations[npc->home_station];
+    float exit_r = STATION_RING_RADIUS[STATION_NUM_RINGS] + 80.0f;
+    float exit_r_sq = exit_r * exit_r;
+    if (v2_dist_sq(npc->ship.pos, home->pos) > exit_r_sq) return want_target;
+    if (v2_dist_sq(want_target,    home->pos) <= exit_r_sq) return want_target;
+    return station_exit_target(home, npc->ship.pos);
 }
 
 static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
@@ -1058,6 +1101,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_TRAVEL_TO_DEST: {
         station_t *dest = &w->stations[npc->dest_station];
         vec2 approach = station_approach_target(dest, npc->ship.pos);
+        approach = npc_target_clear_of_home_rings(w, npc, approach);
         npc_steer_with_path(w, n, npc, approach, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
         float dock_r = dest->dock_radius * 0.7f;
@@ -1131,7 +1175,11 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                             activate_outpost(w, npc->dest_station);
                     }
                 }
-                step_module_delivery(w, dest, npc->dest_station, &hauler_ship, COMMODITY_COUNT);
+                /* Hauler is paid via the contract path elsewhere; the
+                 * build-material payout returned here is discarded. NPC
+                 * economic identity tracking happens through
+                 * ledger_credit_supply_amount on contract completion. */
+                (void)step_module_delivery(w, dest, npc->dest_station, &hauler_ship, COMMODITY_COUNT);
                 /* Put remaining back. The float was drained into
                  * module_input by step_module_delivery; we have to drain
                  * the matching manifest entries too or the BUY picker
@@ -1361,7 +1409,8 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
             npc->state_timer = HAULER_DOCK_TIME;
             break;
         }
-        npc_steer_with_path(w, n, npc, sc->pos, /*thrust_scale=*/1.0f, dt);
+        vec2 sc_target = npc_target_clear_of_home_rings(w, npc, sc->pos);
+        npc_steer_with_path(w, n, npc, sc_target, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
         if (v2_dist_sq(npc->ship.pos, sc->pos) < 80.0f * 80.0f) {
             /* Grab — claim the scaffold and switch to tow mode.
@@ -1394,16 +1443,22 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
         }
         scaffold_t *sc = &w->scaffolds[npc->towed_scaffold];
         station_t *dest = &w->stations[npc->dest_station];
-        /* Drag the scaffold along behind us with simple spring chase. */
-        vec2 to_drone = v2_sub(npc->ship.pos, sc->pos);
-        float td = sqrtf(v2_len_sq(to_drone));
-        float tow_dist = 60.0f;
-        if (td > tow_dist && td > 0.1f) {
-            vec2 dir = v2_scale(to_drone, 1.0f / td);
-            float over = td - tow_dist;
-            sc->vel = v2_add(sc->vel, v2_scale(dir, over * 8.0f * dt));
-        }
-        sc->vel = v2_scale(sc->vel, 1.0f / (1.0f + 0.6f * dt));
+        /* Spring-chase the scaffold behind the drone. Pull-only spring at
+         * rest_length=60; 1D axial damping along the rope; small tangent
+         * drag to bleed orbital drift without locking lateral motion. */
+        static const tractor_beam_t SCAFFOLD_TOW = {
+            .rest_length     = 60.0f,
+            .pull_strength   = 8.0f,
+            .push_strength   = 0.0f,
+            .range           = 0.0f,
+            .axial_damping   = 0.6f,
+            .tangent_damping = 0.15f,   /* ~25% of axial — anti-orbit, tunable */
+            .speed_cap       = 0.0f,
+            .falloff         = TRACTOR_FALLOFF_CONSTANT,
+        };
+        tractor_anchor_t src_drone = { .pos = npc->ship.pos, .vel = NULL,     .inv_mass = 0.0f };
+        tractor_anchor_t tgt_sc    = { .pos = sc->pos,       .vel = &sc->vel, .inv_mass = 1.0f };
+        (void)tractor_apply(&src_drone, &tgt_sc, &SCAFFOLD_TOW, dt);
         sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
 
         vec2 approach = station_approach_target(dest, npc->ship.pos);
@@ -1574,7 +1629,8 @@ void step_npc_ships(world_t *w, float dt) {
                 }
             }
             asteroid_t *a = &w->asteroids[npc->target_asteroid];
-            npc_steer_with_path(w, n, npc, a->pos, /*thrust_scale=*/1.0f, dt);
+            vec2 ast_target = npc_target_clear_of_home_rings(w, npc, a->pos);
+            npc_steer_with_path(w, n, npc, ast_target, /*thrust_scale=*/1.0f, dt);
             npc_apply_physics(npc, dt, w);
             if (v2_dist_sq(npc->ship.pos, a->pos) < MINING_RANGE * MINING_RANGE)
                 npc->state = NPC_STATE_MINING;
@@ -1681,13 +1737,18 @@ void step_npc_ships(world_t *w, float dt) {
                     npc->towed_fragment = best_frag;
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                     /* Stamp the NPC's token onto the towed fragment so
-                     * the eventual smelt-payout (ledger_credit_supply
-                     * keyed off last_towed_token) credits the NPC's
-                     * ledger at the home station. Same hook the player
-                     * pickup uses — symmetrical economic identity. */
+                     * the eventual smelt-payout credits the NPC's ledger.
+                     * Skip if a non-NPC token is already there — the
+                     * player who first towed this fragment keeps the
+                     * payout claim. */
                     asteroid_t *frag = &w->asteroids[best_frag];
-                    memcpy(frag->last_towed_token, npc->session_token,
-                           sizeof(frag->last_towed_token));
+                    bool stamped = false;
+                    for (int b = 0; b < 8 && !stamped; b++)
+                        if (frag->last_towed_token[b]) stamped = true;
+                    if (!stamped || token_is_npc(frag->last_towed_token)) {
+                        memcpy(frag->last_towed_token, npc->session_token,
+                               sizeof(frag->last_towed_token));
+                    }
                 }
             }
             break;
@@ -1718,20 +1779,36 @@ void step_npc_ships(world_t *w, float dt) {
                     npc->ship.vel = v2_scale(npc->ship.vel, max_tow_speed / spd);
             }
 
-            /* Tow the fragment — drag it along with spring physics */
+            /* Tow the fragment — constant-pull thruster engages when the
+             * fragment is past the safe distance behind the NPC. 1D
+             * axial damping keeps the rope steady; small tangent drag
+             * bleeds orbital drift. Speed cap prevents runaway. */
             if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS) {
                 asteroid_t *tow = &w->asteroids[npc->towed_fragment];
                 if (tow->active) {
-                    vec2 to_npc = v2_sub(npc->ship.pos, tow->pos);
-                    float td = sqrtf(v2_len_sq(to_npc));
-                    float safe = 40.0f + tow->radius;
-                    if (td > safe && td > 0.1f) {
-                        vec2 pull_dir = v2_scale(to_npc, 1.0f / td);
-                        tow->vel = v2_add(tow->vel, v2_scale(pull_dir, 500.0f * dt));
-                        tow->vel = v2_scale(tow->vel, 1.0f / (1.0f + 3.0f * dt));
-                        float spd = v2_len(tow->vel);
-                        if (spd > 150.0f) tow->vel = v2_scale(tow->vel, 150.0f / spd);
-                    }
+                    /* rest_length depends on the fragment's radius — bigger
+                     * fragments tow farther behind the drone. */
+                    tractor_beam_t npc_tow = {
+                        .rest_length     = 40.0f + tow->radius,
+                        .pull_strength   = 0.0f,
+                        .push_strength   = 0.0f,
+                        .pull_constant   = 500.0f,    /* constant accel toward NPC */
+                        .push_constant   = 0.0f,
+                        .range           = 0.0f,
+                        .axial_damping   = 3.0f,
+                        /* Tangent damping near axial value — fragments
+                         * will orbit the NPC if it's much lower, and
+                         * orbiting fragments never deliver. The legacy
+                         * code used isotropic drag 3.0 for the same
+                         * reason. Bumping below ~2.0 breaks
+                         * test_scenario_npc_economy_30_seconds. */
+                        .tangent_damping = 2.5f,
+                        .speed_cap       = 150.0f,
+                        .falloff         = TRACTOR_FALLOFF_CONSTANT,
+                    };
+                    tractor_anchor_t src = { .pos = npc->ship.pos, .vel = NULL,      .inv_mass = 0.0f };
+                    tractor_anchor_t tgt = { .pos = tow->pos,      .vel = &tow->vel, .inv_mass = 1.0f };
+                    (void)tractor_apply(&src, &tgt, &npc_tow, dt);
                     /* Release when close to the furnace — let the furnace tractor take over */
                     float furnace_d = v2_dist_sq(tow->pos, delivery_target);
                     if (furnace_d < 150.0f * 150.0f) {

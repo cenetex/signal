@@ -98,10 +98,13 @@ bool                   module_requires_pair(module_type_t type);
  * iff a hopper exists on the station for each of its required input
  * commodities.
  *
- * FURNACE is special: it accepts ANY ore (the count-tier rules in
- * sim_production gate which ones actually smelt). The list returns
- * all three ore commodities but with `.any_satisfies = true` so the
- * validator only requires one of them.
+ * FURNACE is special at the SCHEMA level: it accepts ANY ore (the
+ * count-tier rules in sim_production gate which ones actually smelt).
+ * The list returns all three ore commodities but with `.any_satisfies
+ * = true` so the validator only requires one of them. At the INSTANCE
+ * level, a furnace tagged with an ingot output commodity (Slice 1 of
+ * the cargo-in-space redesign) consumes the matching ore — see
+ * module_instance_input_ore().
  *
  * `out` must be sized at least 3. Returns count written. */
 typedef struct {
@@ -110,6 +113,34 @@ typedef struct {
     bool        any_satisfies; /* true → FURNACE-style "one of these"; false → ALL required */
 } module_inputs_t;
 module_inputs_t        module_required_inputs(module_type_t type);
+
+/* Per-producer output commodity. Each non-shipyard producer emits one
+ * commodity into the station's flow graph; SHIPYARD is exempt (its
+ * output is a physical scaffold body, not a commodity).
+ *
+ * FURNACE at the schema level returns COMMODITY_FERRITE_INGOT (the
+ * default Prospect role); per-instance, the output commodity comes
+ * from the furnace's `station_module_t.commodity` tag — see
+ * module_instance_output(). Returns COMMODITY_COUNT for non-producers
+ * and SHIPYARD. */
+commodity_t            module_required_output(module_type_t type);
+
+/* Instance-aware accessors. For producers whose I/O depends on
+ * per-instance configuration (currently only FURNACE, which tags its
+ * output ingot via station_module_t.commodity), these read the
+ * instance state and fall back to the schema default for legacy /
+ * untagged modules. */
+commodity_t            module_instance_output(const station_module_t *m);
+commodity_t            module_instance_input_ore(const station_module_t *m);
+
+/* Default output commodity for an untagged FURNACE — matches Prospect
+ * (1-furnace tier, ferrite-only). Used by save migration and seeds. */
+commodity_t            module_furnace_default_output(void);
+
+/* Map an ingot commodity to its source ore (and back). Returns
+ * COMMODITY_COUNT if the input isn't a known ingot/ore. */
+commodity_t            commodity_ore_for_ingot(commodity_t ingot);
+commodity_t            commodity_ingot_for_ore(commodity_t ore);
 
 /* Tech-tree gate: a module is unlocked when its prerequisite has been
  * built at least once. Roots (prerequisite = MODULE_COUNT) are always

@@ -174,9 +174,10 @@ TEST(test_furnace_color_non_furnace_modules_unaffected) {
     EXPECT_RGB(r, g, b, 0.85f, 0.30f, 0.20f);
 }
 
-/* (5) Prospect: ring 1 = DOCK + RELAY + FURNACE; ring 2 = single
- *     paired HOPPER at slot 4 (240°, cross-ring opposite the furnace
- *     at ring-1 slot 2). 4 modules total — one hopper per producer. */
+/* Prospect: ring 1 = DOCK + RELAY + FURNACE (tagged FERRITE_INGOT);
+ * ring 2 = single FERRITE_ORE intake at slot 4. 4 modules total —
+ * no output hopper because nothing on Prospect locally consumes
+ * ferrite ingots (no frame press here). */
 TEST(test_prospect_modules_after_silo_cleanup) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);

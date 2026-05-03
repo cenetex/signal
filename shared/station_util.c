@@ -315,6 +315,152 @@ int station_find_hopper_for(const station_t *st, commodity_t commodity) {
     return -1;
 }
 
+int station_find_output_hopper_for_module(const station_t *st, const station_module_t *m) {
+    if (!st || !m) return -1;
+    commodity_t out = module_instance_output(m);
+    if (out == COMMODITY_COUNT) return -1; /* services / hoppers / shipyard */
+    return station_find_hopper_for(st, out);
+}
+
+/* ------------------------------------------------------------------ */
+/* Demand: top shortage, severity, recommended pay multiplier.         */
+/* ------------------------------------------------------------------ */
+
+/* Per-commodity supply target. Mirrors the targets the contract priority
+ * ladder uses in game_sim.c (priority 3 for ore, priority 4 for ingots,
+ * priority 5 for kit inputs) so the demand primitive and the contract
+ * generator agree on what "starving" means. */
+static float station_demand_target_for(const station_t *st, commodity_t c) {
+    if (c < COMMODITY_RAW_ORE_COUNT) {
+        /* Raw ore — matches priority 3 (REFINERY_HOPPER_CAPACITY * 0.5). */
+        return REFINERY_HOPPER_CAPACITY * 0.5f;
+    }
+    switch (c) {
+        case COMMODITY_FERRITE_INGOT:
+        case COMMODITY_CUPRITE_INGOT:
+        case COMMODITY_CRYSTAL_INGOT:
+            /* Matches priority 4 (MAX_PRODUCT_STOCK * 0.9). */
+            return MAX_PRODUCT_STOCK * 0.9f;
+        case COMMODITY_FRAME:
+        case COMMODITY_LASER_MODULE:
+        case COMMODITY_TRACTOR_MODULE:
+            /* Matches priority 5 kit_input_target. */
+            return 12.0f;
+        case COMMODITY_REPAIR_KIT:
+            /* Non-shipyard dock buffer. Half the shipyard's per-batch
+             * output keeps small docks topped up without making them
+             * post a contract on every minor repair. */
+            return 50.0f;
+        default: break;
+    }
+    /* Unknown commodity — caller will see severity 0 and skip it. */
+    if (st) (void)st;
+    return 1.0f;
+}
+
+station_demand_t station_demand_for(const station_t *st, commodity_t c) {
+    station_demand_t out = {
+        .commodity  = COMMODITY_COUNT,
+        .severity   = 0.0f,
+        .price_mult = 1.0f,
+    };
+    if (!st || !station_is_active(st)) return out;
+    if (c >= COMMODITY_COUNT) return out;
+    if (!station_consumes(st, c)) return out;
+    /* A station that produces what it consumes (e.g. Helios with its
+     * own cuprite furnace feeding its laser fab) is not starving for
+     * that commodity — the producer keeps the local shelf supplied.
+     * Mirrors priority 4's "don't import what we make" check. */
+    if (station_produces(st, c)) return out;
+
+    float supply = st->_inventory_cache[c];
+    float target = station_demand_target_for(st, c);
+    if (target <= 0.0f) return out;
+
+    float deficit = target - supply;
+    if (deficit <= 0.0f) return out;
+    float severity = deficit / target;
+    if (severity > 1.0f) severity = 1.0f;
+
+    out.commodity  = c;
+    out.severity   = severity;
+    /* 1.0× at no shortage, up to 1.5× at total starvation. The 0.5
+     * slope is conservative — generous enough that haulers will
+     * notice, gentle enough that players can't game the system by
+     * deliberately starving a station they own. */
+    out.price_mult = 1.0f + 0.5f * severity;
+    return out;
+}
+
+station_demand_t station_top_demand(const station_t *st) {
+    station_demand_t out = {
+        .commodity  = COMMODITY_COUNT,
+        .severity   = 0.0f,
+        .price_mult = 1.0f,
+    };
+    if (!st || !station_is_active(st)) return out;
+
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        station_demand_t d = station_demand_for(st, (commodity_t)c);
+        if (d.severity > out.severity) out = d;
+    }
+    return out;
+}
+
+station_layout_status_t station_module_layout_status(const station_t *st,
+                                                     const station_module_t *m) {
+    if (!st || !m) return STATION_LAYOUT_OK;
+    if (m->scaffold) return STATION_LAYOUT_OK;
+    if (!module_is_producer(m->type) && !module_is_shipyard(m->type)) return STATION_LAYOUT_OK;
+
+    /* Inputs: every required input commodity must have a matching hopper.
+     * For FURNACE the schema says any_satisfies; under per-instance tagging
+     * the actual input is the one ore that matches the furnace's tag. */
+    if (m->type == MODULE_FURNACE) {
+        commodity_t ore = module_instance_input_ore(m);
+        if (ore != COMMODITY_COUNT && station_find_hopper_for(st, ore) < 0) {
+            return STATION_LAYOUT_MISSING_INPUT_HOPPER;
+        }
+    } else {
+        module_inputs_t req = module_required_inputs(m->type);
+        if (req.any_satisfies) {
+            bool ok = false;
+            for (int i = 0; i < req.count; i++) {
+                if (station_find_hopper_for(st, req.commodities[i]) >= 0) { ok = true; break; }
+            }
+            if (req.count > 0 && !ok) return STATION_LAYOUT_MISSING_INPUT_HOPPER;
+        } else {
+            for (int i = 0; i < req.count; i++) {
+                if (station_find_hopper_for(st, req.commodities[i]) < 0)
+                    return STATION_LAYOUT_MISSING_INPUT_HOPPER;
+            }
+        }
+    }
+
+    /* Output hopper: required only when a different on-station producer
+     * declares the same commodity as one of its inputs. If nothing
+     * locally consumes this output, the smelt/fab pipeline writes
+     * straight to station inventory and a hauler picks it up — no
+     * staging hopper needed. SHIPYARD's output is a physical scaffold
+     * body and falls through the COMMODITY_COUNT branch naturally. */
+    commodity_t out = module_instance_output(m);
+    if (out != COMMODITY_COUNT) {
+        bool has_local_consumer = false;
+        for (int j = 0; j < st->module_count && !has_local_consumer; j++) {
+            if (j == (int)(m - st->modules)) continue;
+            if (st->modules[j].scaffold) continue;
+            module_inputs_t cons = module_required_inputs(st->modules[j].type);
+            for (int k = 0; k < cons.count; k++) {
+                if (cons.commodities[k] == out) { has_local_consumer = true; break; }
+            }
+        }
+        if (has_local_consumer && station_find_hopper_for(st, out) < 0) {
+            return STATION_LAYOUT_MISSING_OUTPUT_HOPPER;
+        }
+    }
+    return STATION_LAYOUT_OK;
+}
+
 const char *station_short_name(int station_idx) {
     /* Founding stations have stable, well-known short names that match
      * the in-fiction station identities. Anything beyond the three

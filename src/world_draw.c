@@ -650,6 +650,35 @@ static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaff
         }
     } else {
         draw_module_shape(type, mr, mg, mb, 0.92f);
+
+        /* Demand beacon: a docked station that is starving for some
+         * commodity outlines its DOCK module in pulsing yellow so
+         * arriving players can see "go here, they're paying premium"
+         * from the system view. Severity threshold matches the
+         * contract-pricing kick-in (priorities 3-6 charge an
+         * up-to-1.5x demand mult once severity > 0). 0.3 is the
+         * "noticeable shortfall" floor — below that the multiplier
+         * is < 1.15x and the visual noise isn't worth it. */
+        if (type == MODULE_DOCK && station != NULL) {
+            station_demand_t dem = station_top_demand(station);
+            if (dem.severity >= 0.3f) {
+                /* Pulse: 1.5 Hz, deeper at higher severity. Yellow
+                 * (1.0, 0.85, 0.2) is distinct from scaffold amber
+                 * and the green dock-berth indicator. */
+                float pulse = 0.55f + 0.35f * sinf(g.world.time * 1.5f);
+                float alpha = pulse * (0.5f + 0.5f * dem.severity);
+                /* Local-coord box slightly outside the dock's 28x24
+                 * outline (see draw_module_shape MODULE_DOCK). */
+                const float ox = 32.0f, oy = 28.0f;
+                sgl_c4f(1.0f, 0.85f, 0.2f, alpha);
+                sgl_begin_lines();
+                sgl_v2f(-ox, -oy); sgl_v2f( ox, -oy);
+                sgl_v2f( ox, -oy); sgl_v2f( ox,  oy);
+                sgl_v2f( ox,  oy); sgl_v2f(-ox,  oy);
+                sgl_v2f(-ox,  oy); sgl_v2f(-ox, -oy);
+                sgl_end();
+            }
+        }
     }
 
     sgl_pop_matrix();

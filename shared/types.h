@@ -308,10 +308,16 @@ typedef struct {
      * furnace glow (see station_palette.h::station_palette_furnace_color):
      * cuprite-input → blue, crystal-input → green, otherwise white. */
     uint8_t last_smelt_commodity; /* 1 byte */
-    /* For MODULE_HOPPER: which commodity this hopper holds. Each
-     * hopper buffers exactly one commodity; producers needing that
-     * commodity draw from any matching hopper on the station.
-     * COMMODITY_COUNT (= "unset") for non-hopper modules. */
+    /* Tag commodity, used by:
+     *   - MODULE_HOPPER: which commodity this hopper buffers. Each
+     *     hopper holds exactly one commodity; producers needing that
+     *     commodity draw from any matching hopper on the station.
+     *   - MODULE_FURNACE: which ingot this furnace produces (and, by
+     *     symmetry, which ore it smelts). Set at build/order time.
+     *     COMMODITY_COUNT on legacy/untagged furnaces falls back to
+     *     module_furnace_default_output() (FERRITE_INGOT — Prospect's
+     *     1-furnace tier).
+     *   - other module types: COMMODITY_COUNT (= "unset"). */
     uint8_t commodity;      /* 1 byte */
     uint8_t _pad[2];        /* explicit pad to 4-byte alignment */
     float   build_progress; /* 0.0 to 1.0 */

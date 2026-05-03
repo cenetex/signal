@@ -18,6 +18,10 @@ void add_module_at(station_t *st, module_type_t type, uint8_t arm, uint8_t chain
  * auto-solver — used by seed code and tests that need deterministic
  * hopper layouts. */
 void add_hopper_for(station_t *st, uint8_t arm, uint8_t chain_pos, commodity_t c);
+/* Place a furnace with an explicit output ingot tag. Pass one of
+ * COMMODITY_FERRITE_INGOT / CUPRITE_INGOT / CRYSTAL_INGOT. The
+ * matching ore is implied by module_instance_input_ore(). */
+void add_furnace_for(station_t *st, uint8_t arm, uint8_t chain_pos, commodity_t ingot);
 void step_module_activation(world_t *w, float dt);
 
 /*

@@ -33,6 +33,7 @@ void register_anchor_tests(void);
 void register_economy_mixed_cargo_tests(void);
 void register_economy_service259_tests(void);
 void register_economy_refinery_smelt_tests(void);
+void register_economy_demand_tests(void);
 void register_navigation_autopilot_mining_tests(void);
 void register_construction_collision238_tests(void);
 void register_construction_station_geom_tests(void);
@@ -64,6 +65,8 @@ void register_prefix_class_pricing_tests(void);
 void register_furnace_color_tests(void);
 void register_respawn_fee_tests(void);
 void register_relationship_tests(void);
+void register_tractor_tests(void);
+void register_laser_tests(void);
 
 int main(int argc, char **argv) {
     setbuf(stdout, NULL); /* unbuffered so crash location is visible */
@@ -129,6 +132,7 @@ int main(int argc, char **argv) {
     register_economy_mixed_cargo_tests();
     register_economy_service259_tests();
     register_economy_refinery_smelt_tests();
+    register_economy_demand_tests();
     register_navigation_autopilot_mining_tests();
     register_construction_collision238_tests();
     register_construction_station_geom_tests();
@@ -160,6 +164,8 @@ int main(int argc, char **argv) {
     register_furnace_color_tests();
     register_respawn_fee_tests();
     register_relationship_tests();
+    register_tractor_tests();
+    register_laser_tests();
 
     printf("\n%d tests run, %d passed, %d failed", tests_run, tests_passed, tests_failed);
     if (g_warnings > 0) printf(", %d warnings", g_warnings);

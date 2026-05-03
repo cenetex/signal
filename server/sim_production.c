@@ -3,6 +3,8 @@
  * Extracted from game_sim.c.
  */
 #include "sim_production.h"
+#include "tractor.h"
+#include "laser.h"
 #include "sim_asteroid.h"      /* fracture_claim_state_reset */
 #include "sim_construction.h"  /* module_build_material, module_build_cost */
 #include "manifest.h"
@@ -528,7 +530,13 @@ void step_furnace_smelting(world_t *w, float dt) {
                 int ring = st->modules[m].ring;
                 vec2 furnace_pos = module_world_pos_ring(st, ring, st->modules[m].slot);
 
-                /* Find nearest module on an adjacent ring (inner or outer) */
+                /* Find nearest matching ORE-tagged hopper on an adjacent
+                 * ring. Filtering by commodity matters now that stations
+                 * carry both input AND output hoppers (Slice 1) — without
+                 * the filter, a ferrite-furnace's silo could anchor on a
+                 * neighboring FERRITE_INGOT output hopper at certain
+                 * angles, shifting the smelt midpoint and the visible
+                 * beam endpoint to the wrong hopper. */
                 vec2 silo_pos = furnace_pos;
                 bool has_silo = false;
                 float best_d = 1e18f;
@@ -538,6 +546,9 @@ void step_furnace_smelting(world_t *w, float dt) {
                     if (adj < 1 || adj > STATION_NUM_RINGS) continue;
                     for (int m2 = 0; m2 < st->module_count; m2++) {
                         if (st->modules[m2].ring != adj) continue;
+                        if (st->modules[m2].scaffold) continue;
+                        if (st->modules[m2].type != MODULE_HOPPER) continue;
+                        if ((commodity_t)st->modules[m2].commodity != a->commodity) continue;
                         vec2 mp2 = module_world_pos_ring(st, adj, st->modules[m2].slot);
                         float dd = v2_dist_sq(furnace_pos, mp2);
                         if (dd < best_d) { best_d = dd; silo_pos = mp2; has_silo = true; }
@@ -553,19 +564,38 @@ void step_furnace_smelting(world_t *w, float dt) {
                 bool silo_reach = (d_silo_sq <= pull_sq);
                 if (!furnace_reach || !silo_reach) continue;  /* both must reach */
 
-                /* Pull toward midpoint between furnace and silo — strong pull */
+                /* Pull fragment toward the midpoint between furnace and
+                 * silo. World-pinned source (midpoint isn't a single
+                 * body — it's the geometric center of the two-module
+                 * smelt path). Linear-falloff constant-pull beam:
+                 * peak at d=0, decays to zero at pull_range. */
                 vec2 midpoint = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
-                vec2 to_mid = v2_sub(midpoint, a->pos);
-                float d_mid = sqrtf(v2_len_sq(to_mid));
-                if (d_mid > 0.5f) {
-                    float strength = HOPPER_PULL_ACCEL * 1.5f * (1.0f - d_mid / pull_range);
-                    vec2 dir = v2_scale(to_mid, 1.0f / d_mid);
-                    a->vel = v2_add(a->vel, v2_scale(dir, strength * dt));
-                    a->vel = v2_scale(a->vel, 1.0f / (1.0f + 8.0f * dt));
-                    float spd = v2_len(a->vel);
-                    if (spd > 100.0f) a->vel = v2_scale(a->vel, 100.0f / spd);
-                }
+                static const tractor_beam_t SMELT_BEAM = {
+                    .rest_length     = 0.0f,
+                    .pull_strength   = 0.0f,
+                    .push_strength   = 0.0f,
+                    .pull_constant   = HOPPER_PULL_ACCEL * 1.5f,
+                    .push_constant   = 0.0f,
+                    .range           = HOPPER_PULL_RANGE,
+                    .axial_damping   = 8.0f,
+                    .tangent_damping = 2.0f,    /* ~25% of axial */
+                    .speed_cap       = 100.0f,
+                    .falloff         = TRACTOR_FALLOFF_LINEAR,
+                };
+                tractor_anchor_t src = { .pos = midpoint, .vel = NULL,    .inv_mass = 0.0f };
+                tractor_anchor_t tgt = { .pos = a->pos,   .vel = &a->vel, .inv_mass = 1.0f };
+                (void)tractor_apply(&src, &tgt, &SMELT_BEAM, dt);
 
+                /* Pulse the furnace module — the existing ring-spoke
+                 * physics in step_station_ring_dynamics looks at
+                 * module_active_pulse[] to scale spoke torque. Without
+                 * this, an active smelt beam wouldn't drive any ring
+                 * rotation. The bulk-ore-from-inventory smelt path
+                 * (line ~323) already pulses; the fragment-tow path
+                 * lacked the equivalent. */
+                st->module_active_pulse[m] = 1.0f;
+
+                float d_mid = sqrtf(v2_dist_sq(a->pos, midpoint));
                 /* Smelt when fragment is close to the midpoint */
                 if (d_mid < 80.0f) {
                     smelt_station = s;
@@ -574,24 +604,19 @@ void step_furnace_smelting(world_t *w, float dt) {
             }
         }
 
-        /* If not in any smelt beam this tick, decay progress */
+        /* Smelt-progress laser-effect: in beam → accumulate at 0.5/sec
+         * (~2s to fully smelt); not in beam → decay at 0.5/sec back to 0.
+         * Clamped to [0, 1] so a fragment waiting on a fracture-claim
+         * resolution doesn't grow progress unbounded. */
+        const float SMELT_RATE = 0.5f;
         if (!smelted) {
-            if (a->smelt_progress > 0.0f) {
-                a->smelt_progress -= dt * 0.5f;
-                if (a->smelt_progress < 0.0f) a->smelt_progress = 0.0f;
-            }
+            laser_apply_effect(&a->smelt_progress, -SMELT_RATE, 1.0f, dt);
             continue;
         }
-
-        /* Accumulate smelt progress (~2 seconds to fully smelt) */
-        a->smelt_progress += dt * 0.5f;
+        laser_apply_effect(&a->smelt_progress, +SMELT_RATE, 1.0f, dt);
 
         /* Hold fragment in place while smelting — dampen velocity */
         a->vel = v2_scale(a->vel, 1.0f / (1.0f + 10.0f * dt));
-
-        /* L8: clamp accumulated progress at 1.0 so a fragment waiting on
-         * a fracture-claim resolution doesn't grow smelt_progress unbounded. */
-        if (a->smelt_progress > 1.0f) a->smelt_progress = 1.0f;
 
         if (a->smelt_progress >= 1.0f && smelt_station >= 0) {
             station_t *st = &w->stations[smelt_station];
@@ -685,6 +710,12 @@ void step_furnace_smelting(world_t *w, float dt) {
              * fallback. */
             int tower = connected_player_by_token(w, a->last_towed_token);
             int fracturer = connected_player_by_token(w, a->last_fractured_token);
+            SIM_LOG("[smelt-attr] tower=%d fracturer=%d tow_tok=%02x%02x%02x%02x frac_tok=%02x%02x%02x%02x\n",
+                    tower, fracturer,
+                    a->last_towed_token[0], a->last_towed_token[1],
+                    a->last_towed_token[2], a->last_towed_token[3],
+                    a->last_fractured_token[0], a->last_fractured_token[1],
+                    a->last_fractured_token[2], a->last_fractured_token[3]);
 
             /* Grade is committed when the fracture claim resolves.
              * Smelt only publishes that cached value — no fresh dice. */
@@ -714,11 +745,24 @@ void step_furnace_smelting(world_t *w, float dt) {
 
             if (ore_value > 0.0f) {
                 uint8_t bc = by_contract ? 1 : 0;
+                /* Credit to the same identity the buy/balance paths read:
+                 * pubkey when registered, session_token-pseudokey otherwise.
+                 * Mismatched identity here was the visible-bug:
+                 * smelt-payouts landed on the session-token ledger entry
+                 * but the buy path read the pubkey entry → balance shown
+                 * as 0, "REJECT: finished good but whole=0 (afford=0)". */
                 if (tower >= 0) {
                     float credited = 0.0f;
-                    if (w->players[tower].session_ready)
-                        credited = ledger_credit_supply_amount(st, w->players[tower].session_token, graded_value);
-                    w->players[tower].ship.stat_credits_earned += credited;
+                    server_player_t *pt = &w->players[tower];
+                    if (pt->session_ready) {
+                        credited = pt->pubkey_set
+                            ? ledger_credit_supply_amount_by_pubkey(st, pt->pubkey, graded_value)
+                            : ledger_credit_supply_amount(st, pt->session_token, graded_value);
+                    }
+                    SIM_LOG("[smelt-pay] player %d tower credit: graded=%.2f credited=%.2f pubkey_set=%d session_ready=%d\n",
+                            tower, graded_value, credited, pt->pubkey_set ? 1 : 0,
+                            pt->session_ready ? 1 : 0);
+                    pt->ship.stat_credits_earned += credited;
                     emit_event(w, (sim_event_t){
                         .type = SIM_EVENT_SELL, .player_id = tower,
                         .sell = { .station = smelt_station, .grade = (uint8_t)grade,
@@ -727,9 +771,13 @@ void step_furnace_smelting(world_t *w, float dt) {
                     if (fracturer >= 0 && fracturer != tower) {
                         float finders = graded_value * 0.25f;
                         float fcredited = 0.0f;
-                        if (w->players[fracturer].session_ready)
-                            fcredited = ledger_credit_supply_amount(st, w->players[fracturer].session_token, finders);
-                        w->players[fracturer].ship.stat_credits_earned += fcredited;
+                        server_player_t *pf = &w->players[fracturer];
+                        if (pf->session_ready) {
+                            fcredited = pf->pubkey_set
+                                ? ledger_credit_supply_amount_by_pubkey(st, pf->pubkey, finders)
+                                : ledger_credit_supply_amount(st, pf->session_token, finders);
+                        }
+                        pf->ship.stat_credits_earned += fcredited;
                         emit_event(w, (sim_event_t){
                             .type = SIM_EVENT_SELL, .player_id = fracturer,
                             .sell = { .station = smelt_station, .grade = (uint8_t)grade,
@@ -740,9 +788,13 @@ void step_furnace_smelting(world_t *w, float dt) {
                 } else if (fracturer >= 0) {
                     float half = graded_value * 0.5f;
                     float credited = 0.0f;
-                    if (w->players[fracturer].session_ready)
-                        credited = ledger_credit_supply_amount(st, w->players[fracturer].session_token, half);
-                    w->players[fracturer].ship.stat_credits_earned += credited;
+                    server_player_t *pf = &w->players[fracturer];
+                    if (pf->session_ready) {
+                        credited = pf->pubkey_set
+                            ? ledger_credit_supply_amount_by_pubkey(st, pf->pubkey, half)
+                            : ledger_credit_supply_amount(st, pf->session_token, half);
+                    }
+                    pf->ship.stat_credits_earned += credited;
                     emit_event(w, (sim_event_t){
                         .type = SIM_EVENT_SELL, .player_id = fracturer,
                         .sell = { .station = smelt_station, .grade = (uint8_t)grade,
@@ -1026,9 +1078,22 @@ void step_module_flow(world_t *w, float dt) {
  * immediately from cargo but build progress advances at a fixed rate --
  * delivery fills the module's internal hopper (tracked via build_progress
  * vs the total cost), construction ticks over time in step_module_activation. */
-void step_module_delivery(world_t *w, station_t *st, int station_idx,
-                          ship_t *ship, commodity_t filter) {
+float step_module_delivery(world_t *w, station_t *st, int station_idx,
+                           ship_t *ship, commodity_t filter) {
     (void)w; (void)station_idx;
+    /* Total credit owed for materials this ship donated to construction.
+     * The caller (player path: pay via ledger_earn + SELL event; NPC
+     * path: credit via the hauler's economic identity) decides what to
+     * do with it. Returning 0 means nothing was delivered or the cargo
+     * was already drained by a contract path upstream.
+     *
+     * Bug history: until this returned a payout the player's cargo
+     * silently vanished into a docked station's scaffolded modules
+     * without payment — symptom was "selling ingots drains inventory
+     * but doesn't credit." The contract path at try_sell_station_cargo
+     * runs AFTER this function and would have paid, but module
+     * construction had already consumed the cargo. */
+    float payout = 0.0f;
     for (int i = 0; i < st->module_count; i++) {
         station_module_t *m = &st->modules[i];
         if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
@@ -1042,23 +1107,43 @@ void step_module_delivery(world_t *w, station_t *st, int station_idx,
         if (needed < 0.01f) continue;
 
         /* Pull from docked ship cargo (consume the manifest unit so the
-         * named identity can't be sold or transferred again). */
+         * named identity can't be sold or transferred again). The ship
+         * is paid the station's buy price for whatever it delivers. */
         if (ship->cargo[mat] > 0.01f) {
             float deliver = fminf(ship->cargo[mat], needed);
             ship->cargo[mat] -= deliver;
             m->build_progress += deliver / cost;
             int whole = (int)floorf(deliver + 0.0001f);
-            if (whole > 0)
+            if (whole > 0) {
+                /* Sum prefix-class multipliers across the units we're
+                 * about to consume so high-grade ingots pay the player
+                 * proportionally. Same per-unit accounting as
+                 * try_sell_station_cargo's grade-bonus loop. */
+                float price = station_buy_price(st, mat);
+                int counted = 0;
+                for (uint16_t u = 0; u < ship->manifest.count && counted < whole; u++) {
+                    const cargo_unit_t *cu = &ship->manifest.units[u];
+                    if (cu->commodity != mat) continue;
+                    float mult = mining_payout_multiplier((mining_grade_t)cu->grade);
+                    payout += mult * price;
+                    counted++;
+                }
+                /* Fractional remainder (sub-unit float) priced at base. */
+                float frac = deliver - (float)whole;
+                if (frac > 0.0f) payout += frac * price;
                 manifest_consume_by_commodity(&ship->manifest, mat, whole);
+            } else {
+                payout += deliver * station_buy_price(st, mat);
+            }
             needed -= deliver;
         }
 
         /* Also pull from station inventory (NPC deliveries land here).
-         * Match the consume on the station manifest too — same drift
-         * class as the ship side. Mark the manifest dirty so the
-         * multiplayer broadcaster forwards the new station summary;
-         * otherwise clients keep showing materials that construction
-         * already consumed until some unrelated event triggers a sync. */
+         * NOT credited as a player payout — the materials were already
+         * paid for when they entered the station. Mark the manifest
+         * dirty so the multiplayer broadcaster forwards the new station
+         * summary; otherwise clients keep showing materials that
+         * construction already consumed. */
         if (needed > 0.01f && st->_inventory_cache[mat] > 0.01f) {
             float deliver = fminf(st->_inventory_cache[mat], needed);
             st->_inventory_cache[mat] -= deliver;
@@ -1072,6 +1157,7 @@ void step_module_delivery(world_t *w, station_t *st, int station_idx,
 
         if (m->build_progress > 1.0f) m->build_progress = 1.0f;
     }
+    return payout;
 }
 
 /* ------------------------------------------------------------------ */

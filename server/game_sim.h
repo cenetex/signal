@@ -542,8 +542,12 @@ void begin_module_construction_at(world_t *w, station_t *st, int station_idx, mo
  * be consumed; pass COMMODITY_COUNT to allow any. The filter prevents
  * "deliver ingots only" from also draining frames into a half-built
  * module behind the player's back. */
-void step_module_delivery(world_t *w, station_t *st, int station_idx,
-                          ship_t *ship, commodity_t filter);
+/* Returns the credit owed to the ship for materials it donated to
+ * AWAITING_SUPPLY scaffolds. Caller pays via ledger_earn / equivalent.
+ * Materials drawn from station inventory (NPC-side restock) are NOT
+ * counted — those were already paid for at intake. */
+float step_module_delivery(world_t *w, station_t *st, int station_idx,
+                           ship_t *ship, commodity_t filter);
 
 /* Backfill every active station's manifest from its seeded float
  * inventory (RECIPE_LEGACY_MIGRATE units, deterministic per-station
@@ -557,6 +561,11 @@ void world_seed_station_manifests(world_t *w);
 int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner);
 bool world_save(const world_t *w, const char *path);
 bool world_load(world_t *w, const char *path);
+/* v51 cargo-in-space schema migration: tag untagged furnaces by
+ * station-furnace-count heuristic and auto-spawn missing output
+ * hoppers in free outer-ring slots. Run automatically by world_load
+ * for v50 saves; exposed so tests can exercise directly. Idempotent. */
+void world_apply_cargo_schema_migration(world_t *w);
 /* Station catalog — per-station identity persistence (sim_catalog.c) */
 int  station_catalog_load_all(station_t *stations, int max, const char *dir);
 bool station_catalog_save_all(const station_t *stations, int count, const char *dir);
@@ -592,6 +601,14 @@ bool player_save_rename_legacy_to_pubkey(const char *dir,
 void anchor_ship_in_station(server_player_t *sp, world_t *w);
 asteroid_tier_t max_mineable_tier(int mining_level);
 vec2 station_approach_target(const station_t *st, vec2 from);
+/* Exit target: symmetric departure waypoint for station_approach_target.
+ * Returns a position past the outermost ring along the radial axis of
+ * the dock module nearest `from` (typically the dock the NPC is
+ * undocking from). Drives the NPC_STATE_UNDOCKING phase so a
+ * just-departed ship clears ring corridors before steering to its
+ * real destination. Falls back to a position outside the station's
+ * outer ring along +X if no dock module exists. */
+vec2 station_exit_target(const station_t *st, vec2 from);
 void emit_event(world_t *w, sim_event_t ev);
 /* Station-local ledger economy */
 float ledger_balance(const station_t *st, const uint8_t *token);

@@ -478,10 +478,9 @@ TEST(test_world_load_rejects_stale_version) {
 TEST(test_world_save_load_preserves_module_ring_slot) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
-    /* Cross-ring pair layout: Prospect's furnace lives on ring 1 slot
-     * 2, paired with the lone ring-2 hopper at slot 4 (240° on both
-     * rings). 4 modules total — one hopper per producer, no
-     * decorative ring. */
+    /* Prospect's furnace at ring 1 slot 2, ferrite-ore intake hopper at
+     * ring 2 slot 4. 4 modules total — no ingot output hopper because
+     * Prospect has no on-station consumer of ferrite ingots. */
     ASSERT_EQ_INT((int)w->stations[0].module_count, 4);
     station_module_t orig = w->stations[0].modules[2]; /* furnace at ring 1 slot 2 */
     ASSERT(orig.type == MODULE_FURNACE);
@@ -498,13 +497,120 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     ASSERT_EQ_INT((int)restored.slot, (int)orig.slot);
     ASSERT_EQ_INT((int)restored.scaffold, (int)orig.scaffold);
     ASSERT_EQ_FLOAT(restored.build_progress, orig.build_progress, 0.001f);
-    /* modules[3] = the paired hopper at ring 2 slot 4. */
-    station_module_t paired = loaded->stations[0].modules[3];
-    ASSERT(paired.type == MODULE_HOPPER);
-    ASSERT_EQ_INT((int)paired.ring, 2);
-    ASSERT_EQ_INT((int)paired.slot, 4);
+    /* modules[3] = ferrite-ore intake hopper at ring 2 slot 4. */
+    station_module_t intake = loaded->stations[0].modules[3];
+    ASSERT(intake.type == MODULE_HOPPER);
+    ASSERT_EQ_INT((int)intake.ring, 2);
+    ASSERT_EQ_INT((int)intake.slot, 4);
+    ASSERT_EQ_INT((int)intake.commodity, (int)COMMODITY_FERRITE_ORE);
     ASSERT_EQ_INT((int)loaded->stations[0].module_count, 4);
     remove(TMP("test_modules.sav"));
+}
+
+TEST(test_v51_migration_tags_untagged_furnaces_and_fills_hoppers) {
+    /* Simulate a v50 save: world_reset gives us correctly-tagged
+     * furnaces and full hoppers, then we manually break Helios to look
+     * pre-Slice-1 (untagged furnaces, no LASER_MODULE / TRACTOR_MODULE
+     * output hoppers). Running the migration must restore the seeded
+     * invariant: every Helios producer has a matching tagged hopper
+     * for its output, and furnaces are tagged by count-tier rule. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    station_t *helios = &w->stations[2];
+
+    /* Untag every Helios furnace (pre-Slice-1 state). */
+    int n_furnaces = 0;
+    for (int m = 0; m < helios->module_count; m++) {
+        if (helios->modules[m].type == MODULE_FURNACE) {
+            helios->modules[m].commodity = (uint8_t)COMMODITY_COUNT;
+            n_furnaces++;
+        }
+    }
+    ASSERT_EQ_INT(n_furnaces, 3);
+
+    /* Drop Helios's LASER_MODULE and TRACTOR_MODULE output hoppers.
+     * Walk in reverse so removing entries doesn't shift indices we
+     * still need to check. */
+    for (int m = helios->module_count - 1; m >= 0; m--) {
+        if (helios->modules[m].type != MODULE_HOPPER) continue;
+        commodity_t c = (commodity_t)helios->modules[m].commodity;
+        if (c == COMMODITY_LASER_MODULE || c == COMMODITY_TRACTOR_MODULE) {
+            for (int k = m + 1; k < helios->module_count; k++) {
+                helios->modules[k - 1] = helios->modules[k];
+            }
+            helios->module_count--;
+        }
+    }
+    ASSERT(station_find_hopper_for(helios, COMMODITY_LASER_MODULE)   < 0);
+    ASSERT(station_find_hopper_for(helios, COMMODITY_TRACTOR_MODULE) < 0);
+
+    /* Run the migration. */
+    world_apply_cargo_schema_migration(w);
+
+    /* All 3 furnaces tagged with valid ingot commodities (3-furnace
+     * tier → 1×CU + 1×CR + 1×CU according to the migration heuristic). */
+    int cu = 0, cr = 0;
+    for (int m = 0; m < helios->module_count; m++) {
+        if (helios->modules[m].type != MODULE_FURNACE) continue;
+        commodity_t tag = (commodity_t)helios->modules[m].commodity;
+        if      (tag == COMMODITY_CUPRITE_INGOT) cu++;
+        else if (tag == COMMODITY_CRYSTAL_INGOT) cr++;
+        else ASSERT(false /* unexpected tag */);
+    }
+    ASSERT_EQ_INT(cu, 2);
+    ASSERT_EQ_INT(cr, 1);
+
+    /* Missing output hoppers were auto-spawned. */
+    ASSERT(station_find_hopper_for(helios, COMMODITY_LASER_MODULE)   >= 0);
+    ASSERT(station_find_hopper_for(helios, COMMODITY_TRACTOR_MODULE) >= 0);
+
+    /* Idempotent: running again is a no-op. */
+    int count_after_first = helios->module_count;
+    world_apply_cargo_schema_migration(w);
+    ASSERT_EQ_INT(helios->module_count, count_after_first);
+}
+
+TEST(test_v51_migration_furnace_count_heuristic) {
+    /* Synthetic stations covering 1/2/3-furnace tiers, all furnaces
+     * untagged. Migration tags them per the count-tier rules.
+     * Use stations[3+] to avoid clobbering seeded state (which the
+     * heap WORLD_DECL initializes to zero already). */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    /* 1-furnace station: should tag FERRITE. */
+    station_t *st1 = &w->stations[3];
+    st1->signal_range = 1.0f;
+    add_module_at(st1, MODULE_FURNACE, 1, 0);
+    /* 2-furnace station: should tag FERRITE + CUPRITE. */
+    station_t *st2 = &w->stations[4];
+    st2->signal_range = 1.0f;
+    add_module_at(st2, MODULE_FURNACE, 1, 0);
+    add_module_at(st2, MODULE_FURNACE, 1, 1);
+    /* 3-furnace station: should tag CUPRITE + CRYSTAL + CUPRITE. */
+    station_t *st3 = &w->stations[5];
+    st3->signal_range = 1.0f;
+    add_module_at(st3, MODULE_FURNACE, 1, 0);
+    add_module_at(st3, MODULE_FURNACE, 1, 1);
+    add_module_at(st3, MODULE_FURNACE, 1, 2);
+
+    world_apply_cargo_schema_migration(w);
+
+    ASSERT_EQ_INT((int)st1->modules[0].commodity, (int)COMMODITY_FERRITE_INGOT);
+
+    ASSERT_EQ_INT((int)st2->modules[0].commodity, (int)COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT((int)st2->modules[1].commodity, (int)COMMODITY_CUPRITE_INGOT);
+
+    ASSERT_EQ_INT((int)st3->modules[0].commodity, (int)COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT((int)st3->modules[1].commodity, (int)COMMODITY_CRYSTAL_INGOT);
+    ASSERT_EQ_INT((int)st3->modules[2].commodity, (int)COMMODITY_CUPRITE_INGOT);
+
+    /* Output hoppers spawned for every furnace's tagged output. */
+    ASSERT(station_find_hopper_for(st1, COMMODITY_FERRITE_INGOT) >= 0);
+    ASSERT(station_find_hopper_for(st2, COMMODITY_FERRITE_INGOT) >= 0);
+    ASSERT(station_find_hopper_for(st2, COMMODITY_CUPRITE_INGOT) >= 0);
+    ASSERT(station_find_hopper_for(st3, COMMODITY_CUPRITE_INGOT) >= 0);
+    ASSERT(station_find_hopper_for(st3, COMMODITY_CRYSTAL_INGOT) >= 0);
 }
 
 TEST(test_world_save_load_preserves_smelted_ingots) {
@@ -614,7 +720,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 50);
+    ASSERT_EQ_INT((int)version, 51);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -730,6 +836,8 @@ void register_save_persistence_tests(void) {
     RUN(test_player_load_bad_magic_fails);
     RUN(test_world_load_rejects_stale_version);
     RUN(test_world_save_load_preserves_module_ring_slot);
+    RUN(test_v51_migration_tags_untagged_furnaces_and_fills_hoppers);
+    RUN(test_v51_migration_furnace_count_heuristic);
     RUN(test_world_save_load_preserves_smelted_ingots);
 }
 

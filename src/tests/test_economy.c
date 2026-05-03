@@ -890,3 +890,163 @@ void register_economy_refinery_smelt_tests(void) {
     RUN(test_count_tier_smelt_rules);
 }
 
+/* station_top_demand: derives the top shortage from inventory + the
+ * station's consumed-commodity list. This is the primitive HUD
+ * beacons / contract auto-pricing / NPC scoring will compose on top
+ * of, so the contract-priority code in game_sim.c and this primitive
+ * MUST agree on what "starving" means. The tests below pin those
+ * agreements to the same constants. */
+TEST(test_top_demand_no_shortage_returns_none) {
+    WORLD_DECL;
+    world_reset(&w);
+    /* Top up Kepler's frame_press input commodity to its target — the
+     * station has no shortage, so top demand should be empty. */
+    station_t *kepler = &w.stations[1];
+    kepler->_inventory_cache[COMMODITY_FERRITE_INGOT] = MAX_PRODUCT_STOCK;
+    kepler->_inventory_cache[COMMODITY_FRAME] = MAX_PRODUCT_STOCK;
+    kepler->_inventory_cache[COMMODITY_LASER_MODULE] = 100.0f;
+    kepler->_inventory_cache[COMMODITY_TRACTOR_MODULE] = 100.0f;
+    station_demand_t d = station_top_demand(kepler);
+    ASSERT_EQ_INT((int)d.commodity, (int)COMMODITY_COUNT);
+    ASSERT_EQ_FLOAT(d.severity, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(d.price_mult, 1.0f, 0.001f);
+}
+
+TEST(test_top_demand_picks_starving_commodity) {
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *kepler = &w.stations[1];
+    /* Mild shortage on FRAME (consumed by shipyard kit-fab),
+     * severe shortage on FERRITE_INGOT (frame_press input). The
+     * primitive should pick the worst — ferrite ingots. Targets:
+     * frames at 12.0, ferrite ingots at MAX_PRODUCT_STOCK*0.9 = 108.
+     * Set frames to 6 (mild, severity ~0.5) and ingots to 0 (full
+     * starvation). */
+    kepler->_inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
+    kepler->_inventory_cache[COMMODITY_FRAME]         = 6.0f;
+    kepler->_inventory_cache[COMMODITY_LASER_MODULE]  = 100.0f;
+    kepler->_inventory_cache[COMMODITY_TRACTOR_MODULE]= 100.0f;
+    station_demand_t d = station_top_demand(kepler);
+    ASSERT_EQ_INT((int)d.commodity, (int)COMMODITY_FERRITE_INGOT);
+    ASSERT(d.severity > 0.95f);
+    /* price_mult = 1.0 + 0.5 * severity → ~1.5 at full starvation. */
+    ASSERT(d.price_mult > 1.45f);
+    ASSERT(d.price_mult <= 1.5001f);
+}
+
+TEST(test_top_demand_skips_self_produced_commodities) {
+    /* Helios has its own cuprite furnace + laser fab, so it produces
+     * cuprite ingots locally. Even with the float at zero, the
+     * primitive must not flag cuprite as a top demand — the local
+     * producer is the right answer, not an import. Mirrors the
+     * "don't import what we make ourselves" check in game_sim.c
+     * priority 4. */
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *helios = &w.stations[2];
+    /* Knock out everything else so cuprite is the only candidate
+     * (besides things Helios produces). */
+    helios->_inventory_cache[COMMODITY_CUPRITE_INGOT] = 0.0f;
+    helios->_inventory_cache[COMMODITY_CRYSTAL_INGOT] = MAX_PRODUCT_STOCK;
+    helios->_inventory_cache[COMMODITY_FRAME]         = MAX_PRODUCT_STOCK;
+    helios->_inventory_cache[COMMODITY_LASER_MODULE]  = MAX_PRODUCT_STOCK;
+    helios->_inventory_cache[COMMODITY_TRACTOR_MODULE]= MAX_PRODUCT_STOCK;
+    helios->_inventory_cache[COMMODITY_CUPRITE_ORE]   = REFINERY_HOPPER_CAPACITY;
+    helios->_inventory_cache[COMMODITY_CRYSTAL_ORE]   = REFINERY_HOPPER_CAPACITY;
+    helios->_inventory_cache[COMMODITY_FERRITE_ORE]   = REFINERY_HOPPER_CAPACITY;
+    station_demand_t d = station_top_demand(helios);
+    /* Either no demand at all, or demand for something Helios
+     * actually doesn't produce — but specifically NOT cuprite ingot. */
+    ASSERT(d.commodity != COMMODITY_CUPRITE_INGOT);
+}
+
+TEST(test_top_demand_severity_clamped_zero_to_one) {
+    /* A negative deficit (overstock) should not produce negative
+     * severity, and a wildly empty hopper should clamp to 1.0. */
+    WORLD_DECL;
+    world_reset(&w);
+    station_t *prospect = &w.stations[0];
+    /* Force an overstock on FERRITE_ORE: target = HOPPER_CAPACITY*0.5,
+     * supply = capacity, so deficit is negative. The primitive
+     * should still report severity = 0 for that commodity (and pick
+     * something else, or none). */
+    prospect->_inventory_cache[COMMODITY_FERRITE_ORE] = REFINERY_HOPPER_CAPACITY;
+    station_demand_t d = station_top_demand(prospect);
+    /* Whatever it picks, severity must be in [0,1]. */
+    ASSERT(d.severity >= 0.0f && d.severity <= 1.0f);
+    ASSERT(d.price_mult >= 1.0f && d.price_mult <= 1.5f + 0.001f);
+    /* And it must not have picked overstocked ferrite ore. */
+    ASSERT(d.commodity != COMMODITY_FERRITE_ORE);
+}
+
+/* Demand pricing: a station that's starving for an ingot should post a
+ * higher contract price than one that's stocked. Pool_factor and the
+ * existing 1.15× content premium stay; the new demand multiplier
+ * layers on top, so a fully-stocked station's contract still uses the
+ * old price exactly (1.0× demand mult), and a starved station pays up
+ * to 50% more. */
+TEST(test_contract_price_scales_with_demand) {
+    /* Helper to grab Kepler's frame_press ingot import contract. */
+    WORLD_DECL_NAME(stocked);
+    world_reset(&stocked);
+    /* Top up Kepler's ferrite ingot inventory to its target so demand
+     * mult is 1.0 — i.e. the existing pricing path. */
+    stocked.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = MAX_PRODUCT_STOCK;
+    /* Run a few seconds for contract step to fire. */
+    for (int i = 0; i < 240; i++) world_sim_step(&stocked, SIM_DT);
+
+    WORLD_DECL_NAME(starved);
+    world_reset(&starved);
+    /* Starve Kepler completely for ferrite ingots — demand mult ~1.5. */
+    starved.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
+    for (int i = 0; i < 240; i++) world_sim_step(&starved, SIM_DT);
+
+    /* Find the (Kepler, FERRITE_INGOT) contract in each world. The
+     * stocked world may not generate one at all if supply is at
+     * target — that's also a valid outcome (no demand → no
+     * contract). The starved world must generate one and price it
+     * higher than the stocked baseline if the stocked world did
+     * post one. */
+    contract_t *c_stocked = NULL;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (stocked.contracts[k].active
+            && stocked.contracts[k].station_index == 1
+            && stocked.contracts[k].commodity == COMMODITY_FERRITE_INGOT) {
+            c_stocked = &stocked.contracts[k]; break;
+        }
+    }
+    contract_t *c_starved = NULL;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (starved.contracts[k].active
+            && starved.contracts[k].station_index == 1
+            && starved.contracts[k].commodity == COMMODITY_FERRITE_INGOT) {
+            c_starved = &starved.contracts[k]; break;
+        }
+    }
+    ASSERT(c_starved != NULL); /* starvation MUST produce a contract */
+
+    if (c_stocked != NULL) {
+        /* If the stocked world also posted a contract, the starved
+         * one must be priced higher. The two worlds are otherwise
+         * identical so pool_factor + base_price are equal. The only
+         * delta is the demand multiplier. */
+        ASSERT(c_starved->base_price > c_stocked->base_price * 1.05f);
+    }
+    /* Either way, the starved contract's price must reflect the
+     * demand boost vs. the no-demand baseline of base × 1.15 ×
+     * pool. base_price[FERRITE_INGOT] is non-zero by world_reset
+     * seeding; the contract should land somewhere between 1.0× and
+     * 1.5× of (base × 1.15 × pool). We don't assert the exact value
+     * because pool_factor moves with the simulated economy. */
+    ASSERT(c_starved->base_price > 0.0f);
+}
+
+void register_economy_demand_tests(void) {
+    TEST_SECTION("\nStation demand primitive:\n");
+    RUN(test_top_demand_no_shortage_returns_none);
+    RUN(test_top_demand_picks_starving_commodity);
+    RUN(test_top_demand_skips_self_produced_commodities);
+    RUN(test_top_demand_severity_clamped_zero_to_one);
+    RUN(test_contract_price_scales_with_demand);
+}
+

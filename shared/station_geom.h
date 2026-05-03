@@ -248,13 +248,34 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
         const station_module_t *prod = &st->modules[m];
         if (prod->scaffold) continue;
         module_inputs_t req = module_required_inputs(prod->type);
-        if (req.count == 0) continue;
-        for (int i = 0; i < req.count; i++) {
-            commodity_t c = req.commodities[i];
-            int hop = station_find_hopper_for(st, c);
+        commodity_t out_commodity = module_instance_output(prod);
+        if (req.count == 0 && out_commodity == COMMODITY_COUNT) continue;
+        /* Build the per-producer spoke list: one per declared input
+         * commodity, plus one for the producer's output (if any —
+         * SHIPYARD has none). Each spoke renders + drives ring physics
+         * (Slice 1.5a — output spokes contribute torque too). */
+        for (int i = 0; i <= req.count; i++) {
+            commodity_t c;
+            int hop;
+            if (i < req.count) {
+                c = req.commodities[i];
+                hop = station_find_hopper_for(st, c);
+            } else {
+                /* Output spoke. */
+                if (out_commodity == COMMODITY_COUNT) break;
+                c = out_commodity;
+                hop = station_find_output_hopper_for_module(st, prod);
+            }
             if (hop < 0) continue;
             if (out->spoke_count >= STATION_GEOM_MAX_SPOKES) break;
             const station_module_t *hm = &st->modules[hop];
+            /* Same-ring spokes contribute zero net torque (Newton's
+             * third cancels) and step_station_ring_dynamics skips
+             * them. Skip in the renderer too so visible beams match
+             * the physics — otherwise a producer-and-hopper on the
+             * same ring would render a beam promising torque the
+             * dynamics doesn't apply. */
+            if ((int)hm->ring == (int)prod->ring) continue;
             geom_spoke_t *sp = &out->spokes[out->spoke_count++];
             sp->a = module_world_pos_ring(st, prod->ring, prod->slot);
             sp->b = module_world_pos_ring(st, hm->ring, hm->slot);

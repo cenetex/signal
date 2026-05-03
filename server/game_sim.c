@@ -21,6 +21,8 @@
  * slice of #285 in disguise — file it against #285, not as a refactor.
  */
 #include "game_sim.h"
+#include "tractor.h"
+#include "laser.h"
 #include "manifest.h"
 #include "ship.h"
 #include "sim_ai.h"
@@ -663,6 +665,37 @@ vec2 station_approach_target(const station_t *st, vec2 from) {
     return best_pos;
 }
 
+/* Exit target: pick the dock module nearest `from`, project a waypoint
+ * past the outermost ring along that dock's current radial. NPCs (and
+ * eventually player autopilot) steer through this waypoint as their
+ * UNDOCKING phase, ensuring they clear ring-corridor obstacles before
+ * heading to their real destination. */
+vec2 station_exit_target(const station_t *st, vec2 from) {
+    /* Push 160u past the outermost ring radius — comfortably clear of
+     * the ring corridor band's lookahead cone (which fires at ring_r
+     * +/- ship_radius + 40u). */
+    const float exit_pad = STATION_RING_RADIUS[STATION_NUM_RINGS] + 160.0f;
+    int best_i = -1;
+    float best_d = 1e18f;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type != MODULE_DOCK) continue;
+        if (st->modules[i].scaffold) continue;
+        vec2 mp = module_world_pos_ring(st, st->modules[i].ring, st->modules[i].slot);
+        float d = v2_dist_sq(from, mp);
+        if (d < best_d) { best_d = d; best_i = i; }
+    }
+    if (best_i < 0) {
+        /* No dock — emit a stable fallback past the outer ring. */
+        return v2_add(st->pos, v2(exit_pad, 0.0f));
+    }
+    vec2 mp = module_world_pos_ring(st, st->modules[best_i].ring,
+                                    st->modules[best_i].slot);
+    vec2 outward = v2_sub(mp, st->pos);
+    float len = v2_len(outward);
+    if (len < 1.0f) return v2_add(st->pos, v2(exit_pad, 0.0f));
+    return v2_add(st->pos, v2_scale(outward, exit_pad / len));
+}
+
 /* ================================================================== */
 /* Player ship helpers                                                */
 /* ================================================================== */
@@ -744,10 +777,17 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
      * a bankrupt player still gets a ship — the negative balance becomes
      * the next-run mining target, which is the whole point of the debt
      * loop. Unlike player_seed_credits, this fires on EVERY respawn so
-     * the cost of dying is visible and recurring. */
+     * the cost of dying is visible and recurring. Identity-aware:
+     * registered players debit their pubkey entry (the same one that
+     * carries their earnings); legacy players use session-token. */
     int fee = station_spawn_fee(&w->stations[best]);
-    ledger_force_debit(&w->stations[best], sp->session_token,
-                       (float)fee, &sp->ship);
+    if (sp->pubkey_set) {
+        ledger_force_debit_by_pubkey(&w->stations[best], sp->pubkey,
+                                     (float)fee, &sp->ship);
+    } else {
+        ledger_force_debit(&w->stations[best], sp->session_token,
+                           (float)fee, &sp->ship);
+    }
 
     sim_event_t death_ev = {
         .type = SIM_EVENT_DEATH, .player_id = sp->id,
@@ -1778,37 +1818,31 @@ static bool is_already_towed(const ship_t *ship, int asteroid_idx) {
 #define BAND_DAMPING       0.6f   /* light along-band damping — let it bounce */
 #define BAND_TANGENT_DRAG  0.4f   /* just enough to bleed orbit, not lock parallel motion */
 #define BAND_SHIP_MASS     8.0f   /* ship is heavier than a rock; reaction force scaled by 1/MASS */
+/* Player tow band: symmetric spring (push == pull, signed by stretch),
+ * 1D axial damping, separate tangent drag, full reaction on the ship.
+ * Behavior identical to the pre-tractor-primitive hand-rolled version. */
+static const tractor_beam_t PLAYER_TOW_BAND = {
+    .rest_length     = BAND_REST_LEN,
+    .pull_strength   = BAND_SPRING_K,
+    .push_strength   = BAND_SPRING_K,
+    .range           = 0.0f,                       /* 0 = no range gate */
+    .axial_damping   = BAND_DAMPING,
+    .tangent_damping = BAND_TANGENT_DRAG,
+    .speed_cap       = 0.0f,
+    .falloff         = TRACTOR_FALLOFF_CONSTANT,
+};
 static void apply_band_force(server_player_t *sp, asteroid_t *a, float dt) {
-    vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
-    float dist = v2_len(to_ship);
-    if (dist < 0.001f) return;
-    vec2 dir = v2_scale(to_ship, 1.0f / dist);
-
-    /* Spring: pull rock toward ship past the rest length. Push rock
-     * AWAY when below rest (no slamming into hull on rapid approach). */
-    float stretch = dist - BAND_REST_LEN;
-    float spring_mag = BAND_SPRING_K * stretch;     /* signed: + = pull, - = push */
-
-    /* Damping along the band axis: oppose along-band relative velocity. */
-    vec2 rel_vel = v2_sub(sp->ship.vel, a->vel);
-    float vel_along = v2_dot(rel_vel, dir);
-    float damp_mag = BAND_DAMPING * vel_along;
-
-    /* Axial force = spring + axial damping. */
-    vec2 force_axial = v2_scale(dir, spring_mag + damp_mag);
-
-    /* Tangential drag: kill the rock's perpendicular drift relative to
-     * the ship. Without this the band only restores radial distance —
-     * any sideways relative velocity persists and the rock ends up
-     * orbiting rather than trailing behind. */
-    vec2 vel_tangent = v2_sub(rel_vel, v2_scale(dir, vel_along));
-    vec2 force_tangent = v2_scale(vel_tangent, BAND_TANGENT_DRAG);
-
-    vec2 force = v2_add(force_axial, force_tangent);
-
-    /* Apply to rock (full force) + reaction on ship (1/MASS). */
-    a->vel       = v2_add(a->vel, v2_scale(force, dt));
-    sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(force, dt / BAND_SHIP_MASS));
+    tractor_anchor_t src = {
+        .pos      = sp->ship.pos,
+        .vel      = &sp->ship.vel,
+        .inv_mass = 1.0f / BAND_SHIP_MASS,
+    };
+    tractor_anchor_t tgt = {
+        .pos      = a->pos,
+        .vel      = &a->vel,
+        .inv_mass = 1.0f,
+    };
+    (void)tractor_apply(&src, &tgt, &PLAYER_TOW_BAND, dt);
 }
 
 static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) {
@@ -2347,23 +2381,30 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
     sp->scan_target_index = -1;
     sp->scan_module_index = -1;
 
+    /* Each circle-target test reuses the same laser_ray. We compare the
+     * `along` distance returned by laser_target_in_beam against best_dist
+     * manually rather than tightening the ray's range each time, so a
+     * larger target whose center sits past best_dist but whose radius
+     * extends within still has a chance to register — preserving the
+     * legacy behavior where best_dist gated on projected-center distance. */
+    laser_ray_t ray = {
+        .source_pos = muzzle, .source_dir = forward,
+        .range = MINING_RANGE, .cone_half_angle = 0.0f,
+    };
+
     /* Check station modules */
     for (int si = 0; si < MAX_STATIONS; si++) {
         const station_t *st = &w->stations[si];
         if (st->signal_range <= 0.0f) continue;
         /* Check core */
-        vec2 to_core = v2_sub(st->pos, muzzle);
-        float proj = v2_dot(to_core, forward);
-        if (proj > 0.0f && proj < best_dist) {
-            vec2 closest = v2_add(muzzle, v2_scale(forward, proj));
-            float perp = v2_len(v2_sub(closest, st->pos));
-            if (perp < st->radius) {
-                best_dist = proj;
-                sp->scan_target_type = 1;
-                sp->scan_target_index = si;
-                sp->scan_module_index = -1; /* core */
-                sp->beam_end = v2_sub(st->pos, v2_scale(v2_norm(to_core), st->radius * 0.9f));
-            }
+        vec2 hit; float along;
+        if (laser_target_in_beam(&ray, st->pos, st->radius, &hit, &along)
+            && along < best_dist) {
+            best_dist = along;
+            sp->scan_target_type = 1;
+            sp->scan_target_index = si;
+            sp->scan_module_index = -1; /* core */
+            sp->beam_end = hit;
         }
         /* Check structural rings — ray vs annulus. Each station ring
          * is a thin band of girders at STATION_RING_RADIUS[r]. Cast the
@@ -2399,18 +2440,14 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
         for (int mi = 0; mi < st->module_count; mi++) {
             if (st->modules[mi].scaffold) continue;
             vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
-            vec2 to_mod = v2_sub(mp, muzzle);
-            float mproj = v2_dot(to_mod, forward);
-            if (mproj > 0.0f && mproj < best_dist) {
-                vec2 closest = v2_add(muzzle, v2_scale(forward, mproj));
-                float perp = v2_len(v2_sub(closest, mp));
-                if (perp < STATION_MODULE_COL_RADIUS) {
-                    best_dist = mproj;
-                    sp->scan_target_type = 1;
-                    sp->scan_target_index = si;
-                    sp->scan_module_index = mi;
-                    sp->beam_end = v2_sub(mp, v2_scale(v2_norm(to_mod), STATION_MODULE_COL_RADIUS * 0.9f));
-                }
+            vec2 hit; float along;
+            if (laser_target_in_beam(&ray, mp, STATION_MODULE_COL_RADIUS, &hit, &along)
+                && along < best_dist) {
+                best_dist = along;
+                sp->scan_target_type = 1;
+                sp->scan_target_index = si;
+                sp->scan_module_index = mi;
+                sp->beam_end = hit;
             }
         }
     }
@@ -2419,19 +2456,15 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
     for (int ni = 0; ni < MAX_NPC_SHIPS; ni++) {
         const npc_ship_t *npc = &w->npc_ships[ni];
         if (!npc->active) continue;
-        vec2 to_npc = v2_sub(npc->ship.pos, muzzle);
-        float proj = v2_dot(to_npc, forward);
         float npc_r = npc_hull_def(npc)->render_scale * 16.0f;
-        if (proj > 0.0f && proj < best_dist) {
-            vec2 closest = v2_add(muzzle, v2_scale(forward, proj));
-            float perp = v2_len(v2_sub(closest, npc->ship.pos));
-            if (perp < npc_r) {
-                best_dist = proj;
-                sp->scan_target_type = 2;
-                sp->scan_target_index = ni;
-                sp->scan_module_index = -1;
-                sp->beam_end = v2_sub(npc->ship.pos, v2_scale(v2_norm(to_npc), npc_r * 0.9f));
-            }
+        vec2 hit; float along;
+        if (laser_target_in_beam(&ray, npc->ship.pos, npc_r, &hit, &along)
+            && along < best_dist) {
+            best_dist = along;
+            sp->scan_target_type = 2;
+            sp->scan_target_index = ni;
+            sp->scan_module_index = -1;
+            sp->beam_end = hit;
         }
     }
 
@@ -2439,19 +2472,15 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
     for (int pi = 0; pi < MAX_PLAYERS; pi++) {
         const server_player_t *other = &w->players[pi];
         if (!other->connected || other->id == sp->id) continue;
-        vec2 to_p = v2_sub(other->ship.pos, muzzle);
-        float proj = v2_dot(to_p, forward);
         float pr = ship_hull_def(&other->ship)->ship_radius;
-        if (proj > 0.0f && proj < best_dist) {
-            vec2 closest = v2_add(muzzle, v2_scale(forward, proj));
-            float perp = v2_len(v2_sub(closest, other->ship.pos));
-            if (perp < pr) {
-                best_dist = proj;
-                sp->scan_target_type = 3;
-                sp->scan_target_index = pi;
-                sp->scan_module_index = -1;
-                sp->beam_end = v2_sub(other->ship.pos, v2_scale(v2_norm(to_p), pr * 0.9f));
-            }
+        vec2 hit; float along;
+        if (laser_target_in_beam(&ray, other->ship.pos, pr, &hit, &along)
+            && along < best_dist) {
+            best_dist = along;
+            sp->scan_target_type = 3;
+            sp->scan_target_index = pi;
+            sp->scan_module_index = -1;
+            sp->beam_end = hit;
         }
     }
 
@@ -2660,7 +2689,11 @@ static void handle_hail(world_t *w, server_player_t *sp) {
     }
 
     if (nearest_in >= 0) {
-        float balance = ledger_balance(&w->stations[nearest_in], sp->session_token);
+        /* Hail-credits display must read the same identity the player's
+         * earnings landed on — pubkey when registered, else session token. */
+        float balance = sp->pubkey_set
+            ? ledger_balance_by_pubkey(&w->stations[nearest_in], sp->pubkey)
+            : ledger_balance(&w->stations[nearest_in], sp->session_token);
         int contract_idx = hail_find_or_issue_contract(w, sp, nearest_in);
         emit_event(w, (sim_event_t){
             .type = SIM_EVENT_HAIL_RESPONSE,
@@ -2766,7 +2799,27 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         commodity_t filter = intent->service_sell_only;
         bool deliver_frames = (filter == COMMODITY_COUNT) || (filter == COMMODITY_FRAME);
         if (deliver_frames) step_scaffold_delivery(w, sp);
-        step_module_delivery(w, docked_st, sp->current_station, &sp->ship, filter);
+        float build_payout = step_module_delivery(w, docked_st,
+                                                  sp->current_station,
+                                                  &sp->ship, filter);
+        if (build_payout > 0.01f) {
+            if (sp->pubkey_set) {
+                ledger_earn_by_pubkey(docked_st, sp->pubkey, build_payout);
+            } else {
+                ledger_earn(docked_st, sp->session_token, build_payout);
+            }
+            sp->ship.stat_credits_earned += build_payout;
+            int base_cr = (int)lroundf(build_payout);
+            emit_event(w, (sim_event_t){
+                .type = SIM_EVENT_SELL, .player_id = sp->id,
+                .sell = { .station = sp->current_station,
+                          .grade = (uint8_t)MINING_GRADE_COMMON,
+                          .base_cr = base_cr,
+                          .bonus_cr = 0,
+                          .by_contract = 0 }});
+            SIM_LOG("[sim] player %d delivered build materials for %.0f cr at %s\n",
+                    sp->id, build_payout, docked_st->name);
+        }
         try_sell_station_cargo(w, sp);
     }
     else if (intent->service_repair) try_repair_ship(w, sp);
@@ -2843,7 +2896,26 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
              * even though manifest_transfer falls back to other grades
              * once the named ones run out. Bulk-buy can come back as
              * an explicit `buy_quantity` intent if/when needed. */
-            float bal = ledger_balance(docked_st, sp->session_token);
+            /* Balance and spend MUST use the same identity the SELL path
+             * credits — pubkey when registered (the real Ed25519 entry),
+             * else the session-token-hashed pseudokey. Mismatch here was
+             * the "client predicts buy, server snaps it back" bug:
+             * earnings landed on the pubkey ledger entry but the buy
+             * path was reading the (empty) session-token entry. */
+            float bal = sp->pubkey_set
+                ? ledger_balance_by_pubkey(docked_st, sp->pubkey)
+                : ledger_balance(docked_st, sp->session_token);
+            SIM_LOG("[buy-bal] player %d at station %d: pubkey_set=%d pk_prefix=%02x%02x%02x%02x bal=%.2f ledger_count=%d\n",
+                    sp->id, sp->current_station, sp->pubkey_set ? 1 : 0,
+                    sp->pubkey[0], sp->pubkey[1], sp->pubkey[2], sp->pubkey[3],
+                    bal, docked_st->ledger_count);
+            for (int li = 0; li < docked_st->ledger_count; li++) {
+                const uint8_t *lpk = docked_st->ledger[li].player_pubkey;
+                (void)lpk;
+                SIM_LOG("[buy-bal]   ledger[%d] pk=%02x%02x%02x%02x bal=%.2f\n",
+                        li, lpk[0], lpk[1], lpk[2], lpk[3],
+                        docked_st->ledger[li].balance);
+            }
             float afford = (price_per > 0.01f) ? floorf(bal / price_per) : 0.0f;
             /* Per-press unit cap scales by commodity density: standard
              * goods (vol = 1.0) buy 1 per press; dense goods like
@@ -2881,7 +2953,13 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                 charge_amount = (float)moved;
                 charge_cost = charge_amount * price_per;
             }
-            if (charge_amount > 0.01f && ledger_spend(docked_st, sp->session_token, charge_cost, &sp->ship)) {
+            bool spent = false;
+            if (charge_amount > 0.01f) {
+                spent = sp->pubkey_set
+                    ? ledger_spend_by_pubkey(docked_st, sp->pubkey, charge_cost, &sp->ship)
+                    : ledger_spend(docked_st, sp->session_token, charge_cost, &sp->ship);
+            }
+            if (spent) {
                 sp->ship.cargo[c] += charge_amount;
                 docked_st->_inventory_cache[c] -= charge_amount;
                 if (docked_st->_inventory_cache[c] < 0.0f) docked_st->_inventory_cache[c] = 0.0f;
@@ -3143,12 +3221,19 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                         ? mining_payout_multiplier((mining_grade_t)sp->input.buy_grade)
                         : 1.0f;
                     float price_per = base * gmult;
-                    float nbal = ledger_balance(nearby_st, sp->session_token);
+                    /* Same pubkey-vs-session-token identity rule as the
+                     * docked-buy path. */
+                    float nbal = sp->pubkey_set
+                        ? ledger_balance_by_pubkey(nearby_st, sp->pubkey)
+                        : ledger_balance(nearby_st, sp->session_token);
                     float afford = (price_per > FLOAT_EPSILON) ? floorf(nbal / price_per) : 0.0f;
                     float amount = fminf(fminf(available, 1.0f), afford); /* buy 1 at a time */
                     if (amount > FLOAT_EPSILON) {
                         float cost = amount * price_per;
-                        if (ledger_spend(nearby_st, sp->session_token, cost, &sp->ship)) {
+                        bool spent = sp->pubkey_set
+                            ? ledger_spend_by_pubkey(nearby_st, sp->pubkey, cost, &sp->ship)
+                            : ledger_spend(nearby_st, sp->session_token, cost, &sp->ship);
+                        if (spent) {
                             sp->ship.cargo[c] += amount;
                             nearby_st->_inventory_cache[c] -= amount;
                             /* Phase 1/2.5 manifest-first: if the station
@@ -3635,12 +3720,19 @@ static void step_contracts(world_t *w, float dt) {
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_ore = c; }
             }
             if (worst_ore >= 0) {
+                /* Demand multiplier: 1.0× when at target, up to 1.5× at
+                 * total starvation. Layered on top of pool_factor so a
+                 * starved-but-broke station still posts a sensible
+                 * price. station_demand_for shares its severity
+                 * definition with the priority-3 deficit calc above —
+                 * they cannot disagree about who is starving. */
+                float dmult = station_demand_for(st, (commodity_t)worst_ore).price_mult;
                 need = (contract_t){
                     .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
                     .commodity = (commodity_t)worst_ore,
                     .quantity_needed = 0.0f, /* inventory-driven, not delivery-driven */
-                    .base_price = st->base_price[worst_ore] * pool_factor,
+                    .base_price = st->base_price[worst_ore] * pool_factor * dmult,
                     .target_index = -1, .claimed_by = -1,
                 };
             }
@@ -3679,12 +3771,13 @@ static void step_contracts(world_t *w, float dt) {
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_idx = j; }
             }
             if (worst_idx >= 0) {
+                float dmult = station_demand_for(st, checks[worst_idx].ingot).price_mult;
                 need = (contract_t){
                     .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
                     .commodity = checks[worst_idx].ingot,
                     .quantity_needed = worst_deficit,
-                    .base_price = st->base_price[checks[worst_idx].ingot] * 1.15f * pool_factor,
+                    .base_price = st->base_price[checks[worst_idx].ingot] * 1.15f * pool_factor * dmult,
                     .target_index = -1, .claimed_by = -1,
                 };
             }
@@ -3713,14 +3806,15 @@ static void step_contracts(world_t *w, float dt) {
             }
             if (worst_idx >= 0) {
                 commodity_t mat = kit_inputs[worst_idx].c;
+                float dmult = station_demand_for(st, mat).price_mult;
                 kit_need = (contract_t){
                     .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
                     .commodity = mat,
                     .quantity_needed = worst_deficit,
-                    .base_price = st->base_price[mat] > 0.0f
+                    .base_price = (st->base_price[mat] > 0.0f
                                   ? st->base_price[mat] * 1.25f * pool_factor
-                                  : 28.0f * pool_factor,
+                                  : 28.0f * pool_factor) * dmult,
                     .target_index = -1, .claimed_by = -1,
                 };
             }
@@ -3741,12 +3835,13 @@ static void step_contracts(world_t *w, float dt) {
                 float seed = st->base_price[COMMODITY_REPAIR_KIT] > 0.0f
                              ? st->base_price[COMMODITY_REPAIR_KIT]
                              : 6.0f;
+                float dmult = station_demand_for(st, COMMODITY_REPAIR_KIT).price_mult;
                 need = (contract_t){
                     .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,
                     .commodity = COMMODITY_REPAIR_KIT,
                     .quantity_needed = deficit,
-                    .base_price = seed * 1.5f * pool_factor,
+                    .base_price = seed * 1.5f * pool_factor * dmult,
                     .target_index = -1, .claimed_by = -1,
                 };
             }
@@ -4132,12 +4227,33 @@ static void step_scaffolds(world_t *w, float dt) {
                 const float PLAN_PULL_RANGE = 800.0f;
                 if (dist_sq > PLAN_PULL_RANGE * PLAN_PULL_RANGE) continue;
                 float dist = sqrtf(dist_sq);
-                if (dist < 1.0f) dist = 1.0f;
-                vec2 norm = v2_scale(delta, 1.0f / dist);
-                /* Strong direct pull — no orbit, tractor-like */
-                float pull_strength = 25.0f * (1.0f + 2.0f * (1.0f - dist / PLAN_PULL_RANGE));
-                sc->vel = v2_add(sc->vel, v2_scale(norm, pull_strength * dt));
-                sc->vel = v2_scale(sc->vel, 1.0f / (1.0f + 3.0f * dt)); /* heavy damping */
+                /* Constant-pull beam from blueprint center to scaffold.
+                 * Legacy 25*(1 + 2*(1-d/range)) ranged from 25 (at
+                 * d=range) to 75 (at d=0) with average ~50. Modeling
+                 * as a fixed 50 with no falloff matches the average
+                 * impulse the legacy delivered over a typical
+                 * approach trajectory, and means scaffolds at the
+                 * edge of pull range still get engaged at half the
+                 * legacy peak (vs zero with linear falloff). */
+                static const tractor_beam_t PLAN_BLUEPRINT = {
+                    .rest_length     = 0.0f,
+                    .pull_strength   = 0.0f,
+                    .push_strength   = 0.0f,
+                    .pull_constant   = 50.0f,
+                    .push_constant   = 0.0f,
+                    .range           = 800.0f,   /* PLAN_PULL_RANGE */
+                    .axial_damping   = 3.0f,
+                    /* Tangent damping matches axial (= legacy isotropic
+                     * drag 3.0). Lowering breaks placement timing on
+                     * test_outpost_*. Worth revisiting once playtest
+                     * confirms the pull feels right. */
+                    .tangent_damping = 3.0f,
+                    .speed_cap       = 0.0f,
+                    .falloff         = TRACTOR_FALLOFF_CONSTANT,
+                };
+                tractor_anchor_t plan_src = { .pos = st->pos, .vel = NULL,     .inv_mass = 0.0f };
+                tractor_anchor_t plan_tgt = { .pos = sc->pos, .vel = &sc->vel, .inv_mass = 1.0f };
+                (void)tractor_apply(&plan_src, &plan_tgt, &PLAN_BLUEPRINT, dt);
                 /* Materialize on arrival */
                 if (dist < 40.0f) {
                     st->planned = false;
@@ -4209,13 +4325,37 @@ static void step_scaffolds(world_t *w, float dt) {
                 continue; /* scaffold is now deactivated */
             }
 
-            /* Accelerating pull — gets stronger as it gets closer (tendril grip tightens) */
-            float pull_strength = SCAFFOLD_SNAP_PULL * (1.0f + 2.0f * (1.0f - dist / SCAFFOLD_SNAP_RANGE));
-            if (pull_strength < SCAFFOLD_SNAP_PULL) pull_strength = SCAFFOLD_SNAP_PULL;
-            vec2 pull_dir = v2_scale(delta, pull_strength);
-            sc->vel = v2_add(sc->vel, v2_scale(pull_dir, dt));
-            /* Heavy damping so it doesn't overshoot */
-            sc->vel = v2_scale(sc->vel, 1.0f / (1.0f + 5.0f * dt));
+            /* Spring pull toward the rotating target slot. Legacy used
+             * K*d*(1+2*(1-d/range)) which integrates to ~7K total
+             * impulse over the snap range. A constant-K spring with
+             * pull_strength=12 (= 3*SCAFFOLD_SNAP_PULL) and no falloff
+             * delivers slightly stronger total impulse than the legacy,
+             * which keeps the snap fast enough to satisfy the existing
+             * 5-sim-second test windows. */
+            (void)dist;
+            static const tractor_beam_t SCAFFOLD_SNAP = {
+                .rest_length     = 0.0f,
+                .pull_strength   = SCAFFOLD_SNAP_PULL * 3.0f,   /* K = 12 */
+                .push_strength   = 0.0f,
+                .pull_constant   = 0.0f,
+                .push_constant   = 0.0f,
+                /* No range gate — the SNAPPING state itself guarantees
+                 * the scaffold is supposed to be converging. A range
+                 * gate would disable damping past the limit and let an
+                 * overshooting scaffold fly off into the void. */
+                .range           = 0.0f,
+                .axial_damping   = 5.0f,
+                /* Tangent matches axial (= legacy isotropic drag 5.0).
+                 * The target slot rotates with the ring; without strong
+                 * tangent damping the scaffold orbits the rotating slot
+                 * instead of converging on it. */
+                .tangent_damping = 5.0f,
+                .speed_cap       = 0.0f,
+                .falloff         = TRACTOR_FALLOFF_CONSTANT,
+            };
+            tractor_anchor_t snap_src = { .pos = target,  .vel = NULL,     .inv_mass = 0.0f };
+            tractor_anchor_t snap_tgt = { .pos = sc->pos, .vel = &sc->vel, .inv_mass = 1.0f };
+            (void)tractor_apply(&snap_src, &snap_tgt, &SCAFFOLD_SNAP, dt);
             sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
 
             /* Safety: if station was destroyed or slot got taken, release back to LOOSE */
@@ -4393,33 +4533,31 @@ const signal_channel_msg_t *signal_channel_at(const world_t *w, int i) {
 }
 
 /* Spoke spring + drag dynamics constants. Tuned so the steady-state
- * phase lag at STATION_RING_SPEED is a visible 15-25° per spoke
+ * phase lag at the drift-bias velocity is a visible 15-25° per spoke
  * group — enough to read as "the ring is being dragged" but well
  * shy of 90° where the spring would flip. Per-spoke stiffness sums
  * linearly: a station with many spokes between two rings tracks
  * tightly, a station with one is loose. */
-#define RING_SPOKE_K     2.5f   /* spring constant per spoke (torque/rad) */
-#define RING_DRAG_MU     0.6f   /* angular drag coefficient (torque per rad/s) */
-#define RING_INERTIA_I   1.0f   /* moment of inertia per ring */
+#define RING_SPOKE_K        2.5f   /* spring constant per spoke (torque/rad) */
+#define RING_DRAG_MU        0.6f   /* angular drag coefficient (torque per rad/s) */
+#define RING_INERTIA_I      1.0f   /* moment of inertia per ring */
+/* Drift bias: ambient torque applied per ring. arm_speed[r] * this
+ * keeps a perfectly balanced station drifting (so an idle station
+ * still rotates) and matches the legacy kinematic driver — at zero
+ * spoke load, omega settles at arm_speed[r] * BIAS / DRAG_MU. With
+ * BIAS = DRAG_MU, the steady-state omega equals arm_speed exactly,
+ * so the legacy seed code (`arm_speed[1] = STATION_RING_SPEED`)
+ * keeps Prospect's ring-2 spinning at the same rate as before. */
+#define RING_DRIVE_BIAS_K   0.6f
+/* Hard clamp on per-ring angular velocity. Prevents pathologically
+ * asymmetric station layouts from driving a ring into a runaway
+ * positive-feedback loop while still letting normal spoke balance
+ * settle freely. ~4× the legacy STATION_RING_SPEED (0.04 rad/s). */
+#define RING_OMEGA_MAX      0.16f
 /* How long after a producer's last activity its tractor beam keeps
  * pulling (and rendering) at full strength. Pulse decays linearly
  * to 0 over this many seconds. */
 #define RING_PULSE_LINGER_SEC 1.5f
-
-/* Pick the ring this station drives kinematically. Default ring 2;
- * fall back to ring 1 (small outposts that haven't grown to ring 2
- * yet) and finally ring 3 (degenerate but defensive). */
-static int station_driver_ring_idx(const station_t *st) {
-    int has_ring[STATION_NUM_RINGS + 1] = {0};
-    for (int m = 0; m < st->module_count; m++) {
-        int r = (int)st->modules[m].ring;
-        if (r >= 1 && r <= STATION_NUM_RINGS) has_ring[r] = 1;
-    }
-    if (has_ring[2]) return 1;
-    if (has_ring[1]) return 0;
-    if (has_ring[3]) return 2;
-    return -1;
-}
 
 /* Station jostle constants. Personal space = (a.dock_radius +
  * b.dock_radius) × FACTOR; below that, a spring force scaled by
@@ -4480,6 +4618,34 @@ void step_station_jostle(world_t *w, float dt) {
     }
 }
 
+/* Apply one spoke's spring torque to its two endpoint rings. Equal-and-
+ * opposite (Newton's third) so the spoke conserves angular momentum
+ * within the station. Same-ring spokes (rb == ra) net to zero and are
+ * skipped — their torque contribution would cancel anyway, but the
+ * skip also keeps the renderer/physics agreement clean. Out-of-bounds
+ * rings or scaffolded hoppers are no-ops. */
+static void apply_spoke_torque(const station_t *st,
+                               const station_module_t *prod, float wa, int ra,
+                               int hop, float pulse, float net_torque[]) {
+    if (hop < 0) return;
+    const station_module_t *hm = &st->modules[hop];
+    if (hm->scaffold) return;
+    int rb = (int)hm->ring;
+    if (rb < 1 || rb > STATION_NUM_RINGS) return;
+    if (rb == ra) return;
+    int slots_b = STATION_RING_SLOTS[rb];
+    if (slots_b <= 0) return;
+    float alpha_b = TWO_PI_F * (float)hm->slot / (float)slots_b;
+    float wb = st->arm_rotation[rb-1] + alpha_b;
+    float dr = wb - wa;
+    while (dr >  PI_F) dr -= TWO_PI_F;
+    while (dr < -PI_F) dr += TWO_PI_F;
+    float T = pulse * RING_SPOKE_K * sinf(dr);
+    net_torque[ra-1] += T;
+    net_torque[rb-1] -= T;
+    (void)prod; /* reserved for future per-spoke scaling */
+}
+
 void step_station_ring_dynamics(world_t *w, float dt) {
     /* Decay all module activity pulses linearly. Production code
      * sets the pulse to 1.0 each tick a producer actually consumes
@@ -4498,70 +4664,66 @@ void step_station_ring_dynamics(world_t *w, float dt) {
         station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
 
-        int driver_idx = station_driver_ring_idx(st);
-        if (driver_idx < 0) continue;
-        int driver_ring = driver_idx + 1;
-        float driver_speed = st->arm_speed[driver_idx];
+        /* All-passive ring dynamics (Slice 1.5a). Every ring is a
+         * passive ring receiving torque from its spokes; per-ring
+         * arm_speed[r] becomes a "drift bias" so a perfectly balanced
+         * station still rotates instead of locking up. There is no
+         * kinematic driver — passive rings balance against each other
+         * naturally.
+         *
+         * Spoke set: every active producer contributes one spoke per
+         * declared input commodity AND one spoke for its output
+         * commodity (when one exists — SHIPYARD is exempt; output is a
+         * physical scaffold body). Each spoke applies equal-and-opposite
+         * spring torque to its two endpoints; spokes whose endpoints
+         * sit on the same ring net to zero, which is correct. */
+        float net_torque[STATION_NUM_RINGS] = {0};
 
-        /* Driver: kinematic update from arm_speed. */
-        st->arm_rotation[driver_idx] += driver_speed * dt;
-        st->arm_omega[driver_idx] = driver_speed;
+        for (int m = 0; m < st->module_count; m++) {
+            const station_module_t *prod = &st->modules[m];
+            if (prod->scaffold) continue;
+            float pulse = st->module_active_pulse[m];
+            if (pulse <= 0.0f) continue;
 
-        for (int idx = 0; idx < STATION_NUM_RINGS && idx < MAX_ARMS; idx++) {
-            if (idx == driver_idx) continue;
-            int ring = idx + 1;
+            int ra = (int)prod->ring;
+            if (ra < 1 || ra > STATION_NUM_RINGS) continue;
+            int slots_a = STATION_RING_SLOTS[ra];
+            if (slots_a <= 0) continue;
+            float alpha_a = TWO_PI_F * (float)prod->slot / (float)slots_a;
+            float wa = st->arm_rotation[ra-1] + alpha_a;
 
-            float net_torque = 0.0f;
-            for (int m = 0; m < st->module_count; m++) {
-                const station_module_t *prod = &st->modules[m];
-                if (prod->scaffold) continue;
-                module_inputs_t req = module_required_inputs(prod->type);
-                if (req.count == 0) continue;
-
-                /* Spring strength scales with the producer's activity
-                 * pulse — an idle producer's beams go slack, the
-                 * passive ring loses those anchors and re-equilibriums
-                 * under whatever beams remain hot. */
-                float pulse = st->module_active_pulse[m];
-                if (pulse <= 0.0f) continue;
-
-                /* One spoke per (producer, input commodity). Each
-                 * spoke contributes spring torque when it spans this
-                 * passive ring + the driver. */
-                for (int i = 0; i < req.count; i++) {
-                    int hop = station_find_hopper_for(st, req.commodities[i]);
-                    if (hop < 0) continue;
-                    const station_module_t *hm = &st->modules[hop];
-                    int ra = (int)prod->ring, rb = (int)hm->ring;
-                    if (!((ra == ring && rb == driver_ring) ||
-                          (rb == ring && ra == driver_ring))) continue;
-                    int sa = (int)prod->slot, sb = (int)hm->slot;
-                    int slots_a = STATION_RING_SLOTS[ra];
-                    int slots_b = STATION_RING_SLOTS[rb];
-                    float alpha_a = TWO_PI_F * (float)sa / (float)slots_a;
-                    float alpha_b = TWO_PI_F * (float)sb / (float)slots_b;
-                    float wa = st->arm_rotation[ra-1] + alpha_a;
-                    float wb = st->arm_rotation[rb-1] + alpha_b;
-                    float dr = (ra == ring) ? (wb - wa) : (wa - wb);
-                    while (dr > PI_F)  dr -= TWO_PI_F;
-                    while (dr < -PI_F) dr += TWO_PI_F;
-                    net_torque += pulse * RING_SPOKE_K * sinf(dr);
-                }
+            /* Input spokes — each declared input commodity. */
+            module_inputs_t req = module_required_inputs(prod->type);
+            for (int i = 0; i < req.count; i++) {
+                int hop = station_find_hopper_for(st, req.commodities[i]);
+                apply_spoke_torque(st, prod, wa, ra, hop, pulse, net_torque);
             }
-
-            /* Drag opposes absolute angular velocity. The phase lag at
-             * steady state is arcsin(mu*omega / (k*N_spokes)). */
-            net_torque -= RING_DRAG_MU * st->arm_omega[idx];
-
-            st->arm_omega[idx] += (net_torque / RING_INERTIA_I) * dt;
-            st->arm_rotation[idx] += st->arm_omega[idx] * dt;
-
-            while (st->arm_rotation[idx] >  TWO_PI_F) st->arm_rotation[idx] -= TWO_PI_F;
-            while (st->arm_rotation[idx] < -TWO_PI_F) st->arm_rotation[idx] += TWO_PI_F;
+            /* Output spoke (Slice 1 — cargo-in-space schema). SHIPYARD
+             * has no commodity output and is naturally skipped: its
+             * module_instance_output() returns COMMODITY_COUNT, and
+             * station_find_output_hopper_for_module returns -1. */
+            apply_spoke_torque(st, prod, wa, ra,
+                               station_find_output_hopper_for_module(st, prod),
+                               pulse, net_torque);
         }
 
-        while (st->arm_rotation[driver_idx] >  TWO_PI_F) st->arm_rotation[driver_idx] -= TWO_PI_F;
-        while (st->arm_rotation[driver_idx] < -TWO_PI_F) st->arm_rotation[driver_idx] += TWO_PI_F;
+        /* Per-ring integrate: drift bias + drag, semi-implicit Euler. */
+        for (int idx = 0; idx < STATION_NUM_RINGS && idx < MAX_ARMS; idx++) {
+            float bias = st->arm_speed[idx] * RING_DRIVE_BIAS_K;
+            float damp = RING_DRAG_MU * st->arm_omega[idx];
+            float tau  = net_torque[idx] + bias - damp;
+
+            st->arm_omega[idx] += (tau / RING_INERTIA_I) * dt;
+            if (st->arm_omega[idx] >  RING_OMEGA_MAX) st->arm_omega[idx] =  RING_OMEGA_MAX;
+            if (st->arm_omega[idx] < -RING_OMEGA_MAX) st->arm_omega[idx] = -RING_OMEGA_MAX;
+            st->arm_rotation[idx] += st->arm_omega[idx] * dt;
+            /* No 2π wrap — sin/cos are periodic in the renderer, and
+             * wrapping server-side caused visible "snap-back" artifacts
+             * for clients interpolating across snapshots that landed on
+             * opposite sides of the wrap boundary. arm_rotation grows
+             * unbounded; f32 precision holds for years of session time
+             * at typical drift rates (~0.04 rad/s). */
+        }
     }
 }
 
@@ -4972,19 +5134,21 @@ void world_reset(world_t *w) {
     w->stations[0].base_price[COMMODITY_LASER_MODULE]   = 30.0f;
     w->stations[0].base_price[COMMODITY_TRACTOR_MODULE] = 38.0f;
     w->stations[0].signal_range = 18000.0f;
-    /* Ring 1: dock + relay + ferrite furnace. */
+    /* Ring 1: dock + relay + ferrite furnace (tagged FERRITE_INGOT). */
     add_module_at(&w->stations[0], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 1);
-    add_module_at(&w->stations[0], MODULE_FURNACE,      1, 2);
-    /* Ring 2: one ferrite-ore hopper, the only input the lone
-     * furnace needs. Renders rusty red. */
+    add_furnace_for(&w->stations[0], 1, 2, COMMODITY_FERRITE_INGOT);
+    /* Ring 2: ferrite-ore intake at slot 4 (240°, cross-ring opposite
+     * the furnace at ring 1 slot 2). No output hopper — Prospect has
+     * no downstream local consumer of ferrite ingots (no frame press
+     * here), so smelt-completed ingots go straight to station
+     * inventory and ride out via haulers to Kepler. */
     add_hopper_for(&w->stations[0], 2, 4, COMMODITY_FERRITE_ORE);
     w->stations[0].arm_count = 2;
-    /* Ring 2 (idx 1) is the driver — ring 2 spins, ring 1 is dragged
-     * along by the cross-ring spoke spring. Prospect has only one
-     * spoke (FURNACE@1:2 ↔ HOPPER@2:4) so coupling is loose; ring 1's
-     * steady-state phase lag is large. ring_offset stays at 0; the
-     * spoke dynamics determine relative phase. */
+    /* Drift bias on ring 2 — under the all-passive Slice 1.5a dynamics
+     * this is the per-ring ambient torque. Ring 1 co-rotates via the
+     * cross-ring spoke spring. Prospect has light spoke load (one
+     * input + one output spoke) so ring 1 lags noticeably behind. */
     w->stations[0].arm_speed[1] = STATION_RING_SPEED;
     rebuild_station_services(&w->stations[0]);
     /* Stations are sovereign currency issuers. Net issuance is derived
@@ -5028,7 +5192,7 @@ void world_reset(world_t *w) {
     add_hopper_for(&w->stations[1], 3, 4, COMMODITY_LASER_MODULE);   /* feeds SHIPYARD    */
     add_hopper_for(&w->stations[1], 3, 6, COMMODITY_TRACTOR_MODULE); /* feeds SHIPYARD    */
     w->stations[1].arm_count = 3;
-    w->stations[1].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drives */
+    w->stations[1].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drift bias */
     rebuild_station_services(&w->stations[1]);
     snprintf(w->stations[1].station_slug, sizeof(w->stations[1].station_slug), "kepler");
     snprintf(w->stations[1].currency_name, sizeof(w->stations[1].currency_name), "kepler bonds");
@@ -5058,10 +5222,10 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_FERRITE_INGOT]  = 0.0f;
     /* Producers spread across all three rings; commodity-tagged
      * hoppers feed them all. */
-    /* Ring 1: dock + relay + furnace. */
+    /* Ring 1: dock + relay + cuprite furnace. */
     add_module_at(&w->stations[2], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
-    add_module_at(&w->stations[2], MODULE_FURNACE,      1, 2);
+    add_furnace_for(&w->stations[2], 1, 2, COMMODITY_CUPRITE_INGOT);
     /* Ring 2: fabs + paired ingot hoppers. LASER_FAB needs both
      * cuprite and crystal ingots → 2 spokes from it. TRACTOR_FAB
      * just cuprite → 1 spoke. */
@@ -5069,15 +5233,19 @@ void world_reset(world_t *w) {
     add_hopper_for(&w->stations[2], 2, 1, COMMODITY_CUPRITE_INGOT);
     add_hopper_for(&w->stations[2], 2, 3, COMMODITY_CRYSTAL_INGOT);
     add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  2, 5);
-    /* Ring 3: 2 more furnaces + cuprite/crystal ore hoppers feeding
-     * all 3 furnaces' smelt path. With 3 furnaces total Helios is
-     * tier-3 → smelts cuprite + crystal (ferrite gated). */
+    /* Ring 3: 2 more furnaces (cuprite + crystal output) + cuprite /
+     * crystal ore intake hoppers + laser/tractor module output hoppers
+     * for the ring-2 fabs. All 5 slots used here are well clear of the
+     * dock approach axis (slot 0 = 0° aligns with the dock; we sit
+     * elsewhere on the 9-slot ring). */
     add_hopper_for(&w->stations[2], 3, 0, COMMODITY_CUPRITE_ORE);
-    add_module_at(&w->stations[2], MODULE_FURNACE,      3, 1);
-    add_module_at(&w->stations[2], MODULE_FURNACE,      3, 4);
+    add_furnace_for(&w->stations[2],   3, 1, COMMODITY_CUPRITE_INGOT);
+    add_hopper_for(&w->stations[2], 3, 2, COMMODITY_LASER_MODULE);   /* LASER_FAB output */
+    add_furnace_for(&w->stations[2],   3, 4, COMMODITY_CRYSTAL_INGOT);
     add_hopper_for(&w->stations[2], 3, 6, COMMODITY_CRYSTAL_ORE);
+    add_hopper_for(&w->stations[2], 3, 7, COMMODITY_TRACTOR_MODULE); /* TRACTOR_FAB output */
     w->stations[2].arm_count = 3;
-    w->stations[2].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drives */
+    w->stations[2].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drift bias */
     rebuild_station_services(&w->stations[2]);
     snprintf(w->stations[2].station_slug, sizeof(w->stations[2].station_slug), "helios");
     snprintf(w->stations[2].currency_name, sizeof(w->stations[2].currency_name), "helios credits");
@@ -5139,6 +5307,18 @@ void world_reset(world_t *w) {
     spawn_npc(w, 1, NPC_ROLE_HAULER);   /* Kepler -> Helios frames */
     spawn_npc(w, 2, NPC_ROLE_HAULER);   /* Helios -> Prospect repair kits */
     spawn_npc(w, 1, NPC_ROLE_TOW);      /* Kepler shipyard (only shipyard) */
+
+    /* Bootstrap each station's per-ring angular velocity to its drift
+     * bias. Under the all-passive Slice 1.5a dynamics, omega ramps to
+     * (arm_speed * RING_DRIVE_BIAS_K / RING_DRAG_MU) over a ~1.7s time
+     * constant. Pre-loading omega = arm_speed avoids a visible "spin
+     * up" transient on world_reset and keeps the legacy steady-state
+     * (omega == arm_speed when BIAS_K == DRAG_MU). */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        for (int r = 0; r < MAX_ARMS; r++) {
+            w->stations[s].arm_omega[r] = w->stations[s].arm_speed[r];
+        }
+    }
 
     /* Precompute station nav meshes now that geometry is finalized. */
     station_rebuild_all_nav(w);
@@ -5313,18 +5493,36 @@ void player_seed_credits(server_player_t *sp, world_t *w) {
     int st = sp->current_station;
     if (st < 0 || st >= MAX_STATIONS) st = 0;
     /* Already established a ledger here? Skip — debt and earnings
-     * carry across reconnects and respawns. We probe by entry
-     * existence (any nonzero balance, positive or negative) since
-     * fresh entries always start at exactly 0.
+     * carry across reconnects and respawns.
      *
-     * Token-based path (via pseudo-pubkey shim) so pre-Layer-A.1
-     * anonymous players still get a stable ledger row keyed on their
-     * 8B session token. Layer-A.1 players additionally have a real
-     * 32B pubkey on sp->pubkey; once they register, ledger entries
-     * migrate via the v45→v46 save path (sim_save.c). */
+     * Identity-aware lookup: pubkey-registered players match the
+     * full 32-byte pubkey entry (the same one their earnings credit
+     * to). Legacy session-token players match the SHA256-of-token
+     * pseudokey via the existing ledger_balance shim. The OLD code
+     * here did `memcmp(ledger.player_pubkey, session_token, 8)` —
+     * comparing the first 8 bytes of a 32-byte sha256 against the
+     * raw session token, which never matches even for legacy
+     * players, so the fee was charged on every reconnect. */
+    if (sp->pubkey_set) {
+        for (int i = 0; i < w->stations[st].ledger_count; i++) {
+            if (memcmp(w->stations[st].ledger[i].player_pubkey,
+                       sp->pubkey, 32) == 0) {
+                return;
+            }
+        }
+        int fee = station_spawn_fee(&w->stations[st]);
+        ledger_force_debit_by_pubkey(&w->stations[st], sp->pubkey,
+                                     (float)fee, &sp->ship);
+        return;
+    }
+    /* Legacy: derive the pseudokey via the same helper ledger_balance
+     * uses, then compare full 32 bytes. token_to_pseudo_pubkey copies
+     * 8 bytes of token + 24 zero bytes — NOT a sha256. */
+    uint8_t pseudo[32];
+    token_to_pseudo_pubkey(sp->session_token, pseudo);
     for (int i = 0; i < w->stations[st].ledger_count; i++) {
         if (memcmp(w->stations[st].ledger[i].player_pubkey,
-                   sp->session_token, 8) == 0) {
+                   pseudo, 32) == 0) {
             return;
         }
     }

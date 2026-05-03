@@ -862,6 +862,73 @@ TEST(test_scenario_npc_economy_30_seconds) {
     }
 }
 
+TEST(test_npc_exits_station_with_blocked_rings) {
+    /* Slice 1.5b regression — Prospect's NPCs used to get stuck in the
+     * inner zone whenever ring 2 had multiple hoppers. Blocking ring-2
+     * slots 1, 2, 3, 5 (everything except the dock-radial slot 0 and
+     * the existing slot-4 ferrite-ore intake) plus ring-3 slots 0/3/6
+     * stresses the layout. With npc_target_clear_of_home_rings routing
+     * just-undocked NPCs through the dock-radial exit waypoint, the
+     * miner reaches an asteroid placed outside the rings without
+     * collision-stalling. */
+    WORLD_DECL;
+    world_reset(&w);
+    /* Block every ring-2 non-dock-radial slot on Prospect, plus a few
+     * ring-3 slots, with FERRITE_ORE-tagged hoppers (cheap to add via
+     * the seed helper). */
+    add_hopper_for(&w.stations[0], 2, 1, COMMODITY_FERRITE_ORE);
+    add_hopper_for(&w.stations[0], 2, 2, COMMODITY_FERRITE_ORE);
+    add_hopper_for(&w.stations[0], 2, 3, COMMODITY_FERRITE_ORE);
+    add_hopper_for(&w.stations[0], 2, 5, COMMODITY_FERRITE_ORE);
+    add_hopper_for(&w.stations[0], 3, 0, COMMODITY_FERRITE_ORE);
+    add_hopper_for(&w.stations[0], 3, 3, COMMODITY_FERRITE_ORE);
+    add_hopper_for(&w.stations[0], 3, 6, COMMODITY_FERRITE_ORE);
+    station_rebuild_all_nav(&w);
+
+    /* Find a Prospect miner and force it just-undocked. */
+    int miner = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_MINER
+            && w.npc_ships[i].home_station == 0) { miner = i; break; }
+    }
+    ASSERT(miner >= 0);
+    w.npc_ships[miner].state = NPC_STATE_DOCKED;
+    w.npc_ships[miner].state_timer = 0.0f;
+
+    /* Plant a ferrite asteroid 3000u east of Prospect — well outside
+     * any ring envelope. The miner must reach MINING_RANGE of it. */
+    int target_a = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) { target_a = i; break; }
+    }
+    ASSERT(target_a >= 0);
+    asteroid_t *a = &w.asteroids[target_a];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_M;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->ore = 30.0f;
+    a->max_ore = 30.0f;
+    a->hp = 100.0f;
+    a->max_hp = 100.0f;
+    a->radius = 30.0f;
+    a->pos = v2_add(w.stations[0].pos, v2(3000.0f, 0.0f));
+
+    /* Run up to 30 sim seconds. The miner must reach NPC_STATE_MINING
+     * (not just "near the asteroid") — proximity-only acceptance was
+     * loose enough that a regression where the NPC drifts slowly
+     * toward the asteroid without ever locking on would still pass.
+     * MINING gating requires the asteroid to be in the mining cone,
+     * which means the miner has to actually navigate there. */
+    bool reached = false;
+    for (int i = 0; i < 3600 && !reached; i++) {
+        world_sim_step(&w, SIM_DT);
+        const npc_ship_t *npc = &w.npc_ships[miner];
+        if (npc->state == NPC_STATE_MINING) { reached = true; break; }
+    }
+    ASSERT(reached);
+}
+
 TEST(test_scenario_upgrade_requires_products) {
     WORLD_DECL;
     world_reset(&w);
@@ -1314,6 +1381,7 @@ void register_world_sim_scenarios_tests(void) {
     RUN(test_manifest_conservation_across_transactions);
     RUN(test_scenario_two_players_mining);
     RUN(test_scenario_npc_economy_30_seconds);
+    RUN(test_npc_exits_station_with_blocked_rings);
     RUN(test_scenario_upgrade_requires_products);
     RUN(test_scenario_emergency_recovery);
     RUN(test_scenario_product_cap_pauses_production);

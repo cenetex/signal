@@ -698,15 +698,28 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                         /* Migrate ledger entries from the old token →
                          * the new connection's session_token across
                          * every station, so balances stay spendable
-                         * after the rebinding. */
-                        uint8_t old_tok[8];
-                        memcpy(old_tok, old->session_token, 8);
+                         * after the rebinding.
+                         *
+                         * Compare and write the FULL 32-byte pseudokey
+                         * form (token bytes + 24 trailing zeros — see
+                         * token_to_pseudo_pubkey). The old version did
+                         * memcmp/memcpy on 8 bytes against a 32-byte
+                         * field, which (a) could partially-match a real
+                         * Ed25519 pubkey by 1/2^64 chance and (b) left
+                         * the trailing 24 bytes of a touched entry
+                         * holding stale data, orphaning the entry from
+                         * future lookups. Both bugs are silent —
+                         * 32-byte compare + 32-byte write fixes them. */
+                        uint8_t old_pseudo[32] = {0};
+                        uint8_t new_pseudo[32] = {0};
+                        memcpy(old_pseudo, old->session_token, 8);
+                        memcpy(new_pseudo, sp->session_token, 8);
                         for (int s = 0; s < MAX_STATIONS; s++) {
                             station_t *st = &world.stations[s];
                             for (int e = 0; e < st->ledger_count; e++) {
-                                if (memcmp(st->ledger[e].player_pubkey, old_tok, 8) == 0) {
+                                if (memcmp(st->ledger[e].player_pubkey, old_pseudo, 32) == 0) {
                                     memcpy(st->ledger[e].player_pubkey,
-                                           sp->session_token, 8);
+                                           new_pseudo, 32);
                                 }
                             }
                         }
@@ -1828,10 +1841,18 @@ static void broadcast_world(void) {
     broadcast(tbuf, 5);
 }
 
-/* Compute station-local balance for a player at their current/nearby station */
+/* Compute station-local balance for a player at their current/nearby
+ * station. Must read the same ledger entry the buy/credit paths use:
+ * pubkey when registered, session-token-pseudokey otherwise. Reading
+ * the wrong entry was the visible-bug-symptom that motivated the
+ * earlier identity-fix series — broadcast balance came from a stale
+ * (often negative) session-token entry while real earnings sat on
+ * the pubkey entry. */
 static float player_station_balance(const server_player_t *sp) {
     int st = sp->docked ? sp->current_station : sp->nearby_station;
     if (st < 0 || st >= MAX_STATIONS) return 0.0f;
+    if (sp->pubkey_set)
+        return ledger_balance_by_pubkey(&world.stations[st], sp->pubkey);
     return ledger_balance(&world.stations[st], sp->session_token);
 }
 
