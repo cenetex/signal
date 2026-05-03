@@ -1321,6 +1321,52 @@ TEST(test_station_module_layout_status_furnace_uses_tag) {
     ASSERT_EQ_INT(station_module_layout_status(&st, fc), STATION_LAYOUT_OK);
 }
 
+TEST(test_seeded_furnaces_tagged) {
+    /* Slice 1 — seeded stations tag every furnace with its output ingot.
+     * Prospect runs ferrite tier (1 furnace → FERRITE_INGOT). Helios runs
+     * the 3-furnace tier and tags 2× CUPRITE_INGOT + 1× CRYSTAL_INGOT. */
+    WORLD_DECL;
+    world_reset(&w);
+    int prospect_furnaces = 0;
+    for (int i = 0; i < w.stations[0].module_count; i++) {
+        if (w.stations[0].modules[i].type != MODULE_FURNACE) continue;
+        if (w.stations[0].modules[i].scaffold) continue;
+        prospect_furnaces++;
+        ASSERT_EQ_INT((int)w.stations[0].modules[i].commodity,
+                      (int)COMMODITY_FERRITE_INGOT);
+    }
+    ASSERT_EQ_INT(prospect_furnaces, 1);
+
+    int helios_cu = 0, helios_cr = 0;
+    for (int i = 0; i < w.stations[2].module_count; i++) {
+        if (w.stations[2].modules[i].type != MODULE_FURNACE) continue;
+        if (w.stations[2].modules[i].scaffold) continue;
+        commodity_t tag = (commodity_t)w.stations[2].modules[i].commodity;
+        if (tag == COMMODITY_CUPRITE_INGOT) helios_cu++;
+        else if (tag == COMMODITY_CRYSTAL_INGOT) helios_cr++;
+        else ASSERT(false /* unexpected Helios furnace tag */);
+    }
+    ASSERT_EQ_INT(helios_cu, 2);
+    ASSERT_EQ_INT(helios_cr, 1);
+}
+
+TEST(test_seeded_helios_output_hoppers) {
+    /* Helios's LASER_FAB and TRACTOR_FAB each have a dedicated
+     * commodity-tagged output hopper on ring 3. */
+    WORLD_DECL;
+    world_reset(&w);
+    ASSERT(station_find_hopper_for(&w.stations[2], COMMODITY_LASER_MODULE)   >= 0);
+    ASSERT(station_find_hopper_for(&w.stations[2], COMMODITY_TRACTOR_MODULE) >= 0);
+    /* All Helios producers report OK under the new layout rule. */
+    for (int i = 0; i < w.stations[2].module_count; i++) {
+        const station_module_t *m = &w.stations[2].modules[i];
+        if (m->scaffold) continue;
+        if (!module_is_producer(m->type) && !module_is_shipyard(m->type)) continue;
+        station_layout_status_t s = station_module_layout_status(&w.stations[2], m);
+        ASSERT_EQ_INT(s, STATION_LAYOUT_OK);
+    }
+}
+
 TEST(test_station_module_layout_status_shipyard_exempt) {
     /* SHIPYARD output is a physical scaffold body, not a commodity —
      * so it doesn't need an output hopper. With its 3 input hoppers
@@ -1718,6 +1764,8 @@ void register_construction_module_schema_tests(void) {
     RUN(test_station_module_layout_status_missing_output);
     RUN(test_station_module_layout_status_furnace_uses_tag);
     RUN(test_station_module_layout_status_shipyard_exempt);
+    RUN(test_seeded_furnaces_tagged);
+    RUN(test_seeded_helios_output_hoppers);
     RUN(test_module_schema_valid_rings);
     RUN(test_module_schema_helpers);
     RUN(test_module_schema_build_costs_match);
