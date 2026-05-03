@@ -13,6 +13,7 @@
  * and ignoring weak signal — visible as "NPC ship lasering very far".
  */
 #include "sim_mining.h"
+#include "laser.h"
 #include "game_sim.h"      /* MINING_RANGE, max_mineable_tier, fracture_asteroid */
 #include "sim_asteroid.h"  /* asteroid_is_collectible */
 #include <math.h>
@@ -73,13 +74,17 @@ mining_beam_t sim_mining_beam_step(world_t *w, vec2 muzzle, vec2 forward,
         return r;
     }
 
-    /* Damage. Signal efficiency scales output the same way for everyone
-     * so weak-signal mining feels weak whether you're a player or AI. */
-    float mined = mining_rate * dt * signal_eff;
-    mined = fminf(mined, a->hp);
-    a->hp -= mined;
-    a->net_dirty = true;
-    r.fired = true;
+    /* Damage delivered as a negative laser_apply_effect — laser_apply
+     * floors at zero, so we don't need the explicit fminf clamp the
+     * legacy code carried. Signal efficiency scales output the same
+     * way for everyone so weak-signal mining feels weak whether
+     * you're a player or AI. */
+    float pre_hp = a->hp;
+    laser_apply_effect(&a->hp, -mining_rate * signal_eff, 0.0f, dt);
+    if (a->hp < pre_hp) {
+        a->net_dirty = true;
+        r.fired = true;
+    }
 
     if (a->hp <= 0.01f) {
         fracture_asteroid(w, target_idx, normal, fracturer_id);
