@@ -777,10 +777,17 @@ static void emergency_recover_ship(world_t *w, server_player_t *sp) {
      * a bankrupt player still gets a ship — the negative balance becomes
      * the next-run mining target, which is the whole point of the debt
      * loop. Unlike player_seed_credits, this fires on EVERY respawn so
-     * the cost of dying is visible and recurring. */
+     * the cost of dying is visible and recurring. Identity-aware:
+     * registered players debit their pubkey entry (the same one that
+     * carries their earnings); legacy players use session-token. */
     int fee = station_spawn_fee(&w->stations[best]);
-    ledger_force_debit(&w->stations[best], sp->session_token,
-                       (float)fee, &sp->ship);
+    if (sp->pubkey_set) {
+        ledger_force_debit_by_pubkey(&w->stations[best], sp->pubkey,
+                                     (float)fee, &sp->ship);
+    } else {
+        ledger_force_debit(&w->stations[best], sp->session_token,
+                           (float)fee, &sp->ship);
+    }
 
     sim_event_t death_ev = {
         .type = SIM_EVENT_DEATH, .player_id = sp->id,
@@ -5476,18 +5483,36 @@ void player_seed_credits(server_player_t *sp, world_t *w) {
     int st = sp->current_station;
     if (st < 0 || st >= MAX_STATIONS) st = 0;
     /* Already established a ledger here? Skip — debt and earnings
-     * carry across reconnects and respawns. We probe by entry
-     * existence (any nonzero balance, positive or negative) since
-     * fresh entries always start at exactly 0.
+     * carry across reconnects and respawns.
      *
-     * Token-based path (via pseudo-pubkey shim) so pre-Layer-A.1
-     * anonymous players still get a stable ledger row keyed on their
-     * 8B session token. Layer-A.1 players additionally have a real
-     * 32B pubkey on sp->pubkey; once they register, ledger entries
-     * migrate via the v45→v46 save path (sim_save.c). */
+     * Identity-aware lookup: pubkey-registered players match the
+     * full 32-byte pubkey entry (the same one their earnings credit
+     * to). Legacy session-token players match the SHA256-of-token
+     * pseudokey via the existing ledger_balance shim. The OLD code
+     * here did `memcmp(ledger.player_pubkey, session_token, 8)` —
+     * comparing the first 8 bytes of a 32-byte sha256 against the
+     * raw session token, which never matches even for legacy
+     * players, so the fee was charged on every reconnect. */
+    if (sp->pubkey_set) {
+        for (int i = 0; i < w->stations[st].ledger_count; i++) {
+            if (memcmp(w->stations[st].ledger[i].player_pubkey,
+                       sp->pubkey, 32) == 0) {
+                return;
+            }
+        }
+        int fee = station_spawn_fee(&w->stations[st]);
+        ledger_force_debit_by_pubkey(&w->stations[st], sp->pubkey,
+                                     (float)fee, &sp->ship);
+        return;
+    }
+    /* Legacy: derive the pseudokey via the same helper ledger_balance
+     * uses, then compare full 32 bytes. token_to_pseudo_pubkey copies
+     * 8 bytes of token + 24 zero bytes — NOT a sha256. */
+    uint8_t pseudo[32];
+    token_to_pseudo_pubkey(sp->session_token, pseudo);
     for (int i = 0; i < w->stations[st].ledger_count; i++) {
         if (memcmp(w->stations[st].ledger[i].player_pubkey,
-                   sp->session_token, 8) == 0) {
+                   pseudo, 32) == 0) {
             return;
         }
     }
