@@ -98,6 +98,52 @@ TEST(test_clear_asteroid_marks_net_dirty_when_was_active) {
     ASSERT(!b.net_dirty);
 }
 
+/* Distance-graded mining: rocks near the spawn cluster keep the
+ * baseline burst cap (50), rocks at the frontier fracture with up to
+ * 200 attempts, raising the probability tail on rare prefix classes.
+ * This is the lever that makes pushing outward pay off — players who
+ * plant outposts deeper find better-graded ore, not just more of the
+ * same. */
+TEST(test_burst_cap_baseline_at_origin) {
+    vec2 origin = v2(0.0f, 0.0f);
+    ASSERT_EQ_INT((int)mining_burst_cap_for_position(origin),
+                  (int)FRACTURE_CHALLENGE_BURST_CAP);
+    /* Anywhere within the seed cluster radius (5 kU) stays at baseline. */
+    ASSERT_EQ_INT((int)mining_burst_cap_for_position(v2(3000.0f, 4000.0f)),
+                  (int)FRACTURE_CHALLENGE_BURST_CAP);
+}
+
+TEST(test_burst_cap_clamps_at_far_frontier) {
+    /* Past 30 kU the cap is at maximum — 4× the baseline. */
+    uint16_t cap = mining_burst_cap_for_position(v2(50000.0f, 0.0f));
+    ASSERT_EQ_INT((int)cap, (int)(FRACTURE_CHALLENGE_BURST_CAP * 4));
+}
+
+TEST(test_burst_cap_scales_monotonically_with_distance) {
+    /* Strict monotonicity in the linear range so every kU outward is
+     * a real (not just notional) bump. */
+    uint16_t near    = mining_burst_cap_for_position(v2( 6000.0f, 0.0f));
+    uint16_t mid     = mining_burst_cap_for_position(v2(15000.0f, 0.0f));
+    uint16_t farish  = mining_burst_cap_for_position(v2(25000.0f, 0.0f));
+    ASSERT(near < mid);
+    ASSERT(mid  < farish);
+    ASSERT(near >= FRACTURE_CHALLENGE_BURST_CAP);
+    ASSERT(farish <= FRACTURE_CHALLENGE_BURST_CAP * 4);
+}
+
+TEST(test_burst_cap_isotropic) {
+    /* Distance-only (not direction): the gradient must be radially
+     * symmetric, otherwise frontier outposts on one axis would pay
+     * differently than on another. */
+    float r = 18000.0f;
+    uint16_t east  = mining_burst_cap_for_position(v2( r,  0.0f));
+    uint16_t north = mining_burst_cap_for_position(v2( 0.0f,  r));
+    uint16_t sw    = mining_burst_cap_for_position(v2(-r * 0.7071f, -r * 0.7071f));
+    ASSERT_EQ_INT((int)east, (int)north);
+    /* sqrt(2)/2 ≈ 0.7071 keeps |sw| == r exactly so the cap matches too. */
+    ASSERT(abs((int)east - (int)sw) <= 1);
+}
+
 void register_asteroid_tests(void) {
     TEST_SECTION("Asteroid helper tests:\n");
     RUN(test_asteroid_tier_name_all);
@@ -107,6 +153,10 @@ void register_asteroid_tests(void) {
     RUN(test_asteroid_progress_ratio_tier_s_uses_ore);
     RUN(test_asteroid_progress_ratio_falls_back_to_hp);
     RUN(test_asteroid_progress_ratio_zero_when_uninitialized);
+    RUN(test_burst_cap_baseline_at_origin);
+    RUN(test_burst_cap_clamps_at_far_frontier);
+    RUN(test_burst_cap_scales_monotonically_with_distance);
+    RUN(test_burst_cap_isotropic);
     RUN(test_asteroid_geom_ladder_strictly_decreases);
     RUN(test_clear_asteroid_marks_net_dirty_when_was_active);
 }

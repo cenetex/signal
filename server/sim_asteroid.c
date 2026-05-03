@@ -137,6 +137,28 @@ static int fracture_find_by_id(const world_t *w, uint32_t fracture_id) {
     return -1;
 }
 
+/* Distance-graded burst cap: rocks near the spawn cluster (origin)
+ * fracture with the baseline FRACTURE_CHALLENGE_BURST_CAP attempts;
+ * rocks further out get more attempts, which raises the probability
+ * tail on rare prefix classes (RATi etc.). The driver: pushing the
+ * frontier outward — planting outposts, hauling deeper — should pay
+ * better-graded ore, not just more of the same. The scaling is gentle
+ * (50 → 200 over 30 kU) so the existing prefix distribution stays
+ * dominant near the seed cluster and the dial only matters as players
+ * actually expand. Wire byte 41 already carries burst_cap, so clients
+ * search the matching range with no protocol change. */
+uint16_t mining_burst_cap_for_position(vec2 pos) {
+    const float SCALE_START = 5000.0f;     /* below this — baseline */
+    const float SCALE_FULL  = 30000.0f;    /* above this — clamped at max */
+    const uint16_t CAP_MIN  = FRACTURE_CHALLENGE_BURST_CAP;     /* 50 */
+    const uint16_t CAP_MAX  = FRACTURE_CHALLENGE_BURST_CAP * 4; /* 200 */
+    float dist = sqrtf(pos.x * pos.x + pos.y * pos.y);
+    if (dist <= SCALE_START) return CAP_MIN;
+    if (dist >= SCALE_FULL)  return CAP_MAX;
+    float t = (dist - SCALE_START) / (SCALE_FULL - SCALE_START);
+    return (uint16_t)(CAP_MIN + t * (float)(CAP_MAX - CAP_MIN));
+}
+
 static void fracture_begin_claim_window(world_t *w, int asteroid_idx) {
     fracture_claim_state_t *state;
     asteroid_t *a;
@@ -149,7 +171,7 @@ static void fracture_begin_claim_window(world_t *w, int asteroid_idx) {
     state->challenge_dirty = true;
     state->fracture_id = w->next_fracture_id;
     state->deadline_ms = (uint32_t)(w->time * 1000.0f) + 500u;
-    state->burst_cap = FRACTURE_CHALLENGE_BURST_CAP;
+    state->burst_cap = mining_burst_cap_for_position(a->pos);
     a->grade = MINING_GRADE_COMMON;
     memset(a->fragment_pub, 0, sizeof(a->fragment_pub));
     a->net_dirty = true;

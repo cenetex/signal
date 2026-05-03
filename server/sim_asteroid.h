@@ -37,6 +37,12 @@ int  seed_asteroid_clump(world_t *w, int first_slot);
 void seed_field_asteroid_of_tier(world_t *w, asteroid_t *a, asteroid_tier_t tier);
 void seed_random_field_asteroid(world_t *w, asteroid_t *a);
 
+/* Distance-graded fracture burst cap — exposed for tests. Production
+ * callers never invoke this directly; they pick it up through
+ * fracture_begin_claim_window which now reads it off the asteroid's
+ * world position. */
+uint16_t mining_burst_cap_for_position(vec2 pos);
+
 /*
  * Already declared in game_sim.h:
  *   fracture_asteroid
