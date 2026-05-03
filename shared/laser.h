@@ -23,14 +23,27 @@
  *                                                    accumulator + decay
  *   server/sim_mining.c::sim_mining_beam_step        per-tick HP
  *                                                    damage on asteroids
+ *   server/game_sim.c::find_scan_target              ray-vs-circle hit
+ *                                                    detection (HUD scan;
+ *                                                    no effect, but the
+ *                                                    geometry helper is
+ *                                                    shared with the
+ *                                                    other sites)
  *
  * DELIBERATELY NOT MIGRATED:
- *   - server/game_sim.c::find_scan_target — pure ray-cast for HUD
- *     targeting. No effect accumulation; only target identification.
- *     Could share laser_target_in_cone() if the geometry duplicates
- *     enough to be worth folding in (R3+).
+ *   - server/sim_mining.c::sim_mining_pick_target — its hit test
+ *     computes the true ray-vs-circle entry point (using
+ *     `surface_dist = proj - sqrt(r^2 - perp^2)`) instead of the
+ *     primitive's perpendicular-projection distance. The two values
+ *     differ for off-axis targets and the existing target-priority
+ *     ordering depends on the entry-point semantics. A future commit
+ *     could add a `LASER_HIT_ENTRY_POINT` mode if we want unification.
+ *   - server/game_sim.c::find_scan_target ring-vs-annulus block —
+ *     true ray-circle intersection (entry/exit) rather than
+ *     point-radius. Stays hand-rolled.
  *   - server/game_sim.c scaffold-snap trigger — checks proximity at
- *     beam_end to flip a state machine. Not an effect accumulator.
+ *     beam_end to flip a state machine. Not an effect accumulator,
+ *     not a hit test against a fresh ray.
  *
  * This refactor does NOT add new gameplay (combat lasers, heat,
  * jamming, etc.) — it just consolidates the existing laser-shaped
@@ -65,13 +78,17 @@ typedef struct {
  * the beam's range and cone. When non-NULL, `*out_hit_pos` is filled
  * with the visible-beam termination point (target surface, biased
  * toward the source by 85% of target_radius for a clean visual).
+ * When non-NULL, `*out_along_dist` is filled with the distance along
+ * the beam axis from source to the projected target center — useful
+ * for "nearest hit wins" loops over multiple candidate targets.
  *
  * Doesn't apply any effect — pure geometry check. The caller decides
  * what to do with the hit: accumulate damage, advance progress, etc. */
 bool laser_target_in_beam(const laser_ray_t *ray,
                           vec2 target_pos,
                           float target_radius,
-                          vec2 *out_hit_pos);
+                          vec2 *out_hit_pos,
+                          float *out_along_dist);
 
 /* Per-tick effect accumulation on a scalar field (hp, smelt_progress,
  * fab_charge, etc.).

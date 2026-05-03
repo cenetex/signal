@@ -18,7 +18,7 @@ TEST(test_laser_target_in_thin_ray_hits_on_axis) {
         .cone_half_angle = 0.0f,
     };
     vec2 hit;
-    ASSERT(laser_target_in_beam(&ray, v2(50.0f, 0.0f), 5.0f, &hit));
+    ASSERT(laser_target_in_beam(&ray, v2(50.0f, 0.0f), 5.0f, &hit, NULL));
     /* Hit position biased 85% of radius back toward source from
      * target center → x = 50 - 5*0.85 = 45.75. */
     ASSERT_EQ_FLOAT(hit.x, 45.75f, 0.01f);
@@ -35,9 +35,9 @@ TEST(test_laser_target_in_thin_ray_misses_off_axis) {
         .cone_half_angle = 0.0f,
     };
     /* Target center 20u off axis, radius 5 → perp 20 > radius 5 → miss. */
-    ASSERT(!laser_target_in_beam(&ray, v2(50.0f, 20.0f), 5.0f, NULL));
+    ASSERT(!laser_target_in_beam(&ray, v2(50.0f, 20.0f), 5.0f, NULL, NULL));
     /* Just barely on-axis — perp 4.9 < radius 5 → hit. */
-    ASSERT(laser_target_in_beam(&ray, v2(50.0f, 4.9f), 5.0f, NULL));
+    ASSERT(laser_target_in_beam(&ray, v2(50.0f, 4.9f), 5.0f, NULL, NULL));
 }
 
 TEST(test_laser_cone_widens_with_distance) {
@@ -51,9 +51,9 @@ TEST(test_laser_cone_widens_with_distance) {
     };
     /* Target 10u perpendicular at d=10 → allowed 5.77 + 1 = 6.77; perp
      * 10 > 6.77 → miss. */
-    ASSERT(!laser_target_in_beam(&ray, v2(10.0f, 10.0f), 1.0f, NULL));
+    ASSERT(!laser_target_in_beam(&ray, v2(10.0f, 10.0f), 1.0f, NULL, NULL));
     /* Same target at d=100 → allowed ~58.7; perp 10 < 58.7 → hit. */
-    ASSERT(laser_target_in_beam(&ray, v2(100.0f, 10.0f), 1.0f, NULL));
+    ASSERT(laser_target_in_beam(&ray, v2(100.0f, 10.0f), 1.0f, NULL, NULL));
 }
 
 TEST(test_laser_range_gate_disengages) {
@@ -65,9 +65,9 @@ TEST(test_laser_range_gate_disengages) {
         .cone_half_angle = 0.0f,
     };
     /* Center at d=120, radius 5 → effective_range = 100 + 5 = 105; out. */
-    ASSERT(!laser_target_in_beam(&ray, v2(120.0f, 0.0f), 5.0f, NULL));
+    ASSERT(!laser_target_in_beam(&ray, v2(120.0f, 0.0f), 5.0f, NULL, NULL));
     /* Center at d=104 with radius 5 → effective_range covers it. */
-    ASSERT(laser_target_in_beam(&ray, v2(104.0f, 0.0f), 5.0f, NULL));
+    ASSERT(laser_target_in_beam(&ray, v2(104.0f, 0.0f), 5.0f, NULL, NULL));
 }
 
 TEST(test_laser_target_behind_source_misses) {
@@ -78,7 +78,7 @@ TEST(test_laser_target_behind_source_misses) {
         .range = 100.0f,
         .cone_half_angle = 0.0f,
     };
-    ASSERT(!laser_target_in_beam(&ray, v2(-50.0f, 0.0f), 5.0f, NULL));
+    ASSERT(!laser_target_in_beam(&ray, v2(-50.0f, 0.0f), 5.0f, NULL, NULL));
 }
 
 TEST(test_laser_apply_effect_accumulates) {

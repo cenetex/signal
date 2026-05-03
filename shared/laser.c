@@ -8,7 +8,8 @@
 bool laser_target_in_beam(const laser_ray_t *ray,
                           vec2 target_pos,
                           float target_radius,
-                          vec2 *out_hit_pos) {
+                          vec2 *out_hit_pos,
+                          float *out_along_dist) {
     if (!ray) return false;
 
     vec2 to_target = v2_sub(target_pos, ray->source_pos);
@@ -46,6 +47,7 @@ bool laser_target_in_beam(const laser_ray_t *ray,
         *out_hit_pos = v2_sub(target_pos,
                               v2_scale(to_target_unit, target_radius * 0.85f));
     }
+    if (out_along_dist) *out_along_dist = along;
     return true;
 }
 

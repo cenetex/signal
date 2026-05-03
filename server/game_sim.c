@@ -22,6 +22,7 @@
  */
 #include "game_sim.h"
 #include "tractor.h"
+#include "laser.h"
 #include "manifest.h"
 #include "ship.h"
 #include "sim_ai.h"
@@ -2373,23 +2374,30 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
     sp->scan_target_index = -1;
     sp->scan_module_index = -1;
 
+    /* Each circle-target test reuses the same laser_ray. We compare the
+     * `along` distance returned by laser_target_in_beam against best_dist
+     * manually rather than tightening the ray's range each time, so a
+     * larger target whose center sits past best_dist but whose radius
+     * extends within still has a chance to register — preserving the
+     * legacy behavior where best_dist gated on projected-center distance. */
+    laser_ray_t ray = {
+        .source_pos = muzzle, .source_dir = forward,
+        .range = MINING_RANGE, .cone_half_angle = 0.0f,
+    };
+
     /* Check station modules */
     for (int si = 0; si < MAX_STATIONS; si++) {
         const station_t *st = &w->stations[si];
         if (st->signal_range <= 0.0f) continue;
         /* Check core */
-        vec2 to_core = v2_sub(st->pos, muzzle);
-        float proj = v2_dot(to_core, forward);
-        if (proj > 0.0f && proj < best_dist) {
-            vec2 closest = v2_add(muzzle, v2_scale(forward, proj));
-            float perp = v2_len(v2_sub(closest, st->pos));
-            if (perp < st->radius) {
-                best_dist = proj;
-                sp->scan_target_type = 1;
-                sp->scan_target_index = si;
-                sp->scan_module_index = -1; /* core */
-                sp->beam_end = v2_sub(st->pos, v2_scale(v2_norm(to_core), st->radius * 0.9f));
-            }
+        vec2 hit; float along;
+        if (laser_target_in_beam(&ray, st->pos, st->radius, &hit, &along)
+            && along < best_dist) {
+            best_dist = along;
+            sp->scan_target_type = 1;
+            sp->scan_target_index = si;
+            sp->scan_module_index = -1; /* core */
+            sp->beam_end = hit;
         }
         /* Check structural rings — ray vs annulus. Each station ring
          * is a thin band of girders at STATION_RING_RADIUS[r]. Cast the
@@ -2425,18 +2433,14 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
         for (int mi = 0; mi < st->module_count; mi++) {
             if (st->modules[mi].scaffold) continue;
             vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
-            vec2 to_mod = v2_sub(mp, muzzle);
-            float mproj = v2_dot(to_mod, forward);
-            if (mproj > 0.0f && mproj < best_dist) {
-                vec2 closest = v2_add(muzzle, v2_scale(forward, mproj));
-                float perp = v2_len(v2_sub(closest, mp));
-                if (perp < STATION_MODULE_COL_RADIUS) {
-                    best_dist = mproj;
-                    sp->scan_target_type = 1;
-                    sp->scan_target_index = si;
-                    sp->scan_module_index = mi;
-                    sp->beam_end = v2_sub(mp, v2_scale(v2_norm(to_mod), STATION_MODULE_COL_RADIUS * 0.9f));
-                }
+            vec2 hit; float along;
+            if (laser_target_in_beam(&ray, mp, STATION_MODULE_COL_RADIUS, &hit, &along)
+                && along < best_dist) {
+                best_dist = along;
+                sp->scan_target_type = 1;
+                sp->scan_target_index = si;
+                sp->scan_module_index = mi;
+                sp->beam_end = hit;
             }
         }
     }
@@ -2445,19 +2449,15 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
     for (int ni = 0; ni < MAX_NPC_SHIPS; ni++) {
         const npc_ship_t *npc = &w->npc_ships[ni];
         if (!npc->active) continue;
-        vec2 to_npc = v2_sub(npc->ship.pos, muzzle);
-        float proj = v2_dot(to_npc, forward);
         float npc_r = npc_hull_def(npc)->render_scale * 16.0f;
-        if (proj > 0.0f && proj < best_dist) {
-            vec2 closest = v2_add(muzzle, v2_scale(forward, proj));
-            float perp = v2_len(v2_sub(closest, npc->ship.pos));
-            if (perp < npc_r) {
-                best_dist = proj;
-                sp->scan_target_type = 2;
-                sp->scan_target_index = ni;
-                sp->scan_module_index = -1;
-                sp->beam_end = v2_sub(npc->ship.pos, v2_scale(v2_norm(to_npc), npc_r * 0.9f));
-            }
+        vec2 hit; float along;
+        if (laser_target_in_beam(&ray, npc->ship.pos, npc_r, &hit, &along)
+            && along < best_dist) {
+            best_dist = along;
+            sp->scan_target_type = 2;
+            sp->scan_target_index = ni;
+            sp->scan_module_index = -1;
+            sp->beam_end = hit;
         }
     }
 
@@ -2465,19 +2465,15 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
     for (int pi = 0; pi < MAX_PLAYERS; pi++) {
         const server_player_t *other = &w->players[pi];
         if (!other->connected || other->id == sp->id) continue;
-        vec2 to_p = v2_sub(other->ship.pos, muzzle);
-        float proj = v2_dot(to_p, forward);
         float pr = ship_hull_def(&other->ship)->ship_radius;
-        if (proj > 0.0f && proj < best_dist) {
-            vec2 closest = v2_add(muzzle, v2_scale(forward, proj));
-            float perp = v2_len(v2_sub(closest, other->ship.pos));
-            if (perp < pr) {
-                best_dist = proj;
-                sp->scan_target_type = 3;
-                sp->scan_target_index = pi;
-                sp->scan_module_index = -1;
-                sp->beam_end = v2_sub(other->ship.pos, v2_scale(v2_norm(to_p), pr * 0.9f));
-            }
+        vec2 hit; float along;
+        if (laser_target_in_beam(&ray, other->ship.pos, pr, &hit, &along)
+            && along < best_dist) {
+            best_dist = along;
+            sp->scan_target_type = 3;
+            sp->scan_target_index = pi;
+            sp->scan_module_index = -1;
+            sp->beam_end = hit;
         }
     }
 
