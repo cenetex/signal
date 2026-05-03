@@ -219,6 +219,56 @@ module_inputs_t module_required_inputs(module_type_t type) {
     return r;
 }
 
+commodity_t module_required_output(module_type_t type) {
+    switch (type) {
+    case MODULE_FURNACE:      return COMMODITY_FERRITE_INGOT;   /* schema default; instance tag overrides */
+    case MODULE_FRAME_PRESS:  return COMMODITY_FRAME;
+    case MODULE_LASER_FAB:    return COMMODITY_LASER_MODULE;
+    case MODULE_TRACTOR_FAB:  return COMMODITY_TRACTOR_MODULE;
+    /* SHIPYARD output is a physical scaffold body, not a commodity. */
+    default: return COMMODITY_COUNT;
+    }
+}
+
+commodity_t module_furnace_default_output(void) {
+    return COMMODITY_FERRITE_INGOT;
+}
+
+commodity_t commodity_ingot_for_ore(commodity_t ore) {
+    switch (ore) {
+    case COMMODITY_FERRITE_ORE: return COMMODITY_FERRITE_INGOT;
+    case COMMODITY_CUPRITE_ORE: return COMMODITY_CUPRITE_INGOT;
+    case COMMODITY_CRYSTAL_ORE: return COMMODITY_CRYSTAL_INGOT;
+    default: return COMMODITY_COUNT;
+    }
+}
+
+commodity_t commodity_ore_for_ingot(commodity_t ingot) {
+    switch (ingot) {
+    case COMMODITY_FERRITE_INGOT: return COMMODITY_FERRITE_ORE;
+    case COMMODITY_CUPRITE_INGOT: return COMMODITY_CUPRITE_ORE;
+    case COMMODITY_CRYSTAL_INGOT: return COMMODITY_CRYSTAL_ORE;
+    default: return COMMODITY_COUNT;
+    }
+}
+
+commodity_t module_instance_output(const station_module_t *m) {
+    if (!m) return COMMODITY_COUNT;
+    if (m->type == MODULE_FURNACE) {
+        commodity_t tag = (commodity_t)m->commodity;
+        /* Untagged or non-ingot tag → fall back to the default. Pre-Slice-1
+         * saves left commodity = COMMODITY_COUNT on furnaces. */
+        if (commodity_ore_for_ingot(tag) != COMMODITY_COUNT) return tag;
+        return module_furnace_default_output();
+    }
+    return module_required_output(m->type);
+}
+
+commodity_t module_instance_input_ore(const station_module_t *m) {
+    if (!m || m->type != MODULE_FURNACE) return COMMODITY_COUNT;
+    return commodity_ore_for_ingot(module_instance_output(m));
+}
+
 bool module_unlocked_for_player(uint32_t unlocked_mask, module_type_t type) {
     int prereq = module_schema(type)->prerequisite;
     if (prereq < 0 || prereq >= MODULE_COUNT) return true;

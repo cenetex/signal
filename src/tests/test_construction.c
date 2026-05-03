@@ -1234,6 +1234,59 @@ TEST(test_module_schema_producer_io) {
     ASSERT_EQ_INT(module_schema_output(MODULE_DOCK), COMMODITY_COUNT);
 }
 
+TEST(test_module_schema_required_output) {
+    /* Slice 1 — every non-shipyard producer declares a single output
+     * commodity at the schema level. SHIPYARD is exempt (output is a
+     * physical scaffold, not a commodity). */
+    ASSERT_EQ_INT(module_required_output(MODULE_FURNACE),     COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(module_required_output(MODULE_FRAME_PRESS), COMMODITY_FRAME);
+    ASSERT_EQ_INT(module_required_output(MODULE_LASER_FAB),   COMMODITY_LASER_MODULE);
+    ASSERT_EQ_INT(module_required_output(MODULE_TRACTOR_FAB), COMMODITY_TRACTOR_MODULE);
+    ASSERT_EQ_INT(module_required_output(MODULE_SHIPYARD),    COMMODITY_COUNT);
+    ASSERT_EQ_INT(module_required_output(MODULE_DOCK),        COMMODITY_COUNT);
+    ASSERT_EQ_INT(module_required_output(MODULE_HOPPER),      COMMODITY_COUNT);
+}
+
+TEST(test_module_furnace_instance_tag) {
+    /* Furnace output follows the per-instance commodity tag. Untagged
+     * (legacy COMMODITY_COUNT) falls back to FERRITE_INGOT. Each ingot
+     * tag implies a matching input ore. Non-furnace producers ignore
+     * the tag and read schema. */
+    station_module_t m = { .type = MODULE_FURNACE, .commodity = (uint8_t)COMMODITY_COUNT };
+    ASSERT_EQ_INT(module_instance_output(&m),    COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(module_instance_input_ore(&m), COMMODITY_FERRITE_ORE);
+
+    m.commodity = (uint8_t)COMMODITY_CUPRITE_INGOT;
+    ASSERT_EQ_INT(module_instance_output(&m),    COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(module_instance_input_ore(&m), COMMODITY_CUPRITE_ORE);
+
+    m.commodity = (uint8_t)COMMODITY_CRYSTAL_INGOT;
+    ASSERT_EQ_INT(module_instance_output(&m),    COMMODITY_CRYSTAL_INGOT);
+    ASSERT_EQ_INT(module_instance_input_ore(&m), COMMODITY_CRYSTAL_ORE);
+
+    /* Garbage tag → fallback to default. */
+    m.commodity = (uint8_t)COMMODITY_FRAME;
+    ASSERT_EQ_INT(module_instance_output(&m),    COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(module_instance_input_ore(&m), COMMODITY_FERRITE_ORE);
+
+    /* Frame press: instance output ignores tag, uses schema. */
+    station_module_t fp = { .type = MODULE_FRAME_PRESS, .commodity = (uint8_t)COMMODITY_LASER_MODULE };
+    ASSERT_EQ_INT(module_instance_output(&fp),    COMMODITY_FRAME);
+    ASSERT_EQ_INT(module_instance_input_ore(&fp), COMMODITY_COUNT); /* not a furnace */
+}
+
+TEST(test_commodity_ore_ingot_pairing) {
+    /* Round-trip: ingot ↔ ore. Non-pairs return COMMODITY_COUNT. */
+    ASSERT_EQ_INT(commodity_ingot_for_ore(COMMODITY_FERRITE_ORE), COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(commodity_ingot_for_ore(COMMODITY_CUPRITE_ORE), COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(commodity_ingot_for_ore(COMMODITY_CRYSTAL_ORE), COMMODITY_CRYSTAL_INGOT);
+    ASSERT_EQ_INT(commodity_ore_for_ingot(COMMODITY_FERRITE_INGOT), COMMODITY_FERRITE_ORE);
+    ASSERT_EQ_INT(commodity_ore_for_ingot(COMMODITY_CUPRITE_INGOT), COMMODITY_CUPRITE_ORE);
+    ASSERT_EQ_INT(commodity_ore_for_ingot(COMMODITY_CRYSTAL_INGOT), COMMODITY_CRYSTAL_ORE);
+    ASSERT_EQ_INT(commodity_ingot_for_ore(COMMODITY_FRAME),         COMMODITY_COUNT);
+    ASSERT_EQ_INT(commodity_ore_for_ingot(COMMODITY_LASER_MODULE),  COMMODITY_COUNT);
+}
+
 TEST(test_module_schema_valid_rings) {
     /* Service modules can go anywhere */
     ASSERT(module_valid_on_ring(MODULE_DOCK, 0));
@@ -1611,6 +1664,9 @@ void register_construction_module_schema_tests(void) {
     RUN(test_module_build_state_lifecycle);
     RUN(test_module_schema_basic_kinds);
     RUN(test_module_schema_producer_io);
+    RUN(test_module_schema_required_output);
+    RUN(test_module_furnace_instance_tag);
+    RUN(test_commodity_ore_ingot_pairing);
     RUN(test_module_schema_valid_rings);
     RUN(test_module_schema_helpers);
     RUN(test_module_schema_build_costs_match);
