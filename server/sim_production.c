@@ -586,6 +586,15 @@ void step_furnace_smelting(world_t *w, float dt) {
                 tractor_anchor_t tgt = { .pos = a->pos,   .vel = &a->vel, .inv_mass = 1.0f };
                 (void)tractor_apply(&src, &tgt, &SMELT_BEAM, dt);
 
+                /* Pulse the furnace module — the existing ring-spoke
+                 * physics in step_station_ring_dynamics looks at
+                 * module_active_pulse[] to scale spoke torque. Without
+                 * this, an active smelt beam wouldn't drive any ring
+                 * rotation. The bulk-ore-from-inventory smelt path
+                 * (line ~323) already pulses; the fragment-tow path
+                 * lacked the equivalent. */
+                st->module_active_pulse[m] = 1.0f;
+
                 float d_mid = sqrtf(v2_dist_sq(a->pos, midpoint));
                 /* Smelt when fragment is close to the midpoint */
                 if (d_mid < 80.0f) {
