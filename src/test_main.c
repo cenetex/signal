@@ -64,6 +64,7 @@ void register_furnace_color_tests(void);
 void register_respawn_fee_tests(void);
 void register_relationship_tests(void);
 void register_tractor_tests(void);
+void register_laser_tests(void);
 
 int main(int argc, char **argv) {
     setbuf(stdout, NULL); /* unbuffered so crash location is visible */
@@ -160,6 +161,7 @@ int main(int argc, char **argv) {
     register_respawn_fee_tests();
     register_relationship_tests();
     register_tractor_tests();
+    register_laser_tests();
 
     printf("\n%d tests run, %d passed, %d failed", tests_run, tests_passed, tests_failed);
     if (g_warnings > 0) printf(", %d warnings", g_warnings);
