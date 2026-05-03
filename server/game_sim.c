@@ -2898,6 +2898,17 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
             float bal = sp->pubkey_set
                 ? ledger_balance_by_pubkey(docked_st, sp->pubkey)
                 : ledger_balance(docked_st, sp->session_token);
+            SIM_LOG("[buy-bal] player %d at station %d: pubkey_set=%d pk_prefix=%02x%02x%02x%02x bal=%.2f ledger_count=%d\n",
+                    sp->id, sp->current_station, sp->pubkey_set ? 1 : 0,
+                    sp->pubkey[0], sp->pubkey[1], sp->pubkey[2], sp->pubkey[3],
+                    bal, docked_st->ledger_count);
+            for (int li = 0; li < docked_st->ledger_count; li++) {
+                const uint8_t *lpk = docked_st->ledger[li].player_pubkey;
+                (void)lpk;
+                SIM_LOG("[buy-bal]   ledger[%d] pk=%02x%02x%02x%02x bal=%.2f\n",
+                        li, lpk[0], lpk[1], lpk[2], lpk[3],
+                        docked_st->ledger[li].balance);
+            }
             float afford = (price_per > 0.01f) ? floorf(bal / price_per) : 0.0f;
             /* Per-press unit cap scales by commodity density: standard
              * goods (vol = 1.0) buy 1 per press; dense goods like
