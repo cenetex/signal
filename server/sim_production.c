@@ -528,7 +528,13 @@ void step_furnace_smelting(world_t *w, float dt) {
                 int ring = st->modules[m].ring;
                 vec2 furnace_pos = module_world_pos_ring(st, ring, st->modules[m].slot);
 
-                /* Find nearest module on an adjacent ring (inner or outer) */
+                /* Find nearest matching ORE-tagged hopper on an adjacent
+                 * ring. Filtering by commodity matters now that stations
+                 * carry both input AND output hoppers (Slice 1) — without
+                 * the filter, a ferrite-furnace's silo could anchor on a
+                 * neighboring FERRITE_INGOT output hopper at certain
+                 * angles, shifting the smelt midpoint and the visible
+                 * beam endpoint to the wrong hopper. */
                 vec2 silo_pos = furnace_pos;
                 bool has_silo = false;
                 float best_d = 1e18f;
@@ -538,6 +544,9 @@ void step_furnace_smelting(world_t *w, float dt) {
                     if (adj < 1 || adj > STATION_NUM_RINGS) continue;
                     for (int m2 = 0; m2 < st->module_count; m2++) {
                         if (st->modules[m2].ring != adj) continue;
+                        if (st->modules[m2].scaffold) continue;
+                        if (st->modules[m2].type != MODULE_HOPPER) continue;
+                        if ((commodity_t)st->modules[m2].commodity != a->commodity) continue;
                         vec2 mp2 = module_world_pos_ring(st, adj, st->modules[m2].slot);
                         float dd = v2_dist_sq(furnace_pos, mp2);
                         if (dd < best_d) { best_d = dd; silo_pos = mp2; has_silo = true; }
