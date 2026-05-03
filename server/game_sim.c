@@ -1273,10 +1273,23 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     if (payout > 0.01f) {
         /* Stations carry the debt — pool is derived from -Σ(balance),
          * so crediting the player's ledger naturally pushes the station's
-         * net issuance more negative. Conservation is structural. */
+         * net issuance more negative. Conservation is structural.
+         *
+         * Use ledger_earn_by_pubkey (full credit). DON'T route through
+         * ledger_credit_supply_by_pubkey — that one applies the 35%
+         * smelt-station cut and is meant for raw ore → ingot deliveries
+         * where the destination station does the smelting work. Contract
+         * delivery and the consume-fallback below are pure trade
+         * settlements; the player gets the full quoted price.
+         *
+         * Bug history: until now the pubkey branch silently dropped 35%
+         * of every inter-station ingot delivery on the floor — the
+         * popup showed the full payout (`payout`) but the ledger only
+         * received `payout * 0.65`. Reported as "press S, popup says
+         * +152, wallet only sees +99." */
         {
             if (sp->pubkey_set) {
-                ledger_credit_supply_by_pubkey(st, sp->pubkey, payout);
+                ledger_earn_by_pubkey(st, sp->pubkey, payout);
             } else {
                 ledger_earn(st, sp->session_token, payout);
             }

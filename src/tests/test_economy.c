@@ -363,6 +363,45 @@ TEST(test_deliver_ingots_to_contract) {
     ASSERT(w.contracts[0].quantity_needed < 20.0f || !w.contracts[0].active);
 }
 
+/* Pubkey-registered players had been getting 65% of the contract payout
+ * because try_sell_station_cargo routed through ledger_credit_supply
+ * (which applies the 35% smelt-station cut) instead of ledger_earn
+ * (full credit). Locks the fix in: payout to the ledger == quoted price
+ * × quantity, not × 0.65. Reported as "press S, popup says +152, wallet
+ * only sees +99" on the WORK tab. */
+TEST(test_deliver_ingots_full_payout_to_pubkey_player) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x01, 8);
+    /* Register a pubkey so the bulk-sell path takes the pubkey branch. */
+    memset(w.players[0].pubkey, 0xAA, 32);
+    w.players[0].pubkey_set = true;
+    /* Player carries 10 ferrite ingots; contract pays 20 cr each. */
+    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 10.0f;
+    w.contracts[0] = (contract_t){
+        .active = true, .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 10.0f,
+        .base_price = 20.0f,
+        .target_index = -1, .claimed_by = -1,
+    };
+    float bal_before = ledger_balance_by_pubkey(&w.stations[1], w.players[0].pubkey);
+    w.players[0].docked = true;
+    w.players[0].current_station = 1;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+    /* Expect 10 × 20 = 200 cr credited (allow tiny float slack for
+     * age-escalation drift on tick 1 — should be effectively zero). */
+    float bal_after = ledger_balance_by_pubkey(&w.stations[1], w.players[0].pubkey);
+    float gained = bal_after - bal_before;
+    ASSERT(gained > 199.0f);
+    ASSERT(gained < 201.0f);
+}
+
 TEST(test_mixed_cargo_sell_and_deliver) {
     WORLD_DECL;
     world_reset(&w);
@@ -785,6 +824,7 @@ void register_economy_pricing_tests(void) {
 void register_economy_mixed_cargo_tests(void) {
     TEST_SECTION("\nMixed cargo sell/deliver:\n");
     RUN(test_deliver_ingots_to_contract);
+    RUN(test_deliver_ingots_full_payout_to_pubkey_player);
     RUN(test_mixed_cargo_sell_and_deliver);
     RUN(test_no_delivery_without_matching_contract);
 }
