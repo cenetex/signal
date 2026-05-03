@@ -3,6 +3,7 @@
  * Extracted from game_sim.c.
  */
 #include "sim_production.h"
+#include "tractor.h"
 #include "sim_asteroid.h"      /* fracture_claim_state_reset */
 #include "sim_construction.h"  /* module_build_material, module_build_cost */
 #include "manifest.h"
@@ -562,19 +563,29 @@ void step_furnace_smelting(world_t *w, float dt) {
                 bool silo_reach = (d_silo_sq <= pull_sq);
                 if (!furnace_reach || !silo_reach) continue;  /* both must reach */
 
-                /* Pull toward midpoint between furnace and silo — strong pull */
+                /* Pull fragment toward the midpoint between furnace and
+                 * silo. World-pinned source (midpoint isn't a single
+                 * body — it's the geometric center of the two-module
+                 * smelt path). Linear-falloff constant-pull beam:
+                 * peak at d=0, decays to zero at pull_range. */
                 vec2 midpoint = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
-                vec2 to_mid = v2_sub(midpoint, a->pos);
-                float d_mid = sqrtf(v2_len_sq(to_mid));
-                if (d_mid > 0.5f) {
-                    float strength = HOPPER_PULL_ACCEL * 1.5f * (1.0f - d_mid / pull_range);
-                    vec2 dir = v2_scale(to_mid, 1.0f / d_mid);
-                    a->vel = v2_add(a->vel, v2_scale(dir, strength * dt));
-                    a->vel = v2_scale(a->vel, 1.0f / (1.0f + 8.0f * dt));
-                    float spd = v2_len(a->vel);
-                    if (spd > 100.0f) a->vel = v2_scale(a->vel, 100.0f / spd);
-                }
+                static const tractor_beam_t SMELT_BEAM = {
+                    .rest_length     = 0.0f,
+                    .pull_strength   = 0.0f,
+                    .push_strength   = 0.0f,
+                    .pull_constant   = HOPPER_PULL_ACCEL * 1.5f,
+                    .push_constant   = 0.0f,
+                    .range           = HOPPER_PULL_RANGE,
+                    .axial_damping   = 8.0f,
+                    .tangent_damping = 2.0f,    /* ~25% of axial */
+                    .speed_cap       = 100.0f,
+                    .falloff         = TRACTOR_FALLOFF_LINEAR,
+                };
+                tractor_anchor_t src = { .pos = midpoint, .vel = NULL,    .inv_mass = 0.0f };
+                tractor_anchor_t tgt = { .pos = a->pos,   .vel = &a->vel, .inv_mass = 1.0f };
+                (void)tractor_apply(&src, &tgt, &SMELT_BEAM, dt);
 
+                float d_mid = sqrtf(v2_dist_sq(a->pos, midpoint));
                 /* Smelt when fragment is close to the midpoint */
                 if (d_mid < 80.0f) {
                     smelt_station = s;
