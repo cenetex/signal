@@ -1,39 +1,63 @@
 /*
  * tractor.h — unified tractor-beam primitive.
  *
- * One function (tractor_apply) replaces the half-dozen hand-rolled
- * "apply force between two anchor points" sites scattered across
- * sim_ai, game_sim, and sim_production. Lives in shared/ so client
- * predictive simulation can call the same code as the server's
- * authoritative tick.
+ * One function (tractor_apply) replaces six hand-rolled "apply force
+ * between two anchor points" sites that previously lived in sim_ai,
+ * game_sim, and sim_production. Lives in shared/ so client predictive
+ * simulation can call the same code as the server's authoritative tick.
  *
- * The shape: each beam has a rest length, a pull strength (force per
- * unit stretch when d > rest), a push strength (force per unit
- * compression when d < rest), an outer range gate, axial damping
- * along the beam line, tangent damping perpendicular to it, an
- * optional speed cap, and an optional linear-falloff curve. Newton's
- * third applies automatically when the source anchor is body-attached
- * (vel pointer + nonzero inv_mass); world-pinned anchors (NULL vel,
- * inv_mass = 0) act as infinite-mass attachment points.
+ * Two strength components per side (each can be zero):
+ *   - *_strength: spring term, force per unit of stretch from rest.
+ *     Linear-in-distance, settles to equilibrium at rest_length.
+ *   - *_constant: always-on term, fixed-magnitude force whenever the
+ *     beam is on the corresponding side of rest. Models a "thruster
+ *     on the rope" — fragment yanks in regardless of distance.
  *
- * Migration sites (filled in as each commit lands):
- *   - server/game_sim.c::apply_band_force        (player tow)
- *   - server/sim_ai.c   NPC_STATE_RETURN_TO_STATION (NPC fragment tow)
- *   - server/sim_ai.c   step_tow_drone NPC_STATE_TRAVEL_TO_DEST (scaffold tow)
- *   - server/sim_production.c::step_furnace_smelting (smelt beam pull)
- *   - server/game_sim.c::step_scaffolds blueprint pull
- *   - server/game_sim.c::step_scaffolds module slot snap
+ * Two damping components, decoupled:
+ *   - axial_damping: opposes velocity along the beam line.
+ *   - tangent_damping: opposes velocity perpendicular to it.
  *
- * Deliberately NOT migrated (different shape, future work):
- *   - step_scaffolds orbital vortex      — tangential orbit + radial
- *                                          pull, not a point-anchor.
- *   - step_station_ring_dynamics spokes  — angular variant; needs
- *                                          rings-as-bodies first.
- *   - step_fragment_collection           — state machine, not a
- *                                          force application.
- *   - all laser sites (mining, smelt-progress, future damage) — the
- *                                          laser primitive is a
- *                                          separate refactor.
+ * Plus: range gate (d > range disables the whole beam, including
+ * damping — set range=0 if you want damping unconditional), optional
+ * speed cap on target, and TRACTOR_FALLOFF_LINEAR for `(1 - d/range)`
+ * scaling of strength.
+ *
+ * Newton's third applies automatically when the source anchor is
+ * body-attached (vel pointer + nonzero inv_mass); world-pinned
+ * anchors (NULL vel, inv_mass = 0) act as infinite-mass attachment
+ * points and skip reaction.
+ *
+ * MIGRATED SITES:
+ *   server/game_sim.c::apply_band_force         (player tow)
+ *   server/sim_ai.c   step_npc_ships RETURN     (NPC fragment tow)
+ *   server/sim_ai.c   step_tow_drone TRAVEL     (scaffold tow)
+ *   server/sim_production.c::step_furnace_smelting   (smelt beam pull)
+ *   server/game_sim.c::step_scaffolds LOOSE     (planned blueprint pull)
+ *   server/game_sim.c::step_scaffolds SNAPPING  (module slot snap)
+ *
+ * DELIBERATELY NOT MIGRATED (different shape, future work):
+ *   - step_scaffolds orbital vortex (loose-near-station orbit) —
+ *     tangential orbit + radial pull, not a point-anchor primitive.
+ *   - step_station_ring_dynamics spokes — angular variant; needs
+ *     rings-as-bodies first.
+ *   - step_fragment_collection (player tractor pickup detection) —
+ *     state machine deciding which fragments to attach, not a force
+ *     application.
+ *   - All laser sites (mining laser, smelt_progress accumulator,
+ *     future damage lasers) — the laser primitive (energy delivery
+ *     along a ray, no momentum) is a separate refactor.
+ *
+ * TUNING NOTE (tangent_damping):
+ *   The user's design intent for the 1D-damping refactor was
+ *   "axial damping along the rope only, with small or zero tangent
+ *   damping for natural swing." In practice, several migrated sites
+ *   had to keep tangent_damping near axial value to satisfy existing
+ *   integration tests that were tuned around the legacy isotropic
+ *   drag (`vel *= 1/(1+k*dt)`). Specifically: NPC fragment tow,
+ *   blueprint pull, and slot snap all run with tangent ≈ axial.
+ *   Player tow uses the legacy axial=0.6, tangent=0.4 split. Smelt
+ *   beam and scaffold tow use ~25% tangent. Worth revisiting once
+ *   visual playtest confirms the right feel for each site.
  */
 #ifndef SHARED_TRACTOR_H
 #define SHARED_TRACTOR_H
