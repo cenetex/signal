@@ -28,6 +28,7 @@
 #include "manifest.h"
 #include "ship.h"
 #include "sim_ai.h"
+#include "sim_construction.h"
 #include "base58.h"
 #include "protocol.h"
 #include "station_authority.h"
@@ -78,7 +79,17 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 50  /* Hoppers tag a single commodity each, the
+#define SAVE_VERSION 51  /* Cargo-in-space schema (Slice 1):
+                          * FURNACE per-instance commodity tag drives
+                          * its output ingot type. v50 saves loaded
+                          * with untagged furnaces (commodity ==
+                          * COMMODITY_COUNT) get tagged on load by a
+                          * station-furnace-count heuristic — 1 furnace
+                          * → FERRITE_INGOT, 2 → 1×FERRITE+1×CUPRITE,
+                          * 3+ → CUPRITE+CRYSTAL split — and missing
+                          * output hoppers are auto-spawned into free
+                          * outer-ring slots. Layout-preserving on
+                          * disk. v50 was: Hoppers tag a single commodity each, the
                           * pair rule becomes "all required input
                           * commodities have a hopper on the station,"
                           * and producers emit one spoke per input
@@ -179,6 +190,81 @@ _Static_assert(sizeof(legacy_named_ingot_t) == 56,
 /* Set by world_load() before read_station() so per-station readers know
  * which version they're parsing and can handle field additions. */
 static int g_loaded_save_version = SAVE_VERSION;
+
+/* v51 cargo-in-space schema migration (Slice 1):
+ * - Tag every untagged FURNACE (commodity == COMMODITY_COUNT) with an
+ *   output ingot using a station-furnace-count heuristic that matches
+ *   the existing count-tier smelt rules:
+ *     1 furnace → FERRITE_INGOT
+ *     2 furnaces → 1× FERRITE + 1× CUPRITE
+ *     3+ furnaces → 1× CUPRITE + 1× CRYSTAL + rest CUPRITE
+ * - Auto-spawn missing output hoppers in free outer-ring slots so the
+ *   seeded layout invariant (every producer has a tagged output
+ *   hopper) holds for migrated saves too.
+ *
+ * Idempotent — running it again on an already-migrated world is a
+ * no-op (tagged furnaces are skipped; existing output hoppers
+ * satisfy the search).
+ *
+ * Exposed (non-static) so tests can break a fresh world to look
+ * pre-Slice-1 and exercise this directly. */
+void world_apply_cargo_schema_migration(world_t *w) {
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        station_t *st = &w->stations[i];
+        if (st->module_count <= 0) continue;
+        int n_furnaces = 0;
+        for (int m = 0; m < st->module_count; m++) {
+            if (st->modules[m].type == MODULE_FURNACE && !st->modules[m].scaffold)
+                n_furnaces++;
+        }
+        int seen = 0;
+        for (int m = 0; m < st->module_count; m++) {
+            if (st->modules[m].type != MODULE_FURNACE) continue;
+            if (st->modules[m].scaffold) continue;
+            if ((commodity_t)st->modules[m].commodity == COMMODITY_FERRITE_INGOT ||
+                (commodity_t)st->modules[m].commodity == COMMODITY_CUPRITE_INGOT ||
+                (commodity_t)st->modules[m].commodity == COMMODITY_CRYSTAL_INGOT) {
+                seen++;
+                continue;
+            }
+            commodity_t tag;
+            if (n_furnaces >= 3) {
+                if      (seen == 0) tag = COMMODITY_CUPRITE_INGOT;
+                else if (seen == 1) tag = COMMODITY_CRYSTAL_INGOT;
+                else                tag = COMMODITY_CUPRITE_INGOT;
+            } else if (n_furnaces == 2) {
+                tag = (seen == 0) ? COMMODITY_FERRITE_INGOT
+                                  : COMMODITY_CUPRITE_INGOT;
+            } else {
+                tag = COMMODITY_FERRITE_INGOT;
+            }
+            st->modules[m].commodity = (uint8_t)tag;
+            seen++;
+        }
+        /* Auto-spawn missing output hoppers. Snapshot module_count to
+         * avoid iterating into freshly-added hoppers. */
+        int snap = st->module_count;
+        for (int m = 0; m < snap; m++) {
+            if (st->modules[m].scaffold) continue;
+            if (!module_is_producer(st->modules[m].type)) continue;
+            commodity_t out = module_instance_output(&st->modules[m]);
+            if (out == COMMODITY_COUNT) continue; /* shipyard etc. exempt */
+            if (station_find_hopper_for(st, out) >= 0) continue;
+            int placed_ring = -1, placed_slot = -1;
+            for (int r = 2; r <= STATION_NUM_RINGS && placed_ring < 0; r++) {
+                int slot = station_ring_free_slot(st, r, STATION_RING_SLOTS[r]);
+                if (slot >= 0) { placed_ring = r; placed_slot = slot; }
+            }
+            if (placed_ring < 0) {
+                int slot = station_ring_free_slot(st, 1, STATION_RING_SLOTS[1]);
+                if (slot >= 0) { placed_ring = 1; placed_slot = slot; }
+            }
+            if (placed_ring < 0) continue; /* no room — skip silently */
+            add_hopper_for(st, (uint8_t)placed_ring, (uint8_t)placed_slot, out);
+        }
+        rebuild_station_services(st);
+    }
+}
 
 /* ---- helper macros for explicit field I/O ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
@@ -1279,6 +1365,13 @@ bool world_load(world_t *w, const char *path) {
             int t = (int)w->scaffolds[i].module_type;
             if (t == 8 || t == 10) w->scaffolds[i].module_type = MODULE_HOPPER;
         }
+    }
+
+    /* v51 cargo-in-space schema (Slice 1) — see helper. */
+    if (version < 51) {
+        world_apply_cargo_schema_migration(w);
+        printf("[save] migrated v%d -> v51: tagged furnaces + auto-spawned output hoppers\n",
+               (int)version);
     }
 
     /* v24-v26: asteroids and scaffolds no longer saved — ensure arrays are

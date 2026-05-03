@@ -557,6 +557,11 @@ void world_seed_station_manifests(world_t *w);
 int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner);
 bool world_save(const world_t *w, const char *path);
 bool world_load(world_t *w, const char *path);
+/* v51 cargo-in-space schema migration: tag untagged furnaces by
+ * station-furnace-count heuristic and auto-spawn missing output
+ * hoppers in free outer-ring slots. Run automatically by world_load
+ * for v50 saves; exposed so tests can exercise directly. Idempotent. */
+void world_apply_cargo_schema_migration(world_t *w);
 /* Station catalog — per-station identity persistence (sim_catalog.c) */
 int  station_catalog_load_all(station_t *stations, int max, const char *dir);
 bool station_catalog_save_all(const station_t *stations, int count, const char *dir);
