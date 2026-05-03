@@ -837,6 +837,225 @@ TEST(test_scaffold_full_pipeline) {
     ASSERT_EQ_FLOAT(m->build_progress, 1.0f, 0.01f);
 }
 
+/* End-to-end: a player plants an outpost via tow, supplies its founding
+ * frame quota by docking and dumping cargo, sims through scaffold +
+ * seed-module activation, then plants and supplies a second module
+ * (furnace). Asserts no credits leak, the outpost becomes dockable, the
+ * furnace activates, and the activation spawn loop produces an NPC. */
+TEST(test_build_outpost_full_economy) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    server_player_t *sp = &w.players[0];
+    uint8_t token[8] = {0xB1, 0xD9, 0x07, 0x12, 0x33, 0x44, 0x55, 0x66};
+    memcpy(sp->session_token, token, 8);
+    sp->session_ready = true;
+    /* Synthesize a non-zero pubkey so ledger ops use the pubkey path. */
+    for (int i = 0; i < 32; i++) sp->pubkey[i] = (uint8_t)(0xA0 + i);
+    sp->pubkey_set = true;
+    ASSERT(registry_register_pubkey(&w, sp->pubkey, sp->session_token));
+
+    sp->connected = true;
+    sp->id = 0;
+    player_init_ship(sp, &w);
+    sp->docked = false;
+
+    double credits_start = econ_total_credits(&w);
+
+    /* Step 1 — plant an outpost ~6kU east of Prospect via the tow flow.
+     * The harness spawns a SIGNAL_RELAY scaffold, attaches it to the
+     * player, and trips place_outpost — i.e. exactly what the client
+     * does when the player presses E with a relay in tow. */
+    vec2 outpost_pos = v2_add(w.stations[0].pos, v2(6000.0f, 0.0f));
+    int outpost = test_place_outpost_via_tow(&w, sp, outpost_pos);
+    ASSERT(outpost >= 3);
+    station_t *st_out = &w.stations[outpost];
+    ASSERT(st_out->scaffold);              /* under construction */
+    ASSERT(st_out->signal_range > 0.0f);   /* relay seeded its range */
+    int seed_mod_count = st_out->module_count; /* DOCK + seed SIGNAL_RELAY */
+    ASSERT(seed_mod_count >= 2);
+
+    /* The founding flow opens a CONTRACT_TRACTOR for FRAMES at the
+     * outpost; the same flow we'd use to deliver to it. */
+    bool found_frame_contract = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active
+            && w.contracts[k].station_index == outpost
+            && w.contracts[k].commodity == COMMODITY_FRAME) {
+            found_frame_contract = true; break;
+        }
+    }
+    ASSERT(found_frame_contract);
+
+    /* Step 2 — load up frames. In a live session the player would have
+     * earned credits at Prospect, hauled ingots to Kepler, and bought
+     * frames there (covered by the buy-flow tests). Drop them straight
+     * into cargo for this test — the value here is what happens *after*
+     * the materials reach the outpost. */
+    float frame_budget =
+        SCAFFOLD_MATERIAL_NEEDED                          /* outpost scaffold */
+        + module_build_cost_lookup(MODULE_SIGNAL_RELAY)   /* seed module */
+        + module_build_cost_lookup(MODULE_FURNACE)        /* second module */
+        + 10.0f;                                          /* slack */
+    sp->ship.cargo[COMMODITY_FRAME] = frame_budget;
+
+    /* Step 3 — dock at the outpost and pour the frames in.
+     * The outpost has an OUTPOST_DOCK module stamped on by
+     * place_towed_scaffold so docked-mode is valid here. */
+    sp->docked = true;
+    sp->current_station = outpost;
+    sp->ship.pos = st_out->pos;
+
+    /* service_sell triggers step_scaffold_delivery (advances the
+     * station scaffold) and step_module_delivery (advances any module
+     * scaffold). Run a few sells back-to-back — each sim step the
+     * server clears the intent flag, so we re-arm it. */
+    for (int i = 0; i < 10 && st_out->scaffold; i++) {
+        sp->input.service_sell = true;
+        world_sim_step(&w, SIM_DT);
+    }
+
+    /* Step 4 — sim until outpost-level scaffolding finishes. The
+     * activation step lifts st->scaffold once scaffold_progress hits
+     * 1.0 and the seeded module's frames are in. */
+    for (int i = 0; i < 60 * 120 && st_out->scaffold; i++) {
+        world_sim_step(&w, SIM_DT);
+    }
+    ASSERT(!st_out->scaffold);
+    ASSERT(st_out->signal_connected); /* tied back into the chain */
+
+    /* Step 5 — wait for the seed SIGNAL_RELAY module to finish its
+     * 10s build timer and activate. */
+    for (int i = 0; i < 30 * 120; i++) {
+        bool any_seed_scaffolded = false;
+        for (int m = 0; m < st_out->module_count; m++) {
+            if (st_out->modules[m].scaffold) { any_seed_scaffolded = true; break; }
+        }
+        if (!any_seed_scaffolded) break;
+        world_sim_step(&w, SIM_DT);
+    }
+    for (int m = 0; m < st_out->module_count; m++) {
+        ASSERT(!st_out->modules[m].scaffold);
+    }
+
+    /* Step 6 — plant a second module: a furnace. Spawn a furnace
+     * scaffold near ring 1 and let the snap-to-slot path consume it,
+     * the same flow test_scaffold_full_pipeline exercises. */
+    int npc_before = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_before++;
+
+    sp->docked = false; /* leave so the snap step has clean state */
+    vec2 ring1_near = v2_add(outpost_pos, v2(180.0f, 0.0f));
+    int sc_idx = spawn_scaffold(&w, MODULE_FURNACE, ring1_near, sp->id);
+    ASSERT(sc_idx >= 0);
+    int mod_count_pre = st_out->module_count;
+    for (int i = 0; i < 600 && w.scaffolds[sc_idx].active; i++) {
+        world_sim_step(&w, SIM_DT);
+    }
+    ASSERT(!w.scaffolds[sc_idx].active);
+    ASSERT_EQ_INT(st_out->module_count, mod_count_pre + 1);
+    station_module_t *furn = &st_out->modules[mod_count_pre];
+    ASSERT_EQ_INT(furn->type, MODULE_FURNACE);
+    ASSERT(furn->scaffold);
+
+    /* Step 7 — re-dock and supply the furnace's build material. Ship
+     * still has plenty of frames from the budget. */
+    sp->docked = true;
+    sp->current_station = outpost;
+    for (int i = 0; i < 10 && furn->scaffold; i++) {
+        sp->input.service_sell = true;
+        world_sim_step(&w, SIM_DT);
+    }
+    /* Build timer: ~10s, plus a comfortable runway for the activation
+     * spawn loop to drop in an NPC. */
+    for (int i = 0; i < 30 * 120 && furn->scaffold; i++) {
+        world_sim_step(&w, SIM_DT);
+    }
+    ASSERT(!furn->scaffold);
+    ASSERT_EQ_FLOAT(furn->build_progress, 1.0f, 0.01f);
+
+    /* Step 8 — activation should have spawned a worker NPC at the
+     * outpost (same invariant test_module_activation_spawns_npc proves
+     * for in-place builds). */
+    int npc_after = 0;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_after++;
+    ASSERT(npc_after > npc_before);
+
+    /* Step 9 — plant a HOPPER on a ring-1 slot adjacent to the furnace.
+     * station_can_smelt requires both a hopper and a furnace, so the
+     * hopper completes the smelt prerequisite. The furnace's tag
+     * defaults to ferrite (1-furnace tier, module_furnace_default_output);
+     * we tag the hopper for FERRITE_ORE explicitly so the post-snap
+     * commodity is unambiguous regardless of where the byte zero-init
+     * came from. */
+    sp->docked = false;
+    /* Need slack in cargo: bring the budget for the hopper module up
+     * front so the player has frames left to deliver. The earlier
+     * frame_budget purposely covered SCAFFOLD_MATERIAL_NEEDED + relay +
+     * furnace + 10 slack. The hopper costs more than that 10 slack on
+     * its own, so top the cargo back up here — same shortcut as step 2. */
+    sp->ship.cargo[COMMODITY_FRAME] += module_build_cost_lookup(MODULE_HOPPER);
+
+    vec2 ring1_other = v2_add(outpost_pos, v2(-180.0f, 60.0f));
+    int hop_idx = spawn_scaffold(&w, MODULE_HOPPER, ring1_other, sp->id);
+    ASSERT(hop_idx >= 0);
+    int mod_count_pre_hop = st_out->module_count;
+    for (int i = 0; i < 600 && w.scaffolds[hop_idx].active; i++) {
+        world_sim_step(&w, SIM_DT);
+    }
+    ASSERT(!w.scaffolds[hop_idx].active);
+    ASSERT_EQ_INT(st_out->module_count, mod_count_pre_hop + 1);
+    station_module_t *hop = &st_out->modules[mod_count_pre_hop];
+    ASSERT_EQ_INT(hop->type, MODULE_HOPPER);
+    ASSERT(hop->scaffold);
+    /* Tag the hopper for ferrite ore now (the snap path doesn't call
+     * add_module_at, so auto_pick_hopper_commodity never runs). */
+    hop->commodity = (uint8_t)COMMODITY_FERRITE_ORE;
+
+    sp->docked = true;
+    sp->current_station = outpost;
+    for (int i = 0; i < 10 && hop->scaffold; i++) {
+        sp->input.service_sell = true;
+        world_sim_step(&w, SIM_DT);
+    }
+    for (int i = 0; i < 30 * 120 && hop->scaffold; i++) {
+        world_sim_step(&w, SIM_DT);
+    }
+    ASSERT(!hop->scaffold);
+    ASSERT(station_can_smelt(st_out, COMMODITY_FERRITE_ORE));
+
+    /* Step 10 — process ore. Drop raw ferrite ore into the station's
+     * bulk inventory and tick the sim; sim_step_refinery_production
+     * consumes ore and mints FERRITE_INGOT manifest entries. Rate is
+     * REFINERY_BASE_SMELT_RATE per furnace, so a few seconds is plenty
+     * to clear our 30-unit stockpile. */
+    sp->docked = false;
+    sp->input.service_sell = false;
+    float ore_in = 30.0f;
+    st_out->_inventory_cache[COMMODITY_FERRITE_ORE] = ore_in;
+    int ingots_before = manifest_count_by_commodity(&st_out->manifest,
+                                                    COMMODITY_FERRITE_INGOT);
+    for (int i = 0; i < 30 * 120; i++) {
+        world_sim_step(&w, SIM_DT);
+        if (st_out->_inventory_cache[COMMODITY_FERRITE_ORE] < 0.5f) break;
+    }
+    int ingots_after = manifest_count_by_commodity(&st_out->manifest,
+                                                   COMMODITY_FERRITE_INGOT);
+    ASSERT(ingots_after > ingots_before); /* smelter actually produced */
+    ASSERT(st_out->_inventory_cache[COMMODITY_FERRITE_ORE] < ore_in - 1.0f);
+
+    /* Step 11 — credit conservation. The whole pipeline runs through
+     * ledger paths; nothing should leak. econ_total_credits sums every
+     * station pool plus every player ledger row, so the diff captures
+     * any silent mint or burn. */
+    double credits_end = econ_total_credits(&w);
+    if (fabs(credits_end - credits_start) > 5.0) {
+        printf("    credit drift: start=%.2f end=%.2f delta=%.2f\n",
+               credits_start, credits_end, credits_end - credits_start);
+    }
+    ASSERT(fabs(credits_end - credits_start) <= 5.0);
+}
+
 TEST(test_scaffold_ship_drag) {
     WORLD_DECL;
     world_reset(&w);
@@ -1669,6 +1888,7 @@ void register_construction_scaffold_tests(void) {
     RUN(test_scaffold_snap_to_slot);
     RUN(test_scaffold_snap_ignores_starter_stations);
     RUN(test_scaffold_full_pipeline);
+    RUN(test_build_outpost_full_economy);
     RUN(test_scaffold_ship_drag);
     RUN(test_tow_drone_delivers_to_planned_outpost);
     RUN(test_save_preserves_pending_scaffolds);
