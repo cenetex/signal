@@ -5,6 +5,7 @@
  * step_npc_ships() dispatcher.
  */
 #include "sim_ai.h"
+#include "tractor.h"
 #include "sim_nav.h"
 #include "sim_flight.h"
 #include "sim_ship.h"
@@ -1422,16 +1423,22 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
         }
         scaffold_t *sc = &w->scaffolds[npc->towed_scaffold];
         station_t *dest = &w->stations[npc->dest_station];
-        /* Drag the scaffold along behind us with simple spring chase. */
-        vec2 to_drone = v2_sub(npc->ship.pos, sc->pos);
-        float td = sqrtf(v2_len_sq(to_drone));
-        float tow_dist = 60.0f;
-        if (td > tow_dist && td > 0.1f) {
-            vec2 dir = v2_scale(to_drone, 1.0f / td);
-            float over = td - tow_dist;
-            sc->vel = v2_add(sc->vel, v2_scale(dir, over * 8.0f * dt));
-        }
-        sc->vel = v2_scale(sc->vel, 1.0f / (1.0f + 0.6f * dt));
+        /* Spring-chase the scaffold behind the drone. Pull-only spring at
+         * rest_length=60; 1D axial damping along the rope; small tangent
+         * drag to bleed orbital drift without locking lateral motion. */
+        static const tractor_beam_t SCAFFOLD_TOW = {
+            .rest_length     = 60.0f,
+            .pull_strength   = 8.0f,
+            .push_strength   = 0.0f,
+            .range           = 0.0f,
+            .axial_damping   = 0.6f,
+            .tangent_damping = 0.15f,   /* ~25% of axial — anti-orbit, tunable */
+            .speed_cap       = 0.0f,
+            .falloff         = TRACTOR_FALLOFF_CONSTANT,
+        };
+        tractor_anchor_t src_drone = { .pos = npc->ship.pos, .vel = NULL,     .inv_mass = 0.0f };
+        tractor_anchor_t tgt_sc    = { .pos = sc->pos,       .vel = &sc->vel, .inv_mass = 1.0f };
+        (void)tractor_apply(&src_drone, &tgt_sc, &SCAFFOLD_TOW, dt);
         sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
 
         vec2 approach = station_approach_target(dest, npc->ship.pos);
@@ -1747,20 +1754,36 @@ void step_npc_ships(world_t *w, float dt) {
                     npc->ship.vel = v2_scale(npc->ship.vel, max_tow_speed / spd);
             }
 
-            /* Tow the fragment — drag it along with spring physics */
+            /* Tow the fragment — constant-pull thruster engages when the
+             * fragment is past the safe distance behind the NPC. 1D
+             * axial damping keeps the rope steady; small tangent drag
+             * bleeds orbital drift. Speed cap prevents runaway. */
             if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS) {
                 asteroid_t *tow = &w->asteroids[npc->towed_fragment];
                 if (tow->active) {
-                    vec2 to_npc = v2_sub(npc->ship.pos, tow->pos);
-                    float td = sqrtf(v2_len_sq(to_npc));
-                    float safe = 40.0f + tow->radius;
-                    if (td > safe && td > 0.1f) {
-                        vec2 pull_dir = v2_scale(to_npc, 1.0f / td);
-                        tow->vel = v2_add(tow->vel, v2_scale(pull_dir, 500.0f * dt));
-                        tow->vel = v2_scale(tow->vel, 1.0f / (1.0f + 3.0f * dt));
-                        float spd = v2_len(tow->vel);
-                        if (spd > 150.0f) tow->vel = v2_scale(tow->vel, 150.0f / spd);
-                    }
+                    /* rest_length depends on the fragment's radius — bigger
+                     * fragments tow farther behind the drone. */
+                    tractor_beam_t npc_tow = {
+                        .rest_length     = 40.0f + tow->radius,
+                        .pull_strength   = 0.0f,
+                        .push_strength   = 0.0f,
+                        .pull_constant   = 500.0f,    /* constant accel toward NPC */
+                        .push_constant   = 0.0f,
+                        .range           = 0.0f,
+                        .axial_damping   = 3.0f,
+                        /* Tangent damping near axial value — fragments
+                         * will orbit the NPC if it's much lower, and
+                         * orbiting fragments never deliver. The legacy
+                         * code used isotropic drag 3.0 for the same
+                         * reason. Bumping below ~2.0 breaks
+                         * test_scenario_npc_economy_30_seconds. */
+                        .tangent_damping = 2.5f,
+                        .speed_cap       = 150.0f,
+                        .falloff         = TRACTOR_FALLOFF_CONSTANT,
+                    };
+                    tractor_anchor_t src = { .pos = npc->ship.pos, .vel = NULL,      .inv_mass = 0.0f };
+                    tractor_anchor_t tgt = { .pos = tow->pos,      .vel = &tow->vel, .inv_mass = 1.0f };
+                    (void)tractor_apply(&src, &tgt, &npc_tow, dt);
                     /* Release when close to the furnace — let the furnace tractor take over */
                     float furnace_d = v2_dist_sq(tow->pos, delivery_target);
                     if (furnace_d < 150.0f * 150.0f) {

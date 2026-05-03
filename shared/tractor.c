@@ -25,15 +25,18 @@ bool tractor_apply(const tractor_anchor_t *src,
 
     vec2 dir = v2_scale(to_target, 1.0f / d);  /* unit src→tgt */
 
-    /* Signed spring on stretch. Pull when d > rest, push when d < rest.
-     * The two strength knobs let a beam be asymmetric (pure pull, pure
-     * push, or any mix). spring_mag is signed in dir's frame: negative
-     * = toward source (pull), positive = away from source (push). */
+    /* Signed force in dir's frame: negative = toward source (pull),
+     * positive = away from source (push). Two stacked components:
+     *   - spring term: -strength * stretch (linear in distance)
+     *   - constant term: -constant magnitude (engages when on the
+     *     corresponding side of rest, regardless of how far) */
     float stretch = d - beam->rest_length;
-    float spring_mag;
-    if (stretch > 0.0f)       spring_mag = -beam->pull_strength * stretch;
-    else if (stretch < 0.0f)  spring_mag = -beam->push_strength * stretch;
-    else                      spring_mag = 0.0f;
+    float spring_mag = 0.0f;
+    if (stretch > 0.0f) {
+        spring_mag = -beam->pull_strength * stretch - beam->pull_constant;
+    } else if (stretch < 0.0f) {
+        spring_mag = -beam->push_strength * stretch + beam->push_constant;
+    }
 
     /* Optional linear falloff: strength scales by (1 - d/range). */
     if (beam->falloff == TRACTOR_FALLOFF_LINEAR && beam->range > 0.0f) {

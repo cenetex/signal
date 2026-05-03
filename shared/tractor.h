@@ -67,11 +67,23 @@ typedef enum {
 } tractor_falloff_t;
 
 /* The beam itself — a tuning bundle with no per-call mutable state.
- * Sites typically declare a static const beam config near the call. */
+ * Sites typically declare a static const beam config near the call.
+ *
+ * Two strength components on each side, summed:
+ *   - *_strength is the spring term: accel per unit of stretch from
+ *     rest. Linear in distance, settles to equilibrium at rest.
+ *   - *_constant is the always-on term: a fixed accel that engages
+ *     whenever the beam is on the corresponding side of rest. Models
+ *     a "thruster on the rope" — fragment yanks in regardless of how
+ *     far away it is.
+ * A site can use either or both. Player tow is pure spring; NPC
+ * fragment pickup is pure constant. */
 typedef struct {
     float rest_length;       /* happy distance; 0 = pull-toward-source */
-    float pull_strength;     /* axial accel per unit (d - rest) when d > rest */
-    float push_strength;     /* axial accel per unit (rest - d) when d < rest */
+    float pull_strength;     /* spring: accel per unit (d - rest) when d > rest */
+    float push_strength;     /* spring: accel per unit (rest - d) when d < rest */
+    float pull_constant;     /* constant pull magnitude when d > rest */
+    float push_constant;     /* constant push magnitude when d < rest */
     float range;             /* d > range → no force at all this tick */
     float axial_damping;     /* accel per unit along-beam relative velocity */
     float tangent_damping;   /* accel per unit perpendicular-to-beam relative velocity */

@@ -55,6 +55,28 @@ TEST(test_tractor_push_engages_below_rest) {
     ASSERT_EQ_FLOAT(tgt_vel.y, 0.0f, 0.001f);
 }
 
+TEST(test_tractor_constant_pull_independent_of_stretch) {
+    /* pull_constant=10 with no spring → same force regardless of how
+     * far past rest the body is. Models a "thruster on the rope"
+     * that yanks the fragment in at a fixed rate (NPC pickup tow). */
+    vec2 vel_near = v2(0.0f, 0.0f);
+    vec2 vel_far  = v2(0.0f, 0.0f);
+    tractor_anchor_t src = mk_world_anchor(v2(0.0f, 0.0f));
+    tractor_beam_t   beam = {
+        .rest_length = 5.0f, .pull_strength = 0.0f, .push_strength = 0.0f,
+        .pull_constant = 10.0f, .push_constant = 0.0f,
+        .range = 1000.0f, .axial_damping = 0.0f, .tangent_damping = 0.0f,
+        .speed_cap = 0.0f, .falloff = TRACTOR_FALLOFF_CONSTANT,
+    };
+    tractor_anchor_t tgt_near = mk_body_anchor(v2(7.0f,   0.0f), &vel_near, 1.0f);
+    tractor_anchor_t tgt_far  = mk_body_anchor(v2(500.0f, 0.0f), &vel_far,  1.0f);
+    ASSERT(tractor_apply(&src, &tgt_near, &beam, 1.0f));
+    ASSERT(tractor_apply(&src, &tgt_far,  &beam, 1.0f));
+    /* Both bodies pulled toward source at the same constant rate. */
+    ASSERT_EQ_FLOAT(vel_near.x, -10.0f, 0.001f);
+    ASSERT_EQ_FLOAT(vel_far.x,  -10.0f, 0.001f);
+}
+
 TEST(test_tractor_zero_strength_no_force) {
     /* pull=0, push=0 → no spring force regardless of distance. With
      * zero damping too, the body's velocity is unchanged. */
@@ -218,6 +240,7 @@ void register_tractor_tests(void) {
     TEST_SECTION("\nTractor primitive (R1):\n");
     RUN(test_tractor_pull_engages_beyond_rest);
     RUN(test_tractor_push_engages_below_rest);
+    RUN(test_tractor_constant_pull_independent_of_stretch);
     RUN(test_tractor_zero_strength_no_force);
     RUN(test_tractor_range_gate_disengages);
     RUN(test_tractor_linear_falloff_halves_at_half_range);
