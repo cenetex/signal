@@ -2682,7 +2682,11 @@ static void handle_hail(world_t *w, server_player_t *sp) {
     }
 
     if (nearest_in >= 0) {
-        float balance = ledger_balance(&w->stations[nearest_in], sp->session_token);
+        /* Hail-credits display must read the same identity the player's
+         * earnings landed on — pubkey when registered, else session token. */
+        float balance = sp->pubkey_set
+            ? ledger_balance_by_pubkey(&w->stations[nearest_in], sp->pubkey)
+            : ledger_balance(&w->stations[nearest_in], sp->session_token);
         int contract_idx = hail_find_or_issue_contract(w, sp, nearest_in);
         emit_event(w, (sim_event_t){
             .type = SIM_EVENT_HAIL_RESPONSE,
@@ -2885,7 +2889,15 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
              * even though manifest_transfer falls back to other grades
              * once the named ones run out. Bulk-buy can come back as
              * an explicit `buy_quantity` intent if/when needed. */
-            float bal = ledger_balance(docked_st, sp->session_token);
+            /* Balance and spend MUST use the same identity the SELL path
+             * credits — pubkey when registered (the real Ed25519 entry),
+             * else the session-token-hashed pseudokey. Mismatch here was
+             * the "client predicts buy, server snaps it back" bug:
+             * earnings landed on the pubkey ledger entry but the buy
+             * path was reading the (empty) session-token entry. */
+            float bal = sp->pubkey_set
+                ? ledger_balance_by_pubkey(docked_st, sp->pubkey)
+                : ledger_balance(docked_st, sp->session_token);
             float afford = (price_per > 0.01f) ? floorf(bal / price_per) : 0.0f;
             /* Per-press unit cap scales by commodity density: standard
              * goods (vol = 1.0) buy 1 per press; dense goods like
@@ -2923,7 +2935,13 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                 charge_amount = (float)moved;
                 charge_cost = charge_amount * price_per;
             }
-            if (charge_amount > 0.01f && ledger_spend(docked_st, sp->session_token, charge_cost, &sp->ship)) {
+            bool spent = false;
+            if (charge_amount > 0.01f) {
+                spent = sp->pubkey_set
+                    ? ledger_spend_by_pubkey(docked_st, sp->pubkey, charge_cost, &sp->ship)
+                    : ledger_spend(docked_st, sp->session_token, charge_cost, &sp->ship);
+            }
+            if (spent) {
                 sp->ship.cargo[c] += charge_amount;
                 docked_st->_inventory_cache[c] -= charge_amount;
                 if (docked_st->_inventory_cache[c] < 0.0f) docked_st->_inventory_cache[c] = 0.0f;
@@ -3185,12 +3203,19 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                         ? mining_payout_multiplier((mining_grade_t)sp->input.buy_grade)
                         : 1.0f;
                     float price_per = base * gmult;
-                    float nbal = ledger_balance(nearby_st, sp->session_token);
+                    /* Same pubkey-vs-session-token identity rule as the
+                     * docked-buy path. */
+                    float nbal = sp->pubkey_set
+                        ? ledger_balance_by_pubkey(nearby_st, sp->pubkey)
+                        : ledger_balance(nearby_st, sp->session_token);
                     float afford = (price_per > FLOAT_EPSILON) ? floorf(nbal / price_per) : 0.0f;
                     float amount = fminf(fminf(available, 1.0f), afford); /* buy 1 at a time */
                     if (amount > FLOAT_EPSILON) {
                         float cost = amount * price_per;
-                        if (ledger_spend(nearby_st, sp->session_token, cost, &sp->ship)) {
+                        bool spent = sp->pubkey_set
+                            ? ledger_spend_by_pubkey(nearby_st, sp->pubkey, cost, &sp->ship)
+                            : ledger_spend(nearby_st, sp->session_token, cost, &sp->ship);
+                        if (spent) {
                             sp->ship.cargo[c] += amount;
                             nearby_st->_inventory_cache[c] -= amount;
                             /* Phase 1/2.5 manifest-first: if the station
