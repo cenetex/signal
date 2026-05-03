@@ -321,6 +321,91 @@ int station_find_output_hopper_for_module(const station_t *st, const station_mod
     return station_find_hopper_for(st, out);
 }
 
+/* ------------------------------------------------------------------ */
+/* Demand: top shortage, severity, recommended pay multiplier.         */
+/* ------------------------------------------------------------------ */
+
+/* Per-commodity supply target. Mirrors the targets the contract priority
+ * ladder uses in game_sim.c (priority 3 for ore, priority 4 for ingots,
+ * priority 5 for kit inputs) so the demand primitive and the contract
+ * generator agree on what "starving" means. */
+static float station_demand_target_for(const station_t *st, commodity_t c) {
+    if (c < COMMODITY_RAW_ORE_COUNT) {
+        /* Raw ore — matches priority 3 (REFINERY_HOPPER_CAPACITY * 0.5). */
+        return REFINERY_HOPPER_CAPACITY * 0.5f;
+    }
+    switch (c) {
+        case COMMODITY_FERRITE_INGOT:
+        case COMMODITY_CUPRITE_INGOT:
+        case COMMODITY_CRYSTAL_INGOT:
+            /* Matches priority 4 (MAX_PRODUCT_STOCK * 0.9). */
+            return MAX_PRODUCT_STOCK * 0.9f;
+        case COMMODITY_FRAME:
+        case COMMODITY_LASER_MODULE:
+        case COMMODITY_TRACTOR_MODULE:
+            /* Matches priority 5 kit_input_target. */
+            return 12.0f;
+        case COMMODITY_REPAIR_KIT:
+            /* Non-shipyard dock buffer. Half the shipyard's per-batch
+             * output keeps small docks topped up without making them
+             * post a contract on every minor repair. */
+            return 50.0f;
+        default: break;
+    }
+    /* Unknown commodity — caller will see severity 0 and skip it. */
+    if (st) (void)st;
+    return 1.0f;
+}
+
+station_demand_t station_demand_for(const station_t *st, commodity_t c) {
+    station_demand_t out = {
+        .commodity  = COMMODITY_COUNT,
+        .severity   = 0.0f,
+        .price_mult = 1.0f,
+    };
+    if (!st || !station_is_active(st)) return out;
+    if (c >= COMMODITY_COUNT) return out;
+    if (!station_consumes(st, c)) return out;
+    /* A station that produces what it consumes (e.g. Helios with its
+     * own cuprite furnace feeding its laser fab) is not starving for
+     * that commodity — the producer keeps the local shelf supplied.
+     * Mirrors priority 4's "don't import what we make" check. */
+    if (station_produces(st, c)) return out;
+
+    float supply = st->_inventory_cache[c];
+    float target = station_demand_target_for(st, c);
+    if (target <= 0.0f) return out;
+
+    float deficit = target - supply;
+    if (deficit <= 0.0f) return out;
+    float severity = deficit / target;
+    if (severity > 1.0f) severity = 1.0f;
+
+    out.commodity  = c;
+    out.severity   = severity;
+    /* 1.0× at no shortage, up to 1.5× at total starvation. The 0.5
+     * slope is conservative — generous enough that haulers will
+     * notice, gentle enough that players can't game the system by
+     * deliberately starving a station they own. */
+    out.price_mult = 1.0f + 0.5f * severity;
+    return out;
+}
+
+station_demand_t station_top_demand(const station_t *st) {
+    station_demand_t out = {
+        .commodity  = COMMODITY_COUNT,
+        .severity   = 0.0f,
+        .price_mult = 1.0f,
+    };
+    if (!st || !station_is_active(st)) return out;
+
+    for (int c = 0; c < COMMODITY_COUNT; c++) {
+        station_demand_t d = station_demand_for(st, (commodity_t)c);
+        if (d.severity > out.severity) out = d;
+    }
+    return out;
+}
+
 station_layout_status_t station_module_layout_status(const station_t *st,
                                                      const station_module_t *m) {
     if (!st || !m) return STATION_LAYOUT_OK;
