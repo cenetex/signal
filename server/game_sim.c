@@ -663,6 +663,37 @@ vec2 station_approach_target(const station_t *st, vec2 from) {
     return best_pos;
 }
 
+/* Exit target: pick the dock module nearest `from`, project a waypoint
+ * past the outermost ring along that dock's current radial. NPCs (and
+ * eventually player autopilot) steer through this waypoint as their
+ * UNDOCKING phase, ensuring they clear ring-corridor obstacles before
+ * heading to their real destination. */
+vec2 station_exit_target(const station_t *st, vec2 from) {
+    /* Push 160u past the outermost ring radius — comfortably clear of
+     * the ring corridor band's lookahead cone (which fires at ring_r
+     * +/- ship_radius + 40u). */
+    const float exit_pad = STATION_RING_RADIUS[STATION_NUM_RINGS] + 160.0f;
+    int best_i = -1;
+    float best_d = 1e18f;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].type != MODULE_DOCK) continue;
+        if (st->modules[i].scaffold) continue;
+        vec2 mp = module_world_pos_ring(st, st->modules[i].ring, st->modules[i].slot);
+        float d = v2_dist_sq(from, mp);
+        if (d < best_d) { best_d = d; best_i = i; }
+    }
+    if (best_i < 0) {
+        /* No dock — emit a stable fallback past the outer ring. */
+        return v2_add(st->pos, v2(exit_pad, 0.0f));
+    }
+    vec2 mp = module_world_pos_ring(st, st->modules[best_i].ring,
+                                    st->modules[best_i].slot);
+    vec2 outward = v2_sub(mp, st->pos);
+    float len = v2_len(outward);
+    if (len < 1.0f) return v2_add(st->pos, v2(exit_pad, 0.0f));
+    return v2_add(st->pos, v2_scale(outward, exit_pad / len));
+}
+
 /* ================================================================== */
 /* Player ship helpers                                                */
 /* ================================================================== */

@@ -592,6 +592,14 @@ bool player_save_rename_legacy_to_pubkey(const char *dir,
 void anchor_ship_in_station(server_player_t *sp, world_t *w);
 asteroid_tier_t max_mineable_tier(int mining_level);
 vec2 station_approach_target(const station_t *st, vec2 from);
+/* Exit target: symmetric departure waypoint for station_approach_target.
+ * Returns a position past the outermost ring along the radial axis of
+ * the dock module nearest `from` (typically the dock the NPC is
+ * undocking from). Drives the NPC_STATE_UNDOCKING phase so a
+ * just-departed ship clears ring corridors before steering to its
+ * real destination. Falls back to a position outside the station's
+ * outer ring along +X if no dock module exists. */
+vec2 station_exit_target(const station_t *st, vec2 from);
 void emit_event(world_t *w, sim_event_t ev);
 /* Station-local ledger economy */
 float ledger_balance(const station_t *st, const uint8_t *token);

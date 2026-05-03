@@ -744,6 +744,32 @@ static bool resolve_npc_annular_sector(npc_ship_t *npc, vec2 center,
     return true;
 }
 
+/* If the NPC is still inside its home station's outer-ring envelope
+ * AND the target is outside that envelope, override the steering
+ * target with the dock's exit waypoint (past the outer ring along the
+ * dock's current radial axis). This routes a just-undocked ship along
+ * a known-clear angular corridor before it tries to fly straight at a
+ * far destination, which used to pin it against ring-2 modules.
+ *
+ * Returns the unmodified target if either: (a) the ship is already
+ * past the outer ring, or (b) the target itself is inside the home
+ * envelope (e.g. a tow scaffold sitting just outside the dock — the
+ * NPC should steer to it directly, not detour through an exit waypoint).
+ *
+ * The override is a *target swap* only — physics integration and
+ * collision pushback are unchanged, so the per-tick paired-ship
+ * parity invariant (test_npc_ship_physics_in_sync_each_tick) holds. */
+static vec2 npc_target_clear_of_home_rings(const world_t *w, const npc_ship_t *npc,
+                                           vec2 want_target) {
+    if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) return want_target;
+    const station_t *home = &w->stations[npc->home_station];
+    float exit_r = STATION_RING_RADIUS[STATION_NUM_RINGS] + 80.0f;
+    float exit_r_sq = exit_r * exit_r;
+    if (v2_dist_sq(npc->ship.pos, home->pos) > exit_r_sq) return want_target;
+    if (v2_dist_sq(want_target,    home->pos) <= exit_r_sq) return want_target;
+    return station_exit_target(home, npc->ship.pos);
+}
+
 static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
     const hull_def_t *hull = npc_hull_def(npc);
     float ship_r = hull->ship_radius;
@@ -1058,6 +1084,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_TRAVEL_TO_DEST: {
         station_t *dest = &w->stations[npc->dest_station];
         vec2 approach = station_approach_target(dest, npc->ship.pos);
+        approach = npc_target_clear_of_home_rings(w, npc, approach);
         npc_steer_with_path(w, n, npc, approach, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
         float dock_r = dest->dock_radius * 0.7f;
@@ -1361,7 +1388,8 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
             npc->state_timer = HAULER_DOCK_TIME;
             break;
         }
-        npc_steer_with_path(w, n, npc, sc->pos, /*thrust_scale=*/1.0f, dt);
+        vec2 sc_target = npc_target_clear_of_home_rings(w, npc, sc->pos);
+        npc_steer_with_path(w, n, npc, sc_target, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
         if (v2_dist_sq(npc->ship.pos, sc->pos) < 80.0f * 80.0f) {
             /* Grab — claim the scaffold and switch to tow mode.
@@ -1574,7 +1602,8 @@ void step_npc_ships(world_t *w, float dt) {
                 }
             }
             asteroid_t *a = &w->asteroids[npc->target_asteroid];
-            npc_steer_with_path(w, n, npc, a->pos, /*thrust_scale=*/1.0f, dt);
+            vec2 ast_target = npc_target_clear_of_home_rings(w, npc, a->pos);
+            npc_steer_with_path(w, n, npc, ast_target, /*thrust_scale=*/1.0f, dt);
             npc_apply_physics(npc, dt, w);
             if (v2_dist_sq(npc->ship.pos, a->pos) < MINING_RANGE * MINING_RANGE)
                 npc->state = NPC_STATE_MINING;
