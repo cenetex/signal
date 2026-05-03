@@ -15,6 +15,9 @@
 #include <time.h>
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+#ifdef __EMSCRIPTEN__
+#include <emscripten/html5.h>  /* emscripten_date_now() */
+#endif
 #endif
 #ifdef _WIN32
 /* GetSystemTimePreciseAsFileTime — sub-microsecond wall clock on Win8+. */
@@ -237,10 +240,10 @@ static uint64_t next_signed_action_nonce(void) {
      *
      * Bug history: emscripten_get_now() returns performance.now() in
      * ms — small numbers (0..10^7-ish over a long session). The
-     * comment USED to say "Date.now()" but the implementation didn't
-     * match. Fix: read Date.now() through JS, multiply ms→us. */
-    double js_ms = EM_ASM_DOUBLE({ return Date.now(); });
-    now_us = (uint64_t)(js_ms * 1000.0);
+     * comment USED to say "Date.now()" but the implementation called
+     * a different function. emscripten_date_now() is the dedicated
+     * wall-clock helper (Date.now() in ms). */
+    now_us = (uint64_t)(emscripten_date_now() * 1000.0);
 #elif defined(_WIN32)
     /* MSVC has no clock_gettime/CLOCK_REALTIME. GetSystemTimePreciseAsFileTime
      * returns 100-ns ticks since 1601-01-01 UTC; subtract the 1601→1970
