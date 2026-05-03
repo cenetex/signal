@@ -1828,10 +1828,18 @@ static void broadcast_world(void) {
     broadcast(tbuf, 5);
 }
 
-/* Compute station-local balance for a player at their current/nearby station */
+/* Compute station-local balance for a player at their current/nearby
+ * station. Must read the same ledger entry the buy/credit paths use:
+ * pubkey when registered, session-token-pseudokey otherwise. Reading
+ * the wrong entry was the visible-bug-symptom that motivated the
+ * earlier identity-fix series — broadcast balance came from a stale
+ * (often negative) session-token entry while real earnings sat on
+ * the pubkey entry. */
 static float player_station_balance(const server_player_t *sp) {
     int st = sp->docked ? sp->current_station : sp->nearby_station;
     if (st < 0 || st >= MAX_STATIONS) return 0.0f;
+    if (sp->pubkey_set)
+        return ledger_balance_by_pubkey(&world.stations[st], sp->pubkey);
     return ledger_balance(&world.stations[st], sp->session_token);
 }
 
