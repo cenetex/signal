@@ -22,6 +22,16 @@
 #include <string.h>
 #include <sys/stat.h>
 
+#ifndef _WIN32
+/* popen / pclose are POSIX, gated behind _POSIX_C_SOURCE on glibc.
+ * test_harness.h pulled stdio.h before any define would matter, so
+ * forward-declare them here for the subprocess test below. Both are
+ * used from a single test (test_signal_verify_tower_chain_invariant_*)
+ * and don't need to be visible elsewhere. */
+extern FILE *popen(const char *command, const char *type);
+extern int   pclose(FILE *stream);
+#endif
+
 static void sv_setup(const char *suffix) {
     char path[256];
     snprintf(path, sizeof(path), "%s_sv_%s", TMP("clog"), suffix);
@@ -355,6 +365,122 @@ TEST(test_signal_verify_operator_post_all_kinds) {
     sv_teardown();
 }
 
+#ifndef _WIN32
+static const char *sv_find_signal_verify_bin(void) {
+    static const char *candidates[] = {
+        "build-test/signal_verify",
+        "build-coverage/signal_verify",
+        "build/signal_verify",
+        "build-verify/signal_verify",
+        "./signal_verify",
+        "../build-test/signal_verify",
+        "../build-coverage/signal_verify",
+        "../build/signal_verify",
+        "../build-verify/signal_verify",
+    };
+    for (size_t i = 0; i < sizeof(candidates) / sizeof(candidates[0]); i++) {
+        FILE *f = fopen(candidates[i], "rb");
+        if (!f) continue;
+        fclose(f);
+        return candidates[i];
+    }
+    return NULL;
+}
+
+TEST(test_signal_verify_tower_chain_invariant_detects_orphan) {
+    /* End-to-end test of the new tower_chain_consistent invariant in
+     * the signal_verify CLI: emit a chain log containing
+     *   TOW(F1), SMELT(F1)  — paired, no violation
+     *   TOW(F2), RELEASE(F2) — paired, no violation
+     *   TOW(F3)              — orphan, +1 violation
+     * Then run the standalone signal_verify binary against the log
+     * and grep its --report=json output for the expected violation count.
+     *
+     * This tests the apply_invariants pipeline end-to-end, which can't
+     * be tested via chain_log_verify_with_pubkey directly (the
+     * invariant logic lives in tools/signal_verify.c, not the embedded
+     * verifier). The subprocess approach is heavier than a unit test
+     * but is the only way to exercise the CLI tool's static helpers
+     * without a refactor. */
+    sv_setup("tower_chain_orphan");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 51000u;
+    world_reset(w);
+    sv_wipe(w);
+    for (int s = 0; s < 3; s++) {
+        w->stations[s].chain_event_count = 0;
+        memset(w->stations[s].chain_last_hash, 0, 32);
+    }
+
+    /* Three distinct fragment_pubs. */
+    chain_payload_fragment_tow_t tow = {0};
+    chain_payload_fragment_release_t rel = {0};
+    chain_payload_smelt_t smelt = {0};
+
+    /* Pair 1: TOW + SMELT. */
+    for (int b = 0; b < 32; b++) tow.fragment_pub[b] = (uint8_t)(0x10 + b);
+    tow.epoch_tick = 100;
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_FRAGMENT_TOW,
+                          &tow, sizeof(tow)) > 0);
+    memset(&smelt, 0, sizeof(smelt));
+    for (int b = 0; b < 32; b++) smelt.fragment_pub[b] = (uint8_t)(0x10 + b);
+    for (int b = 0; b < 32; b++) smelt.ingot_pub[b]    = (uint8_t)(0xC0 + b);
+    smelt.mined_block = 101;
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_SMELT,
+                          &smelt, sizeof(smelt)) > 0);
+
+    /* Pair 2: TOW + RELEASE. */
+    memset(&tow, 0, sizeof(tow));
+    for (int b = 0; b < 32; b++) tow.fragment_pub[b] = (uint8_t)(0x40 + b);
+    tow.epoch_tick = 200;
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_FRAGMENT_TOW,
+                          &tow, sizeof(tow)) > 0);
+    for (int b = 0; b < 32; b++) rel.fragment_pub[b] = (uint8_t)(0x40 + b);
+    rel.epoch_tick = 201;
+    rel.reason = (uint8_t)FRAGMENT_RELEASE_BAND_SNAP;
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_FRAGMENT_RELEASE,
+                          &rel, sizeof(rel)) > 0);
+
+    /* Orphan: TOW with no matching resolution. */
+    memset(&tow, 0, sizeof(tow));
+    for (int b = 0; b < 32; b++) tow.fragment_pub[b] = (uint8_t)(0x70 + b);
+    tow.epoch_tick = 300;
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_FRAGMENT_TOW,
+                          &tow, sizeof(tow)) > 0);
+
+    /* Run signal_verify against the log when the standalone binary is
+     * available. The coverage job builds only signal_test, so skip there;
+     * test-basic builds all BUILD_TESTS_ONLY targets and exercises this. */
+    const char *verify_bin = sv_find_signal_verify_bin();
+    if (!verify_bin) {
+        TEST_WARN("signal_verify binary not built; skipping CLI invariant subprocess check");
+        sv_teardown();
+        return;
+    }
+
+    char log_path[256];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey, log_path, sizeof(log_path)));
+
+    char cmd[1024];
+    snprintf(cmd, sizeof(cmd), "%s --report=json %s 2>/dev/null", verify_bin, log_path);
+    FILE *p = popen(cmd, "r");
+    ASSERT(p != NULL);
+    char output[4096] = {0};
+    size_t got = fread(output, 1, sizeof(output) - 1, p);
+    pclose(p);
+    ASSERT(got > 0);
+
+    /* The orphan TOW must surface as exactly 1 in the JSON. */
+    ASSERT(strstr(output, "\"tower_chain_violations\":1") != NULL);
+    /* And the per-type counts must reflect the 3 TOWs and 1 RELEASE. */
+    ASSERT(strstr(output, "\"FRAGMENT_TOW\":3") != NULL);
+    ASSERT(strstr(output, "\"FRAGMENT_RELEASE\":1") != NULL);
+
+    sv_teardown();
+}
+#endif
+
 void register_signal_verify_tests(void);
 void register_signal_verify_tests(void) {
     TEST_SECTION("\n--- Signal Verify (#479 E) ---\n");
@@ -366,4 +492,7 @@ void register_signal_verify_tests(void) {
     RUN(test_signal_verify_multi_station_independent);
     RUN(test_signal_verify_operator_post_all_kinds);
     RUN(test_signal_verify_committed_fixture);
+#ifndef _WIN32
+    RUN(test_signal_verify_tower_chain_invariant_detects_orphan);
+#endif
 }

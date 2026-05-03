@@ -690,6 +690,168 @@ TEST(test_chain_log_seed_rarity_tiers_have_real_content) {
     chain_test_teardown();
 }
 
+TEST(test_chain_log_fragment_tow_payload_size) {
+    /* Wire-format guard. Pin the payload sizes that chain_log.h's
+     * static_asserts already enforce — duplicating the check at the
+     * test layer ensures any reviewer sees the size pinned in two
+     * places when they're tempted to grow the struct. */
+    ASSERT_EQ_INT((int)sizeof(chain_payload_fragment_tow_t), 80);
+    ASSERT_EQ_INT((int)sizeof(chain_payload_fragment_release_t), 88);
+}
+
+TEST(test_chain_log_fragment_tow_emit_and_verify) {
+    /* Round-trip: emit a hand-crafted FRAGMENT_TOW event, walk the
+     * log, and confirm the verifier accepts it AND the per-type
+     * counter increments. Same shape as the existing per-event-type
+     * round-trips above. */
+    chain_test_setup("frag_tow_emit");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9300u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    chain_payload_fragment_tow_t payload = {0};
+    /* Plausible-looking content — any non-zero bytes will do. */
+    for (int b = 0; b < 32; b++) payload.fragment_pub[b] = (uint8_t)(0x10 + b);
+    for (int b = 0; b < 32; b++) payload.tower_player_pub[b] = (uint8_t)(0x80 + b);
+    for (int b = 0; b < 8; b++) payload.tower_session_token[b] = (uint8_t)(0xA0 + b);
+    payload.epoch_tick = 12345u;
+
+    uint64_t id = chain_log_emit(w, &w->stations[0], CHAIN_EVT_FRAGMENT_TOW,
+                                 &payload, (uint16_t)sizeof(payload));
+    ASSERT(id == 1);
+
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(&w->stations[0], &walked, NULL));
+    ASSERT_EQ_INT((int)walked, 1);
+
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_fragment_release_emit_and_verify) {
+    /* Same shape as the TOW round-trip. The reason byte exercises a
+     * code path the TOW payload doesn't (release-specific). */
+    chain_test_setup("frag_release_emit");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9301u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    chain_payload_fragment_release_t payload = {0};
+    for (int b = 0; b < 32; b++) payload.fragment_pub[b] = (uint8_t)(0x20 + b);
+    for (int b = 0; b < 32; b++) payload.tower_player_pub[b] = (uint8_t)(0x60 + b);
+    payload.epoch_tick = 99999u;
+    payload.reason = (uint8_t)FRAGMENT_RELEASE_BAND_SNAP;
+
+    uint64_t id = chain_log_emit(w, &w->stations[0], CHAIN_EVT_FRAGMENT_RELEASE,
+                                 &payload, (uint16_t)sizeof(payload));
+    ASSERT(id == 1);
+
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(&w->stations[0], &walked, NULL));
+    ASSERT_EQ_INT((int)walked, 1);
+
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_fragment_lifecycle_e2e) {
+    /* End-to-end through the sim: spawn a fragment in signal range,
+     * have a player tractor-grab it, then yank them past 1.5x tractor
+     * range to trigger a band-snap release. The chain log should
+     * gain a TOW event at grab-time and a RELEASE event at snap-time,
+     * both signed by the witnessing station. */
+    chain_test_setup("frag_lifecycle");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9400u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    /* world_reset's seed-motd path emits OPERATOR_POST events for the
+     * three founding stations; the wipe deleted the on-disk files but
+     * left in-memory chain_last_hash pointing at the seed events.
+     * Zero the in-memory state so newly-emitted events chain from a
+     * clean slate that matches the empty on-disk file. */
+    for (int s = 0; s < 3; s++) {
+        w->stations[s].chain_event_count = 0;
+        memset(w->stations[s].chain_last_hash, 0, 32);
+    }
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w->npc_ships[i].active = false;
+    player_init_ship(&w->players[0], w);
+    w->players[0].connected = true;
+    w->players[0].docked = false;
+    w->players[0].session_ready = true;
+    memset(w->players[0].session_token, 0x77, 8);
+
+    /* Place a fragment near Prospect (station 0) so the witness picker
+     * picks it up. ~200 units offset is well inside Prospect's signal
+     * range. Spawn close to the player's hull so the tractor-pulse
+     * snaps it on the next sim step. */
+    int slot = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) { slot = i; break; }
+    }
+    ASSERT(slot >= 0);
+    asteroid_t *a = &w->asteroids[slot];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->ore = 5.0f;
+    a->max_ore = 5.0f;
+    a->radius = 6.0f;
+    a->fracture_child = true;
+    a->grade = (uint8_t)MINING_GRADE_COMMON;
+    /* Non-zero fragment_pub so the tow event payload carries something
+     * recognizable in the log. */
+    for (int b = 0; b < 32; b++) a->fragment_pub[b] = (uint8_t)(0x33 + b);
+
+    /* Position: 50 units from Prospect's center (well within signal),
+     * with the player 30 units away (well within tractor range). */
+    a->pos = v2(w->stations[0].pos.x + 50.0f, w->stations[0].pos.y);
+    a->vel = v2(0, 0);
+    w->players[0].ship.pos = v2(a->pos.x + 30.0f, a->pos.y);
+    w->players[0].ship.vel = v2(0, 0);
+    /* Tractor is gated by input.tractor_hold (synced into ship.tractor_active
+     * each tick from sample_input_intent). Set the input directly — setting
+     * the cached ship flag would be clobbered on the next sim step. */
+    w->players[0].input.tractor_hold = true;
+
+    uint64_t before = w->stations[0].chain_event_count;
+    /* One sim step is enough for the tractor pulse to grab it. */
+    world_sim_step(w, 1.0f / 120.0f);
+    /* The chain log gained AT LEAST a TOW event (the tractor-grab fires
+     * synchronously inside step_fragment_collection). The witnessing
+     * station for a fragment 50 units from Prospect is Prospect itself. */
+    ASSERT(w->stations[0].chain_event_count > before);
+
+    /* Now yank the player far past tractor range to force a band snap.
+     * Tractor range scales with tractor_level; default ship is well
+     * under 1000 units so a 5000-unit jump is unambiguous. */
+    w->players[0].ship.pos = v2(a->pos.x + 5000.0f, a->pos.y);
+
+    uint64_t mid = w->stations[0].chain_event_count;
+    /* step_leashed_fragments runs when tractor_hold is off. The
+     * band-snap branch fires when fragment distance > 1.5 * tractor_range. */
+    w->players[0].input.tractor_hold = false;
+    world_sim_step(w, 1.0f / 120.0f);
+
+    /* RELEASE event must have landed; verify count grew further. */
+    ASSERT(w->stations[0].chain_event_count > mid);
+
+    /* Walk the log and confirm full chain integrity. */
+    uint64_t walked = 0;
+    ASSERT(chain_log_verify(&w->stations[0], &walked, NULL));
+    ASSERT(walked == w->stations[0].chain_event_count);
+
+    chain_test_teardown();
+}
+
 void register_chain_log_tests(void);
 void register_chain_log_tests(void) {
     TEST_SECTION("\n--- Chain Log (#479 C) ---\n");
@@ -707,4 +869,8 @@ void register_chain_log_tests(void) {
     RUN(test_chain_log_operator_post_replay_determinism);
     RUN(test_chain_log_operator_post_text_tamper);
     RUN(test_chain_log_seed_rarity_tiers_have_real_content);
+    RUN(test_chain_log_fragment_tow_payload_size);
+    RUN(test_chain_log_fragment_tow_emit_and_verify);
+    RUN(test_chain_log_fragment_release_emit_and_verify);
+    RUN(test_chain_log_fragment_lifecycle_e2e);
 }

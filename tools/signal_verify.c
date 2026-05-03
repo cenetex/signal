@@ -48,7 +48,16 @@ enum {
     INV_SMELT_INPUT_CONSUMED = 1 << 3,
     INV_TRANSFER_BALANCED    = 1 << 4,
     INV_NO_ORPHAN_EVENTS     = 1 << 5,
-    INV_ALL                  = 0x3F,
+    /* Every EVT_FRAGMENT_TOW for fragment F should be paired by a
+     * subsequent EVT_FRAGMENT_RELEASE, EVT_SMELT, or EVT_ROCK_DESTROY
+     * for F at the same station. Unpaired TOWs ("orphan tows") signal
+     * either a sim bug, log truncation, or — most often — a fragment
+     * that was towed in this station's signal range but resolved at a
+     * different station (cross-station tow → smelt). The verifier
+     * counts orphans without failing the report; a high count is a
+     * weak warning, not a hard error. */
+    INV_TOWER_CONSISTENT     = 1 << 6,
+    INV_ALL                  = 0x7F,
 };
 
 typedef struct {
@@ -75,7 +84,8 @@ static void print_usage(FILE *out) {
         "  --invariants=<list>         Comma-separated subset of:\n"
         "                                signatures, linkage, monotonic_event_id,\n"
         "                                smelt_input_consumed, transfer_balanced,\n"
-        "                                no_orphan_events, all (default: all)\n"
+        "                                no_orphan_events, tower_chain_consistent,\n"
+        "                                all (default: all)\n"
         "  --strict                    Treat warnings as errors\n"
         "  --since=<epoch>             Only events at or after sim tick\n"
         "  --until=<epoch>             Only events up to sim tick\n"
@@ -108,6 +118,8 @@ static bool parse_invariant_list(const char *s, uint32_t *out) {
             *out |= INV_TRANSFER_BALANCED;
         else if (n == 16 && strncmp(p, "no_orphan_events", 16) == 0)
             *out |= INV_NO_ORPHAN_EVENTS;
+        else if (n == 22 && strncmp(p, "tower_chain_consistent", 22) == 0)
+            *out |= INV_TOWER_CONSISTENT;
         else {
             fprintf(stderr, "signal_verify: unknown invariant '%.*s'\n", (int)n, p);
             return false;
@@ -206,10 +218,17 @@ typedef struct {
     size_t  consumed_fragment_count;
     uint8_t destroyed_rocks[MAX_TRACKED_PUBS][32];
     size_t  destroyed_rock_count;
+    /* Fragments that were towed (FRAGMENT_TOW seen) but not yet
+     * resolved by a matching FRAGMENT_RELEASE / SMELT / ROCK_DESTROY.
+     * Anything left in the set after the walk completes is an "orphan
+     * tow" — counted, not fatal. */
+    uint8_t pending_tows[MAX_TRACKED_PUBS][32];
+    size_t  pending_tow_count;
 
     uint64_t inv_smelt_violations;
     uint64_t inv_transfer_violations;
     uint64_t inv_orphan_violations;
+    uint64_t inv_tower_violations;
 } inv_state_t;
 
 static bool pub_is_zero(const uint8_t pub[32]) {
@@ -227,6 +246,18 @@ static void pub_set_add(uint8_t (*set)[32], size_t *count, const uint8_t pub[32]
     if (pub_set_contains((const uint8_t (*)[32])set, *count, pub)) return;
     memcpy(set[*count], pub, 32);
     (*count)++;
+}
+
+/* Remove pub from set if present. Returns true if removed (i.e., was
+ * in the set). Order-preservation isn't important — we tail-swap. */
+static bool pub_set_remove(uint8_t (*set)[32], size_t *count, const uint8_t pub[32]) {
+    for (size_t i = 0; i < *count; i++) {
+        if (memcmp(set[i], pub, 32) != 0) continue;
+        if (i + 1 < *count) memcpy(set[i], set[*count - 1], 32);
+        (*count)--;
+        return true;
+    }
+    return false;
 }
 
 /* Dump operator_post text entries from the log if --dump-text was specified. */
@@ -285,7 +316,8 @@ static bool apply_invariants(const char *path,
                              inv_state_t *st,
                              char *fail_reason, size_t fail_cap) {
     if ((invariants &
-        (INV_SMELT_INPUT_CONSUMED | INV_TRANSFER_BALANCED | INV_NO_ORPHAN_EVENTS)) == 0)
+        (INV_SMELT_INPUT_CONSUMED | INV_TRANSFER_BALANCED | INV_NO_ORPHAN_EVENTS |
+         INV_TOWER_CONSISTENT)) == 0)
         return true;
 
     FILE *f = fopen(path, "rb");
@@ -314,7 +346,15 @@ static bool apply_invariants(const char *path,
         switch (type) {
         case CHAIN_EVT_ROCK_DESTROY:
             /* payload begins with rock_pub[32]. */
-            if (plen >= 32) pub_set_add(st->destroyed_rocks, &st->destroyed_rock_count, payload);
+            if (plen >= 32) {
+                pub_set_add(st->destroyed_rocks, &st->destroyed_rock_count, payload);
+                /* A rock_pub destroy resolves any outstanding tow for
+                 * the same fragment_pub (rock and fragment share the
+                 * same content hash). */
+                if (invariants & INV_TOWER_CONSISTENT) {
+                    pub_set_remove(st->pending_tows, &st->pending_tow_count, payload);
+                }
+            }
             break;
         case CHAIN_EVT_SMELT: {
             /* payload: fragment_pub[32], ingot_pub[32], prefix_class, pad[7], mined_block u64.
@@ -338,6 +378,11 @@ static bool apply_invariants(const char *path,
                         }
                         pub_set_add(st->consumed_fragments,
                                     &st->consumed_fragment_count, frag);
+                    }
+                    /* Productive end of a tow — clear any pending TOW
+                     * for this fragment_pub. */
+                    if (invariants & INV_TOWER_CONSISTENT) {
+                        pub_set_remove(st->pending_tows, &st->pending_tow_count, frag);
                     }
                 }
                 pub_set_add(st->cargo_outputs, &st->cargo_output_count, ingot);
@@ -374,13 +419,45 @@ static bool apply_invariants(const char *path,
             }
             break;
         }
+        case CHAIN_EVT_FRAGMENT_TOW:
+            /* payload begins with fragment_pub[32]. Add to pending set;
+             * a later RELEASE/SMELT/ROCK_DESTROY will remove it. */
+            if (plen >= 32 && (invariants & INV_TOWER_CONSISTENT)) {
+                pub_set_add(st->pending_tows, &st->pending_tow_count, payload);
+            }
+            break;
+        case CHAIN_EVT_FRAGMENT_RELEASE:
+            /* payload begins with fragment_pub[32]. Resolve any
+             * pending TOW for this fragment. Stray RELEASE without
+             * matching TOW is silently ignored (could legitimately
+             * happen if the TOW was at a different station). */
+            if (plen >= 32 && (invariants & INV_TOWER_CONSISTENT)) {
+                pub_set_remove(st->pending_tows, &st->pending_tow_count, payload);
+            }
+            break;
         case CHAIN_EVT_TRADE:
         case CHAIN_EVT_LEDGER:
+        case CHAIN_EVT_OPERATOR_POST:
+            /* No invariants to check on these event types — the report
+             * still counts them via event_type_counts (incremented
+             * earlier in the loop) so a verifier sees the per-type
+             * histogram. */
+            break;
         default:
             break;
         }
     }
     fclose(f);
+
+    /* Anything still in pending_tows after the walk is a TOW with no
+     * resolution at this station. Count as a violation but don't fail
+     * the report — orphan tows can legitimately occur when a player
+     * tows in this station's range and resolves at a different one
+     * (cross-station scenario). A high orphan rate is a soft signal,
+     * not a hard error. */
+    if (invariants & INV_TOWER_CONSISTENT) {
+        st->inv_tower_violations += (uint64_t)st->pending_tow_count;
+    }
     return ok;
 }
 
@@ -390,14 +467,16 @@ static bool apply_invariants(const char *path,
 
 static const char *type_name(unsigned t) {
     switch (t) {
-    case CHAIN_EVT_SMELT:        return "SMELT";
-    case CHAIN_EVT_CRAFT:        return "CRAFT";
-    case CHAIN_EVT_TRANSFER:     return "TRANSFER";
-    case CHAIN_EVT_TRADE:        return "TRADE";
-    case CHAIN_EVT_LEDGER:       return "LEDGER";
-    case CHAIN_EVT_ROCK_DESTROY: return "ROCK_DESTROY";
-    case CHAIN_EVT_OPERATOR_POST: return "OPERATOR_POST";
-    default:                     return "UNKNOWN";
+    case CHAIN_EVT_SMELT:            return "SMELT";
+    case CHAIN_EVT_CRAFT:            return "CRAFT";
+    case CHAIN_EVT_TRANSFER:         return "TRANSFER";
+    case CHAIN_EVT_TRADE:            return "TRADE";
+    case CHAIN_EVT_LEDGER:           return "LEDGER";
+    case CHAIN_EVT_ROCK_DESTROY:     return "ROCK_DESTROY";
+    case CHAIN_EVT_OPERATOR_POST:    return "OPERATOR_POST";
+    case CHAIN_EVT_FRAGMENT_TOW:     return "FRAGMENT_TOW";
+    case CHAIN_EVT_FRAGMENT_RELEASE: return "FRAGMENT_RELEASE";
+    default:                         return "UNKNOWN";
     }
 }
 
@@ -435,6 +514,9 @@ static void print_text(const char *path,
             printf("transfer invariant viol: %llu\n", (unsigned long long)inv->inv_transfer_violations);
         if (inv->inv_orphan_violations)
             printf("orphan invariant viol: %llu\n", (unsigned long long)inv->inv_orphan_violations);
+        if (inv->inv_tower_violations)
+            printf("tower chain orphans:  %llu  (TOW unmatched by SMELT/RELEASE/ROCK_DESTROY at this station)\n",
+                   (unsigned long long)inv->inv_tower_violations);
     }
     if (!ok && r->first_fail_reason[0]) {
         printf("first failure:    %s\n", r->first_fail_reason);
@@ -474,6 +556,8 @@ static void print_json(const char *path,
            (unsigned long long)(inv ? inv->inv_transfer_violations : 0));
     printf("\"orphan_invariant_violations\":%llu,",
            (unsigned long long)(inv ? inv->inv_orphan_violations : 0));
+    printf("\"tower_chain_violations\":%llu,",
+           (unsigned long long)(inv ? inv->inv_tower_violations : 0));
     printf("\"status\":\"%s\"", ok ? "OK" : "FAIL");
     printf("}\n");
 }

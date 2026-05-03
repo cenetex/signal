@@ -1845,6 +1845,76 @@ static void apply_band_force(server_player_t *sp, asteroid_t *a, float dt) {
     (void)tractor_apply(&src, &tgt, &PLAYER_TOW_BAND, dt);
 }
 
+/* Pick the closest signal-providing station to a position, or -1 if no
+ * station's signal range covers that point. Used to attribute
+ * fragment-lifecycle chain events to a witnessing station — the chain
+ * log is per-station, so events without a witness can't be recorded.
+ * Same shape as the rock_destroy witness picker in sim_asteroid.c. */
+static int chain_pick_witness(const world_t *w, vec2 pos) {
+    int witness = -1;
+    float best_d2 = 0.0f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_provides_signal(st)) continue;
+        float sr = st->signal_range;
+        float d2 = v2_dist_sq(pos, st->pos);
+        if (d2 <= sr * sr && (witness < 0 || d2 < best_d2)) {
+            witness = s;
+            best_d2 = d2;
+        }
+    }
+    return witness;
+}
+
+/* Sim tick at sub-tick precision rolled up to a 64-bit value the chain
+ * log can record. Mirrors the convention used in chain_log_emit's
+ * `epoch` field (sim ticks at 120 Hz). */
+static uint64_t chain_epoch_tick(const world_t *w) {
+    return (uint64_t)(w->time * 120.0);
+}
+
+/* Emit EVT_FRAGMENT_TOW for the witnessing station closest to the
+ * fragment. Silently skips if no station has the position in signal
+ * range — in-the-void tow events fall outside any chain. Same
+ * fail-quiet semantics as EVT_ROCK_DESTROY. */
+static void emit_fragment_tow_event(world_t *w, const asteroid_t *a,
+                                    const server_player_t *sp) {
+    int witness = chain_pick_witness(w, a->pos);
+    if (witness < 0) return;
+    chain_payload_fragment_tow_t payload = {0};
+    memcpy(payload.fragment_pub, a->fragment_pub, 32);
+    if (sp && sp->session_ready) {
+        memcpy(payload.tower_player_pub, sp->pubkey, 32);
+        memcpy(payload.tower_session_token, sp->session_token,
+               sizeof(payload.tower_session_token));
+    }
+    payload.epoch_tick = chain_epoch_tick(w);
+    (void)chain_log_emit(w, &w->stations[witness], CHAIN_EVT_FRAGMENT_TOW,
+                         &payload, (uint16_t)sizeof(payload));
+}
+
+/* Emit EVT_FRAGMENT_RELEASE — tow ended without a smelt. Reason
+ * captures whether the asteroid was destroyed mid-tow, the band
+ * snapped, or the player manually released (which includes the PvP
+ * fling at high stretch — same code path either way). */
+static void emit_fragment_release_event(world_t *w, const asteroid_t *a,
+                                        const server_player_t *sp,
+                                        fragment_release_reason_t reason) {
+    int witness = chain_pick_witness(w, a->pos);
+    if (witness < 0) return;
+    chain_payload_fragment_release_t payload = {0};
+    memcpy(payload.fragment_pub, a->fragment_pub, 32);
+    if (sp && sp->session_ready) {
+        memcpy(payload.tower_player_pub, sp->pubkey, 32);
+        memcpy(payload.tower_session_token, sp->session_token,
+               sizeof(payload.tower_session_token));
+    }
+    payload.epoch_tick = chain_epoch_tick(w);
+    payload.reason = (uint8_t)reason;
+    (void)chain_log_emit(w, &w->stations[witness], CHAIN_EVT_FRAGMENT_RELEASE,
+                         &payload, (uint16_t)sizeof(payload));
+}
+
 static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) {
     float nearby_sq = FRAGMENT_NEARBY_RANGE * FRAGMENT_NEARBY_RANGE;
     float tr = ship_tractor_range(&sp->ship);
@@ -1929,6 +1999,13 @@ static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) 
                 sp->ship.stat_ore_mined += a->ore;
                 emit_event(w, (sim_event_t){.type = SIM_EVENT_PICKUP, .player_id = sp->id,
                                             .pickup = {.ore = a->ore, .fragments = 1}});
+                /* Layer C of #479: chain-log the start of this tow so
+                 * heritage queries can reconstruct who held a fragment
+                 * before it became an ingot. Witnessed by the closest
+                 * signal-providing station; out-of-signal grabs are
+                 * silently invisible (same fail-quiet semantics as
+                 * EVT_ROCK_DESTROY). */
+                emit_fragment_tow_event(w, a, sp);
             }
         }
     }
@@ -1958,6 +2035,7 @@ static void step_leashed_fragments(world_t *w, server_player_t *sp, float dt) {
 
         /* Elastic limit: band snaps past 1.5 × tractor_range. */
         if (dist > tractor_r * 1.5f) {
+            emit_fragment_release_event(w, a, sp, FRAGMENT_RELEASE_BAND_SNAP);
             sp->ship.towed_count--;
             sp->ship.towed_fragments[t] = sp->ship.towed_fragments[sp->ship.towed_count];
             sp->ship.towed_fragments[sp->ship.towed_count] = -1;
@@ -2018,6 +2096,11 @@ static void release_towed_fragments(world_t *w, server_player_t *sp) {
         if (idx < 0 || idx >= MAX_ASTEROIDS) continue;
         if (!w->asteroids[idx].active) continue;
         asteroid_t *a = &w->asteroids[idx];
+        /* Chain-log the manual release. Same call covers innocent drops
+         * (R-key tap) and the PvP fling (release at high stretch sends
+         * the rock flying) — both are tow terminations from the chain
+         * log's perspective. */
+        emit_fragment_release_event(w, a, sp, FRAGMENT_RELEASE_MANUAL);
         vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
         float dist = v2_len(to_ship);
         if (dist < 0.01f) {

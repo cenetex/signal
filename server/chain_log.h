@@ -71,6 +71,14 @@ typedef enum {
     CHAIN_EVT_LEDGER       = 5,  /* station-side credit balance mutation */
     CHAIN_EVT_ROCK_DESTROY = 6,  /* asteroid fractured to terminal state */
     CHAIN_EVT_OPERATOR_POST = 7, /* persona-authored text signed by station */
+    /* Fragment-lifecycle events: in-flight ore movement that previously
+     * left the chain log silent. Pairs with EVT_SMELT (which captures
+     * the productive end of a fragment's life): TOW records who took
+     * possession, RELEASE records when possession ended without a
+     * smelt. Heritage queries that filter on tower identity ("frames
+     * smelted from ferrite that 0F3H-CH towed") need both. */
+    CHAIN_EVT_FRAGMENT_TOW     = 8,  /* player tractor grabs a fragment */
+    CHAIN_EVT_FRAGMENT_RELEASE = 9,  /* tow ended without smelt */
     CHAIN_EVT_TYPE_COUNT
 } chain_event_type_t;
 
@@ -137,14 +145,57 @@ typedef struct {
 } SIGNAL_PACKED chain_payload_operator_post_t;
 SIGNAL_PACK_POP
 
+/* Fragment-tow event: a player has taken possession of a fragment via
+ * tractor. tower_player_pub is the tower's identity pubkey; for
+ * unregistered (legacy) clients that's all-zero and the
+ * tower_session_token holds the legacy 8-byte session ID instead. */
+SIGNAL_PACK_PUSH
+typedef struct {
+    uint8_t  fragment_pub[32];        /* the rock that's now under tow */
+    uint8_t  tower_player_pub[32];    /* identity pubkey, or 0 for anonymous */
+    uint8_t  tower_session_token[8];  /* legacy session ID (lower 8 bytes) */
+    uint64_t epoch_tick;              /* sim tick when tow began */
+} SIGNAL_PACKED chain_payload_fragment_tow_t;
+SIGNAL_PACK_POP
+
+/* Fragment-release event: tow ended without a smelt completing. The
+ * fragment may or may not still exist in the world; this records the
+ * tow's terminus from the chain log's perspective. Reasons capture the
+ * three player-visible end states.
+ *
+ * DESTROYED is reserved but not currently emitted: when an asteroid
+ * dies mid-tow, EVT_ROCK_DESTROY already fires from sim_asteroid.c,
+ * and a verifier can cross-reference TOW + ROCK_DESTROY events to
+ * detect "was this rock under tow at death" without a separate event.
+ * Wiring DESTROYED in directly would require sim_asteroid.c to scan
+ * player tow lists at destruction time. */
+typedef enum {
+    FRAGMENT_RELEASE_DESTROYED = 0,  /* reserved — see comment above */
+    FRAGMENT_RELEASE_BAND_SNAP = 1,  /* fragment escaped past 1.5x tractor range */
+    FRAGMENT_RELEASE_MANUAL    = 2,  /* player tapped R or threw the rock (PvP fling) */
+} fragment_release_reason_t;
+
+SIGNAL_PACK_PUSH
+typedef struct {
+    uint8_t  fragment_pub[32];        /* the rock whose tow just ended */
+    uint8_t  tower_player_pub[32];    /* who was towing — same as TOW event */
+    uint8_t  tower_session_token[8];  /* legacy session ID */
+    uint64_t epoch_tick;              /* sim tick when release happened */
+    uint8_t  reason;                   /* fragment_release_reason_t */
+    uint8_t  _pad[7];                  /* MUST be zero */
+} SIGNAL_PACKED chain_payload_fragment_release_t;
+SIGNAL_PACK_POP
+
 /* Wire-format guards: any field-list change that shifts these sizes
  * forks the chain log byte format and must be paired with a
  * versioning story (or accepted as a hard break). */
-_Static_assert(sizeof(chain_payload_smelt_t)        == 80,  "smelt payload size");
-_Static_assert(sizeof(chain_payload_craft_t)        == 104, "craft payload size");
-_Static_assert(sizeof(chain_payload_transfer_t)     == 104, "transfer payload size");
-_Static_assert(sizeof(chain_payload_trade_t)        == 48,  "trade payload size");
-_Static_assert(sizeof(chain_payload_rock_destroy_t) == 96,  "rock_destroy payload size");
+_Static_assert(sizeof(chain_payload_smelt_t)            == 80,  "smelt payload size");
+_Static_assert(sizeof(chain_payload_craft_t)            == 104, "craft payload size");
+_Static_assert(sizeof(chain_payload_transfer_t)         == 104, "transfer payload size");
+_Static_assert(sizeof(chain_payload_trade_t)            == 48,  "trade payload size");
+_Static_assert(sizeof(chain_payload_rock_destroy_t)     == 96,  "rock_destroy payload size");
+_Static_assert(sizeof(chain_payload_fragment_tow_t)     == 80,  "fragment_tow payload size");
+_Static_assert(sizeof(chain_payload_fragment_release_t) == 88,  "fragment_release payload size");
 /* The fixed-prefix size (before the text[] variable-length array):
  * kind(1) + tier(1) + ref_id(2) + text_sha256(32) + text_len(2) = 38 bytes */
 _Static_assert(offsetof(chain_payload_operator_post_t, text) == 38, "operator_post fixed-prefix size");
