@@ -4509,6 +4509,34 @@ void step_station_jostle(world_t *w, float dt) {
     }
 }
 
+/* Apply one spoke's spring torque to its two endpoint rings. Equal-and-
+ * opposite (Newton's third) so the spoke conserves angular momentum
+ * within the station. Same-ring spokes (rb == ra) net to zero and are
+ * skipped — their torque contribution would cancel anyway, but the
+ * skip also keeps the renderer/physics agreement clean. Out-of-bounds
+ * rings or scaffolded hoppers are no-ops. */
+static void apply_spoke_torque(const station_t *st,
+                               const station_module_t *prod, float wa, int ra,
+                               int hop, float pulse, float net_torque[]) {
+    if (hop < 0) return;
+    const station_module_t *hm = &st->modules[hop];
+    if (hm->scaffold) return;
+    int rb = (int)hm->ring;
+    if (rb < 1 || rb > STATION_NUM_RINGS) return;
+    if (rb == ra) return;
+    int slots_b = STATION_RING_SLOTS[rb];
+    if (slots_b <= 0) return;
+    float alpha_b = TWO_PI_F * (float)hm->slot / (float)slots_b;
+    float wb = st->arm_rotation[rb-1] + alpha_b;
+    float dr = wb - wa;
+    while (dr >  PI_F) dr -= TWO_PI_F;
+    while (dr < -PI_F) dr += TWO_PI_F;
+    float T = pulse * RING_SPOKE_K * sinf(dr);
+    net_torque[ra-1] += T;
+    net_torque[rb-1] -= T;
+    (void)prod; /* reserved for future per-spoke scaling */
+}
+
 void step_station_ring_dynamics(world_t *w, float dt) {
     /* Decay all module activity pulses linearly. Production code
      * sets the pulse to 1.0 each tick a producer actually consumes
@@ -4555,44 +4583,19 @@ void step_station_ring_dynamics(world_t *w, float dt) {
             float alpha_a = TWO_PI_F * (float)prod->slot / (float)slots_a;
             float wa = st->arm_rotation[ra-1] + alpha_a;
 
-            /* Add a spoke contribution from producer `prod` to the
-             * module at index `hop` (must satisfy ring/slot bounds).
-             * Equal-and-opposite torque on the two endpoint rings. */
-            #define ADD_SPOKE(hop) do {                                    \
-                if ((hop) >= 0) {                                          \
-                    const station_module_t *hm = &st->modules[(hop)];      \
-                    if (!hm->scaffold) {                                   \
-                        int rb = (int)hm->ring;                            \
-                        if (rb >= 1 && rb <= STATION_NUM_RINGS && rb != ra) { \
-                            int slots_b = STATION_RING_SLOTS[rb];          \
-                            if (slots_b > 0) {                             \
-                                float alpha_b = TWO_PI_F * (float)hm->slot \
-                                                / (float)slots_b;          \
-                                float wb = st->arm_rotation[rb-1] + alpha_b; \
-                                float dr = wb - wa;                        \
-                                while (dr > PI_F)  dr -= TWO_PI_F;         \
-                                while (dr < -PI_F) dr += TWO_PI_F;         \
-                                float T = pulse * RING_SPOKE_K * sinf(dr); \
-                                net_torque[ra-1] += T;                     \
-                                net_torque[rb-1] -= T;                     \
-                            }                                              \
-                        }                                                  \
-                    }                                                      \
-                }                                                          \
-            } while (0)
-
             /* Input spokes — each declared input commodity. */
             module_inputs_t req = module_required_inputs(prod->type);
             for (int i = 0; i < req.count; i++) {
-                ADD_SPOKE(station_find_hopper_for(st, req.commodities[i]));
+                int hop = station_find_hopper_for(st, req.commodities[i]);
+                apply_spoke_torque(st, prod, wa, ra, hop, pulse, net_torque);
             }
             /* Output spoke (Slice 1 — cargo-in-space schema). SHIPYARD
              * has no commodity output and is naturally skipped: its
              * module_instance_output() returns COMMODITY_COUNT, and
              * station_find_output_hopper_for_module returns -1. */
-            ADD_SPOKE(station_find_output_hopper_for_module(st, prod));
-
-            #undef ADD_SPOKE
+            apply_spoke_torque(st, prod, wa, ra,
+                               station_find_output_hopper_for_module(st, prod),
+                               pulse, net_torque);
         }
 
         /* Per-ring integrate: drift bias + drag, semi-implicit Euler. */
@@ -5025,25 +5028,14 @@ void world_reset(world_t *w) {
     add_furnace_for(&w->stations[0], 1, 2, COMMODITY_FERRITE_INGOT);
     /* Ring 2: ferrite-ore intake at slot 4 (240°, cross-ring opposite
      * the furnace at ring 1 slot 2), ferrite-ingot output at slot 0
-     * (0°, on the dock's radial axis). Slot choice for the new output
-     * hopper is load-bearing — slot 0 is the only ring-2 slot that
-     * doesn't perturb NPC docking pathways. Empirically, adding any
-     * hopper at slots 1/2/3/5 stalls the NPC mining cycle in
-     * test_scenario_npc_economy_30s; slot 0 alone preserves it.
-     * (The A* nav mesh is rebuilt by station_rebuild_all_nav at end
-     * of world_reset, so it's not stale; the stall comes from the
-     * ring's annular-sector corridor geometry between this slot and
-     * the existing slot-4 hopper. Slot 0's corridor sweeps through
-     * empty slot 5 and terminates on the dock radial — a region NPCs
-     * already vacate when undocking.) */
+     * (0°, on the dock's radial axis). */
     add_hopper_for(&w->stations[0], 2, 4, COMMODITY_FERRITE_ORE);
     add_hopper_for(&w->stations[0], 2, 0, COMMODITY_FERRITE_INGOT);
     w->stations[0].arm_count = 2;
-    /* Ring 2 (idx 1) is the driver — ring 2 spins, ring 1 is dragged
-     * along by the cross-ring spoke spring. Prospect has only one
-     * spoke (FURNACE@1:2 ↔ HOPPER@2:4) so coupling is loose; ring 1's
-     * steady-state phase lag is large. ring_offset stays at 0; the
-     * spoke dynamics determine relative phase. */
+    /* Drift bias on ring 2 — under the all-passive Slice 1.5a dynamics
+     * this is the per-ring ambient torque. Ring 1 co-rotates via the
+     * cross-ring spoke spring. Prospect has light spoke load (one
+     * input + one output spoke) so ring 1 lags noticeably behind. */
     w->stations[0].arm_speed[1] = STATION_RING_SPEED;
     rebuild_station_services(&w->stations[0]);
     /* Stations are sovereign currency issuers. Net issuance is derived
@@ -5087,7 +5079,7 @@ void world_reset(world_t *w) {
     add_hopper_for(&w->stations[1], 3, 4, COMMODITY_LASER_MODULE);   /* feeds SHIPYARD    */
     add_hopper_for(&w->stations[1], 3, 6, COMMODITY_TRACTOR_MODULE); /* feeds SHIPYARD    */
     w->stations[1].arm_count = 3;
-    w->stations[1].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drives */
+    w->stations[1].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drift bias */
     rebuild_station_services(&w->stations[1]);
     snprintf(w->stations[1].station_slug, sizeof(w->stations[1].station_slug), "kepler");
     snprintf(w->stations[1].currency_name, sizeof(w->stations[1].currency_name), "kepler bonds");
@@ -5140,7 +5132,7 @@ void world_reset(world_t *w) {
     add_hopper_for(&w->stations[2], 3, 6, COMMODITY_CRYSTAL_ORE);
     add_hopper_for(&w->stations[2], 3, 7, COMMODITY_TRACTOR_MODULE); /* TRACTOR_FAB output */
     w->stations[2].arm_count = 3;
-    w->stations[2].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drives */
+    w->stations[2].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drift bias */
     rebuild_station_services(&w->stations[2]);
     snprintf(w->stations[2].station_slug, sizeof(w->stations[2].station_slug), "helios");
     snprintf(w->stations[2].currency_name, sizeof(w->stations[2].currency_name), "helios credits");

@@ -93,6 +93,16 @@ void add_hopper_for(station_t *st, uint8_t arm, uint8_t chain_pos, commodity_t c
 }
 
 void add_furnace_for(station_t *st, uint8_t arm, uint8_t chain_pos, commodity_t ingot) {
+    /* The tag must be one of the smeltable ingot commodities. Anything
+     * else (a raw ore, a finished good, COMMODITY_COUNT) would silently
+     * fall back to FERRITE_INGOT via module_instance_output() — easy to
+     * miss in seed code. Guard at the construction site. */
+    if (!(ingot == COMMODITY_FERRITE_INGOT ||
+          ingot == COMMODITY_CUPRITE_INGOT ||
+          ingot == COMMODITY_CRYSTAL_INGOT)) {
+        SIM_LOG("[sim] add_furnace_for: invalid ingot tag %d (defaulting to ferrite)\n", (int)ingot);
+        ingot = COMMODITY_FERRITE_INGOT;
+    }
     add_module_at(st, MODULE_FURNACE, arm, chain_pos);
     if (st->module_count > 0) {
         st->modules[st->module_count - 1].commodity = (uint8_t)ingot;
