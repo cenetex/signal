@@ -2427,27 +2427,27 @@ static bool find_scan_target(world_t *w, server_player_t *sp, vec2 muzzle, vec2 
             if (t_hit < 0.0f || t_hit >= best_dist) continue;
             /* Verify the hit is on the ring band, not just crossing the
              * inner empty space (annulus check via distance from station). */
-            vec2 hit = v2_add(muzzle, v2_scale(forward, t_hit));
-            float hit_dist = v2_len(v2_sub(hit, st->pos));
+            vec2 ring_hit = v2_add(muzzle, v2_scale(forward, t_hit));
+            float hit_dist = v2_len(v2_sub(ring_hit, st->pos));
             if (fabsf(hit_dist - rr) > ring_thickness) continue;
             best_dist = t_hit;
             sp->scan_target_type = 1;
             sp->scan_target_index = si;
             sp->scan_module_index = -1;
-            sp->beam_end = hit;
+            sp->beam_end = ring_hit;
         }
         /* Check individual modules */
         for (int mi = 0; mi < st->module_count; mi++) {
             if (st->modules[mi].scaffold) continue;
             vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
-            vec2 hit; float along;
-            if (laser_target_in_beam(&ray, mp, STATION_MODULE_COL_RADIUS, &hit, &along)
-                && along < best_dist) {
-                best_dist = along;
+            vec2 mod_hit; float mod_along;
+            if (laser_target_in_beam(&ray, mp, STATION_MODULE_COL_RADIUS, &mod_hit, &mod_along)
+                && mod_along < best_dist) {
+                best_dist = mod_along;
                 sp->scan_target_type = 1;
                 sp->scan_target_index = si;
                 sp->scan_module_index = mi;
-                sp->beam_end = hit;
+                sp->beam_end = mod_hit;
             }
         }
     }
@@ -4059,11 +4059,15 @@ int spawn_scaffold(world_t *w, module_type_t type, vec2 pos, int owner) {
 
 /* Snap range: how close a LOOSE scaffold must be to a ring slot for the
  * station to reach out and grab it. */
-static const float SCAFFOLD_SNAP_RANGE = 200.0f;
-/* How fast the station's tendrils pull a scaffold into position. */
-static const float SCAFFOLD_SNAP_PULL = 4.0f;
+#define SCAFFOLD_SNAP_RANGE 200.0f
+/* How fast the station's tendrils pull a scaffold into position.
+ * #define instead of static const float so MSVC accepts SCAFFOLD_SNAP_PULL
+ * * 3.0f as a constant initializer for the static SCAFFOLD_SNAP tractor
+ * beam below — clang/gcc treat const float as a constant expression but
+ * MSVC does not. */
+#define SCAFFOLD_SNAP_PULL  4.0f
 /* Distance threshold to finalize placement. */
-static const float SCAFFOLD_SNAP_ARRIVE = 8.0f;
+#define SCAFFOLD_SNAP_ARRIVE 8.0f
 
 /* Find the open ring slot on a station that best matches a scaffold's
  * approach. The RING is chosen by the scaffold's distance from the station

@@ -1169,9 +1169,9 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
     for (int i = 0; i < rel_count - 1; i++) {
         for (int j = 0; j < rel_count - 1 - i; j++) {
             if (st->ledger[rel_indices[j]].last_dock_tick < st->ledger[rel_indices[j+1]].last_dock_tick) {
-                int tmp = rel_indices[j];
+                int swap = rel_indices[j];
                 rel_indices[j] = rel_indices[j+1];
-                rel_indices[j+1] = tmp;
+                rel_indices[j+1] = swap;
             }
         }
     }
