@@ -710,6 +710,12 @@ void step_furnace_smelting(world_t *w, float dt) {
              * fallback. */
             int tower = connected_player_by_token(w, a->last_towed_token);
             int fracturer = connected_player_by_token(w, a->last_fractured_token);
+            SIM_LOG("[smelt-attr] tower=%d fracturer=%d tow_tok=%02x%02x%02x%02x frac_tok=%02x%02x%02x%02x\n",
+                    tower, fracturer,
+                    a->last_towed_token[0], a->last_towed_token[1],
+                    a->last_towed_token[2], a->last_towed_token[3],
+                    a->last_fractured_token[0], a->last_fractured_token[1],
+                    a->last_fractured_token[2], a->last_fractured_token[3]);
 
             /* Grade is committed when the fracture claim resolves.
              * Smelt only publishes that cached value — no fresh dice. */
@@ -753,6 +759,9 @@ void step_furnace_smelting(world_t *w, float dt) {
                             ? ledger_credit_supply_amount_by_pubkey(st, pt->pubkey, graded_value)
                             : ledger_credit_supply_amount(st, pt->session_token, graded_value);
                     }
+                    SIM_LOG("[smelt-pay] player %d tower credit: graded=%.2f credited=%.2f pubkey_set=%d session_ready=%d\n",
+                            tower, graded_value, credited, pt->pubkey_set ? 1 : 0,
+                            pt->session_ready ? 1 : 0);
                     pt->ship.stat_credits_earned += credited;
                     emit_event(w, (sim_event_t){
                         .type = SIM_EVENT_SELL, .player_id = tower,
