@@ -4644,9 +4644,12 @@ void step_station_ring_dynamics(world_t *w, float dt) {
             if (st->arm_omega[idx] >  RING_OMEGA_MAX) st->arm_omega[idx] =  RING_OMEGA_MAX;
             if (st->arm_omega[idx] < -RING_OMEGA_MAX) st->arm_omega[idx] = -RING_OMEGA_MAX;
             st->arm_rotation[idx] += st->arm_omega[idx] * dt;
-
-            while (st->arm_rotation[idx] >  TWO_PI_F) st->arm_rotation[idx] -= TWO_PI_F;
-            while (st->arm_rotation[idx] < -TWO_PI_F) st->arm_rotation[idx] += TWO_PI_F;
+            /* No 2π wrap — sin/cos are periodic in the renderer, and
+             * wrapping server-side caused visible "snap-back" artifacts
+             * for clients interpolating across snapshots that landed on
+             * opposite sides of the wrap boundary. arm_rotation grows
+             * unbounded; f32 precision holds for years of session time
+             * at typical drift rates (~0.04 rad/s). */
         }
     }
 }
@@ -5063,10 +5066,11 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 1);
     add_furnace_for(&w->stations[0], 1, 2, COMMODITY_FERRITE_INGOT);
     /* Ring 2: ferrite-ore intake at slot 4 (240°, cross-ring opposite
-     * the furnace at ring 1 slot 2), ferrite-ingot output at slot 0
-     * (0°, on the dock's radial axis). */
+     * the furnace at ring 1 slot 2). No output hopper — Prospect has
+     * no downstream local consumer of ferrite ingots (no frame press
+     * here), so smelt-completed ingots go straight to station
+     * inventory and ride out via haulers to Kepler. */
     add_hopper_for(&w->stations[0], 2, 4, COMMODITY_FERRITE_ORE);
-    add_hopper_for(&w->stations[0], 2, 0, COMMODITY_FERRITE_INGOT);
     w->stations[0].arm_count = 2;
     /* Drift bias on ring 2 — under the all-passive Slice 1.5a dynamics
      * this is the per-ring ambient torque. Ring 1 co-rotates via the

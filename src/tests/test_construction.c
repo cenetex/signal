@@ -530,15 +530,12 @@ TEST(test_station_geom_emitter_prospect) {
     /* Core: Prospect has radius 40 */
     ASSERT(geom.has_core == true);
 
-    /* Circles: dock (half-size) + relay + furnace (ring 1) + 2 hoppers
-     * (ring 2: ferrite-ore intake @ slot 4, ferrite-ingot output @
-     * slot 0) = 5. */
-    ASSERT_EQ_INT(geom.circle_count, 5);
-    /* Corridors: ring 1 still = 3 modules → 2 corridors. Ring 2 has
-     * two hoppers at slots 0 and 4 (120° short arc); whether the geom
-     * builder emits a wrap corridor between them depends on adjacency
-     * rules — accept ≥ 2. */
-    ASSERT(geom.corridor_count >= 2);
+    /* Circles: dock (half-size) + relay + furnace (ring 1) + 1 hopper
+     * (ring 2: ferrite-ore intake @ slot 4) = 4. */
+    ASSERT_EQ_INT(geom.circle_count, 4);
+    /* Corridors: ring 1 = 3 modules → 2 corridors. Ring 2 has only one
+     * module so no within-ring corridor. */
+    ASSERT_EQ_INT(geom.corridor_count, 2);
 
     /* Docks: 1 dock on ring 1 */
     ASSERT_EQ_INT(geom.dock_count, 1);
@@ -1290,30 +1287,54 @@ TEST(test_commodity_ore_ingot_pairing) {
 }
 
 TEST(test_station_module_layout_status_missing_output) {
-    /* Synthetic station: TRACTOR_FAB with input hopper but no output
-     * hopper → MISSING_OUTPUT_HOPPER. Adding the output hopper restores
-     * OK. Slice 1 surfaces this informationally only — production keeps
-     * running on missing-output layouts until Slice 5 promotes it to a
-     * hard reject. */
+    /* Synthetic station: TRACTOR_FAB with input hopper, AND a SHIPYARD
+     * on the station that consumes TRACTOR_MODULE — so the TRACTOR_FAB
+     * has a local downstream consumer and an output hopper IS required.
+     * Without the hopper → MISSING_OUTPUT_HOPPER. Adding it restores OK. */
     station_t st = {0};
     st.signal_range = 1.0f;
-    add_hopper_for(&st, 2, 0, COMMODITY_CUPRITE_INGOT);   /* input hopper present */
+    add_hopper_for(&st, 2, 0, COMMODITY_CUPRITE_INGOT);
     add_module_at(&st, MODULE_TRACTOR_FAB, 2, 1);
-    const station_module_t *fab = &st.modules[st.module_count - 1];
+    add_module_at(&st, MODULE_SHIPYARD,    2, 5);   /* downstream consumer */
+    /* Shipyard also needs FRAME and LASER_MODULE input hoppers to be OK
+     * for itself, but we're testing the TRACTOR_FAB module specifically. */
+    add_hopper_for(&st, 3, 0, COMMODITY_FRAME);
+    add_hopper_for(&st, 3, 1, COMMODITY_LASER_MODULE);
+    const station_module_t *fab = &st.modules[1];   /* TRACTOR_FAB */
     ASSERT_EQ_INT(station_module_layout_status(&st, fab),
                   STATION_LAYOUT_MISSING_OUTPUT_HOPPER);
     add_hopper_for(&st, 2, 2, COMMODITY_TRACTOR_MODULE);
     ASSERT_EQ_INT(station_module_layout_status(&st, fab), STATION_LAYOUT_OK);
 }
 
+TEST(test_station_module_layout_status_no_local_consumer_is_ok) {
+    /* The mirror case: a producer with NO local downstream consumer
+     * doesn't need an output hopper. Smelted ingots ride out via
+     * haulers from station inventory. Models Prospect's furnace —
+     * 1-furnace ferrite station with no on-station frame press. */
+    station_t st = {0};
+    st.signal_range = 1.0f;
+    add_hopper_for(&st, 2, 0, COMMODITY_FERRITE_ORE);   /* input only */
+    add_furnace_for(&st, 2, 1, COMMODITY_FERRITE_INGOT);
+    const station_module_t *furnace = &st.modules[1];
+    /* No FRAME_PRESS / LASER_FAB / TRACTOR_FAB on the station, so
+     * nothing locally consumes ferrite ingots. Layout is OK without
+     * an output hopper. */
+    ASSERT_EQ_INT(station_module_layout_status(&st, furnace),
+                  STATION_LAYOUT_OK);
+}
+
 TEST(test_station_module_layout_status_furnace_uses_tag) {
     /* A furnace tagged for CUPRITE_INGOT needs CUPRITE_ORE in (not any
-     * ore) and CUPRITE_INGOT out. FERRITE_ORE alone is missing-input. */
+     * ore) and CUPRITE_INGOT out (because we add a TRACTOR_FAB to give
+     * the cuprite ingot a local downstream consumer). FERRITE_ORE alone
+     * is missing-input. */
     station_t st = {0};
     st.signal_range = 1.0f;
     add_hopper_for(&st, 2, 0, COMMODITY_FERRITE_ORE); /* wrong ore for a CU furnace */
     add_furnace_for(&st, 2, 1, COMMODITY_CUPRITE_INGOT);
-    const station_module_t *fc = &st.modules[st.module_count - 1];
+    add_module_at(&st, MODULE_TRACTOR_FAB, 2, 5);     /* consumes CUPRITE_INGOT */
+    const station_module_t *fc = &st.modules[1];     /* the furnace */
     ASSERT_EQ_INT(station_module_layout_status(&st, fc),
                   STATION_LAYOUT_MISSING_INPUT_HOPPER);
     add_hopper_for(&st, 2, 2, COMMODITY_CUPRITE_ORE);
@@ -1864,6 +1885,7 @@ void register_construction_module_schema_tests(void) {
     RUN(test_module_furnace_instance_tag);
     RUN(test_commodity_ore_ingot_pairing);
     RUN(test_station_module_layout_status_missing_output);
+    RUN(test_station_module_layout_status_no_local_consumer_is_ok);
     RUN(test_station_module_layout_status_furnace_uses_tag);
     RUN(test_station_module_layout_status_shipyard_exempt);
     RUN(test_seeded_furnaces_tagged);

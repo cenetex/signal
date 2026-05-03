@@ -479,11 +479,9 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     /* Prospect's furnace at ring 1 slot 2, ferrite-ore intake hopper at
-     * ring 2 slot 4, ferrite-ingot output hopper at ring 2 slot 0
-     * (slot 0 is on the dock's radial axis — the only ring-2 slot that
-     * doesn't perturb NPC docking pathways. See add_hopper_for site
-     * comment in world_reset). 5 modules total. */
-    ASSERT_EQ_INT((int)w->stations[0].module_count, 5);
+     * ring 2 slot 4. 4 modules total — no ingot output hopper because
+     * Prospect has no on-station consumer of ferrite ingots. */
+    ASSERT_EQ_INT((int)w->stations[0].module_count, 4);
     station_module_t orig = w->stations[0].modules[2]; /* furnace at ring 1 slot 2 */
     ASSERT(orig.type == MODULE_FURNACE);
     ASSERT_EQ_INT((int)orig.ring, 1);
@@ -505,13 +503,7 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     ASSERT_EQ_INT((int)intake.ring, 2);
     ASSERT_EQ_INT((int)intake.slot, 4);
     ASSERT_EQ_INT((int)intake.commodity, (int)COMMODITY_FERRITE_ORE);
-    /* modules[4] = ferrite-ingot output hopper at ring 2 slot 0. */
-    station_module_t out_h = loaded->stations[0].modules[4];
-    ASSERT(out_h.type == MODULE_HOPPER);
-    ASSERT_EQ_INT((int)out_h.ring, 2);
-    ASSERT_EQ_INT((int)out_h.slot, 0);
-    ASSERT_EQ_INT((int)out_h.commodity, (int)COMMODITY_FERRITE_INGOT);
-    ASSERT_EQ_INT((int)loaded->stations[0].module_count, 5);
+    ASSERT_EQ_INT((int)loaded->stations[0].module_count, 4);
     remove(TMP("test_modules.sav"));
 }
 

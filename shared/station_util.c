@@ -351,11 +351,26 @@ station_layout_status_t station_module_layout_status(const station_t *st,
         }
     }
 
-    /* Output hopper: required for every commodity-emitting producer.
-     * SHIPYARD is exempt — its output is a physical scaffold body. */
+    /* Output hopper: required only when a different on-station producer
+     * declares the same commodity as one of its inputs. If nothing
+     * locally consumes this output, the smelt/fab pipeline writes
+     * straight to station inventory and a hauler picks it up — no
+     * staging hopper needed. SHIPYARD's output is a physical scaffold
+     * body and falls through the COMMODITY_COUNT branch naturally. */
     commodity_t out = module_instance_output(m);
-    if (out != COMMODITY_COUNT && station_find_hopper_for(st, out) < 0) {
-        return STATION_LAYOUT_MISSING_OUTPUT_HOPPER;
+    if (out != COMMODITY_COUNT) {
+        bool has_local_consumer = false;
+        for (int j = 0; j < st->module_count && !has_local_consumer; j++) {
+            if (j == (int)(m - st->modules)) continue;
+            if (st->modules[j].scaffold) continue;
+            module_inputs_t cons = module_required_inputs(st->modules[j].type);
+            for (int k = 0; k < cons.count; k++) {
+                if (cons.commodities[k] == out) { has_local_consumer = true; break; }
+            }
+        }
+        if (has_local_consumer && station_find_hopper_for(st, out) < 0) {
+            return STATION_LAYOUT_MISSING_OUTPUT_HOPPER;
+        }
     }
     return STATION_LAYOUT_OK;
 }
