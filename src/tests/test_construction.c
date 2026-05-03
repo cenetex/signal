@@ -1795,35 +1795,45 @@ TEST(test_output_hopper_spoke_contributes_torque) {
     /* Slice 1.5a — output hoppers participate in spoke physics. A
      * synthetic 2-ring station with only an output spoke (no input
      * spoke) must still apply torque to its passive ring when the
-     * producer's pulse is hot. */
-    station_t *st = calloc(1, sizeof(*st));
-    ASSERT(st != NULL);
-    st->signal_range = 1.0f;
-    /* Frame press on ring 2 slot 0; frame output hopper on ring 3
-     * slot 4 (180° away) so the dr term is non-zero. No input hopper
-     * for ferrite ingot, so the input spoke can't contribute. */
-    add_module_at(st, MODULE_FRAME_PRESS, 2, 0);
-    add_hopper_for(st, 3, 4, COMMODITY_FRAME);
-    /* Force the press's pulse high. */
-    st->module_active_pulse[0] = 1.0f;
-    /* Drive ring 2 (the producer's ring). */
-    st->arm_speed[1] = 0.04f;
-    st->arm_omega[1] = 0.04f;
-
-    float r3_0 = st->arm_rotation[2];
-    /* Use a minimal world for step_station_ring_dynamics. Place st as
-     * stations[0] in a heap world so station_exists() picks it up. */
+     * producer's pulse is hot. Asserts both magnitude AND direction:
+     * a producer that's behind its hopper in phase pulls the hopper
+     * ring backward (torque toward closing the phase gap), and the
+     * producer ring forward — Newton's third. A sign-flip in the
+     * spoke math would fail the direction assertion. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
-    w->stations[0] = *st;
-    free(st);
-    /* Re-pin the pulse each tick (decay would zero it after ~1.5s). */
-    for (int i = 0; i < 600; i++) {
-        w->stations[0].module_active_pulse[0] = 1.0f;
-        world_sim_step(w, 1.0f / 120.0f);
-    }
-    float r3_1 = w->stations[0].arm_rotation[2];
-    ASSERT(fabsf(r3_1 - r3_0) > 0.01f);
+    station_t *st = &w->stations[0];
+    st->signal_range = 1.0f;
+    /* Frame press on ring 2 slot 0; frame output hopper on ring 3
+     * slot 4 (160° ahead — hopper leads the producer in phase). */
+    add_module_at(st, MODULE_FRAME_PRESS, 2, 0);
+    add_hopper_for(st, 3, 4, COMMODITY_FRAME);
+    /* No drift bias — isolate the spoke contribution. arm_omega all 0. */
+    st->module_active_pulse[0] = 1.0f;
+
+    /* Single tick: omega should become non-zero on both endpoint rings,
+     * with opposite signs (Newton's third). */
+    float r2_omega_pre = st->arm_omega[1];
+    float r3_omega_pre = st->arm_omega[2];
+    world_sim_step(w, 1.0f / 120.0f);
+    float r2_omega_post = st->arm_omega[1];
+    float r3_omega_post = st->arm_omega[2];
+    float dr2 = r2_omega_post - r2_omega_pre;
+    float dr3 = r3_omega_post - r3_omega_pre;
+
+    /* Magnitude: spoke applied torque to both rings. */
+    ASSERT(fabsf(dr2) > 1e-5f);
+    ASSERT(fabsf(dr3) > 1e-5f);
+    /* Direction: signs are opposite (Newton's third — a sign flip
+     * would push both rings the same way, failing this). */
+    ASSERT(dr2 * dr3 < 0.0f);
+    /* Phase pursuit: hopper leads (slot 4 of 9 = ~160° vs 0°), so dr =
+     * +160°, sin(dr) > 0, T = K*sin(dr) > 0. apply_spoke_torque adds
+     * +T to producer ring (ra=2) and -T to hopper ring (rb=3). So ring 2
+     * accelerates positive (toward the hopper) and ring 3 decelerates
+     * negative (away from the producer). */
+    ASSERT(dr2 > 0.0f);
+    ASSERT(dr3 < 0.0f);
 }
 
 TEST(test_seed_stations_pair_complete) {

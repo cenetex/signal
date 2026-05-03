@@ -269,6 +269,13 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
             if (hop < 0) continue;
             if (out->spoke_count >= STATION_GEOM_MAX_SPOKES) break;
             const station_module_t *hm = &st->modules[hop];
+            /* Same-ring spokes contribute zero net torque (Newton's
+             * third cancels) and step_station_ring_dynamics skips
+             * them. Skip in the renderer too so visible beams match
+             * the physics — otherwise a producer-and-hopper on the
+             * same ring would render a beam promising torque the
+             * dynamics doesn't apply. */
+            if ((int)hm->ring == (int)prod->ring) continue;
             geom_spoke_t *sp = &out->spokes[out->spoke_count++];
             sp->a = module_world_pos_ring(st, prod->ring, prod->slot);
             sp->b = module_world_pos_ring(st, hm->ring, hm->slot);

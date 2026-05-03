@@ -914,18 +914,17 @@ TEST(test_npc_exits_station_with_blocked_rings) {
     a->radius = 30.0f;
     a->pos = v2_add(w.stations[0].pos, v2(3000.0f, 0.0f));
 
-    /* Run up to 60 sim seconds (was 30 in the pre-fix design but the
-     * NPC also has to reacquire its target after my override expires). */
+    /* Run up to 30 sim seconds. The miner must reach NPC_STATE_MINING
+     * (not just "near the asteroid") — proximity-only acceptance was
+     * loose enough that a regression where the NPC drifts slowly
+     * toward the asteroid without ever locking on would still pass.
+     * MINING gating requires the asteroid to be in the mining cone,
+     * which means the miner has to actually navigate there. */
     bool reached = false;
-    for (int i = 0; i < 7200 && !reached; i++) {
+    for (int i = 0; i < 3600 && !reached; i++) {
         world_sim_step(&w, SIM_DT);
         const npc_ship_t *npc = &w.npc_ships[miner];
         if (npc->state == NPC_STATE_MINING) { reached = true; break; }
-        /* Also accept "very close to the asteroid" — MINING transition
-         * is gated by visibility cone which can lag a tick. */
-        if (v2_dist_sq(npc->ship.pos, a->pos) < (MINING_RANGE * 1.5f) * (MINING_RANGE * 1.5f)) {
-            reached = true; break;
-        }
     }
     ASSERT(reached);
 }
