@@ -4158,12 +4158,33 @@ static void step_scaffolds(world_t *w, float dt) {
                 const float PLAN_PULL_RANGE = 800.0f;
                 if (dist_sq > PLAN_PULL_RANGE * PLAN_PULL_RANGE) continue;
                 float dist = sqrtf(dist_sq);
-                if (dist < 1.0f) dist = 1.0f;
-                vec2 norm = v2_scale(delta, 1.0f / dist);
-                /* Strong direct pull — no orbit, tractor-like */
-                float pull_strength = 25.0f * (1.0f + 2.0f * (1.0f - dist / PLAN_PULL_RANGE));
-                sc->vel = v2_add(sc->vel, v2_scale(norm, pull_strength * dt));
-                sc->vel = v2_scale(sc->vel, 1.0f / (1.0f + 3.0f * dt)); /* heavy damping */
+                /* Constant-pull beam from blueprint center to scaffold.
+                 * Legacy 25*(1 + 2*(1-d/range)) ranged from 25 (at
+                 * d=range) to 75 (at d=0) with average ~50. Modeling
+                 * as a fixed 50 with no falloff matches the average
+                 * impulse the legacy delivered over a typical
+                 * approach trajectory, and means scaffolds at the
+                 * edge of pull range still get engaged at half the
+                 * legacy peak (vs zero with linear falloff). */
+                static const tractor_beam_t PLAN_BLUEPRINT = {
+                    .rest_length     = 0.0f,
+                    .pull_strength   = 0.0f,
+                    .push_strength   = 0.0f,
+                    .pull_constant   = 50.0f,
+                    .push_constant   = 0.0f,
+                    .range           = 800.0f,   /* PLAN_PULL_RANGE */
+                    .axial_damping   = 3.0f,
+                    /* Tangent damping matches axial (= legacy isotropic
+                     * drag 3.0). Lowering breaks placement timing on
+                     * test_outpost_*. Worth revisiting once playtest
+                     * confirms the pull feels right. */
+                    .tangent_damping = 3.0f,
+                    .speed_cap       = 0.0f,
+                    .falloff         = TRACTOR_FALLOFF_CONSTANT,
+                };
+                tractor_anchor_t plan_src = { .pos = st->pos, .vel = NULL,     .inv_mass = 0.0f };
+                tractor_anchor_t plan_tgt = { .pos = sc->pos, .vel = &sc->vel, .inv_mass = 1.0f };
+                (void)tractor_apply(&plan_src, &plan_tgt, &PLAN_BLUEPRINT, dt);
                 /* Materialize on arrival */
                 if (dist < 40.0f) {
                     st->planned = false;
@@ -4235,13 +4256,37 @@ static void step_scaffolds(world_t *w, float dt) {
                 continue; /* scaffold is now deactivated */
             }
 
-            /* Accelerating pull — gets stronger as it gets closer (tendril grip tightens) */
-            float pull_strength = SCAFFOLD_SNAP_PULL * (1.0f + 2.0f * (1.0f - dist / SCAFFOLD_SNAP_RANGE));
-            if (pull_strength < SCAFFOLD_SNAP_PULL) pull_strength = SCAFFOLD_SNAP_PULL;
-            vec2 pull_dir = v2_scale(delta, pull_strength);
-            sc->vel = v2_add(sc->vel, v2_scale(pull_dir, dt));
-            /* Heavy damping so it doesn't overshoot */
-            sc->vel = v2_scale(sc->vel, 1.0f / (1.0f + 5.0f * dt));
+            /* Spring pull toward the rotating target slot. Legacy used
+             * K*d*(1+2*(1-d/range)) which integrates to ~7K total
+             * impulse over the snap range. A constant-K spring with
+             * pull_strength=12 (= 3*SCAFFOLD_SNAP_PULL) and no falloff
+             * delivers slightly stronger total impulse than the legacy,
+             * which keeps the snap fast enough to satisfy the existing
+             * 5-sim-second test windows. */
+            (void)dist;
+            static const tractor_beam_t SCAFFOLD_SNAP = {
+                .rest_length     = 0.0f,
+                .pull_strength   = SCAFFOLD_SNAP_PULL * 3.0f,   /* K = 12 */
+                .push_strength   = 0.0f,
+                .pull_constant   = 0.0f,
+                .push_constant   = 0.0f,
+                /* No range gate — the SNAPPING state itself guarantees
+                 * the scaffold is supposed to be converging. A range
+                 * gate would disable damping past the limit and let an
+                 * overshooting scaffold fly off into the void. */
+                .range           = 0.0f,
+                .axial_damping   = 5.0f,
+                /* Tangent matches axial (= legacy isotropic drag 5.0).
+                 * The target slot rotates with the ring; without strong
+                 * tangent damping the scaffold orbits the rotating slot
+                 * instead of converging on it. */
+                .tangent_damping = 5.0f,
+                .speed_cap       = 0.0f,
+                .falloff         = TRACTOR_FALLOFF_CONSTANT,
+            };
+            tractor_anchor_t snap_src = { .pos = target,  .vel = NULL,     .inv_mass = 0.0f };
+            tractor_anchor_t snap_tgt = { .pos = sc->pos, .vel = &sc->vel, .inv_mass = 1.0f };
+            (void)tractor_apply(&snap_src, &snap_tgt, &SCAFFOLD_SNAP, dt);
             sc->pos = v2_add(sc->pos, v2_scale(sc->vel, dt));
 
             /* Safety: if station was destroyed or slot got taken, release back to LOOSE */
