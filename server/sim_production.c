@@ -4,6 +4,7 @@
  */
 #include "sim_production.h"
 #include "tractor.h"
+#include "laser.h"
 #include "sim_asteroid.h"      /* fracture_claim_state_reset */
 #include "sim_construction.h"  /* module_build_material, module_build_cost */
 #include "manifest.h"
@@ -594,24 +595,19 @@ void step_furnace_smelting(world_t *w, float dt) {
             }
         }
 
-        /* If not in any smelt beam this tick, decay progress */
+        /* Smelt-progress laser-effect: in beam → accumulate at 0.5/sec
+         * (~2s to fully smelt); not in beam → decay at 0.5/sec back to 0.
+         * Clamped to [0, 1] so a fragment waiting on a fracture-claim
+         * resolution doesn't grow progress unbounded. */
+        const float SMELT_RATE = 0.5f;
         if (!smelted) {
-            if (a->smelt_progress > 0.0f) {
-                a->smelt_progress -= dt * 0.5f;
-                if (a->smelt_progress < 0.0f) a->smelt_progress = 0.0f;
-            }
+            laser_apply_effect(&a->smelt_progress, -SMELT_RATE, 1.0f, dt);
             continue;
         }
-
-        /* Accumulate smelt progress (~2 seconds to fully smelt) */
-        a->smelt_progress += dt * 0.5f;
+        laser_apply_effect(&a->smelt_progress, +SMELT_RATE, 1.0f, dt);
 
         /* Hold fragment in place while smelting — dampen velocity */
         a->vel = v2_scale(a->vel, 1.0f / (1.0f + 10.0f * dt));
-
-        /* L8: clamp accumulated progress at 1.0 so a fragment waiting on
-         * a fracture-claim resolution doesn't grow smelt_progress unbounded. */
-        if (a->smelt_progress > 1.0f) a->smelt_progress = 1.0f;
 
         if (a->smelt_progress >= 1.0f && smelt_station >= 0) {
             station_t *st = &w->stations[smelt_station];
