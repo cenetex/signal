@@ -2788,7 +2788,27 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
         commodity_t filter = intent->service_sell_only;
         bool deliver_frames = (filter == COMMODITY_COUNT) || (filter == COMMODITY_FRAME);
         if (deliver_frames) step_scaffold_delivery(w, sp);
-        step_module_delivery(w, docked_st, sp->current_station, &sp->ship, filter);
+        float build_payout = step_module_delivery(w, docked_st,
+                                                  sp->current_station,
+                                                  &sp->ship, filter);
+        if (build_payout > 0.01f) {
+            if (sp->pubkey_set) {
+                ledger_earn_by_pubkey(docked_st, sp->pubkey, build_payout);
+            } else {
+                ledger_earn(docked_st, sp->session_token, build_payout);
+            }
+            sp->ship.stat_credits_earned += build_payout;
+            int base_cr = (int)lroundf(build_payout);
+            emit_event(w, (sim_event_t){
+                .type = SIM_EVENT_SELL, .player_id = sp->id,
+                .sell = { .station = sp->current_station,
+                          .grade = (uint8_t)MINING_GRADE_COMMON,
+                          .base_cr = base_cr,
+                          .bonus_cr = 0,
+                          .by_contract = 0 }});
+            SIM_LOG("[sim] player %d delivered build materials for %.0f cr at %s\n",
+                    sp->id, build_payout, docked_st->name);
+        }
         try_sell_station_cargo(w, sp);
     }
     else if (intent->service_repair) try_repair_ship(w, sp);

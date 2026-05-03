@@ -1051,9 +1051,22 @@ void step_module_flow(world_t *w, float dt) {
  * immediately from cargo but build progress advances at a fixed rate --
  * delivery fills the module's internal hopper (tracked via build_progress
  * vs the total cost), construction ticks over time in step_module_activation. */
-void step_module_delivery(world_t *w, station_t *st, int station_idx,
-                          ship_t *ship, commodity_t filter) {
+float step_module_delivery(world_t *w, station_t *st, int station_idx,
+                           ship_t *ship, commodity_t filter) {
     (void)w; (void)station_idx;
+    /* Total credit owed for materials this ship donated to construction.
+     * The caller (player path: pay via ledger_earn + SELL event; NPC
+     * path: credit via the hauler's economic identity) decides what to
+     * do with it. Returning 0 means nothing was delivered or the cargo
+     * was already drained by a contract path upstream.
+     *
+     * Bug history: until this returned a payout the player's cargo
+     * silently vanished into a docked station's scaffolded modules
+     * without payment — symptom was "selling ingots drains inventory
+     * but doesn't credit." The contract path at try_sell_station_cargo
+     * runs AFTER this function and would have paid, but module
+     * construction had already consumed the cargo. */
+    float payout = 0.0f;
     for (int i = 0; i < st->module_count; i++) {
         station_module_t *m = &st->modules[i];
         if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
@@ -1067,23 +1080,43 @@ void step_module_delivery(world_t *w, station_t *st, int station_idx,
         if (needed < 0.01f) continue;
 
         /* Pull from docked ship cargo (consume the manifest unit so the
-         * named identity can't be sold or transferred again). */
+         * named identity can't be sold or transferred again). The ship
+         * is paid the station's buy price for whatever it delivers. */
         if (ship->cargo[mat] > 0.01f) {
             float deliver = fminf(ship->cargo[mat], needed);
             ship->cargo[mat] -= deliver;
             m->build_progress += deliver / cost;
             int whole = (int)floorf(deliver + 0.0001f);
-            if (whole > 0)
+            if (whole > 0) {
+                /* Sum prefix-class multipliers across the units we're
+                 * about to consume so high-grade ingots pay the player
+                 * proportionally. Same per-unit accounting as
+                 * try_sell_station_cargo's grade-bonus loop. */
+                float price = station_buy_price(st, mat);
+                int counted = 0;
+                for (uint16_t u = 0; u < ship->manifest.count && counted < whole; u++) {
+                    const cargo_unit_t *cu = &ship->manifest.units[u];
+                    if (cu->commodity != mat) continue;
+                    float mult = mining_payout_multiplier((mining_grade_t)cu->grade);
+                    payout += mult * price;
+                    counted++;
+                }
+                /* Fractional remainder (sub-unit float) priced at base. */
+                float frac = deliver - (float)whole;
+                if (frac > 0.0f) payout += frac * price;
                 manifest_consume_by_commodity(&ship->manifest, mat, whole);
+            } else {
+                payout += deliver * station_buy_price(st, mat);
+            }
             needed -= deliver;
         }
 
         /* Also pull from station inventory (NPC deliveries land here).
-         * Match the consume on the station manifest too — same drift
-         * class as the ship side. Mark the manifest dirty so the
-         * multiplayer broadcaster forwards the new station summary;
-         * otherwise clients keep showing materials that construction
-         * already consumed until some unrelated event triggers a sync. */
+         * NOT credited as a player payout — the materials were already
+         * paid for when they entered the station. Mark the manifest
+         * dirty so the multiplayer broadcaster forwards the new station
+         * summary; otherwise clients keep showing materials that
+         * construction already consumed. */
         if (needed > 0.01f && st->_inventory_cache[mat] > 0.01f) {
             float deliver = fminf(st->_inventory_cache[mat], needed);
             st->_inventory_cache[mat] -= deliver;
@@ -1097,6 +1130,7 @@ void step_module_delivery(world_t *w, station_t *st, int station_idx,
 
         if (m->build_progress > 1.0f) m->build_progress = 1.0f;
     }
+    return payout;
 }
 
 /* ------------------------------------------------------------------ */

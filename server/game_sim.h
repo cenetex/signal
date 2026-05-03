@@ -542,8 +542,12 @@ void begin_module_construction_at(world_t *w, station_t *st, int station_idx, mo
  * be consumed; pass COMMODITY_COUNT to allow any. The filter prevents
  * "deliver ingots only" from also draining frames into a half-built
  * module behind the player's back. */
-void step_module_delivery(world_t *w, station_t *st, int station_idx,
-                          ship_t *ship, commodity_t filter);
+/* Returns the credit owed to the ship for materials it donated to
+ * AWAITING_SUPPLY scaffolds. Caller pays via ledger_earn / equivalent.
+ * Materials drawn from station inventory (NPC-side restock) are NOT
+ * counted — those were already paid for at intake. */
+float step_module_delivery(world_t *w, station_t *st, int station_idx,
+                           ship_t *ship, commodity_t filter);
 
 /* Backfill every active station's manifest from its seeded float
  * inventory (RECIPE_LEGACY_MIGRATE units, deterministic per-station

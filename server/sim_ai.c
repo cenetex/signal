@@ -1159,7 +1159,11 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                             activate_outpost(w, npc->dest_station);
                     }
                 }
-                step_module_delivery(w, dest, npc->dest_station, &hauler_ship, COMMODITY_COUNT);
+                /* Hauler is paid via the contract path elsewhere; the
+                 * build-material payout returned here is discarded. NPC
+                 * economic identity tracking happens through
+                 * ledger_credit_supply_amount on contract completion. */
+                (void)step_module_delivery(w, dest, npc->dest_station, &hauler_ship, COMMODITY_COUNT);
                 /* Put remaining back. The float was drained into
                  * module_input by step_module_delivery; we have to drain
                  * the matching manifest entries too or the BUY picker
