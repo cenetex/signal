@@ -122,12 +122,17 @@ void activate_outpost(world_t *w, int station_idx) {
     }
     if (!have_relay) add_module_at(st, MODULE_SIGNAL_RELAY, 1, 0);
     st->arm_count = 1;
-    /* Drive whichever ring is current "center" (ring 2 if it ever
-     * gains modules, ring 1 today for fresh outposts). Setting both
-     * lets station_driver_ring_idx pick correctly as the outpost
-     * grows through tiers without a separate retrigger. */
+    /* Per-ring drift bias under the all-passive Slice 1.5a dynamics —
+     * a perfectly balanced station still rotates at this rate. Set
+     * both inner rings so an outpost growing through ring tiers keeps
+     * a sensible rotation without a separate retrigger event. */
     st->arm_speed[0] = STATION_RING_SPEED;
     st->arm_speed[1] = STATION_RING_SPEED;
+    /* Bootstrap omega to match the bias so the freshly-activated
+     * outpost doesn't show a 1.7s spin-up transient. Mirrors the
+     * post-seed bootstrap loop in world_reset. */
+    st->arm_omega[0] = STATION_RING_SPEED;
+    st->arm_omega[1] = STATION_RING_SPEED;
     rebuild_station_services(st);
     rebuild_signal_chain(w);
     /* Count connected stations for milestone tracking */
