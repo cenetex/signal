@@ -610,6 +610,83 @@ TEST(test_chain_log_operator_post_text_tamper) {
     chain_test_teardown();
 }
 
+TEST(test_chain_log_seed_rarity_tiers_have_real_content) {
+    /* Regression guard: world_reset's tier seed events must carry real
+     * flavor text bound by SHA, not the literal placeholder strings
+     * "common" / "uncommon" / "rare" / "ultra_rare" that early
+     * iterations of this code emitted. The chain log is the source
+     * of truth for tier content; events that hash to the placeholder
+     * names are theater (every station's chain would be identical). */
+    chain_test_setup("seed_real_content");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9700u;
+    chain_test_wipe_logs(w);
+    world_reset(w);
+
+    /* Compute SHA-256 of each placeholder string for the negative match. */
+    static const char *placeholders[4] = {
+        "common", "uncommon", "rare", "ultra_rare"
+    };
+    uint8_t placeholder_sha[4][32];
+    for (int i = 0; i < 4; i++) {
+        sha256_bytes((const uint8_t *)placeholders[i],
+                     strlen(placeholders[i]),
+                     placeholder_sha[i]);
+    }
+
+    /* Walk station 0's on-disk log and pull every RARITY_TIER event
+     * (operator_post payload kind == 2). For each tier 0-3, assert
+     * payload SHA != placeholder SHA AND text length > strlen("common"). */
+    char path[256];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey, path, sizeof(path)));
+    FILE *fp = fopen(path, "rb");
+    ASSERT(fp != NULL);
+
+    int tiers_seen[4] = {0, 0, 0, 0};
+    while (!feof(fp)) {
+        chain_event_header_t hdr;
+        if (fread(&hdr, sizeof(hdr), 1, fp) != 1) break;
+        uint16_t plen = 0;
+        if (fread(&plen, sizeof(plen), 1, fp) != 1) break;
+        if (hdr.type == CHAIN_EVT_OPERATOR_POST && plen >= 38) {
+            uint8_t prefix[38];
+            if (fread(prefix, sizeof(prefix), 1, fp) != 1) break;
+            uint8_t kind = prefix[0];
+            uint8_t tier = prefix[1];
+            /* Skip the body bytes for non-RARITY_TIER kinds. */
+            uint16_t body_len = (uint16_t)(plen - 38);
+            uint8_t body[256];
+            if (body_len > 0) {
+                if (body_len > sizeof(body)) {
+                    fseek(fp, body_len, SEEK_CUR);
+                    continue;
+                }
+                if (fread(body, body_len, 1, fp) != 1) break;
+            }
+            if (kind == 2 /* RARITY_TIER */ && tier < 4) {
+                /* Tier text must NOT be the placeholder string. */
+                ASSERT(memcmp(prefix + 4, placeholder_sha[tier], 32) != 0);
+                /* Body length must exceed the placeholder length —
+                 * proves the text is something more than just
+                 * "common"/"uncommon"/etc. */
+                ASSERT((int)body_len > (int)strlen(placeholders[tier]));
+                tiers_seen[tier]++;
+            }
+        } else {
+            fseek(fp, plen, SEEK_CUR);
+        }
+    }
+    fclose(fp);
+
+    /* All four tiers must have been emitted. */
+    for (int i = 0; i < 4; i++) {
+        ASSERT(tiers_seen[i] >= 1);
+    }
+
+    chain_test_teardown();
+}
+
 void register_chain_log_tests(void);
 void register_chain_log_tests(void) {
     TEST_SECTION("\n--- Chain Log (#479 C) ---\n");
@@ -626,4 +703,5 @@ void register_chain_log_tests(void) {
     RUN(test_chain_log_operator_post_all_kinds);
     RUN(test_chain_log_operator_post_replay_determinism);
     RUN(test_chain_log_operator_post_text_tamper);
+    RUN(test_chain_log_seed_rarity_tiers_have_real_content);
 }

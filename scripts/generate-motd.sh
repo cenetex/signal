@@ -76,46 +76,30 @@ for SLUG in signal-prospect signal-kepler signal-helios; do
     echo "    ${TIERS[$i]}: $TEXT"
   done
 
-  # Build multi-tier JSON with proper escaping
-  python3 << PYSCRIPT
-import json
+  # Build multi-tier JSON. Pass tier messages as env vars and read them
+  # in Python to avoid shell-quoting hazards: a """ inside an LLM-emitted
+  # message would terminate the heredoc-embedded triple-quote string and
+  # corrupt the output.
+  COMMON="${MESSAGES[0]}" UNCOMMON="${MESSAGES[1]}" \
+  RARE="${MESSAGES[2]}" ULTRA="${MESSAGES[3]}" \
+  TIMESTAMP="$TIMESTAMP" SEED="$SEED" \
+  python3 - > "/tmp/${SHORT}_motd.json" <<'PYSCRIPT'
+import json, os
 data = {
-    "generated_at": $TIMESTAMP,
-    "seed": $SEED,
+    "generated_at": int(os.environ["TIMESTAMP"]),
+    "seed": int(os.environ["SEED"]),
     "messages": {
-        "common": """${MESSAGES[0]}""",
-        "uncommon": """${MESSAGES[1]}""",
-        "rare": """${MESSAGES[2]}""",
-        "ultra_rare": """${MESSAGES[3]}"""
+        "common":     os.environ["COMMON"],
+        "uncommon":   os.environ["UNCOMMON"],
+        "rare":       os.environ["RARE"],
+        "ultra_rare": os.environ["ULTRA"],
     },
     "bands": {
-        "common": [0.80, 1.00],
-        "uncommon": [0.50, 0.80],
-        "rare": [0.20, 0.50],
-        "ultra_rare": [0.00, 0.20]
-    }
-}
-print(json.dumps(data, ensure_ascii=False))
-PYSCRIPT
-
-  # Save and upload to S3
-  python3 << PYSCRIPT > "/tmp/${SHORT}_motd.json"
-import json
-data = {
-    "generated_at": $TIMESTAMP,
-    "seed": $SEED,
-    "messages": {
-        "common": """${MESSAGES[0]}""",
-        "uncommon": """${MESSAGES[1]}""",
-        "rare": """${MESSAGES[2]}""",
-        "ultra_rare": """${MESSAGES[3]}"""
+        "common":     [0.80, 1.00],
+        "uncommon":   [0.50, 0.80],
+        "rare":       [0.20, 0.50],
+        "ultra_rare": [0.00, 0.20],
     },
-    "bands": {
-        "common": [0.80, 1.00],
-        "uncommon": [0.50, 0.80],
-        "rare": [0.20, 0.50],
-        "ultra_rare": [0.00, 0.20]
-    }
 }
 print(json.dumps(data, ensure_ascii=False))
 PYSCRIPT

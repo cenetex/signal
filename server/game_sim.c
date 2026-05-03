@@ -4803,28 +4803,73 @@ static void emit_operator_post(world_t *w, station_t *st,
     sha256_bytes((const uint8_t *)text, (size_t)text_len, hdr.text_sha256);
     uint8_t payload[38 + 256];
     memcpy(payload, &hdr, 38);
-    memcpy(payload + 38, text, (size_t)text_len);
+    /* memcpy(NULL, ..., 0) is UB per the C standard even with size 0.
+     * The chain_log_emit doesn't read the body bytes when text_len == 0,
+     * but we still memcpy for a populated payload prefix. Guard so a
+     * paranoid caller passing NULL+0 doesn't trip pedantic sanitizers. */
+    if (text_len > 0 && text != NULL) {
+        memcpy(payload + 38, text, (size_t)text_len);
+    }
     (void)chain_log_emit(w, st, CHAIN_EVT_OPERATOR_POST,
                          payload, (uint16_t)(38 + text_len));
 }
 
-/* Seed a station's chain log with the initial hail-message
- * OPERATOR_POST plus four placeholder rarity-tier events. Tier text is
- * just the band name today; the live tier copy gets fetched from S3
- * via avatar_fetch on the client. The seed events anchor the chain
- * structure so per-tier content can be updated under the same kind
- * later. */
-static void seed_station_motd_chain_events(world_t *w, station_t *st) {
-    static const char *tier_names[4] = {
-        "common", "uncommon", "rare", "ultra_rare"
-    };
+/* Default per-station rarity-tier flavor text. Indexed by [station_idx][tier].
+ * These are the *seed* values written into the chain log on world_reset; an
+ * operator-push flow can later append `EVT_OPERATOR_POST(kind=RARITY_TIER, tier=N)`
+ * events whose text supersedes these. Clients walking the chain log use the
+ * latest event per (kind, tier) tuple as the canonical content.
+ *
+ * Tier 0 (common, 80–100% signal): generic hospitality.
+ * Tier 1 (uncommon, 50–80%): mild personality / station chatter.
+ * Tier 2 (rare, 20–50%): real station lore.
+ * Tier 3 (ultra_rare, 0–20%): cryptic, in genre. Far from signal.
+ *
+ * Voice direction lives in src/station_voice.h; tone here matches the
+ * three starter stations' established personalities. */
+static const char *const DEFAULT_STATION_TIER_TEXT[3][4] = {
+    /* Prospect Refinery (0) — pragmatic, tired, notices everything. */
+    {
+        "Prospect Refinery, foreman speaking. Furnaces hot, ore moving. Standard rates today.",
+        "Night shift's been running 18% over throughput. Won't say why. We're not asking.",
+        "Prospect was the first furnace in this arc. The original ferrite is still load-bearing.",
+        "There's a hopper in the back we never open. The tag predates the station charter.",
+    },
+    /* Kepler Yard (1) — engineer, talks to machines, perks up for construction. */
+    {
+        "Kepler Yard, machinist on duty. Frames pressing on schedule. Drop your specs.",
+        "Foreman Kepler used to tell apprentices: a frame is just slow ferrite.",
+        "Our archive holds a frame stamped 'do not press.' The stamp predates the seal.",
+        "You shouldn't be hearing this. Yard signal is gated to dock range. Step closer.",
+    },
+    /* Helios Works (2) — ambitious, enthusiastic, "we" meaning "I". */
+    {
+        "Helios Works. Prestige fabrication. Bring quality, take quality.",
+        "The Director walked the smelting floor at dawn. She left a coin on the cold furnace.",
+        "Helios was built atop another Helios. Three layers down, the foundation talks.",
+        "We received a transmission. The signature was authentic. The author is dead.",
+    },
+};
+
+/* Seed a station's chain log with the initial hail-message OPERATOR_POST
+ * plus four rarity-tier events. Each tier event carries real flavor text
+ * from DEFAULT_STATION_TIER_TEXT — the SHA-256 in the chain header binds
+ * to actual content, so a verifier walking the log can prove a station
+ * authored a specific tier message at a specific tick.
+ *
+ * Stations with index >= 3 (player outposts) emit the hail message but
+ * skip the tier events: there's no authored content for outposts yet. */
+static void seed_station_motd_chain_events(world_t *w, station_t *st,
+                                           int station_idx) {
     emit_operator_post(w, st, 0 /* HAIL_MOTD */, 0,
                        st->hail_message, (int)strlen(st->hail_message));
+    if (station_idx < 0 || station_idx >= 3) return;
     for (int tier_idx = 0; tier_idx < 4; tier_idx++) {
+        const char *text = DEFAULT_STATION_TIER_TEXT[station_idx][tier_idx];
         emit_operator_post(w, st, 2 /* RARITY_TIER */,
                            (uint8_t)tier_idx,
-                           tier_names[tier_idx],
-                           (int)strlen(tier_names[tier_idx]));
+                           text,
+                           (int)strlen(text));
     }
 }
 
@@ -5028,10 +5073,11 @@ void world_reset(world_t *w) {
     w->station_count = 3; /* 3 starter stations */
 
     /* Seed each starter station's chain log with its initial hail
-     * message + four placeholder rarity-tier events. See
-     * seed_station_motd_chain_events for the per-event shape. */
+     * message + four authored rarity-tier events. See
+     * seed_station_motd_chain_events for the per-event shape and
+     * DEFAULT_STATION_TIER_TEXT for the tier flavor copy. */
     for (int s = 0; s < 3; s++)
-        seed_station_motd_chain_events(w, &w->stations[s]);
+        seed_station_motd_chain_events(w, &w->stations[s], s);
 
     rebuild_signal_chain(w);
 
