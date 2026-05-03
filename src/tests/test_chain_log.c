@@ -279,12 +279,15 @@ TEST(test_chain_log_smelt_emits_event_fragment_path) {
     w->stations[0].chain_event_count = 0;
     memset(w->stations[0].chain_last_hash, 0, 32);
 
-    /* Find Prospect's furnace + an adjacent-ring module to anchor
-     * the smelt midpoint. */
+    /* Find Prospect's furnace + the FERRITE_ORE intake hopper. The
+     * ingot output hopper added in the cargo-in-space schema work is
+     * not the smelt anchor — pick the input hopper specifically. */
     int furnace_idx = -1, silo_idx = -1;
     for (int m = 0; m < w->stations[0].module_count; m++) {
         if (w->stations[0].modules[m].type == MODULE_FURNACE) furnace_idx = m;
-        if (w->stations[0].modules[m].type == MODULE_HOPPER) silo_idx = m;
+        if (w->stations[0].modules[m].type == MODULE_HOPPER &&
+            w->stations[0].modules[m].commodity == (uint8_t)COMMODITY_FERRITE_ORE)
+            silo_idx = m;
     }
     ASSERT(furnace_idx >= 0 && silo_idx >= 0);
 

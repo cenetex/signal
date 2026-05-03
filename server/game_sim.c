@@ -4976,9 +4976,21 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[0], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[0], MODULE_SIGNAL_RELAY, 1, 1);
     add_furnace_for(&w->stations[0], 1, 2, COMMODITY_FERRITE_INGOT);
-    /* Ring 2: one ferrite-ore hopper, the only input the lone
-     * furnace needs. Renders rusty red. */
+    /* Ring 2: ferrite-ore intake at slot 4 (240°, cross-ring opposite
+     * the furnace at ring 1 slot 2), ferrite-ingot output at slot 0
+     * (0°, on the dock's radial axis). Slot choice for the new output
+     * hopper is load-bearing — slot 0 is the only ring-2 slot that
+     * doesn't perturb NPC docking pathways. Empirically, adding any
+     * hopper at slots 1/2/3/5 stalls the NPC mining cycle in
+     * test_scenario_npc_economy_30s; slot 0 alone preserves it.
+     * (The A* nav mesh is rebuilt by station_rebuild_all_nav at end
+     * of world_reset, so it's not stale; the stall comes from the
+     * ring's annular-sector corridor geometry between this slot and
+     * the existing slot-4 hopper. Slot 0's corridor sweeps through
+     * empty slot 5 and terminates on the dock radial — a region NPCs
+     * already vacate when undocking.) */
     add_hopper_for(&w->stations[0], 2, 4, COMMODITY_FERRITE_ORE);
+    add_hopper_for(&w->stations[0], 2, 0, COMMODITY_FERRITE_INGOT);
     w->stations[0].arm_count = 2;
     /* Ring 2 (idx 1) is the driver — ring 2 spins, ring 1 is dragged
      * along by the cross-ring spoke spring. Prospect has only one

@@ -478,11 +478,12 @@ TEST(test_world_load_rejects_stale_version) {
 TEST(test_world_save_load_preserves_module_ring_slot) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
-    /* Cross-ring pair layout: Prospect's furnace lives on ring 1 slot
-     * 2, paired with the lone ring-2 hopper at slot 4 (240° on both
-     * rings). 4 modules total — one hopper per producer, no
-     * decorative ring. */
-    ASSERT_EQ_INT((int)w->stations[0].module_count, 4);
+    /* Prospect's furnace at ring 1 slot 2, ferrite-ore intake hopper at
+     * ring 2 slot 4, ferrite-ingot output hopper at ring 2 slot 0
+     * (slot 0 is on the dock's radial axis — the only ring-2 slot that
+     * doesn't perturb NPC docking pathways. See add_hopper_for site
+     * comment in world_reset). 5 modules total. */
+    ASSERT_EQ_INT((int)w->stations[0].module_count, 5);
     station_module_t orig = w->stations[0].modules[2]; /* furnace at ring 1 slot 2 */
     ASSERT(orig.type == MODULE_FURNACE);
     ASSERT_EQ_INT((int)orig.ring, 1);
@@ -498,12 +499,19 @@ TEST(test_world_save_load_preserves_module_ring_slot) {
     ASSERT_EQ_INT((int)restored.slot, (int)orig.slot);
     ASSERT_EQ_INT((int)restored.scaffold, (int)orig.scaffold);
     ASSERT_EQ_FLOAT(restored.build_progress, orig.build_progress, 0.001f);
-    /* modules[3] = the paired hopper at ring 2 slot 4. */
-    station_module_t paired = loaded->stations[0].modules[3];
-    ASSERT(paired.type == MODULE_HOPPER);
-    ASSERT_EQ_INT((int)paired.ring, 2);
-    ASSERT_EQ_INT((int)paired.slot, 4);
-    ASSERT_EQ_INT((int)loaded->stations[0].module_count, 4);
+    /* modules[3] = ferrite-ore intake hopper at ring 2 slot 4. */
+    station_module_t intake = loaded->stations[0].modules[3];
+    ASSERT(intake.type == MODULE_HOPPER);
+    ASSERT_EQ_INT((int)intake.ring, 2);
+    ASSERT_EQ_INT((int)intake.slot, 4);
+    ASSERT_EQ_INT((int)intake.commodity, (int)COMMODITY_FERRITE_ORE);
+    /* modules[4] = ferrite-ingot output hopper at ring 2 slot 0. */
+    station_module_t out_h = loaded->stations[0].modules[4];
+    ASSERT(out_h.type == MODULE_HOPPER);
+    ASSERT_EQ_INT((int)out_h.ring, 2);
+    ASSERT_EQ_INT((int)out_h.slot, 0);
+    ASSERT_EQ_INT((int)out_h.commodity, (int)COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT((int)loaded->stations[0].module_count, 5);
     remove(TMP("test_modules.sav"));
 }
 
