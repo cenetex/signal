@@ -21,6 +21,7 @@
  * slice of #285 in disguise — file it against #285, not as a refactor.
  */
 #include "game_sim.h"
+#include "tractor.h"
 #include "manifest.h"
 #include "ship.h"
 #include "sim_ai.h"
@@ -1809,37 +1810,31 @@ static bool is_already_towed(const ship_t *ship, int asteroid_idx) {
 #define BAND_DAMPING       0.6f   /* light along-band damping — let it bounce */
 #define BAND_TANGENT_DRAG  0.4f   /* just enough to bleed orbit, not lock parallel motion */
 #define BAND_SHIP_MASS     8.0f   /* ship is heavier than a rock; reaction force scaled by 1/MASS */
+/* Player tow band: symmetric spring (push == pull, signed by stretch),
+ * 1D axial damping, separate tangent drag, full reaction on the ship.
+ * Behavior identical to the pre-tractor-primitive hand-rolled version. */
+static const tractor_beam_t PLAYER_TOW_BAND = {
+    .rest_length     = BAND_REST_LEN,
+    .pull_strength   = BAND_SPRING_K,
+    .push_strength   = BAND_SPRING_K,
+    .range           = 0.0f,                       /* 0 = no range gate */
+    .axial_damping   = BAND_DAMPING,
+    .tangent_damping = BAND_TANGENT_DRAG,
+    .speed_cap       = 0.0f,
+    .falloff         = TRACTOR_FALLOFF_CONSTANT,
+};
 static void apply_band_force(server_player_t *sp, asteroid_t *a, float dt) {
-    vec2 to_ship = v2_sub(sp->ship.pos, a->pos);
-    float dist = v2_len(to_ship);
-    if (dist < 0.001f) return;
-    vec2 dir = v2_scale(to_ship, 1.0f / dist);
-
-    /* Spring: pull rock toward ship past the rest length. Push rock
-     * AWAY when below rest (no slamming into hull on rapid approach). */
-    float stretch = dist - BAND_REST_LEN;
-    float spring_mag = BAND_SPRING_K * stretch;     /* signed: + = pull, - = push */
-
-    /* Damping along the band axis: oppose along-band relative velocity. */
-    vec2 rel_vel = v2_sub(sp->ship.vel, a->vel);
-    float vel_along = v2_dot(rel_vel, dir);
-    float damp_mag = BAND_DAMPING * vel_along;
-
-    /* Axial force = spring + axial damping. */
-    vec2 force_axial = v2_scale(dir, spring_mag + damp_mag);
-
-    /* Tangential drag: kill the rock's perpendicular drift relative to
-     * the ship. Without this the band only restores radial distance —
-     * any sideways relative velocity persists and the rock ends up
-     * orbiting rather than trailing behind. */
-    vec2 vel_tangent = v2_sub(rel_vel, v2_scale(dir, vel_along));
-    vec2 force_tangent = v2_scale(vel_tangent, BAND_TANGENT_DRAG);
-
-    vec2 force = v2_add(force_axial, force_tangent);
-
-    /* Apply to rock (full force) + reaction on ship (1/MASS). */
-    a->vel       = v2_add(a->vel, v2_scale(force, dt));
-    sp->ship.vel = v2_sub(sp->ship.vel, v2_scale(force, dt / BAND_SHIP_MASS));
+    tractor_anchor_t src = {
+        .pos      = sp->ship.pos,
+        .vel      = &sp->ship.vel,
+        .inv_mass = 1.0f / BAND_SHIP_MASS,
+    };
+    tractor_anchor_t tgt = {
+        .pos      = a->pos,
+        .vel      = &a->vel,
+        .inv_mass = 1.0f,
+    };
+    (void)tractor_apply(&src, &tgt, &PLAYER_TOW_BAND, dt);
 }
 
 static void step_fragment_collection(world_t *w, server_player_t *sp, float dt) {
