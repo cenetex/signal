@@ -229,9 +229,18 @@ bool net_has_identity_secret(void) {
 static uint64_t next_signed_action_nonce(void) {
     uint64_t now_us;
 #ifdef __EMSCRIPTEN__
-    /* Date.now() has ms resolution; multiply to keep us in the same
-     * units as native. */
-    now_us = (uint64_t)emscripten_get_now() * 1000ULL;
+    /* MUST be wall-clock (Date.now), not performance.now (which is
+     * monotonic-since-page-load and starts at zero). The server
+     * persists last_signed_nonce in wall-clock microseconds; a
+     * page-load-relative nonce always loses to a saved one and every
+     * signed action gets rejected as a replay.
+     *
+     * Bug history: emscripten_get_now() returns performance.now() in
+     * ms — small numbers (0..10^7-ish over a long session). The
+     * comment USED to say "Date.now()" but the implementation didn't
+     * match. Fix: read Date.now() through JS, multiply ms→us. */
+    double js_ms = EM_ASM_DOUBLE({ return Date.now(); });
+    now_us = (uint64_t)(js_ms * 1000.0);
 #elif defined(_WIN32)
     /* MSVC has no clock_gettime/CLOCK_REALTIME. GetSystemTimePreciseAsFileTime
      * returns 100-ns ticks since 1601-01-01 UTC; subtract the 1601→1970
