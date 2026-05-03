@@ -96,4 +96,26 @@ bool          station_pair_satisfied(const station_t *st, int ring, int slot,
  * matches `commodity`. Returns -1 if none. */
 int           station_find_hopper_for(const station_t *st, commodity_t commodity);
 
+/* Find the output hopper that buffers the producer module `m`'s
+ * output commodity. Returns the hopper module index on `st`, or -1
+ * if no matching tagged hopper exists, or if `m` is not a producer
+ * (services, hoppers, shipyards). FURNACEs read their per-instance
+ * commodity tag — see module_instance_output(). */
+int           station_find_output_hopper_for_module(const station_t *st,
+                                                    const station_module_t *m);
+
+/* Layout-validation status for a single module on a station. Slice 1
+ * surfaces this informationally — production keeps running even on a
+ * "missing output hopper" layout — so the renderer / order menu can
+ * badge the module without breaking existing stations. Slice 5 will
+ * promote MISSING_OUTPUT_HOPPER into a hard placement reject. */
+typedef enum {
+    STATION_LAYOUT_OK = 0,
+    STATION_LAYOUT_MISSING_INPUT_HOPPER,
+    STATION_LAYOUT_MISSING_OUTPUT_HOPPER,
+} station_layout_status_t;
+
+station_layout_status_t station_module_layout_status(const station_t *st,
+                                                     const station_module_t *m);
+
 #endif

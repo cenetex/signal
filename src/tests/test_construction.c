@@ -1287,6 +1287,54 @@ TEST(test_commodity_ore_ingot_pairing) {
     ASSERT_EQ_INT(commodity_ore_for_ingot(COMMODITY_LASER_MODULE),  COMMODITY_COUNT);
 }
 
+TEST(test_station_module_layout_status_missing_output) {
+    /* Synthetic station: TRACTOR_FAB with input hopper but no output
+     * hopper → MISSING_OUTPUT_HOPPER. Adding the output hopper restores
+     * OK. Slice 1 surfaces this informationally only — production keeps
+     * running on missing-output layouts until Slice 5 promotes it to a
+     * hard reject. */
+    station_t st = {0};
+    st.signal_range = 1.0f;
+    add_hopper_for(&st, 2, 0, COMMODITY_CUPRITE_INGOT);   /* input hopper present */
+    add_module_at(&st, MODULE_TRACTOR_FAB, 2, 1);
+    const station_module_t *fab = &st.modules[st.module_count - 1];
+    ASSERT_EQ_INT(station_module_layout_status(&st, fab),
+                  STATION_LAYOUT_MISSING_OUTPUT_HOPPER);
+    add_hopper_for(&st, 2, 2, COMMODITY_TRACTOR_MODULE);
+    ASSERT_EQ_INT(station_module_layout_status(&st, fab), STATION_LAYOUT_OK);
+}
+
+TEST(test_station_module_layout_status_furnace_uses_tag) {
+    /* A furnace tagged for CUPRITE_INGOT needs CUPRITE_ORE in (not any
+     * ore) and CUPRITE_INGOT out. FERRITE_ORE alone is missing-input. */
+    station_t st = {0};
+    st.signal_range = 1.0f;
+    add_hopper_for(&st, 2, 0, COMMODITY_FERRITE_ORE); /* wrong ore for a CU furnace */
+    add_furnace_for(&st, 2, 1, COMMODITY_CUPRITE_INGOT);
+    const station_module_t *fc = &st.modules[st.module_count - 1];
+    ASSERT_EQ_INT(station_module_layout_status(&st, fc),
+                  STATION_LAYOUT_MISSING_INPUT_HOPPER);
+    add_hopper_for(&st, 2, 2, COMMODITY_CUPRITE_ORE);
+    ASSERT_EQ_INT(station_module_layout_status(&st, fc),
+                  STATION_LAYOUT_MISSING_OUTPUT_HOPPER);
+    add_hopper_for(&st, 2, 3, COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(station_module_layout_status(&st, fc), STATION_LAYOUT_OK);
+}
+
+TEST(test_station_module_layout_status_shipyard_exempt) {
+    /* SHIPYARD output is a physical scaffold body, not a commodity —
+     * so it doesn't need an output hopper. With its 3 input hoppers
+     * present (frame, laser, tractor module), layout is OK. */
+    station_t st = {0};
+    st.signal_range = 1.0f;
+    add_hopper_for(&st, 3, 0, COMMODITY_FRAME);
+    add_hopper_for(&st, 3, 1, COMMODITY_LASER_MODULE);
+    add_hopper_for(&st, 3, 2, COMMODITY_TRACTOR_MODULE);
+    add_module_at(&st, MODULE_SHIPYARD, 3, 3);
+    const station_module_t *sy = &st.modules[st.module_count - 1];
+    ASSERT_EQ_INT(station_module_layout_status(&st, sy), STATION_LAYOUT_OK);
+}
+
 TEST(test_module_schema_valid_rings) {
     /* Service modules can go anywhere */
     ASSERT(module_valid_on_ring(MODULE_DOCK, 0));
@@ -1667,6 +1715,9 @@ void register_construction_module_schema_tests(void) {
     RUN(test_module_schema_required_output);
     RUN(test_module_furnace_instance_tag);
     RUN(test_commodity_ore_ingot_pairing);
+    RUN(test_station_module_layout_status_missing_output);
+    RUN(test_station_module_layout_status_furnace_uses_tag);
+    RUN(test_station_module_layout_status_shipyard_exempt);
     RUN(test_module_schema_valid_rings);
     RUN(test_module_schema_helpers);
     RUN(test_module_schema_build_costs_match);

@@ -92,6 +92,13 @@ void add_hopper_for(station_t *st, uint8_t arm, uint8_t chain_pos, commodity_t c
     }
 }
 
+void add_furnace_for(station_t *st, uint8_t arm, uint8_t chain_pos, commodity_t ingot) {
+    add_module_at(st, MODULE_FURNACE, arm, chain_pos);
+    if (st->module_count > 0) {
+        st->modules[st->module_count - 1].commodity = (uint8_t)ingot;
+    }
+}
+
 void activate_outpost(world_t *w, int station_idx) {
     station_t *st = &w->stations[station_idx];
     st->scaffold = false;

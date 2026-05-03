@@ -314,3 +314,49 @@ int station_find_hopper_for(const station_t *st, commodity_t commodity) {
     return -1;
 }
 
+int station_find_output_hopper_for_module(const station_t *st, const station_module_t *m) {
+    if (!st || !m) return -1;
+    commodity_t out = module_instance_output(m);
+    if (out == COMMODITY_COUNT) return -1; /* services / hoppers / shipyard */
+    return station_find_hopper_for(st, out);
+}
+
+station_layout_status_t station_module_layout_status(const station_t *st,
+                                                     const station_module_t *m) {
+    if (!st || !m) return STATION_LAYOUT_OK;
+    if (m->scaffold) return STATION_LAYOUT_OK;
+    if (!module_is_producer(m->type) && !module_is_shipyard(m->type)) return STATION_LAYOUT_OK;
+
+    /* Inputs: every required input commodity must have a matching hopper.
+     * For FURNACE the schema says any_satisfies; under per-instance tagging
+     * the actual input is the one ore that matches the furnace's tag. */
+    if (m->type == MODULE_FURNACE) {
+        commodity_t ore = module_instance_input_ore(m);
+        if (ore != COMMODITY_COUNT && station_find_hopper_for(st, ore) < 0) {
+            return STATION_LAYOUT_MISSING_INPUT_HOPPER;
+        }
+    } else {
+        module_inputs_t req = module_required_inputs(m->type);
+        if (req.any_satisfies) {
+            bool ok = false;
+            for (int i = 0; i < req.count; i++) {
+                if (station_find_hopper_for(st, req.commodities[i]) >= 0) { ok = true; break; }
+            }
+            if (req.count > 0 && !ok) return STATION_LAYOUT_MISSING_INPUT_HOPPER;
+        } else {
+            for (int i = 0; i < req.count; i++) {
+                if (station_find_hopper_for(st, req.commodities[i]) < 0)
+                    return STATION_LAYOUT_MISSING_INPUT_HOPPER;
+            }
+        }
+    }
+
+    /* Output hopper: required for every commodity-emitting producer.
+     * SHIPYARD is exempt — its output is a physical scaffold body. */
+    commodity_t out = module_instance_output(m);
+    if (out != COMMODITY_COUNT && station_find_hopper_for(st, out) < 0) {
+        return STATION_LAYOUT_MISSING_OUTPUT_HOPPER;
+    }
+    return STATION_LAYOUT_OK;
+}
+
