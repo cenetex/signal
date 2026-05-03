@@ -1744,9 +1744,10 @@ TEST(test_pair_satisfied_cross_ring) {
 }
 
 TEST(test_helios_ring2_rotates_under_dynamics) {
-    /* Driver ring (ring 2 on Helios) must rotate under
-     * step_station_ring_dynamics. After 2 sim seconds at
-     * STATION_RING_SPEED = 0.04 rad/s, expect ~0.08 rad of rotation. */
+    /* Ring 2 of Helios carries the seeded drift bias (arm_speed[1]
+     * = STATION_RING_SPEED = 0.04 rad/s) and must rotate continuously
+     * under the all-passive dynamics (Slice 1.5a). After 2 sim seconds
+     * at the bootstrapped omega, expect ~0.08 rad of rotation. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
@@ -1755,8 +1756,74 @@ TEST(test_helios_ring2_rotates_under_dynamics) {
     float r0 = st->arm_rotation[1];
     for (int i = 0; i < 240; i++) world_sim_step(w, 1.0f / 120.0f);
     float r1 = st->arm_rotation[1];
-    /* Expect the driver to have advanced ~speed * 2.0s = 0.08 rad. */
+    /* Expect ~speed * 2.0s = 0.08 rad of rotation. */
     ASSERT(r1 - r0 > 0.05f);
+}
+
+TEST(test_all_rings_passive_under_spoke_load) {
+    /* Slice 1.5a — every ring is passive. Drive Helios's ring 2 with
+     * the seeded drift bias; ring 1 and ring 3 should also rotate via
+     * spoke coupling (their producer↔hopper spokes pull them toward
+     * ring 2's phase). The legacy code only spun the driver ring,
+     * leaving ring 1 and ring 3 near-static. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    station_t *st = &w->stations[2];
+    /* Force every Helios producer's pulse high so spokes are taut. */
+    for (int m = 0; m < st->module_count; m++) {
+        if (module_is_producer(st->modules[m].type)) st->module_active_pulse[m] = 1.0f;
+    }
+    float r1_0 = st->arm_rotation[0];  /* ring 1 */
+    float r3_0 = st->arm_rotation[2];  /* ring 3 */
+    for (int i = 0; i < 1200; i++) {  /* 10 sim seconds */
+        for (int m = 0; m < st->module_count; m++) {
+            if (module_is_producer(st->modules[m].type)) st->module_active_pulse[m] = 1.0f;
+        }
+        world_sim_step(w, 1.0f / 120.0f);
+    }
+    float r1_1 = st->arm_rotation[0];
+    float r3_1 = st->arm_rotation[2];
+    /* Ring 1 and ring 3 must each have moved measurably (>0.01 rad).
+     * Direction follows ring 2's drift; with bootstrap omega = bias,
+     * coupling pulls both passive rings into phase pursuit. */
+    ASSERT(fabsf(r1_1 - r1_0) > 0.01f);
+    ASSERT(fabsf(r3_1 - r3_0) > 0.01f);
+}
+
+TEST(test_output_hopper_spoke_contributes_torque) {
+    /* Slice 1.5a — output hoppers participate in spoke physics. A
+     * synthetic 2-ring station with only an output spoke (no input
+     * spoke) must still apply torque to its passive ring when the
+     * producer's pulse is hot. */
+    station_t *st = calloc(1, sizeof(*st));
+    ASSERT(st != NULL);
+    st->signal_range = 1.0f;
+    /* Frame press on ring 2 slot 0; frame output hopper on ring 3
+     * slot 4 (180° away) so the dr term is non-zero. No input hopper
+     * for ferrite ingot, so the input spoke can't contribute. */
+    add_module_at(st, MODULE_FRAME_PRESS, 2, 0);
+    add_hopper_for(st, 3, 4, COMMODITY_FRAME);
+    /* Force the press's pulse high. */
+    st->module_active_pulse[0] = 1.0f;
+    /* Drive ring 2 (the producer's ring). */
+    st->arm_speed[1] = 0.04f;
+    st->arm_omega[1] = 0.04f;
+
+    float r3_0 = st->arm_rotation[2];
+    /* Use a minimal world for step_station_ring_dynamics. Place st as
+     * stations[0] in a heap world so station_exists() picks it up. */
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->stations[0] = *st;
+    free(st);
+    /* Re-pin the pulse each tick (decay would zero it after ~1.5s). */
+    for (int i = 0; i < 600; i++) {
+        w->stations[0].module_active_pulse[0] = 1.0f;
+        world_sim_step(w, 1.0f / 120.0f);
+    }
+    float r3_1 = w->stations[0].arm_rotation[2];
+    ASSERT(fabsf(r3_1 - r3_0) > 0.01f);
 }
 
 TEST(test_seed_stations_pair_complete) {
@@ -1803,5 +1870,7 @@ void register_construction_module_schema_tests(void) {
     RUN(test_pair_satisfied_cross_ring);
     RUN(test_seed_stations_pair_complete);
     RUN(test_helios_ring2_rotates_under_dynamics);
+    RUN(test_all_rings_passive_under_spoke_load);
+    RUN(test_output_hopper_spoke_contributes_torque);
 }
 

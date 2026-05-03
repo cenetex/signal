@@ -4424,33 +4424,31 @@ const signal_channel_msg_t *signal_channel_at(const world_t *w, int i) {
 }
 
 /* Spoke spring + drag dynamics constants. Tuned so the steady-state
- * phase lag at STATION_RING_SPEED is a visible 15-25° per spoke
+ * phase lag at the drift-bias velocity is a visible 15-25° per spoke
  * group — enough to read as "the ring is being dragged" but well
  * shy of 90° where the spring would flip. Per-spoke stiffness sums
  * linearly: a station with many spokes between two rings tracks
  * tightly, a station with one is loose. */
-#define RING_SPOKE_K     2.5f   /* spring constant per spoke (torque/rad) */
-#define RING_DRAG_MU     0.6f   /* angular drag coefficient (torque per rad/s) */
-#define RING_INERTIA_I   1.0f   /* moment of inertia per ring */
+#define RING_SPOKE_K        2.5f   /* spring constant per spoke (torque/rad) */
+#define RING_DRAG_MU        0.6f   /* angular drag coefficient (torque per rad/s) */
+#define RING_INERTIA_I      1.0f   /* moment of inertia per ring */
+/* Drift bias: ambient torque applied per ring. arm_speed[r] * this
+ * keeps a perfectly balanced station drifting (so an idle station
+ * still rotates) and matches the legacy kinematic driver — at zero
+ * spoke load, omega settles at arm_speed[r] * BIAS / DRAG_MU. With
+ * BIAS = DRAG_MU, the steady-state omega equals arm_speed exactly,
+ * so the legacy seed code (`arm_speed[1] = STATION_RING_SPEED`)
+ * keeps Prospect's ring-2 spinning at the same rate as before. */
+#define RING_DRIVE_BIAS_K   0.6f
+/* Hard clamp on per-ring angular velocity. Prevents pathologically
+ * asymmetric station layouts from driving a ring into a runaway
+ * positive-feedback loop while still letting normal spoke balance
+ * settle freely. ~4× the legacy STATION_RING_SPEED (0.04 rad/s). */
+#define RING_OMEGA_MAX      0.16f
 /* How long after a producer's last activity its tractor beam keeps
  * pulling (and rendering) at full strength. Pulse decays linearly
  * to 0 over this many seconds. */
 #define RING_PULSE_LINGER_SEC 1.5f
-
-/* Pick the ring this station drives kinematically. Default ring 2;
- * fall back to ring 1 (small outposts that haven't grown to ring 2
- * yet) and finally ring 3 (degenerate but defensive). */
-static int station_driver_ring_idx(const station_t *st) {
-    int has_ring[STATION_NUM_RINGS + 1] = {0};
-    for (int m = 0; m < st->module_count; m++) {
-        int r = (int)st->modules[m].ring;
-        if (r >= 1 && r <= STATION_NUM_RINGS) has_ring[r] = 1;
-    }
-    if (has_ring[2]) return 1;
-    if (has_ring[1]) return 0;
-    if (has_ring[3]) return 2;
-    return -1;
-}
 
 /* Station jostle constants. Personal space = (a.dock_radius +
  * b.dock_radius) × FACTOR; below that, a spring force scaled by
@@ -4529,70 +4527,88 @@ void step_station_ring_dynamics(world_t *w, float dt) {
         station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
 
-        int driver_idx = station_driver_ring_idx(st);
-        if (driver_idx < 0) continue;
-        int driver_ring = driver_idx + 1;
-        float driver_speed = st->arm_speed[driver_idx];
+        /* All-passive ring dynamics (Slice 1.5a). Every ring is a
+         * passive ring receiving torque from its spokes; per-ring
+         * arm_speed[r] becomes a "drift bias" so a perfectly balanced
+         * station still rotates instead of locking up. There is no
+         * kinematic driver — passive rings balance against each other
+         * naturally.
+         *
+         * Spoke set: every active producer contributes one spoke per
+         * declared input commodity AND one spoke for its output
+         * commodity (when one exists — SHIPYARD is exempt; output is a
+         * physical scaffold body). Each spoke applies equal-and-opposite
+         * spring torque to its two endpoints; spokes whose endpoints
+         * sit on the same ring net to zero, which is correct. */
+        float net_torque[STATION_NUM_RINGS] = {0};
 
-        /* Driver: kinematic update from arm_speed. */
-        st->arm_rotation[driver_idx] += driver_speed * dt;
-        st->arm_omega[driver_idx] = driver_speed;
+        for (int m = 0; m < st->module_count; m++) {
+            const station_module_t *prod = &st->modules[m];
+            if (prod->scaffold) continue;
+            float pulse = st->module_active_pulse[m];
+            if (pulse <= 0.0f) continue;
 
-        for (int idx = 0; idx < STATION_NUM_RINGS && idx < MAX_ARMS; idx++) {
-            if (idx == driver_idx) continue;
-            int ring = idx + 1;
+            int ra = (int)prod->ring;
+            if (ra < 1 || ra > STATION_NUM_RINGS) continue;
+            int slots_a = STATION_RING_SLOTS[ra];
+            if (slots_a <= 0) continue;
+            float alpha_a = TWO_PI_F * (float)prod->slot / (float)slots_a;
+            float wa = st->arm_rotation[ra-1] + alpha_a;
 
-            float net_torque = 0.0f;
-            for (int m = 0; m < st->module_count; m++) {
-                const station_module_t *prod = &st->modules[m];
-                if (prod->scaffold) continue;
-                module_inputs_t req = module_required_inputs(prod->type);
-                if (req.count == 0) continue;
+            /* Add a spoke contribution from producer `prod` to the
+             * module at index `hop` (must satisfy ring/slot bounds).
+             * Equal-and-opposite torque on the two endpoint rings. */
+            #define ADD_SPOKE(hop) do {                                    \
+                if ((hop) >= 0) {                                          \
+                    const station_module_t *hm = &st->modules[(hop)];      \
+                    if (!hm->scaffold) {                                   \
+                        int rb = (int)hm->ring;                            \
+                        if (rb >= 1 && rb <= STATION_NUM_RINGS && rb != ra) { \
+                            int slots_b = STATION_RING_SLOTS[rb];          \
+                            if (slots_b > 0) {                             \
+                                float alpha_b = TWO_PI_F * (float)hm->slot \
+                                                / (float)slots_b;          \
+                                float wb = st->arm_rotation[rb-1] + alpha_b; \
+                                float dr = wb - wa;                        \
+                                while (dr > PI_F)  dr -= TWO_PI_F;         \
+                                while (dr < -PI_F) dr += TWO_PI_F;         \
+                                float T = pulse * RING_SPOKE_K * sinf(dr); \
+                                net_torque[ra-1] += T;                     \
+                                net_torque[rb-1] -= T;                     \
+                            }                                              \
+                        }                                                  \
+                    }                                                      \
+                }                                                          \
+            } while (0)
 
-                /* Spring strength scales with the producer's activity
-                 * pulse — an idle producer's beams go slack, the
-                 * passive ring loses those anchors and re-equilibriums
-                 * under whatever beams remain hot. */
-                float pulse = st->module_active_pulse[m];
-                if (pulse <= 0.0f) continue;
-
-                /* One spoke per (producer, input commodity). Each
-                 * spoke contributes spring torque when it spans this
-                 * passive ring + the driver. */
-                for (int i = 0; i < req.count; i++) {
-                    int hop = station_find_hopper_for(st, req.commodities[i]);
-                    if (hop < 0) continue;
-                    const station_module_t *hm = &st->modules[hop];
-                    int ra = (int)prod->ring, rb = (int)hm->ring;
-                    if (!((ra == ring && rb == driver_ring) ||
-                          (rb == ring && ra == driver_ring))) continue;
-                    int sa = (int)prod->slot, sb = (int)hm->slot;
-                    int slots_a = STATION_RING_SLOTS[ra];
-                    int slots_b = STATION_RING_SLOTS[rb];
-                    float alpha_a = TWO_PI_F * (float)sa / (float)slots_a;
-                    float alpha_b = TWO_PI_F * (float)sb / (float)slots_b;
-                    float wa = st->arm_rotation[ra-1] + alpha_a;
-                    float wb = st->arm_rotation[rb-1] + alpha_b;
-                    float dr = (ra == ring) ? (wb - wa) : (wa - wb);
-                    while (dr > PI_F)  dr -= TWO_PI_F;
-                    while (dr < -PI_F) dr += TWO_PI_F;
-                    net_torque += pulse * RING_SPOKE_K * sinf(dr);
-                }
+            /* Input spokes — each declared input commodity. */
+            module_inputs_t req = module_required_inputs(prod->type);
+            for (int i = 0; i < req.count; i++) {
+                ADD_SPOKE(station_find_hopper_for(st, req.commodities[i]));
             }
+            /* Output spoke (Slice 1 — cargo-in-space schema). SHIPYARD
+             * has no commodity output and is naturally skipped: its
+             * module_instance_output() returns COMMODITY_COUNT, and
+             * station_find_output_hopper_for_module returns -1. */
+            ADD_SPOKE(station_find_output_hopper_for_module(st, prod));
 
-            /* Drag opposes absolute angular velocity. The phase lag at
-             * steady state is arcsin(mu*omega / (k*N_spokes)). */
-            net_torque -= RING_DRAG_MU * st->arm_omega[idx];
+            #undef ADD_SPOKE
+        }
 
-            st->arm_omega[idx] += (net_torque / RING_INERTIA_I) * dt;
+        /* Per-ring integrate: drift bias + drag, semi-implicit Euler. */
+        for (int idx = 0; idx < STATION_NUM_RINGS && idx < MAX_ARMS; idx++) {
+            float bias = st->arm_speed[idx] * RING_DRIVE_BIAS_K;
+            float damp = RING_DRAG_MU * st->arm_omega[idx];
+            float tau  = net_torque[idx] + bias - damp;
+
+            st->arm_omega[idx] += (tau / RING_INERTIA_I) * dt;
+            if (st->arm_omega[idx] >  RING_OMEGA_MAX) st->arm_omega[idx] =  RING_OMEGA_MAX;
+            if (st->arm_omega[idx] < -RING_OMEGA_MAX) st->arm_omega[idx] = -RING_OMEGA_MAX;
             st->arm_rotation[idx] += st->arm_omega[idx] * dt;
 
             while (st->arm_rotation[idx] >  TWO_PI_F) st->arm_rotation[idx] -= TWO_PI_F;
             while (st->arm_rotation[idx] < -TWO_PI_F) st->arm_rotation[idx] += TWO_PI_F;
         }
-
-        while (st->arm_rotation[driver_idx] >  TWO_PI_F) st->arm_rotation[driver_idx] -= TWO_PI_F;
-        while (st->arm_rotation[driver_idx] < -TWO_PI_F) st->arm_rotation[driver_idx] += TWO_PI_F;
     }
 }
 
@@ -5186,6 +5202,18 @@ void world_reset(world_t *w) {
     spawn_npc(w, 1, NPC_ROLE_HAULER);   /* Kepler -> Helios frames */
     spawn_npc(w, 2, NPC_ROLE_HAULER);   /* Helios -> Prospect repair kits */
     spawn_npc(w, 1, NPC_ROLE_TOW);      /* Kepler shipyard (only shipyard) */
+
+    /* Bootstrap each station's per-ring angular velocity to its drift
+     * bias. Under the all-passive Slice 1.5a dynamics, omega ramps to
+     * (arm_speed * RING_DRIVE_BIAS_K / RING_DRAG_MU) over a ~1.7s time
+     * constant. Pre-loading omega = arm_speed avoids a visible "spin
+     * up" transient on world_reset and keeps the legacy steady-state
+     * (omega == arm_speed when BIAS_K == DRAG_MU). */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        for (int r = 0; r < MAX_ARMS; r++) {
+            w->stations[s].arm_omega[r] = w->stations[s].arm_speed[r];
+        }
+    }
 
     /* Precompute station nav meshes now that geometry is finalized. */
     station_rebuild_all_nav(w);
