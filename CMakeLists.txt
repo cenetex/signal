@@ -117,6 +117,7 @@ set(SIGNAL_SIM_HELPERS
     shared/module_schema.c
     shared/station_util.c
     shared/cargo_receipt.c
+    shared/tractor.c
 )
 
 # Client-only: rendering, input, HUD, audio, network plumbing. Not
@@ -210,6 +211,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         src/tests/test_bug_regression.c
         src/tests/test_save.c
         src/tests/test_construction.c
+        src/tests/test_tractor.c
         src/tests/test_navigation.c
         src/tests/test_econ_sim.c
         src/tests/test_asteroid.c
