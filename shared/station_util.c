@@ -6,6 +6,7 @@
  * doesn't recompile every TU that pulls station_t through types.h.
  */
 #include <math.h>
+#include <stdio.h>   /* snprintf — station_short_name */
 #include "types.h"
 #include "station_util.h"
 
@@ -458,5 +459,27 @@ station_layout_status_t station_module_layout_status(const station_t *st,
         }
     }
     return STATION_LAYOUT_OK;
+}
+
+const char *station_short_name(int station_idx) {
+    /* Founding stations have stable, well-known short names that match
+     * the in-fiction station identities. Anything beyond the three
+     * founders is a player-built outpost — return a generic short tag
+     * with the index so distinct outposts read distinctly in the UI.
+     *
+     * Helper is shared/station_util so both the docked trade UI and any
+     * test or server-side code that wants to render lineage can use the
+     * same names. The 16-byte static buffer for outposts caps at
+     * MAX_STATIONS = 64, so "Outpost 63" still fits. */
+    static char outpost_buf[16];
+    switch (station_idx) {
+    case 0: return "Prospect";
+    case 1: return "Kepler";
+    case 2: return "Helios";
+    default:
+        if (station_idx < 0 || station_idx >= MAX_STATIONS) return "?";
+        snprintf(outpost_buf, sizeof(outpost_buf), "Outpost %d", station_idx);
+        return outpost_buf;
+    }
 }
 

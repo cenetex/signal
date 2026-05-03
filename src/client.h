@@ -97,6 +97,21 @@ typedef struct {
                                       * unit; INGOT_PREFIX_ANONYMOUS = bulk row. Drives
                                       * the M-/RATi-prefix indicator in the dock UI
                                       * (#prefix-pricing). */
+    /* Lineage display fields — surface the provenance metadata that
+     * cargo_unit_t already carries so dock rows read as e.g. "from
+     * Prospect ep 4422" rather than "ferrite, 12 units". Picked from
+     * the FIFO-first matching cargo_unit so the tag reflects what the
+     * next transaction would actually move.
+     *
+     * Both default to 0 / sentinel for rows with no provenance:
+     * - is_float_fallback rows (legacy bulk path)
+     * - rows with no manifest entries
+     * - rows whose representative unit has mined_block == 0 (legacy
+     *   migrate units, pre-provenance saves)
+     * The renderer skips the lineage line when has_lineage is false. */
+    bool           has_lineage;
+    uint8_t        origin_station_idx;  /* world index of the producing/smelt station */
+    uint64_t       mined_block;          /* signal_channel_post tick at mint */
 } trade_row_t;
 
 /* Why an otherwise-valid row is non-actionable. Drives the status text

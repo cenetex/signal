@@ -692,12 +692,30 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
              * shared with other grades of this commodity, so the
              * passive line below also references the per-commodity
              * inventory. */
+            /* Pull representative-unit lineage from the station's
+             * manifest. FIFO-first so the tag reflects what the next
+             * BUY would actually move (manifest_consume drains FIFO). */
+            uint8_t origin_idx = 0;
+            uint64_t mined_blk = 0;
+            bool has_lineage = false;
+            int rep_idx = manifest_find_first_cg(&st->manifest,
+                                                 (commodity_t)c,
+                                                 (mining_grade_t)gi);
+            if (rep_idx >= 0) {
+                const cargo_unit_t *rep = &st->manifest.units[rep_idx];
+                origin_idx = rep->origin_station;
+                mined_blk = rep->mined_block;
+                has_lineage = (mined_blk != 0);
+            }
             out[row_count++] = (trade_row_t){
                 .kind = 0, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
                 .stock = stock, .unit_price = price,
                 .actionable = (blk == TRADE_BLOCK_NONE), .is_float_fallback = false,
                 .station_stock = stock, .station_capacity = capacity,
                 .held = 0, .block_reason = blk,
+                .has_lineage = has_lineage,
+                .origin_station_idx = origin_idx,
+                .mined_block = mined_blk,
             };
         }
         /* Station produces this commodity but every grade is empty.
@@ -765,6 +783,25 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
              * read identically across all grade rows of the same item). */
             int station_grade_count =
                 station_manifest_count_cg(st, (commodity_t)c, (mining_grade_t)gi);
+            /* Lineage comes from the FIFO-first matching unit in the
+             * SHIP manifest — that's the one the next SELL would move,
+             * so the displayed origin/epoch is honest about the actual
+             * upcoming transaction. ship_manifest_top_prefix_cg already
+             * picks the highest-multiplier prefix; the FIFO choice here
+             * is intentionally different (prefix vs lineage are
+             * independent dimensions). */
+            uint8_t origin_idx = 0;
+            uint64_t mined_blk = 0;
+            bool has_lineage = false;
+            int rep_idx = manifest_find_first_cg(&ship->manifest,
+                                                 (commodity_t)c,
+                                                 (mining_grade_t)gi);
+            if (rep_idx >= 0) {
+                const cargo_unit_t *rep = &ship->manifest.units[rep_idx];
+                origin_idx = rep->origin_station;
+                mined_blk = rep->mined_block;
+                has_lineage = (mined_blk != 0);
+            }
             out[row_count++] = (trade_row_t){
                 .kind = 1, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
                 .stock = held, .unit_price = price,
@@ -772,6 +809,9 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                 .station_stock = station_grade_count, .station_capacity = capacity,
                 .held = held, .block_reason = blk,
                 .prefix_class = (uint8_t)top_cls,
+                .has_lineage = has_lineage,
+                .origin_station_idx = origin_idx,
+                .mined_block = mined_blk,
             };
         }
         /* Cargo says we have units but manifest empty -- fall back to a
@@ -1050,6 +1090,20 @@ static void draw_trade_view(const station_ui_state_t *ui,
             snprintf(commodity_label, sizeof(commodity_label), "%s", cname);
         }
 
+        /* Lineage tag — "from Prospect ep 4422" — drawn as a faded
+         * single-line suffix on rows whose representative cargo_unit
+         * carries real provenance. Anonymous bulk rows and legacy-
+         * migrate rows (mined_block == 0) skip this line so the dock
+         * UI doesn't bloat for cargo with no story to tell. */
+        char lineage_buf[48];
+        lineage_buf[0] = '\0';
+        if (r->has_lineage) {
+            snprintf(lineage_buf, sizeof(lineage_buf),
+                     "from %s, ep %llu",
+                     station_short_name((int)r->origin_station_idx),
+                     (unsigned long long)r->mined_block);
+        }
+
         if (compact) {
             cell_t top[] = {
                 {  0, key_buf,                            row_rgb },
@@ -1062,6 +1116,15 @@ static void draw_trade_view(const station_ui_state_t *ui,
             draw_row_lr(cx + 32.0f, my, inner_right,
                         info_rgb, status_buf, row_rgb, total_buf);
             my += row_h;
+            /* Optional third line — lineage flavor. Drawn dim so it
+             * reads as background context, not actionable state. */
+            if (lineage_buf[0]) {
+                cell_t lineage[] = {
+                    { 10, lineage_buf, COL_FADED },
+                };
+                draw_row_cells(cx, my, lineage, 1);
+                my += row_h;
+            }
             /* Inter-row gap so two-line rows don't blur together. */
             my += 4.0f;
         } else {
@@ -1075,6 +1138,15 @@ static void draw_trade_view(const station_ui_state_t *ui,
             draw_row_cells(cx, my, row, 5);
             draw_row_lr(cx, my, inner_right, NULL, NULL, row_rgb, total_buf);
             my += row_h;
+            /* Wide mode also gets a lineage line beneath the row.
+             * Same dim styling, indented under the commodity label. */
+            if (lineage_buf[0]) {
+                cell_t lineage[] = {
+                    { 10, lineage_buf, COL_FADED },
+                };
+                draw_row_cells(cx, my, lineage, 1);
+                my += row_h;
+            }
         }
     }
     return;
