@@ -48,6 +48,7 @@ void register_asteroid_tests(void);
 void register_signal_chain_tests(void);
 void register_label_tests(void);
 void register_motd_rarity_tests(void);
+void register_cargo_lineage_tests(void);
 void register_pvp_rocks_tests(void);
 void register_crypto_tests(void);
 void register_identity_tests(void);
@@ -143,6 +144,7 @@ int main(int argc, char **argv) {
     register_signal_chain_tests();
     register_label_tests();
     register_motd_rarity_tests();
+    register_cargo_lineage_tests();
     register_pvp_rocks_tests();
     register_crypto_tests();
     register_identity_tests();

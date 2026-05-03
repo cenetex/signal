@@ -96,4 +96,14 @@ bool          station_pair_satisfied(const station_t *st, int ring, int slot,
  * matches `commodity`. Returns -1 if none. */
 int           station_find_hopper_for(const station_t *st, commodity_t commodity);
 
+/* Short, human-readable display name for a station index — "Prospect",
+ * "Kepler", "Helios" for the three founding stations, or the actual
+ * station name truncated to the first word for outposts. Returns "?"
+ * for invalid / negative indices.
+ *
+ * Used by the docked trade UI's lineage display ("from Prospect ep N").
+ * Falls back gracefully when world state isn't available (e.g., tests
+ * that call this without a populated world_t). */
+const char *  station_short_name(int station_idx);
+
 #endif
