@@ -564,12 +564,28 @@ static int npc_find_loose_fragment(const world_t *w, const npc_ship_t *self, flo
  * always preferable to fracturing more rock. Returns true iff a
  * fragment was claimed and the caller should transition to
  * NPC_STATE_RETURN_TO_STATION. */
+/* NPC tow tokens start with the literal "NPC" prefix (see spawn_npc).
+ * A player's session_token is 8 random bytes — collision probability
+ * with the "NPC\0" prefix is ~1/16M and the worst case is one fragment
+ * smelt going to the wrong ledger; cheaper than a side-table. Used by
+ * the NPC tow paths to AVOID overwriting a player's stamp on a
+ * fragment they already towed (first-player-tower wins). */
+static bool token_is_npc(const uint8_t token[8]) {
+    return token && token[0] == 'N' && token[1] == 'P' && token[2] == 'C';
+}
+
 static bool npc_try_claim_loose_fragment(world_t *w, npc_ship_t *npc, float range_sq) {
     int frag = npc_find_loose_fragment(w, npc, range_sq);
     if (frag < 0) return false;
     npc->towed_fragment = frag;
     asteroid_t *f = &w->asteroids[frag];
-    memcpy(f->last_towed_token, npc->session_token, sizeof(f->last_towed_token));
+    /* Only stamp when the slot is empty or carries another NPC's
+     * token — never overwrite a player tow stamp. */
+    bool stamped = false;
+    for (int b = 0; b < 8 && !stamped; b++) if (f->last_towed_token[b]) stamped = true;
+    if (!stamped || token_is_npc(f->last_towed_token)) {
+        memcpy(f->last_towed_token, npc->session_token, sizeof(f->last_towed_token));
+    }
     return true;
 }
 
@@ -1721,13 +1737,18 @@ void step_npc_ships(world_t *w, float dt) {
                     npc->towed_fragment = best_frag;
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                     /* Stamp the NPC's token onto the towed fragment so
-                     * the eventual smelt-payout (ledger_credit_supply
-                     * keyed off last_towed_token) credits the NPC's
-                     * ledger at the home station. Same hook the player
-                     * pickup uses — symmetrical economic identity. */
+                     * the eventual smelt-payout credits the NPC's ledger.
+                     * Skip if a non-NPC token is already there — the
+                     * player who first towed this fragment keeps the
+                     * payout claim. */
                     asteroid_t *frag = &w->asteroids[best_frag];
-                    memcpy(frag->last_towed_token, npc->session_token,
-                           sizeof(frag->last_towed_token));
+                    bool stamped = false;
+                    for (int b = 0; b < 8 && !stamped; b++)
+                        if (frag->last_towed_token[b]) stamped = true;
+                    if (!stamped || token_is_npc(frag->last_towed_token)) {
+                        memcpy(frag->last_towed_token, npc->session_token,
+                               sizeof(frag->last_towed_token));
+                    }
                 }
             }
             break;
