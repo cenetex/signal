@@ -739,11 +739,21 @@ void step_furnace_smelting(world_t *w, float dt) {
 
             if (ore_value > 0.0f) {
                 uint8_t bc = by_contract ? 1 : 0;
+                /* Credit to the same identity the buy/balance paths read:
+                 * pubkey when registered, session_token-pseudokey otherwise.
+                 * Mismatched identity here was the visible-bug:
+                 * smelt-payouts landed on the session-token ledger entry
+                 * but the buy path read the pubkey entry → balance shown
+                 * as 0, "REJECT: finished good but whole=0 (afford=0)". */
                 if (tower >= 0) {
                     float credited = 0.0f;
-                    if (w->players[tower].session_ready)
-                        credited = ledger_credit_supply_amount(st, w->players[tower].session_token, graded_value);
-                    w->players[tower].ship.stat_credits_earned += credited;
+                    server_player_t *pt = &w->players[tower];
+                    if (pt->session_ready) {
+                        credited = pt->pubkey_set
+                            ? ledger_credit_supply_amount_by_pubkey(st, pt->pubkey, graded_value)
+                            : ledger_credit_supply_amount(st, pt->session_token, graded_value);
+                    }
+                    pt->ship.stat_credits_earned += credited;
                     emit_event(w, (sim_event_t){
                         .type = SIM_EVENT_SELL, .player_id = tower,
                         .sell = { .station = smelt_station, .grade = (uint8_t)grade,
@@ -752,9 +762,13 @@ void step_furnace_smelting(world_t *w, float dt) {
                     if (fracturer >= 0 && fracturer != tower) {
                         float finders = graded_value * 0.25f;
                         float fcredited = 0.0f;
-                        if (w->players[fracturer].session_ready)
-                            fcredited = ledger_credit_supply_amount(st, w->players[fracturer].session_token, finders);
-                        w->players[fracturer].ship.stat_credits_earned += fcredited;
+                        server_player_t *pf = &w->players[fracturer];
+                        if (pf->session_ready) {
+                            fcredited = pf->pubkey_set
+                                ? ledger_credit_supply_amount_by_pubkey(st, pf->pubkey, finders)
+                                : ledger_credit_supply_amount(st, pf->session_token, finders);
+                        }
+                        pf->ship.stat_credits_earned += fcredited;
                         emit_event(w, (sim_event_t){
                             .type = SIM_EVENT_SELL, .player_id = fracturer,
                             .sell = { .station = smelt_station, .grade = (uint8_t)grade,
@@ -765,9 +779,13 @@ void step_furnace_smelting(world_t *w, float dt) {
                 } else if (fracturer >= 0) {
                     float half = graded_value * 0.5f;
                     float credited = 0.0f;
-                    if (w->players[fracturer].session_ready)
-                        credited = ledger_credit_supply_amount(st, w->players[fracturer].session_token, half);
-                    w->players[fracturer].ship.stat_credits_earned += credited;
+                    server_player_t *pf = &w->players[fracturer];
+                    if (pf->session_ready) {
+                        credited = pf->pubkey_set
+                            ? ledger_credit_supply_amount_by_pubkey(st, pf->pubkey, half)
+                            : ledger_credit_supply_amount(st, pf->session_token, half);
+                    }
+                    pf->ship.stat_credits_earned += credited;
                     emit_event(w, (sim_event_t){
                         .type = SIM_EVENT_SELL, .player_id = fracturer,
                         .sell = { .station = smelt_station, .grade = (uint8_t)grade,
