@@ -1119,7 +1119,8 @@ static void draw_trade_view(const station_ui_state_t *ui,
         const trade_row_t *r = &rows[ri];
         int slot = (ri - first) + 1;
         char key_buf[8];
-        snprintf(key_buf, sizeof(key_buf), "[%d]", slot);
+        if (r->actionable) snprintf(key_buf, sizeof(key_buf), "[%d]", slot);
+        else               snprintf(key_buf, sizeof(key_buf), " - ");
 
         const uint8_t *info_rgb = r->actionable ? COL_TEXT : COL_FADED;
 
@@ -1136,6 +1137,8 @@ static void draw_trade_view(const station_ui_state_t *ui,
         const uint8_t *row_rgb   = r->actionable ? total_rgb : COL_DIM;
 
         const char *verb = (r->kind == 0) ? "buy " : "sell";
+        if (r->kind == 1 && r->block_reason == TRADE_BLOCK_NO_CARGO)
+            verb = "buys";
 
         /* Status column on the left of the right-aligned price:
          * BUY:  station X/MAX
@@ -1429,19 +1432,20 @@ static void draw_verbs_view(const station_ui_state_t *ui,
      * pulled from cargo). If cargo is short, the dock fills the gap
      * from its own inventory at retail. Any dock can install — module
      * supply is the only gate. */
-    struct { const char *left; const char *unit_singular; const char *unit_plural;
+    struct { const char *left; const char *passive_left;
+             const char *unit_singular; const char *unit_plural;
              int needed, in_cargo, at_station, credit; bool can; bool maxed; } refit[3] = {
-        { "[M] tune laser",   "laser module",   "laser modules",
+        { "[M] tune laser",   "laser",   "laser module",   "laser modules",
           ui->mining_units_needed, ui->mining_units_in_cargo,
           ui->mining_units_at_station, ui->mining_credit_cost,
           ui->can_upgrade_mining,
           ship_upgrade_maxed(ship, SHIP_UPGRADE_MINING) },
-        { "[H] expand hold",  "frame", "frames",
+        { "[H] expand hold",  "hold",    "frame", "frames",
           ui->hold_units_needed, ui->hold_units_in_cargo,
           ui->hold_units_at_station, ui->hold_credit_cost,
           ui->can_upgrade_hold,
           ship_upgrade_maxed(ship, SHIP_UPGRADE_HOLD) },
-        { "[T] tune tractor", "tractor module", "tractor modules",
+        { "[T] tune tractor", "tractor", "tractor module", "tractor modules",
           ui->tractor_units_needed, ui->tractor_units_in_cargo,
           ui->tractor_units_at_station, ui->tractor_credit_cost,
           ui->can_upgrade_tractor,
@@ -1463,17 +1467,19 @@ static void draw_verbs_view(const station_ui_state_t *ui,
             my += row_h;
             continue;
         }
-        /* Non-actionable: hide the [verb] and just say what's missing. */
-        const char *short_label = refit[i].unit_singular; /* "laser module" / "frame" / "tractor module" */
+        /* Non-actionable: hide the [verb] and keep the left label short;
+         * the right side carries the concrete missing material. */
+        const char *short_label = refit[i].passive_left;
         if (refit[i].maxed) {
             snprintf(right_buf, sizeof(right_buf), "maxed");
         } else if (avail <= 0) {
             int short_by = needed - avail;
             if (short_by <= 0) short_by = needed > 0 ? needed : 1;
-            snprintf(right_buf, sizeof(right_buf), "%d %s%s needed",
-                     short_by, short_label, short_by == 1 ? "" : "s");
+            snprintf(right_buf, sizeof(right_buf), "need %d %s",
+                     short_by, short_by == 1
+                         ? refit[i].unit_singular : refit[i].unit_plural);
         } else if (refit[i].credit > 0) {
-            snprintf(right_buf, sizeof(right_buf), "%d cr needed", refit[i].credit);
+            snprintf(right_buf, sizeof(right_buf), "need %d cr", refit[i].credit);
         } else {
             snprintf(right_buf, sizeof(right_buf), "unavailable");
         }
@@ -1860,10 +1866,12 @@ void draw_station_services(const station_ui_state_t* ui) {
         }
         const char *hint = "[TAB] cycle";
         float hint_w = (float)strlen(hint) * cell_w;
-        sdtx_color3b(PAL_TEXT_FADED);
-        sdtx_pos(ui_text_pos(panel_x + panel_w - 20.0f - hint_w),
-                 ui_text_pos(ty));
-        sdtx_puts(hint);
+        float hint_x = panel_x + panel_w - 20.0f - hint_w;
+        if (tx + 12.0f < hint_x) {
+            sdtx_color3b(PAL_TEXT_FADED);
+            sdtx_pos(ui_text_pos(hint_x), ui_text_pos(ty));
+            sdtx_puts(hint);
+        }
 
         /* Latch underline beneath active tab — diegetic "channel selected"
          * affordance in the station-role tint. */
