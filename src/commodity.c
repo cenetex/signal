@@ -87,28 +87,30 @@ const char* commodity_code(commodity_t commodity) {
 }
 
 void commodity_color_u8(commodity_t commodity, uint8_t *r, uint8_t *g, uint8_t *b) {
-    /* Warm-to-cool ladder for the three ores (matches the color dot on
-     * the asteroid and the tow tether so the TRADE row reads the same).
-     * Fabricated goods get their own signature so the market scans
-     * quickly: frame = slate, laser = nav-blue, tractor = mint. */
+    /* Resource-family ladder: ore is full resource color; ingots are that
+     * resource blended with gray metal; products are mostly metal with a
+     * source-resource accent. Keep this in sync with src/palette.h. */
     switch (commodity) {
     case COMMODITY_FERRITE_ORE:
-    case COMMODITY_FERRITE_INGOT:
-        *r = 217; *g = 127; *b =  90; return;  /* warm ferrite amber */
+        *r = 217; *g =  77; *b =  51; return;
     case COMMODITY_CUPRITE_ORE:
-    case COMMODITY_CUPRITE_INGOT:
-        *r = 110; *g = 210; *b = 140; return;  /* cuprite oxide green */
+        *r =  64; *g = 128; *b = 230; return;
     case COMMODITY_CRYSTAL_ORE:
+        *r =  77; *g = 204; *b =  89; return;
+    case COMMODITY_FERRITE_INGOT:
+        *r = 199; *g = 112; *b =  94; return;
+    case COMMODITY_CUPRITE_INGOT:
+        *r = 107; *g = 150; *b = 207; return;
     case COMMODITY_CRYSTAL_INGOT:
-        *r = 180; *g = 140; *b = 255; return;  /* crystal violet */
+        *r = 112; *g = 191; *b = 120; return;
     case COMMODITY_FRAME:
-        *r = 190; *g = 200; *b = 220; return;  /* cool slate */
+        *r = 163; *g = 135; *b = 135; return;
     case COMMODITY_LASER_MODULE:
-        *r = 140; *g = 180; *b = 255; return;  /* nav blue */
+        *r = 135; *g = 156; *b = 191; return;
     case COMMODITY_TRACTOR_MODULE:
-        *r = 120; *g = 235; *b = 200; return;  /* mint */
+        *r = 130; *g = 176; *b = 143; return;
     case COMMODITY_REPAIR_KIT:
-        *r = 240; *g =  90; *b =  90; return;  /* med-cross red — repair signal */
+        *r = 184; *g = 140; *b = 140; return;
     case COMMODITY_COUNT:
     default:
         *r = 200; *g = 220; *b = 230; return;  /* fallback cool white */

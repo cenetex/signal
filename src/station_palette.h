@@ -2,9 +2,9 @@
  * station_palette.h — render-time palette helpers for station modules.
  *
  * These helpers let the renderer pick a module color based on station
- * context (e.g. how many furnaces a station has, which ring this furnace
- * sits on) without bumping the schema or save format. The simulation
- * remains unaware: it only knows the generic MODULE_FURNACE type.
+ * context. Commodity-tagged furnaces use their instance output when
+ * available; legacy/unconfigured furnaces fall back to the station-wide
+ * ring heuristic without bumping the schema or save format.
  *
  * Test-friendly: defined as a static inline so test_furnace_color.c can
  * include this header and exercise the same logic the renderer uses.
@@ -81,6 +81,38 @@ static inline void station_palette_furnace_color(const station_t *st,
             PAL_UNPACK3(PAL_FURNACE_CHUNKS, *r, *g, *b);
         }
     }
+}
+
+static inline bool station_palette_furnace_commodity_color(commodity_t out,
+                                                           float *r, float *g, float *b) {
+    switch (out) {
+    case COMMODITY_FERRITE_INGOT:
+        PAL_UNPACK3(PAL_FURNACE_FERRITE, *r, *g, *b);
+        return true;
+    case COMMODITY_CUPRITE_INGOT:
+        PAL_UNPACK3(PAL_FURNACE_CUPRITE, *r, *g, *b);
+        return true;
+    case COMMODITY_CRYSTAL_INGOT:
+        PAL_UNPACK3(PAL_FURNACE_CRYSTAL, *r, *g, *b);
+        return true;
+    default:
+        return false;
+    }
+}
+
+static inline void station_palette_furnace_module_color(const station_t *st,
+                                                        const station_module_t *m,
+                                                        float *r, float *g, float *b) {
+    if (m && m->type == MODULE_FURNACE &&
+        (commodity_t)m->commodity != COMMODITY_COUNT &&
+        station_palette_furnace_commodity_color((commodity_t)m->commodity, r, g, b)) {
+        return;
+    }
+    if (st && m) {
+        station_palette_furnace_color(st, (int)m->ring, r, g, b);
+        return;
+    }
+    PAL_UNPACK3(PAL_FURNACE_FERRITE, *r, *g, *b);
 }
 
 #endif /* SIGNAL_STATION_PALETTE_H */

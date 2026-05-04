@@ -56,6 +56,42 @@ static int station_manifest_seed_from_npc(station_t *st, commodity_t c, int n,
     return pushed;
 }
 
+static bool station_smelt_pair_for_ore(const station_t *st, commodity_t ore,
+                                       vec2 *drop_point) {
+    if (!st || !drop_point || ore == COMMODITY_COUNT) return false;
+    bool found = false;
+    float best_d = 1e18f;
+    for (int fm = 0; fm < st->module_count; fm++) {
+        const station_module_t *f = &st->modules[fm];
+        if (f->type != MODULE_FURNACE) continue;
+        if (f->scaffold) continue;
+        if (module_instance_input_ore(f) != ore) continue;
+
+        int ring = (int)f->ring;
+        vec2 furnace_pos = module_world_pos_ring(st, ring, f->slot);
+        int adj_rings[2] = { ring + 1, ring - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int hm = 0; hm < st->module_count; hm++) {
+                const station_module_t *h = &st->modules[hm];
+                if (h->ring != adj) continue;
+                if (h->scaffold) continue;
+                if (h->type != MODULE_HOPPER) continue;
+                if ((commodity_t)h->commodity != ore) continue;
+                vec2 hopper_pos = module_world_pos_ring(st, adj, h->slot);
+                float d = v2_dist_sq(furnace_pos, hopper_pos);
+                if (d < best_d) {
+                    best_d = d;
+                    *drop_point = v2_scale(v2_add(furnace_pos, hopper_pos), 0.5f);
+                    found = true;
+                }
+            }
+        }
+    }
+    return found;
+}
+
 /* ================================================================== */
 /* NPC ships                                                          */
 /* ================================================================== */
@@ -1774,14 +1810,25 @@ void step_npc_ships(world_t *w, float dt) {
         case NPC_STATE_RETURN_TO_STATION: {
             station_t *home = &w->stations[npc->home_station];
 
-            /* Find the nearest furnace on this station to deliver to */
+            /* Deliver to the same furnace+ore-hopper midpoint the smelter
+             * beam uses. Picking the first furnace strands crystal at
+             * Helios when the first furnace is cuprite-tagged. */
             vec2 delivery_target = home->pos;
-            for (int fm = 0; fm < home->module_count; fm++) {
-                module_type_t fmt = home->modules[fm].type;
-                if (fmt != MODULE_FURNACE) continue;
-                if (home->modules[fm].scaffold) continue;
-                delivery_target = module_world_pos_ring(home, home->modules[fm].ring, home->modules[fm].slot);
-                break;
+            bool have_delivery_target = false;
+            if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS) {
+                asteroid_t *tow = &w->asteroids[npc->towed_fragment];
+                if (tow->active) {
+                    have_delivery_target = station_smelt_pair_for_ore(home, tow->commodity, &delivery_target);
+                }
+            }
+            if (!have_delivery_target) {
+                for (int fm = 0; fm < home->module_count; fm++) {
+                    module_type_t fmt = home->modules[fm].type;
+                    if (fmt != MODULE_FURNACE) continue;
+                    if (home->modules[fm].scaffold) continue;
+                    delivery_target = module_world_pos_ring(home, home->modules[fm].ring, home->modules[fm].slot);
+                    break;
+                }
             }
 
             /* Slow down when towing so the fragment can keep up */

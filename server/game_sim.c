@@ -5322,25 +5322,24 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
     add_furnace_for(&w->stations[2], 1, 2, COMMODITY_CUPRITE_INGOT);
-    /* Ring 2: fabs + paired ingot hoppers + shipyard. LASER_FAB needs both
-     * cuprite and crystal ingots → 2 spokes from it. TRACTOR_FAB
-     * just cuprite → 1 spoke. The shipyard consumes frames plus the
-     * locally-produced laser/tractor modules for repair-kit fabrication. */
+    /* Ring 2: fabs + paired ingot / ore hoppers + shipyard. Smelter beams
+     * require the ore hopper on an adjacent ring, so cuprite/crystal ore
+     * intakes live between the ring-1/ring-3 furnaces they feed. */
     add_module_at(&w->stations[2], MODULE_LASER_FAB,    2, 0);
     add_hopper_for(&w->stations[2], 2, 1, COMMODITY_CUPRITE_INGOT);
     add_module_at(&w->stations[2], MODULE_SHIPYARD,     2, 2); /* needs FRAME, LASER, TRACTOR */
-    add_hopper_for(&w->stations[2], 2, 3, COMMODITY_CRYSTAL_INGOT);
+    add_hopper_for(&w->stations[2], 2, 3, COMMODITY_CRYSTAL_ORE);
+    add_hopper_for(&w->stations[2], 2, 4, COMMODITY_CUPRITE_ORE);
     add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  2, 5);
-    /* Ring 3: 2 more furnaces (cuprite + crystal output) + cuprite /
-     * crystal ore intake hoppers + frame / laser / tractor module hoppers
-     * for the ring-2 fabs and shipyard. Slots stay clear of the dock
-     * approach axis except the ore intake at slot 0. */
-    add_hopper_for(&w->stations[2], 3, 0, COMMODITY_CUPRITE_ORE);
-    add_furnace_for(&w->stations[2],   3, 1, COMMODITY_CUPRITE_INGOT);
+    /* Ring 3: 2 more furnaces (crystal + cuprite output) plus frame /
+     * crystal-ingot / laser / tractor module hoppers for the ring-2 fabs
+     * and shipyard. The ring-3 cuprite furnace shares the ring-2 cuprite
+     * ore intake with the inner cuprite furnace. */
     add_hopper_for(&w->stations[2], 3, 2, COMMODITY_LASER_MODULE);   /* LASER_FAB output + shipyard input */
     add_hopper_for(&w->stations[2], 3, 3, COMMODITY_FRAME);          /* feeds SHIPYARD */
     add_furnace_for(&w->stations[2],   3, 4, COMMODITY_CRYSTAL_INGOT);
-    add_hopper_for(&w->stations[2], 3, 6, COMMODITY_CRYSTAL_ORE);
+    add_hopper_for(&w->stations[2], 3, 5, COMMODITY_CRYSTAL_INGOT);
+    add_furnace_for(&w->stations[2],   3, 6, COMMODITY_CUPRITE_INGOT);
     add_hopper_for(&w->stations[2], 3, 7, COMMODITY_TRACTOR_MODULE); /* TRACTOR_FAB output + shipyard input */
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drift bias */
