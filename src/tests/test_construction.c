@@ -2164,6 +2164,34 @@ TEST(test_output_hopper_spoke_contributes_torque) {
     ASSERT(dr3 < 0.0f);
 }
 
+TEST(test_seeded_kepler_shipyard_inner_ring_layout) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    const station_t *st = &w->stations[1];
+    ASSERT_EQ_INT(station_module_at(st, 1, 2), MODULE_SHIPYARD);
+    ASSERT_EQ_INT(station_module_at(st, 2, 0), MODULE_FRAME_PRESS);
+    ASSERT_EQ_INT(ring_module_count(st, 3), 1);
+
+    int frame_hopper = station_find_hopper_for(st, COMMODITY_FRAME);
+    int laser_hopper = station_find_hopper_for(st, COMMODITY_LASER_MODULE);
+    int tractor_hopper = station_find_hopper_for(st, COMMODITY_TRACTOR_MODULE);
+    int ferrite_hopper = station_find_hopper_for(st, COMMODITY_FERRITE_INGOT);
+    ASSERT(frame_hopper >= 0);
+    ASSERT(laser_hopper >= 0);
+    ASSERT(tractor_hopper >= 0);
+    ASSERT(ferrite_hopper >= 0);
+
+    ASSERT_EQ_INT(st->modules[frame_hopper].ring, 2);
+    ASSERT_EQ_INT(st->modules[frame_hopper].slot, 4);
+    ASSERT_EQ_INT(st->modules[laser_hopper].ring, 2);
+    ASSERT_EQ_INT(st->modules[tractor_hopper].ring, 2);
+    ASSERT_EQ_INT(st->modules[ferrite_hopper].ring, 3);
+    ASSERT(station_pair_satisfied(st, 1, 2, MODULE_SHIPYARD));
+    ASSERT(station_pair_satisfied(st, 2, 0, MODULE_FRAME_PRESS));
+}
+
 TEST(test_seed_stations_pair_complete) {
     /* Every producer on every starter station must have its cross-ring
      * pair-intake already satisfied at boot. This is the construction
@@ -2208,6 +2236,7 @@ void register_construction_module_schema_tests(void) {
     RUN(test_module_flow_storage_feeds_consumer);
     RUN(test_pair_neighbors_geometry);
     RUN(test_pair_satisfied_cross_ring);
+    RUN(test_seeded_kepler_shipyard_inner_ring_layout);
     RUN(test_seed_stations_pair_complete);
     RUN(test_helios_ring2_rotates_under_dynamics);
     RUN(test_all_rings_passive_under_spoke_load);

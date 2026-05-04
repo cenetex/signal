@@ -5200,8 +5200,8 @@ void world_reset(world_t *w) {
      * Layout principle: one HOPPER per producer, placed at the
      * cross-ring slot whose canonical angle is closest to the
      * producer's. Hoppers are NOT decorative — every hopper exists
-     * because some producer paired with it. Producers live on rings
-     * 1 or 3; ring 2 hosts the hoppers that feed them.
+     * because some producer paired with it. Starter stations bias
+     * producers inward and use adjacent rings as readable staging belts.
      *   - Slot angles (zero rotation):
      *       ring 1 (3): 0°, 120°, 240°
      *       ring 2 (6): 0°, 60°, 120°, 180°, 240°, 300°
@@ -5272,21 +5272,20 @@ void world_reset(world_t *w) {
     /* Kepler imports laser/tractor modules for its shipyard kit fab. */
     w->stations[1].base_price[COMMODITY_LASER_MODULE]   = 30.0f;
     w->stations[1].base_price[COMMODITY_TRACTOR_MODULE] = 38.0f;
-    /* Ring 1: dock + relay only. Ring-1 slot 2 stays empty. */
+    /* Ring 1: dock + relay + shipyard. The shipyard sits on the inner
+     * ring so its three input hoppers can read as a compact ring-2
+     * staging belt instead of being buried on the outer hull. */
     add_module_at(&w->stations[1], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[1], MODULE_SIGNAL_RELAY, 1, 1);
-    /* Ring 2: frame press + shipyard. */
+    add_module_at(&w->stations[1], MODULE_SHIPYARD,     1, 2); /* needs FRAME, LASER, TRACTOR */
+    /* Ring 2: frame press + shipyard input hoppers. Frame sits on the
+     * shipyard's centerline; laser/tractor flank it. */
     add_module_at(&w->stations[1], MODULE_FRAME_PRESS,  2, 0); /* needs FERRITE_INGOT */
-    add_module_at(&w->stations[1], MODULE_SHIPYARD,     2, 2); /* needs FRAME, LASER, TRACTOR */
-    /* Ring 3: 4 commodity-tagged hoppers — one for FRAME_PRESS's
-     * ferrite ingot, three for SHIPYARD's three inputs. SHIPYARD
-     * emits 3 spokes (one per commodity), so a busy Kepler shows
-     * ferrite-orange + frame-gold + laser-cyan + tractor-blue lines
-     * radiating from the shipyard. */
-    add_hopper_for(&w->stations[1], 3, 0, COMMODITY_FERRITE_INGOT);  /* feeds FRAME_PRESS */
-    add_hopper_for(&w->stations[1], 3, 2, COMMODITY_FRAME);          /* feeds SHIPYARD    */
-    add_hopper_for(&w->stations[1], 3, 4, COMMODITY_LASER_MODULE);   /* feeds SHIPYARD    */
-    add_hopper_for(&w->stations[1], 3, 6, COMMODITY_TRACTOR_MODULE); /* feeds SHIPYARD    */
+    add_hopper_for(&w->stations[1], 2, 3, COMMODITY_LASER_MODULE);   /* feeds SHIPYARD    */
+    add_hopper_for(&w->stations[1], 2, 4, COMMODITY_FRAME);          /* frame output + shipyard input */
+    add_hopper_for(&w->stations[1], 2, 5, COMMODITY_TRACTOR_MODULE); /* feeds SHIPYARD    */
+    /* Ring 3: just the ferrite-ingot hopper feeding the frame press. */
+    add_hopper_for(&w->stations[1], 3, 0, COMMODITY_FERRITE_INGOT);
     w->stations[1].arm_count = 3;
     w->stations[1].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drift bias */
     rebuild_station_services(&w->stations[1]);
