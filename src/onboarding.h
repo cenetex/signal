@@ -1,5 +1,5 @@
 /*
- * onboarding.h — First-run checklist (4 steps, any order).
+ * onboarding.h — First-run progression hints.
  * After all steps complete, stations take over via contextual hails.
  */
 #ifndef ONBOARDING_H
@@ -15,7 +15,7 @@ void onboarding_mark_tractored(void);
 void onboarding_mark_hailed(void);
 void onboarding_mark_boosted(void);
 
-/* Returns true and fills label/message with checklist if onboarding active. */
+/* Returns true and fills label/message when onboarding has a timely hint. */
 bool onboarding_hint(char *label, size_t label_size,
                      char *message, size_t message_size);
 

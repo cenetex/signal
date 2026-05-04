@@ -1,7 +1,8 @@
 /*
  * onboarding.c — First-run checklist for Signal Space Miner.
  *
- * Four steps in any order: MOVE, FRACTURE, TRACTOR, HAIL.
+ * Five milestones in loose order: LAUNCH/MOVE, FRACTURE, TRACTOR,
+ * HAIL, BOOST.
  * Shown as a persistent checklist until all are complete.
  * After that, stations take over via contextual hail responses.
  */
@@ -105,8 +106,19 @@ bool onboarding_hint(char *label, size_t label_size,
         return false;
     }
 
-    /* Subtitle-style: show the NEXT thing to learn, not a checklist. */
+    /* Subtitle-style: show the next useful action, not a checklist. */
     label[0] = '\0';
+    if (LOCAL_PLAYER.docked) {
+        if (!g.onboarding.moved) {
+            snprintf(message, message_size, "Press E to launch.");
+            return true;
+        }
+        /* The station terminal has its own verb rows. Avoid showing
+         * stale flight hints while the player is docked. */
+        if (message_size > 0) message[0] = '\0';
+        return false;
+    }
+
     /* Contextual: if the player has left core signal and hasn't
      * discovered SHIFT yet, that teaching beats the normal queue. */
     if (g.onboarding.moved && !g.onboarding.boosted) {
@@ -117,14 +129,29 @@ bool onboarding_hint(char *label, size_t label_size,
         }
     }
     if (!g.onboarding.moved)
-        snprintf(message, message_size, "Use W A S D to fly your ship.");
-    else if (!g.onboarding.fractured)
-        snprintf(message, message_size, "Aim at a rock and press M");
-    else if (!g.onboarding.tractored)
-        snprintf(message, message_size, "Tractor fragments to a furnace beam");
-    else if (!g.onboarding.hailed)
-        snprintf(message, message_size, "Press H in signal range to hail");
-    else if (message_size > 0)
-        message[0] = '\0';
+        snprintf(message, message_size, "Fly with W A S D.");
+    else if (!g.onboarding.fractured) {
+        if (LOCAL_PLAYER.hover_asteroid >= 0 &&
+            g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active)
+            snprintf(message, message_size, "Hold M to fracture the targeted rock.");
+        else
+            snprintf(message, message_size, "Line up a rock, then hold M to fracture.");
+    } else if (!g.onboarding.tractored) {
+        if (LOCAL_PLAYER.nearby_fragments > 0)
+            snprintf(message, message_size, "Hold SPACE to tractor loose fragments.");
+        else
+            snprintf(message, message_size, "Fracture rocks into fragments, then hold SPACE.");
+    } else if (!g.onboarding.hailed) {
+        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        if (sig >= SIGNAL_BAND_OPERATIONAL)
+            snprintf(message, message_size, "Press H near a station to hail and collect credits.");
+        else
+            snprintf(message, message_size, "Return to signal range, then press H to hail.");
+    } else {
+        /* Only boost remains. Wait for weak signal so the hint is timely
+         * instead of pinning an empty subtitle over other system state. */
+        if (message_size > 0) message[0] = '\0';
+        return false;
+    }
     return true;
 }
