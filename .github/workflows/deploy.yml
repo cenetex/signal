@@ -60,11 +60,10 @@ jobs:
           ulimit -s 16384
           ./build-test/signal_test --soak-only
 
-  # ASan: post-deploy verification on main only. Same logic as
-  # test-valgrind — runs ~7-10 min and was the longest pole on PR
-  # turnaround. test-basic + native (linux/macos/windows) catch the
-  # vast majority of regressions on the PR loop in <5 min; asan
-  # backstops them on main after deploy lands.
+  # ASan: post-deploy verification on main only. Runs off the PR path
+  # because it costs several minutes; test-basic + native
+  # (linux/macos/windows) catch the vast majority of regressions on the
+  # PR loop in <5 min, while ASan backstops them after deploy lands.
   test-asan:
     runs-on: ubuntu-latest
     needs: deploy
@@ -85,7 +84,7 @@ jobs:
   # undefined behavior (signed overflow, strict-aliasing, null derefs,
   # OOB, etc.) that ASan alone misses; running them together backstops
   # the post-deploy check with maximum coverage. Same gating model as
-  # test-asan and test-valgrind — informational on PRs, paging on main.
+  # test-asan — informational on PRs, paging on main.
   test-ubsan:
     runs-on: ubuntu-latest
     needs: deploy
@@ -174,47 +173,6 @@ jobs:
             server/sim_ai.c server/sim_save.c server/sim_construction.c \
             2>&1 | tee clang-tidy-output.txt
           if grep -q "error:" clang-tidy-output.txt; then exit 1; fi
-
-  # Valgrind: slowest sweep, ~30 min. Runs on main only AND only after
-  # deploy succeeds — it's a post-deploy verification, not a gate. The
-  # PR loop relies on test-asan for fast definite-leak detection;
-  # valgrind catches the deeper memcheck issues asan doesn't, but
-  # blocking deploy on it would add 30 min to every prod release.
-  # Failure here surfaces as a red post-deploy check (paging signal),
-  # not a deploy block.
-  test-valgrind:
-    runs-on: ubuntu-latest
-    needs: deploy
-    if: github.ref == 'refs/heads/main'
-    # Sharded across 4 workers via signal_test's --shard=K/N flag.
-    # Single-job valgrind kept timing out at 45m and 60m after the
-    # chain-log/crypto path (#497, #500, #519) made every test exercise
-    # Ed25519 sign/verify. Each shard runs ~25% of tests, so 60m gives
-    # comfortable headroom while preserving full leak-check coverage.
-    timeout-minutes: 60
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3]
-    steps:
-      - uses: actions/checkout@v4
-      - name: Install valgrind
-        run: sudo apt-get update && sudo apt-get install -y valgrind
-
-      - name: Valgrind memcheck (shard ${{ matrix.shard }}/4)
-        run: |
-          cmake -S . -B build-valgrind -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON
-          cmake --build build-valgrind
-          ulimit -s 16384
-          # `--track-origins=yes` dropped per #525 — leaks still detected
-          # by `--leak-check=full`. `--quiet` cuts stdout so valgrind's
-          # interleaved logs don't dominate runtime via I/O.
-          valgrind --error-exitcode=1 \
-            --leak-check=full \
-            --show-leak-kinds=definite \
-            --errors-for-leak-kinds=definite \
-            --main-stacksize=16777216 \
-            ./build-valgrind/signal_test --quiet --shard=${{ matrix.shard }}/4 2>&1 | tail -30
 
   # CRAP score (complexity * uncovered). Tested-code report GATES the
   # deploy at threshold 25 — the codebase already passes this, so the

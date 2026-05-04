@@ -1,0 +1,46 @@
+name: Nightly Valgrind
+
+on:
+  schedule:
+    # Keep Valgrind off the deploy path; run it once per night on main.
+    - cron: "17 10 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: valgrind-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test-valgrind:
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    strategy:
+      fail-fast: false
+      matrix:
+        # The test runner shards by test index. Eight buckets cut the
+        # long-tail Valgrind shards roughly in half versus the old 4-way
+        # post-deploy sweep while preserving full non-soak coverage.
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install valgrind
+        run: sudo apt-get update && sudo apt-get install -y valgrind
+
+      - name: Valgrind memcheck (shard ${{ matrix.shard }}/8)
+        run: |
+          cmake -S . -B build-valgrind -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON
+          cmake --build build-valgrind --parallel
+          ulimit -s 16384
+          # `--track-origins=yes` dropped per #525 — leaks still detected
+          # by `--leak-check=full`. `--quiet` cuts stdout so valgrind's
+          # interleaved logs don't dominate runtime via I/O.
+          valgrind --error-exitcode=1 \
+            --leak-check=full \
+            --show-leak-kinds=definite \
+            --errors-for-leak-kinds=definite \
+            --main-stacksize=16777216 \
+            ./build-valgrind/signal_test --quiet --no-soak --shard=${{ matrix.shard }}/8 2>&1 | tail -30
