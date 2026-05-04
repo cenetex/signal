@@ -211,6 +211,9 @@ world_t *setup_collision_world_heap(void);
 int test_setup_placed_scaffold(world_t *w, int *out_mod_idx);
 int run_autopilot_ticks(world_t *w, server_player_t *sp, float seconds);
 double econ_total_credits(const world_t *w);
+bool test_set_ship_finished_units(ship_t *ship, commodity_t c, int count,
+                                  mining_grade_t grade);
+bool test_set_station_finished_units(station_t *st, commodity_t c, int count);
 
 /* Per-process scratch path helper for tests that touch the filesystem.
  * Returns a pointer into a small ring of static buffers, so multiple

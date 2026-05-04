@@ -1015,12 +1015,11 @@ static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, i
  * `preferred_grade`: if MINING_GRADE_COUNT (sentinel) → FIFO across any
  * grade. Otherwise the helper first picks units of exactly that grade;
  * once those are exhausted (or if there were none to begin with) it
- * falls through to any-grade FIFO so the float-path delivery doesn't
- * silently lose provenance.
+ * falls through to any-grade FIFO.
  *
  * Returns the number actually transferred. The cargo_unit_t (pub +
- * grade + parent_merkle) moves to the receiving side — callers dual-
- * write the float inventory; the manifest is the provenance record.
+ * grade + parent_merkle) moves to the receiving side; callers sync any
+ * derived float caches from the manifest after a successful transfer.
  *
  * Conservation invariant (see tests): at any point,
  *   count_in_any_manifest(pub) == 1
@@ -1065,18 +1064,52 @@ static int manifest_transfer_by_commodity(manifest_t *src, manifest_t *dst,
                                               MINING_GRADE_COUNT, n);
 }
 
-/* Flip station.manifest_dirty when a given manifest transfer affected
- * a station manifest. `manifest_dirty` doubles as the manifest-summary
- * dirty flag for Phase 2 broadcasts; setting it here means every
- * transaction that moves provenance also pokes the MP summary. */
-static void manifest_mark_station_dirty(world_t *w, manifest_t *touched) {
-    if (!w || !touched) return;
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        if (&w->stations[s].manifest == touched) {
-            w->stations[s].manifest_dirty = true;
-            return;
-        }
+static bool is_finished_good(commodity_t c) {
+    return c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT;
+}
+
+static float station_finished_fraction(const station_t *st, commodity_t c) {
+    if (!st || !is_finished_good(c)) return 0.0f;
+    float v = st->_inventory_cache[c];
+    float floor_v = floorf(v + 0.0001f);
+    float frac = v - floor_v;
+    if (frac < 0.0f || frac >= 1.0f) frac = 0.0f;
+    return frac;
+}
+
+static float station_finished_space(const station_t *st, commodity_t c) {
+    if (!st || !is_finished_good(c)) return 0.0f;
+    float stock = (float)manifest_count_by_commodity(&st->manifest, c) +
+                  station_finished_fraction(st, c);
+    return fmaxf(0.0f, MAX_PRODUCT_STOCK - stock);
+}
+
+static void sync_ship_finished_cargo(ship_t *ship, commodity_t c) {
+    if (!ship || !is_finished_good(c)) return;
+    ship->cargo[c] = (float)manifest_count_by_commodity(&ship->manifest, c);
+}
+
+static void sync_station_finished_inventory(station_t *st, commodity_t c) {
+    if (!st || !is_finished_good(c)) return;
+    st->_inventory_cache[c] =
+        (float)manifest_count_by_commodity(&st->manifest, c) +
+        station_finished_fraction(st, c);
+    st->manifest_dirty = true;
+}
+
+static float manifest_grade_bonus_from_range(const manifest_t *manifest,
+                                             uint16_t start,
+                                             commodity_t commodity,
+                                             float price_per) {
+    if (!manifest || start >= manifest->count || price_per <= 0.0f) return 0.0f;
+    float bonus = 0.0f;
+    for (uint16_t u = start; u < manifest->count; u++) {
+        const cargo_unit_t *cu = &manifest->units[u];
+        if (cu->commodity != commodity) continue;
+        float mult = mining_payout_multiplier((mining_grade_t)cu->grade);
+        bonus += (mult - 1.0f) * price_per;
     }
+    return bonus;
 }
 
 /* Sell exactly one (commodity, grade) unit — the trade-tab per-row
@@ -1084,7 +1117,7 @@ static void manifest_mark_station_dirty(world_t *w, manifest_t *touched) {
  * ship manifest matching `grade` (or the FIFO-first matching commodity
  * when `grade == MINING_GRADE_COUNT`), credits the player at this
  * station's buy price + the unit's grade bonus, transfers the manifest
- * entry to the station, and decrements the float cargo by one.
+ * entry to the station, then syncs the derived float cargo/cache.
  *
  * Returns true when a unit actually sold, so the caller can skip the
  * bulk path and not also drain the rest of the cargo. */
@@ -1096,9 +1129,7 @@ static bool try_sell_one_unit(world_t *w, server_player_t *sp,
     if (commodity < COMMODITY_RAW_ORE_COUNT) return false;
     station_t *st = &w->stations[sp->current_station];
     if (!station_consumes(st, commodity)) return false;
-    if (sp->ship.cargo[commodity] < 0.999f) return false; /* < 1 unit */
-    float capacity = MAX_PRODUCT_STOCK;
-    float space = fmaxf(0.0f, capacity - st->_inventory_cache[commodity]);
+    float space = station_finished_space(st, commodity);
     if (space < 0.999f) {
         emit_event(w, (sim_event_t){
             .type = SIM_EVENT_ORDER_REJECTED,
@@ -1132,21 +1163,17 @@ static bool try_sell_one_unit(world_t *w, server_player_t *sp,
     int base_cr = (int)lroundf(price);
     int bonus_cr = (int)lroundf(graded_price - price);
 
-    /* Move the unit + 1.0 float across. The transfer helper finds the
-     * same FIFO unit we did so the index match is fine; we only used
-     * `unit_idx` to confirm presence. */
+    /* Move the unit across. The transfer helper finds the same FIFO
+     * unit we did, so the index match is fine; we only used `unit_idx`
+     * to confirm presence. */
     int moved = manifest_transfer_by_commodity_ex(&sp->ship.manifest,
                                                    &st->manifest,
                                                    commodity,
                                                    grade < MINING_GRADE_COUNT ? grade : MINING_GRADE_COUNT,
                                                    1);
     if (moved <= 0) return false;
-    sp->ship.cargo[commodity] -= 1.0f;
-    if (sp->ship.cargo[commodity] < 0.0f) sp->ship.cargo[commodity] = 0.0f;
-    st->_inventory_cache[commodity] += 1.0f;
-    if (st->_inventory_cache[commodity] > MAX_PRODUCT_STOCK)
-        st->_inventory_cache[commodity] = MAX_PRODUCT_STOCK;
-    manifest_mark_station_dirty(w, &st->manifest);
+    sync_ship_finished_cargo(&sp->ship, commodity);
+    sync_station_finished_inventory(st, commodity);
 
     /* Pool decrement is implicit via ledger_earn; pool is now derived
      * from -Σ(balance), so the credit on the player's ledger naturally
@@ -1204,6 +1231,8 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
      * Only the selective-filter path needs this notice; the bulk
      * SELL_CARGO already drops what fits and ignores the rest. */
     float pre_cargo = (selective ? sp->ship.cargo[filter] : 0.0f);
+    bool tried_but_full = false;
+    bool had_sellable_cargo = false;
 
     /* Deliver any cargo matching active supply contracts at this station.
      *
@@ -1221,37 +1250,34 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         commodity_t c = ct->commodity;
         if (c < COMMODITY_RAW_ORE_COUNT) continue; /* see comment above */
         if (selective && filter != c) continue;
-        if (sp->ship.cargo[c] < 0.01f) continue;
-        float capacity = MAX_PRODUCT_STOCK;
-        float space = fmaxf(0.0f, capacity - st->_inventory_cache[c]);
-        if (space < 0.01f) continue;
-        float deliver = fminf(fminf(sp->ship.cargo[c], ct->quantity_needed), space);
-        float price_per = contract_price(ct);
-        payout += deliver * price_per;
-        if (deliver > 0.01f) sold_against_contract = true;
-        sp->ship.cargo[c] -= deliver;
-        st->_inventory_cache[c] += deliver;
-        /* Phase 1 manifest-first: move whole-unit deliveries across the
-         * ship/station manifests so provenance survives the transaction.
-         * Fractional deliveries still ride the float dual-write. Grade
-         * bonus is added per-unit BEFORE the transfer (FIFO order so the
-         * units we price are the units that move). */
-        {
-            int whole = (int)floorf(deliver + 0.0001f);
-            if (whole > 0) {
-                int counted = 0;
-                for (uint16_t u = 0; u < sp->ship.manifest.count && counted < whole; u++) {
-                    const cargo_unit_t *cu = &sp->ship.manifest.units[u];
-                    if (cu->commodity != c) continue;
-                    float mult = mining_payout_multiplier((mining_grade_t)cu->grade);
-                    payout += (mult - 1.0f) * price_per;  /* base already in deliver*price_per */
-                    counted++;
-                }
-                int moved = manifest_transfer_by_commodity(&sp->ship.manifest,
-                                                           &st->manifest, c, whole);
-                if (moved > 0) manifest_mark_station_dirty(w, &st->manifest);
-            }
+        int held = manifest_count_by_commodity(&sp->ship.manifest, c);
+        if (held <= 0) continue;
+        had_sellable_cargo = true;
+        float space = station_finished_space(st, c);
+        int space_units = (int)floorf(space + 0.0001f);
+        if (space_units <= 0) {
+            tried_but_full = true;
+            continue;
         }
+        int needed = (int)floorf(ct->quantity_needed + 0.0001f);
+        int deliver_units = held;
+        if (deliver_units > needed) deliver_units = needed;
+        if (deliver_units > space_units) deliver_units = space_units;
+        if (deliver_units <= 0) continue;
+        float price_per = contract_price(ct);
+        uint16_t station_count_before = st->manifest.count;
+        int moved = manifest_transfer_by_commodity(&sp->ship.manifest,
+                                                   &st->manifest, c,
+                                                   deliver_units);
+        if (moved <= 0) continue;
+        float bonus = manifest_grade_bonus_from_range(&st->manifest,
+                                                      station_count_before,
+                                                      c, price_per);
+        payout += ((float)moved * price_per) + bonus;
+        sold_against_contract = true;
+        sync_ship_finished_cargo(&sp->ship, c);
+        sync_station_finished_inventory(st, c);
+        float deliver = (float)moved;
         ct->quantity_needed -= deliver;
         if (ct->quantity_needed <= 0.01f) {
             /* Don't close if scaffold modules still need this material */
@@ -1273,39 +1299,32 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
     /* Fallback: fab stations accept any ingot they consume, even without
      * an active contract. This lets multi-input recipes source their
      * secondary ingredient through the normal station sell path. */
-    bool tried_but_full = false;
-    bool had_sellable_cargo = false;
     for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
         commodity_t buy = (commodity_t)i;
         if (!station_consumes(st, buy)) continue;
-        if (sp->ship.cargo[buy] <= 0.01f) continue;
         if (selective && filter != buy) continue;
+        int held = manifest_count_by_commodity(&sp->ship.manifest, buy);
+        if (held <= 0) continue;
         had_sellable_cargo = true;
         {
-            float capacity = MAX_PRODUCT_STOCK;
-            float space = fmaxf(0.0f, capacity - st->_inventory_cache[buy]);
-            if (space <= 0.01f) tried_but_full = true;
-            if (space > 0.01f) {
-                float accepted = fminf(sp->ship.cargo[buy], space);
+            float space = station_finished_space(st, buy);
+            int space_units = (int)floorf(space + 0.0001f);
+            if (space_units <= 0) tried_but_full = true;
+            if (space_units > 0) {
+                int accepted_units = held < space_units ? held : space_units;
+                if (accepted_units <= 0) continue;
                 float price = station_buy_price(st, buy);
-                payout += accepted * price;
-                sp->ship.cargo[buy] -= accepted;
-                st->_inventory_cache[buy] += accepted;
-                /* Manifest dual-write + per-unit grade bonus — see contract branch. */
-                int whole = (int)floorf(accepted + 0.0001f);
-                if (whole > 0) {
-                    int counted = 0;
-                    for (uint16_t u = 0; u < sp->ship.manifest.count && counted < whole; u++) {
-                        const cargo_unit_t *cu = &sp->ship.manifest.units[u];
-                        if (cu->commodity != buy) continue;
-                        float mult = mining_payout_multiplier((mining_grade_t)cu->grade);
-                        payout += (mult - 1.0f) * price;
-                        counted++;
-                    }
-                    int moved = manifest_transfer_by_commodity(&sp->ship.manifest,
-                                                               &st->manifest, buy, whole);
-                    if (moved > 0) manifest_mark_station_dirty(w, &st->manifest);
-                }
+                uint16_t station_count_before = st->manifest.count;
+                int moved = manifest_transfer_by_commodity(&sp->ship.manifest,
+                                                           &st->manifest, buy,
+                                                           accepted_units);
+                if (moved <= 0) continue;
+                float bonus = manifest_grade_bonus_from_range(&st->manifest,
+                                                              station_count_before,
+                                                              buy, price);
+                payout += ((float)moved * price) + bonus;
+                sync_ship_finished_cargo(&sp->ship, buy);
+                sync_station_finished_inventory(st, buy);
             }
         }
     }
@@ -2941,7 +2960,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
              * would fall back to a higher grade and the player walks away
              * with a fine/rare ingot at the 1× COMMON price. Fabs (frames,
              * lasers, tractors, kits) only ever carry COMMON, so the check
-             * is redundant for them — keep them on the legacy fallback. */
+             * is redundant for them. */
             if (intent->buy_grade == MINING_GRADE_COMMON
                 && (c == COMMODITY_FERRITE_INGOT
                     || c == COMMODITY_CUPRITE_INGOT
@@ -3043,15 +3062,19 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                     : ledger_spend(docked_st, sp->session_token, charge_cost, &sp->ship);
             }
             if (spent) {
-                sp->ship.cargo[c] += charge_amount;
-                docked_st->_inventory_cache[c] -= charge_amount;
-                if (docked_st->_inventory_cache[c] < 0.0f) docked_st->_inventory_cache[c] = 0.0f;
+                if (finished) {
+                    sync_ship_finished_cargo(&sp->ship, c);
+                    sync_station_finished_inventory(docked_st, c);
+                } else {
+                    sp->ship.cargo[c] += charge_amount;
+                    docked_st->_inventory_cache[c] -= charge_amount;
+                    if (docked_st->_inventory_cache[c] < 0.0f) docked_st->_inventory_cache[c] = 0.0f;
+                }
                 if (!finished && whole > 0) {
                     moved = manifest_transfer_by_commodity_ex(
                         &docked_st->manifest, &sp->ship.manifest,
                         c, intent->buy_grade, whole);
                 }
-                if (moved > 0) manifest_mark_station_dirty(w, &docked_st->manifest);
                 SIM_LOG("[buy] OK player %d bought %.0f of c=%d for %.0f cr (manifest moved=%d)\n",
                         sp->id, charge_amount, c, charge_cost, moved);
             } else if (charge_amount > 0.01f) {
@@ -3287,8 +3310,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                 if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) {
                     /* Exact-grade hail-buys must refuse if the station
                      * has nothing matching — same rule as the docked
-                     * path; only enforced for non-common grades so
-                     * products without a manifest entry still buy. */
+                     * path. */
                     bool grade_ok = true;
                     if (sp->input.buy_grade < MINING_GRADE_COUNT
                         && sp->input.buy_grade > MINING_GRADE_COMMON) {
@@ -3298,7 +3320,19 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                             grade_ok = false;
                         }
                     }
-                    float available = grade_ok ? nearby_st->_inventory_cache[c] : 0.0f;
+                    if (sp->input.buy_grade == MINING_GRADE_COMMON
+                        && (c == COMMODITY_FERRITE_INGOT
+                            || c == COMMODITY_CUPRITE_INGOT
+                            || c == COMMODITY_CRYSTAL_INGOT)) {
+                        if (manifest_find_first_cg(&nearby_st->manifest, c,
+                                                   MINING_GRADE_COMMON) < 0) {
+                            sp->input.buy_product = false;
+                            grade_ok = false;
+                        }
+                    }
+                    float available = grade_ok
+                        ? (float)manifest_count_by_commodity(&nearby_st->manifest, c)
+                        : 0.0f;
                     float base = station_sell_price(nearby_st, c);
                     float gmult = (sp->input.buy_grade < MINING_GRADE_COUNT)
                         ? mining_payout_multiplier((mining_grade_t)sp->input.buy_grade)
@@ -3312,29 +3346,26 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                     float afford = (price_per > FLOAT_EPSILON) ? floorf(nbal / price_per) : 0.0f;
                     float amount = fminf(fminf(available, 1.0f), afford); /* buy 1 at a time */
                     if (amount > FLOAT_EPSILON) {
-                        float cost = amount * price_per;
+                        int whole = (int)floorf(amount + 0.0001f);
+                        int moved = manifest_transfer_by_commodity_ex(
+                            &nearby_st->manifest, &sp->ship.manifest,
+                            c, sp->input.buy_grade, whole);
+                        if (moved <= 0) {
+                            sp->input.buy_product = false;
+                            return;
+                        }
+                        float cost = (float)moved * price_per;
                         bool spent = sp->pubkey_set
                             ? ledger_spend_by_pubkey(nearby_st, sp->pubkey, cost, &sp->ship)
                             : ledger_spend(nearby_st, sp->session_token, cost, &sp->ship);
                         if (spent) {
-                            sp->ship.cargo[c] += amount;
-                            nearby_st->_inventory_cache[c] -= amount;
-                            /* Phase 1/2.5 manifest-first: if the station
-                             * has a matching manifest unit, transfer it
-                             * to the ship so the ingot's provenance (pub,
-                             * grade, parent_merkle) moves with the purchase.
-                             * Honors the client's buy_grade hint (set when
-                             * the player selects a specific-grade row in
-                             * TRADE) — falls back to any-grade FIFO if no
-                             * preferred-grade unit is available. */
-                            int whole = (int)floorf(amount + 0.0001f);
-                            if (whole > 0) {
-                                int moved = manifest_transfer_by_commodity_ex(
-                                    &nearby_st->manifest, &sp->ship.manifest,
-                                    c, sp->input.buy_grade, whole);
-                                if (moved > 0) manifest_mark_station_dirty(w, &nearby_st->manifest);
-                            }
+                            sync_ship_finished_cargo(&sp->ship, c);
+                            sync_station_finished_inventory(nearby_st, c);
                             emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
+                        } else {
+                            (void)manifest_transfer_by_commodity_ex(
+                                &sp->ship.manifest, &nearby_st->manifest,
+                                c, sp->input.buy_grade, moved);
                         }
                     }
                 }

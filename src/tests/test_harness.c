@@ -76,6 +76,48 @@ void mining_find_best_claim(const uint8_t seed[32], const uint8_t player_pub[32]
     if (out_grade) *out_grade = best_grade;
 }
 
+bool test_set_ship_finished_units(ship_t *ship, commodity_t c, int count,
+                                  mining_grade_t grade) {
+    if (!ship || count < 0) return false;
+    if (c < COMMODITY_RAW_ORE_COUNT || c >= COMMODITY_COUNT) return false;
+    if (grade >= MINING_GRADE_COUNT) grade = MINING_GRADE_COMMON;
+    cargo_kind_t kind;
+    if (!cargo_kind_for_commodity(c, &kind)) return false;
+    if (!ship_manifest_bootstrap(ship)) return false;
+
+    int existing = manifest_count_by_commodity(&ship->manifest, c);
+    if (existing > 0)
+        (void)manifest_consume_by_commodity(&ship->manifest, c, existing);
+
+    for (int i = 0; i < count; i++) {
+        cargo_unit_t unit = {0};
+        unit.kind = (uint8_t)kind;
+        unit.commodity = (uint8_t)c;
+        unit.grade = (uint8_t)grade;
+        unit.quantity = 1;
+        unit.recipe_id = RECIPE_LEGACY_MIGRATE;
+        unit.pub[0] = 0xA5u;
+        unit.pub[1] = (uint8_t)c;
+        unit.pub[2] = (uint8_t)i;
+        unit.pub[3] = (uint8_t)(i >> 8);
+        if (!manifest_push(&ship->manifest, &unit)) return false;
+    }
+    ship->cargo[c] = (float)count;
+    return true;
+}
+
+bool test_set_station_finished_units(station_t *st, commodity_t c, int count) {
+    if (!st || count < 0) return false;
+    if (c < COMMODITY_RAW_ORE_COUNT || c >= COMMODITY_COUNT) return false;
+    if (!station_manifest_bootstrap(st)) return false;
+
+    int existing = manifest_count_by_commodity(&st->manifest, c);
+    if (existing > 0)
+        (void)manifest_consume_by_commodity(&st->manifest, c, existing);
+    st->_inventory_cache[c] = 0.0f;
+    return station_finished_mint(st, c, count, NULL) == count;
+}
+
 /* Place an outpost via the new tow flow without doing the full tow physics.
  * Spawns a scaffold near `pos`, attaches it to the player, and runs
  * place_towed_scaffold via place_outpost intent. */

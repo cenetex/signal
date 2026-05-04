@@ -812,7 +812,9 @@ TEST(test_bug62_sell_event_no_payout) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     /* Deliver ingots via contract to trigger a sell event */
-    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 20.0f;
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+                                        COMMODITY_FERRITE_INGOT, 20,
+                                        MINING_GRADE_COMMON));
     w.contracts[0] = (contract_t){
         .active = true, .action = CONTRACT_TRACTOR,
         .station_index = 0,
@@ -1404,4 +1406,3 @@ void register_bug_regression_b88_90_tests(void) {
     RUN(test_bug89_gravity_symmetric);
     RUN(test_bug90_station_bounce_no_extra_energy);
 }
-

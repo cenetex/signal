@@ -178,7 +178,9 @@ TEST(test_sell_price_uses_contract_price) {
     w.players[0].connected = true;
     w.players[0].docked = true;
     w.players[0].current_station = 0;
-    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 10.0f;
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+                                        COMMODITY_FERRITE_INGOT, 10,
+                                        MINING_GRADE_COMMON));
     /* Zero out ledger balance for precise payout check */
     float init_bal = ledger_balance(&w.stations[0], w.players[0].session_token);
     float expected_price = 10.0f * 1.2f; /* contract_price at age 300 */
@@ -338,7 +340,9 @@ TEST(test_deliver_ingots_to_contract) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     /* Player carries ferrite ingots */
-    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 30.0f;
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+                                        COMMODITY_FERRITE_INGOT, 30,
+                                        MINING_GRADE_COMMON));
     w.players[0].session_ready = true;
     memset(w.players[0].session_token, 0x01, 8);
     float credits_before = ledger_balance(&w.stations[1], w.players[0].session_token);
@@ -380,7 +384,9 @@ TEST(test_deliver_ingots_full_payout_to_pubkey_player) {
     memset(w.players[0].pubkey, 0xAA, 32);
     w.players[0].pubkey_set = true;
     /* Player carries 10 ferrite ingots; contract pays 20 cr each. */
-    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 10.0f;
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+                                        COMMODITY_FERRITE_INGOT, 10,
+                                        MINING_GRADE_COMMON));
     w.contracts[0] = (contract_t){
         .active = true, .action = CONTRACT_TRACTOR,
         .station_index = 1,
@@ -408,7 +414,9 @@ TEST(test_mixed_cargo_sell_and_deliver) {
     player_init_ship(&w.players[0], &w);
     w.players[0].connected = true;
     /* Player carries ingots */
-    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 20.0f;
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+                                        COMMODITY_FERRITE_INGOT, 20,
+                                        MINING_GRADE_COMMON));
     /* Contract at refinery for ferrite ingots (unusual but valid) */
     w.contracts[0] = (contract_t){
         .active = true, .action = CONTRACT_TRACTOR,
@@ -1049,4 +1057,3 @@ void register_economy_demand_tests(void) {
     RUN(test_top_demand_severity_clamped_zero_to_one);
     RUN(test_contract_price_scales_with_demand);
 }
-

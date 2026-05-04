@@ -125,7 +125,8 @@ TEST(test_econ_sim_credit_circulation) {
     /* Dock at Prospect and buy ferrite ingots (spends from station 0 ledger) */
     w.players[0].docked = true;
     w.players[0].current_station = 0;
-    w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = 50.0f;
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT, 50));
     w.players[0].input.buy_product = true;
     w.players[0].input.buy_commodity = COMMODITY_FERRITE_INGOT;
     world_sim_step(&w, SIM_DT);
@@ -156,7 +157,7 @@ TEST(test_econ_sim_credit_circulation) {
         bal1, station_credit_pool(&w.stations[1]));
 
     /* Buy frames from Kepler (spends from station 1 ledger) */
-    w.stations[1]._inventory_cache[COMMODITY_FRAME] = 20.0f;
+    ASSERT(test_set_station_finished_units(&w.stations[1], COMMODITY_FRAME, 20));
     w.players[0].input.buy_product = true;
     w.players[0].input.buy_commodity = COMMODITY_FRAME;
     world_sim_step(&w, SIM_DT);
@@ -217,7 +218,7 @@ TEST(test_bug312_1_docked_buy_honors_spend_failure) {
     w.players[0].connected = true;
     w.players[0].docked = true;
     w.players[0].current_station = kepler;
-    st->_inventory_cache[COMMODITY_FRAME] = 10.0f;
+    ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 10));
     float pool_before = station_credit_pool(st);
     float cargo_before = w.players[0].ship.cargo[COMMODITY_FRAME];
 
@@ -286,6 +287,51 @@ TEST(test_buy_finished_good_requires_manifest_unit) {
     /* The buy must have rejected: no cargo, no charge. */
     ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_FRAME], cargo_before, 0.001f);
     ASSERT_EQ_FLOAT(ledger_balance(st, token), bal_before, 0.001f);
+}
+
+TEST(test_sell_finished_good_requires_manifest_unit) {
+    /* Manifest authority for finished-good SELL (#339): float cargo left
+     * from a transition path must not be sellable unless a concrete
+     * manifest unit backs it. */
+    WORLD_DECL;
+    world_reset(&w);
+    for (int k = 0; k < MAX_CONTRACTS; k++) w.contracts[k].active = false;
+
+    int consumer = -1;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (station_consumes(&w.stations[i], COMMODITY_FERRITE_INGOT)) {
+            consumer = i;
+            break;
+        }
+    }
+    ASSERT(consumer >= 0);
+    station_t *st = &w.stations[consumer];
+
+    uint8_t token[8] = {8,8,8,8,8,8,8,8};
+    memcpy(w.players[0].session_token, token, 8);
+    w.players[0].session_ready = true;
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].docked = true;
+    w.players[0].current_station = consumer;
+
+    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 3.0f;
+    ASSERT_EQ_INT(manifest_count_by_commodity(&w.players[0].ship.manifest,
+                                              COMMODITY_FERRITE_INGOT), 0);
+    float bal_before = ledger_balance(st, token);
+    int station_units_before = manifest_count_by_commodity(&st->manifest,
+                                                           COMMODITY_FERRITE_INGOT);
+
+    w.players[0].input.service_sell = true;
+    w.players[0].input.service_sell_only = COMMODITY_FERRITE_INGOT;
+    world_sim_step(&w, SIM_DT);
+    w.players[0].input.service_sell = false;
+
+    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT], 3.0f, 0.001f);
+    ASSERT_EQ_FLOAT(ledger_balance(st, token), bal_before, 0.001f);
+    ASSERT_EQ_INT(manifest_count_by_commodity(&st->manifest,
+                                              COMMODITY_FERRITE_INGOT),
+                  station_units_before);
 }
 
 TEST(test_bug312_2_ledger_balance_matches_by_token) {
@@ -426,14 +472,16 @@ TEST(test_econ_invariant_player_session_conservation) {
     };
     w.players[0].docked = true;
     w.players[0].current_station = 1;
-    w.players[0].ship.cargo[COMMODITY_FERRITE_INGOT] = 5.0f;
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+                                        COMMODITY_FERRITE_INGOT, 5,
+                                        MINING_GRADE_COMMON));
     w.players[0].input.service_sell = true;
     world_sim_step(&w, SIM_DT);
     w.players[0].input.service_sell = false;
     ASSERT_CONSERVED("after contract sell");
 
     /* Step 3: buy-product path — buy frames from Kepler */
-    w.stations[1]._inventory_cache[COMMODITY_FRAME] = 20.0f;
+    ASSERT(test_set_station_finished_units(&w.stations[1], COMMODITY_FRAME, 20));
     w.players[0].input.buy_product = true;
     w.players[0].input.buy_commodity = COMMODITY_FRAME;
     world_sim_step(&w, SIM_DT);
@@ -746,6 +794,7 @@ void register_econ_sim_bug312_tests(void) {
     TEST_SECTION("\n#312 4-bug-fix regressions:\n");
     RUN(test_bug312_1_docked_buy_honors_spend_failure);
     RUN(test_buy_finished_good_requires_manifest_unit);
+    RUN(test_sell_finished_good_requires_manifest_unit);
     RUN(test_bug312_2_ledger_balance_matches_by_token);
     RUN(test_bug312_3_init_ship_does_not_seed_with_zero_token);
 }
@@ -755,4 +804,3 @@ void register_econ_sim_invariant_tests(void) {
     RUN_SOAK(test_econ_invariant_npc_only_conservation);
     RUN(test_econ_invariant_player_session_conservation);
 }
-
