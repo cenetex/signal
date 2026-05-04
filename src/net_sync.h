@@ -48,6 +48,10 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
 /* World time sync from server. */
 void on_remote_world_time(float server_time);
 
+/* Multiplayer station ring prediction/correction. */
+void reset_station_ring_smoothing(void);
+void step_remote_station_rings(float dt);
+
 /* Sync local player slot to the network-assigned ID. */
 void sync_local_player_slot_from_network(void);
 

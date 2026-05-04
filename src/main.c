@@ -123,6 +123,7 @@ static void reset_world(void) {
     g.npc_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
     memset(&g.player_interp, 0, sizeof(g.player_interp));
     g.player_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
+    reset_station_ring_smoothing();
 
     /* Seed interp buffers so first frame has valid data */
     memcpy(g.asteroid_interp.curr, g.world.asteroids, sizeof(g.asteroid_interp.curr));
@@ -725,22 +726,12 @@ static void sim_step(float dt) {
     audio_step(&g.audio, dt);
 
     /* Advance world time locally in multiplayer (server doesn't send it).
-     * Ring rotations are authoritative server-side and arrive with
-     * each station-identity broadcast at ~30Hz. To avoid 33ms-step
-     * chunkiness at 60fps render, interpolate forward from the last
-     * received snapshot using its arm_omega: each frame extends
-     * arm_rotation by omega*dt, and the next snapshot snaps it back
-     * to the authoritative value. The correction per snapshot is
-     * tiny (omega * 33ms) so the snap is invisible. */
+     * Ring rotations are authoritative server-side; client prediction
+     * integrates omega each frame, while net_sync eases any phase correction
+     * from the latest station-identity snapshot instead of snapping. */
     if (g.multiplayer_enabled) {
         g.world.time += dt;
-        for (int s = 0; s < MAX_STATIONS; s++) {
-            station_t *st = &g.world.stations[s];
-            if (!station_exists(st)) continue;
-            for (int a = 0; a < MAX_ARMS; a++) {
-                st->arm_rotation[a] += st->arm_omega[a] * dt;
-            }
-        }
+        step_remote_station_rings(dt);
     }
 
     /* Commission flash countdown */
