@@ -113,13 +113,13 @@ bool can_afford_upgrade(const station_t* station, const ship_t* ship, ship_upgra
      * the repair-kit "any dock" model from #373. */
     if (!station) return false;
     if (ship_upgrade_maxed(ship, upgrade)) return false;
-    /* Cargo first, dock fallback at retail. Mirror the server logic so
-     * the UI's "can afford?" matches what try_apply_ship_upgrade will
-     * actually accept. */
+    /* Manifest-backed cargo first, dock fallback at retail. Mirror the
+     * server logic so the UI's "can afford?" matches what
+     * try_apply_ship_upgrade will actually accept. */
     commodity_t comm = (commodity_t)(COMMODITY_FRAME + upgrade_required_product(upgrade));
     int units_needed = (int)ceilf(upgrade_product_cost(ship, upgrade));
-    int in_cargo  = (int)floorf(ship->cargo[comm] + 0.0001f);
-    int at_station = (int)floorf(station->_inventory_cache[comm] + 0.0001f);
+    int in_cargo  = ship_finished_count(ship, comm);
+    int at_station = station_finished_count(station, comm);
     if (in_cargo + at_station < units_needed) return false;
     int from_station = units_needed - (units_needed < in_cargo ? units_needed : in_cargo);
     float credit_cost = (float)from_station * station_sell_price(station, comm);

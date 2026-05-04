@@ -897,7 +897,9 @@ TEST(test_build_outpost_full_economy) {
         + module_build_cost_lookup(MODULE_SIGNAL_RELAY)   /* seed module */
         + module_build_cost_lookup(MODULE_FURNACE)        /* second module */
         + 10.0f;                                          /* slack */
-    sp->ship.cargo[COMMODITY_FRAME] = frame_budget;
+    ASSERT(test_set_ship_finished_units(&sp->ship, COMMODITY_FRAME,
+                                        (int)ceilf(frame_budget),
+                                        MINING_GRADE_COMMON));
 
     /* Step 3 — dock at the outpost and pour the frames in.
      * The outpost has an OUTPOST_DOCK module stamped on by
@@ -994,7 +996,11 @@ TEST(test_build_outpost_full_economy) {
      * frame_budget purposely covered SCAFFOLD_MATERIAL_NEEDED + relay +
      * furnace + 10 slack. The hopper costs more than that 10 slack on
      * its own, so top the cargo back up here — same shortcut as step 2. */
-    sp->ship.cargo[COMMODITY_FRAME] += module_build_cost_lookup(MODULE_HOPPER);
+    ASSERT(test_set_ship_finished_units(
+        &sp->ship, COMMODITY_FRAME,
+        ship_finished_count(&sp->ship, COMMODITY_FRAME) +
+            (int)ceilf(module_build_cost_lookup(MODULE_HOPPER)),
+        MINING_GRADE_COMMON));
 
     vec2 ring1_other = v2_add(outpost_pos, v2(-180.0f, 60.0f));
     int hop_idx = spawn_scaffold(&w, MODULE_HOPPER, ring1_other, sp->id);
@@ -2125,4 +2131,3 @@ void register_construction_module_schema_tests(void) {
     RUN(test_all_rings_passive_under_spoke_load);
     RUN(test_output_hopper_spoke_contributes_torque);
 }
-

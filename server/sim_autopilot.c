@@ -9,6 +9,7 @@
 #include "sim_nav.h"
 #include "sim_flight.h"
 #include "signal_model.h"
+#include "manifest.h"
 
 /* ================================================================== */
 /* Player autopilot — server-side AI driving the player's own ship    */
@@ -578,9 +579,9 @@ void step_autopilot(world_t *w, server_player_t *sp, float dt) {
          * delivered kits to this dock and the player isn't carrying
          * any — better to launch with damage than to idle forever. */
         const station_t *st = &w->stations[sp->current_station];
-        float ship_kits = sp->ship.cargo[COMMODITY_REPAIR_KIT];
-        float station_kits = st->_inventory_cache[COMMODITY_REPAIR_KIT];
-        bool any_kits = (ship_kits + station_kits) > 0.5f;
+        int ship_kits = ship_finished_count(&sp->ship, COMMODITY_REPAIR_KIT);
+        int station_kits = station_finished_count(st, COMMODITY_REPAIR_KIT);
+        bool any_kits = (ship_kits + station_kits) > 0;
         if (!autopilot_hull_full(&sp->ship) && any_kits) {
             /* Stay docked; repair will keep ticking from cargo first
              * then station inventory. */

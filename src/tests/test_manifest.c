@@ -306,6 +306,33 @@ TEST(test_hash_product_matches_known_vector_and_min_grade) {
     ASSERT_HEX32_EQ(frame.pub, "afd71562654d3d5a973927c68df0b3187fc3651a2296cd4b48b52e74925bf2d2");
 }
 
+TEST(test_hash_product_accepts_repair_kit_three_finished_inputs) {
+    cargo_unit_t inputs[RECIPE_INPUT_MAX] = {0};
+    cargo_unit_t kit = {0};
+
+    inputs[0].kind = (uint8_t)CARGO_KIND_FRAME;
+    inputs[0].commodity = (uint8_t)COMMODITY_FRAME;
+    inputs[0].grade = (uint8_t)MINING_GRADE_FINE;
+    for (int i = 0; i < 32; i++) inputs[0].pub[i] = (uint8_t)(0x10 + i);
+
+    inputs[1].kind = (uint8_t)CARGO_KIND_LASER;
+    inputs[1].commodity = (uint8_t)COMMODITY_LASER_MODULE;
+    inputs[1].grade = (uint8_t)MINING_GRADE_RARE;
+    for (int i = 0; i < 32; i++) inputs[1].pub[i] = (uint8_t)(0x40 + i);
+
+    inputs[2].kind = (uint8_t)CARGO_KIND_TRACTOR;
+    inputs[2].commodity = (uint8_t)COMMODITY_TRACTOR_MODULE;
+    inputs[2].grade = (uint8_t)MINING_GRADE_COMMON;
+    for (int i = 0; i < 32; i++) inputs[2].pub[i] = (uint8_t)(0x70 + i);
+
+    ASSERT(hash_product(RECIPE_REPAIR_KIT_FAB, inputs, 3, 17, &kit));
+    ASSERT_EQ_INT(kit.kind, CARGO_KIND_REPAIR_KIT);
+    ASSERT_EQ_INT(kit.commodity, COMMODITY_REPAIR_KIT);
+    ASSERT_EQ_INT(kit.grade, MINING_GRADE_COMMON);
+    ASSERT_EQ_INT(kit.recipe_id, RECIPE_REPAIR_KIT_FAB);
+    ASSERT(!hash_product(RECIPE_REPAIR_KIT_FAB, inputs, 2, 0, &kit));
+}
+
 TEST(test_fracture_claim_resolves_best_verified_grade) {
     WORLD_DECL;
     asteroid_t *a = &w.asteroids[0];
@@ -865,6 +892,7 @@ void register_manifest_tests(void) {
     RUN(test_hash_merkle_root_sorts_and_duplicates_odd_leaf);
     RUN(test_hash_ingot_matches_known_vector);
     RUN(test_hash_product_matches_known_vector_and_min_grade);
+    RUN(test_hash_product_accepts_repair_kit_three_finished_inputs);
     RUN(test_fracture_claim_resolves_best_verified_grade);
     RUN(test_fracture_claim_fallback_resolves_without_claims);
     RUN(test_fracture_claim_rejects_past_deadline);

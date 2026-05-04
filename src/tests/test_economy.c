@@ -49,7 +49,7 @@ TEST(test_can_afford_upgrade_dock_fallback) {
     ship.hull_class = HULL_CLASS_MINER;
     station_t station = {0};
     station.services = STATION_SERVICE_UPGRADE_HOLD;
-    station._inventory_cache[COMMODITY_FRAME] = 100.0f;
+    ASSERT(test_set_station_finished_units(&station, COMMODITY_FRAME, 100));
     station.base_price[COMMODITY_FRAME] = 22.0f;
     ASSERT(can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD,10000.0f));
 }
@@ -61,7 +61,7 @@ TEST(test_can_afford_upgrade_no_credits_for_dock_fallback) {
     ship.hull_class = HULL_CLASS_MINER;
     station_t station = {0};
     station.services = STATION_SERVICE_UPGRADE_HOLD;
-    station._inventory_cache[COMMODITY_FRAME] = 100.0f;
+    ASSERT(test_set_station_finished_units(&station, COMMODITY_FRAME, 100));
     station.base_price[COMMODITY_FRAME] = 22.0f;
     ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD,0.0f));
 }
@@ -85,7 +85,8 @@ TEST(test_can_afford_upgrade_cargo_only_no_credits_needed) {
     station.services = STATION_SERVICE_UPGRADE_HOLD;
     /* Empty dock inventory; ship carries enough frames itself. */
     int need = (int)ceilf(upgrade_product_cost(&ship, SHIP_UPGRADE_HOLD));
-    ship.cargo[COMMODITY_FRAME] = (float)need;
+    ASSERT(test_set_ship_finished_units(&ship, COMMODITY_FRAME, need,
+                                        MINING_GRADE_COMMON));
     ASSERT(can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD,0.0f));
 }
 
@@ -504,10 +505,10 @@ TEST(test_kit_fab_requires_shipyard) {
     ASSERT(!station_has_module(&w.stations[0], MODULE_SHIPYARD));
     ASSERT(station_has_module(&w.stations[1], MODULE_SHIPYARD));
     for (int s = 0; s < 2; s++) {
-        w.stations[s]._inventory_cache[COMMODITY_FRAME]          = 5.0f;
-        w.stations[s]._inventory_cache[COMMODITY_LASER_MODULE]   = 5.0f;
-        w.stations[s]._inventory_cache[COMMODITY_TRACTOR_MODULE] = 5.0f;
-        w.stations[s]._inventory_cache[COMMODITY_REPAIR_KIT]     = 0.0f;
+        ASSERT(test_set_station_finished_units(&w.stations[s], COMMODITY_FRAME, 5));
+        ASSERT(test_set_station_finished_units(&w.stations[s], COMMODITY_LASER_MODULE, 5));
+        ASSERT(test_set_station_finished_units(&w.stations[s], COMMODITY_TRACTOR_MODULE, 5));
+        ASSERT(test_set_station_finished_units(&w.stations[s], COMMODITY_REPAIR_KIT, 0));
         w.stations[s].repair_kit_fab_timer = 0.0f;
     }
     /* Run long enough for at least one fab cycle (REPAIR_KIT_FAB_PERIOD = 30s). */
@@ -581,8 +582,9 @@ TEST(test_repair_drains_ship_cargo_first) {
 
     /* Force the repair service (default Prospect lacks REPAIR_BAY). */
     w.stations[0].services |= STATION_SERVICE_REPAIR;
-    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT] = 100.0f;
-    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 50.0f;
+    ASSERT(test_set_station_finished_units(&w.stations[0], COMMODITY_REPAIR_KIT, 100));
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship, COMMODITY_REPAIR_KIT,
+                                        50, MINING_GRADE_COMMON));
     float max_hull = ship_max_hull(&w.players[0].ship);
     w.players[0].ship.hull = max_hull - 30.0f; /* 30 HP missing */
 
@@ -617,8 +619,10 @@ TEST(test_repair_falls_back_to_station_inventory) {
 
     w.stations[0].services |= STATION_SERVICE_REPAIR;
     w.stations[0].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
-    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT]  = MAX_PRODUCT_STOCK; /* full → 1× */
-    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT]  = 0.0f;
+    ASSERT(test_set_station_finished_units(&w.stations[0], COMMODITY_REPAIR_KIT,
+                                           (int)MAX_PRODUCT_STOCK)); /* full → 1× */
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship, COMMODITY_REPAIR_KIT,
+                                        0, MINING_GRADE_COMMON));
     float max_hull = ship_max_hull(&w.players[0].ship);
     w.players[0].ship.hull = max_hull - 10.0f;
 
@@ -651,8 +655,10 @@ TEST(test_repair_at_shipyard_no_labor_fee) {
 
     w.stations[1].services |= STATION_SERVICE_REPAIR;
     w.stations[1].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
-    w.stations[1]._inventory_cache[COMMODITY_REPAIR_KIT]  = MAX_PRODUCT_STOCK;
-    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT]  = 0.0f;
+    ASSERT(test_set_station_finished_units(&w.stations[1], COMMODITY_REPAIR_KIT,
+                                           (int)MAX_PRODUCT_STOCK));
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship, COMMODITY_REPAIR_KIT,
+                                        0, MINING_GRADE_COMMON));
     float max_hull = ship_max_hull(&w.players[0].ship);
     w.players[0].ship.hull = max_hull - 10.0f;
 

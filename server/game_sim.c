@@ -533,18 +533,16 @@ static void step_scaffold_delivery(world_t *w, server_player_t *sp) {
     if (!sp->docked) return;
     station_t *st = &w->stations[sp->current_station];
     if (!st->scaffold) return;
-    if (sp->ship.cargo[COMMODITY_FRAME] < 0.01f) return;
-    float deliver = sp->ship.cargo[COMMODITY_FRAME];
-    float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
-    float accepted = fminf(deliver, needed);
-    sp->ship.cargo[COMMODITY_FRAME] -= accepted;
-    st->scaffold_progress += accepted / SCAFFOLD_MATERIAL_NEEDED;
-    /* Consume the matching manifest units so the named identity can't
-     * be sold or transferred again from the same hold. */
-    int whole = (int)floorf(accepted + 0.0001f);
-    if (whole > 0)
-        manifest_consume_by_commodity(&sp->ship.manifest, COMMODITY_FRAME, whole);
-    SIM_LOG("[sim] player %d delivered %.1f frames to scaffold %d (progress %.0f%%)\n",
+    int held = ship_finished_count(&sp->ship, COMMODITY_FRAME);
+    if (held <= 0) return;
+    float needed_f = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
+    int needed = (int)ceilf(needed_f - 0.0001f);
+    if (needed <= 0) return;
+    int request = held < needed ? held : needed;
+    int accepted = ship_finished_drain(&sp->ship, COMMODITY_FRAME, request);
+    if (accepted <= 0) return;
+    st->scaffold_progress += (float)accepted / SCAFFOLD_MATERIAL_NEEDED;
+    SIM_LOG("[sim] player %d delivered %d frames to scaffold %d (progress %.0f%%)\n",
             sp->id, accepted, sp->current_station, st->scaffold_progress * 100.0f);
     if (st->scaffold_progress >= 1.0f) {
         activate_outpost(w, sp->current_station);
@@ -1411,8 +1409,8 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
      * retail already if buying here); any other dock charges
      * LABOR_FEE_PER_HP for the install. Partial repair is allowed if
      * neither source has enough kits. */
-    int kits_in_cargo  = (int)floorf(sp->ship.cargo[COMMODITY_REPAIR_KIT] + 0.0001f);
-    int kits_at_station = (int)floorf(st->_inventory_cache[COMMODITY_REPAIR_KIT] + 0.0001f);
+    int kits_in_cargo  = ship_finished_count(&sp->ship, COMMODITY_REPAIR_KIT);
+    int kits_at_station = station_finished_count(st, COMMODITY_REPAIR_KIT);
     int hp_needed       = (int)ceilf(missing);
     int hp_apply        = hp_needed;
     if (hp_apply > kits_in_cargo + kits_at_station)
@@ -1422,30 +1420,16 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
     int from_cargo   = (hp_apply < kits_in_cargo) ? hp_apply : kits_in_cargo;
     int from_station = hp_apply - from_cargo;
 
-    /* Drain ship cargo + ship manifest. */
-    if (from_cargo > 0) {
-        sp->ship.cargo[COMMODITY_REPAIR_KIT] -= (float)from_cargo;
-        if (sp->ship.cargo[COMMODITY_REPAIR_KIT] < 0.0f)
-            sp->ship.cargo[COMMODITY_REPAIR_KIT] = 0.0f;
-        manifest_consume_by_commodity(&sp->ship.manifest,
-                                      COMMODITY_REPAIR_KIT, from_cargo);
-    }
-
-    /* Drain station inventory + station manifest for the fallback. */
-    if (from_station > 0) {
-        st->_inventory_cache[COMMODITY_REPAIR_KIT] -= (float)from_station;
-        if (st->_inventory_cache[COMMODITY_REPAIR_KIT] < 0.0f)
-            st->_inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
-        manifest_consume_by_commodity(&st->manifest,
-                                      COMMODITY_REPAIR_KIT, from_station);
-        st->manifest_dirty = true;
-    }
+    int drained_cargo = ship_finished_drain(&sp->ship, COMMODITY_REPAIR_KIT, from_cargo);
+    int drained_station = station_finished_drain(st, COMMODITY_REPAIR_KIT, from_station);
+    int actual_apply = drained_cargo + drained_station;
+    if (actual_apply <= 0) return;
 
     /* Cost = station retail on station-sourced kits + labor at non-shipyard. */
-    float station_kit_cost = (float)from_station
+    float station_kit_cost = (float)drained_station
                            * station_sell_price(st, COMMODITY_REPAIR_KIT);
     bool is_shipyard = station_has_module(st, MODULE_SHIPYARD);
-    float labor_cost = is_shipyard ? 0.0f : (float)hp_apply * LABOR_FEE_PER_HP;
+    float labor_cost = is_shipyard ? 0.0f : (float)actual_apply * LABOR_FEE_PER_HP;
     float cost = ceilf(station_kit_cost + labor_cost);
     if (cost > 0.0f) {
         if (sp->pubkey_set) {
@@ -1455,9 +1439,9 @@ static void try_repair_ship(world_t *w, server_player_t *sp) {
         }
     }
 
-    sp->ship.hull = fminf(max_hull, sp->ship.hull + (float)hp_apply);
+    sp->ship.hull = fminf(max_hull, sp->ship.hull + (float)actual_apply);
     SIM_LOG("[sim] player %d repaired %d HP (%d cargo + %d station kits, %.0f cr)\n",
-            sp->id, hp_apply, from_cargo, from_station, cost);
+            sp->id, actual_apply, drained_cargo, drained_station, cost);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_REPAIR, .player_id = sp->id});
 }
 
@@ -1478,8 +1462,8 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
     product_t required = upgrade_required_product(upgrade);
     commodity_t comm = (commodity_t)(COMMODITY_FRAME + required);
     int units_needed = (int)ceilf(upgrade_product_cost(&sp->ship, upgrade));
-    int in_cargo  = (int)floorf(sp->ship.cargo[comm] + 0.0001f);
-    int at_station = (int)floorf(st->_inventory_cache[comm] + 0.0001f);
+    int in_cargo  = ship_finished_count(&sp->ship, comm);
+    int at_station = station_finished_count(st, comm);
     if (in_cargo + at_station < units_needed) return;
 
     int from_cargo   = (units_needed < in_cargo) ? units_needed : in_cargo;
@@ -1493,17 +1477,9 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
         if (!can_afford) return;
     }
 
-    if (from_cargo > 0) {
-        sp->ship.cargo[comm] -= (float)from_cargo;
-        if (sp->ship.cargo[comm] < 0.0f) sp->ship.cargo[comm] = 0.0f;
-        manifest_consume_by_commodity(&sp->ship.manifest, comm, from_cargo);
-    }
-    if (from_station > 0) {
-        st->_inventory_cache[comm] -= (float)from_station;
-        if (st->_inventory_cache[comm] < 0.0f) st->_inventory_cache[comm] = 0.0f;
-        manifest_consume_by_commodity(&st->manifest, comm, from_station);
-        st->manifest_dirty = true;
-    }
+    int drained_cargo = ship_finished_drain(&sp->ship, comm, from_cargo);
+    int drained_station = station_finished_drain(st, comm, from_station);
+    if (drained_cargo + drained_station < units_needed) return;
 
     switch (upgrade) {
     case SHIP_UPGRADE_MINING:  sp->ship.mining_level++;  break;
@@ -1512,8 +1488,8 @@ static void try_apply_ship_upgrade(world_t *w, server_player_t *sp, ship_upgrade
     default: break;
     }
     SIM_LOG("[sim] player %d upgraded %d to level %d (%d cargo + %d dock kits, %.0f cr)\n",
-           sp->id, (int)upgrade, ship_upgrade_level(&sp->ship, upgrade),
-           from_cargo, from_station, credit_cost);
+            sp->id, (int)upgrade, ship_upgrade_level(&sp->ship, upgrade),
+            drained_cargo, drained_station, credit_cost);
     emit_event(w, (sim_event_t){.type = SIM_EVENT_UPGRADE, .player_id = sp->id, .upgrade.upgrade = upgrade});
 }
 
@@ -3944,8 +3920,9 @@ static void step_contracts(world_t *w, float dt) {
             && station_has_module(st, MODULE_DOCK)
             && !station_has_module(st, MODULE_SHIPYARD)) {
             const float kit_import_threshold = REPAIR_KIT_STOCK_CAP * 0.25f;
-            if (st->_inventory_cache[COMMODITY_REPAIR_KIT] < kit_import_threshold) {
-                float deficit = REPAIR_KIT_STOCK_CAP - st->_inventory_cache[COMMODITY_REPAIR_KIT];
+            float kits_on_hand = (float)station_finished_count(st, COMMODITY_REPAIR_KIT);
+            if (kits_on_hand < kit_import_threshold) {
+                float deficit = REPAIR_KIT_STOCK_CAP - kits_on_hand;
                 float seed = st->base_price[COMMODITY_REPAIR_KIT] > 0.0f
                              ? st->base_price[COMMODITY_REPAIR_KIT]
                              : 6.0f;

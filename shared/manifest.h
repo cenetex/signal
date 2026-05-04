@@ -45,6 +45,12 @@ int manifest_count_by_commodity(const manifest_t *manifest,
 int manifest_consume_by_commodity(manifest_t *manifest,
                                   commodity_t commodity, int n);
 
+/* Ship-side finished-good helpers. Finished goods live in the manifest;
+ * ship.cargo[c] is a derived compatibility count. */
+int ship_finished_count(const ship_t *ship, commodity_t c);
+void ship_finished_sync(ship_t *ship, commodity_t c);
+int ship_finished_drain(ship_t *ship, commodity_t c, int n);
+
 void ship_cleanup(ship_t *ship);
 bool ship_manifest_bootstrap(ship_t *ship);
 bool ship_copy(ship_t *dst, const ship_t *src);
@@ -121,6 +127,11 @@ void manifest_migrate_quantity(manifest_t *manifest);
  * actually minted (may be < n if manifest cap is hit). */
 int station_finished_mint(station_t *st, commodity_t c, int n,
                           const uint8_t origin[8]);
+
+/* Count/sync helpers for callers that need manifest-authoritative reads
+ * or that consumed specific manifest entries themselves. */
+int station_finished_count(const station_t *st, commodity_t c);
+void station_finished_sync(station_t *st, commodity_t c);
 
 /* Drain up to `n` units of finished `c` from the manifest (FIFO) and
  * decrement the float cache by the same number. Returns units drained. */

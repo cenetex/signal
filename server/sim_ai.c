@@ -1161,20 +1161,23 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             }
             /* Hauler also delivers ingots to scaffold station and modules */
             if (dest->scaffold || dest->module_count > 0) {
-                /* Feed from station inventory into scaffolds */
-                ship_t hauler_ship = {0};
-                for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
-                    hauler_ship.cargo[c] = dest->_inventory_cache[c];
                 if (dest->scaffold) {
-                    float needed = SCAFFOLD_MATERIAL_NEEDED * (1.0f - dest->scaffold_progress);
-                    float deliver = fminf(hauler_ship.cargo[COMMODITY_FRAME], needed);
-                    if (deliver > 0.01f) {
-                        hauler_ship.cargo[COMMODITY_FRAME] -= deliver;
-                        dest->scaffold_progress += deliver / SCAFFOLD_MATERIAL_NEEDED;
+                    float needed_f = SCAFFOLD_MATERIAL_NEEDED * (1.0f - dest->scaffold_progress);
+                    int held = station_finished_count(dest, COMMODITY_FRAME);
+                    int needed = (int)ceilf(needed_f - 0.0001f);
+                    if (needed < 0) needed = 0;
+                    int request = held < needed ? held : needed;
+                    int delivered = station_finished_drain(dest, COMMODITY_FRAME, request);
+                    if (delivered > 0) {
+                        dest->scaffold_progress += (float)delivered / SCAFFOLD_MATERIAL_NEEDED;
                         if (dest->scaffold_progress >= 1.0f)
                             activate_outpost(w, npc->dest_station);
                     }
                 }
+                /* Feed remaining station inventory into scaffolded modules. */
+                ship_t hauler_ship = {0};
+                for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
+                    hauler_ship.cargo[c] = dest->_inventory_cache[c];
                 /* Hauler is paid via the contract path elsewhere; the
                  * build-material payout returned here is discarded. NPC
                  * economic identity tracking happens through
@@ -1233,32 +1236,30 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             float cur_hull = ship ? ship->hull : npc->hull;
             if (cur_hull < max_h - 0.5f
                 && station_has_module(home, MODULE_DOCK)) {
-                int kits = (int)floorf(home->_inventory_cache[COMMODITY_REPAIR_KIT] + 0.0001f);
+                int kits = station_finished_count(home, COMMODITY_REPAIR_KIT);
                 int missing = (int)ceilf(max_h - cur_hull);
                 int apply = kits < missing ? kits : missing;
                 if (apply > 0) {
-                    float kit_price = home->base_price[COMMODITY_REPAIR_KIT];
-                    if (kit_price < 0.01f) kit_price = 6.0f;
-                    float cost = (float)apply * kit_price;
-                    /* Force-debit -> balance can go negative, station
-                     * still gets credited. Hauler pays it back over
-                     * subsequent deliveries. */
-                    ledger_force_debit(home, npc->session_token, cost, ship);
-                    home->_inventory_cache[COMMODITY_REPAIR_KIT] -= (float)apply;
-                    if (home->_inventory_cache[COMMODITY_REPAIR_KIT] < 0.0f)
-                        home->_inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
-                    if (manifest_consume_by_commodity(&home->manifest,
-                                                     COMMODITY_REPAIR_KIT, apply) > 0)
-                        home->manifest_dirty = true;
-                    /* Write through ship layer; reverse-mirror at
-                     * end of the NPC tick pushes the value back to
-                     * npc->hull. */
-                    if (ship) {
-                        ship->hull += (float)apply;
-                        if (ship->hull > max_h) ship->hull = max_h;
-                    } else {
-                        npc->hull += (float)apply;
-                        if (npc->hull > max_h) npc->hull = max_h;
+                    int drained = station_finished_drain(home, COMMODITY_REPAIR_KIT, apply);
+                    if (drained > 0) {
+                        apply = drained;
+                        float kit_price = home->base_price[COMMODITY_REPAIR_KIT];
+                        if (kit_price < 0.01f) kit_price = 6.0f;
+                        float cost = (float)apply * kit_price;
+                        /* Force-debit -> balance can go negative, station
+                         * still gets credited. Hauler pays it back over
+                         * subsequent deliveries. */
+                        ledger_force_debit(home, npc->session_token, cost, ship);
+                        /* Write through ship layer; reverse-mirror at
+                         * end of the NPC tick pushes the value back to
+                         * npc->hull. */
+                        if (ship) {
+                            ship->hull += (float)apply;
+                            if (ship->hull > max_h) ship->hull = max_h;
+                        } else {
+                            npc->hull += (float)apply;
+                            if (npc->hull > max_h) npc->hull = max_h;
+                        }
                     }
                 }
             }
@@ -1270,14 +1271,12 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
              * trip, and the inter-station chain stalls. Force-debit so
              * the hauler is on the hook for upkeep just like a repair. */
             if (station_has_module(home, MODULE_DOCK)
-                && home->_inventory_cache[COMMODITY_REPAIR_KIT] >= 1.0f) {
+                && station_finished_count(home, COMMODITY_REPAIR_KIT) >= 1) {
+                if (station_finished_drain(home, COMMODITY_REPAIR_KIT, 1) <= 0)
+                    break;
                 float kit_price = home->base_price[COMMODITY_REPAIR_KIT];
                 if (kit_price < 0.01f) kit_price = 6.0f;
                 ledger_force_debit(home, npc->session_token, kit_price, ship);
-                home->_inventory_cache[COMMODITY_REPAIR_KIT] -= 1.0f;
-                if (manifest_consume_by_commodity(&home->manifest,
-                                                  COMMODITY_REPAIR_KIT, 1) > 0)
-                    home->manifest_dirty = true;
             }
         }
         break;

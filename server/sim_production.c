@@ -72,23 +72,29 @@ static bool station_manifest_push_finished(station_t *st, const cargo_unit_t *un
     if (st->manifest.cap == 0 || st->manifest.units == NULL) {
         if (!station_manifest_bootstrap(st)) return false;
     }
-    if (st->manifest.count >= st->manifest.cap) return false;
-    return manifest_push(&st->manifest, unit);
+    if (manifest_push(&st->manifest, unit)) {
+        st->manifest_dirty = true;
+        return true;
+    }
+    return false;
 }
 
 static bool manifest_unit_matches_recipe_input(const cargo_unit_t *unit,
                                                commodity_t commodity) {
+    cargo_kind_t kind;
+    if (!cargo_kind_for_commodity(commodity, &kind)) return false;
     return unit != NULL &&
-           (cargo_kind_t)unit->kind == CARGO_KIND_INGOT &&
+           (cargo_kind_t)unit->kind == kind &&
            (commodity_t)unit->commodity == commodity;
 }
 
 static bool station_manifest_select_recipe_inputs(const station_t *st,
                                                   const recipe_def_t *recipe,
-                                                  uint16_t out_indices[2],
-                                                  cargo_unit_t out_inputs[2]) {
+                                                  uint16_t out_indices[RECIPE_INPUT_MAX],
+                                                  cargo_unit_t out_inputs[RECIPE_INPUT_MAX]) {
     if (!st || !recipe || !out_indices || !out_inputs ||
-        !st->manifest.units || recipe->input_count == 0 || recipe->input_count > 2) {
+        !st->manifest.units || recipe->input_count == 0 ||
+        recipe->input_count > RECIPE_INPUT_MAX) {
         return false;
     }
 
@@ -121,26 +127,36 @@ static bool station_manifest_select_recipe_inputs(const station_t *st,
 static bool station_manifest_consume_selected_inputs(station_t *st,
                                                      const uint16_t *indices,
                                                      size_t count) {
-    if (!st || !indices || count == 0 || count > 2) return false;
+    uint16_t sorted[RECIPE_INPUT_MAX] = {0};
+    if (!st || !indices || count == 0 || count > RECIPE_INPUT_MAX) return false;
     if (!st->manifest.units) return false;
 
-    if (count == 2) {
-        uint16_t hi = indices[0] > indices[1] ? indices[0] : indices[1];
-        uint16_t lo = indices[0] > indices[1] ? indices[1] : indices[0];
-        return manifest_remove(&st->manifest, hi, NULL) &&
-               manifest_remove(&st->manifest, lo, NULL);
+    for (size_t i = 0; i < count; i++) sorted[i] = indices[i];
+    for (size_t i = 0; i < count; i++) {
+        for (size_t j = i + 1; j < count; j++) {
+            if (sorted[j] > sorted[i]) {
+                uint16_t tmp = sorted[i];
+                sorted[i] = sorted[j];
+                sorted[j] = tmp;
+            }
+        }
     }
-
-    return manifest_remove(&st->manifest, indices[0], NULL);
+    for (size_t i = 0; i < count; i++) {
+        if (!manifest_remove(&st->manifest, sorted[i], NULL)) return false;
+    }
+    return true;
 }
 
 static bool station_manifest_craft_product(world_t *w, station_t *st,
                                            recipe_id_t recipe_id) {
     const recipe_def_t *recipe = recipe_get(recipe_id);
-    uint16_t indices[2] = {0, 0};
-    cargo_unit_t inputs[2] = {{0}};
+    uint16_t indices[RECIPE_INPUT_MAX] = {0};
+    cargo_unit_t inputs[RECIPE_INPUT_MAX] = {{0}};
     cargo_unit_t product = {0};
 
+    /* The signed craft payload currently records two input pubs. Keep the
+     * generic craft path to two-input producer recipes; the repair-kit fab
+     * handles its three-input recipe directly below. */
     if (!st || !recipe || recipe->input_count == 0 || recipe->input_count > 2) return false;
     if (st->manifest.cap == 0 || st->manifest.units == NULL) {
         if (!station_manifest_bootstrap(st)) return false;
@@ -1179,7 +1195,7 @@ void step_dock_repair_kit_fab(world_t *w, float dt) {
         station_t *st = &w->stations[s];
         if (!station_exists(st)) continue;
         if (!station_has_module(st, MODULE_SHIPYARD)) continue;
-        if (st->_inventory_cache[COMMODITY_REPAIR_KIT] >= REPAIR_KIT_STOCK_CAP) continue;
+        if ((float)station_finished_count(st, COMMODITY_REPAIR_KIT) >= REPAIR_KIT_STOCK_CAP) continue;
 
         st->repair_kit_fab_timer += dt;
         if (st->repair_kit_fab_timer < REPAIR_KIT_FAB_PERIOD) continue;
@@ -1187,18 +1203,32 @@ void step_dock_repair_kit_fab(world_t *w, float dt) {
         /* All three inputs required. If any are missing, hold the timer
          * at the period (don't keep accumulating) so the next batch
          * fires the moment supply arrives. */
-        if (st->_inventory_cache[COMMODITY_FRAME] < 1.0f ||
-            st->_inventory_cache[COMMODITY_LASER_MODULE] < 1.0f ||
-            st->_inventory_cache[COMMODITY_TRACTOR_MODULE] < 1.0f) {
+        const recipe_def_t *recipe = recipe_get(RECIPE_REPAIR_KIT_FAB);
+        uint16_t indices[RECIPE_INPUT_MAX] = {0};
+        cargo_unit_t inputs[RECIPE_INPUT_MAX] = {{0}};
+        if (st->manifest.cap == 0 && !station_manifest_bootstrap(st)) {
+            st->repair_kit_fab_timer = REPAIR_KIT_FAB_PERIOD;
+            continue;
+        }
+        if (!recipe || !station_manifest_select_recipe_inputs(st, recipe, indices, inputs)) {
             st->repair_kit_fab_timer = REPAIR_KIT_FAB_PERIOD;
             continue;
         }
 
-        /* Consume one of each from the float + manifest, in lockstep
-         * with the manifest-truth invariant. */
-        st->_inventory_cache[COMMODITY_FRAME]          -= 1.0f;
-        st->_inventory_cache[COMMODITY_LASER_MODULE]   -= 1.0f;
-        st->_inventory_cache[COMMODITY_TRACTOR_MODULE] -= 1.0f;
+        int room = (int)floorf(REPAIR_KIT_STOCK_CAP + 0.0001f) -
+                   station_finished_count(st, COMMODITY_REPAIR_KIT);
+        int batch = (int)floorf(REPAIR_KIT_PER_BATCH + 0.0001f);
+        int int_minted = room < batch ? room : batch;
+        if (int_minted <= 0) continue;
+
+        if (!station_manifest_consume_selected_inputs(st, indices, recipe->input_count)) {
+            st->repair_kit_fab_timer = REPAIR_KIT_FAB_PERIOD;
+            continue;
+        }
+        station_finished_sync(st, COMMODITY_FRAME);
+        station_finished_sync(st, COMMODITY_LASER_MODULE);
+        station_finished_sync(st, COMMODITY_TRACTOR_MODULE);
+
         /* Light the SHIPYARD's tractor beam. The kit-fab path doesn't
          * go through the producer-recipe pipeline that already pulses
          * other producers, so set it here. */
@@ -1208,36 +1238,23 @@ void step_dock_repair_kit_fab(world_t *w, float dt) {
                 st->module_active_pulse[m] = 1.0f;
             }
         }
-        manifest_consume_by_commodity(&st->manifest, COMMODITY_FRAME, 1);
-        manifest_consume_by_commodity(&st->manifest, COMMODITY_LASER_MODULE, 1);
-        manifest_consume_by_commodity(&st->manifest, COMMODITY_TRACTOR_MODULE, 1);
-
-        /* Mint kits — clamp at the cap. Each minted unit gets a
-         * legacy-migrate manifest entry so the TRADE picker can see
-         * them and the per-station origin stays traceable. */
-        float room = REPAIR_KIT_STOCK_CAP - st->_inventory_cache[COMMODITY_REPAIR_KIT];
-        float minted = fminf(REPAIR_KIT_PER_BATCH, room);
-        st->_inventory_cache[COMMODITY_REPAIR_KIT] += minted;
-        int int_minted = (int)floorf(minted + 0.0001f);
-        if (int_minted > 0) {
-            uint8_t origin[8] = { 'D','O','C','K','F','A','B','0' };
-            origin[7] = (uint8_t)('0' + (s % 10));
-            for (int k = 0; k < int_minted; k++) {
-                if (st->manifest.cap == 0 && !station_manifest_bootstrap(st)) break;
-                if (st->manifest.count >= st->manifest.cap) break;
-                cargo_unit_t unit = {0};
-                if (!hash_legacy_migrate_unit(origin, COMMODITY_REPAIR_KIT,
-                                              (uint16_t)k, &unit))
-                    continue;
-                /* Stamp the recipe so future inspectors can see this is a
-                 * dock-fab kit rather than a save-migration leftover. */
-                unit.recipe_id = (uint16_t)RECIPE_REPAIR_KIT_FAB;
-                if (!manifest_push(&st->manifest, &unit)) break;
-            }
-            st->manifest_dirty = true;
+        /* Mint kits as real recipe products. The output multiplier lives
+         * in this production loop; each kit's pub key binds back to the
+         * same frame/laser/tractor input set through hash_product. */
+        int actual_minted = 0;
+        for (int k = 0; k < int_minted; k++) {
+            cargo_unit_t unit = {0};
+            if (!hash_product(RECIPE_REPAIR_KIT_FAB, inputs, recipe->input_count,
+                              (uint16_t)k, &unit))
+                break;
+            unit.origin_station = (uint8_t)s;
+            if (!station_manifest_push_finished(st, &unit)) break;
+            actual_minted++;
         }
+        if (actual_minted > 0)
+            station_finished_sync(st, COMMODITY_REPAIR_KIT);
         st->repair_kit_fab_timer = 0.0f;
         SIM_LOG("[shipyard-fab] station %d minted %d kits (1 frame + 1 laser + 1 tractor consumed)\n",
-                s, int_minted);
+                s, actual_minted);
     }
 }

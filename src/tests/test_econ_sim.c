@@ -628,10 +628,10 @@ TEST(test_e2e_kit_chain_converges) {
     }
     ASSERT(shipyard >= 0);
     /* Big buffer of inputs so fab never starves. */
-    w->stations[shipyard]._inventory_cache[COMMODITY_FRAME]          = 50.0f;
-    w->stations[shipyard]._inventory_cache[COMMODITY_LASER_MODULE]   = 50.0f;
-    w->stations[shipyard]._inventory_cache[COMMODITY_TRACTOR_MODULE] = 50.0f;
-    w->stations[shipyard]._inventory_cache[COMMODITY_REPAIR_KIT]     = 0.0f;
+    ASSERT(test_set_station_finished_units(&w->stations[shipyard], COMMODITY_FRAME, 50));
+    ASSERT(test_set_station_finished_units(&w->stations[shipyard], COMMODITY_LASER_MODULE, 50));
+    ASSERT(test_set_station_finished_units(&w->stations[shipyard], COMMODITY_TRACTOR_MODULE, 50));
+    ASSERT(test_set_station_finished_units(&w->stations[shipyard], COMMODITY_REPAIR_KIT, 0));
     w->stations[shipyard].repair_kit_fab_timer = 0.0f;
 
     int ticks = (int)(300.0f / SIM_DT);
@@ -669,7 +669,8 @@ TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
     }
     ASSERT(shipyard >= 0);
     /* Stock the dock with kits so the auto-repair has something to drain. */
-    w->stations[shipyard]._inventory_cache[COMMODITY_REPAIR_KIT] = 100.0f;
+    ASSERT(test_set_station_finished_units(&w->stations[shipyard],
+                                           COMMODITY_REPAIR_KIT, 100));
 
     /* Pick the first hauler that's currently homed at the shipyard,
      * wound it, and drop it just outside the dock approach radius. */
@@ -739,7 +740,8 @@ TEST(test_e2e_kit_import_contract_lifecycle) {
     ASSERT(prospect >= 0);
 
     /* Phase 1: drain kits and run until a kit import contract is issued. */
-    w->stations[prospect]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
+    ASSERT(test_set_station_finished_units(&w->stations[prospect],
+                                           COMMODITY_REPAIR_KIT, 0));
     bool found_open = false;
     for (int i = 0; i < (int)(120.0f / SIM_DT); i++) {
         world_sim_step(w, SIM_DT);
@@ -762,7 +764,9 @@ TEST(test_e2e_kit_import_contract_lifecycle) {
      * higher bound is the only stable closed state. The fact that
      * those two thresholds don't agree is a real bug worth a separate
      * PR; this test pins current behaviour for now. */
-    w->stations[prospect]._inventory_cache[COMMODITY_REPAIR_KIT] = REPAIR_KIT_STOCK_CAP * 0.5f;
+    ASSERT(test_set_station_finished_units(&w->stations[prospect],
+                                           COMMODITY_REPAIR_KIT,
+                                           (int)(REPAIR_KIT_STOCK_CAP * 0.5f)));
     bool found_after_fill = true;
     for (int i = 0; i < (int)(60.0f / SIM_DT); i++) {
         world_sim_step(w, SIM_DT);

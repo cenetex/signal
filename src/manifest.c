@@ -123,18 +123,29 @@ static mining_grade_t min_input_grade(const cargo_unit_t *inputs, size_t count) 
     return grade;
 }
 
+static bool finished_good_commodity(commodity_t c) {
+    return (int)c >= (int)COMMODITY_RAW_ORE_COUNT &&
+           (int)c < (int)COMMODITY_COUNT;
+}
+
 static bool recipe_inputs_match(const recipe_def_t *recipe,
                                 const cargo_unit_t *inputs,
                                 size_t input_count) {
-    bool matched[2] = { false, false };
+    bool matched[RECIPE_INPUT_MAX] = { false };
 
-    if (!recipe || input_count != recipe->input_count || input_count > 2) return false;
+    if (!recipe || !inputs ||
+        input_count != recipe->input_count ||
+        input_count > RECIPE_INPUT_MAX) {
+        return false;
+    }
     for (size_t i = 0; i < input_count; i++) {
-        if ((cargo_kind_t)inputs[i].kind != CARGO_KIND_INGOT) return false;
+        cargo_kind_t input_kind = (cargo_kind_t)inputs[i].kind;
+        commodity_t input_commodity = (commodity_t)inputs[i].commodity;
+        if (!cargo_kind_matches_commodity(input_kind, input_commodity)) return false;
         bool found = false;
         for (size_t j = 0; j < input_count; j++) {
             if (matched[j]) continue;
-            if ((commodity_t)inputs[i].commodity != recipe->input_commodities[j]) continue;
+            if (input_commodity != recipe->input_commodities[j]) continue;
             matched[j] = true;
             found = true;
             break;
@@ -620,8 +631,7 @@ static const uint8_t kStationDefaultOrigin[8] = { 'S','T','A','T','I','O','N',' 
 int station_finished_mint(station_t *st, commodity_t c, int n,
                           const uint8_t origin[8]) {
     if (!st || n <= 0) return 0;
-    if ((int)c < (int)COMMODITY_RAW_ORE_COUNT) return 0;
-    if ((int)c >= (int)COMMODITY_COUNT) return 0;
+    if (!finished_good_commodity(c)) return 0;
     cargo_kind_t kind;
     if (!cargo_kind_for_commodity(c, &kind)) return 0;
     if (st->manifest.cap == 0 && !station_manifest_bootstrap(st)) return 0;
@@ -633,7 +643,6 @@ int station_finished_mint(station_t *st, commodity_t c, int n,
      * units. */
     uint16_t base_idx = st->manifest.count;
     for (int i = 0; i < n; i++) {
-        if (st->manifest.count >= st->manifest.cap) break;
         cargo_unit_t unit = {0};
         if (!hash_legacy_migrate_unit(use_origin, c,
                                       (uint16_t)(base_idx + i), &unit)) continue;
@@ -660,17 +669,45 @@ int station_finished_mint(station_t *st, commodity_t c, int n,
     return minted;
 }
 
+int ship_finished_count(const ship_t *ship, commodity_t c) {
+    if (!ship || !finished_good_commodity(c)) return 0;
+    return manifest_count_by_commodity(&ship->manifest, c);
+}
+
+void ship_finished_sync(ship_t *ship, commodity_t c) {
+    if (!ship || !finished_good_commodity(c)) return;
+    ship->cargo[c] = (float)manifest_count_by_commodity(&ship->manifest, c);
+}
+
+int ship_finished_drain(ship_t *ship, commodity_t c, int n) {
+    if (!ship || n <= 0 || !finished_good_commodity(c)) return 0;
+    int drained = manifest_consume_by_commodity(&ship->manifest, c, n);
+    if (drained > 0) ship_finished_sync(ship, c);
+    return drained;
+}
+
+int station_finished_count(const station_t *st, commodity_t c) {
+    if (!st || !finished_good_commodity(c)) return 0;
+    return manifest_count_by_commodity(&st->manifest, c);
+}
+
+void station_finished_sync(station_t *st, commodity_t c) {
+    if (!st || !finished_good_commodity(c)) return;
+    float v = st->_inventory_cache[c];
+    float floor_v = floorf(v + 0.0001f);
+    float frac = v - floor_v;
+    if (frac < 0.0f) frac = 0.0f;
+    if (frac >= 1.0f) frac = 0.0f;
+    st->_inventory_cache[c] = (float)manifest_count_by_commodity(&st->manifest, c) + frac;
+    st->manifest_dirty = true;
+    assert_finished_invariant(st, c);
+}
+
 int station_finished_drain(station_t *st, commodity_t c, int n) {
     if (!st || n <= 0) return 0;
-    if ((int)c < (int)COMMODITY_RAW_ORE_COUNT) return 0;
-    if ((int)c >= (int)COMMODITY_COUNT) return 0;
+    if (!finished_good_commodity(c)) return 0;
     int drained = manifest_consume_by_commodity(&st->manifest, c, n);
-    if (drained > 0) {
-        float frac = st->_inventory_cache[c] - floorf(st->_inventory_cache[c]);
-        st->_inventory_cache[c] = (float)manifest_count_by_commodity(&st->manifest, c) + frac;
-        if (st->_inventory_cache[c] < 0.0f) st->_inventory_cache[c] = 0.0f;
-        st->manifest_dirty = true;
-    }
+    if (drained > 0) station_finished_sync(st, c);
     assert_finished_invariant(st, c);
     return drained;
 }
@@ -678,8 +715,7 @@ int station_finished_drain(station_t *st, commodity_t c, int n) {
 int station_finished_accumulate(station_t *st, commodity_t c, float amount,
                                 const uint8_t origin[8]) {
     if (!st || amount <= 0.0f) return 0;
-    if ((int)c < (int)COMMODITY_RAW_ORE_COUNT) return 0;
-    if ((int)c >= (int)COMMODITY_COUNT) return 0;
+    if (!finished_good_commodity(c)) return 0;
 
     /* Compute how many integer crossings this addition triggers. The
      * float currently holds: (manifest count) + (fractional residue).
