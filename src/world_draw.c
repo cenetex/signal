@@ -502,17 +502,18 @@ static void draw_module_shape(module_type_t type, float mr, float mg, float mb, 
     /* ---- FURNACE: Circle ---- */
     case MODULE_FURNACE: {
         /* Filled circle hull */
-        fill_circle_local(0, 0, 28, 20, mr*0.30f, mg*0.30f, mb*0.30f, alpha);
-        /* Ore-type accent glow — warm layered halo */
-        fill_circle_local(0, 0, 24, 16, mr*0.12f, mg*0.04f, mb*0.02f, alpha*0.4f);
-        fill_circle_local(0, 0, 18, 14, mr*0.25f, mg*0.10f, mb*0.04f, alpha*0.5f);
-        fill_circle_local(0, 0, 12, 12, mr*0.50f, mg*0.20f, mb*0.08f, alpha*0.6f);
-        fill_circle_local(0, 0, 7,  10, mr*0.80f, mg*0.40f, mb*0.15f, alpha*0.75f);
-        fill_circle_local(0, 0, 3,  8,  mr*1.0f,  mg*0.70f, mb*0.30f, alpha*0.95f);
+        fill_circle_local(0, 0, 28, 20, mr*0.42f, mg*0.42f, mb*0.42f, alpha);
+        /* Ore-type accent glow. Keep this commodity colored, not generic
+         * orange, so furnace role matches the hopper resource at a glance. */
+        fill_circle_local(0, 0, 24, 16, mr*0.20f, mg*0.20f, mb*0.20f, alpha*0.45f);
+        fill_circle_local(0, 0, 18, 14, mr*0.36f, mg*0.30f, mb*0.26f, alpha*0.55f);
+        fill_circle_local(0, 0, 12, 12, mr*0.62f, mg*0.48f, mb*0.34f, alpha*0.65f);
+        fill_circle_local(0, 0, 7,  10, mr*0.90f, mg*0.66f, mb*0.42f, alpha*0.80f);
+        fill_circle_local(0, 0, 3,  8,  mr*1.0f,  mg*0.82f, mb*0.56f, alpha*0.95f);
         /* Bright hot core dot */
         fill_circle_local(0, 0, 1.5f, 6, 1.0f, 0.95f, 0.7f, alpha*0.8f);
         /* Bold outline */
-        outline_ngon(20, 28, mr*0.7f, mg*0.7f, mb*0.7f, alpha);
+        outline_ngon(20, 29, mr*0.95f, mg*0.95f, mb*0.95f, alpha);
         break;
     }
 
@@ -628,13 +629,21 @@ static void draw_hopper_shape(float br, float bg, float bb,
                               float alpha) {
     /* Triangle pointing outward (-Y) = funnel mouth. The body carries the
      * resource-family base; the rim/core carries the accent. */
-    sgl_c4f(br * 0.34f, bg * 0.34f, bb * 0.34f, alpha);
+    sgl_c4f(br * 0.46f, bg * 0.46f, bb * 0.46f, alpha);
     sgl_begin_triangles();
     sgl_v2f(-32, -20); sgl_v2f(32, -20); sgl_v2f(0, 28);
     sgl_end();
 
+    /* Large inset keeps ore hoppers visibly "full resource" instead of
+     * reading as a dark generic triangle at station scale. */
+    sgl_c4f(br * 0.82f, bg * 0.82f, bb * 0.82f, alpha * 0.72f);
+    sgl_begin_triangles();
+    sgl_v2f(-22, -14); sgl_v2f(22, -14); sgl_v2f(0, 18);
+    sgl_end();
+
     sgl_c4f(ar * 0.95f, ag * 0.95f, ab * 0.95f, alpha);
     fill_quad(-32, -22, 32, -22, 32, -18, -32, -18);
+    fill_quad(-5, -15, 5, -15, 4, 15, -4, 15);
 
     fill_circle_local(0, 0, 8, 8, ar * 0.7f, ag * 0.7f, ab * 0.7f, alpha * 0.26f);
     fill_circle_local(0, 0, 4, 6, ar * 1.0f, ag * 1.0f, ab * 1.0f, alpha * 0.42f);
@@ -650,9 +659,48 @@ static void draw_hopper_shape(float br, float bg, float bb,
     sgl_end();
 }
 
+static void draw_layout_warning_outline(module_type_t type,
+                                        station_layout_status_t status,
+                                        float pulse) {
+    if (status == STATION_LAYOUT_OK) return;
+
+    float wr = 1.0f, wg = 0.25f, wb = 0.10f;
+    if (status == STATION_LAYOUT_MISSING_OUTPUT_HOPPER) {
+        wr = 1.0f; wg = 0.72f; wb = 0.18f;
+    }
+    float a = 0.60f + 0.25f * pulse;
+
+    if (type == MODULE_FURNACE) {
+        outline_ngon(20, 35.0f, wr, wg, wb, a);
+    } else if (type == MODULE_FRAME_PRESS ||
+               type == MODULE_LASER_FAB ||
+               type == MODULE_TRACTOR_FAB) {
+        outline_ngon(5, 35.0f, wr, wg, wb, a);
+    } else {
+        sgl_c4f(wr, wg, wb, a);
+        sgl_begin_lines();
+        sgl_v2f(-34, -34); sgl_v2f( 34, -34);
+        sgl_v2f( 34, -34); sgl_v2f( 34,  34);
+        sgl_v2f( 34,  34); sgl_v2f(-34,  34);
+        sgl_v2f(-34,  34); sgl_v2f(-34, -34);
+        sgl_end();
+    }
+
+    /* Broken-connection ticks make the warning legible even when the
+     * module shape color is already warm. */
+    sgl_c4f(wr, wg, wb, a);
+    sgl_begin_lines();
+    sgl_v2f(-38, -30); sgl_v2f(-24, -38);
+    sgl_v2f( 24, -38); sgl_v2f( 38, -30);
+    sgl_v2f(-38,  30); sgl_v2f(-24,  38);
+    sgl_v2f( 24,  38); sgl_v2f( 38,  30);
+    sgl_end();
+}
+
 static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaffold, float progress, vec2 station_center,
                            const station_t *station, commodity_t hopper_commodity,
-                           const station_module_t *module) {
+                           const station_module_t *module,
+                           station_layout_status_t layout_status) {
     float mr, mg, mb;
     float hr = 0.0f, hg = 0.0f, hb = 0.0f;
     bool custom_hopper = false;
@@ -666,9 +714,8 @@ static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaff
         module_color(type, &mr, &mg, &mb);
     }
     (void)station_center;
-    /* Furnaces tint per-ring based on station context (count + ring).
-     * The sim only knows MODULE_FURNACE; the renderer picks ferrite /
-     * cuprite / crystal / chunks-feeder. See station_palette.h. */
+    /* Furnaces tint from their instance commodity tag when present, with
+     * legacy ring fallback for old/untagged stations. See station_palette.h. */
     if (type == MODULE_FURNACE && station != NULL) {
         station_palette_furnace_module_color(station, module, &mr, &mg, &mb);
     }
@@ -729,6 +776,8 @@ static void draw_module_at(vec2 pos, float angle, module_type_t type, bool scaff
         } else {
             draw_module_shape(type, mr, mg, mb, 0.92f);
         }
+        draw_layout_warning_outline(type, layout_status,
+                                    0.5f + 0.5f * sinf(g.world.time * 5.0f + (float)(pos.x + pos.y) * 0.01f));
 
         /* Demand beacon: a docked station that is starving for some
          * commodity outlines its DOCK module in pulsing yellow so
@@ -1023,8 +1072,9 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
         for (int i = 0; i < mod_count; i++) {
             const station_module_t *m = &station->modules[mod_idx[i]];
             float angle = module_angle_ring(station, ring, m->slot);
+            station_layout_status_t layout_status = station_module_layout_status(station, m);
             draw_module_at(positions[i], angle, m->type, m->scaffold, m->build_progress, station->pos, station,
-                           (commodity_t)m->commodity, m);
+                           (commodity_t)m->commodity, m, layout_status);
 
             /* Furnace: glow + red laser beam to target module when smelting */
             if (!m->scaffold && m->type == MODULE_FURNACE) {
