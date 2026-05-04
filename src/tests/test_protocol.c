@@ -50,6 +50,11 @@ TEST(test_roundtrip_batched_player_states) {
     players[3].ship.vel = v2(0.0f, 2.0f);
     players[3].ship.angle = 3.14f;
     players[3].docked = true;
+    players[3].ship.tractor_active = true;
+    players[3].ship.tractor_level = 2;
+    players[3].ship.towed_count = 2;
+    players[3].ship.towed_fragments[0] = 301;
+    players[3].ship.towed_fragments[1] = 1024;
 
     uint8_t buf[2 + MAX_PLAYERS * PLAYER_RECORD_SIZE];
     int len = serialize_all_player_states(buf, players);
@@ -72,6 +77,11 @@ TEST(test_roundtrip_batched_player_states) {
     ASSERT_EQ_INT(p1[0], 3);
     ASSERT_EQ_FLOAT(read_f32_le(&p1[1]), -50.0f, 0.01f);
     ASSERT(p1[21] & 4); /* docked */
+    ASSERT(p1[21] & 16); /* tractor active */
+    ASSERT_EQ_INT(p1[22], 2);
+    ASSERT_EQ_INT(p1[23], 2);
+    ASSERT_EQ_INT((int)((uint16_t)p1[24] | ((uint16_t)p1[25] << 8)), 301);
+    ASSERT_EQ_INT((int)((uint16_t)p1[26] | ((uint16_t)p1[27] << 8)), 1024);
 }
 
 TEST(test_roundtrip_asteroids) {
@@ -408,4 +418,3 @@ void register_protocol_main_tests(void) {
     RUN(test_parse_input_no_action);
     RUN(test_parse_input_action_accumulates);
 }
-

@@ -355,7 +355,7 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
  * [beam_start_x:f32][beam_start_y:f32][beam_end_x:f32][beam_end_y:f32]
  * towed_frags: 10 × uint16_t asteroid index, 0xFFFF = unused. Widened
  * from uint8_t in #285 Phase 3 so slots 255-2047 survive the wire.
- * flags bits: 1=thrust 2=beam_active+hit 4=docked 8=scan 16=tractor 32=beam_ineffective
+ * flags bits: 1=thrust 2=beam_active 4=docked 8=scan 16=tractor 32=beam_ineffective 64=beam_hit
  * Beam coords are server-authoritative — fixes autopilot mining visuals
  * and (eventually) combat hit prediction. */
 #define PLAYER_RECORD_SIZE 67  /* 51 + 16 bytes beam coords */

@@ -2083,11 +2083,20 @@ void draw_remote_players(void) {
             float dy = players[i].y - LOCAL_PLAYER.ship.pos.y;
             if (dx * dx + dy * dy < 4.0f) continue; /* within 2u = us */
         }
-        if (!on_screen(players[i].x, players[i].y, 50.0f)) continue;
         int ci = i % 6;
         float cr = colors[ci][0], cg = colors[ci][1], cb = colors[ci][2];
         bool thrusting = (players[i].flags & 1) != 0;
         bool mining = (players[i].flags & 2) != 0;
+        bool tractor_on = (players[i].flags & 16) != 0;
+        /* Compute tractor range from level (mirrors ship_tractor_range).
+         * Remote snapshots don't carry hull class yet; multiplayer player
+         * ships are currently the default miner hull. */
+        float base_range = 150.0f;
+        float tr = base_range + (float)players[i].tractor_level * SHIP_TRACTOR_UPGRADE_STEP;
+        float render_radius = tractor_on ? tr : 50.0f;
+        if (players[i].towed_count > 0 && render_radius < tr * 1.5f)
+            render_radius = tr * 1.5f;
+        if (!on_screen(players[i].x, players[i].y, render_radius)) continue;
 
         sgl_push_matrix();
         sgl_translate(players[i].x, players[i].y, 0.0f);
@@ -2141,15 +2150,15 @@ void draw_remote_players(void) {
             }
         }
 
-        /* Tractor field circle + towed tethers */
-        bool tractor_on = (players[i].flags & 16) != 0;
-        if (tractor_on && players[i].towed_count > 0) {
+        /* Tractor field circle + towed tethers. Mirror local rendering:
+         * active tractor shows the field even before pickup, and leashed
+         * fragments keep visible tethers after the player releases R. */
+        if (tractor_on || players[i].towed_count > 0) {
             vec2 pos = v2(players[i].x, players[i].y);
-            /* Compute tractor range from level (mirrors ship_tractor_range) */
-            float base_range = 150.0f; /* default hull tractor_range */
-            float tr = base_range + (float)players[i].tractor_level * SHIP_TRACTOR_UPGRADE_STEP;
-            float pulse = 0.28f + (sinf(g.world.time * 7.0f + (float)i * 2.0f) * 0.08f);
-            draw_circle_outline(pos, tr, 40, cr * 0.4f, cg * 0.8f, cb * 0.9f, pulse);
+            if (tractor_on) {
+                float pulse = 0.28f + (sinf(g.world.time * 7.0f + (float)i * 2.0f) * 0.08f);
+                draw_circle_outline(pos, tr, 40, cr * 0.4f, cg * 0.8f, cb * 0.9f, pulse);
+            }
 
             /* Tether lines to towed fragments */
             for (int t = 0; t < players[i].towed_count && t < 10; t++) {
@@ -2157,8 +2166,11 @@ void draw_remote_players(void) {
                 if (raw == 0xFFFFu || raw >= MAX_ASTEROIDS) continue;
                 const asteroid_t *a = &g.world.asteroids[raw];
                 if (!a->active) continue;
+                float rr, rg, rb;
+                grade_tint(a->grade, &rr, &rg, &rb);
                 float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)t * 1.5f);
-                draw_segment(pos, a->pos, cr * 0.4f, cg * 0.8f, cb * 0.7f, tp);
+                if (a->grade >= 2) tp += 0.12f * sinf(g.world.time * 7.0f + (float)t);
+                draw_segment(pos, a->pos, rr, rg, rb, tp);
             }
         }
     }
