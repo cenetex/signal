@@ -88,7 +88,6 @@ typedef struct {
     int            stock;      /* units available on the active side */
     int            unit_price; /* per-unit, already grade-multiplied */
     bool           actionable; /* player can do this transaction right now */
-    bool           is_float_fallback; /* legacy float row (no manifest unit) */
     int            station_stock;   /* this commodity's inventory at station */
     int            station_capacity;/* MAX_PRODUCT_STOCK */
     int            held;            /* player's cargo of this (commodity,grade) */
@@ -104,7 +103,6 @@ typedef struct {
      * next transaction would actually move.
      *
      * Both default to 0 / sentinel for rows with no provenance:
-     * - is_float_fallback rows (legacy bulk path)
      * - rows with no manifest entries
      * - rows whose representative unit has mined_block == 0 (legacy
      *   migrate units, pre-provenance saves)

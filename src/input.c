@@ -75,6 +75,42 @@ void set_notice(const char* fmt, ...) {
     g.notice_timer = 3.0f;
 }
 
+static int input_ship_manifest_count_c(const ship_t *ship, commodity_t commodity) {
+    if (!ship || !ship->manifest.units) return 0;
+    int n = 0;
+    for (uint16_t i = 0; i < ship->manifest.count; i++) {
+        const cargo_unit_t *u = &ship->manifest.units[i];
+        if (u->commodity == (uint8_t)commodity) n++;
+    }
+    return n;
+}
+
+static int input_station_manifest_count_c(const station_t *st, commodity_t commodity) {
+    if (!st) return 0;
+    int s = (int)(st - g.world.stations);
+    if (s < 0 || s >= MAX_STATIONS) return 0;
+    if ((int)commodity < 0 || (int)commodity >= COMMODITY_COUNT) return 0;
+    int total = 0;
+    for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
+        total += (int)g.station_manifest_summary[s][commodity][gi];
+    return total;
+}
+
+static float input_ship_manifest_backed_cargo_volume(const ship_t *ship) {
+    if (!ship) return 0.0f;
+    float total = 0.0f;
+    for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++)
+        total += ship->cargo[c] * commodity_volume((commodity_t)c);
+    if (ship->manifest.units) {
+        for (uint16_t i = 0; i < ship->manifest.count; i++) {
+            const cargo_unit_t *u = &ship->manifest.units[i];
+            if (u->commodity >= COMMODITY_COUNT) continue;
+            total += commodity_volume((commodity_t)u->commodity);
+        }
+    }
+    return total;
+}
+
 bool is_key_down(sapp_keycode key) {
     /* Cast to int both sides so gcc -Werror=enum-compare doesn't flag
      * comparing the sokol enum against KEY_COUNT (different anon enum). */
@@ -399,8 +435,8 @@ static void sample_dock_keys(input_intent_t *intent) {
     if (is_key_pressed(SAPP_KEYCODE_R)) {
         const station_t *st = current_station_ptr();
         int kits_avail =
-            (int)floorf(LOCAL_PLAYER.ship.cargo[COMMODITY_REPAIR_KIT] + 0.0001f) +
-            (st ? (int)floorf(st->_inventory_cache[COMMODITY_REPAIR_KIT] + 0.0001f) : 0);
+            input_ship_manifest_count_c(&LOCAL_PLAYER.ship, COMMODITY_REPAIR_KIT) +
+            input_station_manifest_count_c(st, COMMODITY_REPAIR_KIT);
         float max_hull = ship_max_hull(&LOCAL_PLAYER.ship);
         bool needs_repair = LOCAL_PLAYER.ship.hull < max_hull;
         if (needs_repair && kits_avail <= 0) {
@@ -431,19 +467,28 @@ static void sample_trade_sell_all(input_intent_t *intent) {
 static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
                                  const ship_t *ship, const trade_row_t *row) {
     float price = (float)row->unit_price;
-    float free_volume = ship_cargo_capacity(ship) - ship_total_cargo(ship);
+    float free_volume = ship_cargo_capacity(ship) -
+                        input_ship_manifest_backed_cargo_volume(ship);
     float vol = commodity_volume(row->commodity);
     /* Match server: dense goods buy multi-per-press so a single keystroke
      * fills one cargo unit. */
     int per_press = (vol > FLOAT_EPSILON) ? (int)lroundf(1.0f / vol) : 1;
     if (per_press < 1) per_press = 1;
+    float balance = player_current_balance();
     if (free_volume + FLOAT_EPSILON < vol) { set_notice("Hold full."); return; }
-    if (player_current_balance() < price) { set_notice("Need $%d.", (int)lroundf(price)); return; }
+    if (balance < price) { set_notice("Need $%d.", (int)lroundf(price)); return; }
+    int volume_cap = (vol > FLOAT_EPSILON)
+        ? (int)floorf((free_volume + FLOAT_EPSILON) / vol) : per_press;
+    int funds_cap = (price > 0.01f)
+        ? (int)floorf((balance + FLOAT_EPSILON) / price) : per_press;
+    if (per_press > row->stock) per_press = row->stock;
+    if (per_press > volume_cap) per_press = volume_cap;
+    if (per_press > funds_cap) per_press = funds_cap;
+    if (per_press < 1) return;
 
     intent->buy_product = true;
     intent->buy_commodity = row->commodity;
     intent->buy_grade = row->grade;
-    LOCAL_PLAYER.ship.cargo[row->commodity] += (float)per_press;
     if (!g.multiplayer_enabled) {
         station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
         float total = price * (float)per_press;
@@ -491,7 +536,7 @@ static void sample_trade_picker(input_intent_t *intent) {
          * of (commodity, grade). The bulk [S] hotkey still drains the
          * hold, but clicking a specific row only nibbles the matching
          * cargo_unit so the rest stays on board. */
-        if (LOCAL_PLAYER.ship.cargo[row->commodity] < 0.999f) {
+        if (row->held <= 0) {
             set_notice("Out of %s.", commodity_short_name(row->commodity));
             return;
         }
@@ -500,11 +545,7 @@ static void sample_trade_picker(input_intent_t *intent) {
         intent->service_sell_grade = row->grade;
         intent->service_sell_one = true;
         float price = (float)row->unit_price;
-        float bonus_mult = mining_payout_multiplier(row->grade);
-        float payout = price * bonus_mult;
-        LOCAL_PLAYER.ship.cargo[row->commodity] -= 1.0f;
-        if (LOCAL_PLAYER.ship.cargo[row->commodity] < 0.0f)
-            LOCAL_PLAYER.ship.cargo[row->commodity] = 0.0f;
+        float payout = price;
         if (!g.multiplayer_enabled) {
             station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
             int idx = -1;

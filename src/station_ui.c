@@ -170,10 +170,18 @@ void station_role_color(const station_t* station, float* r, float* g0, float* b)
 /* Formatting helpers                                                  */
 /* ------------------------------------------------------------------ */
 
+static int station_manifest_count_c(const station_t *st, commodity_t commodity);
+static int ship_manifest_count_c(const ship_t *ship, commodity_t commodity);
+static float ship_manifest_backed_cargo_volume(const ship_t *ship);
+static bool can_afford_upgrade_manifest_ui(const station_t *station,
+                                           const ship_t *ship,
+                                           ship_upgrade_t upgrade,
+                                           float balance);
+
 void format_ingot_stock_line(const station_t* station, char* text, size_t text_size) {
-    int fe = (int)lroundf(station_inventory_amount(station, COMMODITY_FERRITE_INGOT));
-    int cu = (int)lroundf(station_inventory_amount(station, COMMODITY_CUPRITE_INGOT));
-    int cr = (int)lroundf(station_inventory_amount(station, COMMODITY_CRYSTAL_INGOT));
+    int fe = station_manifest_count_c(station, COMMODITY_FERRITE_INGOT);
+    int cu = station_manifest_count_c(station, COMMODITY_CUPRITE_INGOT);
+    int cr = station_manifest_count_c(station, COMMODITY_CRYSTAL_INGOT);
     /* Use full short names so the player can parse the line without
      * memorising 2-letter ingot codes (FR/CO/LN are non-obvious). */
     snprintf(text, text_size, "%s %d  %s %d  %s %d",
@@ -199,8 +207,8 @@ int build_work_slots(int here_idx, vec2 here_pos,
     int count = 0;
 
     /* Pass 1: TRACTOR contracts at this station the player can fulfill
-     * right now. Raw ore lives in towed S-tier fragments rather than
-     * ship.cargo[]; finished goods live on ship.cargo[]. */
+     * right now. Raw ore lives in towed S-tier fragments; finished goods
+     * are counted from the ship manifest. */
     for (int ci = 0; ci < MAX_CONTRACTS && count < 3; ci++) {
         const contract_t *ct = &g.world.contracts[ci];
         if (!ct->active) continue;
@@ -220,7 +228,7 @@ int build_work_slots(int here_idx, vec2 here_pos,
             }
             held_int = (int)lroundf(held_ore);
         } else {
-            held_int = (int)lroundf(LOCAL_PLAYER.ship.cargo[ct->commodity]);
+            held_int = ship_manifest_count_c(&LOCAL_PLAYER.ship, ct->commodity);
         }
         if (held_int <= 0) continue;
         out_contracts[count]   = ci;
@@ -287,7 +295,8 @@ void build_station_ui_state(station_ui_state_t* ui) {
     float repair = station_repair_cost(&LOCAL_PLAYER.ship, current_station_ptr());
     ui->repair_cost = (int)lroundf(repair);
 
-    /* Compute per-upgrade module accounting (cargo first, dock fallback). */
+    /* Compute per-upgrade module accounting (cargo first, dock fallback).
+     * Finished goods are manifest-backed; floats are only derived caches. */
     struct { ship_upgrade_t up; int *needed, *cargo, *atstation, *credit; } slots[3] = {
         { SHIP_UPGRADE_MINING,
           &ui->mining_units_needed,  &ui->mining_units_in_cargo,
@@ -303,9 +312,8 @@ void build_station_ui_state(station_ui_state_t* ui) {
         commodity_t c = (commodity_t)(COMMODITY_FRAME +
                         upgrade_required_product(slots[i].up));
         int need = (int)ceilf(upgrade_product_cost(&LOCAL_PLAYER.ship, slots[i].up));
-        int in_cargo  = (int)floorf(LOCAL_PLAYER.ship.cargo[c] + 0.0001f);
-        int at_station = ui->station
-            ? (int)floorf(ui->station->_inventory_cache[c] + 0.0001f) : 0;
+        int in_cargo  = ship_manifest_count_c(&LOCAL_PLAYER.ship, c);
+        int at_station = ui->station ? station_manifest_count_c(ui->station, c) : 0;
         int from_station = need - (need < in_cargo ? need : in_cargo);
         if (from_station < 0) from_station = 0;
         float credit = ui->station
@@ -321,19 +329,24 @@ void build_station_ui_state(station_ui_state_t* ui) {
 
     /* Kit availability for the [R] row — drives "X kits ship / Y kits
      * station" hint and the partial-repair warning. */
-    ui->ship_kits    = (int)floorf(LOCAL_PLAYER.ship.cargo[COMMODITY_REPAIR_KIT]
-                                   + 0.0001f);
+    ui->ship_kits    = ship_manifest_count_c(&LOCAL_PLAYER.ship,
+                                             COMMODITY_REPAIR_KIT);
     ui->station_kits = (ui->station)
-        ? (int)floorf(ui->station->_inventory_cache[COMMODITY_REPAIR_KIT] + 0.0001f)
-        : 0;
+        ? station_manifest_count_c(ui->station, COMMODITY_REPAIR_KIT) : 0;
     int hp_needed = ui->hull_max - ui->hull_now;
     if (hp_needed < 0) hp_needed = 0;
     int kits_avail = ui->ship_kits + ui->station_kits;
     ui->kits_short_by = (hp_needed > kits_avail) ? (hp_needed - kits_avail) : 0;
     float bal = player_current_balance();
-    ui->can_upgrade_mining = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_MINING, bal);
-    ui->can_upgrade_hold = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_HOLD, bal);
-    ui->can_upgrade_tractor = can_afford_upgrade(ui->station, &LOCAL_PLAYER.ship, SHIP_UPGRADE_TRACTOR, bal);
+    ui->can_upgrade_mining =
+        can_afford_upgrade_manifest_ui(ui->station, &LOCAL_PLAYER.ship,
+                                       SHIP_UPGRADE_MINING, bal);
+    ui->can_upgrade_hold =
+        can_afford_upgrade_manifest_ui(ui->station, &LOCAL_PLAYER.ship,
+                                       SHIP_UPGRADE_HOLD, bal);
+    ui->can_upgrade_tractor =
+        can_afford_upgrade_manifest_ui(ui->station, &LOCAL_PLAYER.ship,
+                                       SHIP_UPGRADE_TRACTOR, bal);
 }
 
 /* ------------------------------------------------------------------ */
@@ -603,10 +616,18 @@ static int station_manifest_count_cg(const station_t *st,
     return (int)g.station_manifest_summary[s][commodity][grade];
 }
 
+static int station_manifest_count_c(const station_t *st, commodity_t commodity)
+{
+    int total = 0;
+    for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
+        total += station_manifest_count_cg(st, commodity, (mining_grade_t)gi);
+    return total;
+}
+
 /* station_manifest_has_commodity / ship_manifest_has_commodity removed —
  * after the manifest-first TRADE rewrite the rows always probe the
- * full grade range and add an unknown-origin row when inventory >
- * manifest_total, so the "any-grade?" predicate is no longer needed. */
+ * full grade range directly, so the "any-grade?" predicate is no
+ * longer needed. */
 
 /* Ship manifest helpers — iterate directly. Ship cargo isn't broadcast
  * grade-grouped over the wire yet (only the local player's manifest
@@ -622,6 +643,44 @@ static int ship_manifest_count_cg(const ship_t *ship,
         if (u->commodity == (uint8_t)commodity && u->grade == (uint8_t)grade) n++;
     }
     return n;
+}
+
+static int ship_manifest_count_c(const ship_t *ship, commodity_t commodity)
+{
+    return manifest_count_by_commodity(ship ? &ship->manifest : NULL, commodity);
+}
+
+static float ship_manifest_backed_cargo_volume(const ship_t *ship)
+{
+    if (!ship) return 0.0f;
+    float total = 0.0f;
+    for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++)
+        total += ship->cargo[c] * commodity_volume((commodity_t)c);
+    if (ship->manifest.units) {
+        for (uint16_t u = 0; u < ship->manifest.count; u++) {
+            const cargo_unit_t *cu = &ship->manifest.units[u];
+            if (cu->commodity >= COMMODITY_COUNT) continue;
+            total += commodity_volume((commodity_t)cu->commodity);
+        }
+    }
+    return total;
+}
+
+static bool can_afford_upgrade_manifest_ui(const station_t *station,
+                                           const ship_t *ship,
+                                           ship_upgrade_t upgrade,
+                                           float balance)
+{
+    if (!station || !ship) return false;
+    if (ship_upgrade_maxed(ship, upgrade)) return false;
+    commodity_t comm = (commodity_t)(COMMODITY_FRAME + upgrade_required_product(upgrade));
+    int units_needed = (int)ceilf(upgrade_product_cost(ship, upgrade));
+    int in_cargo = ship_manifest_count_c(ship, comm);
+    int at_station = station_manifest_count_c(station, comm);
+    if (in_cargo + at_station < units_needed) return false;
+    int from_station = units_needed - (units_needed < in_cargo ? units_needed : in_cargo);
+    float credit_cost = (float)from_station * station_sell_price(station, comm);
+    return balance + FLOAT_EPSILON >= credit_cost;
 }
 
 /* Highest prefix-class observed on the ship for a given (commodity,
@@ -662,7 +721,7 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                      trade_row_t out[], int max) {
     if (!st || !ship || !out || max <= 0) return 0;
     int row_count = 0;
-    float free_volume = ship_cargo_capacity(ship) - ship_total_cargo(ship);
+    float free_volume = ship_cargo_capacity(ship) - ship_manifest_backed_cargo_volume(ship);
     float credits = player_current_balance();
     int capacity = (int)lroundf(MAX_PRODUCT_STOCK);
 
@@ -673,7 +732,6 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         if (!station_produces(st, (commodity_t)c)) continue;
         float price_base = station_sell_price(st, (commodity_t)c);
         if (price_base <= FLOAT_EPSILON) continue;
-        int station_inv = (int)lroundf(st->_inventory_cache[c]);
         bool emitted_any_grade = false;
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
             int stock = station_manifest_count_cg(st, (commodity_t)c, (mining_grade_t)gi);
@@ -710,7 +768,7 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             out[row_count++] = (trade_row_t){
                 .kind = 0, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
                 .stock = stock, .unit_price = price,
-                .actionable = (blk == TRADE_BLOCK_NONE), .is_float_fallback = false,
+                .actionable = (blk == TRADE_BLOCK_NONE),
                 .station_stock = stock, .station_capacity = capacity,
                 .held = 0, .block_reason = blk,
                 .has_lineage = has_lineage,
@@ -724,8 +782,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             out[row_count++] = (trade_row_t){
                 .kind = 0, .commodity = (commodity_t)c, .grade = MINING_GRADE_COMMON,
                 .stock = 0, .unit_price = (int)lroundf(price_base),
-                .actionable = false, .is_float_fallback = false,
-                .station_stock = station_inv, .station_capacity = capacity,
+                .actionable = false,
+                .station_stock = 0, .station_capacity = capacity,
                 .held = 0, .block_reason = TRADE_BLOCK_STATION_EMPTY,
             };
         }
@@ -739,26 +797,25 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         if (!station_consumes(st, (commodity_t)c)) continue;
         float price_base = station_buy_price(st, (commodity_t)c);
         if (price_base <= FLOAT_EPSILON) continue;
-        int station_total_inv = (int)lroundf(st->_inventory_cache[c]);
+        int station_total_inv = station_manifest_count_c(st, (commodity_t)c);
         bool station_full = station_total_inv >= capacity;
-        /* Cargo float is authoritative for what's onboard. The manifest
-         * can drift past it (wire desync), so cap held counts by cargo
-         * before deciding what rows to surface. */
-        int cargo_units = (int)floorf(ship_cargo_amount(ship, (commodity_t)c) + 0.0001f);
-        if (cargo_units <= 0) continue;
         int manifest_total_for_c = 0;
         for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
             manifest_total_for_c += ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi);
-        bool emitted_any = false;
+        if (manifest_total_for_c <= 0) {
+            out[row_count++] = (trade_row_t){
+                .kind = 1, .commodity = (commodity_t)c, .grade = MINING_GRADE_COMMON,
+                .stock = 0, .unit_price = (int)lroundf(price_base),
+                .actionable = false,
+                .station_stock = station_total_inv, .station_capacity = capacity,
+                .held = 0, .block_reason = TRADE_BLOCK_NO_CARGO,
+            };
+            continue;
+        }
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
             int manifest_g = ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi);
             if (manifest_g <= 0) continue;
-            int held = (manifest_total_for_c > 0)
-                ? (int)((float)manifest_g * (float)cargo_units / (float)manifest_total_for_c + 0.5f)
-                : cargo_units;
-            if (held <= 0) continue;
-            if (held > cargo_units) held = cargo_units;
-            emitted_any = true;
+            int held = manifest_g;
             /* Prefix-class price multipliers (#prefix-pricing): if the
              * player is carrying any non-anonymous-prefix unit in this
              * (commodity, grade) bucket, surface the row at the higher
@@ -805,26 +862,13 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             out[row_count++] = (trade_row_t){
                 .kind = 1, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
                 .stock = held, .unit_price = price,
-                .actionable = (blk == TRADE_BLOCK_NONE), .is_float_fallback = false,
+                .actionable = (blk == TRADE_BLOCK_NONE),
                 .station_stock = station_grade_count, .station_capacity = capacity,
                 .held = held, .block_reason = blk,
                 .prefix_class = (uint8_t)top_cls,
                 .has_lineage = has_lineage,
                 .origin_station_idx = origin_idx,
                 .mined_block = mined_blk,
-            };
-        }
-        /* Cargo says we have units but manifest empty -- fall back to a
-         * common-grade row so the player can still sell. */
-        if (!emitted_any && row_count < max) {
-            int price = (int)lroundf(price_base);
-            uint8_t blk = station_full ? TRADE_BLOCK_STATION_FULL : TRADE_BLOCK_NONE;
-            out[row_count++] = (trade_row_t){
-                .kind = 1, .commodity = (commodity_t)c, .grade = MINING_GRADE_COMMON,
-                .stock = cargo_units, .unit_price = price,
-                .actionable = (blk == TRADE_BLOCK_NONE), .is_float_fallback = true,
-                .station_stock = station_total_inv, .station_capacity = capacity,
-                .held = cargo_units, .block_reason = blk,
             };
         }
     }
@@ -925,7 +969,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
              * non-empty storage output as "in flow" for any
              * commodity the station produces (best the data lets us
              * do without per-tick commodity tags). */
-            bool in_flow = (st->_inventory_cache[c] > 0.01f);
+            bool in_flow = (station_manifest_count_c(st, c) > 0);
             if (!in_flow) {
                 for (int m = 0; m < st->module_count; m++) {
                     module_type_t mt = st->modules[m].type;
@@ -1060,6 +1104,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
             case TRADE_BLOCK_STATION_EMPTY: why = "(empty)";      break;
             case TRADE_BLOCK_HOLD_FULL:     why = "(hold full)";  break;
             case TRADE_BLOCK_NO_FUNDS:      why = "(no funds)";   break;
+            case TRADE_BLOCK_NO_CARGO:      why = "(none held)";  break;
             default:                        why = "";             break;
             }
             snprintf(total_buf, sizeof(total_buf), "%s", why);
@@ -1177,7 +1222,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         /* Special case: docked at a station still being built. The "verb"
          * here is delivering frames to advance construction. */
         int pct = (int)lroundf(st->scaffold_progress * 100.0f);
-        int held = (int)lroundf(ship_cargo_amount(ship, COMMODITY_FRAME));
+        int held = ship_manifest_count_c(ship, COMMODITY_FRAME);
         char left_buf[48], right_buf[32];
         snprintf(left_buf, sizeof(left_buf), "SCAFFOLD %d%%", pct);
         draw_row_lr(cx, my, inner_right, COL_AMBER, left_buf, COL_FADED, NULL);
@@ -1209,14 +1254,14 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         my += row_h;
 
         snprintf(right_buf, sizeof(right_buf), "%d / %d",
-                 (int)lroundf(ship_total_cargo(ship)),
+                 (int)lroundf(ship_manifest_backed_cargo_volume(ship)),
                  (int)lroundf(ship_cargo_capacity(ship)));
         draw_row_lr(cx, my, inner_right, COL_TEXT, "cargo", COL_TEXT, right_buf);
         /* Grade-tinted cargo fill bar -- sits inside the cargo row, just
          * below the text baseline so it visually belongs to that row.
          * Segments are sized by manifest unit volume and colored per
-         * grade; common-grade swallows any cargo[] float not represented
-         * by a manifest unit (e.g. fractional leftovers). */
+         * grade; raw float cargo (legacy/non-manifest ore only) is folded
+         * into common grade. */
         {
             float cap_v = ship_cargo_capacity(ship);
             if (cap_v > 0.0f) {
@@ -1236,18 +1281,17 @@ static void draw_verbs_view(const station_ui_state_t *ui,
 
                 /* Volume per grade. */
                 float vol_by_grade[MINING_GRADE_COUNT] = {0};
-                float manifest_vol = 0.0f;
                 for (uint16_t u = 0; u < ship->manifest.count; u++) {
                     const cargo_unit_t *cu = &ship->manifest.units[u];
                     float vol = commodity_volume((commodity_t)cu->commodity);
                     int gi = cu->grade;
                     if (gi < 0 || gi >= MINING_GRADE_COUNT) gi = MINING_GRADE_COMMON;
                     vol_by_grade[gi] += vol;
-                    manifest_vol     += vol;
                 }
-                float total_vol = ship_total_cargo(ship);
-                float remainder = total_vol - manifest_vol;
-                if (remainder > 0.001f) vol_by_grade[MINING_GRADE_COMMON] += remainder;
+                for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
+                    float raw_vol = ship->cargo[c] * commodity_volume((commodity_t)c);
+                    if (raw_vol > 0.001f) vol_by_grade[MINING_GRADE_COMMON] += raw_vol;
+                }
 
                 /* Segments. Walk grade order so rare/RATi sit on the right. */
                 float x = bar_x;
@@ -1668,7 +1712,9 @@ static void draw_yard_view(const station_ui_state_t *ui,
             commodity_t mat_type = module_build_material_lookup(t);
             float need = module_build_cost_lookup(t);
             float have = (p == 0 && nascent) ? nascent->build_amount : 0.0f;
-            float station_have = ui->station->_inventory_cache[mat_type];
+            float station_have = (mat_type >= COMMODITY_RAW_ORE_COUNT)
+                ? (float)station_manifest_count_c(ui->station, mat_type)
+                : ui->station->_inventory_cache[mat_type];
             int got = (int)lroundf(have);
             int total = (int)lroundf(need);
             sdtx_pos(ui_text_pos(cx), ui_text_pos(ly));
