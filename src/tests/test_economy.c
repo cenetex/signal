@@ -744,6 +744,132 @@ TEST(test_ship_total_cargo_kit_density) {
                     100.0f * REPAIR_KIT_CARGO_DENSITY + 5.0f, 0.001f);
 }
 
+TEST(test_per_row_sell_pays_highest_prefix_unit) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int k = 0; k < MAX_CONTRACTS; k++) w->contracts[k].active = false;
+
+    int consumer = -1;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (station_consumes(&w->stations[i], COMMODITY_FERRITE_INGOT)) {
+            consumer = i;
+            break;
+        }
+    }
+    ASSERT(consumer >= 0);
+    station_t *st = &w->stations[consumer];
+    (void)manifest_consume_by_commodity(&st->manifest,
+                                         COMMODITY_FERRITE_INGOT,
+                                         manifest_count_by_commodity(&st->manifest,
+                                                                     COMMODITY_FERRITE_INGOT));
+    st->_inventory_cache[COMMODITY_FERRITE_INGOT] = 0.0f;
+
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0xD1, 8);
+    sp->docked = true;
+    sp->current_station = (uint8_t)consumer;
+    sp->ship.pos = st->pos;
+
+    cargo_unit_t anon = {0};
+    anon.kind = (uint8_t)CARGO_KIND_INGOT;
+    anon.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    anon.grade = (uint8_t)MINING_GRADE_COMMON;
+    anon.prefix_class = (uint8_t)INGOT_PREFIX_ANONYMOUS;
+    anon.quantity = 1;
+    anon.pub[0] = 0x11;
+    cargo_unit_t premium = anon;
+    premium.prefix_class = (uint8_t)INGOT_PREFIX_M;
+    premium.pub[0] = 0x22;
+    ASSERT(manifest_push(&sp->ship.manifest, &anon));
+    ASSERT(manifest_push(&sp->ship.manifest, &premium));
+    sp->ship.cargo[COMMODITY_FERRITE_INGOT] = 2.0f;
+
+    float before = ledger_balance(st, sp->session_token);
+    float expected = station_buy_price_unit(st, &premium);
+
+    sp->input.service_sell = true;
+    sp->input.service_sell_only = COMMODITY_FERRITE_INGOT;
+    sp->input.service_sell_grade = MINING_GRADE_COMMON;
+    sp->input.service_sell_one = true;
+    world_sim_step(w, SIM_DT);
+
+    ASSERT_EQ_FLOAT(ledger_balance(st, sp->session_token) - before,
+                    expected, 0.01f);
+    ASSERT_EQ_FLOAT(sp->ship.cargo[COMMODITY_FERRITE_INGOT], 1.0f, 0.001f);
+    ASSERT_EQ_INT(sp->ship.manifest.count, 1);
+    ASSERT_EQ_INT(sp->ship.manifest.units[0].prefix_class,
+                  INGOT_PREFIX_ANONYMOUS);
+}
+
+TEST(test_market_buy_skips_named_ingots) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+
+    int producer = -1;
+    for (int i = 0; i < MAX_STATIONS; i++) {
+        if (station_produces(&w->stations[i], COMMODITY_FERRITE_INGOT)) {
+            producer = i;
+            break;
+        }
+    }
+    ASSERT(producer >= 0);
+    station_t *st = &w->stations[producer];
+    ASSERT(station_manifest_bootstrap(st));
+    (void)manifest_consume_by_commodity(&st->manifest,
+                                         COMMODITY_FERRITE_INGOT,
+                                         manifest_count_by_commodity(&st->manifest,
+                                                                     COMMODITY_FERRITE_INGOT));
+
+    cargo_unit_t premium = {0};
+    premium.kind = (uint8_t)CARGO_KIND_INGOT;
+    premium.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    premium.grade = (uint8_t)MINING_GRADE_COMMON;
+    premium.prefix_class = (uint8_t)INGOT_PREFIX_M;
+    premium.quantity = 1;
+    premium.pub[0] = 0x31;
+    cargo_unit_t anon = premium;
+    anon.prefix_class = (uint8_t)INGOT_PREFIX_ANONYMOUS;
+    anon.pub[0] = 0x32;
+    ASSERT(manifest_push(&st->manifest, &premium));
+    ASSERT(manifest_push(&st->manifest, &anon));
+    st->_inventory_cache[COMMODITY_FERRITE_INGOT] = 2.0f;
+
+    server_player_t *sp = &w->players[0];
+    player_init_ship(sp, w);
+    sp->connected = true;
+    sp->session_ready = true;
+    memset(sp->session_token, 0xD2, 8);
+    sp->docked = true;
+    sp->current_station = (uint8_t)producer;
+    sp->ship.pos = st->pos;
+    ledger_earn(st, sp->session_token, 100000.0f);
+    float before = ledger_balance(st, sp->session_token);
+    float expected_cost = station_sell_price(st, COMMODITY_FERRITE_INGOT);
+
+    sp->input.buy_product = true;
+    sp->input.buy_commodity = COMMODITY_FERRITE_INGOT;
+    sp->input.buy_grade = MINING_GRADE_COMMON;
+    world_sim_step(w, SIM_DT);
+
+    ASSERT_EQ_FLOAT(before - ledger_balance(st, sp->session_token),
+                    expected_cost, 0.01f);
+    ASSERT_EQ_FLOAT(sp->ship.cargo[COMMODITY_FERRITE_INGOT], 1.0f, 0.001f);
+    ASSERT_EQ_INT(sp->ship.manifest.count, 1);
+    ASSERT_EQ_INT(sp->ship.manifest.units[0].prefix_class,
+                  INGOT_PREFIX_ANONYMOUS);
+
+    int station_named = 0;
+    for (uint16_t i = 0; i < st->manifest.count; i++) {
+        const cargo_unit_t *u = &st->manifest.units[i];
+        if (u->commodity == (uint8_t)COMMODITY_FERRITE_INGOT &&
+            u->prefix_class == (uint8_t)INGOT_PREFIX_M) station_named++;
+    }
+    ASSERT_EQ_INT(station_named, 1);
+}
+
 /* Per-row sell mirrors per-row buy: one click sells one (commodity, grade)
  * unit, the rest of the hold stays put. Pre-fix, [S] sold every grade of
  * the row's commodity in one shot. */
@@ -793,6 +919,8 @@ TEST(test_per_row_sell_drains_one_unit_only) {
 
 void register_economy_basic_tests(void) {
     TEST_SECTION("\nEconomy tests:\n");
+    RUN(test_per_row_sell_pays_highest_prefix_unit);
+    RUN(test_market_buy_skips_named_ingots);
     RUN(test_per_row_sell_drains_one_unit_only);
     RUN(test_station_production_yard_makes_frames);
     RUN(test_station_production_beamworks_makes_modules);

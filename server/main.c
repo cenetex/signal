@@ -299,8 +299,9 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
         if (len >= 33 && world.players[pid].docked) {
             int sidx = world.players[pid].current_station;
             if (sidx < 0 || sidx >= MAX_STATIONS) break;
+            server_player_t *sp = &world.players[pid];
             station_t *st = &world.stations[sidx];
-            ship_t *ship = &world.players[pid].ship;
+            ship_t *ship = &sp->ship;
             const uint8_t *pk = &data[1];
             int slot = manifest_find(&st->manifest, pk);
             if (slot < 0) break;
@@ -315,7 +316,10 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             int price = (int)lroundf(station_sell_price_unit(st, src));
             if (price <= 0) break;
             /* Use ledger_spend so the credit pool stays conserved. */
-            if (!ledger_spend(st, world.players[pid].session_token, (float)price, ship)) break;
+            bool spent = sp->pubkey_set
+                ? ledger_spend_by_pubkey(st, sp->pubkey, (float)price, ship)
+                : ledger_spend(st, sp->session_token, (float)price, ship);
+            if (!spent) break;
             cargo_unit_t copy = *src;
             if (!ship->manifest.units && !ship_manifest_bootstrap(ship)) break;
             if (!manifest_push(&ship->manifest, &copy)) break;
@@ -580,8 +584,10 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                             /* Prefix-class price multipliers (#prefix-pricing):
                              * mirror the unsigned BUY_INGOT path above. */
                             int price = (int)lroundf(station_sell_price_unit(st, src));
-                            if (price > 0 &&
-                                ledger_spend(st, sp->session_token, (float)price, ship)) {
+                            bool spent = price > 0 && (sp->pubkey_set
+                                ? ledger_spend_by_pubkey(st, sp->pubkey, (float)price, ship)
+                                : ledger_spend(st, sp->session_token, (float)price, ship));
+                            if (spent) {
                                 cargo_unit_t copy = *src;
                                 if ((ship->manifest.units || ship_manifest_bootstrap(ship)) &&
                                     manifest_push(&ship->manifest, &copy)) {

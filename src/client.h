@@ -86,7 +86,9 @@ typedef struct {
     commodity_t    commodity;
     mining_grade_t grade;
     int            stock;      /* units available on the active side */
-    int            unit_price; /* per-unit, already grade-multiplied */
+    int            quantity;   /* units moved by one row pick */
+    int            unit_price; /* per-unit, already grade/prefix adjusted */
+    int            total_price;/* unit_price * quantity */
     bool           actionable; /* player can do this transaction right now */
     int            station_stock;   /* this commodity's inventory at station */
     int            station_capacity;/* MAX_PRODUCT_STOCK */
@@ -129,7 +131,7 @@ enum {
  * to find the first row on the current page; the renderer wraps when
  * total_pages * TRADE_ROWS_PER_PAGE >= row_count. */
 #define TRADE_ROWS_PER_PAGE 5
-#define TRADE_MAX_ROWS      20
+#define TRADE_MAX_ROWS      96
 
 /* Build the unified row list for `st` against the player's `ship`.
  * Output is zero-or-more rows in `out[0..count-1]`, capped at `max`

@@ -624,19 +624,6 @@ static int station_manifest_count_c(const station_t *st, commodity_t commodity)
     return total;
 }
 
-static int manifest_count_cg_direct(const manifest_t *manifest,
-                                    commodity_t commodity,
-                                    mining_grade_t grade)
-{
-    if (!manifest || !manifest->units) return 0;
-    int n = 0;
-    for (uint16_t i = 0; i < manifest->count; i++) {
-        const cargo_unit_t *u = &manifest->units[i];
-        if (u->commodity == (uint8_t)commodity && u->grade == (uint8_t)grade) n++;
-    }
-    return n;
-}
-
 static int manifest_lineage_count_cg(const manifest_t *manifest,
                                      commodity_t commodity,
                                      mining_grade_t grade)
@@ -649,6 +636,95 @@ static int manifest_lineage_count_cg(const manifest_t *manifest,
         if (u->mined_block != 0) n++;
     }
     return n;
+}
+
+static bool trade_unit_is_named_ingot(const cargo_unit_t *u)
+{
+    return u && (cargo_kind_t)u->kind == CARGO_KIND_INGOT &&
+           (ingot_prefix_t)u->prefix_class != INGOT_PREFIX_ANONYMOUS;
+}
+
+static bool trade_unit_matches_cg(const cargo_unit_t *u,
+                                  commodity_t commodity,
+                                  mining_grade_t grade)
+{
+    return u && u->commodity == (uint8_t)commodity &&
+           u->grade == (uint8_t)grade;
+}
+
+static bool trade_unit_is_market_buy_unit(const cargo_unit_t *u,
+                                          commodity_t commodity,
+                                          mining_grade_t grade)
+{
+    if (!trade_unit_matches_cg(u, commodity, grade)) return false;
+    return !trade_unit_is_named_ingot(u);
+}
+
+static int manifest_named_count_cg_direct(const manifest_t *manifest,
+                                          commodity_t commodity,
+                                          mining_grade_t grade)
+{
+    if (!manifest || !manifest->units) return 0;
+    int n = 0;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        const cargo_unit_t *u = &manifest->units[i];
+        if (trade_unit_matches_cg(u, commodity, grade) &&
+            trade_unit_is_named_ingot(u)) n++;
+    }
+    return n;
+}
+
+static int manifest_market_count_cg_direct(const manifest_t *manifest,
+                                           commodity_t commodity,
+                                           mining_grade_t grade)
+{
+    if (!manifest || !manifest->units) return 0;
+    int n = 0;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        if (trade_unit_is_market_buy_unit(&manifest->units[i], commodity, grade)) n++;
+    }
+    return n;
+}
+
+static int manifest_market_lineage_count_cg(const manifest_t *manifest,
+                                            commodity_t commodity,
+                                            mining_grade_t grade)
+{
+    if (!manifest || !manifest->units) return 0;
+    int n = 0;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        const cargo_unit_t *u = &manifest->units[i];
+        if (!trade_unit_is_market_buy_unit(u, commodity, grade)) continue;
+        if (u->mined_block != 0) n++;
+    }
+    return n;
+}
+
+static int manifest_find_first_market_cg(const manifest_t *manifest,
+                                         commodity_t commodity,
+                                         mining_grade_t grade)
+{
+    if (!manifest || !manifest->units) return -1;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        if (trade_unit_is_market_buy_unit(&manifest->units[i], commodity, grade))
+            return (int)i;
+    }
+    return -1;
+}
+
+static int station_market_stock_cg(const station_t *st,
+                                   commodity_t commodity,
+                                   mining_grade_t grade)
+{
+    int total = station_manifest_count_cg(st, commodity, grade);
+    if (commodity == COMMODITY_FERRITE_INGOT ||
+        commodity == COMMODITY_CUPRITE_INGOT ||
+        commodity == COMMODITY_CRYSTAL_INGOT) {
+        int named = manifest_named_count_cg_direct(st ? &st->manifest : NULL,
+                                                   commodity, grade);
+        total -= named;
+    }
+    return total > 0 ? total : 0;
 }
 
 /* station_manifest_has_commodity / ship_manifest_has_commodity removed —
@@ -711,28 +787,26 @@ static bool can_afford_upgrade_manifest_ui(const station_t *station,
     return balance + FLOAT_EPSILON >= credit_cost;
 }
 
-/* Highest prefix-class observed on the ship for a given (commodity,
- * grade) bucket. Used by build_trade_rows to scale SELL prices and
- * surface the M-/RATi- indicator on dock rows where the player is
- * carrying named ingots. Returns INGOT_PREFIX_ANONYMOUS if no named
- * units are present (the row is bulk material). */
-static int ship_manifest_top_prefix_cg(const ship_t *ship,
-                                       commodity_t commodity,
-                                       mining_grade_t grade)
+/* Representative SELL unit for a (commodity, grade) row. The server's
+ * per-row sell path picks the highest prefix multiplier in the bucket,
+ * so the UI quotes that same unit instead of an arbitrary FIFO unit. */
+static int manifest_find_top_sell_unit_cg(const manifest_t *manifest,
+                                          commodity_t commodity,
+                                          mining_grade_t grade)
 {
-    if (!ship || !ship->manifest.units) return (int)INGOT_PREFIX_ANONYMOUS;
-    int top = (int)INGOT_PREFIX_ANONYMOUS;
+    if (!manifest || !manifest->units) return -1;
+    int top_idx = -1;
     float top_mult = 1.0f;
-    for (uint16_t i = 0; i < ship->manifest.count; i++) {
-        const cargo_unit_t *u = &ship->manifest.units[i];
-        if (u->commodity != (uint8_t)commodity || u->grade != (uint8_t)grade) continue;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        const cargo_unit_t *u = &manifest->units[i];
+        if (!trade_unit_matches_cg(u, commodity, grade)) continue;
         float m = prefix_class_price_multiplier((int)u->prefix_class);
-        if (m > top_mult) {
+        if (top_idx < 0 || m > top_mult) {
             top_mult = m;
-            top = (int)u->prefix_class;
+            top_idx = (int)i;
         }
     }
-    return top;
+    return top_idx;
 }
 
 /* TRADE view — market. Unified list of rows; BUY rows (what the station
@@ -762,17 +836,25 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         if (price_base <= FLOAT_EPSILON) continue;
         bool emitted_any_grade = false;
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
-            int stock = station_manifest_count_cg(st, (commodity_t)c, (mining_grade_t)gi);
+            int stock = station_market_stock_cg(st, (commodity_t)c, (mining_grade_t)gi);
             if (stock <= 0) continue;
             emitted_any_grade = true;
             int price = (int)lroundf(price_base
                     * mining_payout_multiplier((mining_grade_t)gi));
             float vol = commodity_volume((commodity_t)c);
-            bool has_volume = (free_volume + FLOAT_EPSILON >= vol);
-            bool has_funds  = (credits >= (float)price);
+            int per_press = (vol > FLOAT_EPSILON) ? (int)lroundf(1.0f / vol) : 1;
+            if (per_press < 1) per_press = 1;
+            int volume_cap = (vol > FLOAT_EPSILON)
+                ? (int)floorf((free_volume + FLOAT_EPSILON) / vol) : per_press;
+            int funds_cap = (price > 0)
+                ? (int)floorf((credits + FLOAT_EPSILON) / (float)price) : 0;
+            int qty = per_press;
+            if (qty > stock) qty = stock;
+            if (qty > volume_cap) qty = volume_cap;
+            if (qty > funds_cap) qty = funds_cap;
             uint8_t blk = TRADE_BLOCK_NONE;
-            if (!has_volume) blk = TRADE_BLOCK_HOLD_FULL;
-            else if (!has_funds) blk = TRADE_BLOCK_NO_FUNDS;
+            if (volume_cap <= 0) blk = TRADE_BLOCK_HOLD_FULL;
+            else if (funds_cap <= 0) blk = TRADE_BLOCK_NO_FUNDS;
             /* Per-grade stock is what the row offers; that's already
              * `stock` from the manifest count above. The total cap is
              * shared with other grades of this commodity, so the
@@ -786,16 +868,16 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             uint8_t origin_idx = 0;
             uint64_t mined_blk = 0;
             bool has_lineage = false;
-            int represented = manifest_count_cg_direct(&st->manifest,
-                                                       (commodity_t)c,
-                                                       (mining_grade_t)gi);
-            int lineage_count = manifest_lineage_count_cg(&st->manifest,
-                                                          (commodity_t)c,
-                                                          (mining_grade_t)gi);
+            int represented = manifest_market_count_cg_direct(&st->manifest,
+                                                              (commodity_t)c,
+                                                              (mining_grade_t)gi);
+            int lineage_count = manifest_market_lineage_count_cg(&st->manifest,
+                                                                 (commodity_t)c,
+                                                                 (mining_grade_t)gi);
             if (represented == stock && lineage_count == stock) {
-                int rep_idx = manifest_find_first_cg(&st->manifest,
-                                                     (commodity_t)c,
-                                                     (mining_grade_t)gi);
+                int rep_idx = manifest_find_first_market_cg(&st->manifest,
+                                                            (commodity_t)c,
+                                                            (mining_grade_t)gi);
                 if (rep_idx >= 0) {
                     const cargo_unit_t *rep = &st->manifest.units[rep_idx];
                     origin_idx = rep->origin_station;
@@ -805,8 +887,9 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             }
             out[row_count++] = (trade_row_t){
                 .kind = 0, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
-                .stock = stock, .unit_price = price,
-                .actionable = (blk == TRADE_BLOCK_NONE),
+                .stock = stock, .quantity = qty,
+                .unit_price = price, .total_price = price * qty,
+                .actionable = (blk == TRADE_BLOCK_NONE && qty > 0),
                 .station_stock = stock, .station_capacity = capacity,
                 .held = 0, .block_reason = blk,
                 .has_lineage = has_lineage,
@@ -819,7 +902,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         if (!emitted_any_grade && row_count < max) {
             out[row_count++] = (trade_row_t){
                 .kind = 0, .commodity = (commodity_t)c, .grade = MINING_GRADE_COMMON,
-                .stock = 0, .unit_price = (int)lroundf(price_base),
+                .stock = 0, .quantity = 0,
+                .unit_price = (int)lroundf(price_base), .total_price = 0,
                 .actionable = false,
                 .station_stock = 0, .station_capacity = capacity,
                 .held = 0, .block_reason = TRADE_BLOCK_STATION_EMPTY,
@@ -843,7 +927,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
         if (manifest_total_for_c <= 0) {
             out[row_count++] = (trade_row_t){
                 .kind = 1, .commodity = (commodity_t)c, .grade = MINING_GRADE_COMMON,
-                .stock = 0, .unit_price = (int)lroundf(price_base),
+                .stock = 0, .quantity = 0,
+                .unit_price = (int)lroundf(price_base), .total_price = 0,
                 .actionable = false,
                 .station_stock = station_total_inv, .station_capacity = capacity,
                 .held = 0, .block_reason = TRADE_BLOCK_NO_CARGO,
@@ -854,18 +939,12 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             int manifest_g = ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi);
             if (manifest_g <= 0) continue;
             int held = manifest_g;
-            /* Prefix-class price multipliers (#prefix-pricing): if the
-             * player is carrying any non-anonymous-prefix unit in this
-             * (commodity, grade) bucket, surface the row at the higher
-             * prefix-scaled price. The matching unit will be the one
-             * the SELL hotkey transacts; bulk units in the same bucket
-             * still sell at the row's (higher) advertised rate, which
-             * is consistent with manifest_top_prefix_cg picking the
-             * MAX. The class also drives a row-side M-/RATi- indicator
-             * so the player sees why a price is suddenly higher. */
-            int top_cls = ship_manifest_top_prefix_cg(ship,
-                                                      (commodity_t)c,
-                                                      (mining_grade_t)gi);
+            int rep_idx = manifest_find_top_sell_unit_cg(&ship->manifest,
+                                                         (commodity_t)c,
+                                                         (mining_grade_t)gi);
+            int top_cls = (int)INGOT_PREFIX_ANONYMOUS;
+            if (rep_idx >= 0)
+                top_cls = (int)ship->manifest.units[rep_idx].prefix_class;
             float prefix_mult = prefix_class_price_multiplier(top_cls);
             int price = (int)lroundf(price_base
                     * mining_payout_multiplier((mining_grade_t)gi)
@@ -890,9 +969,6 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                                                           (commodity_t)c,
                                                           (mining_grade_t)gi);
             if (lineage_count >= held) {
-                int rep_idx = manifest_find_first_cg(&ship->manifest,
-                                                     (commodity_t)c,
-                                                     (mining_grade_t)gi);
                 if (rep_idx >= 0) {
                     const cargo_unit_t *rep = &ship->manifest.units[rep_idx];
                     origin_idx = rep->origin_station;
@@ -902,7 +978,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             }
             out[row_count++] = (trade_row_t){
                 .kind = 1, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
-                .stock = held, .unit_price = price,
+                .stock = held, .quantity = 1,
+                .unit_price = price, .total_price = price,
                 .actionable = (blk == TRADE_BLOCK_NONE),
                 .station_stock = station_grade_count, .station_capacity = capacity,
                 .held = held, .block_reason = blk,
@@ -967,102 +1044,39 @@ static void draw_trade_view(const station_ui_state_t *ui,
 
     my += draw_section_header(cx, my, inner_right, "TRADE", HDR_TRADE);
 
-    /* Supply strip — six commodity slots showing this station's chain
-     * STATUS, not raw counts. The picker rows below carry the actual
-     * stock + price; this row is a flow badge.
-     *
-     * Three nested stripes per cell — empty/=/==/=== — each higher
-     * level implies the lower:
-     *   ===  on the shelf  (manifest > 0 && sell_price > 0)
-     *   ==-  in flow       (inventory or any module buffer carrying c)
-     *   =--  in the system (station has the producing module)
-     *   ---  not produced here
-     *
-     * Color = commodity hue, brightness rises with the level so a
-     * station at a glance reads as "alive ferrite line" vs "starved
-     * laser line". */
+    /* Factual stock strip. Use the same buyable-market stock definition
+     * as BUY rows, and include repair kits so the strip does not disagree
+     * with the market below. Named ingots stay out of this count because
+     * generic BUY rows deliberately skip prefix-premium collectibles. */
     {
-        struct { commodity_t c; module_type_t producer; const char *code; } slots[6] = {
-            /* All three ingots produced by the same MODULE_FURNACE; the
-             * count tier on the station decides which ones can mint. */
-            { COMMODITY_FERRITE_INGOT,  MODULE_FURNACE,      "FE" },
-            { COMMODITY_CUPRITE_INGOT,  MODULE_FURNACE,      "CU" },
-            { COMMODITY_CRYSTAL_INGOT,  MODULE_FURNACE,      "CR" },
-            { COMMODITY_FRAME,          MODULE_FRAME_PRESS,  "FM" },
-            { COMMODITY_LASER_MODULE,   MODULE_LASER_FAB,    "LM" },
-            { COMMODITY_TRACTOR_MODULE, MODULE_TRACTOR_FAB,  "TM" },
+        struct { commodity_t c; const char *code; } slots[7] = {
+            { COMMODITY_FERRITE_INGOT,  "FE" },
+            { COMMODITY_CUPRITE_INGOT,  "CU" },
+            { COMMODITY_CRYSTAL_INGOT,  "CR" },
+            { COMMODITY_FRAME,          "FM" },
+            { COMMODITY_LASER_MODULE,   "LM" },
+            { COMMODITY_TRACTOR_MODULE, "TM" },
+            { COMMODITY_REPAIR_KIT,     "RK" },
         };
-        const float cell_w = 8.0f;
-        const float slot_w = cell_w * 7.0f;
-        for (int i = 0; i < 6; i++) {
-            float sx = cx + (float)i * slot_w;
+        cell_t cells[8];
+        char labels[7][8];
+        cells[0] = (cell_t){ 0, "STOCK", COL_FADED };
+        int cell_count = 1;
+        for (int i = 0; i < 7; i++) {
             commodity_t c = slots[i].c;
-
-            /* Level 1: producer module present? */
-            bool in_system = station_produces(st, c);
-
-            /* Level 2: any concrete supply at this station — float
-             * inventory OR module buffers carrying this commodity.
-             * Module buffers are tagged by the recipe of the host
-             * module: input buffer carries the recipe's input;
-             * output buffer carries the recipe's output. STORAGE
-             * modules don't have a fixed commodity, so we count any
-             * non-empty storage output as "in flow" for any
-             * commodity the station produces (best the data lets us
-             * do without per-tick commodity tags). */
-            bool in_flow = (station_manifest_count_c(st, c) > 0);
-            if (!in_flow) {
-                for (int m = 0; m < st->module_count; m++) {
-                    module_type_t mt = st->modules[m].type;
-                    if (st->modules[m].scaffold) continue;
-                    if (module_schema_input(mt) == c && st->module_input[m] > 0.01f) {
-                        in_flow = true; break;
-                    }
-                    if (module_schema_output(mt) == c && st->module_output[m] > 0.01f) {
-                        in_flow = true; break;
-                    }
-                }
-            }
-
-            /* Level 3: stock the player can buy now (same condition
-             * the BUY rows in the picker use). */
-            int manifest_stock = 0;
+            int stock = 0;
             for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
-                manifest_stock += station_manifest_count_cg(st, c, (mining_grade_t)gi);
-            bool sellable = in_system && (manifest_stock > 0)
-                          && (station_sell_price(st, c) > FLOAT_EPSILON);
-
-            int level = 0;
-            if (in_system) level = 1;
-            if (in_system && in_flow) level = 2;
-            if (sellable) level = 3;
-
-            uint8_t r, g, b;
-            if (level == 0) {
-                r = 90; g = 90; b = 90;
-            } else {
-                commodity_color_u8(c, &r, &g, &b);
-                /* Three brightness tiers: 1/3 / 2/3 / full. */
-                int num = level;
-                r = (uint8_t)((int)r * num / 3);
-                g = (uint8_t)((int)g * num / 3);
-                b = (uint8_t)((int)b * num / 3);
-            }
-            sdtx_color3b(r, g, b);
-            sdtx_pos(ui_text_pos(sx), ui_text_pos(my));
-
-            /* Density glyph per level — one character that grows in
-             * weight as the chain ascends from idle to sellable.
-             * Level 3 uses oric font byte 0xA0 (full block, verified
-             * 8×0xFF in vendor/sokol/sokol_debugtext.h). */
-            const char *glyph =
-                (level == 3) ? "\xA0" :
-                (level == 2) ? "=" :
-                (level == 1) ? "-" : " ";
-            char cell[8];
-            snprintf(cell, sizeof(cell), "%s %s", slots[i].code, glyph);
-            sdtx_puts(cell);
+                stock += station_market_stock_cg(st, c, (mining_grade_t)gi);
+            snprintf(labels[i], sizeof(labels[i]), "%s%d", slots[i].code, stock);
+            uint8_t cr, cg, cb;
+            commodity_color_u8(c, &cr, &cg, &cb);
+            static uint8_t rgb[7][3];
+            rgb[i][0] = stock > 0 ? cr : 90;
+            rgb[i][1] = stock > 0 ? cg : 90;
+            rgb[i][2] = stock > 0 ? cb : 90;
+            cells[cell_count++] = (cell_t){ (float)(7 + i * 7), labels[i], rgb[i] };
         }
+        draw_row_cells(cx, my, cells, cell_count);
         my += row_h;
     }
 
@@ -1085,7 +1099,9 @@ static void draw_trade_view(const station_ui_state_t *ui,
         snprintf(pg, sizeof(pg), "page %d/%d   [F] next",
                  page + 1, total_pages);
         const uint8_t COL_ACTIVE[3] = { 130, 210, 255 };
-        draw_row_lr(cx, my, inner_right, COL_ACTIVE, "TRADE", COL_FADED, pg);
+        const char *page_kind = (first < last && rows[first].kind == 1)
+            ? "SELL" : "BUY";
+        draw_row_lr(cx, my, inner_right, COL_ACTIVE, page_kind, COL_FADED, pg);
         my += row_h;
     }
 
@@ -1136,8 +1152,13 @@ static void draw_trade_view(const station_ui_state_t *ui,
 
         char total_buf[32];
         if (r->actionable) {
-            if (r->kind == 0) snprintf(total_buf, sizeof(total_buf), "-%d cr", r->unit_price);
-            else              snprintf(total_buf, sizeof(total_buf), "+%d cr", r->unit_price);
+            int total = r->total_price > 0 ? r->total_price : r->unit_price;
+            if (r->kind == 0 && r->quantity > 1)
+                snprintf(total_buf, sizeof(total_buf), "-%d cr x%d", total, r->quantity);
+            else if (r->kind == 0)
+                snprintf(total_buf, sizeof(total_buf), "-%d cr", total);
+            else
+                snprintf(total_buf, sizeof(total_buf), "+%d cr", total);
         } else {
             const char *why = "";
             switch (r->block_reason) {

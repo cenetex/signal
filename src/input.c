@@ -466,43 +466,38 @@ static void sample_trade_sell_all(input_intent_t *intent) {
  * truth. Mismatched [1] hotkeys aren't possible by construction. */
 static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
                                  const ship_t *ship, const trade_row_t *row) {
-    float price = (float)row->unit_price;
+    int quantity = row->quantity > 0 ? row->quantity : 1;
+    float total_price = (float)(row->total_price > 0
+        ? row->total_price : row->unit_price * quantity);
     float free_volume = ship_cargo_capacity(ship) -
                         input_ship_manifest_backed_cargo_volume(ship);
     float vol = commodity_volume(row->commodity);
-    /* Match server: dense goods buy multi-per-press so a single keystroke
-     * fills one cargo unit. */
-    int per_press = (vol > FLOAT_EPSILON) ? (int)lroundf(1.0f / vol) : 1;
-    if (per_press < 1) per_press = 1;
     float balance = player_current_balance();
-    if (free_volume + FLOAT_EPSILON < vol) { set_notice("Hold full."); return; }
-    if (balance < price) { set_notice("Need $%d.", (int)lroundf(price)); return; }
-    int volume_cap = (vol > FLOAT_EPSILON)
-        ? (int)floorf((free_volume + FLOAT_EPSILON) / vol) : per_press;
-    int funds_cap = (price > 0.01f)
-        ? (int)floorf((balance + FLOAT_EPSILON) / price) : per_press;
-    if (per_press > row->stock) per_press = row->stock;
-    if (per_press > volume_cap) per_press = volume_cap;
-    if (per_press > funds_cap) per_press = funds_cap;
-    if (per_press < 1) return;
+    if (free_volume + FLOAT_EPSILON < vol * (float)quantity) {
+        set_notice("Hold full.");
+        return;
+    }
+    if (balance + FLOAT_EPSILON < total_price) {
+        set_notice("Need $%d.", (int)lroundf(total_price));
+        return;
+    }
 
     intent->buy_product = true;
     intent->buy_commodity = row->commodity;
     intent->buy_grade = row->grade;
     if (!g.multiplayer_enabled) {
         station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
-        float total = price * (float)per_press;
         for (int li = 0; li < mst->ledger_count; li++) {
-            if (mst->ledger[li].balance >= total) {
-                mst->ledger[li].balance -= total;
+            if (mst->ledger[li].balance >= total_price) {
+                mst->ledger[li].balance -= total_price;
                 break;
             }
         }
     }
     set_notice("-$%d  %s %s x%d",
-               (int)lroundf(price * (float)per_press),
+               (int)lroundf(total_price),
                mining_grade_label(row->grade),
-               commodity_short_name(row->commodity), per_press);
+               commodity_short_name(row->commodity), quantity);
     (void)st;
 }
 

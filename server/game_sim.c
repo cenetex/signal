@@ -1055,6 +1055,83 @@ static int manifest_transfer_by_commodity_ex(manifest_t *src, manifest_t *dst,
     return moved;
 }
 
+static bool manifest_unit_is_named_ingot(const cargo_unit_t *u) {
+    return u && (cargo_kind_t)u->kind == CARGO_KIND_INGOT &&
+           (ingot_prefix_t)u->prefix_class != INGOT_PREFIX_ANONYMOUS;
+}
+
+static bool manifest_unit_matches_market_buy(const cargo_unit_t *u,
+                                             commodity_t commodity,
+                                             mining_grade_t preferred_grade) {
+    if (!u || u->commodity != (uint8_t)commodity) return false;
+    if (preferred_grade < MINING_GRADE_COUNT &&
+        u->grade != (uint8_t)preferred_grade) return false;
+    return !manifest_unit_is_named_ingot(u);
+}
+
+static int manifest_count_market_buy_units(const manifest_t *manifest,
+                                           commodity_t commodity,
+                                           mining_grade_t preferred_grade) {
+    if (!manifest || !manifest->units) return 0;
+    int n = 0;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        if (manifest_unit_matches_market_buy(&manifest->units[i],
+                                             commodity, preferred_grade)) n++;
+    }
+    return n;
+}
+
+static int manifest_find_market_buy_unit(const manifest_t *manifest,
+                                         commodity_t commodity,
+                                         mining_grade_t preferred_grade) {
+    if (!manifest || !manifest->units) return -1;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        if (manifest_unit_matches_market_buy(&manifest->units[i],
+                                             commodity, preferred_grade))
+            return (int)i;
+    }
+    return -1;
+}
+
+static int manifest_transfer_market_buy(manifest_t *src, manifest_t *dst,
+                                        commodity_t commodity,
+                                        mining_grade_t preferred_grade,
+                                        int n) {
+    if (!src || !dst || n <= 0) return 0;
+    int moved = 0;
+    while (moved < n) {
+        int idx = manifest_find_market_buy_unit(src, commodity, preferred_grade);
+        if (idx < 0) break;
+        cargo_unit_t unit;
+        if (!manifest_remove(src, (uint16_t)idx, &unit)) break;
+        if (!manifest_push(dst, &unit)) {
+            (void)manifest_push(src, &unit);
+            break;
+        }
+        moved++;
+    }
+    return moved;
+}
+
+static int manifest_find_top_sell_unit(const manifest_t *manifest,
+                                       commodity_t commodity,
+                                       mining_grade_t grade) {
+    if (!manifest || !manifest->units) return -1;
+    int top_idx = -1;
+    float top_mult = 1.0f;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        const cargo_unit_t *u = &manifest->units[i];
+        if (u->commodity != (uint8_t)commodity) continue;
+        if (grade < MINING_GRADE_COUNT && u->grade != (uint8_t)grade) continue;
+        float mult = prefix_class_price_multiplier((int)u->prefix_class);
+        if (top_idx < 0 || mult > top_mult) {
+            top_idx = (int)i;
+            top_mult = mult;
+        }
+    }
+    return top_idx;
+}
+
 /* Backwards-compatible wrapper — any-grade transfer (what Phase 1 used). */
 static int manifest_transfer_by_commodity(manifest_t *src, manifest_t *dst,
                                           commodity_t commodity, int n) {
@@ -1104,7 +1181,8 @@ static float manifest_grade_bonus_from_range(const manifest_t *manifest,
     for (uint16_t u = start; u < manifest->count; u++) {
         const cargo_unit_t *cu = &manifest->units[u];
         if (cu->commodity != commodity) continue;
-        float mult = mining_payout_multiplier((mining_grade_t)cu->grade);
+        float mult = mining_payout_multiplier((mining_grade_t)cu->grade) *
+                     prefix_class_price_multiplier((int)cu->prefix_class);
         bonus += (mult - 1.0f) * price_per;
     }
     return bonus;
@@ -1137,39 +1215,30 @@ static bool try_sell_one_unit(world_t *w, server_player_t *sp,
         return false;
     }
 
-    /* Find the unit in the ship manifest. Specific-grade mode walks
-     * forward to the first match; "any" mode just takes the FIFO-first
-     * matching commodity (mirrors manifest_transfer_by_commodity_ex). */
-    int unit_idx = -1;
-    for (uint16_t u = 0; u < sp->ship.manifest.count; u++) {
-        const cargo_unit_t *cu = &sp->ship.manifest.units[u];
-        if (cu->commodity != commodity) continue;
-        if (grade < MINING_GRADE_COUNT && (mining_grade_t)cu->grade != grade) continue;
-        unit_idx = (int)u;
-        break;
-    }
+    /* Match the TRADE row quote: sell the highest prefix multiplier in
+     * this commodity/grade bucket, not whichever unit happens to be FIFO. */
+    int unit_idx = manifest_find_top_sell_unit(&sp->ship.manifest, commodity, grade);
     /* Without a manifest unit we'd be selling provenance-less float
      * cargo, which the player UI shouldn't have offered. Fall through
      * to refusal (and keep the cargo) so we don't silently mint a
      * common-grade payout that breaks the chain. */
     if (unit_idx < 0) return false;
 
-    mining_grade_t actual_grade = (mining_grade_t)sp->ship.manifest.units[unit_idx].grade;
+    const cargo_unit_t *quoted = &sp->ship.manifest.units[unit_idx];
+    mining_grade_t actual_grade = (mining_grade_t)quoted->grade;
     float price = station_buy_price(st, commodity);
     float mult = mining_payout_multiplier(actual_grade);
-    float graded_price = price * mult;
+    float graded_price = station_buy_price_unit(st, quoted) * mult;
     int base_cr = (int)lroundf(price);
     int bonus_cr = (int)lroundf(graded_price - price);
 
-    /* Move the unit across. The transfer helper finds the same FIFO
-     * unit we did, so the index match is fine; we only used `unit_idx`
-     * to confirm presence. */
-    int moved = manifest_transfer_by_commodity_ex(&sp->ship.manifest,
-                                                   &st->manifest,
-                                                   commodity,
-                                                   grade < MINING_GRADE_COUNT ? grade : MINING_GRADE_COUNT,
-                                                   1);
-    if (moved <= 0) return false;
+    cargo_unit_t sold_unit;
+    if (!manifest_remove(&sp->ship.manifest, (uint16_t)unit_idx, &sold_unit))
+        return false;
+    if (!manifest_push(&st->manifest, &sold_unit)) {
+        (void)manifest_push(&sp->ship.manifest, &sold_unit);
+        return false;
+    }
     sync_ship_finished_cargo(&sp->ship, commodity);
     sync_station_finished_inventory(st, commodity);
 
@@ -2914,46 +2983,13 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                     station_produces(docked_st, c) : -1);
         if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT
             && station_produces(docked_st, c)) {
-            /* Exact-grade buys must refuse if the station has nothing
-             * matching — otherwise the ship lands a common ingot at
-             * the fine/rare price and the row the player tapped lied
-             * to them. Only enforced for non-common grades (1+);
-             * COMMON falls through so products like FRAMES that live
-             * on the float inventory without a manifest entry can
-             * still be purchased. The sentinel MINING_GRADE_COUNT
-             * path stays any-grade FIFO. */
-            if (intent->buy_grade < MINING_GRADE_COUNT
-                && intent->buy_grade > MINING_GRADE_COMMON) {
-                if (manifest_find_first_cg(&docked_st->manifest, c,
-                                           (mining_grade_t)intent->buy_grade) < 0) {
-                    SIM_LOG("[buy] REJECT: no manifest unit at c=%d grade=%d\n",
-                            (int)c, (int)intent->buy_grade);
-                    return;
-                }
-            }
-            /* Common-grade buys for INGOTS must also find an exact-grade
-             * manifest entry. Otherwise manifest_transfer_by_commodity_ex
-             * would fall back to a higher grade and the player walks away
-             * with a fine/rare ingot at the 1× COMMON price. Fabs (frames,
-             * lasers, tractors, kits) only ever carry COMMON, so the check
-             * is redundant for them. */
-            if (intent->buy_grade == MINING_GRADE_COMMON
-                && (c == COMMODITY_FERRITE_INGOT
-                    || c == COMMODITY_CUPRITE_INGOT
-                    || c == COMMODITY_CRYSTAL_INGOT)) {
-                if (manifest_find_first_cg(&docked_st->manifest, c,
-                                           MINING_GRADE_COMMON) < 0) {
-                    SIM_LOG("[buy] REJECT: no COMMON-grade manifest unit at c=%d\n", (int)c);
-                    return;
-                }
-            }
             /* Manifest is authoritative for finished goods. Reading the
              * float here previously rejected buys that the picker had
-             * advertised — every drift bug surfaced as "row shown,
-             * server says avail=0". */
-            float available = (c >= COMMODITY_RAW_ORE_COUNT)
-                ? (float)manifest_count_by_commodity(&docked_st->manifest, c)
-                : docked_st->_inventory_cache[c];
+             * advertised. Named ingots are deliberately excluded from
+             * generic BUY_PRODUCT so the market cannot transfer a prefix-
+             * premium collectible at bulk price; those use BUY_INGOT. */
+            float available = (float)manifest_count_market_buy_units(
+                &docked_st->manifest, c, intent->buy_grade);
             float free_volume = ship_cargo_capacity(&sp->ship) - ship_total_cargo(&sp->ship);
             float vol = commodity_volume(c);
             float space = (vol > FLOAT_EPSILON) ? (free_volume / vol) : free_volume;
@@ -3021,7 +3057,7 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                             whole, amount);
                     return;
                 }
-                moved = manifest_transfer_by_commodity_ex(
+                moved = manifest_transfer_market_buy(
                     &docked_st->manifest, &sp->ship.manifest,
                     c, intent->buy_grade, whole);
                 if (moved <= 0) {
@@ -3284,31 +3320,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
             if (sp->input.buy_product) {
                 commodity_t c = sp->input.buy_commodity;
                 if (c >= COMMODITY_RAW_ORE_COUNT && c < COMMODITY_COUNT) {
-                    /* Exact-grade hail-buys must refuse if the station
-                     * has nothing matching — same rule as the docked
-                     * path. */
-                    bool grade_ok = true;
-                    if (sp->input.buy_grade < MINING_GRADE_COUNT
-                        && sp->input.buy_grade > MINING_GRADE_COMMON) {
-                        if (manifest_find_first_cg(&nearby_st->manifest, c,
-                                                   (mining_grade_t)sp->input.buy_grade) < 0) {
-                            sp->input.buy_product = false;
-                            grade_ok = false;
-                        }
-                    }
-                    if (sp->input.buy_grade == MINING_GRADE_COMMON
-                        && (c == COMMODITY_FERRITE_INGOT
-                            || c == COMMODITY_CUPRITE_INGOT
-                            || c == COMMODITY_CRYSTAL_INGOT)) {
-                        if (manifest_find_first_cg(&nearby_st->manifest, c,
-                                                   MINING_GRADE_COMMON) < 0) {
-                            sp->input.buy_product = false;
-                            grade_ok = false;
-                        }
-                    }
-                    float available = grade_ok
-                        ? (float)manifest_count_by_commodity(&nearby_st->manifest, c)
-                        : 0.0f;
+                    float available = (float)manifest_count_market_buy_units(
+                        &nearby_st->manifest, c, sp->input.buy_grade);
                     float base = station_sell_price(nearby_st, c);
                     float gmult = (sp->input.buy_grade < MINING_GRADE_COUNT)
                         ? mining_payout_multiplier((mining_grade_t)sp->input.buy_grade)
@@ -3323,7 +3336,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                     float amount = fminf(fminf(available, 1.0f), afford); /* buy 1 at a time */
                     if (amount > FLOAT_EPSILON) {
                         int whole = (int)floorf(amount + 0.0001f);
-                        int moved = manifest_transfer_by_commodity_ex(
+                        int moved = manifest_transfer_market_buy(
                             &nearby_st->manifest, &sp->ship.manifest,
                             c, sp->input.buy_grade, whole);
                         if (moved <= 0) {
