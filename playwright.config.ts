@@ -1,22 +1,27 @@
 import { defineConfig } from '@playwright/test';
 
 const liveUrl = process.env.SMOKE_URL;
+const port = Number(process.env.SMOKE_PORT || 3000);
 
 export default defineConfig({
   testDir: './tests',
-  timeout: 30_000,
+  timeout: 45_000,
   use: {
     headless: true,
-    baseURL: liveUrl || 'http://localhost:3000',
+    baseURL: liveUrl || `http://127.0.0.1:${port}`,
+    trace: 'retain-on-failure',
+    screenshot: 'only-on-failure',
   },
   projects: [{ name: 'chromium', use: { browserName: 'chromium' } }],
-  // Only start local server if not testing live URL
+  // Only start a local static server if not testing the deployed URL.
+  // `make smoke` builds build-web first; the smoke spec adds
+  // ?singleplayer=1 so local runs do not require docker/ws://:9091.
   ...(liveUrl
     ? {}
     : {
         webServer: {
-          command: 'npx serve build-web -l 3000 --no-clipboard',
-          port: 3000,
+          command: `python3 -m http.server ${port} --directory build-web`,
+          port,
           reuseExistingServer: !process.env.CI,
         },
       }),

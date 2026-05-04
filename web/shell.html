@@ -103,14 +103,17 @@
         }
       };
 
-      /* Default SIGNAL_SERVER to the local docker websocket when this
+      /* ?singleplayer=1 forces the in-process server for local smoke
+       * tests and client-only iteration. Otherwise, default
+       * SIGNAL_SERVER to the local docker websocket when this
        * page is served from a localhost / private-LAN host. Without
        * this, opening http://localhost:8080/signal.html stays in
        * singleplayer and the docker signal_server on :9091 is unused —
        * which means no global highscore broadcast reaches the client.
        * Production sets window.SIGNAL_SERVER explicitly before this
        * script runs, so this default never fires there. */
-      if (!window.SIGNAL_SERVER) {
+      var signalParams = new URLSearchParams(window.location.search);
+      if (!signalParams.has('singleplayer') && !window.SIGNAL_SERVER) {
         var h = window.location.hostname;
         var isLocal = (h === 'localhost' || h === '127.0.0.1' || h === '0.0.0.0'
                     || /^192\.168\./.test(h) || /^10\./.test(h)

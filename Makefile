@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all crap dev dev-logs dev-clean stop deploy clean install-hooks
+.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all smoke crap dev dev-logs dev-clean stop deploy clean install-hooks
 
 all: build build-web build-server
 
@@ -118,6 +118,11 @@ test-all: build-test
 
 test-serial: build-test
 	./build/signal_test --no-soak $(TEST_QUIET)
+
+# Browser smoke: builds the WASM client, serves build-web locally, and
+# drives the canvas through the same Playwright smoke used after deploy.
+smoke: build-web
+	npm run smoke
 
 # --- CRAP (Change Risk Anti-Patterns): complexity * (1 - coverage) ---
 # Rebuilds signal_test with --coverage, runs it, then joins gcovr line

@@ -1,5 +1,9 @@
 {
   "private": true,
+  "scripts": {
+    "smoke": "playwright test",
+    "smoke:headed": "playwright test --headed"
+  },
   "devDependencies": {
     "@playwright/test": "^1.52.0"
   }
