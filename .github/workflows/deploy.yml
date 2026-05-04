@@ -64,27 +64,34 @@ jobs:
   # because it costs several minutes; test-basic + native
   # (linux/macos/windows) catch the vast majority of regressions on the
   # PR loop in <5 min, while ASan backstops them after deploy lands.
+  # Shard it so one slow test bucket cannot consume the whole main tail.
   test-asan:
     runs-on: ubuntu-latest
     needs: deploy
     if: github.ref == 'refs/heads/main'
-    timeout-minutes: 20
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3]
+    env:
+      ASAN_OPTIONS: halt_on_error=1
     steps:
       - uses: actions/checkout@v4
-      - name: Build and run tests with AddressSanitizer
+      - name: Build and run tests with AddressSanitizer (shard ${{ matrix.shard }}/4)
         run: |
           cmake -S . -B build-san -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
             -DCMAKE_C_FLAGS="-fsanitize=address -fno-omit-frame-pointer" \
             -DCMAKE_EXE_LINKER_FLAGS="-fsanitize=address"
-          cmake --build build-san
+          cmake --build build-san --parallel
           ulimit -s 16384
-          ./build-san/signal_test
+          ./build-san/signal_test --quiet --no-soak --shard=${{ matrix.shard }}/4
 
   # UBSan + ASan: post-deploy verification on main only. UBSan catches
   # undefined behavior (signed overflow, strict-aliasing, null derefs,
   # OOB, etc.) that ASan alone misses; running them together backstops
-  # the post-deploy check with maximum coverage. Same gating model as
-  # test-asan — informational on PRs, paging on main.
+  # the post-deploy check with maximum coverage. Same post-deploy gating
+  # model as test-asan.
   test-ubsan:
     runs-on: ubuntu-latest
     needs: deploy
