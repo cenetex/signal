@@ -2044,6 +2044,7 @@ TEST(test_pair_satisfied_cross_ring) {
     world_reset(w);
 
     station_t *st = &w->stations[5]; /* unused slot, completely empty */
+    station_cleanup(st);
     memset(st, 0, sizeof(*st));
     st->signal_range = 1.0f;
 
@@ -2060,6 +2061,7 @@ TEST(test_pair_satisfied_cross_ring) {
 
     /* FURNACE accepts ANY ore — one ferrite-ore hopper is enough. */
     station_t *st2 = &w->stations[6];
+    station_cleanup(st2);
     memset(st2, 0, sizeof(*st2));
     st2->signal_range = 1.0f;
     ASSERT(!station_pair_satisfied(st2, 2, 0, MODULE_FURNACE));
