@@ -13,6 +13,9 @@
 #include "mining.h"  /* mining_alphanumeric_callsign — pubkey-derived */
 #include "signal_model.h"
 #include "palette.h"
+#ifdef __EMSCRIPTEN__
+#include <emscripten.h>
+#endif
 
 /* ------------------------------------------------------------------ */
 /* Station-local balance helper                                        */
@@ -940,6 +943,28 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
     /* Nothing to say. Panel is empty. */
     return false;
 }
+
+#ifdef __EMSCRIPTEN__
+EMSCRIPTEN_KEEPALIVE
+const char *get_hud_hint_text(void) {
+    static char out[384];
+    char label[64];
+    char message[256];
+    uint8_t r = 0, g0 = 0, b = 0;
+
+    out[0] = '\0';
+    label[0] = '\0';
+    message[0] = '\0';
+    if (!build_hud_message(label, sizeof(label), message, sizeof(message), &r, &g0, &b))
+        return out;
+
+    if (label[0] != '\0')
+        snprintf(out, sizeof(out), "%s: %s", label, message);
+    else
+        snprintf(out, sizeof(out), "%s", message);
+    return out;
+}
+#endif
 
 /* ------------------------------------------------------------------ */
 /* draw_hud_panels -- background panel geometry for the flight HUD     */

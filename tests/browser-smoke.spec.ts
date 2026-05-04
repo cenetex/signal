@@ -160,6 +160,16 @@ async function signalStrength(page: Page): Promise<number | null> {
   });
 }
 
+async function hudHintText(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('get_hud_hint_text', 'string', [], []) || '';
+  });
+}
+
 async function waitForRenderedGame(page: Page, canvas: Locator): Promise<void> {
   await expect(canvas).toBeVisible({ timeout: 20_000 });
   await waitForRuntime(page);
@@ -211,25 +221,25 @@ async function driveCoreControls(page: Page, canvas: Locator): Promise<void> {
   await canvas.click();
 
   await tap(page, 'Escape');
-  await tap(page, 'e');        // launch if docked, interact if already undocked
-  await hold(page, 'w', 450);
-  await hold(page, 'a', 220);
-  await hold(page, 'd', 220);
+  await tap(page, 'E');        // launch if docked, interact if already undocked
+  await hold(page, 'W', 450);
+  await hold(page, 'A', 220);
+  await hold(page, 'D', 220);
   await hold(page, 'Shift', 300);
-  await tap(page, 'h');        // hail / collect credits
-  await hold(page, 'm', 500);  // mining beam
+  await tap(page, 'H');        // hail / collect credits
+  await hold(page, 'M', 500);  // mining beam
   await hold(page, 'Space', 550);
   await tap(page, 'Space');    // release tow tap path
-  await tap(page, 'b');        // plan mode
-  await tap(page, 'r');        // cycle planned module / tow control
-  await tap(page, 'e');        // place / interact
+  await tap(page, 'B');        // plan mode
+  await tap(page, 'R');        // cycle planned module / tow control
+  await tap(page, 'E');        // place / interact
   await tap(page, 'Escape');   // leave plan mode
   await tap(page, 'Tab');      // docked tab cycling if docked
-  await tap(page, 'f');        // docked buy primary product if docked
-  await tap(page, 's');        // docked sell-all if docked
+  await tap(page, 'F');        // docked buy primary product if docked
+  await tap(page, 'S');        // docked sell-all if docked
   await tap(page, '1');        // first visible row action
   await tap(page, '2');        // second visible row action / repair
-  await tap(page, 'o');        // autopilot toggle
+  await tap(page, 'O');        // autopilot toggle
 }
 
 test.describe('Browser smoke tests', () => {
@@ -237,8 +247,18 @@ test.describe('Browser smoke tests', () => {
     const logs = installFatalCollectors(page);
 
     await loadGame(page);
+    await expect
+      .poll(async () => hudHintText(page), { timeout: 5_000 })
+      .toContain('Press E to launch.');
+
     const firstIdentity = await page.evaluate(() => window.localStorage.getItem('signal:identity'));
     expect(firstIdentity).toMatch(/^[A-Za-z0-9+/]{86}==$/);
+
+    await page.locator('canvas').click();
+    await tap(page, 'E');
+    await expect
+      .poll(async () => hudHintText(page), { timeout: 8_000 })
+      .toContain('Fly with W A S D.');
 
     await page.reload();
     await waitForRenderedGame(page, page.locator('canvas'));
@@ -252,6 +272,10 @@ test.describe('Browser smoke tests', () => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });
     const canvas = await loadGame(page);
+
+    await expect
+      .poll(async () => hudHintText(page), { timeout: 5_000 })
+      .toContain('Press E to launch.');
 
     await driveCoreControls(page, canvas);
     await expect
@@ -270,12 +294,12 @@ test.describe('Browser smoke tests', () => {
     await tap(page, 'Escape');
     await tap(page, 'Tab');
     await tap(page, 'Tab');
-    await tap(page, 'f');
-    await tap(page, 's');
+    await tap(page, 'F');
+    await tap(page, 'S');
     await tap(page, '1');
     await tap(page, '2');
-    await tap(page, 'e');
-    await hold(page, 'w', 300);
+    await tap(page, 'E');
+    await hold(page, 'W', 300);
 
     const box = await canvas.boundingBox();
     expect(box).toBeTruthy();
