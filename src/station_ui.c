@@ -1139,15 +1139,19 @@ static void draw_trade_view(const station_ui_state_t *ui,
 
         /* Status column on the left of the right-aligned price:
          * BUY:  station X/MAX
-         * SELL: station X/MAX  (Y held)
-         * Passive rows shorten/replace the price column with a reason. */
+         * SELL: station X/MAX, plus held count only when the player has
+         * cargo. Empty SELL rows already explain themselves in the reason
+         * column, so avoid "(0 held) (none held)" duplication. */
         char status_buf[40];
         if (r->kind == 0) {
             snprintf(status_buf, sizeof(status_buf), "%d/%d",
                      r->station_stock, r->station_capacity);
-        } else {
+        } else if (r->held > 0) {
             snprintf(status_buf, sizeof(status_buf), "%d/%d  (%d held)",
                      r->station_stock, r->station_capacity, r->held);
+        } else {
+            snprintf(status_buf, sizeof(status_buf), "%d/%d",
+                     r->station_stock, r->station_capacity);
         }
 
         char total_buf[32];
