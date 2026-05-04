@@ -90,6 +90,22 @@ TEST(test_can_afford_upgrade_cargo_only_no_credits_needed) {
     ASSERT(can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD,0.0f));
 }
 
+TEST(test_can_afford_upgrade_rejects_float_only_finished_goods) {
+    SHIP_DECL(ship);
+    STATION_DECL(station);
+    ship.hull_class = HULL_CLASS_MINER;
+    ASSERT(ship_manifest_bootstrap(&ship));
+    ASSERT(station_manifest_bootstrap(&station));
+
+    int need = (int)ceilf(upgrade_product_cost(&ship, SHIP_UPGRADE_HOLD));
+    ship.cargo[COMMODITY_FRAME] = (float)need;
+    station._inventory_cache[COMMODITY_FRAME] = (float)need;
+
+    ASSERT_EQ_INT(ship_finished_count(&ship, COMMODITY_FRAME), 0);
+    ASSERT_EQ_INT(station_finished_count(&station, COMMODITY_FRAME), 0);
+    ASSERT(!can_afford_upgrade(&station, &ship, SHIP_UPGRADE_HOLD, 10000.0f));
+}
+
 TEST(test_contract_generated_from_hopper_deficit) {
     /* A refinery with low ore_buffer should generate an ore contract */
     WORLD_DECL;
@@ -212,9 +228,11 @@ TEST(test_hauler_fills_highest_value_contract) {
         .quantity_needed = 20.0f,
         .base_price = 50.0f, .age = 0.0f,
     };
-    /* Give home station (0) inventory of both */
-    w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = 20.0f;
-    w.stations[0]._inventory_cache[COMMODITY_CUPRITE_INGOT] = 20.0f;
+    /* Give home station (0) manifest-backed inventory of both. */
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT, 20));
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_CUPRITE_INGOT, 20));
     /* Find the first hauler */
     npc_ship_t *hauler = NULL;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
@@ -231,6 +249,48 @@ TEST(test_hauler_fills_highest_value_contract) {
     world_sim_step(&w, SIM_DT);
     /* Hauler should target station 2 (higher value contract) */
     ASSERT(hauler->dest_station == 2);
+}
+
+TEST(test_hauler_ignores_float_only_finished_stock) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
+        ASSERT(test_set_station_finished_units(&w.stations[0], (commodity_t)c, 0));
+
+    w.contracts[0] = (contract_t){
+        .active = true, .action = CONTRACT_TRACTOR, .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 20.0f, .base_price = 50.0f,
+    };
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = 20.0f;
+
+    int hauler_slot = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER) {
+            hauler_slot = i;
+            break;
+        }
+    }
+    ASSERT(hauler_slot >= 0);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (i != hauler_slot) w.npc_ships[i].active = false;
+    }
+
+    npc_ship_t *hauler = &w.npc_ships[hauler_slot];
+    hauler->state = NPC_STATE_DOCKED;
+    hauler->state_timer = 0.0f;
+    hauler->home_station = 0;
+    hauler->dest_station = 1;
+    memset(hauler->cargo, 0, sizeof(hauler->cargo));
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_FLOAT(hauler->cargo[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
+    ASSERT_EQ_INT(station_finished_count(&w.stations[0],
+                                         COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
+                    20.0f, 0.001f);
 }
 
 TEST(test_one_contract_per_station) {
@@ -701,6 +761,63 @@ TEST(test_repair_partial_when_kits_short) {
     ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull - 20.0f, 0.01f);
 }
 
+TEST(test_repair_rejects_float_only_kits) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x04, 8);
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_REPAIR_KIT, 0));
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+                                        COMMODITY_REPAIR_KIT, 0,
+                                        MINING_GRADE_COMMON));
+    w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT] = 100.0f;
+    w.players[0].ship.cargo[COMMODITY_REPAIR_KIT] = 100.0f;
+
+    float max_hull = ship_max_hull(&w.players[0].ship);
+    w.players[0].ship.hull = max_hull - 20.0f;
+    w.players[0].input.service_repair = true;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_FLOAT(w.players[0].ship.hull, max_hull - 20.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_REPAIR_KIT],
+                    100.0f, 0.001f);
+}
+
+TEST(test_repair_kit_fab_requires_manifest_inputs) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    int shipyard = -1;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (station_has_module(&w.stations[s], MODULE_SHIPYARD)) {
+            shipyard = s;
+            break;
+        }
+    }
+    ASSERT(shipyard >= 0);
+    station_t *st = &w.stations[shipyard];
+
+    ASSERT(test_set_station_finished_units(st, COMMODITY_FRAME, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_LASER_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_TRACTOR_MODULE, 0));
+    ASSERT(test_set_station_finished_units(st, COMMODITY_REPAIR_KIT, 0));
+    st->_inventory_cache[COMMODITY_FRAME] = 5.0f;
+    st->_inventory_cache[COMMODITY_LASER_MODULE] = 5.0f;
+    st->_inventory_cache[COMMODITY_TRACTOR_MODULE] = 5.0f;
+    st->repair_kit_fab_timer = 0.0f;
+
+    step_dock_repair_kit_fab(&w, 60.0f);
+
+    ASSERT_EQ_INT(station_finished_count(st, COMMODITY_REPAIR_KIT), 0);
+    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_REPAIR_KIT], 0.0f, 0.001f);
+}
+
 TEST(test_furnace_without_hopper_does_not_smelt) {
     /* Under the count-tier rules, a furnace requires at least one
      * hopper on the station before it'll fire. Inverse of the prior
@@ -802,6 +919,7 @@ void register_economy_basic_tests(void) {
     RUN(test_can_afford_upgrade_no_credits_for_dock_fallback);
     RUN(test_can_afford_upgrade_no_product_anywhere);
     RUN(test_can_afford_upgrade_cargo_only_no_credits_needed);
+    RUN(test_can_afford_upgrade_rejects_float_only_finished_goods);
     RUN(test_commodity_volume_kit_dense);
     RUN(test_ship_total_cargo_kit_density);
 }
@@ -813,6 +931,7 @@ void register_economy_contracts_tests(void) {
     RUN(test_contract_closes_when_deficit_filled);
     RUN(test_sell_price_uses_contract_price);
     RUN(test_hauler_fills_highest_value_contract);
+    RUN(test_hauler_ignores_float_only_finished_stock);
     RUN(test_kit_fab_requires_shipyard);
     RUN(test_kit_import_contract_at_consumer_station);
     RUN(test_kit_import_contract_skips_shipyard_stations);
@@ -820,6 +939,8 @@ void register_economy_contracts_tests(void) {
     RUN(test_repair_falls_back_to_station_inventory);
     RUN(test_repair_at_shipyard_no_labor_fee);
     RUN(test_repair_partial_when_kits_short);
+    RUN(test_repair_rejects_float_only_kits);
+    RUN(test_repair_kit_fab_requires_manifest_inputs);
 }
 
 void register_economy_contract3_tests(void) {
