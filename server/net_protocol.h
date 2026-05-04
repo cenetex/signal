@@ -249,16 +249,17 @@ static inline int serialize_asteroids_full(uint8_t *buf, const asteroid_t *aster
 }
 
 /* RATi v2 — write a single named-ingot wire record from a cargo_unit_t.
- * Layout matches the on-wire NAMED_INGOT_RECORD_SIZE definition.
- * The wire shape is unchanged after the named_ingot_t -> cargo_unit_t
- * unification — we just project the cargo_unit's named-ingot fields
- * onto the same byte layout. */
+ * Layout matches the on-wire NAMED_INGOT_RECORD_SIZE definition. The
+ * record size is unchanged after the named_ingot_t -> cargo_unit_t
+ * unification; p[34] was formerly padding and now carries grade so
+ * clients can attach provenance to the correct market row. */
 static inline void write_named_ingot_unit(uint8_t *p, const cargo_unit_t *u) {
     memset(p, 0, NAMED_INGOT_RECORD_SIZE);
     memcpy(&p[0], u->pub, 32);
     p[32] = u->prefix_class;
     p[33] = u->commodity;
-    /* p[34..35] pad */
+    p[34] = u->grade;
+    /* p[35] pad */
     for (int k = 0; k < 8; k++) p[36 + k] = (uint8_t)(u->mined_block >> (8 * k));
     p[44] = u->origin_station;
     /* p[45..51] pad */

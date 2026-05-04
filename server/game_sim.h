@@ -405,6 +405,12 @@ typedef struct {
     float time;
     float field_spawn_timer;
     float gravity_accumulator;  /* runs gravity at reduced rate */
+    /* Operational telemetry for the legacy refinery-hopper smelt path.
+     * Fragment-tow smelts carry explicit fragment lineage; hopper smelts
+     * still use zero fragment_pub, so these counters let live operators
+     * measure whether that compatibility path is actually active. */
+    uint64_t hopper_smelt_events;
+    double hopper_smelt_units;
     /* Replenish dead haulers / miners. Decremented in step_npc_ships;
      * when it hits zero, replenish_npc_roster spawns AT MOST one NPC
      * (the most-understaffed station/role pair) and resets the timer.

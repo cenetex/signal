@@ -348,46 +348,25 @@ log. No new screens, no new keys, just a string format change.
 
 ## Recommended next moves
 
-Ranked by value-per-effort. Bumped slightly from the original draft
-based on the chain-log-emission findings.
+Ranked by value-per-effort after the current implementation pass.
 
-**1. Instrument hopper-path to confirm dead-code suspicion (one
-afternoon, zero risk).** Add a counter at
-`server/sim_production.c:280` (the `_inventory_cache[ore] -= consume`
-line). Run a multi-hour live session. If the counter stays at zero,
-the entire hopper-path can be ripped out and gap 2 disappears. If
-it's non-zero, the heal plan in gap 2 applies.
+**1. Watch the hopper-path telemetry in live sessions.** The legacy
+refinery-hopper path now increments `world.hopper_smelt_events` and
+`world.hopper_smelt_units`, exposed from `/health`. If the counters stay
+at zero during real play, remove the hopper path and its zero-fragment
+`EVT_SMELT` compatibility behavior. If they move, keep it and add
+synthetic batch lineage for hopper-fed ore.
 
-**2. Add `EVT_SMELT` emission to the fragment-tow path (one to two
-days, low risk).** Currently fragment-tow smelts mint ingots with
-full lineage but emit nothing to the chain log. Adding the emit at
-`server/sim_production.c:~768` with `fragment_pub` populated from the
-asteroid record fixes the audit-log invisibility. This is what
-unblocks every downstream heritage feature.
+**2. Expand lineage beyond named ingots.** Trade rows now surface
+representative `origin_station` / `mined_block` text from local
+manifests, and multiplayer preserves detailed named-ingot snapshots.
+Anonymous ingots and fabricated goods still need either richer wire
+records or a compact provenance-summary record if they should display
+the same player-facing history.
 
-**3. Player-visible lineage display (one week, low risk).**
-Surface what the substrate already records. Render a single-line
-provenance summary on cargo rows and station inventory rows. Pulls
-from `cargo_unit_t` fields (`origin_station`, `mined_block`,
-`prefix_class`) that already exist. Zero data-model change. The first
-thing players will *feel* from years of substrate work.
-
-**4. Chain events for fragment in-flight lifecycle (one to two weeks,
-medium risk).** Add `EVT_FRAGMENT_TOW`, `EVT_FRAGMENT_DEPOSIT`,
-`EVT_FRAGMENT_LOST`. Emit at the corresponding sim transitions
-(`server/game_sim.c:1888` for tow, `:1827-1828` for asteroid destroyed,
-`:1916-1917` for fracture-child escape, `:1927-1928` for station-beam
-arrival, `:1950-1951` for manual release). Chain-log volume will rise
-(one event per fragment per state change); worth measuring against the
-binary-fuse rock-ledger machinery already in place.
-
-**5. Resolve gap 2 based on (1)'s instrumentation result.** Either
-delete the hopper-path entirely (if dead) or add synthetic batch
-lineage (if live).
-
-**6. Heritage contract templates (two weeks, low risk).**
-With (2)-(5) in place, contracts can filter on `parent_merkle` chains.
-Build the contract-emission templates that reference real chain-log
+**3. Heritage contract templates.** Fragment-tow smelts emit
+`EVT_SMELT`, and fragment tow/release transitions are logged. Contracts
+can now start filtering on `parent_merkle` chains and real chain-log
 history. The player-facing payoff: the universe's history becomes the
 quest content.
 

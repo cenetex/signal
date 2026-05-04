@@ -182,8 +182,8 @@ change anything here.
 A chain log carries the station's signature on every event and a hash chain
 linking every event to its predecessor. Anyone with the on-disk log file plus
 the station's pubkey can replay the log, verify each signature, and verify the
-prev-hash linkage. This is the surface that `signal_verify` (Layer E, in flight)
-will expose as a standalone tool.
+prev-hash linkage. This is the surface that `signal_verify` (Layer E) exposes
+as a standalone tool.
 
 The trust assumption shrinks to: "the operator who holds this station's private
 key is honest about what their station did." If they aren't, the chain log
@@ -197,10 +197,9 @@ When a second operator joins, they bring their own pubkey-keyed station, run
 their own chain log, and sign their own events. They do not have to trust the
 first operator's server; they only have to verify the first operator's
 signatures on the cargo units and receipts that cross the zone boundary. Layer
-D (cross-station settlement, in flight as a parallel PR) is what threads the
-needle: cargo units carry a chain of signed transfer receipts back to the
-originating event, and the destination station verifies the chain on dock
-before accepting the unit.
+D (cross-station settlement) threads the needle: cargo units carry a chain of
+signed transfer receipts back to the originating event, and the destination
+station verifies the chain on dock before accepting the unit.
 
 Every station is sovereign within its zone. Prospect's operator decides
 Prospect's price curves. Helios's operator decides what Helios pays for
@@ -293,27 +292,26 @@ Verification semantics (`chain_log_verify`,
 4. Returns `true` iff every event verifies. A missing log file returns `true`
    with zero events walked — the empty chain is trivially valid.
 
-## Cross-station settlement (Layer D — in flight)
+## Cross-station settlement (Layer D — shipped off-chain)
 
-When Layer D lands, cargo units crossing a zone boundary will carry a chain
-of signed transfer receipts. The destination station will verify the chain
-before accepting the unit, and emit its own `CHAIN_EVT_TRANSFER` (and, if
-the dock-side trade is atomic, an accompanying `CHAIN_EVT_LEDGER`) into its
-own log.
+Cargo units crossing a zone boundary carry a chain of signed transfer
+receipts. The destination station verifies the chain before accepting the
+unit, and emits its own `CHAIN_EVT_TRANSFER` (and, if the dock-side trade is
+atomic, an accompanying `CHAIN_EVT_LEDGER`) into its own log.
 
 The schema fields are reserved already: `cargo_unit_t.parent_merkle`
 ([`shared/types.h:148`](../shared/types.h)) is the sorted-input merkle root of
 the producing event, and the chain log entry whose hash matches it is the
 authoritative attestation that the unit was legitimately transferred.
 
-Until D lands, cargo movement *within* a zone is fully signed but
-*cross-zone* movement still relies on the same server holding both stations.
-This document will be updated when D ships.
+The remaining Layer D work is product hardening: richer operator policy,
+cross-operator replication, and UX around failed receipt verification. The
+core off-chain receipt format and verifier hooks are in the repository.
 
-## The verifier tool (Layer E — in flight)
+## The verifier tool (Layer E — shipped)
 
-Layer E will ship `signal_verify` as a standalone binary that takes a chain
-log file and a pubkey, and reports:
+Layer E ships `signal_verify` as a standalone binary that takes a chain log
+file and a pubkey, and reports:
 
 - Total events walked and total bytes consumed.
 - First failed event (if any), with a short reason: `bad signature`,
@@ -323,8 +321,7 @@ log file and a pubkey, and reports:
 
 The verifier wraps the same `chain_log_verify` walker that runs at server
 startup; the only difference is the CLI surface and a non-zero exit code on
-failure for CI integration. Until E lands, the same verification is callable
-from C code by any tool that links `chain_log.c`.
+failure for CI integration.
 
 ## Off-chain vs on-chain
 
@@ -337,8 +334,8 @@ from C code by any tool that links `chain_log.c`.
 | Cargo unit identity | Content hash on `cargo_unit_t.pub` (#481) |
 | Station identity | Deterministic Ed25519 keypair (PR #493) |
 | Per-station event history | Signed chain log (PR #497) |
-| Cross-station verification | Cargo receipts (Layer D, in flight) |
-| Standalone verifier | `signal_verify` (Layer E, in flight) |
+| Cross-station verification | Cargo receipts (Layer D, shipped off-chain) |
+| Standalone verifier | `signal_verify` (Layer E, shipped) |
 | Cross-operator anchor | On-chain state-root commitment (#480, future) |
 | Asset extraction | On-chain wrap contract (#480, future) |
 | Bounty payouts | On-chain bounty program (#480, future) |

@@ -204,6 +204,55 @@ void apply_remote_station_manifest(uint8_t station_id,
     }
 }
 
+static bool cargo_unit_from_named_ingot_entry(const NetNamedIngotEntry *entry,
+                                             cargo_unit_t *out) {
+    if (!entry || !out) return false;
+    if (entry->commodity >= COMMODITY_COUNT) return false;
+    if (entry->grade >= MINING_GRADE_COUNT) return false;
+    memset(out, 0, sizeof(*out));
+    out->kind = (uint8_t)CARGO_KIND_INGOT;
+    out->commodity = entry->commodity;
+    out->grade = entry->grade;
+    out->prefix_class = entry->prefix_class;
+    if (out->prefix_class >= INGOT_PREFIX_COUNT)
+        out->prefix_class = (uint8_t)INGOT_PREFIX_ANONYMOUS;
+    out->recipe_id = (uint16_t)RECIPE_SMELT;
+    out->origin_station = entry->origin_station;
+    out->quantity = 1;
+    out->mined_block = entry->mined_block;
+    memcpy(out->pub, entry->pub, sizeof(out->pub));
+    return true;
+}
+
+/* Detailed station named-ingot snapshot. The station manifest remains a
+ * partial provenance mirror in multiplayer: counts come from
+ * g.station_manifest_summary, while this manifest holds only the named
+ * ingot units needed for representative lineage strings. */
+void apply_remote_station_ingots(uint8_t station_id,
+                                 const NetNamedIngotEntry *entries,
+                                 int count) {
+    if (station_id >= MAX_STATIONS) return;
+    if (count < 0) count = 0;
+    if (count > NET_NAMED_INGOT_MAX) count = NET_NAMED_INGOT_MAX;
+    station_t *st = &g.world.stations[station_id];
+    if (!st->manifest.units && !station_manifest_bootstrap(st)) return;
+    manifest_clear(&st->manifest);
+    for (int i = 0; i < count; i++) {
+        cargo_unit_t unit = {0};
+        if (!cargo_unit_from_named_ingot_entry(&entries[i], &unit)) continue;
+        if (!manifest_push(&st->manifest, &unit)) break;
+    }
+}
+
+void apply_remote_hold_ingots(const NetNamedIngotEntry *entries, int count) {
+    if (count < 0) count = 0;
+    if (count > NET_NAMED_INGOT_MAX) count = NET_NAMED_INGOT_MAX;
+    g.remote_hold_named_ingot_count = 0;
+    if (!entries || count == 0) return;
+    for (int i = 0; i < count; i++)
+        g.remote_hold_named_ingots[g.remote_hold_named_ingot_count++] = entries[i];
+}
+
 void apply_remote_highscores(const NetHighscoreEntry *entries, int count) {
     if (count < 0) count = 0;
     int cap = (int)(sizeof(g.highscores) / sizeof(g.highscores[0]));
@@ -216,12 +265,10 @@ void apply_remote_highscores(const NetHighscoreEntry *entries, int count) {
     g.highscore_count = count;
 }
 
-/* Replace the local player's ship.manifest with synthesized
- * legacy-migrate units that match the server-authoritative count
- * summary. Provenance pubkeys are dropped (only counts matter for the
- * SELL trade UI); the server still owns the real manifest. Without
- * this, multiplayer SELL rows reflected only locally-predicted state
- * and went stale the moment the server transferred a unit. */
+/* Replace the local player's ship.manifest with units that match the
+ * server-authoritative count summary. HOLD_INGOTS supplies detailed
+ * named-ingot provenance for units the protocol can describe; the rest
+ * are synthesized legacy-migrate units so counts remain complete. */
 void apply_remote_player_manifest(const NetStationManifestEntry *entries,
                                   int count) {
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
@@ -237,6 +284,7 @@ void apply_remote_player_manifest(const NetStationManifestEntry *entries,
     if (count <= 0) return;
     uint8_t origin[8] = { 'S','R','V','M','I','R','R','0' };
     uint16_t out_idx = 0;
+    bool named_used[NET_NAMED_INGOT_MAX] = { false };
     for (int i = 0; i < count; i++) {
         uint8_t c = entries[i].commodity;
         uint8_t gr = entries[i].grade;
@@ -245,13 +293,25 @@ void apply_remote_player_manifest(const NetStationManifestEntry *entries,
         if (gr >= MINING_GRADE_COUNT) continue;
         cargo_kind_t kind;
         if (!cargo_kind_for_commodity((commodity_t)c, &kind)) continue;
-        for (uint16_t k = 0; k < n; k++) {
-            if (ship->manifest.count >= ship->manifest.cap) break;
+        uint16_t remaining = n;
+        for (int j = 0; j < g.remote_hold_named_ingot_count && remaining > 0; j++) {
+            if (named_used[j]) continue;
+            const NetNamedIngotEntry *entry = &g.remote_hold_named_ingots[j];
+            if (entry->commodity != c || entry->grade != gr) continue;
+            if (ship->manifest.count >= ship->manifest.cap) return;
+            cargo_unit_t unit = {0};
+            if (!cargo_unit_from_named_ingot_entry(entry, &unit)) continue;
+            if (!manifest_push(&ship->manifest, &unit)) return;
+            named_used[j] = true;
+            remaining--;
+        }
+        for (uint16_t k = 0; k < remaining; k++) {
+            if (ship->manifest.count >= ship->manifest.cap) return;
             cargo_unit_t unit = {0};
             if (!hash_legacy_migrate_unit(origin, (commodity_t)c, out_idx++, &unit))
                 continue;
             unit.grade = gr;
-            if (!manifest_push(&ship->manifest, &unit)) break;
+            if (!manifest_push(&ship->manifest, &unit)) return;
         }
     }
 }

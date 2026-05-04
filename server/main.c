@@ -1493,21 +1493,29 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                           "{\"status\":\"ok\",\"players\":%d,\"version\":\"%s\","
                           "\"signed_action_count\":%llu,"
                           "\"signed_action_reject_count\":%llu,"
-                          "\"unsigned_action_count\":%llu}",
+                          "\"unsigned_action_count\":%llu,"
+                          "\"hopper_smelt_events\":%llu,"
+                          "\"hopper_smelt_units\":%.3f}",
                           count, GIT_HASH,
                           (unsigned long long)signed_action_count,
                           (unsigned long long)signed_action_reject_count,
-                          (unsigned long long)unsigned_action_count);
+                          (unsigned long long)unsigned_action_count,
+                          (unsigned long long)world.hopper_smelt_events,
+                          world.hopper_smelt_units);
 #else
             mg_http_reply(c, 200, api_headers,
                           "{\"status\":\"ok\",\"players\":%d,\"version\":\"dev\","
                           "\"signed_action_count\":%llu,"
                           "\"signed_action_reject_count\":%llu,"
-                          "\"unsigned_action_count\":%llu}",
+                          "\"unsigned_action_count\":%llu,"
+                          "\"hopper_smelt_events\":%llu,"
+                          "\"hopper_smelt_units\":%.3f}",
                           count,
                           (unsigned long long)signed_action_count,
                           (unsigned long long)signed_action_reject_count,
-                          (unsigned long long)unsigned_action_count);
+                          (unsigned long long)unsigned_action_count,
+                          (unsigned long long)world.hopper_smelt_events,
+                          world.hopper_smelt_units);
 #endif
         } else if (mg_match(hm->uri, mg_str("/internal/v1/operator-post"), NULL)) {
             if (!internal_auth_ok(hm)) {

@@ -22,6 +22,7 @@
 
 enum {
     NET_MAX_PLAYERS = 32,
+    NET_NAMED_INGOT_MAX = 255,
 };
 
 typedef struct {
@@ -197,6 +198,26 @@ typedef void (*net_on_station_manifest_fn)(uint8_t station_id,
 typedef void (*net_on_player_manifest_fn)(const NetStationManifestEntry *entries,
                                           int count);
 
+/* Detailed named-ingot snapshot entry. These records supplement the
+ * grade-grouped manifest summaries with per-unit provenance for the
+ * representative cargo shown in trade rows. Only non-anonymous named
+ * ingots are carried here; anonymous ingots and finished goods still
+ * rely on the count summary. */
+typedef struct {
+    uint8_t  pub[32];
+    uint8_t  prefix_class;
+    uint8_t  commodity;
+    uint8_t  grade;
+    uint8_t  origin_station;
+    uint64_t mined_block;
+} NetNamedIngotEntry;
+
+typedef void (*net_on_station_ingots_fn)(uint8_t station_id,
+                                         const NetNamedIngotEntry *entries,
+                                         int count);
+typedef void (*net_on_hold_ingots_fn)(const NetNamedIngotEntry *entries,
+                                      int count);
+
 /* Global leaderboard — top-N death runs by credits earned. */
 typedef struct {
     char  callsign[8];    /* not NUL-terminated if 8 chars */
@@ -229,6 +250,8 @@ typedef struct {
     net_on_signal_channel_fn on_signal_channel;
     net_on_station_manifest_fn on_station_manifest;
     net_on_player_manifest_fn  on_player_manifest;
+    net_on_station_ingots_fn   on_station_ingots;
+    net_on_hold_ingots_fn      on_hold_ingots;
     net_on_highscores_fn       on_highscores;
 } NetCallbacks;
 

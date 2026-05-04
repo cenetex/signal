@@ -3,9 +3,9 @@
 ## Status
 
 This file describes the construction loop that is currently implemented in the
-repo. The longer-term target is still the fuller physical post-placement supply
-loop discussed in `#214` and `#224`, but that is not the shipped behavior
-today.
+repo. The longer-term target is still the fuller physical intermediate-goods
+loop discussed in `#224` and `#266`, but the post-placement module supply pass
+has landed.
 
 ## One Sentence
 
@@ -23,7 +23,7 @@ PLAYER enters plan mode with B
         → completed scaffold ejects as a loose world entity
           → PLAYER tractors scaffold through space
             → press E while towing to snap onto a ring slot
-              → MODULE TIMER (10s) or OUTPOST FRAME DELIVERY
+              → MODULE SUPPLY + TIMER (10s) or OUTPOST FRAME DELIVERY
                 → station/module activates
 ```
 
@@ -88,16 +88,16 @@ There are two activation paths in the current implementation:
 
 - **Outpost founding**: the newly founded outpost is itself scaffolded and
   still requires frame delivery before it activates.
-- **Placed module scaffolds**: after snap-to-slot, placed modules currently
-  enter the 10-second construction timer immediately. They do not yet require a
-  second post-placement material delivery pass.
+- **Placed module scaffolds**: after snap-to-slot, placed modules enter an
+  awaiting-supply state. Station inventory feeds the required material into the
+  scaffold, then the module runs the 10-second commissioning timer.
 
 On module activation:
 
 - `scaffold` flips off
 - station services are rebuilt
 - signal is recalculated if needed
-- production modules can spawn NPC miners or haulers
+- production modules can spawn NPC miners, haulers, or tow drones
 
 ## Implemented Data Model
 
@@ -112,8 +112,9 @@ The current scaffold entity supports:
 - `SCAFFOLD_PLACED`
 
 The important difference from the earlier design doc is that module scaffolds
-do not currently linger in a post-placement supply state. Placement finalizes
-them with `build_progress = 1.0f`, then the timer finishes the job.
+now do linger in a post-placement supply state. Placement sets
+`build_progress = 0.0f`, station inventory feeds the material requirement, and
+only then does the timer finish the job.
 
 ### Planning model
 
@@ -126,11 +127,11 @@ Planning is server-side and faction-shared:
 
 ## Known Gaps Relative to the Target Design
 
-- Post-placement material delivery for module scaffolds is not landed yet.
-- `NPC_ROLE_TOW` autonomous scaffold delivery is still reserved, not active.
-- Construction contracts are still station-level and can outlive the scaffold
-  need they were originally posted for.
 - Full physical intermediate-goods flow (`#266`) is still future work.
+- Construction contracts close on activation, but they remain station-level
+  supply jobs rather than cargo-unit-specific delivery orders.
+- `NPC_ROLE_TOW` autonomous scaffold delivery is active, but its routing and
+  dispatch policy are still intentionally simple.
 
 ## Verification
 
@@ -140,11 +141,11 @@ Planning is server-side and faction-shared:
 3. Wait for the scaffold to eject as a loose object near the station.
 4. Toggle the tractor with `R`, tow the scaffold, and press `E` to place it.
 5. For a new outpost, deliver frames until the station activates.
-6. For a placed module, wait out the 10-second commissioning timer.
+6. For a placed module, let station inventory feed the supply phase, then wait
+   out the 10-second commissioning timer.
 
 ## Follow-On Issues
 
-- `#214` unified post-placement supply for module scaffolds
 - `#216` stronger commissioning payoff
 - `#224` fuller physical scaffold construction loop
 - `#266` physical station output and intermediate goods

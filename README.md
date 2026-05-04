@@ -21,8 +21,8 @@ outposts at the edge of signal range. Every AI dreams of being a space station.
    an existing outpost, then dock at a station with a shipyard and order a
    matching scaffold.
 6. Use the tractor to tow loose scaffolds into place. New outposts still need
-   frames delivered before they activate; placed module scaffolds currently go
-   straight into a short commissioning timer once snapped onto a ring slot.
+   frames delivered before they activate; placed module scaffolds enter a
+   station-fed supply phase, then finish with a short commissioning timer.
 7. Throw rocks at other players. This is the main thing.
 
 Signal range matters. Weak signal cuts ship response and mining speed, and both

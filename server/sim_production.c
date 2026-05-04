@@ -315,6 +315,10 @@ void sim_step_refinery_production(world_t *w, float dt) {
             if (room <= 0.01f) continue;
             float consume = fminf(fminf(st->_inventory_cache[ore], rate * dt), room);
             st->_inventory_cache[ore] -= consume;
+            if (consume > 0.0f) {
+                w->hopper_smelt_events++;
+                w->hopper_smelt_units += (double)consume;
+            }
             /* Manifest-as-truth: mint ingot manifest entries at integer
              * crossings (legacy-migrate origin so future inspectors can
              * tell this came from the refinery hopper path, not the

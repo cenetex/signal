@@ -212,8 +212,9 @@ enum {
  *     entry_count × [commodity:1][grade:1][count:u16]   (little-endian)
  * Lets the local client build SELL rows from a manifest count even when
  * the authoritative manifest mutations happened server-side (buy/sell/
- * smelt). Provenance (cargo_unit_t pubkeys) is intentionally dropped —
- * the picker only needs counts; the server keeps the real manifest. */
+ * smelt). The summary carries counts only; the dedicated
+ * STATION_INGOTS / HOLD_INGOTS snapshots carry per-unit named-ingot
+ * provenance when a row needs a representative cargo_unit_t. */
 enum {
     PLAYER_MANIFEST_HEADER = 3,
     PLAYER_MANIFEST_ENTRY  = 4,
@@ -234,9 +235,12 @@ enum {
  * at a station's stockpile — small flat reward for transit. */
 #define INGOT_DELIVERY_CREDIT     100
 
-/* Named ingot wire record: [pubkey:32][prefix:1][metal:1][_pad:2][mined_block:8][origin:1][_pad2:7] = 52 bytes
+/* Named ingot wire record:
+ *   [pubkey:32][prefix:1][metal:1][grade:1][_pad:1]
+ *   [mined_block:8][origin:1][_pad2:7] = 52 bytes
  * The wire shape predates the named_ingot_t -> cargo_unit_t unification;
- * the server now projects the same fields off cargo_unit_t. Class
+ * the server now projects the same fields off cargo_unit_t. The grade
+ * byte reuses former padding without changing record size. Class
  * authorization is in the leading char(s) of base58(pubkey). */
 #define NAMED_INGOT_RECORD_SIZE 52
 

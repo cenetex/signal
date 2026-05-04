@@ -16,9 +16,9 @@
  *
  * Layer scope:
  *   - C (this file): emit + chain + persist + verify-walk.
- *   - D (later): cross-station gossip / merge.
- *   - E (later): standalone `signal_verify` tool wrapping the same
- *     verifier that runs at startup.
+ *   - D: cross-station cargo receipts live in shared/cargo_receipt.h.
+ *   - E: standalone `signal_verify` wraps the same verifier that runs
+ *     at startup.
  *
  * On-disk layout: `chain/<base58(station_pubkey)>.log`. Each entry is
  * the 184-byte chain_event_header_t followed by uint16 payload_len

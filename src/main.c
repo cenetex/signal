@@ -1066,6 +1066,8 @@ static void init(void) {
             cbs.on_signal_channel = apply_remote_signal_channel;
             cbs.on_station_manifest = apply_remote_station_manifest;
             cbs.on_player_manifest = apply_remote_player_manifest;
+            cbs.on_station_ingots = apply_remote_station_ingots;
+            cbs.on_hold_ingots = apply_remote_hold_ingots;
             cbs.on_highscores = apply_remote_highscores;
             /* Layer A.2 of #479 — hand the persistent pubkey to net.c
              * BEFORE net_init so the first WebSocket on_open already

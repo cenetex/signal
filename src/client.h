@@ -218,6 +218,12 @@ typedef struct {
      * station_t because station_t is the authoritative save/wire format
      * and this is derived. */
     uint16_t station_manifest_summary[MAX_STATIONS][COMMODITY_COUNT][MINING_GRADE_COUNT];
+    /* Multiplayer provenance mirror for the local hold. HOLD_INGOTS
+     * arrives just before PLAYER_MANIFEST; the latter rebuilds
+     * ship.manifest from summary counts and grafts these detailed
+     * named-ingot units back in where commodity+grade match. */
+    NetNamedIngotEntry remote_hold_named_ingots[NET_NAMED_INGOT_MAX];
+    int remote_hold_named_ingot_count;
 
     /* Batched sell summary for the bottom-right hint bar — every payout
      * flashes "[ +$N common xA fine xB ... ]" even when the station is

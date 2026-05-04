@@ -79,6 +79,13 @@ static uint16_t read_u16_le(const uint8_t* buf) {
     return (uint16_t)buf[0] | ((uint16_t)buf[1] << 8);
 }
 
+static uint64_t read_u64_le(const uint8_t* buf) {
+    uint64_t v = 0;
+    for (int i = 0; i < 8; i++)
+        v |= ((uint64_t)buf[i]) << (8 * i);
+    return v;
+}
+
 static float read_f32_le(const uint8_t* buf) {
     union { float f; uint32_t u; } conv;
     conv.u = (uint32_t)buf[0]
@@ -86,6 +93,20 @@ static float read_f32_le(const uint8_t* buf) {
            | ((uint32_t)buf[2] << 16)
            | ((uint32_t)buf[3] << 24);
     return conv.f;
+}
+
+static void read_named_ingot_entry(NetNamedIngotEntry *out, const uint8_t *p) {
+    memset(out, 0, sizeof(*out));
+    memcpy(out->pub, p, sizeof(out->pub));
+    out->prefix_class = p[32];
+    if (out->prefix_class >= INGOT_PREFIX_COUNT)
+        out->prefix_class = INGOT_PREFIX_ANONYMOUS;
+    out->commodity = p[33];
+    out->grade = p[34];
+    if (out->grade >= MINING_GRADE_COUNT)
+        out->grade = MINING_GRADE_COMMON;
+    out->mined_block = read_u64_le(&p[36]);
+    out->origin_station = p[44];
 }
 
 /* Forward declaration — implemented per platform below. */
@@ -741,17 +762,18 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_STATION_INGOTS:
-        /* Wire payload kept for backward compatibility — a server still
-         * sends per-station named-ingot snapshots derived from the
-         * unified manifest. The client no longer maintains a separate
-         * named-ingot store (single-source-of-truth refactor); the
-         * STATION_MANIFEST summary feeds the trade UI counts and the
-         * full provenance lives in the singleplayer mirror's manifest.
-         * We just length-validate and drop the bytes here. */
-        if (len >= STATION_INGOTS_HEADER) {
+        if (len >= STATION_INGOTS_HEADER && net_state.callbacks.on_station_ingots) {
+            uint8_t station_id = data[1];
             int count = data[2];
             int expected = STATION_INGOTS_HEADER + count * NAMED_INGOT_RECORD_SIZE;
-            (void)expected;
+            if (len < expected) break;
+            if (count > NET_NAMED_INGOT_MAX) count = NET_NAMED_INGOT_MAX;
+            static NetNamedIngotEntry scratch[NET_NAMED_INGOT_MAX];
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[STATION_INGOTS_HEADER + i * NAMED_INGOT_RECORD_SIZE];
+                read_named_ingot_entry(&scratch[i], p);
+            }
+            net_state.callbacks.on_station_ingots(station_id, scratch, count);
         }
         break;
 
@@ -809,15 +831,17 @@ static void handle_message(const uint8_t* data, int len) {
         break;
 
     case NET_MSG_HOLD_INGOTS:
-        /* Wire payload kept for backward compatibility (see
-         * NET_MSG_STATION_INGOTS above for the rationale). The named-
-         * ingot identity now lives in the ship manifest, populated by
-         * PLAYER_MANIFEST + the singleplayer mirror; the dedicated
-         * hold-ingot wire snapshot is informational only. */
-        if (len >= HOLD_INGOTS_HEADER) {
+        if (len >= HOLD_INGOTS_HEADER && net_state.callbacks.on_hold_ingots) {
             int count = data[1];
             int expected = HOLD_INGOTS_HEADER + count * NAMED_INGOT_RECORD_SIZE;
-            (void)expected;
+            if (len < expected) break;
+            if (count > NET_NAMED_INGOT_MAX) count = NET_NAMED_INGOT_MAX;
+            static NetNamedIngotEntry scratch[NET_NAMED_INGOT_MAX];
+            for (int i = 0; i < count; i++) {
+                const uint8_t *p = &data[HOLD_INGOTS_HEADER + i * NAMED_INGOT_RECORD_SIZE];
+                read_named_ingot_entry(&scratch[i], p);
+            }
+            net_state.callbacks.on_hold_ingots(scratch, count);
         }
         break;
 

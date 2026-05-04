@@ -29,6 +29,12 @@ void apply_remote_station_manifest(uint8_t station_id,
 /* Local player ship manifest summary (server-mirrored). */
 void apply_remote_player_manifest(const NetStationManifestEntry *entries,
                                   int count);
+/* Detailed named-ingot snapshots that supplement manifest summaries with
+ * per-unit provenance for trade-row display. */
+void apply_remote_station_ingots(uint8_t station_id,
+                                 const NetNamedIngotEntry *entries,
+                                 int count);
+void apply_remote_hold_ingots(const NetNamedIngotEntry *entries, int count);
 /* Global leaderboard snapshot. */
 void apply_remote_highscores(const NetHighscoreEntry *entries, int count);
 void apply_remote_events(const sim_event_t *events, int count);

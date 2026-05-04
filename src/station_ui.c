@@ -624,14 +624,42 @@ static int station_manifest_count_c(const station_t *st, commodity_t commodity)
     return total;
 }
 
+static int manifest_count_cg_direct(const manifest_t *manifest,
+                                    commodity_t commodity,
+                                    mining_grade_t grade)
+{
+    if (!manifest || !manifest->units) return 0;
+    int n = 0;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        const cargo_unit_t *u = &manifest->units[i];
+        if (u->commodity == (uint8_t)commodity && u->grade == (uint8_t)grade) n++;
+    }
+    return n;
+}
+
+static int manifest_lineage_count_cg(const manifest_t *manifest,
+                                     commodity_t commodity,
+                                     mining_grade_t grade)
+{
+    if (!manifest || !manifest->units) return 0;
+    int n = 0;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        const cargo_unit_t *u = &manifest->units[i];
+        if (u->commodity != (uint8_t)commodity || u->grade != (uint8_t)grade) continue;
+        if (u->mined_block != 0) n++;
+    }
+    return n;
+}
+
 /* station_manifest_has_commodity / ship_manifest_has_commodity removed —
  * after the manifest-first TRADE rewrite the rows always probe the
  * full grade range directly, so the "any-grade?" predicate is no
  * longer needed. */
 
-/* Ship manifest helpers — iterate directly. Ship cargo isn't broadcast
- * grade-grouped over the wire yet (only the local player's manifest
- * lives on the local client regardless of SP/MP, via LOCAL_PLAYER). */
+/* Ship manifest helpers — iterate directly. In multiplayer, net_sync.c
+ * rebuilds the local ship manifest from PLAYER_MANIFEST plus any detailed
+ * HOLD_INGOTS provenance snapshot, so the trade UI can read the same
+ * local manifest path in SP and MP. */
 static int ship_manifest_count_cg(const ship_t *ship,
                                   commodity_t commodity,
                                   mining_grade_t grade)
@@ -751,19 +779,29 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
              * passive line below also references the per-commodity
              * inventory. */
             /* Pull representative-unit lineage from the station's
-             * manifest. FIFO-first so the tag reflects what the next
-             * BUY would actually move (manifest_consume drains FIFO). */
+             * manifest only when the whole row has provenance locally.
+             * In MP, station manifests are partial named-ingot mirrors;
+             * if anonymous cargo shares the bucket, we hide lineage
+             * rather than imply the next BUY is known. */
             uint8_t origin_idx = 0;
             uint64_t mined_blk = 0;
             bool has_lineage = false;
-            int rep_idx = manifest_find_first_cg(&st->manifest,
-                                                 (commodity_t)c,
-                                                 (mining_grade_t)gi);
-            if (rep_idx >= 0) {
-                const cargo_unit_t *rep = &st->manifest.units[rep_idx];
-                origin_idx = rep->origin_station;
-                mined_blk = rep->mined_block;
-                has_lineage = (mined_blk != 0);
+            int represented = manifest_count_cg_direct(&st->manifest,
+                                                       (commodity_t)c,
+                                                       (mining_grade_t)gi);
+            int lineage_count = manifest_lineage_count_cg(&st->manifest,
+                                                          (commodity_t)c,
+                                                          (mining_grade_t)gi);
+            if (represented == stock && lineage_count == stock) {
+                int rep_idx = manifest_find_first_cg(&st->manifest,
+                                                     (commodity_t)c,
+                                                     (mining_grade_t)gi);
+                if (rep_idx >= 0) {
+                    const cargo_unit_t *rep = &st->manifest.units[rep_idx];
+                    origin_idx = rep->origin_station;
+                    mined_blk = rep->mined_block;
+                    has_lineage = (mined_blk != 0);
+                }
             }
             out[row_count++] = (trade_row_t){
                 .kind = 0, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
@@ -841,23 +879,26 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             int station_grade_count =
                 station_manifest_count_cg(st, (commodity_t)c, (mining_grade_t)gi);
             /* Lineage comes from the FIFO-first matching unit in the
-             * SHIP manifest — that's the one the next SELL would move,
-             * so the displayed origin/epoch is honest about the actual
-             * upcoming transaction. ship_manifest_top_prefix_cg already
-             * picks the highest-multiplier prefix; the FIFO choice here
-             * is intentionally different (prefix vs lineage are
-             * independent dimensions). */
+             * SHIP manifest, but only when every unit in this row has a
+             * provenance tag. In MP, any anonymous or non-wired unit is
+             * reconstructed as a legacy-migrate placeholder, so mixed
+             * buckets intentionally render without a lineage line. */
             uint8_t origin_idx = 0;
             uint64_t mined_blk = 0;
             bool has_lineage = false;
-            int rep_idx = manifest_find_first_cg(&ship->manifest,
-                                                 (commodity_t)c,
-                                                 (mining_grade_t)gi);
-            if (rep_idx >= 0) {
-                const cargo_unit_t *rep = &ship->manifest.units[rep_idx];
-                origin_idx = rep->origin_station;
-                mined_blk = rep->mined_block;
-                has_lineage = (mined_blk != 0);
+            int lineage_count = manifest_lineage_count_cg(&ship->manifest,
+                                                          (commodity_t)c,
+                                                          (mining_grade_t)gi);
+            if (lineage_count >= held) {
+                int rep_idx = manifest_find_first_cg(&ship->manifest,
+                                                     (commodity_t)c,
+                                                     (mining_grade_t)gi);
+                if (rep_idx >= 0) {
+                    const cargo_unit_t *rep = &ship->manifest.units[rep_idx];
+                    origin_idx = rep->origin_station;
+                    mined_blk = rep->mined_block;
+                    has_lineage = (mined_blk != 0);
+                }
             }
             out[row_count++] = (trade_row_t){
                 .kind = 1, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,

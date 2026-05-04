@@ -395,6 +395,41 @@ TEST(test_roundtrip_player_ship) {
     ASSERT_EQ_FLOAT(read_f32_le(&buf[16 + 3*4]), 20.0f, 0.1f); /* ferrite ingot */
 }
 
+TEST(test_named_ingot_record_serializes_grade) {
+    station_t st;
+    memset(&st, 0, sizeof(st));
+    ASSERT(station_manifest_bootstrap(&st));
+
+    cargo_unit_t unit = {0};
+    unit.kind = (uint8_t)CARGO_KIND_INGOT;
+    unit.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    unit.grade = (uint8_t)MINING_GRADE_RARE;
+    unit.prefix_class = (uint8_t)INGOT_PREFIX_M;
+    unit.recipe_id = (uint16_t)RECIPE_SMELT;
+    unit.origin_station = 7;
+    unit.quantity = 1;
+    unit.mined_block = 0x0102030405060708ull;
+    for (int i = 0; i < 32; i++) unit.pub[i] = (uint8_t)(0xA0 + i);
+    ASSERT(manifest_push(&st.manifest, &unit));
+
+    uint8_t buf[STATION_INGOTS_HEADER + NAMED_INGOT_RECORD_SIZE];
+    int len = serialize_station_ingots(buf, 3, &st);
+    ASSERT_EQ_INT(len, STATION_INGOTS_HEADER + NAMED_INGOT_RECORD_SIZE);
+    ASSERT_EQ_INT(buf[0], NET_MSG_STATION_INGOTS);
+    ASSERT_EQ_INT(buf[1], 3);
+    ASSERT_EQ_INT(buf[2], 1);
+
+    const uint8_t *p = &buf[STATION_INGOTS_HEADER];
+    ASSERT_EQ_INT(p[32], INGOT_PREFIX_M);
+    ASSERT_EQ_INT(p[33], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(p[34], MINING_GRADE_RARE);
+    ASSERT_EQ_INT(p[44], 7);
+    ASSERT_EQ_INT(p[36], 0x08);
+    ASSERT_EQ_INT(p[43], 0x01);
+
+    station_cleanup(&st);
+}
+
 TEST(test_parse_input_valid) {
     input_intent_t intent;
     memset(&intent, 0, sizeof(intent));
@@ -465,6 +500,7 @@ void register_protocol_main_tests(void) {
     RUN(test_bug92_station_record_size_matches_buffer);
     RUN(test_bug93_hint_mines_small_shard_with_minor_desync);
     RUN(test_roundtrip_player_ship);
+    RUN(test_named_ingot_record_serializes_grade);
     RUN(test_parse_input_valid);
     RUN(test_parse_input_too_short);
     RUN(test_parse_input_no_action);
