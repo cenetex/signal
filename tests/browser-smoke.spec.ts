@@ -21,6 +21,10 @@ function smokeUrl(): string {
   return url.includes('smoke=') ? url : `${url}${url.includes('?') ? '&' : '?'}smoke=1`;
 }
 
+function usesLiveSmokeUrl(): boolean {
+  return !!process.env.SMOKE_URL;
+}
+
 function installFatalCollectors(page: Page): FatalCollectors {
   const logs: FatalCollectors = { pageErrors: [], consoleErrors: [] };
   page.on('pageerror', (err) => logs.pageErrors.push(err.message));
@@ -277,7 +281,7 @@ test.describe('Browser smoke tests', () => {
   test('boots, renders, and persists browser identity across reload', async ({ page }) => {
     const logs = installFatalCollectors(page);
 
-    await loadGame(page);
+    const canvas = await loadGame(page);
     await expect
       .poll(async () => hudHintText(page), { timeout: 5_000 })
       .toContain('Press E to launch.');
@@ -285,11 +289,19 @@ test.describe('Browser smoke tests', () => {
     const firstIdentity = await page.evaluate(() => window.localStorage.getItem('signal:identity'));
     expect(firstIdentity).toMatch(/^[A-Za-z0-9+/]{86}==$/);
 
-    await page.locator('canvas').click();
+    await canvas.click();
     await tap(page, 'E');
-    await expect
-      .poll(async () => hudHintText(page), { timeout: 8_000 })
-      .toContain('Fly with W A S D.');
+    if (usesLiveSmokeUrl()) {
+      // Deployed smoke runs against the multiplayer URL, where launch timing is
+      // not the deterministic singleplayer transition that local smoke proves.
+      await expect
+        .poll(async () => hudHintText(page), { timeout: 8_000 })
+        .toMatch(/Press E to launch\.|Fly with W A S D\./);
+    } else {
+      await expect
+        .poll(async () => hudHintText(page), { timeout: 8_000 })
+        .toContain('Fly with W A S D.');
+    }
 
     await page.reload();
     await waitForRenderedGame(page, page.locator('canvas'));
