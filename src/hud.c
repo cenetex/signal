@@ -173,133 +173,154 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
     return out;
 }
 
-/* Compact renderer — short-form ALL CAPS at the bottom of the top panel. */
-static void hud_render_action_compact(const hud_action_t *a, const char *dock_role) {
+static void hud_format_action_compact(const hud_action_t *a, const char *dock_role,
+                                      char *out, size_t out_size) {
     switch (a->kind) {
     case HUD_ACTION_DOCKED:
-        sdtx_color3b(PAL_ACTIVE);
-        sdtx_printf("%s CONSOLE", dock_role);
+        snprintf(out, out_size, "%s CONSOLE", dock_role);
         return;
     case HUD_ACTION_TARGET_ASTEROID:
-        sdtx_color3b(PAL_ACTIVE);
-        sdtx_printf("TGT %s // %s // %d HP",
-                    asteroid_tier_name((asteroid_tier_t)a->tier),
-                    commodity_code((commodity_t)a->commodity),
-                    a->int_a);
+        snprintf(out, out_size, "TGT %s // %s // %d HP",
+                 asteroid_tier_name((asteroid_tier_t)a->tier),
+                 commodity_code((commodity_t)a->commodity),
+                 a->int_a);
         return;
     case HUD_ACTION_SCAN_MODULE:
-        sdtx_color3b(PAL_SCAN_ACTIVE);
-        if (a->str_b) sdtx_printf("SCAN %s // %s", a->str_a, a->str_b);
-        else          sdtx_printf("SCAN %s // CORE", a->str_a);
+        if (a->str_b) snprintf(out, out_size, "SCAN %s // %s", a->str_a, a->str_b);
+        else          snprintf(out, out_size, "SCAN %s // CORE", a->str_a);
         return;
     case HUD_ACTION_SCAN_NPC:
-        sdtx_color3b(PAL_SCAN_ACTIVE);
-        sdtx_printf("SCAN NPC // %s",
-                    (a->str_a && a->str_a[0] == 'm') ? "MINER" : "HAULER");
+        snprintf(out, out_size, "SCAN NPC // %s",
+                 (a->str_a && a->str_a[0] == 'm') ? "MINER" : "HAULER");
         return;
     case HUD_ACTION_SCAN_PILOT:
-        sdtx_color3b(PAL_SCAN_ACTIVE);
-        sdtx_printf("SCAN PILOT // ID %d", a->int_a);
+        snprintf(out, out_size, "SCAN PILOT // ID %d", a->int_a);
         return;
     case HUD_ACTION_MINING:
-        sdtx_color3b(PAL_ACTIVE);
-        sdtx_puts("MINING... // CLAIM WINDOW");
+        snprintf(out, out_size, "MINING... // CLAIM WINDOW");
         return;
     case HUD_ACTION_TOWING:
-        sdtx_color3b(PAL_ACTIVE);
-        if (a->int_b) sdtx_printf("TOWING %d // TRACTOR", a->int_a);
-        else          sdtx_printf("TOWING %d // tap [Space] release", a->int_a);
+        if (a->int_b) snprintf(out, out_size, "TOWING %d // TRACTOR", a->int_a);
+        else          snprintf(out, out_size, "TOWING %d // tap [Space] release", a->int_a);
         return;
     case HUD_ACTION_TRACTOR_LOCK:
-        sdtx_color3b(PAL_ACTIVE);
-        sdtx_printf("TRACTOR // %d FRAG", a->int_a);
+        snprintf(out, out_size, "TRACTOR // %d FRAG", a->int_a);
         return;
     case HUD_ACTION_TRACTOR_REACHING:
-        sdtx_color3b(PAL_ACTIVE);
-        sdtx_printf("hold [Space] TRACTOR // %d", a->int_b);
+        snprintf(out, out_size, "hold [Space] TRACTOR // %d", a->int_b);
         return;
     case HUD_ACTION_FRAGMENTS_NEARBY:
-        sdtx_color3b(PAL_TRACTOR_OFF);
-        sdtx_printf("hold [Space] TRACTOR // %d nearby", a->int_b);
+        snprintf(out, out_size, "hold [Space] TRACTOR // %d nearby", a->int_b);
         return;
     case HUD_ACTION_HOLD_FULL:
-        sdtx_color3b(PAL_ORE_AMBER);
-        sdtx_puts("Hold full. Dock to sell.");
+        snprintf(out, out_size, "Hold full. Dock to sell.");
         return;
     case HUD_ACTION_PENDING_COLLECT:
-        sdtx_color3b(PAL_ORE_AMBER);
-        sdtx_printf("[H] collect %d", a->int_a);
+        snprintf(out, out_size, "[H] collect %d", a->int_a);
         return;
     case HUD_ACTION_IDLE:
     default:
-        sdtx_color3b(PAL_TEXT_MUTED);
-        sdtx_puts("Nothing in range. Scan for rocks.");
+        snprintf(out, out_size, "Nothing in range. Scan for rocks.");
         return;
     }
 }
 
-/* Wide renderer — full English at the bottom of the top panel. */
-static void hud_render_action_wide(const hud_action_t *a, const station_t *current_station) {
+static void hud_format_action_wide(const hud_action_t *a, const station_t *current_station,
+                                   char *out, size_t out_size) {
     switch (a->kind) {
     case HUD_ACTION_DOCKED:
-        sdtx_color3b(PAL_ACTIVE);
-        sdtx_printf("%s console", station_role_name(current_station));
+        snprintf(out, out_size, "%s console",
+                 current_station ? station_role_name(current_station) : "Station");
         return;
     case HUD_ACTION_TARGET_ASTEROID:
-        sdtx_color3b(PAL_ACTIVE);
-        sdtx_printf("Target %s // %s // %d hp",
-                    asteroid_tier_kind((asteroid_tier_t)a->tier),
-                    commodity_short_name((commodity_t)a->commodity),
-                    a->int_a);
+        snprintf(out, out_size, "Target %s // %s // %d hp",
+                 asteroid_tier_kind((asteroid_tier_t)a->tier),
+                 commodity_short_name((commodity_t)a->commodity),
+                 a->int_a);
         return;
     case HUD_ACTION_SCAN_MODULE:
-        sdtx_color3b(PAL_SCAN_ACTIVE);
-        if (a->str_b) sdtx_printf("Scan %s // %s", a->str_a, a->str_b);
-        else          sdtx_printf("Scan %s // core hub", a->str_a);
+        if (a->str_b) snprintf(out, out_size, "Scan %s // %s", a->str_a, a->str_b);
+        else          snprintf(out, out_size, "Scan %s // core hub", a->str_a);
         return;
     case HUD_ACTION_SCAN_NPC:
-        sdtx_color3b(PAL_SCAN_ACTIVE);
-        sdtx_printf("Scan NPC %s // cargo %d", a->str_a, a->int_a);
+        snprintf(out, out_size, "Scan NPC %s // cargo %d", a->str_a, a->int_a);
         return;
     case HUD_ACTION_SCAN_PILOT:
-        sdtx_color3b(PAL_SCAN_ACTIVE);
-        sdtx_printf("Scan pilot %d // hull %d", a->int_a, a->int_b);
+        snprintf(out, out_size, "Scan pilot %d // hull %d", a->int_a, a->int_b);
         return;
     case HUD_ACTION_MINING:
-        sdtx_color3b(PAL_ACTIVE);
-        sdtx_puts("Mining... // claim window");
+        snprintf(out, out_size, "Mining... // claim window");
         return;
     case HUD_ACTION_TOWING:
-        sdtx_color3b(PAL_ACTIVE);
-        if (a->int_b) sdtx_printf("Towing %d // tractor on", a->int_a);
-        else          sdtx_printf("Towing %d // tap [Space] to release", a->int_a);
+        if (a->int_b) snprintf(out, out_size, "Towing %d // tractor on", a->int_a);
+        else          snprintf(out, out_size, "Towing %d // tap [Space] to release", a->int_a);
         return;
     case HUD_ACTION_TRACTOR_LOCK:
-        sdtx_color3b(PAL_ACTIVE);
-        sdtx_printf("Tractor lock // %d frag%s", a->int_a, a->int_a == 1 ? "" : "s");
+        snprintf(out, out_size, "Tractor lock // %d frag%s",
+                 a->int_a, a->int_a == 1 ? "" : "s");
         return;
     case HUD_ACTION_TRACTOR_REACHING:
-        sdtx_color3b(PAL_ACTIVE);
-        sdtx_printf("Tractor reaching // %d nearby", a->int_b);
+        snprintf(out, out_size, "Tractor reaching // %d nearby", a->int_b);
         return;
     case HUD_ACTION_FRAGMENTS_NEARBY:
-        sdtx_color3b(PAL_TRACTOR_OFF);
-        sdtx_printf("Hold [Space] tractor // %d nearby", a->int_b);
+        snprintf(out, out_size, "Hold [Space] tractor // %d nearby", a->int_b);
         return;
     case HUD_ACTION_HOLD_FULL:
-        sdtx_color3b(PAL_ORE_AMBER);
-        sdtx_puts("Hold full. Dock to sell.");
+        snprintf(out, out_size, "Hold full. Dock to sell.");
         return;
     case HUD_ACTION_PENDING_COLLECT:
-        sdtx_color3b(PAL_ORE_AMBER);
-        sdtx_printf("H to hail // collect %d cr", a->int_a);
+        snprintf(out, out_size, "H to hail // collect %d cr", a->int_a);
         return;
     case HUD_ACTION_IDLE:
     default:
-        sdtx_color3b(PAL_TEXT_MUTED);
-        sdtx_puts("No target // line up a rock");
+        snprintf(out, out_size, "No target // line up a rock");
         return;
     }
+}
+
+static void hud_set_action_color(const hud_action_t *a) {
+    switch (a->kind) {
+    case HUD_ACTION_SCAN_MODULE:
+    case HUD_ACTION_SCAN_NPC:
+    case HUD_ACTION_SCAN_PILOT:
+        sdtx_color3b(PAL_SCAN_ACTIVE);
+        return;
+    case HUD_ACTION_FRAGMENTS_NEARBY:
+        sdtx_color3b(PAL_TRACTOR_OFF);
+        return;
+    case HUD_ACTION_HOLD_FULL:
+    case HUD_ACTION_PENDING_COLLECT:
+        sdtx_color3b(PAL_ORE_AMBER);
+        return;
+    case HUD_ACTION_IDLE:
+        sdtx_color3b(PAL_TEXT_MUTED);
+        return;
+    case HUD_ACTION_DOCKED:
+    case HUD_ACTION_TARGET_ASTEROID:
+    case HUD_ACTION_MINING:
+    case HUD_ACTION_TOWING:
+    case HUD_ACTION_TRACTOR_LOCK:
+    case HUD_ACTION_TRACTOR_REACHING:
+    default:
+        sdtx_color3b(PAL_ACTIVE);
+        return;
+    }
+}
+
+/* Compact renderer — short-form ALL CAPS at the bottom of the top panel. */
+static void hud_render_action_compact(const hud_action_t *a, const char *dock_role) {
+    char text[128];
+    hud_format_action_compact(a, dock_role, text, sizeof(text));
+    hud_set_action_color(a);
+    sdtx_puts(text);
+}
+
+/* Wide renderer — full English at the bottom of the top panel. */
+static void hud_render_action_wide(const hud_action_t *a, const station_t *current_station) {
+    char text[160];
+    hud_format_action_wide(a, current_station, text, sizeof(text));
+    hud_set_action_color(a);
+    sdtx_puts(text);
 }
 
 /* ------------------------------------------------------------------ */
@@ -945,12 +966,23 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
 }
 
 #ifdef __EMSCRIPTEN__
+static int smoke_loop_state_override = 0;
+static int smoke_apply_loop_state(int state);
+
+static bool smoke_hooks_enabled(void) {
+    return emscripten_run_script_int(
+        "(new URLSearchParams(location.search).get('smoke')==='1')") != 0;
+}
+
 EMSCRIPTEN_KEEPALIVE
 const char *get_hud_hint_text(void) {
     static char out[384];
     char label[64];
     char message[256];
     uint8_t r = 0, g0 = 0, b = 0;
+
+    if (smoke_loop_state_override != 0)
+        (void)smoke_apply_loop_state(smoke_loop_state_override);
 
     out[0] = '\0';
     label[0] = '\0';
@@ -963,6 +995,132 @@ const char *get_hud_hint_text(void) {
     else
         snprintf(out, sizeof(out), "%s", message);
     return out;
+}
+
+EMSCRIPTEN_KEEPALIVE
+const char *get_hud_action_text(void) {
+    static char out[192];
+    int cargo_units = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
+    int cargo_capacity = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
+    float sig_quality = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+    hud_action_t act = hud_classify_action(cargo_units, cargo_capacity, sig_quality);
+
+    if (smoke_loop_state_override != 0) {
+        (void)smoke_apply_loop_state(smoke_loop_state_override);
+        cargo_units = (int)lroundf(ship_total_cargo(&LOCAL_PLAYER.ship));
+        cargo_capacity = (int)lroundf(ship_cargo_capacity(&LOCAL_PLAYER.ship));
+        sig_quality = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+        act = hud_classify_action(cargo_units, cargo_capacity, sig_quality);
+    }
+
+    out[0] = '\0';
+    hud_format_action_wide(&act, current_station_ptr(), out, sizeof(out));
+    return out;
+}
+
+enum {
+    SMOKE_LOOP_STATE_CLEAR = 0,
+    SMOKE_LOOP_STATE_FRAGMENTS_NEARBY = 1,
+    SMOKE_LOOP_STATE_TRACTOR_REACHING = 2,
+    SMOKE_LOOP_STATE_TRACTOR_LOCK = 3,
+    SMOKE_LOOP_STATE_TOWING = 4,
+    SMOKE_LOOP_STATE_HAIL_READY = 5,
+    SMOKE_LOOP_STATE_HAIL_NOTICE = 6,
+};
+
+static void smoke_clear_loop_state(void) {
+    server_player_t *sp = &LOCAL_PLAYER;
+    float max_hull = ship_max_hull(&sp->ship);
+
+    sp->docked = false;
+    sp->in_dock_range = false;
+    sp->docking_approach = false;
+    sp->current_station = 0;
+    sp->nearby_station = 0;
+    sp->hover_asteroid = -1;
+    sp->scan_active = false;
+    sp->scan_target_type = 0;
+    sp->scan_target_index = -1;
+    sp->scan_module_index = -1;
+    sp->ship.towed_count = 0;
+    sp->ship.towed_scaffold = -1;
+    sp->ship.tractor_active = false;
+    sp->nearby_fragments = 0;
+    sp->tractor_fragments = 0;
+    sp->autopilot_mode = 0;
+    if (max_hull > 0.0f)
+        sp->ship.hull = max_hull;
+
+    g.plan_mode_active = false;
+    g.notice_timer = 0.0f;
+    g.notice[0] = '\0';
+    g.collection_feedback_timer = 0.0f;
+    g.collection_feedback_fragments = 0;
+    g.collection_feedback_ore = 0.0f;
+    g.hail_timer = 0.0f;
+    g.hail_station[0] = '\0';
+    g.hail_message[0] = '\0';
+    g.hail_credits = 0.0f;
+    g.hail_station_index = -1;
+
+    if (g.world.station_count > 0 && station_exists(&g.world.stations[0]))
+        sp->ship.pos = g.world.stations[0].pos;
+}
+
+static int smoke_apply_loop_state(int state) {
+    server_player_t *sp = &LOCAL_PLAYER;
+
+    smoke_clear_loop_state();
+    switch (state) {
+    case SMOKE_LOOP_STATE_CLEAR:
+        return 1;
+    case SMOKE_LOOP_STATE_FRAGMENTS_NEARBY:
+        sp->nearby_fragments = 3;
+        return 1;
+    case SMOKE_LOOP_STATE_TRACTOR_REACHING:
+        sp->nearby_fragments = 4;
+        sp->ship.tractor_active = true;
+        return 1;
+    case SMOKE_LOOP_STATE_TRACTOR_LOCK:
+        sp->nearby_fragments = 5;
+        sp->tractor_fragments = 2;
+        sp->ship.tractor_active = true;
+        return 1;
+    case SMOKE_LOOP_STATE_TOWING:
+        sp->ship.towed_count = 1;
+        sp->ship.towed_fragments[0] = 0;
+        return 1;
+    case SMOKE_LOOP_STATE_HAIL_READY:
+        if (g.world.station_count <= 0 || !station_exists(&g.world.stations[0]))
+            return 0;
+        g.local_server.active = true;
+        g.world.stations[0].ledger_count = 0;
+        ledger_earn(&g.world.stations[0], sp->session_token, 123.0f);
+        return 1;
+    case SMOKE_LOOP_STATE_HAIL_NOTICE:
+        snprintf(g.notice, sizeof(g.notice),
+                 "Prospect: channel open. Balance 123 cr.");
+        g.notice_timer = 6.0f;
+        snprintf(g.hail_station, sizeof(g.hail_station), "Prospect");
+        snprintf(g.hail_message, sizeof(g.hail_message), "channel open");
+        g.hail_credits = 123.0f;
+        g.hail_timer = 6.0f;
+        g.hail_station_index = 0;
+        return 1;
+    default:
+        return 0;
+    }
+}
+
+EMSCRIPTEN_KEEPALIVE
+int set_smoke_loop_state(int state) {
+    if (!smoke_hooks_enabled()) {
+        smoke_loop_state_override = 0;
+        return 0;
+    }
+    int ok = smoke_apply_loop_state(state);
+    smoke_loop_state_override = ok ? state : 0;
+    return ok;
 }
 #endif
 

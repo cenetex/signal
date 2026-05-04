@@ -17,7 +17,8 @@ type CanvasStats = {
 };
 
 function smokeUrl(): string {
-  return process.env.SMOKE_URL || '/signal.html?singleplayer=1';
+  const url = process.env.SMOKE_URL || '/signal.html?singleplayer=1';
+  return url.includes('smoke=') ? url : `${url}${url.includes('?') ? '&' : '?'}smoke=1`;
 }
 
 function installFatalCollectors(page: Page): FatalCollectors {
@@ -170,6 +171,36 @@ async function hudHintText(page: Page): Promise<string> {
   });
 }
 
+async function hudActionText(page: Page): Promise<string> {
+  return page.evaluate(() => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => string };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return '';
+    return mod.ccall('get_hud_action_text', 'string', [], []) || '';
+  });
+}
+
+async function setSmokeLoopState(page: Page, state: number): Promise<void> {
+  const ok = await page.evaluate((nextState) => {
+    const mod = (window as unknown as {
+      Module?: { ccall?: (name: string, returnType: string, argTypes: unknown[], args: unknown[]) => number };
+    }).Module;
+    if (!mod || typeof mod.ccall !== 'function') return 0;
+    return mod.ccall('set_smoke_loop_state', 'number', ['number'], [nextState]);
+  }, state);
+  expect(ok).toBe(1);
+}
+
+const smokeLoopState = {
+  fragmentsNearby: 1,
+  tractorReaching: 2,
+  tractorLock: 3,
+  towing: 4,
+  hailReady: 5,
+  hailNotice: 6,
+} as const;
+
 async function waitForRenderedGame(page: Page, canvas: Locator): Promise<void> {
   await expect(canvas).toBeVisible({ timeout: 20_000 });
   await waitForRuntime(page);
@@ -281,6 +312,32 @@ test.describe('Browser smoke tests', () => {
     await expect
       .poll(async () => (await readCanvasStats(canvas)).uniqueBuckets, { timeout: 5_000 })
       .toBeGreaterThan(8);
+
+    expectNoFatalErrors(logs);
+  });
+
+  test('exposes deterministic HUD copy for fragment, tractor, tow, and hail states', async ({ page }) => {
+    const logs = installFatalCollectors(page);
+    await page.setViewportSize({ width: 1280, height: 720 });
+    await loadGame(page);
+
+    await setSmokeLoopState(page, smokeLoopState.fragmentsNearby);
+    expect(await hudActionText(page)).toContain('Hold [Space] tractor // 3 nearby');
+
+    await setSmokeLoopState(page, smokeLoopState.tractorReaching);
+    expect(await hudActionText(page)).toContain('Tractor reaching // 4 nearby');
+
+    await setSmokeLoopState(page, smokeLoopState.tractorLock);
+    expect(await hudActionText(page)).toContain('Tractor lock // 2 frags');
+
+    await setSmokeLoopState(page, smokeLoopState.towing);
+    expect(await hudActionText(page)).toContain('Towing 1 // tap [Space] to release');
+
+    await setSmokeLoopState(page, smokeLoopState.hailReady);
+    expect(await hudActionText(page)).toContain('H to hail // collect 123 cr');
+
+    await setSmokeLoopState(page, smokeLoopState.hailNotice);
+    expect(await hudHintText(page)).toContain('Prospect: channel open. Balance 123 cr.');
 
     expectNoFatalErrors(logs);
   });
