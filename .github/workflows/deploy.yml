@@ -181,11 +181,14 @@ jobs:
             2>&1 | tee clang-tidy-output.txt
           if grep -q "error:" clang-tidy-output.txt; then exit 1; fi
 
-  # CRAP score (complexity * uncovered). Tested-code report GATES the
-  # deploy at threshold 25 — the codebase already passes this, so the
-  # gate engages only on new regressions. Client complexity budget is
-  # informational only (signal_test does not link client code, so
-  # coverage is structurally 0 and CRAP collapses to complexity).
+  # CRAP score (complexity * uncovered). This runs the fast/non-soak
+  # suite under coverage instrumentation; long-horizon sim coverage
+  # belongs in the parallel test-soak job or a scheduled coverage pass.
+  # Tested-code report GATES the deploy at threshold 25 — the codebase
+  # already passes this, so the gate engages only on new regressions.
+  # Client complexity budget is informational only (signal_test does not
+  # link client code, so coverage is structurally 0 and CRAP collapses
+  # to complexity).
   test-crap:
     runs-on: ubuntu-latest
     timeout-minutes: 15
@@ -205,7 +208,8 @@ jobs:
       - name: Run tests (collect coverage)
         run: |
           ulimit -s 16384
-          ./build-coverage/signal_test --quiet
+          find build-coverage -name '*.gcda' -delete
+          ./build-coverage/signal_test --quiet --no-soak
 
       - name: Generate gcovr JSON
         run: |

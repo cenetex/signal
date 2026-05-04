@@ -205,63 +205,96 @@ static int g_loaded_save_version = SAVE_VERSION;
  * Idempotent — running it again on an already-migrated world is a
  * no-op (tagged furnaces are skipped; existing output hoppers
  * satisfy the search).
- *
- * Exposed (non-static) so tests can break a fresh world to look
+ */
+static bool cargo_schema_live_furnace(const station_module_t *mod) {
+    return mod->type == MODULE_FURNACE && !mod->scaffold;
+}
+
+static bool cargo_schema_ingot_furnace_tag(commodity_t c) {
+    return c == COMMODITY_FERRITE_INGOT ||
+           c == COMMODITY_CUPRITE_INGOT ||
+           c == COMMODITY_CRYSTAL_INGOT;
+}
+
+static int cargo_schema_live_furnace_count(const station_t *st) {
+    int n_furnaces = 0;
+    for (int m = 0; m < st->module_count; m++) {
+        if (cargo_schema_live_furnace(&st->modules[m])) n_furnaces++;
+    }
+    return n_furnaces;
+}
+
+static commodity_t cargo_schema_furnace_tag(int n_furnaces, int seen) {
+    if (n_furnaces >= 3) {
+        return seen == 1 ? COMMODITY_CRYSTAL_INGOT
+                         : COMMODITY_CUPRITE_INGOT;
+    }
+    if (n_furnaces == 2) {
+        return seen == 0 ? COMMODITY_FERRITE_INGOT
+                         : COMMODITY_CUPRITE_INGOT;
+    }
+    return COMMODITY_FERRITE_INGOT;
+}
+
+static void cargo_schema_tag_furnaces(station_t *st) {
+    int n_furnaces = cargo_schema_live_furnace_count(st);
+    int seen = 0;
+    for (int m = 0; m < st->module_count; m++) {
+        station_module_t *mod = &st->modules[m];
+        if (!cargo_schema_live_furnace(mod)) continue;
+        if (cargo_schema_ingot_furnace_tag((commodity_t)mod->commodity)) {
+            seen++;
+            continue;
+        }
+        mod->commodity = (uint8_t)cargo_schema_furnace_tag(n_furnaces, seen);
+        seen++;
+    }
+}
+
+static bool cargo_schema_find_hopper_slot(const station_t *st,
+                                          int *out_ring,
+                                          int *out_slot) {
+    for (int r = 2; r <= STATION_NUM_RINGS; r++) {
+        int slot = station_ring_free_slot(st, r, STATION_RING_SLOTS[r]);
+        if (slot < 0) continue;
+        *out_ring = r;
+        *out_slot = slot;
+        return true;
+    }
+
+    int slot = station_ring_free_slot(st, 1, STATION_RING_SLOTS[1]);
+    if (slot < 0) return false;
+    *out_ring = 1;
+    *out_slot = slot;
+    return true;
+}
+
+static void cargo_schema_add_missing_hoppers(station_t *st) {
+    /* Snapshot module_count to avoid iterating into freshly-added hoppers. */
+    int snap = st->module_count;
+    for (int m = 0; m < snap; m++) {
+        const station_module_t *mod = &st->modules[m];
+        if (mod->scaffold) continue;
+        if (!module_is_producer(mod->type)) continue;
+        commodity_t out = module_instance_output(mod);
+        if (out == COMMODITY_COUNT) continue; /* shipyard etc. exempt */
+        if (station_find_hopper_for(st, out) >= 0) continue;
+        int placed_ring = -1;
+        int placed_slot = -1;
+        if (!cargo_schema_find_hopper_slot(st, &placed_ring, &placed_slot))
+            continue;
+        add_hopper_for(st, (uint8_t)placed_ring, (uint8_t)placed_slot, out);
+    }
+}
+
+/* Exposed (non-static) so tests can break a fresh world to look
  * pre-Slice-1 and exercise this directly. */
 void world_apply_cargo_schema_migration(world_t *w) {
     for (int i = 0; i < MAX_STATIONS; i++) {
         station_t *st = &w->stations[i];
         if (st->module_count <= 0) continue;
-        int n_furnaces = 0;
-        for (int m = 0; m < st->module_count; m++) {
-            if (st->modules[m].type == MODULE_FURNACE && !st->modules[m].scaffold)
-                n_furnaces++;
-        }
-        int seen = 0;
-        for (int m = 0; m < st->module_count; m++) {
-            if (st->modules[m].type != MODULE_FURNACE) continue;
-            if (st->modules[m].scaffold) continue;
-            if ((commodity_t)st->modules[m].commodity == COMMODITY_FERRITE_INGOT ||
-                (commodity_t)st->modules[m].commodity == COMMODITY_CUPRITE_INGOT ||
-                (commodity_t)st->modules[m].commodity == COMMODITY_CRYSTAL_INGOT) {
-                seen++;
-                continue;
-            }
-            commodity_t tag;
-            if (n_furnaces >= 3) {
-                if      (seen == 0) tag = COMMODITY_CUPRITE_INGOT;
-                else if (seen == 1) tag = COMMODITY_CRYSTAL_INGOT;
-                else                tag = COMMODITY_CUPRITE_INGOT;
-            } else if (n_furnaces == 2) {
-                tag = (seen == 0) ? COMMODITY_FERRITE_INGOT
-                                  : COMMODITY_CUPRITE_INGOT;
-            } else {
-                tag = COMMODITY_FERRITE_INGOT;
-            }
-            st->modules[m].commodity = (uint8_t)tag;
-            seen++;
-        }
-        /* Auto-spawn missing output hoppers. Snapshot module_count to
-         * avoid iterating into freshly-added hoppers. */
-        int snap = st->module_count;
-        for (int m = 0; m < snap; m++) {
-            if (st->modules[m].scaffold) continue;
-            if (!module_is_producer(st->modules[m].type)) continue;
-            commodity_t out = module_instance_output(&st->modules[m]);
-            if (out == COMMODITY_COUNT) continue; /* shipyard etc. exempt */
-            if (station_find_hopper_for(st, out) >= 0) continue;
-            int placed_ring = -1, placed_slot = -1;
-            for (int r = 2; r <= STATION_NUM_RINGS && placed_ring < 0; r++) {
-                int slot = station_ring_free_slot(st, r, STATION_RING_SLOTS[r]);
-                if (slot >= 0) { placed_ring = r; placed_slot = slot; }
-            }
-            if (placed_ring < 0) {
-                int slot = station_ring_free_slot(st, 1, STATION_RING_SLOTS[1]);
-                if (slot >= 0) { placed_ring = 1; placed_slot = slot; }
-            }
-            if (placed_ring < 0) continue; /* no room — skip silently */
-            add_hopper_for(st, (uint8_t)placed_ring, (uint8_t)placed_slot, out);
-        }
+        cargo_schema_tag_furnaces(st);
+        cargo_schema_add_missing_hoppers(st);
         rebuild_station_services(st);
     }
 }

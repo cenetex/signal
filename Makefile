@@ -125,17 +125,28 @@ smoke: build-web
 	npm run smoke
 
 # --- CRAP (Change Risk Anti-Patterns): complexity * (1 - coverage) ---
-# Rebuilds signal_test with --coverage, runs it, then joins gcovr line
-# coverage with lizard per-function complexity to score each function.
+# Rebuilds signal_test with --coverage, runs the fast/non-soak tests,
+# then joins gcovr line coverage with lizard per-function complexity to
+# score each function. Long-horizon sim coverage belongs in test-soak or
+# a scheduled coverage pass; duplicating it here is especially expensive
+# under --coverage -O0.
 # Vendored code (mongoose, stb_image, pl_mpeg, minimp3) is excluded on
 # both sides — we aren't going to fix it, so it shouldn't pollute the
 # report. Requires: lizard, gcovr (pip install lizard gcovr).
+CRAP_TESTED_PATHS := server/game_sim.c server/sim_ai.c server/sim_autopilot.c \
+	server/sim_flight.c server/sim_nav.c server/sim_save.c \
+	server/sim_catalog.c server/sim_asteroid.c server/sim_physics.c \
+	server/sim_production.c server/sim_construction.c \
+	src/commodity.c src/manifest.c src/ship.c src/economy.c \
+	src/asteroid.c src/rng.c shared
+
 crap:
 	cmake -S . -B build-coverage -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
 		-DCMAKE_C_FLAGS="--coverage -O0 -g" \
 		-DCMAKE_EXE_LINKER_FLAGS="--coverage"
 	cmake --build build-coverage --target signal_test
-	ulimit -s 16384 && ./build-coverage/signal_test --quiet
+	find build-coverage -name '*.gcda' -delete
+	ulimit -s 16384 && ./build-coverage/signal_test --quiet --no-soak
 	gcovr -r . --json coverage.json --gcov-ignore-parse-errors \
 		--filter 'server/.*' --filter 'src/.*' --filter 'shared/.*' \
 		--exclude 'server/mongoose\..*' \
@@ -144,7 +155,9 @@ crap:
 		--exclude 'src/minimp3\.h' \
 		build-coverage
 	python3 scripts/crap.py --coverage coverage.json \
-		--paths server src shared --json-out crap.json
+		--paths $(CRAP_TESTED_PATHS) \
+		--top 30 --threshold 25 --fail-on-exceed \
+		--json-out crap.json
 
 # --- Local dev = docker compose (single source of truth) ---
 # One canonical local path. The container's entrypoint cd's into

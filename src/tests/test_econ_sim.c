@@ -786,10 +786,10 @@ TEST(test_e2e_kit_import_contract_lifecycle) {
 
 void register_econ_sim_sim_tests(void) {
     TEST_SECTION("\nEconomy simulations:\n");
-    RUN(test_econ_sim_npc_only_5min);
+    RUN_SOAK(test_econ_sim_npc_only_5min);
     RUN(test_econ_sim_credit_circulation);
     RUN_SOAK(test_grade_aware_sell_pays_per_unit_grade);
-    RUN(test_e2e_kit_chain_converges);
+    RUN_SOAK(test_e2e_kit_chain_converges);
     RUN(test_e2e_npc_dock_auto_repair_drains_kits);
     RUN_SOAK(test_e2e_kit_import_contract_lifecycle);
 }
