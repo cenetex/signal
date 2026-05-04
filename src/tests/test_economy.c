@@ -47,7 +47,7 @@ TEST(test_can_afford_upgrade_dock_fallback) {
      * credits — dock fills the gap from inventory at retail. */
     ship_t ship = {0};
     ship.hull_class = HULL_CLASS_MINER;
-    station_t station = {0};
+    STATION_DECL(station);
     station.services = STATION_SERVICE_UPGRADE_HOLD;
     ASSERT(test_set_station_finished_units(&station, COMMODITY_FRAME, 100));
     station.base_price[COMMODITY_FRAME] = 22.0f;
@@ -59,7 +59,7 @@ TEST(test_can_afford_upgrade_no_credits_for_dock_fallback) {
      * needs credits, so this must be rejected. */
     ship_t ship = {0};
     ship.hull_class = HULL_CLASS_MINER;
-    station_t station = {0};
+    STATION_DECL(station);
     station.services = STATION_SERVICE_UPGRADE_HOLD;
     ASSERT(test_set_station_finished_units(&station, COMMODITY_FRAME, 100));
     station.base_price[COMMODITY_FRAME] = 22.0f;
@@ -79,7 +79,7 @@ TEST(test_can_afford_upgrade_no_product_anywhere) {
 TEST(test_can_afford_upgrade_cargo_only_no_credits_needed) {
     /* Ship cargo covers the full module cost — credit balance is
      * irrelevant since the dock has nothing to sell. */
-    ship_t ship = {0};
+    SHIP_DECL(ship);
     ship.hull_class = HULL_CLASS_MINER;
     station_t station = {0};
     station.services = STATION_SERVICE_UPGRADE_HOLD;

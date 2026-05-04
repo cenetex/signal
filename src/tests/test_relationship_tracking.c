@@ -109,7 +109,7 @@ TEST(test_relationship_save_load) {
     const char *tmppath = "/tmp/test_relationship_save.sav";
     bool saved = world_save(w, tmppath);
     ASSERT(saved);
-    world_t *w2 = calloc(1, sizeof(world_t));
+    WORLD_HEAP w2 = calloc(1, sizeof(world_t));
     ASSERT(w2 != NULL);
     bool loaded = world_load(w2, tmppath);
     unlink(tmppath);

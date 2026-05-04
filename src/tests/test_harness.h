@@ -78,16 +78,22 @@ extern int g_only_soak;
 #define WORLD_DECL world_t w = {0}
 #define WORLD_DECL_NAME(name) world_t name = {0}
 #define WORLD_HEAP world_t *
+#define SHIP_DECL(name) ship_t name = {0}
+#define STATION_DECL(name) station_t name = {0}
 #define SERVER_PLAYER_DECL(name) server_player_t name = {0}
 #else
 static inline void world_auto_cleanup(world_t *w) { world_cleanup(w); }
 static inline void world_ptr_auto_cleanup(world_t **wp) {
     if (*wp) { world_cleanup(*wp); free(*wp); *wp = NULL; }
 }
+static inline void ship_auto_cleanup(ship_t *ship) { ship_cleanup(ship); }
+static inline void station_auto_cleanup(station_t *station) { station_cleanup(station); }
 static inline void server_player_auto_cleanup(server_player_t *sp) { ship_cleanup(&sp->ship); }
 #define WORLD_DECL world_t __attribute__((cleanup(world_auto_cleanup))) w = {0}
 #define WORLD_DECL_NAME(name) world_t __attribute__((cleanup(world_auto_cleanup))) name = {0}
 #define WORLD_HEAP __attribute__((cleanup(world_ptr_auto_cleanup))) world_t *
+#define SHIP_DECL(name) ship_t __attribute__((cleanup(ship_auto_cleanup))) name = {0}
+#define STATION_DECL(name) station_t __attribute__((cleanup(station_auto_cleanup))) name = {0}
 #define SERVER_PLAYER_DECL(name) \
     server_player_t __attribute__((cleanup(server_player_auto_cleanup))) name = {0}
 #endif
