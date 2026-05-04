@@ -146,8 +146,15 @@ async function readCanvasStats(canvas: Locator): Promise<CanvasStats> {
 async function waitForRuntime(page: Page): Promise<void> {
   await page.waitForFunction(
     () => {
-      const mod = (window as unknown as { Module?: { ccall?: unknown } }).Module;
-      return !!mod && typeof mod.ccall === 'function';
+      const mod = (window as unknown as {
+        Module?: { ccall?: unknown; calledRun?: boolean; _get_signal_strength?: unknown };
+      }).Module;
+      return (
+        !!mod &&
+        mod.calledRun === true &&
+        typeof mod.ccall === 'function' &&
+        typeof mod._get_signal_strength === 'function'
+      );
     },
     undefined,
     { timeout: 20_000 },
