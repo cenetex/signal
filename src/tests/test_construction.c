@@ -1,4 +1,5 @@
 #include "tests/test_harness.h"
+#include "sim_physics.h"
 
 TEST(test_outpost_requires_signal_range) {
     WORLD_DECL;
@@ -380,6 +381,35 @@ TEST(test_238_corridor_blocks_radial_approach) {
     float outer_edge = ring_r + corridor_hw + ship_r;
     /* Player should be at or beyond the outer edge (pushed out) */
     ASSERT(dist_from_center >= outer_edge - 2.0f);
+}
+
+TEST(test_238_fragment_collides_with_corridor_wall) {
+    WORLD_HEAP w = setup_collision_world_heap();
+
+    vec2 st_pos = w->stations[0].pos;
+    float ang1 = module_angle_ring(&w->stations[0], 1, 1);
+    float ang2 = module_angle_ring(&w->stations[0], 1, 2);
+    float mid_ang = (ang1 + ang2) * 0.5f;
+    float ring_r = STATION_RING_RADIUS[1];
+    float radius = 8.0f;
+
+    asteroid_t *a = &w->asteroids[0];
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->radius = radius;
+    a->hp = 10.0f;
+    a->max_hp = 10.0f;
+    a->pos = v2_add(st_pos, v2(cosf(mid_ang) * (ring_r + STATION_CORRIDOR_HW + radius - 3.0f),
+                               sinf(mid_ang) * (ring_r + STATION_CORRIDOR_HW + radius - 3.0f)));
+    vec2 radial = v2_norm(v2_sub(a->pos, st_pos));
+    a->vel = v2_scale(radial, -100.0f);
+
+    resolve_asteroid_station_collisions(w);
+
+    float dist_from_center = v2_len(v2_sub(a->pos, st_pos));
+    float outer_edge = ring_r + STATION_CORRIDOR_HW + radius;
+    ASSERT(dist_from_center >= outer_edge);
+    ASSERT(v2_dot(a->vel, radial) >= -0.01f);
 }
 
 TEST(test_238_dock_gap_allows_entry) {
@@ -1921,6 +1951,7 @@ void register_construction_collision238_tests(void) {
     RUN(test_238_station_core_blocks_player);
     RUN(test_238_module_circle_blocks_player);
     RUN(test_238_corridor_blocks_radial_approach);
+    RUN(test_238_fragment_collides_with_corridor_wall);
     RUN(test_238_dock_gap_allows_entry);
     RUN(test_238_corridor_angular_edge_no_clip);
     RUN(test_238_module_corridor_junction_no_jitter);
@@ -2133,6 +2164,34 @@ TEST(test_output_hopper_spoke_contributes_torque) {
     ASSERT(dr3 < 0.0f);
 }
 
+TEST(test_seeded_kepler_shipyard_inner_ring_layout) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    const station_t *st = &w->stations[1];
+    ASSERT_EQ_INT(station_module_at(st, 1, 2), MODULE_SHIPYARD);
+    ASSERT_EQ_INT(station_module_at(st, 2, 0), MODULE_FRAME_PRESS);
+    ASSERT_EQ_INT(ring_module_count(st, 3), 1);
+
+    int frame_hopper = station_find_hopper_for(st, COMMODITY_FRAME);
+    int laser_hopper = station_find_hopper_for(st, COMMODITY_LASER_MODULE);
+    int tractor_hopper = station_find_hopper_for(st, COMMODITY_TRACTOR_MODULE);
+    int ferrite_hopper = station_find_hopper_for(st, COMMODITY_FERRITE_INGOT);
+    ASSERT(frame_hopper >= 0);
+    ASSERT(laser_hopper >= 0);
+    ASSERT(tractor_hopper >= 0);
+    ASSERT(ferrite_hopper >= 0);
+
+    ASSERT_EQ_INT(st->modules[frame_hopper].ring, 2);
+    ASSERT_EQ_INT(st->modules[frame_hopper].slot, 4);
+    ASSERT_EQ_INT(st->modules[laser_hopper].ring, 2);
+    ASSERT_EQ_INT(st->modules[tractor_hopper].ring, 2);
+    ASSERT_EQ_INT(st->modules[ferrite_hopper].ring, 3);
+    ASSERT(station_pair_satisfied(st, 1, 2, MODULE_SHIPYARD));
+    ASSERT(station_pair_satisfied(st, 2, 0, MODULE_FRAME_PRESS));
+}
+
 TEST(test_seed_stations_pair_complete) {
     /* Every producer on every starter station must have its cross-ring
      * pair-intake already satisfied at boot. This is the construction
@@ -2177,6 +2236,7 @@ void register_construction_module_schema_tests(void) {
     RUN(test_module_flow_storage_feeds_consumer);
     RUN(test_pair_neighbors_geometry);
     RUN(test_pair_satisfied_cross_ring);
+    RUN(test_seeded_kepler_shipyard_inner_ring_layout);
     RUN(test_seed_stations_pair_complete);
     RUN(test_helios_ring2_rotates_under_dynamics);
     RUN(test_all_rings_passive_under_spoke_load);

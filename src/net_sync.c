@@ -9,6 +9,43 @@
 #include "onboarding.h"
 #include "episode.h"
 
+#define STATION_RING_CORRECTION_SEC 0.35f
+
+static float station_ring_correction[MAX_STATIONS][MAX_ARMS];
+static bool station_ring_have_snapshot[MAX_STATIONS];
+
+static float nearest_angle_delta(float from, float to) {
+    float delta = to - from;
+    while (delta >  PI_F) delta -= TWO_PI_F;
+    while (delta < -PI_F) delta += TWO_PI_F;
+    return delta;
+}
+
+void reset_station_ring_smoothing(void) {
+    memset(station_ring_correction, 0, sizeof(station_ring_correction));
+    memset(station_ring_have_snapshot, 0, sizeof(station_ring_have_snapshot));
+}
+
+void step_remote_station_rings(float dt) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        station_t *st = &g.world.stations[s];
+        if (!station_exists(st)) continue;
+        for (int a = 0; a < MAX_ARMS; a++) {
+            float correction = station_ring_correction[s][a];
+            float correction_step = 0.0f;
+            if (fabsf(correction) > 0.00001f) {
+                float k = dt / STATION_RING_CORRECTION_SEC;
+                if (k > 1.0f) k = 1.0f;
+                correction_step = correction * k;
+                station_ring_correction[s][a] -= correction_step;
+            } else {
+                station_ring_correction[s][a] = 0.0f;
+            }
+            st->arm_rotation[a] += st->arm_omega[a] * dt + correction_step;
+        }
+    }
+}
+
 static void server_player_cleanup_local(server_player_t *sp) {
     if (!sp) return;
     ship_cleanup(&sp->ship);
@@ -230,6 +267,11 @@ void apply_remote_contracts(const contract_t* contracts, int count) {
 void apply_remote_station_identity(const NetStationIdentity* si) {
     if (si->index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[si->index];
+    float local_rotation[MAX_ARMS];
+    for (int a = 0; a < MAX_ARMS; a++)
+        local_rotation[a] = st->arm_rotation[a];
+    bool smooth_rotation = station_ring_have_snapshot[si->index];
+
     st->scaffold = (si->flags & 1) != 0;
     st->planned  = (si->flags & 2) != 0;
     st->scaffold_progress = si->scaffold_progress;
@@ -248,9 +290,17 @@ void apply_remote_station_identity(const NetStationIdentity* si) {
     for (int a = 0; a < MAX_ARMS; a++) {
         st->arm_speed[a] = si->arm_speed[a];
         st->ring_offset[a] = si->ring_offset[a];
-        st->arm_rotation[a] = si->arm_rotation[a];
+        if (smooth_rotation) {
+            station_ring_correction[si->index][a] =
+                nearest_angle_delta(local_rotation[a], si->arm_rotation[a]);
+            st->arm_rotation[a] = local_rotation[a];
+        } else {
+            st->arm_rotation[a] = si->arm_rotation[a];
+            station_ring_correction[si->index][a] = 0.0f;
+        }
         st->arm_omega[a] = si->arm_omega[a];
     }
+    station_ring_have_snapshot[si->index] = true;
     /* Placement plans (faction-shared blueprint slots) */
     st->placement_plan_count = si->plan_count;
     for (int p = 0; p < si->plan_count && p < 8; p++) {

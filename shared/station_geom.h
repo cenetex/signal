@@ -95,7 +95,7 @@ typedef struct {
     geom_circle_t core;
     bool has_core;
 
-    /* Module collision circles (docks excluded — docks are passages) */
+    /* Module collision circles; docks get smaller passage-edge circles. */
     geom_circle_t circles[STATION_GEOM_MAX_CIRCLES];
     int circle_count;
 
