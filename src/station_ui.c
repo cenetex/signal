@@ -381,7 +381,27 @@ static void ui_station_currency_short(const station_t *st, char *out, size_t cap
     if (j == 0) snprintf(out, cap, "cr");
 }
 
+static void ui_fit_text(const char *src, int max_chars, char *out, size_t cap) {
+    if (cap == 0) return;
+    out[0] = '\0';
+    if (!src || max_chars <= 0) return;
 
+    size_t limit = (size_t)max_chars;
+    if (limit >= cap) limit = cap - 1;
+    size_t len = strlen(src);
+    if (len <= limit) {
+        snprintf(out, cap, "%s", src);
+        return;
+    }
+
+    if (limit <= 3) {
+        for (size_t i = 0; i < limit; i++) out[i] = '.';
+        out[limit] = '\0';
+        return;
+    }
+
+    snprintf(out, cap, "%.*s...", (int)(limit - 3), src);
+}
 
 /* ====================================================================
  * STATION DOCKED UI — redesigned (#redesign)
@@ -408,7 +428,6 @@ static void draw_header_band(const station_ui_state_t *ui,
                              float panel_x, float panel_y,
                              float panel_w, bool compact)
 {
-    (void)compact;
     const station_t *st = ui->station;
     float left_x = panel_x + 20.0f;
     float right_margin = 20.0f;
@@ -433,7 +452,14 @@ static void draw_header_band(const station_ui_state_t *ui,
     sdtx_color3b(PAL_TEXT_PRIMARY);
     sdtx_pos(ui_text_pos(left_x), ui_text_pos(panel_y + HEADER_L1));
     {
-        char name_with_pub[80];
+        const char *launch = "[E] LAUNCH";
+        float launch_w = (panel_w >= 360.0f) ? (float)strlen(launch) * cell_w : 0.0f;
+        float title_right = panel_x + panel_w - right_margin
+                          - (launch_w > 0.0f ? launch_w + 16.0f : 0.0f);
+        int title_chars = (int)floorf((title_right - left_x) / cell_w);
+        char name_with_pub[96];
+        char name_only[64];
+        char title_fit[96];
         char pub_prefix[16];
         station_pubkey_b58_prefix(st, pub_prefix);
         if (pub_prefix[0])
@@ -441,7 +467,12 @@ static void draw_header_band(const station_ui_state_t *ui,
                      st->name, pub_prefix);
         else
             snprintf(name_with_pub, sizeof(name_with_pub), "%s", st->name);
-        sdtx_puts(name_with_pub);
+        snprintf(name_only, sizeof(name_only), "%s", st->name);
+
+        const char *title = (!compact && (int)strlen(name_with_pub) <= title_chars)
+            ? name_with_pub : name_only;
+        ui_fit_text(title, title_chars, title_fit, sizeof(title_fit));
+        sdtx_puts(title_fit);
     }
 
     if (panel_w >= 360.0f) {
@@ -459,16 +490,19 @@ static void draw_header_band(const station_ui_state_t *ui,
      * data if they'd overlap — compact panels land there. The ledger
      * remains visible in the DOCK tab's SHIP BAY section. */
     const char *role_label = station_role_hub_label(st);
-    float role_w = (float)strlen(role_label) * cell_w;
+    float right_limit = panel_x + panel_w - right_margin;
+    int role_chars = (int)floorf((right_limit - left_x) / cell_w);
+    char role_fit[64];
+    ui_fit_text(role_label, role_chars, role_fit, sizeof(role_fit));
+    float role_w = (float)strlen(role_fit) * cell_w;
     sdtx_color3b(PAL_HOLD_CYAN);
     sdtx_pos(ui_text_pos(left_x), ui_text_pos(panel_y + HEADER_L2));
-    sdtx_puts(role_label);
+    sdtx_puts(role_fit);
 
     if (panel_w >= 360.0f) {
         int balance = (int)lroundf(player_current_balance());
         float sig = signal_strength_at(&g.world, st->pos);
         float gap = 16.0f;
-        float right_limit = panel_x + panel_w - right_margin;
         float left_used = left_x + role_w + gap;
 
         /* Try four progressively shorter forms, each guaranteed to
@@ -510,9 +544,12 @@ static void draw_header_band(const station_ui_state_t *ui,
             }
             char line[200];
             snprintf(line, sizeof(line), "[%s] %s", sender, m->text);
+            int line_chars = (int)floorf((panel_x + panel_w - right_margin - left_x) / cell_w);
+            char line_fit[200];
+            ui_fit_text(line, line_chars, line_fit, sizeof(line_fit));
             sdtx_color3b(PAL_TEXT_FADED);
             sdtx_pos(ui_text_pos(left_x), ui_text_pos(panel_y + HEADER_L3));
-            sdtx_puts(line);
+            sdtx_puts(line_fit);
         }
     }
 }
@@ -563,16 +600,39 @@ static void draw_row_lr(float cx, float my, float inner_right,
                         const uint8_t right_rgb[3], const char *right_txt)
 {
     const float cell_w = 8.0f;
-    if (left_txt && left_txt[0]) {
-        sdtx_color3b(left_rgb[0], left_rgb[1], left_rgb[2]);
-        sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
-        sdtx_puts(left_txt);
+    char right_fit[96];
+    const char *right_draw = NULL;
+    float right_w = 0.0f;
+    float right_x = inner_right;
+
+    if (right_txt && right_txt[0] && right_rgb) {
+        int right_chars = (int)floorf((inner_right - cx) / cell_w);
+        ui_fit_text(right_txt, right_chars, right_fit, sizeof(right_fit));
+        if (right_fit[0]) {
+            right_draw = right_fit;
+            right_w = (float)strlen(right_draw) * cell_w;
+            right_x = inner_right - right_w;
+        }
     }
-    if (right_txt && right_txt[0]) {
-        float rw = (float)strlen(right_txt) * cell_w;
+
+    if (left_txt && left_txt[0]) {
+        char left_fit[96];
+        const char *left_draw = left_txt;
+        if (right_draw) {
+            int left_chars = (int)floorf((right_x - cx - 8.0f) / cell_w);
+            ui_fit_text(left_txt, left_chars, left_fit, sizeof(left_fit));
+            left_draw = left_fit;
+        }
+        if (left_draw[0]) {
+            sdtx_color3b(left_rgb[0], left_rgb[1], left_rgb[2]);
+            sdtx_pos(ui_text_pos(cx), ui_text_pos(my));
+            sdtx_puts(left_draw);
+        }
+    }
+    if (right_draw) {
         sdtx_color3b(right_rgb[0], right_rgb[1], right_rgb[2]);
-        sdtx_pos(ui_text_pos(inner_right - rw), ui_text_pos(my));
-        sdtx_puts(right_txt);
+        sdtx_pos(ui_text_pos(right_x), ui_text_pos(my));
+        sdtx_puts(right_draw);
     }
 }
 
