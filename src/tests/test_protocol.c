@@ -254,6 +254,57 @@ TEST(test_roundtrip_stations) {
     ASSERT_EQ_FLOAT(read_f32_le(&p[1 + COMMODITY_FRAME * 4]), 15.5f, 0.1f);
 }
 
+TEST(test_station_identity_serializes_module_commodities) {
+    station_t st;
+    memset(&st, 0, sizeof(st));
+    st.services = STATION_SERVICE_REPAIR;
+    st.pos = v2(10.0f, -20.0f);
+    st.radius = 60.0f;
+    st.dock_radius = 110.0f;
+    st.signal_range = 2000.0f;
+    snprintf(st.name, sizeof(st.name), "Wire Test");
+    st.module_count = 3;
+    st.modules[0] = (station_module_t){
+        .type = MODULE_HOPPER,
+        .ring = 1,
+        .slot = 0,
+        .scaffold = false,
+        .commodity = (uint8_t)COMMODITY_CUPRITE_ORE,
+        .build_progress = 1.0f,
+    };
+    st.modules[1] = (station_module_t){
+        .type = MODULE_HOPPER,
+        .ring = 2,
+        .slot = 1,
+        .scaffold = false,
+        .commodity = (uint8_t)COMMODITY_FRAME,
+        .build_progress = 1.0f,
+    };
+    st.modules[2] = (station_module_t){
+        .type = MODULE_FURNACE,
+        .ring = 3,
+        .slot = 2,
+        .scaffold = false,
+        .commodity = (uint8_t)COMMODITY_CRYSTAL_INGOT,
+        .build_progress = 1.0f,
+    };
+
+    uint8_t buf[STATION_IDENTITY_SIZE] = {0};
+    int len = serialize_station_identity(buf, 4, &st);
+
+    ASSERT_EQ_INT(len, STATION_IDENTITY_SIZE);
+    ASSERT_EQ_INT(STATION_MODULE_RECORD_SIZE, 9);
+
+    int moff = 59 + COMMODITY_COUNT * 4 + 4;
+    ASSERT_EQ_INT(buf[moff], 3);
+    moff++;
+    ASSERT_EQ_INT(buf[moff + 8], COMMODITY_CUPRITE_ORE);
+    moff += STATION_MODULE_RECORD_SIZE;
+    ASSERT_EQ_INT(buf[moff + 8], COMMODITY_FRAME);
+    moff += STATION_MODULE_RECORD_SIZE;
+    ASSERT_EQ_INT(buf[moff + 8], COMMODITY_CRYSTAL_INGOT);
+}
+
 TEST(test_bug92_station_record_size_matches_buffer) {
     /* Bug 92: station broadcast buffer must match serialized record size.
      * STATION_RECORD_SIZE is validated at compile time via _Static_assert,
@@ -410,6 +461,7 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_asteroids_full_includes_inactive_slots);
     RUN(test_roundtrip_npcs);
     RUN(test_roundtrip_stations);
+    RUN(test_station_identity_serializes_module_commodities);
     RUN(test_bug92_station_record_size_matches_buffer);
     RUN(test_bug93_hint_mines_small_shard_with_minor_desync);
     RUN(test_roundtrip_player_ship);

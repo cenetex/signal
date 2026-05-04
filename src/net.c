@@ -585,6 +585,9 @@ static void handle_message(const uint8_t* data, int len) {
                 si.modules[m].ring = data[moff + 2];
                 si.modules[m].slot = data[moff + 3];
                 si.modules[m].build_progress = read_f32_le(&data[moff + 4]);
+                si.modules[m].commodity = data[moff + 8];
+                if (si.modules[m].commodity > COMMODITY_COUNT)
+                    si.modules[m].commodity = (uint8_t)COMMODITY_COUNT;
                 moff += STATION_MODULE_RECORD_SIZE;
             }
             /* Skip over unused module record slots to reach arm data */

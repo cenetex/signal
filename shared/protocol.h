@@ -367,12 +367,12 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 #define NPC_RECORD_SIZE 26
 
 /* Station identity: [index:1][flags:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32]
- * [base_price:COMMODITY_COUNT×f32][scaffold_progress:f32][module_count:1][modules:MAX_MODULES×8]
+ * [base_price:COMMODITY_COUNT×f32][scaffold_progress:f32][module_count:1][modules:MAX_MODULES×9]
  * [arm_count:1][arm_speed:MAX_ARMS×f32][ring_offset:MAX_ARMS×f32]
  * [plan_count:1][plans:8 × (type:1, ring:1, slot:1, owner:1)]
  * [pending_count:1][pending:4 × (type:1, owner:1)]
  * flags: bit0=scaffold, bit1=planned */
-#define STATION_MODULE_RECORD_SIZE 8  /* type:1 + scaffold:1 + ring:1 + slot:1 + build_progress:f32 */
+#define STATION_MODULE_RECORD_SIZE 9  /* type:1 + scaffold:1 + ring:1 + slot:1 + build_progress:f32 + commodity:1 */
 #define STATION_PLAN_RECORD_SIZE 4    /* type:1 + ring:1 + slot:1 + owner:1 */
 #define STATION_PLAN_RECORD_COUNT 8
 #define STATION_PENDING_SCAFFOLD_RECORD_SIZE 2  /* type:1 + owner:1 */
