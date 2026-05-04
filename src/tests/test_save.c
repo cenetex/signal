@@ -1,5 +1,64 @@
 #include "tests/test_harness.h"
 
+static uint32_t test_crc32_update(uint32_t crc, const void *buf, size_t len) {
+    const uint8_t *p = (const uint8_t *)buf;
+    crc = ~crc;
+    for (size_t i = 0; i < len; i++) {
+        crc ^= p[i];
+        for (int j = 0; j < 8; j++)
+            crc = (crc >> 1) ^ (0xEDB88320u & (0u - (crc & 1u)));
+    }
+    return ~crc;
+}
+
+static bool test_patch_catalog_version(const char *path, uint32_t version) {
+    FILE *f = fopen(path, "rb+");
+    if (!f) return false;
+    fseek(f, 0, SEEK_END);
+    long len = ftell(f);
+    if (len < 12) { fclose(f); return false; }
+    fseek(f, 4, SEEK_SET);
+    if (fwrite(&version, sizeof(version), 1, f) != 1) {
+        fclose(f);
+        return false;
+    }
+    fflush(f);
+
+    fseek(f, 0, SEEK_SET);
+    uint32_t crc = 0;
+    long remaining = len - (long)sizeof(uint32_t);
+    uint8_t chunk[4096];
+    while (remaining > 0) {
+        size_t want = remaining < (long)sizeof(chunk) ? (size_t)remaining : sizeof(chunk);
+        size_t n = fread(chunk, 1, want, f);
+        if (n == 0) { fclose(f); return false; }
+        crc = test_crc32_update(crc, chunk, n);
+        remaining -= (long)n;
+    }
+    fseek(f, len - (long)sizeof(uint32_t), SEEK_SET);
+    if (fwrite(&crc, sizeof(crc), 1, f) != 1) {
+        fclose(f);
+        return false;
+    }
+    fclose(f);
+    return true;
+}
+
+static bool test_furnace_has_adjacent_ore_hopper_save(const station_t *st,
+                                                      const station_module_t *furnace) {
+    commodity_t ore = module_instance_input_ore(furnace);
+    if (ore == COMMODITY_COUNT) return false;
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *hopper = &st->modules[i];
+        if (hopper->scaffold) continue;
+        if (hopper->type != MODULE_HOPPER) continue;
+        if ((commodity_t)hopper->commodity != ore) continue;
+        int dr = (int)hopper->ring - (int)furnace->ring;
+        if (dr == 1 || dr == -1) return true;
+    }
+    return false;
+}
+
 TEST(test_player_save_load_roundtrip) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
@@ -17,6 +76,80 @@ TEST(test_player_save_load_roundtrip) {
     /* loaded auto-freed by WORLD_HEAP cleanup */
     /* w auto-freed by WORLD_HEAP cleanup */
     remove(TMP("test_player.sav"));
+}
+
+TEST(test_v3_station_catalog_repairs_helios_smelter_layout) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+    station_t *helios = &w->stations[2];
+
+    int cu_seen = 0;
+    for (int m = 0; m < helios->module_count; m++) {
+        station_module_t *mod = &helios->modules[m];
+        if (mod->type == MODULE_HOPPER) {
+            commodity_t c = (commodity_t)mod->commodity;
+            if (c == COMMODITY_CUPRITE_ORE) {
+                mod->ring = 3; mod->slot = 0;
+            } else if (c == COMMODITY_CRYSTAL_INGOT) {
+                mod->ring = 2; mod->slot = 3;
+            } else if (c == COMMODITY_CRYSTAL_ORE) {
+                mod->ring = 3; mod->slot = 6;
+            }
+        } else if (mod->type == MODULE_FURNACE &&
+                   (commodity_t)mod->commodity == COMMODITY_CUPRITE_INGOT) {
+            if (cu_seen == 1) {
+                mod->ring = 3; mod->slot = 1;
+            }
+            cu_seen++;
+        }
+    }
+
+    for (int m = helios->module_count - 1; m >= 0; m--) {
+        bool drop = helios->modules[m].type == MODULE_SHIPYARD;
+        if (helios->modules[m].type == MODULE_HOPPER &&
+            (commodity_t)helios->modules[m].commodity == COMMODITY_FRAME) {
+            drop = true;
+        }
+        if (!drop) continue;
+        for (int k = m + 1; k < helios->module_count; k++)
+            helios->modules[k - 1] = helios->modules[k];
+        helios->module_count--;
+    }
+    ASSERT(!station_has_module(helios, MODULE_SHIPYARD));
+    ASSERT(station_find_hopper_for(helios, COMMODITY_FRAME) < 0);
+
+    const char *dir = TMP("test_v3_helios_cat");
+    ASSERT(station_catalog_save(helios, 2, dir));
+    char path[256];
+    snprintf(path, sizeof(path), "%s/2.cat", dir);
+    ASSERT(test_patch_catalog_version(path, 3));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    ASSERT_EQ_INT(station_catalog_load_all(loaded->stations, MAX_STATIONS, dir), 1);
+    ASSERT(station_has_module(&loaded->stations[2], MODULE_SHIPYARD));
+    ASSERT(station_find_hopper_for(&loaded->stations[2], COMMODITY_FRAME) >= 0);
+    int checked_furnaces = 0;
+    for (int m = 0; m < loaded->stations[2].module_count; m++) {
+        const station_module_t *mod = &loaded->stations[2].modules[m];
+        if (mod->type != MODULE_FURNACE) continue;
+        ASSERT(test_furnace_has_adjacent_ore_hopper_save(&loaded->stations[2], mod));
+        checked_furnaces++;
+    }
+    ASSERT_EQ_INT(checked_furnaces, 3);
+    int yard = -1;
+    for (int m = 0; m < loaded->stations[2].module_count; m++) {
+        if (loaded->stations[2].modules[m].type == MODULE_SHIPYARD) {
+            yard = m;
+            break;
+        }
+    }
+    ASSERT(yard >= 0);
+    ASSERT_EQ_INT(station_module_layout_status(&loaded->stations[2],
+                                               &loaded->stations[2].modules[yard]),
+                  STATION_LAYOUT_OK);
+    remove(path);
 }
 
 TEST(test_world_save_load_preserves_stations) {
@@ -836,6 +969,7 @@ void register_save_persistence_tests(void) {
     RUN(test_player_load_bad_magic_fails);
     RUN(test_world_load_rejects_stale_version);
     RUN(test_world_save_load_preserves_module_ring_slot);
+    RUN(test_v3_station_catalog_repairs_helios_smelter_layout);
     RUN(test_v51_migration_tags_untagged_furnaces_and_fills_hoppers);
     RUN(test_v51_migration_furnace_count_heuristic);
     RUN(test_world_save_load_preserves_smelted_ingots);
@@ -850,4 +984,3 @@ void register_save_format_tests(void) {
     RUN(test_save_v21_module_remap);
     RUN(test_save_future_version_rejected);
 }
-

@@ -499,12 +499,13 @@ TEST(test_kit_fab_requires_shipyard) {
      * commodities should never produce kits. */
     WORLD_DECL;
     world_reset(&w);
-    /* Prospect (station 0) has a dock but no shipyard. Kepler (station 1)
-     * has both. Pre-fill both with kit-fab inputs. */
+    /* Prospect (station 0) has a dock but no shipyard. Kepler and Helios
+     * both have shipyards. Pre-fill all three with kit-fab inputs. */
     ASSERT(station_has_module(&w.stations[0], MODULE_DOCK));
     ASSERT(!station_has_module(&w.stations[0], MODULE_SHIPYARD));
     ASSERT(station_has_module(&w.stations[1], MODULE_SHIPYARD));
-    for (int s = 0; s < 2; s++) {
+    ASSERT(station_has_module(&w.stations[2], MODULE_SHIPYARD));
+    for (int s = 0; s < 3; s++) {
         ASSERT(test_set_station_finished_units(&w.stations[s], COMMODITY_FRAME, 5));
         ASSERT(test_set_station_finished_units(&w.stations[s], COMMODITY_LASER_MODULE, 5));
         ASSERT(test_set_station_finished_units(&w.stations[s], COMMODITY_TRACTOR_MODULE, 5));
@@ -516,6 +517,7 @@ TEST(test_kit_fab_requires_shipyard) {
         world_sim_step(&w, SIM_DT);
     /* Shipyard station produces kits; dock-only station does not. */
     ASSERT(w.stations[1]._inventory_cache[COMMODITY_REPAIR_KIT] > 0.0f);
+    ASSERT(w.stations[2]._inventory_cache[COMMODITY_REPAIR_KIT] > 0.0f);
     ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_REPAIR_KIT], 0.0f, 0.01f);
 }
 
@@ -553,12 +555,14 @@ TEST(test_kit_import_contract_skips_shipyard_stations) {
     WORLD_DECL;
     world_reset(&w);
     ASSERT(station_has_module(&w.stations[1], MODULE_SHIPYARD));
+    ASSERT(station_has_module(&w.stations[2], MODULE_SHIPYARD));
     w.stations[1]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
+    w.stations[2]._inventory_cache[COMMODITY_REPAIR_KIT] = 0.0f;
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
     for (int k = 0; k < MAX_CONTRACTS; k++) {
         contract_t *c = &w.contracts[k];
         if (c->active && c->action == CONTRACT_TRACTOR
-            && c->station_index == 1
+            && (c->station_index == 1 || c->station_index == 2)
             && c->commodity == COMMODITY_REPAIR_KIT) {
             ASSERT(false); /* shouldn't reach here */
         }
@@ -752,13 +756,9 @@ TEST(test_per_row_sell_drains_one_unit_only) {
     sp->session_ready = true;
     memset(sp->session_token, 0xAA, 8);
 
-    /* Dock at Helios — its laser/tractor fabs accept frame ingot input. */
-    int helios = -1;
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        if (!station_is_active(&w->stations[s])) continue;
-        if (station_consumes(&w->stations[s], COMMODITY_FRAME)) { helios = s; break; }
-    }
-    ASSERT(helios >= 0);
+    /* Dock at Helios: its shipyard consumes frames for repair-kit fab. */
+    int helios = 2;
+    ASSERT(station_consumes(&w->stations[helios], COMMODITY_FRAME));
     sp->docked = true;
     sp->current_station = (uint8_t)helios;
     sp->ship.pos = w->stations[helios].pos;

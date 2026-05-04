@@ -1,11 +1,11 @@
 /*
  * test_furnace_color.c — per-ring furnace render-tint logic.
  *
- * MODULE_FURNACE is a single sim type; the renderer picks one of four
- * tints (ferrite / cuprite / crystal / chunks-feeder) at draw time
- * based on the station's furnace count and the furnace's ring. The
- * helper lives in src/station_palette.h so both the renderer and these
- * tests share the exact same logic — no schema bump, no save migration.
+ * MODULE_FURNACE is a single sim type; the renderer picks ferrite /
+ * cuprite / crystal from the furnace's instance commodity tag and falls
+ * back to the legacy ring heuristic for untagged furnaces. The helpers
+ * live in src/station_palette.h so both the renderer and these tests
+ * share the exact same logic.
  */
 #include "tests/test_harness.h"
 #include "station_palette.h"
@@ -59,8 +59,8 @@ TEST(test_furnace_color_prospect_is_ferrite_red) {
     EXPECT_RGB(r, g, b, 0.85f, 0.30f, 0.20f); /* ferrite red */
 }
 
-/* (2) Helios (3 furnaces) → inner=crystal, outer=cuprite, middle=chunks. */
-TEST(test_furnace_color_helios_three_ring_pattern) {
+/* (2) Helios (3 furnaces) → each furnace tint follows its commodity tag. */
+TEST(test_furnace_color_helios_uses_instance_tags) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
@@ -75,37 +75,24 @@ TEST(test_furnace_color_helios_three_ring_pattern) {
     }
     ASSERT(helios >= 0);
 
-    int min_ring = 99, max_ring = 0;
+    int saw_cu = 0, saw_cr = 0;
     for (int i = 0; i < w->stations[helios].module_count; i++) {
-        if (w->stations[helios].modules[i].type != MODULE_FURNACE) continue;
-        int rr = (int)w->stations[helios].modules[i].ring;
-        if (rr < min_ring) min_ring = rr;
-        if (rr > max_ring) max_ring = rr;
-    }
-    ASSERT(min_ring < max_ring);
-
-    /* Walk every furnace and verify the right tint per its ring. */
-    int saw_inner = 0, saw_outer = 0, saw_middle = 0;
-    for (int i = 0; i < w->stations[helios].module_count; i++) {
-        if (w->stations[helios].modules[i].type != MODULE_FURNACE) continue;
-        int rr = (int)w->stations[helios].modules[i].ring;
+        const station_module_t *m = &w->stations[helios].modules[i];
+        if (m->type != MODULE_FURNACE) continue;
         float r = 0, g = 0, b = 0;
-        station_palette_furnace_color(&w->stations[helios], rr, &r, &g, &b);
-        if (rr == min_ring) {
-            EXPECT_RGB(r, g, b, 0.30f, 0.80f, 0.35f); /* crystal green */
-            saw_inner++;
-        } else if (rr == max_ring) {
+        station_palette_furnace_module_color(&w->stations[helios], m, &r, &g, &b);
+        if ((commodity_t)m->commodity == COMMODITY_CUPRITE_INGOT) {
             EXPECT_RGB(r, g, b, 0.25f, 0.50f, 0.90f); /* cuprite blue */
-            saw_outer++;
+            saw_cu++;
+        } else if ((commodity_t)m->commodity == COMMODITY_CRYSTAL_INGOT) {
+            EXPECT_RGB(r, g, b, 0.30f, 0.80f, 0.35f); /* crystal green */
+            saw_cr++;
         } else {
-            EXPECT_RGB(r, g, b, 0.85f, 0.85f, 0.90f); /* chunks white */
-            saw_middle++;
+            ASSERT(false /* unexpected Helios furnace tag */);
         }
     }
-    ASSERT(saw_inner >= 1);
-    ASSERT(saw_outer >= 1);
-    /* Middle is optional (only present when 3 distinct rings used). */
-    (void)saw_middle;
+    ASSERT_EQ_INT(saw_cu, 2);
+    ASSERT_EQ_INT(saw_cr, 1);
 }
 
 /* (3) Outpost growth: as furnaces are added, the inner-most furnace's
@@ -244,7 +231,7 @@ TEST(test_furnace_color_middle_ring_glows_by_last_smelt) {
 void register_furnace_color_tests(void) {
     TEST_SECTION("\nFurnace per-ring color render variants:\n");
     RUN(test_furnace_color_prospect_is_ferrite_red);
-    RUN(test_furnace_color_helios_three_ring_pattern);
+    RUN(test_furnace_color_helios_uses_instance_tags);
     RUN(test_furnace_color_outpost_growth_reshuffles);
     RUN(test_furnace_color_non_furnace_modules_unaffected);
     RUN(test_prospect_modules_after_silo_cleanup);

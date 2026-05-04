@@ -523,12 +523,13 @@ void step_furnace_smelting(world_t *w, float dt) {
              * fragments" failure mode under the new rules. */
             if (!sim_can_smelt_ore(st, a->commodity)) continue;
 
-            /* Find furnace+target pairs: any furnace on the station can
-             * anchor the beam, paired with the nearest module on an
-             * adjacent ring. */
+            /* Find furnace+target pairs: only a furnace tagged for this ore
+             * can anchor the beam, paired with the nearest matching hopper
+             * on an adjacent ring. */
             for (int m = 0; m < st->module_count && !smelted; m++) {
                 if (st->modules[m].scaffold) continue;
                 if (st->modules[m].type != MODULE_FURNACE) continue;
+                if (module_instance_input_ore(&st->modules[m]) != a->commodity) continue;
 
                 /* Output cap: refuse to engage the beam if the station's
                  * ingot stockpile is already full. Without this, smelts

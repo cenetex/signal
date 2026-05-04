@@ -56,6 +56,42 @@ static int station_manifest_seed_from_npc(station_t *st, commodity_t c, int n,
     return pushed;
 }
 
+static bool station_smelt_pair_for_ore(const station_t *st, commodity_t ore,
+                                       vec2 *drop_point) {
+    if (!st || !drop_point || ore == COMMODITY_COUNT) return false;
+    bool found = false;
+    float best_d = 1e18f;
+    for (int fm = 0; fm < st->module_count; fm++) {
+        const station_module_t *f = &st->modules[fm];
+        if (f->type != MODULE_FURNACE) continue;
+        if (f->scaffold) continue;
+        if (module_instance_input_ore(f) != ore) continue;
+
+        int ring = (int)f->ring;
+        vec2 furnace_pos = module_world_pos_ring(st, ring, f->slot);
+        int adj_rings[2] = { ring + 1, ring - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int hm = 0; hm < st->module_count; hm++) {
+                const station_module_t *h = &st->modules[hm];
+                if (h->ring != adj) continue;
+                if (h->scaffold) continue;
+                if (h->type != MODULE_HOPPER) continue;
+                if ((commodity_t)h->commodity != ore) continue;
+                vec2 hopper_pos = module_world_pos_ring(st, adj, h->slot);
+                float d = v2_dist_sq(furnace_pos, hopper_pos);
+                if (d < best_d) {
+                    best_d = d;
+                    *drop_point = v2_scale(v2_add(furnace_pos, hopper_pos), 0.5f);
+                    found = true;
+                }
+            }
+        }
+    }
+    return found;
+}
+
 /* ================================================================== */
 /* NPC ships                                                          */
 /* ================================================================== */
@@ -317,14 +353,23 @@ static void mirror_npc_to_character(world_t *w, int npc_slot) {
  * built and don't get auto-replenished here; they can scaffold their
  * own NPCs via gameplay later. */
 static void station_target_npc_counts(int station_idx, const station_t *st,
-                                      int *miners, int *haulers) {
+                                      int *miners, int *haulers, int *tows) {
     *miners = 0;
     *haulers = 0;
+    *tows = 0;
     if (!st || !station_is_active(st)) return;
     switch (station_idx) {
     case 0: *miners = 2; *haulers = 2; return;  /* Prospect */
-    case 1: *miners = 0; *haulers = 1; return;  /* Kepler   */
-    case 2: *miners = 1; *haulers = 1; return;  /* Helios   */
+    case 1: /* Kepler */
+        *miners = 0;
+        *haulers = 1;
+        *tows = station_has_module(st, MODULE_SHIPYARD) ? 1 : 0;
+        return;
+    case 2: /* Helios */
+        *miners = 1;
+        *haulers = 1;
+        *tows = station_has_module(st, MODULE_SHIPYARD) ? 1 : 0;
+        return;
     default: return;                            /* outposts: no auto */
     }
 }
@@ -334,14 +379,20 @@ static void station_target_npc_counts(int station_idx, const station_t *st,
  * (station, role) pair. */
 static void count_npc_roster(const world_t *w,
                              int miners[MAX_STATIONS],
-                             int haulers[MAX_STATIONS]) {
-    for (int s = 0; s < MAX_STATIONS; s++) { miners[s] = 0; haulers[s] = 0; }
+                             int haulers[MAX_STATIONS],
+                             int tows[MAX_STATIONS]) {
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        miners[s] = 0;
+        haulers[s] = 0;
+        tows[s] = 0;
+    }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         const npc_ship_t *npc = &w->npc_ships[n];
         if (!npc->active) continue;
         if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) continue;
         if (npc->role == NPC_ROLE_MINER)  miners[npc->home_station]++;
         if (npc->role == NPC_ROLE_HAULER) haulers[npc->home_station]++;
+        if (npc->role == NPC_ROLE_TOW)    tows[npc->home_station]++;
     }
 }
 
@@ -351,8 +402,8 @@ static void count_npc_roster(const world_t *w,
  * is informational, so spawning is no longer gated on solvency.
  * Returns true if a spawn fired. */
 static bool replenish_npc_roster(world_t *w) {
-    int miners[MAX_STATIONS], haulers[MAX_STATIONS];
-    count_npc_roster(w, miners, haulers);
+    int miners[MAX_STATIONS], haulers[MAX_STATIONS], tows[MAX_STATIONS];
+    count_npc_roster(w, miners, haulers, tows);
 
     /* Find the largest shortfall across all (station, role) pairs.
      * Tie-broken by station index (lower wins). */
@@ -360,16 +411,20 @@ static bool replenish_npc_roster(world_t *w) {
     npc_role_t best_role = NPC_ROLE_MINER;
     int best_shortfall = 0;
     for (int s = 0; s < MAX_STATIONS; s++) {
-        int target_m = 0, target_h = 0;
-        station_target_npc_counts(s, &w->stations[s], &target_m, &target_h);
+        int target_m = 0, target_h = 0, target_t = 0;
+        station_target_npc_counts(s, &w->stations[s], &target_m, &target_h, &target_t);
         /* Sovereign station can run negative; pool is informational. */
         int short_m = target_m - miners[s];
         int short_h = target_h - haulers[s];
+        int short_t = target_t - tows[s];
         if (short_m > best_shortfall) {
             best_shortfall = short_m; best_station = s; best_role = NPC_ROLE_MINER;
         }
         if (short_h > best_shortfall) {
             best_shortfall = short_h; best_station = s; best_role = NPC_ROLE_HAULER;
+        }
+        if (short_t > best_shortfall) {
+            best_shortfall = short_t; best_station = s; best_role = NPC_ROLE_TOW;
         }
     }
     if (best_station < 0) return false;
@@ -1755,14 +1810,25 @@ void step_npc_ships(world_t *w, float dt) {
         case NPC_STATE_RETURN_TO_STATION: {
             station_t *home = &w->stations[npc->home_station];
 
-            /* Find the nearest furnace on this station to deliver to */
+            /* Deliver to the same furnace+ore-hopper midpoint the smelter
+             * beam uses. Picking the first furnace strands crystal at
+             * Helios when the first furnace is cuprite-tagged. */
             vec2 delivery_target = home->pos;
-            for (int fm = 0; fm < home->module_count; fm++) {
-                module_type_t fmt = home->modules[fm].type;
-                if (fmt != MODULE_FURNACE) continue;
-                if (home->modules[fm].scaffold) continue;
-                delivery_target = module_world_pos_ring(home, home->modules[fm].ring, home->modules[fm].slot);
-                break;
+            bool have_delivery_target = false;
+            if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS) {
+                asteroid_t *tow = &w->asteroids[npc->towed_fragment];
+                if (tow->active) {
+                    have_delivery_target = station_smelt_pair_for_ore(home, tow->commodity, &delivery_target);
+                }
+            }
+            if (!have_delivery_target) {
+                for (int fm = 0; fm < home->module_count; fm++) {
+                    module_type_t fmt = home->modules[fm].type;
+                    if (fmt != MODULE_FURNACE) continue;
+                    if (home->modules[fm].scaffold) continue;
+                    delivery_target = module_world_pos_ring(home, home->modules[fm].ring, home->modules[fm].slot);
+                    break;
+                }
             }
 
             /* Slow down when towing so the fragment can keep up */

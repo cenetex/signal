@@ -76,23 +76,25 @@ TEST(test_commodity_color_u8_all_branches) {
      * fallback honest so a new commodity can't silently inherit white. */
     uint8_t r, g, b;
     commodity_color_u8(COMMODITY_FERRITE_ORE, &r, &g, &b);
-    ASSERT_EQ_INT(r, 217); ASSERT_EQ_INT(g, 127); ASSERT_EQ_INT(b, 90);
+    ASSERT_EQ_INT(r, 217); ASSERT_EQ_INT(g, 77); ASSERT_EQ_INT(b, 51);
     commodity_color_u8(COMMODITY_CUPRITE_ORE, &r, &g, &b);
-    ASSERT_EQ_INT(r, 110); ASSERT_EQ_INT(g, 210); ASSERT_EQ_INT(b, 140);
+    ASSERT_EQ_INT(r, 64); ASSERT_EQ_INT(g, 128); ASSERT_EQ_INT(b, 230);
     commodity_color_u8(COMMODITY_CRYSTAL_ORE, &r, &g, &b);
-    ASSERT_EQ_INT(r, 180); ASSERT_EQ_INT(g, 140); ASSERT_EQ_INT(b, 255);
+    ASSERT_EQ_INT(r, 77); ASSERT_EQ_INT(g, 204); ASSERT_EQ_INT(b, 89);
     commodity_color_u8(COMMODITY_FERRITE_INGOT, &r, &g, &b);
-    ASSERT_EQ_INT(r, 217);
+    ASSERT_EQ_INT(r, 199); ASSERT_EQ_INT(g, 112); ASSERT_EQ_INT(b, 94);
     commodity_color_u8(COMMODITY_CUPRITE_INGOT, &r, &g, &b);
-    ASSERT_EQ_INT(r, 110);
+    ASSERT_EQ_INT(r, 107); ASSERT_EQ_INT(g, 150); ASSERT_EQ_INT(b, 207);
     commodity_color_u8(COMMODITY_CRYSTAL_INGOT, &r, &g, &b);
-    ASSERT_EQ_INT(r, 180);
+    ASSERT_EQ_INT(r, 112); ASSERT_EQ_INT(g, 191); ASSERT_EQ_INT(b, 120);
     commodity_color_u8(COMMODITY_FRAME, &r, &g, &b);
-    ASSERT_EQ_INT(r, 190);
+    ASSERT_EQ_INT(r, 163); ASSERT_EQ_INT(g, 135); ASSERT_EQ_INT(b, 135);
     commodity_color_u8(COMMODITY_LASER_MODULE, &r, &g, &b);
-    ASSERT_EQ_INT(r, 140);
+    ASSERT_EQ_INT(r, 135); ASSERT_EQ_INT(g, 156); ASSERT_EQ_INT(b, 191);
     commodity_color_u8(COMMODITY_TRACTOR_MODULE, &r, &g, &b);
-    ASSERT_EQ_INT(r, 120);
+    ASSERT_EQ_INT(r, 130); ASSERT_EQ_INT(g, 176); ASSERT_EQ_INT(b, 143);
+    commodity_color_u8(COMMODITY_REPAIR_KIT, &r, &g, &b);
+    ASSERT_EQ_INT(r, 184); ASSERT_EQ_INT(g, 140); ASSERT_EQ_INT(b, 140);
     commodity_color_u8(COMMODITY_COUNT, &r, &g, &b);
     ASSERT_EQ_INT(r, 200); ASSERT_EQ_INT(g, 220); ASSERT_EQ_INT(b, 230);
 }

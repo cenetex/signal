@@ -1539,9 +1539,9 @@ TEST(test_station_module_layout_status_no_local_consumer_is_ok) {
      * 1-furnace ferrite station with no on-station frame press. */
     station_t st = {0};
     st.signal_range = 1.0f;
-    add_hopper_for(&st, 2, 0, COMMODITY_FERRITE_ORE);   /* input only */
-    add_furnace_for(&st, 2, 1, COMMODITY_FERRITE_INGOT);
-    const station_module_t *furnace = &st.modules[1];
+    add_furnace_for(&st, 1, 1, COMMODITY_FERRITE_INGOT);
+    add_hopper_for(&st, 2, 0, COMMODITY_FERRITE_ORE);   /* adjacent input only */
+    const station_module_t *furnace = &st.modules[0];
     /* No FRAME_PRESS / LASER_FAB / TRACTOR_FAB on the station, so
      * nothing locally consumes ferrite ingots. Layout is OK without
      * an output hopper. */
@@ -1557,7 +1557,7 @@ TEST(test_station_module_layout_status_furnace_uses_tag) {
     station_t st = {0};
     st.signal_range = 1.0f;
     add_hopper_for(&st, 2, 0, COMMODITY_FERRITE_ORE); /* wrong ore for a CU furnace */
-    add_furnace_for(&st, 2, 1, COMMODITY_CUPRITE_INGOT);
+    add_furnace_for(&st, 1, 1, COMMODITY_CUPRITE_INGOT);
     add_module_at(&st, MODULE_TRACTOR_FAB, 2, 5);     /* consumes CUPRITE_INGOT */
     const station_module_t *fc = &st.modules[1];     /* the furnace */
     ASSERT_EQ_INT(station_module_layout_status(&st, fc),
@@ -1621,13 +1621,49 @@ TEST(test_seeded_furnaces_tagged) {
     ASSERT_EQ_INT(helios_cr, 1);
 }
 
+static bool test_furnace_has_adjacent_ore_hopper(const station_t *st,
+                                                 const station_module_t *furnace) {
+    commodity_t ore = module_instance_input_ore(furnace);
+    if (ore == COMMODITY_COUNT) return false;
+    vec2 furnace_pos = module_world_pos_ring(st, furnace->ring, furnace->slot);
+    float max_pair_dist = HOPPER_PULL_RANGE * 2.0f;
+    float max_pair_sq = max_pair_dist * max_pair_dist;
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *hopper = &st->modules[i];
+        if (hopper->scaffold) continue;
+        if (hopper->type != MODULE_HOPPER) continue;
+        if ((commodity_t)hopper->commodity != ore) continue;
+        int dr = (int)hopper->ring - (int)furnace->ring;
+        if (dr != 1 && dr != -1) continue;
+        vec2 hopper_pos = module_world_pos_ring(st, hopper->ring, hopper->slot);
+        if (v2_dist_sq(furnace_pos, hopper_pos) <= max_pair_sq) return true;
+    }
+    return false;
+}
+
 TEST(test_seeded_helios_output_hoppers) {
     /* Helios's LASER_FAB and TRACTOR_FAB each have a dedicated
-     * commodity-tagged output hopper on ring 3. */
+     * commodity-tagged output hopper on ring 3, and its shipyard has
+     * the frame / laser / tractor hoppers needed for repair-kit fab.
+     * Its furnaces also each have a matching ore hopper on an adjacent
+     * ring, which the smelt-beam code requires before firing. */
     WORLD_DECL;
     world_reset(&w);
+    ASSERT(station_has_module(&w.stations[2], MODULE_SHIPYARD));
+    ASSERT(station_find_hopper_for(&w.stations[2], COMMODITY_FRAME) >= 0);
     ASSERT(station_find_hopper_for(&w.stations[2], COMMODITY_LASER_MODULE)   >= 0);
     ASSERT(station_find_hopper_for(&w.stations[2], COMMODITY_TRACTOR_MODULE) >= 0);
+    ASSERT(station_find_hopper_for(&w.stations[2], COMMODITY_CUPRITE_ORE) >= 0);
+    ASSERT(station_find_hopper_for(&w.stations[2], COMMODITY_CRYSTAL_ORE) >= 0);
+    int checked_furnaces = 0;
+    for (int i = 0; i < w.stations[2].module_count; i++) {
+        const station_module_t *m = &w.stations[2].modules[i];
+        if (m->scaffold) continue;
+        if (m->type != MODULE_FURNACE) continue;
+        ASSERT(test_furnace_has_adjacent_ore_hopper(&w.stations[2], m));
+        checked_furnaces++;
+    }
+    ASSERT_EQ_INT(checked_furnaces, 3);
     /* All Helios producers report OK under the new layout rule. */
     for (int i = 0; i < w.stations[2].module_count; i++) {
         const station_module_t *m = &w.stations[2].modules[i];

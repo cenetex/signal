@@ -41,21 +41,19 @@ static bool station_can_smelt_ore_for_autopilot(const station_t *st, commodity_t
 }
 
 /* Compute the smelt-beam drop point for `ore` at `st`: the midpoint of a
- * matching furnace and its nearest adjacent-ring module. Mirrors the
+ * matching furnace and its nearest adjacent-ring ore hopper. Mirrors the
  * pairing logic in step_furnace_smelting so the autopilot parks where
  * fragments will actually be pulled in. Falls back to the station center
  * when no furnace+silo pair exists. */
 static vec2 station_smelt_drop_point(const station_t *st, commodity_t ore) {
-    /* All furnaces are equivalent for parking purposes; the count tier
-     * still has to permit smelting of `ore` for the beam to fire, but
-     * any furnace anchors the geometry. */
-    (void)ore;
     vec2 best_mid = st->pos;
     float best_silo_d = 1e18f;
     bool found = false;
     for (int m = 0; m < st->module_count; m++) {
         if (st->modules[m].scaffold) continue;
         if (st->modules[m].type != MODULE_FURNACE) continue;
+        commodity_t furnace_ore = module_instance_input_ore(&st->modules[m]);
+        if (ore != COMMODITY_COUNT && furnace_ore != ore) continue;
         int ring = st->modules[m].ring;
         vec2 furnace_pos = module_world_pos_ring(st, ring, st->modules[m].slot);
         int adj_rings[2] = { ring + 1, ring - 1 };
@@ -65,6 +63,8 @@ static vec2 station_smelt_drop_point(const station_t *st, commodity_t ore) {
             for (int m2 = 0; m2 < st->module_count; m2++) {
                 if (st->modules[m2].ring != adj) continue;
                 if (st->modules[m2].scaffold) continue;
+                if (st->modules[m2].type != MODULE_HOPPER) continue;
+                if ((commodity_t)st->modules[m2].commodity != furnace_ore) continue;
                 vec2 mp2 = module_world_pos_ring(st, adj, st->modules[m2].slot);
                 float d = v2_dist_sq(furnace_pos, mp2);
                 if (d < best_silo_d) {

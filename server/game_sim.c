@@ -5224,7 +5224,8 @@ void world_reset(world_t *w) {
     w->stations[0].base_price[COMMODITY_CUPRITE_INGOT] = 32.0f;
     w->stations[0].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
     w->stations[0].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
-    /* Prospect doesn't make these but its dock buys them in for kit fab. */
+    /* Finished-good price baselines if Prospect receives stock; its dock
+     * imports repair kits rather than shipyard kit-fab inputs. */
     w->stations[0].base_price[COMMODITY_FRAME]          = 22.0f;
     w->stations[0].base_price[COMMODITY_LASER_MODULE]   = 30.0f;
     w->stations[0].base_price[COMMODITY_TRACTOR_MODULE] = 38.0f;
@@ -5268,7 +5269,7 @@ void world_reset(world_t *w) {
     w->stations[1].base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
     w->stations[1].base_price[COMMODITY_FRAME] = 20.0f;
     w->stations[1].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
-    /* Kepler imports laser/tractor modules for its dock kit fab. */
+    /* Kepler imports laser/tractor modules for its shipyard kit fab. */
     w->stations[1].base_price[COMMODITY_LASER_MODULE]   = 30.0f;
     w->stations[1].base_price[COMMODITY_TRACTOR_MODULE] = 38.0f;
     /* Ring 1: dock + relay only. Ring-1 slot 2 stays empty. */
@@ -5309,7 +5310,7 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_LASER_MODULE] = 28.0f;
     w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
     w->stations[2].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
-    /* Helios imports frames for its dock kit fab. */
+    /* Helios imports frames for its shipyard kit fab. */
     w->stations[2].base_price[COMMODITY_FRAME]          = 22.0f;
     /* No ferrite ingots produced or imported here — Helios runs at the
      * 3-furnace tier, which the new count rules deliberately gate
@@ -5321,24 +5322,25 @@ void world_reset(world_t *w) {
     add_module_at(&w->stations[2], MODULE_DOCK,         1, 0);
     add_module_at(&w->stations[2], MODULE_SIGNAL_RELAY, 1, 1);
     add_furnace_for(&w->stations[2], 1, 2, COMMODITY_CUPRITE_INGOT);
-    /* Ring 2: fabs + paired ingot hoppers. LASER_FAB needs both
-     * cuprite and crystal ingots → 2 spokes from it. TRACTOR_FAB
-     * just cuprite → 1 spoke. */
+    /* Ring 2: fabs + paired ingot / ore hoppers + shipyard. Smelter beams
+     * require the ore hopper on an adjacent ring, so cuprite/crystal ore
+     * intakes live between the ring-1/ring-3 furnaces they feed. */
     add_module_at(&w->stations[2], MODULE_LASER_FAB,    2, 0);
     add_hopper_for(&w->stations[2], 2, 1, COMMODITY_CUPRITE_INGOT);
-    add_hopper_for(&w->stations[2], 2, 3, COMMODITY_CRYSTAL_INGOT);
+    add_module_at(&w->stations[2], MODULE_SHIPYARD,     2, 2); /* needs FRAME, LASER, TRACTOR */
+    add_hopper_for(&w->stations[2], 2, 3, COMMODITY_CRYSTAL_ORE);
+    add_hopper_for(&w->stations[2], 2, 4, COMMODITY_CUPRITE_ORE);
     add_module_at(&w->stations[2], MODULE_TRACTOR_FAB,  2, 5);
-    /* Ring 3: 2 more furnaces (cuprite + crystal output) + cuprite /
-     * crystal ore intake hoppers + laser/tractor module output hoppers
-     * for the ring-2 fabs. All 5 slots used here are well clear of the
-     * dock approach axis (slot 0 = 0° aligns with the dock; we sit
-     * elsewhere on the 9-slot ring). */
-    add_hopper_for(&w->stations[2], 3, 0, COMMODITY_CUPRITE_ORE);
-    add_furnace_for(&w->stations[2],   3, 1, COMMODITY_CUPRITE_INGOT);
-    add_hopper_for(&w->stations[2], 3, 2, COMMODITY_LASER_MODULE);   /* LASER_FAB output */
+    /* Ring 3: 2 more furnaces (crystal + cuprite output) plus frame /
+     * crystal-ingot / laser / tractor module hoppers for the ring-2 fabs
+     * and shipyard. The ring-3 cuprite furnace shares the ring-2 cuprite
+     * ore intake with the inner cuprite furnace. */
+    add_hopper_for(&w->stations[2], 3, 2, COMMODITY_LASER_MODULE);   /* LASER_FAB output + shipyard input */
+    add_hopper_for(&w->stations[2], 3, 3, COMMODITY_FRAME);          /* feeds SHIPYARD */
     add_furnace_for(&w->stations[2],   3, 4, COMMODITY_CRYSTAL_INGOT);
-    add_hopper_for(&w->stations[2], 3, 6, COMMODITY_CRYSTAL_ORE);
-    add_hopper_for(&w->stations[2], 3, 7, COMMODITY_TRACTOR_MODULE); /* TRACTOR_FAB output */
+    add_hopper_for(&w->stations[2], 3, 5, COMMODITY_CRYSTAL_INGOT);
+    add_furnace_for(&w->stations[2],   3, 6, COMMODITY_CUPRITE_INGOT);
+    add_hopper_for(&w->stations[2], 3, 7, COMMODITY_TRACTOR_MODULE); /* TRACTOR_FAB output + shipyard input */
     w->stations[2].arm_count = 3;
     w->stations[2].arm_speed[1] = STATION_RING_SPEED; /* ring 2 drift bias */
     rebuild_station_services(&w->stations[2]);
@@ -5401,7 +5403,8 @@ void world_reset(world_t *w) {
     spawn_npc(w, 0, NPC_ROLE_HAULER);
     spawn_npc(w, 1, NPC_ROLE_HAULER);   /* Kepler -> Helios frames */
     spawn_npc(w, 2, NPC_ROLE_HAULER);   /* Helios -> Prospect repair kits */
-    spawn_npc(w, 1, NPC_ROLE_TOW);      /* Kepler shipyard (only shipyard) */
+    spawn_npc(w, 1, NPC_ROLE_TOW);      /* Kepler shipyard */
+    spawn_npc(w, 2, NPC_ROLE_TOW);      /* Helios shipyard */
 
     /* Bootstrap each station's per-ring angular velocity to its drift
      * bias. Under the all-passive Slice 1.5a dynamics, omega ramps to

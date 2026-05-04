@@ -159,23 +159,23 @@
 #define PAL_FURNACE_CRYSTAL 0.30f, 0.80f, 0.35f
 #define PAL_FURNACE_CHUNKS  0.85f, 0.85f, 0.90f
 
-/* Commodity colors — derived from the asteroid/ore palette and used
- * to tint hoppers (which buffer one commodity each) and the cross-
- * ring spokes that feed/drain them. The chain refines saturation:
- *   ORE     ← raw asteroid color
- *   INGOT   ← ore color, brightened/cleaner
- *   PRODUCT ← blend of constituent ingots
- * Renderer picks the right tint via commodity_color() below. */
+/* Commodity colors — resource-family language for hoppers and spokes:
+ *   ORE     = full resource color
+ *   INGOT   = resource color with gray-metal accent
+ *   PRODUCT = gray-metal base with resource accent
+ * Single-color callers use the representative blend below; hopper glyphs
+ * draw the base/accent split explicitly in world_draw.c. */
+#define PAL_COMMODITY_METAL_ACCENT      0.58f, 0.62f, 0.66f  /* gray metal */
 #define PAL_COMMODITY_FERRITE_ORE     0.85f, 0.30f, 0.20f  /* rusty red */
 #define PAL_COMMODITY_CUPRITE_ORE     0.25f, 0.50f, 0.90f  /* asteroid blue */
 #define PAL_COMMODITY_CRYSTAL_ORE     0.30f, 0.80f, 0.35f  /* asteroid green */
-#define PAL_COMMODITY_FERRITE_INGOT   0.95f, 0.50f, 0.30f  /* hot iron */
-#define PAL_COMMODITY_CUPRITE_INGOT   0.40f, 0.70f, 1.00f  /* refined copper */
-#define PAL_COMMODITY_CRYSTAL_INGOT   0.50f, 0.95f, 0.50f  /* bright crystal */
-#define PAL_COMMODITY_FRAME           0.95f, 0.78f, 0.25f  /* yellow-gold (ferrite product) */
-#define PAL_COMMODITY_LASER_MODULE    0.45f, 0.75f, 0.95f  /* cuprite+crystal blend, lit */
-#define PAL_COMMODITY_TRACTOR_MODULE  0.50f, 0.55f, 0.85f  /* cuprite-only product */
-#define PAL_COMMODITY_REPAIR_KIT      0.95f, 0.70f, 0.50f  /* warm white-gold, end of chain */
+#define PAL_COMMODITY_FERRITE_INGOT   0.78f, 0.44f, 0.37f  /* ferrite + metal */
+#define PAL_COMMODITY_CUPRITE_INGOT   0.42f, 0.59f, 0.81f  /* cuprite + metal */
+#define PAL_COMMODITY_CRYSTAL_INGOT   0.44f, 0.75f, 0.47f  /* crystal + metal */
+#define PAL_COMMODITY_FRAME           0.64f, 0.53f, 0.53f  /* metal + ferrite */
+#define PAL_COMMODITY_LASER_MODULE    0.53f, 0.61f, 0.75f  /* metal + cuprite */
+#define PAL_COMMODITY_TRACTOR_MODULE  0.51f, 0.69f, 0.56f  /* metal + crystal */
+#define PAL_COMMODITY_REPAIR_KIT      0.72f, 0.55f, 0.55f  /* metal + repair red */
 
 /* Kepler modules */
 #define PAL_MODULE_FRAME_PRESS 0.90f, 0.75f, 0.20f

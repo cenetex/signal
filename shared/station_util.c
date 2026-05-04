@@ -407,6 +407,21 @@ station_demand_t station_top_demand(const station_t *st) {
     return out;
 }
 
+static bool station_has_adjacent_hopper_for(const station_t *st,
+                                            const station_module_t *m,
+                                            commodity_t commodity) {
+    if (!st || !m || commodity == COMMODITY_COUNT) return false;
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *h = &st->modules[i];
+        if (h->scaffold) continue;
+        if (h->type != MODULE_HOPPER) continue;
+        if ((commodity_t)h->commodity != commodity) continue;
+        int dr = (int)h->ring - (int)m->ring;
+        if (dr == 1 || dr == -1) return true;
+    }
+    return false;
+}
+
 station_layout_status_t station_module_layout_status(const station_t *st,
                                                      const station_module_t *m) {
     if (!st || !m) return STATION_LAYOUT_OK;
@@ -418,7 +433,7 @@ station_layout_status_t station_module_layout_status(const station_t *st,
      * the actual input is the one ore that matches the furnace's tag. */
     if (m->type == MODULE_FURNACE) {
         commodity_t ore = module_instance_input_ore(m);
-        if (ore != COMMODITY_COUNT && station_find_hopper_for(st, ore) < 0) {
+        if (ore != COMMODITY_COUNT && !station_has_adjacent_hopper_for(st, m, ore)) {
             return STATION_LAYOUT_MISSING_INPUT_HOPPER;
         }
     } else {
@@ -482,4 +497,3 @@ const char *station_short_name(int station_idx) {
         return outpost_buf;
     }
 }
-
