@@ -1623,9 +1623,12 @@ TEST(test_seeded_furnaces_tagged) {
 
 TEST(test_seeded_helios_output_hoppers) {
     /* Helios's LASER_FAB and TRACTOR_FAB each have a dedicated
-     * commodity-tagged output hopper on ring 3. */
+     * commodity-tagged output hopper on ring 3, and its shipyard has
+     * the frame / laser / tractor hoppers needed for repair-kit fab. */
     WORLD_DECL;
     world_reset(&w);
+    ASSERT(station_has_module(&w.stations[2], MODULE_SHIPYARD));
+    ASSERT(station_find_hopper_for(&w.stations[2], COMMODITY_FRAME) >= 0);
     ASSERT(station_find_hopper_for(&w.stations[2], COMMODITY_LASER_MODULE)   >= 0);
     ASSERT(station_find_hopper_for(&w.stations[2], COMMODITY_TRACTOR_MODULE) >= 0);
     /* All Helios producers report OK under the new layout rule. */

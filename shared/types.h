@@ -174,13 +174,13 @@ typedef enum {
     RECIPE_FRAME_BASIC,
     RECIPE_LASER_BASIC,
     RECIPE_TRACTOR_COIL,
-    RECIPE_REPAIR_KIT_FAB,    /* 1 frame + 1 laser → 100 repair kits, at any dock */
+    RECIPE_REPAIR_KIT_FAB,    /* 1 frame + 1 laser + 1 tractor -> 100 repair kits at shipyards */
     RECIPE_LEGACY_MIGRATE,
     RECIPE_COUNT
 } recipe_id_t;
 
-/* RECIPE_INPUT_MAX bumped from 2 → 3 so the dock repair-kit recipe
- * (frame + laser + tractor → 100 kits) can fit. All recipes still
+/* RECIPE_INPUT_MAX bumped from 2 -> 3 so the shipyard repair-kit recipe
+ * (frame + laser + tractor -> 100 kits) can fit. All recipes still
  * declare their actual input_count; the array slot is just sized
  * to the largest recipe in the table. */
 #define RECIPE_INPUT_MAX 3
@@ -440,10 +440,10 @@ typedef struct {
      * wire-push (server-only). */
     manifest_t    manifest;
     bool          manifest_dirty;
-    /* Dock repair-kit fab cadence: server-only countdown. When it
-     * reaches zero and the station has 1 frame + 1 laser + 1 tractor
-     * in inventory, consume them, mint REPAIR_KIT_PER_BATCH kits, and
-     * reset the timer to REPAIR_KIT_FAB_PERIOD. */
+    /* Shipyard repair-kit fab cadence: server-only countdown. When it
+     * reaches the period and the station has 1 frame + 1 laser + 1
+     * tractor in its manifest, consume them, mint REPAIR_KIT_PER_BATCH
+     * kits, and reset the timer. */
     float         repair_kit_fab_timer;
     /* Layer B of #479 — per-station Ed25519 identity.
      *

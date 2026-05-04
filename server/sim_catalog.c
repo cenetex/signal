@@ -12,6 +12,8 @@
  */
 #include "sim_catalog.h"
 #include "manifest.h"
+#include "sim_construction.h"
+#include "station_util.h"
 #include <stdio.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -45,7 +47,8 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define CATALOG_MAGIC   0x53544E43  /* "STNC" */
-#define CATALOG_VERSION 3  /* v3: per-module commodity tag (hopper specialization) */
+#define CATALOG_VERSION 4  /* v4: repair Helios seed to include shipyard + frame hopper.
+                            * v3: per-module commodity tag (hopper specialization). */
 
 /* ---- helper macros (same pattern as sim_save.c) ---- */
 #define WRITE_FIELD(f, val) do { if (fwrite(&(val), sizeof(val), 1, (f)) != 1) { fclose(f); return false; } } while(0)
@@ -58,6 +61,70 @@ static void ensure_dir(const char *dir) {
 #else
     mkdir(dir, 0755);
 #endif
+}
+
+static bool catalog_slot_free(const station_t *st, int ring, int slot) {
+    if (!st || ring < 1 || ring > STATION_NUM_RINGS) return false;
+    if (slot < 0 || slot >= STATION_RING_SLOTS[ring]) return false;
+    for (int i = 0; i < st->module_count; i++) {
+        if (st->modules[i].ring == ring && st->modules[i].slot == slot)
+            return false;
+    }
+    return true;
+}
+
+static bool catalog_add_module_prefer(station_t *st, module_type_t type,
+                                      int preferred_ring, int preferred_slot) {
+    if (!st || st->module_count >= MAX_MODULES_PER_STATION) return false;
+    if (catalog_slot_free(st, preferred_ring, preferred_slot)) {
+        add_module_at(st, type, (uint8_t)preferred_ring, (uint8_t)preferred_slot);
+        return true;
+    }
+    for (int r = 2; r <= STATION_NUM_RINGS; r++) {
+        int slot = station_ring_free_slot(st, r, STATION_RING_SLOTS[r]);
+        if (slot >= 0) {
+            add_module_at(st, type, (uint8_t)r, (uint8_t)slot);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool catalog_add_hopper_prefer(station_t *st, commodity_t c,
+                                      int preferred_ring, int preferred_slot) {
+    if (!st || st->module_count >= MAX_MODULES_PER_STATION) return false;
+    if (catalog_slot_free(st, preferred_ring, preferred_slot)) {
+        add_hopper_for(st, (uint8_t)preferred_ring, (uint8_t)preferred_slot, c);
+        return true;
+    }
+    for (int r = 2; r <= STATION_NUM_RINGS; r++) {
+        int slot = station_ring_free_slot(st, r, STATION_RING_SLOTS[r]);
+        if (slot >= 0) {
+            add_hopper_for(st, (uint8_t)r, (uint8_t)slot, c);
+            return true;
+        }
+    }
+    for (int r = 1; r <= STATION_NUM_RINGS; r++) {
+        int slot = station_ring_free_slot(st, r, STATION_RING_SLOTS[r]);
+        if (slot >= 0) {
+            add_hopper_for(st, (uint8_t)r, (uint8_t)slot, c);
+            return true;
+        }
+    }
+    return false;
+}
+
+static bool station_catalog_migrate_v4_helios(station_t *st, int index, uint32_t ver) {
+    if (!st || index != 2 || ver >= 4) return false;
+    bool changed = false;
+    if (!station_has_module(st, MODULE_SHIPYARD)) {
+        changed |= catalog_add_module_prefer(st, MODULE_SHIPYARD, 2, 2);
+    }
+    if (station_find_hopper_for(st, COMMODITY_FRAME) < 0) {
+        changed |= catalog_add_hopper_prefer(st, COMMODITY_FRAME, 3, 3);
+    }
+    if (changed) rebuild_station_services(st);
+    return changed;
 }
 
 /* ================================================================== */
@@ -229,6 +296,10 @@ static bool station_catalog_load_one(station_t *st, int index, const char *dir) 
         memset(st, 0, sizeof(*st));
         (void)station_manifest_bootstrap(st);
         return false;
+    }
+
+    if (station_catalog_migrate_v4_helios(st, index, ver)) {
+        printf("[catalog] migrated station %d to v4 Helios shipyard layout\n", index);
     }
 
     /* Rebuild service flags from module list */

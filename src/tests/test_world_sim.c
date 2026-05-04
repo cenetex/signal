@@ -7,6 +7,7 @@ TEST(test_world_reset_creates_stations) {
     ASSERT(station_has_module(&w.stations[0], MODULE_FURNACE));
     ASSERT_STR_EQ(w.stations[1].name, "Kepler Yard");
     ASSERT_STR_EQ(w.stations[2].name, "Helios Works");
+    ASSERT(station_has_module(&w.stations[2], MODULE_SHIPYARD));
 }
 
 TEST(test_world_reset_spawns_asteroids) {
@@ -26,14 +27,23 @@ TEST(test_world_reset_spawns_npcs) {
      * Plus a tow drone at each shipyard (Kepler, Helios). */
     WORLD_DECL;
     world_reset(&w);
-    int miners = 0, haulers = 0;
+    int miners = 0, haulers = 0, tows = 0;
+    int kepler_tows = 0, helios_tows = 0;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!w.npc_ships[i].active) continue;
         if (w.npc_ships[i].role == NPC_ROLE_MINER) miners++;
         if (w.npc_ships[i].role == NPC_ROLE_HAULER) haulers++;
+        if (w.npc_ships[i].role == NPC_ROLE_TOW) {
+            tows++;
+            if (w.npc_ships[i].home_station == 1) kepler_tows++;
+            if (w.npc_ships[i].home_station == 2) helios_tows++;
+        }
     }
     ASSERT_EQ_INT(miners, 3);
     ASSERT_EQ_INT(haulers, 4);
+    ASSERT_EQ_INT(tows, 2);
+    ASSERT_EQ_INT(kepler_tows, 1);
+    ASSERT_EQ_INT(helios_tows, 1);
 }
 
 TEST(test_dead_hauler_auto_respawns) {
@@ -82,6 +92,42 @@ TEST(test_dead_hauler_auto_respawns) {
         if (w->npc_ships[n].home_station == 1) kepler_haulers_after++;
     }
     ASSERT_EQ_INT(kepler_haulers_after, 1);
+}
+
+TEST(test_dead_tow_auto_respawns_at_shipyard) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    int target_slot = -1;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active) continue;
+        if (w->npc_ships[n].role != NPC_ROLE_TOW) continue;
+        if (w->npc_ships[n].home_station != 2) continue;
+        target_slot = n;
+        break;
+    }
+    ASSERT(target_slot >= 0);
+    ship_t *s = world_npc_ship_for(w, target_slot);
+    ASSERT(s != NULL);
+    s->hull = 0.0f;
+    world_sim_step(w, SIM_DT);
+
+    int helios_tows = 0;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active) continue;
+        if (w->npc_ships[n].role != NPC_ROLE_TOW) continue;
+        if (w->npc_ships[n].home_station == 2) helios_tows++;
+    }
+    ASSERT_EQ_INT(helios_tows, 0);
+
+    for (int i = 0; i < 1900; i++) world_sim_step(w, SIM_DT);
+
+    int helios_tows_after = 0;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active) continue;
+        if (w->npc_ships[n].role != NPC_ROLE_TOW) continue;
+        if (w->npc_ships[n].home_station == 2) helios_tows_after++;
+    }
+    ASSERT_EQ_INT(helios_tows_after, 1);
 }
 
 TEST(test_player_init_ship_docked) {
@@ -1358,6 +1404,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_spawns_asteroids);
     RUN(test_world_reset_spawns_npcs);
     RUN(test_dead_hauler_auto_respawns);
+    RUN(test_dead_tow_auto_respawns_at_shipyard);
     RUN(test_player_init_ship_docked);
     RUN(test_world_sim_step_advances_time);
     RUN(test_world_sim_step_moves_ship_with_thrust);
@@ -1569,4 +1616,3 @@ void register_world_sim_chunk_tests(void) {
     RUN(test_save_preserves_destroyed_rocks_ledger);
     RUN(test_destroyed_rocks_stays_sorted_after_inserts);
 }
-

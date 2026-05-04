@@ -14,7 +14,7 @@ void sim_step_refinery_production(world_t *w, float dt);
 void sim_step_station_production(world_t *w, float dt);
 void step_module_flow(world_t *w, float dt);
 
-/* Dock repair-kit fabrication: every station with a MODULE_DOCK turns
+/* Shipyard repair-kit fabrication: every station with a MODULE_SHIPYARD turns
  * 1 frame + 1 laser + 1 tractor module into 100 repair kits, slowly,
  * up to a per-station cap. Provides the end-of-chain demand sink that
  * pulls finished goods out of Kepler/Helios. */
