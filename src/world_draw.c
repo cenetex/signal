@@ -643,7 +643,6 @@ static void draw_hopper_shape(float br, float bg, float bb,
 
     sgl_c4f(ar * 0.95f, ag * 0.95f, ab * 0.95f, alpha);
     fill_quad(-32, -22, 32, -22, 32, -18, -32, -18);
-    fill_quad(-5, -15, 5, -15, 4, 15, -4, 15);
 
     fill_circle_local(0, 0, 8, 8, ar * 0.7f, ag * 0.7f, ab * 0.7f, alpha * 0.26f);
     fill_circle_local(0, 0, 4, 6, ar * 1.0f, ag * 1.0f, ab * 1.0f, alpha * 0.42f);

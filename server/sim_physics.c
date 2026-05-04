@@ -239,12 +239,71 @@ static void resolve_asteroid_module_collision(asteroid_t *a, vec2 mod_pos, float
     a->net_dirty = true;
 }
 
+static void resolve_asteroid_corridor_collision(asteroid_t *a, vec2 center,
+                                                float ring_r, float angle_a,
+                                                float arc_delta) {
+    vec2 delta = v2_sub(a->pos, center);
+    float dist = sqrtf(v2_len_sq(delta));
+    if (dist < 1.0f) return;
+
+    float r_inner = ring_r - STATION_CORRIDOR_HW - a->radius;
+    float r_outer = ring_r + STATION_CORRIDOR_HW + a->radius;
+    if (dist <= r_inner || dist >= r_outer) return;
+
+    float ast_angle = atan2f(delta.y, delta.x);
+    float angular_margin = asinf(fminf(a->radius / dist, 1.0f));
+    float expanded_start = angle_a - angular_margin;
+    float expanded_delta = arc_delta + 2.0f * angular_margin;
+    if (angle_in_arc(ast_angle, expanded_start, expanded_delta) < 0.0f) return;
+
+    vec2 radial = v2_scale(delta, 1.0f / dist);
+    vec2 push_normal;
+    float d_inner = dist - (ring_r - STATION_CORRIDOR_HW);
+    float d_outer = (ring_r + STATION_CORRIDOR_HW) - dist;
+    if (d_inner < d_outer) {
+        a->pos = v2_add(center, v2_scale(radial,
+            ring_r - STATION_CORRIDOR_HW - a->radius - 1.0f));
+        push_normal = v2_scale(radial, -1.0f);
+    } else {
+        a->pos = v2_add(center, v2_scale(radial,
+            ring_r + STATION_CORRIDOR_HW + a->radius + 1.0f));
+        push_normal = radial;
+    }
+
+    float vel_along = v2_dot(a->vel, push_normal);
+    if (vel_along < 0.0f)
+        a->vel = v2_sub(a->vel, v2_scale(push_normal, vel_along));
+    a->net_dirty = true;
+}
+
+static bool asteroid_near_corridor_module(const asteroid_t *a,
+                                          const station_geom_t *geom,
+                                          const geom_corridor_t *cor) {
+    vec2 delta = v2_sub(a->pos, geom->center);
+    float dist = sqrtf(v2_len_sq(delta));
+    if (fabsf(dist - cor->ring_radius) >=
+        STATION_CORRIDOR_HW + a->radius + STATION_MODULE_COL_RADIUS)
+        return false;
+
+    float ast_ang = atan2f(delta.y, delta.x);
+    for (int mi = 0; mi < geom->circle_count; mi++) {
+        const geom_circle_t *circle = &geom->circles[mi];
+        if (circle->ring != cor->ring) continue;
+        float angular_size = (cor->ring_radius > 1.0f)
+            ? (STATION_MODULE_COL_RADIUS + a->radius) / cor->ring_radius
+            : 0.0f;
+        if (fabsf(wrap_angle(ast_ang - circle->angle)) < angular_size)
+            return true;
+    }
+    return false;
+}
+
 void resolve_asteroid_station_collisions(world_t *w) {
     /* Build geometry for all active stations once */
     station_geom_t geom_cache[MAX_STATIONS];
     bool geom_valid[MAX_STATIONS];
     for (int s = 0; s < MAX_STATIONS; s++) {
-        if (station_exists(&w->stations[s])) {
+        if (station_collides(&w->stations[s])) {
             station_build_geom(&w->stations[s], &geom_cache[s]);
             geom_valid[s] = true;
         } else {
@@ -260,9 +319,16 @@ void resolve_asteroid_station_collisions(world_t *w) {
             /* Core collision */
             if (geom->has_core)
                 resolve_asteroid_module_collision(a, geom->core.center, geom->core.radius);
-            /* Module circles (docks already excluded by emitter) */
+            /* Module and dock collision circles. */
             for (int ci = 0; ci < geom->circle_count; ci++)
                 resolve_asteroid_module_collision(a, geom->circles[ci].center, geom->circles[ci].radius);
+            /* Corridor arcs form the visible station wall bands between modules. */
+            for (int ci = 0; ci < geom->corridor_count; ci++) {
+                const geom_corridor_t *cor = &geom->corridors[ci];
+                if (asteroid_near_corridor_module(a, geom, cor)) continue;
+                resolve_asteroid_corridor_collision(a, geom->center,
+                    cor->ring_radius, cor->angle_a, cor->arc_delta);
+            }
         }
     }
 }
