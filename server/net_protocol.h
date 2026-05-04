@@ -509,14 +509,19 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
         write_f32_le(&buf[59 + c * 4], st->base_price[c]);
     write_f32_le(&buf[59 + COMMODITY_COUNT * 4], st->scaffold_progress);
     int moff = 59 + COMMODITY_COUNT * 4 + 4;  /* after scaffold_progress */
-    buf[moff] = (uint8_t)st->module_count;
+    int module_count = st->module_count;
+    if (module_count < 0) module_count = 0;
+    if (module_count > MAX_MODULES_PER_STATION) module_count = MAX_MODULES_PER_STATION;
+    buf[moff] = (uint8_t)module_count;
     moff++;
     for (int m = 0; m < MAX_MODULES_PER_STATION; m++) {
-        buf[moff]     = (m < st->module_count) ? (uint8_t)st->modules[m].type : 0;
-        buf[moff + 1] = (m < st->module_count && st->modules[m].scaffold) ? 1 : 0;
-        buf[moff + 2] = (m < st->module_count) ? st->modules[m].ring : 0;
-        buf[moff + 3] = (m < st->module_count) ? st->modules[m].slot : 0;
-        write_f32_le(&buf[moff + 4], (m < st->module_count) ? st->modules[m].build_progress : 0.0f);
+        bool live = m < module_count;
+        buf[moff]     = live ? (uint8_t)st->modules[m].type : 0;
+        buf[moff + 1] = (live && st->modules[m].scaffold) ? 1 : 0;
+        buf[moff + 2] = live ? st->modules[m].ring : 0;
+        buf[moff + 3] = live ? st->modules[m].slot : 0;
+        write_f32_le(&buf[moff + 4], live ? st->modules[m].build_progress : 0.0f);
+        buf[moff + 8] = live ? st->modules[m].commodity : (uint8_t)COMMODITY_COUNT;
         moff += STATION_MODULE_RECORD_SIZE;
     }
     /* Ring rotation speeds + offsets */

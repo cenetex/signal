@@ -1569,6 +1569,20 @@ TEST(test_station_module_layout_status_furnace_uses_tag) {
     ASSERT_EQ_INT(station_module_layout_status(&st, fc), STATION_LAYOUT_OK);
 }
 
+TEST(test_station_module_layout_status_furnace_requires_adjacent_ore_hopper) {
+    station_t st = {0};
+    st.signal_range = 1.0f;
+    add_furnace_for(&st, 2, 1, COMMODITY_CUPRITE_INGOT);
+    add_hopper_for(&st, 2, 2, COMMODITY_CUPRITE_ORE);
+    const station_module_t *fc = &st.modules[0];
+
+    ASSERT_EQ_INT(station_module_layout_status(&st, fc),
+                  STATION_LAYOUT_MISSING_INPUT_HOPPER);
+
+    add_hopper_for(&st, 3, 3, COMMODITY_CUPRITE_ORE);
+    ASSERT_EQ_INT(station_module_layout_status(&st, fc), STATION_LAYOUT_OK);
+}
+
 TEST(test_seeded_stations_layout_ok) {
     /* Slice 1 — every producer module on every seeded station reports
      * STATION_LAYOUT_OK (i.e., its inputs and output have matching
@@ -2149,6 +2163,7 @@ void register_construction_module_schema_tests(void) {
     RUN(test_station_module_layout_status_missing_output);
     RUN(test_station_module_layout_status_no_local_consumer_is_ok);
     RUN(test_station_module_layout_status_furnace_uses_tag);
+    RUN(test_station_module_layout_status_furnace_requires_adjacent_ore_hopper);
     RUN(test_station_module_layout_status_shipyard_exempt);
     RUN(test_seeded_furnaces_tagged);
     RUN(test_seeded_helios_output_hoppers);
