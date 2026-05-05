@@ -119,6 +119,7 @@ set(SIGNAL_SIM_HELPERS
     shared/cargo_receipt.c
     shared/tractor.c
     shared/laser.c
+    shared/trade_paging.c
 )
 
 # Client-only: rendering, input, HUD, audio, network plumbing. Not
@@ -237,6 +238,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         src/tests/test_relationship_tracking.c
         src/tests/test_motd_rarity.c
         src/tests/test_cargo_lineage.c
+        src/tests/test_trade_paging.c
         src/identity.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}

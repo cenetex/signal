@@ -1056,31 +1056,16 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
 void trade_page_range(const trade_row_t *rows, int row_count,
                       int page, int *out_first, int *out_last,
                       int *out_total) {
-    int sell_start = row_count;
-    for (int i = 0; i < row_count; i++) {
-        if (rows[i].kind == 1) { sell_start = i; break; }
-    }
-    int buy_pages  = (sell_start + TRADE_ROWS_PER_PAGE - 1) / TRADE_ROWS_PER_PAGE;
-    int sell_count = row_count - sell_start;
-    int sell_pages = (sell_count + TRADE_ROWS_PER_PAGE - 1) / TRADE_ROWS_PER_PAGE;
-    int total = buy_pages + sell_pages;
-    if (total < 1) total = 1;
-    if (page < 0 || page >= total) page = 0;
-
-    int first, last;
-    if (page < buy_pages) {
-        first = page * TRADE_ROWS_PER_PAGE;
-        last  = first + TRADE_ROWS_PER_PAGE;
-        if (last > sell_start) last = sell_start;
-    } else {
-        int sp = page - buy_pages;
-        first = sell_start + sp * TRADE_ROWS_PER_PAGE;
-        last  = first + TRADE_ROWS_PER_PAGE;
-        if (last > row_count) last = row_count;
-    }
-    if (out_first) *out_first = first;
-    if (out_last)  *out_last  = last;
-    if (out_total) *out_total = total;
+    uint8_t kinds[TRADE_MAX_ROWS];
+    int capped = row_count;
+    if (capped < 0) capped = 0;
+    if (capped > TRADE_MAX_ROWS) capped = TRADE_MAX_ROWS;
+    for (int i = 0; i < capped; i++)
+        kinds[i] = rows && rows[i].kind == 1
+            ? TRADE_ROW_KIND_SELL
+            : TRADE_ROW_KIND_BUY;
+    trade_page_range_for_kinds(kinds, capped, TRADE_ROWS_PER_PAGE,
+                               page, out_first, out_last, out_total);
 }
 
 static void draw_trade_view(const station_ui_state_t *ui,

@@ -23,6 +23,7 @@
 #include "episode.h"
 #include "music.h"
 #include "identity.h"
+#include "trade_paging.h"
 
 /* Sokol headers (declarations only -- SOKOL_IMPL is in main.c) */
 #include "sokol_app.h"
@@ -127,12 +128,6 @@ enum {
     TRADE_BLOCK_NO_CARGO      = 7, /* sell: player carries none of this */
 };
 
-/* Pagination constants — input.c walks `g.trade_page * TRADE_ROWS_PER_PAGE`
- * to find the first row on the current page; the renderer wraps when
- * total_pages * TRADE_ROWS_PER_PAGE >= row_count. */
-#define TRADE_ROWS_PER_PAGE 5
-#define TRADE_MAX_ROWS      96
-
 /* Build the unified row list for `st` against the player's `ship`.
  * Output is zero-or-more rows in `out[0..count-1]`, capped at `max`
  * (caller passes a TRADE_MAX_ROWS-sized buffer). Returns the count.
@@ -146,9 +141,9 @@ void reset_trade_session_rows(int station_index);
 
 /* Resolve `page` to a [first, last) row range, treating the BUY→SELL
  * boundary as a hard page break so SELL never shares a page with BUY.
- * Wraps `page` to `total_pages - 1` if out of range. Returns total_pages
- * via *out_total. Both the picker renderer and input dispatch call this
- * so the visible layout and the [1]..[5] mapping stay locked together. */
+ * Resolves out-of-range pages back to the first page. Returns total_pages via
+ * *out_total. Both the picker renderer and input dispatch call this so the
+ * visible layout and the [1]..[5] mapping stay locked together. */
 void trade_page_range(const trade_row_t *rows, int row_count,
                       int page, int *out_first, int *out_last,
                       int *out_total);
