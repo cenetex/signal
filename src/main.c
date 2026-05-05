@@ -843,6 +843,7 @@ static void sim_step(float dt) {
         const station_t* st = &g.world.stations[LOCAL_PLAYER.current_station];
         g.station_view = STATION_VIEW_DOCK;
         g.selected_contract = -1; /* fresh dock — no carryover selection */
+        reset_trade_session_rows(LOCAL_PLAYER.current_station);
         /* Clear blueprint pip if we docked at the blueprint station */
         if (g.nav_pip_is_blueprint) {
             float d = sqrtf(v2_dist_sq(st->pos, g.nav_pip_pos));

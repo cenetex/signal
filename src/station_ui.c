@@ -664,6 +664,21 @@ static int station_index_of(const station_t *st) {
     return (int)(st - g.world.stations);
 }
 
+void reset_trade_session_rows(int station_index) {
+    g.trade_session_station = station_index;
+    g.trade_page = 0;
+    memset(g.trade_seen_buy, 0, sizeof(g.trade_seen_buy));
+    memset(g.trade_seen_sell, 0, sizeof(g.trade_seen_sell));
+}
+
+static int trade_session_station_index(const station_t *st) {
+    if (!st) return -1;
+    int s = station_index_of(st);
+    if (s < 0 || s >= MAX_STATIONS) return -1;
+    if (g.trade_session_station != s) reset_trade_session_rows(s);
+    return s;
+}
+
 static int station_manifest_count_cg(const station_t *st,
                                      commodity_t commodity,
                                      mining_grade_t grade)
@@ -882,23 +897,26 @@ static int manifest_find_top_sell_unit_cg(const manifest_t *manifest,
 int build_trade_rows(const station_t *st, const ship_t *ship,
                      trade_row_t out[], int max) {
     if (!st || !ship || !out || max <= 0) return 0;
+    if (trade_session_station_index(st) < 0) return 0;
     int row_count = 0;
     float free_volume = ship_cargo_capacity(ship) - ship_manifest_backed_cargo_volume(ship);
     float credits = player_current_balance();
     int capacity = (int)lroundf(MAX_PRODUCT_STOCK);
 
     /* BUY rows -- one per (commodity, grade) the station produces.
-     * Empty grades fold under "common" so the player still sees the
-     * commodity line as part of the market when stock is zero. */
+     * Rows are additive per dock session: an in-stock grade appears
+     * as soon as it exists, then remains visible if the player buys
+     * the shelf empty. Never-before-seen empty catalog lines stay
+     * hidden. */
     for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT && row_count < max; c++) {
         if (!station_produces(st, (commodity_t)c)) continue;
         float price_base = station_sell_price(st, (commodity_t)c);
         if (price_base <= FLOAT_EPSILON) continue;
-        bool emitted_any_grade = false;
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
             int stock = station_market_stock_cg(st, (commodity_t)c, (mining_grade_t)gi);
-            if (stock <= 0) continue;
-            emitted_any_grade = true;
+            if (stock > 0)
+                g.trade_seen_buy[c][gi] = true;
+            if (stock <= 0 && !g.trade_seen_buy[c][gi]) continue;
             int price = (int)lroundf(price_base
                     * mining_payout_multiplier((mining_grade_t)gi));
             float vol = commodity_volume((commodity_t)c);
@@ -913,7 +931,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             if (qty > volume_cap) qty = volume_cap;
             if (qty > funds_cap) qty = funds_cap;
             uint8_t blk = TRADE_BLOCK_NONE;
-            if (volume_cap <= 0) blk = TRADE_BLOCK_HOLD_FULL;
+            if (stock <= 0) blk = TRADE_BLOCK_STATION_EMPTY;
+            else if (volume_cap <= 0) blk = TRADE_BLOCK_HOLD_FULL;
             else if (funds_cap <= 0) blk = TRADE_BLOCK_NO_FUNDS;
             /* Per-grade stock is what the row offers; that's already
              * `stock` from the manifest count above. The total cap is
@@ -957,47 +976,23 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                 .mined_block = mined_blk,
             };
         }
-        /* Station produces this commodity but every grade is empty.
-         * Surface a passive "empty" row so the market line is visible. */
-        if (!emitted_any_grade && row_count < max) {
-            out[row_count++] = (trade_row_t){
-                .kind = 0, .commodity = (commodity_t)c, .grade = MINING_GRADE_COMMON,
-                .stock = 0, .quantity = 0,
-                .unit_price = (int)lroundf(price_base), .total_price = 0,
-                .actionable = false,
-                .station_stock = 0, .station_capacity = capacity,
-                .held = 0, .block_reason = TRADE_BLOCK_STATION_EMPTY,
-            };
-        }
     }
 
-    /* SELL rows -- every commodity the station consumes. Always emit the
-     * line, even when the player has none of it OR the station's hopper
-     * is full -- the row is just passive in those cases (no hotkey, no
-     * +N popup). The point is to show market state at a glance. */
+    /* SELL rows -- every commodity/grade the player has carried during
+     * this dock session for a commodity the station consumes. Rows appear
+     * when cargo exists and remain visible after the player sells it all,
+     * but never-before-carried cargo stays hidden. */
     for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT && row_count < max; c++) {
         if (!station_consumes(st, (commodity_t)c)) continue;
         float price_base = station_buy_price(st, (commodity_t)c);
         if (price_base <= FLOAT_EPSILON) continue;
         int station_total_inv = station_manifest_count_c(st, (commodity_t)c);
         bool station_full = station_total_inv >= capacity;
-        int manifest_total_for_c = 0;
-        for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
-            manifest_total_for_c += ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi);
-        if (manifest_total_for_c <= 0) {
-            out[row_count++] = (trade_row_t){
-                .kind = 1, .commodity = (commodity_t)c, .grade = MINING_GRADE_COMMON,
-                .stock = 0, .quantity = 0,
-                .unit_price = (int)lroundf(price_base), .total_price = 0,
-                .actionable = false,
-                .station_stock = station_total_inv, .station_capacity = capacity,
-                .held = 0, .block_reason = TRADE_BLOCK_NO_CARGO,
-            };
-            continue;
-        }
         for (int gi = 0; gi < MINING_GRADE_COUNT && row_count < max; gi++) {
             int manifest_g = ship_manifest_count_cg(ship, (commodity_t)c, (mining_grade_t)gi);
-            if (manifest_g <= 0) continue;
+            if (manifest_g > 0)
+                g.trade_seen_sell[c][gi] = true;
+            if (manifest_g <= 0 && !g.trade_seen_sell[c][gi]) continue;
             int held = manifest_g;
             int rep_idx = manifest_find_top_sell_unit_cg(&ship->manifest,
                                                          (commodity_t)c,
@@ -1010,7 +1005,8 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
                     * mining_payout_multiplier((mining_grade_t)gi)
                     * prefix_mult);
             uint8_t blk = TRADE_BLOCK_NONE;
-            if (station_full) blk = TRADE_BLOCK_STATION_FULL;
+            if (held <= 0) blk = TRADE_BLOCK_NO_CARGO;
+            else if (station_full) blk = TRADE_BLOCK_STATION_FULL;
             /* Per-grade station count — manifest entries of (c, gi) at
              * the station — so the row reflects what's actually on the
              * shelf at this grade, not the commodity total (which would
@@ -1028,7 +1024,7 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             int lineage_count = manifest_lineage_count_cg(&ship->manifest,
                                                           (commodity_t)c,
                                                           (mining_grade_t)gi);
-            if (lineage_count >= held) {
+            if (held > 0 && lineage_count >= held) {
                 if (rep_idx >= 0) {
                     const cargo_unit_t *rep = &ship->manifest.units[rep_idx];
                     origin_idx = rep->origin_station;
@@ -1038,7 +1034,7 @@ int build_trade_rows(const station_t *st, const ship_t *ship,
             }
             out[row_count++] = (trade_row_t){
                 .kind = 1, .commodity = (commodity_t)c, .grade = (mining_grade_t)gi,
-                .stock = held, .quantity = 1,
+                .stock = held, .quantity = held > 0 ? 1 : 0,
                 .unit_price = price, .total_price = price,
                 .actionable = (blk == TRADE_BLOCK_NONE),
                 .station_stock = station_grade_count, .station_capacity = capacity,

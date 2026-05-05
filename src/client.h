@@ -136,9 +136,13 @@ enum {
 /* Build the unified row list for `st` against the player's `ship`.
  * Output is zero-or-more rows in `out[0..count-1]`, capped at `max`
  * (caller passes a TRADE_MAX_ROWS-sized buffer). Returns the count.
- * BUY rows come first, then SELL rows — matches the picker layout. */
+ * BUY rows come first, then SELL rows — matches the picker layout.
+ * Rows are additive within a dock session: a row appears once matching
+ * station stock or player cargo exists, then remains visible until the
+ * next fresh dock even if that stock/cargo is depleted. */
 int build_trade_rows(const station_t *st, const ship_t *ship,
                      trade_row_t out[], int max);
+void reset_trade_session_rows(int station_index);
 
 /* Resolve `page` to a [first, last) row range, treating the BUY→SELL
  * boundary as a hard page break so SELL never shares a page with BUY.
@@ -279,6 +283,9 @@ typedef struct {
     /* TRADE tab pagination: [F] cycles through pages of 5 rows each.
      * Page 0 is rows 0..4, page 1 is 5..9, etc. Wraps when > 9 rows. */
     uint8_t trade_page;
+    int trade_session_station;
+    bool trade_seen_buy[COMMODITY_COUNT][MINING_GRADE_COUNT];
+    bool trade_seen_sell[COMMODITY_COUNT][MINING_GRADE_COUNT];
     bool was_docked;
     bool was_autopilot;
     float dock_settle_timer;  /* delay before showing station panel after dock */
