@@ -424,6 +424,9 @@ static void sim_on_upgrade(const sim_event_t *ev) {
 static void sim_on_damage(const sim_event_t *ev) {
     if (!ev_is_local(ev)) return;
     audio_play_damage(&g.audio, ev->damage.amount);
+    /* Sharper "thunk" overlay so a rock impact reads as a single hit
+     * over the broader damage hiss. */
+    audio_play_hit_thunk(&g.audio);
     /* Screen shake scales with damage. Tunables chosen so a minor scrape
      * (~2 hp) wiggles a few pixels and a full ramming hit (~30 hp)
      * noticeably jolts. */
@@ -450,6 +453,30 @@ static void sim_on_damage(const sim_event_t *ev) {
     }
 }
 
+/* Find or create a scoreboard row for the given attribution token. */
+static int scoreboard_row_for_token(const uint8_t token[8], const char *label, bool is_npc) {
+    for (int i = 0; i < g.scoreboard.row_count; i++) {
+        if (memcmp(g.scoreboard.rows[i].token, token, 8) == 0) return i;
+    }
+    int cap = (int)(sizeof(g.scoreboard.rows) / sizeof(g.scoreboard.rows[0]));
+    if (g.scoreboard.row_count >= cap) return -1;
+    int idx = g.scoreboard.row_count++;
+    memset(&g.scoreboard.rows[idx], 0, sizeof(g.scoreboard.rows[idx]));
+    memcpy(g.scoreboard.rows[idx].token, token, 8);
+    if (label && label[0])
+        snprintf(g.scoreboard.rows[idx].label, sizeof(g.scoreboard.rows[idx].label), "%s", label);
+    g.scoreboard.rows[idx].is_npc = is_npc;
+    return idx;
+}
+
+static bool token_matches_local(const uint8_t token[8]) {
+    /* Zero token = unattributed; never counts as the local player. */
+    bool nonzero = false;
+    for (int i = 0; i < 8; i++) { if (token[i]) { nonzero = true; break; } }
+    if (!nonzero) return false;
+    return memcmp(token, g.world.players[g.local_player_slot].session_token, 8) == 0;
+}
+
 static void sim_on_npc_kill(const sim_event_t *ev) {
     /* Kill-feed line. Prefer the local player's perspective: if I'm
      * the killer, prepend "You killed"; otherwise show the killer's
@@ -474,6 +501,27 @@ static void sim_on_npc_kill(const sim_event_t *ev) {
                  "%s killed by %s", role, weapon);
     }
     g.kill_feed_timer = 3.0f;
+
+    /* Killer-side feedback: counter, banner, SFX. NPC kills don't have
+     * a victim token to attribute against on the scoreboard, but the
+     * killer entry still gets credited. */
+    if (you_killed) {
+        g.kill_count_session++;
+        snprintf(g.kill_confirm_text, sizeof(g.kill_confirm_text),
+                 "KILL: %s", role);
+        g.kill_confirm_timer = 3.0f;
+        audio_play_kill_confirm(&g.audio);
+        const uint8_t *me = g.world.players[g.local_player_slot].session_token;
+        const char *cs = LOCAL_PLAYER.callsign[0] ? LOCAL_PLAYER.callsign : "YOU";
+        int row = scoreboard_row_for_token(me, cs, false);
+        if (row >= 0) g.scoreboard.rows[row].kills++;
+    } else {
+        /* Some other player killed the NPC. Credit them on the
+         * scoreboard — label is the role since we have no
+         * token→callsign map for kills attributed to remotes. */
+        int row = scoreboard_row_for_token(ev->npc_kill.killer_token, "Player", false);
+        if (row >= 0) g.scoreboard.rows[row].kills++;
+    }
 }
 
 static void sim_on_contract_complete(const sim_event_t *ev) {
@@ -526,7 +574,52 @@ static void death_cinematic_spawn(const sim_event_t *ev) {
 }
 
 static void sim_on_death(const sim_event_t *ev) {
+    /* Scoreboard + kill confirm fire for ANY death we see, not just
+     * the local player's. A remote death observed via the broadcast
+     * SIM_EVENT_DEATH stream is still useful telemetry for the killer. */
+    int vid = ev->player_id;
+    const uint8_t *vtoken = NULL;
+    const char *vlabel = "Pilot";
+    if (vid >= 0 && vid < MAX_PLAYERS) {
+        vtoken = g.world.players[vid].session_token;
+        if (g.world.players[vid].callsign[0])
+            vlabel = g.world.players[vid].callsign;
+    }
+    bool i_killed_them =
+        !ev_is_local(ev) && token_matches_local(ev->death.killer_token);
+    if (i_killed_them) {
+        g.kill_count_session++;
+        snprintf(g.kill_confirm_text, sizeof(g.kill_confirm_text),
+                 "KILL: %s", vlabel);
+        g.kill_confirm_timer = 3.0f;
+        audio_play_kill_confirm(&g.audio);
+        const uint8_t *me = g.world.players[g.local_player_slot].session_token;
+        const char *cs = LOCAL_PLAYER.callsign[0] ? LOCAL_PLAYER.callsign : "YOU";
+        int row = scoreboard_row_for_token(me, cs, false);
+        if (row >= 0) g.scoreboard.rows[row].kills++;
+    } else if (!ev_is_local(ev)) {
+        /* Someone else got the kill — credit them on the scoreboard. */
+        bool nonzero = false;
+        for (int i = 0; i < 8; i++)
+            if (ev->death.killer_token[i]) { nonzero = true; break; }
+        if (nonzero) {
+            int row = scoreboard_row_for_token(ev->death.killer_token, "Player", false);
+            if (row >= 0) g.scoreboard.rows[row].kills++;
+        }
+    }
+    if (vtoken) {
+        int vrow = scoreboard_row_for_token(vtoken, vlabel, false);
+        if (vrow >= 0) g.scoreboard.rows[vrow].deaths++;
+    }
+
     if (!ev_is_local(ev)) return;
+    g.death_count_session++;
+    /* In MP the cinematic + payload come via NET_MSG_DEATH (only the
+     * victim receives that). The broadcast SIM_EVENT_DEATH stream
+     * exists only for kill-confirm + scoreboard attribution and
+     * carries zeroed cinematic fields, so don't try to render off it
+     * in MP. */
+    if (g.multiplayer_enabled) return;
     g.death_ore_mined = ev->death.ore_mined;
     g.death_credits_earned = ev->death.credits_earned;
     g.death_credits_spent = ev->death.credits_spent;
@@ -971,6 +1064,26 @@ static void sim_step(float dt) {
             g.kill_feed_timer = 0.0f;
             g.kill_feed_text[0] = '\0';
         }
+    }
+    if (g.kill_confirm_timer > 0.0f) {
+        g.kill_confirm_timer -= dt;
+        if (g.kill_confirm_timer < 0.0f) {
+            g.kill_confirm_timer = 0.0f;
+            g.kill_confirm_text[0] = '\0';
+        }
+    }
+    /* Tractor-lock pulse: 0->positive towed_count edge plays a short
+     * "lock" tone so the player has audio feedback the grab took. */
+    {
+        static int prev_towed = 0;
+        int now_towed = LOCAL_PLAYER.ship.towed_count;
+        if (now_towed > prev_towed) audio_play_tractor_lock(&g.audio);
+        prev_towed = now_towed;
+    }
+    /* Tab while undocked toggles the session scoreboard. Docked Tab is
+     * already taken (cycle station tabs); the gating mirrors that. */
+    if (!LOCAL_PLAYER.docked && g.input.key_pressed[SAPP_KEYCODE_TAB]) {
+        g.scoreboard.show = !g.scoreboard.show;
     }
     if (g.action_predict_timer > 0.0f)
         g.action_predict_timer = fmaxf(0.0f, g.action_predict_timer - dt);

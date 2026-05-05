@@ -211,6 +211,36 @@ typedef struct {
      * dies). Text + remaining lifetime; 0 = empty. */
     char  kill_feed_text[64];
     float kill_feed_timer;
+    /* Killer-side confirm banner: shown to the local player for ~3 s
+     * when a SIM_EVENT_DEATH or SIM_EVENT_NPC_KILL credits the kill
+     * to their session token. Distinct from kill_feed_text so the
+     * victim copy doesn't overwrite the killer's confirm. */
+    char  kill_confirm_text[64];
+    float kill_confirm_timer;
+    /* Per-session kill tally on the HUD. Incremented when the local
+     * player gets a kill confirm (NPC or PvP). Reset only on a fresh
+     * client launch — survives respawn within session. NOT persisted
+     * and NOT mirrored to a server-side stat (per the per-station-
+     * ledger sovereignty rule — combat counters are local UX). */
+    int   kill_count_session;
+    int   death_count_session;
+    /* PvP scoreboard — aggregated client-side from observed
+     * SIM_EVENT_DEATH and SIM_EVENT_NPC_KILL events this session.
+     * Toggled with [Tab] while undocked. Keyed by attribution token
+     * (8 bytes from killer_token / session_token). NPC entries also
+     * land here for completeness; the local player's row shows the
+     * session callsign. */
+    struct {
+        bool show;
+        struct {
+            uint8_t token[8];
+            char    label[16];   /* callsign or "Hauler" / "Miner" */
+            uint16_t kills;
+            uint16_t deaths;
+            bool     is_npc;
+        } rows[16];
+        int row_count;
+    } scoreboard;
     /* Per-station manifest summary — [commodity][grade] unit counts.
      * Unified read path for the TRADE UI whether we're in singleplayer
      * (populated every frame from g.world.stations[s].manifest) or

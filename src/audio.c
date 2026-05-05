@@ -242,3 +242,17 @@ void audio_play_damage(audio_state_t* a, float damage) {
     audio_play_voice(a, AUDIO_WAVE_NOISE, 180.0f, -80.0f, gain, 0.12f, audio_rand_bipolar(a) * 0.22f, 1.0f);
     audio_play_voice(a, AUDIO_WAVE_SQUARE, 130.0f, -160.0f, gain * 0.5f, 0.10f, 0.0f, 0.15f);
 }
+
+void audio_play_hit_thunk(audio_state_t* a) {
+    audio_play_voice(a, AUDIO_WAVE_SINE,     120.0f, -240.0f, 0.10f, 0.08f, 0.0f, 0.10f);
+    audio_play_voice(a, AUDIO_WAVE_TRIANGLE,  90.0f, -120.0f, 0.06f, 0.06f, 0.0f, 0.0f);
+}
+
+void audio_play_tractor_lock(audio_state_t* a) {
+    audio_play_voice(a, AUDIO_WAVE_SINE, 880.0f, 320.0f, 0.05f, 0.04f, 0.0f, 0.0f);
+}
+
+void audio_play_kill_confirm(audio_state_t* a) {
+    audio_play_voice(a, AUDIO_WAVE_SINE,     660.0f, 240.0f, 0.07f, 0.10f, -0.10f, 0.0f);
+    audio_play_voice(a, AUDIO_WAVE_TRIANGLE, 990.0f, 360.0f, 0.05f, 0.12f,  0.10f, 0.0f);
+}

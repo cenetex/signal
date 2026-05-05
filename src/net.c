@@ -725,6 +725,14 @@ static void handle_message(const uint8_t* data, int len) {
                     ev->npc_kill.cause    = p[2];
                     ev->npc_kill.npc_role = p[3];
                     memcpy(ev->npc_kill.killer_token, &p[4], 8); break;
+                case SIM_EVENT_DEATH:
+                    /* Broadcast slice only (cinematic fields stay
+                     * zero — the victim gets the full payload via
+                     * NET_MSG_DEATH; non-victims just need to know a
+                     * death happened so they can render a kill
+                     * confirm + scoreboard tally). */
+                    ev->death.cause = p[2];
+                    memcpy(ev->death.killer_token, &p[3], 8); break;
                 case SIM_EVENT_OUTPOST_PLACED:
                     ev->outpost_placed.slot = (int)p[2]; break;
                 case SIM_EVENT_OUTPOST_ACTIVATED:

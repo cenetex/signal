@@ -930,14 +930,16 @@ static inline void parse_plan(const uint8_t *data, int len, input_intent_t *inte
 /* ------------------------------------------------------------------ */
 
 /* Serialize all events from the current sim step into a NET_MSG_EVENTS
- * packet. Skips DEATH (has its own message) and HAIL_RESPONSE (ditto).
- * Returns total packet length. */
+ * packet. HAIL_RESPONSE has its own per-recipient message and is
+ * skipped here. DEATH is broadcast in stripped form (killer_token +
+ * cause + victim id only) so the killer can render a kill confirm
+ * even though the cinematic payload still goes to the victim via
+ * NET_MSG_DEATH. Returns total packet length. */
 static inline int serialize_events(uint8_t *buf, const sim_events_t *events) {
     int count = 0;
     for (int i = 0; i < events->count; i++) {
         const sim_event_t *ev = &events->events[i];
         /* Skip types that already have dedicated messages */
-        if (ev->type == SIM_EVENT_DEATH) continue;
         if (ev->type == SIM_EVENT_HAIL_RESPONSE) continue;
 
         uint8_t *p = &buf[2 + count * NET_EVENT_RECORD_SIZE];
@@ -965,6 +967,12 @@ static inline int serialize_events(uint8_t *buf, const sim_events_t *events) {
             p[2] = ev->npc_kill.cause;
             p[3] = ev->npc_kill.npc_role;
             memcpy(&p[4], ev->npc_kill.killer_token, 8);
+            break;
+        case SIM_EVENT_DEATH:
+            /* Broadcast the killer-attribution slice only; the
+             * victim's cinematic payload travels in NET_MSG_DEATH. */
+            p[2] = ev->death.cause;
+            memcpy(&p[3], ev->death.killer_token, 8);
             break;
         case SIM_EVENT_OUTPOST_PLACED:
             p[2] = (uint8_t)ev->outpost_placed.slot;

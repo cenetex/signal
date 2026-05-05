@@ -17,6 +17,9 @@ void audio_play_sale(audio_state_t* audio);
 void audio_play_repair(audio_state_t* audio);
 void audio_play_upgrade(audio_state_t* audio, ship_upgrade_t upgrade);
 void audio_play_damage(audio_state_t* audio, float damage);
+void audio_play_hit_thunk(audio_state_t* audio);
+void audio_play_tractor_lock(audio_state_t* audio);
+void audio_play_kill_confirm(audio_state_t* audio);
 void audio_play_commission(audio_state_t* audio);
 
 #endif

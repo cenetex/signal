@@ -535,6 +535,111 @@ static void hud_draw_kill_feed(float screen_w, float screen_h) {
     (void)screen_h;
 }
 
+/* Killer-side confirm banner — sits one line below the kill feed so
+ * both can be visible if a kill confirm and a separate feed event
+ * happen close together. Brighter / hotter color to read as an
+ * achievement notification rather than a scoreboard entry. */
+static void hud_draw_kill_confirm(float screen_w, float screen_h) {
+    if (g.kill_confirm_timer <= 0.0f) return;
+    if (g.kill_confirm_text[0] == '\0') return;
+    float cell = 8.0f;
+    float a = 1.0f;
+    if (g.kill_confirm_timer > 2.8f) a = (3.0f - g.kill_confirm_timer) / 0.2f;
+    else if (g.kill_confirm_timer < 0.5f) a = g.kill_confirm_timer / 0.5f;
+    if (a < 0.0f) a = 0.0f;
+    if (a > 1.0f) a = 1.0f;
+    uint8_t a8 = (uint8_t)(a * 255.0f);
+    sdtx_canvas(screen_w, screen_h);
+    sdtx_origin(0.0f, 0.0f);
+    sdtx_color4b(255, 90, 60, a8);
+    sdtx_centered_text(screen_w * 0.5f, (screen_h * 0.08f + 18.0f) / cell, cell,
+                       g.kill_confirm_text);
+}
+
+/* Session kill counter, top-right under the version line. Compact
+ * "K 3" so it fits beside the v<hash>/connection status without
+ * crowding the alpha banner above. */
+static void hud_draw_kill_counter(float screen_w) {
+    if (g.kill_count_session <= 0) return;
+    float x = ui_text_pos(fmaxf(8.0f, screen_w - 60.0f));
+    float y = ui_text_pos(22.0f);
+    sdtx_pos(x, y);
+    sdtx_color3b(255, 200, 80);
+    sdtx_printf("K %d", g.kill_count_session);
+}
+
+/* Session scoreboard, toggled with [Tab] while undocked. Kills/deaths
+ * are aggregated client-side from observed SIM_EVENT_DEATH /
+ * SIM_EVENT_NPC_KILL events. Sorted by kills desc; ties broken by
+ * fewer deaths. Single-pass insertion sort -- the row pool is 16. */
+static void hud_draw_scoreboard(float screen_w, float screen_h) {
+    if (!g.scoreboard.show) return;
+    float cell = 8.0f;
+    int order[16];
+    int n = g.scoreboard.row_count;
+    if (n > 16) n = 16;
+    for (int i = 0; i < n; i++) order[i] = i;
+    for (int i = 1; i < n; i++) {
+        int k = order[i];
+        int j = i - 1;
+        while (j >= 0) {
+            int a = order[j];
+            bool worse =
+                (g.scoreboard.rows[a].kills < g.scoreboard.rows[k].kills) ||
+                (g.scoreboard.rows[a].kills == g.scoreboard.rows[k].kills &&
+                 g.scoreboard.rows[a].deaths > g.scoreboard.rows[k].deaths);
+            if (!worse) break;
+            order[j + 1] = order[j];
+            j--;
+        }
+        order[j + 1] = k;
+    }
+
+    float panel_w = 280.0f;
+    float panel_x = (screen_w - panel_w) * 0.5f;
+    float panel_y = screen_h * 0.18f;
+    sdtx_canvas(screen_w, screen_h);
+    sdtx_origin(0.0f, 0.0f);
+
+    sdtx_color3b(255, 220, 100);
+    sdtx_pos(panel_x / cell, panel_y / cell);
+    sdtx_puts("== SCOREBOARD ==  [Tab to close]");
+
+    sdtx_color3b(180, 180, 180);
+    sdtx_pos(panel_x / cell, (panel_y + 16.0f) / cell);
+    sdtx_puts("PILOT             K   D   K/D");
+
+    if (n == 0) {
+        sdtx_color3b(140, 140, 140);
+        sdtx_pos(panel_x / cell, (panel_y + 32.0f) / cell);
+        sdtx_puts("(no kills or deaths yet)");
+        return;
+    }
+    for (int rank = 0; rank < n; rank++) {
+        int idx = order[rank];
+        const char *label = g.scoreboard.rows[idx].label[0]
+                          ? g.scoreboard.rows[idx].label : "????";
+        bool is_me = memcmp(g.scoreboard.rows[idx].token,
+                            g.world.players[g.local_player_slot].session_token, 8) == 0;
+        if (is_me) sdtx_color3b(255, 220, 100);
+        else       sdtx_color3b(200, 200, 200);
+        char kdr[8];
+        if (g.scoreboard.rows[idx].deaths == 0) {
+            snprintf(kdr, sizeof(kdr), "%d.0", g.scoreboard.rows[idx].kills);
+        } else {
+            float r = (float)g.scoreboard.rows[idx].kills /
+                      (float)g.scoreboard.rows[idx].deaths;
+            snprintf(kdr, sizeof(kdr), "%.2f", r);
+        }
+        sdtx_pos(panel_x / cell, (panel_y + 32.0f + (float)rank * 12.0f) / cell);
+        sdtx_printf("%-16s %3d %3d %5s",
+                    label,
+                    g.scoreboard.rows[idx].kills,
+                    g.scoreboard.rows[idx].deaths,
+                    kdr);
+    }
+}
+
 static void hud_draw_shared_panels(float screen_w, float screen_h, float sig_quality, bool compact) {
     hud_draw_alpha_banner_and_mp_indicator(screen_w, compact);
     hud_draw_nav_label(screen_w, screen_h);
@@ -543,6 +648,9 @@ static void hud_draw_shared_panels(float screen_w, float screen_h, float sig_qua
     hud_draw_signal_lost_warning(screen_w, screen_h, sig_quality);
     hud_draw_hit_indicator(screen_w, screen_h);
     hud_draw_kill_feed(screen_w, screen_h);
+    hud_draw_kill_confirm(screen_w, screen_h);
+    hud_draw_kill_counter(screen_w);
+    hud_draw_scoreboard(screen_w, screen_h);
     /* Hit feedback vignette — drawn last so it sits above the HUD
      * readouts, but the inset rectangle in the middle leaves the
      * action row + flight readouts unobscured. */
