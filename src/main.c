@@ -666,7 +666,14 @@ static const char *hail_choose_message(int station_idx, int *out_tier) {
 static void sim_on_hail_response(const sim_event_t *ev) {
     if (!ev_is_local(ev)) return;
     int hs = ev->hail_response.station;
-    if (hs < 0 || hs >= MAX_STATIONS) return;
+    if (hs < 0 || hs >= MAX_STATIONS) {
+        set_notice("No station in range to hail.");
+        return;
+    }
+    if (ev->hail_response.credits < 0.0f) {
+        set_notice("Too far -- nearest: %s", g.world.stations[hs].name);
+        return;
+    }
 
     snprintf(g.hail_station, sizeof(g.hail_station), "%s",
              g.world.stations[hs].name);

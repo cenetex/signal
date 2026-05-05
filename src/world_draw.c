@@ -2368,6 +2368,9 @@ void draw_callsigns(void) {
 }
 
 void draw_npc_chatter(void) {
+    if (g.hail_ping_timer <= 0.0f || g.hail_ping_timer > 8.00f) return; /* HAIL_PING_LIFECYCLE */
+    float hail_range = (g.hail_ping_range > 0.0f) ? g.hail_ping_range : 1500.0f;
+    float hail_range_sq = hail_range * hail_range;
     float view_w = cam_right() - cam_left();
     float view_h = cam_bottom() - cam_top();
     const float cell = 8.0f;
@@ -2379,9 +2382,7 @@ void draw_npc_chatter(void) {
         if (!npc->active) continue;
         if (npc->role == NPC_ROLE_TOW) continue; /* tow drones: silent */
         if (!on_screen(npc->ship.pos.x, npc->ship.pos.y, 50.0f)) continue;
-        float dx = npc->ship.pos.x - LOCAL_PLAYER.ship.pos.x;
-        float dy = npc->ship.pos.y - LOCAL_PLAYER.ship.pos.y;
-        if (dx * dx + dy * dy > 500.0f * 500.0f) continue; /* too far */
+        if (v2_dist_sq(npc->ship.pos, g.hail_ping_origin) > hail_range_sq) continue;
 
         /* Rotate line every 8 seconds, offset by NPC index */
         const char *line;

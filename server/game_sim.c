@@ -2808,15 +2808,40 @@ static int hail_find_or_issue_contract(world_t *w, server_player_t *sp, int issu
 }
 
 static void handle_hail(world_t *w, server_player_t *sp) {
-    if (sp->docked) return;
+    /* Docked hail: the station the player is sitting in should answer
+     * immediately. This keeps H from feeling dead on the station screen
+     * and uses the same response/contract path as an undocked ping. */
+    if (sp->docked) {
+        int docked_station = sp->current_station;
+        if (docked_station >= 0 && docked_station < MAX_STATIONS &&
+            station_is_active(&w->stations[docked_station])) {
+            float balance = sp->pubkey_set
+                ? ledger_balance_by_pubkey(&w->stations[docked_station], sp->pubkey)
+                : ledger_balance(&w->stations[docked_station], sp->session_token);
+            int contract_idx = hail_find_or_issue_contract(w, sp, docked_station);
+            emit_event(w, (sim_event_t){
+                .type = SIM_EVENT_HAIL_RESPONSE,
+                .player_id = sp->id,
+                .hail_response = { .station = docked_station, .credits = balance, .contract_index = contract_idx },
+            });
+        } else {
+            emit_event(w, (sim_event_t){
+                .type = SIM_EVENT_HAIL_RESPONSE,
+                .player_id = sp->id,
+                .hail_response = { .station = -1, .credits = -1.0f, .contract_index = -1 },
+            });
+        }
+        return;
+    }
 
     /* Ship-based ping: the player is the transmitter. Stations inside
      * comm_range respond normally; stations within 2× comm_range chirp
      * back "out of range" with a bearing so the player knows which way
-     * to fly. Stations further than that stay silent.
+     * to fly. If nothing is even in chirp range, the client gets an
+     * explicit miss notice instead of a dead keypress.
      *
      * credits == -1.0f is the out-of-range sentinel on the wire; the
-     * client renders a short "too far — nearest: <name>" overlay
+     * client renders a short "too far -- nearest: <name>" notice
      * instead of the full hail UI. */
     float comm = (sp->ship.comm_range > 0.0f) ? sp->ship.comm_range : 1500.0f;
     float comm_sq = comm * comm;
@@ -2826,7 +2851,7 @@ static void handle_hail(world_t *w, server_player_t *sp) {
     int nearest_chirp = -1; float best_chirp = 1e18f;
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_t *st = &w->stations[s];
-        if (st->signal_range <= 0.0f) continue;
+        if (!station_is_active(st)) continue;
         float d_sq = v2_dist_sq(sp->ship.pos, st->pos);
         if (d_sq <= comm_sq) {
             if (d_sq < best_in) { best_in = d_sq; nearest_in = s; }
@@ -2853,9 +2878,16 @@ static void handle_hail(world_t *w, server_player_t *sp) {
             .player_id = sp->id,
             .hail_response = { .station = nearest_chirp, .credits = -1.0f, .contract_index = -1 },
         });
+    } else {
+        /* No station even in chirp range: send an explicit miss so H never
+         * feels broken. Remote clients receive station=255; local clients see
+         * the negative station index directly. */
+        emit_event(w, (sim_event_t){
+            .type = SIM_EVENT_HAIL_RESPONSE,
+            .player_id = sp->id,
+            .hail_response = { .station = -1, .credits = -1.0f, .contract_index = -1 },
+        });
     }
-    /* No station even in chirp range → silent ping. Client already
-     * drew its local expanding ring so the press isn't lost. */
 }
 
 static void step_station_interaction_system(world_t *w, server_player_t *sp, const input_intent_t *intent) {

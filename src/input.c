@@ -33,7 +33,7 @@
  *
  *   [X]   Undocked → self-destruct (hold 1s; single-press no longer
  *         triggers).
- *   [H]   Undocked → hail ping + collect pending credits.
+ *   [H]   Hail ping + collect pending credits.
  *   [O]   Any → toggle mining autopilot (signal-gated).
  *   [V]   Undocked (strong signal) → hold to talk (pilot mic to NAV-7).
  *   [R]   Plan mode → cycle module type. Outside plan mode → held-tow
@@ -838,10 +838,10 @@ static void sample_music(void) {
 }
 
 /* H: hail ping. Visual ring fires locally so the press feels instant;
- * server decides which (if any) station to respond with based on
- * ship.comm_range. */
+ * server decides which (if any) station to respond with based on dock
+ * state and ship.comm_range. */
 static void sample_hail(input_intent_t *intent) {
-    if (!is_key_pressed(SAPP_KEYCODE_H) || LOCAL_PLAYER.docked) return;
+    if (!is_key_pressed(SAPP_KEYCODE_H)) return;
     intent->hail = true;
     g.hail_ping_timer  = 0.001f; /* any nonzero = active */
     g.hail_ping_origin = LOCAL_PLAYER.ship.pos;

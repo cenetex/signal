@@ -46,6 +46,74 @@ TEST(test_world_reset_spawns_npcs) {
     ASSERT_EQ_INT(helios_tows, 1);
 }
 
+static const sim_event_t *find_hail_response_event(const world_t *w) {
+    for (int i = 0; i < w->events.count; i++) {
+        if (w->events.events[i].type == SIM_EVENT_HAIL_RESPONSE)
+            return &w->events.events[i];
+    }
+    return NULL;
+}
+
+TEST(test_hail_responds_while_docked) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x42, sizeof(sp->session_token));
+    sp->docked = true;
+    sp->current_station = 0;
+    sp->input.hail = true;
+
+    world_sim_step(&w, SIM_DT);
+
+    const sim_event_t *ev = find_hail_response_event(&w);
+    ASSERT(ev != NULL);
+    ASSERT_EQ_INT(ev->hail_response.station, 0);
+    ASSERT(ev->hail_response.credits >= 0.0f);
+}
+
+TEST(test_hail_chirps_nearest_station_when_out_of_range) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x43, sizeof(sp->session_token));
+    sp->docked = false;
+    sp->ship.pos = v2_add(w.stations[0].pos, v2(sp->ship.comm_range * 1.5f, 0.0f));
+    sp->input.hail = true;
+
+    world_sim_step(&w, SIM_DT);
+
+    const sim_event_t *ev = find_hail_response_event(&w);
+    ASSERT(ev != NULL);
+    ASSERT_EQ_INT(ev->hail_response.station, 0);
+    ASSERT(ev->hail_response.credits < 0.0f);
+}
+
+TEST(test_hail_reports_no_station_in_range) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x44, sizeof(sp->session_token));
+    sp->docked = false;
+    sp->ship.pos = v2(WORLD_RADIUS - 100.0f, WORLD_RADIUS - 100.0f);
+    sp->input.hail = true;
+
+    world_sim_step(&w, SIM_DT);
+
+    const sim_event_t *ev = find_hail_response_event(&w);
+    ASSERT(ev != NULL);
+    ASSERT_EQ_INT(ev->hail_response.station, -1);
+    ASSERT(ev->hail_response.credits < 0.0f);
+}
+
 TEST(test_dead_hauler_auto_respawns) {
     /* Confirm replenish_npc_roster fires from step_npc_ships: kill a
      * Kepler-homed hauler, run sim past the respawn cooldown, expect
@@ -1403,6 +1471,9 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_creates_stations);
     RUN(test_world_reset_spawns_asteroids);
     RUN(test_world_reset_spawns_npcs);
+    RUN(test_hail_responds_while_docked);
+    RUN(test_hail_chirps_nearest_station_when_out_of_range);
+    RUN(test_hail_reports_no_station_in_range);
     RUN(test_dead_hauler_auto_respawns);
     RUN(test_dead_tow_auto_respawns_at_shipyard);
     RUN(test_player_init_ship_docked);
