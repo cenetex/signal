@@ -1163,7 +1163,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
     for (int ri = first; ri < last; ri++) {
         const trade_row_t *r = &rows[ri];
         int slot = (ri - first) + 1;
-        char key_buf[8];
+        char key_buf[16];
         if (r->actionable) snprintf(key_buf, sizeof(key_buf), "[%d]", slot);
         else               snprintf(key_buf, sizeof(key_buf), " - ");
 
