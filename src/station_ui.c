@@ -629,7 +629,7 @@ static void draw_row_lr(float cx, float my, float inner_right,
             sdtx_puts(left_draw);
         }
     }
-    if (right_draw) {
+    if (right_draw && right_rgb) {
         sdtx_color3b(right_rgb[0], right_rgb[1], right_rgb[2]);
         sdtx_pos(ui_text_pos(right_x), ui_text_pos(my));
         sdtx_puts(right_draw);
@@ -1115,7 +1115,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
             rgb[i][0] = stock > 0 ? cr : 90;
             rgb[i][1] = stock > 0 ? cg : 90;
             rgb[i][2] = stock > 0 ? cb : 90;
-            cells[cell_count++] = (cell_t){ (float)(7 + i * 7), labels[i], rgb[i] };
+            cells[cell_count++] = (cell_t){ 7 + i * 7, labels[i], rgb[i] };
         }
         draw_row_cells(cx, my, cells, cell_count);
         my += row_h;
