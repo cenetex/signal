@@ -1153,22 +1153,26 @@ static void draw_trade_view(const station_ui_state_t *ui,
     trade_page_range(rows, row_count, page, &first, &last, &total_pages);
     if (page >= total_pages) { page = 0; g.trade_page = 0; }
 
-    /* Page indicator (only when there's actually more than one page). */
-    if (total_pages > 1) {
-        char pg[32];
-        snprintf(pg, sizeof(pg), "page %d/%d   [F] next",
-                 page + 1, total_pages);
-        const uint8_t COL_ACTIVE[3] = { 130, 210, 255 };
-        const char *page_kind = (first < last && rows[first].kind == 1)
-            ? "SELL" : "BUY";
-        draw_row_lr(cx, my, inner_right, COL_ACTIVE, page_kind, COL_FADED, pg);
-        my += row_h;
-    }
-
     if (row_count == 0) {
         draw_row_lr(cx, my, inner_right, COL_FADED,
                     "Nothing on offer and nothing to deliver.", NULL, NULL);
         return;
+    }
+
+    /* Side indicator. BUY/SELL lives here, so individual rows can stay
+     * focused on the item, stock, and price. */
+    {
+        char pg[32];
+        pg[0] = '\0';
+        if (total_pages > 1)
+            snprintf(pg, sizeof(pg), "page %d/%d   [F] next",
+                     page + 1, total_pages);
+        const uint8_t COL_ACTIVE[3] = { 130, 210, 255 };
+        const char *page_kind = (first < last && rows[first].kind == 1)
+            ? "SELL" : "BUY";
+        draw_row_lr(cx, my, inner_right, COL_ACTIVE, page_kind, COL_FADED,
+                    pg[0] ? pg : NULL);
+        my += row_h;
     }
 
     /* Hotkey numbering is by row position on the page, NOT by actionable
@@ -1195,10 +1199,6 @@ static void draw_trade_view(const station_ui_state_t *ui,
          * rows are dimmed regardless of direction. */
         const uint8_t *total_rgb = (r->kind == 0) ? COL_COST : COL_GAIN;
         const uint8_t *row_rgb   = r->actionable ? total_rgb : COL_DIM;
-
-        const char *verb = (r->kind == 0) ? "buy " : "sell";
-        if (r->kind == 1 && r->block_reason == TRADE_BLOCK_NO_CARGO)
-            verb = "buys";
 
         /* Status column on the left of the right-aligned price:
          * BUY:  station X/MAX
@@ -1281,11 +1281,10 @@ static void draw_trade_view(const station_ui_state_t *ui,
         if (compact) {
             cell_t top[] = {
                 {  0, key_buf,                            row_rgb },
-                {  4, verb,                               row_rgb },
-                { 10, commodity_label,                    info_rgb },
-                { 26, grade_label,                        grade_rgb_ptr },
+                {  4, commodity_label,                    info_rgb },
+                { 22, grade_label,                        grade_rgb_ptr },
             };
-            draw_row_cells(cx, my, top, 4);
+            draw_row_cells(cx, my, top, 3);
             my += row_h;
             draw_row_lr(cx + 32.0f, my, inner_right,
                         info_rgb, status_buf, row_rgb, total_buf);
@@ -1294,7 +1293,7 @@ static void draw_trade_view(const station_ui_state_t *ui,
              * reads as background context, not actionable state. */
             if (lineage_buf[0]) {
                 cell_t lineage[] = {
-                    { 10, lineage_buf, COL_FADED },
+                    {  4, lineage_buf, COL_FADED },
                 };
                 draw_row_cells(cx, my, lineage, 1);
                 my += row_h;
@@ -1304,19 +1303,18 @@ static void draw_trade_view(const station_ui_state_t *ui,
         } else {
             cell_t row[] = {
                 {  0, key_buf,                            row_rgb },
-                {  4, verb,                               row_rgb },
-                { 10, commodity_label,                    info_rgb },
-                { 28, grade_label,                        grade_rgb_ptr },
-                { 35, status_buf,                         info_rgb },
+                {  4, commodity_label,                    info_rgb },
+                { 22, grade_label,                        grade_rgb_ptr },
+                { 31, status_buf,                         info_rgb },
             };
-            draw_row_cells(cx, my, row, 5);
+            draw_row_cells(cx, my, row, 4);
             draw_row_lr(cx, my, inner_right, NULL, NULL, row_rgb, total_buf);
             my += row_h;
             /* Wide mode also gets a lineage line beneath the row.
              * Same dim styling, indented under the commodity label. */
             if (lineage_buf[0]) {
                 cell_t lineage[] = {
-                    { 10, lineage_buf, COL_FADED },
+                    {  4, lineage_buf, COL_FADED },
                 };
                 draw_row_cells(cx, my, lineage, 1);
                 my += row_h;
