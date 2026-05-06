@@ -406,6 +406,14 @@ typedef struct {
     int inspect_module;      /* module info pane: module index */
     NetInspectSnapshot inspect_snapshot;
     float inspect_snapshot_timer;
+    /* True while the player has an active scan target. The release
+     * edge (was_active=true → now_active=false) bumps the timer
+     * once into the linger window; subsequent idle frames see this
+     * flag false and don't keep re-bumping the timer. The previous
+     * timer-threshold trick (`timer ≤ 0.6 → bump`) re-fired when
+     * the linger naturally crossed back below 0.6 on its way to 0,
+     * causing the panel/ring to never expire. */
+    bool inspect_was_active;
     /* Per-row scramble-resolve animation state for the inspect snapshot
      * pane. sig is a content fingerprint of the row (cargo_pub +
      * receipt_head + prefix + commodity + grade + qty); a change retriggers
