@@ -476,6 +476,7 @@ static const char *type_name(unsigned t) {
     case CHAIN_EVT_OPERATOR_POST:    return "OPERATOR_POST";
     case CHAIN_EVT_FRAGMENT_TOW:     return "FRAGMENT_TOW";
     case CHAIN_EVT_FRAGMENT_RELEASE: return "FRAGMENT_RELEASE";
+    case CHAIN_EVT_DEATH:            return "DEATH";
     default:                         return "UNKNOWN";
     }
 }

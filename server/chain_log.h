@@ -79,6 +79,10 @@ typedef enum {
      * smelted from ferrite that 0F3H-CH towed") need both. */
     CHAIN_EVT_FRAGMENT_TOW     = 8,  /* player tractor grabs a fragment */
     CHAIN_EVT_FRAGMENT_RELEASE = 9,  /* tow ended without smelt */
+    /* Player death: highscores are now a view of these events replayed
+     * out of the chain log at server boot. Carries the run summary
+     * (credits/ore/asteroids) plus victim+killer tokens for attribution. */
+    CHAIN_EVT_DEATH            = 10,
     CHAIN_EVT_TYPE_COUNT
 } chain_event_type_t;
 
@@ -136,7 +140,12 @@ SIGNAL_PACK_POP
 
 SIGNAL_PACK_PUSH
 typedef struct {
-    uint8_t  kind;            /* 0=HAIL_MOTD, 1=CONTRACT_FLAVOR, 2=RARITY_TIER, reserved 3-255 */
+    uint8_t  kind;            /* 0=HAIL_MOTD, 1=CONTRACT_FLAVOR, 2=RARITY_TIER,
+                               * 3=BUILD_INFO (text=8-hex-char build SHA, ref_id unused),
+                               * 4=WORLD_INFO (text = belt_seed:u32 LE || world_seq:u32 LE
+                               *               || build SHA hex; pre-v52 emits omit world_seq
+                               *               and the parser defaults it to 0),
+                               * reserved 5-255 */
     uint8_t  tier;            /* for kind=RARITY_TIER: 0=common,1=uncommon,2=rare,3=ultra */
     uint16_t ref_id;          /* contract id, motd seed, etc. — kind-specific */
     uint8_t  text_sha256[32]; /* SHA-256 of UTF-8 text bytes */
@@ -186,6 +195,33 @@ typedef struct {
 } SIGNAL_PACKED chain_payload_fragment_release_t;
 SIGNAL_PACK_POP
 
+/* Death event: a single run ended. Replayed out of the chain log at
+ * server boot to rebuild the in-memory highscore table — there is no
+ * separate highscores.dat anymore. victim_pubkey is zeroed for legacy
+ * (un-registered) clients; victim_session_token is always populated.
+ * killer_token is the killer's session_token (zero if unattributed /
+ * NPC / self). killed_by_callsign is resolved against the connected
+ * players list at emit time — leaves the field zero for NPC kills,
+ * disconnected players, or self-destructs. The replay walker reads
+ * this field directly; the legacy victim-callsign-map fallback only
+ * kicks in for events emitted before this field existed. */
+SIGNAL_PACK_PUSH
+typedef struct {
+    uint8_t  victim_pubkey[32];        /* 0 for legacy clients */
+    uint8_t  victim_session_token[8];
+    uint8_t  victim_callsign[8];       /* not NUL-terminated if 8 chars */
+    uint8_t  killer_token[8];
+    uint8_t  cause;                    /* death_cause_t */
+    uint8_t  _pad[7];                  /* MUST be zero */
+    uint64_t epoch_tick;
+    float    credits_earned;
+    float    credits_spent;
+    float    ore_mined;
+    uint32_t asteroids_fractured;
+    uint8_t  killed_by_callsign[8];    /* resolved at emit; 0 if unattributed */
+} SIGNAL_PACKED chain_payload_death_t;
+SIGNAL_PACK_POP
+
 /* Wire-format guards: any field-list change that shifts these sizes
  * forks the chain log byte format and must be paired with a
  * versioning story (or accepted as a hard break). */
@@ -196,6 +232,7 @@ _Static_assert(sizeof(chain_payload_trade_t)            == 48,  "trade payload s
 _Static_assert(sizeof(chain_payload_rock_destroy_t)     == 96,  "rock_destroy payload size");
 _Static_assert(sizeof(chain_payload_fragment_tow_t)     == 80,  "fragment_tow payload size");
 _Static_assert(sizeof(chain_payload_fragment_release_t) == 88,  "fragment_release payload size");
+_Static_assert(sizeof(chain_payload_death_t)            == 96,  "death payload size");
 /* The fixed-prefix size (before the text[] variable-length array):
  * kind(1) + tier(1) + ref_id(2) + text_sha256(32) + text_len(2) = 38 bytes */
 _Static_assert(offsetof(chain_payload_operator_post_t, text) == 38, "operator_post fixed-prefix size");

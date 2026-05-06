@@ -626,6 +626,7 @@ TEST(test_chain_log_seed_rarity_tiers_have_real_content) {
     w->rng = 9700u;
     chain_test_wipe_logs(w);
     world_reset(w);
+    world_seed_station_chain_genesis(w);
 
     /* Compute SHA-256 of each placeholder string for the negative match. */
     static const char *placeholders[4] = {
@@ -685,6 +686,39 @@ TEST(test_chain_log_seed_rarity_tiers_have_real_content) {
     /* All four tiers must have been emitted. */
     for (int i = 0; i < 4; i++) {
         ASSERT(tiers_seen[i] >= 1);
+    }
+
+    chain_test_teardown();
+}
+
+TEST(test_world_reset_does_not_emit_to_chain_log) {
+    /* world_reset used to emit per-station MOTD + rarity-tier events
+     * directly, which corrupted the chain on every server restart:
+     * load_world_state runs world_reset before world_load restores
+     * the saved seed, so each restart appended new prev_hash=0
+     * MOTDs to the default-seed pubkey's log file forever. Genesis
+     * seeding has been moved to world_seed_station_chain_genesis,
+     * called only on fresh-world boots. This test guards the move. */
+    chain_test_setup("no_implicit_emit");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 14143u;
+    chain_test_wipe_logs(w);
+    world_reset(w);
+
+    for (int i = 0; i < 3; i++) {
+        ASSERT_EQ_INT((int)w->stations[i].chain_event_count, 0);
+        char path[256];
+        ASSERT(chain_log_path_for(w->stations[i].station_pubkey,
+                                   path, sizeof(path)));
+        FILE *fp = fopen(path, "rb");
+        /* Either the file doesn't exist, or it's empty. */
+        if (fp) {
+            fseek(fp, 0, SEEK_END);
+            long size = ftell(fp);
+            fclose(fp);
+            ASSERT_EQ_INT((int)size, 0);
+        }
     }
 
     chain_test_teardown();
@@ -869,6 +903,7 @@ void register_chain_log_tests(void) {
     RUN(test_chain_log_operator_post_replay_determinism);
     RUN(test_chain_log_operator_post_text_tamper);
     RUN(test_chain_log_seed_rarity_tiers_have_real_content);
+    RUN(test_world_reset_does_not_emit_to_chain_log);
     RUN(test_chain_log_fragment_tow_payload_size);
     RUN(test_chain_log_fragment_tow_emit_and_verify);
     RUN(test_chain_log_fragment_release_emit_and_verify);

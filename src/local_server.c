@@ -51,6 +51,10 @@ void local_server_init(local_server_t *ls, uint32_t seed) {
      * has rows to surface. Without this, a fresh singleplayer start
      * shows empty markets at every station. */
     world_seed_station_manifests(&ls->world);
+    /* Singleplayer is always a fresh world at this layer (no save
+     * load); seed the chain log genesis events so MOTDs are part of
+     * the chain history just like on the dedicated server. */
+    world_seed_station_chain_genesis(&ls->world);
     ls->world.players[0].connected = true;
     ls->world.players[0].id = 0;
     ls->world.players[0].session_ready = true;
@@ -199,11 +203,13 @@ static bool local_inspect_unit_is_groupable_bulk(const cargo_unit_t *unit) {
 static void local_server_copy_inspect_group(NetInspectSnapshotRow *row,
                                             uint8_t commodity,
                                             uint8_t grade,
-                                            uint16_t quantity) {
+                                            uint16_t quantity,
+                                            uint8_t prefix_class) {
     memset(row, 0, sizeof(*row));
     row->commodity = commodity;
     row->grade = grade;
     row->quantity = quantity > 0 ? quantity : 1;
+    row->chain_len = prefix_class;  /* repurposed when GROUPED is set */
     row->flags |= INSPECT_ROW_GROUPED;
 }
 
@@ -217,8 +223,19 @@ static void local_server_sync_inspect_snapshot(const local_server_t *ls,
     snap.dest_station = 0xFFu;
 
     if (!src->scan_active || src->scan_target_type == INSPECT_TARGET_NONE) {
-        g.inspect_snapshot = snap;
-        g.inspect_snapshot_timer = 0.0f;
+        /* Linger: hold the last snapshot's data on screen for a few
+         * seconds after the player releases the scan key. Active-scan
+         * frames refresh the timer to 0.60; seeing ≤ 0.60 here means
+         * we just hit the release edge and should bump up to the
+         * linger window. After that the timer counts down naturally —
+         * we mustn't reset it on every subsequent idle frame. */
+        bool had_target = g.inspect_snapshot.target_type != INSPECT_TARGET_NONE;
+        if (had_target && g.inspect_snapshot_timer <= 0.60f) {
+            g.inspect_snapshot_timer = 3.5f;
+        } else if (!had_target) {
+            g.inspect_snapshot = snap;
+            g.inspect_snapshot_timer = 0.0f;
+        }
         return;
     }
 
@@ -243,12 +260,21 @@ static void local_server_sync_inspect_snapshot(const local_server_t *ls,
             snap.manifest_count = ship->manifest.units ? ship->manifest.count : 0;
             const ship_receipts_t *rcpts = ship_get_receipts_const(ship);
             uint16_t bulk[COMMODITY_COUNT][MINING_GRADE_COUNT];
+            uint16_t named[COMMODITY_COUNT][MINING_GRADE_COUNT][INGOT_PREFIX_COUNT];
             memset(bulk, 0, sizeof(bulk));
+            memset(named, 0, sizeof(named));
             for (uint16_t i = 0; i < snap.manifest_count; i++) {
                 const cargo_unit_t *unit = &ship->manifest.units[i];
-                if (!local_inspect_unit_is_groupable_bulk(unit)) continue;
-                if (bulk[unit->commodity][unit->grade] < 0xFFFF)
-                    bulk[unit->commodity][unit->grade]++;
+                if (local_inspect_unit_is_groupable_bulk(unit)) {
+                    if (bulk[unit->commodity][unit->grade] < 0xFFFF)
+                        bulk[unit->commodity][unit->grade]++;
+                } else if ((cargo_kind_t)unit->kind == CARGO_KIND_INGOT
+                           && unit->prefix_class < INGOT_PREFIX_COUNT
+                           && unit->commodity < COMMODITY_COUNT
+                           && unit->grade < MINING_GRADE_COUNT) {
+                    if (named[unit->commodity][unit->grade][unit->prefix_class] < 0xFFFF)
+                        named[unit->commodity][unit->grade][unit->prefix_class]++;
+                }
             }
             snap.row_count = 0;
             for (int gr = 0; gr < MINING_GRADE_COUNT && snap.row_count < INSPECT_SNAPSHOT_MAX_ROWS; gr++) {
@@ -256,14 +282,27 @@ static void local_server_sync_inspect_snapshot(const local_server_t *ls,
                     if (bulk[c][gr] > 0) {
                         local_server_copy_inspect_group(&snap.rows[snap.row_count],
                                                         (uint8_t)c, (uint8_t)gr,
-                                                        bulk[c][gr]);
+                                                        bulk[c][gr],
+                                                        (uint8_t)INGOT_PREFIX_ANONYMOUS);
                         snap.row_count++;
+                    }
+                    for (int pc = INGOT_PREFIX_ANONYMOUS + 1;
+                         pc < INGOT_PREFIX_COUNT && snap.row_count < INSPECT_SNAPSHOT_MAX_ROWS; pc++) {
+                        if (named[c][gr][pc] >= 2) {
+                            local_server_copy_inspect_group(&snap.rows[snap.row_count],
+                                                            (uint8_t)c, (uint8_t)gr,
+                                                            named[c][gr][pc],
+                                                            (uint8_t)pc);
+                            snap.row_count++;
+                        }
                     }
                     for (uint16_t i = 0; i < snap.manifest_count &&
                          snap.row_count < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
                         const cargo_unit_t *unit = &ship->manifest.units[i];
                         if (unit->commodity != c || unit->grade != gr) continue;
                         if (local_inspect_unit_is_groupable_bulk(unit)) continue;
+                        if (unit->prefix_class < INGOT_PREFIX_COUNT
+                            && named[c][gr][unit->prefix_class] >= 2) continue;
                         const cargo_receipt_chain_t *chain =
                             (rcpts && i < rcpts->count) ? &rcpts->chains[i] : NULL;
                         local_server_copy_inspect_row(&snap.rows[snap.row_count],

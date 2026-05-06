@@ -79,7 +79,12 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 53  /* Station receipt store:
+#define SAVE_VERSION 54  /* v54: world_seq added — monotonic u32 written
+                          * after belt_seed for total ordering across
+                          * worlds (newer-world-wins highscore policy).
+                          * Pre-v54 saves migrate by defaulting world_seq=0,
+                          * making them lose to any explicit world.
+                          * v53 was the station receipt store:
                           * each station manifest entry now carries a
                           * receipt-chain payload inline
                           * ([len:u8] + len * cargo_receipt_t), matching
@@ -1136,8 +1141,10 @@ bool world_save(const world_t *w, const char *path) {
     /* v37: belt_seed (anchor for rock_pub derivation). v38: each
      * destroyed_rocks entry now carries a destroyed_at_ms timestamp;
      * the array is kept sorted ascending by rock_pub, so writing in
-     * index order preserves order on read. Sparse: count + N tuples. */
+     * index order preserves order on read. Sparse: count + N tuples.
+     * v54: world_seq written immediately after belt_seed. */
     WRITE_FIELD(f, w->belt_seed);
+    WRITE_FIELD(f, w->world_seq);
     {
         uint16_t count = w->destroyed_rock_count;
         WRITE_FIELD(f, count);
@@ -1302,6 +1309,11 @@ bool world_load(world_t *w, const char *path) {
     w->destroyed_rock_count = 0;
     if (version >= 37) {
         READ_FIELD(f, w->belt_seed);
+        if (version >= 54) {
+            READ_FIELD(f, w->world_seq);
+        } else {
+            w->world_seq = 0;
+        }
         uint16_t count = 0;
         READ_FIELD(f, count);
         int cap = (int)(sizeof(w->destroyed_rocks) / sizeof(w->destroyed_rocks[0]));
@@ -1664,7 +1676,7 @@ bool world_load(world_t *w, const char *path) {
      * but do NOT silently rebuild the log. Operators must investigate.
      * An empty log on disk is the post-migration v40 case and is fine. */
     for (int i = 0; i < MAX_STATIONS; i++) {
-        const station_t *st = &w->stations[i];
+        station_t *st = &w->stations[i];
         if (memcmp(st->station_pubkey, zero_pub, 32) == 0) continue;
         uint64_t walked = 0;
         uint8_t walked_last[32] = {0};
@@ -1674,13 +1686,29 @@ bool world_load(world_t *w, const char *path) {
                     i, (unsigned long long)walked);
             continue;
         }
-        /* Cross-check the disk-walked tail against the saved
-         * continuation pointer. A mismatch means the save and the log
-         * file got separated (e.g. someone restored world.sav from a
-         * backup but kept the current chain/ dir). Loud + non-fatal. */
-        if (walked != st->chain_event_count ||
-            (walked > 0 &&
-             memcmp(walked_last, st->chain_last_hash, 32) != 0)) {
+        /* The disk-walked tail is the authoritative continuation point.
+         * If the server crashed (or was killed) after a chain emit but
+         * before the next world.sav write, the saved chain_event_count
+         * lags the disk by N events. The next chain_log_emit reads from
+         * st->chain_last_hash and links its prev_hash to whatever lives
+         * in-memory — so if we don't adopt the disk tail here, the very
+         * first emit after boot forks the chain. Adopt-on-verify keeps
+         * the chain monotonic across crash recovery. */
+        if (walked > st->chain_event_count) {
+            SIM_LOG("[chain] station %d: adopting disk tail "
+                    "(disk: %llu events, save: %llu) — extra events "
+                    "preserved from unsaved appends\n",
+                    i, (unsigned long long)walked,
+                    (unsigned long long)st->chain_event_count);
+            st->chain_event_count = walked;
+            memcpy(st->chain_last_hash, walked_last, 32);
+        } else if (walked < st->chain_event_count
+                   || (walked > 0
+                       && memcmp(walked_last, st->chain_last_hash, 32) != 0)) {
+            /* Save claims more events than disk, or same length but a
+             * different tail. Either is a real divergence (truncated
+             * log, restored save against a different chain dir). Loud
+             * + non-fatal: appends would fork either way. */
             SIM_LOG("[chain] station %d: chain continuation mismatch "
                     "(disk: %llu events, save: %llu) — events appended "
                     "after this point will form a fork from the saved "

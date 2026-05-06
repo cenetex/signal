@@ -537,7 +537,9 @@ static void hud_cargo_label(const uint8_t pub[32], char out[12]) {
 static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     if (g.inspect_snapshot_timer <= 0.0f) return;
     if (LOCAL_PLAYER.docked) return;
-    if (!LOCAL_PLAYER.scan_active) return;
+    /* The timer alone gates visibility — the panel lingers for a few
+     * seconds after scan release so the player can read what they
+     * just locked onto. */
     const NetInspectSnapshot *snap = &g.inspect_snapshot;
     if (snap->target_type != INSPECT_TARGET_NPC) return;
 
@@ -590,15 +592,33 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
         visible_units += qty;
         bool grouped = (row->flags & INSPECT_ROW_GROUPED) != 0;
 
+        /* On grouped rows, chain_len is repurposed as the prefix_class
+         * of the bucket (0 = ANONYMOUS bulk, otherwise a named class). */
+        const char *prefix_label = NULL;
+        if (grouped) {
+            switch ((ingot_prefix_t)row->chain_len) {
+            case INGOT_PREFIX_M:            prefix_label = "M class"; break;
+            case INGOT_PREFIX_H:            prefix_label = "H class"; break;
+            case INGOT_PREFIX_T:            prefix_label = "T class"; break;
+            case INGOT_PREFIX_S:            prefix_label = "S class"; break;
+            case INGOT_PREFIX_F:            prefix_label = "F class"; break;
+            case INGOT_PREFIX_K:            prefix_label = "K class"; break;
+            case INGOT_PREFIX_RATI:         prefix_label = "RATi class"; break;
+            case INGOT_PREFIX_COMMISSIONED: prefix_label = "RATi*"; break;
+            case INGOT_PREFIX_ANONYMOUS:
+            default:                        prefix_label = NULL; break;
+            }
+        }
+
         uint8_t rr, gg, bb;
         mining_grade_rgb((mining_grade_t)row->grade, &rr, &gg, &bb);
         float y = next_y;
         sdtx_pos(px / cell, y / cell);
         sdtx_color4b(rr, gg, bb, 235);
-        sdtx_printf("%-5s %s %-9s x%u",
+        sdtx_printf("%-5s %s %-10s x%u",
                     hud_grade_short_label(row->grade),
                     commodity_code((commodity_t)row->commodity),
-                    cargo,
+                    prefix_label ? prefix_label : cargo,
                     qty);
 
         next_y = y + 14.0f;
@@ -1798,12 +1818,22 @@ static bool draw_death_overlay(float screen_w, float screen_h) {
                     memcpy(cs, g.highscores[i].callsign, 8);
                     cs[8] = '\0';
                     for (int k = 7; k >= 0 && (cs[k] == ' ' || cs[k] == '\0'); k--) cs[k] = '\0';
+                    char kb[9];
+                    memcpy(kb, g.highscores[i].killed_by, 8);
+                    kb[8] = '\0';
+                    for (int k = 7; k >= 0 && (kb[k] == ' ' || kb[k] == '\0'); k--) kb[k] = '\0';
                     bool is_me = (g.death_credits_earned > 0.5f
                                   && fabsf(g.highscores[i].credits_earned - g.death_credits_earned) < 0.5f);
                     if (is_me) sdtx_color4b(PAL_DEATH_EARNED, a8);
                     else       sdtx_color4b(PAL_TEXT_FADED,  a8);
                     sdtx_pos(left, row);
-                    sdtx_printf("%2d. %-8s %8.0f", i + 1, cs, g.highscores[i].credits_earned);
+                    /* callsign / credits / killed-by / build. world_id is
+                     * kept in the data but dropped from the visible row
+                     * to keep the line readable on narrow viewports. */
+                    sdtx_printf("%2d. %-8s %7.0f  %-8s b#%08x",
+                                i + 1, cs, g.highscores[i].credits_earned,
+                                kb[0] ? kb : "-",
+                                g.highscores[i].build_id);
                     row += 1.4f;
                 }
             } else {

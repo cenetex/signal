@@ -24,6 +24,7 @@
 #include <string.h>
 #include <signal.h>
 #include <sys/stat.h>
+#include <time.h>       /* time() for fresh-boot belt_seed rotation */
 
 /* ------------------------------------------------------------------ */
 /* Global state                                                       */
@@ -90,8 +91,32 @@ static uint64_t last_station_identity = 0;
 #define SAVE_PATH "world.sav"
 #define PLAYER_SAVE_DIR "saves"
 #define STATION_CATALOG_DIR "stations"
-#define HIGHSCORE_PATH "highscores.dat"
 #define AUTOSAVE_MS 30000   /* autosave every 30 seconds */
+
+/* Truncate the build SHA (GIT_HASH at compile time, "dev" otherwise) to
+ * 8 hex chars and parse as u32 for the leaderboard's build_id column.
+ * The same value is emitted as a BUILD_INFO operator post at startup so
+ * the chain replay walker can tag historical deaths with their build. */
+static uint32_t signal_build_id_u32(void) {
+#ifdef GIT_HASH
+    const char *hash = GIT_HASH;
+#else
+    const char *hash = "dev";
+#endif
+    uint32_t bid = 0;
+    int n = 0;
+    for (size_t i = 0; hash[i] && n < 8; i++) {
+        char c = hash[i];
+        int v = -1;
+        if (c >= '0' && c <= '9') v = c - '0';
+        else if (c >= 'a' && c <= 'f') v = 10 + (c - 'a');
+        else if (c >= 'A' && c <= 'F') v = 10 + (c - 'A');
+        if (v < 0) continue;
+        bid = (bid << 4) | (uint32_t)v;
+        n++;
+    }
+    return bid;
+}
 
 /* ------------------------------------------------------------------ */
 /* Signal handler                                                     */
@@ -2005,7 +2030,8 @@ static void srv_on_player_state_change(const sim_event_t *ev) {
     contracts_dirty = true;
 }
 
-/* SIM_EVENT_DEATH: highscore submission + per-player death packet
+/* SIM_EVENT_DEATH: emit signed CHAIN_EVT_DEATH (highscore is replayed
+ * from the chain log) + highscore submission + per-player death packet
  * (carries pos/vel/stats so the client cinematic anchors at the
  * wreckage before the server respawn moves the ship) + fresh ship
  * state so the post-respawn hull/dock is visible immediately. */
@@ -2015,8 +2041,58 @@ static void srv_on_death(const sim_event_t *ev) {
     server_player_t *sp = &world.players[pid];
     if (!sp->connected) return;
 
+    /* Resolve killer callsign by token against currently-connected
+     * peers BEFORE chain emit so the killed_by_callsign rides along on
+     * the persisted DEATH event. The replay walker reads it directly;
+     * legacy events without this field fall back to the victim-callsign
+     * map. */
+    uint8_t killed_by[8] = {0};
+    {
+        static const uint8_t zero[8] = {0};
+        if (memcmp(ev->death.killer_token, zero, 8) != 0) {
+            for (int i = 0; i < MAX_PLAYERS; i++) {
+                if (i == pid) continue;
+                if (memcmp(world.players[i].session_token,
+                           ev->death.killer_token, 8) == 0) {
+                    memcpy(killed_by, world.players[i].callsign, 8);
+                    break;
+                }
+            }
+        }
+    }
+
+    /* Append the run to the chain log first so a crash between emit
+     * and submit re-projects on next boot. Station 0 (Prospect) is the
+     * deterministic authority for player-life events — the chain log
+     * is a single-stream view of the world's history per station, and
+     * deaths aren't per-station the way smelts are. */
+    {
+        chain_payload_death_t dp;
+        memset(&dp, 0, sizeof(dp));
+        if (sp->pubkey_set) memcpy(dp.victim_pubkey, sp->pubkey, 32);
+        memcpy(dp.victim_session_token, sp->session_token, 8);
+        memcpy(dp.victim_callsign, sp->callsign, 8);
+        memcpy(dp.killer_token, ev->death.killer_token, 8);
+        dp.cause = ev->death.cause;
+        dp.epoch_tick = (uint64_t)(world.time * 120.0);
+        dp.credits_earned = ev->death.credits_earned;
+        dp.credits_spent = ev->death.credits_spent;
+        dp.ore_mined = ev->death.ore_mined;
+        dp.asteroids_fractured = (uint32_t)ev->death.asteroids_fractured;
+        memcpy(dp.killed_by_callsign, killed_by, 8);
+        if (station_exists(&world.stations[0]))
+            (void)chain_log_emit(&world, &world.stations[0],
+                                 CHAIN_EVT_DEATH, &dp, (uint16_t)sizeof(dp));
+    }
+
     const char *cs = sp->callsign;
-    bool qualified = highscore_submit(&highscores, cs, ev->death.credits_earned);
+    uint32_t world_id = world.belt_seed;
+    uint32_t world_seq = world.world_seq;
+    uint32_t build_id = signal_build_id_u32();
+    uint64_t epoch_tick = (uint64_t)(world.time * 120.0);
+    bool qualified = highscore_submit(&highscores, cs, ev->death.credits_earned,
+                                      world_id, world_seq, build_id,
+                                      epoch_tick, killed_by);
     printf("[server] death pid=%d cs=%s earned=%.0f cr -> %s (top=%d)\n",
            pid, cs[0] ? cs : "?", ev->death.credits_earned,
            qualified ? "qualified" : "skipped", highscores.count);
@@ -2160,12 +2236,32 @@ static void ensure_persistence_dirs(void) {
     player_save_migrate_legacy_layout(PLAYER_SAVE_DIR);
 }
 
+static void emit_world_identity_anchor(void);
+
 /* Layered persistence (#314):
  *   1. world_reset() seeds starter stations + belt field
  *   2. Catalog overwrites identity for any persisted stations
  *   3. Session snapshot overlays economy state
  *   4. Rebuild derived structures (signal chain, station nav, hash chain) */
 static void load_world_state(void) {
+    /* Belt seed is persistent across normal restarts: rotate only when
+     * world.sav is absent (true first boot of a fresh world). On a
+     * resume, world_load below overwrites belt_seed and world_seq with
+     * the persisted values so asteroid layout, station Ed25519 pubkeys,
+     * and the leaderboard's world ordering all stay stable. */
+    bool fresh_world = false;
+    {
+        FILE *probe = fopen(SAVE_PATH, "rb");
+        if (probe) {
+            fclose(probe);
+        } else {
+            fresh_world = true;
+        }
+    }
+    if (fresh_world) {
+        world.rng = (uint32_t)time(NULL);
+        if (!world.rng) world.rng = 2037u;
+    }
     world_reset(&world);
 
     int catalog_count = station_catalog_load_all(world.stations, MAX_STATIONS,
@@ -2174,12 +2270,22 @@ static void load_world_state(void) {
         printf("[server] loaded %d station(s) from catalog\n", catalog_count);
 
     if (world_load(&world, SAVE_PATH)) {
-        printf("[server] loaded session from %s\n", SAVE_PATH);
+        printf("[server] loaded session from %s (belt_seed=%u world_seq=%u)\n",
+               SAVE_PATH, world.belt_seed, world.world_seq);
     } else {
-        printf("[server] no session save -- fresh economy\n");
+        /* fresh_world above already rotated rng; stamp world_seq from the
+         * wall clock so cross-wipe ordering is monotonic too. */
+        world.world_seq = (uint32_t)time(NULL);
+        if (!world.world_seq) world.world_seq = 1u;
+        printf("[server] no session save -- fresh economy (belt_seed=%u world_seq=%u)\n",
+               world.belt_seed, world.world_seq);
         /* Stations are sovereign currency issuers; no seed pool. The
          * pool just tracks net issuance from genesis. */
         world_seed_station_manifests(&world);
+        /* Emit per-station MOTD + rarity-tier genesis events. Only on
+         * fresh-world boots — a resumed world's chain history already
+         * contains them from its original genesis. */
+        world_seed_station_chain_genesis(&world);
     }
 
     /* Assign stable IDs to any stations loaded from v1 catalogs (id == 0). */
@@ -2215,10 +2321,78 @@ static void load_world_state(void) {
      * off (no fork at the genesis block). */
     signal_chain_load(&world);
 
-    highscore_load(&highscores, HIGHSCORE_PATH);
+    /* Highscores are now a *view* of the chain log: walk every
+     * chain/<base58>.log file and project CHAIN_EVT_DEATH events
+     * through highscore_submit. Old chain files from prior worlds
+     * survive as orphans (their station pubkeys differ once
+     * belt_seed rotates) and contribute alongside the current
+     * world's runs — each row carries its world_id. */
+    highscore_replay_from_chain(&highscores, chain_log_get_dir());
     if (highscores.count > 0)
-        printf("[server] loaded %d highscore(s) from %s\n",
-               highscores.count, HIGHSCORE_PATH);
+        printf("[server] replayed %d highscore(s) from chain log\n",
+               highscores.count);
+
+    /* Anchor the current world's identity in station 0's chain. The
+     * BUILD_INFO + WORLD_INFO operator posts let the replay walker
+     * tag every subsequent DEATH event with this world's belt_seed
+     * and build SHA. emit_world_identity_anchor is below. */
+    emit_world_identity_anchor();
+}
+
+/* Forward-declared above load_world_state but defined here so it can
+ * use chain_log_emit + the static GIT_HASH constant. Idempotent: emits
+ * one BUILD_INFO and one WORLD_INFO every server start (the chain log
+ * grows by 2 events per restart, which is fine). */
+static void emit_world_identity_anchor(void) {
+    if (!station_exists(&world.stations[0])) return;
+#ifdef GIT_HASH
+    const char *hash = GIT_HASH;
+#else
+    const char *hash = "dev";
+#endif
+    size_t hash_len = strlen(hash);
+    if (hash_len > 64) hash_len = 64;
+
+    /* BUILD_INFO: text = build SHA. */
+    {
+        uint8_t payload[38 + 64];
+        memset(payload, 0, sizeof(payload));
+        payload[0] = 3; /* kind = BUILD_INFO */
+        sha256_bytes((const uint8_t *)hash, hash_len, &payload[4]);
+        payload[36] = (uint8_t)(hash_len & 0xFF);
+        payload[37] = (uint8_t)((hash_len >> 8) & 0xFF);
+        memcpy(&payload[38], hash, hash_len);
+        (void)chain_log_emit(&world, &world.stations[0],
+                             CHAIN_EVT_OPERATOR_POST,
+                             payload, (uint16_t)(38 + hash_len));
+    }
+    /* WORLD_INFO: text = belt_seed (4 LE) || world_seq (4 LE) || build SHA.
+     * world_seq lets the highscore replay pick the most-recent world's
+     * runs over older ones. Pre-v52 emits had only belt_seed; the parser
+     * detects the legacy form by text_len < 8 and defaults world_seq=0. */
+    {
+        uint8_t payload[38 + 8 + 64];
+        memset(payload, 0, sizeof(payload));
+        payload[0] = 4; /* kind = WORLD_INFO */
+        size_t text_len = 8 + hash_len;
+        uint8_t text[8 + 64];
+        text[0] = (uint8_t)(world.belt_seed & 0xFF);
+        text[1] = (uint8_t)((world.belt_seed >> 8) & 0xFF);
+        text[2] = (uint8_t)((world.belt_seed >> 16) & 0xFF);
+        text[3] = (uint8_t)((world.belt_seed >> 24) & 0xFF);
+        text[4] = (uint8_t)(world.world_seq & 0xFF);
+        text[5] = (uint8_t)((world.world_seq >> 8) & 0xFF);
+        text[6] = (uint8_t)((world.world_seq >> 16) & 0xFF);
+        text[7] = (uint8_t)((world.world_seq >> 24) & 0xFF);
+        memcpy(&text[8], hash, hash_len);
+        sha256_bytes(text, text_len, &payload[4]);
+        payload[36] = (uint8_t)(text_len & 0xFF);
+        payload[37] = (uint8_t)((text_len >> 8) & 0xFF);
+        memcpy(&payload[38], text, text_len);
+        (void)chain_log_emit(&world, &world.stations[0],
+                             CHAIN_EVT_OPERATOR_POST,
+                             payload, (uint16_t)(38 + text_len));
+    }
 }
 
 /* Run as many fixed-step sim ticks as `sim_accum` covers, up to
@@ -2382,7 +2556,6 @@ int main(void) {
         }
         if (highscores_dirty) {
             broadcast_highscores();
-            (void)highscore_save(&highscores, HIGHSCORE_PATH);
             highscores_dirty = false;
         }
         if (now - last_save >= AUTOSAVE_MS) {

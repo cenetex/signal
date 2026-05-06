@@ -796,6 +796,11 @@ static void handle_message(const uint8_t* data, int len) {
                 const uint8_t *p = &data[HIGHSCORE_HEADER + i * HIGHSCORE_ENTRY_SIZE];
                 memcpy(scratch[i].callsign, p, 8);
                 scratch[i].credits_earned = read_f32_le(&p[8]);
+                scratch[i].world_id   = read_u32_le(&p[12]);
+                scratch[i].world_seq  = read_u32_le(&p[16]);
+                scratch[i].build_id   = read_u32_le(&p[20]);
+                scratch[i].epoch_tick = read_u64_le(&p[24]);
+                memcpy(scratch[i].killed_by, &p[32], 8);
             }
             net_state.callbacks.on_highscores(scratch, count);
         }

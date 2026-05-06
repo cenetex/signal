@@ -229,6 +229,8 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         src/tests/test_anchor.c
         src/tests/test_station_authority.c
         src/tests/test_chain_log.c
+        src/tests/test_highscore_replay.c
+        server/highscore.c
         src/tests/test_signal_verify.c
         src/tests/test_cross_station_settlement.c
         src/tests/test_sovereign_ledger.c

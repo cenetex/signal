@@ -341,10 +341,17 @@ typedef struct {
     uint8_t death_respawn_station;
     float   death_respawn_fee;
     /* Global leaderboard from server (top-N by credits earned at death).
-     * Populated on join + after every death in MP. SP leaves it empty. */
+     * Populated on join + after every death in MP. SP leaves it empty.
+     * Highscores are projected from chain-log CHAIN_EVT_DEATH events at
+     * server boot; world_id/build_id/killed_by come along for the ride. */
     struct {
-        char  callsign[8];
-        float credits_earned;
+        char     callsign[8];
+        float    credits_earned;
+        uint32_t world_id;
+        uint32_t world_seq;
+        uint32_t build_id;
+        uint64_t epoch_tick;
+        uint8_t  killed_by[8];
     } highscores[10 /* HIGHSCORE_TOP_N */];
     int highscore_count;
     /* Smoothed fog intensity (0..1). Tracks 1 - (hull/max_hull) but

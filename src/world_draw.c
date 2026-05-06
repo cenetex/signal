@@ -1557,6 +1557,18 @@ void draw_npc_mining_beam(const npc_ship_t* npc) {
 }
 
 void draw_npc_ships(void) {
+    /* Scan-target ring: while the inspect snapshot is alive (active scan
+     * or post-release linger) and aimed at an NPC, mark that NPC with a
+     * pulsing green outline. Lets the player keep visual track of the
+     * ship the snapshot pane is describing — especially during the
+     * linger window when scan_active has gone false. */
+    int scan_npc = -1;
+    if (g.inspect_snapshot_timer > 0.0f
+        && g.inspect_snapshot.target_type == INSPECT_TARGET_NPC
+        && g.inspect_snapshot.target_index != 0xFFu) {
+        scan_npc = (int)g.inspect_snapshot.target_index;
+    }
+
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (!g.world.npc_ships[i].active) continue;
         if (!on_screen(g.world.npc_ships[i].ship.pos.x, g.world.npc_ships[i].ship.pos.y, 50.0f)) continue;
@@ -1570,6 +1582,19 @@ void draw_npc_ships(void) {
                 float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)i * 1.5f);
                 draw_segment(tnpc->ship.pos, ta->pos, 0.7f, 0.5f, 0.2f, tp);
             }
+        }
+        if (i == scan_npc) {
+            float pulse = 0.5f + 0.5f * sinf(g.world.time * 6.0f);
+            float r = 22.0f + 1.5f * pulse;
+            float a = 0.65f + 0.20f * pulse;
+            /* Fade with the linger timer so the ring decays in sync
+             * with the panel rather than vanishing abruptly. */
+            float decay = g.inspect_snapshot_timer < 1.0f
+                          ? g.inspect_snapshot_timer : 1.0f;
+            draw_circle_outline(tnpc->ship.pos, r, 28,
+                                0.20f, 0.95f, 0.45f, a * decay);
+            draw_circle_outline(tnpc->ship.pos, r * 1.35f, 28,
+                                0.10f, 0.55f, 0.25f, a * 0.45f * decay);
         }
     }
 }

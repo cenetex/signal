@@ -253,8 +253,13 @@ typedef void (*net_on_inspect_snapshot_fn)(const NetInspectSnapshot *snapshot);
 
 /* Global leaderboard — top-N death runs by credits earned. */
 typedef struct {
-    char  callsign[8];    /* not NUL-terminated if 8 chars */
-    float credits_earned;
+    char     callsign[8];    /* not NUL-terminated if 8 chars */
+    float    credits_earned;
+    uint32_t world_id;       /* low 32 bits of belt_seed (or station-pub-derived for orphans) */
+    uint32_t world_seq;      /* monotonic world id; higher = newer */
+    uint32_t build_id;       /* low 32 bits of build SHA at run time */
+    uint64_t epoch_tick;     /* sim tick at death */
+    uint8_t  killed_by[8];   /* killer callsign, all-zero if unresolved */
 } NetHighscoreEntry;
 typedef void (*net_on_highscores_fn)(const NetHighscoreEntry *entries, int count);
 
