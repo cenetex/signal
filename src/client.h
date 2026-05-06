@@ -439,6 +439,15 @@ typedef struct {
     vec2 nav_pip_pos;
     bool nav_pip_is_blueprint;  /* false = station, true = placed blueprint */
     /* --- Interpolation (multiplayer) --- */
+    vec2 local_player_render_offset; /* visual-only correction smoothing for local MP ship */
+    struct {
+        float packet_interval;
+        float correction_dist;
+        float velocity_error;
+        float max_correction_5s;
+        float window_elapsed;
+        uint32_t samples;
+    } net_motion;
     struct {
         asteroid_t prev[MAX_ASTEROIDS];
         asteroid_t curr[MAX_ASTEROIDS];

@@ -10,6 +10,8 @@
 #include "episode.h"
 
 #define STATION_RING_CORRECTION_SEC 0.35f
+#define NET_MOTION_TELEMETRY_WINDOW_SEC 5.0f
+#define LOCAL_PLAYER_RENDER_OFFSET_MAX 140.0f
 
 static float station_ring_correction[MAX_STATIONS][MAX_ARMS];
 static bool station_ring_have_snapshot[MAX_STATIONS];
@@ -529,8 +531,48 @@ void begin_player_state_batch(void) {
            sizeof(g.player_interp.prev));
     float elapsed = g.player_interp.t * g.player_interp.interval;
     elapsed = clampf(elapsed, 0.03f, 0.15f);
+    g.net_motion.packet_interval = elapsed;
     g.player_interp.interval = lerpf(g.player_interp.interval, elapsed, 0.3f);
     g.player_interp.t = 0.0f;
+}
+
+static void record_local_player_motion_telemetry(float correction_dist,
+                                                 float velocity_error) {
+    g.net_motion.correction_dist = correction_dist;
+    g.net_motion.velocity_error = velocity_error;
+    if (correction_dist > g.net_motion.max_correction_5s)
+        g.net_motion.max_correction_5s = correction_dist;
+    g.net_motion.window_elapsed += g.net_motion.packet_interval;
+    g.net_motion.samples++;
+    if (g.net_motion.window_elapsed < NET_MOTION_TELEMETRY_WINDOW_SEC) return;
+
+    printf("[net-motion] pkt=%.3fs corr=%.1f max5=%.1f velerr=%.1f samples=%u\n",
+           g.net_motion.packet_interval,
+           g.net_motion.correction_dist,
+           g.net_motion.max_correction_5s,
+           g.net_motion.velocity_error,
+           (unsigned)g.net_motion.samples);
+    g.net_motion.max_correction_5s = 0.0f;
+    g.net_motion.window_elapsed = 0.0f;
+    g.net_motion.samples = 0;
+}
+
+static void add_local_player_render_correction(vec2 applied_delta,
+                                               float correction_dist,
+                                               bool docked) {
+    if (docked || correction_dist > 200.0f) {
+        g.local_player_render_offset = v2(0.0f, 0.0f);
+        return;
+    }
+
+    g.local_player_render_offset =
+        v2_add(g.local_player_render_offset, applied_delta);
+    float len = v2_len(g.local_player_render_offset);
+    if (len > LOCAL_PLAYER_RENDER_OFFSET_MAX) {
+        g.local_player_render_offset =
+            v2_scale(g.local_player_render_offset,
+                     LOCAL_PLAYER_RENDER_OFFSET_MAX / len);
+    }
 }
 
 void apply_remote_player_state(const NetPlayerState* state) {
@@ -539,9 +581,14 @@ void apply_remote_player_state(const NetPlayerState* state) {
     if (state->player_id == net_local_id()) {
         /* Reconcile local prediction with server-authoritative position. */
         server_player_t* sp = &g.world.players[state->player_id];
+        vec2 before_pos = sp->ship.pos;
         float dx = state->x - sp->ship.pos.x;
         float dy = state->y - sp->ship.pos.y;
         float dist_sq = dx * dx + dy * dy;
+        float correction_dist = sqrtf(dist_sq);
+        float dvx = state->vx - sp->ship.vel.x;
+        float dvy = state->vy - sp->ship.vel.y;
+        float velocity_error = sqrtf(dvx * dvx + dvy * dvy);
 
         if (dist_sq > 200.0f * 200.0f) {
             sp->ship.pos.x = state->x;
@@ -559,6 +606,10 @@ void apply_remote_player_state(const NetPlayerState* state) {
             sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.2f);
             sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.2f);
         }
+        vec2 applied_delta = v2_sub(before_pos, sp->ship.pos);
+        add_local_player_render_correction(
+            applied_delta, correction_dist, (state->flags & 4) != 0);
+        record_local_player_motion_telemetry(correction_dist, velocity_error);
         sp->ship.angle = lerp_angle(sp->ship.angle, state->angle, 0.3f);
         /* Beam state is server-authoritative for the local player too —
          * the autopilot fires server-side and the client never predicts

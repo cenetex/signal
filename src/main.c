@@ -1741,8 +1741,32 @@ static void render_ui(void) {
 
 /* interpolate_world_for_render: see net_sync.h/c */
 
+static void step_local_player_render_offset(float dt) {
+    if (!g.multiplayer_enabled || g.local_server.active ||
+        g.death_cinematic.active || LOCAL_PLAYER.docked) {
+        g.local_player_render_offset = v2(0.0f, 0.0f);
+        return;
+    }
+
+    float len_sq = v2_len_sq(g.local_player_render_offset);
+    if (len_sq < 0.01f) {
+        g.local_player_render_offset = v2(0.0f, 0.0f);
+        return;
+    }
+
+    /* Decay the visual correction over a few frames. Simulation state stays
+     * corrected; only the rendered ship/camera eases out the packet snap. */
+    float keep = expf(-dt / 0.18f);
+    g.local_player_render_offset =
+        v2_scale(g.local_player_render_offset, keep);
+}
+
 static void render_frame(void) {
     interpolate_world_for_render();
+    float frame_dt = (float)sapp_frame_duration();
+    if (frame_dt <= 0.0f) frame_dt = 1.0f / 60.0f;
+    if (frame_dt > 0.1f) frame_dt = 0.1f;
+    step_local_player_render_offset(frame_dt);
 
     /* Damage vignette back wave — sgl-queued before world geometry so
      * world content draws on top. Front wave is queued later by the HUD
@@ -1759,7 +1783,14 @@ static void render_frame(void) {
         draw_hull_fog_back();
     }
 
+    vec2 saved_ship_pos = LOCAL_PLAYER.ship.pos;
+    bool apply_visual_offset = v2_len_sq(g.local_player_render_offset) > 0.01f;
+    if (apply_visual_offset)
+        LOCAL_PLAYER.ship.pos = v2_add(LOCAL_PLAYER.ship.pos,
+                                       g.local_player_render_offset);
     render_world();
+    if (apply_visual_offset)
+        LOCAL_PLAYER.ship.pos = saved_ship_pos;
     render_ui();
 
     sg_begin_pass(&(sg_pass){
