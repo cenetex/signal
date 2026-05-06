@@ -37,6 +37,7 @@
 #include "client.h"
 #include "manifest.h"
 #include "mining_client.h"
+#include "sim_ai.h"
 #include "sim_asteroid.h"
 
 static void local_server_process_fracture_updates(local_server_t *ls, int player_slot);
@@ -142,6 +143,10 @@ static void mirror_player_always(server_player_t *dst, const server_player_t *sr
     dst->beam_ineffective = src->beam_ineffective;
     dst->beam_start       = src->beam_start;
     dst->beam_end         = src->beam_end;
+    dst->scan_active      = src->scan_active;
+    dst->scan_target_type = src->scan_target_type;
+    dst->scan_target_index= src->scan_target_index;
+    dst->scan_module_index= src->scan_module_index;
     dst->hover_asteroid   = src->hover_asteroid;
     dst->tractor_fragments= src->tractor_fragments;
     dst->nearby_fragments = src->nearby_fragments;
@@ -161,6 +166,78 @@ static void mirror_player_predicted(server_player_t *dst, const server_player_t 
     memcpy(dst->ship.cargo, src->ship.cargo, sizeof(dst->ship.cargo));
 }
 
+static void local_server_copy_inspect_row(NetInspectSnapshotRow *row,
+                                          const cargo_unit_t *unit,
+                                          const cargo_receipt_chain_t *chain) {
+    memset(row, 0, sizeof(*row));
+    if (!unit) return;
+    row->commodity = unit->commodity;
+    row->grade = unit->grade;
+    memcpy(row->cargo_pub, unit->pub, sizeof(row->cargo_pub));
+    if (chain && chain->len > 0) {
+        const cargo_receipt_t *origin = &chain->links[0];
+        const cargo_receipt_t *latest = &chain->links[chain->len - 1];
+        row->chain_len = chain->len;
+        row->flags |= INSPECT_ROW_HAS_RECEIPT;
+        row->event_id = latest->event_id;
+        cargo_receipt_hash(latest, row->receipt_head);
+        memcpy(row->origin_station, origin->authoring_station, sizeof(row->origin_station));
+        memcpy(row->latest_station, latest->authoring_station, sizeof(row->latest_station));
+    }
+}
+
+static void local_server_sync_inspect_snapshot(const local_server_t *ls,
+                                               const server_player_t *src) {
+    NetInspectSnapshot snap;
+    memset(&snap, 0, sizeof(snap));
+    snap.target_index = 0xFFu;
+    snap.module_index = 0xFFu;
+    snap.home_station = 0xFFu;
+    snap.dest_station = 0xFFu;
+
+    if (!src->scan_active || src->scan_target_type == INSPECT_TARGET_NONE) {
+        g.inspect_snapshot = snap;
+        g.inspect_snapshot_timer = 0.0f;
+        return;
+    }
+
+    snap.target_type = (uint8_t)src->scan_target_type;
+    snap.target_index = (src->scan_target_index >= 0)
+        ? (uint8_t)src->scan_target_index : 0xFFu;
+    snap.module_index = (src->scan_module_index >= 0)
+        ? (uint8_t)src->scan_module_index : 0xFFu;
+
+    if (src->scan_target_type == INSPECT_TARGET_NPC &&
+        src->scan_target_index >= 0 &&
+        src->scan_target_index < MAX_NPC_SHIPS) {
+        const npc_ship_t *npc = &ls->world.npc_ships[src->scan_target_index];
+        ship_t *ship = world_npc_ship_for((world_t *)&ls->world, src->scan_target_index);
+        if (npc->active && ship) {
+            snap.role = (uint8_t)npc->role;
+            snap.state = (uint8_t)npc->state;
+            snap.home_station = (npc->home_station >= 0 && npc->home_station < MAX_STATIONS)
+                ? (uint8_t)npc->home_station : 0xFFu;
+            snap.dest_station = (npc->dest_station >= 0 && npc->dest_station < MAX_STATIONS)
+                ? (uint8_t)npc->dest_station : 0xFFu;
+            snap.manifest_count = ship->manifest.units ? ship->manifest.count : 0;
+            snap.row_count = (int)snap.manifest_count;
+            if (snap.row_count > INSPECT_SNAPSHOT_MAX_ROWS)
+                snap.row_count = INSPECT_SNAPSHOT_MAX_ROWS;
+            const ship_receipts_t *rcpts = ship_get_receipts_const(ship);
+            for (int i = 0; i < snap.row_count; i++) {
+                const cargo_receipt_chain_t *chain =
+                    (rcpts && i < rcpts->count) ? &rcpts->chains[i] : NULL;
+                local_server_copy_inspect_row(&snap.rows[i],
+                                              &ship->manifest.units[i],
+                                              chain);
+            }
+        }
+    }
+
+    g.inspect_snapshot = snap;
+    g.inspect_snapshot_timer = 0.60f;
+}
+
 void local_server_sync_to_client(const local_server_t *ls) {
     if (!ls->active) return;
     mirror_whole_world(&ls->world);
@@ -173,6 +250,7 @@ void local_server_sync_to_client(const local_server_t *ls) {
     /* Mirror autopilot path for dotted-line preview. */
     g.autopilot_path_count = nav_get_player_path(
         g.local_player_slot, g.autopilot_path, 12, &g.autopilot_path_current);
+    local_server_sync_inspect_snapshot(ls, src);
     if (g.action_predict_timer <= 0.0f)
         mirror_player_predicted(dst, src);
 }

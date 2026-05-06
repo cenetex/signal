@@ -225,6 +225,70 @@ TEST(test_roundtrip_npcs) {
     ASSERT_EQ_INT((int8_t)p[22], 12);              /* target_asteroid */
 }
 
+TEST(test_roundtrip_inspect_snapshot_npc_manifest_chain) {
+    npc_ship_t npc;
+    memset(&npc, 0, sizeof(npc));
+    npc.active = true;
+    npc.role = NPC_ROLE_HAULER;
+    npc.state = NPC_STATE_TRAVEL_TO_DEST;
+    npc.home_station = 0;
+    npc.dest_station = 1;
+
+    ship_t ship;
+    memset(&ship, 0, sizeof(ship));
+    ASSERT(ship_manifest_bootstrap(&ship));
+
+    cargo_unit_t unit;
+    memset(&unit, 0, sizeof(unit));
+    uint8_t fragment_pub[32] = {0};
+    fragment_pub[31] = 0x42;
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
+                      fragment_pub, 7, &unit));
+
+    cargo_receipt_chain_t chain;
+    memset(&chain, 0, sizeof(chain));
+    chain.len = 2;
+    memcpy(chain.links[0].cargo_pub, unit.pub, 32);
+    memcpy(chain.links[1].cargo_pub, unit.pub, 32);
+    memset(chain.links[0].authoring_station, 0xA1, 32);
+    memset(chain.links[1].authoring_station, 0xB2, 32);
+    chain.links[0].event_id = 7001;
+    chain.links[1].event_id = 7002;
+    ASSERT(ship_manifest_push_with_chain(&ship, &unit, &chain));
+
+    uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
+    int len = serialize_inspect_snapshot_npc(buf, 3, &npc, &ship);
+
+    ASSERT_EQ_INT(buf[0], NET_MSG_INSPECT_SNAPSHOT);
+    ASSERT_EQ_INT(buf[1], INSPECT_TARGET_NPC);
+    ASSERT_EQ_INT(buf[2], 3);
+    ASSERT_EQ_INT(buf[3], 0xFF);
+    ASSERT_EQ_INT(buf[4], NPC_ROLE_HAULER);
+    ASSERT_EQ_INT(buf[5], NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(buf[6], 0);
+    ASSERT_EQ_INT(buf[7], 1);
+    ASSERT_EQ_INT(buf[8], 1);
+    ASSERT_EQ_INT(read_u16_le(&buf[9]), 1);
+    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_ROW);
+
+    uint8_t *p = &buf[INSPECT_SNAPSHOT_HEADER];
+    ASSERT_EQ_INT(p[0], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(p[1], MINING_GRADE_RARE);
+    ASSERT_EQ_INT(p[2], 2);
+    ASSERT(p[3] & INSPECT_ROW_HAS_RECEIPT);
+    uint64_t event_id = 0;
+    for (int i = 0; i < 8; i++) event_id |= ((uint64_t)p[4 + i]) << (8 * i);
+    ASSERT_EQ_INT((int)event_id, 7002);
+    ASSERT(memcmp(&p[12], unit.pub, 32) == 0);
+    uint8_t expected_head[32];
+    cargo_receipt_hash(&chain.links[1], expected_head);
+    ASSERT(memcmp(&p[44], expected_head, 32) == 0);
+    ASSERT(memcmp(&p[76], chain.links[0].authoring_station, 32) == 0);
+    ASSERT(memcmp(&p[108], chain.links[1].authoring_station, 32) == 0);
+
+    ship_cleanup(&ship);
+}
+
 TEST(test_roundtrip_stations) {
     station_t stations[MAX_STATIONS];
     memset(stations, 0, sizeof(stations));
@@ -516,6 +580,7 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_asteroids);
     RUN(test_roundtrip_asteroids_full_includes_inactive_slots);
     RUN(test_roundtrip_npcs);
+    RUN(test_roundtrip_inspect_snapshot_npc_manifest_chain);
     RUN(test_roundtrip_stations);
     RUN(test_station_identity_serializes_module_commodities);
     RUN(test_bug92_station_record_size_matches_buffer);

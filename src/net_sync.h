@@ -35,6 +35,7 @@ void apply_remote_station_ingots(uint8_t station_id,
                                  const NetNamedIngotEntry *entries,
                                  int count);
 void apply_remote_hold_ingots(const NetNamedIngotEntry *entries, int count);
+void apply_remote_inspect_snapshot(const NetInspectSnapshot *snapshot);
 /* Global leaderboard snapshot. */
 void apply_remote_highscores(const NetHighscoreEntry *entries, int count);
 void apply_remote_events(const sim_event_t *events, int count);

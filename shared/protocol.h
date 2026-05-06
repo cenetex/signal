@@ -131,6 +131,18 @@ enum {
                                             * issues its OWN receipt back to the
                                             * player (next BUY_BACK / DELIVER cycle
                                             * grows the chain by one). */
+    NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
+                                            *
+                                            *   [type:1=0x38][target_type:1][target_index:1]
+                                            *   [module_index:1][role:1][state:1]
+                                            *   [home_station:1][dest_station:1]
+                                            *   [row_count:1][manifest_count:u16]
+                                            *     row_count × INSPECT_SNAPSHOT_ROW bytes
+                                            *
+                                            * Rows project a scanned ship's current
+                                            * manifest into cargo hashes + portable
+                                            * receipt-chain heads. This is display
+                                            * telemetry, not authority. */
     NET_MSG_CLAIM_LEGACY_SAVE      = 0x35, /* client -> server. Layer A.4 of #479.
                                             *
                                             *   [type:1=0x35][token_hex_len:1][token_hex:N]
@@ -250,6 +262,35 @@ enum {
  *   [type:1][count:1] + count × NAMED_INGOT_RECORD_SIZE */
 #define STATION_INGOTS_HEADER 3
 #define HOLD_INGOTS_HEADER    2
+
+/* NET_MSG_INSPECT_SNAPSHOT wire layout:
+ *   header:
+ *     [type:1][target_type:1][target_index:1][module_index:1]
+ *     [role:1][state:1][home_station:1][dest_station:1]
+ *     [row_count:1][manifest_count:u16]
+ *   row:
+ *     [commodity:1][grade:1][chain_len:1][flags:1][event_id:u64]
+ *     [cargo_pub:32][receipt_head:32][origin_station_pub:32]
+ *     [latest_station_pub:32]
+ *
+ * target_type mirrors server_player_t.scan_target_type:
+ *   0 none, 1 station/module, 2 NPC, 3 player.
+ * target_index/module_index/home_station/dest_station use 0xFF as
+ * unknown/none. flags bit0 = row has at least one receipt link. */
+enum {
+    INSPECT_TARGET_NONE    = 0,
+    INSPECT_TARGET_STATION = 1,
+    INSPECT_TARGET_NPC     = 2,
+    INSPECT_TARGET_PLAYER  = 3,
+
+    INSPECT_SNAPSHOT_MAX_ROWS = 8,
+    INSPECT_SNAPSHOT_HEADER   = 11,
+    INSPECT_SNAPSHOT_ROW      = 140,
+    INSPECT_ROW_HAS_RECEIPT   = 1 << 0,
+};
+
+#define INSPECT_SNAPSHOT_MAX_SIZE \
+    (INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_MAX_ROWS * INSPECT_SNAPSHOT_ROW)
 
 /* Client-hashed fracture window */
 #define FRACTURE_CHALLENGE_BURST_CAP 50

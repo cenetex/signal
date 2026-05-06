@@ -9,6 +9,7 @@
 #define NET_PROTOCOL_H
 
 #include "game_sim.h"
+#include "manifest.h"
 #include "sim_nav.h"
 #include "protocol.h"   /* shared/protocol.h — protocol enums & constants */
 
@@ -49,6 +50,11 @@ static inline uint32_t read_u32_le(const uint8_t *buf) {
          | ((uint32_t)buf[1] << 8)
          | ((uint32_t)buf[2] << 16)
          | ((uint32_t)buf[3] << 24);
+}
+
+static inline void write_u64_le(uint8_t *buf, uint64_t v) {
+    for (int i = 0; i < 8; i++)
+        buf[i] = (uint8_t)(v >> (8 * i));
 }
 
 static inline float read_f32_le(const uint8_t *buf) {
@@ -379,6 +385,73 @@ static inline int serialize_hold_ingots(uint8_t *buf, const ship_t *ship) {
     }
     buf[1] = (uint8_t)n;
     return HOLD_INGOTS_HEADER + n * NAMED_INGOT_RECORD_SIZE;
+}
+
+/* Laser/scan inspection snapshot. The target-only helper is used for
+ * station/player scans so clients can still mirror authoritative scan
+ * metadata even when there is no manifest to project. */
+static inline int serialize_inspect_snapshot_target(uint8_t *buf,
+                                                     int target_type,
+                                                     int target_index,
+                                                     int module_index) {
+    memset(buf, 0, INSPECT_SNAPSHOT_HEADER);
+    buf[0] = NET_MSG_INSPECT_SNAPSHOT;
+    buf[1] = (target_type > 0) ? (uint8_t)target_type : (uint8_t)INSPECT_TARGET_NONE;
+    buf[2] = (target_index >= 0) ? (uint8_t)target_index : 0xFFu;
+    buf[3] = (module_index >= 0) ? (uint8_t)module_index : 0xFFu;
+    buf[6] = 0xFFu; /* home_station */
+    buf[7] = 0xFFu; /* dest_station */
+    write_u16_le(&buf[9], 0);
+    return INSPECT_SNAPSHOT_HEADER;
+}
+
+static inline int serialize_inspect_snapshot_npc(uint8_t *buf,
+                                                  uint8_t target_index,
+                                                  const npc_ship_t *npc,
+                                                  const ship_t *ship) {
+    if (!npc || !npc->active || !ship)
+        return serialize_inspect_snapshot_target(buf, INSPECT_TARGET_NONE, -1, -1);
+
+    (void)serialize_inspect_snapshot_target(buf, INSPECT_TARGET_NPC,
+                                            (int)target_index, -1);
+    buf[4] = (uint8_t)npc->role;
+    buf[5] = (uint8_t)npc->state;
+    buf[6] = (npc->home_station >= 0 && npc->home_station < MAX_STATIONS)
+        ? (uint8_t)npc->home_station : 0xFFu;
+    buf[7] = (npc->dest_station >= 0 && npc->dest_station < MAX_STATIONS)
+        ? (uint8_t)npc->dest_station : 0xFFu;
+
+    uint16_t manifest_count = ship->manifest.units ? ship->manifest.count : 0;
+    int row_count = manifest_count;
+    if (row_count > INSPECT_SNAPSHOT_MAX_ROWS) row_count = INSPECT_SNAPSHOT_MAX_ROWS;
+    buf[8] = (uint8_t)row_count;
+    write_u16_le(&buf[9], manifest_count);
+
+    const ship_receipts_t *rcpts = ship_get_receipts_const(ship);
+    for (int i = 0; i < row_count; i++) {
+        const cargo_unit_t *u = &ship->manifest.units[i];
+        uint8_t *p = &buf[INSPECT_SNAPSHOT_HEADER + i * INSPECT_SNAPSHOT_ROW];
+        memset(p, 0, INSPECT_SNAPSHOT_ROW);
+        p[0] = u->commodity;
+        p[1] = u->grade;
+        memcpy(&p[12], u->pub, 32);
+
+        if (rcpts && i < rcpts->count) {
+            const cargo_receipt_chain_t *chain = &rcpts->chains[i];
+            if (chain->len > 0) {
+                const cargo_receipt_t *origin = &chain->links[0];
+                const cargo_receipt_t *latest = &chain->links[chain->len - 1];
+                p[2] = chain->len;
+                p[3] |= INSPECT_ROW_HAS_RECEIPT;
+                write_u64_le(&p[4], latest->event_id);
+                cargo_receipt_hash(latest, &p[44]);
+                memcpy(&p[76], origin->authoring_station, 32);
+                memcpy(&p[108], latest->authoring_station, 32);
+            }
+        }
+    }
+
+    return INSPECT_SNAPSHOT_HEADER + row_count * INSPECT_SNAPSHOT_ROW;
 }
 
 /* Signal channel (#316) snapshot — the client dedupes by id so this

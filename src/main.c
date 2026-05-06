@@ -117,6 +117,12 @@ static void reset_world(void) {
     g.target_module = -1;
     g.inspect_station = -1;
     g.inspect_module = -1;
+    memset(&g.inspect_snapshot, 0, sizeof(g.inspect_snapshot));
+    g.inspect_snapshot.target_index = 0xFFu;
+    g.inspect_snapshot.module_index = 0xFFu;
+    g.inspect_snapshot.home_station = 0xFFu;
+    g.inspect_snapshot.dest_station = 0xFFu;
+    g.inspect_snapshot_timer = 0.0f;
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
     g.asteroid_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
@@ -839,6 +845,8 @@ static void sim_step(float dt) {
         g.commission_timer = fmaxf(0.0f, g.commission_timer - dt);
     if (g.hail_timer > 0.0f)
         g.hail_timer = fmaxf(0.0f, g.hail_timer - dt);
+    if (g.inspect_snapshot_timer > 0.0f)
+        g.inspect_snapshot_timer = fmaxf(0.0f, g.inspect_snapshot_timer - dt);
     if (g.hail_ping_timer > 0.0f) {
         g.hail_ping_timer += dt;
         if (g.hail_ping_timer > 8.00f) g.hail_ping_timer = 0.0f; /* HAIL_PING_LIFECYCLE */
@@ -1189,6 +1197,7 @@ static void init(void) {
             cbs.on_player_manifest = apply_remote_player_manifest;
             cbs.on_station_ingots = apply_remote_station_ingots;
             cbs.on_hold_ingots = apply_remote_hold_ingots;
+            cbs.on_inspect_snapshot = apply_remote_inspect_snapshot;
             cbs.on_highscores = apply_remote_highscores;
             /* Layer A.2 of #479 — hand the persistent pubkey to net.c
              * BEFORE net_init so the first WebSocket on_open already

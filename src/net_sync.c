@@ -255,6 +255,30 @@ void apply_remote_hold_ingots(const NetNamedIngotEntry *entries, int count) {
         g.remote_hold_named_ingots[g.remote_hold_named_ingot_count++] = entries[i];
 }
 
+void apply_remote_inspect_snapshot(const NetInspectSnapshot *snapshot) {
+    if (!snapshot) return;
+    g.inspect_snapshot = *snapshot;
+    g.inspect_snapshot_timer =
+        (snapshot->target_type == INSPECT_TARGET_NONE) ? 0.0f : 0.60f;
+
+    if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
+    server_player_t *sp = &g.world.players[g.local_player_slot];
+    if (snapshot->target_type == INSPECT_TARGET_NONE) {
+        sp->scan_active = false;
+        sp->scan_target_type = 0;
+        sp->scan_target_index = -1;
+        sp->scan_module_index = -1;
+        return;
+    }
+
+    sp->scan_active = true;
+    sp->scan_target_type = (int)snapshot->target_type;
+    sp->scan_target_index = (snapshot->target_index == 0xFFu)
+        ? -1 : (int)snapshot->target_index;
+    sp->scan_module_index = (snapshot->module_index == 0xFFu)
+        ? -1 : (int)snapshot->module_index;
+}
+
 void apply_remote_highscores(const NetHighscoreEntry *entries, int count) {
     if (count < 0) count = 0;
     int cap = (int)(sizeof(g.highscores) / sizeof(g.highscores[0]));

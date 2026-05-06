@@ -397,6 +397,8 @@ typedef struct {
     int target_module;       /* module index within station, -1 = none */
     int inspect_station;     /* module info pane: station index, -1 = closed */
     int inspect_module;      /* module info pane: module index */
+    NetInspectSnapshot inspect_snapshot;
+    float inspect_snapshot_timer;
     /* --- Hail overlay --- */
     float hail_timer;            /* countdown for hail display */
     char hail_station[64];       /* station name */

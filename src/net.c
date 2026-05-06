@@ -853,6 +853,43 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_INSPECT_SNAPSHOT:
+        if (len >= INSPECT_SNAPSHOT_HEADER && net_state.callbacks.on_inspect_snapshot) {
+            int wire_count = data[8];
+            int expected = INSPECT_SNAPSHOT_HEADER + wire_count * INSPECT_SNAPSHOT_ROW;
+            if (len < expected) break;
+            if (wire_count > INSPECT_SNAPSHOT_MAX_ROWS)
+                wire_count = INSPECT_SNAPSHOT_MAX_ROWS;
+
+            NetInspectSnapshot snap;
+            memset(&snap, 0, sizeof(snap));
+            snap.target_type = data[1];
+            snap.target_index = data[2];
+            snap.module_index = data[3];
+            snap.role = data[4];
+            snap.state = data[5];
+            snap.home_station = data[6];
+            snap.dest_station = data[7];
+            snap.row_count = wire_count;
+            snap.manifest_count = read_u16_le(&data[9]);
+
+            for (int i = 0; i < wire_count; i++) {
+                const uint8_t *p = &data[INSPECT_SNAPSHOT_HEADER + i * INSPECT_SNAPSHOT_ROW];
+                NetInspectSnapshotRow *row = &snap.rows[i];
+                row->commodity = p[0];
+                row->grade = p[1];
+                row->chain_len = p[2];
+                row->flags = p[3];
+                row->event_id = read_u64_le(&p[4]);
+                memcpy(row->cargo_pub, &p[12], 32);
+                memcpy(row->receipt_head, &p[44], 32);
+                memcpy(row->origin_station, &p[76], 32);
+                memcpy(row->latest_station, &p[108], 32);
+            }
+            net_state.callbacks.on_inspect_snapshot(&snap);
+        }
+        break;
+
     case NET_MSG_SIGNAL_CHANNEL:
         if (len >= 3 && net_state.callbacks.on_signal_channel) {
             int count = (int)(data[1] | ((uint16_t)data[2] << 8));

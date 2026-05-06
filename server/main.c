@@ -11,6 +11,7 @@
 #include "mining.h"  /* mining_render_callsign for chain log copy */
 #include "net_protocol.h"
 #include "signal_crypto.h"
+#include "sim_ai.h"
 #include "sim_asteroid.h"
 #include "chain_log.h"  /* signed event emission (#479 C) */
 #include "cargo_receipt_issue.h"  /* portable cargo receipts (#479 D) */
@@ -1894,6 +1895,24 @@ static int send_player_ship(uint8_t *buf, uint8_t id, const server_player_t *sp)
     return serialize_player_ship_bal(buf, id, sp, player_station_balance(sp));
 }
 
+static int send_inspect_snapshot(uint8_t *buf, const server_player_t *sp) {
+    if (!sp || !sp->scan_active || sp->scan_target_type == INSPECT_TARGET_NONE)
+        return serialize_inspect_snapshot_target(buf, INSPECT_TARGET_NONE, -1, -1);
+
+    if (sp->scan_target_type == INSPECT_TARGET_NPC &&
+        sp->scan_target_index >= 0 &&
+        sp->scan_target_index < MAX_NPC_SHIPS) {
+        const npc_ship_t *npc = &world.npc_ships[sp->scan_target_index];
+        ship_t *ship = world_npc_ship_for(&world, sp->scan_target_index);
+        return serialize_inspect_snapshot_npc(buf, (uint8_t)sp->scan_target_index,
+                                              npc, ship);
+    }
+
+    return serialize_inspect_snapshot_target(buf, sp->scan_target_type,
+                                             sp->scan_target_index,
+                                             sp->scan_module_index);
+}
+
 static void broadcast_ship_states(void) {
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!world.players[i].connected || !world.players[i].conn) continue;
@@ -1919,6 +1938,10 @@ static void broadcast_ship_states(void) {
                       + COMMODITY_COUNT * MINING_GRADE_COUNT * PLAYER_MANIFEST_ENTRY];
         int pmlen = serialize_player_manifest(pmbuf, &world.players[i].ship);
         ws_send(world.players[i].conn, pmbuf, (size_t)pmlen);
+
+        uint8_t ibuf[INSPECT_SNAPSHOT_MAX_SIZE];
+        int ilen = send_inspect_snapshot(ibuf, &world.players[i]);
+        ws_send(world.players[i].conn, ibuf, (size_t)ilen);
     }
 
     if (station_econ_dirty) {

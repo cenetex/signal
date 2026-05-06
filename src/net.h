@@ -218,6 +218,37 @@ typedef void (*net_on_station_ingots_fn)(uint8_t station_id,
 typedef void (*net_on_hold_ingots_fn)(const NetNamedIngotEntry *entries,
                                       int count);
 
+/* Laser/scan inspect snapshot. target_type mirrors the scan target
+ * values in server_player_t: 0 none, 1 station/module, 2 NPC, 3 player.
+ * For NPC targets, rows project the scanned ship manifest into
+ * cargo-unit identity and portable receipt-chain heads. */
+typedef struct {
+    uint8_t  commodity;
+    uint8_t  grade;
+    uint8_t  chain_len;
+    uint8_t  flags;
+    uint64_t event_id;
+    uint8_t  cargo_pub[32];
+    uint8_t  receipt_head[32];
+    uint8_t  origin_station[32];
+    uint8_t  latest_station[32];
+} NetInspectSnapshotRow;
+
+typedef struct {
+    uint8_t  target_type;
+    uint8_t  target_index;
+    uint8_t  module_index;     /* 0xFF = none */
+    uint8_t  role;             /* npc_role_t when target_type == NPC */
+    uint8_t  state;            /* npc_state_t when target_type == NPC */
+    uint8_t  home_station;     /* 0xFF = unknown */
+    uint8_t  dest_station;     /* 0xFF = unknown */
+    uint16_t manifest_count;
+    int      row_count;
+    NetInspectSnapshotRow rows[INSPECT_SNAPSHOT_MAX_ROWS];
+} NetInspectSnapshot;
+
+typedef void (*net_on_inspect_snapshot_fn)(const NetInspectSnapshot *snapshot);
+
 /* Global leaderboard — top-N death runs by credits earned. */
 typedef struct {
     char  callsign[8];    /* not NUL-terminated if 8 chars */
@@ -252,6 +283,7 @@ typedef struct {
     net_on_player_manifest_fn  on_player_manifest;
     net_on_station_ingots_fn   on_station_ingots;
     net_on_hold_ingots_fn      on_hold_ingots;
+    net_on_inspect_snapshot_fn on_inspect_snapshot;
     net_on_highscores_fn       on_highscores;
 } NetCallbacks;
 

@@ -484,6 +484,138 @@ static void hud_draw_module_inspect_pane(float screen_w) {
     sdtx_puts("[E] close");
 }
 
+static const char *hud_npc_role_label(uint8_t role) {
+    switch ((npc_role_t)role) {
+    case NPC_ROLE_MINER:  return "miner";
+    case NPC_ROLE_HAULER: return "hauler";
+    case NPC_ROLE_TOW:    return "tow";
+    default: return "npc";
+    }
+}
+
+static const char *hud_npc_state_label(uint8_t state) {
+    switch ((npc_state_t)state) {
+    case NPC_STATE_IDLE:               return "idle";
+    case NPC_STATE_TRAVEL_TO_ASTEROID: return "to rock";
+    case NPC_STATE_MINING:             return "mining";
+    case NPC_STATE_RETURN_TO_STATION:  return "return";
+    case NPC_STATE_DOCKED:             return "docked";
+    case NPC_STATE_TRAVEL_TO_DEST:     return "to dest";
+    case NPC_STATE_UNLOADING:          return "unload";
+    default: return "unknown";
+    }
+}
+
+static const char *hud_grade_short_label(uint8_t grade) {
+    if (grade == (uint8_t)MINING_GRADE_COMMISSIONED) return "comm";
+    return mining_grade_label((mining_grade_t)grade);
+}
+
+static bool hash32_is_zero(const uint8_t hash[32]) {
+    for (int i = 0; i < 32; i++) {
+        if (hash[i] != 0) return false;
+    }
+    return true;
+}
+
+static void hud_hash_short_label(const uint8_t hash[32], char out[8]) {
+    if (hash32_is_zero(hash)) {
+        snprintf(out, 8, "-------");
+        return;
+    }
+    mining_callsign_from_pubkey(hash, out);
+}
+
+static void hud_cargo_label(const uint8_t pub[32], char out[12]) {
+    if (hash32_is_zero(pub)) {
+        snprintf(out, 12, "unkeyed");
+        return;
+    }
+    mining_render_callsign(pub, out);
+}
+
+static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
+    if (g.inspect_snapshot_timer <= 0.0f) return;
+    if (LOCAL_PLAYER.docked) return;
+    if (!LOCAL_PLAYER.scan_active) return;
+    const NetInspectSnapshot *snap = &g.inspect_snapshot;
+    if (snap->target_type != INSPECT_TARGET_NPC) return;
+
+    float px = fmaxf(16.0f, screen_w - 360.0f);
+    float py = (screen_h < 520.0f) ? 76.0f : 92.0f;
+    float cell = 8.0f;
+    sdtx_canvas(screen_w, screen_h);
+    sdtx_origin(0.0f, 0.0f);
+
+    int target_idx = (snap->target_index == 0xFFu) ? -1 : (int)snap->target_index;
+    sdtx_pos(px / cell, py / cell);
+    sdtx_color3b(PAL_ORE_AMBER);
+    sdtx_printf("[ %s CHAIN %02d ]", hud_npc_role_label(snap->role), target_idx);
+
+    sdtx_pos(px / cell, (py + 14.0f) / cell);
+    sdtx_color3b(PAL_INSPECT_STATION);
+    const char *home = (snap->home_station < MAX_STATIONS)
+        ? g.world.stations[snap->home_station].name : "?";
+    const char *dest = (snap->dest_station < MAX_STATIONS)
+        ? g.world.stations[snap->dest_station].name : "?";
+    sdtx_printf("%s  %.12s > %.12s",
+                hud_npc_state_label(snap->state), home, dest);
+
+    sdtx_pos(px / cell, (py + 28.0f) / cell);
+    sdtx_color3b(PAL_TEXT_GREY);
+    sdtx_printf("manifest %u unit%s",
+                (unsigned)snap->manifest_count,
+                snap->manifest_count == 1 ? "" : "s");
+
+    if (snap->manifest_count == 0) {
+        sdtx_pos(px / cell, (py + 44.0f) / cell);
+        sdtx_color3b(PAL_TEXT_GREY);
+        sdtx_puts("no cargo in custody");
+        return;
+    }
+
+    int max_rows = (screen_h < 520.0f) ? 4 : 6;
+    int rows = snap->row_count;
+    if (rows > max_rows) rows = max_rows;
+    for (int i = 0; i < rows; i++) {
+        const NetInspectSnapshotRow *row = &snap->rows[i];
+        char cargo[12], head[8], origin[8], latest[8];
+        hud_cargo_label(row->cargo_pub, cargo);
+        hud_hash_short_label(row->receipt_head, head);
+        hud_hash_short_label(row->origin_station, origin);
+        hud_hash_short_label(row->latest_station, latest);
+
+        uint8_t rr, gg, bb;
+        mining_grade_rgb((mining_grade_t)row->grade, &rr, &gg, &bb);
+        float y = py + 48.0f + (float)i * 26.0f;
+        sdtx_pos(px / cell, y / cell);
+        sdtx_color4b(rr, gg, bb, 235);
+        sdtx_printf("%s %-4s %-9s chain %u",
+                    commodity_code((commodity_t)row->commodity),
+                    hud_grade_short_label(row->grade),
+                    cargo,
+                    (unsigned)row->chain_len);
+
+        sdtx_pos(px / cell, (y + 12.0f) / cell);
+        sdtx_color3b(PAL_TEXT_GREY);
+        if (row->flags & INSPECT_ROW_HAS_RECEIPT) {
+            sdtx_printf("  %s>%s  head %s  ev %llu",
+                        origin, latest, head,
+                        (unsigned long long)row->event_id);
+        } else {
+            sdtx_puts("  no portable receipt yet");
+        }
+    }
+
+    if (snap->manifest_count > (uint16_t)rows) {
+        sdtx_pos(px / cell, (py + 48.0f + (float)rows * 26.0f) / cell);
+        sdtx_color3b(PAL_TEXT_GREY);
+        sdtx_printf("+%u more unit%s",
+                    (unsigned)(snap->manifest_count - (uint16_t)rows),
+                    (snap->manifest_count - (uint16_t)rows) == 1 ? "" : "s");
+    }
+}
+
 static void hud_draw_signal_lost_warning(float screen_w, float screen_h, float sig_quality) {
     if (LOCAL_PLAYER.docked) return;
     if (sig_quality >= 0.01f) return;
@@ -645,6 +777,7 @@ static void hud_draw_shared_panels(float screen_w, float screen_h, float sig_qua
     hud_draw_nav_label(screen_w, screen_h);
     hud_draw_hail_sigil(screen_w, screen_h);
     hud_draw_module_inspect_pane(screen_w);
+    hud_draw_inspect_snapshot_pane(screen_w, screen_h);
     hud_draw_signal_lost_warning(screen_w, screen_h, sig_quality);
     hud_draw_hit_indicator(screen_w, screen_h);
     hud_draw_kill_feed(screen_w, screen_h);
