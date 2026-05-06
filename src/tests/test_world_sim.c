@@ -75,7 +75,7 @@ TEST(test_hail_responds_while_docked) {
     ASSERT(ev->hail_response.credits >= 0.0f);
 }
 
-TEST(test_hail_chirps_nearest_station_when_out_of_range) {
+TEST(test_hail_responds_to_station_signal_outside_ship_comm_range) {
     WORLD_DECL;
     world_reset(&w);
     server_player_t *sp = &w.players[0];
@@ -92,7 +92,29 @@ TEST(test_hail_chirps_nearest_station_when_out_of_range) {
     const sim_event_t *ev = find_hail_response_event(&w);
     ASSERT(ev != NULL);
     ASSERT_EQ_INT(ev->hail_response.station, 0);
-    ASSERT(ev->hail_response.credits < 0.0f);
+    ASSERT(ev->hail_response.credits >= 0.0f);
+}
+
+TEST(test_hail_responds_at_helios_dock_even_with_short_ship_comm) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x45, sizeof(sp->session_token));
+    sp->docked = false;
+    sp->ship.comm_range = 150.0f;
+    sp->ship.pos = station_dock_lane_pos(&w.stations[2], 1, 0,
+        STATION_RING_RADIUS[1] + 55.0f);
+    sp->input.hail = true;
+
+    world_sim_step(&w, SIM_DT);
+
+    const sim_event_t *ev = find_hail_response_event(&w);
+    ASSERT(ev != NULL);
+    ASSERT_EQ_INT(ev->hail_response.station, 2);
+    ASSERT(ev->hail_response.credits >= 0.0f);
 }
 
 TEST(test_hail_reports_no_station_in_range) {
@@ -1917,7 +1939,8 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_spawns_asteroids);
     RUN(test_world_reset_spawns_npcs);
     RUN(test_hail_responds_while_docked);
-    RUN(test_hail_chirps_nearest_station_when_out_of_range);
+    RUN(test_hail_responds_to_station_signal_outside_ship_comm_range);
+    RUN(test_hail_responds_at_helios_dock_even_with_short_ship_comm);
     RUN(test_hail_reports_no_station_in_range);
     RUN(test_dead_hauler_auto_respawns);
     RUN(test_hauler_preserves_cargo_identity_in_transit);

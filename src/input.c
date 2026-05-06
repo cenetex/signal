@@ -861,9 +861,8 @@ static void sample_music(void) {
     }
 }
 
-/* H: hail ping. Visual ring fires locally so the press feels instant;
- * server decides which (if any) station to respond with based on dock
- * state and ship.comm_range. */
+/* H: hail/scan ping. Visual ring fires locally so the press feels instant;
+ * server decides which station or local objects respond. */
 static void sample_hail(input_intent_t *intent) {
     if (!is_key_pressed(SAPP_KEYCODE_H)) return;
     intent->hail = true;

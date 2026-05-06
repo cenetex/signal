@@ -2852,87 +2852,77 @@ static int hail_find_or_issue_contract(world_t *w, server_player_t *sp, int issu
     return slot;
 }
 
+static void emit_hail_miss(world_t *w, server_player_t *sp) {
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_HAIL_RESPONSE,
+        .player_id = sp->id,
+        .hail_response = { .station = -1, .credits = -1.0f, .contract_index = -1 },
+    });
+}
+
+static void emit_station_hail_response(world_t *w, server_player_t *sp, int station_idx) {
+    if (station_idx < 0 || station_idx >= MAX_STATIONS ||
+        !station_is_active(&w->stations[station_idx])) {
+        emit_hail_miss(w, sp);
+        return;
+    }
+
+    float balance = sp->pubkey_set
+        ? ledger_balance_by_pubkey(&w->stations[station_idx], sp->pubkey)
+        : ledger_balance(&w->stations[station_idx], sp->session_token);
+    int contract_idx = hail_find_or_issue_contract(w, sp, station_idx);
+    emit_event(w, (sim_event_t){
+        .type = SIM_EVENT_HAIL_RESPONSE,
+        .player_id = sp->id,
+        .hail_response = { .station = station_idx, .credits = balance, .contract_index = contract_idx },
+    });
+}
+
+static int find_nearest_hail_station(const world_t *w, const server_player_t *sp) {
+    if (sp->in_dock_range && sp->nearby_station >= 0 &&
+        sp->nearby_station < MAX_STATIONS &&
+        station_is_active(&w->stations[sp->nearby_station])) {
+        return sp->nearby_station;
+    }
+
+    float comm = (sp->ship.comm_range > 0.0f) ? sp->ship.comm_range : 1500.0f;
+    int best_station = -1;
+    float best_d = 1e18f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_is_active(st)) continue;
+
+        float scan = st->signal_range;
+        float comm_fallback = comm * 2.0f;
+        if (scan < comm_fallback) scan = comm_fallback;
+        float d_sq = v2_dist_sq(sp->ship.pos, st->pos);
+        if (d_sq > scan * scan) continue;
+        if (d_sq < best_d) {
+            best_d = d_sq;
+            best_station = s;
+        }
+    }
+    return best_station;
+}
+
 static void handle_hail(world_t *w, server_player_t *sp) {
     /* Docked hail: the station the player is sitting in should answer
      * immediately. This keeps H from feeling dead on the station screen
      * and uses the same response/contract path as an undocked ping. */
     if (sp->docked) {
-        int docked_station = sp->current_station;
-        if (docked_station >= 0 && docked_station < MAX_STATIONS &&
-            station_is_active(&w->stations[docked_station])) {
-            float balance = sp->pubkey_set
-                ? ledger_balance_by_pubkey(&w->stations[docked_station], sp->pubkey)
-                : ledger_balance(&w->stations[docked_station], sp->session_token);
-            int contract_idx = hail_find_or_issue_contract(w, sp, docked_station);
-            emit_event(w, (sim_event_t){
-                .type = SIM_EVENT_HAIL_RESPONSE,
-                .player_id = sp->id,
-                .hail_response = { .station = docked_station, .credits = balance, .contract_index = contract_idx },
-            });
-        } else {
-            emit_event(w, (sim_event_t){
-                .type = SIM_EVENT_HAIL_RESPONSE,
-                .player_id = sp->id,
-                .hail_response = { .station = -1, .credits = -1.0f, .contract_index = -1 },
-            });
-        }
+        emit_station_hail_response(w, sp, sp->current_station);
         return;
     }
 
-    /* Ship-based ping: the player is the transmitter. Stations inside
-     * comm_range respond normally; stations within 2× comm_range chirp
-     * back "out of range" with a bearing so the player knows which way
-     * to fly. If nothing is even in chirp range, the client gets an
-     * explicit miss notice instead of a dead keypress.
-     *
-     * credits == -1.0f is the out-of-range sentinel on the wire; the
-     * client renders a short "too far -- nearest: <name>" notice
-     * instead of the full hail UI. */
-    float comm = (sp->ship.comm_range > 0.0f) ? sp->ship.comm_range : 1500.0f;
-    float comm_sq = comm * comm;
-    float chirp_sq = (2.0f * comm) * (2.0f * comm);
-
-    int nearest_in = -1;    float best_in = 1e18f;
-    int nearest_chirp = -1; float best_chirp = 1e18f;
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        station_t *st = &w->stations[s];
-        if (!station_is_active(st)) continue;
-        float d_sq = v2_dist_sq(sp->ship.pos, st->pos);
-        if (d_sq <= comm_sq) {
-            if (d_sq < best_in) { best_in = d_sq; nearest_in = s; }
-        } else if (d_sq <= chirp_sq) {
-            if (d_sq < best_chirp) { best_chirp = d_sq; nearest_chirp = s; }
-        }
-    }
-
-    if (nearest_in >= 0) {
-        /* Hail-credits display must read the same identity the player's
-         * earnings landed on — pubkey when registered, else session token. */
-        float balance = sp->pubkey_set
-            ? ledger_balance_by_pubkey(&w->stations[nearest_in], sp->pubkey)
-            : ledger_balance(&w->stations[nearest_in], sp->session_token);
-        int contract_idx = hail_find_or_issue_contract(w, sp, nearest_in);
-        emit_event(w, (sim_event_t){
-            .type = SIM_EVENT_HAIL_RESPONSE,
-            .player_id = sp->id,
-            .hail_response = { .station = nearest_in, .credits = balance, .contract_index = contract_idx },
-        });
-    } else if (nearest_chirp >= 0) {
-        emit_event(w, (sim_event_t){
-            .type = SIM_EVENT_HAIL_RESPONSE,
-            .player_id = sp->id,
-            .hail_response = { .station = nearest_chirp, .credits = -1.0f, .contract_index = -1 },
-        });
-    } else {
-        /* No station even in chirp range: send an explicit miss so H never
-         * feels broken. Remote clients receive station=255; local clients see
-         * the negative station index directly. */
-        emit_event(w, (sim_event_t){
-            .type = SIM_EVENT_HAIL_RESPONSE,
-            .player_id = sp->id,
-            .hail_response = { .station = -1, .credits = -1.0f, .contract_index = -1 },
-        });
-    }
+    /* Hail is now a scan/contact action, not a binary comms-distance
+     * check. Near-dock players should always get the station they are
+     * interacting with; otherwise the closest active station in signal
+     * coverage answers with the same full response. */
+    int station_idx = find_nearest_hail_station(w, sp);
+    if (station_idx >= 0)
+        emit_station_hail_response(w, sp, station_idx);
+    else
+        emit_hail_miss(w, sp);
 }
 
 static void step_station_interaction_system(world_t *w, server_player_t *sp, const input_intent_t *intent) {

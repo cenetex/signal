@@ -209,7 +209,7 @@ typedef struct {
     uint8_t towed_count;
     int16_t towed_scaffold;       /* scaffold index being towed, -1 = none */
     bool tractor_active;          /* true while R held — drives fragment collection */
-    float comm_range;             /* hail ping range (H pings stations within this). 0 = use default. */
+    float comm_range;             /* local hail scan visual/tag range. 0 = use default. */
     /* Tech tree: bit per module type. Set when the player orders a
      * scaffold of that type. Drives the order menu unlock check. */
     uint32_t unlocked_modules;
@@ -695,7 +695,7 @@ typedef struct {
      * as a legacy common row". */
     mining_grade_t buy_grade;
     int mining_target_hint;  /* client's hover_asteroid, -1 = none */
-    bool hail;               /* collect pending credits from nearby station */
+    bool hail;               /* hail/scan nearby signal contacts */
     bool tractor_hold;       /* R held — tractor active this frame */
     bool release_tow;        /* R tapped — drop all towed fragments */
     bool reset;

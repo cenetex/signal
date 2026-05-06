@@ -673,11 +673,7 @@ static void sim_on_hail_response(const sim_event_t *ev) {
     if (!ev_is_local(ev)) return;
     int hs = ev->hail_response.station;
     if (hs < 0 || hs >= MAX_STATIONS) {
-        set_notice("No station in range to hail.");
-        return;
-    }
-    if (ev->hail_response.credits < 0.0f) {
-        set_notice("Too far -- nearest: %s", g.world.stations[hs].name);
+        set_notice("No station signal found.");
         return;
     }
 
@@ -692,7 +688,8 @@ static void sim_on_hail_response(const sim_event_t *ev) {
     } else {
         snprintf(g.hail_message, sizeof(g.hail_message), "%s", msg);
     }
-    g.hail_credits = ev->hail_response.credits;
+    float shown_credits = ev->hail_response.credits >= 0.0f ? ev->hail_response.credits : 0.0f;
+    g.hail_credits = shown_credits;
     g.hail_station_index = hs;
     g.hail_timer = 6.0f;
     if (g.hail_credits > 0.5f) audio_play_sale(&g.audio);
@@ -703,9 +700,13 @@ static void sim_on_hail_response(const sim_event_t *ev) {
      * overlay carried lands there. */
     const char *unit = g.world.stations[hs].currency_name;
     if (!unit[0]) unit = "credits";
-    set_notice("%s: %s  (balance %d %s)",
-               g.hail_station, g.hail_message,
-               (int)lroundf(ev->hail_response.credits), unit);
+    if (ev->hail_response.credits >= 0.0f) {
+        set_notice("%s: %s  (balance %d %s)",
+                   g.hail_station, g.hail_message,
+                   (int)lroundf(shown_credits), unit);
+    } else {
+        set_notice("%s: %s", g.hail_station, g.hail_message);
+    }
     onboarding_mark_hailed();
 
 }

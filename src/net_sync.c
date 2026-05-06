@@ -488,13 +488,7 @@ void apply_remote_signal_channel(const NetSignalChannelMsg *msgs, int count) {
 
 void apply_remote_hail_response(uint8_t station, float credits, int contract_index) {
     if (station >= MAX_STATIONS) {
-        set_notice("No station in range to hail.");
-        return;
-    }
-    /* credits == -1 sentinel: ping reached this station's chirp range
-     * (2× comm_range) but not its comms range. Show just a bearing. */
-    if (credits < 0.0f) {
-        set_notice("Too far -- nearest: %s", g.world.stations[station].name);
+        set_notice("No station signal found.");
         return;
     }
     /* Use the same hail overlay as singleplayer — station name + contextual
@@ -506,7 +500,8 @@ void apply_remote_hail_response(uint8_t station, float credits, int contract_ind
         snprintf(g.hail_message, sizeof(g.hail_message), "%s", ctx);
     else
         snprintf(g.hail_message, sizeof(g.hail_message), "%s", g.world.stations[station].hail_message);
-    g.hail_credits = credits;
+    float shown_credits = credits >= 0.0f ? credits : 0.0f;
+    g.hail_credits = shown_credits;
     g.hail_station_index = station;
     g.hail_timer = 6.0f;
     /* Route the hail through the bottom-right hint bar. Includes the
@@ -515,8 +510,12 @@ void apply_remote_hail_response(uint8_t station, float credits, int contract_ind
     {
         const char *unit = g.world.stations[station].currency_name;
         if (!unit[0]) unit = "credits";
-        set_notice("%s: %s  (balance %d %s)",
-            g.hail_station, g.hail_message, (int)lroundf(credits), unit);
+        if (credits >= 0.0f) {
+            set_notice("%s: %s  (balance %d %s)",
+                g.hail_station, g.hail_message, (int)lroundf(shown_credits), unit);
+        } else {
+            set_notice("%s: %s", g.hail_station, g.hail_message);
+        }
     }
     /* Auto-track the contract the station just issued, so the yellow
      * ring + compass pip appear without any tab navigation. */

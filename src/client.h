@@ -411,7 +411,7 @@ typedef struct {
      * the server takes a frame to respond. */
     float hail_ping_timer;       /* seconds since last ping, 0 = inactive */
     vec2  hail_ping_origin;      /* world-space origin (ship pos at press) */
-    float hail_ping_range;       /* ship comm_range at press time */
+    float hail_ping_range;       /* local scan visual/tag radius at press time */
     /* --- Camera --- */
     vec2 camera_pos;         /* smoothed camera position */
     bool camera_initialized;

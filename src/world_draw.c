@@ -3071,8 +3071,8 @@ void draw_hail_ping(void) {
     float cam_v    = (g_cam_bottom - g_cam_top) * 0.5f;
     if (cam_v < cam_half) cam_half = cam_v;
     float visual_max = cam_half * 0.88f;
-    /* Cap by the actual comm_range too so a tiny comm upgrade doesn't
-     * draw a ring bigger than the sphere it represents. */
+    /* Cap by the local scan/tag range so the pulse matches the objects
+     * that can reveal temporary hail labels. */
     if (visual_max > g.hail_ping_range) visual_max = g.hail_ping_range;
     float r = visual_max * e;
     /* Softer: lower alpha, thinner pad, drop the inner afterglow. */
