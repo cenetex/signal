@@ -19,6 +19,11 @@ bool is_key_down(sapp_keycode key);
 /* Query one-shot pressed key state. */
 bool is_key_pressed(sapp_keycode key);
 
+/* Sample continuous flight controls only. Multiplayer sends these before
+ * the fixed-step sim samples the full intent, so this is shared by both
+ * paths to keep brake/reverse latching identical. */
+void input_sample_movement(input_intent_t *intent);
+
 /* Sample the current keyboard state into an input_intent_t.
  * This is the main input handler (~200 lines) covering flight,
  * docked menus, build overlay, contracts, and outpost placement. */

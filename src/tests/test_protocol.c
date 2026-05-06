@@ -448,6 +448,27 @@ TEST(test_parse_input_valid) {
     ASSERT(intent.service_sell);
 }
 
+TEST(test_parse_input_reverse_flag) {
+    input_intent_t intent;
+    memset(&intent, 0, sizeof(intent));
+
+    uint8_t msg[4] = {
+        NET_MSG_INPUT,
+        NET_INPUT_BRAKE,
+        NET_ACTION_NONE,
+        0xFF
+    };
+
+    parse_input(msg, 4, &intent);
+    ASSERT_EQ_FLOAT(intent.thrust, -1.0f, 0.01f);
+    ASSERT(!intent.reverse_thrust);
+
+    msg[1] = NET_INPUT_BRAKE | NET_INPUT_REVERSE;
+    parse_input(msg, 4, &intent);
+    ASSERT_EQ_FLOAT(intent.thrust, -1.0f, 0.01f);
+    ASSERT(intent.reverse_thrust);
+}
+
 TEST(test_parse_input_too_short) {
     input_intent_t intent;
     memset(&intent, 0, sizeof(intent));
@@ -502,6 +523,7 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_player_ship);
     RUN(test_named_ingot_record_serializes_grade);
     RUN(test_parse_input_valid);
+    RUN(test_parse_input_reverse_flag);
     RUN(test_parse_input_too_short);
     RUN(test_parse_input_no_action);
     RUN(test_parse_input_action_accumulates);

@@ -1825,10 +1825,14 @@ static void frame(void) {
             if (g.net_input_timer <= 0.0f || action != 0) {
                 g.net_input_timer = 1.0f / 30.0f;
                 uint8_t flags = 0;
-                if (g.input.key_down[SAPP_KEYCODE_W] || g.input.key_down[SAPP_KEYCODE_UP])
+                input_intent_t movement_intent = {0};
+                input_sample_movement(&movement_intent);
+                if (movement_intent.thrust > 0.01f)
                     flags |= NET_INPUT_THRUST;
-                if (g.input.key_down[SAPP_KEYCODE_S] || g.input.key_down[SAPP_KEYCODE_DOWN])
+                if (movement_intent.thrust < -0.01f)
                     flags |= NET_INPUT_BRAKE;
+                if (movement_intent.reverse_thrust)
+                    flags |= NET_INPUT_REVERSE;
                 if (g.input.key_down[SAPP_KEYCODE_A] || g.input.key_down[SAPP_KEYCODE_LEFT])
                     flags |= NET_INPUT_LEFT;
                 if (g.input.key_down[SAPP_KEYCODE_D] || g.input.key_down[SAPP_KEYCODE_RIGHT])

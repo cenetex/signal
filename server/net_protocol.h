@@ -739,6 +739,7 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
         intent->thrust = -1.0f;
     else
         intent->thrust = 0.0f;
+    intent->reverse_thrust = (flags & NET_INPUT_BRAKE) && (flags & NET_INPUT_REVERSE);
     intent->turn = 0.0f;
     if ((flags & NET_INPUT_LEFT) && !(flags & NET_INPUT_RIGHT))
         intent->turn = 1.0f;

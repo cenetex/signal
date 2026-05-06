@@ -298,6 +298,7 @@ enum {
     NET_INPUT_BRAKE   = 1 << 4,
     NET_INPUT_TRACTOR = 1 << 5,
     NET_INPUT_BOOST   = 1 << 6,
+    NET_INPUT_REVERSE = 1 << 7,
 };
 
 /* ------------------------------------------------------------------ */

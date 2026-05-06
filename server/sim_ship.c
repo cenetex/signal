@@ -25,13 +25,30 @@ float ship_boost_thrust_mult(bool boost, float hold_t) {
 }
 
 void step_ship_thrust(ship_t *s, float dt, float thrust_input,
-                      vec2 forward, bool boost, float boost_hold) {
+                      vec2 forward, bool boost, float boost_hold,
+                      bool reverse_allowed) {
     const hull_def_t *hull = ship_hull_def(s);
     float mult = ship_boost_thrust_mult(boost, boost_hold);
     if (thrust_input > 0.0f) {
         s->vel = v2_add(s->vel, v2_scale(forward, hull->accel * thrust_input * mult * dt));
     } else if (thrust_input < 0.0f) {
-        s->vel = v2_add(s->vel, v2_scale(forward, SHIP_BRAKE * thrust_input * dt));
+        if (reverse_allowed) {
+            s->vel = v2_add(s->vel, v2_scale(forward, SHIP_BRAKE * thrust_input * dt));
+            return;
+        }
+
+        float speed = v2_len(s->vel);
+        if (speed <= 0.0001f) {
+            s->vel = v2(0.0f, 0.0f);
+            return;
+        }
+
+        float brake = SHIP_BRAKE * -thrust_input * dt;
+        if (brake >= speed) {
+            s->vel = v2(0.0f, 0.0f);
+        } else {
+            s->vel = v2_scale(s->vel, (speed - brake) / speed);
+        }
     }
 }
 

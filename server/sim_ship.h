@@ -28,12 +28,15 @@
  * turn_speed sets the max rad/s. */
 void step_ship_rotation(ship_t *s, float dt, float turn_input);
 
-/* Apply forward/reverse thrust along `forward` direction. thrust_input
- * > 0 = main engine (× hull->accel × boost multiplier), < 0 = brake.
+/* Apply forward thrust, velocity-opposing brake, or explicit reverse.
+ * thrust_input > 0 = main engine (x hull->accel x boost multiplier),
+ * thrust_input < 0 = brake; reverse_allowed lets a fresh stopped
+ * S/Down press back the ship up instead of only holding zero.
  * boost_hold is the held-boost duration in seconds (used for the
  * exponential takeoff kick). */
 void step_ship_thrust(ship_t *s, float dt, float thrust_input,
-                      vec2 forward, bool boost, float boost_hold);
+                      vec2 forward, bool boost, float boost_hold,
+                      bool reverse_allowed);
 
 /* Boost thrust multiplier curve. Exposed so callers that want to
  * report "current boost effect" to the HUD can read it without

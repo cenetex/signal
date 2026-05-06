@@ -693,6 +693,7 @@ typedef struct {
     bool reset;
     bool toggle_autopilot;   /* one-shot: flip autopilot_mode on/off */
     bool boost;              /* Shift held — thrust multiplier + hull drain */
+    bool reverse_thrust;     /* S/Down fresh-pressed from stop: allow backing up */
 } input_intent_t;
 
 typedef struct {

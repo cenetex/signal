@@ -1,4 +1,5 @@
 #include "tests/test_harness.h"
+#include "sim_ship.h"
 
 TEST(test_world_reset_creates_stations) {
     WORLD_DECL;
@@ -231,6 +232,45 @@ TEST(test_world_sim_step_moves_ship_with_thrust) {
     for (int i = 0; i < 120; i++)
         world_sim_step(&w, 1.0f / 120.0f);
     ASSERT(w.players[0].ship.pos.x > 5.0f);
+}
+
+TEST(test_ship_brake_opposes_velocity_not_facing) {
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.vel = v2(100.0f, 0.0f);
+
+    step_ship_thrust(&ship, 0.1f, -1.0f, v2(0.0f, 1.0f),
+                     false, 0.0f, false);
+
+    ASSERT(ship.vel.x > 0.0f);
+    ASSERT(ship.vel.x < 100.0f);
+    ASSERT_EQ_FLOAT(ship.vel.y, 0.0f, 0.001f);
+}
+
+TEST(test_ship_brake_stops_without_overshoot) {
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.vel = v2(5.0f, 0.0f);
+
+    step_ship_thrust(&ship, 1.0f, -1.0f, v2(1.0f, 0.0f),
+                     false, 0.0f, false);
+
+    ASSERT_EQ_FLOAT(ship.vel.x, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(ship.vel.y, 0.0f, 0.001f);
+}
+
+TEST(test_ship_reverse_requires_reverse_flag) {
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.vel = v2(0.0f, 0.0f);
+
+    step_ship_thrust(&ship, 1.0f / 60.0f, -1.0f, v2(1.0f, 0.0f),
+                     false, 0.0f, false);
+    ASSERT_EQ_FLOAT(ship.vel.x, 0.0f, 0.001f);
+
+    step_ship_thrust(&ship, 1.0f / 60.0f, -1.0f, v2(1.0f, 0.0f),
+                     false, 0.0f, true);
+    ASSERT(ship.vel.x < 0.0f);
 }
 
 TEST(test_world_sim_step_mining_damages_asteroid) {
@@ -1479,6 +1519,9 @@ void register_world_sim_basic_tests(void) {
     RUN(test_player_init_ship_docked);
     RUN(test_world_sim_step_advances_time);
     RUN(test_world_sim_step_moves_ship_with_thrust);
+    RUN(test_ship_brake_opposes_velocity_not_facing);
+    RUN(test_ship_brake_stops_without_overshoot);
+    RUN(test_ship_reverse_requires_reverse_flag);
     RUN(test_world_sim_step_mining_damages_asteroid);
     RUN(test_world_sim_step_docking);
     RUN(test_world_sim_step_refinery_produces_ingots);

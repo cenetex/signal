@@ -61,6 +61,8 @@
 void clear_input_state(void) {
     memset(g.input.key_down, 0, sizeof(g.input.key_down));
     memset(g.input.key_pressed, 0, sizeof(g.input.key_pressed));
+    g.input.brake_stop_latched = false;
+    g.input.reverse_thrust_active = false;
 }
 
 void consume_pressed_input(void) {
@@ -201,11 +203,33 @@ static int collect_reticle_targets(vec2 pos, reticle_target_t *out, int max) {
 /* short straight-line shape.                                          */
 /* ================================================================== */
 
-static void sample_movement(input_intent_t *intent) {
+void input_sample_movement(input_intent_t *intent) {
+    const float reverse_start_speed = 2.0f;
+    bool forward_down = is_key_down(SAPP_KEYCODE_W) || is_key_down(SAPP_KEYCODE_UP);
+    bool brake_down = is_key_down(SAPP_KEYCODE_S) || is_key_down(SAPP_KEYCODE_DOWN);
+    bool brake_pressed = is_key_pressed(SAPP_KEYCODE_S) || is_key_pressed(SAPP_KEYCODE_DOWN);
+
     if (is_key_down(SAPP_KEYCODE_A) || is_key_down(SAPP_KEYCODE_LEFT))  intent->turn   += 1.0f;
     if (is_key_down(SAPP_KEYCODE_D) || is_key_down(SAPP_KEYCODE_RIGHT)) intent->turn   -= 1.0f;
-    if (is_key_down(SAPP_KEYCODE_W) || is_key_down(SAPP_KEYCODE_UP))    intent->thrust += 1.0f;
-    if (is_key_down(SAPP_KEYCODE_S) || is_key_down(SAPP_KEYCODE_DOWN))  intent->thrust -= 1.0f;
+    if (forward_down) intent->thrust += 1.0f;
+
+    if (!brake_down || forward_down) {
+        g.input.brake_stop_latched = false;
+        g.input.reverse_thrust_active = false;
+    } else {
+        bool stopped = v2_len_sq(LOCAL_PLAYER.ship.vel) <= reverse_start_speed * reverse_start_speed;
+        if (brake_pressed) {
+            g.input.reverse_thrust_active = stopped;
+            g.input.brake_stop_latched = !stopped;
+        }
+        if (g.input.reverse_thrust_active) {
+            intent->thrust -= 1.0f;
+            intent->reverse_thrust = true;
+        } else if (!(g.input.brake_stop_latched && stopped)) {
+            intent->thrust -= 1.0f;
+        }
+    }
+
     if (intent->thrust != 0.0f || intent->turn != 0.0f) onboarding_mark_moved();
     intent->mine = is_key_down(SAPP_KEYCODE_M);
 }
@@ -885,7 +909,7 @@ input_intent_t sample_input_intent(void) {
     intent.service_sell_grade = MINING_GRADE_COUNT; /* default: any grade */
     intent.service_sell_one = false;
 
-    sample_movement(&intent);
+    input_sample_movement(&intent);
     sample_tractor(&intent);
     sample_boost(&intent);
     sample_self_destruct(&intent);

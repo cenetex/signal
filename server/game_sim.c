@@ -3316,7 +3316,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
         bool boost = sp->input.boost && !sp->docked;
         if (boost) sp->boost_hold_timer += dt;
         else       sp->boost_hold_timer  = 0.0f;
-        step_ship_thrust(&sp->ship, dt, thrust_input, forward, boost, sp->boost_hold_timer);
+        step_ship_thrust(&sp->ship, dt, thrust_input, forward, boost, sp->boost_hold_timer,
+                         sp->input.reverse_thrust);
         step_ship_boost_drain(w, sp, dt, boost, turn_input);
         step_ship_motion(&sp->ship, dt, w, sig);
         /* Tow drag: each fragment adds drag, slowing the ship */

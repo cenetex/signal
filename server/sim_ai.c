@@ -762,7 +762,8 @@ static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
      * (-1) is harmless here, equivalent to "engine idle" on player. */
     float thrust_in = (npc->input.thrust > 0.0f) ? npc->input.thrust : 0.0f;
     vec2 fwd = ship_forward(npc->ship.angle);
-    step_ship_thrust(&npc->ship, dt, thrust_in, fwd, /*boost=*/false, 0.0f);
+    step_ship_thrust(&npc->ship, dt, thrust_in, fwd, /*boost=*/false, 0.0f,
+                     /*reverse_allowed=*/false);
 
     npc->thrusting = thrust_in > 0.0f;
 }
