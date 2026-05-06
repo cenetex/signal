@@ -14,6 +14,13 @@
 #include "station_palette.h"
 #include <stdlib.h>
 
+#define HAIL_PING_DURATION   1.50f   /* ring sweep - gentle, not a shockwave */
+#define HAIL_PING_LIFECYCLE  8.00f   /* widen + very long drift back */
+#define HAIL_PING_PEAK_ZOOM  1.18f   /* half-extent multiplier - subtle */
+#define HAIL_PING_IN_END     0.10f   /* lifecycle frac where widen finishes (~0.8s) */
+#define HAIL_PING_HOLD_END   0.20f   /* lifecycle frac where slow zoom-back starts */
+#define HAIL_SCAN_ASTEROID_TAG_LIMIT 32
+
 /* --- Frustum culling: skip objects entirely off-screen --- */
 static float g_cam_left, g_cam_right, g_cam_top, g_cam_bottom;
 static float g_cam_half_w; /* cached for LOD calculations */
@@ -2368,7 +2375,7 @@ void draw_callsigns(void) {
 }
 
 void draw_npc_chatter(void) {
-    if (g.hail_ping_timer <= 0.0f || g.hail_ping_timer > 8.00f) return; /* HAIL_PING_LIFECYCLE */
+    if (g.hail_ping_timer <= 0.0f || g.hail_ping_timer > HAIL_PING_LIFECYCLE) return;
     float hail_range = (g.hail_ping_range > 0.0f) ? g.hail_ping_range : 1500.0f;
     float hail_range_sq = hail_range * hail_range;
     float view_w = cam_right() - cam_left();
@@ -2376,6 +2383,70 @@ void draw_npc_chatter(void) {
     const float cell = 8.0f;
     sdtx_canvas(view_w, view_h);
     sdtx_origin(0, 0);
+
+    typedef struct {
+        int index;
+        float dist_sq;
+    } hail_asteroid_tag_t;
+
+    hail_asteroid_tag_t tags[HAIL_SCAN_ASTEROID_TAG_LIMIT];
+    int tag_count = 0;
+
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &g.world.asteroids[i];
+        if (!a->active) continue;
+        if (!on_screen(a->pos.x, a->pos.y, a->radius + 80.0f)) continue;
+
+        float dist_sq = v2_dist_sq(a->pos, g.hail_ping_origin);
+        if (dist_sq > hail_range_sq) continue;
+
+        if (tag_count < HAIL_SCAN_ASTEROID_TAG_LIMIT) {
+            tags[tag_count++] = (hail_asteroid_tag_t){ i, dist_sq };
+        } else {
+            int worst = 0;
+            for (int j = 1; j < HAIL_SCAN_ASTEROID_TAG_LIMIT; j++) {
+                if (tags[j].dist_sq > tags[worst].dist_sq) worst = j;
+            }
+            if (dist_sq < tags[worst].dist_sq)
+                tags[worst] = (hail_asteroid_tag_t){ i, dist_sq };
+        }
+    }
+
+    for (int t = 0; t < tag_count; t++) {
+        const asteroid_t *a = &g.world.asteroids[tags[t].index];
+        char label[40];
+        if (a->tier == ASTEROID_TIER_S) {
+            const char *grade = NULL;
+            if (a->grade == (uint8_t)MINING_GRADE_FINE) grade = "fine";
+            else if (a->grade == (uint8_t)MINING_GRADE_RARE) grade = "rare";
+            else if (a->grade == (uint8_t)MINING_GRADE_RATI) grade = "RATi";
+            else if (a->grade == (uint8_t)MINING_GRADE_COMMISSIONED) grade = "comm";
+
+            if (grade) {
+                snprintf(label, sizeof(label), "%s %s %s",
+                         commodity_code((commodity_t)a->commodity),
+                         asteroid_tier_name((asteroid_tier_t)a->tier),
+                         grade);
+            } else {
+                snprintf(label, sizeof(label), "%s %s %.0f",
+                         commodity_code((commodity_t)a->commodity),
+                         asteroid_tier_name((asteroid_tier_t)a->tier),
+                         a->ore);
+            }
+        } else {
+            snprintf(label, sizeof(label), "%s %s",
+                     commodity_code((commodity_t)a->commodity),
+                     asteroid_tier_name((asteroid_tier_t)a->tier));
+        }
+
+        uint8_t r, gg, b;
+        commodity_color_u8((commodity_t)a->commodity, &r, &gg, &b);
+        sdtx_color4b(r, gg, b, 220);
+        int len = (int)strlen(label);
+        sdtx_world_pos(a->pos.x - len * cell * 0.5f,
+                       a->pos.y + a->radius + 18.0f, cell);
+        sdtx_puts(label);
+    }
 
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *npc = &g.world.npc_ships[i];
@@ -2977,12 +3048,6 @@ void draw_shipyard_intake_beams(void) {
  * react to the ping. Zoom-BACK is deliberately long (~5s, ~88% of the
  * lifecycle) so the drift home is almost imperceptible — you notice
  * the world opening up, you don't notice it closing. */
-#define HAIL_PING_DURATION   1.50f   /* ring sweep — gentle, not a shockwave */
-#define HAIL_PING_LIFECYCLE  8.00f   /* widen + very long drift back */
-#define HAIL_PING_PEAK_ZOOM  1.18f   /* half-extent multiplier — subtle */
-#define HAIL_PING_IN_END     0.10f   /* lifecycle frac where widen finishes (~0.8s) */
-#define HAIL_PING_HOLD_END   0.20f   /* lifecycle frac where slow zoom-back starts */
-
 static float ping_ease_out(float t) {
     float u = 1.0f - t;
     return 1.0f - (u * u * u);
