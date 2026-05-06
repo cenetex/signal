@@ -171,6 +171,18 @@ bool ship_receipts_push_chain(ship_receipts_t *r,
     return true;
 }
 
+bool ship_receipts_push_empty(ship_receipts_t *r) {
+    if (!r) return false;
+    if (r->count >= r->cap) {
+        uint16_t new_cap = r->cap > 0 ? (uint16_t)(r->cap * 2u) : 32;
+        if (new_cap <= r->cap) return false;
+        if (!ship_receipts_reserve(r, new_cap)) return false;
+    }
+    memset(&r->chains[r->count], 0, sizeof(r->chains[r->count]));
+    r->count++;
+    return true;
+}
+
 bool ship_receipts_remove(ship_receipts_t *r, uint16_t index,
                           cargo_receipt_chain_t *out_chain) {
     if (!r || index >= r->count || !r->chains) return false;

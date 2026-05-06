@@ -186,6 +186,9 @@ bool ship_receipts_clone(ship_receipts_t *dst, const ship_receipts_t *src);
  * is 0/too long. */
 bool ship_receipts_push_chain(ship_receipts_t *r,
                               const cargo_receipt_t *chain, uint8_t len);
+/* Append an empty receipt slot, preserving manifest/receipt parity for
+ * cargo that has identity but no portable receipt chain yet. */
+bool ship_receipts_push_empty(ship_receipts_t *r);
 
 /* Remove receipts at index, mirroring manifest_remove. If `out_chain`
  * is non-NULL the removed chain is copied there. */

@@ -79,7 +79,14 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 51  /* Cargo-in-space schema (Slice 1):
+#define SAVE_VERSION 52  /* NPC hauler manifest tail:
+                          * appends a fixed per-NPC paired-ship manifest
+                          * payload after the pubkey registry tail and
+                          * before CRC2. This preserves real cargo_unit_t
+                          * identity for manifest-backed NPC hauler cargo
+                          * across save/load, instead of degrading
+                          * in-flight loads back to synthetic legacy units.
+                          * v51 was cargo-in-space schema (Slice 1):
                           * FURNACE per-instance commodity tag drives
                           * its output ingot type. v50 saves loaded
                           * with untagged furnaces (commodity ==
@@ -190,6 +197,11 @@ _Static_assert(sizeof(legacy_named_ingot_t) == 56,
 /* Set by world_load() before read_station() so per-station readers know
  * which version they're parsing and can handle field additions. */
 static int g_loaded_save_version = SAVE_VERSION;
+
+/* Current hauler capacity is 40 ingots; keep the on-disk corruption
+ * guard comfortably above that while avoiding hostile giant receipt
+ * allocations from malformed saves. */
+#define NPC_SHIP_MANIFEST_SAVE_MAX 512u
 
 /* v51 cargo-in-space schema migration (Slice 1):
  * - Tag every untagged FURNACE (commodity == COMMODITY_COUNT) with an
@@ -888,6 +900,112 @@ static bool read_npc(FILE *f, npc_ship_t *n) {
     return true;
 }
 
+static const ship_t *world_save_npc_ship_for(const world_t *w, int npc_slot) {
+    if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return NULL;
+    int cap = (int)(sizeof(w->characters) / sizeof(w->characters[0]));
+    for (int i = 0; i < cap; i++) {
+        const character_t *ch = &w->characters[i];
+        if (!ch->active) continue;
+        if (ch->npc_slot != npc_slot) continue;
+        if (ch->kind != CHARACTER_KIND_NPC_MINER &&
+            ch->kind != CHARACTER_KIND_NPC_HAULER &&
+            ch->kind != CHARACTER_KIND_NPC_TOW) continue;
+        if (ch->ship_idx < 0 || ch->ship_idx >= MAX_SHIPS) return NULL;
+        return &w->ships[ch->ship_idx];
+    }
+    return NULL;
+}
+
+static void npc_ship_manifest_sync_cargo(npc_ship_t *npc, ship_t *ship) {
+    if (!npc || !ship || ship->manifest.count == 0) return;
+    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+        npc->cargo[c] = 0.0f;
+        ship->cargo[c] = 0.0f;
+    }
+    for (uint16_t i = 0; i < ship->manifest.count; i++) {
+        const cargo_unit_t *u = &ship->manifest.units[i];
+        if (u->commodity < COMMODITY_RAW_ORE_COUNT ||
+            u->commodity >= COMMODITY_COUNT) {
+            continue;
+        }
+        npc->cargo[u->commodity] += 1.0f;
+        ship->cargo[u->commodity] += 1.0f;
+    }
+}
+
+static bool write_npc_ship_manifest_payload(FILE *f, const ship_t *ship) {
+    uint16_t count = 0;
+    if (ship && ship->manifest.units) count = ship->manifest.count;
+    if (fwrite(&count, sizeof(count), 1, f) != 1) return false;
+
+    const ship_receipts_t *rcpts = ship_get_receipts_const(ship);
+    for (uint16_t u = 0; u < count; u++) {
+        const cargo_unit_t *cu = &ship->manifest.units[u];
+        if (fwrite(cu, sizeof(*cu), 1, f) != 1) return false;
+
+        uint8_t len = 0;
+        if (rcpts && u < rcpts->count) {
+            len = rcpts->chains[u].len;
+            if (len > CARGO_RECEIPT_CHAIN_MAX_LEN)
+                len = CARGO_RECEIPT_CHAIN_MAX_LEN;
+        }
+        if (fwrite(&len, sizeof(len), 1, f) != 1) return false;
+        for (uint8_t k = 0; k < len; k++) {
+            const cargo_receipt_t *r = &rcpts->chains[u].links[k];
+            if (fwrite(r, sizeof(*r), 1, f) != 1) return false;
+        }
+    }
+    return true;
+}
+
+static bool read_npc_ship_manifest_payload(FILE *f, ship_t *ship) {
+    uint16_t count = 0;
+    if (fread(&count, sizeof(count), 1, f) != 1) return false;
+    if (count > NPC_SHIP_MANIFEST_SAVE_MAX) return false;
+
+    ship_receipts_t *rcpts = NULL;
+    if (ship) {
+        if (!ship_manifest_bootstrap(ship)) return false;
+        manifest_clear(&ship->manifest);
+        rcpts = ship_get_receipts(ship);
+        if (!rcpts) return false;
+        ship_receipts_clear(rcpts);
+        if (count > ship->manifest.cap &&
+            !manifest_reserve(&ship->manifest, count)) {
+            return false;
+        }
+        if (count > rcpts->cap && !ship_receipts_reserve(rcpts, count))
+            return false;
+    }
+
+    for (uint16_t u = 0; u < count; u++) {
+        cargo_unit_t cu = {0};
+        if (fread(&cu, sizeof(cu), 1, f) != 1) return false;
+
+        uint8_t len = 0;
+        if (fread(&len, sizeof(len), 1, f) != 1) return false;
+        if (len > CARGO_RECEIPT_CHAIN_MAX_LEN) return false;
+
+        cargo_receipt_t links[CARGO_RECEIPT_CHAIN_MAX_LEN];
+        memset(links, 0, sizeof(links));
+        for (uint8_t k = 0; k < len; k++) {
+            if (fread(&links[k], sizeof(links[k]), 1, f) != 1)
+                return false;
+        }
+
+        if (ship) {
+            if (!manifest_push(&ship->manifest, &cu)) return false;
+            if (len > 0) {
+                if (!ship_receipts_push_chain(rcpts, links, len))
+                    return false;
+            } else {
+                if (!ship_receipts_push_empty(rcpts)) return false;
+            }
+        }
+    }
+    return true;
+}
+
 /* ---- contract field-by-field I/O ---- */
 static bool write_contract(FILE *f, const contract_t *c) {
     WRITE_FIELD(f, c->active);
@@ -1012,6 +1130,20 @@ bool world_save(const world_t *w, const char *path) {
             if (fwrite(w->pubkey_registry[r].session_token, 8, 1, f) != 1) {
                 fclose(f); remove(tmp_path); return false;
             }
+        }
+    }
+
+    /* v52: paired NPC ship manifest tail. Fixed by NPC slot so a
+     * mid-transit hauler reload keeps the exact cargo_unit_t pubs it
+     * took from station inventory. Empty slots write just count=0. */
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        const ship_t *ship = NULL;
+        if (w->npc_ships[i].active)
+            ship = world_save_npc_ship_for(w, i);
+        if (!write_npc_ship_manifest_payload(f, ship)) {
+            fclose(f);
+            remove(tmp_path);
+            return false;
         }
     }
 
@@ -1179,6 +1311,26 @@ bool world_load(world_t *w, const char *path) {
                 return false;
             }
             w->pubkey_registry[r].in_use = true;
+        }
+    }
+
+    bool characters_rebuilt = false;
+    if (version >= 52) {
+        /* The v52 NPC manifest tail belongs to paired ships[] entries,
+         * which are runtime-derived from npc_ships[]. Build that pool
+         * before consuming the tail, then skip the final rebuild. */
+        rebuild_characters_from_npcs(w);
+        characters_rebuilt = true;
+        for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+            ship_t *ship = NULL;
+            if (w->npc_ships[i].active)
+                ship = world_npc_ship_for(w, i);
+            if (!read_npc_ship_manifest_payload(f, ship)) {
+                fclose(f);
+                return false;
+            }
+            if (ship && ship->manifest.count > 0)
+                npc_ship_manifest_sync_cargo(&w->npc_ships[i], ship);
         }
     }
 
@@ -1438,7 +1590,8 @@ bool world_load(world_t *w, const char *path) {
     fclose(f);
     belt_field_init(&w->belt, w->rng, BELT_SCALE);
     rebuild_signal_chain(w);
-    rebuild_characters_from_npcs(w);
+    if (!characters_rebuilt)
+        rebuild_characters_from_npcs(w);
     /* Layer B of #479: rederive every station's private key from its
      * persisted pubkey + provenance. The secret was never written to
      * disk — this is what makes a save leak NOT a key leak. v39 and
@@ -2042,20 +2195,9 @@ static bool player_load_from_path(server_player_t *sp, world_t *w, const char *p
                             fclose(f); return false;
                         }
                     } else {
-                        /* Empty chain — push a zero placeholder so the
-                         * count stays parity with manifest. We push len=1
-                         * is wrong; instead, special-case: append an empty
-                         * slot directly. ship_receipts_push_chain rejects
-                         * len==0, so we manually grow count. */
-                        if (rcpts->count >= rcpts->cap) {
-                            if (!ship_receipts_reserve(rcpts,
-                                    (uint16_t)(rcpts->cap > 0 ? rcpts->cap * 2 : 32))) {
-                                fclose(f); return false;
-                            }
+                        if (!ship_receipts_push_empty(rcpts)) {
+                            fclose(f); return false;
                         }
-                        memset(&rcpts->chains[rcpts->count], 0,
-                               sizeof(rcpts->chains[rcpts->count]));
-                        rcpts->count++;
                     }
                 }
             }

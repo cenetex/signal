@@ -764,6 +764,122 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
     /* loaded + w auto-freed by WORLD_HEAP cleanup */
 }
 
+TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    world_reset(w);
+
+    int hauler_slot = -1;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (!w->npc_ships[n].active) continue;
+        if (w->npc_ships[n].role != NPC_ROLE_HAULER) continue;
+        if (w->npc_ships[n].home_station != 0) continue;
+        hauler_slot = n;
+        break;
+    }
+    ASSERT(hauler_slot >= 0);
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (n != hauler_slot) w->npc_ships[n].active = false;
+    }
+
+    npc_ship_t *hauler = &w->npc_ships[hauler_slot];
+    ship_t *hauler_ship = world_npc_ship_for(w, hauler_slot);
+    ASSERT(hauler_ship != NULL);
+    ASSERT(ship_manifest_bootstrap(hauler_ship));
+    manifest_clear(&hauler_ship->manifest);
+    ship_receipts_t *hauler_receipts = ship_get_receipts(hauler_ship);
+    ASSERT(hauler_receipts != NULL);
+    ship_receipts_clear(hauler_receipts);
+    memset(hauler->cargo, 0, sizeof(hauler->cargo));
+
+    station_t *home = &w->stations[0];
+    station_t *dest = &w->stations[1];
+    ASSERT(station_manifest_bootstrap(home));
+    ASSERT(station_manifest_bootstrap(dest));
+    manifest_clear(&home->manifest);
+    manifest_clear(&dest->manifest);
+    memset(home->_inventory_cache, 0, sizeof(home->_inventory_cache));
+    memset(dest->_inventory_cache, 0, sizeof(dest->_inventory_cache));
+    dest->module_count = 0;
+    dest->scaffold = false;
+
+    enum { EXPECTED_MOVED = 2 };
+    int stock_units = (int)HAULER_RESERVE + EXPECTED_MOVED;
+    cargo_unit_t units[16] = {{0}};
+    ASSERT(stock_units <= (int)(sizeof(units) / sizeof(units[0])));
+    for (int i = 0; i < stock_units; i++) {
+        uint8_t fragment_pub[32] = {0};
+        fragment_pub[31] = (uint8_t)(0x60 + i);
+        ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
+                          fragment_pub, (uint16_t)i, &units[i]));
+        ASSERT(manifest_push(&home->manifest, &units[i]));
+    }
+    home->_inventory_cache[COMMODITY_FERRITE_INGOT] = (float)stock_units;
+
+    memset(w->contracts, 0, sizeof(w->contracts));
+    w->contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 2.0f,
+        .base_price = 25.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    hauler->state = NPC_STATE_DOCKED;
+    hauler->state_timer = 0.0f;
+    hauler->home_station = 0;
+    hauler->dest_station = 0;
+
+    step_npc_ships(w, SIM_DT);
+
+    ASSERT_EQ_INT(hauler->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(hauler_ship->manifest.count, EXPECTED_MOVED);
+    ASSERT(manifest_find(&hauler_ship->manifest, units[0].pub) >= 0);
+    ASSERT(manifest_find(&hauler_ship->manifest, units[1].pub) >= 0);
+    ASSERT_EQ_INT((int)hauler_receipts->count, EXPECTED_MOVED);
+
+    ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS,
+                                    TMP("test_hauler_manifest_cat")));
+    ASSERT(world_save(w, TMP("test_hauler_manifest.sav")));
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    station_catalog_load_all(loaded->stations, MAX_STATIONS,
+                             TMP("test_hauler_manifest_cat"));
+    ASSERT(world_load(loaded, TMP("test_hauler_manifest.sav")));
+
+    npc_ship_t *loaded_hauler = &loaded->npc_ships[hauler_slot];
+    ship_t *loaded_ship = world_npc_ship_for(loaded, hauler_slot);
+    ASSERT(loaded_ship != NULL);
+    ship_receipts_t *loaded_receipts = ship_get_receipts(loaded_ship);
+    ASSERT(loaded_receipts != NULL);
+    ASSERT_EQ_INT(loaded_ship->manifest.count, EXPECTED_MOVED);
+    ASSERT_EQ_INT((int)loaded_receipts->count, EXPECTED_MOVED);
+    ASSERT(manifest_find(&loaded_ship->manifest, units[0].pub) >= 0);
+    ASSERT(manifest_find(&loaded_ship->manifest, units[1].pub) >= 0);
+    ASSERT_EQ_FLOAT(loaded_hauler->cargo[COMMODITY_FERRITE_INGOT],
+                    (float)EXPECTED_MOVED, 0.001f);
+
+    loaded_hauler->state = NPC_STATE_UNLOADING;
+    loaded_hauler->state_timer = 0.0f;
+    loaded_hauler->dest_station = 1;
+
+    step_npc_ships(loaded, SIM_DT);
+
+    ASSERT_EQ_INT(loaded_ship->manifest.count, 0);
+    ASSERT_EQ_INT((int)loaded_receipts->count, 0);
+    ASSERT(manifest_find(&loaded->stations[1].manifest, units[0].pub) >= 0);
+    ASSERT(manifest_find(&loaded->stations[1].manifest, units[1].pub) >= 0);
+    for (uint16_t i = 0; i < loaded->stations[1].manifest.count; i++) {
+        ASSERT(loaded->stations[1].manifest.units[i].recipe_id !=
+               RECIPE_LEGACY_MIGRATE);
+    }
+    remove(TMP("test_hauler_manifest.sav"));
+    /* loaded + w auto-freed by WORLD_HEAP cleanup */
+}
+
 /*
  * EXPECTED_SAVE_SIZE is the exact byte count of a world.sav written by the
  * current SAVE_VERSION. If a field is added to write_station / write_asteroid /
@@ -815,8 +931,11 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
  * Helios (+2). Module placements live in the catalog file, not
  * world.sav, so EXPECTED_SAVE_SIZE doesn't shift.
  * v48: spoke + drag ring dynamics adds arm_omega[MAX_ARMS] = 4
- * floats × MAX_STATIONS=64 = +1024 bytes. */
-#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40 - 64 * 4 + 64 * 16 * 60 + 64 * 4 * 4)
+ * floats × MAX_STATIONS=64 = +1024 bytes.
+ * v52: NPC paired ship manifest tail writes uint16 count per
+ * MAX_NPC_SHIPS slot on a fresh world. Active haulers with cargo add
+ * variable cargo_unit_t + receipt-chain payloads. */
+#define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40 - 64 * 4 + 64 * 16 * 60 + 64 * 4 * 4 + 16 * 2)
 
 TEST(test_save_file_size_stable) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -853,7 +972,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 51);
+    ASSERT_EQ_INT((int)version, 52);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);
@@ -973,6 +1092,7 @@ void register_save_persistence_tests(void) {
     RUN(test_v51_migration_tags_untagged_furnaces_and_fills_hoppers);
     RUN(test_v51_migration_furnace_count_heuristic);
     RUN(test_world_save_load_preserves_smelted_ingots);
+    RUN(test_world_save_load_preserves_hauler_manifest_cargo);
 }
 
 void register_save_format_tests(void) {
