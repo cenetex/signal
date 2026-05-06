@@ -105,7 +105,7 @@ Per-player saves live under `saves/`:
   identity secret; the server verifies and renames the legacy file
   into `saves/pubkey/`. First-claim-wins — see #479-A.4.
 
-`world.sav` is versioned. v52 appends a per-NPC paired-ship manifest tail so in-flight NPC hauler cargo keeps its exact `cargo_unit_t` identity across save/load.
+`world.sav` is versioned. v53 adds per-station manifest receipt chains so station-held cargo keeps the exact incoming receipt head; v52 added the per-NPC paired-ship manifest tail for in-flight hauler cargo identity.
 
 ## Working Style
 

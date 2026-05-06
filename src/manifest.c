@@ -287,6 +287,95 @@ const ship_receipts_t *ship_get_receipts_const(const ship_t *ship) {
     return (const ship_receipts_t *)ship->receipts_opaque;
 }
 
+ship_receipts_t *station_get_receipts(station_t *station) {
+    if (!station) return NULL;
+    return (ship_receipts_t *)station->receipts_opaque;
+}
+
+const ship_receipts_t *station_get_receipts_const(const station_t *station) {
+    if (!station) return NULL;
+    return (const ship_receipts_t *)station->receipts_opaque;
+}
+
+static bool receipt_store_reconcile(ship_receipts_t *r, const manifest_t *m) {
+    if (!r || !m) return false;
+    if (r->count < m->count) {
+        if (!ship_receipts_reserve(r, m->count)) return false;
+        while (r->count < m->count) {
+            if (!ship_receipts_push_empty(r)) return false;
+        }
+    }
+    while (r->count > m->count) {
+        if (!ship_receipts_remove(r, (uint16_t)(r->count - 1u), NULL))
+            return false;
+    }
+    return true;
+}
+
+static bool receipt_store_push_chain_or_empty(ship_receipts_t *r,
+                                              const cargo_receipt_chain_t *chain) {
+    if (!r) return false;
+    if (chain && chain->len > 0)
+        return ship_receipts_push_chain(r, chain->links, chain->len);
+    return ship_receipts_push_empty(r);
+}
+
+static bool holder_manifest_push_with_chain(manifest_t *manifest,
+                                            ship_receipts_t *receipts,
+                                            const cargo_unit_t *unit,
+                                            const cargo_receipt_chain_t *chain) {
+    uint16_t pushed_index;
+
+    if (!manifest || !receipts || !unit) return false;
+    if (!receipt_store_reconcile(receipts, manifest)) return false;
+    pushed_index = manifest->count;
+    if (!manifest_push(manifest, unit)) return false;
+    if (!receipt_store_push_chain_or_empty(receipts, chain)) {
+        cargo_unit_t rollback = {0};
+        (void)manifest_remove(manifest, pushed_index, &rollback);
+        return false;
+    }
+    return true;
+}
+
+static bool holder_manifest_remove_with_chain(manifest_t *manifest,
+                                              ship_receipts_t *receipts,
+                                              uint16_t index,
+                                              cargo_unit_t *out_unit,
+                                              cargo_receipt_chain_t *out_chain) {
+    cargo_unit_t unit = {0};
+    cargo_receipt_chain_t chain = {0};
+
+    if (!manifest || !receipts || !manifest->units) return false;
+    if (!receipt_store_reconcile(receipts, manifest)) return false;
+    if (index >= manifest->count) return false;
+    if (!ship_receipts_remove(receipts, index, &chain)) return false;
+    if (!manifest_remove(manifest, index, &unit)) {
+        (void)receipt_store_push_chain_or_empty(receipts, &chain);
+        return false;
+    }
+    if (out_unit) *out_unit = unit;
+    if (out_chain) *out_chain = chain;
+    return true;
+}
+
+static int holder_manifest_consume_by_commodity(manifest_t *manifest,
+                                                ship_receipts_t *receipts,
+                                                commodity_t c, int n) {
+    if (!manifest || !manifest->units || !receipts || n <= 0) return 0;
+    if (!receipt_store_reconcile(receipts, manifest)) return 0;
+    int removed = 0;
+    for (int16_t i = (int16_t)manifest->count - 1; i >= 0 && removed < n; i--) {
+        if (manifest->units[i].commodity == (uint8_t)c) {
+            if (holder_manifest_remove_with_chain(manifest, receipts,
+                                                  (uint16_t)i, NULL, NULL)) {
+                removed++;
+            }
+        }
+    }
+    return removed;
+}
+
 void ship_cleanup(ship_t *ship) {
     if (!ship) return;
     manifest_free(&ship->manifest);
@@ -298,8 +387,7 @@ void ship_cleanup(ship_t *ship) {
 
 bool ship_manifest_bootstrap(ship_t *ship) {
     if (!ship) return false;
-    bool manifest_ok = (ship->manifest.cap == SHIP_MANIFEST_DEFAULT_CAP &&
-                        ship->manifest.units);
+    bool manifest_ok = (ship->manifest.cap > 0 && ship->manifest.units);
     if (!manifest_ok) {
         manifest_free(&ship->manifest);
         if (!manifest_init(&ship->manifest, SHIP_MANIFEST_DEFAULT_CAP))
@@ -309,6 +397,10 @@ bool ship_manifest_bootstrap(ship_t *ship) {
     if (!ship->receipts_opaque) {
         ship->receipts_opaque = ship_receipts_alloc();
         if (!ship->receipts_opaque) return false;
+    }
+    if (!receipt_store_reconcile((ship_receipts_t *)ship->receipts_opaque,
+                                 &ship->manifest)) {
+        return false;
     }
     return true;
 }
@@ -342,28 +434,122 @@ bool ship_copy(ship_t *dst, const ship_t *src) {
     return true;
 }
 
+bool ship_manifest_push_with_chain(ship_t *ship, const cargo_unit_t *unit,
+                                   const cargo_receipt_chain_t *chain) {
+    if (!ship || !unit) return false;
+    if (!ship_manifest_bootstrap(ship)) return false;
+    return holder_manifest_push_with_chain(&ship->manifest,
+                                           ship_get_receipts(ship),
+                                           unit, chain);
+}
+
+bool ship_manifest_remove_with_chain(ship_t *ship, uint16_t index,
+                                     cargo_unit_t *out_unit,
+                                     cargo_receipt_chain_t *out_chain) {
+    if (!ship) return false;
+    if (!ship_manifest_bootstrap(ship)) return false;
+    return holder_manifest_remove_with_chain(&ship->manifest,
+                                             ship_get_receipts(ship),
+                                             index, out_unit, out_chain);
+}
+
+int ship_manifest_consume_by_commodity(ship_t *ship, commodity_t c, int n) {
+    if (!ship || n <= 0) return 0;
+    if (!ship_manifest_bootstrap(ship)) return 0;
+    return holder_manifest_consume_by_commodity(&ship->manifest,
+                                                ship_get_receipts(ship),
+                                                c, n);
+}
+
 void station_cleanup(station_t *station) {
     if (!station) return;
     manifest_free(&station->manifest);
+    if (station->receipts_opaque) {
+        ship_receipts_destroy((ship_receipts_t *)station->receipts_opaque);
+        station->receipts_opaque = NULL;
+    }
 }
 
 bool station_manifest_bootstrap(station_t *station) {
     if (!station) return false;
-    if (station->manifest.cap == STATION_MANIFEST_DEFAULT_CAP && station->manifest.units) return true;
-    manifest_free(&station->manifest);
-    return manifest_init(&station->manifest, STATION_MANIFEST_DEFAULT_CAP);
+    bool manifest_ok = (station->manifest.cap > 0 && station->manifest.units);
+    if (!manifest_ok) {
+        manifest_free(&station->manifest);
+        if (!manifest_init(&station->manifest, STATION_MANIFEST_DEFAULT_CAP))
+            return false;
+    }
+    if (!station->receipts_opaque) {
+        station->receipts_opaque = ship_receipts_alloc();
+        if (!station->receipts_opaque) return false;
+    }
+    return receipt_store_reconcile((ship_receipts_t *)station->receipts_opaque,
+                                   &station->manifest);
 }
 
 bool station_copy(station_t *dst, const station_t *src) {
     manifest_t manifest = {0};
+    ship_receipts_t *receipts_dup = NULL;
 
     if (!dst || !src) return false;
     if (dst == src) return true;
     if (!manifest_clone(&manifest, &src->manifest)) return false;
+    if (src->receipts_opaque) {
+        receipts_dup = (ship_receipts_t *)calloc(1, sizeof(*receipts_dup));
+        if (!receipts_dup) {
+            manifest_free(&manifest);
+            return false;
+        }
+        if (!ship_receipts_clone(receipts_dup,
+                                 (const ship_receipts_t *)src->receipts_opaque)) {
+            free(receipts_dup);
+            manifest_free(&manifest);
+            return false;
+        }
+    }
     station_cleanup(dst);
     *dst = *src;
     dst->manifest = manifest;
+    dst->receipts_opaque = receipts_dup;
     return true;
+}
+
+bool station_manifest_push_with_chain(station_t *station,
+                                      const cargo_unit_t *unit,
+                                      const cargo_receipt_chain_t *chain) {
+    if (!station || !unit) return false;
+    if (!station_manifest_bootstrap(station)) return false;
+    if (!holder_manifest_push_with_chain(&station->manifest,
+                                         station_get_receipts(station),
+                                         unit, chain)) {
+        return false;
+    }
+    station->manifest_dirty = true;
+    return true;
+}
+
+bool station_manifest_remove_with_chain(station_t *station, uint16_t index,
+                                        cargo_unit_t *out_unit,
+                                        cargo_receipt_chain_t *out_chain) {
+    if (!station) return false;
+    if (!station_manifest_bootstrap(station)) return false;
+    if (!holder_manifest_remove_with_chain(&station->manifest,
+                                           station_get_receipts(station),
+                                           index, out_unit, out_chain)) {
+        return false;
+    }
+    station->manifest_dirty = true;
+    return true;
+}
+
+int station_manifest_consume_by_commodity(station_t *station,
+                                          commodity_t c, int n) {
+    if (!station || n <= 0) return 0;
+    if (!station_manifest_bootstrap(station)) return 0;
+    int removed = holder_manifest_consume_by_commodity(&station->manifest,
+                                                       station_get_receipts(station),
+                                                       c, n);
+    if (removed > 0) station->manifest_dirty = true;
+    return removed;
 }
 
 bool manifest_push(manifest_t *manifest, const cargo_unit_t *unit) {
@@ -646,7 +832,7 @@ int station_finished_mint(station_t *st, commodity_t c, int n,
         cargo_unit_t unit = {0};
         if (!hash_legacy_migrate_unit(use_origin, c,
                                       (uint16_t)(base_idx + i), &unit)) continue;
-        if (!manifest_push(&st->manifest, &unit)) break;
+        if (!station_manifest_push_with_chain(st, &unit, NULL)) break;
         minted++;
     }
     if (minted > 0) {
@@ -681,7 +867,7 @@ void ship_finished_sync(ship_t *ship, commodity_t c) {
 
 int ship_finished_drain(ship_t *ship, commodity_t c, int n) {
     if (!ship || n <= 0 || !finished_good_commodity(c)) return 0;
-    int drained = manifest_consume_by_commodity(&ship->manifest, c, n);
+    int drained = ship_manifest_consume_by_commodity(ship, c, n);
     if (drained > 0) ship_finished_sync(ship, c);
     return drained;
 }
@@ -706,7 +892,7 @@ void station_finished_sync(station_t *st, commodity_t c) {
 int station_finished_drain(station_t *st, commodity_t c, int n) {
     if (!st || n <= 0) return 0;
     if (!finished_good_commodity(c)) return 0;
-    int drained = manifest_consume_by_commodity(&st->manifest, c, n);
+    int drained = station_manifest_consume_by_commodity(st, c, n);
     if (drained > 0) station_finished_sync(st, c);
     assert_finished_invariant(st, c);
     return drained;

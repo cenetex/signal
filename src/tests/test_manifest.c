@@ -90,6 +90,45 @@ TEST(test_station_copy_clones_manifest_storage) {
     station_cleanup(&src);
 }
 
+TEST(test_station_manifest_receipts_track_push_remove) {
+    station_t st = {0};
+    cargo_unit_t first = {0};
+    cargo_unit_t second = {0};
+    cargo_receipt_chain_t chain = {0};
+    cargo_unit_t removed = {0};
+    cargo_receipt_chain_t removed_chain = {0};
+
+    ASSERT(station_manifest_bootstrap(&st));
+    first.kind = (uint8_t)CARGO_KIND_INGOT;
+    first.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    first.pub[0] = 0xA1;
+    second.kind = (uint8_t)CARGO_KIND_FRAME;
+    second.commodity = (uint8_t)COMMODITY_FRAME;
+    second.pub[0] = 0xB2;
+    chain.len = 2;
+    chain.links[0].event_id = 101;
+    chain.links[1].event_id = 202;
+
+    ASSERT(station_manifest_push_with_chain(&st, &first, &chain));
+    ASSERT(station_manifest_push_with_chain(&st, &second, NULL));
+    ship_receipts_t *rcpts = station_get_receipts(&st);
+    ASSERT(rcpts != NULL);
+    ASSERT_EQ_INT(st.manifest.count, 2);
+    ASSERT_EQ_INT((int)rcpts->count, 2);
+    ASSERT_EQ_INT((int)rcpts->chains[0].len, 2);
+    ASSERT_EQ_INT((int)rcpts->chains[1].len, 0);
+
+    ASSERT(station_manifest_remove_with_chain(&st, 0, &removed, &removed_chain));
+    ASSERT_EQ_INT(removed.pub[0], 0xA1);
+    ASSERT_EQ_INT((int)removed_chain.len, 2);
+    ASSERT_EQ_INT((int)removed_chain.links[1].event_id, 202);
+    ASSERT_EQ_INT(st.manifest.count, 1);
+    ASSERT_EQ_INT((int)rcpts->count, 1);
+    ASSERT_EQ_INT((int)rcpts->chains[0].len, 0);
+
+    station_cleanup(&st);
+}
+
 TEST(test_hash_legacy_migrate_unit_deterministic) {
     /* Same inputs -> byte-identical cargo_unit_t. Independent origins
      * or indices must produce different pubs. Validates the Slice D
@@ -889,6 +928,7 @@ void register_manifest_tests(void) {
     RUN(test_manifest_migrate_quantity_rewrites_zero_to_one);
     RUN(test_ship_copy_clones_manifest_storage);
     RUN(test_station_copy_clones_manifest_storage);
+    RUN(test_station_manifest_receipts_track_push_remove);
     RUN(test_hash_merkle_root_sorts_and_duplicates_odd_leaf);
     RUN(test_hash_ingot_matches_known_vector);
     RUN(test_hash_product_matches_known_vector_and_min_grade);

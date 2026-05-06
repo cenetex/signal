@@ -206,13 +206,17 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
     enum { EXPECTED_MOVED = 2 };
     int stock_units = (int)HAULER_RESERVE + EXPECTED_MOVED;
     cargo_unit_t units[16] = {{0}};
+    cargo_receipt_chain_t chains[16] = {0};
     ASSERT(stock_units <= (int)(sizeof(units) / sizeof(units[0])));
     for (int i = 0; i < stock_units; i++) {
         uint8_t fragment_pub[32] = {0};
         fragment_pub[31] = (uint8_t)(0x40 + i);
         ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
                           fragment_pub, (uint16_t)i, &units[i]));
-        ASSERT(manifest_push(&home->manifest, &units[i]));
+        chains[i].len = 1;
+        memcpy(chains[i].links[0].cargo_pub, units[i].pub, 32);
+        chains[i].links[0].event_id = (uint64_t)(700 + i);
+        ASSERT(station_manifest_push_with_chain(home, &units[i], &chains[i]));
     }
     home->_inventory_cache[COMMODITY_FERRITE_INGOT] = (float)stock_units;
 
@@ -239,7 +243,8 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
     ASSERT_EQ_INT(hauler->dest_station, 1);
     ASSERT_EQ_INT(hauler_ship->manifest.count, EXPECTED_MOVED);
     ASSERT_EQ_INT((int)hauler_receipts->count, EXPECTED_MOVED);
-    ASSERT_EQ_INT((int)hauler_receipts->chains[0].len, 0);
+    ASSERT_EQ_INT((int)hauler_receipts->chains[0].len, 1);
+    ASSERT_EQ_INT((int)hauler_receipts->chains[0].links[0].event_id, 700);
     ASSERT_EQ_INT(manifest_find(&home->manifest, units[0].pub), -1);
     ASSERT_EQ_INT(manifest_find(&home->manifest, units[1].pub), -1);
     ASSERT(manifest_find(&hauler_ship->manifest, units[0].pub) >= 0);
@@ -258,6 +263,16 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
     ASSERT_EQ_FLOAT(hauler->cargo[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
     ASSERT(manifest_find(&dest->manifest, units[0].pub) >= 0);
     ASSERT(manifest_find(&dest->manifest, units[1].pub) >= 0);
+    ship_receipts_t *dest_receipts = station_get_receipts(dest);
+    ASSERT(dest_receipts != NULL);
+    int d0 = manifest_find(&dest->manifest, units[0].pub);
+    int d1 = manifest_find(&dest->manifest, units[1].pub);
+    ASSERT(d0 >= 0);
+    ASSERT(d1 >= 0);
+    ASSERT_EQ_INT((int)dest_receipts->chains[d0].len, 1);
+    ASSERT_EQ_INT((int)dest_receipts->chains[d0].links[0].event_id, 700);
+    ASSERT_EQ_INT((int)dest_receipts->chains[d1].len, 1);
+    ASSERT_EQ_INT((int)dest_receipts->chains[d1].links[0].event_id, 701);
     ASSERT_EQ_INT(manifest_find(&home->manifest, units[0].pub), -1);
     ASSERT_EQ_INT(manifest_find(&home->manifest, units[1].pub), -1);
     ASSERT_EQ_FLOAT(dest->_inventory_cache[COMMODITY_FERRITE_INGOT],

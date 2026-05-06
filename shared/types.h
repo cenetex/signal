@@ -439,6 +439,14 @@ typedef struct {
      * in the "unify ingot identity" PR. `manifest_dirty` drives the
      * wire-push (server-only). */
     manifest_t    manifest;
+    /* Portable cargo receipt chains held by this station.
+     *
+     * Parallel to `manifest`: receipts.chains[i] is the receipt chain
+     * attached to manifest.units[i], just like ship_t.receipts_opaque.
+     * Stored as void* to keep types.h independent of cargo_receipt.h.
+     * Mutate through station_manifest_* helpers so station inventory can
+     * later dispatch cargo by extending the exact incoming chain head. */
+    void          *receipts_opaque; /* ship_receipts_t* -- see cargo_receipt.h */
     bool          manifest_dirty;
     /* Shipyard repair-kit fab cadence: server-only countdown. When it
      * reaches the period and the station has 1 frame + 1 laser + 1

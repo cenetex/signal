@@ -56,11 +56,11 @@ static bool station_manifest_push_ingot(station_t *st, const cargo_unit_t *unit)
      * rotation and clients can surface a "stockpile rotated" notice
      * instead of the ingot silently vanishing. */
     if (st->manifest.count >= st->manifest.cap) {
-        if (!manifest_remove(&st->manifest, 0, NULL)) return false;
+        if (!station_manifest_remove_with_chain(st, 0, NULL, NULL)) return false;
     }
     /* Phase 2: flag dirty on every successful push so the manifest-
      * summary broadcast runs after smelts too (not just rotations). */
-    if (manifest_push(&st->manifest, unit)) {
+    if (station_manifest_push_with_chain(st, unit, NULL)) {
         st->manifest_dirty = true;
         return true;
     }
@@ -72,7 +72,7 @@ static bool station_manifest_push_finished(station_t *st, const cargo_unit_t *un
     if (st->manifest.cap == 0 || st->manifest.units == NULL) {
         if (!station_manifest_bootstrap(st)) return false;
     }
-    if (manifest_push(&st->manifest, unit)) {
+    if (station_manifest_push_with_chain(st, unit, NULL)) {
         st->manifest_dirty = true;
         return true;
     }
@@ -142,7 +142,8 @@ static bool station_manifest_consume_selected_inputs(station_t *st,
         }
     }
     for (size_t i = 0; i < count; i++) {
-        if (!manifest_remove(&st->manifest, sorted[i], NULL)) return false;
+        if (!station_manifest_remove_with_chain(st, sorted[i], NULL, NULL))
+            return false;
     }
     return true;
 }
@@ -1152,7 +1153,7 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
                 /* Fractional remainder (sub-unit float) priced at base. */
                 float frac = deliver - (float)whole;
                 if (frac > 0.0f) payout += frac * price;
-                manifest_consume_by_commodity(&ship->manifest, mat, whole);
+                ship_manifest_consume_by_commodity(ship, mat, whole);
             } else {
                 payout += deliver * station_buy_price(st, mat);
             }
@@ -1171,8 +1172,7 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
             m->build_progress += deliver / cost;
             int whole = (int)floorf(deliver + 0.0001f);
             if (whole > 0) {
-                int drained = manifest_consume_by_commodity(&st->manifest, mat, whole);
-                if (drained > 0) st->manifest_dirty = true;
+                (void)station_manifest_consume_by_commodity(st, mat, whole);
             }
         }
 

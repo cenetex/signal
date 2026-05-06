@@ -62,9 +62,25 @@ bool ship_copy(ship_t *dst, const ship_t *src);
  * if ship_manifest_bootstrap hasn't been called yet. */
 ship_receipts_t *ship_get_receipts(ship_t *ship);
 const ship_receipts_t *ship_get_receipts_const(const ship_t *ship);
+bool ship_manifest_push_with_chain(ship_t *ship, const cargo_unit_t *unit,
+                                   const cargo_receipt_chain_t *chain);
+bool ship_manifest_remove_with_chain(ship_t *ship, uint16_t index,
+                                     cargo_unit_t *out_unit,
+                                     cargo_receipt_chain_t *out_chain);
+int ship_manifest_consume_by_commodity(ship_t *ship, commodity_t c, int n);
 void station_cleanup(station_t *station);
 bool station_manifest_bootstrap(station_t *station);
 bool station_copy(station_t *dst, const station_t *src);
+ship_receipts_t *station_get_receipts(station_t *station);
+const ship_receipts_t *station_get_receipts_const(const station_t *station);
+bool station_manifest_push_with_chain(station_t *station,
+                                      const cargo_unit_t *unit,
+                                      const cargo_receipt_chain_t *chain);
+bool station_manifest_remove_with_chain(station_t *station, uint16_t index,
+                                        cargo_unit_t *out_unit,
+                                        cargo_receipt_chain_t *out_chain);
+int station_manifest_consume_by_commodity(station_t *station,
+                                          commodity_t c, int n);
 
 bool hash_merkle_root(const uint8_t pubs[][32], size_t count, uint8_t out_root[32]);
 bool hash_ingot(commodity_t commodity, mining_grade_t grade,

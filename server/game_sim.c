@@ -1008,53 +1008,6 @@ static int sim_find_mining_target(const world_t *w, vec2 origin, vec2 forward, i
 
 /* ledger_credit_supply declared in game_sim.h */
 
-/* Transfer `n` manifest units of `commodity` from `src` to `dst`.
- *
- * `preferred_grade`: if MINING_GRADE_COUNT (sentinel) → FIFO across any
- * grade. Otherwise the helper first picks units of exactly that grade;
- * once those are exhausted (or if there were none to begin with) it
- * falls through to any-grade FIFO.
- *
- * Returns the number actually transferred. The cargo_unit_t (pub +
- * grade + parent_merkle) moves to the receiving side; callers sync any
- * derived float caches from the manifest after a successful transfer.
- *
- * Conservation invariant (see tests): at any point,
- *   count_in_any_manifest(pub) == 1
- * manifest_remove + manifest_push with the same `unit` value satisfies
- * this because we push a copy of the removed value, not allocate. */
-static int manifest_transfer_by_commodity_ex(manifest_t *src, manifest_t *dst,
-                                             commodity_t commodity,
-                                             mining_grade_t preferred_grade,
-                                             int n) {
-    if (!src || !dst || n <= 0) return 0;
-    int moved = 0;
-    bool allow_any_grade = (preferred_grade >= MINING_GRADE_COUNT);
-    while (moved < n) {
-        int idx = -1;
-        if (!allow_any_grade) {
-            idx = manifest_find_first_cg(src, commodity, preferred_grade);
-        }
-        if (idx < 0) {
-            /* Exhausted preferred grade (or none requested) — fall back
-             * to the first matching commodity, any grade. */
-            for (uint16_t i = 0; i < src->count; i++) {
-                if (src->units[i].commodity == (uint8_t)commodity) { idx = (int)i; break; }
-            }
-        }
-        if (idx < 0) break;
-        cargo_unit_t unit;
-        if (!manifest_remove(src, (uint16_t)idx, &unit)) break;
-        if (!manifest_push(dst, &unit)) {
-            /* dst full — put it back so the invariant holds. */
-            (void)manifest_push(src, &unit);
-            break;
-        }
-        moved++;
-    }
-    return moved;
-}
-
 static bool manifest_unit_is_named_ingot(const cargo_unit_t *u) {
     return u && (cargo_kind_t)u->kind == CARGO_KIND_INGOT &&
            (ingot_prefix_t)u->prefix_class != INGOT_PREFIX_ANONYMOUS;
@@ -1093,21 +1046,116 @@ static int manifest_find_market_buy_unit(const manifest_t *manifest,
     return -1;
 }
 
-static int manifest_transfer_market_buy(manifest_t *src, manifest_t *dst,
-                                        commodity_t commodity,
-                                        mining_grade_t preferred_grade,
-                                        int n) {
+static bool transfer_ship_unit_to_station(ship_t *src, station_t *dst, uint16_t idx) {
+    cargo_unit_t unit = {0};
+    cargo_receipt_chain_t chain = {0};
+
+    if (!src || !dst) return false;
+    if (!ship_manifest_remove_with_chain(src, idx, &unit, &chain)) return false;
+    if (!station_manifest_push_with_chain(dst, &unit, &chain)) {
+        (void)ship_manifest_push_with_chain(src, &unit, &chain);
+        return false;
+    }
+    return true;
+}
+
+static bool transfer_station_unit_to_ship(station_t *src, ship_t *dst, uint16_t idx) {
+    cargo_unit_t unit = {0};
+    cargo_receipt_chain_t chain = {0};
+
+    if (!src || !dst) return false;
+    if (!station_manifest_remove_with_chain(src, idx, &unit, &chain)) return false;
+    if (!ship_manifest_push_with_chain(dst, &unit, &chain)) {
+        (void)station_manifest_push_with_chain(src, &unit, &chain);
+        return false;
+    }
+    return true;
+}
+
+static int transfer_ship_to_station_by_commodity_ex(ship_t *src, station_t *dst,
+                                                    commodity_t commodity,
+                                                    mining_grade_t preferred_grade,
+                                                    int n) {
     if (!src || !dst || n <= 0) return 0;
+    if (!ship_manifest_bootstrap(src) || !station_manifest_bootstrap(dst)) return 0;
+    int moved = 0;
+    bool allow_any_grade = (preferred_grade >= MINING_GRADE_COUNT);
+    while (moved < n) {
+        int idx = -1;
+        if (!allow_any_grade)
+            idx = manifest_find_first_cg(&src->manifest, commodity, preferred_grade);
+        if (idx < 0) {
+            for (uint16_t i = 0; i < src->manifest.count; i++) {
+                if (src->manifest.units[i].commodity == (uint8_t)commodity) {
+                    idx = (int)i;
+                    break;
+                }
+            }
+        }
+        if (idx < 0) break;
+        if (!transfer_ship_unit_to_station(src, dst, (uint16_t)idx)) break;
+        moved++;
+    }
+    return moved;
+}
+
+static int transfer_ship_to_station_by_commodity(ship_t *src, station_t *dst,
+                                                 commodity_t commodity, int n) {
+    return transfer_ship_to_station_by_commodity_ex(src, dst, commodity,
+                                                    MINING_GRADE_COUNT, n);
+}
+
+static int transfer_station_to_ship_by_commodity_ex(station_t *src, ship_t *dst,
+                                                    commodity_t commodity,
+                                                    mining_grade_t preferred_grade,
+                                                    int n) {
+    if (!src || !dst || n <= 0) return 0;
+    if (!station_manifest_bootstrap(src) || !ship_manifest_bootstrap(dst)) return 0;
+    int moved = 0;
+    bool allow_any_grade = (preferred_grade >= MINING_GRADE_COUNT);
+    while (moved < n) {
+        int idx = -1;
+        if (!allow_any_grade)
+            idx = manifest_find_first_cg(&src->manifest, commodity, preferred_grade);
+        if (idx < 0) {
+            for (uint16_t i = 0; i < src->manifest.count; i++) {
+                if (src->manifest.units[i].commodity == (uint8_t)commodity) {
+                    idx = (int)i;
+                    break;
+                }
+            }
+        }
+        if (idx < 0) break;
+        if (!transfer_station_unit_to_ship(src, dst, (uint16_t)idx)) break;
+        moved++;
+    }
+    return moved;
+}
+
+static int transfer_station_to_ship_market_buy(station_t *src, ship_t *dst,
+                                               commodity_t commodity,
+                                               mining_grade_t preferred_grade,
+                                               int n) {
+    if (!src || !dst || n <= 0) return 0;
+    if (!station_manifest_bootstrap(src) || !ship_manifest_bootstrap(dst)) return 0;
     int moved = 0;
     while (moved < n) {
-        int idx = manifest_find_market_buy_unit(src, commodity, preferred_grade);
+        int idx = manifest_find_market_buy_unit(&src->manifest,
+                                                commodity, preferred_grade);
         if (idx < 0) break;
-        cargo_unit_t unit;
-        if (!manifest_remove(src, (uint16_t)idx, &unit)) break;
-        if (!manifest_push(dst, &unit)) {
-            (void)manifest_push(src, &unit);
-            break;
-        }
+        if (!transfer_station_unit_to_ship(src, dst, (uint16_t)idx)) break;
+        moved++;
+    }
+    return moved;
+}
+
+static int transfer_ship_tail_to_station(ship_t *src, station_t *dst, int n) {
+    if (!src || !dst || n <= 0) return 0;
+    if (!ship_manifest_bootstrap(src) || !station_manifest_bootstrap(dst)) return 0;
+    int moved = 0;
+    while (moved < n && src->manifest.count > 0) {
+        uint16_t idx = (uint16_t)(src->manifest.count - 1u);
+        if (!transfer_ship_unit_to_station(src, dst, idx)) break;
         moved++;
     }
     return moved;
@@ -1130,13 +1178,6 @@ static int manifest_find_top_sell_unit(const manifest_t *manifest,
         }
     }
     return top_idx;
-}
-
-/* Backwards-compatible wrapper — any-grade transfer (what Phase 1 used). */
-static int manifest_transfer_by_commodity(manifest_t *src, manifest_t *dst,
-                                          commodity_t commodity, int n) {
-    return manifest_transfer_by_commodity_ex(src, dst, commodity,
-                                              MINING_GRADE_COUNT, n);
 }
 
 static bool is_finished_good(commodity_t c) {
@@ -1233,10 +1274,12 @@ static bool try_sell_one_unit(world_t *w, server_player_t *sp,
     int bonus_cr = (int)lroundf(graded_price - price);
 
     cargo_unit_t sold_unit;
-    if (!manifest_remove(&sp->ship.manifest, (uint16_t)unit_idx, &sold_unit))
+    cargo_receipt_chain_t sold_chain = {0};
+    if (!ship_manifest_remove_with_chain(&sp->ship, (uint16_t)unit_idx,
+                                         &sold_unit, &sold_chain))
         return false;
-    if (!manifest_push(&st->manifest, &sold_unit)) {
-        (void)manifest_push(&sp->ship.manifest, &sold_unit);
+    if (!station_manifest_push_with_chain(st, &sold_unit, &sold_chain)) {
+        (void)ship_manifest_push_with_chain(&sp->ship, &sold_unit, &sold_chain);
         return false;
     }
     sync_ship_finished_cargo(&sp->ship, commodity);
@@ -1333,9 +1376,8 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         if (deliver_units <= 0) continue;
         float price_per = contract_price(ct);
         uint16_t station_count_before = st->manifest.count;
-        int moved = manifest_transfer_by_commodity(&sp->ship.manifest,
-                                                   &st->manifest, c,
-                                                   deliver_units);
+        int moved = transfer_ship_to_station_by_commodity(&sp->ship, st, c,
+                                                          deliver_units);
         if (moved <= 0) continue;
         float bonus = manifest_grade_bonus_from_range(&st->manifest,
                                                       station_count_before,
@@ -1382,9 +1424,8 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
                 if (accepted_units <= 0) continue;
                 float price = station_buy_price(st, buy);
                 uint16_t station_count_before = st->manifest.count;
-                int moved = manifest_transfer_by_commodity(&sp->ship.manifest,
-                                                           &st->manifest, buy,
-                                                           accepted_units);
+                int moved = transfer_ship_to_station_by_commodity(&sp->ship, st, buy,
+                                                                  accepted_units);
                 if (moved <= 0) continue;
                 float bonus = manifest_grade_bonus_from_range(&st->manifest,
                                                               station_count_before,
@@ -3089,9 +3130,8 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                             whole, amount);
                     return;
                 }
-                moved = manifest_transfer_market_buy(
-                    &docked_st->manifest, &sp->ship.manifest,
-                    c, intent->buy_grade, whole);
+                moved = transfer_station_to_ship_market_buy(
+                    docked_st, &sp->ship, c, intent->buy_grade, whole);
                 if (moved <= 0) {
                     SIM_LOG("[buy] REJECT: manifest had no transferable unit for c=%d\n", (int)c);
                     return;
@@ -3115,18 +3155,16 @@ static void step_station_interaction_system(world_t *w, server_player_t *sp, con
                     if (docked_st->_inventory_cache[c] < 0.0f) docked_st->_inventory_cache[c] = 0.0f;
                 }
                 if (!finished && whole > 0) {
-                    moved = manifest_transfer_by_commodity_ex(
-                        &docked_st->manifest, &sp->ship.manifest,
-                        c, intent->buy_grade, whole);
+                    moved = transfer_station_to_ship_by_commodity_ex(
+                        docked_st, &sp->ship, c, intent->buy_grade, whole);
                 }
                 SIM_LOG("[buy] OK player %d bought %.0f of c=%d for %.0f cr (manifest moved=%d)\n",
                         sp->id, charge_amount, c, charge_cost, moved);
             } else if (charge_amount > 0.01f) {
                 if (finished && moved > 0) {
                     /* Roll back the manifest move — payment failed. */
-                    (void)manifest_transfer_by_commodity_ex(
-                        &sp->ship.manifest, &docked_st->manifest,
-                        c, intent->buy_grade, moved);
+                    (void)transfer_ship_tail_to_station(&sp->ship,
+                                                        docked_st, moved);
                 }
                 SIM_LOG("[buy] REJECT: ledger_spend failed (bal=%.2f cost=%.2f)\n",
                         bal, total_cost);
@@ -3369,9 +3407,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                     float amount = fminf(fminf(available, 1.0f), afford); /* buy 1 at a time */
                     if (amount > FLOAT_EPSILON) {
                         int whole = (int)floorf(amount + 0.0001f);
-                        int moved = manifest_transfer_market_buy(
-                            &nearby_st->manifest, &sp->ship.manifest,
-                            c, sp->input.buy_grade, whole);
+                        int moved = transfer_station_to_ship_market_buy(
+                            nearby_st, &sp->ship, c, sp->input.buy_grade, whole);
                         if (moved <= 0) {
                             sp->input.buy_product = false;
                             return;
@@ -3385,9 +3422,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                             sync_station_finished_inventory(nearby_st, c);
                             emit_event(w, (sim_event_t){.type = SIM_EVENT_SELL, .player_id = sp->id});
                         } else {
-                            (void)manifest_transfer_by_commodity_ex(
-                                &sp->ship.manifest, &nearby_st->manifest,
-                                c, sp->input.buy_grade, moved);
+                            (void)transfer_ship_tail_to_station(&sp->ship,
+                                                                nearby_st, moved);
                         }
                     }
                 }

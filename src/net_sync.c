@@ -237,10 +237,12 @@ void apply_remote_station_ingots(uint8_t station_id,
     station_t *st = &g.world.stations[station_id];
     if (!st->manifest.units && !station_manifest_bootstrap(st)) return;
     manifest_clear(&st->manifest);
+    ship_receipts_t *station_receipts = station_get_receipts(st);
+    if (station_receipts) ship_receipts_clear(station_receipts);
     for (int i = 0; i < count; i++) {
         cargo_unit_t unit = {0};
         if (!cargo_unit_from_named_ingot_entry(&entries[i], &unit)) continue;
-        if (!manifest_push(&st->manifest, &unit)) break;
+        if (!station_manifest_push_with_chain(st, &unit, NULL)) break;
     }
 }
 
@@ -281,6 +283,8 @@ void apply_remote_player_manifest(const NetStationManifestEntry *entries,
      * lesser evil compared to ghost SELL rows the player can't act on. */
     if (!ship->manifest.units && !ship_manifest_bootstrap(ship)) return;
     manifest_clear(&ship->manifest);
+    ship_receipts_t *receipts = ship_get_receipts(ship);
+    if (receipts) ship_receipts_clear(receipts);
     if (count <= 0) return;
     uint8_t origin[8] = { 'S','R','V','M','I','R','R','0' };
     uint16_t out_idx = 0;
@@ -301,7 +305,7 @@ void apply_remote_player_manifest(const NetStationManifestEntry *entries,
             if (ship->manifest.count >= ship->manifest.cap) return;
             cargo_unit_t unit = {0};
             if (!cargo_unit_from_named_ingot_entry(entry, &unit)) continue;
-            if (!manifest_push(&ship->manifest, &unit)) return;
+            if (!ship_manifest_push_with_chain(ship, &unit, NULL)) return;
             named_used[j] = true;
             remaining--;
         }
@@ -311,7 +315,7 @@ void apply_remote_player_manifest(const NetStationManifestEntry *entries,
             if (!hash_legacy_migrate_unit(origin, (commodity_t)c, out_idx++, &unit))
                 continue;
             unit.grade = gr;
-            if (!manifest_push(&ship->manifest, &unit)) return;
+            if (!ship_manifest_push_with_chain(ship, &unit, NULL)) return;
         }
     }
 }

@@ -819,8 +819,8 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
                 if (len >= 5) {
                     uint8_t g = data[4];
                     /* Valid grades are 0..MINING_GRADE_COUNT-1; pass the
-                     * sentinel MINING_GRADE_COUNT through so "any" reads
-                     * cleanly in manifest_transfer_by_commodity_ex. */
+                     * sentinel MINING_GRADE_COUNT through so "any" stays
+                     * distinct from a concrete grade in transfer helpers. */
                     if (g <= MINING_GRADE_COUNT) intent->buy_grade = (mining_grade_t)g;
                 }
             }

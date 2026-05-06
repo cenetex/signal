@@ -25,14 +25,7 @@
  * trade picker (manifest-only) shows phantom rows for stock the
  * hauler already carried away. */
 static int station_manifest_drain_commodity(station_t *st, commodity_t c, int n) {
-    if (!st || !st->manifest.units || n <= 0) return 0;
-    int removed = 0;
-    for (int16_t i = (int16_t)st->manifest.count - 1; i >= 0 && removed < n; i--) {
-        if (st->manifest.units[i].commodity == (uint8_t)c) {
-            if (manifest_remove(&st->manifest, (uint16_t)i, NULL)) removed++;
-        }
-    }
-    return removed;
+    return station_manifest_consume_by_commodity(st, c, n);
 }
 
 static int hauler_reserve_units(void) {
@@ -78,7 +71,7 @@ static int station_manifest_seed_from_npc(station_t *st, commodity_t c, int n,
         if (st->manifest.count >= st->manifest.cap) break;
         cargo_unit_t unit = {0};
         if (!hash_legacy_migrate_unit(origin, c, (uint16_t)i, &unit)) continue;
-        if (!manifest_push(&st->manifest, &unit)) break;
+        if (!station_manifest_push_with_chain(st, &unit, NULL)) break;
         pushed++;
     }
     return pushed;
@@ -109,35 +102,18 @@ static int hauler_load_station_units(station_t *src, ship_t *dst,
     if (src->manifest.cap == 0 && !station_manifest_bootstrap(src)) return 0;
     if (!ship_manifest_bootstrap(dst)) return 0;
 
-    ship_receipts_t *dst_receipts = ship_get_receipts(dst);
-    if (!dst_receipts) return 0;
-
-    uint16_t need_cap = (uint16_t)(dst->manifest.count + (uint16_t)n);
-    if (need_cap > dst->manifest.cap &&
-        !manifest_reserve(&dst->manifest, need_cap)) {
-        return 0;
-    }
-    if (need_cap > dst_receipts->cap &&
-        !ship_receipts_reserve(dst_receipts, need_cap)) {
-        return 0;
-    }
-
     int moved = 0;
     while (moved < n) {
         int idx = manifest_find_first_commodity(&src->manifest, c);
         if (idx < 0) break;
         cargo_unit_t unit = {0};
-        if (!manifest_remove(&src->manifest, (uint16_t)idx, &unit)) break;
-        if (!manifest_push(&dst->manifest, &unit)) {
-            (void)manifest_push(&src->manifest, &unit);
+        cargo_receipt_chain_t chain = {0};
+        if (!station_manifest_remove_with_chain(src, (uint16_t)idx,
+                                                &unit, &chain)) {
             break;
         }
-        if (!ship_receipts_push_empty(dst_receipts)) {
-            cargo_unit_t rollback = {0};
-            (void)manifest_remove(&dst->manifest,
-                                  (uint16_t)(dst->manifest.count - 1u),
-                                  &rollback);
-            (void)manifest_push(&src->manifest, &unit);
+        if (!ship_manifest_push_with_chain(dst, &unit, &chain)) {
+            (void)station_manifest_push_with_chain(src, &unit, &chain);
             break;
         }
         moved++;
@@ -150,32 +126,19 @@ static int hauler_unload_ship_units(ship_t *src, station_t *dst,
     if (!src || !dst || n <= 0) return 0;
     if (c < COMMODITY_RAW_ORE_COUNT || c >= COMMODITY_COUNT) return 0;
     if (dst->manifest.cap == 0 && !station_manifest_bootstrap(dst)) return 0;
-    ship_receipts_t *src_receipts = ship_get_receipts(src);
 
     int moved = 0;
     while (moved < n) {
-        if (dst->manifest.count >= dst->manifest.cap) break;
         int idx = manifest_find_first_commodity(&src->manifest, c);
         if (idx < 0) break;
         cargo_unit_t unit = {0};
-        cargo_receipt_chain_t dropped_receipt = {0};
-        bool dropped_receipt_valid = false;
-        if (!manifest_remove(&src->manifest, (uint16_t)idx, &unit)) break;
-        if (src_receipts && idx < (int)src_receipts->count) {
-            dropped_receipt_valid =
-                ship_receipts_remove(src_receipts, (uint16_t)idx,
-                                     &dropped_receipt);
+        cargo_receipt_chain_t chain = {0};
+        if (!ship_manifest_remove_with_chain(src, (uint16_t)idx,
+                                             &unit, &chain)) {
+            break;
         }
-        if (!manifest_push(&dst->manifest, &unit)) {
-            (void)manifest_push(&src->manifest, &unit);
-            if (src_receipts && dropped_receipt_valid) {
-                if (dropped_receipt.len > 0)
-                    (void)ship_receipts_push_chain(src_receipts,
-                                                   dropped_receipt.links,
-                                                   dropped_receipt.len);
-                else
-                    (void)ship_receipts_push_empty(src_receipts);
-            }
+        if (!station_manifest_push_with_chain(dst, &unit, &chain)) {
+            (void)ship_manifest_push_with_chain(src, &unit, &chain);
             break;
         }
         moved++;
@@ -1436,9 +1399,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                         dest->_inventory_cache[c] -= consumed;
                         int whole = (int)floorf(consumed + 0.0001f);
                         if (whole > 0) {
-                            manifest_consume_by_commodity(&dest->manifest,
-                                                          (commodity_t)c, whole);
-                            dest->manifest_dirty = true;
+                            (void)station_manifest_consume_by_commodity(
+                                dest, (commodity_t)c, whole);
                         }
                     }
                 }

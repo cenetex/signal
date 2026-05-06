@@ -454,7 +454,13 @@ TEST(test_world_save_round_trips_station_manifest) {
     unit.grade = (uint8_t)MINING_GRADE_RARE;
     unit.pub[0] = 0xA5;
     unit.pub[31] = 0x5A;
-    ASSERT(manifest_push(&w.stations[0].manifest, &unit));
+    cargo_receipt_chain_t chain = {0};
+    chain.len = 1;
+    memcpy(chain.links[0].cargo_pub, unit.pub, 32);
+    chain.links[0].event_id = 4242;
+    chain.links[0].epoch = 9001;
+    chain.links[0].signature[0] = 0xC7;
+    ASSERT(station_manifest_push_with_chain(&w.stations[0], &unit, &chain));
     ASSERT_EQ_INT(w.stations[0].manifest.count, 1);
     ASSERT(world_save(&w, TMP("test_manifest_roundtrip.sav")));
     ASSERT(world_load(&loaded, TMP("test_manifest_roundtrip.sav")));
@@ -464,6 +470,13 @@ TEST(test_world_save_round_trips_station_manifest) {
     ASSERT_EQ_INT(loaded.stations[0].manifest.units[0].commodity, COMMODITY_FERRITE_INGOT);
     ASSERT_EQ_INT(loaded.stations[0].manifest.units[0].grade, MINING_GRADE_RARE);
     ASSERT(memcmp(loaded.stations[0].manifest.units[0].pub, unit.pub, 32) == 0);
+    ship_receipts_t *loaded_receipts = station_get_receipts(&loaded.stations[0]);
+    ASSERT(loaded_receipts != NULL);
+    ASSERT_EQ_INT((int)loaded_receipts->count, 1);
+    ASSERT_EQ_INT((int)loaded_receipts->chains[0].len, 1);
+    ASSERT_EQ_INT((int)loaded_receipts->chains[0].links[0].event_id, 4242);
+    ASSERT_EQ_INT((int)loaded_receipts->chains[0].links[0].epoch, 9001);
+    ASSERT_EQ_INT((int)loaded_receipts->chains[0].links[0].signature[0], 0xC7);
     remove(TMP("test_manifest_roundtrip.sav"));
 }
 
@@ -806,13 +819,17 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     enum { EXPECTED_MOVED = 2 };
     int stock_units = (int)HAULER_RESERVE + EXPECTED_MOVED;
     cargo_unit_t units[16] = {{0}};
+    cargo_receipt_chain_t chains[16] = {0};
     ASSERT(stock_units <= (int)(sizeof(units) / sizeof(units[0])));
     for (int i = 0; i < stock_units; i++) {
         uint8_t fragment_pub[32] = {0};
         fragment_pub[31] = (uint8_t)(0x60 + i);
         ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
                           fragment_pub, (uint16_t)i, &units[i]));
-        ASSERT(manifest_push(&home->manifest, &units[i]));
+        chains[i].len = 1;
+        memcpy(chains[i].links[0].cargo_pub, units[i].pub, 32);
+        chains[i].links[0].event_id = (uint64_t)(900 + i);
+        ASSERT(station_manifest_push_with_chain(home, &units[i], &chains[i]));
     }
     home->_inventory_cache[COMMODITY_FERRITE_INGOT] = (float)stock_units;
 
@@ -839,6 +856,8 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     ASSERT(manifest_find(&hauler_ship->manifest, units[0].pub) >= 0);
     ASSERT(manifest_find(&hauler_ship->manifest, units[1].pub) >= 0);
     ASSERT_EQ_INT((int)hauler_receipts->count, EXPECTED_MOVED);
+    ASSERT_EQ_INT((int)hauler_receipts->chains[0].len, 1);
+    ASSERT_EQ_INT((int)hauler_receipts->chains[0].links[0].event_id, 900);
 
     ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS,
                                     TMP("test_hauler_manifest_cat")));
@@ -857,6 +876,8 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     ASSERT(loaded_receipts != NULL);
     ASSERT_EQ_INT(loaded_ship->manifest.count, EXPECTED_MOVED);
     ASSERT_EQ_INT((int)loaded_receipts->count, EXPECTED_MOVED);
+    ASSERT_EQ_INT((int)loaded_receipts->chains[0].len, 1);
+    ASSERT_EQ_INT((int)loaded_receipts->chains[0].links[0].event_id, 900);
     ASSERT(manifest_find(&loaded_ship->manifest, units[0].pub) >= 0);
     ASSERT(manifest_find(&loaded_ship->manifest, units[1].pub) >= 0);
     ASSERT_EQ_FLOAT(loaded_hauler->cargo[COMMODITY_FERRITE_INGOT],
@@ -872,6 +893,16 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     ASSERT_EQ_INT((int)loaded_receipts->count, 0);
     ASSERT(manifest_find(&loaded->stations[1].manifest, units[0].pub) >= 0);
     ASSERT(manifest_find(&loaded->stations[1].manifest, units[1].pub) >= 0);
+    ship_receipts_t *dest_receipts = station_get_receipts(&loaded->stations[1]);
+    ASSERT(dest_receipts != NULL);
+    int d0 = manifest_find(&loaded->stations[1].manifest, units[0].pub);
+    int d1 = manifest_find(&loaded->stations[1].manifest, units[1].pub);
+    ASSERT(d0 >= 0);
+    ASSERT(d1 >= 0);
+    ASSERT_EQ_INT((int)dest_receipts->chains[d0].len, 1);
+    ASSERT_EQ_INT((int)dest_receipts->chains[d0].links[0].event_id, 900);
+    ASSERT_EQ_INT((int)dest_receipts->chains[d1].len, 1);
+    ASSERT_EQ_INT((int)dest_receipts->chains[d1].links[0].event_id, 901);
     for (uint16_t i = 0; i < loaded->stations[1].manifest.count; i++) {
         ASSERT(loaded->stations[1].manifest.units[i].recipe_id !=
                RECIPE_LEGACY_MIGRATE);
@@ -934,7 +965,10 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
  * floats × MAX_STATIONS=64 = +1024 bytes.
  * v52: NPC paired ship manifest tail writes uint16 count per
  * MAX_NPC_SHIPS slot on a fresh world. Active haulers with cargo add
- * variable cargo_unit_t + receipt-chain payloads. */
+ * variable cargo_unit_t + receipt-chain payloads.
+ * v53: station manifest entries gained inline receipt-chain payloads.
+ * Fresh world station manifests are empty, so this adds no bytes to
+ * EXPECTED_SAVE_SIZE until a station is holding cargo. */
 #define EXPECTED_SAVE_SIZE ((269292 - (4 + 64 * 56) * 64) + 4 + 4 + 2 + 64 * 104 + 64 * 40 - 64 * 4 + 64 * 16 * 60 + 64 * 4 * 4 + 16 * 2)
 
 TEST(test_save_file_size_stable) {
@@ -972,7 +1006,7 @@ TEST(test_save_header_golden_bytes) {
     ASSERT_EQ_INT((int)fread(&spawn_timer, 4, 1, f), 1);
     fclose(f);
     ASSERT_EQ_INT((int)magic, (int)0x5349474E);    /* "SIGN" */
-    ASSERT_EQ_INT((int)version, 52);
+    ASSERT_EQ_INT((int)version, 53);
     ASSERT(rng != 0);  /* seed is set */
     ASSERT_EQ_FLOAT(time_val, 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(spawn_timer, 0.0f, 0.001f);

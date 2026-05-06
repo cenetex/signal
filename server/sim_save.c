@@ -79,7 +79,13 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define SAVE_MAGIC 0x5349474E  /* "SIGN" */
-#define SAVE_VERSION 52  /* NPC hauler manifest tail:
+#define SAVE_VERSION 53  /* Station receipt store:
+                          * each station manifest entry now carries a
+                          * receipt-chain payload inline
+                          * ([len:u8] + len * cargo_receipt_t), matching
+                          * ship manifest parity so station-held cargo can
+                          * later dispatch by extending the exact incoming
+                          * chain. v52 was the NPC hauler manifest tail:
                           * appends a fixed per-NPC paired-ship manifest
                           * payload after the pubkey registry tail and
                           * before CRC2. This preserves real cargo_unit_t
@@ -458,9 +464,25 @@ static bool write_station_session(FILE *f, const station_t *s) {
      * default capacity and grows as needed. */
     {
         uint16_t manifest_count = s->manifest.count;
+        const ship_receipts_t *rcpts = station_get_receipts_const(s);
         WRITE_FIELD(f, manifest_count);
-        for (uint16_t u = 0; u < manifest_count; u++)
+        for (uint16_t u = 0; u < manifest_count; u++) {
             WRITE_FIELD(f, s->manifest.units[u]);
+            uint8_t len = 0;
+            if (rcpts && u < rcpts->count) {
+                len = rcpts->chains[u].len;
+                if (len > CARGO_RECEIPT_CHAIN_MAX_LEN)
+                    len = CARGO_RECEIPT_CHAIN_MAX_LEN;
+            }
+            WRITE_FIELD(f, len);
+            for (uint8_t k = 0; k < len; k++) {
+                const cargo_receipt_t *r = &rcpts->chains[u].links[k];
+                if (fwrite(r, sizeof(*r), 1, f) != 1) {
+                    fclose(f);
+                    return false;
+                }
+            }
+        }
     }
     /* v40: per-station Ed25519 pubkey (#479 B) + outpost provenance
      * (founder pubkey + name + planted tick) so the matching private
@@ -602,7 +624,7 @@ static bool read_station_session(FILE *f, station_t *s) {
                 u.quantity = 1;
                 u.mined_block = src->mined_block;
                 memcpy(u.pub, src->pubkey, 32);
-                (void)manifest_push(&s->manifest, &u);
+                (void)station_manifest_push_with_chain(s, &u, NULL);
             }
         }
         (void)legacy; /* silence unused warning when nothing is migrated */
@@ -614,12 +636,34 @@ static bool read_station_session(FILE *f, station_t *s) {
     if (!station_manifest_bootstrap(s)) return false;
     if (g_loaded_save_version >= 29) {
         uint16_t manifest_count = 0;
+        ship_receipts_t *rcpts = station_get_receipts(s);
+        if (!rcpts) return false;
         READ_FIELD(f, manifest_count);
+        manifest_clear(&s->manifest);
+        ship_receipts_clear(rcpts);
         if (manifest_count > 0) {
             if (!manifest_reserve(&s->manifest, manifest_count)) return false;
-            for (uint16_t u = 0; u < manifest_count; u++)
-                READ_FIELD(f, s->manifest.units[u]);
-            s->manifest.count = manifest_count;
+            if (!ship_receipts_reserve(rcpts, manifest_count)) return false;
+            for (uint16_t u = 0; u < manifest_count; u++) {
+                cargo_unit_t unit = {0};
+                cargo_receipt_chain_t chain = {0};
+                READ_FIELD(f, unit);
+                if (g_loaded_save_version >= 53) {
+                    READ_FIELD(f, chain.len);
+                    if (chain.len > CARGO_RECEIPT_CHAIN_MAX_LEN)
+                        return false;
+                    for (uint8_t k = 0; k < chain.len; k++) {
+                        if (fread(&chain.links[k], sizeof(chain.links[k]), 1, f) != 1) {
+                            fclose(f);
+                            return false;
+                        }
+                    }
+                }
+                if (!station_manifest_push_with_chain(s, &unit,
+                                                      chain.len > 0 ? &chain : NULL)) {
+                    return false;
+                }
+            }
             /* v45 repurposed cargo_unit_t._pad as quantity. v44 and earlier
              * wrote zero there; rewrite to 1 so units stay addressable. */
             if (g_loaded_save_version < 45)
@@ -1812,7 +1856,7 @@ static void migrate_v4_ship(ship_t *dst, const ship_v4_t *src) {
         u.quantity = 1;
         u.mined_block = lg->mined_block;
         memcpy(u.pub, lg->pubkey, 32);
-        (void)manifest_push(&dst->manifest, &u);
+        (void)ship_manifest_push_with_chain(dst, &u, NULL);
     }
 }
 

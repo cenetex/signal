@@ -315,16 +315,23 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             if ((ingot_prefix_t)src->prefix_class == INGOT_PREFIX_ANONYMOUS) break;
             int price = (int)lroundf(station_sell_price_unit(st, src));
             if (price <= 0) break;
+            if (!station_manifest_bootstrap(st)) break;
+            if (!ship_manifest_bootstrap(ship)) break;
+            ship_receipts_t *station_receipts = station_get_receipts(st);
+            cargo_receipt_chain_t station_chain = {0};
+            if (station_receipts && slot < (int)station_receipts->count)
+                station_chain = station_receipts->chains[slot];
+            if (station_chain.len >= CARGO_RECEIPT_CHAIN_MAX_LEN) break;
             /* Use ledger_spend so the credit pool stays conserved. */
             bool spent = sp->pubkey_set
                 ? ledger_spend_by_pubkey(st, sp->pubkey, (float)price, ship)
                 : ledger_spend(st, sp->session_token, (float)price, ship);
             if (!spent) break;
-            cargo_unit_t copy = *src;
-            if (!ship->manifest.units && !ship_manifest_bootstrap(ship)) break;
-            if (!manifest_push(&ship->manifest, &copy)) break;
-            (void)manifest_remove(&st->manifest, (uint16_t)slot, NULL);
-            st->manifest_dirty = true;
+            cargo_unit_t copy = {0};
+            if (!station_manifest_remove_with_chain(st, (uint16_t)slot,
+                                                    &copy, &station_chain)) {
+                break;
+            }
             /* Layer C of #479: emit EVT_TRANSFER + EVT_TRADE. The two
              * are linked by transfer_event_id so a verifier can stitch
              * them back into a single atomic move.
@@ -335,22 +342,26 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
              * walking the station's chain log to that exact event. */
             {
                 cargo_receipt_t receipt;
+                uint8_t prev_hash[32] = {0};
+                cargo_receipt_chain_t outgoing_chain = station_chain;
+                if (station_chain.len > 0)
+                    cargo_receipt_hash(&station_chain.links[station_chain.len - 1],
+                                       prev_hash);
                 uint64_t xfer_id = cargo_receipt_emit_transfer(
                     &world, st,
                     st->station_pubkey,
                     world.players[pid].pubkey,
                     copy.pub,
                     (uint8_t)CARGO_KIND_INGOT,
-                    st->chain_last_hash, /* anchor: post-emit hash */
+                    station_chain.len > 0 ? prev_hash : st->chain_last_hash,
                     &receipt);
+                if (xfer_id != 0 && outgoing_chain.len < CARGO_RECEIPT_CHAIN_MAX_LEN)
+                    outgoing_chain.links[outgoing_chain.len++] = receipt;
+                if (!ship_manifest_push_with_chain(ship, &copy, &outgoing_chain)) {
+                    (void)station_manifest_push_with_chain(st, &copy, &station_chain);
+                    break;
+                }
                 if (xfer_id != 0) {
-                    /* Attach receipt to the just-pushed manifest entry.
-                     * manifest_push appended at index manifest.count - 1. */
-                    ship_receipts_t *rcpts = ship_get_receipts(ship);
-                    if (rcpts) {
-                        (void)ship_receipts_push_chain(rcpts, &receipt, 1);
-                        /* Keep parity: receipts.count must mirror manifest.count. */
-                    }
                     /* Fire NET_MSG_CARGO_RECEIPT_BUNDLE to the client. */
                     uint8_t buf[3 + CARGO_RECEIPT_SIZE];
                     buf[0] = NET_MSG_CARGO_RECEIPT_BUNDLE;
@@ -395,6 +406,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             }
             if (hidx < 0) break;
             cargo_unit_t copy = ship->manifest.units[hidx];
+            cargo_receipt_chain_t attached_chain = {0};
             /* Layer D of #479: validate any attached receipt chain
              * before accepting. If the chain fails verification, refuse
              * the deliver — federation invariant: a station only takes
@@ -406,6 +418,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             ship_receipts_t *rcpts = ship_get_receipts(ship);
             if (rcpts && hidx < (int)rcpts->count) {
                 const cargo_receipt_chain_t *attached = &rcpts->chains[hidx];
+                attached_chain = *attached;
                 if (attached->len > 0) {
                     cargo_receipt_result_t vr = cargo_receipt_chain_verify(
                         attached->links, attached->len, copy.pub);
@@ -425,7 +438,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
              * so it can never be re-deposited. */
             if (st->manifest.count >= st->manifest.cap) {
                 cargo_unit_t evicted = {0};
-                if (manifest_remove(&st->manifest, 0, &evicted) &&
+                if (station_manifest_remove_with_chain(st, 0, &evicted, NULL) &&
                     (ingot_prefix_t)evicted.prefix_class != INGOT_PREFIX_ANONYMOUS) {
                     char ev_cs[12]; mining_render_callsign(evicted.pub, ev_cs);
                     char ev_msg[96];
@@ -433,22 +446,45 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                     signal_channel_post(&world, sidx, ev_msg, "");
                 }
             }
-            if (!manifest_push(&st->manifest, &copy)) break;
             /* Capture last receipt hash (for the new station-issued
              * receipt's prev_receipt_hash) BEFORE removing. */
             uint8_t prev_hash[32] = {0};
             bool have_prev = false;
-            if (rcpts && hidx < (int)rcpts->count) {
-                const cargo_receipt_chain_t *attached = &rcpts->chains[hidx];
-                if (attached->len > 0) {
-                    cargo_receipt_hash(&attached->links[attached->len - 1], prev_hash);
-                    have_prev = true;
-                }
+            if (attached_chain.len > 0) {
+                cargo_receipt_hash(&attached_chain.links[attached_chain.len - 1], prev_hash);
+                have_prev = true;
             }
-            (void)manifest_remove(&ship->manifest, (uint16_t)hidx, NULL);
-            if (rcpts && hidx < (int)rcpts->count) {
-                (void)ship_receipts_remove(rcpts, (uint16_t)hidx, NULL);
+            cargo_receipt_chain_t removed_chain = {0};
+            if (!ship_manifest_remove_with_chain(ship, (uint16_t)hidx,
+                                                 &copy, &removed_chain)) {
+                break;
             }
+            /* Layer C of #479: emit EVT_TRANSFER (player -> station) +
+             * EVT_TRADE (delivery credit accrual on the station's
+             * ledger).
+             * Layer D of #479: also issue station's own receipt. The
+             * receipt's prev_receipt_hash is the SHA-256 of the player's
+             * presented chain head if there was one — this hop closes
+             * the chain at the destination station. If no prior chain,
+             * anchor to the station's own chain_last_hash post-emit. */
+            cargo_receipt_t receipt = {0};
+            cargo_receipt_chain_t station_chain = removed_chain;
+            uint64_t xfer_id = cargo_receipt_emit_transfer(
+                &world, st,
+                world.players[pid].pubkey,
+                st->station_pubkey,
+                copy.pub,
+                (uint8_t)CARGO_KIND_INGOT,
+                have_prev ? prev_hash : st->chain_last_hash,
+                &receipt);
+            if (xfer_id != 0 && station_chain.len < CARGO_RECEIPT_CHAIN_MAX_LEN)
+                station_chain.links[station_chain.len++] = receipt;
+
+            if (!station_manifest_push_with_chain(st, &copy, &station_chain)) {
+                (void)ship_manifest_push_with_chain(ship, &copy, &removed_chain);
+                break;
+            }
+
             /* Pay delivery credit through the ledger so supply stays
              * balanced. Prefix-class price multipliers (#501): a specific
              * delivered unit pays station_buy_price_unit, so M-class
@@ -463,25 +499,7 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
             } else {
                 ledger_credit_supply(st, world.players[pid].session_token, (float)delivery_int);
             }
-            st->manifest_dirty = true;
-            /* Layer C of #479: emit EVT_TRANSFER (player -> station) +
-             * EVT_TRADE (delivery credit accrual on the station's
-             * ledger).
-             * Layer D of #479: also issue station's own receipt. The
-             * receipt's prev_receipt_hash is the SHA-256 of the player's
-             * presented chain head if there was one — this hop closes
-             * the chain at the destination station. If no prior chain,
-             * anchor to the station's own chain_last_hash post-emit. */
             {
-                cargo_receipt_t receipt;
-                uint64_t xfer_id = cargo_receipt_emit_transfer(
-                    &world, st,
-                    world.players[pid].pubkey,
-                    st->station_pubkey,
-                    copy.pub,
-                    (uint8_t)CARGO_KIND_INGOT,
-                    have_prev ? prev_hash : st->chain_last_hash,
-                    &receipt);
                 if (xfer_id != 0) {
                     /* Send the destination's reissued receipt back to
                      * the player. The cargo is now in the station; the
@@ -588,11 +606,13 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
                                 ? ledger_spend_by_pubkey(st, sp->pubkey, (float)price, ship)
                                 : ledger_spend(st, sp->session_token, (float)price, ship));
                             if (spent) {
-                                cargo_unit_t copy = *src;
-                                if ((ship->manifest.units || ship_manifest_bootstrap(ship)) &&
-                                    manifest_push(&ship->manifest, &copy)) {
-                                    (void)manifest_remove(&st->manifest, (uint16_t)slot, NULL);
-                                    st->manifest_dirty = true;
+                                cargo_unit_t copy = {0};
+                                cargo_receipt_chain_t chain = {0};
+                                if (station_manifest_remove_with_chain(st, (uint16_t)slot,
+                                                                       &copy, &chain)) {
+                                    if (!ship_manifest_push_with_chain(ship, &copy, &chain)) {
+                                        (void)station_manifest_push_with_chain(st, &copy, &chain);
+                                    }
                                 }
                             }
                         }

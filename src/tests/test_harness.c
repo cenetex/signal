@@ -87,7 +87,7 @@ bool test_set_ship_finished_units(ship_t *ship, commodity_t c, int count,
 
     int existing = manifest_count_by_commodity(&ship->manifest, c);
     if (existing > 0)
-        (void)manifest_consume_by_commodity(&ship->manifest, c, existing);
+        (void)ship_manifest_consume_by_commodity(ship, c, existing);
 
     for (int i = 0; i < count; i++) {
         cargo_unit_t unit = {0};
@@ -100,7 +100,7 @@ bool test_set_ship_finished_units(ship_t *ship, commodity_t c, int count,
         unit.pub[1] = (uint8_t)c;
         unit.pub[2] = (uint8_t)i;
         unit.pub[3] = (uint8_t)(i >> 8);
-        if (!manifest_push(&ship->manifest, &unit)) return false;
+        if (!ship_manifest_push_with_chain(ship, &unit, NULL)) return false;
     }
     ship->cargo[c] = (float)count;
     return true;
@@ -113,7 +113,7 @@ bool test_set_station_finished_units(station_t *st, commodity_t c, int count) {
 
     int existing = manifest_count_by_commodity(&st->manifest, c);
     if (existing > 0)
-        (void)manifest_consume_by_commodity(&st->manifest, c, existing);
+        (void)station_manifest_consume_by_commodity(st, c, existing);
     st->_inventory_cache[c] = 0.0f;
     return station_finished_mint(st, c, count, NULL) == count;
 }
