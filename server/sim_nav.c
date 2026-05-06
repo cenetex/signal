@@ -42,8 +42,9 @@ typedef struct {
  * in local polar coords so ring rotation is handled at conversion. */
 
 enum {
-    SNAV_MAX_NODES = 28,  /* 8 exterior + up to ~9 dock pairs */
-    SNAV_MAX_EDGES = 64,
+    /* 8 exterior + dock pairs + per-ring open-gap pairs. */
+    SNAV_MAX_NODES = 48,
+    SNAV_MAX_EDGES = 128,
 };
 
 typedef enum {
@@ -85,6 +86,85 @@ static vec2 snav_node_world_pos(const station_t *st, const snav_node_t *n) {
     /* SNAV_FIXED */
     return v2_add(st->pos, v2(cosf(n->angle) * n->radius,
                                sinf(n->angle) * n->radius));
+}
+
+/* The station geometry emitter leaves the wrap-around span between the
+ * highest occupied slot and the lowest occupied slot open on every ring.
+ * This is the roadway through a ring even when the ring has no dock module.
+ * Return that lane as "slot + angle offset" so SNAV_RING nodes can keep
+ * rotating with the ring they belong to. */
+static bool station_ring_open_gap_lane(const station_t *st, int ring,
+                                       int *out_slot, float *out_offset) {
+    if (!st || ring < 1 || ring > STATION_NUM_RINGS) return false;
+    int slots_n = STATION_RING_SLOTS[ring];
+    if (slots_n <= 0) return false;
+
+    int slots[MAX_MODULES_PER_STATION];
+    int count = 0;
+    for (int i = 0; i < st->module_count && count < MAX_MODULES_PER_STATION; i++) {
+        if (st->modules[i].ring != ring) continue;
+        slots[count++] = st->modules[i].slot;
+    }
+    if (count <= 0) return false;
+
+    for (int i = 1; i < count; i++) {
+        int tmp = slots[i];
+        int j = i - 1;
+        while (j >= 0 && slots[j] > tmp) {
+            slots[j + 1] = slots[j];
+            j--;
+        }
+        slots[j + 1] = tmp;
+    }
+
+    int first = slots[0];
+    int last = slots[count - 1];
+    int gap_slots = first + slots_n - last;
+    if (gap_slots <= 0) gap_slots += slots_n;
+
+    float slot_arc = TWO_PI_F / (float)slots_n;
+    *out_slot = last;
+    *out_offset = slot_arc * (float)gap_slots * 0.5f;
+    return true;
+}
+
+static bool station_ring_angle_blocked(const station_t *st, int ring,
+                                       float angle, float clearance) {
+    if (!st || ring < 1 || ring > STATION_NUM_RINGS) return false;
+    float ring_r = STATION_RING_RADIUS[ring];
+
+    /* Dock slots are intentionally passable. This mirrors the path
+     * validator's legacy behavior and keeps dock approach lanes open. */
+    for (int mi = 0; mi < st->module_count; mi++) {
+        if (st->modules[mi].ring != ring) continue;
+        if (st->modules[mi].type != MODULE_DOCK) continue;
+        if (st->modules[mi].scaffold) continue;
+        float dock_ang = module_angle_ring(st, ring, st->modules[mi].slot);
+        int slots_n = STATION_RING_SLOTS[ring];
+        float slot_arc = (slots_n > 0) ? (TWO_PI_F / (float)slots_n) : TWO_PI_F;
+        if (fabsf(wrap_angle(angle - dock_ang)) < slot_arc * 0.35f)
+            return false;
+    }
+
+    for (int mi = 0; mi < st->module_count; mi++) {
+        if (st->modules[mi].ring != ring) continue;
+        if (st->modules[mi].type == MODULE_DOCK) continue;
+        if (st->modules[mi].scaffold) continue;
+        float mod_ang = module_angle_ring(st, ring, st->modules[mi].slot);
+        float ang_size = (STATION_MODULE_COL_RADIUS + clearance) / ring_r;
+        if (fabsf(wrap_angle(angle - mod_ang)) < ang_size)
+            return true;
+    }
+
+    station_geom_t geom;
+    station_build_geom(st, &geom);
+    for (int co = 0; co < geom.corridor_count; co++) {
+        if (geom.corridors[co].ring != ring) continue;
+        if (angle_in_arc(angle, geom.corridors[co].angle_a,
+                         geom.corridors[co].arc_delta) >= 0.0f)
+            return true;
+    }
+    return false;
 }
 
 static nav_path_t s_npc_paths[MAX_NPC_SHIPS];
@@ -253,46 +333,8 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
                 if (t < 0.0f || t > seg_len) continue;
                 vec2 cross_local = v2_add(lp, v2_scale(fwd, t));
                 float cross_ang = atan2f(cross_local.y, cross_local.x);
-                /* Is this a dock slot? If so, passable. */
-                bool dock_slot = false;
-                for (int mi = 0; mi < st->module_count; mi++) {
-                    if (st->modules[mi].ring != ring) continue;
-                    if (st->modules[mi].type != MODULE_DOCK) continue;
-                    if (st->modules[mi].scaffold) continue;
-                    float dock_ang = module_angle_ring(st, ring, st->modules[mi].slot);
-                    int slots_n = STATION_RING_SLOTS[ring];
-                    float slot_arc = (slots_n > 0) ? (TWO_PI_F / (float)slots_n) : TWO_PI_F;
-                    if (fabsf(wrap_angle(cross_ang - dock_ang)) < slot_arc * 0.35f) {
-                        dock_slot = true; break;
-                    }
-                }
-                if (dock_slot) continue;
-                /* Check if crossing hits a corridor or non-dock module */
-                bool in_wall = false;
-                for (int mi = 0; mi < st->module_count; mi++) {
-                    if (st->modules[mi].ring != ring) continue;
-                    if (st->modules[mi].type == MODULE_DOCK) continue;
-                    if (st->modules[mi].scaffold) continue;
-                    float mod_ang = module_angle_ring(st, ring, st->modules[mi].slot);
-                    float ang_size = (STATION_MODULE_COL_RADIUS + clearance) / ring_r;
-                    if (fabsf(wrap_angle(cross_ang - mod_ang)) < ang_size) {
-                        in_wall = true; break;
-                    }
-                }
-                if (!in_wall) {
-                    /* Check corridor arcs between modules */
-                    station_geom_t geom;
-                    station_build_geom(st, &geom);
-                    for (int co = 0; co < geom.corridor_count; co++) {
-                        if (geom.corridors[co].ring != ring) continue;
-                        float a0 = geom.corridors[co].angle_a;
-                        float da = geom.corridors[co].arc_delta;
-                        if (angle_in_arc(cross_ang, a0, da) >= 0.0f) {
-                            in_wall = true; break;
-                        }
-                    }
-                }
-                if (in_wall) return false;
+                if (station_ring_angle_blocked(st, ring, cross_ang, clearance))
+                    return false;
             }
         }
     }
@@ -309,10 +351,15 @@ bool nav_segment_clear(const world_t *w, vec2 start, vec2 goal, float clearance)
 /* Nodes:
  *   - Per dock: outer waypoint (ring_r + 100) and inner (ring_r - 60), both RING,
  *     offset to the dock gap lane instead of the dock module body.
+ *   - Per occupied ring: outer/inner waypoints through the ring's open
+ *     wrap gap, so stations with inner docks and rotating outer rings
+ *     still expose a roadway through the station wall.
  *   - 8 exterior waypoints around the outermost ring (FIXED, every 45 deg)
  *
  * Edges: every pair of nodes is tested with nav_line_clear. Validated
- * pairs are stored so the A* graph can skip the expensive check later.
+ * pairs are stored so the A* graph can skip the expensive check later,
+ * but only when the nodes share a frame of reference. Cross-ring edges
+ * are validated at query time because each ring can rotate independently.
  *
  * Must be called after module changes (activation, placement, init). */
 void station_build_nav(const world_t *w, int station_idx) {
@@ -357,6 +404,29 @@ void station_build_nav(const world_t *w, int station_idx) {
         }
     }
 
+    /* --- Add ring open-gap pairs (RING) --- */
+    for (int ring = 1; ring <= STATION_NUM_RINGS && nav->node_count < SNAV_MAX_NODES - 2; ring++) {
+        int slot = 0;
+        float lane_offset = 0.0f;
+        if (!station_ring_open_gap_lane(st, ring, &slot, &lane_offset)) continue;
+
+        snav_node_t *outer = &nav->nodes[nav->node_count++];
+        outer->kind = SNAV_RING;
+        outer->angle = lane_offset;
+        outer->radius = 90.0f;
+        outer->ring = ring;
+        outer->slot = slot;
+
+        if (nav->node_count < SNAV_MAX_NODES) {
+            snav_node_t *inner = &nav->nodes[nav->node_count++];
+            inner->kind = SNAV_RING;
+            inner->angle = lane_offset;
+            inner->radius = -90.0f;
+            inner->ring = ring;
+            inner->slot = slot;
+        }
+    }
+
     /* --- Add 8 exterior waypoints around outermost occupied ring (FIXED) --- */
     float outer_r = 0.0f;
     for (int mi = 0; mi < st->module_count; mi++) {
@@ -377,16 +447,19 @@ void station_build_nav(const world_t *w, int station_idx) {
     }
 
     /* --- Validate edges: test all pairs with nav_line_clear --- */
-    /* Only precompute edges where both nodes are rotation-invariant:
-     * RING<->RING (all rings share one rotation speed, so relative
-     * geometry is constant) or FIXED<->FIXED. Mixed FIXED<->RING edges
-     * go stale as rings rotate, so those are left for runtime
+    /* Only precompute edges where both endpoints share one reference
+     * frame: FIXED<->FIXED or same-ring RING<->RING. Mixed and cross-ring
+     * edges go stale as rings drift, so those are left for runtime
      * nav_line_clear during A* expansion. */
     const float clearance = 46.0f; /* 16 ship_radius + 30 margin */
     for (int i = 0; i < nav->node_count && nav->edge_count < SNAV_MAX_EDGES; i++) {
         for (int j = i + 1; j < nav->node_count && nav->edge_count < SNAV_MAX_EDGES; j++) {
-            bool same_kind = (nav->nodes[i].kind == nav->nodes[j].kind);
-            if (!same_kind) continue; /* skip FIXED<->RING — stale after rotation */
+            bool same_fixed = nav->nodes[i].kind == SNAV_FIXED &&
+                              nav->nodes[j].kind == SNAV_FIXED;
+            bool same_ring = nav->nodes[i].kind == SNAV_RING &&
+                             nav->nodes[j].kind == SNAV_RING &&
+                             nav->nodes[i].ring == nav->nodes[j].ring;
+            if (!same_fixed && !same_ring) continue;
             vec2 pi = snav_node_world_pos(st, &nav->nodes[i]);
             vec2 pj = snav_node_world_pos(st, &nav->nodes[j]);
             if (nav_line_clear(w, pi, pj, clearance)) {
@@ -757,10 +830,9 @@ float nav_forward_clearance(const world_t *w, vec2 pos, vec2 vel,
             }
         }
 
-        /* Ring corridor walls — simplified check: treat each ring as a
-         * circle obstacle when the probe ray crosses near a corridor arc.
-         * Full ray-circle intersection is expensive; instead, check if
-         * the ship is heading toward a ring band and there's no dock gap. */
+        /* Ring corridor walls. Use the same angular wall test as the
+         * path validator so open wrap gaps are flyable even when a ring
+         * has no dock module. */
         for (int ring = 1; ring <= STATION_NUM_RINGS; ring++) {
             bool has_modules = false;
             for (int mi = 0; mi < st->module_count; mi++)
@@ -768,35 +840,25 @@ float nav_forward_clearance(const world_t *w, vec2 pos, vec2 vel,
             if (!has_modules) continue;
 
             float ring_r = STATION_RING_RADIUS[ring];
-            /* Quick check: is the probe ray near this ring radius? */
-            vec2 to_c = v2_sub(st->pos, pos);
-            float dist_to_center = sqrtf(v2_len_sq(to_c));
-            /* Ship approaching ring from outside or inside? */
-            float ring_dist = fabsf(dist_to_center - ring_r);
-            if (ring_dist > lookahead + ship_radius + 40.0f) continue;
+            vec2 lp = v2_sub(pos, st->pos);
+            float bb = 2.0f * v2_dot(lp, fwd);
+            float cc = v2_len_sq(lp) - ring_r * ring_r;
+            float disc = bb * bb - 4.0f * cc;
+            if (disc < 0.0f) continue;
+            float sqd = sqrtf(disc);
+            float hits[2] = {
+                (-bb - sqd) * 0.5f,
+                (-bb + sqd) * 0.5f,
+            };
+            for (int hi = 0; hi < 2; hi++) {
+                float t = hits[hi];
+                if (t < 0.0f || t > lookahead + ship_radius + 40.0f) continue;
+                vec2 cross_local = v2_add(lp, v2_scale(fwd, t));
+                float cross_ang = atan2f(cross_local.y, cross_local.x);
+                if (!station_ring_angle_blocked(st, ring, cross_ang, ship_radius + 15.0f))
+                    continue;
 
-            /* Check angle at closest approach to ring — is there a dock? */
-            float approach_ang = atan2f(-to_c.y + fwd.y * dist_to_center,
-                                        -to_c.x + fwd.x * dist_to_center);
-            /* Simplified: just check if the heading points toward the ring
-             * and there's no dock at that angle */
-            float ship_ang = atan2f(pos.y - st->pos.y, pos.x - st->pos.x);
-            bool dock_gap = false;
-            for (int mi = 0; mi < st->module_count; mi++) {
-                if (st->modules[mi].ring != ring) continue;
-                if (st->modules[mi].type != MODULE_DOCK) continue;
-                if (st->modules[mi].scaffold) continue;
-                float dock_ang = module_angle_ring(st, ring, st->modules[mi].slot);
-                int slots_n = STATION_RING_SLOTS[ring];
-                float slot_arc = (slots_n > 0) ? (TWO_PI_F / (float)slots_n) : TWO_PI_F;
-                if (fabsf(wrap_angle(ship_ang - dock_ang)) < slot_arc * 0.6f) {
-                    dock_gap = true; break;
-                }
-            }
-            (void)approach_ang;
-
-            if (!dock_gap && ring_dist < ship_radius + 40.0f) {
-                float urgency = 1.0f - clampf(ring_dist / (ship_radius + 80.0f), 0.0f, 1.0f);
+                float urgency = 1.0f - clampf(t / fmaxf(lookahead, 1.0f), 0.0f, 1.0f);
                 float scale = 1.0f - urgency;
                 if (scale < worst) worst = scale;
             }

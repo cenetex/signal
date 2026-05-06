@@ -264,6 +264,71 @@ static void test_nav_routes_to_station_smelt_midpoint(void) {
     ASSERT(path.count > 0);
 }
 
+static void test_nav_routes_to_kepler_dock_through_outer_ring_gap(void) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+    spatial_grid_build(w);
+
+    const station_t *kepler = &w->stations[1];
+    int dock_ring = 1;
+    int dock_slot = 0;
+    vec2 start = station_dock_lane_pos(kepler, dock_ring, dock_slot, 900.0f);
+    vec2 target = station_approach_target(kepler, start);
+
+    ASSERT(!nav_segment_clear(w, start, target, 46.0f));
+
+    nav_path_t path;
+    bool found = nav_find_path(w, start, target, 46.0f, &path);
+    ASSERT(found);
+    ASSERT(path.count > 0);
+
+    float ring2_gap = module_angle_ring(kepler, 2, 5) +
+                      (TWO_PI_F / (float)STATION_RING_SLOTS[2]) * 0.5f;
+    bool saw_ring2_gap = false;
+    for (int i = 0; i < path.count; i++) {
+        vec2 local = v2_sub(path.waypoints[i], kepler->pos);
+        float r = sqrtf(v2_len_sq(local));
+        float a = atan2f(local.y, local.x);
+        if (fabsf(r - STATION_RING_RADIUS[2]) < 120.0f &&
+            fabsf(wrap_angle(a - ring2_gap)) < 0.35f) {
+            saw_ring2_gap = true;
+            break;
+        }
+    }
+    ASSERT(saw_ring2_gap);
+}
+
+static void test_nav_forward_clearance_respects_kepler_open_gap(void) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+    spatial_grid_build(w);
+
+    const station_t *kepler = &w->stations[1];
+    float ring_r = STATION_RING_RADIUS[2];
+    float open_ang = module_angle_ring(kepler, 2, 5) +
+                     (TWO_PI_F / (float)STATION_RING_SLOTS[2]) * 0.5f;
+    float wall_ang = module_angle_ring(kepler, 2, 4) +
+                     (TWO_PI_F / (float)STATION_RING_SLOTS[2]) * 0.5f;
+    float start_r = ring_r + 90.0f;
+
+    vec2 open_pos = v2_add(kepler->pos, v2(cosf(open_ang) * start_r,
+                                            sinf(open_ang) * start_r));
+    vec2 open_fwd = v2(cosf(open_ang + PI_F), sinf(open_ang + PI_F));
+    float open_clear = nav_forward_clearance(w, open_pos, v2_scale(open_fwd, 120.0f),
+                                             16.0f, open_ang + PI_F);
+    ASSERT(open_clear > 0.85f);
+
+    vec2 wall_pos = v2_add(kepler->pos, v2(cosf(wall_ang) * start_r,
+                                            sinf(wall_ang) * start_r));
+    vec2 wall_fwd = v2(cosf(wall_ang + PI_F), sinf(wall_ang + PI_F));
+    float wall_clear = nav_forward_clearance(w, wall_pos, v2_scale(wall_fwd, 120.0f),
+                                             16.0f, wall_ang + PI_F);
+    ASSERT(wall_clear < open_clear);
+    ASSERT(wall_clear < 0.85f);
+}
+
 TEST(test_autopilot_completes_mining_cycle) {
     /* Run one autopilot player for 180 seconds. It should mine at least
      * one asteroid and earn credits (complete a full cycle).
@@ -509,6 +574,8 @@ void register_navigation_nav_tests(void) {
     RUN(test_nav_force_replan);
     RUN(test_nav_waypoint_advancement);
     RUN(test_nav_routes_to_station_smelt_midpoint);
+    RUN(test_nav_routes_to_kepler_dock_through_outer_ring_gap);
+    RUN(test_nav_forward_clearance_respects_kepler_open_gap);
 }
 
 void register_navigation_autopilot_stress_tests(void) {
