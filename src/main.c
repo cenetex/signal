@@ -848,6 +848,12 @@ static void sim_step(float dt) {
         g.hail_timer = fmaxf(0.0f, g.hail_timer - dt);
     if (g.inspect_snapshot_timer > 0.0f)
         g.inspect_snapshot_timer = fmaxf(0.0f, g.inspect_snapshot_timer - dt);
+    /* Station chain-event heartbeats: ~1s decay so a single delta reads
+     * as one short pulse, but consecutive ticks compound (clamped 1.0). */
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        if (g.station_heartbeat[s] > 0.0f)
+            g.station_heartbeat[s] = fmaxf(0.0f, g.station_heartbeat[s] - dt);
+    }
     if (g.hail_ping_timer > 0.0f) {
         g.hail_ping_timer += dt;
         if (g.hail_ping_timer > 8.00f) g.hail_ping_timer = 0.0f; /* HAIL_PING_LIFECYCLE */

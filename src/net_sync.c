@@ -183,8 +183,26 @@ void apply_remote_stations(uint8_t index, const float* inventory, float credit_p
     (void)credit_pool;
     if (index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[index];
-    for (int i = 0; i < COMMODITY_COUNT; i++)
+    /* Diff against last seen inventory to fire a chain-event heartbeat
+     * pulse on the world. Threshold is loose (>= 0.5 units of any
+     * commodity) so float drift in the smelter doesn't trigger every
+     * tick — production cycles, ore intakes, sales actually move the
+     * needle in whole units. Mirror the singleplayer path's existence
+     * gate (local_server.c::mirror_whole_world) so an uninhabited slot
+     * with stale prev_seen=true doesn't fire spurious heartbeats. */
+    if (g.station_prev_seen[index] && station_exists(st)) {
+        for (int i = 0; i < COMMODITY_COUNT; i++) {
+            if (fabsf(inventory[i] - g.station_prev_inventory[index][i]) >= 0.5f) {
+                g.station_heartbeat[index] = 1.0f;
+                break;
+            }
+        }
+    }
+    for (int i = 0; i < COMMODITY_COUNT; i++) {
         st->_inventory_cache[i] = inventory[i];
+        g.station_prev_inventory[index][i] = inventory[i];
+    }
+    g.station_prev_seen[index] = station_exists(st);
 }
 
 /* Phase 2 wire: server → client station manifest summary. Fully

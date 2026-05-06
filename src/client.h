@@ -406,6 +406,28 @@ typedef struct {
     int inspect_module;      /* module info pane: module index */
     NetInspectSnapshot inspect_snapshot;
     float inspect_snapshot_timer;
+    /* Per-row scramble-resolve animation state for the inspect snapshot
+     * pane. sig is a content fingerprint of the row (cargo_pub +
+     * receipt_head + prefix + commodity + grade + qty); a change retriggers
+     * the animation. anim_t0 is the world time when the row entered its
+     * current state — char i settles at t0 + i * stagger.
+     * phase rotates A→B→C for chains>1 (origin>latest, origin name,
+     * latest name). phase_t0 marks the start of the current phase so the
+     * scramble re-fires only on the bits that actually change. */
+    struct {
+        uint64_t sig;
+        float anim_t0;
+        uint8_t phase;        /* 0..2 — current ticker phase for chained rows */
+        float phase_t0;
+    } inspect_row_anim[INSPECT_SNAPSHOT_MAX_ROWS];
+    /* Station chain-event heartbeat. Set to 1.0 when the deserialized
+     * STATION_RECORD shows a non-trivial inventory or credit_pool delta;
+     * decays per frame in the main step. Renderer draws an expanding
+     * green halo with alpha = heartbeat[i]. Previous-frame mirror so we
+     * can compute the delta wherever the records land. */
+    float station_heartbeat[MAX_STATIONS];
+    float station_prev_inventory[MAX_STATIONS][COMMODITY_COUNT];
+    bool  station_prev_seen[MAX_STATIONS];
     /* --- Hail overlay --- */
     float hail_timer;            /* countdown for hail display */
     char hail_station[64];       /* station name */

@@ -6,6 +6,7 @@
 #include "render.h"
 #include "net.h"
 #include "net_sync.h"
+#include "inspect_anim.h"
 #include "onboarding.h"
 #include "world_draw.h"
 #include "avatar.h"
@@ -534,6 +535,98 @@ static void hud_cargo_label(const uint8_t pub[32], char out[12]) {
     mining_render_callsign(pub, out);
 }
 
+/* ----- scramble-resolve glyph animation -----
+ * Tape-printer feel: when a row's content changes, each character starts
+ * as a random glyph and resolves to its true value at t0 + i * stagger.
+ * Once settled, the chars stay still — this is not a perpetual jitter.
+ *
+ * The codebase calls it "hash short label" but mining_callsign_from_pubkey
+ * emits base58 — that's the only alphabet we scramble over today, so
+ * the truth and the in-flight glyphs share a character class. */
+#define HUD_SCRAMBLE_TOTAL_MS    250.0f   /* full settle time per row */
+#define HUD_SCRAMBLE_STAGGER_MS   30.0f   /* per-character delay */
+
+static char hud_random_glyph(uint32_t *rng) {
+    /* tiny xorshift so the scramble is stable per-frame for the same
+     * t but different across (row, char_index, frame). */
+    uint32_t x = *rng;
+    x ^= x << 13; x ^= x >> 17; x ^= x << 5;
+    *rng = x ? x : 0xDEADBEEFu;
+    static const char b58[] =
+        "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+    return b58[x % (sizeof(b58) - 1)];
+}
+
+/* Render `truth` (null-terminated) into `out` (cap bytes), scrambling
+ * unsettled chars from the base58 alphabet. `phase_ms` is ms since the
+ * row's animation t0. `lock` is a bitmask (positions 0..31) of char
+ * indices that should NEVER scramble (e.g. the literal "M-" prefix on
+ * a cargo callsign). Char i settles at i*HUD_SCRAMBLE_STAGGER_MS;
+ * after HUD_SCRAMBLE_TOTAL_MS the whole string is the truth. */
+static void hud_scramble_into(char *out, size_t cap,
+                              const char *truth,
+                              float phase_ms, uint32_t lock_mask, uint32_t seed) {
+    if (cap == 0) return;
+    size_t L = strlen(truth);
+    if (L >= cap) L = cap - 1;
+    for (size_t i = 0; i < L; i++) {
+        float settle = (float)i * HUD_SCRAMBLE_STAGGER_MS;
+        bool locked = (i < 32) && ((lock_mask >> i) & 1u);
+        if (locked || phase_ms >= settle) {
+            out[i] = truth[i];
+            continue;
+        }
+        /* Mid-flight: emit a random glyph. The rng seed mixes (row,
+         * char_index, phase) so successive frames cycle through
+         * different glyphs, but a given (row, char, frame) is
+         * deterministic — no per-frame RAND state. */
+        uint32_t rng = seed ^ ((uint32_t)i * 0x9E3779B1u)
+                            ^ (uint32_t)(phase_ms * 1.7f);
+        out[i] = hud_random_glyph(&rng);
+    }
+    out[L] = '\0';
+}
+
+/* Cargo callsigns have a literal class prefix that should never
+ * scramble — only the hash body should animate.
+ * Returns the lock mask covering the prefix chars. */
+static uint32_t hud_cargo_prefix_lock(const char *cargo) {
+    if (!cargo) return 0;
+    size_t L = strlen(cargo);
+    /* Patterns: "RATi-XYZ" (5 prefix chars), "M-ABCDEF" (2 prefix chars),
+     * "ABCDEFG" (no prefix). */
+    if (L >= 5 && cargo[0]=='R' && cargo[1]=='A' && cargo[2]=='T'
+        && cargo[3]=='i' && cargo[4]=='-')
+        return 0x1Fu;
+    if (L >= 2 && cargo[1] == '-')
+        return 0x3u;
+    return 0;
+}
+
+/* hud_row_signature lives in inspect_anim.c so signal_test can link
+ * it without sokol. See inspect_anim.h. */
+
+/* Find a station by pubkey; returns the human name if the pubkey
+ * matches a live station, else writes the 7-char hash short label.
+ * out cap must be >= 13 to hold the longest station name + null. */
+static void hud_station_name_for_pubkey(const uint8_t pub[32],
+                                        char *out, size_t cap) {
+    if (cap == 0) return;
+    if (!hash32_is_zero(pub)) {
+        for (int i = 0; i < MAX_STATIONS; i++) {
+            const station_t *st = &g.world.stations[i];
+            if (!station_exists(st)) continue;
+            if (memcmp(st->station_pubkey, pub, 32) == 0) {
+                snprintf(out, cap, "%s", st->name);
+                return;
+            }
+        }
+    }
+    char tmp[8];
+    hud_hash_short_label(pub, tmp);
+    snprintf(out, cap, "%s", tmp);
+}
+
 static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     if (g.inspect_snapshot_timer <= 0.0f) return;
     if (LOCAL_PLAYER.docked) return;
@@ -581,6 +674,7 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     if (rows > max_rows) rows = max_rows;
     unsigned visible_units = 0;
     float next_y = py + 48.0f;
+    float now = g.world.time;
     for (int i = 0; i < rows; i++) {
         const NetInspectSnapshotRow *row = &snap->rows[i];
         char cargo[12], head[8], origin[8], latest[8];
@@ -610,26 +704,115 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
             }
         }
 
+        /* Per-row scramble state: re-trigger the animation only when the
+         * row's content fingerprint actually changed. Same content across
+         * frames = no re-scramble. */
+        uint64_t sig = hud_row_signature(row);
+        if (g.inspect_row_anim[i].sig != sig) {
+            g.inspect_row_anim[i].sig = sig;
+            g.inspect_row_anim[i].anim_t0 = now;
+            g.inspect_row_anim[i].phase = 0;
+            g.inspect_row_anim[i].phase_t0 = now;
+        }
+        float row_phase_ms = (now - g.inspect_row_anim[i].anim_t0) * 1000.0f;
+        float settle_norm = row_phase_ms / HUD_SCRAMBLE_TOTAL_MS;
+        if (settle_norm < 0.0f) settle_norm = 0.0f;
+        if (settle_norm > 1.0f) settle_norm = 1.0f;
+        /* Brightness pulses during settle: dimmer at the start, full at
+         * settle, then a touch under so settled rows don't burn too hot. */
+        float row_alpha = 0.55f + 0.45f * settle_norm;
+        uint8_t a8_label = (uint8_t)(235.0f * row_alpha);
+        uint8_t a8_chain = (uint8_t)(200.0f * row_alpha);
+
         uint8_t rr, gg, bb;
         mining_grade_rgb((mining_grade_t)row->grade, &rr, &gg, &bb);
         float y = next_y;
+
+        /* The label proper: rarity short + commodity code + cargo/prefix
+         * + quantity. The cargo callsign body scrambles but the class
+         * prefix ("M-", "RATi-") and the ingot-class words ("M class")
+         * stay fixed — those aren't hashes, those are stable bucket
+         * labels. */
+        char cargo_disp[12];
+        if (prefix_label) {
+            snprintf(cargo_disp, sizeof(cargo_disp), "%s", prefix_label);
+        } else {
+            uint32_t lock = hud_cargo_prefix_lock(cargo);
+            uint32_t seed = (uint32_t)(sig & 0xffffffffu) ^ 0xC0FFEEu;
+            hud_scramble_into(cargo_disp, sizeof(cargo_disp), cargo,
+                              row_phase_ms, lock, seed);
+        }
         sdtx_pos(px / cell, y / cell);
-        sdtx_color4b(rr, gg, bb, 235);
+        sdtx_color4b(rr, gg, bb, a8_label);
         sdtx_printf("%-5s %s %-10s x%u",
                     hud_grade_short_label(row->grade),
                     commodity_code((commodity_t)row->commodity),
-                    prefix_label ? prefix_label : cargo,
+                    cargo_disp,
                     qty);
 
         next_y = y + 14.0f;
         if (!grouped && (row->flags & INSPECT_ROW_HAS_RECEIPT)) {
+            /* Phase rotation for chained rows. Singletons (chain_len==1)
+             * pin to phase 0 — origin and latest are the same so phases
+             * B/C add nothing. Each phase fires a fresh per-phase
+             * scramble on the bits that actually changed line-to-line. */
+            const float PHASE_DUR = 1.2f;
+            uint8_t target_phase = 0;
+            if (row->chain_len > 1) {
+                int slot = (int)((now - g.inspect_row_anim[i].anim_t0) / PHASE_DUR) % 3;
+                if (slot < 0) slot = 0;
+                target_phase = (uint8_t)slot;
+            }
+            if (target_phase != g.inspect_row_anim[i].phase) {
+                g.inspect_row_anim[i].phase = target_phase;
+                g.inspect_row_anim[i].phase_t0 = now;
+            }
+            float phase_ms = (now - g.inspect_row_anim[i].phase_t0) * 1000.0f;
+
             sdtx_pos(px / cell, (y + 12.0f) / cell);
-            sdtx_color3b(PAL_TEXT_GREY);
-            sdtx_printf("chain %u  %s>%s  head %s  ev %llu",
-                        (unsigned)row->chain_len, origin, latest, head,
-                        (unsigned long long)row->event_id);
+            sdtx_color4b(PAL_TEXT_GREY, a8_chain);
+            uint32_t seed = (uint32_t)(sig & 0xffffffffu);
+            if (target_phase == 0) {
+                /* Phase A — origin>latest + head + ev. The body of each
+                 * 7-char hash scrambles independently. */
+                char a_origin[8], a_latest[8], a_head[8];
+                hud_scramble_into(a_origin, sizeof(a_origin), origin,
+                                  phase_ms,0, seed ^ 1u);
+                hud_scramble_into(a_latest, sizeof(a_latest), latest,
+                                  phase_ms,0, seed ^ 2u);
+                hud_scramble_into(a_head, sizeof(a_head), head,
+                                  phase_ms,0, seed ^ 3u);
+                sdtx_printf("chain %u  %s>%s  head %s  ev %llu",
+                            (unsigned)row->chain_len, a_origin, a_latest,
+                            a_head, (unsigned long long)row->event_id);
+            } else if (target_phase == 1) {
+                /* Phase B — origin: <station name or hash>. */
+                char name[24];
+                hud_station_name_for_pubkey(row->origin_station, name, sizeof(name));
+                char disp[24];
+                hud_scramble_into(disp, sizeof(disp), name,
+                                  phase_ms,0, seed ^ 4u);
+                sdtx_printf("chain %u  origin: %s",
+                            (unsigned)row->chain_len, disp);
+            } else {
+                /* Phase C — latest: <station name or hash>. */
+                char name[24];
+                hud_station_name_for_pubkey(row->latest_station, name, sizeof(name));
+                char disp[24];
+                hud_scramble_into(disp, sizeof(disp), name,
+                                  phase_ms,0, seed ^ 5u);
+                sdtx_printf("chain %u  latest: %s",
+                            (unsigned)row->chain_len, disp);
+            }
             next_y = y + 26.0f;
         }
+    }
+    /* Clear stale anim slots beyond the current row count so an
+     * eventually-shorter snapshot doesn't carry old signatures forward
+     * (would otherwise look like a fresh re-trigger when the same
+     * NPC's row count grew back). */
+    for (int i = rows; i < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
+        g.inspect_row_anim[i].sig = 0;
     }
 
     if (snap->manifest_count > visible_units) {

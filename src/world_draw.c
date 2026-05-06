@@ -13,6 +13,7 @@
 #include "manifest.h"
 #include "palette.h"
 #include "station_palette.h"
+#include <stddef.h>  /* ptrdiff_t for station index */
 #include <stdlib.h>
 
 #define HAIL_PING_DURATION   1.50f   /* ring sweep - gentle, not a shockwave */
@@ -882,6 +883,25 @@ void draw_station(const station_t* station, bool is_current, bool is_nearby) {
             if (station->modules[i].ring == r) { has_modules = true; break; }
         if (!has_modules) continue;
         draw_circle_outline(station->pos, STATION_RING_RADIUS[r], 48, role_r * 0.08f, role_g * 0.08f, role_b * 0.08f, 0.08f);
+    }
+
+    /* Chain-event heartbeat — gentle expanding green halo when this
+     * station's inventory or credit_pool moved this tick. Same muted
+     * green used for the scan ring; pulse expands as it fades, so a
+     * settled value (heartbeat = 0) is invisible and a fresh delta
+     * (heartbeat = 1) starts as a tight ring at the station core. */
+    ptrdiff_t s_idx = station - g.world.stations;
+    if (s_idx >= 0 && s_idx < MAX_STATIONS) {
+        float hb = g.station_heartbeat[s_idx];
+        if (hb > 0.001f) {
+            float t = 1.0f - hb;                    /* 0 at fire, 1 at decay */
+            float radius = 12.0f + t * 18.0f;        /* tight 12u → 30u */
+            float alpha = hb * 0.8f;
+            draw_circle_outline(station->pos, radius, 24,
+                                0.20f, 0.95f, 0.45f, alpha);
+            draw_circle_outline(station->pos, radius * 0.55f, 16,
+                                0.20f, 0.95f, 0.45f, alpha * 0.6f);
+        }
     }
 }
 
