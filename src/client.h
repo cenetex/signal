@@ -427,6 +427,7 @@ typedef struct {
      * can compute the delta wherever the records land. */
     float station_heartbeat[MAX_STATIONS];
     float station_prev_inventory[MAX_STATIONS][COMMODITY_COUNT];
+    float station_prev_credit_pool[MAX_STATIONS];
     bool  station_prev_seen[MAX_STATIONS];
     /* --- Hail overlay --- */
     float hail_timer;            /* countdown for hail display */

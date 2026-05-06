@@ -1604,8 +1604,14 @@ void draw_npc_ships(void) {
             }
         }
         if (i == scan_npc) {
+            /* Hug the visible ship: ship_radius is the collision radius
+             * and the rendered triangle sits within it, so a tight
+             * fraction reads as "highlighting this ship" rather than
+             * "drawing a halo around general space near it". Pulse is
+             * subtle (±1 unit) so the radius stays visually stable. */
             float pulse = 0.5f + 0.5f * sinf(g.world.time * 6.0f);
-            float r = 22.0f + 1.5f * pulse;
+            float ship_r = npc_hull_def(tnpc)->ship_radius;
+            float r = ship_r * 0.7f + 2.0f + 1.0f * pulse;
             float a = 0.65f + 0.20f * pulse;
             /* Fade with the linger timer so the ring decays in sync
              * with the panel rather than vanishing abruptly. */
@@ -1613,8 +1619,6 @@ void draw_npc_ships(void) {
                           ? g.inspect_snapshot_timer : 1.0f;
             draw_circle_outline(tnpc->ship.pos, r, 28,
                                 0.20f, 0.95f, 0.45f, a * decay);
-            draw_circle_outline(tnpc->ship.pos, r * 1.35f, 28,
-                                0.10f, 0.55f, 0.25f, a * 0.45f * decay);
         }
     }
 }

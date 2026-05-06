@@ -116,21 +116,31 @@ static void mirror_whole_world(const world_t *src) {
     memcpy(g.world.asteroids, src->asteroids, sizeof(g.world.asteroids));
     memcpy(g.world.npc_ships, src->npc_ships, sizeof(g.world.npc_ships));
     for (int i = 0; i < MAX_STATIONS; i++) {
-        /* Diff inventory before the copy clobbers it — heartbeat fires
-         * on production cycles, ore intake, sales. Same threshold as
-         * the multiplayer path in apply_remote_stations(). */
+        /* Diff inventory + credit_pool before the copy clobbers them —
+         * heartbeat fires on production cycles, ore intakes, sales,
+         * and ledger movement. Same thresholds as apply_remote_stations
+         * (MP path). credit_pool is derived from -Σ(ledger.balance);
+         * use station_credit_pool() so this matches the wire value. */
         const station_t *src_st = &src->stations[i];
         if (g.station_prev_seen[i] && station_exists(src_st)) {
+            bool fired = false;
             for (int c = 0; c < COMMODITY_COUNT; c++) {
                 if (fabsf(src_st->_inventory_cache[c] -
                           g.station_prev_inventory[i][c]) >= 0.5f) {
-                    g.station_heartbeat[i] = 1.0f;
+                    fired = true;
                     break;
                 }
             }
+            if (!fired) {
+                float pool = station_credit_pool(src_st);
+                if (fabsf(pool - g.station_prev_credit_pool[i]) >= 5.0f)
+                    fired = true;
+            }
+            if (fired) g.station_heartbeat[i] = 1.0f;
         }
         for (int c = 0; c < COMMODITY_COUNT; c++)
             g.station_prev_inventory[i][c] = src_st->_inventory_cache[c];
+        g.station_prev_credit_pool[i] = station_credit_pool(src_st);
         g.station_prev_seen[i] = station_exists(src_st);
         (void)station_copy(&g.world.stations[i], src_st);
     }

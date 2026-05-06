@@ -177,31 +177,36 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
 }
 
 void apply_remote_stations(uint8_t index, const float* inventory, float credit_pool) {
-    /* credit_pool is now derived server-side from -Σ(ledger.balance);
-     * still arrives over the wire for protocol stability but no client
-     * code reads it, so we discard it here. */
-    (void)credit_pool;
     if (index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[index];
-    /* Diff against last seen inventory to fire a chain-event heartbeat
-     * pulse on the world. Threshold is loose (>= 0.5 units of any
-     * commodity) so float drift in the smelter doesn't trigger every
-     * tick — production cycles, ore intakes, sales actually move the
-     * needle in whole units. Mirror the singleplayer path's existence
-     * gate (local_server.c::mirror_whole_world) so an uninhabited slot
-     * with stale prev_seen=true doesn't fire spurious heartbeats. */
+    /* Diff against last seen inventory + credit_pool to fire a chain-
+     * event heartbeat pulse on the world. Inventory tracks production
+     * and consumption; credit_pool tracks commerce (ledger movement
+     * from sales, supplier credits, contract payouts). Together they
+     * cover the chain events visible to a player at-a-glance.
+     * Thresholds are loose so float drift in the smelter (~0.016/tick)
+     * doesn't fire every frame: 0.5 units of any commodity, or 5
+     * credits of pool delta. Mirror the singleplayer existence gate
+     * so an uninhabited slot with stale prev_seen=true doesn't fire. */
     if (g.station_prev_seen[index] && station_exists(st)) {
+        bool fired = false;
         for (int i = 0; i < COMMODITY_COUNT; i++) {
             if (fabsf(inventory[i] - g.station_prev_inventory[index][i]) >= 0.5f) {
-                g.station_heartbeat[index] = 1.0f;
+                fired = true;
                 break;
             }
         }
+        if (!fired
+            && fabsf(credit_pool - g.station_prev_credit_pool[index]) >= 5.0f) {
+            fired = true;
+        }
+        if (fired) g.station_heartbeat[index] = 1.0f;
     }
     for (int i = 0; i < COMMODITY_COUNT; i++) {
         st->_inventory_cache[i] = inventory[i];
         g.station_prev_inventory[index][i] = inventory[i];
     }
+    g.station_prev_credit_pool[index] = credit_pool;
     g.station_prev_seen[index] = station_exists(st);
 }
 
@@ -278,15 +283,19 @@ void apply_remote_hold_ingots(const NetNamedIngotEntry *entries, int count) {
 void apply_remote_inspect_snapshot(const NetInspectSnapshot *snapshot) {
     if (!snapshot) return;
 
-    /* Linger: when the server reports no current target (player let
-     * the scan key go), keep the last frame's snapshot data and let
-     * the panel decay over a few seconds — gives the player time to
-     * read what they just locked onto. The active-scan tick refresh
-     * uses the shorter 0.6s timeout so that a still-locked target
-     * doesn't render the previous frame after the snapshot grows
-     * stale. */
+    /* Linger: hold the last snapshot's data on screen for a few
+     * seconds after the player releases the scan key. Active-scan
+     * frames refresh the timer to 0.60; the release edge bumps it up
+     * to the linger window. After that, the timer counts down on its
+     * own — we mustn't reset it on every subsequent idle frame, which
+     * would clamp it at 3.5 forever. The per-frame decay in main.c
+     * clears target_type when the timer hits 0, so this branch can
+     * trust target_type as a "we already lingered out" signal. */
     if (snapshot->target_type == INSPECT_TARGET_NONE) {
-        g.inspect_snapshot_timer = 3.5f;
+        bool had_target = g.inspect_snapshot.target_type != INSPECT_TARGET_NONE;
+        if (had_target && g.inspect_snapshot_timer <= 0.60f) {
+            g.inspect_snapshot_timer = 3.5f;
+        }
     } else {
         g.inspect_snapshot = *snapshot;
         g.inspect_snapshot_timer = 0.60f;

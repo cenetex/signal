@@ -846,8 +846,16 @@ static void sim_step(float dt) {
         g.commission_timer = fmaxf(0.0f, g.commission_timer - dt);
     if (g.hail_timer > 0.0f)
         g.hail_timer = fmaxf(0.0f, g.hail_timer - dt);
-    if (g.inspect_snapshot_timer > 0.0f)
+    if (g.inspect_snapshot_timer > 0.0f) {
         g.inspect_snapshot_timer = fmaxf(0.0f, g.inspect_snapshot_timer - dt);
+        if (g.inspect_snapshot_timer <= 0.0f) {
+            /* Linger fully decayed — clear so the next idle frame's
+             * apply_*_inspect_snapshot doesn't see had_target=true and
+             * keep re-bumping the timer back to 3.5 indefinitely. */
+            g.inspect_snapshot.target_type = INSPECT_TARGET_NONE;
+            g.inspect_snapshot.target_index = 0xFFu;
+        }
+    }
     /* Station chain-event heartbeats: ~1s decay so a single delta reads
      * as one short pulse, but consecutive ticks compound (clamped 1.0). */
     for (int s = 0; s < MAX_STATIONS; s++) {
@@ -1376,6 +1384,28 @@ static void render_world(void) {
                 float kcen = (1.0f - expf(-3.0f * dt)) * g.boost_center_blend;
                 g.camera_pos.x += (ship.x - g.camera_pos.x) * kcen;
                 g.camera_pos.y += (ship.y - g.camera_pos.y) * kcen;
+            }
+        }
+
+        /* Scan-target framing: bias the camera toward the midpoint
+         * between the local player and the scanned NPC so both stay
+         * visible. Skipped during the death cinematic. Strength
+         * tracks the linger timer normalized to [0,1] so the framing
+         * eases back to neutral as the panel fades out. */
+        if (!g.death_cinematic.active
+            && g.inspect_snapshot.target_type == INSPECT_TARGET_NPC
+            && g.inspect_snapshot_timer > 0.0f
+            && g.inspect_snapshot.target_index < MAX_NPC_SHIPS) {
+            int idx = (int)g.inspect_snapshot.target_index;
+            const npc_ship_t *tn = &g.world.npc_ships[idx];
+            if (tn->active) {
+                vec2 mid = v2(0.5f * (LOCAL_PLAYER.ship.pos.x + tn->ship.pos.x),
+                              0.5f * (LOCAL_PLAYER.ship.pos.y + tn->ship.pos.y));
+                float strength = g.inspect_snapshot_timer < 1.0f
+                                 ? g.inspect_snapshot_timer : 1.0f;
+                float k = (1.0f - expf(-2.5f * dt)) * 0.6f * strength;
+                g.camera_pos.x += (mid.x - g.camera_pos.x) * k;
+                g.camera_pos.y += (mid.y - g.camera_pos.y) * k;
             }
         }
     }
