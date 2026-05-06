@@ -1851,6 +1851,10 @@ static void frame(void) {
                     flags |= NET_INPUT_FIRE;
                 if (g.input.key_down[SAPP_KEYCODE_SPACE] && !g.plan_mode_active)
                     flags |= NET_INPUT_TRACTOR;
+                if ((g.input.key_down[SAPP_KEYCODE_LEFT_SHIFT] ||
+                     g.input.key_down[SAPP_KEYCODE_RIGHT_SHIFT]) &&
+                    !LOCAL_PLAYER.docked)
+                    flags |= NET_INPUT_BOOST;
                 uint8_t buy_grade_byte = g.pending_net_buy_grade;
                 int8_t place_station = g.pending_net_place_station;
                 int8_t place_ring    = g.pending_net_place_ring;

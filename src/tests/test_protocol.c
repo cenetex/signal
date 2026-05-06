@@ -574,7 +574,7 @@ TEST(test_parse_input_valid) {
 
     uint8_t msg[4] = {
         NET_MSG_INPUT,
-        NET_INPUT_THRUST | NET_INPUT_LEFT | NET_INPUT_FIRE,
+        NET_INPUT_THRUST | NET_INPUT_LEFT | NET_INPUT_FIRE | NET_INPUT_BOOST,
         NET_ACTION_SELL_CARGO,
         0xFF  /* no mining target */
     };
@@ -583,6 +583,7 @@ TEST(test_parse_input_valid) {
     ASSERT_EQ_FLOAT(intent.thrust, 1.0f, 0.01f);
     ASSERT_EQ_FLOAT(intent.turn, 1.0f, 0.01f);
     ASSERT(intent.mine);
+    ASSERT(intent.boost);
     ASSERT(intent.service_sell);
 }
 
