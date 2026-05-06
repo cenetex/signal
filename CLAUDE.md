@@ -1,6 +1,8 @@
 # Signal — Claude Code Context
 
-Live at **[signal.ratimics.com/play](https://signal.ratimics.com/play)**. Multiplayer space-station game in C11 / Sokol. PvP rock-flinging is the hook; the rest of the systems feed that hook.
+Live at **[signal.ratimics.com/play](https://signal.ratimics.com/play)**. Multiplayer space-station game in C11 / Sokol. Frontier mining economy: sovereign per-station currencies, signal-gated expansion, player-built outposts on a shared ring network. Oh yeah and you kill each other with rocks.
+
+Like Factorio is a game about managing trains: the surface pitch is the economy, but the beating heart of the game — what players will be telling stories about ten years from now — is the rock. Treat that line accordingly. The economy is the structure that *makes the rock matter*. A rock is just a rock until somebody hauled it eight jumps from Prospect through three currency zones to deliver it personally to your face.
 
 ## Build
 
@@ -52,7 +54,8 @@ cmake --build build-test
 3. Dock and sell ore, or deliver named contract cargo (manifest / `cargo_unit_t` ingots).
 4. Stations internally smelt ore → ingots and fabricate frames / lasers / tractor modules. Press `F` docked to buy the station's primary product.
 5. Enter plan mode (`B` undocked) to reserve a module slot or plant a new outpost. Order a scaffold at a shipyard, then tractor-tow the scaffold into place (`E`).
-6. Throw rocks at other players.
+
+If another ship is in your way, you can fling rocks at them. The mining laser is a mining tool and does not damage hulls; the only weapon in the game is a fragment under tractor tension, released. No lasers, no missiles, no turrets, no directed-energy anything — ever. Every escalation a player invents has to be built out of rocks, hopper levels, dock approaches, and signal coverage. This is the design rule, not a placeholder.
 
 ## Stations
 
@@ -80,7 +83,7 @@ This means haulers and arbitrage are first-class: credits earned at Prospect can
 
 ## Signal
 
-Stations emit signal, and signal range matters mechanically. Weak signal throttles mining speed and ship response; players and NPCs get pushed back toward the connected station chain. `H` while undocked in strong signal hails the nearest station and collects pending supplier credits at the station you're nearest to.
+Stations emit signal, and signal range matters mechanically. Weak signal throttles mining speed and ship response; players and NPCs get pushed back toward the connected station chain. `H` hails a station in comm range, shows that station's local ledger balance for the player, and opens the current station-authored hail/contract response.
 
 ## Ships and manifest
 
@@ -102,7 +105,7 @@ Per-player saves live under `saves/`:
   identity secret; the server verifies and renames the legacy file
   into `saves/pubkey/`. First-claim-wins — see #479-A.4.
 
-`world.sav` is unchanged.
+`world.sav` is versioned. v52 appends a per-NPC paired-ship manifest tail so in-flight NPC hauler cargo keeps its exact `cargo_unit_t` identity across save/load.
 
 ## Working Style
 

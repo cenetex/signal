@@ -1,20 +1,32 @@
 # Signal
 
-A space station game where you fight by smashing one another with rocks.
+A multiplayer space mining game about frontier economies, signal coverage,
+and the slow work of building an outpost network at the edge of charted
+space.
+
+Oh yeah and you kill each other with rocks.
 
 **Play now:** [signal.ratimics.com/play](https://signal.ratimics.com/play)
 
-Signal is a multiplayer space mining game built in C11 with Sokol — no external
-assets, no engine, just procedural geometry and physics. You launch from
-stations, fracture asteroids, haul ore, and expand the network by building
-outposts at the edge of signal range. Every AI dreams of being a space station.
+Signal is built in C11 with Sokol — no external assets for geometry, no engine,
+just procedural drawing and physics. You launch from a station, fracture
+asteroids, haul ore between sovereign currency zones, and expand the network
+by building outposts at the edge of signal range. Every AI dreams of being a
+space station.
+
+The mining laser is a mining tool. It does not damage hulls. The only weapon
+in the game is a rock under tractor tension, released. There are no lasers,
+no missiles, no turrets, no directed-energy weapons, and there never will be.
+Whatever combat means in Signal, it has to be built out of the same materials
+as the economy: rocks, tractors, dock approaches, hopper levels, signal lines.
 
 ## Gameplay Loop
 
 1. Launch from Prospect Refinery and work the asteroid belt.
 2. Fracture large rocks with the mining beam and sweep up ferrite, cuprite, and
    crystal fragments.
-3. Sell ore or deliver contract cargo at docked stations.
+3. Sell ore or deliver contract cargo at docked stations. Credits are
+   per-station — what you earn at Prospect can't be spent at Helios.
 4. Let stations smelt ore into ingots and fabricate ship parts, then buy what
    you need with `F`.
 5. Press `B` in flight to create a planned outpost or reserve module slots on
@@ -23,10 +35,14 @@ outposts at the edge of signal range. Every AI dreams of being a space station.
 6. Use the tractor to tow loose scaffolds into place. New outposts still need
    frames delivered before they activate; placed module scaffolds enter a
    station-fed supply phase, then finish with a short commissioning timer.
-7. Throw rocks at other players. This is the main thing.
+7. Hail (`H`) inside signal coverage to hear the nearest station, see your
+   local ledger balance there, and pick up current station work.
 
 Signal range matters. Weak signal cuts ship response and mining speed, and both
-players and NPCs are pushed back toward the connected station chain.
+players and NPCs are pushed back toward the connected station chain. Expansion
+is signal expansion: an outpost's first job is being a relay.
+
+Oh yeah and you kill each other with rocks.
 
 ## Stations
 
