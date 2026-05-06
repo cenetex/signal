@@ -407,7 +407,7 @@ static inline int serialize_signal_channel(uint8_t *buf, const signal_channel_t 
 /*
  * WORLD_NPCS message:
  * [type:1][count:1] + count * NPC_RECORD_SIZE-byte records
- * (23 original + 3 tint bytes)
+ * (23 original + 3 manifest-rarity tint bytes)
  */
 static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
     int count = 0;

@@ -90,6 +90,47 @@ TEST(test_station_copy_clones_manifest_storage) {
     station_cleanup(&src);
 }
 
+TEST(test_manifest_rarity_tint_blends_grade_average) {
+    manifest_t manifest = {0};
+    cargo_unit_t fine = {0};
+    cargo_unit_t rare = {0};
+    float neutral_r = 0.86f, neutral_g = 0.93f, neutral_b = 1.0f;
+    float out_r = 0.0f, out_g = 0.0f, out_b = 0.0f;
+
+    ASSERT(manifest_init(&manifest, 2));
+    fine.kind = (uint8_t)CARGO_KIND_INGOT;
+    fine.commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
+    fine.grade = (uint8_t)MINING_GRADE_FINE;
+    rare = fine;
+    rare.grade = (uint8_t)MINING_GRADE_RARE;
+    ASSERT(manifest_push(&manifest, &fine));
+    ASSERT(manifest_push(&manifest, &rare));
+
+    ASSERT(manifest_rarity_tint(&manifest, 0.5f,
+                                neutral_r, neutral_g, neutral_b,
+                                &out_r, &out_g, &out_b));
+
+    uint8_t fine_r, fine_g, fine_b;
+    uint8_t rare_r, rare_g, rare_b;
+    mining_grade_rgb(MINING_GRADE_FINE, &fine_r, &fine_g, &fine_b);
+    mining_grade_rgb(MINING_GRADE_RARE, &rare_r, &rare_g, &rare_b);
+    float avg_r = ((float)fine_r + (float)rare_r) / (2.0f * 255.0f);
+    float avg_g = ((float)fine_g + (float)rare_g) / (2.0f * 255.0f);
+    float avg_b = ((float)fine_b + (float)rare_b) / (2.0f * 255.0f);
+    ASSERT_EQ_FLOAT(out_r, lerpf(neutral_r, avg_r, 0.5f), 0.001f);
+    ASSERT_EQ_FLOAT(out_g, lerpf(neutral_g, avg_g, 0.5f), 0.001f);
+    ASSERT_EQ_FLOAT(out_b, lerpf(neutral_b, avg_b, 0.5f), 0.001f);
+
+    ASSERT(manifest_rarity_tint(&manifest, 10.0f,
+                                neutral_r, neutral_g, neutral_b,
+                                &out_r, &out_g, &out_b));
+    ASSERT_EQ_FLOAT(out_r, avg_r, 0.001f);
+    ASSERT_EQ_FLOAT(out_g, avg_g, 0.001f);
+    ASSERT_EQ_FLOAT(out_b, avg_b, 0.001f);
+
+    manifest_free(&manifest);
+}
+
 TEST(test_station_manifest_receipts_track_push_remove) {
     station_t st = {0};
     cargo_unit_t first = {0};
@@ -928,6 +969,7 @@ void register_manifest_tests(void) {
     RUN(test_manifest_migrate_quantity_rewrites_zero_to_one);
     RUN(test_ship_copy_clones_manifest_storage);
     RUN(test_station_copy_clones_manifest_storage);
+    RUN(test_manifest_rarity_tint_blends_grade_average);
     RUN(test_station_manifest_receipts_track_push_remove);
     RUN(test_hash_merkle_root_sorts_and_duplicates_odd_leaf);
     RUN(test_hash_ingot_matches_known_vector);

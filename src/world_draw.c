@@ -10,6 +10,7 @@
 #include "net_sync.h"
 #include "station_voice.h"
 #include "signal_model.h"
+#include "manifest.h"
 #include "palette.h"
 #include "station_palette.h"
 #include <stdlib.h>
@@ -1367,36 +1368,18 @@ void draw_ship(void) {
     }
 
     /* Ship body tint: white when empty, blends toward the manifest's
-     * grade-weighted color as cargo fills. Same palette the dock cargo
-     * bar uses, so the ship's hull reads as a continuation of the
-     * inventory bar. */
+     * grade-weighted color as cargo fills. Same helper drives NPC hulls
+     * and future inspect chips so rarity reads consistently everywhere. */
     float tr = 0.86f, tg = 0.93f, tb = 1.0f;
     {
         const ship_t *s = &LOCAL_PLAYER.ship;
         float cap   = ship_cargo_capacity(s);
         float total = ship_total_cargo(s);
-        if (cap > 0.0f && total > 0.001f && s->manifest.units) {
+        if (cap > 0.0f && total > 0.001f) {
             float fill = total / cap;
-            if (fill > 1.0f) fill = 1.0f;
-            float wr = 0.0f, wg = 0.0f, wb = 0.0f;
-            int n = 0;
-            for (uint16_t i = 0; i < s->manifest.count; i++) {
-                const cargo_unit_t *u = &s->manifest.units[i];
-                uint8_t cr, cg, cb;
-                mining_grade_rgb((mining_grade_t)u->grade, &cr, &cg, &cb);
-                wr += cr / 255.0f;
-                wg += cg / 255.0f;
-                wb += cb / 255.0f;
-                n++;
-            }
-            if (n > 0) {
-                wr /= (float)n;
-                wg /= (float)n;
-                wb /= (float)n;
-                tr = lerpf(tr, wr, fill);
-                tg = lerpf(tg, wg, fill);
-                tb = lerpf(tb, wb, fill);
-            }
+            (void)manifest_rarity_tint(&s->manifest, fill,
+                                       0.86f, 0.93f, 1.0f,
+                                       &tr, &tg, &tb);
         }
     }
     sgl_c4f(tr, tg, tb, 1.0f);
@@ -2440,7 +2423,7 @@ void draw_npc_chatter(void) {
         }
 
         uint8_t r, gg, b;
-        commodity_color_u8((commodity_t)a->commodity, &r, &gg, &b);
+        mining_grade_rgb((mining_grade_t)a->grade, &r, &gg, &b);
         sdtx_color4b(r, gg, b, 220);
         int len = (int)strlen(label);
         sdtx_world_pos(a->pos.x - len * cell * 0.5f,
@@ -2466,7 +2449,10 @@ void draw_npc_chatter(void) {
         }
 
         int len = (int)strlen(line);
-        sdtx_color3b(PAL_RADIO_GREEN); /* faded radio green */
+        uint8_t nr = (uint8_t)(clampf(npc->tint_r, 0.0f, 1.0f) * 255.0f);
+        uint8_t ng = (uint8_t)(clampf(npc->tint_g, 0.0f, 1.0f) * 255.0f);
+        uint8_t nb = (uint8_t)(clampf(npc->tint_b, 0.0f, 1.0f) * 255.0f);
+        sdtx_color4b(nr, ng, nb, 230);
         /* Sit chatter just below the NPC sprite. World Y-up: smaller
          * world_y is below on screen. */
         sdtx_world_pos(npc->ship.pos.x - len * cell * 0.5f,

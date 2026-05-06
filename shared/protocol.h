@@ -368,7 +368,7 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 /* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32][smelt:u8][grade:u8] */
 #define ASTEROID_RECORD_SIZE 33  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 */
 
-/* NPC record: [id+flags:1][flags:1][pos:2xf32][vel:2xf32][angle:f32][target:1][tint:3] */
+/* NPC record: [id+flags:1][flags:1][pos:2xf32][vel:2xf32][angle:f32][target:1][rarity_tint:3] */
 #define NPC_RECORD_SIZE 26
 
 /* Station identity: [index:1][flags:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32]

@@ -72,7 +72,7 @@ typedef struct {
     float vx, vy;       /* velocity */
     float angle;        /* facing */
     int8_t target_asteroid; /* mining target (-1 for none) */
-    uint8_t tint_r, tint_g, tint_b; /* accumulated ore color */
+    uint8_t tint_r, tint_g, tint_b; /* manifest rarity display tint */
 } NetNpcState;
 
 /* Callbacks — set these before calling net_init(). */

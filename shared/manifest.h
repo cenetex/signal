@@ -37,6 +37,16 @@ int manifest_find_first_cg(const manifest_t *manifest,
 int manifest_count_by_commodity(const manifest_t *manifest,
                                 commodity_t commodity);
 
+/* Compute the manifest's grade-weighted display tint. `fill_ratio`
+ * controls how far the returned color blends from the neutral holder
+ * color toward the average `cargo_unit_t.grade` color, matching the
+ * player-ship hull tint rule used by world rendering. Returns false
+ * when no manifest grade was available; outputs still receive the
+ * neutral color. */
+bool manifest_rarity_tint(const manifest_t *manifest, float fill_ratio,
+                          float neutral_r, float neutral_g, float neutral_b,
+                          float *out_r, float *out_g, float *out_b);
+
 /* Remove up to `n` units of `commodity` from `manifest` (no destination
  * — the units are destroyed). Used by construction delivery, where the
  * cargo unit's identity is consumed into a built module rather than

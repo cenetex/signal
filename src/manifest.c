@@ -613,6 +613,48 @@ int manifest_count_by_commodity(const manifest_t *manifest, commodity_t commodit
     return n;
 }
 
+bool manifest_rarity_tint(const manifest_t *manifest, float fill_ratio,
+                          float neutral_r, float neutral_g, float neutral_b,
+                          float *out_r, float *out_g, float *out_b) {
+    if (!out_r || !out_g || !out_b) return false;
+
+    *out_r = neutral_r;
+    *out_g = neutral_g;
+    *out_b = neutral_b;
+
+    if (!manifest || !manifest->units || manifest->count == 0)
+        return false;
+
+    float fill = clampf(fill_ratio, 0.0f, 1.0f);
+    if (fill <= 0.0f)
+        return false;
+
+    float avg_r = 0.0f, avg_g = 0.0f, avg_b = 0.0f;
+    int count = 0;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        const cargo_unit_t *unit = &manifest->units[i];
+        uint8_t grade_r, grade_g, grade_b;
+        mining_grade_rgb((mining_grade_t)unit->grade,
+                         &grade_r, &grade_g, &grade_b);
+        avg_r += (float)grade_r / 255.0f;
+        avg_g += (float)grade_g / 255.0f;
+        avg_b += (float)grade_b / 255.0f;
+        count++;
+    }
+
+    if (count == 0)
+        return false;
+
+    avg_r /= (float)count;
+    avg_g /= (float)count;
+    avg_b /= (float)count;
+
+    *out_r = lerpf(neutral_r, avg_r, fill);
+    *out_g = lerpf(neutral_g, avg_g, fill);
+    *out_b = lerpf(neutral_b, avg_b, fill);
+    return true;
+}
+
 int manifest_consume_by_commodity(manifest_t *manifest, commodity_t commodity, int n) {
     if (!manifest || !manifest->units || n <= 0) return 0;
     int removed = 0;

@@ -13,6 +13,7 @@
 #include "sim_mining.h"
 #include "signal_model.h"
 #include "manifest.h"
+#include "commodity.h"
 #include "ship.h"
 #include "game_sim.h" /* SHIP_COLLISION_DAMAGE_THRESHOLD/_SCALE */
 #include <math.h>
@@ -55,6 +56,27 @@ static int station_finished_room_units_for_hauler(const station_t *st,
     float used = (float)stock + station_finished_fraction_for_hauler(st, c);
     int room = (int)floorf(cap - used + 0.0001f);
     return room > 0 ? room : 0;
+}
+
+static void npc_update_manifest_rarity_tint(npc_ship_t *npc,
+                                            const ship_t *paired_ship,
+                                            float dt) {
+    float neutral_r = 0.86f, neutral_g = 0.93f, neutral_b = 1.0f;
+    float target_r = neutral_r, target_g = neutral_g, target_b = neutral_b;
+
+    if (paired_ship) {
+        float cap = ship_cargo_capacity(paired_ship);
+        float total = ship_total_cargo(paired_ship);
+        float fill = (cap > 0.0f) ? (total / cap) : 0.0f;
+        (void)manifest_rarity_tint(&paired_ship->manifest, fill,
+                                   neutral_r, neutral_g, neutral_b,
+                                   &target_r, &target_g, &target_b);
+    }
+
+    float blend = clampf(0.3f * dt, 0.0f, 1.0f);
+    npc->tint_r = lerpf(npc->tint_r, target_r, blend);
+    npc->tint_g = lerpf(npc->tint_g, target_g, blend);
+    npc->tint_b = lerpf(npc->tint_b, target_b, blend);
 }
 
 /* Legacy fallback: push synthetic legacy-migrate units when an NPC has
@@ -2080,31 +2102,7 @@ void step_npc_ships(world_t *w, float dt) {
          * for the despawn check at the top of the next tick. */
         mirror_ship_to_npc(w, n);
 
-        /* Blend tint toward dominant cargo color.
-         * Ore colors: ferrite=(0.55, 0.25, 0.18), cuprite=(0.22, 0.30, 0.50), crystal=(0.25, 0.48, 0.30) */
-        static const float ore_r[3] = {0.55f, 0.22f, 0.25f};
-        static const float ore_g[3] = {0.25f, 0.30f, 0.48f};
-        static const float ore_b[3] = {0.18f, 0.50f, 0.30f};
-        float total = 0.0f;
-        float target_r = 1.0f, target_g = 1.0f, target_b = 1.0f;
-        {
-            int base = (npc->role == NPC_ROLE_MINER) ? 0 : COMMODITY_RAW_ORE_COUNT;
-            for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) total += npc->cargo[base + c];
-        }
-        if (total > 1.0f) {
-            target_r = 0.0f; target_g = 0.0f; target_b = 0.0f;
-            int base = (npc->role == NPC_ROLE_MINER) ? 0 : COMMODITY_RAW_ORE_COUNT;
-            for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
-                float w_c = npc->cargo[base + c] / total;
-                target_r += ore_r[c] * w_c;
-                target_g += ore_g[c] * w_c;
-                target_b += ore_b[c] * w_c;
-            }
-        }
-        float blend = 0.3f * dt;  /* slow blend toward cargo color */
-        npc->tint_r = lerpf(npc->tint_r, target_r, blend);
-        npc->tint_g = lerpf(npc->tint_g, target_g, blend);
-        npc->tint_b = lerpf(npc->tint_b, target_b, blend);
+        npc_update_manifest_rarity_tint(npc, npc_ship_for(w, n), dt);
     }
 }
 
