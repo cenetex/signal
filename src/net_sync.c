@@ -283,22 +283,23 @@ void apply_remote_hold_ingots(const NetNamedIngotEntry *entries, int count) {
 void apply_remote_inspect_snapshot(const NetInspectSnapshot *snapshot) {
     if (!snapshot) return;
 
-    /* Linger: hold the last snapshot's data on screen for a few
-     * seconds after the player releases the scan key. Active-scan
-     * frames refresh the timer to 0.60; the release edge bumps it up
-     * to the linger window. After that, the timer counts down on its
-     * own — we mustn't reset it on every subsequent idle frame, which
-     * would clamp it at 3.5 forever. The per-frame decay in main.c
-     * clears target_type when the timer hits 0, so this branch can
-     * trust target_type as a "we already lingered out" signal. */
+    /* Linger: keep the snapshot on screen for ~3.5s after release.
+     * The was_active flag marks the active→idle edge. Once we've
+     * bumped the timer into the linger window, was_active is false
+     * and this branch is a no-op until the next active scan — the
+     * timer counts down naturally. Earlier `timer ≤ 0.60` trick
+     * silently re-fired ~2.9s into the linger when the timer
+     * crossed back below 0.60 on its way to zero, restarting the
+     * countdown indefinitely. */
     if (snapshot->target_type == INSPECT_TARGET_NONE) {
-        bool had_target = g.inspect_snapshot.target_type != INSPECT_TARGET_NONE;
-        if (had_target && g.inspect_snapshot_timer <= 0.60f) {
+        if (g.inspect_was_active) {
             g.inspect_snapshot_timer = 3.5f;
+            g.inspect_was_active = false;
         }
     } else {
         g.inspect_snapshot = *snapshot;
         g.inspect_snapshot_timer = 0.60f;
+        g.inspect_was_active = true;
     }
 
     if (g.local_player_slot < 0 || g.local_player_slot >= MAX_PLAYERS) return;
