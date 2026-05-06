@@ -50,6 +50,9 @@ commodity_t   station_primary_sell(const station_t *st);
 float         station_ring_rotation(const station_t *st, int ring);
 vec2          module_world_pos_ring(const station_t *st, int ring, int slot);
 float         module_angle_ring   (const station_t *st, int ring, int slot);
+float         station_dock_lane_angle(const station_t *st, int ring, int slot);
+vec2          station_dock_lane_pos(const station_t *st, int ring, int slot,
+                                    float radius);
 int           ring_module_count(const station_t *st, int ring);
 bool          station_has_ring(const station_t *st, int ring);
 bool          ring_has_dock(const station_t *st, int ring);

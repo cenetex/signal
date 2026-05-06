@@ -203,6 +203,67 @@ static void test_nav_waypoint_advancement(void) {
     ASSERT(wp.x >= 199.0f);
 }
 
+static bool test_station_smelt_midpoint(const station_t *st, commodity_t ore,
+                                        vec2 *out_target) {
+    bool found = false;
+    float best_d = 1e18f;
+    for (int fm = 0; fm < st->module_count; fm++) {
+        const station_module_t *f = &st->modules[fm];
+        if (f->type != MODULE_FURNACE || f->scaffold) continue;
+        if (module_instance_input_ore(f) != ore) continue;
+        int ring = (int)f->ring;
+        vec2 furnace_pos = module_world_pos_ring(st, ring, f->slot);
+        int adj_rings[2] = { ring + 1, ring - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int hm = 0; hm < st->module_count; hm++) {
+                const station_module_t *h = &st->modules[hm];
+                if (h->ring != adj || h->scaffold) continue;
+                if (h->type != MODULE_HOPPER) continue;
+                if ((commodity_t)h->commodity != ore) continue;
+                vec2 hopper_pos = module_world_pos_ring(st, adj, h->slot);
+                float d = v2_dist_sq(furnace_pos, hopper_pos);
+                if (d < best_d) {
+                    best_d = d;
+                    *out_target = v2_scale(v2_add(furnace_pos, hopper_pos), 0.5f);
+                    found = true;
+                }
+            }
+        }
+    }
+    return found;
+}
+
+static void test_nav_routes_to_station_smelt_midpoint(void) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+    spatial_grid_build(w);
+
+    vec2 target = {0};
+    ASSERT(test_station_smelt_midpoint(&w->stations[0], COMMODITY_FERRITE_ORE,
+                                       &target));
+
+    vec2 start = {0};
+    bool found_blocked_start = false;
+    for (int i = 0; i < 16; i++) {
+        float a = (TWO_PI_F * (float)i) / 16.0f;
+        start = v2_add(w->stations[0].pos, v2(cosf(a) * 900.0f,
+                                               sinf(a) * 900.0f));
+        if (!nav_segment_clear(w, start, target, 46.0f)) {
+            found_blocked_start = true;
+            break;
+        }
+    }
+    ASSERT(found_blocked_start);
+
+    nav_path_t path;
+    bool found = nav_find_path(w, start, target, 46.0f, &path);
+    ASSERT(found);
+    ASSERT(path.count > 0);
+}
+
 TEST(test_autopilot_completes_mining_cycle) {
     /* Run one autopilot player for 180 seconds. It should mine at least
      * one asteroid and earn credits (complete a full cycle).
@@ -447,6 +508,7 @@ void register_navigation_nav_tests(void) {
     RUN(test_nav_follow_path_replans_on_stale);
     RUN(test_nav_force_replan);
     RUN(test_nav_waypoint_advancement);
+    RUN(test_nav_routes_to_station_smelt_midpoint);
 }
 
 void register_navigation_autopilot_stress_tests(void) {
@@ -458,4 +520,3 @@ void register_navigation_autopilot_stress_tests(void) {
     RUN(test_autopilot_follows_path_waypoints);
     RUN(test_autopilot_path_matches_preview);
 }
-

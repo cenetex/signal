@@ -203,6 +203,21 @@ float module_angle_ring(const station_t *st, int ring, int slot) {
     return TWO_PI_F * (float)slot / (float)slots + station_ring_rotation(st, ring);
 }
 
+float station_dock_lane_angle(const station_t *st, int ring, int slot) {
+    if (ring < 1 || ring > STATION_NUM_RINGS) return 0.0f;
+    int slots = STATION_RING_SLOTS[ring];
+    if (slots <= 0) return module_angle_ring(st, ring, slot);
+    float slot_arc = TWO_PI_F / (float)slots;
+    float dir = (slot == 0) ? -1.0f : 1.0f;
+    return module_angle_ring(st, ring, slot) + dir * slot_arc * 0.5f;
+}
+
+vec2 station_dock_lane_pos(const station_t *st, int ring, int slot,
+                           float radius) {
+    float angle = station_dock_lane_angle(st, ring, slot);
+    return v2_add(st->pos, v2(cosf(angle) * radius, sinf(angle) * radius));
+}
+
 int ring_module_count(const station_t *st, int ring) {
     int count = 0;
     for (int i = 0; i < st->module_count; i++)

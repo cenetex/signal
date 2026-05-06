@@ -9,7 +9,6 @@
 #include "sim_nav.h"
 #include "sim_flight.h"
 #include "sim_ship.h"
-#include "sim_production.h" /* sim_can_smelt_ore for miner asteroid filter */
 #include "sim_mining.h"
 #include "signal_model.h"
 #include "manifest.h"
@@ -170,7 +169,7 @@ static int hauler_unload_ship_units(ship_t *src, station_t *dst,
 
 static bool station_smelt_pair_for_ore(const station_t *st, commodity_t ore,
                                        vec2 *drop_point) {
-    if (!st || !drop_point || ore == COMMODITY_COUNT) return false;
+    if (!st || ore == COMMODITY_COUNT) return false;
     bool found = false;
     float best_d = 1e18f;
     for (int fm = 0; fm < st->module_count; fm++) {
@@ -195,13 +194,22 @@ static bool station_smelt_pair_for_ore(const station_t *st, commodity_t ore,
                 float d = v2_dist_sq(furnace_pos, hopper_pos);
                 if (d < best_d) {
                     best_d = d;
-                    *drop_point = v2_scale(v2_add(furnace_pos, hopper_pos), 0.5f);
+                    if (drop_point)
+                        *drop_point = v2_scale(v2_add(furnace_pos, hopper_pos), 0.5f);
                     found = true;
                 }
             }
         }
     }
     return found;
+}
+
+static bool npc_home_has_smelt_endpoint(const world_t *w, const npc_ship_t *npc,
+                                        commodity_t ore, vec2 *drop_point) {
+    if (!w || !npc) return false;
+    if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) return false;
+    return station_smelt_pair_for_ore(&w->stations[npc->home_station], ore,
+                                      drop_point);
 }
 
 /* ================================================================== */
@@ -701,6 +709,7 @@ static int npc_find_loose_fragment(const world_t *w, const npc_ship_t *self, flo
     for (int fi = 0; fi < MAX_ASTEROIDS; fi++) {
         const asteroid_t *f = &w->asteroids[fi];
         if (!f->active || f->tier != ASTEROID_TIER_S) continue;
+        if (!npc_home_has_smelt_endpoint(w, self, f->commodity, NULL)) continue;
         bool taken = false;
         /* Player tow check. */
         for (int p = 0; p < MAX_PLAYERS && !taken; p++) {
@@ -766,7 +775,7 @@ static bool npc_home_ore_above_frac(const world_t *w, const npc_ship_t *npc, flo
     const station_t *home = &w->stations[npc->home_station];
     float threshold = REFINERY_HOPPER_CAPACITY * frac;
     for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
-        if (!sim_can_smelt_ore(home, (commodity_t)c)) continue;
+        if (!station_smelt_pair_for_ore(home, (commodity_t)c, NULL)) continue;
         if (home->_inventory_cache[c] >= threshold) return true;
     }
     return false;
@@ -790,33 +799,26 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
         if (!miner_target_taken(w, idx, self_char)) return idx;
     }
 
-    /* Two-pass nearest search:
-     *   pass 1 — only ores the miner's HOME station can actually smelt.
-     *            Prevents a Prospect miner from filling its hold with
-     *            cuprite (Prospect has no FURNACE_CU); same for a Helios
-     *            miner grabbing ferrite ore.
-     *   pass 2 — any ore. Fallback so a miner is never idle when there's
-     *            ANY rock in range (e.g. early game with sparse spawns).
-     * Two passes preserve the "nearest available" feel while preferring
-     * useful loads. */
+    /* Nearest useful rock only: the home station must expose a concrete
+     * furnace+hopper endpoint for the ore. Count-tier smelt capability
+     * is too broad here; miners need a typed service destination, not
+     * "try any furnace and hope." */
     const station_t *home = (npc->home_station >= 0 && npc->home_station < MAX_STATIONS)
                           ? &w->stations[npc->home_station]
                           : NULL;
-    for (int pass = 0; pass < 2; pass++) {
-        int best = -1;
-        float best_d = 1e18f;
-        for (int i = 0; i < MAX_ASTEROIDS; i++) {
-            const asteroid_t *a = &w->asteroids[i];
-            if (!a->active || a->tier == ASTEROID_TIER_S) continue;
-            if (signal_npc_confidence(signal_strength_at(w, a->pos)) < 0.1f) continue;
-            if (miner_target_taken(w, i, self_char)) continue;
-            if (pass == 0 && home && !sim_can_smelt_ore(home, a->commodity)) continue;
-            float d = v2_dist_sq(npc->ship.pos, a->pos);
-            if (d < best_d) { best_d = d; best = i; }
-        }
-        if (best >= 0) return best;
+    if (!home) return -1;
+    int best = -1;
+    float best_d = 1e18f;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &w->asteroids[i];
+        if (!a->active || a->tier == ASTEROID_TIER_S) continue;
+        if (signal_npc_confidence(signal_strength_at(w, a->pos)) < 0.1f) continue;
+        if (miner_target_taken(w, i, self_char)) continue;
+        if (!station_smelt_pair_for_ore(home, a->commodity, NULL)) continue;
+        float d = v2_dist_sq(npc->ship.pos, a->pos);
+        if (d < best_d) { best_d = d; best = i; }
     }
-    return -1;
+    return best;
 }
 
 /* Forward decl — definition below; npc_steer_toward routes through it. */
@@ -851,7 +853,7 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float dt) {
  * physics integration (npc_apply_physics) and any thrust<0 handling
  * (e.g. hover-specific brake-away-from-target).
  *
- * Forward-thrust-only gate: NPCs don't have a brake controller, so
+ * Forward-thrust-only gate: NPCs don't have a full brake controller, so
  * flight_steer_to's negative-thrust "panic stop" clamps to 0. To
  * throttle the engine (hauler-tow paths used to pass hull->accel *
  * 0.6f), scale cmd.thrust before calling — thrust ∈ [-1,1] so this is
@@ -870,8 +872,6 @@ static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
     npc_set_intent(npc, cmd);
     step_ship_rotation(&npc->ship, dt, npc->input.turn);
 
-    /* NPCs gate to forward thrust only — flight_steer_to's panic-stop
-     * (-1) is harmless here, equivalent to "engine idle" on player. */
     float thrust_in = (npc->input.thrust > 0.0f) ? npc->input.thrust : 0.0f;
     vec2 fwd = ship_forward(npc->ship.angle);
     step_ship_thrust(&npc->ship, dt, thrust_in, fwd, /*boost=*/false, 0.0f,
@@ -913,9 +913,10 @@ static void npc_apply_physics(npc_ship_t *npc, float dt, const world_t *w) {
 /* NPC circle pushback: routed through the shared sim_ship primitive
  * on the embedded ship_t. NPCs take no damage from station geometry
  * today; if that changes, the impact return is available. */
-static void resolve_npc_circle(npc_ship_t *npc, vec2 center, float radius) {
-    float impact = resolve_ship_circle_pushback(&npc->ship, center, radius);
-    if (impact <= 0.0f) return;
+static bool resolve_npc_circle(npc_ship_t *npc, vec2 center, float radius) {
+    vec2 before = npc->ship.pos;
+    (void)resolve_ship_circle_pushback(&npc->ship, center, radius);
+    return v2_dist_sq(before, npc->ship.pos) > 0.001f;
 }
 
 /* NPC corridor collision: routed through the shared sim_ship
@@ -923,36 +924,70 @@ static void resolve_npc_circle(npc_ship_t *npc, vec2 center, float radius) {
  * caller can force a nav replan. */
 static bool resolve_npc_annular_sector(npc_ship_t *npc, vec2 center,
                                         float ring_r, float angle_a, float arc_delta) {
-    float impact = resolve_ship_annular_pushback(&npc->ship, center, ring_r,
-                                                  angle_a, arc_delta);
-    if (impact <= 0.0f) return false;
-    return true;
+    vec2 before = npc->ship.pos;
+    (void)resolve_ship_annular_pushback(&npc->ship, center, ring_r,
+                                        angle_a, arc_delta);
+    return v2_dist_sq(before, npc->ship.pos) > 0.001f;
 }
 
-/* If the NPC is still inside its home station's outer-ring envelope
- * AND the target is outside that envelope, override the steering
- * target with the dock's exit waypoint (past the outer ring along the
- * dock's current radial axis). This routes a just-undocked ship along
- * a known-clear angular corridor before it tries to fly straight at a
- * far destination, which used to pin it against ring-2 modules.
- *
- * Returns the unmodified target if either: (a) the ship is already
- * past the outer ring, or (b) the target itself is inside the home
- * envelope (e.g. a tow scaffold sitting just outside the dock — the
- * NPC should steer to it directly, not detour through an exit waypoint).
- *
- * The override is a *target swap* only — physics integration and
- * collision pushback are unchanged, so the per-tick paired-ship
- * parity invariant (test_npc_ship_physics_in_sync_each_tick) holds. */
-static vec2 npc_target_clear_of_home_rings(const world_t *w, const npc_ship_t *npc,
-                                           vec2 want_target) {
-    if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) return want_target;
-    const station_t *home = &w->stations[npc->home_station];
-    float exit_r = STATION_RING_RADIUS[STATION_NUM_RINGS] + 80.0f;
-    float exit_r_sq = exit_r * exit_r;
-    if (v2_dist_sq(npc->ship.pos, home->pos) > exit_r_sq) return want_target;
-    if (v2_dist_sq(want_target,    home->pos) <= exit_r_sq) return want_target;
-    return station_exit_target(home, npc->ship.pos);
+static float npc_station_nav_envelope_radius(const station_t *st) {
+    int max_ring = station_max_ring(st);
+    float r = (max_ring >= 1 && max_ring <= STATION_NUM_RINGS)
+        ? STATION_RING_RADIUS[max_ring] + 80.0f
+        : st->dock_radius;
+    return (r > st->dock_radius) ? r : st->dock_radius;
+}
+
+static bool npc_point_inside_station_nav_envelope(const station_t *st, vec2 p) {
+    float r = npc_station_nav_envelope_radius(st);
+    return v2_dist_sq(p, st->pos) <= r * r;
+}
+
+/* Treat station rings as traffic envelopes. If an NPC is inside any
+ * station and its desired target is outside that station, first route
+ * to that station's dock exit. Conversely, if the desired target is an
+ * internal station work point and the NPC is outside that station,
+ * route to the dock approach first. This covers haulers leaving a
+ * non-home destination after unloading and miners returning to a
+ * furnace/hopper midpoint with a fragment in tow. */
+static vec2 npc_target_routed_through_station_docks(const world_t *w,
+                                                    const npc_ship_t *npc,
+                                                    vec2 want_target) {
+    int exit_station = -1;
+    float best_exit_d = 1e18f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+        bool ship_inside = npc_point_inside_station_nav_envelope(st, npc->ship.pos);
+        bool target_inside = npc_point_inside_station_nav_envelope(st, want_target);
+        if (!ship_inside || target_inside) continue;
+        float d = v2_dist_sq(npc->ship.pos, st->pos);
+        if (d < best_exit_d) {
+            best_exit_d = d;
+            exit_station = s;
+        }
+    }
+    if (exit_station >= 0)
+        return station_exit_target(&w->stations[exit_station], npc->ship.pos);
+
+    int entry_station = -1;
+    float best_entry_d = 1e18f;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+        bool ship_inside = npc_point_inside_station_nav_envelope(st, npc->ship.pos);
+        bool target_inside = npc_point_inside_station_nav_envelope(st, want_target);
+        if (!target_inside || ship_inside) continue;
+        float d = v2_dist_sq(want_target, st->pos);
+        if (d < best_entry_d) {
+            best_entry_d = d;
+            entry_station = s;
+        }
+    }
+    if (entry_station >= 0)
+        return station_approach_target(&w->stations[entry_station], npc->ship.pos);
+
+    return want_target;
 }
 
 static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
@@ -969,8 +1004,12 @@ static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
         /* Core: empty space, no collision */
 
         /* Module circles */
-        for (int ci = 0; ci < geom.circle_count; ci++)
-            resolve_npc_circle(npc, geom.circles[ci].center, geom.circles[ci].radius);
+        for (int ci = 0; ci < geom.circle_count; ci++) {
+            if (resolve_npc_circle(npc, geom.circles[ci].center,
+                                   geom.circles[ci].radius)) {
+                any_push = true;
+            }
+        }
 
         /* Near-module suppression + corridor annular sectors
          * (matches player collision logic) */
@@ -1295,7 +1334,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_TRAVEL_TO_DEST: {
         station_t *dest = &w->stations[npc->dest_station];
         vec2 approach = station_approach_target(dest, npc->ship.pos);
-        approach = npc_target_clear_of_home_rings(w, npc, approach);
+        approach = npc_target_routed_through_station_docks(w, npc, approach);
         npc_steer_with_path(w, n, npc, approach, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
         float dock_r = dest->dock_radius * 0.7f;
@@ -1434,6 +1473,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_RETURN_TO_STATION: {
         station_t *home = &w->stations[npc->home_station];
         vec2 approach_home = station_approach_target(home, npc->ship.pos);
+        approach_home = npc_target_routed_through_station_docks(w, npc, approach_home);
         npc_steer_with_path(w, n, npc, approach_home, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
         float dock_r = home->dock_radius * 0.7f;
@@ -1633,7 +1673,7 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
             npc->state_timer = HAULER_DOCK_TIME;
             break;
         }
-        vec2 sc_target = npc_target_clear_of_home_rings(w, npc, sc->pos);
+        vec2 sc_target = npc_target_routed_through_station_docks(w, npc, sc->pos);
         npc_steer_with_path(w, n, npc, sc_target, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
         if (v2_dist_sq(npc->ship.pos, sc->pos) < 80.0f * 80.0f) {
@@ -1704,6 +1744,7 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
     case NPC_STATE_RETURN_TO_STATION: {
         station_t *home = &w->stations[npc->home_station];
         vec2 approach = station_approach_target(home, npc->ship.pos);
+        approach = npc_target_routed_through_station_docks(w, npc, approach);
         npc_steer_with_path(w, n, npc, approach, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
         if (v2_dist_sq(npc->ship.pos, home->pos) < (home->dock_radius * 0.7f) * (home->dock_radius * 0.7f)) {
@@ -1853,7 +1894,7 @@ void step_npc_ships(world_t *w, float dt) {
                 }
             }
             asteroid_t *a = &w->asteroids[npc->target_asteroid];
-            vec2 ast_target = npc_target_clear_of_home_rings(w, npc, a->pos);
+            vec2 ast_target = npc_target_routed_through_station_docks(w, npc, a->pos);
             npc_steer_with_path(w, n, npc, ast_target, /*thrust_scale=*/1.0f, dt);
             npc_apply_physics(npc, dt, w);
             if (v2_dist_sq(npc->ship.pos, a->pos) < MINING_RANGE * MINING_RANGE)
@@ -1954,6 +1995,7 @@ void step_npc_ships(world_t *w, float dt) {
                 for (int fi = 0; fi < MAX_ASTEROIDS; fi++) {
                     asteroid_t *f = &w->asteroids[fi];
                     if (!f->active || f->tier != ASTEROID_TIER_S) continue;
+                    if (!npc_home_has_smelt_endpoint(w, npc, f->commodity, NULL)) continue;
                     float fd = v2_dist_sq(npc->ship.pos, f->pos);
                     if (fd < best_frag_d) { best_frag_d = fd; best_frag = fi; }
                 }
@@ -1989,20 +2031,21 @@ void step_npc_ships(world_t *w, float dt) {
                 asteroid_t *tow = &w->asteroids[npc->towed_fragment];
                 if (tow->active) {
                     have_delivery_target = station_smelt_pair_for_ore(home, tow->commodity, &delivery_target);
+                    if (!have_delivery_target) {
+                        npc->towed_fragment = -1;
+                        npc->state = NPC_STATE_IDLE;
+                        npc->state_timer = 2.0f;
+                        break;
+                    }
                 }
             }
             if (!have_delivery_target) {
-                for (int fm = 0; fm < home->module_count; fm++) {
-                    module_type_t fmt = home->modules[fm].type;
-                    if (fmt != MODULE_FURNACE) continue;
-                    if (home->modules[fm].scaffold) continue;
-                    delivery_target = module_world_pos_ring(home, home->modules[fm].ring, home->modules[fm].slot);
-                    break;
-                }
+                delivery_target = station_approach_target(home, npc->ship.pos);
             }
 
             /* Slow down when towing so the fragment can keep up */
             float tow_thrust_scale = (npc->towed_fragment >= 0) ? 0.5f : 1.0f;
+            delivery_target = npc_target_routed_through_station_docks(w, npc, delivery_target);
             npc_steer_with_path(w, n, npc, delivery_target, tow_thrust_scale, dt);
             npc_apply_physics(npc, dt, w);
 

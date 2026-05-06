@@ -173,6 +173,7 @@ static void local_server_copy_inspect_row(NetInspectSnapshotRow *row,
     if (!unit) return;
     row->commodity = unit->commodity;
     row->grade = unit->grade;
+    row->quantity = 1;
     memcpy(row->cargo_pub, unit->pub, sizeof(row->cargo_pub));
     if (chain && chain->len > 0) {
         const cargo_receipt_t *origin = &chain->links[0];
@@ -184,6 +185,26 @@ static void local_server_copy_inspect_row(NetInspectSnapshotRow *row,
         memcpy(row->origin_station, origin->authoring_station, sizeof(row->origin_station));
         memcpy(row->latest_station, latest->authoring_station, sizeof(row->latest_station));
     }
+}
+
+static bool local_inspect_unit_is_groupable_bulk(const cargo_unit_t *unit) {
+    if (!unit) return false;
+    if ((cargo_kind_t)unit->kind != CARGO_KIND_INGOT) return false;
+    if ((ingot_prefix_t)unit->prefix_class != INGOT_PREFIX_ANONYMOUS) return false;
+    if (unit->commodity >= COMMODITY_COUNT) return false;
+    if (unit->grade >= MINING_GRADE_COUNT) return false;
+    return true;
+}
+
+static void local_server_copy_inspect_group(NetInspectSnapshotRow *row,
+                                            uint8_t commodity,
+                                            uint8_t grade,
+                                            uint16_t quantity) {
+    memset(row, 0, sizeof(*row));
+    row->commodity = commodity;
+    row->grade = grade;
+    row->quantity = quantity > 0 ? quantity : 1;
+    row->flags |= INSPECT_ROW_GROUPED;
 }
 
 static void local_server_sync_inspect_snapshot(const local_server_t *ls,
@@ -220,16 +241,36 @@ static void local_server_sync_inspect_snapshot(const local_server_t *ls,
             snap.dest_station = (npc->dest_station >= 0 && npc->dest_station < MAX_STATIONS)
                 ? (uint8_t)npc->dest_station : 0xFFu;
             snap.manifest_count = ship->manifest.units ? ship->manifest.count : 0;
-            snap.row_count = (int)snap.manifest_count;
-            if (snap.row_count > INSPECT_SNAPSHOT_MAX_ROWS)
-                snap.row_count = INSPECT_SNAPSHOT_MAX_ROWS;
             const ship_receipts_t *rcpts = ship_get_receipts_const(ship);
-            for (int i = 0; i < snap.row_count; i++) {
-                const cargo_receipt_chain_t *chain =
-                    (rcpts && i < rcpts->count) ? &rcpts->chains[i] : NULL;
-                local_server_copy_inspect_row(&snap.rows[i],
-                                              &ship->manifest.units[i],
-                                              chain);
+            uint16_t bulk[COMMODITY_COUNT][MINING_GRADE_COUNT];
+            memset(bulk, 0, sizeof(bulk));
+            for (uint16_t i = 0; i < snap.manifest_count; i++) {
+                const cargo_unit_t *unit = &ship->manifest.units[i];
+                if (!local_inspect_unit_is_groupable_bulk(unit)) continue;
+                if (bulk[unit->commodity][unit->grade] < 0xFFFF)
+                    bulk[unit->commodity][unit->grade]++;
+            }
+            snap.row_count = 0;
+            for (int gr = 0; gr < MINING_GRADE_COUNT && snap.row_count < INSPECT_SNAPSHOT_MAX_ROWS; gr++) {
+                for (int c = 0; c < COMMODITY_COUNT && snap.row_count < INSPECT_SNAPSHOT_MAX_ROWS; c++) {
+                    if (bulk[c][gr] > 0) {
+                        local_server_copy_inspect_group(&snap.rows[snap.row_count],
+                                                        (uint8_t)c, (uint8_t)gr,
+                                                        bulk[c][gr]);
+                        snap.row_count++;
+                    }
+                    for (uint16_t i = 0; i < snap.manifest_count &&
+                         snap.row_count < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
+                        const cargo_unit_t *unit = &ship->manifest.units[i];
+                        if (unit->commodity != c || unit->grade != gr) continue;
+                        if (local_inspect_unit_is_groupable_bulk(unit)) continue;
+                        const cargo_receipt_chain_t *chain =
+                            (rcpts && i < rcpts->count) ? &rcpts->chains[i] : NULL;
+                        local_server_copy_inspect_row(&snap.rows[snap.row_count],
+                                                      unit, chain);
+                        snap.row_count++;
+                    }
+                }
             }
         }
     }

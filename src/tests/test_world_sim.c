@@ -1255,6 +1255,239 @@ TEST(test_npc_exits_station_with_blocked_rings) {
     ASSERT(reached);
 }
 
+TEST(test_hauler_exits_non_home_station_before_return) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    int hauler = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER) {
+            hauler = i;
+            break;
+        }
+    }
+    ASSERT(hauler >= 0);
+
+    npc_ship_t *npc = &w.npc_ships[hauler];
+    npc->home_station = 0;
+    npc->dest_station = 1;
+    npc->state = NPC_STATE_RETURN_TO_STATION;
+    npc->state_timer = 0.0f;
+    npc->ship.hull_class = HULL_CLASS_HAULER;
+    npc->ship.pos = w.stations[1].pos;
+    npc->ship.vel = v2(0.0f, 0.0f);
+    npc->ship.angle = 0.0f;
+    ship_t *paired = world_npc_ship_for(&w, hauler);
+    ASSERT(paired != NULL);
+    paired->pos = npc->ship.pos;
+    paired->vel = npc->ship.vel;
+    paired->angle = npc->ship.angle;
+    *nav_npc_path(hauler) = (nav_path_t){0};
+
+    vec2 expected_exit = station_exit_target(&w.stations[1], npc->ship.pos);
+    world_sim_step(&w, SIM_DT);
+
+    const nav_path_t *path = nav_npc_path(hauler);
+    ASSERT(v2_dist_sq(path->goal, expected_exit) < 5.0f * 5.0f);
+}
+
+TEST(test_miner_enters_station_before_smelt_delivery) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    int miner = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_MINER
+            && w.npc_ships[i].home_station == 0) {
+            miner = i;
+            break;
+        }
+    }
+    ASSERT(miner >= 0);
+
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) {
+            frag = i;
+            break;
+        }
+    }
+    ASSERT(frag >= 0);
+    asteroid_t *tow = &w.asteroids[frag];
+    memset(tow, 0, sizeof(*tow));
+    tow->active = true;
+    tow->tier = ASTEROID_TIER_S;
+    tow->commodity = COMMODITY_FERRITE_ORE;
+    tow->radius = 12.0f;
+    tow->ore = 1.0f;
+    tow->max_ore = 1.0f;
+
+    npc_ship_t *npc = &w.npc_ships[miner];
+    npc->state = NPC_STATE_RETURN_TO_STATION;
+    npc->target_asteroid = -1;
+    npc->towed_fragment = frag;
+    npc->ship.hull_class = HULL_CLASS_NPC_MINER;
+    npc->ship.pos = v2_add(w.stations[0].pos, v2(900.0f, 0.0f));
+    npc->ship.vel = v2(0.0f, 0.0f);
+    npc->ship.angle = PI_F;
+    tow->pos = v2_add(npc->ship.pos, v2(40.0f, 0.0f));
+    ship_t *paired = world_npc_ship_for(&w, miner);
+    ASSERT(paired != NULL);
+    paired->pos = npc->ship.pos;
+    paired->vel = npc->ship.vel;
+    paired->angle = npc->ship.angle;
+    *nav_npc_path(miner) = (nav_path_t){0};
+
+    vec2 expected_entry = station_approach_target(&w.stations[0], npc->ship.pos);
+    world_sim_step(&w, SIM_DT);
+
+    const nav_path_t *path = nav_npc_path(miner);
+    ASSERT(v2_dist_sq(path->goal, expected_entry) < 5.0f * 5.0f);
+}
+
+static bool test_station_smelt_endpoint_for_ore(const station_t *st,
+                                                commodity_t ore,
+                                                vec2 *out_target) {
+    bool found = false;
+    float best_d = 1e18f;
+    for (int fm = 0; fm < st->module_count; fm++) {
+        const station_module_t *f = &st->modules[fm];
+        if (f->type != MODULE_FURNACE || f->scaffold) continue;
+        if (module_instance_input_ore(f) != ore) continue;
+        int ring = (int)f->ring;
+        vec2 furnace_pos = module_world_pos_ring(st, ring, f->slot);
+        int adj_rings[2] = { ring + 1, ring - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int hm = 0; hm < st->module_count; hm++) {
+                const station_module_t *h = &st->modules[hm];
+                if (h->ring != adj || h->scaffold) continue;
+                if (h->type != MODULE_HOPPER) continue;
+                if ((commodity_t)h->commodity != ore) continue;
+                vec2 hopper_pos = module_world_pos_ring(st, adj, h->slot);
+                float d = v2_dist_sq(furnace_pos, hopper_pos);
+                if (d < best_d) {
+                    best_d = d;
+                    if (out_target)
+                        *out_target = v2_scale(v2_add(furnace_pos, hopper_pos), 0.5f);
+                    found = true;
+                }
+            }
+        }
+    }
+    return found;
+}
+
+TEST(test_miner_routes_crystal_to_crystal_smelt_endpoint) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    int miner = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_MINER
+            && w.npc_ships[i].home_station == 2) {
+            miner = i;
+            break;
+        }
+    }
+    ASSERT(miner >= 0);
+
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) { frag = i; break; }
+    }
+    ASSERT(frag >= 0);
+    asteroid_t *tow = &w.asteroids[frag];
+    memset(tow, 0, sizeof(*tow));
+    tow->active = true;
+    tow->tier = ASTEROID_TIER_S;
+    tow->commodity = COMMODITY_CRYSTAL_ORE;
+    tow->radius = 12.0f;
+    tow->ore = 1.0f;
+    tow->max_ore = 1.0f;
+
+    npc_ship_t *npc = &w.npc_ships[miner];
+    npc->state = NPC_STATE_RETURN_TO_STATION;
+    npc->target_asteroid = -1;
+    npc->towed_fragment = frag;
+    npc->ship.hull_class = HULL_CLASS_NPC_MINER;
+    npc->ship.pos = v2_add(w.stations[2].pos, v2(100.0f, 0.0f));
+    npc->ship.vel = v2(0.0f, 0.0f);
+    npc->ship.angle = 0.0f;
+    tow->pos = v2_add(npc->ship.pos, v2(40.0f, 0.0f));
+    ship_t *paired = world_npc_ship_for(&w, miner);
+    ASSERT(paired != NULL);
+    paired->pos = npc->ship.pos;
+    paired->vel = npc->ship.vel;
+    paired->angle = npc->ship.angle;
+    *nav_npc_path(miner) = (nav_path_t){0};
+
+    vec2 crystal_endpoint = {0};
+    ASSERT(test_station_smelt_endpoint_for_ore(&w.stations[2],
+                                               COMMODITY_CRYSTAL_ORE,
+                                               &crystal_endpoint));
+
+    world_sim_step(&w, SIM_DT);
+
+    const nav_path_t *path = nav_npc_path(miner);
+    ASSERT(v2_dist_sq(path->goal, crystal_endpoint) < 5.0f * 5.0f);
+}
+
+TEST(test_miner_drops_fragment_without_matching_smelt_endpoint) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    int miner = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_MINER
+            && w.npc_ships[i].home_station == 2) {
+            miner = i;
+            break;
+        }
+    }
+    ASSERT(miner >= 0);
+
+    for (int m = 0; m < w.stations[2].module_count; m++) {
+        station_module_t *mod = &w.stations[2].modules[m];
+        if (mod->type == MODULE_FURNACE &&
+            (commodity_t)mod->commodity == COMMODITY_CRYSTAL_INGOT) {
+            mod->commodity = (uint8_t)COMMODITY_CUPRITE_INGOT;
+        }
+    }
+    ASSERT(!test_station_smelt_endpoint_for_ore(&w.stations[2],
+                                                COMMODITY_CRYSTAL_ORE,
+                                                NULL));
+
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) { frag = i; break; }
+    }
+    ASSERT(frag >= 0);
+    asteroid_t *tow = &w.asteroids[frag];
+    memset(tow, 0, sizeof(*tow));
+    tow->active = true;
+    tow->tier = ASTEROID_TIER_S;
+    tow->commodity = COMMODITY_CRYSTAL_ORE;
+    tow->radius = 12.0f;
+    tow->ore = 1.0f;
+    tow->max_ore = 1.0f;
+
+    npc_ship_t *npc = &w.npc_ships[miner];
+    npc->state = NPC_STATE_RETURN_TO_STATION;
+    npc->target_asteroid = -1;
+    npc->towed_fragment = frag;
+    npc->ship.pos = v2_add(w.stations[2].pos, v2(100.0f, 0.0f));
+    ship_t *paired = world_npc_ship_for(&w, miner);
+    ASSERT(paired != NULL);
+    paired->pos = npc->ship.pos;
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->towed_fragment, -1);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_IDLE);
+}
+
 TEST(test_scenario_upgrade_requires_products) {
     WORLD_DECL;
     world_reset(&w);
@@ -1717,6 +1950,10 @@ void register_world_sim_scenarios_tests(void) {
     RUN(test_scenario_two_players_mining);
     RUN(test_scenario_npc_economy_30_seconds);
     RUN(test_npc_exits_station_with_blocked_rings);
+    RUN(test_hauler_exits_non_home_station_before_return);
+    RUN(test_miner_enters_station_before_smelt_delivery);
+    RUN(test_miner_routes_crystal_to_crystal_smelt_endpoint);
+    RUN(test_miner_drops_fragment_without_matching_smelt_endpoint);
     RUN(test_scenario_upgrade_requires_products);
     RUN(test_scenario_emergency_recovery);
     RUN(test_scenario_product_cap_pauses_production);

@@ -881,10 +881,11 @@ static void handle_message(const uint8_t* data, int len) {
                 row->chain_len = p[2];
                 row->flags = p[3];
                 row->event_id = read_u64_le(&p[4]);
-                memcpy(row->cargo_pub, &p[12], 32);
-                memcpy(row->receipt_head, &p[44], 32);
-                memcpy(row->origin_station, &p[76], 32);
-                memcpy(row->latest_station, &p[108], 32);
+                row->quantity = read_u16_le(&p[12]);
+                memcpy(row->cargo_pub, &p[14], 32);
+                memcpy(row->receipt_head, &p[46], 32);
+                memcpy(row->origin_station, &p[78], 32);
+                memcpy(row->latest_station, &p[110], 32);
             }
             net_state.callbacks.on_inspect_snapshot(&snap);
         }

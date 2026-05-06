@@ -270,13 +270,14 @@ enum {
  *     [row_count:1][manifest_count:u16]
  *   row:
  *     [commodity:1][grade:1][chain_len:1][flags:1][event_id:u64]
- *     [cargo_pub:32][receipt_head:32][origin_station_pub:32]
+ *     [quantity:u16][cargo_pub:32][receipt_head:32][origin_station_pub:32]
  *     [latest_station_pub:32]
  *
  * target_type mirrors server_player_t.scan_target_type:
  *   0 none, 1 station/module, 2 NPC, 3 player.
  * target_index/module_index/home_station/dest_station use 0xFF as
- * unknown/none. flags bit0 = row has at least one receipt link. */
+ * unknown/none. flags bit0 = row has at least one receipt link;
+ * bit1 = row is a grouped bulk row with no individual cargo identity. */
 enum {
     INSPECT_TARGET_NONE    = 0,
     INSPECT_TARGET_STATION = 1,
@@ -285,8 +286,9 @@ enum {
 
     INSPECT_SNAPSHOT_MAX_ROWS = 8,
     INSPECT_SNAPSHOT_HEADER   = 11,
-    INSPECT_SNAPSHOT_ROW      = 140,
+    INSPECT_SNAPSHOT_ROW      = 142,
     INSPECT_ROW_HAS_RECEIPT   = 1 << 0,
+    INSPECT_ROW_GROUPED       = 1 << 1,
 };
 
 #define INSPECT_SNAPSHOT_MAX_SIZE \

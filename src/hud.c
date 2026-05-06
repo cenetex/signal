@@ -528,7 +528,7 @@ static void hud_hash_short_label(const uint8_t hash[32], char out[8]) {
 
 static void hud_cargo_label(const uint8_t pub[32], char out[12]) {
     if (hash32_is_zero(pub)) {
-        snprintf(out, 12, "unkeyed");
+        snprintf(out, 12, "-------");
         return;
     }
     mining_render_callsign(pub, out);
@@ -574,9 +574,11 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
         return;
     }
 
-    int max_rows = (screen_h < 520.0f) ? 4 : 6;
+    int max_rows = (screen_h < 520.0f) ? 5 : 8;
     int rows = snap->row_count;
     if (rows > max_rows) rows = max_rows;
+    unsigned visible_units = 0;
+    float next_y = py + 48.0f;
     for (int i = 0; i < rows; i++) {
         const NetInspectSnapshotRow *row = &snap->rows[i];
         char cargo[12], head[8], origin[8], latest[8];
@@ -584,35 +586,38 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
         hud_hash_short_label(row->receipt_head, head);
         hud_hash_short_label(row->origin_station, origin);
         hud_hash_short_label(row->latest_station, latest);
+        unsigned qty = row->quantity > 0 ? row->quantity : 1;
+        visible_units += qty;
+        bool grouped = (row->flags & INSPECT_ROW_GROUPED) != 0;
 
         uint8_t rr, gg, bb;
         mining_grade_rgb((mining_grade_t)row->grade, &rr, &gg, &bb);
-        float y = py + 48.0f + (float)i * 26.0f;
+        float y = next_y;
         sdtx_pos(px / cell, y / cell);
         sdtx_color4b(rr, gg, bb, 235);
-        sdtx_printf("%s %-4s %-9s chain %u",
-                    commodity_code((commodity_t)row->commodity),
+        sdtx_printf("%-5s %s %-9s x%u",
                     hud_grade_short_label(row->grade),
+                    commodity_code((commodity_t)row->commodity),
                     cargo,
-                    (unsigned)row->chain_len);
+                    qty);
 
-        sdtx_pos(px / cell, (y + 12.0f) / cell);
-        sdtx_color3b(PAL_TEXT_GREY);
-        if (row->flags & INSPECT_ROW_HAS_RECEIPT) {
-            sdtx_printf("  %s>%s  head %s  ev %llu",
-                        origin, latest, head,
+        next_y = y + 14.0f;
+        if (!grouped && (row->flags & INSPECT_ROW_HAS_RECEIPT)) {
+            sdtx_pos(px / cell, (y + 12.0f) / cell);
+            sdtx_color3b(PAL_TEXT_GREY);
+            sdtx_printf("chain %u  %s>%s  head %s  ev %llu",
+                        (unsigned)row->chain_len, origin, latest, head,
                         (unsigned long long)row->event_id);
-        } else {
-            sdtx_puts("  no portable receipt yet");
+            next_y = y + 26.0f;
         }
     }
 
-    if (snap->manifest_count > (uint16_t)rows) {
-        sdtx_pos(px / cell, (py + 48.0f + (float)rows * 26.0f) / cell);
+    if (snap->manifest_count > visible_units) {
+        sdtx_pos(px / cell, next_y / cell);
         sdtx_color3b(PAL_TEXT_GREY);
         sdtx_printf("+%u more unit%s",
-                    (unsigned)(snap->manifest_count - (uint16_t)rows),
-                    (snap->manifest_count - (uint16_t)rows) == 1 ? "" : "s");
+                    (unsigned)(snap->manifest_count - visible_units),
+                    (snap->manifest_count - visible_units) == 1 ? "" : "s");
     }
 }
 

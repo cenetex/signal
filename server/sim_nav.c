@@ -42,7 +42,7 @@ typedef struct {
  * in local polar coords so ring rotation is handled at conversion. */
 
 enum {
-    SNAV_MAX_NODES = 28,  /* center + 8 exterior + up to ~9 dock pairs */
+    SNAV_MAX_NODES = 28,  /* 8 exterior + up to ~9 dock pairs */
     SNAV_MAX_EDGES = 64,
 };
 
@@ -78,7 +78,7 @@ static station_nav_t s_station_nav[MAX_STATIONS];
 /* Convert a precomputed nav node to world-space for a given station. */
 static vec2 snav_node_world_pos(const station_t *st, const snav_node_t *n) {
     if (n->kind == SNAV_RING) {
-        float ang = module_angle_ring(st, n->ring, n->slot);
+        float ang = module_angle_ring(st, n->ring, n->slot) + n->angle;
         float r = STATION_RING_RADIUS[n->ring] + n->radius;
         return v2_add(st->pos, v2(cosf(ang) * r, sinf(ang) * r));
     }
@@ -210,13 +210,23 @@ static bool nav_line_clear(const world_t *w, vec2 a, vec2 b, float clearance) {
         float max_r = 600.0f; /* conservative max ring + margin */
         if (st_d > (seg_len + max_r) * (seg_len + max_r)) continue;
 
-        /* Core circle */
+        /* Core circle. Treat the core as blocked for through-routes, but
+         * don't trap a route whose start or goal is already inside the
+         * inflated core. NPCs can be teleported/spawned near station
+         * center by state transitions and must be able to route back out
+         * to the dock lane instead of failing every edge. */
         if (st->radius > 0.0f) {
             vec2 to_c = v2_sub(st->pos, a);
+            float start_core_sq = v2_dist_sq(a, st->pos);
+            float goal_core_sq = v2_dist_sq(b, st->pos);
+            float inflated_core = st->radius + clearance;
+            bool endpoint_inside_core =
+                start_core_sq < inflated_core * inflated_core ||
+                goal_core_sq < inflated_core * inflated_core;
             float proj = v2_dot(to_c, fwd);
             if (proj > -st->radius && proj < seg_len + st->radius) {
                 float perp = fabsf(v2_cross(to_c, fwd));
-                if (perp < st->radius + clearance) return false;
+                if (!endpoint_inside_core && perp < inflated_core) return false;
             }
         }
 
@@ -297,8 +307,8 @@ bool nav_segment_clear(const world_t *w, vec2 start, vec2 goal, float clearance)
 /* station_build_nav — precompute navigable road network for a station */
 /* ------------------------------------------------------------------ */
 /* Nodes:
- *   - Station center (FIXED)
- *   - Per dock: outer waypoint (ring_r + 100) and inner (ring_r - 100), both RING
+ *   - Per dock: outer waypoint (ring_r + 100) and inner (ring_r - 60), both RING,
+ *     offset to the dock gap lane instead of the dock module body.
  *   - 8 exterior waypoints around the outermost ring (FIXED, every 45 deg)
  *
  * Edges: every pair of nodes is tested with nav_line_clear. Validated
@@ -318,37 +328,30 @@ void station_build_nav(const world_t *w, int station_idx) {
      * rebuild and keep `valid = false` so A* falls back to direct-line. */
     if (!isfinite(st->pos.x) || !isfinite(st->pos.y)) return;
 
-    /* --- Add center node (FIXED) --- */
-    if (nav->node_count < SNAV_MAX_NODES) {
-        snav_node_t *n = &nav->nodes[nav->node_count++];
-        n->kind = SNAV_FIXED;
-        n->angle = 0.0f;
-        n->radius = 0.0f;
-        n->ring = 0;
-        n->slot = 0;
-    }
-
     /* --- Add dock inner/outer pairs (RING) --- */
     for (int mi = 0; mi < st->module_count && nav->node_count < SNAV_MAX_NODES - 2; mi++) {
         if (st->modules[mi].type != MODULE_DOCK) continue;
         if (st->modules[mi].scaffold) continue;
         int ring = st->modules[mi].ring;
         int slot = st->modules[mi].slot;
+        int slots_n = STATION_RING_SLOTS[ring];
+        float slot_arc = (slots_n > 0) ? (TWO_PI_F / (float)slots_n) : TWO_PI_F;
+        float lane_offset = (slot == 0) ? -slot_arc * 0.5f : slot_arc * 0.5f;
 
         /* Outer: 100u outside the ring */
         snav_node_t *outer = &nav->nodes[nav->node_count++];
         outer->kind = SNAV_RING;
-        outer->angle = 0.0f;
+        outer->angle = lane_offset;
         outer->radius = 100.0f;  /* offset from ring radius */
         outer->ring = ring;
         outer->slot = slot;
 
-        /* Inner: 100u inside the ring */
+        /* Inner: stay outside the core clearance while still inside the ring. */
         if (nav->node_count < SNAV_MAX_NODES) {
             snav_node_t *inner = &nav->nodes[nav->node_count++];
             inner->kind = SNAV_RING;
-            inner->angle = 0.0f;
-            inner->radius = -100.0f;
+            inner->angle = lane_offset;
+            inner->radius = -60.0f;
             inner->ring = ring;
             inner->slot = slot;
         }
@@ -739,6 +742,7 @@ float nav_forward_clearance(const world_t *w, vec2 pos, vec2 vel,
         /* Module positions on rings */
         for (int mi = 0; mi < st->module_count; mi++) {
             if (st->modules[mi].scaffold) continue;
+            if (st->modules[mi].type == MODULE_DOCK) continue;
             vec2 mp = module_world_pos_ring(st, st->modules[mi].ring, st->modules[mi].slot);
             vec2 to_m = v2_sub(mp, pos);
             float fd = v2_dot(to_m, fwd);
@@ -785,7 +789,7 @@ float nav_forward_clearance(const world_t *w, vec2 pos, vec2 vel,
                 float dock_ang = module_angle_ring(st, ring, st->modules[mi].slot);
                 int slots_n = STATION_RING_SLOTS[ring];
                 float slot_arc = (slots_n > 0) ? (TWO_PI_F / (float)slots_n) : TWO_PI_F;
-                if (fabsf(wrap_angle(ship_ang - dock_ang)) < slot_arc * 0.4f) {
+                if (fabsf(wrap_angle(ship_ang - dock_ang)) < slot_arc * 0.6f) {
                     dock_gap = true; break;
                 }
             }

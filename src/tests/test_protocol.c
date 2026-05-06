@@ -244,6 +244,7 @@ TEST(test_roundtrip_inspect_snapshot_npc_manifest_chain) {
     fragment_pub[31] = 0x42;
     ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
                       fragment_pub, 7, &unit));
+    unit.prefix_class = (uint8_t)INGOT_PREFIX_H;
 
     cargo_receipt_chain_t chain;
     memset(&chain, 0, sizeof(chain));
@@ -276,15 +277,88 @@ TEST(test_roundtrip_inspect_snapshot_npc_manifest_chain) {
     ASSERT_EQ_INT(p[1], MINING_GRADE_RARE);
     ASSERT_EQ_INT(p[2], 2);
     ASSERT(p[3] & INSPECT_ROW_HAS_RECEIPT);
+    ASSERT_EQ_INT(read_u16_le(&p[12]), 1);
     uint64_t event_id = 0;
     for (int i = 0; i < 8; i++) event_id |= ((uint64_t)p[4 + i]) << (8 * i);
     ASSERT_EQ_INT((int)event_id, 7002);
-    ASSERT(memcmp(&p[12], unit.pub, 32) == 0);
+    ASSERT(memcmp(&p[14], unit.pub, 32) == 0);
     uint8_t expected_head[32];
     cargo_receipt_hash(&chain.links[1], expected_head);
-    ASSERT(memcmp(&p[44], expected_head, 32) == 0);
-    ASSERT(memcmp(&p[76], chain.links[0].authoring_station, 32) == 0);
-    ASSERT(memcmp(&p[108], chain.links[1].authoring_station, 32) == 0);
+    ASSERT(memcmp(&p[46], expected_head, 32) == 0);
+    ASSERT(memcmp(&p[78], chain.links[0].authoring_station, 32) == 0);
+    ASSERT(memcmp(&p[110], chain.links[1].authoring_station, 32) == 0);
+
+    ship_cleanup(&ship);
+}
+
+TEST(test_inspect_snapshot_groups_anonymous_ingots_by_grade) {
+    npc_ship_t npc;
+    memset(&npc, 0, sizeof(npc));
+    npc.active = true;
+    npc.role = NPC_ROLE_HAULER;
+    npc.state = NPC_STATE_TRAVEL_TO_DEST;
+    npc.home_station = 0;
+    npc.dest_station = 1;
+
+    ship_t ship;
+    memset(&ship, 0, sizeof(ship));
+    ASSERT(ship_manifest_bootstrap(&ship));
+
+    uint8_t fragment_pub[32] = {0};
+    for (int i = 0; i < 3; i++) {
+        cargo_unit_t u;
+        memset(&u, 0, sizeof(u));
+        fragment_pub[31] = (uint8_t)(0x10 + i);
+        ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_COMMON,
+                          fragment_pub, (uint16_t)i, &u));
+        u.prefix_class = (uint8_t)INGOT_PREFIX_ANONYMOUS;
+        ASSERT(ship_manifest_push_with_chain(&ship, &u, NULL));
+    }
+
+    cargo_unit_t named;
+    memset(&named, 0, sizeof(named));
+    fragment_pub[31] = 0x40;
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_COMMON,
+                      fragment_pub, 9, &named));
+    named.prefix_class = (uint8_t)INGOT_PREFIX_H;
+    ASSERT(ship_manifest_push_with_chain(&ship, &named, NULL));
+
+    for (int i = 0; i < 2; i++) {
+        cargo_unit_t u;
+        memset(&u, 0, sizeof(u));
+        fragment_pub[31] = (uint8_t)(0x70 + i);
+        ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RARE,
+                          fragment_pub, (uint16_t)i, &u));
+        u.prefix_class = (uint8_t)INGOT_PREFIX_ANONYMOUS;
+        ASSERT(ship_manifest_push_with_chain(&ship, &u, NULL));
+    }
+
+    uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
+    int len = serialize_inspect_snapshot_npc(buf, 3, &npc, &ship);
+
+    ASSERT_EQ_INT(buf[8], 3);
+    ASSERT_EQ_INT(read_u16_le(&buf[9]), 6);
+    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + 3 * INSPECT_SNAPSHOT_ROW);
+
+    uint8_t *bulk_common = &buf[INSPECT_SNAPSHOT_HEADER];
+    ASSERT_EQ_INT(bulk_common[0], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(bulk_common[1], MINING_GRADE_COMMON);
+    ASSERT(bulk_common[3] & INSPECT_ROW_GROUPED);
+    ASSERT(!(bulk_common[3] & INSPECT_ROW_HAS_RECEIPT));
+    ASSERT_EQ_INT(read_u16_le(&bulk_common[12]), 3);
+
+    uint8_t *named_common = &buf[INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_ROW];
+    ASSERT_EQ_INT(named_common[0], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(named_common[1], MINING_GRADE_COMMON);
+    ASSERT(!(named_common[3] & INSPECT_ROW_GROUPED));
+    ASSERT_EQ_INT(read_u16_le(&named_common[12]), 1);
+    ASSERT(memcmp(&named_common[14], named.pub, 32) == 0);
+
+    uint8_t *bulk_rare = &buf[INSPECT_SNAPSHOT_HEADER + 2 * INSPECT_SNAPSHOT_ROW];
+    ASSERT_EQ_INT(bulk_rare[0], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(bulk_rare[1], MINING_GRADE_RARE);
+    ASSERT(bulk_rare[3] & INSPECT_ROW_GROUPED);
+    ASSERT_EQ_INT(read_u16_le(&bulk_rare[12]), 2);
 
     ship_cleanup(&ship);
 }
@@ -581,6 +655,7 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_asteroids_full_includes_inactive_slots);
     RUN(test_roundtrip_npcs);
     RUN(test_roundtrip_inspect_snapshot_npc_manifest_chain);
+    RUN(test_inspect_snapshot_groups_anonymous_ingots_by_grade);
     RUN(test_roundtrip_stations);
     RUN(test_station_identity_serializes_module_commodities);
     RUN(test_bug92_station_record_size_matches_buffer);

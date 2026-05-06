@@ -221,13 +221,15 @@ typedef void (*net_on_hold_ingots_fn)(const NetNamedIngotEntry *entries,
 /* Laser/scan inspect snapshot. target_type mirrors the scan target
  * values in server_player_t: 0 none, 1 station/module, 2 NPC, 3 player.
  * For NPC targets, rows project the scanned ship manifest into
- * cargo-unit identity and portable receipt-chain heads. */
+ * cargo-unit identity and portable receipt-chain heads. Quantity is
+ * greater than 1 for grouped anonymous ingot buckets. */
 typedef struct {
     uint8_t  commodity;
     uint8_t  grade;
     uint8_t  chain_len;
     uint8_t  flags;
     uint64_t event_id;
+    uint16_t quantity;
     uint8_t  cargo_pub[32];
     uint8_t  receipt_head[32];
     uint8_t  origin_station[32];
