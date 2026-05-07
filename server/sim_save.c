@@ -1685,7 +1685,7 @@ bool world_load(world_t *w, const char *path) {
         uint8_t walked_last[32] = {0};
         chain_log_verify_report_t report;
         if (!chain_log_verify_station(st, &walked, walked_last, &report)) {
-            char msg[128];
+            char msg[256];
             snprintf(msg, sizeof(msg),
                      "verification failed after %llu valid events: %s",
                      (unsigned long long)walked,
