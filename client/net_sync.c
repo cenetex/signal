@@ -541,15 +541,38 @@ void apply_remote_signal_channel(const NetSignalChannelMsg *msgs, int count) {
     ch->head = n % SIGNAL_CHANNEL_CAPACITY;
 }
 
+static bool net_hash32_is_zero(const uint8_t hash[32]) {
+    for (int i = 0; i < 32; i++) {
+        if (hash[i] != 0) return false;
+    }
+    return true;
+}
+
+static void net_station_hail_label(uint8_t station, char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    if (station >= MAX_STATIONS) {
+        snprintf(out, cap, "Unknown");
+        return;
+    }
+    const station_t *st = &g.world.stations[station];
+    if (net_hash32_is_zero(st->station_pubkey)) {
+        snprintf(out, cap, "%s", st->name);
+        return;
+    }
+    char id[8];
+    mining_callsign_from_pubkey(st->station_pubkey, id);
+    snprintf(out, cap, "%s [%s]", st->name, id);
+}
+
 void apply_remote_hail_response(uint8_t station, float credits, int contract_index) {
     if (station >= MAX_STATIONS) {
-        set_notice("No station signal found.");
+        set_notice("Local scan sweep.");
         return;
     }
     /* Use the same hail overlay as singleplayer — station name + contextual
      * voice line + credits. The notice system is for transient alerts;
      * hails get their own 6-second radio-style overlay in the HUD. */
-    snprintf(g.hail_station, sizeof(g.hail_station), "%s", g.world.stations[station].name);
+    net_station_hail_label(station, g.hail_station, sizeof(g.hail_station));
     const char *ctx = contextual_hail_message(station);
     if (ctx)
         snprintf(g.hail_message, sizeof(g.hail_message), "%s", ctx);
