@@ -3952,10 +3952,8 @@ static void step_contracts(world_t *w, float dt) {
         if (!need.active && !has_production_contract) {
             struct { commodity_t ingot; bool needed; } checks[] = {
                 { COMMODITY_FERRITE_INGOT, station_has_module(st, MODULE_FRAME_PRESS) },
-                { COMMODITY_CUPRITE_INGOT,
-                  station_has_module(st, MODULE_LASER_FAB) ||
-                  station_has_module(st, MODULE_TRACTOR_FAB) },
-                { COMMODITY_CRYSTAL_INGOT, station_has_module(st, MODULE_LASER_FAB) },
+                { COMMODITY_CUPRITE_INGOT, station_has_module(st, MODULE_LASER_FAB) },
+                { COMMODITY_CRYSTAL_INGOT, station_has_module(st, MODULE_TRACTOR_FAB) },
             };
             float worst_deficit = 0.0f;
             int worst_idx = -1;
@@ -4903,7 +4901,7 @@ void step_station_ring_dynamics(world_t *w, float dt) {
             float wa = st->arm_rotation[ra-1] + alpha_a;
 
             /* Input spokes — each declared input commodity. */
-            module_inputs_t req = module_required_inputs(prod->type);
+            module_inputs_t req = module_instance_required_inputs(prod);
             for (int i = 0; i < req.count; i++) {
                 int hop = station_find_hopper_for(st, req.commodities[i]);
                 apply_spoke_torque(st, prod, wa, ra, hop, pulse, net_torque);
@@ -5364,15 +5362,15 @@ void world_reset(world_t *w) {
     w->stations[0].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
     w->stations[0].base_price[COMMODITY_CUPRITE_ORE] = 14.0f;
     w->stations[0].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
-    w->stations[0].base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
-    w->stations[0].base_price[COMMODITY_CUPRITE_INGOT] = 32.0f;
-    w->stations[0].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
-    w->stations[0].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
+    w->stations[0].base_price[COMMODITY_FERRITE_INGOT] = 10.0f;
+    w->stations[0].base_price[COMMODITY_CUPRITE_INGOT] = 12.0f;
+    w->stations[0].base_price[COMMODITY_CRYSTAL_INGOT] = 14.0f;
+    w->stations[0].base_price[COMMODITY_REPAIR_KIT] = 1.0f;
     /* Finished-good price baselines if Prospect receives stock; its dock
      * imports repair kits rather than shipyard kit-fab inputs. */
-    w->stations[0].base_price[COMMODITY_FRAME]          = 22.0f;
-    w->stations[0].base_price[COMMODITY_LASER_MODULE]   = 30.0f;
-    w->stations[0].base_price[COMMODITY_TRACTOR_MODULE] = 38.0f;
+    w->stations[0].base_price[COMMODITY_FRAME]          = 2.0f;
+    w->stations[0].base_price[COMMODITY_LASER_MODULE]   = 16.0f;
+    w->stations[0].base_price[COMMODITY_TRACTOR_MODULE] = 18.0f;
     w->stations[0].signal_range = 18000.0f;
     /* Ring 1: dock + relay + ferrite furnace (tagged FERRITE_INGOT). */
     add_module_at(&w->stations[0], MODULE_DOCK,         1, 0);
@@ -5416,12 +5414,12 @@ void world_reset(world_t *w) {
     w->stations[1].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
     w->stations[1].base_price[COMMODITY_CUPRITE_ORE] = 14.0f;
     w->stations[1].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
-    w->stations[1].base_price[COMMODITY_FERRITE_INGOT] = 24.0f;
-    w->stations[1].base_price[COMMODITY_FRAME] = 20.0f;
-    w->stations[1].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
+    w->stations[1].base_price[COMMODITY_FERRITE_INGOT] = 10.0f;
+    w->stations[1].base_price[COMMODITY_FRAME] = 2.0f;
+    w->stations[1].base_price[COMMODITY_REPAIR_KIT] = 1.0f;
     /* Kepler imports laser/tractor modules for its shipyard kit fab. */
-    w->stations[1].base_price[COMMODITY_LASER_MODULE]   = 30.0f;
-    w->stations[1].base_price[COMMODITY_TRACTOR_MODULE] = 38.0f;
+    w->stations[1].base_price[COMMODITY_LASER_MODULE]   = 16.0f;
+    w->stations[1].base_price[COMMODITY_TRACTOR_MODULE] = 18.0f;
     /* Ring 1: dock + relay + shipyard. The shipyard sits on the inner
      * ring so its three input hoppers can read as a compact ring-2
      * staging belt instead of being buried on the outer hull. */
@@ -5460,13 +5458,13 @@ void world_reset(world_t *w) {
     w->stations[2].base_price[COMMODITY_FERRITE_ORE] = 10.0f;
     w->stations[2].base_price[COMMODITY_CUPRITE_ORE] = 14.0f;
     w->stations[2].base_price[COMMODITY_CRYSTAL_ORE] = 18.0f;
-    w->stations[2].base_price[COMMODITY_CUPRITE_INGOT] = 32.0f;
-    w->stations[2].base_price[COMMODITY_CRYSTAL_INGOT] = 40.0f;
-    w->stations[2].base_price[COMMODITY_LASER_MODULE] = 28.0f;
-    w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 36.0f;
-    w->stations[2].base_price[COMMODITY_REPAIR_KIT] = 6.0f;
+    w->stations[2].base_price[COMMODITY_CUPRITE_INGOT] = 12.0f;
+    w->stations[2].base_price[COMMODITY_CRYSTAL_INGOT] = 14.0f;
+    w->stations[2].base_price[COMMODITY_LASER_MODULE] = 16.0f;
+    w->stations[2].base_price[COMMODITY_TRACTOR_MODULE] = 18.0f;
+    w->stations[2].base_price[COMMODITY_REPAIR_KIT] = 1.0f;
     /* Helios imports frames for its shipyard kit fab. */
-    w->stations[2].base_price[COMMODITY_FRAME]          = 22.0f;
+    w->stations[2].base_price[COMMODITY_FRAME]          = 2.0f;
     /* No ferrite ingots produced or imported here — Helios runs at the
      * 3-furnace tier, which the new count rules deliberately gate
      * against ferrite. The ferrite-ingot pipeline stays Prospect's. */

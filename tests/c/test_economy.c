@@ -6,8 +6,8 @@ TEST(test_station_production_yard_makes_frames) {
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_FRAME_PRESS };
     station._inventory_cache[COMMODITY_FERRITE_INGOT] = 5.0f;
     step_station_production(&station, 1, 1.0f);
-    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_FERRITE_INGOT], 3.0f, 0.001f);
-    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_FRAME], 1.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_FERRITE_INGOT], 4.0f, 0.001f);
+    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_FRAME], 10.0f, 0.001f);
 }
 
 TEST(test_station_production_beamworks_makes_modules) {
@@ -16,9 +16,11 @@ TEST(test_station_production_beamworks_makes_modules) {
     station.modules[station.module_count++] = (station_module_t){ .type = MODULE_TRACTOR_FAB };
     station._inventory_cache[COMMODITY_CUPRITE_INGOT] = 5.0f;
     station._inventory_cache[COMMODITY_CRYSTAL_INGOT] = 5.0f;
+    station._inventory_cache[COMMODITY_FRAME] = 1.0f;
     step_station_production(&station, 1, 1.0f);
-    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_CUPRITE_INGOT], 3.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_CUPRITE_INGOT], 4.5f, 0.001f);
     ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_CRYSTAL_INGOT], 4.5f, 0.001f);
+    ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_FRAME], 0.0f, 0.001f);
     ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_LASER_MODULE], 0.5f, 0.001f);
     ASSERT_EQ_FLOAT(station._inventory_cache[COMMODITY_TRACTOR_MODULE], 0.5f, 0.001f);
 }
@@ -463,9 +465,9 @@ TEST(test_destroy_contract_completes_when_asteroid_gone) {
 TEST(test_supply_contract_uses_correct_material) {
     WORLD_DECL;
     world_reset(&w);
-    /* LASER_FAB needs cuprite + crystal ingot hoppers. Plant both. */
+    /* LASER_FAB needs cuprite ingot + frame hoppers. Plant both. */
     add_hopper_for(&w.stations[1], 3, 1, COMMODITY_CUPRITE_INGOT);
-    add_hopper_for(&w.stations[1], 3, 7, COMMODITY_CRYSTAL_INGOT);
+    add_hopper_for(&w.stations[1], 3, 7, COMMODITY_FRAME);
     begin_module_construction_at(&w, &w.stations[1], 1, MODULE_LASER_FAB, 2, 4);
     /* The generated contract should be for cuprite ingots */
     bool found = false;

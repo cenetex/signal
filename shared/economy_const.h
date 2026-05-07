@@ -49,6 +49,9 @@ static inline float prefix_class_price_multiplier(int cls) {
 }
 
 /* --- Refinery / station production --- */
+/* A collectible ore fragment is the game's smallest physical ore unit.
+ * Smelting a full fragment mints this many ingot units. */
+static const float REFINERY_INGOTS_PER_FRAGMENT = 10.0f;
 static const float REFINERY_HOPPER_CAPACITY = 500.0f;
 static const float REFINERY_BASE_SMELT_RATE = 2.0f;
 /* enum, not `static const int`, so MSVC accepts it as a constant
@@ -87,6 +90,7 @@ static const float HAULER_RESERVE = 6.0f;
 static const float REPAIR_KIT_FAB_PERIOD  = 30.0f;
 static const float REPAIR_KIT_PER_BATCH   = 100.0f;
 static const float REPAIR_KIT_STOCK_CAP   = 1000.0f;
+static const float REPAIR_KITS_PER_RESPAWN = 100.0f;
 
 /* Kits are dense cargo: 10 kits per cargo unit. A 100-HP repair (= 100
  * kits) costs 10 cargo slots, which fits in any starter ship's hold.

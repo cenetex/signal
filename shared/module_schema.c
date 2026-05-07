@@ -106,7 +106,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
     [MODULE_LASER_FAB] = {
         .name = "Laser Fab",
         .kind = MODULE_KIND_PRODUCER,
-        .input = COMMODITY_CUPRITE_INGOT, /* plus crystal ingots */
+        .input = COMMODITY_CUPRITE_INGOT, /* plus frames */
         .output = COMMODITY_LASER_MODULE,
         .rate = 0.5f, .buffer_capacity = 12.0f,
         .build_material = 80.0f, .build_commodity = COMMODITY_CUPRITE_INGOT,
@@ -120,7 +120,7 @@ const module_schema_t MODULE_SCHEMA[MODULE_COUNT] = {
     [MODULE_TRACTOR_FAB] = {
         .name = "Tractor Fab",
         .kind = MODULE_KIND_PRODUCER,
-        .input = COMMODITY_CUPRITE_INGOT,
+        .input = COMMODITY_CRYSTAL_INGOT,
         .output = COMMODITY_TRACTOR_MODULE,
         .rate = 0.5f, .buffer_capacity = 12.0f,
         .build_material = 80.0f, .build_commodity = COMMODITY_CRYSTAL_INGOT,
@@ -200,12 +200,13 @@ module_inputs_t module_required_inputs(module_type_t type) {
         break;
     case MODULE_LASER_FAB:
         r.commodities[0] = COMMODITY_CUPRITE_INGOT;
-        r.commodities[1] = COMMODITY_CRYSTAL_INGOT;
+        r.commodities[1] = COMMODITY_FRAME;
         r.count = 2;
         break;
     case MODULE_TRACTOR_FAB:
-        r.commodities[0] = COMMODITY_CUPRITE_INGOT;
-        r.count = 1;
+        r.commodities[0] = COMMODITY_CRYSTAL_INGOT;
+        r.commodities[1] = COMMODITY_FRAME;
+        r.count = 2;
         break;
     case MODULE_SHIPYARD:
         r.commodities[0] = COMMODITY_FRAME;
@@ -217,6 +218,20 @@ module_inputs_t module_required_inputs(module_type_t type) {
         break;
     }
     return r;
+}
+
+module_inputs_t module_instance_required_inputs(const station_module_t *m) {
+    module_inputs_t r = { .count = 0, .any_satisfies = false };
+    if (!m) return r;
+    if (m->type == MODULE_FURNACE) {
+        commodity_t ore = module_instance_input_ore(m);
+        if (ore != COMMODITY_COUNT) {
+            r.commodities[0] = ore;
+            r.count = 1;
+        }
+        return r;
+    }
+    return module_required_inputs(m->type);
 }
 
 commodity_t module_required_output(module_type_t type) {

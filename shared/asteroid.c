@@ -123,7 +123,8 @@ void configure_asteroid_tier(asteroid_t* asteroid, asteroid_tier_t tier, commodi
     asteroid->max_ore = 0.0f;
     asteroid->ore = 0.0f;
     if (tier == ASTEROID_TIER_S) {
-        asteroid->max_ore = rand_range(rng, 8.0f, 14.0f);
+        (void)rng;
+        asteroid->max_ore = REFINERY_INGOTS_PER_FRAGMENT;
         asteroid->ore = asteroid->max_ore;
     }
     asteroid->rotation = rand_range(rng, 0.0f, TWO_PI_F);

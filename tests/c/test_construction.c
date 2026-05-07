@@ -144,13 +144,13 @@ TEST(test_outpost_min_distance) {
 
 TEST(test_module_build_material_types) {
     /* Verify each module requires the correct ingot type. LASER_FAB
-     * needs cuprite + crystal ingot hoppers. Plant both, then queue
+     * needs cuprite ingots plus frames. Plant both, then queue
      * the laser fab. */
     WORLD_DECL;
     world_reset(&w);
     station_t *st = &w.stations[1];
     add_hopper_for(st, 3, 1, COMMODITY_CUPRITE_INGOT);
-    add_hopper_for(st, 3, 7, COMMODITY_CRYSTAL_INGOT);
+    add_hopper_for(st, 3, 7, COMMODITY_FRAME);
     begin_module_construction_at(&w, st, 1, MODULE_LASER_FAB, 2, 4);
     bool found_cu = false;
     for (int k = 0; k < MAX_CONTRACTS; k++) {
@@ -166,11 +166,12 @@ TEST(test_module_construction_and_delivery) {
     world_reset(&w);
     station_t *st = &w.stations[1]; /* Kepler */
     int mc_before = st->module_count;
-    /* TRACTOR_FAB needs cuprite ingot hopper. */
-    add_hopper_for(st, 3, 1, COMMODITY_CUPRITE_INGOT);
-    int producer_idx = mc_before + 1;
+    /* TRACTOR_FAB needs crystal ingot plus frame hoppers. */
+    add_hopper_for(st, 3, 1, COMMODITY_CRYSTAL_INGOT);
+    add_hopper_for(st, 3, 2, COMMODITY_FRAME);
+    int producer_idx = mc_before + 2;
     begin_module_construction_at(&w, st, 1, MODULE_TRACTOR_FAB, 2, 4);
-    ASSERT_EQ_INT(st->module_count, mc_before + 2);
+    ASSERT_EQ_INT(st->module_count, mc_before + 3);
     ASSERT(st->modules[producer_idx].scaffold);
     ASSERT_EQ_INT((int)st->modules[producer_idx].type, (int)MODULE_TRACTOR_FAB);
     /* Deliver the required crystal ingots (goes into station inventory) */
@@ -569,6 +570,24 @@ TEST(test_station_geom_emitter_prospect) {
 
     /* Docks: 1 dock on ring 1 */
     ASSERT_EQ_INT(geom.dock_count, 1);
+    ASSERT_EQ_INT(geom.spoke_count, 1);
+    ASSERT_EQ_INT(geom.spokes[0].commodity, COMMODITY_FERRITE_ORE);
+}
+
+TEST(test_furnace_geom_spokes_use_instance_ore_tag) {
+    station_t st = {0};
+    station_geom_t geom;
+
+    st.signal_range = 1.0f;
+    add_furnace_for(&st, 1, 1, COMMODITY_CUPRITE_INGOT);
+    add_hopper_for(&st, 2, 0, COMMODITY_FERRITE_ORE);
+    add_hopper_for(&st, 2, 2, COMMODITY_CUPRITE_ORE);
+    st.module_active_pulse[0] = 1.0f;
+
+    station_build_geom(&st, &geom);
+
+    ASSERT_EQ_INT(geom.spoke_count, 1);
+    ASSERT_EQ_INT(geom.spokes[0].commodity, COMMODITY_CUPRITE_ORE);
 }
 
 TEST(test_scaffold_spawn) {
@@ -1481,7 +1500,7 @@ TEST(test_module_schema_producer_io) {
     ASSERT_EQ_INT(module_schema_output(MODULE_FRAME_PRESS), COMMODITY_FRAME);
     ASSERT_EQ_INT(module_schema_input(MODULE_LASER_FAB), COMMODITY_CUPRITE_INGOT);
     ASSERT_EQ_INT(module_schema_output(MODULE_LASER_FAB), COMMODITY_LASER_MODULE);
-    ASSERT_EQ_INT(module_schema_input(MODULE_TRACTOR_FAB), COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(module_schema_input(MODULE_TRACTOR_FAB), COMMODITY_CRYSTAL_INGOT);
     ASSERT_EQ_INT(module_schema_output(MODULE_TRACTOR_FAB), COMMODITY_TRACTOR_MODULE);
     /* Services have no input/output */
     ASSERT_EQ_INT(module_schema_input(MODULE_DOCK), COMMODITY_COUNT);
@@ -1548,14 +1567,15 @@ TEST(test_station_module_layout_status_missing_output) {
      * Without the hopper → MISSING_OUTPUT_HOPPER. Adding it restores OK. */
     station_t st = {0};
     st.signal_range = 1.0f;
-    add_hopper_for(&st, 2, 0, COMMODITY_CUPRITE_INGOT);
+    add_hopper_for(&st, 2, 0, COMMODITY_CRYSTAL_INGOT);
+    add_hopper_for(&st, 2, 4, COMMODITY_FRAME);
     add_module_at(&st, MODULE_TRACTOR_FAB, 2, 1);
     add_module_at(&st, MODULE_SHIPYARD,    2, 5);   /* downstream consumer */
     /* Shipyard also needs FRAME and LASER_MODULE input hoppers to be OK
      * for itself, but we're testing the TRACTOR_FAB module specifically. */
     add_hopper_for(&st, 3, 0, COMMODITY_FRAME);
     add_hopper_for(&st, 3, 1, COMMODITY_LASER_MODULE);
-    const station_module_t *fab = &st.modules[1];   /* TRACTOR_FAB */
+    const station_module_t *fab = &st.modules[2];   /* TRACTOR_FAB */
     ASSERT_EQ_INT(station_module_layout_status(&st, fab),
                   STATION_LAYOUT_MISSING_OUTPUT_HOPPER);
     add_hopper_for(&st, 2, 2, COMMODITY_TRACTOR_MODULE);
@@ -1581,14 +1601,15 @@ TEST(test_station_module_layout_status_no_local_consumer_is_ok) {
 
 TEST(test_station_module_layout_status_furnace_uses_tag) {
     /* A furnace tagged for CUPRITE_INGOT needs CUPRITE_ORE in (not any
-     * ore) and CUPRITE_INGOT out (because we add a TRACTOR_FAB to give
+     * ore) and CUPRITE_INGOT out (because we add a LASER_FAB to give
      * the cuprite ingot a local downstream consumer). FERRITE_ORE alone
      * is missing-input. */
     station_t st = {0};
     st.signal_range = 1.0f;
     add_hopper_for(&st, 2, 0, COMMODITY_FERRITE_ORE); /* wrong ore for a CU furnace */
     add_furnace_for(&st, 1, 1, COMMODITY_CUPRITE_INGOT);
-    add_module_at(&st, MODULE_TRACTOR_FAB, 2, 5);     /* consumes CUPRITE_INGOT */
+    add_module_at(&st, MODULE_LASER_FAB, 2, 5);       /* consumes CUPRITE_INGOT */
+    add_hopper_for(&st, 3, 0, COMMODITY_FRAME);
     const station_module_t *fc = &st.modules[1];     /* the furnace */
     ASSERT_EQ_INT(station_module_layout_status(&st, fc),
                   STATION_LAYOUT_MISSING_INPUT_HOPPER);
@@ -1961,6 +1982,7 @@ void register_construction_collision238_tests(void) {
 void register_construction_station_geom_tests(void) {
     TEST_SECTION("\nStation geometry emitter:\n");
     RUN(test_station_geom_emitter_prospect);
+    RUN(test_furnace_geom_spokes_use_instance_ore_tag);
 }
 
 void register_construction_scaffold_tests(void) {
@@ -2037,7 +2059,7 @@ TEST(test_pair_satisfied_cross_ring) {
     /* Producer pair-validation under the commodity-tagged hopper
      * model: a producer is satisfied when ALL its required input
      * commodities have a tagged hopper somewhere on the station.
-     * For LASER_FAB that means BOTH cuprite ingot AND crystal ingot
+     * For LASER_FAB that means BOTH cuprite ingot AND frame
      * hoppers must exist. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -2056,7 +2078,7 @@ TEST(test_pair_satisfied_cross_ring) {
     ASSERT(!station_pair_satisfied(st, 2, 3, MODULE_LASER_FAB));
 
     /* Add the second commodity — now satisfied. */
-    add_hopper_for(st, 3, 5, COMMODITY_CRYSTAL_INGOT);
+    add_hopper_for(st, 3, 5, COMMODITY_FRAME);
     ASSERT(station_pair_satisfied(st, 2, 3, MODULE_LASER_FAB));
 
     /* FURNACE accepts ANY ore — one ferrite-ore hopper is enough. */
@@ -2090,12 +2112,12 @@ TEST(test_helios_ring2_rotates_under_dynamics) {
     ASSERT(r1 - r0 > 0.05f);
 }
 
-TEST(test_all_rings_passive_under_spoke_load) {
-    /* Slice 1.5a — every ring is passive. Drive Helios's ring 2 with
-     * the seeded drift bias; ring 1 and ring 3 should also rotate via
-     * spoke coupling (their producer↔hopper spokes pull them toward
-     * ring 2's phase). The legacy code only spun the driver ring,
-     * leaving ring 1 and ring 3 near-static. */
+TEST(test_targeted_spokes_drive_only_loaded_rings) {
+    /* With per-instance furnace tags, Helios no longer gets fake spoke
+     * torque from unrelated ore hoppers. Ring 3 still has asymmetric
+     * furnace/fab load and should visibly move; ring 1's cuprite furnace
+     * happens to be symmetric with its targeted hoppers and can stay near
+     * static instead of being driven by irrelevant crystal beams. */
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
@@ -2104,7 +2126,7 @@ TEST(test_all_rings_passive_under_spoke_load) {
     for (int m = 0; m < st->module_count; m++) {
         if (module_is_producer(st->modules[m].type)) st->module_active_pulse[m] = 1.0f;
     }
-    float r1_0 = st->arm_rotation[0];  /* ring 1 */
+    float r1_0 = st->arm_rotation[0];  /* symmetric targeted load */
     float r3_0 = st->arm_rotation[2];  /* ring 3 */
     for (int i = 0; i < 1200; i++) {  /* 10 sim seconds */
         for (int m = 0; m < st->module_count; m++) {
@@ -2114,10 +2136,7 @@ TEST(test_all_rings_passive_under_spoke_load) {
     }
     float r1_1 = st->arm_rotation[0];
     float r3_1 = st->arm_rotation[2];
-    /* Ring 1 and ring 3 must each have moved measurably (>0.01 rad).
-     * Direction follows ring 2's drift; with bootstrap omega = bias,
-     * coupling pulls both passive rings into phase pursuit. */
-    ASSERT(fabsf(r1_1 - r1_0) > 0.01f);
+    ASSERT(fabsf(r1_1 - r1_0) < 0.01f);
     ASSERT(fabsf(r3_1 - r3_0) > 0.01f);
 }
 
@@ -2241,6 +2260,6 @@ void register_construction_module_schema_tests(void) {
     RUN(test_seeded_kepler_shipyard_inner_ring_layout);
     RUN(test_seed_stations_pair_complete);
     RUN(test_helios_ring2_rotates_under_dynamics);
-    RUN(test_all_rings_passive_under_spoke_load);
+    RUN(test_targeted_spokes_drive_only_loaded_rings);
     RUN(test_output_hopper_spoke_contributes_torque);
 }

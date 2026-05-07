@@ -693,14 +693,13 @@ TEST(test_station_production_dual_writes_frame_manifest) {
     WORLD_DECL;
     world_reset(&w);
     station_t *st = &w.stations[1];
-    cargo_unit_t inputs[2] = {{0}};
-    cargo_unit_t expected = {0};
+    cargo_unit_t input = {0};
+    cargo_unit_t expected_first = {0};
+    cargo_unit_t expected_last = {0};
     int press_idx = -1;
     uint8_t fragment_a[32] = {0};
-    uint8_t fragment_b[32] = {0};
 
     fragment_a[31] = 0x11;
-    fragment_b[31] = 0x22;
     for (int i = 0; i < st->module_count; i++) {
         if (st->modules[i].type == MODULE_FRAME_PRESS) {
             press_idx = i;
@@ -714,24 +713,23 @@ TEST(test_station_production_dual_writes_frame_manifest) {
     memset(st->module_input, 0, sizeof(st->module_input));
     memset(st->module_output, 0, sizeof(st->module_output));
 
-    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RATI, fragment_a, 0, &inputs[0]));
-    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_COMMON, fragment_b, 0, &inputs[1]));
-    ASSERT(hash_product(RECIPE_FRAME_BASIC, inputs, 2, 0, &expected));
-    ASSERT(manifest_push(&st->manifest, &inputs[0]));
-    ASSERT(manifest_push(&st->manifest, &inputs[1]));
+    ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_RATI, fragment_a, 0, &input));
+    ASSERT(hash_product(RECIPE_FRAME_BASIC, &input, 1, 0, &expected_first));
+    ASSERT(hash_product(RECIPE_FRAME_BASIC, &input, 1, 9, &expected_last));
+    ASSERT(manifest_push(&st->manifest, &input));
 
-    st->module_input[press_idx] = 2.0f;
+    st->module_input[press_idx] = 1.0f;
     sim_step_station_production(&w, 1.0f);
 
-    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_FRAME], 1.0f, 0.001f);
-    ASSERT_EQ_INT(st->manifest.count, 1);
-    ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[0].pub), -1);
-    ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[1].pub), -1);
-    ASSERT(memcmp(st->manifest.units[0].pub, expected.pub, 32) == 0);
-    ASSERT(memcmp(st->manifest.units[0].parent_merkle, expected.parent_merkle, 32) == 0);
+    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_FRAME], 10.0f, 0.001f);
+    ASSERT_EQ_INT(st->manifest.count, 10);
+    ASSERT_EQ_INT(manifest_find(&st->manifest, input.pub), -1);
+    ASSERT(memcmp(st->manifest.units[0].pub, expected_first.pub, 32) == 0);
+    ASSERT(memcmp(st->manifest.units[9].pub, expected_last.pub, 32) == 0);
+    ASSERT(memcmp(st->manifest.units[0].parent_merkle, expected_first.parent_merkle, 32) == 0);
     ASSERT_EQ_INT(st->manifest.units[0].kind, CARGO_KIND_FRAME);
     ASSERT_EQ_INT(st->manifest.units[0].commodity, COMMODITY_FRAME);
-    ASSERT_EQ_INT(st->manifest.units[0].grade, MINING_GRADE_COMMON);
+    ASSERT_EQ_INT(st->manifest.units[0].grade, MINING_GRADE_RATI);
     ASSERT_EQ_INT(st->manifest.units[0].recipe_id, RECIPE_FRAME_BASIC);
 }
 
@@ -745,10 +743,10 @@ TEST(test_station_production_dual_writes_laser_manifest) {
     cargo_unit_t expected = {0};
     int laser_idx = -1;
     uint8_t fragment_cu[32] = {0};
-    uint8_t fragment_cr[32] = {0};
+    uint8_t frame_pub[32] = {0};
 
     fragment_cu[31] = 0x33;
-    fragment_cr[31] = 0x44;
+    frame_pub[31] = 0x44;
     for (int i = 0; i < st->module_count; i++) {
         if (st->modules[i].type == MODULE_LASER_FAB) {
             laser_idx = i;
@@ -763,17 +761,21 @@ TEST(test_station_production_dual_writes_laser_manifest) {
     memset(st->module_output, 0, sizeof(st->module_output));
 
     ASSERT(hash_ingot(COMMODITY_CUPRITE_INGOT, MINING_GRADE_RARE, fragment_cu, 0, &inputs[0]));
-    ASSERT(hash_ingot(COMMODITY_CRYSTAL_INGOT, MINING_GRADE_FINE, fragment_cr, 0, &inputs[1]));
+    inputs[1].kind = (uint8_t)CARGO_KIND_FRAME;
+    inputs[1].commodity = (uint8_t)COMMODITY_FRAME;
+    inputs[1].grade = (uint8_t)MINING_GRADE_FINE;
+    inputs[1].quantity = 1;
+    memcpy(inputs[1].pub, frame_pub, sizeof(frame_pub));
     ASSERT(hash_product(RECIPE_LASER_BASIC, inputs, 2, 0, &expected));
     ASSERT(manifest_push(&st->manifest, &inputs[0]));
     ASSERT(manifest_push(&st->manifest, &inputs[1]));
 
     st->module_input[laser_idx] = 1.0f;
-    st->_inventory_cache[COMMODITY_CRYSTAL_INGOT] = 1.0f;
+    st->_inventory_cache[COMMODITY_FRAME] = 1.0f;
     sim_step_station_production(&w, 2.0f);
 
     ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_LASER_MODULE], 1.0f, 0.001f);
-    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_CRYSTAL_INGOT], 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(st->_inventory_cache[COMMODITY_FRAME], 0.0f, 0.001f);
     ASSERT_EQ_INT(st->manifest.count, 1);
     ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[0].pub), -1);
     ASSERT_EQ_INT(manifest_find(&st->manifest, inputs[1].pub), -1);
