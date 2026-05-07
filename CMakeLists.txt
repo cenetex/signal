@@ -138,6 +138,7 @@ set(SIGNAL_CLIENT_SOURCES
     client/net_sync.c
     client/local_server.c
     client/onboarding.c
+    client/contract_objective.c
     client/episode.c
     client/music.c
     client/avatar.c

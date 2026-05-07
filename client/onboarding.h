@@ -1,6 +1,6 @@
 /*
  * onboarding.h — First-run guide objectives.
- * This is local teaching state, not station contract state.
+ * First-run teaching state plus accessors for the SIGNAL hint surface.
  */
 #ifndef ONBOARDING_H
 #define ONBOARDING_H

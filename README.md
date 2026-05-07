@@ -82,11 +82,10 @@ for the `swarm.rati.chat` avatar sync workflow.
   and `E` docks or launches.
 - Tractor: `R` toggles the tractor beam. Turning it off releases towed
   fragments or scaffolds.
-- Docked station controls: `1` sell or deliver cargo, `2` repair if available,
-  `3` laser upgrade, `4` hold upgrade, `5` tractor upgrade, `F` buy the
-  station's primary product.
-- Station navigation: `Tab` or `Q` cycle station tabs while docked. `B` jumps
-  directly to the SHIPYARD tab when the station has one.
+- Docked station controls: `Tab` cycles tabs. In SHIP BAY, `R` repairs,
+  `M` upgrades the mining laser, `C` expands cargo hold, and `T` upgrades the
+  tractor. In TRADE, `1`-`5` buy/sell visible rows, `F` pages, and `S` sells
+  accepted cargo. In JOBS, `1`-`3` track work and `S` delivers.
 - Plan mode: while undocked and not towing, `B` enters or exits plan mode, `R`
   cycles module type, and `E` reserves the current slot. Press `B` in open
   signal to create a planned outpost.
