@@ -4,7 +4,7 @@
 #   docker-compose up -d              # detached
 #   docker-compose down               # stop
 #
-# Browser: http://localhost:8080/signal.html?server=ws://localhost:9091/ws
+# Browser: http://localhost:8080/play.html?server=ws://localhost:9091/ws
 # (Or set window.SIGNAL_SERVER in play.html for a fixed default.)
 services:
   signal:

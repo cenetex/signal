@@ -177,7 +177,7 @@ dev:
 	@mkdir -p data
 	docker compose up --build -d
 	@echo ""
-	@echo "  Web:     http://localhost:8080/signal.html?server=ws://localhost:9091/ws"
+	@echo "  Web:     http://localhost:8080/play.html?server=ws://localhost:9091/ws"
 	@echo "  Server:  ws://localhost:9091/ws"
 	@echo "  Logs:    make dev-logs"
 	@echo "  Stop:    make stop  (or  make dev-clean  to wipe state)"
