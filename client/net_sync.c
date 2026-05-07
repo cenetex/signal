@@ -593,8 +593,9 @@ void apply_remote_hail_response(uint8_t station, float credits, int contract_ind
             set_notice("%s: %s", g.hail_station, g.hail_message);
         }
     }
-    /* Auto-track the contract the station just issued, so the yellow
-     * ring + compass pip appear without any tab navigation. */
+    /* Track station work when the hail response names a real board contract.
+     * Hail itself is scan/contact; the server no longer mints ad hoc
+     * nearest-rock fracture jobs just to have something to point at. */
     if (contract_index >= 0 && contract_index < MAX_CONTRACTS)
         g.tracked_contract = contract_index;
     onboarding_mark_hailed();

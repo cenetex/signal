@@ -2845,48 +2845,64 @@ void ledger_credit_supply(station_t *st, const uint8_t *token, float ore_value) 
     (void)ledger_credit_supply_amount(st, token, ore_value);
 }
 
-/* Hail: report station-local balance (informational — no withdrawal). */
-/* Hail-as-quest: if the player has no open claimed contract, pick an
- * appropriate one — FRACTURE if they're empty-holded, TRACTOR if they
- * already have fragments/ore on board. Returns slot index, or -1 if
- * the contract pool is full. Reuses an existing claimed contract when
- * present so H-mashing doesn't spam the board. */
-static int hail_find_or_issue_contract(world_t *w, server_player_t *sp, int issuer_station) {
+/* Hail: report station-local balance (informational -- no withdrawal).
+ *
+ * H used to manufacture a nearest-rock FRACTURE contract when the player had
+ * nothing claimed. That made scan feel like a fake quest generator: a station
+ * could "ask" for a random ferrite rock near the player, then the client would
+ * paint it yellow as if it were intentional work. Hail now only returns real
+ * station-authored work that already exists on the board. */
+static int hail_find_station_work_contract(world_t *w, server_player_t *sp, int issuer_station) {
     for (int i = 0; i < MAX_CONTRACTS; i++) {
         contract_t *c = &w->contracts[i];
         if (c->active && c->claimed_by == (int8_t)sp->id) return i;
     }
-    int slot = -1;
+
+    if (issuer_station < 0 || issuer_station >= MAX_STATIONS) return -1;
+
+    int best_contract = -1;
+    float best_score = 0.0f;
     for (int i = 0; i < MAX_CONTRACTS; i++) {
-        if (!w->contracts[i].active) { slot = i; break; }
-    }
-    if (slot < 0) return -1;
+        contract_t *c = &w->contracts[i];
+        if (!c->active) continue;
+        if (c->station_index != (uint8_t)issuer_station) continue;
+        if (c->claimed_by >= 0 && c->claimed_by != (int8_t)sp->id) continue;
 
-    contract_t *c = &w->contracts[slot];
-    memset(c, 0, sizeof(*c));
+        float price_hint = isfinite(c->base_price) && c->base_price > 0.0f
+            ? c->base_price : 1.0f;
+        float score = 1.0f + price_hint * 0.01f;
+        if (c->action == CONTRACT_TRACTOR) {
+            commodity_t commodity = c->commodity;
+            if (commodity < COMMODITY_RAW_ORE_COUNT) {
+                for (int t = 0; t < sp->ship.towed_count; t++) {
+                    int fi = sp->ship.towed_fragments[t];
+                    if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
+                    asteroid_t *a = &w->asteroids[fi];
+                    if (contract_fit_is_ok(contract_fit_fragment(c, a)))
+                        score += 500.0f;
+                }
+            } else {
+                int held = contract_fit_manifest_count(c, &sp->ship.manifest);
+                if (held > 0) score += 700.0f + (float)held * 10.0f;
+                else          score += 100.0f;
+            }
+        } else if (c->action == CONTRACT_FRACTURE) {
+            int idx = c->target_index;
+            if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active)
+                continue;
+            float d = v2_len(v2_sub(w->asteroids[idx].pos, sp->ship.pos));
+            score += 250.0f / fmaxf(1.0f, d / 1000.0f);
+        }
 
-    /* FRACTURE: nearest mineable rock in signal coverage. Raw-ore TRACTOR
-     * contracts were removed because players can't carry ore — fragments
-     * ride in ship.towed_fragments[] and smelt directly on the beam. */
-    int best_a = -1;
-    float best_d = 1e18f;
-    for (int a = 0; a < MAX_ASTEROIDS; a++) {
-        asteroid_t *ast = &w->asteroids[a];
-        if (!ast->active) continue;
-        if (ast->tier == ASTEROID_TIER_S) continue;
-        if (signal_strength_at(w, ast->pos) <= 0.0f) continue;
-        float d = v2_dist_sq(sp->ship.pos, ast->pos);
-        if (d < best_d) { best_d = d; best_a = a; }
+        if (score > best_score) {
+            best_score = score;
+            best_contract = i;
+        }
     }
-    if (best_a < 0) return -1;
-    c->active = true;
-    c->action = CONTRACT_FRACTURE;
-    c->station_index = (uint8_t)((issuer_station >= 0) ? issuer_station : 0);
-    c->target_pos = w->asteroids[best_a].pos;
-    c->target_index = best_a;
-    c->base_price = 25.0f;
-    c->claimed_by = (int8_t)sp->id;
-    return slot;
+
+    if (best_contract >= 0 && w->contracts[best_contract].claimed_by < 0)
+        w->contracts[best_contract].claimed_by = (int8_t)sp->id;
+    return best_contract;
 }
 
 static void emit_hail_miss(world_t *w, server_player_t *sp) {
@@ -2907,7 +2923,7 @@ static void emit_station_hail_response(world_t *w, server_player_t *sp, int stat
     float balance = sp->pubkey_set
         ? ledger_balance_by_pubkey(&w->stations[station_idx], sp->pubkey)
         : ledger_balance(&w->stations[station_idx], sp->session_token);
-    int contract_idx = hail_find_or_issue_contract(w, sp, station_idx);
+    int contract_idx = hail_find_station_work_contract(w, sp, station_idx);
     emit_event(w, (sim_event_t){
         .type = SIM_EVENT_HAIL_RESPONSE,
         .player_id = sp->id,

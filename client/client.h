@@ -316,14 +316,14 @@ typedef struct {
     bool was_docked;
     bool was_autopilot;
     float dock_settle_timer;  /* delay before showing station panel after dock */
-    /* --- Onboarding (first-run progression hints) --- */
+    /* --- Onboarding (first-run guide objectives) --- */
     struct {
         bool moved;          /* pressed a movement key */
         bool fractured;      /* broke an asteroid */
         bool tractored;      /* collected ore fragments */
         bool hailed;         /* pressed H to hail a station */
         bool boosted;        /* held SHIFT outside core signal */
-        bool complete;       /* all 5 steps done — stations take over */
+        bool complete;       /* core loop done — stations take over */
         bool welcomed;       /* completion message shown */
         bool loaded;         /* state loaded from localStorage */
     } onboarding;

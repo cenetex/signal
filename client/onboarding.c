@@ -1,10 +1,9 @@
 /*
- * onboarding.c — First-run checklist for Signal Space Miner.
+ * onboarding.c — First-run guide objectives for Signal Space Miner.
  *
- * Five milestones in loose order: LAUNCH/MOVE, FRACTURE, TRACTOR,
- * HAIL, BOOST.
- * Shown as a persistent checklist until all are complete.
- * After that, stations take over via operator-authored hails.
+ * This is deliberately not a contract/quest generator. It is a local,
+ * state-driven guide for the first loop: launch, fly, fracture, tractor,
+ * scan. Stations and contracts take over after that.
  */
 #include "client.h"
 #include "signal_model.h"  /* SIGNAL_BAND_OPERATIONAL threshold */
@@ -20,7 +19,7 @@ void onboarding_load(void) {
     if (g.onboarding.loaded) return;
     g.onboarding.loaded = true;
     /* Always start fresh — controls change between versions,
-     * so the checklist re-teaches bindings every session. */
+     * so the guide can re-teach bindings every session. */
 }
 
 static void onboarding_save(void) {
@@ -40,14 +39,21 @@ static void onboarding_save(void) {
 /* Step completion                                                     */
 /* ------------------------------------------------------------------ */
 
+static bool onboarding_core_complete(void) {
+    return g.onboarding.moved &&
+           g.onboarding.fractured &&
+           g.onboarding.tractored &&
+           g.onboarding.hailed;
+}
+
+static void onboarding_refresh_complete(void) {
+    g.onboarding.complete = onboarding_core_complete();
+}
+
 static void complete_step(bool *step) {
     if (*step) return;
     *step = true;
-    g.onboarding.complete = g.onboarding.moved &&
-                             g.onboarding.fractured &&
-                             g.onboarding.tractored &&
-                             g.onboarding.hailed &&
-                             g.onboarding.boosted;
+    onboarding_refresh_complete();
     onboarding_save();
 }
 
@@ -68,78 +74,109 @@ void onboarding_mark_boosted(void) {
 }
 
 /* ------------------------------------------------------------------ */
-/* Checklist hint                                                      */
+/* Guide objective formatters                                          */
 /* ------------------------------------------------------------------ */
+
+typedef bool (*guide_formatter_t)(char *message, size_t message_size);
+
+typedef struct {
+    guide_formatter_t format;
+} guide_objective_t;
+
+static bool guide_launch(char *message, size_t message_size) {
+    if (g.onboarding.moved || !LOCAL_PLAYER.docked) return false;
+    snprintf(message, message_size,
+             "GUIDE // LAUNCH FROM DOCK ::::: [E]");
+    return true;
+}
+
+static bool guide_flight(char *message, size_t message_size) {
+    if (g.onboarding.moved || LOCAL_PLAYER.docked) return false;
+    snprintf(message, message_size,
+             "GUIDE // FLIGHT CHECK ::::: [WASD] FLY TOWARD ROCKS");
+    return true;
+}
+
+static bool guide_fracture(char *message, size_t message_size) {
+    if (!g.onboarding.moved || g.onboarding.fractured || LOCAL_PLAYER.docked)
+        return false;
+    if (LOCAL_PLAYER.hover_asteroid >= 0 &&
+        g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
+        snprintf(message, message_size,
+                 "GUIDE // ROCK TARGETED ::::: [M] FRACTURE");
+    } else {
+        snprintf(message, message_size,
+                 "GUIDE // AIM AT A LARGE ROCK ::::: [M] FRACTURE");
+    }
+    return true;
+}
+
+static bool guide_tractor(char *message, size_t message_size) {
+    if (!g.onboarding.fractured || g.onboarding.tractored || LOCAL_PLAYER.docked)
+        return false;
+    if (LOCAL_PLAYER.nearby_fragments > 0) {
+        snprintf(message, message_size,
+                 "GUIDE // FRAGMENTS NEARBY ::::: HOLD [SPACE] TRACTOR");
+    } else {
+        snprintf(message, message_size,
+                 "GUIDE // BREAK ROCKS INTO FRAGMENTS ::::: THEN [SPACE]");
+    }
+    return true;
+}
+
+static bool guide_scan(char *message, size_t message_size) {
+    if (!g.onboarding.tractored || g.onboarding.hailed || LOCAL_PLAYER.docked)
+        return false;
+    float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
+    if (sig > 0.0f) {
+        snprintf(message, message_size,
+                 "GUIDE // LOCAL SCAN READY ::::: [H] REVEAL IDS + WORK");
+    } else {
+        snprintf(message, message_size,
+                 "GUIDE // RETURN TO SIGNAL ::::: [H] SCANS WHEN LINKED");
+    }
+    return true;
+}
+
+static const guide_objective_t GUIDE_OBJECTIVES[] = {
+    { guide_launch },
+    { guide_flight },
+    { guide_fracture },
+    { guide_tractor },
+    { guide_scan },
+};
 
 bool onboarding_hint(char *label, size_t label_size,
                      char *message, size_t message_size) {
     if (label_size > 0) label[0] = '\0';
+    onboarding_refresh_complete();
     if (g.onboarding.complete) {
         /* One final system line, then station hails own station voice. */
         if (!g.onboarding.welcomed) {
             g.onboarding.welcomed = true;
             snprintf(message, message_size,
-                     "SIGNAL // CALIBRATION COMPLETE ::::: STATION NETWORK ONLINE");
+                     "GUIDE // LOOP COMPLETE ::::: [H] SCAN // LASER INSPECTS");
             return true;
         }
         return false;
     }
 
-    /* Subtitle-style: show the next useful action in the tutorial's own
-     * system voice. Stations should not teach controls through hails. */
-    if (LOCAL_PLAYER.docked) {
-        if (!g.onboarding.moved) {
-            snprintf(message, message_size,
-                     "SIGNAL // GREETINGS PILOT ::::: SYSTEM CALIBRATING // [E] LAUNCH");
-            return true;
-        }
-        /* The station terminal has its own verb rows. Avoid showing
-         * stale flight hints while the player is docked. */
-        if (message_size > 0) message[0] = '\0';
-        return false;
-    }
-
-    /* Contextual: if the player has left core signal and hasn't
-     * discovered SHIFT yet, that teaching beats the normal queue. */
-    if (g.onboarding.moved && !g.onboarding.boosted) {
+    /* Contextual, optional: boost is useful, but not part of completing the
+     * first economy loop. Show it only when the weak-signal context exists. */
+    if (!LOCAL_PLAYER.docked && g.onboarding.moved && !g.onboarding.boosted) {
         float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
         if (sig > 0.0f && sig < SIGNAL_BAND_OPERATIONAL) {
             snprintf(message, message_size,
-                     "SIGNAL // LINK DEGRADED ::::: BOOST AVAILABLE // [SHIFT] BOOST");
+                     "GUIDE // LOW SIGNAL ::::: [SHIFT] BOOST TOWARD LINK");
             return true;
         }
     }
-    if (!g.onboarding.moved)
-        snprintf(message, message_size,
-                 "SIGNAL // FLIGHT CONTROL ::::: [WASD] MOVE");
-    else if (!g.onboarding.fractured) {
-        if (LOCAL_PLAYER.hover_asteroid >= 0 &&
-            g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active)
-            snprintf(message, message_size,
-                     "SIGNAL // TARGET LOCK ::::: [M] FRACTURE ROCK");
-        else
-            snprintf(message, message_size,
-                     "SIGNAL // TARGET ACQUISITION ::::: LINE UP ROCK // [M] FRACTURE");
-    } else if (!g.onboarding.tractored) {
-        if (LOCAL_PLAYER.nearby_fragments > 0)
-            snprintf(message, message_size,
-                     "SIGNAL // FRAGMENTS LOOSE ::::: [SPACE] TRACTOR");
-        else
-            snprintf(message, message_size,
-                     "SIGNAL // MINING LOOP ::::: FRACTURE ROCKS INTO FRAGMENTS");
-    } else if (!g.onboarding.hailed) {
-        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
-        if (sig >= SIGNAL_BAND_OPERATIONAL)
-            snprintf(message, message_size,
-                     "SIGNAL // LEDGER READY ::::: [H] HAIL STATION");
-        else
-            snprintf(message, message_size,
-                     "SIGNAL // LINK REQUIRED ::::: RETURN TO SIGNAL // [H] HAIL");
-    } else {
-        /* Only boost remains. Wait for weak signal so the hint is timely
-         * instead of pinning an empty subtitle over other system state. */
-        if (message_size > 0) message[0] = '\0';
-        return false;
+
+    for (int i = 0; i < (int)(sizeof(GUIDE_OBJECTIVES) / sizeof(GUIDE_OBJECTIVES[0])); i++) {
+        if (GUIDE_OBJECTIVES[i].format(message, message_size))
+            return true;
     }
-    return true;
+
+    if (message_size > 0) message[0] = '\0';
+    return false;
 }

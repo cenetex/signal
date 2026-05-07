@@ -1360,7 +1360,7 @@ static void wrap_hud_message_lines(const char *text, int max_cols,
 static bool build_hud_message(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
     /* ================================================================
      * SYSTEM HINT PANEL — bottom-right, one message at a time.
-     * Tutorial copy uses the SIGNAL system voice; stations never speak
+     * Tutorial copy uses the local guide voice; stations never speak
      * here because they use the hail overlay.
      * ================================================================ */
 

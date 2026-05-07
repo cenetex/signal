@@ -2376,121 +2376,60 @@ void draw_towed_tethers(void) {
 
 /* --- Compass ring: navigation pips around the player ship --- */
 /* Resolve the world-space target the player should go to next for the
- * currently tracked contract. Returns true + fills *out_pos / *out_radius
- * when a target exists, false when no contract is tracked or nothing
- * usable was found. For a TRACTOR contract on raw ore this walks the
- * same arc the compass pip uses: carrying → station; else nearest
- * free S-tier fragment; else smallest fracturable rock. */
+ * currently tracked contract. Returns true only for an actual objective:
+ * a destination station/furnace or an exact fracture target. Quota-style
+ * "bring any matching commodity" work intentionally does not turn into a
+ * yellow ring around a random nearby rock. Hail/scan tags own discovery. */
 static bool resolve_tracked_contract_target(vec2 *out_pos, float *out_radius) {
     if (g.tracked_contract < 0 || g.tracked_contract >= MAX_CONTRACTS) return false;
-    contract_t *ct = &g.world.contracts[g.tracked_contract];
+    const contract_t *ct = &g.world.contracts[g.tracked_contract];
     if (!ct->active) return false;
 
-    vec2 target = (ct->action == CONTRACT_TRACTOR && ct->station_index < MAX_STATIONS)
-        ? g.world.stations[ct->station_index].pos : ct->target_pos;
-    float radius = 200.0f;  /* default ring for station / fracture field */
+    if (ct->action == CONTRACT_TRACTOR) {
+        if (ct->station_index >= MAX_STATIONS) return false;
+        const station_t *st = &g.world.stations[ct->station_index];
+        if (!station_is_active(st)) return false;
 
-    if (ct->action == CONTRACT_TRACTOR && ct->commodity < COMMODITY_RAW_ORE_COUNT) {
+        if (ct->commodity >= COMMODITY_RAW_ORE_COUNT) {
+            *out_pos = st->pos;
+            *out_radius = st->radius + 28.0f;
+            return true;
+        }
+
         const ship_t *ship = &LOCAL_PLAYER.ship;
         bool carrying = false;
         for (int t = 0; t < ship->towed_count && !carrying; t++) {
             int fi = ship->towed_fragments[t];
             if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
             const asteroid_t *a = &g.world.asteroids[fi];
-            if (a->active && a->tier == ASTEROID_TIER_S && a->commodity == ct->commodity)
+            if (a->active && a->tier == ASTEROID_TIER_S &&
+                a->commodity == ct->commodity)
                 carrying = true;
         }
-        if (!carrying) {
-            float best_d = 1e18f;
-            int best_i = -1;
-            for (int i = 0; i < MAX_ASTEROIDS; i++) {
-                const asteroid_t *a = &g.world.asteroids[i];
-                if (!a->active) continue;
-                if (a->tier != ASTEROID_TIER_S) continue;
-                if (a->commodity != ct->commodity) continue;
-                if (a->last_towed_by >= 0) continue;
-                float d = v2_dist_sq(a->pos, ship->pos);
-                if (d < best_d) { best_d = d; best_i = i; }
-            }
-            if (best_i >= 0) {
-                target = g.world.asteroids[best_i].pos;
-                radius = g.world.asteroids[best_i].radius + 24.0f;
-            } else {
-                asteroid_tier_t best_tier = ASTEROID_TIER_XXL;
-                best_d = 1e18f;
-                best_i = -1;
-                for (int i = 0; i < MAX_ASTEROIDS; i++) {
-                    const asteroid_t *a = &g.world.asteroids[i];
-                    if (!a->active) continue;
-                    if (a->tier == ASTEROID_TIER_S) continue;
-                    if (a->commodity != ct->commodity) continue;
-                    if ((int)a->tier > (int)best_tier) continue;
-                    float d = v2_dist_sq(a->pos, ship->pos);
-                    if ((int)a->tier < (int)best_tier || d < best_d) {
-                        best_tier = a->tier; best_d = d; best_i = i;
-                    }
-                }
-                if (best_i >= 0) {
-                    target = g.world.asteroids[best_i].pos;
-                    radius = g.world.asteroids[best_i].radius + 32.0f;
-                } else {
-                    return false;  /* no fragment, no rock */
-                }
-            }
-        } else if (ct->station_index < MAX_STATIONS) {
-            /* Carrying the fragment — aim at the matching furnace module's
-             * actual world position, not the station center. The furnace
-             * is what eats the ore; the player needs to fly that ring. */
-            const station_t *st = &g.world.stations[ct->station_index];
-            /* Any furnace anchors the smelt beam now — the count tier
-             * determines which ore it'll accept, but the visual ring
-             * just needs to land on a furnace module. */
-            module_type_t want = (ct->commodity == COMMODITY_FERRITE_ORE
-                               || ct->commodity == COMMODITY_CUPRITE_ORE
-                               || ct->commodity == COMMODITY_CRYSTAL_ORE)
-                                ? MODULE_FURNACE
-                                : (module_type_t)-1;
-            bool found_mod = false;
-            for (int m = 0; m < st->module_count; m++) {
-                if (st->modules[m].scaffold) continue;
-                if (st->modules[m].type != want) continue;
-                target = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
-                radius = 22.0f;  /* tight ring around the furnace body */
-                found_mod = true;
-                break;
-            }
-            if (!found_mod) {
-                /* Fallback: ring the station body itself. */
-                target = st->pos;
-                radius = st->radius + 20.0f;
-            }
+        if (!carrying) return false;
+        if (!station_can_smelt(st, ct->commodity)) return false;
+
+        for (int m = 0; m < st->module_count; m++) {
+            if (st->modules[m].scaffold) continue;
+            if (st->modules[m].type != MODULE_FURNACE) continue;
+            *out_pos = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
+            *out_radius = 22.0f;
+            return true;
         }
-    } else if (ct->action == CONTRACT_FRACTURE) {
-        /* Ring the nearest non-S rock of the contract's commodity rather
-         * than ct->target_pos (often a stale station coord). Distance
-         * only — any crackable rock will do. */
-        const ship_t *ship = &LOCAL_PLAYER.ship;
-        float best_d = 1e18f;
-        int best_i = -1;
-        for (int i = 0; i < MAX_ASTEROIDS; i++) {
-            const asteroid_t *a = &g.world.asteroids[i];
-            if (!a->active) continue;
-            if (a->tier == ASTEROID_TIER_S) continue;  /* already cracked */
-            if (a->commodity != ct->commodity) continue;
-            float d = v2_dist_sq(a->pos, ship->pos);
-            if (d < best_d) { best_d = d; best_i = i; }
-        }
-        if (best_i >= 0) {
-            target = g.world.asteroids[best_i].pos;
-            radius = g.world.asteroids[best_i].radius + 32.0f;
-        } else {
-            return false;  /* nothing to fracture */
-        }
+        return false;
     }
 
-    *out_pos = target;
-    *out_radius = radius;
-    return true;
+    if (ct->action == CONTRACT_FRACTURE) {
+        int idx = ct->target_index;
+        if (idx < 0 || idx >= MAX_ASTEROIDS) return false;
+        const asteroid_t *a = &g.world.asteroids[idx];
+        if (!a->active || a->tier == ASTEROID_TIER_S) return false;
+        *out_pos = a->pos;
+        *out_radius = a->radius + 32.0f;
+        return true;
+    }
+
+    return false;
 }
 
 /* In-world yellow pulsing ring at the tracked contract's current next
@@ -2565,88 +2504,13 @@ void draw_compass_ring(void) {
         if (found) COMPASS_PIP(best_pos, 0.9f, 0.25f, 0.2f);
     }
 
-    /* Tracked contract pip (yellow). For a TRACTOR contract targeting a
-     * raw ore, the pip lead-points the player along the delivery arc:
-     *   - if the hold already carries a fragment of that commodity, aim
-     *     at the destination station (go dock / dump into the furnace);
-     *   - otherwise aim at the nearest S-tier fragment of that commodity
-     *     in signal coverage;
-     *   - if no S-tier fragment is present, aim at the smallest
-     *     fracturable rock of that commodity so the player can crack it.
-     * For FRACTURE contracts or non-ore commodities, the old
-     * destination-pos / target_pos behavior is kept. */
-    if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
-        contract_t *ct = &g.world.contracts[g.tracked_contract];
-        if (ct->active) {
-            vec2 target = (ct->action == CONTRACT_TRACTOR)
-                ? g.world.stations[ct->station_index].pos : ct->target_pos;
-            bool pip_found = true;
-
-            if (ct->action == CONTRACT_TRACTOR
-                && ct->commodity < COMMODITY_RAW_ORE_COUNT) {
-                /* Does the ship already tow a fragment of this commodity?
-                 * Local pointer named pship — outer scope already has
-                 * vec2 ship for the compass center, so MSVC -Wshadow
-                 * (=Werror under /WX) bites if we reuse the name. */
-                bool carrying = false;
-                const ship_t *pship = &LOCAL_PLAYER.ship;
-                for (int t = 0; t < pship->towed_count && !carrying; t++) {
-                    int fi = pship->towed_fragments[t];
-                    if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
-                    const asteroid_t *a = &g.world.asteroids[fi];
-                    if (a->active && a->tier == ASTEROID_TIER_S
-                        && a->commodity == ct->commodity)
-                        carrying = true;
-                }
-                if (!carrying) {
-                    /* Prefer a free S-tier fragment of the commodity. */
-                    float best_d = 1e18f;
-                    vec2 best_pos = pship->pos;
-                    bool found_frag = false;
-                    for (int i = 0; i < MAX_ASTEROIDS; i++) {
-                        const asteroid_t *a = &g.world.asteroids[i];
-                        if (!a->active) continue;
-                        if (a->tier != ASTEROID_TIER_S) continue;
-                        if (a->commodity != ct->commodity) continue;
-                        /* Skip already-towed fragments. */
-                        if (a->last_towed_by >= 0) continue;
-                        float d = v2_dist_sq(a->pos, pship->pos);
-                        if (d < best_d) {
-                            best_d = d; best_pos = a->pos; found_frag = true;
-                        }
-                    }
-                    if (found_frag) {
-                        target = best_pos;
-                    } else {
-                        /* Fall back to the smallest fracturable rock
-                         * (lowest tier above S) of the commodity. Smaller
-                         * tier = fewer fragments needed to trigger it. */
-                        asteroid_tier_t best_tier = ASTEROID_TIER_XXL;
-                        best_d = 1e18f;
-                        bool found_rock = false;
-                        for (int i = 0; i < MAX_ASTEROIDS; i++) {
-                            const asteroid_t *a = &g.world.asteroids[i];
-                            if (!a->active) continue;
-                            if (a->tier == ASTEROID_TIER_S) continue;
-                            if (a->commodity != ct->commodity) continue;
-                            if ((int)a->tier > (int)best_tier) continue;
-                            float d = v2_dist_sq(a->pos, pship->pos);
-                            if ((int)a->tier < (int)best_tier
-                                || d < best_d) {
-                                best_tier = a->tier;
-                                best_d = d;
-                                best_pos = a->pos;
-                                found_rock = true;
-                            }
-                        }
-                        if (found_rock) target = best_pos;
-                        else            pip_found = false;
-                    }
-                }
-            }
-
-            if (pip_found) COMPASS_PIP(target, 1.0f, 0.87f, 0.20f);
-        }
+    /* Tracked contract pip (yellow). Uses the same resolver as the in-world
+     * ring so quota work cannot masquerade as a specific asteroid target. */
+    {
+        vec2 target;
+        float radius;
+        if (resolve_tracked_contract_target(&target, &radius))
+            COMPASS_PIP(target, 1.0f, 0.87f, 0.20f);
     }
 
     /* Nearest 3 remote players (colored pips) */

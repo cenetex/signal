@@ -75,6 +75,62 @@ TEST(test_hail_responds_while_docked) {
     ASSERT(ev->hail_response.credits >= 0.0f);
 }
 
+TEST(test_hail_does_not_spawn_nearest_rock_contract) {
+    WORLD_DECL;
+    world_reset(&w);
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x46, sizeof(sp->session_token));
+    sp->docked = true;
+    sp->current_station = 2; /* Helios */
+    sp->input.hail = true;
+
+    world_sim_step(&w, SIM_DT);
+
+    const sim_event_t *ev = find_hail_response_event(&w);
+    ASSERT(ev != NULL);
+    ASSERT_EQ_INT(ev->hail_response.station, 2);
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        ASSERT(!(w.contracts[k].active &&
+                 w.contracts[k].action == CONTRACT_FRACTURE &&
+                 w.contracts[k].claimed_by == 0));
+    }
+}
+
+TEST(test_hail_claims_existing_station_work) {
+    WORLD_DECL;
+    world_reset(&w);
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 2,
+        .commodity = COMMODITY_FRAME,
+        .quantity_needed = 2.0f,
+        .base_price = 10.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    server_player_t *sp = &w.players[0];
+    player_init_ship(sp, &w);
+    sp->connected = true;
+    sp->id = 0;
+    memset(sp->session_token, 0x47, sizeof(sp->session_token));
+    sp->docked = true;
+    sp->current_station = 2;
+    sp->input.hail = true;
+
+    world_sim_step(&w, SIM_DT);
+
+    const sim_event_t *ev = find_hail_response_event(&w);
+    ASSERT(ev != NULL);
+    ASSERT_EQ_INT(ev->hail_response.station, 2);
+    ASSERT_EQ_INT(ev->hail_response.contract_index, 0);
+    ASSERT_EQ_INT(w.contracts[0].claimed_by, 0);
+}
+
 TEST(test_hail_responds_to_station_signal_outside_ship_comm_range) {
     WORLD_DECL;
     world_reset(&w);
@@ -1980,6 +2036,8 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_reset_spawns_asteroids);
     RUN(test_world_reset_spawns_npcs);
     RUN(test_hail_responds_while_docked);
+    RUN(test_hail_does_not_spawn_nearest_rock_contract);
+    RUN(test_hail_claims_existing_station_work);
     RUN(test_hail_responds_to_station_signal_outside_ship_comm_range);
     RUN(test_hail_responds_at_helios_dock_even_with_short_ship_comm);
     RUN(test_hail_reports_no_station_in_range);
