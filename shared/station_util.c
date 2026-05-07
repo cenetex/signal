@@ -8,6 +8,7 @@
 #include <math.h>
 #include <stdio.h>   /* snprintf — station_short_name */
 #include "types.h"
+#include "commodity.h"
 #include "station_util.h"
 
 bool station_exists(const station_t *st) {
@@ -47,12 +48,13 @@ int station_max_ring(const station_t *st) {
 }
 
 int station_spawn_fee(const station_t *st) {
-    switch (station_max_ring(st)) {
-        case 1:  return 50;
-        case 2:  return 100;
-        case 3:  return 300;
-        default: return 50;
-    }
+    if (!st) return (int)REPAIR_KITS_PER_RESPAWN;
+    float kit_price = station_sell_price(st, COMMODITY_REPAIR_KIT);
+    if (kit_price <= FLOAT_EPSILON)
+        kit_price = st->base_price[COMMODITY_REPAIR_KIT] > FLOAT_EPSILON
+                  ? st->base_price[COMMODITY_REPAIR_KIT] : 1.0f;
+    int fee = (int)ceilf(kit_price * REPAIR_KITS_PER_RESPAWN);
+    return fee > 0 ? fee : (int)REPAIR_KITS_PER_RESPAWN;
 }
 
 int station_furnace_count(const station_t *st) {
@@ -80,11 +82,9 @@ bool station_can_smelt(const station_t *st, commodity_t ore) {
 }
 
 bool station_consumes(const station_t *st, commodity_t c) {
-    /* Shipyards consume frame + laser + tractor as kit-fab inputs.
-     * Without this branch, a player who fills a frame contract at
-     * Helios and has leftover frames can't sell them — Helios's frame
-     * press doesn't exist locally, so the fallback skipped, even
-     * though the kit fab will happily eat any extras. */
+    /* Finished-good consumers feed demand, selling, and contracts. Frames
+     * now sit in the middle of the whole ladder: fabs consume them to make
+     * modules, and shipyards consume them again for repair-kit batches. */
     bool is_shipyard = station_has_module(st, MODULE_SHIPYARD);
     switch (c) {
         case COMMODITY_FERRITE_ORE:   return station_can_smelt(st, COMMODITY_FERRITE_ORE);
@@ -92,11 +92,13 @@ bool station_consumes(const station_t *st, commodity_t c) {
         case COMMODITY_CRYSTAL_ORE:   return station_can_smelt(st, COMMODITY_CRYSTAL_ORE);
         case COMMODITY_FERRITE_INGOT: return station_has_module(st, MODULE_FRAME_PRESS);
         case COMMODITY_CUPRITE_INGOT:
-            return station_has_module(st, MODULE_LASER_FAB) ||
-                   station_has_module(st, MODULE_TRACTOR_FAB);
-        case COMMODITY_CRYSTAL_INGOT:
             return station_has_module(st, MODULE_LASER_FAB);
-        case COMMODITY_FRAME:         return is_shipyard;
+        case COMMODITY_CRYSTAL_INGOT:
+            return station_has_module(st, MODULE_TRACTOR_FAB);
+        case COMMODITY_FRAME:
+            return is_shipyard ||
+                   station_has_module(st, MODULE_LASER_FAB) ||
+                   station_has_module(st, MODULE_TRACTOR_FAB);
         case COMMODITY_LASER_MODULE:  return is_shipyard;
         case COMMODITY_TRACTOR_MODULE:return is_shipyard;
         case COMMODITY_REPAIR_KIT:
@@ -151,7 +153,7 @@ commodity_t station_primary_buy(const station_t *st) {
     switch (dom) {
         case MODULE_FRAME_PRESS: return COMMODITY_FERRITE_INGOT;
         case MODULE_LASER_FAB:   return COMMODITY_CUPRITE_INGOT;
-        case MODULE_TRACTOR_FAB: return COMMODITY_CUPRITE_INGOT;
+        case MODULE_TRACTOR_FAB: return COMMODITY_CRYSTAL_INGOT;
         default: break;
     }
     return (commodity_t)-1;
@@ -529,7 +531,7 @@ station_layout_status_t station_module_layout_status(const station_t *st,
         for (int j = 0; j < st->module_count && !has_local_consumer; j++) {
             if (j == (int)(m - st->modules)) continue;
             if (st->modules[j].scaffold) continue;
-            module_inputs_t cons = module_required_inputs(st->modules[j].type);
+            module_inputs_t cons = module_instance_required_inputs(&st->modules[j]);
             for (int k = 0; k < cons.count; k++) {
                 if (cons.commodities[k] == out) { has_local_consumer = true; break; }
             }

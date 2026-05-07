@@ -93,13 +93,27 @@ TEST(test_station_primary_buy_per_dominant_module) {
     seed_single_module_station(&st, MODULE_LASER_FAB);
     ASSERT_EQ_INT(station_primary_buy(&st), COMMODITY_CUPRITE_INGOT);
     seed_single_module_station(&st, MODULE_TRACTOR_FAB);
-    ASSERT_EQ_INT(station_primary_buy(&st), COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(station_primary_buy(&st), COMMODITY_CRYSTAL_INGOT);
     /* Furnaces don't buy from players (ore arrives via fragment smelting). */
     seed_single_module_station(&st, MODULE_FURNACE);
     ASSERT_EQ_INT((int)station_primary_buy(&st), -1);
     /* No production module → no trade. */
     memset(&st, 0, sizeof st);
     ASSERT_EQ_INT((int)station_primary_buy(&st), -1);
+}
+
+TEST(test_station_consumes_fab_inputs) {
+    station_t st = {0};
+
+    seed_single_module_station(&st, MODULE_LASER_FAB);
+    ASSERT(station_consumes(&st, COMMODITY_CUPRITE_INGOT));
+    ASSERT(station_consumes(&st, COMMODITY_FRAME));
+    ASSERT(!station_consumes(&st, COMMODITY_CRYSTAL_INGOT));
+
+    seed_single_module_station(&st, MODULE_TRACTOR_FAB);
+    ASSERT(station_consumes(&st, COMMODITY_CRYSTAL_INGOT));
+    ASSERT(station_consumes(&st, COMMODITY_FRAME));
+    ASSERT(!station_consumes(&st, COMMODITY_CUPRITE_INGOT));
 }
 
 TEST(test_station_primary_sell_per_dominant_module) {
@@ -157,6 +171,7 @@ void register_label_tests(void) {
     RUN(test_commodity_short_label_all);
     RUN(test_station_dominant_module_priority);
     RUN(test_station_primary_buy_per_dominant_module);
+    RUN(test_station_consumes_fab_inputs);
     RUN(test_station_primary_sell_per_dominant_module);
     RUN(test_producer_module_for_commodity);
 }

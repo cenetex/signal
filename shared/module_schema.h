@@ -113,6 +113,7 @@ typedef struct {
     bool        any_satisfies; /* true → FURNACE-style "one of these"; false → ALL required */
 } module_inputs_t;
 module_inputs_t        module_required_inputs(module_type_t type);
+module_inputs_t        module_instance_required_inputs(const station_module_t *m);
 
 /* Per-producer output commodity. Each non-shipyard producer emits one
  * commodity into the station's flow graph; SHIPYARD is exempt (its

@@ -58,8 +58,8 @@ typedef enum {
     COMMODITY_FRAME,
     COMMODITY_LASER_MODULE,
     COMMODITY_TRACTOR_MODULE,
-    COMMODITY_REPAIR_KIT,        /* 1 kit = 1 HP at a dock; produced by docks
-                                   * from 1 FRAME + 1 LASER_MODULE → 100 kits.
+    COMMODITY_REPAIR_KIT,        /* 1 kit = 1 HP at a dock; produced by shipyards
+                                   * from 1 FRAME + 1 LASER + 1 TRACTOR → 100 kits.
                                    * The end-of-chain demand sink that closes
                                    * the ferrite + cuprite production loops. */
     COMMODITY_COUNT,
@@ -201,6 +201,7 @@ typedef struct {
     const char   *name;
     cargo_kind_t  output_kind;
     commodity_t   output_commodity; /* COMMODITY_COUNT = caller supplies */
+    uint16_t      output_count;      /* product units minted per recipe batch */
     uint8_t       input_count;
     commodity_t   input_commodities[RECIPE_INPUT_MAX];
 } recipe_def_t;
@@ -443,6 +444,10 @@ typedef struct {
      * manufacture). Service modules leave both at 0. */
     float module_input[MAX_MODULES_PER_STATION];
     float module_output[MAX_MODULES_PER_STATION];
+    /* Runtime-only production accumulator. Producer recipes advance in
+     * whole batches so identity can consume one input set and mint every
+     * output unit from that same parent set. Not persisted in saves. */
+    float module_craft_progress[MAX_MODULES_PER_STATION];
     /* (credit_pool field removed — derived from -Σ(ledger.balance) via
      *  station_credit_pool() in server/game_sim.h. Conservation is
      *  structural now; there is no separate stored aggregate.) */

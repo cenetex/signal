@@ -265,14 +265,41 @@ TEST(test_hash_helpers_set_quantity_one) {
                       fragment_pub, 0, &ingot));
     ASSERT_EQ_INT(ingot.quantity, 1);
 
-    cargo_unit_t inputs[2];
+    cargo_unit_t inputs[1];
     inputs[0] = ingot;
-    inputs[1] = ingot;  /* RECIPE_FRAME_BASIC: 2× ferrite ingot */
-    ASSERT(hash_product(RECIPE_FRAME_BASIC, inputs, 2, 0, &frame));
+    ASSERT(hash_product(RECIPE_FRAME_BASIC, inputs, 1, 0, &frame));
     ASSERT_EQ_INT(frame.quantity, 1);
 
     ASSERT(hash_legacy_migrate_unit(origin, COMMODITY_FRAME, 0, &legacy));
     ASSERT_EQ_INT(legacy.quantity, 1);
+}
+
+TEST(test_recipe_ratios_match_economy_ladder) {
+    const recipe_def_t *frame = recipe_get(RECIPE_FRAME_BASIC);
+    const recipe_def_t *laser = recipe_get(RECIPE_LASER_BASIC);
+    const recipe_def_t *tractor = recipe_get(RECIPE_TRACTOR_COIL);
+    const recipe_def_t *kits = recipe_get(RECIPE_REPAIR_KIT_FAB);
+
+    ASSERT(frame != NULL);
+    ASSERT_EQ_INT(frame->input_count, 1);
+    ASSERT_EQ_INT(frame->input_commodities[0], COMMODITY_FERRITE_INGOT);
+    ASSERT_EQ_INT(frame->output_count, 10);
+
+    ASSERT(laser != NULL);
+    ASSERT_EQ_INT(laser->input_count, 2);
+    ASSERT_EQ_INT(laser->input_commodities[0], COMMODITY_CUPRITE_INGOT);
+    ASSERT_EQ_INT(laser->input_commodities[1], COMMODITY_FRAME);
+    ASSERT_EQ_INT(laser->output_count, 1);
+
+    ASSERT(tractor != NULL);
+    ASSERT_EQ_INT(tractor->input_count, 2);
+    ASSERT_EQ_INT(tractor->input_commodities[0], COMMODITY_CRYSTAL_INGOT);
+    ASSERT_EQ_INT(tractor->input_commodities[1], COMMODITY_FRAME);
+    ASSERT_EQ_INT(tractor->output_count, 1);
+
+    ASSERT(kits != NULL);
+    ASSERT_EQ_INT(kits->input_count, 3);
+    ASSERT_EQ_INT(kits->output_count, 100);
 }
 
 TEST(test_manifest_migrate_quantity_rewrites_zero_to_one) {
@@ -364,7 +391,7 @@ TEST(test_hash_ingot_matches_known_vector) {
 }
 
 TEST(test_hash_product_matches_known_vector_and_min_grade) {
-    cargo_unit_t inputs[2] = {0};
+    cargo_unit_t inputs[1] = {0};
     cargo_unit_t frame = {0};
 
     inputs[0].kind = (uint8_t)CARGO_KIND_INGOT;
@@ -372,18 +399,13 @@ TEST(test_hash_product_matches_known_vector_and_min_grade) {
     inputs[0].grade = (uint8_t)MINING_GRADE_RARE;
     for (int i = 0; i < 32; i++) inputs[0].pub[i] = (uint8_t)(0x20 + i);
 
-    inputs[1].kind = (uint8_t)CARGO_KIND_INGOT;
-    inputs[1].commodity = (uint8_t)COMMODITY_FERRITE_INGOT;
-    inputs[1].grade = (uint8_t)MINING_GRADE_FINE;
-    for (int i = 0; i < 32; i++) inputs[1].pub[i] = (uint8_t)(0x40 + i);
-
-    ASSERT(hash_product(RECIPE_FRAME_BASIC, inputs, 2, 0, &frame));
+    ASSERT(hash_product(RECIPE_FRAME_BASIC, inputs, 1, 0, &frame));
     ASSERT_EQ_INT(frame.kind, CARGO_KIND_FRAME);
     ASSERT_EQ_INT(frame.commodity, COMMODITY_FRAME);
-    ASSERT_EQ_INT(frame.grade, MINING_GRADE_FINE);
+    ASSERT_EQ_INT(frame.grade, MINING_GRADE_RARE);
     ASSERT_EQ_INT(frame.recipe_id, RECIPE_FRAME_BASIC);
-    ASSERT_HEX32_EQ(frame.parent_merkle, "ae02e99bbdd3713ac87427589a48fc45818ef9a7ecd27941142d8f6f61afb7c1");
-    ASSERT_HEX32_EQ(frame.pub, "afd71562654d3d5a973927c68df0b3187fc3651a2296cd4b48b52e74925bf2d2");
+    ASSERT_HEX32_EQ(frame.parent_merkle, "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f");
+    ASSERT_HEX32_EQ(frame.pub, "70d2a849d9c7d9371b612afb7c6818a08d30fd9a34ba7dd44416ba8acabdec5f");
 }
 
 TEST(test_hash_product_accepts_repair_kit_three_finished_inputs) {
@@ -966,6 +988,7 @@ void register_manifest_tests(void) {
     RUN(test_hash_legacy_migrate_unit_rejects_raw_ore);
     RUN(test_manifest_migrate_legacy_inventory_synthesizes_entries);
     RUN(test_hash_helpers_set_quantity_one);
+    RUN(test_recipe_ratios_match_economy_ladder);
     RUN(test_manifest_migrate_quantity_rewrites_zero_to_one);
     RUN(test_ship_copy_clones_manifest_storage);
     RUN(test_station_copy_clones_manifest_storage);

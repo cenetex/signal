@@ -1538,8 +1538,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     int drained = station_finished_drain(home, COMMODITY_REPAIR_KIT, apply);
                     if (drained > 0) {
                         apply = drained;
-                        float kit_price = home->base_price[COMMODITY_REPAIR_KIT];
-                        if (kit_price < 0.01f) kit_price = 6.0f;
+                        float kit_price = station_sell_price(home, COMMODITY_REPAIR_KIT);
+                        if (kit_price < 0.01f) kit_price = 1.0f;
                         float cost = (float)apply * kit_price;
                         /* Force-debit -> balance can go negative, station
                          * still gets credited. Hauler pays it back over
@@ -1569,8 +1569,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 && station_finished_count(home, COMMODITY_REPAIR_KIT) >= 1) {
                 if (station_finished_drain(home, COMMODITY_REPAIR_KIT, 1) <= 0)
                     break;
-                float kit_price = home->base_price[COMMODITY_REPAIR_KIT];
-                if (kit_price < 0.01f) kit_price = 6.0f;
+                float kit_price = station_sell_price(home, COMMODITY_REPAIR_KIT);
+                if (kit_price < 0.01f) kit_price = 1.0f;
                 ledger_force_debit(home, npc->session_token, kit_price, ship);
             }
         }

@@ -5,10 +5,11 @@
 
 typedef struct {
     commodity_t primary_input;
-    float primary_units_per_output;
+    float primary_units_per_batch;
     commodity_t secondary_input;
-    float secondary_units_per_output;
+    float secondary_units_per_batch;
     commodity_t output;
+    float output_units_per_batch;
 } producer_recipe_t;
 
 static bool producer_recipe_for_module(module_type_t mt, producer_recipe_t *out_recipe) {
@@ -32,23 +33,25 @@ static bool producer_recipe_for_module(module_type_t mt, producer_recipe_t *out_
     primary = module_schema_input(mt);
     out_recipe->primary_input = primary;
     out_recipe->output = recipe->output_commodity;
+    out_recipe->output_units_per_batch =
+        recipe->output_count > 0 ? (float)recipe->output_count : 1.0f;
 
     for (size_t i = 0; i < recipe->input_count; i++) {
         commodity_t input = recipe->input_commodities[i];
         if (input == primary) {
-            out_recipe->primary_units_per_output += 1.0f;
+            out_recipe->primary_units_per_batch += 1.0f;
             continue;
         }
         if (out_recipe->secondary_input == COMMODITY_COUNT ||
             out_recipe->secondary_input == input) {
             out_recipe->secondary_input = input;
-            out_recipe->secondary_units_per_output += 1.0f;
+            out_recipe->secondary_units_per_batch += 1.0f;
             continue;
         }
         return false;
     }
 
-    return out_recipe->primary_units_per_output > 0.0f &&
+    return out_recipe->primary_units_per_batch > 0.0f &&
            out_recipe->output == module_schema_output(mt);
 }
 
@@ -66,28 +69,30 @@ void step_station_production(station_t* stations, int count, float dt) {
             if (!producer_recipe_for_module(mt, &recipe)) continue;
 
             schema = module_schema(mt);
-            room = MAX_PRODUCT_STOCK - station->_inventory_cache[recipe.output];
+            room = (MAX_PRODUCT_STOCK - station->_inventory_cache[recipe.output]) /
+                   recipe.output_units_per_batch;
             if (room <= FLOAT_EPSILON) continue;
 
             rate = schema->rate > 0.0f ? schema->rate : STATION_PRODUCTION_RATE;
             produce = fminf(rate * dt, room);
             produce = fminf(produce,
                             station->_inventory_cache[recipe.primary_input] /
-                            recipe.primary_units_per_output);
+                            recipe.primary_units_per_batch);
             if (recipe.secondary_input < COMMODITY_COUNT) {
                 produce = fminf(produce,
                                 station->_inventory_cache[recipe.secondary_input] /
-                                recipe.secondary_units_per_output);
+                                recipe.secondary_units_per_batch);
             }
             if (produce <= FLOAT_EPSILON) continue;
 
             station->_inventory_cache[recipe.primary_input] -=
-                produce * recipe.primary_units_per_output;
+                produce * recipe.primary_units_per_batch;
             if (recipe.secondary_input < COMMODITY_COUNT) {
                 station->_inventory_cache[recipe.secondary_input] -=
-                    produce * recipe.secondary_units_per_output;
+                    produce * recipe.secondary_units_per_batch;
             }
-            station->_inventory_cache[recipe.output] += produce;
+            station->_inventory_cache[recipe.output] +=
+                produce * recipe.output_units_per_batch;
         }
     }
 }

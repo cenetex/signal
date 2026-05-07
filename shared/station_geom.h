@@ -247,7 +247,7 @@ static inline void station_build_geom(const station_t *st, station_geom_t *out) 
     for (int m = 0; m < st->module_count; m++) {
         const station_module_t *prod = &st->modules[m];
         if (prod->scaffold) continue;
-        module_inputs_t req = module_required_inputs(prod->type);
+        module_inputs_t req = module_instance_required_inputs(prod);
         commodity_t out_commodity = module_instance_output(prod);
         if (req.count == 0 && out_commodity == COMMODITY_COUNT) continue;
         /* Build the per-producer spoke list: one per declared input
