@@ -4,11 +4,9 @@
  * Five milestones in loose order: LAUNCH/MOVE, FRACTURE, TRACTOR,
  * HAIL, BOOST.
  * Shown as a persistent checklist until all are complete.
- * After that, stations take over via contextual hail responses.
+ * After that, stations take over via operator-authored hails.
  */
 #include "client.h"
-#include "station_voice.h"
-#include "world_draw.h"
 #include "signal_model.h"  /* SIGNAL_BAND_OPERATIONAL threshold */
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
@@ -53,32 +51,19 @@ static void complete_step(bool *step) {
     onboarding_save();
 }
 
-static void emit_onboarding_voice(int milestone) {
-    /* No-op since the voice subsystem was removed. Kept as a stub so the
-     * onboarding flow's call sites still compile and reads as a marker
-     * for "this is where a station hail used to fire" — handy if the
-     * line content is ever reused for HUD subtitles. */
-    (void)milestone;
-}
-
 void onboarding_mark_moved(void) {
-    if (!g.onboarding.moved) emit_onboarding_voice(VOICE_ONBOARD_LAUNCH);
     complete_step(&g.onboarding.moved);
 }
 void onboarding_mark_fractured(void) {
-    if (!g.onboarding.fractured) emit_onboarding_voice(VOICE_ONBOARD_MINE);
     complete_step(&g.onboarding.fractured);
 }
 void onboarding_mark_tractored(void) {
-    if (!g.onboarding.tractored) emit_onboarding_voice(VOICE_ONBOARD_COLLECT);
     complete_step(&g.onboarding.tractored);
 }
 void onboarding_mark_hailed(void) {
-    if (!g.onboarding.hailed) emit_onboarding_voice(VOICE_ONBOARD_SELL);
     complete_step(&g.onboarding.hailed);
 }
 void onboarding_mark_boosted(void) {
-    if (!g.onboarding.boosted) emit_onboarding_voice(VOICE_ONBOARD_UPGRADE);
     complete_step(&g.onboarding.boosted);
 }
 
@@ -88,29 +73,24 @@ void onboarding_mark_boosted(void) {
 
 bool onboarding_hint(char *label, size_t label_size,
                      char *message, size_t message_size) {
+    if (label_size > 0) label[0] = '\0';
     if (g.onboarding.complete) {
-        /* Show welcome message once, from nearest station */
+        /* One final system line, then station hails own station voice. */
         if (!g.onboarding.welcomed) {
             g.onboarding.welcomed = true;
-            int ns = nearest_signal_station(LOCAL_PLAYER.ship.pos);
-            if (ns >= 0 && ns < 3) {
-                snprintf(label, label_size, "%s", g.world.stations[ns].name);
-                snprintf(message, message_size, "%s",
-                    STATION_ONBOARD[ns][VOICE_ONBOARD_COMPLETE]);
-            } else {
-                snprintf(label, label_size, "SIGNAL");
-                snprintf(message, message_size, "Signal chain active. Welcome to the network.");
-            }
+            snprintf(message, message_size,
+                     "SIGNAL // CALIBRATION COMPLETE ::::: STATION NETWORK ONLINE");
             return true;
         }
         return false;
     }
 
-    /* Subtitle-style: show the next useful action, not a checklist. */
-    label[0] = '\0';
+    /* Subtitle-style: show the next useful action in the tutorial's own
+     * system voice. Stations should not teach controls through hails. */
     if (LOCAL_PLAYER.docked) {
         if (!g.onboarding.moved) {
-            snprintf(message, message_size, "Press E to launch.");
+            snprintf(message, message_size,
+                     "SIGNAL // GREETINGS PILOT ::::: SYSTEM CALIBRATING // [E] LAUNCH");
             return true;
         }
         /* The station terminal has its own verb rows. Avoid showing
@@ -124,29 +104,37 @@ bool onboarding_hint(char *label, size_t label_size,
     if (g.onboarding.moved && !g.onboarding.boosted) {
         float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
         if (sig > 0.0f && sig < SIGNAL_BAND_OPERATIONAL) {
-            snprintf(message, message_size, "Signal degraded -- hold SHIFT to boost through");
+            snprintf(message, message_size,
+                     "SIGNAL // LINK DEGRADED ::::: BOOST AVAILABLE // [SHIFT] BOOST");
             return true;
         }
     }
     if (!g.onboarding.moved)
-        snprintf(message, message_size, "Fly with W A S D.");
+        snprintf(message, message_size,
+                 "SIGNAL // FLIGHT CONTROL ::::: [WASD] MOVE");
     else if (!g.onboarding.fractured) {
         if (LOCAL_PLAYER.hover_asteroid >= 0 &&
             g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active)
-            snprintf(message, message_size, "Hold M to fracture the targeted rock.");
+            snprintf(message, message_size,
+                     "SIGNAL // TARGET LOCK ::::: [M] FRACTURE ROCK");
         else
-            snprintf(message, message_size, "Line up a rock, then hold M to fracture.");
+            snprintf(message, message_size,
+                     "SIGNAL // TARGET ACQUISITION ::::: LINE UP ROCK // [M] FRACTURE");
     } else if (!g.onboarding.tractored) {
         if (LOCAL_PLAYER.nearby_fragments > 0)
-            snprintf(message, message_size, "Hold SPACE to tractor loose fragments.");
+            snprintf(message, message_size,
+                     "SIGNAL // FRAGMENTS LOOSE ::::: [SPACE] TRACTOR");
         else
-            snprintf(message, message_size, "Fracture rocks into fragments, then hold SPACE.");
+            snprintf(message, message_size,
+                     "SIGNAL // MINING LOOP ::::: FRACTURE ROCKS INTO FRAGMENTS");
     } else if (!g.onboarding.hailed) {
         float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
         if (sig >= SIGNAL_BAND_OPERATIONAL)
-            snprintf(message, message_size, "Press H near a station to hail and collect credits.");
+            snprintf(message, message_size,
+                     "SIGNAL // LEDGER READY ::::: [H] HAIL STATION");
         else
-            snprintf(message, message_size, "Return to signal range, then press H to hail.");
+            snprintf(message, message_size,
+                     "SIGNAL // LINK REQUIRED ::::: RETURN TO SIGNAL // [H] HAIL");
     } else {
         /* Only boost remains. Wait for weak signal so the hint is timely
          * instead of pinning an empty subtitle over other system state. */

@@ -569,15 +569,13 @@ void apply_remote_hail_response(uint8_t station, float credits, int contract_ind
         set_notice("Local scan sweep.");
         return;
     }
-    /* Use the same hail overlay as singleplayer — station name + contextual
-     * voice line + credits. The notice system is for transient alerts;
-     * hails get their own 6-second radio-style overlay in the HUD. */
+    /* Use the same hail overlay as singleplayer — station name + the
+     * operator-authored station hail + credits. Tutorial/system guidance
+     * is intentionally kept out of station hails. */
     net_station_hail_label(station, g.hail_station, sizeof(g.hail_station));
-    const char *ctx = contextual_hail_message(station);
-    if (ctx)
-        snprintf(g.hail_message, sizeof(g.hail_message), "%s", ctx);
-    else
-        snprintf(g.hail_message, sizeof(g.hail_message), "%s", g.world.stations[station].hail_message);
+    const char *msg = g.world.stations[station].hail_message;
+    snprintf(g.hail_message, sizeof(g.hail_message), "%s",
+             msg[0] ? msg : "Signal acknowledged.");
     float shown_credits = credits >= 0.0f ? credits : 0.0f;
     g.hail_credits = shown_credits;
     g.hail_station_index = station;

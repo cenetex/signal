@@ -13,7 +13,6 @@
 #include "input.h"
 #include "net_sync.h"
 #include "onboarding.h"
-#include "station_voice.h"
 #include "avatar.h"
 #include "mining_client.h"
 #include "base58.h"
@@ -147,7 +146,8 @@ static void reset_world(void) {
     audio_clear_voices(&g.audio);
     clear_collection_feedback();
 
-    set_notice("%s online. Press E to launch.", g.world.stations[LOCAL_PLAYER.current_station].name);
+    /* First-run launch copy is owned by onboarding's SIGNAL system voice,
+     * not by the docked station notice channel. */
 }
 
 /* Camera/frustum, asteroid_profile, draw_background, draw_station, draw_ship*,
@@ -247,99 +247,6 @@ static void step_notice_timer(float dt) {
 /* No sync_globals_to_world — world_t is the source of truth in single player. */
 
 /* sync_world_to_globals removed — everything reads from g.world directly */
-
-/* ------------------------------------------------------------------ */
-/* Contextual hail: pick a station-authored message based on player state */
-/* ------------------------------------------------------------------ */
-
-static bool check_hail_condition(hail_cond_t cond) {
-    const ship_t *ship = &LOCAL_PLAYER.ship;
-    switch (cond) {
-    case HAIL_COND_NO_TOWED:
-        return ship->towed_count == 0;
-    case HAIL_COND_HAS_TOWED:
-        return ship->towed_count > 0;
-    case HAIL_COND_LOW_CREDITS: {
-        if (player_current_balance() >= 50.0f) return false;
-        for (int s = 3; s < MAX_STATIONS; s++)
-            if (station_exists(&g.world.stations[s])) return false;
-        return true;
-    }
-    case HAIL_COND_HAS_CREDITS_NO_OUTPOST: {
-        if (player_current_balance() < 200.0f) return false;
-        for (int s = 3; s < MAX_STATIONS; s++)
-            if (station_exists(&g.world.stations[s])) return false;
-        return true;
-    }
-    case HAIL_COND_HAS_OUTPOST_NO_FURNACE:
-        for (int s = 3; s < MAX_STATIONS; s++) {
-            if (!station_is_active(&g.world.stations[s])) continue;
-            if (!station_has_module(&g.world.stations[s], MODULE_FURNACE)) return true;
-        }
-        return false;
-    case HAIL_COND_HAS_FURNACE:
-        for (int s = 3; s < MAX_STATIONS; s++) {
-            if (!station_is_active(&g.world.stations[s])) continue;
-            if (station_has_module(&g.world.stations[s], MODULE_FURNACE)) return true;
-        }
-        return false;
-    case HAIL_COND_HAS_NO_FRAMES:
-        return ship->cargo[COMMODITY_FRAME] < 0.5f;
-    case HAIL_COND_HAS_NO_SCAFFOLD:
-        return ship->towed_scaffold < 0;
-    case HAIL_COND_HAS_OUTPOST_NO_PRESS:
-        for (int s = 3; s < MAX_STATIONS; s++) {
-            if (!station_is_active(&g.world.stations[s])) continue;
-            if (!station_has_module(&g.world.stations[s], MODULE_FRAME_PRESS)) return true;
-        }
-        return false;
-    case HAIL_COND_HAS_PRESS:
-        for (int s = 3; s < MAX_STATIONS; s++) {
-            if (!station_is_active(&g.world.stations[s])) continue;
-            if (station_has_module(&g.world.stations[s], MODULE_FRAME_PRESS)) return true;
-        }
-        return false;
-    case HAIL_COND_NEVER_UPGRADED:
-        return ship->mining_level == 0 && ship->hold_level == 0
-            && ship->tractor_level == 0;
-    case HAIL_COND_NO_SPECIALTY_FURNACE:
-        /* True when at least one outpost station hasn't yet built up to
-         * the cuprite-capable furnace tier (≥2 furnaces). The legacy
-         * specialised CU/CR furnace types collapsed into MODULE_FURNACE
-         * at the count-tier rework — a "specialty" stack is now defined
-         * as 2+ furnaces. */
-        for (int s = 3; s < MAX_STATIONS; s++) {
-            if (!station_is_active(&g.world.stations[s])) continue;
-            if (station_furnace_count(&g.world.stations[s]) < 2) return true;
-        }
-        return false;
-    case HAIL_COND_ONE_OUTPOST: {
-        int count = 0;
-        for (int s = 3; s < MAX_STATIONS; s++)
-            if (station_is_active(&g.world.stations[s])) count++;
-        return count == 1;
-    }
-    case HAIL_COND_NEAR_EDGE: {
-        float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
-        return sig > 0.0f && sig < SIGNAL_BAND_FRINGE;
-    }
-    case HAIL_COND_DEFAULT:
-        return true;
-    default:
-        return false;
-    }
-}
-
-const char *contextual_hail_message(int station_index) {
-    if (station_index < 0 || station_index >= 3) return NULL;
-    const hail_response_t *table = STATION_HAIL_TABLES[station_index];
-    int count = STATION_HAIL_COUNTS[station_index];
-    for (int i = 0; i < count; i++) {
-        if (check_hail_condition(table[i].condition))
-            return table[i].message;
-    }
-    return NULL;
-}
 
 /* ================================================================== */
 /* sim_event handlers — one per event type, dispatched via the table   */
@@ -683,24 +590,13 @@ static void sim_on_death(const sim_event_t *ev) {
     music_enter_death(&g.music);
 }
 
-/* Pick the hail message: contextual > avatar MOTD (with tier label) > station hardcoded.
- * Caller should reserve space for tier label + message. */
-static const char *hail_choose_message(int station_idx, int *out_tier) {
-    if (out_tier) *out_tier = -1;
-
-    const char *ctx = contextual_hail_message(station_idx);
-    if (ctx) return ctx;
-
-    const avatar_cache_t *av = avatar_get(station_idx);
-    if (av && av->motd_fetched) {
-        float signal = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
-        int tier_idx = avatar_motd_tier_for_signal(av, signal);
-        if (tier_idx >= 0 && av->tiers[tier_idx].text[0]) {
-            if (out_tier) *out_tier = tier_idx;
-            return av->tiers[tier_idx].text;
-        }
-    }
-    return g.world.stations[station_idx].hail_message;
+/* Station hails are operator-authored server state. Tutorial copy lives
+ * in onboarding.c; avatar/MOTD fetches are only for profile art/caches. */
+static const char *hail_choose_message(int station_idx) {
+    if (station_idx < 0 || station_idx >= MAX_STATIONS)
+        return "Signal acknowledged.";
+    const char *msg = g.world.stations[station_idx].hail_message;
+    return msg[0] ? msg : "Signal acknowledged.";
 }
 
 static void sim_on_hail_response(const sim_event_t *ev) {
@@ -712,15 +608,8 @@ static void sim_on_hail_response(const sim_event_t *ev) {
     }
 
     station_hail_label(hs, g.hail_station, sizeof(g.hail_station));
-    int tier = -1;
-    const char *msg = hail_choose_message(hs, &tier);
-    if (tier >= 0) {
-        const char *tier_label = avatar_motd_tier_label(tier);
-        snprintf(g.hail_message, sizeof(g.hail_message), "[%s] %s",
-                 tier_label, msg);
-    } else {
-        snprintf(g.hail_message, sizeof(g.hail_message), "%s", msg);
-    }
+    const char *msg = hail_choose_message(hs);
+    snprintf(g.hail_message, sizeof(g.hail_message), "%s", msg);
     float shown_credits = ev->hail_response.credits >= 0.0f ? ev->hail_response.credits : 0.0f;
     g.hail_credits = shown_credits;
     g.hail_station_index = hs;
