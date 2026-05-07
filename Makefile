@@ -1,4 +1,4 @@
-.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all smoke crap dev dev-logs dev-clean stop deploy clean install-hooks
+.PHONY: all build build-web build-server build-test test test-serial test-fast test-soak test-all smoke crap profile-machine dev dev-logs dev-clean stop deploy clean install-hooks
 
 all: build build-web build-server
 
@@ -159,6 +159,9 @@ crap:
 		--paths $(CRAP_TESTED_PATHS) \
 		--top 30 --threshold 25 --fail-on-exceed \
 		--json-out crap.json
+
+profile-machine:
+	tools/profile_machine.sh
 
 # --- Local dev = docker compose (single source of truth) ---
 # One canonical local path. The container's entrypoint cd's into

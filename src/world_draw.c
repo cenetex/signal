@@ -73,11 +73,36 @@ typedef struct {
     int smelting_count;
 } asteroid_render_lists_t;
 
+#define ASTEROID_RENDER_MAX_VERTS 29
+#define ASTEROID_RENDER_MAX_CRYSTAL_SPIKES 5
+
+typedef struct {
+    int index;
+    int segments;
+    int crystal_spikes;
+    bool crystal;
+    bool target;
+    bool ineffective;
+    float progress_ratio;
+    float body_r, body_g, body_b;
+    float rim_r, rim_g, rim_b, rim_a;
+    vec2 outline[ASTEROID_RENDER_MAX_VERTS];
+    vec2 crystal_corners[ASTEROID_RENDER_MAX_CRYSTAL_SPIKES][4];
+} asteroid_draw_item_t;
+
+typedef struct {
+    bool valid;
+    asteroid_draw_item_t items[MAX_ASTEROIDS];
+    int count;
+} asteroid_draw_frame_t;
+
 static asteroid_render_lists_t g_asteroid_render_lists;
 static bool g_asteroid_render_lists_valid = false;
+static asteroid_draw_frame_t g_asteroid_draw_frame;
 
 void world_draw_begin_frame(void) {
     g_asteroid_render_lists_valid = false;
+    g_asteroid_draw_frame.valid = false;
 }
 
 static const asteroid_render_lists_t *asteroid_render_lists(void) {
@@ -209,6 +234,187 @@ void draw_crystal_asteroid_outline(const asteroid_t *a, float r, float g, float 
         }
     }
     sgl_end();
+}
+
+static int asteroid_render_base_segments(asteroid_tier_t tier) {
+    switch (tier) {
+        case ASTEROID_TIER_XXL: return 28;
+        case ASTEROID_TIER_XL:  return 22;
+        case ASTEROID_TIER_L:   return 18;
+        case ASTEROID_TIER_M:   return 15;
+        case ASTEROID_TIER_S:   return 12;
+        default:                return 18;
+    }
+}
+
+static void asteroid_draw_item_build_boundary(asteroid_draw_item_t *item,
+                                              const asteroid_t *a) {
+    if (item->crystal) {
+        item->crystal_spikes = crystal_spike_count(a);
+        if (item->crystal_spikes > ASTEROID_RENDER_MAX_CRYSTAL_SPIKES) {
+            item->crystal_spikes = ASTEROID_RENDER_MAX_CRYSTAL_SPIKES;
+        }
+        for (int i = 0; i < item->crystal_spikes; i++) {
+            float wx[4], wy[4];
+            crystal_spike_corners(a, i, item->crystal_spikes, wx, wy);
+            for (int k = 0; k < 4; k++) {
+                item->crystal_corners[i][k] = v2(wx[k], wy[k]);
+            }
+        }
+        return;
+    }
+
+    int segments = lod_segments(asteroid_render_base_segments(a->tier), a->radius);
+    if (segments > ASTEROID_RENDER_MAX_VERTS - 1) segments = ASTEROID_RENDER_MAX_VERTS - 1;
+    if (segments < 3) segments = 3;
+    item->segments = segments;
+
+    float step = TWO_PI_F / (float)segments;
+    for (int j = 0; j <= segments; j++) {
+        float angle = a->rotation + (float)j * step;
+        float radius = asteroid_profile(a, angle);
+        item->outline[j] = v2(a->pos.x + cosf(angle) * radius,
+                              a->pos.y + sinf(angle) * radius);
+    }
+}
+
+static const asteroid_draw_frame_t *asteroid_draw_frame(void) {
+    if (g_asteroid_draw_frame.valid) return &g_asteroid_draw_frame;
+
+    g_asteroid_draw_frame.count = 0;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &g.world.asteroids[i];
+        if (!a->active) continue;
+        if (!on_screen(a->pos.x, a->pos.y, a->radius + 16.0f)) continue;
+        if (g_asteroid_draw_frame.count >= MAX_ASTEROIDS) break;
+
+        asteroid_draw_item_t *item =
+            &g_asteroid_draw_frame.items[g_asteroid_draw_frame.count++];
+        item->index = i;
+        item->segments = 0;
+        item->crystal_spikes = 0;
+        item->crystal = a->commodity == COMMODITY_CRYSTAL_ORE;
+        item->target = (i == LOCAL_PLAYER.hover_asteroid);
+        item->ineffective = item->target && LOCAL_PLAYER.beam_ineffective;
+        item->progress_ratio = asteroid_progress_ratio(a);
+
+        asteroid_body_color(a->tier, a->commodity, item->progress_ratio,
+                            &item->body_r, &item->body_g, &item->body_b);
+        if (a->smelt_progress > 0.01f) {
+            float sp = a->smelt_progress;
+            item->body_r = item->body_r + (1.0f - item->body_r) * sp * 0.8f;
+            item->body_g = item->body_g + (0.6f - item->body_g) * sp * 0.6f;
+            item->body_b = item->body_b + (0.2f - item->body_b) * sp * 0.3f;
+        }
+
+        float base_r, base_g, base_b;
+        asteroid_body_color(a->tier, a->commodity, item->progress_ratio,
+                            &base_r, &base_g, &base_b);
+        item->rim_r = item->target ? (item->ineffective ? 1.0f : 0.45f) : (base_r * 0.85f);
+        item->rim_g = item->target ? (item->ineffective ? 0.15f : 0.94f) : (base_g * 0.95f);
+        item->rim_b = item->target ? (item->ineffective ? 0.10f : 1.0f) : fminf(1.0f, base_b * 1.2f);
+        item->rim_a = item->target ? 1.0f : 0.8f;
+
+        asteroid_draw_item_build_boundary(item, a);
+    }
+
+    g_asteroid_draw_frame.valid = true;
+    return &g_asteroid_draw_frame;
+}
+
+void draw_asteroids(void) {
+    const asteroid_draw_frame_t *frame = asteroid_draw_frame();
+
+    sgl_begin_triangles();
+    for (int i = 0; i < frame->count; i++) {
+        const asteroid_draw_item_t *item = &frame->items[i];
+        const asteroid_t *a = &g.world.asteroids[item->index];
+
+        sgl_c4f(item->body_r, item->body_g, item->body_b, 1.0f);
+        if (item->crystal) {
+            for (int si = 0; si < item->crystal_spikes; si++) {
+                const vec2 *c = item->crystal_corners[si];
+                sgl_v2f(c[0].x, c[0].y); sgl_v2f(c[1].x, c[1].y); sgl_v2f(c[2].x, c[2].y);
+                sgl_v2f(c[0].x, c[0].y); sgl_v2f(c[2].x, c[2].y); sgl_v2f(c[3].x, c[3].y);
+            }
+            continue;
+        }
+
+        for (int j = 1; j <= item->segments; j++) {
+            sgl_v2f(a->pos.x, a->pos.y);
+            sgl_v2f(item->outline[j - 1].x, item->outline[j - 1].y);
+            sgl_v2f(item->outline[j].x, item->outline[j].y);
+        }
+    }
+    sgl_end();
+
+    for (int i = 0; i < frame->count; i++) {
+        const asteroid_draw_item_t *item = &frame->items[i];
+        const asteroid_t *a = &g.world.asteroids[item->index];
+
+        if (item->crystal) {
+            sgl_c4f(item->rim_r, item->rim_g, item->rim_b, item->rim_a);
+            sgl_begin_lines();
+            for (int si = 0; si < item->crystal_spikes; si++) {
+                const vec2 *c = item->crystal_corners[si];
+                for (int k = 0; k < 4; k++) {
+                    const vec2 p0 = c[k];
+                    const vec2 p1 = c[(k + 1) % 4];
+                    sgl_v2f(p0.x, p0.y);
+                    sgl_v2f(p1.x, p1.y);
+                }
+            }
+            sgl_end();
+        } else {
+            sgl_c4f(item->rim_r, item->rim_g, item->rim_b, item->rim_a);
+            sgl_begin_line_strip();
+            for (int j = 0; j <= item->segments; j++) {
+                sgl_v2f(item->outline[j].x, item->outline[j].y);
+            }
+            sgl_end();
+        }
+
+        /* Glow core (the "dot"). Common fragments keep the original
+         * muted commodity tint — the belt should look mostly the
+         * same. Fine+ rocks get the grade tint with a halo + pulse so
+         * a strike actually catches the eye against the sea of dim
+         * dots. M-tier always uses commodity tint (no payable ore). */
+        if (a->tier == ASTEROID_TIER_S) {
+            if (a->grade == 0) {
+                float cr, cg, cb;
+                commodity_material_tint(a->commodity, &cr, &cg, &cb);
+                draw_circle_filled(a->pos, a->radius * lerpf(0.14f, 0.24f, item->progress_ratio), 10,
+                    lerpf(0.48f, cr * 1.6f, 0.5f), lerpf(0.96f, cg * 1.6f, 0.5f),
+                    lerpf(0.78f, cb * 1.6f, 0.5f), lerpf(0.35f, 0.8f, item->progress_ratio));
+            } else {
+                float cr, cg, cb;
+                grade_tint(a->grade, &cr, &cg, &cb);
+                float bloom = 1.10f + 0.18f * (float)(a->grade - 1);
+                float pulse = (a->grade >= 3)
+                    ? (1.0f + 0.18f * sinf(g.world.time * 6.0f))
+                    : 1.0f;
+                float base_r = a->radius * lerpf(0.18f, 0.30f, item->progress_ratio) * bloom * pulse;
+                draw_circle_filled(a->pos, base_r, 12,
+                    cr, cg, cb, lerpf(0.65f, 0.95f, item->progress_ratio));
+                if (a->grade >= 2) {
+                    draw_circle_outline(a->pos, base_r * 1.9f, 18,
+                        cr, cg, cb, 0.45f * pulse);
+                }
+            }
+        } else if (a->tier == ASTEROID_TIER_M) {
+            float cr, cg, cb;
+            commodity_material_tint(a->commodity, &cr, &cg, &cb);
+            draw_circle_filled(a->pos, a->radius * 0.16f, 8,
+                lerpf(0.36f, cr * 1.4f, 0.4f), lerpf(0.78f, cg * 1.4f, 0.4f),
+                lerpf(0.98f, cb * 1.4f, 0.4f), 0.4f);
+        }
+
+        if (item->target && item->ineffective) {
+            draw_circle_outline(a->pos, a->radius + 12.0f, 24, 1.0f, 0.2f, 0.15f, 0.75f);
+        } else if (item->target) {
+            draw_circle_outline(a->pos, a->radius + 12.0f, 24, 0.35f, 1.0f, 0.92f, 0.75f);
+        }
+    }
 }
 
 void draw_background(vec2 camera) {
@@ -1121,6 +1327,15 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
     station_role_color(station, &role_r, &role_g, &role_b);
     float base_alpha = is_current ? 0.9f : (is_nearby ? 0.7f : 0.5f);
 
+    vec2 module_pos[MAX_MODULES_PER_STATION];
+    float module_angle_cache[MAX_MODULES_PER_STATION];
+    for (int i = 0; i < station->module_count; i++) {
+        module_pos[i] = module_world_pos_ring(station, station->modules[i].ring,
+                                              station->modules[i].slot);
+        module_angle_cache[i] = module_angle_ring(station, station->modules[i].ring,
+                                                  station->modules[i].slot);
+    }
+
     /* Find outermost populated ring */
     int max_ring = 0;
     for (int i = 0; i < station->module_count; i++)
@@ -1249,13 +1464,13 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
 
         vec2 positions[MAX_MODULES_PER_STATION];
         for (int i = 0; i < mod_count; i++) {
-            positions[i] = module_world_pos_ring(station, ring, station->modules[mod_idx[i]].slot);
+            positions[i] = module_pos[mod_idx[i]];
         }
 
         /* Modules + dock indicators + furnace glow */
         for (int i = 0; i < mod_count; i++) {
             const station_module_t *m = &station->modules[mod_idx[i]];
-            float angle = module_angle_ring(station, ring, m->slot);
+            float angle = module_angle_cache[mod_idx[i]];
             station_layout_status_t layout_status = station_module_layout_status(station, m);
             draw_module_at(positions[i], angle, m->type, m->scaffold, m->build_progress, station->pos, station,
                            (commodity_t)m->commodity, m, layout_status);
@@ -1294,7 +1509,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                             if (station->modules[mi2].scaffold) continue;
                             if (station->modules[mi2].type != MODULE_HOPPER) continue;
                             if ((commodity_t)station->modules[mi2].commodity != ore) continue;
-                            vec2 mp2 = module_world_pos_ring(station, adj, station->modules[mi2].slot);
+                            vec2 mp2 = module_pos[mi2];
                             float dd = v2_dist_sq(positions[i], mp2);
                             if (dd < best_d) { best_d = dd; target = mp2; has_target = true; }
                         }
@@ -1365,8 +1580,7 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
                         bool is_supplier = (st == MODULE_FURNACE ||
                                            st == MODULE_HOPPER);
                         if (!is_supplier) continue;
-                        vec2 sp = module_world_pos_ring(station, station->modules[mi2].ring,
-                                                       station->modules[mi2].slot);
+                        vec2 sp = module_pos[mi2];
                         float dd = v2_dist_sq(positions[i], sp);
                         if (dd < best_d) { best_d = dd; supplier = sp; }
                     }
@@ -1788,7 +2002,10 @@ void draw_hopper_tractors(void) {
     const asteroid_render_lists_t *lists = asteroid_render_lists();
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &g.world.stations[s];
-        if (st->scaffold) continue;
+        if (!station_exists(st) || st->scaffold) continue;
+        float station_pull_radius =
+            fmaxf(st->dock_radius, STATION_RING_RADIUS[STATION_NUM_RINGS]) + pull_range + 80.0f;
+        if (!on_screen(st->pos.x, st->pos.y, station_pull_radius)) continue;
         for (int m = 0; m < st->module_count; m++) {
             if (st->modules[m].scaffold) continue;
             module_type_t mt = st->modules[m].type;
