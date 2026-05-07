@@ -823,10 +823,15 @@ static int npc_find_loose_fragment(const world_t *w, const npc_ship_t *self, flo
     int best = -1;
     float best_d = range_sq;
     int self_slot = (int)(self - w->npc_ships);
+    const station_t *home = (self->home_station >= 0 && self->home_station < MAX_STATIONS)
+                          ? &w->stations[self->home_station]
+                          : NULL;
+    if (!home) return -1;
     for (int fi = 0; fi < MAX_ASTEROIDS; fi++) {
         const asteroid_t *f = &w->asteroids[fi];
         if (!f->active || f->tier != ASTEROID_TIER_S) continue;
         if (!npc_home_has_smelt_endpoint(w, self, f->commodity, NULL)) continue;
+        if (station_raw_ore_need_score(home, f->commodity) <= 0.0f) continue;
         bool taken = false;
         /* Player tow check. */
         for (int p = 0; p < MAX_PLAYERS && !taken; p++) {

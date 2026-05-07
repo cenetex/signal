@@ -1970,6 +1970,14 @@ TEST(test_npc_miner_idles_when_refined_output_is_full) {
     w.asteroids[0].max_hp = 120.0f;
     w.asteroids[0].pos = v2_add(prospect->pos, v2(700.0f, 0.0f));
 
+    w.asteroids[1].active = true;
+    w.asteroids[1].tier = ASTEROID_TIER_S;
+    w.asteroids[1].commodity = COMMODITY_FERRITE_ORE;
+    w.asteroids[1].radius = 24.0f;
+    w.asteroids[1].hp = 1.0f;
+    w.asteroids[1].max_hp = 1.0f;
+    w.asteroids[1].pos = v2_add(prospect->pos, v2(300.0f, 0.0f));
+
     w.npc_ships[0].active = true;
     w.npc_ships[0].role = NPC_ROLE_MINER;
     w.npc_ships[0].ship.hull_class = HULL_CLASS_NPC_MINER;
@@ -1984,6 +1992,7 @@ TEST(test_npc_miner_idles_when_refined_output_is_full) {
 
     step_npc_ships(&w, SIM_DT);
     ASSERT_EQ_INT(w.npc_ships[0].target_asteroid, -1);
+    ASSERT_EQ_INT(w.npc_ships[0].towed_fragment, -1);
     ASSERT_EQ_INT(w.npc_ships[0].state, NPC_STATE_IDLE);
 }
 
