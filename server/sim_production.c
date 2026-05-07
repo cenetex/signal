@@ -520,15 +520,6 @@ void step_furnace_smelting(world_t *w, float dt) {
                 if (st->modules[m].type != MODULE_FURNACE) continue;
                 if (module_instance_input_ore(&st->modules[m]) != a->commodity) continue;
 
-                /* Output cap: refuse only when no room remains. If a large
-                 * fragment would overfill the bin, still clear it and vent
-                 * the excess below; otherwise a 90/120 stockpile can strand
-                 * every 30+ ore fragment on the beam and stall the intake
-                 * loop. */
-                commodity_t furnace_ingot = commodity_refined_form(a->commodity);
-                if (MAX_PRODUCT_STOCK - st->_inventory_cache[furnace_ingot] <= 0.01f)
-                    continue;  /* output full — skip this furnace */
-
                 int ring = st->modules[m].ring;
                 vec2 furnace_pos = module_world_pos_ring(st, ring, st->modules[m].slot);
 
