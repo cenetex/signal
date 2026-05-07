@@ -459,6 +459,63 @@ station_demand_t station_demand_for(const station_t *st, commodity_t c) {
     return out;
 }
 
+static float shortage01(float stock, float target) {
+    if (target <= 0.0f) return 0.0f;
+    float deficit = target - stock;
+    if (deficit <= 0.0f) return 0.0f;
+    float score = deficit / target;
+    return score > 1.0f ? 1.0f : score;
+}
+
+float station_raw_ore_chain_need_score(const station_t *st, commodity_t ore) {
+    if (!st || !station_is_active(st)) return 0.0f;
+    if (ore >= COMMODITY_RAW_ORE_COUNT) return 0.0f;
+    if (!station_can_smelt(st, ore)) return 0.0f;
+
+    commodity_t ingot = commodity_refined_form(ore);
+    if (ingot == ore || ingot >= COMMODITY_COUNT) return 0.0f;
+
+    float ingot_room = MAX_PRODUCT_STOCK - st->_inventory_cache[ingot];
+    if (ingot_room <= FLOAT_EPSILON) return 0.0f;
+
+    float score = shortage01(st->_inventory_cache[ingot], MAX_PRODUCT_STOCK);
+    switch (ore) {
+    case COMMODITY_FERRITE_ORE:
+        if (station_has_module(st, MODULE_FRAME_PRESS)) {
+            score = fmaxf(shortage01(st->_inventory_cache[COMMODITY_FRAME],
+                                      MAX_PRODUCT_STOCK),
+                          shortage01(st->_inventory_cache[ingot], 12.0f) * 0.5f);
+        }
+        break;
+    case COMMODITY_CUPRITE_ORE:
+        if (station_has_module(st, MODULE_LASER_FAB)) {
+            score = fmaxf(shortage01(st->_inventory_cache[COMMODITY_LASER_MODULE],
+                                      12.0f),
+                          shortage01(st->_inventory_cache[ingot], 12.0f) * 0.5f);
+        }
+        break;
+    case COMMODITY_CRYSTAL_ORE:
+        if (station_has_module(st, MODULE_TRACTOR_FAB)) {
+            score = fmaxf(shortage01(st->_inventory_cache[COMMODITY_TRACTOR_MODULE],
+                                      12.0f),
+                          shortage01(st->_inventory_cache[ingot], 12.0f) * 0.5f);
+        }
+        break;
+    default:
+        break;
+    }
+
+    return score;
+}
+
+float station_raw_ore_need_score(const station_t *st, commodity_t ore) {
+    float chain_need = station_raw_ore_chain_need_score(st, ore);
+    if (chain_need <= 0.0f) return 0.0f;
+    float raw_gate = shortage01(st->_inventory_cache[ore],
+                                REFINERY_HOPPER_CAPACITY * 0.5f);
+    return chain_need * raw_gate;
+}
+
 station_demand_t station_top_demand(const station_t *st) {
     station_demand_t out = {
         .commodity  = COMMODITY_COUNT,

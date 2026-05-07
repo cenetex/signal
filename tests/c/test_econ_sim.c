@@ -780,15 +780,11 @@ TEST(test_e2e_kit_import_contract_lifecycle) {
     ASSERT(found_open);
 
     /* Phase 2: refill enough to satisfy BOTH close and issue checks.
-     * Close fires above 0.8 * MAX_PRODUCT_STOCK (96), but P6 re-issues
-     * below 0.25 * REPAIR_KIT_STOCK_CAP (250) — the gap between them
-     * is unstable (closes and re-issues every tick). Filling above the
-     * higher bound is the only stable closed state. The fact that
-     * those two thresholds don't agree is a real bug worth a separate
-     * PR; this test pins current behaviour for now. */
+     * Repair kits use their own 1000-kit buffer, not MAX_PRODUCT_STOCK:
+     * import opens below 25% of the kit cap and closes near 95% of it. */
     ASSERT(test_set_station_finished_units(&w->stations[prospect],
                                            COMMODITY_REPAIR_KIT,
-                                           (int)(REPAIR_KIT_STOCK_CAP * 0.5f)));
+                                           (int)(REPAIR_KIT_STOCK_CAP * 0.96f)));
     bool found_after_fill = true;
     for (int i = 0; i < (int)(60.0f / SIM_DT); i++) {
         world_sim_step(w, SIM_DT);

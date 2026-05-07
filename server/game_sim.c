@@ -3812,16 +3812,29 @@ static void step_contracts(world_t *w, float dt) {
                         emit_event(w, (sim_event_t){.type = SIM_EVENT_CONTRACT_COMPLETE, .contract_complete.action = CONTRACT_TRACTOR});
                 }
             } else {
-                /* Non-construction: close once inventory is above the OPEN
-                 * threshold. Hysteresis (open <90%, close >=95%) keeps a
-                 * single station from oscillating, but production-chain
-                 * stations consume ingots fast enough to re-cross 90%
-                 * within seconds — so we only fire CONTRACT_COMPLETE when
-                 * a player/NPC actually claimed and delivered. Otherwise
-                 * the contract just retires silently. */
+                /* Non-construction: close once inventory reaches the
+                 * commodity's actual buffer target. Bulk products use
+                 * MAX_PRODUCT_STOCK hysteresis, kit inputs use the
+                 * 12-unit shipyard target, and repair kits use their
+                 * larger dock buffer. */
                 float current = st->_inventory_cache[c];
-                float threshold = (c < COMMODITY_RAW_ORE_COUNT) ? REFINERY_HOPPER_CAPACITY * 0.95f : MAX_PRODUCT_STOCK * 0.95f;
-                if (current >= threshold) {
+                float threshold = MAX_PRODUCT_STOCK * 0.95f;
+                if (c < COMMODITY_RAW_ORE_COUNT) {
+                    threshold = REFINERY_HOPPER_CAPACITY * 0.95f;
+                } else if ((c == COMMODITY_FRAME ||
+                            c == COMMODITY_LASER_MODULE ||
+                            c == COMMODITY_TRACTOR_MODULE) &&
+                           station_has_module(st, MODULE_SHIPYARD)) {
+                    threshold = 12.0f;
+                } else if (c == COMMODITY_REPAIR_KIT &&
+                           station_has_module(st, MODULE_DOCK) &&
+                           !station_has_module(st, MODULE_SHIPYARD)) {
+                    threshold = REPAIR_KIT_STOCK_CAP * 0.95f;
+                }
+                bool obsolete_raw_ore =
+                    c < COMMODITY_RAW_ORE_COUNT &&
+                    station_raw_ore_chain_need_score(st, c) <= 0.0f;
+                if (obsolete_raw_ore || current >= threshold) {
                     bool was_claimed = (w->contracts[i].claimed_by >= 0);
                     w->contracts[i].active = false;
                     if (was_claimed)
@@ -3929,25 +3942,24 @@ static void step_contracts(world_t *w, float dt) {
             }
         }
 
-        /* Priority 3: ore hopper with biggest deficit (ore slot).
-         * Ore contracts are inventory-driven — fulfilled by fragment smelting, not cargo
-         * delivery. quantity_needed is unused; contract closes when inventory > 80%. */
+        /* Priority 3: ore chain with biggest useful deficit (ore slot).
+         * Ore contracts are inventory-driven — fulfilled by fragment
+         * smelting, not cargo delivery. quantity_needed is unused;
+         * demand is gated by raw hopper room, refined output room, and
+         * downstream product shortage. */
         if (!need.active && !has_ore_contract && station_has_module(st, MODULE_FURNACE)) {
             float worst_deficit = 0.0f;
             int worst_ore = -1;
             for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
-                if (!sim_can_smelt_ore(st, (commodity_t)c)) continue;
-                float deficit = REFINERY_HOPPER_CAPACITY * 0.5f - st->_inventory_cache[c];
+                float deficit = station_raw_ore_need_score(st, (commodity_t)c);
                 if (deficit > worst_deficit) { worst_deficit = deficit; worst_ore = c; }
             }
             if (worst_ore >= 0) {
                 /* Demand multiplier: 1.0× when at target, up to 1.5× at
                  * total starvation. Layered on top of pool_factor so a
                  * starved-but-broke station still posts a sensible
-                 * price. station_demand_for shares its severity
-                 * definition with the priority-3 deficit calc above —
-                 * they cannot disagree about who is starving. */
-                float dmult = station_demand_for(st, (commodity_t)worst_ore).price_mult;
+                 * price. */
+                float dmult = 1.0f + 0.5f * worst_deficit;
                 need = (contract_t){
                     .active = true, .action = CONTRACT_TRACTOR,
                     .station_index = (uint8_t)s,

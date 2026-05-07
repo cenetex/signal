@@ -165,6 +165,18 @@ station_demand_t station_top_demand(const station_t *st);
  * they for this one?". */
 station_demand_t station_demand_for(const station_t *st, commodity_t c);
 
+/* Downstream raw-ore demand, ignoring the current raw hopper fill. This
+ * answers whether an ore is still useful at all once it reaches the
+ * furnace. */
+float station_raw_ore_chain_need_score(const station_t *st, commodity_t ore);
+
+/* Raw-ore demand for miners and ore contracts. This looks through the
+ * furnace output into the downstream local chain: a refinery with a full
+ * ingot shelf does not need more ore, and a multi-ore station prefers
+ * the ore whose module output is actually starved. Returns 0 when
+ * mining that ore would just add stuck mass. */
+float station_raw_ore_need_score(const station_t *st, commodity_t ore);
+
 /* Short, human-readable display name for a station index — "Prospect",
  * "Kepler", "Helios" for the three founding stations, or the actual
  * station name truncated to the first word for outposts. Returns "?"
