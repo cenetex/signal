@@ -522,7 +522,7 @@ static bool hash32_is_zero(const uint8_t hash[32]) {
 
 static void hud_hash_short_label(const uint8_t hash[32], char out[8]) {
     if (hash32_is_zero(hash)) {
-        snprintf(out, 8, "-------");
+        snprintf(out, 8, "no-id");
         return;
     }
     mining_callsign_from_pubkey(hash, out);
@@ -530,7 +530,7 @@ static void hud_hash_short_label(const uint8_t hash[32], char out[8]) {
 
 static void hud_cargo_label(const uint8_t pub[32], char out[12]) {
     if (hash32_is_zero(pub)) {
-        snprintf(out, 12, "-------");
+        snprintf(out, 12, "no-id");
         return;
     }
     mining_render_callsign(pub, out);
@@ -689,11 +689,8 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     float now = g.world.time;
     for (int i = 0; i < rows; i++) {
         const NetInspectSnapshotRow *row = &snap->rows[i];
-        char cargo[12], head[8], origin[8], latest[8];
+        char cargo[12];
         hud_cargo_label(row->cargo_pub, cargo);
-        hud_hash_short_label(row->receipt_head, head);
-        hud_hash_short_label(row->origin_station, origin);
-        hud_hash_short_label(row->latest_station, latest);
         unsigned qty = row->quantity > 0 ? row->quantity : 1;
         visible_units += qty;
         bool grouped = (row->flags & INSPECT_ROW_GROUPED) != 0;
@@ -712,7 +709,7 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
             case INGOT_PREFIX_RATI:         prefix_label = "RATi class"; break;
             case INGOT_PREFIX_COMMISSIONED: prefix_label = "RATi*"; break;
             case INGOT_PREFIX_ANONYMOUS:
-            default:                        prefix_label = NULL; break;
+            default:                        prefix_label = "bulk"; break;
             }
         }
 
@@ -793,6 +790,10 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
             }
         }
         if (!grouped && (row->flags & INSPECT_ROW_HAS_RECEIPT)) {
+            char head[8], origin[8], latest[8];
+            hud_hash_short_label(row->receipt_head, head);
+            hud_hash_short_label(row->origin_station, origin);
+            hud_hash_short_label(row->latest_station, latest);
             /* Phase rotation for chained rows. Singletons (chain_len==1)
              * pin to phase 0 — origin and latest are the same so phases
              * B/C add nothing. Each phase fires a fresh per-phase
@@ -845,6 +846,16 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
                                   phase_ms,0, seed ^ 5u);
                 sdtx_printf("chain %u  latest: %s",
                             (unsigned)row->chain_len, disp);
+            }
+            next_y = chain_y + 14.0f;
+        } else if (!grouped) {
+            float chain_y = drew_contract_fit ? (y + 24.0f) : (y + 12.0f);
+            sdtx_pos(px / cell, chain_y / cell);
+            sdtx_color4b(PAL_TEXT_GREY, a8_chain);
+            if (hash32_is_zero(row->cargo_pub)) {
+                sdtx_puts("identity missing");
+            } else {
+                sdtx_puts("chain: station origin / receipt pending");
             }
             next_y = chain_y + 14.0f;
         }

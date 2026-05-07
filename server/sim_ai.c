@@ -15,6 +15,8 @@
 #include "commodity.h"
 #include "ship.h"
 #include "game_sim.h" /* SHIP_COLLISION_DAMAGE_THRESHOLD/_SCALE */
+#include "cargo_receipt_issue.h"
+#include "sha256.h"
 #include <math.h>
 #include <string.h>
 
@@ -30,6 +32,59 @@ static int station_manifest_drain_commodity(station_t *st, commodity_t c, int n)
 
 static int hauler_reserve_units(void) {
     return (int)ceilf(HAULER_RESERVE - 0.0001f);
+}
+
+static bool npc_hash32_is_zero(const uint8_t hash[32]) {
+    static const uint8_t zero[32] = {0};
+    return !hash || memcmp(hash, zero, sizeof(zero)) == 0;
+}
+
+static void npc_custody_pubkey(const npc_ship_t *npc, int npc_slot,
+                               uint8_t out[32]) {
+    static const uint8_t domain[] = {
+        'S','I','G','N','A','L','-','N','P','C','-','C','U','S','T','O','D','Y','-','v','1'
+    };
+    sha256_ctx_t ctx;
+    uint8_t slot_le[2];
+    uint8_t role = npc ? (uint8_t)npc->role : 0;
+    uint8_t home = npc ? (uint8_t)npc->home_station : 0xFFu;
+
+    slot_le[0] = (uint8_t)(npc_slot & 0xFF);
+    slot_le[1] = (uint8_t)((npc_slot >> 8) & 0xFF);
+
+    sha256_init(&ctx);
+    sha256_update(&ctx, domain, sizeof(domain));
+    if (npc) sha256_update(&ctx, npc->session_token, sizeof(npc->session_token));
+    sha256_update(&ctx, slot_le, sizeof(slot_le));
+    sha256_update(&ctx, &role, sizeof(role));
+    sha256_update(&ctx, &home, sizeof(home));
+    sha256_final(&ctx, out);
+}
+
+static bool append_station_transfer_receipt(world_t *w, station_t *author,
+                                            const uint8_t from_pubkey[32],
+                                            const uint8_t to_pubkey[32],
+                                            const cargo_unit_t *unit,
+                                            cargo_receipt_chain_t *chain) {
+    if (!w || !author || !unit || !chain) return false;
+    if (npc_hash32_is_zero(unit->pub)) return false;
+    if (chain->len >= CARGO_RECEIPT_CHAIN_MAX_LEN) return false;
+
+    uint8_t prev_hash[32] = {0};
+    const uint8_t *prev = author->chain_last_hash;
+    if (chain->len > 0) {
+        cargo_receipt_hash(&chain->links[chain->len - 1], prev_hash);
+        prev = prev_hash;
+    }
+
+    cargo_receipt_t receipt = {0};
+    uint64_t xfer_id = cargo_receipt_emit_transfer(w, author,
+                                                   from_pubkey, to_pubkey,
+                                                   unit->pub, unit->kind,
+                                                   prev, &receipt);
+    if (xfer_id == 0) return false;
+    chain->links[chain->len++] = receipt;
+    return true;
 }
 
 static int station_finished_available_for_hauler(const station_t *st,
@@ -154,15 +209,21 @@ static void hauler_sync_cargo_from_manifest(npc_ship_t *npc, const ship_t *ship)
     }
 }
 
-static int hauler_load_station_units(station_t *src, ship_t *dst,
-                                     commodity_t c, int n) {
-    if (!src || !dst || n <= 0) return 0;
+static int hauler_load_station_units(world_t *w, int npc_slot, station_t *src,
+                                     ship_t *dst, commodity_t c, int n) {
+    if (!w || !src || !dst || n <= 0) return 0;
     if (c < COMMODITY_RAW_ORE_COUNT || c >= COMMODITY_COUNT) return 0;
     if (src->manifest.cap == 0 && !station_manifest_bootstrap(src)) return 0;
     if (!ship_manifest_bootstrap(dst)) return 0;
+    if (npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return 0;
+
+    npc_ship_t *npc = &w->npc_ships[npc_slot];
+    uint8_t npc_pubkey[32];
+    npc_custody_pubkey(npc, npc_slot, npc_pubkey);
 
     int moved = 0;
     while (moved < n) {
+        if (dst->manifest.count >= dst->manifest.cap) break;
         int idx = manifest_find_first_commodity(&src->manifest, c);
         if (idx < 0) break;
         cargo_unit_t unit = {0};
@@ -171,7 +232,13 @@ static int hauler_load_station_units(station_t *src, ship_t *dst,
                                                 &unit, &chain)) {
             break;
         }
-        if (!ship_manifest_push_with_chain(dst, &unit, &chain)) {
+        cargo_receipt_chain_t outgoing = chain;
+        /* Receipt extension is best-effort. Chain health policy may block
+         * appends after a bad reload; cargo custody still moves, and scan
+         * UI surfaces the missing receipt instead of forging continuity. */
+        (void)append_station_transfer_receipt(w, src, src->station_pubkey,
+                                              npc_pubkey, &unit, &outgoing);
+        if (!ship_manifest_push_with_chain(dst, &unit, &outgoing)) {
             (void)station_manifest_push_with_chain(src, &unit, &chain);
             break;
         }
@@ -180,14 +247,20 @@ static int hauler_load_station_units(station_t *src, ship_t *dst,
     return moved;
 }
 
-static int hauler_unload_ship_units(ship_t *src, station_t *dst,
-                                    commodity_t c, int n) {
-    if (!src || !dst || n <= 0) return 0;
+static int hauler_unload_ship_units(world_t *w, int npc_slot, ship_t *src,
+                                    station_t *dst, commodity_t c, int n) {
+    if (!w || !src || !dst || n <= 0) return 0;
     if (c < COMMODITY_RAW_ORE_COUNT || c >= COMMODITY_COUNT) return 0;
     if (dst->manifest.cap == 0 && !station_manifest_bootstrap(dst)) return 0;
+    if (npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return 0;
+
+    npc_ship_t *npc = &w->npc_ships[npc_slot];
+    uint8_t npc_pubkey[32];
+    npc_custody_pubkey(npc, npc_slot, npc_pubkey);
 
     int moved = 0;
     while (moved < n) {
+        if (dst->manifest.count >= dst->manifest.cap) break;
         int idx = manifest_find_first_commodity(&src->manifest, c);
         if (idx < 0) break;
         cargo_unit_t unit = {0};
@@ -196,7 +269,13 @@ static int hauler_unload_ship_units(ship_t *src, station_t *dst,
                                              &unit, &chain)) {
             break;
         }
-        if (!station_manifest_push_with_chain(dst, &unit, &chain)) {
+        cargo_receipt_chain_t incoming = chain;
+        /* Best-effort for the same reason as load: never pretend a broken
+         * chain wrote a receipt, but don't strand cargo in the hauler. */
+        (void)append_station_transfer_receipt(w, dst, npc_pubkey,
+                                              dst->station_pubkey, &unit,
+                                              &incoming);
+        if (!station_manifest_push_with_chain(dst, &unit, &incoming)) {
             (void)ship_manifest_push_with_chain(src, &unit, &chain);
             break;
         }
@@ -1237,7 +1316,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 if (take_units > space_units) take_units = space_units;
                 if (take_units > 0) {
                     if (hauler_ship) {
-                        int moved = hauler_load_station_units(home, hauler_ship,
+                        int moved = hauler_load_station_units(w, n, home,
+                                                              hauler_ship,
                                                               ingot, take_units);
                         if (moved > 0) {
                             station_finished_sync(home, ingot);
@@ -1314,8 +1394,10 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     if (take_units > space_units) take_units = space_units;
                     if (take_units > 0) {
                         if (hauler_ship) {
-                            int moved = hauler_load_station_units(home, hauler_ship,
-                                                                  best_cargo, take_units);
+                            int moved = hauler_load_station_units(w, n, home,
+                                                                  hauler_ship,
+                                                                  best_cargo,
+                                                                  take_units);
                             if (moved > 0) {
                                 station_finished_sync(home, best_cargo);
                                 ship_finished_sync(hauler_ship, best_cargo);
@@ -1391,8 +1473,9 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                         dest, (commodity_t)i, MAX_PRODUCT_STOCK);
                     if (space_units <= 0) continue;
                     int request = held < space_units ? held : space_units;
-                    int moved = hauler_unload_ship_units(hauler_ship, dest,
-                                                         (commodity_t)i, request);
+                    int moved = hauler_unload_ship_units(w, n, hauler_ship,
+                                                         dest, (commodity_t)i,
+                                                         request);
                     if (moved <= 0) continue;
                     station_finished_sync(dest, (commodity_t)i);
                     ship_finished_sync(hauler_ship, (commodity_t)i);
