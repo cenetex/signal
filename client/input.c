@@ -420,9 +420,14 @@ static void sample_work_keys(input_intent_t *intent) {
         if (slot_contract[k] < 0) break;
         g.selected_contract = slot_contract[k];
         g.tracked_contract = slot_contract[k];
-        const contract_t *ct = &g.world.contracts[slot_contract[k]];
-        set_notice("Selected: %s. [S] deliver.",
-                   commodity_short_name(ct->commodity));
+        char step[192];
+        if (contract_step_hint(step, sizeof(step)))
+            set_notice("%s", step);
+        else {
+            const contract_t *ct = &g.world.contracts[slot_contract[k]];
+            set_notice("Tracking %s contract.",
+                       commodity_short_name(ct->commodity));
+        }
         break;
     }
 
