@@ -216,7 +216,7 @@ static bool objective_fracture(int contract_index, const contract_t *ct,
         if (a->active && a->tier != ASTEROID_TIER_S) {
             objective_set_asteroid_target(out, idx);
             snprintf(out->message, sizeof(out->message),
-                     "SIGNAL // NEXT STEP ::::: FRACTURE %s TARGET ASTEROID [M]",
+                     "SIGNAL // CONTRACT :: FRACTURE %s TARGET ASTEROID [M]",
                      commodity_short_name((commodity_t)a->commodity));
             return true;
         }
@@ -224,11 +224,11 @@ static bool objective_fracture(int contract_index, const contract_t *ct,
 
     if (ct->commodity < COMMODITY_COUNT) {
         snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // NEXT STEP ::::: FRACTURE %s ASTEROID [M]",
+                 "SIGNAL // CONTRACT :: FRACTURE %s ASTEROID [M]",
                  commodity_short_name(ct->commodity));
     } else {
         snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // NEXT STEP ::::: FRACTURE TARGET ASTEROID [M]");
+                 "SIGNAL // CONTRACT :: FRACTURE TARGET ASTEROID [M]");
     }
     return true;
 }
@@ -254,11 +254,11 @@ static bool objective_raw_tractor(int contract_index, const contract_t *ct,
             out->world_target = furnace;
             out->world_radius = 22.0f;
             snprintf(out->message, sizeof(out->message),
-                     "SIGNAL // NEXT STEP ::::: TOW %s FRAGMENTS TO %s FURNACE BEAM",
+                     "SIGNAL // CONTRACT :: TOW %s FRAGMENTS TO %s FURNACE BEAM",
                      commodity_short_name(ct->commodity), dest);
         } else {
             snprintf(out->message, sizeof(out->message),
-                     "SIGNAL // NEXT STEP ::::: TOW %s FRAGMENTS TO COMPATIBLE FURNACE",
+                     "SIGNAL // CONTRACT :: TOW %s FRAGMENTS TO COMPATIBLE FURNACE",
                      commodity_short_name(ct->commodity));
         }
         return true;
@@ -273,14 +273,14 @@ static bool objective_raw_tractor(int contract_index, const contract_t *ct,
         objective_set_job(out, "tractor");
         objective_set_asteroid_target(out, frag);
         snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // NEXT STEP ::::: TRACTOR %s FRAGMENTS, THEN FURNACE BEAM",
+                 "SIGNAL // CONTRACT :: TRACTOR %s FRAGMENTS, THEN FURNACE BEAM",
                  commodity_short_name(ct->commodity));
     } else {
         out->kind = CONTRACT_OBJECTIVE_FRACTURE;
         out->quantity = 1;
         objective_set_job(out, "fracture");
         snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // NEXT STEP ::::: FRACTURE %s ASTEROID FOR FURNACE FEED",
+                 "SIGNAL // CONTRACT :: FRACTURE %s ASTEROID FOR FURNACE FEED",
                  commodity_short_name(ct->commodity));
     }
     return true;
@@ -308,16 +308,16 @@ static bool objective_finished_delivery(int contract_index, const contract_t *ct
             LOCAL_PLAYER.current_station == (int)ct->station_index) {
             if (g.station_view == STATION_VIEW_WORK) {
                 snprintf(out->message, sizeof(out->message),
-                         "SIGNAL // NEXT STEP ::::: DELIVER %s x%d TO %s [S]",
+                         "SIGNAL // CONTRACT :: DELIVER %s x%d TO %s [S]",
                          commodity_short_name(ct->commodity), deliver, dest);
             } else {
                 snprintf(out->message, sizeof(out->message),
-                         "SIGNAL // NEXT STEP ::::: DELIVER %s x%d TO %s: OPEN JOBS [TAB]",
+                         "SIGNAL // CONTRACT :: DELIVER %s x%d TO %s: OPEN JOBS [TAB]",
                          commodity_short_name(ct->commodity), deliver, dest);
             }
         } else {
             snprintf(out->message, sizeof(out->message),
-                     "SIGNAL // NEXT STEP ::::: DELIVER %s x%d TO %s",
+                     "SIGNAL // CONTRACT :: DELIVER %s x%d TO %s",
                      commodity_short_name(ct->commodity), deliver, dest);
         }
         return true;
@@ -334,7 +334,7 @@ static bool objective_finished_delivery(int contract_index, const contract_t *ct
         objective_set_job(out, "pickup");
         objective_set_station_target(out, stock_station);
         snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // NEXT STEP ::::: BUY %s AT %s, DELIVER TO %s",
+                 "SIGNAL // CONTRACT :: BUY %s AT %s, DELIVER TO %s",
                  commodity_short_name(ct->commodity), stock, dest);
         return true;
     }
@@ -352,10 +352,10 @@ static bool objective_finished_delivery(int contract_index, const contract_t *ct
         out->source_station = producer;
         objective_set_station_target(out, producer);
         snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // NEXT STEP ::::: %s AT %s", upstream, where);
+                 "SIGNAL // CONTRACT :: %s AT %s", upstream, where);
     } else {
         snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // NEXT STEP ::::: %s", upstream);
+                 "SIGNAL // CONTRACT :: %s", upstream);
     }
     return true;
 }
@@ -416,7 +416,7 @@ bool contract_objective_ready_upgrade(contract_objective_t *out) {
         out->kind = CONTRACT_OBJECTIVE_UPGRADE;
         objective_set_job(out, "upgrade");
         snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // NEXT STEP ::::: %s AT DOCK %s",
+                 "SIGNAL // UPGRADE :: %s AT DOCK %s",
                  checks[i].label, checks[i].key);
         return true;
     }
