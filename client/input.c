@@ -27,8 +27,8 @@
  *   [1-9] SHIPYARD tab → order scaffold kit row.
  *   [S]   TRADE tab → sell accepted cargo; JOBS tab → deliver selected
  *         contract or all matching contract cargo.
- *   [R]   DOCK tab → repair; plan mode → cycle module type; undocked
- *         outside plan mode → release held tractor tow.
+ *   [Space] Undocked outside plan mode → hold tractor; tap to release tow.
+ *   [R]   DOCK tab → repair; plan mode → cycle module type.
  *   [M]   DOCK tab → upgrade mining laser; undocked → mining laser.
  *   [C]   DOCK tab → upgrade cargo hold.
  *   [H]   Hail ping + collect pending credits.
@@ -282,7 +282,7 @@ static void sample_ui_safety(void) {
     if (LOCAL_PLAYER.docked) { g.inspect_station = -1; g.inspect_module = -1; }
 }
 
-/* SPACE (laser) auto-targets the nearest module in the beam cone.
+/* Mining beam auto-targets the nearest module in the beam cone.
  * Targets clear if the laser releases or the player drifts out of range. */
 static void sample_targeting(const input_intent_t *intent) {
     if (intent->mine && !LOCAL_PLAYER.docked &&

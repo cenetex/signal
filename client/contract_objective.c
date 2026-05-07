@@ -3,6 +3,7 @@
  */
 #include "contract_objective.h"
 
+#include <stdarg.h>
 #include "client.h"
 #include "contract_fit.h"
 #include "manifest.h"
@@ -21,24 +22,41 @@ static void objective_set_job(contract_objective_t *out, const char *job) {
     snprintf(out->job, sizeof(out->job), "%s", job);
 }
 
+static void objective_set_copy(contract_objective_t *out,
+                               const char *label,
+                               const char *fmt, ...) {
+    if (!out || !label || !fmt) return;
+    snprintf(out->label, sizeof(out->label), "%s", label);
+    va_list args;
+    va_start(args, fmt);
+    vsnprintf(out->body, sizeof(out->body), fmt, args);
+    va_end(args);
+    snprintf(out->message, sizeof(out->message), "%s :: %s",
+             out->label, out->body);
+}
+
 static void objective_set_station_target(contract_objective_t *out,
-                                         int station_index) {
+                                         int station_index,
+                                         contract_objective_target_kind_t kind) {
     if (!out) return;
     if (station_index < 0 || station_index >= MAX_STATIONS) return;
     const station_t *st = &g.world.stations[station_index];
     if (!station_is_active(st)) return;
     out->has_world_target = true;
+    out->target_kind = kind;
     out->world_target = st->pos;
     out->world_radius = st->radius + 28.0f;
 }
 
 static void objective_set_asteroid_target(contract_objective_t *out,
-                                          int asteroid_index) {
+                                          int asteroid_index,
+                                          contract_objective_target_kind_t kind) {
     if (!out) return;
     if (asteroid_index < 0 || asteroid_index >= MAX_ASTEROIDS) return;
     const asteroid_t *a = &g.world.asteroids[asteroid_index];
     if (!a->active) return;
     out->has_world_target = true;
+    out->target_kind = kind;
     out->world_target = a->pos;
     out->world_radius = a->radius + 32.0f;
 }
@@ -214,21 +232,22 @@ static bool objective_fracture(int contract_index, const contract_t *ct,
     if (idx >= 0 && idx < MAX_ASTEROIDS) {
         const asteroid_t *a = &g.world.asteroids[idx];
         if (a->active && a->tier != ASTEROID_TIER_S) {
-            objective_set_asteroid_target(out, idx);
-            snprintf(out->message, sizeof(out->message),
-                     "SIGNAL // CONTRACT :: FRACTURE %s TARGET ASTEROID [M]",
-                     commodity_short_name((commodity_t)a->commodity));
+            objective_set_asteroid_target(out, idx,
+                                          CONTRACT_OBJECTIVE_TARGET_EXACT);
+            objective_set_copy(out, "SIGNAL // CONTRACT",
+                               "FRACTURE %s TARGET ASTEROID [M]",
+                               commodity_short_name((commodity_t)a->commodity));
             return true;
         }
     }
 
     if (ct->commodity < COMMODITY_COUNT) {
-        snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // CONTRACT :: FRACTURE %s ASTEROID [M]",
-                 commodity_short_name(ct->commodity));
+        objective_set_copy(out, "SIGNAL // CONTRACT",
+                           "FRACTURE %s ASTEROID [M]",
+                           commodity_short_name(ct->commodity));
     } else {
-        snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // CONTRACT :: FRACTURE TARGET ASTEROID [M]");
+        objective_set_copy(out, "SIGNAL // CONTRACT",
+                           "FRACTURE TARGET ASTEROID [M]");
     }
     return true;
 }
@@ -251,15 +270,16 @@ static bool objective_raw_tractor(int contract_index, const contract_t *ct,
         vec2 furnace;
         if (nearest_compatible_furnace(st, ct->commodity, &furnace) >= 0) {
             out->has_world_target = true;
+            out->target_kind = CONTRACT_OBJECTIVE_TARGET_FURNACE;
             out->world_target = furnace;
             out->world_radius = 22.0f;
-            snprintf(out->message, sizeof(out->message),
-                     "SIGNAL // CONTRACT :: TOW %s FRAGMENTS TO %s FURNACE BEAM",
-                     commodity_short_name(ct->commodity), dest);
+            objective_set_copy(out, "SIGNAL // CONTRACT",
+                               "TOW %s FRAGMENTS TO %s FURNACE BEAM",
+                               commodity_short_name(ct->commodity), dest);
         } else {
-            snprintf(out->message, sizeof(out->message),
-                     "SIGNAL // CONTRACT :: TOW %s FRAGMENTS TO COMPATIBLE FURNACE",
-                     commodity_short_name(ct->commodity));
+            objective_set_copy(out, "SIGNAL // CONTRACT",
+                               "TOW %s FRAGMENTS TO COMPATIBLE FURNACE",
+                               commodity_short_name(ct->commodity));
         }
         return true;
     }
@@ -271,17 +291,18 @@ static bool objective_raw_tractor(int contract_index, const contract_t *ct,
         out->kind = CONTRACT_OBJECTIVE_TRACTOR;
         out->quantity = (int)lroundf(available_ore);
         objective_set_job(out, "tractor");
-        objective_set_asteroid_target(out, frag);
-        snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // CONTRACT :: TRACTOR %s FRAGMENTS, THEN FURNACE BEAM",
-                 commodity_short_name(ct->commodity));
+        objective_set_asteroid_target(out, frag,
+                                      CONTRACT_OBJECTIVE_TARGET_SUGGESTED_SOURCE);
+        objective_set_copy(out, "SIGNAL // CONTRACT",
+                           "TRACTOR %s FRAGMENTS, THEN FURNACE BEAM",
+                           commodity_short_name(ct->commodity));
     } else {
         out->kind = CONTRACT_OBJECTIVE_FRACTURE;
         out->quantity = 1;
         objective_set_job(out, "fracture");
-        snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // CONTRACT :: FRACTURE %s ASTEROID FOR FURNACE FEED",
-                 commodity_short_name(ct->commodity));
+        objective_set_copy(out, "SIGNAL // CONTRACT",
+                           "FRACTURE %s ASTEROID FOR FURNACE FEED",
+                           commodity_short_name(ct->commodity));
     }
     return true;
 }
@@ -303,22 +324,26 @@ static bool objective_finished_delivery(int contract_index, const contract_t *ct
         out->kind = CONTRACT_OBJECTIVE_DELIVER;
         out->quantity = deliver;
         objective_set_job(out, "deliver");
-        objective_set_station_target(out, ct->station_index);
+        objective_set_station_target(out, ct->station_index,
+                                     CONTRACT_OBJECTIVE_TARGET_DESTINATION);
         if (LOCAL_PLAYER.docked &&
             LOCAL_PLAYER.current_station == (int)ct->station_index) {
             if (g.station_view == STATION_VIEW_WORK) {
-                snprintf(out->message, sizeof(out->message),
-                         "SIGNAL // CONTRACT :: DELIVER %s x%d TO %s [S]",
-                         commodity_short_name(ct->commodity), deliver, dest);
+                objective_set_copy(out, "SIGNAL // CONTRACT",
+                                   "DELIVER %s x%d TO %s [S]",
+                                   commodity_short_name(ct->commodity),
+                                   deliver, dest);
             } else {
-                snprintf(out->message, sizeof(out->message),
-                         "SIGNAL // CONTRACT :: DELIVER %s x%d TO %s: OPEN JOBS [TAB]",
-                         commodity_short_name(ct->commodity), deliver, dest);
+                objective_set_copy(out, "SIGNAL // CONTRACT",
+                                   "DELIVER %s x%d TO %s: OPEN JOBS [TAB]",
+                                   commodity_short_name(ct->commodity),
+                                   deliver, dest);
             }
         } else {
-            snprintf(out->message, sizeof(out->message),
-                     "SIGNAL // CONTRACT :: DELIVER %s x%d TO %s",
-                     commodity_short_name(ct->commodity), deliver, dest);
+            objective_set_copy(out, "SIGNAL // CONTRACT",
+                               "DELIVER %s x%d TO %s",
+                               commodity_short_name(ct->commodity),
+                               deliver, dest);
         }
         return true;
     }
@@ -332,10 +357,11 @@ static bool objective_finished_delivery(int contract_index, const contract_t *ct
         out->source_station = stock_station;
         out->quantity = qty;
         objective_set_job(out, "pickup");
-        objective_set_station_target(out, stock_station);
-        snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // CONTRACT :: BUY %s AT %s, DELIVER TO %s",
-                 commodity_short_name(ct->commodity), stock, dest);
+        objective_set_station_target(out, stock_station,
+                                     CONTRACT_OBJECTIVE_TARGET_SUGGESTED_SOURCE);
+        objective_set_copy(out, "SIGNAL // CONTRACT",
+                           "BUY %s AT %s, DELIVER TO %s",
+                           commodity_short_name(ct->commodity), stock, dest);
         return true;
     }
 
@@ -350,14 +376,49 @@ static bool objective_finished_delivery(int contract_index, const contract_t *ct
         char where[32];
         station_name(producer, where, sizeof(where));
         out->source_station = producer;
-        objective_set_station_target(out, producer);
-        snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // CONTRACT :: %s AT %s", upstream, where);
+        objective_set_station_target(out, producer,
+                                     CONTRACT_OBJECTIVE_TARGET_PRODUCER);
+        objective_set_copy(out, "SIGNAL // CONTRACT",
+                           "%s AT %s", upstream, where);
     } else {
-        snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // CONTRACT :: %s", upstream);
+        objective_set_copy(out, "SIGNAL // CONTRACT", "%s", upstream);
     }
     return true;
+}
+
+static int commodity_spine_priority(commodity_t commodity) {
+    switch (commodity) {
+    case COMMODITY_FERRITE_ORE:      return 0;
+    case COMMODITY_FERRITE_INGOT:    return 1;
+    case COMMODITY_FRAME:            return 2;
+    case COMMODITY_CUPRITE_ORE:      return 3;
+    case COMMODITY_CUPRITE_INGOT:    return 4;
+    case COMMODITY_LASER_MODULE:     return 5;
+    case COMMODITY_CRYSTAL_ORE:      return 6;
+    case COMMODITY_CRYSTAL_INGOT:    return 7;
+    case COMMODITY_TRACTOR_MODULE:   return 8;
+    case COMMODITY_REPAIR_KIT:       return 9;
+    default:                         return 20;
+    }
+}
+
+static bool contract_is_claimed_by_other_player(const contract_t *ct) {
+    if (!ct) return true;
+    return ct->claimed_by >= 0 && ct->claimed_by != (int8_t)LOCAL_PLAYER.id;
+}
+
+static bool player_can_fulfill_contract_now(const contract_t *ct) {
+    if (!ct || !ct->active) return false;
+    if (ct->action != CONTRACT_TRACTOR) return false;
+    if (ct->commodity < COMMODITY_RAW_ORE_COUNT)
+        return towed_matching_ore(ct) > 0.0f;
+    return contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest) > 0;
+}
+
+static bool contract_has_valid_fracture_target(const contract_t *ct) {
+    if (!ct || ct->action != CONTRACT_FRACTURE) return true;
+    int idx = ct->target_index;
+    return idx >= 0 && idx < MAX_ASTEROIDS && g.world.asteroids[idx].active;
 }
 
 bool contract_objective_for_contract(int contract_index,
@@ -391,6 +452,49 @@ bool contract_objective_for_tracked(contract_objective_t *out) {
     return contract_objective_for_contract(g.tracked_contract, out);
 }
 
+bool contract_objective_for_recommended(contract_objective_t *out) {
+    objective_reset(out);
+    int best = -1;
+    float best_score = -1.0e20f;
+    vec2 here = LOCAL_PLAYER.docked && LOCAL_PLAYER.current_station >= 0 &&
+                LOCAL_PLAYER.current_station < MAX_STATIONS
+              ? g.world.stations[LOCAL_PLAYER.current_station].pos
+              : LOCAL_PLAYER.ship.pos;
+
+    for (int i = 0; i < MAX_CONTRACTS; i++) {
+        const contract_t *ct = &g.world.contracts[i];
+        if (!ct->active) continue;
+        if (contract_is_claimed_by_other_player(ct)) continue;
+        if (!contract_has_valid_fracture_target(ct)) continue;
+
+        float score = 10000.0f - (float)commodity_spine_priority(ct->commodity) * 300.0f;
+        score += fminf(ct->age, 300.0f) * 0.25f;
+        if (ct->claimed_by == (int8_t)LOCAL_PLAYER.id) score += 5000.0f;
+        if (player_can_fulfill_contract_now(ct)) score += 6000.0f;
+        if (LOCAL_PLAYER.docked &&
+            LOCAL_PLAYER.current_station == (int)ct->station_index) {
+            score += 900.0f;
+        }
+
+        vec2 target = here;
+        if (ct->action == CONTRACT_FRACTURE &&
+            ct->target_index >= 0 && ct->target_index < MAX_ASTEROIDS) {
+            target = g.world.asteroids[ct->target_index].pos;
+        } else if (ct->station_index < MAX_STATIONS) {
+            target = g.world.stations[ct->station_index].pos;
+        }
+        score -= sqrtf(v2_dist_sq(here, target)) * 0.01f;
+
+        if (score > best_score) {
+            best_score = score;
+            best = i;
+        }
+    }
+
+    if (best < 0) return false;
+    return contract_objective_for_contract(best, out);
+}
+
 bool contract_objective_ready_upgrade(contract_objective_t *out) {
     objective_reset(out);
     if (!out || !LOCAL_PLAYER.docked) return false;
@@ -415,9 +519,9 @@ bool contract_objective_ready_upgrade(contract_objective_t *out) {
         out->active = true;
         out->kind = CONTRACT_OBJECTIVE_UPGRADE;
         objective_set_job(out, "upgrade");
-        snprintf(out->message, sizeof(out->message),
-                 "SIGNAL // UPGRADE :: %s AT DOCK %s",
-                 checks[i].label, checks[i].key);
+        objective_set_copy(out, "SIGNAL // UPGRADE",
+                           "%s AT DOCK %s",
+                           checks[i].label, checks[i].key);
         return true;
     }
 
