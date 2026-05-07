@@ -18,27 +18,26 @@
  *   [B]   1. Docked → (no action; plan mode needs undocked).
  *         2. Plan mode active → exit plan mode.
  *         3. Otherwise → enter plan mode.
- *         (Note: named-ingot buy lives on [G], NOT [B], precisely to
- *         avoid teaching the player that [B] means 'buy'.)
+ *         (Docked station tab changes are [Tab], not [B].)
  *
- *   [G]   Docked → buy first named ingot from HIGH-GRADE STOCK.
- *   [N]   Docked → deliver first named ingot from YOUR HOLD.
- *   [F]   Docked → buy primary product (float commodity).
+ *   [F]   TRADE tab → next market page.
  *
- *   [1]   STATUS/MARKET → sell cargo  |  CONTRACTS → select contract 1
- *         SHIPYARD → order scaffold 1.
- *   [2]   STATUS → repair  |  CONTRACTS/SHIPYARD → select/order 2.
- *   [3-5] STATUS → upgrade laser/hold/tractor  |  sel/order 3-5.
- *   [6-9] SHIPYARD → order scaffold 6-9 (no STATUS/MARKET meaning).
+ *   [1-5] TRADE tab → buy/sell visible row.
+ *   [1-3] JOBS tab → track/select contract row.
+ *   [1-9] SHIPYARD tab → order scaffold kit row.
+ *   [S]   TRADE tab → sell accepted cargo; JOBS tab → deliver selected
+ *         contract or all matching contract cargo.
+ *   [R]   DOCK tab → repair; plan mode → cycle module type; undocked
+ *         outside plan mode → release held tractor tow.
+ *   [M]   DOCK tab → upgrade mining laser; undocked → mining laser.
+ *   [C]   DOCK tab → upgrade cargo hold.
+ *   [H]   Hail ping + collect pending credits.
+ *   [T]   DOCK tab → upgrade tractor.
  *
  *   [X]   Undocked → self-destruct (hold 1s; single-press no longer
  *         triggers).
- *   [H]   Hail ping + collect pending credits.
  *   [O]   Any → toggle mining autopilot (signal-gated).
  *   [V]   Undocked (strong signal) → hold to talk (pilot mic to NAV-7).
- *   [R]   Plan mode → cycle module type. Outside plan mode → held-tow
- *         (tractor R).
- *   [M]   Undocked → mining laser.
  *   [P] [ ] ]   Music controls (any context).
  *   [Shift]     Undocked → boost.
  *   [Esc]       Plan mode → exit  |  Episode popup → dismiss.
@@ -457,7 +456,7 @@ static void sample_work_keys(input_intent_t *intent) {
 /* DOCK (ship bay) tab keys:
  *   [R] REPAIR
  *   [M] upgrade mining laser
- *   [H] upgrade hold capacity
+ *   [C] upgrade cargo hold capacity
  *   [T] upgrade tractor */
 static void sample_dock_keys(input_intent_t *intent) {
     if (!LOCAL_PLAYER.docked || g.station_view != STATION_VIEW_DOCK) return;
@@ -476,7 +475,7 @@ static void sample_dock_keys(input_intent_t *intent) {
         } else intent->service_repair = true;
     }
     intent->upgrade_mining  = is_key_pressed(SAPP_KEYCODE_M);
-    intent->upgrade_hold    = is_key_pressed(SAPP_KEYCODE_H);
+    intent->upgrade_hold    = is_key_pressed(SAPP_KEYCODE_C);
     intent->upgrade_tractor = is_key_pressed(SAPP_KEYCODE_T);
 }
 

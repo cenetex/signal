@@ -8,6 +8,7 @@
 #include "npc.h"
 #include "net.h"
 #include "net_sync.h"
+#include "contract_objective.h"
 #include "station_voice.h"
 #include "signal_model.h"
 #include "manifest.h"
@@ -2389,60 +2390,15 @@ void draw_towed_tethers(void) {
 
 /* --- Compass ring: navigation pips around the player ship --- */
 /* Resolve the world-space target the player should go to next for the
- * currently tracked contract. Returns true only for an actual objective:
- * a destination station/furnace or an exact fracture target. Quota-style
- * "bring any matching commodity" work intentionally does not turn into a
- * yellow ring around a random nearby rock. Hail/scan tags own discovery. */
+ * currently tracked contract. The objective module owns source/destination
+ * choice so SIGNAL text, compass pips, and the world ring cannot drift. */
 static bool resolve_tracked_contract_target(vec2 *out_pos, float *out_radius) {
-    if (g.tracked_contract < 0 || g.tracked_contract >= MAX_CONTRACTS) return false;
-    const contract_t *ct = &g.world.contracts[g.tracked_contract];
-    if (!ct->active) return false;
-
-    if (ct->action == CONTRACT_TRACTOR) {
-        if (ct->station_index >= MAX_STATIONS) return false;
-        const station_t *st = &g.world.stations[ct->station_index];
-        if (!station_is_active(st)) return false;
-
-        if (ct->commodity >= COMMODITY_RAW_ORE_COUNT) {
-            *out_pos = st->pos;
-            *out_radius = st->radius + 28.0f;
-            return true;
-        }
-
-        const ship_t *ship = &LOCAL_PLAYER.ship;
-        bool carrying = false;
-        for (int t = 0; t < ship->towed_count && !carrying; t++) {
-            int fi = ship->towed_fragments[t];
-            if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
-            const asteroid_t *a = &g.world.asteroids[fi];
-            if (a->active && a->tier == ASTEROID_TIER_S &&
-                a->commodity == ct->commodity)
-                carrying = true;
-        }
-        if (!carrying) return false;
-        if (!station_can_smelt(st, ct->commodity)) return false;
-
-        for (int m = 0; m < st->module_count; m++) {
-            if (st->modules[m].scaffold) continue;
-            if (st->modules[m].type != MODULE_FURNACE) continue;
-            *out_pos = module_world_pos_ring(st, st->modules[m].ring, st->modules[m].slot);
-            *out_radius = 22.0f;
-            return true;
-        }
-        return false;
-    }
-
-    if (ct->action == CONTRACT_FRACTURE) {
-        int idx = ct->target_index;
-        if (idx < 0 || idx >= MAX_ASTEROIDS) return false;
-        const asteroid_t *a = &g.world.asteroids[idx];
-        if (!a->active || a->tier == ASTEROID_TIER_S) return false;
-        *out_pos = a->pos;
-        *out_radius = a->radius + 32.0f;
-        return true;
-    }
-
-    return false;
+    contract_objective_t objective;
+    if (!contract_objective_for_tracked(&objective)) return false;
+    if (!objective.has_world_target) return false;
+    *out_pos = objective.world_target;
+    *out_radius = objective.world_radius;
+    return true;
 }
 
 /* In-world yellow pulsing ring at the tracked contract's current next

@@ -6,6 +6,7 @@
 #include "render.h"
 #include "palette.h"
 #include "mining_client.h"
+#include "contract_objective.h"
 #include "manifest.h"
 #include "station_authority.h"
 #include "contract_fit.h"
@@ -1466,7 +1467,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         my += row_h;
     }
 
-    /* [M] tune laser, [H] expand hold, [T] tune tractor — same grammar.
+    /* [M] tune laser, [C] expand hold, [T] tune tractor — same grammar.
      * Real cost is the modules themselves (frames / lasers / tractors
      * pulled from cargo). If cargo is short, the dock fills the gap
      * from its own inventory at retail. Any dock can install — module
@@ -1479,7 +1480,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
           ui->mining_units_at_station, ui->mining_credit_cost,
           ui->can_upgrade_mining,
           ship_upgrade_maxed(ship, SHIP_UPGRADE_MINING) },
-        { "[H] expand hold",  "hold",    "frame", "frames",
+        { "[C] expand hold",  "hold",    "frame", "frames",
           ui->hold_units_needed, ui->hold_units_in_cargo,
           ui->hold_units_at_station, ui->hold_credit_cost,
           ui->can_upgrade_hold,
@@ -1612,32 +1613,14 @@ static void draw_jobs_view(const station_ui_state_t *ui,
         snprintf(key_buf, sizeof(key_buf), "[%d]%s",
                  s + 1, tracked && !selected ? "*" : "");
 
-        /* Job column doubles as the state verb — the action the player
-         * needs to take next. FRACTURE contracts always read "fracture".
-         * TRACTOR contracts pivot based on hold + world:
-         *   - held enough                          → "deliver"
-         *   - ingot/frame (never a raw ore tow)    → "deliver"
-         *   - an S-tier fragment of this commodity
-         *     exists in the world                  → "tractor"
-         *   - no fragments yet                     → "fracture" */
-        const char *job_txt;
-        if (ct->action == CONTRACT_FRACTURE) {
-            job_txt = "fracture";
-        } else if (slot_fulfillable[s]) {
-            job_txt = "deliver";
-        } else if (ct->commodity >= COMMODITY_RAW_ORE_COUNT) {
-            /* Ingots / frames / fab goods — always the delivery verb. */
-            job_txt = "deliver";
-        } else {
-            /* Raw ore, not yet held: tractor if a matching S-tier
-             * fragment exists anywhere, else fracture. */
-            bool any_frag = false;
-            for (int i = 0; i < MAX_ASTEROIDS; i++) {
-                const asteroid_t *a = &g.world.asteroids[i];
-                if (!contract_fit_is_ok(contract_fit_fragment(ct, a))) continue;
-                any_frag = true; break;
-            }
-            job_txt = any_frag ? "tractor" : "fracture";
+        /* Job column doubles as the immediate next-step verb. The shared
+         * objective resolver also drives SIGNAL copy and world markers, so
+         * the station board cannot drift from the HUD hint. */
+        const char *job_txt = "work";
+        contract_objective_t objective;
+        if (contract_objective_for_contract(slots[s], &objective) &&
+            objective.job[0] != '\0') {
+            job_txt = objective.job;
         }
 
         if (ct->action == CONTRACT_FRACTURE) {
