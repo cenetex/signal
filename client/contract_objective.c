@@ -22,6 +22,17 @@ static void objective_set_job(contract_objective_t *out, const char *job) {
     snprintf(out->job, sizeof(out->job), "%s", job);
 }
 
+static void objective_append(char *dst, size_t cap, const char *src) {
+    if (!dst || cap == 0 || !src) return;
+    size_t len = strlen(dst);
+    if (len >= cap - 1) return;
+    size_t room = cap - len - 1;
+    size_t n = strlen(src);
+    if (n > room) n = room;
+    memcpy(dst + len, src, n);
+    dst[len + n] = '\0';
+}
+
 static void objective_set_copy(contract_objective_t *out,
                                const char *label,
                                const char *fmt, ...) {
@@ -31,8 +42,10 @@ static void objective_set_copy(contract_objective_t *out,
     va_start(args, fmt);
     vsnprintf(out->body, sizeof(out->body), fmt, args);
     va_end(args);
-    snprintf(out->message, sizeof(out->message), "%s :: %s",
-             out->label, out->body);
+    out->message[0] = '\0';
+    objective_append(out->message, sizeof(out->message), out->label);
+    objective_append(out->message, sizeof(out->message), " :: ");
+    objective_append(out->message, sizeof(out->message), out->body);
 }
 
 static void objective_set_station_target(contract_objective_t *out,
