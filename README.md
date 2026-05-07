@@ -65,10 +65,12 @@ generated from station need, and hail displays stored station text.
 
 Press `H` while undocked in strong signal coverage to collect pending supplier
 credits and show the nearest station's hail message. Starter stations ship with
-static hail text, and fetched CDN MOTDs can override that copy at runtime.
+static hail text, and operator-authored station copy is signed into the
+station chain before it is broadcast to clients.
 
-Daily external planning, per-band hail variants, and richer AI station
-operators are planned, but they are not implemented in this repository today.
+Station operators can set the MOTD, miner/hauler chatter, and special RATi-grade
+delivery hail. See [`docs/operator-onboarding.md`](docs/operator-onboarding.md)
+for the `swarm.rati.chat` avatar sync workflow.
 
 ## Controls
 

@@ -95,10 +95,10 @@ def main():
     ap.add_argument("--coverage", required=True, help="gcovr --json output file")
     ap.add_argument("--threshold", type=float, default=30.0)
     ap.add_argument("--top", type=int, default=50)
-    ap.add_argument("--paths", nargs="+", default=["server", "src", "shared"])
+    ap.add_argument("--paths", nargs="+", default=["server", "client", "shared"])
     ap.add_argument("--exclude", nargs="*", default=[
         "server/mongoose.c", "server/mongoose.h",
-        "src/stb_image.h", "src/pl_mpeg.h", "src/minimp3.h",
+        "client/stb_image.h", "client/pl_mpeg.h", "client/minimp3.h",
     ], help="file paths to drop from the report (vendored code by default)")
     ap.add_argument("--fail-on-exceed", action="store_true",
                     help="exit 1 if any function exceeds threshold")

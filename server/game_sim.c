@@ -5171,7 +5171,7 @@ static void emit_operator_post(world_t *w, station_t *st,
  * Tier 2 (rare, 20–50%): real station lore.
  * Tier 3 (ultra_rare, 0–20%): cryptic, in genre. Far from signal.
  *
- * Voice direction lives in src/station_voice.h; tone here matches the
+ * Voice direction lives in client/station_voice.h; tone here matches the
  * three starter stations' established personalities. */
 static const char *const DEFAULT_STATION_TIER_TEXT[3][4] = {
     /* Prospect Refinery (0) — pragmatic, tired, notices everything. */
@@ -5346,6 +5346,12 @@ void world_reset(world_t *w) {
     snprintf(w->stations[0].currency_name, sizeof(w->stations[0].currency_name), "prospect vouchers");
     snprintf(w->stations[0].hail_message, sizeof(w->stations[0].hail_message),
              "Prospect Refinery. Ferrite smelting. Tow fragments to the furnace.");
+    snprintf(w->stations[0].miner_chatter[0], sizeof(w->stations[0].miner_chatter[0]), "Prospect says keep it small.");
+    snprintf(w->stations[0].miner_chatter[1], sizeof(w->stations[0].miner_chatter[1]), "Furnace wants ferrite.");
+    snprintf(w->stations[0].hauler_chatter[0], sizeof(w->stations[0].hauler_chatter[0]), "Prospect load secured.");
+    snprintf(w->stations[0].hauler_chatter[1], sizeof(w->stations[0].hauler_chatter[1]), "Tow line clean.");
+    snprintf(w->stations[0].rati_hail_message, sizeof(w->stations[0].rati_hail_message),
+             "RATi-grade ore confirmed. Prospect has your signature on the log.");
 
     w->stations[1].id = w->next_station_id++;
     snprintf(w->stations[1].name, sizeof(w->stations[1].name), "%s", "Kepler Yard");
@@ -5384,6 +5390,12 @@ void world_reset(world_t *w) {
     snprintf(w->stations[1].currency_name, sizeof(w->stations[1].currency_name), "kepler bonds");
     snprintf(w->stations[1].hail_message, sizeof(w->stations[1].hail_message),
              "Kepler Yard. Fabrication and scaffold kits. Build the frontier.");
+    snprintf(w->stations[1].miner_chatter[0], sizeof(w->stations[1].miner_chatter[0]), "Kepler wants clean ingots.");
+    snprintf(w->stations[1].miner_chatter[1], sizeof(w->stations[1].miner_chatter[1]), "Frame stock running low.");
+    snprintf(w->stations[1].hauler_chatter[0], sizeof(w->stations[1].hauler_chatter[0]), "Frames inbound.");
+    snprintf(w->stations[1].hauler_chatter[1], sizeof(w->stations[1].hauler_chatter[1]), "Yard manifest updated.");
+    snprintf(w->stations[1].rati_hail_message, sizeof(w->stations[1].rati_hail_message),
+             "That RATi ore just made the yard stop talking. Logged and paid.");
 
     w->stations[2].id = w->next_station_id++;
     snprintf(w->stations[2].name, sizeof(w->stations[2].name), "%s", "Helios Works");
@@ -5438,6 +5450,12 @@ void world_reset(world_t *w) {
     snprintf(w->stations[2].currency_name, sizeof(w->stations[2].currency_name), "helios credits");
     snprintf(w->stations[2].hail_message, sizeof(w->stations[2].hail_message),
              "Helios Works. Advanced smelting. Copper and crystal refined here.");
+    snprintf(w->stations[2].miner_chatter[0], sizeof(w->stations[2].miner_chatter[0]), "Helios wants premium ore.");
+    snprintf(w->stations[2].miner_chatter[1], sizeof(w->stations[2].miner_chatter[1]), "Director is watching yields.");
+    snprintf(w->stations[2].hauler_chatter[0], sizeof(w->stations[2].hauler_chatter[0]), "Helios shipment bright.");
+    snprintf(w->stations[2].hauler_chatter[1], sizeof(w->stations[2].hauler_chatter[1]), "Prestige cargo inbound.");
+    snprintf(w->stations[2].rati_hail_message, sizeof(w->stations[2].rati_hail_message),
+             "RATi-grade delivery received. Helios will remember the callsign.");
     w->station_count = 3; /* 3 starter stations */
 
     /* Genesis MOTD + tier events used to be emitted here, but doing so

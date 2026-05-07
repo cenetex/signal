@@ -5,9 +5,14 @@
 
 set -euo pipefail
 
-API_BASE="https://staging-swarm.rati.chat/api/v1"
-API_KEY="${SWARM_API_KEY:-sk-rati--hO4iZYH3jj4DhjiWfEJPeAjrdDdhJCR13LuJzPjRuQ}"
+API_BASE="${SWARM_API_BASE:-https://swarm.rati.chat/api/v1}"
+API_KEY="${SWARM_API_KEY:-}"
 S3_BUCKET="signal-ratimics-assets"
+
+if [ -z "$API_KEY" ]; then
+  echo "SWARM_API_KEY is required; refusing to use a repo-embedded fallback secret." >&2
+  exit 1
+fi
 
 # Tier-specific prompts
 PROMPTS=(

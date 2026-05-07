@@ -8,7 +8,7 @@
  * faster batch verify), only signal_crypto_<backend>.c changes.
  *
  * Layer A.1 of the off-chain decentralization roadmap (#479) — see
- * src/identity.[ch] for the on-disk player identity that uses this.
+ * client/identity.[ch] for the on-disk player identity that uses this.
  */
 #ifndef SHARED_SIGNAL_CRYPTO_H
 #define SHARED_SIGNAL_CRYPTO_H

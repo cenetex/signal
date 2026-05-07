@@ -8,7 +8,7 @@
  *       server/sim_autopilot.c server/sim_flight.c server/sim_ai.c \
  *       server/sim_nav.c server/sim_save.c server/sim_asteroid.c \
  *       server/sim_physics.c server/sim_production.c server/sim_construction.c \
- *       src/commodity.c src/ship.c src/economy.c src/asteroid.c src/rng.c \
+ *       shared/commodity.c shared/ship.c shared/economy.c shared/asteroid.c shared/rng.c \
  *       -Ishared -Isrc -Iserver -lm
  *
  *   ./autopilot_eval [num_ships] [seconds]

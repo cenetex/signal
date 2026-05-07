@@ -17,7 +17,7 @@ IGNORED_VENDORS=$(grep -E "^vendor/" .dockerignore | sed 's|vendor/||;s|/||' | s
 # Find all #include "vendor/..." and #include "../vendor/..." in server code
 INCLUDED_VENDORS=$(
   {
-    grep -rh '#include.*vendor' server/ shared/ src/ --include="*.c" --include="*.h" 2>/dev/null || true
+    grep -rh '#include.*vendor' server/ shared/ client/ --include="*.c" --include="*.h" 2>/dev/null || true
   } | sed 's|.*vendor/||;s|/.*||' | sort -u
 )
 

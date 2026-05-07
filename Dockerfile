@@ -18,7 +18,7 @@
 
 # GIT_HASH ARG — passed in by docker-compose build args (computed by the
 # host's git). Falls back to "local" when no arg is provided.
-# Reading it via `git -C /src` inside the container hits caching weirdness
+# Reading it via `git -C /workspace` inside the container hits caching weirdness
 # on bind-mounted .git dirs on macOS/podman, so we accept it as a build
 # arg instead.
 ARG GIT_HASH=local
@@ -26,12 +26,12 @@ ARG GIT_HASH=local
 # ----- stage 1: wasm build --------------------------------------------------
 FROM emscripten/emsdk:3.1.64 AS wasm-build
 ARG GIT_HASH
-WORKDIR /src
+WORKDIR /workspace
 RUN apt-get update && apt-get install -y --no-install-recommends cmake \
     && rm -rf /var/lib/apt/lists/*
-COPY . /src
-RUN emcmake cmake -S /src -B /src/build-web -DGIT_HASH=${GIT_HASH:-local} \
-    && cmake --build /src/build-web --parallel
+COPY . /workspace
+RUN emcmake cmake -S /workspace -B /workspace/build-web -DGIT_HASH=${GIT_HASH:-local} \
+    && cmake --build /workspace/build-web --parallel
 
 # ----- stage 2: runtime (native server build happens here) -----------------
 # Build the native server in the runtime image's own arch so it runs
@@ -51,22 +51,22 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && rm -rf /var/lib/apt/lists/*
 
 # Compile signal_server in this stage so it's native arch. GIT_HASH comes
-# from the build-arg (host's git), not from `git -C /src` — bind-mounted
+# from the build-arg (host's git), not from `git -C /workspace` — bind-mounted
 # .git on macOS/podman caches inconsistently.
-COPY . /src
-RUN cmake -S /src -B /src/build -DBUILD_SERVER_ONLY=ON -DGIT_HASH=${GIT_HASH:-local} \
-    && cmake --build /src/build --target signal_server --parallel \
-    && cp /src/build/signal_server /app/signal_server \
-    && rm -rf /src
+COPY . /workspace
+RUN cmake -S /workspace -B /workspace/build -DBUILD_SERVER_ONLY=ON -DGIT_HASH=${GIT_HASH:-local} \
+    && cmake --build /workspace/build --target signal_server --parallel \
+    && cp /workspace/build/signal_server /app/signal_server \
+    && rm -rf /workspace
 
-COPY --from=wasm-build /src/build-web /app/build-web
+COPY --from=wasm-build /workspace/build-web /app/build-web
 # Ship the play/shell wrappers alongside the emscripten bundle. These set
 # window.SIGNAL_SERVER = ws://<host>:9091/ws when served from a local
 # host, so the wasm client connects to the in-container server instead
 # of falling into singleplayer ("offline"). Without these, opening
 # /signal.html directly bypasses the WS autoconfig.
-COPY --from=wasm-build /src/web/play.html  /app/build-web/play.html
-COPY --from=wasm-build /src/web/shell.html /app/build-web/shell.html
+COPY --from=wasm-build /workspace/web/play.html  /app/build-web/play.html
+COPY --from=wasm-build /workspace/web/shell.html /app/build-web/shell.html
 
 # Persistence dirs (world.sav, chain/, saves/, stations/). Bind a host dir
 # to /app/data via `docker run -v $(pwd)/data:/app/data` to make them

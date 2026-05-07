@@ -731,6 +731,38 @@ static inline int serialize_station_identity(uint8_t *buf, int index, const stat
         }
         moff += STATION_PENDING_SCAFFOLD_RECORD_SIZE;
     }
+    /* Operator-authored text trailers. Hail/MOTD is the normal station
+     * response. Chatter arrays are station-specific NPC speech lines.
+     * RATi hail is shown when the local player delivers RATi+ ore. */
+    memset(&buf[moff], 0, STATION_IDENTITY_HAIL_MESSAGE_LEN);
+    {
+        size_t n = strlen(st->hail_message);
+        if (n > STATION_IDENTITY_HAIL_MESSAGE_LEN - 1) n = STATION_IDENTITY_HAIL_MESSAGE_LEN - 1;
+        memcpy(&buf[moff], st->hail_message, n);
+    }
+    moff += STATION_IDENTITY_HAIL_MESSAGE_LEN;
+    for (int i = 0; i < STATION_IDENTITY_CHATTER_LINES; i++) {
+        memset(&buf[moff], 0, STATION_IDENTITY_CHATTER_LINE_LEN);
+        size_t n = strlen(st->miner_chatter[i]);
+        if (n > STATION_IDENTITY_CHATTER_LINE_LEN - 1) n = STATION_IDENTITY_CHATTER_LINE_LEN - 1;
+        memcpy(&buf[moff], st->miner_chatter[i], n);
+        moff += STATION_IDENTITY_CHATTER_LINE_LEN;
+    }
+    for (int i = 0; i < STATION_IDENTITY_CHATTER_LINES; i++) {
+        memset(&buf[moff], 0, STATION_IDENTITY_CHATTER_LINE_LEN);
+        size_t n = strlen(st->hauler_chatter[i]);
+        if (n > STATION_IDENTITY_CHATTER_LINE_LEN - 1) n = STATION_IDENTITY_CHATTER_LINE_LEN - 1;
+        memcpy(&buf[moff], st->hauler_chatter[i], n);
+        moff += STATION_IDENTITY_CHATTER_LINE_LEN;
+    }
+    memset(&buf[moff], 0, STATION_IDENTITY_RATI_HAIL_LEN);
+    {
+        size_t n = strlen(st->rati_hail_message);
+        if (n > STATION_IDENTITY_RATI_HAIL_LEN - 1) n = STATION_IDENTITY_RATI_HAIL_LEN - 1;
+        memcpy(&buf[moff], st->rati_hail_message, n);
+    }
+    moff += STATION_IDENTITY_RATI_HAIL_LEN;
+
     /* Currency name trailer — 32 bytes, zero-padded. Empty → client
      * shows "credits". AI-editable via /api/station/<id>/command. */
     memset(&buf[moff], 0, STATION_IDENTITY_CURRENCY_NAME_LEN);

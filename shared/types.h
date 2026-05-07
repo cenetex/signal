@@ -23,7 +23,7 @@
  * a tuning change. File it against #285 instead of editing here.
  *
  * Do NOT raise MAX_NPC_SHIPS or MAX_SCAFFOLDS without a paired
- * wire-protocol bump and a deserializer change in src/net.c.
+ * wire-protocol bump and a deserializer change in client/net.c.
  * MAX_STATIONS lifted to 64 (#285 Phase 1). MAX_ASTEROIDS lifted
  * to 2048 (#285 Phase 3) with uint16 wire indices.
  */
@@ -383,6 +383,9 @@ typedef struct {
                                        * legacy; new stations leave at 0 and let
                                        * spoke dynamics determine relative phase. */
     char hail_message[256];           /* AI-authored station message of the day */
+    char miner_chatter[8][64];        /* station-authored short miner lines */
+    char hauler_chatter[8][64];       /* station-authored short hauler lines */
+    char rati_hail_message[256];      /* special hail when local player delivers RATi+ ore */
     char station_slug[32];            /* URL slug for CDN assets (e.g. "prospect") */
     char currency_name[32];           /* station-local currency label, e.g. "helios credits".
                                        * Empty string → HUD falls back to "credits". */

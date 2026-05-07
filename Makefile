@@ -138,8 +138,8 @@ CRAP_TESTED_PATHS := server/game_sim.c server/sim_ai.c server/sim_autopilot.c \
 	server/sim_flight.c server/sim_nav.c server/sim_save.c \
 	server/sim_catalog.c server/sim_asteroid.c server/sim_physics.c \
 	server/sim_production.c server/sim_construction.c \
-	src/commodity.c src/manifest.c src/ship.c src/economy.c \
-	src/asteroid.c src/rng.c shared
+	shared/commodity.c shared/manifest.c shared/ship.c shared/economy.c \
+	shared/asteroid.c shared/rng.c shared
 
 crap:
 	cmake -S . -B build-coverage -DCMAKE_BUILD_TYPE=Debug -DBUILD_TESTS_ONLY=ON \
@@ -149,11 +149,11 @@ crap:
 	find build-coverage -name '*.gcda' -delete
 	ulimit -s 16384 && ./build-coverage/signal_test --quiet --no-soak
 	gcovr -r . --json coverage.json --gcov-ignore-parse-errors \
-		--filter 'server/.*' --filter 'src/.*' --filter 'shared/.*' \
+		--filter 'server/.*' --filter 'client/.*' --filter 'shared/.*' \
 		--exclude 'server/mongoose\..*' \
-		--exclude 'src/stb_image\.h' \
-		--exclude 'src/pl_mpeg\.h' \
-		--exclude 'src/minimp3\.h' \
+		--exclude 'client/stb_image\.h' \
+		--exclude 'client/pl_mpeg\.h' \
+		--exclude 'client/minimp3\.h' \
 		build-coverage
 	python3 scripts/crap.py --coverage coverage.json \
 		--paths $(CRAP_TESTED_PATHS) \
@@ -172,7 +172,7 @@ profile-machine:
 # For client-only iteration (HUD, input, render — anything that
 # doesn't need a server) use the offline native build instead:
 #   make build && ./build/signal
-# That path uses the embedded singleplayer server in src/local_server.c.
+# That path uses the embedded singleplayer server in client/local_server.c.
 dev:
 	@mkdir -p data
 	docker compose up --build -d

@@ -47,7 +47,8 @@ static uint32_t crc32_file(FILE *f) {
 }
 
 #define CATALOG_MAGIC   0x53544E43  /* "STNC" */
-#define CATALOG_VERSION 5  /* v5: repair Helios smelter ore/furnace adjacency.
+#define CATALOG_VERSION 6  /* v6: station-authored NPC/RATi hail text.
+                            * v5: repair Helios smelter ore/furnace adjacency.
                             * v4: repair Helios seed to include shipyard + frame hopper.
                             * v3: per-module commodity tag (hopper specialization). */
 
@@ -217,6 +218,9 @@ bool station_catalog_save(const station_t *st, int index, const char *dir) {
 
     /* Hail message + slug */
     WRITE_FIELD(f, st->hail_message);
+    WRITE_FIELD(f, st->miner_chatter);
+    WRITE_FIELD(f, st->hauler_chatter);
+    WRITE_FIELD(f, st->rati_hail_message);
     WRITE_FIELD(f, st->station_slug);
 
     /* CRC32 trailer — close and reopen to ensure all data is on disk */
@@ -310,6 +314,11 @@ static bool station_catalog_load_one(station_t *st, int index, const char *dir) 
 
     /* Hail message + slug */
     READ_FIELD(f, st->hail_message);
+    if (ver >= 6) {
+        READ_FIELD(f, st->miner_chatter);
+        READ_FIELD(f, st->hauler_chatter);
+        READ_FIELD(f, st->rati_hail_message);
+    }
     READ_FIELD(f, st->station_slug);
 
     /* Verify CRC32 trailer */

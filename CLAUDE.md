@@ -43,8 +43,8 @@ cmake --build build-test
 
 ## Architecture
 
-- **Client / server split**, not a single file anymore. `src/` is the client (render, HUD, input, net, audio, episodes). `server/` is the authoritative sim (physics, production, AI, save, construction). `shared/` holds the wire protocol, types, module schema, and economy constants used by both.
-- **Singleplayer** runs the server in-process (`src/local_server.c`). Multiplayer uses the same sim over WebSocket (`server/main.c` with `mongoose`). Sim is fixed-step at `120 Hz`.
+- **Client / server split**, not a single file anymore. `client/` is the client (render, HUD, input, net, audio, episodes). `server/` is the authoritative sim (physics, production, AI, save, construction). `shared/` holds the wire protocol, types, module schema, and economy constants used by both.
+- **Singleplayer** runs the server in-process (`client/local_server.c`). Multiplayer uses the same sim over WebSocket (`server/main.c` with `mongoose`). Sim is fixed-step at `120 Hz`.
 - **Rendering** is procedural `sokol_gl` + `sokol_debugtext` for world and HUD. Avatars use `stb_image`; episode cutscenes decode MP4 via `pl_mpeg`; music decodes MP3 via `minimp3`. So: geometry is assetless, but audio + avatars + cutscenes ship as assets under `assets/`.
 
 ## Gameplay Loop

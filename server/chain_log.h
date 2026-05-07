@@ -10,7 +10,7 @@
  * altered after the fact.
  *
  * This is deliberately separate from the player-input signed-action
- * machinery in src/identity.c (#479 A.3) — that protects player
+ * machinery in client/identity.c (#479 A.3) — that protects player
  * intent against replay; this protects the world's *recorded history*
  * against tampering by the server operator.
  *
@@ -145,7 +145,8 @@ typedef struct {
                                * 4=WORLD_INFO (text = belt_seed:u32 LE || world_seq:u32 LE
                                *               || build SHA hex; pre-v52 emits omit world_seq
                                *               and the parser defaults it to 0),
-                               * reserved 5-255 */
+                               * 5=MINER_CHATTER, 6=HAULER_CHATTER, 7=RATI_DELIVERY,
+                               * reserved 8-255 */
     uint8_t  tier;            /* for kind=RARITY_TIER: 0=common,1=uncommon,2=rare,3=ultra */
     uint16_t ref_id;          /* contract id, motd seed, etc. — kind-specific */
     uint8_t  text_sha256[32]; /* SHA-256 of UTF-8 text bytes */
@@ -153,6 +154,17 @@ typedef struct {
     uint8_t  text[];          /* UTF-8, exact length text_len, no NUL terminator */
 } SIGNAL_PACKED chain_payload_operator_post_t;
 SIGNAL_PACK_POP
+
+typedef enum {
+    OPERATOR_POST_HAIL_MOTD      = 0,
+    OPERATOR_POST_CONTRACT_FLAVOR= 1,
+    OPERATOR_POST_RARITY_TIER    = 2,
+    OPERATOR_POST_BUILD_INFO     = 3,
+    OPERATOR_POST_WORLD_INFO     = 4,
+    OPERATOR_POST_MINER_CHATTER  = 5,
+    OPERATOR_POST_HAULER_CHATTER = 6,
+    OPERATOR_POST_RATI_DELIVERY  = 7,
+} operator_post_kind_t;
 
 /* Fragment-tow event: a player has taken possession of a fragment via
  * tractor. tower_player_pub is the tower's identity pubkey; for
