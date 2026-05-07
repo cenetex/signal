@@ -26,18 +26,18 @@ void draw_segment_batched(vec2 start, vec2 end, float r, float g0, float b, floa
 /* Precomputed sin/cos for common circle segment counts.
  * 64 covers all LOD tiers including medium-distance asteroids. */
 #define SINCOS_TABLE_MAX 64
-static float sincos_table_sin[SINCOS_TABLE_MAX + 1];
-static float sincos_table_cos[SINCOS_TABLE_MAX + 1];
-static int sincos_table_segs = 0;
+static float sincos_table_sin[SINCOS_TABLE_MAX + 1][SINCOS_TABLE_MAX + 1];
+static float sincos_table_cos[SINCOS_TABLE_MAX + 1][SINCOS_TABLE_MAX + 1];
+static bool sincos_table_valid[SINCOS_TABLE_MAX + 1];
 
 static void ensure_sincos_table(int segments) {
-    if (segments == sincos_table_segs || segments > SINCOS_TABLE_MAX) return;
-    sincos_table_segs = segments;
+    if (segments > SINCOS_TABLE_MAX || sincos_table_valid[segments]) return;
+    sincos_table_valid[segments] = true;
     float step = TWO_PI_F / (float)segments;
     for (int i = 0; i <= segments; i++) {
         float angle = (float)i * step;
-        sincos_table_sin[i] = sinf(angle);
-        sincos_table_cos[i] = cosf(angle);
+        sincos_table_sin[segments][i] = sinf(angle);
+        sincos_table_cos[segments][i] = cosf(angle);
     }
 }
 
@@ -48,11 +48,11 @@ void draw_circle_filled(vec2 center, float radius, int segments, float r, float 
     sgl_begin_triangles();
     if (segments <= SINCOS_TABLE_MAX) {
         ensure_sincos_table(segments);
-        float prev_cx = center.x + sincos_table_cos[0] * radius;
-        float prev_cy = center.y + sincos_table_sin[0] * radius;
+        float prev_cx = center.x + sincos_table_cos[segments][0] * radius;
+        float prev_cy = center.y + sincos_table_sin[segments][0] * radius;
         for (int i = 1; i <= segments; i++) {
-            float cx = center.x + sincos_table_cos[i] * radius;
-            float cy = center.y + sincos_table_sin[i] * radius;
+            float cx = center.x + sincos_table_cos[segments][i] * radius;
+            float cy = center.y + sincos_table_sin[segments][i] * radius;
             sgl_v2f(center.x, center.y);
             sgl_v2f(prev_cx, prev_cy);
             sgl_v2f(cx, cy);
@@ -85,7 +85,7 @@ void draw_circle_outline(vec2 center, float radius, int segments, float r, float
     if (segments <= SINCOS_TABLE_MAX) {
         ensure_sincos_table(segments);
         for (int i = 0; i <= segments; i++) {
-            sgl_v2f(center.x + sincos_table_cos[i] * radius, center.y + sincos_table_sin[i] * radius);
+            sgl_v2f(center.x + sincos_table_cos[segments][i] * radius, center.y + sincos_table_sin[segments][i] * radius);
         }
     } else {
         float step = TWO_PI_F / (float)segments;

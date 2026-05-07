@@ -66,6 +66,39 @@ void grade_tint(uint8_t grade, float *r, float *g, float *b) {
     *b = (float)bb / 255.0f;
 }
 
+typedef struct {
+    int s_tier[MAX_ASTEROIDS];
+    int s_tier_count;
+    int smelting[MAX_ASTEROIDS];
+    int smelting_count;
+} asteroid_render_lists_t;
+
+static asteroid_render_lists_t g_asteroid_render_lists;
+static bool g_asteroid_render_lists_valid = false;
+
+void world_draw_begin_frame(void) {
+    g_asteroid_render_lists_valid = false;
+}
+
+static const asteroid_render_lists_t *asteroid_render_lists(void) {
+    if (g_asteroid_render_lists_valid) return &g_asteroid_render_lists;
+
+    g_asteroid_render_lists.s_tier_count = 0;
+    g_asteroid_render_lists.smelting_count = 0;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &g.world.asteroids[i];
+        if (!a->active) continue;
+        if (a->tier == ASTEROID_TIER_S) {
+            g_asteroid_render_lists.s_tier[g_asteroid_render_lists.s_tier_count++] = i;
+        }
+        if (a->smelt_progress >= 0.05f) {
+            g_asteroid_render_lists.smelting[g_asteroid_render_lists.smelting_count++] = i;
+        }
+    }
+    g_asteroid_render_lists_valid = true;
+    return &g_asteroid_render_lists;
+}
+
 float asteroid_profile(const asteroid_t* asteroid, float angle) {
     /* Polar-profile silhouettes for ferrite (lumpy round) and cuprite
      * (six-sided hex crystal). Crystal-ore asteroids do NOT use this
@@ -199,20 +232,100 @@ void draw_background(vec2 camera) {
 /* Signal border rendering — union-of-circles arc clipping            */
 /* ------------------------------------------------------------------ */
 
-void draw_signal_borders(void) {
-    /* S(p) >= t iff p is inside any circle of radius R_i*(1-t).
-     * The contour is the boundary of the union of those circles.
-     * For each station, draw only the arc NOT inside another circle.
-     * Exact geometry — perfectly smooth, no grid, no sampling. */
+typedef struct {
+    float threshold;
+    float r, g, b, a;
+    float width;
+} signal_border_band_t;
 
-    static const struct { float threshold; float r, g, b, a; float width; } bands[] = {
-        { SIGNAL_BAND_OPERATIONAL, 0.12f, 0.22f, 0.45f, 0.18f, 3.0f },
-        { SIGNAL_BAND_FRINGE,     0.45f, 0.28f, 0.08f, 0.15f, 2.5f },
-        { SIGNAL_BAND_FRONTIER,   0.42f, 0.10f, 0.08f, 0.12f, 2.0f },
-    };
+static const signal_border_band_t SIGNAL_BORDER_BANDS[] = {
+    { SIGNAL_BAND_OPERATIONAL, 0.12f, 0.22f, 0.45f, 0.18f, 3.0f },
+    { SIGNAL_BAND_FRINGE,     0.45f, 0.28f, 0.08f, 0.15f, 2.5f },
+    { SIGNAL_BAND_FRONTIER,   0.42f, 0.10f, 0.08f, 0.12f, 2.0f },
+};
 
-    const int SEGS = 180;
-    const float STEP = TWO_PI_F / (float)SEGS;
+enum {
+    SIGNAL_BORDER_BAND_COUNT = (int)(sizeof(SIGNAL_BORDER_BANDS) / sizeof(SIGNAL_BORDER_BANDS[0])),
+    SIGNAL_BORDER_SEGS = 180,
+    SIGNAL_BORDER_MAX_STRIPS = SIGNAL_BORDER_BAND_COUNT * MAX_STATIONS * (SIGNAL_BORDER_SEGS + 1),
+    SIGNAL_BORDER_MAX_VERTS = SIGNAL_BORDER_MAX_STRIPS * 2,
+};
+
+typedef struct {
+    bool provides;
+    float x, y, range;
+} signal_border_source_t;
+
+typedef struct {
+    uint32_t first;
+    uint32_t count;
+    uint8_t band;
+    float x, y, radius;
+} signal_border_strip_t;
+
+static struct {
+    bool valid;
+    bool trig_ready;
+    signal_border_source_t sources[MAX_STATIONS];
+    float sin_lut[SIGNAL_BORDER_SEGS + 1];
+    float cos_lut[SIGNAL_BORDER_SEGS + 1];
+    vec2 verts[SIGNAL_BORDER_MAX_VERTS];
+    signal_border_strip_t strips[SIGNAL_BORDER_MAX_STRIPS];
+    uint32_t vert_count;
+    uint32_t strip_count;
+} g_signal_border_cache;
+
+static void signal_border_ensure_trig(void) {
+    if (g_signal_border_cache.trig_ready) return;
+    float step = TWO_PI_F / (float)SIGNAL_BORDER_SEGS;
+    for (int i = 0; i <= SIGNAL_BORDER_SEGS; i++) {
+        float a = (float)(i % SIGNAL_BORDER_SEGS) * step;
+        g_signal_border_cache.sin_lut[i] = sinf(a);
+        g_signal_border_cache.cos_lut[i] = cosf(a);
+    }
+    g_signal_border_cache.trig_ready = true;
+}
+
+static bool signal_border_sources_changed(signal_border_source_t current[MAX_STATIONS]) {
+    bool changed = !g_signal_border_cache.valid;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &g.world.stations[s];
+        current[s].provides = station_provides_signal(st);
+        current[s].x = current[s].provides ? st->pos.x : 0.0f;
+        current[s].y = current[s].provides ? st->pos.y : 0.0f;
+        current[s].range = current[s].provides ? st->signal_range : 0.0f;
+        if (!g_signal_border_cache.valid) continue;
+        const signal_border_source_t *prev = &g_signal_border_cache.sources[s];
+        if (prev->provides != current[s].provides ||
+            prev->x != current[s].x ||
+            prev->y != current[s].y ||
+            prev->range != current[s].range) {
+            changed = true;
+        }
+    }
+    return changed;
+}
+
+static void signal_border_finish_strip(uint8_t band, float x, float y, float radius,
+                                       uint32_t first, uint32_t count) {
+    if (count < 4 || g_signal_border_cache.strip_count >= SIGNAL_BORDER_MAX_STRIPS)
+        return;
+    signal_border_strip_t *strip =
+        &g_signal_border_cache.strips[g_signal_border_cache.strip_count++];
+    strip->first = first;
+    strip->count = count;
+    strip->band = band;
+    strip->x = x;
+    strip->y = y;
+    strip->radius = radius;
+}
+
+static void signal_border_rebuild_cache(const signal_border_source_t sources[MAX_STATIONS]) {
+    signal_border_ensure_trig();
+    g_signal_border_cache.vert_count = 0;
+    g_signal_border_cache.strip_count = 0;
+
+    memcpy(g_signal_border_cache.sources, sources, sizeof(g_signal_border_cache.sources));
 
     /* Overlap boost for the drawn contour. Matches the server's signal
      * strength rule (server/game_sim.c:signal_strength_raw): at points
@@ -228,74 +341,118 @@ void draw_signal_borders(void) {
     int station_overlap[MAX_STATIONS];
     for (int s = 0; s < MAX_STATIONS; s++) {
         station_overlap[s] = 1;
-        if (!station_provides_signal(&g.world.stations[s])) continue;
-        float r_s = g.world.stations[s].signal_range;
+        if (!sources[s].provides) continue;
+        float r_s = sources[s].range;
         for (int o = 0; o < MAX_STATIONS; o++) {
             if (o == s) continue;
-            if (!station_provides_signal(&g.world.stations[o])) continue;
-            float r_o = g.world.stations[o].signal_range;
-            float dx = g.world.stations[s].pos.x - g.world.stations[o].pos.x;
-            float dy = g.world.stations[s].pos.y - g.world.stations[o].pos.y;
+            if (!sources[o].provides) continue;
+            float r_o = sources[o].range;
+            float dx = sources[s].x - sources[o].x;
+            float dy = sources[s].y - sources[o].y;
             float reach = r_s + r_o;
             if (dx * dx + dy * dy < reach * reach) station_overlap[s]++;
         }
         if (station_overlap[s] > 3) station_overlap[s] = 3;
     }
 
-    for (int band = 0; band < 3; band++) {
-        float thr = bands[band].threshold;
-        float hw = bands[band].width;
+    for (int band = 0; band < SIGNAL_BORDER_BAND_COUNT; band++) {
+        float thr = SIGNAL_BORDER_BANDS[band].threshold;
+        float hw = SIGNAL_BORDER_BANDS[band].width;
 
         float radii[MAX_STATIONS];
+        float radii_sq[MAX_STATIONS];
         for (int s = 0; s < MAX_STATIONS; s++) {
-            if (!station_provides_signal(&g.world.stations[s])) {
+            if (!sources[s].provides) {
                 radii[s] = 0.0f;
+                radii_sq[s] = 0.0f;
                 continue;
             }
             float boost = (float)station_overlap[s];
             float effective_thr = thr / boost;    /* boost reduces the per-station needed strength */
             if (effective_thr > 1.0f) effective_thr = 1.0f;
-            radii[s] = g.world.stations[s].signal_range * (1.0f - effective_thr);
+            radii[s] = sources[s].range * (1.0f - effective_thr);
+            radii_sq[s] = radii[s] * radii[s];
         }
 
         for (int s = 0; s < MAX_STATIONS; s++) {
             if (radii[s] <= 0.0f) continue;
-            const station_t *st = &g.world.stations[s];
             float r = radii[s];
-            if (!on_screen(st->pos.x, st->pos.y, r)) continue;
 
-            sgl_begin_triangle_strip();
-            sgl_c4f(bands[band].r, bands[band].g, bands[band].b, bands[band].a);
             bool active = false;
+            uint32_t first = 0;
 
-            for (int i = 0; i <= SEGS; i++) {
-                float a = (float)(i % SEGS) * STEP;
-                float ca = cosf(a), sa = sinf(a);
-                float px = st->pos.x + ca * r;
-                float py = st->pos.y + sa * r;
+            for (int i = 0; i <= SIGNAL_BORDER_SEGS; i++) {
+                float ca = g_signal_border_cache.cos_lut[i];
+                float sa = g_signal_border_cache.sin_lut[i];
+                float px = sources[s].x + ca * r;
+                float py = sources[s].y + sa * r;
 
                 /* Clip: skip if inside another station's circle */
                 bool clipped = false;
                 for (int o = 0; o < MAX_STATIONS; o++) {
                     if (o == s || radii[o] <= 0.0f) continue;
-                    float dx = px - g.world.stations[o].pos.x;
-                    float dy = py - g.world.stations[o].pos.y;
-                    if (dx*dx + dy*dy < radii[o]*radii[o]) { clipped = true; break; }
+                    float dx = px - sources[o].x;
+                    float dy = py - sources[o].y;
+                    if (dx*dx + dy*dy < radii_sq[o]) { clipped = true; break; }
                 }
 
                 if (!clipped && (i % 4 < 3)) { /* 3 on, 1 off = dashed */
-                    sgl_v2f(px - ca * hw, py - sa * hw);
-                    sgl_v2f(px + ca * hw, py + sa * hw);
+                    if (g_signal_border_cache.vert_count + 2 > SIGNAL_BORDER_MAX_VERTS) {
+                        if (active) {
+                            signal_border_finish_strip((uint8_t)band, sources[s].x, sources[s].y,
+                                                       r, first,
+                                                       g_signal_border_cache.vert_count - first);
+                        }
+                        active = false;
+                        break;
+                    }
+                    if (!active) {
+                        active = true;
+                        first = g_signal_border_cache.vert_count;
+                    }
+                    g_signal_border_cache.verts[g_signal_border_cache.vert_count++] =
+                        v2(px - ca * hw, py - sa * hw);
+                    g_signal_border_cache.verts[g_signal_border_cache.vert_count++] =
+                        v2(px + ca * hw, py + sa * hw);
                     active = true;
                 } else if (active) {
-                    sgl_end();
-                    sgl_begin_triangle_strip();
-                    sgl_c4f(bands[band].r, bands[band].g, bands[band].b, bands[band].a);
+                    signal_border_finish_strip((uint8_t)band, sources[s].x, sources[s].y,
+                                               r, first,
+                                               g_signal_border_cache.vert_count - first);
                     active = false;
                 }
             }
-            sgl_end();
+            if (active) {
+                signal_border_finish_strip((uint8_t)band, sources[s].x, sources[s].y,
+                                           r, first,
+                                           g_signal_border_cache.vert_count - first);
+            }
         }
+    }
+    g_signal_border_cache.valid = true;
+}
+
+void draw_signal_borders(void) {
+    /* S(p) >= t iff p is inside any circle of radius R_i*(1-t).
+     * The contour is the boundary of the union of those circles.
+     * For each station, draw only the arc NOT inside another circle.
+     * Exact geometry is cached until station signal sources change. */
+    signal_border_source_t sources[MAX_STATIONS];
+    if (signal_border_sources_changed(sources)) {
+        signal_border_rebuild_cache(sources);
+    }
+
+    for (uint32_t si = 0; si < g_signal_border_cache.strip_count; si++) {
+        const signal_border_strip_t *strip = &g_signal_border_cache.strips[si];
+        if (!on_screen(strip->x, strip->y, strip->radius)) continue;
+        const signal_border_band_t *band = &SIGNAL_BORDER_BANDS[strip->band];
+        sgl_begin_triangle_strip();
+        sgl_c4f(band->r, band->g, band->b, band->a);
+        for (uint32_t vi = 0; vi < strip->count; vi++) {
+            vec2 p = g_signal_border_cache.verts[strip->first + vi];
+            sgl_v2f(p.x, p.y);
+        }
+        sgl_end();
     }
 }
 
@@ -1146,9 +1303,9 @@ void draw_station_rings(const station_t* station, bool is_current, bool is_nearb
 
                 /* Check if any fragment is smelting near this furnace */
                 bool has_smelting = false;
-                for (int ai = 0; ai < MAX_ASTEROIDS; ai++) {
-                    const asteroid_t *fa = &g.world.asteroids[ai];
-                    if (!fa->active || fa->smelt_progress < 0.05f) continue;
+                const asteroid_render_lists_t *lists = asteroid_render_lists();
+                for (int li = 0; li < lists->smelting_count; li++) {
+                    const asteroid_t *fa = &g.world.asteroids[lists->smelting[li]];
                     if (v2_dist_sq(fa->pos, positions[i]) < 300.0f * 300.0f) {
                         has_smelting = true; break;
                     }
@@ -1628,6 +1785,7 @@ void draw_npc_ships(void) {
 void draw_hopper_tractors(void) {
     float pull_range = 300.0f;
     float pull_sq = pull_range * pull_range;
+    const asteroid_render_lists_t *lists = asteroid_render_lists();
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &g.world.stations[s];
         if (st->scaffold) continue;
@@ -1642,9 +1800,9 @@ void draw_hopper_tractors(void) {
             module_color(mt, &fr, &fg, &fb);
 
             /* Draw orange tractor tendrils to all S-tier fragments in range */
-            for (int i = 0; i < MAX_ASTEROIDS; i++) {
+            for (int li = 0; li < lists->s_tier_count; li++) {
+                int i = lists->s_tier[li];
                 const asteroid_t *a = &g.world.asteroids[i];
-                if (!a->active || a->tier != ASTEROID_TIER_S) continue;
                 float d_sq = v2_dist_sq(a->pos, mp);
                 if (d_sq > pull_sq) continue;
                 float d = sqrtf(d_sq);
