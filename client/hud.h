@@ -15,7 +15,7 @@ typedef enum {
     MSG_NOTICE,             /* P1: Transient notice (reconnect, connection lost) */
     MSG_PLAN_MODE,          /* P2: Active planning mode */
     MSG_AUTOPILOT,          /* P2: Autopilot mining loop */
-    MSG_ONBOARDING,         /* P3: Onboarding checklist progress */
+    MSG_ONBOARDING,         /* P3: Local guide objective */
     MSG_TOW,                /* P4: Scaffold tow active */
     MSG_CARGO,              /* P5: Hold full warning */
     MSG_DOCKING,            /* P6: Docking approach / dock ring hot */

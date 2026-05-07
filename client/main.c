@@ -146,7 +146,7 @@ static void reset_world(void) {
     audio_clear_voices(&g.audio);
     clear_collection_feedback();
 
-    /* First-run launch copy is owned by onboarding's SIGNAL system voice,
+    /* First-run launch copy is owned by the local guide voice,
      * not by the docked station notice channel. */
 }
 
@@ -269,7 +269,6 @@ static void sim_on_fracture(const sim_event_t *ev) {
 static void sim_on_mining_tick(const sim_event_t *ev) {
     if (!ev_is_local(ev)) return;
     audio_play_mining_tick(&g.audio);
-    onboarding_mark_fractured(); /* "mine" milestone = fired laser */
 }
 
 static void sim_on_dock(const sim_event_t *ev) {

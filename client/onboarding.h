@@ -1,6 +1,6 @@
 /*
- * onboarding.h — First-run progression hints.
- * After all steps complete, stations take over via contextual hails.
+ * onboarding.h — First-run guide objectives.
+ * This is local teaching state, not station contract state.
  */
 #ifndef ONBOARDING_H
 #define ONBOARDING_H
