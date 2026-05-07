@@ -32,9 +32,25 @@ fi
 PORT=${PORT:-9091} "$SERVER_BIN" &
 SERVER_PID=$!
 
-# Static HTTP for the browser bundle on :8080. python's http.server is
-# single-threaded but plenty for local play; swap to nginx later if wanted.
-python3 -m http.server 8080 --directory /app/build-web &
+# Static HTTP for the browser bundle on :8080. Keep local assets uncached so
+# a rebuilt signal.js/signal.wasm cannot leave the browser on an old HUD hash
+# while the websocket server has already moved to the new build.
+python3 - <<'PY' &
+from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
+import os
+
+
+class NoStoreHandler(SimpleHTTPRequestHandler):
+    def end_headers(self):
+        self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
+        self.send_header("Pragma", "no-cache")
+        self.send_header("Expires", "0")
+        super().end_headers()
+
+
+os.chdir("/app/build-web")
+ThreadingHTTPServer(("0.0.0.0", 8080), NoStoreHandler).serve_forever()
+PY
 HTTP_PID=$!
 
 # Exit as soon as either child dies so docker restarts correctly.
