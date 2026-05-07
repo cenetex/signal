@@ -2117,26 +2117,53 @@ void draw_spark_burst(vec2 pos, float intensity, bool red, float seed) {
     }
 }
 
+static void local_player_beam_render_line(vec2 *beam_start, vec2 *beam_end) {
+    *beam_start = LOCAL_PLAYER.beam_start;
+    *beam_end = LOCAL_PLAYER.beam_end;
+
+    if (!g.multiplayer_enabled || g.local_server.active) {
+        return;
+    }
+
+    /* The local multiplayer ship can be drawn with a visual-only
+     * reconciliation offset in render_frame(). Anchor the beam to that
+     * same render pose while leaving authoritative hit endpoints alone. */
+    *beam_start = ship_muzzle(LOCAL_PLAYER.ship.pos,
+                              LOCAL_PLAYER.ship.angle,
+                              &LOCAL_PLAYER.ship);
+    if (!LOCAL_PLAYER.beam_hit) {
+        float beam_len = v2_len(v2_sub(LOCAL_PLAYER.beam_end,
+                                       LOCAL_PLAYER.beam_start));
+        if (beam_len < 1.0f) beam_len = MINING_RANGE;
+        vec2 forward = v2_from_angle(LOCAL_PLAYER.ship.angle);
+        *beam_end = v2_add(*beam_start, v2_scale(forward, beam_len));
+    }
+}
+
 void draw_beam(void) {
     if (!LOCAL_PLAYER.beam_active) {
         return;
     }
 
+    vec2 beam_start;
+    vec2 beam_end;
+    local_player_beam_render_line(&beam_start, &beam_end);
+
     if (LOCAL_PLAYER.scan_active) {
         /* Scan beam: cyan/blue — information, not damage */
-        draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.30f, 0.70f, 1.0f, 0.90f);
-        draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.15f, 0.50f, 0.90f, 0.35f);
+        draw_segment(beam_start, beam_end, 0.30f, 0.70f, 1.0f, 0.90f);
+        draw_segment(beam_start, beam_end, 0.15f, 0.50f, 0.90f, 0.35f);
     } else if (LOCAL_PLAYER.beam_hit && LOCAL_PLAYER.beam_ineffective) {
         /* Red beam: hitting a rock too tough for current laser */
-        draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 1.0f, 0.2f, 0.15f, 0.85f);
-        draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.8f, 0.1f, 0.05f, 0.30f);
+        draw_segment(beam_start, beam_end, 1.0f, 0.2f, 0.15f, 0.85f);
+        draw_segment(beam_start, beam_end, 0.8f, 0.1f, 0.05f, 0.30f);
     } else if (LOCAL_PLAYER.beam_hit) {
         /* Normal mining beam: teal */
-        draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.45f, 1.0f, 0.92f, 0.95f);
-        draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.12f, 0.78f, 1.0f, 0.35f);
+        draw_segment(beam_start, beam_end, 0.45f, 1.0f, 0.92f, 0.95f);
+        draw_segment(beam_start, beam_end, 0.12f, 0.78f, 1.0f, 0.35f);
     } else {
         /* Beam into empty space */
-        draw_segment(LOCAL_PLAYER.beam_start, LOCAL_PLAYER.beam_end, 0.9f, 0.75f, 0.30f, 0.55f);
+        draw_segment(beam_start, beam_end, 0.9f, 0.75f, 0.30f, 0.55f);
     }
 
     /* Impact sparks at the beam contact point. */
@@ -2145,13 +2172,13 @@ void draw_beam(void) {
             LOCAL_PLAYER.scan_target_type == 1;
         bool is_asteroid = !LOCAL_PLAYER.scan_active;
         if (is_asteroid) {
-            draw_spark_burst(LOCAL_PLAYER.beam_end,
+            draw_spark_burst(beam_end,
                              LOCAL_PLAYER.beam_ineffective ? 0.7f : 1.0f,
                              LOCAL_PLAYER.beam_ineffective,
                              3.14f);
         } else if (is_station) {
             /* Lasering a station/module — hot orange metal sparks. */
-            draw_spark_burst(LOCAL_PLAYER.beam_end, 0.9f, true, 9.7f);
+            draw_spark_burst(beam_end, 0.9f, true, 9.7f);
         }
     }
 }
