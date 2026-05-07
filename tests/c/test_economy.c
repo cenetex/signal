@@ -244,6 +244,82 @@ TEST(test_contract_closes_when_deficit_filled) {
     ASSERT(!still_active2);
 }
 
+TEST(test_raw_ore_contract_retires_when_refined_output_full) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 0.0f;
+    w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] = MAX_PRODUCT_STOCK;
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 0,
+        .commodity = COMMODITY_FERRITE_ORE,
+        .quantity_needed = 1.0f,
+        .base_price = 3.0f,
+        .claimed_by = -1,
+    };
+
+    world_sim_step(&w, SIM_DT);
+
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        ASSERT(!(w.contracts[k].active &&
+                 w.contracts[k].station_index == 0 &&
+                 w.contracts[k].commodity == COMMODITY_FERRITE_ORE));
+    }
+}
+
+TEST(test_kit_input_contract_closes_at_kit_target) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    w.stations[2]._inventory_cache[COMMODITY_FRAME] = 20.0f;
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 2,
+        .commodity = COMMODITY_FRAME,
+        .quantity_needed = 12.0f,
+        .base_price = 1.0f,
+        .claimed_by = -1,
+    };
+
+    world_sim_step(&w, SIM_DT);
+
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        ASSERT(!(w.contracts[k].active &&
+                 w.contracts[k].station_index == 2 &&
+                 w.contracts[k].commodity == COMMODITY_FRAME));
+    }
+}
+
+TEST(test_raw_ore_contract_prefers_starved_downstream_output) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    station_t *helios = &w.stations[2];
+    helios->_inventory_cache[COMMODITY_CUPRITE_ORE] = 0.0f;
+    helios->_inventory_cache[COMMODITY_CRYSTAL_ORE] = 0.0f;
+    helios->_inventory_cache[COMMODITY_CUPRITE_INGOT] = 0.0f;
+    helios->_inventory_cache[COMMODITY_LASER_MODULE] = 0.0f;
+    helios->_inventory_cache[COMMODITY_CRYSTAL_INGOT] = 12.0f;
+    helios->_inventory_cache[COMMODITY_TRACTOR_MODULE] = 12.0f;
+
+    world_sim_step(&w, SIM_DT);
+
+    bool found_cuprite = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (!w.contracts[k].active || w.contracts[k].station_index != 2) continue;
+        if (w.contracts[k].commodity == COMMODITY_CUPRITE_ORE)
+            found_cuprite = true;
+        ASSERT(w.contracts[k].commodity != COMMODITY_CRYSTAL_ORE);
+    }
+    ASSERT(found_cuprite);
+}
+
 TEST(test_sell_price_uses_contract_price) {
     /* When a contract exists, selling at that station should pay the
      * escalated contract price, not the base buy_price.
@@ -1126,6 +1202,9 @@ void register_economy_contracts_tests(void) {
     RUN(test_contract_fit_requires_material_grade_and_fragment_tier);
     RUN(test_contract_delivery_requires_required_grade);
     RUN(test_contract_closes_when_deficit_filled);
+    RUN(test_raw_ore_contract_retires_when_refined_output_full);
+    RUN(test_kit_input_contract_closes_at_kit_target);
+    RUN(test_raw_ore_contract_prefers_starved_downstream_output);
     RUN(test_sell_price_uses_contract_price);
     RUN(test_hauler_fills_highest_value_contract);
     RUN(test_hauler_skips_incompatible_contract_destination);

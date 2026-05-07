@@ -882,20 +882,21 @@ static bool npc_try_claim_loose_fragment(world_t *w, npc_ship_t *npc, float rang
     return true;
 }
 
-/* True if the miner's home station has any smeltable raw-ore stock
- * above `frac` of REFINERY_HOPPER_CAPACITY. Used to gate fracturing:
- * when the hopper is at-or-above 50%, miners stop creating new mass
- * and only tractor pre-existing fragments — keeps the belt clean
- * without backing the smelter further. */
-static bool npc_home_ore_above_frac(const world_t *w, const npc_ship_t *npc, float frac) {
+/* True if every ore the miner can deliver is currently pointless:
+ * either the raw hopper is above target, the refined output has no
+ * room, or the downstream module product is stocked. This keeps miners
+ * from adding fresh fragments to a saturated local chain while still
+ * letting multi-ore stations work on a starved ore even when another
+ * hopper/product is healthy. */
+static bool npc_home_has_no_ore_need(const world_t *w, const npc_ship_t *npc) {
     if (npc->home_station < 0 || npc->home_station >= MAX_STATIONS) return false;
     const station_t *home = &w->stations[npc->home_station];
-    float threshold = REFINERY_HOPPER_CAPACITY * frac;
     for (int c = 0; c < COMMODITY_RAW_ORE_COUNT; c++) {
         if (!station_smelt_pair_for_ore(home, (commodity_t)c, NULL)) continue;
-        if (home->_inventory_cache[c] >= threshold) return true;
+        if (station_raw_ore_need_score(home, (commodity_t)c) > 0.0f)
+            return false;
     }
-    return false;
+    return true;
 }
 
 static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
@@ -916,15 +917,17 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
         if (!miner_target_taken(w, idx, self_char)) return idx;
     }
 
-    /* Nearest useful rock only: the home station must expose a concrete
-     * furnace+hopper endpoint for the ore. Count-tier smelt capability
-     * is too broad here; miners need a typed service destination, not
-     * "try any furnace and hope." */
+    /* Most-needed useful rock: the home station must expose a concrete
+     * furnace+hopper endpoint for the ore, and the ore must feed a
+     * non-saturated downstream chain. Distance only breaks ties within
+     * the same demand band; otherwise Helios keeps mining nearby
+     * crystal while the laser line is actually starved for cuprite. */
     const station_t *home = (npc->home_station >= 0 && npc->home_station < MAX_STATIONS)
                           ? &w->stations[npc->home_station]
                           : NULL;
     if (!home) return -1;
     int best = -1;
+    float best_need = 0.0f;
     float best_d = 1e18f;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
@@ -932,8 +935,15 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
         if (signal_npc_confidence(signal_strength_at(w, a->pos)) < 0.1f) continue;
         if (miner_target_taken(w, i, self_char)) continue;
         if (!station_smelt_pair_for_ore(home, a->commodity, NULL)) continue;
+        float need = station_raw_ore_need_score(home, a->commodity);
+        if (need <= 0.0f) continue;
         float d = v2_dist_sq(npc->ship.pos, a->pos);
-        if (d < best_d) { best_d = d; best = i; }
+        if (need > best_need + 0.05f ||
+            (fabsf(need - best_need) <= 0.05f && d < best_d)) {
+            best_need = need;
+            best_d = d;
+            best = i;
+        }
     }
     return best;
 }
@@ -1950,10 +1960,10 @@ void step_npc_ships(world_t *w, float dt) {
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                     break;
                 }
-                /* Home hopper above 50%? Don't add more mass — IDLE and
-                 * wait for fragments to drift through, or for the smelter
-                 * to drain stock back below the threshold. */
-                if (npc_home_ore_above_frac(w, npc, 0.5f)) {
+                /* No useful ore demand? Don't add more mass — IDLE and
+                 * wait for fragments to drift through, or for the local
+                 * chain to drain back into a useful state. */
+                if (npc_home_has_no_ore_need(w, npc)) {
                     npc->state = NPC_STATE_IDLE;
                     npc->state_timer = 5.0f;
                     break;
@@ -1978,7 +1988,7 @@ void step_npc_ships(world_t *w, float dt) {
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                     break;
                 }
-                if (npc_home_ore_above_frac(w, npc, 0.5f)) {
+                if (npc_home_has_no_ore_need(w, npc)) {
                     npc->target_asteroid = -1;
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                     break;
@@ -2024,7 +2034,7 @@ void step_npc_ships(world_t *w, float dt) {
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                 } else if (npc_try_claim_loose_fragment(w, npc, 4000.0f * 4000.0f)) {
                     npc->state = NPC_STATE_RETURN_TO_STATION;
-                } else if (npc_home_ore_above_frac(w, npc, 0.5f)) {
+                } else if (npc_home_has_no_ore_need(w, npc)) {
                     /* Hopper full and no fragment in range — head home
                      * and IDLE there until the smelter drains. */
                     npc->state = NPC_STATE_RETURN_TO_STATION;
@@ -2231,9 +2241,9 @@ void step_npc_ships(world_t *w, float dt) {
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                     break;
                 }
-                /* Hopper full → stay idle until either a fragment drifts
-                 * into range or the smelter drains stock back below 50%. */
-                if (npc_home_ore_above_frac(w, npc, 0.5f)) {
+                /* No useful ore demand → stay idle until either a
+                 * fragment drifts into range or the local chain drains. */
+                if (npc_home_has_no_ore_need(w, npc)) {
                     npc->state_timer = 5.0f;
                     break;
                 }

@@ -1907,6 +1907,86 @@ TEST(test_npc_miners_avoid_zero_signal_asteroids) {
     ASSERT_EQ_INT(w.npc_ships[0].target_asteroid, 0);
 }
 
+TEST(test_npc_miner_prefers_starved_ore_over_nearest_compatible_rock) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    for (int i = 1; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    station_t *helios = &w.stations[2];
+    helios->_inventory_cache[COMMODITY_CUPRITE_ORE] = 0.0f;
+    helios->_inventory_cache[COMMODITY_CRYSTAL_ORE] = 0.0f;
+    helios->_inventory_cache[COMMODITY_CUPRITE_INGOT] = 0.0f;
+    helios->_inventory_cache[COMMODITY_LASER_MODULE] = 0.0f;
+    helios->_inventory_cache[COMMODITY_CRYSTAL_INGOT] = 12.0f;
+    helios->_inventory_cache[COMMODITY_TRACTOR_MODULE] = 12.0f;
+
+    w.asteroids[0].active = true;
+    w.asteroids[0].tier = ASTEROID_TIER_L;
+    w.asteroids[0].commodity = COMMODITY_CRYSTAL_ORE;
+    w.asteroids[0].radius = 50.0f;
+    w.asteroids[0].hp = 120.0f;
+    w.asteroids[0].max_hp = 120.0f;
+    w.asteroids[0].pos = v2_add(helios->pos, v2(350.0f, 0.0f));
+
+    w.asteroids[1].active = true;
+    w.asteroids[1].tier = ASTEROID_TIER_L;
+    w.asteroids[1].commodity = COMMODITY_CUPRITE_ORE;
+    w.asteroids[1].radius = 50.0f;
+    w.asteroids[1].hp = 120.0f;
+    w.asteroids[1].max_hp = 120.0f;
+    w.asteroids[1].pos = v2_add(helios->pos, v2(1300.0f, 0.0f));
+
+    w.npc_ships[0].active = true;
+    w.npc_ships[0].role = NPC_ROLE_MINER;
+    w.npc_ships[0].ship.hull_class = HULL_CLASS_NPC_MINER;
+    w.npc_ships[0].home_station = 2;
+    w.npc_ships[0].state = NPC_STATE_DOCKED;
+    w.npc_ships[0].state_timer = 0.0f;
+    w.npc_ships[0].target_asteroid = -1;
+    w.npc_ships[0].towed_fragment = -1;
+    w.npc_ships[0].ship.pos = helios->pos;
+    w.npc_ships[0].ship.vel = v2(0.0f, 0.0f);
+    w.npc_ships[0].ship.angle = 0.0f;
+
+    step_npc_ships(&w, SIM_DT);
+    ASSERT_EQ_INT(w.npc_ships[0].target_asteroid, 1);
+}
+
+TEST(test_npc_miner_idles_when_refined_output_is_full) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    for (int i = 1; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    station_t *prospect = &w.stations[0];
+    prospect->_inventory_cache[COMMODITY_FERRITE_INGOT] = MAX_PRODUCT_STOCK;
+
+    w.asteroids[0].active = true;
+    w.asteroids[0].tier = ASTEROID_TIER_L;
+    w.asteroids[0].commodity = COMMODITY_FERRITE_ORE;
+    w.asteroids[0].radius = 50.0f;
+    w.asteroids[0].hp = 120.0f;
+    w.asteroids[0].max_hp = 120.0f;
+    w.asteroids[0].pos = v2_add(prospect->pos, v2(700.0f, 0.0f));
+
+    w.npc_ships[0].active = true;
+    w.npc_ships[0].role = NPC_ROLE_MINER;
+    w.npc_ships[0].ship.hull_class = HULL_CLASS_NPC_MINER;
+    w.npc_ships[0].home_station = 0;
+    w.npc_ships[0].state = NPC_STATE_DOCKED;
+    w.npc_ships[0].state_timer = 0.0f;
+    w.npc_ships[0].target_asteroid = -1;
+    w.npc_ships[0].towed_fragment = -1;
+    w.npc_ships[0].ship.pos = prospect->pos;
+    w.npc_ships[0].ship.vel = v2(0.0f, 0.0f);
+    w.npc_ships[0].ship.angle = 0.0f;
+
+    step_npc_ships(&w, SIM_DT);
+    ASSERT_EQ_INT(w.npc_ships[0].target_asteroid, -1);
+    ASSERT_EQ_INT(w.npc_ships[0].state, NPC_STATE_IDLE);
+}
+
 TEST(test_field_respawn_starts_beyond_signal_edge) {
     WORLD_DECL;
     world_reset(&w);
@@ -2155,6 +2235,8 @@ void register_world_sim_signal_tests(void) {
     RUN(test_ship_thrust_scales_with_signal);
     RUN(test_asteroid_outside_signal_despawns);
     RUN(test_npc_miners_avoid_zero_signal_asteroids);
+    RUN(test_npc_miner_prefers_starved_ore_over_nearest_compatible_rock);
+    RUN(test_npc_miner_idles_when_refined_output_is_full);
     RUN(test_field_respawn_starts_beyond_signal_edge);
     RUN(test_asteroids_drift_toward_stronger_signal);
 }
