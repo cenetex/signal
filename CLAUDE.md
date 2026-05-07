@@ -50,8 +50,8 @@ cmake --build build-test
 ## Gameplay Loop
 
 1. Launch from a station. Fracture asteroids `XL → L → M → S` with the mining beam.
-2. Tractor-sweep fragments of ferrite, cuprite, and crystal ore into the hold.
-3. Dock and sell ore, or deliver named contract cargo (manifest / `cargo_unit_t` ingots).
+2. Tractor-sweep fragments of ferrite, cuprite, and crystal ore into station smelter beams.
+3. Dock and sell smelted goods, or deliver named contract cargo (manifest / `cargo_unit_t` ingots and finished goods).
 4. Stations internally smelt ore → ingots and fabricate frames / lasers / tractor modules. Press `F` docked to buy the station's primary product.
 5. Enter plan mode (`B` undocked) to reserve a module slot or plant a new outpost. Order a scaffold at a shipyard, then tractor-tow the scaffold into place (`E`).
 
@@ -70,24 +70,24 @@ The economy model is under active redesign toward a stricter 3-tier structure (P
 
 ## Economy: per-station credits
 
-**There is no global player wallet.** Credits are *per-station ledgers*, keyed by the player's session token. See `station_t.ledger[]` and `currency_name` in `shared/types.h`.
+**There is no global player wallet.** Credits are *per-station ledgers*, keyed by the player's persistent pubkey once registered, with legacy session-token fallback for anonymous clients. See `station_t.ledger[]` and `currency_name` in `shared/types.h`.
 
-- Each station keeps its own balance for each supplier (e.g. "helios credits", "prospect credits"). Selling ore or completing a contract credits *that station's* ledger.
+- Each station keeps its own balance for each supplier (e.g. "helios credits", "prospect credits"). Supplying goods or completing a contract credits *that station's* ledger.
 - Balances are spendable only at the station that issued them.
 - Prices are dynamic: station buy-price scales 1.0× (empty hopper) down to 0.5× (full) of `base_price`; product sell-price scales 2.0× (empty) down to 1.0× (full stock). See `station_buy_price` / `station_sell_price` and the `test_dynamic_ore_price_*` tests.
-- Players collect pending supplier credits at the station they're standing on — there's no cross-station sweep.
+- Hail reports the issuing station's local balance; there is no global or cross-station sweep.
 
 This means haulers and arbitrage are first-class: credits earned at Prospect can't be spent at Helios. Carrying value between stations means carrying *goods*, not currency.
 
-**Stations are sovereign currency issuers.** A station's `credit_pool` can go arbitrarily negative — it represents the running count of currency in circulation, not a bounded resource. There is no money-supply cap, no policy floor, no risk of "the station runs out of money." Cross-station value transfer happens exclusively through goods (the hauler IS the FX desk; the miner is the only source of new value). On-chain wrapping (#480) will eventually allow cross-currency settlement; until then, currency is strictly per-station.
+**Stations are sovereign currency issuers.** A station's derived `station_credit_pool()` can go arbitrarily negative — it represents the running count of currency in circulation, not a bounded stored resource. There is no money-supply cap, no policy floor, no risk of "the station runs out of money." Cross-station value transfer happens exclusively through goods (the hauler IS the FX desk; the miner is the only source of new value). On-chain wrapping (#480) will eventually allow cross-currency settlement; until then, currency is strictly per-station.
 
 ## Signal
 
-Stations emit signal, and signal range matters mechanically. Weak signal throttles mining speed and ship response; players and NPCs get pushed back toward the connected station chain. `H` hails a station in comm range, shows that station's local ledger balance for the player, and opens the current station-authored hail/contract response.
+Stations emit signal, and signal range matters mechanically. Weak signal throttles mining speed and ship response; players and NPCs get pushed back toward the connected station chain. `H` is a hail/scan contact ping: docked players get the current station, near-dock players get the station they are interacting with, and otherwise the nearest active station inside signal or ship scan fallback answers. The response shows that station's local ledger balance and station-authored hail/contract text; the local client also uses the ping to reveal short-lived nearby tags.
 
 ## Ships and manifest
 
-Ships carry commodities in their hold. The **manifest layer** (`shared/manifest.h`, `cargo_unit_t`) adds named, traceable ingots — so a specific batch of ferrite ingots smelted at Prospect can be contracted for delivery to Kepler. This is live under the min-flow grade and is the foundation for the T1/T2/T3 chain work.
+Ships carry commodities in two different shapes. Fragments are physical `asteroid_t` objects being towed through space; they are not manifest rows. Named ingots and finished goods are `cargo_unit_t` rows in a ship or station manifest, with `pub`, `parent_merkle`, and receipt-chain state. Treat [`docs/cargo-architecture.md`](docs/cargo-architecture.md) as the canonical vocabulary: fragment, bulk float, crate.
 
 ## Save layout
 
@@ -114,3 +114,4 @@ Per-player saves live under `saves/`:
 - If the docked UI changes, verify fullscreen and narrow browser windows both.
 - Don't assume what's in `MEMORY.md` is still true — verify against code before acting on a remembered fact.
 - Be careful with economy/ledger invariants. Credits are per-station; do not silently globalize them, and do not assume a single balance exists on the player.
+- Be careful with cargo vocabulary. Do not turn raw ore/fragments into manifest crates unless a design explicitly changes the three-state model.

@@ -46,7 +46,7 @@ The layers, from substrate up:
 ### `rock_pub` — terrain asteroids
 
 Seed-origin asteroids carry a stable 32-byte pubkey baked at world birth:
-`asteroid_t.rock_pub` ([`shared/types.h:509`](../shared/types.h)). The hash is
+`asteroid_t.rock_pub` ([`shared/types.h`](../shared/types.h)). The hash is
 deterministic in `(belt_seed, asteroid_index)` so every server with the same
 world seed agrees on every rock's identity. PRs #486 and #487 made this layer
 permanent; the rock-ledger is sorted and binary-searched at runtime.
@@ -54,7 +54,7 @@ permanent; the rock-ledger is sorted and binary-searched at runtime.
 ### `fragment_pub` — fracture children
 
 When a player fractures an asteroid, each child fragment gets its own pubkey:
-`asteroid_t.fragment_pub` ([`shared/types.h:498`](../shared/types.h)). The
+`asteroid_t.fragment_pub` ([`shared/types.h`](../shared/types.h)). The
 fragment hash binds in the parent's `rock_pub`, the fracture seed, and the
 fragment index, so the lineage from terrain rock to handheld pebble is auditable
 without trusting the server's word for it.
@@ -78,14 +78,14 @@ typedef struct {
     uint8_t  prefix_class;
     uint16_t recipe_id;
     uint8_t  origin_station;
-    uint8_t  _pad;
+    uint8_t  quantity;          /* 1 for current live production */
     uint64_t mined_block;
     uint8_t  pub[32];           /* content hash */
     uint8_t  parent_merkle[32]; /* sorted-input merkle root */
 } cargo_unit_t;                 /* 80 bytes */
 ```
 
-(See [`shared/types.h:138`](../shared/types.h) for the canonical definition and
+(See [`shared/types.h`](../shared/types.h) for the canonical definition and
 [`shared/manifest.h`](../shared/manifest.h) for the helpers.)
 
 For ingots, `pub = hash_ingot(commodity, grade, fragment_pub, output_index)` —
@@ -105,7 +105,7 @@ deterministically:
   server running the same world seed agrees on every seeded station's pubkey
   bit-for-bit. See
   [`server/station_authority.c`](../server/station_authority.c) and the seeded
-  bootstrap in [`server/game_sim.c:4613`](../server/game_sim.c).
+  bootstrap in [`server/game_sim.c`](../server/game_sim.c).
 - **Player-planted outposts** (indices 3+) derive their seed as
   `SHA256("signal-outpost-v1" || founder_pub[32] || station_name[16] || planted_tick_u64)`.
   An auditor with the founding event can rederive the outpost's pubkey from the
@@ -114,7 +114,7 @@ deterministically:
 The private key is rederivable on demand; it is **never** serialized to disk and
 **never** sent over the wire. The struct layout enforces this — `station_secret`
 is the last field of `station_t` and a `_Static_assert` keeps it that way
-([`shared/types.h:411`](../shared/types.h)). Losing the disk does not leak the
+([`shared/types.h`](../shared/types.h)). Losing the disk does not leak the
 private key.
 
 ### Player identity — `player_identity_t`
@@ -144,16 +144,20 @@ that any auditor with the on-disk chain log and the station's pubkey can prove
 that no event was inserted, removed, or altered after the fact.
 
 Event types currently emitted (from `chain_event_type_t` in
-[`chain_log.h:45`](../server/chain_log.h)):
+[`server/chain_log.h`](../server/chain_log.h)):
 
 | Event | Meaning |
 | --- | --- |
-| `CHAIN_EVT_SMELT` | Fragment smelted into ingot at this station |
+| `CHAIN_EVT_SMELT` | Fragment or compatibility hopper batch smelted into an ingot at this station |
 | `CHAIN_EVT_CRAFT` | Ingots fabricated into a finished product |
 | `CHAIN_EVT_TRANSFER` | Cargo unit moved between holders |
 | `CHAIN_EVT_TRADE` | Transfer + ledger delta, atomic |
 | `CHAIN_EVT_LEDGER` | Station-side credit balance mutation |
 | `CHAIN_EVT_ROCK_DESTROY` | Asteroid fractured to terminal state |
+| `CHAIN_EVT_OPERATOR_POST` | Station-authored MOTD, chatter, rarity text, build/world anchor, or other operator copy |
+| `CHAIN_EVT_FRAGMENT_TOW` | Player tractor takes possession of an in-space fragment |
+| `CHAIN_EVT_FRAGMENT_RELEASE` | Fragment tow ended without a smelt |
+| `CHAIN_EVT_DEATH` | Player run ended; highscores are replayed from these events |
 
 Every event is exactly 184 bytes of header followed by `uint16` payload length
 and the payload bytes. The header includes `epoch` (sim tick), `event_id`
@@ -162,7 +166,7 @@ and the payload bytes. The header includes `epoch` (sim tick), `event_id`
 previous event's full header), and a 64-byte Ed25519 `signature` over the
 unsigned header span. A `_Static_assert` pins the size to 184 bytes so the
 on-disk format cannot drift silently
-([`server/chain_log.c:31`](../server/chain_log.c)).
+([`server/chain_log.c`](../server/chain_log.c)).
 
 ## The trust model
 
@@ -197,9 +201,9 @@ When a second operator joins, they bring their own pubkey-keyed station, run
 their own chain log, and sign their own events. They do not have to trust the
 first operator's server; they only have to verify the first operator's
 signatures on the cargo units and receipts that cross the zone boundary. Layer
-D (cross-station settlement) threads the needle: cargo units carry a chain of
-signed transfer receipts back to the originating event, and the destination
-station verifies the chain on dock before accepting the unit.
+D is the off-chain receipt layer: cargo units carry a chain of signed transfer
+receipts back to the originating event, and the destination station verifies the
+chain on dock before accepting the unit.
 
 Every station is sovereign within its zone. Prospect's operator decides
 Prospect's price curves. Helios's operator decides what Helios pays for
@@ -240,8 +244,9 @@ The CLAUDE.md at the repo root has the canonical text on this; see the
   (sell 2.0× → 1.0×). See `station_buy_price` / `station_sell_price` and the
   `test_dynamic_ore_price_*` tests.
 - Carrying value between stations means carrying *goods*, not currency.
-  Hauling is first-class, and the hauling primitive becomes a real
-  cryptographic asset transfer once Layer D lands.
+  Hauling is first-class, and the hauling primitive is now backed by portable
+  cargo receipt chains; cross-operator policy and UX are the remaining
+  hardening work.
 
 The reason this maps so cleanly onto federation is that the ledger was already
 per-station before any of the identity work. Layer B simply attached the
@@ -256,7 +261,7 @@ chain/<base58(station_pubkey)>.log
 ```
 
 The base directory defaults to `chain/` and can be overridden for tests via
-`chain_log_set_dir()` ([`server/chain_log.h:75`](../server/chain_log.h)). Each
+`chain_log_set_dir()` ([`server/chain_log.h`](../server/chain_log.h)). Each
 entry is the 184-byte header followed by `uint16 payload_len` and `payload_len`
 bytes of payload. Entries are append-only; existing entries are never
 rewritten.
@@ -277,7 +282,7 @@ restart cleanly. The actual event records live in the side files under
 `chain/` — they are not part of `world.sav`.
 
 Verification semantics (`chain_log_verify`,
-[`server/chain_log.h:108`](../server/chain_log.h)):
+[`server/chain_log.h`](../server/chain_log.h)):
 
 1. Walk the on-disk log entry by entry.
 2. For each entry: verify the Ed25519 signature against the asserted authority
@@ -299,10 +304,11 @@ receipts. The destination station verifies the chain before accepting the
 unit, and emits its own `CHAIN_EVT_TRANSFER` (and, if the dock-side trade is
 atomic, an accompanying `CHAIN_EVT_LEDGER`) into its own log.
 
-The schema fields are reserved already: `cargo_unit_t.parent_merkle`
-([`shared/types.h:148`](../shared/types.h)) is the sorted-input merkle root of
-the producing event, and the chain log entry whose hash matches it is the
-authoritative attestation that the unit was legitimately transferred.
+The schema is split deliberately: `cargo_unit_t.parent_merkle`
+([`shared/types.h`](../shared/types.h)) names the producing inputs, while
+`cargo_receipt_chain_t` stores the portable station-signed transfer trail. The
+origin receipt pins to the hash of the originating `SMELT` or `CRAFT` chain
+event header; later receipts link to the prior receipt hash.
 
 The remaining Layer D work is product hardening: richer operator policy,
 cross-operator replication, and UX around failed receipt verification. The
@@ -353,14 +359,14 @@ operator cannot publish two divergent logs to two audiences.
 - **`fragment_pub`** — 32-byte hash for a fracture child, binds parent
   `rock_pub` + fracture seed + index.
 - **`cargo_unit`** — the unified manifest row for an ingot or finished good
-  ([`shared/types.h:138`](../shared/types.h)). Carries the content hash
+  ([`shared/types.h`](../shared/types.h)). Carries the content hash
   `pub` and the input merkle root `parent_merkle`.
 - **`manifest`** — an array of cargo units owned by a holder (a player's
   ship, a station's hold). [`shared/manifest.h`](../shared/manifest.h).
 - **`ledger`** — `station_t.ledger[]`, the per-station credit-balance table
   keyed by player pubkey.
 - **`EVT_*` / `CHAIN_EVT_*`** — event types in the signed chain log. See
-  `chain_event_type_t` in [`server/chain_log.h:45`](../server/chain_log.h).
+  `chain_event_type_t` in [`server/chain_log.h`](../server/chain_log.h).
 - **callsign** — the first 8 base58 chars of the player's pubkey, shown in
   the HUD as their permanent identity.
 - **prefix class** — the optional named-ingot prefix (`INGOT_PREFIX_RATI`,
