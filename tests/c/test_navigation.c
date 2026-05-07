@@ -299,6 +299,24 @@ static void test_nav_routes_to_kepler_dock_through_outer_ring_gap(void) {
     ASSERT(saw_ring2_gap);
 }
 
+static void test_station_entry_target_uses_outer_roadway(void) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+
+    const station_t *kepler = &w->stations[1];
+    vec2 start = station_dock_lane_pos(kepler, 1, 0, 900.0f);
+    vec2 entry = station_entry_target(kepler, start);
+    vec2 local = v2_sub(entry, kepler->pos);
+    float r = sqrtf(v2_len_sq(local));
+    float a = atan2f(local.y, local.x);
+
+    int outer_ring = station_max_ring(kepler);
+    float expected = station_ring_open_gap_angle(kepler, outer_ring);
+    ASSERT(outer_ring == 3);
+    ASSERT(r > STATION_RING_RADIUS[outer_ring] + 120.0f);
+    ASSERT(fabsf(wrap_angle(a - expected)) < 0.05f);
+}
+
 static void test_nav_forward_clearance_respects_kepler_open_gap(void) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
@@ -575,6 +593,7 @@ void register_navigation_nav_tests(void) {
     RUN(test_nav_waypoint_advancement);
     RUN(test_nav_routes_to_station_smelt_midpoint);
     RUN(test_nav_routes_to_kepler_dock_through_outer_ring_gap);
+    RUN(test_station_entry_target_uses_outer_roadway);
     RUN(test_nav_forward_clearance_respects_kepler_open_gap);
 }
 

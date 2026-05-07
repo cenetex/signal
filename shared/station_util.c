@@ -218,6 +218,56 @@ vec2 station_dock_lane_pos(const station_t *st, int ring, int slot,
     return v2_add(st->pos, v2(cosf(angle) * radius, sinf(angle) * radius));
 }
 
+bool station_ring_open_gap_lane(const station_t *st, int ring,
+                                int *out_slot, float *out_offset) {
+    if (!st || ring < 1 || ring > STATION_NUM_RINGS) return false;
+    int slots_n = STATION_RING_SLOTS[ring];
+    if (slots_n <= 0) return false;
+
+    int slots[MAX_MODULES_PER_STATION];
+    int count = 0;
+    for (int i = 0; i < st->module_count && count < MAX_MODULES_PER_STATION; i++) {
+        if (st->modules[i].ring != ring) continue;
+        slots[count++] = st->modules[i].slot;
+    }
+    if (count <= 0) return false;
+
+    for (int i = 1; i < count; i++) {
+        int tmp = slots[i];
+        int j = i - 1;
+        while (j >= 0 && slots[j] > tmp) {
+            slots[j + 1] = slots[j];
+            j--;
+        }
+        slots[j + 1] = tmp;
+    }
+
+    int first = slots[0];
+    int last = slots[count - 1];
+    int gap_slots = first + slots_n - last;
+    if (gap_slots <= 0) gap_slots += slots_n;
+
+    if (out_slot) *out_slot = last;
+    if (out_offset) {
+        float slot_arc = TWO_PI_F / (float)slots_n;
+        *out_offset = slot_arc * (float)gap_slots * 0.5f;
+    }
+    return true;
+}
+
+float station_ring_open_gap_angle(const station_t *st, int ring) {
+    int slot = 0;
+    float offset = 0.0f;
+    if (!station_ring_open_gap_lane(st, ring, &slot, &offset)) return 0.0f;
+    return module_angle_ring(st, ring, slot) + offset;
+}
+
+vec2 station_ring_open_gap_lane_pos(const station_t *st, int ring,
+                                    float radius) {
+    float angle = station_ring_open_gap_angle(st, ring);
+    return v2_add(st->pos, v2(cosf(angle) * radius, sinf(angle) * radius));
+}
+
 int ring_module_count(const station_t *st, int ring) {
     int count = 0;
     for (int i = 0; i < st->module_count; i++)

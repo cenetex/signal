@@ -1,0 +1,138 @@
+#ifndef CONTRACT_FIT_H
+#define CONTRACT_FIT_H
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <string.h>
+
+#include "types.h"
+
+typedef enum {
+    CONTRACT_FIT_OK = 0,
+    CONTRACT_FIT_INACTIVE,
+    CONTRACT_FIT_WRONG_ACTION,
+    CONTRACT_FIT_WRONG_COMMODITY,
+    CONTRACT_FIT_GRADE_TOO_LOW,
+    CONTRACT_FIT_WRONG_TIER,
+    CONTRACT_FIT_NO_CARGO,
+    CONTRACT_FIT_NOT_DELIVERABLE,
+    CONTRACT_FIT_MISSING_PROOF,
+} contract_fit_reason_t;
+
+static inline const char *contract_fit_reason_label(contract_fit_reason_t reason) {
+    switch (reason) {
+    case CONTRACT_FIT_OK:              return "match";
+    case CONTRACT_FIT_INACTIVE:        return "inactive";
+    case CONTRACT_FIT_WRONG_ACTION:    return "wrong job";
+    case CONTRACT_FIT_WRONG_COMMODITY: return "wrong material";
+    case CONTRACT_FIT_GRADE_TOO_LOW:   return "grade too low";
+    case CONTRACT_FIT_WRONG_TIER:      return "needs fragment";
+    case CONTRACT_FIT_NO_CARGO:        return "no cargo";
+    case CONTRACT_FIT_NOT_DELIVERABLE: return "not deliverable";
+    case CONTRACT_FIT_MISSING_PROOF:   return "proof missing";
+    default:                           return "unknown";
+    }
+}
+
+static inline bool contract_fit_is_ok(contract_fit_reason_t reason) {
+    return reason == CONTRACT_FIT_OK;
+}
+
+static inline bool contract_fit_has_bytes(const uint8_t bytes[32]) {
+    static const uint8_t zero[32] = {0};
+    return bytes && memcmp(bytes, zero, sizeof(zero)) != 0;
+}
+
+static inline contract_fit_reason_t contract_fit_cargo_fields(
+    const contract_t *contract,
+    commodity_t commodity,
+    mining_grade_t grade,
+    uint16_t quantity,
+    bool has_proof)
+{
+    (void)has_proof;
+    if (!contract || !contract->active) return CONTRACT_FIT_INACTIVE;
+    if (contract->action != CONTRACT_TRACTOR) return CONTRACT_FIT_WRONG_ACTION;
+    if (quantity == 0) return CONTRACT_FIT_NO_CARGO;
+    if (commodity >= COMMODITY_COUNT ||
+        contract->commodity != commodity) {
+        return CONTRACT_FIT_WRONG_COMMODITY;
+    }
+    if (grade >= MINING_GRADE_COUNT ||
+        grade < (mining_grade_t)contract->required_grade) {
+        return CONTRACT_FIT_GRADE_TOO_LOW;
+    }
+    return CONTRACT_FIT_OK;
+}
+
+static inline contract_fit_reason_t contract_fit_cargo_unit(
+    const contract_t *contract,
+    const cargo_unit_t *unit)
+{
+    if (!unit) return CONTRACT_FIT_NO_CARGO;
+    uint16_t quantity = unit->quantity > 0 ? unit->quantity : 1;
+    bool has_proof = contract_fit_has_bytes(unit->pub) ||
+                     contract_fit_has_bytes(unit->parent_merkle) ||
+                     unit->mined_block != 0;
+    return contract_fit_cargo_fields(contract,
+                                     (commodity_t)unit->commodity,
+                                     (mining_grade_t)unit->grade,
+                                     quantity,
+                                     has_proof);
+}
+
+static inline contract_fit_reason_t contract_fit_fragment(
+    const contract_t *contract,
+    const asteroid_t *fragment)
+{
+    if (!contract || !contract->active) return CONTRACT_FIT_INACTIVE;
+    if (contract->action != CONTRACT_TRACTOR) return CONTRACT_FIT_WRONG_ACTION;
+    if (!fragment || !fragment->active || fragment->ore <= 0.0f)
+        return CONTRACT_FIT_NO_CARGO;
+    if (contract->commodity >= COMMODITY_RAW_ORE_COUNT)
+        return CONTRACT_FIT_NOT_DELIVERABLE;
+    if (fragment->tier != ASTEROID_TIER_S)
+        return CONTRACT_FIT_WRONG_TIER;
+    if (fragment->commodity != contract->commodity)
+        return CONTRACT_FIT_WRONG_COMMODITY;
+    if ((mining_grade_t)fragment->grade < (mining_grade_t)contract->required_grade)
+        return CONTRACT_FIT_GRADE_TOO_LOW;
+    return CONTRACT_FIT_OK;
+}
+
+static inline contract_fit_reason_t contract_fit_asteroid(
+    const contract_t *contract,
+    const asteroid_t *asteroid)
+{
+    if (!contract || !contract->active) return CONTRACT_FIT_INACTIVE;
+    if (!asteroid || !asteroid->active) return CONTRACT_FIT_NO_CARGO;
+    if (contract->action == CONTRACT_TRACTOR)
+        return contract_fit_fragment(contract, asteroid);
+    if (contract->action != CONTRACT_FRACTURE)
+        return CONTRACT_FIT_WRONG_ACTION;
+    if (asteroid->tier == ASTEROID_TIER_S)
+        return CONTRACT_FIT_WRONG_TIER;
+    if (contract->target_index >= 0)
+        return CONTRACT_FIT_OK;
+    if (contract->commodity < COMMODITY_COUNT &&
+        asteroid->commodity != contract->commodity) {
+        return CONTRACT_FIT_WRONG_COMMODITY;
+    }
+    return CONTRACT_FIT_OK;
+}
+
+static inline int contract_fit_manifest_count(const contract_t *contract,
+                                              const manifest_t *manifest)
+{
+    if (!manifest || !manifest->units) return 0;
+    int count = 0;
+    for (uint16_t i = 0; i < manifest->count; i++) {
+        if (contract_fit_is_ok(contract_fit_cargo_unit(contract,
+                                                       &manifest->units[i]))) {
+            count++;
+        }
+    }
+    return count;
+}
+
+#endif /* CONTRACT_FIT_H */

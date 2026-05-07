@@ -837,7 +837,6 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     manifest_clear(&dest->manifest);
     memset(home->_inventory_cache, 0, sizeof(home->_inventory_cache));
     memset(dest->_inventory_cache, 0, sizeof(dest->_inventory_cache));
-    dest->module_count = 0;
     dest->scaffold = false;
 
     enum { EXPECTED_MOVED = 2 };

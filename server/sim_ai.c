@@ -57,6 +57,44 @@ static int station_finished_room_units_for_hauler(const station_t *st,
     return room > 0 ? room : 0;
 }
 
+static bool station_accepts_hauler_commodity(const station_t *st,
+                                             commodity_t c) {
+    if (!st || !station_is_active(st)) return false;
+    if (c < COMMODITY_RAW_ORE_COUNT || c >= COMMODITY_COUNT) return false;
+
+    if (st->scaffold && c == COMMODITY_FRAME) return true;
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *m = &st->modules[i];
+        if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
+        if (module_build_material_lookup(m->type) == c) return true;
+    }
+    return station_consumes(st, c);
+}
+
+static float station_hauler_need_score(const station_t *st, commodity_t c) {
+    if (!station_accepts_hauler_commodity(st, c)) return 0.0f;
+
+    float best = 0.0f;
+    if (st->scaffold && c == COMMODITY_FRAME) {
+        float remaining = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
+        if (remaining > best) best = remaining / SCAFFOLD_MATERIAL_NEEDED;
+    }
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *m = &st->modules[i];
+        if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
+        if (module_build_material_lookup(m->type) != c) continue;
+        float cost = module_build_cost_lookup(m->type);
+        if (cost <= 0.0f) continue;
+        float remaining = cost * (1.0f - module_supply_fraction(m));
+        float score = remaining / cost;
+        if (score > best) best = score;
+    }
+
+    station_demand_t d = station_demand_for(st, c);
+    if (d.commodity == c && d.severity > best) best = d.severity;
+    return best;
+}
+
 static void npc_update_manifest_rarity_tint(npc_ship_t *npc,
                                             const ship_t *paired_ship,
                                             float dt) {
@@ -933,8 +971,8 @@ static bool resolve_npc_annular_sector(npc_ship_t *npc, vec2 center,
 static float npc_station_nav_envelope_radius(const station_t *st) {
     int max_ring = station_max_ring(st);
     float r = (max_ring >= 1 && max_ring <= STATION_NUM_RINGS)
-        ? STATION_RING_RADIUS[max_ring] + 80.0f
-        : st->dock_radius;
+        ? STATION_RING_RADIUS[max_ring] + 220.0f
+        : st->dock_radius + 220.0f;
     return (r > st->dock_radius) ? r : st->dock_radius;
 }
 
@@ -943,11 +981,20 @@ static bool npc_point_inside_station_nav_envelope(const station_t *st, vec2 p) {
     return v2_dist_sq(p, st->pos) <= r * r;
 }
 
+static bool npc_point_inside_station_wall_clearance(const station_t *st, vec2 p) {
+    int max_ring = station_max_ring(st);
+    float r = (max_ring >= 1 && max_ring <= STATION_NUM_RINGS)
+        ? STATION_RING_RADIUS[max_ring] + 40.0f
+        : st->dock_radius + 40.0f;
+    if (r < st->dock_radius) r = st->dock_radius;
+    return v2_dist_sq(p, st->pos) <= r * r;
+}
+
 /* Treat station rings as traffic envelopes. If an NPC is inside any
  * station and its desired target is outside that station, first route
  * to that station's dock exit. Conversely, if the desired target is an
  * internal station work point and the NPC is outside that station,
- * route to the dock approach first. This covers haulers leaving a
+ * route to the outer roadway first. This covers haulers leaving a
  * non-home destination after unloading and miners returning to a
  * furnace/hopper midpoint with a fragment in tow. */
 static vec2 npc_target_routed_through_station_docks(const world_t *w,
@@ -958,7 +1005,7 @@ static vec2 npc_target_routed_through_station_docks(const world_t *w,
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_collides(st)) continue;
-        bool ship_inside = npc_point_inside_station_nav_envelope(st, npc->ship.pos);
+        bool ship_inside = npc_point_inside_station_wall_clearance(st, npc->ship.pos);
         bool target_inside = npc_point_inside_station_nav_envelope(st, want_target);
         if (!ship_inside || target_inside) continue;
         float d = v2_dist_sq(npc->ship.pos, st->pos);
@@ -967,8 +1014,13 @@ static vec2 npc_target_routed_through_station_docks(const world_t *w,
             exit_station = s;
         }
     }
-    if (exit_station >= 0)
-        return station_exit_target(&w->stations[exit_station], npc->ship.pos);
+    if (exit_station >= 0) {
+        const station_t *st = &w->stations[exit_station];
+        vec2 outer = station_entry_target(st, npc->ship.pos);
+        if (v2_dist_sq(npc->ship.pos, outer) < 180.0f * 180.0f)
+            return want_target;
+        return station_exit_target(st, npc->ship.pos);
+    }
 
     int entry_station = -1;
     float best_entry_d = 1e18f;
@@ -984,10 +1036,24 @@ static vec2 npc_target_routed_through_station_docks(const world_t *w,
             entry_station = s;
         }
     }
-    if (entry_station >= 0)
-        return station_approach_target(&w->stations[entry_station], npc->ship.pos);
+    if (entry_station >= 0) {
+        vec2 entry = station_entry_target(&w->stations[entry_station], npc->ship.pos);
+        if (v2_dist_sq(npc->ship.pos, entry) < 180.0f * 180.0f)
+            return want_target;
+        return entry;
+    }
 
     return want_target;
+}
+
+static bool npc_reached_station_dock_lane(const npc_ship_t *npc,
+                                          const station_t *st,
+                                          vec2 dock_lane) {
+    float lane_r = 90.0f;
+    if (v2_dist_sq(npc->ship.pos, dock_lane) < lane_r * lane_r) return true;
+
+    float dock_r = st->dock_radius * 0.7f;
+    return v2_dist_sq(npc->ship.pos, st->pos) < dock_r * dock_r;
 }
 
 static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
@@ -1147,7 +1213,11 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                 if (w->contracts[k].station_index >= MAX_STATIONS) continue;
                 if (w->contracts[k].station_index == npc->home_station) continue;
                 commodity_t c = w->contracts[k].commodity;
-                if (c < COMMODITY_RAW_ORE_COUNT) continue; /* haulers carry ingots only */
+                if (c < COMMODITY_RAW_ORE_COUNT) continue; /* raw ore moves as fragments */
+                if (!station_accepts_hauler_commodity(
+                        &w->stations[w->contracts[k].station_index], c)) {
+                    continue;
+                }
                 if (station_finished_available_for_hauler(home, c) <= 0)
                     continue; /* no manifest-backed stock to fill */
                 float dist = fmaxf(1.0f, v2_len(v2_sub(w->stations[w->contracts[k].station_index].pos, home->pos)));
@@ -1183,42 +1253,20 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     }
                 }
             } else {
-                /* Fallback: original round-trip behavior (leave reserve for players) */
+                /* Fallback: round-trip to the best compatible station need
+                 * (leave reserve for players). */
                 station_t *dest = &w->stations[npc->dest_station];
-                /* Sized for: FRAME_PRESS (FE) + LASER_FAB (CU+CR) +
-                 * TRACTOR_FAB (CU). Original code had wants[3] which
-                 * stack-overflowed when a station had FRAME_PRESS +
-                 * LASER_FAB + TRACTOR_FAB (Kepler post-#367). */
-                commodity_t wants[4];
-                int want_count = 0;
-                commodity_t best_ingot = COMMODITY_COUNT;
+                commodity_t best_cargo = COMMODITY_COUNT;
                 float best_need = -1.0f;
 
-                if (station_has_module(dest, MODULE_FRAME_PRESS))
-                    wants[want_count++] = COMMODITY_FERRITE_INGOT;
-                if (station_has_module(dest, MODULE_LASER_FAB)) {
-                    wants[want_count++] = COMMODITY_CUPRITE_INGOT;
-                    wants[want_count++] = COMMODITY_CRYSTAL_INGOT;
-                }
-                if (station_has_module(dest, MODULE_TRACTOR_FAB))
-                    wants[want_count++] = COMMODITY_CUPRITE_INGOT;
-
-                for (int wi = 0; wi < want_count; wi++) {
-                    commodity_t ingot = wants[wi];
-                    float avail = (float)station_finished_available_for_hauler(home, ingot);
-                    float need;
-                    bool seen = false;
-
-                    for (int wj = 0; wj < wi; wj++) {
-                        if (wants[wj] == ingot) { seen = true; break; }
-                    }
-                    if (seen || avail <= 0.5f) continue;
-
-                    need = fmaxf(0.0f, MAX_PRODUCT_STOCK * 0.5f -
-                                       (float)station_finished_count(dest, ingot));
+                for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+                    commodity_t cargo = (commodity_t)c;
+                    float avail = (float)station_finished_available_for_hauler(home, cargo);
+                    float need = station_hauler_need_score(dest, cargo);
+                    if (avail <= 0.5f || need <= 0.0f) continue;
                     if (need > best_need) {
                         best_need = need;
-                        best_ingot = ingot;
+                        best_cargo = cargo;
                     }
                 }
 
@@ -1228,72 +1276,56 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                  * full of ferrite, haulers are idle" — Prospect's home
                  * had ingots but the stale dest_station (e.g. Prospect
                  * itself, or a station with no FRAME_PRESS) had no
-                 * matching `wants[]`, so best_ingot stayed unset and
+                 * matching station need, so best_cargo stayed unset and
                  * total_carried fell to 0. Re-scan every other station
                  * and pick the best (surplus × need / dist) match. */
-                if (best_ingot >= COMMODITY_COUNT) {
+                if (best_cargo >= COMMODITY_COUNT) {
                     int best_alt_dest = -1;
-                    commodity_t best_alt_ingot = COMMODITY_COUNT;
+                    commodity_t best_alt_cargo = COMMODITY_COUNT;
                     float best_alt_score = 0.0f;
                     for (int s = 0; s < MAX_STATIONS; s++) {
                         if (s == npc->home_station) continue;
                         if (!station_is_active(&w->stations[s])) continue;
                         const station_t *alt = &w->stations[s];
-                        commodity_t alt_wants[4];
-                        int alt_want_count = 0;
-                        if (station_has_module(alt, MODULE_FRAME_PRESS))
-                            alt_wants[alt_want_count++] = COMMODITY_FERRITE_INGOT;
-                        if (station_has_module(alt, MODULE_LASER_FAB)) {
-                            alt_wants[alt_want_count++] = COMMODITY_CUPRITE_INGOT;
-                            alt_wants[alt_want_count++] = COMMODITY_CRYSTAL_INGOT;
-                        }
-                        if (station_has_module(alt, MODULE_TRACTOR_FAB))
-                            alt_wants[alt_want_count++] = COMMODITY_CUPRITE_INGOT;
-                        for (int wi = 0; wi < alt_want_count; wi++) {
-                            commodity_t ingot = alt_wants[wi];
-                            bool seen = false;
-                            for (int wj = 0; wj < wi; wj++) {
-                                if (alt_wants[wj] == ingot) { seen = true; break; }
-                            }
-                            if (seen) continue;
-                            float avail = (float)station_finished_available_for_hauler(home, ingot);
+                        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+                            commodity_t cargo = (commodity_t)c;
+                            float avail = (float)station_finished_available_for_hauler(home, cargo);
                             if (avail <= 0.5f) continue;
-                            float need = fmaxf(0.0f, MAX_PRODUCT_STOCK * 0.5f -
-                                                     (float)station_finished_count(alt, ingot));
+                            float need = station_hauler_need_score(alt, cargo);
                             if (need <= 0.0f) continue;
                             float dist = fmaxf(1.0f, v2_len(v2_sub(alt->pos, home->pos)));
                             float score = (avail * need) / dist;
                             if (score > best_alt_score) {
                                 best_alt_score = score;
                                 best_alt_dest = s;
-                                best_alt_ingot = ingot;
+                                best_alt_cargo = cargo;
                             }
                         }
                     }
                     if (best_alt_dest >= 0) {
                         npc->dest_station = best_alt_dest;
-                        best_ingot = best_alt_ingot;
+                        best_cargo = best_alt_cargo;
                     }
                 }
 
-                if (best_ingot < COMMODITY_COUNT) {
-                    int take_units = station_finished_available_for_hauler(home, best_ingot);
+                if (best_cargo < COMMODITY_COUNT) {
+                    int take_units = station_finished_available_for_hauler(home, best_cargo);
                     int space_units = (int)floorf(space + 0.0001f);
                     if (take_units > space_units) take_units = space_units;
                     if (take_units > 0) {
                         if (hauler_ship) {
                             int moved = hauler_load_station_units(home, hauler_ship,
-                                                                  best_ingot, take_units);
+                                                                  best_cargo, take_units);
                             if (moved > 0) {
-                                station_finished_sync(home, best_ingot);
-                                ship_finished_sync(hauler_ship, best_ingot);
+                                station_finished_sync(home, best_cargo);
+                                ship_finished_sync(hauler_ship, best_cargo);
                                 hauler_sync_cargo_from_manifest(npc, hauler_ship);
                             }
                         } else {
                             float take = (float)take_units;
-                            npc->cargo[best_ingot] += take;
-                            home->_inventory_cache[best_ingot] -= take;
-                            if (station_manifest_drain_commodity(home, best_ingot, take_units) > 0)
+                            npc->cargo[best_cargo] += take;
+                            home->_inventory_cache[best_cargo] -= take;
+                            if (station_manifest_drain_commodity(home, best_cargo, take_units) > 0)
                                 home->manifest_dirty = true;
                         }
                     }
@@ -1302,7 +1334,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             float total_carried = 0.0f;
             for (int c = 0; c < COMMODITY_COUNT; c++) total_carried += npc->cargo[c];
             if (total_carried < 0.01f) {
-                /* Nothing at home — relocate to a station with surplus ingots */
+                /* Nothing at home — look for surplus finished cargo. */
                 int best_src = -1;
                 float best_stock = 0.0f;
                 for (int s = 0; s < MAX_STATIONS; s++) {
@@ -1333,14 +1365,13 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     }
     case NPC_STATE_TRAVEL_TO_DEST: {
         station_t *dest = &w->stations[npc->dest_station];
-        vec2 approach = station_approach_target(dest, npc->ship.pos);
-        approach = npc_target_routed_through_station_docks(w, npc, approach);
+        vec2 dock_lane = station_approach_target(dest, npc->ship.pos);
+        vec2 approach = npc_target_routed_through_station_docks(w, npc, dock_lane);
         npc_steer_with_path(w, n, npc, approach, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
-        float dock_r = dest->dock_radius * 0.7f;
-        if (v2_dist_sq(npc->ship.pos, dest->pos) < dock_r * dock_r) {
+        if (npc_reached_station_dock_lane(npc, dest, dock_lane)) {
             npc->ship.vel = v2(0.0f, 0.0f);
-            npc->ship.pos = v2_add(dest->pos, v2(30.0f * (float)(n % 2 == 0 ? -1 : 1), -(dest->radius + hull->ship_radius + 50.0f)));
+            npc->ship.pos = dock_lane;
             npc->state = NPC_STATE_UNLOADING;
             npc->state_timer = HAULER_LOAD_TIME;
         }
@@ -1423,7 +1454,7 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     npc->cargo[i] = 0.0f;
                 }
             }
-            /* Hauler also delivers ingots to scaffold station and modules */
+            /* Hauler also feeds delivered stock into scaffold station/modules. */
             if (dest->scaffold || dest->module_count > 0) {
                 if (dest->scaffold) {
                     float needed_f = SCAFFOLD_MATERIAL_NEEDED * (1.0f - dest->scaffold_progress);
@@ -1472,14 +1503,13 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     }
     case NPC_STATE_RETURN_TO_STATION: {
         station_t *home = &w->stations[npc->home_station];
-        vec2 approach_home = station_approach_target(home, npc->ship.pos);
-        approach_home = npc_target_routed_through_station_docks(w, npc, approach_home);
+        vec2 dock_lane = station_approach_target(home, npc->ship.pos);
+        vec2 approach_home = npc_target_routed_through_station_docks(w, npc, dock_lane);
         npc_steer_with_path(w, n, npc, approach_home, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
-        float dock_r = home->dock_radius * 0.7f;
-        if (v2_dist_sq(npc->ship.pos, home->pos) < dock_r * dock_r) {
+        if (npc_reached_station_dock_lane(npc, home, dock_lane)) {
             npc->ship.vel = v2(0.0f, 0.0f);
-            npc->ship.pos = v2_add(home->pos, v2(50.0f * (float)(n % 2 == 0 ? -1 : 1), -(home->radius + hull->ship_radius + 70.0f)));
+            npc->ship.pos = dock_lane;
             npc->state = NPC_STATE_DOCKED;
             npc->state_timer = HAULER_DOCK_TIME;
             /* Dock auto-repair: NPC owes the home station for the
@@ -1731,7 +1761,9 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
         float spd = v2_len(npc->ship.vel);
         if (spd > 60.0f) npc->ship.vel = v2_scale(npc->ship.vel, 60.0f / spd);
         npc_apply_physics(npc, dt, w);
-        if (v2_dist_sq(npc->ship.pos, dest->pos) < 600.0f * 600.0f) {
+        float scaffold_arrival = dest->planned ? 700.0f : 600.0f;
+        float sc_d = v2_dist_sq(sc->pos, dest->pos);
+        if (sc_d < scaffold_arrival * scaffold_arrival) {
             /* Release — let the existing snap-to-slot logic in step_scaffolds
              * pick up the loose scaffold near the outpost ring. */
             sc->towed_by = -1;
@@ -1743,12 +1775,13 @@ static void step_tow_drone(world_t *w, npc_ship_t *npc, int n, float dt) {
     }
     case NPC_STATE_RETURN_TO_STATION: {
         station_t *home = &w->stations[npc->home_station];
-        vec2 approach = station_approach_target(home, npc->ship.pos);
-        approach = npc_target_routed_through_station_docks(w, npc, approach);
+        vec2 dock_lane = station_approach_target(home, npc->ship.pos);
+        vec2 approach = npc_target_routed_through_station_docks(w, npc, dock_lane);
         npc_steer_with_path(w, n, npc, approach, /*thrust_scale=*/1.0f, dt);
         npc_apply_physics(npc, dt, w);
-        if (v2_dist_sq(npc->ship.pos, home->pos) < (home->dock_radius * 0.7f) * (home->dock_radius * 0.7f)) {
+        if (npc_reached_station_dock_lane(npc, home, dock_lane)) {
             npc->ship.vel = v2(0.0f, 0.0f);
+            npc->ship.pos = dock_lane;
             npc->state = NPC_STATE_DOCKED;
             npc->state_timer = HAULER_DOCK_TIME;
         }

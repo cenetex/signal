@@ -24,6 +24,7 @@
 #include "tractor.h"
 #include "laser.h"
 #include "manifest.h"
+#include "contract_fit.h"
 #include "ship.h"
 #include "sim_ai.h"
 #include "sim_autopilot.h"
@@ -642,10 +643,11 @@ static int find_best_berth(const world_t *w, const station_t *st, int station_id
  * step_furnace_smelting, step_module_flow, step_module_delivery
  *   → sim_production.c */
 
-/* Approach target: aim for the dock gap lane nearest `from`, not the
- * dock module body. This gives NPCs/autopilot a road through the open
- * side of the dock instead of a straight line into its collision circle.
- * Falls back to station center if no dock module exists. */
+/* Approach target: aim for the inner dock gap lane nearest `from`, not
+ * the dock module body. This is the last station-local waypoint before
+ * an NPC is considered docked. Outside ships should route through
+ * station_entry_target() first so they cross the outer rings through the
+ * station roadway instead of cutting straight at an inner dock. */
 vec2 station_approach_target(const station_t *st, vec2 from) {
     float best_d = 1e18f;
     vec2 best_pos = st->pos;
@@ -662,16 +664,27 @@ vec2 station_approach_target(const station_t *st, vec2 from) {
     return best_pos;
 }
 
-/* Exit target: pick the dock gap lane nearest `from`, project a waypoint
- * past the outermost ring along that lane. NPCs (and eventually player
- * autopilot) steer through this waypoint as their UNDOCKING phase,
- * ensuring they clear ring-corridor obstacles before heading to their
- * real destination. */
+/* Entry target: the outside mouth of the outermost occupied ring's open
+ * roadway. This is the first waypoint for ships entering a station whose
+ * dock lives on an inner ring, such as Kepler. */
+vec2 station_entry_target(const station_t *st, vec2 from) {
+    (void)from;
+    int ring = station_max_ring(st);
+    if (ring >= 1 && ring <= STATION_NUM_RINGS) {
+        float r = STATION_RING_RADIUS[ring] + 160.0f;
+        if (station_ring_open_gap_lane(st, ring, NULL, NULL))
+            return station_ring_open_gap_lane_pos(st, ring, r);
+    }
+
+    /* No ring roadway: use a stable fallback outside the docking halo. */
+    float r = st->dock_radius + 160.0f;
+    if (r < st->radius + 160.0f) r = st->radius + 160.0f;
+    return v2_add(st->pos, v2(r, 0.0f));
+}
+
+/* Exit target: clear the inner dock lane if needed, then route to the
+ * same outer roadway mouth used for entry. */
 vec2 station_exit_target(const station_t *st, vec2 from) {
-    /* Push 160u past the outermost ring radius — comfortably clear of
-     * the ring corridor band's lookahead cone (which fires at ring_r
-     * +/- ship_radius + 40u). */
-    const float exit_pad = STATION_RING_RADIUS[STATION_NUM_RINGS] + 160.0f;
     int best_i = -1;
     float best_d = 1e18f;
     for (int i = 0; i < st->module_count; i++) {
@@ -682,8 +695,7 @@ vec2 station_exit_target(const station_t *st, vec2 from) {
         if (d < best_d) { best_d = d; best_i = i; }
     }
     if (best_i < 0) {
-        /* No dock — emit a stable fallback past the outer ring. */
-        return v2_add(st->pos, v2(exit_pad, 0.0f));
+        return station_entry_target(st, from);
     }
     int ring = st->modules[best_i].ring;
     int slot = st->modules[best_i].slot;
@@ -695,7 +707,7 @@ vec2 station_exit_target(const station_t *st, vec2 from) {
         v2_dist_sq(from, inner_lane) > 80.0f * 80.0f) {
         return inner_lane;
     }
-    return station_dock_lane_pos(st, ring, slot, exit_pad);
+    return station_entry_target(st, from);
 }
 
 /* ================================================================== */
@@ -1109,6 +1121,29 @@ static int transfer_ship_to_station_by_commodity(ship_t *src, station_t *dst,
                                                     MINING_GRADE_COUNT, n);
 }
 
+static int transfer_ship_to_station_by_contract(ship_t *src, station_t *dst,
+                                                const contract_t *contract,
+                                                int n) {
+    if (!src || !dst || !contract || n <= 0) return 0;
+    if (!ship_manifest_bootstrap(src) || !station_manifest_bootstrap(dst)) return 0;
+    int moved = 0;
+    while (moved < n) {
+        int idx = -1;
+        for (uint16_t i = 0; i < src->manifest.count; i++) {
+            if (!contract_fit_is_ok(contract_fit_cargo_unit(contract,
+                                                            &src->manifest.units[i]))) {
+                continue;
+            }
+            idx = (int)i;
+            break;
+        }
+        if (idx < 0) break;
+        if (!transfer_ship_unit_to_station(src, dst, (uint16_t)idx)) break;
+        moved++;
+    }
+    return moved;
+}
+
 static int transfer_station_to_ship_by_commodity_ex(station_t *src, ship_t *dst,
                                                     commodity_t commodity,
                                                     mining_grade_t preferred_grade,
@@ -1364,7 +1399,7 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         commodity_t c = ct->commodity;
         if (c < COMMODITY_RAW_ORE_COUNT) continue; /* see comment above */
         if (selective && filter != c) continue;
-        int held = manifest_count_by_commodity(&sp->ship.manifest, c);
+        int held = contract_fit_manifest_count(ct, &sp->ship.manifest);
         if (held <= 0) continue;
         had_sellable_cargo = true;
         float space = station_finished_space(st, c);
@@ -1380,8 +1415,8 @@ static void try_sell_station_cargo(world_t *w, server_player_t *sp) {
         if (deliver_units <= 0) continue;
         float price_per = contract_price(ct);
         uint16_t station_count_before = st->manifest.count;
-        int moved = transfer_ship_to_station_by_commodity(&sp->ship, st, c,
-                                                          deliver_units);
+        int moved = transfer_ship_to_station_by_contract(&sp->ship, st, ct,
+                                                         deliver_units);
         if (moved <= 0) continue;
         float bonus = manifest_grade_bonus_from_range(&st->manifest,
                                                       station_count_before,
