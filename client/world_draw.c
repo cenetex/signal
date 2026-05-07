@@ -66,6 +66,52 @@ void grade_tint(uint8_t grade, float *r, float *g, float *b) {
     *b = (float)bb / 255.0f;
 }
 
+static bool world_hash32_is_zero(const uint8_t hash[32]) {
+    for (int i = 0; i < 32; i++) {
+        if (hash[i] != 0) return false;
+    }
+    return true;
+}
+
+static void world_hash_short_label(const uint8_t hash[32], char out[8]) {
+    if (!hash || world_hash32_is_zero(hash)) {
+        snprintf(out, 8, "-------");
+        return;
+    }
+    mining_callsign_from_pubkey(hash, out);
+}
+
+static const uint8_t *hail_asteroid_identity_hash(const asteroid_t *a) {
+    if (!a) return NULL;
+    if (!world_hash32_is_zero(a->fragment_pub)) return a->fragment_pub;
+    if (!world_hash32_is_zero(a->rock_pub)) return a->rock_pub;
+    return NULL;
+}
+
+static const char *world_npc_role_label(npc_role_t role) {
+    switch (role) {
+    case NPC_ROLE_MINER:  return "MINER";
+    case NPC_ROLE_HAULER: return "HAULER";
+    case NPC_ROLE_TOW:    return "TOW";
+    default:              return "NPC";
+    }
+}
+
+static void world_npc_scan_label(const npc_ship_t *npc, int idx,
+                                 char out[32]) {
+    if (!npc) {
+        snprintf(out, 32, "NPC --");
+        return;
+    }
+    if (npc->session_token[0] == 'N' && npc->session_token[1] == 'P' &&
+        npc->session_token[2] == 'C') {
+        snprintf(out, 32, "%s N%02u", world_npc_role_label(npc->role),
+                 (unsigned)npc->session_token[5]);
+    } else {
+        snprintf(out, 32, "%s %02d", world_npc_role_label(npc->role), idx);
+    }
+}
+
 typedef struct {
     int s_tier[MAX_ASTEROIDS];
     int s_tier_count;
@@ -2848,7 +2894,9 @@ void draw_npc_chatter(void) {
 
     for (int t = 0; t < tag_count; t++) {
         const asteroid_t *a = &g.world.asteroids[tags[t].index];
-        char label[40];
+        char label[64];
+        char id[8];
+        world_hash_short_label(hail_asteroid_identity_hash(a), id);
         if (a->tier == ASTEROID_TIER_S) {
             const char *grade = NULL;
             if (a->grade == (uint8_t)MINING_GRADE_FINE) grade = "fine";
@@ -2857,20 +2905,21 @@ void draw_npc_chatter(void) {
             else if (a->grade == (uint8_t)MINING_GRADE_COMMISSIONED) grade = "comm";
 
             if (grade) {
-                snprintf(label, sizeof(label), "%s %s %s",
+                snprintf(label, sizeof(label), "%s %s %s %s",
                          commodity_code((commodity_t)a->commodity),
                          asteroid_tier_name((asteroid_tier_t)a->tier),
-                         grade);
+                         grade, id);
             } else {
-                snprintf(label, sizeof(label), "%s %s %.0f",
+                snprintf(label, sizeof(label), "%s %s %.0f %s",
                          commodity_code((commodity_t)a->commodity),
                          asteroid_tier_name((asteroid_tier_t)a->tier),
-                         a->ore);
+                         a->ore, id);
             }
         } else {
-            snprintf(label, sizeof(label), "%s %s",
+            snprintf(label, sizeof(label), "%s %s %s",
                      commodity_code((commodity_t)a->commodity),
-                     asteroid_tier_name((asteroid_tier_t)a->tier));
+                     asteroid_tier_name((asteroid_tier_t)a->tier),
+                     id);
         }
 
         uint8_t r, gg, b;
@@ -2885,7 +2934,6 @@ void draw_npc_chatter(void) {
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         const npc_ship_t *npc = &g.world.npc_ships[i];
         if (!npc->active) continue;
-        if (npc->role == NPC_ROLE_TOW) continue; /* tow drones: silent */
         if (!on_screen(npc->ship.pos.x, npc->ship.pos.y, 50.0f)) continue;
         if (v2_dist_sq(npc->ship.pos, g.hail_ping_origin) > hail_range_sq) continue;
 
@@ -2901,7 +2949,7 @@ void draw_npc_chatter(void) {
                     g.world.stations[npc->home_station].miner_chatter[idx % STATION_IDENTITY_CHATTER_LINES];
                 if (station_line[0]) line = station_line;
             }
-        } else {
+        } else if (npc->role == NPC_ROLE_HAULER) {
             int idx = (i + (int)(g.world.time / 8.0f)) % NPC_CHATTER_HAULER_COUNT;
             line = NPC_CHATTER_HAULER[idx];
             if (npc->home_station >= 0 && npc->home_station < MAX_STATIONS) {
@@ -2909,7 +2957,17 @@ void draw_npc_chatter(void) {
                     g.world.stations[npc->home_station].hauler_chatter[idx % STATION_IDENTITY_CHATTER_LINES];
                 if (station_line[0]) line = station_line;
             }
+        } else {
+            line = "tow drone";
         }
+
+        char ident[32];
+        world_npc_scan_label(npc, i, ident);
+        int ident_len = (int)strlen(ident);
+        sdtx_color4b(PAL_WORLD_STATION_CYAN, 220);
+        sdtx_world_pos(npc->ship.pos.x - ident_len * cell * 0.5f,
+                       npc->ship.pos.y + 34.0f, cell);
+        sdtx_puts(ident);
 
         int len = (int)strlen(line);
         uint8_t nr = (uint8_t)(clampf(npc->tint_r, 0.0f, 1.0f) * 255.0f);

@@ -410,6 +410,29 @@ static void sell_batch_accumulate(const sim_event_t *ev, int total) {
     g.sell_batch.settle_timer = 0.6f;
 }
 
+static bool client_hash32_is_zero(const uint8_t hash[32]) {
+    for (int i = 0; i < 32; i++) {
+        if (hash[i] != 0) return false;
+    }
+    return true;
+}
+
+static void station_hail_label(int station_idx, char *out, size_t cap) {
+    if (!out || cap == 0) return;
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) {
+        snprintf(out, cap, "Unknown");
+        return;
+    }
+    const station_t *st = &g.world.stations[station_idx];
+    if (client_hash32_is_zero(st->station_pubkey)) {
+        snprintf(out, cap, "%s", st->name);
+        return;
+    }
+    char id[8];
+    mining_callsign_from_pubkey(st->station_pubkey, id);
+    snprintf(out, cap, "%s [%s]", st->name, id);
+}
+
 static void sim_on_sell(const sim_event_t *ev) {
     if (!ev_is_local(ev)) return;
     audio_play_sale(&g.audio);
@@ -421,7 +444,7 @@ static void sim_on_sell(const sim_event_t *ev) {
         ev->sell.station >= 0 && ev->sell.station < MAX_STATIONS &&
         g.world.stations[ev->sell.station].rati_hail_message[0]) {
         const station_t *st = &g.world.stations[ev->sell.station];
-        snprintf(g.hail_station, sizeof(g.hail_station), "%s", st->name);
+        station_hail_label(ev->sell.station, g.hail_station, sizeof(g.hail_station));
         snprintf(g.hail_message, sizeof(g.hail_message), "%s", st->rati_hail_message);
         g.hail_credits = 0.0f;
         g.hail_station_index = ev->sell.station;
@@ -684,12 +707,11 @@ static void sim_on_hail_response(const sim_event_t *ev) {
     if (!ev_is_local(ev)) return;
     int hs = ev->hail_response.station;
     if (hs < 0 || hs >= MAX_STATIONS) {
-        set_notice("No station signal found.");
+        set_notice("Local scan sweep.");
         return;
     }
 
-    snprintf(g.hail_station, sizeof(g.hail_station), "%s",
-             g.world.stations[hs].name);
+    station_hail_label(hs, g.hail_station, sizeof(g.hail_station));
     int tier = -1;
     const char *msg = hail_choose_message(hs, &tier);
     if (tier >= 0) {
