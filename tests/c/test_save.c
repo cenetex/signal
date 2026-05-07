@@ -879,8 +879,11 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     ASSERT(manifest_find(&hauler_ship->manifest, units[0].pub) >= 0);
     ASSERT(manifest_find(&hauler_ship->manifest, units[1].pub) >= 0);
     ASSERT_EQ_INT((int)hauler_receipts->count, EXPECTED_MOVED);
-    ASSERT_EQ_INT((int)hauler_receipts->chains[0].len, 1);
+    ASSERT_EQ_INT((int)hauler_receipts->chains[0].len, 2);
     ASSERT_EQ_INT((int)hauler_receipts->chains[0].links[0].event_id, 900);
+    ASSERT(hauler_receipts->chains[0].links[1].event_id != 0);
+    ASSERT(memcmp(hauler_receipts->chains[0].links[1].authoring_station,
+                  home->station_pubkey, 32) == 0);
 
     ASSERT(station_catalog_save_all(w->stations, MAX_STATIONS,
                                     TMP("test_hauler_manifest_cat")));
@@ -899,8 +902,11 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     ASSERT(loaded_receipts != NULL);
     ASSERT_EQ_INT(loaded_ship->manifest.count, EXPECTED_MOVED);
     ASSERT_EQ_INT((int)loaded_receipts->count, EXPECTED_MOVED);
-    ASSERT_EQ_INT((int)loaded_receipts->chains[0].len, 1);
+    ASSERT_EQ_INT((int)loaded_receipts->chains[0].len, 2);
     ASSERT_EQ_INT((int)loaded_receipts->chains[0].links[0].event_id, 900);
+    ASSERT(loaded_receipts->chains[0].links[1].event_id != 0);
+    ASSERT(memcmp(loaded_receipts->chains[0].links[1].authoring_station,
+                  loaded->stations[0].station_pubkey, 32) == 0);
     ASSERT(manifest_find(&loaded_ship->manifest, units[0].pub) >= 0);
     ASSERT(manifest_find(&loaded_ship->manifest, units[1].pub) >= 0);
     ASSERT_EQ_FLOAT(loaded_hauler->cargo[COMMODITY_FERRITE_INGOT],
@@ -922,10 +928,22 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     int d1 = manifest_find(&loaded->stations[1].manifest, units[1].pub);
     ASSERT(d0 >= 0);
     ASSERT(d1 >= 0);
-    ASSERT_EQ_INT((int)dest_receipts->chains[d0].len, 1);
+    ASSERT((int)dest_receipts->chains[d0].len >= 2);
     ASSERT_EQ_INT((int)dest_receipts->chains[d0].links[0].event_id, 900);
-    ASSERT_EQ_INT((int)dest_receipts->chains[d1].len, 1);
+    ASSERT(memcmp(dest_receipts->chains[d0].links[1].authoring_station,
+                  loaded->stations[0].station_pubkey, 32) == 0);
+    if (dest_receipts->chains[d0].len >= 3) {
+        ASSERT(memcmp(dest_receipts->chains[d0].links[2].authoring_station,
+                      loaded->stations[1].station_pubkey, 32) == 0);
+    }
+    ASSERT((int)dest_receipts->chains[d1].len >= 2);
     ASSERT_EQ_INT((int)dest_receipts->chains[d1].links[0].event_id, 901);
+    ASSERT(memcmp(dest_receipts->chains[d1].links[1].authoring_station,
+                  loaded->stations[0].station_pubkey, 32) == 0);
+    if (dest_receipts->chains[d1].len >= 3) {
+        ASSERT(memcmp(dest_receipts->chains[d1].links[2].authoring_station,
+                      loaded->stations[1].station_pubkey, 32) == 0);
+    }
     for (uint16_t i = 0; i < loaded->stations[1].manifest.count; i++) {
         ASSERT(loaded->stations[1].manifest.units[i].recipe_id !=
                RECIPE_LEGACY_MIGRATE);

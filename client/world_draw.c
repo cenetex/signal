@@ -75,7 +75,7 @@ static bool world_hash32_is_zero(const uint8_t hash[32]) {
 
 static void world_hash_short_label(const uint8_t hash[32], char out[8]) {
     if (!hash || world_hash32_is_zero(hash)) {
-        snprintf(out, 8, "-------");
+        snprintf(out, 8, "no-id");
         return;
     }
     mining_callsign_from_pubkey(hash, out);
@@ -86,6 +86,19 @@ static const uint8_t *hail_asteroid_identity_hash(const asteroid_t *a) {
     if (!world_hash32_is_zero(a->fragment_pub)) return a->fragment_pub;
     if (!world_hash32_is_zero(a->rock_pub)) return a->rock_pub;
     return NULL;
+}
+
+static void hail_asteroid_identity_label(const asteroid_t *a, char out[8]) {
+    const uint8_t *hash = hail_asteroid_identity_hash(a);
+    if (hash) {
+        world_hash_short_label(hash, out);
+        return;
+    }
+    if (a && a->fracture_child && !world_hash32_is_zero(a->fracture_seed)) {
+        snprintf(out, 8, "pending");
+        return;
+    }
+    snprintf(out, 8, "no-id");
 }
 
 static const char *world_npc_role_label(npc_role_t role) {
@@ -2760,7 +2773,7 @@ void draw_npc_chatter(void) {
         const asteroid_t *a = &g.world.asteroids[tags[t].index];
         char label[64];
         char id[8];
-        world_hash_short_label(hail_asteroid_identity_hash(a), id);
+        hail_asteroid_identity_label(a, id);
         if (a->tier == ASTEROID_TIER_S) {
             const char *grade = NULL;
             if (a->grade == (uint8_t)MINING_GRADE_FINE) grade = "fine";

@@ -320,8 +320,13 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
     ASSERT_EQ_INT(hauler->dest_station, 1);
     ASSERT_EQ_INT(hauler_ship->manifest.count, EXPECTED_MOVED);
     ASSERT_EQ_INT((int)hauler_receipts->count, EXPECTED_MOVED);
-    ASSERT_EQ_INT((int)hauler_receipts->chains[0].len, 1);
+    ASSERT_EQ_INT((int)hauler_receipts->chains[0].len, 2);
     ASSERT_EQ_INT((int)hauler_receipts->chains[0].links[0].event_id, 700);
+    ASSERT(hauler_receipts->chains[0].links[1].event_id != 0);
+    ASSERT(memcmp(hauler_receipts->chains[0].links[1].cargo_pub,
+                  units[0].pub, 32) == 0);
+    ASSERT(memcmp(hauler_receipts->chains[0].links[1].authoring_station,
+                  home->station_pubkey, 32) == 0);
     ASSERT_EQ_INT(manifest_find(&home->manifest, units[0].pub), -1);
     ASSERT_EQ_INT(manifest_find(&home->manifest, units[1].pub), -1);
     ASSERT(manifest_find(&hauler_ship->manifest, units[0].pub) >= 0);
@@ -346,10 +351,20 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
     int d1 = manifest_find(&dest->manifest, units[1].pub);
     ASSERT(d0 >= 0);
     ASSERT(d1 >= 0);
-    ASSERT_EQ_INT((int)dest_receipts->chains[d0].len, 1);
+    ASSERT_EQ_INT((int)dest_receipts->chains[d0].len, 3);
     ASSERT_EQ_INT((int)dest_receipts->chains[d0].links[0].event_id, 700);
-    ASSERT_EQ_INT((int)dest_receipts->chains[d1].len, 1);
+    ASSERT(memcmp(dest_receipts->chains[d0].links[1].authoring_station,
+                  home->station_pubkey, 32) == 0);
+    ASSERT(memcmp(dest_receipts->chains[d0].links[2].authoring_station,
+                  dest->station_pubkey, 32) == 0);
+    ASSERT(memcmp(dest_receipts->chains[d0].links[2].recipient_pubkey,
+                  dest->station_pubkey, 32) == 0);
+    ASSERT_EQ_INT((int)dest_receipts->chains[d1].len, 3);
     ASSERT_EQ_INT((int)dest_receipts->chains[d1].links[0].event_id, 701);
+    ASSERT(memcmp(dest_receipts->chains[d1].links[1].authoring_station,
+                  home->station_pubkey, 32) == 0);
+    ASSERT(memcmp(dest_receipts->chains[d1].links[2].authoring_station,
+                  dest->station_pubkey, 32) == 0);
     ASSERT_EQ_INT(manifest_find(&home->manifest, units[0].pub), -1);
     ASSERT_EQ_INT(manifest_find(&home->manifest, units[1].pub), -1);
     ASSERT_EQ_FLOAT(dest->_inventory_cache[COMMODITY_FERRITE_INGOT],
