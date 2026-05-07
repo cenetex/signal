@@ -228,6 +228,20 @@ TEST(test_chain_log_emit_blocked_by_failed_health) {
     chain_test_teardown();
 }
 
+TEST(test_chain_log_health_repair_hints_are_operator_facing) {
+    const char *ok = chain_log_health_repair_hint(CHAIN_HEALTH_OK, false);
+    const char *failed = chain_log_health_repair_hint(CHAIN_HEALTH_FAILED, true);
+    const char *mismatch = chain_log_health_repair_hint(CHAIN_HEALTH_MISMATCH, true);
+    const char *adopted = chain_log_health_repair_hint(CHAIN_HEALTH_ADOPTED, false);
+
+    ASSERT(ok != NULL && strstr(ok, "No repair needed") != NULL);
+    ASSERT(failed != NULL && strstr(failed, "Preserve") != NULL);
+    ASSERT(failed != NULL && strstr(failed, "signal_verify") != NULL);
+    ASSERT(mismatch != NULL && strstr(mismatch, "Restore") != NULL);
+    ASSERT(mismatch != NULL && strstr(mismatch, "do not append") != NULL);
+    ASSERT(adopted != NULL && strstr(adopted, "Save") != NULL);
+}
+
 TEST(test_world_load_blocks_chain_appends_after_failed_verify) {
     chain_test_setup("load_failed_blocks");
     WORLD_HEAP w = calloc(1, sizeof(world_t));
@@ -1002,6 +1016,7 @@ void register_chain_log_tests(void) {
     RUN(test_chain_log_wrong_station_signature_rejected);
     RUN(test_chain_log_save_load_continuity);
     RUN(test_chain_log_emit_blocked_by_failed_health);
+    RUN(test_chain_log_health_repair_hints_are_operator_facing);
     RUN(test_world_load_blocks_chain_appends_after_failed_verify);
     RUN(test_world_load_blocks_chain_appends_after_missing_tail);
     RUN(test_chain_log_cross_station_independent);

@@ -166,6 +166,33 @@ const char *chain_log_health_status_name(chain_health_status_t status) {
     }
 }
 
+const char *chain_log_health_repair_hint(chain_health_status_t status,
+                                         bool append_blocked) {
+    switch (status) {
+    case CHAIN_HEALTH_OK:
+        return "No repair needed; verified chain tail matches the saved continuation pointer.";
+    case CHAIN_HEALTH_EMPTY:
+        return "No repair needed; the station has a verified empty chain.";
+    case CHAIN_HEALTH_ADOPTED:
+        return "Save the world state soon; the server adopted extra verified disk events after the last save.";
+    case CHAIN_HEALTH_FRESH:
+        return "No repair needed yet; this station has fresh in-memory chain state.";
+    case CHAIN_HEALTH_FAILED:
+        return append_blocked
+            ? "Preserve the damaged log, run signal_verify on it, then restore a matching save+chain backup or quarantine the bad log before starting a new chain branch."
+            : "Run signal_verify on the station log and preserve the diagnostic output.";
+    case CHAIN_HEALTH_MISMATCH:
+        return append_blocked
+            ? "Restore the matching world.sav and chain directory, or back up both and reset/re-anchor them together; do not append from the saved head."
+            : "Save and chain tails differ; compare world.sav with the chain directory before allowing appends.";
+    case CHAIN_HEALTH_UNKNOWN:
+    default:
+        return append_blocked
+            ? "Chain health is unknown and appends are blocked; verify the station log before repair."
+            : "Chain health has not been verified yet; restart or run signal_verify before trusting this station.";
+    }
+}
+
 void chain_log_health_set(station_t *s, chain_health_status_t status,
                           bool append_blocked,
                           uint64_t verified_event_count,

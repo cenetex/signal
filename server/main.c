@@ -1301,6 +1301,11 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
     for (int k = 0; k < 32; k++) BUF_APPEND(pos, buf, BUFSZ, "%02x", st->chain_verified_last_hash[k]);
     BUF_APPEND(pos, buf, BUFSZ, "\",\"chain_health_message\":\"");
     json_escape_append(buf, &pos, BUFSZ, st->chain_health_message);
+    BUF_APPEND(pos, buf, BUFSZ, "\",\"chain_repair_hint\":\"");
+    json_escape_append(buf, &pos, BUFSZ,
+                       chain_log_health_repair_hint(
+                           (chain_health_status_t)st->chain_health_status,
+                           st->chain_append_blocked));
     BUF_APPEND(pos, buf, BUFSZ, "\",\"inventory\":{");
 
     static const char *cnames[] = {
@@ -1891,6 +1896,11 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
                            (unsigned long long)st->chain_event_count,
                            (unsigned long long)st->chain_verified_event_count);
                 json_escape_append(buf, &pos, HEALTH_BUFSZ, st->chain_health_message);
+                BUF_APPEND(pos, buf, HEALTH_BUFSZ, "\",\"repair_hint\":\"");
+                json_escape_append(buf, &pos, HEALTH_BUFSZ,
+                                   chain_log_health_repair_hint(
+                                       (chain_health_status_t)st->chain_health_status,
+                                       st->chain_append_blocked));
                 BUF_APPEND(pos, buf, HEALTH_BUFSZ, "\"}");
             }
             BUF_APPEND(pos, buf, HEALTH_BUFSZ, "]}}");
