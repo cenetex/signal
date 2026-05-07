@@ -1383,6 +1383,187 @@ TEST(test_hauler_exits_non_home_station_before_return) {
 
     const nav_path_t *path = nav_npc_path(hauler);
     ASSERT(v2_dist_sq(path->goal, expected_exit) < 5.0f * 5.0f);
+
+    bool moved = false;
+    for (int i = 0; i < 240; i++) {
+        world_sim_step(&w, SIM_DT);
+        if (v2_dist_sq(npc->ship.pos, w.stations[1].pos) > 25.0f * 25.0f &&
+            v2_len(npc->ship.vel) > 1.0f) {
+            moved = true;
+            break;
+        }
+    }
+    ASSERT(moved);
+}
+
+TEST(test_miner_inside_station_nav_envelope_routes_to_outer_gap) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    int miner = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_MINER
+            && w.npc_ships[i].home_station == 2) {
+            miner = i;
+            break;
+        }
+    }
+    ASSERT(miner >= 0);
+
+    int target_a = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) { target_a = i; break; }
+    }
+    ASSERT(target_a >= 0);
+    asteroid_t *a = &w.asteroids[target_a];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_M;
+    a->commodity = COMMODITY_CUPRITE_ORE;
+    a->ore = 30.0f;
+    a->max_ore = 30.0f;
+    a->hp = 100.0f;
+    a->max_hp = 100.0f;
+    a->radius = 30.0f;
+    a->pos = v2_add(w.stations[2].pos, v2(3240.0f, -4200.0f));
+
+    npc_ship_t *npc = &w.npc_ships[miner];
+    npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+    npc->state_timer = 0.0f;
+    npc->target_asteroid = target_a;
+    npc->towed_fragment = -1;
+    npc->ship.hull_class = HULL_CLASS_NPC_MINER;
+    npc->ship.pos = v2_add(w.stations[2].pos, v2(292.0f, -485.0f));
+    npc->ship.vel = v2(0.0f, 0.0f);
+    npc->ship.angle = -1.12f;
+    ship_t *paired = world_npc_ship_for(&w, miner);
+    ASSERT(paired != NULL);
+    paired->pos = npc->ship.pos;
+    paired->vel = npc->ship.vel;
+    paired->angle = npc->ship.angle;
+    *nav_npc_path(miner) = (nav_path_t){0};
+
+    vec2 start = npc->ship.pos;
+    world_sim_step(&w, SIM_DT);
+
+    const nav_path_t *path = nav_npc_path(miner);
+    vec2 expected_exit = station_exit_target(&w.stations[2], start);
+    ASSERT(v2_dist_sq(path->goal, expected_exit) < 10.0f * 10.0f);
+
+    bool moved = false;
+    for (int i = 0; i < 240; i++) {
+        world_sim_step(&w, SIM_DT);
+        if (v2_dist_sq(npc->ship.pos, start) > 25.0f * 25.0f &&
+            v2_len(npc->ship.vel) > 1.0f) {
+            moved = true;
+            break;
+        }
+    }
+    ASSERT(moved);
+}
+
+TEST(test_hauler_near_station_does_not_post_distress_contract) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    int hauler = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER) {
+            hauler = i;
+            break;
+        }
+    }
+    ASSERT(hauler >= 0);
+
+    npc_ship_t *npc = &w.npc_ships[hauler];
+    npc->home_station = 2;
+    npc->dest_station = 1;
+    npc->state = NPC_STATE_RETURN_TO_STATION;
+    npc->ship.pos = station_approach_target(&w.stations[2], w.stations[1].pos);
+    npc->ship.vel = v2(0.0f, 0.0f);
+
+    int blocker = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) { blocker = i; break; }
+    }
+    ASSERT(blocker >= 0);
+    asteroid_t *a = &w.asteroids[blocker];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_M;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->hp = 100.0f;
+    a->max_hp = 100.0f;
+    a->radius = 40.0f;
+    a->pos = v2_add(npc->ship.pos, v2(80.0f, 0.0f));
+
+    generate_npc_distress_contracts(&w, SIM_DT);
+
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        ASSERT(!(w.contracts[k].active &&
+                 w.contracts[k].action == CONTRACT_FRACTURE &&
+                 w.contracts[k].target_index == blocker));
+    }
+}
+
+TEST(test_hauler_distress_requires_sustained_stall) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    int hauler = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER) {
+            hauler = i;
+            break;
+        }
+    }
+    ASSERT(hauler >= 0);
+
+    npc_ship_t *npc = &w.npc_ships[hauler];
+    npc->home_station = 0;
+    npc->dest_station = 1;
+    npc->state = NPC_STATE_TRAVEL_TO_DEST;
+    npc->ship.pos = v2(1200.0f, 1800.0f);
+    npc->ship.vel = v2(0.0f, 0.0f);
+    npc->state_timer = 0.0f;
+
+    int blocker = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) { blocker = i; break; }
+    }
+    ASSERT(blocker >= 0);
+    asteroid_t *a = &w.asteroids[blocker];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_M;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->hp = 100.0f;
+    a->max_hp = 100.0f;
+    a->radius = 40.0f;
+    a->pos = v2_add(npc->ship.pos, v2(80.0f, 0.0f));
+
+    generate_npc_distress_contracts(&w, 1.0f);
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        ASSERT(!(w.contracts[k].active &&
+                 w.contracts[k].action == CONTRACT_FRACTURE &&
+                 w.contracts[k].target_index == blocker));
+    }
+
+    for (int i = 0; i < 6; i++)
+        generate_npc_distress_contracts(&w, 1.0f);
+
+    bool posted = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (w.contracts[k].active &&
+            w.contracts[k].action == CONTRACT_FRACTURE &&
+            w.contracts[k].target_index == blocker) {
+            posted = true;
+            break;
+        }
+    }
+    ASSERT(posted);
 }
 
 TEST(test_hauler_docks_when_reaching_station_lane) {
@@ -2225,6 +2406,9 @@ void register_world_sim_scenarios_tests(void) {
     RUN(test_scenario_npc_economy_30_seconds);
     RUN(test_npc_exits_station_with_blocked_rings);
     RUN(test_hauler_exits_non_home_station_before_return);
+    RUN(test_miner_inside_station_nav_envelope_routes_to_outer_gap);
+    RUN(test_hauler_near_station_does_not_post_distress_contract);
+    RUN(test_hauler_distress_requires_sustained_stall);
     RUN(test_miner_enters_station_before_smelt_delivery);
     RUN(test_fragment_smelt_vents_overflow_instead_of_stranding);
     RUN(test_miner_routes_crystal_to_crystal_smelt_endpoint);
