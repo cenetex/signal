@@ -1075,15 +1075,6 @@ static bool npc_point_inside_station_nav_envelope(const station_t *st, vec2 p) {
     return v2_dist_sq(p, st->pos) <= r * r;
 }
 
-static bool npc_point_inside_station_wall_clearance(const station_t *st, vec2 p) {
-    int max_ring = station_max_ring(st);
-    float r = (max_ring >= 1 && max_ring <= STATION_NUM_RINGS)
-        ? STATION_RING_RADIUS[max_ring] + 40.0f
-        : st->dock_radius + 40.0f;
-    if (r < st->dock_radius) r = st->dock_radius;
-    return v2_dist_sq(p, st->pos) <= r * r;
-}
-
 /* Treat station rings as traffic envelopes. If an NPC is inside any
  * station and its desired target is outside that station, first route
  * to that station's dock exit. Conversely, if the desired target is an
@@ -1099,7 +1090,7 @@ static vec2 npc_target_routed_through_station_docks(const world_t *w,
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_collides(st)) continue;
-        bool ship_inside = npc_point_inside_station_wall_clearance(st, npc->ship.pos);
+        bool ship_inside = npc_point_inside_station_nav_envelope(st, npc->ship.pos);
         bool target_inside = npc_point_inside_station_nav_envelope(st, want_target);
         if (!ship_inside || target_inside) continue;
         float d = v2_dist_sq(npc->ship.pos, st->pos);
@@ -2281,16 +2272,33 @@ void step_npc_ships(world_t *w, float dt) {
 }
 
 /* Generate DESTROY contracts for asteroids blocking stuck NPCs. */
-void generate_npc_distress_contracts(world_t *w) {
+void generate_npc_distress_contracts(world_t *w, float dt) {
+    const float STUCK_CONTRACT_DELAY = 6.0f;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         npc_ship_t *npc = &w->npc_ships[n];
         if (!npc->active) continue;
         /* Only haulers in transit can get stuck */
         if (npc->role != NPC_ROLE_HAULER) continue;
         if (npc->state != NPC_STATE_TRAVEL_TO_DEST && npc->state != NPC_STATE_RETURN_TO_STATION) continue;
-        /* Check if stuck: low speed for a while (state_timer repurposed — skip if fresh) */
+        int route_station = (npc->state == NPC_STATE_TRAVEL_TO_DEST)
+            ? npc->dest_station
+            : npc->home_station;
+        if (route_station >= 0 && route_station < MAX_STATIONS &&
+            station_is_active(&w->stations[route_station]) &&
+            npc_point_inside_station_nav_envelope(&w->stations[route_station], npc->ship.pos)) {
+            npc->state_timer = 0.0f;
+            continue;
+        }
+        /* Check if stuck: low speed away from stations for a while.
+         * state_timer is unused by TRAVEL_TO_DEST / RETURN_TO_STATION,
+         * so it doubles as a small sustained-stall timer here. */
         float speed = v2_len(npc->ship.vel);
-        if (speed > 15.0f) continue;
+        if (speed > 15.0f) {
+            npc->state_timer = 0.0f;
+            continue;
+        }
+        npc->state_timer += dt;
+        if (npc->state_timer < STUCK_CONTRACT_DELAY) continue;
         /* Find nearest blocking asteroid */
         int blocker = -1;
         float best_d = 200.0f * 200.0f; /* within 200u */

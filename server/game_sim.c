@@ -5022,7 +5022,7 @@ void world_sim_step(world_t *w, float dt) {
     step_scaffolds(w, dt);
     step_contracts(w, dt);
     step_npc_ships(w, dt);
-    generate_npc_distress_contracts(w);
+    generate_npc_distress_contracts(w, dt);
     for (int p = 0; p < MAX_PLAYERS; p++) {
         if (!w->players[p].connected) continue;
         step_player(w, &w->players[p], dt);

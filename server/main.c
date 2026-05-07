@@ -1334,11 +1334,33 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
 
     BUF_APPEND(pos, buf, BUFSZ, "]},");
 
+    float sr_sq = st->signal_range * st->signal_range;
+    int asteroid_commodity_counts[COMMODITY_RAW_ORE_COUNT] = {0};
+    int asteroid_fragment_counts[COMMODITY_RAW_ORE_COUNT] = {0};
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        const asteroid_t *a = &world.asteroids[i];
+        if (!a->active) continue;
+        if (v2_dist_sq(a->pos, st->pos) > sr_sq) continue;
+        if (a->commodity < COMMODITY_RAW_ORE_COUNT) {
+            asteroid_commodity_counts[a->commodity]++;
+            if (a->tier == ASTEROID_TIER_S)
+                asteroid_fragment_counts[a->commodity]++;
+        }
+    }
+    BUF_APPEND(pos, buf, BUFSZ,
+        "\"asteroid_counts\":{\"ferrite\":%d,\"cuprite\":%d,\"crystal\":%d,"
+        "\"fragments\":{\"ferrite\":%d,\"cuprite\":%d,\"crystal\":%d}},",
+        asteroid_commodity_counts[COMMODITY_FERRITE_ORE],
+        asteroid_commodity_counts[COMMODITY_CUPRITE_ORE],
+        asteroid_commodity_counts[COMMODITY_CRYSTAL_ORE],
+        asteroid_fragment_counts[COMMODITY_FERRITE_ORE],
+        asteroid_fragment_counts[COMMODITY_CUPRITE_ORE],
+        asteroid_fragment_counts[COMMODITY_CRYSTAL_ORE]);
+
     /* Visible asteroids within signal range. Capped at
      * STATION_API_MAX_ASTEROIDS — agents don't need 1000+ rocks and
      * serializing them all blew past 32KB and truncated the tail of
      * the JSON mid-field (prod bug, April 2026). */
-    float sr_sq = st->signal_range * st->signal_range;
     BUF_APPEND(pos, buf, BUFSZ, "\"visible_asteroids\":[");
     bool first = true;
     int asteroid_count = 0;
@@ -1368,6 +1390,34 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
             "{\"id\":%d,\"x\":%.0f,\"y\":%.0f,\"docked\":%s}",
             i, world.players[i].ship.pos.x, world.players[i].ship.pos.y,
             world.players[i].docked ? "true" : "false");
+    }
+
+    /* Visible NPCs within signal range. Kept compact for operator/debug
+     * reads: role/state are enum ordinals matching shared/types.h. */
+    BUF_APPEND(pos, buf, BUFSZ, "],\"visible_npcs\":[");
+    first = true;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        const npc_ship_t *npc = &world.npc_ships[i];
+        if (!npc->active) continue;
+        if (v2_dist_sq(npc->ship.pos, st->pos) > sr_sq) continue;
+        float cargo_total = 0.0f;
+        for (int cc = 0; cc < COMMODITY_COUNT; cc++)
+            cargo_total += npc->cargo[cc];
+        const asteroid_t *target = NULL;
+        if (npc->target_asteroid >= 0 && npc->target_asteroid < MAX_ASTEROIDS) {
+            const asteroid_t *candidate = &world.asteroids[npc->target_asteroid];
+            if (candidate->active) target = candidate;
+        }
+        if (!first) BUF_APPEND(pos, buf, BUFSZ, ",");
+        first = false;
+        BUF_APPEND(pos, buf, BUFSZ,
+            "{\"slot\":%d,\"role\":%d,\"state\":%d,\"home\":%d,\"dest\":%d,"
+            "\"target\":%d,\"target_commodity\":%d,\"towed\":%d,"
+            "\"cargo\":%.0f,\"x\":%.1f,\"y\":%.1f,\"vx\":%.2f,\"vy\":%.2f}",
+            i, npc->role, npc->state, npc->home_station, npc->dest_station,
+            npc->target_asteroid, target ? (int)target->commodity : -1,
+            npc->towed_fragment, cargo_total,
+            npc->ship.pos.x, npc->ship.pos.y, npc->ship.vel.x, npc->ship.vel.y);
     }
 
     /* Visible stations within signal range */

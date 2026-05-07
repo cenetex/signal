@@ -317,7 +317,7 @@ static void test_station_entry_target_uses_outer_roadway(void) {
     ASSERT(fabsf(wrap_angle(a - expected)) < 0.05f);
 }
 
-static void test_nav_forward_clearance_respects_kepler_open_gap(void) {
+static void test_nav_segment_clear_respects_kepler_open_gap(void) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
     for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
@@ -330,21 +330,19 @@ static void test_nav_forward_clearance_respects_kepler_open_gap(void) {
     float wall_ang = module_angle_ring(kepler, 2, 4) +
                      (TWO_PI_F / (float)STATION_RING_SLOTS[2]) * 0.5f;
     float start_r = ring_r + 90.0f;
+    float end_r = ring_r - 90.0f;
 
     vec2 open_pos = v2_add(kepler->pos, v2(cosf(open_ang) * start_r,
                                             sinf(open_ang) * start_r));
-    vec2 open_fwd = v2(cosf(open_ang + PI_F), sinf(open_ang + PI_F));
-    float open_clear = nav_forward_clearance(w, open_pos, v2_scale(open_fwd, 120.0f),
-                                             16.0f, open_ang + PI_F);
-    ASSERT(open_clear > 0.85f);
+    vec2 open_goal = v2_add(kepler->pos, v2(cosf(open_ang) * end_r,
+                                             sinf(open_ang) * end_r));
+    ASSERT(nav_segment_clear(w, open_pos, open_goal, 46.0f));
 
     vec2 wall_pos = v2_add(kepler->pos, v2(cosf(wall_ang) * start_r,
                                             sinf(wall_ang) * start_r));
-    vec2 wall_fwd = v2(cosf(wall_ang + PI_F), sinf(wall_ang + PI_F));
-    float wall_clear = nav_forward_clearance(w, wall_pos, v2_scale(wall_fwd, 120.0f),
-                                             16.0f, wall_ang + PI_F);
-    ASSERT(wall_clear < open_clear);
-    ASSERT(wall_clear < 0.85f);
+    vec2 wall_goal = v2_add(kepler->pos, v2(cosf(wall_ang) * end_r,
+                                             sinf(wall_ang) * end_r));
+    ASSERT(!nav_segment_clear(w, wall_pos, wall_goal, 46.0f));
 }
 
 TEST(test_autopilot_completes_mining_cycle) {
@@ -594,7 +592,7 @@ void register_navigation_nav_tests(void) {
     RUN(test_nav_routes_to_station_smelt_midpoint);
     RUN(test_nav_routes_to_kepler_dock_through_outer_ring_gap);
     RUN(test_station_entry_target_uses_outer_roadway);
-    RUN(test_nav_forward_clearance_respects_kepler_open_gap);
+    RUN(test_nav_segment_clear_respects_kepler_open_gap);
 }
 
 void register_navigation_autopilot_stress_tests(void) {
