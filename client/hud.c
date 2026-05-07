@@ -1423,7 +1423,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
     /* Scaffold tow */
     if (LOCAL_PLAYER.ship.towed_scaffold >= 0) {
         label[0] = '\0';
-        snprintf(message, message_size, "Towing scaffold. E place, SPACE release.");
+        snprintf(message, message_size, "Towing scaffold. E place, tap SPACE release.");
         *r = 160; *g0 = 150; *b = 100;
         return true;
     }
@@ -1494,7 +1494,7 @@ const char *get_hud_hint_text(void) {
         return out;
 
     if (label[0] != '\0')
-        snprintf(out, sizeof(out), "%s: %s", label, message);
+        snprintf(out, sizeof(out), "%s :: %s", label, message);
     else
         snprintf(out, sizeof(out), "%s", message);
     return out;
@@ -2453,7 +2453,7 @@ void draw_hud(void) {
              * without forcing an explicit length check. */
             char line_buf[512];
             if (li == 0 && message_label[0] != '\0')
-                snprintf(line_buf, sizeof(line_buf), "%s: %s",
+                snprintf(line_buf, sizeof(line_buf), "%s :: %s",
                          message_label, message_lines[li]);
             else
                 snprintf(line_buf, sizeof(line_buf), "%s", message_lines[li]);

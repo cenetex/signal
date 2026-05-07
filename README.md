@@ -78,10 +78,10 @@ for the `swarm.rati.chat` avatar sync workflow.
 ## Controls
 
 - Flight: `W` or up thrusts, `S` or down brakes along current travel; from a
-  stop, pressing it again can reverse. `A/D` or arrows turn, `Space` mines,
-  and `E` docks or launches.
-- Tractor: `R` toggles the tractor beam. Turning it off releases towed
-  fragments or scaffolds.
+  stop, pressing it again can reverse. `A/D` or arrows turn, `M` fires the
+  mining beam, and `E` docks or launches.
+- Tractor: hold `Space` to tractor fragments or scaffolds. Tap `Space` to
+  release a tow.
 - Docked station controls: `Tab` cycles tabs. In SHIP BAY, `R` repairs,
   `M` upgrades the mining laser, `C` expands cargo hold, and `T` upgrades the
   tractor. In TRADE, `1`-`5` buy/sell visible rows, `F` pages, and `S` sells

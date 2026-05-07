@@ -4,8 +4,8 @@
  * This is deliberately not a contract/quest generator. It owns the
  * bottom-right guide/SIGNAL text surface: first the local teaching loop
  * (launch, fly, fracture, tractor, scan), then the concrete next step
- * for whatever station contract or ready ship upgrade the player is
- * tracking.
+ * for tracked station work, ready ship upgrades, or the highest-priority
+ * real station contract available as the economy spine.
  */
 #include "client.h"
 #include "contract_objective.h"
@@ -122,7 +122,7 @@ static bool guide_tractor(char *message, size_t message_size) {
                  "GUIDE // FRAGMENTS NEARBY ::::: HOLD [SPACE] TRACTOR");
     } else {
         snprintf(message, message_size,
-                 "GUIDE // BREAK ROCKS INTO FRAGMENTS ::::: THEN [SPACE]");
+                 "GUIDE // BREAK ROCKS INTO FRAGMENTS ::::: THEN HOLD [SPACE]");
     }
     return true;
 }
@@ -158,12 +158,40 @@ bool contract_step_hint(char *message, size_t message_size) {
     return true;
 }
 
-static bool ship_upgrade_step_hint(char *message, size_t message_size) {
-    if (message_size == 0) return false;
+static bool copy_objective_directive(const contract_objective_t *objective,
+                                     char *label, size_t label_size,
+                                     char *message, size_t message_size) {
+    if (!objective || !objective->active) return false;
+    if (label_size > 0)
+        snprintf(label, label_size, "%s", objective->label);
+    if (message_size > 0)
+        snprintf(message, message_size, "%s", objective->body[0]
+                 ? objective->body : objective->message);
+    return true;
+}
+
+static bool tracked_contract_directive(char *label, size_t label_size,
+                                       char *message, size_t message_size) {
+    contract_objective_t objective;
+    if (!contract_objective_for_tracked(&objective)) return false;
+    return copy_objective_directive(&objective, label, label_size,
+                                    message, message_size);
+}
+
+static bool recommended_contract_directive(char *label, size_t label_size,
+                                           char *message, size_t message_size) {
+    contract_objective_t objective;
+    if (!contract_objective_for_recommended(&objective)) return false;
+    return copy_objective_directive(&objective, label, label_size,
+                                    message, message_size);
+}
+
+static bool ship_upgrade_directive(char *label, size_t label_size,
+                                   char *message, size_t message_size) {
     contract_objective_t objective;
     if (!contract_objective_ready_upgrade(&objective)) return false;
-    snprintf(message, message_size, "%s", objective.message);
-    return true;
+    return copy_objective_directive(&objective, label, label_size,
+                                    message, message_size);
 }
 
 bool onboarding_hint(char *label, size_t label_size,
@@ -178,9 +206,21 @@ bool onboarding_hint(char *label, size_t label_size,
                      "GUIDE // LOOP COMPLETE ::::: [H] SCAN // LASER INSPECTS");
             return true;
         }
-        if (contract_step_hint(message, message_size))
+        if (tracked_contract_directive(label, label_size,
+                                       message, message_size))
             return true;
-        return ship_upgrade_step_hint(message, message_size);
+        if (ship_upgrade_directive(label, label_size,
+                                   message, message_size))
+            return true;
+        if (recommended_contract_directive(label, label_size,
+                                           message, message_size))
+            return true;
+        return false;
+    }
+
+    for (int i = 0; i < (int)(sizeof(GUIDE_OBJECTIVES) / sizeof(GUIDE_OBJECTIVES[0])); i++) {
+        if (GUIDE_OBJECTIVES[i].format(message, message_size))
+            return true;
     }
 
     /* Contextual, optional: boost is useful, but not part of completing the
@@ -194,15 +234,15 @@ bool onboarding_hint(char *label, size_t label_size,
         }
     }
 
-    if (contract_step_hint(message, message_size))
+    if (tracked_contract_directive(label, label_size,
+                                   message, message_size))
         return true;
-    if (ship_upgrade_step_hint(message, message_size))
+    if (ship_upgrade_directive(label, label_size,
+                               message, message_size))
         return true;
-
-    for (int i = 0; i < (int)(sizeof(GUIDE_OBJECTIVES) / sizeof(GUIDE_OBJECTIVES[0])); i++) {
-        if (GUIDE_OBJECTIVES[i].format(message, message_size))
-            return true;
-    }
+    if (recommended_contract_directive(label, label_size,
+                                       message, message_size))
+        return true;
 
     if (message_size > 0) message[0] = '\0';
     return false;

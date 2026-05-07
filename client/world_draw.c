@@ -2392,26 +2392,54 @@ void draw_towed_tethers(void) {
 /* Resolve the world-space target the player should go to next for the
  * currently tracked contract. The objective module owns source/destination
  * choice so SIGNAL text, compass pips, and the world ring cannot drift. */
-static bool resolve_tracked_contract_target(vec2 *out_pos, float *out_radius) {
+static bool resolve_tracked_contract_target(vec2 *out_pos, float *out_radius,
+                                            contract_objective_target_kind_t *out_kind) {
     contract_objective_t objective;
     if (!contract_objective_for_tracked(&objective)) return false;
     if (!objective.has_world_target) return false;
     *out_pos = objective.world_target;
     *out_radius = objective.world_radius;
+    if (out_kind) *out_kind = objective.target_kind;
     return true;
 }
 
-/* In-world yellow pulsing ring at the tracked contract's current next
- * objective. Sits in the same world-space pass as the rocks and ships
- * so the highlight is attached to the object, not a HUD overlay. */
+static void contract_target_color(contract_objective_target_kind_t kind,
+                                  float *r, float *g0, float *b) {
+    switch (kind) {
+    case CONTRACT_OBJECTIVE_TARGET_EXACT:
+        *r = 1.00f; *g0 = 0.87f; *b = 0.20f;
+        return;
+    case CONTRACT_OBJECTIVE_TARGET_SUGGESTED_SOURCE:
+        *r = 0.35f; *g0 = 0.72f; *b = 1.00f;
+        return;
+    case CONTRACT_OBJECTIVE_TARGET_DESTINATION:
+    case CONTRACT_OBJECTIVE_TARGET_FURNACE:
+        *r = 0.42f; *g0 = 0.92f; *b = 0.62f;
+        return;
+    case CONTRACT_OBJECTIVE_TARGET_PRODUCER:
+        *r = 1.00f; *g0 = 0.58f; *b = 0.24f;
+        return;
+    case CONTRACT_OBJECTIVE_TARGET_NONE:
+    default:
+        *r = 1.00f; *g0 = 0.87f; *b = 0.20f;
+        return;
+    }
+}
+
+/* In-world pulsing ring at the tracked contract's current next objective.
+ * Color comes from target semantics: exact target, suggested source,
+ * destination/furnace, or producer. */
 void draw_tracked_contract_highlight(void) {
     vec2 target; float radius;
-    if (!resolve_tracked_contract_target(&target, &radius)) return;
+    contract_objective_target_kind_t kind = CONTRACT_OBJECTIVE_TARGET_NONE;
+    if (!resolve_tracked_contract_target(&target, &radius, &kind)) return;
     if (!on_screen(target.x, target.y, radius + 40.0f)) return;
     float t = g.world.time;
     float pulse = 0.5f + 0.5f * sinf(t * 2.4f);
     float r = radius * (1.0f + 0.06f * pulse);
-    draw_circle_outline(target, r, 40, 1.0f, 0.87f, 0.20f, 0.75f + 0.20f * pulse);
+    float cr, cg, cb;
+    contract_target_color(kind, &cr, &cg, &cb);
+    draw_circle_outline(target, r, 40, cr, cg, cb, 0.75f + 0.20f * pulse);
 }
 
 void draw_compass_ring(void) {
@@ -2473,13 +2501,18 @@ void draw_compass_ring(void) {
         if (found) COMPASS_PIP(best_pos, 0.9f, 0.25f, 0.2f);
     }
 
-    /* Tracked contract pip (yellow). Uses the same resolver as the in-world
-     * ring so quota work cannot masquerade as a specific asteroid target. */
+    /* Tracked contract pip. Uses the same resolver/color policy as the
+     * in-world ring so quota work cannot masquerade as a specific asteroid
+     * target. */
     {
         vec2 target;
         float radius;
-        if (resolve_tracked_contract_target(&target, &radius))
-            COMPASS_PIP(target, 1.0f, 0.87f, 0.20f);
+        contract_objective_target_kind_t kind = CONTRACT_OBJECTIVE_TARGET_NONE;
+        if (resolve_tracked_contract_target(&target, &radius, &kind)) {
+            float cr, cg, cb;
+            contract_target_color(kind, &cr, &cg, &cb);
+            COMPASS_PIP(target, cr, cg, cb);
+        }
     }
 
     /* Nearest 3 remote players (colored pips) */

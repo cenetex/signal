@@ -19,8 +19,8 @@ void onboarding_mark_boosted(void);
  * player step: fracture, tow to furnace, deliver, or make the upstream good. */
 bool contract_step_hint(char *message, size_t message_size);
 
-/* Returns true and fills label/message when onboarding, tracked work, or a
- * ready ship upgrade has a timely hint. */
+/* Returns true and fills label/message when onboarding, tracked work, a ready
+ * ship upgrade, or a recommended real station contract has a timely hint. */
 bool onboarding_hint(char *label, size_t label_size,
                      char *message, size_t message_size);
 
