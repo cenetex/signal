@@ -186,6 +186,9 @@ TEST(test_chain_log_save_load_continuity) {
 
     ASSERT_EQ_INT((int)loaded->stations[0].chain_event_count, (int)saved_count);
     ASSERT(memcmp(loaded->stations[0].chain_last_hash, saved_last, 32) == 0);
+    ASSERT_EQ_INT((int)loaded->stations[0].chain_health_status,
+                  (int)CHAIN_HEALTH_OK);
+    ASSERT(!loaded->stations[0].chain_append_blocked);
 
     /* Emit one more — its prev_hash must equal saved_last. */
     uint8_t pl2[] = "def";
@@ -197,6 +200,115 @@ TEST(test_chain_log_save_load_continuity) {
     ASSERT(chain_log_verify(&loaded->stations[0], &walked, NULL));
     ASSERT_EQ_INT((int)walked, (int)id3);
     remove(TMP("clog_continuity.sav"));
+    chain_test_teardown();
+}
+
+TEST(test_chain_log_emit_blocked_by_failed_health) {
+    chain_test_setup("health_block_direct");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9016u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    chain_log_health_set(&w->stations[0], CHAIN_HEALTH_FAILED, true,
+                         0, NULL, "test verifier failure");
+    uint8_t pl[] = "blocked";
+    uint64_t id = chain_log_emit(w, &w->stations[0], CHAIN_EVT_LEDGER,
+                                 pl, sizeof(pl));
+    ASSERT(id == 0);
+    ASSERT_EQ_INT((int)w->stations[0].chain_event_count, 0);
+
+    char path[256];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey, path, sizeof(path)));
+    FILE *f = fopen(path, "rb");
+    ASSERT(f == NULL);
+    chain_test_teardown();
+}
+
+TEST(test_world_load_blocks_chain_appends_after_failed_verify) {
+    chain_test_setup("load_failed_blocks");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9017u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    uint8_t pl[] = "abc";
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_LEDGER,
+                          pl, sizeof(pl)) == 1);
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_LEDGER,
+                          pl, sizeof(pl)) == 2);
+    ASSERT(world_save(w, TMP("clog_failed_blocks.sav")));
+
+    char path[256];
+    ASSERT(chain_log_path_for(w->stations[0].station_pubkey, path, sizeof(path)));
+    FILE *f = fopen(path, "r+b");
+    ASSERT(f != NULL);
+    fseek(f, CHAIN_EVENT_HEADER_SIZE + 2, SEEK_SET);
+    uint8_t b = 0;
+    ASSERT(fread(&b, 1, 1, f) == 1);
+    fseek(f, CHAIN_EVENT_HEADER_SIZE + 2, SEEK_SET);
+    b ^= 0xFFu;
+    ASSERT(fwrite(&b, 1, 1, f) == 1);
+    fclose(f);
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    ASSERT(world_load(loaded, TMP("clog_failed_blocks.sav")));
+    ASSERT_EQ_INT((int)loaded->stations[0].chain_health_status,
+                  (int)CHAIN_HEALTH_FAILED);
+    ASSERT(loaded->stations[0].chain_append_blocked);
+    ASSERT(strstr(loaded->stations[0].chain_health_message,
+                  "payload_hash mismatch") != NULL);
+
+    uint64_t before = loaded->stations[0].chain_event_count;
+    uint64_t id = chain_log_emit(loaded, &loaded->stations[0],
+                                 CHAIN_EVT_LEDGER, pl, sizeof(pl));
+    ASSERT(id == 0);
+    ASSERT(loaded->stations[0].chain_event_count == before);
+    remove(TMP("clog_failed_blocks.sav"));
+    chain_test_teardown();
+}
+
+TEST(test_world_load_blocks_chain_appends_after_missing_tail) {
+    chain_test_setup("load_mismatch_blocks");
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    ASSERT(w != NULL);
+    w->rng = 9018u;
+    world_reset(w);
+    chain_test_wipe_logs(w);
+    w->stations[0].chain_event_count = 0;
+    memset(w->stations[0].chain_last_hash, 0, 32);
+
+    uint8_t pl[] = "abc";
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_LEDGER,
+                          pl, sizeof(pl)) == 1);
+    ASSERT(chain_log_emit(w, &w->stations[0], CHAIN_EVT_LEDGER,
+                          pl, sizeof(pl)) == 2);
+    ASSERT(world_save(w, TMP("clog_missing_tail.sav")));
+
+    chain_log_reset(&w->stations[0]);
+
+    WORLD_HEAP loaded = calloc(1, sizeof(world_t));
+    ASSERT(loaded != NULL);
+    ASSERT(world_load(loaded, TMP("clog_missing_tail.sav")));
+    ASSERT_EQ_INT((int)loaded->stations[0].chain_health_status,
+                  (int)CHAIN_HEALTH_MISMATCH);
+    ASSERT(loaded->stations[0].chain_append_blocked);
+    ASSERT(strstr(loaded->stations[0].chain_health_message,
+                  "continuation mismatch") != NULL);
+
+    uint64_t before = loaded->stations[0].chain_event_count;
+    uint64_t id = chain_log_emit(loaded, &loaded->stations[0],
+                                 CHAIN_EVT_LEDGER, pl, sizeof(pl));
+    ASSERT(id == 0);
+    ASSERT(loaded->stations[0].chain_event_count == before);
+    remove(TMP("clog_missing_tail.sav"));
     chain_test_teardown();
 }
 
@@ -532,12 +644,9 @@ TEST(test_chain_log_operator_post_replay_determinism) {
     free(payload);
 
     /* Round-trip the world via save/load — this is the actual replay
-     * condition (server restart). We deliberately do NOT call
-     * world_reset on a fresh world: that resets seeded stations'
-     * chain logs (see chain_log_reset in world_reset, game_sim.c) and
-     * would wipe the on-disk log we just wrote. world_save/load
-     * preserves chain_event_count and chain_last_hash; the on-disk
-     * .log file is untouched. */
+     * condition (server restart). world_save/load preserves
+     * chain_event_count and chain_last_hash; the on-disk .log file is
+     * untouched and world_load verifies it before future appends. */
     ASSERT(world_save(w, TMP("clog_op_replay.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(loaded != NULL);
@@ -806,9 +915,7 @@ TEST(test_chain_log_fragment_lifecycle_e2e) {
     w->rng = 9400u;
     world_reset(w);
     chain_test_wipe_logs(w);
-    /* world_reset's seed-motd path emits OPERATOR_POST events for the
-     * three founding stations; the wipe deleted the on-disk files but
-     * left in-memory chain_last_hash pointing at the seed events.
+    /* The wipe deleted any previous on-disk files for this test dir.
      * Zero the in-memory state so newly-emitted events chain from a
      * clean slate that matches the empty on-disk file. */
     for (int s = 0; s < 3; s++) {
@@ -894,6 +1001,9 @@ void register_chain_log_tests(void) {
     RUN(test_chain_log_tampered_event_detected);
     RUN(test_chain_log_wrong_station_signature_rejected);
     RUN(test_chain_log_save_load_continuity);
+    RUN(test_chain_log_emit_blocked_by_failed_health);
+    RUN(test_world_load_blocks_chain_appends_after_failed_verify);
+    RUN(test_world_load_blocks_chain_appends_after_missing_tail);
     RUN(test_chain_log_cross_station_independent);
     RUN(test_chain_log_smelt_emits_event);
     RUN(test_chain_log_smelt_emits_event_fragment_path);

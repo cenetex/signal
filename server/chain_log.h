@@ -285,9 +285,17 @@ const char *chain_log_get_dir(void);
  *
  * Returns the new event_id (>= 1), or 0 on failure. Failures are
  * logged via SIM_LOG and leave the station's in-memory state
- * untouched. */
+ * untouched. Returns 0 if startup verification has marked the station's
+ * chain unsafe to append. */
 uint64_t chain_log_emit(world_t *w, station_t *s, chain_event_type_t type,
                         const void *payload, uint16_t payload_len);
+
+const char *chain_log_health_status_name(chain_health_status_t status);
+void chain_log_health_set(station_t *s, chain_health_status_t status,
+                          bool append_blocked,
+                          uint64_t verified_event_count,
+                          const uint8_t verified_last_hash[32],
+                          const char *message);
 
 /* Walk the on-disk chain log for station s. Returns true iff every
  * event verifies: signature against authority pubkey (must equal
@@ -342,6 +350,11 @@ bool chain_log_verify_with_pubkey(FILE *log,
                                   const uint8_t station_pubkey[32],
                                   chain_log_verify_report_t *out_report);
 
+bool chain_log_verify_station(const station_t *s,
+                              uint64_t *out_event_count,
+                              uint8_t out_last_hash[32],
+                              chain_log_verify_report_t *out_report);
+
 /* Compute the SHA-256 of a chain_event_header_t (all 184 bytes,
  * including the signature — this is the full record hash that gets
  * fed into the *next* event's prev_hash). */
@@ -351,8 +364,8 @@ void chain_event_header_hash(const chain_event_header_t *h, uint8_t out[32]);
  * 256). Returns true on success. */
 bool chain_log_path_for(const uint8_t pubkey[32], char *out, size_t cap);
 
-/* Remove the on-disk chain log file for station s, if any. Used by
- * world_reset() so a fresh sim starts with empty per-station logs.
+/* Remove the on-disk chain log file for station s, if any. Use only for
+ * explicit test/fresh-world tooling after the intended seed is known.
  * Safe to call even if the file does not exist. */
 void chain_log_reset(const station_t *s);
 

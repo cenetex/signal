@@ -269,9 +269,10 @@ rewritten.
 Write semantics: `chain_log_emit` opens the per-station log file in append
 mode, writes header + payload-length + payload, calls `fflush`, and closes.
 Crash safety relies on the append-only property — a partial last-entry write
-is detected on the next verify walk and treated as the truncation it is. The
-verifier reports the count of events successfully walked, regardless of
-whether the walk failed at the tail.
+is detected on the next verify walk and treated as chain damage, not as an
+invitation to rewrite history. Startup verification records per-station chain
+health in `station_t`; `failed` or `mismatch` stations block future
+`chain_log_emit` calls until an operator repairs the save/log pairing.
 
 In-memory state: `station_t.chain_last_hash` is the SHA-256 of the most
 recently authored event header. The next event's `prev_hash` is set to this
@@ -280,6 +281,13 @@ monotonic per-station counter, stamped into `event_id` on every emit. Both
 fields are persisted by the world save (v41+), so the chain survives a server
 restart cleanly. The actual event records live in the side files under
 `chain/` — they are not part of `world.sav`.
+
+Startup policy: the on-disk log is authoritative when it verifies. If the disk
+tail is ahead of `world.sav` because the previous process appended events and
+died before autosave, `world_load()` adopts the verified disk tail before any
+startup anchor emits. If the log fails verification, or if a valid disk tail and
+saved continuation pointer disagree, the station becomes operator-visible
+health `failed` or `mismatch` and appends are blocked to avoid creating a fork.
 
 Verification semantics (`chain_log_verify`,
 [`server/chain_log.h`](../server/chain_log.h)):
@@ -296,6 +304,8 @@ Verification semantics (`chain_log_verify`,
    walked header through.
 4. Returns `true` iff every event verifies. A missing log file returns `true`
    with zero events walked — the empty chain is trivially valid.
+5. The server's startup wrapper stores this result as chain health and exposes it
+   through `/health` and `/api/station/<id>/state`.
 
 ## Cross-station settlement (Layer D — shipped off-chain)
 
