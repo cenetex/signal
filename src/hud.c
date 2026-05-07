@@ -630,11 +630,21 @@ static void hud_station_name_for_pubkey(const uint8_t pub[32],
 static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     if (g.inspect_snapshot_timer <= 0.0f) return;
     if (LOCAL_PLAYER.docked) return;
+    /* Suppress during the death cinematic — the camera framing and
+     * sepia tint are doing their own thing; the inspect pane would
+     * undermine that with stale info from before the death. */
+    if (g.death_cinematic.active) return;
     /* The timer alone gates visibility — the panel lingers for a few
      * seconds after scan release so the player can read what they
      * just locked onto. */
     const NetInspectSnapshot *snap = &g.inspect_snapshot;
     if (snap->target_type != INSPECT_TARGET_NPC) return;
+    /* Bug D: the linger keeps showing the pane after the scanned NPC
+     * despawns — drop it for stale targets. The world ring already
+     * gates on npc_ships[i].active, so this keeps the two surfaces
+     * in sync. */
+    if (snap->target_index < MAX_NPC_SHIPS
+        && !g.world.npc_ships[snap->target_index].active) return;
 
     float px = fmaxf(16.0f, screen_w - 360.0f);
     float py = (screen_h < 520.0f) ? 76.0f : 92.0f;
