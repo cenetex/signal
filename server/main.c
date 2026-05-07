@@ -1292,6 +1292,15 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
     for (int k = 0; k < 32; k++) BUF_APPEND(pos, buf, BUFSZ, "%02x", st->station_pubkey[k]);
     BUF_APPEND(pos, buf, BUFSZ, "\",\"chain_last_hash\":\"");
     for (int k = 0; k < 32; k++) BUF_APPEND(pos, buf, BUFSZ, "%02x", st->chain_last_hash[k]);
+    BUF_APPEND(pos, buf, BUFSZ,
+        "\",\"chain_health\":\"%s\",\"chain_append_blocked\":%s,"
+        "\"chain_verified_event_count\":%llu,\"chain_verified_last_hash\":\"",
+        chain_log_health_status_name((chain_health_status_t)st->chain_health_status),
+        st->chain_append_blocked ? "true" : "false",
+        (unsigned long long)st->chain_verified_event_count);
+    for (int k = 0; k < 32; k++) BUF_APPEND(pos, buf, BUFSZ, "%02x", st->chain_verified_last_hash[k]);
+    BUF_APPEND(pos, buf, BUFSZ, "\",\"chain_health_message\":\"");
+    json_escape_append(buf, &pos, BUFSZ, st->chain_health_message);
     BUF_APPEND(pos, buf, BUFSZ, "\",\"inventory\":{");
 
     static const char *cnames[] = {
@@ -1809,35 +1818,84 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
             int count = 0;
             for (int i = 0; i < MAX_PLAYERS; i++)
                 if (world.players[i].connected) count++;
+            static const uint8_t zero_pub[32] = {0};
+            int chain_station_count = 0;
+            int chain_blocked_count = 0;
+            int chain_warning_count = 0;
+            for (int i = 0; i < MAX_STATIONS; i++) {
+                const station_t *st = &world.stations[i];
+                if (memcmp(st->station_pubkey, zero_pub, 32) == 0) continue;
+                chain_station_count++;
+                chain_health_status_t status =
+                    (chain_health_status_t)st->chain_health_status;
+                if (st->chain_append_blocked) {
+                    chain_blocked_count++;
+                    chain_warning_count++;
+                } else if (status == CHAIN_HEALTH_UNKNOWN ||
+                           status == CHAIN_HEALTH_ADOPTED) {
+                    chain_warning_count++;
+                }
+            }
+            const char *chain_health =
+                chain_blocked_count > 0 ? "blocked" :
+                chain_warning_count > 0 ? "warning" : "ok";
 #ifdef GIT_HASH
-            mg_http_reply(c, 200, api_headers,
-                          "{\"status\":\"ok\",\"players\":%d,\"version\":\"%s\","
-                          "\"signed_action_count\":%llu,"
-                          "\"signed_action_reject_count\":%llu,"
-                          "\"unsigned_action_count\":%llu,"
-                          "\"hopper_smelt_events\":%llu,"
-                          "\"hopper_smelt_units\":%.3f}",
-                          count, GIT_HASH,
-                          (unsigned long long)signed_action_count,
-                          (unsigned long long)signed_action_reject_count,
-                          (unsigned long long)unsigned_action_count,
-                          (unsigned long long)world.hopper_smelt_events,
-                          world.hopper_smelt_units);
+            const char *version = GIT_HASH;
 #else
-            mg_http_reply(c, 200, api_headers,
-                          "{\"status\":\"ok\",\"players\":%d,\"version\":\"dev\","
-                          "\"signed_action_count\":%llu,"
-                          "\"signed_action_reject_count\":%llu,"
-                          "\"unsigned_action_count\":%llu,"
-                          "\"hopper_smelt_events\":%llu,"
-                          "\"hopper_smelt_units\":%.3f}",
-                          count,
-                          (unsigned long long)signed_action_count,
-                          (unsigned long long)signed_action_reject_count,
-                          (unsigned long long)unsigned_action_count,
-                          (unsigned long long)world.hopper_smelt_events,
-                          world.hopper_smelt_units);
+            const char *version = "dev";
 #endif
+            enum { HEALTH_BUFSZ = 65536 };
+            char *buf = (char *)malloc(HEALTH_BUFSZ);
+            if (!buf) {
+                mg_http_reply(c, 500, api_headers, "{\"error\":\"out of memory\"}");
+                return;
+            }
+            int pos = 0;
+            BUF_APPEND(pos, buf, HEALTH_BUFSZ,
+                       "{\"status\":\"ok\",\"players\":%d,\"version\":\"%s\","
+                       "\"signed_action_count\":%llu,"
+                       "\"signed_action_reject_count\":%llu,"
+                       "\"unsigned_action_count\":%llu,"
+                       "\"hopper_smelt_events\":%llu,"
+                       "\"hopper_smelt_units\":%.3f,"
+                       "\"chain\":{\"status\":\"%s\",\"chain_dir\":\"",
+                       count, version,
+                       (unsigned long long)signed_action_count,
+                       (unsigned long long)signed_action_reject_count,
+                       (unsigned long long)unsigned_action_count,
+                       (unsigned long long)world.hopper_smelt_events,
+                       world.hopper_smelt_units,
+                       chain_health);
+            json_escape_append(buf, &pos, HEALTH_BUFSZ, chain_log_get_dir());
+            BUF_APPEND(pos, buf, HEALTH_BUFSZ,
+                       "\",\"stations\":%d,\"blocked_stations\":%d,"
+                       "\"warning_stations\":%d,\"station_status\":[",
+                       chain_station_count, chain_blocked_count,
+                       chain_warning_count);
+            bool first_chain_station = true;
+            for (int i = 0; i < MAX_STATIONS; i++) {
+                const station_t *st = &world.stations[i];
+                if (memcmp(st->station_pubkey, zero_pub, 32) == 0) continue;
+                if (!first_chain_station) BUF_APPEND(pos, buf, HEALTH_BUFSZ, ",");
+                first_chain_station = false;
+                BUF_APPEND(pos, buf, HEALTH_BUFSZ,
+                           "{\"index\":%d,\"name\":\"", i);
+                json_escape_append(buf, &pos, HEALTH_BUFSZ, st->name);
+                BUF_APPEND(pos, buf, HEALTH_BUFSZ,
+                           "\",\"health\":\"%s\",\"append_blocked\":%s,"
+                           "\"event_count\":%llu,\"verified_event_count\":%llu,"
+                           "\"message\":\"",
+                           chain_log_health_status_name(
+                               (chain_health_status_t)st->chain_health_status),
+                           st->chain_append_blocked ? "true" : "false",
+                           (unsigned long long)st->chain_event_count,
+                           (unsigned long long)st->chain_verified_event_count);
+                json_escape_append(buf, &pos, HEALTH_BUFSZ, st->chain_health_message);
+                BUF_APPEND(pos, buf, HEALTH_BUFSZ, "\"}");
+            }
+            BUF_APPEND(pos, buf, HEALTH_BUFSZ, "]}}");
+            mg_http_reply(c, 200, api_headers, "%s", buf);
+            free(buf);
         } else if (mg_match(hm->uri, mg_str("/internal/v1/operator-post"), NULL)) {
             if (!internal_auth_ok(hm)) {
                 mg_http_reply(c, 401, api_headers, "{\"error\":\"unauthorized\"}");

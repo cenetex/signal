@@ -153,6 +153,42 @@ static void chain_event_unsigned_pack(const chain_event_header_t *h,
 /* Emit                                                                */
 /* ------------------------------------------------------------------ */
 
+const char *chain_log_health_status_name(chain_health_status_t status) {
+    switch (status) {
+    case CHAIN_HEALTH_FRESH:    return "fresh";
+    case CHAIN_HEALTH_OK:       return "ok";
+    case CHAIN_HEALTH_EMPTY:    return "empty";
+    case CHAIN_HEALTH_ADOPTED:  return "adopted";
+    case CHAIN_HEALTH_MISMATCH: return "mismatch";
+    case CHAIN_HEALTH_FAILED:   return "failed";
+    case CHAIN_HEALTH_UNKNOWN:
+    default:                    return "unknown";
+    }
+}
+
+void chain_log_health_set(station_t *s, chain_health_status_t status,
+                          bool append_blocked,
+                          uint64_t verified_event_count,
+                          const uint8_t verified_last_hash[32],
+                          const char *message) {
+    if (!s) return;
+    s->chain_health_status = (uint8_t)status;
+    s->chain_append_blocked = append_blocked;
+    s->chain_append_block_warned = false;
+    s->chain_verified_event_count = verified_event_count;
+    if (verified_last_hash) {
+        memcpy(s->chain_verified_last_hash, verified_last_hash, 32);
+    } else {
+        memset(s->chain_verified_last_hash, 0, sizeof(s->chain_verified_last_hash));
+    }
+    if (message && message[0]) {
+        snprintf(s->chain_health_message, sizeof(s->chain_health_message),
+                 "%s", message);
+    } else {
+        s->chain_health_message[0] = '\0';
+    }
+}
+
 uint64_t chain_log_emit(world_t *w, station_t *s, chain_event_type_t type,
                         const void *payload, uint16_t payload_len) {
     static const uint8_t zero_pub[32] = {0};
@@ -169,6 +205,18 @@ uint64_t chain_log_emit(world_t *w, station_t *s, chain_event_type_t type,
      * skip rather than emit a forgery-friendly all-zero signature. */
     static const uint8_t zero_secret[64] = {0};
     if (memcmp(s->station_secret, zero_secret, 64) == 0) return 0;
+    if (s->chain_append_blocked) {
+        if (!s->chain_append_block_warned) {
+            SIM_LOG("[chain] append blocked for station %s: %s\n",
+                    s->name[0] ? s->name : "(unnamed)",
+                    s->chain_health_message[0]
+                        ? s->chain_health_message
+                        : chain_log_health_status_name(
+                              (chain_health_status_t)s->chain_health_status));
+            s->chain_append_block_warned = true;
+        }
+        return 0;
+    }
 
     chain_event_header_t hdr;
     memset(&hdr, 0, sizeof(hdr));
@@ -242,12 +290,14 @@ uint64_t chain_log_emit(world_t *w, station_t *s, chain_event_type_t type,
  * tool can link it without pulling in the world_t / SIM_LOG / station
  * authority dependencies that chain_log_emit needs. */
 
-bool chain_log_verify(const station_t *s,
-                      uint64_t *out_event_count,
-                      uint8_t out_last_hash[32]) {
+bool chain_log_verify_station(const station_t *s,
+                              uint64_t *out_event_count,
+                              uint8_t out_last_hash[32],
+                              chain_log_verify_report_t *out_report) {
     static const uint8_t zero_pub[32] = {0};
     if (out_event_count) *out_event_count = 0;
     if (out_last_hash) memset(out_last_hash, 0, 32);
+    if (out_report) memset(out_report, 0, sizeof(*out_report));
     if (!s) return false;
     if (memcmp(s->station_pubkey, zero_pub, 32) == 0) {
         /* Unkeyed station — log is trivially empty. */
@@ -263,11 +313,12 @@ bool chain_log_verify(const station_t *s,
 
     chain_log_verify_report_t report;
     bool ok = chain_log_verify_with_pubkey(f, s->station_pubkey, &report);
+    if (out_report) memcpy(out_report, &report, sizeof(report));
 
     /* Recompute last_hash by re-reading just the last valid header,
      * preserving the original out_last_hash semantics (caller may
      * compare against in-memory chain_last_hash). */
-    if (ok && report.valid_events > 0 && out_last_hash) {
+    if (report.valid_events > 0 && out_last_hash) {
         rewind(f);
         uint8_t prev_hash[32] = {0};
         for (uint64_t i = 0; i < report.valid_events; i++) {
@@ -286,6 +337,12 @@ bool chain_log_verify(const station_t *s,
     fclose(f);
     if (out_event_count) *out_event_count = report.valid_events;
     return ok;
+}
+
+bool chain_log_verify(const station_t *s,
+                      uint64_t *out_event_count,
+                      uint8_t out_last_hash[32]) {
+    return chain_log_verify_station(s, out_event_count, out_last_hash, NULL);
 }
 
 void chain_log_reset(const station_t *s) {

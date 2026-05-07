@@ -717,6 +717,8 @@ static bool read_station_session(FILE *f, station_t *s) {
         memset(s->chain_last_hash, 0, sizeof(s->chain_last_hash));
         s->chain_event_count = 0;
     }
+    chain_log_health_set(s, CHAIN_HEALTH_UNKNOWN, false, 0, NULL,
+                         "chain not verified this boot");
     /* station_secret is rederived by the world loader, not persisted. */
     memset(s->station_secret, 0, sizeof(s->station_secret));
     return true;
@@ -1672,18 +1674,29 @@ bool world_load(world_t *w, const char *path) {
     /* Layer C of #479: walk every station's chain log on disk and
      * verify it against its station_pubkey. A corrupt chain (bad
      * signature, broken prev_hash linkage, or last_hash mismatch
-     * vs. the saved continuation pointer) is loud — we log a warning
-     * but do NOT silently rebuild the log. Operators must investigate.
-     * An empty log on disk is the post-migration v40 case and is fine. */
+     * vs. the saved continuation pointer) is now an explicit runtime
+     * health state. Unsafe stations block future appends until an
+     * operator repairs the save/log pairing; otherwise the first startup
+     * anchor could fork an already-divergent log. */
     for (int i = 0; i < MAX_STATIONS; i++) {
         station_t *st = &w->stations[i];
         if (memcmp(st->station_pubkey, zero_pub, 32) == 0) continue;
         uint64_t walked = 0;
         uint8_t walked_last[32] = {0};
-        if (!chain_log_verify(st, &walked, walked_last)) {
-            SIM_LOG("[chain] station %d: chain log VERIFICATION FAILED "
-                    "after %llu events — investigate; log untouched\n",
-                    i, (unsigned long long)walked);
+        chain_log_verify_report_t report;
+        if (!chain_log_verify_station(st, &walked, walked_last, &report)) {
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                     "verification failed after %llu valid events: %s",
+                     (unsigned long long)walked,
+                     report.first_fail_reason[0]
+                         ? report.first_fail_reason
+                         : "unknown verifier failure");
+            chain_log_health_set(st, CHAIN_HEALTH_FAILED, true,
+                                 walked, walked_last, msg);
+            SIM_LOG("[chain] OPERATOR WARNING station %d (%s): %s; "
+                    "chain appends blocked, log untouched\n",
+                    i, st->name, msg);
             continue;
         }
         /* The disk-walked tail is the authoritative continuation point.
@@ -1694,27 +1707,44 @@ bool world_load(world_t *w, const char *path) {
          * in-memory — so if we don't adopt the disk tail here, the very
          * first emit after boot forks the chain. Adopt-on-verify keeps
          * the chain monotonic across crash recovery. */
-        if (walked > st->chain_event_count) {
+        uint64_t saved_count = st->chain_event_count;
+        if (walked > saved_count) {
             SIM_LOG("[chain] station %d: adopting disk tail "
-                    "(disk: %llu events, save: %llu) — extra events "
+                    "(disk: %llu events, save: %llu) - extra events "
                     "preserved from unsaved appends\n",
                     i, (unsigned long long)walked,
-                    (unsigned long long)st->chain_event_count);
+                    (unsigned long long)saved_count);
             st->chain_event_count = walked;
             memcpy(st->chain_last_hash, walked_last, 32);
-        } else if (walked < st->chain_event_count
-                   || (walked > 0
-                       && memcmp(walked_last, st->chain_last_hash, 32) != 0)) {
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                     "adopted verified disk tail (%llu events; save had %llu)",
+                     (unsigned long long)walked,
+                     (unsigned long long)saved_count);
+            chain_log_health_set(st, CHAIN_HEALTH_ADOPTED, false,
+                                 walked, walked_last, msg);
+        } else if (walked < saved_count
+                   || memcmp(walked_last, st->chain_last_hash, 32) != 0) {
             /* Save claims more events than disk, or same length but a
              * different tail. Either is a real divergence (truncated
              * log, restored save against a different chain dir). Loud
              * + non-fatal: appends would fork either way. */
-            SIM_LOG("[chain] station %d: chain continuation mismatch "
-                    "(disk: %llu events, save: %llu) — events appended "
-                    "after this point will form a fork from the saved "
-                    "head\n",
-                    i, (unsigned long long)walked,
-                    (unsigned long long)st->chain_event_count);
+            char msg[128];
+            snprintf(msg, sizeof(msg),
+                     "continuation mismatch (disk: %llu events, save: %llu)",
+                     (unsigned long long)walked,
+                     (unsigned long long)saved_count);
+            chain_log_health_set(st, CHAIN_HEALTH_MISMATCH, true,
+                                 walked, walked_last, msg);
+            SIM_LOG("[chain] OPERATOR WARNING station %d (%s): %s; "
+                    "chain appends blocked to avoid forking from the saved head\n",
+                    i, st->name, msg);
+        } else {
+            chain_log_health_set(st, walked == 0 ? CHAIN_HEALTH_EMPTY : CHAIN_HEALTH_OK,
+                                 false, walked, walked_last,
+                                 walked == 0
+                                     ? "verified empty chain"
+                                     : "verified chain tail matches save");
         }
     }
     return true;

@@ -78,6 +78,16 @@ typedef enum {
     HULL_CLASS_COUNT,
 } hull_class_t;
 
+typedef enum {
+    CHAIN_HEALTH_UNKNOWN = 0,
+    CHAIN_HEALTH_FRESH = 1,
+    CHAIN_HEALTH_OK = 2,
+    CHAIN_HEALTH_EMPTY = 3,
+    CHAIN_HEALTH_ADOPTED = 4,
+    CHAIN_HEALTH_MISMATCH = 5,
+    CHAIN_HEALTH_FAILED = 6,
+} chain_health_status_t;
+
 typedef struct {
     const char* name;
     float max_hull;
@@ -498,9 +508,20 @@ typedef struct {
      * Both are persisted by the save (v41+) so the chain survives a
      * server restart. The actual event records live in side files
      * under `chain/<base58(station_pubkey)>.log` — they are NOT part
-     * of `world.sav`. */
+     * of `world.sav`.
+     *
+     * The chain_health_* fields are runtime-only startup verification
+     * state. They deliberately are not serialized: the next boot must
+     * re-walk the chain logs and make a fresh append/no-append decision. */
     uint8_t  chain_last_hash[32];
     uint64_t chain_event_count;
+    uint8_t  chain_health_status; /* chain_health_status_t */
+    bool     chain_append_blocked;
+    bool     chain_append_block_warned;
+    uint8_t  chain_health_pad[5];
+    uint64_t chain_verified_event_count;
+    uint8_t  chain_verified_last_hash[32];
+    char     chain_health_message[128];
     uint8_t  station_secret[64];   /* MUST stay last — never serialized */
 } station_t;
 

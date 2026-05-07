@@ -2421,6 +2421,8 @@ static void place_towed_scaffold(world_t *w, server_player_t *sp) {
              * derivation) and stays stable for the station's lifetime. */
             station_authority_init_outpost(st, sp->pubkey,
                                            (uint64_t)(w->time * 128.0f));
+            chain_log_health_set(st, CHAIN_HEALTH_FRESH, false, 0, NULL,
+                                 "new outpost chain; no log events yet");
             /* Outpost is born under construction — needs frames delivered
              * to activate. The towed relay seed becomes the station's
              * core relay (added below); the dock comes pre-stamped. */
@@ -3541,6 +3543,8 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
                  * frames, the station's pubkey traces to the planner. */
                 station_authority_init_outpost(st, sp->pubkey,
                                                (uint64_t)(w->time * 128.0f));
+                chain_log_health_set(st, CHAIN_HEALTH_FRESH, false, 0, NULL,
+                                     "planned outpost chain; no log events yet");
                 st->radius = 0.0f;
                 st->dock_radius = 0.0f;
                 st->signal_range = 0.0f;
@@ -5225,8 +5229,19 @@ static void seed_station_motd_chain_events(world_t *w, station_t *st,
  * append duplicate genesis events to an already-extended chain. */
 void world_seed_station_chain_genesis(world_t *w) {
     int n = w->station_count < 3 ? w->station_count : 3;
-    for (int s = 0; s < n; s++)
-        seed_station_motd_chain_events(w, &w->stations[s], s);
+    for (int s = 0; s < n; s++) {
+        station_t *st = &w->stations[s];
+        seed_station_motd_chain_events(w, st, s);
+        chain_log_health_set(st,
+                             st->chain_event_count > 0
+                                 ? CHAIN_HEALTH_OK
+                                 : CHAIN_HEALTH_EMPTY,
+                             false, st->chain_event_count,
+                             st->chain_last_hash,
+                             st->chain_event_count > 0
+                                 ? "fresh chain genesis authored"
+                                 : "fresh chain has no events");
+    }
 }
 
 void world_reset(world_t *w) {
@@ -5268,9 +5283,12 @@ void world_reset(world_t *w) {
      * etc.) sees stations with stable pubkeys. New seed → new pubkeys
      * → new chain log filenames; previous worlds' logs survive on
      * disk under their old pubkeys and feed the highscore replay. */
-    for (int s = 0; s < 3; s++)
+    for (int s = 0; s < 3; s++) {
         station_authority_init_seeded(&w->stations[s], w->belt_seed,
                                        (uint32_t)s);
+        chain_log_health_set(&w->stations[s], CHAIN_HEALTH_FRESH, false,
+                             0, NULL, "fresh chain; not verified yet");
+    }
 
     /* In-memory chain state is implicitly zero from the memset above.
      * Do NOT delete chain log files here — world_reset is called as

@@ -231,6 +231,11 @@ The same walker is callable from any C tool that links
 station record and check that it returns `true` and that `out_event_count`
 matches the in-memory `s->chain_event_count`.
 
+The running server also exposes chain health through `/health` and
+`/api/station/<id>/state`. A healthy station reports `chain_health` as `ok` or
+`empty` and `chain_append_blocked:false`. A station reporting `failed` or
+`mismatch` will refuse new chain events until the save/log pairing is repaired.
+
 ## Operational hygiene
 
 - **Backup the world save, not the keypair.** For seeded stations the
@@ -242,10 +247,10 @@ matches the in-memory `s->chain_event_count`.
   per station. If it grows much faster, something is emitting more than
   it should — investigate before it eats the volume.
 - **Verify on every server start.** Run `chain_log_verify` or standalone
-  `signal_verify` before serving any clients. A mismatched tail
-  is a real signal — either your previous run crashed mid-write, in
-  which case the verifier will tell you the count of events that
-  successfully walked, or someone tampered with the log file.
+  `signal_verify` before serving any clients. The server also performs this
+  walk during `world_load()` and publishes the result in `/health`. A failed
+  verification or save/log mismatch is a real signal; the station will block
+  future appends instead of silently forking the log.
 - **Don't truncate, edit, or replace chain logs in place.** They are
   append-only by contract. `world_reset()` intentionally does not delete chain
   files because normal load paths reset memory before the saved belt seed is
@@ -302,11 +307,12 @@ the outpost's identity is gone — start fresh by planting a new outpost.
 The chain log emitter writes header + payload-length + payload then `fflush`
 and closes ([`server/chain_log.c`](../server/chain_log.c)). The disk may
 contain a partial last entry. The verifier will walk up to the last good
-entry and report the count; the in-memory `chain_last_hash` is reset to that
-last good entry's hash on the next server start (via the verify-walk seeding
-the chain state during world load), and the truncated tail is overwritten by
-the next emit's append. There is no manual recovery step; verify on boot is
-sufficient.
+entry and report the count, but the server now treats the station as
+`CHAIN_HEALTH_FAILED` and blocks future appends. If the on-disk log is fully
+valid but simply ahead of `world.sav` because the process died after an append
+and before autosave, `world_load()` adopts the verified disk tail automatically.
+If verification fails, restore a matching save/log pair or archive the damaged
+chain for investigation before starting a new station identity.
 
 ### `world.sav` corruption
 
@@ -369,13 +375,18 @@ restore the world seed (or founding event) it expects.
 
 ### "Verifier reports `bad prev-hash linkage`"
 
-The on-disk tail does not match what the in-memory chain state thinks it
-is. Common cause: the server crashed after writing an event to disk but
-before persisting the world.sav, so on restart `chain_last_hash` came
-from an older save while the on-disk tail was newer. Resolution: walk
-the log forward from the start, take the verifier's `out_last_hash` as
-truth, and patch `station_t.chain_last_hash` from there before continuing
-emits. The chain log is the authoritative history.
+The on-disk log is internally broken: an event's `prev_hash` does not match the
+hash of the previous event header. Do not continue writing to that file. The
+server will mark the station `failed` and block appends. Restore a matching
+backup or preserve the damaged log for audit and start a new chain identity.
+
+### "Server refuses to emit; chain appends blocked"
+
+Check `/health` for the station's `chain.health`, `append_blocked`, and
+`message`. `failed` means signature, payload, or linkage verification failed.
+`mismatch` means the saved continuation pointer and verified disk tail disagree.
+In both cases the policy is intentional: continuing would create a fork that
+looks valid from the new head but loses continuity with the permanent history.
 
 ### "Server refuses to emit; SIM_LOG says self-verify failed"
 
