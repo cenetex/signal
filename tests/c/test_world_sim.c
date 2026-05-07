@@ -222,7 +222,6 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
     manifest_clear(&dest->manifest);
     memset(home->_inventory_cache, 0, sizeof(home->_inventory_cache));
     memset(dest->_inventory_cache, 0, sizeof(dest->_inventory_cache));
-    dest->module_count = 0; /* keep unload from immediately feeding fab modules */
     dest->scaffold = false;
 
     enum { EXPECTED_MOVED = 2 };
@@ -1313,6 +1312,46 @@ TEST(test_hauler_exits_non_home_station_before_return) {
     ASSERT(v2_dist_sq(path->goal, expected_exit) < 5.0f * 5.0f);
 }
 
+TEST(test_hauler_docks_when_reaching_station_lane) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    int hauler = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER) {
+            hauler = i;
+            break;
+        }
+    }
+    ASSERT(hauler >= 0);
+
+    station_t *kepler = &w.stations[1];
+    npc_ship_t *npc = &w.npc_ships[hauler];
+    npc->home_station = 0;
+    npc->dest_station = 1;
+    npc->state = NPC_STATE_TRAVEL_TO_DEST;
+    npc->state_timer = 0.0f;
+    npc->ship.hull_class = HULL_CLASS_HAULER;
+    vec2 lane = station_approach_target(kepler, v2_add(kepler->pos, v2(900.0f, 0.0f)));
+    npc->ship.pos = lane;
+    npc->ship.vel = v2(0.0f, 0.0f);
+    npc->ship.angle = 0.0f;
+    ship_t *paired = world_npc_ship_for(&w, hauler);
+    ASSERT(paired != NULL);
+    paired->pos = npc->ship.pos;
+    paired->vel = npc->ship.vel;
+    paired->angle = npc->ship.angle;
+    *nav_npc_path(hauler) = (nav_path_t){0};
+
+    ASSERT(v2_dist_sq(npc->ship.pos, kepler->pos) >
+           (kepler->dock_radius * 0.7f) * (kepler->dock_radius * 0.7f));
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->state, NPC_STATE_UNLOADING);
+    ASSERT(v2_dist_sq(npc->ship.pos, lane) < 5.0f * 5.0f);
+}
+
 TEST(test_miner_enters_station_before_smelt_delivery) {
     WORLD_DECL;
     world_reset(&w);
@@ -1360,7 +1399,7 @@ TEST(test_miner_enters_station_before_smelt_delivery) {
     paired->angle = npc->ship.angle;
     *nav_npc_path(miner) = (nav_path_t){0};
 
-    vec2 expected_entry = station_approach_target(&w.stations[0], npc->ship.pos);
+    vec2 expected_entry = station_entry_target(&w.stations[0], npc->ship.pos);
     world_sim_step(&w, SIM_DT);
 
     const nav_path_t *path = nav_npc_path(miner);
@@ -1944,6 +1983,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_hail_reports_no_station_in_range);
     RUN(test_dead_hauler_auto_respawns);
     RUN(test_hauler_preserves_cargo_identity_in_transit);
+    RUN(test_hauler_docks_when_reaching_station_lane);
     RUN(test_legacy_hauler_cargo_unloads_when_manifest_empty);
     RUN(test_dead_tow_auto_respawns_at_shipyard);
     RUN(test_player_init_ship_docked);

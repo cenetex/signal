@@ -53,6 +53,14 @@ float         module_angle_ring   (const station_t *st, int ring, int slot);
 float         station_dock_lane_angle(const station_t *st, int ring, int slot);
 vec2          station_dock_lane_pos(const station_t *st, int ring, int slot,
                                     float radius);
+/* The open station roadway for a ring: the middle of the intentionally
+ * unconnected wrap gap between the highest occupied slot and lowest
+ * occupied slot. Returns false for empty rings. */
+bool          station_ring_open_gap_lane(const station_t *st, int ring,
+                                         int *out_slot, float *out_offset);
+float         station_ring_open_gap_angle(const station_t *st, int ring);
+vec2          station_ring_open_gap_lane_pos(const station_t *st, int ring,
+                                             float radius);
 int           ring_module_count(const station_t *st, int ring);
 bool          station_has_ring(const station_t *st, int ring);
 bool          ring_has_dock(const station_t *st, int ring);

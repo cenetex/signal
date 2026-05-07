@@ -14,6 +14,7 @@
 #include "mining.h"  /* mining_alphanumeric_callsign — pubkey-derived */
 #include "signal_model.h"
 #include "palette.h"
+#include "contract_fit.h"
 #ifdef __EMSCRIPTEN__
 #include <emscripten.h>
 #endif
@@ -627,6 +628,15 @@ static void hud_station_name_for_pubkey(const uint8_t pub[32],
     snprintf(out, cap, "%s", tmp);
 }
 
+static const contract_t *hud_tracked_tractor_contract(void) {
+    if (g.tracked_contract < 0 || g.tracked_contract >= MAX_CONTRACTS)
+        return NULL;
+    const contract_t *contract = &g.world.contracts[g.tracked_contract];
+    if (!contract->active || contract->action != CONTRACT_TRACTOR)
+        return NULL;
+    return contract;
+}
+
 static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
     if (g.inspect_snapshot_timer <= 0.0f) return;
     if (LOCAL_PLAYER.docked) return;
@@ -669,7 +679,9 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
         return;
     }
 
+    const contract_t *tracked_contract = hud_tracked_tractor_contract();
     int max_rows = (screen_h < 520.0f) ? 5 : 8;
+    if (tracked_contract && max_rows > 1) max_rows--;
     int rows = snap->row_count;
     if (rows > max_rows) rows = max_rows;
     unsigned visible_units = 0;
@@ -751,6 +763,35 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
                     qty);
 
         next_y = y + 14.0f;
+        bool drew_contract_fit = false;
+        if (tracked_contract) {
+            bool has_proof = !grouped &&
+                ((row->flags & INSPECT_ROW_HAS_RECEIPT) != 0);
+            contract_fit_reason_t fit = contract_fit_cargo_fields(
+                tracked_contract,
+                (commodity_t)row->commodity,
+                (mining_grade_t)row->grade,
+                (uint16_t)qty,
+                has_proof);
+            bool relevant = contract_fit_is_ok(fit) ||
+                            row->commodity == (uint8_t)tracked_contract->commodity;
+            if (relevant) {
+                sdtx_pos(px / cell, (y + 12.0f) / cell);
+                if (contract_fit_is_ok(fit) && has_proof) {
+                    sdtx_color4b(PAL_CONTRACT_READY, a8_chain);
+                    sdtx_puts("contract: match");
+                } else if (contract_fit_is_ok(fit)) {
+                    sdtx_color4b(PAL_CONTRACT_HINT, a8_chain);
+                    sdtx_puts("contract: match / proof missing");
+                } else {
+                    sdtx_color4b(PAL_TEXT_GREY, a8_chain);
+                    sdtx_printf("contract: %s",
+                                contract_fit_reason_label(fit));
+                }
+                next_y = y + 26.0f;
+                drew_contract_fit = true;
+            }
+        }
         if (!grouped && (row->flags & INSPECT_ROW_HAS_RECEIPT)) {
             /* Phase rotation for chained rows. Singletons (chain_len==1)
              * pin to phase 0 — origin and latest are the same so phases
@@ -769,7 +810,8 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
             }
             float phase_ms = (now - g.inspect_row_anim[i].phase_t0) * 1000.0f;
 
-            sdtx_pos(px / cell, (y + 12.0f) / cell);
+            float chain_y = drew_contract_fit ? (y + 24.0f) : (y + 12.0f);
+            sdtx_pos(px / cell, chain_y / cell);
             sdtx_color4b(PAL_TEXT_GREY, a8_chain);
             uint32_t seed = (uint32_t)(sig & 0xffffffffu);
             if (target_phase == 0) {
@@ -804,7 +846,7 @@ static void hud_draw_inspect_snapshot_pane(float screen_w, float screen_h) {
                 sdtx_printf("chain %u  latest: %s",
                             (unsigned)row->chain_len, disp);
             }
-            next_y = y + 26.0f;
+            next_y = chain_y + 14.0f;
         }
     }
     /* Clear stale anim slots beyond the current row count so an

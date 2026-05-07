@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "contract_fit.h"
 
 TEST(test_station_production_yard_makes_frames) {
     station_t station = {0};
@@ -122,6 +123,92 @@ TEST(test_contract_price_escalates_with_age) {
     ASSERT_EQ_FLOAT(price_t5, 10.0f * 1.2f, 0.01f);
 }
 
+TEST(test_contract_fit_requires_material_grade_and_fragment_tier) {
+    contract_t ingot_contract = {
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .required_grade = (uint8_t)MINING_GRADE_RARE,
+    };
+    cargo_unit_t unit = {
+        .kind = CARGO_KIND_INGOT,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .grade = (uint8_t)MINING_GRADE_FINE,
+        .quantity = 1,
+    };
+    ASSERT_EQ_INT((int)contract_fit_cargo_unit(&ingot_contract, &unit),
+                  (int)CONTRACT_FIT_GRADE_TOO_LOW);
+
+    unit.grade = (uint8_t)MINING_GRADE_RARE;
+    ASSERT_EQ_INT((int)contract_fit_cargo_unit(&ingot_contract, &unit),
+                  (int)CONTRACT_FIT_OK);
+
+    unit.commodity = (uint8_t)COMMODITY_CUPRITE_INGOT;
+    ASSERT_EQ_INT((int)contract_fit_cargo_unit(&ingot_contract, &unit),
+                  (int)CONTRACT_FIT_WRONG_COMMODITY);
+
+    contract_t ore_contract = {
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .commodity = COMMODITY_FERRITE_ORE,
+        .required_grade = (uint8_t)MINING_GRADE_RARE,
+    };
+    asteroid_t fragment = {
+        .active = true,
+        .tier = ASTEROID_TIER_S,
+        .ore = 8.0f,
+        .commodity = COMMODITY_FERRITE_ORE,
+        .grade = (uint8_t)MINING_GRADE_FINE,
+    };
+    ASSERT_EQ_INT((int)contract_fit_fragment(&ore_contract, &fragment),
+                  (int)CONTRACT_FIT_GRADE_TOO_LOW);
+
+    fragment.grade = (uint8_t)MINING_GRADE_RARE;
+    ASSERT_EQ_INT((int)contract_fit_fragment(&ore_contract, &fragment),
+                  (int)CONTRACT_FIT_OK);
+
+    fragment.tier = ASTEROID_TIER_M;
+    ASSERT_EQ_INT((int)contract_fit_fragment(&ore_contract, &fragment),
+                  (int)CONTRACT_FIT_WRONG_TIER);
+}
+
+TEST(test_contract_delivery_requires_required_grade) {
+    WORLD_DECL;
+    world_reset(&w);
+    player_init_ship(&w.players[0], &w);
+    w.players[0].connected = true;
+    w.players[0].session_ready = true;
+    memset(w.players[0].session_token, 0x01, 8);
+
+    ASSERT(test_set_ship_finished_units(&w.players[0].ship,
+                                        COMMODITY_TRACTOR_MODULE, 5,
+                                        MINING_GRADE_COMMON));
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 0,
+        .commodity = COMMODITY_TRACTOR_MODULE,
+        .required_grade = (uint8_t)MINING_GRADE_RARE,
+        .quantity_needed = 2.0f,
+        .base_price = 100.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+    float credits_before = ledger_balance(&w.stations[0],
+                                          w.players[0].session_token);
+    w.players[0].docked = true;
+    w.players[0].current_station = 0;
+    w.players[0].input.service_sell = true;
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_FLOAT(w.players[0].ship.cargo[COMMODITY_TRACTOR_MODULE],
+                    5.0f, 0.01f);
+    ASSERT_EQ_FLOAT(w.contracts[0].quantity_needed, 2.0f, 0.01f);
+    ASSERT_EQ_FLOAT(ledger_balance(&w.stations[0],
+                                   w.players[0].session_token),
+                    credits_before, 0.01f);
+}
+
 TEST(test_contract_closes_when_deficit_filled) {
     /* Tractor-contract close hysteresis: opens on deficit (<90%), must NOT
      * close until inventory crosses 95% — otherwise a station sitting in
@@ -233,6 +320,53 @@ TEST(test_hauler_fills_highest_value_contract) {
     world_sim_step(&w, SIM_DT);
     /* Hauler should target station 2 (higher value contract) */
     ASSERT(hauler->dest_station == 2);
+}
+
+TEST(test_hauler_skips_incompatible_contract_destination) {
+    WORLD_DECL;
+    world_reset(&w);
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    w.contracts[0] = (contract_t){
+        .active = true, .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_CRYSTAL_INGOT,
+        .quantity_needed = 20.0f,
+        .base_price = 500.0f,
+        .target_index = -1, .claimed_by = -1,
+    };
+    w.contracts[1] = (contract_t){
+        .active = true, .action = CONTRACT_TRACTOR,
+        .station_index = 2,
+        .commodity = COMMODITY_CUPRITE_INGOT,
+        .quantity_needed = 20.0f,
+        .base_price = 20.0f,
+        .target_index = -1, .claimed_by = -1,
+    };
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_CRYSTAL_INGOT, 20));
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_CUPRITE_INGOT, 20));
+
+    npc_ship_t *hauler = NULL;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER) {
+            hauler = &w.npc_ships[i];
+            break;
+        }
+    }
+    ASSERT(hauler != NULL);
+    hauler->state = NPC_STATE_DOCKED;
+    hauler->state_timer = 0.0f;
+    hauler->home_station = 0;
+    hauler->dest_station = 1;
+    memset(hauler->cargo, 0, sizeof(hauler->cargo));
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(hauler->dest_station, 2);
+    ASSERT_EQ_FLOAT(hauler->cargo[COMMODITY_CRYSTAL_INGOT], 0.0f, 0.001f);
+    ASSERT(hauler->cargo[COMMODITY_CUPRITE_INGOT] > 0.0f);
 }
 
 TEST(test_hauler_ignores_float_only_finished_stock) {
@@ -987,9 +1121,12 @@ void register_economy_contracts_tests(void) {
     TEST_SECTION("\nContract tests:\n");
     RUN(test_contract_generated_from_hopper_deficit);
     RUN(test_contract_price_escalates_with_age);
+    RUN(test_contract_fit_requires_material_grade_and_fragment_tier);
+    RUN(test_contract_delivery_requires_required_grade);
     RUN(test_contract_closes_when_deficit_filled);
     RUN(test_sell_price_uses_contract_price);
     RUN(test_hauler_fills_highest_value_contract);
+    RUN(test_hauler_skips_incompatible_contract_destination);
     RUN(test_hauler_ignores_float_only_finished_stock);
     RUN(test_kit_fab_requires_shipyard);
     RUN(test_kit_import_contract_at_consumer_station);

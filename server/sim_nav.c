@@ -88,46 +88,6 @@ static vec2 snav_node_world_pos(const station_t *st, const snav_node_t *n) {
                                sinf(n->angle) * n->radius));
 }
 
-/* The station geometry emitter leaves the wrap-around span between the
- * highest occupied slot and the lowest occupied slot open on every ring.
- * This is the roadway through a ring even when the ring has no dock module.
- * Return that lane as "slot + angle offset" so SNAV_RING nodes can keep
- * rotating with the ring they belong to. */
-static bool station_ring_open_gap_lane(const station_t *st, int ring,
-                                       int *out_slot, float *out_offset) {
-    if (!st || ring < 1 || ring > STATION_NUM_RINGS) return false;
-    int slots_n = STATION_RING_SLOTS[ring];
-    if (slots_n <= 0) return false;
-
-    int slots[MAX_MODULES_PER_STATION];
-    int count = 0;
-    for (int i = 0; i < st->module_count && count < MAX_MODULES_PER_STATION; i++) {
-        if (st->modules[i].ring != ring) continue;
-        slots[count++] = st->modules[i].slot;
-    }
-    if (count <= 0) return false;
-
-    for (int i = 1; i < count; i++) {
-        int tmp = slots[i];
-        int j = i - 1;
-        while (j >= 0 && slots[j] > tmp) {
-            slots[j + 1] = slots[j];
-            j--;
-        }
-        slots[j + 1] = tmp;
-    }
-
-    int first = slots[0];
-    int last = slots[count - 1];
-    int gap_slots = first + slots_n - last;
-    if (gap_slots <= 0) gap_slots += slots_n;
-
-    float slot_arc = TWO_PI_F / (float)slots_n;
-    *out_slot = last;
-    *out_offset = slot_arc * (float)gap_slots * 0.5f;
-    return true;
-}
-
 static bool station_ring_angle_blocked(const station_t *st, int ring,
                                        float angle, float clearance) {
     if (!st || ring < 1 || ring > STATION_NUM_RINGS) return false;

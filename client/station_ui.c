@@ -8,6 +8,7 @@
 #include "mining_client.h"
 #include "manifest.h"
 #include "station_authority.h"
+#include "contract_fit.h"
 /* Grade palette lives in shared/mining.h (pulled in via client.h →
  * types.h → mining.h) alongside the grade enum + label + multiplier. */
 
@@ -222,13 +223,12 @@ int build_work_slots(int here_idx, vec2 here_pos,
                 int fi = ship->towed_fragments[t];
                 if (fi < 0 || fi >= MAX_ASTEROIDS) continue;
                 const asteroid_t *a = &g.world.asteroids[fi];
-                if (!a->active || a->tier != ASTEROID_TIER_S) continue;
-                if (a->commodity != ct->commodity) continue;
+                if (!contract_fit_is_ok(contract_fit_fragment(ct, a))) continue;
                 held_ore += a->ore;
             }
             held_int = (int)lroundf(held_ore);
         } else {
-            held_int = ship_manifest_count_c(&LOCAL_PLAYER.ship, ct->commodity);
+            held_int = contract_fit_manifest_count(ct, &LOCAL_PLAYER.ship.manifest);
         }
         if (held_int <= 0) continue;
         out_contracts[count]   = ci;
@@ -1634,9 +1634,7 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             bool any_frag = false;
             for (int i = 0; i < MAX_ASTEROIDS; i++) {
                 const asteroid_t *a = &g.world.asteroids[i];
-                if (!a->active) continue;
-                if (a->tier != ASTEROID_TIER_S) continue;
-                if (a->commodity != ct->commodity) continue;
+                if (!contract_fit_is_ok(contract_fit_fragment(ct, a))) continue;
                 any_frag = true; break;
             }
             job_txt = any_frag ? "tractor" : "fracture";
