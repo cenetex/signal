@@ -363,11 +363,10 @@ TEST(test_inspect_snapshot_groups_anonymous_ingots_by_grade) {
     ship_cleanup(&ship);
 }
 
-TEST(test_inspect_snapshot_groups_named_ingots_by_prefix_class) {
-    /* Hauler scan should collapse multiple same-prefix-class ingots
-     * (e.g. 3× H-class) into a single "X class xN" grouped row, while
-     * keeping a singleton named ingot (1× RATI) as its own per-unit
-     * row. The grouped row carries the prefix class in chain_len. */
+TEST(test_inspect_snapshot_keeps_named_ingots_individual) {
+    /* Hauler scan should group common anonymous bulk, but every named
+     * / prefix-class ingot stays per-unit so the hash and provenance can
+     * be inspected. */
     npc_ship_t npc;
     memset(&npc, 0, sizeof(npc));
     npc.active = true;
@@ -381,6 +380,7 @@ TEST(test_inspect_snapshot_groups_named_ingots_by_prefix_class) {
     ASSERT(ship_manifest_bootstrap(&ship));
 
     uint8_t fragment_pub[32] = {0};
+    cargo_unit_t h_units[3];
     /* Three H-class units at (FERRITE, COMMON). */
     for (int i = 0; i < 3; i++) {
         cargo_unit_t u;
@@ -389,6 +389,7 @@ TEST(test_inspect_snapshot_groups_named_ingots_by_prefix_class) {
         ASSERT(hash_ingot(COMMODITY_FERRITE_INGOT, MINING_GRADE_COMMON,
                           fragment_pub, (uint16_t)i, &u));
         u.prefix_class = (uint8_t)INGOT_PREFIX_H;
+        h_units[i] = u;
         ASSERT(ship_manifest_push_with_chain(&ship, &u, NULL));
     }
 
@@ -404,20 +405,21 @@ TEST(test_inspect_snapshot_groups_named_ingots_by_prefix_class) {
     uint8_t buf[INSPECT_SNAPSHOT_MAX_SIZE];
     int len = serialize_inspect_snapshot_npc(buf, 3, &npc, &ship);
 
-    ASSERT_EQ_INT(buf[8], 2);
+    ASSERT_EQ_INT(buf[8], 4);
     ASSERT_EQ_INT(read_u16_le(&buf[9]), 4);
-    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + 2 * INSPECT_SNAPSHOT_ROW);
+    ASSERT_EQ_INT(len, INSPECT_SNAPSHOT_HEADER + 4 * INSPECT_SNAPSHOT_ROW);
 
-    /* Row 0: H-class group of 3, prefix in chain_len byte. */
-    uint8_t *grp = &buf[INSPECT_SNAPSHOT_HEADER];
-    ASSERT_EQ_INT(grp[0], COMMODITY_FERRITE_INGOT);
-    ASSERT_EQ_INT(grp[1], MINING_GRADE_COMMON);
-    ASSERT_EQ_INT(grp[2], INGOT_PREFIX_H);
-    ASSERT(grp[3] & INSPECT_ROW_GROUPED);
-    ASSERT_EQ_INT(read_u16_le(&grp[12]), 3);
+    for (int i = 0; i < 3; i++) {
+        uint8_t *row = &buf[INSPECT_SNAPSHOT_HEADER + i * INSPECT_SNAPSHOT_ROW];
+        ASSERT_EQ_INT(row[0], COMMODITY_FERRITE_INGOT);
+        ASSERT_EQ_INT(row[1], MINING_GRADE_COMMON);
+        ASSERT(!(row[3] & INSPECT_ROW_GROUPED));
+        ASSERT_EQ_INT(read_u16_le(&row[12]), 1);
+        ASSERT(memcmp(&row[14], h_units[i].pub, 32) == 0);
+    }
 
-    /* Row 1: RATI singleton, ungrouped, full pub. */
-    uint8_t *single = &buf[INSPECT_SNAPSHOT_HEADER + INSPECT_SNAPSHOT_ROW];
+    /* Row 3: RATI singleton, ungrouped, full pub. */
+    uint8_t *single = &buf[INSPECT_SNAPSHOT_HEADER + 3 * INSPECT_SNAPSHOT_ROW];
     ASSERT_EQ_INT(single[0], COMMODITY_FERRITE_INGOT);
     ASSERT_EQ_INT(single[1], MINING_GRADE_COMMON);
     ASSERT(!(single[3] & INSPECT_ROW_GROUPED));
@@ -755,7 +757,7 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_npcs);
     RUN(test_roundtrip_inspect_snapshot_npc_manifest_chain);
     RUN(test_inspect_snapshot_groups_anonymous_ingots_by_grade);
-    RUN(test_inspect_snapshot_groups_named_ingots_by_prefix_class);
+    RUN(test_inspect_snapshot_keeps_named_ingots_individual);
     RUN(test_roundtrip_stations);
     RUN(test_station_identity_serializes_module_commodities);
     RUN(test_station_identity_serializes_operator_text);

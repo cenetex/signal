@@ -468,21 +468,13 @@ static inline int serialize_inspect_snapshot_npc(uint8_t *buf,
     write_u16_le(&buf[9], manifest_count);
 
     uint16_t bulk[COMMODITY_COUNT][MINING_GRADE_COUNT];
-    uint16_t named[COMMODITY_COUNT][MINING_GRADE_COUNT][INGOT_PREFIX_COUNT];
     memset(bulk, 0, sizeof(bulk));
-    memset(named, 0, sizeof(named));
     const ship_receipts_t *rcpts = ship_get_receipts_const(ship);
     for (uint16_t i = 0; i < manifest_count; i++) {
         const cargo_unit_t *u = &ship->manifest.units[i];
         if (inspect_unit_is_groupable_bulk(u)) {
             if (bulk[u->commodity][u->grade] < 0xFFFF)
                 bulk[u->commodity][u->grade]++;
-        } else if ((cargo_kind_t)u->kind == CARGO_KIND_INGOT
-                   && u->prefix_class < INGOT_PREFIX_COUNT
-                   && u->commodity < COMMODITY_COUNT
-                   && u->grade < MINING_GRADE_COUNT) {
-            if (named[u->commodity][u->grade][u->prefix_class] < 0xFFFF)
-                named[u->commodity][u->grade][u->prefix_class]++;
         }
     }
 
@@ -497,27 +489,10 @@ static inline int serialize_inspect_snapshot_npc(uint8_t *buf,
                 row_count++;
             }
 
-            /* Named-prefix grouping: ≥2 units of the same prefix class
-             * collapse into a single "X class xN" row; singletons fall
-             * through to the per-unit loop so their callsign + receipt
-             * chain stay visible. */
-            for (int pc = INGOT_PREFIX_ANONYMOUS + 1;
-                 pc < INGOT_PREFIX_COUNT && row_count < INSPECT_SNAPSHOT_MAX_ROWS; pc++) {
-                if (named[c][gr][pc] >= 2) {
-                    uint8_t *p = &buf[INSPECT_SNAPSHOT_HEADER + row_count * INSPECT_SNAPSHOT_ROW];
-                    write_inspect_snapshot_row(p, NULL, (uint8_t)c, (uint8_t)gr,
-                                               named[c][gr][pc], NULL, true,
-                                               (uint8_t)pc);
-                    row_count++;
-                }
-            }
-
             for (uint16_t i = 0; i < manifest_count && row_count < INSPECT_SNAPSHOT_MAX_ROWS; i++) {
                 const cargo_unit_t *u = &ship->manifest.units[i];
                 if (u->commodity != c || u->grade != gr) continue;
                 if (inspect_unit_is_groupable_bulk(u)) continue;
-                if (u->prefix_class < INGOT_PREFIX_COUNT
-                    && named[c][gr][u->prefix_class] >= 2) continue;
                 const cargo_receipt_chain_t *chain =
                     (rcpts && i < rcpts->count) ? &rcpts->chains[i] : NULL;
                 uint8_t *p = &buf[INSPECT_SNAPSHOT_HEADER + row_count * INSPECT_SNAPSHOT_ROW];
