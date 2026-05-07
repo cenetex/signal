@@ -291,7 +291,7 @@ test.describe('Browser smoke tests', () => {
     const canvas = await loadGame(page);
     await expect
       .poll(async () => hudHintText(page), { timeout: 5_000 })
-      .toContain('Press E to launch.');
+      .toContain('SIGNAL // GREETINGS PILOT');
 
     const firstIdentity = await page.evaluate(() => window.localStorage.getItem('signal:identity'));
     expect(firstIdentity).toMatch(/^[A-Za-z0-9+/]{86}==$/);
@@ -303,11 +303,11 @@ test.describe('Browser smoke tests', () => {
       // not the deterministic singleplayer transition that local smoke proves.
       await expect
         .poll(async () => hudHintText(page), { timeout: 8_000 })
-        .toMatch(/Press E to launch\.|Fly with W A S D\./);
+        .toMatch(/SIGNAL \/\/ GREETINGS PILOT|SIGNAL \/\/ FLIGHT CONTROL/);
     } else {
       await expect
         .poll(async () => hudHintText(page), { timeout: 8_000 })
-        .toContain('Fly with W A S D.');
+        .toContain('SIGNAL // FLIGHT CONTROL');
     }
 
     await page.reload();
@@ -325,7 +325,7 @@ test.describe('Browser smoke tests', () => {
 
     await expect
       .poll(async () => hudHintText(page), { timeout: 5_000 })
-      .toContain('Press E to launch.');
+      .toContain('SIGNAL // GREETINGS PILOT');
 
     await driveCoreControls(page, canvas);
     await expect

@@ -1242,7 +1242,8 @@ void get_flight_hud_rects(float* top_x, float* top_y, float* top_w, float* top_h
 
 bool hud_should_draw_message_panel(void) {
     if (episode_is_active(&g.episode)) return false;
-    return !LOCAL_PLAYER.docked || (g.notice_timer > 0.0f) || (g.collection_feedback_timer > 0.0f);
+    return !LOCAL_PLAYER.docked || !g.onboarding.complete || !g.onboarding.welcomed ||
+           (g.notice_timer > 0.0f) || (g.collection_feedback_timer > 0.0f);
 }
 
 void get_hud_message_panel_rect(float* x, float* y, float* width, float* height) {
@@ -1316,9 +1317,9 @@ static void wrap_hud_message_lines(const char *text, int max_cols,
 
 static bool build_hud_message(char* label, size_t label_size, char* message, size_t message_size, uint8_t* r, uint8_t* g0, uint8_t* b) {
     /* ================================================================
-     * SYSTEM HINT PANEL — bottom-right, muted colors, no personality.
-     * Shows the single most relevant system message or nothing.
-     * Stations never speak here — they use the hail overlay.
+     * SYSTEM HINT PANEL — bottom-right, one message at a time.
+     * Tutorial copy uses the SIGNAL system voice; stations never speak
+     * here because they use the hail overlay.
      * ================================================================ */
 
     /* Subtitle-style messages: one clean line, no label brackets.
@@ -1362,7 +1363,7 @@ static bool build_hud_message(char* label, size_t label_size, char* message, siz
 
     /* Onboarding */
     if (onboarding_hint(label, label_size, message, message_size)) {
-        *r = 130; *g0 = 180; *b = 200;
+        *r = 255; *g0 = 221; *b = 119;
         return true;
     }
 
