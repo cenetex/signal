@@ -520,18 +520,14 @@ void step_furnace_smelting(world_t *w, float dt) {
                 if (st->modules[m].type != MODULE_FURNACE) continue;
                 if (module_instance_input_ore(&st->modules[m]) != a->commodity) continue;
 
-                /* Output cap: refuse to engage the beam if the station's
-                 * ingot stockpile is already full. Without this, smelts
-                 * silently overflow (the inventory float clamps at
-                 * MAX_PRODUCT_STOCK and the manifest entry vanishes —
-                 * including the rare-grade identity the player worked
-                 * for). Skipping the beam keeps the fragment free; the
-                 * player gets visible feedback that this station can't
-                 * accept it (no tractor pull, no smelt) and can route
-                 * to a station with room. */
+                /* Output cap: refuse only when no room remains. If a large
+                 * fragment would overfill the bin, still clear it and vent
+                 * the excess below; otherwise a 90/120 stockpile can strand
+                 * every 30+ ore fragment on the beam and stall the intake
+                 * loop. */
                 commodity_t furnace_ingot = commodity_refined_form(a->commodity);
-                if (st->_inventory_cache[furnace_ingot] + a->ore > MAX_PRODUCT_STOCK)
-                    continue;  /* hopper full — skip this furnace */
+                if (MAX_PRODUCT_STOCK - st->_inventory_cache[furnace_ingot] <= 0.01f)
+                    continue;  /* output full — skip this furnace */
 
                 int ring = st->modules[m].ring;
                 vec2 furnace_pos = module_world_pos_ring(st, ring, st->modules[m].slot);
@@ -824,8 +820,8 @@ void step_furnace_smelting(world_t *w, float dt) {
             }
 
             /* Smelt: ore -> ingot in station inventory. Clamp at the
-             * stockpile cap — overshoot is lost (and the manifest dual-
-             * write below sees a smaller delta). The player still gets
+             * stockpile cap — overshoot is vented (and the manifest write
+             * below sees only the accepted delta). The player still gets
              * paid for the full ore value via the ledger above. */
             commodity_t ingot = commodity_refined_form(a->commodity);
             commodity_t output = (ingot != a->commodity) ? ingot : a->commodity;
@@ -839,10 +835,9 @@ void step_furnace_smelting(world_t *w, float dt) {
              * from base58(pub); this is the single identity store now —
              * the legacy named_ingots[] dual store was removed. */
             {
-                /* The furnace beam-engagement check (above) guarantees
-                 * stock_before + a->ore <= MAX_PRODUCT_STOCK, so the
-                 * post-clamp delta = pre-clamp delta. No more silent
-                 * overflow → no more "unknown origin" rows. */
+                /* Large fragments may overfill the remaining room. Mint
+                 * identity only for the units that actually landed in the
+                 * station bin; the rest is explicit vented overflow. */
                 int units_before = (int)floorf(stock_before + 0.0001f);
                 int units_after = (int)floorf(st->_inventory_cache[output] + 0.0001f);
                 int manifest_units = units_after - units_before;

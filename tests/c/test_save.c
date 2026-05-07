@@ -504,6 +504,35 @@ TEST(test_world_save_round_trips_station_manifest) {
     remove(TMP("test_manifest_roundtrip.sav"));
 }
 
+TEST(test_world_load_repairs_cache_only_station_finished_goods) {
+    WORLD_DECL;
+    WORLD_DECL_NAME(loaded);
+    world_reset(&w);
+    world_reset(&loaded);
+
+    station_t *helios = &w.stations[2];
+    ASSERT(test_set_station_finished_units(helios, COMMODITY_TRACTOR_MODULE, 10));
+    ASSERT_EQ_INT(station_finished_count(helios, COMMODITY_TRACTOR_MODULE), 10);
+
+    /* Simulate an older live save where the float stock survived but some
+     * cargo_unit_t rows were never minted. This exact shape makes haulers
+     * look paused: UI sees inventory, routing sees no manifest-backed cargo. */
+    ASSERT_EQ_INT(station_manifest_consume_by_commodity(
+                      helios, COMMODITY_TRACTOR_MODULE, 6), 6);
+    ASSERT_EQ_INT(station_finished_count(helios, COMMODITY_TRACTOR_MODULE), 4);
+    ASSERT_EQ_FLOAT(helios->_inventory_cache[COMMODITY_TRACTOR_MODULE],
+                    10.0f, 0.001f);
+
+    ASSERT(world_save(&w, TMP("test_manifest_repair.sav")));
+    ASSERT(world_load(&loaded, TMP("test_manifest_repair.sav")));
+
+    ASSERT_EQ_INT(station_finished_count(&loaded.stations[2],
+                                         COMMODITY_TRACTOR_MODULE), 10);
+    ASSERT_EQ_FLOAT(loaded.stations[2]._inventory_cache[COMMODITY_TRACTOR_MODULE],
+                    10.0f, 0.001f);
+    remove(TMP("test_manifest_repair.sav"));
+}
+
 TEST(test_player_load_clamps_negative_credits) {
     /* Credits are now in station ledgers, not ship_t. PLY3 format has no
      * credits field. This test just confirms save/load round-trip works. */
@@ -1155,6 +1184,7 @@ void register_save_persistence_tests(void) {
     RUN(test_world_load_missing_file);
     RUN(test_player_save_load_preserves_ship);
     RUN(test_world_save_round_trips_station_manifest);
+    RUN(test_world_load_repairs_cache_only_station_finished_goods);
     RUN(test_player_load_clamps_negative_credits);
     RUN(test_player_save_round_trips_ship_manifest);
     RUN(test_player_load_clamps_negative_cargo);

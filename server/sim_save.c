@@ -36,6 +36,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <errno.h>
+#include <math.h>
 #include <sys/stat.h>
 #include <sys/types.h>
 #ifdef _WIN32
@@ -719,6 +720,24 @@ static bool read_station_session(FILE *f, station_t *s) {
     }
     chain_log_health_set(s, CHAIN_HEALTH_UNKNOWN, false, 0, NULL,
                          "chain not verified this boot");
+    /* Repair saves produced while finished-good code was still being
+     * migrated to manifest-as-truth. Those builds could leave visible
+     * inventory in _inventory_cache without matching cargo_unit_t rows,
+     * which made trade IDs show as "------" and made haulers treat the
+     * stock as immovable. Keep real saved units, synthesize only the
+     * missing whole-unit tail, and preserve fractional production residue. */
+    {
+        uint8_t origin[8] = { 'R','E','P','A','I','R','v','1' };
+        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+            commodity_t commodity = (commodity_t)c;
+            int cache_units = (int)floorf(s->_inventory_cache[c] + 0.0001f);
+            int manifest_units = manifest_count_by_commodity(&s->manifest,
+                                                             commodity);
+            int missing = cache_units - manifest_units;
+            if (missing <= 0) continue;
+            (void)station_finished_mint(s, commodity, missing, origin);
+        }
+    }
     /* station_secret is rederived by the world loader, not persisted. */
     memset(s->station_secret, 0, sizeof(s->station_secret));
     return true;
