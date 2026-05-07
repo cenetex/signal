@@ -235,6 +235,15 @@ The running server also exposes chain health through `/health` and
 `/api/station/<id>/state`. A healthy station reports `chain_health` as `ok` or
 `empty` and `chain_append_blocked:false`. A station reporting `failed` or
 `mismatch` will refuse new chain events until the save/log pairing is repaired.
+For a readable local diagnosis, run:
+
+```sh
+scripts/chain-doctor.py --url http://127.0.0.1:9091/health
+```
+
+The doctor is read-only. It prints each station's verifier message and the
+server-authored repair hint, then reminds the operator to preserve `world.sav`
+and `chain/` before making manual repairs.
 
 ## Operational hygiene
 
@@ -383,10 +392,11 @@ backup or preserve the damaged log for audit and start a new chain identity.
 ### "Server refuses to emit; chain appends blocked"
 
 Check `/health` for the station's `chain.health`, `append_blocked`, and
-`message`. `failed` means signature, payload, or linkage verification failed.
-`mismatch` means the saved continuation pointer and verified disk tail disagree.
-In both cases the policy is intentional: continuing would create a fork that
-looks valid from the new head but loses continuity with the permanent history.
+`message`, or run `scripts/chain-doctor.py`. `failed` means signature, payload,
+or linkage verification failed. `mismatch` means the saved continuation pointer
+and verified disk tail disagree. In both cases the policy is intentional:
+continuing would create a fork that looks valid from the new head but loses
+continuity with the permanent history.
 
 ### "Server refuses to emit; SIM_LOG says self-verify failed"
 

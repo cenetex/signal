@@ -291,6 +291,8 @@ uint64_t chain_log_emit(world_t *w, station_t *s, chain_event_type_t type,
                         const void *payload, uint16_t payload_len);
 
 const char *chain_log_health_status_name(chain_health_status_t status);
+const char *chain_log_health_repair_hint(chain_health_status_t status,
+                                         bool append_blocked);
 void chain_log_health_set(station_t *s, chain_health_status_t status,
                           bool append_blocked,
                           uint64_t verified_event_count,
