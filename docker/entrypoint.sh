@@ -38,9 +38,33 @@ SERVER_PID=$!
 python3 - <<'PY' &
 from http.server import SimpleHTTPRequestHandler, ThreadingHTTPServer
 import os
+from urllib.parse import urlsplit
 
 
 class NoStoreHandler(SimpleHTTPRequestHandler):
+    def _redirect_entrypoint(self):
+        parts = urlsplit(self.path)
+        if parts.path not in ("/", "/play", "/play/", "/signal.html"):
+            return False
+
+        target = "/play.html"
+        if parts.query:
+            target += "?" + parts.query
+        self.send_response(302)
+        self.send_header("Location", target)
+        self.end_headers()
+        return True
+
+    def do_GET(self):
+        if self._redirect_entrypoint():
+            return
+        super().do_GET()
+
+    def do_HEAD(self):
+        if self._redirect_entrypoint():
+            return
+        super().do_HEAD()
+
     def end_headers(self):
         self.send_header("Cache-Control", "no-store, no-cache, must-revalidate, max-age=0")
         self.send_header("Pragma", "no-cache")
