@@ -1434,6 +1434,7 @@ static void render_world(void) {
     float ping_zoom = hail_ping_camera_zoom();
     float total_zoom = ping_zoom * g.boost_zoom;
     set_camera_bounds(camera, half_w * total_zoom, half_h * total_zoom);
+    world_draw_begin_frame();
 
     sgl_defaults();
     sgl_matrix_mode_projection();

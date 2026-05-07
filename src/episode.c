@@ -66,22 +66,16 @@ static void on_video_frame(plm_t *plm, plm_frame_t *frame, void *user) {
     int w = frame->width;
     int h = frame->height;
 
-    int rgb_size = w * h * 3;
-    uint8_t *rgb = (uint8_t *)malloc((size_t)rgb_size);
-    if (!rgb) return;
-
-    plm_frame_to_rgb(frame, rgb, w * 3);
-
     int rgba_size = w * h * 4;
-    uint8_t *rgba = (uint8_t *)malloc((size_t)rgba_size);
-    if (!rgba) { free(rgb); return; }
-
-    for (int i = 0; i < w * h; i++) {
-        rgba[i * 4 + 0] = rgb[i * 3 + 0];
-        rgba[i * 4 + 1] = rgb[i * 3 + 1];
-        rgba[i * 4 + 2] = rgb[i * 3 + 2];
-        rgba[i * 4 + 3] = 255;
+    if (rgba_size <= 0) return;
+    if ((size_t)rgba_size > ep->rgba_buffer_size) {
+        uint8_t *next = (uint8_t *)realloc(ep->rgba_buffer, (size_t)rgba_size);
+        if (!next) return;
+        ep->rgba_buffer = next;
+        ep->rgba_buffer_size = (size_t)rgba_size;
     }
+
+    plm_frame_to_rgba(frame, ep->rgba_buffer, w * 4);
 
     if (!ep->texture_valid || ep->video_width != w || ep->video_height != h) {
         if (ep->texture_valid) {
@@ -112,14 +106,12 @@ static void on_video_frame(plm_t *plm, plm_frame_t *frame, void *user) {
         }
     }
 
-    /* Stash rgba as the pending upload. If a previous frame was decoded in
-     * this same tick but not yet uploaded, drop it — we only want the latest. */
-    free(ep->pending_rgba);
-    ep->pending_rgba = rgba;
+    /* Stash the reusable RGBA buffer as the pending upload. If multiple
+     * frames decode before render, the next decode overwrites this buffer
+     * and the upload path still sees only the latest frame. */
+    ep->pending_rgba = ep->rgba_buffer;
     ep->pending_w = w;
     ep->pending_h = h;
-
-    free(rgb);
 }
 
 static void on_audio_frame(plm_t *plm, plm_samples_t *samples, void *user) {
@@ -277,7 +269,6 @@ void episode_skip(episode_state_t *ep) {
         sg_destroy_image((sg_image){ ep->texture_id });
         ep->texture_valid = false;
     }
-    free(ep->pending_rgba);
     ep->pending_rgba = NULL;
     ep->pending_w = 0;
     ep->pending_h = 0;
@@ -308,7 +299,6 @@ void episode_upload_frame(episode_state_t *ep) {
             .mip_levels[0] = { .ptr = ep->pending_rgba, .size = (size_t)rgba_size },
         });
     }
-    free(ep->pending_rgba);
     ep->pending_rgba = NULL;
     ep->pending_w = 0;
     ep->pending_h = 0;
@@ -497,7 +487,9 @@ void episode_shutdown(episode_state_t *ep) {
         sg_destroy_sampler((sg_sampler){ ep->sampler_id });
         ep->sampler_id = 0;
     }
-    free(ep->pending_rgba);
+    free(ep->rgba_buffer);
+    ep->rgba_buffer = NULL;
+    ep->rgba_buffer_size = 0;
     ep->pending_rgba = NULL;
 }
 

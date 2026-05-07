@@ -2,6 +2,7 @@
 #define EPISODE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #define EPISODE_COUNT 10
@@ -41,6 +42,8 @@ typedef struct {
     uint8_t *pending_rgba;
     int pending_w;
     int pending_h;
+    uint8_t *rgba_buffer;
+    size_t rgba_buffer_size;
 
     /* Trigger tracking */
     uint8_t stations_visited;  /* bitmask of original stations docked at (0-2) */

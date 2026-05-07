@@ -18,10 +18,11 @@ install-hooks:
 # Use Ninja if installed — significantly faster parallel builds and
 # better dependency tracking than Make. Falls back to Make otherwise.
 GENERATOR := $(shell command -v ninja >/dev/null 2>&1 && echo "-G Ninja")
+BUILD_TYPE ?= RelWithDebInfo
 
 # --- Native desktop client ---
 build:
-	cmake $(GENERATOR) -S . -B build
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal --parallel
 
@@ -32,7 +33,7 @@ build-web:
 
 # --- Headless game server ---
 build-server:
-	cmake $(GENERATOR) -S . -B build
+	cmake $(GENERATOR) -S . -B build -DCMAKE_BUILD_TYPE=$(BUILD_TYPE)
 	@ln -sf build/compile_commands.json compile_commands.json
 	cmake --build build --target signal_server --parallel
 
