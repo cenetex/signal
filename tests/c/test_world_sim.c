@@ -1513,6 +1513,53 @@ static bool test_station_smelt_endpoint_for_ore(const station_t *st,
     return found;
 }
 
+TEST(test_fragment_smelt_vents_overflow_instead_of_stranding) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+
+    station_t *prospect = &w.stations[0];
+    for (int arm = 0; arm < MAX_ARMS; arm++) {
+        prospect->arm_speed[arm] = 0.0f;
+        prospect->arm_rotation[arm] = 0.0f;
+    }
+
+    ASSERT(test_set_station_finished_units(prospect, COMMODITY_FERRITE_INGOT,
+                                           (int)MAX_PRODUCT_STOCK - 5));
+
+    vec2 smelt_target = prospect->pos;
+    ASSERT(test_station_smelt_endpoint_for_ore(prospect, COMMODITY_FERRITE_ORE,
+                                               &smelt_target));
+
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) { frag = i; break; }
+    }
+    ASSERT(frag >= 0);
+
+    asteroid_t *a = &w.asteroids[frag];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->ore = 12.0f;
+    a->max_ore = 12.0f;
+    a->radius = 8.0f;
+    a->fracture_child = true;
+    a->grade = (uint8_t)MINING_GRADE_COMMON;
+    a->pos = smelt_target;
+
+    int initial_count = station_finished_count(prospect, COMMODITY_FERRITE_INGOT);
+    for (int i = 0; i < 600 && w.asteroids[frag].active; i++)
+        world_sim_step(&w, 1.0f / 120.0f);
+
+    ASSERT(!w.asteroids[frag].active);
+    ASSERT_EQ_INT(station_finished_count(prospect, COMMODITY_FERRITE_INGOT),
+                  initial_count + 5);
+    ASSERT_EQ_FLOAT(prospect->_inventory_cache[COMMODITY_FERRITE_INGOT],
+                    MAX_PRODUCT_STOCK, 0.001f);
+}
+
 TEST(test_miner_routes_crystal_to_crystal_smelt_endpoint) {
     WORLD_DECL;
     world_reset(&w);
@@ -2090,6 +2137,7 @@ void register_world_sim_scenarios_tests(void) {
     RUN(test_npc_exits_station_with_blocked_rings);
     RUN(test_hauler_exits_non_home_station_before_return);
     RUN(test_miner_enters_station_before_smelt_delivery);
+    RUN(test_fragment_smelt_vents_overflow_instead_of_stranding);
     RUN(test_miner_routes_crystal_to_crystal_smelt_endpoint);
     RUN(test_miner_drops_fragment_without_matching_smelt_endpoint);
     RUN(test_scenario_upgrade_requires_products);
