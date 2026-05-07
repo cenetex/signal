@@ -1,5 +1,18 @@
 #include "test_harness.h"
 
+static bool first_manifest_pub_for_commodity(const station_t *st,
+                                             commodity_t commodity,
+                                             uint8_t out_pub[32]) {
+    if (!st || !out_pub || !st->manifest.units) return false;
+    for (uint16_t i = 0; i < st->manifest.count; i++) {
+        const cargo_unit_t *unit = &st->manifest.units[i];
+        if ((commodity_t)unit->commodity != commodity) continue;
+        memcpy(out_pub, unit->pub, 32);
+        return true;
+    }
+    return false;
+}
+
 TEST(test_econ_sim_npc_only_5min) {
     /* Run the world for 5 minutes with NO players — just NPCs.
      * Report: station credit pools, inventories, NPC activity. */
@@ -632,6 +645,15 @@ TEST(test_e2e_kit_chain_converges) {
     ASSERT(test_set_station_finished_units(&w->stations[shipyard], COMMODITY_LASER_MODULE, 50));
     ASSERT(test_set_station_finished_units(&w->stations[shipyard], COMMODITY_TRACTOR_MODULE, 50));
     ASSERT(test_set_station_finished_units(&w->stations[shipyard], COMMODITY_REPAIR_KIT, 0));
+    uint8_t seed_frame_pub[32] = {0};
+    uint8_t seed_laser_pub[32] = {0};
+    uint8_t seed_tractor_pub[32] = {0};
+    ASSERT(first_manifest_pub_for_commodity(&w->stations[shipyard],
+                                            COMMODITY_FRAME, seed_frame_pub));
+    ASSERT(first_manifest_pub_for_commodity(&w->stations[shipyard],
+                                            COMMODITY_LASER_MODULE, seed_laser_pub));
+    ASSERT(first_manifest_pub_for_commodity(&w->stations[shipyard],
+                                            COMMODITY_TRACTOR_MODULE, seed_tractor_pub));
     w->stations[shipyard].repair_kit_fab_timer = 0.0f;
 
     int ticks = (int)(300.0f / SIM_DT);
@@ -642,12 +664,12 @@ TEST(test_e2e_kit_chain_converges) {
            shipyard, kits_now);
     ASSERT(kits_now > 0.0f);
 
-    /* Inputs should also be visibly drawn down — at least one batch
-     * consumed of each input commodity (fewer than seed, > 0 means
-     * something was minted but not all 50). */
-    ASSERT(w->stations[shipyard]._inventory_cache[COMMODITY_FRAME]        < 50.0f);
-    ASSERT(w->stations[shipyard]._inventory_cache[COMMODITY_LASER_MODULE] < 50.0f);
-    ASSERT(w->stations[shipyard]._inventory_cache[COMMODITY_TRACTOR_MODULE] < 50.0f);
+    /* Inputs should also be consumed. Net station stock can stay at or above
+     * the seed now that 1 ferrite ingot presses into 10 frames, so assert
+     * concrete manifest drawdown instead of a brittle final float count. */
+    ASSERT(manifest_find(&w->stations[shipyard].manifest, seed_frame_pub) < 0);
+    ASSERT(manifest_find(&w->stations[shipyard].manifest, seed_laser_pub) < 0);
+    ASSERT(manifest_find(&w->stations[shipyard].manifest, seed_tractor_pub) < 0);
 }
 
 TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
