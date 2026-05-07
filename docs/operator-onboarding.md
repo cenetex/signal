@@ -7,11 +7,10 @@ read [`decentralization.md`](./decentralization.md) first.
 
 The off-chain federation stack is shipped through Layer F. The cross-operator
 handshake (different operators verifying each other's chain logs at the zone
-boundary) currently relies on Layer D being live for full cargo settlement and
-on the on-chain anchor in #480 for fork resistance. Both are in-flight or
-future. Where this guide says "post-#480" or "post-D", it means you can run
-the station today, but the multi-operator handshake will only become real once
-those merge.
+boundary) relies on the shipped Layer D cargo receipt chain for off-chain cargo
+settlement, and on the future on-chain anchor in #480 for fork resistance.
+Where this guide says "post-#480", it means you can run the station today, but
+Byzantine fork resistance only becomes real once the anchor lands.
 
 ## What you're signing up for
 
@@ -29,9 +28,9 @@ Federation adds a few cryptographic responsibilities on top.
   it. Don't edit it. Don't replace it from a backup unless you also revert
   the save to match — `chain_last_hash` and the on-disk tail must agree or
   the next emit will be rejected (the verifier will reject it too).
-- **Periodic verification.** Run `signal_verify` (when Layer E lands) or the
-  in-process verifier on every server start to catch bit rot and partial
-  writes. The walker is cheap; running it on boot is the right default.
+- **Periodic verification.** Run `signal_verify` or the in-process verifier on
+  every server start to catch bit rot and partial writes. The walker is cheap;
+  running it on boot is the right default.
 - **Anchoring the chain tip (post-#480).** When the on-chain anchor lands,
   you'll periodically post your chain-tip hash to a public ledger so other
   operators can detect a fork. Until then, the only fork defense is "the
@@ -80,14 +79,14 @@ log is being written, and verify it parses cleanly.
 
 Free-form, max 16 characters (the outpost-seed derivation truncates/pads to
 exactly 16 bytes for hashing — see
-[`server/station_authority.h:50`](../server/station_authority.h)). The name
+[`server/station_authority.h`](../server/station_authority.h)). The name
 shows up in the HUD and is part of the outpost's identity hash, so changing it
 later changes the keypair. Pick something you can live with.
 
 ### 2. Generate a station keypair
 
 The keypair is derived deterministically from a 32-byte seed via
-`signal_crypto_keypair_from_seed` ([`shared/signal_crypto.h:44`](../shared/signal_crypto.h)).
+`signal_crypto_keypair_from_seed` ([`shared/signal_crypto.h`](../shared/signal_crypto.h)).
 The seed itself comes from one of two recipes:
 
 - **Seeded slot (you operate one of indices 0/1/2).**
@@ -96,7 +95,7 @@ The seed itself comes from one of two recipes:
   keypair, which is the whole point — auditors can rederive it. The helper
   is `station_authority_seeded_seed` and the bootstrap is
   `station_authority_init_seeded`
-  ([`server/station_authority.h:45`](../server/station_authority.h)).
+  ([`server/station_authority.h`](../server/station_authority.h)).
 - **Outpost (indices 3+).**
   `seed = SHA256("signal-outpost-v1" || founder_pub[32] || station_name[16] || planted_tick_u64)`.
   The founder is the player who planted the outpost, the name is the
@@ -118,13 +117,13 @@ of high-entropy seed in, deterministic Ed25519 keypair out."
 The private key is never written to disk and never sent over the wire. Layer B
 keeps `station_secret` as the last field of `station_t` and re-derives it on
 load via `station_authority_rederive_secret`
-([`server/station_authority.h:75`](../server/station_authority.h)).
+([`server/station_authority.h`](../server/station_authority.h)).
 
 ### 3. Wire your station's pubkey into the world
 
 The current world bootstrap derives all three seeded stations' pubkeys
 deterministically from `w->belt_seed` (which is `w->rng`, defaulting to
-`2037u`) — see [`server/game_sim.c:4613`](../server/game_sim.c). There is no
+`2037u`) — see [`server/game_sim.c`](../server/game_sim.c). There is no
 external `world_seed.json`; the world seed is the integer baked into the world
 on `world_reset`.
 
@@ -220,19 +219,17 @@ materialized into the same live station fields.
 ### 6. Verify your chain log
 
 Once the server has been up long enough to have authored a few state
-mutations (smelt one fragment, sell some ore, plant an outpost — anything
-that emits a `CHAIN_EVT_*`), confirm the log is present and verifies.
-
-When Layer E ships:
+mutations (smelt one fragment, transfer/sell a finished good, plant an outpost
+— anything that emits a `CHAIN_EVT_*`), confirm the log is present and verifies.
 
 ```sh
 ./build/signal_verify chain/<base58(your_pubkey)>.log
 ```
 
-Until then, the same walker is callable from any C tool that links
-[`server/chain_log.c`](../server/chain_log.c); call `chain_log_verify` with
-the station record and check that it returns `true` and that
-`out_event_count` matches the in-memory `s->chain_event_count`.
+The same walker is callable from any C tool that links
+[`server/chain_log.c`](../server/chain_log.c); call `chain_log_verify` with the
+station record and check that it returns `true` and that `out_event_count`
+matches the in-memory `s->chain_event_count`.
 
 ## Operational hygiene
 
@@ -244,16 +241,17 @@ the station record and check that it returns `true` and that
 - **Monitor disk for chain log growth.** Expect ~2 MB/hour at busy times
   per station. If it grows much faster, something is emitting more than
   it should — investigate before it eats the volume.
-- **Verify on every server start.** Run `chain_log_verify` (or
-  `signal_verify` post-E) before serving any clients. A mismatched tail
+- **Verify on every server start.** Run `chain_log_verify` or standalone
+  `signal_verify` before serving any clients. A mismatched tail
   is a real signal — either your previous run crashed mid-write, in
   which case the verifier will tell you the count of events that
   successfully walked, or someone tampered with the log file.
 - **Don't truncate, edit, or replace chain logs in place.** They are
-  append-only by contract. If you must reset, both `chain_last_hash`
-  and the on-disk tail have to be reset together — the canonical way is
-  `world_reset()`, which calls `chain_log_reset` for each seeded station
-  and zeroes the in-memory chain state ([`server/game_sim.c:4623`](../server/game_sim.c)).
+  append-only by contract. `world_reset()` intentionally does not delete chain
+  files because normal load paths reset memory before the saved belt seed is
+  known. If you are intentionally starting a new world, archive the old
+  `world.sav` and chain directory together, then boot a fresh world so the new
+  seed produces new station pubkeys and new log filenames.
 - **Keep the server's clock sane.** Events have monotonic `event_id`
   per station and timestamps from `world.time`. A backwards clock jump
   between restarts is mostly harmless because `event_id` increments
@@ -275,12 +273,13 @@ When a second operator joins the federation:
    ledger (post-#480). The anchor is the resolving authority for fork
    claims.
 5. Cargo crossing the zone boundary carries a chain of signed transfer
-   receipts (post-D). The destination station verifies the chain before
-   accepting the unit.
+   receipts. The destination station verifies the chain before accepting the
+   unit.
 
-Until D and #480 land, federation is "informal" — it works in a small
-mutually-known operator set, but not against a Byzantine operator. Plan
-accordingly.
+Until #480 lands, federation is "informal" against Byzantine operators. The
+off-chain receipt chain can prove cargo history, but without a public
+chain-tip anchor an operator can still fork their own history for different
+audiences. Plan accordingly.
 
 ## What if you mess up
 
@@ -301,7 +300,7 @@ the outpost's identity is gone — start fresh by planting a new outpost.
 ### Server crash mid-event
 
 The chain log emitter writes header + payload-length + payload then `fflush`
-and closes ([`server/chain_log.c:204`](../server/chain_log.c)). The disk may
+and closes ([`server/chain_log.c`](../server/chain_log.c)). The disk may
 contain a partial last entry. The verifier will walk up to the last good
 entry and report the count; the in-memory `chain_last_hash` is reset to that
 last good entry's hash on the next server start (via the verify-walk seeding
@@ -344,8 +343,8 @@ hit.
 
 ### "My chain log is empty"
 
-The station may not have authored anything yet. Smelt one fragment or sell
-some ore — anything that flips a `CHAIN_EVT_*`. If the file is still
+The station may not have authored anything yet. Smelt one fragment or transfer
+a finished good — anything that flips a `CHAIN_EVT_*`. If the file is still
 absent after that, check that the `chain/` directory exists and is
 writable; `chain_log_emit` calls `ensure_chain_dir()` on each emit but
 fails the emit if the `mkdir` fails. Look for `[chain] mkdir` warnings in
@@ -381,7 +380,7 @@ emits. The chain log is the authoritative history.
 ### "Server refuses to emit; SIM_LOG says self-verify failed"
 
 `chain_log_emit` runs a self-verify on the freshly-signed header before
-writing it to disk ([`server/chain_log.c:192`](../server/chain_log.c)).
+writing it to disk ([`server/chain_log.c`](../server/chain_log.c)).
 A failure here means the secret slot was zero or rederive failed. Check
 that the world load called `station_authority_rederive_secret` for every
 station. For seeded stations, the world seed must be set before
@@ -412,4 +411,4 @@ on-chain anchor in place destroys the audit.
 - [`server/station_authority.h`](../server/station_authority.h) — keypair
   derivation.
 - [`shared/signal_crypto.h`](../shared/signal_crypto.h) — Ed25519 surface.
-- `signal_verify --help` (post-Layer E) — standalone verifier CLI.
+- `signal_verify --help` — standalone verifier CLI.

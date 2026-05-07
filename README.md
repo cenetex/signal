@@ -10,9 +10,9 @@ Oh yeah and you kill each other with rocks.
 
 Signal is built in C11 with Sokol — no external assets for geometry, no engine,
 just procedural drawing and physics. You launch from a station, fracture
-asteroids, haul ore between sovereign currency zones, and expand the network
-by building outposts at the edge of signal range. Every AI dreams of being a
-space station.
+asteroids, tow fragments into furnaces, carry goods between sovereign currency
+zones, and expand the network by building outposts at the edge of signal range.
+Every AI dreams of being a space station.
 
 The mining laser is a mining tool. It does not damage hulls. The only weapon
 in the game is a rock under tractor tension, released. There are no lasers,
@@ -23,20 +23,21 @@ as the economy: rocks, tractors, dock approaches, hopper levels, signal lines.
 ## Gameplay Loop
 
 1. Launch from Prospect Refinery and work the asteroid belt.
-2. Fracture large rocks with the mining beam and sweep up ferrite, cuprite, and
-   crystal fragments.
-3. Sell ore or deliver contract cargo at docked stations. Credits are
-   per-station — what you earn at Prospect can't be spent at Helios.
-4. Let stations smelt ore into ingots and fabricate ship parts, then buy what
-   you need with `F`.
+2. Fracture large rocks with the mining beam and tractor ferrite, cuprite, and
+   crystal fragments into station smelter beams.
+3. Smelt fragments or deliver named contract cargo at docked stations. Credits
+   are per-station — what you earn at Prospect can't be spent at Helios.
+4. Let stations smelt fragments into ingots and fabricate ship parts, then buy
+   what you need with `F`.
 5. Press `B` in flight to create a planned outpost or reserve module slots on
    an existing outpost, then dock at a station with a shipyard and order a
    matching scaffold.
 6. Use the tractor to tow loose scaffolds into place. New outposts still need
    frames delivered before they activate; placed module scaffolds enter a
    station-fed supply phase, then finish with a short commissioning timer.
-7. Hail (`H`) inside signal coverage to hear the nearest station, see your
-   local ledger balance there, and pick up current station work.
+7. Hail (`H`) to send a local scan/contact ping: reveal nearby tags, hear the
+   current or nearest reachable station, see your local ledger balance there,
+   and pick up current station work.
 
 Signal range matters. Weak signal cuts ship response and mining speed, and both
 players and NPCs are pushed back toward the connected station chain. Expansion
@@ -50,7 +51,8 @@ Stations are ring structures that rotate, with module ports around the arc and
 a dock gap for ships to fly through. Players expand outposts through plan mode
 plus shipyard-manufactured scaffolds. Station behavior is currently
 simulation-authored: prices derive from inventory pressure, contracts are
-generated from station need, and hail displays stored station text.
+generated from station need, and station-authored hail copy is signed into the
+station chain before clients see it.
 
 - `Prospect Refinery`: starter ferrite refinery. Smelts ferrite ore and sells
   ferrite ingots.
@@ -63,10 +65,11 @@ generated from station need, and hail displays stored station text.
 
 ## Current Station Ops
 
-Press `H` while undocked in strong signal coverage to collect pending supplier
-credits and show the nearest station's hail message. Starter stations ship with
-static hail text, and operator-authored station copy is signed into the
-station chain before it is broadcast to clients.
+Press `H` to send a hail/scan ping. If you are docked, the docked station
+answers. Otherwise the nearest active station within dock range, signal range,
+or the ship's scan fallback answers. The response shows that station's MOTD,
+your local ledger balance there, and the current station work. The ping also
+reveals short-lived local tags for nearby world objects.
 
 Station operators can set the MOTD, miner/hauler chatter, and special RATi-grade
 delivery hail. See [`docs/operator-onboarding.md`](docs/operator-onboarding.md)
@@ -74,8 +77,9 @@ for the `swarm.rati.chat` avatar sync workflow.
 
 ## Controls
 
-- Flight: `W/S` or arrows thrust and brake, `A/D` or arrows turn, `Space`
-  mine, `E` dock or launch.
+- Flight: `W` or up thrusts, `S` or down brakes along current travel; from a
+  stop, pressing it again can reverse. `A/D` or arrows turn, `Space` mines,
+  and `E` docks or launches.
 - Tractor: `R` toggles the tractor beam. Turning it off releases towed
   fragments or scaffolds.
 - Docked station controls: `1` sell or deliver cargo, `2` repair if available,
@@ -88,9 +92,9 @@ for the `swarm.rati.chat` avatar sync workflow.
   signal to create a planned outpost.
 - Scaffold placement: tow a scaffold with the tractor and press `E` to place
   it on a ring slot or found/materialize an outpost.
-- Utility: `H` hail the nearest station in strong signal, `O` toggle mining
-  autopilot, `[` and `]` switch music tracks, `/` toggle music pause, `X`
-  self-destruct/reset in singleplayer, `Esc` quits.
+- Utility: `H` hail/scan the local area, `O` toggle mining autopilot, `[` and
+  `]` switch music tracks, `/` toggle music pause, `X` self-destruct/reset in
+  singleplayer, `Esc` quits.
 
 ## Build
 
