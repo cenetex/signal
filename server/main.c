@@ -1035,6 +1035,107 @@ static int parse_station_id(struct mg_http_message *hm) {
     return id;
 }
 
+static size_t operator_post_field_cap(uint8_t kind) {
+    switch ((operator_post_kind_t)kind) {
+    case OPERATOR_POST_MINER_CHATTER:
+    case OPERATOR_POST_HAULER_CHATTER:
+        return sizeof(world.stations[0].miner_chatter[0]);
+    case OPERATOR_POST_HAIL_MOTD:
+        return sizeof(world.stations[0].hail_message);
+    case OPERATOR_POST_RATI_DELIVERY:
+        return sizeof(world.stations[0].rati_hail_message);
+    default:
+        return 257; /* chain payload cap + NUL; no materialized field */
+    }
+}
+
+static void materialize_operator_post(station_t *st, uint8_t kind,
+                                      uint16_t ref_id, const char *text) {
+    switch ((operator_post_kind_t)kind) {
+    case OPERATOR_POST_HAIL_MOTD:
+        snprintf(st->hail_message, sizeof(st->hail_message), "%s", text);
+        break;
+    case OPERATOR_POST_MINER_CHATTER:
+        if (ref_id < STATION_IDENTITY_CHATTER_LINES)
+            snprintf(st->miner_chatter[ref_id], sizeof(st->miner_chatter[ref_id]), "%s", text);
+        break;
+    case OPERATOR_POST_HAULER_CHATTER:
+        if (ref_id < STATION_IDENTITY_CHATTER_LINES)
+            snprintf(st->hauler_chatter[ref_id], sizeof(st->hauler_chatter[ref_id]), "%s", text);
+        break;
+    case OPERATOR_POST_RATI_DELIVERY:
+        snprintf(st->rati_hail_message, sizeof(st->rati_hail_message), "%s", text);
+        break;
+    default:
+        break;
+    }
+}
+
+static bool emit_operator_post_for_station(int station_idx, uint8_t kind,
+                                           uint8_t tier, uint16_t ref_id,
+                                           const char *text,
+                                           uint64_t *out_event_id,
+                                           const char **out_error) {
+    if (out_event_id) *out_event_id = 0;
+    if (out_error) *out_error = NULL;
+    if (station_idx < 0 || station_idx >= MAX_STATIONS) {
+        if (out_error) *out_error = "invalid station_index";
+        return false;
+    }
+    if (!station_exists(&world.stations[station_idx])) {
+        if (out_error) *out_error = "station not found";
+        return false;
+    }
+    if (!text || text[0] == '\0') {
+        if (out_error) *out_error = "text missing";
+        return false;
+    }
+    size_t text_len = strlen(text);
+    if (text_len > 256) {
+        if (out_error) *out_error = "text too long";
+        return false;
+    }
+    size_t field_cap = operator_post_field_cap(kind);
+    if (text_len >= field_cap) {
+        if (out_error) *out_error = "text too long for target field";
+        return false;
+    }
+    if ((kind == OPERATOR_POST_MINER_CHATTER ||
+         kind == OPERATOR_POST_HAULER_CHATTER) &&
+        ref_id >= STATION_IDENTITY_CHATTER_LINES) {
+        if (out_error) *out_error = "invalid chatter slot";
+        return false;
+    }
+    if (!is_valid_utf8((const uint8_t *)text, text_len)) {
+        if (out_error) *out_error = "invalid utf-8";
+        return false;
+    }
+
+    uint8_t payload[38 + 256];
+    memset(payload, 0, sizeof(payload));
+    payload[0] = kind;
+    payload[1] = tier;
+    payload[2] = (uint8_t)(ref_id & 0xFFu);
+    payload[3] = (uint8_t)((ref_id >> 8) & 0xFFu);
+    sha256_bytes((const uint8_t *)text, text_len, &payload[4]);
+    payload[36] = (uint8_t)(text_len & 0xFFu);
+    payload[37] = (uint8_t)((text_len >> 8) & 0xFFu);
+    memcpy(&payload[38], text, text_len);
+
+    station_t *st = &world.stations[station_idx];
+    uint64_t event_id = chain_log_emit(&world, st, CHAIN_EVT_OPERATOR_POST,
+                                       payload, (uint16_t)(38 + text_len));
+    if (event_id == 0) {
+        if (out_error) *out_error = "failed to emit event";
+        return false;
+    }
+
+    materialize_operator_post(st, kind, ref_id, text);
+    station_identity_dirty[station_idx] = true;
+    if (out_event_id) *out_event_id = event_id;
+    return true;
+}
+
 /* Append a JSON-escaped string to buf at *pos, respecting bufsz.
  * Escapes quotes, backslashes, and control characters. */
 static void json_escape_append(char *buf, int *pos, int bufsz, const char *s) {
@@ -1073,6 +1174,81 @@ static void json_escape_append(char *buf, int *pos, int bufsz, const char *s) {
     } \
 } while (0)
 
+typedef struct {
+    uint64_t event_id;
+    uint8_t kind;
+    uint8_t tier;
+    uint16_t ref_id;
+    char text[257];
+} operator_post_tail_t;
+
+static const char *operator_post_kind_name(uint8_t kind) {
+    switch (kind) {
+    case OPERATOR_POST_HAIL_MOTD:       return "hail_motd";
+    case OPERATOR_POST_CONTRACT_FLAVOR: return "contract_flavor";
+    case OPERATOR_POST_RARITY_TIER:     return "rarity_tier";
+    case OPERATOR_POST_BUILD_INFO:      return "build_info";
+    case OPERATOR_POST_WORLD_INFO:      return "world_info";
+    case OPERATOR_POST_MINER_CHATTER:   return "miner_chatter";
+    case OPERATOR_POST_HAULER_CHATTER:  return "hauler_chatter";
+    case OPERATOR_POST_RATI_DELIVERY:   return "rati_delivery";
+    default:                            return "unknown";
+    }
+}
+
+static int read_operator_post_tail(const station_t *st,
+                                   operator_post_tail_t out[16]) {
+    if (!st || !out) return 0;
+    char path[256];
+    if (!chain_log_path_for(st->station_pubkey, path, sizeof(path))) return 0;
+    FILE *f = fopen(path, "rb");
+    if (!f) return 0;
+
+    int count = 0;
+    while (!feof(f)) {
+        chain_event_header_t hdr;
+        uint16_t plen = 0;
+        if (fread(&hdr, sizeof(hdr), 1, f) != 1) break;
+        if (fread(&plen, sizeof(plen), 1, f) != 1) break;
+        if (hdr.type == CHAIN_EVT_OPERATOR_POST && plen >= 38) {
+            uint8_t prefix[38];
+            if (fread(prefix, sizeof(prefix), 1, f) != 1) break;
+            uint16_t text_len = (uint16_t)(prefix[36] | ((uint16_t)prefix[37] << 8));
+            uint16_t body_len = (uint16_t)(plen - 38);
+            if (text_len > body_len) text_len = body_len;
+            if (text_len > 256) text_len = 256;
+
+            operator_post_tail_t item = {
+                .event_id = hdr.event_id,
+                .kind = prefix[0],
+                .tier = prefix[1],
+                .ref_id = (uint16_t)(prefix[2] | ((uint16_t)prefix[3] << 8)),
+            };
+            if (text_len > 0) {
+                if (fread(item.text, 1, text_len, f) != text_len) break;
+                item.text[text_len] = '\0';
+            }
+            if (body_len > text_len)
+                fseek(f, (long)(body_len - text_len), SEEK_CUR);
+
+            out[count % 16] = item;
+            count++;
+        } else {
+            fseek(f, plen, SEEK_CUR);
+        }
+    }
+    fclose(f);
+    int n = count < 16 ? count : 16;
+    if (count > 16) {
+        operator_post_tail_t ordered[16];
+        int start = count % 16;
+        for (int i = 0; i < 16; i++)
+            ordered[i] = out[(start + i) % 16];
+        memcpy(out, ordered, sizeof(ordered));
+    }
+    return n;
+}
+
 /* Cap visible_asteroids in the agent-facing JSON. Populated stations
  * at 15-18k signal range can see 1000+ rocks once chunk gen has run,
  * and at ~80 bytes/record that explodes past any reasonable response
@@ -1088,9 +1264,11 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
 
     /* Parse query params */
     int include_activity = 0;
-    char tmp[32];
+    int include_chain_history = 0;
+    char tmp[96];
     if (hm && mg_http_get_var(&hm->query, "include", tmp, sizeof(tmp)) > 0) {
-        include_activity = strcmp(tmp, "activity_history") == 0;
+        include_activity = strstr(tmp, "activity_history") != NULL || strcmp(tmp, "all") == 0;
+        include_chain_history = strstr(tmp, "chain_history") != NULL || strcmp(tmp, "all") == 0;
     }
     /* Heap-allocated so we aren't bound by the event-loop thread's
      * stack (alpine musl main stack is ~80KB by default). */
@@ -1108,8 +1286,13 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
     json_escape_append(buf, &pos, BUFSZ, st->name);
     BUF_APPEND(pos, buf, BUFSZ,
         "\",\"signal_range\":%.1f,\"scaffold\":%s,"
-        "\"inventory\":{",
-        st->signal_range, st->scaffold ? "true" : "false");
+        "\"chain_event_count\":%llu,\"station_pubkey\":\"",
+        st->signal_range, st->scaffold ? "true" : "false",
+        (unsigned long long)st->chain_event_count);
+    for (int k = 0; k < 32; k++) BUF_APPEND(pos, buf, BUFSZ, "%02x", st->station_pubkey[k]);
+    BUF_APPEND(pos, buf, BUFSZ, "\",\"chain_last_hash\":\"");
+    for (int k = 0; k < 32; k++) BUF_APPEND(pos, buf, BUFSZ, "%02x", st->chain_last_hash[k]);
+    BUF_APPEND(pos, buf, BUFSZ, "\",\"inventory\":{");
 
     static const char *cnames[] = {
         "ferrite_ore","cuprite_ore","crystal_ore",
@@ -1304,10 +1487,49 @@ static void handle_station_state(struct mg_connection *c, int sid, struct mg_htt
         BUF_APPEND(pos, buf, BUFSZ, "]}");
     }
 
+    /* Recent signed station-operator content, bounded for avatar prompt context.
+     * This is a context feed, not a verifier; authority still lives in the
+     * append-only chain log and its signed event records. */
+    if (include_chain_history) {
+        operator_post_tail_t posts[16];
+        int post_count = read_operator_post_tail(st, posts);
+        BUF_APPEND(pos, buf, BUFSZ, ",\"chain_history\":{\"operator_posts\":[");
+        for (int i = 0; i < post_count; i++) {
+            if (i > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
+            BUF_APPEND(pos, buf, BUFSZ,
+                "{\"event_id\":%llu,\"kind\":%u,\"kind_name\":\"%s\","
+                "\"tier\":%u,\"ref_id\":%u,\"text\":\"",
+                (unsigned long long)posts[i].event_id,
+                (unsigned)posts[i].kind,
+                operator_post_kind_name(posts[i].kind),
+                (unsigned)posts[i].tier,
+                (unsigned)posts[i].ref_id);
+            json_escape_append(buf, &pos, BUFSZ, posts[i].text);
+            BUF_APPEND(pos, buf, BUFSZ, "\"}");
+        }
+        BUF_APPEND(pos, buf, BUFSZ, "]}");
+    }
+
     /* Hail message */
     BUF_APPEND(pos, buf, BUFSZ, ",\"hail\":\"");
     json_escape_append(buf, &pos, BUFSZ, st->hail_message);
-    BUF_APPEND(pos, buf, BUFSZ, "\"}");
+    BUF_APPEND(pos, buf, BUFSZ, "\",\"rati_hail\":\"");
+    json_escape_append(buf, &pos, BUFSZ, st->rati_hail_message);
+    BUF_APPEND(pos, buf, BUFSZ, "\",\"miner_chatter\":[");
+    for (int i = 0; i < STATION_IDENTITY_CHATTER_LINES; i++) {
+        if (i > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
+        BUF_APPEND(pos, buf, BUFSZ, "\"");
+        json_escape_append(buf, &pos, BUFSZ, st->miner_chatter[i]);
+        BUF_APPEND(pos, buf, BUFSZ, "\"");
+    }
+    BUF_APPEND(pos, buf, BUFSZ, "],\"hauler_chatter\":[");
+    for (int i = 0; i < STATION_IDENTITY_CHATTER_LINES; i++) {
+        if (i > 0) BUF_APPEND(pos, buf, BUFSZ, ",");
+        BUF_APPEND(pos, buf, BUFSZ, "\"");
+        json_escape_append(buf, &pos, BUFSZ, st->hauler_chatter[i]);
+        BUF_APPEND(pos, buf, BUFSZ, "\"");
+    }
+    BUF_APPEND(pos, buf, BUFSZ, "]}");
 
     mg_http_reply(c, 200, api_headers, "%s", buf);
     free(buf);
@@ -1321,22 +1543,68 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
     double price_val = 0;
     mg_json_get_num(body, "$.price", &price_val);
     long module_type = mg_json_get_long(body, "$.module_type", -1);
+    long slot = mg_json_get_long(body, "$.slot", -1);
     char *hail = mg_json_get_str(body, "$.hail");
+    char *message = mg_json_get_str(body, "$.message");
     char *currency = mg_json_get_str(body, "$.currency_name");
 
     if (!action) {
         mg_http_reply(c, 400, api_headers,
                       "{\"ok\":false,\"error\":\"missing action\"}");
         free(hail);
+        free(message);
         free(currency);
         return;
     }
 
     if (strcmp(action, "set_hail") == 0 && hail && hail[0] != '\0') {
-        snprintf(st->hail_message, sizeof(st->hail_message), "%s", hail);
-        station_identity_dirty[sid] = true;
-        mg_http_reply(c, 200, api_headers,
-                      "{\"ok\":true,\"action\":\"set_hail\"}");
+        uint64_t event_id = 0;
+        const char *err = NULL;
+        if (emit_operator_post_for_station(sid, OPERATOR_POST_HAIL_MOTD, 0, 0,
+                                           hail, &event_id, &err)) {
+            mg_http_reply(c, 200, api_headers,
+                          "{\"ok\":true,\"action\":\"set_hail\",\"event_id\":%llu}",
+                          (unsigned long long)event_id);
+        } else {
+            mg_http_reply(c, 400, api_headers,
+                          "{\"ok\":false,\"error\":\"%s\"}", err ? err : "operator post failed");
+        }
+    } else if (strcmp(action, "set_miner_chatter") == 0 && message && message[0] != '\0') {
+        uint64_t event_id = 0;
+        const char *err = NULL;
+        if (emit_operator_post_for_station(sid, OPERATOR_POST_MINER_CHATTER, 0,
+                                           (uint16_t)slot, message, &event_id, &err)) {
+            mg_http_reply(c, 200, api_headers,
+                          "{\"ok\":true,\"action\":\"set_miner_chatter\",\"slot\":%ld,\"event_id\":%llu}",
+                          slot, (unsigned long long)event_id);
+        } else {
+            mg_http_reply(c, 400, api_headers,
+                          "{\"ok\":false,\"error\":\"%s\"}", err ? err : "operator post failed");
+        }
+    } else if (strcmp(action, "set_hauler_chatter") == 0 && message && message[0] != '\0') {
+        uint64_t event_id = 0;
+        const char *err = NULL;
+        if (emit_operator_post_for_station(sid, OPERATOR_POST_HAULER_CHATTER, 0,
+                                           (uint16_t)slot, message, &event_id, &err)) {
+            mg_http_reply(c, 200, api_headers,
+                          "{\"ok\":true,\"action\":\"set_hauler_chatter\",\"slot\":%ld,\"event_id\":%llu}",
+                          slot, (unsigned long long)event_id);
+        } else {
+            mg_http_reply(c, 400, api_headers,
+                          "{\"ok\":false,\"error\":\"%s\"}", err ? err : "operator post failed");
+        }
+    } else if (strcmp(action, "set_rati_hail") == 0 && message && message[0] != '\0') {
+        uint64_t event_id = 0;
+        const char *err = NULL;
+        if (emit_operator_post_for_station(sid, OPERATOR_POST_RATI_DELIVERY, 0, 0,
+                                           message, &event_id, &err)) {
+            mg_http_reply(c, 200, api_headers,
+                          "{\"ok\":true,\"action\":\"set_rati_hail\",\"event_id\":%llu}",
+                          (unsigned long long)event_id);
+        } else {
+            mg_http_reply(c, 400, api_headers,
+                          "{\"ok\":false,\"error\":\"%s\"}", err ? err : "operator post failed");
+        }
     } else if (strcmp(action, "set_currency_name") == 0 && currency && currency[0] != '\0') {
         /* ASCII-ish trim; drop anything that would mess with the HUD
          * renderer (control chars, quotes). 31 chars max so the wire
@@ -1381,6 +1649,7 @@ static void handle_station_command(struct mg_connection *c, struct mg_http_messa
     }
     free(action);
     free(hail);
+    free(message);
     free(currency);
 }
 
@@ -1592,67 +1861,19 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
 
                 char *text = mg_json_get_str(hm->body, "$.text");
 
-                /* Validate inputs */
-                if (station_idx < 0 || station_idx >= MAX_STATIONS) {
-                    mg_http_reply(c, 400, api_headers,
-                                  "{\"error\":\"invalid station_index\"}");
-                } else if (!station_exists(&world.stations[station_idx])) {
-                    mg_http_reply(c, 404, api_headers,
-                                  "{\"error\":\"station not found\"}");
-                } else if (!text || text[0] == '\0') {
-                    mg_http_reply(c, 400, api_headers,
-                                  "{\"error\":\"text missing\"}");
+                uint64_t event_id = 0;
+                const char *err = NULL;
+                if (emit_operator_post_for_station(station_idx, kind, tier, ref_id,
+                                                   text, &event_id, &err)) {
+                    mg_http_reply(c, 200, api_headers,
+                                  "{\"ok\":true,\"event_id\":%llu,\"prev_hash\":\"%lX\"}",
+                                  (unsigned long long)event_id,
+                                  (unsigned long)(world.stations[station_idx].chain_last_hash[0]));
                 } else {
-                    size_t text_len = strlen(text);
-                    if (text_len > 256) {
-                        mg_http_reply(c, 400, api_headers,
-                                      "{\"error\":\"text too long\",\"code\":\"text_too_long\"}");
-                    } else if (!is_valid_utf8((const uint8_t *)text, text_len)) {
-                        mg_http_reply(c, 400, api_headers,
-                                      "{\"error\":\"invalid utf-8\"}");
-                    } else {
-                        /* Build the payload: fixed prefix + text */
-                        size_t payload_len = 38 + text_len;
-                        uint8_t *payload = (uint8_t *)malloc(payload_len);
-                        if (!payload) {
-                            mg_http_reply(c, 500, api_headers,
-                                          "{\"error\":\"out of memory\"}");
-                        } else {
-                            /* Pack the fixed-prefix part */
-                            payload[0] = kind;
-                            payload[1] = tier;
-                            payload[2] = (uint8_t)(ref_id & 0xFF);
-                            payload[3] = (uint8_t)((ref_id >> 8) & 0xFF);
-                            /* Compute SHA-256 of text */
-                            sha256_bytes((const uint8_t *)text, text_len, &payload[4]);
-                            /* text_len field (uint16_t little-endian) */
-                            payload[36] = (uint8_t)(text_len & 0xFF);
-                            payload[37] = (uint8_t)((text_len >> 8) & 0xFF);
-                            /* Copy text bytes */
-                            if (text_len > 0) {
-                                memcpy(&payload[38], text, text_len);
-                            }
-
-                            /* Emit the signed event */
-                            uint64_t event_id = chain_log_emit(&world,
-                                                               &world.stations[station_idx],
-                                                               CHAIN_EVT_OPERATOR_POST,
-                                                               payload, (uint16_t)payload_len);
-                            free(payload);
-
-                            if (event_id > 0) {
-                                mg_http_reply(c, 200, api_headers,
-                                              "{\"ok\":true,\"event_id\":%llu,\"prev_hash\":\"%lX\"}",
-                                              (unsigned long long)event_id,
-                                              (unsigned long)(world.stations[station_idx].chain_last_hash[0]));
-                            } else {
-                                mg_http_reply(c, 500, api_headers,
-                                              "{\"error\":\"failed to emit event\"}");
-                            }
-                        }
-                    }
-                    if (text) free(text);
+                    mg_http_reply(c, 400, api_headers,
+                                  "{\"error\":\"%s\"}", err ? err : "operator post failed");
                 }
+                if (text) free(text);
             }
         } else {
             mg_http_reply(c, 404, "", "Not found");

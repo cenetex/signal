@@ -172,7 +172,52 @@ The server creates `chain/` on its first emit and writes per-station log
 files into it. It creates `saves/pubkey/` and `saves/legacy/` lazily
 when the first save needs to be written.
 
-### 5. Verify your chain log
+### 5. Sync station avatar content
+
+Station copy is operational state, not a client-side cosmetic override. The
+supported flow is:
+
+1. Read the station state from `/api/station/<id>/state?include=activity_history,chain_history`.
+2. Ask the station avatar model for a MOTD, RATi-grade delivery hail, and
+   eight miner plus eight hauler chatter lines.
+3. Post the results back through `/api/station/<id>/command`.
+4. Let the server emit `CHAIN_EVT_OPERATOR_POST`, materialize the fields into
+   `station_t`, persist them in the station catalog, and rebroadcast station
+   identity to clients.
+
+Use the helper script:
+
+```sh
+SWARM_API_KEY=... \
+SIGNAL_API_TOKEN=... \
+SIGNAL_SERVER_API=https://your-signal-server.example \
+scripts/sync-station-operator-content.py --stations prospect,kepler,helios
+```
+
+Optional knobs:
+
+- `SWARM_API_BASE` — defaults to `https://swarm.rati.chat/api/v1`.
+- `--dry-run` — fetches station state and generates content, but does not
+  post it back to the server.
+- `--stations prospect,kepler,helios` — limits which starter avatar models
+  are called.
+
+The station command API accepts:
+
+- `{"action":"set_hail","hail":"..."}` for the station MOTD/hail text.
+- `{"action":"set_miner_chatter","slot":0,"message":"..."}` for miner NPC
+  chatter slots `0..7`.
+- `{"action":"set_hauler_chatter","slot":0,"message":"..."}` for hauler NPC
+  chatter slots `0..7`.
+- `{"action":"set_rati_hail","message":"..."}` for player-facing hail after
+  RATi-grade ore delivery.
+
+Every accepted command returns the signed station-chain `event_id`. The
+lower-level `/internal/v1/operator-post` endpoint still exists for internal
+services that already choose an operator-post kind directly; known kinds are
+materialized into the same live station fields.
+
+### 6. Verify your chain log
 
 Once the server has been up long enough to have authored a few state
 mutations (smelt one fragment, sell some ore, plant an outpost — anything

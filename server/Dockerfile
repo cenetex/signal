@@ -19,7 +19,7 @@ WORKDIR /app
 # A CI check validates that all server/shared #includes match the ignore list.
 COPY CMakeLists.txt ./
 COPY shared/ ./shared/
-COPY src/ ./src/
+COPY client/ ./client/
 COPY server/ ./server/
 COPY vendor/ ./vendor/
 

@@ -175,23 +175,23 @@ not a thing you can put your hand on.
 | NPC tow | NPCs use a *different* shape: `npc_ship_t.towed_fragment` (single int16, not an array) — set at `server/sim_ai.c:1560`. NPC ships only tow one fragment at a time. |
 | Tow-add site | `server/game_sim.c:1888` — tractor pulse in `step_fragment_collection()`. Fragment ownership is stamped via `last_towed_by` and `last_towed_token[8]` at the same instant. |
 | Tow-remove sites (player) | `server/sim_production.c:732-736` (smelt), `server/game_sim.c:1827-1828` (asteroid destroyed), `:1916-1917` (fracture child escapes gravity), `:1927-1928` (lands in station beam), `:1950-1951` (manual R-release). |
-| Fragment generation | Initial spawn from `shared/belt.c` and `src/asteroid_field.c`. Fracture children created in `server/sim_asteroid.c`. |
+| Fragment generation | Initial spawn from `shared/belt.c` and `client/asteroid_field.c`. Fracture children created in `server/sim_asteroid.c`. |
 
 ### Bulk float
 
 | Concern | Where |
 |---|---|
 | Storage | `station._inventory_cache[c]` for `c < COMMODITY_RAW_ORE_COUNT` (`shared/types.h:327`). Underscore prefix and "private; use accessors" comment indicate the field is no longer treated as authoritative for finished goods, but for raw ore it's still where the value lives. |
-| Public accessor | `station_inventory_amount(station, commodity)` (`src/commodity.c:194`). Used by client UI for *finished-goods* display only; raw ore display is intentionally skipped. |
+| Public accessor | `station_inventory_amount(station, commodity)` (`shared/commodity.c:194`). Used by client UI for *finished-goods* display only; raw ore display is intentionally skipped. |
 | Write — fragment-smelt completion | `server/sim_production.c:748` writes `_inventory_cache[output] += a->ore` — note `output` is the *ingot* commodity, not the ore. The ore commodity slot itself is barely written on this path; the float-as-ingot accumulator is. |
 | Write — player ore-sell | `server/game_sim.c:1089` — `_inventory_cache[commodity] += 1.0f` when a docked player sells ore from `ship.cargo[]`. *This is a vestigial path*; comment at `:1148-1154` says players no longer carry raw ore post-#259. Reachable but probably never exercised in normal play. Worth confirming. |
 | Write — player ore-deliver | `server/game_sim.c:1171` — same path for contract delivery. Same vestigial concern. |
 | Write — player ore-buy | `server/game_sim.c:1231` — when a player buys ore from a station (refill scenario). |
-| Write — economy sim | `src/economy.c:90` — production recipe execution. |
+| Write — economy sim | `shared/economy.c:90` — production recipe execution. |
 | Read — furnace intake | `server/sim_production.c:251, 275` — gates the smelt loop on float > threshold. |
 | Read — smelt rate/consume | `server/sim_production.c:279-280` — bulk-float drain per tick. |
-| Read — UI display | `src/station_ui.c:676` — trade UI ore-side display. |
-| Read — price scaling | `src/commodity.c:172` — `station_buy_price` reads hopper fill. |
+| Read — UI display | `client/station_ui.c:676` — trade UI ore-side display. |
+| Read — price scaling | `shared/commodity.c:172` — `station_buy_price` reads hopper fill. |
 | Persistence | The float is **not** persistent at meaningful timescales. Furnace smelt rate (`REFINERY_BASE_SMELT_RATE = 2.0`/sec, hopper cap 500) drains it within seconds at typical throughput. |
 
 ### Crate
@@ -200,8 +200,8 @@ not a thing you can put your hand on.
 |---|---|
 | Type | `cargo_unit_t` (`shared/types.h:138-160`). 80 bytes. As of slice 0 (PR #526), byte 7 is `quantity` (u8, default 1). |
 | Storage | `manifest_t` (`shared/types.h:151-155`) — held by `ship_t.manifest` and `station_t.manifest`. |
-| Creation | Three hash helpers in `src/manifest.c`: `hash_ingot` (`:481`), `hash_product` (`:503`), `hash_legacy_migrate_unit` (`:536`). All set `quantity = 1`. |
-| Mutation | `manifest_push`, `manifest_remove`, `manifest_consume_by_commodity` in `src/manifest.c`. |
+| Creation | Three hash helpers in `shared/manifest.c`: `hash_ingot` (`:481`), `hash_product` (`:503`), `hash_legacy_migrate_unit` (`:536`). All set `quantity = 1`. |
+| Mutation | `manifest_push`, `manifest_remove`, `manifest_consume_by_commodity` in `shared/manifest.c`. |
 | Chain witnessing | `chain_log_emit(EVT_SMELT)` at `server/sim_production.c:314` for ingot mint. `chain_log_emit(EVT_CRAFT)` at `:160` for fab/craft. `chain_log_emit(EVT_TRANSFER)` at `server/cargo_receipt_issue.c:58` for inter-holder moves. |
 | Wire | `NET_MSG_PLAYER_MANIFEST` and `NET_MSG_STATION_MANIFEST` send `(commodity, grade) → count` summaries derived from manifests. They do *not* send the bulk float. The hopper float is server-side only. |
 
@@ -417,13 +417,13 @@ instrumenting before optimizing.
 |---|---|
 | `shared/types.h` | All struct definitions: `asteroid_t`, `ship_t`, `station_t`, `cargo_unit_t`, `manifest_t`, `commodity_t` enum |
 | `shared/manifest.h` | Crate API: push/remove/find, hash_*, migration helpers |
-| `src/manifest.c` | Crate implementation |
+| `shared/manifest.c` | Crate implementation |
 | `server/sim_production.c` | The smelt boundary lives here. Both fragment-tow and hopper-float smelt paths. |
 | `server/sim_ai.c` | NPC autopilot. NPCs tow fragments via `npc_ship_t.towed_fragment` (single-slot) and deliver via the fragment-tow path; they never deposit raw ore at hoppers. |
 | `server/sim_save.c` | Save format, including the manifest persistence and migration paths |
 | `server/chain_log.h` / `chain_log.c` | Append-only signed event log per station |
 | `server/cargo_receipt_issue.c` | EVT_TRANSFER emission |
-| `shared/belt.c` / `src/asteroid_field.c` / `server/sim_asteroid.c` | Fragment generation and fracture |
+| `shared/belt.c` / `client/asteroid_field.c` / `server/sim_asteroid.c` | Fragment generation and fracture |
 
 ---
 

@@ -31,7 +31,7 @@ if ! docker image inspect signal-builder:dev >/dev/null 2>&1; then
     docker build --load -t signal-builder:dev - <<'DOCKERFILE'
 FROM alpine:3.19
 RUN apk add --no-cache gcc musl-dev make cmake
-WORKDIR /src
+WORKDIR /workspace
 DOCKERFILE
 fi
 
@@ -47,12 +47,12 @@ esac
 # is incremental across runs), and the output dir for the binary.
 docker run --rm \
     --platform "$PLATFORM" \
-    -v "$ROOT:/src:ro" \
+    -v "$ROOT:/workspace:ro" \
     -v signal-builder-build:/build \
     -v "$OUT_DIR:/out" \
     -e GIT_HASH="$GIT_HASH" \
     signal-builder:dev \
-    sh -c 'cmake -S /src -B /build -DCMAKE_BUILD_TYPE=Release \
+    sh -c 'cmake -S /workspace -B /build -DCMAKE_BUILD_TYPE=Release \
                  -DCMAKE_C_FLAGS_RELEASE="-O2 -DNDEBUG" \
                  -DCMAKE_EXE_LINKER_FLAGS="-static" \
                  -DBUILD_SERVER_ONLY=ON \

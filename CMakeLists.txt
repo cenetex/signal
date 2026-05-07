@@ -107,12 +107,12 @@ set(SIGNAL_SIM_SOURCES
 # Shared libraries used by both sim and client render — pure C, no
 # sokol / audio / GL dependencies.
 set(SIGNAL_SIM_HELPERS
-    src/commodity.c
-    src/manifest.c
-    src/ship.c
-    src/economy.c
-    src/asteroid.c
-    src/rng.c
+    shared/commodity.c
+    shared/manifest.c
+    shared/ship.c
+    shared/economy.c
+    shared/asteroid.c
+    shared/rng.c
     shared/belt.c
     shared/module_schema.c
     shared/station_util.c
@@ -125,28 +125,28 @@ set(SIGNAL_SIM_HELPERS
 # Client-only: rendering, input, HUD, audio, network plumbing. Not
 # compiled into signal_server or signal_test.
 set(SIGNAL_CLIENT_SOURCES
-    src/main.c
-    src/net.c
-    src/station_ui.c
-    src/hud.c
-    src/world_draw.c
-    src/audio.c
-    src/asteroid_field.c
-    src/npc.c
-    src/render.c
-    src/input.c
-    src/net_sync.c
-    src/local_server.c
-    src/onboarding.c
-    src/episode.c
-    src/music.c
-    src/avatar.c
-    src/mining_client.c
-    src/identity.c
+    client/main.c
+    client/net.c
+    client/station_ui.c
+    client/hud.c
+    client/world_draw.c
+    client/audio.c
+    client/asteroid_field.c
+    client/npc.c
+    client/render.c
+    client/input.c
+    client/net_sync.c
+    client/local_server.c
+    client/onboarding.c
+    client/episode.c
+    client/music.c
+    client/avatar.c
+    client/mining_client.c
+    client/identity.c
 )
 
 set(SIGNAL_INCLUDE_DIRS
-    "${CMAKE_CURRENT_SOURCE_DIR}/src"
+    "${CMAKE_CURRENT_SOURCE_DIR}/client"
     "${CMAKE_CURRENT_SOURCE_DIR}/shared"
     "${CMAKE_CURRENT_SOURCE_DIR}/server"
 )
@@ -201,48 +201,48 @@ endif()
 # ------------------------------------------------------------------
 if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
     add_executable(signal_test
-        src/test_main.c
-        src/tests/test_harness.c
-        src/tests/test_commodity.c
-        src/tests/test_math.c
-        src/tests/test_ship.c
-        src/tests/test_manifest.c
-        src/tests/test_economy.c
-        src/tests/test_world_sim.c
-        src/tests/test_protocol.c
-        src/tests/test_bug_regression.c
-        src/tests/test_save.c
-        src/tests/test_construction.c
-        src/tests/test_tractor.c
-        src/tests/test_laser.c
-        src/tests/test_navigation.c
-        src/tests/test_econ_sim.c
-        src/tests/test_asteroid.c
-        src/tests/test_chain.c
-        src/tests/test_labels.c
-        src/tests/test_pvp_rocks.c
-        src/tests/test_crypto.c
-        src/tests/test_identity.c
-        src/tests/test_registry.c
-        src/tests/test_signed_action.c
-        src/tests/test_save_keyed_by_pubkey.c
-        src/tests/test_anchor.c
-        src/tests/test_station_authority.c
-        src/tests/test_chain_log.c
-        src/tests/test_highscore_replay.c
+        tests/c/test_main.c
+        tests/c/test_harness.c
+        tests/c/test_commodity.c
+        tests/c/test_math.c
+        tests/c/test_ship.c
+        tests/c/test_manifest.c
+        tests/c/test_economy.c
+        tests/c/test_world_sim.c
+        tests/c/test_protocol.c
+        tests/c/test_bug_regression.c
+        tests/c/test_save.c
+        tests/c/test_construction.c
+        tests/c/test_tractor.c
+        tests/c/test_laser.c
+        tests/c/test_navigation.c
+        tests/c/test_econ_sim.c
+        tests/c/test_asteroid.c
+        tests/c/test_chain.c
+        tests/c/test_labels.c
+        tests/c/test_pvp_rocks.c
+        tests/c/test_crypto.c
+        tests/c/test_identity.c
+        tests/c/test_registry.c
+        tests/c/test_signed_action.c
+        tests/c/test_save_keyed_by_pubkey.c
+        tests/c/test_anchor.c
+        tests/c/test_station_authority.c
+        tests/c/test_chain_log.c
+        tests/c/test_highscore_replay.c
         server/highscore.c
-        src/tests/test_signal_verify.c
-        src/tests/test_cross_station_settlement.c
-        src/tests/test_sovereign_ledger.c
-        src/tests/test_prefix_class_pricing.c
-        src/tests/test_furnace_color.c
-        src/tests/test_respawn_fee.c
-        src/tests/test_relationship_tracking.c
-        src/tests/test_motd_rarity.c
-        src/tests/test_cargo_lineage.c
-        src/tests/test_trade_paging.c
-        src/tests/test_inspect_anim.c
-        src/identity.c
+        tests/c/test_signal_verify.c
+        tests/c/test_cross_station_settlement.c
+        tests/c/test_sovereign_ledger.c
+        tests/c/test_prefix_class_pricing.c
+        tests/c/test_furnace_color.c
+        tests/c/test_respawn_fee.c
+        tests/c/test_relationship_tracking.c
+        tests/c/test_motd_rarity.c
+        tests/c/test_cargo_lineage.c
+        tests/c/test_trade_paging.c
+        tests/c/test_inspect_anim.c
+        client/identity.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}
         ${SIGNAL_CRYPTO_SOURCES}
@@ -339,8 +339,8 @@ if(MSVC)
     # TUs that host them with /W0 so those lines don't fail /WX, while every
     # other client source file still builds under the full /W4 strictness.
     set_source_files_properties(
-        src/episode.c       # includes pl_mpeg.h
-        src/music.c         # includes minimp3.h
+        client/episode.c       # includes pl_mpeg.h
+        client/music.c         # includes minimp3.h
         server/mongoose.c   # vendor single-file WebSocket server
         PROPERTIES COMPILE_OPTIONS "/W0"
     )
@@ -349,13 +349,13 @@ else()
     # use K&R-style () prototypes for C++ compat.
     target_compile_options(signal PRIVATE -Wall -Wextra -Wpedantic -Werror -Wno-strict-prototypes)
 
-    # src/main.c is the single SOKOL_IMPL translation unit. GCC still emits
+    # client/main.c is the single SOKOL_IMPL translation unit. GCC still emits
     # -Wpedantic warnings from system headers when they are "required
     # diagnostics" — e.g. ISO C's forbid on object↔function pointer casts
     # inside sokol_app.h's GLX loader. The SYSTEM include above isn't enough.
     # Suppress -Wpedantic only for this one TU, so all other sources stay
     # strict.
-    set_source_files_properties(src/main.c PROPERTIES
+    set_source_files_properties(client/main.c PROPERTIES
         COMPILE_OPTIONS "-Wno-pedantic;-Wno-error=pedantic")
 endif()
 

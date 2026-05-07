@@ -530,7 +530,7 @@ float ledger_credit_supply_amount(station_t *st, const uint8_t *token, float ore
 
 /* Nav API — canonical declarations in sim_nav.h.
  * Repeated here because sim_nav.h includes game_sim.h (circular).
- * Client code (src/) includes game_sim.h but not sim_nav.h. */
+ * Client code (client/) includes game_sim.h but not sim_nav.h. */
 int nav_get_player_path(int player_id, vec2 *out_waypoints, int max_count, int *out_current);
 int nav_compute_path(const world_t *w, vec2 start, vec2 goal, float clearance,
                      vec2 *out_waypoints, int max_count);

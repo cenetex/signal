@@ -1,6 +1,6 @@
 /*
  * shared/net_protocol.h — Single source of truth for the Signal Space Miner
- * binary wire protocol.  Included by both the client (src/net.h) and the
+ * binary wire protocol.  Included by both the client (client/net.h) and the
  * authoritative server (server/net_protocol.h).
  *
  * Packet layouts (little-endian):
@@ -431,6 +431,10 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 #define STATION_PLAN_RECORD_COUNT 8
 #define STATION_PENDING_SCAFFOLD_RECORD_SIZE 2  /* type:1 + owner:1 */
 #define STATION_PENDING_SCAFFOLD_RECORD_COUNT 4
+#define STATION_IDENTITY_HAIL_MESSAGE_LEN 256  /* trailer: station MOTD/hail copy */
+#define STATION_IDENTITY_CHATTER_LINES 8
+#define STATION_IDENTITY_CHATTER_LINE_LEN 64
+#define STATION_IDENTITY_RATI_HAIL_LEN 256
 #define STATION_IDENTITY_CURRENCY_NAME_LEN 32  /* trailer: per-station scrip label */
 #define STATION_IDENTITY_PUBKEY_LEN 32         /* Ed25519 station identity (#479 B) */
 #define STATION_IDENTITY_SIZE (59 + COMMODITY_COUNT * 4 + 4 \
@@ -438,6 +442,10 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
     + 1 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4 + MAX_ARMS * 4 \
     + 1 + STATION_PLAN_RECORD_COUNT * STATION_PLAN_RECORD_SIZE \
     + 1 + STATION_PENDING_SCAFFOLD_RECORD_COUNT * STATION_PENDING_SCAFFOLD_RECORD_SIZE \
+    + STATION_IDENTITY_HAIL_MESSAGE_LEN \
+    + STATION_IDENTITY_CHATTER_LINES * STATION_IDENTITY_CHATTER_LINE_LEN \
+    + STATION_IDENTITY_CHATTER_LINES * STATION_IDENTITY_CHATTER_LINE_LEN \
+    + STATION_IDENTITY_RATI_HAIL_LEN \
     + STATION_IDENTITY_CURRENCY_NAME_LEN \
     + STATION_IDENTITY_PUBKEY_LEN)
 /* The four "MAX_ARMS * 4" terms above are arm_speed[], ring_offset[],

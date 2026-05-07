@@ -128,8 +128,8 @@ sends the pubkey on connect. The server validates state-changing actions
 against the player's signature, keys the save file by pubkey, and offers a
 "claim my legacy save" handshake for pre-A.4 anonymous saves.
 
-See [`src/identity.h`](../src/identity.h) for the load/save surface and
-[`src/identity.c`](../src/identity.c) for the platform-path resolution.
+See [`client/identity.h`](../client/identity.h) for the load/save surface and
+[`client/identity.c`](../client/identity.c) for the platform-path resolution.
 
 The HUD shows the first 8 base58 chars of the player's pubkey as their permanent
 identity. That prefix is the callsign.
@@ -389,7 +389,7 @@ operator cannot publish two divergent logs to two audiences.
 - [`shared/signal_crypto.h`](../shared/signal_crypto.h) — the Ed25519 surface.
 - [`shared/manifest.h`](../shared/manifest.h) — manifest helpers and the
   finished-good lifecycle invariants.
-- [`src/identity.h`](../src/identity.h) — client-side player identity
+- [`client/identity.h`](../client/identity.h) — client-side player identity
   load/save.
 - Issue #479 — the umbrella for off-chain decentralization.
 - Issue #480 — the on-chain follow-on.
