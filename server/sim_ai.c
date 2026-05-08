@@ -16,6 +16,7 @@
 #include "ship.h"
 #include "game_sim.h" /* SHIP_COLLISION_DAMAGE_THRESHOLD/_SCALE */
 #include "cargo_receipt_issue.h"
+#include "gossip.h"
 #include "sha256.h"
 #include <math.h>
 #include <string.h>
@@ -110,100 +111,6 @@ static int station_finished_room_units_for_hauler(const station_t *st,
     float used = (float)stock + station_finished_fraction_for_hauler(st, c);
     int room = (int)floorf(cap - used + 0.0001f);
     return room > 0 ? room : 0;
-}
-
-static bool station_accepts_hauler_commodity(const station_t *st,
-                                             commodity_t c) {
-    if (!st || !station_is_active(st)) return false;
-    if (c < COMMODITY_RAW_ORE_COUNT || c >= COMMODITY_COUNT) return false;
-
-    if (st->scaffold && c == COMMODITY_FRAME) return true;
-    for (int i = 0; i < st->module_count; i++) {
-        const station_module_t *m = &st->modules[i];
-        if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
-        if (module_build_material_lookup(m->type) == c) return true;
-    }
-    return station_consumes(st, c);
-}
-
-static float station_hauler_need_score(const station_t *st, commodity_t c) {
-    if (!station_accepts_hauler_commodity(st, c)) return 0.0f;
-
-    float best = 0.0f;
-    if (st->scaffold && c == COMMODITY_FRAME) {
-        float remaining = SCAFFOLD_MATERIAL_NEEDED * (1.0f - st->scaffold_progress);
-        if (remaining > best) best = remaining / SCAFFOLD_MATERIAL_NEEDED;
-    }
-    for (int i = 0; i < st->module_count; i++) {
-        const station_module_t *m = &st->modules[i];
-        if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
-        if (module_build_material_lookup(m->type) != c) continue;
-        float cost = module_build_cost_lookup(m->type);
-        if (cost <= 0.0f) continue;
-        float remaining = cost * (1.0f - module_supply_fraction(m));
-        float score = remaining / cost;
-        if (score > best) best = score;
-    }
-
-    station_demand_t d = station_demand_for(st, c);
-    if (d.commodity == c && d.severity > best) best = d.severity;
-    return best;
-}
-
-static bool station_hauler_export_pick(const world_t *w, const station_t *home,
-                                       int home_station, commodity_t *out_cargo,
-                                       int *out_dest, int *out_room) {
-    if (!w || !home || !out_cargo || !out_dest || !out_room) return false;
-
-    const float high_water = MAX_PRODUCT_STOCK * 0.85f;
-    float best_score = 0.0f;
-    commodity_t best_cargo = COMMODITY_COUNT;
-    int best_dest = -1;
-    int best_room = 0;
-
-    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-        commodity_t cargo = (commodity_t)c;
-        int available = station_finished_available_for_hauler(home, cargo);
-        if (available <= 0) continue;
-
-        float stock = home->_inventory_cache[c];
-        float pressure = (stock - high_water) / (MAX_PRODUCT_STOCK - high_water);
-        if (pressure <= 0.0f) continue;
-        if (pressure > 1.0f) pressure = 1.0f;
-
-        for (int s = 0; s < MAX_STATIONS; s++) {
-            if (s == home_station) continue;
-            const station_t *dest = &w->stations[s];
-            if (!station_is_active(dest)) continue;
-            if (!station_accepts_hauler_commodity(dest, cargo)) continue;
-            if (station_produces(dest, cargo) &&
-                station_hauler_need_score(dest, cargo) <= 0.0f) {
-                continue;
-            }
-
-            int room = station_finished_room_units_for_hauler(dest, cargo,
-                                                              MAX_PRODUCT_STOCK);
-            if (room <= 0) continue;
-            int movable = available < room ? available : room;
-            if (movable <= 0) continue;
-
-            float dist = fmaxf(1.0f, v2_len(v2_sub(dest->pos, home->pos)));
-            float need = station_hauler_need_score(dest, cargo);
-            float score = pressure * (float)movable * (1.0f + need) / dist;
-            if (score > best_score) {
-                best_score = score;
-                best_cargo = cargo;
-                best_dest = s;
-                best_room = room;
-            }
-        }
-    }
-
-    if (best_dest < 0 || best_cargo >= COMMODITY_COUNT) return false;
-    *out_cargo = best_cargo;
-    *out_dest = best_dest;
-    *out_room = best_room;
-    return true;
 }
 
 static void npc_update_manifest_rarity_tint(npc_ship_t *npc,
@@ -1323,98 +1230,6 @@ static void npc_validate_stations(world_t *w, npc_ship_t *npc) {
         npc->dest_station = npc->home_station;
 }
 
-/* ------------------------------------------------------------------ */
-/* Gossip-contract dock handshake.                                     */
-/* ------------------------------------------------------------------ */
-/* Contracts as bounded ship/station memory. New entries push out
- * oldest (FIFO eviction); information speed = ship speed. The hauler
- * picker reads only from npc->known_contracts, never from
- * w->contracts[] — peer station state is never iterated. The
- * authoritative settlement still reads w->contracts[] but only at
- * the issuing station, where it is local state by definition. */
-
-static contract_summary_t contract_summary_make(const contract_t *ct) {
-    contract_summary_t s = {0};
-    if (!ct) return s;
-    s.active = ct->active;
-    s.action = (uint8_t)ct->action;
-    s.station_index = ct->station_index;
-    s.commodity = (uint8_t)ct->commodity;
-    s.required_grade = ct->required_grade;
-    s.quantity_needed = ct->quantity_needed;
-    s.base_price = ct->base_price;
-    s.age_at_copy = ct->age;
-    return s;
-}
-
-static bool contract_summary_matches(const contract_summary_t *a,
-                                     const contract_summary_t *b) {
-    return a->action == b->action &&
-           a->station_index == b->station_index &&
-           a->commodity == b->commodity;
-}
-
-/* FIFO insert with dedup-refresh. Matching summary in place is updated
- * with newer data; otherwise new entry appended; full lists shift left
- * (oldest evicted). */
-static void gossip_insert(contract_summary_t *list, uint8_t *count, int cap,
-                          const contract_summary_t *s) {
-    if (!list || !count || !s || cap <= 0) return;
-    for (int i = 0; i < *count; i++) {
-        if (contract_summary_matches(&list[i], s)) {
-            list[i] = *s;
-            return;
-        }
-    }
-    if (*count < cap) {
-        list[*count] = *s;
-        (*count)++;
-    } else {
-        for (int i = 1; i < cap; i++)
-            list[i-1] = list[i];
-        list[cap - 1] = *s;
-    }
-}
-
-/* Bidirectional dock-contact gossip:
- *   1. Station merges its locally-issued active contracts into its own
- *      known pool. This is a local read (filter w->contracts[] by
- *      station_index == self) — under shard-split this becomes a per-
- *      station list. Allowed under the no-radio rule.
- *   2. Station's known pool copies into ship's known pool (FIFO insert).
- *   3. Ship's pre-handshake known pool copies into station's known pool.
- * Stale entries (now-inactive at issuer) eventually evict via FIFO. */
-static void gossip_dock_handshake(world_t *w, npc_ship_t *npc, int station_index) {
-    if (!w || !npc) return;
-    if (station_index < 0 || station_index >= MAX_STATIONS) return;
-    station_t *st = &w->stations[station_index];
-
-    for (int k = 0; k < MAX_CONTRACTS; k++) {
-        const contract_t *ct = &w->contracts[k];
-        if (!ct->active) continue;
-        if (ct->station_index != station_index) continue;
-        contract_summary_t s = contract_summary_make(ct);
-        gossip_insert(st->known_contracts, &st->known_contract_count,
-                      STATION_KNOWN_CONTRACT_CAP, &s);
-    }
-
-    contract_summary_t ship_pre[NPC_KNOWN_CONTRACT_CAP];
-    uint8_t ship_pre_count = npc->known_contract_count;
-    for (int i = 0; i < ship_pre_count; i++)
-        ship_pre[i] = npc->known_contracts[i];
-
-    for (int i = 0; i < st->known_contract_count; i++) {
-        if (!st->known_contracts[i].active) continue;
-        gossip_insert(npc->known_contracts, &npc->known_contract_count,
-                      NPC_KNOWN_CONTRACT_CAP, &st->known_contracts[i]);
-    }
-    for (int i = 0; i < ship_pre_count; i++) {
-        if (!ship_pre[i].active) continue;
-        gossip_insert(st->known_contracts, &st->known_contract_count,
-                      STATION_KNOWN_CONTRACT_CAP, &ship_pre[i]);
-    }
-}
-
 static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     const hull_def_t *hull = npc_hull_def(npc);
     ship_t *hauler_ship = npc_ship_for(w, n);
@@ -1429,7 +1244,10 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
              * home station. After this, npc->known_contracts holds
              * everything home knows (its own issued contracts plus
              * intel from prior visiting ships), capped by FIFO. */
-            gossip_dock_handshake(w, npc, npc->home_station);
+            gossip_dock_handshake(w, npc->home_station,
+                                  npc->known_contracts,
+                                  &npc->known_contract_count,
+                                  SHIP_KNOWN_CONTRACT_CAP);
 
             station_t *home = &w->stations[npc->home_station];
             float carried = 0.0f;
@@ -1498,100 +1316,13 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                             home->manifest_dirty = true;
                     }
                 }
-            } else {
-                /* Fallback: round-trip to the best compatible station need
-                 * (leave reserve for players). */
-                station_t *dest = &w->stations[npc->dest_station];
-                commodity_t best_cargo = COMMODITY_COUNT;
-                float best_need = -1.0f;
-
-                for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-                    commodity_t cargo = (commodity_t)c;
-                    float avail = (float)station_finished_available_for_hauler(home, cargo);
-                    float need = station_hauler_need_score(dest, cargo);
-                    if (avail <= 0.5f || need <= 0.0f) continue;
-                    if (need > best_need) {
-                        best_need = need;
-                        best_cargo = cargo;
-                    }
-                }
-
-                /* If the previously-bound dest_station doesn't want any
-                 * of home's stock, the original fallback would just sit
-                 * the hauler in the dock. Bug surfaced as "Prospect is
-                 * full of ferrite, haulers are idle" — Prospect's home
-                 * had ingots but the stale dest_station (e.g. Prospect
-                 * itself, or a station with no FRAME_PRESS) had no
-                 * matching station need, so best_cargo stayed unset and
-                 * total_carried fell to 0. Re-scan every other station
-                 * and pick the best (surplus × need / dist) match. */
-                if (best_cargo >= COMMODITY_COUNT) {
-                    int best_alt_dest = -1;
-                    commodity_t best_alt_cargo = COMMODITY_COUNT;
-                    float best_alt_score = 0.0f;
-                    for (int s = 0; s < MAX_STATIONS; s++) {
-                        if (s == npc->home_station) continue;
-                        if (!station_is_active(&w->stations[s])) continue;
-                        const station_t *alt = &w->stations[s];
-                        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-                            commodity_t cargo = (commodity_t)c;
-                            float avail = (float)station_finished_available_for_hauler(home, cargo);
-                            if (avail <= 0.5f) continue;
-                            float need = station_hauler_need_score(alt, cargo);
-                            if (need <= 0.0f) continue;
-                            float dist = fmaxf(1.0f, v2_len(v2_sub(alt->pos, home->pos)));
-                            float score = (avail * need) / dist;
-                            if (score > best_alt_score) {
-                                best_alt_score = score;
-                                best_alt_dest = s;
-                                best_alt_cargo = cargo;
-                            }
-                        }
-                    }
-                    if (best_alt_dest >= 0) {
-                        npc->dest_station = best_alt_dest;
-                        best_cargo = best_alt_cargo;
-                    }
-                }
-
-                int export_room = 1000000;
-                if (best_cargo >= COMMODITY_COUNT) {
-                    int export_dest = -1;
-                    commodity_t export_cargo = COMMODITY_COUNT;
-                    if (station_hauler_export_pick(w, home, npc->home_station,
-                                                   &export_cargo, &export_dest,
-                                                   &export_room)) {
-                        npc->dest_station = export_dest;
-                        best_cargo = export_cargo;
-                    }
-                }
-
-                if (best_cargo < COMMODITY_COUNT) {
-                    int take_units = station_finished_available_for_hauler(home, best_cargo);
-                    int space_units = (int)floorf(space + 0.0001f);
-                    if (take_units > space_units) take_units = space_units;
-                    if (take_units > export_room) take_units = export_room;
-                    if (take_units > 0) {
-                        if (hauler_ship) {
-                            int moved = hauler_load_station_units(w, n, home,
-                                                                  hauler_ship,
-                                                                  best_cargo,
-                                                                  take_units);
-                            if (moved > 0) {
-                                station_finished_sync(home, best_cargo);
-                                ship_finished_sync(hauler_ship, best_cargo);
-                                hauler_sync_cargo_from_manifest(npc, hauler_ship);
-                            }
-                        } else {
-                            float take = (float)take_units;
-                            npc->cargo[best_cargo] += take;
-                            home->_inventory_cache[best_cargo] -= take;
-                            if (station_manifest_drain_commodity(home, best_cargo, take_units) > 0)
-                                home->manifest_dirty = true;
-                        }
-                    }
-                }
             }
+            /* If no contract was fillable from known_contracts, the
+             * hauler stays docked. Under the gossip-contract model the
+             * hauler only acts on intel it has heard about via prior
+             * dock contact — no peer-station scan, no surplus-push
+             * stopgap. Idle haulers re-handshake at home each dock
+             * cycle and pick up whatever new gossip arrives. */
             float total_carried = 0.0f;
             for (int c = 0; c < COMMODITY_COUNT; c++) total_carried += npc->cargo[c];
             if (total_carried < 0.01f) {
@@ -1632,7 +1363,10 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
              * brings any contracts it picked up at home (or earlier
              * docks) and learns the dest's open demands. This is how
              * intel propagates one hop per round-trip. */
-            gossip_dock_handshake(w, npc, npc->dest_station);
+            gossip_dock_handshake(w, npc->dest_station,
+                                  npc->known_contracts,
+                                  &npc->known_contract_count,
+                                  SHIP_KNOWN_CONTRACT_CAP);
 
             station_t *dest = &w->stations[npc->dest_station];
             if (hauler_ship && hauler_ship->manifest.count > 0) {

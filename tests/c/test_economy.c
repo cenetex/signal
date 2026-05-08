@@ -401,7 +401,7 @@ TEST(test_hauler_fills_highest_value_contract) {
      * scoring, not the gossip propagation, so we inject knowledge
      * directly. */
     hauler->known_contract_count = 0;
-    for (int k = 0; k < MAX_CONTRACTS && hauler->known_contract_count < NPC_KNOWN_CONTRACT_CAP; k++) {
+    for (int k = 0; k < MAX_CONTRACTS && hauler->known_contract_count < SHIP_KNOWN_CONTRACT_CAP; k++) {
         if (!w.contracts[k].active) continue;
         hauler->known_contracts[hauler->known_contract_count++] = (contract_summary_t){
             .active = true,
@@ -465,7 +465,7 @@ TEST(test_hauler_picker_trusts_gossiped_contract) {
     memset(hauler->cargo, 0, sizeof(hauler->cargo));
     /* Seed known_contracts (see comment in test_hauler_fills_highest_value_contract) */
     hauler->known_contract_count = 0;
-    for (int k = 0; k < MAX_CONTRACTS && hauler->known_contract_count < NPC_KNOWN_CONTRACT_CAP; k++) {
+    for (int k = 0; k < MAX_CONTRACTS && hauler->known_contract_count < SHIP_KNOWN_CONTRACT_CAP; k++) {
         if (!w.contracts[k].active) continue;
         hauler->known_contracts[hauler->known_contract_count++] = (contract_summary_t){
             .active = true,

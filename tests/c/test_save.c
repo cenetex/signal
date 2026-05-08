@@ -900,6 +900,20 @@ TEST(test_world_save_load_preserves_hauler_manifest_cargo) {
     hauler->state_timer = 0.0f;
     hauler->home_station = 0;
     hauler->dest_station = 0;
+    /* Seed gossip — see comment in test_hauler_preserves_cargo_identity_in_transit. */
+    hauler->known_contract_count = 0;
+    for (int k = 0; k < MAX_CONTRACTS && hauler->known_contract_count < SHIP_KNOWN_CONTRACT_CAP; k++) {
+        if (!w->contracts[k].active) continue;
+        hauler->known_contracts[hauler->known_contract_count++] = (contract_summary_t){
+            .active = true,
+            .action = (uint8_t)w->contracts[k].action,
+            .station_index = w->contracts[k].station_index,
+            .commodity = (uint8_t)w->contracts[k].commodity,
+            .quantity_needed = w->contracts[k].quantity_needed,
+            .base_price = w->contracts[k].base_price,
+            .age_at_copy = w->contracts[k].age,
+        };
+    }
 
     step_npc_ships(w, SIM_DT);
 
