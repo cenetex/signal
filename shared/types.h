@@ -196,6 +196,31 @@ typedef enum {
  * to the largest recipe in the table. */
 #define RECIPE_INPUT_MAX 3
 
+/* Gossip-contract bounded memory caps. Ships and stations carry
+ * snapshots of contracts they've learned about via dock contact;
+ * new entries push out oldest (FIFO eviction). Information speed =
+ * ship speed. Stations are gossip hubs (bigger pool, 10 = 2 pages);
+ * ships are couriers (smaller pool, hull-class-dependent — for v0
+ * NPCs and players share the same cap, future may scale by hull).
+ * The full contract_t (declared later in this file) is the
+ * authoritative storage at the issuing station. The summary is the
+ * gossiped payload. */
+enum {
+    SHIP_KNOWN_CONTRACT_CAP = 3,
+    STATION_KNOWN_CONTRACT_CAP = 10,
+};
+
+typedef struct {
+    bool active;
+    uint8_t action;          /* contract_action_t */
+    uint8_t station_index;   /* destination/issuer */
+    uint8_t commodity;       /* commodity_t */
+    uint8_t required_grade;  /* mining_grade_t */
+    float quantity_needed;
+    float base_price;
+    float age_at_copy;       /* issuer's age at the moment this snapshot was taken */
+} contract_summary_t;        /* keep small — embedded in station_t and npc_ship_t arrays */
+
 typedef struct {
     recipe_id_t   id;
     const char   *name;
@@ -249,6 +274,16 @@ typedef struct {
      * through it. The on-disk save format (v42+) round-trips through
      * the cargo_receipt_t wire layout. */
     void          *receipts_opaque; /* ship_receipts_t* — see cargo_receipt.h */
+
+    /* Gossip-contract bounded memory. Same shape as npc_ship_t's pool —
+     * both NPC and player ships are couriers in the gossip protocol.
+     * Refreshed via dock-contact handshake; ephemeral (not serialized);
+     * FIFO eviction on overflow. Player UI selecting contracts at a
+     * dock reads from THIS pool — what the player can choose from is
+     * what the player's ship already knows about, refreshed by the
+     * dock handshake on arrival. */
+    contract_summary_t known_contracts[SHIP_KNOWN_CONTRACT_CAP];
+    uint8_t known_contract_count;
 } ship_t;
 
 typedef enum {
@@ -340,30 +375,6 @@ enum {
     MAX_ARMS = 4,
     PLAYER_PLAN_TYPE_LIMIT = 2, /* max distinct planned module types per player */
 };
-
-/* Gossip-contract bounded memory caps. Ships and stations carry
- * snapshots of contracts they've learned about via dock contact;
- * new entries push out oldest (FIFO eviction). Information speed =
- * ship speed. Stations are gossip hubs (bigger pool); ships are
- * couriers (smaller pool, hull-class-dependent — for v0 all NPCs
- * get the same cap, future may scale by hull). The full contract_t
- * (declared later in this file) is the authoritative storage at
- * the issuing station. The summary is the gossiped payload. */
-enum {
-    NPC_KNOWN_CONTRACT_CAP = 3,
-    STATION_KNOWN_CONTRACT_CAP = 8,
-};
-
-typedef struct {
-    bool active;
-    uint8_t action;          /* contract_action_t */
-    uint8_t station_index;   /* destination/issuer */
-    uint8_t commodity;       /* commodity_t */
-    uint8_t required_grade;  /* mining_grade_t */
-    float quantity_needed;
-    float base_price;
-    float age_at_copy;       /* issuer's age at the moment this snapshot was taken */
-} contract_summary_t;        /* keep small — embedded in station_t and npc_ship_t arrays */
 
 typedef struct {
     uint32_t id;             /* stable ID, survives array slot changes (0 = unassigned) */
@@ -815,7 +826,7 @@ typedef struct {
      * here, never from w->contracts[] — peer station state is never
      * iterated. FIFO eviction on overflow. Ephemeral — not serialized;
      * the next dock cycle re-populates via the dock handshake. */
-    contract_summary_t known_contracts[NPC_KNOWN_CONTRACT_CAP];
+    contract_summary_t known_contracts[SHIP_KNOWN_CONTRACT_CAP];
     uint8_t known_contract_count;
 } npc_ship_t;
 

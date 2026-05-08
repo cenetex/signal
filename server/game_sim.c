@@ -25,6 +25,7 @@
 #include "laser.h"
 #include "manifest.h"
 #include "contract_fit.h"
+#include "gossip.h"
 #include "ship.h"
 #include "sim_ai.h"
 #include "sim_autopilot.h"
@@ -752,6 +753,16 @@ static void dock_ship(world_t *w, server_player_t *sp) {
     if (sp->current_station >= 0 && sp->pubkey_set) {
         ledger_record_dock(&w->stations[sp->current_station], sp->pubkey,
                             (uint64_t)w->time);
+    }
+    /* Gossip-contract dock handshake: bidirectional set-union with the
+     * station's known pool. Player ships are couriers in the gossip
+     * protocol exactly like NPC haulers. The contract menu the player
+     * sees post-dock is sourced from the player's own known_contracts. */
+    if (sp->current_station >= 0) {
+        gossip_dock_handshake(w, sp->current_station,
+                              sp->ship.known_contracts,
+                              &sp->ship.known_contract_count,
+                              SHIP_KNOWN_CONTRACT_CAP);
     }
     emit_event(w, (sim_event_t){.type = SIM_EVENT_DOCK, .player_id = sp->id});
 }
@@ -5609,6 +5620,25 @@ void world_reset(world_t *w) {
 
     /* Precompute station nav meshes now that geometry is finalized. */
     station_rebuild_all_nav(w);
+
+    /* Cold-start gossip bootstrap: seed every active station's known
+     * pool with every currently-active contract. This is a one-time
+     * radio-violation marked TODO — the proper fix is pressure-driven
+     * contract issuance that produces local contracts where ships can
+     * find them organically. For v0, ships docking at any station get
+     * a complete view of initial demands; runtime contracts spawned
+     * later only land in the issuer's pool and spread via gossip. */
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        const contract_t *ct = &w->contracts[k];
+        if (!ct->active) continue;
+        contract_summary_t s = contract_summary_make(ct);
+        for (int s_idx = 0; s_idx < MAX_STATIONS; s_idx++) {
+            if (!station_is_active(&w->stations[s_idx])) continue;
+            contract_pool_insert(w->stations[s_idx].known_contracts,
+                                 &w->stations[s_idx].known_contract_count,
+                                 STATION_KNOWN_CONTRACT_CAP, &s);
+        }
+    }
 
     SIM_LOG("[sim] world reset complete (%d asteroids, 7 NPCs)\n", FIELD_ASTEROID_TARGET);
 }

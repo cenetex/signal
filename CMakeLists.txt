@@ -86,6 +86,7 @@ endif()
 set(SIGNAL_SIM_SOURCES
     server/game_sim.c
     server/sim_ai.c
+    server/gossip.c
     server/sim_autopilot.c
     server/sim_flight.c
     server/sim_nav.c
