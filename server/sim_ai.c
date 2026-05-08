@@ -1491,28 +1491,14 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             float total_carried = 0.0f;
             for (int c = 0; c < COMMODITY_COUNT; c++) total_carried += npc->cargo[c];
             if (total_carried < 0.01f) {
-                /* Nothing at home — look for surplus finished cargo. */
-                int best_src = -1;
-                float best_stock = 0.0f;
-                for (int s = 0; s < MAX_STATIONS; s++) {
-                    if (s == npc->home_station) continue;
-                    if (!station_is_active(&w->stations[s])) continue;
-                    float stock = 0.0f;
-                    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
-                        stock += (float)station_finished_available_for_hauler(
-                            &w->stations[s], (commodity_t)c);
-                    }
-                    if (stock > best_stock) { best_stock = stock; best_src = s; }
-                }
-                /* Stay docked at home and wait for stock or a contract.
-                 * Prior to this, the fallback permanently mutated
-                 * home_station to wherever had surplus, which caused
-                 * every hauler in the world to converge on the
-                 * highest-stock station (Helios) and the inter-station
-                 * chain to permanently stall. Haulers belong to their
-                 * spawn station; the auto-respawn loop replaces dead
-                 * slots if a station's roster ever drops to zero. */
-                (void)best_src; (void)best_stock;
+                /* No cargo loaded — stay docked at home and wait for
+                 * stock or a contract. Do NOT migrate home_station to
+                 * wherever surplus happens to be: an earlier version
+                 * did that and every hauler in the world converged on
+                 * the highest-stock station (Helios), permanently
+                 * stalling the inter-station chain. Haulers belong to
+                 * their spawn station; the auto-respawn loop replaces
+                 * dead slots if a station's roster ever drops to zero. */
                 npc->state_timer = HAULER_DOCK_TIME;
             } else {
                 npc->state = NPC_STATE_TRAVEL_TO_DEST;
