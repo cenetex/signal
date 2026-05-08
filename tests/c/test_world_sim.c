@@ -374,6 +374,124 @@ TEST(test_hauler_preserves_cargo_identity_in_transit) {
     }
 }
 
+TEST(test_hauler_exports_surplus_finished_stock_without_contract) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    int hauler_slot = -1;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (w.npc_ships[n].active &&
+            w.npc_ships[n].role == NPC_ROLE_HAULER &&
+            w.npc_ships[n].home_station == 0) {
+            hauler_slot = n;
+            break;
+        }
+    }
+    ASSERT(hauler_slot >= 0);
+    for (int n = 0; n < MAX_NPC_SHIPS; n++)
+        if (n != hauler_slot) w.npc_ships[n].active = false;
+
+    for (int s = 0; s < 3; s++) {
+        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
+            ASSERT(test_set_station_finished_units(&w.stations[s],
+                                                   (commodity_t)c, 0));
+    }
+    ASSERT(test_set_station_finished_units(&w.stations[0],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)MAX_PRODUCT_STOCK));
+    ASSERT(test_set_station_finished_units(&w.stations[1],
+                                           COMMODITY_FERRITE_INGOT,
+                                           (int)MAX_PRODUCT_STOCK - 8));
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    npc_ship_t *hauler = &w.npc_ships[hauler_slot];
+    ship_t *hauler_ship = world_npc_ship_for(&w, hauler_slot);
+    ASSERT(hauler_ship != NULL);
+    ASSERT(ship_manifest_bootstrap(hauler_ship));
+    manifest_clear(&hauler_ship->manifest);
+    ship_receipts_clear(ship_get_receipts(hauler_ship));
+    memset(hauler->cargo, 0, sizeof(hauler->cargo));
+    memset(hauler_ship->cargo, 0, sizeof(hauler_ship->cargo));
+    hauler->state = NPC_STATE_DOCKED;
+    hauler->state_timer = 0.0f;
+    hauler->home_station = 0;
+    hauler->dest_station = 0;
+
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(hauler->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(hauler->dest_station, 1);
+    ASSERT_EQ_INT(manifest_count_by_commodity(&hauler_ship->manifest,
+                                              COMMODITY_FERRITE_INGOT), 8);
+    ASSERT_EQ_INT(station_finished_count(&w.stations[0],
+                                         COMMODITY_FERRITE_INGOT),
+                  (int)MAX_PRODUCT_STOCK - 8);
+
+    float bal_before = ledger_balance(&w.stations[1], hauler->session_token);
+    hauler->state = NPC_STATE_UNLOADING;
+    hauler->state_timer = 0.0f;
+    hauler->dest_station = 1;
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(manifest_count_by_commodity(&hauler_ship->manifest,
+                                              COMMODITY_FERRITE_INGOT), 0);
+    ASSERT_EQ_INT(station_finished_count(&w.stations[1],
+                                         COMMODITY_FERRITE_INGOT),
+                  (int)MAX_PRODUCT_STOCK);
+    ASSERT(ledger_balance(&w.stations[1], hauler->session_token) > bal_before);
+}
+
+TEST(test_hauler_exports_kepler_frames_to_helios_room) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    int hauler_slot = -1;
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        if (w.npc_ships[n].active &&
+            w.npc_ships[n].role == NPC_ROLE_HAULER &&
+            w.npc_ships[n].home_station == 1) {
+            hauler_slot = n;
+            break;
+        }
+    }
+    ASSERT(hauler_slot >= 0);
+    for (int n = 0; n < MAX_NPC_SHIPS; n++)
+        if (n != hauler_slot) w.npc_ships[n].active = false;
+
+    for (int s = 0; s < 3; s++) {
+        for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++)
+            ASSERT(test_set_station_finished_units(&w.stations[s],
+                                                   (commodity_t)c, 0));
+    }
+    ASSERT(test_set_station_finished_units(&w.stations[1], COMMODITY_FRAME,
+                                           (int)MAX_PRODUCT_STOCK));
+    ASSERT(test_set_station_finished_units(&w.stations[2], COMMODITY_FRAME,
+                                           76));
+    memset(w.contracts, 0, sizeof(w.contracts));
+
+    npc_ship_t *hauler = &w.npc_ships[hauler_slot];
+    ship_t *hauler_ship = world_npc_ship_for(&w, hauler_slot);
+    ASSERT(hauler_ship != NULL);
+    ASSERT(ship_manifest_bootstrap(hauler_ship));
+    manifest_clear(&hauler_ship->manifest);
+    ship_receipts_clear(ship_get_receipts(hauler_ship));
+    memset(hauler->cargo, 0, sizeof(hauler->cargo));
+    memset(hauler_ship->cargo, 0, sizeof(hauler_ship->cargo));
+    hauler->state = NPC_STATE_DOCKED;
+    hauler->state_timer = 0.0f;
+    hauler->home_station = 1;
+    hauler->dest_station = 1;
+
+    step_npc_ships(&w, SIM_DT);
+
+    int carried = manifest_count_by_commodity(&hauler_ship->manifest,
+                                              COMMODITY_FRAME);
+    ASSERT_EQ_INT(hauler->state, NPC_STATE_TRAVEL_TO_DEST);
+    ASSERT_EQ_INT(hauler->dest_station, 2);
+    ASSERT(carried > 0);
+    ASSERT(carried <= 44);
+}
+
 TEST(test_legacy_hauler_cargo_unloads_when_manifest_empty) {
     WORLD_DECL;
     world_reset(&w);
@@ -2422,6 +2540,8 @@ void register_world_sim_basic_tests(void) {
     RUN(test_hail_reports_no_station_in_range);
     RUN(test_dead_hauler_auto_respawns);
     RUN(test_hauler_preserves_cargo_identity_in_transit);
+    RUN(test_hauler_exports_surplus_finished_stock_without_contract);
+    RUN(test_hauler_exports_kepler_frames_to_helios_room);
     RUN(test_hauler_docks_when_reaching_station_lane);
     RUN(test_legacy_hauler_cargo_unloads_when_manifest_empty);
     RUN(test_dead_tow_auto_respawns_at_shipyard);
