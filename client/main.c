@@ -1125,6 +1125,7 @@ static void init(void) {
             cbs.on_hail_response = apply_remote_hail_response;
             cbs.on_player_ship = apply_remote_player_ship;
             cbs.on_contracts = apply_remote_contracts;
+            cbs.on_player_known_contracts = apply_remote_player_known_contracts;
             cbs.on_death = on_remote_death;
             cbs.on_world_time = on_remote_world_time;
             cbs.on_events = apply_remote_events;

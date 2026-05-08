@@ -45,8 +45,15 @@ float player_current_balance(void) {
     return client_station_balance(st);
 }
 
-/* Forward decl — defined below near the other client_* helpers. */
-static float client_pending_balance(void);
+/* Forward decl — defined below near the other client_* helpers.
+ * Fills `strongest_idx` with the station holding the largest pending
+ * balance for the local player, `strongest_balance` with that amount,
+ * and `other_count` with how many *other* stations also have a
+ * positive balance. Returns true when there's anything to collect.
+ * Singleplayer only — MP doesn't push per-station ledgers. */
+static bool client_pending_summary(int *strongest_idx,
+                                   float *strongest_balance,
+                                   int *other_count);
 
 /* Center `text` horizontally around screen-pixel x = `center_x` and
  * place its baseline at row index `row_idx` (already in canvas-cell
@@ -82,7 +89,9 @@ typedef enum {
     HUD_ACTION_TRACTOR_REACHING,   /* tractor active, no frag yet — int_b = nearby_fragments */
     HUD_ACTION_FRAGMENTS_NEARBY,   /* tractor inactive, frags in range — int_b = nearby_fragments */
     HUD_ACTION_HOLD_FULL,
-    HUD_ACTION_PENDING_COLLECT,    /* int_a = total pending credits */
+    HUD_ACTION_PENDING_COLLECT,    /* int_a = strongest-station balance,
+                                    * int_b = other stations with pending,
+                                    * str_a = strongest station's currency_name */
     HUD_ACTION_IDLE,
 } hud_action_kind_t;
 
@@ -165,12 +174,21 @@ static hud_action_t hud_classify_action(int cargo_units, int cargo_capacity, flo
         return out;
     }
     /* Pending ledger credits — only surface when in usable signal so we
-     * don't tease "collect" while H couldn't do anything. */
-    float pending = (sig_quality >= 0.90f) ? client_pending_balance() : 0.0f;
-    if (pending > 0.5f) {
-        out.kind = HUD_ACTION_PENDING_COLLECT;
-        out.int_a = (int)lroundf(pending);
-        return out;
+     * don't tease "collect" while H couldn't do anything. Names the
+     * single largest-pending station so the per-station ledger model is
+     * legible from the action row instead of being flattened into one
+     * global number. */
+    if (sig_quality >= 0.90f) {
+        int best_idx = -1, others = 0;
+        float best_bal = 0.0f;
+        if (client_pending_summary(&best_idx, &best_bal, &others)) {
+            out.kind = HUD_ACTION_PENDING_COLLECT;
+            out.int_a = (int)lroundf(best_bal);
+            out.int_b = others;
+            const char *cn = g.world.stations[best_idx].currency_name;
+            out.str_a = (cn && cn[0]) ? cn : "credits";
+            return out;
+        }
     }
     return out;
 }
@@ -218,7 +236,13 @@ static void hud_format_action_compact(const hud_action_t *a, const char *dock_ro
         snprintf(out, out_size, "Hold full. Dock to sell.");
         return;
     case HUD_ACTION_PENDING_COLLECT:
-        snprintf(out, out_size, "[H] collect %d", a->int_a);
+        if (a->int_b > 0) {
+            snprintf(out, out_size, "[H] collect %d %s (+%d)",
+                     a->int_a, a->str_a ? a->str_a : "credits", a->int_b);
+        } else {
+            snprintf(out, out_size, "[H] collect %d %s",
+                     a->int_a, a->str_a ? a->str_a : "credits");
+        }
         return;
     case HUD_ACTION_IDLE:
     default:
@@ -271,7 +295,13 @@ static void hud_format_action_wide(const hud_action_t *a, const station_t *curre
         snprintf(out, out_size, "Hold full. Dock to sell.");
         return;
     case HUD_ACTION_PENDING_COLLECT:
-        snprintf(out, out_size, "H to hail // collect %d cr", a->int_a);
+        if (a->int_b > 0) {
+            snprintf(out, out_size, "H to hail // collect %d %s (+%d more)",
+                     a->int_a, a->str_a ? a->str_a : "credits", a->int_b);
+        } else {
+            snprintf(out, out_size, "H to hail // collect %d %s",
+                     a->int_a, a->str_a ? a->str_a : "credits");
+        }
         return;
     case HUD_ACTION_IDLE:
     default:
@@ -393,7 +423,11 @@ static void hud_draw_nav_label(float screen_w, float screen_h) {
         sdtx_printf("%.*s", name_cols, nav_st->name);
     }
     if (g.tracked_contract >= 0 && g.tracked_contract < MAX_CONTRACTS) {
-        if (!g.world.contracts[g.tracked_contract].active)
+        /* Drop tracking when the contract closes OR when it leaves the
+         * player's gossip mask (e.g., overwritten by FIFO eviction at a
+         * later dock). */
+        if (!g.world.contracts[g.tracked_contract].active ||
+            !(g.player_known_contract_mask & (1u << g.tracked_contract)))
             g.tracked_contract = -1;
     }
 }
@@ -631,6 +665,8 @@ static void hud_station_name_for_pubkey(const uint8_t pub[32],
 static const contract_t *hud_tracked_tractor_contract(void) {
     if (g.tracked_contract < 0 || g.tracked_contract >= MAX_CONTRACTS)
         return NULL;
+    if (!(g.player_known_contract_mask & (1u << g.tracked_contract)))
+        return NULL; /* dropped from gossip memory */
     const contract_t *contract = &g.world.contracts[g.tracked_contract];
     if (!contract->active || contract->action != CONTRACT_TRACTOR)
         return NULL;
@@ -1051,24 +1087,45 @@ static void hud_draw_shared_panels(float screen_w, float screen_h, float sig_qua
     draw_damage_flash(screen_w, screen_h);
 }
 
-/* Pending credits across all stations — sum of every ledger entry the
- * local player owns. Singleplayer only: in MP, the server doesn't push
- * a per-station ledger and the wide/compact action rows treat this as
- * 0. Cheap O(stations × ledger) walk; reused per-frame by both HUD
- * variants instead of duplicating the loop. */
-static float client_pending_balance(void) {
-    if (!g.local_server.active) return 0.0f;
-    float pending = 0.0f;
+/* Pending credits, broken out per station. Reports the station holding
+ * the largest player-owned balance plus how many *other* stations also
+ * have a positive balance, so the HUD can name the strongest station
+ * and surface multi-ledger spread without flattening it into one
+ * generic number. Singleplayer only: in MP the server doesn't push a
+ * per-station ledger and this returns false. Cheap O(stations × ledger)
+ * walk; reused per-frame by both HUD variants. */
+static bool client_pending_summary(int *strongest_idx,
+                                   float *strongest_balance,
+                                   int *other_count) {
+    if (strongest_idx) *strongest_idx = -1;
+    if (strongest_balance) *strongest_balance = 0.0f;
+    if (other_count) *other_count = 0;
+    if (!g.local_server.active) return false;
+    int best_idx = -1;
+    float best_bal = 0.0f;
+    int positives = 0;
     for (int si = 0; si < MAX_STATIONS; si++) {
         const station_t *st = &g.world.stations[si];
+        float bal = 0.0f;
         for (int li = 0; li < st->ledger_count; li++) {
             if (memcmp(st->ledger[li].player_pubkey,
                        LOCAL_PLAYER.session_token, 8) == 0) {
-                pending += st->ledger[li].balance;
+                bal += st->ledger[li].balance;
+            }
+        }
+        if (bal > 0.5f) {
+            positives++;
+            if (bal > best_bal) {
+                best_bal = bal;
+                best_idx = si;
             }
         }
     }
-    return pending;
+    if (best_idx < 0) return false;
+    if (strongest_idx) *strongest_idx = best_idx;
+    if (strongest_balance) *strongest_balance = best_bal;
+    if (other_count) *other_count = positives - 1;
+    return true;
 }
 
 /* Currency label at the player's current (docked or nearby) station.

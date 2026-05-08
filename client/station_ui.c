@@ -212,6 +212,10 @@ int build_work_slots(int here_idx, vec2 here_pos,
      * right now. Raw ore lives in towed S-tier fragments; finished goods
      * are counted from the ship manifest. */
     for (int ci = 0; ci < MAX_CONTRACTS && count < 3; ci++) {
+        /* Gossip filter: only show contracts the player has heard
+         * about via dock contact. Mask is set by the per-player
+         * NET_MSG_PLAYER_KNOWN_CONTRACTS message. */
+        if (!(g.player_known_contract_mask & (1u << ci))) continue;
         const contract_t *ct = &g.world.contracts[ci];
         if (!ct->active) continue;
         if (ct->action != CONTRACT_TRACTOR) continue;
@@ -245,6 +249,7 @@ int build_work_slots(int here_idx, vec2 here_pos,
         int nearest[3] = {-1, -1, -1};
         float nearest_d[3] = {1e18f, 1e18f, 1e18f};
         for (int ci = 0; ci < MAX_CONTRACTS; ci++) {
+            if (!(g.player_known_contract_mask & (1u << ci))) continue; /* gossip filter */
             const contract_t *ct = &g.world.contracts[ci];
             if (!ct->active) continue;
             if (ct->station_index >= MAX_STATIONS) continue;

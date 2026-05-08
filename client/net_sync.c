@@ -398,6 +398,10 @@ void apply_remote_contracts(const contract_t* contracts, int count) {
         g.world.contracts[i] = contracts[i];
 }
 
+void apply_remote_player_known_contracts(uint32_t mask) {
+    g.player_known_contract_mask = mask;
+}
+
 void apply_remote_station_identity(const NetStationIdentity* si) {
     if (si->index >= MAX_STATIONS) return;
     station_t* st = &g.world.stations[si->index];

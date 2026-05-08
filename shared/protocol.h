@@ -134,6 +134,14 @@ enum {
                                             * issues its OWN receipt back to the
                                             * player (next BUY_BACK / DELIVER cycle
                                             * grows the chain by one). */
+    NET_MSG_PLAYER_KNOWN_CONTRACTS = 0x39, /* server -> client. Per-player gossip-contract visibility
+                                            * mask. Wire shape: [type:1][mask:u32].
+                                            * Bit i set iff w->contracts[i] matches a summary in this
+                                            * player's ship known_contracts pool. UI uses this mask to
+                                            * hide contracts the player hasn't heard about via dock
+                                            * gossip — keeps NET_MSG_CONTRACTS as the global authoritative
+                                            * snapshot but filters the player-facing dock UI to gossip-
+                                            * legal entries only. Sent per-tick, per-player. */
     NET_MSG_INSPECT_SNAPSHOT       = 0x38, /* server -> client. Laser/scan inspection snapshot.
                                             *
                                             *   [type:1=0x38][target_type:1][target_index:1]

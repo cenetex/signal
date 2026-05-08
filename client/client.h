@@ -278,6 +278,12 @@ typedef struct {
     world_t world;
     local_server_t local_server;
     int local_player_slot;
+    /* Per-player gossip-contract visibility mask. Bit i set iff
+     * world.contracts[i] is in this player's ship known_contracts pool.
+     * Set by NET_MSG_PLAYER_KNOWN_CONTRACTS in multiplayer; computed
+     * locally in singleplayer (local_server). UI iterates the global
+     * world.contracts[] but skips entries not in the mask. */
+    uint32_t player_known_contract_mask;
     /* --- Local identity (Layer A.1 of #479) --- */
     /* Persistent Ed25519 keypair owned by the player. Loaded from disk
      * (or generated on first run) before WebSocket connect; surfaced
