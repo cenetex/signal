@@ -341,6 +341,30 @@ enum {
     PLAYER_PLAN_TYPE_LIMIT = 2, /* max distinct planned module types per player */
 };
 
+/* Gossip-contract bounded memory caps. Ships and stations carry
+ * snapshots of contracts they've learned about via dock contact;
+ * new entries push out oldest (FIFO eviction). Information speed =
+ * ship speed. Stations are gossip hubs (bigger pool); ships are
+ * couriers (smaller pool, hull-class-dependent — for v0 all NPCs
+ * get the same cap, future may scale by hull). The full contract_t
+ * (declared later in this file) is the authoritative storage at
+ * the issuing station. The summary is the gossiped payload. */
+enum {
+    NPC_KNOWN_CONTRACT_CAP = 3,
+    STATION_KNOWN_CONTRACT_CAP = 8,
+};
+
+typedef struct {
+    bool active;
+    uint8_t action;          /* contract_action_t */
+    uint8_t station_index;   /* destination/issuer */
+    uint8_t commodity;       /* commodity_t */
+    uint8_t required_grade;  /* mining_grade_t */
+    float quantity_needed;
+    float base_price;
+    float age_at_copy;       /* issuer's age at the moment this snapshot was taken */
+} contract_summary_t;        /* keep small — embedded in station_t and npc_ship_t arrays */
+
 typedef struct {
     uint32_t id;             /* stable ID, survives array slot changes (0 = unassigned) */
     char name[32];
@@ -518,6 +542,15 @@ typedef struct {
      * The chain_health_* fields are runtime-only startup verification
      * state. They deliberately are not serialized: the next boot must
      * re-walk the chain logs and make a fresh append/no-append decision. */
+    /* Gossip-contract pool. Holds summaries of contracts this station
+     * knows about, both its own locally-issued ones and snapshots
+     * brought by visiting ships. Refreshed on dock contact (bidirectional
+     * set-union with FIFO eviction). Ephemeral — not serialized; rebuilt
+     * from w->contracts[] (locally-issued) on first dock cycle after
+     * load. */
+    contract_summary_t known_contracts[STATION_KNOWN_CONTRACT_CAP];
+    uint8_t known_contract_count;
+
     uint8_t  chain_last_hash[32];
     uint64_t chain_event_count;
     uint8_t  chain_health_status; /* chain_health_status_t */
@@ -776,6 +809,14 @@ typedef struct {
      * counter (the dead ledger entries belonging to the old token
      * just sit until the 16-slot LRU evicts them). */
     uint8_t session_token[8];
+
+    /* Gossip-contract bounded memory. Snapshots of contracts the NPC has
+     * learned about via dock contact. The hauler picker reads only from
+     * here, never from w->contracts[] — peer station state is never
+     * iterated. FIFO eviction on overflow. Ephemeral — not serialized;
+     * the next dock cycle re-populates via the dock handshake. */
+    contract_summary_t known_contracts[NPC_KNOWN_CONTRACT_CAP];
+    uint8_t known_contract_count;
 } npc_ship_t;
 
 /* ------------------------------------------------------------------ */

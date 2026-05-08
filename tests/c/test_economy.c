@@ -395,12 +395,36 @@ TEST(test_hauler_fills_highest_value_contract) {
     hauler->home_station = 0;
     hauler->dest_station = 1; /* default dest */
     memset(hauler->cargo, 0, sizeof(hauler->cargo));
+    /* Seed known_contracts to simulate prior gossip — under the
+     * gossip-contract model the hauler only acts on contracts it has
+     * heard about via dock contact. The test is exercising the picker
+     * scoring, not the gossip propagation, so we inject knowledge
+     * directly. */
+    hauler->known_contract_count = 0;
+    for (int k = 0; k < MAX_CONTRACTS && hauler->known_contract_count < NPC_KNOWN_CONTRACT_CAP; k++) {
+        if (!w.contracts[k].active) continue;
+        hauler->known_contracts[hauler->known_contract_count++] = (contract_summary_t){
+            .active = true,
+            .action = (uint8_t)w.contracts[k].action,
+            .station_index = w.contracts[k].station_index,
+            .commodity = (uint8_t)w.contracts[k].commodity,
+            .quantity_needed = w.contracts[k].quantity_needed,
+            .base_price = w.contracts[k].base_price,
+            .age_at_copy = w.contracts[k].age,
+        };
+    }
     world_sim_step(&w, SIM_DT);
     /* Hauler should target station 2 (higher value contract) */
     ASSERT(hauler->dest_station == 2);
 }
 
-TEST(test_hauler_skips_incompatible_contract_destination) {
+TEST(test_hauler_picker_trusts_gossiped_contract) {
+    /* Under the gossip-contract model the hauler trusts known contract
+     * summaries — it cannot peek at foreign station module state to
+     * filter out destinations that don't accept the commodity. The
+     * authoritative compatibility check happens at delivery time, where
+     * a mismatch costs a wasted trip rather than a wrong pick. So the
+     * picker simply takes the highest-scoring contract by price/dist. */
     WORLD_DECL;
     world_reset(&w);
     memset(w.contracts, 0, sizeof(w.contracts));
@@ -439,12 +463,30 @@ TEST(test_hauler_skips_incompatible_contract_destination) {
     hauler->home_station = 0;
     hauler->dest_station = 1;
     memset(hauler->cargo, 0, sizeof(hauler->cargo));
+    /* Seed known_contracts (see comment in test_hauler_fills_highest_value_contract) */
+    hauler->known_contract_count = 0;
+    for (int k = 0; k < MAX_CONTRACTS && hauler->known_contract_count < NPC_KNOWN_CONTRACT_CAP; k++) {
+        if (!w.contracts[k].active) continue;
+        hauler->known_contracts[hauler->known_contract_count++] = (contract_summary_t){
+            .active = true,
+            .action = (uint8_t)w.contracts[k].action,
+            .station_index = w.contracts[k].station_index,
+            .commodity = (uint8_t)w.contracts[k].commodity,
+            .quantity_needed = w.contracts[k].quantity_needed,
+            .base_price = w.contracts[k].base_price,
+            .age_at_copy = w.contracts[k].age,
+        };
+    }
 
     step_npc_ships(&w, SIM_DT);
 
-    ASSERT_EQ_INT(hauler->dest_station, 2);
-    ASSERT_EQ_FLOAT(hauler->cargo[COMMODITY_CRYSTAL_INGOT], 0.0f, 0.001f);
-    ASSERT(hauler->cargo[COMMODITY_CUPRITE_INGOT] > 0.0f);
+    /* Highest-value contract wins: $500 crystal to station 1, even
+     * though station 1 doesn't actually have a crystal-consuming
+     * module. The mismatch will surface at unloading; for the picker,
+     * the gossiped contract is the source of truth. */
+    ASSERT_EQ_INT(hauler->dest_station, 1);
+    ASSERT(hauler->cargo[COMMODITY_CRYSTAL_INGOT] > 0.0f);
+    ASSERT_EQ_FLOAT(hauler->cargo[COMMODITY_CUPRITE_INGOT], 0.0f, 0.001f);
 }
 
 TEST(test_hauler_ignores_float_only_finished_stock) {
@@ -1207,7 +1249,7 @@ void register_economy_contracts_tests(void) {
     RUN(test_raw_ore_contract_prefers_starved_downstream_output);
     RUN(test_sell_price_uses_contract_price);
     RUN(test_hauler_fills_highest_value_contract);
-    RUN(test_hauler_skips_incompatible_contract_destination);
+    RUN(test_hauler_picker_trusts_gossiped_contract);
     RUN(test_hauler_ignores_float_only_finished_stock);
     RUN(test_kit_fab_requires_shipyard);
     RUN(test_kit_import_contract_at_consumer_station);
