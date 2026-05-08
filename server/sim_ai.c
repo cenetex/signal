@@ -13,6 +13,7 @@
 #include "signal_model.h"
 #include "manifest.h"
 #include "commodity.h"
+#include "contract_fit.h"
 #include "ship.h"
 #include "game_sim.h" /* SHIP_COLLISION_DAMAGE_THRESHOLD/_SCALE */
 #include "cargo_receipt_issue.h"
@@ -95,6 +96,20 @@ static int station_finished_available_for_hauler(const station_t *st,
     return stock > reserve ? stock - reserve : 0;
 }
 
+static bool station_accepts_hauler_commodity(const station_t *st,
+                                             commodity_t c) {
+    if (!st || !station_is_active(st)) return false;
+    if (c < COMMODITY_RAW_ORE_COUNT || c >= COMMODITY_COUNT) return false;
+
+    if (st->scaffold && c == COMMODITY_FRAME) return true;
+    for (int i = 0; i < st->module_count; i++) {
+        const station_module_t *m = &st->modules[i];
+        if (module_build_state(m) != MODULE_BUILD_AWAITING_SUPPLY) continue;
+        if (module_build_material_lookup(m->type) == c) return true;
+    }
+    return station_consumes(st, c);
+}
+
 static float station_finished_fraction_for_hauler(const station_t *st,
                                                   commodity_t c) {
     if (!st || c < COMMODITY_RAW_ORE_COUNT || c >= COMMODITY_COUNT)
@@ -111,6 +126,101 @@ static int station_finished_room_units_for_hauler(const station_t *st,
     float used = (float)stock + station_finished_fraction_for_hauler(st, c);
     int room = (int)floorf(cap - used + 0.0001f);
     return room > 0 ? room : 0;
+}
+
+static void contract_summary_pool_forget(contract_summary_t *list,
+                                         uint8_t *count, int cap,
+                                         int station_idx, commodity_t c) {
+    if (!list || !count || cap <= 0) return;
+    int out = 0;
+    for (int i = 0; i < *count && i < cap; i++) {
+        const contract_summary_t *cs = &list[i];
+        bool drop = cs->active &&
+                    cs->action == (uint8_t)CONTRACT_TRACTOR &&
+                    cs->station_index == station_idx &&
+                    cs->commodity == (uint8_t)c;
+        if (!drop) {
+            if (out != i) list[out] = list[i];
+            out++;
+        }
+    }
+    for (int i = out; i < *count && i < cap; i++)
+        memset(&list[i], 0, sizeof(list[i]));
+    *count = (uint8_t)out;
+}
+
+static void forget_known_delivery_contracts(world_t *w, int station_idx,
+                                            commodity_t c) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        contract_summary_pool_forget(w->stations[s].known_contracts,
+                                     &w->stations[s].known_contract_count,
+                                     STATION_KNOWN_CONTRACT_CAP,
+                                     station_idx, c);
+    }
+    for (int n = 0; n < MAX_NPC_SHIPS; n++) {
+        contract_summary_pool_forget(w->npc_ships[n].known_contracts,
+                                     &w->npc_ships[n].known_contract_count,
+                                     SHIP_KNOWN_CONTRACT_CAP,
+                                     station_idx, c);
+    }
+    for (int p = 0; p < MAX_PLAYERS; p++) {
+        contract_summary_pool_forget(w->players[p].ship.known_contracts,
+                                     &w->players[p].ship.known_contract_count,
+                                     SHIP_KNOWN_CONTRACT_CAP,
+                                     station_idx, c);
+    }
+}
+
+static void expire_incompatible_delivery_contracts(world_t *w, int station_idx,
+                                                   commodity_t c) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *ct = &w->contracts[k];
+        if (!ct->active) continue;
+        if (ct->action != CONTRACT_TRACTOR) continue;
+        if (ct->station_index != station_idx) continue;
+        if (ct->commodity != c) continue;
+        ct->active = false;
+    }
+    forget_known_delivery_contracts(w, station_idx, c);
+}
+
+static contract_t *hauler_delivery_contract(world_t *w, int station_idx,
+                                            commodity_t c,
+                                            const manifest_t *manifest) {
+    if (!w || station_idx < 0 || station_idx >= MAX_STATIONS) return NULL;
+    station_t *dest = &w->stations[station_idx];
+    if (!station_accepts_hauler_commodity(dest, c)) {
+        expire_incompatible_delivery_contracts(w, station_idx, c);
+        return NULL;
+    }
+
+    contract_t *best = NULL;
+    float best_price = 0.0f;
+    bool saw_active_contract = false;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        contract_t *ct = &w->contracts[k];
+        if (!ct->active) continue;
+        if (ct->action != CONTRACT_TRACTOR) continue;
+        if (ct->station_index != station_idx) continue;
+        if (ct->commodity != c) continue;
+        if (ct->quantity_needed <= 0.01f) continue;
+        saw_active_contract = true;
+        if (manifest) {
+            if (contract_fit_manifest_count(ct, manifest) <= 0) continue;
+        } else if (ct->required_grade > (uint8_t)MINING_GRADE_COMMON) {
+            continue;
+        }
+        float price = contract_price(ct);
+        if (price > best_price) {
+            best_price = price;
+            best = ct;
+        }
+    }
+    if (!saw_active_contract)
+        forget_known_delivery_contracts(w, station_idx, c);
+    return best;
 }
 
 static void npc_update_manifest_rarity_tint(npc_ship_t *npc,
@@ -210,10 +320,13 @@ static int hauler_load_station_units(world_t *w, int npc_slot, station_t *src,
     return moved;
 }
 
-static int hauler_unload_ship_units(world_t *w, int npc_slot, ship_t *src,
-                                    station_t *dst, commodity_t c, int n) {
-    if (!w || !src || !dst || n <= 0) return 0;
-    if (c < COMMODITY_RAW_ORE_COUNT || c >= COMMODITY_COUNT) return 0;
+static int hauler_unload_ship_units_for_contract(world_t *w, int npc_slot,
+                                                 ship_t *src, station_t *dst,
+                                                 const contract_t *contract,
+                                                 int n) {
+    if (!w || !src || !dst || !contract || n <= 0) return 0;
+    if (contract->commodity < COMMODITY_RAW_ORE_COUNT ||
+        contract->commodity >= COMMODITY_COUNT) return 0;
     if (dst->manifest.cap == 0 && !station_manifest_bootstrap(dst)) return 0;
     if (npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return 0;
 
@@ -224,7 +337,14 @@ static int hauler_unload_ship_units(world_t *w, int npc_slot, ship_t *src,
     int moved = 0;
     while (moved < n) {
         if (dst->manifest.count >= dst->manifest.cap) break;
-        int idx = manifest_find_first_commodity(&src->manifest, c);
+        int idx = -1;
+        for (uint16_t i = 0; i < src->manifest.count; i++) {
+            if (contract_fit_is_ok(contract_fit_cargo_unit(contract,
+                                                           &src->manifest.units[i]))) {
+                idx = (int)i;
+                break;
+            }
+        }
         if (idx < 0) break;
         cargo_unit_t unit = {0};
         cargo_receipt_chain_t chain = {0};
@@ -233,8 +353,6 @@ static int hauler_unload_ship_units(world_t *w, int npc_slot, ship_t *src,
             break;
         }
         cargo_receipt_chain_t incoming = chain;
-        /* Best-effort for the same reason as load: never pretend a broken
-         * chain wrote a receipt, but don't strand cargo in the hauler. */
         (void)append_station_transfer_receipt(w, dst, npc_pubkey,
                                               dst->station_pubkey, &unit,
                                               &incoming);
@@ -1371,48 +1489,50 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             station_t *dest = &w->stations[npc->dest_station];
             if (hauler_ship && hauler_ship->manifest.count > 0) {
                 for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
-                    int held = manifest_count_by_commodity(&hauler_ship->manifest,
-                                                           (commodity_t)i);
+                    commodity_t cargo = (commodity_t)i;
+                    contract_t *ct = hauler_delivery_contract(
+                        w, npc->dest_station, cargo, &hauler_ship->manifest);
+                    if (!ct) continue;
+                    int held = contract_fit_manifest_count(ct,
+                                                           &hauler_ship->manifest);
                     if (held <= 0) continue;
+                    int needed = (int)floorf(ct->quantity_needed + 0.0001f);
+                    if (needed <= 0) continue;
                     int space_units = station_finished_room_units_for_hauler(
-                        dest, (commodity_t)i, MAX_PRODUCT_STOCK);
+                        dest, cargo, MAX_PRODUCT_STOCK);
                     if (space_units <= 0) continue;
                     int request = held < space_units ? held : space_units;
-                    int moved = hauler_unload_ship_units(w, n, hauler_ship,
-                                                         dest, (commodity_t)i,
-                                                         request);
+                    if (request > needed) request = needed;
+                    int moved = hauler_unload_ship_units_for_contract(
+                        w, n, hauler_ship, dest, ct, request);
                     if (moved <= 0) continue;
-                    station_finished_sync(dest, (commodity_t)i);
-                    ship_finished_sync(hauler_ship, (commodity_t)i);
-                    /* Pay the NPC for fulfilling a contract. Walk active
-                     * TRACTOR contracts at this destination for the same
-                     * commodity, prefer the highest contract_price. The
-                     * full base_price (already pool-factor adjusted at
-                     * issue time) goes into the NPC's ledger entry at the
-                     * destination station — the hauler is now a real
-                     * economic actor whose accumulated credits pay for
-                     * its own dock-side repair-kit consumption. */
-                    float best_price = 0.0f;
-                    for (int k = 0; k < MAX_CONTRACTS; k++) {
-                        const contract_t *ct = &w->contracts[k];
-                        if (!ct->active) continue;
-                        if (ct->action != CONTRACT_TRACTOR) continue;
-                        if (ct->station_index != npc->dest_station) continue;
-                        if (ct->commodity != (commodity_t)i) continue;
-                        if (ct->base_price > best_price) best_price = ct->base_price;
-                    }
-                    if (best_price <= 0.0f)
-                        best_price = station_buy_price(dest, (commodity_t)i);
-                    if (best_price > 0.0f) {
+                    station_finished_sync(dest, cargo);
+                    ship_finished_sync(hauler_ship, cargo);
+                    ct->quantity_needed -= (float)moved;
+                    if (ct->quantity_needed < 0.0f) ct->quantity_needed = 0.0f;
+                    float price = contract_price(ct);
+                    if (price > 0.0f) {
                         ledger_earn_from_pool(dest, npc->session_token,
-                                              best_price * (float)moved);
+                                              price * (float)moved);
                     }
                 }
                 hauler_sync_cargo_from_manifest(npc, hauler_ship);
             } else {
                 for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
                     if (npc->cargo[i] <= 0.0f) continue;
-                    float delivered = npc->cargo[i];
+                    commodity_t cargo = (commodity_t)i;
+                    contract_t *ct = hauler_delivery_contract(
+                        w, npc->dest_station, cargo, NULL);
+                    if (!ct) continue;
+                    int held = (int)floorf(npc->cargo[i] + 0.0001f);
+                    int needed = (int)floorf(ct->quantity_needed + 0.0001f);
+                    int space_units = station_finished_room_units_for_hauler(
+                        dest, cargo, MAX_PRODUCT_STOCK);
+                    int delivered_units = held;
+                    if (delivered_units > needed) delivered_units = needed;
+                    if (delivered_units > space_units) delivered_units = space_units;
+                    if (delivered_units <= 0) continue;
+                    float delivered = (float)delivered_units;
                     float before = dest->_inventory_cache[i];
                     dest->_inventory_cache[i] += delivered;
                     if (dest->_inventory_cache[i] > MAX_PRODUCT_STOCK)
@@ -1428,22 +1548,15 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                                                            int_delta, n) > 0)
                             dest->manifest_dirty = true;
                     }
-                    float best_price = 0.0f;
-                    for (int k = 0; k < MAX_CONTRACTS; k++) {
-                        const contract_t *ct = &w->contracts[k];
-                        if (!ct->active) continue;
-                        if (ct->action != CONTRACT_TRACTOR) continue;
-                        if (ct->station_index != npc->dest_station) continue;
-                        if (ct->commodity != (commodity_t)i) continue;
-                        if (ct->base_price > best_price) best_price = ct->base_price;
-                    }
-                    if (best_price <= 0.0f)
-                        best_price = station_buy_price(dest, (commodity_t)i);
-                    if (best_price > 0.0f && delivered > 0.01f) {
+                    ct->quantity_needed -= delivered;
+                    if (ct->quantity_needed < 0.0f) ct->quantity_needed = 0.0f;
+                    float price = contract_price(ct);
+                    if (price > 0.0f && delivered > 0.01f) {
                         ledger_earn_from_pool(dest, npc->session_token,
-                                               best_price * delivered);
+                                               price * delivered);
                     }
-                    npc->cargo[i] = 0.0f;
+                    npc->cargo[i] -= delivered;
+                    if (npc->cargo[i] < 0.01f) npc->cargo[i] = 0.0f;
                 }
             }
             /* Hauler also feeds delivered stock into scaffold station/modules. */

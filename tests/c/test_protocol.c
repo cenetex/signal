@@ -561,6 +561,58 @@ TEST(test_bug92_station_record_size_matches_buffer) {
     ASSERT((size_t)len <= sizeof(buf));
 }
 
+TEST(test_player_known_contract_mask_uses_compact_contract_ordinals) {
+    contract_t contracts[MAX_CONTRACTS];
+    memset(contracts, 0, sizeof(contracts));
+
+    contracts[3] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_FERRITE_INGOT,
+        .quantity_needed = 5.0f,
+        .base_price = 10.0f,
+        .target_index = -1,
+    };
+    contracts[7] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 2,
+        .commodity = COMMODITY_CUPRITE_INGOT,
+        .quantity_needed = 8.0f,
+        .base_price = 20.0f,
+        .target_index = -1,
+    };
+
+    uint8_t cbuf[2 + MAX_CONTRACTS * CONTRACT_RECORD_SIZE];
+    int clen = serialize_contracts(cbuf, contracts);
+    ASSERT_EQ_INT(clen, 2 + 2 * CONTRACT_RECORD_SIZE);
+    ASSERT_EQ_INT(cbuf[1], 2);
+    ASSERT_EQ_INT(cbuf[2 + CONTRACT_RECORD_SIZE + 1], 2);
+    ASSERT_EQ_INT(cbuf[2 + CONTRACT_RECORD_SIZE + 2], COMMODITY_CUPRITE_INGOT);
+
+    ship_t ship;
+    memset(&ship, 0, sizeof(ship));
+    ship.known_contract_count = 1;
+    ship.known_contracts[0] = (contract_summary_t){
+        .active = true,
+        .action = (uint8_t)CONTRACT_TRACTOR,
+        .station_index = 2,
+        .commodity = (uint8_t)COMMODITY_CUPRITE_INGOT,
+        .quantity_needed = 8.0f,
+        .base_price = 20.0f,
+    };
+
+    uint8_t kbuf[5];
+    int klen = serialize_player_known_contracts(kbuf, contracts, &ship);
+    ASSERT_EQ_INT(klen, 5);
+    ASSERT_EQ_INT(kbuf[0], NET_MSG_PLAYER_KNOWN_CONTRACTS);
+    uint32_t mask = read_u32_le(&kbuf[1]);
+    ASSERT_EQ_INT((int)mask, 1 << 1);
+    ASSERT_EQ_INT(contract_compact_index_for_slot(contracts, 3), 0);
+    ASSERT_EQ_INT(contract_compact_index_for_slot(contracts, 7), 1);
+}
+
 TEST(test_bug93_hint_mines_small_shard_with_minor_desync) {
     WORLD_DECL;
     world_reset(&w);
@@ -762,6 +814,7 @@ void register_protocol_main_tests(void) {
     RUN(test_station_identity_serializes_module_commodities);
     RUN(test_station_identity_serializes_operator_text);
     RUN(test_bug92_station_record_size_matches_buffer);
+    RUN(test_player_known_contract_mask_uses_compact_contract_ordinals);
     RUN(test_bug93_hint_mines_small_shard_with_minor_desync);
     RUN(test_roundtrip_player_ship);
     RUN(test_named_ingot_record_serializes_grade);

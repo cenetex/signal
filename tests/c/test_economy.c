@@ -450,14 +450,24 @@ TEST(test_hauler_picker_trusts_gossiped_contract) {
     ASSERT(test_set_station_finished_units(&w.stations[0],
                                            COMMODITY_CUPRITE_INGOT, 20));
 
+    int hauler_slot = -1;
     npc_ship_t *hauler = NULL;
     for (int i = 0; i < MAX_NPC_SHIPS; i++) {
         if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER) {
+            hauler_slot = i;
             hauler = &w.npc_ships[i];
             break;
         }
     }
     ASSERT(hauler != NULL);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++)
+        if (i != hauler_slot) w.npc_ships[i].active = false;
+    ship_t *hauler_ship = world_npc_ship_for(&w, hauler_slot);
+    ASSERT(hauler_ship != NULL);
+    ASSERT(ship_manifest_bootstrap(hauler_ship));
+    manifest_clear(&hauler_ship->manifest);
+    ship_receipts_clear(ship_get_receipts(hauler_ship));
+    memset(hauler_ship->cargo, 0, sizeof(hauler_ship->cargo));
     hauler->state = NPC_STATE_DOCKED;
     hauler->state_timer = 0.0f;
     hauler->home_station = 0;
@@ -487,6 +497,24 @@ TEST(test_hauler_picker_trusts_gossiped_contract) {
     ASSERT_EQ_INT(hauler->dest_station, 1);
     ASSERT(hauler->cargo[COMMODITY_CRYSTAL_INGOT] > 0.0f);
     ASSERT_EQ_FLOAT(hauler->cargo[COMMODITY_CUPRITE_INGOT], 0.0f, 0.001f);
+
+    int dest_stock_before = station_finished_count(&w.stations[1],
+                                                   COMMODITY_CRYSTAL_INGOT);
+    float ledger_before = ledger_balance(&w.stations[1],
+                                         hauler->session_token);
+    hauler->state = NPC_STATE_UNLOADING;
+    hauler->state_timer = 0.0f;
+    hauler->dest_station = 1;
+    step_npc_ships(&w, SIM_DT);
+
+    ASSERT_EQ_INT(station_finished_count(&w.stations[1],
+                                         COMMODITY_CRYSTAL_INGOT),
+                  dest_stock_before);
+    ASSERT_EQ_FLOAT(ledger_balance(&w.stations[1], hauler->session_token),
+                    ledger_before, 0.001f);
+    ASSERT(manifest_count_by_commodity(&hauler_ship->manifest,
+                                       COMMODITY_CRYSTAL_INGOT) > 0);
+    ASSERT(!w.contracts[0].active);
 }
 
 TEST(test_hauler_ignores_float_only_finished_stock) {

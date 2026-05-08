@@ -112,10 +112,10 @@ typedef void (*net_on_stations_fn)(uint8_t index, const float* inventory, float 
 /* Contracts callback: full replacement of contract array. */
 typedef void (*net_on_contracts_fn)(const contract_t* contracts, int count);
 
-/* Per-player gossip-contract visibility mask. Bit i set iff
- * w->contracts[i] matches a summary in this player's known_contracts.
- * The dock UI uses this to hide contracts the player hasn't heard
- * about via dock contact. */
+/* Per-player gossip-contract visibility mask. Bit i set iff compact
+ * NET_MSG_CONTRACTS record i matches a summary in this player's
+ * known_contracts. The dock UI uses this to hide contracts the player
+ * hasn't heard about via dock contact. */
 typedef void (*net_on_player_known_contracts_fn)(uint32_t mask);
 
 /* Packed station identity for network sync.

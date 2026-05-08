@@ -291,7 +291,7 @@ test.describe('Browser smoke tests', () => {
     const canvas = await loadGame(page);
     await expect
       .poll(async () => hudHintText(page), { timeout: 5_000 })
-      .toContain('GUIDE // LAUNCH FROM DOCK');
+      .toContain('SIGNAL // GUIDE // LAUNCH FROM DOCK');
 
     const firstIdentity = await page.evaluate(() => window.localStorage.getItem('signal:identity'));
     expect(firstIdentity).toMatch(/^[A-Za-z0-9+/]{86}==$/);
@@ -303,11 +303,11 @@ test.describe('Browser smoke tests', () => {
       // not the deterministic singleplayer transition that local smoke proves.
       await expect
         .poll(async () => hudHintText(page), { timeout: 8_000 })
-        .toMatch(/GUIDE \/\/ LAUNCH FROM DOCK|GUIDE \/\/ FLIGHT CHECK/);
+        .toMatch(/SIGNAL \/\/ GUIDE \/\/ LAUNCH FROM DOCK|SIGNAL \/\/ GUIDE \/\/ FLIGHT CHECK/);
     } else {
       await expect
         .poll(async () => hudHintText(page), { timeout: 8_000 })
-        .toContain('GUIDE // FLIGHT CHECK');
+        .toContain('SIGNAL // GUIDE // FLIGHT CHECK');
     }
 
     await page.reload();
@@ -325,7 +325,7 @@ test.describe('Browser smoke tests', () => {
 
     await expect
       .poll(async () => hudHintText(page), { timeout: 5_000 })
-      .toContain('GUIDE // LAUNCH FROM DOCK');
+      .toContain('SIGNAL // GUIDE // LAUNCH FROM DOCK');
 
     await driveCoreControls(page, canvas);
     await expect
