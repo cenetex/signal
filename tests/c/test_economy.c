@@ -808,20 +808,90 @@ TEST(test_no_passive_heal_without_kits) {
     ASSERT_EQ_FLOAT(w.players[0].ship.hull, 50.0f, 0.01f);
 }
 
-TEST(test_refinery_smelts_ore_in_inventory) {
+static bool economy_test_smelt_target_for_ore(const station_t *st,
+                                              commodity_t ore,
+                                              vec2 *out_target) {
+    bool found = false;
+    float best_d = 1e18f;
+    for (int fm = 0; fm < st->module_count; fm++) {
+        const station_module_t *f = &st->modules[fm];
+        if (f->type != MODULE_FURNACE || f->scaffold) continue;
+        if (module_instance_input_ore(f) != ore) continue;
+        int ring = (int)f->ring;
+        vec2 furnace_pos = module_world_pos_ring(st, ring, f->slot);
+        int adj_rings[2] = { ring + 1, ring - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int hm = 0; hm < st->module_count; hm++) {
+                const station_module_t *h = &st->modules[hm];
+                if (h->ring != adj || h->scaffold) continue;
+                if (h->type != MODULE_HOPPER) continue;
+                if ((commodity_t)h->commodity != ore) continue;
+                vec2 hopper_pos = module_world_pos_ring(st, adj, h->slot);
+                float d = v2_dist_sq(furnace_pos, hopper_pos);
+                if (d < best_d) {
+                    best_d = d;
+                    if (out_target)
+                        *out_target = v2_scale(v2_add(furnace_pos, hopper_pos), 0.5f);
+                    found = true;
+                }
+            }
+        }
+    }
+    return found;
+}
+
+static int economy_test_spawn_fragment(world_t *w, commodity_t ore,
+                                       float units, vec2 pos) {
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) { frag = i; break; }
+    }
+    if (frag < 0) return -1;
+    asteroid_t *a = &w->asteroids[frag];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = ore;
+    a->ore = units;
+    a->max_ore = units;
+    a->radius = 6.0f;
+    a->fracture_child = true;
+    a->grade = (uint8_t)MINING_GRADE_COMMON;
+    for (int b = 0; b < 32; b++) a->fracture_seed[b] = (uint8_t)(0x80 + b);
+    a->pos = pos;
+    a->vel = v2(0.0f, 0.0f);
+    return frag;
+}
+
+TEST(test_refinery_smelts_fragment_into_inventory) {
     WORLD_DECL;
     world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
     w.players[0].connected = true;
     player_init_ship(&w.players[0], &w);
-    /* Verify Prospect has a furnace */
+
     ASSERT(station_has_module(&w.stations[0], MODULE_FURNACE));
-    /* Put ore directly in station inventory (as if delivered by fragments) */
-    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 10.0f;
-    /* Run sim for 10 seconds — should smelt ore into ingots */
-    for (int i = 0; i < (int)(10.0f / SIM_DT); i++)
+    for (int arm = 0; arm < MAX_ARMS; arm++) {
+        w.stations[0].arm_speed[arm] = 0.0f;
+        w.stations[0].arm_rotation[arm] = 0.0f;
+    }
+
+    vec2 smelt_target = w.stations[0].pos;
+    ASSERT(economy_test_smelt_target_for_ore(&w.stations[0],
+                                             COMMODITY_FERRITE_ORE,
+                                             &smelt_target));
+    int frag = economy_test_spawn_fragment(&w, COMMODITY_FERRITE_ORE,
+                                           10.0f, smelt_target);
+    ASSERT(frag >= 0);
+
+    for (int i = 0; i < (int)(10.0f / SIM_DT) && w.asteroids[frag].active; i++)
         world_sim_step(&w, SIM_DT);
+    ASSERT(!w.asteroids[frag].active);
     float ingots = w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT];
     ASSERT(ingots > 0.0f);
+    ASSERT_EQ_INT((int)w.hopper_smelt_events, 0);
 }
 
 TEST(test_kit_fab_requires_shipyard) {
@@ -1039,22 +1109,55 @@ TEST(test_furnace_without_hopper_does_not_smelt) {
      * exact behavior we removed in the rework. */
     WORLD_DECL;
     world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int arm = 0; arm < MAX_ARMS; arm++) {
+        w.stations[0].arm_speed[arm] = 0.0f;
+        w.stations[0].arm_rotation[arm] = 0.0f;
+    }
     w.stations[0].module_count = 0;
     rebuild_station_services(&w.stations[0]);
-    w.stations[0].modules[0] = (station_module_t){ .type = MODULE_FURNACE, .ring = 2, .slot = 0, .scaffold = false, .build_progress = 1.0f };
+    w.stations[0].modules[0] = (station_module_t){
+        .type = MODULE_FURNACE,
+        .ring = 2,
+        .slot = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_INGOT,
+        .scaffold = false,
+        .build_progress = 1.0f
+    };
     w.stations[0].module_count = 1;
-    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 100.0f;
     float initial_ingots = w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT];
+    vec2 furnace_only_pos = module_world_pos_ring(&w.stations[0], 2, 0);
+    int frag = economy_test_spawn_fragment(&w, COMMODITY_FERRITE_ORE,
+                                           8.0f, furnace_only_pos);
+    ASSERT(frag >= 0);
     for (int i = 0; i < (int)(5.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
+    ASSERT(w.asteroids[frag].active);
     ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
                     initial_ingots, 0.001f);
-    /* Add a hopper and let it run again — now it should smelt. */
-    w.stations[0].modules[1] = (station_module_t){ .type = MODULE_HOPPER, .ring = 1, .slot = 0, .scaffold = false, .build_progress = 1.0f };
+
+    /* Add a matching hopper and let it run again — now it should smelt. */
+    w.stations[0].modules[1] = (station_module_t){
+        .type = MODULE_HOPPER,
+        .ring = 1,
+        .slot = 0,
+        .commodity = (uint8_t)COMMODITY_FERRITE_ORE,
+        .scaffold = false,
+        .build_progress = 1.0f
+    };
     w.stations[0].module_count = 2;
-    for (int i = 0; i < (int)(5.0f / SIM_DT); i++)
+    vec2 smelt_target = w.stations[0].pos;
+    ASSERT(economy_test_smelt_target_for_ore(&w.stations[0],
+                                             COMMODITY_FERRITE_ORE,
+                                             &smelt_target));
+    w.asteroids[frag].pos = smelt_target;
+    w.asteroids[frag].vel = v2(0.0f, 0.0f);
+    w.asteroids[frag].smelt_progress = 0.0f;
+    for (int i = 0; i < (int)(5.0f / SIM_DT) && w.asteroids[frag].active; i++)
         world_sim_step(&w, SIM_DT);
+    ASSERT(!w.asteroids[frag].active);
     ASSERT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] > initial_ingots);
+    ASSERT_EQ_INT((int)w.hopper_smelt_events, 0);
 }
 
 TEST(test_commodity_volume_kit_dense) {
@@ -1365,7 +1468,7 @@ TEST(test_count_tier_smelt_rules) {
 
 void register_economy_refinery_smelt_tests(void) {
     TEST_SECTION("\nRefinery smelt test:\n");
-    RUN(test_refinery_smelts_ore_in_inventory);
+    RUN(test_refinery_smelts_fragment_into_inventory);
     RUN(test_furnace_without_hopper_does_not_smelt);
     RUN(test_count_tier_smelt_rules);
 }

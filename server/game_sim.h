@@ -412,10 +412,9 @@ typedef struct {
     float time;
     float field_spawn_timer;
     float gravity_accumulator;  /* runs gravity at reduced rate */
-    /* Operational telemetry for the legacy refinery-hopper smelt path.
-     * Fragment-tow smelts carry explicit fragment lineage; hopper smelts
-     * still use zero fragment_pub, so these counters let live operators
-     * measure whether that compatibility path is actually active. */
+    /* Regression telemetry for the retired refinery-hopper smelt path.
+     * Fragment-tow smelts are the only valid smelt source now. These
+     * counters should remain zero in normal play and in tests. */
     uint64_t hopper_smelt_events;
     double hopper_smelt_units;
     /* Replenish dead haulers / miners. Decremented in step_npc_ships;

@@ -11,6 +11,7 @@
 #include "chain_log.h"
 #include "station_authority.h"
 #include "sim_asteroid.h"
+#include "sim_production.h"
 #include "game_sim.h"
 #include "sha256.h"
 
@@ -357,11 +358,11 @@ TEST(test_chain_log_cross_station_independent) {
     chain_test_teardown();
 }
 
-TEST(test_chain_log_smelt_emits_event) {
-    /* End-to-end: drop ferrite ore into Prospect's hopper, run the
-     * sim until the refinery mints an ingot, then verify Prospect's
-     * chain log gained an EVT_SMELT for it. */
-    chain_test_setup("smelt_e2e");
+TEST(test_chain_log_hopper_smelt_path_retired) {
+    /* Raw ore floats are preserved for old saves and pricing fixtures,
+     * but they are no longer a smelt source. Ingot lineage must enter
+     * through the physical fragment path, where fragment_pub is known. */
+    chain_test_setup("hopper_retired");
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     w->rng = 9007u;
@@ -370,21 +371,20 @@ TEST(test_chain_log_smelt_emits_event) {
     w->stations[0].chain_event_count = 0;
     memset(w->stations[0].chain_last_hash, 0, 32);
 
-    /* Force a guaranteed smelt: dump ore directly into Prospect's
-     * inventory cache — refinery production consumes from here. */
+    int manifest_before = w->stations[0].manifest.count;
+    float ingots_before = w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT];
     w->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 5.0f;
-    /* Step the sim long enough for the refinery to consume an integer
-     * crossing's worth of ore (REFINERY_BASE_SMELT_RATE is small).
-     * 30 seconds at SIM_DT is well above the worst-case smelt cycle. */
-    for (int i = 0; i < (int)(30.0f / SIM_DT); i++)
-        world_sim_step(w, SIM_DT);
 
-    /* Walk Prospect's log; if a smelt happened it must verify. */
-    uint64_t walked = 0;
-    ASSERT(chain_log_verify(&w->stations[0], &walked, NULL));
-    /* At least one event must have landed (the refinery WILL produce
-     * an ingot in 30 s with 5.0 input ore). */
-    ASSERT(walked >= 1);
+    sim_step_refinery_production(w, 30.0f);
+
+    ASSERT_EQ_FLOAT(w->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE],
+                    5.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
+                    ingots_before, 0.001f);
+    ASSERT_EQ_INT(w->stations[0].manifest.count, manifest_before);
+    ASSERT_EQ_INT((int)w->stations[0].chain_event_count, 0);
+    ASSERT_EQ_INT((int)w->hopper_smelt_events, 0);
+    ASSERT(w->hopper_smelt_units == 0.0);
     chain_test_teardown();
 }
 
@@ -392,9 +392,7 @@ TEST(test_chain_log_smelt_emits_event_fragment_path) {
     /* The richer smelt path: spawn a physical fragment between a
      * furnace and an adjacent module, run the sim until the beam
      * smelts it, then verify the chain log gained an EVT_SMELT whose
-     * fragment_pub matches the consumed asteroid's record. This is
-     * what the (suspected-dead) hopper-float path could never do —
-     * fragment-attributed lineage on the smelt event itself. */
+     * fragment_pub matches the consumed asteroid's record. */
     chain_test_setup("smelt_fragment");
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
@@ -459,16 +457,19 @@ TEST(test_chain_log_smelt_emits_event_fragment_path) {
     ASSERT(chain_log_verify(&w->stations[0], &walked, NULL));
     ASSERT(walked == w->stations[0].chain_event_count);
 
-    /* Walk the on-disk log and confirm at least one EVT_SMELT carries
-     * a non-zero fragment_pub — that's the gap the fragment-tow path
-     * just closed. The hopper-float path emits with fragment_pub = 0,
-     * so any non-zero is positive proof the fragment-tow path fired. */
+    ASSERT_EQ_INT((int)w->hopper_smelt_events, 0);
+    ASSERT(w->hopper_smelt_units == 0.0);
+
+    /* Walk the on-disk log and confirm every EVT_SMELT carries a
+     * non-zero fragment_pub. Zero-fragment smelt events were the retired
+     * hopper-float compatibility behavior. */
     char path[256];
     ASSERT(chain_log_path_for(w->stations[0].station_pubkey,
                               path, sizeof(path)));
     FILE *fp = fopen(path, "rb");
     ASSERT(fp != NULL);
     bool saw_fragment_attributed = false;
+    bool saw_zero_fragment_smelt = false;
     while (!feof(fp)) {
         chain_event_header_t hdr;
         if (fread(&hdr, sizeof(hdr), 1, fp) != 1) break;
@@ -480,7 +481,8 @@ TEST(test_chain_log_smelt_emits_event_fragment_path) {
             uint8_t zero[32] = {0};
             if (memcmp(pl.fragment_pub, zero, 32) != 0) {
                 saw_fragment_attributed = true;
-                break;
+            } else {
+                saw_zero_fragment_smelt = true;
             }
         } else {
             fseek(fp, plen, SEEK_CUR);
@@ -488,6 +490,7 @@ TEST(test_chain_log_smelt_emits_event_fragment_path) {
     }
     fclose(fp);
     ASSERT(saw_fragment_attributed);
+    ASSERT(!saw_zero_fragment_smelt);
 
     chain_test_teardown();
 }
@@ -1020,7 +1023,7 @@ void register_chain_log_tests(void) {
     RUN(test_world_load_blocks_chain_appends_after_failed_verify);
     RUN(test_world_load_blocks_chain_appends_after_missing_tail);
     RUN(test_chain_log_cross_station_independent);
-    RUN(test_chain_log_smelt_emits_event);
+    RUN(test_chain_log_hopper_smelt_path_retired);
     RUN(test_chain_log_smelt_emits_event_fragment_path);
     RUN(test_chain_log_rock_destroy_emits_event);
     RUN(test_chain_log_operator_post_emit);

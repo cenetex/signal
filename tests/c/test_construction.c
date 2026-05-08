@@ -1032,13 +1032,11 @@ TEST(test_build_outpost_full_economy) {
     for (int i = 0; i < MAX_NPC_SHIPS; i++) if (w.npc_ships[i].active) npc_after++;
     ASSERT(npc_after > npc_before);
 
-    /* Step 9 — plant a HOPPER on a ring-1 slot adjacent to the furnace.
-     * station_can_smelt requires both a hopper and a furnace, so the
-     * hopper completes the smelt prerequisite. The furnace's tag
-     * defaults to ferrite (1-furnace tier, module_furnace_default_output);
-     * we tag the hopper for FERRITE_ORE explicitly so the post-snap
-     * commodity is unambiguous regardless of where the byte zero-init
-     * came from. */
+    /* Step 9 — plant a HOPPER on the furnace's adjacent-ring pair slot.
+     * The live fragment beam requires a real furnace/hopper pair, not
+     * just the station-level "has any hopper" count-tier gate. The
+     * furnace's tag defaults to ferrite (1-furnace tier); we tag the
+     * hopper for FERRITE_ORE explicitly. */
     sp->docked = false;
     /* Need slack in cargo: bring the budget for the hopper module up
      * front so the player has frames left to deliver. The earlier
@@ -1051,14 +1049,24 @@ TEST(test_build_outpost_full_economy) {
             (int)ceilf(module_build_cost_lookup(MODULE_HOPPER)),
         MINING_GRADE_COMMON));
 
-    vec2 ring1_other = v2_add(outpost_pos, v2(-180.0f, 60.0f));
-    int hop_idx = spawn_scaffold(&w, MODULE_HOPPER, ring1_other, sp->id);
-    ASSERT(hop_idx >= 0);
-    int mod_count_pre_hop = st_out->module_count;
-    for (int i = 0; i < 600 && w.scaffolds[hop_idx].active; i++) {
-        world_sim_step(&w, SIM_DT);
+    station_slot_pair_t pair_slots[2];
+    int pair_count = station_pair_neighbors((int)furn->ring, (int)furn->slot,
+                                            pair_slots);
+    ASSERT(pair_count > 0);
+    int hop_ring = -1, hop_slot = -1;
+    for (int i = 0; i < pair_count; i++) {
+        if (station_module_at(st_out, pair_slots[i].ring, pair_slots[i].slot)
+            == MODULE_COUNT) {
+            hop_ring = pair_slots[i].ring;
+            hop_slot = pair_slots[i].slot;
+            break;
+        }
     }
-    ASSERT(!w.scaffolds[hop_idx].active);
+    ASSERT(hop_ring >= 0 && hop_slot >= 0);
+
+    int mod_count_pre_hop = st_out->module_count;
+    begin_module_construction_at(&w, st_out, outpost, MODULE_HOPPER,
+                                 hop_ring, hop_slot);
     ASSERT_EQ_INT(st_out->module_count, mod_count_pre_hop + 1);
     station_module_t *hop = &st_out->modules[mod_count_pre_hop];
     ASSERT_EQ_INT(hop->type, MODULE_HOPPER);
@@ -1079,25 +1087,50 @@ TEST(test_build_outpost_full_economy) {
     ASSERT(!hop->scaffold);
     ASSERT(station_can_smelt(st_out, COMMODITY_FERRITE_ORE));
 
-    /* Step 10 — process ore. Drop raw ferrite ore into the station's
-     * bulk inventory and tick the sim; sim_step_refinery_production
-     * consumes ore and mints FERRITE_INGOT manifest entries. Rate is
-     * REFINERY_BASE_SMELT_RATE per furnace, so a few seconds is plenty
-     * to clear our 30-unit stockpile. */
+    /* Step 10 — process ore. The retired hopper-float path no longer
+     * accepts raw `_inventory_cache[ORE]`; smelting now means a physical
+     * fragment enters the furnace/hopper beam and mints attributed
+     * FERRITE_INGOT manifest entries. */
     sp->docked = false;
     sp->input.service_sell = false;
-    float ore_in = 30.0f;
-    st_out->_inventory_cache[COMMODITY_FERRITE_ORE] = ore_in;
+    for (int arm = 0; arm < MAX_ARMS; arm++) {
+        st_out->arm_speed[arm] = 0.0f;
+        st_out->arm_rotation[arm] = 0.0f;
+    }
+    vec2 furnace_pos = module_world_pos_ring(st_out, furn->ring, furn->slot);
+    vec2 hopper_pos = module_world_pos_ring(st_out, hop->ring, hop->slot);
+    vec2 smelt_midpoint = v2_scale(v2_add(furnace_pos, hopper_pos), 0.5f);
+
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) { frag = i; break; }
+    }
+    ASSERT(frag >= 0);
+    asteroid_t *a = &w.asteroids[frag];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->ore = 6.0f;
+    a->max_ore = 6.0f;
+    a->radius = 6.0f;
+    a->fracture_child = true;
+    a->grade = (uint8_t)MINING_GRADE_COMMON;
+    for (int b = 0; b < 32; b++) a->fracture_seed[b] = (uint8_t)(0x50 + b);
+    a->pos = smelt_midpoint;
+    a->vel = v2(0.0f, 0.0f);
+
     int ingots_before = manifest_count_by_commodity(&st_out->manifest,
                                                     COMMODITY_FERRITE_INGOT);
-    for (int i = 0; i < 30 * 120; i++) {
+    for (int i = 0; i < 10 * 120 && w.asteroids[frag].active; i++) {
         world_sim_step(&w, SIM_DT);
-        if (st_out->_inventory_cache[COMMODITY_FERRITE_ORE] < 0.5f) break;
     }
+    ASSERT(!w.asteroids[frag].active);
     int ingots_after = manifest_count_by_commodity(&st_out->manifest,
                                                    COMMODITY_FERRITE_INGOT);
     ASSERT(ingots_after > ingots_before); /* smelter actually produced */
-    ASSERT(st_out->_inventory_cache[COMMODITY_FERRITE_ORE] < ore_in - 1.0f);
+    ASSERT_EQ_INT((int)w.hopper_smelt_events, 0);
+    ASSERT(w.hopper_smelt_units == 0.0);
 
     /* Step 11 — credit conservation. The whole pipeline runs through
      * ledger paths; nothing should leak. econ_total_credits sums every
@@ -1908,42 +1941,37 @@ TEST(test_module_flow_does_not_overflow_capacity) {
 }
 
 /* #280: storage modules must participate in flow as buffers, not be
- * pure sinks. Place a hopper next to a furnace, seed station inventory
- * with raw ferrite, and verify the hopper pulls from inventory and
- * pushes into the furnace's input buffer. */
+ * pure sinks. Raw ore hoppers are fragment-smelt anchors now, so this
+ * covers the remaining storage-flow job: finished goods feeding fabs. */
 TEST(test_module_flow_storage_feeds_consumer) {
     WORLD_DECL;
     world_reset(&w);
 
-    /* Use Prospect (station 0): it has a hopper as part of its default
-     * layout, plus a furnace. Find them. */
-    int hopper_idx = -1, furnace_idx = -1;
-    for (int i = 0; i < w.stations[0].module_count; i++) {
-        if (w.stations[0].modules[i].type == MODULE_HOPPER && hopper_idx < 0)
+    /* Use Kepler (station 1): its ferrite-ingot hopper feeds the frame
+     * press through the module-flow graph. */
+    int hopper_idx = -1, press_idx = -1;
+    for (int i = 0; i < w.stations[1].module_count; i++) {
+        if (w.stations[1].modules[i].type == MODULE_HOPPER &&
+            w.stations[1].modules[i].commodity == (uint8_t)COMMODITY_FERRITE_INGOT)
             hopper_idx = i;
-        if (w.stations[0].modules[i].type == MODULE_FURNACE && furnace_idx < 0)
-            furnace_idx = i;
+        if (w.stations[1].modules[i].type == MODULE_FRAME_PRESS)
+            press_idx = i;
     }
-    if (hopper_idx < 0 || furnace_idx < 0) return; /* layout drift, skip */
+    if (hopper_idx < 0 || press_idx < 0) return; /* layout drift, skip */
 
-    /* Seed the hopper-side: put raw ferrite in station inventory and
-     * verify it actually moves into the flow graph. */
-    w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 50.0f;
-    w.stations[0].module_output[hopper_idx] = 0.0f;
-    w.stations[0].module_input[furnace_idx] = 0.0f;
-    float ore_before = w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE];
+    w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] = 50.0f;
+    w.stations[1].module_output[hopper_idx] = 0.0f;
+    w.stations[1].module_input[press_idx] = 0.0f;
+    float ingots_before = w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT];
 
     /* One second of sim — hopper should refill its output from inventory
      * and the flow stepper should push it onward. */
     for (int i = 0; i < 120; i++) world_sim_step(&w, SIM_DT);
 
-    /* Either the hopper buffer carries ore, the furnace input does, or
-     * the furnace already smelted some into ingots. Any of those means
-     * storage→flow is connected. */
-    bool flowed = w.stations[0].module_output[hopper_idx] > 0.0f
-               || w.stations[0].module_input[furnace_idx] > 0.0f
-               || w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] > 0.0f
-               || w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] < ore_before - 0.5f;
+    bool flowed = w.stations[1].module_output[hopper_idx] > 0.0f
+               || w.stations[1].module_input[press_idx] > 0.0f
+               || w.stations[1]._inventory_cache[COMMODITY_FERRITE_INGOT] <
+                  ingots_before - 0.5f;
     ASSERT(flowed);
 }
 

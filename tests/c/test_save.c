@@ -817,10 +817,55 @@ TEST(test_world_save_load_preserves_smelted_ingots) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     ASSERT(w != NULL);
     world_reset(w);
-    w->stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 20.0f;
-    for (int i = 0; i < (int)(10.0f / SIM_DT); i++) world_sim_step(w, SIM_DT);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w->npc_ships[i].active = false;
+    for (int arm = 0; arm < MAX_ARMS; arm++) {
+        w->stations[0].arm_speed[arm] = 0.0f;
+        w->stations[0].arm_rotation[arm] = 0.0f;
+    }
+
+    int furnace_idx = -1, silo_idx = -1;
+    for (int m = 0; m < w->stations[0].module_count; m++) {
+        station_module_t *mod = &w->stations[0].modules[m];
+        if (mod->type == MODULE_FURNACE &&
+            module_instance_input_ore(mod) == COMMODITY_FERRITE_ORE)
+            furnace_idx = m;
+        if (mod->type == MODULE_HOPPER &&
+            mod->commodity == (uint8_t)COMMODITY_FERRITE_ORE)
+            silo_idx = m;
+    }
+    ASSERT(furnace_idx >= 0 && silo_idx >= 0);
+    vec2 furnace_pos = module_world_pos_ring(&w->stations[0],
+        w->stations[0].modules[furnace_idx].ring,
+        w->stations[0].modules[furnace_idx].slot);
+    vec2 silo_pos = module_world_pos_ring(&w->stations[0],
+        w->stations[0].modules[silo_idx].ring,
+        w->stations[0].modules[silo_idx].slot);
+
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w->asteroids[i].active) { frag = i; break; }
+    }
+    ASSERT(frag >= 0);
+    asteroid_t *a = &w->asteroids[frag];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->ore = 20.0f;
+    a->max_ore = 20.0f;
+    a->radius = 6.0f;
+    a->fracture_child = true;
+    a->grade = (uint8_t)MINING_GRADE_COMMON;
+    for (int b = 0; b < 32; b++) a->fracture_seed[b] = (uint8_t)(0xA0 + b);
+    a->pos = v2_scale(v2_add(furnace_pos, silo_pos), 0.5f);
+    a->vel = v2(0.0f, 0.0f);
+
+    for (int i = 0; i < (int)(10.0f / SIM_DT) && w->asteroids[frag].active; i++)
+        world_sim_step(w, SIM_DT);
+    ASSERT(!w->asteroids[frag].active);
     float ingots_before = w->stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT];
     ASSERT(ingots_before > 0.0f);
+    ASSERT_EQ_INT((int)w->hopper_smelt_events, 0);
     ASSERT(world_save(w, TMP("test_ingots.sav")));
     WORLD_HEAP loaded = calloc(1, sizeof(world_t));
     ASSERT(loaded != NULL);
