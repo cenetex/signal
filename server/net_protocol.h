@@ -217,10 +217,10 @@ static inline int serialize_asteroids_for_player(
     return ASTEROID_MSG_HEADER + count * ASTEROID_RECORD_SIZE;
 }
 
-/* Serialize every asteroid slot (full snapshot for new player join).
- * Inactive slots must be included so clients can clear any locally
- * predicted or stale asteroid state they seeded before connecting.
- * Does not clear dirty flags. */
+/* Serialize active asteroid slots for a new-player snapshot. Inactive
+ * slots are omitted because MAX_ASTEROIDS is large; clients entering
+ * remote-authoritative mode must clear any locally seeded asteroid state
+ * before applying this active-only snapshot. Does not clear dirty flags. */
 static inline int serialize_asteroids_full(uint8_t *buf, const asteroid_t *asteroids) {
     int count = 0;
     for (int i = 0; i < MAX_ASTEROIDS; i++) {

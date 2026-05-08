@@ -14,6 +14,7 @@ void on_player_join(uint8_t player_id);
 void on_player_leave(uint8_t player_id);
 
 /* Apply server-authoritative world state. */
+void reset_remote_dynamic_sync(void);
 void apply_remote_asteroids(const NetAsteroidState* asteroids, int count);
 void apply_remote_npcs(const NetNpcState* npcs, int count);
 void apply_remote_stations(uint8_t index, const float* inventory, float credit_pool);

@@ -86,6 +86,19 @@ void on_player_leave(uint8_t player_id) {
     g.world.players[player_id].connected = false;
 }
 
+void reset_remote_dynamic_sync(void) {
+    memset(g.world.asteroids, 0, sizeof(g.world.asteroids));
+    memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
+    g.asteroid_interp.interval = 0.1f;
+
+    memset(g.world.npc_ships, 0, sizeof(g.world.npc_ships));
+    memset(&g.npc_interp, 0, sizeof(g.npc_interp));
+    g.npc_interp.interval = 0.1f;
+
+    memset(g.world.scaffolds, 0, sizeof(g.world.scaffolds));
+    LOCAL_PLAYER.hover_asteroid = -1;
+}
+
 void apply_remote_asteroids(const NetAsteroidState* asteroids, int count) {
     /* Shift current -> previous for interpolation.
      * Compute interval as blend of measured elapsed and previous interval

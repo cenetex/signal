@@ -2053,7 +2053,7 @@ static void ev_handler(struct mg_connection *c, int ev, void *ev_data) {
 
         /* Send full asteroid sync to new player and mark all as sent. */
         {
-            uint8_t sync_buf[2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
+            uint8_t sync_buf[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
             int sync_len = serialize_asteroids_full(sync_buf, world.asteroids);
             ws_send(c, sync_buf, (size_t)sync_len);
             /* Initialize per-player sent tracking */
@@ -2162,7 +2162,7 @@ static void broadcast_world(void) {
      * Each player gets only asteroids in their view radius.
      * Deactivation records sent when asteroids leave a player's view. */
     {
-        uint8_t abuf[2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
+        uint8_t abuf[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
         for (int p = 0; p < MAX_PLAYERS; p++) {
             server_player_t *sp = &world.players[p];
             if (!sp->connected || !sp->conn) continue;
