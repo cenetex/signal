@@ -256,132 +256,18 @@ bool sim_can_smelt_ore(const station_t *st, commodity_t ore) {
 /* Refinery production                                                 */
 /* ------------------------------------------------------------------ */
 
-/* Per-furnace smelting from the station's bulk-ore float
- * (`_inventory_cache[ORE]`).
+/* Retired refinery-hopper smelting.
  *
- * SUSPECTED DEAD CODE post-#259. Players no longer carry raw ore in
- * `ship.cargo[]` (fragments ride in `ship.towed_fragments[]` instead),
- * NPCs don't deposit raw ore either (they use `npc_ship_t.towed_fragment`
- * and deliver via the fragment-tow path in `step_furnace_smelting`),
- * and no other code path appears to populate `_inventory_cache[ORE]`.
- * The early-skip at the float-zero check (line ~250) means this
- * function does nothing in normal multiplayer play.
- *
- * It is still wired into the per-tick world step (`game_sim.c`) and
- * still emits EVT_SMELT events with `fragment_pub = 0` (broken lineage)
- * if ore somehow lands in the float — which is why we keep it for now
- * rather than ripping it out: removing it would also need to migrate
- * `last_smelt_commodity` (set at line ~299, drives the dynamic furnace
- * glow render) onto the fragment-tow path AND retire the
- * `_inventory_cache[ORE]`-populating tests. That's a follow-up PR.
- *
- * See docs/cargo-architecture.md for the larger architectural picture.
+ * Raw ore no longer enters station inventory in normal play. Players and
+ * NPC miners tow physical fragments, and `step_furnace_smelting` is the
+ * only path that turns ore into ingot manifests and EVT_SMELT chain
+ * entries. Keeping this symbol wired into the tick preserves call-site
+ * shape and save compatibility for `_inventory_cache[ORE]`, but it must
+ * not mint zero-lineage ingots from anonymous bulk floats.
  */
 void sim_step_refinery_production(world_t *w, float dt) {
-    for (int s = 0; s < MAX_STATIONS; s++) {
-        station_t *st = &w->stations[s];
-
-        /* Count-tier smelt: each station declares which ores its furnace
-         * stack can process via sim_can_smelt_ore. Build the per-tick
-         * task list once, then divide the throughput across active
-         * (furnace × ore) pairs so a 3-furnace stack doesn't outrun a
-         * 1-furnace one on the same ore stockpile. */
-        commodity_t smeltable[3] = { COMMODITY_FERRITE_ORE,
-                                     COMMODITY_CUPRITE_ORE,
-                                     COMMODITY_CRYSTAL_ORE };
-        int n_furnaces = station_furnace_count(st);
-        if (n_furnaces == 0) continue;
-        if (n_furnaces > REFINERY_MAX_FURNACES) n_furnaces = REFINERY_MAX_FURNACES;
-        int active_ores = 0;
-        for (int oi = 0; oi < 3; oi++) {
-            commodity_t ore = smeltable[oi];
-            if (!sim_can_smelt_ore(st, ore)) continue;
-            if (st->_inventory_cache[ore] <= 0.01f) continue;
-            active_ores++;
-        }
-        if (active_ores == 0) continue;
-        /* Total throughput = base × furnace_count, split evenly across
-         * the ore types currently smelting. */
-        float total_rate = REFINERY_BASE_SMELT_RATE * (float)n_furnaces;
-        float rate = total_rate / (float)active_ores;
-
-        /* Round-robin furnace slot indices so each ore stream lands on a
-         * distinct furnace's output buffer when more than one is
-         * present — the flow graph downstream still sees per-module
-         * production deltas. */
-        int furnace_slots[REFINERY_MAX_FURNACES];
-        int n_slots = 0;
-        for (int m = 0; m < st->module_count && n_slots < REFINERY_MAX_FURNACES; m++) {
-            if (st->modules[m].type != MODULE_FURNACE) continue;
-            if (st->modules[m].scaffold) continue;
-            furnace_slots[n_slots++] = m;
-        }
-        int next_furnace = 0;
-        for (int oi = 0; oi < 3; oi++) {
-            commodity_t ore = smeltable[oi];
-            if (!sim_can_smelt_ore(st, ore)) continue;
-            if (st->_inventory_cache[ore] <= 0.01f) continue;
-            commodity_t ingot = commodity_refined_form(ore);
-            float room = MAX_PRODUCT_STOCK - st->_inventory_cache[ingot];
-            if (room <= 0.01f) continue;
-            float consume = fminf(fminf(st->_inventory_cache[ore], rate * dt), room);
-            st->_inventory_cache[ore] -= consume;
-            if (consume > 0.0f) {
-                w->hopper_smelt_events++;
-                w->hopper_smelt_units += (double)consume;
-            }
-            /* Manifest-as-truth: mint ingot manifest entries at integer
-             * crossings (legacy-migrate origin so future inspectors can
-             * tell this came from the refinery hopper path, not the
-             * fragment-tow path). The float cache is bumped in lockstep
-             * inside the helper so the supply strip and BUY check stay
-             * aligned with manifest count. */
-            uint8_t origin[8] = { 'R','E','F','N','0','0','0','0' };
-            origin[7] = (uint8_t)('0' + (s % 10));
-            uint16_t pre_mft_count = st->manifest.count;
-            station_finished_accumulate(st, ingot, consume, origin);
-            /* Tag the producing furnace with this ore for the dynamic
-             * middle-ring glow render (cuprite → blue, crystal →
-             * green, ferrite → uses inner-ring red anyway). For
-             * multi-furnace stations the smelt logic round-robins
-             * across furnace_slots[]; mark the round-robin slot.
-             * Single-furnace stations: tag the lone furnace. */
-            if (n_slots > 0 && consume > 0.001f) {
-                int chosen = furnace_slots[next_furnace % n_slots];
-                st->modules[chosen].last_smelt_commodity = (uint8_t)ore;
-                /* Tractor beam fires while the furnace is consuming
-                 * ore — the pulse drives geom + dynamics. */
-                st->module_active_pulse[chosen] = 1.0f;
-                next_furnace++;
-            }
-            /* Layer C of #479: one EVT_SMELT per ingot minted. The
-             * payload binds (fragment_pub, ingot_pub, prefix_class,
-             * mined_block) to the station's signature. We don't know
-             * the source fragment_pub for hopper-path smelts (#280
-             * fragment-tow path is separate); use zero so verifiers
-             * can distinguish. */
-            for (uint16_t u = pre_mft_count; u < st->manifest.count; u++) {
-                const cargo_unit_t *unit = &st->manifest.units[u];
-                chain_payload_smelt_t payload = {0};
-                memcpy(payload.ingot_pub, unit->pub, 32);
-                payload.prefix_class = unit->prefix_class;
-                payload.mined_block = unit->mined_block;
-                (void)chain_log_emit(w, st, CHAIN_EVT_SMELT,
-                                     &payload, (uint16_t)sizeof(payload));
-            }
-            /* Mirror to module output buffer for the flow graph (#280).
-             * Round-robin across the furnace slots so each smelt ore
-             * has a distinct anchor. */
-            int slot_idx = furnace_slots[next_furnace % (n_slots > 0 ? n_slots : 1)];
-            next_furnace++;
-            float cap = module_buffer_capacity(MODULE_FURNACE);
-            if (cap > 0.0f && n_slots > 0) {
-                float overflow = (st->module_output[slot_idx] + consume) - cap;
-                float to_buffer = (overflow > 0.0f) ? consume - overflow : consume;
-                if (to_buffer > 0.0f) st->module_output[slot_idx] += to_buffer;
-            }
-        }
-    }
+    (void)w;
+    (void)dt;
 }
 
 /* ------------------------------------------------------------------ */
@@ -583,9 +469,10 @@ void step_furnace_smelting(world_t *w, float dt) {
                  * physics in step_station_ring_dynamics looks at
                  * module_active_pulse[] to scale spoke torque. Without
                  * this, an active smelt beam wouldn't drive any ring
-                 * rotation. The bulk-ore-from-inventory smelt path
-                 * (line ~323) already pulses; the fragment-tow path
-                 * lacked the equivalent. */
+                 * rotation. Also tag the ore for the dynamic furnace
+                 * glow; the retired hopper-float path used to be the
+                 * only writer for this field. */
+                st->modules[m].last_smelt_commodity = (uint8_t)a->commodity;
                 st->module_active_pulse[m] = 1.0f;
 
                 float d_mid = sqrtf(v2_dist_sq(a->pos, midpoint));
@@ -875,15 +762,8 @@ void step_furnace_smelting(world_t *w, float dt) {
                  * ingot. fragment_pub is populated from the consumed
                  * asteroid record so the chain log captures real
                  * provenance — every downstream verifier can walk back
-                 * to the source rock.
-                 *
-                 * The hopper-float smelt path
-                 * (sim_step_refinery_production) also emits EVT_SMELT,
-                 * but with fragment_pub = 0 because there's no source
-                 * fragment on that path. That path is suspected dead
-                 * post-#259 (nothing populates _inventory_cache[ORE]
-                 * any more); see docs/cargo-architecture.md and the
-                 * docstring on sim_step_refinery_production. */
+                 * to the source rock. The retired hopper-float smelt
+                 * path no longer emits zero-fragment EVT_SMELT events. */
                 if (pushed > 0) {
                     uint16_t first_new = (uint16_t)((int)st->manifest.count - pushed);
                     for (uint16_t u = first_new; u < st->manifest.count; u++) {
@@ -983,8 +863,9 @@ void step_module_flow(world_t *w, float dt) {
             commodity_t output = module_schema_output(st->modules[p].type);
             module_kind_t producer_kind = module_kind(st->modules[p].type);
             /* Storage modules pull from station inventory and push into the
-             * flow graph. They feed both furnaces (with ore) and fabs (with
-             * ingots), acting as buffers in the production chain. */
+             * flow graph for finished goods. Raw-ore hoppers are physical
+             * fragment-smelt anchors only; they no longer drain anonymous
+             * `_inventory_cache[ORE]` into furnace buffers. */
             if (output == COMMODITY_COUNT) {
                 if (producer_kind != MODULE_KIND_STORAGE) continue;
 
@@ -997,6 +878,10 @@ void step_module_flow(world_t *w, float dt) {
                     /* Check what consumers on this station need */
                     commodity_t tag = (commodity_t)st->modules[p].commodity;
                     if (tag >= COMMODITY_COUNT) continue;
+                    if (tag < COMMODITY_RAW_ORE_COUNT) {
+                        st->module_output[p] = 0.0f;
+                        continue;
+                    }
                     {
                         commodity_t com = tag;
                         if (st->_inventory_cache[com] <= 0.1f) continue;

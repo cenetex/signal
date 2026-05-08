@@ -618,14 +618,19 @@ TEST(test_world_sim_step_docking) {
     ASSERT(w.players[0].docked);
 }
 
-TEST(test_world_sim_step_refinery_produces_ingots) {
+TEST(test_world_sim_step_refinery_hopper_path_retired) {
     WORLD_DECL;
     world_reset(&w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
     w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] = 50.0f;
     for (int i = 0; i < 600; i++)
         world_sim_step(&w, 1.0f / 120.0f);
-    ASSERT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT] > 0.0f);
-    ASSERT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE] < 50.0f);
+    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_INGOT],
+                    0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(w.stations[0]._inventory_cache[COMMODITY_FERRITE_ORE],
+                    50.0f, 0.001f);
+    ASSERT_EQ_INT((int)w.hopper_smelt_events, 0);
+    ASSERT(w.hopper_smelt_units == 0.0);
 }
 
 TEST(test_mining_class_prefix_round_trip) {
@@ -2464,7 +2469,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_ship_reverse_requires_reverse_flag);
     RUN(test_world_sim_step_mining_damages_asteroid);
     RUN(test_world_sim_step_docking);
-    RUN(test_world_sim_step_refinery_produces_ingots);
+    RUN(test_world_sim_step_refinery_hopper_path_retired);
     RUN(test_mining_class_prefix_round_trip);
     RUN(test_refinery_deposits_named_ingot);
     RUN(test_station_production_dual_writes_frame_manifest);

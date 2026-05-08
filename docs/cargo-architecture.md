@@ -13,10 +13,10 @@ is born at the smelt/craft boundary**, not at the moment of mining. The
 data model is correct; we don't need to crateify ore.
 
 The chain log coverage gap that motivated this doc has mostly been closed:
-normal fragment-tow smelts now emit `CHAIN_EVT_SMELT`, and fragment tow/release
-transitions emit their own lifecycle events. The remaining work is to watch the
-legacy hopper-path telemetry, keep receipt-chain parity intact, and build
-player-facing lineage display — not to change the cargo data model.
+normal fragment-tow smelts now emit `CHAIN_EVT_SMELT`, fragment tow/release
+transitions emit their own lifecycle events, and the legacy hopper-path smelt
+compatibility behavior is retired. The remaining work is receipt-chain parity
+and player-facing lineage display — not a cargo data-model rewrite.
 
 ## The conceptual model
 
@@ -36,9 +36,9 @@ to a different invariant.
             ┌─────────────────┐
             │   BULK FLOAT    │   ephemeral working buffer
             │   (at station)  │   ── no identity, no chain entry
-            └────────┬────────┘   ── _inventory_cache[ORE], smelter integration
+            └────────┬────────┘   ── _inventory_cache[ORE], legacy/demand only
                      │
-                     │  furnace produces output
+                     │  retired as a smelt source
                      │
                      ▼
             ┌─────────────────┐
@@ -67,22 +67,21 @@ the fragment is ever smelted (the resulting ingot's `parent_merkle ==
 fragment_pub`). If the fragment is destroyed in the void without being
 smelted, its identity is lost — there's nothing to inherit it.
 
-### State 2 — Bulk Float (transient, at-station-only, possibly dead)
+### State 2 — Bulk Float (legacy raw-ore station float)
 
-This is the form we were about to migrate, until we realized it's
-either a working buffer or a vestigial code path. Either way, not a
-crate.
+This is the form we were about to migrate, until we realized the raw-ore
+side is vestigial in normal play. Either way, not a crate.
 
 `station._inventory_cache[c]` for `c < COMMODITY_RAW_ORE_COUNT` (i.e.
-the three raw ore slots) holds floats representing ore that has *just
-been deposited at a hopper* and *is about to be smelted*. The typical
-lifetime of a value in this float is a few sim ticks — deposit, brief
-buffer, consume.
+the three raw ore slots) can still hold floats from old saves, tests,
+pricing fixtures, and demand scoring. It is no longer consumed by
+production. Physical fragments now cross the smelt boundary directly
+into ingot crates.
 
-But here's the thing: **the deposit-side population paths look mostly
-or entirely vestigial in today's code.** The raw-ore float write sites are
-the legacy player service paths in `server/game_sim.c`, the station refill
-path, and the economy sim production helper in `shared/economy.c`.
+The deposit-side population paths are vestigial in today's code. The
+raw-ore float write sites are the legacy player service paths in
+`server/game_sim.c`, the station refill path, and the economy sim
+production helper in `shared/economy.c`.
 
 Players no longer carry raw ore in `ship.cargo[]` after the #259 tow
 migration (the service-sell path in `server/game_sim.c` says this directly).
@@ -90,11 +89,13 @@ NPCs never
 deposit raw ore — they tow fragments via `npc_ship_t.towed_fragment`
 (single int16, not an array) and deliver through the fragment-tow path.
 
-So in practice, the hopper float for raw ore may never be populated in
-normal multiplayer play. The "smelt from hopper float" code path
-(`server/sim_production.c`) is instrumented with
-`world.hopper_smelt_events` and `world.hopper_smelt_units`; watch those
-counters before deciding whether to delete or heal it.
+So in practice, the hopper float for raw ore is not populated in normal
+multiplayer play. The old "smelt from hopper float" code path
+(`server/sim_production.c`) has been retired: `_inventory_cache[ORE]`
+can still exist for old saves, pricing fixtures, and demand scoring, but
+it is no longer a production input. `world.hopper_smelt_events` and
+`world.hopper_smelt_units` remain exposed as regression telemetry and
+should stay at zero.
 
 **Bulk float has no crate identity by design.** It represents
 undifferentiated material in transit through the smelter's working
@@ -181,8 +182,8 @@ not a thing you can put your hand on.
 | Write — fragment-smelt completion | `server/sim_production.c` accumulates the produced *ingot* commodity, not the raw ore. The ore commodity slot itself is barely written on this path. |
 | Write — legacy player ore paths | `server/game_sim.c` still has vestigial service sell/deliver/refill paths around `ship.cargo[]`; normal play no longer puts raw ore there. |
 | Write — economy sim | `shared/economy.c` production recipe execution. |
-| Read — furnace intake | `server/sim_production.c` gates the compatibility smelt loop on raw-ore float > threshold. |
-| Read — smelt rate/consume | `server/sim_production.c` drains the bulk-float path and increments hopper telemetry counters. |
+| Read — furnace intake | Retired. `sim_step_refinery_production` is a no-op, and raw-ore hoppers no longer feed furnace buffers. |
+| Read — smelt rate/consume | Retired. Hopper telemetry counters remain as zero-valued regression guards. |
 | Read — UI display | `client/station_ui.c` trade UI ore-side display. |
 | Read — price scaling | `shared/commodity.c` `station_buy_price` reads hopper fill. |
 | Persistence | The float is **not** persistent at meaningful timescales. Furnace smelt rate (`REFINERY_BASE_SMELT_RATE = 2.0`/sec, hopper cap 500) drains it within seconds at typical throughput. |
@@ -252,61 +253,32 @@ successful deposit is a smelt; non-smelt endings are releases. That keeps
 the chain vocabulary aligned with semantic transitions rather than every
 physics contact.
 
-### Gap 2 — Hopper-path smelt mints ingots with broken lineage
+### Closed gap — Hopper-path smelt no longer mints ingots
 
-When the smelter consumes from `_inventory_cache[ORE]` (the bulk-float
-path), the resulting ingot is minted with `parent_merkle = 0` — no
-source fragment to attribute to. The hardcoded origin string is
-`"REFN0000"` (`station_finished_accumulate` callsite). The comment in
-`server/sim_production.c` is explicit about this:
+The old concern was: if the smelter consumed from `_inventory_cache[ORE]`
+(the bulk-float path), the resulting ingot was minted with
+`parent_merkle = 0` because there was no source fragment to attribute.
+That compatibility path is now disabled. `sim_step_refinery_production`
+is a no-op, raw-ore storage hoppers do not feed furnace buffers, and
+`EVT_SMELT` is emitted only from `step_furnace_smelting` after a physical
+fragment reaches the furnace/hopper beam.
 
-> "We don't know the source fragment_pub for hopper-path smelts (#280
-> fragment-tow path is separate); use zero so verifiers can
-> distinguish."
-
-The substrate is honest about the gap, which is good. But it also
-means any ingot that came through the hopper-path has zero-merkle
-lineage and can't participate in heritage queries.
-
-**There's a related discovery worth flagging.** The hopper-float-population
-paths in current code are:
+The removed hopper-float-population paths were:
 
 - Legacy player ore service paths in `server/game_sim.c`
 - Player ore refill from station stock in `server/game_sim.c`
 - Economy sim production in `shared/economy.c`
 
-The legacy player paths are *vestigial* per the service-path comments:
+The legacy player paths are vestigial per the service-path comments:
 players stopped carrying raw ore in `ship.cargo[]` after #259. Refill is
 explicitly a station-stock path. The fourth is NPC-economy production.
-**No NPC ever deposits raw ore at a hopper**; NPC miners use
+No NPC deposits raw ore at a hopper; NPC miners use
 `npc_ship_t.towed_fragment` and deliver to furnaces via the fragment-tow path,
 same as players.
 
-So the practical question is: **is the hopper-float path actually
-exercised in normal multiplayer play, or is it dead code from #259's
-half-finished migration?** If it's dead, this whole "gap 2" disappears
-— there's no hopper-path smelt happening, so there are no zero-merkle
-ingots being minted.
-
-This is worth observing before fixing. The hopper-float drain increments
-`world.hopper_smelt_events` and `world.hopper_smelt_units`, exposed through
-server health output. Watch a multi-hour live game session. If the counters
-stay at zero,
-"gap 2" downgrades to "dead code path; consider removal" instead of
-"lineage-fix project."
-
-Two possible outcomes:
-
-- **If hopper-path is dead in practice:** delete the legacy
-  `_inventory_cache[ORE]` write paths in `server/game_sim.c` and the matching
-  compatibility read in `server/sim_production.c`. Bulk float for raw ore goes
-  away entirely. Pure fragment-tow → ingot pipeline.
-- **If hopper-path is live:** add a synthetic batch-lineage anchor at
-  hopper deposit, used as `parent_merkle` for ingots smelted from the
-  resulting float. Each "deposit batch" gets a content-hashed pub
-  derived from `(station, epoch, depositor_session)`.
-
-Don't pick yet; instrument first.
+The decision is picked: pure fragment-tow to ingot pipeline. Tests now
+assert that directly seeded raw ore does not smelt, does not drain through
+raw hopper flow, and does not emit zero-fragment `EVT_SMELT`.
 
 ### Gap 3 — Players can't see provenance at all
 
@@ -324,26 +296,19 @@ log. No new screens, no new keys, just a string format change.
 
 Ranked by value-per-effort after the fragment-chain coverage pass.
 
-**1. Watch the hopper-path telemetry in live sessions.** The legacy
-refinery-hopper path now increments `world.hopper_smelt_events` and
-`world.hopper_smelt_units`, exposed from `/health`. If the counters stay
-at zero during real play, remove the hopper path and its zero-fragment
-`EVT_SMELT` compatibility behavior. If they move, keep it and add
-synthetic batch lineage for hopper-fed ore.
-
-**2. Build the lineage display layer.** Trade rows now surface
+**1. Build the lineage display layer.** Trade rows now surface
 representative `origin_station` / `mined_block` text from local
 manifests, and multiplayer preserves detailed named-ingot snapshots.
 Anonymous ingots and fabricated goods still need either richer wire
 records or a compact provenance-summary record if they should display
 the same player-facing history.
 
-**3. Group manifest presentation before showing every hash.** Common
+**2. Group manifest presentation before showing every hash.** Common
 anonymous stock should compress into commodity/grade buckets, while
 named or receipt-bearing units stay individually addressable. This keeps
 inspection readable as station and hauler manifests grow.
 
-**4. Heritage contract templates.** Fragment-tow smelts emit
+**3. Heritage contract templates.** Fragment-tow smelts emit
 `EVT_SMELT`, and fragment tow/release transitions are logged. Contracts
 can now start filtering on `parent_merkle` chains and real chain-log
 history. The player-facing payoff: the universe's history becomes the
@@ -397,7 +362,7 @@ instrumenting before optimizing.
 | `shared/types.h` | All struct definitions: `asteroid_t`, `ship_t`, `station_t`, `cargo_unit_t`, `manifest_t`, `commodity_t` enum |
 | `shared/manifest.h` | Crate API: push/remove/find, hash_*, migration helpers |
 | `shared/manifest.c` | Crate implementation |
-| `server/sim_production.c` | The smelt boundary lives here. Both fragment-tow and hopper-float smelt paths. |
+| `server/sim_production.c` | The smelt boundary lives here. Fragment-tow smelting is the only production smelt path; the hopper-float compatibility function is a no-op. |
 | `server/sim_ai.c` | NPC autopilot. NPCs tow fragments via `npc_ship_t.towed_fragment` (single-slot) and deliver via the fragment-tow path; they never deposit raw ore at hoppers. |
 | `server/sim_save.c` | Save format, including the manifest persistence and migration paths |
 | `server/chain_log.h` / `chain_log.c` | Append-only signed event log per station |
@@ -417,15 +382,11 @@ batch compression of finished goods). The rest of the slices (1-5)
 targeted "ore as crate," a problem that doesn't exist. The new
 roadmap is now:
 
-1. Watch the hopper-path telemetry to confirm or reject the dead-code
-   suspicion.
-2. Player-visible lineage display for cargo and inspected haulers.
-3. Group common manifest rows while keeping named/receipt-bearing units
+1. Player-visible lineage display for cargo and inspected haulers.
+2. Group common manifest rows while keeping named/receipt-bearing units
    individually visible.
-4. Heritage contract templates that filter on `parent_merkle` chains.
-5. Resolve gap 2 based on (1)'s telemetry result — either
-   delete the hopper-path or add synthetic batch lineage to it.
-6. Use `quantity > 1` only for future grouped anonymous crates where
+3. Heritage contract templates that filter on `parent_merkle` chains.
+4. Use `quantity > 1` only for future grouped anonymous crates where
    individual identity adds no gameplay value.
 
 **No further data-model changes to ore.** Ore stays as fragments and
