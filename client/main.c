@@ -1148,8 +1148,11 @@ static void init(void) {
             if (g.multiplayer_enabled) {
                 /* Deactivate the local server — the remote server is authoritative.
                  * The local server was started by reset_world() before we knew
-                 * multiplayer was available. */
+                 * multiplayer was available. Clear dynamic state seeded by that
+                 * bootstrap world so active-only remote snapshots cannot leave
+                 * local-only asteroid/NPC ghosts behind. */
                 g.local_server.active = false;
+                reset_remote_dynamic_sync();
             }
         }
     }
@@ -1675,6 +1678,7 @@ static void frame(void) {
             if (net_reconnect()) {
                 set_notice("Reconnecting...");
                 g.local_server.active = false;
+                reset_remote_dynamic_sync();
             }
 #endif
         }

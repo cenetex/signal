@@ -111,7 +111,7 @@ TEST(test_roundtrip_asteroids) {
     asteroids[5].ore = 10.5f;
     asteroids[5].radius = 14.0f;
 
-    uint8_t buf[2 + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
+    uint8_t buf[ASTEROID_MSG_HEADER + MAX_ASTEROIDS * ASTEROID_RECORD_SIZE];
     bool sent[MAX_ASTEROIDS] = {0};
     vec2 view_pos = v2(0.0f, 0.0f); /* both asteroids are within 3000u */
     int len = serialize_asteroids_for_player(buf, asteroids, view_pos, sent);
@@ -141,12 +141,12 @@ TEST(test_roundtrip_asteroids) {
     ASSERT_EQ_FLOAT(read_f32_le(&p1[27]), 14.0f, 0.1f);  /* radius */
 }
 
-TEST(test_roundtrip_asteroids_full_includes_inactive_slots) {
+TEST(test_roundtrip_asteroids_full_skips_inactive_slots) {
     asteroid_t asteroids[MAX_ASTEROIDS];
     memset(asteroids, 0, sizeof(asteroids));
 
-    /* Join-time full sync must include inactive slots so a client can clear
-     * any locally seeded asteroid that the authoritative server no longer has. */
+    /* Join-time full sync is active-only; the client clears local asteroid
+     * buffers before entering remote-authoritative mode. */
     asteroids[0].active = true;
     asteroids[0].tier = ASTEROID_TIER_L;
     asteroids[0].commodity = COMMODITY_CUPRITE_ORE;
@@ -805,7 +805,7 @@ void register_protocol_main_tests(void) {
     RUN(test_roundtrip_player_state);
     RUN(test_roundtrip_batched_player_states);
     RUN(test_roundtrip_asteroids);
-    RUN(test_roundtrip_asteroids_full_includes_inactive_slots);
+    RUN(test_roundtrip_asteroids_full_skips_inactive_slots);
     RUN(test_roundtrip_npcs);
     RUN(test_roundtrip_inspect_snapshot_npc_manifest_chain);
     RUN(test_inspect_snapshot_groups_anonymous_ingots_by_grade);
