@@ -1323,6 +1323,98 @@ static void npc_validate_stations(world_t *w, npc_ship_t *npc) {
         npc->dest_station = npc->home_station;
 }
 
+/* ------------------------------------------------------------------ */
+/* Gossip-contract dock handshake.                                     */
+/* ------------------------------------------------------------------ */
+/* Contracts as bounded ship/station memory. New entries push out
+ * oldest (FIFO eviction); information speed = ship speed. The hauler
+ * picker reads only from npc->known_contracts, never from
+ * w->contracts[] — peer station state is never iterated. The
+ * authoritative settlement still reads w->contracts[] but only at
+ * the issuing station, where it is local state by definition. */
+
+static contract_summary_t contract_summary_make(const contract_t *ct) {
+    contract_summary_t s = {0};
+    if (!ct) return s;
+    s.active = ct->active;
+    s.action = (uint8_t)ct->action;
+    s.station_index = ct->station_index;
+    s.commodity = (uint8_t)ct->commodity;
+    s.required_grade = ct->required_grade;
+    s.quantity_needed = ct->quantity_needed;
+    s.base_price = ct->base_price;
+    s.age_at_copy = ct->age;
+    return s;
+}
+
+static bool contract_summary_matches(const contract_summary_t *a,
+                                     const contract_summary_t *b) {
+    return a->action == b->action &&
+           a->station_index == b->station_index &&
+           a->commodity == b->commodity;
+}
+
+/* FIFO insert with dedup-refresh. Matching summary in place is updated
+ * with newer data; otherwise new entry appended; full lists shift left
+ * (oldest evicted). */
+static void gossip_insert(contract_summary_t *list, uint8_t *count, int cap,
+                          const contract_summary_t *s) {
+    if (!list || !count || !s || cap <= 0) return;
+    for (int i = 0; i < *count; i++) {
+        if (contract_summary_matches(&list[i], s)) {
+            list[i] = *s;
+            return;
+        }
+    }
+    if (*count < cap) {
+        list[*count] = *s;
+        (*count)++;
+    } else {
+        for (int i = 1; i < cap; i++)
+            list[i-1] = list[i];
+        list[cap - 1] = *s;
+    }
+}
+
+/* Bidirectional dock-contact gossip:
+ *   1. Station merges its locally-issued active contracts into its own
+ *      known pool. This is a local read (filter w->contracts[] by
+ *      station_index == self) — under shard-split this becomes a per-
+ *      station list. Allowed under the no-radio rule.
+ *   2. Station's known pool copies into ship's known pool (FIFO insert).
+ *   3. Ship's pre-handshake known pool copies into station's known pool.
+ * Stale entries (now-inactive at issuer) eventually evict via FIFO. */
+static void gossip_dock_handshake(world_t *w, npc_ship_t *npc, int station_index) {
+    if (!w || !npc) return;
+    if (station_index < 0 || station_index >= MAX_STATIONS) return;
+    station_t *st = &w->stations[station_index];
+
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        const contract_t *ct = &w->contracts[k];
+        if (!ct->active) continue;
+        if (ct->station_index != station_index) continue;
+        contract_summary_t s = contract_summary_make(ct);
+        gossip_insert(st->known_contracts, &st->known_contract_count,
+                      STATION_KNOWN_CONTRACT_CAP, &s);
+    }
+
+    contract_summary_t ship_pre[NPC_KNOWN_CONTRACT_CAP];
+    uint8_t ship_pre_count = npc->known_contract_count;
+    for (int i = 0; i < ship_pre_count; i++)
+        ship_pre[i] = npc->known_contracts[i];
+
+    for (int i = 0; i < st->known_contract_count; i++) {
+        if (!st->known_contracts[i].active) continue;
+        gossip_insert(npc->known_contracts, &npc->known_contract_count,
+                      NPC_KNOWN_CONTRACT_CAP, &st->known_contracts[i]);
+    }
+    for (int i = 0; i < ship_pre_count; i++) {
+        if (!ship_pre[i].active) continue;
+        gossip_insert(st->known_contracts, &st->known_contract_count,
+                      STATION_KNOWN_CONTRACT_CAP, &ship_pre[i]);
+    }
+}
+
 static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
     const hull_def_t *hull = npc_hull_def(npc);
     ship_t *hauler_ship = npc_ship_for(w, n);
@@ -1333,46 +1425,58 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
         npc->state_timer -= dt;
         npc->ship.vel = v2(0.0f, 0.0f);
         if (npc->state_timer <= 0.0f) {
+            /* Dock-contact gossip: bidirectional set-union with the
+             * home station. After this, npc->known_contracts holds
+             * everything home knows (its own issued contracts plus
+             * intel from prior visiting ships), capped by FIFO. */
+            gossip_dock_handshake(w, npc, npc->home_station);
+
             station_t *home = &w->stations[npc->home_station];
             float carried = 0.0f;
             for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) carried += npc->cargo[c];
             float space = hull->ingot_capacity - carried;
 
-            /* Contract-driven routing: find highest-value fillable
-             * external contract. SKIP contracts whose station_index
-             * is our own home — a self-delivery is zero-distance,
-             * scores dist=1 = max possible price/dist, and would
-             * always win the race. The bug it caused: Prospect
-             * issues a P6 kit-import contract for itself; Prospect
-             * haulers loaded local stock and "delivered" it back to
-             * Prospect, never carrying ferrite ingots out to Kepler. */
-            int best_contract = -1;
+            /* Contract-driven routing: scan only the NPC's own bounded
+             * memory of contract summaries — no peer-station radio.
+             * SKIP contracts whose station_index is our own home —
+             * a self-delivery is zero-distance, scores dist=1 = max
+             * possible price/dist, and would always win the race. The
+             * bug it caused: Prospect issues a P6 kit-import contract
+             * for itself; Prospect haulers loaded local stock and
+             * "delivered" it back to Prospect, never carrying ferrite
+             * ingots out to Kepler. */
+            int best_known = -1;
             float best_score = 0.0f;
-            for (int k = 0; k < MAX_CONTRACTS; k++) {
-                if (!w->contracts[k].active) continue;
-                if (w->contracts[k].action != CONTRACT_TRACTOR) continue;
-                if (w->contracts[k].station_index >= MAX_STATIONS) continue;
-                if (w->contracts[k].station_index == npc->home_station) continue;
-                commodity_t c = w->contracts[k].commodity;
+            for (int k = 0; k < npc->known_contract_count; k++) {
+                const contract_summary_t *cs = &npc->known_contracts[k];
+                if (!cs->active) continue;
+                if (cs->action != CONTRACT_TRACTOR) continue;
+                if (cs->station_index >= MAX_STATIONS) continue;
+                if (cs->station_index == npc->home_station) continue;
+                commodity_t c = (commodity_t)cs->commodity;
                 if (c < COMMODITY_RAW_ORE_COUNT) continue; /* raw ore moves as fragments */
-                if (!station_accepts_hauler_commodity(
-                        &w->stations[w->contracts[k].station_index], c)) {
-                    continue;
-                }
                 if (station_finished_available_for_hauler(home, c) <= 0)
-                    continue; /* no manifest-backed stock to fill */
-                float dist = fmaxf(1.0f, v2_len(v2_sub(w->stations[w->contracts[k].station_index].pos, home->pos)));
-                float score = contract_price(&w->contracts[k]) / dist;
+                    continue; /* no manifest-backed stock at home to fill */
+                /* Stations are physical landmarks visible via the signal
+                 * grid — position lookup is the legal infrastructure
+                 * gossip channel, not radio. */
+                float dist = fmaxf(1.0f,
+                    v2_len(v2_sub(w->stations[cs->station_index].pos, home->pos)));
+                /* Use snapshot's age-at-copy for escalation; matches
+                 * contract_price() formula. Stale snapshot eats the
+                 * difference at settlement. */
+                float esc = 1.0f + fminf(cs->age_at_copy / 300.0f, 1.0f) * 0.2f;
+                float score = (cs->base_price * esc) / dist;
                 if (score > best_score) {
                     best_score = score;
-                    best_contract = k;
+                    best_known = k;
                 }
             }
 
-            if (best_contract >= 0) {
+            if (best_known >= 0) {
                 /* Load the commodity for this contract (leave reserve for players) */
-                commodity_t ingot = w->contracts[best_contract].commodity;
-                npc->dest_station = w->contracts[best_contract].station_index;
+                commodity_t ingot = (commodity_t)npc->known_contracts[best_known].commodity;
+                npc->dest_station = npc->known_contracts[best_known].station_index;
                 int take_units = station_finished_available_for_hauler(home, ingot);
                 int space_units = (int)floorf(space + 0.0001f);
                 if (take_units > space_units) take_units = space_units;
@@ -1524,6 +1628,12 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
         npc->state_timer -= dt;
         npc->ship.vel = v2(0.0f, 0.0f);
         if (npc->state_timer <= 0.0f) {
+            /* Dock-contact gossip with the destination station: ship
+             * brings any contracts it picked up at home (or earlier
+             * docks) and learns the dest's open demands. This is how
+             * intel propagates one hop per round-trip. */
+            gossip_dock_handshake(w, npc, npc->dest_station);
+
             station_t *dest = &w->stations[npc->dest_station];
             if (hauler_ship && hauler_ship->manifest.count > 0) {
                 for (int i = COMMODITY_RAW_ORE_COUNT; i < COMMODITY_COUNT; i++) {
