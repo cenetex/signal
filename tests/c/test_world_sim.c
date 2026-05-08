@@ -425,9 +425,21 @@ TEST(test_legacy_hauler_cargo_unloads_when_manifest_empty) {
     memset(dest->_inventory_cache, 0, sizeof(dest->_inventory_cache));
     dest->module_count = 0;
     dest->scaffold = false;
+    add_module_at(dest, MODULE_DOCK, 1, 0);
+    memset(w.contracts, 0, sizeof(w.contracts));
+    w.contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 1,
+        .commodity = COMMODITY_REPAIR_KIT,
+        .quantity_needed = 2.0f,
+        .base_price = 5.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
 
     memset(hauler->cargo, 0, sizeof(hauler->cargo));
-    hauler->cargo[COMMODITY_FERRITE_INGOT] = 2.0f;
+    hauler->cargo[COMMODITY_REPAIR_KIT] = 2.0f;
     hauler->state = NPC_STATE_UNLOADING;
     hauler->state_timer = 0.0f;
     hauler->home_station = 0;
@@ -437,10 +449,10 @@ TEST(test_legacy_hauler_cargo_unloads_when_manifest_empty) {
 
     ASSERT_EQ_INT(hauler_ship->manifest.count, 0);
     ASSERT_EQ_INT((int)hauler_receipts->count, 0);
-    ASSERT_EQ_FLOAT(hauler->cargo[COMMODITY_FERRITE_INGOT], 0.0f, 0.001f);
-    ASSERT_EQ_FLOAT(dest->_inventory_cache[COMMODITY_FERRITE_INGOT],
+    ASSERT_EQ_FLOAT(hauler->cargo[COMMODITY_REPAIR_KIT], 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(dest->_inventory_cache[COMMODITY_REPAIR_KIT],
                     2.0f, 0.001f);
-    ASSERT_EQ_INT(station_finished_count(dest, COMMODITY_FERRITE_INGOT), 2);
+    ASSERT_EQ_INT(station_finished_count(dest, COMMODITY_REPAIR_KIT), 2);
     ASSERT_EQ_INT(dest->manifest.count, 2);
     ASSERT_EQ_INT(dest->manifest.units[0].recipe_id, RECIPE_LEGACY_MIGRATE);
     ASSERT_EQ_INT(dest->manifest.units[1].recipe_id, RECIPE_LEGACY_MIGRATE);
