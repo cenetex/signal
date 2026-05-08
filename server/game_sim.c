@@ -670,11 +670,14 @@ vec2 station_approach_target(const station_t *st, vec2 from) {
  * dock lives on an inner ring, such as Kepler. */
 vec2 station_entry_target(const station_t *st, vec2 from) {
     (void)from;
-    int ring = station_max_ring(st);
-    if (ring >= 1 && ring <= STATION_NUM_RINGS) {
-        float r = STATION_RING_RADIUS[ring] + 160.0f;
-        if (station_ring_open_gap_lane(st, ring, NULL, NULL))
-            return station_ring_open_gap_lane_pos(st, ring, r);
+    int outer_ring = station_max_ring(st);
+    int road_ring = outer_ring;
+    while (road_ring > 1 && ring_module_count(st, road_ring) <= 1)
+        road_ring--;
+    if (road_ring >= 1 && road_ring <= STATION_NUM_RINGS) {
+        float r = STATION_RING_RADIUS[outer_ring] + 160.0f;
+        if (station_ring_open_gap_lane(st, road_ring, NULL, NULL))
+            return station_ring_open_gap_lane_pos(st, road_ring, r);
     }
 
     /* No ring roadway: use a stable fallback outside the docking halo. */
@@ -704,7 +707,7 @@ vec2 station_exit_target(const station_t *st, vec2 from) {
     if (inner_r < st->radius + 80.0f) inner_r = st->radius + 80.0f;
     vec2 inner_lane = station_dock_lane_pos(st, ring, slot, inner_r);
     float from_r = v2_len(v2_sub(from, st->pos));
-    if (from_r < STATION_RING_RADIUS[ring] + 40.0f &&
+    if (from_r < STATION_RING_RADIUS[ring] - 20.0f &&
         v2_dist_sq(from, inner_lane) > 80.0f * 80.0f) {
         return inner_lane;
     }
@@ -2763,10 +2766,15 @@ static void step_mining_system(world_t *w, server_player_t *sp, float dt, bool m
          * applied identically here as in NPC fire. Player owns
          * hover_asteroid acquisition (cone search + manual hint), the
          * helper owns "given that target, what does one tick do?" */
-        mining_beam_t mb = sim_mining_beam_step(w, muzzle, forward,
+        float aim_slack = 0.0f;
+        if (sp->input.mining_target_hint == sp->hover_asteroid &&
+            hinted_target_in_mining_cone(muzzle, forward, a)) {
+            aim_slack = 12.0f;
+        }
+        mining_beam_t mb = sim_mining_beam_step_with_aim_slack(w, muzzle, forward,
             sp->hover_asteroid, sp->ship.mining_level,
             ship_mining_rate(&sp->ship), signal_mining_efficiency(cached_signal),
-            (int8_t)sp->id, dt);
+            (int8_t)sp->id, dt, aim_slack);
         sp->beam_end = mb.beam_end;
         sp->beam_hit = mb.hit;
         sp->beam_ineffective = mb.ineffective;

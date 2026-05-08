@@ -14,6 +14,7 @@
 #include "manifest.h"
 #include "palette.h"
 #include "station_palette.h"
+#include "sim_mining.h"
 #include <stddef.h>  /* ptrdiff_t for station index */
 #include <stdlib.h>
 
@@ -1995,13 +1996,14 @@ void draw_npc_ship(const npc_ship_t* npc) {
 void draw_npc_mining_beam(const npc_ship_t* npc) {
     if (npc->state != NPC_STATE_MINING) return;
     if (npc->target_asteroid < 0) return;
+    if (npc->target_asteroid >= MAX_ASTEROIDS) return;
     const asteroid_t* asteroid = &g.world.asteroids[npc->target_asteroid];
     if (!asteroid->active) return;
 
     vec2 forward = v2_from_angle(npc->ship.angle);
     vec2 muzzle = v2_add(npc->ship.pos, v2_scale(forward, npc_hull_def(npc)->ship_radius + 5.0f));
-    vec2 to_target = v2_sub(asteroid->pos, muzzle);
-    vec2 hit = v2_sub(asteroid->pos, v2_scale(v2_norm(to_target), asteroid->radius * 0.85f));
+    vec2 hit;
+    if (!sim_mining_target_hit(muzzle, forward, asteroid, &hit, NULL)) return;
 
     draw_segment(muzzle, hit, 0.92f, 0.68f, 0.28f, 0.85f);
     draw_segment(muzzle, hit, 0.45f, 0.30f, 0.10f, 0.35f);
