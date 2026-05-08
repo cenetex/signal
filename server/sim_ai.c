@@ -150,6 +150,62 @@ static float station_hauler_need_score(const station_t *st, commodity_t c) {
     return best;
 }
 
+static bool station_hauler_export_pick(const world_t *w, const station_t *home,
+                                       int home_station, commodity_t *out_cargo,
+                                       int *out_dest, int *out_room) {
+    if (!w || !home || !out_cargo || !out_dest || !out_room) return false;
+
+    const float high_water = MAX_PRODUCT_STOCK * 0.85f;
+    float best_score = 0.0f;
+    commodity_t best_cargo = COMMODITY_COUNT;
+    int best_dest = -1;
+    int best_room = 0;
+
+    for (int c = COMMODITY_RAW_ORE_COUNT; c < COMMODITY_COUNT; c++) {
+        commodity_t cargo = (commodity_t)c;
+        int available = station_finished_available_for_hauler(home, cargo);
+        if (available <= 0) continue;
+
+        float stock = home->_inventory_cache[c];
+        float pressure = (stock - high_water) / (MAX_PRODUCT_STOCK - high_water);
+        if (pressure <= 0.0f) continue;
+        if (pressure > 1.0f) pressure = 1.0f;
+
+        for (int s = 0; s < MAX_STATIONS; s++) {
+            if (s == home_station) continue;
+            const station_t *dest = &w->stations[s];
+            if (!station_is_active(dest)) continue;
+            if (!station_accepts_hauler_commodity(dest, cargo)) continue;
+            if (station_produces(dest, cargo) &&
+                station_hauler_need_score(dest, cargo) <= 0.0f) {
+                continue;
+            }
+
+            int room = station_finished_room_units_for_hauler(dest, cargo,
+                                                              MAX_PRODUCT_STOCK);
+            if (room <= 0) continue;
+            int movable = available < room ? available : room;
+            if (movable <= 0) continue;
+
+            float dist = fmaxf(1.0f, v2_len(v2_sub(dest->pos, home->pos)));
+            float need = station_hauler_need_score(dest, cargo);
+            float score = pressure * (float)movable * (1.0f + need) / dist;
+            if (score > best_score) {
+                best_score = score;
+                best_cargo = cargo;
+                best_dest = s;
+                best_room = room;
+            }
+        }
+    }
+
+    if (best_dest < 0 || best_cargo >= COMMODITY_COUNT) return false;
+    *out_cargo = best_cargo;
+    *out_dest = best_dest;
+    *out_room = best_room;
+    return true;
+}
+
 static void npc_update_manifest_rarity_tint(npc_ship_t *npc,
                                             const ship_t *paired_ship,
                                             float dt) {
@@ -1394,10 +1450,23 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                     }
                 }
 
+                int export_room = 1000000;
+                if (best_cargo >= COMMODITY_COUNT) {
+                    int export_dest = -1;
+                    commodity_t export_cargo = COMMODITY_COUNT;
+                    if (station_hauler_export_pick(w, home, npc->home_station,
+                                                   &export_cargo, &export_dest,
+                                                   &export_room)) {
+                        npc->dest_station = export_dest;
+                        best_cargo = export_cargo;
+                    }
+                }
+
                 if (best_cargo < COMMODITY_COUNT) {
                     int take_units = station_finished_available_for_hauler(home, best_cargo);
                     int space_units = (int)floorf(space + 0.0001f);
                     if (take_units > space_units) take_units = space_units;
+                    if (take_units > export_room) take_units = export_room;
                     if (take_units > 0) {
                         if (hauler_ship) {
                             int moved = hauler_load_station_units(w, n, home,
@@ -1502,6 +1571,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                         if (ct->commodity != (commodity_t)i) continue;
                         if (ct->base_price > best_price) best_price = ct->base_price;
                     }
+                    if (best_price <= 0.0f)
+                        best_price = station_buy_price(dest, (commodity_t)i);
                     if (best_price > 0.0f) {
                         ledger_earn_from_pool(dest, npc->session_token,
                                               best_price * (float)moved);
@@ -1536,6 +1607,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
                         if (ct->commodity != (commodity_t)i) continue;
                         if (ct->base_price > best_price) best_price = ct->base_price;
                     }
+                    if (best_price <= 0.0f)
+                        best_price = station_buy_price(dest, (commodity_t)i);
                     if (best_price > 0.0f && delivered > 0.01f) {
                         ledger_earn_from_pool(dest, npc->session_token,
                                                best_price * delivered);
