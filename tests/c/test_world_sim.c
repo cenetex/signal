@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "sim_mining.h"
 #include "sim_ship.h"
 
 TEST(test_world_reset_creates_stations) {
@@ -1642,6 +1643,85 @@ TEST(test_hauler_docks_when_reaching_station_lane) {
     ASSERT(v2_dist_sq(npc->ship.pos, lane) < 5.0f * 5.0f);
 }
 
+TEST(test_kepler_frame_hauler_reaches_helios_dock) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+
+    int hauler = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w->npc_ships[i].active && w->npc_ships[i].role == NPC_ROLE_HAULER
+            && w->npc_ships[i].home_station == 1) {
+            hauler = i;
+            break;
+        }
+    }
+    ASSERT(hauler >= 0);
+
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (i != hauler) w->npc_ships[i].active = false;
+    }
+
+    npc_ship_t *npc = &w->npc_ships[hauler];
+    ship_t *ship = world_npc_ship_for(w, hauler);
+    ASSERT(ship != NULL);
+    ASSERT(test_set_ship_finished_units(ship, COMMODITY_FRAME, 12,
+                                        MINING_GRADE_COMMON));
+    memset(npc->cargo, 0, sizeof(npc->cargo));
+    npc->cargo[COMMODITY_FRAME] = 12.0f;
+
+    memset(w->contracts, 0, sizeof(w->contracts));
+    w->contracts[0] = (contract_t){
+        .active = true,
+        .action = CONTRACT_TRACTOR,
+        .station_index = 2,
+        .commodity = COMMODITY_FRAME,
+        .quantity_needed = 12.0f,
+        .base_price = 5.0f,
+        .target_index = -1,
+        .claimed_by = -1,
+    };
+
+    station_t *kepler = &w->stations[1];
+    station_t *helios = &w->stations[2];
+    npc->home_station = 1;
+    npc->dest_station = 2;
+    npc->state = NPC_STATE_TRAVEL_TO_DEST;
+    npc->state_timer = 0.0f;
+    npc->ship.hull_class = HULL_CLASS_HAULER;
+    npc->ship.pos = station_approach_target(kepler, helios->pos);
+    npc->ship.vel = v2(0.0f, 0.0f);
+    npc->ship.angle = 0.0f;
+    ship->pos = npc->ship.pos;
+    ship->vel = npc->ship.vel;
+    ship->angle = npc->ship.angle;
+    *nav_npc_path(hauler) = (nav_path_t){0};
+
+    bool reached = false;
+    float best_d = 1e18f;
+    for (int i = 0; i < 12000; i++) {
+        world_sim_step(w, SIM_DT);
+        float d = v2_dist_sq(npc->ship.pos, helios->pos);
+        if (d < best_d) best_d = d;
+        if (npc->state == NPC_STATE_UNLOADING ||
+            npc->state == NPC_STATE_RETURN_TO_STATION ||
+            npc->state == NPC_STATE_DOCKED) {
+            reached = true;
+            break;
+        }
+    }
+
+    if (!reached) {
+        const nav_path_t *path = nav_npc_path(hauler);
+        printf("Kepler hauler did not dock: state=%d dist=%.1f best=%.1f speed=%.1f path_goal=(%.1f,%.1f) count=%d cur=%d\n",
+               (int)npc->state,
+               v2_len(v2_sub(npc->ship.pos, helios->pos)),
+               sqrtf(best_d),
+               v2_len(npc->ship.vel),
+               path->goal.x, path->goal.y, path->count, path->current);
+    }
+    ASSERT(reached);
+}
+
 TEST(test_miner_enters_station_before_smelt_delivery) {
     WORLD_DECL;
     world_reset(&w);
@@ -2445,6 +2525,86 @@ TEST(test_npc_mining_drops_state_when_far_from_target) {
     ASSERT(npc->state != NPC_STATE_MINING);
 }
 
+TEST(test_mining_beam_step_rejects_target_beyond_surface_range) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+
+    asteroid_t *a = &w->asteroids[0];
+    a->active = true;
+    a->tier = ASTEROID_TIER_M;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->radius = 30.0f;
+    a->hp = 40.0f;
+    a->max_hp = 40.0f;
+    a->pos = v2(MINING_RANGE + a->radius + 5.0f, 0.0f);
+
+    mining_beam_t mb = sim_mining_beam_step(w, v2(0.0f, 0.0f), v2(1.0f, 0.0f),
+        0, 99, 25.0f, 1.0f, -1, 1.0f / 60.0f);
+
+    ASSERT(!mb.hit);
+    ASSERT(!mb.fired);
+    ASSERT_EQ_FLOAT(a->hp, 40.0f, 0.001f);
+    ASSERT_EQ_FLOAT(mb.beam_end.x, MINING_RANGE, 0.001f);
+    ASSERT_EQ_FLOAT(mb.beam_end.y, 0.0f, 0.001f);
+}
+
+TEST(test_mining_beam_step_rejects_off_axis_target) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+
+    asteroid_t *a = &w->asteroids[0];
+    a->active = true;
+    a->tier = ASTEROID_TIER_M;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->radius = 25.0f;
+    a->hp = 40.0f;
+    a->max_hp = 40.0f;
+    a->pos = v2(80.0f, 70.0f);
+
+    mining_beam_t mb = sim_mining_beam_step(w, v2(0.0f, 0.0f), v2(1.0f, 0.0f),
+        0, 99, 25.0f, 1.0f, -1, 1.0f / 60.0f);
+
+    ASSERT(!mb.hit);
+    ASSERT(!mb.fired);
+    ASSERT_EQ_FLOAT(a->hp, 40.0f, 0.001f);
+}
+
+TEST(test_npc_mining_drops_state_when_target_out_of_cone) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w->npc_ships[i].active = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+
+    npc_ship_t *npc = &w->npc_ships[0];
+    npc->active = true;
+    npc->role = NPC_ROLE_MINER;
+    npc->state = NPC_STATE_MINING;
+    npc->home_station = 0;
+    npc->target_asteroid = 0;
+    npc->ship.hull_class = HULL_CLASS_MINER;
+    npc->hull = 100.0f;
+    npc->ship.pos = v2(0.0f, 0.0f);
+    npc->ship.vel = v2(0.0f, 0.0f);
+    npc->ship.angle = 0.0f;
+
+    asteroid_t *a = &w->asteroids[0];
+    a->active = true;
+    a->tier = ASTEROID_TIER_M;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->radius = 25.0f;
+    a->hp = 40.0f;
+    a->max_hp = 40.0f;
+    a->pos = v2(0.0f, 90.0f); /* within center range, outside forward ray */
+
+    float hp_before = a->hp;
+    world_sim_step(w, 1.0f / 120.0f);
+
+    ASSERT_EQ_FLOAT(a->hp, hp_before, 0.001f);
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_ASTEROID);
+}
+
 void register_world_sim_basic_tests(void) {
     TEST_SECTION("\nWorld sim tests:\n");
     RUN(test_world_reset_creates_stations);
@@ -2478,6 +2638,9 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_sim_step_events_emitted);
     RUN(test_world_sim_step_npc_miners_work);
     RUN(test_npc_mining_drops_state_when_far_from_target);
+    RUN(test_mining_beam_step_rejects_target_beyond_surface_range);
+    RUN(test_mining_beam_step_rejects_off_axis_target);
+    RUN(test_npc_mining_drops_state_when_target_out_of_cone);
     RUN(test_world_network_writes_persist);
 }
 
@@ -2493,6 +2656,7 @@ void register_world_sim_scenarios_tests(void) {
     RUN(test_hauler_near_station_does_not_post_distress_contract);
     RUN(test_hauler_distress_requires_sustained_stall);
     RUN(test_miner_enters_station_before_smelt_delivery);
+    RUN(test_kepler_frame_hauler_reaches_helios_dock);
     RUN(test_fragment_smelt_vents_overflow_instead_of_stranding);
     RUN(test_fragment_smelt_at_full_stock_vents_all_overflow);
     RUN(test_miner_routes_crystal_to_crystal_smelt_endpoint);

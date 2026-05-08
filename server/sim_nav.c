@@ -618,9 +618,11 @@ vec2 nav_next_waypoint(nav_path_t *path, vec2 ship_pos, vec2 final_target, float
     path->age += dt;
     if (path->count == 0 || path->current >= path->count)
         return final_target;
-    /* Advance when within 80u of the current waypoint */
+    /* Advance when close enough to the current waypoint. Station-road
+     * waypoints sit near moving ring gaps; a too-tight radius lets
+     * haulers brake just outside the threshold and orbit the lane. */
     while (path->current < path->count &&
-           v2_dist_sq(ship_pos, path->waypoints[path->current]) < 80.0f * 80.0f) {
+           v2_dist_sq(ship_pos, path->waypoints[path->current]) < 120.0f * 120.0f) {
         path->current++;
     }
     if (path->current >= path->count) return final_target;

@@ -310,10 +310,14 @@ static void test_station_entry_target_uses_outer_roadway(void) {
     float r = sqrtf(v2_len_sq(local));
     float a = atan2f(local.y, local.x);
 
-    int outer_ring = station_max_ring(kepler);
-    float expected = station_ring_open_gap_angle(kepler, outer_ring);
-    ASSERT(outer_ring == 3);
-    ASSERT(r > STATION_RING_RADIUS[outer_ring] + 120.0f);
+    int shell_ring = station_max_ring(kepler);
+    int road_ring = shell_ring;
+    while (road_ring > 1 && ring_module_count(kepler, road_ring) <= 1)
+        road_ring--;
+    float expected = station_ring_open_gap_angle(kepler, road_ring);
+    ASSERT(shell_ring == 3);
+    ASSERT(road_ring == 2);
+    ASSERT(r > STATION_RING_RADIUS[shell_ring] + 120.0f);
     ASSERT(fabsf(wrap_angle(a - expected)) < 0.05f);
 }
 

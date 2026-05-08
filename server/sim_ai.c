@@ -1036,6 +1036,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
 
 /* Forward decl — definition below; npc_steer_toward routes through it. */
 static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt);
+static bool npc_point_inside_station_nav_envelope(const station_t *st, vec2 p);
 
 /* Direct face-and-thrust steering used by the MINING-approach state.
  * Produces a normalized flight_cmd_t and routes through
@@ -1066,8 +1067,9 @@ static void npc_steer_toward(npc_ship_t *npc, vec2 target, float dt) {
  * physics integration (npc_apply_physics) and any thrust<0 handling
  * (e.g. hover-specific brake-away-from-target).
  *
- * Forward-thrust-only gate: NPCs don't have a full brake controller, so
- * flight_steer_to's negative-thrust "panic stop" clamps to 0. To
+ * Path-following negative thrust maps to the shared velocity brake.
+ * Without that, haulers coast past station waypoints and orbit the
+ * rotating dock lanes instead of slowing down enough to enter. To
  * throttle the engine (hauler-tow paths used to pass hull->accel *
  * 0.6f), scale cmd.thrust before calling — thrust ∈ [-1,1] so this is
  * equivalent to the old accel multiplier. */
@@ -1085,12 +1087,11 @@ static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
     npc_set_intent(npc, cmd);
     step_ship_rotation(&npc->ship, dt, npc->input.turn);
 
-    float thrust_in = (npc->input.thrust > 0.0f) ? npc->input.thrust : 0.0f;
     vec2 fwd = ship_forward(npc->ship.angle);
-    step_ship_thrust(&npc->ship, dt, thrust_in, fwd, /*boost=*/false, 0.0f,
+    step_ship_thrust(&npc->ship, dt, npc->input.thrust, fwd, /*boost=*/false, 0.0f,
                      /*reverse_allowed=*/false);
 
-    npc->thrusting = thrust_in > 0.0f;
+    npc->thrusting = npc->input.thrust > 0.0f;
 }
 
 /* A*-guided NPC steering via the shared flight controller. Creates a
@@ -1103,6 +1104,18 @@ static void npc_apply_flight_cmd(npc_ship_t *npc, flight_cmd_t cmd, float dt) {
 static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
                                 vec2 final_target, float thrust_scale, float dt) {
     nav_path_t *path = nav_npc_path(npc_idx);
+    bool station_local = false;
+    for (int s = 0; s < MAX_STATIONS; s++) {
+        const station_t *st = &w->stations[s];
+        if (!station_collides(st)) continue;
+        if (npc_point_inside_station_nav_envelope(st, npc->ship.pos) ||
+            npc_point_inside_station_nav_envelope(st, final_target)) {
+            station_local = true;
+            break;
+        }
+    }
+    if (station_local && path->age > 0.25f)
+        nav_force_replan(path);
     flight_cmd_t cmd = flight_steer_to(w, &npc->ship, path, final_target,
                                         0.0f, 200.0f, dt);
     cmd.thrust *= thrust_scale;
@@ -1219,7 +1232,17 @@ static bool npc_reached_station_dock_lane(const npc_ship_t *npc,
     if (v2_dist_sq(npc->ship.pos, dock_lane) < lane_r * lane_r) return true;
 
     float dock_r = st->dock_radius * 0.7f;
-    return v2_dist_sq(npc->ship.pos, st->pos) < dock_r * dock_r;
+    if (v2_dist_sq(npc->ship.pos, st->pos) < dock_r * dock_r) return true;
+
+    int outer_ring = station_max_ring(st);
+    if (outer_ring >= 1 && outer_ring <= STATION_NUM_RINGS) {
+        float outer_lane_r = STATION_RING_RADIUS[outer_ring] + 80.0f;
+        if (v2_dist_sq(npc->ship.pos, st->pos) < outer_lane_r * outer_lane_r &&
+            v2_len(npc->ship.vel) < 90.0f) {
+            return true;
+        }
+    }
+    return false;
 }
 
 static void npc_resolve_station_collisions(world_t *w, npc_ship_t *npc) {
@@ -2114,13 +2137,12 @@ void step_npc_ships(world_t *w, float dt) {
                 npc->target_asteroid, mining_level,
                 hull->mining_rate, sig_eff, /*fracturer*/ -1, dt);
 
+            if (!mb.hit) {
+                npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
+                break;
+            }
+
             if (!mb.fired && !mb.fractured) {
-                /* Out of range / cone — let TRAVEL re-acquire instead of
-                 * sitting here lit up. Player path naturally re-acquires
-                 * via cone search; NPC path uses target_asteroid + state. */
-                if (dist_sq > MINING_RANGE * MINING_RANGE) {
-                    npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
-                }
                 break;
             }
 

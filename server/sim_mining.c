@@ -36,10 +36,47 @@ int sim_mining_pick_target(const world_t *w, vec2 origin, vec2 forward) {
     return best;
 }
 
-mining_beam_t sim_mining_beam_step(world_t *w, vec2 muzzle, vec2 forward,
-                                    int target_idx, int mining_level,
-                                    float mining_rate, float signal_eff,
-                                    int8_t fracturer_id, float dt) {
+static bool mining_target_hit_with_slack(vec2 muzzle, vec2 forward,
+                                         const asteroid_t *a,
+                                         float aim_slack,
+                                         vec2 *out_hit,
+                                         vec2 *out_normal) {
+    if (!a || !a->active || asteroid_is_collectible(a)) return false;
+    float effective_radius = a->radius + fmaxf(0.0f, aim_slack);
+
+    vec2 to_a = v2_sub(a->pos, muzzle);
+    float proj = v2_dot(to_a, forward);
+    float perp = fabsf(v2_cross(to_a, forward));
+    if (perp > effective_radius) return false;
+
+    float chord = sqrtf(fmaxf(0.0f, effective_radius * effective_radius - perp * perp));
+    float surface_dist = proj - chord;
+    if (surface_dist < -effective_radius) return false;
+    if (surface_dist > MINING_RANGE) return false;
+
+    vec2 normal = v2_norm(to_a);
+    if (out_hit) {
+        *out_hit = v2_sub(a->pos, v2_scale(normal, a->radius * 0.85f));
+    }
+    if (out_normal) *out_normal = normal;
+    return true;
+}
+
+bool sim_mining_target_hit(vec2 muzzle, vec2 forward,
+                           const asteroid_t *a,
+                           vec2 *out_hit, vec2 *out_normal) {
+    return mining_target_hit_with_slack(muzzle, forward, a, 0.0f,
+                                        out_hit, out_normal);
+}
+
+mining_beam_t sim_mining_beam_step_with_aim_slack(world_t *w, vec2 muzzle,
+                                                   vec2 forward, int target_idx,
+                                                   int mining_level,
+                                                   float mining_rate,
+                                                   float signal_eff,
+                                                   int8_t fracturer_id,
+                                                   float dt,
+                                                   float aim_slack) {
     mining_beam_t r = {
         .fired = false, .ineffective = false, .fractured = false,
         .hit = false,
@@ -51,18 +88,9 @@ mining_beam_t sim_mining_beam_step(world_t *w, vec2 muzzle, vec2 forward,
     asteroid_t *a = &w->asteroids[target_idx];
     if (!a->active || asteroid_is_collectible(a)) return r;
 
-    /* Target validation (range / cone / clear-line-of-fire) is the
-     * caller's responsibility — see `sim_mining_pick_target` and the
-     * player hint path in `update_targeting_state`. The helper trusts
-     * the caller's selection: given a target, apply one tick of fire.
-     * (forward is unused here — kept in the signature for the future
-     *  occluder check that #294 slice 4 will add.) */
-    (void)forward;
-
-    vec2 to_a = v2_sub(a->pos, muzzle);
-    vec2 normal = v2_norm(to_a);
-    r.beam_end = v2_sub(a->pos, v2_scale(normal, a->radius * 0.85f));
-    r.hit_normal = normal;
+    if (!mining_target_hit_with_slack(muzzle, forward, a, aim_slack,
+                                      &r.beam_end, &r.hit_normal))
+        return r;
     r.hit = true;
 
     /* Tier gate: laser too weak to chip this rock. Beam still hits (so
@@ -87,8 +115,16 @@ mining_beam_t sim_mining_beam_step(world_t *w, vec2 muzzle, vec2 forward,
     }
 
     if (a->hp <= 0.01f) {
-        fracture_asteroid(w, target_idx, normal, fracturer_id);
+        fracture_asteroid(w, target_idx, r.hit_normal, fracturer_id);
         r.fractured = true;
     }
     return r;
+}
+
+mining_beam_t sim_mining_beam_step(world_t *w, vec2 muzzle, vec2 forward,
+                                    int target_idx, int mining_level,
+                                    float mining_rate, float signal_eff,
+                                    int8_t fracturer_id, float dt) {
+    return sim_mining_beam_step_with_aim_slack(w, muzzle, forward, target_idx,
+        mining_level, mining_rate, signal_eff, fracturer_id, dt, 0.0f);
 }
