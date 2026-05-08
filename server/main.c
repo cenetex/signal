@@ -2489,7 +2489,8 @@ static void srv_on_hail_response(const sim_event_t *ev) {
     msg[1] = (uint8_t)ev->hail_response.station;
     write_f32_le(&msg[2], ev->hail_response.credits);
     int ci = ev->hail_response.contract_index;
-    msg[6] = (ci >= 0 && ci < MAX_CONTRACTS) ? (uint8_t)ci : 0xFF;
+    int compact_ci = contract_compact_index_for_slot(world.contracts, ci);
+    msg[6] = (compact_ci >= 0) ? (uint8_t)compact_ci : 0xFF;
     ws_send(sp->conn, msg, sizeof(msg));
 
     contracts_dirty = true;

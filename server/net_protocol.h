@@ -872,16 +872,31 @@ static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts)
     return 2 + count * CONTRACT_RECORD_SIZE;
 }
 
-/* Per-player gossip-contract visibility mask. Bit i set iff
- * w->contracts[i] matches a summary in the player's ship
- * known_contracts pool (by action + station_index + commodity).
- * The client UI uses this to hide contracts the player hasn't
- * heard about via dock-contact gossip. Wire: [type:1][mask:u32]. */
+static inline int contract_compact_index_for_slot(const contract_t *contracts,
+                                                  int slot) {
+    if (!contracts || slot < 0 || slot >= MAX_CONTRACTS) return -1;
+    if (!contracts[slot].active) return -1;
+    int ordinal = 0;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        if (!contracts[k].active) continue;
+        if (k == slot) return ordinal;
+        ordinal++;
+    }
+    return -1;
+}
+
+/* Per-player gossip-contract visibility mask. Bit i set iff compact
+ * contract record i from NET_MSG_CONTRACTS matches a summary in the
+ * player's ship known_contracts pool (by action + station_index +
+ * commodity). The client stores NET_MSG_CONTRACTS compactly too, so
+ * the mask must use the same ordinal space, not raw w->contracts[]
+ * slots. Wire: [type:1][mask:u32]. */
 static inline int serialize_player_known_contracts(uint8_t *buf,
                                                    const contract_t *contracts,
                                                    const ship_t *ship) {
     uint32_t mask = 0;
     if (ship) {
+        int ordinal = 0;
         for (int k = 0; k < MAX_CONTRACTS && k < 32; k++) {
             if (!contracts[k].active) continue;
             for (int i = 0; i < ship->known_contract_count; i++) {
@@ -890,10 +905,11 @@ static inline int serialize_player_known_contracts(uint8_t *buf,
                 if (cs->action == (uint8_t)contracts[k].action &&
                     cs->station_index == contracts[k].station_index &&
                     cs->commodity == (uint8_t)contracts[k].commodity) {
-                    mask |= (1u << k);
+                    mask |= (1u << ordinal);
                     break;
                 }
             }
+            ordinal++;
         }
     }
     buf[0] = NET_MSG_PLAYER_KNOWN_CONTRACTS;

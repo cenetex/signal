@@ -89,14 +89,14 @@ typedef struct {
 static bool guide_launch(char *message, size_t message_size) {
     if (g.onboarding.moved || !LOCAL_PLAYER.docked) return false;
     snprintf(message, message_size,
-             "GUIDE // LAUNCH FROM DOCK ::::: [E]");
+             "SIGNAL // GUIDE // LAUNCH FROM DOCK ::::: [E]");
     return true;
 }
 
 static bool guide_flight(char *message, size_t message_size) {
     if (g.onboarding.moved || LOCAL_PLAYER.docked) return false;
     snprintf(message, message_size,
-             "GUIDE // FLIGHT CHECK ::::: [WASD] FLY TOWARD ROCKS");
+             "SIGNAL // GUIDE // FLIGHT CHECK ::::: [WASD] FLY TOWARD ROCKS");
     return true;
 }
 
@@ -106,10 +106,10 @@ static bool guide_fracture(char *message, size_t message_size) {
     if (LOCAL_PLAYER.hover_asteroid >= 0 &&
         g.world.asteroids[LOCAL_PLAYER.hover_asteroid].active) {
         snprintf(message, message_size,
-                 "GUIDE // ROCK TARGETED ::::: [M] FRACTURE");
+                 "SIGNAL // GUIDE // ROCK TARGETED ::::: [M] FRACTURE");
     } else {
         snprintf(message, message_size,
-                 "GUIDE // AIM AT A LARGE ROCK ::::: [M] FRACTURE");
+                 "SIGNAL // GUIDE // AIM AT A LARGE ROCK ::::: [M] FRACTURE");
     }
     return true;
 }
@@ -119,10 +119,10 @@ static bool guide_tractor(char *message, size_t message_size) {
         return false;
     if (LOCAL_PLAYER.nearby_fragments > 0) {
         snprintf(message, message_size,
-                 "GUIDE // FRAGMENTS NEARBY ::::: HOLD [SPACE] TRACTOR");
+                 "SIGNAL // GUIDE // FRAGMENTS NEARBY ::::: HOLD [SPACE] TRACTOR");
     } else {
         snprintf(message, message_size,
-                 "GUIDE // BREAK ROCKS INTO FRAGMENTS ::::: THEN HOLD [SPACE]");
+                 "SIGNAL // GUIDE // BREAK ROCKS INTO FRAGMENTS ::::: THEN HOLD [SPACE]");
     }
     return true;
 }
@@ -133,10 +133,10 @@ static bool guide_scan(char *message, size_t message_size) {
     float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
     if (sig > 0.0f) {
         snprintf(message, message_size,
-                 "GUIDE // LOCAL SCAN READY ::::: [H] REVEAL IDS + WORK");
+                 "SIGNAL // GUIDE // LOCAL SCAN READY ::::: [H] REVEAL IDS + WORK");
     } else {
         snprintf(message, message_size,
-                 "GUIDE // RETURN TO SIGNAL ::::: [H] SCANS WHEN LINKED");
+                 "SIGNAL // GUIDE // RETURN TO SIGNAL ::::: [H] SCANS WHEN LINKED");
     }
     return true;
 }
@@ -203,7 +203,7 @@ bool onboarding_hint(char *label, size_t label_size,
         if (!g.onboarding.welcomed) {
             g.onboarding.welcomed = true;
             snprintf(message, message_size,
-                     "GUIDE // LOOP COMPLETE ::::: [H] SCAN // LASER INSPECTS");
+                     "SIGNAL // GUIDE // LOOP COMPLETE ::::: [H] SCAN // LASER INSPECTS");
             return true;
         }
         if (tracked_contract_directive(label, label_size,
@@ -229,7 +229,7 @@ bool onboarding_hint(char *label, size_t label_size,
         float sig = signal_strength_at(&g.world, LOCAL_PLAYER.ship.pos);
         if (sig > 0.0f && sig < SIGNAL_BAND_OPERATIONAL) {
             snprintf(message, message_size,
-                     "GUIDE // LOW SIGNAL ::::: [SHIFT] BOOST TOWARD LINK");
+                     "SIGNAL // GUIDE // LOW SIGNAL ::::: [SHIFT] BOOST TOWARD LINK");
             return true;
         }
     }

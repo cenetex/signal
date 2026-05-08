@@ -149,10 +149,10 @@ static void mirror_whole_world(const world_t *src) {
     g.world.events = src->events;
     g.world.time   = src->time;
 
-    /* Singleplayer mirror of NET_MSG_PLAYER_KNOWN_CONTRACTS: compute
-     * the local player's gossip-contract visibility mask the same way
-     * the server does in serialize_player_known_contracts(). UI sites
-     * filter g.world.contracts[] through this mask. */
+    /* Singleplayer mirror of NET_MSG_PLAYER_KNOWN_CONTRACTS. The local
+     * mirror keeps g.world.contracts[] in raw world slots, so its mask
+     * uses raw slots too; multiplayer uses the compact NET_MSG_CONTRACTS
+     * ordinal space because its contract array is compacted on receipt. */
     uint32_t mask = 0;
     if (g.local_player_slot >= 0 && g.local_player_slot < MAX_PLAYERS) {
         const ship_t *ship = &src->players[g.local_player_slot].ship;
