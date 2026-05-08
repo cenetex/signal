@@ -1047,6 +1047,13 @@ static void handle_message(const uint8_t* data, int len) {
         }
         break;
 
+    case NET_MSG_PLAYER_KNOWN_CONTRACTS:
+        if (len >= 5 && net_state.callbacks.on_player_known_contracts) {
+            uint32_t mask = read_u32_le(&data[1]);
+            net_state.callbacks.on_player_known_contracts(mask);
+        }
+        break;
+
     case NET_MSG_LEGACY_SAVES_AVAILABLE:
         /* Layer A.4 of #479 — server reports legacy saves the player
          * could claim. For now we just log; a docked-UI integration is

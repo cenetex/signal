@@ -112,6 +112,12 @@ typedef void (*net_on_stations_fn)(uint8_t index, const float* inventory, float 
 /* Contracts callback: full replacement of contract array. */
 typedef void (*net_on_contracts_fn)(const contract_t* contracts, int count);
 
+/* Per-player gossip-contract visibility mask. Bit i set iff
+ * w->contracts[i] matches a summary in this player's known_contracts.
+ * The dock UI uses this to hide contracts the player hasn't heard
+ * about via dock contact. */
+typedef void (*net_on_player_known_contracts_fn)(uint32_t mask);
+
 /* Packed station identity for network sync.
  * flags: bit0=scaffold, bit1=planned. */
 typedef struct {
@@ -282,6 +288,7 @@ typedef struct {
     net_on_hail_response_fn on_hail_response;
     net_on_player_ship_fn on_player_ship;
     net_on_contracts_fn on_contracts;
+    net_on_player_known_contracts_fn on_player_known_contracts;
     void (*on_death)(uint8_t player_id, float pos_x, float pos_y,
                      float vel_x, float vel_y, float angle,
                      float ore_mined, float credits_earned, float credits_spent,

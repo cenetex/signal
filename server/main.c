@@ -2306,6 +2306,15 @@ static void broadcast_ship_states(void) {
         uint8_t ibuf[INSPECT_SNAPSHOT_MAX_SIZE];
         int ilen = send_inspect_snapshot(ibuf, &world.players[i]);
         ws_send(world.players[i].conn, ibuf, (size_t)ilen);
+
+        /* Gossip-contract visibility mask. The dock UI on the client
+         * reads NET_MSG_CONTRACTS for the global authoritative array
+         * but filters by this per-player mask so the player only sees
+         * contracts they've heard about via dock contact. 5 bytes. */
+        uint8_t kbuf[5];
+        int klen = serialize_player_known_contracts(kbuf, world.contracts,
+                                                    &world.players[i].ship);
+        ws_send(world.players[i].conn, kbuf, (size_t)klen);
     }
 
     if (station_econ_dirty) {

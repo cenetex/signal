@@ -5785,6 +5785,17 @@ void player_init_ship(server_player_t *sp, world_t *w) {
     sp->autopilot_target = -1;
     sp->autopilot_timer = 0.0f;
     anchor_ship_in_station(sp, w);
+    /* The player spawns docked but doesn't go through dock_ship() —
+     * run the gossip handshake here so their known_contracts is
+     * populated from the home station's pool right away. Otherwise
+     * the contract menu is empty until their first launch + redock. */
+    if (sp->docked && sp->current_station >= 0 &&
+        sp->current_station < MAX_STATIONS) {
+        gossip_dock_handshake(w, sp->current_station,
+                              sp->ship.known_contracts,
+                              &sp->ship.known_contract_count,
+                              SHIP_KNOWN_CONTRACT_CAP);
+    }
 }
 
 /* Charge the spawn / docking fee at the player's current station.

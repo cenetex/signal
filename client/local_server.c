@@ -148,6 +148,29 @@ static void mirror_whole_world(const world_t *src) {
     memcpy(g.world.scaffolds, src->scaffolds, sizeof(g.world.scaffolds));
     g.world.events = src->events;
     g.world.time   = src->time;
+
+    /* Singleplayer mirror of NET_MSG_PLAYER_KNOWN_CONTRACTS: compute
+     * the local player's gossip-contract visibility mask the same way
+     * the server does in serialize_player_known_contracts(). UI sites
+     * filter g.world.contracts[] through this mask. */
+    uint32_t mask = 0;
+    if (g.local_player_slot >= 0 && g.local_player_slot < MAX_PLAYERS) {
+        const ship_t *ship = &src->players[g.local_player_slot].ship;
+        for (int k = 0; k < MAX_CONTRACTS && k < 32; k++) {
+            if (!src->contracts[k].active) continue;
+            for (int i = 0; i < ship->known_contract_count; i++) {
+                const contract_summary_t *cs = &ship->known_contracts[i];
+                if (!cs->active) continue;
+                if (cs->action == (uint8_t)src->contracts[k].action &&
+                    cs->station_index == src->contracts[k].station_index &&
+                    cs->commodity == (uint8_t)src->contracts[k].commodity) {
+                    mask |= (1u << k);
+                    break;
+                }
+            }
+        }
+    }
+    g.player_known_contract_mask = mask;
 }
 
 /* (2a) Local player ship — always-sync fields (no client optimism). */

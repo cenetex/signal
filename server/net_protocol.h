@@ -872,6 +872,35 @@ static inline int serialize_contracts(uint8_t *buf, const contract_t *contracts)
     return 2 + count * CONTRACT_RECORD_SIZE;
 }
 
+/* Per-player gossip-contract visibility mask. Bit i set iff
+ * w->contracts[i] matches a summary in the player's ship
+ * known_contracts pool (by action + station_index + commodity).
+ * The client UI uses this to hide contracts the player hasn't
+ * heard about via dock-contact gossip. Wire: [type:1][mask:u32]. */
+static inline int serialize_player_known_contracts(uint8_t *buf,
+                                                   const contract_t *contracts,
+                                                   const ship_t *ship) {
+    uint32_t mask = 0;
+    if (ship) {
+        for (int k = 0; k < MAX_CONTRACTS && k < 32; k++) {
+            if (!contracts[k].active) continue;
+            for (int i = 0; i < ship->known_contract_count; i++) {
+                const contract_summary_t *cs = &ship->known_contracts[i];
+                if (!cs->active) continue;
+                if (cs->action == (uint8_t)contracts[k].action &&
+                    cs->station_index == contracts[k].station_index &&
+                    cs->commodity == (uint8_t)contracts[k].commodity) {
+                    mask |= (1u << k);
+                    break;
+                }
+            }
+        }
+    }
+    buf[0] = NET_MSG_PLAYER_KNOWN_CONTRACTS;
+    write_u32_le(&buf[1], mask);
+    return 5;
+}
+
 /* ------------------------------------------------------------------ */
 /* Deserialisation (client -> server)                                 */
 /* ------------------------------------------------------------------ */

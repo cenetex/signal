@@ -439,6 +439,9 @@ bool contract_objective_for_contract(int contract_index,
     objective_reset(out);
     if (!out) return false;
     if (contract_index < 0 || contract_index >= MAX_CONTRACTS) return false;
+    /* Gossip filter: only show objective markers for contracts in the
+     * player's known set. */
+    if (!(g.player_known_contract_mask & (1u << contract_index))) return false;
     const contract_t *ct = &g.world.contracts[contract_index];
     if (!ct->active) return false;
 
@@ -475,6 +478,7 @@ bool contract_objective_for_recommended(contract_objective_t *out) {
               : LOCAL_PLAYER.ship.pos;
 
     for (int i = 0; i < MAX_CONTRACTS; i++) {
+        if (!(g.player_known_contract_mask & (1u << i))) continue; /* gossip filter */
         const contract_t *ct = &g.world.contracts[i];
         if (!ct->active) continue;
         if (contract_is_claimed_by_other_player(ct)) continue;
