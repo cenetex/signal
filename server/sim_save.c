@@ -25,6 +25,7 @@
  *     crashes/restarts.
  */
 #include "game_sim.h"
+#include "gossip.h"
 #include "manifest.h"
 #include "ship.h"
 #include "sim_ai.h"
@@ -1766,6 +1767,11 @@ bool world_load(world_t *w, const char *path) {
                                      : "verified chain tail matches save");
         }
     }
+    /* Gossip pools are ephemeral (not serialized). Re-bootstrap
+     * stations' known_contracts from the loaded contract array so
+     * post-load NPCs aren't stuck idling against empty pools until
+     * a player happens to dock somewhere. Same shape as world_reset. */
+    gossip_bootstrap_world_stations(w);
     return true;
 }
 

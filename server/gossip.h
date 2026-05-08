@@ -32,4 +32,36 @@ void gossip_dock_handshake(world_t *w, int station_index,
                            contract_summary_t *ship_pool,
                            uint8_t *ship_count, int ship_cap);
 
+/* Cold-start bootstrap: seed every active station's known_contracts pool
+ * with every currently-active contract in w->contracts[]. Called once at
+ * world_reset and once after save-load completes — never at runtime.
+ *
+ * Why this is needed: contracts use station_index = destination, and the
+ * hauler picker filters out contracts whose station_index == own home
+ * (no self-delivery). So a hauler at home Prospect can only act on
+ * contracts to OTHER stations. Those contracts only enter Prospect's
+ * gossip pool via dock contact from a ship that has previously visited
+ * the issuing station. With no traffic at world_reset, no ship has been
+ * anywhere yet — Prospect's pool only contains Prospect-as-destination
+ * contracts (which the picker ignores), so haulers idle forever. The
+ * bootstrap breaks this deadlock by injecting an initial "everyone
+ * knows everyone's demands" state — equivalent to "every station heard
+ * about every contract at world creation."
+ *
+ * Why this is a bounded violation rather than ongoing radio: it runs
+ * once per world-state-event (reset or load), not on every tick. New
+ * contracts spawned at runtime — e.g. when a player plants an outpost
+ * and a new SUPPLY contract spawns at the outpost's station_index —
+ * land only in their issuer's pool and propagate purely via ship dock
+ * contact. The bootstrap is initial conditions, not steady-state radio.
+ *
+ * Proper fix (TODO, post-v0): replace with pressure-driven contract
+ * issuance that produces local contracts at every station as a function
+ * of local state (modules awaiting supply, scaffolds in progress, hopper
+ * pressure). Each station's pool fills from its own demands without
+ * needing this cross-pollination; cold-start NPCs find work at their
+ * home pool's locally-issued contracts (after picker semantics evolve to
+ * allow some of them) or via early ship traffic. */
+void gossip_bootstrap_world_stations(world_t *w);
+
 #endif

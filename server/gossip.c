@@ -1,5 +1,6 @@
 #include "gossip.h"
 
+#include "../shared/station_util.h"
 #include <string.h>
 
 contract_summary_t contract_summary_make(const contract_t *ct) {
@@ -87,5 +88,20 @@ void gossip_dock_handshake(world_t *w, int station_index,
         if (!ship_pre[i].active) continue;
         contract_pool_insert(st->known_contracts, &st->known_contract_count,
                              STATION_KNOWN_CONTRACT_CAP, &ship_pre[i]);
+    }
+}
+
+void gossip_bootstrap_world_stations(world_t *w) {
+    if (!w) return;
+    for (int k = 0; k < MAX_CONTRACTS; k++) {
+        const contract_t *ct = &w->contracts[k];
+        if (!ct->active) continue;
+        contract_summary_t s = contract_summary_make(ct);
+        for (int s_idx = 0; s_idx < MAX_STATIONS; s_idx++) {
+            if (!station_is_active(&w->stations[s_idx])) continue;
+            contract_pool_insert(w->stations[s_idx].known_contracts,
+                                 &w->stations[s_idx].known_contract_count,
+                                 STATION_KNOWN_CONTRACT_CAP, &s);
+        }
     }
 }

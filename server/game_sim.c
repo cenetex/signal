@@ -5621,24 +5621,12 @@ void world_reset(world_t *w) {
     /* Precompute station nav meshes now that geometry is finalized. */
     station_rebuild_all_nav(w);
 
-    /* Cold-start gossip bootstrap: seed every active station's known
-     * pool with every currently-active contract. This is a one-time
-     * radio-violation marked TODO — the proper fix is pressure-driven
-     * contract issuance that produces local contracts where ships can
-     * find them organically. For v0, ships docking at any station get
-     * a complete view of initial demands; runtime contracts spawned
-     * later only land in the issuer's pool and spread via gossip. */
-    for (int k = 0; k < MAX_CONTRACTS; k++) {
-        const contract_t *ct = &w->contracts[k];
-        if (!ct->active) continue;
-        contract_summary_t s = contract_summary_make(ct);
-        for (int s_idx = 0; s_idx < MAX_STATIONS; s_idx++) {
-            if (!station_is_active(&w->stations[s_idx])) continue;
-            contract_pool_insert(w->stations[s_idx].known_contracts,
-                                 &w->stations[s_idx].known_contract_count,
-                                 STATION_KNOWN_CONTRACT_CAP, &s);
-        }
-    }
+    /* Cold-start gossip bootstrap — see gossip.h for the long-form
+     * rationale. Without this, fresh-world haulers idle forever
+     * because the picker filters out their home station's own
+     * contracts and gossip can't propagate cross-station intel
+     * before any ship has moved. */
+    gossip_bootstrap_world_stations(w);
 
     SIM_LOG("[sim] world reset complete (%d asteroids, 7 NPCs)\n", FIELD_ASTEROID_TARGET);
 }
