@@ -2018,7 +2018,8 @@ void draw_npc_ships(void) {
     int scan_npc = -1;
     if (g.inspect_snapshot_timer > 0.0f
         && g.inspect_snapshot.target_type == INSPECT_TARGET_NPC
-        && g.inspect_snapshot.target_index != 0xFFu) {
+        && g.inspect_snapshot.target_index != 0xFFu
+        && !g.death_cinematic.active) {
         scan_npc = (int)g.inspect_snapshot.target_index;
     }
 

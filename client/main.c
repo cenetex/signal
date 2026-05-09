@@ -125,6 +125,7 @@ static void reset_world(void) {
     g.inspect_snapshot.home_station = 0xFFu;
     g.inspect_snapshot.dest_station = 0xFFu;
     g.inspect_snapshot_timer = 0.0f;
+    g.inspect_was_active = false;
     memset(&g.asteroid_interp, 0, sizeof(g.asteroid_interp));
     g.asteroid_interp.interval = g.local_server.active ? SIM_DT : 0.1f;
     memset(&g.npc_interp, 0, sizeof(g.npc_interp));
@@ -772,10 +773,10 @@ static void sim_step(float dt) {
         g.hail_timer = fmaxf(0.0f, g.hail_timer - dt);
     if (g.inspect_snapshot_timer > 0.0f) {
         g.inspect_snapshot_timer = fmaxf(0.0f, g.inspect_snapshot_timer - dt);
-        if (g.inspect_snapshot_timer <= 0.0f) {
+        if (g.inspect_snapshot_timer == 0.0f) {
             /* Linger fully decayed — clear so the next idle frame's
-             * apply_*_inspect_snapshot doesn't see had_target=true and
-             * keep re-bumping the timer back to 3.5 indefinitely. */
+             * apply_*_inspect_snapshot doesn't see was_active stuck
+             * true and re-bump the timer. */
             g.inspect_snapshot.target_type = INSPECT_TARGET_NONE;
             g.inspect_snapshot.target_index = 0xFFu;
         }
@@ -1317,9 +1318,10 @@ static void render_world(void) {
 
         /* Scan-target framing: bias the camera toward the midpoint
          * between the local player and the scanned NPC so both stay
-         * visible. Skipped during the death cinematic. Strength
-         * tracks the linger timer normalized to [0,1] so the framing
-         * eases back to neutral as the panel fades out. */
+         * visible. Skipped during the death cinematic. Strength is
+         * full while actively scanning; after release it tracks the
+         * linger timer normalized to [0,1] so the framing eases back
+         * to neutral as the panel fades out. */
         if (!g.death_cinematic.active
             && g.inspect_snapshot.target_type == INSPECT_TARGET_NPC
             && g.inspect_snapshot_timer > 0.0f
@@ -1329,8 +1331,10 @@ static void render_world(void) {
             if (tn->active) {
                 vec2 mid = v2(0.5f * (LOCAL_PLAYER.ship.pos.x + tn->ship.pos.x),
                               0.5f * (LOCAL_PLAYER.ship.pos.y + tn->ship.pos.y));
-                float strength = g.inspect_snapshot_timer < 1.0f
-                                 ? g.inspect_snapshot_timer : 1.0f;
+                float strength = g.inspect_was_active
+                                 ? 1.0f
+                                 : (g.inspect_snapshot_timer < 1.0f
+                                    ? g.inspect_snapshot_timer : 1.0f);
                 float k = (1.0f - expf(-2.5f * dt)) * 0.6f * strength;
                 g.camera_pos.x += (mid.x - g.camera_pos.x) * k;
                 g.camera_pos.y += (mid.y - g.camera_pos.y) * k;
