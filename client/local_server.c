@@ -113,6 +113,28 @@ static void local_server_process_fracture_updates(local_server_t *ls, int player
 
 /* (1) Whole-world arrays. Add new world_t arrays here as one line. */
 static void mirror_whole_world(const world_t *src) {
+    g.world.station_count = src->station_count;
+    g.world.next_station_id = src->next_station_id;
+    g.world.rng = src->rng;
+    g.world.belt_seed = src->belt_seed;
+    g.world.world_seq = src->world_seq;
+    g.world.field_spawn_timer = src->field_spawn_timer;
+    g.world.gravity_accumulator = src->gravity_accumulator;
+    g.world.hopper_smelt_events = src->hopper_smelt_events;
+    g.world.hopper_smelt_units = src->hopper_smelt_units;
+    g.world.npc_respawn_timer = src->npc_respawn_timer;
+    g.world.next_npc_token = src->next_npc_token;
+    g.world.player_only_mode = false;
+    g.world.next_fracture_id = src->next_fracture_id;
+    g.world.belt = src->belt;
+    g.world.signal_channel = src->signal_channel;
+    memcpy(g.world.asteroid_origin, src->asteroid_origin, sizeof(g.world.asteroid_origin));
+    memcpy(g.world.fracture_claims, src->fracture_claims, sizeof(g.world.fracture_claims));
+    memcpy(g.world.pending_resolves, src->pending_resolves, sizeof(g.world.pending_resolves));
+    memcpy(g.world.destroyed_rocks, src->destroyed_rocks, sizeof(g.world.destroyed_rocks));
+    g.world.destroyed_rock_count = src->destroyed_rock_count;
+    memcpy(g.world.pubkey_registry, src->pubkey_registry, sizeof(g.world.pubkey_registry));
+
     memcpy(g.world.asteroids, src->asteroids, sizeof(g.world.asteroids));
     memcpy(g.world.npc_ships, src->npc_ships, sizeof(g.world.npc_ships));
     for (int i = 0; i < MAX_STATIONS; i++) {

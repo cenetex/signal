@@ -1643,6 +1643,51 @@ TEST(test_hauler_docks_when_reaching_station_lane) {
     ASSERT(v2_dist_sq(npc->ship.pos, lane) < 5.0f * 5.0f);
 }
 
+TEST(test_hauler_does_not_dock_from_outer_station_ring) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    int hauler = -1;
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) {
+        if (w.npc_ships[i].active && w.npc_ships[i].role == NPC_ROLE_HAULER) {
+            hauler = i;
+            break;
+        }
+    }
+    ASSERT(hauler >= 0);
+
+    station_t *kepler = &w.stations[1];
+    npc_ship_t *npc = &w.npc_ships[hauler];
+    npc->home_station = 0;
+    npc->dest_station = 1;
+    npc->state = NPC_STATE_TRAVEL_TO_DEST;
+    npc->state_timer = 0.0f;
+    npc->ship.hull_class = HULL_CLASS_HAULER;
+
+    vec2 lane = station_approach_target(kepler, v2_add(kepler->pos, v2(900.0f, 0.0f)));
+    vec2 lane_dir = v2_norm(v2_sub(lane, kepler->pos));
+    vec2 off_lane = v2(-lane_dir.y, lane_dir.x);
+    npc->ship.pos = v2_add(kepler->pos, v2_scale(off_lane, 500.0f));
+    npc->ship.vel = v2(0.0f, 0.0f);
+    npc->ship.angle = 0.0f;
+
+    ASSERT(v2_dist_sq(npc->ship.pos, kepler->pos) <
+           (STATION_RING_RADIUS[station_max_ring(kepler)] + 80.0f) *
+           (STATION_RING_RADIUS[station_max_ring(kepler)] + 80.0f));
+    ASSERT(v2_dist_sq(npc->ship.pos, lane) > 180.0f * 180.0f);
+
+    ship_t *paired = world_npc_ship_for(&w, hauler);
+    ASSERT(paired != NULL);
+    paired->pos = npc->ship.pos;
+    paired->vel = npc->ship.vel;
+    paired->angle = npc->ship.angle;
+    *nav_npc_path(hauler) = (nav_path_t){0};
+
+    world_sim_step(&w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_DEST);
+}
+
 TEST(test_kepler_frame_hauler_reaches_helios_dock) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
@@ -1712,12 +1757,16 @@ TEST(test_kepler_frame_hauler_reaches_helios_dock) {
 
     if (!reached) {
         const nav_path_t *path = nav_npc_path(hauler);
-        printf("Kepler hauler did not dock: state=%d dist=%.1f best=%.1f speed=%.1f path_goal=(%.1f,%.1f) count=%d cur=%d\n",
+        vec2 wp = (path->count > 0 && path->current < path->count)
+            ? path->waypoints[path->current] : path->goal;
+        printf("Kepler hauler did not dock: state=%d pos=(%.1f,%.1f) dist=%.1f best=%.1f speed=%.1f path_goal=(%.1f,%.1f) count=%d cur=%d wp=(%.1f,%.1f)\n",
                (int)npc->state,
+               npc->ship.pos.x, npc->ship.pos.y,
                v2_len(v2_sub(npc->ship.pos, helios->pos)),
                sqrtf(best_d),
                v2_len(npc->ship.vel),
-               path->goal.x, path->goal.y, path->count, path->current);
+               path->goal.x, path->goal.y, path->count, path->current,
+               wp.x, wp.y);
     }
     ASSERT(reached);
 }
@@ -2619,6 +2668,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_dead_hauler_auto_respawns);
     RUN(test_hauler_preserves_cargo_identity_in_transit);
     RUN(test_hauler_docks_when_reaching_station_lane);
+    RUN(test_hauler_does_not_dock_from_outer_station_ring);
     RUN(test_legacy_hauler_cargo_unloads_when_manifest_empty);
     RUN(test_dead_tow_auto_respawns_at_shipyard);
     RUN(test_player_init_ship_docked);

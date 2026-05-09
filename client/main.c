@@ -97,11 +97,15 @@ static void init_starfield(void) {
 }
 
 static void reset_world(void) {
+    g.local_player_slot = 0;
+    world_cleanup(&g.world);
+    memset(&g.world, 0, sizeof(g.world));
+
     if (!g.multiplayer_enabled) {
         /* Singleplayer: use local server as authoritative sim */
+        world_cleanup(&g.local_server.world);
         local_server_init(&g.local_server, 0);
-        /* Copy full initial state to client world view */
-        g.world = g.local_server.world;
+        local_server_sync_to_client(&g.local_server);
     } else {
         /* Multiplayer: server manages world, client just predicts */
         world_reset(&g.world);
@@ -109,7 +113,6 @@ static void reset_world(void) {
         LOCAL_PLAYER.connected = true;
     }
 
-    g.local_player_slot = 0;
     g.tracked_contract = -1;
     g.selected_contract = -1;
     g.target_station = -1;
@@ -1660,9 +1663,11 @@ static void frame(void) {
         sync_local_player_slot_from_network();
         if (was_connected && !net_is_connected()) {
             set_notice("Connection lost. Reload to reconnect.");
-            /* Fall back to local server using current world state */
-            g.local_server.world = g.world;
-            g.local_server.active = true;
+            /* world_t owns station/player manifest buffers; never copy it
+             * by value. Use a fresh local sim as the crash-safe fallback. */
+            world_cleanup(&g.local_server.world);
+            local_server_init(&g.local_server, g.world.rng);
+            local_server_sync_to_client(&g.local_server);
         }
         /* P key (offline): hard-reload the page. The HUD prompt is
          * "offline [P] reconnect" but a graceful net_reconnect()
