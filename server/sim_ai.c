@@ -157,18 +157,27 @@ static void forget_known_delivery_contracts(world_t *w, int station_idx,
                                      &w->stations[s].known_contract_count,
                                      STATION_KNOWN_CONTRACT_CAP,
                                      station_idx, c);
+        knowledge_view_forget_contract(&w->stations[s].knowledge,
+                                       (uint8_t)CONTRACT_TRACTOR,
+                                       station_idx, c);
     }
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
         contract_summary_pool_forget(w->npc_ships[n].known_contracts,
                                      &w->npc_ships[n].known_contract_count,
                                      SHIP_KNOWN_CONTRACT_CAP,
                                      station_idx, c);
+        knowledge_view_forget_contract(&w->npc_ships[n].knowledge,
+                                       (uint8_t)CONTRACT_TRACTOR,
+                                       station_idx, c);
     }
     for (int p = 0; p < MAX_PLAYERS; p++) {
         contract_summary_pool_forget(w->players[p].ship.known_contracts,
                                      &w->players[p].ship.known_contract_count,
                                      SHIP_KNOWN_CONTRACT_CAP,
                                      station_idx, c);
+        knowledge_view_forget_contract(&w->players[p].ship.knowledge,
+                                       (uint8_t)CONTRACT_TRACTOR,
+                                       station_idx, c);
     }
 }
 
@@ -1388,7 +1397,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             gossip_dock_handshake(w, npc->home_station,
                                   npc->known_contracts,
                                   &npc->known_contract_count,
-                                  SHIP_KNOWN_CONTRACT_CAP);
+                                  SHIP_KNOWN_CONTRACT_CAP,
+                                  &npc->knowledge);
 
             station_t *home = &w->stations[npc->home_station];
             float carried = 0.0f;
@@ -1507,7 +1517,8 @@ static void step_hauler(world_t *w, npc_ship_t *npc, int n, float dt) {
             gossip_dock_handshake(w, npc->dest_station,
                                   npc->known_contracts,
                                   &npc->known_contract_count,
-                                  SHIP_KNOWN_CONTRACT_CAP);
+                                  SHIP_KNOWN_CONTRACT_CAP,
+                                  &npc->knowledge);
 
             station_t *dest = &w->stations[npc->dest_station];
             if (hauler_ship && hauler_ship->manifest.count > 0) {
