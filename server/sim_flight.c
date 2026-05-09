@@ -31,6 +31,9 @@ flight_cmd_t flight_steer_to(const world_t *w, const ship_t *ship,
 
     /* Keep the A* path fresh and advance waypoints. */
     nav_follow_path(w, path, ship->pos, target, clearance, dt);
+    vec2 control_target = target;
+    if (path->count > 0 && path->current < path->count)
+        control_target = path->waypoints[path->current];
     nav_steer_t st = nav_steer_toward_waypoint(path, ship->pos, target, dt);
 
     /* Proportional turn toward the current waypoint heading. */
@@ -40,9 +43,12 @@ flight_cmd_t flight_steer_to(const world_t *w, const ship_t *ship,
              : (diff < -0.02f ? -turn_strength : 0.0f);
     float facing = cosf(diff);
 
-    /* Velocity-controlled approach. */
-    float dist_to_target = sqrtf(v2_dist_sq(ship->pos, target));
-    float effective_dist = fmaxf(0.0f, dist_to_target - standoff);
+    /* Velocity-controlled approach. Intermediate path legs must brake
+     * against their active waypoint, not the final destination, or ships
+     * carry too much speed into station lanes and orbit the dock. */
+    float dist_to_control = sqrtf(v2_dist_sq(ship->pos, control_target));
+    float control_standoff = st.at_intermediate ? 0.0f : standoff;
+    float effective_dist = fmaxf(0.0f, dist_to_control - control_standoff);
     float target_speed = nav_approach_speed(effective_dist, max_speed);
 
     /* Slow down near intermediate waypoints to make clean turns. */
@@ -51,9 +57,9 @@ flight_cmd_t flight_steer_to(const world_t *w, const ship_t *ship,
         if (wp_speed < target_speed) target_speed = wp_speed;
     }
 
-    /* Project velocity onto the target direction for speed control. */
-    vec2 to_target_dir = (dist_to_target > 0.5f)
-        ? v2_scale(v2_sub(target, ship->pos), 1.0f / dist_to_target)
+    /* Project velocity onto the same leg used for speed control. */
+    vec2 to_target_dir = (dist_to_control > 0.5f)
+        ? v2_scale(v2_sub(control_target, ship->pos), 1.0f / dist_to_control)
         : v2(cosf(ship->angle), sinf(ship->angle));
     float approach_v = v2_dot(ship->vel, to_target_dir);
     float thrust_cmd = nav_speed_control(approach_v, target_speed);

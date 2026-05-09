@@ -695,7 +695,7 @@ TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
                                            COMMODITY_REPAIR_KIT, 100));
 
     /* Pick the first hauler that's currently homed at the shipyard,
-     * wound it, and drop it just outside the dock approach radius. */
+     * wound it, and drop it directly on the dock approach lane. */
     npc_ship_t *hauler = NULL;
     int hauler_slot = -1;
     for (int n = 0; n < MAX_NPC_SHIPS; n++) {
@@ -714,10 +714,10 @@ TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
      * nothing to fix. */
     apply_npc_ship_damage(w, hauler_slot, 20.0f);
     hauler->state = NPC_STATE_RETURN_TO_STATION;
-    /* Drop the hauler well inside the home station's dock approach
-     * radius so the next sim_step's RETURN_TO_STATION branch trips
-     * the dock-arrival condition (dist < dock_radius * 0.7). */
-    hauler->ship.pos = w->stations[shipyard].pos;
+    vec2 dock_lane = station_approach_target(&w->stations[shipyard],
+                                             v2_add(w->stations[shipyard].pos,
+                                                    v2(900.0f, 0.0f)));
+    hauler->ship.pos = dock_lane;
     hauler->ship.vel = v2(0.0f, 0.0f);
     /* Slice 13: physics is ship-authoritative going into the tick — write
      * the paired ship_t too so the pre-mirror doesn't overwrite the npc
@@ -725,7 +725,7 @@ TEST(test_e2e_npc_dock_auto_repair_drains_kits) {
     {
         ship_t *hauler_ship = world_npc_ship_for(w, hauler_slot);
         ASSERT(hauler_ship != NULL);
-        hauler_ship->pos = w->stations[shipyard].pos;
+        hauler_ship->pos = dock_lane;
         hauler_ship->vel = v2(0.0f, 0.0f);
     }
 

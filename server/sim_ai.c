@@ -1125,8 +1125,9 @@ static void npc_steer_with_path(const world_t *w, int npc_idx, npc_ship_t *npc,
     }
     if (station_local && path->age > 0.25f)
         nav_force_replan(path);
+    float max_speed = station_local ? 110.0f : 200.0f;
     flight_cmd_t cmd = flight_steer_to(w, &npc->ship, path, final_target,
-                                        0.0f, 200.0f, dt);
+                                        0.0f, max_speed, dt);
     cmd.thrust *= thrust_scale;
     npc_apply_flight_cmd(npc, cmd, dt);
 }
@@ -1178,6 +1179,51 @@ static bool npc_point_inside_station_nav_envelope(const station_t *st, vec2 p) {
     return v2_dist_sq(p, st->pos) <= r * r;
 }
 
+static int npc_station_entry_road_ring(const station_t *st) {
+    int road_ring = station_max_ring(st);
+    while (road_ring > 1 && ring_module_count(st, road_ring) <= 1)
+        road_ring--;
+    if (road_ring < 1 || road_ring > STATION_NUM_RINGS) return 0;
+    if (!station_ring_open_gap_lane(st, road_ring, NULL, NULL)) return 0;
+    return road_ring;
+}
+
+static vec2 npc_station_entry_inner_target(const station_t *st) {
+    int road_ring = npc_station_entry_road_ring(st);
+    if (road_ring <= 0) return station_entry_target(st, st->pos);
+    float r = STATION_RING_RADIUS[road_ring] - 90.0f;
+    if (r < st->radius + 90.0f) r = st->radius + 90.0f;
+    return station_ring_open_gap_lane_pos(st, road_ring, r);
+}
+
+static vec2 npc_station_entry_stage_target(const station_t *st, vec2 ship_pos,
+                                           vec2 want_target) {
+    int outer_ring = station_max_ring(st);
+    int road_ring = npc_station_entry_road_ring(st);
+    if (outer_ring <= 1 || road_ring <= 0) return want_target;
+
+    vec2 rel = v2_sub(ship_pos, st->pos);
+    float ship_r = v2_len(rel);
+    float target_r = v2_len(v2_sub(want_target, st->pos));
+    if (target_r >= STATION_RING_RADIUS[outer_ring] + 20.0f)
+        return want_target;
+
+    vec2 outer = station_entry_target(st, ship_pos);
+    if (ship_r > STATION_RING_RADIUS[outer_ring] + 80.0f &&
+        v2_dist_sq(ship_pos, outer) > 140.0f * 140.0f) {
+        return outer;
+    }
+
+    vec2 inner = npc_station_entry_inner_target(st);
+    float inner_gate = STATION_RING_RADIUS[road_ring] - 70.0f;
+    if (inner_gate < st->radius + 90.0f) inner_gate = st->radius + 90.0f;
+    if (ship_r > inner_gate) {
+        return inner;
+    }
+
+    return want_target;
+}
+
 /* Treat station rings as traffic envelopes. If an NPC is inside any
  * station and its desired target is outside that station, first route
  * to that station's dock exit. Conversely, if the desired target is an
@@ -1212,23 +1258,24 @@ static vec2 npc_target_routed_through_station_docks(const world_t *w,
 
     int entry_station = -1;
     float best_entry_d = 1e18f;
+    vec2 best_entry_target = want_target;
     for (int s = 0; s < MAX_STATIONS; s++) {
         const station_t *st = &w->stations[s];
         if (!station_collides(st)) continue;
-        bool ship_inside = npc_point_inside_station_nav_envelope(st, npc->ship.pos);
         bool target_inside = npc_point_inside_station_nav_envelope(st, want_target);
-        if (!target_inside || ship_inside) continue;
+        if (!target_inside) continue;
+        vec2 staged_target = npc_station_entry_stage_target(st, npc->ship.pos,
+                                                            want_target);
+        if (v2_dist_sq(staged_target, want_target) < 1.0f) continue;
         float d = v2_dist_sq(want_target, st->pos);
         if (d < best_entry_d) {
             best_entry_d = d;
             entry_station = s;
+            best_entry_target = staged_target;
         }
     }
     if (entry_station >= 0) {
-        vec2 entry = station_entry_target(&w->stations[entry_station], npc->ship.pos);
-        if (v2_dist_sq(npc->ship.pos, entry) < 180.0f * 180.0f)
-            return want_target;
-        return entry;
+        return best_entry_target;
     }
 
     return want_target;
@@ -1240,16 +1287,13 @@ static bool npc_reached_station_dock_lane(const npc_ship_t *npc,
     float lane_r = 90.0f;
     if (v2_dist_sq(npc->ship.pos, dock_lane) < lane_r * lane_r) return true;
 
-    float dock_r = st->dock_radius * 0.7f;
-    if (v2_dist_sq(npc->ship.pos, st->pos) < dock_r * dock_r) return true;
-
-    int outer_ring = station_max_ring(st);
-    if (outer_ring >= 1 && outer_ring <= STATION_NUM_RINGS) {
-        float outer_lane_r = STATION_RING_RADIUS[outer_ring] + 80.0f;
-        if (v2_dist_sq(npc->ship.pos, st->pos) < outer_lane_r * outer_lane_r &&
-            v2_len(npc->ship.vel) < 90.0f) {
+    if (station_max_ring(st) > 1 && v2_len(npc->ship.vel) < 130.0f) {
+        vec2 outer = station_entry_target(st, npc->ship.pos);
+        if (v2_dist_sq(npc->ship.pos, outer) < 130.0f * 130.0f)
             return true;
-        }
+        vec2 inner = npc_station_entry_inner_target(st);
+        if (v2_dist_sq(npc->ship.pos, inner) < 130.0f * 130.0f)
+            return true;
     }
     return false;
 }

@@ -106,6 +106,30 @@ static void test_nav_speed_control_deadband(void) {
     ASSERT_EQ_FLOAT(nav_speed_control(105.0f, 100.0f), 0.0f, 0.01f);
 }
 
+static void test_flight_steer_to_brakes_for_intermediate_waypoint(void) {
+    WORLD_DECL;
+    world_reset(&w);
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w.asteroids[i].active = false;
+    spatial_grid_build(&w);
+
+    SHIP_DECL(ship);
+    ship.hull_class = HULL_CLASS_HAULER;
+    ship.pos = v2(0.0f, 0.0f);
+    ship.vel = v2(90.0f, 0.0f);
+    ship.angle = 0.0f;
+
+    nav_path_t path = {0};
+    path.count = 1;
+    path.current = 0;
+    path.age = 0.0f;
+    path.goal = v2(10000.0f, 10000.0f);
+    path.waypoints[0] = v2(150.0f, 0.0f);
+
+    flight_cmd_t cmd = flight_steer_to(&w, &ship, &path, path.goal,
+                                       0.0f, 200.0f, SIM_DT);
+    ASSERT(cmd.thrust < 0.0f);
+}
+
 static void test_nav_forward_clearance_empty(void) {
     WORLD_HEAP w = calloc(1, sizeof(world_t));
     world_reset(w);
@@ -201,6 +225,21 @@ static void test_nav_waypoint_advancement(void) {
     ASSERT(path.current >= 1);
     /* Returned waypoint should be wp[1] or final target */
     ASSERT(wp.x >= 199.0f);
+}
+
+static void test_nav_waypoint_advances_after_overshoot(void) {
+    nav_path_t path = {0};
+    path.count = 2;
+    path.current = 0;
+    path.waypoints[0] = v2(100.0f, 0.0f);
+    path.waypoints[1] = v2(250.0f, 0.0f);
+    path.goal = v2(400.0f, 0.0f);
+
+    vec2 wp = nav_next_waypoint(&path, v2(180.0f, 140.0f),
+                                v2(400.0f, 0.0f), SIM_DT);
+
+    ASSERT_EQ_INT(path.current, 1);
+    ASSERT(v2_dist_sq(wp, path.waypoints[1]) < 1.0f);
 }
 
 static bool test_station_smelt_midpoint(const station_t *st, commodity_t ore,
@@ -586,6 +625,7 @@ void register_navigation_nav_tests(void) {
     TEST_SECTION("\nNavigation (sim_nav):\n");
     RUN(test_nav_approach_speed_basic);
     RUN(test_nav_speed_control_deadband);
+    RUN(test_flight_steer_to_brakes_for_intermediate_waypoint);
     RUN(test_nav_forward_clearance_empty);
     RUN(test_nav_forward_clearance_blocked);
     RUN(test_nav_find_path_direct);
@@ -593,6 +633,7 @@ void register_navigation_nav_tests(void) {
     RUN(test_nav_follow_path_replans_on_stale);
     RUN(test_nav_force_replan);
     RUN(test_nav_waypoint_advancement);
+    RUN(test_nav_waypoint_advances_after_overshoot);
     RUN(test_nav_routes_to_station_smelt_midpoint);
     RUN(test_nav_routes_to_kepler_dock_through_outer_ring_gap);
     RUN(test_station_entry_target_uses_outer_roadway);
