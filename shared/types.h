@@ -221,6 +221,60 @@ typedef struct {
     float age_at_copy;       /* issuer's age at the moment this snapshot was taken */
 } contract_summary_t;        /* keep small — embedded in station_t and npc_ship_t arrays */
 
+typedef enum {
+    KNOW_NONE = 0,
+    KNOW_CONTRACT,
+    KNOW_CARGO,
+    KNOW_FRAGMENT,
+    KNOW_STATION,
+    KNOW_ROUTE,
+    KNOW_PLAYER,
+    KNOW_SHIP,
+    KNOW_MODULE,
+    KNOW_SCAFFOLD,
+    KNOW_EVENT,
+    KNOW_SIGNAL,
+    KNOW_MARKET,
+} knowledge_kind_t;
+
+typedef enum {
+    KNOW_PAYLOAD_NONE = 0,
+    KNOW_PAYLOAD_CONTRACT_SUMMARY = 1,
+} knowledge_payload_kind_t;
+
+enum {
+    KNOWLEDGE_PAYLOAD_BYTES = 64,
+    KNOWLEDGE_VIEW_MAX_CAP = 64,
+    SHIP_KNOWN_ITEM_CAP = 16,
+    STATION_KNOWN_ITEM_CAP = 64,
+};
+
+typedef struct {
+    uint8_t kind;                         /* knowledge_kind_t; 0 = empty */
+    uint8_t hops;
+    uint8_t confidence;
+    uint8_t salience;
+    uint8_t payload_kind;                 /* knowledge_payload_kind_t */
+    uint8_t _pad[3];
+    uint8_t subject_hash[32];             /* cargo pub, route hash, contract key, etc. */
+    uint8_t chain_anchor[32];             /* canonical receipt/event hash if known */
+    uint8_t source_hash[32];              /* immediate source, if known */
+    uint8_t witness_hash[32];             /* original witness, if known */
+    uint64_t observed_tick;
+    uint64_t learned_tick;
+    uint8_t payload[KNOWLEDGE_PAYLOAD_BYTES];
+} knowledge_item_t;
+
+typedef struct {
+    knowledge_item_t items[KNOWLEDGE_VIEW_MAX_CAP];
+    uint8_t count;
+    uint8_t capacity;                     /* active cap inside items[] */
+    uint8_t _pad[6];
+} knowledge_view_t;
+
+_Static_assert(sizeof(contract_summary_t) <= KNOWLEDGE_PAYLOAD_BYTES,
+               "contract_summary_t must fit in knowledge payload");
+
 typedef struct {
     recipe_id_t   id;
     const char   *name;
@@ -284,6 +338,11 @@ typedef struct {
      * dock handshake on arrival. */
     contract_summary_t known_contracts[SHIP_KNOWN_CONTRACT_CAP];
     uint8_t known_contract_count;
+
+    /* General bounded situated knowledge. Slice 1 mirrors contract
+     * gossip into KNOW_CONTRACT payloads while behavior still reads
+     * known_contracts[]; later slices move actor queries here. */
+    knowledge_view_t knowledge;
 } ship_t;
 
 typedef enum {
@@ -562,6 +621,10 @@ typedef struct {
     contract_summary_t known_contracts[STATION_KNOWN_CONTRACT_CAP];
     uint8_t known_contract_count;
 
+    /* Station-local situated knowledge. Ephemeral, not serialized; station
+     * contract gossip is mirrored into this view at dock/bootstrap. */
+    knowledge_view_t knowledge;
+
     uint8_t  chain_last_hash[32];
     uint64_t chain_event_count;
     uint8_t  chain_health_status; /* chain_health_status_t */
@@ -828,6 +891,10 @@ typedef struct {
      * the next dock cycle re-populates via the dock handshake. */
     contract_summary_t known_contracts[SHIP_KNOWN_CONTRACT_CAP];
     uint8_t known_contract_count;
+
+    /* NPC-local situated knowledge. Slice 1 mirrors contract gossip into
+     * KNOW_CONTRACT payloads without changing the hauler picker yet. */
+    knowledge_view_t knowledge;
 } npc_ship_t;
 
 /* ------------------------------------------------------------------ */

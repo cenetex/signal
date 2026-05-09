@@ -765,7 +765,8 @@ static void dock_ship(world_t *w, server_player_t *sp) {
         gossip_dock_handshake(w, sp->current_station,
                               sp->ship.known_contracts,
                               &sp->ship.known_contract_count,
-                              SHIP_KNOWN_CONTRACT_CAP);
+                              SHIP_KNOWN_CONTRACT_CAP,
+                              &sp->ship.knowledge);
     }
     emit_event(w, (sim_event_t){.type = SIM_EVENT_DOCK, .player_id = sp->id});
 }
@@ -5802,7 +5803,8 @@ void player_init_ship(server_player_t *sp, world_t *w) {
         gossip_dock_handshake(w, sp->current_station,
                               sp->ship.known_contracts,
                               &sp->ship.known_contract_count,
-                              SHIP_KNOWN_CONTRACT_CAP);
+                              SHIP_KNOWN_CONTRACT_CAP,
+                              &sp->ship.knowledge);
     }
 }
 

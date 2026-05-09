@@ -244,6 +244,7 @@ if(NOT EMSCRIPTEN AND NOT BUILD_SERVER_ONLY)
         tests/c/test_cargo_lineage.c
         tests/c/test_trade_paging.c
         tests/c/test_inspect_anim.c
+        tests/c/test_gossip.c
         client/identity.c
         ${SIGNAL_SIM_SOURCES}
         ${SIGNAL_SIM_HELPERS}

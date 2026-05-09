@@ -1,13 +1,16 @@
 #ifndef SIGNAL_SERVER_GOSSIP_H
 #define SIGNAL_SERVER_GOSSIP_H
 
-/* Gossip-contract dock handshake.
+/* Gossip / knowledge dock handshake.
  *
  * Contracts spread between stations and ships as bounded copies in
  * known_contracts pools. Information speed = ship speed; no station-
  * to-station radio. The full contract_t is the authoritative storage
  * at the issuing station; the contract_summary_t is the gossip payload
  * embedded in station_t and ship/npc_ship_t known_contracts arrays.
+ * Slice 1 also mirrors those summaries into knowledge_view_t as
+ * KNOW_CONTRACT items. Existing behavior continues to read
+ * known_contracts[] until later slices move actor queries to knowledge.
  *
  * The handshake is bidirectional: station merges its locally-issued
  * contracts into its own known pool, then station and ship copy
@@ -23,6 +26,17 @@ contract_summary_t contract_summary_make(const contract_t *ct);
 void contract_pool_insert(contract_summary_t *list, uint8_t *count, int cap,
                           const contract_summary_t *s);
 
+void knowledge_view_configure(knowledge_view_t *view, uint8_t capacity);
+void knowledge_view_insert(knowledge_view_t *view, const knowledge_item_t *item);
+void knowledge_view_exchange(knowledge_view_t *a, knowledge_view_t *b);
+
+bool knowledge_item_from_contract_summary(const contract_summary_t *s,
+                                          knowledge_item_t *out);
+bool contract_summary_from_knowledge_item(const knowledge_item_t *item,
+                                          contract_summary_t *out);
+void knowledge_view_forget_contract(knowledge_view_t *view, uint8_t action,
+                                    int station_idx, commodity_t commodity);
+
 /* Run the bidirectional handshake at `station_index` between the station
  * and the ship pool passed in. The world is needed only for reading the
  * station's locally-issued contracts (filter w->contracts[] by
@@ -30,7 +44,8 @@ void contract_pool_insert(contract_summary_t *list, uint8_t *count, int cap,
  * peer-station radio. */
 void gossip_dock_handshake(world_t *w, int station_index,
                            contract_summary_t *ship_pool,
-                           uint8_t *ship_count, int ship_cap);
+                           uint8_t *ship_count, int ship_cap,
+                           knowledge_view_t *ship_knowledge);
 
 /* Cold-start bootstrap: seed every active station's known_contracts pool
  * with every currently-active contract in w->contracts[]. Called once at
