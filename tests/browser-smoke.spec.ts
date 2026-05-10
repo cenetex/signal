@@ -2,7 +2,7 @@ import { test, expect, type Page, type Locator } from '@playwright/test';
 import { inflateSync } from 'node:zlib';
 
 const fatalPattern =
-  /abort|unreachable|RuntimeError|LinkError|compile failed|Cannot enlarge memory|exception thrown/i;
+  /abort|unreachable|RuntimeError|LinkError|compile failed|Cannot enlarge memory|exception thrown|websocket error|WebSocket is already in CLOSING|WebSocket connection .* failed/i;
 
 type FatalCollectors = {
   pageErrors: string[];
@@ -30,6 +30,9 @@ function installFatalCollectors(page: Page): FatalCollectors {
   page.on('pageerror', (err) => logs.pageErrors.push(err.message));
   page.on('console', (msg) => {
     if (msg.type() === 'error') logs.consoleErrors.push(msg.text());
+  });
+  page.on('websocket', (ws) => {
+    ws.on('socketerror', (err) => logs.consoleErrors.push(`websocket error ${ws.url()}: ${err.message}`));
   });
   return logs;
 }
@@ -212,7 +215,11 @@ const smokeLoopState = {
   hailNotice: 6,
 } as const;
 
-async function waitForRenderedGame(page: Page, canvas: Locator): Promise<void> {
+async function waitForRenderedGame(
+  page: Page,
+  canvas: Locator,
+  requireLiveRelay = usesLiveSmokeUrl(),
+): Promise<void> {
   await expect(canvas).toBeVisible({ timeout: 20_000 });
   await waitForRuntime(page);
 
@@ -238,12 +245,28 @@ async function waitForRenderedGame(page: Page, canvas: Locator): Promise<void> {
   const signal = await signalStrength(page);
   expect(signal).not.toBeNull();
   expect(signal!).toBeGreaterThanOrEqual(0);
+
+  if (requireLiveRelay) {
+    await expect
+      .poll(async () => (await signalStrength(page)) ?? -1, {
+        timeout: 8_000,
+        message: 'live smoke should connect to the relay',
+      })
+      .toBeGreaterThan(0);
+    await page.waitForTimeout(2_000);
+    await expect
+      .poll(async () => (await signalStrength(page)) ?? -1, {
+        timeout: 2_000,
+        message: 'live smoke should stay connected to the relay',
+      })
+      .toBeGreaterThan(0);
+  }
 }
 
-async function loadGame(page: Page): Promise<Locator> {
+async function loadGame(page: Page, requireLiveRelay = usesLiveSmokeUrl()): Promise<Locator> {
   await page.goto(smokeUrl());
   const canvas = page.locator('canvas');
-  await waitForRenderedGame(page, canvas);
+  await waitForRenderedGame(page, canvas, requireLiveRelay);
   return canvas;
 }
 
@@ -338,7 +361,7 @@ test.describe('Browser smoke tests', () => {
   test('exposes deterministic HUD copy for fragment, tractor, tow, and hail states', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });
-    await loadGame(page);
+    await loadGame(page, false);
 
     await setSmokeLoopState(page, smokeLoopState.fragmentsNearby);
     expect(await hudActionText(page)).toContain('Hold [Space] tractor // 3 nearby');

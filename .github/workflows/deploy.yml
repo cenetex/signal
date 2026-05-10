@@ -419,18 +419,31 @@ jobs:
             --output text)
           echo "task_def_arn=$CURRENT_TASK_DEF" >> "$GITHUB_OUTPUT"
 
-      # --- Deploy both ---
-      - name: Deploy client to S3
+      # --- Stage immutable client bundle first ---
+      - name: Deploy versioned client bundle to S3
         run: |
-          # Root assets: --delete strips anything removed from _site/ —
-          # but we exclude the versioned archive so old pinned bundles
-          # stay reachable when the server is still on their hash.
-          aws s3 sync _site/ s3://signal-ratimics-client/ --delete --exclude "play/v/*"
-          # Versioned bundles are additive — never delete prior versions.
+          set -euo pipefail
+          GIT_HASH=${{ needs.build-server.outputs.image_tag }}
+          test -f "_site/play/v/$GIT_HASH/signal.js"
+          test -f "_site/play/v/$GIT_HASH/signal.wasm"
+          # Versioned bundles are additive and immutable; never delete prior
+          # versions because rolled-back servers can still advertise them.
           aws s3 sync _site/play/v/ s3://signal-ratimics-client/play/v/
 
-      - name: Invalidate CloudFront
-        run: aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*"
+      - name: Invalidate versioned bundle
+        run: |
+          set -euo pipefail
+          GIT_HASH=${{ needs.build-server.outputs.image_tag }}
+          INV_ID=$(
+            aws cloudfront create-invalidation \
+              --distribution-id E32W3RMW5O86FJ \
+              --paths "/play/v/$GIT_HASH/*" \
+              --query 'Invalidation.Id' \
+              --output text
+          )
+          aws cloudfront wait invalidation-completed \
+            --distribution-id E32W3RMW5O86FJ \
+            --id "$INV_ID"
 
       - name: Deploy server to ECS
         run: |
@@ -477,10 +490,7 @@ jobs:
           echo "Waiting for new server task to be running..."
           aws ecs wait services-stable --cluster default --services signal-relay
 
-      - name: Wait for CDN propagation
-        run: sleep 20
-
-      # --- Smoke test ---
+      # --- Smoke test staged server against the already-published pinned bundle ---
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
@@ -491,37 +501,85 @@ jobs:
           npm install
           npx playwright install chromium --with-deps
 
-      - name: Smoke test (client + server coherence)
-        id: smoke
+      - name: Smoke test before root client promotion
+        id: smoke-pre-promote
         continue-on-error: true
         run: SMOKE_URL=https://signal.ratimics.com/play/ npx playwright test
 
-      - name: Upload smoke results
-        if: steps.smoke.outcome == 'failure'
+      - name: Upload pre-promotion smoke results
+        if: steps.smoke-pre-promote.outcome == 'failure'
         uses: actions/upload-artifact@v4
         with:
-          name: playwright-report
+          name: playwright-report-pre-promote
           path: test-results/
 
-      # --- Rollback BOTH on failure ---
-      - name: Rollback client
-        if: steps.smoke.outcome == 'failure' && steps.snapshot-client.outputs.has_snapshot == 'true'
-        run: |
-          echo "::error::Smoke tests failed — rolling back client"
-          aws s3 sync /tmp/rollback-client/ s3://signal-ratimics-client/ --delete
-          aws cloudfront create-invalidation --distribution-id E32W3RMW5O86FJ --paths "/*"
-
       - name: Rollback server
-        if: steps.smoke.outcome == 'failure'
+        if: steps.smoke-pre-promote.outcome == 'failure'
         run: |
           echo "::error::Smoke tests failed — rolling back server to previous task definition"
           aws ecs update-service \
             --cluster default \
             --service signal-relay \
             --task-definition "${{ steps.snapshot-server.outputs.task_def_arn }}"
+          aws ecs wait services-stable --cluster default --services signal-relay
 
-      - name: Fail if smoke tests failed
-        if: steps.smoke.outcome == 'failure'
+      - name: Fail if pre-promotion smoke tests failed
+        if: steps.smoke-pre-promote.outcome == 'failure'
+        run: exit 1
+
+      # --- Promote root client only after the new server proves coherent ---
+      - name: Promote root client to S3
+        run: |
+          set -euo pipefail
+          # Root assets: --delete strips anything removed from _site/ —
+          # but we exclude the versioned archive so old pinned bundles
+          # stay reachable when the server is still on their hash.
+          aws s3 sync _site/ s3://signal-ratimics-client/ --delete --exclude "play/v/*"
+
+      - name: Invalidate promoted root client
+        run: |
+          set -euo pipefail
+          INV_ID=$(
+            aws cloudfront create-invalidation \
+              --distribution-id E32W3RMW5O86FJ \
+              --paths "/*" \
+              --query 'Invalidation.Id' \
+              --output text
+          )
+          aws cloudfront wait invalidation-completed \
+            --distribution-id E32W3RMW5O86FJ \
+            --id "$INV_ID"
+
+      - name: Smoke test after root client promotion
+        id: smoke-post-promote
+        continue-on-error: true
+        run: SMOKE_URL=https://signal.ratimics.com/play/ npx playwright test
+
+      - name: Upload post-promotion smoke results
+        if: steps.smoke-post-promote.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report-post-promote
+          path: test-results/
+
+      - name: Rollback promoted root client
+        if: steps.smoke-post-promote.outcome == 'failure' && steps.snapshot-client.outputs.has_snapshot == 'true'
+        run: |
+          echo "::error::Post-promotion smoke tests failed — rolling back root client"
+          aws s3 sync /tmp/rollback-client/ s3://signal-ratimics-client/ --delete --exclude "play/v/*"
+          INV_ID=$(
+            aws cloudfront create-invalidation \
+              --distribution-id E32W3RMW5O86FJ \
+              --paths "/*" \
+              --query 'Invalidation.Id' \
+              --output text
+          )
+          aws cloudfront wait invalidation-completed \
+            --distribution-id E32W3RMW5O86FJ \
+            --id "$INV_ID"
+
+      - name: Fail if post-promotion smoke tests failed
+        if: steps.smoke-post-promote.outcome == 'failure'
         run: exit 1
 
   # Native builds: only after basic tests pass. fail-fast cancels
