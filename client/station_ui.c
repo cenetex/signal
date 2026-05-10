@@ -1470,6 +1470,8 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         int kits_needed = ui->hull_max - ui->hull_now;
         if (kits_needed < 0) kits_needed = 0;
         char right_buf[32];
+        char short_cur[5];
+        ui_station_currency_short(st, short_cur, sizeof(short_cur));
         if (ui->hull_now >= ui->hull_max) {
             draw_row_lr(cx, my, inner_right, COL_DIM, "hull",
                         COL_FADED, "full");
@@ -1484,12 +1486,12 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                         COL_FADED, right_buf);
         } else if (ui->can_repair && ui->repair_cost > 0) {
             snprintf(right_buf, sizeof(right_buf), "%d %s",
-                     ui->repair_cost, ui_station_currency(st));
+                     ui->repair_cost, short_cur);
             draw_row_lr(cx, my, inner_right, COL_AMBER, "[R] repair hull",
                         COL_TEXT, right_buf);
         } else if (ui->repair_cost > 0) {
             snprintf(right_buf, sizeof(right_buf), "%d %s needed",
-                     ui->repair_cost, ui_station_currency(st));
+                     ui->repair_cost, short_cur);
             draw_row_lr(cx, my, inner_right, COL_DIM, "repair",
                         COL_FADED, right_buf);
         }
@@ -1522,6 +1524,8 @@ static void draw_verbs_view(const station_ui_state_t *ui,
     };
     for (int i = 0; i < 3; i++) {
         char right_buf[40];
+        char short_cur[5];
+        ui_station_currency_short(st, short_cur, sizeof(short_cur));
         int avail  = refit[i].in_cargo + refit[i].at_station;
         int needed = refit[i].needed;
         const char *plural = refit[i].unit_plural;
@@ -1529,7 +1533,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
             /* Actionable: show the hotkey + verb with cost. */
             if (refit[i].credit > 0)
                 snprintf(right_buf, sizeof(right_buf), "%d %s",
-                         refit[i].credit, ui_station_currency(st));
+                         refit[i].credit, short_cur);
             else
                 snprintf(right_buf, sizeof(right_buf), "ready");
             draw_row_lr(cx, my, inner_right, COL_NAV, refit[i].left,
@@ -1550,7 +1554,7 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                          ? refit[i].unit_singular : refit[i].unit_plural);
         } else if (refit[i].credit > 0) {
             snprintf(right_buf, sizeof(right_buf), "need %d %s",
-                     refit[i].credit, ui_station_currency(st));
+                     refit[i].credit, short_cur);
         } else {
             snprintf(right_buf, sizeof(right_buf), "unavailable");
         }
