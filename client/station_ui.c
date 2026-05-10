@@ -387,6 +387,26 @@ static void ui_station_currency_short(const station_t *st, char *out, size_t cap
     if (j == 0) snprintf(out, cap, "cr");
 }
 
+static void ui_station_name_short(int station_index, char *out, size_t cap) {
+    if (cap == 0) return;
+    out[0] = '\0';
+    if (station_index < 0 || station_index >= MAX_STATIONS) {
+        snprintf(out, cap, "station");
+        return;
+    }
+    const station_t *st = &g.world.stations[station_index];
+    if (!station_exists(st) || !st->name[0]) {
+        snprintf(out, cap, "station");
+        return;
+    }
+    size_t i = 0, j = 0;
+    while (st->name[i] != '\0' && st->name[i] != ' ' && j < cap - 1) {
+        out[j++] = st->name[i++];
+    }
+    out[j] = '\0';
+    if (j == 0) snprintf(out, cap, "station");
+}
+
 static void ui_fit_text(const char *src, int max_chars, char *out, size_t cap) {
     if (cap == 0) return;
     out[0] = '\0';
@@ -1204,15 +1224,17 @@ static void draw_trade_view(const station_ui_state_t *ui,
                      r->station_stock, r->station_capacity);
         }
 
-        char total_buf[32];
+        char total_buf[64];
+        const char *trade_cur = ui_station_currency(st);
         if (r->actionable) {
             int total = r->total_price > 0 ? r->total_price : r->unit_price;
             if (r->kind == 0 && r->quantity > 1)
-                snprintf(total_buf, sizeof(total_buf), "-%d cr x%d", total, r->quantity);
+                snprintf(total_buf, sizeof(total_buf), "-%d %s x%d",
+                         total, trade_cur, r->quantity);
             else if (r->kind == 0)
-                snprintf(total_buf, sizeof(total_buf), "-%d cr", total);
+                snprintf(total_buf, sizeof(total_buf), "-%d %s", total, trade_cur);
             else
-                snprintf(total_buf, sizeof(total_buf), "+%d cr", total);
+                snprintf(total_buf, sizeof(total_buf), "+%d %s", total, trade_cur);
         } else {
             const char *why = "";
             switch (r->block_reason) {
@@ -1461,11 +1483,13 @@ static void draw_verbs_view(const station_ui_state_t *ui,
             draw_row_lr(cx, my, inner_right, COL_DIM, "repair hull",
                         COL_FADED, right_buf);
         } else if (ui->can_repair && ui->repair_cost > 0) {
-            snprintf(right_buf, sizeof(right_buf), "%d cr", ui->repair_cost);
+            snprintf(right_buf, sizeof(right_buf), "%d %s",
+                     ui->repair_cost, ui_station_currency(st));
             draw_row_lr(cx, my, inner_right, COL_AMBER, "[R] repair hull",
                         COL_TEXT, right_buf);
         } else if (ui->repair_cost > 0) {
-            snprintf(right_buf, sizeof(right_buf), "%d cr needed", ui->repair_cost);
+            snprintf(right_buf, sizeof(right_buf), "%d %s needed",
+                     ui->repair_cost, ui_station_currency(st));
             draw_row_lr(cx, my, inner_right, COL_DIM, "repair",
                         COL_FADED, right_buf);
         }
@@ -1504,7 +1528,8 @@ static void draw_verbs_view(const station_ui_state_t *ui,
         if (refit[i].can) {
             /* Actionable: show the hotkey + verb with cost. */
             if (refit[i].credit > 0)
-                snprintf(right_buf, sizeof(right_buf), "%d cr", refit[i].credit);
+                snprintf(right_buf, sizeof(right_buf), "%d %s",
+                         refit[i].credit, ui_station_currency(st));
             else
                 snprintf(right_buf, sizeof(right_buf), "ready");
             draw_row_lr(cx, my, inner_right, COL_NAV, refit[i].left,
@@ -1524,7 +1549,8 @@ static void draw_verbs_view(const station_ui_state_t *ui,
                      short_by, short_by == 1
                          ? refit[i].unit_singular : refit[i].unit_plural);
         } else if (refit[i].credit > 0) {
-            snprintf(right_buf, sizeof(right_buf), "need %d cr", refit[i].credit);
+            snprintf(right_buf, sizeof(right_buf), "need %d %s",
+                     refit[i].credit, ui_station_currency(st));
         } else {
             snprintf(right_buf, sizeof(right_buf), "unavailable");
         }
@@ -1628,8 +1654,24 @@ static void draw_jobs_view(const station_ui_state_t *ui,
             job_txt = objective.job;
         }
 
+        const station_t *dest = (ct->station_index < MAX_STATIONS)
+            ? &g.world.stations[ct->station_index] : NULL;
+
         if (ct->action == CONTRACT_FRACTURE) {
             snprintf(cargo_buf, sizeof(cargo_buf), "asteroid field");
+        } else if (objective.kind == CONTRACT_OBJECTIVE_PICKUP &&
+                   objective.source_station >= 0 &&
+                   objective.target_station >= 0) {
+            char source_name[12], dest_name[12];
+            char route_buf[32];
+            ui_station_name_short(objective.source_station,
+                                  source_name, sizeof(source_name));
+            ui_station_name_short(objective.target_station,
+                                  dest_name, sizeof(dest_name));
+            snprintf(route_buf, sizeof(route_buf), "%s %s>%s",
+                     commodity_short_name(ct->commodity),
+                     source_name, dest_name);
+            ui_fit_text(route_buf, 18, cargo_buf, sizeof(cargo_buf));
         } else {
             int qty = slot_fulfillable[s] ? slot_held[s]
                                           : (int)lroundf(ct->quantity_needed);
@@ -1640,8 +1682,6 @@ static void draw_jobs_view(const station_ui_state_t *ui,
                      commodity_short_name(ct->commodity), qty);
         }
 
-        const station_t *dest = (ct->station_index < MAX_STATIONS)
-            ? &g.world.stations[ct->station_index] : NULL;
         /* Currency fallback chain: destination station's currency (that's
          * where the payout actually lands), then the current station's
          * (outpost destinations have empty currency_name today), then
@@ -1759,11 +1799,10 @@ static void draw_yard_view(const station_ui_state_t *ui,
         if (can_afford) sdtx_color3b(PAL_TEXT_SECONDARY);
         else            sdtx_color3b(PAL_CANNOT_AFFORD);
         if (compact) {
-            /* Narrow form: skip the currency name (it's in the header
-             * already) and use the short material label so the row
-             * fits inside inner_right at 1200px. */
-            sdtx_printf("[%d] %-14s %d cr + %d %s",
-                shown + 1, module_type_name(kit), fee, mat, mat_name);
+            char short_cur[8];
+            ui_station_currency_short(ui->station, short_cur, sizeof(short_cur));
+            sdtx_printf("[%d] %-14s %d %s + %d %s",
+                shown + 1, module_type_name(kit), fee, short_cur, mat, mat_name);
         } else {
             sdtx_printf("[%d] %-14s %d %s + %d %s",
                 shown + 1, module_type_name(kit),

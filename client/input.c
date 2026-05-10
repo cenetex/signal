@@ -76,6 +76,26 @@ void set_notice(const char* fmt, ...) {
     g.notice_timer = 3.0f;
 }
 
+static const char *input_station_currency(const station_t *st) {
+    if (!st || !st->currency_name[0]) return "cr";
+    return st->currency_name;
+}
+
+static const char *input_current_currency(void) {
+    return input_station_currency(current_station_ptr());
+}
+
+static int input_local_ledger_index(station_t *st) {
+    if (!st) return -1;
+    uint8_t pseudo[32];
+    client_session_pseudo_pubkey(LOCAL_PLAYER.session_token, pseudo);
+    for (int li = 0; li < st->ledger_count; li++) {
+        if (memcmp(st->ledger[li].player_pubkey, pseudo, 32) == 0)
+            return li;
+    }
+    return -1;
+}
+
 static int input_ship_manifest_count_c(const ship_t *ship, commodity_t commodity) {
     if (!ship || !ship->manifest.units) return 0;
     int n = 0;
@@ -383,7 +403,8 @@ static void sample_yard_keys(input_intent_t *intent) {
             if (st->pending_scaffold_count >= 4) {
                 set_notice("Shipyard queue full.");
             } else if ((int)lroundf(player_current_balance()) < scaffold_order_fee(kit)) {
-                set_notice("Need %d cr to order.", scaffold_order_fee(kit));
+                set_notice("Need %d %s to order.",
+                           scaffold_order_fee(kit), input_current_currency());
             } else {
                 intent->buy_scaffold_kit = true;
                 intent->scaffold_kit_module = kit;
@@ -506,7 +527,8 @@ static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
         return;
     }
     if (balance + FLOAT_EPSILON < total_price) {
-        set_notice("Need $%d.", (int)lroundf(total_price));
+        set_notice("Need %d %s.",
+                   (int)lroundf(total_price), input_station_currency(st));
         return;
     }
 
@@ -515,15 +537,13 @@ static void trade_apply_buy_row(input_intent_t *intent, const station_t *st,
     intent->buy_grade = row->grade;
     if (!g.multiplayer_enabled) {
         station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
-        for (int li = 0; li < mst->ledger_count; li++) {
-            if (mst->ledger[li].balance >= total_price) {
-                mst->ledger[li].balance -= total_price;
-                break;
-            }
-        }
+        int li = input_local_ledger_index(mst);
+        if (li >= 0 && mst->ledger[li].balance >= total_price)
+            mst->ledger[li].balance -= total_price;
     }
-    set_notice("-$%d  %s %s x%d",
+    set_notice("-%d %s  %s %s x%d",
                (int)lroundf(total_price),
+               input_station_currency(st),
                mining_grade_label(row->grade),
                commodity_short_name(row->commodity), quantity);
     (void)st;
@@ -571,24 +591,19 @@ static void sample_trade_picker(input_intent_t *intent) {
         float payout = price;
         if (!g.multiplayer_enabled) {
             station_t *mst = &g.world.stations[LOCAL_PLAYER.current_station];
-            uint8_t pseudo[32];
-            client_session_pseudo_pubkey(LOCAL_PLAYER.session_token, pseudo);
-            int idx = -1;
-            for (int li = 0; li < mst->ledger_count; li++) {
-                if (memcmp(mst->ledger[li].player_pubkey,
-                           pseudo, 32) == 0) { idx = li; break; }
-            }
+            int idx = input_local_ledger_index(mst);
             if (idx < 0 && mst->ledger_count < 16) {
                 idx = mst->ledger_count++;
-                memcpy(mst->ledger[idx].player_pubkey,
-                       pseudo, 32);
+                client_session_pseudo_pubkey(LOCAL_PLAYER.session_token,
+                                             mst->ledger[idx].player_pubkey);
                 mst->ledger[idx].balance = 0.0f;
                 mst->ledger[idx].lifetime_supply = 0.0f;
             }
             if (idx >= 0) mst->ledger[idx].balance += payout;
         }
-        set_notice("+$%d  %s %s",
+        set_notice("+%d %s  %s %s",
                    (int)lroundf(payout),
+                   input_station_currency(st),
                    mining_grade_label(row->grade),
                    commodity_short_name(row->commodity));
     }

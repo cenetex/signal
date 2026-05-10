@@ -264,7 +264,7 @@ typedef struct {
     int remote_hold_named_ingot_count;
 
     /* Batched sell summary for the bottom-right hint bar — every payout
-     * flashes "[ +$N common xA fine xB ... ]" even when the station is
+     * flashes its paying station/currency even when the station is
      * off-camera. Events within settle_timer (~0.6s) accumulate into one
      * batch; once idle, display_timer holds the result on-screen (~3s)
      * so the HUD can render it with per-grade colors. */
@@ -275,6 +275,8 @@ typedef struct {
         int total_cr;
         int grade_counts[MINING_GRADE_COUNT];
         bool any_by_contract;
+        int station;
+        bool mixed_stations;
     } sell_batch;
     runtime_state_t runtime;
     audio_state_t audio;

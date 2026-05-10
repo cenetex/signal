@@ -2855,7 +2855,7 @@ void draw_npc_chatter(void) {
 }
 
 /* ================================================================== */
-/* Sell FX — floating "+$N" popups on SIM_EVENT_SELL                  */
+/* Sell FX — floating "+N" popups on SIM_EVENT_SELL                   */
 /* ================================================================== */
 
 /* Popup text color — uses the canonical palette from shared/mining.h.
@@ -2894,7 +2894,7 @@ void spawn_sell_fx(const vec2 *origin, int amount, mining_grade_t grade, bool by
     } else {
         sell_fx_grade_rgb(grade, &g.sell_fx[slot].r, &g.sell_fx[slot].g, &g.sell_fx[slot].b);
     }
-    snprintf(g.sell_fx[slot].text, sizeof(g.sell_fx[slot].text), "+$%d", amount);
+    snprintf(g.sell_fx[slot].text, sizeof(g.sell_fx[slot].text), "+%d", amount);
 }
 
 void update_sell_fx(float dt) {

@@ -216,8 +216,8 @@ static void flush_sell_batch(void) {
     if (!g.sell_batch.active) return;
     /* Stop accumulating; hand off to the HUD render for ~3s so it can
      * draw the totals with per-grade colors in the hint-bar row. The
-     * batch payload (total_cr, grade_counts, any_by_contract) is
-     * preserved so the renderer has everything it needs. */
+     * batch payload is preserved so the renderer can name the paying
+     * station and currency. */
     g.sell_batch.active = false;
     g.sell_batch.settle_timer = 0.0f;
     g.sell_batch.display_timer = 3.0f;
@@ -245,6 +245,8 @@ static void step_notice_timer(float dt) {
             /* Lifetime elapsed — drop the summary. */
             g.sell_batch.total_cr = 0;
             g.sell_batch.any_by_contract = false;
+            g.sell_batch.station = -1;
+            g.sell_batch.mixed_stations = false;
             for (int gi = 0; gi < MINING_GRADE_COUNT; gi++)
                 g.sell_batch.grade_counts[gi] = 0;
         }
@@ -312,13 +314,27 @@ static void sell_batch_accumulate(const sim_event_t *ev, int total) {
         for (int gi = 0; gi < MINING_GRADE_COUNT; gi++) g.sell_batch.grade_counts[gi] = 0;
         g.sell_batch.total_cr = 0;
         g.sell_batch.any_by_contract = false;
+        g.sell_batch.station = -1;
+        g.sell_batch.mixed_stations = false;
         g.sell_batch.display_timer = 0.0f;
+    }
+    if (!g.sell_batch.active && g.sell_batch.display_timer <= 0.0f &&
+        g.sell_batch.total_cr == 0) {
+        g.sell_batch.station = -1;
+        g.sell_batch.mixed_stations = false;
     }
     int grade_idx = (int)ev->sell.grade;
     if (grade_idx >= 0 && grade_idx < MINING_GRADE_COUNT)
         g.sell_batch.grade_counts[grade_idx]++;
     g.sell_batch.total_cr += total;
     if (ev->sell.by_contract) g.sell_batch.any_by_contract = true;
+    if (ev->sell.station >= 0 && ev->sell.station < MAX_STATIONS) {
+        if (g.sell_batch.station < 0) {
+            g.sell_batch.station = ev->sell.station;
+        } else if (g.sell_batch.station != ev->sell.station) {
+            g.sell_batch.mixed_stations = true;
+        }
+    }
     g.sell_batch.active = true;
     g.sell_batch.settle_timer = 0.6f;
 }
