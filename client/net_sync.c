@@ -12,8 +12,6 @@
 #define STATION_RING_CORRECTION_SEC 0.35f
 #define NET_MOTION_TELEMETRY_WINDOW_SEC 5.0f
 #define LOCAL_PLAYER_RENDER_OFFSET_MAX 140.0f
-#define NET_SERVER_TICK_RATE 120.0f
-#define NET_LOCAL_EXTRAPOLATE_MAX_SEC 0.50f
 
 static float station_ring_correction[MAX_STATIONS][MAX_ARMS];
 static bool station_ring_have_snapshot[MAX_STATIONS];
@@ -673,15 +671,6 @@ static void add_local_player_render_correction(vec2 applied_delta,
     }
 }
 
-static float local_authority_lead_seconds(uint32_t server_tick) {
-    if (server_tick == 0) return 0.0f;
-    uint32_t local_tick = (uint32_t)lroundf(g.world.time * NET_SERVER_TICK_RATE);
-    int32_t delta_ticks = (int32_t)(local_tick - server_tick);
-    if (delta_ticks <= 0) return 0.0f;
-    float lead = (float)delta_ticks / NET_SERVER_TICK_RATE;
-    return clampf(lead, 0.0f, NET_LOCAL_EXTRAPOLATE_MAX_SEC);
-}
-
 void apply_remote_player_state(const NetPlayerState* state) {
     if (state->player_id >= NET_MAX_PLAYERS) return;
 
@@ -693,13 +682,14 @@ void apply_remote_player_state(const NetPlayerState* state) {
         if (has_input_ack) g.net_last_server_ack = state->input_seq_ack;
         if (state->server_tick != 0) g.net_last_server_tick = state->server_tick;
 
-        float lead_sec = local_authority_lead_seconds(state->server_tick);
-        float target_x = state->x + state->vx * lead_sec;
-        float target_y = state->y + state->vy * lead_sec;
-        uint16_t unacked = has_input_ack
-            ? (uint16_t)(g.net_input_seq - g.net_last_server_ack) : 0;
-        float medium_alpha = unacked ? 0.30f : 0.50f;
-        float small_alpha = unacked ? 0.08f : 0.20f;
+        /* Keep ack/tick as diagnostics for now. The client sends periodic
+         * 60 Hz input heartbeats even when controls have not changed, so
+         * "net_input_seq != ack" is almost always true and does not prove
+         * there is meaningful unplayed input. Extrapolating a server pose
+         * without replaying the unacked input history also pulls against
+         * fresh key changes and reads as flicker/rubberbanding. */
+        float target_x = state->x;
+        float target_y = state->y;
 
         float dx = target_x - sp->ship.pos.x;
         float dy = target_y - sp->ship.pos.y;
@@ -715,15 +705,15 @@ void apply_remote_player_state(const NetPlayerState* state) {
             sp->ship.vel.x = state->vx;
             sp->ship.vel.y = state->vy;
         } else if (dist_sq > 20.0f * 20.0f) {
-            sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, medium_alpha);
-            sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, medium_alpha);
-            sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, medium_alpha);
-            sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, medium_alpha);
+            sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, 0.5f);
+            sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, 0.5f);
+            sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.5f);
+            sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.5f);
         } else {
-            sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, small_alpha);
-            sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, small_alpha);
-            sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, small_alpha);
-            sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, small_alpha);
+            sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, 0.2f);
+            sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, 0.2f);
+            sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.2f);
+            sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.2f);
         }
         vec2 applied_delta = v2_sub(before_pos, sp->ship.pos);
         add_local_player_render_correction(
