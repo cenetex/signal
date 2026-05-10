@@ -9,7 +9,7 @@
  *   STATE           (0x03): [type:1][id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1][tractor_lvl:1][towed_count:1][towed_frags:20]  = 45 bytes (towed_frags = 10 × uint16_t, 0xFFFF = unused)
  *   INPUT           (0x04): legacy 4-8 bytes, current 12 bytes with seq + uint16 target
  *   WORLD_ASTEROIDS (0x10): [type:1][count:u16] + count * ASTEROID_RECORD_SIZE records
- *   WORLD_NPCS      (0x11): [type:1][count:1] + count * 26-byte records
+ *   WORLD_NPCS      (0x11): [type:1][count:1] + count * 29-byte records
  *   WORLD_STATIONS  (0x12): [type:1][count:1] + count * STATION_RECORD_SIZE records
  *   PLAYER_SHIP     (0x15): [type:1][id:1] + ship cargo/hull/credits/levels
  *   SERVER_INFO     (0x16): [type:1][hash:up to 11]
@@ -429,8 +429,9 @@ _Static_assert(NET_ACTION_DELIVER_COMMODITY + COMMODITY_COUNT <= 256,
 /* Asteroid record: [index:2][flags:1][pos:2xf32][vel:2xf32][hp:f32][ore:f32][radius:f32][smelt:u8][grade:u8] */
 #define ASTEROID_RECORD_SIZE 33  /* uint16 index + flags + 7 floats + smelt:u8 + grade:u8 */
 
-/* NPC record: [id+flags:1][flags:1][pos:2xf32][vel:2xf32][angle:f32][target:1][rarity_tint:3] */
-#define NPC_RECORD_SIZE 26
+/* NPC record: [id:1][flags:1][pos:2xf32][vel:2xf32][angle:f32]
+ * [target:u16][towed_fragment:u16][rarity_tint:3], 0xFFFF = none */
+#define NPC_RECORD_SIZE 29
 
 /* Station identity: [index:1][flags:1][services:4][pos:2xf32][radius:f32][dock_radius:f32][signal_range:f32][name:32]
  * [base_price:COMMODITY_COUNT×f32][scaffold_progress:f32][module_count:1][modules:MAX_MODULES×9]

@@ -2030,9 +2030,12 @@ void draw_npc_ships(void) {
         draw_npc_mining_beam(&g.world.npc_ships[i]);
         /* NPC tow tether */
         const npc_ship_t *tnpc = &g.world.npc_ships[i];
-        if (tnpc->towed_fragment >= 0 && tnpc->towed_fragment < MAX_ASTEROIDS) {
+        if (tnpc->role == NPC_ROLE_MINER &&
+            tnpc->towed_fragment >= 0 && tnpc->towed_fragment < MAX_ASTEROIDS) {
             const asteroid_t *ta = &g.world.asteroids[tnpc->towed_fragment];
-            if (ta->active) {
+            float tr = ship_tractor_range(&tnpc->ship);
+            float d = ta->active ? v2_len(v2_sub(ta->pos, tnpc->ship.pos)) : 0.0f;
+            if (ta->active && tr > 0.0f && d <= tr * 1.5f) {
                 float tp = 0.4f + 0.15f * sinf(g.world.time * 3.0f + (float)i * 1.5f);
                 draw_segment(tnpc->ship.pos, ta->pos, 0.7f, 0.5f, 0.2f, tp);
             }

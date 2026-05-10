@@ -538,7 +538,7 @@ static inline int serialize_signal_channel(uint8_t *buf, const signal_channel_t 
 /*
  * WORLD_NPCS message:
  * [type:1][count:1] + count * NPC_RECORD_SIZE-byte records
- * (23 original + 3 manifest-rarity tint bytes)
+ * (24 pose/state bytes + 2 towed-fragment bytes + 3 manifest-rarity tint bytes)
  */
 static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
     int count = 0;
@@ -556,10 +556,15 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
         write_f32_le(&p[10], n->ship.vel.x);
         write_f32_le(&p[14], n->ship.vel.y);
         write_f32_le(&p[18], n->ship.angle);
-        p[22] = (uint8_t)(int8_t)n->target_asteroid;
-        p[23] = (uint8_t)(n->tint_r * 255.0f);
-        p[24] = (uint8_t)(n->tint_g * 255.0f);
-        p[25] = (uint8_t)(n->tint_b * 255.0f);
+        uint16_t target = (n->target_asteroid >= 0 && n->target_asteroid < MAX_ASTEROIDS)
+            ? (uint16_t)n->target_asteroid : 0xFFFFu;
+        uint16_t towed = (n->towed_fragment >= 0 && n->towed_fragment < MAX_ASTEROIDS)
+            ? (uint16_t)n->towed_fragment : 0xFFFFu;
+        write_u16_le(&p[22], target);
+        write_u16_le(&p[24], towed);
+        p[26] = (uint8_t)(n->tint_r * 255.0f);
+        p[27] = (uint8_t)(n->tint_g * 255.0f);
+        p[28] = (uint8_t)(n->tint_b * 255.0f);
         count++;
     }
     buf[0] = NET_MSG_WORLD_NPCS;
@@ -586,7 +591,7 @@ _Static_assert(
     "ASTEROID_RECORD_SIZE must match serialized asteroid layout"
 );
 _Static_assert(
-    2 + 5 * 4 + 1 + 3 == NPC_RECORD_SIZE,
+    2 + 5 * 4 + 2 + 2 + 3 == NPC_RECORD_SIZE,
     "NPC_RECORD_SIZE must match serialized NPC layout"
 );
 _Static_assert(

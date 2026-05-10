@@ -171,12 +171,16 @@ void apply_remote_npcs(const NetNpcState* npcs, int count) {
         n->role = (npc_role_t)((npcs[i].flags >> 1) & 0x3);
         n->state = (npc_state_t)((npcs[i].flags >> 3) & 0x7);
         n->thrusting = (npcs[i].flags & (1 << 6)) != 0;
+        n->ship.hull_class = (n->role == NPC_ROLE_HAULER)
+            ? HULL_CLASS_HAULER : HULL_CLASS_MINER;
         n->ship.pos.x = npcs[i].x;
         n->ship.pos.y = npcs[i].y;
         n->ship.vel.x = npcs[i].vx;
         n->ship.vel.y = npcs[i].vy;
         n->ship.angle = npcs[i].angle;
-        n->target_asteroid = (int)npcs[i].target_asteroid;
+        n->target_asteroid = npcs[i].target_asteroid;
+        n->towed_fragment = npcs[i].towed_fragment;
+        n->towed_scaffold = -1;
         n->tint_r = (float)npcs[i].tint_r / 255.0f;
         n->tint_g = (float)npcs[i].tint_g / 255.0f;
         n->tint_b = (float)npcs[i].tint_b / 255.0f;

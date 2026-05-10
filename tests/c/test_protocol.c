@@ -204,18 +204,19 @@ TEST(test_roundtrip_npcs) {
     npcs[0].ship.pos = v2(800.0f, 400.0f);
     npcs[0].ship.vel = v2(10.0f, -5.0f);
     npcs[0].ship.angle = 1.57f;
-    npcs[0].target_asteroid = 12;
+    npcs[0].target_asteroid = 512;
+    npcs[0].towed_fragment = 1024;
 
     npcs[0].tint_r = 0.55f;
     npcs[0].tint_g = 0.25f;
     npcs[0].tint_b = 0.18f;
 
-    uint8_t buf[2 + MAX_NPC_SHIPS * 26];
+    uint8_t buf[2 + MAX_NPC_SHIPS * NPC_RECORD_SIZE];
     int len = serialize_npcs(buf, npcs);
 
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_NPCS);
     ASSERT_EQ_INT(buf[1], 1);
-    ASSERT_EQ_INT(len, 2 + 26);
+    ASSERT_EQ_INT(len, 2 + NPC_RECORD_SIZE);
 
     uint8_t *p = &buf[2];
     ASSERT_EQ_INT(p[0], 0);
@@ -225,7 +226,9 @@ TEST(test_roundtrip_npcs) {
     ASSERT(p[1] & (1 << 6));                        /* thrusting */
     ASSERT_EQ_FLOAT(read_f32_le(&p[2]), 800.0f, 0.1f);
     ASSERT_EQ_FLOAT(read_f32_le(&p[18]), 1.57f, 0.01f);
-    ASSERT_EQ_INT((int8_t)p[22], 12);              /* target_asteroid */
+    ASSERT_EQ_INT(read_u16_le(&p[22]), 512);       /* target_asteroid */
+    ASSERT_EQ_INT(read_u16_le(&p[24]), 1024);      /* towed_fragment */
+    ASSERT_EQ_INT(p[26], (int)(0.55f * 255.0f));
 }
 
 TEST(test_roundtrip_inspect_snapshot_npc_manifest_chain) {
