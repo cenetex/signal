@@ -8,6 +8,7 @@
  */
 #include "sim_ship.h"
 #include "game_sim.h"  /* SHIP_BRAKE, MAX_STATIONS, station_t */
+#include "tractor.h"
 #include "types.h"
 
 void step_ship_rotation(ship_t *s, float dt, float turn_input) {
@@ -22,6 +23,31 @@ float ship_boost_thrust_mult(bool boost, float hold_t) {
      * the first ~500ms, tail blends into the steady burn. */
     float kick = expf(-3.0f * hold_t);
     return steady + (peak - steady) * kick;
+}
+
+void ship_apply_fragment_tow(ship_t *ship, asteroid_t *fragment, float dt) {
+    if (!ship || !fragment) return;
+    static const tractor_beam_t SHIP_FRAGMENT_TOW_BAND = {
+        .rest_length     = SHIP_TOW_BAND_REST_LEN,
+        .pull_strength   = SHIP_TOW_BAND_SPRING_K,
+        .push_strength   = SHIP_TOW_BAND_SPRING_K,
+        .range           = 0.0f,
+        .axial_damping   = SHIP_TOW_BAND_DAMPING,
+        .tangent_damping = SHIP_TOW_BAND_TANGENT_DRAG,
+        .speed_cap       = 0.0f,
+        .falloff         = TRACTOR_FALLOFF_CONSTANT,
+    };
+    tractor_anchor_t src = {
+        .pos      = ship->pos,
+        .vel      = &ship->vel,
+        .inv_mass = 1.0f / SHIP_TOW_BAND_SHIP_MASS,
+    };
+    tractor_anchor_t tgt = {
+        .pos      = fragment->pos,
+        .vel      = &fragment->vel,
+        .inv_mass = 1.0f,
+    };
+    (void)tractor_apply(&src, &tgt, &SHIP_FRAGMENT_TOW_BAND, dt);
 }
 
 void step_ship_thrust(ship_t *s, float dt, float thrust_input,

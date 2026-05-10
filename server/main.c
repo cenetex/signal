@@ -2206,16 +2206,20 @@ static void broadcast_world(void) {
                 write_f32_le(&q[10], n->ship.vel.x);
                 write_f32_le(&q[14], n->ship.vel.y);
                 write_f32_le(&q[18], n->ship.angle);
-                q[22] = (uint8_t)(int8_t)n->target_asteroid;
-                q[23] = (uint8_t)(n->tint_r * 255.0f);
-                q[24] = (uint8_t)(n->tint_g * 255.0f);
-                q[25] = (uint8_t)(n->tint_b * 255.0f);
+                uint16_t target = (n->target_asteroid >= 0 && n->target_asteroid < MAX_ASTEROIDS)
+                    ? (uint16_t)n->target_asteroid : 0xFFFFu;
+                uint16_t towed = (n->towed_fragment >= 0 && n->towed_fragment < MAX_ASTEROIDS)
+                    ? (uint16_t)n->towed_fragment : 0xFFFFu;
+                write_u16_le(&q[22], target);
+                write_u16_le(&q[24], towed);
+                q[26] = (uint8_t)(n->tint_r * 255.0f);
+                q[27] = (uint8_t)(n->tint_g * 255.0f);
+                q[28] = (uint8_t)(n->tint_b * 255.0f);
                 count++;
             }
             nbuf[0] = NET_MSG_WORLD_NPCS;
             nbuf[1] = (uint8_t)count;
-            if (count > 0)
-                ws_send(sp->conn, nbuf, (size_t)(2 + count * NPC_RECORD_SIZE));
+            ws_send(sp->conn, nbuf, (size_t)(2 + count * NPC_RECORD_SIZE));
         }
     }
 

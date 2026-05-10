@@ -515,10 +515,13 @@ static void handle_message(const uint8_t* data, int len) {
                     arr[i].vx               = read_f32_le(&p[10]);
                     arr[i].vy               = read_f32_le(&p[14]);
                     arr[i].angle            = read_f32_le(&p[18]);
-                    arr[i].target_asteroid  = (int8_t)p[22];
-                    arr[i].tint_r           = p[23];
-                    arr[i].tint_g           = p[24];
-                    arr[i].tint_b           = p[25];
+                    uint16_t target = read_u16_le(&p[22]);
+                    uint16_t towed  = read_u16_le(&p[24]);
+                    arr[i].target_asteroid  = (target == 0xFFFFu) ? -1 : (int)target;
+                    arr[i].towed_fragment   = (towed == 0xFFFFu) ? -1 : (int)towed;
+                    arr[i].tint_r           = p[26];
+                    arr[i].tint_g           = p[27];
+                    arr[i].tint_b           = p[28];
                 }
                 net_state.callbacks.on_npcs(arr, decoded);
             }

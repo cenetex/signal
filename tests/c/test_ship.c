@@ -1,4 +1,5 @@
 #include "test_harness.h"
+#include "sim_ship.h"
 
 TEST(test_ship_hull_def_miner) {
     ship_t ship = {0};
@@ -86,7 +87,27 @@ TEST(test_npc_hull_def) {
     npc.ship.hull_class = HULL_CLASS_NPC_MINER;
     const hull_def_t* hull = npc_hull_def(&npc);
     ASSERT_STR_EQ(hull->name, "Mining Drone");
-    ASSERT_EQ_FLOAT(hull->cargo_capacity, 16.0f, 0.01f);
+    ASSERT_EQ_FLOAT(hull->cargo_capacity, 24.0f, 0.01f);
+    ASSERT_EQ_FLOAT(hull->mining_rate, 28.0f, 0.01f);
+    ASSERT_EQ_FLOAT(hull->tractor_range, 150.0f, 0.01f);
+}
+
+TEST(test_ship_fragment_tow_applies_ship_reaction) {
+    ship_t ship = {0};
+    ship.hull_class = HULL_CLASS_MINER;
+    ship.pos = v2(0.0f, 0.0f);
+    ship.vel = v2(0.0f, 0.0f);
+
+    asteroid_t fragment = {0};
+    fragment.active = true;
+    fragment.tier = ASTEROID_TIER_S;
+    fragment.pos = v2(200.0f, 0.0f);
+    fragment.vel = v2(0.0f, 0.0f);
+
+    ship_apply_fragment_tow(&ship, &fragment, 1.0f / 60.0f);
+
+    ASSERT(fragment.vel.x < 0.0f);
+    ASSERT(ship.vel.x > 0.0f);
 }
 
 TEST(test_product_name) {
@@ -107,5 +128,6 @@ void register_ship_tests(void) {
     RUN(test_upgrade_required_product);
     RUN(test_upgrade_product_cost_scales_with_level);
     RUN(test_npc_hull_def);
+    RUN(test_ship_fragment_tow_applies_ship_reaction);
     RUN(test_product_name);
 }
