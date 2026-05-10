@@ -1,5 +1,9 @@
 # Anime Episodes × Signal: A Creative Framework
 
+**Status:** creative reference. Current playback code, asset format, and live
+trigger hooks are documented in
+[`anime-integration-plan.md`](./anime-integration-plan.md).
+
 ## The Core Concept
 
 The game already has a **signal mechanic** — stations broadcast in expanding circles, and connectivity is survival. Anime episodes become **signal artifacts**: fragmented transmissions from the past (or future?) that you physically discover as you push into deeper space. They're not cutscenes that interrupt gameplay — they're **objects in the world** you stumble across, like finding a black box in a shipwreck.

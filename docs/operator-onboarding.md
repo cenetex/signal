@@ -160,11 +160,16 @@ Run:
 
 Relevant environment variables (read in [`server/main.c`](../server/main.c)):
 
-- `PORT` — TCP port to bind. Defaults to a baked-in value if unset.
-- `SIGNAL_API_TOKEN` — admin API bearer; required for any admin endpoints
-  if `SIGNAL_REQUIRE_API_TOKEN` is set.
+- `PORT` — TCP port to bind. Defaults to `8080` when unset. The root
+  Docker-compose dev flow sets this to `9091` because the same container also
+  serves the static web client on host port `8080`.
+- `SIGNAL_API_TOKEN` — bearer token for `/api/station/<id>/command` and other
+  admin REST surfaces.
 - `SIGNAL_REQUIRE_API_TOKEN` — when set, refuses admin requests that don't
-  present `SIGNAL_API_TOKEN`.
+  present `SIGNAL_API_TOKEN`; startup fails if this is set without a token.
+- `SIGNAL_INTERNAL_SHARED_KEY` — bearer for `/internal/v1/operator-post`.
+  Without it, that internal endpoint rejects all requests. The public
+  station-command workflow below uses `SIGNAL_API_TOKEN` instead.
 - `SIGNAL_ALLOWED_ORIGIN` — CORS allowlist for the websocket upgrade.
 
 The server creates `chain/` on its first emit and writes per-station log
@@ -225,6 +230,10 @@ mutations (smelt one fragment, transfer/sell a finished good, plant an outpost
 ```sh
 ./build/signal_verify chain/<base58(your_pubkey)>.log
 ```
+
+`signal_verify` derives the station pubkey from the `<base58>.log` filename.
+If you are checking a renamed file, pass
+`--station-pubkey=<base58(station_pubkey)>` explicitly.
 
 The same walker is callable from any C tool that links
 [`server/chain_log.c`](../server/chain_log.c); call `chain_log_verify` with the

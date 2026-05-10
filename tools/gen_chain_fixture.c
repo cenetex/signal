@@ -4,7 +4,7 @@
  *
  * Not built by default — rebuild and run only when sim event semantics
  * intentionally change. The output is a small, deterministic chain
- * log covering all 6 event types, with deterministic station keys
+ * log covering the original 6 core event types, with deterministic station keys
  * (seed=0x42).
  *
  * Build:
@@ -79,8 +79,9 @@ int main(int argc, char **argv) {
     if (!f) { perror("fopen"); return 1; }
 
     /* Deterministic 48-event log (just under 10 KB at 202 bytes/entry).
-     * Types rotate over all 6 known kinds so event_type_counts fully
-     * populates. */
+     * Types rotate over the original 6 core kinds so event_type_counts
+     * still exercises multiple buckets without pretending this fixture
+     * covers every event family. */
     uint8_t prev_hash[32] = {0};
     static const uint8_t types[] = {
         CHAIN_EVT_SMELT, CHAIN_EVT_CRAFT, CHAIN_EVT_TRANSFER,
