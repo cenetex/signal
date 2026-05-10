@@ -441,9 +441,8 @@ jobs:
               --query 'Invalidation.Id' \
               --output text
           )
-          aws cloudfront wait invalidation-completed \
-            --distribution-id E32W3RMW5O86FJ \
-            --id "$INV_ID"
+          echo "Submitted CloudFront invalidation $INV_ID for /play/v/$GIT_HASH/*"
+          sleep 30
 
       - name: Deploy server to ECS
         run: |
@@ -546,9 +545,8 @@ jobs:
               --query 'Invalidation.Id' \
               --output text
           )
-          aws cloudfront wait invalidation-completed \
-            --distribution-id E32W3RMW5O86FJ \
-            --id "$INV_ID"
+          echo "Submitted CloudFront invalidation $INV_ID for root client"
+          sleep 30
 
       - name: Smoke test after root client promotion
         id: smoke-post-promote
@@ -574,9 +572,8 @@ jobs:
               --query 'Invalidation.Id' \
               --output text
           )
-          aws cloudfront wait invalidation-completed \
-            --distribution-id E32W3RMW5O86FJ \
-            --id "$INV_ID"
+          echo "Submitted CloudFront rollback invalidation $INV_ID"
+          sleep 30
 
       - name: Fail if post-promotion smoke tests failed
         if: steps.smoke-post-promote.outcome == 'failure'
