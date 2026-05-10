@@ -14,6 +14,7 @@
 #define PL_MPEG_IMPLEMENTATION
 #include "pl_mpeg.h"
 #include "episode.h"
+#include "render.h"
 #include "sokol_gfx.h"
 #include "sokol_gl.h"
 #include "sokol_debugtext.h"
@@ -437,17 +438,11 @@ void episode_render(episode_state_t *ep, float screen_w, float screen_h) {
             }
             if (vid_fade < 0.0f) vid_fade = 0.0f;
 
-            sgl_enable_texture();
-            sgl_texture((sg_view){ ep->view_id }, (sg_sampler){ ep->sampler_id });
-            sgl_begin_quads();
             /* Tint: suppress red/green, boost blue — gives cold transmission feel */
-            sgl_c4f(0.55f * vid_fade, 0.65f * vid_fade, 1.0f * vid_fade, alpha);
-            sgl_v2f_t2f(x0, y0, 0.0f, 0.0f);
-            sgl_v2f_t2f(x1, y0, 1.0f, 0.0f);
-            sgl_v2f_t2f(x1, y1, 1.0f, 1.0f);
-            sgl_v2f_t2f(x0, y1, 0.0f, 1.0f);
-            sgl_end();
-            sgl_disable_texture();
+            draw_texture_rect(ep->view_id, ep->sampler_id,
+                              x0, y0, x1, y1,
+                              0.55f * vid_fade, 0.65f * vid_fade,
+                              1.0f * vid_fade, alpha);
 
             /* Scanline overlay for retro transmission look */
             sgl_begin_quads();

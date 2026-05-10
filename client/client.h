@@ -597,6 +597,7 @@ float player_current_balance(void);
 /* Pre-bake the radial fog vignette textures (one per damage tier).
  * Must be called once after sg_setup. */
 void hull_fog_init(void);
+void hull_fog_shutdown(void);
 
 /* Damage vignette back wave — render before world geometry so ships and
  * stations sit on top of the fog. Ramps 0..1 over damage 0..0.5 (HP 100→50)

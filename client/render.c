@@ -7,6 +7,15 @@
 /* Batched line drawing — call between begin/end_line_batch */
 static bool _line_batch_active = false;
 
+void render_set_screen_space(float screen_w, float screen_h) {
+    sgl_defaults();
+    sgl_matrix_mode_projection();
+    sgl_load_identity();
+    sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
+    sgl_matrix_mode_modelview();
+    sgl_load_identity();
+}
+
 void begin_line_batch(void) {
     sgl_begin_lines();
     _line_batch_active = true;
@@ -124,6 +133,22 @@ void draw_segment(vec2 start, vec2 end, float r, float g0, float b, float a) {
     sgl_v2f(start.x, start.y);
     sgl_v2f(end.x, end.y);
     sgl_end();
+}
+
+void draw_texture_rect(uint32_t view_id, uint32_t sampler_id,
+                       float x0, float y0, float x1, float y1,
+                       float r, float g0, float b, float a) {
+    if (view_id == 0 || sampler_id == 0) return;
+    sgl_enable_texture();
+    sgl_texture((sg_view){ view_id }, (sg_sampler){ sampler_id });
+    sgl_begin_quads();
+    sgl_c4f(r, g0, b, a);
+    sgl_v2f_t2f(x0, y0, 0.0f, 0.0f);
+    sgl_v2f_t2f(x1, y0, 1.0f, 0.0f);
+    sgl_v2f_t2f(x1, y1, 1.0f, 1.0f);
+    sgl_v2f_t2f(x0, y1, 0.0f, 1.0f);
+    sgl_end();
+    sgl_disable_texture();
 }
 
 void commodity_material_tint(commodity_t commodity, float* mr, float* mg, float* mb) {
