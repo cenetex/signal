@@ -317,6 +317,9 @@ typedef struct {
     int8_t  pending_net_place_slot;
     float action_predict_timer;
     float net_input_timer;
+    uint16_t net_input_seq;
+    uint16_t net_last_server_ack;
+    uint32_t net_last_server_tick;
     station_view_t station_view;
     /* TRADE tab pagination: [F] cycles through pages of 5 rows each.
      * Page 0 is rows 0..4, page 1 is 5..9, etc. Wraps when > 9 rows. */

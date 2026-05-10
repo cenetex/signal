@@ -418,12 +418,17 @@ static void handle_message(const uint8_t* data, int len) {
         if (len < 2) break;
         {
             int count = (int)data[1];
-            int expected = 2 + count * PLAYER_RECORD_SIZE;
+            int record_size = PLAYER_RECORD_SIZE;
+            int expected = 2 + count * record_size;
+            if (len < expected && len >= 2 + count * 67) {
+                record_size = 67; /* pre-input-ack server */
+                expected = 2 + count * record_size;
+            }
             if (len < expected) break;
             if (net_state.callbacks.on_players_begin)
                 net_state.callbacks.on_players_begin();
             for (int i = 0; i < count; i++) {
-                const uint8_t *p = &data[2 + i * PLAYER_RECORD_SIZE];
+                const uint8_t *p = &data[2 + i * record_size];
                 uint8_t id = p[0];
                 if (id >= NET_MAX_PLAYERS) continue;
                 NetPlayerState* ps = &net_state.players[id];
@@ -445,6 +450,13 @@ static void handle_message(const uint8_t* data, int len) {
                 ps->beam_start_y = read_f32_le(&p[55]);
                 ps->beam_end_x   = read_f32_le(&p[59]);
                 ps->beam_end_y   = read_f32_le(&p[63]);
+                if (record_size >= 73) {
+                    ps->input_seq_ack = read_u16_le(&p[67]);
+                    ps->server_tick   = read_u32_le(&p[69]);
+                } else {
+                    ps->input_seq_ack = 0;
+                    ps->server_tick = 0;
+                }
                 ps->active = true;
                 if (net_state.callbacks.on_state) {
                     net_state.callbacks.on_state(ps);
@@ -1243,20 +1255,25 @@ void net_send_session(const uint8_t token[8]) {
     ws_send_binary(buf, 9);
 }
 
-void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target,
+void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
+                    uint16_t mining_target,
                     uint8_t buy_grade, int8_t place_station,
                     int8_t place_ring, int8_t place_slot) {
-    uint8_t buf[8];
+    uint8_t buf[12];
     buf[0] = NET_MSG_INPUT;
     buf[1] = flags;
     buf[2] = action;
-    buf[3] = mining_target;
+    buf[3] = (mining_target == 0xFFFFu) ? 0xFFu : (uint8_t)(mining_target & 0xFFu);
     buf[4] = buy_grade;
     /* int8 -> uint8 round-trip preserves sentinel -1 (=> 0xFF). */
     buf[5] = (uint8_t)place_station;
     buf[6] = (uint8_t)place_ring;
     buf[7] = (uint8_t)place_slot;
-    ws_send_binary(buf, 8);
+    buf[8] = (uint8_t)(input_seq & 0xFFu);
+    buf[9] = (uint8_t)(input_seq >> 8);
+    buf[10] = (uint8_t)(mining_target & 0xFFu);
+    buf[11] = (uint8_t)(mining_target >> 8);
+    ws_send_binary(buf, 12);
 }
 
 void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {
@@ -1407,20 +1424,25 @@ void net_send_session(const uint8_t token[8]) {
     ws_send_binary(buf, 9);
 }
 
-void net_send_input(uint8_t flags, uint8_t action, uint8_t mining_target,
+void net_send_input(uint8_t flags, uint8_t action, uint16_t input_seq,
+                    uint16_t mining_target,
                     uint8_t buy_grade, int8_t place_station,
                     int8_t place_ring, int8_t place_slot) {
-    uint8_t buf[8];
+    uint8_t buf[12];
     buf[0] = NET_MSG_INPUT;
     buf[1] = flags;
     buf[2] = action;
-    buf[3] = mining_target;
+    buf[3] = (mining_target == 0xFFFFu) ? 0xFFu : (uint8_t)(mining_target & 0xFFu);
     buf[4] = buy_grade;
     /* int8 -> uint8 round-trip preserves sentinel -1 (=> 0xFF). */
     buf[5] = (uint8_t)place_station;
     buf[6] = (uint8_t)place_ring;
     buf[7] = (uint8_t)place_slot;
-    ws_send_binary(buf, 8);
+    buf[8] = (uint8_t)(input_seq & 0xFFu);
+    buf[9] = (uint8_t)(input_seq >> 8);
+    buf[10] = (uint8_t)(mining_target & 0xFFu);
+    buf[11] = (uint8_t)(mining_target >> 8);
+    ws_send_binary(buf, 12);
 }
 
 void net_send_buy_ingot(const uint8_t ingot_pubkey[32]) {

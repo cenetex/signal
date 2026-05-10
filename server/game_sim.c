@@ -3314,7 +3314,7 @@ static void step_player(world_t *w, server_player_t *sp, float dt) {
 
     /* Snapshot the network-provided continuous inputs BEFORE the autopilot
      * gets a chance to overwrite them. The MP server sub-steps at 120Hz
-     * but parse_input only runs when a NET_MSG_INPUT arrives (~30Hz), so
+     * but parse_input only runs when a NET_MSG_INPUT arrives (~60Hz), so
      * sp->input is the last network state. The autopilot writes turn /
      * thrust / mine each tick to drive physics — without this snapshot,
      * the NEXT sub-step's manual-override check would see the autopilot's

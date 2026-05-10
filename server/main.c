@@ -83,7 +83,7 @@ static void send_highscores_to(struct mg_connection *c) {
 static uint64_t last_station_identity = 0;
 
 /* Timing intervals in milliseconds */
-#define SIM_TICK_MS   33    /* ~30 Hz poll rate; sim uses SIM_DT accumulator */
+#define SIM_TICK_MS   8     /* ~120 Hz poll gate; sim uses SIM_DT accumulator */
 #define STATE_TICK_MS 50    /* 20 Hz player state broadcast */
 #define WORLD_TICK_MS 100   /* 10 Hz world state broadcast */
 #define SHIP_TICK_MS  250   /* 4 Hz full ship state (cargo, hull, etc.) */
@@ -261,7 +261,7 @@ static void broadcast_fracture_updates(void) {
 /* Per-player WebSocket message rate limiting */
 static struct { uint64_t window_start; int msg_count; } ws_rate[MAX_PLAYERS];
 #define WS_RATE_WINDOW_MS 1000
-#define WS_RATE_LIMIT 60  /* 60 msgs/sec -- generous for 30Hz game input */
+#define WS_RATE_LIMIT 140 /* 60Hz input + signed/plan bursts without drops */
 
 static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm) {
     int pid = -1;
@@ -285,6 +285,10 @@ static void handle_ws_message(struct mg_connection *c, struct mg_ws_message *wm)
     switch (data[0]) {
     case NET_MSG_INPUT:
         parse_input(data, len, &world.players[pid].input);
+        if (len >= 10) {
+            world.players[pid].last_input_seq =
+                (uint16_t)data[8] | ((uint16_t)data[9] << 8);
+        }
         /* If the player just queued a shipyard order, refresh that station's
          * identity on the next world tick so the SHIPYARD tab sees the new
          * pending count immediately instead of waiting for the 2s fallback. */
@@ -2152,7 +2156,8 @@ static void broadcast_player_states(void) {
     /* Batch all connected player states into one message, send once per client.
      * This is O(N) sends instead of O(N^2). */
     uint8_t buf[2 + MAX_PLAYERS * PLAYER_RECORD_SIZE];
-    int len = serialize_all_player_states(buf, world.players);
+    uint32_t server_tick = (uint32_t)lroundf(world.time * 120.0f);
+    int len = serialize_all_player_states(buf, world.players, server_tick);
     broadcast(buf, (size_t)len);
 }
 

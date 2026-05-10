@@ -478,7 +478,7 @@ TEST(test_bug35_no_brake_flag) {
 }
 
 TEST(test_bug36_stale_input_between_sends) {
-    /* Input is now sent every frame (~16ms at 60fps).  At 120Hz sim,
+    /* Input is now sent at 60Hz (~16ms).  At 120Hz sim,
      * that means at most ~2 ticks of stale input, which is acceptable. */
     float send_interval = 1.0f / 60.0f;  /* ~16ms at 60fps */
     float sim_dt = SIM_DT;               /* ~8.3ms */

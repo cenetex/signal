@@ -12,6 +12,8 @@
 #define STATION_RING_CORRECTION_SEC 0.35f
 #define NET_MOTION_TELEMETRY_WINDOW_SEC 5.0f
 #define LOCAL_PLAYER_RENDER_OFFSET_MAX 140.0f
+#define NET_SERVER_TICK_RATE 120.0f
+#define NET_LOCAL_EXTRAPOLATE_MAX_SEC 0.50f
 
 static float station_ring_correction[MAX_STATIONS][MAX_ARMS];
 static bool station_ring_have_snapshot[MAX_STATIONS];
@@ -667,6 +669,15 @@ static void add_local_player_render_correction(vec2 applied_delta,
     }
 }
 
+static float local_authority_lead_seconds(uint32_t server_tick) {
+    if (server_tick == 0) return 0.0f;
+    uint32_t local_tick = (uint32_t)lroundf(g.world.time * NET_SERVER_TICK_RATE);
+    int32_t delta_ticks = (int32_t)(local_tick - server_tick);
+    if (delta_ticks <= 0) return 0.0f;
+    float lead = (float)delta_ticks / NET_SERVER_TICK_RATE;
+    return clampf(lead, 0.0f, NET_LOCAL_EXTRAPOLATE_MAX_SEC);
+}
+
 void apply_remote_player_state(const NetPlayerState* state) {
     if (state->player_id >= NET_MAX_PLAYERS) return;
 
@@ -674,8 +685,20 @@ void apply_remote_player_state(const NetPlayerState* state) {
         /* Reconcile local prediction with server-authoritative position. */
         server_player_t* sp = &g.world.players[state->player_id];
         vec2 before_pos = sp->ship.pos;
-        float dx = state->x - sp->ship.pos.x;
-        float dy = state->y - sp->ship.pos.y;
+        bool has_input_ack = state->input_seq_ack != 0;
+        if (has_input_ack) g.net_last_server_ack = state->input_seq_ack;
+        if (state->server_tick != 0) g.net_last_server_tick = state->server_tick;
+
+        float lead_sec = local_authority_lead_seconds(state->server_tick);
+        float target_x = state->x + state->vx * lead_sec;
+        float target_y = state->y + state->vy * lead_sec;
+        uint16_t unacked = has_input_ack
+            ? (uint16_t)(g.net_input_seq - g.net_last_server_ack) : 0;
+        float medium_alpha = unacked ? 0.30f : 0.50f;
+        float small_alpha = unacked ? 0.08f : 0.20f;
+
+        float dx = target_x - sp->ship.pos.x;
+        float dy = target_y - sp->ship.pos.y;
         float dist_sq = dx * dx + dy * dy;
         float correction_dist = sqrtf(dist_sq);
         float dvx = state->vx - sp->ship.vel.x;
@@ -683,20 +706,20 @@ void apply_remote_player_state(const NetPlayerState* state) {
         float velocity_error = sqrtf(dvx * dvx + dvy * dvy);
 
         if (dist_sq > 200.0f * 200.0f) {
-            sp->ship.pos.x = state->x;
-            sp->ship.pos.y = state->y;
+            sp->ship.pos.x = target_x;
+            sp->ship.pos.y = target_y;
             sp->ship.vel.x = state->vx;
             sp->ship.vel.y = state->vy;
         } else if (dist_sq > 20.0f * 20.0f) {
-            sp->ship.pos.x = lerpf(sp->ship.pos.x, state->x, 0.5f);
-            sp->ship.pos.y = lerpf(sp->ship.pos.y, state->y, 0.5f);
-            sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.5f);
-            sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.5f);
+            sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, medium_alpha);
+            sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, medium_alpha);
+            sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, medium_alpha);
+            sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, medium_alpha);
         } else {
-            sp->ship.pos.x = lerpf(sp->ship.pos.x, state->x, 0.2f);
-            sp->ship.pos.y = lerpf(sp->ship.pos.y, state->y, 0.2f);
-            sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, 0.2f);
-            sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, 0.2f);
+            sp->ship.pos.x = lerpf(sp->ship.pos.x, target_x, small_alpha);
+            sp->ship.pos.y = lerpf(sp->ship.pos.y, target_y, small_alpha);
+            sp->ship.vel.x = lerpf(sp->ship.vel.x, state->vx, small_alpha);
+            sp->ship.vel.y = lerpf(sp->ship.vel.y, state->vy, small_alpha);
         }
         vec2 applied_delta = v2_sub(before_pos, sp->ship.pos);
         add_local_player_render_correction(
@@ -913,5 +936,10 @@ void on_remote_death(uint8_t player_id, float pos_x, float pos_y,
 }
 
 void on_remote_world_time(float server_time) {
-    g.world.time = server_time;
+    float delta = server_time - g.world.time;
+    if (fabsf(delta) > 2.0f) {
+        g.world.time = server_time;
+    } else {
+        g.world.time += delta * 0.10f;
+    }
 }

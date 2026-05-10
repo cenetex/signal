@@ -147,6 +147,9 @@ static void reset_world(void) {
     g.pending_net_place_station = -1;
     g.pending_net_place_ring    = -1;
     g.pending_net_place_slot    = -1;
+    g.net_input_seq = 0;
+    g.net_last_server_ack = 0;
+    g.net_last_server_tick = 0;
     audio_clear_voices(&g.audio);
     clear_collection_feedback();
 
@@ -1697,12 +1700,12 @@ static void frame(void) {
             }
 #endif
         }
-        /* Send input at ~30 Hz, or immediately if there's a one-shot action. */
+        /* Send input at ~60 Hz, or immediately if there's a one-shot action. */
         {
             uint8_t action = g.pending_net_action;
             g.net_input_timer -= frame_dt;
             if (g.net_input_timer <= 0.0f || action != 0) {
-                g.net_input_timer = 1.0f / 30.0f;
+                g.net_input_timer = 1.0f / 60.0f;
                 uint8_t flags = 0;
                 input_intent_t movement_intent = {0};
                 input_sample_movement(&movement_intent);
@@ -1733,8 +1736,12 @@ static void frame(void) {
                 g.pending_net_place_station = -1;
                 g.pending_net_place_ring    = -1;
                 g.pending_net_place_slot    = -1;
-                uint8_t mining_target = (LOCAL_PLAYER.hover_asteroid >= 0 && LOCAL_PLAYER.hover_asteroid < 255)
-                    ? (uint8_t)LOCAL_PLAYER.hover_asteroid : 255;
+                uint16_t mining_target =
+                    (LOCAL_PLAYER.hover_asteroid >= 0 &&
+                     LOCAL_PLAYER.hover_asteroid < MAX_ASTEROIDS)
+                    ? (uint16_t)LOCAL_PLAYER.hover_asteroid : 0xFFFFu;
+                g.net_input_seq++;
+                if (g.net_input_seq == 0) g.net_input_seq++;
                 /* Layer A.3 of #479 — migrate state-changing actions
                  * onto the signed channel when an identity secret is
                  * available. Transient input (movement, mining-beam-on)
@@ -1758,8 +1765,8 @@ static void frame(void) {
                         action = NET_ACTION_NONE;
                     }
                 }
-                net_send_input(flags, action, mining_target, buy_grade_byte,
-                               place_station, place_ring, place_slot);
+                net_send_input(flags, action, g.net_input_seq, mining_target,
+                               buy_grade_byte, place_station, place_ring, place_slot);
             }
         }
     }
