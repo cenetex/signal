@@ -66,14 +66,15 @@ typedef struct {
     uint8_t grade;        /* mining_grade_t — 0 = common, set on tractor */
 } NetAsteroidState;
 
-/* Packed NPC state for world sync (23 bytes per NPC). */
+/* Packed NPC state for world sync. */
 typedef struct {
     uint8_t index;      /* NPC slot 0-15 */
     uint8_t flags;      /* bit0=active, bits1-2=role, bits3-5=state, bit6=thrusting */
     float x, y;         /* position */
     float vx, vy;       /* velocity */
     float angle;        /* facing */
-    int8_t target_asteroid; /* mining target (-1 for none) */
+    int target_asteroid;    /* mining target (-1 for none) */
+    int towed_fragment;     /* towed fragment (-1 for none) */
     uint8_t tint_r, tint_g, tint_b; /* manifest rarity display tint */
 } NetNpcState;
 
