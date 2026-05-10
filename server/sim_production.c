@@ -476,8 +476,12 @@ void step_furnace_smelting(world_t *w, float dt) {
                 st->module_active_pulse[m] = 1.0f;
 
                 float d_mid = sqrtf(v2_dist_sq(a->pos, midpoint));
-                /* Smelt when fragment is close to the midpoint */
-                if (d_mid < 80.0f) {
+                /* Smelt once the fragment is in the central beam corridor.
+                 * The both-module reach gate above keeps this local to the
+                 * furnace/hopper pair; the wider midpoint radius lets player
+                 * and NPC tow bands finish deliveries instead of holding ore
+                 * just outside the old 80u threshold forever. */
+                if (d_mid < HOPPER_PULL_RANGE * 0.5f) {
                     smelt_station = s;
                     smelted = true;
                 }

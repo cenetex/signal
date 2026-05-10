@@ -797,6 +797,78 @@ TEST(test_refinery_deposits_named_ingot) {
     }
 }
 
+TEST(test_furnace_smelting_accepts_beam_corridor_delivery) {
+    WORLD_DECL;
+    world_reset(&w);
+
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w.npc_ships[i].active = false;
+    for (int arm = 0; arm < MAX_ARMS; arm++) {
+        w.stations[0].arm_speed[arm] = 0.0f;
+        w.stations[0].arm_rotation[arm] = 0.0f;
+    }
+
+    int furnace_idx = -1;
+    int hopper_idx = -1;
+    for (int m = 0; m < w.stations[0].module_count; m++) {
+        station_module_t *f = &w.stations[0].modules[m];
+        if (f->scaffold || f->type != MODULE_FURNACE) continue;
+        if (module_instance_input_ore(f) != COMMODITY_FERRITE_ORE) continue;
+        int ring = f->ring;
+        vec2 furnace_pos = module_world_pos_ring(&w.stations[0], ring, f->slot);
+        float best_d = 1e18f;
+        int adj_rings[2] = { ring + 1, ring - 1 };
+        for (int ri = 0; ri < 2; ri++) {
+            int adj = adj_rings[ri];
+            if (adj < 1 || adj > STATION_NUM_RINGS) continue;
+            for (int h = 0; h < w.stations[0].module_count; h++) {
+                station_module_t *hm = &w.stations[0].modules[h];
+                if (hm->scaffold || hm->ring != adj) continue;
+                if (hm->type != MODULE_HOPPER) continue;
+                if ((commodity_t)hm->commodity != COMMODITY_FERRITE_ORE) continue;
+                vec2 hp = module_world_pos_ring(&w.stations[0], adj, hm->slot);
+                float d = v2_dist_sq(furnace_pos, hp);
+                if (d < best_d) { best_d = d; furnace_idx = m; hopper_idx = h; }
+            }
+        }
+    }
+    ASSERT(furnace_idx >= 0);
+    ASSERT(hopper_idx >= 0);
+
+    vec2 furnace_pos = module_world_pos_ring(&w.stations[0],
+        w.stations[0].modules[furnace_idx].ring, w.stations[0].modules[furnace_idx].slot);
+    vec2 hopper_pos = module_world_pos_ring(&w.stations[0],
+        w.stations[0].modules[hopper_idx].ring, w.stations[0].modules[hopper_idx].slot);
+    vec2 midpoint = v2_scale(v2_add(furnace_pos, hopper_pos), 0.5f);
+    vec2 beam_axis = v2_sub(hopper_pos, furnace_pos);
+    vec2 tangent = v2_norm(v2_perp(beam_axis));
+    vec2 delivery_pos = v2_add(midpoint, v2_scale(tangent, 120.0f));
+
+    ASSERT(sqrtf(v2_dist_sq(delivery_pos, midpoint)) > 80.0f);
+    ASSERT(v2_dist_sq(delivery_pos, furnace_pos) < HOPPER_PULL_RANGE * HOPPER_PULL_RANGE);
+    ASSERT(v2_dist_sq(delivery_pos, hopper_pos) < HOPPER_PULL_RANGE * HOPPER_PULL_RANGE);
+
+    int frag = -1;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) {
+        if (!w.asteroids[i].active) { frag = i; break; }
+    }
+    ASSERT(frag >= 0);
+
+    asteroid_t *a = &w.asteroids[frag];
+    memset(a, 0, sizeof(*a));
+    a->active = true;
+    a->tier = ASTEROID_TIER_S;
+    a->commodity = COMMODITY_FERRITE_ORE;
+    a->ore = 4.0f;
+    a->max_ore = 4.0f;
+    a->radius = 6.0f;
+    a->fracture_child = true;
+    a->pos = delivery_pos;
+    a->vel = v2(0.0f, 0.0f);
+
+    step_furnace_smelting(&w, SIM_DT);
+    ASSERT(a->smelt_progress > 0.0f);
+}
+
 TEST(test_station_production_dual_writes_frame_manifest) {
     WORLD_DECL;
     world_reset(&w);
@@ -2759,6 +2831,7 @@ void register_world_sim_basic_tests(void) {
     RUN(test_world_sim_step_refinery_hopper_path_retired);
     RUN(test_mining_class_prefix_round_trip);
     RUN(test_refinery_deposits_named_ingot);
+    RUN(test_furnace_smelting_accepts_beam_corridor_delivery);
     RUN(test_station_production_dual_writes_frame_manifest);
     RUN(test_station_production_dual_writes_laser_manifest);
     RUN(test_station_production_without_manifest_inputs_refuses_to_mint);
