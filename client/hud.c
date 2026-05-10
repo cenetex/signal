@@ -32,8 +32,10 @@ static float client_station_balance(int station_idx) {
     if (station_idx < 0 || station_idx >= MAX_STATIONS) return 0.0f;
     const station_t *st = &g.world.stations[station_idx];
     const uint8_t *token = g.world.players[g.local_player_slot].session_token;
+    uint8_t pseudo[32];
+    client_session_pseudo_pubkey(token, pseudo);
     for (int i = 0; i < st->ledger_count; i++) {
-        if (memcmp(st->ledger[i].player_pubkey, token, 8) == 0)
+        if (memcmp(st->ledger[i].player_pubkey, pseudo, 32) == 0)
             return st->ledger[i].balance;
     }
     return 0.0f;
@@ -1104,6 +1106,8 @@ static bool client_pending_summary(int *strongest_idx,
     if (strongest_balance) *strongest_balance = 0.0f;
     if (other_count) *other_count = 0;
     if (!g.local_server.active) return false;
+    uint8_t pseudo[32];
+    client_session_pseudo_pubkey(LOCAL_PLAYER.session_token, pseudo);
     int best_idx = -1;
     float best_bal = 0.0f;
     int positives = 0;
@@ -1112,7 +1116,7 @@ static bool client_pending_summary(int *strongest_idx,
         float bal = 0.0f;
         for (int li = 0; li < st->ledger_count; li++) {
             if (memcmp(st->ledger[li].player_pubkey,
-                       LOCAL_PLAYER.session_token, 8) == 0) {
+                       pseudo, 32) == 0) {
                 bal += st->ledger[li].balance;
             }
         }
