@@ -2654,6 +2654,83 @@ TEST(test_npc_mining_drops_state_when_target_out_of_cone) {
     ASSERT_EQ_INT(npc->state, NPC_STATE_TRAVEL_TO_ASTEROID);
 }
 
+TEST(test_npc_miner_does_not_claim_fragment_outside_tractor_range) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w->npc_ships[i].active = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+
+    npc_ship_t *npc = &w->npc_ships[0];
+    npc->active = true;
+    npc->role = NPC_ROLE_MINER;
+    npc->state = NPC_STATE_IDLE;
+    npc->home_station = 0;
+    npc->dest_station = 0;
+    npc->state_timer = 0.0f;
+    npc->target_asteroid = -1;
+    npc->towed_fragment = -1;
+    npc->ship.hull_class = HULL_CLASS_MINER;
+    npc->hull = 100.0f;
+    npc->ship.pos = v2_add(w->stations[0].pos, v2(900.0f, 900.0f));
+    npc->ship.vel = v2(0.0f, 0.0f);
+    npc->ship.angle = 0.0f;
+
+    asteroid_t *frag = &w->asteroids[0];
+    frag->active = true;
+    frag->tier = ASTEROID_TIER_S;
+    frag->commodity = COMMODITY_FERRITE_ORE;
+    frag->radius = 12.0f;
+    frag->ore = 1.0f;
+    frag->max_ore = 1.0f;
+    frag->pos = v2_add(npc->ship.pos, v2(ship_tractor_range(&npc->ship) + 80.0f, 0.0f));
+    frag->vel = v2(0.0f, 0.0f);
+
+    rebuild_characters_from_npcs(w);
+    world_sim_step(w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->towed_fragment, -1);
+    ASSERT_EQ_FLOAT(frag->vel.x, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(frag->vel.y, 0.0f, 0.001f);
+}
+
+TEST(test_npc_miner_drops_fragment_when_tow_band_snaps) {
+    WORLD_HEAP w = calloc(1, sizeof(world_t));
+    world_reset(w);
+    for (int i = 0; i < MAX_NPC_SHIPS; i++) w->npc_ships[i].active = false;
+    for (int i = 0; i < MAX_ASTEROIDS; i++) w->asteroids[i].active = false;
+
+    npc_ship_t *npc = &w->npc_ships[0];
+    npc->active = true;
+    npc->role = NPC_ROLE_MINER;
+    npc->state = NPC_STATE_RETURN_TO_STATION;
+    npc->home_station = 0;
+    npc->dest_station = 0;
+    npc->target_asteroid = -1;
+    npc->towed_fragment = 0;
+    npc->ship.hull_class = HULL_CLASS_MINER;
+    npc->hull = 100.0f;
+    npc->ship.pos = v2_add(w->stations[0].pos, v2(900.0f, 900.0f));
+    npc->ship.vel = v2(0.0f, 0.0f);
+    npc->ship.angle = 0.0f;
+
+    asteroid_t *frag = &w->asteroids[0];
+    frag->active = true;
+    frag->tier = ASTEROID_TIER_S;
+    frag->commodity = COMMODITY_FERRITE_ORE;
+    frag->radius = 12.0f;
+    frag->ore = 1.0f;
+    frag->max_ore = 1.0f;
+    frag->pos = v2_add(npc->ship.pos, v2(ship_tractor_range(&npc->ship) * 1.5f + 40.0f, 0.0f));
+    frag->vel = v2(0.0f, 0.0f);
+
+    rebuild_characters_from_npcs(w);
+    world_sim_step(w, SIM_DT);
+
+    ASSERT_EQ_INT(npc->towed_fragment, -1);
+    ASSERT_EQ_FLOAT(frag->vel.x, 0.0f, 0.001f);
+    ASSERT_EQ_FLOAT(frag->vel.y, 0.0f, 0.001f);
+}
+
 void register_world_sim_basic_tests(void) {
     TEST_SECTION("\nWorld sim tests:\n");
     RUN(test_world_reset_creates_stations);
@@ -2691,6 +2768,8 @@ void register_world_sim_basic_tests(void) {
     RUN(test_mining_beam_step_rejects_target_beyond_surface_range);
     RUN(test_mining_beam_step_rejects_off_axis_target);
     RUN(test_npc_mining_drops_state_when_target_out_of_cone);
+    RUN(test_npc_miner_does_not_claim_fragment_outside_tractor_range);
+    RUN(test_npc_miner_drops_fragment_when_tow_band_snaps);
     RUN(test_world_network_writes_persist);
 }
 

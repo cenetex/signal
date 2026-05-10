@@ -258,15 +258,15 @@ const hull_def_t HULL_DEFS[HULL_CLASS_COUNT] = {
     },
     [HULL_CLASS_NPC_MINER] = {
         .name          = "Mining Drone",
-        .max_hull      = 80.0f,
-        .accel         = 140.0f,
-        .turn_speed    = 1.8f,
-        .drag          = 0.5f,
-        .cargo_capacity  = 16.0f,
+        .max_hull      = 100.0f,
+        .accel         = 300.0f,
+        .turn_speed    = 2.75f,
+        .drag          = 0.45f,
+        .cargo_capacity  = 24.0f,
         .ingot_capacity= 0.0f,
-        .mining_rate   = 8.0f,
-        .tractor_range = 0.0f,
-        .ship_radius   = 12.0f,
+        .mining_rate   = 28.0f,
+        .tractor_range = 150.0f,
+        .ship_radius   = 16.0f,
         .render_scale  = 0.7f,
     },
 };
@@ -1968,40 +1968,13 @@ static bool is_already_towed(const ship_t *ship, int asteroid_idx) {
  * brake — rocks naturally trail at REST_LEN while the ship cruises,
  * and stretch when the ship accelerates away.
  *
- * Constants tuned so:
+ * Constants live in sim_ship.h so player ships and NPC miner ships use
+ * the same tow primitive. Tuned so:
  *   - 100 u stretch ≈ a noticeable tug (~3 HP/s of ship drag at full load)
  *   - 200 u stretch ≈ near-elastic-limit, hauling feels heavy
  *   - tractor_range * 1.5 ≈ snap-out (band breaks). */
-#define BAND_REST_LEN     80.0f
-#define BAND_SPRING_K      4.0f   /* per unit of stretch (looser = more elastic lag) */
-#define BAND_DAMPING       0.6f   /* light along-band damping — let it bounce */
-#define BAND_TANGENT_DRAG  0.4f   /* just enough to bleed orbit, not lock parallel motion */
-#define BAND_SHIP_MASS     8.0f   /* ship is heavier than a rock; reaction force scaled by 1/MASS */
-/* Player tow band: symmetric spring (push == pull, signed by stretch),
- * 1D axial damping, separate tangent drag, full reaction on the ship.
- * Behavior identical to the pre-tractor-primitive hand-rolled version. */
-static const tractor_beam_t PLAYER_TOW_BAND = {
-    .rest_length     = BAND_REST_LEN,
-    .pull_strength   = BAND_SPRING_K,
-    .push_strength   = BAND_SPRING_K,
-    .range           = 0.0f,                       /* 0 = no range gate */
-    .axial_damping   = BAND_DAMPING,
-    .tangent_damping = BAND_TANGENT_DRAG,
-    .speed_cap       = 0.0f,
-    .falloff         = TRACTOR_FALLOFF_CONSTANT,
-};
 static void apply_band_force(server_player_t *sp, asteroid_t *a, float dt) {
-    tractor_anchor_t src = {
-        .pos      = sp->ship.pos,
-        .vel      = &sp->ship.vel,
-        .inv_mass = 1.0f / BAND_SHIP_MASS,
-    };
-    tractor_anchor_t tgt = {
-        .pos      = a->pos,
-        .vel      = &a->vel,
-        .inv_mass = 1.0f,
-    };
-    (void)tractor_apply(&src, &tgt, &PLAYER_TOW_BAND, dt);
+    ship_apply_fragment_tow(&sp->ship, a, dt);
 }
 
 /* Pick the closest signal-providing station to a position, or -1 if no
@@ -2273,12 +2246,12 @@ static void release_towed_fragments(world_t *w, server_player_t *sp) {
         vec2 dir = v2_scale(to_ship, 1.0f / dist);
         /* Stretch beyond rest length — only the elastic portion counts
          * as stored energy. A rock at slack-distance gets just BASE. */
-        float stretch = dist - BAND_REST_LEN;
+        float stretch = dist - SHIP_TOW_BAND_REST_LEN;
         if (stretch < 0.0f) stretch = 0.0f;
         /* v = sqrt(K) * stretch  is the elastic-energy fling. With
-         * BAND_SPRING_K = 6 and stretch = 200 (deep stretch), this is
-         * ~490 m/s — punchy. Half-stretch (100) is ~245 m/s. */
-        float elastic = sqrtf(BAND_SPRING_K) * stretch;
+         * SHIP_TOW_BAND_SPRING_K = 4 and stretch = 200 (deep stretch),
+         * this is ~400 m/s. Half-stretch (100) is ~200 m/s. */
+        float elastic = sqrtf(SHIP_TOW_BAND_SPRING_K) * stretch;
         float fling = ROCK_THROW_BASE_SPEED + elastic;
         a->vel = v2_add(sp->ship.vel, v2_scale(dir, fling));
         a->net_dirty = true;
@@ -4983,6 +4956,18 @@ void step_station_ring_dynamics(world_t *w, float dt) {
     }
 }
 
+static void sync_npc_paired_ship_physics(world_t *w, int npc_slot) {
+    if (!w || npc_slot < 0 || npc_slot >= MAX_NPC_SHIPS) return;
+    npc_ship_t *npc = &w->npc_ships[npc_slot];
+    if (!npc->active) return;
+    ship_t *ship = world_npc_ship_for(w, npc_slot);
+    if (!ship) return;
+    ship->pos = npc->ship.pos;
+    ship->vel = npc->ship.vel;
+    ship->angle = npc->ship.angle;
+    ship->hull_class = npc->ship.hull_class;
+}
+
 void world_sim_step(world_t *w, float dt) {
     w->events.count = 0;
     w->time += dt;
@@ -5123,14 +5108,16 @@ void world_sim_step(world_t *w, float dt) {
                         a->session_token, DEATH_CAUSE_RAM);
                 }
             }
+            sync_npc_paired_ship_physics(w, i);
+            sync_npc_paired_ship_physics(w, j);
         }
     }
 
     /* Player-NPC collision: same shape as player-player. Players push
      * NPCs around at full force (mass-symmetric), and ramming a hauler
-     * costs both sides hull. NPC physics writes land on npc_ship_t for
-     * now; the end-of-tick mirror in step_npc_ships pushes them onto
-     * the paired ship_t. */
+     * costs both sides hull. Collision writes land on npc_ship_t first,
+     * then sync_npc_paired_ship_physics keeps the paired ship_t from
+     * lagging one tick behind. */
     for (int i = 0; i < MAX_PLAYERS; i++) {
         server_player_t *sp = &w->players[i];
         if (!sp->connected || sp->docked) continue;
@@ -5165,6 +5152,7 @@ void world_sim_step(world_t *w, float dt) {
                         sp->session_token, DEATH_CAUSE_RAM);
                 }
             }
+            sync_npc_paired_ship_physics(w, n);
         }
     }
 }

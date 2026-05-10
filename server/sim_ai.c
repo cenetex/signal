@@ -442,6 +442,20 @@ static character_kind_t character_kind_from_role(npc_role_t role) {
     }
 }
 
+static hull_class_t npc_hull_class_for_role(npc_role_t role) {
+    switch (role) {
+    case NPC_ROLE_MINER:  return HULL_CLASS_MINER;
+    case NPC_ROLE_HAULER: return HULL_CLASS_HAULER;
+    case NPC_ROLE_TOW:    return HULL_CLASS_MINER;
+    default:              return HULL_CLASS_MINER;
+    }
+}
+
+static void npc_enforce_role_hull(npc_ship_t *npc) {
+    if (!npc) return;
+    npc->ship.hull_class = npc_hull_class_for_role(npc->role);
+}
+
 /* Find a free ships[] slot — one not pointed to by any active character.
  * Returns -1 if the pool is full. */
 static int ship_pool_alloc_slot(const world_t *w) {
@@ -800,6 +814,7 @@ void rebuild_characters_from_npcs(world_t *w) {
             npc->session_token[6] = (uint8_t)(tok & 0xFF);
             npc->session_token[7] = (uint8_t)((tok >> 8) & 0xFF);
         }
+        npc_enforce_role_hull(npc);
         (void)character_alloc_for_npc(w, n, npc);
     }
 }
@@ -812,13 +827,7 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
     }
     if (slot < 0) return -1;
     station_t *st = &w->stations[station_idx];
-    hull_class_t hc;
-    switch (role) {
-    case NPC_ROLE_MINER: hc = HULL_CLASS_NPC_MINER; break;
-    case NPC_ROLE_HAULER: hc = HULL_CLASS_HAULER; break;
-    case NPC_ROLE_TOW:    hc = HULL_CLASS_HAULER; break; /* tow drone uses hauler hull */
-    default: hc = HULL_CLASS_NPC_MINER; break;
-    }
+    hull_class_t hc = npc_hull_class_for_role(role);
     npc_ship_t *npc = &w->npc_ships[slot];
     memset(npc, 0, sizeof(*npc));
     /* Clear stale path from previous occupant of this slot. */
@@ -883,7 +892,8 @@ int spawn_npc(world_t *w, int station_idx, npc_role_t role) {
 static bool npc_target_valid(const world_t *w, const npc_ship_t *npc) {
     if (npc->target_asteroid < 0 || npc->target_asteroid >= MAX_ASTEROIDS) return false;
     const asteroid_t *a = &w->asteroids[npc->target_asteroid];
-    return a->active && a->tier != ASTEROID_TIER_S;
+    if (!a->active || a->tier == ASTEROID_TIER_S) return false;
+    return a->tier >= max_mineable_tier(npc->ship.mining_level);
 }
 
 /* Asteroid-already-taken check, reading from the controller layer
@@ -911,6 +921,10 @@ static bool miner_target_taken(const world_t *w, int target_idx, int self_char_i
  * fresh rock. Returns asteroid index, or -1. */
 static int npc_find_loose_fragment(const world_t *w, const npc_ship_t *self, float range_sq) {
     int best = -1;
+    float tractor_r = ship_tractor_range(&self->ship);
+    if (tractor_r <= 0.0f) return -1;
+    float tractor_sq = tractor_r * tractor_r;
+    if (range_sq <= 0.0f || range_sq > tractor_sq) range_sq = tractor_sq;
     float best_d = range_sq;
     int self_slot = (int)(self - w->npc_ships);
     const station_t *home = (self->home_station >= 0 && self->home_station < MAX_STATIONS)
@@ -997,6 +1011,7 @@ static bool npc_home_has_no_ore_need(const world_t *w, const npc_ship_t *npc) {
 static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     int self_npc_slot = (int)(npc - w->npc_ships);
     int self_char = character_for_npc_slot(w, self_npc_slot);
+    asteroid_tier_t max_tier = max_mineable_tier(npc->ship.mining_level);
 
     /* Priority: DESTROY contract targets first — but only if reasonably
      * nearby. Without the distance cap, a Helios miner would pick up a
@@ -1008,6 +1023,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
         if (!w->contracts[k].active || w->contracts[k].action != CONTRACT_FRACTURE) continue;
         int idx = w->contracts[k].target_index;
         if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
+        if (w->asteroids[idx].tier < max_tier) continue;
         if (v2_dist_sq(npc->ship.pos, w->asteroids[idx].pos) > MAX_DISTRESS_DIST_SQ) continue;
         if (!miner_target_taken(w, idx, self_char)) return idx;
     }
@@ -1027,6 +1043,7 @@ static int npc_find_mineable_asteroid(const world_t *w, const npc_ship_t *npc) {
     for (int i = 0; i < MAX_ASTEROIDS; i++) {
         const asteroid_t *a = &w->asteroids[i];
         if (!a->active || a->tier == ASTEROID_TIER_S) continue;
+        if (a->tier < max_tier) continue;
         if (signal_npc_confidence(signal_strength_at(w, a->pos)) < 0.1f) continue;
         if (miner_target_taken(w, i, self_char)) continue;
         if (!station_smelt_pair_for_ore(home, a->commodity, NULL)) continue;
@@ -2011,9 +2028,11 @@ void step_npc_ships(world_t *w, float dt) {
             continue;
         }
         npc->thrusting = false;
+        npc->ship.tractor_active = false;
         /* Slice 13: pull external ship.pos/vel/angle writes into the
          * npc fields before physics integration this tick. */
         mirror_ship_pos_to_npc(w, n);
+        npc_enforce_role_hull(npc);
         mirror_npc_to_character(w, n);
         npc_validate_stations(w, npc);
 
@@ -2043,10 +2062,10 @@ void step_npc_ships(world_t *w, float dt) {
             npc->ship.vel = v2(0.0f, 0.0f);
             if (npc->state_timer <= 0.0f) {
                 /* Prefer towing a loose fragment over fracturing fresh
-                 * rock — keeps the belt clean and is faster than mining.
-                 * Generous range: a fresh-undock miner is willing to
-                 * traverse the local sector for low-hanging fruit. */
-                if (npc_try_claim_loose_fragment(w, npc, 4000.0f * 4000.0f)) {
+                 * rock, but only if the fragment is inside this ship's
+                 * actual tractor range. NPC miners do not get a remote
+                 * claim/pull channel. */
+                if (npc_try_claim_loose_fragment(w, npc, 0.0f)) {
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                     break;
                 }
@@ -2073,7 +2092,7 @@ void step_npc_ships(world_t *w, float dt) {
             if (!npc_target_valid(w, npc)) {
                 /* Same fragment-first rule when the current target dies
                  * (someone else fractured it, etc.). */
-                if (npc_try_claim_loose_fragment(w, npc, 4000.0f * 4000.0f)) {
+                if (npc_try_claim_loose_fragment(w, npc, 0.0f)) {
                     npc->target_asteroid = -1;
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                     break;
@@ -2103,6 +2122,7 @@ void step_npc_ships(world_t *w, float dt) {
                     if (w->contracts[k].action != CONTRACT_FRACTURE) continue;
                     int idx = w->contracts[k].target_index;
                     if (idx < 0 || idx >= MAX_ASTEROIDS || !w->asteroids[idx].active) continue;
+                    if (w->asteroids[idx].tier < max_mineable_tier(npc->ship.mining_level)) continue;
                     if (idx == npc->target_asteroid) break;
                     float new_d2 = v2_dist_sq(npc->ship.pos, w->asteroids[idx].pos);
                     if (new_d2 > MAX_DISTRESS_PREEMPT_SQ) continue;
@@ -2122,7 +2142,7 @@ void step_npc_ships(world_t *w, float dt) {
                 /* Target gone — look for a fragment to tow, or find new target */
                 if (npc->towed_fragment >= 0) {
                     npc->state = NPC_STATE_RETURN_TO_STATION;
-                } else if (npc_try_claim_loose_fragment(w, npc, 4000.0f * 4000.0f)) {
+                } else if (npc_try_claim_loose_fragment(w, npc, 0.0f)) {
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                 } else if (npc_home_has_no_ore_need(w, npc)) {
                     /* Hopper full and no fragment in range — head home
@@ -2186,11 +2206,11 @@ void step_npc_ships(world_t *w, float dt) {
              * fall back to TRAVEL so steering pulls us back into range. */
             vec2 forward = v2_from_angle(npc->ship.angle);
             vec2 muzzle = ship_muzzle(npc->ship.pos, npc->ship.angle, &npc->ship);
-            int mining_level = (int)hull->mining_rate >= 1 ? 99 : 0; /* NPCs ignore tier */
+            int mining_level = npc->ship.mining_level;
             float sig_eff = signal_mining_efficiency(signal_strength_at(w, npc->ship.pos));
             mining_beam_t mb = sim_mining_beam_step(w, muzzle, forward,
                 npc->target_asteroid, mining_level,
-                hull->mining_rate, sig_eff, /*fracturer*/ -1, dt);
+                ship_mining_rate(&npc->ship), sig_eff, /*fracturer*/ -1, dt);
 
             if (!mb.hit) {
                 npc->state = NPC_STATE_TRAVEL_TO_ASTEROID;
@@ -2205,14 +2225,17 @@ void step_npc_ships(world_t *w, float dt) {
                 npc->target_asteroid = -1;
 
                 /* Grab the nearest S-tier fragment to tow home */
-                float best_frag_d = 200.0f * 200.0f;
+                float tractor_r = ship_tractor_range(&npc->ship);
+                float best_frag_d = tractor_r * tractor_r;
                 int best_frag = -1;
-                for (int fi = 0; fi < MAX_ASTEROIDS; fi++) {
-                    asteroid_t *f = &w->asteroids[fi];
-                    if (!f->active || f->tier != ASTEROID_TIER_S) continue;
-                    if (!npc_home_has_smelt_endpoint(w, npc, f->commodity, NULL)) continue;
-                    float fd = v2_dist_sq(npc->ship.pos, f->pos);
-                    if (fd < best_frag_d) { best_frag_d = fd; best_frag = fi; }
+                if (tractor_r > 0.0f) {
+                    for (int fi = 0; fi < MAX_ASTEROIDS; fi++) {
+                        asteroid_t *f = &w->asteroids[fi];
+                        if (!f->active || f->tier != ASTEROID_TIER_S) continue;
+                        if (!npc_home_has_smelt_endpoint(w, npc, f->commodity, NULL)) continue;
+                        float fd = v2_dist_sq(npc->ship.pos, f->pos);
+                        if (fd < best_frag_d) { best_frag_d = fd; best_frag = fi; }
+                    }
                 }
                 if (best_frag >= 0) {
                     npc->towed_fragment = best_frag;
@@ -2266,42 +2289,26 @@ void step_npc_ships(world_t *w, float dt) {
 
             /* Speed cap when towing */
             if (npc->towed_fragment >= 0) {
+                npc->ship.tractor_active = true;
                 float spd = v2_len(npc->ship.vel);
                 float max_tow_speed = 80.0f;
                 if (spd > max_tow_speed)
                     npc->ship.vel = v2_scale(npc->ship.vel, max_tow_speed / spd);
             }
 
-            /* Tow the fragment — constant-pull thruster engages when the
-             * fragment is past the safe distance behind the NPC. 1D
-             * axial damping keeps the rope steady; small tangent drag
-             * bleeds orbital drift. Speed cap prevents runaway. */
+            /* Tow the fragment with the same elastic band used by player
+             * ships. NPC miners must keep the rock inside their actual
+             * tractor envelope; if they outrun it, the band snaps. */
             if (npc->towed_fragment >= 0 && npc->towed_fragment < MAX_ASTEROIDS) {
                 asteroid_t *tow = &w->asteroids[npc->towed_fragment];
                 if (tow->active) {
-                    /* rest_length depends on the fragment's radius — bigger
-                     * fragments tow farther behind the drone. */
-                    tractor_beam_t npc_tow = {
-                        .rest_length     = 40.0f + tow->radius,
-                        .pull_strength   = 0.0f,
-                        .push_strength   = 0.0f,
-                        .pull_constant   = 500.0f,    /* constant accel toward NPC */
-                        .push_constant   = 0.0f,
-                        .range           = 0.0f,
-                        .axial_damping   = 3.0f,
-                        /* Tangent damping near axial value — fragments
-                         * will orbit the NPC if it's much lower, and
-                         * orbiting fragments never deliver. The legacy
-                         * code used isotropic drag 3.0 for the same
-                         * reason. Bumping below ~2.0 breaks
-                         * test_scenario_npc_economy_30_seconds. */
-                        .tangent_damping = 2.5f,
-                        .speed_cap       = 150.0f,
-                        .falloff         = TRACTOR_FALLOFF_CONSTANT,
-                    };
-                    tractor_anchor_t src = { .pos = npc->ship.pos, .vel = NULL,      .inv_mass = 0.0f };
-                    tractor_anchor_t tgt = { .pos = tow->pos,      .vel = &tow->vel, .inv_mass = 1.0f };
-                    (void)tractor_apply(&src, &tgt, &npc_tow, dt);
+                    float tractor_r = ship_tractor_range(&npc->ship);
+                    float dist = v2_len(v2_sub(npc->ship.pos, tow->pos));
+                    if (tractor_r <= 0.0f || dist > tractor_r * 1.5f) {
+                        npc->towed_fragment = -1;
+                        break;
+                    }
+                    ship_apply_fragment_tow(&npc->ship, tow, dt);
                     /* Release when close to the furnace — let the furnace tractor take over */
                     float furnace_d = v2_dist_sq(tow->pos, delivery_target);
                     if (furnace_d < 150.0f * 150.0f) {
@@ -2310,6 +2317,8 @@ void step_npc_ships(world_t *w, float dt) {
                 } else {
                     npc->towed_fragment = -1;
                 }
+            } else if (npc->towed_fragment >= MAX_ASTEROIDS) {
+                npc->towed_fragment = -1;
             }
 
             /* Once fragment is delivered (or lost), go find more ore */
@@ -2326,7 +2335,7 @@ void step_npc_ships(world_t *w, float dt) {
             npc->state_timer -= dt;
             if (npc->state_timer <= 0.0f) {
                 /* IDLE → fragment first, fracture second. */
-                if (npc_try_claim_loose_fragment(w, npc, 4000.0f * 4000.0f)) {
+                if (npc_try_claim_loose_fragment(w, npc, 0.0f)) {
                     npc->state = NPC_STATE_RETURN_TO_STATION;
                     break;
                 }

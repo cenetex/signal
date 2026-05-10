@@ -43,6 +43,16 @@ void step_ship_thrust(ship_t *s, float dt, float thrust_input,
  * duplicating the formula. */
 float ship_boost_thrust_mult(bool boost, float hold_t);
 
+/* Shared fragment tow band used by player ships and NPC miner ships.
+ * The tractor pickup and elastic-limit gates live at the call sites;
+ * this helper applies the per-tick tether force and ship reaction. */
+#define SHIP_TOW_BAND_REST_LEN      80.0f
+#define SHIP_TOW_BAND_SPRING_K       4.0f
+#define SHIP_TOW_BAND_DAMPING        0.6f
+#define SHIP_TOW_BAND_TANGENT_DRAG   0.4f
+#define SHIP_TOW_BAND_SHIP_MASS      8.0f
+void ship_apply_fragment_tow(ship_t *ship, asteroid_t *fragment, float dt);
+
 /* Integrate velocity onto position with hull drag, plus apply the
  * signal-frontier inward push when the ship is past the boundary
  * (`cached_signal` is the precomputed signal strength at the ship's
