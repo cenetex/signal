@@ -2,17 +2,27 @@
 
 all: build build-web build-server
 
-# install-hooks — symlink the tracked git hooks under scripts/git-hooks/
-# into .git/hooks/ so commits trigger the fast localhost auto-deploy.
-# Symlinks (vs copies) so future edits to scripts/git-hooks/ take effect
-# without re-running this target.
+# install-hooks - install small wrappers in the shared git hooks dir.
+#
+# Linked worktrees share one common .git/hooks directory. A symlink from
+# that common directory back to one checkout can run stale hook code when
+# pushing from another worktree, so wrappers resolve the active worktree
+# at runtime and then exec its tracked script under scripts/git-hooks/.
 install-hooks:
 	@root=$$(git rev-parse --show-toplevel); \
-	for f in $$root/scripts/git-hooks/*; do \
-		name=$$(basename $$f); \
-		target=$$root/.git/hooks/$$name; \
-		ln -sf ../../scripts/git-hooks/$$name $$target; \
-		echo "  hook: $$name → scripts/git-hooks/$$name"; \
+	hooks_dir=$$(git rev-parse --git-common-dir)/hooks; \
+	mkdir -p "$$hooks_dir"; \
+	for f in "$$root"/scripts/git-hooks/*; do \
+		name=$$(basename "$$f"); \
+		target="$$hooks_dir/$$name"; \
+		rm -f "$$target"; \
+		{ \
+			printf '%s\n' '#!/bin/sh'; \
+			printf '%s\n' 'root=$$(git rev-parse --show-toplevel) || exit 0'; \
+			printf '%s\n' 'exec "$$root/scripts/git-hooks/'"$$name"'" "$$@"'; \
+		} > "$$target"; \
+		chmod +x "$$target"; \
+		echo "  hook: $$name -> scripts/git-hooks/$$name"; \
 	done
 
 # Use Ninja if installed — significantly faster parallel builds and

@@ -1,6 +1,6 @@
 #!/bin/bash
 # Post-commit hook: rebuild docker server + wasm client to match HEAD,
-# THEN run tests in the background.
+# THEN run fast tests in the background.
 #
 # Order matters. Deployment is the path that has to be fast and stable
 # — the user wants to refresh the browser and see new code seconds
@@ -9,13 +9,14 @@
 # steal CPU from the build. So the hook runs:
 #
 #   Phase 1 (fast, ~5-10s):  wasm rebuild → server rebuild → restart
-#   Phase 2 (slow, ~30-60s): signal_test --quiet, results to log
+#   Phase 2 (background): signal_test --quiet --no-soak, results to log
 #
 # Both phases are backgrounded + disowned so `git commit` returns
 # immediately. Phase 2 never blocks phase 1 — they run sequentially
 # in the same async pipeline so there's no CPU contention with the
 # build, but a failed build doesn't keep tests from running, and a
-# failed test doesn't restart the container.
+# failed test doesn't restart the container. Full soak/static/native
+# confidence belongs to PR checks rather than local hooks.
 #
 # Logic is inlined here (rather than via `make local-sync`) so a
 # Makefile edit can't silently break the auto-sync flow.
@@ -68,20 +69,20 @@ echo "post-commit: rebuilding wasm + docker (log: $LOG)"
         fi
 
         # ---- Phase 2: run tests after deploy is live ----
-        # Browser already has the new code. Now exercise the suite as
+        # Browser already has the new code. Now exercise the fast suite as
         # an after-the-fact validator — failures are surfaced in the
         # log, not blocking the deploy. The test build dir is separate
         # from the local-build-server.sh tree so this doesn't trash
         # cmake's incremental cache for the runtime container.
         TEST_LOG=/tmp/signal-local-test.log
-        echo "[local-sync] starting test run (phase 2 — log: $TEST_LOG)"
+        echo "[local-sync] starting fast test run (phase 2 — log: $TEST_LOG)"
         {
             date
             echo "[local-test] target hash: $GIT_HASH"
             if cmake -S . -B build-test -DBUILD_TESTS_ONLY=ON \
                      -DGIT_HASH="$GIT_HASH" >/dev/null 2>&1 \
                && cmake --build build-test --parallel >/dev/null 2>&1; then
-                ./build-test/signal_test --quiet
+                ./build-test/signal_test --quiet --no-soak
                 rc=$?
                 if [ "$rc" = "0" ]; then
                     echo "[local-test] PASSED at $GIT_HASH"

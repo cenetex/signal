@@ -290,10 +290,10 @@ jobs:
             crap-client.txt
             coverage.json
 
-  # Client WASM build — parallel with tests.
+  # Client WASM build — parallel with tests. Runs on PRs as a browser-build
+  # gate, and on main to produce the deploy artifact.
   build-client:
     runs-on: ubuntu-latest
-    if: github.ref == 'refs/heads/main'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
