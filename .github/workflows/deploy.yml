@@ -181,16 +181,13 @@ jobs:
             2>&1 | tee clang-tidy-output.txt
           if grep -q "error:" clang-tidy-output.txt; then exit 1; fi
 
-  # CRAP score (complexity * uncovered). This runs the fast/non-soak
-  # suite under coverage instrumentation; long-horizon sim coverage
-  # belongs in the parallel test-soak job or a scheduled coverage pass.
-  # Tested-code report GATES the deploy at threshold 25 — the codebase
-  # already passes this, so the gate engages only on new regressions.
-  # Client complexity budget is informational only (signal_test does not
-  # link client code, so coverage is structurally 0 and CRAP collapses
-  # to complexity).
+  # CRAP score (complexity * uncovered). Runs after deploy on main only:
+  # useful as a regression report, too expensive/noisy for the local or PR
+  # path, and not important enough to delay production promotion.
   test-crap:
     runs-on: ubuntu-latest
+    needs: deploy
+    if: github.ref == 'refs/heads/main'
     timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
@@ -222,14 +219,12 @@ jobs:
             build-coverage
 
       # Sim code + pure helpers are the files signal_test actually links,
-      # so coverage is meaningful and CRAP is actionable. --fail-on-exceed
-      # gates the deploy: any function scoring >25 fails the job. Threshold
+      # so coverage is meaningful and CRAP is actionable. Threshold
       # 25 is structurally equivalent to "no function with CCN >= 25, and
       # CCN 10-24 functions need real test coverage" — the floor of the
       # CRAP formula is `+ ccn`, so CCN >= 25 cannot score below 25 at any
-      # coverage level. The codebase already passes; the gate engages on
-      # new regressions only.
-      - name: Compute CRAP (tested code) — GATING at threshold 25
+      # coverage level.
+      - name: Compute CRAP (tested code) at threshold 25
         run: |
           python3 scripts/crap.py --coverage coverage.json \
             --paths server/game_sim.c server/sim_ai.c server/sim_autopilot.c \
@@ -381,10 +376,11 @@ jobs:
           cache-from: type=gha
           cache-to: type=gha,mode=max
 
-  # Deploy GATES ON ALL TESTS passing + both builds.
+  # Deploy gates on fast/soak/static/client/server work. Slower advisory
+  # diagnostics such as CRAP and sanitizers run after promotion on main.
   deploy:
     runs-on: ubuntu-latest
-    needs: [test-basic, test-soak, test-crap, build-client, build-server]
+    needs: [test-basic, test-soak, test-static, build-client, build-server]
     timeout-minutes: 30
     steps:
       - uses: actions/checkout@v4

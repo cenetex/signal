@@ -179,6 +179,8 @@ TEST(test_module_construction_and_delivery) {
     ship.cargo[COMMODITY_CRYSTAL_INGOT] = 200.0f;
     step_module_delivery(&w, st, 1, &ship, COMMODITY_COUNT);
     ASSERT(ship.cargo[COMMODITY_CRYSTAL_INGOT] < 200.0f);  /* consumed from ship */
+    ASSERT_EQ_INT(ship.manifest.cap, 0);
+    ASSERT(ship.receipts_opaque == NULL);
     ASSERT_EQ_FLOAT(st->modules[producer_idx].build_progress, 1.0f, 0.01f); /* fully supplied */
     ASSERT(st->modules[producer_idx].scaffold);  /* still building — not instant */
     /* Run sim for 15 seconds (MODULE_BUILD_TIME = 10s + margin) */
@@ -299,6 +301,8 @@ TEST(test_module_activation_spawns_npc) {
     ship_t ship = {0};
     ship.cargo[COMMODITY_FRAME] = 200.0f;
     step_module_delivery(&w, st, 1, &ship, COMMODITY_COUNT);
+    ASSERT_EQ_INT(ship.manifest.cap, 0);
+    ASSERT(ship.receipts_opaque == NULL);
     /* Run sim long enough for construction to complete (~60 frames / 4 per sec = 15s) */
     for (int i = 0; i < (int)(20.0f / SIM_DT); i++)
         world_sim_step(&w, SIM_DT);
