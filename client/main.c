@@ -1538,11 +1538,7 @@ static void render_world(void) {
 static void render_ui(void) {
     float screen_w = ui_screen_width();
     float screen_h = ui_screen_height();
-    sgl_matrix_mode_projection();
-    sgl_load_identity();
-    sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
-    sgl_matrix_mode_modelview();
-    sgl_load_identity();
+    render_set_screen_space(screen_w, screen_h);
 
     draw_hud_panels();
     draw_hud();
@@ -1629,11 +1625,7 @@ static void render_frame(void) {
     {
         float screen_w = ui_screen_width();
         float screen_h = ui_screen_height();
-        sgl_matrix_mode_projection();
-        sgl_load_identity();
-        sgl_ortho(0.0f, screen_w, screen_h, 0.0f, -1.0f, 1.0f);
-        sgl_matrix_mode_modelview();
-        sgl_load_identity();
+        render_set_screen_space(screen_w, screen_h);
         draw_hull_fog_back();
     }
 
@@ -1814,6 +1806,7 @@ static void cleanup(void) {
     }
     saudio_shutdown();
     sdtx_shutdown();
+    hull_fog_shutdown();
     sgl_shutdown();
     sg_shutdown();
 }

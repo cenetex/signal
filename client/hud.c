@@ -446,24 +446,10 @@ static void hud_draw_hail_sigil(float screen_w, float screen_h) {
     float sig_size = 48.0f;
     float sx0 = 16.0f;
     float sy0 = screen_h - sig_size - 32.0f;
-    /* Reset projection — texture pipeline can have stale state from
-     * the world pass; same as the center hail overlay does. */
-    sgl_defaults();
-    sgl_matrix_mode_projection();
-    sgl_load_identity();
-    sgl_ortho(0, screen_w, screen_h, 0, -1, 1);
-    sgl_matrix_mode_modelview();
-    sgl_load_identity();
-    sgl_enable_texture();
-    sgl_texture((sg_view){ av->view_id }, (sg_sampler){ av->sampler_id });
-    sgl_begin_quads();
-    sgl_c4f(alpha, alpha, alpha, alpha);
-    sgl_v2f_t2f(sx0,            sy0,            0.0f, 0.0f);
-    sgl_v2f_t2f(sx0 + sig_size, sy0,            1.0f, 0.0f);
-    sgl_v2f_t2f(sx0 + sig_size, sy0 + sig_size, 1.0f, 1.0f);
-    sgl_v2f_t2f(sx0,            sy0 + sig_size, 0.0f, 1.0f);
-    sgl_end();
-    sgl_disable_texture();
+    render_set_screen_space(screen_w, screen_h);
+    draw_texture_rect(av->view_id, av->sampler_id,
+                      sx0, sy0, sx0 + sig_size, sy0 + sig_size,
+                      alpha, alpha, alpha, alpha);
     /* Gold border frame — "transmission active" radio indicator. */
     float border_a = 0.70f * alpha;
     sgl_begin_lines();
@@ -1821,6 +1807,30 @@ void hull_fog_init(void) {
         hull_fog.view_id[level] = view.id;
     }
     hull_fog.initialized = true;
+}
+
+void hull_fog_shutdown(void) {
+    if (!hull_fog.initialized) return;
+
+    if (hull_fog.blend_pip_id) {
+        sgl_destroy_pipeline((sgl_pipeline){ hull_fog.blend_pip_id });
+        hull_fog.blend_pip_id = 0;
+    }
+    for (int level = 0; level < HULL_FOG_LEVELS; level++) {
+        if (hull_fog.view_id[level]) {
+            sg_destroy_view((sg_view){ hull_fog.view_id[level] });
+            hull_fog.view_id[level] = 0;
+        }
+        if (hull_fog.image_id[level]) {
+            sg_destroy_image((sg_image){ hull_fog.image_id[level] });
+            hull_fog.image_id[level] = 0;
+        }
+    }
+    if (hull_fog.sampler_id) {
+        sg_destroy_sampler((sg_sampler){ hull_fog.sampler_id });
+        hull_fog.sampler_id = 0;
+    }
+    hull_fog.initialized = false;
 }
 
 /* Shared lava-lamp pulse — slow multi-frequency drift, no spikes. */

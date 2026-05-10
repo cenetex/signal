@@ -41,7 +41,11 @@ void avatar_init(void) {
 void avatar_shutdown(void) {
     for (int i = 0; i < MAX_STATIONS; i++) {
         if (cache[i].texture_valid) {
+            sg_destroy_view((sg_view){ cache[i].view_id });
             sg_destroy_image((sg_image){ cache[i].image_id });
+            cache[i].view_id = 0;
+            cache[i].image_id = 0;
+            cache[i].texture_valid = false;
         }
     }
     if (shared_sampler) {
@@ -53,7 +57,10 @@ void avatar_shutdown(void) {
 
 static void upload_texture(avatar_cache_t *entry, const unsigned char *rgba, int w, int h) {
     if (entry->texture_valid) {
+        sg_destroy_view((sg_view){ entry->view_id });
         sg_destroy_image((sg_image){ entry->image_id });
+        entry->view_id = 0;
+        entry->image_id = 0;
         entry->texture_valid = false;
     }
     sg_image img = sg_make_image(&(sg_image_desc){
