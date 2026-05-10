@@ -1007,10 +1007,13 @@ float step_module_delivery(world_t *w, station_t *st, int station_idx,
                     payout += mult * price;
                     counted++;
                 }
+                if (counted < whole)
+                    payout += (float)(whole - counted) * price;
                 /* Fractional remainder (sub-unit float) priced at base. */
                 float frac = deliver - (float)whole;
                 if (frac > 0.0f) payout += frac * price;
-                ship_manifest_consume_by_commodity(ship, mat, whole);
+                if (manifest_count_by_commodity(&ship->manifest, mat) > 0)
+                    (void)ship_manifest_consume_by_commodity(ship, mat, whole);
             } else {
                 payout += deliver * station_buy_price(st, mat);
             }
