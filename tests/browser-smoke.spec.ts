@@ -16,9 +16,19 @@ type CanvasStats = {
   avgLuma: number;
 };
 
-function smokeUrl(): string {
-  const url = process.env.SMOKE_URL || '/signal.html?singleplayer=1';
-  return url.includes('smoke=') ? url : `${url}${url.includes('?') ? '&' : '?'}smoke=1`;
+function addQueryParam(rawUrl: string, key: string, value: string): string {
+  const hashAt = rawUrl.indexOf('#');
+  const beforeHash = hashAt >= 0 ? rawUrl.slice(0, hashAt) : rawUrl;
+  const afterHash = hashAt >= 0 ? rawUrl.slice(hashAt) : '';
+  if (new RegExp(`[?&]${key}=`).test(beforeHash)) return rawUrl;
+  return `${beforeHash}${beforeHash.includes('?') ? '&' : '?'}${key}=${encodeURIComponent(value)}${afterHash}`;
+}
+
+function smokeUrl(options: { singleplayer?: boolean } = {}): string {
+  let url = process.env.SMOKE_URL || '/signal.html?singleplayer=1';
+  url = addQueryParam(url, 'smoke', '1');
+  if (options.singleplayer) url = addQueryParam(url, 'singleplayer', '1');
+  return url;
 }
 
 function usesLiveSmokeUrl(): boolean {
@@ -263,8 +273,12 @@ async function waitForRenderedGame(
   }
 }
 
-async function loadGame(page: Page, requireLiveRelay = usesLiveSmokeUrl()): Promise<Locator> {
-  await page.goto(smokeUrl());
+async function loadGame(
+  page: Page,
+  requireLiveRelay = usesLiveSmokeUrl(),
+  options: { singleplayer?: boolean } = {},
+): Promise<Locator> {
+  await page.goto(smokeUrl(options));
   const canvas = page.locator('canvas');
   await waitForRenderedGame(page, canvas, requireLiveRelay);
   return canvas;
@@ -361,7 +375,7 @@ test.describe('Browser smoke tests', () => {
   test('exposes deterministic HUD copy for fragment, tractor, tow, and hail states', async ({ page }) => {
     const logs = installFatalCollectors(page);
     await page.setViewportSize({ width: 1280, height: 720 });
-    await loadGame(page, false);
+    await loadGame(page, false, { singleplayer: true });
 
     await setSmokeLoopState(page, smokeLoopState.fragmentsNearby);
     expect(await hudActionText(page)).toContain('Hold [Space] tractor // 3 nearby');

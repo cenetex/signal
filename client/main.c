@@ -919,11 +919,16 @@ static void sim_step(float dt) {
 #endif
         if (srv[0] != '\0' && strcmp(cli, "dev") != 0 && strcmp(cli, srv) != 0) {
 #ifdef __EMSCRIPTEN__
-            /* Only reload once — if URL already has ?v= we already tried */
+            /* Only reload once, preserving smoke/server/singleplayer params. */
             int already_tried = emscripten_run_script_int(
-                "location.search.indexOf('v=') >= 0 ? 1 : 0");
+                "new URLSearchParams(location.search).has('v') ? 1 : 0");
             if (!already_tried) {
-                emscripten_run_script("location.replace(location.pathname + '?v=' + Date.now())");
+                emscripten_run_script(
+                    "(() => {"
+                    "  const u = new URL(location.href);"
+                    "  u.searchParams.set('v', Date.now().toString());"
+                    "  location.replace(u.pathname + '?' + u.searchParams.toString() + u.hash);"
+                    "})()");
             }
 #endif
         }
@@ -1109,6 +1114,7 @@ static void init(void) {
         server_url = emscripten_run_script_string(
             "(() => {"
             "  const p = new URLSearchParams(window.location.search);"
+            "  if (p.has('singleplayer')) return '';"
             "  return p.get('server') || window.SIGNAL_SERVER || '';"
             "})()");
 #else

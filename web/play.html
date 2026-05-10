@@ -97,6 +97,7 @@
       var signalParams = new URLSearchParams(window.location.search);
       var signalHost = window.location.hostname;
       var signalHostIsLocal = isLocalHostName(signalHost);
+      if (signalParams.has('singleplayer')) window.SIGNAL_SERVER = '';
       if (!signalParams.has('singleplayer') && !window.SIGNAL_SERVER) {
         if (signalHostIsLocal) window.SIGNAL_SERVER = 'ws://' + signalHost + ':9091/ws';
       }
