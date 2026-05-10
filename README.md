@@ -84,11 +84,11 @@ for the `swarm.rati.chat` avatar sync workflow.
   signed chain logs, cargo receipts, and the off-chain trust model.
 - [`docs/cargo-architecture.md`](docs/cargo-architecture.md): canonical cargo
   vocabulary — fragments, bulk float, crates, manifests, and lineage.
-- [`docs/anime-framework.md`](docs/anime-framework.md): creative framework for
-  signal artifacts and episode themes.
+- [`docs/anime-framework.md`](docs/anime-framework.md): milestone-video product
+  scope and cut line.
 - [`docs/anime-integration-plan.md`](docs/anime-integration-plan.md): current
-  in-engine episode playback architecture and remaining work.
-- [`docs/sector-x-whitepaper.md`](docs/sector-x-whitepaper.md): concept design
+  in-engine milestone-video playback architecture and remaining work.
+- [`docs/sector-x-whitepaper.md`](docs/sector-x-whitepaper.md): post-MVP vision
   for dark-sector battery runs, megastructures, jump crystals, and gates.
 - [`tests/fixtures/README.md`](tests/fixtures/README.md): deterministic
   `signal_verify` chain-log fixtures.

@@ -2,9 +2,10 @@
 
 ### A Design Whitepaper for Signal's Endgame
 
-**Status:** concept design, not current shipped gameplay. The present game loop
-is mining, smelting, station trade, outpost construction, signal expansion, and
-rock combat; Sector X describes a future endgame direction.
+**Status:** post-MVP vision, not current shipped gameplay and not MVP scope.
+The present game loop is mining, smelting, station trade, outpost construction,
+signal expansion, and rock combat. Sector X should not enter implementation
+until that loop is already legible, fun, and worth extending.
 
 ---
 
@@ -363,7 +364,27 @@ That feeling — pride in what you've built and awe at what was built before —
 
 ---
 
-## 8. Implementation Priority
+## 8. Post-MVP Entry Criteria
+
+Sector X works only after the base game has taught the player that signal is
+safety, labor, identity, and economic reach. Do not start this work until the
+following are true in the playable game:
+
+- Mining, towing, smelting, and local station credit payouts are obvious without
+  reading docs.
+- At least one profitable hauling route makes per-station currency feel real.
+- Outpost construction feels physical: the player understands where the station
+  came from and what changed after activation.
+- Signal boundaries have clear mechanical consequences in normal play.
+- Rock combat is readable enough that players can intentionally threaten each
+  other with fragments.
+- Station contracts and NPC activity make the network feel alive before any
+  endgame mystery appears.
+
+Until then, Sector X is a north star for tone and long-term systems, not a
+backlog.
+
+## 9. Potential Implementation Order
 
 ### Phase 1: Battery Mode (no sector system required)
 

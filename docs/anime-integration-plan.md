@@ -1,8 +1,8 @@
-# Anime Integration Plan - Current Implementation
+# Milestone Video Integration Plan
 
-This document tracks the shipped episode-playback architecture. The creative
-framework lives in [`anime-framework.md`](./anime-framework.md); this file is
-for code and asset integration details.
+This document tracks the shipped milestone-video playback architecture. Product
+scope is intentionally narrow: play the existing videos at meaningful progress
+beats, and do not build a broader anime/narrative content system.
 
 ## Status
 
@@ -19,6 +19,7 @@ overlay.
 
 The old browser-native MP4 plan is retired. There is no `signalPlayEpisode`
 JavaScript bridge, no DOM overlay, and no `space_miner.html` integration point.
+The old Signal Ghost / Signal Archive roadmap is also cut from MVP scope.
 
 ## Asset Layout
 
@@ -117,8 +118,8 @@ Episodes are diegetic popups, not full-screen blocking cutscenes.
   clears watched flags, triggers episode 9, and keeps episode decode/audio
   running while the death cinematic owns input.
 
-This matches the signal-artifact framing in the creative doc: the episode is
-an object in the world, not a hard mode switch away from gameplay.
+This keeps videos secondary to play: the player can keep flying, and the video
+does not introduce a separate collection or archive loop.
 
 ## Persistence
 
@@ -152,5 +153,12 @@ currently persist watched state to disk; they rely on in-memory session state.
    nonblank episode texture plus audio-buffer activity.
 4. Revisit the episode 2 trigger if the "all three ore types" milestone is
    still the intended narrative beat.
-5. Implement the future Signal Ghost layer from the creative framework:
-   spatial audio fragments, in-world echo nodes, and Signal Archive assembly.
+
+## Explicitly Out Of Scope
+
+- New episode discovery entities.
+- Signal Archive station modules.
+- Audio-fragment collection.
+- Future video seasons or narrative questlines.
+- Any milestone video work that delays core mining, hauling, construction,
+  station economy, or rock-combat readability.
