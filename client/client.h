@@ -319,6 +319,9 @@ typedef struct {
     int8_t  pending_net_place_slot;
     float action_predict_timer;
     float net_input_timer;
+    bool net_input_have_last;
+    uint8_t net_last_sent_flags;
+    uint16_t net_last_sent_mining_target;
     uint16_t net_input_seq;
     uint16_t net_last_server_ack;
     uint32_t net_last_server_tick;
