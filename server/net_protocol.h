@@ -110,9 +110,11 @@ static inline int serialize_player_state(uint8_t *buf, uint8_t id, const server_
  * Each record: [id:1][x:f32][y:f32][vx:f32][vy:f32][angle:f32][flags:1]
  *              [tractor_lvl:1][towed_count:1][towed_frags:20][callsign:7]
  *              [beam_start_x:f32][beam_start_y:f32][beam_end_x:f32][beam_end_y:f32]
+ *              [last_input_seq:u16][server_tick:u32]
  */
 /* PLAYER_RECORD_SIZE defined in shared/net_protocol.h */
-static inline int serialize_all_player_states(uint8_t *buf, const server_player_t *players) {
+static inline int serialize_all_player_states(uint8_t *buf, const server_player_t *players,
+                                              uint32_t server_tick) {
     int count = 0;
     for (int i = 0; i < MAX_PLAYERS; i++) {
         if (!players[i].connected || players[i].grace_period) continue;
@@ -154,6 +156,8 @@ static inline int serialize_all_player_states(uint8_t *buf, const server_player_
         write_f32_le(&p[55], players[i].beam_start.y);
         write_f32_le(&p[59], players[i].beam_end.x);
         write_f32_le(&p[63], players[i].beam_end.y);
+        write_u16_le(&p[67], players[i].last_input_seq);
+        write_u32_le(&p[69], server_tick);
         count++;
     }
     buf[0] = NET_MSG_WORLD_PLAYERS;
@@ -574,7 +578,7 @@ static inline int serialize_npcs(uint8_t *buf, const npc_ship_t *npcs) {
  * (in shared/net_protocol.h) and all buffers that depend on it. */
 /* Compile-time guards: record sizes must match serialization layouts. */
 _Static_assert(
-    1 + 5 * 4 + 1 + 1 + 1 + 20 + 7 + 4 * 4 == PLAYER_RECORD_SIZE,
+    1 + 5 * 4 + 1 + 1 + 1 + 20 + 7 + 4 * 4 + 2 + 4 == PLAYER_RECORD_SIZE,
     "PLAYER_RECORD_SIZE must match serialized player state layout"
 );
 _Static_assert(
@@ -922,11 +926,15 @@ static inline int serialize_player_known_contracts(uint8_t *buf,
 /* ------------------------------------------------------------------ */
 
 /*
- * INPUT message (4 or 5 bytes):
+ * INPUT message (4, 5, 8, or 12 bytes):
  * [type:1][flags:1][action:1][mining_target:1][buy_grade:1 (optional)]
  * Older clients send 4 bytes — buy_grade is treated as MINING_GRADE_COUNT
  * ("any grade, FIFO"). Only meaningful when action is in the
  * NET_ACTION_BUY_PRODUCT range.
+ *
+ * Current clients send 12 bytes. Bytes 8..9 carry a client input sequence
+ * number, and bytes 10..11 carry a uint16 mining target (0xFFFF = none).
+ * Byte 3 remains the low byte / legacy target sentinel for old servers.
  */
 static inline void parse_input(const uint8_t *data, int len, input_intent_t *intent) {
     if (len < 4) return;
@@ -1060,10 +1068,17 @@ static inline void parse_input(const uint8_t *data, int len, input_intent_t *int
         }
     }
 
-    /* Mining target hint (uint8 — always valid with MAX_ASTEROIDS=2048) */
+    /* Mining target hint. V2 clients send uint16 at bytes 10..11 so all
+     * MAX_ASTEROIDS slots fit; legacy clients only had byte 3. */
     {
-        uint8_t target = data[3];
-        intent->mining_target_hint = (target == 0xFF) ? -1 : (int)target;
+        if (len >= 12) {
+            uint16_t target = read_u16_le(&data[10]);
+            intent->mining_target_hint =
+                (target == 0xFFFFu || target >= MAX_ASTEROIDS) ? -1 : (int)target;
+        } else {
+            uint8_t target = data[3];
+            intent->mining_target_hint = (target == 0xFF) ? -1 : (int)target;
+        }
     }
 }
 

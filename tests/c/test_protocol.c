@@ -44,6 +44,7 @@ TEST(test_roundtrip_batched_player_states) {
     players[0].ship.angle = 1.5f;
     players[0].actual_thrusting = true;
     players[0].docked = false;
+    players[0].last_input_seq = 321;
 
     players[3].connected = true;
     players[3].ship.pos = v2(-50.0f, 300.0f);
@@ -57,7 +58,7 @@ TEST(test_roundtrip_batched_player_states) {
     players[3].ship.towed_fragments[1] = 1024;
 
     uint8_t buf[2 + MAX_PLAYERS * PLAYER_RECORD_SIZE];
-    int len = serialize_all_player_states(buf, players);
+    int len = serialize_all_player_states(buf, players, 12345u);
 
     /* Should have 2 records */
     ASSERT_EQ_INT(buf[0], NET_MSG_WORLD_PLAYERS);
@@ -71,6 +72,8 @@ TEST(test_roundtrip_batched_player_states) {
     ASSERT_EQ_FLOAT(read_f32_le(&p0[5]), 200.0f, 0.01f);
     ASSERT(p0[21] & 1); /* thrusting */
     ASSERT(!(p0[21] & 4)); /* not docked */
+    ASSERT_EQ_INT((int)((uint16_t)p0[67] | ((uint16_t)p0[68] << 8)), 321);
+    ASSERT_EQ_INT((int)read_u32_le(&p0[69]), 12345);
 
     /* Second record: player 3 */
     uint8_t *p1 = &buf[2 + PLAYER_RECORD_SIZE];
@@ -784,6 +787,31 @@ TEST(test_parse_input_no_action) {
     ASSERT(!intent.interact);
 }
 
+TEST(test_parse_input_v2_uint16_mining_target) {
+    input_intent_t intent;
+    memset(&intent, 0, sizeof(intent));
+
+    uint8_t msg[12] = {
+        NET_MSG_INPUT,
+        NET_INPUT_FIRE,
+        NET_ACTION_NONE,
+        0x2C, /* legacy low byte for target 300 */
+        MINING_GRADE_COUNT,
+        0xFF, 0xFF, 0xFF,
+        0x34, 0x12, /* input seq */
+        0x2C, 0x01  /* mining target 300 */
+    };
+
+    parse_input(msg, sizeof(msg), &intent);
+    ASSERT(intent.mine);
+    ASSERT_EQ_INT(intent.mining_target_hint, 300);
+
+    msg[10] = 0xFF;
+    msg[11] = 0xFF;
+    parse_input(msg, sizeof(msg), &intent);
+    ASSERT_EQ_INT(intent.mining_target_hint, -1);
+}
+
 TEST(test_parse_input_action_accumulates) {
     input_intent_t intent;
     memset(&intent, 0, sizeof(intent));
@@ -822,5 +850,6 @@ void register_protocol_main_tests(void) {
     RUN(test_parse_input_reverse_flag);
     RUN(test_parse_input_too_short);
     RUN(test_parse_input_no_action);
+    RUN(test_parse_input_v2_uint16_mining_target);
     RUN(test_parse_input_action_accumulates);
 }

@@ -228,6 +228,9 @@ typedef struct {
     float autopilot_stuck_timer;/* seconds since meaningful movement */
     /* Per-player relevance: tracks which asteroids this player has received */
     bool asteroid_sent[MAX_ASTEROIDS];
+    /* Last movement/control input sequence accepted from this client. Mirrored
+     * back in WORLD_PLAYERS so the client can reason about prediction age. */
+    uint16_t last_input_seq;
     /* Last damage attribution. Set by apply_ship_damage_attributed and
      * read by emergency_recover_ship when populating SIM_EVENT_DEATH so
      * the death cinematic can name a killer. Cleared when the player
